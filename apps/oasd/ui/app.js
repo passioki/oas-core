@@ -11,7 +11,7 @@ const logEl = document.getElementById('log');
 const btnCapture = document.getElementById('btn-capture');
 const btnOcr = document.getElementById('btn-ocr');
 const btnClear = document.getElementById(''btn-clear'');
-const btnLines = document.getElementById(''btn-lines'');
+const btnLines = document.getElementById('btn-lines');
 
 let img = null;
 let roi = null; // {x,y,w,h} in frame coordinates
