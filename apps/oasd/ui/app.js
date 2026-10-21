@@ -12,6 +12,9 @@ const btnCapture = document.getElementById('btn-capture');
 const btnOcr = document.getElementById('btn-ocr');
 const btnClear = document.getElementById('btn-clear');
 const btnLines = document.getElementById('btn-lines');
+const btnAsset = document.getElementById('btn-asset');
+const assetId = document.getElementById('asset-id');
+const assetKind = document.getElementById('asset-kind');
 
 let img = null;
 let roi = null; // {x,y,w,h} in frame coordinates
@@ -104,11 +107,13 @@ function updateRoiLabel() {
     roiEl.textContent = '未选择';
     btnOcr.disabled = true;
     btnLines.disabled = true;
+    if (btnAsset) btnAsset.disabled = true;
     return;
   }
   roiEl.textContent = `x=${roi.x} y=${roi.y} w=${roi.w} h=${roi.h}`;
   btnOcr.disabled = roi.w < 2 || roi.h < 2;
   btnLines.disabled = roi.w < 2 || roi.h < 2;
+  if (btnAsset) btnAsset.disabled = roi.w < 2 || roi.h < 2;
 }
 
 async function loadFrame() {
@@ -210,6 +215,39 @@ btnOcr.addEventListener('click', async () => {
 });
 
 btnCapture.addEventListener('click', doCapture);
+
+// P1-d2 step 2: turn the current ROI into an asset declaration. Copying JSON
+// keeps this a pure frontend step (no new endpoint, no restart) while the
+// editor is being built; writing assets.json to disk comes with the task
+// save/bundle step.
+btnAsset.addEventListener('click', async () => {
+  if (!roi) return;
+  const id = (assetId.value || '').trim();
+  if (!id) {
+    resultEl.textContent = '请先填素材 id';
+    assetId.focus();
+    return;
+  }
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(id)) {
+    resultEl.textContent = 'id 只能用字母/数字/下划线，且以字母开头';
+    return;
+  }
+  const kind = assetKind.value;
+  const decl = {
+    id,
+    kind,
+    roi: [roi.x, roi.y, roi.w, roi.h],
+    ...(kind === 'template' ? { file: `images/${id}.png`, threshold: 0.85 } : {}),
+  };
+  const json = JSON.stringify(decl, null, 2);
+  resultEl.textContent = json;
+  try {
+    await navigator.clipboard.writeText(json);
+    log(`素材 JSON 已复制：${id} (${kind})`);
+  } catch (e) {
+    log(`素材 JSON 已生成（复制失败，请手动选中）：${id}`);
+  }
+});
 
 btnLines.addEventListener('click', async () => {
   if (!roi) return;

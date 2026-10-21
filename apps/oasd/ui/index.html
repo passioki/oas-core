@@ -27,6 +27,16 @@
       <button id="btn-lines" disabled>多行识别 (det+rec)</button>
       
       <button id="btn-clear">清除 ROI</button>
+      <h3>存为素材</h3>
+      <label class="opt"><input id="asset-id" placeholder="素材 id，如 I_PRESET_ENTRY" /></label>
+      <label class="opt">类型
+        <select id="asset-kind">
+          <option value="template">template（模板图）</option>
+          <option value="ocr_line">ocr_line（单行文字）</option>
+          <option value="ocr_lines">ocr_lines（多行文字）</option>
+        </select>
+      </label>
+      <button id="btn-asset" disabled>生成素材 JSON</button>
       <h3>结果</h3>
       <pre id="result" class="muted">—</pre>
       <h3>日志</h3>
