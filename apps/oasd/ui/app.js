@@ -10,11 +10,13 @@ const resultEl = document.getElementById('result');
 const logEl = document.getElementById('log');
 const btnCapture = document.getElementById('btn-capture');
 const btnOcr = document.getElementById('btn-ocr');
-const btnClear = document.getElementById('btn-clear');
+const btnClear = document.getElementById(''btn-clear'');
+const btnLines = document.getElementById(''btn-lines'');
 
 let img = null;
 let roi = null; // {x,y,w,h} in frame coordinates
 let dragStart = null;
+let boxes = []; // detection boxes from the multi-line route
 
 function log(msg) {
   const t = new Date().toLocaleTimeString();
@@ -57,16 +59,31 @@ function draw() {
     ctx.fillText(`${roi.w}x${roi.h} @ ${roi.x},${roi.y}`, roi.x + 4, Math.max(14, roi.y - 6));
     ctx.restore();
   }
+  // detection boxes (multi-line route)
+  for (const b of boxes) {
+    ctx.save();
+    ctx.strokeStyle = '#e8b431';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(b.box[0] + 0.5, b.box[1] + 0.5, b.box[2], b.box[3]);
+    ctx.fillStyle = 'rgba(232,180,49,0.10)';
+    ctx.fillRect(b.box[0], b.box[1], b.box[2], b.box[3]);
+    ctx.fillStyle = '#e8b431';
+    ctx.font = '13px Consolas, monospace';
+    ctx.fillText(`${b.text} ${b.score.toFixed(2)}`, b.box[0], Math.max(13, b.box[1] - 4));
+    ctx.restore();
+  }
 }
 
 function updateRoiLabel() {
   if (!roi) {
     roiEl.textContent = '未选择';
     btnOcr.disabled = true;
+    btnLines.disabled = true;
     return;
   }
   roiEl.textContent = `x=${roi.x} y=${roi.y} w=${roi.w} h=${roi.h}`;
   btnOcr.disabled = roi.w < 2 || roi.h < 2;
+  btnLines.disabled = roi.w < 2 || roi.h < 2;
 }
 
 async function loadFrame() {
@@ -119,6 +136,7 @@ async function doCapture() {
 canvas.addEventListener('mousedown', (ev) => {
   dragStart = toFrame(ev);
   roi = null;
+  boxes = [];
   draw();
 });
 
@@ -167,6 +185,31 @@ btnOcr.addEventListener('click', async () => {
 });
 
 btnCapture.addEventListener('click', doCapture);
+
+btnLines.addEventListener('click', async () => {
+  if (!roi) return;
+  btnLines.disabled = true;
+  resultEl.textContent = '多行识别中…';
+  try {
+    const q = `x=${roi.x}&y=${roi.y}&w=${roi.w}&h=${roi.h}`;
+    const r = await fetch('/lines?' + q);
+    const s = await r.json();
+    if (s.error) {
+      resultEl.textContent = '错误：' + s.error;
+      log('多行识别错误：' + s.error);
+    } else {
+      boxes = s.lines || [];
+      draw();
+      const txt = boxes.map((b, i) => `${i + 1}. ${b.text} (${b.score.toFixed(3)})`).join('\n');
+      resultEl.textContent = `${boxes.length} 行 / ${s.elapsed_ms.toFixed(0)} ms\n` + txt;
+      log(`多行识别 → ${boxes.length} 行`);
+    }
+  } catch (e) {
+    resultEl.textContent = '多行识别异常：' + e;
+  } finally {
+    btnLines.disabled = false;
+  }
+});
 
 (async function boot() {
   try {
