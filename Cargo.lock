@@ -125,6 +125,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "oas-runtime"
+version = "0.1.0"
+dependencies = [
+ "oas-flow",
+ "oas-obs",
+ "oas-perceive",
+ "oas-types",
+]
+
+[[package]]
 name = "oas-types"
 version = "0.1.0"
 

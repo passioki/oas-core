@@ -6,6 +6,7 @@ members = [
     "crates/oas-perceive",
     "crates/oas-obs",
     "crates/oas-flow",
+    "crates/oas-runtime",
     "crates/oas-adapter-pc",
     "apps/oasd",
 ]
@@ -22,4 +23,5 @@ oas-codec = { path = "crates/oas-codec" }
 oas-perceive = { path = "crates/oas-perceive" }
 oas-obs = { path = "crates/oas-obs" }
 oas-flow = { path = "crates/oas-flow" }
+oas-runtime = { path = "crates/oas-runtime" }
 oas-adapter-pc = { path = "crates/oas-adapter-pc" }

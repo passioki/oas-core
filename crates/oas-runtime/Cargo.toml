@@ -1,0 +1,13 @@
+﻿[package]
+name = "oas-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oas-types = { workspace = true }
+oas-perceive = { workspace = true }
+oas-flow = { workspace = true }
+
+[dev-dependencies]
+oas-obs = { workspace = true }

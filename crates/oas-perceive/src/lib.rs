@@ -141,29 +141,36 @@ fn dot(img: &GrayImage, tpl: &GrayImage, px: usize, py: usize) -> i64 {
     total
 }
 
-/// Reusable matcher for one frame: builds the integral images **once** and
-/// lets every template reuse them (building them per template was a real
-/// 40x slowdown measured in P0-2).
-pub struct Matcher<'a> {
-    img: &'a GrayImage,
+/// Reusable matcher for one frame: **owns** the gray frame and builds the
+/// integral images **once**, so every template reuses them (building them per
+/// template was a real 40x slowdown measured in P0-2).
+///
+/// Owning the frame (instead of borrowing) lets an interpreter cache one
+/// matcher per captured frame in a struct field without lifetime gymnastics.
+pub struct Matcher {
+    img: GrayImage,
     integral: Integral,
 }
 
-impl<'a> Matcher<'a> {
-    pub fn new(img: &'a GrayImage) -> Self {
-        Self {
-            img,
-            integral: Integral::build(img),
-        }
+impl Matcher {
+    /// Take ownership of the frame (no copy).
+    pub fn new(img: GrayImage) -> Self {
+        let integral = Integral::build(&img);
+        Self { img, integral }
     }
 
-    pub fn image(&self) -> &'a GrayImage {
-        self.img
+    /// Keep the caller's frame by reference (copies the gray buffer once).
+    pub fn from_ref(img: &GrayImage) -> Self {
+        Self::new(img.clone())
+    }
+
+    pub fn image(&self) -> &GrayImage {
+        &self.img
     }
 
     /// Best NCC match of `tpl` inside the frame (optionally restricted to `roi`).
     pub fn match_template(&self, tpl: &GrayImage, roi: Option<Rect>) -> Option<MatchBest> {
-        let img = self.img;
+        let img = &self.img;
         let (ox, oy, sw, sh) = match roi {
             Some(r) => (r.x, r.y, r.w, r.h),
             None => (0, 0, img.width as i32, img.height as i32),
@@ -238,10 +245,10 @@ impl<'a> Matcher<'a> {
     }
 }
 
-/// One-shot convenience (builds the integral image internally).
+/// One-shot convenience (copies the frame and builds the integral image).
 /// Prefer [`Matcher`] when matching several templates against the same frame.
 pub fn match_template(img: &GrayImage, tpl: &GrayImage, roi: Option<Rect>) -> Option<MatchBest> {
-    Matcher::new(img).match_template(tpl, roi)
+    Matcher::from_ref(img).match_template(tpl, roi)
 }
 
 /// Convenience: does the template appear in `roi` at or above `threshold`?
