@@ -130,13 +130,31 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             events: Vec::new(),
             started: Instant::now(),
             humanize: crate::humanize::Humanize::default(),
-            rng: crate::humanize::Rng::new(crate::humanize::Humanize::default().resolved_seed(0)),
+            // Per-run seed: random for the game (HB1/HB5), persisted by the
+            // recorder so a replay can use with_seed() and reproduce exactly.
+            // A FIXED seed every run would make the click sequence identical
+            // across runs, which is itself a bot tell.
+            rng: crate::humanize::Rng::new(
+                crate::humanize::Humanize::default()
+                    .resolved_seed(now_ms()),
+            ),
             steps: 0,
         }
     }
 
     pub fn events(&self) -> &[StepEvent] {
         &self.events
+    }
+
+    /// Pin the RNG seed (replays use the seed recorded in the bundle).
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.rng = crate::humanize::Rng::new(seed);
+        self
+    }
+
+    /// Current RNG seed state (record it into the bundle meta).
+    pub fn seed_now(&self) -> u64 {
+        self.rng.peek()
     }
 
     pub fn run(&mut self, flow: &Flow) -> RunResult {
@@ -654,4 +672,11 @@ mod tests {
             other => panic!("expected Failed, got {other:?}"),
         }
     }
+}
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
 }

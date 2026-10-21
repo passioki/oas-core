@@ -1,4 +1,4 @@
-//! Humanised input (anti-ban, design doc §20). **Default ON.**
+﻿//! Humanised input (anti-ban, design doc §20). **Default ON.**
 //!
 //! Rules:
 //! * HB1 clicks are never a fixed point: pick uniformly inside the target box
@@ -43,6 +43,10 @@ impl Rng {
     pub fn new(seed: u64) -> Self {
         // never allow state 0
         Self(if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed })
+    }
+
+    pub fn peek(&self) -> u64 {
+        self.0
     }
 
     pub fn next_u64(&mut self) -> u64 {
