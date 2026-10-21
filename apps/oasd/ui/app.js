@@ -198,7 +198,13 @@ btnLines.addEventListener('click', async () => {
       resultEl.textContent = '错误：' + s.error;
       log('多行识别错误：' + s.error);
     } else {
-      boxes = s.lines || [];
+      // /lines returns boxes in ROI-LOCAL coordinates; the canvas draws in
+      // frame coordinates, so shift by the ROI origin (this was the visible
+      // "boxes drift to the upper-left" bug).
+      boxes = (s.lines || []).map((b) => ({
+        ...b,
+        box: [roi.x + b.box[0], roi.y + b.box[1], b.box[2], b.box[3]],
+      }));
       draw();
       const txt = boxes.map((b, i) => `${i + 1}. ${b.text} (${b.score.toFixed(3)})`).join('\n');
       resultEl.textContent = `${boxes.length} 行 / ${s.elapsed_ms.toFixed(0)} ms\n` + txt;
