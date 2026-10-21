@@ -1,9 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/oas-types"]
+members = ["crates/oas-types", "crates/oas-perceive"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
+
+[workspace.dependencies]
+oas-types = { path = "crates/oas-types" }
+oas-perceive = { path = "crates/oas-perceive" }

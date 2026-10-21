@@ -1,0 +1,78 @@
+{
+  "frame": "frame.gray",
+  "cases": [
+    {
+      "name": "exact",
+      "tpl": "tpl_exact.gray",
+      "roi": [
+        650,
+        250,
+        160,
+        140
+      ],
+      "paste": [
+        700,
+        300
+      ],
+      "score": 0.9999995827674866,
+      "x": 700,
+      "y": 300,
+      "tpl_w": 56,
+      "tpl_h": 46
+    },
+    {
+      "name": "noisy",
+      "tpl": "tpl_noisy.gray",
+      "roi": [
+        150,
+        450,
+        160,
+        140
+      ],
+      "paste": [
+        200,
+        500
+      ],
+      "score": 0.9999997615814209,
+      "x": 200,
+      "y": 500,
+      "tpl_w": 40,
+      "tpl_h": 40
+    },
+    {
+      "name": "absent",
+      "tpl": "tpl_absent.gray",
+      "roi": [
+        900,
+        100,
+        200,
+        200
+      ],
+      "paste": null,
+      "score": 0.09637416899204254,
+      "x": 967,
+      "y": 221,
+      "tpl_w": 36,
+      "tpl_h": 48
+    },
+    {
+      "name": "crop",
+      "tpl": "tpl_crop.gray",
+      "roi": [
+        950,
+        80,
+        160,
+        140
+      ],
+      "paste": [
+        1000,
+        120
+      ],
+      "score": 1.0,
+      "x": 1000,
+      "y": 120,
+      "tpl_w": 44,
+      "tpl_h": 38
+    }
+  ]
+}
