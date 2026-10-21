@@ -1,4 +1,4 @@
-﻿[workspace]
+[workspace]
 resolver = "2"
 members = [
     "crates/oas-types",
@@ -8,6 +8,7 @@ members = [
     "crates/oas-flow",
     "crates/oas-ocr",
     "crates/oas-runtime",
+    "crates/oas-task",
     "crates/oas-adapter-pc",
     "apps/oasd",
 ]
@@ -26,4 +27,5 @@ oas-obs = { path = "crates/oas-obs" }
 oas-flow = { path = "crates/oas-flow" }
 oas-ocr = { path = "crates/oas-ocr" }
 oas-runtime = { path = "crates/oas-runtime" }
+oas-task = { path = "crates/oas-task" }
 oas-adapter-pc = { path = "crates/oas-adapter-pc" }

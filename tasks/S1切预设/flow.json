@@ -1,0 +1,132 @@
+{
+  "name": "S1切预设",
+  "schema_version": 1,
+  "steps": [
+    {
+      "args": {
+        "level": "info",
+        "text": "'S1: 庭院 → 式神录 → 队伍预设 → 分组2 → 恢复默认分组'"
+      },
+      "op": "log"
+    },
+    {
+      "args": {
+        "sel": "结界突破"
+      },
+      "op": "click"
+    },
+    {
+      "args": {
+        "seconds": 1.5
+      },
+      "op": "wait"
+    },
+    {
+      "args": {
+        "sel": "式神录"
+      },
+      "op": "click"
+    },
+    {
+      "args": {
+        "seconds": 1.8
+      },
+      "op": "wait"
+    },
+    {
+      "args": {
+        "sel": "预设"
+      },
+      "op": "click"
+    },
+    {
+      "args": {
+        "seconds": 1.8
+      },
+      "op": "wait"
+    },
+    {
+      "args": {
+        "from": [
+          1180,
+          260
+        ],
+        "ms": 400,
+        "to": [
+          1180,
+          660
+        ]
+      },
+      "op": "swipe"
+    },
+    {
+      "args": {
+        "seconds": 0.6
+      },
+      "op": "wait"
+    },
+    {
+      "args": {
+        "x": "1131 + 69 / 2",
+        "y": "175 + 30 / 2"
+      },
+      "op": "click_point"
+    },
+    {
+      "args": {
+        "seconds": 1.0
+      },
+      "op": "wait"
+    },
+    {
+      "args": {
+        "x": "1111 + 106 / 2",
+        "y": "106 + 29 / 2"
+      },
+      "op": "click_point"
+    },
+    {
+      "args": {
+        "seconds": 0.8
+      },
+      "op": "wait"
+    },
+    {
+      "args": {
+        "sel": "返回"
+      },
+      "op": "click"
+    },
+    {
+      "args": {
+        "seconds": 1.5
+      },
+      "op": "wait"
+    },
+    {
+      "args": {
+        "sel": "关闭"
+      },
+      "op": "click"
+    },
+    {
+      "args": {
+        "seconds": 1.0
+      },
+      "op": "wait"
+    },
+    {
+      "args": {
+        "level": "info",
+        "text": "'S1 done: 分组2 点击一次，已恢复默认分组并回到庭院'"
+      },
+      "op": "log"
+    },
+    {
+      "args": {
+        "exit": "done"
+      },
+      "op": "finish"
+    }
+  ]
+}

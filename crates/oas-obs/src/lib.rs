@@ -89,12 +89,24 @@ impl Recorder {
     /// Grab one frame from `src` and persist it. Returns the frame hash.
     pub fn capture(&mut self, src: &mut impl ScreenSource) -> Result<u64, String> {
         let frame = src.grab()?;
-        let png = encode_png(&frame)?;
+        self.capture_frame(&frame)
+    }
+
+    /// Persist a frame that was already grabbed.
+    ///
+    /// This is the half of [`capture`](Self::capture) that a `ScreenSource`
+    /// **wrapper** needs: `oasd run --record` wraps the live source so every
+    /// `grab()` is persisted without the wrapper owning the `Recorder`
+    /// (design §6: record every frame; §20 HB5: the same seed + the recorded
+    /// frames reproduce the exact click sequence). Behavior is identical to
+    /// `capture`; the only difference is who called `grab()`.
+    pub fn capture_frame(&mut self, frame: &Frame) -> Result<u64, String> {
+        let png = encode_png(frame)?;
         let name = format!("frames/{:04}.png", self.frames);
         std::fs::write(self.dir.join(&name), &png).map_err(|e| format!("write {name}: {e}"))?;
         self.width = frame.width;
         self.height = frame.height;
-        let hash = frame_hash(&frame);
+        let hash = frame_hash(frame);
         self.event(0, "grab", &format!("{name} hash={hash:016x}"));
         self.frames += 1;
         Ok(hash)
@@ -273,5 +285,54 @@ mod tests {
         std::fs::create_dir_all(dir.join("frames")).unwrap();
         assert!(ReplaySource::open(&dir).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capture_frame_is_the_same_write_path_as_capture() {
+        // `oasd run --record` wraps a ScreenSource and calls `capture_frame`;
+        // both entry points must produce the same bytes/hash/meta, otherwise a
+        // recording made through the wrapper would not replay like one made by
+        // `oasd record` (design §6 + §20 HB5: frames are the replay substrate).
+        let dir_a = tmpdir("captureapi_a");
+        let dir_b = tmpdir("captureapi_b");
+        let f = frame(11);
+        let mut src = FakeFrames {
+            frames: vec![f.clone()],
+            idx: 0,
+        };
+        let mut rec_a = Recorder::create(&dir_a, "capture").expect("rec a");
+        let mut rec_b = Recorder::create(&dir_b, "capture_frame").expect("rec b");
+
+        let hash_a = rec_a.capture(&mut src).expect("capture");
+        let hash_b = rec_b.capture_frame(&f).expect("capture_frame");
+        assert_eq!(hash_a, hash_b, "the frame hash must not depend on the entry point");
+        assert_eq!(rec_a.frames(), 1);
+        assert_eq!(rec_b.frames(), 1);
+
+        // A second capture_frame must use the next sequence number (no overwrite).
+        let hash_b2 = rec_b.capture_frame(&f).expect("second capture_frame");
+        assert_eq!(hash_b2, hash_b, "identical frames hash identically");
+        assert_eq!(rec_b.frames(), 2);
+
+        let meta_a = rec_a.finish().expect("finish a");
+        let meta_b = rec_b.finish().expect("finish b");
+        assert_eq!(
+            (meta_a.frames, meta_a.width, meta_a.height),
+            (1, 8, 6)
+        );
+        assert_eq!(
+            (meta_b.frames, meta_b.width, meta_b.height),
+            (2, 8, 6)
+        );
+        assert_eq!(
+            std::fs::read(dir_a.join("frames/0000.png")).expect("png a"),
+            std::fs::read(dir_b.join("frames/0000.png")).expect("png b"),
+            "capture_frame must write the identical PNG"
+        );
+        assert!(dir_b.join("frames/0001.png").is_file());
+        assert!(!dir_a.join("frames/0001.png").exists());
+
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
     }
 }

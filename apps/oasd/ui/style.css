@@ -37,6 +37,17 @@ aside { width: 320px; flex: 0 0 320px; }
 aside h3 { margin: 14px 0 6px; font-size: 13px; color: #8fb8e8; font-weight: 600; }
 aside button { display: block; width: 100%; margin-bottom: 8px; }
 .kv { font-family: Consolas, monospace; background: #1d2027; padding: 8px; border-radius: 6px; }
+input, select, textarea {
+  width: 100%;
+  background: #1d2027;
+  color: #e6e6e6;
+  border: 1px solid #2b2f38;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+}
+label.opt { display: block; margin-bottom: 8px; color: #aeb6c2; font-size: 12px; }
+textarea { font-family: Consolas, monospace; font-size: 12px; resize: vertical; }
 pre {
   background: #1d2027;
   padding: 8px;

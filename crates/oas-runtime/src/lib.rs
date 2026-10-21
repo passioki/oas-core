@@ -1,4 +1,4 @@
-﻿//! oas-runtime: the flow interpreter (P1-b).
+//! oas-runtime: the flow interpreter (P1-b).
 //!
 //! Executes a validated [`oas_flow::Flow`] against a [`ScreenSource`] +
 //! [`InputSink`], emitting one **structured event per step** (step / op / detail
@@ -16,7 +16,7 @@ pub mod humanize;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use oas_flow::{eval, EvalContext, Flow, Step, Value};
+use oas_flow::{eval, EvalContext, Expr, Flow, Step, Value};
 use oas_perceive::{GrayImage, Matcher};
 use oas_types::{Exit, Frame, InputSink, Outcome, Point, Rect, ScreenSource};
 
@@ -112,6 +112,9 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     assets: AssetSet,
     budget: Budget,
     matcher: Option<Matcher>,
+    /// Size of the frame `matcher` was built from (`click_point` needs it for
+    /// the CP3 in-frame check).
+    frame_size: Option<(u32, u32)>,
     events: Vec<StepEvent>,
     started: Instant,
     humanize: crate::humanize::Humanize,
@@ -127,6 +130,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             assets,
             budget,
             matcher: None,
+            frame_size: None,
             events: Vec::new(),
             started: Instant::now(),
             humanize: crate::humanize::Humanize::default(),
@@ -192,9 +196,18 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// Grab a frame and cache its matcher (integral images) for this frame.
     fn refresh_frame(&mut self) -> Result<(), String> {
         let frame: Frame = self.src.grab()?;
+        self.frame_size = Some((frame.width, frame.height));
         let gray = GrayImage::from_frame(&frame);
         self.matcher = Some(Matcher::new(gray));
         Ok(())
+    }
+
+    /// Discard the cached frame. Called after every successful click: the click
+    /// may have changed the screen, so the **next** selector must not match
+    /// against the pre-click pixels (that stale-frame bug is exactly what this
+    /// rewrite exists to kill: it produces "clicked the old position" runs).
+    fn invalidate_frame(&mut self) {
+        self.matcher = None;
     }
 
     fn check_budget(&self) -> Result<(), String> {
@@ -232,6 +245,16 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         match best {
             Some(b) => Ok((b.score, Some(Point { x: b.x, y: b.y }))),
             None => Ok((0.0, None)),
+        }
+    }
+
+    /// Evaluate one coordinate expression (`click_point`/`swipe`): it must be a
+    /// finite number. A string/bool is a loud error, not a silent miss.
+    fn eval_coord(&mut self, e: &Expr, what: &str) -> Result<f64, String> {
+        match eval(e, self)? {
+            Value::Num(n) if n.is_finite() => Ok(n),
+            Value::Num(n) => Err(format!("{what} must be a finite number, got {n}")),
+            other => Err(format!("{what} must be a number, got {other:?}")),
         }
     }
 
@@ -375,21 +398,132 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 let Some(p) = at.filter(|_| score >= th) else {
                     return Err(format!("click target `{sel}` not found (best score {score:.3} < {th})"));
                 };
-                // HB1/HB2/HB6: never click a fixed point; log the ACTUAL point
-                // (its divergence from the centre is exactly what the click
-                // distribution map visualises).
-                let target = Rect { x: p.x - 5, y: p.y - 5, w: 11, h: 11 };
+                // HB1: the target box is the MATCHED TEMPLATE RECT, not an
+                // 11x11 box at its top-left. Picking inside the real box is what
+                // keeps the click distribution spread over the button; a fixed
+                // box would defeat the whole anti-ban rule.
+                let (tw, th_px) = self
+                    .assets
+                    .get(sel)
+                    .map(|t| (t.gray.width, t.gray.height))
+                    .ok_or_else(|| format!("selector `{sel}` is not declared in the task's assets"))?;
+                let target = Rect {
+                    x: p.x,
+                    y: p.y,
+                    w: tw as i32,
+                    h: th_px as i32,
+                };
                 let actual = self.humanize.point_in(target, &mut self.rng);
-                let actual = crate::humanize::Humanize::clamp(actual, 1_000_000, 1_000_000)
-                    .unwrap_or(actual);
+                // Keep a humanised point inside the frame (a target touching an
+                // edge can otherwise jitter off-screen). `locate` guarantees a
+                // frame, so the missing-frame branch is a loud invariant break.
+                let (w, h) = self
+                    .frame_size
+                    .ok_or_else(|| "click: no frame available".to_string())?;
+                let actual = Point {
+                    x: actual.x.clamp(0, w.saturating_sub(1) as i32),
+                    y: actual.y.clamp(0, h.saturating_sub(1) as i32),
+                };
                 let delay = self.humanize.delay_ms(&mut self.rng);
                 if delay > 0 {
                     std::thread::sleep(std::time::Duration::from_millis(delay as u64));
                 }
                 self.input.click(actual)?;
+                // The screen may now be different: never let the next selector
+                // match against this pre-click frame.
+                self.invalidate_frame();
                 Ok(format!(
                     "clicked {sel} target=({},{}) point=({},{}) delay={delay}ms score={score:.3}",
                     p.x, p.y, actual.x, actual.y
+                ))
+            }
+            Step::ClickPoint { x, y } => {
+                // CP2: both coordinates are expressions (literal or computed).
+                let tx = self.eval_coord(x, "x")?;
+                let ty = self.eval_coord(y, "y")?;
+                let target = Point {
+                    x: tx.round() as i32,
+                    y: ty.round() as i32,
+                };
+                // CP3 needs the frame dimensions; grab one lazily if nothing has
+                // looked at the screen yet in this run.
+                if self.matcher.is_none() {
+                    self.refresh_frame()?;
+                }
+                let (w, h) = self
+                    .frame_size
+                    .ok_or_else(|| "click_point: no frame available".to_string())?;
+                // CP3: an off-screen click must fail loudly - never "clicked
+                // outside the screen, counted as success".
+                if target.x < 0 || target.y < 0 || target.x >= w as i32 || target.y >= h as i32 {
+                    return Err(format!(
+                        "click_point ({},{}) is outside the frame ({}x{})",
+                        target.x, target.y, w, h
+                    ));
+                }
+                // HB2: a raw coordinate click still gets +/- jitter_px of noise.
+                let jittered = self.humanize.jitter_point(target, &mut self.rng);
+                // ...but the ACTUAL point must stay on-screen.
+                let actual = Point {
+                    x: jittered.x.clamp(0, w.saturating_sub(1) as i32),
+                    y: jittered.y.clamp(0, h.saturating_sub(1) as i32),
+                };
+                // HB3: randomised pre-click pause (not a machine-perfect rhythm).
+                let delay = self.humanize.delay_ms(&mut self.rng);
+                if delay > 0 {
+                    std::thread::sleep(Duration::from_millis(delay as u64));
+                }
+                self.input.click(actual)?;
+                self.invalidate_frame();
+                // CP4/HB6: the log carries the TARGET *and* the actual point
+                // (plus the jitter's delay and the frame it was checked against).
+                Ok(format!(
+                    "clicked_point target=({},{}) point=({},{}) delay={delay}ms frame={}x{}",
+                    target.x, target.y, actual.x, actual.y, w, h
+                ))
+            }
+            Step::Swipe {
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                ms,
+            } => {
+                let fx = self.eval_coord(from_x, "swipe from_x")?;
+                let fy = self.eval_coord(from_y, "swipe from_y")?;
+                let tx = self.eval_coord(to_x, "swipe to_x")?;
+                let ty = self.eval_coord(to_y, "swipe to_y")?;
+                let from = Point {
+                    x: fx.round() as i32,
+                    y: fy.round() as i32,
+                };
+                let to = Point {
+                    x: tx.round() as i32,
+                    y: ty.round() as i32,
+                };
+                // Same CP3 posture as click_point: both endpoints must be
+                // on-screen, otherwise the swipe is a loud failure.
+                if self.matcher.is_none() {
+                    self.refresh_frame()?;
+                }
+                let (w, h) = self
+                    .frame_size
+                    .ok_or_else(|| "swipe: no frame available".to_string())?;
+                let outside = |p: Point| {
+                    p.x < 0 || p.y < 0 || p.x >= w as i32 || p.y >= h as i32
+                };
+                if outside(from) || outside(to) {
+                    return Err(format!(
+                        "swipe ({},{})->({},{}) is outside the frame ({}x{})",
+                        from.x, from.y, to.x, to.y, w, h
+                    ));
+                }
+                // Deterministic (no jitter/delay): see Step::Swipe docs.
+                self.input.swipe(from, to, *ms)?;
+                self.invalidate_frame();
+                Ok(format!(
+                    "swiped from=({},{}) to=({},{}) ms={} frame={}x{}",
+                    from.x, from.y, to.x, to.y, ms, w, h
                 ))
             }
             Step::Ocr { sel } => Err(format!(
@@ -421,6 +555,8 @@ fn step_name(s: &Step) -> &'static str {
         Step::WaitUntil { .. } => "wait_until",
         Step::Appear { .. } => "appear",
         Step::Click { .. } => "click",
+        Step::ClickPoint { .. } => "click_point",
+        Step::Swipe { .. } => "swipe",
         Step::Ocr { .. } => "ocr",
         Step::Log { .. } => "log",
         Step::Finish { .. } => "finish",
@@ -451,6 +587,23 @@ mod tests {
     use super::*;
     use oas_flow::Flow;
 
+    /// A 64x48 frame with the patterned 10x10 tile pasted at `(tx, ty)`.
+    fn frame_with_tile(tx: u32, ty: u32) -> Frame {
+        let (w, h) = (64u32, 48u32);
+        let mut rgba = vec![30u8; (w * h * 4) as usize];
+        for y in 0..10u32 {
+            for x in 0..10u32 {
+                let v = (((x * 7 + y * 13) % 251) + 3) as u8;
+                let i = (((ty + y) * w + (tx + x)) * 4) as usize;
+                rgba[i] = v;
+                rgba[i + 1] = v;
+                rgba[i + 2] = v;
+                rgba[i + 3] = 255;
+            }
+        }
+        Frame::new(w, h, rgba)
+    }
+
     /// Fake screen: one 64x48 frame with a bright 10x10 block at (12,10).
     struct FakeScreen {
         frame: Frame,
@@ -459,21 +612,8 @@ mod tests {
 
     impl FakeScreen {
         fn new() -> Self {
-            let (w, h) = (64u32, 48u32);
-            let mut rgba = vec![30u8; (w * h * 4) as usize];
-            // same patterned 10x10 tile as the asset, pasted at (12,10)
-            for y in 0..10u32 {
-                for x in 0..10u32 {
-                    let v = (((x * 7 + y * 13) % 251) + 3) as u8;
-                    let i = (((10 + y) * w + (12 + x)) * 4) as usize;
-                    rgba[i] = v;
-                    rgba[i + 1] = v;
-                    rgba[i + 2] = v;
-                    rgba[i + 3] = 255;
-                }
-            }
             Self {
-                frame: Frame::new(w, h, rgba),
+                frame: frame_with_tile(12, 10),
                 grabs: 0,
             }
         }
@@ -486,16 +626,51 @@ mod tests {
         }
     }
 
+    /// Screen whose grabs return successive frames (the last one repeats), so a
+    /// test can prove that a click forces the next selector to re-grab.
+    struct TwoFrameScreen {
+        frames: Vec<Frame>,
+        idx: usize,
+    }
+
+    impl ScreenSource for TwoFrameScreen {
+        fn grab(&mut self) -> Result<Frame, String> {
+            let i = self.idx.min(self.frames.len() - 1);
+            self.idx += 1;
+            Ok(self.frames[i].clone())
+        }
+    }
+
+    /// Input sink whose recorded clicks/swipes can be inspected after `run()`.
+    #[derive(Clone, Default)]
+    struct SharedInput {
+        clicks: std::rc::Rc<std::cell::RefCell<Vec<Point>>>,
+        swipes: std::rc::Rc<std::cell::RefCell<Vec<(Point, Point, u32)>>>,
+    }
+
     struct FakeInput {
-        clicks: Vec<Point>,
+        shared: SharedInput,
+    }
+
+    impl FakeInput {
+        fn new() -> (Self, SharedInput) {
+            let shared = SharedInput::default();
+            (
+                Self {
+                    shared: shared.clone(),
+                },
+                shared,
+            )
+        }
     }
 
     impl InputSink for FakeInput {
         fn click(&mut self, p: Point) -> Result<(), String> {
-            self.clicks.push(p);
+            self.shared.clicks.borrow_mut().push(p);
             Ok(())
         }
-        fn swipe(&mut self, _f: Point, _t: Point, _ms: u32) -> Result<(), String> {
+        fn swipe(&mut self, from: Point, to: Point, ms: u32) -> Result<(), String> {
+            self.shared.swipes.borrow_mut().push((from, to, ms));
             Ok(())
         }
     }
@@ -531,11 +706,46 @@ mod tests {
     }
 
     fn mk(src: FakeScreen, budget: Budget) -> Interpreter<FakeScreen, FakeInput> {
-        Interpreter::new(src, FakeInput { clicks: vec![] }, assets(), budget)
+        Interpreter::new(src, FakeInput::new().0, assets(), budget)
+    }
+
+    fn mk_inspect<S: ScreenSource>(src: S) -> (Interpreter<S, FakeInput>, SharedInput) {
+        let (input, shared) = FakeInput::new();
+        (
+            Interpreter::new(src, input, assets(), Budget::default()),
+            shared,
+        )
     }
 
     fn flow(json: &str) -> Flow {
         Flow::from_json(json).expect("flow should load")
+    }
+
+    /// Parse the `key=(a,b)` tuple out of a step detail.
+    fn detail_tuple(detail: &str, key: &str) -> (i32, i32) {
+        let marker = format!("{key}=(");
+        let i = detail
+            .find(&marker)
+            .unwrap_or_else(|| panic!("no `{marker}` in `{detail}`"))
+            + marker.len();
+        let rest = &detail[i..];
+        let end = rest.find(')').expect("closing paren");
+        let mut it = rest[..end].split(',');
+        let x = it.next().expect("x").trim().parse().expect("numeric x");
+        let y = it.next().expect("y").trim().parse().expect("numeric y");
+        (x, y)
+    }
+
+    fn detail_point(detail: &str) -> Point {
+        let (x, y) = detail_tuple(detail, "point");
+        Point { x, y }
+    }
+
+    fn detail_delay_ms(detail: &str) -> u32 {
+        let i = detail.find("delay=").expect("delay field") + "delay=".len();
+        let rest = &detail[i..];
+        let end = rest.find("ms").expect("ms suffix");
+        rest[..end].parse().expect("numeric delay")
     }
 
     #[test]
@@ -554,12 +764,18 @@ mod tests {
         let ops: Vec<&str> = interp.events().iter().map(|e| e.op.as_str()).collect();
         assert_eq!(ops, vec!["appear", "click", "log", "finish"]);
         assert!(interp.events().iter().all(|e| e.result == "ok"));
-        // the click landed on the bright block
         let click = &interp.events()[1];
-        // the click is humanised: the TARGET is reported, the actual point is
-        // jittered inside it (HB1/HB6)
-        assert!(click.detail.contains("target=(12,10)"), "{}", click.detail);
-        assert!(click.detail.contains("point="), "{}", click.detail);
+        // HB1: the target box is the matched 10x10 template rect at (12,10) ...
+        assert_eq!(detail_tuple(&click.detail, "target"), (12, 10));
+        // ... and the ACTUAL humanised point lies inside that template rect
+        // (not in the old hard-coded 11x11 box hugging the match's top-left).
+        let p = detail_point(&click.detail);
+        assert!(
+            (12..22).contains(&p.x) && (10..20).contains(&p.y),
+            "actual point {p:?} must be inside the matched template rect: {}",
+            click.detail
+        );
+        assert!((30..=120).contains(&detail_delay_ms(&click.detail)));
     }
 
     #[test]
@@ -671,6 +887,201 @@ mod tests {
             RunResult::Failed(msg) => assert!(msg.contains("finish"), "{msg}"),
             other => panic!("expected Failed, got {other:?}"),
         }
+    }
+
+    // ---- click_point (design doc §19 CP1-CP4, §20 HB2/HB3/HB6) ----
+
+    #[test]
+    fn click_point_literal_is_humanised_bounded_and_audited() {
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":20}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let r = interp.run(&f);
+        assert_eq!(r, RunResult::Finished(Exit::Done), "events: {:?}", interp.events());
+        let ev = &interp.events()[0];
+        assert_eq!(ev.op, "click_point");
+        assert_eq!(ev.result, "ok");
+        // CP4: the exact requested target and the frame it was validated against
+        assert_eq!(detail_tuple(&ev.detail, "target"), (20, 20));
+        assert!(ev.detail.contains("frame=64x48"), "{}", ev.detail);
+        // HB2: actual point within +/-6px of the target, and on-screen
+        let actual = detail_point(&ev.detail);
+        let clicks = input.clicks.borrow();
+        assert_eq!(clicks.len(), 1, "exactly one click");
+        assert_eq!(clicks[0], actual, "HB6: the log must carry the ACTUAL point");
+        assert!((actual.x - 20).abs() <= 6 && (actual.y - 20).abs() <= 6, "{actual:?}");
+        assert!(
+            (0..64).contains(&actual.x) && (0..48).contains(&actual.y),
+            "actual point must stay on-screen: {actual:?}"
+        );
+        // HB3: randomised pre-click delay inside the documented band
+        let delay = detail_delay_ms(&ev.detail);
+        assert!((30..=120).contains(&delay), "delay {delay} out of range");
+    }
+
+    #[test]
+    fn click_point_evaluates_expression_coordinates() {
+        // CP2: coordinates are expressions (arithmetic, then rounded to i32).
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":"15 + 5","y":"4 * 5"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let ev = &interp.events()[0];
+        assert_eq!(detail_tuple(&ev.detail, "target"), (20, 20), "{}", ev.detail);
+        let actual = detail_point(&ev.detail);
+        assert!((actual.x - 20).abs() <= 6 && (actual.y - 20).abs() <= 6, "{actual:?}");
+        assert_eq!(input.clicks.borrow().len(), 1);
+    }
+
+    #[test]
+    fn click_point_out_of_frame_fails_loudly_without_clicking() {
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":64,"y":20}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let r = interp.run(&f);
+        match &r {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("outside the frame"), "{msg}");
+                assert!(msg.contains("64x48"), "{msg}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert_eq!(r.outcome(), Outcome::Failed);
+        // CP3: no InputSink click may happen for an off-screen target
+        assert!(input.clicks.borrow().is_empty(), "off-screen click must not be sent");
+        let last = interp.events().last().expect("event");
+        assert_eq!(last.op, "click_point");
+        assert_eq!(last.result, "failed");
+    }
+
+    #[test]
+    fn click_point_negative_coordinate_fails_loudly() {
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":-1}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let r = interp.run(&f);
+        match &r {
+            RunResult::Failed(msg) => assert!(msg.contains("outside the frame"), "{msg}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(input.clicks.borrow().is_empty());
+    }
+
+    #[test]
+    fn click_invalidates_frame_cache() {
+        // Frame 1 has the tile at (12,10); after the first click the game shows
+        // frame 2, where the same tile is at (40,20). The second click must
+        // match against the NEW frame, not the cached pre-click one.
+        let src = TwoFrameScreen {
+            frames: vec![frame_with_tile(12, 10), frame_with_tile(40, 20)],
+            idx: 0,
+        };
+        let (mut interp, _input) = mk_inspect(src);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_BRIGHT"}},
+                 {"op":"click","args":{"sel":"I_BRIGHT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let events = interp.events();
+        assert_eq!(detail_tuple(&events[0].detail, "target"), (12, 10), "{}", events[0].detail);
+        assert_eq!(
+            detail_tuple(&events[1].detail, "target"),
+            (40, 20),
+            "second click used a STALE frame: {}",
+            events[1].detail
+        );
+    }
+
+    #[test]
+    fn click_point_jitter_cannot_leave_the_frame() {
+        // A target on the far corner: HB2 jitter would push the point off-screen
+        // for some seeds; the interpreter must clamp the ACTUAL point.
+        let mut saw_would_leave = false;
+        for seed in 1u64..=16 {
+            let (mut interp, input) = mk_inspect(FakeScreen::new());
+            interp = interp.with_seed(seed);
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"click_point","args":{"x":63,"y":47}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done), "seed {seed}");
+            let clicks = input.clicks.borrow();
+            let p = clicks[0];
+            assert!(
+                (0..64).contains(&p.x) && (0..48).contains(&p.y),
+                "seed {seed}: click {p:?} left the 64x48 frame"
+            );
+            // reproduce the raw jitter: this seed genuinely wanted to go off-screen
+            let mut rng = crate::humanize::Rng::new(seed);
+            let raw = crate::humanize::Humanize::default().jitter_point(Point { x: 63, y: 47 }, &mut rng);
+            if raw.x >= 64 || raw.y >= 48 || raw.x < 0 || raw.y < 0 {
+                saw_would_leave = true;
+            }
+        }
+        assert!(saw_would_leave, "test needs at least one seed whose raw jitter leaves the frame");
+    }
+
+    // ---- swipe (§3.2 action class) ----
+
+    #[test]
+    fn swipe_executes_in_frame_and_logs_endpoints() {
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"swipe","args":{"from":[10,20],"to":["40 + 10","30"],"ms":400}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let ev = &interp.events()[0];
+        assert_eq!(ev.op, "swipe");
+        assert_eq!(ev.result, "ok");
+        assert_eq!(
+            ev.detail,
+            "swiped from=(10,20) to=(50,30) ms=400 frame=64x48"
+        );
+        // deterministic: the endpoints are passed through untouched
+        assert_eq!(
+            input.swipes.borrow().as_slice(),
+            &[(Point { x: 10, y: 20 }, Point { x: 50, y: 30 }, 400)]
+        );
+    }
+
+    #[test]
+    fn swipe_out_of_frame_endpoint_fails_without_input() {
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"swipe","args":{"from":[10,20],"to":[64,20]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let r = interp.run(&f);
+        match &r {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("outside the frame"), "{msg}");
+                assert!(msg.contains("64x48"), "{msg}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert_eq!(r.outcome(), Outcome::Failed);
+        assert!(input.swipes.borrow().is_empty(), "off-screen swipe must not be sent");
+        let last = interp.events().last().expect("event");
+        assert_eq!(last.op, "swipe");
+        assert_eq!(last.result, "failed");
     }
 }
 

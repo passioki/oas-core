@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "oasd"
 version.workspace = true
 edition.workspace = true
@@ -13,7 +13,10 @@ oas-types = { workspace = true }
 oas-adapter-pc = { workspace = true }
 oas-codec = { workspace = true }
 oas-obs = { workspace = true }
+oas-runtime = { workspace = true }
+oas-task = { workspace = true }
 oas-ocr = { workspace = true, optional = true, features = ["onnx"] }
+serde_json = "1"
 
 [features]
 ocr = ["dep:oas-ocr"]

@@ -1,4 +1,4 @@
-﻿//! oasd: minimal CLI for live checks (P0). No UI, no scheduler - just enough to
+//! oasd: minimal CLI for live checks (P0). No UI, no scheduler - just enough to
 //! prove the capture/input/record/replay ports work.
 //!
 //! Usage:
@@ -6,9 +6,11 @@
 //!   oasd tap <x> <y>                tap once (input port smoke test)
 //!   oasd record <dir> <n>           record n live frames into a replay bundle
 //!   oasd replay <dir>               re-drive a bundle offline, print frame hashes
+//!   oasd run --task <dir> [--replay <dir>] [--seed <n>] ...   run a task bundle
 
 use std::process::ExitCode;
 
+mod run;
 mod serve;
 
 use oas_adapter_pc::Adb;
@@ -24,11 +26,16 @@ fn main() -> ExitCode {
         "tap" => tap(&args[1..]),
         "record" => record(&args[1..]),
         "replay" => replay(&args[1..]),
+        "run" => run::run_cmd(&args[1..]),
         "serve" => serve_cmd(&args[1..]),
         "" | "-h" | "--help" => {
             eprintln!(
                 "usage:\n  oasd probe [--out <file.png>]\n  oasd tap <x> <y>\n  \
-                 oasd record <dir> <n>\n  oasd replay <dir>"
+                 oasd record <dir> <n>\n  oasd replay <dir>\n  \
+                 oasd run --task <bundle-dir> [--replay <bundle-dir>] [--seed <u64>] \
+                 [--dry-run] [--record <bundle-dir>] [--events-out <file.jsonl>] \
+                 [--budget-steps N] [--budget-wall S]\n  \
+                 oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--model <path>] [--det-model <path>]"
             );
             ExitCode::from(2)
         }
@@ -215,6 +222,7 @@ fn replay(rest: &[String]) -> ExitCode {
 fn serve_cmd(rest: &[String]) -> ExitCode {
     let mut port: u16 = 8787;
     let mut ui = "apps/oasd/ui".to_string();
+    let mut tasks_dir = "tasks".to_string();
     let mut model: Option<String> = None;
     let mut det_model: Option<String> = None;
     let mut i = 0;
@@ -234,6 +242,10 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
                 ui = rest[i + 1].clone();
                 i += 2;
             }
+            "--tasks-dir" if i + 1 < rest.len() => {
+                tasks_dir = rest[i + 1].clone();
+                i += 2;
+            }
             "--model" if i + 1 < rest.len() => {
                 model = Some(rest[i + 1].clone());
                 i += 2;
@@ -249,22 +261,43 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
         }
     }
     let adb = Adb::from_env();
-    let mut server = serve::Server::new(adb);
-    if let Some(path) = model.as_ref() {
+    let mut server = serve::Server::new(adb).with_tasks_dir(&tasks_dir);
+    enable_models(&mut server, model.as_deref(), det_model.as_deref());
+    match server.run(port, &ui) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => fail("serve", e),
+    }
+}
+
+/// Load OCR models when the `ocr` feature is on.
+///
+/// The whole point of this helper is the `#[cfg(not(feature = "ocr"))]` twin
+/// below: calling `server.enable_ocr()` unconditionally is what made the
+/// DEFAULT build (`cargo test --workspace` without features) fail to compile.
+#[cfg(feature = "ocr")]
+fn enable_models(server: &mut serve::Server, model: Option<&str>, det_model: Option<&str>) {
+    if let Some(path) = model {
         match server.enable_ocr(path) {
             Ok(n) => println!("ocr model loaded: {path} (charset {n})"),
             Err(e) => eprintln!("ocr disabled: {e}"),
         }
     }
-    if let Some(path) = det_model.as_ref() {
+    if let Some(path) = det_model {
         match server.enable_det(path) {
             Ok(()) => println!("det model loaded: {path}"),
             Err(e) => eprintln!("det disabled: {e}"),
         }
     }
-    match server.run(port, &ui) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => fail("serve", e),
+}
+
+/// Default (feature-less) build: OCR flags are accepted but ignored, loudly.
+#[cfg(not(feature = "ocr"))]
+fn enable_models(_server: &mut serve::Server, model: Option<&str>, det_model: Option<&str>) {
+    if model.is_some() || det_model.is_some() {
+        eprintln!(
+            "warning: --model/--det-model ignored: this build has no OCR \
+             (rebuild with `--features ocr`)"
+        );
     }
 }
 

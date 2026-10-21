@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "design_resolution": [
+    1280,
+    720
+  ],
+  "items": [
+    {
+      "id": "结界突破",
+      "kind": "template",
+      "file": "images/a001.png",
+      "roi": [
+        258,
+        636,
+        49,
+        38
+      ],
+      "threshold": 0.85,
+      "rev": 1
+    },
+    {
+      "id": "式神录",
+      "kind": "template",
+      "file": "images/a002.png",
+      "roi": [
+        1206,
+        615,
+        45,
+        44
+      ],
+      "threshold": 0.85,
+      "rev": 1
+    },
+    {
+      "id": "关闭",
+      "kind": "template",
+      "file": "images/a003.png",
+      "roi": [
+        1178,
+        105,
+        53,
+        52
+      ],
+      "threshold": 0.85,
+      "rev": 1
+    },
+    {
+      "id": "预设",
+      "kind": "template",
+      "file": "images/a004.png",
+      "roi": [
+        330,
+        69,
+        95,
+        55
+      ],
+      "threshold": 0.85,
+      "rev": 1
+    },
+    {
+      "id": "返回",
+      "kind": "template",
+      "file": "images/a005.png",
+      "roi": [
+        16,
+        5,
+        57,
+        52
+      ],
+      "threshold": 0.85,
+      "rev": 1
+    },
+    {
+      "id": "分组2",
+      "kind": "ocr_line",
+      "roi": [
+        1080,
+        80,
+        200,
+        600
+      ],
+      "rev": 1
+    },
+    {
+      "id": "默认分组",
+      "kind": "ocr_line",
+      "roi": [
+        1080,
+        80,
+        200,
+        600
+      ],
+      "rev": 1
+    }
+  ]
+}

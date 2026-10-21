@@ -379,6 +379,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "oas-task"
+version = "0.1.0"
+dependencies = [
+ "oas-codec",
+ "oas-flow",
+ "oas-perceive",
+ "oas-runtime",
+ "oas-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oas-types"
 version = "0.1.0"
 
@@ -390,7 +403,10 @@ dependencies = [
  "oas-codec",
  "oas-obs",
  "oas-ocr",
+ "oas-runtime",
+ "oas-task",
  "oas-types",
+ "serde_json",
 ]
 
 [[package]]

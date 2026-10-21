@@ -561,6 +561,26 @@ pub enum Step {
     Click {
         sel: String,
     },
+    /// §19 CP1: click an absolute frame coordinate computed from expressions.
+    ///
+    /// This exists because a block produced by multi-line OCR is *not* a
+    /// declared asset - it only has a box centre. Both coordinates are
+    /// expressions, so "click the N-th row" style logic stays possible.
+    ClickPoint {
+        x: Expr,
+        y: Expr,
+    },
+    /// Action-class swipe/scroll (§3.2): drag from one frame point to another.
+    ///
+    /// Kept deterministic (no jitter/delay): a scroll is a movement, not a
+    /// click, and the recorded `ms` is part of the action's identity.
+    Swipe {
+        from_x: Expr,
+        from_y: Expr,
+        to_x: Expr,
+        to_y: Expr,
+        ms: u32,
+    },
     Ocr {
         sel: String,
     },
@@ -599,6 +619,62 @@ fn parse_expr_field(
 ) -> Result<Expr, FlowError> {
     let src = req_str(v, key, path)?;
     parse_expr(&src).map_err(|e| FlowError::new(format!("{path}.{key}"), e))
+}
+
+/// CP1/CP2: a `click_point` coordinate accepts a JSON number (a literal) or a
+/// JSON string (an expression). The distinction is a load-time concern only:
+/// both become an [`Expr`].
+fn parse_coord_value(v: &serde_json::Value, coord_path: String) -> Result<Expr, FlowError> {
+    match v {
+        serde_json::Value::Number(n) => n
+            .as_f64()
+            .map(|f| Expr::Lit(Lit::Num(f)))
+            .ok_or_else(|| FlowError::new(coord_path, "coordinate is not a number")),
+        serde_json::Value::String(src) => parse_expr(src).map_err(|e| FlowError::new(coord_path, e)),
+        other => Err(FlowError::new(
+            coord_path,
+            format!("coordinate must be a number or an expression string, got {other}"),
+        )),
+    }
+}
+
+fn parse_point_coord(
+    v: &serde_json::Value,
+    key: &str,
+    path: &str,
+) -> Result<Expr, FlowError> {
+    let coord_path = format!("{path}.{key}");
+    match v.get(key) {
+        Some(inner) => parse_coord_value(inner, coord_path),
+        None => Err(FlowError::new(
+            coord_path,
+            format!("missing arg `{key}` (a number or an expression string)"),
+        )),
+    }
+}
+
+/// §3.2 swipe endpoints: `[<expr>, <expr>]` (a JSON 2-element array).
+fn parse_coord_pair(
+    v: &serde_json::Value,
+    key: &str,
+    path: &str,
+) -> Result<(Expr, Expr), FlowError> {
+    let pair_path = format!("{path}.{key}");
+    let arr = v.get(key).and_then(|x| x.as_array()).ok_or_else(|| {
+        FlowError::new(
+            pair_path.clone(),
+            format!("`{key}` must be a 2-element array of numbers/expressions"),
+        )
+    })?;
+    if arr.len() != 2 {
+        return Err(FlowError::new(
+            pair_path,
+            format!("`{key}` must have exactly 2 elements, got {}", arr.len()),
+        ));
+    }
+    let first = parse_coord_value(&arr[0], format!("{path}.{key}[0]"))?;
+    let second = parse_coord_value(&arr[1], format!("{path}.{key}[1]"))?;
+    Ok((first, second))
 }
 
 fn parse_steps(v: &serde_json::Value, path: &str) -> Result<Vec<Step>, FlowError> {
@@ -690,6 +766,38 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
         "click" => Ok(Step::Click {
             sel: req_str(&args, "sel", &a_path)?,
         }),
+        "click_point" => Ok(Step::ClickPoint {
+            x: parse_point_coord(&args, "x", &a_path)?,
+            y: parse_point_coord(&args, "y", &a_path)?,
+        }),
+        "swipe" => {
+            let (from_x, from_y) = parse_coord_pair(&args, "from", &a_path)?;
+            let (to_x, to_y) = parse_coord_pair(&args, "to", &a_path)?;
+            // `ms` is optional, defaults to 300; 0 would be an instantaneous
+            // teleport, not a swipe.
+            let ms = match args.get("ms") {
+                None => 300u32,
+                Some(v) => {
+                    let n = v.as_f64().ok_or_else(|| {
+                        FlowError::new(format!("{a_path}.ms"), "`ms` must be a number")
+                    })?;
+                    if !n.is_finite() || n <= 0.0 {
+                        return Err(FlowError::new(
+                            format!("{a_path}.ms"),
+                            format!("`ms` must be > 0, got {n}"),
+                        ));
+                    }
+                    n.round() as u32
+                }
+            };
+            Ok(Step::Swipe {
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                ms,
+            })
+        }
         "ocr" => Ok(Step::Ocr {
             sel: req_str(&args, "sel", &a_path)?,
         }),
@@ -712,7 +820,7 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
             path,
             format!(
                 "unknown instruction `{other}` (supported: if/loop/while/break/continue/\
-                 wait/wait_until/appear/click/ocr/log/finish)"
+                 wait/wait_until/appear/click/click_point/swipe/ocr/log/finish)"
             ),
         )),
     }
@@ -841,6 +949,22 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {
             Step::Appear { sel } | Step::Click { sel } | Step::Ocr { sel } => {
                 out.insert(sel.clone());
             }
+            Step::ClickPoint { x, y } => {
+                collect_assets_expr(x, out);
+                collect_assets_expr(y, out);
+            }
+            Step::Swipe {
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                ..
+            } => {
+                collect_assets_expr(from_x, out);
+                collect_assets_expr(from_y, out);
+                collect_assets_expr(to_x, out);
+                collect_assets_expr(to_y, out);
+            }
             Step::Log { text, .. } => collect_assets_expr(text, out),
             Step::Finish { .. } => {}
         }
@@ -963,5 +1087,169 @@ mod tests {
         let e = flow.validate_assets(&known).expect_err("must reject typo");
         assert_eq!(e.len(), 1);
         assert!(e[0].msg.contains("I_TYPO"), "{}", e[0]);
+    }
+
+    // ---- click_point (design doc §19 CP1/CP2) ----
+
+    #[test]
+    fn click_point_accepts_numeric_literals() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":15}}]}"#,
+        )
+        .expect("flow");
+        match &flow.steps[0] {
+            Step::ClickPoint { x, y } => {
+                assert_eq!(*x, Expr::Lit(Lit::Num(20.0)));
+                assert_eq!(*y, Expr::Lit(Lit::Num(15.0)));
+            }
+            other => panic!("expected ClickPoint, got {other:?}"),
+        }
+        assert!(flow.referenced_assets().is_empty(), "literals reference no assets");
+    }
+
+    #[test]
+    fn click_point_accepts_expression_strings_and_collects_assets() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":"ocr_digit('体力') * 10 + 5","y":"120"}}]}"#,
+        )
+        .expect("flow");
+        match &flow.steps[0] {
+            Step::ClickPoint { x, y } => {
+                // first arg is a parsed call, not a literal string
+                assert!(
+                    matches!(x, Expr::Binary(BinOp::Add, _, _)),
+                    "expected parsed expression, got {x:?}"
+                );
+                assert_eq!(*y, Expr::Lit(Lit::Num(120.0)));
+            }
+            other => panic!("expected ClickPoint, got {other:?}"),
+        }
+        let got: Vec<String> = flow.referenced_assets().into_iter().collect();
+        assert_eq!(got, vec!["体力"]);
+    }
+
+    #[test]
+    fn click_point_missing_coordinate_is_a_load_error() {
+        let e = errs(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"y":10}}]}"#,
+        );
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].path, "steps[0].args.x");
+        assert!(e[0].msg.contains("missing arg `x`"), "{}", e[0]);
+    }
+
+    #[test]
+    fn click_point_bad_expression_string_is_a_load_error_with_exact_path() {
+        let e = errs(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":"15 +","y":10}}]}"#,
+        );
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].path, "steps[0].args.x");
+        assert!(e[0].msg.contains("unexpected token"), "{}", e[0]);
+    }
+
+    #[test]
+    fn click_point_coordinate_of_bad_type_is_a_load_error() {
+        let e = errs(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":true,"y":10}}]}"#,
+        );
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].path, "steps[0].args.x");
+    }
+
+    #[test]
+    fn unknown_instruction_message_lists_click_point() {
+        let e = errs(r#"{"schema_version":1,"name":"t","steps":[{"op":"teleport"}]}"#);
+        assert!(e[0].msg.contains("click_point"), "{}", e[0]);
+        assert!(e[0].msg.contains("swipe"), "{}", e[0]);
+    }
+
+    // ---- swipe (§3.2 action class) ----
+
+    #[test]
+    fn swipe_parses_numbers_expression_strings_and_default_ms() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"swipe","args":{"from":[10,20],"to":["5 * 2","480 / 2"],"ms":450}},
+                 {"op":"swipe","args":{"from":[0,0],"to":[63,47]}}]}"#,
+        )
+        .expect("flow");
+        match &flow.steps[0] {
+            Step::Swipe {
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                ms,
+            } => {
+                assert_eq!(*from_x, Expr::Lit(Lit::Num(10.0)));
+                assert_eq!(*from_y, Expr::Lit(Lit::Num(20.0)));
+                assert!(matches!(to_x, Expr::Binary(BinOp::Mul, _, _)), "{to_x:?}");
+                assert!(matches!(to_y, Expr::Binary(BinOp::Div, _, _)), "{to_y:?}");
+                assert_eq!(*ms, 450);
+            }
+            other => panic!("expected Swipe, got {other:?}"),
+        }
+        match &flow.steps[1] {
+            Step::Swipe { ms, .. } => assert_eq!(*ms, 300, "ms defaults to 300"),
+            other => panic!("expected Swipe, got {other:?}"),
+        }
+        assert!(flow.referenced_assets().is_empty(), "literal swipe references no assets");
+    }
+
+    #[test]
+    fn swipe_collects_assets_from_expression_endpoints() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"swipe","args":{"from":["appear('I_A')","ocr_digit('体力')"],
+                                       "to":[63,47]}}]}"#,
+        )
+        .expect("flow");
+        let got: Vec<String> = flow.referenced_assets().into_iter().collect();
+        assert_eq!(got, vec!["I_A", "体力"]);
+    }
+
+    #[test]
+    fn swipe_rejects_bad_endpoint_arrays() {
+        let e = errs(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"swipe","args":{"from":[10],"to":[1,2]}}]}"#,
+        );
+        assert_eq!(e[0].path, "steps[0].args.from");
+        assert!(e[0].msg.contains("2 elements"), "{}", e[0]);
+
+        let e = errs(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"swipe","args":{"from":"10,20","to":[1,2]}}]}"#,
+        );
+        assert_eq!(e[0].path, "steps[0].args.from");
+        assert!(e[0].msg.contains("2-element array"), "{}", e[0]);
+
+        let e = errs(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"swipe","args":{"from":[10,20]}}]}"#,
+        );
+        assert_eq!(e[0].path, "steps[0].args.to");
+    }
+
+    #[test]
+    fn swipe_rejects_non_positive_or_non_numeric_ms() {
+        let e = errs(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"swipe","args":{"from":[0,0],"to":[10,10],"ms":0}}]}"#,
+        );
+        assert_eq!(e[0].path, "steps[0].args.ms");
+        assert!(e[0].msg.contains("> 0"), "{}", e[0]);
+
+        let e = errs(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"swipe","args":{"from":[0,0],"to":[10,10],"ms":"fast"}}]}"#,
+        );
+        assert_eq!(e[0].path, "steps[0].args.ms");
     }
 }

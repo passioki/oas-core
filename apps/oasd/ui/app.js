@@ -1,4 +1,4 @@
-﻿// OAS engine editor - MVP front end.
+// OAS engine editor - MVP front end.
 // Plain JS on purpose: no build step, so the same files can be served by the
 // Rust daemon today and wrapped by Tauri / an Android WebView later.
 
@@ -15,6 +15,11 @@ const btnLines = document.getElementById('btn-lines');
 const btnAsset = document.getElementById('btn-asset');
 const assetId = document.getElementById('asset-id');
 const assetKind = document.getElementById('asset-kind');
+const taskName = document.getElementById('task-name');
+const btnSaveAsset = document.getElementById('btn-save-asset');
+const flowJson = document.getElementById('flow-json');
+const btnSaveFlow = document.getElementById('btn-save-flow');
+const assetsSummary = document.getElementById('assets-summary');
 
 let img = null;
 let roi = null; // {x,y,w,h} in frame coordinates
@@ -108,12 +113,139 @@ function updateRoiLabel() {
     btnOcr.disabled = true;
     btnLines.disabled = true;
     if (btnAsset) btnAsset.disabled = true;
+    if (btnSaveAsset) btnSaveAsset.disabled = true;
     return;
   }
   roiEl.textContent = `x=${roi.x} y=${roi.y} w=${roi.w} h=${roi.h}`;
   btnOcr.disabled = roi.w < 2 || roi.h < 2;
   btnLines.disabled = roi.w < 2 || roi.h < 2;
   if (btnAsset) btnAsset.disabled = roi.w < 2 || roi.h < 2;
+  if (btnSaveAsset) btnSaveAsset.disabled = roi.w < 2 || roi.h < 2;
+}
+
+// --- N3: task bundle save helpers -----------------------------------------
+
+function currentTask() {
+  const t = (taskName.value || '').trim();
+  if (!t) {
+    resultEl.textContent = '请先填任务名';
+    taskName.focus();
+    return null;
+  }
+  return t;
+}
+
+function isValidAssetId(id) {
+  return /^[\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_]*$/.test(id);
+}
+
+function showErrors(prefix, errors) {
+  const list = (errors || []).map((e) => '· ' + e).join('\n');
+  resultEl.textContent = `${prefix}\n${list || '（无错误信息）'}`;
+}
+
+async function postJson(url, payload) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return r.json();
+}
+
+// Show what is actually on disk for this task (/task/assets summary).
+async function refreshTaskAssets(task) {
+  if (!task) task = (taskName.value || '').trim();
+  if (!task) return;
+  try {
+    const r = await fetch('/task/assets?task=' + encodeURIComponent(task));
+    const s = await r.json();
+    if (!s.ok) {
+      assetsSummary.textContent = '读取失败：\n' + (s.errors || []).join('\n');
+      return;
+    }
+    const res = s.design_resolution ? s.design_resolution.join('x') : '未设置';
+    const lines = [`任务 ${s.task} · design ${res} · ${s.count} 个素材`];
+    for (const it of s.items || []) {
+      const roi = it.roi ? `[${it.roi.join(', ')}]` : '—';
+      const thr = it.threshold != null ? ` thr=${Number(it.threshold.toFixed(3))}` : '';
+      lines.push(`· ${it.id}  [${it.kind}]  ${it.file || '（无图）'}  roi=${roi}${thr}`);
+    }
+    assetsSummary.textContent = lines.join('\n');
+  } catch (e) {
+    assetsSummary.textContent = '读取异常：' + e;
+  }
+}
+
+// Persist the current ROI as an asset in the task bundle. The server crops the
+// LAST captured frame and assigns images/aNNN.png; the (Chinese) id never
+// becomes a path.
+async function doSaveAsset() {
+  if (!roi) return;
+  const task = currentTask();
+  if (!task) return;
+  const id = (assetId.value || '').trim();
+  if (!id) {
+    resultEl.textContent = '请先填素材 id';
+    assetId.focus();
+    return;
+  }
+  if (!isValidAssetId(id)) {
+    resultEl.textContent = 'id 可用中文/字母/数字/下划线，但不能以数字开头、不能含空格或标点';
+    return;
+  }
+  const kind = assetKind.value;
+  const payload = { task, id, kind, roi: [roi.x, roi.y, roi.w, roi.h] };
+  if (kind === 'template') payload.threshold = 0.85;
+  btnSaveAsset.disabled = true;
+  try {
+    const s = await postJson('/task/save_asset', payload);
+    if (!s.ok) {
+      showErrors('保存失败（未写入任何文件）：', s.errors);
+      log(`保存素材失败：${id}`);
+      return;
+    }
+    resultEl.textContent = JSON.stringify(s.item, null, 2);
+    log(`已保存素材：${s.item.id} → ${s.item.file || '（无图）'}`);
+    await refreshTaskAssets(task);
+  } catch (e) {
+    resultEl.textContent = '保存异常：' + e;
+  } finally {
+    updateRoiLabel();
+  }
+}
+
+async function doSaveFlow() {
+  const task = currentTask();
+  if (!task) return;
+  const text = (flowJson.value || '').trim();
+  if (!text) {
+    resultEl.textContent = '请先粘贴 flow.json';
+    return;
+  }
+  let flow;
+  try {
+    flow = JSON.parse(text);
+  } catch (e) {
+    resultEl.textContent = 'flow.json 不是合法 JSON：' + e.message;
+    return;
+  }
+  btnSaveFlow.disabled = true;
+  try {
+    const s = await postJson('/task/save_flow', { task, flow });
+    if (!s.ok) {
+      showErrors('保存 flow 失败（未写入任何文件）：', s.errors);
+      log('保存 flow 失败');
+      return;
+    }
+    resultEl.textContent = `flow.json 已保存到任务「${s.task}」（引用校验通过）`;
+    log(`flow.json 已保存：${s.task}`);
+    await refreshTaskAssets(task);
+  } catch (e) {
+    resultEl.textContent = '保存 flow 异常：' + e;
+  } finally {
+    btnSaveFlow.disabled = false;
+  }
 }
 
 async function loadFrame() {
@@ -237,10 +369,9 @@ btnOcr.addEventListener('click', async () => {
 
 btnCapture.addEventListener('click', doCapture);
 
-// P1-d2 step 2: turn the current ROI into an asset declaration. Copying JSON
-// keeps this a pure frontend step (no new endpoint, no restart) while the
-// editor is being built; writing assets.json to disk comes with the task
-// save/bundle step.
+// Generate the declaration JSON for copy/paste. `file` is intentionally NOT
+// generated: when saved, the engine assigns images/aNNN.png, so the (Chinese)
+// id never lands on disk as a path (ENGINE-DESIGN §18.1).
 btnAsset.addEventListener('click', async () => {
   if (!roi) return;
   const id = (assetId.value || '').trim();
@@ -249,22 +380,21 @@ btnAsset.addEventListener('click', async () => {
     assetId.focus();
     return;
   }
-  // ids may be Chinese (this project's vocabulary is Chinese); the on-disk file
-  // name is NOT the id - assets get hashed/sequential file names when saved, so
-  // no encoding traps on Windows/Android/git.
-  if (!/^[\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_]*$/.test(id)) {
+  if (!isValidAssetId(id)) {
     resultEl.textContent = 'id 可用中文/字母/数字/下划线，但不能以数字开头、不能含空格或标点';
     return;
   }
   const kind = assetKind.value;
+  const task = (taskName.value || '').trim();
   const decl = {
+    ...(task ? { task } : {}),
     id,
     kind,
     roi: [roi.x, roi.y, roi.w, roi.h],
-    ...(kind === 'template' ? { file: `images/${id}.png`, threshold: 0.85 } : {}),
+    ...(kind === 'template' ? { threshold: 0.85 } : {}),
   };
   const json = JSON.stringify(decl, null, 2);
-  resultEl.textContent = json;
+  resultEl.textContent = `${json}\n\n（保存时由引擎分配 images/aNNN.png；id 不会变成路径）`;
   try {
     await navigator.clipboard.writeText(json);
     log(`素材 JSON 已复制：${id} (${kind})`);
@@ -305,6 +435,9 @@ btnLines.addEventListener('click', async () => {
 });
 
 (async function boot() {
+  btnSaveAsset.addEventListener('click', doSaveAsset);
+  btnSaveFlow.addEventListener('click', doSaveFlow);
+  taskName.addEventListener('change', () => refreshTaskAssets());
   try {
     await loadFrame();
     await refreshState();
@@ -314,4 +447,5 @@ btnLines.addEventListener('click', async () => {
     setStatus('没有可用帧，点「截图」');
     btnCapture.disabled = false;
   }
+  await refreshTaskAssets();
 })();

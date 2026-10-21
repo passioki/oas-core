@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
@@ -27,6 +27,8 @@
       <button id="btn-lines" disabled>多行识别 (det+rec)</button>
       
       <button id="btn-clear">清除 ROI</button>
+      <h3>任务</h3>
+      <label class="opt"><input id="task-name" placeholder="任务名，如：队伍预设" value="任务1" /></label>
       <h3>存为素材</h3>
       <label class="opt"><input id="asset-id" placeholder="素材 id，如：队伍预设入口" /></label>
       <label class="opt">类型
@@ -37,6 +39,12 @@
         </select>
       </label>
       <button id="btn-asset" disabled>生成素材 JSON</button>
+      <button id="btn-save-asset" disabled>保存素材到任务</button>
+      <h3>flow.json</h3>
+      <textarea id="flow-json" rows="8" spellcheck="false" placeholder='{"schema_version":1,"name":"任务1","steps":[{"op":"click","args":{"sel":"分组2"}},{"op":"finish","args":{"exit":"done"}}]}'></textarea>
+      <button id="btn-save-flow">保存 flow（校验引用）</button>
+      <h3>任务素材</h3>
+      <pre id="assets-summary" class="muted">—</pre>
       <h3>结果</h3>
       <pre id="result" class="muted">—</pre>
       <h3>日志</h3>
