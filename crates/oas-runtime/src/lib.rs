@@ -114,6 +114,8 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     matcher: Option<Matcher>,
     events: Vec<StepEvent>,
     started: Instant,
+    humanize: crate::humanize::Humanize,
+    rng: crate::humanize::Rng,
     steps: u32,
 }
 
@@ -127,6 +129,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             matcher: None,
             events: Vec::new(),
             started: Instant::now(),
+            humanize: crate::humanize::Humanize::default(),
+            rng: crate::humanize::Rng::new(crate::humanize::Humanize::default().resolved_seed(0)),
             steps: 0,
         }
     }
@@ -353,8 +357,22 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 let Some(p) = at.filter(|_| score >= th) else {
                     return Err(format!("click target `{sel}` not found (best score {score:.3} < {th})"));
                 };
-                self.input.click(p)?;
-                Ok(format!("clicked {sel} at ({},{}) score={score:.3}", p.x, p.y))
+                // HB1/HB2/HB6: never click a fixed point; log the ACTUAL point
+                // (its divergence from the centre is exactly what the click
+                // distribution map visualises).
+                let target = Rect { x: p.x - 5, y: p.y - 5, w: 11, h: 11 };
+                let actual = self.humanize.point_in(target, &mut self.rng);
+                let actual = crate::humanize::Humanize::clamp(actual, 1_000_000, 1_000_000)
+                    .unwrap_or(actual);
+                let delay = self.humanize.delay_ms(&mut self.rng);
+                if delay > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(delay as u64));
+                }
+                self.input.click(actual)?;
+                Ok(format!(
+                    "clicked {sel} target=({},{}) point=({},{}) delay={delay}ms score={score:.3}",
+                    p.x, p.y, actual.x, actual.y
+                ))
             }
             Step::Ocr { sel } => Err(format!(
                 "OCR is not wired yet (P1-c): step ocr(`{sel}`) cannot run"
@@ -520,7 +538,10 @@ mod tests {
         assert!(interp.events().iter().all(|e| e.result == "ok"));
         // the click landed on the bright block
         let click = &interp.events()[1];
-        assert!(click.detail.contains("at (12,10)"), "{}", click.detail);
+        // the click is humanised: the TARGET is reported, the actual point is
+        // jittered inside it (HB1/HB6)
+        assert!(click.detail.contains("target=(12,10)"), "{}", click.detail);
+        assert!(click.detail.contains("point="), "{}", click.detail);
     }
 
     #[test]
