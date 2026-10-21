@@ -1,4 +1,4 @@
-//! P1-b integration: a recorded bundle drives the interpreter offline.
+﻿//! P1-b integration: a recorded bundle drives the interpreter offline.
 //!
 //! This is the loop the whole rewrite depends on:
 //!   record (device)  ->  bundle on disk  ->  interpreter replays it  ->  events
@@ -137,7 +137,7 @@ fn recorded_bundle_drives_the_interpreter_offline() {
     let ops: Vec<&str> = interp.events().iter().map(|e| e.op.as_str()).collect();
     assert_eq!(ops, vec!["appear", "click", "log", "finish"]);
     let click = &interp.events()[1];
-    assert!(click.detail.contains("at (12,10)"), "{}", click.detail);
+    assert!(click.detail.contains("target=(12,10)"), "{}", click.detail);
 
     // and the action sequence is what the recording implies
     // (RecordingInput lives inside the interpreter; the event detail carries it)
