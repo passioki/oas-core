@@ -98,6 +98,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oas-flow"
+version = "0.1.0"
+dependencies = [
+ "oas-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oas-obs"
 version = "0.1.0"
 dependencies = [
