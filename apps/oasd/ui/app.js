@@ -164,7 +164,28 @@ async function doCapture() {
 }
 
 canvas.addEventListener('mousedown', (ev) => {
-  dragStart = toFrame(ev);
+  // P1-d2 step 3: every detected block is individually operable. Clicking inside
+  // a box selects that block (ROI := box) so 生成素材 JSON applies to it, and
+  // shows only that block's text.
+  const p0 = toFrame(ev);
+  if (boxes.length) {
+    for (let i = boxes.length - 1; i >= 0; i--) {
+      const b = boxes[i];
+      const [bx, by, bw, bh] = b.box;
+      if (p0.x >= bx && p0.x <= bx + bw && p0.y >= by && p0.y <= by + bh) {
+        roi = { x: bx, y: by, w: bw, h: bh };
+        dragStart = null;
+        updateRoiLabel();
+        draw();
+        resultEl.textContent =
+          `选中区块：${b.text}\nscore = ${b.score.toFixed(4)}\nroi = [${b.box.join(', ')}]\n` +
+          '（点「生成素材 JSON」即可为这一块建素材）';
+        log(`选中区块「${b.text}」(${b.score.toFixed(3)})`);
+        return;
+      }
+    }
+  }
+  dragStart = p0;
   roi = null;
   boxes = [];
   draw();
