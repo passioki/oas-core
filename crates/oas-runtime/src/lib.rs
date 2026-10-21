@@ -1,4 +1,4 @@
-//! oas-runtime: the flow interpreter (P1-b).
+﻿//! oas-runtime: the flow interpreter (P1-b).
 //!
 //! Executes a validated [`oas_flow::Flow`] against a [`ScreenSource`] +
 //! [`InputSink`], emitting one **structured event per step** (step / op / detail
@@ -10,6 +10,8 @@
 //! * **Missing selectors fail loudly** instead of being skipped.
 //! * **OCR is not stubbed to 0/""**: until P1-c wires ONNX, `ocr()` returns an
 //!   explicit error, so a flow that needs OCR cannot silently pass.
+
+pub mod humanize;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
