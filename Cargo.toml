@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/oas-types", "crates/oas-perceive"]
+members = [
+    "crates/oas-types",
+    "crates/oas-perceive",
+    "crates/oas-adapter-pc",
+    "apps/oasd",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,3 +16,4 @@ license = "MIT"
 [workspace.dependencies]
 oas-types = { path = "crates/oas-types" }
 oas-perceive = { path = "crates/oas-perceive" }
+oas-adapter-pc = { path = "crates/oas-adapter-pc" }

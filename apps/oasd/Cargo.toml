@@ -1,0 +1,14 @@
+[package]
+name = "oasd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "oasd"
+path = "src/main.rs"
+
+[dependencies]
+oas-types = { workspace = true }
+oas-adapter-pc = { workspace = true }
+png = "0.17"
