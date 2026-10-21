@@ -1,0 +1,9 @@
+[package]
+name = "oas-codec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oas-types = { workspace = true }
+png = "0.17"

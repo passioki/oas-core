@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "oasd"
 version.workspace = true
 edition.workspace = true
@@ -11,4 +11,5 @@ path = "src/main.rs"
 [dependencies]
 oas-types = { workspace = true }
 oas-adapter-pc = { workspace = true }
-png = "0.17"
+oas-codec = { workspace = true }
+oas-obs = { workspace = true }

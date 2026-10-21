@@ -1,4 +1,4 @@
-//! oas-adapter-pc: PC-side adapters (ADB over MuMu/emulator/phone).
+﻿//! oas-adapter-pc: PC-side adapters (ADB over MuMu/emulator/phone).
 //!
 //! This is the ONLY kind of crate allowed to know about a platform. The core
 //! crates must never depend on it.
@@ -9,10 +9,10 @@
 //!   * the same physical device can be reachable under two serials
 //!     (`127.0.0.1:16384` and `emulator-5554`); dedupe by `ro.serialno`.
 
-use std::io::Cursor;
 use std::path::PathBuf;
 use std::process::Command;
 
+use oas_codec::decode_png;
 use oas_types::{Frame, InputSink, Point, ScreenSource};
 
 /// Thin wrapper around the adb executable.
@@ -211,56 +211,6 @@ impl AdbInput {
             ])
             .map(|_| ())
     }
-}
-
-/// Decode a PNG into an RGBA frame (pure Rust `png` crate: no C deps, so the
-/// same code will build for Android).
-pub fn decode_png(bytes: &[u8]) -> Result<Frame, String> {
-    let decoder = png::Decoder::new(Cursor::new(bytes));
-    let mut reader = decoder
-        .read_info()
-        .map_err(|e| format!("png read_info: {e}"))?;
-    let mut buf = vec![0u8; reader.output_buffer_size()];
-    let info = reader
-        .next_frame(&mut buf)
-        .map_err(|e| format!("png next_frame: {e}"))?;
-    let data = &buf[..info.buffer_size()];
-    let (w, h) = (info.width, info.height);
-    let n = (w as usize) * (h as usize);
-    let mut rgba = vec![0u8; n * 4];
-    match info.color_type {
-        png::ColorType::Rgba => rgba.copy_from_slice(data),
-        png::ColorType::Rgb => {
-            for i in 0..n {
-                rgba[i * 4] = data[i * 3];
-                rgba[i * 4 + 1] = data[i * 3 + 1];
-                rgba[i * 4 + 2] = data[i * 3 + 2];
-                rgba[i * 4 + 3] = 255;
-            }
-        }
-        png::ColorType::Grayscale => {
-            for i in 0..n {
-                let v = data[i];
-                rgba[i * 4] = v;
-                rgba[i * 4 + 1] = v;
-                rgba[i * 4 + 2] = v;
-                rgba[i * 4 + 3] = 255;
-            }
-        }
-        png::ColorType::GrayscaleAlpha => {
-            for i in 0..n {
-                let v = data[i * 2];
-                rgba[i * 4] = v;
-                rgba[i * 4 + 1] = v;
-                rgba[i * 4 + 2] = v;
-                rgba[i * 4 + 3] = data[i * 2 + 1];
-            }
-        }
-        png::ColorType::Indexed => {
-            return Err("indexed PNG not supported by screencap path".into())
-        }
-    }
-    Ok(Frame::new(w, h, rgba))
 }
 
 #[cfg(test)]

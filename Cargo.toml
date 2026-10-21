@@ -2,7 +2,9 @@
 resolver = "2"
 members = [
     "crates/oas-types",
+    "crates/oas-codec",
     "crates/oas-perceive",
+    "crates/oas-obs",
     "crates/oas-adapter-pc",
     "apps/oasd",
 ]
@@ -15,5 +17,7 @@ license = "MIT"
 
 [workspace.dependencies]
 oas-types = { path = "crates/oas-types" }
+oas-codec = { path = "crates/oas-codec" }
 oas-perceive = { path = "crates/oas-perceive" }
+oas-obs = { path = "crates/oas-obs" }
 oas-adapter-pc = { path = "crates/oas-adapter-pc" }

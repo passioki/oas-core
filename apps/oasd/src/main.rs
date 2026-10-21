@@ -1,14 +1,18 @@
 //! oasd: minimal CLI for live checks (P0). No UI, no scheduler - just enough to
-//! prove the capture/input ports work against a real device.
+//! prove the capture/input/record/replay ports work.
 //!
 //! Usage:
-//!   oasd probe [--out <file.png>]   list devices (deduped) + capture one frame
+//!   oasd probe  [--out <file.png>]   list devices (deduped) + capture one frame
 //!   oasd tap <x> <y>                tap once (input port smoke test)
+//!   oasd record <dir> <n>           record n live frames into a replay bundle
+//!   oasd replay <dir>               re-drive a bundle offline, print frame hashes
 
 use std::process::ExitCode;
 
 use oas_adapter_pc::Adb;
-use oas_types::ScreenSource;
+use oas_codec::{encode_png, frame_hash};
+use oas_obs::{read_events, read_meta, Recorder, ReplaySource};
+use oas_types::{InputSink, Point, ScreenSource};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -16,8 +20,13 @@ fn main() -> ExitCode {
     match cmd {
         "probe" => probe(&args[1..]),
         "tap" => tap(&args[1..]),
+        "record" => record(&args[1..]),
+        "replay" => replay(&args[1..]),
         "" | "-h" | "--help" => {
-            eprintln!("usage: oasd probe [--out <file.png>] | oasd tap <x> <y>");
+            eprintln!(
+                "usage:\n  oasd probe [--out <file.png>]\n  oasd tap <x> <y>\n  \
+                 oasd record <dir> <n>\n  oasd replay <dir>"
+            );
             ExitCode::from(2)
         }
         other => {
@@ -35,7 +44,11 @@ fn pick_device(adb: &Adb) -> Result<String, String> {
     for d in &devices {
         println!("device: serial={} unique={}", d.serial, d.unique);
     }
-    println!("picked: {} (of {} deduped endpoint(s))", devices[0].serial, devices.len());
+    println!(
+        "picked: {} (of {} deduped endpoint(s))",
+        devices[0].serial,
+        devices.len()
+    );
     Ok(devices[0].serial.clone())
 }
 
@@ -55,34 +68,28 @@ fn probe(rest: &[String]) -> ExitCode {
     let adb = Adb::from_env();
     let serial = match pick_device(&adb) {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("probe failed: {e}");
-            return ExitCode::FAILURE;
-        }
+        Err(e) => return fail("probe", e),
     };
 
     let mut screen = adb.screen(&serial);
     let frame = match screen.grab() {
         Ok(f) => f,
-        Err(e) => {
-            eprintln!("capture failed: {e}");
-            return ExitCode::FAILURE;
-        }
+        Err(e) => return fail("capture", e),
     };
     println!(
-        "captured frame: {}x{} rgba_bytes={}",
+        "captured frame: {}x{} rgba_bytes={} hash={:016x}",
         frame.width,
         frame.height,
-        frame.rgba.len()
+        frame.rgba.len(),
+        frame_hash(&frame)
     );
 
     if let Some(path) = out_path {
-        match save_png(&frame, &path) {
+        match encode_png(&frame).and_then(|png| {
+            std::fs::write(&path, png).map_err(|e| format!("write {path}: {e}"))
+        }) {
             Ok(()) => println!("saved decoded frame -> {path}"),
-            Err(e) => {
-                eprintln!("save failed: {e}");
-                return ExitCode::FAILURE;
-            }
+            Err(e) => return fail("save", e),
         }
     }
     ExitCode::SUCCESS
@@ -103,33 +110,106 @@ fn tap(rest: &[String]) -> ExitCode {
     let adb = Adb::from_env();
     let serial = match pick_device(&adb) {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("tap failed: {e}");
-            return ExitCode::FAILURE;
-        }
+        Err(e) => return fail("tap", e),
     };
     let mut input = adb.input(&serial);
-    use oas_types::{InputSink, Point};
     match input.click(Point { x, y }) {
         Ok(()) => {
             println!("tapped ({x},{y}) on {serial}");
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("tap failed: {e}");
-            ExitCode::FAILURE
-        }
+        Err(e) => fail("tap", e),
     }
 }
 
-fn save_png(frame: &oas_types::Frame, path: &str) -> Result<(), String> {
-    let file = std::fs::File::create(path).map_err(|e| format!("create {path}: {e}"))?;
-    let mut enc = png::Encoder::new(file, frame.width, frame.height);
-    enc.set_color(png::ColorType::Rgba);
-    enc.set_depth(png::BitDepth::Eight);
-    let mut writer = enc.write_header().map_err(|e| format!("png header: {e}"))?;
-    writer
-        .write_image_data(&frame.rgba)
-        .map_err(|e| format!("png data: {e}"))?;
-    Ok(())
+fn record(rest: &[String]) -> ExitCode {
+    if rest.len() != 2 {
+        eprintln!("usage: oasd record <dir> <n>");
+        return ExitCode::from(2);
+    }
+    let dir = &rest[0];
+    let n: usize = match rest[1].parse() {
+        Ok(v) if v > 0 => v,
+        _ => {
+            eprintln!("<n> must be a positive integer");
+            return ExitCode::from(2);
+        }
+    };
+
+    let adb = Adb::from_env();
+    let serial = match pick_device(&adb) {
+        Ok(s) => s,
+        Err(e) => return fail("record", e),
+    };
+    let mut screen = adb.screen(&serial);
+    let mut rec = match Recorder::create(dir, format!("adb:{serial}")) {
+        Ok(r) => r,
+        Err(e) => return fail("recorder", e),
+    };
+    for k in 0..n {
+        match rec.capture(&mut screen) {
+            Ok(hash) => println!("frame {k}: hash={hash:016x}"),
+            Err(e) => return fail("capture", e),
+        }
+    }
+    match rec.finish() {
+        Ok(meta) => {
+            println!(
+                "recorded {} frame(s) {}x{} -> {dir} (schema v{})",
+                meta.frames, meta.width, meta.height, meta.schema_version
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail("finish", e),
+    }
+}
+
+fn replay(rest: &[String]) -> ExitCode {
+    if rest.len() != 1 {
+        eprintln!("usage: oasd replay <dir>");
+        return ExitCode::from(2);
+    }
+    let dir = &rest[0];
+    match read_meta(dir) {
+        Ok(m) => println!(
+            "bundle: {}x{} frames={} source={} schema=v{}",
+            m.width, m.height, m.frames, m.source, m.schema_version
+        ),
+        Err(e) => return fail("meta", e),
+    }
+    let events = match read_events(dir) {
+        Ok(e) => e,
+        Err(e) => return fail("events", e),
+    };
+    println!("events: {}", events.len());
+
+    let mut src = match ReplaySource::open(dir) {
+        Ok(s) => s,
+        Err(e) => return fail("open", e),
+    };
+    let total = src.len();
+    let mut k = 0usize;
+    loop {
+        match src.grab() {
+            Ok(f) => {
+                println!("frame {k}: {}x{} hash={:016x}", f.width, f.height, frame_hash(&f));
+                k += 1;
+            }
+            Err(e) => {
+                println!("replay stopped after {k}/{total}: {e}");
+                break;
+            }
+        }
+    }
+    if k == total {
+        println!("replay OK: all {total} frame(s) decoded");
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn fail(what: &str, e: String) -> ExitCode {
+    eprintln!("{what} failed: {e}");
+    ExitCode::FAILURE
 }

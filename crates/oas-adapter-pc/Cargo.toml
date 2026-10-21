@@ -6,4 +6,4 @@ license.workspace = true
 
 [dependencies]
 oas-types = { workspace = true }
-png = "0.17"
+oas-codec = { workspace = true }
