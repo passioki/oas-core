@@ -60,16 +60,41 @@ function draw() {
     ctx.restore();
   }
   // detection boxes (multi-line route)
+  // High-contrast strategy: every outline is drawn twice - a dark halo first,
+  // then the bright line on top - so it stays readable on both light and dark
+  // game art. Labels get a dark plate for the same reason.
   for (const b of boxes) {
+    const [x, y, w, h] = b.box;
     ctx.save();
-    ctx.strokeStyle = '#e8b431';
+    ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+    ctx.lineWidth = 5;
+    ctx.strokeRect(x + 0.5, y + 0.5, w, h);
+    ctx.strokeStyle = '#ffd54a';
     ctx.lineWidth = 2;
-    ctx.strokeRect(b.box[0] + 0.5, b.box[1] + 0.5, b.box[2], b.box[3]);
-    ctx.fillStyle = 'rgba(232,180,49,0.10)';
-    ctx.fillRect(b.box[0], b.box[1], b.box[2], b.box[3]);
-    ctx.fillStyle = '#e8b431';
+    ctx.strokeRect(x + 0.5, y + 0.5, w, h);
+    // tiny corner ticks make the exact edges readable on busy art
+    ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+    ctx.lineWidth = 4;
+    const tick = 6;
+    ctx.beginPath();
+    for (const [cx, cy, dx, dy] of [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]) {
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + dx * tick, cy);
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx, cy + dy * tick);
+    }
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(232,180,49,0.08)';
+    ctx.fillRect(x, y, w, h);
+    // label plate
+    const label = `${b.text} ${b.score.toFixed(2)}`;
     ctx.font = '13px Consolas, monospace';
-    ctx.fillText(`${b.text} ${b.score.toFixed(2)}`, b.box[0], Math.max(13, b.box[1] - 4));
+    const tw = ctx.measureText(label).width;
+    const ly = y >= 16 ? y - 15 : y + 1;
+    ctx.fillStyle = 'rgba(0,0,0,0.72)';
+    ctx.fillRect(x, ly, tw + 8, 15);
+    ctx.fillStyle = '#ffd54a';
+    ctx.fillText(label, x + 4, ly + 12);
     ctx.restore();
   }
 }
