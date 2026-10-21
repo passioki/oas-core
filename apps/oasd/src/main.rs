@@ -238,6 +238,10 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
                 model = Some(rest[i + 1].clone());
                 i += 2;
             }
+            "--det-model" if i + 1 < rest.len() => {
+                det_model = Some(rest[i + 1].clone());
+                i += 2;
+            }
             other => {
                 eprintln!("unknown serve arg: {other}");
                 return ExitCode::from(2);
