@@ -29,6 +29,8 @@ struct State {
 pub struct Server {
     adb: Adb,
     state: Arc<Mutex<State>>,
+    #[cfg(feature = "ocr")]
+    ocr: Option<Arc<Mutex<oas_ocr::onnx::RecEngine>>>,
 }
 
 impl Server {
@@ -41,7 +43,18 @@ impl Server {
                 device: String::new(),
                 error: None,
             })),
+            #[cfg(feature = "ocr")]
+            ocr: None,
         }
+    }
+
+    /// Load the PP-OCRv6 rec model; returns the charset size.
+    #[cfg(feature = "ocr")]
+    pub fn enable_ocr(&mut self, model_path: &str) -> Result<usize, String> {
+        let engine = oas_ocr::onnx::RecEngine::from_file(model_path)?;
+        let n = engine.charset().len();
+        self.ocr = Some(Arc::new(Mutex::new(engine)));
+        Ok(n)
     }
 
     /// Serve forever on 127.0.0.1:`port`. Returns only on bind failure.
@@ -181,18 +194,89 @@ impl Server {
                 );
                 self.send_json(&mut out, 200, &body)
             }
-            ("POST", "/ocr") => self.send_json(
-                &mut out,
+            ("GET", "/ocr") => self.handle_ocr(&mut out, &path),
+            _ => self.send_json(&mut out, 404, r#"{"error":"not found"}"#),
+        }
+    }
+
+    #[allow(unused_variables)]
+    fn handle_ocr(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
+        let q = raw_path.split_once('?').map(|(_, q)| q).unwrap_or("");
+        let mut x = 0i32;
+        let mut y = 0i32;
+        let mut w = 0i32;
+        let mut h = 0i32;
+        for kv in q.split('&') {
+            let Some((k, v)) = kv.split_once('=') else { continue };
+            let val: i32 = v.parse().unwrap_or(0);
+            match k {
+                "x" => x = val,
+                "y" => y = val,
+                "w" => w = val,
+                "h" => h = val,
+                _ => {}
+            }
+        }
+        if w <= 0 || h <= 0 {
+            return self.send_json(out, 400, r#"{"error":"invalid roi"}"#);
+        }
+
+        #[cfg(not(feature = "ocr"))]
+        {
+            self.send_json(
+                out,
                 501,
-                r#"{"error":"OCR route is wired in the next step (P1-d2)"}"#,
-            ),
-            _ => self.send_json(&mut out, 404, r#"{\"error\":\"not found\"}"#), 
+                r#"{"error":"this build has no OCR (rebuild with --features ocr)"}"#,
+            )
+        }
+
+        #[cfg(feature = "ocr")]
+        {
+            let engine = match self.ocr.as_ref() {
+                Some(e) => e.clone(),
+                None => {
+                    return self.send_json(
+                        out,
+                        501,
+                        r#"{"error":"no OCR model loaded (start with --model <path>)"}"#,
+                    )
+                }
+            };
+            let frame = {
+                let st = self.state.lock().unwrap();
+                match st.frame.as_ref() {
+                    Some(f) => oas_types::Frame::new(f.width, f.height, f.rgba.clone()),
+                    None => return self.send_json(out, 400, r#"{"error":"no frame yet"}"#),
+                }
+            };
+            let roi = oas_types::Rect { x, y, w, h };
+            let crop = match oas_ocr::RgbCrop::from_rgba(frame.width, frame.height, &frame.rgba, roi) {
+                Ok(c) => c,
+                Err(e) => return self.send_json(out, 400, &format!(r#"{{"error":{:?}}}"#, e)),
+            };
+            let t0 = std::time::Instant::now();
+            let mut eng = engine.lock().unwrap();
+            match eng.recognize(&crop) {
+                Ok((text, score)) => {
+                    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                    let body = format!(
+                        r#"{{"text":{},"score":{},"elapsed_ms":{},"charset":{}}}"#,
+                        json_escape(&text),
+                        score,
+                        ms,
+                        eng.charset().len()
+                    );
+                    drop(eng);
+                    self.send_json(out, 200, &body)
+                }
+                Err(e) => self.send_json(out, 500, &format!(r#"{{"error":{:?}}}"#, e)),
+            }
         }
     }
 
     fn send_json(&self, out: &mut TcpStream, code: u16, body: &str) -> std::io::Result<()> {
         let head = format!(
-            "HTTP/1.1 {code} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 {code} OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
             body.as_bytes().len()
         );
         out.write_all(head.as_bytes())?;
@@ -237,4 +321,23 @@ fn read_body(reader: &mut impl Read, len: usize) -> Vec<u8> {
     let mut buf = vec![0u8; len];
     let _ = reader.read_exact(&mut buf);
     buf
+}
+
+/// Minimal JSON string escaping (no serde: keeps the daemon dependency-free).
+pub fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }

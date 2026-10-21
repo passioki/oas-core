@@ -389,6 +389,7 @@ dependencies = [
  "oas-adapter-pc",
  "oas-codec",
  "oas-obs",
+ "oas-ocr",
  "oas-types",
 ]
 

@@ -215,6 +215,7 @@ fn replay(rest: &[String]) -> ExitCode {
 fn serve_cmd(rest: &[String]) -> ExitCode {
     let mut port: u16 = 8787;
     let mut ui = "apps/oasd/ui".to_string();
+    let mut model: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -232,6 +233,10 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
                 ui = rest[i + 1].clone();
                 i += 2;
             }
+            "--model" if i + 1 < rest.len() => {
+                model = Some(rest[i + 1].clone());
+                i += 2;
+            }
             other => {
                 eprintln!("unknown serve arg: {other}");
                 return ExitCode::from(2);
@@ -239,7 +244,13 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
         }
     }
     let adb = Adb::from_env();
-    let server = serve::Server::new(adb);
+    let mut server = serve::Server::new(adb);
+    if let Some(path) = model.as_ref() {
+        match server.enable_ocr(path) {
+            Ok(n) => println!("ocr model loaded: {path} (charset {n})"),
+            Err(e) => eprintln!("ocr disabled: {e}"),
+        }
+    }
     match server.run(port, &ui) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => fail("serve", e),

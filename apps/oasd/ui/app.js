@@ -1,4 +1,4 @@
-// OAS engine editor - MVP front end.
+﻿// OAS engine editor - MVP front end.
 // Plain JS on purpose: no build step, so the same files can be served by the
 // Rust daemon today and wrapped by Tauri / an Android WebView later.
 
@@ -150,11 +150,8 @@ btnOcr.addEventListener('click', async () => {
   resultEl.textContent = '识别中…';
   try {
     // Wired up in the next step; the route already exists on the backend side.
-    const r = await fetch('/ocr', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(roi),
-    });
+    const q = `x=${roi.x}&y=${roi.y}&w=${roi.w}&h=${roi.h}`;
+    const r = await fetch('/ocr?' + q);
     const s = await r.json();
     if (s.error) {
       resultEl.textContent = '错误：' + s.error;
