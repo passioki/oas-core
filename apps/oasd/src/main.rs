@@ -216,6 +216,7 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
     let mut port: u16 = 8787;
     let mut ui = "apps/oasd/ui".to_string();
     let mut model: Option<String> = None;
+    let mut det_model: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -249,6 +250,12 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
         match server.enable_ocr(path) {
             Ok(n) => println!("ocr model loaded: {path} (charset {n})"),
             Err(e) => eprintln!("ocr disabled: {e}"),
+        }
+    }
+    if let Some(path) = det_model.as_ref() {
+        match server.enable_det(path) {
+            Ok(()) => println!("det model loaded: {path}"),
+            Err(e) => eprintln!("det disabled: {e}"),
         }
     }
     match server.run(port, &ui) {

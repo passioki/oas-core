@@ -31,6 +31,8 @@ pub struct Server {
     state: Arc<Mutex<State>>,
     #[cfg(feature = "ocr")]
     ocr: Option<Arc<Mutex<oas_ocr::onnx::RecEngine>>>,
+    #[cfg(feature = "ocr")]
+    det: Option<Arc<Mutex<oas_ocr::det_engine::DetEngine>>>,
 }
 
 impl Server {
@@ -45,6 +47,8 @@ impl Server {
             })),
             #[cfg(feature = "ocr")]
             ocr: None,
+            #[cfg(feature = "ocr")]
+            det: None,
         }
     }
 
@@ -195,7 +199,13 @@ impl Server {
                 self.send_json(&mut out, 200, &body)
             }
             ("GET", "/ocr") => self.handle_ocr(&mut out, &path),
-            _ => self.send_json(&mut out, 404, r#"{"error":"not found"}"#),
+            _ => {
+                if path_only == "/lines" {
+                    self.handle_lines(&mut out, &path)
+                } else {
+                    self.send_json(&mut out, 404, r#"{"error":"not found"}"#)
+                }
+            }
         }
     }
 
@@ -340,4 +350,125 @@ pub fn json_escape(s: &str) -> String {
     }
     out.push('"');
     out
+}
+// --- P1-c2: multi-line detection route (additive; keeps /ocr single-line) ---
+
+impl Server {
+    /// Load the detector; returns Ok(()) when ready.
+    #[cfg(feature = "ocr")]
+    pub fn enable_det(&mut self, model_path: &str) -> Result<(), String> {
+        let det = oas_ocr::det_engine::DetEngine::from_file(model_path)?;
+        self.det = Some(Arc::new(Mutex::new(det)));
+        Ok(())
+    }
+
+    /// GET /lines?x=&y=&w=&h=[&vertical=1]  ->  [{box:[x,y,w,h], text, score}, ...]
+    #[allow(unused_variables)]
+    pub fn handle_lines(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
+        #[cfg(not(feature = "ocr"))]
+        {
+            return self.send_json(
+                out,
+                501,
+                r#"{"error":"this build has no OCR (rebuild with --features ocr)"}"#,
+            );
+        }
+        #[cfg(feature = "ocr")]
+        {
+            let q = raw_path.split_once('?').map(|(_, q)| q).unwrap_or("");
+            let (mut x, mut y, mut w, mut h) = (0i32, 0i32, 0i32, 0i32);
+            let mut vertical_only = false;
+            for kv in q.split('&') {
+                let Some((k, v)) = kv.split_once('=') else { continue };
+                match k {
+                    "x" => x = v.parse().unwrap_or(0),
+                    "y" => y = v.parse().unwrap_or(0),
+                    "w" => w = v.parse().unwrap_or(0),
+                    "h" => h = v.parse().unwrap_or(0),
+                    "vertical" => vertical_only = v == "1",
+                    _ => {}
+                }
+            }
+            if w <= 0 || h <= 0 {
+                return self.send_json(out, 400, r#"{"error":"invalid roi"}"#);
+            }
+            let (det, rec) = match (self.det.as_ref(), self.ocr.as_ref()) {
+                (Some(d), Some(r)) => (d.clone(), r.clone()),
+                _ => {
+                    return self.send_json(
+                        out,
+                        501,
+                        r#"{"error":"det/rec model not loaded (start with --model and --det-model)"}"#,
+                    )
+                }
+            };
+            let frame = {
+                let st = self.state.lock().unwrap();
+                match st.frame.as_ref() {
+                    Some(f) => oas_types::Frame::new(f.width, f.height, f.rgba.clone()),
+                    None => return self.send_json(out, 400, r#"{"error":"no frame yet"}"#),
+                }
+            };
+            let roi = oas_types::Rect { x, y, w, h };
+            let crop = match oas_ocr::RgbCrop::from_rgba(frame.width, frame.height, &frame.rgba, roi) {
+                Ok(c) => c,
+                Err(e) => return self.send_json(out, 400, &format!(r#"{{"error":{:?}}}"#, e)),
+            };
+            // RGB crop -> RGBA so sub-boxes can be cut with the same helper
+            let mut rgba = Vec::with_capacity(crop.data.len() / 3 * 4);
+            for px in crop.data.chunks_exact(3) {
+                rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
+            }
+
+            let t0 = std::time::Instant::now();
+            let boxes = match det.lock().unwrap().detect(&crop) {
+                Ok(b) => b,
+                Err(e) => return self.send_json(out, 500, &format!(r#"{{"error":{:?}}}"#, e)),
+            };
+            let mut items: Vec<String> = Vec::new();
+            let mut rec_guard = rec.lock().unwrap();
+            for b in boxes.iter() {
+                let sub = match oas_ocr::RgbCrop::from_rgba(crop.width, crop.height, &rgba, *b) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let (mut text, mut score) = match rec_guard.recognize(&sub) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                // vertical / rotated fallback: keep the best orientation
+                if vertical_only || score < 0.6 {
+                    for cand in [sub.rotate90_cw(), sub.rotate90_ccw()] {
+                        if let Ok((t2, s2)) = rec_guard.recognize(&cand) {
+                            if s2 > score {
+                                text = t2;
+                                score = s2;
+                            }
+                        }
+                    }
+                }
+                if score < 0.5 {
+                    continue; // drop noise boxes (e.g. a lone "o" at 0.46)
+                }
+                items.push(format!(
+                    r#"{{"box":[{},{},{},{}],"text":{},"score":{:.4}}}"#,
+                    b.x,
+                    b.y,
+                    b.w,
+                    b.h,
+                    json_escape(&text),
+                    score
+                ));
+            }
+            drop(rec_guard);
+            let ms = t0.elapsed().as_secs_f64() * 1000.0;
+            let body = format!(
+                r#"{{"lines":[{}],"count":{},"elapsed_ms":{:.1}}}"#,
+                items.join(","),
+                items.len(),
+                ms
+            );
+            self.send_json(out, 200, &body)
+        }
+    }
 }
