@@ -18,7 +18,8 @@
 //!
 //! Extra informational lines: `task=`, `assets=`, `device=`, `replay_frames=`,
 //! `input=`, `budget_steps=`/`budget_wall_s=`, `record=`, `record_dir=`,
-//! `events_out=`, `swipes=`, and `hint=` after a failure (actionable next step).
+//! `events_out=`, `clicks_out=<path> count=<N>`, `swipes=`, and `hint=` after a
+//! failure (actionable next step).
 //!
 //! Exit code: `0` iff `outcome=Done`; `1` for `Failed`/`Exhausted`; `2` for
 //! usage / setup errors (bad flags, missing bundle, no adb device, ...).
@@ -36,6 +37,11 @@
 //!   seed the Lead can replay with. Replaying it with the same seed must
 //!   reproduce the identical click sequence (HB5 / §6).
 //! * `--events-out <file.jsonl>`: one JSON object per [`StepEvent`].
+//! * `--clicks-out <file.jsonl>`: the CD2 click audit (§21) — one
+//!   `{ts_ms,x,y,target_x,target_y,sel,seed}` object per successful click, i.e.
+//!   the data source of the always-on click-distribution view. Written even when
+//!   the outcome is not `Done` (an empty file still witnesses "there were no
+//!   clicks"), and the parent directory is created if missing.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -44,13 +50,14 @@ use std::rc::Rc;
 
 use oas_adapter_pc::Adb;
 use oas_obs::{Recorder, ReplaySource};
-use oas_runtime::{Budget, Interpreter, RunResult, StepEvent};
+use oas_runtime::{Budget, ClickRecord, Interpreter, RunResult, StepEvent};
 use oas_task::TaskBundle;
 use oas_types::{Frame, InputSink, Outcome, Point, ScreenSource};
 
 pub const USAGE: &str = "usage: oasd run --task <bundle-dir> [--replay <bundle-dir>] \
                          [--seed <u64>] [--dry-run] [--record <bundle-dir>] \
-                         [--events-out <file.jsonl>] [--budget-steps N] [--budget-wall S]";
+                         [--events-out <file.jsonl>] [--clicks-out <file.jsonl>] \
+                         [--budget-steps N] [--budget-wall S]";
 
 const DEFAULT_MAX_STEPS: u32 = 5000;
 const DEFAULT_MAX_WALL_S: f64 = 300.0;
@@ -80,6 +87,7 @@ pub struct RunOptions {
     pub dry_run: bool,
     pub record: Option<PathBuf>,
     pub events_out: Option<PathBuf>,
+    pub clicks_out: Option<PathBuf>,
     pub budget_steps: u32,
     pub budget_wall_s: f64,
 }
@@ -93,6 +101,7 @@ impl Default for RunOptions {
             dry_run: false,
             record: None,
             events_out: None,
+            clicks_out: None,
             budget_steps: DEFAULT_MAX_STEPS,
             budget_wall_s: DEFAULT_MAX_WALL_S,
         }
@@ -122,6 +131,9 @@ impl RunOptions {
                 "--record" => o.record = Some(PathBuf::from(take_value(rest, &mut i, "--record")?)),
                 "--events-out" => {
                     o.events_out = Some(PathBuf::from(take_value(rest, &mut i, "--events-out")?))
+                }
+                "--clicks-out" => {
+                    o.clicks_out = Some(PathBuf::from(take_value(rest, &mut i, "--clicks-out")?))
                 }
                 "--budget-steps" => {
                     let v = take_value(rest, &mut i, "--budget-steps")?;
@@ -346,6 +358,9 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     let mut interp = Interpreter::new(DynScreen(src), input, assets, budget).with_seed(seed);
     let result = interp.run(&flow);
     let events = interp.events().to_vec();
+    // CD2 (§21): snapshot the click audit BEFORE the interpreter is dropped.
+    // The rows are the interpreter's own report of what it actually clicked.
+    let click_rows = interp.clicks().to_vec();
     drop(interp); // release the recording source's Rc clone before finishing
 
     for e in &events {
@@ -406,6 +421,17 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
             "events_out={} lines={}",
             path.display(),
             events.len()
+        ));
+    }
+
+    // CD2 (§21): the persistent click-distribution input. Written even when the
+    // outcome != Done on purpose: "0 clicks" is evidence too.
+    if let Some(path) = &opts.clicks_out {
+        write_clicks_jsonl(path, &click_rows)?;
+        out(&format!(
+            "clicks_out={} count={}",
+            path.display(),
+            click_rows.len()
         ));
     }
 
@@ -612,6 +638,48 @@ fn write_events_jsonl(path: &Path, events: &[StepEvent]) -> Result<(), String> {
         text.push('\n');
     }
     std::fs::write(path, text).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// JSONL click audit (CD2, §21): one object per successful click. The field set
+/// is exactly [`ClickRecord`]'s (the §21 row `ts_ms,x,y,sel,seed` plus the
+/// audit columns `target_x,target_y` that §19 CP4/HB6 requires). Written to the
+/// parent directory, created on demand — a run must never be lost because the
+/// output folder did not exist yet.
+fn write_clicks_jsonl(path: &Path, rows: &[ClickRecord]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "--clicks-out: cannot create directory `{}` for `{}` ({e}) — \
+                     pass a path in an existing writable directory",
+                    parent.display(),
+                    path.display()
+                )
+            })?;
+        }
+    }
+    let mut text = String::new();
+    for r in rows {
+        // `sel` is a validated asset id, but go through serde_json so any
+        // future id (Chinese, quotes) can never produce a broken JSONL line.
+        let sel = match &r.sel {
+            Some(s) => serde_json::to_string(s)
+                .map_err(|e| format!("--clicks-out: serialize sel: {e}"))?,
+            None => "null".to_string(),
+        };
+        text.push_str(&format!(
+            r#"{{"ts_ms":{},"x":{},"y":{},"target_x":{},"target_y":{},"sel":{},"seed":{}}}"#,
+            r.ts_ms, r.x, r.y, r.target_x, r.target_y, sel, r.seed
+        ));
+        text.push('\n');
+    }
+    std::fs::write(path, text).map_err(|e| {
+        format!(
+            "--clicks-out: cannot write `{}` ({e}) — check that the path is writable \
+             and is not a directory",
+            path.display()
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -875,6 +943,123 @@ mod tests {
         )));
     }
 
+    /// Parse a clicks JSONL file into values (each line must be one JSON object).
+    fn read_clicks_jsonl(path: &Path) -> Vec<serde_json::Value> {
+        let text = std::fs::read_to_string(path).expect("clicks file written");
+        text.lines()
+            .map(|l| serde_json::from_str(l).expect("every clicks JSONL line is valid JSON"))
+            .collect()
+    }
+
+    #[test]
+    fn clicks_out_writes_one_cd2_row_per_click_and_is_seed_reproducible() {
+        // §21 CD2: `oasd run --clicks-out` persists the click audit that the
+        // click-distribution view (CD3/CD4) reads. Two same-seed replays must
+        // produce identical files except for the wall-clock `ts_ms`.
+        let (td, task, replay) = fixture("clicks-out");
+        let a = td.path().join("runs/a.clicks.jsonl");
+        let b = td.path().join("runs/b.clicks.jsonl");
+        let mut o1 = replay_options(&task, &replay, 42);
+        o1.clicks_out = Some(a.clone());
+        let (r1, lines1) = run_capture(&o1);
+        let mut o2 = replay_options(&task, &replay, 42);
+        o2.clicks_out = Some(b.clone());
+        let (r2, _lines2) = run_capture(&o2);
+
+        assert_eq!(r1.outcome(), Outcome::Done);
+        assert_eq!(
+            line_with(&lines1, "clicks_out="),
+            format!("clicks_out={} count=1", a.display()),
+            "the count must be machine-greppable (CD4 anchors on it)"
+        );
+        // The parent directory did not exist: the writer created it.
+        let rows1 = read_clicks_jsonl(&a);
+        let rows2 = read_clicks_jsonl(&b);
+        assert_eq!(rows1.len(), 1, "the fixture clicks exactly once");
+        assert_eq!(rows1.len(), r1.clicks.len());
+        assert_eq!(rows1[0]["sel"], serde_json::Value::Null);
+        assert_eq!(rows1[0]["seed"].as_u64(), Some(42));
+        let (x, y) = (
+            rows1[0]["x"].as_i64().expect("x") as i32,
+            rows1[0]["y"].as_i64().expect("y") as i32,
+        );
+        assert_eq!(
+            (x, y),
+            (r1.clicks[0].x, r1.clicks[0].y),
+            "CD2 x/y must be the ACTUAL points from the run"
+        );
+        assert!(
+            (x - TARGET.x).abs() <= 6 && (y - TARGET.y).abs() <= 6,
+            "HB2: ({x},{y}) is not within ±6 px of {TARGET:?}"
+        );
+        assert_eq!(rows1[0]["target_x"].as_i64(), Some(TARGET.x as i64));
+        assert_eq!(rows1[0]["target_y"].as_i64(), Some(TARGET.y as i64));
+        assert!(
+            rows1[0]["ts_ms"].as_u64().unwrap_or(0) > 1_600_000_000_000,
+            "ts_ms must be epoch milliseconds: {}",
+            rows1[0]["ts_ms"]
+        );
+
+        // Same seed => byte-identical rows apart from the wall-clock timestamp.
+        let strip_ts = |rows: Vec<serde_json::Value>| -> Vec<serde_json::Value> {
+            rows.into_iter()
+                .map(|mut r| {
+                    r["ts_ms"] = serde_json::json!(0);
+                    r
+                })
+                .collect()
+        };
+        assert_eq!(
+            strip_ts(rows1),
+            strip_ts(rows2),
+            "same seed must reproduce the same CD2 rows (except ts_ms)"
+        );
+        assert_eq!(
+            r1.clicks, r2.clicks,
+            "same seed must replay the same actual points"
+        );
+
+        // Replay mode still never touches adb: no `device=` line is printed and
+        // the frame source is the replay bundle.
+        assert_eq!(line_with(&lines1, "frame_source="), "frame_source=replay");
+        assert_eq!(line_with(&lines1, "input="), "input=dry (replay)");
+        assert!(
+            !lines1.iter().any(|l| l.starts_with("device=")),
+            "replay must not open an adb device: {lines1:?}"
+        );
+    }
+
+    #[test]
+    fn clicks_out_is_written_even_when_the_run_fails() {
+        // "Write even when outcome != Done": a failed run still leaves evidence
+        // (here: an empty file = there were no clicks), and the count is printed.
+        let td = TempDir::new("clicks-out-fail");
+        let task = td.path().join("task");
+        let replay = td.path().join("replay");
+        let bundle = TaskBundle::open(&task).expect("open task bundle");
+        bundle
+            .save_flow(
+                r#"{"schema_version":1,"name":"n4-fail","steps":[
+                     {"op":"click_point","args":{"x":10000,"y":60}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            )
+            .expect("save flow");
+        write_replay_bundle(&replay);
+        let out_path = td.path().join("nested/runs/fail.clicks.jsonl");
+        let mut opts = replay_options(&task, &replay, 3);
+        opts.clicks_out = Some(out_path.clone());
+        let (r, lines) = run_capture(&opts);
+
+        assert_eq!(r.outcome(), Outcome::Failed, "off-screen click must fail");
+        assert_eq!(r.exit_code(), 1);
+        let text = std::fs::read_to_string(&out_path).expect("clicks file written on failure");
+        assert_eq!(text, "", "no successful click => no rows");
+        assert_eq!(
+            line_with(&lines, "clicks_out="),
+            format!("clicks_out={} count=0", out_path.display())
+        );
+    }
+
     #[test]
     fn recording_wrapper_persists_every_grab_and_replays_frame_exact() {
         struct FakeScreen {
@@ -1106,6 +1291,8 @@ mod tests {
             "rec",
             "--events-out",
             "out/e.jsonl",
+            "--clicks-out",
+            "runs/s1.clicks.jsonl",
             "--budget-steps",
             "7",
             "--budget-wall",
@@ -1121,6 +1308,10 @@ mod tests {
         assert!(o.dry_run);
         assert_eq!(o.record.as_deref(), Some(Path::new("rec")));
         assert_eq!(o.events_out.as_deref(), Some(Path::new("out/e.jsonl")));
+        assert_eq!(
+            o.clicks_out.as_deref(),
+            Some(Path::new("runs/s1.clicks.jsonl"))
+        );
         assert_eq!(o.budget_steps, 7);
         assert_eq!(o.budget_wall_s, 1.5);
 
@@ -1130,6 +1321,7 @@ mod tests {
             vec!["--seed", "abc"],
             vec!["--budget-steps", "0"],
             vec!["--budget-wall", "NaN"],
+            vec!["--clicks-out"],
         ] {
             let bad: Vec<String> = bad.iter().map(|s| s.to_string()).collect();
             assert!(

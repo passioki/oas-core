@@ -1,2 +1,6 @@
 /target
 **/*.rs.bk
+
+# CD2 click-distribution run logs (runtime artifacts; regenerate with:
+#   oasd run ... --clicks-out runs/<name>.clicks.jsonl )
+/runs

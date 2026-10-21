@@ -80,6 +80,31 @@ pub struct StepEvent {
     pub elapsed_ms: f64,
 }
 
+/// One click-audit row: the **actual** point handed to the [`InputSink`] plus the
+/// target it was derived from (design doc §21 CD2, §19 CP4, §20 HB6).
+///
+/// `x`/`y` are what really got clicked; `target_x`/`target_y` are the intent
+/// (a template rect's centre for `click`, the evaluated point for `click_point`).
+/// Keeping both is what lets the click-distribution view answer "why did the
+/// click land here?" — and `seed` makes the jitter reproducible.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClickRecord {
+    /// Epoch milliseconds when the click was accepted.
+    pub ts_ms: u128,
+    /// ACTUAL clicked point.
+    pub x: i32,
+    /// ACTUAL clicked point.
+    pub y: i32,
+    /// Target point: template-rect centre (`click`) / evaluated target (`click_point`).
+    pub target_x: i32,
+    /// Target point: template-rect centre (`click`) / evaluated target (`click_point`).
+    pub target_y: i32,
+    /// Asset id for a `click` step; `None` for a raw `click_point`.
+    pub sel: Option<String>,
+    /// The run's seed (HB5: the audit is reproducible).
+    pub seed: u64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunResult {
     Finished(Exit),
@@ -116,6 +141,10 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     /// the CP3 in-frame check).
     frame_size: Option<(u32, u32)>,
     events: Vec<StepEvent>,
+    /// CD2 (§21) click audit: one row per SUCCESSFUL click, cleared per run.
+    clicks: Vec<ClickRecord>,
+    /// Seed resolved once at construction (HB5); `with_seed` pins it.
+    run_seed: u64,
     started: Instant,
     humanize: crate::humanize::Humanize,
     rng: crate::humanize::Rng,
@@ -124,6 +153,13 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
 
 impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     pub fn new(src: S, input: I, assets: AssetSet, budget: Budget) -> Self {
+        let humanize = crate::humanize::Humanize::default();
+        // Per-run seed: random for the game (HB1/HB5), persisted by the
+        // recorder so a replay can use with_seed() and reproduce exactly.
+        // A FIXED seed every run would make the click sequence identical
+        // across runs, which is itself a bot tell. Resolved ONCE here so the
+        // CD2 click audit records the same seed the RNG actually uses.
+        let run_seed = humanize.resolved_seed(now_ms());
         Self {
             src,
             input,
@@ -132,16 +168,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             matcher: None,
             frame_size: None,
             events: Vec::new(),
+            clicks: Vec::new(),
+            run_seed,
             started: Instant::now(),
-            humanize: crate::humanize::Humanize::default(),
-            // Per-run seed: random for the game (HB1/HB5), persisted by the
-            // recorder so a replay can use with_seed() and reproduce exactly.
-            // A FIXED seed every run would make the click sequence identical
-            // across runs, which is itself a bot tell.
-            rng: crate::humanize::Rng::new(
-                crate::humanize::Humanize::default()
-                    .resolved_seed(now_ms()),
-            ),
+            humanize,
+            rng: crate::humanize::Rng::new(run_seed),
             steps: 0,
         }
     }
@@ -150,9 +181,23 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         &self.events
     }
 
+    /// CD2 (§21) click audit for the LAST/current run: actual point, target,
+    /// selector and the run seed, one row per successful `click`/`click_point`.
+    pub fn clicks(&self) -> &[ClickRecord] {
+        &self.clicks
+    }
+
+    /// The seed this run actually used (HB5). Unlike [`Self::seed_now`] (which
+    /// exposes the mutable RNG state the recorder peeks at), this is the
+    /// immutable per-run seed recorded in the audit.
+    pub fn run_seed(&self) -> u64 {
+        self.run_seed
+    }
+
     /// Pin the RNG seed (replays use the seed recorded in the bundle).
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.rng = crate::humanize::Rng::new(seed);
+        self.run_seed = seed;
         self
     }
 
@@ -164,6 +209,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     pub fn run(&mut self, flow: &Flow) -> RunResult {
         self.started = Instant::now();
         self.events.clear();
+        // A rerun is a NEW run: its click audit must not carry rows from the
+        // previous one (same lifecycle as `events`).
+        self.clicks.clear();
         self.steps = 0;
         let mut ctl = Ctl::Normal;
         match self.exec(&flow.steps, 0, &mut ctl) {
@@ -190,6 +238,22 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             detail: detail.to_string(),
             result: result.to_string(),
             elapsed_ms,
+        });
+    }
+
+    /// CD2 (§21): audit a click **after** the input sink accepted it — a click
+    /// that failed (off-screen target / missing template) is not a click and must
+    /// not appear in the distribution, or the heatmap would show points the game
+    /// never received.
+    fn record_click(&mut self, actual: Point, target: Point, sel: Option<String>) {
+        self.clicks.push(ClickRecord {
+            ts_ms: now_ms(),
+            x: actual.x,
+            y: actual.y,
+            target_x: target.x,
+            target_y: target.y,
+            sel,
+            seed: self.run_seed,
         });
     }
 
@@ -432,6 +496,13 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 // The screen may now be different: never let the next selector
                 // match against this pre-click frame.
                 self.invalidate_frame();
+                // CD2/HB6: audit the click with the template-rect CENTRE as the
+                // intended target and the humanised point as what actually went out.
+                let centre = Point {
+                    x: target.x + target.w / 2,
+                    y: target.y + target.h / 2,
+                };
+                self.record_click(actual, centre, Some(sel.clone()));
                 Ok(format!(
                     "clicked {sel} target=({},{}) point=({},{}) delay={delay}ms score={score:.3}",
                     p.x, p.y, actual.x, actual.y
@@ -475,6 +546,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 }
                 self.input.click(actual)?;
                 self.invalidate_frame();
+                // CD2: `click_point` has no asset id; the evaluated target is the
+                // intent and the jittered point is what the device received.
+                self.record_click(actual, target, None);
                 // CP4/HB6: the log carries the TARGET *and* the actual point
                 // (plus the jitter's delay and the frame it was checked against).
                 Ok(format!(
@@ -1034,6 +1108,121 @@ mod tests {
             }
         }
         assert!(saw_would_leave, "test needs at least one seed whose raw jitter leaves the frame");
+    }
+
+    // ---- CD2 click audit (§21) ----
+
+    #[test]
+    fn click_point_records_one_cd2_row_with_the_evaluated_target() {
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        interp = interp.with_seed(99);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":20}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let rows = interp.clicks();
+        assert_eq!(rows.len(), 1, "one successful click => exactly one row: {rows:?}");
+        let r = &rows[0];
+        // target = the evaluated (pre-jitter) point, x/y = the ACTUAL point.
+        assert_eq!((r.target_x, r.target_y), (20, 20), "{r:?}");
+        assert_eq!(r.sel, None, "click_point has no asset id");
+        assert_eq!(r.seed, 99, "the audit must carry the seeded run seed");
+        let actual = input.clicks.borrow()[0];
+        assert_eq!(
+            (r.x, r.y),
+            (actual.x, actual.y),
+            "CD2 x/y must be the point actually handed to InputSink"
+        );
+        assert!(
+            (r.x - 20).abs() <= 6 && (r.y - 20).abs() <= 6,
+            "HB2: {r:?} is not within ±6 px of the target"
+        );
+        assert!(
+            r.ts_ms > 1_600_000_000_000,
+            "ts_ms must be epoch milliseconds, got {}",
+            r.ts_ms
+        );
+    }
+
+    #[test]
+    fn click_template_records_the_asset_id_and_the_template_centre() {
+        let (mut interp, _input) = mk_inspect(FakeScreen::new());
+        interp = interp.with_seed(5);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_BRIGHT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let rows = interp.clicks();
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.sel.as_deref(), Some("I_BRIGHT"));
+        // The 10x10 template matches at (12,10) => its rect centre is (17,15).
+        assert_eq!((r.target_x, r.target_y), (17, 15), "{r:?}");
+        // The actual point is a humanised point inside that template rect.
+        assert!(
+            (12..22).contains(&r.x) && (10..20).contains(&r.y),
+            "actual point ({},{}) left the matched template rect",
+            r.x,
+            r.y
+        );
+        assert_eq!(r.seed, 5);
+    }
+
+    #[test]
+    fn failed_click_records_no_audit_row() {
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_NEVER"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert!(matches!(interp.run(&f), RunResult::Failed(_)));
+        assert!(input.clicks.borrow().is_empty(), "no InputSink click may happen");
+        assert!(
+            interp.clicks().is_empty(),
+            "a failed click must not appear in the click distribution: {:?}",
+            interp.clicks()
+        );
+    }
+
+    #[test]
+    fn clicks_are_cleared_when_the_same_interpreter_runs_again() {
+        let (mut interp, _input) = mk_inspect(FakeScreen::new());
+        interp = interp.with_seed(3);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":20}},
+                 {"op":"click_point","args":{"x":30,"y":25}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert_eq!(interp.clicks().len(), 2);
+        assert_eq!(interp.clicks()[0].seed, 3);
+        // A rerun is a new run: same lifecycle as `events` (cleared, not appended).
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert_eq!(
+            interp.clicks().len(),
+            2,
+            "rerun must not append to the previous run's click audit"
+        );
+    }
+
+    #[test]
+    fn run_seed_is_resolved_once_and_pinned_by_with_seed() {
+        // Construction resolves seed 0 into a concrete seed (HB5) ...
+        let (interp, _input) = mk_inspect(FakeScreen::new());
+        assert_ne!(interp.run_seed(), 0, "seed 0 must resolve at construction");
+        // ... and seed_now() (the recorder's view) is unchanged: initial state.
+        assert_eq!(interp.run_seed(), interp.seed_now());
+        // with_seed pins BOTH the RNG and the recorded run seed.
+        let (pinned, _input2) = mk_inspect(FakeScreen::new());
+        let pinned = pinned.with_seed(1234);
+        assert_eq!(pinned.run_seed(), 1234);
+        assert_eq!(pinned.seed_now(), 1234);
     }
 
     // ---- swipe (§3.2 action class) ----

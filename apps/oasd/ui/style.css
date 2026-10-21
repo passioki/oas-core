@@ -60,3 +60,35 @@ pre {
   font-family: Consolas, monospace;
   font-size: 12px;
 }
+
+/* --- N2/N4: 生成点击指令 + 点击分布视图 --- */
+.row { display: flex; gap: 8px; }
+.row button { flex: 1; width: auto; }
+.mono { font-family: Consolas, monospace; }
+.small { font-size: 12px; line-height: 1.45; }
+#click-stats {
+  margin-bottom: 8px;
+  font-family: Consolas, monospace;
+  color: #ffd54a;
+  font-size: 13px;
+}
+.clicks-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  margin: 6px 0 8px;
+}
+.clicks-legend .ramp {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, rgba(0,120,255,.6), rgba(255,220,40,.75), rgba(255,48,0,.95));
+}
+.clicks-legend .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f2f7ff;
+  box-shadow: 0 0 0 2px #000;
+}

@@ -7,6 +7,7 @@
 //!   oasd record <dir> <n>           record n live frames into a replay bundle
 //!   oasd replay <dir>               re-drive a bundle offline, print frame hashes
 //!   oasd run --task <dir> [--replay <dir>] [--seed <n>] ...   run a task bundle
+//!   oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>]
 
 use std::process::ExitCode;
 
@@ -34,8 +35,9 @@ fn main() -> ExitCode {
                  oasd record <dir> <n>\n  oasd replay <dir>\n  \
                  oasd run --task <bundle-dir> [--replay <bundle-dir>] [--seed <u64>] \
                  [--dry-run] [--record <bundle-dir>] [--events-out <file.jsonl>] \
+                 [--clicks-out <file.jsonl>] \
                  [--budget-steps N] [--budget-wall S]\n  \
-                 oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--model <path>] [--det-model <path>]"
+                 oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--model <path>] [--det-model <path>]"
             );
             ExitCode::from(2)
         }
@@ -223,6 +225,7 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
     let mut port: u16 = 8787;
     let mut ui = "apps/oasd/ui".to_string();
     let mut tasks_dir = "tasks".to_string();
+    let mut runs_dir = "runs".to_string();
     let mut model: Option<String> = None;
     let mut det_model: Option<String> = None;
     let mut i = 0;
@@ -246,6 +249,10 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
                 tasks_dir = rest[i + 1].clone();
                 i += 2;
             }
+            "--runs-dir" if i + 1 < rest.len() => {
+                runs_dir = rest[i + 1].clone();
+                i += 2;
+            }
             "--model" if i + 1 < rest.len() => {
                 model = Some(rest[i + 1].clone());
                 i += 2;
@@ -261,7 +268,9 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
         }
     }
     let adb = Adb::from_env();
-    let mut server = serve::Server::new(adb).with_tasks_dir(&tasks_dir);
+    let mut server = serve::Server::new(adb)
+        .with_tasks_dir(&tasks_dir)
+        .with_runs_dir(&runs_dir);
     enable_models(&mut server, model.as_deref(), det_model.as_deref());
     match server.run(port, &ui) {
         Ok(()) => ExitCode::SUCCESS,
