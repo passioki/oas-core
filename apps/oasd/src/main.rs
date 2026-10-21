@@ -1,4 +1,4 @@
-//! oasd: minimal CLI for live checks (P0). No UI, no scheduler - just enough to
+﻿//! oasd: minimal CLI for live checks (P0). No UI, no scheduler - just enough to
 //! prove the capture/input/record/replay ports work.
 //!
 //! Usage:
@@ -8,6 +8,8 @@
 //!   oasd replay <dir>               re-drive a bundle offline, print frame hashes
 
 use std::process::ExitCode;
+
+mod serve;
 
 use oas_adapter_pc::Adb;
 use oas_codec::{encode_png, frame_hash};
@@ -22,6 +24,7 @@ fn main() -> ExitCode {
         "tap" => tap(&args[1..]),
         "record" => record(&args[1..]),
         "replay" => replay(&args[1..]),
+        "serve" => serve_cmd(&args[1..]),
         "" | "-h" | "--help" => {
             eprintln!(
                 "usage:\n  oasd probe [--out <file.png>]\n  oasd tap <x> <y>\n  \
@@ -206,6 +209,40 @@ fn replay(rest: &[String]) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+fn serve_cmd(rest: &[String]) -> ExitCode {
+    let mut port: u16 = 8787;
+    let mut ui = "apps/oasd/ui".to_string();
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--port" if i + 1 < rest.len() => {
+                port = match rest[i + 1].parse() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        eprintln!("bad --port value");
+                        return ExitCode::from(2);
+                    }
+                };
+                i += 2;
+            }
+            "--ui" if i + 1 < rest.len() => {
+                ui = rest[i + 1].clone();
+                i += 2;
+            }
+            other => {
+                eprintln!("unknown serve arg: {other}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let adb = Adb::from_env();
+    let server = serve::Server::new(adb);
+    match server.run(port, &ui) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => fail("serve", e),
     }
 }
 

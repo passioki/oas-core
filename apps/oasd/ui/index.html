@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>OAS 引擎编辑器 · MVP</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <strong>OAS 引擎编辑器</strong>
+    <span id="status" class="muted">连接中…</span>
+    <span class="spacer"></span>
+    <button id="btn-capture">截图</button>
+  </header>
+
+  <main>
+    <section id="canvas-wrap">
+      <canvas id="screen" width="1280" height="720"></canvas>
+      <div id="hint" class="muted">在画面上拖拽选择 ROI</div>
+    </section>
+
+    <aside>
+      <h3>ROI</h3>
+      <div id="roi" class="kv">未选择</div>
+      <h3>操作</h3>
+      <button id="btn-ocr" disabled>试识别 (OCR)</button>
+      <button id="btn-clear">清除 ROI</button>
+      <h3>结果</h3>
+      <pre id="result" class="muted">—</pre>
+      <h3>日志</h3>
+      <pre id="log"></pre>
+    </aside>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

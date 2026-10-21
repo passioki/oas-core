@@ -1,0 +1,51 @@
+/* OAS engine editor - minimal tool UI */
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 14px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  background: #14161a;
+  color: #e6e6e6;
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: #1d2027;
+  border-bottom: 1px solid #2b2f38;
+}
+.spacer { flex: 1; }
+button {
+  background: #2b6cb0;
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font: inherit;
+}
+button:disabled { background: #3a3f4a; color: #8a8f99; cursor: default; }
+button:hover:not(:disabled) { background: #3182ce; }
+.muted { color: #9aa0aa; }
+
+main { display: flex; gap: 14px; padding: 14px; align-items: flex-start; }
+#canvas-wrap { position: relative; flex: 1; background: #0b0d10; border-radius: 8px; padding: 8px; }
+#screen { width: 100%; height: auto; display: block; border-radius: 4px; cursor: crosshair; }
+#hint { position: absolute; right: 16px; bottom: 14px; font-size: 12px; }
+
+aside { width: 320px; flex: 0 0 320px; }
+aside h3 { margin: 14px 0 6px; font-size: 13px; color: #8fb8e8; font-weight: 600; }
+aside button { display: block; width: 100%; margin-bottom: 8px; }
+.kv { font-family: Consolas, monospace; background: #1d2027; padding: 8px; border-radius: 6px; }
+pre {
+  background: #1d2027;
+  padding: 8px;
+  border-radius: 6px;
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+}
