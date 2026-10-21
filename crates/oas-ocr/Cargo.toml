@@ -23,3 +23,6 @@ oas-codec = { workspace = true }
 [[example]]
 name = "rec"
 required-features = ["onnx"]
+[[example]]
+name = "lines"
+required-features = ["onnx"]

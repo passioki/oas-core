@@ -1,4 +1,4 @@
-//! oas-ocr: PP-OCRv6 text recognition, pure-Rust pre/post processing.
+﻿//! oas-ocr: PP-OCRv6 text recognition, pure-Rust pre/post processing.
 //!
 //! # Decision (design doc §16)
 //! The OCR *engine* is NOT being replaced: the old repo already migrated from
@@ -18,6 +18,10 @@
 //! and recognise directly; DBNet detection (for `find_text_in_list`) comes later.
 
 use oas_types::Rect;
+
+pub mod det;
+#[cfg(feature = "onnx")]
+pub mod det_engine;
 
 pub const REC_HEIGHT: u32 = 48;
 pub const REC_MAX_WIDTH: u32 = 320;
@@ -142,6 +146,44 @@ impl RgbCrop {
 
     pub fn preprocess(&self) -> RecTensor {
         preprocess_rec(self.width, self.height, &self.data)
+    }
+
+    /// Rotate 90 degrees clockwise. Vertical signs in the game are horizontal
+    /// text turned 90 degrees, so rotating before rec makes them readable.
+    pub fn rotate90_cw(&self) -> RgbCrop {
+        let (w, h) = (self.width, self.height);
+        let mut out = vec![0u8; self.data.len()];
+        for y in 0..h {
+            for x in 0..w {
+                // dest (h-1-y, x) <- src (x, y)
+                let dx = h - 1 - y;
+                let dy = x;
+                let si = ((y * w + x) * 3) as usize;
+                let di = ((dy * h + dx) * 3) as usize;
+                out[di] = self.data[si];
+                out[di + 1] = self.data[si + 1];
+                out[di + 2] = self.data[si + 2];
+            }
+        }
+        RgbCrop { width: h, height: w, data: out }
+    }
+
+    /// Rotate 90 degrees counter-clockwise (the other vertical reading order).
+    pub fn rotate90_ccw(&self) -> RgbCrop {
+        let (w, h) = (self.width, self.height);
+        let mut out = vec![0u8; self.data.len()];
+        for y in 0..h {
+            for x in 0..w {
+                let dx = y;
+                let dy = w - 1 - x;
+                let si = ((y * w + x) * 3) as usize;
+                let di = ((dy * h + dx) * 3) as usize;
+                out[di] = self.data[si];
+                out[di + 1] = self.data[si + 1];
+                out[di + 2] = self.data[si + 2];
+            }
+        }
+        RgbCrop { width: h, height: w, data: out }
     }
 }
 
@@ -363,12 +405,10 @@ pub mod onnx {
         }
     }
 
-    /// ONNX Runtime permits one Environment per process; create it lazily once.
+    /// Shares the single per-process ONNX Runtime environment with the detector
+    /// (ort refuses to create a second one).
     fn global_env() -> Result<&'static Environment, String> {
-        static ENV: std::sync::OnceLock<Result<Environment, String>> = std::sync::OnceLock::new();
-        ENV.get_or_init(|| ort::init().build().map_err(|e| format!("ort env: {e}")))
-            .as_ref()
-            .map_err(|e| e.clone())
+        crate::det_engine::global_env()
     }
 }
 
