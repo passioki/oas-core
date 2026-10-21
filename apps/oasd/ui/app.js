@@ -12,7 +12,6 @@ const btnCapture = document.getElementById('btn-capture');
 const btnOcr = document.getElementById('btn-ocr');
 const btnClear = document.getElementById('btn-clear');
 const btnLines = document.getElementById('btn-lines');
-const chkVertical = document.getElementById('chk-vertical');
 
 let img = null;
 let roi = null; // {x,y,w,h} in frame coordinates
@@ -218,8 +217,7 @@ btnLines.addEventListener('click', async () => {
   resultEl.textContent = '多行识别中…';
   try {
     const q = `x=${roi.x}&y=${roi.y}&w=${roi.w}&h=${roi.h}`;
-    const vq = chkVertical && chkVertical.checked ? '&vertical=1' : '';
-    const r = await fetch('/lines?' + q + vq);
+    const r = await fetch('/lines?' + q);
     const s = await r.json();
     if (s.error) {
       resultEl.textContent = '错误：' + s.error;
