@@ -228,8 +228,11 @@ btnAsset.addEventListener('click', async () => {
     assetId.focus();
     return;
   }
-  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(id)) {
-    resultEl.textContent = 'id 只能用字母/数字/下划线，且以字母开头';
+  // ids may be Chinese (this project's vocabulary is Chinese); the on-disk file
+  // name is NOT the id - assets get hashed/sequential file names when saved, so
+  // no encoding traps on Windows/Android/git.
+  if (!/^[\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_]*$/.test(id)) {
+    resultEl.textContent = 'id 可用中文/字母/数字/下划线，但不能以数字开头、不能含空格或标点';
     return;
   }
   const kind = assetKind.value;
