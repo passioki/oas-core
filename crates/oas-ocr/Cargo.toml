@@ -1,0 +1,18 @@
+[package]
+name = "oas-ocr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oas-types = { workspace = true }
+
+[features]
+# ONNX Runtime session (PP-OCRv6). Off by default so the pure-Rust pre/post
+# processing (and its tests) build anywhere, including without the runtime.
+onnx = ["dep:ort"]
+
+[dependencies.ort]
+version = "2.0.0-rc.15"
+optional = true
+features = ["download-binaries"]
