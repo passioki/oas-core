@@ -10,7 +10,7 @@ const resultEl = document.getElementById('result');
 const logEl = document.getElementById('log');
 const btnCapture = document.getElementById('btn-capture');
 const btnOcr = document.getElementById('btn-ocr');
-const btnClear = document.getElementById(''btn-clear'');
+const btnClear = document.getElementById('btn-clear');
 const btnLines = document.getElementById('btn-lines');
 
 let img = null;
