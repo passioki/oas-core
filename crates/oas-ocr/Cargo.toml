@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "oas-ocr"
 version.workspace = true
 edition.workspace = true
@@ -16,3 +16,10 @@ onnx = ["dep:ort"]
 version = "2.0.0-rc.15"
 optional = true
 features = ["download-binaries"]
+
+[dev-dependencies]
+oas-codec = { workspace = true }
+
+[[example]]
+name = "rec"
+required-features = ["onnx"]

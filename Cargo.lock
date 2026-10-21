@@ -355,6 +355,7 @@ dependencies = [
 name = "oas-ocr"
 version = "0.1.0"
 dependencies = [
+ "oas-codec",
  "oas-types",
  "ort",
 ]

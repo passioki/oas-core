@@ -46,6 +46,23 @@ impl Charset {
         if chars.last().map(|s| s.is_empty()).unwrap_or(false) {
             chars.pop();
         }
+        // RapidOCR's `get_character()` ALWAYS prepends the CTC blank and appends
+        // the space char, even when the table comes from ONNX metadata:
+        //   character_list.insert(len, " "); character_list.insert(0, "blank")
+        // Getting this wrong shifts every class by one: measured on a real frame
+        // the output was "黙讥切绅" at conf 0.9987 instead of "默认分组".
+        Self::with_ctc_specials(chars)
+    }
+
+    /// Prepend the CTC blank (index 0) and append the space char, mirroring
+    /// RapidOCR. Idempotent for tables that already carry them.
+    pub fn with_ctc_specials(mut chars: Vec<String>) -> Self {
+        if chars.first().map(|s| s.as_str()) != Some("blank") {
+            chars.insert(0, "blank".to_string());
+        }
+        if chars.last().map(|s| s.as_str()) != Some(" ") {
+            chars.push(" ".to_string());
+        }
         Self { chars }
     }
 
@@ -252,6 +269,109 @@ pub fn softmax_row(row: &[f32]) -> Vec<f32> {
     exps.into_iter().map(|v| v / sum).collect()
 }
 
+// ---------------------------------------------------------------------------
+// ONNX session (optional `onnx` feature)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "onnx")]
+pub mod onnx {
+    use std::path::Path;
+
+    use ort::environment::Environment;
+    use ort::session::Session;
+    use ort::value::Tensor;
+
+    use super::{ctc_greedy_decode, Charset, RgbCrop};
+
+    /// PP-OCRv6 recogniser backed by ONNX Runtime.
+    pub struct RecEngine {
+        /// ONNX Runtime allows exactly one Environment per process.
+        _env: &'static Environment,
+        session: Session,
+        charset: Charset,
+        input_name: String,
+    }
+
+    impl RecEngine {
+        /// Load a `*_rec_*.onnx` model and read its embedded charset.
+        pub fn from_file(path: impl AsRef<Path>) -> Result<Self, String> {
+            let path = path.as_ref();
+            let env = global_env()?;
+            let session = Session::builder(env)
+                .map_err(|e| format!("ort builder: {e}"))?
+                .commit_from_file(path)
+                .map_err(|e| format!("load {}: {e}", path.display()))?;
+
+            // Borrow `session` only inside this block: both `ModelMetadata` and
+            // the input slice borrow it, and `session` is moved into `Self` below.
+            let (charset, input_name) = {
+                // Rule 3: the charset is embedded in the model metadata.
+                let meta = session.metadata().map_err(|e| format!("metadata: {e}"))?;
+                let blob = meta.custom("character").ok_or_else(|| {
+                    "model metadata has no `character` key (cannot build the charset)".to_string()
+                })?;
+                let charset = Charset::from_metadata(&blob);
+                if charset.is_empty() {
+                    return Err("charset from model metadata is empty".into());
+                }
+                let input_name = session
+                    .inputs()
+                    .first()
+                    .map(|i| i.name().to_string())
+                    .ok_or_else(|| "model has no inputs".to_string())?;
+                (charset, input_name)
+            };
+
+            Ok(Self {
+                _env: env,
+                session,
+                charset,
+                input_name,
+            })
+        }
+
+        pub fn charset(&self) -> &Charset {
+            &self.charset
+        }
+
+        /// Recognise one cropped text line.
+        ///
+        /// NOTE: PP-OCR's rec heads already output **probabilities** (the Python
+        /// decoder does a plain argmax/max - no softmax), so we do the same.
+        pub fn recognize(&mut self, crop: &RgbCrop) -> Result<(String, f32), String> {
+            let t = crop.preprocess();
+            let shape = t.shape();
+            let input = Tensor::from_array((shape, t.data))
+                .map_err(|e| format!("build input tensor: {e}"))?;
+
+            let outputs = self
+                .session
+                .run(ort::inputs![self.input_name.as_str() => input])
+                .map_err(|e| format!("inference: {e}"))?;
+            let (out_shape, data) = outputs[0]
+                .try_extract_tensor::<f32>()
+                .map_err(|e| format!("output tensor: {e}"))?;
+
+            let dims: Vec<usize> = out_shape.iter().map(|d| *d as usize).collect();
+            let (steps, classes) = match dims.as_slice() {
+                [1, t, c] => (*t, *c),
+                [t, c] => (*t, *c),
+                other => return Err(format!("unexpected rec output shape {other:?}")),
+            };
+            let (text, conf) = ctc_greedy_decode(data, steps, classes, &self.charset);
+            Ok((text, conf))
+        }
+    }
+
+    /// ONNX Runtime permits one Environment per process; create it lazily once.
+    fn global_env() -> Result<&'static Environment, String> {
+        static ENV: std::sync::OnceLock<Result<Environment, String>> = std::sync::OnceLock::new();
+        ENV.get_or_init(|| ort::init().build().map_err(|e| format!("ort env: {e}")))
+            .as_ref()
+            .map_err(|e| e.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,12 +388,32 @@ mod tests {
     }
 
     #[test]
-    fn metadata_blob_is_split_by_newline_and_keeps_embedded_blank() {
+    fn metadata_gets_ctc_blank_prepended_and_space_appended() {
+        // Measured on a real frame: WITHOUT this shift every class mapped one
+        // index off and "默认分组" decoded as "黙讥切绅" at conf 0.9987.
+        let cs = Charset::from_metadata("A\nB");
+        assert_eq!(cs.len(), 4);
+        assert_eq!(cs.get(0), Some("blank"), "CTC blank must be index 0");
+        assert_eq!(cs.get(1), Some("A"));
+        assert_eq!(cs.get(2), Some("B"));
+        assert_eq!(cs.get(3), Some(" "), "space is appended, like RapidOCR");
+    }
+
+    #[test]
+    fn metadata_specials_are_idempotent_and_trim_cr() {
+        // already has "blank" first => not prepended twice; "3\r" must be "3"
         let cs = Charset::from_metadata("blank\n1\n2\n3\r\n");
-        assert_eq!(cs.len(), 4, "v6 metadata must not need extra specials");
+        assert_eq!(cs.len(), 5);
         assert_eq!(cs.get(0), Some("blank"));
-        assert_eq!(cs.get(1), Some("1"));
-        assert_eq!(cs.get(3), Some("3"), "trailing \\r must be trimmed");
+        assert_eq!(cs.get(3), Some("3"));
+        assert_eq!(cs.get(4), Some(" "));
+        // and calling it again on the produced lines changes nothing
+        let again = Charset::with_ctc_specials(
+            (0..cs.len())
+                .map(|i| cs.get(i).unwrap().to_string())
+                .collect(),
+        );
+        assert_eq!(again.len(), cs.len());
     }
 
     #[test]
