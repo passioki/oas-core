@@ -650,6 +650,21 @@ impl Server {
                 }
             },
         };
+        // `replace: true` = overwrite an existing asset id (rev+1) instead of
+        // failing with "already exists" (ENGINE-DESIGN §4 rev semantics).
+        let replace = match v.get("replace") {
+            None => false,
+            Some(x) => match x.as_bool() {
+                Some(b) => b,
+                None => {
+                    return self.send_errors(
+                        out,
+                        400,
+                        vec!["`replace` must be a boolean".to_string()],
+                    )
+                }
+            },
+        };
         let frame = match self.state.lock().unwrap().frame.clone() {
             Some(f) => f,
             None => {
@@ -672,7 +687,11 @@ impl Server {
             threshold,
             rev: None,
         };
-        match bundle.save_asset(decl, Some(&frame)) {
+        match if replace {
+            bundle.update_asset(decl, Some(&frame))
+        } else {
+            bundle.save_asset(decl, Some(&frame))
+        } {
             Ok(item) => {
                 let body = serde_json::json!({ "ok": true, "task": task, "item": item });
                 self.send_json(out, 200, &body.to_string())

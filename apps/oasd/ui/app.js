@@ -573,14 +573,29 @@ async function doSaveAsset() {
   if (kind === 'template') payload.threshold = 0.85;
   btnSaveAsset.disabled = true;
   try {
-    const s = await postJson('/task/save_asset', payload);
+    let s = await postJson('/task/save_asset', payload);
+    // §4 rev: an existing id is a *re-crop*, not an error — ask once, then
+    // overwrite with rev+1. Cancelling writes nothing (old asset stays).
+    if (!s.ok && (s.errors || []).some((e) => e.includes('already exists'))) {
+      const ok = window.confirm(
+        `素材 id「${id}」已存在。\n\n覆盖它并升版（rev+1）吗？\n` +
+          '· 确定 = 用当前截图的 ROI 覆盖\n' +
+          '· 取消 = 不写入任何文件（想保留旧素材请换个 id）'
+      );
+      if (!ok) {
+        resultEl.textContent = '已取消：未写入任何文件（旧素材保留）';
+        log(`保存素材取消：${id} 已存在`);
+        return;
+      }
+      s = await postJson('/task/save_asset', { ...payload, replace: true });
+    }
     if (!s.ok) {
       showErrors('保存失败（未写入任何文件）：', s.errors);
       log(`保存素材失败：${id}`);
       return;
     }
     resultEl.textContent = JSON.stringify(s.item, null, 2);
-    log(`已保存素材：${s.item.id} → ${s.item.file || '（无图）'}`);
+    log(`已保存素材：${s.item.id} rev=${s.item.rev} → ${s.item.file || '（无图）'}`);
     await refreshTaskAssets(task);
   } catch (e) {
     resultEl.textContent = '保存异常：' + e;

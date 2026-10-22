@@ -454,18 +454,38 @@ impl TaskBundle {
 
     // -- saving ------------------------------------------------------------
 
-    /// Save one asset.
+    /// Save one **new** asset.
     ///
     /// `frame` is required for `template` assets: the ROI is cropped out of it
     /// and written as the next `images/aNNN.png`. Before anything is written:
     ///
     /// 1. id grammar / kind / threshold / ROI bounds are checked,
-    /// 2. duplicate ids are rejected,
+    /// 2. duplicate ids are rejected (use [`Self::update_asset`] to overwrite),
     /// 3. the design resolution is enforced,
     /// 4. if `flow.json` exists, the **would-be** item list (existing items plus
     ///    this one) is validated against the flow — a flow that references a
     ///    different (typo'd) id makes the save fail and write nothing.
-    pub fn save_asset(&self, mut decl: AssetDecl, frame: Option<&Frame>) -> Result<AssetDecl, String> {
+    pub fn save_asset(&self, decl: AssetDecl, frame: Option<&Frame>) -> Result<AssetDecl, String> {
+        self.save_asset_impl(decl, frame, false)
+    }
+
+    /// Overwrite an **existing** asset with the same id (`rev + 1`).
+    ///
+    /// Design: ENGINE-DESIGN §4 keeps a per-asset `rev` ("改图后能报哪张图变了")
+    /// — an editor that could only *create* would force a rename on every
+    /// re-crop. Update is therefore an **explicit second path**, never an
+    /// implicit upsert. Every check of [`Self::save_asset`] still applies; on
+    /// any failure **nothing is written** (old image + manifest stay untouched).
+    pub fn update_asset(&self, decl: AssetDecl, frame: Option<&Frame>) -> Result<AssetDecl, String> {
+        self.save_asset_impl(decl, frame, true)
+    }
+
+    fn save_asset_impl(
+        &self,
+        mut decl: AssetDecl,
+        frame: Option<&Frame>,
+        replace: bool,
+    ) -> Result<AssetDecl, String> {
         validate_id(&decl.id).map_err(|e| format!("asset rejected: {e}"))?;
         if !KINDS.contains(&decl.kind.as_str()) {
             return Err(format!(
@@ -479,12 +499,25 @@ impl TaskBundle {
             .map_err(|e| format!("asset `{}` rejected: {e}", decl.id))?;
 
         let mut af = self.load_assets_file()?;
-        if let Some(i) = af.items.iter().position(|it| it.id == decl.id) {
-            return Err(format!(
-                "asset id `{}` already exists (assets.json items[{i}]); nothing written",
-                decl.id
-            ));
-        }
+        let existing = af.items.iter().position(|it| it.id == decl.id);
+        let old_file = existing.and_then(|i| af.items[i].file.clone());
+        let rev = match (replace, existing) {
+            (false, Some(i)) => {
+                return Err(format!(
+                    "asset id `{}` already exists (assets.json items[{i}]); nothing written - \
+                     send `replace: true` to overwrite it (rev+1)",
+                    decl.id
+                ))
+            }
+            (true, None) => {
+                return Err(format!(
+                    "asset id `{}` does not exist; nothing written - drop `replace` to create it",
+                    decl.id
+                ))
+            }
+            (false, None) => 1,
+            (true, Some(i)) => af.items[i].rev.unwrap_or(1).saturating_add(1),
+        };
 
         // Validate + compute everything; nothing touches the disk before the
         // flow cross-check below passed.
@@ -535,7 +568,7 @@ impl TaskBundle {
             // OCR assets carry no template pixels: the id never becomes a path.
             decl.file = None;
         }
-        decl.rev = Some(1);
+        decl.rev = Some(rev);
 
         // Save-time reference validation (the N3 "judge"): the flow must already
         // be satisfiable by the *would-be* asset list.
@@ -564,13 +597,23 @@ impl TaskBundle {
         if let Some((abs, png)) = pending_image.as_ref() {
             write_atomic(abs, png)?;
         }
-        af.items.push(decl.clone());
+        match existing {
+            Some(i) => af.items[i] = decl.clone(),
+            None => af.items.push(decl.clone()),
+        }
         if let Err(e) = self.write_assets_file(&af) {
             // Do not leave an orphan image behind when the manifest write failed.
             if let Some((abs, _)) = pending_image {
                 let _ = std::fs::remove_file(abs);
             }
             return Err(e);
+        }
+        // A successful overwrite may have moved the asset to a new `aNNN.png`:
+        // drop the OLD image only after the manifest points at the new one.
+        if let (true, Some(old)) = (replace, old_file) {
+            if decl.file.as_deref() != Some(old.as_str()) {
+                let _ = std::fs::remove_file(self.root.join(old));
+            }
         }
         Ok(decl)
     }
@@ -942,6 +985,109 @@ mod tests {
             let name = f.file_name().unwrap().to_string_lossy().to_string();
             assert!(!name.contains("分组"), "id leaked into a path: {name}");
         }
+    }
+
+    #[test]
+    fn update_asset_bumps_rev_swaps_pixels_and_removes_old_image() {
+        let td = TempDir::new("upd");
+        let b = open(&td);
+        let f = frame(64, 48);
+        let first = b
+            .save_asset(AssetDecl::template("探索入口", [0, 0, 10, 10]), Some(&f))
+            .expect("create");
+        assert_eq!(first.rev, Some(1));
+        let old_file = first.file.clone().expect("file");
+        let old_bytes = std::fs::read(b.root().join(&old_file)).expect("old image");
+
+        // A re-crop at a different ROI: same id, rev+1, NEW image, old file gone.
+        let updated = b
+            .update_asset(AssetDecl::template("探索入口", [4, 4, 12, 9]), Some(&f))
+            .expect("update");
+        assert_eq!(updated.rev, Some(2), "rev must bump");
+        assert_ne!(
+            updated.file.as_deref(),
+            Some(old_file.as_str()),
+            "a re-crop gets a new image file"
+        );
+        assert!(!b.root().join(&old_file).is_file(), "old image must be removed");
+        let new_file = updated.file.as_deref().expect("new file");
+        let new_bytes = std::fs::read(b.root().join(new_file)).expect("new image");
+        assert_ne!(old_bytes, new_bytes, "pixels must be replaced");
+
+        let af = b.load_assets_file().expect("assets");
+        assert_eq!(af.items.len(), 1, "update must not duplicate the id");
+        assert_eq!(af.items[0].id, "探索入口");
+        assert_eq!(af.items[0].rev, Some(2));
+        assert_eq!(af.items[0].roi, Some([4, 4, 12, 9]));
+    }
+
+    #[test]
+    fn update_asset_works_for_ocr_rois_and_keeps_flow_refs_valid() {
+        let td = TempDir::new("updocr");
+        let b = open(&td);
+        let f = frame(40, 30);
+        b.save_asset(
+            AssetDecl {
+                kind: "ocr_line".into(),
+                ..AssetDecl::template("探索入口", [0, 0, 20, 8])
+            },
+            Some(&f),
+        )
+        .expect("create ocr");
+        b.save_flow(&flow_json("探索入口")).expect("flow");
+        let flow_before = std::fs::read(b.flow_path()).expect("flow bytes");
+
+        let updated = b
+            .update_asset(
+                AssetDecl {
+                    kind: "ocr_line".into(),
+                    ..AssetDecl::template("探索入口", [5, 5, 30, 10])
+                },
+                Some(&f),
+            )
+            .expect("update ocr");
+        assert_eq!(updated.rev, Some(2));
+        assert_eq!(updated.file, None, "OCR assets never own an image");
+        assert_eq!(updated.roi, Some([5, 5, 30, 10]));
+        assert_eq!(
+            std::fs::read(b.flow_path()).expect("flow bytes"),
+            flow_before,
+            "updating an asset must not touch flow.json"
+        );
+    }
+
+    #[test]
+    fn update_asset_of_a_missing_id_is_rejected_and_writes_nothing() {
+        let td = TempDir::new("updmiss");
+        let b = open(&td);
+        let f = frame(32, 32);
+        let err = b
+            .update_asset(AssetDecl::template("探索入口", [0, 0, 8, 8]), Some(&f))
+            .expect_err("must reject");
+        assert!(err.contains("does not exist"), "unexpected: {err}");
+        assert!(!b.assets_path().exists(), "nothing written");
+    }
+
+    #[test]
+    fn failed_update_writes_nothing() {
+        let td = TempDir::new("updfail");
+        let b = open(&td);
+        let f = frame(40, 30);
+        b.save_asset(AssetDecl::template("探索入口", [0, 0, 10, 10]), Some(&f))
+            .expect("create");
+        let before_assets = std::fs::read(b.assets_path()).expect("assets");
+        let mut before_files = Vec::new();
+        walk_files(b.root(), &mut before_files);
+
+        // ROI outside the frame => must fail before any write.
+        let err = b
+            .update_asset(AssetDecl::template("探索入口", [35, 25, 10, 10]), Some(&f))
+            .expect_err("must fail");
+        assert!(err.contains("out of bounds") || err.contains("roi"), "{err}");
+        assert_eq!(std::fs::read(b.assets_path()).expect("assets"), before_assets);
+        let mut after_files = Vec::new();
+        walk_files(b.root(), &mut after_files);
+        assert_eq!(before_files.len(), after_files.len(), "no orphan image");
     }
 
     #[test]
