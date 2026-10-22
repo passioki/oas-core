@@ -55,6 +55,9 @@ let clickData = null; // {file, clicks, distinct, points}
 let clickOverlay = null;
 // §22.18 visual flow editor model: {name, steps:[{op,argsText}], interrupts:[{detect,action}]}
 let flowModel = { name: '', steps: [], interrupts: [] };
+// §22.22: serve 能力位（OCR 模型是否就绪），避免"无模型/无 feature 构建"静默 501
+let ocrReady = true;
+let detReady = true;
 // §22.10 polygon selection: vertices in FRAME coordinates + closed flag.
 // When closed, roi becomes the polygon bbox and assets are saved with `polygon`;
 // the runtime clicks inside the polygon's largest inscribed rectangle.
@@ -905,11 +908,14 @@ async function loadFrame() {
 async function refreshState() {
   const r = await fetch('/state');
   const s = await r.json();
+  ocrReady = s.ocr !== false;
+  detReady = s.det !== false;
   if (!s.captured) {
     setStatus(s.error ? `未截到帧：${s.error}` : '没有帧');
     return;
   }
-  setStatus(`${s.device} · ${s.width}x${s.height}`);
+  const caps = `OCR=${ocrReady ? 'on' : 'off'} · det=${detReady ? 'on' : 'off'}`;
+  setStatus(`${s.device} · ${s.width}x${s.height} · ${caps}`);
 }
 
 async function doCapture() {
@@ -1061,6 +1067,11 @@ btnClear.addEventListener('click', () => {
 
 btnOcr.addEventListener('click', async () => {
   if (!roi) return;
+  if (!ocrReady) {
+    resultEl.textContent =
+      'OCR 不可用：serve 未加载 OCR（需 `cargo build -p oasd --features ocr` 构建，并带 --model 启动）';
+    return;
+  }
   btnOcr.disabled = true;
   resultEl.textContent = '识别中…';
   try {
@@ -1158,6 +1169,11 @@ btnAsset.addEventListener('click', async () => {
 
 btnLines.addEventListener('click', async () => {
   if (!roi) return;
+  if (!ocrReady || !detReady) {
+    resultEl.textContent =
+      '多行识别不可用：serve 需 `--features ocr` 构建且带 --model 与 --det-model 启动';
+    return;
+  }
   btnLines.disabled = true;
   resultEl.textContent = '多行识别中…';
   try {
@@ -1242,6 +1258,9 @@ btnLines.addEventListener('click', async () => {
     await loadFrame();
     await refreshState();
     btnCapture.disabled = false;
+    if (!ocrReady) {
+      log('OCR 未加载：serve 需 `--features ocr` 构建并带 --model/--det-model（单行/多行识别不可用）');
+    }
     log('已连接，画面已加载');
   } catch (e) {
     setStatus('没有可用帧，点「截图」');

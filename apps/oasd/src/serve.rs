@@ -10,7 +10,7 @@
 //!   GET  /app.js          -> ui/app.js
 //!   GET  /frame.png       -> last captured frame (404 before the first capture)
 //!   POST /capture         -> capture a fresh frame, returns JSON {width,height}
-//!   GET  /state           -> JSON {captured: bool, width, height, device}
+//!   GET  /state           -> JSON {captured, width, height, device, ocr, det}
 //!   GET  /ocr?x&y&w&h     -> single-line OCR
 //!   GET  /lines?x&y&w&h   -> multi-line det+rec
 //!   POST /task/save_asset -> crop the LAST captured frame -> task bundle
@@ -88,6 +88,26 @@ impl Server {
     }
 
     /// Load the PP-OCRv6 rec model; returns the charset size.
+    #[cfg(feature = "ocr")]
+    pub fn ocr_ready(&self) -> bool {
+        self.ocr.is_some()
+    }
+
+    #[cfg(not(feature = "ocr"))]
+    pub fn ocr_ready(&self) -> bool {
+        false
+    }
+
+    #[cfg(feature = "ocr")]
+    pub fn det_ready(&self) -> bool {
+        self.det.is_some()
+    }
+
+    #[cfg(not(feature = "ocr"))]
+    pub fn det_ready(&self) -> bool {
+        false
+    }
+
     #[cfg(feature = "ocr")]
     pub fn enable_ocr(&mut self, model_path: &str) -> Result<usize, String> {
         let engine = oas_ocr::onnx::RecEngine::from_file(model_path)?;
@@ -221,12 +241,14 @@ impl Server {
                     .map(|f| (f.width, f.height))
                     .unwrap_or((0, 0));
                 let body = format!(
-                    r#"{{"captured":{},"width":{},"height":{},"device":{:?},"error":{:?}}}"#,
+                    r#"{{"captured":{},"width":{},"height":{},"device":{:?},"error":{:?},"ocr":{},"det":{}}}"#,
                     st.png.is_some(),
                     w,
                     h,
                     st.device,
-                    st.error.clone().unwrap_or_default()
+                    st.error.clone().unwrap_or_default(),
+                    self.ocr_ready(),
+                    self.det_ready()
                 );
                 drop(st);
                 self.send_json(&mut out, 200, &body)
