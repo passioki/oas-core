@@ -1,20 +1,21 @@
 //! Humanised input (anti-ban, design doc §20). **Default ON.**
 //!
-//! Rules:
-//! * HB1 clicks are never a fixed point: sample a **center-biased** point inside
-//!   the target box. This is the same shape the old engine used
-//!   (`module/base/utils/utils.py::random_normal_distribution_int` = mean of 3
-//!   uniform samples, i.e. Irwin–Hall(3)) — a uniform sample is wrong because
-//!   enough clicks literally fill (and "raster scan") the whole rectangle.
-//! * HB2 raw coordinate clicks get a +/- `jitter_px` offset.
-//! * HB3 a random delay between `delay_ms[0]` and `delay_ms[1]`.
-//! * HB5 (hard constraint) randomness is **seeded**, so a recording can be
-//!   replayed exactly. `seed = 0` means "pick one at run start and persist it".
-//! * HB6 the caller logs the actual point that was clicked.
+//! Distribution of a template click inside the (inset) target box — user spec
+//! `[10-22 19:0x]`, replacing the previous "bell only":
 //!
-//! `[10-22 18:4x]` the user decided **只保留钟形，去掉手误**: an experimental
-//! "miss" (HB7) was removed. Clicks always land inside the (inset) target box —
-//! reliability over extra randomness.
+//! * **30% bell** — Irwin–Hall(3), center biased (the old-engine shape);
+//! * **20% uniform** — fully random inside the inset box (edge/coverage hygiene);
+//! * **50% comet** — density grows toward the **hand-side bottom corner**:
+//!   targets on the right half are denser toward the bottom-right, targets on the
+//!   left half toward the bottom-left ("彗星尾巴方向与双手操作方向有联系").
+//!   Biomechanically this is the thumb-reach bias: the thumb pivots from its
+//!   bottom hand anchor, so points nearer that anchor are easier/more frequent.
+//! * **1~3% miss** — per click a miss rate uniform in `[miss_chance_min,
+//!   miss_chance_max]`; the click then lands up to `miss_px` outside the box
+//!   (still a real click, audited as `miss=true`).
+//!
+//! Other rules kept: HB2 +/- jitter for raw coordinate clicks, HB3 random delay,
+//! HB5 seeded randomness (replayable), HB6 actual point logged.
 
 use oas_types::{Point, Rect};
 
@@ -26,6 +27,17 @@ pub struct Humanize {
     pub delay_min_ms: u32,
     pub delay_max_ms: u32,
     pub seed: u64,
+    // --- distribution mixture (weights are normalised at sampling time) ---
+    pub bell_weight: f32,
+    pub uniform_weight: f32,
+    pub comet_weight: f32,
+    /// Comet contrast: higher = denser toward the hand corner (≈2.4 default).
+    pub comet_contrast: f32,
+    // --- miss (1~3 per 100 clicks, user spec) ---
+    pub miss_chance_min: f32,
+    pub miss_chance_max: f32,
+    /// Max distance (px) outside the target box for a miss.
+    pub miss_px: i32,
 }
 
 impl Default for Humanize {
@@ -38,8 +50,23 @@ impl Default for Humanize {
             delay_min_ms: 30,
             delay_max_ms: 120,
             seed: 0,
+            bell_weight: 0.30,
+            uniform_weight: 0.20,
+            comet_weight: 0.50,
+            comet_contrast: 2.4,
+            miss_chance_min: 0.01,
+            miss_chance_max: 0.03,
+            miss_px: 12,
         }
     }
+}
+
+/// The result of humanising one click: where it landed **and** whether it missed
+/// the target (audited by the interpreter).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClickPlan {
+    pub point: Point,
+    pub miss: bool,
 }
 
 /// xorshift64* - tiny, deterministic, good enough for jitter.
@@ -65,6 +92,11 @@ impl Rng {
         x.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
 
+    /// Uniform in [0, 1).
+    pub fn unit_f64(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
+
     /// Uniform in [lo, hi] (inclusive), `lo <= hi`.
     pub fn range_i32(&mut self, lo: i32, hi: i32) -> i32 {
         if hi <= lo {
@@ -85,11 +117,18 @@ impl Humanize {
         }
     }
 
+    fn inset_bounds(&self, rect: Rect) -> (i32, i32, i32, i32) {
+        let (x, y, w, h) = (rect.x, rect.y, rect.w, rect.h);
+        let ix = ((w as f32) * self.inset_ratio).round() as i32;
+        let iy = ((h as f32) * self.inset_ratio).round() as i32;
+        let x0 = x + ix.min(w / 2);
+        let x1 = x + w - ix.min(w / 2) - 1;
+        let y0 = y + iy.min(h / 2);
+        let y1 = y + h - iy.min(h / 2) - 1;
+        (x0, x1.max(x0), y0, y1.max(y0))
+    }
+
     /// Irwin–Hall(3): the rounded mean of 3 uniform ints.
-    ///
-    /// Same distribution family as the old engine's
-    /// `random_normal_distribution_int()`, i.e. a bell centered on the interval:
-    /// the middle is much more likely than the edges, but every px is possible.
     fn bell_i32(&self, lo: i32, hi: i32, rng: &mut Rng) -> i32 {
         if hi <= lo {
             return lo;
@@ -100,25 +139,162 @@ impl Humanize {
         ((sum as f64) / 3.0).round() as i32
     }
 
-    /// HB1: a **center-biased** random point inside `rect`, after inset.
+    /// HB1 (bell-only view): center-biased point inside `rect`, after inset.
+    /// Kept for tests / callers that want the pure bell.
     pub fn point_in(&self, rect: Rect, rng: &mut Rng) -> Point {
-        let (x, y, w, h) = (rect.x, rect.y, rect.w, rect.h);
         if !self.enabled {
             return Point {
-                x: x + w / 2,
-                y: y + h / 2,
+                x: rect.x + rect.w / 2,
+                y: rect.y + rect.h / 2,
             };
         }
-        // inset both axes; keep at least 1px of range
-        let inset_x = ((w as f32) * self.inset_ratio).round() as i32;
-        let inset_y = ((h as f32) * self.inset_ratio).round() as i32;
-        let x0 = x + inset_x.min(w / 2);
-        let x1 = x + w - inset_x.min(w / 2) - 1;
-        let y0 = y + inset_y.min(h / 2);
-        let y1 = y + h - inset_y.min(h / 2) - 1;
+        let (x0, x1, y0, y1) = self.inset_bounds(rect);
         Point {
-            x: self.bell_i32(x0, x1.max(x0), rng),
-            y: self.bell_i32(y0, y1.max(y0), rng),
+            x: self.bell_i32(x0, x1, rng),
+            y: self.bell_i32(y0, y1, rng),
+        }
+    }
+
+    /// Per-click miss rate: uniform in `[miss_chance_min, miss_chance_max]`.
+    fn miss_rate(&self, rng: &mut Rng) -> f32 {
+        if self.miss_chance_max <= self.miss_chance_min {
+            self.miss_chance_min.max(0.0)
+        } else {
+            let span = (self.miss_chance_max - self.miss_chance_min) as f64;
+            (self.miss_chance_min as f64 + rng.unit_f64() * span) as f32
+        }
+    }
+
+    fn pick_branch(&self, rng: &mut Rng) -> u8 {
+        let (b, u, c) = (
+            self.bell_weight.max(0.0) as f64,
+            self.uniform_weight.max(0.0) as f64,
+            self.comet_weight.max(0.0) as f64,
+        );
+        let total = b + u + c;
+        if total <= 0.0 {
+            return 0;
+        }
+        let r = rng.unit_f64() * total;
+        if r < b {
+            0
+        } else if r < b + u {
+            1
+        } else {
+            2
+        }
+    }
+
+    /// Comet sampling: rejection with an exponentially increasing density toward
+    /// the hand-side bottom corner. `screen_w` decides the hand (right half ->
+    /// bottom-right; left half -> bottom-left; near the middle the x term fades
+    /// and only the "thumb anchored at the bottom" bias remains).
+    fn comet_in(&self, rect: Rect, screen_w: u32, rng: &mut Rng) -> Point {
+        let (x0, x1, y0, y1) = self.inset_bounds(rect);
+        let w = (x1 - x0).max(1) as f64;
+        let h = (y1 - y0).max(1) as f64;
+        let half_screen = (screen_w.max(1) as f64) / 2.0;
+        let cx = (x0 as f64 + x1 as f64) / 2.0;
+        let hand = ((cx - half_screen) / half_screen).clamp(-1.0, 1.0); // -1..1
+        let dx = hand;
+        let dy = 1.0;
+        let norm = (dx * dx + dy * dy).sqrt();
+        let k = (self.comet_contrast.max(0.05) as f64) * 1.0;
+        for _ in 0..64 {
+            let px = rng.range_i32(x0, x1);
+            let py = rng.range_i32(y0, y1);
+            let ux = (px - x0) as f64 / w * 2.0 - 1.0; // -1..1
+            let uy = (py - y0) as f64 / h * 2.0 - 1.0;
+            let s = (dx * ux + dy * uy) / norm; // -1..1, 1 = hand corner
+            // accept prob rises monotonically from e^-k (opposite corner) to 1
+            if rng.unit_f64() < ((k * (s - 1.0) / 2.0).exp()).clamp(0.0, 1.0) {
+                return Point { x: px, y: py };
+            }
+        }
+        // Degenerate / extremely unlucky: fall back to the bell, never a fixed point.
+        self.point_in(rect, rng)
+    }
+
+    /// HB1 + HB7: click plan for a **box** target (`click` step).
+    ///
+    /// Branch order: miss (1~3%) → distribution mixture (30% bell / 20% uniform /
+    /// 50% comet). `screen_w` is only used by the comet (hand-side) term.
+    pub fn template_click(&self, rect: Rect, screen_w: u32, rng: &mut Rng) -> ClickPlan {
+        if !self.enabled {
+            return ClickPlan {
+                point: Point {
+                    x: rect.x + rect.w / 2,
+                    y: rect.y + rect.h / 2,
+                },
+                miss: false,
+            };
+        }
+        let rate = self.miss_rate(rng);
+        if rate > 0.0 && rng.unit_f64() < rate as f64 {
+            return ClickPlan {
+                point: self.miss_point(rect, rng),
+                miss: true,
+            };
+        }
+        let (x0, x1, y0, y1) = self.inset_bounds(rect);
+        let point = match self.pick_branch(rng) {
+            0 => Point {
+                x: self.bell_i32(x0, x1, rng),
+                y: self.bell_i32(y0, y1, rng),
+            },
+            1 => Point {
+                x: rng.range_i32(x0, x1),
+                y: rng.range_i32(y0, y1),
+            },
+            _ => self.comet_in(rect, screen_w, rng),
+        };
+        ClickPlan { point, miss: false }
+    }
+
+    /// HB2 + HB7: click plan for a **coordinate** target (`click_point` step).
+    pub fn point_click(&self, p: Point, rng: &mut Rng) -> ClickPlan {
+        if !self.enabled {
+            return ClickPlan { point: p, miss: false };
+        }
+        let rate = self.miss_rate(rng);
+        if rate > 0.0 && rng.unit_f64() < rate as f64 {
+            let dist = rng.range_i32(self.miss_px.max(8), (self.miss_px * 2).max(12));
+            let angle = rng.unit_f64() * std::f64::consts::TAU;
+            return ClickPlan {
+                point: Point {
+                    x: p.x + (angle.cos() * dist as f64).round() as i32,
+                    y: p.y + (angle.sin() * dist as f64).round() as i32,
+                },
+                miss: true,
+            };
+        }
+        ClickPlan {
+            point: self.jitter_point(p, rng),
+            miss: false,
+        }
+    }
+
+    /// Miss sampling: inside the ring `rect` expanded by `miss_px`, outside `rect`.
+    fn miss_point(&self, rect: Rect, rng: &mut Rng) -> Point {
+        let pad = self.miss_px.max(1);
+        let inside = |p: Point| {
+            p.x >= rect.x
+                && p.x < rect.x + rect.w
+                && p.y >= rect.y
+                && p.y < rect.y + rect.h
+        };
+        for _ in 0..16 {
+            let p = Point {
+                x: rng.range_i32(rect.x - pad, rect.x + rect.w + pad),
+                y: rng.range_i32(rect.y - pad, rect.y + rect.h + pad),
+            };
+            if !inside(p) {
+                return p;
+            }
+        }
+        Point {
+            x: rect.x + rect.w + 1,
+            y: rect.y + rect.h / 2,
         }
     }
 
@@ -164,83 +340,201 @@ mod tests {
         }
     }
 
-    #[test]
-    fn hb1_points_never_a_fixed_point_and_stay_inside_inset() {
-        let h = Humanize::default();
-        let mut rng = Rng::new(42);
-        let rect = r();
-        let inset_x = (80.0f32 * 0.15).round() as i32; // 12
-        let inset_y = (40.0f32 * 0.15).round() as i32; // 6
-        let mut seen = std::collections::HashSet::new();
-        for _ in 0..10_000 {
-            let p = h.point_in(rect, &mut rng);
-            assert!(p.x >= rect.x + inset_x && p.x <= rect.x + rect.w - inset_x - 1, "{p:?}");
-            assert!(p.y >= rect.y + inset_y && p.y <= rect.y + rect.h - inset_y - 1, "{p:?}");
-            seen.insert((p.x, p.y));
+    fn no_miss() -> Humanize {
+        Humanize {
+            miss_chance_min: 0.0,
+            miss_chance_max: 0.0,
+            ..Humanize::default()
         }
-        let area = (rect.w - 2 * inset_x) * (rect.h - 2 * inset_y);
-        assert!(
-            seen.len() > area as usize / 2,
-            "must not collapse to a fixed point: {} distinct",
-            seen.len()
-        );
     }
 
-    /// HB1 regression: the old uniform sample filled the whole box like a raster
-    /// scan; the bell must put most clicks near the centre (old-engine shape).
+    fn bell_only() -> Humanize {
+        Humanize {
+            bell_weight: 1.0,
+            uniform_weight: 0.0,
+            comet_weight: 0.0,
+            ..no_miss()
+        }
+    }
+
+    fn uniform_only() -> Humanize {
+        Humanize {
+            bell_weight: 0.0,
+            uniform_weight: 1.0,
+            comet_weight: 0.0,
+            ..no_miss()
+        }
+    }
+
+    fn comet_only() -> Humanize {
+        Humanize {
+            bell_weight: 0.0,
+            uniform_weight: 0.0,
+            comet_weight: 1.0,
+            ..no_miss()
+        }
+    }
+
+    /// Bell branch: most points near the centre (old-engine shape).
     #[test]
-    fn hb1_is_center_biased_like_the_old_engine() {
-        let h = Humanize::default();
+    fn mixture_bell_branch_is_center_biased() {
+        let h = bell_only();
         let mut rng = Rng::new(7);
-        let rect = r();
-        let inset_x = (80.0f32 * 0.15).round() as i32;
-        let inset_y = (40.0f32 * 0.15).round() as i32;
-        let (x0, x1) = (rect.x + inset_x, rect.x + rect.w - inset_x - 1);
-        let (y0, y1) = (rect.y + inset_y, rect.y + rect.h - inset_y - 1);
+        let (x0, x1, y0, y1) = h.inset_bounds(r());
         let (cx, cy) = ((x0 + x1) as f64 / 2.0, (y0 + y1) as f64 / 2.0);
-        let half_w = (x1 - x0 + 1) as f64 / 4.0;
-        let half_h = (y1 - y0 + 1) as f64 / 4.0;
-        let mut central = 0usize;
-        let mut xs = Vec::with_capacity(10_000);
-        let mut ys = Vec::with_capacity(10_000);
+        let hw = (x1 - x0 + 1) as f64 / 4.0;
+        let hh = (y1 - y0 + 1) as f64 / 4.0;
+        let mut central = 0;
         for _ in 0..10_000 {
-            let p = h.point_in(rect, &mut rng);
-            xs.push(p.x as f64);
-            ys.push(p.y as f64);
-            if (p.x as f64 - cx).abs() <= half_w && (p.y as f64 - cy).abs() <= half_h {
+            let p = h.template_click(r(), 1280, &mut rng);
+            assert!(!p.miss);
+            let q = p.point;
+            assert!(q.x >= x0 && q.x <= x1 && q.y >= y0 && q.y <= y1, "{q:?}");
+            if (q.x as f64 - cx).abs() <= hw && (q.y as f64 - cy).abs() <= hh {
                 central += 1;
             }
         }
-        // Uniform sampling of the same box would put ~25% in the central quarter.
-        assert!(
-            central as f64 / 10_000.0 > 0.60,
-            "expected a bell (central quarter > 60%), got {central}/10000"
-        );
-        let std = |v: &[f64]| {
-            let m = v.iter().sum::<f64>() / v.len() as f64;
-            (v.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / v.len() as f64).sqrt()
+        assert!(central as f64 / 10_000.0 > 0.60, "bell central {central}/10000");
+    }
+
+    /// Uniform branch: ~25% in the central quarter (the "filling" shape; only 20% of clicks).
+    #[test]
+    fn mixture_uniform_branch_fills_the_box_evenly() {
+        let h = uniform_only();
+        let mut rng = Rng::new(7);
+        let (x0, x1, y0, y1) = h.inset_bounds(r());
+        let (cx, cy) = ((x0 + x1) as f64 / 2.0, (y0 + y1) as f64 / 2.0);
+        let hw = (x1 - x0 + 1) as f64 / 4.0;
+        let hh = (y1 - y0 + 1) as f64 / 4.0;
+        let mut central = 0;
+        for _ in 0..10_000 {
+            let q = h.template_click(r(), 1280, &mut rng).point;
+            if (q.x as f64 - cx).abs() <= hw && (q.y as f64 - cy).abs() <= hh {
+                central += 1;
+            }
+        }
+        let share = central as f64 / 10_000.0;
+        assert!((0.18..=0.32).contains(&share), "uniform central {share}");
+    }
+
+    /// Comet branch: right-side target => denser bottom-right than top-left.
+    #[test]
+    fn comet_right_side_is_denser_toward_bottom_right() {
+        let h = comet_only();
+        let mut rng = Rng::new(5);
+        let rect = Rect {
+            x: 900,
+            y: 300,
+            w: 120,
+            h: 60,
         };
-        // Old engine: sigma ~ interval/6; uniform would be ~/3.46.
-        let w = (x1 - x0 + 1) as f64;
+        let (x0, x1, y0, y1) = h.inset_bounds(rect);
+        let (mx, my) = ((x0 + x1) / 2, (y0 + y1) / 2);
+        let mut br = 0;
+        let mut tl = 0;
+        for _ in 0..20_000 {
+            let q = h.template_click(rect, 1280, &mut rng).point;
+            if q.x >= mx && q.y >= my {
+                br += 1;
+            }
+            if q.x <= mx && q.y <= my {
+                tl += 1;
+            }
+        }
         assert!(
-            std(&xs) < w / 4.5,
-            "x std {} is too close to uniform ({})",
-            std(&xs),
-            w / 12.0_f64.sqrt()
+            br as f64 > tl as f64 * 2.0,
+            "right-side comet should favour bottom-right: br={br} tl={tl}"
         );
     }
 
+    /// Comet branch: left-side target => denser bottom-left than top-right.
     #[test]
-    fn hb5_same_seed_same_sequence_and_different_seed_differs() {
+    fn comet_left_side_is_denser_toward_bottom_left() {
+        let h = comet_only();
+        let mut rng = Rng::new(5);
+        let rect = Rect {
+            x: 100,
+            y: 300,
+            w: 120,
+            h: 60,
+        };
+        let (x0, x1, y0, y1) = h.inset_bounds(rect);
+        let (mx, my) = ((x0 + x1) / 2, (y0 + y1) / 2);
+        let mut bl = 0;
+        let mut tr = 0;
+        for _ in 0..20_000 {
+            let q = h.template_click(rect, 1280, &mut rng).point;
+            if q.x <= mx && q.y >= my {
+                bl += 1;
+            }
+            if q.x >= mx && q.y <= my {
+                tr += 1;
+            }
+        }
+        assert!(
+            bl as f64 > tr as f64 * 2.0,
+            "left-side comet should favour bottom-left: bl={bl} tr={tr}"
+        );
+    }
+
+    /// Miss rate is uniform in [1%, 3%] per click => ~2% overall.
+    #[test]
+    fn miss_rate_is_1_to_3_percent() {
         let h = Humanize::default();
-        let mut a = Rng::new(7);
-        let mut b = Rng::new(7);
-        let mut c = Rng::new(8);
-        let sa: Vec<_> = (0..32).map(|_| h.point_in(r(), &mut a)).collect();
-        let sb: Vec<_> = (0..32).map(|_| h.point_in(r(), &mut b)).collect();
-        let sc: Vec<_> = (0..32).map(|_| h.point_in(r(), &mut c)).collect();
-        assert_eq!(sa, sb, "same seed must replay exactly");
-        assert_ne!(sa, sc, "different seed must differ");
+        let mut rng = Rng::new(13);
+        let n = 20_000;
+        let misses = (0..n).filter(|_| h.template_click(r(), 1280, &mut rng).miss).count();
+        let rate = misses as f64 / n as f64;
+        assert!((0.014..=0.026).contains(&rate), "miss rate {rate}");
+    }
+
+    #[test]
+    fn matches_land_in_the_inset_box_unless_missed() {
+        let h = Humanize::default();
+        let mut rng = Rng::new(21);
+        let (x0, x1, y0, y1) = h.inset_bounds(r());
+        for _ in 0..10_000 {
+            let plan = h.template_click(r(), 1280, &mut rng);
+            if plan.miss {
+                continue;
+            }
+            let p = plan.point;
+            assert!(p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn miss_points_are_outside_the_box() {
+        let h = Humanize {
+            miss_chance_min: 1.0,
+            miss_chance_max: 1.0,
+            ..Humanize::default()
+        };
+        let mut rng = Rng::new(11);
+        let rect = r();
+        let pad = h.miss_px;
+        for _ in 0..1000 {
+            let plan = h.template_click(rect, 1280, &mut rng);
+            assert!(plan.miss);
+            let p = plan.point;
+            let inside = p.x >= rect.x
+                && p.x < rect.x + rect.w
+                && p.y >= rect.y
+                && p.y < rect.y + rect.h;
+            assert!(!inside, "{p:?}");
+            assert!(p.x >= rect.x - pad && p.x <= rect.x + rect.w + pad);
+            assert!(p.y >= rect.y - pad && p.y <= rect.y + rect.h + pad);
+        }
+    }
+
+    #[test]
+    fn hb5_same_seed_same_sequence() {
+        let h = Humanize::default();
+        let mut a = Rng::new(99);
+        let mut b = Rng::new(99);
+        let sa: Vec<_> = (0..64).map(|_| h.template_click(r(), 1280, &mut a)).collect();
+        let sb: Vec<_> = (0..64).map(|_| h.template_click(r(), 1280, &mut b)).collect();
+        assert_eq!(sa, sb, "same seed must replay exactly (including misses)");
     }
 
     #[test]
@@ -253,19 +547,28 @@ mod tests {
         assert_eq!(h.point_in(r(), &mut rng), Point { x: 140, y: 220 });
         assert_eq!(h.delay_ms(&mut rng), 0);
         assert_eq!(h.jitter_point(Point { x: 5, y: 5 }, &mut rng), Point { x: 5, y: 5 });
+        let plan = h.template_click(r(), 1280, &mut rng);
+        assert_eq!(plan.point, Point { x: 140, y: 220 });
+        assert!(!plan.miss);
     }
 
     #[test]
-    fn hb2_jitter_is_bounded_and_varies() {
+    fn hb2_jitter_and_point_miss_are_bounded() {
         let h = Humanize::default();
         let mut rng = Rng::new(3);
         let mut seen = std::collections::HashSet::new();
         for _ in 0..1000 {
-            let p = h.jitter_point(Point { x: 500, y: 500 }, &mut rng);
-            assert!((p.x - 500).abs() <= 6 && (p.y - 500).abs() <= 6);
-            seen.insert((p.x, p.y));
+            let plan = h.point_click(Point { x: 500, y: 500 }, &mut rng);
+            assert!(plan.point.x >= 0 && plan.point.y >= 0);
+            seen.insert((plan.point.x, plan.point.y));
         }
         assert!(seen.len() > 10, "jitter must vary");
+        let no = no_miss();
+        let mut rng = Rng::new(3);
+        for _ in 0..1000 {
+            let p = no.point_click(Point { x: 500, y: 500 }, &mut rng).point;
+            assert!((p.x - 500).abs() <= 6 && (p.y - 500).abs() <= 6);
+        }
     }
 
     #[test]

@@ -2,15 +2,17 @@
 //!
 //! usage:
 //!   cargo run -p oas-runtime --example click_sim -- \
-//!     <rect|point> <count> <seed> <x> <y> <w> <h> <out.jsonl>
+//!     <rect|point> <count> <seed> <x> <y> <w> <h> <out.jsonl> [bell] [uniform] [comet]
 //!
-//! * `rect`  = template click: center-biased (HB1 = Irwin–Hall bell) inside the
-//!             box, inset 15%;
-//! * `point` = click_point: +/- jitter around (x, y) (HB2);
-//! * the same run also prints the distribution stats (mean/std/inside%).
+//! * `rect`  = template click: 30% bell / 20% uniform / 50% comet (hand-side
+//!             corner), inset 15%, plus 1~3% misses just outside the box;
+//! * `point` = click_point: +/- jitter, plus 1~3% misses;
+//! * optional trailing weights override the mixture (e.g. `1 0 0` = bell only)
+//!   so the three distributions can be compared side by side;
+//! * the run prints the distribution stats (mean/std/inside%/misses).
 //!
-//! Every row is CD2-compatible (`ts_ms,x,y,target_x,target_y,sel,seed`), so the
-//! output can be dropped into `runs/` and viewed in the editor's 点击分布 panel.
+//! Every row is CD2-compatible (`ts_ms,x,y,target_x,target_y,sel,miss,seed`), so
+//! the output can be dropped into `runs/` and viewed in the editor's 点击分布 panel.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -38,22 +40,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("<count> must be > 0".into());
     }
 
-    let h = Humanize::default();
+    let h = {
+        let mut h = Humanize::default();
+        if a.len() >= 9 {
+            h.bell_weight = a[8].parse()?;
+        }
+        if a.len() >= 10 {
+            h.uniform_weight = a[9].parse()?;
+        }
+        if a.len() >= 11 {
+            h.comet_weight = a[10].parse()?;
+        }
+        // Optional miss overrides (defaults = 1~3%): `... 0.3 0.2 0.5 0 0`
+        // disables misses so a pure distribution shape can be rendered.
+        if a.len() >= 12 {
+            h.miss_chance_min = a[11].parse()?;
+        }
+        if a.len() >= 13 {
+            h.miss_chance_max = a[12].parse()?;
+        }
+        h
+    };
     let mut rng = Rng::new(seed);
     let mut file = std::fs::File::create(out)?;
     let mut xs = Vec::with_capacity(n);
     let mut ys = Vec::with_capacity(n);
     let mut delays = Vec::with_capacity(n);
     let mut distinct: HashSet<(i32, i32)> = HashSet::new();
+    let mut misses = 0usize;
     let mut ts: u128 = 1_792_605_800_000;
     let (cx, cy) = (rect.x + rect.w / 2, rect.y + rect.h / 2);
     for _ in 0..n {
-        let p = match mode {
-            "rect" => h.point_in(rect, &mut rng),
-            "point" => h.jitter_point(Point { x: rect.x, y: rect.y }, &mut rng),
+        let plan = match mode {
+            "rect" => h.template_click(rect, 1280, &mut rng),
+            "point" => h.point_click(Point { x: rect.x, y: rect.y }, &mut rng),
             other => return Err(format!("unknown mode `{other}` (rect|point)").into()),
         };
+        let p = plan.point;
         let d = h.delay_ms(&mut rng);
+        if plan.miss {
+            misses += 1;
+        }
         xs.push(p.x as f64);
         ys.push(p.y as f64);
         delays.push(d);
@@ -61,8 +88,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ts += d as u128 + 50;
         writeln!(
             file,
-            r#"{{"ts_ms":{ts},"x":{},"y":{},"target_x":{cx},"target_y":{cy},"sel":null,"seed":{seed}}}"#,
-            p.x, p.y
+            r#"{{"ts_ms":{ts},"x":{},"y":{},"target_x":{cx},"target_y":{cy},"sel":null,"miss":{},"seed":{seed}}}"#,
+            p.x, p.y, plan.miss
         )?;
     }
 
@@ -125,6 +152,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         100.0 * inside_rect as f64 / n as f64,
         inside_inset,
         100.0 * inside_inset as f64 / n as f64
+    );
+    println!(
+        "misses={misses} ({:.2}% of clicks)",
+        misses as f64 / n as f64 * 100.0
+    );
+    println!(
+        "mix: bell={:.2} uniform={:.2} comet={:.2}",
+        h.bell_weight, h.uniform_weight, h.comet_weight
     );
     println!(
         "distinct_points={} ({:.1}% of {}", distinct.len(),

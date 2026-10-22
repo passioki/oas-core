@@ -167,6 +167,7 @@ fn run() -> Result<(), String> {
     let mut per_sel: BTreeMap<String, (usize, BTreeSet<(i32, i32)>)> = BTreeMap::new();
     let mut all_points: BTreeSet<(i32, i32)> = BTreeSet::new();
     let mut total_clicks = 0usize;
+    let mut total_misses = 0usize;
 
     for k in (shard..repeats).step_by(shards) {
         let seed = seed_base.wrapping_add(k as u64);
@@ -197,6 +198,9 @@ fn run() -> Result<(), String> {
 
         for c in interp.clicks() {
             total_clicks += 1;
+            if c.miss {
+                total_misses += 1;
+            }
             let sel = c.sel.clone().unwrap_or_else(|| "<click_point>".to_string());
             let e = per_sel.entry(sel.clone()).or_insert_with(|| (0, BTreeSet::new()));
             e.0 += 1;
@@ -204,13 +208,14 @@ fn run() -> Result<(), String> {
             all_points.insert((c.x, c.y));
             writeln!(
                 file,
-                "{{\"ts_ms\":{},\"x\":{},\"y\":{},\"target_x\":{},\"target_y\":{},\"sel\":{},\"seed\":{},\"run\":{}}}",
+                "{{\"ts_ms\":{},\"x\":{},\"y\":{},\"target_x\":{},\"target_y\":{},\"sel\":{},\"miss\":{},\"seed\":{},\"run\":{}}}",
                 c.ts_ms,
                 c.x,
                 c.y,
                 c.target_x,
                 c.target_y,
                 json_opt(&c.sel),
+                c.miss,
                 c.seed,
                 k
             )
@@ -224,6 +229,10 @@ fn run() -> Result<(), String> {
     println!("task={}", task.display());
     println!("repeats={repeats} seed_base={seed_base}");
     println!("clicks_total={total_clicks} distinct_pixels={}", all_points.len());
+    println!(
+        "misses={total_misses} ({:.2}%）",
+        100.0 * total_misses as f64 / total_clicks.max(1) as f64
+    );
     for (k, v) in &outcomes {
         println!("outcome[{k}]={v}");
     }

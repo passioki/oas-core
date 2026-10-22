@@ -38,7 +38,7 @@
 //!   reproduce the identical click sequence (HB5 / §6).
 //! * `--events-out <file.jsonl>`: one JSON object per [`StepEvent`].
 //! * `--clicks-out <file.jsonl>`: the CD2 click audit (§21) — one
-//!   `{ts_ms,x,y,target_x,target_y,sel,seed}` object per successful click, i.e.
+//!   `{ts_ms,x,y,target_x,target_y,sel,miss,seed}` object per successful click, i.e.
 //!   the data source of the always-on click-distribution view. Written even when
 //!   the outcome is not `Done` (an empty file still witnesses "there were no
 //!   clicks"), and the parent directory is created if missing.
@@ -488,6 +488,10 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
 
     let clicked = clicks.borrow().clone();
     out(&format!("clicks={}", format_clicks(&clicked)));
+    out(&format!(
+        "misses={}",
+        click_rows.iter().filter(|r| r.miss).count()
+    ));
     out(&format!("swipes={}", swipes.borrow().len()));
 
     if let Some(path) = &opts.events_out {
@@ -743,8 +747,8 @@ fn write_clicks_jsonl(path: &Path, rows: &[ClickRecord]) -> Result<(), String> {
             None => "null".to_string(),
         };
         text.push_str(&format!(
-            r#"{{"ts_ms":{},"x":{},"y":{},"target_x":{},"target_y":{},"sel":{},"seed":{}}}"#,
-            r.ts_ms, r.x, r.y, r.target_x, r.target_y, sel, r.seed
+            r#"{{"ts_ms":{},"x":{},"y":{},"target_x":{},"target_y":{},"sel":{},"miss":{},"seed":{}}}"#,
+            r.ts_ms, r.x, r.y, r.target_x, r.target_y, sel, r.miss, r.seed
         ));
         text.push('\n');
     }
@@ -945,12 +949,21 @@ mod tests {
     fn different_seeds_keep_the_target_but_move_the_point() {
         // Deterministic property (fixed seed list => no flakiness): the target
         // stays the same, the anti-ban jitter does not collapse to one point.
+        // HB7 allows 1~3% misses, so a missed click is skipped here (its point is
+        // deliberately outside the jitter neighbourhood).
         let (_td, task, replay) = fixture("seeds");
         let mut points = Vec::new();
         for seed in 1..=8u64 {
             let (r, _lines) = run_capture(&replay_options(&task, &replay, seed));
             assert_eq!(r.outcome(), Outcome::Done, "seed {seed}");
             assert_eq!(r.clicks.len(), 1, "seed {seed}");
+            let missed = r
+                .events
+                .iter()
+                .any(|e| e.op == "click_point" && e.detail.contains("miss=true"));
+            if missed {
+                continue;
+            }
             let p = r.clicks[0];
             assert!(
                 (p.x - TARGET.x).abs() <= 6 && (p.y - TARGET.y).abs() <= 6,
@@ -965,7 +978,7 @@ mod tests {
         let distinct: HashSet<(i32, i32)> = points.iter().copied().collect();
         assert!(
             distinct.len() >= 2,
-            "8 seeds produced a single point {points:?} — jitter is not seed-driven"
+            "seeds produced a single non-miss point {points:?} — jitter is not seed-driven"
         );
     }
 
