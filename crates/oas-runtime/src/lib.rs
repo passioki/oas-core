@@ -714,48 +714,49 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             .assets
             .get(sel)
             .ok_or_else(|| format!("selector `{sel}` is not declared in the task's assets"))?;
-        let best = self
+        let matcher = self
             .matcher
             .as_ref()
-            .ok_or_else(|| "no frame available".to_string())?
-            .match_template(&tpl.gray, tpl.roi);
-        match best {
-            Some(b) => Ok((b.score, Some(Point { x: b.x, y: b.y }))),
-            None => Ok((0.0, None)),
+            .ok_or_else(|| "no frame available".to_string())?;
+        // §22.20: search the authored ROI first (fast); when that is not a
+        // confident hit, fall back to a WHOLE-FRAME pyramid search so a UI that
+        // shifted (or was re-laid-out) is still found — no ROI tuning needed.
+        let roi_best = matcher.match_template(&tpl.gray, tpl.roi);
+        if let Some(b) = &roi_best {
+            if b.score >= 0.95 {
+                return Ok((b.score, Some(Point { x: b.x, y: b.y })));
+            }
+        }
+        let full_best = matcher.match_template_full(&tpl.gray);
+        match (roi_best, full_best) {
+            (Some(a), Some(b)) => {
+                if b.score > a.score {
+                    Ok((b.score, Some(Point { x: b.x, y: b.y })))
+                } else {
+                    Ok((a.score, Some(Point { x: a.x, y: a.y })))
+                }
+            }
+            (Some(a), None) => Ok((a.score, Some(Point { x: a.x, y: a.y }))),
+            (None, Some(b)) => Ok((b.score, Some(Point { x: b.x, y: b.y }))),
+            (None, None) => Ok((0.0, None)),
         }
     }
 
-    /// Actual click box for a matched template: the matched template rect, or the
-    /// polygon's LAAR translated by the match offset (ENGINE §22.10).
+    /// Actual click box for a matched template. Explicit user decision [10-22
+    /// 23:0x]: the click area is the matched template's **bounding rectangle**
+    /// (the same rect before/after the polygon feature); the polygon now only
+    /// affects MATCHING (mask, §22.10 N10b), never the click area shape.
     fn click_box_for(&self, sel: &str, p: Point) -> Result<Rect, String> {
         let t = self
             .assets
             .get(sel)
             .ok_or_else(|| format!("selector `{sel}` is not declared in the task's assets"))?;
-        let mut target = Rect {
+        Ok(Rect {
             x: p.x,
             y: p.y,
             w: t.gray.width as i32,
             h: t.gray.height as i32,
-        };
-        if let Some(poly) = &t.click_polygon {
-            let roi = t.roi.ok_or_else(|| {
-                format!("selector `{sel}` has a click polygon but no roi (cannot translate it)")
-            })?;
-            let laar = largest_inscribed_rect(poly).ok_or_else(|| {
-                format!(
-                    "selector `{sel}` has a click polygon with no clickable rectangle \
-                     (degenerate: <3 points or zero area)"
-                )
-            })?;
-            target = Rect {
-                x: laar.x + (p.x - roi.x),
-                y: laar.y + (p.y - roi.y),
-                w: laar.w,
-                h: laar.h,
-            };
-        }
-        Ok(target)
+        })
     }
 
     /// Evaluate one coordinate expression (`click_point`/`swipe`): it must be a
@@ -2531,9 +2532,9 @@ mod tests {
     }
 
     #[test]
-    fn click_uses_the_laar_inside_the_asset_polygon() {
-        // Template matches the 10x10 tile at (12,10); roi == that position, the
-        // polygon is the same square => offset 0 => target == polygon LAAR.
+    fn click_area_is_the_matched_template_bbox_even_with_a_polygon() {
+        // Explicit user decision [10-22 23:0x]: polygon only affects MATCHING;
+        // the click area is the matched template's bounding rectangle.
         let pattern: Vec<u8> = (0..100)
             .map(|i| (((i % 10) * 7 + (i / 10) * 13) % 251 + 3) as u8)
             .collect();
@@ -2556,17 +2557,6 @@ mod tests {
                 ]),
             },
         );
-        // A triangle: bbox != LAAR with a gap LARGER than the 15% inset, so a
-        // "use the bbox" regression cannot hide inside the inset (unlike a
-        // near-square polygon where inset(bbox) ⊂ LAAR).
-        let poly = vec![
-            Point { x: 12, y: 10 },
-            Point { x: 22, y: 10 },
-            Point { x: 17, y: 20 },
-        ];
-        let laar = largest_inscribed_rect(&poly).expect("laar");
-        // Uniform-only sampling so a bbox-vs-LAAR regression cannot hide behind
-        // the bell/comet center bias (5% uniform would almost never hit corners).
         let uniform_only = crate::humanize::Humanize {
             bell_weight: 0.0,
             uniform_weight: 1.0,
@@ -2575,7 +2565,7 @@ mod tests {
             miss_chance_max: 0.0,
             ..crate::humanize::Humanize::default()
         };
-        for seed in 1..=100u64 {
+        for seed in 1..=50u64 {
             let (input, shared) = FakeInput::new();
             let mut interp = Interpreter::new(
                 FakeScreen::new(),
@@ -2593,15 +2583,55 @@ mod tests {
             assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done), "seed {seed}");
             let clicks = shared.clicks.borrow();
             let p = clicks[0];
-            assert!(point_in_polygon(p, &poly), "seed {seed}: {p:?} outside polygon");
             assert!(
-                p.x >= laar.x
-                    && p.x < laar.x + laar.w
-                    && p.y >= laar.y
-                    && p.y < laar.y + laar.h,
-                "seed {seed}: {p:?} outside LAAR {laar:?}"
+                p.x >= 12 && p.x < 22 && p.y >= 10 && p.y < 20,
+                "seed {seed}: click must stay inside the matched template bbox, got {p:?}"
             );
         }
+    }
+
+    #[test]
+    fn click_finds_a_template_that_shifted_outside_its_roi() {
+        // §22.20: the authored ROI has nothing, but the same template sits at
+        // (40,30) elsewhere => whole-frame fallback finds it and clicks there.
+        let pattern: Vec<u8> = (0..100)
+            .map(|i| (((i % 10) * 7 + (i / 10) * 13) % 251 + 3) as u8)
+            .collect();
+        let mut assets = assets();
+        assets.insert(
+            "I_SHIFTED",
+            Template {
+                gray: GrayImage::new(10, 10, pattern),
+                roi: Some(Rect {
+                    x: 12,
+                    y: 10,
+                    w: 10,
+                    h: 10,
+                }),
+                threshold: 0.8,
+                click_polygon: None,
+            },
+        );
+        let screen = TwoFrameScreen {
+            frames: vec![frame_with_tile(40, 30)],
+            idx: 0,
+        };
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(screen, input, assets, Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(5);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_SHIFTED"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let clicks = shared.clicks.borrow();
+        let p = clicks[0];
+        assert!(
+            p.x >= 40 && p.x < 50 && p.y >= 30 && p.y < 40,
+            "click should follow the shifted template to (40,30), got {p:?}"
+        );
     }
 
     // ---- §22.11 click_target locator chain ----

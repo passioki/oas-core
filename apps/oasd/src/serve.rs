@@ -257,6 +257,7 @@ impl Server {
             ("POST", "/task/save_flow") => self.handle_save_flow(&mut out, &body),
             ("GET", "/task/list") => self.handle_task_list(&mut out),
             ("GET", "/stats") => self.handle_stats(&mut out),
+            ("GET", "/match") => self.handle_match(&mut out, &path),
             // --- N4: click-distribution data plane (§21 CD1~CD4) ---
             ("GET", "/runs") => self.handle_runs(&mut out),
             ("GET", "/runs/clicks") => self.handle_run_clicks(&mut out, &path),
@@ -747,6 +748,62 @@ impl Server {
     }
 
     /// GET /task/assets?task=任务1 -> assets.json summary.
+    /// `GET /match?x&y&w&h` — image-recognition smoke test for the editor
+    /// (§22.21): crop the ROI as a template, search the WHOLE current frame,
+    /// report the best score/position. This is the image counterpart of /ocr.
+    fn handle_match(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
+        let q = parse_query(raw_path);
+        let (mut x, mut y, mut w, mut h) = (0i32, 0i32, 0i32, 0i32);
+        for (k, v) in &q {
+            let val: i32 = v.parse().unwrap_or(0);
+            match k.as_str() {
+                "x" => x = val,
+                "y" => y = val,
+                "w" => w = val,
+                "h" => h = val,
+                _ => {}
+            }
+        }
+        if w <= 0 || h <= 0 {
+            return self.send_json(out, 400, r#"{"error":"invalid roi"}"#);
+        }
+        let frame = {
+            let st = self.state.lock().unwrap();
+            match st.frame.as_ref() {
+                Some(f) => oas_types::Frame::new(f.width, f.height, f.rgba.clone()),
+                None => return self.send_json(out, 400, r#"{"error":"no frame yet"}"#),
+            }
+        };
+        let gray = oas_perceive::GrayImage::from_frame(&frame);
+        let roi = oas_types::Rect { x, y, w, h };
+        let tpl = match gray.crop(roi) {
+            Some(t) => t,
+            None => return self.send_json(out, 400, r#"{"error":"roi outside frame"}"#),
+        };
+        let t0 = std::time::Instant::now();
+        let full = oas_perceive::match_template_full(&gray, &tpl);
+        let roi_hit = oas_perceive::match_template(&gray, &tpl, Some(roi));
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let body = match full {
+            Some(b) => format!(
+                r#"{{"ok":true,"score":{},"x":{},"y":{},"w":{},"h":{},"elapsed_ms":{},"roi_score":{}}}"#,
+                b.score,
+                b.x,
+                b.y,
+                w,
+                h,
+                ms,
+                roi_hit.map(|r| r.score).unwrap_or(-2.0)
+            ),
+            None => format!(
+                r#"{{"ok":true,"score":-2,"x":-1,"y":-1,"roi_score":{},"elapsed_ms":{}}}"#,
+                roi_hit.map(|r| r.score).unwrap_or(-2.0),
+                ms
+            ),
+        };
+        self.send_json(out, 200, &body)
+    }
+
     /// `GET /stats` — long-run summary (ENGINE §22.19); the editor renders it.
     fn handle_stats(&self, out: &mut TcpStream) -> std::io::Result<()> {
         match crate::stats::collect(&self.runs_dir) {

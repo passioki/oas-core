@@ -42,6 +42,65 @@ impl GrayImage {
         self.data[(y as usize) * (self.width as usize) + (x as usize)]
     }
 
+    /// Box-filter downsample (odd leftovers are dropped). Used by the full-frame
+    /// template search pyramid.
+    pub fn downsample(&self, factor: u32) -> GrayImage {
+        let f = factor.max(1) as usize;
+        let w = ((self.width as usize) / f).max(1);
+        let h = ((self.height as usize) / f).max(1);
+        let mut data = vec![0u8; w * h];
+        let src_w = self.width as usize;
+        for y in 0..h {
+            for x in 0..w {
+                let mut sum = 0u32;
+                let mut n = 0u32;
+                for dy in 0..f {
+                    for dx in 0..f {
+                        let sx = x * f + dx;
+                        let sy = y * f + dy;
+                        if sx < src_w && sy < self.height as usize {
+                            sum += self.data[sy * src_w + sx] as u32;
+                            n += 1;
+                        }
+                    }
+                }
+                data[y * w + x] = (sum / n.max(1)) as u8;
+            }
+        }
+        GrayImage {
+            width: w as u32,
+            height: h as u32,
+            data,
+        }
+    }
+
+    /// Crop a rectangle out of this gray image (bounds-checked).
+    pub fn crop(&self, rect: Rect) -> Option<GrayImage> {
+        if rect.w <= 0 || rect.h <= 0 {
+            return None;
+        }
+        let x0 = rect.x.max(0) as usize;
+        let y0 = rect.y.max(0) as usize;
+        let x1 = (rect.x + rect.w) as usize;
+        let y1 = (rect.y + rect.h) as usize;
+        if x1 > self.width as usize || y1 > self.height as usize {
+            return None;
+        }
+        let w = x1 - x0;
+        let h = y1 - y0;
+        let mut data = vec![0u8; w * h];
+        for y in 0..h {
+            let src = (y0 + y) * self.width as usize + x0;
+            let dst = y * w;
+            data[dst..dst + w].copy_from_slice(&self.data[src..src + w]);
+        }
+        Some(GrayImage {
+            width: w as u32,
+            height: h as u32,
+            data,
+        })
+    }
+
     /// Approximate luma (77R + 150G + 29B) >> 8.
     /// NOTE: intentionally NOT OpenCV's exact formula; equivalence tests feed
     /// grayscale buffers directly so no conversion ambiguity is involved.
@@ -251,6 +310,56 @@ pub fn match_template(img: &GrayImage, tpl: &GrayImage, roi: Option<Rect>) -> Op
     Matcher::from_ref(img).match_template(tpl, roi)
 }
 
+impl Matcher {
+    /// Full-frame template search with a 4x pyramid: coarse scan on a downscaled
+    /// frame, then a full-resolution refine around the coarse best. This is what
+    /// gives layout-shift tolerance without a user-tuned search ROI.
+    pub fn match_template_full(&self, tpl: &GrayImage) -> Option<MatchBest> {
+        const F: u32 = 4;
+        let tw = tpl.width as i32;
+        let th = tpl.height as i32;
+        let iw = self.img.width as i32;
+        let ih = self.img.height as i32;
+        if tw <= 0 || th <= 0 || tw > iw || th > ih {
+            return None;
+        }
+        // Tiny templates: a pyramid would shrink them below usefulness.
+        if tpl.width < F * 4 || tpl.height < F * 4 {
+            return self.match_template(tpl, None);
+        }
+        let img_c = self.img.downsample(F);
+        let tpl_c = tpl.downsample(F);
+        if tpl_c.width == 0 || tpl_c.height == 0 {
+            return self.match_template(tpl, None);
+        }
+        let coarse = Matcher::from_ref(&img_c).match_template(&tpl_c, None)?;
+        let cx = coarse.x * F as i32;
+        let cy = coarse.y * F as i32;
+        let pad = F as i32 * 2;
+        let x0 = (cx - pad).max(0);
+        let y0 = (cy - pad).max(0);
+        let w = (tw + pad * 2).min(iw - x0);
+        let h = (th + pad * 2).min(ih - y0);
+        if w < tw || h < th {
+            return Some(coarse);
+        }
+        self.match_template(
+            tpl,
+            Some(Rect {
+                x: x0,
+                y: y0,
+                w,
+                h,
+            }),
+        )
+    }
+}
+
+/// Convenience wrapper for the full-frame pyramid search.
+pub fn match_template_full(img: &GrayImage, tpl: &GrayImage) -> Option<MatchBest> {
+    Matcher::from_ref(img).match_template_full(tpl)
+}
+
 /// Convenience: does the template appear in `roi` at or above `threshold`?
 pub fn appear(img: &GrayImage, tpl: &GrayImage, roi: Option<Rect>, threshold: f32) -> bool {
     match match_template(img, tpl, roi) {
@@ -281,5 +390,70 @@ mod tests {
         let tpl = solid(10, 10, 10);
         let roi = Rect { x: 0, y: 0, w: 5, h: 5 };
         assert!(match_template(&img, &tpl, Some(roi)).is_none());
+    }
+
+    // ---- full-frame pyramid search (search window = whole frame, §22.20) ----
+
+    fn noise_img(w: u32, h: u32, seed: u32) -> GrayImage {
+        let mut s = seed.wrapping_mul(2654435761).max(1);
+        let data = (0..(w * h) as usize)
+            .map(|_| {
+                s ^= s << 13;
+                s ^= s >> 17;
+                s ^= s << 5;
+                (s & 0xff) as u8
+            })
+            .collect();
+        GrayImage::new(w, h, data)
+    }
+
+    fn stamp(img: &mut GrayImage, tpl: &GrayImage, x: u32, y: u32) {
+        for j in 0..tpl.height {
+            for i in 0..tpl.width {
+                let v = tpl.pixel(i, j);
+                img.data[((y + j) * img.width + (x + i)) as usize] = v;
+            }
+        }
+    }
+
+    #[test]
+    fn full_frame_finds_template_and_tolerates_translation() {
+        let mut frame = noise_img(1280, 720, 7);
+        let tpl = noise_img(48, 32, 99);
+        stamp(&mut frame, &tpl, 700, 400);
+        let b = match_template_full(&frame, &tpl).expect("match");
+        assert!(b.score > 0.99, "score {}", b.score);
+        assert_eq!((b.x, b.y), (700, 400));
+
+        // Same template moved by (+60,+30): full-frame search must still find it.
+        let mut shifted = noise_img(1280, 720, 7);
+        stamp(&mut shifted, &tpl, 760, 430);
+        let b2 = match_template_full(&shifted, &tpl).expect("match shifted");
+        assert!(b2.score > 0.99, "shifted score {}", b2.score);
+        assert_eq!((b2.x, b2.y), (760, 430));
+    }
+
+    #[test]
+    fn full_frame_search_does_not_invent_a_match() {
+        let frame = noise_img(1280, 720, 11);
+        let tpl = noise_img(40, 30, 12);
+        let b = match_template_full(&frame, &tpl).expect("best candidate");
+        assert!(b.score < 0.5, "unrelated template must score low: {}", b.score);
+    }
+
+    #[test]
+    fn full_frame_search_is_fast_enough_for_live_use() {
+        let mut frame = noise_img(1280, 720, 21);
+        let tpl = noise_img(95, 55, 22);
+        stamp(&mut frame, &tpl, 330, 69);
+        let t0 = std::time::Instant::now();
+        let b = match_template_full(&frame, &tpl).expect("match");
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        println!(
+            "full-frame 1280x720 tpl 95x55: {ms:.1} ms score={:.3}",
+            b.score
+        );
+        assert!(b.score > 0.99);
+        assert!(ms < 10_000.0, "too slow for live use: {ms:.1} ms");
     }
 }

@@ -12,6 +12,7 @@ const btnCapture = document.getElementById('btn-capture');
 const btnOcr = document.getElementById('btn-ocr');
 const btnClear = document.getElementById('btn-clear');
 const btnLines = document.getElementById('btn-lines');
+const btnMatch = document.getElementById('btn-match');
 const btnAsset = document.getElementById('btn-asset');
 const assetId = document.getElementById('asset-id');
 const assetKind = document.getElementById('asset-kind');
@@ -224,15 +225,17 @@ function updateRoiLabel() {
     roiEl.textContent = polygon ? `多边形：${polygon.length} 个顶点（未闭合）` : '未选择';
     btnOcr.disabled = true;
     btnLines.disabled = true;
+    if (btnMatch) btnMatch.disabled = true;
     if (btnAsset) btnAsset.disabled = true;
     if (btnSaveAsset) btnSaveAsset.disabled = true;
     return;
   }
   const polyInfo =
-    polygon && polyClosed ? ` · 多边形 ${polygon.length} 顶点（点击区=最大内接矩形）` : '';
+    polygon && polyClosed ? ` · 多边形 ${polygon.length} 顶点（点击区=匹配外接矩形）` : '';
   roiEl.textContent = `x=${roi.x} y=${roi.y} w=${roi.w} h=${roi.h}${polyInfo}`;
   btnOcr.disabled = roi.w < 2 || roi.h < 2;
   btnLines.disabled = roi.w < 2 || roi.h < 2;
+  if (btnMatch) btnMatch.disabled = roi.w < 2 || roi.h < 2;
   if (btnAsset) btnAsset.disabled = roi.w < 2 || roi.h < 2;
   if (btnSaveAsset) btnSaveAsset.disabled = roi.w < 2 || roi.h < 2;
 }
@@ -1078,6 +1081,42 @@ btnOcr.addEventListener('click', async () => {
   }
 });
 
+// §22.21: image-recognition test for an ROI — crop it as a template and search
+// the WHOLE frame (the same fallback the runtime uses for shifted UIs).
+async function doMatch(r) {
+  if (!r) return null;
+  const q = `x=${r.x}&y=${r.y}&w=${r.w}&h=${r.h}`;
+  const resp = await fetch('/match?' + q);
+  const s = await resp.json();
+  if (s.error) {
+    resultEl.textContent = '匹配错误：' + s.error;
+    log('图识别匹配错误：' + s.error);
+    return s;
+  }
+  const roiScore = typeof s.roi_score === 'number' ? s.roi_score : -2;
+  resultEl.textContent =
+    `图识别 score = ${Number(s.score).toFixed(4)} @ (${s.x}, ${s.y})\n` +
+    `ROI内 score = ${roiScore.toFixed(4)}\n` +
+    `elapsed = ${Number(s.elapsed_ms || 0).toFixed(1)} ms（全帧金字塔搜索）`;
+  log(`图识别 → score=${Number(s.score).toFixed(3)} @ (${s.x},${s.y})`);
+  return s;
+}
+
+if (btnMatch) {
+  btnMatch.addEventListener('click', async () => {
+    if (!roi) return;
+    btnMatch.disabled = true;
+    resultEl.textContent = '图识别匹配中（全帧搜索）…';
+    try {
+      await doMatch(roi);
+    } catch (e) {
+      resultEl.textContent = '图识别异常：' + e;
+    } finally {
+      btnMatch.disabled = false;
+    }
+  });
+}
+
 btnCapture.addEventListener('click', doCapture);
 
 // Generate the declaration JSON for copy/paste. `file` is intentionally NOT
@@ -1226,6 +1265,26 @@ btnLines.addEventListener('click', async () => {
   }
   if (deepTask) taskName.value = deepTask;
   await loadTaskFlow((taskName.value || '').trim());
+
+  // §22.21 deep link for the headless acceptance:
+  //   /?match=1&x=330&y=69&w=95&h=55  -> select that ROI and run the image test.
+  try {
+    const dp = new URLSearchParams(location.search);
+    if (dp.get('match') === '1') {
+      const x = Number(dp.get('x'));
+      const y = Number(dp.get('y'));
+      const w = Number(dp.get('w'));
+      const h = Number(dp.get('h'));
+      if (w > 1 && h > 1) {
+        roi = { x, y, w, h };
+        updateRoiLabel();
+        if (img) draw();
+        await doMatch(roi);
+      }
+    }
+  } catch (e) {
+    log('图识别深链失败：' + e);
+  }
   window.OAS_FLOW_UI = {
     getModel: () => flowModel,
     render: flowRender,

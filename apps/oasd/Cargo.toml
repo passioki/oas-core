@@ -14,6 +14,7 @@ oas-adapter-pc = { workspace = true }
 oas-codec = { workspace = true }
 oas-obs = { workspace = true }
 oas-runtime = { workspace = true }
+oas-perceive = { workspace = true }
 oas-task = { workspace = true }
 oas-ocr = { workspace = true, optional = true, features = ["onnx"] }
 serde = { version = "1", features = ["derive"] }

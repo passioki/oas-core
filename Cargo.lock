@@ -403,6 +403,7 @@ dependencies = [
  "oas-codec",
  "oas-obs",
  "oas-ocr",
+ "oas-perceive",
  "oas-runtime",
  "oas-task",
  "oas-types",
