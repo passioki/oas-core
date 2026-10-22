@@ -239,6 +239,8 @@ impl Server {
             ("GET", "/app.js") => self.send_file(&mut out, &format!("{ui_dir}/app.js"), "application/javascript; charset=utf-8"),
             ("GET", "/style.css") => self.send_file(&mut out, &format!("{ui_dir}/style.css"), "text/css; charset=utf-8"),
             ("GET", "/flow_model.js") => self.send_file(&mut out, &format!("{ui_dir}/flow_model.js"), "application/javascript; charset=utf-8"),
+            ("GET", "/dashboard.html") => self.send_file(&mut out, &format!("{ui_dir}/dashboard.html"), "text/html; charset=utf-8"),
+            ("GET", "/dashboard.js") => self.send_file(&mut out, &format!("{ui_dir}/dashboard.js"), "application/javascript; charset=utf-8"),
             ("GET", "/frame.png") => {
                 let png = self.state.lock().unwrap().png.clone();
                 match png {

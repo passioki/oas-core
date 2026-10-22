@@ -10,6 +10,7 @@
     <strong>OAS 引擎编辑器</strong>
     <span id="status" class="muted">连接中…</span>
     <span class="spacer"></span>
+    <a class="nav-link" href="/dashboard.html">调试面板 →</a>
     <button id="btn-capture">截图</button>
   </header>
 
@@ -32,28 +33,6 @@
       <button id="btn-append-step" disabled>追加到 flow</button>
 
       <button id="btn-clear">清除 ROI</button>
-
-      <h3>点击分布（常设）</h3>
-      <label class="opt">运行记录
-        <select id="runs-select">
-          <option value="">（未加载）</option>
-        </select>
-      </label>
-      <div class="row">
-        <button id="btn-runs-refresh">刷新运行记录</button>
-        <button id="btn-clicks-overlay">叠加分布</button>
-      </div>
-      <button id="btn-clicks-clear">清除分布</button>
-      <div id="click-stats" class="kv mono">clicks=— distinct=—</div>
-      <div id="clicks-legend" class="clicks-legend">
-        <span class="muted">稀疏</span><span class="ramp"></span><span class="muted">密集</span>
-        <span class="dot"></span><span class="muted">单次点击</span>
-      </div>
-      <div id="clicks-status" class="muted small">—</div>
-
-      <h3>运行统计（长跑）</h3>
-      <button id="btn-stats-refresh">刷新统计</button>
-      <pre id="stats-summary" class="muted">—</pre>
 
       <h3>任务</h3>
       <label class="opt"><input id="task-name" placeholder="任务名，如：队伍预设" value="任务1" /></label>

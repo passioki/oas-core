@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>OAS 调试面板 · 点击分布与长跑统计</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <strong>OAS 调试面板</strong>
+    <span id="status" class="muted">连接中…</span>
+    <span class="spacer"></span>
+    <a class="nav-link" href="/">← 返回编辑器</a>
+    <button id="btn-capture">截图</button>
+  </header>
+
+  <main>
+    <section id="canvas-wrap">
+      <canvas id="screen" width="1280" height="720"></canvas>
+      <div id="hint" class="muted">暖色 = 落点密集 · 白点 = 单次点击</div>
+    </section>
+
+    <aside>
+      <h3>运行记录</h3>
+      <label class="opt">运行文件
+        <select id="runs-select">
+          <option value="">（未加载）</option>
+        </select>
+      </label>
+      <div class="row">
+        <button id="btn-runs-refresh">刷新运行记录</button>
+        <button id="btn-clicks-overlay">叠加分布</button>
+      </div>
+      <button id="btn-clicks-clear">清除分布</button>
+      <div id="click-stats" class="kv mono">clicks=— distinct=—</div>
+      <div id="clicks-legend" class="clicks-legend">
+        <span class="muted">稀疏</span><span class="ramp"></span><span class="muted">密集</span>
+        <span class="dot"></span><span class="muted">单次点击</span>
+      </div>
+      <div id="clicks-status" class="muted small">—</div>
+
+      <h3>运行统计（长跑）</h3>
+      <button id="btn-stats-refresh">刷新统计</button>
+      <pre id="stats-summary" class="muted">—</pre>
+
+      <h3>日志</h3>
+      <pre id="log" class="muted small"></pre>
+    </aside>
+  </main>
+
+  <script src="/dashboard.js"></script>
+</body>
+</html>
