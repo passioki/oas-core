@@ -38,7 +38,7 @@
 //!   reproduce the identical click sequence (HB5 / §6).
 //! * `--events-out <file.jsonl>`: one JSON object per [`StepEvent`].
 //! * `--clicks-out <file.jsonl>`: the CD2 click audit (§21) — one
-//!   `{ts_ms,x,y,target_x,target_y,sel,miss,seed}` object per successful click, i.e.
+//!   `{ts_ms,x,y,target_x,target_y,sel,seed}` object per successful click, i.e.
 //!   the data source of the always-on click-distribution view. Written even when
 //!   the outcome is not `Done` (an empty file still witnesses "there were no
 //!   clicks"), and the parent directory is created if missing.
@@ -488,10 +488,6 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
 
     let clicked = clicks.borrow().clone();
     out(&format!("clicks={}", format_clicks(&clicked)));
-    out(&format!(
-        "misses={}",
-        click_rows.iter().filter(|r| r.miss).count()
-    ));
     out(&format!("swipes={}", swipes.borrow().len()));
 
     if let Some(path) = &opts.events_out {
@@ -747,8 +743,8 @@ fn write_clicks_jsonl(path: &Path, rows: &[ClickRecord]) -> Result<(), String> {
             None => "null".to_string(),
         };
         text.push_str(&format!(
-            r#"{{"ts_ms":{},"x":{},"y":{},"target_x":{},"target_y":{},"sel":{},"miss":{},"seed":{}}}"#,
-            r.ts_ms, r.x, r.y, r.target_x, r.target_y, sel, r.miss, r.seed
+            r#"{{"ts_ms":{},"x":{},"y":{},"target_x":{},"target_y":{},"sel":{},"seed":{}}}"#,
+            r.ts_ms, r.x, r.y, r.target_x, r.target_y, sel, r.seed
         ));
         text.push('\n');
     }

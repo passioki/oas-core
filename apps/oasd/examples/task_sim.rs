@@ -78,9 +78,6 @@ fn run() -> Result<(), String> {
     let mut seed_base = 1u64;
     let mut shard = 0usize;
     let mut shards = 1usize;
-    // HB7 knobs (defaults = Humanize::default): let the operator try e.g. 10%.
-    let mut miss_chance: f32 = Humanize::default().miss_chance;
-    let mut miss_px: i32 = Humanize::default().miss_px;
     let mut i = 0usize;
     while i < a.len() {
         match a[i].as_str() {
@@ -110,20 +107,23 @@ fn run() -> Result<(), String> {
                     .map_err(|_| "--shards must be a positive integer".to_string())?
             }
             "--miss-chance" => {
-                miss_chance = take(&a, &mut i, "--miss-chance")?
-                    .parse::<f32>()
-                    .map_err(|_| "--miss-chance must be a number (0.0..=1.0)".to_string())?
+                return Err(
+                    "--miss-chance was removed: [10-22] the user kept the bell only \
+                     (no miss clicks)"
+                        .into(),
+                )
             }
             "--miss-px" => {
-                miss_px = take(&a, &mut i, "--miss-px")?
-                    .parse::<i32>()
-                    .map_err(|_| "--miss-px must be an integer".to_string())?
+                return Err(
+                    "--miss-px was removed: [10-22] the user kept the bell only \
+                     (no miss clicks)"
+                        .into(),
+                )
             }
             other => {
                 return Err(format!(
                     "unknown argument `{other}`\nusage: --task <bundle> --replay <dir> \
-                     --repeats N --seed-base S --clicks-out <file> \
-                     [--miss-chance 0.02] [--miss-px 12] [--shard i --shards n]"
+                     --repeats N --seed-base S --clicks-out <file> [--shard i --shards n]"
                 ))
             }
         }
@@ -136,12 +136,6 @@ fn run() -> Result<(), String> {
     }
     if shards == 0 || shard >= shards {
         return Err("--shards must be > 0 and --shard must be in 0..shards".into());
-    }
-    if !(0.0..=1.0).contains(&miss_chance) {
-        return Err("--miss-chance must be in 0.0..=1.0".into());
-    }
-    if miss_px < 0 {
-        return Err("--miss-px must be >= 0".into());
     }
 
     let bundle = TaskBundle::open(&task).map_err(|e| format!("task bundle: {e}"))?;
@@ -173,7 +167,6 @@ fn run() -> Result<(), String> {
     let mut per_sel: BTreeMap<String, (usize, BTreeSet<(i32, i32)>)> = BTreeMap::new();
     let mut all_points: BTreeSet<(i32, i32)> = BTreeSet::new();
     let mut total_clicks = 0usize;
-    let mut total_misses = 0usize;
 
     for k in (shard..repeats).step_by(shards) {
         let seed = seed_base.wrapping_add(k as u64);
@@ -192,8 +185,6 @@ fn run() -> Result<(), String> {
         .with_humanize(Humanize {
             delay_min_ms: 0,
             delay_max_ms: 0,
-            miss_chance,
-            miss_px,
             ..Humanize::default()
         });
         let result = interp.run(&flow);
@@ -206,9 +197,6 @@ fn run() -> Result<(), String> {
 
         for c in interp.clicks() {
             total_clicks += 1;
-            if c.miss {
-                total_misses += 1;
-            }
             let sel = c.sel.clone().unwrap_or_else(|| "<click_point>".to_string());
             let e = per_sel.entry(sel.clone()).or_insert_with(|| (0, BTreeSet::new()));
             e.0 += 1;
@@ -216,14 +204,13 @@ fn run() -> Result<(), String> {
             all_points.insert((c.x, c.y));
             writeln!(
                 file,
-                "{{\"ts_ms\":{},\"x\":{},\"y\":{},\"target_x\":{},\"target_y\":{},\"sel\":{},\"miss\":{},\"seed\":{},\"run\":{}}}",
+                "{{\"ts_ms\":{},\"x\":{},\"y\":{},\"target_x\":{},\"target_y\":{},\"sel\":{},\"seed\":{},\"run\":{}}}",
                 c.ts_ms,
                 c.x,
                 c.y,
                 c.target_x,
                 c.target_y,
                 json_opt(&c.sel),
-                c.miss,
                 c.seed,
                 k
             )
@@ -237,10 +224,6 @@ fn run() -> Result<(), String> {
     println!("task={}", task.display());
     println!("repeats={repeats} seed_base={seed_base}");
     println!("clicks_total={total_clicks} distinct_pixels={}", all_points.len());
-    println!(
-        "misses={total_misses} ({:.2}%)",
-        100.0 * total_misses as f64 / total_clicks.max(1) as f64
-    );
     for (k, v) in &outcomes {
         println!("outcome[{k}]={v}");
     }

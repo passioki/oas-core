@@ -11,14 +11,10 @@
 //! * HB5 (hard constraint) randomness is **seeded**, so a recording can be
 //!   replayed exactly. `seed = 0` means "pick one at run start and persist it".
 //! * HB6 the caller logs the actual point that was clicked.
-//! * HB7 **[10-22] misses**: with probability `miss_chance` the click lands
-//!   **outside the target box** by at most `miss_px` (a human "fat finger").
-//!   Perfect hit-rates are themselves a bot tell; the caller logs `miss=true`.
 //!
-//! HB7 is what the old repo did with `RuleClickExclude` (`module/atom/click.py`):
-//! random clicks that deliberately avoid the known click regions. We keep the
-//! "miss" attached to the target click instead of adding extra full-screen taps,
-//! so the task semantics stay explainable.
+//! `[10-22 18:4x]` the user decided **只保留钟形，去掉手误**: an experimental
+//! "miss" (HB7) was removed. Clicks always land inside the (inset) target box —
+//! reliability over extra randomness.
 
 use oas_types::{Point, Rect};
 
@@ -30,10 +26,6 @@ pub struct Humanize {
     pub delay_min_ms: u32,
     pub delay_max_ms: u32,
     pub seed: u64,
-    /// HB7: probability that a click misses the target box (0.0 = never).
-    pub miss_chance: f32,
-    /// HB7: maximum distance (px) outside the target box for a miss.
-    pub miss_px: i32,
 }
 
 impl Default for Humanize {
@@ -46,20 +38,8 @@ impl Default for Humanize {
             delay_min_ms: 30,
             delay_max_ms: 120,
             seed: 0,
-            // ~1 in 50 clicks is a visible miss; small enough to keep tasks
-            // usable, large enough to break a perfect hit-rate fingerprint.
-            miss_chance: 0.02,
-            miss_px: 12,
         }
     }
-}
-
-/// The result of humanising one click: where it landed **and** whether it missed
-/// the target (HB7). The interpreter logs and audits both.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ClickPlan {
-    pub point: Point,
-    pub miss: bool,
 }
 
 /// xorshift64* - tiny, deterministic, good enough for jitter.
@@ -83,11 +63,6 @@ impl Rng {
         x ^= x >> 27;
         self.0 = x;
         x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-
-    /// Uniform in [0, 1).
-    pub fn unit_f64(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
 
     /// Uniform in [lo, hi] (inclusive), `lo <= hi`.
@@ -144,82 +119,6 @@ impl Humanize {
         Point {
             x: self.bell_i32(x0, x1.max(x0), rng),
             y: self.bell_i32(y0, y1.max(y0), rng),
-        }
-    }
-
-    /// HB7 + HB1: click plan for a **box** target (`click` step).
-    ///
-    /// `miss = true` means the point is outside `rect` (by at most `miss_px`);
-    /// the interpreter still performs the click (that is what a human does) but
-    /// records the miss.
-    pub fn plan_click(&self, rect: Rect, rng: &mut Rng) -> ClickPlan {
-        if !self.enabled || self.miss_chance <= 0.0 {
-            return ClickPlan {
-                point: self.point_in(rect, rng),
-                miss: false,
-            };
-        }
-        if rng.unit_f64() < self.miss_chance as f64 {
-            ClickPlan {
-                point: self.miss_point(rect, rng),
-                miss: true,
-            }
-        } else {
-            ClickPlan {
-                point: self.point_in(rect, rng),
-                miss: false,
-            }
-        }
-    }
-
-    /// HB7 + HB2: click plan for a **coordinate** target (`click_point` step).
-    pub fn plan_point_click(&self, p: Point, rng: &mut Rng) -> ClickPlan {
-        if !self.enabled {
-            return ClickPlan {
-                point: p,
-                miss: false,
-            };
-        }
-        if self.miss_chance > 0.0 && rng.unit_f64() < self.miss_chance as f64 {
-            let dist = rng.range_i32(self.miss_px.max(8), (self.miss_px * 2).max(12));
-            let angle = rng.unit_f64() * std::f64::consts::TAU;
-            return ClickPlan {
-                point: Point {
-                    x: p.x + (angle.cos() * dist as f64).round() as i32,
-                    y: p.y + (angle.sin() * dist as f64).round() as i32,
-                },
-                miss: true,
-            };
-        }
-        ClickPlan {
-            point: self.jitter_point(p, rng),
-            miss: false,
-        }
-    }
-
-    /// HB7: sample inside the ring `rect` expanded by `miss_px` but **outside**
-    /// `rect` itself. Bounded by the caller (the interpreter clamps to the frame).
-    fn miss_point(&self, rect: Rect, rng: &mut Rng) -> Point {
-        let pad = self.miss_px.max(1);
-        let inside = |p: Point| {
-            p.x >= rect.x
-                && p.x < rect.x + rect.w
-                && p.y >= rect.y
-                && p.y < rect.y + rect.h
-        };
-        for _ in 0..16 {
-            let p = Point {
-                x: rng.range_i32(rect.x - pad, rect.x + rect.w + pad),
-                y: rng.range_i32(rect.y - pad, rect.y + rect.h + pad),
-            };
-            if !inside(p) {
-                return p;
-            }
-        }
-        // Extremely small rect: step just outside the right edge instead.
-        Point {
-            x: rect.x + rect.w + 1,
-            y: rect.y + rect.h / 2,
         }
     }
 
@@ -332,72 +231,6 @@ mod tests {
     }
 
     #[test]
-    fn hb7_misses_are_outside_the_box_and_flagged() {
-        let h = Humanize {
-            miss_chance: 1.0,
-            ..Humanize::default()
-        };
-        let mut rng = Rng::new(11);
-        let rect = r();
-        let pad = h.miss_px;
-        for _ in 0..1000 {
-            let plan = h.plan_click(rect, &mut rng);
-            assert!(plan.miss, "miss_chance=1.0 must always miss");
-            let p = plan.point;
-            let inside = p.x >= rect.x
-                && p.x < rect.x + rect.w
-                && p.y >= rect.y
-                && p.y < rect.y + rect.h;
-            assert!(!inside, "miss point {p:?} is inside the target box");
-            assert!(
-                p.x >= rect.x - pad && p.x <= rect.x + rect.w + pad,
-                "{p:?} out of the miss ring"
-            );
-            assert!(
-                p.y >= rect.y - pad && p.y <= rect.y + rect.h + pad,
-                "{p:?} out of the miss ring"
-            );
-        }
-    }
-
-    #[test]
-    fn hb7_miss_rate_is_roughly_the_configured_chance() {
-        let h = Humanize::default();
-        let mut rng = Rng::new(13);
-        let rect = r();
-        let n = 10_000;
-        let misses = (0..n)
-            .filter(|_| h.plan_click(rect, &mut rng).miss)
-            .count();
-        let rate = misses as f64 / n as f64;
-        assert!(
-            (0.012..=0.028).contains(&rate),
-            "miss rate {rate} not near the configured 0.02"
-        );
-
-        let zero = Humanize {
-            miss_chance: 0.0,
-            ..Humanize::default()
-        };
-        let mut rng = Rng::new(13);
-        assert!((0..n).all(|_| !zero.plan_click(rect, &mut rng).miss));
-    }
-
-    #[test]
-    fn hb7_same_seed_replays_the_same_miss_sequence() {
-        let h = Humanize::default();
-        let mut a = Rng::new(99);
-        let mut b = Rng::new(99);
-        let sa: Vec<_> = (0..64).map(|_| h.plan_click(r(), &mut a)).collect();
-        let sb: Vec<_> = (0..64).map(|_| h.plan_click(r(), &mut b)).collect();
-        assert_eq!(sa, sb, "same seed must replay the same misses");
-        assert!(
-            sa.iter().any(|p| p.miss),
-            "64 clicks should contain at least one miss with 2%"
-        );
-    }
-
-    #[test]
     fn hb5_same_seed_same_sequence_and_different_seed_differs() {
         let h = Humanize::default();
         let mut a = Rng::new(7);
@@ -420,9 +253,6 @@ mod tests {
         assert_eq!(h.point_in(r(), &mut rng), Point { x: 140, y: 220 });
         assert_eq!(h.delay_ms(&mut rng), 0);
         assert_eq!(h.jitter_point(Point { x: 5, y: 5 }, &mut rng), Point { x: 5, y: 5 });
-        let plan = h.plan_click(r(), &mut rng);
-        assert_eq!(plan.point, Point { x: 140, y: 220 });
-        assert!(!plan.miss);
     }
 
     #[test]
