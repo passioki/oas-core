@@ -78,6 +78,9 @@ fn run() -> Result<(), String> {
     let mut seed_base = 1u64;
     let mut shard = 0usize;
     let mut shards = 1usize;
+    // HB7 knobs (defaults = Humanize::default): let the operator try e.g. 10%.
+    let mut miss_chance: f32 = Humanize::default().miss_chance;
+    let mut miss_px: i32 = Humanize::default().miss_px;
     let mut i = 0usize;
     while i < a.len() {
         match a[i].as_str() {
@@ -106,10 +109,21 @@ fn run() -> Result<(), String> {
                     .parse()
                     .map_err(|_| "--shards must be a positive integer".to_string())?
             }
+            "--miss-chance" => {
+                miss_chance = take(&a, &mut i, "--miss-chance")?
+                    .parse::<f32>()
+                    .map_err(|_| "--miss-chance must be a number (0.0..=1.0)".to_string())?
+            }
+            "--miss-px" => {
+                miss_px = take(&a, &mut i, "--miss-px")?
+                    .parse::<i32>()
+                    .map_err(|_| "--miss-px must be an integer".to_string())?
+            }
             other => {
                 return Err(format!(
                     "unknown argument `{other}`\nusage: --task <bundle> --replay <dir> \
-                     --repeats N --seed-base S --clicks-out <file>"
+                     --repeats N --seed-base S --clicks-out <file> \
+                     [--miss-chance 0.02] [--miss-px 12] [--shard i --shards n]"
                 ))
             }
         }
@@ -122,6 +136,12 @@ fn run() -> Result<(), String> {
     }
     if shards == 0 || shard >= shards {
         return Err("--shards must be > 0 and --shard must be in 0..shards".into());
+    }
+    if !(0.0..=1.0).contains(&miss_chance) {
+        return Err("--miss-chance must be in 0.0..=1.0".into());
+    }
+    if miss_px < 0 {
+        return Err("--miss-px must be >= 0".into());
     }
 
     let bundle = TaskBundle::open(&task).map_err(|e| format!("task bundle: {e}"))?;
@@ -172,6 +192,8 @@ fn run() -> Result<(), String> {
         .with_humanize(Humanize {
             delay_min_ms: 0,
             delay_max_ms: 0,
+            miss_chance,
+            miss_px,
             ..Humanize::default()
         });
         let result = interp.run(&flow);
