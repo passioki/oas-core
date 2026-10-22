@@ -338,6 +338,7 @@ impl Server {
             // --- N3: task bundle save routes ---
             ("POST", "/task/save_asset") => self.handle_save_asset(&mut out, &body),
             ("GET", "/task/assets") => self.handle_task_assets(&mut out, &path),
+            ("GET", "/task/asset/match") => self.handle_asset_match(&mut out, &path),
             ("GET", "/task/flow") => self.handle_task_flow(&mut out, &path),
             ("POST", "/task/save_flow") => self.handle_save_flow(&mut out, &body),
             ("GET", "/task/list") => self.handle_task_list(&mut out),
@@ -1200,7 +1201,79 @@ impl Server {
         }
     }
 
-    fn handle_task_assets(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {        let q = parse_query(raw_path);
+    /// `GET /task/asset/match?task=<name>&id=<asset>` — §22.28 行内「测试」：
+    /// 用任务里**已保存的模板图**在当前帧全屏匹配（不依赖 ROI 选得准不准）.
+    fn handle_asset_match(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
+        let q = parse_query(raw_path);
+        let mut task = String::new();
+        let mut id = String::new();
+        for (k, v) in &q {
+            match k.as_str() {
+                "task" => task = v.clone(),
+                "id" => id = v.clone(),
+                _ => {}
+            }
+        }
+        if task.is_empty() || id.is_empty() {
+            return self.send_errors(
+                out,
+                400,
+                vec!["`task` and `id` query params are required".to_string()],
+            );
+        }
+        if let Err(e) = oas_task::validate_task_name(&task) {
+            return self.send_errors(out, 400, vec![e]);
+        }
+        let bundle = match oas_task::TaskBundle::open_named(&self.tasks_dir, &task) {
+            Ok(b) => b,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let assets = match bundle.load_runtime_assets() {
+            Ok(a) => a,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let Some(tpl) = assets.get(&id) else {
+            return self.send_errors(
+                out,
+                404,
+                vec![format!(
+                    "asset `{id}` is not a template (or does not exist) in task `{task}`"
+                )],
+            );
+        };
+        let frame = {
+            let st = self.state.lock().unwrap();
+            match st.frame.as_ref() {
+                Some(f) => oas_types::Frame::new(f.width, f.height, f.rgba.clone()),
+                None => return self.send_json(out, 400, r#"{"error":"no frame yet"}"#),
+            }
+        };
+        let gray = oas_perceive::GrayImage::from_frame(&frame);
+        let t0 = std::time::Instant::now();
+        let best = oas_perceive::match_template_full(&gray, &tpl.gray);
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let (score, x, y) = match best {
+            Some(b) => (b.score, b.x, b.y),
+            None => (-2.0f32, -1, -1),
+        };
+        let body = serde_json::json!({
+            "ok": true,
+            "task": task,
+            "id": id,
+            "score": score,
+            "x": x,
+            "y": y,
+            "w": tpl.gray.width,
+            "h": tpl.gray.height,
+            "threshold": tpl.threshold,
+            "pass": score >= tpl.threshold,
+            "elapsed_ms": ms,
+        });
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    fn handle_task_assets(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
+        let q = parse_query(raw_path);
         let task = match q.iter().find(|(k, _)| k == "task").map(|(_, v)| v.clone()) {
             Some(t) => t,
             None => {

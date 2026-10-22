@@ -33,6 +33,15 @@ const btnFramesRefresh = document.getElementById('btn-frames-refresh');
 const btnFramesClear = document.getElementById('btn-frames-clear');
 const framesList = document.getElementById('frames-list');
 const framesStatus = document.getElementById('frames-status');
+// §22.28 顶部标题行：结果/日志抽屉 + 任务素材列表
+const btnResultToggle = document.getElementById('btn-result-toggle');
+const btnLogToggle = document.getElementById('btn-log-toggle');
+const hdrDrawers = document.getElementById('hdr-drawers');
+const resultPop = document.getElementById('result-pop');
+const logPop = document.getElementById('log-pop');
+const assetSearch = document.getElementById('asset-search');
+const assetsList = document.getElementById('assets-list');
+const btnAssetsRefresh = document.getElementById('assets-refresh');
 const runsSelect = document.getElementById('runs-select');
 const btnRunsRefresh = document.getElementById('btn-runs-refresh');
 const btnClicksOverlay = document.getElementById('btn-clicks-overlay');
@@ -74,6 +83,11 @@ let clickData = null; // {file, clicks, distinct, points}
 let clickOverlay = null;
 // §22.18 visual flow editor model: {name, steps:[{op,argsText}], interrupts:[{detect,action}]}
 let flowModel = { name: '', steps: [], interrupts: [] };
+// §22.28 任务素材列表（分组/搜索/行内测试）
+let taskAssets = [];
+let taskAssetsMeta = {};
+let resultOpen = false;
+let logOpen = false;
 // §22.22: serve 能力位（OCR 模型是否就绪），避免"无模型/无 feature 构建"静默 501
 let ocrReady = true;
 let detReady = true;
@@ -645,19 +659,139 @@ async function refreshTaskAssets(task) {
     const r = await fetch('/task/assets?task=' + encodeURIComponent(task));
     const s = await r.json();
     if (!s.ok) {
-      assetsSummary.textContent = '读取失败：\n' + (s.errors || []).join('\n');
+      if (assetsList) assetsList.textContent = '读取失败：' + (s.errors || []).join('; ');
       return;
     }
-    const res = s.design_resolution ? s.design_resolution.join('x') : '未设置';
-    const lines = [`任务 ${s.task} · design ${res} · ${s.count} 个素材`];
-    for (const it of s.items || []) {
-      const roi = it.roi ? `[${it.roi.join(', ')}]` : '—';
-      const thr = it.threshold != null ? ` thr=${Number(it.threshold.toFixed(3))}` : '';
-      lines.push(`· ${it.id}  [${it.kind}]  ${it.file || '（无图）'}  roi=${roi}${thr}`);
-    }
-    assetsSummary.textContent = lines.join('\n');
+    taskAssets = s.items || [];
+    taskAssetsMeta = { task: s.task, design: s.design_resolution, count: s.count };
+    renderAssetList();
   } catch (e) {
-    assetsSummary.textContent = '读取异常：' + e;
+    if (assetsList) assetsList.textContent = '读取异常：' + e;
+  }
+}
+
+const ASSET_KIND_LABELS = {
+  template: '模板图（template）',
+  ocr_line: '单行文字（ocr_line）',
+  ocr_lines: '多行文字（ocr_lines）',
+};
+
+function renderAssetList() {
+  if (!assetsList) return;
+  const q = ((assetSearch && assetSearch.value) || '').trim().toLowerCase();
+  const items = (taskAssets || []).filter(
+    (it) => !q || String(it.id).toLowerCase().includes(q)
+  );
+  assetsList.textContent = '';
+  if (taskAssetsMeta.task) {
+    const res = taskAssetsMeta.design ? taskAssetsMeta.design.join('x') : '未设置';
+    const head = document.createElement('div');
+    head.className = 'muted small';
+    head.textContent = `任务 ${taskAssetsMeta.task} · design ${res} · ${taskAssets.length} 个素材`;
+    assetsList.appendChild(head);
+  }
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'muted small';
+    empty.textContent = q ? '（没有匹配的素材 id）' : '（任务还没有素材）';
+    assetsList.appendChild(empty);
+    return;
+  }
+  const groups = new Map();
+  for (const it of items) {
+    if (!groups.has(it.kind)) groups.set(it.kind, []);
+    groups.get(it.kind).push(it);
+  }
+  for (const [kind, list] of groups) {
+    const h = document.createElement('h4');
+    h.className = 'asset-group';
+    h.textContent = `${ASSET_KIND_LABELS[kind] || kind}（${list.length}）`;
+    assetsList.appendChild(h);
+    for (const it of list) {
+      const row = document.createElement('div');
+      row.className = 'asset-row';
+      const main = document.createElement('button');
+      main.type = 'button';
+      main.className = 'asset-main';
+      const roi = it.roi ? `[${it.roi.join(',')}]` : '—';
+      const back = it.roi_back ? ` · 点击框[${it.roi_back.join(',')}]` : '';
+      main.textContent = `${it.id}\n${roi}${back}`;
+      main.title = `${it.file || '（无图）'}`;
+      main.addEventListener('click', () => pickAssetRoi(it));
+      const test = document.createElement('button');
+      test.type = 'button';
+      test.className = 'asset-test';
+      if (it.kind === 'template') {
+        test.textContent = '测试';
+        test.title = '用已保存的模板图在当前帧全屏匹配';
+        test.addEventListener('click', () => testAssetMatch(it));
+      } else {
+        test.textContent = '识别';
+        test.title = '在当前帧用该 ROI 试识别文字';
+        test.addEventListener('click', () => testAssetOcr(it));
+      }
+      row.append(main, test);
+      assetsList.appendChild(row);
+    }
+  }
+}
+
+function pickAssetRoi(it) {
+  if (!it.roi) {
+    resultEl.textContent = `素材「${it.id}」没有 roi`;
+    return;
+  }
+  roi = { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] };
+  roiBack = it.roi_back
+    ? { x: it.roi_back[0], y: it.roi_back[1], w: it.roi_back[2], h: it.roi_back[3] }
+    : null;
+  polygon = null;
+  polyClosed = false;
+  updateRoiLabel();
+  draw();
+  log(`已用素材「${it.id}」设置识别框${it.roi_back ? '（含点击框）' : ''}`);
+}
+
+async function testAssetMatch(it) {
+  const task = (taskName.value || '').trim();
+  if (!task) return;
+  resultEl.textContent = `素材「${it.id}」全屏匹配中…`;
+  try {
+    const r = await fetch(
+      `/task/asset/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}`
+    );
+    const s = await r.json();
+    if (s.error) {
+      resultEl.textContent = '测试失败：' + s.error;
+      return;
+    }
+    const pass = s.pass ? '通过' : '未过阈值';
+    resultEl.textContent =
+      `素材「${s.id}」测试：${pass}\n得分 = ${Number(s.score).toFixed(4)}（阈值 ${Number(s.threshold).toFixed(2)}）\n` +
+      `位置 = (${s.x}, ${s.y})  尺寸 = ${s.w}x${s.h}\n耗时 = ${Number(s.elapsed_ms).toFixed(1)} ms`;
+    boxes = [{ text: `测试 ${s.id} ${Number(s.score).toFixed(2)}`, score: s.score, box: [s.x, s.y, s.w, s.h] }];
+    draw();
+    log(`素材测试：${s.id} → ${Number(s.score).toFixed(3)} @ (${s.x},${s.y})`);
+  } catch (e) {
+    resultEl.textContent = '测试异常：' + e;
+  }
+}
+
+async function testAssetOcr(it) {
+  if (!it.roi) return;
+  const q = `x=${it.roi[0]}&y=${it.roi[1]}&w=${it.roi[2]}&h=${it.roi[3]}`;
+  resultEl.textContent = `素材「${it.id}」识别中…`;
+  try {
+    const r = await fetch('/ocr?' + q);
+    const s = await r.json();
+    if (s.error) {
+      resultEl.textContent = '识别失败：' + s.error;
+      return;
+    }
+    resultEl.textContent = `文字 = ${JSON.stringify(s.text)}\n得分 = ${Number(s.score).toFixed(4)}\n耗时 = ${Number(s.elapsed_ms).toFixed(1)} ms`;
+    log(`素材识别：${it.id} → ${s.text}`);
+  } catch (e) {
+    resultEl.textContent = '识别异常：' + e;
   }
 }
 
@@ -1599,8 +1733,46 @@ btnLines.addEventListener('click', async () => {
     }
   }
   for (const b of railButtons) {
-    b.addEventListener('click', () => activatePanel(b.dataset.panel));
+    b.addEventListener('click', () => {
+      if (b.dataset.href) {
+        window.location.href = b.dataset.href;
+        return;
+      }
+      activatePanel(b.dataset.panel);
+    });
   }
+  // §22.28 顶部标题行：结果 / 日志 抽屉
+  function syncDrawers() {
+    if (hdrDrawers) hdrDrawers.classList.toggle('hidden', !(resultOpen || logOpen));
+    if (resultPop) resultPop.classList.toggle('open', resultOpen);
+    if (logPop) logPop.classList.toggle('open', logOpen);
+    if (btnResultToggle) btnResultToggle.classList.toggle('active', resultOpen);
+    if (btnLogToggle) btnLogToggle.classList.toggle('active', logOpen);
+  }
+  if (btnResultToggle) {
+    btnResultToggle.addEventListener('click', () => {
+      resultOpen = !resultOpen;
+      syncDrawers();
+    });
+  }
+  if (btnLogToggle) {
+    btnLogToggle.addEventListener('click', () => {
+      logOpen = !logOpen;
+      syncDrawers();
+    });
+  }
+  syncDrawers();
+  // 深链 ?drawers=log,result 供验收直接展开抽屉
+  try {
+    const want = (new URLSearchParams(location.search).get('drawers') || '').toLowerCase();
+    if (want.includes('log')) logOpen = true;
+    if (want.includes('result')) resultOpen = true;
+    syncDrawers();
+  } catch (e) {
+    /* ignore */
+  }
+  if (btnAssetsRefresh) btnAssetsRefresh.addEventListener('click', () => refreshTaskAssets());
+  if (assetSearch) assetSearch.addEventListener('input', renderAssetList);
   if (railButtons.length) activatePanel(railButtons[0].dataset.panel);
   // 深链 ?panel=flow / ?panel=task 供验收/直达使用
   try {
@@ -1706,6 +1878,7 @@ btnLines.addEventListener('click', async () => {
     deepTask = '';
   }
   if (deepTask) taskName.value = deepTask;
+  await refreshTaskAssets(deepTask || undefined);
   await loadTaskFlow((taskName.value || '').trim());
 
   // §22.21 deep link for the headless acceptance:

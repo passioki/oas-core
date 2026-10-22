@@ -265,3 +265,72 @@ aside.side {
   color: #ffd54a;
 }
 #frame-file { width: 100%; }
+
+/* 22.28 顶部标题行：结果 / 日志抽屉 + 任务素材列表 */
+.hdr-btn {
+  width: auto;
+  margin: 0;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+.hdr-btn.active {
+  border-color: #ffd54a;
+  color: #ffd54a;
+}
+.hdr-drawers {
+  position: fixed;
+  top: 54px;
+  right: 12px;
+  z-index: 60;
+  display: flex;
+  gap: 10px;
+  width: min(940px, calc(100vw - 24px));
+}
+.hdr-drawers.hidden { display: none; }
+.hdr-pop {
+  display: none;
+  flex: 1;
+  min-width: 0;
+  background: #0b0d10;
+  border: 1px solid #2a3a4a;
+  border-radius: 8px;
+  padding: 8px 10px;
+  max-height: 340px;
+  overflow: auto;
+  box-shadow: 0 10px 26px rgba(0,0,0,.5);
+}
+.hdr-pop.open { display: block; }
+.hdr-pop h4 { margin: 0 0 6px; font-size: 13px; color: #8fb8e8; }
+.hdr-pop pre { margin: 0; white-space: pre-wrap; }
+.asset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 420px;
+  overflow: auto;
+}
+.asset-group {
+  margin: 8px 0 2px;
+  font-size: 12px;
+  color: #8fb8e8;
+}
+.asset-row {
+  display: flex;
+  gap: 4px;
+  align-items: stretch;
+}
+.asset-row .asset-main {
+  flex: 1;
+  margin: 0;
+  padding: 4px 8px;
+  text-align: left;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.asset-row .asset-test {
+  flex: 0 0 52px;
+  margin: 0;
+  padding: 4px 0;
+  font-size: 12px;
+}

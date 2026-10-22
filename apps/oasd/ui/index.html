@@ -10,23 +10,26 @@
     <strong>OAS 引擎编辑器</strong>
     <span id="status" class="muted">连接中…</span>
     <span class="spacer"></span>
-    <a class="nav-link" href="/dashboard.html">调试面板 →</a>
+    <button id="btn-result-toggle" class="hdr-btn" type="button">结果窗口</button>
+    <button id="btn-log-toggle" class="hdr-btn" type="button">日志窗口</button>
     <button id="btn-capture">截图</button>
   </header>
+
+  <div id="hdr-drawers" class="hdr-drawers hidden">
+    <section class="hdr-pop" id="result-pop">
+      <h4>结果</h4>
+      <pre id="result" class="muted">—</pre>
+    </section>
+    <section class="hdr-pop" id="log-pop">
+      <h4>日志</h4>
+      <pre id="log"></pre>
+    </section>
+  </div>
 
   <main>
     <section id="canvas-wrap">
       <canvas id="screen" width="1280" height="720"></canvas>
       <div id="hint" class="muted">在画面上拖拽选择识别 ROI；可再画一个「点击框」</div>
-
-      <section id="output-panel">
-        <div class="row output-head">
-          <h3>结果 / 输出</h3>
-        </div>
-        <pre id="result" class="muted">—</pre>
-        <h3>日志</h3>
-        <pre id="log"></pre>
-      </section>
     </section>
 
     <aside class="side">
@@ -35,6 +38,7 @@
         <button class="rail-btn" data-panel="panel-images" type="button">图片</button>
         <button class="rail-btn" data-panel="panel-task" type="button">任务</button>
         <button class="rail-btn" data-panel="panel-flow" type="button">流程</button>
+        <button class="rail-btn rail-nav" data-href="/dashboard.html" type="button">点击分布</button>
       </nav>
 
       <div class="rail-panels">
@@ -102,10 +106,16 @@
           </p>
         </section>
 
-        <section class="panel" id="panel-task">          <h3>任务</h3>
+        <section class="panel" id="panel-task">
+          <h3>任务</h3>
           <label class="opt"><input id="task-name" placeholder="任务名，如：队伍预设" value="任务1" /></label>
           <h3>任务素材</h3>
-          <pre id="assets-summary" class="muted">—</pre>
+          <div class="row lib-toolbar">
+            <input id="asset-search" placeholder="按素材 id 搜索" />
+            <button id="assets-refresh">刷新</button>
+          </div>
+          <div id="assets-list" class="asset-list muted">（未加载任务素材）</div>
+          <pre id="assets-summary" class="muted small" style="display:none">—</pre>
         </section>
 
         <section class="panel" id="panel-flow">
