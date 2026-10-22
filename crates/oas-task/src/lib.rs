@@ -61,6 +61,12 @@ pub struct AssetDecl {
     /// `[x, y, w, h]` in frame coordinates at the bundle's `design_resolution`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roi: Option<[i32; 4]>,
+    /// Optional **click area** (`roi_back`, frame coordinates). Borrowed from the
+    /// old OAS annotator (`roiFront`/`roiBack`): `roi` is the recognition/crop box,
+    /// this is the click-sampling box. Missing => click the matched template bbox
+    /// (the default since §22.20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roi_back: Option<[i32; 4]>,
     /// NCC threshold; defaults to [`DEFAULT_THRESHOLD`] for templates.
     #[serde(
         default,
@@ -87,6 +93,7 @@ impl AssetDecl {
             kind: "template".to_string(),
             file: None,
             roi: Some(roi),
+            roi_back: None,
             threshold: None,
             polygon: None,
             rev: None,
@@ -528,6 +535,17 @@ impl TaskBundle {
                 }),
             };
             set.insert(item.id.clone(), tpl);
+            if let Some(back) = item.roi_back {
+                set.set_click_back(
+                    item.id.clone(),
+                    oas_types::Rect {
+                        x: back[0],
+                        y: back[1],
+                        w: back[2],
+                        h: back[3],
+                    },
+                );
+            }
         }
         Ok(set)
     }
@@ -645,8 +663,39 @@ impl TaskBundle {
             decl.roi = Some([min_x, min_y, max_x - min_x + 1, max_y - min_y + 1]);
         }
 
-        let existing = af.items.iter().position(|it| it.id == decl.id);
-        let old_file = existing.and_then(|i| af.items[i].file.clone());
+        // §22.25 `roi_back`: optional explicit click area (old OAS roiBack).
+        // Only templates have a click target; bounds must fit the design frame.
+        if let Some(back) = decl.roi_back {
+            if decl.kind != "template" {
+                return Err(format!(
+                    "asset `{}` rejected: roi_back is only valid for template assets \
+                     (OCR assets have no click target); nothing written",
+                    decl.id
+                ));
+            }
+            let [bx, by, bw, bh] = back;
+            if bw <= 0 || bh <= 0 || bx < 0 || by < 0 {
+                return Err(format!(
+                    "asset `{}` rejected: roi_back [x,y,w,h] = {back:?} must have \
+                     x,y >= 0 and w,h > 0; nothing written",
+                    decl.id
+                ));
+            }
+            let bounds = match frame {
+                Some(f) => Some((f.width as i32, f.height as i32)),
+                None => af.design_resolution.map(|[w, h]| (w as i32, h as i32)),
+            };
+            if let Some((fw, fh)) = bounds {
+                if bx + bw > fw || by + bh > fh {
+                    return Err(format!(
+                        "asset `{}` rejected: roi_back [x,y,w,h] = {back:?} is outside \
+                         the {fw}x{fh} frame; nothing written",
+                        decl.id
+                    ));
+                }
+            }
+        }
+        let existing = af.items.iter().position(|it| it.id == decl.id);        let old_file = existing.and_then(|i| af.items[i].file.clone());
         let rev = match (replace, existing) {
             (false, Some(i)) => {
                 return Err(format!(
@@ -1268,6 +1317,7 @@ mod tests {
             kind: "ocr_lines".to_string(),
             file: None,
             roi: Some([10, 10, 21, 11]),
+            roi_back: None,
             threshold: None,
             polygon: Some(vec![[10, 10], [30, 10], [30, 20], [10, 20]]),
             rev: None,
@@ -1281,6 +1331,46 @@ mod tests {
         // OCR assets still carry no image file.
         decl = saved;
         assert!(decl.file.is_none());
+    }
+
+    #[test]
+    fn roi_back_is_persisted_and_wired_into_the_runtime_click_area() {
+        let td = TempDir::new("back");
+        let b = open(&td);
+        let f = frame(64, 48);
+        let mut decl = AssetDecl::template("点击区按钮", [10, 10, 21, 11]);
+        decl.roi_back = Some([8, 8, 30, 30]);
+        let saved = b.save_asset(decl, Some(&f)).expect("save with roi_back");
+        assert_eq!(saved.roi_back, Some([8, 8, 30, 30]));
+        let text = std::fs::read_to_string(b.assets_path()).expect("read assets");
+        assert!(text.contains("roi_back"), "{text}");
+        let set = b.load_runtime_assets().expect("runtime assets");
+        let back = set.click_back("点击区按钮").expect("click_back wired");
+        assert_eq!((back.x, back.y, back.w, back.h), (8, 8, 30, 30));
+    }
+
+    #[test]
+    fn roi_back_is_rejected_on_ocr_assets_and_outside_the_frame() {
+        let td = TempDir::new("backbad");
+        let b = open(&td);
+        let f = frame(64, 48);
+        let mut ocr = AssetDecl {
+            id: "文字".to_string(),
+            kind: "ocr_lines".to_string(),
+            file: None,
+            roi: Some([10, 10, 21, 11]),
+            roi_back: Some([8, 8, 30, 30]),
+            threshold: None,
+            polygon: None,
+            rev: None,
+        };
+        let err = b.save_asset(ocr.clone(), Some(&f)).expect_err("ocr must reject");
+        assert!(err.contains("roi_back is only valid for template"), "{err}");
+        ocr.kind = "template".to_string();
+        ocr.roi_back = Some([50, 40, 30, 30]); // outside 64x48
+        let err = b.save_asset(ocr, Some(&f)).expect_err("outside must reject");
+        assert!(err.contains("outside"), "{err}");
+        assert!(!b.assets_path().exists());
     }
 
     #[test]

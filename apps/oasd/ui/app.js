@@ -24,6 +24,7 @@ const assetsSummary = document.getElementById('assets-summary');
 const btnClickStep = document.getElementById('btn-click-step');
 const btnAppendStep = document.getElementById('btn-append-step');
 const btnPoly = document.getElementById('btn-poly');
+const btnBackMode = document.getElementById('btn-back-mode');
 const runsSelect = document.getElementById('runs-select');
 const btnRunsRefresh = document.getElementById('btn-runs-refresh');
 const btnClicksOverlay = document.getElementById('btn-clicks-overlay');
@@ -51,7 +52,10 @@ const btnLibraryMatch = document.getElementById('btn-library-match');
 const libraryStatus = document.getElementById('library-status');
 
 let img = null;
-let roi = null; // {x,y,w,h} in frame coordinates
+let roi = null; // {x,y,w,h} 识别框（前端识别/裁剪区域）
+let roiBack = null; // §22.25 点击框（roi_back）；null = 点击匹配外接矩形
+let backMode = false; // 正在绘制点击框
+let dragTarget = 'roi'; // 'roi' | 'back'
 let dragStart = null;
 let boxes = []; // detection boxes from the multi-line route
 let selectedBox = null; // the detection block last clicked (N2, §19.2)
@@ -148,7 +152,25 @@ function draw() {
     ctx.fillRect(roi.x, roi.y, roi.w, roi.h);
     ctx.fillStyle = '#31d0aa';
     ctx.font = '14px Consolas, monospace';
-    ctx.fillText(`${roi.w}x${roi.h} @ ${roi.x},${roi.y}`, roi.x + 4, Math.max(14, roi.y - 6));
+    ctx.fillText(`识别 ${roi.w}x${roi.h} @ ${roi.x},${roi.y}`, roi.x + 4, Math.max(14, roi.y - 6));
+    ctx.restore();
+  }
+  // §22.25 点击框（roi_back）：橙色虚线；未设置时运行期点击=匹配外接矩形。
+  if (roiBack && roiBack.w > 0 && roiBack.h > 0) {
+    ctx.save();
+    ctx.setLineDash([8, 5]);
+    ctx.strokeStyle = '#ff9f40';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(roiBack.x + 0.5, roiBack.y + 0.5, roiBack.w, roiBack.h);
+    ctx.fillStyle = 'rgba(255,159,64,0.10)';
+    ctx.fillRect(roiBack.x, roiBack.y, roiBack.w, roiBack.h);
+    ctx.fillStyle = '#ff9f40';
+    ctx.font = '14px Consolas, monospace';
+    ctx.fillText(
+      `点击 ${roiBack.w}x${roiBack.h} @ ${roiBack.x},${roiBack.y}`,
+      roiBack.x + 4,
+      Math.max(14, roiBack.y - 6)
+    );
     ctx.restore();
   }
   // §22.10 polygon overlay (orange; closed => translucent fill + bbox roi)
@@ -231,18 +253,25 @@ function polygonBBox(poly) {
 }
 
 function updateRoiLabel() {
+  const backInfo = roiBack
+    ? ` · 点击框 ${roiBack.w}x${roiBack.h} @ ${roiBack.x},${roiBack.y}`
+    : ' · 点击框未设置（=匹配外接矩形）';
   if (!roi) {
-    roiEl.textContent = polygon ? `多边形：${polygon.length} 个顶点（未闭合）` : '未选择';
+    roiEl.textContent = polygon
+      ? `多边形：${polygon.length} 个顶点（未闭合）`
+      : '未选择';
     btnOcr.disabled = true;
     btnLines.disabled = true;
     if (btnMatch) btnMatch.disabled = true;
+    if (btnLibrarySave) btnLibrarySave.disabled = true;
     if (btnAsset) btnAsset.disabled = true;
     if (btnSaveAsset) btnSaveAsset.disabled = true;
     return;
   }
   const polyInfo =
-    polygon && polyClosed ? ` · 多边形 ${polygon.length} 顶点（点击区=匹配外接矩形）` : '';
-  roiEl.textContent = `x=${roi.x} y=${roi.y} w=${roi.w} h=${roi.h}${polyInfo}`;
+    polygon && polyClosed ? ` · 多边形 ${polygon.length} 顶点（识别掩膜）` : '';
+  roiEl.textContent =
+    `识别框 x=${roi.x} y=${roi.y} w=${roi.w} h=${roi.h}${polyInfo}${backInfo}`;
   btnOcr.disabled = roi.w < 2 || roi.h < 2;
   btnLines.disabled = roi.w < 2 || roi.h < 2;
   if (btnMatch) btnMatch.disabled = roi.w < 2 || roi.h < 2;
@@ -644,8 +673,12 @@ async function doSaveAsset() {
   const kind = assetKind.value;
   const payload = { task, id, kind, roi: [roi.x, roi.y, roi.w, roi.h] };
   if (kind === 'template') payload.threshold = 0.85;
-  // §22.10: a closed polygon restricts the runtime click area to its largest
-  // inscribed rectangle; roi is already the polygon bbox.
+  // §22.25: 显式点击框（roi_back）；不设时运行期点击=匹配外接矩形。
+  if (kind === 'template' && roiBack) {
+    payload.roi_back = [roiBack.x, roiBack.y, roiBack.w, roiBack.h];
+  }
+  // §22.10: a closed polygon is an identification mask (match/OCR); the click
+  // area stays the matched bbox unless roi_back is set above.
   if (polygon && polyClosed && polygon.length >= 3) {
     payload.polygon = polygon.map((p) => [p.x, p.y]);
   }
@@ -1033,6 +1066,7 @@ async function doCapture() {
     boxes = [];
     polygon = null;
     polyClosed = false;
+    roiBack = null;
     selectedBox = null;
     clickOverlay = null;
     updateClickStepButtons();
@@ -1077,12 +1111,20 @@ canvas.addEventListener('mousedown', (ev) => {
     draw();
     return;
   }
+  // §22.25 点击框模式：拖出一个 ROI 作为「点击框」（roi_back），识别框保持不变。
+  if (backMode) {
+    dragStart = p0;
+    dragTarget = 'back';
+    draw();
+    return;
+  }
   if (boxes.length) {
     for (let i = boxes.length - 1; i >= 0; i--) {
       const b = boxes[i];
       const [bx, by, bw, bh] = b.box;
       if (p0.x >= bx && p0.x <= bx + bw && p0.y >= by && p0.y <= by + bh) {
         roi = { x: bx, y: by, w: bw, h: bh };
+        roiBack = null;
         polygon = null;
         polyClosed = false;
         selectedBox = b;
@@ -1099,7 +1141,9 @@ canvas.addEventListener('mousedown', (ev) => {
     }
   }
   dragStart = p0;
+  dragTarget = 'roi';
   roi = null;
+  roiBack = null;
   boxes = [];
   polygon = null;
   polyClosed = false;
@@ -1118,6 +1162,12 @@ canvas.addEventListener('mousemove', (ev) => {
     return;
   }
   if (!dragStart) return;
+  if (dragTarget === 'back') {
+    roiBack = normalizeRect(dragStart, toFrame(ev));
+    updateRoiLabel();
+    draw();
+    return;
+  }
   roi = normalizeRect(dragStart, toFrame(ev));
   updateRoiLabel();
   draw();
@@ -1135,9 +1185,16 @@ canvas.addEventListener('mouseup', () => {
   }
   if (!dragStart) return;
   dragStart = null;
+  if (dragTarget === 'back') {
+    dragTarget = 'roi';
+    updateRoiLabel();
+    draw();
+    if (roiBack) log(`点击框 ${roiBack.w}x${roiBack.h} @ ${roiBack.x},${roiBack.y}`);
+    return;
+  }
   updateRoiLabel();
   draw();
-  if (roi) log(`选中 ROI ${roi.w}x${roi.h} @ ${roi.x},${roi.y}`);
+  if (roi) log(`选中识别框 ${roi.w}x${roi.h} @ ${roi.x},${roi.y}`);
 });
 
 // 最近顶点（8px 内）——用于闭合后编辑顶点
@@ -1196,6 +1253,7 @@ btnPoly.addEventListener('click', () => {
     polyClosed = false;
     polyDrag = null;
     roi = null;
+    roiBack = null;
     dragStart = null;
     btnPoly.textContent = '退出多边形模式（点顶点，双击闭合；闭合后可拖/双击删顶点）';
     log('多边形模式：逐点点击，双击闭合；闭合后可拖动顶点、双击删除顶点');
@@ -1206,8 +1264,22 @@ btnPoly.addEventListener('click', () => {
   draw();
 });
 
+btnBackMode.addEventListener('click', () => {
+  backMode = !backMode;
+  btnBackMode.textContent = backMode
+    ? '退出点击框模式（拖拽画出点击框）'
+    : '绘制点击框（未设置=匹配外接矩形）';
+  log(
+    backMode
+      ? '点击框模式：在画面上拖拽画出「点击框」（roi_back，可大于识别框）'
+      : '已退出点击框模式'
+  );
+  draw();
+});
+
 btnClear.addEventListener('click', () => {
   roi = null;
+  roiBack = null;
   polygon = null;
   polyClosed = false;
   selectedBox = null;
@@ -1362,6 +1434,27 @@ btnLines.addEventListener('click', async () => {
 // Each independent concern is isolated so a missing frame or a not-yet-served
 // backend route (/runs) can never blank-screen the editor.
 (async function boot() {
+  // §22.26 三栏面板切换（素材 / 任务 / 流程）—— 参考旧 OAS annotator 的 rail。
+  const railButtons = Array.from(document.querySelectorAll('.rail-btn'));
+  function activatePanel(panelId) {
+    for (const b of railButtons) b.classList.toggle('active', b.dataset.panel === panelId);
+    for (const p of document.querySelectorAll('.rail-panels .panel')) {
+      p.classList.toggle('active', p.id === panelId);
+    }
+  }
+  for (const b of railButtons) {
+    b.addEventListener('click', () => activatePanel(b.dataset.panel));
+  }
+  if (railButtons.length) activatePanel(railButtons[0].dataset.panel);
+  // 深链 ?panel=flow / ?panel=task 供验收/直达使用
+  try {
+    const wantPanel = new URLSearchParams(location.search).get('panel');
+    const ok = ['panel-assets', 'panel-task', 'panel-flow'];
+    if (wantPanel && ok.includes(wantPanel)) activatePanel(wantPanel);
+  } catch (e) {
+    /* ignore */
+  }
+
   btnSaveAsset.addEventListener('click', doSaveAsset);
   btnSaveFlow.addEventListener('click', doSaveFlow);
   taskName.addEventListener('change', async () => {

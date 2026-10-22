@@ -681,6 +681,11 @@ impl Server {
             Ok(r) => r,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
+        // §22.25: optional explicit click area (`roi_back`, old OAS roiBack).
+        let roi_back = match json_opt_roi_back(&v) {
+            Ok(r) => r,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
         let threshold = match v.get("threshold") {
             None => None,
             Some(x) => match x.as_f64() {
@@ -770,6 +775,7 @@ impl Server {
             kind,
             file: None,
             roi: Some(roi),
+            roi_back,
             threshold,
             polygon,
             rev: None,
@@ -1428,9 +1434,33 @@ fn json_roi_field(v: &serde_json::Value) -> Result<[i32; 4], String> {
     Ok(out)
 }
 
+/// §22.25: optional `roi_back` (explicit click area; old OAS `roiBack`).
+fn json_opt_roi_back(v: &serde_json::Value) -> Result<Option<[i32; 4]>, String> {
+    let Some(x) = v.get("roi_back") else {
+        return Ok(None);
+    };
+    let arr = x
+        .as_array()
+        .ok_or_else(|| "`roi_back` must be an array of 4 integers [x,y,w,h]".to_string())?;
+    if arr.len() != 4 {
+        return Err(format!(
+            "`roi_back` must have exactly 4 integers [x,y,w,h], got {}",
+            arr.len()
+        ));
+    }
+    let mut out = [0i32; 4];
+    for (i, item) in arr.iter().enumerate() {
+        let n = item
+            .as_i64()
+            .ok_or_else(|| format!("`roi_back[{i}]` must be an integer"))?;
+        out[i] = i32::try_from(n)
+            .map_err(|_| format!("`roi_back[{i}]` = {n} does not fit in i32"))?;
+    }
+    Ok(Some(out))
+}
+
 // ---------------------------------------------------------------------------
-// N4 tests: pure helpers + the real routes over a loopback socket
-// ---------------------------------------------------------------------------
+// N4 tests: pure helpers + the real routes over a loopback socket// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

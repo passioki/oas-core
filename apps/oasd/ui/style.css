@@ -173,3 +173,61 @@ pre {
   max-height: 220px;
   overflow: auto;
 }
+
+/* 22.26 三栏 IDE 布局（参考旧 OAS annotator） */
+main { align-items: stretch; }
+#canvas-wrap {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+#screen { cursor: crosshair; }
+#output-panel {
+  margin-top: 8px;
+  background: #0b0d10;
+  border-radius: 8px;
+  padding: 8px 10px;
+  max-height: 230px;
+  overflow: auto;
+}
+#output-panel h3 { margin: 4px 0 6px; font-size: 13px; color: #8fb8e8; font-weight: 600; }
+#output-panel pre { margin: 0 0 8px; white-space: pre-wrap; }
+aside.side {
+  display: flex;
+  width: 380px;
+  flex: 0 0 380px;
+  min-height: 0;
+  background: #0b0d10;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.rail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 4px;
+  background: #10131a;
+  border-right: 1px solid #2a2d38;
+  flex: 0 0 52px;
+}
+.rail-btn {
+  width: 100%;
+  margin: 0;
+  padding: 10px 2px;
+  background: transparent;
+  color: #9aa0aa;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 12px;
+  writing-mode: vertical-rl;
+  letter-spacing: 2px;
+}
+.rail-btn.active {
+  color: #ffd54a;
+  border-color: #3a3d48;
+  background: #171a23;
+}
+.rail-panels { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 0 10px 12px; }
+.rail-panels .panel { display: none; }
+.rail-panels .panel.active { display: block; }
+.side h3:first-child { margin-top: 12px; }

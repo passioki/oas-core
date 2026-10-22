@@ -45,6 +45,9 @@ pub struct AssetSet {
     /// Optional polygon mask per OCR asset (§22.10 N10b-2): OCR crops the bbox
     /// but only pixels INSIDE this polygon are kept; outside is filled white.
     ocr_polygons: HashMap<String, Vec<Point>>,
+    /// Optional explicit click area per template asset (§22.25, old OAS `roiBack`):
+    /// frame coords at design resolution; translated by the match offset on use.
+    click_back: HashMap<String, Rect>,
 }
 
 impl AssetSet {
@@ -55,6 +58,15 @@ impl AssetSet {
 
     pub fn ocr_polygon(&self, id: &str) -> Option<&[Point]> {
         self.ocr_polygons.get(id).map(|v| v.as_slice())
+    }
+
+    /// Attach an explicit click area to a template asset (§22.25).
+    pub fn set_click_back(&mut self, id: impl Into<String>, rect: Rect) {
+        self.click_back.insert(id.into(), rect);
+    }
+
+    pub fn click_back(&self, id: &str) -> Option<Rect> {
+        self.click_back.get(id).copied()
     }
 }
 
@@ -808,6 +820,22 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             .assets
             .get(sel)
             .ok_or_else(|| format!("selector `{sel}` is not declared in the task's assets"))?;
+        // §22.25: explicit click area (`roi_back`) wins, translated by the match
+        // offset; without it we keep the matched template bbox (§22.20 decision).
+        if let Some(back) = self.assets.click_back(sel) {
+            let roi = t.roi.ok_or_else(|| {
+                format!(
+                    "selector `{sel}` has a roi_back but no roi to translate it \
+                     (a click area only makes sense together with an authored roi)"
+                )
+            })?;
+            return Ok(Rect {
+                x: back.x + (p.x - roi.x),
+                y: back.y + (p.y - roi.y),
+                w: back.w,
+                h: back.h,
+            });
+        }
         Ok(Rect {
             x: p.x,
             y: p.y,
@@ -2698,6 +2726,130 @@ mod tests {
         assert!(
             p.x >= 40 && p.x < 50 && p.y >= 30 && p.y < 40,
             "click should follow the shifted template to (40,30), got {p:?}"
+        );
+    }
+
+    #[test]
+    fn roi_back_expands_the_click_area_and_translates_with_the_match() {
+        // §22.25: recognition box = 10x10 at (12,10); click box = 20x20 at (10,8)
+        // (a bigger "safe" area, like the old OAS roiBack). Clicks must sample the
+        // click box, not the matched template bbox.
+        let pattern: Vec<u8> = (0..100)
+            .map(|i| (((i % 10) * 7 + (i / 10) * 13) % 251 + 3) as u8)
+            .collect();
+        let mut assets = assets();
+        assets.insert(
+            "I_BACK",
+            Template {
+                gray: GrayImage::new(10, 10, pattern.clone()),
+                roi: Some(Rect {
+                    x: 12,
+                    y: 10,
+                    w: 10,
+                    h: 10,
+                }),
+                threshold: 0.8,
+                click_polygon: None,
+            },
+        );
+        assets.set_click_back(
+            "I_BACK",
+            Rect {
+                x: 10,
+                y: 8,
+                w: 20,
+                h: 20,
+            },
+        );
+        let uniform_only = crate::humanize::Humanize {
+            bell_weight: 0.0,
+            uniform_weight: 1.0,
+            comet_weight: 0.0,
+            miss_chance_min: 0.0,
+            miss_chance_max: 0.0,
+            ..crate::humanize::Humanize::default()
+        };
+        let mut outside_front = 0;
+        for seed in 1..=50u64 {
+            let (input, shared) = FakeInput::new();
+            let mut interp = Interpreter::new(
+                FakeScreen::new(),
+                input,
+                assets.clone(),
+                Budget::default(),
+            )
+            .with_humanize(uniform_only)
+            .with_seed(seed);
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"click","args":{"sel":"I_BACK"}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done), "seed {seed}");
+            let p = shared.clicks.borrow()[0];
+            assert!(
+                p.x >= 10 && p.x < 30 && p.y >= 8 && p.y < 28,
+                "seed {seed}: click must stay inside roi_back (10,8,20,20), got {p:?}"
+            );
+            if !(p.x >= 12 && p.x < 22 && p.y >= 10 && p.y < 20) {
+                outside_front += 1;
+            }
+        }
+        assert!(
+            outside_front > 0,
+            "click box must actually be used (all 50 clicks landed in the template bbox)"
+        );
+    }
+
+    #[test]
+    fn roi_back_translates_when_the_template_moved() {
+        // Template authored at (12,10) but the frame has it at (40,30): the click
+        // box (10,8,20,20) must move by the same (+28,+20) offset => (38,28,20,20).
+        let pattern: Vec<u8> = (0..100)
+            .map(|i| (((i % 10) * 7 + (i / 10) * 13) % 251 + 3) as u8)
+            .collect();
+        let mut assets = assets();
+        assets.insert(
+            "I_BACK_SHIFT",
+            Template {
+                gray: GrayImage::new(10, 10, pattern),
+                roi: Some(Rect {
+                    x: 12,
+                    y: 10,
+                    w: 10,
+                    h: 10,
+                }),
+                threshold: 0.8,
+                click_polygon: None,
+            },
+        );
+        assets.set_click_back(
+            "I_BACK_SHIFT",
+            Rect {
+                x: 10,
+                y: 8,
+                w: 20,
+                h: 20,
+            },
+        );
+        let screen = TwoFrameScreen {
+            frames: vec![frame_with_tile(40, 30)],
+            idx: 0,
+        };
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(screen, input, assets, Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(7);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_BACK_SHIFT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            p.x >= 38 && p.x < 58 && p.y >= 28 && p.y < 48,
+            "click must follow the translated roi_back (38,28,20,20), got {p:?}"
         );
     }
 

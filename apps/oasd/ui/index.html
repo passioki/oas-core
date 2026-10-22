@@ -17,74 +17,99 @@
   <main>
     <section id="canvas-wrap">
       <canvas id="screen" width="1280" height="720"></canvas>
-      <div id="hint" class="muted">在画面上拖拽选择 ROI</div>
+      <div id="hint" class="muted">在画面上拖拽选择识别 ROI；可再画一个「点击框」</div>
+
+      <section id="output-panel">
+        <div class="row output-head">
+          <h3>结果 / 输出</h3>
+        </div>
+        <pre id="result" class="muted">—</pre>
+        <h3>日志</h3>
+        <pre id="log"></pre>
+      </section>
     </section>
 
-    <aside>
-      <h3>ROI</h3>
-      <div id="roi" class="kv">未选择</div>
-      <h3>操作</h3>
-      <button id="btn-ocr" disabled>试识别（单行文字）</button>
-      <button id="btn-lines" disabled>多行识别（逐行文字+框）</button>
-      <button id="btn-match" disabled>试匹配（图片识别，全屏搜索）</button>
-      <button id="btn-poly">多边形框选（点顶点，双击闭合）</button>
+    <aside class="side">
+      <nav class="rail" id="rail">
+        <button class="rail-btn active" data-panel="panel-assets" type="button">素材</button>
+        <button class="rail-btn" data-panel="panel-task" type="button">任务</button>
+        <button class="rail-btn" data-panel="panel-flow" type="button">流程</button>
+      </nav>
 
-      <button id="btn-click-step" disabled>生成点击指令（选中识别区块）</button>
-      <button id="btn-append-step" disabled>追加到 flow</button>
+      <div class="rail-panels">
+        <section class="panel active" id="panel-assets">
+          <h3>ROI（识别框）</h3>
+          <div id="roi" class="kv">未选择</div>
 
-      <button id="btn-clear">清除 ROI</button>
+          <h3>操作</h3>
+          <button id="btn-ocr" disabled>试识别（单行文字）</button>
+          <button id="btn-lines" disabled>多行识别（逐行文字+框）</button>
+          <button id="btn-match" disabled>试匹配（图片识别，全屏搜索）</button>
+          <button id="btn-poly">多边形框选（点顶点，双击闭合）</button>
+          <button id="btn-back-mode">绘制点击框（未设置=匹配外接矩形）</button>
 
-      <h3>任务</h3>
-      <label class="opt"><input id="task-name" placeholder="任务名，如：队伍预设" value="任务1" /></label>
-      <h3>存为素材</h3>
-      <label class="opt"><input id="asset-id" placeholder="素材 id，如：队伍预设入口" /></label>
-      <label class="opt">类型
-        <select id="asset-kind">
-          <option value="template">模板图（template）</option>
-          <option value="ocr_line">单行文字（ocr_line）</option>
-          <option value="ocr_lines">多行文字（ocr_lines）</option>
-        </select>
-      </label>
-      <button id="btn-asset" disabled>生成素材 JSON</button>
-      <button id="btn-save-asset" disabled>保存素材到任务</button>
-      <div class="row lib-toolbar">
-        <input id="library-id" placeholder="库素材 id（如：返回按钮）" />
-        <button id="btn-library-save" disabled>保存到素材库</button>
-      </div>
-      <div class="row lib-toolbar">
-        <select id="library-select">
-          <option value="">（素材库为空）</option>
-        </select>
-        <button id="btn-library-refresh">刷新素材库</button>
-        <button id="btn-library-match" disabled>用库素材试匹配</button>
-      </div>
-      <div id="library-status" class="muted small">—</div>
-      <div class="muted small">
-        素材库是全局的：flow/素材里写 <code>lib:&lt;id&gt;</code> 即可引用（匹配/点击/守卫/弹窗全可用）。
-      </div>
-      <h3>flow.json</h3>
-      <textarea id="flow-json" rows="8" spellcheck="false" placeholder='{"schema_version":1,"name":"任务1","steps":[{"op":"click","args":{"sel":"分组2"}},{"op":"finish","args":{"exit":"done"}}]}'></textarea>
-      <button id="btn-save-flow">保存 flow（校验引用）</button>
-      <h3>流程编辑器（可视化）</h3>
-      <div class="row flow-toolbar">
-        <select id="flow-op"></select>
-        <button id="flow-add-step">添加步骤</button>
-        <button id="flow-from-json">从 JSON 载入</button>
-        <button id="flow-to-json">生成 JSON</button>
-        <button id="flow-save-viz">生成并保存</button>
-      </div>
-      <div id="flow-steps" class="flow-steps muted">（从任务载入或点「从 JSON 载入」）</div>
-      <h4>弹窗规则（interrupts）</h4>
-      <div id="flow-interrupts" class="flow-steps muted">（无）</div>
-      <button id="flow-add-interrupt">添加弹窗规则</button>
-      <p class="muted small">带 if/loop 的流程请用 JSON 文本模式；可视化模式拒绝 flatten（避免丢内容）。</p>
-      <h3>任务素材</h3>
-      <pre id="assets-summary" class="muted">—</pre>
+          <button id="btn-click-step" disabled>生成点击指令（选中识别区块）</button>
+          <button id="btn-append-step" disabled>追加到 flow</button>
 
-      <h3>结果</h3>
-      <pre id="result" class="muted">—</pre>
-      <h3>日志</h3>
-      <pre id="log"></pre>
+          <button id="btn-clear">清除 ROI / 点击框</button>
+
+          <h3>存为素材</h3>
+          <label class="opt"><input id="asset-id" placeholder="素材 id，如：队伍预设入口" /></label>
+          <label class="opt">类型
+            <select id="asset-kind">
+              <option value="template">模板图（template）</option>
+              <option value="ocr_line">单行文字（ocr_line）</option>
+              <option value="ocr_lines">多行文字（ocr_lines）</option>
+            </select>
+          </label>
+          <button id="btn-asset" disabled>生成素材 JSON</button>
+          <button id="btn-save-asset" disabled>保存素材到任务</button>
+
+          <h3>素材库（全局）</h3>
+          <div class="row lib-toolbar">
+            <input id="library-id" placeholder="库素材 id（如：返回按钮）" />
+            <button id="btn-library-save" disabled>保存到素材库</button>
+          </div>
+          <div class="row lib-toolbar">
+            <select id="library-select">
+              <option value="">（素材库为空）</option>
+            </select>
+            <button id="btn-library-refresh">刷新素材库</button>
+            <button id="btn-library-match" disabled>用库素材试匹配</button>
+          </div>
+          <div id="library-status" class="muted small">—</div>
+          <div class="muted small">
+            素材库是全局的：flow/素材里写 <code>lib:&lt;id&gt;</code> 即可引用（匹配/点击/守卫/弹窗全可用）。
+          </div>
+        </section>
+
+        <section class="panel" id="panel-task">
+          <h3>任务</h3>
+          <label class="opt"><input id="task-name" placeholder="任务名，如：队伍预设" value="任务1" /></label>
+          <h3>任务素材</h3>
+          <pre id="assets-summary" class="muted">—</pre>
+        </section>
+
+        <section class="panel" id="panel-flow">
+          <h3>flow.json</h3>
+          <textarea id="flow-json" rows="10" spellcheck="false" placeholder='{"schema_version":1,"name":"任务1","steps":[{"op":"click","args":{"sel":"分组2"}},{"op":"finish","args":{"exit":"done"}}]}'></textarea>
+          <button id="btn-save-flow">保存 flow（校验引用）</button>
+
+          <h3>流程编辑器（可视化）</h3>
+          <div class="row flow-toolbar">
+            <select id="flow-op"></select>
+            <button id="flow-add-step">添加步骤</button>
+            <button id="flow-from-json">从 JSON 载入</button>
+            <button id="flow-to-json">生成 JSON</button>
+            <button id="flow-save-viz">生成并保存</button>
+          </div>
+          <div id="flow-steps" class="flow-steps muted">（从任务载入或点「从 JSON 载入」）</div>
+          <h4>弹窗规则（interrupts）</h4>
+          <div id="flow-interrupts" class="flow-steps muted">（无）</div>
+          <button id="flow-add-interrupt">添加弹窗规则</button>
+          <p class="muted small">带 if/loop 的流程请用 JSON 文本模式；可视化模式拒绝 flatten（避免丢内容）。</p>
+        </section>
+      </div>
     </aside>
   </main>
 
