@@ -521,11 +521,24 @@ fn values_eq(a: &Value, b: &Value) -> bool {
 // Flow schema
 // ---------------------------------------------------------------------------
 
+/// A known popup/interruption rule (ENGINE §22.15).
+///
+/// The runtime checks these templates **before every step**; a match is clicked
+/// (dismissed) immediately and the step is retried, so flow logic never has to
+/// special-case popups.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InterruptRule {
+    /// Template asset that identifies the popup / its close button.
+    pub sel: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Flow {
     pub schema_version: u32,
     pub name: String,
     pub steps: Vec<Step>,
+    /// Auto-dismiss rules, checked before each step (§22.15).
+    pub interrupts: Vec<InterruptRule>,
 }
 
 /// One locator in a `click_target` redundancy chain (ENGINE §22.11).
@@ -681,6 +694,13 @@ pub enum Step {
     },
     Ocr {
         sel: String,
+    },
+    /// Explicitly dismiss a known popup (ENGINE §22.15). When `required` is false
+    /// an absent popup is OK; when true it is a loud failure.
+    DismissPopup {
+        sel: String,
+        timeout_ms: u32,
+        required: bool,
     },
     /// ENGINE §22.11: click a target resolved by an ordered redundancy chain
     /// (image > text > remembered coordinate). All locators failing = loud error.
@@ -1034,6 +1054,35 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
             requires: parse_expect(&args, "requires", &a_path)?,
             expect: parse_expect(&args, "expect", &a_path)?,
         }),
+        "dismiss_popup" => {
+            let sel = req_str(&args, "sel", &a_path)?;
+            let timeout_ms = match args.get("timeout_ms") {
+                None => 0u32,
+                Some(x) => {
+                    let n = x.as_u64().ok_or_else(|| {
+                        FlowError::new(format!("{a_path}.timeout_ms"), "`timeout_ms` must be an integer")
+                    })?;
+                    if n > 60_000 {
+                        return Err(FlowError::new(
+                            format!("{a_path}.timeout_ms"),
+                            format!("`timeout_ms` must be <= 60000, got {n}"),
+                        ));
+                    }
+                    n as u32
+                }
+            };
+            let required = match args.get("required") {
+                None => false,
+                Some(x) => x.as_bool().ok_or_else(|| {
+                    FlowError::new(format!("{a_path}.required"), "`required` must be a boolean")
+                })?,
+            };
+            Ok(Step::DismissPopup {
+                sel,
+                timeout_ms,
+                required,
+            })
+        }
         "ocr" => Ok(Step::Ocr {
             sel: req_str(&args, "sel", &a_path)?,
         }),
@@ -1056,7 +1105,7 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
             path,
             format!(
                 "unknown instruction `{other}` (supported: if/loop/while/break/continue/\
-                 wait/wait_until/appear/click/click_point/click_target/swipe/ocr/log/finish)"
+                 wait/wait_until/appear/click/click_point/click_target/dismiss_popup/swipe/ocr/log/finish)"
             ),
         )),
     }
@@ -1101,10 +1150,28 @@ impl Flow {
                 .ok_or_else(|| FlowError::new("$", "missing `steps`"))?,
             "steps",
         )?;
+        // ENGINE §22.15: optional list of known popups dismissed before each step.
+        let interrupts = match v.get("interrupts") {
+            None => Vec::new(),
+            Some(x) => {
+                let arr = x.as_array().ok_or_else(|| {
+                    FlowError::new("$.interrupts", "`interrupts` must be an array of {sel} rules")
+                })?;
+                arr.iter()
+                    .enumerate()
+                    .map(|(i, item)| {
+                        let p = format!("$.interrupts[{i}]");
+                        let sel = req_str(item, "sel", &p)?;
+                        Ok(InterruptRule { sel })
+                    })
+                    .collect::<Result<Vec<_>, FlowError>>()?
+            }
+        };
         Ok(Self {
             schema_version,
             name,
             steps,
+            interrupts,
         })
     }
 
@@ -1112,6 +1179,9 @@ impl Flow {
     pub fn referenced_assets(&self) -> BTreeSet<String> {
         let mut out = BTreeSet::new();
         collect_assets_steps(&self.steps, &mut out);
+        for rule in &self.interrupts {
+            out.insert(rule.sel.clone());
+        }
         out
     }
 
@@ -1183,6 +1253,9 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {
             Step::Wait { .. } | Step::Break | Step::Continue => {}
             Step::WaitUntil { cond, .. } => collect_assets_expr(cond, out),
             Step::Appear { sel } | Step::Ocr { sel } => {
+                out.insert(sel.clone());
+            }
+            Step::DismissPopup { sel, .. } => {
                 out.insert(sel.clone());
             }
             Step::Click {
@@ -1416,6 +1489,54 @@ mod tests {
                 r#"{{"schema_version":1,"name":"t","steps":[{{"op":"click","args":{{"sel":"S","alts":{spec}}}}}]}}"#
             );
             assert!(!errs(&json).is_empty(), "must reject alts={spec}");
+        }
+    }
+
+    #[test]
+    fn parses_interrupts_and_dismiss_popup() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t",
+                 "interrupts":[{"sel":"公告关闭"},{"sel":"网络异常"}],
+                 "steps":[
+                   {"op":"dismiss_popup","args":{"sel":"公告关闭","timeout_ms":2000,"required":true}},
+                   {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("flow");
+        assert_eq!(
+            flow.interrupts,
+            vec![
+                InterruptRule {
+                    sel: "公告关闭".to_string()
+                },
+                InterruptRule {
+                    sel: "网络异常".to_string()
+                }
+            ]
+        );
+        match &flow.steps[0] {
+            Step::DismissPopup {
+                sel,
+                timeout_ms,
+                required,
+            } => {
+                assert_eq!(sel, "公告关闭");
+                assert_eq!(*timeout_ms, 2000);
+                assert!(*required);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let got: Vec<String> = flow.referenced_assets().into_iter().collect();
+        assert_eq!(got, vec!["公告关闭", "网络异常"]);
+    }
+
+    #[test]
+    fn rejects_bad_interrupts() {
+        for interrupts in [r#"{}}"#, r#"[{}]"#, r#"[{"sel":1}]"#] {
+            let json = format!(
+                r#"{{"schema_version":1,"name":"t","interrupts":{interrupts},
+                    "steps":[{{"op":"finish","args":{{"exit":"done"}}}}]}}"#
+            );
+            assert!(!errs(&json).is_empty(), "must reject interrupts={interrupts}");
         }
     }
 

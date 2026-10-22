@@ -16,7 +16,7 @@ pub mod humanize;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use oas_flow::{eval, EvalContext, Expect, Expr, Flow, Locator, Step, Value};
+use oas_flow::{eval, EvalContext, Expect, Expr, Flow, InterruptRule, Locator, Step, Value};
 use oas_perceive::{GrayImage, Matcher};
 use oas_types::{Exit, Frame, InputSink, Outcome, Point, Rect, ScreenSource};
 
@@ -335,6 +335,8 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     ocr: Option<Box<dyn OcrProvider>>,
     /// Injected coordinate-memory store for `click_target` fallbacks (§22.11).
     coords: Option<Box<dyn CoordStore>>,
+    /// Known popups dismissed before every step (§22.15), copied from the flow.
+    interrupts: Vec<InterruptRule>,
     /// Size of the frame `matcher` was built from (`click_point` needs it for
     /// the CP3 in-frame check).
     frame_size: Option<(u32, u32)>,
@@ -367,6 +369,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             frame: None,
             ocr: None,
             coords: None,
+            interrupts: Vec::new(),
             frame_size: None,
             events: Vec::new(),
             clicks: Vec::new(),
@@ -442,6 +445,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         // previous one (same lifecycle as `events`).
         self.clicks.clear();
         self.steps = 0;
+        self.interrupts = flow.interrupts.clone();
         let mut ctl = Ctl::Normal;
         match self.exec(&flow.steps, 0, &mut ctl) {
             Ok(()) => match ctl {
@@ -809,12 +813,67 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         }
     }
 
+    /// Dismiss one known popup if any `interrupts` rule matches (§22.15).
+    /// Returns `true` when a popup was clicked (caller re-checks, bounded).
+    fn handle_interrupts(&mut self, depth: usize) -> Result<bool, String> {
+        let rules = self.interrupts.clone();
+        for rule in &rules {
+            let (score, at) = self.locate(&rule.sel)?;
+            let th = self.assets.get(&rule.sel).map(|t| t.threshold).unwrap_or(0.9);
+            let Some(p) = at.filter(|_| score >= th) else {
+                continue;
+            };
+            let target = self.click_box_for(&rule.sel, p)?;
+            let (w, h) = self
+                .frame_size
+                .ok_or_else(|| "interrupt: no frame available".to_string())?;
+            let plan = self.humanize.template_click(target, w, &mut self.rng);
+            let centre = Point {
+                x: target.x + target.w / 2,
+                y: target.y + target.h / 2,
+            };
+            let (actual, delay) = self.perform_click(
+                plan,
+                centre,
+                Some(rule.sel.clone()),
+                "interrupt",
+                format!("interrupt:{}:{score:.3}", rule.sel),
+                w,
+                h,
+            )?;
+            self.log(
+                depth,
+                "interrupt",
+                &format!(
+                    "dismissed popup `{}` score={score:.3} point=({},{}) delay={delay}ms",
+                    rule.sel, actual.x, actual.y
+                ),
+                "ok",
+                0.0,
+            );
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     fn exec(&mut self, steps: &[Step], depth: usize, ctl: &mut Ctl) -> Result<(), String> {
         for step in steps {
             self.check_budget()?;
             self.steps += 1;
             if !matches!(ctl, Ctl::Normal) {
                 return Ok(());
+            }
+            // ENGINE §22.15: dismiss known popups BEFORE the step runs. Bounded
+            // so a permanently-matching "popup" cannot spin forever.
+            let mut dismissed = 0usize;
+            while self.handle_interrupts(depth)? {
+                dismissed += 1;
+                if dismissed >= MAX_INTERRUPTS_PER_STEP {
+                    return Err(format!(
+                        "popup handling did not converge after {MAX_INTERRUPTS_PER_STEP} dismissals \
+                         (check the `interrupts` rules)"
+                    ));
+                }
             }
             let t0 = Instant::now();
             match self.exec_one(step, depth, ctl) {
@@ -941,6 +1000,53 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     Ok(format!("appear {sel} score={score:.3} at {at:?}"))
                 } else {
                     Err(format!("selector `{sel}` not found (best score {score:.3} < {th})"))
+                }
+            }
+            Step::DismissPopup {
+                sel,
+                timeout_ms,
+                required,
+            } => {
+                let deadline = Instant::now() + Duration::from_millis(*timeout_ms as u64);
+                loop {
+                    let (score, at) = self.locate(sel)?;
+                    let th = self.assets.get(sel).map(|t| t.threshold).unwrap_or(0.9);
+                    if let Some(p) = at.filter(|_| score >= th) {
+                        let target = self.click_box_for(sel, p)?;
+                        let (w, h) = self
+                            .frame_size
+                            .ok_or_else(|| "dismiss_popup: no frame available".to_string())?;
+                        let plan = self.humanize.template_click(target, w, &mut self.rng);
+                        let centre = Point {
+                            x: target.x + target.w / 2,
+                            y: target.y + target.h / 2,
+                        };
+                        let (actual, delay) = self.perform_click(
+                            plan,
+                            centre,
+                            Some(sel.clone()),
+                            "dismiss_popup",
+                            format!("dismiss_popup:{sel}:{score:.3}"),
+                            w,
+                            h,
+                        )?;
+                        return Ok(format!(
+                            "dismissed {sel} score={score:.3} point=({},{}) delay={delay}ms",
+                            actual.x, actual.y
+                        ));
+                    }
+                    if *timeout_ms == 0 || Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                    self.invalidate_frame(); // next poll grabs a fresh frame
+                }
+                if *required {
+                    Err(format!(
+                        "dismiss_popup: `{sel}` not found within {timeout_ms}ms"
+                    ))
+                } else {
+                    Ok(format!("no popup `{sel}`"))
                 }
             }
             Step::Click {
@@ -1321,6 +1427,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
 /// Marker error used to signal budget/loop exhaustion (mapped to Exhausted).
 const EXHAUSTED: &str = "__exhausted__";
 
+/// §22.15: a step may be preceded by at most this many popup dismissals before
+/// the run fails loudly (a rule that always matches would otherwise spin).
+const MAX_INTERRUPTS_PER_STEP: usize = 5;
+
 fn step_name(s: &Step) -> &'static str {
     match s {
         Step::If { .. } => "if",
@@ -1335,6 +1445,7 @@ fn step_name(s: &Step) -> &'static str {
         Step::ClickPoint { .. } => "click_point",
         Step::Swipe { .. } => "swipe",
         Step::Ocr { .. } => "ocr",
+        Step::DismissPopup { .. } => "dismiss_popup",
         Step::ClickTarget { .. } => "click_target",
         Step::Log { .. } => "log",
         Step::Finish { .. } => "finish",
@@ -2779,6 +2890,108 @@ mod tests {
             RunResult::Failed(msg) => {
                 assert!(msg.contains("not found"), "{msg}");
                 assert!(msg.contains("I_NEVER:"), "per-variant evidence missing: {msg}");
+            }
+            other => panic!("expected a loud failure, got {other:?}"),
+        }
+    }
+
+    // ---- §22.15 popup / interrupt handling ----
+
+    #[test]
+    fn on_interrupt_dismisses_a_popup_before_the_step_runs() {
+        let screen = TwoFrameScreen {
+            frames: vec![frame_with_tile(12, 10), frame_flat()],
+            idx: 0,
+        };
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(screen, input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(13);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","interrupts":[{"sel":"I_BRIGHT"}],
+                 "steps":[{"op":"click_point","args":{"x":20,"y":20}},
+                          {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let rows = interp.clicks();
+        assert_eq!(rows.len(), 2, "one dismiss + one real click");
+        assert_eq!(rows[0].locator, "interrupt");
+        assert!(rows[0].match_info.starts_with("interrupt:I_BRIGHT:"));
+        assert_eq!(rows[1].locator, "point");
+        assert!(
+            interp.events().iter().any(|e| e.op == "interrupt"),
+            "the dismissal must be visible in the step log"
+        );
+    }
+
+    #[test]
+    fn on_interrupt_that_never_disappears_fails_loudly() {
+        // FakeScreen always shows the tile => the rule matches forever.
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(14);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","interrupts":[{"sel":"I_BRIGHT"}],
+                 "steps":[{"op":"click_point","args":{"x":20,"y":20}},
+                          {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("did not converge"), "{msg}");
+            }
+            other => panic!("expected a bounded-popup failure, got {other:?}"),
+        }
+        assert_eq!(shared.clicks.borrow().len(), MAX_INTERRUPTS_PER_STEP);
+    }
+
+    #[test]
+    fn dismiss_popup_step_clicks_when_present() {
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(15);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"dismiss_popup","args":{"sel":"I_BRIGHT","timeout_ms":0,"required":true}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert_eq!(shared.clicks.borrow().len(), 1);
+        let rows = interp.clicks();
+        assert_eq!(rows[0].locator, "dismiss_popup");
+        assert!(rows[0].match_info.starts_with("dismiss_popup:I_BRIGHT:"));
+    }
+
+    #[test]
+    fn dismiss_popup_absent_is_ok_when_not_required() {
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(16);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"dismiss_popup","args":{"sel":"I_NEVER","timeout_ms":0}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert!(shared.clicks.borrow().is_empty(), "absent popup => no click");
+    }
+
+    #[test]
+    fn dismiss_popup_absent_required_fails_loudly() {
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(17);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"dismiss_popup","args":{"sel":"I_NEVER","timeout_ms":100,"required":true}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("dismiss_popup: `I_NEVER` not found"), "{msg}");
             }
             other => panic!("expected a loud failure, got {other:?}"),
         }
