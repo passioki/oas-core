@@ -1,0 +1,272 @@
+{
+  "schema_version": 1,
+  "name": "探索",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 探索 开始（庭院 → 探索 → 第二十八章 → 战斗 → 返回庭院）'"
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 680,
+        "y": 152,
+        "requires": {
+          "kind": "appear",
+          "sel": "庭院_探索灯笼",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 10000
+        }
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 1140,
+        "y": 462,
+        "requires": {
+          "kind": "appear",
+          "sel": "章节_第二十八章",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "入口_探索按钮",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 1115,
+        "y": 630,
+        "requires": {
+          "kind": "appear",
+          "sel": "入口_探索按钮",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "章节_固定阵容",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.0
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 已进入第二十八章地图，先点空地清剧情对话（无对话时无副作用）'"
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 640,
+        "y": 360,
+        "requires": {
+          "kind": "appear",
+          "sel": "章节_固定阵容",
+          "timeout_ms": 3000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 0.8
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "param('max_battles')"
+      },
+      "body": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 点击章节地图上的妖怪（自动挑战已开，点中即开战）'"
+          }
+        },
+        {
+          "op": "click_target",
+          "args": {
+            "find": [
+              {
+                "kind": "template",
+                "sel": "章节_战斗图标"
+              }
+            ],
+            "requires": {
+              "kind": "appear",
+              "sel": "章节_固定阵容",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "vanish",
+              "sel": "章节_固定阵容",
+              "timeout_ms": 15000
+            }
+          }
+        },
+        {
+          "op": "wait_until",
+          "args": {
+            "cond": "appear('战斗_自动按钮')",
+            "timeout_s": 20
+          }
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 已进入战斗，等待结算（自动战斗）'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "40"
+          },
+          "body": [
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 2.0
+              }
+            },
+            {
+              "op": "click_point",
+              "args": {
+                "x": 640,
+                "y": 690
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('章节_固定阵容')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": []
+            }
+          ]
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "章节_固定阵容"
+          }
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 战斗结算完成，已回到章节地图，准备返回庭院'"
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 53,
+        "y": 32,
+        "requires": {
+          "kind": "appear",
+          "sel": "章节_固定阵容",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "退出确认_确认",
+          "timeout_ms": 5000
+        }
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 780,
+        "y": 401,
+        "requires": {
+          "kind": "appear",
+          "sel": "退出确认_确认",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "入口_探索按钮",
+          "timeout_ms": 8000
+        }
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 53,
+        "y": 32,
+        "requires": {
+          "kind": "appear",
+          "sel": "入口_探索按钮",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "vanish",
+          "sel": "入口_探索按钮",
+          "timeout_ms": 5000
+        }
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 53,
+        "y": 32,
+        "requires": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "庭院_探索灯笼",
+          "timeout_ms": 15000
+        }
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 探索 done，已回到庭院'"
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

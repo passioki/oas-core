@@ -396,6 +396,20 @@ pub trait EvalContext {
     fn ocr(&mut self, sel: &str) -> Result<Option<String>, String>;
     fn ocr_digit(&mut self, sel: &str) -> Result<Option<f64>, String>;
     fn page(&mut self) -> Result<Option<String>, String>;
+
+    /// `param('key')` — one declared task parameter (ENGINE §22.34.2, M0).
+    ///
+    /// The default implementation is a **loud error**, not a silent null: an
+    /// `EvalContext` that was not wired to a parameter map (e.g. an old/offline
+    /// context) must never make `param('x')` look like "no value provided".
+    /// The interpreter overrides this with the bundle defaults + `--param`
+    /// values injected by the driver.
+    fn param(&mut self, key: &str) -> Result<Value, String> {
+        Err(format!(
+            "param('{key}') is not available in this evaluation context \
+             (declare it in meta.params and run through the interpreter)"
+        ))
+    }
 }
 
 pub fn eval(e: &Expr, ctx: &mut dyn EvalContext) -> Result<Value, String> {
@@ -433,6 +447,17 @@ pub fn eval(e: &Expr, ctx: &mut dyn EvalContext) -> Result<Value, String> {
 }
 
 fn eval_call(name: &str, args: &[Expr], ctx: &mut dyn EvalContext) -> Result<Value, String> {
+    // `param('key')` (M0): a declared task parameter, resolved by the context.
+    if name == "param" {
+        if args.len() != 1 {
+            return Err("param() takes exactly one key argument".into());
+        }
+        let key = match eval(&args[0], ctx)? {
+            Value::Str(s) => s,
+            other => return Err(format!("param() expects a string key, got {other:?}")),
+        };
+        return ctx.param(&key);
+    }
     let sel = match name {
         "page" => {
             if !args.is_empty() {
@@ -452,7 +477,11 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut dyn EvalContext) -> Result<Val
                 other => return Err(format!("{name}() expects a string asset id, got {other:?}")),
             }
         }
-        other => return Err(format!("unknown function `{other}` (allowed: appear, ocr, ocr_digit, page)")),
+        other => {
+            return Err(format!(
+                "unknown function `{other}` (allowed: appear, ocr, ocr_digit, page, param)"
+            ))
+        }
     };
     match name {
         "appear" => Ok(Value::Bool(ctx.appear(&sel)?)),
@@ -1392,6 +1421,193 @@ impl Flow {
             Err(errs)
         }
     }
+
+    /// Every exit name that any `finish` step in the flow can produce (nested
+    /// blocks included). This is the T1 input for the lint: each name must be
+    /// declared in `meta.exits` (ENGINE §22.34.2).
+    pub fn reachable_exits(&self) -> BTreeSet<String> {
+        self.finish_uses().into_iter().map(|u| u.exit).collect()
+    }
+
+    /// Like [`Self::reachable_exits`] but keeps the path of every finish step.
+    pub fn finish_uses(&self) -> Vec<ExitUse> {
+        let mut out = Vec::new();
+        collect_finish_steps(&self.steps, "steps", &mut out);
+        out
+    }
+
+    /// Every literal key passed to `param('key')` anywhere in the flow (T3).
+    ///
+    /// Non-literal keys (e.g. `param('a' + 'b')`) cannot be checked statically
+    /// and are intentionally absent here; use [`Self::param_uses_at`] to report
+    /// them as lint errors.
+    pub fn param_uses(&self) -> BTreeSet<String> {
+        self.param_uses_at()
+            .into_iter()
+            .filter_map(|u| u.key)
+            .collect()
+    }
+
+    /// Every `param(...)` call site with its JSON-ish path. `key == None` means
+    /// the argument is not exactly one string literal => lint must flag it.
+    pub fn param_uses_at(&self) -> Vec<ParamUse> {
+        let mut out = Vec::new();
+        collect_param_steps(&self.steps, "steps", &mut out);
+        out
+    }
+
+    /// T1: does every path through the flow end with `finish(<exit>)`?
+    ///
+    /// Conservative: the last step must be a `finish`, or an `if` whose BOTH
+    /// branches terminate (a loop is not terminal: it may run zero times).
+    pub fn ends_with_finish(&self) -> bool {
+        steps_end_with_finish(&self.steps)
+    }
+}
+
+/// Name of an [`Exit`] (the inverse of [`parse_exit`]).
+pub fn exit_name(exit: Exit) -> &'static str {
+    match exit {
+        Exit::Done => "done",
+        Exit::NoResource => "no_resource",
+        Exit::WindowClosed => "window_closed",
+        Exit::NoTarget => "no_target",
+        Exit::ResourceEmpty => "resource_empty",
+        Exit::Exhausted => "exhausted",
+        Exit::Failed => "failed",
+        Exit::Skipped => "skipped",
+    }
+}
+
+/// One `finish` site: the exit name + its JSON-ish path (`steps[2].args.exit`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExitUse {
+    pub exit: String,
+    pub path: String,
+}
+
+/// One `param('key')` call site; `key == None` = not a single string literal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParamUse {
+    pub key: Option<String>,
+    pub path: String,
+}
+
+fn collect_finish_steps(steps: &[Step], prefix: &str, out: &mut Vec<ExitUse>) {
+    for (i, s) in steps.iter().enumerate() {
+        let p = format!("{prefix}[{i}]");
+        match s {
+            Step::Finish { exit } => out.push(ExitUse {
+                exit: exit_name(*exit).to_string(),
+                path: format!("{p}.args.exit"),
+            }),
+            Step::If {
+                then, otherwise, ..
+            } => {
+                collect_finish_steps(then, &format!("{p}.then"), out);
+                collect_finish_steps(otherwise, &format!("{p}.else"), out);
+            }
+            Step::Loop { body, .. } | Step::While { body, .. } => {
+                collect_finish_steps(body, &format!("{p}.body"), out)
+            }
+            _ => {}
+        }
+    }
+}
+
+fn steps_end_with_finish(steps: &[Step]) -> bool {
+    match steps.last() {
+        Some(Step::Finish { .. }) => true,
+        Some(Step::If {
+            then, otherwise, ..
+        }) => {
+            !then.is_empty()
+                && !otherwise.is_empty()
+                && steps_end_with_finish(then)
+                && steps_end_with_finish(otherwise)
+        }
+        _ => false,
+    }
+}
+
+fn collect_param_steps(steps: &[Step], prefix: &str, out: &mut Vec<ParamUse>) {
+    for (i, s) in steps.iter().enumerate() {
+        let p = format!("{prefix}[{i}]");
+        match s {
+            Step::If {
+                cond,
+                then,
+                otherwise,
+            } => {
+                collect_param_expr(cond, &format!("{p}.args.cond"), out);
+                collect_param_steps(then, &format!("{p}.then"), out);
+                collect_param_steps(otherwise, &format!("{p}.else"), out);
+            }
+            Step::Loop { n, body } => {
+                collect_param_expr(n, &format!("{p}.args.n"), out);
+                collect_param_steps(body, &format!("{p}.body"), out);
+            }
+            Step::While { cond, body, .. } => {
+                collect_param_expr(cond, &format!("{p}.args.cond"), out);
+                collect_param_steps(body, &format!("{p}.body"), out);
+            }
+            Step::WaitUntil { cond, .. } => {
+                collect_param_expr(cond, &format!("{p}.args.cond"), out)
+            }
+            Step::ClickPoint { x, y, .. } => {
+                collect_param_expr(x, &format!("{p}.args.x"), out);
+                collect_param_expr(y, &format!("{p}.args.y"), out);
+            }
+            Step::Swipe {
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                ..
+            } => {
+                collect_param_expr(from_x, &format!("{p}.args.from[0]"), out);
+                collect_param_expr(from_y, &format!("{p}.args.from[1]"), out);
+                collect_param_expr(to_x, &format!("{p}.args.to[0]"), out);
+                collect_param_expr(to_y, &format!("{p}.args.to[1]"), out);
+            }
+            Step::Log { text, .. } => collect_param_expr(text, &format!("{p}.args.text"), out),
+            Step::Break
+            | Step::Continue
+            | Step::Wait { .. }
+            | Step::Appear { .. }
+            | Step::Click { .. }
+            | Step::Ocr { .. }
+            | Step::DismissPopup { .. }
+            | Step::ClickTarget { .. }
+            | Step::Finish { .. } => {}
+        }
+    }
+}
+
+fn collect_param_expr(e: &Expr, path: &str, out: &mut Vec<ParamUse>) {
+    match e {
+        Expr::Lit(_) => {}
+        Expr::Call(name, args) => {
+            if name == "param" {
+                let key = match args.as_slice() {
+                    [Expr::Lit(Lit::Str(s))] => Some(s.clone()),
+                    _ => None,
+                };
+                out.push(ParamUse {
+                    key,
+                    path: path.to_string(),
+                });
+            }
+            for a in args {
+                collect_param_expr(a, path, out);
+            }
+        }
+        Expr::Not(x) | Expr::Neg(x) => collect_param_expr(x, path, out),
+        Expr::Binary(_, a, b) => {
+            collect_param_expr(a, path, out);
+            collect_param_expr(b, path, out);
+        }
+    }
 }
 
 fn collect_assets_expr(e: &Expr, out: &mut BTreeSet<String>) {
@@ -2110,5 +2326,250 @@ mod tests {
                  {"op":"swipe","args":{"from":[0,0],"to":[10,10],"ms":"fast"}}]}"#,
         );
         assert_eq!(e[0].path, "steps[0].args.ms");
+    }
+
+    // ---- param() + exits collection (M0 unified task template) ----
+
+    /// One param() call site: `key` is `None` when the argument is not a single
+    /// string literal (undecidable at lint time => must be an error).
+    #[test]
+    fn flow_collects_param_uses_with_paths() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"if","args":{"cond":"param('max_rounds') > 0 and param('mode') == 'fast'"},
+                  "then":[{"op":"log","args":{"text":"param('deep_key')"}}]},
+                 {"op":"wait_until","args":{"cond":"param('ready')","timeout_s":2}},
+                 {"op":"loop","args":{"n":"param('rounds')"},"body":[]},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("flow");
+
+        let uses: std::collections::BTreeSet<String> = flow.param_uses();
+        assert_eq!(
+            uses,
+            std::collections::BTreeSet::from([
+                "max_rounds".to_string(),
+                "mode".to_string(),
+                "deep_key".to_string(),
+                "ready".to_string(),
+                "rounds".to_string(),
+            ])
+        );
+
+        let detailed = flow.param_uses_at();
+        assert_eq!(detailed.len(), 5, "{detailed:?}");
+        let paths: Vec<&str> = detailed.iter().map(|u| u.path.as_str()).collect();
+        assert!(
+            paths.iter().any(|p| p.contains("steps[0].args.cond")),
+            "{paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p.contains("steps[0].then[0].args.text")),
+            "{paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p.contains("steps[1].args.cond")),
+            "{paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p.contains("steps[2].args.n")),
+            "{paths:?}"
+        );
+        assert!(detailed.iter().all(|u| u.key.is_some()), "{detailed:?}");
+    }
+
+    #[test]
+    fn flow_param_uses_flags_a_dynamic_key_as_undecidable() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"param('a' + 'b')"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("flow");
+        assert!(
+            flow.param_uses().is_empty(),
+            "a computed key is not a literal key"
+        );
+        let detailed = flow.param_uses_at();
+        assert_eq!(detailed.len(), 1, "{detailed:?}");
+        assert_eq!(detailed[0].key, None);
+        assert!(detailed[0].path.contains("steps[0].args.text"));
+    }
+
+    #[test]
+    fn reachable_exits_collects_nested_finish_exits_with_paths() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"if","args":{"cond":"true"},
+                  "then":[{"op":"finish","args":{"exit":"done"}}],
+                  "else":[{"op":"finish","args":{"exit":"failed"}}]},
+                 {"op":"loop","args":{"n":"2"},"body":[
+                    {"op":"finish","args":{"exit":"exhausted"}}]},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("flow");
+        let exits: std::collections::BTreeSet<String> = flow.reachable_exits();
+        assert_eq!(
+            exits,
+            std::collections::BTreeSet::from([
+                "done".to_string(),
+                "failed".to_string(),
+                "exhausted".to_string(),
+            ])
+        );
+        let uses = flow.finish_uses();
+        assert_eq!(uses.len(), 4, "{uses:?}");
+        let paths: Vec<&str> = uses.iter().map(|u| u.path.as_str()).collect();
+        assert!(
+            paths.iter().any(|p| p.contains("steps[0].then[0].args.exit")),
+            "{paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p.contains("steps[0].else[0].args.exit")),
+            "{paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p.contains("steps[1].body[0].args.exit")),
+            "{paths:?}"
+        );
+    }
+
+    #[test]
+    fn ends_with_finish_requires_every_path_to_terminate() {
+        let fin = |json: &str| Flow::from_json(json).expect("flow").ends_with_finish();
+        // Last step is finish => terminal.
+        assert!(fin(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"'x'"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#
+        ));
+        // Last step is not finish => some path falls off the end.
+        assert!(!fin(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"finish","args":{"exit":"done"}},
+                 {"op":"log","args":{"text":"'x'"}}]}"#
+        ));
+        // A terminal if-then-else where BOTH branches finish is terminal.
+        assert!(fin(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"if","args":{"cond":"true"},
+                  "then":[{"op":"finish","args":{"exit":"done"}}],
+                  "else":[{"op":"finish","args":{"exit":"failed"}}]}]}"#
+        ));
+        // ... but only when the else-branch exists too.
+        assert!(!fin(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"if","args":{"cond":"true"},
+                  "then":[{"op":"finish","args":{"exit":"done"}}]}]}"#
+        ));
+        // An empty flow cannot be terminal.
+        assert!(!fin(r#"{"schema_version":1,"name":"t","steps":[]}"#));
+    }
+
+    #[test]
+    fn exit_name_is_the_inverse_of_parse_exit() {
+        for name in [
+            "done",
+            "no_resource",
+            "window_closed",
+            "no_target",
+            "resource_empty",
+            "exhausted",
+            "failed",
+            "skipped",
+        ] {
+            let exit = parse_exit(name).expect("known exit");
+            assert_eq!(exit_name(exit), name);
+        }
+    }
+
+    // ---- param() evaluation through EvalContext ----
+
+    /// Context that answers `param()` from a fixed map; other accessors fail
+    /// loudly (a test never wants a silent default).
+    struct ParamCtx(std::collections::BTreeMap<String, Value>);
+
+    impl EvalContext for ParamCtx {
+        fn appear(&mut self, _sel: &str) -> Result<bool, String> {
+            Err("appear() unavailable in this test".into())
+        }
+        fn ocr(&mut self, _sel: &str) -> Result<Option<String>, String> {
+            Err("ocr() unavailable in this test".into())
+        }
+        fn ocr_digit(&mut self, _sel: &str) -> Result<Option<f64>, String> {
+            Err("ocr_digit() unavailable in this test".into())
+        }
+        fn page(&mut self) -> Result<Option<String>, String> {
+            Err("page() unavailable in this test".into())
+        }
+        fn param(&mut self, key: &str) -> Result<Value, String> {
+            self.0
+                .get(key)
+                .cloned()
+                .ok_or_else(|| format!("no test param `{key}`"))
+        }
+    }
+
+    /// Context that does NOT override `param()`: the trait default must be a
+    /// loud error (old EvalContext implementors keep compiling, but a flow that
+    /// needs `param()` cannot silently see a null).
+    struct NoParamCtx;
+
+    impl EvalContext for NoParamCtx {
+        fn appear(&mut self, _sel: &str) -> Result<bool, String> {
+            Err("appear() unavailable".into())
+        }
+        fn ocr(&mut self, _sel: &str) -> Result<Option<String>, String> {
+            Err("ocr() unavailable".into())
+        }
+        fn ocr_digit(&mut self, _sel: &str) -> Result<Option<f64>, String> {
+            Err("ocr_digit() unavailable".into())
+        }
+        fn page(&mut self) -> Result<Option<String>, String> {
+            Err("page() unavailable".into())
+        }
+    }
+
+    #[test]
+    fn param_call_evaluates_through_the_context() {
+        let e = parse_expr("param('max_rounds') * 2 + 1").expect("parse");
+        let mut ctx = ParamCtx(std::collections::BTreeMap::from([(
+            "max_rounds".to_string(),
+            Value::Num(3.0),
+        )]));
+        assert_eq!(eval(&e, &mut ctx).expect("eval"), Value::Num(7.0));
+
+        let e = parse_expr("param('mode') == 'fast'").expect("parse");
+        let mut ctx = ParamCtx(std::collections::BTreeMap::from([(
+            "mode".to_string(),
+            Value::Str("fast".to_string()),
+        )]));
+        assert_eq!(eval(&e, &mut ctx).expect("eval"), Value::Bool(true));
+    }
+
+    #[test]
+    fn param_without_context_support_or_value_is_a_loud_error() {
+        let e = parse_expr("param('missing')").expect("parse");
+        let err = eval(&e, &mut ParamCtx(Default::default())).expect_err("no value");
+        assert!(err.contains("missing"), "must name the key: {err}");
+
+        let e = parse_expr("param('missing')").expect("parse");
+        let err = eval(&e, &mut NoParamCtx).expect_err("no support");
+        assert!(
+            err.contains("param") && err.contains("missing"),
+            "trait default must name param+key: {err}"
+        );
+    }
+
+    #[test]
+    fn param_requires_exactly_one_string_argument() {
+        let mut ctx = ParamCtx(Default::default());
+        let e = parse_expr("param('a', 'b')").expect("parse");
+        let err = eval(&e, &mut ctx).expect_err("arity");
+        assert!(err.contains("exactly one"), "{err}");
+
+        let e = parse_expr("param(1)").expect("parse");
+        let err = eval(&e, &mut ctx).expect_err("type");
+        assert!(err.contains("string"), "{err}");
     }
 }

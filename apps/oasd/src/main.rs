@@ -20,6 +20,9 @@ mod queue;
 mod stats;
 mod library;
 mod schedule;
+mod scheduler;
+mod config;
+mod task;
 #[cfg(feature = "ocr")]
 mod ocr;
 
@@ -29,7 +32,45 @@ use oas_obs::{read_events, read_meta, Recorder, ReplaySource};
 use oas_types::{InputSink, Point, ScreenSource};
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // Global deployment config (DELIVERY-PLAN M3 / ENGINE §22.34):
+    //   oasd [--config config/live.json] <command> ...
+    // The flag is consumed here so every subcommand can rely on the env/global
+    // values without growing a `--config` parser of its own.
+    let mut config_path: Option<String> = None;
+    let mut i = 0usize;
+    while i < args.len() {
+        if args[i] == "--config" {
+            if i + 1 >= args.len() {
+                eprintln!("--config requires a file path");
+                return ExitCode::from(2);
+            }
+            config_path = Some(args[i + 1].clone());
+            args.drain(i..=i + 1);
+        } else if let Some(p) = args[i].strip_prefix("--config=") {
+            config_path = Some(p.to_string());
+            args.remove(i);
+        } else if args[i] == "--version" || args[i] == "-V" {
+            println!("oasd {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        } else {
+            i += 1;
+        }
+    }
+    if let Some(path) = config_path {
+        match config::OasConfig::load(std::path::Path::new(&path)) {
+            Ok(cfg) => {
+                cfg.apply_env();
+                config::set_global(cfg);
+                println!("config={path}");
+            }
+            Err(e) => {
+                eprintln!("config error: {e}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
     let cmd = args.first().map(|s| s.as_str()).unwrap_or("");
     match cmd {
         "probe" => probe(&args[1..]),
@@ -39,16 +80,21 @@ fn main() -> ExitCode {
         "run" => run::run_cmd(&args[1..]),
         "queue" => queue::queue_cmd(&args[1..]),
         "schedule" => schedule::schedule_cmd(&args[1..]),
+        "scheduler" => schedule::scheduler_cmd(&args[1..]),
         "stats" => stats::stats_cmd(&args[1..]),
+        "task" => task::task_cmd(&args[1..]),
         "serve" => serve_cmd(&args[1..]),
         "" | "-h" | "--help" => {
             eprintln!(
-                "usage:\n  oasd probe [--out <file.png>]\n  oasd tap <x> <y>\n  \
+                "usage:\n  oasd [--config <live.json>] [--version] <command> ...\n  \
+                 oasd probe [--out <file.png>]\n  oasd tap <x> <y>\n  \
                  oasd record <dir> <n>\n  oasd replay <dir>\n  \
                  oasd run --task <bundle-dir> [--replay <bundle-dir>] [--seed <u64>] \
                  [--dry-run] [--record <bundle-dir>] [--events-out <file.jsonl>] \
                  [--clicks-out <file.jsonl>] [--model <rec.onnx>] [--det-model <det.onnx>] \
-                 [--budget-steps N] [--budget-wall S]\n  \
+                 [--budget-steps N] [--budget-wall S] [--param k=v]...\n  \
+                 oasd task lint --tasks-dir <dir> [--all | --task <name>]\n  \
+                 oasd task new --template daily|loop|utility --id <id> --tasks-dir <dir>\n  \
                  oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--model <path>] [--det-model <path>]"
             );
             ExitCode::from(2)
@@ -67,6 +113,28 @@ fn pick_device(adb: &Adb) -> Result<String, String> {
     }
     for d in &devices {
         println!("device: serial={} unique={}", d.serial, d.unique);
+    }
+    if let Some(wanted) = config::device_serial() {
+        match devices.iter().find(|d| d.serial == wanted) {
+            Some(d) => {
+                println!(
+                    "picked: {} (configured; of {} deduped endpoint(s))",
+                    d.serial,
+                    devices.len()
+                );
+                return Ok(d.serial.clone());
+            }
+            None => {
+                let seen = devices
+                    .iter()
+                    .map(|d| d.serial.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(format!(
+                    "configured device `{wanted}` is not attached (seen: [{seen}])"
+                ));
+            }
+        }
     }
     println!(
         "picked: {} (of {} deduped endpoint(s))",

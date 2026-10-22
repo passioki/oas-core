@@ -17,6 +17,9 @@
 //!   GET  /task/assets?task=Name -> assets.json summary
 //!   POST /task/save_flow  -> validate + save flow.json (asset refs checked)
 //!   GET  /task/list       -> task bundle names under --tasks-dir
+//!   POST /task/create     -> atomically create a new task bundle skeleton (N38/M1)
+//!   POST /task/run        -> run a task bundle in the background via `run::execute`
+//!   GET  /task/run/status -> status/log tail of the current or last editor run
 //!   GET  /runs            -> click-run JSONL files under --runs-dir (§21 CD1/CD4)
 //!   GET  /runs/clicks?file=<name> -> one run's CD2 click rows (§21 CD2/CD3)
 //!
@@ -24,15 +27,68 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use oas_adapter_pc::Adb;
 use oas_codec::encode_png;
-use oas_types::{Frame, ScreenSource};
+use oas_runtime::RunResult;
+use oas_types::{Frame, Outcome, ScreenSource};
+
+use crate::run::{RunOptions, RunReport};
+use crate::schedule::{ResetOptions, SchedulerOptions};
 
 /// Upper bound for a POST body (flow.json is small; never buffer more).
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// The **executor** behind `POST /task/run` (N38/M1): the default is the real
+/// `run::execute`, the editor never gets a second copy of the interpreter.
+///
+/// It is a function value on purpose: a unit test can inject a fake executor,
+/// so the whole run state machine (single-run mutex, status JSON, outcome,
+/// error, log tail) is testable without a device or a replay bundle.
+pub type RunExecutor =
+    dyn Fn(&RunOptions, &mut dyn FnMut(&str)) -> Result<RunReport, String> + Send + Sync;
+
+/// Maximum number of log lines kept in memory for one editor run.
+const RUN_LOG_MAX: usize = 2000;
+/// How many of those log lines `GET /task/run/status` returns (the UI polls).
+const RUN_LOG_TAIL: usize = 200;
+
+/// Status of the current/last editor run (`POST /task/run` / `GET /task/run/status`).
+#[derive(Debug, Default)]
+struct RunState {
+    running: bool,
+    task: Option<String>,
+    started_ms: Option<u64>,
+    finished_ms: Option<u64>,
+    /// `run::RunReport::exit_code()`: 0 = Done, 1 = Failed/Exhausted, 2 = setup error.
+    exit: Option<u8>,
+    /// `Done` / `Failed` / `Exhausted` / `Error` (setup failure).
+    outcome: Option<String>,
+    error: Option<String>,
+    /// `live` / `dry-run` / `replay`.
+    mode: Option<String>,
+    dry_run: bool,
+    replay: Option<String>,
+    seed: Option<u64>,
+    /// `live` / `replay` (as reported by the executor); None on setup errors.
+    frame_source: Option<String>,
+    /// Actual clicks of the run (HB6/CD2), when the executor returned a report.
+    clicks: Option<u64>,
+    log: Vec<String>,
+}
+
+impl RunState {
+    fn push_log(&mut self, line: &str) {
+        self.log.push(line.to_string());
+        if self.log.len() > RUN_LOG_MAX {
+            let excess = self.log.len() - RUN_LOG_MAX;
+            self.log.drain(0..excess);
+        }
+    }
+}
 
 struct State {
     frame: Option<Frame>,
@@ -89,6 +145,10 @@ pub struct Server {
     runs_dir: PathBuf,
     /// Root for the global template asset library (`--library-dir`, §22.22).
     library_dir: PathBuf,
+    /// Shared state of the editor-triggered background run (N38/M1).
+    run_state: Arc<Mutex<RunState>>,
+    /// Executor used by `POST /task/run`; replaceable in tests.
+    run_executor: Arc<RunExecutor>,
     #[cfg(feature = "ocr")]
     ocr: Option<Arc<Mutex<oas_ocr::onnx::RecEngine>>>,
     #[cfg(feature = "ocr")]
@@ -97,6 +157,7 @@ pub struct Server {
 
 impl Server {
     pub fn new(adb: Adb) -> Self {
+        let default_executor: Arc<RunExecutor> = Arc::new(default_run_executor);
         Self {
             adb,
             state: Arc::new(Mutex::new(State {
@@ -111,11 +172,20 @@ impl Server {
             tasks_dir: PathBuf::from("tasks"),
             runs_dir: PathBuf::from("runs"),
             library_dir: PathBuf::from(crate::library::DEFAULT_DIR),
+            run_state: Arc::new(Mutex::new(RunState::default())),
+            run_executor: default_executor,
             #[cfg(feature = "ocr")]
             ocr: None,
             #[cfg(feature = "ocr")]
             det: None,
         }
+    }
+
+    /// Replace the executor behind `POST /task/run` (tests inject a fake one so
+    /// the run state machine can be checked without a device).
+    pub fn with_run_executor(mut self, executor: Arc<RunExecutor>) -> Self {
+        self.run_executor = executor;
+        self
     }
 
     /// Set the task-bundle root (default `tasks`).
@@ -208,7 +278,23 @@ impl Server {
                 return;
             }
         };
-        let serial = devices[0].serial.clone();
+        let serial = match crate::config::device_serial() {
+            Some(wanted) => match devices.iter().find(|d| d.serial == wanted) {
+                Some(d) => d.serial.clone(),
+                None => {
+                    let seen = devices
+                        .iter()
+                        .map(|d| d.serial.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.set_error(&format!(
+                        "configured device `{wanted}` not attached (seen: [{seen}])"
+                    ));
+                    return;
+                }
+            },
+            None => devices[0].serial.clone(),
+        };
         let mut screen = self.adb.screen(&serial);
         match screen.grab() {
             Ok(frame) => match encode_png(&frame) {
@@ -342,6 +428,13 @@ impl Server {
             ("GET", "/task/flow") => self.handle_task_flow(&mut out, &path),
             ("POST", "/task/save_flow") => self.handle_save_flow(&mut out, &body),
             ("GET", "/task/list") => self.handle_task_list(&mut out),
+            // --- N38/M1: task creation + editor-triggered run ---
+            ("POST", "/task/create") => self.handle_task_create(&mut out, &body),
+            ("POST", "/task/run") => self.handle_task_run(&mut out, &body),
+            ("GET", "/task/run/status") => self.handle_run_status(&mut out),
+            // --- M2/N37: scheduler status panel + reset-memory dialog ---
+            ("GET", "/scheduler/status") => self.handle_scheduler_status(&mut out),
+            ("POST", "/scheduler/reset") => self.handle_scheduler_reset(&mut out, &body),
             ("GET", "/stats") => self.handle_stats(&mut out),
             ("GET", "/match") => self.handle_match(&mut out, &path),
             // --- §22.22 global template asset library ---
@@ -621,6 +714,7 @@ fn reason_phrase(code: u16) -> &'static str {
         200 => "OK",
         400 => "Bad Request",
         404 => "Not Found",
+        409 => "Conflict",
         413 => "Payload Too Large",
         500 => "Internal Server Error",
         501 => "Not Implemented",
@@ -1715,6 +1809,770 @@ fn json_opt_roi_back(v: &serde_json::Value) -> Result<Option<[i32; 4]>, String> 
 }
 
 // ---------------------------------------------------------------------------
+// N38/M1: task creation + editor-triggered runs
+// ---------------------------------------------------------------------------
+
+/// Templates accepted by `POST /task/create` (the same names as M0
+/// `oasd task new --template daily|loop|utility`).
+const TASK_TEMPLATES: [&str; 3] = ["daily", "loop", "utility"];
+
+/// Default executor: the one and only `run::execute` (no second interpreter).
+fn default_run_executor(
+    opts: &RunOptions,
+    out: &mut dyn FnMut(&str),
+) -> Result<RunReport, String> {
+    crate::run::execute(opts, out)
+}
+
+/// Per-template defaults for a freshly created bundle, aligned with M0's
+/// `templates/` (ENGINE §22.34.2 contract fields):
+/// `(category, params, capabilities.duration_hint_s)`.
+fn template_defaults(template: &str) -> (&'static str, serde_json::Value, u32) {
+    match template {
+        "loop" => (
+            // ENGINE's category enum has no `loop`; M0 maps the loop template to
+            // a repeatable utility task (the lifecycle lives in scheduler.json).
+            "utility",
+            serde_json::json!([
+                {"key": "max_rounds", "type": "int", "default": 3, "min": 1, "max": 99}
+            ]),
+            600,
+        ),
+        "utility" => ("utility", serde_json::json!([]), 60),
+        _ => ("daily", serde_json::json!([]), 300),
+    }
+}
+
+/// A bundle that is about to be created.
+struct CreateSpec<'a> {
+    name: &'a str,
+    template: &'a str,
+    description: &'a str,
+}
+
+/// Where [`create_task_bundle_with_hook`] currently is. Test failpoints hook
+/// here so every abort path can be proven to clean up after itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CreateStage {
+    /// Staging directory created (visible bundle dir does not exist yet).
+    Staged,
+    /// `flow.json` / `assets.json` / `images/` written inside the staging dir.
+    FilesWritten,
+    /// `meta.json` written; `TaskBundle::validate()` + M0 `lint()` passed
+    /// (still the staging dir, so a lint failure rolls back nothing visible).
+    Validated,
+    /// Last step before the staging dir is published as `tasks/<name>`.
+    BeforeRename,
+}
+
+impl Server {
+    /// `POST /task/create` — body `{name, template?, description?}`.
+    ///
+    /// Creates `tasks/<name>/{meta.json,flow.json,assets.json,images/}` in one
+    /// shot. Nothing is visible (and nothing is overwritten) until every file is
+    /// written and the generated skeleton passed `TaskBundle::validate()` plus
+    /// the M0 unified-template lint: the staging directory is then renamed into
+    /// place. Any failure removes the staging directory again (rollback).
+    /// Duplicate/existing names answer 409.
+    fn handle_task_create(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => {
+                return self.send_errors(out, 400, vec![format!("请求体不是合法 JSON：{e}")])
+            }
+        };
+        let name = match json_str_field(&v, "name") {
+            Ok(n) => n,
+            Err(e) => return self.send_errors(out, 400, vec![format!("任务名称缺失：{e}")]),
+        };
+        if name.is_empty() {
+            return self.send_errors(out, 400, vec!["任务名称不能为空".to_string()]);
+        }
+        if let Err(e) = oas_task::validate_task_name(&name) {
+            return self.send_errors(out, 400, vec![format!("任务名称不合法：{e}")]);
+        }
+        let template = match v.get("template") {
+            None | Some(serde_json::Value::Null) => "daily".to_string(),
+            Some(serde_json::Value::String(s)) => {
+                let t = s.trim().to_string();
+                if !TASK_TEMPLATES.contains(&t.as_str()) {
+                    return self.send_errors(
+                        out,
+                        400,
+                        vec![format!(
+                            "未知模板「{t}」（可选：{}）",
+                            TASK_TEMPLATES.join(" / ")
+                        )],
+                    );
+                }
+                t
+            }
+            Some(other) => {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec![format!(
+                        "`template` 必须是字符串（daily/loop/utility），收到 {other}"
+                    )],
+                )
+            }
+        };
+        let description = match v.get("description") {
+            None | Some(serde_json::Value::Null) => String::new(),
+            Some(serde_json::Value::String(s)) => s.trim().to_string(),
+            Some(other) => {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec![format!("`description` 必须是字符串，收到 {other}")],
+                )
+            }
+        };
+        if description.chars().count() > 500 {
+            return self.send_errors(out, 400, vec!["任务描述最多 500 个字符".to_string()]);
+        }
+        let target = self.tasks_dir.join(&name);
+        if target.exists() {
+            return self.send_errors(
+                out,
+                409,
+                vec![format!("任务「{name}」已存在（不会覆盖已有任务）")],
+            );
+        }
+        let spec = CreateSpec {
+            name: &name,
+            template: &template,
+            description: &description,
+        };
+        match create_task_bundle(&self.tasks_dir, &spec) {
+            Ok(task) => {
+                let body = serde_json::json!({"ok": true, "task": task});
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(e) => self.send_errors(out, 400, vec![e]),
+        }
+    }
+
+    /// `POST /task/run` — body `{task, dry_run?, seed?, replay?}`.
+    ///
+    /// Starts the run in a background thread through [`Server::run_executor`]
+    /// (the real one calls `run::execute`); the state lives in `run_state` and is
+    /// polled via `GET /task/run/status`. Only one run at a time: a second start
+    /// while running answers 409.
+    fn handle_task_run(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => {
+                return self.send_errors(out, 400, vec![format!("请求体不是合法 JSON：{e}")])
+            }
+        };
+        let task = match json_str_field(&v, "task") {
+            Ok(t) => t,
+            Err(e) => return self.send_errors(out, 400, vec![format!("缺少任务名：{e}")]),
+        };
+        if let Err(e) = oas_task::validate_task_name(&task) {
+            return self.send_errors(out, 400, vec![format!("任务名称不合法：{e}")]);
+        }
+        let dry_run = match json_opt_bool(&v, "dry_run") {
+            Ok(b) => b.unwrap_or(false),
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let seed = match json_opt_u64(&v, "seed") {
+            Ok(s) => s,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let replay = match json_opt_str(&v, "replay") {
+            Ok(s) => s.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        if let Some(dir) = &replay {
+            if !Path::new(dir).is_dir() {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec![format!(
+                        "回放目录不存在：{dir}（先用 `oasd run --record` 录一个回放包，或留空）"
+                    )],
+                );
+            }
+        }
+        let task_dir = self.tasks_dir.join(&task);
+        if !task_dir.join("meta.json").is_file() {
+            return self.send_errors(
+                out,
+                404,
+                vec![format!(
+                    "任务「{task}」不存在（先在任务面板点「新建任务」或刷新任务列表）"
+                )],
+            );
+        }
+        let mode = if replay.is_some() {
+            "replay"
+        } else if dry_run {
+            "dry-run"
+        } else {
+            "live"
+        };
+        let started_ms = now_ms();
+        {
+            let mut st = self.run_state.lock().unwrap();
+            if st.running {
+                let running = st.task.clone().unwrap_or_else(|| "（未知任务）".to_string());
+                drop(st);
+                return self.send_errors(
+                    out,
+                    409,
+                    vec![format!(
+                        "已有任务正在运行：{running}；等它结束再试（GET /task/run/status 查看进度）"
+                    )],
+                );
+            }
+            *st = RunState {
+                running: true,
+                task: Some(task.clone()),
+                started_ms: Some(started_ms),
+                mode: Some(mode.to_string()),
+                dry_run,
+                replay: replay.clone(),
+                seed: seed.filter(|s| *s != 0),
+                ..RunState::default()
+            };
+        }
+
+        // The exact `oasd run` equivalent: same RunOptions, same execute().
+        let mut opts = RunOptions::default();
+        opts.task = Some(task_dir);
+        opts.replay = replay.as_ref().map(PathBuf::from);
+        opts.seed = seed;
+        opts.dry_run = dry_run;
+        opts.library = self.library_dir.clone();
+        // Click audit (CD2) is written even for dry/replay runs, so the editor's
+        // 点击分布 panel sees editor-triggered runs exactly like CLI runs.
+        opts.clicks_out = Some(
+            self.runs_dir
+                .join(format!("editor-{task}-{started_ms}.clicks.jsonl")),
+        );
+
+        let state = self.run_state.clone();
+        let executor = self.run_executor.clone();
+        let spawned = std::thread::Builder::new()
+            .name("oasd-editor-run".to_string())
+            .spawn(move || {
+                let log_state = state.clone();
+                let mut emit = move |line: &str| {
+                    if let Ok(mut st) = log_state.lock() {
+                        st.push_log(line);
+                    }
+                };
+                let emit_ref: &mut dyn FnMut(&str) = &mut emit;
+                let result = executor(&opts, emit_ref);
+                let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+                st.running = false;
+                st.finished_ms = Some(now_ms());
+                match result {
+                    Ok(report) => {
+                        st.exit = Some(report.exit_code());
+                        st.outcome = Some(outcome_label(report.outcome()).to_string());
+                        st.frame_source = Some(report.frame_source.as_str().to_string());
+                        st.clicks = Some(report.clicks.len() as u64);
+                        if let RunResult::Failed(m) | RunResult::Exhausted(m) = &report.result {
+                            st.error = Some(m.clone());
+                        }
+                    }
+                    Err(e) => {
+                        // Setup errors are `oasd run` exit code 2, never "Failed".
+                        st.exit = Some(2);
+                        st.outcome = Some("Error".to_string());
+                        st.error = Some(e.clone());
+                        st.push_log(&format!("error={e}"));
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            let mut st = self.run_state.lock().unwrap();
+            st.running = false;
+            st.error = Some(format!("启动后台运行线程失败：{e}"));
+            drop(st);
+            return self.send_errors(out, 500, vec![format!("启动后台运行线程失败：{e}")]);
+        }
+        let body = serde_json::json!({
+            "ok": true,
+            "running": true,
+            "task": task,
+            "started_ms": started_ms,
+            "mode": mode,
+            "dry_run": dry_run,
+            "seed": seed,
+            "replay": replay,
+        });
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `GET /task/run/status` — `{running, task, started_ms, finished_ms, exit,
+    /// outcome, error, log_tail[], ...}`. Always 200 (never run == empty state).
+    fn handle_run_status(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let st = self.run_state.lock().unwrap();
+        let start = st.log.len().saturating_sub(RUN_LOG_TAIL);
+        let body = serde_json::json!({
+            "ok": true,
+            "running": st.running,
+            "task": st.task,
+            "started_ms": st.started_ms,
+            "finished_ms": st.finished_ms,
+            "exit": st.exit,
+            "outcome": st.outcome,
+            "error": st.error,
+            "mode": st.mode,
+            "dry_run": st.dry_run,
+            "replay": st.replay,
+            "seed": st.seed,
+            "frame_source": st.frame_source,
+            "clicks": st.clicks,
+            "log_count": st.log.len(),
+            "log_tail": &st.log[start..],
+        });
+        drop(st);
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// Scheduler options for the read-only panel: paths come from the global
+    /// live config (`scheduler.plan/state`), never shell out to another process.
+    fn scheduler_options(&self) -> SchedulerOptions {
+        let mut o = SchedulerOptions {
+            tasks_dir: self.tasks_dir.clone(),
+            library: self.library_dir.clone(),
+            ..SchedulerOptions::default()
+        };
+        if let Some(cfg) = crate::config::global() {
+            if !cfg.scheduler.plan.trim().is_empty() {
+                o.config = PathBuf::from(cfg.scheduler.plan.trim());
+            }
+            if !cfg.scheduler.state.trim().is_empty() {
+                o.state = Some(PathBuf::from(cfg.scheduler.state.trim()));
+            }
+        }
+        o
+    }
+
+    fn scheduler_reset_options(&self, body: &serde_json::Value) -> ResetOptions {
+        let mut o = ResetOptions {
+            tasks_dir: self.tasks_dir.clone(),
+            include_checkpoint: true,
+            ..ResetOptions::default()
+        };
+        let base = self.scheduler_options();
+        o.config = base.config;
+        o.state = base.state;
+        o.tasks = body
+            .get("tasks")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        o.all = body.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
+        o.include_checkpoint = body
+            .get("include_checkpoint")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        o.keep_checkpoint = !o.include_checkpoint;
+        o
+    }
+
+    /// `GET /scheduler/status` — read-only scheduler panel data (M2/N37).
+    /// Never takes the scheduler lock; safe while the daemon runs.
+    fn handle_scheduler_status(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        match crate::schedule::status_json(&self.scheduler_options()) {
+            Ok(v) => self.send_json(out, 200, &v.to_string()),
+            Err(e) => self.send_errors(out, 400, vec![format!("scheduler status: {e}")]),
+        }
+    }
+
+    /// `POST /scheduler/reset` — reset memory for selected tasks (all/invert
+    /// selection is computed by the UI). 409 when the scheduler is running.
+    fn handle_scheduler_reset(
+        &self,
+        out: &mut TcpStream,
+        body: &[u8],
+    ) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let opts = self.scheduler_reset_options(&v);
+        if !opts.all && opts.tasks.is_empty() {
+            return self.send_errors(
+                out,
+                400,
+                vec!["请选择要重置记忆的任务（tasks）或 all=true".into()],
+            );
+        }
+        let mut lines: Vec<String> = Vec::new();
+        match crate::schedule::reset_memory(&opts, &mut |s| lines.push(s.to_string())) {
+            Ok(rep) => {
+                let body = serde_json::json!({
+                    "ok": true,
+                    "report": rep,
+                    "log": lines,
+                });
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(e) => {
+                let busy = e.contains("running")
+                    || e.contains("运行")
+                    || e.contains("占用")
+                    || e.contains("lock");
+                let code = if busy { 409 } else { 500 };
+                self.send_errors(out, code, vec![format!("reset-memory: {e}")])
+            }
+        }
+    }
+}
+
+/// `Outcome` -> the 3-state label `oasd run` prints (`outcome=Done|Failed|Exhausted`).
+fn outcome_label(outcome: Outcome) -> &'static str {
+    match outcome {
+        Outcome::Done => "Done",
+        Outcome::Failed => "Failed",
+        Outcome::Exhausted => "Exhausted",
+    }
+}
+
+/// Epoch milliseconds (same clock `oasd run` reports in `ts_ms`/seed).
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+static CREATE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Unique staging directory **inside** `tasks_dir` (same volume => the final
+/// rename is atomic). The name keeps the task name so a crash leaves a clue.
+fn unique_staging_dir(tasks_dir: &Path, name: &str) -> PathBuf {
+    loop {
+        let seq = CREATE_SEQ.fetch_add(1, Ordering::Relaxed);
+        let candidate = tasks_dir.join(format!(
+            ".oasd-create-{}-{seq}-{name}",
+            std::process::id()
+        ));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+}
+
+/// Write `text` atomically (sibling tmp file + rename), creating the parent dir.
+fn write_text_atomic(path: &Path, text: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("`{}` 没有父目录", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("创建目录 `{}` 失败：{e}", parent.display()))?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("oas-task");
+    let seq = CREATE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = parent.join(format!(".{name}.tmp-{}-{seq}", std::process::id()));
+    if let Err(e) = std::fs::write(&tmp, text) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("写入 `{}` 失败：{e}", tmp.display()));
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!(
+            "重命名 `{}` -> `{}` 失败：{e}",
+            tmp.display(),
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn json_pretty(v: &serde_json::Value) -> Result<String, String> {
+    let mut text =
+        serde_json::to_string_pretty(v).map_err(|e| format!("序列化 JSON 失败：{e}"))?;
+    text.push('\n');
+    Ok(text)
+}
+
+/// M0 contract (`task_id` syntax == task-directory-name syntax): derive a stable
+/// id from the (human, Chinese-allowed) task name.
+fn slugify_task_id(name: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = false;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            last_dash = false;
+        } else if c.is_whitespace() || matches!(c, '-' | '_' | '.') {
+            if !out.is_empty() && !last_dash {
+                out.push('-');
+                last_dash = true;
+            }
+        } else if ('\u{4e00}'..='\u{9fa5}').contains(&c) {
+            out.push(c);
+            last_dash = false;
+        }
+        if out.chars().count() >= 120 {
+            break;
+        }
+    }
+    let mut slug = out.trim_matches('-').to_string();
+    if slug.is_empty() {
+        return "task".to_string();
+    }
+    // The slug itself must be a legal task-directory name (e.g. "con" is not).
+    if oas_task::validate_task_name(&slug).is_ok() {
+        return slug;
+    }
+    slug = format!("task-{slug}");
+    if slug.chars().count() > 120 {
+        slug = slug.chars().take(120).collect();
+    }
+    if oas_task::validate_task_name(&slug).is_ok() {
+        slug
+    } else {
+        "task".to_string()
+    }
+}
+
+/// `meta.json` of a freshly created bundle: ENGINE §22.34.2 contract fields with
+/// the M0 defaults (old bundles without them behave exactly like this).
+fn new_task_meta(spec: &CreateSpec) -> serde_json::Value {
+    let (category, params, duration_hint_s) = template_defaults(spec.template);
+    let task_id = slugify_task_id(spec.name);
+    let mut meta = serde_json::json!({
+        "schema_version": 1,
+        "template_version": 1,
+        "task_id": task_id,
+        "name": spec.name,
+        "version": 1,
+        // Old (pre-contract) field: still accepted, `category` is authoritative.
+        "expire": "daily",
+        "category": category,
+        "params": params,
+        "exits": {
+            "done": {"result": "success"},
+            "failed": {"result": "retryable"},
+        },
+        "capabilities": {
+            "checkpoint": true,
+            "interruptible": false,
+            "duration_hint_s": duration_hint_s,
+        },
+        "resources": [],
+    });
+    if spec.template == "daily" {
+        // schedule_hint only feeds UI defaults; it is never the scheduling authority.
+        meta["schedule_hint"] = serde_json::json!({
+            "windows": [],
+            "quota": {"per": "day", "times": 1},
+        });
+    }
+    if !spec.description.is_empty() {
+        meta["description"] = serde_json::json!(spec.description);
+    }
+    meta
+}
+
+/// Skeleton `flow.json`: `log` + `finish("done")`.
+///
+/// The `loop` template adds M0's bounded `loop(param('max_rounds'))` block
+/// (ENGINE §22.34.2 T1: the last top-level step is still a declared `finish`;
+/// `param('max_rounds')` is declared in that template's `meta.params`).
+/// `name` and `schema_version` are mandatory for the DSL loader.
+fn new_task_flow(spec: &CreateSpec) -> Result<String, String> {
+    // The expression language has string literals but NO escapes, so the log
+    // text is built from the validated name (no `"` / control chars are legal in
+    // a task name, by oas_task::validate_task_name).
+    let message = format!(
+        "任务「{}」骨架已创建（{} 模板）：在编辑器里添加素材/步骤后点「运行任务」",
+        spec.name, spec.template
+    );
+    let mut steps = vec![serde_json::json!({
+        "op": "log",
+        "args": {"level": "info", "text": format!("\"{message}\"")},
+    })];
+    if spec.template == "loop" {
+        steps.push(serde_json::json!({
+            "op": "loop",
+            // Bounded by the declared param (default 3, range 1..=99 from meta).
+            "args": {"n": "param('max_rounds')"},
+            "body": [{
+                "op": "log",
+                "args": {
+                    "level": "info",
+                    "text": "\"loop round（占位：请在编辑器里替换为真实操作）\"",
+                },
+            }],
+        }));
+    }
+    steps.push(serde_json::json!({"op": "finish", "args": {"exit": "done"}}));
+    let flow = serde_json::json!({
+        "schema_version": 1,
+        "name": spec.name,
+        "steps": steps,
+    });
+    json_pretty(&flow)
+}
+
+/// `assets.json` skeleton: the editor's canonical design resolution, no items.
+fn new_task_assets() -> Result<String, String> {
+    json_pretty(&serde_json::json!({
+        "schema_version": 1,
+        "design_resolution": [1280, 720],
+        "items": [],
+    }))
+}
+
+/// Create one task bundle (no failpoints; production path).
+fn create_task_bundle(tasks_dir: &Path, spec: &CreateSpec) -> Result<serde_json::Value, String> {
+    create_task_bundle_with_hook(tasks_dir, spec, |_| Ok(()))
+}
+
+/// Create one task bundle with an injectable failpoint (tests prove rollback).
+///
+/// Steps: staging dir -> flow/assets/images -> meta -> `TaskBundle::validate()`
+/// -> rename into `tasks/<name>`. A failure at **any** point removes the staging
+/// directory again, so a failed create leaves neither a half bundle nor an
+/// existing task touched. The visible directory only appears via the final
+/// atomic rename of an already valid bundle.
+fn create_task_bundle_with_hook<F>(
+    tasks_dir: &Path,
+    spec: &CreateSpec,
+    mut fail: F,
+) -> Result<serde_json::Value, String>
+where
+    F: FnMut(CreateStage) -> Result<(), String>,
+{
+    if spec.name.is_empty() {
+        return Err("任务名称不能为空".to_string());
+    }
+    oas_task::validate_task_name(spec.name).map_err(|e| format!("任务名称不合法：{e}"))?;
+    let final_dir = tasks_dir.join(spec.name);
+    if final_dir.exists() {
+        return Err(format!("任务「{}」已存在（不会覆盖已有任务）", spec.name));
+    }
+    let meta = new_task_meta(spec);
+    let meta_text = json_pretty(&meta)?;
+    let flow_text = new_task_flow(spec)?;
+    let assets_text = new_task_assets()?;
+    // Fail BEFORE touching the disk if our own skeleton is not loadable. The same
+    // rules the runtime uses (not a second, weaker parser).
+    let flow = oas_flow::Flow::from_json(&flow_text)
+        .map_err(|e| format!("生成的 flow.json 不合法（内部错误）：{e}"))?;
+    let no_assets = std::collections::BTreeSet::new();
+    flow.validate_assets(&no_assets).map_err(|errs| {
+        format!(
+            "生成的 flow.json 引用校验失败（内部错误）：{}",
+            errs.iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    })?;
+
+    std::fs::create_dir_all(tasks_dir)
+        .map_err(|e| format!("创建任务根目录 `{}` 失败：{e}", tasks_dir.display()))?;
+    let staging = unique_staging_dir(tasks_dir, spec.name);
+    let published = std::cell::Cell::new(false);
+    let result = (|| -> Result<(), String> {
+        std::fs::create_dir(&staging)
+            .map_err(|e| format!("创建临时目录 `{}` 失败：{e}", staging.display()))?;
+        fail(CreateStage::Staged)?;
+        std::fs::write(staging.join("flow.json"), &flow_text)
+            .map_err(|e| format!("写入 flow.json 失败：{e}"))?;
+        std::fs::write(staging.join("assets.json"), &assets_text)
+            .map_err(|e| format!("写入 assets.json 失败：{e}"))?;
+        std::fs::create_dir_all(staging.join("images"))
+            .map_err(|e| format!("创建 images/ 失败：{e}"))?;
+        fail(CreateStage::FilesWritten)?;
+        write_text_atomic(&staging.join("meta.json"), &meta_text)?;
+        // Pre-M0 `bundle.validate()` (old bundles: schema/name/expire + asset refs)
+        // AND M0's unified-template lint (ENGINE §22.34.2 META/T1/T3/T4/T5/T6).
+        // A freshly generated skeleton must satisfy both; otherwise roll back.
+        let bundle = oas_task::TaskBundle::open(&staging)?;
+        bundle.validate().map_err(|errs| {
+            format!("生成的骨架没有通过 bundle 校验：{}", errs.join("; "))
+        })?;
+        bundle.lint().map_err(|issues| {
+            format!(
+                "生成的骨架没有通过任务 lint：{}",
+                issues
+                    .iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
+        })?;
+        fail(CreateStage::Validated)?;
+        fail(CreateStage::BeforeRename)?;
+        std::fs::rename(&staging, &final_dir).map_err(|e| {
+            format!(
+                "发布任务目录 `{}` -> `{}` 失败（是否已被占用？）：{e}",
+                staging.display(),
+                final_dir.display()
+            )
+        })?;
+        published.set(true);
+        Ok(())
+    })();
+
+    // Rollback: remove the staging dir on every abort path. If the rename already
+    // happened the staging path no longer exists (the run is a success then).
+    if result.is_err() && !published.get() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    result?;
+    let (category, _, _) = template_defaults(spec.template);
+    Ok(serde_json::json!({
+        "name": spec.name,
+        "template": spec.template,
+        "category": category,
+        "task_id": meta["task_id"],
+        "path": final_dir.display().to_string(),
+        "files": ["meta.json", "flow.json", "assets.json", "images/"],
+        "meta": meta,
+    }))
+}
+
+/// Optional boolean JSON field (`missing`/`null` => `None`, wrong type => error).
+fn json_opt_bool(v: &serde_json::Value, key: &str) -> Result<Option<bool>, String> {
+    match v.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Bool(b)) => Ok(Some(*b)),
+        Some(other) => Err(format!("`{key}` 必须是布尔值，收到 {other}")),
+    }
+}
+
+/// Optional unsigned JSON field.
+fn json_opt_u64(v: &serde_json::Value, key: &str) -> Result<Option<u64>, String> {
+    match v.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(x) => match x.as_u64() {
+            Some(n) => Ok(Some(n)),
+            None => Err(format!("`{key}` 必须是无符号整数（u64），收到 {x}")),
+        },
+    }
+}
+
+/// Optional string JSON field.
+fn json_opt_str(v: &serde_json::Value, key: &str) -> Result<Option<String>, String> {
+    match v.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
+        Some(other) => Err(format!("`{key}` 必须是字符串，收到 {other}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // N4 tests: pure helpers + the real routes over a loopback socket// ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -2090,5 +2948,516 @@ mod tests {
             v.get("frames").and_then(|f| f.as_array()).map(|a| a.len()),
             Some(0)
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // N38/M1: task creation + editor-triggered run
+    // -----------------------------------------------------------------------
+
+    fn server_with_tasks(td: &Path) -> Server {
+        Server::new(Adb::from_env())
+            .with_tasks_dir(td.join("tasks"))
+            .with_runs_dir(td.join("runs"))
+            .with_library_dir(td.join("library"))
+    }
+
+    /// Create one valid bundle in the test tasks dir (through the real helper).
+    fn make_task(tasks_dir: &Path, name: &str) -> serde_json::Value {
+        let spec = CreateSpec {
+            name,
+            template: "daily",
+            description: "",
+        };
+        create_task_bundle(tasks_dir, &spec).expect("create a test task bundle")
+    }
+
+    fn read_json(path: &Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).expect("read json file"))
+            .expect("valid json")
+    }
+
+    fn source_entries(dir: &Path) -> Vec<String> {
+        match std::fs::read_dir(dir) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn poll_run_status(server: &Server) -> serde_json::Value {
+        let (status, body) = get_route(server, "/task/run/status");
+        assert!(status.contains("200"), "status route: {status} {body}");
+        serde_json::from_str(&body).expect("status JSON")
+    }
+
+    fn wait_run_finished(server: &Server, timeout_ms: u64) -> serde_json::Value {
+        let t0 = std::time::Instant::now();
+        loop {
+            let v = poll_run_status(server);
+            if v["running"] == serde_json::Value::Bool(false) {
+                return v;
+            }
+            assert!(
+                t0.elapsed() < std::time::Duration::from_millis(timeout_ms),
+                "run did not finish in {timeout_ms}ms: {v}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn done_report() -> RunReport {
+        RunReport {
+            seed: 42,
+            frame_source: crate::run::FrameSource::Live,
+            events: Vec::new(),
+            result: RunResult::Finished(oas_types::Exit::Done),
+            clicks: vec![oas_types::Point { x: 10, y: 20 }],
+        }
+    }
+
+    /// Blocking fake executor: proves the single-run mutex (409) and that the
+    /// status route reports `running` before the result is available.
+    struct Gate {
+        released: Mutex<bool>,
+        cv: std::sync::Condvar,
+    }
+
+    impl Gate {
+        fn new() -> Self {
+            Self {
+                released: Mutex::new(false),
+                cv: std::sync::Condvar::new(),
+            }
+        }
+
+        fn wait(&self) {
+            let mut g = self.released.lock().unwrap();
+            while !*g {
+                g = self.cv.wait(g).unwrap();
+            }
+        }
+
+        fn open(&self) {
+            *self.released.lock().unwrap() = true;
+            self.cv.notify_all();
+        }
+    }
+
+    #[test]
+    fn task_create_writes_a_valid_skeleton_and_lists_it() {
+        let td = TempDir::new("task-create");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path());
+        let (status, body) = post_route(
+            &server,
+            "/task/create",
+            "application/json",
+            r#"{"name":"新建任务A","template":"daily","description":"冒烟任务"}"#
+                .as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("create JSON");
+        assert_eq!(v["ok"], serde_json::Value::Bool(true));
+        let task = &v["task"];
+        assert_eq!(task["name"], "新建任务A");
+        assert_eq!(task["template"], "daily");
+        assert_eq!(task["category"], "daily");
+        assert!(task["task_id"].as_str().is_some_and(|s| !s.is_empty()));
+
+        let dir = tasks_dir.join("新建任务A");
+        for f in ["meta.json", "flow.json", "assets.json"] {
+            assert!(dir.join(f).is_file(), "missing {f}");
+        }
+        assert!(dir.join("images").is_dir(), "images/ must exist");
+
+        let meta = read_json(&dir.join("meta.json"));
+        assert_eq!(meta["schema_version"], 1);
+        assert_eq!(meta["template_version"], 1);
+        assert_eq!(meta["name"], "新建任务A");
+        assert_eq!(meta["version"], 1);
+        assert_eq!(meta["expire"], "daily");
+        assert_eq!(meta["category"], "daily");
+        assert_eq!(meta["params"], serde_json::json!([]));
+        assert_eq!(meta["exits"]["done"]["result"], "success");
+        assert_eq!(meta["exits"]["failed"]["result"], "retryable");
+        assert_eq!(meta["capabilities"]["checkpoint"], true);
+        assert_eq!(meta["resources"], serde_json::json!([]));
+        assert_eq!(meta["description"], "冒烟任务");
+
+        let assets = read_json(&dir.join("assets.json"));
+        assert_eq!(assets["design_resolution"], serde_json::json!([1280, 720]));
+        assert_eq!(assets["items"], serde_json::json!([]));
+
+        // The skeleton is loadable by the DSL and ends in a declared exit.
+        let flow_text = std::fs::read_to_string(dir.join("flow.json")).expect("flow text");
+        let flow = oas_flow::Flow::from_json(&flow_text).expect("skeleton flow parses");
+        assert_eq!(flow.name, "新建任务A");
+        assert!(flow_text.contains("\"log\""));
+        assert!(flow_text.contains("\"finish\""));
+
+        // The same bundle validation /task/create runs after writing.
+        oas_task::TaskBundle::open_named(&tasks_dir, "新建任务A")
+            .expect("open bundle")
+            .validate()
+            .expect("skeleton bundle validates");
+        oas_task::TaskBundle::open_named(&tasks_dir, "新建任务A")
+            .expect("open bundle")
+            .lint()
+            .expect("created skeleton must pass M0 task lint");
+
+        // GET /task/list now lists it.
+        let (status, body) = get_route(&server, "/task/list");
+        assert!(status.contains("200"), "{status} {body}");
+        let list: serde_json::Value = serde_json::from_str(&body).expect("list JSON");
+        let names: Vec<&str> = list["tasks"]
+            .as_array()
+            .expect("tasks array")
+            .iter()
+            .filter_map(|t| t.as_str())
+            .collect();
+        assert!(names.contains(&"新建任务A"), "{names:?}");
+    }
+
+    #[test]
+    fn task_create_defaults_follow_the_m0_contract() {
+        let td = TempDir::new("task-templates");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path());
+        // (name, template, category, duration_hint_s, param key or None)
+        let cases = [
+            ("模板日常", "daily", "daily", 300u64, None),
+            ("模板循环", "loop", "utility", 600u64, Some("max_rounds")),
+            ("模板工具", "utility", "utility", 60u64, None),
+        ];
+        for (name, template, category, duration, param_key) in cases {
+            let body = format!(r#"{{"name":"{name}","template":"{template}"}}"#);
+            let (status, out) =
+                post_route(&server, "/task/create", "application/json", body.as_bytes());
+            assert!(status.contains("200"), "{template}: {status} {out}");
+            let dir = tasks_dir.join(name);
+            let meta = read_json(&dir.join("meta.json"));
+            assert_eq!(meta["category"], category, "{template} category");
+            assert_eq!(
+                meta["capabilities"]["duration_hint_s"], duration,
+                "{template} duration_hint_s"
+            );
+            assert_eq!(meta["exits"]["done"]["result"], "success");
+            assert_eq!(meta["exits"]["failed"]["result"], "retryable");
+            match param_key {
+                Some(key) => {
+                    let params = meta["params"].as_array().expect("params array");
+                    assert_eq!(params.len(), 1, "{template} must declare {key}");
+                    assert_eq!(params[0]["key"], key);
+                    assert_eq!(params[0]["default"], 3);
+                }
+                None => assert_eq!(meta["params"], serde_json::json!([])),
+            }
+            let flow = oas_flow::Flow::from_json(
+                &std::fs::read_to_string(dir.join("flow.json")).expect("flow"),
+            )
+            .expect("flow parses");
+            assert_eq!(flow.name, name);
+            if template == "loop" {
+                assert!(
+                    flow.param_uses().contains("max_rounds"),
+                    "loop skeleton must use its declared max_rounds param"
+                );
+            }
+            oas_task::TaskBundle::open_named(&tasks_dir, name)
+                .expect("open")
+                .validate()
+                .expect("validates");
+            oas_task::TaskBundle::open_named(&tasks_dir, name)
+                .expect("open")
+                .lint()
+                .unwrap_or_else(|issues| {
+                    panic!(
+                        "{template} skeleton must pass M0 lint: {:?}",
+                        issues.iter().map(|i| i.to_string()).collect::<Vec<_>>()
+                    )
+                });
+        }
+        // daily also carries the UI-default schedule_hint (never authoritative).
+        let daily = read_json(&tasks_dir.join("模板日常").join("meta.json"));
+        assert_eq!(daily["schedule_hint"]["quota"]["per"], "day");
+    }
+
+    #[test]
+    fn task_create_rejects_bad_names_and_traversal() {
+        let td = TempDir::new("task-bad-names");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path());
+        for (name, why) in [
+            ("", "empty"),
+            ("..", "dotdot"),
+            ("../evil", "traversal"),
+            ("..\\evil", "traversal-win"),
+            ("a/b", "slash"),
+            ("a\\b", "backslash"),
+            ("a:b", "colon"),
+            ("a*b", "star"),
+            ("任务.", "trailing dot"),
+            (" con ", "padding"),
+            ("con", "reserved"),
+            ("   ", "spaces"),
+        ] {
+            let body = serde_json::json!({"name": name}).to_string();
+            let (status, out) =
+                post_route(&server, "/task/create", "application/json", body.as_bytes());
+            assert!(status.contains("400"), "{why} ({name:?}) => {status} {out}");
+            let v: serde_json::Value = serde_json::from_str(&out).expect("error JSON");
+            assert_eq!(v["ok"], serde_json::Value::Bool(false), "{why}: {out}");
+            assert!(
+                !v["errors"].as_array().map(|a| a.is_empty()).unwrap_or(true),
+                "{why}: rejection must explain why ({out})"
+            );
+        }
+        // Nothing escaped the tasks dir and no half bundle was left behind.
+        assert!(!td.path().join("evil").exists(), "path traversal must not write");
+        assert!(!tasks_dir.join("evil").exists());
+        for entry in source_entries(&tasks_dir) {
+            assert!(
+                !entry.starts_with(".oasd-create-"),
+                "staging leftovers: {entry}"
+            );
+        }
+    }
+
+    #[test]
+    fn task_create_rejects_duplicate_without_touching_the_bundle() {
+        let td = TempDir::new("task-duplicate");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path());
+        let payload = r#"{"name":"重复任务","template":"daily"}"#.as_bytes();
+        let (status, body) = post_route(&server, "/task/create", "application/json", payload);
+        assert!(status.contains("200"), "{status} {body}");
+        let dir = tasks_dir.join("重复任务");
+        let meta_before = std::fs::read_to_string(dir.join("meta.json")).expect("meta");
+        let flow_before = std::fs::read_to_string(dir.join("flow.json")).expect("flow");
+        let (status, body) = post_route(&server, "/task/create", "application/json", payload);
+        assert!(status.contains("409"), "{status} {body}");
+        assert!(body.contains("已存在"), "duplicate must be explained: {body}");
+        assert_eq!(
+            meta_before,
+            std::fs::read_to_string(dir.join("meta.json")).expect("meta after"),
+            "a rejected duplicate must not overwrite meta.json"
+        );
+        assert_eq!(
+            flow_before,
+            std::fs::read_to_string(dir.join("flow.json")).expect("flow after"),
+            "a rejected duplicate must not overwrite flow.json"
+        );
+    }
+
+    #[test]
+    fn task_create_rolls_back_on_every_failure_stage() {
+        for stage in [
+            CreateStage::Staged,
+            CreateStage::FilesWritten,
+            CreateStage::Validated,
+            CreateStage::BeforeRename,
+        ] {
+            let td = TempDir::new("task-rollback");
+            let tasks_dir = td.path().join("tasks");
+            let name = format!("回滚任务-{stage:?}");
+            let spec = CreateSpec {
+                name: &name,
+                template: "daily",
+                description: "",
+            };
+            let err = create_task_bundle_with_hook(&tasks_dir, &spec, |s| {
+                if s == stage {
+                    Err(format!("注入失败（{s:?}）"))
+                } else {
+                    Ok(())
+                }
+            })
+            .expect_err("the injected failure must abort creation");
+            assert_eq!(err, format!("注入失败（{stage:?}）"));
+            assert!(
+                !tasks_dir.join(&name).exists(),
+                "{stage:?}: the visible bundle dir must not exist"
+            );
+            let leftovers = source_entries(&tasks_dir);
+            assert!(
+                leftovers.is_empty(),
+                "{stage:?}: rollback must leave no staging dir, found {leftovers:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn run_status_route_starts_empty() {
+        let td = TempDir::new("run-empty");
+        let server = server_with_tasks(td.path());
+        let v = poll_run_status(&server);
+        assert_eq!(v["ok"], serde_json::Value::Bool(true));
+        assert_eq!(v["running"], serde_json::Value::Bool(false));
+        assert_eq!(v["task"], serde_json::Value::Null);
+        assert_eq!(v["started_ms"], serde_json::Value::Null);
+        assert_eq!(v["finished_ms"], serde_json::Value::Null);
+        assert_eq!(v["exit"], serde_json::Value::Null);
+        assert_eq!(v["outcome"], serde_json::Value::Null);
+        assert_eq!(v["error"], serde_json::Value::Null);
+        assert_eq!(v["log_tail"].as_array().map(|a| a.len()), Some(0));
+    }
+
+    #[test]
+    fn run_route_validates_input_and_missing_task() {
+        let td = TempDir::new("run-bad-request");
+        let server = server_with_tasks(td.path());
+        for (body, why) in [
+            ("{}", "missing task"),
+            (r#"{"task":""}"#, "empty task"),
+            (r#"{"task":"../evil"}"#, "traversal"),
+            (r#"{"task":"ok","dry_run":"yes"}"#, "bad dry_run"),
+            (r#"{"task":"ok","seed":-1}"#, "negative seed"),
+            (r#"{"task":"ok","replay":42}"#, "bad replay"),
+        ] {
+            let (status, out) =
+                post_route(&server, "/task/run", "application/json", body.as_bytes());
+            assert!(status.contains("400"), "{why}: {status} {out}");
+        }
+        // A valid name that has no bundle is a 404, not a crash.
+        let (status, body) = post_route(
+            &server,
+            "/task/run",
+            "application/json",
+            r#"{"task":"不存在的任务"}"#.as_bytes(),
+        );
+        assert!(status.contains("404"), "{status} {body}");
+        assert!(body.contains("不存在"), "{body}");
+        // A missing replay dir is rejected before the background thread starts.
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "有任务");
+        let (status, body) = post_route(
+            &server,
+            "/task/run",
+            "application/json",
+            r#"{"task":"有任务","replay":"D:\\no-such-replay-dir"}"#.as_bytes(),
+        );
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("回放目录不存在"), "{body}");
+        // Nothing must be running after these rejections.
+        assert_eq!(poll_run_status(&server)["running"], false);
+    }
+
+    #[test]
+    fn run_route_runs_in_background_and_reports_done() {
+        let td = TempDir::new("run-done");
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "可运行任务");
+        let exec: Arc<RunExecutor> = Arc::new(
+            |_opts: &RunOptions, out: &mut dyn FnMut(&str)| {
+                out("seed=42");
+                out("frame_source=live");
+                out("outcome=Done reason=Done");
+                Ok(done_report())
+            },
+        );
+        let server = server_with_tasks(td.path()).with_run_executor(exec);
+        let (status, body) = post_route(
+            &server,
+            "/task/run",
+            "application/json",
+            r#"{"task":"可运行任务","dry_run":true}"#.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let started: serde_json::Value = serde_json::from_str(&body).expect("start JSON");
+        assert_eq!(started["ok"], serde_json::Value::Bool(true));
+        assert_eq!(started["task"], "可运行任务");
+        assert_eq!(started["mode"], "dry-run");
+        let st = wait_run_finished(&server, 5000);
+        assert_eq!(st["running"], serde_json::Value::Bool(false));
+        assert_eq!(st["task"], "可运行任务");
+        assert_eq!(st["outcome"], "Done");
+        assert_eq!(st["exit"], 0);
+        assert_eq!(st["mode"], "dry-run");
+        assert_eq!(st["dry_run"], serde_json::Value::Bool(true));
+        assert_eq!(st["frame_source"], "live");
+        assert_eq!(st["clicks"], 1);
+        assert_eq!(st["error"], serde_json::Value::Null);
+        assert!(st["started_ms"].as_u64().is_some());
+        assert!(
+            st["finished_ms"].as_u64().expect("finished_ms")
+                >= st["started_ms"].as_u64().expect("started_ms")
+        );
+        let tail: Vec<&str> = st["log_tail"]
+            .as_array()
+            .expect("log_tail")
+            .iter()
+            .filter_map(|l| l.as_str())
+            .collect();
+        assert!(tail.contains(&"outcome=Done reason=Done"), "{tail:?}");
+        assert_eq!(st["log_count"], 3);
+    }
+
+    #[test]
+    fn run_route_allows_only_one_run_at_a_time() {
+        let td = TempDir::new("run-mutex");
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "互斥任务");
+        let gate = Arc::new(Gate::new());
+        let gate_in_thread = gate.clone();
+        let exec: Arc<RunExecutor> = Arc::new(
+            move |_opts: &RunOptions, out: &mut dyn FnMut(&str)| {
+                out("seed=7");
+                gate_in_thread.wait();
+                out("outcome=Done reason=Done");
+                Ok(done_report())
+            },
+        );
+        let server = server_with_tasks(td.path()).with_run_executor(exec);
+        let payload = r#"{"task":"互斥任务"}"#.as_bytes();
+        let (status, body) = post_route(&server, "/task/run", "application/json", payload);
+        assert!(status.contains("200"), "{status} {body}");
+        // `running` is set synchronously BEFORE the response, so the second
+        // start is a deterministic 409 (the fake executor is still blocked).
+        assert_eq!(poll_run_status(&server)["running"], true);
+        let (status, body) = post_route(&server, "/task/run", "application/json", payload);
+        assert!(status.contains("409"), "{status} {body}");
+        assert!(body.contains("已有任务正在运行"), "{body}");
+        gate.open();
+        let st = wait_run_finished(&server, 5000);
+        assert_eq!(st["outcome"], "Done");
+        assert_eq!(st["exit"], 0);
+        // Once finished, the mutex is released and status keeps the last result.
+        assert_eq!(poll_run_status(&server)["task"], "互斥任务");
+    }
+
+    #[test]
+    fn run_route_reports_setup_errors_with_exit_2() {
+        let td = TempDir::new("run-setup-error");
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "无设备任务");
+        let exec: Arc<RunExecutor> = Arc::new(
+            |_opts: &RunOptions, out: &mut dyn FnMut(&str)| {
+                out("seed=1");
+                Err("no adb device attached (fake executor)".to_string())
+            },
+        );
+        let server = server_with_tasks(td.path()).with_run_executor(exec);
+        let (status, body) = post_route(
+            &server,
+            "/task/run",
+            "application/json",
+            r#"{"task":"无设备任务"}"#.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let st = wait_run_finished(&server, 5000);
+        assert_eq!(st["running"], serde_json::Value::Bool(false));
+        assert_eq!(st["outcome"], "Error");
+        assert_eq!(st["exit"], 2);
+        let err = st["error"].as_str().expect("error string");
+        assert!(err.contains("no adb device"), "{err}");
+        let tail: Vec<&str> = st["log_tail"]
+            .as_array()
+            .expect("log_tail")
+            .iter()
+            .filter_map(|l| l.as_str())
+            .collect();
+        assert!(tail.iter().any(|l| l.contains("error=no adb device")), "{tail:?}");
     }
 }

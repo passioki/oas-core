@@ -13,7 +13,7 @@
 
 pub mod humanize;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 use oas_flow::{eval, EvalContext, Expect, Expr, Flow, InterruptRule, Locator, Step, Value};
@@ -402,6 +402,9 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     clicks: Vec<ClickRecord>,
     /// Seed resolved once at construction (HB5); `with_seed` pins it.
     run_seed: u64,
+    /// Injected task parameters for `param('key')` (M0 unified template):
+    /// `meta.params[].default` merged with `oasd run --param k=v` overrides.
+    params: BTreeMap<String, Value>,
     started: Instant,
     humanize: crate::humanize::Humanize,
     rng: crate::humanize::Rng,
@@ -433,6 +436,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             events: Vec::new(),
             clicks: Vec::new(),
             run_seed,
+            params: BTreeMap::new(),
             started: Instant::now(),
             humanize,
             rng: crate::humanize::Rng::new(run_seed),
@@ -501,6 +505,21 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// untouched).
     pub fn with_humanize(mut self, humanize: crate::humanize::Humanize) -> Self {
         self.humanize = humanize;
+        self
+    }
+
+    /// Inject the task parameters visible to `param('key')` (M0 unified task
+    /// template). The driver passes `meta.params[].default` values merged with
+    /// the `--param k=v` CLI overrides; a call with no value is a **loud**
+    /// runtime failure, never a silent null/zero.
+    pub fn with_params(mut self, params: BTreeMap<String, Value>) -> Self {
+        self.params = params;
+        self
+    }
+
+    /// Add one parameter value (convenience for callers/tests).
+    pub fn with_param(mut self, key: impl Into<String>, value: Value) -> Self {
+        self.params.insert(key.into(), value);
         self
     }
 
@@ -1839,6 +1858,15 @@ impl<S: ScreenSource, I: InputSink> EvalContext for Interpreter<S, I> {
 
     fn page(&mut self) -> Result<Option<String>, String> {
         Ok(None) // page recognition lands in a later phase
+    }
+
+    fn param(&mut self, key: &str) -> Result<Value, String> {
+        self.params.get(key).cloned().ok_or_else(|| {
+            format!(
+                "param('{key}') has no value: declare it in meta.params (with a default) \
+                 or pass --param {key}=<value>"
+            )
+        })
     }
 }
 
@@ -4204,6 +4232,54 @@ mod tests {
         let last = interp.events().last().expect("event");
         assert_eq!(last.op, "swipe");
         assert_eq!(last.result, "failed");
+    }
+
+    // ---- param() injection (M0 unified task template) ----
+
+    #[test]
+    fn param_values_are_injected_into_expressions() {
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"param('max_rounds') * 2"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let mut interp = mk(FakeScreen::new(), Budget::default()).with_params(
+            std::collections::BTreeMap::from([("max_rounds".to_string(), Value::Num(3.0))]),
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let detail = &interp.events()[0].detail;
+        assert!(detail.contains("Num(6.0)"), "detail: {detail}");
+    }
+
+    #[test]
+    fn with_param_adds_one_value_and_can_be_chained() {
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"param('flag') == true and param('mode') == 'fast'"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let mut interp = mk(FakeScreen::new(), Budget::default())
+            .with_param("flag", Value::Bool(true))
+            .with_param("mode", Value::Str("fast".to_string()));
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert!(interp.events()[0].detail.contains("true"));
+    }
+
+    #[test]
+    fn missing_param_value_fails_the_run_loudly() {
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"param('nope')"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let mut interp = mk(FakeScreen::new(), Budget::default());
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("nope"), "must name the missing key: {msg}");
+                assert!(msg.contains("param"), "must mention param(): {msg}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
     }
 }
 

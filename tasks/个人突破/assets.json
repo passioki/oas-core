@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "design_resolution": [
+    1280,
+    720
+  ],
+  "items": [
+    {
+      "id": "庭院_探索灯笼",
+      "kind": "template",
+      "file": "images/a001.png",
+      "roi": [
+        638,
+        105,
+        88,
+        85
+      ],
+      "rev": 1,
+      "threshold": 0.88
+    },
+    {
+      "id": "世界_章节栏",
+      "kind": "template",
+      "file": "images/a002.png",
+      "roi": [
+        1070,
+        165,
+        160,
+        48
+      ],
+      "rev": 1,
+      "threshold": 0.8
+    },
+    {
+      "id": "探索_结界突破图标",
+      "kind": "template",
+      "file": "images/a003.png",
+      "roi": [
+        266,
+        626,
+        62,
+        46
+      ],
+      "rev": 1,
+      "threshold": 0.88
+    },
+    {
+      "id": "结界突破_个人页签",
+      "kind": "template",
+      "file": "images/a004.png",
+      "roi": [
+        1185,
+        255,
+        62,
+        85
+      ],
+      "rev": 1,
+      "threshold": 0.9
+    },
+    {
+      "id": "进攻按钮",
+      "kind": "template",
+      "file": "images/a005.png",
+      "roi": [
+        340,
+        358,
+        98,
+        66
+      ],
+      "rev": 1,
+      "threshold": 0.88
+    },
+    {
+      "id": "战斗_准备按钮",
+      "kind": "template",
+      "file": "images/a006.png",
+      "roi": [
+        1118,
+        542,
+        110,
+        105
+      ],
+      "rev": 1,
+      "threshold": 0.88
+    },
+    {
+      "id": "结界突破_返回X",
+      "kind": "template",
+      "file": "images/a007.png",
+      "roi": [
+        1182,
+        100,
+        58,
+        58
+      ],
+      "rev": 1,
+      "threshold": 0.88
+    },
+    {
+      "id": "战斗_自动按钮",
+      "kind": "template",
+      "file": "images/a008.png",
+      "roi": [
+        20,
+        645,
+        110,
+        58
+      ],
+      "rev": 1,
+      "threshold": 0.85
+    },
+    {
+      "id": "突破券",
+      "kind": "ocr_line",
+      "roi": [
+        1160,
+        6,
+        112,
+        38
+      ],
+      "rev": 1
+    }
+  ]
+}

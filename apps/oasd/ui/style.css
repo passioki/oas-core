@@ -383,3 +383,64 @@ aside.side {
   margin-bottom: 8px;
 }
 .canvas-windows .hdr-window { flex: 1; }
+
+/* N38/M1: 任务创建对话框 + 编辑器运行状态 */
+.run-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.run-opt input[type="checkbox"] {
+  width: auto;
+  flex: none;
+}
+#run-status {
+  margin: 4px 0 10px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.task-dialog {
+  min-width: min(460px, calc(100vw - 40px));
+  max-width: min(560px, calc(100vw - 40px));
+  background: #14161a;
+  color: #e6e6e6;
+  border: 1px solid #2a3a4a;
+  border-radius: 10px;
+  padding: 16px 18px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .6);
+}
+.task-dialog::backdrop { background: rgba(0, 0, 0, .55); }
+.task-dialog h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  color: #8fb8e8;
+}
+.task-dialog .dialog-error {
+  margin: 4px 0 10px;
+  min-height: 0;
+  color: #ff8a80;
+  background: #1d2027;
+}
+.task-dialog .dialog-error:empty { display: none; }
+.dialog-actions { margin-top: 4px; }
+.dialog-actions button { flex: 1; }
+
+/* M2/N37: scheduler panel + reset-memory dialog */
+.reset-task-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+.reset-task-row input[type="checkbox"] {
+  width: auto;
+  flex: none;
+  margin: 0;
+}
+.sched-entry {
+  border: 1px solid #2a3a4a;
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+.sched-entry .row { gap: 8px; align-items: center; }

@@ -1,0 +1,50 @@
+{
+  "template_version": 1,
+  "description": "utility 一次性/工具任务骨架：手动触发，无 quota 提示（占位 log + finish(done)）",
+  "meta": {
+    "schema_version": 1,
+    "template_version": 1,
+    "task_id": "{{id}}",
+    "name": "{{id}}",
+    "version": 1,
+    "category": "utility",
+    "params": [],
+    "exits": {
+      "done": {
+        "result": "success"
+      },
+      "failed": {
+        "result": "retryable"
+      }
+    },
+    "capabilities": {
+      "checkpoint": true,
+      "interruptible": false,
+      "duration_hint_s": 60
+    },
+    "resources": []
+  },
+  "flow": {
+    "schema_version": 1,
+    "name": "{{id}}",
+    "steps": [
+      {
+        "op": "log",
+        "args": {
+          "level": "info",
+          "text": "'utility task started'"
+        }
+      },
+      {
+        "op": "finish",
+        "args": {
+          "exit": "done"
+        }
+      }
+    ]
+  },
+  "assets": {
+    "schema_version": 1,
+    "items": []
+  }
+}

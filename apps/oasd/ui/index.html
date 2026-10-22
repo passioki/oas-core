@@ -38,6 +38,7 @@
         <button class="rail-btn" data-panel="panel-task" type="button">任务</button>
         <button class="rail-btn" data-panel="panel-flow" type="button">流程</button>
         <button class="rail-btn" data-panel="panel-click" type="button">点击分布</button>
+        <button class="rail-btn" data-panel="panel-schedule" type="button">调度</button>
       </nav>
 
       <div class="rail-panels">
@@ -136,6 +137,22 @@
         <section class="panel" id="panel-task">
           <h3>任务</h3>
           <label class="opt"><input id="task-name" placeholder="任务名，如：队伍预设" value="任务1" /></label>
+          <div class="row lib-toolbar">
+            <select id="task-select" title="tasks/ 下已有的任务包">
+              <option value="">（刷新任务列表）</option>
+            </select>
+            <button id="btn-task-refresh">刷新列表</button>
+          </div>
+          <div class="row lib-toolbar">
+            <button id="btn-task-create">新建任务…</button>
+            <button id="btn-task-run">运行任务</button>
+          </div>
+          <label class="opt run-opt"><input id="run-dry" type="checkbox" /> 只演练（dry-run，不点击设备）</label>
+          <label class="opt">回放目录（可选，不连设备）
+            <input id="run-replay" placeholder="留空 = 实机运行；填 record 包目录 = replay" />
+          </label>
+          <div id="run-status" class="muted small">—</div>
+
           <h3>任务素材</h3>
           <div class="row lib-toolbar">
             <input id="asset-search" placeholder="按素材 id 搜索" />
@@ -164,9 +181,68 @@
           <button id="flow-add-interrupt">添加弹窗规则</button>
           <p class="muted small">带 if/loop 的流程请用 JSON 文本模式；可视化模式拒绝 flatten（避免丢内容）。</p>
         </section>
+
+        <section class="panel" id="panel-schedule">
+          <h3>调度（v3）</h3>
+          <div class="row lib-toolbar">
+            <button id="btn-sched-refresh" type="button">刷新状态</button>
+            <button id="btn-sched-reset" type="button">重置记忆…</button>
+          </div>
+          <div id="sched-summary" class="muted small">—</div>
+          <div id="sched-entries" class="asset-list muted">（未加载调度状态）</div>
+          <p class="muted small">
+            状态来自 <code>scheduler.json</code>（v3）；启动/停止守护进程用
+            <code>start-scheduler.bat</code> / <code>stop-scheduler.bat</code>。
+          </p>
+        </section>
       </div>
     </aside>
   </main>
+
+  <!-- M1/N38：新建任务对话框（名称 / 模板 / 描述 -> POST /task/create） -->
+  <dialog id="create-task-dialog" class="task-dialog">
+    <h3>新建任务</h3>
+    <label class="opt">任务名称（目录名，可用中文；不能含 / \ : * ? " &lt; &gt; | 或 ..）
+      <input id="create-name" autocomplete="off" placeholder="如：每日探索" />
+    </label>
+    <label class="opt">模板
+      <select id="create-template">
+        <option value="daily">daily（每日任务：log + finish）</option>
+        <option value="loop">loop（循环任务：meta.params.max_rounds）</option>
+        <option value="utility">utility（工具/一次性任务）</option>
+      </select>
+    </label>
+    <label class="opt">描述（可选，≤500 字，写入 meta.json）
+      <textarea id="create-desc" rows="3" placeholder="这个任务是做什么的（可留空）"></textarea>
+    </label>
+    <pre id="create-error" class="muted small dialog-error"></pre>
+    <div class="row dialog-actions">
+      <button id="btn-create-cancel" type="button">取消</button>
+      <button id="btn-create-submit" type="button">创建</button>
+    </div>
+  </dialog>
+
+  <!-- M2/N37：重置记忆（多选 + 全选/反选；清调度状态 + 任务 state/） -->
+  <dialog id="reset-memory-dialog" class="task-dialog">
+    <h3>重置记忆</h3>
+    <p class="muted small">
+      清空所选任务的调度器条目状态 + 任务 <code>state/</code>（checkpoint/坐标计数）。
+      正在运行的调度器需要先停止。
+    </p>
+    <div class="row lib-toolbar">
+      <button id="btn-reset-all" type="button">全选</button>
+      <button id="btn-reset-invert" type="button">反选</button>
+      <button id="btn-reset-none" type="button">全不选</button>
+    </div>
+    <div id="reset-task-list" class="asset-list"></div>
+    <label class="opt"><input id="reset-include-checkpoint" type="checkbox" checked />
+      同时清除 checkpoint/计数（任务 state/）</label>
+    <pre id="reset-error" class="muted small dialog-error"></pre>
+    <div class="row dialog-actions">
+      <button id="btn-reset-cancel" type="button">取消</button>
+      <button id="btn-reset-submit" type="button">确认重置</button>
+    </div>
+  </dialog>
 
   <script src="/flow_model.js"></script>
   <script src="/app.js"></script>

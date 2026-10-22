@@ -26,6 +26,7 @@
 //!   frame with different dimensions is an error, not a silently distorted crop.
 
 use std::collections::BTreeSet;
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,6 +34,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 
 use oas_types::Frame;
+
+mod meta;
+pub use meta::{
+    Capabilities, EntryRequires, ExitDecl, Meta, MetaEntry, ParamDecl, QuotaHint, ScheduleHint,
+    CATEGORY_DEFAULT, DEFAULT_EXIT_NAMES, EXIT_RESULTS, PARAM_TYPES, TEMPLATE_VERSION,
+};
 
 /// On-disk schema version for `meta.json` / `flow.json` / `assets.json`.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -42,6 +49,38 @@ pub const DEFAULT_THRESHOLD: f32 = 0.85;
 
 /// Asset kinds allowed by §18.1 (`template` / `ocr_line` / `ocr_lines`).
 pub const KINDS: [&str; 3] = ["template", "ocr_line", "ocr_lines"];
+
+// ---------------------------------------------------------------------------
+// Lint (M0 unified task template, ENGINE-DESIGN §22.34.2)
+// ---------------------------------------------------------------------------
+
+/// One lint violation: a stable rule code, the JSON/file path it applies to and
+/// a human-readable message. **Every issue carries a path** (the M0 acceptance
+/// criterion; the CLI prints it and M1's create/save endpoints return it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LintIssue {
+    /// `T1`/`T3`/`T4`/`T5`/`T6` for the flow invariants, `META` for the
+    /// `meta.json` contract, `FLOW` for flow parse/read errors.
+    pub code: &'static str,
+    pub path: String,
+    pub msg: String,
+}
+
+impl LintIssue {
+    pub fn new(code: &'static str, path: impl Into<String>, msg: impl Into<String>) -> Self {
+        Self {
+            code,
+            path: path.into(),
+            msg: msg.into(),
+        }
+    }
+}
+
+impl fmt::Display for LintIssue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}] {}: {}", self.code, self.path, self.msg)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public data model (serde: this is the on-disk contract)
@@ -896,6 +935,210 @@ impl TaskBundle {
         }
     }
 
+    /// Load the typed M0 `meta.json`. A missing file is `Ok(None)` (callers that
+    /// only need the flow stay tolerant); malformed JSON is a loud error.
+    pub fn load_meta(&self) -> Result<Option<Meta>, String> {
+        let path = self.meta_path();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("read {}: {e}", path.display())),
+        };
+        Meta::from_json(&text)
+            .map(Some)
+            .map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Lint the unified task-template contract (ENGINE §22.34.2, M0).
+    ///
+    /// Rules (every error carries a path, see [`LintIssue`]):
+    /// * `META` — `meta.json` contract (exit result classes, params, …).
+    /// * `T1`   — every path ends in `finish(<exit>)`, and every exit is declared
+    ///            in `meta.exits`.
+    /// * `T3`   — every `param('key')` is declared in `meta.params`.
+    /// * `T4`   — every asset selector resolves to a declared asset (or `lib:`).
+    /// * `T5`   — every declared asset is well-formed and its image exists.
+    /// * `T6`   — the flow is DSL-only (no external-code keys).
+    ///
+    /// T2 (bounded loops) is enforced earlier by the DSL parser (`while`
+    /// requires `max_iters > 0`) plus the runtime step budget. `flow.json` is
+    /// optional (old tasks may not have one yet).
+    pub fn lint(&self) -> Result<(), Vec<LintIssue>> {
+        let mut issues = Vec::new();
+        self.lint_into(&mut issues);
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(issues)
+        }
+    }
+
+    /// Accumulate lint issues into `issues` (used by [`Self::lint`] and by
+    /// `--all`, so one broken task cannot abort the whole report).
+    pub fn lint_into(&self, issues: &mut Vec<LintIssue>) {
+        // ---- meta.json ------------------------------------------------------
+        let meta = match std::fs::read_to_string(self.meta_path()) {
+            Ok(text) => match Meta::from_json(&text) {
+                Ok(m) => {
+                    issues.extend(m.lint_issues());
+                    Some(m)
+                }
+                Err(e) => {
+                    issues.push(LintIssue::new("META", "meta.json", e));
+                    None
+                }
+            },
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                issues.push(LintIssue::new(
+                    "META",
+                    "meta.json",
+                    format!("missing ({})", self.meta_path().display()),
+                ));
+                None
+            }
+            Err(e) => {
+                issues.push(LintIssue::new(
+                    "META",
+                    "meta.json",
+                    format!("read failed: {e}"),
+                ));
+                None
+            }
+        };
+
+        // ---- assets.json (T5) ----------------------------------------------
+        let assets = self.lint_assets(issues);
+
+        // ---- flow.json (T1/T3/T4/T6) ---------------------------------------
+        let flow_text = match std::fs::read_to_string(self.flow_path()) {
+            Ok(t) => Some(t),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None, // optional
+            Err(e) => {
+                issues.push(LintIssue::new(
+                    "FLOW",
+                    "flow.json",
+                    format!("read failed: {e}"),
+                ));
+                None
+            }
+        };
+        let Some(text) = flow_text else { return };
+        // T6: the DSL has no external-code construct by construction; still scan
+        // for hand-added keys (e.g. "code"/"script") BEFORE parsing so the report
+        // is about the right rule.
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+            scan_forbidden_keys(&value, "$", issues);
+        }
+        let flow = match oas_flow::Flow::from_json(&text) {
+            Ok(f) => f,
+            Err(e) => {
+                issues.push(LintIssue::new(
+                    "FLOW",
+                    format!("flow.json:{}", e.path),
+                    e.msg,
+                ));
+                return;
+            }
+        };
+
+        // T1: every path must end with finish(...), and each exit must be declared.
+        if !flow.ends_with_finish() {
+            issues.push(LintIssue::new(
+                "T1",
+                "flow.json:steps",
+                "flow must end with an explicit finish(<exit>) on every path",
+            ));
+        }
+        if let Some(meta) = &meta {
+            let declared = meta.declared_exit_names();
+            let listed = join_or_none(&declared);
+            for use_site in flow.finish_uses() {
+                if !declared.contains(&use_site.exit) {
+                    issues.push(LintIssue::new(
+                        "T1",
+                        format!("flow.json:{}", use_site.path),
+                        format!(
+                            "finish exit `{}` is not declared in meta.exits \
+                             (declared: {listed})",
+                            use_site.exit
+                        ),
+                    ));
+                }
+            }
+            // T3: every param('key') must be declared in meta.params.
+            let params = meta.declared_param_keys();
+            let listed_params = join_or_none(&params);
+            for site in flow.param_uses_at() {
+                match site.key {
+                    None => issues.push(LintIssue::new(
+                        "T3",
+                        format!("flow.json:{}", site.path),
+                        "param() requires exactly one string-literal key \
+                         (a computed key cannot be linted)"
+                            .to_string(),
+                    )),
+                    Some(key) if !params.contains(&key) => {
+                        issues.push(LintIssue::new(
+                            "T3",
+                            format!("flow.json:{}", site.path),
+                            format!(
+                                "param(`{key}`) is used but not declared in meta.params \
+                                 (declared: {listed_params})"
+                            ),
+                        ))
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // T4: asset references must resolve (or be `lib:` selectors).
+        if let Some(af) = &assets {
+            let ids: BTreeSet<String> = af.items.iter().map(|i| i.id.clone()).collect();
+            if let Err(errs) = flow.validate_assets(&ids) {
+                for e in errs {
+                    issues.push(LintIssue::new(
+                        "T4",
+                        format!("flow.json:{}", e.path),
+                        e.msg,
+                    ));
+                }
+            }
+        }
+    }
+
+    /// T5: parse + shape-check `assets.json`. Returns the parsed file even when
+    /// shape issues exist (the flow cross-check still has ids to work with).
+    fn lint_assets(&self, issues: &mut Vec<LintIssue>) -> Option<AssetsFile> {
+        let text = match std::fs::read_to_string(self.assets_path()) {
+            Ok(t) => t,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Some(AssetsFile::default()),
+            Err(e) => {
+                issues.push(LintIssue::new(
+                    "T5",
+                    "assets.json",
+                    format!("read failed: {e}"),
+                ));
+                return None;
+            }
+        };
+        let af = match serde_json::from_str::<AssetsFile>(&text) {
+            Ok(af) => af,
+            Err(e) => {
+                issues.push(LintIssue::new(
+                    "T5",
+                    "assets.json",
+                    format!("invalid JSON: {e}"),
+                ));
+                return None;
+            }
+        };
+        for (p, msg) in self.assets_shape_issues(&af) {
+            issues.push(LintIssue::new("T5", p, msg));
+        }
+        Some(af)
+    }
+
     // -- internals ---------------------------------------------------------
 
     fn write_assets_file(&self, af: &AssetsFile) -> Result<(), String> {
@@ -947,48 +1190,72 @@ impl TaskBundle {
     }
 
     fn assets_shape_errors(&self, af: &AssetsFile) -> Vec<String> {
-        let mut errs = Vec::new();
+        self.assets_shape_issues(af)
+            .into_iter()
+            .map(|(path, msg)| format!("{path}: {msg}"))
+            .collect()
+    }
+
+    /// Structured form of [`Self::assets_shape_errors`]: `(path, message)` pairs
+    /// so the lint can carry a precise `assets.json: items[i].field` path.
+    fn assets_shape_issues(&self, af: &AssetsFile) -> Vec<(String, String)> {
+        let mut errs: Vec<(String, String)> = Vec::new();
         if af.schema_version != SCHEMA_VERSION {
-            errs.push(format!(
-                "assets.json: unsupported schema_version {} (expected {SCHEMA_VERSION})",
-                af.schema_version
+            errs.push((
+                "assets.json: schema_version".to_string(),
+                format!(
+                    "unsupported schema_version {} (expected {SCHEMA_VERSION})",
+                    af.schema_version
+                ),
             ));
         }
         if let Some([w, h]) = af.design_resolution {
             if w == 0 || h == 0 {
-                errs.push("assets.json: design_resolution must be > 0".to_string());
+                errs.push((
+                    "assets.json: design_resolution".to_string(),
+                    "must be > 0".to_string(),
+                ));
             }
         }
         let mut seen = BTreeSet::new();
         for (i, item) in af.items.iter().enumerate() {
             let p = format!("assets.json: items[{i}]");
             if let Err(e) = validate_id(&item.id) {
-                errs.push(format!("{p}.id: {e}"));
+                errs.push((format!("{p}.id"), e));
             }
             if !seen.insert(item.id.clone()) {
-                errs.push(format!("{p}.id: duplicate asset id `{}`", item.id));
+                errs.push((format!("{p}.id"), format!("duplicate asset id `{}`", item.id)));
             }
             if !KINDS.contains(&item.kind.as_str()) {
-                errs.push(format!(
-                    "{p}.kind: unknown kind `{}` (allowed: {})",
-                    item.kind,
-                    KINDS.join(", ")
+                errs.push((
+                    format!("{p}.kind"),
+                    format!(
+                        "unknown kind `{}` (allowed: {})",
+                        item.kind,
+                        KINDS.join(", ")
+                    ),
                 ));
             }
             if let Err(e) = validate_threshold(item.threshold) {
-                errs.push(format!("{p}.threshold: {e}"));
+                errs.push((format!("{p}.threshold"), e));
             }
             match item.roi {
                 Some([x, y, w, h]) => {
                     if x < 0 || y < 0 || w <= 0 || h <= 0 {
-                        errs.push(format!(
-                            "{p}.roi: [x,y,w,h] = {x},{y},{w},{h} must have x,y >= 0 and w,h > 0"
+                        errs.push((
+                            format!("{p}.roi"),
+                            format!(
+                                "[x,y,w,h] = {x},{y},{w},{h} must have x,y >= 0 and w,h > 0"
+                            ),
                         ));
                     }
                 }
                 None => {
                     if item.kind == "template" {
-                        errs.push(format!("{p}.roi: template asset requires [x,y,w,h]"));
+                        errs.push((
+                            format!("{p}.roi"),
+                            "template asset requires [x,y,w,h]".to_string(),
+                        ));
                     }
                 }
             }
@@ -996,14 +1263,20 @@ impl TaskBundle {
                 Some(file) => match validate_image_rel_path(file) {
                     Ok(()) => {
                         if !self.root.join(file).is_file() {
-                            errs.push(format!("{p}.file: `{file}` does not exist"));
+                            errs.push((
+                                format!("{p}.file"),
+                                format!("`{file}` does not exist"),
+                            ));
                         }
                     }
-                    Err(e) => errs.push(format!("{p}.file: {e}")),
+                    Err(e) => errs.push((format!("{p}.file"), e)),
                 },
                 None => {
                     if item.kind == "template" {
-                        errs.push(format!("{p}.file: template asset requires an image file"));
+                        errs.push((
+                            format!("{p}.file"),
+                            "template asset requires an image file".to_string(),
+                        ));
                     }
                 }
             }
@@ -1040,6 +1313,116 @@ pub fn list_tasks(tasks_dir: &Path) -> Result<Vec<String>, String> {
         Err(e) => return Err(format!("read {}: {e}", tasks_dir.display())),
     }
     out.sort();
+    Ok(out)
+}
+
+/// T6: keys that would smuggle executable/foreign code into a flow. The DSL
+/// parser already rejects unknown instructions; this catches hand-added args
+/// that look like an external-code escape hatch.
+const FORBIDDEN_FLOW_KEYS: [&str; 9] = [
+    "code",
+    "script",
+    "eval",
+    "exec",
+    "python",
+    "shell",
+    "cmd",
+    "powershell",
+    "unsafe",
+];
+
+fn scan_forbidden_keys(
+    value: &serde_json::Value,
+    path: &str,
+    issues: &mut Vec<LintIssue>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                let child = format!("{path}.{k}");
+                if FORBIDDEN_FLOW_KEYS.contains(&k.as_str()) {
+                    issues.push(LintIssue::new(
+                        "T6",
+                        format!("flow.json:{child}"),
+                        format!(
+                            "key `{k}` is not part of the flow DSL: external code is \
+                             not allowed (T6)"
+                        ),
+                    ));
+                }
+                scan_forbidden_keys(v, &child, issues);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (i, v) in items.iter().enumerate() {
+                scan_forbidden_keys(v, &format!("{path}[{i}]"), issues);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn join_or_none(set: &BTreeSet<String>) -> String {
+    if set.is_empty() {
+        "(none)".to_string()
+    } else {
+        set.iter().cloned().collect::<Vec<_>>().join(", ")
+    }
+}
+
+/// Lint one task bundle `<tasks_dir>/<name>`.
+///
+/// Setup errors (invalid name / missing directory) are `Err`; contract
+/// violations are the returned issues (`Ok(vec![])` = green).
+pub fn lint_task(tasks_dir: &Path, name: &str) -> Result<Vec<LintIssue>, String> {
+    let bundle = TaskBundle::open_named(tasks_dir, name)?;
+    if !bundle.root().is_dir() {
+        return Err(format!(
+            "task `{name}` not found under {} (expected a directory with meta.json)",
+            tasks_dir.display()
+        ));
+    }
+    match bundle.lint() {
+        Ok(()) => Ok(Vec::new()),
+        Err(issues) => Ok(issues),
+    }
+}
+
+/// Lint every directory under `tasks_dir` (sorted by name).
+///
+/// A directory without `meta.json` is reported as a broken bundle instead of
+/// being silently skipped: `task lint --all` is the upgrade/verification gate.
+/// Hidden directories (`.`-prefixed staging dirs) are ignored.
+pub fn lint_tasks(tasks_dir: &Path) -> Result<Vec<(String, Vec<LintIssue>)>, String> {
+    let entries = std::fs::read_dir(tasks_dir)
+        .map_err(|e| format!("read {}: {e}", tasks_dir.display()))?;
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read {}: {e}", tasks_dir.display()))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.') {
+            continue; // staging dirs created by `oasd task new`
+        }
+        names.push(name.to_string());
+    }
+    names.sort();
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        // Opened by path: the directory already exists, so a name that is not a
+        // valid bundle name is reported by the lint (missing meta), not aborted.
+        let bundle = TaskBundle::open(tasks_dir.join(&name))?;
+        let issues = match bundle.lint() {
+            Ok(()) => Vec::new(),
+            Err(issues) => issues,
+        };
+        out.push((name, issues));
+    }
     Ok(out)
 }
 
@@ -1677,5 +2060,237 @@ mod tests {
         assert!(TaskBundle::open_named(td.path(), "a/b").is_err());
         let ok = TaskBundle::open_named(td.path(), "任务1").expect("valid name");
         assert_eq!(ok.root(), td.path().join("任务1"));
+    }
+
+    // ---- M0 lint: meta contract + T1/T3/T4/T5/T6 ----
+
+    /// A legacy bundle exactly like the two shipped tasks: old-shape meta.json
+    /// (schema/name/expire only), one template asset, flow ending in finish(done).
+    fn write_legacy_bundle(td: &TempDir) -> TaskBundle {
+        let b = open(td);
+        b.save_asset(
+            AssetDecl::template("返回按钮", [0, 0, 8, 8]),
+            Some(&frame(32, 32)),
+        )
+        .expect("save asset");
+        b.save_flow(&flow_json("返回按钮")).expect("save flow");
+        b
+    }
+
+    fn write_flow_only_bundle(b: &TaskBundle, meta: &str, flow: &str) {
+        std::fs::create_dir_all(b.root()).expect("root");
+        std::fs::write(b.meta_path(), meta).expect("write meta");
+        if !b.assets_path().exists() {
+            std::fs::write(b.assets_path(), r#"{"schema_version":1,"items":[]}"#)
+                .expect("write assets");
+        }
+        std::fs::write(b.flow_path(), flow).expect("write flow");
+    }
+
+    #[test]
+    fn lint_passes_a_legacy_bundle_untouched() {
+        let td = TempDir::new("lintlegacy");
+        let b = write_legacy_bundle(&td);
+        // meta.json is the OLD shape written by save_flow: no M0 fields at all.
+        let meta_text = std::fs::read_to_string(b.meta_path()).expect("meta");
+        assert!(
+            !meta_text.contains("exits"),
+            "fixture must stay legacy: {meta_text}"
+        );
+        b.lint()
+            .unwrap_or_else(|issues| panic!("legacy bundle must lint green: {issues:?}"));
+
+        // The typed view applies the M0 defaults (old tasks are untouched on disk).
+        let meta = b.load_meta().expect("load meta").expect("meta present");
+        assert_eq!(meta.category(), "expire");
+        assert_eq!(meta.exits.len(), 2);
+        assert!(meta.capabilities.checkpoint);
+        assert!(meta.params.is_empty());
+    }
+
+    #[test]
+    fn lint_flags_unknown_exit_result_in_meta() {
+        let td = TempDir::new("lintbadresult");
+        let b = write_legacy_bundle(&td);
+        std::fs::write(
+            b.meta_path(),
+            r#"{"schema_version":1,"name":"任务1","exits":{"done":{"result":"continue"}}}"#,
+        )
+        .expect("meta");
+        let issues = b.lint().expect_err("`continue` is not a result class");
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == "META" && i.path == "meta.json:exits.done.result"),
+            "{issues:?}"
+        );
+        assert!(
+            issues.iter().any(|i| i.msg.contains("continue/stop")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn lint_flags_an_exit_that_is_not_declared() {
+        let td = TempDir::new("lintexit");
+        let b = open(&td);
+        write_flow_only_bundle(
+            &b,
+            r#"{"schema_version":1,"name":"任务1","exits":{"done":{"result":"success"}}}"#,
+            r#"{"schema_version":1,"name":"任务1","steps":[
+                 {"op":"finish","args":{"exit":"failed"}}]}"#,
+        );
+        let issues = b.lint().expect_err("`failed` is not declared");
+        let t1: Vec<&LintIssue> = issues.iter().filter(|i| i.code == "T1").collect();
+        assert_eq!(t1.len(), 1, "{issues:?}");
+        assert!(
+            t1[0].path.contains("steps[0].args.exit"),
+            "path must point at the finish step: {}",
+            t1[0].path
+        );
+        assert!(t1[0].msg.contains("failed"), "{}", t1[0].msg);
+    }
+
+    #[test]
+    fn lint_flags_a_flow_that_does_not_end_with_finish() {
+        let td = TempDir::new("lintend");
+        let b = open(&td);
+        write_flow_only_bundle(
+            &b,
+            r#"{"schema_version":1,"name":"任务1"}"#,
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"'no finish'"}}]}"#,
+        );
+        let issues = b.lint().expect_err("must end with finish");
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == "T1" && i.path == "flow.json:steps"),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn lint_flags_undeclared_and_dynamic_params() {
+        let td = TempDir::new("lintparam");
+        let b = open(&td);
+        write_flow_only_bundle(
+            &b,
+            r#"{"schema_version":1,"name":"任务1","params":[]}"#,
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"if","args":{"cond":"param('max_rounds') > 0"},"then":[]},
+                 {"op":"log","args":{"text":"param('a' + 'b')"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let issues = b.lint().expect_err("undeclared param");
+        let t3: Vec<&LintIssue> = issues.iter().filter(|i| i.code == "T3").collect();
+        assert_eq!(t3.len(), 2, "{issues:?}");
+        assert!(
+            t3.iter()
+                .any(|i| i.path.contains("steps[0].args.cond") && i.msg.contains("max_rounds")),
+            "{t3:?}"
+        );
+        assert!(
+            t3.iter()
+                .any(|i| i.path.contains("steps[1].args.text")
+                    && i.msg.contains("string-literal")),
+            "{t3:?}"
+        );
+    }
+
+    #[test]
+    fn lint_flags_asset_refs_and_missing_images() {
+        let td = TempDir::new("lintassets");
+        let b = open(&td);
+        // T4: the flow references an asset that assets.json does not declare.
+        write_flow_only_bundle(
+            &b,
+            r#"{"schema_version":1,"name":"任务1"}"#,
+            &flow_json("不存在"),
+        );
+        let issues = b.lint().expect_err("undeclared asset reference");
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == "T4" && i.msg.contains("不存在")),
+            "{issues:?}"
+        );
+
+        // T5: a declared template whose image file is not on disk.
+        let bad = serde_json::json!({
+            "schema_version": 1,
+            "items": [{
+                "id": "返回按钮", "kind": "template",
+                "file": "images/a999.png", "roi": [0, 0, 8, 8]
+            }]
+        });
+        std::fs::write(b.assets_path(), serde_json::to_string(&bad).unwrap()).expect("assets");
+        std::fs::write(b.flow_path(), flow_json("返回按钮")).expect("flow");
+        let issues = b.lint().expect_err("missing image");
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == "T5" && i.path == "assets.json: items[0].file"),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn lint_flags_external_code_keys() {
+        let td = TempDir::new("lintcode");
+        let b = open(&td);
+        // The DSL parser ignores unknown args, so T6 must catch the escape hatch.
+        write_flow_only_bundle(
+            &b,
+            r#"{"schema_version":1,"name":"任务1"}"#,
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"'hi'","code":"os.system('x')"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let issues = b.lint().expect_err("external code must be rejected");
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == "T6" && i.path.contains("args.code")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn lint_tasks_reports_every_bundle_and_the_broken_one() {
+        let td = TempDir::new("lintall");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).expect("tasks dir");
+        let good = TaskBundle::open(tasks.join("好任务")).expect("open good");
+        good.save_asset(
+            AssetDecl::template("返回按钮", [0, 0, 8, 8]),
+            Some(&frame(32, 32)),
+        )
+        .expect("asset");
+        good.save_flow(&flow_json("返回按钮")).expect("flow");
+        // A directory without meta.json is a broken bundle (reported, not skipped).
+        let broken = tasks.join("坏任务");
+        std::fs::create_dir_all(&broken).expect("broken dir");
+        std::fs::write(broken.join("flow.json"), flow_json("x")).expect("broken flow");
+        // A staging dir must be ignored.
+        std::fs::create_dir_all(tasks.join(".oasd-new-1")).expect("staging dir");
+
+        let all = lint_tasks(&tasks).expect("lint all");
+        assert_eq!(all.len(), 2, "{all:?}");
+        let get = |name: &str| {
+            all.iter()
+                .find(|(n, _)| n == name)
+                .unwrap_or_else(|| panic!("{name} missing from {all:?}"))
+        };
+        assert!(get("好任务").1.is_empty(), "{:?}", get("好任务").1);
+        assert!(
+            get("坏任务").1.iter().any(|i| i.path == "meta.json"),
+            "{:?}",
+            get("坏任务").1
+        );
+
+        assert!(lint_task(&tasks, "好任务").expect("lint one").is_empty());
+        assert!(lint_task(&tasks, "不存在").is_err(), "missing dir is a setup error");
+        assert!(lint_task(&tasks, "../evil").is_err(), "traversal rejected");
     }
 }

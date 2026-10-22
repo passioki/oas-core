@@ -1,0 +1,64 @@
+{
+  "template_version": 1,
+  "description": "daily 周期任务骨架：preflight → main → settle → finish（占位 log + finish(done)，由用户/编辑器补步骤）",
+  "meta": {
+    "schema_version": 1,
+    "template_version": 1,
+    "task_id": "{{id}}",
+    "name": "{{id}}",
+    "version": 1,
+    "category": "daily",
+    "entry": {
+      "requires": {
+        "kind": "appear",
+        "sel": "主界面",
+        "timeout_ms": 3000
+      }
+    },
+    "params": [],
+    "exits": {
+      "done": {
+        "result": "success"
+      },
+      "failed": {
+        "result": "retryable"
+      }
+    },
+    "capabilities": {
+      "checkpoint": true,
+      "interruptible": false,
+      "duration_hint_s": 300
+    },
+    "resources": [],
+    "schedule_hint": {
+      "windows": [],
+      "quota": {
+        "per": "day",
+        "times": 1
+      }
+    }
+  },
+  "flow": {
+    "schema_version": 1,
+    "name": "{{id}}",
+    "steps": [
+      {
+        "op": "log",
+        "args": {
+          "level": "info",
+          "text": "'daily task started'"
+        }
+      },
+      {
+        "op": "finish",
+        "args": {
+          "exit": "done"
+        }
+      }
+    ]
+  },
+  "assets": {
+    "schema_version": 1,
+    "items": []
+  }
+}

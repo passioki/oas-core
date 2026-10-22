@@ -67,6 +67,39 @@ const librarySelect = document.getElementById('library-select');
 const btnLibraryRefresh = document.getElementById('btn-library-refresh');
 const btnLibraryMatch = document.getElementById('btn-library-match');
 const libraryStatus = document.getElementById('library-status');
+// N38/M1: 任务列表 / 新建任务对话框 / 运行任务
+const taskSelect = document.getElementById('task-select');
+const btnTaskRefresh = document.getElementById('btn-task-refresh');
+const btnTaskCreate = document.getElementById('btn-task-create');
+const btnTaskRun = document.getElementById('btn-task-run');
+const runDry = document.getElementById('run-dry');
+const runReplay = document.getElementById('run-replay');
+const runStatusEl = document.getElementById('run-status');
+const createTaskDialog = document.getElementById('create-task-dialog');
+const createName = document.getElementById('create-name');
+const createTemplate = document.getElementById('create-template');
+const createDesc = document.getElementById('create-desc');
+const createError = document.getElementById('create-error');
+const btnCreateSubmit = document.getElementById('btn-create-submit');
+const btnCreateCancel = document.getElementById('btn-create-cancel');
+// M2/N37：调度面板 + 重置记忆对话框
+const btnSchedRefresh = document.getElementById('btn-sched-refresh');
+const btnSchedReset = document.getElementById('btn-sched-reset');
+const schedSummary = document.getElementById('sched-summary');
+const schedEntries = document.getElementById('sched-entries');
+const resetMemoryDialog = document.getElementById('reset-memory-dialog');
+const resetTaskList = document.getElementById('reset-task-list');
+const resetIncludeCheckpoint = document.getElementById('reset-include-checkpoint');
+const resetError = document.getElementById('reset-error');
+const btnResetAll = document.getElementById('btn-reset-all');
+const btnResetInvert = document.getElementById('btn-reset-invert');
+const btnResetNone = document.getElementById('btn-reset-none');
+const btnResetSubmit = document.getElementById('btn-reset-submit');
+const btnResetCancel = document.getElementById('btn-reset-cancel');
+let schedulerStatus = null;
+// M1 运行状态轮询：已消费的日志行数 / 是否已有轮询在跑（避免重复轮询）
+let runLogSeen = 0;
+let runPolling = false;
 
 let img = null;
 let roi = null; // {x,y,w,h} 识别框（前端识别/裁剪区域）
@@ -1720,8 +1753,419 @@ btnLines.addEventListener('click', async () => {
   }
 });
 
-// --- boot -------------------------------------------------------------------
-// Each independent concern is isolated so a missing frame or a not-yet-served
+// --- N38/M1: 任务创建 + 编辑器「运行任务」 ------------------------------------
+// 创建走 POST /task/create（服务端原子创建 + 校验），运行走 POST /task/run
+// （后台线程跑 run::execute），状态由 GET /task/run/status 轮询到结果/日志窗口。
+
+function setRunStatus(text) {
+  if (runStatusEl) runStatusEl.textContent = text || '—';
+}
+
+// 与服务端一致的前置检查（服务端仍是权威）；错误信息用中文，直接显示。
+function validateTaskNameClient(name) {
+  if (!name) return '任务名称不能为空';
+  if (name.length > 120) return '任务名称不能超过 120 个字符';
+  if (/[\\/:*?"<>|]/.test(name)) return '任务名称不能包含 \\ / : * ? " < > | 这些字符';
+  if (name.includes('..')) return '任务名称不能包含 `..`（防止路径穿越）';
+  if (name === '.' || name.endsWith('.')) return '任务名称不能是 .，也不能以 . 结尾';
+  if (name.trim() !== name) return '任务名称首尾不能有空格';
+  const reserved = ['CON', 'PRN', 'AUX', 'NUL'];
+  for (let i = 1; i <= 9; i++) {
+    reserved.push('COM' + i);
+    reserved.push('LPT' + i);
+  }
+  const stem = name.split('.')[0].toUpperCase();
+  if (reserved.includes(stem)) return `「${name}」是 Windows 保留设备名，请换一个`;
+  return '';
+}
+
+// 把当前任务名同步到任务列表下拉框（名称不在列表里就保持原样）。
+function syncTaskSelect(name) {
+  if (!taskSelect) return;
+  const want = (name || '').trim();
+  const has = Array.from(taskSelect.options).some((o) => o.value === want);
+  if (has) taskSelect.value = want;
+}
+
+// GET /task/list -> 下拉框；selectName 是想选中的任务（创建后/深链）。
+async function refreshTaskList(selectName) {
+  if (!taskSelect) return;
+  try {
+    const r = await fetch('/task/list');
+    const s = await r.json();
+    if (!s.ok) {
+      log('任务列表读取失败：' + (s.errors || []).join('; '));
+      return;
+    }
+    const tasks = s.tasks || [];
+    const want = (selectName || (taskName.value || '')).trim();
+    taskSelect.textContent = '';
+    if (!tasks.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '（还没有任务，点「新建任务」）';
+      taskSelect.appendChild(opt);
+      return;
+    }
+    for (const t of tasks) {
+      const opt = document.createElement('option');
+      opt.value = t;
+      opt.textContent = t;
+      taskSelect.appendChild(opt);
+    }
+    taskSelect.value = want && tasks.includes(want) ? want : tasks[0];
+  } catch (e) {
+    log('任务列表读取异常：' + e);
+  }
+}
+
+function openCreateTaskDialog() {
+  if (!createTaskDialog) return;
+  if (createError) createError.textContent = '';
+  if (createName) createName.value = '';
+  if (createTemplate) createTemplate.value = 'daily';
+  if (createDesc) createDesc.value = '';
+  if (typeof createTaskDialog.showModal === 'function') {
+    if (!createTaskDialog.open) createTaskDialog.showModal();
+  } else {
+    createTaskDialog.setAttribute('open', '');
+  }
+  if (createName) createName.focus();
+}
+
+function closeCreateTaskDialog() {
+  if (!createTaskDialog) return;
+  if (typeof createTaskDialog.close === 'function') {
+    if (createTaskDialog.open) createTaskDialog.close();
+  } else {
+    createTaskDialog.removeAttribute('open');
+  }
+}
+
+// 对话框「创建」：POST /task/create -> 刷新任务列表并选中 -> 刷新素材/flow。
+async function submitCreateTask() {
+  const name = ((createName && createName.value) || '').trim();
+  const template = (createTemplate && createTemplate.value) || 'daily';
+  const description = ((createDesc && createDesc.value) || '').trim();
+  const bad = validateTaskNameClient(name);
+  if (bad) {
+    if (createError) createError.textContent = bad;
+    if (createName) createName.focus();
+    return;
+  }
+  if (btnCreateSubmit) btnCreateSubmit.disabled = true;
+  if (createError) createError.textContent = '正在创建任务包…';
+  try {
+    const s = await postJson('/task/create', { name, template, description });
+    if (!s.ok) {
+      const errs = (s.errors || []).map((e) => '· ' + e).join('\n');
+      if (createError) createError.textContent = '创建失败：\n' + (errs || '（未知错误）');
+      return;
+    }
+    const t = s.task || {};
+    if (createError) createError.textContent = '';
+    closeCreateTaskDialog();
+    taskName.value = t.name || name;
+    await refreshTaskList(taskName.value);
+    syncTaskSelect(taskName.value);
+    await refreshTaskAssets(taskName.value);
+    await loadTaskFlow(taskName.value);
+    const metaText = t.meta ? JSON.stringify(t.meta, null, 2) : '';
+    resultEl.textContent =
+      `已创建任务「${taskName.value}」\n模板：${t.template || template} · 分类：${t.category || '—'}\n` +
+      `路径：${t.path || ''}\n\n${metaText}`;
+    log(`已创建任务「${taskName.value}」（模板 ${t.template || template}）`);
+    setStatus(`已创建任务：${taskName.value}`);
+    setRunStatus(`任务「${taskName.value}」已就绪：点「运行任务」开始一次运行。`);
+  } catch (e) {
+    if (createError) createError.textContent = '创建异常：' + (e && e.message ? e.message : e);
+  } finally {
+    if (btnCreateSubmit) btnCreateSubmit.disabled = false;
+  }
+}
+
+function formatRunSummary(s) {
+  const lines = [];
+  lines.push(`任务「${s.task || '—'}」运行结束：${s.outcome || '未知'}`);
+  lines.push(`退出码 = ${s.exit == null ? '—' : s.exit}`);
+  if (s.mode) lines.push(`模式 = ${s.mode}`);
+  if (s.seed != null) lines.push(`seed = ${s.seed}`);
+  if (s.clicks != null) lines.push(`实际点击 = ${s.clicks} 次`);
+  if (s.started_ms && s.finished_ms) {
+    lines.push(`耗时 = ${((s.finished_ms - s.started_ms) / 1000).toFixed(1)} 秒`);
+  }
+  if (s.error) lines.push(`错误 = ${s.error}`);
+  return lines.join('\n');
+}
+
+// 把一次状态快照写到任务面板状态行 + 增量日志写到已有「日志窗口」。
+function renderRunStatus(s) {
+  const mode = s.mode || (s.replay ? 'replay' : (s.dry_run ? 'dry-run' : 'live'));
+  let text;
+  if (s.running) {
+    text = `运行中：任务「${s.task || '—'}」（${mode}）…`;
+  } else if (s.task) {
+    text = `上次运行：任务「${s.task}」→ ${s.outcome || '—'}（exit ${s.exit == null ? '—' : s.exit}）`;
+    if (s.error) text += `\n错误：${s.error}`;
+  } else {
+    text = '尚未运行任务（先选择任务，再点「运行任务」）';
+  }
+  setRunStatus(text);
+  const tail = Array.isArray(s.log_tail) ? s.log_tail : [];
+  const count = Number(s.log_count || 0);
+  if (count > runLogSeen) {
+    const fresh = Math.min(count - runLogSeen, tail.length);
+    const start = Math.max(0, tail.length - fresh);
+    // log() 把新行加在最上面：倒序写入才能让日志窗口保持时间顺序。
+    for (let i = tail.length - 1; i >= start; i--) log('[run] ' + tail[i]);
+    runLogSeen = count;
+  }
+}
+
+// 轮询 GET /task/run/status 直到 !running；结束后把结果写到「结果窗口」。
+async function pollRunStatus() {
+  if (runPolling) return;
+  runPolling = true;
+  try {
+    while (true) {
+      const r = await fetch('/task/run/status');
+      const s = await r.json();
+      if (!s.ok) {
+        setRunStatus('运行状态读取失败：' + (s.error || '未知错误'));
+        break;
+      }
+      renderRunStatus(s);
+      if (!s.running) {
+        resultEl.textContent = formatRunSummary(s);
+        log(`任务运行结束：${s.outcome || '—'}（exit ${s.exit == null ? '—' : s.exit}）`);
+        try {
+          await refreshRuns();
+        } catch (e) {
+          /* 点击分布刷新失败不影响运行结果 */
+        }
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  } catch (e) {
+    setRunStatus('运行状态轮询异常：' + (e && e.message ? e.message : e));
+  } finally {
+    runPolling = false;
+    if (btnTaskRun) btnTaskRun.disabled = false;
+  }
+}
+
+// 任务面板「运行任务」：POST /task/run -> 轮询状态 -> 结果/日志窗口。
+async function doRunTask() {
+  const task = currentTask();
+  if (!task) return;
+  const payload = { task };
+  if (runDry && runDry.checked) payload.dry_run = true;
+  const replay = ((runReplay && runReplay.value) || '').trim();
+  if (replay) payload.replay = replay;
+  const modeLabel = replay
+    ? `回放（${replay}）`
+    : (payload.dry_run ? 'dry-run（不点击设备）' : '实机');
+  if (btnTaskRun) btnTaskRun.disabled = true;
+  runLogSeen = 0;
+  setRunStatus(`正在启动任务「${task}」（${modeLabel}）…`);
+  try {
+    const s = await postJson('/task/run', payload);
+    if (!s.ok) {
+      const errs = (s.errors || []).map((e) => '· ' + e).join('\n');
+      setRunStatus('启动失败：\n' + (errs || '未知错误'));
+      showErrors('运行任务失败：', s.errors);
+      log('运行任务失败：' + (errs || '未知错误'));
+      if (btnTaskRun) btnTaskRun.disabled = false;
+      return;
+    }
+    log(`运行任务：${s.task}（${s.mode || modeLabel}）`);
+    resultEl.textContent =
+      `任务「${s.task}」运行中…\n模式 = ${s.mode || modeLabel}\n` +
+      '实时日志写入「日志窗口」；结束后这里显示结果。';
+    await pollRunStatus();
+  } catch (e) {
+    setRunStatus('运行异常：' + (e && e.message ? e.message : e));
+    log('运行异常：' + e);
+    if (btnTaskRun) btnTaskRun.disabled = false;
+  }
+}
+
+// --- M2/N37: 调度面板 + 重置记忆 -------------------------------------------
+function fmtLocal(ms) {
+  if (!ms) return '—';
+  try {
+    return new Date(Number(ms)).toLocaleString('zh-CN', { hour12: false });
+  } catch (e) {
+    return String(ms);
+  }
+}
+
+function schedBadge(text, cls) {
+  const s = document.createElement('span');
+  s.className = 'badge ' + (cls || '');
+  s.textContent = text;
+  return s;
+}
+
+function renderScheduler(s) {
+  if (!schedSummary || !schedEntries) return;
+  schedulerStatus = s;
+  const guards = s.guards || {};
+  const parts = [
+    `模式=${s.mode || '—'}`,
+    `轮次=${s.passes ?? 0}`,
+    `下一唤醒=${s.next_wake_local || fmtLocal(s.next_wake_ms)}`,
+    `护栏=${guards.blocked ? '已阻断' : '正常'}`,
+  ];
+  if (guards.blackout_reason) parts.push(`原因=${guards.blackout_reason}`);
+  if (s.last_stop) parts.push(`上次停止=${typeof s.last_stop === 'string' ? s.last_stop : JSON.stringify(s.last_stop)}`);
+  schedSummary.textContent = parts.join(' · ');
+
+  schedEntries.textContent = '';
+  const entries = Array.isArray(s.entries) ? s.entries : [];
+  if (!entries.length) {
+    schedEntries.textContent = '（无调度条目：编辑 scheduler.json 后刷新）';
+    return;
+  }
+  for (const e of entries) {
+    const row = document.createElement('div');
+    row.className = 'sched-entry';
+    const head = document.createElement('div');
+    head.className = 'row';
+    const name = document.createElement('strong');
+    name.textContent = `${e.entry_id || '?'} · ${e.task || '?'}`;
+    head.appendChild(name);
+    head.appendChild(schedBadge(e.lifecycle || '?', 'kind'));
+    if (e.enabled === false) head.appendChild(schedBadge('已禁用', 'warn'));
+    if (e.runnable_now) head.appendChild(schedBadge('现在可跑', 'ok'));
+    if (e.blocked_reason) head.appendChild(schedBadge('等待：' + e.blocked_reason, 'warn'));
+    row.appendChild(head);
+
+    const meta = document.createElement('div');
+    meta.className = 'muted small';
+    const quota = e.quota || {};
+    const bits = [];
+    if (quota.per) bits.push(`quota ${quota.used ?? 0}/${quota.times ?? '?'}（${quota.per}）`);
+    if (e.next_due_local) bits.push(`下次=${e.next_due_local}`);
+    if (e.cooldown_until_ms) bits.push(`冷却至=${fmtLocal(e.cooldown_until_ms)}`);
+    if (e.last_result) bits.push(`上次=${e.last_result}`);
+    meta.textContent = bits.join(' · ') || '（无窗口限制 / 每轮执行）';
+    row.appendChild(meta);
+    schedEntries.appendChild(row);
+  }
+}
+
+async function refreshScheduler() {
+  if (!schedSummary) return;
+  try {
+    const r = await fetch('/scheduler/status');
+    const s = await r.json();
+    if (s.ok === false) {
+      schedSummary.textContent = '读取调度状态失败：' + ((s.errors || []).join('; ') || '未知错误');
+      return;
+    }
+    renderScheduler(s);
+  } catch (e) {
+    schedSummary.textContent = '读取调度状态失败：' + e;
+  }
+}
+
+function resetTaskChecks(mode) {
+  if (!resetTaskList) return;
+  for (const cb of resetTaskList.querySelectorAll('input[type=checkbox][data-task]')) {
+    if (mode === 'all') cb.checked = true;
+    else if (mode === 'none') cb.checked = false;
+    else cb.checked = !cb.checked;
+  }
+}
+
+function openResetMemoryDialog() {
+  if (!resetMemoryDialog) return;
+  if (resetError) resetError.textContent = '';
+  if (!schedulerStatus) {
+    refreshScheduler().then(() => {
+      populateResetTaskList();
+      resetMemoryDialog.showModal();
+    });
+    return;
+  }
+  populateResetTaskList();
+  resetMemoryDialog.showModal();
+}
+
+function populateResetTaskList() {
+  if (!resetTaskList) return;
+  resetTaskList.textContent = '';
+  const choices = (schedulerStatus && schedulerStatus.task_choices) || [];
+  const seen = new Set();
+  const rows = [];
+  for (const c of choices) {
+    const task = c.task || '';
+    if (!task || seen.has(task)) continue;
+    seen.add(task);
+    rows.push(c);
+  }
+  if (!rows.length && schedulerStatus && Array.isArray(schedulerStatus.entries)) {
+    for (const e of schedulerStatus.entries) {
+      if (e.task && !seen.has(e.task)) {
+        seen.add(e.task);
+        rows.push({ task: e.task });
+      }
+    }
+  }
+  if (!rows.length) {
+    resetTaskList.textContent = '（没有可重置的任务：先创建任务/加入调度）';
+    return;
+  }
+  for (const c of rows) {
+    const label = document.createElement('label');
+    label.className = 'opt reset-task-row';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.dataset.task = c.task;
+    label.appendChild(cb);
+    const text = document.createElement('span');
+    let note = '';
+    if (c.bundle_exists === false) note += ' · 任务目录不存在';
+    if (c.state_dir_exists) note += ' · 有 state';
+    text.textContent = `${c.task}${note}`;
+    label.appendChild(text);
+    resetTaskList.appendChild(label);
+  }
+}
+
+async function submitResetMemory() {
+  if (!resetTaskList) return;
+  const tasks = Array.from(resetTaskList.querySelectorAll('input[type=checkbox][data-task]'))
+    .filter((cb) => cb.checked)
+    .map((cb) => cb.dataset.task);
+  if (!tasks.length) {
+    if (resetError) resetError.textContent = '请至少选择一个任务（可用「全选」）。';
+    return;
+  }
+  const include_checkpoint = resetIncludeCheckpoint ? resetIncludeCheckpoint.checked : true;
+  try {
+    const r = await postJson('/scheduler/reset', { tasks, include_checkpoint });
+    if (!r.ok) {
+      if (resetError) resetError.textContent = (r.errors || ['重置失败']).join('\n');
+      return;
+    }
+    const rep = r.report || {};
+    resultEl.textContent =
+      `重置记忆完成：任务=[${(rep.tasks || tasks).join(', ')}] · ` +
+      `删除文件=${rep.files_removed ?? '?'} · 状态=${rep.state_path || ''}`;
+    if (logEl) logEl.textContent += '[reset-memory] ' + (r.log || []).join('\n') + '\n';
+
+
+    if (resetMemoryDialog) resetMemoryDialog.close();
+    await refreshScheduler();
+  } catch (e) {
+    if (resetError) resetError.textContent = '请求失败：' + e;
+  }
+}
+
+// --- boot -------------------------------------------------------------------// Each independent concern is isolated so a missing frame or a not-yet-served
 // backend route (/runs) can never blank-screen the editor.
 (async function boot() {
   // §22.26 三栏面板切换（素材 / 任务 / 流程）—— 参考旧 OAS annotator 的 rail。
@@ -1731,6 +2175,7 @@ btnLines.addEventListener('click', async () => {
     for (const p of document.querySelectorAll('.rail-panels .panel')) {
       p.classList.toggle('active', p.id === panelId);
     }
+    if (panelId === 'panel-schedule') refreshScheduler();
   }
   for (const b of railButtons) {
     b.addEventListener('click', () => {
@@ -1768,8 +2213,20 @@ btnLines.addEventListener('click', async () => {
   // 深链 ?panel=flow / ?panel=task 供验收/直达使用
   try {
     const wantPanel = new URLSearchParams(location.search).get('panel');
-    const ok = ['panel-assets', 'panel-images', 'panel-click', 'panel-task', 'panel-flow'];
+    const ok = ['panel-assets', 'panel-images', 'panel-click', 'panel-task', 'panel-flow', 'panel-schedule'];
     if (wantPanel && ok.includes(wantPanel)) activatePanel(wantPanel);
+  } catch (e) {
+    /* ignore */
+  }
+  // 深链 ?new=1：直接打开「新建任务」对话框（headless 截图验收用）
+  try {
+    if (new URLSearchParams(location.search).get('new') === '1') openCreateTaskDialog();
+  } catch (e) {
+    /* ignore */
+  }
+  // 深链 ?reset=1：打开「重置记忆」多选框（headless 截图验收用）
+  try {
+    if (new URLSearchParams(location.search).get('reset') === '1') openResetMemoryDialog();
   } catch (e) {
     /* ignore */
   }
@@ -1777,8 +2234,51 @@ btnLines.addEventListener('click', async () => {
   btnSaveAsset.addEventListener('click', doSaveAsset);
   btnSaveFlow.addEventListener('click', doSaveFlow);
   taskName.addEventListener('change', async () => {
+    syncTaskSelect(taskName.value);
     await refreshTaskAssets();
     await loadTaskFlow((taskName.value || '').trim());
+  });
+  // --- N38/M1: 任务列表 / 新建任务 / 运行任务 ---
+  if (btnTaskRefresh) btnTaskRefresh.addEventListener('click', () => refreshTaskList());
+  if (taskSelect) {
+    taskSelect.addEventListener('change', async () => {
+      const name = (taskSelect.value || '').trim();
+      if (!name) return;
+      taskName.value = name;
+      await refreshTaskAssets(name);
+      await loadTaskFlow(name);
+      setRunStatus(`已选择任务「${name}」；点「运行任务」开始一次运行。`);
+    });
+  }
+  if (btnTaskCreate) btnTaskCreate.addEventListener('click', openCreateTaskDialog);
+  if (btnCreateSubmit) btnCreateSubmit.addEventListener('click', submitCreateTask);
+  if (btnCreateCancel) btnCreateCancel.addEventListener('click', closeCreateTaskDialog);
+  if (createName) {
+    createName.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        submitCreateTask();
+      }
+    });
+  }
+  if (createDesc) {
+    createDesc.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+        ev.preventDefault();
+        submitCreateTask();
+      }
+    });
+  }
+  if (btnTaskRun) btnTaskRun.addEventListener('click', doRunTask);
+  // --- M2/N37: 调度面板 + 重置记忆 ---
+  if (btnSchedRefresh) btnSchedRefresh.addEventListener('click', refreshScheduler);
+  if (btnSchedReset) btnSchedReset.addEventListener('click', openResetMemoryDialog);
+  if (btnResetAll) btnResetAll.addEventListener('click', () => resetTaskChecks('all'));
+  if (btnResetInvert) btnResetInvert.addEventListener('click', () => resetTaskChecks('invert'));
+  if (btnResetNone) btnResetNone.addEventListener('click', () => resetTaskChecks('none'));
+  if (btnResetSubmit) btnResetSubmit.addEventListener('click', submitResetMemory);
+  if (btnResetCancel) btnResetCancel.addEventListener('click', () => {
+    if (resetMemoryDialog) resetMemoryDialog.close();
   });
   // §22.18 可视化流程编辑器
   if (btnFlowAddStep) {
@@ -1871,6 +2371,8 @@ btnLines.addEventListener('click', async () => {
   if (deepTask) taskName.value = deepTask;
   await refreshTaskAssets(deepTask || undefined);
   await loadTaskFlow((taskName.value || '').trim());
+  // M1：任务列表下拉框（深链任务会被选中）。
+  await refreshTaskList(taskName.value.trim());
 
   // §22.21 deep link for the headless acceptance:
   //   /?match=1&x=330&y=69&w=95&h=55  -> select that ROI and run the image test.
@@ -1918,5 +2420,20 @@ btnLines.addEventListener('click', async () => {
   } catch (e) {
     setClicksStatus('点击分布初始化失败：' + (e && e.message ? e.message : e));
     log('点击分布初始化失败：' + e);
+  }
+
+  // M1：页面刷新时如果后台还有运行中的任务，继续轮询并把结果接回日志窗口。
+  try {
+    const r = await fetch('/task/run/status');
+    const st = await r.json();
+    if (st.ok && st.running) {
+      log(`检测到后台任务仍在运行：${st.task}（${st.mode || ''}），继续等待结果…`);
+      renderRunStatus(st);
+      pollRunStatus();
+    } else if (st.ok && st.task) {
+      setRunStatus(`上次运行：任务「${st.task}」→ ${st.outcome || '—'}（exit ${st.exit == null ? '—' : st.exit}）`);
+    }
+  } catch (e) {
+    /* 状态路由不可用时忽略（编辑器其它功能不受影响） */
   }
 })();

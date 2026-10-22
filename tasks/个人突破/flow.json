@@ -1,0 +1,476 @@
+{
+  "schema_version": 1,
+  "name": "个人突破",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 个人突破 开始（庭院 → 探索 → 结界突破 → 个人突破 → 挑战 → 返回庭院）'"
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 680,
+        "y": 152,
+        "requires": {
+          "kind": "appear",
+          "sel": "庭院_探索灯笼",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 10000
+        }
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 297,
+        "y": 647,
+        "requires": {
+          "kind": "appear",
+          "sel": "探索_结界突破图标",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "结界突破_个人页签",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.0
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 已进入个人突破页，先看突破券数量（OCR，29/30 → 29）'"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "ocr_digit('突破券') != 0"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 突破券足够，选目标挑战'"
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "'S: 突破券不足 → 先退回庭院，再 finish(resource_empty)（模板契约名 no_tickets，result=resource）'"
+          }
+        },
+        {
+          "op": "click_point",
+          "args": {
+            "x": 1208,
+            "y": 128,
+            "requires": {
+              "kind": "appear",
+              "sel": "结界突破_返回X",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "世界_章节栏",
+              "timeout_ms": 10000
+            }
+          }
+        },
+        {
+          "op": "click_point",
+          "args": {
+            "x": 56,
+            "y": 58,
+            "requires": {
+              "kind": "appear",
+              "sel": "世界_章节栏",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "庭院_探索灯笼",
+              "timeout_ms": 15000
+            }
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "resource_empty"
+          }
+        }
+      ]
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "param('max_attacks')"
+      },
+      "body": [
+        {
+          "op": "click_point",
+          "args": {
+            "x": 1010,
+            "y": 190,
+            "requires": {
+              "kind": "appear",
+              "sel": "结界突破_个人页签",
+              "timeout_ms": 3000
+            }
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('进攻按钮')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 进攻弹窗出现，点「进攻」→「准备」开战'"
+              }
+            },
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "template",
+                    "sel": "进攻按钮"
+                  }
+                ],
+                "requires": {
+                  "kind": "appear",
+                  "sel": "进攻按钮",
+                  "timeout_ms": 3000
+                },
+                "expect": {
+                  "kind": "appear",
+                  "sel": "战斗_准备按钮",
+                  "timeout_ms": 15000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 0.8
+              }
+            },
+            {
+              "op": "click_point",
+              "args": {
+                "x": 1170,
+                "y": 590,
+                "requires": {
+                  "kind": "appear",
+                  "sel": "战斗_准备按钮",
+                  "timeout_ms": 5000
+                },
+                "expect": {
+                  "kind": "vanish",
+                  "sel": "战斗_准备按钮",
+                  "timeout_ms": 10000
+                }
+              }
+            },
+            {
+              "op": "wait_until",
+              "args": {
+                "cond": "appear('战斗_自动按钮')",
+                "timeout_s": 25
+              }
+            },
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 战斗中（自动战斗），循环点「点击屏幕继续」直到回到个人突破页'"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "60"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 2.5
+                  }
+                },
+                {
+                  "op": "click_point",
+                  "args": {
+                    "x": 640,
+                    "y": 690
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('结界突破_个人页签')"
+                  },
+                  "then": [
+                    {
+                      "op": "break"
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            },
+            {
+              "op": "appear",
+              "args": {
+                "sel": "结界突破_个人页签"
+              }
+            },
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 挑战结算完成，已回到个人突破页'"
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "click_point",
+              "args": {
+                "x": 280,
+                "y": 390,
+                "requires": {
+                  "kind": "appear",
+                  "sel": "结界突破_个人页签",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('进攻按钮')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 进攻弹窗出现，点「进攻」→「准备」开战'"
+                  }
+                },
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "template",
+                        "sel": "进攻按钮"
+                      }
+                    ],
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "进攻按钮",
+                      "timeout_ms": 3000
+                    },
+                    "expect": {
+                      "kind": "appear",
+                      "sel": "战斗_准备按钮",
+                      "timeout_ms": 15000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.8
+                  }
+                },
+                {
+                  "op": "click_point",
+                  "args": {
+                    "x": 1170,
+                    "y": 590,
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "战斗_准备按钮",
+                      "timeout_ms": 5000
+                    },
+                    "expect": {
+                      "kind": "vanish",
+                      "sel": "战斗_准备按钮",
+                      "timeout_ms": 10000
+                    }
+                  }
+                },
+                {
+                  "op": "wait_until",
+                  "args": {
+                    "cond": "appear('战斗_自动按钮')",
+                    "timeout_s": 25
+                  }
+                },
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 战斗中（自动战斗），循环点「点击屏幕继续」直到回到个人突破页'"
+                  }
+                },
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "60"
+                  },
+                  "body": [
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 2.5
+                      }
+                    },
+                    {
+                      "op": "click_point",
+                      "args": {
+                        "x": 640,
+                        "y": 690
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('结界突破_个人页签')"
+                      },
+                      "then": [
+                        {
+                          "op": "break"
+                        }
+                      ],
+                      "else": []
+                    }
+                  ]
+                },
+                {
+                  "op": "appear",
+                  "args": {
+                    "sel": "结界突破_个人页签"
+                  }
+                },
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 挑战结算完成，已回到个人突破页'"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "warn",
+                    "text": "'S: 两处候选目标都不可打 → finish(no_target)，meta.exits 声明为 blocked'"
+                  }
+                },
+                {
+                  "op": "finish",
+                  "args": {
+                    "exit": "no_target"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.0
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 1208,
+        "y": 128,
+        "requires": {
+          "kind": "appear",
+          "sel": "结界突破_返回X",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 10000
+        }
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 56,
+        "y": 58,
+        "requires": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "庭院_探索灯笼",
+          "timeout_ms": 15000
+        }
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 个人突破 done，已回到庭院'"
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

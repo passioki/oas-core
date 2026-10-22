@@ -1,0 +1,73 @@
+{
+  "template_version": 1,
+  "description": "loop 可重复任务骨架：轮数由声明的 param('max_rounds') 控制（temp/utility 语义，调度由 M2 scheduler.json 决定）",
+  "meta": {
+    "schema_version": 1,
+    "template_version": 1,
+    "task_id": "{{id}}",
+    "name": "{{id}}",
+    "version": 1,
+    "category": "utility",
+    "params": [
+      {
+        "key": "max_rounds",
+        "type": "int",
+        "default": 3,
+        "min": 1,
+        "max": 99
+      }
+    ],
+    "exits": {
+      "done": {
+        "result": "success"
+      },
+      "failed": {
+        "result": "retryable"
+      }
+    },
+    "capabilities": {
+      "checkpoint": true,
+      "interruptible": false,
+      "duration_hint_s": 600
+    },
+    "resources": []
+  },
+  "flow": {
+    "schema_version": 1,
+    "name": "{{id}}",
+    "steps": [
+      {
+        "op": "log",
+        "args": {
+          "level": "info",
+          "text": "'loop task started'"
+        }
+      },
+      {
+        "op": "loop",
+        "args": {
+          "n": "param('max_rounds')"
+        },
+        "body": [
+          {
+            "op": "log",
+            "args": {
+              "level": "info",
+              "text": "'round'"
+            }
+          }
+        ]
+      },
+      {
+        "op": "finish",
+        "args": {
+          "exit": "done"
+        }
+      }
+    ]
+  },
+  "assets": {
+    "schema_version": 1,
+    "items": []
+  }
+}

@@ -45,12 +45,14 @@
 //!   `template` / `ocr_text` / `coord_memory` / `point` (ENGINE §22.11).
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 
 use oas_adapter_pc::Adb;
 use oas_codec;
+use oas_flow::Value;
 use oas_obs::{Recorder, ReplaySource};
 use oas_runtime::{Budget, ClickRecord, Interpreter, RunResult, StepEvent};
 use oas_task::TaskBundle;
@@ -62,7 +64,7 @@ pub const USAGE: &str = "usage: oasd run --task <bundle-dir> [--replay <bundle-d
                          [--shots-dir <dir>] [--resume] [--checkpoint <file.json>] \
                          [--library <dir>] \
                          [--model <rec.onnx>] [--det-model <det.onnx>] \
-                         [--budget-steps N] [--budget-wall S]";
+                         [--budget-steps N] [--budget-wall S] [--param k=v]...";
 
 const DEFAULT_MAX_STEPS: u32 = 5000;
 const DEFAULT_MAX_WALL_S: f64 = 300.0;
@@ -109,6 +111,9 @@ pub struct RunOptions {
     pub det_model: Option<PathBuf>,
     pub budget_steps: u32,
     pub budget_wall_s: f64,
+    /// `--param k=v` values for `param('key')` (M0 unified template). The
+    /// bundle's `meta.params[].default` is the fallback; CLI wins on conflict.
+    pub params: BTreeMap<String, String>,
 }
 
 impl Default for RunOptions {
@@ -129,6 +134,7 @@ impl Default for RunOptions {
             det_model: None,
             budget_steps: DEFAULT_MAX_STEPS,
             budget_wall_s: DEFAULT_MAX_WALL_S,
+            params: BTreeMap::new(),
         }
     }
 }
@@ -197,6 +203,22 @@ impl RunOptions {
                     }
                     o.budget_wall_s = s;
                 }
+                "--param" => {
+                    let raw = take_value(rest, &mut i, "--param")?;
+                    let (key, value) = raw.split_once('=').ok_or_else(|| {
+                        format!("--param expects `key=value`, got `{raw}`")
+                    })?;
+                    if key.trim().is_empty() {
+                        return Err(format!("--param key is empty in `{raw}`"));
+                    }
+                    if key.trim() != key {
+                        return Err(format!(
+                            "--param key `{key}` has leading/trailing whitespace"
+                        ));
+                    }
+                    // Last one wins (explicit rebinding of a scheduler-passed value).
+                    o.params.insert(key.to_string(), value.to_string());
+                }
                 other => return Err(format!("unknown run argument `{other}`\n{USAGE}")),
             }
         }
@@ -210,6 +232,19 @@ fn take_value(rest: &[String], i: &mut usize, flag: &str) -> Result<String, Stri
         .ok_or_else(|| format!("{flag} needs a value\n{USAGE}"))?;
     *i += 2;
     Ok(v.clone())
+}
+
+/// Parse one `--param k=v` value: `true`/`false` => bool, a finite number => num,
+/// everything else => string. The flow expression decides how it is used.
+fn parse_param_value(raw: &str) -> Value {
+    match raw {
+        "true" => Value::Bool(true),
+        "false" => Value::Bool(false),
+        _ => match raw.parse::<f64>() {
+            Ok(n) if n.is_finite() => Value::Num(n),
+            _ => Value::Str(raw.to_string()),
+        },
+    }
 }
 
 /// Attach the in-flow OCR provider when `--model` / `--det-model` are given.
@@ -374,6 +409,28 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     out(&format!("task={}", task_dir.display()));
     out(&format!("assets={}", assets.len()));
 
+    // ---- task parameters (M0 unified template, §22.34.2) --------------------
+    // Defaults come from meta.params[].default; `--param k=v` wins. A parameter
+    // used by `param('key')` but never provided is a loud runtime failure.
+    let meta = bundle
+        .load_meta()
+        .map_err(|e| format!("task bundle `{}`: {e}", task_dir.display()))?;
+    let mut params = match &meta {
+        Some(meta) => meta
+            .param_defaults()
+            .map_err(|e| format!("task bundle `{}`: {e}", task_dir.display()))?,
+        None => BTreeMap::new(),
+    };
+    let cli_param_count = opts.params.len();
+    for (key, raw) in &opts.params {
+        params.insert(key.clone(), parse_param_value(raw));
+    }
+    out(&format!(
+        "params={} cli_params={}",
+        params.len(),
+        cli_param_count
+    ));
+
     // ---- checkpoint / resume (§22.16) --------------------------------------
     let checkpoint_path = opts
         .checkpoint
@@ -485,13 +542,28 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
                     }
                 }
             }
-            let dev = devices.first().ok_or_else(|| {
-                format!(
-                    "no adb device attached (ADB_PATH={}); attach the emulator or pass \
-                     --replay <bundle>",
-                    adb.exe.display()
-                )
-            })?;
+            let wanted = crate::config::device_serial();
+            let dev = match &wanted {
+                Some(serial) => devices.iter().find(|d| &d.serial == serial).ok_or_else(|| {
+                    let seen = devices
+                        .iter()
+                        .map(|d| d.serial.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(
+                        "configured device serial `{serial}` is not attached (seen: [{seen}]; \
+                         ADB_PATH={}); fix config/live.json device.serial or pass --replay",
+                        adb.exe.display()
+                    )
+                })?,
+                None => devices.first().ok_or_else(|| {
+                    format!(
+                        "no adb device attached (ADB_PATH={}); attach the emulator, set \
+                         device.serial in config, or pass --replay <bundle>",
+                        adb.exe.display()
+                    )
+                })?,
+            };
             out(&format!("device={}", dev.serial));
             live = Some((adb.clone(), dev.serial.clone()));
             Box::new(crate::reconnect::ReconnectingScreen::new(
@@ -544,7 +616,9 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
         "budget_steps={} budget_wall_s={}",
         budget.max_steps, budget.max_wall_s
     ));
-    let interp = Interpreter::new(DynScreen(src), input, assets, budget).with_seed(seed);
+    let interp = Interpreter::new(DynScreen(src), input, assets, budget)
+        .with_seed(seed)
+        .with_params(params);
     let interp = attach_ocr(interp, opts.model.as_deref(), opts.det_model.as_deref())?;
     let mut interp = interp
         .with_coord_store(Box::new(crate::coords::SharedStore(coords.clone())))
@@ -1712,6 +1786,103 @@ mod tests {
                 RunOptions::parse(&bad).is_err(),
                 "should reject {bad:?}"
             );
+        }
+    }
+
+    // ---- param() injection (M0 unified task template) ----
+
+    const PARAM_FLOW: &str = r#"{"schema_version":1,"name":"n5-param-test","steps":[
+        {"op":"log","args":{"level":"info","text":"param('max_rounds') * 2"}},
+        {"op":"finish","args":{"exit":"done"}}]}"#;
+    const PARAM_META: &str = r#"{"schema_version":1,"name":"n5-param-test",
+        "params":[{"key":"max_rounds","type":"int","default":3,"min":1,"max":99}],
+        "exits":{"done":{"result":"success"},"failed":{"result":"retryable"}}}"#;
+
+    /// Task bundle with a custom flow + M0 meta (params contract).
+    fn write_task_bundle_with(dir: &Path, flow: &str, meta: &str) {
+        let bundle = TaskBundle::open(dir).expect("open task bundle");
+        bundle.save_flow(flow).expect("save flow");
+        std::fs::write(bundle.meta_path(), meta).expect("write meta");
+    }
+
+    #[test]
+    fn run_param_uses_the_meta_default_and_cli_overrides_it() {
+        let td = TempDir::new("param");
+        let task = td.path().join("task");
+        let replay = td.path().join("replay");
+        write_task_bundle_with(&task, PARAM_FLOW, PARAM_META);
+        write_replay_bundle(&replay);
+
+        // No --param => meta.params[].default (3) => 3 * 2 = 6.
+        let (r, lines) = run_capture(&replay_options(&task, &replay, 1));
+        assert_eq!(r.outcome(), Outcome::Done, "events: {:?}", r.events);
+        assert_eq!(line_with(&lines, "params="), "params=1 cli_params=0");
+        assert!(
+            r.events.iter().any(|e| e.detail.contains("Num(6.0)")),
+            "{:?}",
+            r.events
+        );
+
+        // --param max_rounds=7 wins => 7 * 2 = 14.
+        let mut opts = replay_options(&task, &replay, 1);
+        opts.params.insert("max_rounds".to_string(), "7".to_string());
+        let (r, lines) = run_capture(&opts);
+        assert_eq!(r.outcome(), Outcome::Done);
+        assert_eq!(line_with(&lines, "params="), "params=1 cli_params=1");
+        assert!(
+            r.events.iter().any(|e| e.detail.contains("Num(14.0)")),
+            "{:?}",
+            r.events
+        );
+    }
+
+    #[test]
+    fn run_with_a_missing_param_value_fails_loudly() {
+        let td = TempDir::new("param-missing");
+        let task = td.path().join("task");
+        let replay = td.path().join("replay");
+        let flow = r#"{"schema_version":1,"name":"t","steps":[
+             {"op":"log","args":{"level":"info","text":"param('nope')"}},
+             {"op":"finish","args":{"exit":"done"}}]}"#;
+        write_task_bundle_with(&task, flow, r#"{"schema_version":1,"name":"t"}"#);
+        write_replay_bundle(&replay);
+        let (r, _lines) = run_capture(&replay_options(&task, &replay, 1));
+        match &r.result {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("nope"), "{msg}");
+                assert!(msg.contains("param"), "{msg}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert_eq!(r.outcome(), Outcome::Failed);
+    }
+
+    #[test]
+    fn param_cli_values_are_typed_and_bad_shapes_rejected() {
+        assert_eq!(parse_param_value("3"), Value::Num(3.0));
+        assert_eq!(parse_param_value("-2.5"), Value::Num(-2.5));
+        assert_eq!(parse_param_value("true"), Value::Bool(true));
+        assert_eq!(parse_param_value("false"), Value::Bool(false));
+        assert_eq!(parse_param_value("fast"), Value::Str("fast".to_string()));
+        // Non-finite text stays a string (never a silent NaN injection).
+        assert_eq!(parse_param_value("NaN"), Value::Str("NaN".to_string()));
+
+        let args: Vec<String> = ["--task", "t", "--param", "a=1", "--param", "mode=fast"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let o = RunOptions::parse(&args).expect("parse");
+        assert_eq!(o.params["a"], "1");
+        assert_eq!(o.params["mode"], "fast");
+
+        for bad in [
+            vec!["--task", "t", "--param", "novalue"],
+            vec!["--task", "t", "--param", "=x"],
+            vec!["--task", "t", "--param", " a=1"],
+            vec!["--task", "t", "--param"],
+        ] {
+            let bad: Vec<String> = bad.iter().map(|s| s.to_string()).collect();
+            assert!(RunOptions::parse(&bad).is_err(), "should reject {bad:?}");
         }
     }
 }

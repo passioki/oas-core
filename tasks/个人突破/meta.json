@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "个人突破",
+  "name": "个人突破",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "庭院→探索→个人突破→选目标→进攻→准备→自动战斗→结算→返回庭院。突破券为 0 时以 resource_empty（=no_tickets, resource）结束。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "max_attacks",
+      "type": "int",
+      "default": 1,
+      "min": 1,
+      "max": 9
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_tickets": {
+      "result": "resource"
+    },
+    "resource_empty": {
+      "result": "resource"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 150
+  },
+  "resources": [
+    "realm_raid_ticket"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

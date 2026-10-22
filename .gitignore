@@ -8,3 +8,12 @@
 # runtime state (checkpoint / coordinate memory are machine-local, never shared)
 /tasks/*/state
 /library/
+
+# release artifacts (zip/stage; regenerate with scripts/package.ps1)
+/dist
+
+# scheduler runtime state (machine-local)
+/scheduler.state.json
+/scheduler.events.jsonl
+/scheduler.state.json.lock
+/logs
