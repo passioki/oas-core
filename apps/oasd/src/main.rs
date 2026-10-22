@@ -19,6 +19,7 @@ mod reconnect;
 mod queue;
 mod stats;
 mod library;
+mod schedule;
 #[cfg(feature = "ocr")]
 mod ocr;
 
@@ -37,6 +38,7 @@ fn main() -> ExitCode {
         "replay" => replay(&args[1..]),
         "run" => run::run_cmd(&args[1..]),
         "queue" => queue::queue_cmd(&args[1..]),
+        "schedule" => schedule::schedule_cmd(&args[1..]),
         "stats" => stats::stats_cmd(&args[1..]),
         "serve" => serve_cmd(&args[1..]),
         "" | "-h" | "--help" => {
