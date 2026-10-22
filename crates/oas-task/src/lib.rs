@@ -398,6 +398,25 @@ impl TaskBundle {
         let mut set = oas_runtime::AssetSet::new();
         for (i, item) in af.items.iter().enumerate() {
             if item.kind != "template" {
+                // OCR assets (`ocr_line` / `ocr_lines`) carry **no pixels**: the
+                // runtime only needs their ROI so `ocr(sel)` can crop it (P1-c).
+                // A missing ROI is a loud load error, never "skip silently".
+                let roi = item.roi.ok_or_else(|| {
+                    format!(
+                        "assets.json: items[{i}].roi: OCR asset `{}` has no roi \
+                         (ocr(sel) needs the text region)",
+                        item.id
+                    )
+                })?;
+                set.insert_ocr(
+                    item.id.clone(),
+                    oas_types::Rect {
+                        x: roi[0],
+                        y: roi[1],
+                        w: roi[2],
+                        h: roi[3],
+                    },
+                );
                 continue;
             }
             let file = item.file.as_ref().ok_or_else(|| {

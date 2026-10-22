@@ -57,6 +57,7 @@ use oas_types::{Frame, InputSink, Outcome, Point, ScreenSource};
 pub const USAGE: &str = "usage: oasd run --task <bundle-dir> [--replay <bundle-dir>] \
                          [--seed <u64>] [--dry-run] [--record <bundle-dir>] \
                          [--events-out <file.jsonl>] [--clicks-out <file.jsonl>] \
+                         [--model <rec.onnx>] \
                          [--budget-steps N] [--budget-wall S]";
 
 const DEFAULT_MAX_STEPS: u32 = 5000;
@@ -88,6 +89,9 @@ pub struct RunOptions {
     pub record: Option<PathBuf>,
     pub events_out: Option<PathBuf>,
     pub clicks_out: Option<PathBuf>,
+    /// PP-OCRv6 recogniser for in-flow `ocr()` (P1-c). Only meaningful with
+    /// `--features ocr`; the feature-less build rejects it loudly.
+    pub model: Option<PathBuf>,
     pub budget_steps: u32,
     pub budget_wall_s: f64,
 }
@@ -102,6 +106,7 @@ impl Default for RunOptions {
             record: None,
             events_out: None,
             clicks_out: None,
+            model: None,
             budget_steps: DEFAULT_MAX_STEPS,
             budget_wall_s: DEFAULT_MAX_WALL_S,
         }
@@ -135,6 +140,7 @@ impl RunOptions {
                 "--clicks-out" => {
                     o.clicks_out = Some(PathBuf::from(take_value(rest, &mut i, "--clicks-out")?))
                 }
+                "--model" => o.model = Some(PathBuf::from(take_value(rest, &mut i, "--model")?)),
                 "--budget-steps" => {
                     let v = take_value(rest, &mut i, "--budget-steps")?;
                     let n = v
@@ -168,6 +174,42 @@ fn take_value(rest: &[String], i: &mut usize, flag: &str) -> Result<String, Stri
         .ok_or_else(|| format!("{flag} needs a value\n{USAGE}"))?;
     *i += 2;
     Ok(v.clone())
+}
+
+/// Attach the in-flow OCR provider when `--model` is given (P1-c).
+///
+/// Feature-gated on purpose: `ort`/`oas-ocr` must not leak into the default
+/// build (ENGINE-DESIGN §22.4 "trait + feature 门控"). The feature-less twin
+/// below rejects `--model` loudly instead of ignoring it (a flow that needs OCR
+/// would otherwise fail much later with a confusing message).
+#[cfg(feature = "ocr")]
+fn attach_ocr<S: ScreenSource, I: InputSink>(
+    interp: Interpreter<S, I>,
+    model: Option<&Path>,
+) -> Result<Interpreter<S, I>, String> {
+    match model {
+        Some(path) => {
+            let provider = crate::ocr::OnnxOcr::from_file(path)
+                .map_err(|e| format!("--model {}: {e}", path.display()))?;
+            Ok(interp.with_ocr(Box::new(provider)))
+        }
+        None => Ok(interp),
+    }
+}
+
+#[cfg(not(feature = "ocr"))]
+fn attach_ocr<S: ScreenSource, I: InputSink>(
+    interp: Interpreter<S, I>,
+    model: Option<&Path>,
+) -> Result<Interpreter<S, I>, String> {
+    match model {
+        Some(path) => Err(format!(
+            "--model {} is not supported: this build has no OCR \
+             (rebuild with `--features ocr`) - refusing to ignore it",
+            path.display()
+        )),
+        None => Ok(interp),
+    }
 }
 
 /// Structured result of one run (also what the unit tests assert on).
@@ -355,7 +397,15 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
         "budget_steps={} budget_wall_s={}",
         budget.max_steps, budget.max_wall_s
     ));
-    let mut interp = Interpreter::new(DynScreen(src), input, assets, budget).with_seed(seed);
+    let interp = Interpreter::new(DynScreen(src), input, assets, budget).with_seed(seed);
+    let mut interp = attach_ocr(interp, opts.model.as_deref())?;
+    out(&format!(
+        "ocr={}",
+        match opts.model.as_deref() {
+            Some(p) => format!("on model={}", p.display()),
+            None => "off".to_string(),
+        }
+    ));
     let result = interp.run(&flow);
     let events = interp.events().to_vec();
     // CD2 (§21): snapshot the click audit BEFORE the interpreter is dropped.

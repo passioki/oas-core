@@ -6,13 +6,15 @@
 //!   oasd tap <x> <y>                tap once (input port smoke test)
 //!   oasd record <dir> <n>           record n live frames into a replay bundle
 //!   oasd replay <dir>               re-drive a bundle offline, print frame hashes
-//!   oasd run --task <dir> [--replay <dir>] [--seed <n>] ...   run a task bundle
+//!   oasd run --task <dir> [--replay <dir>] [--seed <n>] [--model <rec.onnx>] ...
 //!   oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>]
 
 use std::process::ExitCode;
 
 mod run;
 mod serve;
+#[cfg(feature = "ocr")]
+mod ocr;
 
 use oas_adapter_pc::Adb;
 use oas_codec::{encode_png, frame_hash};
@@ -35,7 +37,7 @@ fn main() -> ExitCode {
                  oasd record <dir> <n>\n  oasd replay <dir>\n  \
                  oasd run --task <bundle-dir> [--replay <bundle-dir>] [--seed <u64>] \
                  [--dry-run] [--record <bundle-dir>] [--events-out <file.jsonl>] \
-                 [--clicks-out <file.jsonl>] \
+                 [--clicks-out <file.jsonl>] [--model <rec.onnx>] \
                  [--budget-steps N] [--budget-wall S]\n  \
                  oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--model <path>] [--det-model <path>]"
             );

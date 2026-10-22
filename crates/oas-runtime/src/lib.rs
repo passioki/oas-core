@@ -31,6 +31,10 @@ pub struct Template {
 #[derive(Default)]
 pub struct AssetSet {
     map: HashMap<String, Template>,
+    /// OCR assets (`kind: ocr_line` / `ocr_lines`): they carry **no pixels**,
+    /// only a frame ROI. `ocr(sel)` crops that ROI and hands it to the injected
+    /// [`OcrProvider`] (P1-c, ENGINE-DESIGN §16.4/§22.4).
+    ocr_rois: HashMap<String, Rect>,
 }
 
 impl AssetSet {
@@ -42,8 +46,22 @@ impl AssetSet {
         self.map.insert(id.into(), tpl);
     }
 
+    /// Declare an OCR asset (no template pixels, only an ROI).
+    pub fn insert_ocr(&mut self, id: impl Into<String>, roi: Rect) {
+        self.ocr_rois.insert(id.into(), roi);
+    }
+
     pub fn get(&self, id: &str) -> Option<&Template> {
         self.map.get(id)
+    }
+
+    /// ROI of a declared OCR asset, if `id` is one.
+    pub fn ocr_roi(&self, id: &str) -> Option<Rect> {
+        self.ocr_rois.get(id).copied()
+    }
+
+    pub fn ocr_len(&self) -> usize {
+        self.ocr_rois.len()
     }
 
     pub fn len(&self) -> usize {
@@ -53,6 +71,21 @@ impl AssetSet {
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
+}
+
+/// Recognise text inside a frame ROI (P1-c).
+///
+/// The runtime deliberately does **not** depend on `oas-ocr`: the ONNX engine is
+/// optional (`onnx` feature) and only the binary crate wires it in. This trait is
+/// the seam, so the interpreter can be unit-tested offline with a fake provider
+/// and built **without** ONNX at all.
+///
+/// Contract (ENGINE-DESIGN §3.2 "识别统一返回结构化结果，不许静默 0"):
+/// * an empty string means "nothing recognised"; the interpreter maps it to
+///   `Value::Null`, never to a success-looking `""`;
+/// * a provider error is a **loud** run failure, not a skipped step.
+pub trait OcrProvider {
+    fn recognize(&mut self, frame: &Frame, roi: Rect) -> Result<(String, f32), String>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -137,6 +170,13 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     assets: AssetSet,
     budget: Budget,
     matcher: Option<Matcher>,
+    /// RGBA frame the cached matcher was built from. Kept so in-flow OCR can
+    /// crop the **same** frame a selector just looked at (P1-c); dropped by
+    /// [`Self::invalidate_frame`] exactly like the matcher.
+    frame: Option<Frame>,
+    /// Injected OCR engine. `None` means "this run cannot do OCR": `ocr()` must
+    /// fail loudly instead of returning `""` (ENGINE-DESIGN §3.2).
+    ocr: Option<Box<dyn OcrProvider>>,
     /// Size of the frame `matcher` was built from (`click_point` needs it for
     /// the CP3 in-frame check).
     frame_size: Option<(u32, u32)>,
@@ -166,6 +206,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             assets,
             budget,
             matcher: None,
+            frame: None,
+            ocr: None,
             frame_size: None,
             events: Vec::new(),
             clicks: Vec::new(),
@@ -198,6 +240,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.rng = crate::humanize::Rng::new(seed);
         self.run_seed = seed;
+        self
+    }
+
+    /// Attach the OCR engine used by `ocr(sel)` / `ocr_digit(sel)` / `ocr` steps
+    /// (P1-c). Without it, any OCR accessor is a **loud** failure — it must
+    /// never look like "recognised nothing" (ENGINE-DESIGN §3.2).
+    pub fn with_ocr(mut self, provider: Box<dyn OcrProvider>) -> Self {
+        self.ocr = Some(provider);
         self
     }
 
@@ -263,6 +313,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         self.frame_size = Some((frame.width, frame.height));
         let gray = GrayImage::from_frame(&frame);
         self.matcher = Some(Matcher::new(gray));
+        self.frame = Some(frame);
         Ok(())
     }
 
@@ -270,8 +321,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// may have changed the screen, so the **next** selector must not match
     /// against the pre-click pixels (that stale-frame bug is exactly what this
     /// rewrite exists to kill: it produces "clicked the old position" runs).
+    /// It also discards the cached RGBA frame used by in-flow OCR.
     fn invalidate_frame(&mut self) {
         self.matcher = None;
+        self.frame = None;
     }
 
     fn check_budget(&self) -> Result<(), String> {
@@ -319,6 +372,57 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             Value::Num(n) if n.is_finite() => Ok(n),
             Value::Num(n) => Err(format!("{what} must be a finite number, got {n}")),
             other => Err(format!("{what} must be a number, got {other:?}")),
+        }
+    }
+
+    /// Resolve an OCR asset's ROI and recognise it in the cached frame (P1-c).
+    ///
+    /// Failure semantics (all loud, never a silent `""`):
+    /// * `sel` not declared / declared as a pixel template ⇒ error;
+    /// * no [`OcrProvider`] attached ⇒ error;
+    /// * the provider itself fails (empty ROI, out of bounds, ONNX error) ⇒ error.
+    ///
+    /// An **empty recognised text is not an error**: it maps to `None` (= `Null`
+    /// in expressions), so `wait_until(ocr('X') == '分组2')` can keep polling and
+    /// a missing text can never satisfy the comparison.
+    fn ocr_run(&mut self, sel: &str) -> Result<(Option<String>, f32), String> {
+        let roi = match self.assets.ocr_roi(sel) {
+            Some(r) => r,
+            None if self.assets.get(sel).is_some() => {
+                return Err(format!(
+                    "selector `{sel}` is a template asset, not an OCR asset \
+                     (kind must be `ocr_line`/`ocr_lines`)"
+                ))
+            }
+            None => {
+                return Err(format!(
+                    "OCR selector `{sel}` is not declared in the task's assets"
+                ))
+            }
+        };
+        if self.ocr.is_none() {
+            return Err(format!(
+                "OCR is not available for this run: no OCR provider attached \
+                 (build with `--features ocr` and pass `--model <rec.onnx>`) - \
+                 refusing to fake `ocr({sel})`"
+            ));
+        }
+        if self.frame.is_none() {
+            self.refresh_frame()?;
+        }
+        let frame = self
+            .frame
+            .as_ref()
+            .ok_or_else(|| "OCR: no frame available".to_string())?;
+        let provider = self.ocr.as_mut().expect("provider checked above");
+        let (text, score) = provider.recognize(frame, roi)?;
+        Ok((if text.is_empty() { None } else { Some(text) }, score))
+    }
+
+    fn ocr_digit_value(&mut self, sel: &str) -> Result<Option<f64>, String> {
+        match self.ocr_run(sel)? {
+            (Some(text), _) => Ok(parse_digit(&text)),
+            (None, _) => Ok(None),
         }
     }
 
@@ -444,7 +548,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         return Err(format!("wait_until timed out after {timeout_s}s"));
                     }
                     std::thread::sleep(Duration::from_millis(20));
-                    self.matcher = None; // next eval grabs a fresh frame
+                    self.invalidate_frame(); // next eval grabs a fresh frame
                 }
             }
             Step::Appear { sel } => {
@@ -600,9 +704,17 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     from.x, from.y, to.x, to.y, ms, w, h
                 ))
             }
-            Step::Ocr { sel } => Err(format!(
-                "OCR is not wired yet (P1-c): step ocr(`{sel}`) cannot run"
-            )),
+            Step::Ocr { sel } => {
+                // P1-c: the standalone `ocr` step exists so an editor-authored
+                // flow can PROVE what a selector reads without branching on it
+                // (a plain expression has no step log). Empty text is reported,
+                // not failed: the loud failure is only a missing provider/asset.
+                let (text, score) = self.ocr_run(sel)?;
+                Ok(match text {
+                    Some(t) => format!("ocr {sel} = {t:?} score={score:.4}"),
+                    None => format!("ocr {sel} = <no text> score={score:.4}"),
+                })
+            }
             Step::Log { level, text } => {
                 let v = eval(text, self)?;
                 Ok(format!("[{level}] {v:?}"))
@@ -644,16 +756,27 @@ impl<S: ScreenSource, I: InputSink> EvalContext for Interpreter<S, I> {
     }
 
     fn ocr(&mut self, sel: &str) -> Result<Option<String>, String> {
-        Err(format!("OCR is not wired yet (P1-c): ocr(`{sel}`)"))
+        Ok(self.ocr_run(sel)?.0)
     }
 
     fn ocr_digit(&mut self, sel: &str) -> Result<Option<f64>, String> {
-        Err(format!("OCR is not wired yet (P1-c): ocr_digit(`{sel}`)"))
+        self.ocr_digit_value(sel)
     }
 
     fn page(&mut self) -> Result<Option<String>, String> {
         Ok(None) // page recognition lands in a later phase
     }
+}
+
+/// `ocr_digit(sel)` helper: the **first run of digits** in the recognised text,
+/// e.g. `"12/30" -> 12`, `"体力: 3.5" -> 3.5`, `"无" -> None`.
+fn parse_digit(text: &str) -> Option<f64> {
+    let start = text.find(|c: char| c.is_ascii_digit())?;
+    let rest = &text[start..];
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(rest.len());
+    rest[..end].parse::<f64>().ok()
 }
 
 #[cfg(test)]
@@ -749,6 +872,44 @@ mod tests {
         }
     }
 
+    /// Fake OCR provider (P1-c): scripted `(text, score)` replies, one per call;
+    /// the last reply repeats. Records the ROI of every call so a test can prove
+    /// the interpreter used the **declared asset's** ROI.
+    struct FakeOcr {
+        replies: std::collections::VecDeque<(String, f32)>,
+        rois: std::rc::Rc<std::cell::RefCell<Vec<Rect>>>,
+    }
+
+    impl FakeOcr {
+        fn new(replies: &[(&str, f32)]) -> (Self, std::rc::Rc<std::cell::RefCell<Vec<Rect>>>) {
+            let rois = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            (
+                Self {
+                    replies: replies
+                        .iter()
+                        .map(|(t, s)| (t.to_string(), *s))
+                        .collect(),
+                    rois: rois.clone(),
+                },
+                rois,
+            )
+        }
+    }
+
+    impl OcrProvider for FakeOcr {
+        fn recognize(&mut self, _frame: &Frame, roi: Rect) -> Result<(String, f32), String> {
+            self.rois.borrow_mut().push(roi);
+            if let Some(reply) = self.replies.pop_front() {
+                if self.replies.is_empty() {
+                    self.replies.push_back(reply.clone());
+                }
+                Ok(reply)
+            } else {
+                Err("FakeOcr has no scripted reply".into())
+            }
+        }
+    }
+
     fn assets() -> AssetSet {
         let (w, h) = (10u32, 10u32);
         // NOTE: a FLAT template has zero variance => NCC is undefined (and our
@@ -781,6 +942,51 @@ mod tests {
 
     fn mk(src: FakeScreen, budget: Budget) -> Interpreter<FakeScreen, FakeInput> {
         Interpreter::new(src, FakeInput::new().0, assets(), budget)
+    }
+
+    /// `assets()` plus two declared OCR assets (`ocr_line` kind → ROI only).
+    fn assets_with_ocr() -> AssetSet {
+        let mut set = assets();
+        set.insert_ocr("O_TEXT", Rect { x: 4, y: 6, w: 20, h: 10 });
+        set.insert_ocr("O_DIGITS", Rect { x: 4, y: 30, w: 30, h: 10 });
+        set
+    }
+
+    /// OCR provider whose text is derived from the **frame itself** (`f<tag>`,
+    /// tag = `rgba[0]`). This is what makes "did the interpreter drop the cached
+    /// frame?" observable.
+    struct FrameTagOcr {
+        calls: std::rc::Rc<std::cell::RefCell<usize>>,
+    }
+
+    impl OcrProvider for FrameTagOcr {
+        fn recognize(&mut self, frame: &Frame, _roi: Rect) -> Result<(String, f32), String> {
+            *self.calls.borrow_mut() += 1;
+            Ok((format!("f{}", frame.rgba[0]), 0.9))
+        }
+    }
+
+    fn tagged_frame(tag: u8) -> Frame {
+        let mut frame = frame_with_tile(12, 10);
+        frame.rgba[0] = tag;
+        frame
+    }
+
+    type OcrInterp = Interpreter<FakeScreen, FakeInput>;
+    type OcrRois = std::rc::Rc<std::cell::RefCell<Vec<Rect>>>;
+
+    /// Interpreter with a scripted [`FakeOcr`] attached.
+    fn mk_ocr(replies: &[(&str, f32)]) -> (OcrInterp, OcrRois) {
+        let (input, _) = FakeInput::new();
+        let (fake, rois) = FakeOcr::new(replies);
+        let interp = Interpreter::new(
+            FakeScreen::new(),
+            input,
+            assets_with_ocr(),
+            Budget::default(),
+        )
+        .with_ocr(Box::new(fake));
+        (interp, rois)
     }
 
     fn mk_inspect<S: ScreenSource>(src: S) -> (Interpreter<S, FakeInput>, SharedInput) {
@@ -935,18 +1141,166 @@ mod tests {
         }
     }
 
+    // ---- OCR wiring (P1-c · ENGINE-DESIGN §16.4 / §22.4) ----
+
+    /// The provider is the only source of text: the step log and the expression
+    /// evaluator both read the asset's declared ROI (no hard-coded coordinates).
     #[test]
-    fn ocr_is_not_silently_zero() {
-        let mut interp = mk(FakeScreen::new(), Budget::default());
+    fn ocr_reads_the_declared_roi_and_reports_text() {
+        let (mut interp, rois) = mk_ocr(&[("分组2", 0.9987)]);
         let f = flow(
             r#"{"schema_version":1,"name":"t","steps":[
-                 {"op":"if","args":{"cond":"ocr('I_BRIGHT') == '1'"},
+                 {"op":"ocr","args":{"sel":"O_TEXT"}},
+                 {"op":"log","args":{"text":"ocr('O_TEXT')"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let ev = &interp.events()[0];
+        assert_eq!(ev.op, "ocr");
+        assert!(ev.detail.contains("分组2"), "{}", ev.detail);
+        assert!(ev.detail.contains("0.9987"), "{}", ev.detail);
+        assert!(
+            interp.events()[1].detail.contains("分组2"),
+            "{:?}",
+            interp.events()[1]
+        );
+        // Both calls used exactly the declared OCR asset ROI.
+        assert_eq!(
+            rois.borrow().as_slice(),
+            &[Rect { x: 4, y: 6, w: 20, h: 10 }; 2]
+        );
+    }
+
+    /// Empty recognition is `Null`, never `""`: it must not satisfy a comparison.
+    #[test]
+    fn ocr_empty_text_is_null_and_never_matches() {
+        let (mut interp, _) = mk_ocr(&[("", 0.0)]);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"ocr('O_TEXT')"}},
+                 {"op":"if","args":{"cond":"ocr('O_TEXT') == '分组2'"},
+                  "then":[{"op":"log","args":{"text":"'matched'"}}],
+                  "else":[{"op":"log","args":{"text":"'no match'"}}]},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert!(
+            interp.events()[0].detail.contains("Null"),
+            "{:?}",
+            interp.events()[0]
+        );
+        // Nested steps are logged before their parent `if` event.
+        assert!(
+            interp.events()[1].detail.contains("no match"),
+            "{:?}",
+            interp.events()[1]
+        );
+        assert!(
+            interp.events()[2].detail.contains("cond -> false"),
+            "if cond must be false: {:?}",
+            interp.events()[2]
+        );
+    }
+
+    /// `wait_until(ocr(...) == ...)` polls **fresh frames**: the interpreter must
+    /// drop the cached frame between attempts, otherwise a replay would keep
+    /// OCR-ing one frame forever and the wait could never see the next screen.
+    #[test]
+    fn wait_until_ocr_polls_fresh_frames() {
+        let src = TwoFrameScreen {
+            frames: vec![tagged_frame(1), tagged_frame(2)],
+            idx: 0,
+        };
+        let (input, _) = FakeInput::new();
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(0usize));
+        let mut interp = Interpreter::new(src, input, assets_with_ocr(), Budget::default())
+            .with_ocr(Box::new(FrameTagOcr {
+                calls: calls.clone(),
+            }));
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"wait_until","args":{"cond":"ocr('O_TEXT') == 'f2'","timeout_s":0.3}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        assert!(*calls.borrow() >= 2, "must poll at least twice");
+    }
+
+    /// `ocr_digit` takes the first number in the recognised text ("12/30" → 12).
+    #[test]
+    fn ocr_digit_parses_the_first_number() {
+        let (mut interp, _) = mk_ocr(&[("12/30", 0.97)]);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"ocr_digit('O_DIGITS')"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert!(
+            interp.events()[0].detail.contains("12.0"),
+            "{:?}",
+            interp.events()[0]
+        );
+    }
+
+    /// P1-c regression guard: without a provider `ocr()` must FAIL LOUDLY — it
+    /// must never degrade to `""`/`Null` (that would make an OCR-dependent flow
+    /// silently pass, the exact bug this rewrite exists to kill).
+    #[test]
+    fn ocr_without_a_provider_fails_loudly() {
+        let (input, _) = FakeInput::new();
+        let mut interp =
+            Interpreter::new(FakeScreen::new(), input, assets_with_ocr(), Budget::default());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"if","args":{"cond":"ocr('O_TEXT') == '1'"},
                   "then":[{"op":"log","args":{"text":"'one'"}}]},
                  {"op":"finish","args":{"exit":"done"}}]}"#,
         );
         match interp.run(&f) {
-            RunResult::Failed(msg) => assert!(msg.contains("OCR is not wired"), "{msg}"),
-            other => panic!("expected Failed (OCR not wired), got {other:?}"),
+            RunResult::Failed(msg) => assert!(
+                msg.contains("no OCR provider") && msg.contains("refusing to fake"),
+                "{msg}"
+            ),
+            other => panic!("expected Failed (no provider), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ocr_on_a_template_asset_is_a_loud_error() {
+        let (mut interp, _) = mk_ocr(&[("x", 0.5)]);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"ocr","args":{"sel":"I_BRIGHT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => assert!(msg.contains("not an OCR asset"), "{msg}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ocr_undeclared_asset_is_a_loud_error() {
+        let (mut interp, _) = mk_ocr(&[("x", 0.5)]);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"ocr","args":{"sel":"O_MISSING"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => assert!(msg.contains("not declared"), "{msg}"),
+            other => panic!("expected Failed, got {other:?}"),
         }
     }
 
