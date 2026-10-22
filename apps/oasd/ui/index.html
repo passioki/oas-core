@@ -68,6 +68,21 @@
       </label>
       <button id="btn-asset" disabled>生成素材 JSON</button>
       <button id="btn-save-asset" disabled>保存素材到任务</button>
+      <div class="row lib-toolbar">
+        <input id="library-id" placeholder="库素材 id（如：返回按钮）" />
+        <button id="btn-library-save" disabled>保存到素材库</button>
+      </div>
+      <div class="row lib-toolbar">
+        <select id="library-select">
+          <option value="">（素材库为空）</option>
+        </select>
+        <button id="btn-library-refresh">刷新素材库</button>
+        <button id="btn-library-match" disabled>用库素材试匹配</button>
+      </div>
+      <div id="library-status" class="muted small">—</div>
+      <div class="muted small">
+        素材库是全局的：flow/素材里写 <code>lib:&lt;id&gt;</code> 即可引用（匹配/点击/守卫/弹窗全可用）。
+      </div>
       <h3>flow.json</h3>
       <textarea id="flow-json" rows="8" spellcheck="false" placeholder='{"schema_version":1,"name":"任务1","steps":[{"op":"click","args":{"sel":"分组2"}},{"op":"finish","args":{"exit":"done"}}]}'></textarea>
       <button id="btn-save-flow">保存 flow（校验引用）</button>

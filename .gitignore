@@ -7,3 +7,4 @@
 
 # runtime state (checkpoint / coordinate memory are machine-local, never shared)
 /tasks/*/state
+/library/

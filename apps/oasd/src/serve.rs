@@ -49,6 +49,8 @@ pub struct Server {
     /// Root for click-run JSONL files (`--runs-dir`, §21): the data plane of the
     /// always-on click-distribution view.
     runs_dir: PathBuf,
+    /// Root for the global template asset library (`--library-dir`, §22.22).
+    library_dir: PathBuf,
     #[cfg(feature = "ocr")]
     ocr: Option<Arc<Mutex<oas_ocr::onnx::RecEngine>>>,
     #[cfg(feature = "ocr")]
@@ -67,6 +69,7 @@ impl Server {
             })),
             tasks_dir: PathBuf::from("tasks"),
             runs_dir: PathBuf::from("runs"),
+            library_dir: PathBuf::from(crate::library::DEFAULT_DIR),
             #[cfg(feature = "ocr")]
             ocr: None,
             #[cfg(feature = "ocr")]
@@ -85,6 +88,16 @@ impl Server {
     pub fn with_runs_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.runs_dir = dir.into();
         self
+    }
+
+    /// Set the global template asset library root (default `library`; §22.22).
+    pub fn with_library_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.library_dir = dir.into();
+        self
+    }
+
+    fn library(&self) -> crate::library::Library {
+        crate::library::Library::open(&self.library_dir)
     }
 
     /// Load the PP-OCRv6 rec model; returns the charset size.
@@ -280,6 +293,9 @@ impl Server {
             ("GET", "/task/list") => self.handle_task_list(&mut out),
             ("GET", "/stats") => self.handle_stats(&mut out),
             ("GET", "/match") => self.handle_match(&mut out, &path),
+            // --- §22.22 global template asset library ---
+            ("GET", "/library") => self.handle_library_list(&mut out),
+            ("POST", "/library/save_asset") => self.handle_library_save(&mut out, &body),
             // --- N4: click-distribution data plane (§21 CD1~CD4) ---
             ("GET", "/runs") => self.handle_runs(&mut out),
             ("GET", "/runs/clicks") => self.handle_run_clicks(&mut out, &path),
@@ -775,6 +791,52 @@ impl Server {
     /// report the best score/position. This is the image counterpart of /ocr.
     fn handle_match(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
         let q = parse_query(raw_path);
+        // §22.22: `?lib=<id>` matches a GLOBAL library template over the whole frame.
+        if let Some((_, lib_id)) = q.iter().find(|(k, _)| k == "lib") {
+            let frame = {
+                let st = self.state.lock().unwrap();
+                match st.frame.as_ref() {
+                    Some(f) => oas_types::Frame::new(f.width, f.height, f.rgba.clone()),
+                    None => return self.send_json(out, 400, r#"{"error":"no frame yet"}"#),
+                }
+            };
+            let gray = oas_perceive::GrayImage::from_frame(&frame);
+            let (_key, tpl) = match self.library().load_one(lib_id) {
+                Ok(Some(t)) => t,
+                Ok(None) => {
+                    return self.send_errors(
+                        out,
+                        404,
+                        vec![format!(
+                            "library asset `{lib_id}` not found (see GET /library)"
+                        )],
+                    )
+                }
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            };
+            let t0 = std::time::Instant::now();
+            let full = oas_perceive::match_template_full(&gray, &tpl.gray);
+            let ms = t0.elapsed().as_secs_f64() * 1000.0;
+            let body = match full {
+                Some(b) => format!(
+                    r#"{{"ok":true,"lib":{},"score":{},"x":{},"y":{},"w":{},"h":{},"threshold":{},"elapsed_ms":{}}}"#,
+                    json_escape(lib_id),
+                    b.score,
+                    b.x,
+                    b.y,
+                    tpl.gray.width,
+                    tpl.gray.height,
+                    tpl.threshold,
+                    ms
+                ),
+                None => format!(
+                    r#"{{"ok":true,"lib":{},"score":-2,"x":-1,"y":-1,"elapsed_ms":{}}}"#,
+                    json_escape(lib_id),
+                    ms
+                ),
+            };
+            return self.send_json(out, 200, &body);
+        }
         let (mut x, mut y, mut w, mut h) = (0i32, 0i32, 0i32, 0i32);
         for (k, v) in &q {
             let val: i32 = v.parse().unwrap_or(0);
@@ -824,6 +886,85 @@ impl Server {
             ),
         };
         self.send_json(out, 200, &body)
+    }
+
+    /// `GET /library` — list global template library assets (§22.22).
+    fn handle_library_list(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        match self.library().list() {
+            Ok(items) => {
+                let body = serde_json::json!({"ok": true, "items": items});
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(e) => self.send_errors(out, 500, vec![e]),
+        }
+    }
+
+    /// `POST /library/save_asset` — crop the last captured frame into the global
+    /// library, body: `{id, roi:[x,y,w,h], threshold?, replace?}`.
+    fn handle_library_save(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON body: {e}")]),
+        };
+        let id = match json_str_field(&v, "id") {
+            Ok(s) => s,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let roi = match v.get("roi").and_then(|r| r.as_array()) {
+            Some(a) if a.len() == 4 => {
+                let mut r = [0i32; 4];
+                for (i, val) in a.iter().enumerate() {
+                    match val.as_i64() {
+                        Some(n) if n >= i32::MIN as i64 && n <= i32::MAX as i64 => {
+                            r[i] = n as i32
+                        }
+                        _ => {
+                            return self.send_errors(
+                                out,
+                                400,
+                                vec!["roi must be 4 integers [x,y,w,h]".to_string()],
+                            )
+                        }
+                    }
+                }
+                r
+            }
+            _ => {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec!["missing integer array field `roi` [x,y,w,h]".to_string()],
+                )
+            }
+        };
+        let threshold = v.get("threshold").and_then(|t| t.as_f64()).map(|t| t as f32);
+        let replace = v
+            .get("replace")
+            .and_then(|r| r.as_bool())
+            .unwrap_or(false);
+        let frame = {
+            let st = self.state.lock().unwrap();
+            match st.frame.as_ref() {
+                Some(f) => oas_types::Frame::new(f.width, f.height, f.rgba.clone()),
+                None => {
+                    return self.send_errors(
+                        out,
+                        400,
+                        vec!["no frame yet (POST /capture first)".to_string()],
+                    )
+                }
+            }
+        };
+        match self
+            .library()
+            .save_template(&frame, roi, &id, threshold, replace)
+        {
+            Ok(asset) => {
+                let body = serde_json::json!({"ok": true, "asset": asset});
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(e) => self.send_errors(out, 400, vec![e]),
+        }
     }
 
     /// `GET /stats` — long-run summary (ENGINE §22.19); the editor renders it.
@@ -942,6 +1083,28 @@ impl Server {
             Ok(t) => t,
             Err(e) => return self.send_errors(out, 400, vec![format!("serialize flow: {e}")]),
         };
+        // §22.22: `lib:<id>` refs must exist in the global library.
+        if let Ok(parsed) = oas_flow::Flow::from_json(&text) {
+            let known = match self.library().selector_ids() {
+                Ok(s) => s,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            };
+            let missing: Vec<String> = parsed
+                .referenced_assets()
+                .into_iter()
+                .filter(|a| a.starts_with("lib:") && !known.contains(a))
+                .collect();
+            if !missing.is_empty() {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec![format!(
+                        "flow.json: library asset(s) not found: {} (see GET /library)",
+                        missing.join(", ")
+                    )],
+                );
+            }
+        }
         let bundle = match oas_task::TaskBundle::open_named(&self.tasks_dir, &task) {
             Ok(b) => b,
             Err(e) => return self.send_errors(out, 400, vec![e]),

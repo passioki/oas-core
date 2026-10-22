@@ -42,6 +42,13 @@ const btnFlowAddInterrupt = document.getElementById('flow-add-interrupt');
 // §22.19 long-run stats
 const btnStatsRefresh = document.getElementById('btn-stats-refresh');
 const statsSummary = document.getElementById('stats-summary');
+// §22.22 全局素材库
+const libraryId = document.getElementById('library-id');
+const btnLibrarySave = document.getElementById('btn-library-save');
+const librarySelect = document.getElementById('library-select');
+const btnLibraryRefresh = document.getElementById('btn-library-refresh');
+const btnLibraryMatch = document.getElementById('btn-library-match');
+const libraryStatus = document.getElementById('library-status');
 
 let img = null;
 let roi = null; // {x,y,w,h} in frame coordinates
@@ -239,6 +246,7 @@ function updateRoiLabel() {
   btnOcr.disabled = roi.w < 2 || roi.h < 2;
   btnLines.disabled = roi.w < 2 || roi.h < 2;
   if (btnMatch) btnMatch.disabled = roi.w < 2 || roi.h < 2;
+  if (btnLibrarySave) btnLibrarySave.disabled = roi.w < 2 || roi.h < 2;
   if (btnAsset) btnAsset.disabled = roi.w < 2 || roi.h < 2;
   if (btnSaveAsset) btnSaveAsset.disabled = roi.w < 2 || roi.h < 2;
 }
@@ -893,6 +901,93 @@ async function loadStats() {
   }
 }
 
+async function loadLibrary() {
+  if (!librarySelect) return;
+  try {
+    const r = await fetch('/library');
+    const s = await r.json();
+    if (!s.ok) {
+      libraryStatus.textContent = '素材库读取失败：' + (s.errors || []).join('; ');
+      return;
+    }
+    const items = s.items || [];
+    librarySelect.textContent = '';
+    const opt0 = document.createElement('option');
+    opt0.value = '';
+    opt0.textContent = items.length ? '（选择库素材）' : '（素材库为空）';
+    librarySelect.appendChild(opt0);
+    for (const it of items) {
+      const o = document.createElement('option');
+      o.value = it.id;
+      o.textContent = `${it.id}（阈值 ${Number(it.threshold ?? 0.85).toFixed(2)}）`;
+      librarySelect.appendChild(o);
+    }
+    libraryStatus.textContent = `素材库：${items.length} 个素材`;
+    if (btnLibraryMatch) btnLibraryMatch.disabled = items.length === 0;
+  } catch (e) {
+    libraryStatus.textContent = '素材库读取异常：' + e;
+  }
+}
+
+async function saveLibraryAsset() {
+  if (!roi) return;
+  const id = (libraryId.value || '').trim();
+  if (!id) {
+    libraryStatus.textContent = '请先填写库素材 id';
+    return;
+  }
+  btnLibrarySave.disabled = true;
+  try {
+    const r = await fetch('/library/save_asset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id,
+        roi: [roi.x, roi.y, roi.w, roi.h],
+        threshold: 0.85,
+      }),
+    });
+    const s = await r.json();
+    if (!s.ok) {
+      libraryStatus.textContent = '保存到素材库失败：' + (s.errors || []).join('; ');
+      return;
+    }
+    libraryStatus.textContent = `已存入素材库：${s.asset.id}（rev ${s.asset.rev}）`;
+    log(`素材库：已保存「${s.asset.id}」（${roi.w}x${roi.h}）`);
+    await loadLibrary();
+  } catch (e) {
+    libraryStatus.textContent = '保存到素材库异常：' + e;
+  } finally {
+    btnLibrarySave.disabled = !roi;
+  }
+}
+
+async function matchLibrary() {
+  const id = (librarySelect.value || '').trim();
+  if (!id) {
+    libraryStatus.textContent = '先选择一个库素材';
+    return;
+  }
+  btnLibraryMatch.disabled = true;
+  libraryStatus.textContent = `库素材「${id}」全屏匹配中…`;
+  try {
+    const r = await fetch('/match?lib=' + encodeURIComponent(id));
+    const s = await r.json();
+    if (s.error) {
+      libraryStatus.textContent = '库素材匹配失败：' + s.error;
+      return;
+    }
+    libraryStatus.textContent =
+      `库素材「${id}」匹配：得分 ${Number(s.score).toFixed(4)} @ (${s.x}, ${s.y})` +
+      ` · 耗时 ${Number(s.elapsed_ms || 0).toFixed(1)} ms`;
+    log(`库素材匹配：${id} → 得分 ${Number(s.score).toFixed(3)} @ (${s.x},${s.y})`);
+  } catch (e) {
+    libraryStatus.textContent = '库素材匹配异常：' + e;
+  } finally {
+    btnLibraryMatch.disabled = false;
+  }
+}
+
 async function loadFrame() {
   return new Promise((resolve, reject) => {
     const im = new Image();
@@ -1294,6 +1389,21 @@ btnLines.addEventListener('click', async () => {
   if (flowSteps) flowRender();
   if (btnStatsRefresh) btnStatsRefresh.addEventListener('click', () => loadStats());
   await loadStats();
+  // §22.22 全局素材库
+  if (btnLibrarySave) btnLibrarySave.addEventListener('click', saveLibraryAsset);
+  if (btnLibraryRefresh) btnLibraryRefresh.addEventListener('click', () => loadLibrary());
+  if (btnLibraryMatch) btnLibraryMatch.addEventListener('click', matchLibrary);
+  await loadLibrary();
+  // §22.22 deep link: /?lib=<id> selects that library asset and runs the match.
+  try {
+    const libParam = new URLSearchParams(location.search).get('lib');
+    if (libParam && librarySelect) {
+      librarySelect.value = libParam;
+      await matchLibrary();
+    }
+  } catch (e) {
+    log('素材库深链失败：' + e);
+  }
   // N2: 生成点击指令 / 追加到 flow
   if (btnClickStep) btnClickStep.addEventListener('click', doGenerateClickStep);
   if (btnAppendStep) btnAppendStep.addEventListener('click', doAppendStepToFlow);

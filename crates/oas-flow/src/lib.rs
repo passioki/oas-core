@@ -1327,6 +1327,11 @@ impl Flow {
     pub fn validate_assets(&self, known: &BTreeSet<String>) -> Result<(), Vec<FlowError>> {
         let mut errs = Vec::new();
         for a in self.referenced_assets() {
+            // §22.22: `lib:<id>` selectors come from the GLOBAL asset library, not
+            // the task bundle; the runtime validates them when it loads the library.
+            if a.starts_with("lib:") {
+                continue;
+            }
             if !known.contains(&a) {
                 errs.push(FlowError::new(
                     "assets",
@@ -1809,6 +1814,19 @@ mod tests {
                   "then":[{"op":"look_ma_no_hands"}]}]}"#,
         );
         assert_eq!(e[0].path, "steps[0].then[0]");
+    }
+
+    #[test]
+    fn validate_assets_accepts_library_selectors_without_declaring_them() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"lib:预设入口"}},
+                 {"op":"log","args":{"text":"appear('lib:关闭')"}}]}"#,
+        )
+        .expect("flow");
+        flow.validate_assets(&BTreeSet::new())
+            .expect("lib: refs are external, not task assets");
+        assert_eq!(flow.referenced_assets().len(), 2);
     }
 
     #[test]

@@ -18,6 +18,7 @@ mod checkpoint;
 mod reconnect;
 mod queue;
 mod stats;
+mod library;
 #[cfg(feature = "ocr")]
 mod ocr;
 
@@ -237,6 +238,7 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
     let mut runs_dir = "runs".to_string();
     let mut model: Option<String> = None;
     let mut det_model: Option<String> = None;
+    let mut library_dir = library::DEFAULT_DIR.to_string();
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -270,6 +272,10 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
                 det_model = Some(rest[i + 1].clone());
                 i += 2;
             }
+            "--library-dir" if i + 1 < rest.len() => {
+                library_dir = rest[i + 1].clone();
+                i += 2;
+            }
             other => {
                 eprintln!("unknown serve arg: {other}");
                 return ExitCode::from(2);
@@ -279,7 +285,8 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
     let adb = Adb::from_env();
     let mut server = serve::Server::new(adb)
         .with_tasks_dir(&tasks_dir)
-        .with_runs_dir(&runs_dir);
+        .with_runs_dir(&runs_dir)
+        .with_library_dir(&library_dir);
     enable_models(&mut server, model.as_deref(), det_model.as_deref());
     match server.run(port, &ui) {
         Ok(()) => ExitCode::SUCCESS,

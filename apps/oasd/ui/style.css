@@ -138,3 +138,22 @@ pre {
   padding: 2px 6px;
   font-size: 12px;
 }
+
+/* 22.22 asset library toolbar */
+.lib-toolbar {
+  flex-wrap: wrap;
+  align-items: center;
+}
+.lib-toolbar select,
+.lib-toolbar button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  padding: 2px 6px;
+  font-size: 12px;
+}
+.lib-toolbar input {
+  flex: 1 1 120px;
+  min-width: 0;
+  padding: 2px 6px;
+  font-size: 12px;
+}
