@@ -1,15 +1,16 @@
-//! Simulate N humanised clicks and dump them as CD2 JSONL (ENGINE-DESIGN §20 HB1~HB3).
+//! Simulate N humanised clicks and dump them as CD2 JSONL (ENGINE-DESIGN §20).
 //!
 //! usage:
 //!   cargo run -p oas-runtime --example click_sim -- \
 //!     <rect|point> <count> <seed> <x> <y> <w> <h> <out.jsonl>
 //!
-//! * `rect`  = template click: uniformly inside the box, inset 15% (HB1)
-//! * `point` = click_point: +/- jitter around (x, y) (HB2)
-//! * the same run also prints the distribution stats (mean/std/inside%).
+//! * `rect`  = template click: center-biased (HB1) inside the box, inset 15%,
+//!             with HB7 misses landing just outside the box;
+//! * `point` = click_point: +/- jitter around (x, y) (HB2), HB7 misses too;
+//! * the same run also prints the distribution stats (mean/std/inside%/misses).
 //!
-//! Every row is CD2-compatible (`ts_ms,x,y,target_x,target_y,sel,seed`), so the
-//! output can be dropped into `runs/` and viewed in the editor's 点击分布 panel.
+//! Every row is CD2-compatible (`ts_ms,x,y,target_x,target_y,sel,miss,seed`), so
+//! the output can be dropped into `runs/` and viewed in the editor's 点击分布 panel.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -44,15 +45,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ys = Vec::with_capacity(n);
     let mut delays = Vec::with_capacity(n);
     let mut distinct: HashSet<(i32, i32)> = HashSet::new();
+    let mut misses = 0usize;
     let mut ts: u128 = 1_792_605_800_000;
     let (cx, cy) = (rect.x + rect.w / 2, rect.y + rect.h / 2);
     for _ in 0..n {
-        let p = match mode {
-            "rect" => h.point_in(rect, &mut rng),
-            "point" => h.jitter_point(Point { x: rect.x, y: rect.y }, &mut rng),
+        let plan = match mode {
+            "rect" => h.plan_click(rect, &mut rng),
+            "point" => h.plan_point_click(Point { x: rect.x, y: rect.y }, &mut rng),
             other => return Err(format!("unknown mode `{other}` (rect|point)").into()),
         };
+        let p = plan.point;
         let d = h.delay_ms(&mut rng);
+        if plan.miss {
+            misses += 1;
+        }
         xs.push(p.x as f64);
         ys.push(p.y as f64);
         delays.push(d);
@@ -60,8 +66,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ts += d as u128 + 50;
         writeln!(
             file,
-            r#"{{"ts_ms":{ts},"x":{},"y":{},"target_x":{cx},"target_y":{cy},"sel":null,"seed":{seed}}}"#,
-            p.x, p.y
+            r#"{{"ts_ms":{ts},"x":{},"y":{},"target_x":{cx},"target_y":{cy},"sel":null,"miss":{},"seed":{seed}}}"#,
+            p.x, p.y, plan.miss
         )?;
     }
 
@@ -124,6 +130,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         100.0 * inside_rect as f64 / n as f64,
         inside_inset,
         100.0 * inside_inset as f64 / n as f64
+    );
+    println!(
+        "misses={misses} ({:.2}% - HB7 expected ~{:.2}%)",
+        misses as f64 / n as f64 * 100.0,
+        h.miss_chance as f64 * 100.0
     );
     println!(
         "distinct_points={} ({:.1}% of {}", distinct.len(),

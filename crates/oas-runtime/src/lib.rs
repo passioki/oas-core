@@ -162,6 +162,9 @@ pub struct ClickRecord {
     pub target_y: i32,
     /// Asset id for a `click` step; `None` for a raw `click_point`.
     pub sel: Option<String>,
+    /// HB7: `true` when this click MISSED the target box (human error). The row
+    /// still records the real point so the distribution view can colour misses.
+    pub miss: bool,
     /// The run's seed (HB5: the audit is reproducible).
     pub seed: u64,
 }
@@ -340,7 +343,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// that failed (off-screen target / missing template) is not a click and must
     /// not appear in the distribution, or the heatmap would show points the game
     /// never received.
-    fn record_click(&mut self, actual: Point, target: Point, sel: Option<String>) {
+    fn record_click(&mut self, actual: Point, target: Point, sel: Option<String>, miss: bool) {
         self.clicks.push(ClickRecord {
             ts_ms: now_ms(),
             x: actual.x,
@@ -348,6 +351,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             target_x: target.x,
             target_y: target.y,
             sel,
+            miss,
             seed: self.run_seed,
         });
     }
@@ -664,7 +668,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     w: tw as i32,
                     h: th_px as i32,
                 };
-                let actual = self.humanize.point_in(target, &mut self.rng);
+                // HB1/HB7: center-biased point inside the matched template rect;
+                // with probability `miss_chance` the click lands OUTSIDE the box
+                // (a human miss) — still performed, but audited as `miss=true`.
+                let plan = self.humanize.plan_click(target, &mut self.rng);
                 // Keep a humanised point inside the frame (a target touching an
                 // edge can otherwise jitter off-screen). `locate` guarantees a
                 // frame, so the missing-frame branch is a loud invariant break.
@@ -672,8 +679,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     .frame_size
                     .ok_or_else(|| "click: no frame available".to_string())?;
                 let actual = Point {
-                    x: actual.x.clamp(0, w.saturating_sub(1) as i32),
-                    y: actual.y.clamp(0, h.saturating_sub(1) as i32),
+                    x: plan.point.x.clamp(0, w.saturating_sub(1) as i32),
+                    y: plan.point.y.clamp(0, h.saturating_sub(1) as i32),
                 };
                 let delay = self.humanize.delay_ms(&mut self.rng);
                 if delay > 0 {
@@ -689,9 +696,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     x: target.x + target.w / 2,
                     y: target.y + target.h / 2,
                 };
-                self.record_click(actual, centre, Some(sel.clone()));
+                self.record_click(actual, centre, Some(sel.clone()), plan.miss);
+                let miss = if plan.miss { " miss=true" } else { "" };
                 Ok(format!(
-                    "clicked {sel} target=({},{}) point=({},{}) delay={delay}ms score={score:.3}",
+                    "clicked {sel} target=({},{}) point=({},{}){miss} delay={delay}ms score={score:.3}",
                     p.x, p.y, actual.x, actual.y
                 ))
             }
@@ -719,12 +727,13 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         target.x, target.y, w, h
                     ));
                 }
-                // HB2: a raw coordinate click still gets +/- jitter_px of noise.
-                let jittered = self.humanize.jitter_point(target, &mut self.rng);
+                // HB2/HB7: a raw coordinate click still gets +/- jitter_px of
+                // noise, and with `miss_chance` it can miss by up to ~2*miss_px.
+                let plan = self.humanize.plan_point_click(target, &mut self.rng);
                 // ...but the ACTUAL point must stay on-screen.
                 let actual = Point {
-                    x: jittered.x.clamp(0, w.saturating_sub(1) as i32),
-                    y: jittered.y.clamp(0, h.saturating_sub(1) as i32),
+                    x: plan.point.x.clamp(0, w.saturating_sub(1) as i32),
+                    y: plan.point.y.clamp(0, h.saturating_sub(1) as i32),
                 };
                 // HB3: randomised pre-click pause (not a machine-perfect rhythm).
                 let delay = self.humanize.delay_ms(&mut self.rng);
@@ -735,11 +744,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 self.invalidate_frame();
                 // CD2: `click_point` has no asset id; the evaluated target is the
                 // intent and the jittered point is what the device received.
-                self.record_click(actual, target, None);
+                self.record_click(actual, target, None, plan.miss);
                 // CP4/HB6: the log carries the TARGET *and* the actual point
                 // (plus the jitter's delay and the frame it was checked against).
+                let miss = if plan.miss { " miss=true" } else { "" };
                 Ok(format!(
-                    "clicked_point target=({},{}) point=({},{}) delay={delay}ms frame={}x{}",
+                    "clicked_point target=({},{}) point=({},{}){miss} delay={delay}ms frame={}x{}",
                     target.x, target.y, actual.x, actual.y, w, h
                 ))
             }
@@ -1084,8 +1094,17 @@ mod tests {
         set
     }
 
+    /// Test default: misses disabled, otherwise a random 2% click in a unit test
+    /// would make bounded-hit assertions flaky.
+    fn no_miss() -> crate::humanize::Humanize {
+        crate::humanize::Humanize {
+            miss_chance: 0.0,
+            ..crate::humanize::Humanize::default()
+        }
+    }
+
     fn mk(src: FakeScreen, budget: Budget) -> Interpreter<FakeScreen, FakeInput> {
-        Interpreter::new(src, FakeInput::new().0, assets(), budget)
+        Interpreter::new(src, FakeInput::new().0, assets(), budget).with_humanize(no_miss())
     }
 
     /// `assets()` plus two declared OCR assets (`ocr_line` kind → ROI only).
@@ -1146,7 +1165,7 @@ mod tests {
     fn mk_inspect<S: ScreenSource>(src: S) -> (Interpreter<S, FakeInput>, SharedInput) {
         let (input, shared) = FakeInput::new();
         (
-            Interpreter::new(src, input, assets(), Budget::default()),
+            Interpreter::new(src, input, assets(), Budget::default()).with_humanize(no_miss()),
             shared,
         )
     }
@@ -1675,6 +1694,57 @@ mod tests {
             }
         }
         assert!(saw_would_leave, "test needs at least one seed whose raw jitter leaves the frame");
+    }
+
+    // ---- HB7 human misses ([10-22]) ----
+
+    #[test]
+    fn click_miss_is_outside_the_template_box_and_logged() {
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets(), Budget::default())
+            .with_humanize(crate::humanize::Humanize {
+                miss_chance: 1.0,
+                ..crate::humanize::Humanize::default()
+            });
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_BRIGHT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let ev = &interp.events()[0];
+        assert!(ev.detail.contains("miss=true"), "{}", ev.detail);
+        let p = detail_point(&ev.detail);
+        // The matched template sits at (12,10) with size 10x10.
+        let inside = (12..22).contains(&p.x) && (10..20).contains(&p.y);
+        assert!(!inside, "HB7 miss must land outside the template rect: {p:?}");
+        let rows = interp.clicks();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].miss, "audit row must flag the miss: {rows:?}");
+        assert_eq!(shared.clicks.borrow().as_slice(), &[p], "HB6: the log carries the actual point");
+    }
+
+    #[test]
+    fn click_point_miss_is_logged_and_audited() {
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets(), Budget::default())
+            .with_humanize(crate::humanize::Humanize {
+                miss_chance: 1.0,
+                ..crate::humanize::Humanize::default()
+            });
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":32,"y":24}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let ev = &interp.events()[0];
+        assert!(ev.detail.contains("miss=true"), "{}", ev.detail);
+        let p = detail_point(&ev.detail);
+        let far = (p.x - 32).abs() + (p.y - 24).abs() > 8;
+        assert!(far, "HB7 miss should be visibly off target: {p:?}");
+        let rows = interp.clicks();
+        assert!(rows[0].miss, "{rows:?}");
     }
 
     // ---- CD2 click audit (§21) ----
