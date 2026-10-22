@@ -256,6 +256,7 @@ impl Server {
             ("GET", "/task/flow") => self.handle_task_flow(&mut out, &path),
             ("POST", "/task/save_flow") => self.handle_save_flow(&mut out, &body),
             ("GET", "/task/list") => self.handle_task_list(&mut out),
+            ("GET", "/stats") => self.handle_stats(&mut out),
             // --- N4: click-distribution data plane (§21 CD1~CD4) ---
             ("GET", "/runs") => self.handle_runs(&mut out),
             ("GET", "/runs/clicks") => self.handle_run_clicks(&mut out, &path),
@@ -746,6 +747,18 @@ impl Server {
     }
 
     /// GET /task/assets?task=任务1 -> assets.json summary.
+    /// `GET /stats` — long-run summary (ENGINE §22.19); the editor renders it.
+    fn handle_stats(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        match crate::stats::collect(&self.runs_dir) {
+            Ok(s) => {
+                let s = crate::stats::alerts_for(s, 0.10, 0);
+                let body = serde_json::json!({"ok": true, "summary": s});
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(e) => self.send_errors(out, 400, vec![e]),
+        }
+    }
+
     /// `GET /task/flow?task=<name>` — the task's flow.json (visual editor input).
     fn handle_task_flow(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
         let q = parse_query(raw_path);

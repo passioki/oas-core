@@ -38,6 +38,9 @@ const btnFlowFromJson = document.getElementById('flow-from-json');
 const btnFlowToJson = document.getElementById('flow-to-json');
 const btnFlowSaveViz = document.getElementById('flow-save-viz');
 const btnFlowAddInterrupt = document.getElementById('flow-add-interrupt');
+// §22.19 long-run stats
+const btnStatsRefresh = document.getElementById('btn-stats-refresh');
+const statsSummary = document.getElementById('stats-summary');
 
 let img = null;
 let roi = null; // {x,y,w,h} in frame coordinates
@@ -851,6 +854,36 @@ async function loadTaskFlow(task) {
   }
 }
 
+async function loadStats() {
+  if (!statsSummary) return;
+  try {
+    const r = await fetch('/stats');
+    const s = await r.json();
+    if (!s.ok) {
+      statsSummary.textContent = '统计失败：' + (s.errors || []).join('; ');
+      return;
+    }
+    const m = s.summary;
+    const lines = [
+      `点击 ${m.clicks.clicks}（miss ${m.clicks.misses} · distinct ${m.clicks.distinct} · 文件 ${m.clicks.files}）`,
+      `队列 done/failed ${m.queue.done}/${m.queue.failed}（attempts ${m.queue.attempts}）`,
+      `步骤 failed ${m.events.failed_steps} · retry ${m.events.retries} · 弹窗 ${m.events.popup_interrupts}`,
+      `失败截图 ${m.shots.count}`,
+    ];
+    const locs = m.clicks.locators || {};
+    for (const k of Object.keys(locs)) lines.push(`locator ${k}=${locs[k]}`);
+    if (m.alerts && m.alerts.length) {
+      lines.push('', '告警：');
+      for (const a of m.alerts) lines.push('· ' + a);
+    } else {
+      lines.push('', '告警：无');
+    }
+    statsSummary.textContent = lines.join('\n');
+  } catch (e) {
+    statsSummary.textContent = '统计异常：' + e;
+  }
+}
+
 async function loadFrame() {
   return new Promise((resolve, reject) => {
     const im = new Image();
@@ -1147,6 +1180,8 @@ btnLines.addEventListener('click', async () => {
     });
   }
   if (flowSteps) flowRender();
+  if (btnStatsRefresh) btnStatsRefresh.addEventListener('click', () => loadStats());
+  await loadStats();
   // N2: 生成点击指令 / 追加到 flow
   if (btnClickStep) btnClickStep.addEventListener('click', doGenerateClickStep);
   if (btnAppendStep) btnAppendStep.addEventListener('click', doAppendStepToFlow);
