@@ -807,6 +807,46 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         Ok(())
     }
 
+    /// §22.31 H5：在 `rect` 周边 `expand` 像素内寻找一个已声明模板（用于
+    /// 「OCR 文字 + 图标」互证：同文案不同按钮时只有带图标的那个通过）。
+    fn template_in_region(
+        &mut self,
+        sel: &str,
+        rect: Rect,
+        expand: i32,
+    ) -> Result<bool, String> {
+        if self.matcher.is_none() {
+            self.refresh_frame()?;
+        }
+        let Some(tpl) = self.assets.get(sel) else {
+            return Err(format!(
+                "require_template `{sel}` is not declared in the task's assets"
+            ));
+        };
+        let th = tpl.threshold;
+        let (fw, fh) = self
+            .frame_size
+            .ok_or_else(|| "require_template: no frame available".to_string())?;
+        let (fw, fh) = (fw as i32, fh as i32);
+        let x0 = (rect.x - expand).max(0);
+        let y0 = (rect.y - expand).max(0);
+        let x1 = (rect.x + rect.w + expand).min(fw);
+        let y1 = (rect.y + rect.h + expand).min(fh);
+        let w = (x1 - x0).max(0);
+        let h = (y1 - y0).max(0);
+        if w < tpl.gray.width as i32 || h < tpl.gray.height as i32 {
+            return Ok(false);
+        }
+        let matcher = self
+            .matcher
+            .as_ref()
+            .ok_or_else(|| "require_template: no frame available".to_string())?;
+        Ok(matcher
+            .match_template(&tpl.gray, Some(Rect { x: x0, y: y0, w, h }))
+            .map(|b| b.score >= th)
+            .unwrap_or(false))
+    }
+
     fn locate(&mut self, sel: &str) -> Result<(f32, Option<Point>), String> {
         if self.matcher.is_none() {
             self.refresh_frame()?;
@@ -1506,7 +1546,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             }
                             Err(e) => evidence.push(format!("template `{sel}`: {e}")),
                         },
-                        Locator::OcrText { sel, text } => match self.ocr_read(sel) {
+                        Locator::OcrText {
+                            sel,
+                            text,
+                            require_template,
+                        } => match self.ocr_read(sel) {
                             Ok(OcrRead::Lines(lines)) => {
                                 let hit = lines
                                     .iter()
@@ -1518,6 +1562,20 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                     });
                                 match hit {
                                     Some(line) => {
+                                        if let Some(rt) = require_template {
+                                            match self.template_in_region(rt, line.rect, 16) {
+                                                Ok(true) => {}
+                                                Ok(false) => {
+                                                    evidence.push(format!(
+                                                        "ocr_text `{sel}`: line {:?} matched but \
+                                                         required template `{rt}` not found near it",
+                                                        line.text
+                                                    ));
+                                                    continue;
+                                                }
+                                                Err(e) => return Err(e),
+                                            }
+                                        }
                                         let plan =
                                             self.humanize.template_click(line.rect, w, &mut self.rng);
                                         let centre = Point {
@@ -1556,6 +1614,20 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                         .assets
                                         .ocr_roi(sel)
                                         .ok_or_else(|| format!("ocr_text `{sel}`: OCR asset has no roi"))?;
+                                    if let Some(rt) = require_template {
+                                        match self.template_in_region(rt, rect, 16) {
+                                            Ok(true) => {}
+                                            Ok(false) => {
+                                                evidence.push(format!(
+                                                    "ocr_text `{sel}`: {:?} matched but required \
+                                                     template `{rt}` not found near it",
+                                                    t
+                                                ));
+                                                continue;
+                                            }
+                                            Err(e) => return Err(e),
+                                        }
+                                    }
                                     let plan = self.humanize.template_click(rect, w, &mut self.rng);
                                     let centre = Point {
                                         x: rect.x + rect.w / 2,
@@ -2964,6 +3036,74 @@ mod tests {
             shared.clicks.borrow().is_empty(),
             "voting failure must never click"
         );
+    }
+
+    // ---- §22.31 H5: OCR text + template cross-check ----
+
+    struct FixedLineOcr {
+        rect: Rect,
+        text: String,
+    }
+
+    impl OcrProvider for FixedLineOcr {
+        fn recognize(&mut self, _frame: &Frame, _roi: Rect) -> Result<(String, f32), String> {
+            Ok((self.text.clone(), 0.99))
+        }
+
+        fn recognize_lines(&mut self, _frame: &Frame, _roi: Rect) -> Result<Vec<OcrLine>, String> {
+            Ok(vec![line(&self.text, 0.99, self.rect)])
+        }
+    }
+
+    fn run_cross_check(frame: Frame, require_template: &str) -> (RunResult, Vec<Point>) {
+        let mut assets = assets_with_ocr();
+        assets.insert_ocr_lines("O_CONFIRM", Rect { x: 0, y: 0, w: 64, h: 48 });
+        let screen = TwoFrameScreen {
+            frames: vec![frame],
+            idx: 0,
+        };
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(screen, input, assets, Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(FixedLineOcr {
+                rect: Rect { x: 0, y: 0, w: 30, h: 20 },
+                text: "确认".to_string(),
+            }))
+            .with_seed(51);
+        let f = flow(
+            &r#"{"schema_version":1,"name":"t","steps":[{"op":"click_target","args":{"find":[{"kind":"ocr_text","sel":"O_CONFIRM","text":"确认","require_template":"__RT__"}]}},{"op":"finish","args":{"exit":"done"}}]}"#
+                .replace("__RT__", require_template),
+        );
+        let res = interp.run(&f);
+        let clicks = shared.clicks.borrow().clone();
+        (res, clicks)
+    }
+
+    #[test]
+    fn ocr_text_requires_the_cross_check_template() {
+        // Positive: the frame contains I_BRIGHT near the OCR line => click.
+        let (res, clicks) = run_cross_check(frame_with_tile(12, 10), "I_BRIGHT");
+        assert_eq!(res, RunResult::Finished(Exit::Done));
+        assert_eq!(clicks.len(), 1);
+        let p = clicks[0];
+        assert!(
+            p.x >= 0 && p.x < 30 && p.y >= 0 && p.y < 20,
+            "click should land in the OCR line rect, got {p:?}"
+        );
+
+        // Negative: same text, but the required icon template is absent => no click.
+        let mut blank = Frame::new(64, 48, vec![10u8; 64 * 48 * 4]);
+        for i in (3..blank.rgba.len()).step_by(4) {
+            blank.rgba[i] = 255;
+        }
+        let (res, clicks) = run_cross_check(blank, "I_NEVER");
+        match res {
+            RunResult::Failed(e) => {
+                assert!(e.contains("require") || e.contains("required template"), "{e}")
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(clicks.is_empty(), "cross-check failure must never click");
     }
 
     // ---- §22.11 click_target locator chain ----

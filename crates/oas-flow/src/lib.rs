@@ -556,7 +556,13 @@ pub enum Locator {
         threshold: Option<f32>,
     },
     /// Text recognition: an OCR asset + the expected line (exact match after trim).
-    OcrText { sel: String, text: String },
+    /// §22.31 H5: optional `require_template` cross-checks that the line's region
+    /// also contains a declared template (same text but different button => skip).
+    OcrText {
+        sel: String,
+        text: String,
+        require_template: Option<String>,
+    },
     /// Remembered coordinate (fallback), keyed in the task's `state/coords.json`.
     CoordMemory { key: String },
 }
@@ -1013,6 +1019,19 @@ fn parse_locator(v: &serde_json::Value, path: &str) -> Result<Locator, FlowError
         "ocr_text" => Ok(Locator::OcrText {
             sel: req_str(v, "sel", path)?,
             text: req_str(v, "text", path)?,
+            require_template: match v.get("require_template") {
+                None => None,
+                Some(x) => Some(
+                    x.as_str()
+                        .ok_or_else(|| {
+                            FlowError::new(
+                                format!("{path}.require_template"),
+                                "`require_template` must be an asset id string",
+                            )
+                        })?
+                        .to_string(),
+                ),
+            },
         }),
         "coord_memory" => Ok(Locator::CoordMemory {
             key: req_str(v, "key", path)?,
@@ -1454,6 +1473,14 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {
                     if let Some(a) = loc.asset() {
                         out.insert(a.to_string());
                     }
+                    // §22.31 H5: the cross-check template is also a referenced asset.
+                    if let Locator::OcrText {
+                        require_template: Some(rt),
+                        ..
+                    } = loc
+                    {
+                        out.insert(rt.clone());
+                    }
                 }
                 for e in requires.iter().chain(expect.iter()) {
                     out.insert(e.sel().to_string());
@@ -1536,6 +1563,32 @@ mod tests {
     }
 
     #[test]
+    fn ocr_text_require_template_is_parsed_and_collected() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[{"op":"click_target","args":{
+                 "find":[{"kind":"ocr_text","sel":"O_LIST","text":"确认","require_template":"I_ICON"}]}}]}"#,
+        )
+        .expect("flow");
+        let refs = flow.referenced_assets();
+        assert!(refs.contains("O_LIST"), "{refs:?}");
+        assert!(refs.contains("I_ICON"), "require_template asset must be collected: {refs:?}");
+        match &flow.steps[0] {
+            Step::ClickTarget { find, .. } => match &find[0] {
+                Locator::OcrText {
+                    require_template: Some(rt),
+                    ..
+                } => assert_eq!(rt, "I_ICON"),
+                other => panic!("unexpected locator: {other:?}"),
+            },
+            other => panic!("unexpected step: {other:?}"),
+        }
+        // wrong type is rejected at parse time
+        let bad = r#"{"schema_version":1,"name":"t","steps":[{"op":"click_target","args":{
+            "find":[{"kind":"ocr_text","sel":"O_LIST","text":"确认","require_template":1}]}}]}"#;
+        assert!(Flow::from_json(bad).is_err());
+    }
+
+    #[test]
     fn parses_click_target_and_collects_both_asset_locators() {
         let flow = Flow::from_json(
             r#"{"schema_version":1,"name":"t","steps":[{"op":"click_target","args":{"find":[
@@ -1551,7 +1604,8 @@ mod tests {
                     find[1],
                     Locator::OcrText {
                         sel: "O_LIST".to_string(),
-                        text: "返回".to_string()
+                        text: "返回".to_string(),
+                        require_template: None,
                     }
                 );
                 // Priority is fixed by kind, not by the declared array order.

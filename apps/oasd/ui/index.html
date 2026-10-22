@@ -13,20 +13,20 @@
       <span class="spacer"></span>
       <button id="btn-capture">截图</button>
     </div>
-    <div class="hdr-windows">
-      <section class="hdr-window">
-        <h4>结果窗口</h4>
-        <pre id="result" class="muted">—</pre>
-      </section>
-      <section class="hdr-window">
-        <h4>日志窗口</h4>
-        <pre id="log"></pre>
-      </section>
-    </div>
   </header>
 
   <main>
     <section id="canvas-wrap">
+      <div class="canvas-windows">
+        <section class="hdr-window">
+          <h4>结果窗口</h4>
+          <pre id="result" class="muted">—</pre>
+        </section>
+        <section class="hdr-window">
+          <h4>日志窗口</h4>
+          <pre id="log"></pre>
+        </section>
+      </div>
       <canvas id="screen" width="1280" height="720"></canvas>
       <div id="hint" class="muted">在画面上拖拽选择识别 ROI；可再画一个「点击框」</div>
     </section>

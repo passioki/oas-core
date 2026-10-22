@@ -375,3 +375,11 @@ aside.side {
   max-height: 90px;
   overflow: auto;
 }
+
+/* 22.31 结果/日志窗口移到截图上方、rail 左侧 */
+.canvas-windows {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.canvas-windows .hdr-window { flex: 1; }
