@@ -4,3 +4,6 @@
 # CD2 click-distribution run logs (runtime artifacts; regenerate with:
 #   oasd run ... --clicks-out runs/<name>.clicks.jsonl )
 /runs
+
+# runtime state (checkpoint / coordinate memory are machine-local, never shared)
+/tasks/*/state
