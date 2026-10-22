@@ -278,6 +278,10 @@ pub struct ClickRecord {
     /// Which locator resolved this click (§22.11): `template` / `ocr_text` /
     /// `coord_memory` / `point` (raw `click_point`).
     pub locator: String,
+    /// Human-readable match evidence for THIS click, e.g. `template:预设:0.987`,
+    /// `ocr_text:分组列表:分组2:1.000`, `coord_memory:分组2记忆`, `point`.
+    /// Written to the CD2 JSONL so every click's match path is auditable.
+    pub match_info: String,
     /// The run's seed (HB5: the audit is reproducible).
     pub seed: u64,
 }
@@ -384,6 +388,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         &self.clicks
     }
 
+    /// Last frame the interpreter looked at (for failure screenshots, §22.11 审计).
+    pub fn last_frame(&self) -> Option<Frame> {
+        self.frame.clone()
+    }
+
     /// The seed this run actually used (HB5). Unlike [`Self::seed_now`] (which
     /// exposes the mutable RNG state the recorder peeks at), this is the
     /// immutable per-run seed recorded in the audit.
@@ -472,6 +481,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         sel: Option<String>,
         miss: bool,
         locator: &str,
+        match_info: String,
     ) {
         self.clicks.push(ClickRecord {
             ts_ms: now_ms(),
@@ -482,6 +492,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             sel,
             miss,
             locator: locator.to_string(),
+            match_info,
             seed: self.run_seed,
         });
     }
@@ -495,6 +506,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         centre: Point,
         sel: Option<String>,
         locator: &str,
+        match_info: String,
         w: u32,
         h: u32,
     ) -> Result<(Point, u32), String> {
@@ -510,7 +522,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         // The screen may now be different: never let the next selector match
         // against this pre-click frame.
         self.invalidate_frame();
-        self.record_click(actual, centre, sel, plan.miss, locator);
+        self.record_click(actual, centre, sel, plan.miss, locator, match_info);
         Ok((actual, delay))
     }
 
@@ -984,8 +996,16 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     x: target.x + target.w / 2,
                     y: target.y + target.h / 2,
                 };
-                let (actual, delay) =
-                    self.perform_click(plan, centre, Some(hit_sel.to_string()), "template", w, h)?;
+                let match_info = format!("template:{hit_sel}:{score:.3}");
+                let (actual, delay) = self.perform_click(
+                    plan,
+                    centre,
+                    Some(hit_sel.to_string()),
+                    "template",
+                    match_info,
+                    w,
+                    h,
+                )?;
                 let verified = self.verify_if_present(expect.as_ref())?;
                 let miss = if plan.miss { " miss=true" } else { "" };
                 Ok(format!(
@@ -1021,7 +1041,15 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 // HB2/HB7: a raw coordinate click gets +/- jitter_px of noise and
                 // can miss by up to ~2*miss_px with the 1~3% per-click chance.
                 let plan = self.humanize.point_click(target, &mut self.rng);
-                let (actual, delay) = self.perform_click(plan, target, None, "point", w, h)?;
+                let (actual, delay) = self.perform_click(
+                    plan,
+                    target,
+                    None,
+                    "point",
+                    "point".to_string(),
+                    w,
+                    h,
+                )?;
                 let verified = self.verify_if_present(expect.as_ref())?;
                 // CP4/HB6: the log carries the TARGET *and* the actual point
                 // (plus the jitter's delay and the frame it was checked against).
@@ -1064,11 +1092,13 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                     x: target.x + target.w / 2,
                                     y: target.y + target.h / 2,
                                 };
+                                let match_info = format!("template:{sel}:{score:.3}");
                                 let (actual, _delay) = self.perform_click(
                                     plan,
                                     centre,
                                     Some(sel.clone()),
                                     "template",
+                                    match_info,
                                     w,
                                     h,
                                 )?;
@@ -1100,11 +1130,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                             x: line.rect.x + line.rect.w / 2,
                                             y: line.rect.y + line.rect.h / 2,
                                         };
+                                        let match_info =
+                                            format!("ocr_text:{sel}:{}:{:.3}", line.text, line.score);
                                         let (actual, _delay) = self.perform_click(
                                             plan,
                                             centre,
                                             Some(sel.clone()),
                                             "ocr_text",
+                                            match_info,
                                             w,
                                             h,
                                         )?;
@@ -1134,11 +1167,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                         x: rect.x + rect.w / 2,
                                         y: rect.y + rect.h / 2,
                                     };
+                                    let match_info =
+                                        format!("ocr_text:{sel}:{t}:{score:.3}");
                                     let (actual, _delay) = self.perform_click(
                                         plan,
                                         centre,
                                         Some(sel.clone()),
                                         "ocr_text",
+                                        match_info,
                                         w,
                                         h,
                                     )?;
@@ -1168,8 +1204,15 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             match store.get(key, w, h) {
                                 Some(p) => {
                                     let plan = self.humanize.point_click(p, &mut self.rng);
-                                    let (actual, _delay) =
-                                        self.perform_click(plan, p, None, "coord_memory", w, h)?;
+                                    let (actual, _delay) = self.perform_click(
+                                        plan,
+                                        p,
+                                        None,
+                                        "coord_memory",
+                                        format!("coord_memory:{key}"),
+                                        w,
+                                        h,
+                                    )?;
                                     let verified = self.verify_if_present(expect.as_ref())?;
                                     let miss = if plan.miss { " miss=true" } else { "" };
                                     return Ok(format!(
@@ -2431,6 +2474,11 @@ mod tests {
         assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
         let rows = interp.clicks();
         assert_eq!(rows[0].locator, "ocr_text");
+        assert!(
+            rows[0].match_info.starts_with("ocr_text:O_LIST:返回:"),
+            "match_info must carry the OCR evidence: {}",
+            rows[0].match_info
+        );
         let p = shared.clicks.borrow()[0];
         assert!(
             p.x >= 40 && p.x < 60 && p.y >= 24 && p.y < 36,
@@ -2469,6 +2517,11 @@ mod tests {
         assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
         let rows = interp.clicks();
         assert_eq!(rows[0].locator, "coord_memory");
+        assert!(
+            rows[0].match_info.starts_with("coord_memory:预设"),
+            "match_info must carry the memory key: {}",
+            rows[0].match_info
+        );
         let p = shared.clicks.borrow()[0];
         assert!(
             (p.x - 50).abs() <= 7 && (p.y - 40).abs() <= 7,
@@ -2698,6 +2751,11 @@ mod tests {
             rows[0].sel.as_deref(),
             Some("I_BRIGHT"),
             "the audited id must be the VARIANT that matched"
+        );
+        assert!(
+            rows[0].match_info.starts_with("template:I_BRIGHT:"),
+            "match_info must carry the matched variant + score: {}",
+            rows[0].match_info
         );
         let p = shared.clicks.borrow()[0];
         assert!(

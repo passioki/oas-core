@@ -50,6 +50,7 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 use oas_adapter_pc::Adb;
+use oas_codec;
 use oas_obs::{Recorder, ReplaySource};
 use oas_runtime::{Budget, ClickRecord, Interpreter, RunResult, StepEvent};
 use oas_task::TaskBundle;
@@ -58,6 +59,7 @@ use oas_types::{Frame, InputSink, Outcome, Point, ScreenSource};
 pub const USAGE: &str = "usage: oasd run --task <bundle-dir> [--replay <bundle-dir>] \
                          [--seed <u64>] [--dry-run] [--record <bundle-dir>] \
                          [--events-out <file.jsonl>] [--clicks-out <file.jsonl>] \
+                         [--shots-dir <dir>] \
                          [--model <rec.onnx>] [--det-model <det.onnx>] \
                          [--budget-steps N] [--budget-wall S]";
 
@@ -90,6 +92,9 @@ pub struct RunOptions {
     pub record: Option<PathBuf>,
     pub events_out: Option<PathBuf>,
     pub clicks_out: Option<PathBuf>,
+    /// Directory for failure screenshots (default: `<clicks-out>.shots` next to
+    /// the clicks JSONL, when `--clicks-out` is given).
+    pub shots_dir: Option<PathBuf>,
     /// PP-OCRv6 recogniser for in-flow `ocr()` (P1-c). Only meaningful with
     /// `--features ocr`; the feature-less build rejects it loudly.
     pub model: Option<PathBuf>,
@@ -109,6 +114,7 @@ impl Default for RunOptions {
             record: None,
             events_out: None,
             clicks_out: None,
+            shots_dir: None,
             model: None,
             det_model: None,
             budget_steps: DEFAULT_MAX_STEPS,
@@ -143,6 +149,9 @@ impl RunOptions {
                 }
                 "--clicks-out" => {
                     o.clicks_out = Some(PathBuf::from(take_value(rest, &mut i, "--clicks-out")?))
+                }
+                "--shots-dir" => {
+                    o.shots_dir = Some(PathBuf::from(take_value(rest, &mut i, "--shots-dir")?))
                 }
                 "--model" => o.model = Some(PathBuf::from(take_value(rest, &mut i, "--model")?)),
                 "--det-model" => {
@@ -451,7 +460,29 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     // CD2 (§21): snapshot the click audit BEFORE the interpreter is dropped.
     // The rows are the interpreter's own report of what it actually clicked.
     let click_rows = interp.clicks().to_vec();
+    let shot_frame = interp.last_frame();
     drop(interp); // release the recording source's Rc clone before finishing
+
+    // §22.11 审计: a FAILED run keeps the frame that was actually analysed, so the
+    // anomaly ("target not found", "page guard failed", "expect timed out") can be
+    // inspected visually later. Default location: `<clicks-out dir>/shots`.
+    let shots_dir = opts.shots_dir.clone().or_else(|| {
+        opts.clicks_out
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|d| d.join("shots"))
+    });
+    if let RunResult::Failed(msg) = &result {
+        out(&format!("failure={msg}"));
+        match (&shots_dir, &shot_frame) {
+            (Some(dir), Some(frame)) => match save_failure_shot(dir, frame, seed) {
+                Ok(path) => out(&format!("shot={}", path.display())),
+                Err(e) => out(&format!("shot_warn={e}")),
+            },
+            _ => out("shot=none (no frame captured)"),
+        }
+    }
+
     // Persist learned points (no-op for replay/dry). A write failure is a loud
     // warning, not a run failure: the flow itself already succeeded.
     let flush_result = coords.borrow_mut().flush();
@@ -749,6 +780,22 @@ fn write_events_jsonl(path: &Path, events: &[StepEvent]) -> Result<(), String> {
 /// audit columns `target_x,target_y` that §19 CP4/HB6 requires). Written to the
 /// parent directory, created on demand — a run must never be lost because the
 /// output folder did not exist yet.
+/// §22.11 审计: persist the frame of a failed run for later visual inspection.
+fn save_failure_shot(dir: &Path, frame: &Frame, seed: u64) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("--shots-dir: create `{}` ({e})", dir.display()))?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let path = dir.join(format!("fail-seed{seed}-{ts}.png"));
+    let png = oas_codec::encode_png(frame)
+        .map_err(|e| format!("--shots-dir: encode png ({e})"))?;
+    std::fs::write(&path, png)
+        .map_err(|e| format!("--shots-dir: write `{}` ({e})", path.display()))?;
+    Ok(path)
+}
+
 fn write_clicks_jsonl(path: &Path, rows: &[ClickRecord]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -772,7 +819,7 @@ fn write_clicks_jsonl(path: &Path, rows: &[ClickRecord]) -> Result<(), String> {
             None => "null".to_string(),
         };
         text.push_str(&format!(
-            r#"{{"ts_ms":{},"x":{},"y":{},"target_x":{},"target_y":{},"sel":{},"miss":{},"locator":{},"seed":{}}}"#,
+            r#"{{"ts_ms":{},"x":{},"y":{},"target_x":{},"target_y":{},"sel":{},"miss":{},"locator":{},"match":{},"seed":{}}}"#,
             r.ts_ms,
             r.x,
             r.y,
@@ -782,6 +829,8 @@ fn write_clicks_jsonl(path: &Path, rows: &[ClickRecord]) -> Result<(), String> {
             r.miss,
             serde_json::to_string(&r.locator)
                 .map_err(|e| format!("--clicks-out: serialize locator: {e}"))?,
+            serde_json::to_string(&r.match_info)
+                .map_err(|e| format!("--clicks-out: serialize match: {e}"))?,
             r.seed
         ));
         text.push('\n');
@@ -1101,6 +1150,14 @@ mod tests {
         assert_eq!(rows1.len(), r1.clicks.len());
         assert_eq!(rows1[0]["sel"], serde_json::Value::Null);
         assert_eq!(rows1[0]["seed"].as_u64(), Some(42));
+        assert!(
+            rows1[0]["match"]
+                .as_str()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
+            "CD2 must carry the per-click match path: {}",
+            rows1[0]["match"]
+        );
         let (x, y) = (
             rows1[0]["x"].as_i64().expect("x") as i32,
             rows1[0]["y"].as_i64().expect("y") as i32,
@@ -1180,6 +1237,35 @@ mod tests {
             line_with(&lines, "clicks_out="),
             format!("clicks_out={} count=0", out_path.display())
         );
+    }
+
+    #[test]
+    fn failed_run_saves_a_screenshot_to_the_shots_dir() {
+        let td = TempDir::new("shot");
+        let task = td.path().join("task");
+        let replay = td.path().join("replay");
+        let bundle = TaskBundle::open(&task).expect("open task bundle");
+        bundle
+            .save_flow(
+                r#"{"schema_version":1,"name":"n4-shot","steps":[
+                     {"op":"click_point","args":{"x":10000,"y":60}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            )
+            .expect("save flow");
+        write_replay_bundle(&replay);
+        let shots = td.path().join("shots");
+        let mut opts = replay_options(&task, &replay, 4);
+        opts.shots_dir = Some(shots.clone());
+        let (r, lines) = run_capture(&opts);
+        assert_eq!(r.outcome(), Outcome::Failed);
+        assert!(lines.iter().any(|l| l.starts_with("failure=")), "{lines:?}");
+        let shot_line = line_with(&lines, "shot=");
+        assert!(!shot_line.contains("none"), "expected a shot: {shot_line}");
+        let path = PathBuf::from(shot_line.trim_start_matches("shot="));
+        assert!(path.exists(), "screenshot missing: {path:?}");
+        let png = std::fs::read(&path).expect("read shot");
+        let frame = oas_codec::decode_png(&png).expect("shot must be a valid PNG");
+        assert!(frame.width > 0 && frame.height > 0);
     }
 
     #[test]
