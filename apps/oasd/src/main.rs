@@ -16,6 +16,7 @@ mod serve;
 mod coords;
 mod checkpoint;
 mod reconnect;
+mod queue;
 #[cfg(feature = "ocr")]
 mod ocr;
 
@@ -33,6 +34,7 @@ fn main() -> ExitCode {
         "record" => record(&args[1..]),
         "replay" => replay(&args[1..]),
         "run" => run::run_cmd(&args[1..]),
+        "queue" => queue::queue_cmd(&args[1..]),
         "serve" => serve_cmd(&args[1..]),
         "" | "-h" | "--help" => {
             eprintln!(
