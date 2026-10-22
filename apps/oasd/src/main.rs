@@ -13,6 +13,7 @@ use std::process::ExitCode;
 
 mod run;
 mod serve;
+mod coords;
 #[cfg(feature = "ocr")]
 mod ocr;
 

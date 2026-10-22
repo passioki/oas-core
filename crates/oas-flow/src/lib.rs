@@ -528,11 +528,55 @@ pub struct Flow {
     pub steps: Vec<Step>,
 }
 
+/// One locator in a `click_target` redundancy chain (ENGINE §22.11).
+///
+/// Priority is **fixed** (image > text > memory), regardless of the array order
+/// in `flow.json`; the runtime sorts before trying.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Locator {
+    /// Image recognition: a declared template asset.
+    Template {
+        sel: String,
+        /// Per-locator override; `None` = use the asset's own threshold.
+        threshold: Option<f32>,
+    },
+    /// Text recognition: an OCR asset + the expected line (exact match after trim).
+    OcrText { sel: String, text: String },
+    /// Remembered coordinate (fallback), keyed in the task's `state/coords.json`.
+    CoordMemory { key: String },
+}
+
+impl Locator {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Locator::Template { .. } => "template",
+            Locator::OcrText { .. } => "ocr_text",
+            Locator::CoordMemory { .. } => "coord_memory",
+        }
+    }
+
+    /// 0 = highest priority (image), 2 = lowest (memory).
+    pub fn priority(&self) -> u8 {
+        match self {
+            Locator::Template { .. } => 0,
+            Locator::OcrText { .. } => 1,
+            Locator::CoordMemory { .. } => 2,
+        }
+    }
+
+    /// Asset id referenced by this locator (memory locators reference no asset).
+    pub fn asset(&self) -> Option<&str> {
+        match self {
+            Locator::Template { sel, .. } | Locator::OcrText { sel, .. } => Some(sel),
+            Locator::CoordMemory { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
     /// Structured branch (nested blocks; there is no goto).
-    If {
-        cond: Expr,
+    If {        cond: Expr,
         then: Vec<Step>,
         otherwise: Vec<Step>,
     },
@@ -583,6 +627,11 @@ pub enum Step {
     },
     Ocr {
         sel: String,
+    },
+    /// ENGINE §22.11: click a target resolved by an ordered redundancy chain
+    /// (image > text > remembered coordinate). All locators failing = loud error.
+    ClickTarget {
+        find: Vec<Locator>,
     },
     Log {
         level: String,
@@ -677,8 +726,59 @@ fn parse_coord_pair(
     Ok((first, second))
 }
 
-fn parse_steps(v: &serde_json::Value, path: &str) -> Result<Vec<Step>, FlowError> {
-    let arr = v
+fn parse_locator(v: &serde_json::Value, path: &str) -> Result<Locator, FlowError> {
+    let kind = req_str(v, "kind", path)?;
+    match kind.as_str() {
+        "template" => {
+            let sel = req_str(v, "sel", path)?;
+            let threshold = match v.get("threshold") {
+                None => None,
+                Some(x) => Some(
+                    x.as_f64()
+                        .ok_or_else(|| FlowError::new(format!("{path}.threshold"), "`threshold` must be a number"))?
+                        as f32,
+                ),
+            };
+            Ok(Locator::Template { sel, threshold })
+        }
+        "ocr_text" => Ok(Locator::OcrText {
+            sel: req_str(v, "sel", path)?,
+            text: req_str(v, "text", path)?,
+        }),
+        "coord_memory" => Ok(Locator::CoordMemory {
+            key: req_str(v, "key", path)?,
+        }),
+        other => Err(FlowError::new(
+            path,
+            format!(
+                "unknown locator kind `{other}` (allowed: template, ocr_text, coord_memory)"
+            ),
+        )),
+    }
+}
+
+fn parse_locators(args: &serde_json::Value, a_path: &str) -> Result<Vec<Locator>, FlowError> {
+    let find_path = format!("{a_path}.find");
+    let arr = args
+        .get("find")
+        .and_then(|x| x.as_array())
+        .ok_or_else(|| {
+            FlowError::new(&find_path, "`find` must be a non-empty array of locators")
+        })?;
+    if arr.is_empty() {
+        return Err(FlowError::new(
+            &find_path,
+            "`find` must have at least one locator",
+        ));
+    }
+    let mut out = Vec::with_capacity(arr.len());
+    for (i, item) in arr.iter().enumerate() {
+        out.push(parse_locator(item, &format!("{find_path}[{i}]"))?);
+    }
+    Ok(out)
+}
+
+fn parse_steps(v: &serde_json::Value, path: &str) -> Result<Vec<Step>, FlowError> {    let arr = v
         .as_array()
         .ok_or_else(|| FlowError::new(path, "expected an array of steps"))?;
     let mut out = Vec::with_capacity(arr.len());
@@ -798,6 +898,9 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
                 ms,
             })
         }
+        "click_target" => Ok(Step::ClickTarget {
+            find: parse_locators(&args, &a_path)?,
+        }),
         "ocr" => Ok(Step::Ocr {
             sel: req_str(&args, "sel", &a_path)?,
         }),
@@ -820,7 +923,7 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
             path,
             format!(
                 "unknown instruction `{other}` (supported: if/loop/while/break/continue/\
-                 wait/wait_until/appear/click/click_point/swipe/ocr/log/finish)"
+                 wait/wait_until/appear/click/click_point/click_target/swipe/ocr/log/finish)"
             ),
         )),
     }
@@ -949,6 +1052,13 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {
             Step::Appear { sel } | Step::Click { sel } | Step::Ocr { sel } => {
                 out.insert(sel.clone());
             }
+            Step::ClickTarget { find } => {
+                for loc in find {
+                    if let Some(a) = loc.asset() {
+                        out.insert(a.to_string());
+                    }
+                }
+            }
             Step::ClickPoint { x, y } => {
                 collect_assets_expr(x, out);
                 collect_assets_expr(y, out);
@@ -1014,6 +1124,54 @@ mod tests {
         .expect("flow");
         let got: Vec<String> = flow.referenced_assets().into_iter().collect();
         assert_eq!(got, vec!["I_A", "I_C", "O_B"]);
+    }
+
+    #[test]
+    fn parses_click_target_and_collects_both_asset_locators() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[{"op":"click_target","args":{"find":[
+                 {"kind":"coord_memory","key":"返回"},
+                 {"kind":"ocr_text","sel":"O_LIST","text":"返回"},
+                 {"kind":"template","sel":"I_BACK","threshold":0.9}]}}]}"#,
+        )
+        .expect("flow");
+        match &flow.steps[0] {
+            Step::ClickTarget { find } => {
+                assert_eq!(find.len(), 3);
+                assert_eq!(
+                    find[1],
+                    Locator::OcrText {
+                        sel: "O_LIST".to_string(),
+                        text: "返回".to_string()
+                    }
+                );
+                // Priority is fixed by kind, not by the declared array order.
+                assert_eq!(find[2].priority(), 0);
+                assert_eq!(find[0].priority(), 2);
+                assert_eq!(find[1].asset(), Some("O_LIST"));
+                assert_eq!(find[0].asset(), None);
+            }
+            other => panic!("unexpected step: {other:?}"),
+        }
+        let got: Vec<String> = flow.referenced_assets().into_iter().collect();
+        assert_eq!(got, vec!["I_BACK", "O_LIST"]);
+    }
+
+    #[test]
+    fn rejects_click_target_with_empty_or_bad_locators() {
+        let bad_finds = [
+            "[]",
+            r#"[{"kind":"magic"}]"#,
+            r#"[{"kind":"template"}]"#,
+            r#"[{"kind":"ocr_text","sel":"O"}]"#,
+            r#"[{"kind":"coord_memory"}]"#,
+        ];
+        for find in bad_finds {
+            let json = format!(
+                r#"{{"schema_version":1,"name":"t","steps":[{{"op":"click_target","args":{{"find":{find}}}}}]}}"#
+            );
+            assert!(!errs(&json).is_empty(), "must reject find={find}");
+        }
     }
 
     // ---- schema validation ----

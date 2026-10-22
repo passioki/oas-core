@@ -406,6 +406,7 @@ dependencies = [
  "oas-runtime",
  "oas-task",
  "oas-types",
+ "serde",
  "serde_json",
 ]
 

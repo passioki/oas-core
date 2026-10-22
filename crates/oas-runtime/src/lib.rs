@@ -16,7 +16,7 @@ pub mod humanize;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use oas_flow::{eval, EvalContext, Expr, Flow, Step, Value};
+use oas_flow::{eval, EvalContext, Expr, Flow, Locator, Step, Value};
 use oas_perceive::{GrayImage, Matcher};
 use oas_types::{Exit, Frame, InputSink, Outcome, Point, Rect, ScreenSource};
 
@@ -215,6 +215,17 @@ pub trait OcrProvider {
     fn recognize_lines(&mut self, frame: &Frame, roi: Rect) -> Result<Vec<OcrLine>, String>;
 }
 
+/// Persistent "coordinate memory" store for the lowest-priority locator of a
+/// `click_target` chain (ENGINE §22.11).
+///
+/// The runtime never touches the filesystem: the binary crate implements this
+/// over `tasks/<task>/state/coords.json`, decides whether writes are allowed
+/// (replay = read-only) and handles design-resolution scaling.
+pub trait CoordStore {
+    fn get(&mut self, key: &str, frame_w: u32, frame_h: u32) -> Option<Point>;
+    fn put(&mut self, key: &str, point: Point, frame_w: u32, frame_h: u32);
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Budget {
     pub max_wall_s: f64,
@@ -264,6 +275,9 @@ pub struct ClickRecord {
     /// HB7: `true` when this click MISSED the target box (human error). The row
     /// still records the real point so the distribution view can colour misses.
     pub miss: bool,
+    /// Which locator resolved this click (§22.11): `template` / `ocr_text` /
+    /// `coord_memory` / `point` (raw `click_point`).
+    pub locator: String,
     /// The run's seed (HB5: the audit is reproducible).
     pub seed: u64,
 }
@@ -315,6 +329,8 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     /// Injected OCR engine. `None` means "this run cannot do OCR": `ocr()` must
     /// fail loudly instead of returning `""` (ENGINE-DESIGN §3.2).
     ocr: Option<Box<dyn OcrProvider>>,
+    /// Injected coordinate-memory store for `click_target` fallbacks (§22.11).
+    coords: Option<Box<dyn CoordStore>>,
     /// Size of the frame `matcher` was built from (`click_point` needs it for
     /// the CP3 in-frame check).
     frame_size: Option<(u32, u32)>,
@@ -346,6 +362,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             matcher: None,
             frame: None,
             ocr: None,
+            coords: None,
             frame_size: None,
             events: Vec::new(),
             clicks: Vec::new(),
@@ -386,6 +403,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// never look like "recognised nothing" (ENGINE-DESIGN §3.2).
     pub fn with_ocr(mut self, provider: Box<dyn OcrProvider>) -> Self {
         self.ocr = Some(provider);
+        self
+    }
+
+    /// Attach the coordinate-memory store used by `click_target`'s last locator.
+    pub fn with_coord_store(mut self, store: Box<dyn CoordStore>) -> Self {
+        self.coords = Some(store);
         self
     }
 
@@ -442,7 +465,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// that failed (off-screen target / missing template) is not a click and must
     /// not appear in the distribution, or the heatmap would show points the game
     /// never received.
-    fn record_click(&mut self, actual: Point, target: Point, sel: Option<String>, miss: bool) {
+    fn record_click(
+        &mut self,
+        actual: Point,
+        target: Point,
+        sel: Option<String>,
+        miss: bool,
+        locator: &str,
+    ) {
         self.clicks.push(ClickRecord {
             ts_ms: now_ms(),
             x: actual.x,
@@ -451,8 +481,50 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             target_y: target.y,
             sel,
             miss,
+            locator: locator.to_string(),
             seed: self.run_seed,
         });
+    }
+
+    /// Clamp -> HB3 delay -> tap -> invalidate -> CD2 audit. The three click
+    /// instructions share this (DRY-3: same sequence in click/click_point/
+    /// click_target), and it returns the ACTUAL point + delay for the step log.
+    fn perform_click(
+        &mut self,
+        plan: crate::humanize::ClickPlan,
+        centre: Point,
+        sel: Option<String>,
+        locator: &str,
+        w: u32,
+        h: u32,
+    ) -> Result<(Point, u32), String> {
+        let actual = Point {
+            x: plan.point.x.clamp(0, w.saturating_sub(1) as i32),
+            y: plan.point.y.clamp(0, h.saturating_sub(1) as i32),
+        };
+        let delay = self.humanize.delay_ms(&mut self.rng);
+        if delay > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay as u64));
+        }
+        self.input.click(actual)?;
+        // The screen may now be different: never let the next selector match
+        // against this pre-click frame.
+        self.invalidate_frame();
+        self.record_click(actual, centre, sel, plan.miss, locator);
+        Ok((actual, delay))
+    }
+
+    /// `click_target`: after ANY locator succeeds, refresh the remembered point
+    /// for the chain's `coord_memory` key (§22.11) — the store may be read-only.
+    fn remember_target(&mut self, find: &[Locator], p: Point, w: u32, h: u32) {
+        if let Some(store) = self.coords.as_mut() {
+            for loc in find {
+                if let Locator::CoordMemory { key } = loc {
+                    store.put(key, p, w, h);
+                    break;
+                }
+            }
+        }
     }
 
     /// Grab a frame and cache its matcher (integral images) for this frame.
@@ -511,6 +583,39 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             Some(b) => Ok((b.score, Some(Point { x: b.x, y: b.y }))),
             None => Ok((0.0, None)),
         }
+    }
+
+    /// Actual click box for a matched template: the matched template rect, or the
+    /// polygon's LAAR translated by the match offset (ENGINE §22.10).
+    fn click_box_for(&self, sel: &str, p: Point) -> Result<Rect, String> {
+        let t = self
+            .assets
+            .get(sel)
+            .ok_or_else(|| format!("selector `{sel}` is not declared in the task's assets"))?;
+        let mut target = Rect {
+            x: p.x,
+            y: p.y,
+            w: t.gray.width as i32,
+            h: t.gray.height as i32,
+        };
+        if let Some(poly) = &t.click_polygon {
+            let roi = t.roi.ok_or_else(|| {
+                format!("selector `{sel}` has a click polygon but no roi (cannot translate it)")
+            })?;
+            let laar = largest_inscribed_rect(poly).ok_or_else(|| {
+                format!(
+                    "selector `{sel}` has a click polygon with no clickable rectangle \
+                     (degenerate: <3 points or zero area)"
+                )
+            })?;
+            target = Rect {
+                x: laar.x + (p.x - roi.x),
+                y: laar.y + (p.y - roi.y),
+                w: laar.w,
+                h: laar.h,
+            };
+        }
+        Ok(target)
     }
 
     /// Evaluate one coordinate expression (`click_point`/`swipe`): it must be a
@@ -761,41 +866,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 // the largest axis-aligned rectangle inscribed in that polygon
                 // (translated by the match offset). Matching still uses the
                 // whole template.
-                let (tw, th_px, click_polygon, tpl_roi) = self
-                    .assets
-                    .get(sel)
-                    .map(|t| {
-                        (
-                            t.gray.width,
-                            t.gray.height,
-                            t.click_polygon.clone(),
-                            t.roi,
-                        )
-                    })
-                    .ok_or_else(|| format!("selector `{sel}` is not declared in the task's assets"))?;
-                let mut target = Rect {
-                    x: p.x,
-                    y: p.y,
-                    w: tw as i32,
-                    h: th_px as i32,
-                };
-                if let Some(poly) = click_polygon {
-                    let roi = tpl_roi.ok_or_else(|| {
-                        format!("selector `{sel}` has a click polygon but no roi (cannot translate it)")
-                    })?;
-                    let laar = largest_inscribed_rect(&poly).ok_or_else(|| {
-                        format!(
-                            "selector `{sel}` has a click polygon with no clickable rectangle \
-                             (degenerate: <3 points or zero area)"
-                        )
-                    })?;
-                    target = Rect {
-                        x: laar.x + (p.x - roi.x),
-                        y: laar.y + (p.y - roi.y),
-                        w: laar.w,
-                        h: laar.h,
-                    };
-                }
+                let target = self.click_box_for(sel, p)?;
                 // HB1/HB7: 20% bell / 5% uniform / 75% comet (hand-side tail)
                 // inside the target rect; with 1~3% probability the click MISSES
                 // the box (still performed, audited as `miss=true`).
@@ -803,25 +874,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     .frame_size
                     .ok_or_else(|| "click: no frame available".to_string())?;
                 let plan = self.humanize.template_click(target, w, &mut self.rng);
-                let actual = Point {
-                    x: plan.point.x.clamp(0, w.saturating_sub(1) as i32),
-                    y: plan.point.y.clamp(0, h.saturating_sub(1) as i32),
-                };
-                let delay = self.humanize.delay_ms(&mut self.rng);
-                if delay > 0 {
-                    std::thread::sleep(std::time::Duration::from_millis(delay as u64));
-                }
-                self.input.click(actual)?;
-                // The screen may now be different: never let the next selector
-                // match against this pre-click frame.
-                self.invalidate_frame();
-                // CD2/HB6: audit the click with the template-rect CENTRE as the
-                // intended target and the humanised point as what actually went out.
                 let centre = Point {
                     x: target.x + target.w / 2,
                     y: target.y + target.h / 2,
                 };
-                self.record_click(actual, centre, Some(sel.clone()), plan.miss);
+                let (actual, delay) =
+                    self.perform_click(plan, centre, Some(sel.clone()), "template", w, h)?;
                 let miss = if plan.miss { " miss=true" } else { "" };
                 Ok(format!(
                     "clicked {sel} target=({},{}) point=({},{}){miss} delay={delay}ms score={score:.3}",
@@ -855,27 +913,166 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 // HB2/HB7: a raw coordinate click gets +/- jitter_px of noise and
                 // can miss by up to ~2*miss_px with the 1~3% per-click chance.
                 let plan = self.humanize.point_click(target, &mut self.rng);
-                // ...but the ACTUAL point must stay on-screen.
-                let actual = Point {
-                    x: plan.point.x.clamp(0, w.saturating_sub(1) as i32),
-                    y: plan.point.y.clamp(0, h.saturating_sub(1) as i32),
-                };
-                // HB3: randomised pre-click pause (not a machine-perfect rhythm).
-                let delay = self.humanize.delay_ms(&mut self.rng);
-                if delay > 0 {
-                    std::thread::sleep(Duration::from_millis(delay as u64));
-                }
-                self.input.click(actual)?;
-                self.invalidate_frame();
-                // CD2: `click_point` has no asset id; the evaluated target is the
-                // intent and the jittered point is what the device received.
-                self.record_click(actual, target, None, plan.miss);
+                let (actual, delay) = self.perform_click(plan, target, None, "point", w, h)?;
                 // CP4/HB6: the log carries the TARGET *and* the actual point
                 // (plus the jitter's delay and the frame it was checked against).
                 let miss = if plan.miss { " miss=true" } else { "" };
                 Ok(format!(
                     "clicked_point target=({},{}) point=({},{}){miss} delay={delay}ms frame={}x{}",
                     target.x, target.y, actual.x, actual.y, w, h
+                ))
+            }
+            Step::ClickTarget { find } => {
+                // ENGINE §22.11: fixed priority image > text > memory; every
+                // locator failure is kept as evidence, and ALL failing is a loud
+                // step failure (never a silent skip).
+                if self.frame_size.is_none() {
+                    self.refresh_frame()?;
+                }
+                let (w, h) = self
+                    .frame_size
+                    .ok_or_else(|| "click_target: no frame available".to_string())?;
+                let mut order: Vec<&Locator> = find.iter().collect();
+                order.sort_by_key(|l| l.priority());
+                let mut evidence: Vec<String> = Vec::new();
+                for loc in order {
+                    match loc {
+                        Locator::Template { sel, threshold } => match self.locate(sel) {
+                            Ok((score, at)) => {
+                                let th = threshold.unwrap_or_else(|| {
+                                    self.assets.get(sel).map(|t| t.threshold).unwrap_or(0.9)
+                                });
+                                let Some(p) = at.filter(|_| score >= th) else {
+                                    evidence.push(format!(
+                                        "template `{sel}`: best score {score:.3} < {th}"
+                                    ));
+                                    continue;
+                                };
+                                let target = self.click_box_for(sel, p)?;
+                                let plan = self.humanize.template_click(target, w, &mut self.rng);
+                                let centre = Point {
+                                    x: target.x + target.w / 2,
+                                    y: target.y + target.h / 2,
+                                };
+                                let (actual, _delay) = self.perform_click(
+                                    plan,
+                                    centre,
+                                    Some(sel.clone()),
+                                    "template",
+                                    w,
+                                    h,
+                                )?;
+                                self.remember_target(find, actual, w, h);
+                                let miss = if plan.miss { " miss=true" } else { "" };
+                                return Ok(format!(
+                                    "clicked_target locator=template sel={sel} score={score:.3} point=({},{}){miss}",
+                                    actual.x, actual.y
+                                ));
+                            }
+                            Err(e) => evidence.push(format!("template `{sel}`: {e}")),
+                        },
+                        Locator::OcrText { sel, text } => match self.ocr_read(sel) {
+                            Ok(OcrRead::Lines(lines)) => {
+                                let hit = lines
+                                    .iter()
+                                    .filter(|l| l.text.trim() == text.trim())
+                                    .max_by(|a, b| {
+                                        a.score
+                                            .partial_cmp(&b.score)
+                                            .unwrap_or(std::cmp::Ordering::Equal)
+                                    });
+                                match hit {
+                                    Some(line) => {
+                                        let plan =
+                                            self.humanize.template_click(line.rect, w, &mut self.rng);
+                                        let centre = Point {
+                                            x: line.rect.x + line.rect.w / 2,
+                                            y: line.rect.y + line.rect.h / 2,
+                                        };
+                                        let (actual, _delay) = self.perform_click(
+                                            plan,
+                                            centre,
+                                            Some(sel.clone()),
+                                            "ocr_text",
+                                            w,
+                                            h,
+                                        )?;
+                                        self.remember_target(find, actual, w, h);
+                                        let miss = if plan.miss { " miss=true" } else { "" };
+                                        return Ok(format!(
+                                            "clicked_target locator=ocr_text sel={sel} text={:?} score={:.3} point=({},{}){miss}",
+                                            line.text, line.score, actual.x, actual.y
+                                        ));
+                                    }
+                                    None => evidence.push(format!(
+                                        "ocr_text `{sel}`: no line equals {:?} ({} lines found)",
+                                        text,
+                                        lines.len()
+                                    )),
+                                }
+                            }
+                            Ok(OcrRead::Single(Some(t), score)) => {
+                                if t.trim() == text.trim() {
+                                    let rect = self
+                                        .assets
+                                        .ocr_roi(sel)
+                                        .ok_or_else(|| format!("ocr_text `{sel}`: OCR asset has no roi"))?;
+                                    let plan = self.humanize.template_click(rect, w, &mut self.rng);
+                                    let centre = Point {
+                                        x: rect.x + rect.w / 2,
+                                        y: rect.y + rect.h / 2,
+                                    };
+                                    let (actual, _delay) = self.perform_click(
+                                        plan,
+                                        centre,
+                                        Some(sel.clone()),
+                                        "ocr_text",
+                                        w,
+                                        h,
+                                    )?;
+                                    self.remember_target(find, actual, w, h);
+                                    let miss = if plan.miss { " miss=true" } else { "" };
+                                    return Ok(format!(
+                                        "clicked_target locator=ocr_text sel={sel} text={:?} score={score:.3} point=({},{}){miss}",
+                                        t, actual.x, actual.y
+                                    ));
+                                }
+                                evidence.push(format!(
+                                    "ocr_text `{sel}`: text {:?} != {:?}",
+                                    t, text
+                                ));
+                            }
+                            Ok(OcrRead::Single(None, score)) => evidence.push(format!(
+                                "ocr_text `{sel}`: no text (score {score:.3})"
+                            )),
+                            Err(e) => evidence.push(format!("ocr_text `{sel}`: {e}")),
+                        },
+                        Locator::CoordMemory { key } => {
+                            let Some(store) = self.coords.as_mut() else {
+                                evidence.push("coord_memory: no store attached".to_string());
+                                continue;
+                            };
+                            match store.get(key, w, h) {
+                                Some(p) => {
+                                    let plan = self.humanize.point_click(p, &mut self.rng);
+                                    let (actual, _delay) =
+                                        self.perform_click(plan, p, None, "coord_memory", w, h)?;
+                                    let miss = if plan.miss { " miss=true" } else { "" };
+                                    return Ok(format!(
+                                        "clicked_target locator=coord_memory key={key} point=({},{}){miss}",
+                                        actual.x, actual.y
+                                    ));
+                                }
+                                None => {
+                                    evidence.push(format!("coord_memory `{key}`: no remembered point"))
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(format!(
+                    "click_target: all locators failed: [{}]",
+                    evidence.join("; ")
                 ))
             }
             Step::Swipe {
@@ -981,6 +1178,7 @@ fn step_name(s: &Step) -> &'static str {
         Step::ClickPoint { .. } => "click_point",
         Step::Swipe { .. } => "swipe",
         Step::Ocr { .. } => "ocr",
+        Step::ClickTarget { .. } => "click_target",
         Step::Log { .. } => "log",
         Step::Finish { .. } => "finish",
     }
@@ -1986,6 +2184,216 @@ mod tests {
                     && p.y < laar.y + laar.h,
                 "seed {seed}: {p:?} outside LAAR {laar:?}"
             );
+        }
+    }
+
+    // ---- §22.11 click_target locator chain ----
+
+    struct FakeStore {
+        items: std::collections::HashMap<String, Point>,
+        puts: usize,
+        writable: bool,
+    }
+
+    impl FakeStore {
+        fn new(items: &[(&str, (i32, i32))], writable: bool) -> Self {
+            Self {
+                items: items
+                    .iter()
+                    .map(|(k, (x, y))| {
+                        (k.to_string(), Point { x: *x, y: *y })
+                    })
+                    .collect(),
+                puts: 0,
+                writable,
+            }
+        }
+    }
+
+    impl CoordStore for FakeStore {
+        fn get(&mut self, key: &str, _w: u32, _h: u32) -> Option<Point> {
+            self.items.get(key).copied()
+        }
+
+        fn put(&mut self, key: &str, p: Point, _w: u32, _h: u32) {
+            if self.writable {
+                self.items.insert(key.to_string(), p);
+                self.puts += 1;
+            }
+        }
+    }
+
+    /// Interpreter owns `Box<dyn CoordStore>`, so the test keeps an Rc to inspect.
+    struct SharedFakeStore(std::rc::Rc<std::cell::RefCell<FakeStore>>);
+
+    impl CoordStore for SharedFakeStore {
+        fn get(&mut self, key: &str, w: u32, h: u32) -> Option<Point> {
+            self.0.borrow_mut().get(key, w, h)
+        }
+        fn put(&mut self, key: &str, p: Point, w: u32, h: u32) {
+            self.0.borrow_mut().put(key, p, w, h)
+        }
+    }
+
+    fn chain_assets() -> AssetSet {
+        let mut a = assets();
+        a.insert_ocr_lines(
+            "O_LIST",
+            Rect {
+                x: 40,
+                y: 24,
+                w: 40,
+                h: 24,
+            },
+        );
+        a
+    }
+
+    fn click_target_flow(find: &str) -> Flow {
+        flow(&format!(
+            r#"{{"schema_version":1,"name":"t","steps":[
+                 {{"op":"click_target","args":{{"find":{find}}}}},
+                 {{"op":"finish","args":{{"exit":"done"}}}}]}}"#
+        ))
+    }
+
+    #[test]
+    fn click_target_prefers_template_even_when_declared_last_and_updates_memory() {
+        let (ocr, _rois) = FakeDetOcr::new(vec![line(
+            "返回",
+            0.99,
+            Rect {
+                x: 40,
+                y: 24,
+                w: 20,
+                h: 12,
+            },
+        )]);
+        let store = std::rc::Rc::new(std::cell::RefCell::new(FakeStore::new(
+            &[("返回按钮", (50, 40))],
+            true,
+        )));
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, chain_assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(ocr))
+            .with_coord_store(Box::new(SharedFakeStore(store.clone())))
+            .with_seed(5);
+        let f = click_target_flow(
+            r#"[{"kind":"coord_memory","key":"返回按钮"},
+                {"kind":"ocr_text","sel":"O_LIST","text":"返回"},
+                {"kind":"template","sel":"I_BRIGHT"}]"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let rows = interp.clicks();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].locator, "template");
+        assert_eq!(rows[0].sel.as_deref(), Some("I_BRIGHT"));
+        // Any locator success refreshes the remembered point for the chain.
+        assert_eq!(store.borrow().puts, 1);
+    }
+
+    #[test]
+    fn click_target_falls_back_to_ocr_text() {
+        let (ocr, rois) = FakeDetOcr::new(vec![line(
+            "返回",
+            0.9,
+            Rect {
+                x: 40,
+                y: 24,
+                w: 20,
+                h: 12,
+            },
+        )]);
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, chain_assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(ocr))
+            .with_seed(6);
+        let f = click_target_flow(
+            r#"[{"kind":"template","sel":"I_NEVER"},
+                {"kind":"ocr_text","sel":"O_LIST","text":"返回"}]"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let rows = interp.clicks();
+        assert_eq!(rows[0].locator, "ocr_text");
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            p.x >= 40 && p.x < 60 && p.y >= 24 && p.y < 36,
+            "OCR fallback must click inside the matched line box: {p:?}"
+        );
+        assert_eq!(rois.borrow().len(), 1, "OCR must have been asked once");
+    }
+
+    #[test]
+    fn click_target_falls_back_to_coord_memory_and_respects_read_only_store() {
+        let (ocr, _rois) = FakeDetOcr::new(vec![line(
+            "分组2",
+            0.9,
+            Rect {
+                x: 40,
+                y: 24,
+                w: 20,
+                h: 12,
+            },
+        )]);
+        let store = std::rc::Rc::new(std::cell::RefCell::new(FakeStore::new(
+            &[("预设", (50, 40))],
+            false, // replay-like read-only store: put() is a no-op
+        )));
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, chain_assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(ocr))
+            .with_coord_store(Box::new(SharedFakeStore(store.clone())))
+            .with_seed(7);
+        let f = click_target_flow(
+            r#"[{"kind":"template","sel":"I_NEVER"},
+                {"kind":"ocr_text","sel":"O_LIST","text":"不存在的文字"},
+                {"kind":"coord_memory","key":"预设"}]"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let rows = interp.clicks();
+        assert_eq!(rows[0].locator, "coord_memory");
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            (p.x - 50).abs() <= 7 && (p.y - 40).abs() <= 7,
+            "memory fallback should jitter around the remembered point: {p:?}"
+        );
+        assert_eq!(store.borrow().puts, 0, "read-only store must not be written");
+    }
+
+    #[test]
+    fn click_target_all_locators_failing_is_a_loud_error() {
+        let (ocr, _rois) = FakeDetOcr::new(vec![line(
+            "分组2",
+            0.9,
+            Rect {
+                x: 40,
+                y: 24,
+                w: 20,
+                h: 12,
+            },
+        )]);
+        let store = std::rc::Rc::new(std::cell::RefCell::new(FakeStore::new(&[], false)));
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, chain_assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(ocr))
+            .with_coord_store(Box::new(SharedFakeStore(store)))
+            .with_seed(8);
+        let f = click_target_flow(
+            r#"[{"kind":"template","sel":"I_NEVER"},
+                {"kind":"ocr_text","sel":"O_LIST","text":"没有这个"},
+                {"kind":"coord_memory","key":"空记忆"}]"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("all locators failed"), "{msg}");
+                assert!(msg.contains("no remembered point"), "evidence missing: {msg}");
+                assert!(msg.contains("template `I_NEVER`"), "evidence missing: {msg}");
+            }
+            other => panic!("expected a loud failure, got {other:?}"),
         }
     }
 

@@ -38,10 +38,11 @@
 //!   reproduce the identical click sequence (HB5 / §6).
 //! * `--events-out <file.jsonl>`: one JSON object per [`StepEvent`].
 //! * `--clicks-out <file.jsonl>`: the CD2 click audit (§21) — one
-//!   `{ts_ms,x,y,target_x,target_y,sel,miss,seed}` object per successful click, i.e.
-//!   the data source of the always-on click-distribution view. Written even when
-//!   the outcome is not `Done` (an empty file still witnesses "there were no
-//!   clicks"), and the parent directory is created if missing.
+//!   `{ts_ms,x,y,target_x,target_y,sel,miss,locator,seed}` object per successful
+//!   click, i.e. the data source of the always-on click-distribution view. Written
+//!   even when the outcome is not `Done` (an empty file still witnesses "there were
+//!   no clicks"), and the parent directory is created if missing. `locator` is
+//!   `template` / `ocr_text` / `coord_memory` / `point` (ENGINE §22.11).
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -328,6 +329,19 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     out(&format!("task={}", task_dir.display()));
     out(&format!("assets={}", assets.len()));
 
+    // ---- coordinate memory for `click_target` (§22.11) ----------------------
+    // Replay and dry runs are READ-ONLY: a replay must never pollute the task's
+    // remembered points. The file lives next to the bundle, not in git.
+    let coords = Rc::new(RefCell::new(crate::coords::FileCoordStore::open(
+        &task_dir.join("state"),
+        opts.replay.is_none() && !opts.dry_run,
+    )));
+    out(&format!(
+        "coords={} writable={}",
+        coords.borrow().len(),
+        coords.borrow().is_writable()
+    ));
+
     // ---- optional recorder (wraps the source; §6 record every frame) --------
     let recorder: Option<Rc<RefCell<Recorder>>> = match &opts.record {
         Some(dir) => {
@@ -419,7 +433,8 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
         budget.max_steps, budget.max_wall_s
     ));
     let interp = Interpreter::new(DynScreen(src), input, assets, budget).with_seed(seed);
-    let mut interp = attach_ocr(interp, opts.model.as_deref(), opts.det_model.as_deref())?;
+    let interp = attach_ocr(interp, opts.model.as_deref(), opts.det_model.as_deref())?;
+    let mut interp = interp.with_coord_store(Box::new(crate::coords::SharedStore(coords.clone())));
     out(&format!(
         "ocr={}",
         match (opts.model.as_deref(), opts.det_model.as_deref()) {
@@ -437,6 +452,16 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     // The rows are the interpreter's own report of what it actually clicked.
     let click_rows = interp.clicks().to_vec();
     drop(interp); // release the recording source's Rc clone before finishing
+    // Persist learned points (no-op for replay/dry). A write failure is a loud
+    // warning, not a run failure: the flow itself already succeeded.
+    let flush_result = coords.borrow_mut().flush();
+    match flush_result {
+        Ok(()) => {
+            let n = coords.borrow().len();
+            out(&format!("coords_final={n}"));
+        }
+        Err(e) => out(&format!("coords_warn={e}")),
+    }
 
     for e in &events {
         out(&format!(
@@ -747,8 +772,17 @@ fn write_clicks_jsonl(path: &Path, rows: &[ClickRecord]) -> Result<(), String> {
             None => "null".to_string(),
         };
         text.push_str(&format!(
-            r#"{{"ts_ms":{},"x":{},"y":{},"target_x":{},"target_y":{},"sel":{},"miss":{},"seed":{}}}"#,
-            r.ts_ms, r.x, r.y, r.target_x, r.target_y, sel, r.miss, r.seed
+            r#"{{"ts_ms":{},"x":{},"y":{},"target_x":{},"target_y":{},"sel":{},"miss":{},"locator":{},"seed":{}}}"#,
+            r.ts_ms,
+            r.x,
+            r.y,
+            r.target_x,
+            r.target_y,
+            sel,
+            r.miss,
+            serde_json::to_string(&r.locator)
+                .map_err(|e| format!("--clicks-out: serialize locator: {e}"))?,
+            r.seed
         ));
         text.push('\n');
     }
