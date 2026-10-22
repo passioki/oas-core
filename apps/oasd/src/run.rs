@@ -57,7 +57,7 @@ use oas_types::{Frame, InputSink, Outcome, Point, ScreenSource};
 pub const USAGE: &str = "usage: oasd run --task <bundle-dir> [--replay <bundle-dir>] \
                          [--seed <u64>] [--dry-run] [--record <bundle-dir>] \
                          [--events-out <file.jsonl>] [--clicks-out <file.jsonl>] \
-                         [--model <rec.onnx>] \
+                         [--model <rec.onnx>] [--det-model <det.onnx>] \
                          [--budget-steps N] [--budget-wall S]";
 
 const DEFAULT_MAX_STEPS: u32 = 5000;
@@ -92,6 +92,8 @@ pub struct RunOptions {
     /// PP-OCRv6 recogniser for in-flow `ocr()` (P1-c). Only meaningful with
     /// `--features ocr`; the feature-less build rejects it loudly.
     pub model: Option<PathBuf>,
+    /// Text detector — required by `ocr_lines` assets (det + rec, §17.1).
+    pub det_model: Option<PathBuf>,
     pub budget_steps: u32,
     pub budget_wall_s: f64,
 }
@@ -107,6 +109,7 @@ impl Default for RunOptions {
             events_out: None,
             clicks_out: None,
             model: None,
+            det_model: None,
             budget_steps: DEFAULT_MAX_STEPS,
             budget_wall_s: DEFAULT_MAX_WALL_S,
         }
@@ -141,6 +144,9 @@ impl RunOptions {
                     o.clicks_out = Some(PathBuf::from(take_value(rest, &mut i, "--clicks-out")?))
                 }
                 "--model" => o.model = Some(PathBuf::from(take_value(rest, &mut i, "--model")?)),
+                "--det-model" => {
+                    o.det_model = Some(PathBuf::from(take_value(rest, &mut i, "--det-model")?))
+                }
                 "--budget-steps" => {
                     let v = take_value(rest, &mut i, "--budget-steps")?;
                     let n = v
@@ -176,24 +182,38 @@ fn take_value(rest: &[String], i: &mut usize, flag: &str) -> Result<String, Stri
     Ok(v.clone())
 }
 
-/// Attach the in-flow OCR provider when `--model` is given (P1-c).
+/// Attach the in-flow OCR provider when `--model` / `--det-model` are given.
 ///
 /// Feature-gated on purpose: `ort`/`oas-ocr` must not leak into the default
 /// build (ENGINE-DESIGN §22.4 "trait + feature 门控"). The feature-less twin
-/// below rejects `--model` loudly instead of ignoring it (a flow that needs OCR
+/// below rejects the flags loudly instead of ignoring them (a flow that needs OCR
 /// would otherwise fail much later with a confusing message).
+///
+/// Both OCR paths are wired (§17.1): rec always; det too when `--det-model` is
+/// passed, which is what `ocr_lines` assets need (det + rec).
 #[cfg(feature = "ocr")]
 fn attach_ocr<S: ScreenSource, I: InputSink>(
     interp: Interpreter<S, I>,
     model: Option<&Path>,
+    det_model: Option<&Path>,
 ) -> Result<Interpreter<S, I>, String> {
-    match model {
-        Some(path) => {
-            let provider = crate::ocr::OnnxOcr::from_file(path)
-                .map_err(|e| format!("--model {}: {e}", path.display()))?;
+    match (model, det_model) {
+        (Some(rec), det) => {
+            let mut provider = crate::ocr::OnnxOcr::from_file(rec)
+                .map_err(|e| format!("--model {}: {e}", rec.display()))?;
+            if let Some(det) = det {
+                provider = provider
+                    .with_det(det)
+                    .map_err(|e| format!("--det-model {}: {e}", det.display()))?;
+            }
             Ok(interp.with_ocr(Box::new(provider)))
         }
-        None => Ok(interp),
+        (None, Some(det)) => Err(format!(
+            "--det-model {} needs --model <rec.onnx> too \
+             (det alone finds boxes, it cannot recognise text)",
+            det.display()
+        )),
+        (None, None) => Ok(interp),
     }
 }
 
@@ -201,15 +221,16 @@ fn attach_ocr<S: ScreenSource, I: InputSink>(
 fn attach_ocr<S: ScreenSource, I: InputSink>(
     interp: Interpreter<S, I>,
     model: Option<&Path>,
+    det_model: Option<&Path>,
 ) -> Result<Interpreter<S, I>, String> {
-    match model {
-        Some(path) => Err(format!(
-            "--model {} is not supported: this build has no OCR \
-             (rebuild with `--features ocr`) - refusing to ignore it",
-            path.display()
-        )),
-        None => Ok(interp),
+    if model.is_none() && det_model.is_none() {
+        return Ok(interp);
     }
+    Err(
+        "--model/--det-model not supported: this build has no OCR \
+         (rebuild with `--features ocr`) - refusing to ignore them"
+            .into(),
+    )
 }
 
 /// Structured result of one run (also what the unit tests assert on).
@@ -398,12 +419,16 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
         budget.max_steps, budget.max_wall_s
     ));
     let interp = Interpreter::new(DynScreen(src), input, assets, budget).with_seed(seed);
-    let mut interp = attach_ocr(interp, opts.model.as_deref())?;
+    let mut interp = attach_ocr(interp, opts.model.as_deref(), opts.det_model.as_deref())?;
     out(&format!(
         "ocr={}",
-        match opts.model.as_deref() {
-            Some(p) => format!("on model={}", p.display()),
-            None => "off".to_string(),
+        match (opts.model.as_deref(), opts.det_model.as_deref()) {
+            (Some(rec), det) => {
+                let det = det.map(|d| format!(" det={}", d.display())).unwrap_or_default();
+                format!("on model={}{det}", rec.display())
+            }
+            (None, Some(_)) => "on (det only)".to_string(),
+            (None, None) => "off".to_string(),
         }
     ));
     let result = interp.run(&flow);

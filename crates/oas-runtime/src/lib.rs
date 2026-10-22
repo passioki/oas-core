@@ -21,6 +21,7 @@ use oas_perceive::{GrayImage, Matcher};
 use oas_types::{Exit, Frame, InputSink, Outcome, Point, Rect, ScreenSource};
 
 /// One declared asset: template pixels + optional search ROI + threshold.
+#[derive(Clone)]
 pub struct Template {
     pub gray: GrayImage,
     pub roi: Option<Rect>,
@@ -28,13 +29,14 @@ pub struct Template {
 }
 
 /// The task's declared assets (`assets/<Name>.json` in a later phase).
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct AssetSet {
     map: HashMap<String, Template>,
     /// OCR assets (`kind: ocr_line` / `ocr_lines`): they carry **no pixels**,
     /// only a frame ROI. `ocr(sel)` crops that ROI and hands it to the injected
-    /// [`OcrProvider`] (P1-c, ENGINE-DESIGN §16.4/§22.4).
-    ocr_rois: HashMap<String, Rect>,
+    /// [`OcrProvider`] (ENGINE-DESIGN §17.1: rec is the fast path for one line;
+    /// `ocr_lines` regions go through **det + rec**).
+    ocr: HashMap<String, (Rect, bool)>,
 }
 
 impl AssetSet {
@@ -46,9 +48,14 @@ impl AssetSet {
         self.map.insert(id.into(), tpl);
     }
 
-    /// Declare an OCR asset (no template pixels, only an ROI).
+    /// Declare a **single-line** OCR asset (rec fast path).
     pub fn insert_ocr(&mut self, id: impl Into<String>, roi: Rect) {
-        self.ocr_rois.insert(id.into(), roi);
+        self.ocr.insert(id.into(), (roi, false));
+    }
+
+    /// Declare a **multi-line** OCR asset (`kind: ocr_lines`) — det + rec.
+    pub fn insert_ocr_lines(&mut self, id: impl Into<String>, roi: Rect) {
+        self.ocr.insert(id.into(), (roi, true));
     }
 
     pub fn get(&self, id: &str) -> Option<&Template> {
@@ -57,11 +64,16 @@ impl AssetSet {
 
     /// ROI of a declared OCR asset, if `id` is one.
     pub fn ocr_roi(&self, id: &str) -> Option<Rect> {
-        self.ocr_rois.get(id).copied()
+        self.ocr.get(id).map(|(roi, _)| *roi)
+    }
+
+    /// `true` when this OCR asset must go through det + rec (`ocr_lines`).
+    pub fn ocr_is_multiline(&self, id: &str) -> bool {
+        self.ocr.get(id).map(|(_, multi)| *multi).unwrap_or(false)
     }
 
     pub fn ocr_len(&self) -> usize {
-        self.ocr_rois.len()
+        self.ocr.len()
     }
 
     pub fn len(&self) -> usize {
@@ -73,7 +85,15 @@ impl AssetSet {
     }
 }
 
-/// Recognise text inside a frame ROI (P1-c).
+/// One detected text line (det + rec): box in **frame** coordinates.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OcrLine {
+    pub rect: Rect,
+    pub text: String,
+    pub score: f32,
+}
+
+/// Recognise text inside a frame ROI.
 ///
 /// The runtime deliberately does **not** depend on `oas-ocr`: the ONNX engine is
 /// optional (`onnx` feature) and only the binary crate wires it in. This trait is
@@ -84,8 +104,16 @@ impl AssetSet {
 /// * an empty string means "nothing recognised"; the interpreter maps it to
 ///   `Value::Null`, never to a success-looking `""`;
 /// * a provider error is a **loud** run failure, not a skipped step.
+///
+/// There are two paths on purpose (ENGINE-DESIGN §17.1 — the user explicitly
+/// kept both): `recognize` is the fast single-line rec primitive; `recognize_lines`
+/// is det + per-line rec for a whole region. `ocr_line` assets call the former,
+/// `ocr_lines` assets the latter.
 pub trait OcrProvider {
     fn recognize(&mut self, frame: &Frame, roi: Rect) -> Result<(String, f32), String>;
+
+    /// det + rec: every text line inside `roi`, boxes in FRAME coordinates.
+    fn recognize_lines(&mut self, frame: &Frame, roi: Rect) -> Result<Vec<OcrLine>, String>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -162,6 +190,14 @@ enum Ctl {
     Break,
     Continue,
     Finish(Exit),
+}
+
+/// Result of one OCR asset read (`ocr` step / expression).
+enum OcrRead {
+    /// `ocr_line`: one recognised line (or `None` when nothing was read).
+    Single(Option<String>, f32),
+    /// `ocr_lines`: det + rec, one entry per text line.
+    Lines(Vec<OcrLine>),
 }
 
 pub struct Interpreter<S: ScreenSource, I: InputSink> {
@@ -248,6 +284,15 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// never look like "recognised nothing" (ENGINE-DESIGN §3.2).
     pub fn with_ocr(mut self, provider: Box<dyn OcrProvider>) -> Self {
         self.ocr = Some(provider);
+        self
+    }
+
+    /// Override the humanisation policy (HB1~HB3). Offline simulations use
+    /// `delay_min_ms == delay_max_ms == 0` so 1000 runs do not spend ~500ms per
+    /// run in HB3 sleeps; the click **distribution** stays the same (HB1/HB2 are
+    /// untouched).
+    pub fn with_humanize(mut self, humanize: crate::humanize::Humanize) -> Self {
+        self.humanize = humanize;
         self
     }
 
@@ -375,17 +420,23 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         }
     }
 
-    /// Resolve an OCR asset's ROI and recognise it in the cached frame (P1-c).
+    /// Resolve an OCR asset and read it from the cached frame.
+    ///
+    /// Path selection follows the asset `kind` (ENGINE-DESIGN §17.1: the user
+    /// kept **both** rec and det):
+    /// * `ocr_line`  → `recognize` (fast single-line rec, 12~20ms);
+    /// * `ocr_lines` → `recognize_lines` (det + rec, every line in the region).
     ///
     /// Failure semantics (all loud, never a silent `""`):
     /// * `sel` not declared / declared as a pixel template ⇒ error;
     /// * no [`OcrProvider`] attached ⇒ error;
-    /// * the provider itself fails (empty ROI, out of bounds, ONNX error) ⇒ error.
+    /// * the provider itself fails (empty ROI, out of bounds, ONNX error,
+    ///   `ocr_lines` without a det model) ⇒ error.
     ///
     /// An **empty recognised text is not an error**: it maps to `None` (= `Null`
-    /// in expressions), so `wait_until(ocr('X') == '分组2')` can keep polling and
-    /// a missing text can never satisfy the comparison.
-    fn ocr_run(&mut self, sel: &str) -> Result<(Option<String>, f32), String> {
+    /// in expressions), so `wait_until(ocr('X') == …)` can keep polling and a
+    /// missing text can never satisfy the comparison.
+    fn ocr_read(&mut self, sel: &str) -> Result<OcrRead, String> {
         let roi = match self.assets.ocr_roi(sel) {
             Some(r) => r,
             None if self.assets.get(sel).is_some() => {
@@ -407,6 +458,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                  refusing to fake `ocr({sel})`"
             ));
         }
+        let multiline = self.assets.ocr_is_multiline(sel);
         if self.frame.is_none() {
             self.refresh_frame()?;
         }
@@ -415,8 +467,39 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             .as_ref()
             .ok_or_else(|| "OCR: no frame available".to_string())?;
         let provider = self.ocr.as_mut().expect("provider checked above");
-        let (text, score) = provider.recognize(frame, roi)?;
-        Ok((if text.is_empty() { None } else { Some(text) }, score))
+        if multiline {
+            Ok(OcrRead::Lines(provider.recognize_lines(frame, roi)?))
+        } else {
+            let (text, score) = provider.recognize(frame, roi)?;
+            Ok(OcrRead::Single(
+                if text.is_empty() { None } else { Some(text) },
+                score,
+            ))
+        }
+    }
+
+    /// Value view of [`Self::ocr_read`]: `ocr()` returns **one string**.
+    ///
+    /// For `ocr_lines` the lines are joined with `\n` and the score is the
+    /// **minimum** line score — never an optimistic average (a bad line must
+    /// lower the reported confidence).
+    fn ocr_run(&mut self, sel: &str) -> Result<(Option<String>, f32), String> {
+        match self.ocr_read(sel)? {
+            OcrRead::Single(text, score) => Ok((text, score)),
+            OcrRead::Lines(lines) if lines.is_empty() => Ok((None, 0.0)),
+            OcrRead::Lines(lines) => {
+                let text = lines
+                    .iter()
+                    .map(|l| l.text.clone())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let score = lines
+                    .iter()
+                    .map(|l| l.score)
+                    .fold(f32::INFINITY, f32::min);
+                Ok((Some(text), score))
+            }
+        }
     }
 
     fn ocr_digit_value(&mut self, sel: &str) -> Result<Option<f64>, String> {
@@ -705,15 +788,34 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 ))
             }
             Step::Ocr { sel } => {
-                // P1-c: the standalone `ocr` step exists so an editor-authored
-                // flow can PROVE what a selector reads without branching on it
-                // (a plain expression has no step log). Empty text is reported,
-                // not failed: the loud failure is only a missing provider/asset.
-                let (text, score) = self.ocr_run(sel)?;
-                Ok(match text {
-                    Some(t) => format!("ocr {sel} = {t:?} score={score:.4}"),
-                    None => format!("ocr {sel} = <no text> score={score:.4}"),
-                })
+                // The standalone `ocr` step exists so an editor-authored flow can
+                // PROVE what a selector reads without branching on it (a plain
+                // expression has no step log). `ocr_lines` assets log EVERY line
+                // (det + rec), so a multi-line region stays inspectable (§17.1).
+                // Empty text is reported, not failed: the loud failure is only a
+                // missing provider / asset / det model.
+                match self.ocr_read(sel)? {
+                    OcrRead::Single(text, score) => Ok(match text {
+                        Some(t) => format!("ocr {sel} = {t:?} score={score:.4}"),
+                        None => format!("ocr {sel} = <no text> score={score:.4}"),
+                    }),
+                    OcrRead::Lines(lines) => {
+                        let parts: Vec<String> = lines
+                            .iter()
+                            .map(|l| {
+                                format!(
+                                    "{:?}@({},{},{},{})={:.4}",
+                                    l.text, l.rect.x, l.rect.y, l.rect.w, l.rect.h, l.score
+                                )
+                            })
+                            .collect();
+                        Ok(format!(
+                            "ocr {sel} = {} line(s): {}",
+                            lines.len(),
+                            parts.join(" | ")
+                        ))
+                    }
+                }
             }
             Step::Log { level, text } => {
                 let v = eval(text, self)?;
@@ -908,6 +1010,48 @@ mod tests {
                 Err("FakeOcr has no scripted reply".into())
             }
         }
+
+        fn recognize_lines(&mut self, _frame: &Frame, _roi: Rect) -> Result<Vec<OcrLine>, String> {
+            Err("FakeOcr only supports single-line rec".into())
+        }
+    }
+
+    /// Fake det+rec provider for `ocr_lines` assets.
+    struct FakeDetOcr {
+        lines: Vec<OcrLine>,
+        rois: std::rc::Rc<std::cell::RefCell<Vec<Rect>>>,
+    }
+
+    impl FakeDetOcr {
+        fn new(lines: Vec<OcrLine>) -> (Self, std::rc::Rc<std::cell::RefCell<Vec<Rect>>>) {
+            let rois = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            (
+                Self {
+                    lines,
+                    rois: rois.clone(),
+                },
+                rois,
+            )
+        }
+    }
+
+    impl OcrProvider for FakeDetOcr {
+        fn recognize(&mut self, _frame: &Frame, _roi: Rect) -> Result<(String, f32), String> {
+            Err("FakeDetOcr only supports det+rec".into())
+        }
+
+        fn recognize_lines(&mut self, _frame: &Frame, roi: Rect) -> Result<Vec<OcrLine>, String> {
+            self.rois.borrow_mut().push(roi);
+            Ok(self.lines.clone())
+        }
+    }
+
+    fn line(text: &str, score: f32, rect: Rect) -> OcrLine {
+        OcrLine {
+            rect,
+            text: text.to_string(),
+            score,
+        }
     }
 
     fn assets() -> AssetSet {
@@ -949,6 +1093,7 @@ mod tests {
         let mut set = assets();
         set.insert_ocr("O_TEXT", Rect { x: 4, y: 6, w: 20, h: 10 });
         set.insert_ocr("O_DIGITS", Rect { x: 4, y: 30, w: 30, h: 10 });
+        set.insert_ocr_lines("O_LIST", Rect { x: 0, y: 0, w: 64, h: 48 });
         set
     }
 
@@ -963,6 +1108,15 @@ mod tests {
         fn recognize(&mut self, frame: &Frame, _roi: Rect) -> Result<(String, f32), String> {
             *self.calls.borrow_mut() += 1;
             Ok((format!("f{}", frame.rgba[0]), 0.9))
+        }
+
+        fn recognize_lines(&mut self, frame: &Frame, roi: Rect) -> Result<Vec<OcrLine>, String> {
+            let (text, score) = self.recognize(frame, roi)?;
+            Ok(vec![OcrLine {
+                rect: roi,
+                text,
+                score,
+            }])
         }
     }
 
@@ -1301,6 +1455,65 @@ mod tests {
         match interp.run(&f) {
             RunResult::Failed(msg) => assert!(msg.contains("not declared"), "{msg}"),
             other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    // ---- multi-line OCR (`ocr_lines` => det + rec · ENGINE-DESIGN §17.1) ----
+
+    #[test]
+    fn ocr_lines_asset_uses_det_and_logs_every_line() {
+        let (input, _) = FakeInput::new();
+        let (fake, rois) = FakeDetOcr::new(vec![
+            line("默认分组", 0.9999, Rect { x: 4, y: 6, w: 40, h: 10 }),
+            line("分组2", 0.9998, Rect { x: 4, y: 20, w: 30, h: 10 }),
+        ]);
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets_with_ocr(), Budget::default())
+            .with_ocr(Box::new(fake));
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"ocr","args":{"sel":"O_LIST"}},
+                 {"op":"log","args":{"text":"ocr('O_LIST')"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let ev = &interp.events()[0];
+        assert!(ev.detail.contains("2 line(s)"), "{}", ev.detail);
+        assert!(
+            ev.detail.contains("默认分组") && ev.detail.contains("分组2"),
+            "{}",
+            ev.detail
+        );
+        // The expression view joins lines with `\n` (Debug escapes it).
+        assert!(
+            interp.events()[1].detail.contains("默认分组\\n分组2"),
+            "{:?}",
+            interp.events()[1]
+        );
+        // Two reads: the `ocr` step and the `log(ocr(...))` expression.
+        assert_eq!(
+            rois.borrow().as_slice(),
+            &[Rect { x: 0, y: 0, w: 64, h: 48 }; 2]
+        );
+    }
+
+    /// An `ocr_lines` asset must NEVER go through the single-line rec path —
+    /// FakeOcr (rec-only) errors, which proves `ocr_read` branched correctly.
+    #[test]
+    fn ocr_lines_never_uses_the_single_line_path() {
+        let (mut interp, _) = mk_ocr(&[("should-not-be-used", 0.5)]);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"ocr","args":{"sel":"O_LIST"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => assert!(msg.contains("single-line rec"), "{msg}"),
+            other => panic!("expected Failed (det path), got {other:?}"),
         }
     }
 

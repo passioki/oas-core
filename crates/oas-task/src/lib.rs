@@ -399,7 +399,9 @@ impl TaskBundle {
         for (i, item) in af.items.iter().enumerate() {
             if item.kind != "template" {
                 // OCR assets (`ocr_line` / `ocr_lines`) carry **no pixels**: the
-                // runtime only needs their ROI so `ocr(sel)` can crop it (P1-c).
+                // runtime only needs their ROI so `ocr(sel)` can crop it.
+                // `ocr_line` → single-line rec (fast); `ocr_lines` → det + rec
+                // (ENGINE-DESIGN §17.1: both paths are kept, the kind picks one).
                 // A missing ROI is a loud load error, never "skip silently".
                 let roi = item.roi.ok_or_else(|| {
                     format!(
@@ -408,15 +410,17 @@ impl TaskBundle {
                         item.id
                     )
                 })?;
-                set.insert_ocr(
-                    item.id.clone(),
-                    oas_types::Rect {
-                        x: roi[0],
-                        y: roi[1],
-                        w: roi[2],
-                        h: roi[3],
-                    },
-                );
+                let rect = oas_types::Rect {
+                    x: roi[0],
+                    y: roi[1],
+                    w: roi[2],
+                    h: roi[3],
+                };
+                if item.kind == "ocr_lines" {
+                    set.insert_ocr_lines(item.id.clone(), rect);
+                } else {
+                    set.insert_ocr(item.id.clone(), rect);
+                }
                 continue;
             }
             let file = item.file.as_ref().ok_or_else(|| {

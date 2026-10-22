@@ -1,40 +1,88 @@
-//! OCR provider adapter for `oasd` (P1-c, ENGINE-DESIGN §22.4).
+//! OCR provider adapter for `oasd` (ENGINE-DESIGN §17.1 / §22.4).
 //!
 //! `oas-runtime` only knows the [`OcrProvider`] trait. The ONNX implementation
 //! lives here so the default build (`cargo test --workspace`, no features) stays
 //! free of `ort`: `main.rs` declares this module only under `--features ocr`, and
 //! Cargo makes `oas-ocr` optional behind the same feature.
 //!
-//! Layout of one recognition (design §16.4: rec only, the ROI comes from the DSL):
+//! Both OCR paths are supported on purpose — the user kept **rec 与 det 都要**
+//! (§17.1 "回滚到rec保留吧 … 只保留rec+det"):
+//! * `ocr_line`  → [`OcrProvider::recognize`] (fast single-line rec, 12~20ms);
+//! * `ocr_lines` → [`OcrProvider::recognize_lines`] (det + rec, every line).
+//!
 //! ```text
-//! assets.json item (kind=ocr_line, roi=[x,y,w,h])
-//!   -> interpreter crops THAT roi out of the current frame
-//!   -> RgbCrop::from_rgba (RGB, never BGR - §16.3 rule 1)
-//!   -> RecEngine::recognize -> (text, score)
+//! assets.json (kind, roi) -> interpreter crops THAT roi out of the frame
+//!   single line: RgbCrop::from_rgba -> RecEngine::recognize
+//!   multi line : RgbCrop::from_rgba -> DetEngine::detect -> per-box rec
 //! ```
 
 use std::path::Path;
 
-use oas_runtime::OcrProvider;
+use oas_runtime::{OcrLine, OcrProvider};
 use oas_types::{Frame, Rect};
 
-/// PP-OCRv6 recogniser behind the runtime's provider seam.
+/// PP-OCRv6 recogniser (+ optional text detector) behind the runtime seam.
 pub struct OnnxOcr {
-    engine: oas_ocr::onnx::RecEngine,
+    rec: oas_ocr::onnx::RecEngine,
+    det: Option<oas_ocr::det_engine::DetEngine>,
 }
 
 impl OnnxOcr {
-    /// Load a `*_rec_*.onnx` model (the charset is read from its metadata).
+    /// Load a `*_rec_*.onnx` model (charset from its metadata).
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, String> {
         Ok(Self {
-            engine: oas_ocr::onnx::RecEngine::from_file(path)?,
+            rec: oas_ocr::onnx::RecEngine::from_file(path)?,
+            det: None,
         })
+    }
+
+    /// Load the text detector (`*_det_*.onnx`) — required by `ocr_lines` assets.
+    pub fn with_det(mut self, path: impl AsRef<Path>) -> Result<Self, String> {
+        self.det = Some(oas_ocr::det_engine::DetEngine::from_file(path)?);
+        Ok(self)
     }
 }
 
 impl OcrProvider for OnnxOcr {
     fn recognize(&mut self, frame: &Frame, roi: Rect) -> Result<(String, f32), String> {
         let crop = oas_ocr::RgbCrop::from_rgba(frame.width, frame.height, &frame.rgba, roi)?;
-        self.engine.recognize(&crop)
+        self.rec.recognize(&crop)
     }
+
+    fn recognize_lines(&mut self, frame: &Frame, roi: Rect) -> Result<Vec<OcrLine>, String> {
+        let crop = oas_ocr::RgbCrop::from_rgba(frame.width, frame.height, &frame.rgba, roi)?;
+        let det = self.det.as_mut().ok_or_else(|| {
+            "no text detector loaded: `ocr_lines` needs det+rec - pass \
+             --det-model <det.onnx> (or declare the asset as `ocr_line`)"
+                .to_string()
+        })?;
+        let boxes = det.detect(&crop)?;
+        // det boxes are local to the ROI crop; re-crop each one from an RGBA copy
+        // (RgbCrop::from_rgba works on RGBA, the rec engine wants RGB internally).
+        let rgba = rgb_to_rgba(&crop);
+        let mut out = Vec::with_capacity(boxes.len());
+        for b in boxes {
+            let sub = oas_ocr::RgbCrop::from_rgba(crop.width, crop.height, &rgba, b)?;
+            let (text, score) = self.rec.recognize(&sub)?;
+            out.push(OcrLine {
+                rect: Rect {
+                    x: roi.x + b.x,
+                    y: roi.y + b.y,
+                    w: b.w,
+                    h: b.h,
+                },
+                text,
+                score,
+            });
+        }
+        Ok(out)
+    }
+}
+
+fn rgb_to_rgba(c: &oas_ocr::RgbCrop) -> Vec<u8> {
+    let mut out = Vec::with_capacity(c.data.len() / 3 * 4);
+    for px in c.data.chunks_exact(3) {
+        out.extend_from_slice(&[px[0], px[1], px[2], 255]);
+    }
+    out
 }

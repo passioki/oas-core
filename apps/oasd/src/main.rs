@@ -37,7 +37,7 @@ fn main() -> ExitCode {
                  oasd record <dir> <n>\n  oasd replay <dir>\n  \
                  oasd run --task <bundle-dir> [--replay <bundle-dir>] [--seed <u64>] \
                  [--dry-run] [--record <bundle-dir>] [--events-out <file.jsonl>] \
-                 [--clicks-out <file.jsonl>] [--model <rec.onnx>] \
+                 [--clicks-out <file.jsonl>] [--model <rec.onnx>] [--det-model <det.onnx>] \
                  [--budget-steps N] [--budget-wall S]\n  \
                  oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--model <path>] [--det-model <path>]"
             );
