@@ -896,21 +896,70 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     ));
                 }
             }
-            let t0 = Instant::now();
-            match self.exec_one(step, depth, ctl) {
-                Ok(detail) => {
-                    let ms = t0.elapsed().as_secs_f64() * 1000.0;
-                    let op = step_name(step);
-                    self.log(depth, op, &detail, "ok", ms);
-                    if matches!(ctl, Ctl::Finish(_)) {
-                        return Ok(());
+            // ENGINE §22.16: step-level retry with backoff. The policy is only
+            // attached to action steps; control-flow steps never re-run.
+            let policy = step_retry(step);
+            let mut attempt: u32 = 0;
+            loop {
+                let t0 = Instant::now();
+                match self.exec_one(step, depth, ctl) {
+                    Ok(detail) => {
+                        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                        let op = step_name(step);
+                        if attempt > 0 {
+                            self.log(
+                                depth,
+                                op,
+                                &format!("{detail} (retried {attempt})"),
+                                "ok",
+                                ms,
+                            );
+                        } else {
+                            self.log(depth, op, &detail, "ok", ms);
+                        }
+                        if matches!(ctl, Ctl::Finish(_)) {
+                            return Ok(());
+                        }
+                        break;
                     }
-                }
-                Err(e) => {
-                    let ms = t0.elapsed().as_secs_f64() * 1000.0;
-                    let op = step_name(step);
-                    self.log(depth, op, &format!("error: {e}"), "failed", ms);
-                    return Err(e);
+                    Err(e) => {
+                        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                        let op = step_name(step);
+                        let Some(policy) = policy else {
+                            self.log(depth, op, &format!("error: {e}"), "failed", ms);
+                            return Err(e);
+                        };
+                        if attempt >= policy.times {
+                            self.log(
+                                depth,
+                                op,
+                                &format!(
+                                    "error: {e} (retries exhausted: {}/{})",
+                                    attempt, policy.times
+                                ),
+                                "failed",
+                                ms,
+                            );
+                            return Err(e);
+                        }
+                        attempt += 1;
+                        let delay = policy.delay_for_attempt(attempt);
+                        self.log(
+                            depth,
+                            op,
+                            &format!(
+                                "error: {e} (retry {attempt}/{} after {delay}ms)",
+                                policy.times
+                            ),
+                            "retry",
+                            ms,
+                        );
+                        if delay > 0 {
+                            std::thread::sleep(Duration::from_millis(delay as u64));
+                        }
+                        self.invalidate_frame(); // a retry must re-grab
+                        self.check_budget()?;
+                    }
                 }
             }
         }
@@ -1028,6 +1077,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 action,
                 timeout_ms,
                 required,
+                ..
             } => {
                 let deadline = Instant::now() + Duration::from_millis(*timeout_ms as u64);
                 loop {
@@ -1092,6 +1142,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 alts,
                 requires,
                 expect,
+                ..
             } => {
                 let guarded = self.require_guard(requires.as_ref())?;
                 // ENGINE §22.11 补充层 "多模板变体": try `sel` first, then the
@@ -1157,7 +1208,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     p.x, p.y, actual.x, actual.y
                 ))
             }
-            Step::ClickPoint { x, y, requires, expect } => {
+            Step::ClickPoint { x, y, requires, expect, .. } => {
                 let guarded = self.require_guard(requires.as_ref())?;
                 // CP2: both coordinates are expressions (literal or computed).
                 let tx = self.eval_coord(x, "x")?;
@@ -1203,7 +1254,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     target.x, target.y, actual.x, actual.y, w, h
                 ))
             }
-            Step::ClickTarget { find, requires, expect } => {
+            Step::ClickTarget {
+                find,
+                requires,
+                expect,
+                ..
+            } => {
                 let guarded = self.require_guard(requires.as_ref())?;
                 // ENGINE §22.11: fixed priority image > text > memory; every
                 // locator failure is kept as evidence, and ALL failing is a loud
@@ -1468,6 +1524,17 @@ const EXHAUSTED: &str = "__exhausted__";
 /// §22.15: a step may be preceded by at most this many popup dismissals before
 /// the run fails loudly (a rule that always matches would otherwise spin).
 const MAX_INTERRUPTS_PER_STEP: usize = 5;
+
+/// ENGINE §22.16: the retry policy of a step (action steps only).
+fn step_retry(step: &Step) -> Option<oas_flow::RetryPolicy> {
+    match step {
+        Step::Click { retry, .. }
+        | Step::ClickPoint { retry, .. }
+        | Step::ClickTarget { retry, .. }
+        | Step::DismissPopup { retry, .. } => *retry,
+        _ => None,
+    }
+}
 
 fn step_name(s: &Step) -> &'static str {
     match s {
@@ -3157,6 +3224,60 @@ mod tests {
             }
             other => panic!("expected a loud failure, got {other:?}"),
         }
+    }
+
+    // ---- §22.16 step-level retry with backoff ----
+
+    #[test]
+    fn click_retry_succeeds_on_the_next_frame() {
+        let screen = TwoFrameScreen {
+            frames: vec![frame_flat(), frame_with_tile(12, 10)],
+            idx: 0,
+        };
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(screen, input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(20);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_BRIGHT",
+                   "retry":{"times":1,"delay_ms":0}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert_eq!(shared.clicks.borrow().len(), 1);
+        let events = interp.events();
+        assert_eq!(
+            events.iter().filter(|e| e.result == "retry").count(),
+            1,
+            "exactly one retry event: {events:?}"
+        );
+        let ok = events
+            .iter()
+            .find(|e| e.op == "click" && e.result == "ok")
+            .expect("successful click event");
+        assert!(ok.detail.contains("(retried 1)"), "{}", ok.detail);
+    }
+
+    #[test]
+    fn click_retry_exhaustion_fails_with_evidence() {
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(21);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_NEVER",
+                   "retry":{"times":2,"delay_ms":0}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => assert!(msg.contains("not found"), "{msg}"),
+            other => panic!("expected a loud failure, got {other:?}"),
+        }
+        let events = interp.events();
+        assert_eq!(events.iter().filter(|e| e.result == "retry").count(), 2);
+        assert!(events.last().map(|e| e.result == "failed" && e.detail.contains("retries exhausted")).unwrap_or(false), "{events:?}");
     }
 
     // ---- CD2 click audit (§21) ----

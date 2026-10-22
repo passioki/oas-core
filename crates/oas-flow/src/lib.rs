@@ -632,6 +632,33 @@ impl Expect {
     }
 }
 
+/// Step-level retry policy (ENGINE §22.16 纵向②).
+///
+/// Attached to action steps that can fail transiently (a template that appears a
+/// moment late, a tap lost during an animation). Control-flow steps never take a
+/// retry policy: re-running a whole block would replay its side effects.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RetryPolicy {
+    /// Extra attempts after the first failure (1..=10).
+    pub times: u32,
+    /// Base delay before the first retry (ms).
+    pub delay_ms: u32,
+    /// `true` = exponential backoff (base × 2^(attempt-1), capped at 30s).
+    pub exponential: bool,
+}
+
+impl RetryPolicy {
+    pub fn delay_for_attempt(&self, attempt: u32) -> u32 {
+        let base = self.delay_ms as u64;
+        let d = if self.exponential {
+            base.saturating_mul(1u64 << (attempt.saturating_sub(1)).min(6))
+        } else {
+            base
+        };
+        d.min(30_000) as u32
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
     /// Structured branch (nested blocks; there is no goto).
@@ -671,6 +698,8 @@ pub enum Step {
         requires: Option<Expect>,
         /// Optional post-click verification (ENGINE §22.11 补充层).
         expect: Option<Expect>,
+        /// Optional retry with backoff (§22.16).
+        retry: Option<RetryPolicy>,
     },
     /// §19 CP1: click an absolute frame coordinate computed from expressions.
     ///
@@ -682,6 +711,7 @@ pub enum Step {
         y: Expr,
         requires: Option<Expect>,
         expect: Option<Expect>,
+        retry: Option<RetryPolicy>,
     },
     /// Action-class swipe/scroll (§3.2): drag from one frame point to another.
     ///
@@ -705,6 +735,7 @@ pub enum Step {
         action: Option<String>,
         timeout_ms: u32,
         required: bool,
+        retry: Option<RetryPolicy>,
     },
     /// ENGINE §22.11: click a target resolved by an ordered redundancy chain
     /// (image > text > remembered coordinate). All locators failing = loud error.
@@ -714,6 +745,7 @@ pub enum Step {
         requires: Option<Expect>,
         /// Optional post-click verification (ENGINE §22.11 补充层).
         expect: Option<Expect>,
+        retry: Option<RetryPolicy>,
     },
     Log {
         level: String,
@@ -831,6 +863,66 @@ fn parse_alts(args: &serde_json::Value, a_path: &str) -> Result<Vec<String>, Flo
         out.push(s.to_string());
     }
     Ok(out)
+}
+
+/// Parse an optional `retry` object (`{times, delay_ms?, backoff?}`).
+fn parse_retry(
+    args: &serde_json::Value,
+    a_path: &str,
+) -> Result<Option<RetryPolicy>, FlowError> {
+    let p = format!("{a_path}.retry");
+    let Some(obj) = args.get("retry") else {
+        return Ok(None);
+    };
+    if !obj.is_object() {
+        return Err(FlowError::new(
+            &p,
+            "`retry` must be an object {times, delay_ms?, backoff?}",
+        ));
+    }
+    let times = obj
+        .get("times")
+        .and_then(|x| x.as_u64())
+        .ok_or_else(|| FlowError::new(format!("{p}.times"), "`retry.times` must be an integer"))?;
+    if times == 0 || times > 10 {
+        return Err(FlowError::new(
+            format!("{p}.times"),
+            format!("`retry.times` must be 1..=10, got {times}"),
+        ));
+    }
+    let delay_ms = match obj.get("delay_ms") {
+        None => 0u32,
+        Some(x) => {
+            let n = x.as_u64().ok_or_else(|| {
+                FlowError::new(format!("{p}.delay_ms"), "`retry.delay_ms` must be an integer")
+            })?;
+            if n > 60_000 {
+                return Err(FlowError::new(
+                    format!("{p}.delay_ms"),
+                    format!("`retry.delay_ms` must be <= 60000, got {n}"),
+                ));
+            }
+            n as u32
+        }
+    };
+    let exponential = match obj.get("backoff") {
+        None => false,
+        Some(x) => match x.as_str() {
+            Some("constant") => false,
+            Some("exponential") => true,
+            _ => {
+                return Err(FlowError::new(
+                    format!("{p}.backoff"),
+                    "`retry.backoff` must be \"constant\" or \"exponential\"",
+                ))
+            }
+        },
+    };
+    Ok(Some(RetryPolicy {
+        times: times as u32,
+        delay_ms,
+        exponential,
+    }))
 }
 
 /// Parse an optional `requires` / `expect` object on a click step.
@@ -1018,12 +1110,14 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
             alts: parse_alts(&args, &a_path)?,
             requires: parse_expect(&args, "requires", &a_path)?,
             expect: parse_expect(&args, "expect", &a_path)?,
+            retry: parse_retry(&args, &a_path)?,
         }),
         "click_point" => Ok(Step::ClickPoint {
             x: parse_point_coord(&args, "x", &a_path)?,
             y: parse_point_coord(&args, "y", &a_path)?,
             requires: parse_expect(&args, "requires", &a_path)?,
             expect: parse_expect(&args, "expect", &a_path)?,
+            retry: parse_retry(&args, &a_path)?,
         }),
         "swipe" => {
             let (from_x, from_y) = parse_coord_pair(&args, "from", &a_path)?;
@@ -1057,6 +1151,7 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
             find: parse_locators(&args, &a_path)?,
             requires: parse_expect(&args, "requires", &a_path)?,
             expect: parse_expect(&args, "expect", &a_path)?,
+            retry: parse_retry(&args, &a_path)?,
         }),
         "dismiss_popup" => {
             let sel = req_str(&args, "sel", &a_path)?;
@@ -1096,6 +1191,7 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
                 action,
                 timeout_ms,
                 required,
+                retry: parse_retry(&args, &a_path)?,
             })
         }
         "ocr" => Ok(Step::Ocr {
@@ -1305,6 +1401,7 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {
                 alts,
                 requires,
                 expect,
+                ..
             } => {
                 out.insert(sel.clone());
                 for a in alts {
@@ -1318,6 +1415,7 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {
                 find,
                 requires,
                 expect,
+                ..
             } => {
                 for loc in find {
                     if let Some(a) = loc.asset() {
@@ -1328,7 +1426,13 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {
                     out.insert(e.sel().to_string());
                 }
             }
-            Step::ClickPoint { x, y, requires, expect } => {
+            Step::ClickPoint {
+                x,
+                y,
+                requires,
+                expect,
+                ..
+            } => {
                 collect_assets_expr(x, out);
                 collect_assets_expr(y, out);
                 for e in requires.iter().chain(expect.iter()) {
@@ -1570,6 +1674,7 @@ mod tests {
                 action,
                 timeout_ms,
                 required,
+                ..
             } => {
                 assert_eq!(sel, "公告关闭");
                 assert_eq!(action.as_deref(), Some("接受"));
@@ -1595,6 +1700,55 @@ mod tests {
                     "steps":[{{"op":"finish","args":{{"exit":"done"}}}}]}}"#
             );
             assert!(!errs(&json).is_empty(), "must reject interrupts={interrupts}");
+        }
+    }
+
+    #[test]
+    fn parses_step_retry_and_backoff() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I","retry":{"times":2,"delay_ms":100,"backoff":"exponential"}}},
+                 {"op":"click_point","args":{"x":1,"y":2,"retry":{"times":1}}}]}"#,
+        )
+        .expect("flow");
+        match &flow.steps[0] {
+            Step::Click {
+                retry: Some(policy),
+                ..
+            } => {
+                assert_eq!(*policy, RetryPolicy {
+                    times: 2,
+                    delay_ms: 100,
+                    exponential: true
+                });
+                assert_eq!(policy.delay_for_attempt(1), 100);
+                assert_eq!(policy.delay_for_attempt(2), 200);
+                assert_eq!(policy.delay_for_attempt(3), 400);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match &flow.steps[1] {
+            Step::ClickPoint {
+                retry: Some(policy),
+                ..
+            } => assert_eq!(policy.times, 1),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_bad_retry() {
+        for retry in [
+            r#""x""#,
+            r#"{"times":0}"#,
+            r#"{"times":11}"#,
+            r#"{"times":1,"delay_ms":60001}"#,
+            r#"{"times":1,"backoff":"linear"}"#,
+        ] {
+            let json = format!(
+                r#"{{"schema_version":1,"name":"t","steps":[{{"op":"click","args":{{"sel":"S","retry":{retry}}}}}]}}"#
+            );
+            assert!(!errs(&json).is_empty(), "must reject retry={retry}");
         }
     }
 
