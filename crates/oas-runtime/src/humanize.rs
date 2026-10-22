@@ -31,7 +31,8 @@ pub struct Humanize {
     pub bell_weight: f32,
     pub uniform_weight: f32,
     pub comet_weight: f32,
-    /// Comet contrast: higher = denser toward the hand corner (≈2.4 default).
+    /// Comet contrast: tail-length ratio toward the hand side (default 1.8).
+    /// `λ_toward = 0.45 * comet_contrast`, `λ_away = 0.45`, cross = 0.55.
     pub comet_contrast: f32,
     // --- miss (1~3 per 100 clicks, user spec) ---
     pub miss_chance_min: f32,
@@ -53,7 +54,7 @@ impl Default for Humanize {
             bell_weight: 0.30,
             uniform_weight: 0.20,
             comet_weight: 0.50,
-            comet_contrast: 2.4,
+            comet_contrast: 1.8,
             miss_chance_min: 0.01,
             miss_chance_max: 0.03,
             miss_px: 12,
@@ -185,29 +186,54 @@ impl Humanize {
         }
     }
 
-    /// Comet sampling: rejection with an exponentially increasing density toward
-    /// the hand-side bottom corner. `screen_w` decides the hand (right half ->
-    /// bottom-right; left half -> bottom-left; near the middle the x term fades
-    /// and only the "thumb anchored at the bottom" bias remains).
+    /// Comet sampling: **head at the box centre, tail toward the hand side**.
+    ///
+    /// Density falls off **exponentially with distance from the centre** (user
+    /// spec: "越靠中心点远，概率应该指数级下降"), but the decay length is longer
+    /// along the hand direction (`λ_toward = 0.45*contrast`) than away from it
+    /// (`λ_away = 0.45`) — the directional stretch is what produces the comet
+    /// tail while probability still **monotonically decreases** with distance.
+    ///
+    /// Why exponential and not a steep linear ramp: a linear density hits zero at
+    /// a fixed distance, which creates a visible "wall"/plateau edge inside the
+    /// button (an unmistakable synthetic tell). An exponential has a smooth,
+    /// unbounded tail that still decays everywhere.
+    ///
+    /// `screen_w` decides the hand: right half -> bottom-right, left half ->
+    /// bottom-left; near the middle the x component fades and the tail points
+    /// straight down (both thumbs are anchored at the bottom).
     fn comet_in(&self, rect: Rect, screen_w: u32, rng: &mut Rng) -> Point {
         let (x0, x1, y0, y1) = self.inset_bounds(rect);
-        let w = (x1 - x0).max(1) as f64;
-        let h = (y1 - y0).max(1) as f64;
-        let half_screen = (screen_w.max(1) as f64) / 2.0;
+        if x1 <= x0 || y1 <= y0 {
+            return Point { x: x0, y: y0 };
+        }
+        let half_w = ((x1 - x0) as f64 / 2.0).max(0.5);
+        let half_h = ((y1 - y0) as f64 / 2.0).max(0.5);
         let cx = (x0 as f64 + x1 as f64) / 2.0;
+        let cy = (y0 as f64 + y1 as f64) / 2.0;
+        let half_screen = (screen_w.max(1) as f64) / 2.0;
         let hand = ((cx - half_screen) / half_screen).clamp(-1.0, 1.0); // -1..1
-        let dx = hand;
-        let dy = 1.0;
+
+        // Direction of the comet tail = toward the hand side and downward.
+        let (dx, dy) = (hand, 1.0);
         let norm = (dx * dx + dy * dy).sqrt();
-        let k = (self.comet_contrast.max(0.05) as f64) * 1.0;
-        for _ in 0..64 {
+        let (ax, ay) = (dx / norm, dy / norm); // unit "along" axis
+
+        let lambda_away = 0.45f64;
+        let lambda_toward = 0.45 * self.comet_contrast.max(0.2) as f64;
+        let lambda_cross = 0.55f64;
+
+        for _ in 0..96 {
             let px = rng.range_i32(x0, x1);
             let py = rng.range_i32(y0, y1);
-            let ux = (px - x0) as f64 / w * 2.0 - 1.0; // -1..1
-            let uy = (py - y0) as f64 / h * 2.0 - 1.0;
-            let s = (dx * ux + dy * uy) / norm; // -1..1, 1 = hand corner
-            // accept prob rises monotonically from e^-k (opposite corner) to 1
-            if rng.unit_f64() < ((k * (s - 1.0) / 2.0).exp()).clamp(0.0, 1.0) {
+            let u = (px as f64 - cx) / half_w; // -1..1 in box
+            let v = (py as f64 - cy) / half_h;
+            let along = ax * u + ay * v;
+            let cross = -ay * u + ax * v;
+            let lambda_along = if along >= 0.0 { lambda_toward } else { lambda_away };
+            // Anisotropic exponential distance; weight is 1 at the centre.
+            let d = ((along / lambda_along).powi(2) + (cross / lambda_cross).powi(2)).sqrt();
+            if rng.unit_f64() < (-d).exp() {
                 return Point { x: px, y: py };
             }
         }
@@ -442,7 +468,7 @@ mod tests {
             }
         }
         assert!(
-            br as f64 > tl as f64 * 2.0,
+            br as f64 > tl as f64 * 1.3,
             "right-side comet should favour bottom-right: br={br} tl={tl}"
         );
     }
@@ -472,12 +498,48 @@ mod tests {
             }
         }
         assert!(
-            bl as f64 > tr as f64 * 2.0,
+            bl as f64 > tr as f64 * 1.3,
             "left-side comet should favour bottom-left: bl={bl} tr={tr}"
         );
     }
 
-    /// Miss rate is uniform in [1%, 3%] per click => ~2% overall.
+    /// Comet branch: probability **decreases with distance from the box centre**
+    /// (exponential falloff) — inner region must out-count the far corners even
+    /// though it is a much smaller area.
+    #[test]
+    fn comet_density_falls_with_distance_from_centre() {
+        let h = comet_only();
+        let mut rng = Rng::new(17);
+        let rect = Rect {
+            x: 900,
+            y: 300,
+            w: 120,
+            h: 60,
+        };
+        let (x0, x1, y0, y1) = h.inset_bounds(rect);
+        let (cx, cy) = ((x0 + x1) as f64 / 2.0, (y0 + y1) as f64 / 2.0);
+        let hw = ((x1 - x0) as f64 / 2.0).max(1.0);
+        let hh = ((y1 - y0) as f64 / 2.0).max(1.0);
+        let mut inner = 0usize;
+        let mut corners = 0usize;
+        for _ in 0..20_000 {
+            let p = h.template_click(rect, 1280, &mut rng).point;
+            let u = (p.x as f64 - cx) / hw;
+            let v = (p.y as f64 - cy) / hh;
+            if (u * u + v * v).sqrt() <= 0.5 {
+                inner += 1;
+            }
+            if u.abs() > 0.7 && v.abs() > 0.7 {
+                corners += 1;
+            }
+        }
+        assert!(
+            inner > corners,
+            "exponential falloff expected: inner={inner} corners={corners}"
+        );
+    }
+
+
     #[test]
     fn miss_rate_is_1_to_3_percent() {
         let h = Humanize::default();
