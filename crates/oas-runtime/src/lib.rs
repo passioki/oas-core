@@ -770,6 +770,43 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         Some(mask)
     }
 
+    /// §22.29 H4：在后续 `frames - 1` 帧上继续匹配同一目标；位置漂移超过
+    /// `tolerance_px` 或分数低于阈值 ⇒ 响亮失败（不点击）。
+    fn verify_stable_frames(
+        &mut self,
+        sel: &str,
+        first: Point,
+        threshold: f32,
+        frames: u8,
+    ) -> Result<(), String> {
+        const TOLERANCE_PX: i32 = 4;
+        for i in 1..frames {
+            self.refresh_frame()?;
+            let (score, at) = self.locate(sel)?;
+            if score < threshold {
+                return Err(format!(
+                    "多帧投票失败：第 {} 帧未达到阈值（{score:.3} < {threshold:.3}）",
+                    i + 1
+                ));
+            }
+            let p = at.ok_or_else(|| {
+                format!("多帧投票失败：第 {} 帧未找到 `{sel}`", i + 1)
+            })?;
+            if (p.x - first.x).abs() > TOLERANCE_PX || (p.y - first.y).abs() > TOLERANCE_PX {
+                return Err(format!(
+                    "多帧投票失败：第 {} 帧位置漂移（首帧 ({},{})，本帧 ({},{})，容差 {}px）",
+                    i + 1,
+                    first.x,
+                    first.y,
+                    p.x,
+                    p.y,
+                    TOLERANCE_PX
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn locate(&mut self, sel: &str) -> Result<(f32, Option<Point>), String> {
         if self.matcher.is_none() {
             self.refresh_frame()?;
@@ -1282,6 +1319,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 alts,
                 requires,
                 expect,
+                stable_frames,
                 ..
             } => {
                 let guarded = self.require_guard(requires.as_ref())?;
@@ -1309,6 +1347,17 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         evidence.join(", ")
                     ));
                 };
+                // §22.29 H4 多帧投票：连续 N 帧都命中同一位置才允许点击，
+                // 专治动画/过场/淡入期间的抖动或误匹配。
+                let vote_frames = stable_frames.unwrap_or(1);
+                if vote_frames > 1 {
+                    let th = self
+                        .assets
+                        .get(hit_sel)
+                        .map(|t| t.threshold)
+                        .unwrap_or(0.9);
+                    self.verify_stable_frames(hit_sel, p, th, vote_frames)?;
+                }
 
                 // HB1: the target box is the MATCHED TEMPLATE RECT, not an
                 // 11x11 box at its top-left. Picking inside the real box is what
@@ -1343,8 +1392,13 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 )?;
                 let verified = self.verify_if_present(expect.as_ref())?;
                 let miss = if plan.miss { " miss=true" } else { "" };
+                let voted = if vote_frames > 1 {
+                    format!(" voted={vote_frames}")
+                } else {
+                    String::new()
+                };
                 Ok(format!(
-                    "clicked {hit_sel} target=({},{}) point=({},{}){miss} delay={delay}ms score={score:.3} verified={verified} guard={guarded}",
+                    "clicked {hit_sel} target=({},{}) point=({},{}){miss} delay={delay}ms score={score:.3} verified={verified} guard={guarded}{voted}",
                     p.x, p.y, actual.x, actual.y
                 ))
             }
@@ -2850,6 +2904,65 @@ mod tests {
         assert!(
             p.x >= 38 && p.x < 58 && p.y >= 28 && p.y < 48,
             "click must follow the translated roi_back (38,28,20,20), got {p:?}"
+        );
+    }
+
+    #[test]
+    fn stable_frames_requires_the_same_position_on_two_frames() {
+        // §22.29 H4: two consecutive frames with the target at the same place
+        // => one click. A moving target => loud failure and NO click.
+        let pattern: Vec<u8> = (0..100)
+            .map(|i| (((i % 10) * 7 + (i / 10) * 13) % 251 + 3) as u8)
+            .collect();
+        let mut assets = assets();
+        assets.insert(
+            "I_VOTE",
+            Template {
+                gray: GrayImage::new(10, 10, pattern),
+                roi: Some(Rect {
+                    x: 12,
+                    y: 10,
+                    w: 10,
+                    h: 10,
+                }),
+                threshold: 0.8,
+                click_polygon: None,
+            },
+        );
+        let stable = frame_with_tile(12, 10);
+        let screen = TwoFrameScreen {
+            frames: vec![stable.clone(), stable],
+            idx: 0,
+        };
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(screen, input, assets.clone(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(41);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_VOTE","stable_frames":2}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert_eq!(shared.clicks.borrow().len(), 1);
+
+        // moving target between the two frames
+        let moving = TwoFrameScreen {
+            frames: vec![frame_with_tile(12, 10), frame_with_tile(40, 30)],
+            idx: 0,
+        };
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(moving, input, assets, Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(42);
+        let res = interp.run(&f);
+        match res {
+            RunResult::Failed(e) => assert!(e.contains("多帧投票失败"), "{e}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(
+            shared.clicks.borrow().is_empty(),
+            "voting failure must never click"
         );
     }
 

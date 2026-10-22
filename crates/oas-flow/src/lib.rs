@@ -700,6 +700,10 @@ pub enum Step {
         expect: Option<Expect>,
         /// Optional retry with backoff (§22.16).
         retry: Option<RetryPolicy>,
+        /// §22.29 多帧投票（H4）: require the SAME target to match on N
+        /// consecutive frames (same position ± tolerance) before clicking.
+        /// `None` / `Some(1)` = current behaviour (single frame).
+        stable_frames: Option<u8>,
     },
     /// §19 CP1: click an absolute frame coordinate computed from expressions.
     ///
@@ -866,6 +870,29 @@ fn parse_alts(args: &serde_json::Value, a_path: &str) -> Result<Vec<String>, Flo
 }
 
 /// Parse an optional `retry` object (`{times, delay_ms?, backoff?}`).
+/// §22.29 H4: optional `stable_frames` (consecutive matching frames before click).
+fn parse_stable_frames(
+    args: &serde_json::Value,
+    a_path: &str,
+) -> Result<Option<u8>, FlowError> {
+    let Some(v) = args.get("stable_frames") else {
+        return Ok(None);
+    };
+    let n = v.as_u64().ok_or_else(|| {
+        FlowError::new(
+            format!("{a_path}.stable_frames"),
+            "`stable_frames` must be an integer",
+        )
+    })?;
+    if !(1..=10).contains(&n) {
+        return Err(FlowError::new(
+            format!("{a_path}.stable_frames"),
+            format!("`stable_frames` must be within 1..=10, got {n}"),
+        ));
+    }
+    Ok(Some(n as u8))
+}
+
 fn parse_retry(
     args: &serde_json::Value,
     a_path: &str,
@@ -1111,6 +1138,7 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
             requires: parse_expect(&args, "requires", &a_path)?,
             expect: parse_expect(&args, "expect", &a_path)?,
             retry: parse_retry(&args, &a_path)?,
+            stable_frames: parse_stable_frames(&args, &a_path)?,
         }),
         "click_point" => Ok(Step::ClickPoint {
             x: parse_point_coord(&args, "x", &a_path)?,
@@ -1844,6 +1872,29 @@ mod tests {
     }
 
     // ---- click_point (design doc §19 CP1/CP2) ----
+
+    #[test]
+    fn click_stable_frames_is_parsed_and_validated() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_A","stable_frames":2}}]}"#,
+        )
+        .expect("flow");
+        match &flow.steps[0] {
+            Step::Click {
+                stable_frames: Some(2),
+                ..
+            } => {}
+            other => panic!("stable_frames not parsed: {other:?}"),
+        }
+        for bad in ["0", "11", "1.5"] {
+            let json = format!(
+                r#"{{"schema_version":1,"name":"t","steps":[
+                     {{"op":"click","args":{{"sel":"I_A","stable_frames":{bad}}}}}]}}"#
+            );
+            assert!(Flow::from_json(&json).is_err(), "must reject {bad}");
+        }
+    }
 
     #[test]
     fn click_point_accepts_numeric_literals() {

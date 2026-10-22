@@ -6,25 +6,24 @@
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <header>
-    <strong>OAS 引擎编辑器</strong>
-    <span id="status" class="muted">连接中…</span>
-    <span class="spacer"></span>
-    <button id="btn-result-toggle" class="hdr-btn" type="button">结果窗口</button>
-    <button id="btn-log-toggle" class="hdr-btn" type="button">日志窗口</button>
-    <button id="btn-capture">截图</button>
+  <header class="app-header">
+    <div class="hdr-row">
+      <strong>OAS 引擎编辑器</strong>
+      <span id="status" class="muted">连接中…</span>
+      <span class="spacer"></span>
+      <button id="btn-capture">截图</button>
+    </div>
+    <div class="hdr-windows">
+      <section class="hdr-window">
+        <h4>结果窗口</h4>
+        <pre id="result" class="muted">—</pre>
+      </section>
+      <section class="hdr-window">
+        <h4>日志窗口</h4>
+        <pre id="log"></pre>
+      </section>
+    </div>
   </header>
-
-  <div id="hdr-drawers" class="hdr-drawers hidden">
-    <section class="hdr-pop" id="result-pop">
-      <h4>结果</h4>
-      <pre id="result" class="muted">—</pre>
-    </section>
-    <section class="hdr-pop" id="log-pop">
-      <h4>日志</h4>
-      <pre id="log"></pre>
-    </section>
-  </div>
 
   <main>
     <section id="canvas-wrap">
@@ -38,7 +37,7 @@
         <button class="rail-btn" data-panel="panel-images" type="button">图片</button>
         <button class="rail-btn" data-panel="panel-task" type="button">任务</button>
         <button class="rail-btn" data-panel="panel-flow" type="button">流程</button>
-        <button class="rail-btn rail-nav" data-href="/dashboard.html" type="button">点击分布</button>
+        <button class="rail-btn" data-panel="panel-click" type="button">点击分布</button>
       </nav>
 
       <div class="rail-panels">
@@ -103,6 +102,34 @@
           <div id="frames-status" class="muted small">—</div>
           <p class="muted small">
             点图片即切换「当前帧」：识别/匹配/裁剪都以当前帧为准（多帧可测试素材稳定性）。
+          </p>
+        </section>
+
+        <section class="panel" id="panel-click">
+          <h3>运行记录</h3>
+          <label class="opt">运行文件
+            <select id="runs-select">
+              <option value="">（未加载）</option>
+            </select>
+          </label>
+          <div class="row lib-toolbar">
+            <button id="btn-runs-refresh">刷新运行记录</button>
+            <button id="btn-clicks-overlay">叠加分布</button>
+          </div>
+          <button id="btn-clicks-clear">清除分布</button>
+          <div id="click-stats" class="kv mono">clicks=— distinct=—</div>
+          <div id="clicks-legend" class="clicks-legend">
+            <span class="muted">稀疏</span><span class="ramp"></span><span class="muted">密集</span>
+            <span class="dot"></span><span class="muted">单次点击</span>
+          </div>
+          <div id="clicks-status" class="muted small">—</div>
+
+          <h3>运行统计（长跑）</h3>
+          <button id="btn-stats-refresh">刷新统计</button>
+          <pre id="stats-summary" class="muted">—</pre>
+          <p class="muted small">
+            叠加分布会把点击热力/散点画到左侧画布上；全屏调试页仍可访问
+            <a href="/dashboard.html">/dashboard.html</a>。
           </p>
         </section>
 

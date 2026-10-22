@@ -1762,22 +1762,13 @@ btnLines.addEventListener('click', async () => {
     });
   }
   syncDrawers();
-  // 深链 ?drawers=log,result 供验收直接展开抽屉
-  try {
-    const want = (new URLSearchParams(location.search).get('drawers') || '').toLowerCase();
-    if (want.includes('log')) logOpen = true;
-    if (want.includes('result')) resultOpen = true;
-    syncDrawers();
-  } catch (e) {
-    /* ignore */
-  }
   if (btnAssetsRefresh) btnAssetsRefresh.addEventListener('click', () => refreshTaskAssets());
   if (assetSearch) assetSearch.addEventListener('input', renderAssetList);
   if (railButtons.length) activatePanel(railButtons[0].dataset.panel);
   // 深链 ?panel=flow / ?panel=task 供验收/直达使用
   try {
     const wantPanel = new URLSearchParams(location.search).get('panel');
-    const ok = ['panel-assets', 'panel-images', 'panel-task', 'panel-flow'];
+    const ok = ['panel-assets', 'panel-images', 'panel-click', 'panel-task', 'panel-flow'];
     if (wantPanel && ok.includes(wantPanel)) activatePanel(wantPanel);
   } catch (e) {
     /* ignore */
