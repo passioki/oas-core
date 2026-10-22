@@ -119,6 +119,62 @@ impl Default for AssetsFile {
 // Validation helpers (also unit-tested directly)
 // ---------------------------------------------------------------------------
 
+/// §22.10 N10b-3: true when two non-adjacent polygon edges cross (bowtie etc.).
+fn polygon_self_intersects(poly: &[[i32; 2]]) -> bool {
+    let n = poly.len();
+    if n < 4 {
+        return false;
+    }
+    let cross = |o: [i32; 2], a: [i32; 2], b: [i32; 2]| -> i64 {
+        (a[0] - o[0]) as i64 * (b[1] - o[1]) as i64
+            - (a[1] - o[1]) as i64 * (b[0] - o[0]) as i64
+    };
+    let on_seg = |a: [i32; 2], b: [i32; 2], p: [i32; 2]| -> bool {
+        p[0] >= a[0].min(b[0])
+            && p[0] <= a[0].max(b[0])
+            && p[1] >= a[1].min(b[1])
+            && p[1] <= a[1].max(b[1])
+    };
+    for i in 0..n {
+        let a1 = poly[i];
+        let a2 = poly[(i + 1) % n];
+        for j in 0..n {
+            if j == i {
+                continue;
+            }
+            let b1 = poly[j];
+            let b2 = poly[(j + 1) % n];
+            // adjacent edges share a vertex by construction — skip them
+            if (i + 1) % n == j || (j + 1) % n == i {
+                continue;
+            }
+            let d1 = cross(b1, b2, a1);
+            let d2 = cross(b1, b2, a2);
+            let d3 = cross(a1, a2, b1);
+            let d4 = cross(a1, a2, b2);
+            let proper = ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0))
+                && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+            if proper {
+                return true;
+            }
+            // collinear touching/overlap
+            if d1 == 0 && on_seg(b1, b2, a1) {
+                return true;
+            }
+            if d2 == 0 && on_seg(b1, b2, a2) {
+                return true;
+            }
+            if d3 == 0 && on_seg(a1, a2, b1) {
+                return true;
+            }
+            if d4 == 0 && on_seg(a1, a2, b2) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn is_id_start(c: char) -> bool {
     c.is_ascii_alphabetic() || c == '_' || ('\u{4e00}'..='\u{9fa5}').contains(&c)
 }
@@ -428,6 +484,14 @@ impl TaskBundle {
                 } else {
                     set.insert_ocr(item.id.clone(), rect);
                 }
+                // §22.10 N10b-2: OCR polygon mask (frame coordinates).
+                if let Some(poly) = &item.polygon {
+                    let pts: Vec<oas_types::Point> = poly
+                        .iter()
+                        .map(|p| oas_types::Point { x: p[0], y: p[1] })
+                        .collect();
+                    set.set_ocr_polygon(item.id.clone(), pts);
+                }
                 continue;
             }
             let file = item.file.as_ref().ok_or_else(|| {
@@ -516,10 +580,9 @@ impl TaskBundle {
 
         let mut af = self.load_assets_file()?;
 
-        // §22.10: optional polygon => validate it and derive `roi` = bounding box
-        // (the editor/API may send any roi; the polygon wins so the bundle is
-        // self-consistent). Matching/OCR keep using `roi`; `click` uses the
-        // polygon's largest inscribed rectangle at runtime.
+        // §22.10: optional polygon => validate it and derive `roi` = bounding box.
+        // Matching uses a masked NCC inside the polygon; OCR uses the bbox crop
+        // with outside-polygon pixels filled white; click uses the bbox.
         if let Some(poly) = &decl.polygon {
             if poly.len() < 3 {
                 return Err(format!(
@@ -543,6 +606,12 @@ impl TaskBundle {
             if area2 == 0 {
                 return Err(format!(
                     "asset `{}` rejected: polygon has zero area (collinear points); nothing written",
+                    decl.id
+                ));
+            }
+            if polygon_self_intersects(poly) {
+                return Err(format!(
+                    "asset `{}` rejected: polygon self-intersects (edges cross); nothing written",
                     decl.id
                 ));
             }
@@ -1188,8 +1257,34 @@ mod tests {
     }
 
     #[test]
-    fn polygon_asset_validation_rejects_bad_shapes_without_writing() {
-        let td = TempDir::new("polybad");
+    fn ocr_asset_polygon_is_wired_into_the_runtime_ocr_mask() {
+        let td = TempDir::new("polyocr");
+        let b = open(&td);
+        let f = frame(64, 48);
+        b.save_asset(AssetDecl::template("占位模板", [10, 10, 21, 11]), Some(&f))
+            .expect("template sets design resolution");
+        let mut decl = AssetDecl {
+            id: "多边形文字".to_string(),
+            kind: "ocr_lines".to_string(),
+            file: None,
+            roi: Some([10, 10, 21, 11]),
+            threshold: None,
+            polygon: Some(vec![[10, 10], [30, 10], [30, 20], [10, 20]]),
+            rev: None,
+        };
+        let saved = b.save_asset(decl.clone(), Some(&f)).expect("save ocr polygon");
+        assert_eq!(saved.roi, Some([10, 10, 21, 11]));
+        let set = b.load_runtime_assets().expect("runtime assets");
+        let poly = set.ocr_polygon("多边形文字").expect("ocr polygon wired");
+        assert_eq!(poly.len(), 4);
+        assert_eq!((poly[2].x, poly[2].y), (30, 20));
+        // OCR assets still carry no image file.
+        decl = saved;
+        assert!(decl.file.is_none());
+    }
+
+    #[test]
+    fn polygon_asset_validation_rejects_bad_shapes_without_writing() {        let td = TempDir::new("polybad");
         let b = open(&td);
         let f = frame(40, 30);
         let cases: Vec<Vec<[i32; 2]>> = vec![
@@ -1197,6 +1292,7 @@ mod tests {
             vec![[0, 0], [10, 0], [20, 0]],                             // zero area
             vec![[0, 0], [-5, 10], [10, 10]],                           // negative
             vec![[0, 0], [100, 0], [100, 10], [0, 10]],                 // outside frame
+            vec![[0, 0], [10, 10], [12, 0], [0, 12]],                   // self-intersecting (bowtie, non-zero area)
         ];
         for (i, poly) in cases.into_iter().enumerate() {
             let mut decl = AssetDecl::template(format!("坏多边形{i}"), [0, 0, 10, 10]);

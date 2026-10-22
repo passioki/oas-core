@@ -8,6 +8,21 @@
 // `argsText` is a JSON string so invalid args can be shown/fixed without losing
 // the rest of the flow; buildFlow() parses it and fails loudly.
 (function () {
+  // 中文短名（界面展示用；flow JSON 里始终是英文 op 键）
+  const OP_LABELS = {
+    log: '日志',
+    wait: '等待',
+    wait_until: '等到',
+    appear: '出现',
+    click: '点击',
+    click_point: '点坐标',
+    click_target: '定位点击',
+    dismiss_popup: '关弹窗',
+    swipe: '滑动',
+    ocr: '识别文字',
+    finish: '结束',
+  };
+
   const OPS = [
     'log',
     'wait',
@@ -148,7 +163,7 @@
     return errs;
   }
 
-  const api = { OPS, defaultArgs, parseFlow, buildFlow, validateModel };
+  const api = { OPS, OP_LABELS, defaultArgs, parseFlow, buildFlow, validateModel };
   if (typeof window !== 'undefined') window.OAS_FLOW = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })();

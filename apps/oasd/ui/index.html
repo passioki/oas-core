@@ -23,9 +23,9 @@
       <h3>ROI</h3>
       <div id="roi" class="kv">未选择</div>
       <h3>操作</h3>
-      <button id="btn-ocr" disabled>试识别 (OCR 单行)</button>
-      <button id="btn-lines" disabled>多行识别 (det+rec)</button>
-      <button id="btn-match" disabled>试匹配（图识别，全帧搜索）</button>
+      <button id="btn-ocr" disabled>试识别（单行文字）</button>
+      <button id="btn-lines" disabled>多行识别（逐行文字+框）</button>
+      <button id="btn-match" disabled>试匹配（图片识别，全屏搜索）</button>
       <button id="btn-poly">多边形框选（点顶点，双击闭合）</button>
 
       <button id="btn-click-step" disabled>生成点击指令（选中识别区块）</button>
@@ -61,9 +61,9 @@
       <label class="opt"><input id="asset-id" placeholder="素材 id，如：队伍预设入口" /></label>
       <label class="opt">类型
         <select id="asset-kind">
-          <option value="template">template（模板图）</option>
-          <option value="ocr_line">ocr_line（单行文字）</option>
-          <option value="ocr_lines">ocr_lines（多行文字）</option>
+          <option value="template">模板图（template）</option>
+          <option value="ocr_line">单行文字（ocr_line）</option>
+          <option value="ocr_lines">多行文字（ocr_lines）</option>
         </select>
       </label>
       <button id="btn-asset" disabled>生成素材 JSON</button>

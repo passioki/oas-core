@@ -42,6 +42,20 @@ pub struct AssetSet {
     /// [`OcrProvider`] (ENGINE-DESIGN §17.1: rec is the fast path for one line;
     /// `ocr_lines` regions go through **det + rec**).
     ocr: HashMap<String, (Rect, bool)>,
+    /// Optional polygon mask per OCR asset (§22.10 N10b-2): OCR crops the bbox
+    /// but only pixels INSIDE this polygon are kept; outside is filled white.
+    ocr_polygons: HashMap<String, Vec<Point>>,
+}
+
+impl AssetSet {
+    /// Attach a polygon mask to an OCR asset (frame coordinates).
+    pub fn set_ocr_polygon(&mut self, id: impl Into<String>, polygon: Vec<Point>) {
+        self.ocr_polygons.insert(id.into(), polygon);
+    }
+
+    pub fn ocr_polygon(&self, id: &str) -> Option<&[Point]> {
+        self.ocr_polygons.get(id).map(|v| v.as_slice())
+    }
 }
 
 impl AssetSet {
@@ -99,8 +113,7 @@ pub struct OcrLine {
 }
 
 /// Point-in-polygon (ray casting, even-odd). Boundary points are unspecified.
-pub fn point_in_polygon(p: Point, polygon: &[Point]) -> bool {
-    if polygon.len() < 3 {
+pub fn point_in_polygon(p: Point, polygon: &[Point]) -> bool {    if polygon.len() < 3 {
         return false;
     }
     let (px, py) = (p.x as f64, p.y as f64);
@@ -120,8 +133,30 @@ pub fn point_in_polygon(p: Point, polygon: &[Point]) -> bool {
     inside
 }
 
-/// Largest axis-aligned rectangle **inscribed in the polygon** (ENGINE §22.10).
-///
+/// OCR mask helper (§22.10 N10b-2): copy the frame and fill every pixel inside
+/// the OCR bbox but OUTSIDE the polygon with white, so only polygon content is
+/// recognised.
+pub fn mask_frame_for_ocr(frame: &Frame, roi: Rect, polygon: &[Point]) -> Frame {
+    let mut rgba = frame.rgba.clone();
+    let x0 = roi.x.max(0);
+    let y0 = roi.y.max(0);
+    let x1 = (roi.x + roi.w).min(frame.width as i32);
+    let y1 = (roi.y + roi.h).min(frame.height as i32);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            if !point_in_polygon(Point { x, y }, polygon) {
+                let i = (((y as u32) * frame.width + (x as u32)) * 4) as usize;
+                rgba[i] = 255;
+                rgba[i + 1] = 255;
+                rgba[i + 2] = 255;
+                rgba[i + 3] = 255;
+            }
+        }
+    }
+    Frame::new(frame.width, frame.height, rgba)
+}
+
+/// Largest axis-aligned rectangle **inscribed in the polygon** (ENGINE §22.10).///
 /// Implementation: rasterise the polygon's bounding box to a boolean mask
 /// (pixel centres), then run the classic maximal-rectangle-in-histogram scan.
 /// Boxes are small (a UI button), so this is exact-on-pixels and fast.
@@ -706,6 +741,23 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// Borrow note: the frame/matcher is refreshed first (needs `&mut self`),
     /// then the asset and matcher are borrowed **disjointly** for the match, so
     /// no unsafe code is needed.
+    /// Template-pixel mask from the asset polygon (frame coords → template coords).
+    fn template_mask(&self, tpl: &Template) -> Option<Vec<bool>> {
+        let poly = tpl.click_polygon.as_ref()?;
+        let roi = tpl.roi?;
+        let tw = tpl.gray.width as i32;
+        let th = tpl.gray.height as i32;
+        let mut mask = vec![false; (tw * th) as usize];
+        for j in 0..th {
+            for i in 0..tw {
+                if point_in_polygon(Point { x: roi.x + i, y: roi.y + j }, poly) {
+                    mask[(j * tw + i) as usize] = true;
+                }
+            }
+        }
+        Some(mask)
+    }
+
     fn locate(&mut self, sel: &str) -> Result<(f32, Option<Point>), String> {
         if self.matcher.is_none() {
             self.refresh_frame()?;
@@ -721,7 +773,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         // §22.20: search the authored ROI first (fast); when that is not a
         // confident hit, fall back to a WHOLE-FRAME pyramid search so a UI that
         // shifted (or was re-laid-out) is still found — no ROI tuning needed.
-        let roi_best = matcher.match_template(&tpl.gray, tpl.roi);
+        // §22.10 N10b-1: with a polygon, match only INSIDE it (masked NCC) so
+        // background/animation outside the polygon cannot hurt the score.
+        let roi_best = match self.template_mask(tpl) {
+            Some(mask) => matcher.match_template_masked(&tpl.gray, &mask, tpl.roi),
+            None => matcher.match_template(&tpl.gray, tpl.roi),
+        };
         if let Some(b) = &roi_best {
             if b.score >= 0.95 {
                 return Ok((b.score, Some(Point { x: b.x, y: b.y })));
@@ -808,6 +865,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             ));
         }
         let multiline = self.assets.ocr_is_multiline(sel);
+        let ocr_polygon = self.assets.ocr_polygon(sel).map(|p| p.to_vec());
         if self.frame.is_none() {
             self.refresh_frame()?;
         }
@@ -815,6 +873,15 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             .frame
             .as_ref()
             .ok_or_else(|| "OCR: no frame available".to_string())?;
+        // §22.10 N10b-2: polygon OCR mask = bbox crop, outside-polygon pixels
+        // filled white so neighbour text / background never reaches the engine.
+        let masked_frame;
+        let frame: &Frame = if let Some(poly) = &ocr_polygon {
+            masked_frame = mask_frame_for_ocr(frame, roi, poly);
+            &masked_frame
+        } else {
+            frame
+        };
         let provider = self.ocr.as_mut().expect("provider checked above");
         if multiline {
             Ok(OcrRead::Lines(provider.recognize_lines(frame, roi)?))
@@ -3416,6 +3483,159 @@ mod tests {
                 (2, "finish".to_string())
             ]
         );
+    }
+
+    // ---- §22.10 N10b: polygon masks (match + OCR) ----
+
+    #[test]
+    fn mask_matching_ignores_changed_background_outside_the_polygon() {
+        // Template tile 10x10 at (12,10); polygon = top/apex triangle. Pixels
+        // OUTSIDE the polygon are changed in the frame; masked matching must not
+        // care (plain matching would score much lower).
+        let pattern: Vec<u8> = (0..100)
+            .map(|i| (((i % 10) * 7 + (i / 10) * 13) % 251 + 3) as u8)
+            .collect();
+        let mut frame = frame_with_tile(12, 10);
+        let poly = vec![
+            Point { x: 12, y: 10 },
+            Point { x: 22, y: 10 },
+            Point { x: 17, y: 20 },
+        ];
+        for j in 0..10u32 {
+            for i in 0..10u32 {
+                let p = Point {
+                    x: 12 + i as i32,
+                    y: 10 + j as i32,
+                };
+                if !point_in_polygon(p, &poly) {
+                    let idx = (((10 + j) * frame.width + (12 + i)) * 4) as usize;
+                    frame.rgba[idx] = 255 - frame.rgba[idx];
+                }
+            }
+        }
+        let gray = GrayImage::from_frame(&frame);
+        let tpl = GrayImage::new(10, 10, pattern.clone());
+        let roi = Rect {
+            x: 12,
+            y: 10,
+            w: 10,
+            h: 10,
+        };
+        let mut mask = vec![false; 100];
+        for j in 0..10i32 {
+            for i in 0..10i32 {
+                if point_in_polygon(
+                    Point {
+                        x: 12 + i,
+                        y: 10 + j,
+                    },
+                    &poly,
+                ) {
+                    mask[(j * 10 + i) as usize] = true;
+                }
+            }
+        }
+        let plain = oas_perceive::match_template(&gray, &tpl, Some(roi))
+            .map(|b| b.score)
+            .unwrap_or(-2.0);
+        let masked = oas_perceive::Matcher::from_ref(&gray)
+            .match_template_masked(&tpl, &mask, Some(roi))
+            .map(|b| b.score)
+            .unwrap_or(-2.0);
+        assert!(plain < 0.99, "plain NCC should drop with changed pixels: {plain}");
+        assert!(masked > 0.99, "masked NCC should ignore outside pixels: {masked}");
+
+        let mut assets = AssetSet::new();
+        assets.insert(
+            "I_MASK",
+            Template {
+                gray: tpl,
+                roi: Some(roi),
+                threshold: 0.995,
+                click_polygon: Some(poly),
+            },
+        );
+        let screen = TwoFrameScreen {
+            frames: vec![frame],
+            idx: 0,
+        };
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(screen, input, assets, Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(31);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_MASK"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            p.x >= 12 && p.x < 22 && p.y >= 10 && p.y < 20,
+            "click must stay inside the matched template: {p:?}"
+        );
+    }
+
+    struct ProbeOcr;
+    impl OcrProvider for ProbeOcr {
+        fn recognize(&mut self, frame: &Frame, _roi: Rect) -> Result<(String, f32), String> {
+            let at = |x: u32, y: u32| -> u8 {
+                frame.rgba[((y * frame.width + x) * 4) as usize]
+            };
+            // inside polygon (10,5) unchanged; outside (30,5) must be filled white.
+            assert_eq!(at(10, 5), 100, "inside-polygon pixel must survive masking");
+            assert_eq!(at(30, 5), 255, "outside-polygon pixel must be filled white");
+            Ok(("ok".to_string(), 1.0))
+        }
+        fn recognize_lines(&mut self, _frame: &Frame, _roi: Rect) -> Result<Vec<OcrLine>, String> {
+            Err("single-line only".into())
+        }
+    }
+
+    #[test]
+    fn ocr_polygon_mask_fills_pixels_outside_the_polygon() {
+        let (w, h) = (64u32, 48u32);
+        let mut rgba = vec![10u8; (w * h * 4) as usize];
+        for i in (3..rgba.len()).step_by(4) {
+            rgba[i] = 255;
+        }
+        let idx = |x: u32, y: u32| ((y * w + x) * 4) as usize;
+        rgba[idx(10, 5)] = 100; // inside polygon
+        rgba[idx(30, 5)] = 50; // outside polygon
+        let frame = Frame::new(w, h, rgba);
+        let mut assets = AssetSet::new();
+        assets.insert_ocr(
+            "O_MASK",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 32,
+                h: 16,
+            },
+        );
+        assets.set_ocr_polygon(
+            "O_MASK",
+            vec![
+                Point { x: 0, y: 0 },
+                Point { x: 20, y: 0 },
+                Point { x: 0, y: 15 },
+            ],
+        );
+        let screen = TwoFrameScreen {
+            frames: vec![frame],
+            idx: 0,
+        };
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(screen, input, assets, Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(ProbeOcr))
+            .with_seed(32);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"ocr","args":{"sel":"O_MASK"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
     }
 
     // ---- CD2 click audit (§21) ----

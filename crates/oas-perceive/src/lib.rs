@@ -311,6 +311,104 @@ pub fn match_template(img: &GrayImage, tpl: &GrayImage, roi: Option<Rect>) -> Op
 }
 
 impl Matcher {
+    /// Masked NCC (§22.10 N10b-1): only pixels where `mask[i]` is true take part
+    /// in the correlation. Out-of-polygon template pixels can change freely
+    /// (background/animation/neighbour content) without hurting the score.
+    ///
+    /// `mask` must have `tpl.width * tpl.height` entries (row-major, true = use).
+    pub fn match_template_masked(
+        &self,
+        tpl: &GrayImage,
+        mask: &[bool],
+        roi: Option<Rect>,
+    ) -> Option<MatchBest> {
+        let img = &self.img;
+        let tw = tpl.width as i32;
+        let th = tpl.height as i32;
+        if tw <= 0 || th <= 0 || mask.len() != (tw * th) as usize {
+            return None;
+        }
+        let (ox, oy, sw, sh) = match roi {
+            Some(r) => (r.x, r.y, r.w, r.h),
+            None => (0, 0, img.width as i32, img.height as i32),
+        };
+        let x0 = ox.max(0);
+        let y0 = oy.max(0);
+        let x1 = (ox + sw).min(img.width as i32);
+        let y1 = (oy + sh).min(img.height as i32);
+        if x1 - x0 < tw || y1 - y0 < th {
+            return None;
+        }
+        // Masked template statistics + the list of offsets that participate.
+        let mut offsets: Vec<(usize, i64)> = Vec::new();
+        let mut sum_t: i64 = 0;
+        let mut sum_t2: i64 = 0;
+        for j in 0..th as usize {
+            for i in 0..tw as usize {
+                let idx = j * tw as usize + i;
+                if mask[idx] {
+                    let v = tpl.data[idx] as i64;
+                    offsets.push((idx, v));
+                    sum_t += v;
+                    sum_t2 += v * v;
+                }
+            }
+        }
+        let n = offsets.len() as i64;
+        if n == 0 {
+            return None;
+        }
+        let den_t = n * sum_t2 - sum_t * sum_t;
+        if den_t <= 0 {
+            return None; // flat masked template
+        }
+        let den_t_f = den_t as f64;
+        let mut best = MatchBest {
+            score: -2.0,
+            x: -1,
+            y: -1,
+        };
+        let iw = img.width as usize;
+        let px_end = x1 - tw;
+        let py_end = y1 - th;
+        for py in y0..=py_end {
+            for px in x0..=px_end {
+                let mut sum_i: i64 = 0;
+                let mut sum_i2: i64 = 0;
+                let mut dot: i64 = 0;
+                for &(idx, tv) in &offsets {
+                    let dx = (idx % tw as usize) as i32;
+                    let dy = (idx / tw as usize) as i32;
+                    let v = img.data[(py + dy) as usize * iw + (px + dx) as usize] as i64;
+                    sum_i += v;
+                    sum_i2 += v * v;
+                    dot += v * tv;
+                }
+                let den_i = n * sum_i2 - sum_i * sum_i;
+                if den_i <= 0 {
+                    continue;
+                }
+                let num = n * dot - sum_t * sum_i;
+                let score = (num as f64) / ((den_t_f * den_i as f64).sqrt());
+                let score = score.clamp(-1.0, 1.0) as f32;
+                if score > best.score {
+                    best = MatchBest {
+                        score,
+                        x: px,
+                        y: py,
+                    };
+                }
+            }
+        }
+        if best.score <= -1.5 {
+            None
+        } else {
+            Some(best)
+        }
+    }
+}
+
+impl Matcher {
     /// Full-frame template search with a 4x pyramid: coarse scan on a downscaled
     /// frame, then a full-resolution refine around the coarse best. This is what
     /// gives layout-shift tolerance without a user-tuned search ROI.
@@ -455,5 +553,51 @@ mod tests {
         );
         assert!(b.score > 0.99);
         assert!(ms < 10_000.0, "too slow for live use: {ms:.1} ms");
+    }
+
+    #[test]
+    fn masked_ncc_ignores_pixels_outside_the_polygon_mask() {
+        // Template area: LEFT half is "inside the polygon" (must match), RIGHT half
+        // is background that is allowed to change.
+        let tpl = noise_img(20, 20, 31);
+        let mut frame_a = noise_img(64, 48, 32);
+        stamp(&mut frame_a, &tpl, 10, 10);
+        let mut frame_b = frame_a.clone();
+        // Change ONLY the right (mask=false) half of the template area.
+        for j in 0..20u32 {
+            for i in 10..20u32 {
+                frame_b.data[((10 + j) * 64 + (10 + i)) as usize] =
+                    ((i * 7 + j * 11 + 33) % 251) as u8;
+            }
+        }
+        let mut mask = vec![false; 20 * 20];
+        for j in 0..20usize {
+            for i in 0..10usize {
+                mask[j * 20 + i] = true;
+            }
+        }
+        let roi = Rect {
+            x: 10,
+            y: 10,
+            w: 20,
+            h: 20,
+        };
+        let m_a = Matcher::from_ref(&frame_a);
+        let m_b = Matcher::from_ref(&frame_b);
+        let plain_ok = m_a.match_template(&tpl, Some(roi)).expect("plain").score;
+        let plain_changed = m_b.match_template(&tpl, Some(roi)).expect("plain b").score;
+        let masked_changed = m_b
+            .match_template_masked(&tpl, &mask, Some(roi))
+            .expect("masked")
+            .score;
+        assert!(plain_ok > 0.99, "sanity: plain match on identical frame {plain_ok}");
+        assert!(
+            plain_changed < 0.9,
+            "unmasked score must drop when background changes: {plain_changed}"
+        );
+        assert!(
+            masked_changed > 0.997,
+            "masked score must ignore the changed background: {masked_changed}"
+        );
     }
 }

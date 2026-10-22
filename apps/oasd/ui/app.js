@@ -58,12 +58,12 @@ let flowModel = { name: '', steps: [], interrupts: [] };
 // §22.22: serve 能力位（OCR 模型是否就绪），避免"无模型/无 feature 构建"静默 501
 let ocrReady = true;
 let detReady = true;
-// §22.10 polygon selection: vertices in FRAME coordinates + closed flag.
-// When closed, roi becomes the polygon bbox and assets are saved with `polygon`;
-// the runtime clicks inside the polygon's largest inscribed rectangle.
+// §22.10 多边形框选：顶点为画面坐标；闭合后 roi = 多边形外接矩形。
+// 运行时：点击区 = 匹配外接矩形；匹配/OCR 使用多边形掩膜（N10b）。
 let polygon = null;
 let polyClosed = false;
 let polyMode = false;
+let polyDrag = null; // 正在拖动的顶点下标（闭合后编辑）
 
 // --- N4: pure click-distribution helpers (§21 CD1~CD5) -----------------------
 // Kept as plain top-level code on purpose: no build step, no CDN, no module
@@ -711,10 +711,11 @@ async function doSaveFlow() {
 function flowEnsureOps() {
   if (!flowOp || flowOp.options.length) return;
   const ops = (window.OAS_FLOW && window.OAS_FLOW.OPS) || [];
+  const labels = (window.OAS_FLOW && window.OAS_FLOW.OP_LABELS) || {};
   for (const op of ops) {
     const o = document.createElement('option');
     o.value = op;
-    o.textContent = op;
+    o.textContent = `${labels[op] || op}（${op}）`;
     flowOp.appendChild(o);
   }
 }
@@ -729,7 +730,9 @@ function flowRender() {
     row.className = 'flow-step';
     const op = document.createElement('span');
     op.className = 'flow-op';
+    const labels = (window.OAS_FLOW && window.OAS_FLOW.OP_LABELS) || {};
     op.textContent = step.op;
+    op.title = labels[step.op] ? `${labels[step.op]}（${step.op}）` : step.op;
     const args = document.createElement('input');
     args.className = 'flow-args';
     args.spellcheck = false;
@@ -914,7 +917,7 @@ async function refreshState() {
     setStatus(s.error ? `未截到帧：${s.error}` : '没有帧');
     return;
   }
-  const caps = `OCR=${ocrReady ? 'on' : 'off'} · det=${detReady ? 'on' : 'off'}`;
+  const caps = `单行识别=${ocrReady ? '可用' : '不可用'} · 多行识别=${detReady ? '可用' : '不可用'}`;
   setStatus(`${s.device} · ${s.width}x${s.height} · ${caps}`);
 }
 
@@ -954,11 +957,19 @@ canvas.addEventListener('mousedown', (ev) => {
   // a box selects that block (ROI := box) so 生成素材 JSON applies to it, and
   // shows only that block's text.
   const p0 = toFrame(ev);
-  // §22.10 polygon mode: each click appends a vertex; double-click closes.
+  // §22.10 多边形模式：未闭合时逐点点击、双击闭合；闭合后可拖动顶点、双击删顶点。
   if (polyMode) {
     if (ev.detail >= 2) {
       ev.preventDefault();
-      return; // the closing dblclick handles this; avoid duplicate vertices
+      return; // 交给 dblclick 处理（闭合/删顶点），避免多加一个重复点
+    }
+    if (polygon && polygon.length) {
+      const vi = nearestVertex(p0);
+      if (vi >= 0) {
+        polyDrag = vi; // 闭合/未闭合都允许拖动已有顶点
+        log(`拖动顶点 ${vi + 1}/${polygon.length}`);
+        return;
+      }
     }
     if (!polygon || polyClosed) {
       polygon = [];
@@ -985,7 +996,7 @@ canvas.addEventListener('mousedown', (ev) => {
         updateClickStepButtons();
         draw();
         resultEl.textContent =
-          `选中区块：${b.text}\nscore = ${b.score.toFixed(4)}\nroi = [${b.box.join(', ')}]\n` +
+          `选中区块：${b.text}\n得分 = ${b.score.toFixed(4)}\nROI = [${b.box.join(', ')}]\n` +
           '（点「生成素材 JSON」为这一块建素材；点「生成点击指令」把它变成 click_point 步骤）';
         log(`选中区块「${b.text}」(${b.score.toFixed(3)})`);
         return;
@@ -1003,25 +1014,70 @@ canvas.addEventListener('mousedown', (ev) => {
 });
 
 canvas.addEventListener('mousemove', (ev) => {
-  if (polyMode || !dragStart) return;
+  if (polyMode) {
+    if (polyDrag === null || !polygon) return;
+    polygon[polyDrag] = toFrame(ev);
+    if (polygon.length >= 3) roi = polygonBBox(polygon);
+    updateRoiLabel();
+    draw();
+    return;
+  }
+  if (!dragStart) return;
   roi = normalizeRect(dragStart, toFrame(ev));
   updateRoiLabel();
   draw();
 });
 
 canvas.addEventListener('mouseup', () => {
-  if (polyMode || !dragStart) return;
+  if (polyMode) {
+    if (polyDrag === null) return;
+    polyDrag = null;
+    if (polygon && polygon.length >= 3) roi = polygonBBox(polygon);
+    updateRoiLabel();
+    draw();
+    if (roi) log(`顶点已调整：${polygon.length} 顶点，bbox ${roi.w}x${roi.h} @ ${roi.x},${roi.y}`);
+    return;
+  }
+  if (!dragStart) return;
   dragStart = null;
   updateRoiLabel();
   draw();
   if (roi) log(`选中 ROI ${roi.w}x${roi.h} @ ${roi.x},${roi.y}`);
 });
 
-// §22.10: double-click closes the polygon. The double-click's first mousedown may
-// have appended a duplicate of the last vertex — drop consecutive duplicates.
+// 最近顶点（8px 内）——用于闭合后编辑顶点
+function nearestVertex(p) {
+  if (!polygon) return -1;
+  let best = -1;
+  let bestD = 8 * 8;
+  for (let i = 0; i < polygon.length; i++) {
+    const dx = polygon[i].x - p.x;
+    const dy = polygon[i].y - p.y;
+    const d = dx * dx + dy * dy;
+    if (d <= bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+// §22.10：双击行为 —— 未闭合则闭合；已闭合且双击顶点则删除该顶点（保持 >=3）。
 canvas.addEventListener('dblclick', (ev) => {
   if (!polyMode || !polygon || polygon.length < 3) return;
   ev.preventDefault();
+  const p = toFrame(ev);
+  if (polyClosed) {
+    const vi = nearestVertex(p);
+    if (vi >= 0 && polygon.length > 3) {
+      polygon.splice(vi, 1);
+      roi = polygonBBox(polygon);
+      updateRoiLabel();
+      draw();
+      log(`已删除顶点 ${vi + 1}，剩余 ${polygon.length} 个；bbox ${roi.w}x${roi.h} @ ${roi.x},${roi.y}`);
+    }
+    return;
+  }
   while (polygon.length > 3) {
     const a = polygon[polygon.length - 1];
     const b = polygon[polygon.length - 2];
@@ -1034,7 +1090,7 @@ canvas.addEventListener('dblclick', (ev) => {
   draw();
   log(
     `多边形已闭合：${polygon.length} 顶点，bbox ${roi.w}x${roi.h} @ ${roi.x},${roi.y}` +
-      '（运行时点击区 = 最大内接矩形）'
+      '（点击区=匹配外接矩形；多边形用于匹配/OCR 掩膜）'
   );
 });
 
@@ -1043,10 +1099,11 @@ btnPoly.addEventListener('click', () => {
   if (polyMode) {
     polygon = null;
     polyClosed = false;
+    polyDrag = null;
     roi = null;
     dragStart = null;
-    btnPoly.textContent = '退出多边形模式（点顶点，双击闭合）';
-    log('多边形模式：逐点点击，双击闭合；闭合后点击区 = 多边形最大内接矩形');
+    btnPoly.textContent = '退出多边形模式（点顶点，双击闭合；闭合后可拖/双击删顶点）';
+    log('多边形模式：逐点点击，双击闭合；闭合后可拖动顶点、双击删除顶点');
   } else {
     btnPoly.textContent = '多边形框选（点顶点，双击闭合）';
   }
@@ -1082,7 +1139,7 @@ btnOcr.addEventListener('click', async () => {
     if (s.error) {
       resultEl.textContent = '错误：' + s.error;
     } else {
-      resultEl.textContent = `text = ${JSON.stringify(s.text)}\nscore = ${s.score.toFixed(4)}\nelapsed = ${s.elapsed_ms.toFixed(1)} ms`;
+      resultEl.textContent = `文字 = ${JSON.stringify(s.text)}\n得分 = ${s.score.toFixed(4)}\n耗时 = ${s.elapsed_ms.toFixed(1)} ms`;
       log(`OCR → ${s.text} (${s.score.toFixed(3)})`);
     }
   } catch (e) {
@@ -1106,10 +1163,10 @@ async function doMatch(r) {
   }
   const roiScore = typeof s.roi_score === 'number' ? s.roi_score : -2;
   resultEl.textContent =
-    `图识别 score = ${Number(s.score).toFixed(4)} @ (${s.x}, ${s.y})\n` +
-    `ROI内 score = ${roiScore.toFixed(4)}\n` +
-    `elapsed = ${Number(s.elapsed_ms || 0).toFixed(1)} ms（全帧金字塔搜索）`;
-  log(`图识别 → score=${Number(s.score).toFixed(3)} @ (${s.x},${s.y})`);
+    `图识别得分 = ${Number(s.score).toFixed(4)} @ (${s.x}, ${s.y})\n` +
+    `ROI 内得分 = ${roiScore.toFixed(4)}\n` +
+    `耗时 = ${Number(s.elapsed_ms || 0).toFixed(1)} ms（全屏金字塔搜索）`;
+  log(`图识别 → 得分 ${Number(s.score).toFixed(3)} @ (${s.x},${s.y})`);
   return s;
 }
 
