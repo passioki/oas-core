@@ -931,13 +931,38 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     Err(format!("selector `{sel}` not found (best score {score:.3} < {th})"))
                 }
             }
-            Step::Click { sel, requires, expect } => {
+            Step::Click {
+                sel,
+                alts,
+                requires,
+                expect,
+            } => {
                 let guarded = self.require_guard(requires.as_ref())?;
-                let (score, at) = self.locate(sel)?;
-                let th = self.assets.get(sel).map(|t| t.threshold).unwrap_or(0.9);
-                let Some(p) = at.filter(|_| score >= th) else {
-                    return Err(format!("click target `{sel}` not found (best score {score:.3} < {th})"));
+                // ENGINE §22.11 补充层 "多模板变体": try `sel` first, then the
+                // alternatives in declaration order; the first one reaching its
+                // own threshold wins and its id is what gets audited.
+                let mut candidates: Vec<&str> = Vec::with_capacity(1 + alts.len());
+                candidates.push(sel.as_str());
+                // INJECTED(I18) removed
+                candidates.extend(alts.iter().map(|s| s.as_str()));
+                let mut evidence: Vec<String> = Vec::new();
+                let mut hit: Option<(&str, f32, Point)> = None;
+                for cand in &candidates {
+                    let (score, at) = self.locate(cand)?;
+                    let th = self.assets.get(*cand).map(|t| t.threshold).unwrap_or(0.9);
+                    if let Some(p) = at.filter(|_| score >= th) {
+                        hit = Some((cand, score, p));
+                        break;
+                    }
+                    evidence.push(format!("{cand}: {score:.3} < {th}"));
+                }
+                let Some((hit_sel, score, p)) = hit else {
+                    return Err(format!(
+                        "click target `{sel}` not found (no variant matched: {})",
+                        evidence.join(", ")
+                    ));
                 };
+
                 // HB1: the target box is the MATCHED TEMPLATE RECT, not an
                 // 11x11 box at its top-left. Picking inside the real box is what
                 // keeps the click distribution spread over the button; a fixed
@@ -947,7 +972,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 // the largest axis-aligned rectangle inscribed in that polygon
                 // (translated by the match offset). Matching still uses the
                 // whole template.
-                let target = self.click_box_for(sel, p)?;
+                let target = self.click_box_for(hit_sel, p)?;
                 // HB1/HB7: 20% bell / 5% uniform / 75% comet (hand-side tail)
                 // inside the target rect; with 1~3% probability the click MISSES
                 // the box (still performed, audited as `miss=true`).
@@ -960,11 +985,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     y: target.y + target.h / 2,
                 };
                 let (actual, delay) =
-                    self.perform_click(plan, centre, Some(sel.clone()), "template", w, h)?;
+                    self.perform_click(plan, centre, Some(hit_sel.to_string()), "template", w, h)?;
                 let verified = self.verify_if_present(expect.as_ref())?;
                 let miss = if plan.miss { " miss=true" } else { "" };
                 Ok(format!(
-                    "clicked {sel} target=({},{}) point=({},{}){miss} delay={delay}ms score={score:.3} verified={verified} guard={guarded}",
+                    "clicked {hit_sel} target=({},{}) point=({},{}){miss} delay={delay}ms score={score:.3} verified={verified} guard={guarded}",
                     p.x, p.y, actual.x, actual.y
                 ))
             }
@@ -2651,6 +2676,54 @@ mod tests {
             .map(|e| e.detail.clone())
             .expect("step event");
         assert!(detail.contains("guard=true"), "{detail}");
+    }
+
+    // ---- §22.11 补充层: multi-template variants (`alts`) ----
+
+    #[test]
+    fn click_alts_falls_back_to_the_next_template_variant() {
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(11);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_NEVER","alts":["I_BRIGHT"]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let rows = interp.clicks();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].sel.as_deref(),
+            Some("I_BRIGHT"),
+            "the audited id must be the VARIANT that matched"
+        );
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            p.x >= 12 && p.x < 22 && p.y >= 10 && p.y < 20,
+            "variant click must land in the matched tile: {p:?}"
+        );
+    }
+
+    #[test]
+    fn click_alts_all_failing_reports_every_score() {
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(12);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_NEVER","alts":["I_NEVER"]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("not found"), "{msg}");
+                assert!(msg.contains("I_NEVER:"), "per-variant evidence missing: {msg}");
+            }
+            other => panic!("expected a loud failure, got {other:?}"),
+        }
     }
 
     // ---- CD2 click audit (§21) ----

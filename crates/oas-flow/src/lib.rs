@@ -648,6 +648,9 @@ pub enum Step {
     },
     Click {
         sel: String,
+        /// Optional extra template assets for the SAME target, tried in order
+        /// after `sel` (ENGINE §22.11 补充层 "多模板变体": skins/animation).
+        alts: Vec<String>,
         /// Optional pre-click page guard (ENGINE §22.11 补充层): if the page
         /// precondition is not satisfied, the click never happens.
         requires: Option<Expect>,
@@ -779,6 +782,31 @@ fn parse_coord_pair(
     let first = parse_coord_value(&arr[0], format!("{path}.{key}[0]"))?;
     let second = parse_coord_value(&arr[1], format!("{path}.{key}[1]"))?;
     Ok((first, second))
+}
+
+/// Parse an optional `alts` array of template asset ids (multi-variant click).
+fn parse_alts(args: &serde_json::Value, a_path: &str) -> Result<Vec<String>, FlowError> {
+    let p = format!("{a_path}.alts");
+    let Some(v) = args.get("alts") else {
+        return Ok(Vec::new());
+    };
+    let arr = v.as_array().ok_or_else(|| {
+        FlowError::new(&p, "`alts` must be an array of template asset ids")
+    })?;
+    let mut out = Vec::with_capacity(arr.len());
+    for (i, item) in arr.iter().enumerate() {
+        let s = item.as_str().ok_or_else(|| {
+            FlowError::new(format!("{p}[{i}]"), "`alts` entries must be strings")
+        })?;
+        if s.trim().is_empty() {
+            return Err(FlowError::new(
+                format!("{p}[{i}]"),
+                "`alts` entries must be non-empty",
+            ));
+        }
+        out.push(s.to_string());
+    }
+    Ok(out)
 }
 
 /// Parse an optional `requires` / `expect` object on a click step.
@@ -963,6 +991,7 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
         }),
         "click" => Ok(Step::Click {
             sel: req_str(&args, "sel", &a_path)?,
+            alts: parse_alts(&args, &a_path)?,
             requires: parse_expect(&args, "requires", &a_path)?,
             expect: parse_expect(&args, "expect", &a_path)?,
         }),
@@ -1158,10 +1187,14 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {
             }
             Step::Click {
                 sel,
+                alts,
                 requires,
                 expect,
             } => {
                 out.insert(sel.clone());
+                for a in alts {
+                    out.insert(a.clone());
+                }
                 for e in requires.iter().chain(expect.iter()) {
                     out.insert(e.sel().to_string());
                 }
@@ -1356,6 +1389,33 @@ mod tests {
                 );
                 assert!(!errs(&json).is_empty(), "must reject {key}={spec}");
             }
+        }
+    }
+
+    #[test]
+    fn parses_click_alts_and_collects_them() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"式神录","alts":["式神录_夜","式神录_昼"]}}]}"#,
+        )
+        .expect("flow");
+        match &flow.steps[0] {
+            Step::Click { alts, .. } => {
+                assert_eq!(alts, &vec!["式神录_夜".to_string(), "式神录_昼".to_string()]);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let got: Vec<String> = flow.referenced_assets().into_iter().collect();
+        assert_eq!(got, vec!["式神录", "式神录_夜", "式神录_昼"]);
+    }
+
+    #[test]
+    fn rejects_bad_alts() {
+        for spec in [r#""x""#, "[1]", r#"[""]"#] {
+            let json = format!(
+                r#"{{"schema_version":1,"name":"t","steps":[{{"op":"click","args":{{"sel":"S","alts":{spec}}}}}]}}"#
+            );
+            assert!(!errs(&json).is_empty(), "must reject alts={spec}");
         }
     }
 
