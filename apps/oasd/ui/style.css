@@ -92,3 +92,49 @@ pre {
   background: #f2f7ff;
   box-shadow: 0 0 0 2px #000;
 }
+
+/* 22.18 visual flow editor */
+.flow-steps {
+  margin: 6px 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  overflow: auto;
+}
+.flow-step {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.flow-step .flow-op {
+  width: 84px;
+  flex: none;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  color: #ffd54a;
+}
+.flow-step .flow-args {
+  flex: 1;
+  min-width: 0;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+.flow-step button {
+  width: 26px;
+  flex: none;
+  padding: 1px 0;
+  font-size: 12px;
+}
+.flow-toolbar {
+  flex-wrap: wrap;
+  align-items: center;
+}
+.flow-toolbar select,
+.flow-toolbar button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  padding: 2px 6px;
+  font-size: 12px;
+}

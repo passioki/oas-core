@@ -66,6 +66,19 @@
       <h3>flow.json</h3>
       <textarea id="flow-json" rows="8" spellcheck="false" placeholder='{"schema_version":1,"name":"任务1","steps":[{"op":"click","args":{"sel":"分组2"}},{"op":"finish","args":{"exit":"done"}}]}'></textarea>
       <button id="btn-save-flow">保存 flow（校验引用）</button>
+      <h3>流程编辑器（可视化）</h3>
+      <div class="row flow-toolbar">
+        <select id="flow-op"></select>
+        <button id="flow-add-step">添加步骤</button>
+        <button id="flow-from-json">从 JSON 载入</button>
+        <button id="flow-to-json">生成 JSON</button>
+        <button id="flow-save-viz">生成并保存</button>
+      </div>
+      <div id="flow-steps" class="flow-steps muted">（从任务载入或点「从 JSON 载入」）</div>
+      <h4>弹窗规则（interrupts）</h4>
+      <div id="flow-interrupts" class="flow-steps muted">（无）</div>
+      <button id="flow-add-interrupt">添加弹窗规则</button>
+      <p class="muted small">带 if/loop 的流程请用 JSON 文本模式；可视化模式拒绝 flatten（避免丢内容）。</p>
       <h3>任务素材</h3>
       <pre id="assets-summary" class="muted">—</pre>
 
@@ -76,6 +89,7 @@
     </aside>
   </main>
 
+  <script src="/flow_model.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

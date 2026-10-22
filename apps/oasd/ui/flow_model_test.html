@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh">
+<head><meta charset="utf-8"><title>flow_model.js tests</title></head>
+<body>
+<pre id="out">RUNNING</pre>
+<script src="flow_model.js"></script>
+<script>
+(function () {
+  const results = [];
+  function eq(a, b) {
+    const sa = JSON.stringify(a);
+    const sb = JSON.stringify(b);
+    if (sa !== sb) throw new Error(sa + ' != ' + sb);
+  }
+  function check(name, fn) {
+    try {
+      fn();
+      results.push('PASS ' + name);
+    } catch (e) {
+      results.push('FAIL ' + name + ': ' + (e && e.message ? e.message : e));
+    }
+  }
+  const F = window.OAS_FLOW;
+  if (!F) {
+    document.getElementById('out').textContent = 'FLOW_MODEL_TESTS FAIL: OAS_FLOW missing';
+    return;
+  }
+
+  check('parse flat flow with interrupts', function () {
+    const m = F.parseFlow(JSON.stringify({
+      schema_version: 1,
+      name: 't',
+      steps: [{ op: 'click', args: { sel: 'A' } }, { op: 'finish', args: { exit: 'done' } }],
+      interrupts: [{ detect: 'D', action: 'A' }],
+    }));
+    eq(m.name, 't');
+    eq(m.steps.map(function (s) { return s.op; }), ['click', 'finish']);
+    eq(m.interrupts, [{ detect: 'D', action: 'A' }]);
+  });
+
+  check('parse rejects if/loop nesting (no silent flatten)', function () {
+    let ok = false;
+    try {
+      F.parseFlow(JSON.stringify({ schema_version: 1, name: 't', steps: [{ op: 'if', args: {} }] }));
+    } catch (e) {
+      ok = /嵌套块/.test(e.message);
+    }
+    if (!ok) throw new Error('nested block must be rejected');
+  });
+
+  check('build roundtrip keeps steps and interrupts', function () {
+    const m = {
+      name: 'x',
+      steps: [
+        { op: 'click', argsText: '{"sel":"A"}' },
+        { op: 'finish', argsText: '{"exit":"done"}' },
+      ],
+      interrupts: [{ detect: 'D', action: '' }],
+    };
+    const text = F.buildFlow(m);
+    const back = F.parseFlow(text);
+    eq(back.steps.map(function (s) { return s.op; }), ['click', 'finish']);
+    eq(back.interrupts, [{ detect: 'D', action: '' }]);
+  });
+
+  check('build rejects invalid args JSON', function () {
+    let ok = false;
+    try {
+      F.buildFlow({
+        name: 'x',
+        steps: [
+          { op: 'click', argsText: '{bad' },
+          { op: 'finish', argsText: '{}' },
+        ],
+      });
+    } catch (e) {
+      ok = /args 不是合法 JSON/.test(e.message);
+    }
+    if (!ok) throw new Error('bad args must fail');
+  });
+
+  check('build rejects unknown op', function () {
+    let ok = false;
+    try {
+      F.buildFlow({ name: 'x', steps: [{ op: 'teleport', argsText: '{}' }] });
+    } catch (e) {
+      ok = /未知 op/.test(e.message);
+    }
+    if (!ok) throw new Error('unknown op must fail');
+  });
+
+  check('validateModel: finish must be unique and last', function () {
+    if (F.validateModel({ steps: [{ op: 'log', argsText: '{}' }] }).length === 0) {
+      throw new Error('missing finish must be reported');
+    }
+    if (F.validateModel({
+      steps: [{ op: 'finish', argsText: '{}' }, { op: 'log', argsText: '{}' }],
+    }).length === 0) {
+      throw new Error('finish-not-last must be reported');
+    }
+    eq(
+      F.validateModel({ steps: [{ op: 'log', argsText: '{}' }, { op: 'finish', argsText: '{}' }] }),
+      []
+    );
+  });
+
+  check('defaultArgs returns objects for every op', function () {
+    F.OPS.forEach(function (op) {
+      const a = F.defaultArgs(op);
+      if (!a || typeof a !== 'object' || Array.isArray(a)) throw new Error(op + ' defaultArgs invalid');
+    });
+  });
+
+  const allPass = results.every(function (r) { return r.indexOf('PASS') === 0; });
+  document.getElementById('out').textContent =
+    results.join('\n') + '\nFLOW_MODEL_TESTS ' + (allPass ? 'PASS' : 'FAIL');
+})();
+</script>
+</body>
+</html>

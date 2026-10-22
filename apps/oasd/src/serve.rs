@@ -205,6 +205,7 @@ impl Server {
             ("GET", "/") => self.send_file(&mut out, &format!("{ui_dir}/index.html"), "text/html; charset=utf-8"),
             ("GET", "/app.js") => self.send_file(&mut out, &format!("{ui_dir}/app.js"), "application/javascript; charset=utf-8"),
             ("GET", "/style.css") => self.send_file(&mut out, &format!("{ui_dir}/style.css"), "text/css; charset=utf-8"),
+            ("GET", "/flow_model.js") => self.send_file(&mut out, &format!("{ui_dir}/flow_model.js"), "application/javascript; charset=utf-8"),
             ("GET", "/frame.png") => {
                 let png = self.state.lock().unwrap().png.clone();
                 match png {
@@ -252,6 +253,7 @@ impl Server {
             // --- N3: task bundle save routes ---
             ("POST", "/task/save_asset") => self.handle_save_asset(&mut out, &body),
             ("GET", "/task/assets") => self.handle_task_assets(&mut out, &path),
+            ("GET", "/task/flow") => self.handle_task_flow(&mut out, &path),
             ("POST", "/task/save_flow") => self.handle_save_flow(&mut out, &body),
             ("GET", "/task/list") => self.handle_task_list(&mut out),
             // --- N4: click-distribution data plane (§21 CD1~CD4) ---
@@ -744,8 +746,47 @@ impl Server {
     }
 
     /// GET /task/assets?task=任务1 -> assets.json summary.
-    fn handle_task_assets(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
+    /// `GET /task/flow?task=<name>` — the task's flow.json (visual editor input).
+    fn handle_task_flow(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
         let q = parse_query(raw_path);
+        let task = match q.iter().find(|(k, _)| k == "task").map(|(_, v)| v.clone()) {
+            Some(t) => t,
+            None => {
+                return self.send_errors(out, 400, vec!["missing query param `task`".to_string()])
+            }
+        };
+        if let Err(e) = oas_task::validate_task_name(&task) {
+            return self.send_errors(out, 400, vec![e]);
+        }
+        let path = self.tasks_dir.join(&task).join("flow.json");
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                let flow: serde_json::Value = match serde_json::from_str(&text) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return self.send_errors(
+                            out,
+                            400,
+                            vec![format!("flow.json is not valid JSON: {e}")],
+                        )
+                    }
+                };
+                let body = serde_json::json!({"ok": true, "task": task, "flow": flow});
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let body = serde_json::json!({"ok": true, "task": task, "flow": serde_json::Value::Null});
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(e) => self.send_errors(
+                out,
+                400,
+                vec![format!("read `{}`: {e}", path.display())],
+            ),
+        }
+    }
+
+    fn handle_task_assets(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {        let q = parse_query(raw_path);
         let task = match q.iter().find(|(k, _)| k == "task").map(|(_, v)| v.clone()) {
             Some(t) => t,
             None => {

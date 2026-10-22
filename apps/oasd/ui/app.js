@@ -29,6 +29,15 @@ const btnClicksOverlay = document.getElementById('btn-clicks-overlay');
 const btnClicksClear = document.getElementById('btn-clicks-clear');
 const clickStats = document.getElementById('click-stats');
 const clicksStatus = document.getElementById('clicks-status');
+// §22.18 visual flow editor
+const flowOp = document.getElementById('flow-op');
+const flowSteps = document.getElementById('flow-steps');
+const flowInterrupts = document.getElementById('flow-interrupts');
+const btnFlowAddStep = document.getElementById('flow-add-step');
+const btnFlowFromJson = document.getElementById('flow-from-json');
+const btnFlowToJson = document.getElementById('flow-to-json');
+const btnFlowSaveViz = document.getElementById('flow-save-viz');
+const btnFlowAddInterrupt = document.getElementById('flow-add-interrupt');
 
 let img = null;
 let roi = null; // {x,y,w,h} in frame coordinates
@@ -40,6 +49,8 @@ let selectedBox = null; // the detection block last clicked (N2, §19.2)
 let runs = [];
 let clickData = null; // {file, clicks, distinct, points}
 let clickOverlay = null;
+// §22.18 visual flow editor model: {name, steps:[{op,argsText}], interrupts:[{detect,action}]}
+let flowModel = { name: '', steps: [], interrupts: [] };
 // §22.10 polygon selection: vertices in FRAME coordinates + closed flag.
 // When closed, roi becomes the polygon bbox and assets are saved with `polygon`;
 // the runtime clicks inside the polygon's largest inscribed rectangle.
@@ -687,6 +698,159 @@ async function doSaveFlow() {
   }
 }
 
+// --- §22.18 流程编辑器（可视化） --------------------------------------------
+function flowEnsureOps() {
+  if (!flowOp || flowOp.options.length) return;
+  const ops = (window.OAS_FLOW && window.OAS_FLOW.OPS) || [];
+  for (const op of ops) {
+    const o = document.createElement('option');
+    o.value = op;
+    o.textContent = op;
+    flowOp.appendChild(o);
+  }
+}
+
+function flowRender() {
+  if (!flowSteps) return;
+  flowEnsureOps();
+  flowSteps.textContent = '';
+  if (!flowModel.steps.length) flowSteps.textContent = '（无步骤）';
+  flowModel.steps.forEach((step, i) => {
+    const row = document.createElement('div');
+    row.className = 'flow-step';
+    const op = document.createElement('span');
+    op.className = 'flow-op';
+    op.textContent = step.op;
+    const args = document.createElement('input');
+    args.className = 'flow-args';
+    args.spellcheck = false;
+    args.value = step.argsText;
+    args.title = step.argsText;
+    args.addEventListener('input', () => { step.argsText = args.value; });
+    const up = document.createElement('button');
+    up.textContent = '↑';
+    up.disabled = i === 0;
+    up.addEventListener('click', () => {
+      if (i === 0) return;
+      [flowModel.steps[i - 1], flowModel.steps[i]] = [flowModel.steps[i], flowModel.steps[i - 1]];
+      flowRender();
+    });
+    const down = document.createElement('button');
+    down.textContent = '↓';
+    down.disabled = i === flowModel.steps.length - 1;
+    down.addEventListener('click', () => {
+      if (i >= flowModel.steps.length - 1) return;
+      [flowModel.steps[i + 1], flowModel.steps[i]] = [flowModel.steps[i], flowModel.steps[i + 1]];
+      flowRender();
+    });
+    const del = document.createElement('button');
+    del.textContent = '✕';
+    del.title = '删除该步骤';
+    del.addEventListener('click', () => {
+      flowModel.steps.splice(i, 1);
+      flowRender();
+    });
+    row.append(op, args, up, down, del);
+    flowSteps.appendChild(row);
+  });
+
+  flowInterrupts.textContent = '';
+  if (!flowModel.interrupts.length) flowInterrupts.textContent = '（无）';
+  flowModel.interrupts.forEach((rule, i) => {
+    const row = document.createElement('div');
+    row.className = 'flow-step';
+    const detect = document.createElement('input');
+    detect.className = 'flow-args';
+    detect.placeholder = 'detect（弹窗模板 id）';
+    detect.value = rule.detect || '';
+    detect.addEventListener('input', () => { rule.detect = detect.value; });
+    const action = document.createElement('input');
+    action.className = 'flow-args';
+    action.placeholder = 'action（要点的按钮 id，空=点 detect）';
+    action.value = rule.action || '';
+    action.addEventListener('input', () => { rule.action = action.value; });
+    const del = document.createElement('button');
+    del.textContent = '✕';
+    del.addEventListener('click', () => {
+      flowModel.interrupts.splice(i, 1);
+      flowRender();
+    });
+    row.append(detect, action, del);
+    flowInterrupts.appendChild(row);
+  });
+}
+
+function flowLoadFromJson() {
+  if (!window.OAS_FLOW) {
+    resultEl.textContent = 'flow_model.js 未加载（换页/清缓存后重试）';
+    return;
+  }
+  try {
+    const text = (flowJson.value || '').trim();
+    if (!text) {
+      resultEl.textContent = 'flow.json 为空：先载入任务流程或粘贴 JSON';
+      return;
+    }
+    flowModel = window.OAS_FLOW.parseFlow(text);
+    flowRender();
+    resultEl.textContent =
+      `流程编辑器已载入：${flowModel.steps.length} 个步骤 / ${flowModel.interrupts.length} 条弹窗规则`;
+    log(`流程编辑器：载入 ${flowModel.steps.length} 步`);
+  } catch (e) {
+    resultEl.textContent = '可视化载入失败：' + (e && e.message ? e.message : e);
+    log('流程可视化载入失败：' + (e && e.message ? e.message : e));
+  }
+}
+
+function flowBuildToJson() {
+  if (!window.OAS_FLOW) {
+    resultEl.textContent = 'flow_model.js 未加载';
+    return null;
+  }
+  try {
+    const text = window.OAS_FLOW.buildFlow(flowModel);
+    flowJson.value = text;
+    resultEl.textContent = '已生成 flow.json（保存前仍会做服务端校验）';
+    return text;
+  } catch (e) {
+    resultEl.textContent = '生成 flow.json 失败：' + (e && e.message ? e.message : e);
+    return null;
+  }
+}
+
+async function flowSaveVisual() {
+  const errs = window.OAS_FLOW ? window.OAS_FLOW.validateModel(flowModel) : [];
+  if (errs.length) {
+    resultEl.textContent = '流程检查未通过：\n· ' + errs.join('\n· ');
+    return;
+  }
+  if (!flowBuildToJson()) return;
+  await doSaveFlow();
+}
+
+async function loadTaskFlow(task) {
+  if (!task) return;
+  try {
+    const r = await fetch('/task/flow?task=' + encodeURIComponent(task));
+    const s = await r.json();
+    if (!s.ok) {
+      log('读取任务流程失败：' + (s.errors || []).join('; '));
+      return;
+    }
+    if (!s.flow) {
+      log(`任务「${task}」还没有 flow.json`);
+      return;
+    }
+    flowJson.value = JSON.stringify(s.flow, null, 2);
+    flowModel = window.OAS_FLOW ? window.OAS_FLOW.parseFlow(flowJson.value) : flowModel;
+    flowModel.name = s.flow.name || task;
+    flowRender();
+    log(`已载入任务「${task}」的 flow（${flowModel.steps.length} 步）`);
+  } catch (e) {
+    log('读取任务流程异常：' + e);
+  }
+}
+
 async function loadFrame() {
   return new Promise((resolve, reject) => {
     const im = new Image();
@@ -960,7 +1124,29 @@ btnLines.addEventListener('click', async () => {
 (async function boot() {
   btnSaveAsset.addEventListener('click', doSaveAsset);
   btnSaveFlow.addEventListener('click', doSaveFlow);
-  taskName.addEventListener('change', () => refreshTaskAssets());
+  taskName.addEventListener('change', async () => {
+    await refreshTaskAssets();
+    await loadTaskFlow((taskName.value || '').trim());
+  });
+  // §22.18 可视化流程编辑器
+  if (btnFlowAddStep) {
+    btnFlowAddStep.addEventListener('click', () => {
+      if (!flowOp) return;
+      const defaults = window.OAS_FLOW ? window.OAS_FLOW.defaultArgs(flowOp.value) : {};
+      flowModel.steps.push({ op: flowOp.value, argsText: JSON.stringify(defaults, null, 2) });
+      flowRender();
+    });
+  }
+  if (btnFlowFromJson) btnFlowFromJson.addEventListener('click', flowLoadFromJson);
+  if (btnFlowToJson) btnFlowToJson.addEventListener('click', () => { flowBuildToJson(); });
+  if (btnFlowSaveViz) btnFlowSaveViz.addEventListener('click', flowSaveVisual);
+  if (btnFlowAddInterrupt) {
+    btnFlowAddInterrupt.addEventListener('click', () => {
+      flowModel.interrupts.push({ detect: '', action: '' });
+      flowRender();
+    });
+  }
+  if (flowSteps) flowRender();
   // N2: 生成点击指令 / 追加到 flow
   if (btnClickStep) btnClickStep.addEventListener('click', doGenerateClickStep);
   if (btnAppendStep) btnAppendStep.addEventListener('click', doAppendStepToFlow);
@@ -994,6 +1180,23 @@ btnLines.addEventListener('click', async () => {
   } catch (e) {
     log('任务素材读取失败：' + e);
   }
+
+  // §22.18: load the task's existing flow into the visual editor; `?task=<name>`
+  // is a deep link used by the headless acceptance run.
+  let deepTask = '';
+  try {
+    deepTask = new URLSearchParams(location.search).get('task') || '';
+  } catch (e) {
+    deepTask = '';
+  }
+  if (deepTask) taskName.value = deepTask;
+  await loadTaskFlow((taskName.value || '').trim());
+  window.OAS_FLOW_UI = {
+    getModel: () => flowModel,
+    render: flowRender,
+    load: loadTaskFlow,
+    build: flowBuildToJson,
+  };
 
   // N4: refresh /runs once on boot, then honour the `?run=<file>` deep link so
   // a headless screenshot can land directly on the rendered distribution.
