@@ -528,7 +528,7 @@ pub struct Flow {
     pub steps: Vec<Step>,
 }
 
-/// One locator in a `click_target` redundancy chain (ENGINE 搂22.11).
+/// One locator in a `click_target` redundancy chain (ENGINE §22.11).
 ///
 /// Priority is **fixed** (image > text > memory), regardless of the array order
 /// in `flow.json`; the runtime sorts before trying.
@@ -573,14 +573,13 @@ impl Locator {
     }
 }
 
-/// Post-click verification (ENGINE 搂22.11 琛ュ厖灞?"鐐瑰嚮鍚庨獙璇?).
+/// Page/verification expectation (ENGINE §22.11 补充层).
 ///
-/// The runtime polls the screen after the click until the expectation holds or
-/// `timeout_ms` elapsed; a timeout FAILS the step (no "clicked but nothing
-/// happened = success" hole).
+/// Used twice: `requires` = pre-click page guard (the click must NOT happen when
+/// unmet), `expect` = post-click verification (the step fails when unmet).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expect {
-    /// A template must become findable (鈮?its threshold) within `timeout_ms`.
+    /// A template must become findable (≥ its threshold) within `timeout_ms`.
     Appear { sel: String, timeout_ms: u32 },
     /// A template must become NOT findable within `timeout_ms` (e.g. popup gone).
     Vanish { sel: String, timeout_ms: u32 },
@@ -649,10 +648,13 @@ pub enum Step {
     },
     Click {
         sel: String,
-        /// Optional post-click verification (ENGINE 搂22.11 琛ュ厖灞?.
+        /// Optional pre-click page guard (ENGINE §22.11 补充层): if the page
+        /// precondition is not satisfied, the click never happens.
+        requires: Option<Expect>,
+        /// Optional post-click verification (ENGINE §22.11 补充层).
         expect: Option<Expect>,
     },
-    /// 搂19 CP1: click an absolute frame coordinate computed from expressions.
+    /// §19 CP1: click an absolute frame coordinate computed from expressions.
     ///
     /// This exists because a block produced by multi-line OCR is *not* a
     /// declared asset - it only has a box centre. Both coordinates are
@@ -660,9 +662,10 @@ pub enum Step {
     ClickPoint {
         x: Expr,
         y: Expr,
+        requires: Option<Expect>,
         expect: Option<Expect>,
     },
-    /// Action-class swipe/scroll (搂3.2): drag from one frame point to another.
+    /// Action-class swipe/scroll (§3.2): drag from one frame point to another.
     ///
     /// Kept deterministic (no jitter/delay): a scroll is a movement, not a
     /// click, and the recorded `ms` is part of the action's identity.
@@ -676,11 +679,13 @@ pub enum Step {
     Ocr {
         sel: String,
     },
-    /// ENGINE 搂22.11: click a target resolved by an ordered redundancy chain
+    /// ENGINE §22.11: click a target resolved by an ordered redundancy chain
     /// (image > text > remembered coordinate). All locators failing = loud error.
     ClickTarget {
         find: Vec<Locator>,
-        /// Optional post-click verification (ENGINE 搂22.11 琛ュ厖灞?.
+        /// Optional pre-click page guard; unsatisfied => the click never happens.
+        requires: Option<Expect>,
+        /// Optional post-click verification (ENGINE §22.11 补充层).
         expect: Option<Expect>,
     },
     Log {
@@ -752,7 +757,7 @@ fn parse_point_coord(
     }
 }
 
-/// 搂3.2 swipe endpoints: `[<expr>, <expr>]` (a JSON 2-element array).
+/// §3.2 swipe endpoints: `[<expr>, <expr>]` (a JSON 2-element array).
 fn parse_coord_pair(
     v: &serde_json::Value,
     key: &str,
@@ -776,11 +781,12 @@ fn parse_coord_pair(
     Ok((first, second))
 }
 
-fn parse_expect(args: &serde_json::Value, a_path: &str) -> Result<Option<Expect>, FlowError> {
-    let Some(obj) = args.get("expect") else {
+/// Parse an optional `requires` / `expect` object on a click step.
+fn parse_expect(args: &serde_json::Value, key: &str, a_path: &str) -> Result<Option<Expect>, FlowError> {
+    let Some(obj) = args.get(key) else {
         return Ok(None);
     };
-    let p = format!("{a_path}.expect");
+    let p = format!("{a_path}.{key}");
     let kind = req_str(obj, "kind", &p)?;
     let timeout_ms = match obj.get("timeout_ms") {
         None => 1000u32,
@@ -813,7 +819,7 @@ fn parse_expect(args: &serde_json::Value, a_path: &str) -> Result<Option<Expect>
         })),
         other => Err(FlowError::new(
             &p,
-            format!("unknown expect kind `{other}` (allowed: appear, vanish, ocr_text)"),
+            format!("unknown {key} kind `{other}` (allowed: appear, vanish, ocr_text)"),
         )),
     }
 }
@@ -957,12 +963,14 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
         }),
         "click" => Ok(Step::Click {
             sel: req_str(&args, "sel", &a_path)?,
-            expect: parse_expect(&args, &a_path)?,
+            requires: parse_expect(&args, "requires", &a_path)?,
+            expect: parse_expect(&args, "expect", &a_path)?,
         }),
         "click_point" => Ok(Step::ClickPoint {
             x: parse_point_coord(&args, "x", &a_path)?,
             y: parse_point_coord(&args, "y", &a_path)?,
-            expect: parse_expect(&args, &a_path)?,
+            requires: parse_expect(&args, "requires", &a_path)?,
+            expect: parse_expect(&args, "expect", &a_path)?,
         }),
         "swipe" => {
             let (from_x, from_y) = parse_coord_pair(&args, "from", &a_path)?;
@@ -994,7 +1002,8 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
         }
         "click_target" => Ok(Step::ClickTarget {
             find: parse_locators(&args, &a_path)?,
-            expect: parse_expect(&args, &a_path)?,
+            requires: parse_expect(&args, "requires", &a_path)?,
+            expect: parse_expect(&args, "expect", &a_path)?,
         }),
         "ocr" => Ok(Step::Ocr {
             sel: req_str(&args, "sel", &a_path)?,
@@ -1147,26 +1156,34 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {
             Step::Appear { sel } | Step::Ocr { sel } => {
                 out.insert(sel.clone());
             }
-            Step::Click { sel, expect } => {
+            Step::Click {
+                sel,
+                requires,
+                expect,
+            } => {
                 out.insert(sel.clone());
-                if let Some(e) = expect {
+                for e in requires.iter().chain(expect.iter()) {
                     out.insert(e.sel().to_string());
                 }
             }
-            Step::ClickTarget { find, expect } => {
+            Step::ClickTarget {
+                find,
+                requires,
+                expect,
+            } => {
                 for loc in find {
                     if let Some(a) = loc.asset() {
                         out.insert(a.to_string());
                     }
                 }
-                if let Some(e) = expect {
+                for e in requires.iter().chain(expect.iter()) {
                     out.insert(e.sel().to_string());
                 }
             }
-            Step::ClickPoint { x, y, expect } => {
+            Step::ClickPoint { x, y, requires, expect } => {
                 collect_assets_expr(x, out);
                 collect_assets_expr(y, out);
-                if let Some(e) = expect {
+                for e in requires.iter().chain(expect.iter()) {
                     out.insert(e.sel().to_string());
                 }
             }
@@ -1237,8 +1254,8 @@ mod tests {
     fn parses_click_target_and_collects_both_asset_locators() {
         let flow = Flow::from_json(
             r#"{"schema_version":1,"name":"t","steps":[{"op":"click_target","args":{"find":[
-                 {"kind":"coord_memory","key":"杩斿洖"},
-                 {"kind":"ocr_text","sel":"O_LIST","text":"杩斿洖"},
+                 {"kind":"coord_memory","key":"返回"},
+                 {"kind":"ocr_text","sel":"O_LIST","text":"返回"},
                  {"kind":"template","sel":"I_BACK","threshold":0.9}]}}]}"#,
         )
         .expect("flow");
@@ -1249,7 +1266,7 @@ mod tests {
                     find[1],
                     Locator::OcrText {
                         sel: "O_LIST".to_string(),
-                        text: "杩斿洖".to_string()
+                        text: "返回".to_string()
                     }
                 );
                 // Priority is fixed by kind, not by the declared array order.
@@ -1282,37 +1299,49 @@ mod tests {
     }
 
     #[test]
-    fn parses_click_expect_and_collects_its_asset() {
+    fn parses_requires_and_expect_and_collects_their_assets() {
         let flow = Flow::from_json(
             r#"{"schema_version":1,"name":"t","steps":[
-                 {"op":"click","args":{"sel":"预设","expect":{"kind":"appear","sel":"关闭","timeout_ms":1500}}},
-                 {"op":"click_point","args":{"x":1,"y":2,"expect":{"kind":"vanish","sel":"弹窗"}}},
-                 {"op":"click_target","args":{"find":[{"kind":"ocr_text","sel":"列表","text":"分组2"}],"expect":{"kind":"ocr_text","sel":"列表","text":"已切换"}}}]}"#,
+                 {"op":"click","args":{"sel":"预设",
+                   "requires":{"kind":"appear","sel":"式神录","timeout_ms":2000},
+                   "expect":{"kind":"vanish","sel":"关闭"}}},
+                 {"op":"click_point","args":{"x":1,"y":2,
+                   "requires":{"kind":"ocr_text","sel":"顶栏","text":"式神录"}}},
+                 {"op":"click_target","args":{
+                   "find":[{"kind":"template","sel":"返回"}],
+                   "requires":{"kind":"appear","sel":"分组列表"},
+                   "expect":{"kind":"ocr_text","sel":"分组列表","text":"分组2"}}}]}"#,
         )
         .expect("flow");
         match &flow.steps[0] {
             Step::Click {
-                expect: Some(Expect::Appear { sel, timeout_ms }),
+                requires: Some(Expect::Appear { sel, timeout_ms }),
+                expect: Some(Expect::Vanish { sel: vsel, .. }),
                 ..
             } => {
-                assert_eq!(sel, "关闭");
-                assert_eq!(*timeout_ms, 1500);
+                assert_eq!(sel, "式神录");
+                assert_eq!(*timeout_ms, 2000);
+                assert_eq!(vsel, "关闭");
             }
             other => panic!("unexpected {other:?}"),
         }
-        match &flow.steps[1] {
-            Step::ClickPoint {
-                expect: Some(Expect::Vanish { timeout_ms, .. }),
+        match &flow.steps[2] {
+            Step::ClickTarget {
+                requires: Some(Expect::Appear { .. }),
+                expect: Some(Expect::OcrText { .. }),
                 ..
-            } => assert_eq!(*timeout_ms, 1000, "default timeout must be 1000ms"),
+            } => {}
             other => panic!("unexpected {other:?}"),
         }
         let got: Vec<String> = flow.referenced_assets().into_iter().collect();
-        assert_eq!(got, vec!["关闭", "列表", "弹窗", "预设"]);
+        assert_eq!(
+            got,
+            vec!["关闭", "分组列表", "式神录", "返回", "顶栏", "预设"]
+        );
     }
 
     #[test]
-    fn rejects_bad_expect() {
+    fn rejects_bad_requires_and_expect() {
         let bad = [
             r#"{"kind":"magic","sel":"X"}"#,
             r#"{"kind":"appear"}"#,
@@ -1320,11 +1349,13 @@ mod tests {
             r#"{"kind":"appear","sel":"X","timeout_ms":0}"#,
             r#"{"kind":"appear","sel":"X","timeout_ms":999999}"#,
         ];
-        for expect in bad {
-            let json = format!(
-                r#"{{"schema_version":1,"name":"t","steps":[{{"op":"click","args":{{"sel":"S","expect":{expect}}}}}]}}"#
-            );
-            assert!(!errs(&json).is_empty(), "must reject expect={expect}");
+        for key in ["requires", "expect"] {
+            for spec in bad {
+                let json = format!(
+                    r#"{{"schema_version":1,"name":"t","steps":[{{"op":"click","args":{{"sel":"S","{key}":{spec}}}}}]}}"#
+                );
+                assert!(!errs(&json).is_empty(), "must reject {key}={spec}");
+            }
         }
     }
 
@@ -1401,7 +1432,7 @@ mod tests {
         assert!(e[0].msg.contains("I_TYPO"), "{}", e[0]);
     }
 
-    // ---- click_point (design doc 搂19 CP1/CP2) ----
+    // ---- click_point (design doc §19 CP1/CP2) ----
 
     #[test]
     fn click_point_accepts_numeric_literals() {
@@ -1424,7 +1455,7 @@ mod tests {
     fn click_point_accepts_expression_strings_and_collects_assets() {
         let flow = Flow::from_json(
             r#"{"schema_version":1,"name":"t","steps":[
-                 {"op":"click_point","args":{"x":"ocr_digit('浣撳姏') * 10 + 5","y":"120"}}]}"#,
+                 {"op":"click_point","args":{"x":"ocr_digit('体力') * 10 + 5","y":"120"}}]}"#,
         )
         .expect("flow");
         match &flow.steps[0] {
@@ -1439,7 +1470,7 @@ mod tests {
             other => panic!("expected ClickPoint, got {other:?}"),
         }
         let got: Vec<String> = flow.referenced_assets().into_iter().collect();
-        assert_eq!(got, vec!["浣撳姏"]);
+        assert_eq!(got, vec!["体力"]);
     }
 
     #[test]
@@ -1481,7 +1512,7 @@ mod tests {
         assert!(e[0].msg.contains("swipe"), "{}", e[0]);
     }
 
-    // ---- swipe (搂3.2 action class) ----
+    // ---- swipe (§3.2 action class) ----
 
     #[test]
     fn swipe_parses_numbers_expression_strings_and_default_ms() {
@@ -1518,12 +1549,12 @@ mod tests {
     fn swipe_collects_assets_from_expression_endpoints() {
         let flow = Flow::from_json(
             r#"{"schema_version":1,"name":"t","steps":[
-                 {"op":"swipe","args":{"from":["appear('I_A')","ocr_digit('浣撳姏')"],
+                 {"op":"swipe","args":{"from":["appear('I_A')","ocr_digit('体力')"],
                                        "to":[63,47]}}]}"#,
         )
         .expect("flow");
         let got: Vec<String> = flow.referenced_assets().into_iter().collect();
-        assert_eq!(got, vec!["I_A", "浣撳姏"]);
+        assert_eq!(got, vec!["I_A", "体力"]);
     }
 
     #[test]

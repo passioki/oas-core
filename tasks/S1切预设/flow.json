@@ -11,7 +11,12 @@
     },
     {
       "args": {
-        "sel": "结界突破"
+        "sel": "结界突破",
+        "requires": {
+          "kind": "appear",
+          "sel": "结界突破",
+          "timeout_ms": 3000
+        }
       },
       "op": "click"
     },

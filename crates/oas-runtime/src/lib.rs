@@ -570,6 +570,19 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         }
     }
 
+    /// Pre-click page guard (`requires`): when unmet the click must NOT happen.
+    /// Uses the same polling engine as `expect`, but a distinct error prefix.
+    fn require_guard(&mut self, requires: Option<&Expect>) -> Result<bool, String> {
+        match requires {
+            None => Ok(false),
+            Some(e) => {
+                self.verify_expect(e)
+                    .map_err(|err| format!("page guard failed: {err}"))?;
+                Ok(true)
+            }
+        }
+    }
+
     /// Run `expect` when present; returns whether a verification ran (for logs).
     fn verify_if_present(&mut self, expect: Option<&Expect>) -> Result<bool, String> {
         match expect {
@@ -918,7 +931,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     Err(format!("selector `{sel}` not found (best score {score:.3} < {th})"))
                 }
             }
-            Step::Click { sel, expect } => {
+            Step::Click { sel, requires, expect } => {
+                let guarded = self.require_guard(requires.as_ref())?;
                 let (score, at) = self.locate(sel)?;
                 let th = self.assets.get(sel).map(|t| t.threshold).unwrap_or(0.9);
                 let Some(p) = at.filter(|_| score >= th) else {
@@ -950,11 +964,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 let verified = self.verify_if_present(expect.as_ref())?;
                 let miss = if plan.miss { " miss=true" } else { "" };
                 Ok(format!(
-                    "clicked {sel} target=({},{}) point=({},{}){miss} delay={delay}ms score={score:.3} verified={verified}",
+                    "clicked {sel} target=({},{}) point=({},{}){miss} delay={delay}ms score={score:.3} verified={verified} guard={guarded}",
                     p.x, p.y, actual.x, actual.y
                 ))
             }
-            Step::ClickPoint { x, y, expect } => {
+            Step::ClickPoint { x, y, requires, expect } => {
+                let guarded = self.require_guard(requires.as_ref())?;
                 // CP2: both coordinates are expressions (literal or computed).
                 let tx = self.eval_coord(x, "x")?;
                 let ty = self.eval_coord(y, "y")?;
@@ -987,11 +1002,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 // (plus the jitter's delay and the frame it was checked against).
                 let miss = if plan.miss { " miss=true" } else { "" };
                 Ok(format!(
-                    "clicked_point target=({},{}) point=({},{}){miss} delay={delay}ms frame={}x{} verified={verified}",
+                    "clicked_point target=({},{}) point=({},{}){miss} delay={delay}ms frame={}x{} verified={verified} guard={guarded}",
                     target.x, target.y, actual.x, actual.y, w, h
                 ))
             }
-            Step::ClickTarget { find, expect } => {
+            Step::ClickTarget { find, requires, expect } => {
+                let guarded = self.require_guard(requires.as_ref())?;
                 // ENGINE §22.11: fixed priority image > text > memory; every
                 // locator failure is kept as evidence, and ALL failing is a loud
                 // step failure (never a silent skip).
@@ -1035,7 +1051,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 let verified = self.verify_if_present(expect.as_ref())?;
                                 let miss = if plan.miss { " miss=true" } else { "" };
                                 return Ok(format!(
-                                    "clicked_target locator=template sel={sel} score={score:.3} point=({},{}){miss} verified={verified}",
+                                    "clicked_target locator=template sel={sel} score={score:.3} point=({},{}){miss} verified={verified} guard={guarded}",
                                     actual.x, actual.y
                                 ));
                             }
@@ -1071,7 +1087,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                         let verified = self.verify_if_present(expect.as_ref())?;
                                         let miss = if plan.miss { " miss=true" } else { "" };
                                         return Ok(format!(
-                                            "clicked_target locator=ocr_text sel={sel} text={:?} score={:.3} point=({},{}){miss} verified={verified}",
+                                            "clicked_target locator=ocr_text sel={sel} text={:?} score={:.3} point=({},{}){miss} verified={verified} guard={guarded}",
                                             line.text, line.score, actual.x, actual.y
                                         ));
                                     }
@@ -1105,7 +1121,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                     let verified = self.verify_if_present(expect.as_ref())?;
                                     let miss = if plan.miss { " miss=true" } else { "" };
                                     return Ok(format!(
-                                        "clicked_target locator=ocr_text sel={sel} text={:?} score={score:.3} point=({},{}){miss} verified={verified}",
+                                        "clicked_target locator=ocr_text sel={sel} text={:?} score={score:.3} point=({},{}){miss} verified={verified} guard={guarded}",
                                         t, actual.x, actual.y
                                     ));
                                 }
@@ -1132,7 +1148,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                     let verified = self.verify_if_present(expect.as_ref())?;
                                     let miss = if plan.miss { " miss=true" } else { "" };
                                     return Ok(format!(
-                                        "clicked_target locator=coord_memory key={key} point=({},{}){miss} verified={verified}",
+                                        "clicked_target locator=coord_memory key={key} point=({},{}){miss} verified={verified} guard={guarded}",
                                         actual.x, actual.y
                                     ));
                                 }
@@ -2581,6 +2597,60 @@ mod tests {
             .map(|e| e.detail.clone())
             .expect("step event");
         assert!(detail.contains("verified=true"), "{detail}");
+    }
+
+    // ---- §22.11 补充层: pre-click page guard (`requires`) ----
+
+    #[test]
+    fn click_requires_guard_fails_before_any_click() {
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(9);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":20,
+                   "requires":{"kind":"appear","sel":"I_NEVER","timeout_ms":120}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("page guard failed"), "{msg}");
+                assert!(msg.contains("expect appear not met"), "{msg}");
+            }
+            other => panic!("expected a loud guard failure, got {other:?}"),
+        }
+        assert!(
+            shared.clicks.borrow().is_empty(),
+            "an unmet page guard must NOT click"
+        );
+    }
+
+    #[test]
+    fn click_requires_guard_polls_then_clicks_on_the_right_page() {
+        let screen = TwoFrameScreen {
+            frames: vec![frame_flat(), frame_with_tile(12, 10)],
+            idx: 0,
+        };
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(screen, input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(10);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":20,
+                   "requires":{"kind":"appear","sel":"I_BRIGHT","timeout_ms":500}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert_eq!(shared.clicks.borrow().len(), 1, "guard met => click happens");
+        let detail = interp
+            .events()
+            .iter()
+            .find(|e| e.op == "click_point")
+            .map(|e| e.detail.clone())
+            .expect("step event");
+        assert!(detail.contains("guard=true"), "{detail}");
     }
 
     // ---- CD2 click audit (§21) ----
