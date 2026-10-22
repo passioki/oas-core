@@ -16,7 +16,7 @@ pub mod humanize;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use oas_flow::{eval, EvalContext, Expr, Flow, Locator, Step, Value};
+use oas_flow::{eval, EvalContext, Expect, Expr, Flow, Locator, Step, Value};
 use oas_perceive::{GrayImage, Matcher};
 use oas_types::{Exit, Frame, InputSink, Outcome, Point, Rect, ScreenSource};
 
@@ -514,6 +514,73 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         Ok((actual, delay))
     }
 
+    /// ENGINE §22.11 补充层: poll the screen after a click until `expect` holds.
+    ///
+    /// Each poll invalidates the cached frame and grabs a fresh one (a frame-gated
+    /// replay therefore consumes one frame per poll — exactly how waiting is
+    /// modelled offline). Timeout = loud step failure: "clicked but nothing
+    /// changed" must never count as success.
+    fn verify_expect(&mut self, expect: &Expect) -> Result<(), String> {
+        let timeout = std::time::Duration::from_millis(expect.timeout_ms() as u64);
+        let start = std::time::Instant::now();
+        let mut last;
+        loop {
+            self.invalidate_frame();
+            last = match expect {
+                Expect::Appear { sel, .. } => {
+                    let (score, at) = self.locate(sel)?;
+                    let th = self.assets.get(sel).map(|t| t.threshold).unwrap_or(0.9);
+                    if at.is_some() && score >= th {
+                        return Ok(());
+                    }
+                    format!("template `{sel}` best score {score:.3} < {th}")
+                }
+                Expect::Vanish { sel, .. } => {
+                    let (score, at) = self.locate(sel)?;
+                    let th = self.assets.get(sel).map(|t| t.threshold).unwrap_or(0.9);
+                    if !(at.is_some() && score >= th) {
+                        return Ok(());
+                    }
+                    format!("template `{sel}` still present (score {score:.3})")
+                }
+                Expect::OcrText { sel, text, .. } => {
+                    let read = self.ocr_read(sel)?;
+                    let ok = match &read {
+                        OcrRead::Lines(lines) => {
+                            lines.iter().any(|l| l.text.trim() == text.trim())
+                        }
+                        OcrRead::Single(Some(t), _) => t.trim() == text.trim(),
+                        OcrRead::Single(None, _) => false,
+                    };
+                    if ok {
+                        return Ok(());
+                    }
+                    format!("ocr_text `{sel}` does not read {text:?} yet")
+                }
+            };
+            let elapsed = start.elapsed();
+            if elapsed >= timeout {
+                return Err(format!(
+                    "expect {} not met after {}ms ({last})",
+                    expect.kind(),
+                    expect.timeout_ms()
+                ));
+            }
+            std::thread::sleep((timeout - elapsed).min(std::time::Duration::from_millis(50)));
+        }
+    }
+
+    /// Run `expect` when present; returns whether a verification ran (for logs).
+    fn verify_if_present(&mut self, expect: Option<&Expect>) -> Result<bool, String> {
+        match expect {
+            Some(e) => {
+                self.verify_expect(e)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     /// `click_target`: after ANY locator succeeds, refresh the remembered point
     /// for the chain's `coord_memory` key (§22.11) — the store may be read-only.
     fn remember_target(&mut self, find: &[Locator], p: Point, w: u32, h: u32) {
@@ -851,7 +918,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     Err(format!("selector `{sel}` not found (best score {score:.3} < {th})"))
                 }
             }
-            Step::Click { sel } => {
+            Step::Click { sel, expect } => {
                 let (score, at) = self.locate(sel)?;
                 let th = self.assets.get(sel).map(|t| t.threshold).unwrap_or(0.9);
                 let Some(p) = at.filter(|_| score >= th) else {
@@ -880,13 +947,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 };
                 let (actual, delay) =
                     self.perform_click(plan, centre, Some(sel.clone()), "template", w, h)?;
+                let verified = self.verify_if_present(expect.as_ref())?;
                 let miss = if plan.miss { " miss=true" } else { "" };
                 Ok(format!(
-                    "clicked {sel} target=({},{}) point=({},{}){miss} delay={delay}ms score={score:.3}",
+                    "clicked {sel} target=({},{}) point=({},{}){miss} delay={delay}ms score={score:.3} verified={verified}",
                     p.x, p.y, actual.x, actual.y
                 ))
             }
-            Step::ClickPoint { x, y } => {
+            Step::ClickPoint { x, y, expect } => {
                 // CP2: both coordinates are expressions (literal or computed).
                 let tx = self.eval_coord(x, "x")?;
                 let ty = self.eval_coord(y, "y")?;
@@ -914,15 +982,16 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 // can miss by up to ~2*miss_px with the 1~3% per-click chance.
                 let plan = self.humanize.point_click(target, &mut self.rng);
                 let (actual, delay) = self.perform_click(plan, target, None, "point", w, h)?;
+                let verified = self.verify_if_present(expect.as_ref())?;
                 // CP4/HB6: the log carries the TARGET *and* the actual point
                 // (plus the jitter's delay and the frame it was checked against).
                 let miss = if plan.miss { " miss=true" } else { "" };
                 Ok(format!(
-                    "clicked_point target=({},{}) point=({},{}){miss} delay={delay}ms frame={}x{}",
+                    "clicked_point target=({},{}) point=({},{}){miss} delay={delay}ms frame={}x{} verified={verified}",
                     target.x, target.y, actual.x, actual.y, w, h
                 ))
             }
-            Step::ClickTarget { find } => {
+            Step::ClickTarget { find, expect } => {
                 // ENGINE §22.11: fixed priority image > text > memory; every
                 // locator failure is kept as evidence, and ALL failing is a loud
                 // step failure (never a silent skip).
@@ -963,9 +1032,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                     h,
                                 )?;
                                 self.remember_target(find, actual, w, h);
+                                let verified = self.verify_if_present(expect.as_ref())?;
                                 let miss = if plan.miss { " miss=true" } else { "" };
                                 return Ok(format!(
-                                    "clicked_target locator=template sel={sel} score={score:.3} point=({},{}){miss}",
+                                    "clicked_target locator=template sel={sel} score={score:.3} point=({},{}){miss} verified={verified}",
                                     actual.x, actual.y
                                 ));
                             }
@@ -998,9 +1068,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                             h,
                                         )?;
                                         self.remember_target(find, actual, w, h);
+                                        let verified = self.verify_if_present(expect.as_ref())?;
                                         let miss = if plan.miss { " miss=true" } else { "" };
                                         return Ok(format!(
-                                            "clicked_target locator=ocr_text sel={sel} text={:?} score={:.3} point=({},{}){miss}",
+                                            "clicked_target locator=ocr_text sel={sel} text={:?} score={:.3} point=({},{}){miss} verified={verified}",
                                             line.text, line.score, actual.x, actual.y
                                         ));
                                     }
@@ -1031,9 +1102,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                         h,
                                     )?;
                                     self.remember_target(find, actual, w, h);
+                                    let verified = self.verify_if_present(expect.as_ref())?;
                                     let miss = if plan.miss { " miss=true" } else { "" };
                                     return Ok(format!(
-                                        "clicked_target locator=ocr_text sel={sel} text={:?} score={score:.3} point=({},{}){miss}",
+                                        "clicked_target locator=ocr_text sel={sel} text={:?} score={score:.3} point=({},{}){miss} verified={verified}",
                                         t, actual.x, actual.y
                                     ));
                                 }
@@ -1057,9 +1129,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                     let plan = self.humanize.point_click(p, &mut self.rng);
                                     let (actual, _delay) =
                                         self.perform_click(plan, p, None, "coord_memory", w, h)?;
+                                    let verified = self.verify_if_present(expect.as_ref())?;
                                     let miss = if plan.miss { " miss=true" } else { "" };
                                     return Ok(format!(
-                                        "clicked_target locator=coord_memory key={key} point=({},{}){miss}",
+                                        "clicked_target locator=coord_memory key={key} point=({},{}){miss} verified={verified}",
                                         actual.x, actual.y
                                     ));
                                 }
@@ -2395,6 +2468,119 @@ mod tests {
             }
             other => panic!("expected a loud failure, got {other:?}"),
         }
+    }
+
+    // ---- §22.11 补充层: post-click verification (`expect`) ----
+
+    fn frame_flat() -> Frame {
+        Frame::new(64, 48, vec![30u8; (64 * 48 * 4) as usize])
+    }
+
+    #[test]
+    fn click_point_expect_appear_polls_until_the_template_appears() {
+        let screen = TwoFrameScreen {
+            frames: vec![frame_flat(), frame_with_tile(12, 10)],
+            idx: 0,
+        };
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(screen, input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(3);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":20,
+                   "expect":{"kind":"appear","sel":"I_BRIGHT","timeout_ms":800}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert_eq!(shared.clicks.borrow().len(), 1);
+        let detail = interp
+            .events()
+            .iter()
+            .find(|e| e.op == "click_point")
+            .map(|e| e.detail.clone())
+            .expect("step event");
+        assert!(detail.contains("verified=true"), "{detail}");
+    }
+
+    #[test]
+    fn click_point_expect_appear_times_out_loudly() {
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(4);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":20,
+                   "expect":{"kind":"appear","sel":"I_NEVER","timeout_ms":120}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("expect appear not met after 120ms"), "{msg}");
+            }
+            other => panic!("expected a loud timeout failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn click_point_expect_vanish_passes_after_the_popup_is_gone() {
+        let screen = TwoFrameScreen {
+            frames: vec![frame_with_tile(12, 10), frame_flat()],
+            idx: 0,
+        };
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(screen, input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(6);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":20,
+                   "expect":{"kind":"vanish","sel":"I_BRIGHT","timeout_ms":800}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let detail = interp
+            .events()
+            .iter()
+            .find(|e| e.op == "click_point")
+            .map(|e| e.detail.clone())
+            .expect("step event");
+        assert!(detail.contains("verified=true"), "{detail}");
+    }
+
+    #[test]
+    fn click_point_expect_ocr_text_uses_the_ocr_provider() {
+        let mut a = assets();
+        a.insert_ocr(
+            "O_MSG",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 64,
+                h: 48,
+            },
+        );
+        let (ocr, _rois) = FakeOcr::new(&[("完成", 0.9)]);
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, a, Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(ocr))
+            .with_seed(7);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":20,
+                   "expect":{"kind":"ocr_text","sel":"O_MSG","text":"完成","timeout_ms":500}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let detail = interp
+            .events()
+            .iter()
+            .find(|e| e.op == "click_point")
+            .map(|e| e.detail.clone())
+            .expect("step event");
+        assert!(detail.contains("verified=true"), "{detail}");
     }
 
     // ---- CD2 click audit (§21) ----

@@ -65,6 +65,8 @@ impl FileCoordStore {
         }
     }
 
+    /// Path of the backing file (used by tests / diagnostics).
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -75,10 +77,6 @@ impl FileCoordStore {
 
     pub fn len(&self) -> usize {
         self.items.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
     }
 
     /// Persist pending learns atomically. Read-only stores are a no-op.
@@ -183,7 +181,7 @@ mod tests {
     fn put_flush_open_roundtrip_and_design_scaling() {
         let dir = tmpdir("roundtrip");
         let mut s = FileCoordStore::open(&dir, true);
-        assert!(s.is_empty());
+        assert_eq!(s.len(), 0);
         s.put(
             "返回按钮",
             Point { x: 100, y: 200 },
