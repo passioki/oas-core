@@ -68,6 +68,12 @@ pub struct AssetDecl {
         serialize_with = "serialize_threshold"
     )]
     pub threshold: Option<f32>,
+    /// Optional polygon in **frame coordinates** at `design_resolution`
+    /// (ENGINE §22.10). When present the runtime restricts `click` sampling to
+    /// the polygon's **largest inscribed axis-aligned rectangle**; matching/OCR
+    /// still use `roi` (= the polygon bounding box, computed on save).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polygon: Option<Vec<[i32; 2]>>,
     /// Revision counter (1 on first save).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rev: Option<u32>,
@@ -82,6 +88,7 @@ impl AssetDecl {
             file: None,
             roi: Some(roi),
             threshold: None,
+            polygon: None,
             rev: None,
         }
     }
@@ -450,6 +457,11 @@ impl TaskBundle {
                     h: roi[3],
                 }),
                 threshold: item.threshold.unwrap_or(DEFAULT_THRESHOLD),
+                click_polygon: item.polygon.as_ref().map(|pts| {
+                    pts.iter()
+                        .map(|p| oas_types::Point { x: p[0], y: p[1] })
+                        .collect()
+                }),
             };
             set.insert(item.id.clone(), tpl);
         }
@@ -503,6 +515,67 @@ impl TaskBundle {
             .map_err(|e| format!("asset `{}` rejected: {e}", decl.id))?;
 
         let mut af = self.load_assets_file()?;
+
+        // §22.10: optional polygon => validate it and derive `roi` = bounding box
+        // (the editor/API may send any roi; the polygon wins so the bundle is
+        // self-consistent). Matching/OCR keep using `roi`; `click` uses the
+        // polygon's largest inscribed rectangle at runtime.
+        if let Some(poly) = &decl.polygon {
+            if poly.len() < 3 {
+                return Err(format!(
+                    "asset `{}` rejected: polygon needs >= 3 points (got {}); nothing written",
+                    decl.id,
+                    poly.len()
+                ));
+            }
+            let mut area2: i64 = 0;
+            for i in 0..poly.len() {
+                let a = poly[i];
+                let b = poly[(i + 1) % poly.len()];
+                if a == b {
+                    return Err(format!(
+                        "asset `{}` rejected: polygon has repeated adjacent point {:?}; nothing written",
+                        decl.id, a
+                    ));
+                }
+                area2 += a[0] as i64 * b[1] as i64 - b[0] as i64 * a[1] as i64;
+            }
+            if area2 == 0 {
+                return Err(format!(
+                    "asset `{}` rejected: polygon has zero area (collinear points); nothing written",
+                    decl.id
+                ));
+            }
+            let (mut min_x, mut min_y) = (i32::MAX, i32::MAX);
+            let (mut max_x, mut max_y) = (i32::MIN, i32::MIN);
+            for p in poly {
+                min_x = min_x.min(p[0]);
+                min_y = min_y.min(p[1]);
+                max_x = max_x.max(p[0]);
+                max_y = max_y.max(p[1]);
+            }
+            if min_x < 0 || min_y < 0 {
+                return Err(format!(
+                    "asset `{}` rejected: polygon point is negative; nothing written",
+                    decl.id
+                ));
+            }
+            let bounds = match frame {
+                Some(f) => Some((f.width as i32, f.height as i32)),
+                None => af.design_resolution.map(|[w, h]| (w as i32, h as i32)),
+            };
+            if let Some((bw, bh)) = bounds {
+                if max_x >= bw || max_y >= bh {
+                    return Err(format!(
+                        "asset `{}` rejected: polygon [{}..{}, {}..{}] is outside the {bw}x{bh} frame; \
+                         nothing written",
+                        decl.id, min_x, max_x, min_y, max_y
+                    ));
+                }
+            }
+            decl.roi = Some([min_x, min_y, max_x - min_x + 1, max_y - min_y + 1]);
+        }
+
         let existing = af.items.iter().position(|it| it.id == decl.id);
         let old_file = existing.and_then(|i| af.items[i].file.clone());
         let rev = match (replace, existing) {
@@ -1092,6 +1165,46 @@ mod tests {
         let mut after_files = Vec::new();
         walk_files(b.root(), &mut after_files);
         assert_eq!(before_files.len(), after_files.len(), "no orphan image");
+    }
+
+    #[test]
+    fn polygon_asset_is_persisted_and_wired_into_the_runtime_template() {
+        let td = TempDir::new("poly");
+        let b = open(&td);
+        let f = frame(64, 48);
+        let mut decl = AssetDecl::template("多边形按钮", [10, 10, 21, 11]);
+        decl.polygon = Some(vec![[10, 10], [30, 10], [30, 20], [10, 20]]);
+        let saved = b.save_asset(decl, Some(&f)).expect("save polygon asset");
+        // roi is DERIVED from the polygon bbox (inclusive pixel convention).
+        assert_eq!(saved.roi, Some([10, 10, 21, 11]));
+        assert_eq!(saved.rev, Some(1));
+        let text = std::fs::read_to_string(b.assets_path()).expect("read assets");
+        assert!(text.contains("\"polygon\""), "{text}");
+        let set = b.load_runtime_assets().expect("runtime assets");
+        let tpl = set.get("多边形按钮").expect("template");
+        let poly = tpl.click_polygon.as_ref().expect("polygon wired");
+        assert_eq!(poly.len(), 4);
+        assert_eq!((poly[0].x, poly[0].y), (10, 10));
+    }
+
+    #[test]
+    fn polygon_asset_validation_rejects_bad_shapes_without_writing() {
+        let td = TempDir::new("polybad");
+        let b = open(&td);
+        let f = frame(40, 30);
+        let cases: Vec<Vec<[i32; 2]>> = vec![
+            vec![[0, 0], [10, 10]],                                     // < 3 points
+            vec![[0, 0], [10, 0], [20, 0]],                             // zero area
+            vec![[0, 0], [-5, 10], [10, 10]],                           // negative
+            vec![[0, 0], [100, 0], [100, 10], [0, 10]],                 // outside frame
+        ];
+        for (i, poly) in cases.into_iter().enumerate() {
+            let mut decl = AssetDecl::template(format!("坏多边形{i}"), [0, 0, 10, 10]);
+            decl.polygon = Some(poly);
+            let err = b.save_asset(decl, Some(&f)).expect_err("must reject");
+            assert!(err.contains("nothing written"), "case {i}: {err}");
+            assert!(!b.assets_path().exists(), "case {i} must write nothing");
+        }
     }
 
     #[test]

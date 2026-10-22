@@ -665,6 +665,48 @@ impl Server {
                 }
             },
         };
+        // §22.10: optional polygon (frame coords, ≥3 points) — validated by
+        // oas-task (which also derives roi = its bounding box).
+        let polygon = match v.get("polygon") {
+            None => None,
+            Some(x) => {
+                let arr = match x.as_array() {
+                    Some(a) => a,
+                    None => {
+                        return self.send_errors(
+                            out,
+                            400,
+                            vec!["`polygon` must be an array of [x,y] integer pairs".to_string()],
+                        )
+                    }
+                };
+                let mut pts: Vec<[i32; 2]> = Vec::with_capacity(arr.len());
+                for (i, item) in arr.iter().enumerate() {
+                    let pair = item.as_array().filter(|a| a.len() == 2);
+                    let parsed = pair.and_then(|a| {
+                        Some((a[0].as_i64()?, a[1].as_i64()?))
+                    });
+                    match parsed {
+                        Some((x, y))
+                            if (i32::MIN as i64..=i32::MAX as i64).contains(&x)
+                                && (i32::MIN as i64..=i32::MAX as i64).contains(&y) =>
+                        {
+                            pts.push([x as i32, y as i32])
+                        }
+                        _ => {
+                            return self.send_errors(
+                                out,
+                                400,
+                                vec![format!(
+                                    "`polygon[{i}]` must be an [x,y] pair of integers"
+                                )],
+                            )
+                        }
+                    }
+                }
+                Some(pts)
+            }
+        };
         let frame = match self.state.lock().unwrap().frame.clone() {
             Some(f) => f,
             None => {
@@ -685,6 +727,7 @@ impl Server {
             file: None,
             roi: Some(roi),
             threshold,
+            polygon,
             rev: None,
         };
         match if replace {

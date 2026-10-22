@@ -1,4 +1,4 @@
-﻿//! P1-b integration: a recorded bundle drives the interpreter offline.
+//! P1-b integration: a recorded bundle drives the interpreter offline.
 //!
 //! This is the loop the whole rewrite depends on:
 //!   record (device)  ->  bundle on disk  ->  interpreter replays it  ->  events
@@ -77,6 +77,7 @@ fn assets() -> AssetSet {
             gray,
             roi: None,
             threshold: 0.9,
+            click_polygon: None,
         },
     );
     set
@@ -166,6 +167,7 @@ fn replay_that_runs_out_fails_loudly() {
             gray: never,
             roi: Some(Rect { x: 0, y: 0, w: 64, h: 48 }),
             threshold: 0.99,
+            click_polygon: None,
         },
     );
 

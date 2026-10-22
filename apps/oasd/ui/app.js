@@ -22,6 +22,7 @@ const btnSaveFlow = document.getElementById('btn-save-flow');
 const assetsSummary = document.getElementById('assets-summary');
 const btnClickStep = document.getElementById('btn-click-step');
 const btnAppendStep = document.getElementById('btn-append-step');
+const btnPoly = document.getElementById('btn-poly');
 const runsSelect = document.getElementById('runs-select');
 const btnRunsRefresh = document.getElementById('btn-runs-refresh');
 const btnClicksOverlay = document.getElementById('btn-clicks-overlay');
@@ -39,6 +40,12 @@ let selectedBox = null; // the detection block last clicked (N2, §19.2)
 let runs = [];
 let clickData = null; // {file, clicks, distinct, points}
 let clickOverlay = null;
+// §22.10 polygon selection: vertices in FRAME coordinates + closed flag.
+// When closed, roi becomes the polygon bbox and assets are saved with `polygon`;
+// the runtime clicks inside the polygon's largest inscribed rectangle.
+let polygon = null;
+let polyClosed = false;
+let polyMode = false;
 
 // --- N4: pure click-distribution helpers (§21 CD1~CD5) -----------------------
 // Kept as plain top-level code on purpose: no build step, no CDN, no module
@@ -119,6 +126,28 @@ function draw() {
     ctx.fillText(`${roi.w}x${roi.h} @ ${roi.x},${roi.y}`, roi.x + 4, Math.max(14, roi.y - 6));
     ctx.restore();
   }
+  // §22.10 polygon overlay (orange; closed => translucent fill + bbox roi)
+  if (polygon && polygon.length) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(polygon[0].x, polygon[0].y);
+    for (let i = 1; i < polygon.length; i++) ctx.lineTo(polygon[i].x, polygon[i].y);
+    if (polyClosed) ctx.closePath();
+    if (polyClosed) {
+      ctx.fillStyle = 'rgba(255,140,0,0.12)';
+      ctx.fill();
+    }
+    ctx.strokeStyle = '#ff8c00';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    for (const p of polygon) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#ff8c00';
+      ctx.fill();
+    }
+    ctx.restore();
+  }
   // detection boxes (multi-line route)
   // High-contrast strategy: every outline is drawn twice - a dark halo first,
   // then the bright line on top - so it stays readable on both light and dark
@@ -162,16 +191,32 @@ function draw() {
   drawClickOverlay();
 }
 
+function polygonBBox(poly) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of poly) {
+    x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+    x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
+  }
+  return {
+    x: Math.round(x0),
+    y: Math.round(y0),
+    w: Math.round(x1 - x0 + 1),
+    h: Math.round(y1 - y0 + 1),
+  };
+}
+
 function updateRoiLabel() {
   if (!roi) {
-    roiEl.textContent = '未选择';
+    roiEl.textContent = polygon ? `多边形：${polygon.length} 个顶点（未闭合）` : '未选择';
     btnOcr.disabled = true;
     btnLines.disabled = true;
     if (btnAsset) btnAsset.disabled = true;
     if (btnSaveAsset) btnSaveAsset.disabled = true;
     return;
   }
-  roiEl.textContent = `x=${roi.x} y=${roi.y} w=${roi.w} h=${roi.h}`;
+  const polyInfo =
+    polygon && polyClosed ? ` · 多边形 ${polygon.length} 顶点（点击区=最大内接矩形）` : '';
+  roiEl.textContent = `x=${roi.x} y=${roi.y} w=${roi.w} h=${roi.h}${polyInfo}`;
   btnOcr.disabled = roi.w < 2 || roi.h < 2;
   btnLines.disabled = roi.w < 2 || roi.h < 2;
   if (btnAsset) btnAsset.disabled = roi.w < 2 || roi.h < 2;
@@ -571,6 +616,11 @@ async function doSaveAsset() {
   const kind = assetKind.value;
   const payload = { task, id, kind, roi: [roi.x, roi.y, roi.w, roi.h] };
   if (kind === 'template') payload.threshold = 0.85;
+  // §22.10: a closed polygon restricts the runtime click area to its largest
+  // inscribed rectangle; roi is already the polygon bbox.
+  if (polygon && polyClosed && polygon.length >= 3) {
+    payload.polygon = polygon.map((p) => [p.x, p.y]);
+  }
   btnSaveAsset.disabled = true;
   try {
     let s = await postJson('/task/save_asset', payload);
@@ -677,6 +727,8 @@ async function doCapture() {
     // from the old frame); the click distribution overlay is kept but its
     // cached bitmap is dropped so draw() rebuilds it over the fresh frame.
     boxes = [];
+    polygon = null;
+    polyClosed = false;
     selectedBox = null;
     clickOverlay = null;
     updateClickStepButtons();
@@ -696,12 +748,31 @@ canvas.addEventListener('mousedown', (ev) => {
   // a box selects that block (ROI := box) so 生成素材 JSON applies to it, and
   // shows only that block's text.
   const p0 = toFrame(ev);
+  // §22.10 polygon mode: each click appends a vertex; double-click closes.
+  if (polyMode) {
+    if (ev.detail >= 2) {
+      ev.preventDefault();
+      return; // the closing dblclick handles this; avoid duplicate vertices
+    }
+    if (!polygon || polyClosed) {
+      polygon = [];
+      polyClosed = false;
+      roi = null;
+    }
+    polygon.push(p0);
+    if (polygon.length >= 3) roi = polygonBBox(polygon);
+    updateRoiLabel();
+    draw();
+    return;
+  }
   if (boxes.length) {
     for (let i = boxes.length - 1; i >= 0; i--) {
       const b = boxes[i];
       const [bx, by, bw, bh] = b.box;
       if (p0.x >= bx && p0.x <= bx + bw && p0.y >= by && p0.y <= by + bh) {
         roi = { x: bx, y: by, w: bw, h: bh };
+        polygon = null;
+        polyClosed = false;
         selectedBox = b;
         dragStart = null;
         updateRoiLabel();
@@ -718,28 +789,69 @@ canvas.addEventListener('mousedown', (ev) => {
   dragStart = p0;
   roi = null;
   boxes = [];
+  polygon = null;
+  polyClosed = false;
   selectedBox = null;
   updateClickStepButtons();
   draw();
 });
 
 canvas.addEventListener('mousemove', (ev) => {
-  if (!dragStart) return;
+  if (polyMode || !dragStart) return;
   roi = normalizeRect(dragStart, toFrame(ev));
   updateRoiLabel();
   draw();
 });
 
 canvas.addEventListener('mouseup', () => {
-  if (!dragStart) return;
+  if (polyMode || !dragStart) return;
   dragStart = null;
   updateRoiLabel();
   draw();
   if (roi) log(`选中 ROI ${roi.w}x${roi.h} @ ${roi.x},${roi.y}`);
 });
 
+// §22.10: double-click closes the polygon. The double-click's first mousedown may
+// have appended a duplicate of the last vertex — drop consecutive duplicates.
+canvas.addEventListener('dblclick', (ev) => {
+  if (!polyMode || !polygon || polygon.length < 3) return;
+  ev.preventDefault();
+  while (polygon.length > 3) {
+    const a = polygon[polygon.length - 1];
+    const b = polygon[polygon.length - 2];
+    if (Math.abs(a.x - b.x) <= 2 && Math.abs(a.y - b.y) <= 2) polygon.pop();
+    else break;
+  }
+  polyClosed = true;
+  roi = polygonBBox(polygon);
+  updateRoiLabel();
+  draw();
+  log(
+    `多边形已闭合：${polygon.length} 顶点，bbox ${roi.w}x${roi.h} @ ${roi.x},${roi.y}` +
+      '（运行时点击区 = 最大内接矩形）'
+  );
+});
+
+btnPoly.addEventListener('click', () => {
+  polyMode = !polyMode;
+  if (polyMode) {
+    polygon = null;
+    polyClosed = false;
+    roi = null;
+    dragStart = null;
+    btnPoly.textContent = '退出多边形模式（点顶点，双击闭合）';
+    log('多边形模式：逐点点击，双击闭合；闭合后点击区 = 多边形最大内接矩形');
+  } else {
+    btnPoly.textContent = '多边形框选（点顶点，双击闭合）';
+  }
+  updateRoiLabel();
+  draw();
+});
+
 btnClear.addEventListener('click', () => {
   roi = null;
+  polygon = null;
+  polyClosed = false;
   selectedBox = null;
   updateRoiLabel();
   updateClickStepButtons();
@@ -794,6 +906,9 @@ btnAsset.addEventListener('click', async () => {
     kind,
     roi: [roi.x, roi.y, roi.w, roi.h],
     ...(kind === 'template' ? { threshold: 0.85 } : {}),
+    ...(polygon && polyClosed && polygon.length >= 3
+      ? { polygon: polygon.map((p) => [p.x, p.y]) }
+      : {}),
   };
   const json = JSON.stringify(decl, null, 2);
   resultEl.textContent = `${json}\n\n（保存时由引擎分配 images/aNNN.png；id 不会变成路径）`;

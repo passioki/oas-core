@@ -26,6 +26,11 @@ pub struct Template {
     pub gray: GrayImage,
     pub roi: Option<Rect>,
     pub threshold: f32,
+    /// Optional polygon (FRAME coordinates at authoring time, ENGINE §22.10).
+    /// When present, `click` samples inside its **largest inscribed axis-aligned
+    /// rectangle** instead of the full matched template rect — the polygon is
+    /// used for precision/selection, while the click area stays rectangular.
+    pub click_polygon: Option<Vec<Point>>,
 }
 
 /// The task's declared assets (`assets/<Name>.json` in a later phase).
@@ -93,7 +98,101 @@ pub struct OcrLine {
     pub score: f32,
 }
 
-/// Recognise text inside a frame ROI.
+/// Point-in-polygon (ray casting, even-odd). Boundary points are unspecified.
+pub fn point_in_polygon(p: Point, polygon: &[Point]) -> bool {
+    if polygon.len() < 3 {
+        return false;
+    }
+    let (px, py) = (p.x as f64, p.y as f64);
+    let mut inside = false;
+    let n = polygon.len();
+    for i in 0..n {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % n];
+        if ((a.y as f64) > py) != ((b.y as f64) > py) {
+            let x = (b.x - a.x) as f64 * (py - a.y as f64) / ((b.y - a.y) as f64)
+                + a.x as f64;
+            if px < x {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+/// Largest axis-aligned rectangle **inscribed in the polygon** (ENGINE §22.10).
+///
+/// Implementation: rasterise the polygon's bounding box to a boolean mask
+/// (pixel centres), then run the classic maximal-rectangle-in-histogram scan.
+/// Boxes are small (a UI button), so this is exact-on-pixels and fast.
+pub fn largest_inscribed_rect(polygon: &[Point]) -> Option<Rect> {
+    if polygon.len() < 3 {
+        return None;
+    }
+    let (mut min_x, mut min_y) = (i32::MAX, i32::MAX);
+    let (mut max_x, mut max_y) = (i32::MIN, i32::MIN);
+    for p in polygon {
+        min_x = min_x.min(p.x);
+        min_y = min_y.min(p.y);
+        max_x = max_x.max(p.x);
+        max_y = max_y.max(p.y);
+    }
+    let w = (max_x - min_x + 1) as usize;
+    let h = (max_y - min_y + 1) as usize;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let mut mask = vec![false; w * h];
+    for j in 0..h {
+        for i in 0..w {
+            if point_in_polygon(
+                Point {
+                    x: min_x + i as i32,
+                    y: min_y + j as i32,
+                },
+                polygon,
+            ) {
+                mask[j * w + i] = true;
+            }
+        }
+    }
+
+    // Maximal rectangle in a binary matrix (height histogram + stack).
+    let mut heights = vec![0usize; w];
+    let mut best: Option<(usize, usize, usize, usize)> = None; // x, y, w, h
+    let mut best_area = 0usize;
+    for j in 0..h {
+        for i in 0..w {
+            heights[i] = if mask[j * w + i] { heights[i] + 1 } else { 0 };
+        }
+        let mut stack: Vec<usize> = Vec::new();
+        for i in 0..=w {
+            let cur = if i == w { 0 } else { heights[i] };
+            while let Some(&top) = stack.last() {
+                if heights[top] > cur {
+                    let height = heights[top];
+                    stack.pop();
+                    let left = stack.last().map(|&x| x + 1).unwrap_or(0);
+                    let width = i - left;
+                    let area = height * width;
+                    if area > best_area {
+                        best_area = area;
+                        best = Some((left, j + 1 - height, width, height));
+                    }
+                } else {
+                    break;
+                }
+            }
+            stack.push(i);
+        }
+    }
+    best.map(|(x, y, ww, hh)| Rect {
+        x: min_x + x as i32,
+        y: min_y + y as i32,
+        w: ww as i32,
+        h: hh as i32,
+    })
+}
 ///
 /// The runtime deliberately does **not** depend on `oas-ocr`: the ONNX engine is
 /// optional (`onnx` feature) and only the binary crate wires it in. This trait is
@@ -657,20 +756,49 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 // 11x11 box at its top-left. Picking inside the real box is what
                 // keeps the click distribution spread over the button; a fixed
                 // box would defeat the whole anti-ban rule.
-                let (tw, th_px) = self
+                //
+                // ENGINE §22.10: if the asset has a polygon, the CLICK AREA is
+                // the largest axis-aligned rectangle inscribed in that polygon
+                // (translated by the match offset). Matching still uses the
+                // whole template.
+                let (tw, th_px, click_polygon, tpl_roi) = self
                     .assets
                     .get(sel)
-                    .map(|t| (t.gray.width, t.gray.height))
+                    .map(|t| {
+                        (
+                            t.gray.width,
+                            t.gray.height,
+                            t.click_polygon.clone(),
+                            t.roi,
+                        )
+                    })
                     .ok_or_else(|| format!("selector `{sel}` is not declared in the task's assets"))?;
-                let target = Rect {
+                let mut target = Rect {
                     x: p.x,
                     y: p.y,
                     w: tw as i32,
                     h: th_px as i32,
                 };
-                // HB1/HB7: 30% bell / 20% uniform / 50% comet (hand-side corner)
-                // inside the matched template rect; with 1~3% probability the
-                // click MISSES the box (still performed, audited as `miss=true`).
+                if let Some(poly) = click_polygon {
+                    let roi = tpl_roi.ok_or_else(|| {
+                        format!("selector `{sel}` has a click polygon but no roi (cannot translate it)")
+                    })?;
+                    let laar = largest_inscribed_rect(&poly).ok_or_else(|| {
+                        format!(
+                            "selector `{sel}` has a click polygon with no clickable rectangle \
+                             (degenerate: <3 points or zero area)"
+                        )
+                    })?;
+                    target = Rect {
+                        x: laar.x + (p.x - roi.x),
+                        y: laar.y + (p.y - roi.y),
+                        w: laar.w,
+                        h: laar.h,
+                    };
+                }
+                // HB1/HB7: 20% bell / 5% uniform / 75% comet (hand-side tail)
+                // inside the target rect; with 1~3% probability the click MISSES
+                // the box (still performed, audited as `miss=true`).
                 let (w, h) = self
                     .frame_size
                     .ok_or_else(|| "click: no frame available".to_string())?;
@@ -1076,6 +1204,7 @@ mod tests {
                 gray,
                 roi: None,
                 threshold: 0.8,
+                click_polygon: None,
             },
         );
         // a dark template that cannot match anything in our frame
@@ -1086,6 +1215,7 @@ mod tests {
                 gray: dark,
                 roi: Some(Rect { x: 0, y: 0, w: 64, h: 48 }),
                 threshold: 0.9,
+                click_polygon: None,
             },
         );
         set
@@ -1743,6 +1873,120 @@ mod tests {
         let far = (p.x - 32).abs() + (p.y - 24).abs() > 8;
         assert!(far, "HB7 miss should be visibly off target: {p:?}");
         assert!(interp.clicks()[0].miss);
+    }
+
+    // ---- §22.10 polygon click area (largest inscribed rectangle) ----
+
+    #[test]
+    fn polygon_laar_finds_a_rectangle_inside_a_rectangle_polygon() {
+        let poly = vec![
+            Point { x: 100, y: 100 },
+            Point { x: 142, y: 100 },
+            Point { x: 142, y: 132 },
+            Point { x: 100, y: 132 },
+        ];
+        let r = largest_inscribed_rect(&poly).expect("laar");
+        assert!(r.w >= 39 && r.h >= 29, "{r:?}");
+        assert!(r.x >= 100 && r.y >= 100 && r.x + r.w <= 142 && r.y + r.h <= 132, "{r:?}");
+    }
+
+    #[test]
+    fn polygon_laar_finds_the_largest_arm_of_an_l_shape() {
+        let poly = vec![
+            Point { x: 0, y: 0 },
+            Point { x: 60, y: 0 },
+            Point { x: 60, y: 20 },
+            Point { x: 20, y: 20 },
+            Point { x: 20, y: 60 },
+            Point { x: 0, y: 60 },
+        ];
+        let r = largest_inscribed_rect(&poly).expect("laar");
+        assert!(r.w * r.h >= 1100, "{r:?} area {}", r.w * r.h);
+        let centre = Point {
+            x: r.x + r.w / 2,
+            y: r.y + r.h / 2,
+        };
+        assert!(point_in_polygon(centre, &poly));
+    }
+
+    #[test]
+    fn polygon_laar_rejects_degenerate_polygons() {
+        assert!(largest_inscribed_rect(&[]).is_none());
+        assert!(largest_inscribed_rect(&[Point { x: 0, y: 0 }, Point { x: 1, y: 1 }]).is_none());
+    }
+
+    #[test]
+    fn click_uses_the_laar_inside_the_asset_polygon() {
+        // Template matches the 10x10 tile at (12,10); roi == that position, the
+        // polygon is the same square => offset 0 => target == polygon LAAR.
+        let pattern: Vec<u8> = (0..100)
+            .map(|i| (((i % 10) * 7 + (i / 10) * 13) % 251 + 3) as u8)
+            .collect();
+        let mut assets = assets();
+        assets.insert(
+            "I_POLY",
+            Template {
+                gray: GrayImage::new(10, 10, pattern),
+                roi: Some(Rect {
+                    x: 12,
+                    y: 10,
+                    w: 10,
+                    h: 10,
+                }),
+                threshold: 0.8,
+                click_polygon: Some(vec![
+                    Point { x: 12, y: 10 },
+                    Point { x: 22, y: 10 },
+                    Point { x: 17, y: 20 },
+                ]),
+            },
+        );
+        // A triangle: bbox != LAAR with a gap LARGER than the 15% inset, so a
+        // "use the bbox" regression cannot hide inside the inset (unlike a
+        // near-square polygon where inset(bbox) ⊂ LAAR).
+        let poly = vec![
+            Point { x: 12, y: 10 },
+            Point { x: 22, y: 10 },
+            Point { x: 17, y: 20 },
+        ];
+        let laar = largest_inscribed_rect(&poly).expect("laar");
+        // Uniform-only sampling so a bbox-vs-LAAR regression cannot hide behind
+        // the bell/comet center bias (5% uniform would almost never hit corners).
+        let uniform_only = crate::humanize::Humanize {
+            bell_weight: 0.0,
+            uniform_weight: 1.0,
+            comet_weight: 0.0,
+            miss_chance_min: 0.0,
+            miss_chance_max: 0.0,
+            ..crate::humanize::Humanize::default()
+        };
+        for seed in 1..=100u64 {
+            let (input, shared) = FakeInput::new();
+            let mut interp = Interpreter::new(
+                FakeScreen::new(),
+                input,
+                assets.clone(),
+                Budget::default(),
+            )
+            .with_humanize(uniform_only)
+            .with_seed(seed);
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"click","args":{"sel":"I_POLY"}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done), "seed {seed}");
+            let clicks = shared.clicks.borrow();
+            let p = clicks[0];
+            assert!(point_in_polygon(p, &poly), "seed {seed}: {p:?} outside polygon");
+            assert!(
+                p.x >= laar.x
+                    && p.x < laar.x + laar.w
+                    && p.y >= laar.y
+                    && p.y < laar.y + laar.h,
+                "seed {seed}: {p:?} outside LAAR {laar:?}"
+            );
+        }
     }
 
     // ---- CD2 click audit (§21) ----
