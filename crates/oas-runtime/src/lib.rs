@@ -813,17 +813,35 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         }
     }
 
-    /// Dismiss one known popup if any `interrupts` rule matches (§22.15).
-    /// Returns `true` when a popup was clicked (caller re-checks, bounded).
+    /// Resolve one known popup if any `interrupts` rule matches (§22.15).
+    ///
+    /// A rule is `{detect, action?}`: `detect` proves the popup is present, then
+    /// `action` is clicked (defaults to `detect`). This is what lets an invitation
+    /// popup be **accepted** (action = 「接受」) instead of blindly dismissed.
+    /// Returns `true` when a popup was resolved (caller re-checks, bounded).
     fn handle_interrupts(&mut self, depth: usize) -> Result<bool, String> {
         let rules = self.interrupts.clone();
         for rule in &rules {
-            let (score, at) = self.locate(&rule.sel)?;
-            let th = self.assets.get(&rule.sel).map(|t| t.threshold).unwrap_or(0.9);
-            let Some(p) = at.filter(|_| score >= th) else {
+            let (score, at) = self.locate(&rule.detect)?;
+            let th = self.assets.get(&rule.detect).map(|t| t.threshold).unwrap_or(0.9);
+            let Some(_detected) = at.filter(|_| score >= th) else {
                 continue;
             };
-            let target = self.click_box_for(&rule.sel, p)?;
+            let action_sel = rule.action.clone().unwrap_or_else(|| rule.detect.clone());
+            let (ascore, aat) = self.locate(&action_sel)?;
+            let ath = self
+                .assets
+                .get(&action_sel)
+                .map(|t| t.threshold)
+                .unwrap_or(0.9);
+            let Some(ap) = aat.filter(|_| ascore >= ath) else {
+                return Err(format!(
+                    "interrupt: popup `{}` detected (score {score:.3}) but action `{action_sel}` \
+                     not found (best {ascore:.3} < {ath})",
+                    rule.detect
+                ));
+            };
+            let target = self.click_box_for(&action_sel, ap)?;
             let (w, h) = self
                 .frame_size
                 .ok_or_else(|| "interrupt: no frame available".to_string())?;
@@ -835,9 +853,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             let (actual, delay) = self.perform_click(
                 plan,
                 centre,
-                Some(rule.sel.clone()),
+                Some(action_sel.clone()),
                 "interrupt",
-                format!("interrupt:{}:{score:.3}", rule.sel),
+                format!(
+                    "interrupt:{}:{}->{}:{ascore:.3}",
+                    rule.detect, rule.detect, action_sel
+                ),
                 w,
                 h,
             )?;
@@ -845,8 +866,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 depth,
                 "interrupt",
                 &format!(
-                    "dismissed popup `{}` score={score:.3} point=({},{}) delay={delay}ms",
-                    rule.sel, actual.x, actual.y
+                    "resolved popup detect=`{}` action=`{action_sel}` score={ascore:.3} point=({},{}) delay={delay}ms",
+                    rule.detect, actual.x, actual.y
                 ),
                 "ok",
                 0.0,
@@ -1004,6 +1025,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             }
             Step::DismissPopup {
                 sel,
+                action,
                 timeout_ms,
                 required,
             } => {
@@ -1011,8 +1033,23 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 loop {
                     let (score, at) = self.locate(sel)?;
                     let th = self.assets.get(sel).map(|t| t.threshold).unwrap_or(0.9);
-                    if let Some(p) = at.filter(|_| score >= th) {
-                        let target = self.click_box_for(sel, p)?;
+                    if let Some(_detected) = at.filter(|_| score >= th) {
+                        // §22.15: `action` selects the button (e.g. 接受); when
+                        // omitted the detected template itself is clicked.
+                        let action_sel = action.clone().unwrap_or_else(|| sel.clone());
+                        let (ascore, aat) = self.locate(&action_sel)?;
+                        let ath = self
+                            .assets
+                            .get(&action_sel)
+                            .map(|t| t.threshold)
+                            .unwrap_or(0.9);
+                        let Some(ap) = aat.filter(|_| ascore >= ath) else {
+                            return Err(format!(
+                                "dismiss_popup: popup `{sel}` detected but action `{action_sel}` \
+                                 not found (best {ascore:.3} < {ath})"
+                            ));
+                        };
+                        let target = self.click_box_for(&action_sel, ap)?;
                         let (w, h) = self
                             .frame_size
                             .ok_or_else(|| "dismiss_popup: no frame available".to_string())?;
@@ -1024,14 +1061,15 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         let (actual, delay) = self.perform_click(
                             plan,
                             centre,
-                            Some(sel.clone()),
+                            Some(action_sel.clone()),
                             "dismiss_popup",
-                            format!("dismiss_popup:{sel}:{score:.3}"),
+                            format!("dismiss_popup:{sel}->{action_sel}:{ascore:.3}"),
                             w,
                             h,
                         )?;
                         return Ok(format!(
-                            "dismissed {sel} score={score:.3} point=({},{}) delay={delay}ms",
+                            "resolved popup `{sel}` action=`{action_sel}` score={ascore:.3} \
+                             point=({},{}) delay={delay}ms",
                             actual.x, actual.y
                         ));
                     }
@@ -2960,7 +2998,11 @@ mod tests {
         assert_eq!(shared.clicks.borrow().len(), 1);
         let rows = interp.clicks();
         assert_eq!(rows[0].locator, "dismiss_popup");
-        assert!(rows[0].match_info.starts_with("dismiss_popup:I_BRIGHT:"));
+        assert!(
+            rows[0].match_info.starts_with("dismiss_popup:I_BRIGHT->I_BRIGHT:"),
+            "match_info: {}",
+            rows[0].match_info
+        );
     }
 
     #[test]
@@ -2992,6 +3034,126 @@ mod tests {
         match interp.run(&f) {
             RunResult::Failed(msg) => {
                 assert!(msg.contains("dismiss_popup: `I_NEVER` not found"), "{msg}");
+            }
+            other => panic!("expected a loud failure, got {other:?}"),
+        }
+    }
+
+    // ---- §22.15 popup / interrupt handling: ACCEPT vs DISMISS ----
+
+    /// Popup frame with TWO distinct tiles: a placeholder "popup" at (12,10) and
+    /// the "accept" button at (40,30) (10x10 each).
+    fn frame_two_tiles() -> Frame {
+        let (w, h) = (64u32, 48u32);
+        let mut rgba = vec![30u8; (w * h * 4) as usize];
+        let paint = |rgba: &mut [u8], ox: u32, oy: u32, mul: u32| {
+            for y in 0..10u32 {
+                for x in 0..10u32 {
+                    let v = (((x * mul + y * (mul + 3)) % 251) + 3) as u8;
+                    let i = (((oy + y) * w + (ox + x)) * 4) as usize;
+                    rgba[i] = v;
+                    rgba[i + 1] = v;
+                    rgba[i + 2] = v;
+                    rgba[i + 3] = 255;
+                }
+            }
+        };
+        paint(&mut rgba, 12, 10, 7);
+        paint(&mut rgba, 40, 30, 11);
+        Frame::new(w, h, rgba)
+    }
+
+    fn tile_pattern(mul: u32) -> Vec<u8> {
+        (0..100u32)
+            .map(|i| {
+                let (x, y) = (i % 10, i / 10);
+                (((x * mul + y * (mul + 3)) % 251) + 3) as u8
+            })
+            .collect()
+    }
+
+    fn two_tile_assets() -> AssetSet {
+        let mut set = AssetSet::new();
+        set.insert(
+            "POPUP",
+            Template {
+                gray: GrayImage::new(10, 10, tile_pattern(7)),
+                roi: Some(Rect {
+                    x: 12,
+                    y: 10,
+                    w: 10,
+                    h: 10,
+                }),
+                threshold: 0.8,
+                click_polygon: None,
+            },
+        );
+        set.insert(
+            "ACCEPT",
+            Template {
+                gray: GrayImage::new(10, 10, tile_pattern(11)),
+                roi: Some(Rect {
+                    x: 40,
+                    y: 30,
+                    w: 10,
+                    h: 10,
+                }),
+                threshold: 0.8,
+                click_polygon: None,
+            },
+        );
+        set
+    }
+
+    #[test]
+    fn on_interrupt_accepts_an_invitation_popup_via_action_template() {
+        let screen = TwoFrameScreen {
+            frames: vec![frame_two_tiles(), frame_flat()],
+            idx: 0,
+        };
+        let (input, _shared) = FakeInput::new();
+        let mut interp =
+            Interpreter::new(screen, input, two_tile_assets(), Budget::default())
+                .with_humanize(no_miss())
+                .with_seed(18);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t",
+                 "interrupts":[{"detect":"POPUP","action":"ACCEPT"}],
+                 "steps":[{"op":"click_point","args":{"x":20,"y":20}},
+                          {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let rows = interp.clicks();
+        assert_eq!(rows.len(), 2, "one accept + one real click");
+        assert_eq!(rows[0].locator, "interrupt");
+        assert!(
+            rows[0].x >= 40 && rows[0].x < 50 && rows[0].y >= 30 && rows[0].y < 40,
+            "must click the ACTION (accept) button, got ({},{})",
+            rows[0].x,
+            rows[0].y
+        );
+        assert!(
+            rows[0].match_info.contains("POPUP->ACCEPT"),
+            "match_info: {}",
+            rows[0].match_info
+        );
+    }
+
+    #[test]
+    fn interrupt_detected_without_its_action_is_a_loud_error() {
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(19);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t",
+                 "interrupts":[{"detect":"I_BRIGHT","action":"I_NEVER"}],
+                 "steps":[{"op":"click_point","args":{"x":20,"y":20}},
+                          {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("action `I_NEVER` not found"), "{msg}");
             }
             other => panic!("expected a loud failure, got {other:?}"),
         }
