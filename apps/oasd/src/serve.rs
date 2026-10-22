@@ -39,6 +39,44 @@ struct State {
     png: Option<Vec<u8>>,
     device: String,
     error: Option<String>,
+    /// §22.27 会话图片列表（旧 annotator「图片」面板）：上传/截帧都进这里，
+    /// 选中某张即成为当前帧（/match、/ocr、素材裁剪都用它）。
+    frames: Vec<SessionFrame>,
+    next_frame_id: u64,
+    current_frame_id: Option<u64>,
+}
+
+struct SessionFrame {
+    id: u64,
+    png: Vec<u8>,
+    width: u32,
+    height: u32,
+    source: String,
+    ts_ms: u128,
+}
+
+impl State {
+    fn push_frame(&mut self, png: Vec<u8>, width: u32, height: u32, source: &str) -> u64 {
+        let id = self.next_frame_id;
+        self.next_frame_id += 1;
+        self.frames.push(SessionFrame {
+            id,
+            png,
+            width,
+            height,
+            source: source.to_string(),
+            ts_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+        });
+        // Keep memory bounded: 20 PNG frames ≈ tens of MB.
+        while self.frames.len() > 20 {
+            self.frames.remove(0);
+        }
+        self.current_frame_id = Some(id);
+        id
+    }
 }
 
 pub struct Server {
@@ -66,6 +104,9 @@ impl Server {
                 png: None,
                 device: String::new(),
                 error: None,
+                frames: Vec::new(),
+                next_frame_id: 1,
+                current_frame_id: None,
             })),
             tasks_dir: PathBuf::from("tasks"),
             runs_dir: PathBuf::from("runs"),
@@ -173,6 +214,7 @@ impl Server {
             Ok(frame) => match encode_png(&frame) {
                 Ok(png) => {
                     let mut st = self.state.lock().unwrap();
+                    st.push_frame(png.clone(), frame.width, frame.height, "capture");
                     st.png = Some(png);
                     st.device = serial;
                     st.error = None;
@@ -285,6 +327,12 @@ impl Server {
                 );
                 self.send_json(&mut out, 200, &body)
             }
+            // --- §22.27 会话图片列表（旧 annotator「图片」面板）---
+            ("GET", "/frames") => self.handle_frames(&mut out),
+            ("POST", "/frames") => self.handle_frame_upload(&mut out, &body),
+            ("POST", "/frames/select") => self.handle_frame_select(&mut out, &body),
+            ("POST", "/frames/delete") => self.handle_frame_delete(&mut out, &body),
+            ("POST", "/frames/clear") => self.handle_frames_clear(&mut out),
             ("GET", "/ocr") => self.handle_ocr(&mut out, &path),
             ("GET", "/lines") => self.handle_lines(&mut out, &path),
             // --- N3: task bundle save routes ---
@@ -308,6 +356,131 @@ impl Server {
             ),
             _ => self.send_json(&mut out, 404, r#"{"error":"not found"}"#),
         }
+    }
+
+    /// `GET /frames` — 会话图片列表（不含像素，只有元信息）.
+    fn handle_frames(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let st = self.state.lock().unwrap();
+        let frames: Vec<serde_json::Value> = st
+            .frames
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "id": f.id,
+                    "width": f.width,
+                    "height": f.height,
+                    "source": f.source,
+                    "ts_ms": f.ts_ms,
+                    "bytes": f.png.len(),
+                    "current": st.current_frame_id == Some(f.id),
+                })
+            })
+            .collect();
+        drop(st);
+        let body = serde_json::json!({"ok": true, "frames": frames});
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `POST /frames` — body = raw PNG bytes（编辑器把任意图片转成 PNG 后上传）。
+    fn handle_frame_upload(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        if body.is_empty() {
+            return self.send_errors(
+                out,
+                400,
+                vec!["empty body: POST the raw PNG bytes (Content-Type: image/png)".to_string()],
+            );
+        }
+        let frame = match oas_codec::decode_png(body) {
+            Ok(f) => f,
+            Err(e) => {
+                return self.send_errors(out, 400, vec![format!("not a valid PNG image: {e}")])
+            }
+        };
+        let (w, h) = (frame.width, frame.height);
+        let mut st = self.state.lock().unwrap();
+        let id = st.push_frame(body.to_vec(), w, h, "upload");
+        st.frame = Some(frame);
+        st.png = Some(body.to_vec());
+        st.error = None;
+        drop(st);
+        let body = serde_json::json!({"ok": true, "id": id, "width": w, "height": h});
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `POST /frames/select` — body `{"id":N}`: 切换当前帧（后续 /match、/ocr、裁剪都用它）.
+    fn handle_frame_select(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let id = match json_u64_field(body, "id") {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let mut st = self.state.lock().unwrap();
+        let found = st
+            .frames
+            .iter()
+            .find(|f| f.id == id)
+            .map(|f| (f.png.clone(), f.width, f.height));
+        let Some((png, w, h)) = found else {
+            drop(st);
+            return self.send_errors(
+                out,
+                404,
+                vec![format!("frame id {id} not found (GET /frames)")],
+            );
+        };
+        let frame = match oas_codec::decode_png(&png) {
+            Ok(f) => f,
+            Err(e) => {
+                drop(st);
+                return self.send_errors(out, 400, vec![format!("decode frame {id}: {e}")]);
+            }
+        };
+        st.frame = Some(frame);
+        st.png = Some(png);
+        st.current_frame_id = Some(id);
+        drop(st);
+        let body = serde_json::json!({"ok": true, "id": id, "width": w, "height": h});
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `POST /frames/delete` — body `{"id":N}`；删当前帧则回退到列表最后一张.
+    fn handle_frame_delete(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let id = match json_u64_field(body, "id") {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let mut st = self.state.lock().unwrap();
+        let before = st.frames.len();
+        st.frames.retain(|f| f.id != id);
+        if st.frames.len() == before {
+            drop(st);
+            return self.send_errors(out, 404, vec![format!("frame id {id} not found")]);
+        }
+        if st.current_frame_id == Some(id) {
+            st.current_frame_id = None;
+            st.frame = None;
+            st.png = None;
+            let last = st.frames.last().map(|f| (f.png.clone(), f.id));
+            if let Some((png, last_id)) = last {
+                if let Ok(frame) = oas_codec::decode_png(&png) {
+                    st.png = Some(png);
+                    st.frame = Some(frame);
+                    st.current_frame_id = Some(last_id);
+                }
+            }
+        }
+        let remaining = st.frames.len();
+        drop(st);
+        let body = serde_json::json!({"ok": true, "remaining": remaining});
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `POST /frames/clear` — 清空会话图片列表（当前帧保留在内存里，避免画面突然消失）.
+    fn handle_frames_clear(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let mut st = self.state.lock().unwrap();
+        st.frames.clear();
+        st.current_frame_id = None;
+        drop(st);
+        self.send_json(out, 200, r#"{"ok":true}"#)
     }
 
     #[allow(unused_variables)]
@@ -1413,6 +1586,15 @@ fn json_str_field(v: &serde_json::Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("missing string field `{key}`"))
 }
 
+/// Parse a required `u64` field from a raw JSON POST body.
+fn json_u64_field(body: &[u8], key: &str) -> Result<u64, String> {
+    let v: serde_json::Value =
+        serde_json::from_slice(body).map_err(|e| format!("invalid JSON body: {e}"))?;
+    v.get(key)
+        .and_then(|x| x.as_u64())
+        .ok_or_else(|| format!("missing integer field `{key}`"))
+}
+
 fn json_roi_field(v: &serde_json::Value) -> Result<[i32; 4], String> {
     let arr = v
         .get("roi")
@@ -1737,5 +1919,103 @@ mod tests {
         // Missing file (safe name) => 404.
         let (status, body) = get_route(&server, "/runs/clicks?file=nope.jsonl");
         assert!(status.contains("404"), "{status} {body}");
+    }
+
+    /// Drive one POST through the REAL [`Server::handle`] over a loopback socket
+    /// pair and return `(status line, body)`.
+    fn post_route(
+        server: &Server,
+        target: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> (String, String) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("local addr");
+        let mut client = TcpStream::connect(addr).expect("connect");
+        let (srv, _) = listener.accept().expect("accept");
+        let head = format!(
+            "POST {target} HTTP/1.1\r\nHost: test\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        client.write_all(head.as_bytes()).expect("write head");
+        client.write_all(body).expect("write body");
+        server.handle(srv, "ui").expect("handle request");
+        let mut raw = Vec::new();
+        client.read_to_end(&mut raw).expect("read response");
+        let text = String::from_utf8_lossy(&raw).into_owned();
+        let (head, body) = text.split_once("\r\n\r\n").expect("header/body split");
+        (
+            head.lines().next().unwrap_or_default().to_string(),
+            body.to_string(),
+        )
+    }
+
+    #[test]
+    fn session_frames_upload_select_delete_roundtrip() {
+        let server = Server::new(Adb::from_env());
+        // frame A: 2x2; frame B: 3x2 (different size proves select really swaps).
+        let a = Frame::new(
+            2,
+            2,
+            vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 200, 200, 200, 255,
+            ],
+        );
+        let b = Frame::new(3, 2, vec![10u8; 3 * 2 * 4]);
+        let png_a = oas_codec::encode_png(&a).expect("png a");
+        let png_b = oas_codec::encode_png(&b).expect("png b");
+
+        let (status, out) = post_route(&server, "/frames", "image/png", &png_a);
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("upload json");
+        let id_a = v.get("id").and_then(|x| x.as_u64()).expect("id a");
+        assert_eq!(v.get("width").and_then(|x| x.as_u64()), Some(2));
+
+        let (_, out) = post_route(&server, "/frames", "image/png", &png_b);
+        let v: serde_json::Value = serde_json::from_str(&out).expect("upload json b");
+        let id_b = v.get("id").and_then(|x| x.as_u64()).expect("id b");
+        assert_eq!(v.get("height").and_then(|x| x.as_u64()), Some(2));
+
+        let (status, out) = get_route(&server, "/frames");
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("frames json");
+        let frames = v.get("frames").and_then(|f| f.as_array()).expect("frames");
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[1].get("current").and_then(|c| c.as_bool()), Some(true));
+
+        let (status, out) = post_route(
+            &server,
+            "/frames/select",
+            "application/json",
+            format!(r#"{{"id":{id_a}}}"#).as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let (_, out) = get_route(&server, "/state");
+        let st: serde_json::Value = serde_json::from_str(&out).expect("state json");
+        assert_eq!(st.get("captured").and_then(|c| c.as_bool()), Some(true));
+        assert_eq!(st.get("width").and_then(|w| w.as_u64()), Some(2));
+        assert_eq!(st.get("height").and_then(|h| h.as_u64()), Some(2));
+
+        // deleting the current frame falls back to the remaining last frame.
+        let (status, out) = post_route(
+            &server,
+            "/frames/delete",
+            "application/json",
+            format!(r#"{{"id":{id_a}}}"#).as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let (_, out) = get_route(&server, "/state");
+        let st: serde_json::Value = serde_json::from_str(&out).expect("state json");
+        assert_eq!(st.get("width").and_then(|w| w.as_u64()), Some(3));
+        assert!(id_b > id_a);
+
+        let (status, out) = post_route(&server, "/frames/clear", "application/json", b"{}");
+        assert!(status.contains("200"), "{status} {out}");
+        let (_, out) = get_route(&server, "/frames");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("frames json");
+        assert_eq!(
+            v.get("frames").and_then(|f| f.as_array()).map(|a| a.len()),
+            Some(0)
+        );
     }
 }

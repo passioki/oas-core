@@ -231,3 +231,37 @@ aside.side {
 .rail-panels .panel { display: none; }
 .rail-panels .panel.active { display: block; }
 .side h3:first-child { margin-top: 12px; }
+
+/* 22.27 会话图片列表（多帧） */
+.frames-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+.frame-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.frame-row .frame-pick {
+  flex: 1;
+  margin: 0;
+  padding: 4px 8px;
+  text-align: left;
+  font-size: 12px;
+  font-family: Consolas, monospace;
+}
+.frame-row .frame-del {
+  flex: 0 0 32px;
+  margin: 0;
+  padding: 4px 0;
+  font-size: 12px;
+}
+.frame-row.current .frame-pick {
+  border-color: #ffd54a;
+  color: #ffd54a;
+}
+#frame-file { width: 100%; }

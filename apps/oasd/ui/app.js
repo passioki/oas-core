@@ -25,6 +25,14 @@ const btnClickStep = document.getElementById('btn-click-step');
 const btnAppendStep = document.getElementById('btn-append-step');
 const btnPoly = document.getElementById('btn-poly');
 const btnBackMode = document.getElementById('btn-back-mode');
+// §22.27 会话图片列表（多帧）
+const frameFile = document.getElementById('frame-file');
+const btnFrameUpload = document.getElementById('btn-frame-upload');
+const btnFrameCapture = document.getElementById('btn-frame-capture');
+const btnFramesRefresh = document.getElementById('btn-frames-refresh');
+const btnFramesClear = document.getElementById('btn-frames-clear');
+const framesList = document.getElementById('frames-list');
+const framesStatus = document.getElementById('frames-status');
 const runsSelect = document.getElementById('runs-select');
 const btnRunsRefresh = document.getElementById('btn-runs-refresh');
 const btnClicksOverlay = document.getElementById('btn-clicks-overlay');
@@ -1021,6 +1029,153 @@ async function matchLibrary() {
   }
 }
 
+// --- §22.27 会话图片列表（多帧，参考旧 annotator「图片」面板） ---
+async function refreshFrames() {
+  if (!framesList) return;
+  try {
+    const r = await fetch('/frames');
+    const s = await r.json();
+    if (!s.ok) {
+      framesStatus.textContent = '图片列表读取失败：' + (s.errors || []).join('; ');
+      return;
+    }
+    const frames = s.frames || [];
+    framesList.textContent = '';
+    if (!frames.length) {
+      framesList.textContent = '（暂无图片，点「截图」或上传）';
+      framesStatus.textContent = '—';
+      return;
+    }
+    for (const f of frames) {
+      const row = document.createElement('div');
+      row.className = 'frame-row' + (f.current ? ' current' : '');
+      const pick = document.createElement('button');
+      pick.type = 'button';
+      pick.className = 'frame-pick';
+      pick.textContent = `#${f.id} ${f.source} ${f.width}x${f.height}${f.current ? ' · 当前' : ''}`;
+      pick.title = `时间 ${f.ts_ms} · ${f.bytes} 字节`;
+      pick.addEventListener('click', () => selectFrame(f.id));
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'frame-del';
+      del.textContent = '删';
+      del.title = '删除该帧';
+      del.addEventListener('click', () => deleteFrame(f.id));
+      row.append(pick, del);
+      framesList.appendChild(row);
+    }
+    framesStatus.textContent = `共 ${frames.length} 帧（上限 20）；点行切换当前帧`;
+  } catch (e) {
+    framesStatus.textContent = '图片列表异常：' + e;
+  }
+}
+
+async function selectFrame(id) {
+  try {
+    const r = await fetch('/frames/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    const s = await r.json();
+    if (s.error) {
+      framesStatus.textContent = '切换失败：' + s.error;
+      return;
+    }
+    await loadFrame();
+    await refreshState();
+    draw();
+    log(`已切换当前帧 #${id}（${s.width}x${s.height}）`);
+    await refreshFrames();
+  } catch (e) {
+    framesStatus.textContent = '切换异常：' + e;
+  }
+}
+
+async function deleteFrame(id) {
+  try {
+    const r = await fetch('/frames/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    const s = await r.json();
+    if (s.error) {
+      framesStatus.textContent = '删除失败：' + s.error;
+      return;
+    }
+    log(`已删除图片 #${id}（剩 ${s.remaining} 帧）`);
+    await refreshFrames();
+    const st = await (await fetch('/state')).json();
+    if (st.captured) {
+      await loadFrame();
+      draw();
+    }
+  } catch (e) {
+    framesStatus.textContent = '删除异常：' + e;
+  }
+}
+
+async function clearFrames() {
+  try {
+    await fetch('/frames/clear', { method: 'POST' });
+    await refreshFrames();
+    log('已清空会话图片列表');
+  } catch (e) {
+    framesStatus.textContent = '清空异常：' + e;
+  }
+}
+
+// 任意图片 -> PNG 字节（浏览器 canvas 转换；/frames 只接受 PNG）
+async function fileToPngBytes(file) {
+  const bmp = await createImageBitmap(file);
+  const c = document.createElement('canvas');
+  c.width = bmp.width;
+  c.height = bmp.height;
+  c.getContext('2d').drawImage(bmp, 0, 0);
+  const blob = await new Promise((res) => c.toBlob(res, 'image/png'));
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+async function uploadFrames() {
+  const files = Array.from(frameFile.files || []);
+  if (!files.length) {
+    framesStatus.textContent = '先选择图片文件（可多选）';
+    return;
+  }
+  btnFrameUpload.disabled = true;
+  framesStatus.textContent = `上传中（${files.length} 张）…`;
+  let okCount = 0;
+  try {
+    for (const file of files) {
+      const bytes = await fileToPngBytes(file);
+      const r = await fetch('/frames', {
+        method: 'POST',
+        headers: { 'Content-Type': 'image/png' },
+        body: bytes,
+      });
+      const s = await r.json();
+      if (!s.ok) {
+        log(`上传失败 ${file.name}：${(s.errors || []).join('; ')}`);
+        continue;
+      }
+      okCount += 1;
+      log(`已上传图片 #${s.id}（${s.width}x${s.height}）`);
+    }
+    if (okCount) {
+      await loadFrame();
+      await refreshState();
+      draw();
+    }
+    framesStatus.textContent = `已上传 ${okCount}/${files.length} 张`;
+    await refreshFrames();
+  } catch (e) {
+    framesStatus.textContent = '上传异常：' + e;
+  } finally {
+    btnFrameUpload.disabled = false;
+  }
+}
+
 async function loadFrame() {
   return new Promise((resolve, reject) => {
     const im = new Image();
@@ -1073,6 +1228,7 @@ async function doCapture() {
     await loadFrame();
     await refreshState();
     log(`已截图 ${s.width}x${s.height}`);
+    await refreshFrames();
   } catch (e) {
     setStatus('截图异常');
     log('截图异常：' + e);
@@ -1449,7 +1605,7 @@ btnLines.addEventListener('click', async () => {
   // 深链 ?panel=flow / ?panel=task 供验收/直达使用
   try {
     const wantPanel = new URLSearchParams(location.search).get('panel');
-    const ok = ['panel-assets', 'panel-task', 'panel-flow'];
+    const ok = ['panel-assets', 'panel-images', 'panel-task', 'panel-flow'];
     if (wantPanel && ok.includes(wantPanel)) activatePanel(wantPanel);
   } catch (e) {
     /* ignore */
@@ -1487,6 +1643,12 @@ btnLines.addEventListener('click', async () => {
   if (btnLibraryRefresh) btnLibraryRefresh.addEventListener('click', () => loadLibrary());
   if (btnLibraryMatch) btnLibraryMatch.addEventListener('click', matchLibrary);
   await loadLibrary();
+  // §22.27 会话图片列表
+  if (btnFrameUpload) btnFrameUpload.addEventListener('click', uploadFrames);
+  if (btnFrameCapture) btnFrameCapture.addEventListener('click', () => doCapture());
+  if (btnFramesRefresh) btnFramesRefresh.addEventListener('click', () => refreshFrames());
+  if (btnFramesClear) btnFramesClear.addEventListener('click', () => clearFrames());
+  await refreshFrames();
   // §22.22 deep link: /?lib=<id> selects that library asset and runs the match.
   try {
     const libParam = new URLSearchParams(location.search).get('lib');
@@ -1518,6 +1680,7 @@ btnLines.addEventListener('click', async () => {
     await loadFrame();
     await refreshState();
     btnCapture.disabled = false;
+    await refreshFrames();
     if (!ocrReady) {
       log('OCR 未加载：serve 需 `--features ocr` 构建并带 --model/--det-model（单行/多行识别不可用）');
     }
