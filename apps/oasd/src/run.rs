@@ -54,12 +54,12 @@ use oas_codec;
 use oas_obs::{Recorder, ReplaySource};
 use oas_runtime::{Budget, ClickRecord, Interpreter, RunResult, StepEvent};
 use oas_task::TaskBundle;
-use oas_types::{Frame, InputSink, Outcome, Point, ScreenSource};
+use oas_types::{Exit, Frame, InputSink, Outcome, Point, ScreenSource};
 
 pub const USAGE: &str = "usage: oasd run --task <bundle-dir> [--replay <bundle-dir>] \
                          [--seed <u64>] [--dry-run] [--record <bundle-dir>] \
                          [--events-out <file.jsonl>] [--clicks-out <file.jsonl>] \
-                         [--shots-dir <dir>] \
+                         [--shots-dir <dir>] [--resume] [--checkpoint <file.json>] \
                          [--model <rec.onnx>] [--det-model <det.onnx>] \
                          [--budget-steps N] [--budget-wall S]";
 
@@ -95,6 +95,10 @@ pub struct RunOptions {
     /// Directory for failure screenshots (default: `<clicks-out>.shots` next to
     /// the clicks JSONL, when `--clicks-out` is given).
     pub shots_dir: Option<PathBuf>,
+    /// Resume from the checkpoint file (§22.16).
+    pub resume: bool,
+    /// Checkpoint file override (also enables writing during replay for tests).
+    pub checkpoint: Option<PathBuf>,
     /// PP-OCRv6 recogniser for in-flow `ocr()` (P1-c). Only meaningful with
     /// `--features ocr`; the feature-less build rejects it loudly.
     pub model: Option<PathBuf>,
@@ -115,6 +119,8 @@ impl Default for RunOptions {
             events_out: None,
             clicks_out: None,
             shots_dir: None,
+            resume: false,
+            checkpoint: None,
             model: None,
             det_model: None,
             budget_steps: DEFAULT_MAX_STEPS,
@@ -152,6 +158,13 @@ impl RunOptions {
                 }
                 "--shots-dir" => {
                     o.shots_dir = Some(PathBuf::from(take_value(rest, &mut i, "--shots-dir")?))
+                }
+                "--resume" => {
+                    o.resume = true;
+                    i += 1;
+                }
+                "--checkpoint" => {
+                    o.checkpoint = Some(PathBuf::from(take_value(rest, &mut i, "--checkpoint")?))
                 }
                 "--model" => o.model = Some(PathBuf::from(take_value(rest, &mut i, "--model")?)),
                 "--det-model" => {
@@ -338,6 +351,52 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     out(&format!("task={}", task_dir.display()));
     out(&format!("assets={}", assets.len()));
 
+    // ---- checkpoint / resume (§22.16) --------------------------------------
+    let checkpoint_path = opts
+        .checkpoint
+        .clone()
+        .unwrap_or_else(|| task_dir.join("state").join("checkpoint.json"));
+    let checkpoint_writable =
+        opts.checkpoint.is_some() || (opts.replay.is_none() && !opts.dry_run);
+    let mut start_step = 0usize;
+    if opts.resume {
+        match crate::checkpoint::FileCheckpoint::load(&checkpoint_path)? {
+            Some(c) => {
+                if c.flow_name != flow.name || c.steps as usize != flow.steps.len() {
+                    return Err(format!(
+                        "--resume: checkpoint `{}` belongs to flow `{}` ({} steps), current is \
+                         `{}` ({} steps); delete it or run without --resume",
+                        checkpoint_path.display(),
+                        c.flow_name,
+                        c.steps,
+                        flow.name,
+                        flow.steps.len()
+                    ));
+                }
+                start_step = (c.next_step as usize).min(flow.steps.len());
+                out(&format!("resume_from_step={start_step}"));
+            }
+            None => {
+                return Err(format!(
+                    "--resume: no checkpoint at `{}`; run once without --resume first",
+                    checkpoint_path.display()
+                ))
+            }
+        }
+    }
+    let ckpt = Rc::new(RefCell::new(crate::checkpoint::FileCheckpoint::open(
+        &checkpoint_path,
+        &flow.name,
+        flow.steps.len(),
+        checkpoint_writable,
+        start_step,
+    )));
+    out(&format!(
+        "checkpoint={} writable={}",
+        checkpoint_path.display(),
+        checkpoint_writable
+    ));
+
     // ---- coordinate memory for `click_target` (§22.11) ----------------------
     // Replay and dry runs are READ-ONLY: a replay must never pollute the task's
     // remembered points. The file lives next to the bundle, not in git.
@@ -382,12 +441,27 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
         }
         None => {
             let adb = Adb::from_env();
-            let devices = adb.devices().map_err(|e| {
-                format!(
-                    "no adb device via `{}` ({e}); attach the emulator or pass --replay <bundle>",
-                    adb.exe.display()
-                )
-            })?;
+            // §22.16: an adb server restart drops TCP devices, so a cold start can
+            // see zero devices. Try the configured reconnect endpoints before
+            // failing the run (same env as the live reconnect wrapper).
+            let mut devices = adb.devices().unwrap_or_default();
+            if devices.is_empty() {
+                for ep in std::env::var("OAS_ADB_RECONNECT_ENDPOINTS")
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                {
+                    let _ = adb.connect(&ep);
+                }
+                for _ in 0..50 {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    devices = adb.devices().unwrap_or_default();
+                    if !devices.is_empty() {
+                        break;
+                    }
+                }
+            }
             let dev = devices.first().ok_or_else(|| {
                 format!(
                     "no adb device attached (ADB_PATH={}); attach the emulator or pass \
@@ -397,7 +471,10 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
             })?;
             out(&format!("device={}", dev.serial));
             live = Some((adb.clone(), dev.serial.clone()));
-            Box::new(adb.screen(&dev.serial))
+            Box::new(crate::reconnect::ReconnectingScreen::new(
+                adb.clone(),
+                &dev.serial,
+            ))
         }
     };
     if let Some(rec) = &recorder {
@@ -415,7 +492,10 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     let inner_input: Option<Box<dyn InputSink>> = match (&live, opts.dry_run) {
         (Some((adb, serial)), false) => {
             out("input=adb");
-            Some(Box::new(adb.input(serial)))
+            Some(Box::new(crate::reconnect::ReconnectingInput::new(
+                adb.clone(),
+                serial,
+            )))
         }
         (Some(_), true) => {
             out("input=dry-run");
@@ -443,7 +523,10 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     ));
     let interp = Interpreter::new(DynScreen(src), input, assets, budget).with_seed(seed);
     let interp = attach_ocr(interp, opts.model.as_deref(), opts.det_model.as_deref())?;
-    let mut interp = interp.with_coord_store(Box::new(crate::coords::SharedStore(coords.clone())));
+    let mut interp = interp
+        .with_coord_store(Box::new(crate::coords::SharedStore(coords.clone())))
+        .with_progress_sink(Box::new(crate::checkpoint::SharedCheckpoint(ckpt.clone())))
+        .with_start_step(start_step);
     out(&format!(
         "ocr={}",
         match (opts.model.as_deref(), opts.det_model.as_deref()) {
@@ -462,6 +545,21 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     let click_rows = interp.clicks().to_vec();
     let shot_frame = interp.last_frame();
     drop(interp); // release the recording source's Rc clone before finishing
+
+    // §22.16 checkpoint: a Done run is complete => clear; a failure keeps the last
+    // good `next_step` so `--resume` retries the failed step.
+    if matches!(&result, RunResult::Finished(Exit::Done)) {
+        match ckpt.borrow_mut().clear() {
+            Ok(()) => out("checkpoint=cleared"),
+            Err(e) => out(&format!("checkpoint_warn={e}")),
+        }
+    } else {
+        let next = ckpt.borrow().next_step();
+        match ckpt.borrow_mut().flush() {
+            Ok(()) => out(&format!("checkpoint=kept next_step={next}")),
+            Err(e) => out(&format!("checkpoint_warn={e}")),
+        }
+    }
 
     // §22.11 审计: a FAILED run keeps the frame that was actually analysed, so the
     // anomaly ("target not found", "page guard failed", "expect timed out") can be
@@ -1236,6 +1334,61 @@ mod tests {
         assert_eq!(
             line_with(&lines, "clicks_out="),
             format!("clicks_out={} count=0", out_path.display())
+        );
+    }
+
+    #[test]
+    fn checkpoint_is_cleared_after_a_done_run() {
+        let (td, task, replay) = fixture("ckpt-done");
+        let ckpt = td.path().join("ckpt/checkpoint.json");
+        let mut opts = replay_options(&task, &replay, 6);
+        opts.checkpoint = Some(ckpt.clone());
+        let (r, lines) = run_capture(&opts);
+        assert_eq!(r.outcome(), Outcome::Done);
+        assert!(line_with(&lines, "checkpoint=").contains("writable=true"));
+        assert_eq!(line_with(&lines, "checkpoint=cleared"), "checkpoint=cleared");
+        assert!(!ckpt.exists(), "a Done run must clear the checkpoint");
+    }
+
+    #[test]
+    fn resume_skips_the_completed_prefix() {
+        let td = TempDir::new("ckpt-resume");
+        let task = td.path().join("task");
+        let replay = td.path().join("replay");
+        let bundle = TaskBundle::open(&task).expect("open task bundle");
+        bundle
+            .save_flow(
+                r#"{"schema_version":1,"name":"n4-resume","steps":[
+                     {"op":"click_point","args":{"x":100,"y":60}},
+                     {"op":"click_point","args":{"x":10000,"y":60}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            )
+            .expect("save flow");
+        write_replay_bundle(&replay);
+        let ckpt = td.path().join("ckpt/checkpoint.json");
+
+        // First run: step 0 succeeds, step 1 (off-screen) fails => checkpoint kept.
+        let mut first = replay_options(&task, &replay, 7);
+        first.checkpoint = Some(ckpt.clone());
+        let (r1, _lines1) = run_capture(&first);
+        assert_eq!(r1.outcome(), Outcome::Failed);
+        assert_eq!(r1.clicks.len(), 1, "step 0 clicked once");
+        let raw = std::fs::read_to_string(&ckpt).expect("checkpoint written");
+        let c: serde_json::Value = serde_json::from_str(&raw).expect("checkpoint json");
+        assert_eq!(c["next_step"].as_u64(), Some(1));
+        assert_eq!(c["flow_name"].as_str(), Some("n4-resume"));
+
+        // Second run: --resume starts at step 1 => step 0 is NOT executed again.
+        let mut second = replay_options(&task, &replay, 7);
+        second.checkpoint = Some(ckpt.clone());
+        second.resume = true;
+        let (r2, lines2) = run_capture(&second);
+        assert_eq!(line_with(&lines2, "resume_from_step="), "resume_from_step=1");
+        assert_eq!(r2.outcome(), Outcome::Failed, "step 1 still fails");
+        assert!(
+            r2.clicks.is_empty(),
+            "resumed run must not repeat the completed click: {:?}",
+            r2.clicks
         );
     }
 

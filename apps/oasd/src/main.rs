@@ -14,6 +14,8 @@ use std::process::ExitCode;
 mod run;
 mod serve;
 mod coords;
+mod checkpoint;
+mod reconnect;
 #[cfg(feature = "ocr")]
 mod ocr;
 

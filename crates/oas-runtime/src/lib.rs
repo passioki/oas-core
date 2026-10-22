@@ -226,6 +226,12 @@ pub trait CoordStore {
     fn put(&mut self, key: &str, point: Point, frame_w: u32, frame_h: u32);
 }
 
+/// Progress hook for checkpointing (ENGINE §22.16): called after each successful
+/// TOP-LEVEL step with its index, so the driver can persist "next step to run".
+pub trait ProgressSink {
+    fn step_done(&mut self, index: usize, op: &str);
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Budget {
     pub max_wall_s: f64,
@@ -337,6 +343,10 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     coords: Option<Box<dyn CoordStore>>,
     /// Known popups dismissed before every step (§22.15), copied from the flow.
     interrupts: Vec<InterruptRule>,
+    /// Checkpoint hook (§22.16); `None` = no persistence.
+    progress: Option<Box<dyn ProgressSink>>,
+    /// Resume offset: skip this many TOP-LEVEL steps (§22.16 checkpoint recovery).
+    start_step: usize,
     /// Size of the frame `matcher` was built from (`click_point` needs it for
     /// the CP3 in-frame check).
     frame_size: Option<(u32, u32)>,
@@ -370,6 +380,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             ocr: None,
             coords: None,
             interrupts: Vec::new(),
+            progress: None,
+            start_step: 0,
             frame_size: None,
             events: Vec::new(),
             clicks: Vec::new(),
@@ -424,6 +436,18 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         self
     }
 
+    /// Attach a checkpoint hook (§22.16): after every successful top-level step.
+    pub fn with_progress_sink(mut self, sink: Box<dyn ProgressSink>) -> Self {
+        self.progress = Some(sink);
+        self
+    }
+
+    /// Resume from a checkpoint: skip the first `n` top-level steps (§22.16).
+    pub fn with_start_step(mut self, n: usize) -> Self {
+        self.start_step = n;
+        self
+    }
+
     /// Override the humanisation policy (HB1~HB3). Offline simulations use
     /// `delay_min_ms == delay_max_ms == 0` so 1000 runs do not spend ~500ms per
     /// run in HB3 sleeps; the click **distribution** stays the same (HB1/HB2 are
@@ -446,8 +470,28 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         self.clicks.clear();
         self.steps = 0;
         self.interrupts = flow.interrupts.clone();
+        // ENGINE §22.16: top-level steps are executed one by one so a checkpoint
+        // can be persisted after each success (and `--resume` can skip the prefix).
+        let start = self.start_step.min(flow.steps.len());
         let mut ctl = Ctl::Normal;
-        match self.exec(&flow.steps, 0, &mut ctl) {
+        let mut outcome: Result<(), String> = Ok(());
+        for (i, step) in flow.steps.iter().enumerate().skip(start) {
+            match self.exec(std::slice::from_ref(step), 0, &mut ctl) {
+                Ok(()) => {
+                    if let Some(sink) = self.progress.as_mut() {
+                        sink.step_done(i, step_name(step));
+                    }
+                    if !matches!(ctl, Ctl::Normal) {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    outcome = Err(e);
+                    break;
+                }
+            }
+        }
+        match outcome {
             Ok(()) => match ctl {
                 Ctl::Finish(exit) => RunResult::Finished(exit),
                 _ => RunResult::Failed(
@@ -3278,6 +3322,70 @@ mod tests {
         let events = interp.events();
         assert_eq!(events.iter().filter(|e| e.result == "retry").count(), 2);
         assert!(events.last().map(|e| e.result == "failed" && e.detail.contains("retries exhausted")).unwrap_or(false), "{events:?}");
+    }
+
+    // ---- §22.16 checkpoint recovery: start_step + progress sink ----
+
+    struct RecordingSink {
+        steps: std::rc::Rc<std::cell::RefCell<Vec<(usize, String)>>>,
+    }
+
+    impl ProgressSink for RecordingSink {
+        fn step_done(&mut self, index: usize, op: &str) {
+            self.steps
+                .borrow_mut()
+                .push((index, op.to_string()));
+        }
+    }
+
+    #[test]
+    fn start_step_skips_the_checkpointed_prefix() {
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(22)
+            .with_start_step(1);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":20}},
+                 {"op":"log","args":{"level":"info","text":"'resumed'"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert!(
+            shared.clicks.borrow().is_empty(),
+            "step 0 must be skipped when resuming"
+        );
+        assert!(
+            interp.events().iter().any(|e| e.op == "log"),
+            "step 1 must still run"
+        );
+    }
+
+    #[test]
+    fn progress_sink_reports_each_successful_top_level_step() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(23)
+            .with_progress_sink(Box::new(RecordingSink { steps: seen.clone() }));
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":20}},
+                 {"op":"log","args":{"level":"info","text":"'x'"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let got = seen.borrow().clone();
+        assert_eq!(
+            got,
+            vec![
+                (0, "click_point".to_string()),
+                (1, "log".to_string()),
+                (2, "finish".to_string())
+            ]
+        );
     }
 
     // ---- CD2 click audit (§21) ----

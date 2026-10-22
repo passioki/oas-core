@@ -1,4 +1,4 @@
-﻿//! oas-adapter-pc: PC-side adapters (ADB over MuMu/emulator/phone).
+//! oas-adapter-pc: PC-side adapters (ADB over MuMu/emulator/phone).
 //!
 //! This is the ONLY kind of crate allowed to know about a platform. The core
 //! crates must never depend on it.
@@ -106,6 +106,43 @@ impl Adb {
             }
         }
         serial.to_string()
+    }
+
+    /// `adb connect <endpoint>` (TCP devices such as MuMu at 127.0.0.1:16384).
+    pub fn connect(&self, endpoint: &str) -> Result<(), String> {
+        self.run(&["connect", endpoint]).map(|_| ())
+    }
+
+    /// Ask adb to reconnect `serial` and wait until it is listed again (§22.16).
+    ///
+    /// `adb reconnect` itself may fail while the device is briefly offline, so its
+    /// result is ignored; the source of truth is the `devices` poll below.
+    ///
+    /// Restarting the adb server drops TCP devices (MuMu/emulator) until they are
+    /// re-`connect`ed. Set `OAS_ADB_RECONNECT_ENDPOINTS` (comma separated, e.g.
+    /// `127.0.0.1:16384`) to also try `adb connect` for those endpoints.
+    pub fn reconnect(&self, serial: &str) -> Result<(), String> {
+        let _ = self.run(&["-s", serial, "reconnect"]);
+        let endpoints: Vec<String> = std::env::var("OAS_ADB_RECONNECT_ENDPOINTS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        for ep in &endpoints {
+            let _ = self.run(&["connect", ep]);
+        }
+        for _ in 0..100 {
+            if let Ok(devs) = self.devices() {
+                if devs.iter().any(|d| d.serial == serial) {
+                    return Ok(());
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        Err(format!(
+            "adb reconnect `{serial}`: device not listed again after 20s"
+        ))
     }
 
     pub fn screen(&self, serial: &str) -> AdbScreen {
