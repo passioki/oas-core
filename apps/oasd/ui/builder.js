@@ -279,6 +279,236 @@
     });
   }
 
+  // v1.2.3 (R9): real control-flow graph. Build nodes/edges first, then render
+  // SVG with actual edge paths (no more `↓` / `↺` text as pseudo-edges).
+  const G = {
+    nodeW: 210,
+    nodeH: 50,
+    ifW: 190,
+    ifH: 76,
+    junction: 22,
+    gapY: 30,
+    branchDX: 170,
+    loopDX: 100,
+    pad: 30,
+  };
+
+  function sEl(tag, attrs) {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, String(v));
+    return el;
+  }
+
+  function gNode(graph, opts) {
+    const kind = opts.kind || 'action';
+    const w = kind === 'if' ? G.ifW : kind === 'junction' ? G.junction : kind === 'terminal' ? 124 : G.nodeW;
+    const h = kind === 'if' ? G.ifH : kind === 'junction' ? G.junction : kind === 'terminal' ? 38 : G.nodeH;
+    const n = {
+      cx: opts.cx,
+      y: opts.y,
+      w,
+      h,
+      kind,
+      label: opts.label || '',
+      summary: opts.summary || '',
+      path: opts.path || null,
+    };
+    graph.nodes.push(n);
+    if (kind === 'finish') graph.finishNodes.push(n);
+    return n;
+  }
+
+  function gEdge(graph, from, to, label) {
+    if (!from || !to || from === to) return;
+    graph.edges.push({ from, to, label: label || '' });
+  }
+
+  function connectExits(graph, exits, to, label) {
+    for (const e of exits || []) gEdge(graph, e, to, label);
+  }
+
+  // Layout one sequence. `ctx.loop` collects break/continue targets for the
+  // enclosing loop; nested loops replace it.
+  function layoutSteps(graph, steps, basePath, cx, y, ctx) {
+    let entry = null;
+    let prev = [];
+    let bottom = y;
+    steps.forEach((step, idx) => {
+      const path = basePath.concat([idx]);
+      let node;
+      if (step.op === 'if') {
+        node = gNode(graph, {
+          cx,
+          y,
+          kind: 'if',
+          label: '如果',
+          summary: stepSummary(step),
+          path,
+        });
+        if (!entry) entry = node;
+        connectExits(graph, prev, node);
+        const branchY = node.y + node.h + G.gapY;
+        const thenR = layoutSteps(graph, step.then || [], path.concat(['then']), cx - G.branchDX, branchY, ctx);
+        const elseR = layoutSteps(graph, step.else || [], path.concat(['else']), cx + G.branchDX, branchY, ctx);
+        if (thenR.entry) gEdge(graph, node, thenR.entry, '是');
+        if (elseR.entry) gEdge(graph, node, elseR.entry, '否');
+        const mergeY = Math.max(thenR.bottom, elseR.bottom, node.y + node.h) + G.gapY;
+        const merge = gNode(graph, { cx, y: mergeY, kind: 'junction', label: '' });
+        connectExits(graph, thenR.exits, merge);
+        connectExits(graph, elseR.exits, merge);
+        if (!thenR.exits.length && !elseR.exits.length) gEdge(graph, node, merge, '是/否');
+        prev = [merge];
+        bottom = Math.max(bottom, merge.y + merge.h);
+        y = bottom + G.gapY;
+        return;
+      }
+      if (step.op === 'loop' || step.op === 'while') {
+        node = gNode(graph, {
+          cx,
+          y,
+          label: step.op === 'while' ? '当条件循环' : '循环',
+          summary: stepSummary(step),
+          path,
+        });
+        if (!entry) entry = node;
+        connectExits(graph, prev, node);
+        const loopCtx = {
+          ...ctx,
+          loop: { header: node, breakNodes: [], continueNodes: [] },
+        };
+        const bodyR = layoutSteps(
+          graph,
+          step.body || [],
+          path.concat(['body']),
+          cx + G.loopDX,
+          node.y + node.h + G.gapY,
+          loopCtx
+        );
+        if (bodyR.entry) gEdge(graph, node, bodyR.entry, '循环');
+        for (const ex of bodyR.exits || []) gEdge(graph, ex, node, '↺ 回边');
+        for (const c of loopCtx.loop.continueNodes) gEdge(graph, c, node, 'continue');
+        const exitY = Math.max(bodyR.bottom, node.y + node.h) + G.gapY;
+        const exitJ = gNode(graph, { cx, y: exitY, kind: 'junction', label: '' });
+        gEdge(graph, node, exitJ, '退出');
+        for (const b of loopCtx.loop.breakNodes) gEdge(graph, b, exitJ, 'break');
+        prev = [exitJ];
+        bottom = Math.max(bottom, exitJ.y + exitJ.h);
+        y = bottom + G.gapY;
+        return;
+      }
+      if (step.op === 'break' || step.op === 'continue') {
+        node = gNode(graph, {
+          cx,
+          y,
+          label: step.op,
+          summary: stepSummary(step),
+          path,
+        });
+        if (!entry) entry = node;
+        connectExits(graph, prev, node);
+        if (ctx.loop) {
+          if (step.op === 'break') ctx.loop.breakNodes.push(node);
+          else ctx.loop.continueNodes.push(node);
+        }
+        prev = [];
+        bottom = Math.max(bottom, node.y + node.h);
+        y = bottom + G.gapY;
+        return;
+      }
+      if (step.op === 'finish') {
+        node = gNode(graph, {
+          cx,
+          y,
+          kind: 'finish',
+          label: '结束',
+          summary: stepSummary(step),
+          path,
+        });
+        if (!entry) entry = node;
+        connectExits(graph, prev, node);
+        prev = [];
+        bottom = Math.max(bottom, node.y + node.h);
+        y = bottom + G.gapY;
+        return;
+      }
+      node = gNode(graph, {
+        cx,
+        y,
+        label: (OP_META[step.op] && OP_META[step.op].label) || step.op,
+        summary: stepSummary(step),
+        path,
+      });
+      if (!entry) entry = node;
+      connectExits(graph, prev, node);
+      prev = [node];
+      bottom = Math.max(bottom, node.y + node.h);
+      y = bottom + G.gapY;
+    });
+    return { entry, exits: prev, bottom };
+  }
+
+  function edgePath(a, b) {
+    const x1 = a.cx;
+    const y1 = a.y + a.h;
+    const x2 = b.cx;
+    const y2 = b.y;
+    if (y2 >= y1) {
+      const mid = (y1 + y2) / 2;
+      return `M ${x1} ${y1} L ${x1} ${mid} L ${x2} ${mid} L ${x2} ${y2}`;
+    }
+    // back edge (loop/continue): curved to distinguish from forward flow
+    return `M ${x1} ${y1} C ${x1 + 70} ${y1 + 34}, ${x2 - 70} ${y2 - 28}, ${x2} ${y2}`;
+  }
+
+  function renderSvgNode(svg, graph, node) {
+    const g = sEl('g', { class: `flow-svg-node ${node.kind}` });
+    if (node.kind === 'if') {
+      const p = sEl('polygon', {
+        points: `${node.cx},${node.y} ${node.cx + node.w / 2},${node.y + node.h / 2} ${node.cx},${node.y + node.h} ${node.cx - node.w / 2},${node.y + node.h / 2}`,
+      });
+      p.setAttribute('class', 'flow-svg-shape decision');
+      g.appendChild(p);
+    } else if (node.kind === 'junction') {
+      const c = sEl('circle', { cx: node.cx, cy: node.y + node.h / 2, r: node.w / 2 });
+      c.setAttribute('class', 'flow-svg-shape junction');
+      g.appendChild(c);
+    } else {
+      const r = sEl('rect', {
+        x: node.cx - node.w / 2,
+        y: node.y,
+        width: node.w,
+        height: node.h,
+        rx: node.kind === 'terminal' || node.kind === 'finish' ? node.h / 2 : 8,
+      });
+      r.setAttribute('class', `flow-svg-shape ${node.kind}`);
+      g.appendChild(r);
+    }
+    if (node.kind !== 'junction') {
+      const label = sEl('text', { x: node.cx, y: node.y + 19, 'text-anchor': 'middle' });
+      label.setAttribute('class', 'flow-svg-label');
+      label.textContent = node.label;
+      g.appendChild(label);
+      if (node.summary) {
+        const sum = sEl('text', { x: node.cx, y: node.y + 35, 'text-anchor': 'middle' });
+        sum.setAttribute('class', 'flow-svg-summary');
+        sum.textContent = node.summary.length > 28 ? node.summary.slice(0, 27) + '…' : node.summary;
+        g.appendChild(sum);
+      }
+      const title = sEl('title');
+      title.textContent = `${node.label}${node.summary ? ' · ' + node.summary : ''}`;
+      g.appendChild(title);
+    }
+    if (node.path) {
+      g.classList.add('clickable');
+      if (B.selected && JSON.stringify(B.selected) === JSON.stringify(node.path)) g.classList.add('selected');
+      g.addEventListener('click', () => {
+        B.selected = node.path;
+        renderAll();
+      });
+    }
+    svg.appendChild(g);
+  }
+
   function renderGraph() {
     const root = $('builder-graph');
     if (!root) return;
@@ -288,101 +518,60 @@
       root.textContent = '（空流程；添加动作后显示控制流图）';
       return;
     }
-    const wrap = document.createElement('div');
-    wrap.className = 'flowgraph';
-    const start = document.createElement('div');
-    start.className = 'fg-terminator';
-    start.textContent = '开始';
-    wrap.appendChild(start);
-    renderGraphSteps(steps, [], wrap, true);
-    const end = document.createElement('div');
-    end.className = 'fg-terminator end';
-    end.textContent = '流程出口';
-    wrap.appendChild(end);
-    root.appendChild(wrap);
-  }
+    const graph = { nodes: [], edges: [], finishNodes: [] };
+    const cx = 330;
+    const start = gNode(graph, { cx, y: 20, kind: 'terminal', label: '开始' });
+    const layout = layoutSteps(graph, steps, [], cx, start.y + start.h + G.gapY, { loop: null });
+    if (layout.entry) gEdge(graph, start, layout.entry);
+    const maxBottom = graph.nodes.reduce((m, n) => Math.max(m, n.y + n.h), layout.bottom);
+    const end = gNode(graph, { cx, y: maxBottom + G.gapY, kind: 'terminal', label: '流程出口' });
+    for (const f of graph.finishNodes) gEdge(graph, f, end);
+    for (const e of layout.exits) gEdge(graph, e, end);
+    if (!layout.exits.length && !graph.finishNodes.length) gEdge(graph, start, end);
 
-  function graphNode(step, path, cls) {
-    const meta = OP_META[step.op] || { label: step.op };
-    const node = document.createElement('div');
-    node.className = 'fg-node ' + (cls || '') + (childArrays(step).length ? ' control' : '');
-    const label = document.createElement('div');
-    label.className = 'fg-label';
-    label.textContent = meta.label;
-    const summary = document.createElement('div');
-    summary.className = 'fg-summary';
-    summary.textContent = stepSummary(step);
-    node.append(label, summary);
-    if (B.selected && JSON.stringify(B.selected) === JSON.stringify(path)) node.classList.add('selected');
-    node.addEventListener('click', () => { B.selected = path; renderAll(); });
-    return node;
-  }
-
-  // Real control-flow view: sequential arrows, if/else side-by-side lanes, loop
-  // body with a back edge. This is NOT a copy of the step list.
-  function renderGraphSteps(steps, basePath, container, first) {
-    steps.forEach((step, idx) => {
-      const path = basePath.concat([idx]);
-      if (!(first && idx === 0)) {
-        const a = document.createElement('div');
-        a.className = 'fg-arrow';
-        a.textContent = '↓';
-        container.appendChild(a);
-      }
-      if (step.op === 'if') {
-        const hasElse = Array.isArray(step.else) && step.else.length > 0;
-        const box = document.createElement('div');
-        box.className = 'fg-control-box if-box';
-        const head = graphNode(step, path, 'fg-branch-head');
-        box.appendChild(head);
-        const lanes = document.createElement('div');
-        lanes.className = 'fg-lanes' + (hasElse ? '' : ' one');
-        const thenLane = document.createElement('div');
-        thenLane.className = 'fg-lane';
-        const l1 = document.createElement('div');
-        l1.className = 'fg-lane-label';
-        l1.textContent = '是';
-        thenLane.appendChild(l1);
-        renderGraphSteps(step.then || [], path.concat(['then']), thenLane, false);
-        lanes.appendChild(thenLane);
-        if (hasElse) {
-          const elseLane = document.createElement('div');
-          elseLane.className = 'fg-lane';
-          const l2 = document.createElement('div');
-          l2.className = 'fg-lane-label';
-          l2.textContent = '否';
-          elseLane.appendChild(l2);
-          renderGraphSteps(step.else, path.concat(['else']), elseLane, false);
-          lanes.appendChild(elseLane);
-        }
-        box.appendChild(lanes);
-        const merge = document.createElement('div');
-        merge.className = 'fg-merge';
-        merge.textContent = '↓ 汇合';
-        box.appendChild(merge);
-        container.appendChild(box);
-      } else if (step.op === 'loop' || step.op === 'while') {
-        const box = document.createElement('div');
-        box.className = 'fg-control-box loop-box';
-        const head = graphNode(step, path, 'fg-branch-head');
-        box.appendChild(head);
-        const body = document.createElement('div');
-        body.className = 'fg-loop-body';
-        const bodyLabel = document.createElement('div');
-        bodyLabel.className = 'fg-lane-label';
-        bodyLabel.textContent = '循环体';
-        body.appendChild(bodyLabel);
-        renderGraphSteps(step.body || [], path.concat(['body']), body, false);
-        const back = document.createElement('div');
-        back.className = 'fg-backedge';
-        back.textContent = '↺ 回到循环开始';
-        body.appendChild(back);
-        box.appendChild(body);
-        container.appendChild(box);
-      } else {
-        container.appendChild(graphNode(step, path));
-      }
+    const width = Math.max(760, ...graph.nodes.map((n) => n.cx + n.w / 2 + G.pad));
+    const height = end.y + end.h + G.pad;
+    const svg = sEl('svg', {
+      class: 'flow-svg',
+      width,
+      height,
+      viewBox: `0 0 ${width} ${height}`,
+      role: 'img',
+      'aria-label': '控制流图',
     });
+    const defs = sEl('defs');
+    const marker = sEl('marker', {
+      id: 'flow-arrow',
+      markerWidth: 8,
+      markerHeight: 8,
+      refX: 7,
+      refY: 3,
+      orient: 'auto',
+      markerUnits: 'strokeWidth',
+    });
+    const arrow = sEl('path', { d: 'M0,0 L0,6 L7,3 z' });
+    arrow.setAttribute('class', 'flow-svg-arrow');
+    marker.appendChild(arrow);
+    defs.appendChild(marker);
+    svg.appendChild(defs);
+
+    for (const e of graph.edges) {
+      const p = sEl('path', { d: edgePath(e.from, e.to), 'marker-end': 'url(#flow-arrow)' });
+      p.setAttribute('class', 'flow-svg-edge');
+      svg.appendChild(p);
+      if (e.label) {
+        const t = sEl('text', {
+          x: (e.from.cx + e.to.cx) / 2,
+          y: (e.from.y + e.from.h + e.to.y) / 2 - 2,
+          'text-anchor': 'middle',
+        });
+        t.setAttribute('class', 'flow-svg-edge-label');
+        t.textContent = e.label;
+        svg.appendChild(t);
+      }
+    }
+    for (const n of graph.nodes) renderSvgNode(svg, graph, n);
+    root.appendChild(svg);
   }
 
   function assetSelect(current, kinds) {

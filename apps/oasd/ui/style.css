@@ -564,6 +564,22 @@ aside.side {
 .fg-merge { text-align: center; color: #5f7ea0; font-size: 11px; margin-top: 4px; }
 .fg-loop-body { border-left: 2px dashed #8a6a2a; margin-left: 16px; padding: 4px 0 4px 8px; }
 .fg-backedge { color: #c49a3a; font-size: 11px; margin-top: 3px; }
+
+/* v1.2.3 R9: real SVG control-flow graph */
+.builder-graph { max-height: 68vh; overflow: auto; }
+.flow-svg { display: block; min-width: 760px; background: #0f141a; border: 1px solid #2b2f38; border-radius: 8px; }
+.flow-svg-shape { fill: #1b2530; stroke: #4b6b8a; stroke-width: 1.6; }
+.flow-svg-shape.decision { fill: #2a2416; stroke: #b08a3a; stroke-width: 1.8; }
+.flow-svg-shape.junction { fill: #0f141a; stroke: #7c8b9e; stroke-width: 1.5; }
+.flow-svg-shape.terminal { fill: #16261c; stroke: #4f9a68; }
+.flow-svg-shape.finish { fill: #2a1717; stroke: #a45858; }
+.flow-svg-label { fill: #e6edf3; font-size: 12px; font-weight: 600; }
+.flow-svg-summary { fill: #aab4c0; font-size: 10px; }
+.flow-svg-edge { fill: none; stroke: #7c8b9e; stroke-width: 1.6; }
+.flow-svg-edge-label { fill: #c9a85a; font-size: 10px; }
+.flow-svg-arrow { fill: #7c8b9e; }
+.flow-svg-node.clickable { cursor: pointer; }
+.flow-svg-node.selected .flow-svg-shape { stroke: #e0a040; stroke-width: 2.6; }
 /* v1.2.1 frame gallery rename/group/drag */
 .frame-group { margin: 6px 0; border-top: 1px solid #2b2f38; padding-top: 4px; }
 .frame-group-head { color: #98a0ac; font-size: 12px; padding: 2px 4px; user-select: none; }
