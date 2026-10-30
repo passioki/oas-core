@@ -522,6 +522,11 @@ aside.side {
 .builder-head select { width: 260px; }
 .builder-head button { width: auto; margin: 0; }
 .builder-main { display: grid; grid-template-columns: 220px minmax(0, 1fr) 340px; gap: 10px; align-items: start; }
+/* The global `aside { width:320px; flex:0 0 320px }` must NOT size builder
+   grid items: it made the 220px palette wider than its track and overlap the
+   center column. Let the grid tracks control the width. */
+.builder-main > .builder-palette,
+.builder-main > .builder-inspector { width: auto; flex: none; }
 .builder-palette, .builder-center, .builder-inspector { background: #1d2027; border: 1px solid #2b2f38; border-radius: 8px; padding: 10px; min-height: 480px; min-width: 0; overflow: hidden; }
 .builder-palette h3, .builder-center h3, .builder-inspector h3 { margin: 2px 0 8px; color: #8fb8e8; font-size: 13px; }
 .builder-ops { display: flex; flex-direction: column; gap: 4px; }
