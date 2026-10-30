@@ -452,6 +452,12 @@ impl Server {
             // --- M2/N37: scheduler status panel + reset-memory dialog ---
             ("GET", "/scheduler/status") => self.handle_scheduler_status(&mut out),
             ("POST", "/scheduler/reset") => self.handle_scheduler_reset(&mut out, &body),
+            // --- v1.1 P3: app shell data routes (task library / instance / settings) ---
+            ("GET", "/task/library") => self.handle_task_library(&mut out),
+            ("POST", "/task/delete") => self.handle_task_delete(&mut out, &body),
+            ("GET", "/config") => self.handle_config(&mut out),
+            ("GET", "/instance") => self.handle_instance(&mut out),
+            ("POST", "/instance") => self.handle_instance_update(&mut out, &body),
             ("GET", "/stats") => self.handle_stats(&mut out),
             ("GET", "/match") => self.handle_match(&mut out, &path),
             // --- §22.22 global template asset library ---
@@ -1595,6 +1601,184 @@ impl Server {
         }
         self.editor_log(&format!("task_goal task={task} mode={mode}"));
         self.send_json(out, 200, &serde_json::json!({"ok": true, "task": task, "goal": goal}).to_string())
+    }
+
+    /// v1.1 P3: task library summary for the 任务库 page.
+    fn handle_task_library(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let names = match oas_task::list_tasks(&self.tasks_dir) {
+            Ok(n) => n,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let mut tasks = Vec::new();
+        for name in names {
+            let bundle = match oas_task::TaskBundle::open_named(&self.tasks_dir, &name) {
+                Ok(b) => b,
+                Err(e) => {
+                    tasks.push(serde_json::json!({"name": name, "error": e}));
+                    continue;
+                }
+            };
+            let meta = bundle.load_meta().ok().flatten();
+            let assets = bundle
+                .load_assets_file()
+                .map(|a| a.items.len())
+                .unwrap_or(0);
+            let mtime_ms = std::fs::metadata(self.tasks_dir.join(&name).join("meta.json"))
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let display = meta.as_ref().map(|m| m.name.clone()).unwrap_or(name.clone());
+            let category = meta
+                .as_ref()
+                .and_then(|m| m.category.clone())
+                .or_else(|| meta.as_ref().and_then(|m| m.expire.clone()))
+                .unwrap_or_default();
+            let description = meta
+                .as_ref()
+                .and_then(|m| m.description.clone())
+                .unwrap_or_default();
+            let goal = meta
+                .as_ref()
+                .and_then(|m| m.goal.clone())
+                .map(|g| serde_json::json!({"mode": g.mode, "count": g.count}))
+                .unwrap_or(serde_json::Value::Null);
+            tasks.push(serde_json::json!({
+                "name": name,
+                "display_name": display,
+                "category": category,
+                "description": description,
+                "assets": assets,
+                "goal": goal,
+                "mtime_ms": mtime_ms,
+            }));
+        }
+        self.send_json(out, 200, &serde_json::json!({"ok": true, "tasks": tasks}).to_string())
+    }
+
+    /// v1.1 P3: delete a task bundle from the library (UI asks for confirmation).
+    fn handle_task_delete(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if let Err(e) = oas_task::validate_task_name(task) {
+            return self.send_errors(out, 400, vec![e]);
+        }
+        let root = self.tasks_dir.join(task);
+        let root = match std::fs::canonicalize(&root) {
+            Ok(p) => p,
+            Err(e) => return self.send_errors(out, 400, vec![format!("task `{task}`: {e}")]),
+        };
+        let tasks_root = match std::fs::canonicalize(&self.tasks_dir) {
+            Ok(p) => p,
+            Err(e) => return self.send_errors(out, 500, vec![format!("tasks dir: {e}")]),
+        };
+        if root.parent() != Some(tasks_root.as_path()) {
+            return self.send_errors(out, 400, vec!["refusing to delete outside tasks dir".into()]);
+        }
+        if let Err(e) = std::fs::remove_dir_all(&root) {
+            return self.send_errors(out, 500, vec![format!("delete task `{task}`: {e}")]);
+        }
+        self.editor_log(&format!("task_delete task={task}"));
+        self.send_json(out, 200, &serde_json::json!({"ok": true, "task": task}).to_string())
+    }
+
+    /// v1.1 P3: current deployment config (settings page).
+    fn handle_config(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        match crate::config::global() {
+            Some(cfg) => {
+                let body = serde_json::json!({"ok": true, "config": cfg});
+                self.send_json(out, 200, &body.to_string())
+            }
+            None => self.send_errors(
+                out,
+                400,
+                vec!["no --config loaded (start serve with --config config/live.json)".into()],
+            ),
+        }
+    }
+
+    /// v1.1 P3: active instance view (single active device in this process).
+    fn handle_instance(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let cfg = crate::config::global();
+        let st = self.state.lock().unwrap();
+        let body = serde_json::json!({
+            "ok": true,
+            "active": true,
+            "name": "本机实例",
+            "device_serial": cfg.map(|c| c.device.serial.clone()).unwrap_or_default(),
+            "adb_path": cfg.map(|c| c.device.adb_path.clone()).unwrap_or_default(),
+            "serve_port": cfg.map(|c| c.serve.port).unwrap_or(0),
+            "bind": cfg.map(|c| c.serve.bind.clone()).unwrap_or_default(),
+            "state": {
+                "captured": st.png.is_some(),
+                "device": st.device,
+                "error": st.error,
+            },
+        });
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// v1.1 P3: update the active instance's serial/adb path in `config/live.json`.
+    ///
+    /// The running process keeps its already-applied env; the response says
+    /// restart is required (the UI shows that clearly).
+    fn handle_instance_update(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let Some(path) = crate::config::global_path() else {
+            return self.send_errors(
+                out,
+                400,
+                vec!["no --config file loaded; start serve with --config config/live.json".into()],
+            );
+        };
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) => return self.send_errors(out, 500, vec![format!("read config: {e}")]),
+        };
+        let mut cfg: crate::config::OasConfig = match serde_json::from_str(&text) {
+            Ok(c) => c,
+            Err(e) => return self.send_errors(out, 500, vec![format!("parse config: {e}")]),
+        };
+        if let Some(serial) = v.get("device_serial").and_then(|x| x.as_str()) {
+            let serial = serial.trim();
+            if serial.is_empty() || serial.contains(char::is_whitespace) {
+                return self.send_errors(out, 400, vec!["device_serial must be non-empty without spaces".into()]);
+            }
+            cfg.device.serial = serial.to_string();
+        }
+        if let Some(adb) = v.get("adb_path").and_then(|x| x.as_str()) {
+            let adb = adb.trim();
+            if !adb.is_empty() && !std::path::Path::new(adb).is_file() {
+                return self.send_errors(out, 400, vec![format!("adb_path does not exist: {adb}")]);
+            }
+            cfg.device.adb_path = adb.to_string();
+        }
+        let pretty = match serde_json::to_string_pretty(&cfg) {
+            Ok(s) => s,
+            Err(e) => return self.send_errors(out, 500, vec![format!("serialize config: {e}")]),
+        };
+        if let Err(e) = std::fs::write(path, format!("{pretty}\n")) {
+            return self.send_errors(out, 500, vec![format!("write config: {e}")]);
+        }
+        self.editor_log(&format!("instance_update serial={}", cfg.device.serial));
+        self.send_json(
+            out,
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "device_serial": cfg.device.serial,
+                "adb_path": cfg.device.adb_path,
+                "restart_required": true
+            })
+            .to_string(),
+        )
     }
 
     fn handle_task_assets(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {

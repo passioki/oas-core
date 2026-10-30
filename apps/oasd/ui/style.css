@@ -465,3 +465,45 @@ aside.side {
   font-size: 11px;
   padding: 2px 6px;
 }
+/* v1.1 P3: app shell pages */
+.app-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: #171a20;
+  border-bottom: 1px solid #2b2f38;
+}
+.app-nav-btn {
+  display: inline-block;
+  width: auto;
+  margin: 0;
+  padding: 4px 12px;
+}
+.app-nav-btn.active { background: #24384f; border-color: #4a7fb5; color: #cfe4ff; }
+.app-page { display: none; }
+.app-page.active { display: block; }
+.page-wrap { padding: 14px; max-width: 1180px; }
+.page-head { align-items: center; margin-bottom: 10px; }
+.page-head h2 { margin: 0; font-size: 16px; }
+.card {
+  background: #1d2027;
+  border: 1px solid #2b2f38;
+  border-radius: 8px;
+  padding: 12px;
+}
+.task-library { display: flex; flex-direction: column; gap: 6px; }
+.task-card {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  background: #1d2027;
+  border: 1px solid #2b2f38;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.task-card .task-meta { flex: 1; min-width: 0; }
+.task-card .task-title { font-weight: 600; }
+.task-card .task-sub { color: #98a0ac; font-size: 12px; }
+.task-card .row { width: auto; }.page-head button { width: auto; margin: 0; display: inline-block; flex: none; }
+.page-head .spacer { flex: 1; }

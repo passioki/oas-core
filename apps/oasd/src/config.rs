@@ -16,9 +16,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct OasConfig {
     pub schema_version: u32,
@@ -29,7 +29,7 @@ pub struct OasConfig {
     pub scheduler: SchedulerConfig,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ServeConfig {
     pub port: u16,
@@ -47,7 +47,7 @@ impl Default for ServeConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct PathsConfig {
     pub tasks_dir: String,
@@ -65,7 +65,7 @@ impl Default for PathsConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct OcrConfig {
     pub model: String,
@@ -81,7 +81,7 @@ impl Default for OcrConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct DeviceConfig {
     /// 显式 adb 路径；空 = 走 `ADB_PATH` / PATH。
@@ -102,7 +102,7 @@ impl Default for DeviceConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct SchedulerConfig {
     pub plan: String,
@@ -205,6 +205,17 @@ pub fn set_global(cfg: OasConfig) {
     let _ = GLOBAL.set(cfg);
 }
 
+/// Path of the loaded `--config` file (v1.1 P3 settings/instance editing).
+static GLOBAL_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_global_path(path: PathBuf) {
+    let _ = GLOBAL_PATH.set(path);
+}
+
+pub fn global_path() -> Option<&'static Path> {
+    GLOBAL_PATH.get().map(|p| p.as_path())
+}
+
 /// 已加载的全局配置；未加载（如纯 CLI/dev）时为 None。
 pub fn global() -> Option<&'static OasConfig> {
     GLOBAL.get()
@@ -268,3 +279,4 @@ mod tests {
         assert!(e.contains("read config"), "{e}");
     }
 }
+

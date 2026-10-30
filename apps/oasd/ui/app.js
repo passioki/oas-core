@@ -83,6 +83,25 @@ const goalStatus = document.getElementById('goal-status');
 const btnWbAssets = document.getElementById('btn-wb-assets');
 const btnWbFlow = document.getElementById('btn-wb-flow');
 const btnWbRun = document.getElementById('btn-wb-run');
+// v1.1 P3: app shell pages
+const appNav = document.getElementById('app-nav');
+const appPages = Array.from(document.querySelectorAll('.app-page'));
+const navDevice = document.getElementById('nav-device');
+const libList = document.getElementById('lib-list');
+const libRefresh = document.getElementById('lib-refresh');
+const libNew = document.getElementById('lib-new');
+const instCard = document.getElementById('inst-card');
+const instRefresh = document.getElementById('inst-refresh');
+const instSerial = document.getElementById('inst-serial');
+const instAdb = document.getElementById('inst-adb');
+const instSave = document.getElementById('inst-save');
+const instMsg = document.getElementById('inst-msg');
+const pageSchedSummary = document.getElementById('page-sched-summary');
+const pageSchedEntries = document.getElementById('page-sched-entries');
+const pageSchedRefresh = document.getElementById('page-sched-refresh');
+const pageSchedReset = document.getElementById('page-sched-reset');
+const settingsConfig = document.getElementById('settings-config');
+const settingsRefresh = document.getElementById('settings-refresh');
 const runDry = document.getElementById('run-dry');
 const runReplay = document.getElementById('run-replay');
 const runStatusEl = document.getElementById('run-status');
@@ -499,6 +518,199 @@ async function applyTaskGoal() {
 }
 
 // --- v1.1 P2: 任务工作台导航 -----------------------------------------------
+// --- v1.1 P3: 应用级页面（工作台/任务库/实例/调度/设置） --------------------
+function activatePage(name) {
+  for (const p of appPages) p.classList.toggle('active', p.id === 'page-' + name);
+  if (appNav) {
+    for (const b of appNav.querySelectorAll('.app-nav-btn')) {
+      b.classList.toggle('active', b.dataset.page === name);
+    }
+  }
+  if (name === 'tasks') refreshLibrary();
+  else if (name === 'instances') refreshInstance();
+  else if (name === 'schedule') refreshSchedulePage();
+  else if (name === 'settings') refreshSettings();
+}
+
+async function refreshNavDevice() {
+  try {
+    const r = await fetch('/instance');
+    const s = await r.json();
+    if (navDevice) {
+      navDevice.textContent = s.ok
+        ? `实例：${s.device_serial || '未配置'} · ${s.state && s.state.device ? s.state.device : '未连接'}`
+        : '实例：未配置';
+    }
+  } catch (e) {
+    if (navDevice) navDevice.textContent = '实例：不可用';
+  }
+}
+
+async function refreshLibrary() {
+  if (!libList) return;
+  libList.textContent = '加载中…';
+  try {
+    const r = await fetch('/task/library');
+    const s = await r.json();
+    if (!s.ok) {
+      libList.textContent = '加载失败：' + ((s.errors || []).join('; ') || '未知错误');
+      return;
+    }
+    libList.textContent = '';
+    if (!s.tasks.length) {
+      libList.textContent = '（还没有任务；点「新建任务…」）';
+      return;
+    }
+    for (const t of s.tasks) {
+      const card = document.createElement('div');
+      card.className = 'task-card';
+      const meta = document.createElement('div');
+      meta.className = 'task-meta';
+      const title = document.createElement('div');
+      title.className = 'task-title';
+      title.textContent = `${t.display_name || t.name}  (${t.name})`;
+      const sub = document.createElement('div');
+      sub.className = 'task-sub';
+      const goal = t.goal && t.goal.mode ? ` · 完成条件=${t.goal.mode}${t.goal.count ? '/' + t.goal.count : ''}` : '';
+      sub.textContent = `${t.category || '—'} · 素材 ${t.assets ?? '?'} · ${t.description || '（无描述）'}${goal}`;
+      meta.append(title, sub);
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.textContent = '打开';
+      open.addEventListener('click', () => openTaskInWorkbench(t.name));
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.textContent = '删除';
+      del.addEventListener('click', () => deleteTaskFromLibrary(t.name));
+      card.append(meta, open, del);
+      libList.appendChild(card);
+    }
+  } catch (e) {
+    libList.textContent = '加载异常：' + e;
+  }
+}
+
+async function openTaskInWorkbench(name) {
+  taskName.value = name;
+  if (taskSelect) syncTaskSelect(name);
+  activatePage('workbench');
+  if (window.__oasActivatePanel) window.__oasActivatePanel('panel-task');
+  await refreshTaskAssets(name);
+  await loadTaskFlow(name);
+}
+
+async function deleteTaskFromLibrary(name) {
+  if (!window.confirm(`删除任务「${name}」？\n\n任务目录（flow/assets/images）会被删除，不可恢复。`)) return;
+  const r = await postJson('/task/delete', { task: name });
+  if (!r.ok) {
+    window.alert('删除失败：' + (r.errors || []).join('\n'));
+    return;
+  }
+  log(`已删除任务：${name}`);
+  await refreshLibrary();
+}
+
+async function refreshInstance() {
+  if (!instCard) return;
+  try {
+    const r = await fetch('/instance');
+    const s = await r.json();
+    if (!s.ok) {
+      instCard.textContent = '加载失败：' + ((s.errors || []).join('; ') || '未知错误');
+      return;
+    }
+    instCard.textContent = '';
+    const rows = [
+      ['活动实例', s.name],
+      ['设备 serial', s.device_serial || '（未配置）'],
+      ['adb 路径', s.adb_path || '（PATH/ADB_PATH）'],
+      ['serve 端口', String(s.serve_port || '—')],
+      ['绑定地址', s.bind || '—'],
+      ['设备状态', s.state && s.state.device ? s.state.device : '未连接'],
+      ['错误', (s.state && s.state.error) || '无'],
+    ];
+    for (const [k, v] of rows) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML = `<span class="muted small" style="width:110px">${k}</span><span>${String(v)}</span>`;
+      instCard.appendChild(row);
+    }
+    if (navDevice) navDevice.textContent = `实例：${s.device_serial || '未配置'}`;
+    if (instSerial) instSerial.value = s.device_serial || '';
+    if (instAdb) instAdb.value = s.adb_path || '';
+  } catch (e) {
+    instCard.textContent = '加载异常：' + e;
+  }
+}
+
+async function saveInstance() {
+  if (!instSerial) return;
+  if (instMsg) instMsg.textContent = '保存中…';
+  const r = await postJson('/instance', {
+    device_serial: instSerial.value.trim(),
+    adb_path: instAdb ? instAdb.value.trim() : '',
+  });
+  if (!r.ok) {
+    if (instMsg) instMsg.textContent = '保存失败：' + (r.errors || []).join('; ');
+    return;
+  }
+  if (instMsg) instMsg.textContent = '已保存 config/live.json；重启 serve 后生效。';
+  log('实例配置已保存；重启 serve 生效');
+  await refreshInstance();
+}
+
+async function refreshSchedulePage() {
+  if (!pageSchedSummary) return;
+  try {
+    const r = await fetch('/scheduler/status');
+    const s = await r.json();
+    if (s.ok === false) {
+      pageSchedSummary.textContent = '读取失败：' + ((s.errors || []).join('; ') || '未知');
+      return;
+    }
+    schedulerStatus = s;
+    const guards = s.guards || {};
+    pageSchedSummary.textContent =
+      `模式=${s.mode || '—'} · 轮次=${s.passes ?? 0} · 下一唤醒=${s.next_wake_local || '—'} · ` +
+      `护栏=${guards.blocked ? '已阻断' : '正常'} · 计划=${s.config_path || '—'}`;
+    pageSchedEntries.textContent = '';
+    for (const e of s.entries || []) {
+      const card = document.createElement('div');
+      card.className = 'task-card';
+      const meta = document.createElement('div');
+      meta.className = 'task-meta';
+      const title = document.createElement('div');
+      title.className = 'task-title';
+      title.textContent = `${e.entry_id} · ${e.task}`;
+      const sub = document.createElement('div');
+      sub.className = 'task-sub';
+      const q = e.quota || {};
+      sub.textContent =
+        `${e.lifecycle} · ${e.runnable_now ? '现在可跑' : (e.blocked_reason || '等待')}` +
+        (q.per ? ` · quota ${q.used ?? 0}/${q.times ?? '?'}` : '') +
+        (e.next_due_local ? ` · 下次 ${e.next_due_local}` : '');
+      meta.append(title, sub);
+      card.append(meta);
+      pageSchedEntries.appendChild(card);
+    }
+  } catch (e) {
+    pageSchedSummary.textContent = '读取异常：' + e;
+  }
+}
+
+async function refreshSettings() {
+  if (!settingsConfig) return;
+  try {
+    const r = await fetch('/config');
+    const s = await r.json();
+    settingsConfig.textContent = s.ok
+      ? JSON.stringify(s.config, null, 2)
+      : '读取失败：' + ((s.errors || []).join('; ') || '未知错误');
+  } catch (e) {
+    settingsConfig.textContent = '读取异常：' + e;
+  }
+}
+
 function regionRoiArray() {
   return roi ? [roi.x, roi.y, roi.w, roi.h] : null;
 }
@@ -2480,6 +2692,7 @@ async function submitResetMemory() {
     }
     if (panelId === 'panel-schedule') refreshScheduler();
   }
+  window.__oasActivatePanel = activatePanel;
   for (const b of railButtons) {
     b.addEventListener('click', () => {
       if (b.dataset.href) {
@@ -2733,6 +2946,34 @@ async function submitResetMemory() {
     setClicksStatus('点击分布初始化失败：' + (e && e.message ? e.message : e));
     log('点击分布初始化失败：' + e);
   }
+
+  // --- v1.1 P3: app-level pages ---
+  if (appNav) {
+    for (const b of appNav.querySelectorAll('.app-nav-btn')) {
+      b.addEventListener('click', () => activatePage(b.dataset.page));
+    }
+  }
+  if (libRefresh) libRefresh.addEventListener('click', refreshLibrary);
+  if (instRefresh) instRefresh.addEventListener('click', refreshInstance);
+  if (instSave) instSave.addEventListener('click', saveInstance);
+  if (pageSchedRefresh) pageSchedRefresh.addEventListener('click', refreshSchedulePage);
+  if (pageSchedReset) pageSchedReset.addEventListener('click', openResetMemoryDialog);
+  if (settingsRefresh) settingsRefresh.addEventListener('click', refreshSettings);
+  if (libNew) {
+    libNew.addEventListener('click', () => {
+      activatePage('workbench');
+      openCreateTaskDialog();
+    });
+  }
+  try {
+    const wantPage = new URLSearchParams(location.search).get('page');
+    if (wantPage && ['workbench', 'tasks', 'instances', 'schedule', 'settings'].includes(wantPage)) {
+      activatePage(wantPage);
+    }
+  } catch (e) {
+    /* ignore */
+  }
+  refreshNavDevice();
 
   // M1：页面刷新时如果后台还有运行中的任务，继续轮询并把结果接回日志窗口。
   try {

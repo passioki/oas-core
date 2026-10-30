@@ -62,6 +62,7 @@ fn main() -> ExitCode {
             Ok(cfg) => {
                 cfg.apply_env();
                 config::set_global(cfg);
+                config::set_global_path(std::path::PathBuf::from(&path));
                 println!("config={path}");
             }
             Err(e) => {

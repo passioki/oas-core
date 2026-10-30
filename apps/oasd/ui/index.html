@@ -15,6 +15,17 @@
     </div>
   </header>
 
+  <nav class="app-nav" id="app-nav">
+    <button class="app-nav-btn active" data-page="workbench" type="button">工作台</button>
+    <button class="app-nav-btn" data-page="tasks" type="button">任务库</button>
+    <button class="app-nav-btn" data-page="instances" type="button">实例</button>
+    <button class="app-nav-btn" data-page="schedule" type="button">调度</button>
+    <button class="app-nav-btn" data-page="settings" type="button">设置</button>
+    <span class="spacer"></span>
+    <span id="nav-device" class="muted small">实例：—</span>
+  </nav>
+
+  <div id="page-workbench" class="app-page active">
   <main>
     <section id="canvas-wrap">
       <div class="canvas-windows">
@@ -240,6 +251,75 @@
       </div>
     </aside>
   </main>
+  </div>
+
+  <!-- v1.1 P3: 任务库 -->
+  <div id="page-tasks" class="app-page">
+    <div class="page-wrap">
+      <div class="row page-head">
+        <h2>任务库</h2>
+        <span class="muted small">创建、打开、删除任务；flow/素材都是数据</span>
+        <span class="spacer"></span>
+        <button id="lib-refresh" type="button">刷新</button>
+        <button id="lib-new" type="button">新建任务…</button>
+      </div>
+      <div id="lib-list" class="task-library muted">（未加载）</div>
+    </div>
+  </div>
+
+  <!-- v1.1 P3: 实例（单活动实例） -->
+  <div id="page-instances" class="app-page">
+    <div class="page-wrap">
+      <div class="row page-head">
+        <h2>实例</h2>
+        <span class="muted small">v1.1 单进程单活动实例；多实例并行在后续版本</span>
+        <span class="spacer"></span>
+        <button id="inst-refresh" type="button">刷新</button>
+      </div>
+      <div id="inst-card" class="card muted">（未加载；需要服务以 --config config/live.json 启动）</div>
+      <h3>实例配置（写入 config/live.json，重启 serve 生效）</h3>
+      <label class="opt">设备 serial
+        <input id="inst-serial" placeholder="如 127.0.0.1:16384" />
+      </label>
+      <label class="opt">adb 路径（留空 = PATH/ADB_PATH）
+        <input id="inst-adb" placeholder="D:\...\adb.exe" />
+      </label>
+      <button id="inst-save" type="button">保存实例配置</button>
+      <div id="inst-msg" class="muted small">—</div>
+    </div>
+  </div>
+
+  <!-- v1.1 P3: 调度 -->
+  <div id="page-schedule" class="app-page">
+    <div class="page-wrap">
+      <div class="row page-head">
+        <h2>调度</h2>
+        <span class="muted small">scheduler.json v3 · periodic/temp · 重置记忆</span>
+        <span class="spacer"></span>
+        <button id="page-sched-refresh" type="button">刷新状态</button>
+        <button id="page-sched-reset" type="button">重置记忆…</button>
+      </div>
+      <div id="page-sched-summary" class="muted small">—</div>
+      <div id="page-sched-entries" class="task-library muted">（未加载）</div>
+    </div>
+  </div>
+
+  <!-- v1.1 P3: 设置 -->
+  <div id="page-settings" class="app-page">
+    <div class="page-wrap">
+      <div class="row page-head">
+        <h2>设置</h2>
+        <span class="muted small">读取 config/live.json；修改后重启 serve 生效</span>
+        <span class="spacer"></span>
+        <button id="settings-refresh" type="button">刷新</button>
+      </div>
+      <pre id="settings-config" class="card muted">（未加载）</pre>
+      <p class="muted small">
+        配置文件：<code>config/live.json</code>（device.serial / adb_path / serve.port / paths / ocr 模型）。<br/>
+        保存方式：停止编辑器 → 编辑 config/live.json → start-editor.bat。
+      </p>
+    </div>
+  </div>
 
   <!-- M1/N38：新建任务对话框（名称 / 模板 / 描述 -> POST /task/create） -->
   <dialog id="create-task-dialog" class="task-dialog">
@@ -286,6 +366,19 @@
     </div>
   </dialog>
 
+  <script>
+    // v1.1 diagnostics: surface uncaught JS errors in the header instead of a
+    // silent blank page (headless acceptance also relies on this).
+    window.__oasErrors = [];
+    window.addEventListener('error', function (e) {
+      window.__oasErrors.push(String(e.message || e.error || e));
+      var s = document.getElementById('status');
+      if (s) {
+        s.textContent = 'JS 错误：' + (e.message || e.error);
+        s.style.color = '#ff8a80';
+      }
+    });
+  </script>
   <script src="/flow_model.js"></script>
   <script src="/app.js"></script>
 </body>
