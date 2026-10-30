@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "oas-adapter-pc"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "oas-codec",
  "oas-types",
@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "oas-codec"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "oas-types",
  "png",
@@ -334,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "oas-flow"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "oas-types",
  "serde",
@@ -343,7 +343,7 @@ dependencies = [
 
 [[package]]
 name = "oas-obs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "oas-codec",
  "oas-types",
@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "oas-ocr"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "oas-codec",
  "oas-types",
@@ -362,7 +362,7 @@ dependencies = [
 
 [[package]]
 name = "oas-perceive"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "oas-types",
  "serde_json",
@@ -370,7 +370,7 @@ dependencies = [
 
 [[package]]
 name = "oas-runtime"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "oas-flow",
  "oas-obs",
@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "oas-task"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "oas-codec",
  "oas-flow",
@@ -393,11 +393,11 @@ dependencies = [
 
 [[package]]
 name = "oas-types"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "oasd"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "oas-adapter-pc",
  "oas-codec",

@@ -506,7 +506,7 @@ async function applyTaskGoal() {
     }
     if (!actions.length) actions.push({ op: 'log', args: { level: 'info', text: "'完成条件循环'" } });
     flow.steps = [
-      { op: 'loop', args: { n: "param('max_battles')", body: actions } },
+      { op: 'loop', args: { n: "param('max_battles')" }, body: actions },
       { op: 'finish', args: { exit } },
     ];
   }
