@@ -179,6 +179,21 @@ pub struct Meta {
     pub resources: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule_hint: Option<ScheduleHint>,
+    /// v1.1 task-level completion condition. Scheduler quota ("how many times
+    /// per day") is separate; this describes "how much work = one run".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<Goal>,
+}
+
+/// Task-level completion condition (v1.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Goal {
+    /// `battles` = repeat the flow N times; `until_resource` / `until_condition`
+    /// are reserved for flow-authored checks (UI records them, engine does not
+    /// invent game semantics).
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +326,32 @@ impl Meta {
                 "meta.json:name".to_string(),
                 "must be a non-empty task name".to_string(),
             );
+        }
+        if let Some(goal) = &self.goal {
+            match goal.mode.as_str() {
+                "battles" => {
+                    if !matches!(goal.count, Some(n) if (1..=999).contains(&n)) {
+                        push(
+                            "meta.json:goal.count".to_string(),
+                            "mode=battles requires count 1..=999".to_string(),
+                        );
+                    }
+                }
+                "until_resource" | "until_condition" => {
+                    if goal.count.is_some() {
+                        push(
+                            "meta.json:goal.count".to_string(),
+                            format!("count is not used by mode={}", goal.mode),
+                        );
+                    }
+                }
+                other => push(
+                    "meta.json:goal.mode".to_string(),
+                    format!(
+                        "unknown goal mode `{other}` (allowed: battles, until_resource, until_condition)"
+                    ),
+                ),
+            }
         }
         if let Some(v) = self.template_version {
             if v == 0 {

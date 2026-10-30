@@ -439,6 +439,7 @@ impl Server {
             ("POST", "/task/asset/delete") => self.handle_asset_delete(&mut out, &body),
             ("POST", "/task/asset/rename") => self.handle_asset_rename(&mut out, &body),
             ("POST", "/task/asset/update") => self.handle_asset_update(&mut out, &body),
+            ("POST", "/task/goal") => self.handle_task_goal(&mut out, &body),
             ("GET", "/task/assets") => self.handle_task_assets(&mut out, &path),
             ("GET", "/task/asset/match") => self.handle_asset_match(&mut out, &path),
             ("GET", "/task/flow") => self.handle_task_flow(&mut out, &path),
@@ -1500,6 +1501,100 @@ impl Server {
             }
             Err(e) => self.send_errors(out, 400, vec![e]),
         }
+    }
+
+    /// v1.1 P2: `POST /task/goal` body `{task, goal:{mode,count?}}`.
+    ///
+    /// Stores the task-level completion condition in `meta.json`; for
+    /// `mode=battles` it also ensures `params.max_battles` exists so the flow
+    /// can use `loop n=param('max_battles')`.
+    fn handle_task_goal(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if task.is_empty() {
+            return self.send_errors(out, 400, vec!["`task` is required".into()]);
+        }
+        if let Err(e) = oas_task::validate_task_name(task) {
+            return self.send_errors(out, 400, vec![e]);
+        }
+        let goal = match v.get("goal") {
+            Some(g) if g.is_object() => g.clone(),
+            _ => return self.send_errors(out, 400, vec!["`goal` object is required".into()]),
+        };
+        let mode = goal.get("mode").and_then(|x| x.as_str()).unwrap_or("");
+        let count = goal.get("count").and_then(|x| x.as_u64());
+        match mode {
+            "battles" => {
+                let Some(n) = count else {
+                    return self.send_errors(out, 400, vec!["goal.mode=battles needs count".into()]);
+                };
+                if !(1..=999).contains(&n) {
+                    return self.send_errors(out, 400, vec!["goal.count must be 1..=999".into()]);
+                }
+            }
+            "until_resource" | "until_condition" => {}
+            other => {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec![format!(
+                        "unknown goal mode `{other}` (allowed: battles, until_resource, until_condition)"
+                    )],
+                )
+            }
+        }
+        let path = self.tasks_dir.join(task).join("meta.json");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => return self.send_errors(out, 400, vec![format!("read meta.json: {e}")]),
+        };
+        let mut meta: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("meta.json invalid: {e}")]),
+        };
+        meta["goal"] = goal.clone();
+        if mode == "battles" {
+            let count = count.unwrap_or(1);
+            let params = meta
+                .as_object_mut()
+                .unwrap()
+                .entry("params")
+                .or_insert_with(|| serde_json::json!([]));
+            let Some(arr) = params.as_array_mut() else {
+                return self.send_errors(out, 400, vec!["meta.params must be an array".into()]);
+            };
+            let existing = arr
+                .iter()
+                .position(|p| p.get("key").and_then(|k| k.as_str()) == Some("max_battles"));
+            let decl = serde_json::json!({
+                "key": "max_battles",
+                "type": "int",
+                "default": count,
+                "min": 1,
+                "max": 999
+            });
+            if let Some(i) = existing {
+                arr[i] = decl;
+            } else {
+                arr.push(decl);
+            }
+        }
+        let pretty = match serde_json::to_string_pretty(&meta) {
+            Ok(s) => s,
+            Err(e) => return self.send_errors(out, 500, vec![format!("serialize meta: {e}")]),
+        };
+        // validate through the typed contract before writing
+        if let Err(e) = oas_task::Meta::from_json(&pretty) {
+            return self.send_errors(out, 400, vec![format!("meta validation: {e}")]);
+        }
+        if let Err(e) = std::fs::write(&path, format!("{pretty}\n")) {
+            return self.send_errors(out, 500, vec![format!("write meta.json: {e}")]);
+        }
+        self.editor_log(&format!("task_goal task={task} mode={mode}"));
+        self.send_json(out, 200, &serde_json::json!({"ok": true, "task": task, "goal": goal}).to_string())
     }
 
     fn handle_task_assets(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {

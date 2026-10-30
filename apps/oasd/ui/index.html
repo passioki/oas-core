@@ -151,6 +151,16 @@
 
         <section class="panel" id="panel-task">
           <h3>任务</h3>
+          <div class="task-wizard">
+            <div class="muted small">
+              任务工作台：① 基础 → ② 画面/素材 → ③ 素材操作 → ④ 流程 → ⑤ 完成条件 → ⑥ 测试 → ⑦ 保存/调度
+            </div>
+            <div class="row lib-toolbar">
+              <button id="btn-wb-assets" type="button">② 画面/素材</button>
+              <button id="btn-wb-flow" type="button">④ 流程</button>
+              <button id="btn-wb-run" type="button">⑥ 测试运行</button>
+            </div>
+          </div>
           <label class="opt"><input id="task-name" placeholder="任务名，如：队伍预设" value="任务1" /></label>
           <div class="row lib-toolbar">
             <select id="task-select" title="tasks/ 下已有的任务包">
@@ -167,6 +177,23 @@
             <input id="run-replay" placeholder="留空 = 实机运行；填 record 包目录 = replay" />
           </label>
           <div id="run-status" class="muted small">—</div>
+
+          <h3>⑤ 完成条件（一次运行做到什么算完成）</h3>
+          <label class="opt">模式
+            <select id="goal-mode">
+              <option value="battles">打 N 场（自动生成循环）</option>
+              <option value="until_resource">直到资源耗尽（flow 自行判断）</option>
+              <option value="until_condition">直到出现指定条件（flow 自行判断）</option>
+            </select>
+          </label>
+          <label class="opt">次数 N
+            <input id="goal-count" type="number" min="1" max="999" value="1" />
+          </label>
+          <button id="btn-goal-apply" type="button">应用完成条件（写入 meta + 生成流程）</button>
+          <div id="goal-status" class="muted small">—</div>
+          <p class="muted small">
+            完成条件属于任务（一次运行打几场）；调度器的 quota 是“一天/一周跑几次任务”，两者分开。
+          </p>
 
           <h3>任务素材</h3>
           <div class="row lib-toolbar">

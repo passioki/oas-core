@@ -75,6 +75,14 @@ const taskSelect = document.getElementById('task-select');
 const btnTaskRefresh = document.getElementById('btn-task-refresh');
 const btnTaskCreate = document.getElementById('btn-task-create');
 const btnTaskRun = document.getElementById('btn-task-run');
+// v1.1 P2: 任务工作台 + 完成条件
+const goalMode = document.getElementById('goal-mode');
+const goalCount = document.getElementById('goal-count');
+const btnGoalApply = document.getElementById('btn-goal-apply');
+const goalStatus = document.getElementById('goal-status');
+const btnWbAssets = document.getElementById('btn-wb-assets');
+const btnWbFlow = document.getElementById('btn-wb-flow');
+const btnWbRun = document.getElementById('btn-wb-run');
 const runDry = document.getElementById('run-dry');
 const runReplay = document.getElementById('run-replay');
 const runStatusEl = document.getElementById('run-status');
@@ -90,8 +98,7 @@ const btnSchedRefresh = document.getElementById('btn-sched-refresh');
 const btnSchedReset = document.getElementById('btn-sched-reset');
 const schedSummary = document.getElementById('sched-summary');
 const schedEntries = document.getElementById('sched-entries');
-const resetMemoryDialog = document.getElementById('reset-memory-dialog');
-const resetTaskList = document.getElementById('reset-task-list');
+const resetMemoryDialog = document.getElementById('reset-memory-dialog');const resetTaskList = document.getElementById('reset-task-list');
 const resetIncludeCheckpoint = document.getElementById('reset-include-checkpoint');
 const resetError = document.getElementById('reset-error');
 const btnResetAll = document.getElementById('btn-reset-all');
@@ -420,7 +427,78 @@ function doAppendStepToFlow() {
   appendStepToFlow(step, '点击指令');
 }
 
-// --- v1.1: 独立区域操作（不识别，区域随机点） ------------------------------
+// --- v1.1 P2: 任务级完成条件 ------------------------------------------------
+async function applyTaskGoal() {
+  const task = (taskName.value || '').trim();
+  if (!task) {
+    resultEl.textContent = '请先选择/新建任务';
+    return;
+  }
+  const mode = goalMode ? goalMode.value : 'battles';
+  const goal = { mode };
+  if (mode === 'battles') {
+    const n = Number(goalCount && goalCount.value);
+    if (!Number.isInteger(n) || n < 1 || n > 999) {
+      resultEl.textContent = '完成次数必须是 1~999 的整数';
+      return;
+    }
+    goal.count = n;
+  }
+  const r = await postJson('/task/goal', { task, goal });
+  if (!r.ok) {
+    showErrors('写入完成条件失败：', r.errors);
+    return;
+  }
+  if (goalStatus) goalStatus.textContent = `已写入 meta.goal：${JSON.stringify(goal)}`;
+  if (mode !== 'battles') {
+    resultEl.textContent =
+      '完成条件已写入 meta.goal。\n' +
+      '「直到资源耗尽 / 直到条件出现」需要 flow 自己用 while/识别/出现 判断，编辑器只记录目标。';
+    return;
+  }
+  // battles: wrap existing actions in loop(param('max_battles')), preserve the
+  // original finish exit. This is what makes "打 N 场算完成" executable.
+  let flow;
+  try {
+    const fr = await fetch('/task/flow?task=' + encodeURIComponent(task));
+    const fs = await fr.json();
+    flow = fs.flow;
+  } catch (e) {
+    showErrors('读取 flow 失败：', [String(e)]);
+    return;
+  }
+  if (!flow || !Array.isArray(flow.steps)) {
+    flow = { schema_version: 1, name: task, steps: [] };
+  }
+  const already = flow.steps.length === 2 &&
+    flow.steps[0].op === 'loop' &&
+    JSON.stringify(flow.steps[0].args || {}).includes('max_battles');
+  if (!already) {
+    let exit = 'done';
+    const actions = [];
+    for (const s of flow.steps) {
+      if (s.op === 'finish') exit = (s.args && s.args.exit) || exit;
+      else actions.push(s);
+    }
+    if (!actions.length) actions.push({ op: 'log', args: { level: 'info', text: "'完成条件循环'" } });
+    flow.steps = [
+      { op: 'loop', args: { n: "param('max_battles')", body: actions } },
+      { op: 'finish', args: { exit } },
+    ];
+  }
+  const sr = await postJson('/task/save_flow', { task, flow });
+  if (!sr.ok) {
+    showErrors('生成完成条件流程失败：', sr.errors);
+    return;
+  }
+  resultEl.textContent =
+    `完成条件已应用：一次运行打 ${goal.count} 场。\n` +
+    `flow 已生成 loop n=param('max_battles')，并保留出口 ${flow.steps[1].args.exit}。`;
+  if (typeof loadTaskFlow === 'function') await loadTaskFlow(task);
+  log(`完成条件：${task} 打 ${goal.count} 场`);
+}
+
+// --- v1.1 P2: 任务工作台导航 -----------------------------------------------
 function regionRoiArray() {
   return roi ? [roi.x, roi.y, roi.w, roi.h] : null;
 }
@@ -2495,6 +2573,13 @@ async function submitResetMemory() {
     });
   }
   if (btnTaskRun) btnTaskRun.addEventListener('click', doRunTask);
+  if (btnGoalApply) btnGoalApply.addEventListener('click', applyTaskGoal);
+  if (btnWbAssets) btnWbAssets.addEventListener('click', () => activatePanel('panel-assets'));
+  if (btnWbFlow) btnWbFlow.addEventListener('click', () => activatePanel('panel-flow'));
+  if (btnWbRun) btnWbRun.addEventListener('click', () => {
+    activatePanel('panel-task');
+    setRunStatus('点「运行任务」开始测试；先确认完成条件已应用。');
+  });
   if (btnRegionClick) btnRegionClick.addEventListener('click', generateRegionClick);
   if (btnRegionDrag) btnRegionDrag.addEventListener('click', generateRegionDrag);
   // --- M2/N37: 调度面板 + 重置记忆 ---
