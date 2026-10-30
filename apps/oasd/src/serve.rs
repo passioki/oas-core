@@ -31,6 +31,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use serde::{Deserialize, Serialize};
+
 use oas_adapter_pc::Adb;
 use oas_codec::encode_png;
 use oas_runtime::RunResult;
@@ -108,34 +110,79 @@ struct SessionFrame {
     name: String,
     /// Free-form category/group used by the frame gallery.
     category: String,
-    png: Vec<u8>,
+    /// v1.2.2: PNG is persisted under `frames_dir`; the gallery only keeps
+    /// metadata, the current frame's pixels live in `State.png`.
+    file: PathBuf,
+    bytes: u64,
     width: u32,
     height: u32,
     source: String,
-    ts_ms: u128,
+    ts_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FrameMeta {
+    id: u64,
+    name: String,
+    #[serde(default)]
+    category: String,
+    file: String,
+    width: u32,
+    height: u32,
+    source: String,
+    ts_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FramesManifest {
+    #[serde(default = "default_next_frame_id")]
+    next_id: u64,
+    #[serde(default)]
+    current_id: Option<u64>,
+    #[serde(default)]
+    frames: Vec<FrameMeta>,
+}
+
+fn default_next_frame_id() -> u64 {
+    1
 }
 
 impl State {
-    fn push_frame(&mut self, png: Vec<u8>, width: u32, height: u32, source: &str) -> u64 {
+    fn push_frame(
+        &mut self,
+        frames_dir: &Path,
+        png: Vec<u8>,
+        width: u32,
+        height: u32,
+        source: &str,
+    ) -> Result<u64, String> {
         let id = self.next_frame_id;
         self.next_frame_id += 1;
+        std::fs::create_dir_all(frames_dir)
+            .map_err(|e| format!("create frames dir {}: {e}", frames_dir.display()))?;
+        let file_name = format!("frame-{id}.png");
+        let file = frames_dir.join(&file_name);
+        std::fs::write(&file, &png)
+            .map_err(|e| format!("write frame {}: {e}", file.display()))?;
+        let bytes = png.len() as u64;
         self.frames.push(SessionFrame {
             id,
             name: format!("帧 {id}"),
             category: String::new(),
-            png,
+            file,
+            bytes,
             width,
             height,
             source: source.to_string(),
             ts_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
+                .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
         });
-        // v1.2.1: no hard 20-frame cap. Frames are session data; the user asked
-        // for unlimited count and explicit delete/reorder management.
+        // v1.2.2: no hard 20-frame cap and frames are persisted under
+        // `<frames-dir>/frames.json` + `frame-<id>.png`.
         self.current_frame_id = Some(id);
-        id
+        Ok(id)
     }
 }
 
@@ -152,6 +199,9 @@ pub struct Server {
     /// v1.2.1 unified global asset store (`--assets-dir`). When initialized it
     /// replaces per-task assets for the editor, builder and runs.
     assets_dir: PathBuf,
+    /// v1.2.2 disk-backed frame gallery (`--frames-dir`): `frames.json` +
+    /// `frame-<id>.png`. Metadata is always in memory; pixels are lazy.
+    frames_dir: PathBuf,
     /// Editor action log (`logs/editor.log`): OCR/asset/task requests are
     /// persisted so a user's reproduction can be diagnosed after the browser
     /// log window is closed (v1.1).
@@ -184,6 +234,7 @@ impl Server {
             runs_dir: PathBuf::from("runs"),
             library_dir: PathBuf::from(crate::library::DEFAULT_DIR),
             assets_dir: PathBuf::from(crate::global_assets::DEFAULT_DIR),
+            frames_dir: PathBuf::from("frames"),
             run_state: Arc::new(Mutex::new(RunState::default())),
             run_executor: default_executor,
             editor_log: PathBuf::from("logs/editor.log"),
@@ -224,6 +275,110 @@ impl Server {
     pub fn with_assets_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.assets_dir = dir.into();
         self
+    }
+
+    /// Set the disk-backed frame gallery root (default `frames`). If a manifest
+    /// already exists it is loaded immediately, so a restarted serve keeps the
+    /// gallery without an extra command.
+    pub fn with_frames_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.frames_dir = dir.into();
+        if let Err(e) = self.load_frames_from_disk() {
+            eprintln!("frames manifest load failed: {e}");
+        }
+        self
+    }
+
+    fn persist_frames(&self, st: &State) -> Result<(), String> {
+        std::fs::create_dir_all(&self.frames_dir)
+            .map_err(|e| format!("create frames dir {}: {e}", self.frames_dir.display()))?;
+        let frames: Vec<FrameMeta> = st
+            .frames
+            .iter()
+            .map(|f| FrameMeta {
+                id: f.id,
+                name: f.name.clone(),
+                category: f.category.clone(),
+                file: f
+                    .file
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                width: f.width,
+                height: f.height,
+                source: f.source.clone(),
+                ts_ms: f.ts_ms,
+            })
+            .collect();
+        let manifest = FramesManifest {
+            next_id: st.next_frame_id,
+            current_id: st.current_frame_id,
+            frames,
+        };
+        let text = serde_json::to_string_pretty(&manifest)
+            .map_err(|e| format!("serialize frames manifest: {e}"))?;
+        let path = self.frames_dir.join("frames.json");
+        let tmp = self.frames_dir.join("frames.json.tmp");
+        std::fs::write(&tmp, format!("{text}\n"))
+            .map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, &path)
+            .map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), path.display()))?;
+        Ok(())
+    }
+
+    fn load_frames_from_disk(&self) -> Result<(), String> {
+        let path = self.frames_dir.join("frames.json");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(format!("read {}: {e}", path.display())),
+        };
+        let manifest: FramesManifest = serde_json::from_str(&text)
+            .map_err(|e| format!("{}: invalid JSON: {e}", path.display()))?;
+        let mut frames = Vec::with_capacity(manifest.frames.len());
+        for meta in manifest.frames {
+            let file = self.frames_dir.join(&meta.file);
+            let bytes = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+            frames.push(SessionFrame {
+                id: meta.id,
+                name: meta.name,
+                category: meta.category,
+                file,
+                bytes,
+                width: meta.width,
+                height: meta.height,
+                source: meta.source,
+                ts_ms: meta.ts_ms,
+            });
+        }
+        let mut max_id = frames.iter().map(|f| f.id).max().unwrap_or(0);
+        let next_id = manifest.next_id.max(max_id + 1).max(1);
+        let mut st = self.state.lock().unwrap();
+        st.frames = frames;
+        st.next_frame_id = next_id;
+        st.current_frame_id = manifest.current_id;
+        st.frame = None;
+        st.png = None;
+        if let Some(id) = manifest.current_id {
+            if let Some(f) = st.frames.iter().find(|f| f.id == id) {
+                let path = f.file.clone();
+                let w = f.width;
+                let h = f.height;
+                match std::fs::read(&path).and_then(|bytes| {
+                    oas_codec::decode_png(&bytes)
+                        .map(|frame| (bytes, frame))
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                }) {
+                    Ok((png, frame)) => {
+                        st.png = Some(png);
+                        st.frame = Some(frame);
+                    }
+                    Err(e) => eprintln!(
+                        "frames manifest: current frame {id} ({w}x{h}) load failed: {e}"
+                    ),
+                }
+            }
+        }
+        Ok(())
     }
 
     fn using_global_assets(&self) -> bool {
@@ -356,11 +511,18 @@ impl Server {
             Ok(frame) => match encode_png(&frame) {
                 Ok(png) => {
                     let mut st = self.state.lock().unwrap();
-                    st.push_frame(png.clone(), frame.width, frame.height, "capture");
+                    if let Err(e) =
+                        st.push_frame(&self.frames_dir, png.clone(), frame.width, frame.height, "capture")
+                    {
+                        drop(st);
+                        self.set_error(&format!("save frame: {e}"));
+                        return;
+                    }
                     st.png = Some(png);
                     st.device = serial;
                     st.error = None;
                     st.frame = Some(frame);
+                    let _ = self.persist_frames(&st);
                 }
                 Err(e) => self.set_error(&format!("encode png: {e}")),
             },
@@ -550,7 +712,7 @@ impl Server {
                     "height": f.height,
                     "source": f.source,
                     "ts_ms": f.ts_ms,
-                    "bytes": f.png.len(),
+                    "bytes": f.bytes,
                     "current": st.current_frame_id == Some(f.id),
                 })
             })
@@ -577,10 +739,17 @@ impl Server {
         };
         let (w, h) = (frame.width, frame.height);
         let mut st = self.state.lock().unwrap();
-        let id = st.push_frame(body.to_vec(), w, h, "upload");
+        let id = match st.push_frame(&self.frames_dir, body.to_vec(), w, h, "upload") {
+            Ok(id) => id,
+            Err(e) => {
+                drop(st);
+                return self.send_errors(out, 500, vec![format!("save frame: {e}")]);
+            }
+        };
         st.frame = Some(frame);
         st.png = Some(body.to_vec());
         st.error = None;
+        let _ = self.persist_frames(&st);
         drop(st);
         let body = serde_json::json!({"ok": true, "id": id, "width": w, "height": h});
         self.send_json(out, 200, &body.to_string())
@@ -597,14 +766,25 @@ impl Server {
             .frames
             .iter()
             .find(|f| f.id == id)
-            .map(|f| (f.png.clone(), f.width, f.height));
-        let Some((png, w, h)) = found else {
+            .map(|f| (f.file.clone(), f.width, f.height));
+        let Some((path, w, h)) = found else {
             drop(st);
             return self.send_errors(
                 out,
                 404,
                 vec![format!("frame id {id} not found (GET /frames)")],
             );
+        };
+        let png = match std::fs::read(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                drop(st);
+                return self.send_errors(
+                    out,
+                    500,
+                    vec![format!("read frame {}: {e}", path.display())],
+                );
+            }
         };
         let frame = match oas_codec::decode_png(&png) {
             Ok(f) => f,
@@ -616,6 +796,7 @@ impl Server {
         st.frame = Some(frame);
         st.png = Some(png);
         st.current_frame_id = Some(id);
+        let _ = self.persist_frames(&st);
         drop(st);
         let body = serde_json::json!({"ok": true, "id": id, "width": w, "height": h});
         self.send_json(out, 200, &body.to_string())
@@ -628,26 +809,33 @@ impl Server {
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
         let mut st = self.state.lock().unwrap();
-        let before = st.frames.len();
-        st.frames.retain(|f| f.id != id);
-        if st.frames.len() == before {
+        let pos = st.frames.iter().position(|f| f.id == id);
+        let Some(pos) = pos else {
             drop(st);
             return self.send_errors(out, 404, vec![format!("frame id {id} not found")]);
-        }
+        };
+        let removed = st.frames.remove(pos);
+        let _ = std::fs::remove_file(&removed.file);
         if st.current_frame_id == Some(id) {
             st.current_frame_id = None;
             st.frame = None;
             st.png = None;
-            let last = st.frames.last().map(|f| (f.png.clone(), f.id));
-            if let Some((png, last_id)) = last {
-                if let Ok(frame) = oas_codec::decode_png(&png) {
-                    st.png = Some(png);
-                    st.frame = Some(frame);
-                    st.current_frame_id = Some(last_id);
+            let last = st
+                .frames
+                .last()
+                .map(|f| (f.file.clone(), f.id));
+            if let Some((path, last_id)) = last {
+                if let Ok(png) = std::fs::read(&path) {
+                    if let Ok(frame) = oas_codec::decode_png(&png) {
+                        st.png = Some(png);
+                        st.frame = Some(frame);
+                        st.current_frame_id = Some(last_id);
+                    }
                 }
             }
         }
         let remaining = st.frames.len();
+        let _ = self.persist_frames(&st);
         drop(st);
         let body = serde_json::json!({"ok": true, "remaining": remaining});
         self.send_json(out, 200, &body.to_string())
@@ -674,6 +862,7 @@ impl Server {
         };
         f.name = name.to_string();
         let name = f.name.clone();
+        let _ = self.persist_frames(&st);
         drop(st);
         self.send_json(out, 200, &serde_json::json!({"ok": true, "id": id, "name": name}).to_string())
     }
@@ -703,6 +892,7 @@ impl Server {
         };
         f.category = category.to_string();
         let category = f.category.clone();
+        let _ = self.persist_frames(&st);
         drop(st);
         self.send_json(
             out,
@@ -738,15 +928,20 @@ impl Server {
         ordered.append(&mut st.frames);
         st.frames = ordered;
         let ids: Vec<u64> = st.frames.iter().map(|f| f.id).collect();
+        let _ = self.persist_frames(&st);
         drop(st);
         self.send_json(out, 200, &serde_json::json!({"ok": true, "ids": ids}).to_string())
     }
 
-    /// `POST /frames/clear` — 清空会话图片列表（当前帧保留在内存里，避免画面突然消失）.
+    /// `POST /frames/clear` — 清空会话图片列表（当前帧像素保留在内存里，避免画面突然消失）.
     fn handle_frames_clear(&self, out: &mut TcpStream) -> std::io::Result<()> {
         let mut st = self.state.lock().unwrap();
+        for frame in &st.frames {
+            let _ = std::fs::remove_file(&frame.file);
+        }
         st.frames.clear();
         st.current_frame_id = None;
+        let _ = self.persist_frames(&st);
         drop(st);
         self.send_json(out, 200, r#"{"ok":true}"#)
     }
@@ -3972,7 +4167,9 @@ mod tests {
 
     #[test]
     fn session_frames_upload_select_delete_roundtrip() {
-        let server = Server::new(Adb::from_env());
+        let td = TempDir::new("frames-roundtrip");
+        let server = Server::new(Adb::from_env())
+            .with_frames_dir(td.path().join("frames"));
         // frame A: 2x2; frame B: 3x2 (different size proves select really swaps).
         let a = Frame::new(
             2,
@@ -4042,6 +4239,51 @@ mod tests {
     // -----------------------------------------------------------------------
     // N38/M1: task creation + editor-triggered run
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn frames_manifest_survives_restart_and_keeps_metadata() {
+        let td = TempDir::new("frames-restart");
+        let frames_dir = td.path().join("frames");
+        let server = Server::new(Adb::from_env()).with_frames_dir(frames_dir.clone());
+        let frame = Frame::new(2, 2, vec![128u8; 2 * 2 * 4]);
+        let png = oas_codec::encode_png(&frame).expect("png");
+        let (status, out) = post_route(&server, "/frames", "image/png", &png);
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("upload json");
+        let id = v["id"].as_u64().expect("id");
+
+        let (status, out) = post_route(
+            &server,
+            "/frames/rename",
+            "application/json",
+            format!(r#"{{"id":{id},"name":"庭院"}}"#).as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let (status, out) = post_route(
+            &server,
+            "/frames/category",
+            "application/json",
+            format!(r#"{{"id":{id},"category":"探索"}}"#).as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        assert!(frames_dir.join("frames.json").is_file(), "manifest written");
+        assert!(frames_dir.join(format!("frame-{id}.png")).is_file(), "png written");
+
+        // Fresh server with the same dir: metadata and current frame load back.
+        let restarted = Server::new(Adb::from_env()).with_frames_dir(frames_dir);
+        let (status, out) = get_route(&restarted, "/frames");
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("frames json");
+        let frames = v["frames"].as_array().expect("frames");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0]["name"], "庭院");
+        assert_eq!(frames[0]["category"], "探索");
+        assert_eq!(frames[0]["current"], true);
+        let (_, out) = get_route(&restarted, "/state");
+        let st: serde_json::Value = serde_json::from_str(&out).expect("state json");
+        assert_eq!(st["captured"], true);
+        assert_eq!(st["width"], 2);
+    }
 
     fn server_with_tasks(td: &Path) -> Server {
         Server::new(Adb::from_env())

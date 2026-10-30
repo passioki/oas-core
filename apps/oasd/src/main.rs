@@ -99,7 +99,7 @@ fn main() -> ExitCode {
                  oasd task lint --tasks-dir <dir> [--all | --task <name>]\n  \
                  oasd task new --template daily|loop|utility --id <id> --tasks-dir <dir>\n  \
                  oasd assets migrate [--tasks-dir <dir>] [--library-dir <dir>] [--assets-dir <dir>]\n  \
-                 oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--assets-dir <dir>] [--model <path>] [--det-model <path>]"
+                 oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--assets-dir <dir>] [--frames-dir <dir>] [--model <path>] [--det-model <path>]"
             );
             ExitCode::from(2)
         }
@@ -365,6 +365,7 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
     let mut det_model: Option<String> = None;
     let mut library_dir = library::DEFAULT_DIR.to_string();
     let mut assets_dir = global_assets::DEFAULT_DIR.to_string();
+    let mut frames_dir = "frames".to_string();
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -406,6 +407,10 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
                 assets_dir = rest[i + 1].clone();
                 i += 2;
             }
+            "--frames-dir" if i + 1 < rest.len() => {
+                frames_dir = rest[i + 1].clone();
+                i += 2;
+            }
             other => {
                 eprintln!("unknown serve arg: {other}");
                 return ExitCode::from(2);
@@ -417,7 +422,8 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
         .with_tasks_dir(&tasks_dir)
         .with_runs_dir(&runs_dir)
         .with_library_dir(&library_dir)
-        .with_assets_dir(&assets_dir);
+        .with_assets_dir(&assets_dir)
+        .with_frames_dir(&frames_dir);
     enable_models(&mut server, model.as_deref(), det_model.as_deref());
     match server.run(port, &ui) {
         Ok(()) => ExitCode::SUCCESS,

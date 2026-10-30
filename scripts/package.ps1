@@ -25,7 +25,7 @@ if (-not (Test-Path $Exe)) { throw "missing $Exe (run without -SkipBuild)" }
 
 if (Test-Path $Stage) { Remove-Item $Stage -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
-foreach ($d in @("ui", "models", "adb", "tasks", "library", "assets", "config", "runs", "logs")) {
+foreach ($d in @("ui", "models", "adb", "tasks", "library", "assets", "frames", "config", "runs", "logs")) {
   New-Item -ItemType Directory -Force -Path (Join-Path $Stage $d) | Out-Null
 }
 

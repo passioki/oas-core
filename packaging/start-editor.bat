@@ -14,6 +14,7 @@ start "" /B "%~dp0oasd.exe" serve ^
   --runs-dir runs ^
   --library-dir library ^
   --assets-dir assets ^
+  --frames-dir frames ^
   --model models\PP-OCRv6_rec_small.onnx ^
   --det-model models\PP-OCRv6_det_small.onnx ^
   --config config\live.json
