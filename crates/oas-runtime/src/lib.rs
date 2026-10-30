@@ -47,9 +47,13 @@ pub struct AssetSet {
     /// Optional polygon mask per OCR asset (§22.10 N10b-2): OCR crops the bbox
     /// but only pixels INSIDE this polygon are kept; outside is filled white.
     ocr_polygons: HashMap<String, Vec<Point>>,
-    /// Optional explicit click area per template asset (§22.25, old OAS `roiBack`):
-    /// frame coords at design resolution; translated by the match offset on use.
+    /// Optional explicit **operation region** (`action_roi`, old OAS `roiBack`)
+    /// per recognizable object: frame coords at design resolution; translated by
+    /// the match offset on use. OCR objects use it directly.
     click_back: HashMap<String, Rect>,
+    /// Pure operation regions (`kind: region`, v1.2): no recognition, the rect is
+    /// the operation region itself.
+    regions: HashMap<String, Rect>,
 }
 
 impl AssetSet {
@@ -62,13 +66,22 @@ impl AssetSet {
         self.ocr_polygons.get(id).map(|v| v.as_slice())
     }
 
-    /// Attach an explicit click area to a template asset (§22.25).
+    /// Attach an explicit operation region to a recognizable object (v1.2).
     pub fn set_click_back(&mut self, id: impl Into<String>, rect: Rect) {
         self.click_back.insert(id.into(), rect);
     }
 
     pub fn click_back(&self, id: &str) -> Option<Rect> {
         self.click_back.get(id).copied()
+    }
+
+    /// Declare a pure operation region (`kind: region`, v1.2).
+    pub fn insert_region(&mut self, id: impl Into<String>, rect: Rect) {
+        self.regions.insert(id.into(), rect);
+    }
+
+    pub fn region(&self, id: &str) -> Option<Rect> {
+        self.regions.get(id).copied()
     }
 }
 
@@ -407,6 +420,9 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     /// Injected task parameters for `param('key')` (M0 unified template):
     /// `meta.params[].default` merged with `oasd run --param k=v` overrides.
     params: BTreeMap<String, Value>,
+    /// v1.2 runtime variables (`set_var`/`inc_var`/`ocr_to_var`), scoped to one
+    /// flow run. Not persisted in checkpoints (intentionally simple).
+    vars: BTreeMap<String, Value>,
     started: Instant,
     humanize: crate::humanize::Humanize,
     rng: crate::humanize::Rng,
@@ -439,6 +455,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             clicks: Vec::new(),
             run_seed,
             params: BTreeMap::new(),
+            vars: BTreeMap::new(),
             started: Instant::now(),
             humanize,
             rng: crate::humanize::Rng::new(run_seed),
@@ -1737,12 +1754,17 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             }
                             Ok(OcrRead::Single(Some(t), score)) => {
                                 if t.trim() == text.trim() {
-                                    let rect = self
+                                    let recognition = self
                                         .assets
                                         .ocr_roi(sel)
                                         .ok_or_else(|| format!("ocr_text `{sel}`: OCR asset has no roi"))?;
+                                    // v1.2: the saved operation region (defaults to the
+                                    // recognition ROI) is where the click lands. This is
+                                    // what lets an OCR line's action area be larger than
+                                    // the text box without per-action offsets.
+                                    let rect = self.assets.click_back(sel).unwrap_or(recognition);
                                     if let Some(rt) = require_template {
-                                        match self.template_in_region(rt, rect, 16) {
+                                        match self.template_in_region(rt, recognition, 16) {
                                             Ok(true) => {}
                                             Ok(false) => {
                                                 evidence.push(format!(
@@ -1943,6 +1965,52 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 actual.x, actual.y
                             ));
                         }
+                        Locator::RegionRef { sel } => {
+                            let rect = self.assets.region(sel).ok_or_else(|| {
+                                format!(
+                                    "region `{sel}` is not declared as a task region asset \
+                                     (kind: region)"
+                                )
+                            })?;
+                            if self.matcher.is_none() {
+                                self.refresh_frame()?;
+                            }
+                            let (fw, fh) = self
+                                .frame_size
+                                .ok_or_else(|| "region click: no frame available".to_string())?;
+                            if rect.x < 0
+                                || rect.y < 0
+                                || rect.x + rect.w > fw as i32
+                                || rect.y + rect.h > fh as i32
+                            {
+                                evidence.push(format!(
+                                    "region `{sel}` rect ({},{},{},{}) is outside the frame ({}x{})",
+                                    rect.x, rect.y, rect.w, rect.h, fw, fh
+                                ));
+                                continue;
+                            }
+                            let p = self.random_point_in(rect, 0.15);
+                            let plan = self.humanize.point_click(p, &mut self.rng);
+                            let (actual, _delay) = self.perform_click(
+                                plan,
+                                p,
+                                Some(sel.clone()),
+                                "region",
+                                format!(
+                                    "region:{sel}:({},{},{},{})",
+                                    rect.x, rect.y, rect.w, rect.h
+                                ),
+                                fw,
+                                fh,
+                            )?;
+                            self.remember_target(find, actual, fw, fh);
+                            let verified = self.verify_if_present(expect.as_ref())?;
+                            let miss = if plan.miss { " miss=true" } else { "" };
+                            return Ok(format!(
+                                "clicked_target locator=region sel={sel} point=({},{}){miss} verified={verified} guard={guarded}",
+                                actual.x, actual.y
+                            ));
+                        }
                         Locator::CoordMemory { key } => {
                             let Some(store) = self.coords.as_mut() else {
                                 evidence.push("coord_memory: no store attached".to_string());
@@ -2118,6 +2186,41 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     h
                 ))
             }
+            Step::SetVar { name, value } => {
+                let v = eval(value, self)?;
+                self.vars.insert(name.clone(), v.clone());
+                Ok(format!("set_var {name}={v:?}"))
+            }
+            Step::IncVar { name, by } => {
+                let by_v = eval(by, self)?;
+                let delta = match by_v {
+                    Value::Num(n) => n,
+                    other => return Err(format!("inc_var({name}): `by` must be a number, got {other:?}")),
+                };
+                let current = match self.vars.get(name) {
+                    Some(Value::Num(n)) => *n,
+                    Some(other) => {
+                        return Err(format!(
+                            "inc_var({name}): variable exists but is not a number: {other:?}"
+                        ))
+                    }
+                    None => 0.0,
+                };
+                let next = current + delta;
+                self.vars.insert(name.clone(), Value::Num(next));
+                Ok(format!("inc_var {name} += {delta} -> {next}"))
+            }
+            Step::OcrToVar { sel, var } => {
+                let text = match self.ocr_read(sel)? {
+                    OcrRead::Single(Some(t), _) => t,
+                    OcrRead::Single(None, _) => String::new(),
+                    OcrRead::Lines(lines) => {
+                        lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>().join("\n")
+                    }
+                };
+                self.vars.insert(var.clone(), Value::Str(text.clone()));
+                Ok(format!("ocr_to_var {sel} -> {var} = {text:?}"))
+            }
             Step::Ocr { sel } => {
                 // The standalone `ocr` step exists so an editor-authored flow can
                 // PROVE what a selector reads without branching on it (a plain
@@ -2193,6 +2296,9 @@ fn step_name(s: &Step) -> &'static str {
         Step::Swipe { .. } => "swipe",
         Step::Drag { .. } => "drag",
         Step::Ocr { .. } => "ocr",
+        Step::SetVar { .. } => "set_var",
+        Step::IncVar { .. } => "inc_var",
+        Step::OcrToVar { .. } => "ocr_to_var",
         Step::DismissPopup { .. } => "dismiss_popup",
         Step::ClickTarget { .. } => "click_target",
         Step::Log { .. } => "log",
@@ -2223,6 +2329,14 @@ impl<S: ScreenSource, I: InputSink> EvalContext for Interpreter<S, I> {
             format!(
                 "param('{key}') has no value: declare it in meta.params (with a default) \
                  or pass --param {key}=<value>"
+            )
+        })
+    }
+
+    fn var(&mut self, name: &str) -> Result<Value, String> {
+        self.vars.get(name).cloned().ok_or_else(|| {
+            format!(
+                "var('{name}') is not set: use set_var/inc_var/ocr_to_var earlier in the flow"
             )
         })
     }
@@ -4698,8 +4812,143 @@ mod tests {
         let clicks = input.clicks.borrow().clone();
         assert_eq!(clicks.len(), 1);
         let p = clicks[0];
-        assert!(p.x >= 10 && p.x < 40 && p.y >= 20 && p.y < 40, "{p:?}");
+        assert!(
+            p.x >= 6 && p.x <= 44 && p.y >= 16 && p.y <= 44,
+            "click should be inside region (humanize jitter allowed): {p:?}"
+        );
         assert_eq!(interp.clicks()[0].locator, "region");
+    }
+
+    #[test]
+    fn ocr_asset_action_roi_controls_click_landing() {
+        let mut a = assets();
+        a.insert_ocr(
+            "O_LINE",
+            Rect {
+                x: 10,
+                y: 10,
+                w: 20,
+                h: 10,
+            },
+        );
+        a.set_click_back(
+            "O_LINE",
+            Rect {
+                x: 5,
+                y: 5,
+                w: 60,
+                h: 30,
+            },
+        );
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, a, Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(FixedLineOcr {
+                rect: Rect {
+                    x: 10,
+                    y: 10,
+                    w: 20,
+                    h: 10,
+                },
+                text: "确认".to_string(),
+            }))
+            .with_seed(11);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[{"kind":"ocr_text","sel":"O_LINE","text":"确认"}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let clicks = shared.clicks.borrow().clone();
+        assert_eq!(clicks.len(), 1);
+        let p = clicks[0];
+        assert!(
+            p.x >= 0 && p.x <= 70 && p.y >= 0 && p.y <= 40,
+            "OCR click should land in the operation region (jitter allowed): {p:?}"
+        );
+        assert_eq!(interp.clicks()[0].locator, "ocr_text");
+    }
+
+    #[test]
+    fn saved_region_ref_clicks_inside_the_operation_region() {
+        let mut a = assets();
+        a.insert_region(
+            "R_LIST",
+            Rect {
+                x: 10,
+                y: 20,
+                w: 30,
+                h: 20,
+            },
+        );
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, a, Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(12);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[{"kind":"region","sel":"R_LIST"}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let clicks = shared.clicks.borrow().clone();
+        assert_eq!(clicks.len(), 1);
+        let p = clicks[0];
+        assert!(p.x >= 6 && p.x <= 44 && p.y >= 16 && p.y <= 44, "{p:?}");
+        assert_eq!(interp.clicks()[0].locator, "region");
+    }
+
+    #[test]
+    fn variables_can_count_across_a_loop() {
+        let (mut interp, _input) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"set_var","args":{"name":"n","value":"0"}},
+                 {"op":"loop","args":{"n":"3"},"body":[
+                   {"op":"inc_var","args":{"name":"n"}},
+                   {"op":"log","args":{"text":"var('n')"}}
+                 ]},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert_eq!(interp.vars.get("n"), Some(&Value::Num(3.0)));
+    }
+
+    #[test]
+    fn ocr_to_var_exposes_recognized_text() {
+        let (input, _shared) = FakeInput::new();
+        let mut a = assets();
+        a.insert_ocr(
+            "O_LINE",
+            Rect {
+                x: 10,
+                y: 10,
+                w: 20,
+                h: 10,
+            },
+        );
+        let mut interp = Interpreter::new(FakeScreen::new(), input, a, Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(FixedLineOcr {
+                rect: Rect {
+                    x: 10,
+                    y: 10,
+                    w: 20,
+                    h: 10,
+                },
+                text: "确认".to_string(),
+            }))
+            .with_seed(13);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"ocr_to_var","args":{"sel":"O_LINE","var":"answer"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert_eq!(
+            interp.vars.get("answer"),
+            Some(&Value::Str("确认".to_string()))
+        );
     }
 
     // ---- param() injection (M0 unified task template) ----

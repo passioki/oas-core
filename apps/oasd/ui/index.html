@@ -17,6 +17,7 @@
 
   <nav class="app-nav" id="app-nav">
     <button class="app-nav-btn active" data-page="workbench" type="button">工作台</button>
+    <button class="app-nav-btn" data-page="builder" type="button">任务构建</button>
     <button class="app-nav-btn" data-page="tasks" type="button">任务库</button>
     <button class="app-nav-btn" data-page="instances" type="button">实例</button>
     <button class="app-nav-btn" data-page="schedule" type="button">调度</button>
@@ -54,7 +55,7 @@
 
       <div class="rail-panels">
         <section class="panel active" id="panel-assets">
-          <h3>ROI（识别框）</h3>
+          <h3>识别区域（ROI）</h3>
           <div id="roi" class="kv">未选择</div>
 
           <h3>操作</h3>
@@ -62,7 +63,7 @@
           <button id="btn-lines" disabled>多行识别（逐行文字+框）</button>
           <button id="btn-match" disabled>试匹配（图片识别，全屏搜索）</button>
           <button id="btn-poly">多边形框选（点顶点，双击闭合）</button>
-          <button id="btn-back-mode">绘制点击框（未设置=匹配外接矩形）</button>
+          <button id="btn-back-mode">绘制操作区域（默认=识别区域）</button>
 
           <button id="btn-click-step" disabled>生成点击指令（选中识别区块）</button>
           <button id="btn-append-step" disabled>追加到流程</button>
@@ -77,12 +78,14 @@
 
           <h4>多行识别结果（每行可直接操作）</h4>
           <div id="lines-list" class="asset-list muted">（先点「多行识别」）</div>
+          <button id="btn-batch-save" type="button" disabled>保存选中素材（批量）</button>
+          <div id="batch-status" class="muted small">—</div>
           <p class="muted small">
             整屏/区域多行识别后，每一行都可以直接生成「点击该行文字」的流程步骤，
             不需要逐行保存素材；需要复用时再「另存为素材」。
           </p>
 
-          <button id="btn-clear">清除 ROI / 点击框</button>
+          <button id="btn-clear">清除识别/操作区域</button>
 
           <h3>存为素材</h3>
           <label class="opt"><input id="asset-id" placeholder="素材 id，如：队伍预设入口" /></label>
@@ -91,6 +94,7 @@
               <option value="template">模板图（template）</option>
               <option value="ocr_line">单行文字（ocr_line）</option>
               <option value="ocr_lines">多行文字（ocr_lines）</option>
+              <option value="region">操作区域（region，无识别）</option>
             </select>
           </label>
           <button id="btn-asset" disabled>生成素材 JSON</button>
@@ -109,6 +113,8 @@
             <button id="btn-library-match" disabled>用库素材试匹配</button>
           </div>
           <div id="library-status" class="muted small">—</div>
+          <button id="btn-asset-conflicts" type="button">全局重名扫描</button>
+          <div id="asset-conflicts" class="muted small">—</div>
           <div class="muted small">
             素材库是全局的：flow/素材里写 <code>lib:&lt;id&gt;</code> 即可引用（匹配/点击/守卫/弹窗全可用）。
           </div>
@@ -268,6 +274,43 @@
   </main>
   </div>
 
+  <!-- v1.2: 任务构建大页面 -->
+  <div id="page-builder" class="app-page">
+    <div class="builder-wrap">
+      <div class="builder-head">
+        <strong>任务构建</strong>
+        <select id="builder-task" title="选择要构建的任务">
+          <option value="">（选择任务）</option>
+        </select>
+        <button id="builder-reload" type="button">重新载入</button>
+        <button id="builder-save" type="button">保存 flow</button>
+        <button id="builder-dry-run" type="button">dry-run</button>
+        <span class="spacer"></span>
+        <span id="builder-status" class="muted small">—</span>
+      </div>
+      <div class="builder-main">
+        <aside class="builder-palette">
+          <h3>动作库</h3>
+          <div id="builder-ops" class="builder-ops"></div>
+          <p class="muted small">
+            先选中中间的 if/loop/while 容器，再添加子动作；否则追加到根流程末尾。
+          </p>
+        </aside>
+        <section class="builder-center">
+          <h3>流程步骤</h3>
+          <div id="builder-steps" class="builder-steps muted">（选择任务后加载）</div>
+          <h3>实时流程图</h3>
+          <div id="builder-graph" class="builder-graph muted">（—）</div>
+        </section>
+        <aside class="builder-inspector">
+          <h3>动作属性</h3>
+          <div id="builder-form" class="muted small">（选中一个动作）</div>
+          <div id="builder-assets" class="builder-assets muted small"></div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
   <!-- v1.1 P3: 任务库 -->
   <div id="page-tasks" class="app-page">
     <div class="page-wrap">
@@ -395,6 +438,7 @@
     });
   </script>
   <script src="/flow_model.js"></script>
+  <script src="/builder.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

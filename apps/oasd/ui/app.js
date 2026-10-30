@@ -137,8 +137,8 @@ let runPolling = false;
 
 let img = null;
 let roi = null; // {x,y,w,h} 识别框（前端识别/裁剪区域）
-let roiBack = null; // §22.25 点击框（roi_back）；null = 点击匹配外接矩形
-let backMode = false; // 正在绘制点击框
+let roiBack = null; // v1.2 操作区域（action_roi）；null = 默认识别区域
+let backMode = false; // 正在绘制操作区域
 let dragTarget = 'roi'; // 'roi' | 'back'
 let dragStart = null;
 let boxes = []; // detection boxes from the multi-line route
@@ -146,6 +146,15 @@ let selectedBox = null; // the detection block last clicked (N2, §19.2)
 // v1.1: ROI used by the latest multi-line OCR; each line can be turned into an
 // inline-OCR flow step (roi + text) without saving per-line assets.
 let lastLinesRoi = null;
+// v1.2: multi-select save candidates + their recognition / operation regions.
+// `actionRoi` defaults to the recognition bbox; adjusted on canvas.
+let saveCandidates = [];
+let activeCandidate = -1;
+let pendingActionAsset = null; // existing asset whose operation region is being edited
+const btnBatchSave = document.getElementById('btn-batch-save');
+const btnAssetConflicts = document.getElementById('btn-asset-conflicts');
+const assetConflicts = document.getElementById('asset-conflicts');
+const batchStatus = document.getElementById('batch-status');
 // N4 click-distribution state (§21): the run list, the loaded points + metrics,
 // and a cached offscreen bitmap so draw() stays cheap.
 let runs = [];
@@ -247,7 +256,7 @@ function draw() {
     ctx.fillText(`识别 ${roi.w}x${roi.h} @ ${roi.x},${roi.y}`, roi.x + 4, Math.max(14, roi.y - 6));
     ctx.restore();
   }
-  // §22.25 点击框（roi_back）：橙色虚线；未设置时运行期点击=匹配外接矩形。
+  // §22.25 / v1.2 操作区域（action_roi）：橙色虚线；未设置时运行期用识别结果。
   if (roiBack && roiBack.w > 0 && roiBack.h > 0) {
     ctx.save();
     ctx.setLineDash([8, 5]);
@@ -259,12 +268,24 @@ function draw() {
     ctx.fillStyle = '#ff9f40';
     ctx.font = '14px Consolas, monospace';
     ctx.fillText(
-      `点击 ${roiBack.w}x${roiBack.h} @ ${roiBack.x},${roiBack.y}`,
+      `操作区域 ${roiBack.w}x${roiBack.h} @ ${roiBack.x},${roiBack.y}`,
       roiBack.x + 4,
       Math.max(14, roiBack.y - 6)
     );
     ctx.restore();
   }
+  // v1.2 multi-select candidates: show their operation regions (active one is
+  // brighter) so the user can compare "识别区域 vs 操作区域" before saving.
+  saveCandidates.forEach((c, idx) => {
+    if (!c.action || c.action.w <= 0 || c.action.h <= 0) return;
+    const active = idx === activeCandidate;
+    ctx.save();
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = active ? 'rgba(255,159,64,0.95)' : 'rgba(255,159,64,0.45)';
+    ctx.lineWidth = active ? 2 : 1;
+    ctx.strokeRect(c.action.x + 0.5, c.action.y + 0.5, c.action.w, c.action.h);
+    ctx.restore();
+  });
   // §22.10 polygon overlay (orange; closed => translucent fill + bbox roi)
   if (polygon && polygon.length) {
     ctx.save();
@@ -346,8 +367,8 @@ function polygonBBox(poly) {
 
 function updateRoiLabel() {
   const backInfo = roiBack
-    ? ` · 点击框 ${roiBack.w}x${roiBack.h} @ ${roiBack.x},${roiBack.y}`
-    : ' · 点击框未设置（=匹配外接矩形）';
+    ? ` · 操作区域 ${roiBack.w}x${roiBack.h} @ ${roiBack.x},${roiBack.y}`
+    : ' · 操作区域未设置（=识别区域）';
   if (!roi) {
     roiEl.textContent = polygon
       ? `多边形：${polygon.length} 个顶点（未闭合）`
@@ -532,6 +553,7 @@ function activatePage(name) {
     }
   }
   if (name === 'tasks') refreshLibrary();
+  else if (name === 'builder' && window.OAS_BUILDER) window.OAS_BUILDER.activate();
   else if (name === 'instances') refreshInstance();
   else if (name === 'schedule') refreshSchedulePage();
   else if (name === 'settings') refreshSettings();
@@ -773,64 +795,187 @@ function inlineOcrClickStep(text, roi) {
 function renderOcrLines(lines, roi, sourceLabel) {
   lastLinesRoi = roi;
   if (!linesList) return;
+  // v1.2 multi-select candidates. Every recognized line starts with:
+  //   recognize = the OCR line bbox
+  //   action    = the same rect (default operation region)
+  // Both are absolute frame coords; action can be adjusted on the canvas.
+  saveCandidates = lines.map((b) => {
+    const rec = { x: b.box[0], y: b.box[1], w: b.box[2], h: b.box[3] };
+    return {
+      text: b.text,
+      score: Number(b.score || 0),
+      recognize: rec,
+      action: { ...rec },
+      selected: candidateNameValid(b.text),
+      name: b.text,
+    };
+  });
+  activeCandidate = -1;
+  pendingActionAsset = null;
+  renderCandidateList(sourceLabel);
+}
+
+function candidateNameValid(name) {
+  return /^[A-Za-z_\u4e00-\u9fa5][A-Za-z0-9_\u4e00-\u9fa5]*$/.test((name || '').trim());
+}
+
+function candidateStatusText(sourceLabel) {
+  if (!batchStatus) return;
+  const sel = saveCandidates.filter((c) => c.selected);
+  const invalid = sel.filter((c) => !candidateNameValid(c.name));
+  if (!saveCandidates.length) {
+    batchStatus.textContent = '—';
+  } else if (invalid.length) {
+    batchStatus.textContent = `${sel.length} 个选中；${invalid.length} 个名称非法（需字母/中文/数字/下划线，不能以数字开头）`;
+    batchStatus.style.color = '#ff8a80';
+  } else {
+    batchStatus.textContent = `${sel.length} 个选中 / 共 ${saveCandidates.length} 行 · ${sourceLabel || ''}`;
+    batchStatus.style.color = '';
+  }
+  if (btnBatchSave) btnBatchSave.disabled = !sel.length || invalid.length > 0;
+}
+
+function renderCandidateList(sourceLabel) {
+  if (!linesList) return;
   linesList.textContent = '';
   const head = document.createElement('div');
   head.className = 'muted small';
-  head.textContent = `${lines.length} 行 · ${sourceLabel || '多行识别'}（点行内按钮生成流程步骤）`;
+  head.textContent = `${saveCandidates.length} 行 · ${sourceLabel || '多行识别'} · 勾选后批量保存（名称全局唯一）`;
   linesList.appendChild(head);
-  if (!lines.length) {
+  if (!saveCandidates.length) {
     const empty = document.createElement('div');
     empty.className = 'muted small';
     empty.textContent = '（没有识别到文字行）';
     linesList.appendChild(empty);
+    batchStatus.textContent = '—';
+    if (btnBatchSave) btnBatchSave.disabled = true;
     return;
   }
-  lines.forEach((b, idx) => {
+  saveCandidates.forEach((c, idx) => {
     const row = document.createElement('div');
     row.className = 'ocr-line-row';
-    const label = document.createElement('span');
-    label.className = 'ocr-line-text';
-    label.textContent = `${idx + 1}. ${b.text}  ${Number(b.score || 0).toFixed(3)}`;
+    const headRow = document.createElement('div');
+    headRow.className = 'candidate-head';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = c.selected;
+    cb.title = '勾选后批量保存';
+    cb.addEventListener('change', () => {
+      c.selected = cb.checked;
+      candidateStatusText(sourceLabel);
+    });
+    const name = document.createElement('input');
+    name.className = 'candidate-name';
+    name.value = c.name;
+    name.placeholder = '素材名称（全局唯一）';
+    name.addEventListener('input', () => {
+      c.name = name.value;
+      name.classList.toggle('invalid', !candidateNameValid(c.name) && c.selected);
+      candidateStatusText(sourceLabel);
+    });
+    name.classList.toggle('invalid', !candidateNameValid(c.name));
+    headRow.append(cb, name);
+
+    const info = document.createElement('div');
+    info.className = 'candidate-info muted small';
+    const r = c.recognize;
+    const a = c.action;
+    info.textContent =
+      `识别 [${r.x},${r.y},${r.w},${r.h}] · 操作 [${a.x},${a.y},${a.w},${a.h}]`;
+
+    const actions = document.createElement('div');
+    actions.className = 'candidate-actions';
+    const adjust = document.createElement('button');
+    adjust.type = 'button';
+    adjust.textContent = '调操作区域';
+    adjust.title = '在画布上拖拽画出该素材的实际点击/拖动区域（默认=识别区域）';
+    adjust.addEventListener('click', () => {
+      activeCandidate = idx;
+      roiBack = { ...c.action };
+      backMode = true;
+      pendingActionAsset = null;
+      if (btnBackMode) btnBackMode.textContent = '退出操作区域编辑（拖拽画操作区域）';
+      updateRoiLabel();
+      draw();
+      log(`编辑「${c.name || c.text}」的操作区域：在画布上拖拽`);
+    });
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.textContent = '重置';
+    reset.title = '操作区域恢复为识别区域';
+    reset.addEventListener('click', () => {
+      c.action = { ...c.recognize };
+      if (activeCandidate === idx) roiBack = { ...c.action };
+      renderCandidateList(sourceLabel);
+      draw();
+    });
     const gen = document.createElement('button');
     gen.type = 'button';
-    gen.textContent = '生成点击步骤';
-    gen.title = '生成 click_target（内联 ROI + 该行文字），无需保存素材';
+    gen.textContent = '生成步骤';
+    gen.title = '生成 click_target（该行识别区域+文字）';
     gen.addEventListener('click', () => {
-      const step = inlineOcrClickStep(b.text, roi);
+      const rr = lastLinesRoi || roi;
+      const step = inlineOcrClickStep(c.text, rr);
       resultEl.textContent = JSON.stringify(step, null, 2);
-      log(`生成 OCR 点击步骤：「${b.text}」`);
-      try {
-        navigator.clipboard.writeText(JSON.stringify(step));
-      } catch (e) {
-        /* clipboard may be unavailable; result panel still shows it */
-      }
+      log(`生成 OCR 点击步骤：「${c.text}」`);
     });
     const append = document.createElement('button');
     append.type = 'button';
-    append.textContent = '追加到流程';
-    append.addEventListener('click', () => appendStepToFlow(inlineOcrClickStep(b.text, roi), 'OCR 点击'));
-    const drag = document.createElement('button');
-    drag.type = 'button';
-    drag.textContent = '拖动';
-    drag.title = '从该行文字拖动；方向必填，起点/终点随机';
-    drag.addEventListener('click', () => {
-      const direction = promptDragDirection();
-      if (!direction) return;
-      const step = {
-        op: 'drag',
-        args: {
-          from: { kind: 'ocr_text', roi: [roi.x, roi.y, roi.w, roi.h], text: b.text },
-          direction,
-          distance: [150, 500],
-          duration_ms: [300, 650],
-          margin: 0.15,
-        },
-      };
-      appendStepToFlow(step, 'OCR 拖动');
+    append.textContent = '追加';
+    append.title = '追加点击该行到 flow';
+    append.addEventListener('click', () => {
+      const rr = lastLinesRoi || roi;
+      appendStepToFlow(inlineOcrClickStep(c.text, rr), 'OCR 点击');
     });
-    row.append(label, gen, append, drag);
+    actions.append(adjust, reset, gen, append);
+    row.append(headRow, info, actions);
     linesList.appendChild(row);
   });
+  candidateStatusText(sourceLabel);
+}
+
+async function saveSelectedCandidates() {
+  const task = (taskName.value || '').trim();
+  if (!task) {
+    resultEl.textContent = '请先选择/新建任务';
+    return;
+  }
+  const chosen = saveCandidates.filter((c) => c.selected);
+  if (!chosen.length) {
+    resultEl.textContent = '请先勾选要保存的素材';
+    return;
+  }
+  const bad = chosen.filter((c) => !candidateNameValid(c.name));
+  if (bad.length) {
+    resultEl.textContent = '名称非法（需字母/中文开头，仅字母/数字/下划线/中文）：\n' + bad.map((c) => c.name).join('\n');
+    return;
+  }
+  const assets = chosen.map((c) => ({
+    id: c.name.trim(),
+    kind: 'ocr_line',
+    roi: [c.recognize.x, c.recognize.y, c.recognize.w, c.recognize.h],
+    action_roi: [c.action.x, c.action.y, c.action.w, c.action.h],
+  }));
+  if (btnBatchSave) btnBatchSave.disabled = true;
+  if (batchStatus) batchStatus.textContent = '保存中…';
+  try {
+    const r = await postJson('/task/save_assets', { task, assets });
+    if (!r.ok) {
+      if (batchStatus) {
+        batchStatus.textContent = '保存失败：' + (r.errors || []).join('; ');
+        batchStatus.style.color = '#ff8a80';
+      }
+      resultEl.textContent = '批量保存失败：\n' + (r.errors || []).join('\n');
+      return;
+    }
+    resultEl.textContent = `已批量保存 ${r.saved.length} 个素材：\n` + r.saved.map((a) => a.id).join('\n');
+    log(`批量保存 ${r.saved.length} 个素材`);
+    await refreshTaskAssets(task);
+  } catch (e) {
+    resultEl.textContent = '批量保存异常：' + e;
+  } finally {
+    candidateStatusText('已保存');
+  }
 }
 
 // v1.1: asset-list OCR action — ocr_lines uses /lines (not single-line /ocr);
@@ -1252,6 +1397,7 @@ const ASSET_KIND_LABELS = {
   template: '模板图（template）',
   ocr_line: '单行文字（ocr_line）',
   ocr_lines: '多行文字（ocr_lines）',
+  region: '操作区域（region）',
 };
 
 function renderAssetList() {
@@ -1292,8 +1438,8 @@ function renderAssetList() {
       main.type = 'button';
       main.className = 'asset-main';
       const roi = it.roi ? `[${it.roi.join(',')}]` : '—';
-      const back = it.roi_back ? ` · 点击框[${it.roi_back.join(',')}]` : '';
-      main.textContent = `${it.id}\n${roi}${back}`;
+      const action = it.action_roi ? ` · 操作区域[${it.action_roi.join(',')}]` : '';
+      main.textContent = `${it.id}\n识别 ${roi}${action}`;
       main.title = `${it.file || '（无图）'}`;
       main.addEventListener('click', () => pickAssetRoi(it));
       const test = document.createElement('button');
@@ -1303,6 +1449,15 @@ function renderAssetList() {
         test.textContent = '测试';
         test.title = '用已保存的模板图在当前帧全屏匹配';
         test.addEventListener('click', () => testAssetMatch(it));
+      } else if (it.kind === 'region') {
+        test.textContent = '区域';
+        test.title = '选中该操作区域（区域点击/拖动可直接引用）';
+        test.addEventListener('click', () => {
+          pickAssetRoi(it);
+          resultEl.textContent =
+            `操作区域「${it.id}」[${(it.roi || []).join(',')}]\n` +
+            `流程引用：click_target/find {kind:"region", sel:"${it.id}"}`;
+        });
       } else {
         test.textContent = '识别';
         test.title = '在当前帧用该 ROI 试识别文字';
@@ -1321,6 +1476,15 @@ function renderAssetList() {
       del.title = '删除素材（flow 仍引用时会被拒绝）';
       del.addEventListener('click', () => deleteAsset(it));
       row.append(main, test, edit, del);
+      if (it.kind !== 'region') {
+        const op = document.createElement('button');
+        op.type = 'button';
+        op.className = 'asset-test';
+        op.textContent = '操作区';
+        op.title = '在画布上拖拽设置该素材的操作区域（默认=识别结果）';
+        op.addEventListener('click', () => editAssetActionRoi(it));
+        row.appendChild(op);
+      }
       assetsList.appendChild(row);
     }
   }
@@ -1375,19 +1539,60 @@ async function editAsset(it) {
   await refreshTaskAssets(task);
 }
 
-function pickAssetRoi(it) {  if (!it.roi) {
+function editAssetActionRoi(it) {
+  if (!it.roi) {
+    resultEl.textContent = `素材「${it.id}」没有识别区域`;
+    return;
+  }
+  pendingActionAsset = it.id;
+  activeCandidate = -1;
+  backMode = true;
+  roi = { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] };
+  roiBack = it.action_roi
+    ? { x: it.action_roi[0], y: it.action_roi[1], w: it.action_roi[2], h: it.action_roi[3] }
+    : { ...roi };
+  if (btnBackMode) btnBackMode.textContent = '退出操作区域编辑（拖拽画操作区域）';
+  updateRoiLabel();
+  draw();
+  log(`编辑素材「${it.id}」操作区域：在画布上拖拽画框`);
+}
+
+async function updateAssetActionRoi(id, rect) {
+  const task = (taskName.value || '').trim();
+  if (!task || !rect) {
+    pendingActionAsset = null;
+    return;
+  }
+  const r = await postJson('/task/asset/update', {
+    task,
+    id,
+    action_roi: [rect.x, rect.y, rect.w, rect.h],
+  });
+  pendingActionAsset = null;
+  backMode = false;
+  if (btnBackMode) btnBackMode.textContent = '绘制操作区域（默认=识别区域）';
+  if (!r.ok) {
+    showErrors('更新操作区域失败：', r.errors);
+    return;
+  }
+  log(`素材「${id}」操作区域已更新`);
+  await refreshTaskAssets(task);
+}
+
+function pickAssetRoi(it) {
+  if (!it.roi) {
     resultEl.textContent = `素材「${it.id}」没有 roi`;
     return;
   }
   roi = { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] };
-  roiBack = it.roi_back
-    ? { x: it.roi_back[0], y: it.roi_back[1], w: it.roi_back[2], h: it.roi_back[3] }
+  roiBack = it.action_roi
+    ? { x: it.action_roi[0], y: it.action_roi[1], w: it.action_roi[2], h: it.action_roi[3] }
     : null;
   polygon = null;
   polyClosed = false;
   updateRoiLabel();
   draw();
-  log(`已用素材「${it.id}」设置识别框${it.roi_back ? '（含点击框）' : ''}`);
+  log(`已用素材「${it.id}」设置识别区域${it.action_roi ? '（含操作区域）' : ''}`);
 }
 
 async function testAssetMatch(it) {
@@ -1435,9 +1640,9 @@ async function doSaveAsset() {
   const kind = assetKind.value;
   const payload = { task, id, kind, roi: [roi.x, roi.y, roi.w, roi.h] };
   if (kind === 'template') payload.threshold = 0.85;
-  // §22.25: 显式点击框（roi_back）；不设时运行期点击=匹配外接矩形。
-  if (kind === 'template' && roiBack) {
-    payload.roi_back = [roiBack.x, roiBack.y, roiBack.w, roiBack.h];
+  // v1.2: 显式操作区域（action_roi）；不设时运行期用识别结果。
+  if (kind !== 'region' && roiBack) {
+    payload.action_roi = [roiBack.x, roiBack.y, roiBack.w, roiBack.h];
   }
   // §22.10: a closed polygon is an identification mask (match/OCR); the click
   // area stays the matched bbox unless roi_back is set above.
@@ -2021,7 +2226,7 @@ canvas.addEventListener('mousedown', (ev) => {
     draw();
     return;
   }
-  // §22.25 点击框模式：拖出一个 ROI 作为「点击框」（roi_back），识别框保持不变。
+  // §22.25 操作区域模式：拖出一个 ROI 作为「操作区域」（roi_back），识别框保持不变。
   if (backMode) {
     dragStart = p0;
     dragTarget = 'back';
@@ -2097,9 +2302,20 @@ canvas.addEventListener('mouseup', () => {
   dragStart = null;
   if (dragTarget === 'back') {
     dragTarget = 'roi';
+    const finished = roiBack ? { ...roiBack } : null;
+    if (activeCandidate >= 0 && saveCandidates[activeCandidate]) {
+      saveCandidates[activeCandidate].action = finished || { ...saveCandidates[activeCandidate].recognize };
+      activeCandidate = -1;
+      backMode = false;
+      if (btnBackMode) btnBackMode.textContent = '绘制操作区域（默认=识别区域）';
+      renderCandidateList(lastLinesRoi ? '本次识别' : '识别结果');
+      log(`操作区域已更新：${finished ? `${finished.w}x${finished.h} @ ${finished.x},${finished.y}` : '默认=识别区域'}`);
+    } else if (pendingActionAsset) {
+      updateAssetActionRoi(pendingActionAsset, finished);
+    }
     updateRoiLabel();
     draw();
-    if (roiBack) log(`点击框 ${roiBack.w}x${roiBack.h} @ ${roiBack.x},${roiBack.y}`);
+    if (roiBack) log(`操作区域 ${roiBack.w}x${roiBack.h} @ ${roiBack.x},${roiBack.y}`);
     return;
   }
   updateRoiLabel();
@@ -2177,12 +2393,16 @@ btnPoly.addEventListener('click', () => {
 btnBackMode.addEventListener('click', () => {
   backMode = !backMode;
   btnBackMode.textContent = backMode
-    ? '退出点击框模式（拖拽画出点击框）'
-    : '绘制点击框（未设置=匹配外接矩形）';
+    ? '退出操作区域编辑（拖拽画操作区域）'
+    : '绘制操作区域（默认=识别区域）';
+  if (!backMode) {
+    activeCandidate = -1;
+    pendingActionAsset = null;
+  }
   log(
     backMode
-      ? '点击框模式：在画面上拖拽画出「点击框」（roi_back，可大于识别框）'
-      : '已退出点击框模式'
+      ? '操作区域模式：在画面上拖拽画出「操作区域」（action_roi，可大于识别区域）'
+      : '已退出操作区域模式'
   );
   draw();
 });
@@ -2193,6 +2413,8 @@ btnClear.addEventListener('click', () => {
   polygon = null;
   polyClosed = false;
   selectedBox = null;
+  activeCandidate = -1;
+  pendingActionAsset = null;
   updateRoiLabel();
   updateClickStepButtons();
   draw();
@@ -2924,6 +3146,23 @@ async function submitResetMemory() {
   // N2: 生成点击指令 / 追加到 flow
   if (btnClickStep) btnClickStep.addEventListener('click', doGenerateClickStep);
   if (btnAppendStep) btnAppendStep.addEventListener('click', doAppendStepToFlow);
+  if (btnBatchSave) btnBatchSave.addEventListener('click', saveSelectedCandidates);
+  if (btnAssetConflicts) {
+    btnAssetConflicts.addEventListener('click', async () => {
+      if (!assetConflicts) return;
+      assetConflicts.textContent = '扫描中…';
+      try {
+        const r = await fetch('/assets/conflicts');
+        const s = await r.json();
+        if (!s.ok) throw new Error((s.errors || []).join('; ') || 'ok=false');
+        assetConflicts.textContent = s.conflicts.length
+          ? '重名（需处理）：\n' + s.conflicts.map((c) => `${c.id} ← ${c.sources.join(', ')}`).join('\n')
+          : '没有跨任务/素材库的重名。';
+      } catch (e) {
+        assetConflicts.textContent = '扫描失败：' + (e && e.message ? e.message : e);
+      }
+    });
+  }
   updateClickStepButtons();
   // N4: 点击分布 controls
   if (btnRunsRefresh) btnRunsRefresh.addEventListener('click', () => refreshRuns());
@@ -3044,7 +3283,7 @@ async function submitResetMemory() {
   }
   try {
     const wantPage = new URLSearchParams(location.search).get('page');
-    if (wantPage && ['workbench', 'tasks', 'instances', 'schedule', 'settings'].includes(wantPage)) {
+    if (wantPage && ['workbench', 'builder', 'tasks', 'instances', 'schedule', 'settings'].includes(wantPage)) {
       activatePage(wantPage);
     }
   } catch (e) {

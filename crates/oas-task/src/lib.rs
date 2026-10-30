@@ -1,4 +1,4 @@
-﻿//! oas-task: on-disk **task bundle** persistence (N3, design `ENGINE-DESIGN.md`
+//! oas-task: on-disk **task bundle** persistence (N3, design `ENGINE-DESIGN.md`
 //! §18.1 / §19.3 / §22.2).
 //!
 //! # Layout
@@ -47,8 +47,9 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// NCC score above which a template counts as "found".
 pub const DEFAULT_THRESHOLD: f32 = 0.85;
 
-/// Asset kinds allowed by §18.1 (`template` / `ocr_line` / `ocr_lines`).
-pub const KINDS: [&str; 3] = ["template", "ocr_line", "ocr_lines"];
+/// Asset/object kinds: recognize+act (`template`/`ocr_line`/`ocr_lines`) and
+/// pure operation region (`region`, no recognition).
+pub const KINDS: [&str; 4] = ["template", "ocr_line", "ocr_lines", "region"];
 
 // ---------------------------------------------------------------------------
 // Lint (M0 unified task template, ENGINE-DESIGN §22.34.2)
@@ -91,21 +92,32 @@ impl fmt::Display for LintIssue {
 pub struct AssetDecl {
     /// Semantic name; Chinese allowed (`分组2`, `返回按钮`). Never used as a path.
     pub id: String,
-    /// `template` | `ocr_line` | `ocr_lines`.
+    /// `template` | `ocr_line` | `ocr_lines` | `region`.
     pub kind: String,
     /// Template image, relative to the bundle root, always `images/aNNN.png`.
-    /// `None` for OCR assets (they have no pixels).
+    /// `None` for OCR / region objects (they have no pixels).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
-    /// `[x, y, w, h]` in frame coordinates at the bundle's `design_resolution`.
+    /// **Recognition region** `[x, y, w, h]` in frame coordinates.
+    ///
+    /// - template: source crop / template image origin;
+    /// - OCR: ROI where recognition runs;
+    /// - `region`: this is the operation region itself (no separate recognition).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roi: Option<[i32; 4]>,
-    /// Optional **click area** (`roi_back`, frame coordinates). Borrowed from the
-    /// old OAS annotator (`roiFront`/`roiBack`): `roi` is the recognition/crop box,
-    /// this is the click-sampling box. Missing => click the matched template bbox
-    /// (the default since §22.20).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub roi_back: Option<[i32; 4]>,
+    /// **Operation region** `[x, y, w, h]` in frame coordinates: where a click/drag
+    /// actually lands. Missing => default to the recognition result (template match
+    /// bbox / OCR line bbox / OCR asset ROI). For `region` assets the operation
+    /// region is `roi` and this field is normally None.
+    ///
+    /// v1.2 renames the legacy `roi_back` (click box) to this unified concept;
+    /// old assets with `"roi_back"` still load via serde alias.
+    #[serde(
+        default,
+        alias = "roi_back",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub action_roi: Option<[i32; 4]>,
     /// NCC threshold; defaults to [`DEFAULT_THRESHOLD`] for templates.
     #[serde(
         default,
@@ -132,7 +144,7 @@ impl AssetDecl {
             kind: "template".to_string(),
             file: None,
             roi: Some(roi),
-            roi_back: None,
+            action_roi: None,
             threshold: None,
             polygon: None,
             rev: None,
@@ -506,6 +518,26 @@ impl TaskBundle {
         let af = self.load_assets_file()?;
         let mut set = oas_runtime::AssetSet::new();
         for (i, item) in af.items.iter().enumerate() {
+            if item.kind == "region" {
+                // v1.2 pure operation region: no pixels, no recognition.
+                let roi = item.roi.ok_or_else(|| {
+                    format!(
+                        "assets.json: items[{i}].roi: region `{}` has no roi \
+                         (operation region)",
+                        item.id
+                    )
+                })?;
+                set.insert_region(
+                    item.id.clone(),
+                    oas_types::Rect {
+                        x: roi[0],
+                        y: roi[1],
+                        w: roi[2],
+                        h: roi[3],
+                    },
+                );
+                continue;
+            }
             if item.kind != "template" {
                 // OCR assets (`ocr_line` / `ocr_lines`) carry **no pixels**: the
                 // runtime only needs their ROI so `ocr(sel)` can crop it.
@@ -530,6 +562,17 @@ impl TaskBundle {
                 } else {
                     set.insert_ocr(item.id.clone(), rect);
                 }
+                // v1.2 operation region (default: OCR asset ROI).
+                let action = item.action_roi.unwrap_or(roi);
+                set.set_click_back(
+                    item.id.clone(),
+                    oas_types::Rect {
+                        x: action[0],
+                        y: action[1],
+                        w: action[2],
+                        h: action[3],
+                    },
+                );
                 // §22.10 N10b-2: OCR polygon mask (frame coordinates).
                 if let Some(poly) = &item.polygon {
                     let pts: Vec<oas_types::Point> = poly
@@ -574,7 +617,7 @@ impl TaskBundle {
                 }),
             };
             set.insert(item.id.clone(), tpl);
-            if let Some(back) = item.roi_back {
+            if let Some(back) = item.action_roi {
                 set.set_click_back(
                     item.id.clone(),
                     oas_types::Rect {
@@ -615,6 +658,58 @@ impl TaskBundle {
     /// any failure **nothing is written** (old image + manifest stay untouched).
     pub fn update_asset(&self, decl: AssetDecl, frame: Option<&Frame>) -> Result<AssetDecl, String> {
         self.save_asset_impl(decl, frame, true)
+    }
+
+    /// v1.2: save several recognized candidates in one all-or-nothing batch.
+    ///
+    /// Each item still goes through [`Self::save_asset`] validation; if any item
+    /// fails, the manifest is restored and images created by this batch are
+    /// removed. Global uniqueness is checked by the caller (it needs all tasks +
+    /// library), but duplicate IDs inside the batch are rejected here.
+    pub fn save_assets_batch(
+        &self,
+        decls: Vec<AssetDecl>,
+        frame: Option<&Frame>,
+    ) -> Result<Vec<AssetDecl>, String> {
+        if decls.is_empty() {
+            return Err("save_assets_batch: no assets given".into());
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for d in &decls {
+            if !seen.insert(d.id.clone()) {
+                return Err(format!("duplicate asset id `{}` in the same batch", d.id));
+            }
+        }
+        let before_text = std::fs::read_to_string(self.assets_path()).ok();
+        let before_files: std::collections::BTreeSet<String> = self
+            .load_assets_file()
+            .map(|af| af.items.into_iter().filter_map(|a| a.file).collect())
+            .unwrap_or_default();
+        let mut out = Vec::with_capacity(decls.len());
+        for decl in decls {
+            match self.save_asset(decl, frame) {
+                Ok(saved) => out.push(saved),
+                Err(e) => {
+                    // rollback manifest + any image files created by this batch
+                    if let Some(text) = before_text {
+                        let _ = write_atomic(&self.assets_path(), text.as_bytes());
+                    } else {
+                        let _ = std::fs::remove_file(self.assets_path());
+                    }
+                    if let Ok(after) = self.load_assets_file() {
+                        for item in after.items {
+                            if let Some(file) = item.file {
+                                if !before_files.contains(&file) {
+                                    let _ = std::fs::remove_file(self.root.join(file));
+                                }
+                            }
+                        }
+                    }
+                    return Err(format!("batch save rolled back: {e}"));
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// v1.1 asset CRUD: delete one asset (never while the flow still references it).
@@ -677,6 +772,7 @@ impl TaskBundle {
         &self,
         id: &str,
         roi: Option<[i32; 4]>,
+        action_roi: Option<[i32; 4]>,
         threshold: Option<f32>,
     ) -> Result<AssetDecl, String> {
         let mut af = self.load_assets_file()?;
@@ -698,6 +794,18 @@ impl TaskBundle {
             }
             af.items[pos].roi = Some(r);
         }
+        if let Some(a) = action_roi {
+            if a[2] <= 0 || a[3] <= 0 || a[0] < 0 || a[1] < 0 {
+                return Err("action_roi (操作区域) must have x,y >= 0 and w,h > 0".into());
+            }
+            if kind == "region" {
+                return Err(
+                    "region objects use roi as the operation region; action_roi must be empty"
+                        .into(),
+                );
+            }
+            af.items[pos].action_roi = Some(a);
+        }
         if let Some(t) = threshold {
             if !(0.0..=1.0).contains(&t) {
                 return Err("threshold must be 0..=1".into());
@@ -707,8 +815,8 @@ impl TaskBundle {
             }
             af.items[pos].threshold = Some(t);
         }
-        if roi.is_none() && threshold.is_none() {
-            return Err("nothing to update (pass roi and/or threshold)".into());
+        if roi.is_none() && action_roi.is_none() && threshold.is_none() {
+            return Err("nothing to update (pass roi, action_roi and/or threshold)".into());
         }
         af.items[pos].rev = Some(af.items[pos].rev.unwrap_or(0) + 1);
         let item = af.items[pos].clone();
@@ -801,20 +909,21 @@ impl TaskBundle {
             decl.roi = Some([min_x, min_y, max_x - min_x + 1, max_y - min_y + 1]);
         }
 
-        // §22.25 `roi_back`: optional explicit click area (old OAS roiBack).
-        // Only templates have a click target; bounds must fit the design frame.
-        if let Some(back) = decl.roi_back {
-            if decl.kind != "template" {
+        // v1.2 `action_roi`: unified **operation region** for recognizable
+        // objects (template/ocr_line/ocr_lines); bounds must fit the design frame.
+        // Pure `region` objects carry their operation region in `roi` instead.
+        if let Some(action) = decl.action_roi {
+            if decl.kind == "region" {
                 return Err(format!(
-                    "asset `{}` rejected: roi_back is only valid for template assets \
-                     (OCR assets have no click target); nothing written",
-                    decl.id
+                    "asset `{}` rejected: region `{}` uses its roi as the operation \
+                     region; action_roi must be empty",
+                    decl.id, decl.id
                 ));
             }
-            let [bx, by, bw, bh] = back;
+            let [bx, by, bw, bh] = action;
             if bw <= 0 || bh <= 0 || bx < 0 || by < 0 {
                 return Err(format!(
-                    "asset `{}` rejected: roi_back [x,y,w,h] = {back:?} must have \
+                    "asset `{}` rejected: action_roi (操作区域) [x,y,w,h] = {action:?} must have \
                      x,y >= 0 and w,h > 0; nothing written",
                     decl.id
                 ));
@@ -826,11 +935,31 @@ impl TaskBundle {
             if let Some((fw, fh)) = bounds {
                 if bx + bw > fw || by + bh > fh {
                     return Err(format!(
-                        "asset `{}` rejected: roi_back [x,y,w,h] = {back:?} is outside \
-                         the {fw}x{fh} frame; nothing written",
+                        "asset `{}` rejected: action_roi (操作区域) [x,y,w,h] = {action:?} \
+                         is outside the {fw}x{fh} frame; nothing written",
                         decl.id
                     ));
                 }
+            }
+        }
+        if decl.kind == "region" {
+            if decl.file.is_some() {
+                return Err(format!(
+                    "asset `{}` rejected: region objects must not carry a file",
+                    decl.id
+                ));
+            }
+            if decl.roi.is_none() {
+                return Err(format!(
+                    "asset `{}` rejected: region requires roi [x,y,w,h] (operation region)",
+                    decl.id
+                ));
+            }
+            if decl.threshold.is_some() {
+                return Err(format!(
+                    "asset `{}` rejected: region objects must not carry a threshold",
+                    decl.id
+                ));
             }
         }
         let existing = af.items.iter().position(|it| it.id == decl.id);        let old_file = existing.and_then(|i| af.items[i].file.clone());
@@ -1338,6 +1467,23 @@ impl TaskBundle {
             if let Err(e) = validate_threshold(item.threshold) {
                 errs.push((format!("{p}.threshold"), e));
             }
+            if let Some([x, y, w, h]) = item.action_roi {
+                if x < 0 || y < 0 || w <= 0 || h <= 0 {
+                    errs.push((
+                        format!("{p}.action_roi"),
+                        format!(
+                            "[x,y,w,h] = {x},{y},{w},{h} must have x,y >= 0 and w,h > 0"
+                        ),
+                    ));
+                }
+                if item.kind == "region" {
+                    errs.push((
+                        format!("{p}.action_roi"),
+                        "region objects use roi as the operation region; action_roi must be empty"
+                            .to_string(),
+                    ));
+                }
+            }
             match item.roi {
                 Some([x, y, w, h]) => {
                     if x < 0 || y < 0 || w <= 0 || h <= 0 {
@@ -1350,10 +1496,10 @@ impl TaskBundle {
                     }
                 }
                 None => {
-                    if item.kind == "template" {
+                    if matches!(item.kind.as_str(), "template" | "region") {
                         errs.push((
                             format!("{p}.roi"),
-                            "template asset requires [x,y,w,h]".to_string(),
+                            format!("{} object requires [x,y,w,h]", item.kind),
                         ));
                     }
                 }
@@ -1367,6 +1513,12 @@ impl TaskBundle {
                                 format!("`{file}` does not exist"),
                             ));
                         }
+                        if item.kind != "template" {
+                            errs.push((
+                                format!("{p}.file"),
+                                format!("{} objects must not carry a file", item.kind),
+                            ));
+                        }
                     }
                     Err(e) => errs.push((format!("{p}.file"), e)),
                 },
@@ -1378,6 +1530,12 @@ impl TaskBundle {
                         ));
                     }
                 }
+            }
+            if item.kind == "region" && item.threshold.is_some() {
+                errs.push((
+                    format!("{p}.threshold"),
+                    "region objects must not carry a threshold".to_string(),
+                ));
             }
         }
         errs
@@ -1799,12 +1957,11 @@ mod tests {
             kind: "ocr_lines".to_string(),
             file: None,
             roi: Some([10, 10, 21, 11]),
-            roi_back: None,
+            action_roi: None,
             threshold: None,
             polygon: Some(vec![[10, 10], [30, 10], [30, 20], [10, 20]]),
             rev: None,
-        };
-        let saved = b.save_asset(decl.clone(), Some(&f)).expect("save ocr polygon");
+        };        let saved = b.save_asset(decl.clone(), Some(&f)).expect("save ocr polygon");
         assert_eq!(saved.roi, Some([10, 10, 21, 11]));
         let set = b.load_runtime_assets().expect("runtime assets");
         let poly = set.ocr_polygon("多边形文字").expect("ocr polygon wired");
@@ -1816,43 +1973,120 @@ mod tests {
     }
 
     #[test]
-    fn roi_back_is_persisted_and_wired_into_the_runtime_click_area() {
+    fn action_roi_is_persisted_and_wired_into_the_runtime_operation_region() {
         let td = TempDir::new("back");
         let b = open(&td);
         let f = frame(64, 48);
         let mut decl = AssetDecl::template("点击区按钮", [10, 10, 21, 11]);
-        decl.roi_back = Some([8, 8, 30, 30]);
-        let saved = b.save_asset(decl, Some(&f)).expect("save with roi_back");
-        assert_eq!(saved.roi_back, Some([8, 8, 30, 30]));
+        decl.action_roi = Some([8, 8, 30, 30]);
+        let saved = b.save_asset(decl, Some(&f)).expect("save with action_roi");
+        assert_eq!(saved.action_roi, Some([8, 8, 30, 30]));
         let text = std::fs::read_to_string(b.assets_path()).expect("read assets");
-        assert!(text.contains("roi_back"), "{text}");
+        assert!(text.contains("action_roi"), "{text}");
         let set = b.load_runtime_assets().expect("runtime assets");
         let back = set.click_back("点击区按钮").expect("click_back wired");
         assert_eq!((back.x, back.y, back.w, back.h), (8, 8, 30, 30));
     }
 
     #[test]
-    fn roi_back_is_rejected_on_ocr_assets_and_outside_the_frame() {
+    fn action_roi_is_valid_for_ocr_and_bounded_region_is_a_pure_region() {
         let td = TempDir::new("backbad");
         let b = open(&td);
         let f = frame(64, 48);
-        let mut ocr = AssetDecl {
+        let ocr = AssetDecl {
             id: "文字".to_string(),
             kind: "ocr_lines".to_string(),
             file: None,
             roi: Some([10, 10, 21, 11]),
-            roi_back: Some([8, 8, 30, 30]),
+            action_roi: Some([12, 12, 30, 30]),
             threshold: None,
             polygon: None,
             rev: None,
         };
-        let err = b.save_asset(ocr.clone(), Some(&f)).expect_err("ocr must reject");
-        assert!(err.contains("roi_back is only valid for template"), "{err}");
-        ocr.kind = "template".to_string();
-        ocr.roi_back = Some([50, 40, 30, 30]); // outside 64x48
-        let err = b.save_asset(ocr, Some(&f)).expect_err("outside must reject");
+        b.save_asset(ocr.clone(), Some(&f))
+            .expect("OCR action region is valid");
+        let set = b.load_runtime_assets().expect("runtime assets");
+        let op = set.click_back("文字").expect("OCR operation region");
+        assert_eq!((op.x, op.y, op.w, op.h), (12, 12, 30, 30));
+
+        let mut bad = ocr.clone();
+        bad.id = "文字越界".to_string();
+        bad.action_roi = Some([50, 40, 30, 30]);
+        let err = b.save_asset(bad, Some(&f)).expect_err("outside must reject");
         assert!(err.contains("outside"), "{err}");
-        assert!(!b.assets_path().exists());
+
+        // Pure operation region: roi is the operation region, no action_roi.
+        let mut region = AssetDecl::template("占位", [1, 1, 2, 2]);
+        region.id = "右侧列表".to_string();
+        region.kind = "region".to_string();
+        region.roi = Some([40, 10, 20, 20]);
+        region.file = None;
+        region.threshold = None;
+        region.action_roi = None;
+        b.save_asset(region.clone(), Some(&f))
+            .expect("pure region save");
+        let set = b.load_runtime_assets().expect("runtime assets");
+        let r = set.region("右侧列表").expect("region wired");
+        assert_eq!((r.x, r.y, r.w, r.h), (40, 10, 20, 20));
+
+        let mut bad_region = region.clone();
+        bad_region.id = "坏区域".to_string();
+        bad_region.action_roi = Some([1, 1, 2, 2]);
+        let err = b.save_asset(bad_region, Some(&f)).expect_err("region action_roi");
+        assert!(err.contains("action_roi"), "{err}");
+    }
+
+    #[test]
+    fn legacy_roi_back_alias_loads_as_action_roi() {
+        let td = TempDir::new("alias");
+        let b = open(&td);
+        std::fs::create_dir_all(b.root()).expect("root");
+        std::fs::write(
+            b.assets_path(),
+            r#"{"schema_version":1,"items":[
+                 {"id":"旧点击框","kind":"ocr_line","roi":[1,2,30,20],"roi_back":[0,0,40,30]}
+               ]}"#,
+        )
+        .expect("write old assets");
+        let af = b.load_assets_file().expect("legacy assets load");
+        assert_eq!(af.items[0].action_roi, Some([0, 0, 40, 30]));
+    }
+
+    #[test]
+    fn batch_save_is_all_or_nothing() {
+        let td = TempDir::new("batchrollback");
+        let b = open(&td);
+        let ok = AssetDecl {
+            id: "批次甲".to_string(),
+            kind: "ocr_line".to_string(),
+            file: None,
+            roi: Some([1, 2, 30, 20]),
+            action_roi: Some([0, 0, 40, 30]),
+            threshold: None,
+            polygon: None,
+            rev: None,
+        };
+        let bad = AssetDecl {
+            id: "批次乙".to_string(),
+            kind: "region".to_string(),
+            file: None,
+            roi: None, // region requires roi
+            action_roi: None,
+            threshold: None,
+            polygon: None,
+            rev: None,
+        };
+        let err = b
+            .save_assets_batch(vec![ok, bad], None)
+            .expect_err("bad batch must roll back");
+        assert!(err.contains("rolled back"), "{err}");
+        assert!(
+            !b.assets_path().exists()
+                || b.load_assets_file()
+                    .map(|af| af.items.is_empty())
+                    .unwrap_or(true),
+            "no partial asset may remain"
+        );
     }
 
     #[test]

@@ -21,6 +21,9 @@
     swipe: '滑动',
     drag: '拖动（拟人）',
     ocr: '识别文字',
+    set_var: '设置变量',
+    inc_var: '变量自增',
+    ocr_to_var: '识别写变量',
     finish: '结束',
   };
 
@@ -36,6 +39,9 @@
     'swipe',
     'drag',
     'ocr',
+    'set_var',
+    'inc_var',
+    'ocr_to_var',
     'finish',
   ];
 
@@ -69,6 +75,12 @@
         };
       case 'ocr':
         return { sel: 'O_A' };
+      case 'set_var':
+        return { name: 'n', value: '0' };
+      case 'inc_var':
+        return { name: 'n', by: '1' };
+      case 'ocr_to_var':
+        return { sel: 'O_A', var: 'text' };
       case 'finish':
         return { exit: 'done' };
       default:

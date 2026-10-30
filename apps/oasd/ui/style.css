@@ -507,3 +507,41 @@ aside.side {
 .task-card .task-sub { color: #98a0ac; font-size: 12px; }
 .task-card .row { width: auto; }.page-head button { width: auto; margin: 0; display: inline-block; flex: none; }
 .page-head .spacer { flex: 1; }
+/* v1.2 multi-select save candidates */
+.candidate-head { display: flex; gap: 6px; align-items: center; }
+.candidate-head input[type="checkbox"] { flex: none; width: auto; margin: 0; }
+.candidate-name { flex: 1; min-width: 0; font-size: 12px; padding: 2px 4px; }
+.candidate-name.invalid { border-color: #ff6b6b; background: #2a1a1c; }
+.candidate-info { margin: 2px 0; }
+.candidate-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.candidate-actions button { width: auto; flex: none; margin: 0; padding: 2px 6px; font-size: 11px; }
+.ocr-line-row { padding: 6px 0; }
+/* v1.2 任务构建大页面 */
+.builder-wrap { padding: 12px 14px; }
+.builder-head { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+.builder-head select { width: 260px; }
+.builder-head button { width: auto; margin: 0; }
+.builder-main { display: grid; grid-template-columns: 220px minmax(0, 1fr) 340px; gap: 10px; align-items: start; }
+.builder-palette, .builder-center, .builder-inspector { background: #1d2027; border: 1px solid #2b2f38; border-radius: 8px; padding: 10px; min-height: 480px; }
+.builder-palette h3, .builder-center h3, .builder-inspector h3 { margin: 2px 0 8px; color: #8fb8e8; font-size: 13px; }
+.builder-ops { display: flex; flex-direction: column; gap: 4px; }
+.builder-op-group { margin: 6px 0 2px; color: #98a0ac; font-size: 11px; }
+.builder-ops button { width: 100%; text-align: left; margin: 0; padding: 4px 6px; font-size: 12px; }
+.builder-steps { font-family: Consolas, monospace; }
+.builder-step { border-left: 2px solid #2b6da8; margin: 3px 0; padding: 3px 6px; cursor: pointer; }
+.builder-step.selected { background: #24384f; border-left-color: #ffd54a; }
+.builder-step .op { color: #8fb8e8; font-weight: 600; }
+.builder-step .summary { color: #cbd5e1; font-size: 12px; }
+.builder-step .rowbtns { margin-left: 6px; }
+.builder-step .rowbtns button { width: auto; display: inline-block; margin: 0 2px 0 0; padding: 1px 5px; font-size: 11px; }
+.builder-children { margin-left: 14px; border-left: 1px dashed #3a4250; padding-left: 8px; }
+.builder-graph { margin-top: 8px; max-height: 320px; overflow: auto; }
+.graph-node { border: 1px solid #3a5f86; border-radius: 6px; padding: 3px 6px; margin: 4px 0; background: #17222e; font-size: 12px; }
+.graph-node.control { border-color: #8a6a2a; background: #241f15; }
+.graph-arrow { color: #5f7ea0; text-align: center; font-size: 12px; }
+.builder-inspector label { display: block; margin: 6px 0; font-size: 12px; }
+.builder-inspector input, .builder-inspector select, .builder-inspector textarea { width: 100%; box-sizing: border-box; }
+.builder-inspector textarea { min-height: 100px; font-family: Consolas, monospace; }
+.builder-form-actions { margin-top: 10px; display: flex; gap: 6px; }
+.builder-form-actions button { width: auto; flex: none; margin: 0; }
+.builder-assets { margin-top: 12px; border-top: 1px solid #2b2f38; padding-top: 8px; }

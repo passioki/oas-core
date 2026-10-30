@@ -410,6 +410,15 @@ pub trait EvalContext {
              (declare it in meta.params and run through the interpreter)"
         ))
     }
+
+    /// `var('name')` (v1.2): a runtime variable set by `set_var`/`inc_var`/
+    /// `ocr_to_var`. Unset variables are a loud error, not null.
+    fn var(&mut self, name: &str) -> Result<Value, String> {
+        Err(format!(
+            "var('{name}') is not available in this evaluation context \
+             (variables are only set during a flow run)"
+        ))
+    }
 }
 
 pub fn eval(e: &Expr, ctx: &mut dyn EvalContext) -> Result<Value, String> {
@@ -458,6 +467,17 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut dyn EvalContext) -> Result<Val
         };
         return ctx.param(&key);
     }
+    // `var('name')` (v1.2): runtime variable set by set_var/inc_var/ocr_to_var.
+    if name == "var" {
+        if args.len() != 1 {
+            return Err("var() takes exactly one name argument".into());
+        }
+        let key = match eval(&args[0], ctx)? {
+            Value::Str(s) => s,
+            other => return Err(format!("var() expects a string name, got {other:?}")),
+        };
+        return ctx.var(&key);
+    }
     let sel = match name {
         "page" => {
             if !args.is_empty() {
@@ -479,7 +499,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut dyn EvalContext) -> Result<Val
         }
         other => {
             return Err(format!(
-                "unknown function `{other}` (allowed: appear, ocr, ocr_digit, page, param)"
+                "unknown function `{other}` (allowed: appear, ocr, ocr_digit, page, param, var)"
             ))
         }
     };
@@ -643,6 +663,11 @@ pub enum Locator {
     Region {
         roi: [i32; 4],
     },
+    /// v1.2 saved pure operation region (`kind: region`): click a random point
+    /// inside the named region asset.
+    RegionRef {
+        sel: String,
+    },
     /// Remembered coordinate (fallback), keyed in the task's `state/coords.json`.
     CoordMemory { key: String },
 }
@@ -652,7 +677,7 @@ impl Locator {
         match self {
             Locator::Template { .. } => "template",
             Locator::OcrText { .. } | Locator::OcrTextInline { .. } => "ocr_text",
-            Locator::Region { .. } => "region",
+            Locator::Region { .. } | Locator::RegionRef { .. } => "region",
             Locator::CoordMemory { .. } => "coord_memory",
         }
     }
@@ -661,15 +686,20 @@ impl Locator {
     pub fn priority(&self) -> u8 {
         match self {
             Locator::Template { .. } => 0,
-            Locator::OcrText { .. } | Locator::OcrTextInline { .. } | Locator::Region { .. } => 1,
+            Locator::OcrText { .. }
+            | Locator::OcrTextInline { .. }
+            | Locator::Region { .. }
+            | Locator::RegionRef { .. } => 1,
             Locator::CoordMemory { .. } => 2,
         }
     }
 
-    /// Asset id referenced by this locator (inline OCR / region / memory none).
+    /// Asset id referenced by this locator (inline OCR / inline region / memory none).
     pub fn asset(&self) -> Option<&str> {
         match self {
-            Locator::Template { sel, .. } | Locator::OcrText { sel, .. } => Some(sel),
+            Locator::Template { sel, .. }
+            | Locator::OcrText { sel, .. }
+            | Locator::RegionRef { sel } => Some(sel),
             Locator::OcrTextInline { .. } | Locator::Region { .. } | Locator::CoordMemory { .. } => {
                 None
             }
@@ -836,6 +866,21 @@ pub enum Step {
     },
     Ocr {
         sel: String,
+    },
+    /// v1.2 变量：`set_var('name', value)`（值可以是表达式）。
+    SetVar {
+        name: String,
+        value: Expr,
+    },
+    /// v1.2 变量：`inc_var('name', by)`；变量不存在按 0 起算。
+    IncVar {
+        name: String,
+        by: Expr,
+    },
+    /// v1.2 变量：把 OCR 识别结果写入变量（多行用换行连接）。
+    OcrToVar {
+        sel: String,
+        var: String,
     },
     /// Explicitly resolve a known popup (ENGINE §22.15). When `required` is false
     /// an absent popup is OK; when true it is a loud failure. `action` selects the
@@ -1292,9 +1337,17 @@ fn parse_locator(v: &serde_json::Value, path: &str) -> Result<Locator, FlowError
             })
         }
         "region" => {
+            if let Some(sel) = v.get("sel").and_then(|x| x.as_str()) {
+                if sel.trim().is_empty() {
+                    return Err(FlowError::new(format!("{path}.sel"), "region `sel` is empty"));
+                }
+                return Ok(Locator::RegionRef {
+                    sel: sel.to_string(),
+                });
+            }
             let roi = v
                 .get("roi")
-                .ok_or_else(|| FlowError::new(path, "region needs `roi`"))?;
+                .ok_or_else(|| FlowError::new(path, "region needs `roi` or `sel`"))?;
             Ok(Locator::Region {
                 roi: parse_roi4(roi, &format!("{path}.roi"))?,
             })
@@ -1581,6 +1634,21 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
         }
         "ocr" => Ok(Step::Ocr {
             sel: req_str(&args, "sel", &a_path)?,
+        }),
+        "set_var" => Ok(Step::SetVar {
+            name: req_str(&args, "name", &a_path)?,
+            value: parse_expr_field(&args, "value", &a_path)?,
+        }),
+        "inc_var" => Ok(Step::IncVar {
+            name: req_str(&args, "name", &a_path)?,
+            by: match args.get("by") {
+                Some(v) => parse_coord_value(v, format!("{a_path}.by"))?,
+                None => Expr::Lit(Lit::Num(1.0)),
+            },
+        }),
+        "ocr_to_var" => Ok(Step::OcrToVar {
+            sel: req_str(&args, "sel", &a_path)?,
+            var: req_str(&args, "var", &a_path)?,
         }),
         "log" => Ok(Step::Log {
             level: args
@@ -1880,12 +1948,17 @@ fn collect_param_steps(steps: &[Step], prefix: &str, out: &mut Vec<ParamUse>) {
                 collect_param_expr(to_y, &format!("{p}.args.to[1]"), out);
             }
             Step::Log { text, .. } => collect_param_expr(text, &format!("{p}.args.text"), out),
+            Step::SetVar { value, .. } => {
+                collect_param_expr(value, &format!("{p}.args.value"), out)
+            }
+            Step::IncVar { by, .. } => collect_param_expr(by, &format!("{p}.args.by"), out),
             Step::Break
             | Step::Continue
             | Step::Wait { .. }
             | Step::Appear { .. }
             | Step::Click { .. }
             | Step::Ocr { .. }
+            | Step::OcrToVar { .. }
             | Step::DismissPopup { .. }
             | Step::ClickTarget { .. }
             | Step::Drag { .. }
@@ -1976,6 +2049,11 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {    for s i
             Step::Appear { sel } | Step::Ocr { sel } => {
                 out.insert(sel.clone());
             }
+            Step::OcrToVar { sel, .. } => {
+                out.insert(sel.clone());
+            }
+            Step::SetVar { value, .. } => collect_assets_expr(value, out),
+            Step::IncVar { by, .. } => collect_assets_expr(by, out),
             Step::DismissPopup { sel, action, .. } => {
                 out.insert(sel.clone());
                 if let Some(a) = action {
@@ -2121,6 +2199,40 @@ mod tests {
                     assert_eq!(text, "个人突破");
                     assert!(find[0].asset().is_none());
                 }
+                other => panic!("unexpected locator: {other:?}"),
+            },
+            other => panic!("unexpected step: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn variable_steps_parse_and_collect_ocr_asset() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"set_var","args":{"name":"n","value":"0"}},
+                 {"op":"inc_var","args":{"name":"n","by":"1"}},
+                 {"op":"ocr_to_var","args":{"sel":"O_LIST","var":"txt"}},
+                 {"op":"if","args":{"cond":"var('n') > 0"},"then":[{"op":"finish","args":{"exit":"done"}}],"else":[]}
+               ]}"#,
+        )
+        .expect("flow");
+        let refs = flow.referenced_assets();
+        assert!(refs.contains("O_LIST"), "{refs:?}");
+        assert_eq!(flow.steps.len(), 4);
+    }
+
+    #[test]
+    fn saved_region_locator_is_parsed_and_collected_as_asset() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[{"op":"click_target","args":{
+                 "find":[{"kind":"region","sel":"右侧列表"}]}}]}"#,
+        )
+        .expect("flow");
+        let refs = flow.referenced_assets();
+        assert!(refs.contains("右侧列表"), "{refs:?}");
+        match &flow.steps[0] {
+            Step::ClickTarget { find, .. } => match &find[0] {
+                Locator::RegionRef { sel } => assert_eq!(sel, "右侧列表"),
                 other => panic!("unexpected locator: {other:?}"),
             },
             other => panic!("unexpected step: {other:?}"),

@@ -378,6 +378,7 @@ impl Server {
         match (method, path_only.as_str()) {
             ("GET", "/") => self.send_file(&mut out, &format!("{ui_dir}/index.html"), "text/html; charset=utf-8"),
             ("GET", "/app.js") => self.send_file(&mut out, &format!("{ui_dir}/app.js"), "application/javascript; charset=utf-8"),
+            ("GET", "/builder.js") => self.send_file(&mut out, &format!("{ui_dir}/builder.js"), "application/javascript; charset=utf-8"),
             ("GET", "/style.css") => self.send_file(&mut out, &format!("{ui_dir}/style.css"), "text/css; charset=utf-8"),
             ("GET", "/flow_model.js") => self.send_file(&mut out, &format!("{ui_dir}/flow_model.js"), "application/javascript; charset=utf-8"),
             ("GET", "/dashboard.html") => self.send_file(&mut out, &format!("{ui_dir}/dashboard.html"), "text/html; charset=utf-8"),
@@ -436,6 +437,8 @@ impl Server {
             ("GET", "/lines") => self.handle_lines(&mut out, &path),
             // --- N3: task bundle save routes ---
             ("POST", "/task/save_asset") => self.handle_save_asset(&mut out, &body),
+            ("POST", "/task/save_assets") => self.handle_save_assets(&mut out, &body),
+            ("GET", "/assets/conflicts") => self.handle_asset_conflicts(&mut out),
             ("POST", "/task/asset/delete") => self.handle_asset_delete(&mut out, &body),
             ("POST", "/task/asset/rename") => self.handle_asset_rename(&mut out, &body),
             ("POST", "/task/asset/update") => self.handle_asset_update(&mut out, &body),
@@ -994,8 +997,8 @@ impl Server {
             Ok(r) => r,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
-        // §22.25: optional explicit click area (`roi_back`, old OAS roiBack).
-        let roi_back = match json_opt_roi_back(&v) {
+        // §22.25: optional explicit operation region (`action_roi`, legacy `roi_back`).
+        let roi_back = match json_opt_action_roi(&v) {
             Ok(r) => r,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
@@ -1083,12 +1086,31 @@ impl Server {
             Ok(b) => b,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
+        // v1.2 global-unique naming: creating a new object may not reuse an id
+        // from ANY task or the global library. Overwrite (replace=true) is the
+        // explicit "same object, rev+1" path and is allowed.
+        if !replace {
+            match self.global_asset_entries() {
+                Ok(entries) => {
+                    if let Some((_, source)) = entries.iter().find(|(gid, _)| gid == &id) {
+                        return self.send_errors(
+                            out,
+                            400,
+                            vec![format!(
+                                "asset id `{id}` already exists ({source}); names must be globally unique"
+                            )],
+                        );
+                    }
+                }
+                Err(e) => return self.send_errors(out, 500, vec![e]),
+            }
+        }
         let decl = oas_task::AssetDecl {
             id,
             kind,
             file: None,
             roi: Some(roi),
-            roi_back,
+            action_roi: roi_back,
             threshold,
             polygon,
             rev: None,
@@ -1412,6 +1434,153 @@ impl Server {
     }
 
     /// v1.1 asset CRUD: `POST /task/asset/delete` body `{task,id}`.
+    /// v1.2: all asset/object ids visible to this editor (every task + global
+    /// library), used for the global-unique naming contract.
+    fn global_asset_entries(&self) -> Result<Vec<(String, String)>, String> {
+        let mut out = Vec::new();
+        let names = oas_task::list_tasks(&self.tasks_dir)?;
+        for name in names {
+            let Ok(bundle) = oas_task::TaskBundle::open_named(&self.tasks_dir, &name) else {
+                continue;
+            };
+            let Ok(af) = bundle.load_assets_file() else {
+                continue;
+            };
+            for item in af.items {
+                out.push((item.id, format!("task:{name}")));
+            }
+        }
+        let lib = crate::library::Library::open(&self.library_dir);
+        if let Ok(items) = lib.list() {
+            for item in items {
+                out.push((item.id, "library".to_string()));
+            }
+        }
+        Ok(out)
+    }
+
+    /// v1.2: report duplicate ids across tasks/library (migration scan).
+    fn handle_asset_conflicts(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let entries = match self.global_asset_entries() {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 500, vec![e]),
+        };
+        let mut by_id: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for (id, source) in entries {
+            by_id.entry(id).or_default().push(source);
+        }
+        let conflicts: Vec<serde_json::Value> = by_id
+            .into_iter()
+            .filter(|(_, sources)| sources.len() > 1)
+            .map(|(id, sources)| serde_json::json!({"id": id, "sources": sources}))
+            .collect();
+        self.send_json(
+            out,
+            200,
+            &serde_json::json!({"ok": true, "conflicts": conflicts}).to_string(),
+        )
+    }
+
+    /// v1.2: batch save recognized candidates. Body:
+    /// `{task, assets:[{id,kind,roi,action_roi?,threshold?}]}`
+    ///
+    /// All ids are checked against the **global** namespace (all tasks + library)
+    /// before anything is written; the batch is all-or-nothing.
+    fn handle_save_assets(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").trim();
+        let arr = match v.get("assets").and_then(|x| x.as_array()) {
+            Some(a) => a.clone(),
+            None => return self.send_errors(out, 400, vec!["`assets` array is required".into()]),
+        };
+        if arr.is_empty() {
+            return self.send_errors(out, 400, vec!["`assets` cannot be empty".into()]);
+        }
+        let bundle = match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
+            Ok(b) => b,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let global = match self.global_asset_entries() {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 500, vec![e]),
+        };
+        let mut decls = Vec::with_capacity(arr.len());
+        let mut errors: Vec<String> = Vec::new();
+        let mut batch_ids = std::collections::BTreeSet::new();
+        for (i, item) in arr.iter().enumerate() {
+            let p = format!("assets[{i}]");
+            let id = item.get("id").and_then(|x| x.as_str()).unwrap_or("").trim();
+            if let Err(e) = oas_task::validate_id(id) {
+                errors.push(format!("{p}.id: {e}"));
+                continue;
+            }
+            if !batch_ids.insert(id.to_string()) {
+                errors.push(format!("{p}.id: duplicate `{id}` in this batch"));
+            }
+            if let Some((_, source)) = global.iter().find(|(gid, _)| gid == id) {
+                errors.push(format!(
+                    "{p}.id: `{id}` already exists ({source}); names must be globally unique"
+                ));
+            }
+            let kind = item.get("kind").and_then(|x| x.as_str()).unwrap_or("");
+            if !oas_task::KINDS.contains(&kind) {
+                errors.push(format!(
+                    "{p}.kind: unknown `{kind}` (allowed: {})",
+                    oas_task::KINDS.join(", ")
+                ));
+                continue;
+            }
+            let roi = if item.get("roi").is_some() {
+                match json_roi_field(item) {
+                    Ok(r) => Some(r),
+                    Err(e) => {
+                        errors.push(format!("{p}.roi: {e}"));
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            let action_roi = match json_opt_action_roi(item) {
+                Ok(r) => r,
+                Err(e) => {
+                    errors.push(format!("{p}.action_roi: {e}"));
+                    continue;
+                }
+            };
+            let threshold = item.get("threshold").and_then(|x| x.as_f64()).map(|t| t as f32);
+            decls.push(oas_task::AssetDecl {
+                id: id.to_string(),
+                kind: kind.to_string(),
+                file: None,
+                roi,
+                action_roi,
+                threshold,
+                polygon: None,
+                rev: None,
+            });
+        }
+        if !errors.is_empty() {
+            return self.send_errors(out, 400, errors);
+        }
+        let frame = self.state.lock().unwrap().frame.clone();
+        match bundle.save_assets_batch(decls, frame.as_ref()) {
+            Ok(saved) => {
+                self.editor_log(&format!("assets_batch_save task={task} count={}", saved.len()));
+                self.send_json(
+                    out,
+                    200,
+                    &serde_json::json!({"ok": true, "saved": saved}).to_string(),
+                )
+            }
+            Err(e) => self.send_errors(out, 400, vec![e]),
+        }
+    }
+
     fn handle_asset_delete(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
         let v: serde_json::Value = match serde_json::from_slice(body) {
             Ok(v) => v,
@@ -1446,6 +1615,17 @@ impl Server {
         let to = v.get("to").and_then(|x| x.as_str()).unwrap_or("").trim();
         if task.is_empty() || from.is_empty() || to.is_empty() {
             return self.send_errors(out, 400, vec!["`task`, `from`, `to` are required".into()]);
+        }
+        if let Ok(entries) = self.global_asset_entries() {
+            if let Some((_, source)) = entries.iter().find(|(gid, _)| gid == to) {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec![format!(
+                        "asset id `{to}` already exists ({source}); names must be globally unique"
+                    )],
+                );
+            }
         }
         let b = match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
             Ok(b) => b,
@@ -1502,7 +1682,11 @@ impl Server {
             Ok(b) => b,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
-        match b.update_asset_meta(id, roi, threshold) {
+        let action_roi = match json_opt_action_roi(&v) {
+            Ok(r) => r,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        match b.update_asset_meta(id, roi, action_roi, threshold) {
             Ok(item) => {
                 self.editor_log(&format!("asset_update task={task} id={id}"));
                 self.send_json(out, 200, &serde_json::json!({"ok": true, "item": item}).to_string())
@@ -2363,17 +2547,17 @@ fn json_roi_field(v: &serde_json::Value) -> Result<[i32; 4], String> {
     Ok(out)
 }
 
-/// §22.25: optional `roi_back` (explicit click area; old OAS `roiBack`).
-fn json_opt_roi_back(v: &serde_json::Value) -> Result<Option<[i32; 4]>, String> {
-    let Some(x) = v.get("roi_back") else {
+/// §22.25: optional `action_roi` (operation region; legacy `roi_back`).
+fn json_opt_action_roi(v: &serde_json::Value) -> Result<Option<[i32; 4]>, String> {
+    let Some(x) = v.get("action_roi").or_else(|| v.get("roi_back")) else {
         return Ok(None);
     };
     let arr = x
         .as_array()
-        .ok_or_else(|| "`roi_back` must be an array of 4 integers [x,y,w,h]".to_string())?;
+        .ok_or_else(|| "`action_roi` must be an array of 4 integers [x,y,w,h]".to_string())?;
     if arr.len() != 4 {
         return Err(format!(
-            "`roi_back` must have exactly 4 integers [x,y,w,h], got {}",
+            "`action_roi` must have exactly 4 integers [x,y,w,h], got {}",
             arr.len()
         ));
     }
@@ -2381,9 +2565,9 @@ fn json_opt_roi_back(v: &serde_json::Value) -> Result<Option<[i32; 4]>, String> 
     for (i, item) in arr.iter().enumerate() {
         let n = item
             .as_i64()
-            .ok_or_else(|| format!("`roi_back[{i}]` must be an integer"))?;
+            .ok_or_else(|| format!("`action_roi[{i}]` must be an integer"))?;
         out[i] = i32::try_from(n)
-            .map_err(|_| format!("`roi_back[{i}]` = {n} does not fit in i32"))?;
+            .map_err(|_| format!("`action_roi[{i}]` = {n} does not fit in i32"))?;
     }
     Ok(Some(out))
 }
