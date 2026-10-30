@@ -433,6 +433,155 @@
     }
   }
 
+  // v1.2.2 (N47): structured editors for the two complex actions. Raw args JSON
+  // stays below as the escape hatch for multi-locator chains / advanced fields.
+  function locatorFromAsset(a) {
+    if (!a) return null;
+    if (a.kind === 'region') return { kind: 'region', sel: a.id };
+    if (a.kind === 'template') return { kind: 'template', sel: a.id };
+    return { kind: 'ocr_text', sel: a.id, text: a.ocr_text || a.id };
+  }
+
+  function formBox(title) {
+    const box = document.createElement('div');
+    box.className = 'builder-subform';
+    const h = document.createElement('div');
+    h.className = 'muted small';
+    h.textContent = title;
+    box.appendChild(h);
+    return box;
+  }
+
+  function numberInput(label, value, onchange) {
+    const lab = document.createElement('label');
+    lab.textContent = label;
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.value = value == null ? '' : value;
+    inp.addEventListener('change', () => onchange(Number(inp.value)));
+    lab.appendChild(inp);
+    return lab;
+  }
+
+  function structuredClickTarget(root, step) {
+    const box = formBox('定位对象（find[0]；多定位器/内联 ROI 用下方高级 JSON）');
+    const find = Array.isArray(step.args.find) ? step.args.find : [];
+    const loc = Object.assign({ kind: 'template' }, find[0] || {});
+    const kindLab = document.createElement('label');
+    kindLab.textContent = '定位方式';
+    const kind = document.createElement('select');
+    for (const k of ['template', 'ocr_text', 'region']) {
+      const o = document.createElement('option');
+      o.value = k;
+      o.textContent = k;
+      kind.appendChild(o);
+    }
+    kind.value = loc.kind || 'template';
+    kindLab.appendChild(kind);
+    box.appendChild(kindLab);
+
+    const assetLab = document.createElement('label');
+    assetLab.textContent = '素材/操作区域';
+    const asset = assetSelect(loc.sel || '', null);
+    assetLab.appendChild(asset);
+    box.appendChild(assetLab);
+
+    const textLab = document.createElement('label');
+    textLab.textContent = 'OCR 文字（ocr_text 必填）';
+    const text = document.createElement('input');
+    text.value = loc.text || '';
+    textLab.appendChild(text);
+    box.appendChild(textLab);
+
+    function sync() {
+      const next = { kind: kind.value };
+      if (asset.value) next.sel = asset.value;
+      if (kind.value === 'ocr_text') next.text = text.value;
+      step.args.find = [next].concat(find.slice(1));
+      renderAll();
+    }
+    kind.addEventListener('change', sync);
+    asset.addEventListener('change', sync);
+    text.addEventListener('change', sync);
+    root.appendChild(box);
+  }
+
+  function structuredDrag(root, step) {
+    const box = formBox('拖动（from 区域 + 方向/距离/时长；其它 from/to 形态用下方高级 JSON）');
+    const dirLab = document.createElement('label');
+    dirLab.textContent = '方向（必填）';
+    const dir = document.createElement('select');
+    for (const d of ['up', 'down', 'left', 'right']) {
+      const o = document.createElement('option');
+      o.value = d;
+      o.textContent = d;
+      dir.appendChild(o);
+    }
+    dir.value = step.args.direction || 'up';
+    dirLab.appendChild(dir);
+    box.appendChild(dirLab);
+
+    const from = step.args.from || {};
+    if (from.kind === 'region' && Array.isArray(from.roi) && from.roi.length === 4) {
+      const roi = from.roi.slice();
+      const row = document.createElement('div');
+      row.className = 'builder-inline';
+      ['x', 'y', 'w', 'h'].forEach((k, i) =>
+        row.appendChild(
+          numberInput(k, roi[i], (v) => {
+            roi[i] = v;
+            step.args.from = { kind: 'region', roi };
+            renderAll();
+          })
+        )
+      );
+      box.appendChild(row);
+    } else {
+      const n = document.createElement('div');
+      n.className = 'muted small';
+      n.textContent = 'from 不是 region（OCR 行/坐标）：请用高级 JSON 编辑';
+      box.appendChild(n);
+    }
+
+    const d = Array.isArray(step.args.distance) && step.args.distance.length === 2
+      ? step.args.distance
+      : [150, 450];
+    const dur = Array.isArray(step.args.duration_ms) && step.args.duration_ms.length === 2
+      ? step.args.duration_ms
+      : [300, 650];
+    const dRow = document.createElement('div');
+    dRow.className = 'builder-inline';
+    dRow.appendChild(numberInput('最小距离', d[0], (v) => {
+      step.args.distance = [v, d[1]];
+      renderAll();
+    }));
+    dRow.appendChild(numberInput('最大距离', d[1], (v) => {
+      step.args.distance = [d[0], v];
+      renderAll();
+    }));
+    box.appendChild(dRow);
+    const durRow = document.createElement('div');
+    durRow.className = 'builder-inline';
+    durRow.appendChild(numberInput('最小时长', dur[0], (v) => {
+      step.args.duration_ms = [v, dur[1]];
+      renderAll();
+    }));
+    durRow.appendChild(numberInput('最大时长', dur[1], (v) => {
+      step.args.duration_ms = [dur[0], v];
+      renderAll();
+    }));
+    box.appendChild(durRow);
+    box.appendChild(numberInput('margin', step.args.margin == null ? 0.15 : step.args.margin, (v) => {
+      step.args.margin = v;
+      renderAll();
+    }));
+    dir.addEventListener('change', () => {
+      step.args.direction = dir.value;
+      renderAll();
+    });
+    root.appendChild(box);
+  }
+
   function renderForm() {
     const root = $('builder-form');
     if (!root) return;
@@ -501,6 +650,8 @@
       lab.appendChild(input);
       root.appendChild(lab);
     }
+    if (step.op === 'click_target') structuredClickTarget(root, step);
+    if (step.op === 'drag') structuredDrag(root, step);
     // raw args JSON fallback for complex actions (click_target/drag)
     const raw = document.createElement('label');
     raw.textContent = '高级：args JSON';

@@ -305,6 +305,10 @@ pub trait CoordStore {
 /// TOP-LEVEL step with its index, so the driver can persist "next step to run".
 pub trait ProgressSink {
     fn step_done(&mut self, index: usize, op: &str);
+
+    /// v1.2.2: persist runtime variables after each successful top-level step.
+    /// Default is a no-op so existing sinks stay compatible.
+    fn vars_changed(&mut self, _vars: &BTreeMap<String, Value>) {}
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -523,6 +527,17 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         self
     }
 
+    /// v1.2.2: restore variables from a checkpoint before resuming.
+    pub fn with_vars(mut self, vars: BTreeMap<String, Value>) -> Self {
+        self.vars = vars;
+        self
+    }
+
+    /// v1.2.2: snapshot of runtime variables for checkpoint persistence.
+    pub fn vars(&self) -> &BTreeMap<String, Value> {
+        &self.vars
+    }
+
     /// Attach a checkpoint hook (§22.16): after every successful top-level step.
     pub fn with_progress_sink(mut self, sink: Box<dyn ProgressSink>) -> Self {
         self.progress = Some(sink);
@@ -582,6 +597,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 Ok(()) => {
                     if let Some(sink) = self.progress.as_mut() {
                         sink.step_done(i, step_name(step));
+                        let vars = self.vars.clone();
+                        sink.vars_changed(&vars);
                     }
                     if !matches!(ctl, Ctl::Normal) {
                         break;

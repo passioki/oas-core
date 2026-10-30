@@ -254,3 +254,96 @@ pub fn migrate(
     );
     Ok(report)
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LegacyCleanupItem {
+    pub task: String,
+    pub assets_json: bool,
+    pub images_dir: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LegacyCleanupReport {
+    pub dry_run: bool,
+    pub tasks_scanned: usize,
+    pub items: Vec<LegacyCleanupItem>,
+    pub backup_dir: Option<PathBuf>,
+}
+
+fn move_legacy_path(src: &Path, dst: &Path) -> Result<(), String> {
+    if !src.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    std::fs::rename(src, dst)
+        .map_err(|e| format!("move {} -> {}: {e}", src.display(), dst.display()))
+}
+
+/// v1.2.2 (N46): after `assets migrate`, old per-task `assets.json` / `images/`
+/// are unused. Move them into `<assets-dir>/_legacy-backup/<timestamp>/<task>/`
+/// (never delete, never touch meta/flow). `apply=false` only reports.
+pub fn cleanup_legacy(
+    tasks_dir: &Path,
+    assets_dir: &Path,
+    apply: bool,
+) -> Result<LegacyCleanupReport, String> {
+    if !is_initialized(assets_dir) {
+        return Err(format!(
+            "global asset store not initialized at {}; run `assets migrate` first",
+            assets_dir.display()
+        ));
+    }
+    let names = list_tasks(tasks_dir)?;
+    let mut items = Vec::new();
+    for task in &names {
+        let bundle = TaskBundle::open_named(tasks_dir, task)?;
+        let has_assets = bundle.assets_path().is_file();
+        let has_images = bundle.images_dir().is_dir();
+        if has_assets || has_images {
+            items.push(LegacyCleanupItem {
+                task: task.clone(),
+                assets_json: has_assets,
+                images_dir: has_images,
+            });
+        }
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let backup_dir = assets_dir.join("_legacy-backup").join(stamp.to_string());
+    if apply {
+        for item in &items {
+            let bundle = TaskBundle::open_named(tasks_dir, &item.task)?;
+            let dst = backup_dir.join(&item.task);
+            if item.assets_json {
+                move_legacy_path(&bundle.assets_path(), &dst.join("assets.json"))?;
+            }
+            if item.images_dir {
+                move_legacy_path(&bundle.images_dir(), &dst.join("images"))?;
+            }
+        }
+        let report = LegacyCleanupReport {
+            dry_run: false,
+            tasks_scanned: names.len(),
+            items,
+            backup_dir: Some(backup_dir),
+        };
+        let report_path = assets_dir.join("legacy-cleanup-report.json");
+        let _ = std::fs::write(
+            &report_path,
+            serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()) + "\n",
+        );
+        Ok(report)
+    } else {
+        Ok(LegacyCleanupReport {
+            dry_run: true,
+            tasks_scanned: names.len(),
+            items,
+            backup_dir: None,
+        })
+    }
+}

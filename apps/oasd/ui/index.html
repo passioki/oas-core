@@ -66,7 +66,7 @@
           <button id="btn-back-mode">绘制操作区域（默认=识别区域）</button>
 
           <button id="btn-click-step" disabled>生成点击指令（选中识别区块）</button>
-          <button id="btn-append-step" disabled>追加到流程</button>
+          <button id="btn-append-step" disabled>复制步骤到剪贴板</button>
 
           <h3>独立区域操作（不识别，随机点）</h3>
           <button id="btn-region-click" disabled>生成区域点击步骤</button>
@@ -236,26 +236,6 @@
           </div>
           <div id="assets-list" class="asset-list muted">（未加载任务素材）</div>
           <pre id="assets-summary" class="muted small" style="display:none">—</pre>
-        </section>
-
-        <section class="panel" id="panel-flow" style="display:none">
-          <h3>flow.json</h3>
-          <textarea id="flow-json" rows="10" spellcheck="false" placeholder='{"schema_version":1,"name":"任务1","steps":[{"op":"click","args":{"sel":"分组2"}},{"op":"finish","args":{"exit":"done"}}]}'></textarea>
-          <button id="btn-save-flow">保存 flow（校验引用）</button>
-
-          <h3>流程编辑器（可视化）</h3>
-          <div class="row flow-toolbar">
-            <select id="flow-op"></select>
-            <button id="flow-add-step">添加步骤</button>
-            <button id="flow-from-json">从 JSON 载入</button>
-            <button id="flow-to-json">生成 JSON</button>
-            <button id="flow-save-viz">生成并保存</button>
-          </div>
-          <div id="flow-steps" class="flow-steps muted">（从任务载入或点「从 JSON 载入」）</div>
-          <h4>弹窗规则（interrupts）</h4>
-          <div id="flow-interrupts" class="flow-steps muted">（无）</div>
-          <button id="flow-add-interrupt">添加弹窗规则</button>
-          <p class="muted small">带 if/loop 的流程请用 JSON 文本模式；可视化模式拒绝 flatten（避免丢内容）。</p>
         </section>
 
         <section class="panel" id="panel-schedule">

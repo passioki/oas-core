@@ -99,6 +99,7 @@ fn main() -> ExitCode {
                  oasd task lint --tasks-dir <dir> [--all | --task <name>]\n  \
                  oasd task new --template daily|loop|utility --id <id> --tasks-dir <dir>\n  \
                  oasd assets migrate [--tasks-dir <dir>] [--library-dir <dir>] [--assets-dir <dir>]\n  \
+                 oasd assets cleanup-legacy [--tasks-dir <dir>] [--assets-dir <dir>] [--apply]\n  \
                  oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--assets-dir <dir>] [--frames-dir <dir>] [--model <path>] [--det-model <path>]"
             );
             ExitCode::from(2)
@@ -306,13 +307,17 @@ fn replay(rest: &[String]) -> ExitCode {
 }
 
 fn assets_cmd(rest: &[String]) -> ExitCode {
-    if rest.first().map(|s| s.as_str()) != Some("migrate") {
-        eprintln!("usage: oasd assets migrate [--tasks-dir <dir>] [--library-dir <dir>] [--assets-dir <dir>]");
+    let sub = rest.first().map(|s| s.as_str()).unwrap_or("");
+    if sub != "migrate" && sub != "cleanup-legacy" {
+        eprintln!(
+            "usage:\n  oasd assets migrate [--tasks-dir <dir>] [--library-dir <dir>] [--assets-dir <dir>]\n  oasd assets cleanup-legacy [--tasks-dir <dir>] [--assets-dir <dir>] [--apply]"
+        );
         return ExitCode::from(2);
     }
     let mut tasks_dir = "tasks".to_string();
     let mut library_dir = library::DEFAULT_DIR.to_string();
     let mut assets_dir = global_assets::DEFAULT_DIR.to_string();
+    let mut apply = false;
     let mut i = 1usize;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -328,11 +333,44 @@ fn assets_cmd(rest: &[String]) -> ExitCode {
                 assets_dir = rest[i + 1].clone();
                 i += 2;
             }
+            "--apply" => {
+                apply = true;
+                i += 1;
+            }
             other => {
                 eprintln!("unknown assets arg: {other}");
                 return ExitCode::from(2);
             }
         }
+    }
+    if sub == "cleanup-legacy" {
+        return match global_assets::cleanup_legacy(
+            std::path::Path::new(&tasks_dir),
+            std::path::Path::new(&assets_dir),
+            apply,
+        ) {
+            Ok(report) => {
+                println!(
+                    "assets cleanup-legacy {}: tasks={} candidates={} backup={}",
+                    if report.dry_run { "DRY-RUN" } else { "OK" },
+                    report.tasks_scanned,
+                    report.items.len(),
+                    report
+                        .backup_dir
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "(not applied)".to_string())
+                );
+                for item in report.items {
+                    println!(
+                        "  {} assets.json={} images={}",
+                        item.task, item.assets_json, item.images_dir
+                    );
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail("assets cleanup-legacy", e),
+        };
     }
     match global_assets::migrate(
         std::path::Path::new(&tasks_dir),

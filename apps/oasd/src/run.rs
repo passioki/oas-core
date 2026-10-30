@@ -462,6 +462,8 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     let checkpoint_writable =
         opts.checkpoint.is_some() || (opts.replay.is_none() && !opts.dry_run);
     let mut start_step = 0usize;
+    let mut resume_vars: std::collections::BTreeMap<String, oas_flow::Value> =
+        std::collections::BTreeMap::new();
     if opts.resume {
         match crate::checkpoint::FileCheckpoint::load(&checkpoint_path)? {
             Some(c) => {
@@ -477,7 +479,15 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
                     ));
                 }
                 start_step = (c.next_step as usize).min(flow.steps.len());
-                out(&format!("resume_from_step={start_step}"));
+                resume_vars = c
+                    .vars
+                    .iter()
+                    .map(|(k, v)| (k.clone(), crate::checkpoint::json_to_value(v)))
+                    .collect();
+                out(&format!(
+                    "resume_from_step={start_step} vars={}",
+                    resume_vars.len()
+                ));
             }
             None => {
                 return Err(format!(
@@ -494,6 +504,14 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
         checkpoint_writable,
         start_step,
     )));
+    if !resume_vars.is_empty() {
+        ckpt.borrow_mut().seed_vars(
+            resume_vars
+                .iter()
+                .map(|(k, v)| (k.clone(), crate::checkpoint::value_to_json(v)))
+                .collect(),
+        );
+    }
     out(&format!(
         "checkpoint={} writable={}",
         checkpoint_path.display(),
@@ -642,6 +660,7 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     let interp = Interpreter::new(DynScreen(src), input, assets, budget)
         .with_seed(seed)
         .with_params(params);
+    let interp = interp.with_vars(resume_vars);
     let interp = attach_ocr(interp, opts.model.as_deref(), opts.det_model.as_deref())?;
     let mut interp = interp
         .with_coord_store(Box::new(crate::coords::SharedStore(coords.clone())))
@@ -1503,13 +1522,45 @@ mod tests {
         second.checkpoint = Some(ckpt.clone());
         second.resume = true;
         let (r2, lines2) = run_capture(&second);
-        assert_eq!(line_with(&lines2, "resume_from_step="), "resume_from_step=1");
+        assert_eq!(
+            line_with(&lines2, "resume_from_step="),
+            "resume_from_step=1 vars=0"
+        );
         assert_eq!(r2.outcome(), Outcome::Failed, "step 1 still fails");
         assert!(
             r2.clicks.is_empty(),
             "resumed run must not repeat the completed click: {:?}",
             r2.clicks
         );
+    }
+
+    #[test]
+    fn resume_restores_variables_from_checkpoint() {
+        let (td, task, replay) = fixture("ckpt-vars");
+        let bundle = TaskBundle::open(&task).expect("open task bundle");
+        bundle
+            .save_flow(
+                r#"{"schema_version":1,"name":"ckpt-vars","steps":[
+                     {"op":"set_var","args":{"name":"n","value":"5"}},
+                     {"op":"log","args":{"level":"info","text":"var('n')"}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            )
+            .expect("save flow");
+        write_replay_bundle(&replay);
+        let ckpt = td.path().join("ckpt/checkpoint.json");
+        std::fs::create_dir_all(ckpt.parent().unwrap()).expect("ckpt dir");
+        std::fs::write(
+            &ckpt,
+            r#"{"schema_version":1,"flow_name":"ckpt-vars","steps":3,"next_step":1,"updated_ms":0,"vars":{"n":5}}"#,
+        )
+        .expect("write checkpoint");
+
+        let mut opts = replay_options(&task, &replay, 7);
+        opts.checkpoint = Some(ckpt);
+        opts.resume = true;
+        let (r, lines) = run_capture(&opts);
+        assert_eq!(r.outcome(), Outcome::Done, "{lines:?}");
+        assert!(line_with(&lines, "resume_from_step=").contains("vars=1"));
     }
 
     #[test]

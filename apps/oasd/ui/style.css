@@ -569,3 +569,9 @@ aside.side {
 .frame-group-head { color: #98a0ac; font-size: 12px; padding: 2px 4px; user-select: none; }
 .frame-row.dragging { opacity: 0.45; }
 .frame-row[draggable="true"] { cursor: grab; }
+
+/* v1.2.2 N47: builder structured sub-forms */
+.builder-subform { border: 1px solid #2b2f38; border-radius: 6px; padding: 6px; margin: 6px 0; }
+.builder-subform label { display: block; margin: 4px 0; }
+.builder-inline { display: flex; gap: 6px; flex-wrap: wrap; }
+.builder-inline label { flex: 1 1 80px; }

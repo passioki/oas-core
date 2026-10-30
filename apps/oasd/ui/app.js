@@ -444,6 +444,15 @@ async function doGenerateClickStep() {
 // non-array `steps`) must leave the textarea untouched - never corrupt user
 // input. Shared by the local-point path and the v1.1 inline-OCR path.
 function appendStepToFlow(step, label) {
+  // v1.2.2: workbench flow panel is removed; flow editing lives in 任务构建.
+  // Copy the generated step instead of mutating a hidden textarea.
+  if (!flowJson) {
+    const json = JSON.stringify(step, null, 2);
+    resultEl.textContent = `已复制${label || '步骤'}到剪贴板（到「任务构建」粘贴/添加）：\n${json}`;
+    log(`已复制${label || '步骤'}到剪贴板（任务构建编辑）`);
+    if (navigator.clipboard) navigator.clipboard.writeText(json).catch(() => {});
+    return true;
+  }
   const raw = (flowJson.value || '').trim();
   if (!raw) {
     resultEl.textContent = '追加失败：flow 为空，请先粘贴/保存一个 flow.json（textarea 未改动）';
@@ -928,8 +937,8 @@ function renderCandidateList(sourceLabel) {
     });
     const append = document.createElement('button');
     append.type = 'button';
-    append.textContent = '追加';
-    append.title = '追加点击该行到 flow';
+    append.textContent = '复制步骤';
+    append.title = '复制该行点击步骤到剪贴板（到任务构建使用）';
     append.addEventListener('click', () => {
       const rr = lastLinesRoi || roi;
       appendStepToFlow(inlineOcrClickStep(c.text, rr), 'OCR 点击');
@@ -1693,6 +1702,7 @@ async function doSaveAsset() {
 }
 
 async function doSaveFlow() {
+  if (!flowJson || !btnSaveFlow) return;
   const task = currentTask();
   if (!task) return;
   const text = (flowJson.value || '').trim();
@@ -1859,6 +1869,7 @@ async function flowSaveVisual() {
 }
 
 async function loadTaskFlow(task) {
+  if (!flowJson) return;
   if (!task) return;
   try {
     const r = await fetch('/task/flow?task=' + encodeURIComponent(task));
@@ -3203,7 +3214,7 @@ async function submitResetMemory() {
   }
 
   btnSaveAsset.addEventListener('click', doSaveAsset);
-  btnSaveFlow.addEventListener('click', doSaveFlow);
+  if (btnSaveFlow) btnSaveFlow.addEventListener('click', doSaveFlow);
   taskName.addEventListener('change', async () => {
     syncTaskSelect(taskName.value);
     await refreshTaskAssets();

@@ -1,4 +1,4 @@
-﻿//! Checkpoint / resume (ENGINE §22.16 纵向② "检查点恢复").
+//! Checkpoint / resume (ENGINE §22.16 纵向② "检查点恢复").
 //!
 //! After every successful **top-level** step the runtime calls the progress sink;
 //! this module persists `{flow_name, steps, next_step}` atomically. `--resume`
@@ -6,6 +6,7 @@
 //! prefix. A `Done` run clears the file; a failed run keeps it.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -20,6 +21,9 @@ pub struct Checkpoint {
     pub next_step: u32,
     #[serde(default)]
     pub updated_ms: u128,
+    /// v1.2.2: `set_var`/`inc_var`/`ocr_to_var` values at the checkpoint.
+    #[serde(default)]
+    pub vars: BTreeMap<String, serde_json::Value>,
 }
 
 pub struct FileCheckpoint {
@@ -30,6 +34,7 @@ pub struct FileCheckpoint {
     writable: bool,
     dirty: bool,
     last_error: Option<String>,
+    vars: BTreeMap<String, serde_json::Value>,
 }
 
 impl FileCheckpoint {
@@ -48,7 +53,13 @@ impl FileCheckpoint {
             writable,
             dirty: false,
             last_error: None,
+            vars: BTreeMap::new(),
         }
+    }
+
+    /// v1.2.2: seed restored variables so the next write keeps them.
+    pub fn seed_vars(&mut self, vars: BTreeMap<String, serde_json::Value>) {
+        self.vars = vars;
     }
 
     pub fn is_writable(&self) -> bool {
@@ -118,6 +129,7 @@ impl FileCheckpoint {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis())
                 .unwrap_or(0),
+            vars: self.vars.clone(),
         };
         let text = serde_json::to_string_pretty(&c)
             .map_err(|e| format!("checkpoint: serialize ({e})"))?;
@@ -144,6 +156,38 @@ impl ProgressSink for FileCheckpoint {
     fn step_done(&mut self, index: usize, _op: &str) {
         self.observe_step(index);
     }
+
+    fn vars_changed(&mut self, vars: &BTreeMap<String, oas_flow::Value>) {
+        self.vars = vars.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect();
+        self.dirty = true;
+        if self.writable {
+            if let Err(e) = self.write_now() {
+                self.last_error = Some(e);
+            }
+        }
+    }
+}
+
+/// Runtime `Value` → JSON for checkpoint storage.
+pub fn value_to_json(v: &oas_flow::Value) -> serde_json::Value {
+    match v {
+        oas_flow::Value::Bool(b) => serde_json::Value::Bool(*b),
+        oas_flow::Value::Num(n) => serde_json::Number::from_f64(*n)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        oas_flow::Value::Str(s) => serde_json::Value::String(s.clone()),
+        oas_flow::Value::Null => serde_json::Value::Null,
+    }
+}
+
+/// JSON checkpoint value → runtime `Value` (used by `--resume`).
+pub fn json_to_value(v: &serde_json::Value) -> oas_flow::Value {
+    match v {
+        serde_json::Value::Bool(b) => oas_flow::Value::Bool(*b),
+        serde_json::Value::Number(n) => oas_flow::Value::Num(n.as_f64().unwrap_or(0.0)),
+        serde_json::Value::String(s) => oas_flow::Value::Str(s.clone()),
+        _ => oas_flow::Value::Null,
+    }
 }
 
 /// Shareable wrapper: the interpreter owns the sink, the driver flushes/clears.
@@ -153,6 +197,10 @@ pub struct SharedCheckpoint(pub Rc<RefCell<FileCheckpoint>>);
 impl ProgressSink for SharedCheckpoint {
     fn step_done(&mut self, index: usize, op: &str) {
         self.0.borrow_mut().step_done(index, op);
+    }
+
+    fn vars_changed(&mut self, vars: &BTreeMap<String, oas_flow::Value>) {
+        self.0.borrow_mut().vars_changed(vars);
     }
 }
 
@@ -198,6 +246,26 @@ mod tests {
         c.flush().expect("flush no-op");
         assert!(!path.exists());
         assert!(FileCheckpoint::load(&path).expect("load").is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn checkpoint_persists_and_restores_variables() {
+        let dir = tmpdir("vars");
+        let path = dir.join("checkpoint.json");
+        let mut c = FileCheckpoint::open(&path, "vars", 4, true, 0);
+        let mut vars = BTreeMap::new();
+        vars.insert("n".to_string(), oas_flow::Value::Num(3.0));
+        vars.insert("name".to_string(), oas_flow::Value::Str("abc".to_string()));
+        c.vars_changed(&vars);
+        let loaded = FileCheckpoint::load(&path).expect("load").expect("file");
+        assert_eq!(loaded.vars["n"], serde_json::json!(3.0));
+        assert_eq!(loaded.vars["name"], serde_json::json!("abc"));
+        assert_eq!(json_to_value(&loaded.vars["n"]), oas_flow::Value::Num(3.0));
+        assert_eq!(
+            json_to_value(&loaded.vars["name"]),
+            oas_flow::Value::Str("abc".to_string())
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }
