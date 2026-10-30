@@ -133,17 +133,32 @@
         </section>
 
         <section class="panel" id="panel-click">
+          <h3>聚合分布（默认全部运行）</h3>
+          <label class="opt">范围
+            <select id="click-scope">
+              <option value="all">全部运行记录</option>
+              <option value="recent">最近 10 次</option>
+              <option value="latest">最近 1 次</option>
+            </select>
+          </label>
+          <label class="opt">任务过滤（可空）
+            <input id="click-task-filter" placeholder="任务名/文件名片段，如 探索" />
+          </label>
+          <button id="btn-clicks-aggregate">聚合分布</button>
+          <button id="btn-run-delete">删除选中运行（移到 _trash）</button>
+          <button id="btn-runs-trash-all">清空全部运行（移到 _trash）</button>
+
           <h3>运行记录</h3>
-          <label class="opt">运行文件
+          <label class="opt">单次运行文件
             <select id="runs-select">
               <option value="">（未加载）</option>
             </select>
           </label>
           <div class="row lib-toolbar">
             <button id="btn-runs-refresh">刷新运行记录</button>
-            <button id="btn-clicks-overlay">叠加分布</button>
+            <button id="btn-clicks-overlay">叠加本次分布</button>
           </div>
-          <button id="btn-clicks-clear">清除分布</button>
+          <button id="btn-clicks-clear">清除画布分布</button>
           <div id="click-stats" class="kv mono">clicks=— distinct=—</div>
           <div id="clicks-legend" class="clicks-legend">
             <span class="muted">稀疏</span><span class="ramp"></span><span class="muted">密集</span>

@@ -46,6 +46,11 @@ const assetSearch = document.getElementById('asset-search');
 const assetsList = document.getElementById('assets-list');
 const btnAssetsRefresh = document.getElementById('assets-refresh');
 const runsSelect = document.getElementById('runs-select');
+const clickScope = document.getElementById('click-scope');
+const clickTaskFilter = document.getElementById('click-task-filter');
+const btnClicksAggregate = document.getElementById('btn-clicks-aggregate');
+const btnRunDelete = document.getElementById('btn-run-delete');
+const btnRunsTrashAll = document.getElementById('btn-runs-trash-all');
 const btnRunsRefresh = document.getElementById('btn-runs-refresh');
 const btnClicksOverlay = document.getElementById('btn-clicks-overlay');
 const btnClicksClear = document.getElementById('btn-clicks-clear');
@@ -940,7 +945,9 @@ async function refreshRuns() {
       setClicksStatus('没有运行记录（先跑一次 oasd run --clicks-out <file>）');
       log('点击分布：没有运行记录');
     } else {
-      setClicksStatus(`已发现 ${runs.length} 条运行记录，选一条后点「叠加分布」`);
+      setClicksStatus(`已发现 ${runs.length} 条运行记录，选一条后点「叠加本次分布」`);
+      // v1.1 P4: default view is aggregated over all runs (no per-run clutter).
+      if (btnClicksAggregate) await loadAggregate();
     }
   } catch (e) {
     runs = [];
@@ -1075,6 +1082,73 @@ function drawClickOverlay() {
     if (clickOverlay) ctx.drawImage(clickOverlay, 0, 0);
   }
   drawClickStats();
+}
+
+// v1.1 P4: aggregate view (all/recent/latest, optional task filter). Raw per-run
+// JSONL files stay the source of truth; aggregation is computed on demand.
+async function loadAggregate() {
+  const scope = clickScope ? clickScope.value : 'all';
+  const task = clickTaskFilter ? clickTaskFilter.value.trim() : '';
+  if (btnClicksAggregate) btnClicksAggregate.disabled = true;
+  setClicksStatus('正在聚合运行记录…');
+  try {
+    const qs = new URLSearchParams({ scope });
+    if (task) qs.set('task', task);
+    const r = await fetch('/runs/aggregate?' + qs.toString());
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const s = await r.json();
+    if (!s || !s.ok) throw new Error(((s && s.errors) || []).join('; ') || 'ok=false');
+    const points = Array.isArray(s.points) ? s.points : [];
+    clickData = {
+      file: `聚合(${s.scope}${task ? ' · ' + task : ''})`,
+      clicks: Number(s.clicks) || points.length,
+      distinct: Number(s.distinct) || window.OAS_HEATMAP.countDistinct(points),
+      points,
+    };
+    clickOverlay = null;
+    draw();
+    updateClickStatsText();
+    const files = Array.isArray(s.files) ? s.files : [];
+    setClicksStatus(
+      `聚合 ${s.runs} 次运行 / ${files.length} 个文件 · clicks=${clickData.clicks} distinct=${clickData.distinct}` +
+        `（${points.length} 个点）`
+    );
+    log(`点击分布聚合：${clickData.file} runs=${s.runs} clicks=${clickData.clicks}`);
+  } catch (e) {
+    setClicksStatus('聚合失败：' + (e && e.message ? e.message : e));
+  } finally {
+    if (btnClicksAggregate) btnClicksAggregate.disabled = false;
+  }
+}
+
+async function deleteRunFiles(files, label) {
+  if (!files.length) {
+    setClicksStatus('没有可删除的运行记录');
+    return;
+  }
+  if (!window.confirm(`把 ${files.length} 个运行记录移到 runs/_trash？\n\n原始文件不会永久删除。`)) return;
+  const r = await postJson('/runs/delete', { files });
+  if (!r.ok) {
+    window.alert('删除失败：' + (r.errors || []).join('\n'));
+    return;
+  }
+  log(`已移动 ${r.moved.length} 个运行记录到 _trash（${label}）`);
+  await refreshRuns();
+  if (clickData && String(clickData.file || '').startsWith('聚合')) await loadAggregate();
+}
+
+async function deleteSelectedRun() {
+  const file = runsSelect ? runsSelect.value : '';
+  if (!file) {
+    setClicksStatus('请先选择一条运行记录');
+    return;
+  }
+  await deleteRunFiles([file], '选中运行');
+}
+
+async function trashAllRuns() {
+  const files = runs.map((r) => r.file).filter(Boolean);
+  await deleteRunFiles(files, '全部运行');
 }
 
 async function loadClicks(file) {
@@ -2853,6 +2927,9 @@ async function submitResetMemory() {
   updateClickStepButtons();
   // N4: 点击分布 controls
   if (btnRunsRefresh) btnRunsRefresh.addEventListener('click', () => refreshRuns());
+  if (btnClicksAggregate) btnClicksAggregate.addEventListener('click', () => loadAggregate());
+  if (btnRunDelete) btnRunDelete.addEventListener('click', () => deleteSelectedRun());
+  if (btnRunsTrashAll) btnRunsTrashAll.addEventListener('click', () => trashAllRuns());
   if (btnClicksOverlay) btnClicksOverlay.addEventListener('click', () => loadClicks(runsSelect.value));
   if (btnClicksClear) btnClicksClear.addEventListener('click', clearClicks);
   if (runsSelect) {

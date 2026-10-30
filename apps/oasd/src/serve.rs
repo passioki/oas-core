@@ -466,6 +466,8 @@ impl Server {
             // --- N4: click-distribution data plane (§21 CD1~CD4) ---
             ("GET", "/runs") => self.handle_runs(&mut out),
             ("GET", "/runs/clicks") => self.handle_run_clicks(&mut out, &path),
+            ("GET", "/runs/aggregate") => self.handle_runs_aggregate(&mut out, &path),
+            ("POST", "/runs/delete") => self.handle_runs_delete(&mut out, &body),
             ("POST", other) => self.send_errors(
                 &mut out,
                 404,
@@ -2026,6 +2028,169 @@ impl Server {
     fn send_run_error(&self, out: &mut TcpStream, code: u16, msg: &str) -> std::io::Result<()> {
         let body = serde_json::json!({ "ok": false, "error": msg });
         self.send_json(out, code, &body.to_string())
+    }
+
+    /// GET /runs/aggregate?scope=all|recent|latest&task=<filter> ->
+    /// `{"ok":true,"scope","runs":N,"clicks":N,"distinct":N,"files":[...],"points":[...]}`
+    ///
+    /// Aggregation is computed on demand from the per-run JSONL files (raw data
+    /// stays untouched); the UI never needs one file per observation view.
+    fn handle_runs_aggregate(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
+        let q = parse_query(raw_path);
+        let scope = q
+            .iter()
+            .find(|(k, _)| k == "scope")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("all");
+        let task_filter = q
+            .iter()
+            .find(|(k, _)| k == "task")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        let entries = match std::fs::read_dir(&self.runs_dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return self.send_json(
+                    out,
+                    200,
+                    &serde_json::json!({"ok":true,"scope":scope,"runs":0,"clicks":0,"distinct":0,"files":[],"points":[]}).to_string(),
+                )
+            }
+            Err(e) => {
+                return self.send_errors(
+                    out,
+                    500,
+                    vec![format!("scan runs dir `{}`: {e}", self.runs_dir.display())],
+                )
+            }
+        };
+        let mut found: Vec<(String, i64)> = Vec::new();
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
+            if !is_file {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".jsonl") {
+                continue;
+            }
+            if !task_filter.is_empty() && !name.contains(&task_filter) {
+                continue;
+            }
+            found.push((name, mtime_ms(&entry)));
+        }
+        found.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let take = match scope {
+            "latest" => 1,
+            "recent" => 10,
+            _ => found.len(),
+        };
+        found.truncate(take.min(found.len()));
+        let mut points: Vec<serde_json::Value> = Vec::new();
+        let mut files: Vec<String> = Vec::new();
+        let mut total_rows = 0usize;
+        let mut distinct = 0usize;
+        for (name, _) in &found {
+            let path = self.runs_dir.join(name);
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(rows) = parse_clicks_jsonl(&text) else {
+                continue;
+            };
+            total_rows += rows.len();
+            distinct += distinct_clicks(&rows);
+            files.push(name.clone());
+            for r in rows {
+                if points.len() >= 50_000 {
+                    break;
+                }
+                points.push(serde_json::json!({
+                    "ts_ms": r.ts_ms as u64,
+                    "x": r.x,
+                    "y": r.y,
+                    "target_x": r.target_x,
+                    "target_y": r.target_y,
+                    "sel": r.sel,
+                    "seed": r.seed,
+                    "file": name,
+                }));
+            }
+        }
+        let body = serde_json::json!({
+            "ok": true,
+            "scope": scope,
+            "task_filter": task_filter,
+            "runs": found.len(),
+            "clicks": total_rows,
+            "distinct": distinct,
+            "files": files,
+            "points": points,
+        });
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// POST /runs/delete body `{files:[...]}`: move run JSONL files to
+    /// `runs/_trash/` (raw files are preserved, no permanent delete).
+    fn handle_runs_delete(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let Some(arr) = v.get("files").and_then(|x| x.as_array()) else {
+            return self.send_errors(out, 400, vec!["`files` must be an array".into()]);
+        };
+        if arr.is_empty() {
+            return self.send_errors(out, 400, vec!["`files` cannot be empty".into()]);
+        }
+        let trash = self.runs_dir.join("_trash");
+        if let Err(e) = std::fs::create_dir_all(&trash) {
+            return self.send_errors(out, 500, vec![format!("create _trash: {e}")]);
+        }
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let mut moved: Vec<String> = Vec::new();
+        let mut errors: Vec<String> = Vec::new();
+        for item in arr {
+            let raw = item.as_str().unwrap_or("");
+            let name = match sanitize_run_file(raw) {
+                Ok(n) => n,
+                Err(e) => {
+                    errors.push(format!("`{raw}`: {e}"));
+                    continue;
+                }
+            };
+            let src = self.runs_dir.join(name);
+            if !src.is_file() {
+                errors.push(format!("`{name}`: not a run file"));
+                continue;
+            }
+            let dst = trash.join(format!("{ts}_{name}"));
+            match std::fs::rename(&src, &dst) {
+                Ok(()) => moved.push(name.to_string()),
+                Err(e) => errors.push(format!("`{name}`: {e}")),
+            }
+        }
+        if !errors.is_empty() {
+            return self.send_errors(
+                out,
+                400,
+                vec![format!(
+                    "moved {} file(s); errors: {}",
+                    moved.len(),
+                    errors.join("; ")
+                )],
+            );
+        }
+        self.editor_log(&format!("runs_delete count={} files={moved:?}", moved.len()));
+        self.send_json(
+            out,
+            200,
+            &serde_json::json!({"ok": true, "moved": moved, "trash": "_trash"}).to_string(),
+        )
     }
 
     /// GET /runs -> `{"ok":true,"runs":[{"file","clicks","distinct","mtime_ms"}]}`
