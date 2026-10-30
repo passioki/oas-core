@@ -76,13 +76,12 @@
             拖动方向必须指定（上/下/左/右）。
           </p>
 
-          <h4>多行识别结果（每行可直接操作）</h4>
+          <h4>多行识别结果（勾选后保存）</h4>
           <div id="lines-list" class="asset-list muted">（先点「多行识别」）</div>
-          <button id="btn-batch-save" type="button" disabled>保存选中素材（批量）</button>
           <div id="batch-status" class="muted small">—</div>
           <p class="muted small">
-            整屏/区域多行识别后，每一行都可以直接生成「点击该行文字」的流程步骤，
-            不需要逐行保存素材；需要复用时再「另存为素材」。
+            多行识别后勾选需要的行；右侧「保存素材」会保存选中行。
+            不需要逐行保存时，也可直接生成点击步骤。
           </p>
 
           <button id="btn-clear">清除识别/操作区域</button>
@@ -98,7 +97,7 @@
             </select>
           </label>
           <button id="btn-asset" disabled>生成素材 JSON</button>
-          <button id="btn-save-asset" disabled>保存素材到任务</button>
+          <button id="btn-save-asset" disabled>保存素材（当前框选 / 选中识别行）</button>
 
           <h3>素材库（全局）</h3>
           <div class="row lib-toolbar">
@@ -282,12 +281,14 @@
             这三个是条件/取值动作，不会自己点击。
           </p>
         </aside>
+        <div class="builder-splitter" data-side="left" title="拖动调整动作库宽度（记忆）"></div>
         <section class="builder-center">
           <h3>流程步骤</h3>
           <div id="builder-steps" class="builder-steps muted">（选择任务后加载）</div>
           <h3>实时流程图</h3>
           <div id="builder-graph" class="builder-graph muted">（—）</div>
         </section>
+        <div class="builder-splitter" data-side="right" title="拖动调整属性面板宽度（记忆）"></div>
         <aside class="builder-inspector">
           <h3>动作属性</h3>
           <div id="builder-form" class="muted small">（选中一个动作）</div>

@@ -521,12 +521,26 @@ aside.side {
 .builder-head { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
 .builder-head select { width: 260px; }
 .builder-head button { width: auto; margin: 0; }
-.builder-main { display: grid; grid-template-columns: 220px minmax(0, 1fr) 340px; gap: 10px; align-items: start; }
+.builder-main {
+  display: grid;
+  grid-template-columns:
+    var(--builder-left, 220px) 6px minmax(0, 1fr) 6px var(--builder-right, 340px);
+  gap: 10px;
+  align-items: start;
+}
 /* The global `aside { width:320px; flex:0 0 320px }` must NOT size builder
    grid items: it made the 220px palette wider than its track and overlap the
    center column. Let the grid tracks control the width. */
 .builder-main > .builder-palette,
 .builder-main > .builder-inspector { width: auto; flex: none; }
+.builder-splitter {
+  align-self: stretch;
+  min-height: 480px;
+  cursor: col-resize;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #2b2f38, #1d2027);
+}
+.builder-splitter:hover { background: #3a5f86; }
 .builder-palette, .builder-center, .builder-inspector { background: #1d2027; border: 1px solid #2b2f38; border-radius: 8px; padding: 10px; min-height: 480px; min-width: 0; overflow: hidden; }
 .builder-palette h3, .builder-center h3, .builder-inspector h3 { margin: 2px 0 8px; color: #8fb8e8; font-size: 13px; }
 .builder-ops { display: flex; flex-direction: column; gap: 4px; }
@@ -585,6 +599,11 @@ aside.side {
 .flow-svg-arrow { fill: #7c8b9e; }
 .flow-svg-node.clickable { cursor: pointer; }
 .flow-svg-node.selected .flow-svg-shape { stroke: #e0a040; stroke-width: 2.6; }
+.candidate-select-all { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+.candidate-select-all input { width: auto; margin: 0; }
+.builder-child-add { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+.builder-child-add select { flex: 1; min-width: 0; }
+.builder-child-add button { width: auto; flex: none; margin: 0; }
 /* v1.2.1 frame gallery rename/group/drag */
 .frame-group { margin: 6px 0; border-top: 1px solid #2b2f38; padding-top: 4px; }
 .frame-group-head { color: #98a0ac; font-size: 12px; padding: 2px 4px; user-select: none; }

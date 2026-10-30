@@ -192,15 +192,33 @@
     }
   }
 
-  function addAction(op) {
-    const meta = OP_META[op];
-    if (!meta) return;
+  function makeStep(op) {
     const step = { op, args: JSON.parse(JSON.stringify(DEFAULTS[op] || {})) };
     if (op === 'if') {
       step.then = [];
       step.else = [];
     } else if (op === 'loop' || op === 'while') {
       step.body = [];
+    }
+    return step;
+  }
+
+  function addAction(op) {
+    const meta = OP_META[op];
+    if (!meta) return;
+    const step = makeStep(op);
+    // Text in the palette promises this: selected control container receives
+    // the new child (if => then, loop/while => body). The inspector still lets
+    // the user choose else.
+    const selected = getStep(B.selected);
+    const containers = childArrays(selected);
+    if (containers.length) {
+      const [key, arr] = containers[0];
+      arr.push(step);
+      B.selected = B.selected.concat([key, arr.length - 1]);
+      renderAll();
+      status(`已添加子动作 ${meta.label} → ${key}`);
+      return;
     }
     const arr = getRoot();
     // Keep `finish` last automatically: append before the trailing finish.
@@ -856,17 +874,30 @@
     const actions = document.createElement('div');
     actions.className = 'builder-form-actions';
     for (const [key] of childArrays(step)) {
+      const row = document.createElement('div');
+      row.className = 'builder-child-add';
+      const sel = document.createElement('select');
+      for (const op of Object.keys(OP_META)) {
+        const o = document.createElement('option');
+        o.value = op;
+        o.textContent = OP_META[op].label + ' (' + op + ')';
+        sel.appendChild(o);
+      }
+      sel.value = 'log';
       const b = document.createElement('button');
       b.type = 'button';
       b.textContent = '添加子动作到 ' + key;
       b.addEventListener('click', () => {
         const arr = step[key];
-        const child = { op: 'log', args: { level: 'info', text: "'子动作'" } };
+        const child = makeStep(sel.value);
         arr.push(child);
         B.selected = B.selected.concat([key, arr.length - 1]);
         renderAll();
+        status(`已添加 ${OP_META[sel.value] ? OP_META[sel.value].label : sel.value} → ${key}`);
       });
-      actions.appendChild(b);
+      row.appendChild(sel);
+      row.appendChild(b);
+      actions.appendChild(row);
     }
     root.appendChild(actions);
   }
@@ -991,7 +1022,63 @@
     if (B.task) await loadTask(B.task);
   }
 
+  const LAYOUT_KEY = 'oas.builder.layout.v1';
+
+  function clampLayout(v, min, max) {
+    return Math.round(Math.max(min, Math.min(max, v)));
+  }
+
+  function applyBuilderLayout(left, right) {
+    const main = document.querySelector('.builder-main');
+    if (!main) return;
+    main.style.setProperty('--builder-left', clampLayout(left, 160, 420) + 'px');
+    main.style.setProperty('--builder-right', clampLayout(right, 240, 520) + 'px');
+  }
+
+  function saveBuilderLayout() {
+    const main = document.querySelector('.builder-main');
+    if (!main) return;
+    const left = document.querySelector('.builder-palette').getBoundingClientRect().width;
+    const right = document.querySelector('.builder-inspector').getBoundingClientRect().width;
+    if (!(left > 40 && right > 40)) return;
+    try {
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify({ left, right }));
+    } catch (e) { /* localStorage may be disabled */ }
+  }
+
+  function initBuilderLayout() {
+    const main = document.querySelector('.builder-main');
+    if (!main) return;
+    try {
+      const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) || 'null');
+      if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.right)) {
+        applyBuilderLayout(saved.left, saved.right);
+      }
+    } catch (e) { /* ignore corrupt layout */ }
+    document.querySelectorAll('.builder-splitter').forEach((splitter) => {
+      splitter.addEventListener('pointerdown', (ev) => {
+        ev.preventDefault();
+        const side = splitter.dataset.side;
+        const left0 = document.querySelector('.builder-palette').getBoundingClientRect().width;
+        const right0 = document.querySelector('.builder-inspector').getBoundingClientRect().width;
+        const startX = ev.clientX;
+        const move = (e2) => {
+          const dx = e2.clientX - startX;
+          if (side === 'left') applyBuilderLayout(left0 + dx, right0);
+          else applyBuilderLayout(left0, right0 - dx);
+        };
+        const up = () => {
+          window.removeEventListener('pointermove', move);
+          saveBuilderLayout();
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up, { once: true });
+      });
+    });
+  }
+
   function init() {
+    initBuilderLayout();
     const taskSel = $('builder-task');
     if (taskSel) taskSel.addEventListener('change', () => loadTask(taskSel.value));
     const reload = $('builder-reload');

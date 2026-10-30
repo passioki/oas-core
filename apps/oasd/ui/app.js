@@ -858,8 +858,22 @@ function renderCandidateList(sourceLabel) {
   if (!linesList) return;
   linesList.textContent = '';
   const head = document.createElement('div');
-  head.className = 'muted small';
-  head.textContent = `${saveCandidates.length} 行 · ${sourceLabel || '多行识别'} · 勾选后批量保存（名称全局唯一）`;
+  head.className = 'muted small candidate-select-all';
+  const selectAll = document.createElement('input');
+  selectAll.type = 'checkbox';
+  const selectedCount = saveCandidates.filter((c) => c.selected).length;
+  selectAll.checked = saveCandidates.length > 0 && selectedCount === saveCandidates.length;
+  selectAll.indeterminate = selectedCount > 0 && selectedCount < saveCandidates.length;
+  selectAll.title = '全选 / 全不选';
+  selectAll.addEventListener('change', () => {
+    saveCandidates.forEach((c) => { c.selected = selectAll.checked; });
+    renderCandidateList(sourceLabel);
+    draw();
+  });
+  const headText = document.createElement('span');
+  headText.textContent =
+    `全选 · ${saveCandidates.length} 行 · ${sourceLabel || '多行识别'} · 勾选后用右侧「保存素材」`;
+  head.append(selectAll, headText);
   linesList.appendChild(head);
   if (!saveCandidates.length) {
     const empty = document.createElement('div');
@@ -1790,6 +1804,17 @@ async function testAssetMatch(it) {
 // Persist the current ROI as an asset in the task bundle. The server crops the
 // LAST captured frame and assigns images/aNNN.png; the (Chinese) id never
 // becomes a path.
+// R23: one save entry. If OCR candidates exist, save the checked rows; otherwise
+// save the current ROI as a single asset.
+async function saveAssetUnified() {
+  if (saveCandidates.length) {
+    await saveSelectedCandidates();
+    return;
+  }
+  await doSaveAsset();
+}
+
+
 async function doSaveAsset() {
   if (!roi) return;
   const task = currentTask();
@@ -3361,7 +3386,7 @@ async function submitResetMemory() {
     /* ignore */
   }
 
-  btnSaveAsset.addEventListener('click', doSaveAsset);
+  btnSaveAsset.addEventListener('click', saveAssetUnified);
   if (btnSaveFlow) btnSaveFlow.addEventListener('click', doSaveFlow);
   taskName.addEventListener('change', async () => {
     syncTaskSelect(taskName.value);
