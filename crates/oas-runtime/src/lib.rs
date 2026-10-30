@@ -16,7 +16,9 @@ pub mod humanize;
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
-use oas_flow::{eval, EvalContext, Expect, Expr, Flow, InterruptRule, Locator, Step, Value};
+use oas_flow::{
+    eval, DragAxis, DragTarget, EvalContext, Expect, Expr, Flow, InterruptRule, Locator, Step, Value,
+};
 use oas_perceive::{GrayImage, Matcher};
 use oas_types::{Exit, Frame, InputSink, Outcome, Point, Rect, ScreenSource};
 
@@ -1002,7 +1004,77 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         }
     }
 
+    /// Resolve a `drag` endpoint to a frame rectangle.
+    ///
+    /// `region`/`point` need no assets; `ocr_text` reads the line's bbox from an
+    /// OCR asset or an inline ROI. A single-line OCR target has no line bbox by
+    /// design, so it is rejected with a clear message.
+    fn drag_target_rect(&mut self, t: &DragTarget) -> Result<oas_types::Rect, String> {
+        match t {
+            DragTarget::Region { roi } => Ok(oas_types::Rect {
+                x: roi[0],
+                y: roi[1],
+                w: roi[2],
+                h: roi[3],
+            }),
+            DragTarget::Point { x, y } => Ok(oas_types::Rect {
+                x: *x,
+                y: *y,
+                w: 1,
+                h: 1,
+            }),
+            DragTarget::OcrText { sel, roi, text } => {
+                let read = if let Some(roi) = roi {
+                    self.ocr_read_rect(
+                        oas_types::Rect {
+                            x: roi[0],
+                            y: roi[1],
+                            w: roi[2],
+                            h: roi[3],
+                        },
+                        true,
+                    )?
+                } else {
+                    let sel = sel
+                        .clone()
+                        .ok_or_else(|| "ocr_text drag target needs sel or roi".to_string())?;
+                    self.ocr_read(&sel)?
+                };
+                match read {
+                    OcrRead::Lines(lines) => lines
+                        .iter()
+                        .find(|l| l.text.trim() == text.trim())
+                        .map(|l| l.rect)
+                        .ok_or_else(|| {
+                            format!("drag ocr_text: no line equals {text:?} in the region")
+                        }),
+                    OcrRead::Single(..) => Err(
+                        "drag ocr_text target must use ocr_lines/inline det (single-line has no bbox)"
+                            .into(),
+                    ),
+                }
+            }
+        }
+    }
+
+    /// Random point inside `rect`, inset by `margin` fraction (never edge-exact).
+    fn random_point_in(&mut self, rect: oas_types::Rect, margin: f32) -> Point {
+        let w = rect.w.max(1);
+        let h = rect.h.max(1);
+        let mx = ((w as f32 * margin).floor() as i32).min(w / 2);
+        let my = ((h as f32 * margin).floor() as i32).min(h / 2);
+        let span_x = (w - 2 * mx).max(1);
+        let span_y = (h - 2 * my).max(1);
+        let dx = (self.rng.unit_f64() * span_x as f64).floor() as i32;
+        let dy = (self.rng.unit_f64() * span_y as f64).floor() as i32;
+        Point {
+            x: rect.x + mx + dx.min(span_x - 1),
+            y: rect.y + my + dy.min(span_y - 1),
+        }
+    }
+
     fn ocr_read(&mut self, sel: &str) -> Result<OcrRead, String> {
+
         let roi = match self.assets.ocr_roi(sel) {
             Some(r) => r,
             None if self.assets.get(sel).is_some() => {
@@ -1828,6 +1900,49 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 Err(e) => evidence.push(format!("ocr_text inline: {e}")),
                             }
                         }
+                        Locator::Region { roi } => {
+                            if self.matcher.is_none() {
+                                self.refresh_frame()?;
+                            }
+                            let (fw, fh) = self
+                                .frame_size
+                                .ok_or_else(|| "region click: no frame available".to_string())?;
+                            let rect = oas_types::Rect {
+                                x: roi[0],
+                                y: roi[1],
+                                w: roi[2],
+                                h: roi[3],
+                            };
+                            if rect.x < 0
+                                || rect.y < 0
+                                || rect.x + rect.w > fw as i32
+                                || rect.y + rect.h > fh as i32
+                            {
+                                evidence.push(format!(
+                                    "region {:?} is outside the frame ({}x{})",
+                                    roi, fw, fh
+                                ));
+                                continue;
+                            }
+                            let p = self.random_point_in(rect, 0.15);
+                            let plan = self.humanize.point_click(p, &mut self.rng);
+                            let (actual, _delay) = self.perform_click(
+                                plan,
+                                p,
+                                None,
+                                "region",
+                                format!("region:({},{},{},{})", roi[0], roi[1], roi[2], roi[3]),
+                                fw,
+                                fh,
+                            )?;
+                            self.remember_target(find, actual, fw, fh);
+                            let verified = self.verify_if_present(expect.as_ref())?;
+                            let miss = if plan.miss { " miss=true" } else { "" };
+                            return Ok(format!(
+                                "clicked_target locator=region roi={roi:?} point=({},{}){miss} verified={verified} guard={guarded}",
+                                actual.x, actual.y
+                            ));
+                        }
                         Locator::CoordMemory { key } => {
                             let Some(store) = self.coords.as_mut() else {
                                 evidence.push("coord_memory: no store attached".to_string());
@@ -1908,6 +2023,101 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     from.x, from.y, to.x, to.y, ms, w, h
                 ))
             }
+            Step::Drag {
+                from,
+                to,
+                direction,
+                distance,
+                duration_ms,
+                margin,
+            } => {
+                let src_rect = self.drag_target_rect(from)?;
+                if self.matcher.is_none() {
+                    self.refresh_frame()?;
+                }
+                let (w, h) = self
+                    .frame_size
+                    .ok_or_else(|| "drag: no frame available".to_string())?;
+                let start = self.random_point_in(src_rect, *margin);
+                let (ux, uy) = match direction {
+                    DragAxis::Up => (0, -1),
+                    DragAxis::Down => (0, 1),
+                    DragAxis::Left => (-1, 0),
+                    DragAxis::Right => (1, 0),
+                };
+                let inside = |p: Point| {
+                    p.x >= 0 && p.y >= 0 && p.x < w as i32 && p.y < h as i32
+                };
+                if !inside(start) {
+                    return Err(format!(
+                        "drag start ({},{}) is outside the frame ({}x{})",
+                        start.x, start.y, w, h
+                    ));
+                }
+                let end = if let Some(target) = to {
+                    let rect = self.drag_target_rect(target)?;
+                    // Random end inside the target region, but only accept it when
+                    // it really lies in `direction` (v1.1 方向性要求).
+                    let mut picked = None;
+                    for _ in 0..24 {
+                        let p = self.random_point_in(rect, *margin);
+                        let dx = p.x - start.x;
+                        let dy = p.y - start.y;
+                        let dot = dx * ux + dy * uy;
+                        let dist2 = dx * dx + dy * dy;
+                        if dot > 0 && dist2 >= 20 * 20 && inside(p) {
+                            picked = Some(p);
+                            break;
+                        }
+                    }
+                    picked.ok_or_else(|| {
+                        format!(
+                            "drag target in direction `{}` is unreachable from ({},{}) (no point with positive {}-ward distance)",
+                            direction.as_str(),
+                            start.x,
+                            start.y,
+                            direction.as_str()
+                        )
+                    })?
+                } else {
+                    let range = distance.ok_or_else(|| "drag needs to or distance".to_string())?;
+                    let span = (range[1] - range[0]).max(1) as f64;
+                    let len = range[0] + (self.rng.unit_f64() * span).round() as i32;
+                    let p = Point {
+                        x: start.x + ux * len,
+                        y: start.y + uy * len,
+                    };
+                    if !inside(p) {
+                        return Err(format!(
+                            "drag distance {len} in direction `{}` from ({},{}) leaves the frame ({}x{})",
+                            direction.as_str(),
+                            start.x,
+                            start.y,
+                            w,
+                            h
+                        ));
+                    }
+                    p
+                };
+                let span = (duration_ms[1] - duration_ms[0] + 1) as f64;
+                let ms = duration_ms[0] + (self.rng.unit_f64() * span) as u32;
+                if ms == 0 {
+                    return Err("drag duration must be > 0".into());
+                }
+                self.input.swipe(start, end, ms)?;
+                self.invalidate_frame();
+                Ok(format!(
+                    "dragged direction={} from=({},{}) to=({},{}) ms={} randomized=true frame={}x{}",
+                    direction.as_str(),
+                    start.x,
+                    start.y,
+                    end.x,
+                    end.y,
+                    ms,
+                    w,
+                    h
+                ))
+            }
             Step::Ocr { sel } => {
                 // The standalone `ocr` step exists so an editor-authored flow can
                 // PROVE what a selector reads without branching on it (a plain
@@ -1981,6 +2191,7 @@ fn step_name(s: &Step) -> &'static str {
         Step::Click { .. } => "click",
         Step::ClickPoint { .. } => "click_point",
         Step::Swipe { .. } => "swipe",
+        Step::Drag { .. } => "drag",
         Step::Ocr { .. } => "ocr",
         Step::DismissPopup { .. } => "dismiss_popup",
         Step::ClickTarget { .. } => "click_target",
@@ -4418,6 +4629,77 @@ mod tests {
         let last = interp.events().last().expect("event");
         assert_eq!(last.op, "swipe");
         assert_eq!(last.result, "failed");
+    }
+
+    // ---- v1.1 拟人拖动 / 独立区域 ----
+
+    #[test]
+    fn drag_region_randomizes_endpoints_and_respects_direction() {
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"region","roi":[10,20,30,20]},
+                   "direction":"right",
+                   "distance":[20,30],
+                   "duration_ms":[100,120],
+                   "margin":0.0
+                 }},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let swipes = input.swipes.borrow().clone();
+        assert_eq!(swipes.len(), 1, "exactly one swipe");
+        let (from, to, ms) = swipes[0];
+        assert!(from.x >= 10 && from.x < 40 && from.y >= 20 && from.y < 40, "{from:?}");
+        assert!(to.x > from.x, "direction right: {from:?} -> {to:?}");
+        let dist = to.x - from.x;
+        assert!((20..=30).contains(&dist), "distance {dist} outside [20,30]");
+        assert!((100..=120).contains(&ms), "duration {ms} outside [100,120]");
+        let ev = interp
+            .events()
+            .iter()
+            .rev()
+            .find(|e| e.op == "drag")
+            .expect("drag event");
+        assert!(ev.detail.contains("direction=right"), "{}", ev.detail);
+        assert!(ev.detail.contains("randomized=true"), "{}", ev.detail);
+    }
+
+    #[test]
+    fn drag_to_target_rejects_wrong_direction() {
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        // source right side, target left side, direction right => unreachable.
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"region","roi":[40,10,10,10]},
+                   "to":{"kind":"region","roi":[5,10,10,10]},
+                   "direction":"right"
+                 }},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => assert!(msg.contains("unreachable"), "{msg}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(input.swipes.borrow().is_empty(), "invalid drag must not swipe");
+    }
+
+    #[test]
+    fn region_locator_clicks_a_random_point_inside_roi() {
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[{"kind":"region","roi":[10,20,30,20]}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let clicks = input.clicks.borrow().clone();
+        assert_eq!(clicks.len(), 1);
+        let p = clicks[0];
+        assert!(p.x >= 10 && p.x < 40 && p.y >= 20 && p.y < 40, "{p:?}");
+        assert_eq!(interp.clicks()[0].locator, "region");
     }
 
     // ---- param() injection (M0 unified task template) ----

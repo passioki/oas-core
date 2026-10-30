@@ -436,6 +436,9 @@ impl Server {
             ("GET", "/lines") => self.handle_lines(&mut out, &path),
             // --- N3: task bundle save routes ---
             ("POST", "/task/save_asset") => self.handle_save_asset(&mut out, &body),
+            ("POST", "/task/asset/delete") => self.handle_asset_delete(&mut out, &body),
+            ("POST", "/task/asset/rename") => self.handle_asset_rename(&mut out, &body),
+            ("POST", "/task/asset/update") => self.handle_asset_update(&mut out, &body),
             ("GET", "/task/assets") => self.handle_task_assets(&mut out, &path),
             ("GET", "/task/asset/match") => self.handle_asset_match(&mut out, &path),
             ("GET", "/task/flow") => self.handle_task_flow(&mut out, &path),
@@ -1397,6 +1400,106 @@ impl Server {
             "elapsed_ms": ms,
         });
         self.send_json(out, 200, &body.to_string())
+    }
+
+    /// v1.1 asset CRUD: `POST /task/asset/delete` body `{task,id}`.
+    fn handle_asset_delete(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").trim();
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if task.is_empty() || id.is_empty() {
+            return self.send_errors(out, 400, vec!["`task` and `id` are required".into()]);
+        }
+        let b = match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
+            Ok(b) => b,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        match b.delete_asset(id) {
+            Ok(item) => {
+                self.editor_log(&format!("asset_delete task={task} id={id}"));
+                self.send_json(out, 200, &serde_json::json!({"ok": true, "item": item}).to_string())
+            }
+            Err(e) => self.send_errors(out, 400, vec![e]),
+        }
+    }
+
+    /// v1.1 asset CRUD: `POST /task/asset/rename` body `{task,from,to}`.
+    fn handle_asset_rename(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").trim();
+        let from = v.get("from").and_then(|x| x.as_str()).unwrap_or("").trim();
+        let to = v.get("to").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if task.is_empty() || from.is_empty() || to.is_empty() {
+            return self.send_errors(out, 400, vec!["`task`, `from`, `to` are required".into()]);
+        }
+        let b = match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
+            Ok(b) => b,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        match b.rename_asset(from, to) {
+            Ok(item) => {
+                self.editor_log(&format!("asset_rename task={task} from={from} to={to}"));
+                self.send_json(out, 200, &serde_json::json!({"ok": true, "item": item}).to_string())
+            }
+            Err(e) => self.send_errors(out, 400, vec![e]),
+        }
+    }
+
+    /// v1.1 asset CRUD: `POST /task/asset/update` body `{task,id,roi?,threshold?}`.
+    fn handle_asset_update(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").trim();
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if task.is_empty() || id.is_empty() {
+            return self.send_errors(out, 400, vec!["`task` and `id` are required".into()]);
+        }
+        let roi = match v.get("roi") {
+            None => None,
+            Some(x) => {
+                let arr = x.as_array().filter(|a| a.len() == 4);
+                let Some(a) = arr else {
+                    return self.send_errors(out, 400, vec!["`roi` must be [x,y,w,h]".into()]);
+                };
+                let mut r = [0i32; 4];
+                for (i, item) in a.iter().enumerate() {
+                    let Some(n) = item.as_i64() else {
+                        return self.send_errors(out, 400, vec!["`roi` values must be integers".into()]);
+                    };
+                    if !(i32::MIN as i64..=i32::MAX as i64).contains(&n) {
+                        return self.send_errors(out, 400, vec!["`roi` value out of i32 range".into()]);
+                    }
+                    r[i] = n as i32;
+                }
+                Some(r)
+            }
+        };
+        let threshold = match v.get("threshold") {
+            None => None,
+            Some(x) => match x.as_f64() {
+                Some(t) => Some(t as f32),
+                None => return self.send_errors(out, 400, vec!["`threshold` must be a number".into()]),
+            },
+        };
+        let b = match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
+            Ok(b) => b,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        match b.update_asset_meta(id, roi, threshold) {
+            Ok(item) => {
+                self.editor_log(&format!("asset_update task={task} id={id}"));
+                self.send_json(out, 200, &serde_json::json!({"ok": true, "item": item}).to_string())
+            }
+            Err(e) => self.send_errors(out, 400, vec![e]),
+        }
     }
 
     fn handle_task_assets(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {

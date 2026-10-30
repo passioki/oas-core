@@ -19,6 +19,7 @@
     click_target: '定位点击',
     dismiss_popup: '关弹窗',
     swipe: '滑动',
+    drag: '拖动（拟人）',
     ocr: '识别文字',
     finish: '结束',
   };
@@ -33,6 +34,7 @@
     'click_target',
     'dismiss_popup',
     'swipe',
+    'drag',
     'ocr',
     'finish',
   ];
@@ -57,6 +59,14 @@
         return { sel: 'POPUP', timeout_ms: 0 };
       case 'swipe':
         return { from: [1180, 260], to: [1180, 660], ms: 400 };
+      case 'drag':
+        return {
+          from: { kind: 'region', roi: [100, 400, 300, 200] },
+          direction: 'up',
+          distance: [150, 450],
+          duration_ms: [300, 650],
+          margin: 0.15,
+        };
       case 'ocr':
         return { sel: 'O_A' };
       case 'finish':

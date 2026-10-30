@@ -24,6 +24,8 @@ const btnSaveFlow = document.getElementById('btn-save-flow');
 const assetsSummary = document.getElementById('assets-summary');
 const btnClickStep = document.getElementById('btn-click-step');
 const btnAppendStep = document.getElementById('btn-append-step');
+const btnRegionClick = document.getElementById('btn-region-click');
+const btnRegionDrag = document.getElementById('btn-region-drag');
 const btnPoly = document.getElementById('btn-poly');
 const btnBackMode = document.getElementById('btn-back-mode');
 // §22.27 会话图片列表（多帧）
@@ -325,6 +327,8 @@ function updateRoiLabel() {
     if (btnLibrarySave) btnLibrarySave.disabled = true;
     if (btnAsset) btnAsset.disabled = true;
     if (btnSaveAsset) btnSaveAsset.disabled = true;
+    if (btnRegionClick) btnRegionClick.disabled = true;
+    if (btnRegionDrag) btnRegionDrag.disabled = true;
     return;
   }
   const polyInfo =
@@ -333,6 +337,8 @@ function updateRoiLabel() {
     `识别框 x=${roi.x} y=${roi.y} w=${roi.w} h=${roi.h}${polyInfo}${backInfo}`;
   btnOcr.disabled = roi.w < 2 || roi.h < 2;
   btnLines.disabled = roi.w < 2 || roi.h < 2;
+  if (btnRegionClick) btnRegionClick.disabled = roi.w < 2 || roi.h < 2;
+  if (btnRegionDrag) btnRegionDrag.disabled = roi.w < 2 || roi.h < 2;
   if (btnMatch) btnMatch.disabled = roi.w < 2 || roi.h < 2;
   if (btnLibrarySave) btnLibrarySave.disabled = roi.w < 2 || roi.h < 2;
   if (btnAsset) btnAsset.disabled = roi.w < 2 || roi.h < 2;
@@ -414,6 +420,45 @@ function doAppendStepToFlow() {
   appendStepToFlow(step, '点击指令');
 }
 
+// --- v1.1: 独立区域操作（不识别，区域随机点） ------------------------------
+function regionRoiArray() {
+  return roi ? [roi.x, roi.y, roi.w, roi.h] : null;
+}
+
+function promptDragDirection() {
+  const raw = (window.prompt('拖动方向：up / down / left / right（必填）', 'up') || '').trim().toLowerCase();
+  if (!['up', 'down', 'left', 'right'].includes(raw)) {
+    resultEl.textContent = '拖动方向必须是 up / down / left / right';
+    return null;
+  }
+  return raw;
+}
+
+function generateRegionClick() {
+  const r = regionRoiArray();
+  if (!r) return;
+  const step = { op: 'click_target', args: { find: [{ kind: 'region', roi: r }] } };
+  appendStepToFlow(step, '区域点击');
+}
+
+function generateRegionDrag() {
+  const r = regionRoiArray();
+  if (!r) return;
+  const direction = promptDragDirection();
+  if (!direction) return;
+  const step = {
+    op: 'drag',
+    args: {
+      from: { kind: 'region', roi: r },
+      direction,
+      distance: [150, 500],
+      duration_ms: [300, 650],
+      margin: 0.15,
+    },
+  };
+  appendStepToFlow(step, '区域拖动');
+}
+
 // --- v1.1: 多行 OCR 行级操作（内联 ROI，不强制建素材） --------------------
 function inlineOcrClickStep(text, roi) {
   return {
@@ -469,7 +514,26 @@ function renderOcrLines(lines, roi, sourceLabel) {
     append.type = 'button';
     append.textContent = '追加到流程';
     append.addEventListener('click', () => appendStepToFlow(inlineOcrClickStep(b.text, roi), 'OCR 点击'));
-    row.append(label, gen, append);
+    const drag = document.createElement('button');
+    drag.type = 'button';
+    drag.textContent = '拖动';
+    drag.title = '从该行文字拖动；方向必填，起点/终点随机';
+    drag.addEventListener('click', () => {
+      const direction = promptDragDirection();
+      if (!direction) return;
+      const step = {
+        op: 'drag',
+        args: {
+          from: { kind: 'ocr_text', roi: [roi.x, roi.y, roi.w, roi.h], text: b.text },
+          direction,
+          distance: [150, 500],
+          duration_ms: [300, 650],
+          margin: 0.15,
+        },
+      };
+      appendStepToFlow(step, 'OCR 拖动');
+    });
+    row.append(label, gen, append, drag);
     linesList.appendChild(row);
   });
 }
@@ -880,14 +944,74 @@ function renderAssetList() {
         test.title = '在当前帧用该 ROI 试识别文字';
         test.addEventListener('click', () => testAssetOcr(it));
       }
-      row.append(main, test);
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'asset-test';
+      edit.textContent = '改';
+      edit.title = '重命名 / 修改 OCR ROI / 模板阈值';
+      edit.addEventListener('click', () => editAsset(it));
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'asset-test';
+      del.textContent = '删';
+      del.title = '删除素材（flow 仍引用时会被拒绝）';
+      del.addEventListener('click', () => deleteAsset(it));
+      row.append(main, test, edit, del);
       assetsList.appendChild(row);
     }
   }
 }
 
-function pickAssetRoi(it) {
-  if (!it.roi) {
+async function deleteAsset(it) {
+  const task = (taskName.value || '').trim();
+  if (!task) return;
+  if (!window.confirm(`删除素材「${it.id}」？\n\nflow 仍在引用该素材时会被拒绝。`)) return;
+  const r = await postJson('/task/asset/delete', { task, id: it.id });
+  if (!r.ok) {
+    showErrors('删除失败：', r.errors);
+    return;
+  }
+  log(`已删除素材：${it.id}`);
+  await refreshTaskAssets(task);
+}
+
+async function editAsset(it) {
+  const task = (taskName.value || '').trim();
+  if (!task) return;
+  const newId = (window.prompt('素材 id（留空 = 不重命名）', it.id) || '').trim();
+  if (newId && newId !== it.id) {
+    const r = await postJson('/task/asset/rename', { task, from: it.id, to: newId });
+    if (!r.ok) {
+      showErrors('重命名失败：', r.errors);
+      return;
+    }
+    log(`素材重命名：${it.id} → ${newId}`);
+  }
+  if (it.kind === 'template') {
+    const t = window.prompt('模板阈值 0~1（留空 = 不改）', String(it.threshold ?? 0.85));
+    if (t != null && t.trim() !== '') {
+      const tv = Number(t);
+      const r = await postJson('/task/asset/update', { task, id: newId || it.id, threshold: tv });
+      if (!r.ok) {
+        showErrors('修改阈值失败：', r.errors);
+        return;
+      }
+    }
+  } else if (roi && window.confirm('用当前画布识别框更新该 OCR 素材的 ROI？')) {
+    const r = await postJson('/task/asset/update', {
+      task,
+      id: newId || it.id,
+      roi: [roi.x, roi.y, roi.w, roi.h],
+    });
+    if (!r.ok) {
+      showErrors('更新 ROI 失败：', r.errors);
+      return;
+    }
+  }
+  await refreshTaskAssets(task);
+}
+
+function pickAssetRoi(it) {  if (!it.roi) {
     resultEl.textContent = `素材「${it.id}」没有 roi`;
     return;
   }
@@ -2371,6 +2495,8 @@ async function submitResetMemory() {
     });
   }
   if (btnTaskRun) btnTaskRun.addEventListener('click', doRunTask);
+  if (btnRegionClick) btnRegionClick.addEventListener('click', generateRegionClick);
+  if (btnRegionDrag) btnRegionDrag.addEventListener('click', generateRegionDrag);
   // --- M2/N37: 调度面板 + 重置记忆 ---
   if (btnSchedRefresh) btnSchedRefresh.addEventListener('click', refreshScheduler);
   if (btnSchedReset) btnSchedReset.addEventListener('click', openResetMemoryDialog);

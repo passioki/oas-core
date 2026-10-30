@@ -572,6 +572,42 @@ pub struct Flow {
     pub interrupts: Vec<InterruptRule>,
 }
 
+/// v1.1: target of a `drag` endpoint (region/OCR text/point).
+///
+/// `region` is the "独立区域操作" path: the user marks any rectangle (no
+/// recognition) and the runtime picks a random point inside it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DragTarget {
+    Region { roi: [i32; 4] },
+    OcrText {
+        sel: Option<String>,
+        roi: Option<[i32; 4]>,
+        text: String,
+    },
+    Point { x: i32, y: i32 },
+}
+
+/// Drag direction is mandatory (v1.1 拟人拖动): the end point must lie in this
+/// direction from the start point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DragAxis {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl DragAxis {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DragAxis::Up => "up",
+            DragAxis::Down => "down",
+            DragAxis::Left => "left",
+            DragAxis::Right => "right",
+        }
+    }
+}
+
 /// One locator in a `click_target` redundancy chain (ENGINE §22.11).
 ///
 /// Priority is **fixed** (image > text > memory), regardless of the array order
@@ -602,6 +638,11 @@ pub enum Locator {
         text: String,
         require_template: Option<String>,
     },
+    /// v1.1 independent region operation: click a random point inside an
+    /// arbitrary frame rectangle (no recognition / no asset needed).
+    Region {
+        roi: [i32; 4],
+    },
     /// Remembered coordinate (fallback), keyed in the task's `state/coords.json`.
     CoordMemory { key: String },
 }
@@ -611,6 +652,7 @@ impl Locator {
         match self {
             Locator::Template { .. } => "template",
             Locator::OcrText { .. } | Locator::OcrTextInline { .. } => "ocr_text",
+            Locator::Region { .. } => "region",
             Locator::CoordMemory { .. } => "coord_memory",
         }
     }
@@ -619,16 +661,18 @@ impl Locator {
     pub fn priority(&self) -> u8 {
         match self {
             Locator::Template { .. } => 0,
-            Locator::OcrText { .. } | Locator::OcrTextInline { .. } => 1,
+            Locator::OcrText { .. } | Locator::OcrTextInline { .. } | Locator::Region { .. } => 1,
             Locator::CoordMemory { .. } => 2,
         }
     }
 
-    /// Asset id referenced by this locator (inline OCR / memory reference none).
+    /// Asset id referenced by this locator (inline OCR / region / memory none).
     pub fn asset(&self) -> Option<&str> {
         match self {
             Locator::Template { sel, .. } | Locator::OcrText { sel, .. } => Some(sel),
-            Locator::OcrTextInline { .. } | Locator::CoordMemory { .. } => None,
+            Locator::OcrTextInline { .. } | Locator::Region { .. } | Locator::CoordMemory { .. } => {
+                None
+            }
         }
     }
 }
@@ -773,6 +817,23 @@ pub enum Step {
         to_y: Expr,
         ms: u32,
     },
+    /// v1.1 拟人拖动：起点/终点在区域/OCR 行内**随机**，时长/速度随机；
+    /// 方向必填（上/下/左/右），终点必须落在该方向（方向点积 > 0）。
+    ///
+    /// Engine limitation: the PC adapter's `input swipe` is a straight line, so
+    /// intermediate curve jitter is represented in the audit but not sent as
+    /// extra move events yet (minitouch/scrcpy can add that later).
+    Drag {
+        from: DragTarget,
+        to: Option<DragTarget>,
+        direction: DragAxis,
+        /// `[min,max]` random distance when `to` is omitted.
+        distance: Option<[i32; 2]>,
+        /// `[min,max]` random duration (ms).
+        duration_ms: [u32; 2],
+        /// Fraction of the region inset for random points (0..=0.45).
+        margin: f32,
+    },
     Ocr {
         sel: String,
     },
@@ -887,6 +948,130 @@ fn parse_coord_pair(
     let first = parse_coord_value(&arr[0], format!("{path}.{key}[0]"))?;
     let second = parse_coord_value(&arr[1], format!("{path}.{key}[1]"))?;
     Ok((first, second))
+}
+
+/// Parse `[x,y,w,h]` (i32) used by v1.1 inline OCR / region targets.
+fn parse_roi4(v: &serde_json::Value, path: &str) -> Result<[i32; 4], FlowError> {
+    let arr = v
+        .as_array()
+        .ok_or_else(|| FlowError::new(path, "roi must be [x,y,w,h]"))?;
+    if arr.len() != 4 {
+        return Err(FlowError::new(path, "roi must be exactly 4 integers [x,y,w,h]"));
+    }
+    let mut out = [0i32; 4];
+    for (i, item) in arr.iter().enumerate() {
+        out[i] = item
+            .as_i64()
+            .ok_or_else(|| FlowError::new(format!("{path}[{i}]"), "roi values must be integers"))?
+            as i32;
+    }
+    if out[2] <= 0 || out[3] <= 0 {
+        return Err(FlowError::new(path, "roi width/height must be > 0"));
+    }
+    Ok(out)
+}
+
+fn parse_i32_pair(v: &serde_json::Value, path: &str) -> Result<[i32; 2], FlowError> {
+    let arr = v
+        .as_array()
+        .ok_or_else(|| FlowError::new(path, "expected [min,max] integers"))?;
+    if arr.len() != 2 {
+        return Err(FlowError::new(path, "expected exactly [min,max]"));
+    }
+    let a = arr[0]
+        .as_i64()
+        .ok_or_else(|| FlowError::new(format!("{path}[0]"), "must be an integer"))? as i32;
+    let b = arr[1]
+        .as_i64()
+        .ok_or_else(|| FlowError::new(format!("{path}[1]"), "must be an integer"))? as i32;
+    if a > b || a < 0 {
+        return Err(FlowError::new(path, "expected 0 <= min <= max"));
+    }
+    Ok([a, b])
+}
+
+fn parse_u32_pair(v: &serde_json::Value, path: &str) -> Result<[u32; 2], FlowError> {
+    let arr = v
+        .as_array()
+        .ok_or_else(|| FlowError::new(path, "expected [min,max] integers"))?;
+    if arr.len() != 2 {
+        return Err(FlowError::new(path, "expected exactly [min,max]"));
+    }
+    let a = arr[0]
+        .as_u64()
+        .ok_or_else(|| FlowError::new(format!("{path}[0]"), "must be a positive integer"))?
+        as u32;
+    let b = arr[1]
+        .as_u64()
+        .ok_or_else(|| FlowError::new(format!("{path}[1]"), "must be a positive integer"))?
+        as u32;
+    if a > b {
+        return Err(FlowError::new(path, "expected min <= max"));
+    }
+    Ok([a, b])
+}
+
+fn parse_drag_axis(s: &str, path: &str) -> Result<DragAxis, FlowError> {
+    match s {
+        "up" => Ok(DragAxis::Up),
+        "down" => Ok(DragAxis::Down),
+        "left" => Ok(DragAxis::Left),
+        "right" => Ok(DragAxis::Right),
+        other => Err(FlowError::new(
+            path,
+            format!("unknown direction `{other}` (allowed: up, down, left, right)"),
+        )),
+    }
+}
+
+fn parse_drag_target(v: &serde_json::Value, path: &str) -> Result<DragTarget, FlowError> {
+    let kind = v
+        .get("kind")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| FlowError::new(path, "drag target needs `kind`"))?;
+    match kind {
+        "region" => Ok(DragTarget::Region {
+            roi: parse_roi4(
+                v.get("roi")
+                    .ok_or_else(|| FlowError::new(path, "region needs `roi`"))?,
+                &format!("{path}.roi"),
+            )?,
+        }),
+        "point" => {
+            let x = v
+                .get("x")
+                .and_then(|x| x.as_i64())
+                .ok_or_else(|| FlowError::new(path, "point needs integer `x`"))? as i32;
+            let y = v
+                .get("y")
+                .and_then(|x| x.as_i64())
+                .ok_or_else(|| FlowError::new(path, "point needs integer `y`"))? as i32;
+            Ok(DragTarget::Point { x, y })
+        }
+        "ocr_text" => {
+            let text = v
+                .get("text")
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| FlowError::new(path, "ocr_text needs `text`"))?
+                .to_string();
+            let sel = v.get("sel").and_then(|x| x.as_str()).map(|s| s.to_string());
+            let roi = match v.get("roi") {
+                None => None,
+                Some(x) => Some(parse_roi4(x, &format!("{path}.roi"))?),
+            };
+            if sel.is_none() && roi.is_none() {
+                return Err(FlowError::new(
+                    path,
+                    "ocr_text drag target needs `sel` or `roi`",
+                ));
+            }
+            Ok(DragTarget::OcrText { sel, roi, text })
+        }
+        other => Err(FlowError::new(
+            path,
+            format!("unknown drag target `{other}` (allowed: region, point, ocr_text)"),
+        )),
+    }
 }
 
 /// Parse an optional `alts` array of template asset ids (multi-variant click).
@@ -1106,6 +1291,14 @@ fn parse_locator(v: &serde_json::Value, path: &str) -> Result<Locator, FlowError
                 require_template,
             })
         }
+        "region" => {
+            let roi = v
+                .get("roi")
+                .ok_or_else(|| FlowError::new(path, "region needs `roi`"))?;
+            Ok(Locator::Region {
+                roi: parse_roi4(roi, &format!("{path}.roi"))?,
+            })
+        }
         "coord_memory" => Ok(Locator::CoordMemory {
             key: req_str(v, "key", path)?,
         }),
@@ -1265,6 +1458,78 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
                 to_x,
                 to_y,
                 ms,
+            })
+        }
+        "drag" => {
+            let from = parse_drag_target(
+                args.get("from")
+                    .ok_or_else(|| FlowError::new(format!("{a_path}.from"), "`drag` needs `from`"))?,
+                &format!("{a_path}.from"),
+            )?;
+            let to = match args.get("to") {
+                None => None,
+                Some(v) => Some(parse_drag_target(v, &format!("{a_path}.to"))?),
+            };
+            let direction = parse_drag_axis(
+                args.get("direction")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        FlowError::new(
+                            format!("{a_path}.direction"),
+                            "`drag` needs direction up|down|left|right",
+                        )
+                    })?,
+                &format!("{a_path}.direction"),
+            )?;
+            let distance = match args.get("distance") {
+                None => None,
+                Some(v) => Some(parse_i32_pair(v, &format!("{a_path}.distance"))?),
+            };
+            if to.is_none() && distance.is_none() {
+                return Err(FlowError::new(
+                    format!("{a_path}"),
+                    "`drag` needs `to` or `distance:[min,max]`",
+                ));
+            }
+            let duration_ms = match args.get("duration_ms") {
+                None => [300, 650],
+                Some(v) => {
+                    if let Some(n) = v.as_u64() {
+                        let n = n as u32;
+                        [n, n]
+                    } else {
+                        parse_u32_pair(v, &format!("{a_path}.duration_ms"))?
+                    }
+                }
+            };
+            if duration_ms[0] == 0 || duration_ms[1] == 0 {
+                return Err(FlowError::new(
+                    format!("{a_path}.duration_ms"),
+                    "duration_ms must be > 0",
+                ));
+            }
+            let margin = match args.get("margin") {
+                None => 0.15f32,
+                Some(v) => {
+                    let x = v.as_f64().ok_or_else(|| {
+                        FlowError::new(format!("{a_path}.margin"), "`margin` must be a number")
+                    })?;
+                    if !(0.0..=0.45).contains(&x) {
+                        return Err(FlowError::new(
+                            format!("{a_path}.margin"),
+                            "`margin` must be 0..=0.45",
+                        ));
+                    }
+                    x as f32
+                }
+            };
+            Ok(Step::Drag {
+                from,
+                to,
+                direction,
+                distance,
+                duration_ms,
+                margin,
             })
         }
         "click_target" => Ok(Step::ClickTarget {
@@ -1623,6 +1888,7 @@ fn collect_param_steps(steps: &[Step], prefix: &str, out: &mut Vec<ParamUse>) {
             | Step::Ocr { .. }
             | Step::DismissPopup { .. }
             | Step::ClickTarget { .. }
+            | Step::Drag { .. }
             | Step::Finish { .. } => {}
         }
     }
@@ -1675,8 +1941,16 @@ fn collect_assets_expr(e: &Expr, out: &mut BTreeSet<String>) {
     }
 }
 
-fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {
-    for s in steps {
+fn collect_drag_target_assets(t: &DragTarget, out: &mut BTreeSet<String>) {
+    if let DragTarget::OcrText {
+        sel: Some(sel), ..
+    } = t
+    {
+        out.insert(sel.clone());
+    }
+}
+
+fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {    for s in steps {
         match s {
             Step::If {
                 cond,
@@ -1776,6 +2050,12 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {
                 collect_assets_expr(to_y, out);
             }
             Step::Log { text, .. } => collect_assets_expr(text, out),
+            Step::Drag { from, to, .. } => {
+                collect_drag_target_assets(from, out);
+                if let Some(t) = to {
+                    collect_drag_target_assets(t, out);
+                }
+            }
             Step::Finish { .. } => {}
         }
     }

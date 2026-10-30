@@ -1,4 +1,4 @@
-//! oas-task: on-disk **task bundle** persistence (N3, design `ENGINE-DESIGN.md`
+﻿//! oas-task: on-disk **task bundle** persistence (N3, design `ENGINE-DESIGN.md`
 //! §18.1 / §19.3 / §22.2).
 //!
 //! # Layout
@@ -615,6 +615,105 @@ impl TaskBundle {
     /// any failure **nothing is written** (old image + manifest stay untouched).
     pub fn update_asset(&self, decl: AssetDecl, frame: Option<&Frame>) -> Result<AssetDecl, String> {
         self.save_asset_impl(decl, frame, true)
+    }
+
+    /// v1.1 asset CRUD: delete one asset (never while the flow still references it).
+    pub fn delete_asset(&self, id: &str) -> Result<AssetDecl, String> {
+        let mut af = self.load_assets_file()?;
+        let pos = af
+            .items
+            .iter()
+            .position(|a| a.id == id)
+            .ok_or_else(|| format!("asset `{id}` does not exist"))?;
+        if let Some(flow) = self.load_flow()? {
+            if flow.referenced_assets().contains(id) {
+                return Err(format!(
+                    "asset `{id}` is still referenced by flow.json; remove/replace it in the flow first"
+                ));
+            }
+        }
+        let item = af.items.remove(pos);
+        self.write_assets_file(&af)?;
+        if let Some(file) = &item.file {
+            let path = self.root.join(file);
+            if path.starts_with(self.images_dir()) && path.is_file() {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        Ok(item)
+    }
+
+    /// v1.1 asset CRUD: rename an asset id (flow references must be updated first).
+    pub fn rename_asset(&self, from: &str, to: &str) -> Result<AssetDecl, String> {
+        validate_id(to)?;
+        let mut af = self.load_assets_file()?;
+        if af.items.iter().any(|a| a.id == to) {
+            return Err(format!("asset `{to}` already exists"));
+        }
+        let pos = af
+            .items
+            .iter()
+            .position(|a| a.id == from)
+            .ok_or_else(|| format!("asset `{from}` does not exist"))?;
+        if let Some(flow) = self.load_flow()? {
+            if flow.referenced_assets().contains(from) {
+                return Err(format!(
+                    "asset `{from}` is still referenced by flow.json; update the flow reference to `{to}` first"
+                ));
+            }
+        }
+        af.items[pos].id = to.to_string();
+        af.items[pos].rev = Some(af.items[pos].rev.unwrap_or(0) + 1);
+        let item = af.items[pos].clone();
+        self.write_assets_file(&af)?;
+        Ok(item)
+    }
+
+    /// v1.1 asset CRUD: update OCR ROI / template threshold without re-cropping.
+    ///
+    /// Template ROI changes are rejected (the crop image would go stale); use
+    /// `update_asset`/「保存素材覆盖」to re-crop a template.
+    pub fn update_asset_meta(
+        &self,
+        id: &str,
+        roi: Option<[i32; 4]>,
+        threshold: Option<f32>,
+    ) -> Result<AssetDecl, String> {
+        let mut af = self.load_assets_file()?;
+        let pos = af
+            .items
+            .iter()
+            .position(|a| a.id == id)
+            .ok_or_else(|| format!("asset `{id}` does not exist"))?;
+        let kind = af.items[pos].kind.clone();
+        if let Some(r) = roi {
+            if r[2] <= 0 || r[3] <= 0 {
+                return Err("roi width/height must be > 0".into());
+            }
+            if kind == "template" {
+                return Err(
+                    "template ROI update needs re-crop: save the asset again with 覆盖 (rev+1)"
+                        .into(),
+                );
+            }
+            af.items[pos].roi = Some(r);
+        }
+        if let Some(t) = threshold {
+            if !(0.0..=1.0).contains(&t) {
+                return Err("threshold must be 0..=1".into());
+            }
+            if kind != "template" {
+                return Err("threshold only applies to template assets".into());
+            }
+            af.items[pos].threshold = Some(t);
+        }
+        if roi.is_none() && threshold.is_none() {
+            return Err("nothing to update (pass roi and/or threshold)".into());
+        }
+        af.items[pos].rev = Some(af.items[pos].rev.unwrap_or(0) + 1);
+        let item = af.items[pos].clone();
+        self.write_assets_file(&af)?;
+        Ok(item)
     }
 
     fn save_asset_impl(
@@ -2294,3 +2393,4 @@ mod tests {
         assert!(lint_task(&tasks, "../evil").is_err(), "traversal rejected");
     }
 }
+
