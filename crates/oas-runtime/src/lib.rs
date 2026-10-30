@@ -2323,6 +2323,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 let v = eval(text, self)?;
                 Ok(format!("[{level}] {v:?}"))
             }
+            Step::CallTask { task } => Err(format!(
+                "call_task `{task}` was not expanded by the task loader; \
+                 run the flow through oasd/TaskBundle::load_flow"
+            )),
             Step::Finish { exit } => {
                 *ctl = Ctl::Finish(*exit);
                 Ok(format!("finish {exit:?}"))
@@ -2369,6 +2373,7 @@ fn step_name(s: &Step) -> &'static str {
         Step::OcrToVar { .. } => "ocr_to_var",
         Step::DismissPopup { .. } => "dismiss_popup",
         Step::ClickTarget { .. } => "click_target",
+        Step::CallTask { .. } => "call_task",
         Step::Log { .. } => "log",
         Step::Finish { .. } => "finish",
     }

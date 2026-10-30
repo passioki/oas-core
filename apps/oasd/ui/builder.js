@@ -7,6 +7,7 @@
     while: { label: '当条件成立循环', group: '流程控制', container: 'body' },
     break: { label: '跳出循环', group: '流程控制' },
     continue: { label: '继续循环', group: '流程控制' },
+    call_task: { label: '调用已有任务', group: '流程控制' },
     wait: { label: '等待', group: '识别/等待' },
     wait_until: { label: '等到条件', group: '识别/等待' },
     appear: { label: '检查出现', group: '识别/等待' },
@@ -43,6 +44,7 @@
     set_var: [{ key: 'name', label: '变量名', type: 'text' }, { key: 'value', label: '值（表达式）', type: 'text' }],
     inc_var: [{ key: 'name', label: '变量名', type: 'text' }, { key: 'by', label: '增量（数字/表达式）', type: 'text' }],
     ocr_to_var: [{ key: 'sel', label: 'OCR 素材', type: 'asset' }, { key: 'var', label: '变量名', type: 'text' }],
+    call_task: [],
   };
   const DEFAULTS = {
     log: { level: 'info', text: "'hello'" },
@@ -69,6 +71,7 @@
     set_var: { name: 'n', value: '0' },
     inc_var: { name: 'n', by: '1' },
     ocr_to_var: { sel: 'O_A', var: 'text' },
+    call_task: { task: '', mode: 'run' },
     break: {},
     continue: {},
   };
@@ -163,6 +166,7 @@
       case 'set_var': return `${esc(a.name)} = ${esc(a.value)}`;
       case 'inc_var': return `${esc(a.name)} += ${esc(a.by)}`;
       case 'ocr_to_var': return `${esc(a.sel)} → ${esc(a.var)}`;
+      case 'call_task': return `${a.mode === 'inline' ? '内联' : '调用'} ${esc(a.task) || '（未选择）'}`;
       case 'if': return `if ${esc(a.cond)}`;
       case 'loop': return `×${esc(a.n)}`;
       case 'while': return `while ${esc(a.cond)}`;
@@ -789,6 +793,105 @@
     root.appendChild(box);
   }
 
+  function stripFinishSteps(steps) {
+    return (steps || [])
+      .filter((s) => s && s.op !== 'finish')
+      .map((s) => {
+        const out = { ...s };
+        for (const k of ['then', 'else', 'body']) {
+          if (Array.isArray(s[k])) out[k] = stripFinishSteps(s[k]);
+        }
+        return out;
+      });
+  }
+
+  async function inlineCallTask(step) {
+    const task = (step.args.task || '').trim();
+    if (!task) {
+      status('请先选择要调用的任务', '#ff8a80');
+      return;
+    }
+    if (task === B.task) {
+      status('不能调用当前任务自身（会形成递归）', '#ff8a80');
+      return;
+    }
+    try {
+      const r = await fetch('/task/flow?task=' + encodeURIComponent(task));
+      const s = await r.json();
+      if (!s.ok || !s.flow) throw new Error((s.errors || []).join('; ') || 'flow 读取失败');
+      const steps = stripFinishSteps(s.flow.steps || []);
+      if (!steps.length) {
+        status(`任务「${task}」没有可内联的步骤`, '#ff8a80');
+        return;
+      }
+      const path = (B.selected || []).slice();
+      const arr = getContainer(path);
+      if (!arr) {
+        status('找不到当前步骤所在容器', '#ff8a80');
+        return;
+      }
+      const idx = path[path.length - 1];
+      if (typeof idx !== 'number') {
+        status('当前选中不是可替换的步骤', '#ff8a80');
+        return;
+      }
+      arr.splice(idx, 1, ...steps);
+      B.selected = path.slice(0, -1).concat([idx]);
+      renderAll();
+      status(`已内联任务「${task}」的 ${steps.length} 个步骤（A）`);
+    } catch (e) {
+      status('内联失败：' + e, '#ff8a80');
+    }
+  }
+
+  function renderCallTaskForm(root, step) {
+    const box = document.createElement('div');
+    box.className = 'builder-subform';
+    const taskLabel = document.createElement('label');
+    taskLabel.textContent = '被调用任务';
+    const taskSel = document.createElement('select');
+    taskSel.appendChild(new Option('（选择任务）', ''));
+    for (const t of B.tasks) {
+      if (t.name === B.task) continue;
+      taskSel.appendChild(new Option(`${t.display_name || t.name} (${t.name})`, t.name));
+    }
+    taskSel.value = step.args.task || '';
+    taskSel.addEventListener('change', () => {
+      step.args.task = taskSel.value;
+      renderAll();
+    });
+    taskLabel.appendChild(taskSel);
+    box.appendChild(taskLabel);
+
+    const modeLabel = document.createElement('label');
+    modeLabel.textContent = '方式';
+    const mode = document.createElement('select');
+    mode.appendChild(new Option('B 运行时引用（目标改动下次运行生效）', 'run'));
+    mode.appendChild(new Option('A 立即内联（复制当前步骤）', 'inline'));
+    mode.value = step.args.mode === 'inline' ? 'inline' : 'run';
+    mode.addEventListener('change', () => {
+      step.args.mode = mode.value;
+      renderAll();
+    });
+    modeLabel.appendChild(mode);
+    box.appendChild(modeLabel);
+
+    if (mode.value === 'inline') {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = '立即内联到当前位置（A）';
+      b.addEventListener('click', () => inlineCallTask(step));
+      box.appendChild(b);
+    }
+    const hint = document.createElement('div');
+    hint.className = 'muted small';
+    hint.textContent = mode.value === 'inline'
+      ? 'A：把目标任务的步骤复制进来，之后目标改动不会同步。'
+      : 'B：只保存 call_task 引用；运行时由 oas-task 加载目标 flow（目标 finish 视为返回）。';
+    box.appendChild(hint);
+    root.appendChild(box);
+  }
+
   function renderForm() {
     const root = $('builder-form');
     if (!root) return;
@@ -815,6 +918,7 @@
     });
     assetLabel.appendChild(assetPick);
     root.appendChild(assetLabel);
+    if (step.op === 'call_task') renderCallTaskForm(root, step);
     for (const f of FIELDS[step.op] || []) {
       const lab = document.createElement('label');
       lab.textContent = f.label;

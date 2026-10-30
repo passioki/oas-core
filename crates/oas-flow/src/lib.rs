@@ -906,6 +906,13 @@ pub enum Step {
         level: String,
         text: Expr,
     },
+    /// v1.2.3 U-01(B): call another task's flow as a subflow. The oas-task
+    /// loader expands this step into the target steps before execution, so the
+    /// runtime never sees it; it is kept in flow.json so the reference stays
+    /// live (edit the target once, all callers pick it up on next load).
+    CallTask {
+        task: String,
+    },
     Finish {
         exit: Exit,
     },
@@ -1658,6 +1665,9 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
                 .to_string(),
             text: parse_expr_field(&args, "text", &a_path)?,
         }),
+        "call_task" => Ok(Step::CallTask {
+            task: req_str(&args, "task", &a_path)?,
+        }),
         "finish" => {
             let name = req_str(&args, "exit", &a_path)?;
             Ok(Step::Finish {
@@ -1962,6 +1972,7 @@ fn collect_param_steps(steps: &[Step], prefix: &str, out: &mut Vec<ParamUse>) {
             | Step::DismissPopup { .. }
             | Step::ClickTarget { .. }
             | Step::Drag { .. }
+            | Step::CallTask { .. }
             | Step::Finish { .. } => {}
         }
     }
@@ -2044,7 +2055,7 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {    for s i
                 collect_assets_expr(cond, out);
                 collect_assets_steps(body, out);
             }
-            Step::Wait { .. } | Step::Break | Step::Continue => {}
+            Step::Wait { .. } | Step::Break | Step::Continue | Step::CallTask { .. } => {}
             Step::WaitUntil { cond, .. } => collect_assets_expr(cond, out),
             Step::Appear { sel } | Step::Ocr { sel } => {
                 out.insert(sel.clone());

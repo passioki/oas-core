@@ -451,6 +451,76 @@ pub struct TaskBundle {
     assets_only: bool,
 }
 
+/// v1.2.3 U-01(B): a `call_task` step is a live reference. Before parsing, the
+/// caller's raw JSON is expanded with the target task's current steps. This keeps
+/// `flow.json` readable/reusable and makes target edits visible on the next run.
+const MAX_CALL_DEPTH: usize = 8;
+
+fn strip_finish_steps(steps: &mut Vec<serde_json::Value>) {
+    steps.retain(|s| s.get("op").and_then(|x| x.as_str()) != Some("finish"));
+    for s in steps.iter_mut() {
+        for key in ["then", "else", "body"] {
+            if let Some(arr) = s.get_mut(key).and_then(|x| x.as_array_mut()) {
+                strip_finish_steps(arr);
+            }
+        }
+    }
+}
+
+fn expand_call_steps(
+    steps: &mut Vec<serde_json::Value>,
+    tasks_dir: &Path,
+    stack: &mut Vec<String>,
+    depth: usize,
+) -> Result<(), String> {
+    if depth > MAX_CALL_DEPTH {
+        return Err(format!("call_task nesting exceeds {MAX_CALL_DEPTH}"));
+    }
+    let mut out = Vec::with_capacity(steps.len());
+    for mut step in steps.drain(..) {
+        if step.get("op").and_then(|x| x.as_str()) == Some("call_task") {
+            let task = step
+                .get("args")
+                .and_then(|a| a.get("task"))
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| "call_task requires args.task".to_string())?
+                .to_string();
+            validate_task_name(&task)?;
+            if stack.iter().any(|s| s == &task) {
+                return Err(format!(
+                    "call_task cycle: {} -> {task}",
+                    stack.join(" -> ")
+                ));
+            }
+            let target_flow = tasks_dir.join(&task).join("flow.json");
+            let text = std::fs::read_to_string(&target_flow)
+                .map_err(|e| format!("call_task `{task}`: read {}: {e}", target_flow.display()))?;
+            let mut target: serde_json::Value = serde_json::from_str(&text)
+                .map_err(|e| format!("call_task `{task}`: flow.json: {e}"))?;
+            let mut target_steps = target
+                .get_mut("steps")
+                .and_then(|x| x.as_array_mut())
+                .map(|a| std::mem::take(a))
+                .ok_or_else(|| format!("call_task `{task}`: flow.json has no steps array"))?;
+            // A task's terminal finishes are "return", not caller termination.
+            strip_finish_steps(&mut target_steps);
+            stack.push(task.clone());
+            expand_call_steps(&mut target_steps, tasks_dir, stack, depth + 1)?;
+            stack.pop();
+            out.extend(target_steps);
+            continue;
+        }
+        for key in ["then", "else", "body"] {
+            if let Some(arr) = step.get_mut(key).and_then(|x| x.as_array_mut()) {
+                expand_call_steps(arr, tasks_dir, stack, depth + 1)?;
+            }
+        }
+        out.push(step);
+    }
+    *steps = out;
+    Ok(())
+}
+
 impl TaskBundle {
     /// Open (or prepare to create) the bundle rooted at `root`.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, String> {
@@ -542,6 +612,9 @@ impl TaskBundle {
     }
 
     /// Load `flow.json`, if present.
+    ///
+    /// v1.2.3 U-01(B): expand `call_task` references against the sibling task
+    /// directories before parsing, so the runtime only sees ordinary steps.
     pub fn load_flow(&self) -> Result<Option<oas_flow::Flow>, String> {
         let path = self.flow_path();
         let text = match std::fs::read_to_string(&path) {
@@ -549,7 +622,25 @@ impl TaskBundle {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(format!("read {}: {e}", path.display())),
         };
-        oas_flow::Flow::from_json(&text)
+        let mut value: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| format!("flow.json: invalid JSON: {e}"))?;
+        if let Some(steps) = value.get_mut("steps").and_then(|x| x.as_array_mut()) {
+            let tasks_dir = self
+                .root
+                .parent()
+                .ok_or_else(|| format!("task bundle `{}` has no parent tasks dir", self.root.display()))?;
+            let current_task = self
+                .root
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            let mut stack = vec![current_task];
+            expand_call_steps(steps, tasks_dir, &mut stack, 0)?;
+        }
+        let expanded = serde_json::to_string(&value)
+            .map_err(|e| format!("flow.json: serialize expanded flow: {e}"))?;
+        oas_flow::Flow::from_json(&expanded)
             .map(Some)
             .map_err(|e| format!("flow.json: {e}"))
     }
@@ -1925,6 +2016,49 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn load_flow_expands_call_task_and_strips_target_finish() {
+        let td = TempDir::new("calltask");
+        let target = TaskBundle::open(td.path().join("子任务")).expect("open target");
+        target
+            .save_flow(
+                r#"{"schema_version":1,"name":"子任务","steps":[
+                    {"op":"log","args":{"level":"info","text":"'inside'"}},
+                    {"op":"finish","args":{"exit":"done"}}
+                ]}"#,
+            )
+            .expect("save target");
+
+        let caller = TaskBundle::open(td.path().join("调用者")).expect("open caller");
+        caller
+            .save_flow(
+                r#"{"schema_version":1,"name":"调用者","steps":[
+                    {"op":"call_task","args":{"task":"子任务","mode":"run"}},
+                    {"op":"finish","args":{"exit":"done"}}
+                ]}"#,
+            )
+            .expect("save caller");
+
+        let flow = caller.load_flow().expect("load").expect("flow");
+        assert_eq!(flow.steps.len(), 2, "target finish must be stripped");
+        assert!(
+            matches!(flow.steps[0], oas_flow::Step::Log { .. }),
+            "target steps must be expanded: {:?}",
+            flow.steps
+        );
+        assert!(
+            matches!(flow.steps[1], oas_flow::Step::Finish { .. }),
+            "caller finish must remain"
+        );
+        assert!(
+            !flow
+                .steps
+                .iter()
+                .any(|s| matches!(s, oas_flow::Step::CallTask { .. })),
+            "no unexpanded call_task may reach the runtime"
+        );
     }
 
     #[test]
