@@ -966,6 +966,42 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// An **empty recognised text is not an error**: it maps to `None` (= `Null`
     /// in expressions), so `wait_until(ocr('X') == …)` can keep polling and a
     /// missing text can never satisfy the comparison.
+    /// OCR an explicit frame rectangle (v1.1 inline `ocr_text` locators).
+    ///
+    /// Same loud failure semantics as [`Self::ocr_read`]: no provider = error,
+    /// provider failure = error; empty text maps to `None` for the single path.
+    fn ocr_read_rect(
+        &mut self,
+        roi: oas_types::Rect,
+        multiline: bool,
+    ) -> Result<OcrRead, String> {
+        if self.ocr.is_none() {
+            return Err(
+                "OCR is not available for this run: no OCR provider attached \
+                 (build with `--features ocr` and pass `--model <rec.onnx>`) - \
+                 refusing to fake inline ocr_text"
+                    .into(),
+            );
+        }
+        if self.frame.is_none() {
+            self.refresh_frame()?;
+        }
+        let frame = self
+            .frame
+            .as_ref()
+            .ok_or_else(|| "OCR: no frame available".to_string())?;
+        let provider = self.ocr.as_mut().expect("provider checked above");
+        if multiline {
+            Ok(OcrRead::Lines(provider.recognize_lines(frame, roi)?))
+        } else {
+            let (text, score) = provider.recognize(frame, roi)?;
+            Ok(OcrRead::Single(
+                if text.is_empty() { None } else { Some(text) },
+                score,
+            ))
+        }
+    }
+
     fn ocr_read(&mut self, sel: &str) -> Result<OcrRead, String> {
         let roi = match self.assets.ocr_roi(sel) {
             Some(r) => r,
@@ -1681,6 +1717,117 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             )),
                             Err(e) => evidence.push(format!("ocr_text `{sel}`: {e}")),
                         },
+                        Locator::OcrTextInline {
+                            roi,
+                            text,
+                            require_template,
+                        } => {
+                            let rect = oas_types::Rect {
+                                x: roi[0],
+                                y: roi[1],
+                                w: roi[2],
+                                h: roi[3],
+                            };
+                            match self.ocr_read_rect(rect, true) {
+                                Ok(OcrRead::Lines(lines)) => {
+                                    let hit = lines
+                                        .iter()
+                                        .filter(|l| l.text.trim() == text.trim())
+                                        .max_by(|a, b| {
+                                            a.score
+                                                .partial_cmp(&b.score)
+                                                .unwrap_or(std::cmp::Ordering::Equal)
+                                        });
+                                    match hit {
+                                        Some(line) => {
+                                            if let Some(rt) = require_template {
+                                                match self.template_in_region(rt, line.rect, 16) {
+                                                    Ok(true) => {}
+                                                    Ok(false) => {
+                                                        evidence.push(format!(
+                                                            "ocr_text inline: line {:?} matched but \
+                                                             required template `{rt}` not found near it",
+                                                            line.text
+                                                        ));
+                                                        continue;
+                                                    }
+                                                    Err(e) => return Err(e),
+                                                }
+                                            }
+                                            let plan = self
+                                                .humanize
+                                                .template_click(line.rect, w, &mut self.rng);
+                                            let centre = Point {
+                                                x: line.rect.x + line.rect.w / 2,
+                                                y: line.rect.y + line.rect.h / 2,
+                                            };
+                                            let match_info = format!(
+                                                "ocr_text:inline:{}:{:.3}",
+                                                line.text, line.score
+                                            );
+                                            let (actual, _delay) = self.perform_click(
+                                                plan,
+                                                centre,
+                                                None,
+                                                "ocr_text",
+                                                match_info,
+                                                w,
+                                                h,
+                                            )?;
+                                            self.remember_target(find, actual, w, h);
+                                            let verified =
+                                                self.verify_if_present(expect.as_ref())?;
+                                            let miss =
+                                                if plan.miss { " miss=true" } else { "" };
+                                            return Ok(format!(
+                                                "clicked_target locator=ocr_text inline text={:?} \
+                                                 score={:.3} point=({},{}){miss} verified={verified} guard={guarded}",
+                                                line.text, line.score, actual.x, actual.y
+                                            ));
+                                        }
+                                        None => evidence.push(format!(
+                                            "ocr_text inline: no line equals {:?} ({} lines found in roi {:?})",
+                                            text,
+                                            lines.len(),
+                                            roi
+                                        )),
+                                    }
+                                }
+                                Ok(OcrRead::Single(Some(t), score)) => {
+                                    if t.trim() == text.trim() {
+                                        let plan = self.humanize.template_click(rect, w, &mut self.rng);
+                                        let centre = Point {
+                                            x: rect.x + rect.w / 2,
+                                            y: rect.y + rect.h / 2,
+                                        };
+                                        let (actual, _delay) = self.perform_click(
+                                            plan,
+                                            centre,
+                                            None,
+                                            "ocr_text",
+                                            format!("ocr_text:inline:{t}:{score:.3}"),
+                                            w,
+                                            h,
+                                        )?;
+                                        self.remember_target(find, actual, w, h);
+                                        let verified = self.verify_if_present(expect.as_ref())?;
+                                        let miss = if plan.miss { " miss=true" } else { "" };
+                                        return Ok(format!(
+                                            "clicked_target locator=ocr_text inline text={t:?} \
+                                             score={score:.3} point=({},{}){miss} verified={verified} guard={guarded}",
+                                            actual.x, actual.y
+                                        ));
+                                    }
+                                    evidence.push(format!(
+                                        "ocr_text inline: text {t:?} != {text:?}"
+                                    ));
+                                }
+                                Ok(OcrRead::Single(None, score)) => evidence.push(format!(
+                                    "ocr_text inline: no text in roi {roi:?} (score {score:.3})"
+                                )),
+                                Err(e) => evidence.push(format!("ocr_text inline: {e}")),
+                            }
+                        }
                         Locator::CoordMemory { key } => {
                             let Some(store) = self.coords.as_mut() else {
                                 evidence.push("coord_memory: no store attached".to_string());
@@ -3275,6 +3422,45 @@ mod tests {
             "OCR fallback must click inside the matched line box: {p:?}"
         );
         assert_eq!(rois.borrow().len(), 1, "OCR must have been asked once");
+    }
+
+    #[test]
+    fn click_target_inline_ocr_roi_clicks_matching_line_without_asset() {
+        // v1.1: whole-screen OCR lines can be clicked with an inline roi+text;
+        // no OCR asset is declared (chain_assets only has O_LIST/I_BRIGHT).
+        let (ocr, rois) = FakeDetOcr::new(vec![line(
+            "个人突破",
+            0.97,
+            Rect {
+                x: 40,
+                y: 24,
+                w: 36,
+                h: 14,
+            },
+        )]);
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, chain_assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(ocr))
+            .with_seed(7);
+        let f = click_target_flow(
+            r#"[{"kind":"ocr_text","roi":[5,1,60,40],"text":"个人突破"}]"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let rows = interp.clicks();
+        assert_eq!(rows[0].locator, "ocr_text");
+        assert!(rows[0].sel.is_none(), "inline locator has no asset");
+        assert!(
+            rows[0].match_info.starts_with("ocr_text:inline:个人突破:"),
+            "match_info must say inline: {}",
+            rows[0].match_info
+        );
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            p.x >= 40 && p.x < 76 && p.y >= 24 && p.y < 38,
+            "inline OCR click must land in the matched line, got {p:?}"
+        );
+        assert_eq!(rois.borrow().len(), 1, "inline OCR must ask the provider once");
     }
 
     #[test]

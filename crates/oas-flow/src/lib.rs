@@ -592,6 +592,16 @@ pub enum Locator {
         text: String,
         require_template: Option<String>,
     },
+    /// Text recognition with an **inline ROI** (v1.1): no asset needed.
+    ///
+    /// This is the "整屏 OCR → 直接点某一行文字" path: the flow carries the
+    /// region it was recognized in plus the expected text, so per-line assets do
+    /// not have to be maintained. `require_template` keeps the H5 cross-check.
+    OcrTextInline {
+        roi: [i32; 4],
+        text: String,
+        require_template: Option<String>,
+    },
     /// Remembered coordinate (fallback), keyed in the task's `state/coords.json`.
     CoordMemory { key: String },
 }
@@ -600,7 +610,7 @@ impl Locator {
     pub fn kind(&self) -> &'static str {
         match self {
             Locator::Template { .. } => "template",
-            Locator::OcrText { .. } => "ocr_text",
+            Locator::OcrText { .. } | Locator::OcrTextInline { .. } => "ocr_text",
             Locator::CoordMemory { .. } => "coord_memory",
         }
     }
@@ -609,16 +619,16 @@ impl Locator {
     pub fn priority(&self) -> u8 {
         match self {
             Locator::Template { .. } => 0,
-            Locator::OcrText { .. } => 1,
+            Locator::OcrText { .. } | Locator::OcrTextInline { .. } => 1,
             Locator::CoordMemory { .. } => 2,
         }
     }
 
-    /// Asset id referenced by this locator (memory locators reference no asset).
+    /// Asset id referenced by this locator (inline OCR / memory reference none).
     pub fn asset(&self) -> Option<&str> {
         match self {
             Locator::Template { sel, .. } | Locator::OcrText { sel, .. } => Some(sel),
-            Locator::CoordMemory { .. } => None,
+            Locator::OcrTextInline { .. } | Locator::CoordMemory { .. } => None,
         }
     }
 }
@@ -1045,23 +1055,57 @@ fn parse_locator(v: &serde_json::Value, path: &str) -> Result<Locator, FlowError
             };
             Ok(Locator::Template { sel, threshold })
         }
-        "ocr_text" => Ok(Locator::OcrText {
-            sel: req_str(v, "sel", path)?,
-            text: req_str(v, "text", path)?,
-            require_template: match v.get("require_template") {
+        "ocr_text" => {
+            let text = req_str(v, "text", path)?;
+            let require_template = match v.get("require_template") {
                 None => None,
                 Some(x) => Some(
                     x.as_str()
                         .ok_or_else(|| {
                             FlowError::new(
                                 format!("{path}.require_template"),
-                                "`require_template` must be an asset id string",
+                                "`require_template` must be a string asset id",
                             )
                         })?
                         .to_string(),
                 ),
-            },
-        }),
+            };
+            // v1.1: inline ROI form — no OCR asset needed, so whole-screen OCR
+            // lines can be clicked without per-line assets (the user's request).
+            if let Some(roi_v) = v.get("roi") {
+                let arr = roi_v.as_array().ok_or_else(|| {
+                    FlowError::new(format!("{path}.roi"), "`roi` must be [x,y,w,h]")
+                })?;
+                if arr.len() != 4 {
+                    return Err(FlowError::new(
+                        format!("{path}.roi"),
+                        "`roi` must be exactly 4 integers [x,y,w,h]",
+                    ));
+                }
+                let mut roi = [0i32; 4];
+                for (i, item) in arr.iter().enumerate() {
+                    roi[i] = item.as_i64().ok_or_else(|| {
+                        FlowError::new(format!("{path}.roi[{i}]"), "roi values must be integers")
+                    })? as i32;
+                }
+                if roi[2] <= 0 || roi[3] <= 0 {
+                    return Err(FlowError::new(
+                        format!("{path}.roi"),
+                        "inline OCR roi width/height must be > 0",
+                    ));
+                }
+                return Ok(Locator::OcrTextInline {
+                    roi,
+                    text,
+                    require_template,
+                });
+            }
+            Ok(Locator::OcrText {
+                sel: req_str(v, "sel", path)?,
+                text,
+                require_template,
+            })
+        }
         "coord_memory" => Ok(Locator::CoordMemory {
             key: req_str(v, "key", path)?,
         }),
@@ -1693,6 +1737,10 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {
                     if let Locator::OcrText {
                         require_template: Some(rt),
                         ..
+                    }
+                    | Locator::OcrTextInline {
+                        require_template: Some(rt),
+                        ..
                     } = loc
                     {
                         out.insert(rt.clone());
@@ -1776,6 +1824,41 @@ mod tests {
         .expect("flow");
         let got: Vec<String> = flow.referenced_assets().into_iter().collect();
         assert_eq!(got, vec!["I_A", "I_C", "O_B"]);
+    }
+
+    #[test]
+    fn inline_ocr_roi_is_parsed_without_asset_reference() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[{"op":"click_target","args":{
+                 "find":[{"kind":"ocr_text","roi":[5,1,1272,717],"text":"个人突破"}]}}]}"#,
+        )
+        .expect("flow");
+        assert!(flow.referenced_assets().is_empty(), "inline OCR needs no asset");
+        match &flow.steps[0] {
+            Step::ClickTarget { find, .. } => match &find[0] {
+                Locator::OcrTextInline { roi, text, .. } => {
+                    assert_eq!(*roi, [5, 1, 1272, 717]);
+                    assert_eq!(text, "个人突破");
+                    assert!(find[0].asset().is_none());
+                }
+                other => panic!("unexpected locator: {other:?}"),
+            },
+            other => panic!("unexpected step: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inline_ocr_requires_a_positive_roi() {
+        for bad in [
+            r#"{"kind":"ocr_text","roi":[1,2,3],"text":"x"}"#,
+            r#"{"kind":"ocr_text","roi":[1,2,0,9],"text":"x"}"#,
+            r#"{"kind":"ocr_text","roi":[1,2,9,0],"text":"x"}"#,
+        ] {
+            let text = format!(
+                r#"{{"schema_version":1,"name":"t","steps":[{{"op":"click_target","args":{{"find":[{bad}]}}}}]}}"#
+            );
+            assert!(Flow::from_json(&text).is_err(), "should reject {bad}");
+        }
     }
 
     #[test]

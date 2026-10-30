@@ -17,3 +17,6 @@
 /scheduler.events.jsonl
 /scheduler.state.json.lock
 /logs
+
+# editor request logs (runtime)
+**/logs/

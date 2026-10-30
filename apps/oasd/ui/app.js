@@ -12,6 +12,7 @@ const btnCapture = document.getElementById('btn-capture');
 const btnOcr = document.getElementById('btn-ocr');
 const btnClear = document.getElementById('btn-clear');
 const btnLines = document.getElementById('btn-lines');
+const linesList = document.getElementById('lines-list');
 const btnMatch = document.getElementById('btn-match');
 const btnAsset = document.getElementById('btn-asset');
 const assetId = document.getElementById('asset-id');
@@ -109,6 +110,9 @@ let dragTarget = 'roi'; // 'roi' | 'back'
 let dragStart = null;
 let boxes = []; // detection boxes from the multi-line route
 let selectedBox = null; // the detection block last clicked (N2, §19.2)
+// v1.1: ROI used by the latest multi-line OCR; each line can be turned into an
+// inline-OCR flow step (roi + text) without saving per-line assets.
+let lastLinesRoi = null;
 // N4 click-distribution state (§21): the run list, the loaded points + metrics,
 // and a cached offscreen bitmap so draw() stays cheap.
 let runs = [];
@@ -374,33 +378,146 @@ async function doGenerateClickStep() {
   }
 }
 
-// Append the generated step to the flow textarea. A parse failure (or a
+// Append one generated step to the flow textarea. A parse failure (or a
 // non-array `steps`) must leave the textarea untouched - never corrupt user
-// input.
-function doAppendStepToFlow() {
-  if (!selectedBox) return;
-  const step = clickStepForBox(selectedBox);
+// input. Shared by the local-point path and the v1.1 inline-OCR path.
+function appendStepToFlow(step, label) {
   const raw = (flowJson.value || '').trim();
   if (!raw) {
     resultEl.textContent = '追加失败：flow 为空，请先粘贴/保存一个 flow.json（textarea 未改动）';
-    return;
+    return false;
   }
   let flow;
   try {
     flow = JSON.parse(raw);
   } catch (e) {
     resultEl.textContent = `追加失败：现有 flow 不是合法 JSON（${e.message}）。textarea 未改动。`;
-    return;
+    return false;
   }
   if (!Array.isArray(flow.steps)) {
     resultEl.textContent = '追加失败：flow.steps 不是数组。textarea 未改动。';
-    return;
+    return false;
   }
   flow.steps.push(step);
   flowJson.value = JSON.stringify(flow, null, 2);
-  resultEl.textContent =
-    `已追加到 flow.steps（共 ${flow.steps.length} 步）\n` + JSON.stringify(step);
-  log(`已追加点击指令 (${step.args.x},${step.args.y}) 到 flow（${flow.steps.length} 步）`);
+  resultEl.textContent = `已追加到流程（共 ${flow.steps.length} 步）\n` + JSON.stringify(step, null, 2);
+  log(`已追加${label || '步骤'}到流程（${flow.steps.length} 步）`);
+  return true;
+}
+
+// Append the generated step to the flow textarea. A parse failure (or a
+// non-array `steps`) must leave the textarea untouched - never corrupt user
+// input.
+function doAppendStepToFlow() {
+  if (!selectedBox) return;
+  const step = clickStepForBox(selectedBox);
+  appendStepToFlow(step, '点击指令');
+}
+
+// --- v1.1: 多行 OCR 行级操作（内联 ROI，不强制建素材） --------------------
+function inlineOcrClickStep(text, roi) {
+  return {
+    op: 'click_target',
+    args: {
+      find: [
+        {
+          kind: 'ocr_text',
+          roi: [roi.x, roi.y, roi.w, roi.h],
+          text,
+        },
+      ],
+    },
+  };
+}
+
+function renderOcrLines(lines, roi, sourceLabel) {
+  lastLinesRoi = roi;
+  if (!linesList) return;
+  linesList.textContent = '';
+  const head = document.createElement('div');
+  head.className = 'muted small';
+  head.textContent = `${lines.length} 行 · ${sourceLabel || '多行识别'}（点行内按钮生成流程步骤）`;
+  linesList.appendChild(head);
+  if (!lines.length) {
+    const empty = document.createElement('div');
+    empty.className = 'muted small';
+    empty.textContent = '（没有识别到文字行）';
+    linesList.appendChild(empty);
+    return;
+  }
+  lines.forEach((b, idx) => {
+    const row = document.createElement('div');
+    row.className = 'ocr-line-row';
+    const label = document.createElement('span');
+    label.className = 'ocr-line-text';
+    label.textContent = `${idx + 1}. ${b.text}  ${Number(b.score || 0).toFixed(3)}`;
+    const gen = document.createElement('button');
+    gen.type = 'button';
+    gen.textContent = '生成点击步骤';
+    gen.title = '生成 click_target（内联 ROI + 该行文字），无需保存素材';
+    gen.addEventListener('click', () => {
+      const step = inlineOcrClickStep(b.text, roi);
+      resultEl.textContent = JSON.stringify(step, null, 2);
+      log(`生成 OCR 点击步骤：「${b.text}」`);
+      try {
+        navigator.clipboard.writeText(JSON.stringify(step));
+      } catch (e) {
+        /* clipboard may be unavailable; result panel still shows it */
+      }
+    });
+    const append = document.createElement('button');
+    append.type = 'button';
+    append.textContent = '追加到流程';
+    append.addEventListener('click', () => appendStepToFlow(inlineOcrClickStep(b.text, roi), 'OCR 点击'));
+    row.append(label, gen, append);
+    linesList.appendChild(row);
+  });
+}
+
+// v1.1: asset-list OCR action — ocr_lines uses /lines (not single-line /ocr);
+// this is the fix for "整屏多行识别保存素材后点识别出现错误结果".
+async function testAssetOcr(it) {
+  if (!it.roi) return;
+  const roi = { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] };
+  const q = `x=${roi.x}&y=${roi.y}&w=${roi.w}&h=${roi.h}`;
+  resultEl.textContent = `素材「${it.id}」识别中…`;
+  try {
+    if (it.kind === 'ocr_lines') {
+      if (!detReady) {
+        resultEl.textContent = '多行识别不可用：serve 需 --features ocr 且带 --det-model';
+        return;
+      }
+      const r = await fetch('/lines?' + q);
+      const s = await r.json();
+      if (s.error) {
+        resultEl.textContent = '多行识别失败：' + s.error;
+        log('素材多行识别失败：' + s.error);
+        return;
+      }
+      const lines = (s.lines || []).map((b) => ({
+        ...b,
+        box: [roi.x + b.box[0], roi.y + b.box[1], b.box[2], b.box[3]],
+      }));
+      resultEl.textContent = `${lines.length} 行 / ${Number(s.elapsed_ms || 0).toFixed(0)} ms\n` +
+        lines.map((b, i) => `${i + 1}. ${b.text} (${Number(b.score).toFixed(3)})`).join('\n');
+      renderOcrLines(lines, roi, `素材「${it.id}」`);
+      log(`素材多行识别「${it.id}」→ ${lines.length} 行`);
+      return;
+    }
+    const r = await fetch('/ocr?' + q);
+    const s = await r.json();
+    if (s.error) {
+      resultEl.textContent = '识别失败：' + s.error;
+      log('素材识别失败：' + s.error);
+      return;
+    }
+    resultEl.textContent =
+      `文字 = ${JSON.stringify(s.text)}\n得分 = ${Number(s.score).toFixed(4)}\n` +
+      `耗时 = ${Number(s.elapsed_ms).toFixed(1)} ms`;
+    log(`素材识别：${it.id} → ${s.text}`);
+  } catch (e) {
+    resultEl.textContent = '识别异常：' + e;
+  }
 }
 
 // --- N4: 点击分布视图 (§21 CD1~CD5) ------------------------------------------
@@ -807,24 +924,6 @@ async function testAssetMatch(it) {
     log(`素材测试：${s.id} → ${Number(s.score).toFixed(3)} @ (${s.x},${s.y})`);
   } catch (e) {
     resultEl.textContent = '测试异常：' + e;
-  }
-}
-
-async function testAssetOcr(it) {
-  if (!it.roi) return;
-  const q = `x=${it.roi[0]}&y=${it.roi[1]}&w=${it.roi[2]}&h=${it.roi[3]}`;
-  resultEl.textContent = `素材「${it.id}」识别中…`;
-  try {
-    const r = await fetch('/ocr?' + q);
-    const s = await r.json();
-    if (s.error) {
-      resultEl.textContent = '识别失败：' + s.error;
-      return;
-    }
-    resultEl.textContent = `文字 = ${JSON.stringify(s.text)}\n得分 = ${Number(s.score).toFixed(4)}\n耗时 = ${Number(s.elapsed_ms).toFixed(1)} ms`;
-    log(`素材识别：${it.id} → ${s.text}`);
-  } catch (e) {
-    resultEl.textContent = '识别异常：' + e;
   }
 }
 
@@ -1742,9 +1841,11 @@ btnLines.addEventListener('click', async () => {
       selectedBox = null;
       updateClickStepButtons();
       draw();
+      lastLinesRoi = { x: roi.x, y: roi.y, w: roi.w, h: roi.h };
       const txt = boxes.map((b, i) => `${i + 1}. ${b.text} (${b.score.toFixed(3)})`).join('\n');
       resultEl.textContent = `${boxes.length} 行 / ${s.elapsed_ms.toFixed(0)} ms\n` + txt;
-      log(`多行识别 → ${boxes.length} 行`);
+      renderOcrLines(boxes, lastLinesRoi, '本次多行识别');
+      log(`多行识别 → ${boxes.length} 行（可直接点击任一行）`);
     }
   } catch (e) {
     resultEl.textContent = '多行识别异常：' + e;

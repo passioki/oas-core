@@ -145,6 +145,10 @@ pub struct Server {
     runs_dir: PathBuf,
     /// Root for the global template asset library (`--library-dir`, §22.22).
     library_dir: PathBuf,
+    /// Editor action log (`logs/editor.log`): OCR/asset/task requests are
+    /// persisted so a user's reproduction can be diagnosed after the browser
+    /// log window is closed (v1.1).
+    editor_log: PathBuf,
     /// Shared state of the editor-triggered background run (N38/M1).
     run_state: Arc<Mutex<RunState>>,
     /// Executor used by `POST /task/run`; replaceable in tests.
@@ -174,6 +178,7 @@ impl Server {
             library_dir: PathBuf::from(crate::library::DEFAULT_DIR),
             run_state: Arc::new(Mutex::new(RunState::default())),
             run_executor: default_executor,
+            editor_log: PathBuf::from("logs/editor.log"),
             #[cfg(feature = "ocr")]
             ocr: None,
             #[cfg(feature = "ocr")]
@@ -360,6 +365,14 @@ impl Server {
         let method = parts.next().unwrap_or("");
         let path = parts.next().unwrap_or("/").to_string();
         let path_only = path.split('?').next().unwrap_or("/").to_string();
+        // Persist only editor data-plane actions (never the 500ms /state poll).
+        const LOGGED_PREFIXES: [&str; 6] = ["/ocr", "/lines", "/match", "/task/", "/library/", "/scheduler/"];
+        if LOGGED_PREFIXES
+            .iter()
+            .any(|p| path_only == p.trim_end_matches('/') || path_only.starts_with(*p) || path_only.starts_with("/task/"))
+        {
+            self.editor_log(&format!("{method} {path}"));
+        }
 
         let mut out = stream;
         match (method, path_only.as_str()) {
@@ -651,6 +664,26 @@ impl Server {
                 }
                 Err(e) => self.send_json(out, 500, &format!(r#"{{"error":{:?}}}"#, e)),
             }
+        }
+    }
+
+    fn editor_log(&self, msg: &str) {
+        let Some(parent) = self.editor_log.parent() else {
+            return;
+        };
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.editor_log)
+        {
+            let _ = writeln!(f, "[{ts}] {msg}");
         }
     }
 
