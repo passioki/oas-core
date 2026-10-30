@@ -14,6 +14,7 @@ const btnClear = document.getElementById('btn-clear');
 const btnLines = document.getElementById('btn-lines');
 const linesList = document.getElementById('lines-list');
 const btnMatch = document.getElementById('btn-match');
+const btnMatchSave = document.getElementById('btn-match-save');
 const btnAsset = document.getElementById('btn-asset');
 const assetId = document.getElementById('asset-id');
 const assetKind = document.getElementById('asset-kind');
@@ -138,6 +139,7 @@ let runPolling = false;
 let img = null;
 let roi = null; // {x,y,w,h} 识别框（前端识别/裁剪区域）
 let roiBack = null; // v1.2 操作区域（action_roi）；null = 默认识别区域
+let lastMatch = null; // v1.2.2: last image-match result; save-with-action-region source
 let backMode = false; // 正在绘制操作区域
 let dragTarget = 'roi'; // 'roi' | 'back'
 let dragStart = null;
@@ -2299,6 +2301,8 @@ async function doCapture() {
     polygon = null;
     polyClosed = false;
     roiBack = null;
+    lastMatch = null;
+    if (btnMatchSave) btnMatchSave.disabled = true;
     selectedBox = null;
     clickOverlay = null;
     updateClickStepButtons();
@@ -2377,6 +2381,8 @@ canvas.addEventListener('mousedown', (ev) => {
   dragTarget = 'roi';
   roi = null;
   roiBack = null;
+  lastMatch = null;
+  if (btnMatchSave) btnMatchSave.disabled = true;
   boxes = [];
   polygon = null;
   polyClosed = false;
@@ -2528,6 +2534,8 @@ btnBackMode.addEventListener('click', () => {
 btnClear.addEventListener('click', () => {
   roi = null;
   roiBack = null;
+  lastMatch = null;
+  if (btnMatchSave) btnMatchSave.disabled = true;
   polygon = null;
   polyClosed = false;
   selectedBox = null;
@@ -2579,10 +2587,16 @@ async function doMatch(r) {
     return s;
   }
   const roiScore = typeof s.roi_score === 'number' ? s.roi_score : -2;
+  lastMatch = s;
+  if (btnMatchSave) btnMatchSave.disabled = false;
+  boxes = [{ text: `图匹配 ${Number(s.score).toFixed(2)}`, score: Number(s.score), box: [s.x, s.y, s.w, s.h] }];
+  draw();
   resultEl.textContent =
     `图识别得分 = ${Number(s.score).toFixed(4)} @ (${s.x}, ${s.y})\n` +
+    `识别区域 = [${s.x}, ${s.y}, ${s.w}, ${s.h}]\n` +
     `ROI 内得分 = ${roiScore.toFixed(4)}\n` +
-    `耗时 = ${Number(s.elapsed_ms || 0).toFixed(1)} ms（全屏金字塔搜索）`;
+    `耗时 = ${Number(s.elapsed_ms || 0).toFixed(1)} ms（全屏金字塔搜索）\n` +
+    '（点「用匹配结果建素材」可把该识别区域作为素材，再拖出操作区域）';
   log(`图识别 → 得分 ${Number(s.score).toFixed(3)} @ (${s.x},${s.y})`);
   return s;
 }
@@ -2599,6 +2613,28 @@ if (btnMatch) {
     } finally {
       btnMatch.disabled = false;
     }
+  });
+}
+
+if (btnMatchSave) {
+  btnMatchSave.addEventListener('click', () => {
+    if (!lastMatch) return;
+    roi = { x: lastMatch.x, y: lastMatch.y, w: lastMatch.w, h: lastMatch.h };
+    // Image-match result: recognition region = matched bbox; operation region
+    // defaults to it and can be enlarged/moved via 「绘制操作区域」.
+    roiBack = null;
+    polygon = null;
+    polyClosed = false;
+    selectedBox = null;
+    boxes = [{ text: `图匹配 ${Number(lastMatch.score).toFixed(2)}`, score: Number(lastMatch.score), box: [roi.x, roi.y, roi.w, roi.h] }];
+    if (assetKind && assetKind.value !== 'template') assetKind.value = 'template';
+    updateRoiLabel();
+    draw();
+    resultEl.textContent =
+      `已用图匹配结果设置识别区域：[${roi.x}, ${roi.y}, ${roi.w}, ${roi.h}]\n` +
+      '1) 填素材 id → 保存素材（模板图）；2) 需要更大点击范围时点「绘制操作区域」再拖拽；\n' +
+      '3) 保存时 action_roi 会一并写入。';
+    log('图匹配结果 → 识别区域已设置；可调整操作区域后保存模板素材');
   });
 }
 
