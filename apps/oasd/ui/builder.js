@@ -795,7 +795,9 @@
     }
   }
 
-  async function activate() {
+  async function activate(preferredTask) {
+    const wanted = (preferredTask || B.task || '').trim();
+    if (wanted) B.task = wanted;
     await refreshTaskList();
     if (B.task) await loadTask(B.task);
   }

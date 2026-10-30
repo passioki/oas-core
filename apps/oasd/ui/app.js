@@ -566,7 +566,10 @@ function activatePage(name) {
     }
   }
   if (name === 'tasks') refreshLibrary();
-  else if (name === 'builder' && window.OAS_BUILDER) window.OAS_BUILDER.activate();
+  else if (name === 'builder' && window.OAS_BUILDER) {
+    // R14: builder must open the same active task as the workbench.
+    window.OAS_BUILDER.activate((taskName && taskName.value || '').trim());
+  }
   else if (name === 'instances') refreshInstance();
   else if (name === 'schedule') refreshSchedulePage();
   else if (name === 'settings') refreshSettings();
@@ -904,7 +907,7 @@ function renderCandidateList(sourceLabel) {
     const adjust = document.createElement('button');
     adjust.type = 'button';
     adjust.textContent = '调操作区域';
-    adjust.title = '在画布上拖拽画出该素材的实际点击/拖动区域（默认=识别区域）';
+    adjust.title = '在画布上拖拽画出该素材的操作区域（默认=识别区域）';
     adjust.addEventListener('click', () => {
       activeCandidate = idx;
       roiBack = { ...c.action };
@@ -994,6 +997,132 @@ async function saveSelectedCandidates() {
     resultEl.textContent = '批量保存异常：' + e;
   } finally {
     candidateStatusText('已保存');
+  }
+}
+
+// v1.2.3 (R19): per-asset click/drag dry-run tests + step generation.
+function assetActionBox(it) {
+  return it.action_roi || it.roi || null;
+}
+
+function boxCenter(box) {
+  return { x: box[0] + Math.floor(box[2] / 2), y: box[1] + Math.floor(box[3] / 2) };
+}
+
+async function testAssetClick(it) {
+  const task = currentTask();
+  const action = assetActionBox(it);
+  if (!action) {
+    resultEl.textContent = `素材「${it.id}」没有识别/操作区域`;
+    return;
+  }
+  try {
+    let point = boxCenter(action);
+    let detail = '';
+    if (it.kind === 'template') {
+      const r = await fetch(
+        `/task/asset/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}`
+      );
+      const s = await r.json();
+      if (s.error) {
+        resultEl.textContent = `点击测试失败：${s.error}`;
+        return;
+      }
+      if (!it.roi) {
+        resultEl.textContent = `素材「${it.id}」没有 roi`;
+        return;
+      }
+      const dx = s.x - it.roi[0];
+      const dy = s.y - it.roi[1];
+      point = {
+        x: action[0] + dx + Math.floor(action[2] / 2),
+        y: action[1] + dy + Math.floor(action[3] / 2),
+      };
+      boxes = [{ text: `点测 ${s.id}`, score: Number(s.score), box: [s.x, s.y, s.w, s.h] }];
+      draw();
+      detail = `匹配得分 ${Number(s.score).toFixed(4)} @ (${s.x},${s.y})\n`;
+    } else if (it.kind === 'ocr_line' || it.kind === 'ocr_lines') {
+      const roi = it.roi;
+      const q = `x=${roi[0]}&y=${roi[1]}&w=${roi[2]}&h=${roi[3]}`;
+      const r = await fetch(it.kind === 'ocr_lines' ? '/lines?' + q : '/ocr?' + q);
+      const s = await r.json();
+      if (s.error) {
+        resultEl.textContent = `点击测试失败：${s.error}`;
+        return;
+      }
+      detail = it.kind === 'ocr_lines'
+        ? `多行识别 ${s.lines ? s.lines.length : 0} 行\n`
+        : `识别文字 ${JSON.stringify(s.text)} 得分 ${Number(s.score).toFixed(4)}\n`;
+    }
+    resultEl.textContent =
+      `点击测试（dry-run，不实际点击）「${it.id}」\n` +
+      detail +
+      `操作区域 [${action.join(',')}] → 目标点 (${point.x}, ${point.y})\n` +
+      '注意：这里只验证定位/目标点；实际点击请在 flow 中运行。';
+    log(`素材点击测试（dry-run）：${it.id} → (${point.x},${point.y})`);
+  } catch (e) {
+    resultEl.textContent = '点击测试异常：' + e;
+  }
+}
+
+function testAssetDrag(it) {
+  const action = assetActionBox(it);
+  if (!action) {
+    resultEl.textContent = `素材「${it.id}」没有识别/操作区域`;
+    return;
+  }
+  const direction = (window.prompt('拖动方向（up/down/left/right）', 'up') || '').trim();
+  if (!['up', 'down', 'left', 'right'].includes(direction)) {
+    resultEl.textContent = '拖动方向必须是 up/down/left/right';
+    return;
+  }
+  const from = boxCenter(action);
+  const dist = 150 + Math.floor(Math.random() * 200);
+  const to = {
+    x: from.x + (direction === 'left' ? -dist : direction === 'right' ? dist : 0),
+    y: from.y + (direction === 'up' ? -dist : direction === 'down' ? dist : 0),
+  };
+  const step = {
+    op: 'drag',
+    args: {
+      from: { kind: 'region', roi: action },
+      direction,
+      distance: [150, 350],
+      duration_ms: [300, 650],
+      margin: 0.15,
+    },
+  };
+  resultEl.textContent =
+    `拖动测试（dry-run，不实际滑动）「${it.id}」\n` +
+    `方向 ${direction} · 起点 (${from.x},${from.y}) → 目标 (${to.x},${to.y})\n\n` +
+    JSON.stringify(step, null, 2);
+  log(`素材拖动测试（dry-run）：${it.id} ${direction} (${from.x},${from.y})→(${to.x},${to.y})`);
+}
+
+async function generateAssetStep(it) {
+  let step;
+  if (it.kind === 'template') {
+    step = { op: 'click_target', args: { find: [{ kind: 'template', sel: it.id }] } };
+  } else if (it.kind === 'region') {
+    step = { op: 'click_target', args: { find: [{ kind: 'region', sel: it.id }] } };
+  } else {
+    const text = (it.ocr_text || window.prompt('OCR 文字（用于 ocr_text 定位）', it.id) || '').trim();
+    if (!text) {
+      resultEl.textContent = '生成步骤取消：OCR 文字不能为空';
+      return;
+    }
+    step = {
+      op: 'click_target',
+      args: { find: [{ kind: 'ocr_text', sel: it.id, text }] },
+    };
+  }
+  const json = JSON.stringify(step, null, 2);
+  resultEl.textContent = `已生成「${it.id}」步骤（复制到剪贴板，到「任务构建」使用）：\n${json}`;
+  try {
+    await navigator.clipboard.writeText(json);
+    log(`已生成素材步骤并复制：${it.id}`);
+  } catch (e) {
+    log(`已生成素材步骤（复制失败，请手动选中）`);
   }
 }
 
@@ -1504,6 +1633,25 @@ function renderAssetList() {
         op.addEventListener('click', () => editAssetActionRoi(it));
         row.appendChild(op);
       }
+      const clickTest = document.createElement('button');
+      clickTest.type = 'button';
+      clickTest.className = 'asset-test';
+      clickTest.textContent = '点测';
+      clickTest.title = '点击测试（dry-run：验证定位并显示目标点）';
+      clickTest.addEventListener('click', () => testAssetClick(it));
+      const dragTest = document.createElement('button');
+      dragTest.type = 'button';
+      dragTest.className = 'asset-test';
+      dragTest.textContent = '拖测';
+      dragTest.title = '拖动测试（dry-run：生成方向/起终点）';
+      dragTest.addEventListener('click', () => testAssetDrag(it));
+      const genStep = document.createElement('button');
+      genStep.type = 'button';
+      genStep.className = 'asset-test';
+      genStep.textContent = '步骤';
+      genStep.title = '生成 click_target 步骤并复制到剪贴板';
+      genStep.addEventListener('click', () => generateAssetStep(it));
+      row.append(clickTest, dragTest, genStep);
       assetsList.appendChild(row);
     }
   }
