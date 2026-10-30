@@ -2,7 +2,7 @@
 # Usage:  pwsh -File scripts/package.ps1 [-Version 0.1.0] [-SkipBuild]
 # Output: dist/oasd-v<version>-win64.zip + .sha256 + BUILD-INFO.txt
 param(
-  [string]$Version = "1.2.1",
+  [string]$Version = "1.2.2",
   [switch]$SkipBuild
 )
 $ErrorActionPreference = "Stop"
@@ -94,6 +94,9 @@ try {
   }
   & $StageExe task lint --tasks-dir tasks --all
   if ($LASTEXITCODE -ne 0) { throw "packaged task lint failed after migration" }
+  # N46: package ships no per-task legacy assets after global migration.
+  & $StageExe assets cleanup-legacy --tasks-dir tasks --assets-dir assets --apply
+  if ($LASTEXITCODE -ne 0) { throw "packaged legacy asset cleanup failed" }
 } finally {
   Pop-Location
 }

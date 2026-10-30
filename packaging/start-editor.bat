@@ -1,5 +1,5 @@
 @echo off
-REM OAS V1.2.1 editor launcher (port 8788; avoids old OAS 22287)
+REM OAS V1.2.2 editor launcher (port 8788; avoids old OAS 22287)
 setlocal
 cd /d "%~dp0"
 set "ADB_PATH=%~dp0adb\adb.exe"

@@ -1,9 +1,18 @@
-# OAS V1.2.1 部署说明（实机 / 模拟器）
+# OAS V1.2.2 部署说明（实机 / 模拟器）
 
 > 本包 = `oasd.exe` + 编辑器 UI + OCR 模型 + adb + 配置 + 启停脚本；数据在 `tasks/`、`assets/`、`library/`、`frames/`、`runs/`、`logs/`。
 > 目标环境：Windows 10/11 x64；Android 模拟器（MuMu 12）或 Android 真机（adb）；阴阳师 Android 客户端。
 
-## 0. V1.2.1 修复与统一
+## 0. V1.2.2 新增
+
+- **帧持久化**：帧图/名称/分类/顺序写入 `frames/frames.json` + `frames/frame-<id>.png`；重启编辑器后列表仍在；当前帧像素按需加载；
+- **图片匹配建素材**：图识别结果可一键设为识别区域，调整操作区域后保存模板（`action_roi`）；
+- **builder 结构化属性**：`click_target` / `drag` 提供结构化表单（定位方式/素材、方向/距离/时长），复杂场景保留高级 args JSON；
+- **变量 checkpoint**：`set_var`/`inc_var`/`ocr_to_var` 变量随检查点保存，`--resume` 恢复；
+- **旧素材清理**：`oasd assets cleanup-legacy [--apply]` 把旧任务 `assets.json/images` 归档到 `assets/_legacy-backup/`；
+- **工作台流程面板删除**：流程编辑只在「任务构建」；工作台生成步骤改为复制到剪贴板。
+
+## 0.1 V1.2.1 修复与统一
 
 - **统一素材库**：所有任务共用一个 `assets/`（`assets.json` + `images/`）；不再分任务素材/全局素材；名称全局唯一；删除/改名会检查所有任务 flow 引用；
 - **旧数据迁移**：`oasd assets migrate` 或素材面板「迁移到统一素材库…」；重名自动加 `_2/_3` 后缀，并按每个任务重写 flow 引用（迁移报告在 `assets/migration-report.json`）；
@@ -13,11 +22,11 @@
 - **工作台移除流程面板**：流程编辑统一在「任务构建」；工作台只做帧/识别/测试；
 - **帧管理**：可重命名、自由文本分类、拖动排序、分组展示；移除 20 帧上限。
 
-## 0.1 V1.2 内容
+## 0.2 V1.2 内容
 
 - 识别区域/操作区域统一、多选批量保存、全局唯一、任务构建页、变量动作 `set_var/inc_var/ocr_to_var`。
 
-## 0.2 V1.1 内容
+## 0.3 V1.1 内容
 
 - 整屏多行 OCR 直接点击；素材 CRUD；独立区域操作/拟人拖动；任务工作台+完成条件；5 个页面；点击分布聚合+删除；editor.log。
 
