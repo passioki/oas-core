@@ -100,6 +100,9 @@ pub struct RunOptions {
     pub shots_dir: Option<PathBuf>,
     /// 全局素材库根目录（§22.22）：`lib:<id>` 引用的模板从这里加载。
     pub library: PathBuf,
+    /// v1.2.1 unified global asset store. When `<assets>/assets.json` exists it
+    /// replaces per-task assets; when absent old task assets are used.
+    pub assets: PathBuf,
     /// Resume from the checkpoint file (§22.16).
     pub resume: bool,
     /// Checkpoint file override (also enables writing during replay for tests).
@@ -128,6 +131,7 @@ impl Default for RunOptions {
             clicks_out: None,
             shots_dir: None,
             library: PathBuf::from(crate::library::DEFAULT_DIR),
+            assets: PathBuf::from(crate::global_assets::DEFAULT_DIR),
             resume: false,
             checkpoint: None,
             model: None,
@@ -171,6 +175,9 @@ impl RunOptions {
                 }
                 "--library" => {
                     o.library = PathBuf::from(take_value(rest, &mut i, "--library")?)
+                }
+                "--assets" => {
+                    o.assets = PathBuf::from(take_value(rest, &mut i, "--assets")?)
                 }
                 "--resume" => {
                     o.resume = true;
@@ -387,24 +394,40 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
                 task_dir.display()
             )
         })?;
-    let mut assets = bundle
-        .load_runtime_assets()
-        .map_err(|e| format!("task bundle `{}`: {e}", task_dir.display()))?;
-    // §22.22: merge the global template library under `lib:<id>` selectors.
-    match crate::library::Library::open(&opts.library).load_templates() {
-        Ok(tpls) => {
-            let n = tpls.len();
-            for (id, t) in tpls {
-                assets.insert(id, t);
+    let global_assets = crate::global_assets::is_initialized(&opts.assets);
+    let mut assets = if global_assets {
+        let store = crate::global_assets::open_store(&opts.assets)?;
+        store
+            .load_runtime_assets()
+            .map_err(|e| format!("global assets `{}`: {e}", opts.assets.display()))?
+    } else {
+        bundle
+            .load_runtime_assets()
+            .map_err(|e| format!("task bundle `{}`: {e}", task_dir.display()))?
+    };
+    // Legacy `lib:` templates are merged only before unified migration; after it
+    // every asset is referenced by its bare global id.
+    if !global_assets {
+        match crate::library::Library::open(&opts.library).load_templates() {
+            Ok(tpls) => {
+                let n = tpls.len();
+                for (id, t) in tpls {
+                    assets.insert(id, t);
+                }
+                if n > 0 {
+                    out(&format!(
+                        "library={n} asset(s) from {}",
+                        opts.library.display()
+                    ));
+                }
             }
-            if n > 0 {
-                out(&format!(
-                    "library={n} asset(s) from {}",
-                    opts.library.display()
-                ));
-            }
+            Err(e) => return Err(format!("library: {e}")),
         }
-        Err(e) => return Err(format!("library: {e}")),
+    } else {
+        out(&format!(
+            "assets=global from {}",
+            opts.assets.display()
+        ));
     }
     out(&format!("task={}", task_dir.display()));
     out(&format!("assets={}", assets.len()));

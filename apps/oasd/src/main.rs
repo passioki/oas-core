@@ -23,6 +23,7 @@ mod schedule;
 mod scheduler;
 mod config;
 mod task;
+mod global_assets;
 #[cfg(feature = "ocr")]
 mod ocr;
 
@@ -84,6 +85,7 @@ fn main() -> ExitCode {
         "scheduler" => schedule::scheduler_cmd(&args[1..]),
         "stats" => stats::stats_cmd(&args[1..]),
         "task" => task::task_cmd(&args[1..]),
+        "assets" => assets_cmd(&args[1..]),
         "serve" => serve_cmd(&args[1..]),
         "" | "-h" | "--help" => {
             eprintln!(
@@ -96,7 +98,8 @@ fn main() -> ExitCode {
                  [--budget-steps N] [--budget-wall S] [--param k=v]...\n  \
                  oasd task lint --tasks-dir <dir> [--all | --task <name>]\n  \
                  oasd task new --template daily|loop|utility --id <id> --tasks-dir <dir>\n  \
-                 oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--model <path>] [--det-model <path>]"
+                 oasd assets migrate [--tasks-dir <dir>] [--library-dir <dir>] [--assets-dir <dir>]\n  \
+                 oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--assets-dir <dir>] [--model <path>] [--det-model <path>]"
             );
             ExitCode::from(2)
         }
@@ -302,6 +305,57 @@ fn replay(rest: &[String]) -> ExitCode {
     }
 }
 
+fn assets_cmd(rest: &[String]) -> ExitCode {
+    if rest.first().map(|s| s.as_str()) != Some("migrate") {
+        eprintln!("usage: oasd assets migrate [--tasks-dir <dir>] [--library-dir <dir>] [--assets-dir <dir>]");
+        return ExitCode::from(2);
+    }
+    let mut tasks_dir = "tasks".to_string();
+    let mut library_dir = library::DEFAULT_DIR.to_string();
+    let mut assets_dir = global_assets::DEFAULT_DIR.to_string();
+    let mut i = 1usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--tasks-dir" if i + 1 < rest.len() => {
+                tasks_dir = rest[i + 1].clone();
+                i += 2;
+            }
+            "--library-dir" if i + 1 < rest.len() => {
+                library_dir = rest[i + 1].clone();
+                i += 2;
+            }
+            "--assets-dir" if i + 1 < rest.len() => {
+                assets_dir = rest[i + 1].clone();
+                i += 2;
+            }
+            other => {
+                eprintln!("unknown assets arg: {other}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    match global_assets::migrate(
+        std::path::Path::new(&tasks_dir),
+        std::path::Path::new(&library_dir),
+        std::path::Path::new(&assets_dir),
+    ) {
+        Ok(report) => {
+            println!(
+                "assets migrate OK: assets={} tasks={} flows_rewritten={} renamed={}",
+                report.assets,
+                report.tasks,
+                report.flows_rewritten,
+                report.renamed.len()
+            );
+            for r in report.renamed {
+                println!("  renamed {} -> {} ({})", r.old, r.new, r.source);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail("assets migrate", e),
+    }
+}
+
 fn serve_cmd(rest: &[String]) -> ExitCode {
     let mut port: u16 = 8787;
     let mut ui = "apps/oasd/ui".to_string();
@@ -310,6 +364,7 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
     let mut model: Option<String> = None;
     let mut det_model: Option<String> = None;
     let mut library_dir = library::DEFAULT_DIR.to_string();
+    let mut assets_dir = global_assets::DEFAULT_DIR.to_string();
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -347,6 +402,10 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
                 library_dir = rest[i + 1].clone();
                 i += 2;
             }
+            "--assets-dir" if i + 1 < rest.len() => {
+                assets_dir = rest[i + 1].clone();
+                i += 2;
+            }
             other => {
                 eprintln!("unknown serve arg: {other}");
                 return ExitCode::from(2);
@@ -357,7 +416,8 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
     let mut server = serve::Server::new(adb)
         .with_tasks_dir(&tasks_dir)
         .with_runs_dir(&runs_dir)
-        .with_library_dir(&library_dir);
+        .with_library_dir(&library_dir)
+        .with_assets_dir(&assets_dir);
     enable_models(&mut server, model.as_deref(), det_model.as_deref());
     match server.run(port, &ui) {
         Ok(()) => ExitCode::SUCCESS,

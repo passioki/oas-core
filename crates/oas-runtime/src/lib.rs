@@ -54,6 +54,10 @@ pub struct AssetSet {
     /// Pure operation regions (`kind: region`, v1.2): no recognition, the rect is
     /// the operation region itself.
     regions: HashMap<String, Rect>,
+    /// Derived OCR lines (v1.2.1): saved from a multi-line det+rec result. Runtime
+    /// must re-run det+rec on `source_roi` and match `expected` text, instead of
+    /// degrading to a single-line rec on the tight line crop.
+    derived_ocr: HashMap<String, (Rect, String)>,
 }
 
 impl AssetSet {
@@ -82,6 +86,15 @@ impl AssetSet {
 
     pub fn region(&self, id: &str) -> Option<Rect> {
         self.regions.get(id).copied()
+    }
+
+    /// Register a multi-line-derived OCR line: source ROI + expected text.
+    pub fn set_derived_ocr(&mut self, id: impl Into<String>, source_roi: Rect, expected: String) {
+        self.derived_ocr.insert(id.into(), (source_roi, expected));
+    }
+
+    pub fn derived_ocr(&self, id: &str) -> Option<(Rect, String)> {
+        self.derived_ocr.get(id).cloned()
     }
 }
 
@@ -423,6 +436,9 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     /// v1.2 runtime variables (`set_var`/`inc_var`/`ocr_to_var`), scoped to one
     /// flow run. Not persisted in checkpoints (intentionally simple).
     vars: BTreeMap<String, Value>,
+    /// Matched line rect from the last OCR read (v1.2.1 derived ocr_line), used
+    /// to translate the saved operation region to the new line position.
+    last_ocr_rect: Option<Rect>,
     started: Instant,
     humanize: crate::humanize::Humanize,
     rng: crate::humanize::Rng,
@@ -456,6 +472,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             run_seed,
             params: BTreeMap::new(),
             vars: BTreeMap::new(),
+            last_ocr_rect: None,
             started: Instant::now(),
             humanize,
             rng: crate::humanize::Rng::new(run_seed),
@@ -1122,6 +1139,30 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             .frame
             .as_ref()
             .ok_or_else(|| "OCR: no frame available".to_string())?;
+        // v1.2.1: a line saved from a multi-line det+rec result must use the SAME
+        // source region + det+rec path at runtime. Falling back to single-line
+        // rec on the tight line crop can change the recognized text.
+        if let Some((source, expected)) = self.assets.derived_ocr(sel) {
+            let provider = self.ocr.as_mut().expect("provider checked above");
+            let lines = provider.recognize_lines(frame, source)?;
+            let hit = lines
+                .iter()
+                .filter(|l| l.text.trim() == expected.trim())
+                .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
+            let Some(line) = hit else {
+                self.last_ocr_rect = None;
+                return Err(format!(
+                    "derived ocr_line `{sel}`: no line equals {:?} in original source ROI {:?} \
+                     ({} lines found) - refusing to use single-line rec",
+                    expected,
+                    source,
+                    lines.len()
+                ));
+            };
+            self.last_ocr_rect = Some(line.rect);
+            return Ok(OcrRead::Single(Some(line.text.clone()), line.score));
+        }
+        self.last_ocr_rect = None;
         // §22.10 N10b-2: polygon OCR mask = bbox crop, outside-polygon pixels
         // filled white so neighbour text / background never reaches the engine.
         let masked_frame;
@@ -1762,7 +1803,17 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                     // recognition ROI) is where the click lands. This is
                                     // what lets an OCR line's action area be larger than
                                     // the text box without per-action offsets.
-                                    let rect = self.assets.click_back(sel).unwrap_or(recognition);
+                                    let mut rect = self.assets.click_back(sel).unwrap_or(recognition);
+                                    // v1.2.1: a multi-line-derived line follows its
+                                    // matched line position; translate the saved
+                                    // operation region by the detection delta.
+                                    if self.assets.derived_ocr(sel).is_some() {
+                                        if let Some(matched) = self.last_ocr_rect {
+                                            let saved_line = recognition;
+                                            rect.x += matched.x - saved_line.x;
+                                            rect.y += matched.y - saved_line.y;
+                                        }
+                                    }
                                     if let Some(rt) = require_template {
                                         match self.template_in_region(rt, recognition, 16) {
                                             Ok(true) => {}
@@ -4753,9 +4804,9 @@ mod tests {
         let f = flow(
             r#"{"schema_version":1,"name":"t","steps":[
                  {"op":"drag","args":{
-                   "from":{"kind":"region","roi":[10,20,30,20]},
+                   "from":{"kind":"region","roi":[5,20,20,20]},
                    "direction":"right",
-                   "distance":[20,30],
+                   "distance":[10,20],
                    "duration_ms":[100,120],
                    "margin":0.0
                  }},
@@ -4765,10 +4816,10 @@ mod tests {
         let swipes = input.swipes.borrow().clone();
         assert_eq!(swipes.len(), 1, "exactly one swipe");
         let (from, to, ms) = swipes[0];
-        assert!(from.x >= 10 && from.x < 40 && from.y >= 20 && from.y < 40, "{from:?}");
+        assert!(from.x >= 5 && from.x < 25 && from.y >= 20 && from.y < 40, "{from:?}");
         assert!(to.x > from.x, "direction right: {from:?} -> {to:?}");
         let dist = to.x - from.x;
-        assert!((20..=30).contains(&dist), "distance {dist} outside [20,30]");
+        assert!((10..=20).contains(&dist), "distance {dist} outside [10,20]");
         assert!((100..=120).contains(&ms), "duration {ms} outside [100,120]");
         let ev = interp
             .events()
@@ -4867,6 +4918,77 @@ mod tests {
             "OCR click should land in the operation region (jitter allowed): {p:?}"
         );
         assert_eq!(interp.clicks()[0].locator, "ocr_text");
+    }
+
+    #[test]
+    fn derived_ocr_line_uses_original_source_roi_and_translates_action_region() {
+        let mut a = assets();
+        // Saved line frame: recognition line bbox + operation region.
+        a.insert_ocr(
+            "O_DERIVED",
+            Rect {
+                x: 10,
+                y: 10,
+                w: 20,
+                h: 8,
+            },
+        );
+        a.set_click_back(
+            "O_DERIVED",
+            Rect {
+                x: 5,
+                y: 5,
+                w: 30,
+                h: 20,
+            },
+        );
+        // Original multi-line source region; det+rec must run on THIS region.
+        a.set_derived_ocr(
+            "O_DERIVED",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 60,
+                h: 40,
+            },
+            "确认".to_string(),
+        );
+        let (ocr, rois) = FakeDetOcr::new(vec![line(
+            "确认",
+            0.98,
+            Rect {
+                x: 10,
+                y: 18, // line moved down 8px vs saved line bbox
+                w: 20,
+                h: 8,
+            },
+        )]);
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, a, Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(ocr))
+            .with_seed(14);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[{"kind":"ocr_text","sel":"O_DERIVED","text":"确认"}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        // Provider was asked with the ORIGINAL source ROI, not the tight line ROI.
+        let seen = rois.borrow().clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            (seen[0].x, seen[0].y, seen[0].w, seen[0].h),
+            (0, 0, 60, 40)
+        );
+        // Operation region translated by (matched line y - saved line y) = +8.
+        let clicks = shared.clicks.borrow().clone();
+        assert_eq!(clicks.len(), 1);
+        let p = clicks[0];
+        assert!(
+            p.x >= 0 && p.x <= 40 && p.y >= 8 && p.y <= 38,
+            "click should land in translated operation region: {p:?}"
+        );
     }
 
     #[test]

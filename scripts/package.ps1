@@ -2,7 +2,7 @@
 # Usage:  pwsh -File scripts/package.ps1 [-Version 0.1.0] [-SkipBuild]
 # Output: dist/oasd-v<version>-win64.zip + .sha256 + BUILD-INFO.txt
 param(
-  [string]$Version = "1.2.0",
+  [string]$Version = "1.2.1",
   [switch]$SkipBuild
 )
 $ErrorActionPreference = "Stop"
@@ -25,7 +25,7 @@ if (-not (Test-Path $Exe)) { throw "missing $Exe (run without -SkipBuild)" }
 
 if (Test-Path $Stage) { Remove-Item $Stage -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
-foreach ($d in @("ui", "models", "adb", "tasks", "library", "config", "runs", "logs")) {
+foreach ($d in @("ui", "models", "adb", "tasks", "library", "assets", "config", "runs", "logs")) {
   New-Item -ItemType Directory -Force -Path (Join-Path $Stage $d) | Out-Null
 }
 
@@ -79,6 +79,23 @@ if (Test-Path (Join-Path $Root "tasks")) {
 }
 if (Test-Path (Join-Path $Root "library")) {
   Copy-Item (Join-Path $Root "library\*") (Join-Path $Stage "library") -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# v1.2.1: migrate the shipped tasks + old library into the unified global asset
+# store. This rewrites task flows (duplicates get _2 suffix, references kept).
+Write-Host "-- migrate packaged assets (auto-suffix, rewrite flows)"
+$StageExe = Join-Path $Stage "oasd.exe"
+Push-Location $Stage
+try {
+  & $StageExe assets migrate --tasks-dir tasks --library-dir library --assets-dir assets
+  if ($LASTEXITCODE -ne 0) { throw "assets migrate failed (exit $LASTEXITCODE)" }
+  if (-not (Test-Path (Join-Path $Stage "assets\assets.json"))) {
+    throw "assets migrate did not produce assets/assets.json"
+  }
+  & $StageExe task lint --tasks-dir tasks --all
+  if ($LASTEXITCODE -ne 0) { throw "packaged task lint failed after migration" }
+} finally {
+  Pop-Location
 }
 
 # start/stop scripts + readme

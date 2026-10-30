@@ -1,5 +1,5 @@
 @echo off
-REM OAS V1.0 editor launcher (port 8788; avoids old OAS 22287)
+REM OAS V1.2.1 editor launcher (port 8788; avoids old OAS 22287)
 setlocal
 cd /d "%~dp0"
 set "ADB_PATH=%~dp0adb\adb.exe"
@@ -13,6 +13,7 @@ start "" /B "%~dp0oasd.exe" serve ^
   --tasks-dir tasks ^
   --runs-dir runs ^
   --library-dir library ^
+  --assets-dir assets ^
   --model models\PP-OCRv6_rec_small.onnx ^
   --det-model models\PP-OCRv6_det_small.onnx ^
   --config config\live.json

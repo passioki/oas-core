@@ -104,6 +104,10 @@ struct State {
 
 struct SessionFrame {
     id: u64,
+    /// User-editable display name (rename API; id stays stable).
+    name: String,
+    /// Free-form category/group used by the frame gallery.
+    category: String,
     png: Vec<u8>,
     width: u32,
     height: u32,
@@ -117,6 +121,8 @@ impl State {
         self.next_frame_id += 1;
         self.frames.push(SessionFrame {
             id,
+            name: format!("帧 {id}"),
+            category: String::new(),
             png,
             width,
             height,
@@ -126,10 +132,8 @@ impl State {
                 .map(|d| d.as_millis())
                 .unwrap_or(0),
         });
-        // Keep memory bounded: 20 PNG frames ≈ tens of MB.
-        while self.frames.len() > 20 {
-            self.frames.remove(0);
-        }
+        // v1.2.1: no hard 20-frame cap. Frames are session data; the user asked
+        // for unlimited count and explicit delete/reorder management.
         self.current_frame_id = Some(id);
         id
     }
@@ -145,6 +149,9 @@ pub struct Server {
     runs_dir: PathBuf,
     /// Root for the global template asset library (`--library-dir`, §22.22).
     library_dir: PathBuf,
+    /// v1.2.1 unified global asset store (`--assets-dir`). When initialized it
+    /// replaces per-task assets for the editor, builder and runs.
+    assets_dir: PathBuf,
     /// Editor action log (`logs/editor.log`): OCR/asset/task requests are
     /// persisted so a user's reproduction can be diagnosed after the browser
     /// log window is closed (v1.1).
@@ -176,6 +183,7 @@ impl Server {
             tasks_dir: PathBuf::from("tasks"),
             runs_dir: PathBuf::from("runs"),
             library_dir: PathBuf::from(crate::library::DEFAULT_DIR),
+            assets_dir: PathBuf::from(crate::global_assets::DEFAULT_DIR),
             run_state: Arc::new(Mutex::new(RunState::default())),
             run_executor: default_executor,
             editor_log: PathBuf::from("logs/editor.log"),
@@ -210,6 +218,49 @@ impl Server {
     pub fn with_library_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.library_dir = dir.into();
         self
+    }
+
+    /// Set the unified global asset store root (default `assets`).
+    pub fn with_assets_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.assets_dir = dir.into();
+        self
+    }
+
+    fn using_global_assets(&self) -> bool {
+        crate::global_assets::is_initialized(&self.assets_dir)
+    }
+
+    /// Asset store used by editor routes: global store when initialized,
+    /// otherwise the legacy per-task bundle.
+    fn asset_store(&self, task: &str) -> Result<oas_task::TaskBundle, String> {
+        if self.using_global_assets() {
+            crate::global_assets::open_store(&self.assets_dir)
+        } else {
+            oas_task::TaskBundle::open_named(&self.tasks_dir, task)
+        }
+    }
+
+    fn global_asset_ids(&self) -> Result<std::collections::BTreeSet<String>, String> {
+        let store = crate::global_assets::open_store(&self.assets_dir)?;
+        let af = store.load_assets_file()?;
+        Ok(af.items.into_iter().map(|a| a.id).collect())
+    }
+
+    /// Task names whose flow.json references `id` (global delete/rename guard).
+    fn asset_referrers(&self, id: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Ok(names) = oas_task::list_tasks(&self.tasks_dir) {
+            for name in names {
+                if let Ok(b) = oas_task::TaskBundle::open_named(&self.tasks_dir, &name) {
+                    if let Ok(Some(flow)) = b.load_flow() {
+                        if flow.referenced_assets().contains(id) {
+                            out.push(name);
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     fn library(&self) -> crate::library::Library {
@@ -432,6 +483,9 @@ impl Server {
             ("POST", "/frames") => self.handle_frame_upload(&mut out, &body),
             ("POST", "/frames/select") => self.handle_frame_select(&mut out, &body),
             ("POST", "/frames/delete") => self.handle_frame_delete(&mut out, &body),
+            ("POST", "/frames/rename") => self.handle_frame_rename(&mut out, &body),
+            ("POST", "/frames/category") => self.handle_frame_category(&mut out, &body),
+            ("POST", "/frames/reorder") => self.handle_frames_reorder(&mut out, &body),
             ("POST", "/frames/clear") => self.handle_frames_clear(&mut out),
             ("GET", "/ocr") => self.handle_ocr(&mut out, &path),
             ("GET", "/lines") => self.handle_lines(&mut out, &path),
@@ -439,6 +493,7 @@ impl Server {
             ("POST", "/task/save_asset") => self.handle_save_asset(&mut out, &body),
             ("POST", "/task/save_assets") => self.handle_save_assets(&mut out, &body),
             ("GET", "/assets/conflicts") => self.handle_asset_conflicts(&mut out),
+            ("POST", "/assets/migrate") => self.handle_assets_migrate(&mut out),
             ("POST", "/task/asset/delete") => self.handle_asset_delete(&mut out, &body),
             ("POST", "/task/asset/rename") => self.handle_asset_rename(&mut out, &body),
             ("POST", "/task/asset/update") => self.handle_asset_update(&mut out, &body),
@@ -489,6 +544,8 @@ impl Server {
             .map(|f| {
                 serde_json::json!({
                     "id": f.id,
+                    "name": f.name,
+                    "category": f.category,
                     "width": f.width,
                     "height": f.height,
                     "source": f.source,
@@ -594,6 +651,95 @@ impl Server {
         drop(st);
         let body = serde_json::json!({"ok": true, "remaining": remaining});
         self.send_json(out, 200, &body.to_string())
+    }
+
+    /// v1.2.1: rename a session frame (id stays stable).
+    fn handle_frame_rename(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let id = match json_u64_field(body, "id") {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if name.is_empty() || name.chars().count() > 120 {
+            return self.send_errors(out, 400, vec!["frame name must be 1..=120 characters".into()]);
+        }
+        let mut st = self.state.lock().unwrap();
+        let Some(f) = st.frames.iter_mut().find(|f| f.id == id) else {
+            drop(st);
+            return self.send_errors(out, 404, vec![format!("frame id {id} not found")]);
+        };
+        f.name = name.to_string();
+        let name = f.name.clone();
+        drop(st);
+        self.send_json(out, 200, &serde_json::json!({"ok": true, "id": id, "name": name}).to_string())
+    }
+
+    /// v1.2.1: set a frame's free-form category/group.
+    fn handle_frame_category(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let id = match json_u64_field(body, "id") {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let category = v
+            .get("category")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim();
+        if category.chars().count() > 80 {
+            return self.send_errors(out, 400, vec!["frame category is longer than 80".into()]);
+        }
+        let mut st = self.state.lock().unwrap();
+        let Some(f) = st.frames.iter_mut().find(|f| f.id == id) else {
+            drop(st);
+            return self.send_errors(out, 404, vec![format!("frame id {id} not found")]);
+        };
+        f.category = category.to_string();
+        let category = f.category.clone();
+        drop(st);
+        self.send_json(
+            out,
+            200,
+            &serde_json::json!({"ok": true, "id": id, "category": category}).to_string(),
+        )
+    }
+
+    /// v1.2.1: reorder frames. `ids` may be a partial permutation; listed ids
+    /// come first in the given order, remaining frames keep their relative order.
+    fn handle_frames_reorder(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let Some(arr) = v.get("ids").and_then(|x| x.as_array()) else {
+            return self.send_errors(out, 400, vec!["`ids` array is required".into()]);
+        };
+        let mut want: Vec<u64> = Vec::new();
+        for item in arr {
+            let Some(n) = item.as_u64() else {
+                return self.send_errors(out, 400, vec!["`ids` values must be integers".into()]);
+            };
+            want.push(n);
+        }
+        let mut st = self.state.lock().unwrap();
+        let mut ordered: Vec<SessionFrame> = Vec::with_capacity(st.frames.len());
+        for id in &want {
+            if let Some(pos) = st.frames.iter().position(|f| f.id == *id) {
+                ordered.push(st.frames.remove(pos));
+            }
+        }
+        ordered.append(&mut st.frames);
+        st.frames = ordered;
+        let ids: Vec<u64> = st.frames.iter().map(|f| f.id).collect();
+        drop(st);
+        self.send_json(out, 200, &serde_json::json!({"ok": true, "ids": ids}).to_string())
     }
 
     /// `POST /frames/clear` — 清空会话图片列表（当前帧保留在内存里，避免画面突然消失）.
@@ -978,12 +1124,20 @@ impl Server {
             Ok(v) => v,
             Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON body: {e}")]),
         };
-        let task = match json_str_field(&v, "task") {
-            Ok(s) => s,
-            Err(e) => return self.send_errors(out, 400, vec![e]),
-        };
-        if let Err(e) = oas_task::validate_task_name(&task) {
-            return self.send_errors(out, 400, vec![e]);
+        let global_mode = self.using_global_assets();
+        let task = v
+            .get("task")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !global_mode {
+            if task.is_empty() {
+                return self.send_errors(out, 400, vec!["`task` is required".into()]);
+            }
+            if let Err(e) = oas_task::validate_task_name(&task) {
+                return self.send_errors(out, 400, vec![e]);
+            }
         }
         let id = match json_str_field(&v, "id") {
             Ok(s) => s,
@@ -1082,14 +1236,22 @@ impl Server {
                 )
             }
         };
-        let bundle = match oas_task::TaskBundle::open_named(&self.tasks_dir, &task) {
-            Ok(b) => b,
-            Err(e) => return self.send_errors(out, 400, vec![e]),
+        let bundle = if global_mode {
+            match self.asset_store("") {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        } else {
+            match oas_task::TaskBundle::open_named(&self.tasks_dir, &task) {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
         };
         // v1.2 global-unique naming: creating a new object may not reuse an id
         // from ANY task or the global library. Overwrite (replace=true) is the
-        // explicit "same object, rev+1" path and is allowed.
-        if !replace {
+        // explicit "same object, rev+1" path and is allowed. In unified global
+        // mode the store itself is the single namespace; no legacy scan needed.
+        if !replace && !global_mode {
             match self.global_asset_entries() {
                 Ok(entries) => {
                     if let Some((_, source)) = entries.iter().find(|(gid, _)| gid == &id) {
@@ -1111,6 +1273,9 @@ impl Server {
             file: None,
             roi: Some(roi),
             action_roi: roi_back,
+            ocr_mode: None,
+            ocr_source_roi: None,
+            ocr_text: None,
             threshold,
             polygon,
             rev: None,
@@ -1375,19 +1540,29 @@ impl Server {
                 _ => {}
             }
         }
-        if task.is_empty() || id.is_empty() {
+        let global_mode = self.using_global_assets();
+        if id.is_empty() || (!global_mode && task.is_empty()) {
             return self.send_errors(
                 out,
                 400,
                 vec!["`task` and `id` query params are required".to_string()],
             );
         }
-        if let Err(e) = oas_task::validate_task_name(&task) {
-            return self.send_errors(out, 400, vec![e]);
+        if !global_mode {
+            if let Err(e) = oas_task::validate_task_name(&task) {
+                return self.send_errors(out, 400, vec![e]);
+            }
         }
-        let bundle = match oas_task::TaskBundle::open_named(&self.tasks_dir, &task) {
-            Ok(b) => b,
-            Err(e) => return self.send_errors(out, 400, vec![e]),
+        let bundle = if global_mode {
+            match self.asset_store("") {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        } else {
+            match oas_task::TaskBundle::open_named(&self.tasks_dir, &task) {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
         };
         let assets = match bundle.load_runtime_assets() {
             Ok(a) => a,
@@ -1459,8 +1634,35 @@ impl Server {
         Ok(out)
     }
 
+    /// v1.2.1: one-time migration of all task assets + old library into the
+    /// unified global store. Auto-suffixes duplicate ids and rewrites each task
+    /// flow with its own old→new mapping.
+    fn handle_assets_migrate(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        match crate::global_assets::migrate(&self.tasks_dir, &self.library_dir, &self.assets_dir) {
+            Ok(report) => {
+                self.editor_log(&format!(
+                    "assets_migrate assets={} tasks={} renamed={}",
+                    report.assets,
+                    report.tasks,
+                    report.renamed.len()
+                ));
+                self.send_json(out, 200, &serde_json::json!({"ok": true, "report": report}).to_string())
+            }
+            Err(e) => self.send_errors(out, 400, vec![e]),
+        }
+    }
+
     /// v1.2: report duplicate ids across tasks/library (migration scan).
     fn handle_asset_conflicts(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        if self.using_global_assets() {
+            // Unified store: ids are unique by construction; legacy task asset
+            // files are no longer the active namespace.
+            return self.send_json(
+                out,
+                200,
+                &serde_json::json!({"ok": true, "conflicts": []}).to_string(),
+            );
+        }
         let entries = match self.global_asset_entries() {
             Ok(v) => v,
             Err(e) => return self.send_errors(out, 500, vec![e]),
@@ -1492,6 +1694,7 @@ impl Server {
             Ok(v) => v,
             Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
         };
+        let global_mode = self.using_global_assets();
         let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").trim();
         let arr = match v.get("assets").and_then(|x| x.as_array()) {
             Some(a) => a.clone(),
@@ -1500,13 +1703,27 @@ impl Server {
         if arr.is_empty() {
             return self.send_errors(out, 400, vec!["`assets` cannot be empty".into()]);
         }
-        let bundle = match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
-            Ok(b) => b,
-            Err(e) => return self.send_errors(out, 400, vec![e]),
+        if !global_mode && task.is_empty() {
+            return self.send_errors(out, 400, vec!["`task` is required".into()]);
+        }
+        let bundle = if global_mode {
+            match self.asset_store("") {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        } else {
+            match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
         };
-        let global = match self.global_asset_entries() {
-            Ok(v) => v,
-            Err(e) => return self.send_errors(out, 500, vec![e]),
+        let global = if global_mode {
+            Vec::new()
+        } else {
+            match self.global_asset_entries() {
+                Ok(v) => v,
+                Err(e) => return self.send_errors(out, 500, vec![e]),
+            }
         };
         let mut decls = Vec::with_capacity(arr.len());
         let mut errors: Vec<String> = Vec::new();
@@ -1553,12 +1770,40 @@ impl Server {
                 }
             };
             let threshold = item.get("threshold").and_then(|x| x.as_f64()).map(|t| t as f32);
+            let ocr_mode = item.get("ocr_mode").and_then(|x| x.as_str()).map(|s| s.to_string());
+            let ocr_source_roi = match item.get("ocr_source_roi") {
+                None => None,
+                Some(x) => {
+                    let arr = x.as_array().filter(|a| a.len() == 4);
+                    let Some(a) = arr else {
+                        errors.push(format!("{p}.ocr_source_roi: must be [x,y,w,h]"));
+                        continue;
+                    };
+                    let mut r = [0i32; 4];
+                    let mut ok = true;
+                    for (j, v) in a.iter().enumerate() {
+                        match v.as_i64() {
+                            Some(n) => r[j] = n as i32,
+                            None => ok = false,
+                        }
+                    }
+                    if !ok {
+                        errors.push(format!("{p}.ocr_source_roi: values must be integers"));
+                        continue;
+                    }
+                    Some(r)
+                }
+            };
+            let ocr_text = item.get("ocr_text").and_then(|x| x.as_str()).map(|s| s.to_string());
             decls.push(oas_task::AssetDecl {
                 id: id.to_string(),
                 kind: kind.to_string(),
                 file: None,
                 roi,
                 action_roi,
+                ocr_mode,
+                ocr_source_roi,
+                ocr_text,
                 threshold,
                 polygon: None,
                 rev: None,
@@ -1586,14 +1831,35 @@ impl Server {
             Ok(v) => v,
             Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
         };
+        let global_mode = self.using_global_assets();
         let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").trim();
         let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").trim();
-        if task.is_empty() || id.is_empty() {
+        if id.is_empty() || (!global_mode && task.is_empty()) {
             return self.send_errors(out, 400, vec!["`task` and `id` are required".into()]);
         }
-        let b = match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
-            Ok(b) => b,
-            Err(e) => return self.send_errors(out, 400, vec![e]),
+        if global_mode {
+            let refs = self.asset_referrers(id);
+            if !refs.is_empty() {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec![format!(
+                        "asset `{id}` is referenced by task(s): {}; update those flows first",
+                        refs.join(", ")
+                    )],
+                );
+            }
+        }
+        let b = if global_mode {
+            match self.asset_store("") {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        } else {
+            match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
         };
         match b.delete_asset(id) {
             Ok(item) => {
@@ -1610,13 +1876,26 @@ impl Server {
             Ok(v) => v,
             Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
         };
+        let global_mode = self.using_global_assets();
         let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").trim();
         let from = v.get("from").and_then(|x| x.as_str()).unwrap_or("").trim();
         let to = v.get("to").and_then(|x| x.as_str()).unwrap_or("").trim();
-        if task.is_empty() || from.is_empty() || to.is_empty() {
+        if from.is_empty() || to.is_empty() || (!global_mode && task.is_empty()) {
             return self.send_errors(out, 400, vec!["`task`, `from`, `to` are required".into()]);
         }
-        if let Ok(entries) = self.global_asset_entries() {
+        if global_mode {
+            let refs = self.asset_referrers(from);
+            if !refs.is_empty() {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec![format!(
+                        "asset `{from}` is referenced by task(s): {}; update/rewrite those flows first",
+                        refs.join(", ")
+                    )],
+                );
+            }
+        } else if let Ok(entries) = self.global_asset_entries() {
             if let Some((_, source)) = entries.iter().find(|(gid, _)| gid == to) {
                 return self.send_errors(
                     out,
@@ -1627,9 +1906,16 @@ impl Server {
                 );
             }
         }
-        let b = match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
-            Ok(b) => b,
-            Err(e) => return self.send_errors(out, 400, vec![e]),
+        let b = if global_mode {
+            match self.asset_store("") {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        } else {
+            match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
         };
         match b.rename_asset(from, to) {
             Ok(item) => {
@@ -1646,9 +1932,10 @@ impl Server {
             Ok(v) => v,
             Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
         };
+        let global_mode = self.using_global_assets();
         let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").trim();
         let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").trim();
-        if task.is_empty() || id.is_empty() {
+        if id.is_empty() || (!global_mode && task.is_empty()) {
             return self.send_errors(out, 400, vec!["`task` and `id` are required".into()]);
         }
         let roi = match v.get("roi") {
@@ -1678,9 +1965,16 @@ impl Server {
                 None => return self.send_errors(out, 400, vec!["`threshold` must be a number".into()]),
             },
         };
-        let b = match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
-            Ok(b) => b,
-            Err(e) => return self.send_errors(out, 400, vec![e]),
+        let b = if global_mode {
+            match self.asset_store("") {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        } else {
+            match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
         };
         let action_roi = match json_opt_action_roi(&v) {
             Ok(r) => r,
@@ -1796,6 +2090,14 @@ impl Server {
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
         let mut tasks = Vec::new();
+        let global_count = if self.using_global_assets() {
+            crate::global_assets::open_store(&self.assets_dir)
+                .and_then(|s| s.load_assets_file())
+                .map(|af| af.items.len())
+                .ok()
+        } else {
+            None
+        };
         for name in names {
             let bundle = match oas_task::TaskBundle::open_named(&self.tasks_dir, &name) {
                 Ok(b) => b,
@@ -1805,10 +2107,12 @@ impl Server {
                 }
             };
             let meta = bundle.load_meta().ok().flatten();
-            let assets = bundle
-                .load_assets_file()
-                .map(|a| a.items.len())
-                .unwrap_or(0);
+            let assets = global_count.unwrap_or_else(|| {
+                bundle
+                    .load_assets_file()
+                    .map(|a| a.items.len())
+                    .unwrap_or(0)
+            });
             let mtime_ms = std::fs::metadata(self.tasks_dir.join(&name).join("meta.json"))
                 .and_then(|m| m.modified())
                 .ok()
@@ -1968,26 +2272,38 @@ impl Server {
     }
 
     fn handle_task_assets(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
+        let global_mode = self.using_global_assets();
         let q = parse_query(raw_path);
-        let task = match q.iter().find(|(k, _)| k == "task").map(|(_, v)| v.clone()) {
-            Some(t) => t,
-            None => {
-                return self.send_errors(out, 400, vec!["missing query param `task`".to_string()])
+        let task = q
+            .iter()
+            .find(|(k, _)| k == "task")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        if !global_mode {
+            if task.is_empty() {
+                return self.send_errors(out, 400, vec!["missing query param `task`".to_string()]);
             }
-        };
-        if let Err(e) = oas_task::validate_task_name(&task) {
-            return self.send_errors(out, 400, vec![e]);
+            if let Err(e) = oas_task::validate_task_name(&task) {
+                return self.send_errors(out, 400, vec![e]);
+            }
         }
-        let bundle = match oas_task::TaskBundle::open_named(&self.tasks_dir, &task) {
-            Ok(b) => b,
-            Err(e) => return self.send_errors(out, 400, vec![e]),
+        let bundle = if global_mode {
+            match self.asset_store("") {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        } else {
+            match oas_task::TaskBundle::open_named(&self.tasks_dir, &task) {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
         };
         match bundle.load_assets_file() {
             Ok(af) => {
                 let count = af.items.len();
                 let body = serde_json::json!({
                     "ok": true,
-                    "task": task,
+                    "task": if global_mode { "（全局素材库）".to_string() } else { task },
                     "design_resolution": af.design_resolution,
                     "count": count,
                     "items": af.items,
@@ -2058,7 +2374,15 @@ impl Server {
             Ok(b) => b,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
-        match bundle.save_flow(&text) {
+        let result = if self.using_global_assets() {
+            match self.global_asset_ids() {
+                Ok(ids) => bundle.save_flow_with_ids(&text, &ids),
+                Err(e) => return self.send_errors(out, 500, vec![e]),
+            }
+        } else {
+            bundle.save_flow(&text)
+        };
+        match result {
             Ok(()) => {
                 let body = serde_json::json!({ "ok": true, "task": task });
                 self.send_json(out, 200, &body.to_string())
@@ -2810,6 +3134,7 @@ impl Server {
         opts.seed = seed;
         opts.dry_run = dry_run;
         opts.library = self.library_dir.clone();
+        opts.assets = self.assets_dir.clone();
         // Click audit (CD2) is written even for dry/replay runs, so the editor's
         // 点击分布 panel sees editor-triggered runs exactly like CLI runs.
         opts.clicks_out = Some(

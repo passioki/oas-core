@@ -285,36 +285,102 @@
     root.textContent = '';
     const steps = getRoot();
     if (!steps.length) {
-      root.textContent = '（空流程）';
+      root.textContent = '（空流程；添加动作后显示控制流图）';
       return;
     }
     const wrap = document.createElement('div');
-    renderGraphArray(steps, wrap);
+    wrap.className = 'flowgraph';
+    const start = document.createElement('div');
+    start.className = 'fg-terminator';
+    start.textContent = '开始';
+    wrap.appendChild(start);
+    renderGraphSteps(steps, [], wrap, true);
+    const end = document.createElement('div');
+    end.className = 'fg-terminator end';
+    end.textContent = '流程出口';
+    wrap.appendChild(end);
     root.appendChild(wrap);
   }
 
-  function renderGraphArray(steps, container) {
+  function graphNode(step, path, cls) {
+    const meta = OP_META[step.op] || { label: step.op };
+    const node = document.createElement('div');
+    node.className = 'fg-node ' + (cls || '') + (childArrays(step).length ? ' control' : '');
+    const label = document.createElement('div');
+    label.className = 'fg-label';
+    label.textContent = meta.label;
+    const summary = document.createElement('div');
+    summary.className = 'fg-summary';
+    summary.textContent = stepSummary(step);
+    node.append(label, summary);
+    if (B.selected && JSON.stringify(B.selected) === JSON.stringify(path)) node.classList.add('selected');
+    node.addEventListener('click', () => { B.selected = path; renderAll(); });
+    return node;
+  }
+
+  // Real control-flow view: sequential arrows, if/else side-by-side lanes, loop
+  // body with a back edge. This is NOT a copy of the step list.
+  function renderGraphSteps(steps, basePath, container, first) {
     steps.forEach((step, idx) => {
-      if (idx > 0) {
+      const path = basePath.concat([idx]);
+      if (!(first && idx === 0)) {
         const a = document.createElement('div');
-        a.className = 'graph-arrow';
+        a.className = 'fg-arrow';
         a.textContent = '↓';
         container.appendChild(a);
       }
-      const meta = OP_META[step.op] || { label: step.op };
-      const node = document.createElement('div');
-      node.className = 'graph-node' + (childArrays(step).length ? ' control' : '');
-      node.textContent = `${meta.label}${stepSummary(step) ? '：' + stepSummary(step) : ''}`;
-      container.appendChild(node);
-      for (const [key, arr] of childArrays(step)) {
-        const branch = document.createElement('div');
-        branch.style.marginLeft = '14px';
-        const lb = document.createElement('div');
-        lb.className = 'muted small';
-        lb.textContent = key;
-        branch.appendChild(lb);
-        if (arr.length) renderGraphArray(arr, branch);
-        container.appendChild(branch);
+      if (step.op === 'if') {
+        const hasElse = Array.isArray(step.else) && step.else.length > 0;
+        const box = document.createElement('div');
+        box.className = 'fg-control-box if-box';
+        const head = graphNode(step, path, 'fg-branch-head');
+        box.appendChild(head);
+        const lanes = document.createElement('div');
+        lanes.className = 'fg-lanes' + (hasElse ? '' : ' one');
+        const thenLane = document.createElement('div');
+        thenLane.className = 'fg-lane';
+        const l1 = document.createElement('div');
+        l1.className = 'fg-lane-label';
+        l1.textContent = '是';
+        thenLane.appendChild(l1);
+        renderGraphSteps(step.then || [], path.concat(['then']), thenLane, false);
+        lanes.appendChild(thenLane);
+        if (hasElse) {
+          const elseLane = document.createElement('div');
+          elseLane.className = 'fg-lane';
+          const l2 = document.createElement('div');
+          l2.className = 'fg-lane-label';
+          l2.textContent = '否';
+          elseLane.appendChild(l2);
+          renderGraphSteps(step.else, path.concat(['else']), elseLane, false);
+          lanes.appendChild(elseLane);
+        }
+        box.appendChild(lanes);
+        const merge = document.createElement('div');
+        merge.className = 'fg-merge';
+        merge.textContent = '↓ 汇合';
+        box.appendChild(merge);
+        container.appendChild(box);
+      } else if (step.op === 'loop' || step.op === 'while') {
+        const box = document.createElement('div');
+        box.className = 'fg-control-box loop-box';
+        const head = graphNode(step, path, 'fg-branch-head');
+        box.appendChild(head);
+        const body = document.createElement('div');
+        body.className = 'fg-loop-body';
+        const bodyLabel = document.createElement('div');
+        bodyLabel.className = 'fg-lane-label';
+        bodyLabel.textContent = '循环体';
+        body.appendChild(bodyLabel);
+        renderGraphSteps(step.body || [], path.concat(['body']), body, false);
+        const back = document.createElement('div');
+        back.className = 'fg-backedge';
+        back.textContent = '↺ 回到循环开始';
+        body.appendChild(back);
+        box.appendChild(body);
+        container.appendChild(box);
+      } else {
+        container.appendChild(graphNode(step, path));
       }
     });
   }
@@ -342,19 +408,57 @@
     return sel;
   }
 
+  function renderAssetPanel() {
+    const box = $('builder-assets');
+    if (!box) return;
+    box.textContent = '';
+    const head = document.createElement('div');
+    head.textContent = B.task
+      ? `当前任务：${B.task} · 可用素材/操作区域 ${B.assets.length} 个`
+      : '当前任务：未选择';
+    box.appendChild(head);
+    if (B.assets.length) {
+      const sel = assetSelect('', null);
+      sel.title = '任务构建可用素材/操作区域（动作属性里会用到）';
+      box.appendChild(sel);
+      const list = document.createElement('div');
+      list.className = 'muted small';
+      list.textContent = B.assets.map((a) => `${a.id} [${a.kind}]`).join('\n');
+      box.appendChild(list);
+    } else {
+      const empty = document.createElement('div');
+      empty.className = 'muted small';
+      empty.textContent = '（当前任务没有素材/操作区域；先到工作台识别并保存）';
+      box.appendChild(empty);
+    }
+  }
+
   function renderForm() {
     const root = $('builder-form');
     if (!root) return;
     root.textContent = '';
     const step = getStep(B.selected);
     if (!step) {
-      root.textContent = '（选中一个动作）';
+      root.textContent = '（选中中间的步骤后编辑动作值；右侧下方始终显示可用素材/操作区域）';
       return;
     }
     const title = document.createElement('div');
     title.innerHTML = `<strong>${esc((OP_META[step.op] && OP_META[step.op].label) || step.op)}</strong>`;
     root.appendChild(title);
     step.args = step.args || {};
+    // Always expose the task asset/region list at the top of the inspector.
+    const assetLabel = document.createElement('label');
+    assetLabel.textContent = `任务素材/操作区域（${B.assets.length}）`;
+    const assetPick = assetSelect(step.args.sel || '', null);
+    assetPick.addEventListener('change', () => {
+      if (assetPick.value) {
+        step.args.sel = assetPick.value;
+        status(`已选择素材：${assetPick.value}`);
+        renderAll();
+      }
+    });
+    assetLabel.appendChild(assetPick);
+    root.appendChild(assetLabel);
     for (const f of FIELDS[step.op] || []) {
       const lab = document.createElement('label');
       lab.textContent = f.label;
@@ -425,19 +529,13 @@
       actions.appendChild(b);
     }
     root.appendChild(actions);
-
-    const assets = $('builder-assets');
-    if (assets) {
-      assets.textContent = B.assets.length
-        ? `可用素材/区域（${B.assets.length}）：\n` + B.assets.map((a) => `${a.id} [${a.kind}]${a.action_roi ? ' 操作区' + JSON.stringify(a.action_roi) : ''}`).join('\n')
-        : '（该任务暂无素材/区域）';
-    }
   }
 
   function renderAll() {
     renderSteps();
     renderGraph();
     renderForm();
+    renderAssetPanel();
   }
 
   async function refreshTaskList() {

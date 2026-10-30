@@ -197,9 +197,28 @@ fn push_issue_lines(lines: &mut Vec<String>, name: &str, issues: &[LintIssue]) {
 /// Lint one task (`--task <name>`) or every task (`--all` / `None`).
 ///
 /// Setup errors are `Err`; lint findings are counted in [`LintSummary`].
+fn lint_one_with_global(tasks_dir: &Path, name: &str) -> Result<Vec<LintIssue>, String> {
+    let assets_root = Path::new(crate::global_assets::DEFAULT_DIR);
+    if crate::global_assets::is_initialized(assets_root) {
+        let store = crate::global_assets::open_store(assets_root)?;
+        let ids: std::collections::BTreeSet<String> = store
+            .load_assets_file()?
+            .items
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+        let bundle = TaskBundle::open_named(tasks_dir, name)?;
+        let mut issues = Vec::new();
+        bundle.lint_into_with_assets(&mut issues, Some(&ids));
+        Ok(issues)
+    } else {
+        lint_task(tasks_dir, name)
+    }
+}
+
 pub fn lint(tasks_dir: &Path, only: Option<&str>) -> Result<LintSummary, String> {
     if let Some(name) = only {
-        let issues = lint_task(tasks_dir, name)?;
+        let issues = lint_one_with_global(tasks_dir, name)?;
         let mut lines = vec![format!("lint task={name} errors={}", issues.len())];
         push_issue_lines(&mut lines, name, &issues);
         return Ok(LintSummary {
@@ -209,7 +228,14 @@ pub fn lint(tasks_dir: &Path, only: Option<&str>) -> Result<LintSummary, String>
         });
     }
 
-    let results = lint_tasks(tasks_dir)?;
+    let names = oas_task::list_tasks(tasks_dir)?;
+    let mut results: Vec<(String, Vec<LintIssue>)> = Vec::new();
+    for name in names {
+        match lint_one_with_global(tasks_dir, &name) {
+            Ok(issues) => results.push((name, issues)),
+            Err(e) => results.push((name, vec![LintIssue::new("TASK", "task", e)])),
+        }
+    }
     let mut lines = Vec::new();
     let mut errors = 0usize;
     for (name, issues) in &results {

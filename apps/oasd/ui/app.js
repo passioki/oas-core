@@ -154,6 +154,8 @@ let pendingActionAsset = null; // existing asset whose operation region is being
 const btnBatchSave = document.getElementById('btn-batch-save');
 const btnAssetConflicts = document.getElementById('btn-asset-conflicts');
 const assetConflicts = document.getElementById('asset-conflicts');
+const btnAssetsMigrate = document.getElementById('btn-assets-migrate');
+const assetsMigrateStatus = document.getElementById('assets-migrate-status');
 const batchStatus = document.getElementById('batch-status');
 // N4 click-distribution state (§21): the run list, the loaded points + metrics,
 // and a cached offscreen bitmap so draw() stays cheap.
@@ -806,6 +808,9 @@ function renderOcrLines(lines, roi, sourceLabel) {
       score: Number(b.score || 0),
       recognize: rec,
       action: { ...rec },
+      // v1.2.1: remember the original multi-line recognition ROI; runtime must
+      // re-run the same det+rec over this region for this saved line.
+      sourceRoi: { x: roi.x, y: roi.y, w: roi.w, h: roi.h },
       selected: candidateNameValid(b.text),
       name: b.text,
     };
@@ -955,6 +960,9 @@ async function saveSelectedCandidates() {
     kind: 'ocr_line',
     roi: [c.recognize.x, c.recognize.y, c.recognize.w, c.recognize.h],
     action_roi: [c.action.x, c.action.y, c.action.w, c.action.h],
+    ocr_mode: 'lines',
+    ocr_source_roi: [c.sourceRoi.x, c.sourceRoi.y, c.sourceRoi.w, c.sourceRoi.h],
+    ocr_text: c.text,
   }));
   if (btnBatchSave) btnBatchSave.disabled = true;
   if (batchStatus) batchStatus.textContent = '保存中…';
@@ -1411,7 +1419,7 @@ function renderAssetList() {
     const res = taskAssetsMeta.design ? taskAssetsMeta.design.join('x') : '未设置';
     const head = document.createElement('div');
     head.className = 'muted small';
-    head.textContent = `任务 ${taskAssetsMeta.task} · design ${res} · ${taskAssets.length} 个素材`;
+    head.textContent = `素材库 ${taskAssetsMeta.task} · design ${res} · ${taskAssets.length} 个素材`;
     assetsList.appendChild(head);
   }
   if (!items.length) {
@@ -2005,28 +2013,138 @@ async function refreshFrames() {
       framesStatus.textContent = '—';
       return;
     }
+    const groups = new Map();
     for (const f of frames) {
-      const row = document.createElement('div');
-      row.className = 'frame-row' + (f.current ? ' current' : '');
-      const pick = document.createElement('button');
-      pick.type = 'button';
-      pick.className = 'frame-pick';
-      pick.textContent = `#${f.id} ${f.source} ${f.width}x${f.height}${f.current ? ' · 当前' : ''}`;
-      pick.title = `时间 ${f.ts_ms} · ${f.bytes} 字节`;
-      pick.addEventListener('click', () => selectFrame(f.id));
-      const del = document.createElement('button');
-      del.type = 'button';
-      del.className = 'frame-del';
-      del.textContent = '删';
-      del.title = '删除该帧';
-      del.addEventListener('click', () => deleteFrame(f.id));
-      row.append(pick, del);
-      framesList.appendChild(row);
+      const cat = (f.category || '').trim() || '未分类';
+      if (!groups.has(cat)) groups.set(cat, []);
+      groups.get(cat).push(f);
     }
-    framesStatus.textContent = `共 ${frames.length} 帧（上限 20）；点行切换当前帧`;
+    const orderedCats = Array.from(groups.keys()).sort((a, b) => {
+      if (a === '未分类') return 1;
+      if (b === '未分类') return -1;
+      return 0;
+    });
+    for (const cat of orderedCats) {
+      const group = document.createElement('div');
+      group.className = 'frame-group';
+      const head = document.createElement('div');
+      head.className = 'frame-group-head';
+      head.textContent = `${cat}（${groups.get(cat).length}）`;
+      head.title = '把帧拖到分组标题上可改分类';
+      head.addEventListener('dragover', (e) => e.preventDefault());
+      head.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const id = Number(e.dataTransfer.getData('text/plain'));
+        if (id) moveFrameToCategory(id, cat === '未分类' ? '' : cat);
+      });
+      group.appendChild(head);
+      for (const f of groups.get(cat)) {
+        const row = document.createElement('div');
+        row.className = 'frame-row' + (f.current ? ' current' : '');
+        row.draggable = true;
+        row.dataset.id = String(f.id);
+        row.addEventListener('dragstart', (e) => {
+          e.dataTransfer.setData('text/plain', String(f.id));
+          e.dataTransfer.effectAllowed = 'move';
+          row.classList.add('dragging');
+        });
+        row.addEventListener('dragend', () => row.classList.remove('dragging'));
+        row.addEventListener('dragover', (e) => e.preventDefault());
+        row.addEventListener('drop', (e) => {
+          e.preventDefault();
+          const dragged = Number(e.dataTransfer.getData('text/plain'));
+          if (dragged && dragged !== f.id) {
+            moveFrameBefore(dragged, f.id, cat === '未分类' ? '' : cat);
+          }
+        });
+        const pick = document.createElement('button');
+        pick.type = 'button';
+        pick.className = 'frame-pick';
+        pick.textContent = `${f.name || '帧'} · #${f.id} ${f.width}x${f.height}${f.current ? ' · 当前' : ''}`;
+        pick.title = `来源 ${f.source} · 时间 ${f.ts_ms} · ${f.bytes} 字节`;
+        pick.addEventListener('click', () => selectFrame(f.id));
+        const rename = document.createElement('button');
+        rename.type = 'button';
+        rename.className = 'frame-del';
+        rename.textContent = '名';
+        rename.title = '重命名该帧';
+        rename.addEventListener('click', () => renameFrame(f));
+        const catBtn = document.createElement('button');
+        catBtn.type = 'button';
+        catBtn.className = 'frame-del';
+        catBtn.textContent = '类';
+        catBtn.title = '设置分类（自由文本）';
+        catBtn.addEventListener('click', () => setFrameCategory(f));
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'frame-del';
+        del.textContent = '删';
+        del.title = '删除该帧';
+        del.addEventListener('click', () => deleteFrame(f.id));
+        row.append(pick, rename, catBtn, del);
+        group.appendChild(row);
+      }
+      framesList.appendChild(group);
+    }
+    framesStatus.textContent = `共 ${frames.length} 帧；拖动排序/换分组，点行切换当前帧`;
   } catch (e) {
     framesStatus.textContent = '图片列表异常：' + e;
   }
+}
+
+async function renameFrame(f) {
+  const name = window.prompt('帧名称', f.name || `帧 ${f.id}`);
+  if (name == null) return;
+  const r = await postJson('/frames/rename', { id: f.id, name: name.trim() });
+  if (!r.ok) {
+    framesStatus.textContent = '重命名失败：' + (r.errors || []).join('; ');
+    return;
+  }
+  await refreshFrames();
+}
+
+async function setFrameCategory(f) {
+  const cat = window.prompt('分类（自由文本，留空=未分类）', f.category || '');
+  if (cat == null) return;
+  const r = await postJson('/frames/category', { id: f.id, category: cat.trim() });
+  if (!r.ok) {
+    framesStatus.textContent = '设置分类失败：' + (r.errors || []).join('; ');
+    return;
+  }
+  await refreshFrames();
+}
+
+async function moveFrameToCategory(id, category) {
+  const r = await postJson('/frames/category', { id, category });
+  if (!r.ok) {
+    framesStatus.textContent = '改分类失败：' + (r.errors || []).join('; ');
+    return;
+  }
+  await refreshFrames();
+}
+
+async function moveFrameBefore(dragged, target, category) {
+  // Update category first (if dropped into another group), then reorder.
+  const cat = await postJson('/frames/category', { id: dragged, category });
+  if (!cat.ok) {
+    framesStatus.textContent = '改分类失败：' + (cat.errors || []).join('; ');
+    return;
+  }
+  const s = await (await fetch('/frames')).json();
+  const ids = (s.frames || []).map((f) => f.id);
+  const from = ids.indexOf(dragged);
+  const to = ids.indexOf(target);
+  if (from >= 0 && to >= 0) {
+    ids.splice(from, 1);
+    const insert = Math.max(0, ids.indexOf(target) >= 0 ? ids.indexOf(target) : to);
+    ids.splice(insert, 0, dragged);
+  }
+  const r = await postJson('/frames/reorder', { ids });
+  if (!r.ok) {
+    framesStatus.textContent = '排序失败：' + (r.errors || []).join('; ');
+    return;
+  }
+  await refreshFrames();
 }
 
 async function selectFrame(id) {
@@ -2624,7 +2742,12 @@ async function refreshTaskList(selectName) {
       opt.textContent = t;
       taskSelect.appendChild(opt);
     }
-    taskSelect.value = want && tasks.includes(want) ? want : tasks[0];
+    // Single source of truth: the task name input mirrors the selected task.
+    // Without this, batch save could write to the default "任务1" while the
+    // user is looking at another selected task.
+    const selected = want && tasks.includes(want) ? want : tasks[0];
+    taskSelect.value = selected;
+    if (taskName) taskName.value = selected;
   } catch (e) {
     log('任务列表读取异常：' + e);
   }
@@ -3025,7 +3148,7 @@ async function submitResetMemory() {
   // 深链 ?panel=flow / ?panel=task 供验收/直达使用
   try {
     const wantPanel = new URLSearchParams(location.search).get('panel');
-    const ok = ['panel-assets', 'panel-images', 'panel-click', 'panel-task', 'panel-flow', 'panel-schedule'];
+    const ok = ['panel-assets', 'panel-images', 'panel-click', 'panel-task', 'panel-schedule'];
     if (wantPanel && ok.includes(wantPanel)) activatePanel(wantPanel);
   } catch (e) {
     /* ignore */
@@ -3084,7 +3207,7 @@ async function submitResetMemory() {
   if (btnTaskRun) btnTaskRun.addEventListener('click', doRunTask);
   if (btnGoalApply) btnGoalApply.addEventListener('click', applyTaskGoal);
   if (btnWbAssets) btnWbAssets.addEventListener('click', () => activatePanel('panel-assets'));
-  if (btnWbFlow) btnWbFlow.addEventListener('click', () => activatePanel('panel-flow'));
+  if (btnWbFlow) btnWbFlow.addEventListener('click', () => activatePage('builder'));
   if (btnWbRun) btnWbRun.addEventListener('click', () => {
     activatePanel('panel-task');
     setRunStatus('点「运行任务」开始测试；先确认完成条件已应用。');
@@ -3147,6 +3270,28 @@ async function submitResetMemory() {
   if (btnClickStep) btnClickStep.addEventListener('click', doGenerateClickStep);
   if (btnAppendStep) btnAppendStep.addEventListener('click', doAppendStepToFlow);
   if (btnBatchSave) btnBatchSave.addEventListener('click', saveSelectedCandidates);
+  if (btnAssetsMigrate) {
+    btnAssetsMigrate.addEventListener('click', async () => {
+      if (!window.confirm('把现有所有任务素材和旧素材库迁移到统一素材库？\n\n重名会自动加后缀，并按任务重写 flow 引用；迁移报告会生成。')) return;
+      if (assetsMigrateStatus) assetsMigrateStatus.textContent = '迁移中…';
+      try {
+        const r = await postJson('/assets/migrate', {});
+        if (!r.ok) {
+          if (assetsMigrateStatus) assetsMigrateStatus.textContent = '迁移失败：' + (r.errors || []).join('; ');
+          return;
+        }
+        const rep = r.report || {};
+        if (assetsMigrateStatus) {
+          assetsMigrateStatus.textContent =
+            `迁移完成：${rep.assets || 0} 素材 / ${rep.tasks || 0} 任务 / ${rep.flows_rewritten || 0} flow，重命名 ${(rep.renamed || []).length} 个`;
+        }
+        await refreshTaskAssets();
+        await refreshTaskList(taskName.value);
+      } catch (e) {
+        if (assetsMigrateStatus) assetsMigrateStatus.textContent = '迁移异常：' + e;
+      }
+    });
+  }
   if (btnAssetConflicts) {
     btnAssetConflicts.addEventListener('click', async () => {
       if (!assetConflicts) return;

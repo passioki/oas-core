@@ -48,7 +48,6 @@
         <button class="rail-btn active" data-panel="panel-assets" type="button">素材</button>
         <button class="rail-btn" data-panel="panel-images" type="button">图片</button>
         <button class="rail-btn" data-panel="panel-task" type="button">任务</button>
-        <button class="rail-btn" data-panel="panel-flow" type="button">流程</button>
         <button class="rail-btn" data-panel="panel-click" type="button">点击分布</button>
         <button class="rail-btn" data-panel="panel-schedule" type="button">调度</button>
       </nav>
@@ -115,6 +114,8 @@
           <div id="library-status" class="muted small">—</div>
           <button id="btn-asset-conflicts" type="button">全局重名扫描</button>
           <div id="asset-conflicts" class="muted small">—</div>
+          <button id="btn-assets-migrate" type="button">迁移到统一素材库…</button>
+          <div id="assets-migrate-status" class="muted small">—</div>
           <div class="muted small">
             素材库是全局的：flow/素材里写 <code>lib:&lt;id&gt;</code> 即可引用（匹配/点击/守卫/弹窗全可用）。
           </div>
@@ -227,7 +228,7 @@
             完成条件属于任务（一次运行打几场）；调度器的 quota 是“一天/一周跑几次任务”，两者分开。
           </p>
 
-          <h3>任务素材</h3>
+          <h3>素材库（全任务统一）</h3>
           <div class="row lib-toolbar">
             <input id="asset-search" placeholder="按素材 id 搜索" />
             <button id="assets-refresh">刷新</button>
@@ -236,7 +237,7 @@
           <pre id="assets-summary" class="muted small" style="display:none">—</pre>
         </section>
 
-        <section class="panel" id="panel-flow">
+        <section class="panel" id="panel-flow" style="display:none">
           <h3>flow.json</h3>
           <textarea id="flow-json" rows="10" spellcheck="false" placeholder='{"schema_version":1,"name":"任务1","steps":[{"op":"click","args":{"sel":"分组2"}},{"op":"finish","args":{"exit":"done"}}]}'></textarea>
           <button id="btn-save-flow">保存 flow（校验引用）</button>

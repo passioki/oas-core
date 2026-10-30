@@ -118,6 +118,17 @@ pub struct AssetDecl {
         skip_serializing_if = "Option::is_none"
     )]
     pub action_roi: Option<[i32; 4]>,
+    /// v1.2.1 recognition provenance for `ocr_line` assets:
+    /// `single` (default, rec only) or `lines` (came from a multi-line det+rec
+    /// result and must run the same det+rec path at runtime).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr_mode: Option<String>,
+    /// Original recognition region that produced this OCR line (multi-line path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr_source_roi: Option<[i32; 4]>,
+    /// Expected line text captured when this derived `ocr_line` was saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr_text: Option<String>,
     /// NCC threshold; defaults to [`DEFAULT_THRESHOLD`] for templates.
     #[serde(
         default,
@@ -145,6 +156,9 @@ impl AssetDecl {
             file: None,
             roi: Some(roi),
             action_roi: None,
+            ocr_mode: None,
+            ocr_source_roi: None,
+            ocr_text: None,
             threshold: None,
             polygon: None,
             rev: None,
@@ -432,6 +446,9 @@ fn crop_rgba(frame: &Frame, roi: [i32; 4]) -> Result<Frame, String> {
 #[derive(Debug, Clone)]
 pub struct TaskBundle {
     root: PathBuf,
+    /// v1.2.1: a pure global asset store (`assets/`) has no meta/flow; saves must
+    /// not create task files or run flow cross-checks.
+    assets_only: bool,
 }
 
 impl TaskBundle {
@@ -447,7 +464,33 @@ impl TaskBundle {
                 root.display()
             ));
         }
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            assets_only: false,
+        })
+    }
+
+    /// Open a **global asset store** rooted at `root` (`assets.json` + `images/`).
+    /// Unlike a task bundle it has no meta/flow and never writes them.
+    pub fn open_asset_store(root: impl Into<PathBuf>) -> Result<Self, String> {
+        let root = root.into();
+        if root.as_os_str().is_empty() {
+            return Err("asset store root is empty".to_string());
+        }
+        if root.exists() && !root.is_dir() {
+            return Err(format!(
+                "asset store root {} exists but is not a directory",
+                root.display()
+            ));
+        }
+        Ok(Self {
+            root,
+            assets_only: true,
+        })
+    }
+
+    pub fn is_assets_only(&self) -> bool {
+        self.assets_only
     }
 
     /// Open `<tasks_dir>/<name>`, validating `name` against path traversal.
@@ -573,6 +616,26 @@ impl TaskBundle {
                         h: action[3],
                     },
                 );
+                // v1.2.1: multi-line-derived ocr_line keeps its original source
+                // region + expected text, so runtime re-runs det+rec instead of
+                // a single-line rec on the tight line crop.
+                if item.kind == "ocr_line"
+                    && item.ocr_mode.as_deref() == Some("lines")
+                    && item.ocr_source_roi.is_some()
+                    && item.ocr_text.is_some()
+                {
+                    let src = item.ocr_source_roi.unwrap();
+                    set.set_derived_ocr(
+                        item.id.clone(),
+                        oas_types::Rect {
+                            x: src[0],
+                            y: src[1],
+                            w: src[2],
+                            h: src[3],
+                        },
+                        item.ocr_text.clone().unwrap(),
+                    );
+                }
                 // §22.10 N10b-2: OCR polygon mask (frame coordinates).
                 if let Some(poly) = &item.polygon {
                     let pts: Vec<oas_types::Point> = poly
@@ -589,12 +652,7 @@ impl TaskBundle {
                     item.id
                 )
             })?;
-            let roi = item.roi.ok_or_else(|| {
-                format!(
-                    "assets.json: items[{i}].roi: template asset `{}` has no roi",
-                    item.id
-                )
-            })?;
+            let roi = item.roi;
             let path = self.root.join(file);
             let bytes = std::fs::read(&path)
                 .map_err(|e| format!("read template {}: {e}", path.display()))?;
@@ -603,11 +661,11 @@ impl TaskBundle {
             // The PNG is already the ROI crop; `roi` is the search window.
             let tpl = oas_runtime::Template {
                 gray: oas_perceive::GrayImage::from_frame(&frame),
-                roi: Some(oas_types::Rect {
-                    x: roi[0],
-                    y: roi[1],
-                    w: roi[2],
-                    h: roi[3],
+                roi: roi.map(|r| oas_types::Rect {
+                    x: r[0],
+                    y: r[1],
+                    w: r[2],
+                    h: r[3],
                 }),
                 threshold: item.threshold.unwrap_or(DEFAULT_THRESHOLD),
                 click_polygon: item.polygon.as_ref().map(|pts| {
@@ -841,6 +899,57 @@ impl TaskBundle {
         }
         validate_threshold(decl.threshold)
             .map_err(|e| format!("asset `{}` rejected: {e}", decl.id))?;
+        // v1.2.1: OCR recognition provenance. A derived `ocr_line` saved from a
+        // multi-line det+rec result must keep the source region + expected text
+        // so runtime can reproduce the original recognition method.
+        if decl.ocr_mode.is_some() || decl.ocr_source_roi.is_some() || decl.ocr_text.is_some() {
+            if decl.kind != "ocr_line" {
+                return Err(format!(
+                    "asset `{}` rejected: ocr_mode/ocr_source_roi/ocr_text are only valid \
+                     for ocr_line assets",
+                    decl.id
+                ));
+            }
+            let mode = decl.ocr_mode.as_deref().unwrap_or("single");
+            match mode {
+                "single" => {
+                    if decl.ocr_source_roi.is_some() || decl.ocr_text.is_some() {
+                        return Err(format!(
+                            "asset `{}` rejected: ocr_mode=single must not carry \
+                             ocr_source_roi/ocr_text",
+                            decl.id
+                        ));
+                    }
+                }
+                "lines" => {
+                    let Some(src) = decl.ocr_source_roi else {
+                        return Err(format!(
+                            "asset `{}` rejected: ocr_mode=lines requires ocr_source_roi",
+                            decl.id
+                        ));
+                    };
+                    if src[2] <= 0 || src[3] <= 0 || src[0] < 0 || src[1] < 0 {
+                        return Err(format!(
+                            "asset `{}` rejected: ocr_source_roi must have x,y >= 0 and w,h > 0",
+                            decl.id
+                        ));
+                    }
+                    if decl.ocr_text.as_deref().unwrap_or("").trim().is_empty() {
+                        return Err(format!(
+                            "asset `{}` rejected: ocr_mode=lines requires non-empty ocr_text",
+                            decl.id
+                        ));
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "asset `{}` rejected: unknown ocr_mode `{other}` \
+                         (allowed: single, lines)",
+                        decl.id
+                    ))
+                }
+            }
+        }
 
         let mut af = self.load_assets_file()?;
 
@@ -1040,7 +1149,7 @@ impl TaskBundle {
             .map(|i| i.id.clone())
             .chain(std::iter::once(decl.id.clone()))
             .collect();
-        if self.flow_path().is_file() {
+        if !self.assets_only && self.flow_path().is_file() {
             let flow = self.load_flow()?.ok_or_else(|| {
                 "flow.json exists but could not be loaded; nothing written".to_string()
             })?;
@@ -1055,7 +1164,9 @@ impl TaskBundle {
         }
 
         // ----- writes start here (all validation already passed) -----
-        self.ensure_meta()?;
+        if !self.assets_only {
+            self.ensure_meta()?;
+        }
         if let Some((abs, png)) = pending_image.as_ref() {
             write_atomic(abs, png)?;
         }
@@ -1084,11 +1195,22 @@ impl TaskBundle {
     /// DSL load-time validation applies) and cross-checked against declared
     /// assets before anything is written.
     pub fn save_flow(&self, flow_json: &str) -> Result<(), String> {
-        let flow =
-            oas_flow::Flow::from_json(flow_json).map_err(|e| format!("flow.json rejected: {e}"))?;
         let af = self.load_assets_file()?;
         let ids: BTreeSet<String> = af.items.iter().map(|i| i.id.clone()).collect();
-        if let Err(errs) = flow.validate_assets(&ids) {
+        self.save_flow_with_ids(flow_json, &ids)
+    }
+
+    /// v1.2.1: save a task flow validated against an **external** asset id set
+    /// (typically the global asset store). `save_flow` remains the task-local
+    /// compatibility path.
+    pub fn save_flow_with_ids(
+        &self,
+        flow_json: &str,
+        ids: &BTreeSet<String>,
+    ) -> Result<(), String> {
+        let flow =
+            oas_flow::Flow::from_json(flow_json).map_err(|e| format!("flow.json rejected: {e}"))?;
+        if let Err(errs) = flow.validate_assets(ids) {
             let joined = errs
                 .iter()
                 .map(|e| e.to_string())
@@ -1096,7 +1218,9 @@ impl TaskBundle {
                 .join("; ");
             return Err(format!("flow.json: {joined}; nothing written"));
         }
-        self.ensure_meta()?;
+        if !self.assets_only {
+            self.ensure_meta()?;
+        }
         let mut text = flow_json.trim_end().to_string();
         text.push('\n');
         write_atomic(&self.flow_path(), text.as_bytes())
@@ -1204,6 +1328,15 @@ impl TaskBundle {
     /// Accumulate lint issues into `issues` (used by [`Self::lint`] and by
     /// `--all`, so one broken task cannot abort the whole report).
     pub fn lint_into(&self, issues: &mut Vec<LintIssue>) {
+        self.lint_into_with_assets(issues, None);
+    }
+
+    /// v1.2.1: lint a task whose flow may reference a **global** asset id set.
+    pub fn lint_into_with_assets(
+        &self,
+        issues: &mut Vec<LintIssue>,
+        external_assets: Option<&BTreeSet<String>>,
+    ) {
         // ---- meta.json ------------------------------------------------------
         let meta = match std::fs::read_to_string(self.meta_path()) {
             Ok(text) => match Meta::from_json(&text) {
@@ -1321,8 +1454,13 @@ impl TaskBundle {
         }
 
         // T4: asset references must resolve (or be `lib:` selectors).
-        if let Some(af) = &assets {
-            let ids: BTreeSet<String> = af.items.iter().map(|i| i.id.clone()).collect();
+        let t4_ids: Option<BTreeSet<String>> = match external_assets {
+            Some(ids) => Some(ids.clone()),
+            None => assets
+                .as_ref()
+                .map(|af| af.items.iter().map(|i| i.id.clone()).collect()),
+        };
+        if let Some(ids) = t4_ids {
             if let Err(errs) = flow.validate_assets(&ids) {
                 for e in errs {
                     issues.push(LintIssue::new(
@@ -1467,6 +1605,38 @@ impl TaskBundle {
             if let Err(e) = validate_threshold(item.threshold) {
                 errs.push((format!("{p}.threshold"), e));
             }
+            if item.ocr_mode.is_some()
+                || item.ocr_source_roi.is_some()
+                || item.ocr_text.is_some()
+            {
+                if item.kind != "ocr_line" {
+                    errs.push((
+                        format!("{p}.ocr_mode"),
+                        "ocr provenance is only valid for ocr_line".to_string(),
+                    ));
+                }
+                match item.ocr_mode.as_deref().unwrap_or("single") {
+                    "single" => {}
+                    "lines" => {
+                        if item.ocr_source_roi.is_none() {
+                            errs.push((
+                                format!("{p}.ocr_source_roi"),
+                                "ocr_mode=lines requires ocr_source_roi".to_string(),
+                            ));
+                        }
+                        if item.ocr_text.as_deref().unwrap_or("").trim().is_empty() {
+                            errs.push((
+                                format!("{p}.ocr_text"),
+                                "ocr_mode=lines requires non-empty ocr_text".to_string(),
+                            ));
+                        }
+                    }
+                    other => errs.push((
+                        format!("{p}.ocr_mode"),
+                        format!("unknown ocr_mode `{other}` (allowed: single, lines)"),
+                    )),
+                }
+            }
             if let Some([x, y, w, h]) = item.action_roi {
                 if x < 0 || y < 0 || w <= 0 || h <= 0 {
                     errs.push((
@@ -1496,12 +1666,15 @@ impl TaskBundle {
                     }
                 }
                 None => {
-                    if matches!(item.kind.as_str(), "template" | "region") {
+                    if item.kind == "region" {
                         errs.push((
                             format!("{p}.roi"),
-                            format!("{} object requires [x,y,w,h]", item.kind),
+                            "region object requires [x,y,w,h]".to_string(),
                         ));
                     }
+                    // template without ROI is allowed in the GLOBAL store: old
+                    // library templates were authored without an ROI and use
+                    // full-frame search at runtime.
                 }
             }
             match item.file.as_deref() {
@@ -1958,6 +2131,9 @@ mod tests {
             file: None,
             roi: Some([10, 10, 21, 11]),
             action_roi: None,
+            ocr_mode: None,
+            ocr_source_roi: None,
+            ocr_text: None,
             threshold: None,
             polygon: Some(vec![[10, 10], [30, 10], [30, 20], [10, 20]]),
             rev: None,
@@ -1999,6 +2175,9 @@ mod tests {
             file: None,
             roi: Some([10, 10, 21, 11]),
             action_roi: Some([12, 12, 30, 30]),
+            ocr_mode: None,
+            ocr_source_roi: None,
+            ocr_text: None,
             threshold: None,
             polygon: None,
             rev: None,
@@ -2062,6 +2241,9 @@ mod tests {
             file: None,
             roi: Some([1, 2, 30, 20]),
             action_roi: Some([0, 0, 40, 30]),
+            ocr_mode: None,
+            ocr_source_roi: None,
+            ocr_text: None,
             threshold: None,
             polygon: None,
             rev: None,
@@ -2072,6 +2254,9 @@ mod tests {
             file: None,
             roi: None, // region requires roi
             action_roi: None,
+            ocr_mode: None,
+            ocr_source_roi: None,
+            ocr_text: None,
             threshold: None,
             polygon: None,
             rev: None,
