@@ -1,6 +1,6 @@
 # OAS V1.2.1 部署说明（实机 / 模拟器）
 
-> 本包 = `oasd.exe` + 编辑器 UI + OCR 模型 + adb + 配置 + 启停脚本；数据在 `tasks/`、`assets/`、`library/`、`runs/`、`logs/`。
+> 本包 = `oasd.exe` + 编辑器 UI + OCR 模型 + adb + 配置 + 启停脚本；数据在 `tasks/`、`assets/`、`library/`、`frames/`、`runs/`、`logs/`。
 > 目标环境：Windows 10/11 x64；Android 模拟器（MuMu 12）或 Android 真机（adb）；阴阳师 Android 客户端。
 
 ## 0. V1.2.1 修复与统一
