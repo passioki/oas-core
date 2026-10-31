@@ -1,0 +1,16 @@
+{
+  "task": "Duel",
+  "status": "🔄",
+  "evidence": "oasd task lint 绿；覆盖：主界面→战斗→准备页→自动上阵/准备→P-BATTLE→回页循环；分数目标/名仕/ban/荣誉/时间窗未迁移。未真机/回放验证。 bundle: tasks/Duel/; lint green.",
+  "gaps": [
+    "目标分数/名仕(celeb)判定（O_D_SCORE OCR、I_BAN、O_D_BAN_NAME、C_DUEL_CLICK_5 自动上阵）未迁移：flow 只按 max_battles 次数循环，不打到分数目标不退出。",
+    "12:00-23:00 时间窗无时钟原语 → scheduler windows。",
+    "荣誉满退出（O_D_HONOR）、练习模式检测（I_BATTLE_WITH_TRAIN）、结算分享（I_D_VICTORY_SHARE）未迁移。",
+    "御魂/式神/阴阳师切换（switch_soul/switch_onmyoji/switch_all_soul）未迁移。",
+    "P-BATTLE v2 不含斗技专有的准备阶段处理（名仕 ban、I_D_CHECK_BAN 等）。"
+  ],
+  "artifacts": {
+    "spec": "migration/specs/Duel.md",
+    "bundle": "tasks/Duel/"
+  }
+}

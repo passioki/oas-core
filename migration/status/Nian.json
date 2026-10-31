@@ -1,0 +1,15 @@
+{
+  "task": "Nian",
+  "status": "🔄",
+  "evidence": "oasd task lint 绿；覆盖：组队入口→年兽区域（inline OCR 列表点击）→冷却文本检测→自动匹配→准备/通用战斗→回庭院；cooldown 剩余时间解析/房间邀请/匹配超时取消未覆盖。 bundle: tasks/Nian/; lint green.",
+  "gaps": [
+    "冷却剩余时间解析（远程 re.search(r'(\\d+)时(\\d+)分后可') + timedelta）无字符串解析原语 → 只能以 blocked 退出让调度器稍后重试，不设置精确 next_run。",
+    "GeneralRoom.check_zones（L_TEAM_LIST 滚动列表 OCR + O_GR_ZONES_NAME）未迁移：用 inline OCR [26,106,360,549] 点击可见的「年兽」行 + 上滑 8 次替代；若年兽行多次滚动后仍不可见会失败。",
+    "GeneralInvite（房间/邀人）未迁移：只处理「自动匹配」路径；匹配 240s 安全点击、480s 取消、被秒开接管战斗未覆盖。",
+    "普通战斗用 P-BATTLE 通用骨架，不含绿标/预设阵容。"
+  ],
+  "artifacts": {
+    "spec": "migration/specs/Nian.md",
+    "bundle": "tasks/Nian/"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "task": "RealmRaid",
+  "status": "🔄",
+  "evidence": [
+    "spec: migration/specs/RealmRaid.md (behavior matrix §3, diffs §6)",
+    "bundle: tasks/RealmRaid/{meta.json,flow.json,README.md,migration.json}",
+    "lint: oasd task lint --tasks-dir tasks --task RealmRaid => lint task=RealmRaid errors=0",
+    "assets: legacy_RealmRaid_* + newly imported legacy_Component_GeneralBattle_* + GameUi/GlobalGame; all resolved (T4 green)",
+    "flow covers: entry nav, frog modal dismiss, team-lock toggle, ticket OCR exit, medal-priority scan+attack, generic battle (prepare/win/lose/reward), 3-win reward click, refresh/confirm, optional exit-four retreat, return home, 4 exits"
+  ],
+  "gaps": [
+    "TODO(behavior): frog-activity target judgement (I_FROG_MEDAL + O_FROG_1..9 OCR==20 + temporary team unlock) not migrated; only a warn is logged",
+    "TODO(behavior): partition index semantics lost (old find_one derives 1..9 from medal centre; used by exit_four first-partition trigger and false_roi masking)",
+    "TODO(config): three_refresh and when_attack_fail=EXIT|CONTINUE not mapped; fixed 'no target -> refresh/failed'",
+    "TODO(DSL): number_base ticket baseline needs (cu,res,total) triple; only ocr_digit first number available",
+    "TODO(fidelity): 3-win reward/chat-bubble detection approximated by I_SOUL_RAID appearance",
+    "TODO(DSL): switch_soul preset/soul switching has no primitive",
+    "no real-device/replay evidence (emulator offline); verify medal thresholds, I_RR_PERSON page guard and Component_GeneralBattle template calibration on live device"
+  ]
+}

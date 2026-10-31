@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "MysteryShop",
+  "name": "神秘商店",
+  "version": 1,
+  "expire": "weekly",
+  "category": "weekly",
+  "description": "庭院→商店→神秘商店：遍历好友商店，按开关购买神秘符咒/黑达摩碎片/太鼓3/太鼓4；按记录数领取 3/5/10 次奖励；回庭院。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "mystery_amulet",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "black_daruma_scrap",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "shop_kaiko_3",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "shop_kaiko_4",
+      "type": "bool",
+      "default": false
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 600
+  },
+  "resources": [
+    "friendship_points"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "week",
+      "times": 1
+    }
+  }
+}

@@ -1,0 +1,1882 @@
+{
+  "schema_version": 1,
+  "name": "HeroTest",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "\"HeroTest 开始：庭院 → 探索 → 英杰试炼 → 切换英杰 → 进入模式页 → 循环挑战\""
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "庭院_探索灯笼",
+        "requires": {
+          "kind": "appear",
+          "sel": "庭院_探索灯笼",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 10000
+        }
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_EXPLORATION_GOTO_HERO_TEST",
+        "requires": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_HERO_TEST",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "\"已进入英杰试炼页面，切换目标英杰（param layer 1..4）\""
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('layer') == 1"
+      },
+      "then": [
+        {
+          "op": "loop",
+          "args": {
+            "n": "15"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_HeroTest_I_CHECK_HERO1')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_HeroTest_I_SWITCH_HERO1')"
+              },
+              "then": [
+                {
+                  "op": "click_point",
+                  "args": {
+                    "x": 301,
+                    "y": 293
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.5
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GameUi_I_CHECK_HERO_TEST')"
+              },
+              "then": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "region",
+                        "sel": "legacy_HeroTest_C_SWITCH_HERO_BTN"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.5
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "legacy_HeroTest_I_CHECK_HERO1"
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "param('layer') == 2"
+          },
+          "then": [
+            {
+              "op": "loop",
+              "args": {
+                "n": "15"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_HeroTest_I_CHECK_HERO1')"
+                  },
+                  "then": [
+                    {
+                      "op": "break"
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_HeroTest_I_SWITCH_HERO1')"
+                  },
+                  "then": [
+                    {
+                      "op": "click_point",
+                      "args": {
+                        "x": 301,
+                        "y": 293
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.5
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GameUi_I_CHECK_HERO_TEST')"
+                  },
+                  "then": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_HeroTest_C_SWITCH_HERO_BTN"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.5
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ]
+            },
+            {
+              "op": "appear",
+              "args": {
+                "sel": "legacy_HeroTest_I_CHECK_HERO1"
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "loop",
+              "args": {
+                "n": "15"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_HeroTest_I_CHECK_HERO2')"
+                  },
+                  "then": [
+                    {
+                      "op": "break"
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_HeroTest_I_SWITCH_HERO2')"
+                  },
+                  "then": [
+                    {
+                      "op": "click_point",
+                      "args": {
+                        "x": 634,
+                        "y": 302
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.5
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GameUi_I_CHECK_HERO_TEST')"
+                  },
+                  "then": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_HeroTest_C_SWITCH_HERO_BTN"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.5
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ]
+            },
+            {
+              "op": "appear",
+              "args": {
+                "sel": "legacy_HeroTest_I_CHECK_HERO2"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('layer') == 1"
+      },
+      "then": [
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_HeroTest_I_GBB",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_HERO_TEST",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_HeroTest_I_CHECK_HERO1_EXP",
+              "timeout_ms": 12000
+            }
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "param('layer') == 2"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_HeroTest_I_BCMJ",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GameUi_I_CHECK_HERO_TEST",
+                  "timeout_ms": 3000
+                },
+                "expect": {
+                  "kind": "appear",
+                  "sel": "legacy_HeroTest_I_CHECK_HERO1_SKILL",
+                  "timeout_ms": 12000
+                }
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "param('layer') == 3"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_HeroTest_I_ENTER_CCSL",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GameUi_I_CHECK_HERO_TEST",
+                      "timeout_ms": 3000
+                    },
+                    "expect": {
+                      "kind": "appear",
+                      "sel": "legacy_HeroTest_I_CHECK_HERO2_EXP",
+                      "timeout_ms": 12000
+                    }
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_HeroTest_I_ENTER_MXMJ",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GameUi_I_CHECK_HERO_TEST",
+                      "timeout_ms": 3000
+                    },
+                    "expect": {
+                      "kind": "appear",
+                      "sel": "legacy_HeroTest_I_CHECK_HERO2_SKILL",
+                      "timeout_ms": 12000
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('lock_team')"
+      },
+      "then": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "param('layer') == 1"
+          },
+          "then": [
+            {
+              "op": "loop",
+              "args": {
+                "n": "8"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_HeroTest_I_LOCK')"
+                  },
+                  "then": [
+                    {
+                      "op": "break"
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_HeroTest_I_UNLOCK')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_HeroTest_I_UNLOCK",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_HeroTest_I_UNLOCK",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.8
+                  }
+                }
+              ]
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "param('layer') == 2"
+              },
+              "then": [
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "8"
+                  },
+                  "body": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_HeroTest_I_BCMJ_LOCK')"
+                      },
+                      "then": [
+                        {
+                          "op": "break"
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_HeroTest_I_BCMJ_UNLOCK')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_HeroTest_I_BCMJ_UNLOCK",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_HeroTest_I_BCMJ_UNLOCK",
+                              "timeout_ms": 3000
+                            }
+                          }
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 0.8
+                      }
+                    }
+                  ]
+                }
+              ],
+              "else": [
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "8"
+                  },
+                  "body": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_HeroTest_I_BCMJ_LOCK')"
+                      },
+                      "then": [
+                        {
+                          "op": "break"
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_HeroTest_I_BCMJ_UNLOCK')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_HeroTest_I_BCMJ_UNLOCK",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_HeroTest_I_BCMJ_UNLOCK",
+                              "timeout_ms": 3000
+                            }
+                          }
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 0.8
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "else": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "param('layer') == 1"
+          },
+          "then": [
+            {
+              "op": "loop",
+              "args": {
+                "n": "8"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_HeroTest_I_UNLOCK')"
+                  },
+                  "then": [
+                    {
+                      "op": "break"
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_HeroTest_I_LOCK')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_HeroTest_I_LOCK",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_HeroTest_I_LOCK",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.8
+                  }
+                }
+              ]
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "param('layer') == 2"
+              },
+              "then": [
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "8"
+                  },
+                  "body": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_HeroTest_I_BCMJ_UNLOCK')"
+                      },
+                      "then": [
+                        {
+                          "op": "break"
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_HeroTest_I_BCMJ_LOCK')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_HeroTest_I_BCMJ_LOCK",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_HeroTest_I_BCMJ_LOCK",
+                              "timeout_ms": 3000
+                            }
+                          }
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 0.8
+                      }
+                    }
+                  ]
+                }
+              ],
+              "else": [
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "8"
+                  },
+                  "body": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_HeroTest_I_BCMJ_UNLOCK')"
+                      },
+                      "then": [
+                        {
+                          "op": "break"
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_HeroTest_I_BCMJ_LOCK')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_HeroTest_I_BCMJ_LOCK",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_HeroTest_I_BCMJ_LOCK",
+                              "timeout_ms": 3000
+                            }
+                          }
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 0.8
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "set_var",
+      "args": {
+        "name": "empty",
+        "value": "0"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "\"开始挑战循环\""
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "param('max_battles')"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "not (((appear('legacy_HeroTest_I_CHECK_HERO1_EXP') and param('layer') <= 2) or (appear('legacy_HeroTest_I_CHECK_HERO2_EXP') and param('layer') >= 3)))"
+          },
+          "then": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "param('layer') == 1"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_HeroTest_I_GBB",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GameUi_I_CHECK_HERO_TEST",
+                      "timeout_ms": 3000
+                    },
+                    "expect": {
+                      "kind": "appear",
+                      "sel": "legacy_HeroTest_I_CHECK_HERO1_EXP",
+                      "timeout_ms": 8000
+                    }
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "param('layer') == 2"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_HeroTest_I_BCMJ",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GameUi_I_CHECK_HERO_TEST",
+                          "timeout_ms": 3000
+                        },
+                        "expect": {
+                          "kind": "appear",
+                          "sel": "legacy_HeroTest_I_CHECK_HERO1_SKILL",
+                          "timeout_ms": 8000
+                        }
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "param('layer') == 3"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_HeroTest_I_ENTER_CCSL",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_GameUi_I_CHECK_HERO_TEST",
+                              "timeout_ms": 3000
+                            },
+                            "expect": {
+                              "kind": "appear",
+                              "sel": "legacy_HeroTest_I_CHECK_HERO2_EXP",
+                              "timeout_ms": 8000
+                            }
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_HeroTest_I_ENTER_MXMJ",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_GameUi_I_CHECK_HERO_TEST",
+                              "timeout_ms": 3000
+                            },
+                            "expect": {
+                              "kind": "appear",
+                              "sel": "legacy_HeroTest_I_CHECK_HERO2_SKILL",
+                              "timeout_ms": 8000
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 2.0
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "param('layer') == 1"
+          },
+          "then": [],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "param('layer') == 2"
+              },
+              "then": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "not (ocr_digit('legacy_HeroTest_O_ART_WAR_CARD') >= 1 or ocr_digit('legacy_HeroTest_O_ART_WAR_CARD_PLUS') >= 1)"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "warn",
+                        "text": "\"兵藏秘卷不足，结束\""
+                      }
+                    },
+                    {
+                      "op": "set_var",
+                      "args": {
+                        "name": "empty",
+                        "value": "1"
+                      }
+                    },
+                    {
+                      "op": "break"
+                    }
+                  ],
+                  "else": []
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "param('layer') == 3"
+                  },
+                  "then": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_HeroTest_I_HERO_EXP_MAX')"
+                      },
+                      "then": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "warn",
+                            "text": "\"传承试炼经验已满，结束\""
+                          }
+                        },
+                        {
+                          "op": "break"
+                        }
+                      ],
+                      "else": []
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "not (ocr_digit('legacy_HeroTest_O_ART_WAR_CARD') >= 1 or ocr_digit('legacy_HeroTest_O_ART_WAR_CARD_PLUS') >= 1)"
+                      },
+                      "then": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "warn",
+                            "text": "\"梦虚秘卷不足，结束\""
+                          }
+                        },
+                        {
+                          "op": "set_var",
+                          "args": {
+                            "name": "empty",
+                            "value": "1"
+                          }
+                        },
+                        {
+                          "op": "break"
+                        }
+                      ],
+                      "else": []
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "\"进入战斗\""
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "8"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('战斗_自动按钮')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_HeroTest_I_REAL_MONEY')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "warn",
+                    "text": "\"兵藏/梦虚门票不足，结束\""
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "empty",
+                    "value": "1"
+                  }
+                },
+                {
+                  "op": "break"
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_HeroTest_I_START_CHALLENGE')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_HeroTest_I_START_CHALLENGE",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_HeroTest_I_START_CHALLENGE",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_HeroTest_I_BCMJ_RESET_CONFIRM')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_HeroTest_I_BCMJ_RESET_CONFIRM",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_HeroTest_I_BCMJ_RESET_CONFIRM",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_HeroTest_O_FIRE')"
+              },
+              "then": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "ocr_text",
+                        "sel": "legacy_HeroTest_O_FIRE",
+                        "text": "挑战"
+                      }
+                    ],
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_HeroTest_O_FIRE",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "not appear('战斗_自动按钮')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "10"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('战斗_自动按钮')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('战斗_准备按钮')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "战斗_准备按钮",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "战斗_准备按钮",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "op": "wait_until",
+          "args": {
+            "cond": "appear('战斗_自动按钮')",
+            "timeout_s": 30
+          }
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "\"战斗中：处理技能面板 + 结算，直到回到英杰模式的页面\""
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "150"
+          },
+          "body": [
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 2.2
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "param('layer') == 2 or param('layer') == 4"
+              },
+              "then": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_HeroTest_I_BCMJ_SKILL_ADD_CONFIRM')"
+                  },
+                  "then": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "param('layer') == 1"
+                      },
+                      "then": [],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "param('layer') == 2"
+                          },
+                          "then": [
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_HeroTest_I_BCMJ_SKILL_ADD1')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_HeroTest_I_BCMJ_SKILL_ADD1",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_HeroTest_I_BCMJ_SKILL_ADD1",
+                                      "timeout_ms": 3000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_HeroTest_I_BCMJ_SKILL_ADD2')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_HeroTest_I_BCMJ_SKILL_ADD2",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_HeroTest_I_BCMJ_SKILL_ADD2",
+                                      "timeout_ms": 3000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_HeroTest_I_BCMJ_BLESS')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_HeroTest_I_BCMJ_BLESS",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_HeroTest_I_BCMJ_BLESS",
+                                      "timeout_ms": 3000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_HeroTest_I_BCMJ_PROPERTY_ADD_CRITICAL')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_HeroTest_I_BCMJ_PROPERTY_ADD_CRITICAL",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_HeroTest_I_BCMJ_PROPERTY_ADD_CRITICAL",
+                                      "timeout_ms": 3000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_HeroTest_I_BCMJ__DEFALUT_ATTRIBUTE')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_HeroTest_I_BCMJ__DEFALUT_ATTRIBUTE",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_HeroTest_I_BCMJ__DEFALUT_ATTRIBUTE",
+                                      "timeout_ms": 3000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            },
+                            {
+                              "op": "click_target",
+                              "args": {
+                                "find": [
+                                  {
+                                    "kind": "region",
+                                    "roi": [
+                                      60,
+                                      320,
+                                      200,
+                                      140
+                                    ]
+                                  }
+                                ]
+                              }
+                            }
+                          ],
+                          "else": [
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_HeroTest_I_HERO2_SKILL1')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_HeroTest_I_HERO2_SKILL1",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_HeroTest_I_HERO2_SKILL1",
+                                      "timeout_ms": 3000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_HeroTest_I_HERO2_SKILL2')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_HeroTest_I_HERO2_SKILL2",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_HeroTest_I_HERO2_SKILL2",
+                                      "timeout_ms": 3000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_HeroTest_I_HERO2_SKILL3')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_HeroTest_I_HERO2_SKILL3",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_HeroTest_I_HERO2_SKILL3",
+                                      "timeout_ms": 3000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_HeroTest_I_HERO2_SKILL4')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_HeroTest_I_HERO2_SKILL4",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_HeroTest_I_HERO2_SKILL4",
+                                      "timeout_ms": 3000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_HeroTest_I_HERO2_SKILL5')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_HeroTest_I_HERO2_SKILL5",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_HeroTest_I_HERO2_SKILL5",
+                                      "timeout_ms": 3000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_HeroTest_I_HERO2_SKILL6')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_HeroTest_I_HERO2_SKILL6",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_HeroTest_I_HERO2_SKILL6",
+                                      "timeout_ms": 3000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            },
+                            {
+                              "op": "click_target",
+                              "args": {
+                                "find": [
+                                  {
+                                    "kind": "region",
+                                    "roi": [
+                                      60,
+                                      320,
+                                      200,
+                                      140
+                                    ]
+                                  }
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "loop",
+                      "args": {
+                        "n": "8"
+                      },
+                      "body": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "not appear('legacy_HeroTest_I_BCMJ_SKILL_ADD_CONFIRM')"
+                          },
+                          "then": [
+                            {
+                              "op": "break"
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_HeroTest_I_BCMJ_SKILL_ADD_CONFIRM",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_HeroTest_I_BCMJ_SKILL_ADD_CONFIRM",
+                              "timeout_ms": 3000
+                            }
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 1.0
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "else": []
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_HeroTest_I_BCMJ_WIN')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_HeroTest_I_BCMJ_WIN",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_HeroTest_I_BCMJ_WIN",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_WIN')"
+              },
+              "then": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "region",
+                        "sel": "legacy_Component_GeneralBattle_C_RANDOM_TOP"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_DE_WIN')"
+              },
+              "then": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "region",
+                        "sel": "legacy_Component_GeneralBattle_C_RANDOM_TOP"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+              },
+              "then": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "region",
+                        "sel": "legacy_Component_GeneralBattle_C_REWARD_2"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+              },
+              "then": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "region",
+                        "sel": "legacy_Component_GeneralBattle_C_RANDOM_RIGHT"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+              },
+              "then": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "region",
+                        "sel": "legacy_GlobalGame_C_UI_REWARD"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "click_point",
+              "args": {
+                "x": 640,
+                "y": 690
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "((appear('legacy_HeroTest_I_CHECK_HERO1_EXP') and param('layer') <= 2) or (appear('legacy_HeroTest_I_CHECK_HERO2_EXP') and param('layer') >= 3))"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": []
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "not (((appear('legacy_HeroTest_I_CHECK_HERO1_EXP') and param('layer') <= 2) or (appear('legacy_HeroTest_I_CHECK_HERO2_EXP') and param('layer') >= 3)))"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "inc_var",
+          "args": {
+            "name": "battles",
+            "by": 1
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "\"挑战循环结束\""
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "12"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_HeroTest_I_BCMJ_RESET_CLOSE')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_HeroTest_I_BCMJ_RESET_CLOSE",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_HeroTest_I_BCMJ_RESET_CLOSE",
+                  "timeout_ms": 3000
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_HeroTest_I_GBB_BACK')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_HeroTest_I_GBB_BACK",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_HeroTest_I_GBB_BACK",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.5
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_HeroTest_I_BACK')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_HeroTest_I_BACK",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_HeroTest_I_BACK",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.5
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('世界_章节栏')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "世界_章节栏",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.5
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_HERO_TEST')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GameUi_I_CHECK_HERO_TEST",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.5
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GameUi_I_BACK_YOLLOW",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GameUi_I_BACK_YOLLOW",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.5
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "var('empty') == 1"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "\"以 resource_empty（门票不足）结束\""
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "resource_empty"
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "\"HeroTest done，已回到庭院\""
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

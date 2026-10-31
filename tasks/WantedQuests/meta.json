@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "WantedQuests",
+  "name": "悬赏封印",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "庭院→打开悬赏封印界面→领取封印宝箱；任务列表识别、4 类悬赏执行（含协作邀请/追踪/探索战斗）逻辑量大，当前版本未迁移，以 blocked 退出。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 900
+  },
+  "resources": [
+    "wanted_quest_ticket"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

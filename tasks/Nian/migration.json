@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "task": "Nian",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "ref": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/Nian/script_task.py",
+      "tasks/Nian/config.py",
+      "tasks/Nian/assets.py",
+      "tasks/Component/GeneralRoom/general_room.py (imported)",
+      "tasks/Component/GeneralInvite/general_invite.py (imported)",
+      "tasks/Component/GeneralBattle/general_battle.py (imported)",
+      "tasks/GameUi/game_ui.py, tasks/GameUi/page.py (imported)"
+    ]
+  },
+  "status": "🔄",
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task Nian => errors=0",
+    "live_or_replay": "none (no device / no matching replay recording in this session)",
+    "assets": "global legacy_* ids from migration/asset-map.json; T4 green"
+  },
+  "differences": [
+    "素材点击：远端模板 click = 匹配模板矩形（导入器 v2 已无 action_roi，与旧引擎 coord() 一致）；RuleClick 用 click_target(region, sel)。",
+    "远端 while True + Timer 的重试/判停改为有界 loop / wait_until(timeout) / 步骤 retry；结束条件用页面 marker。",
+    "战斗统一 P-BATTLE 骨架（准备→自动→安全点→回页），不是完整 GeneralBattle（无绿标/预设/失败分支）。",
+    "OCR：RuleOcr → ocr_lines；字符串子串/正则匹配改为规范化精确行匹配或 text_visible。"
+  ],
+  "gaps": [
+    "冷却剩余时间解析（远程 re.search(r'(\\d+)时(\\d+)分后可') + timedelta）无字符串解析原语 → 只能以 blocked 退出让调度器稍后重试，不设置精确 next_run。",
+    "GeneralRoom.check_zones（L_TEAM_LIST 滚动列表 OCR + O_GR_ZONES_NAME）未迁移：用 inline OCR [26,106,360,549] 点击可见的「年兽」行 + 上滑 8 次替代；若年兽行多次滚动后仍不可见会失败。",
+    "GeneralInvite（房间/邀人）未迁移：只处理「自动匹配」路径；匹配 240s 安全点击、480s 取消、被秒开接管战斗未覆盖。",
+    "普通战斗用 P-BATTLE 通用骨架，不含绿标/预设阵容。"
+  ]
+}

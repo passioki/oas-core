@@ -1,0 +1,51 @@
+{
+  "task": "DailyTrifles",
+  "name": "DailyTrifles",
+  "source": {
+    "repo": "https://github.com/runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/DailyTrifles/script_task.py",
+      "tasks/DailyTrifles/config.py",
+      "tasks/DailyTrifles/page.py",
+      "tasks/DailyTrifles/assets.py",
+      "tasks/DailyTrifles/{love,store,summonRecall}/*.json",
+      "tasks/Component/Summon/summon.py",
+      "tasks/RichMan/assets.py"
+    ]
+  },
+  "status": "🔄",
+  "evidence": [
+    "task lint --task DailyTrifles => errors=0",
+    "migration/specs/DailyTrifles.md：friend_love/store_sign 已映射；召唤/吉闻/买体力列 TODO"
+  ],
+  "assets": {
+    "reused_global": [
+      "庭院_探索灯笼",
+      "legacy_GameUi_I_MAIN_GOTO_FRIENDS",
+      "legacy_GameUi_I_CHECK_FRIENDS",
+      "legacy_GameUi_I_MAIN_GOTO_MALL",
+      "legacy_GameUi_I_CHECK_MALL",
+      "legacy_GameUi_I_CHECK_MALL_PURPLE",
+      "legacy_DailyTrifles_I_FRIENDSHIP_UP",
+      "legacy_DailyTrifles_I_L_FRIENDS",
+      "legacy_DailyTrifles_I_L_LOVE",
+      "legacy_DailyTrifles_I_FRIEND_TAB",
+      "legacy_DailyTrifles_I_L_COLLECT",
+      "legacy_DailyTrifles_I_ROOM_GIFT",
+      "legacy_DailyTrifles_I_GIFT_RECOMMEND",
+      "legacy_DailyTrifles_I_GIFT_SIGN",
+      "legacy_GlobalGame_I_UI_REWARD",
+      "legacy_GlobalGame_I_UI_BACK_{RED,YELLOW}"
+    ],
+    "new": []
+  },
+  "differences": [
+    "每日召唤（普通/今忆）、吉闻、买体力未迁移（见 spec TODO）",
+    "friend_love/store_sign 参数默认 1（上游默认 False，由调度配置开启）",
+    "`guild_wish` 上游为空实现，跳过",
+    "`set_next_run`（调度器职责）未迁移",
+    "未实机/回放验证"
+  ]
+}

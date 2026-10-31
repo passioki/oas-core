@@ -1,0 +1,324 @@
+{
+  "schema_version": 1,
+  "name": "WantedQuests",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'WantedQuests: 悬赏封印（庭院→打开封印界面→领取宝箱；任务执行逻辑未迁移，见 spec）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "6"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "click_point",
+                          "args": {
+                            "x": 48,
+                            "y": 43
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GameUi_I_CHECK_MAIN"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "12"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_WantedQuests_I_TRACE_ENABLE') or appear('legacy_WantedQuests_I_TRACE_DISABLE')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_WantedQuests_I_WQ_SEAL')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_WantedQuests_I_WQ_SEAL",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GameUi_I_CHECK_MAIN",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_WantedQuests_I_WQ_DONE')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_WantedQuests_I_WQ_DONE",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_WantedQuests_I_WQ_DONE",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_WantedQuests_I_TRACE_ENABLE"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'WantedQuests: 领取悬赏封印宝箱（I_WQ_BOX）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "6"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_WantedQuests_I_WQ_BOX')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_WantedQuests_I_WQ_BOX",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_WantedQuests_I_WQ_BOX",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "warn",
+        "text": "'WantedQuests: 主循环（find_wq/4 类任务/协作邀请/追踪/探索战斗）本轮未迁移 → blocked'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "8"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "click_point",
+                          "args": {
+                            "x": 48,
+                            "y": 43
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GameUi_I_CHECK_MAIN"
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "no_target"
+      }
+    }
+  ]
+}

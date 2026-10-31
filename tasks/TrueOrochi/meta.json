@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "TrueOrochi",
+  "name": "TrueOrochi",
+  "version": 1,
+  "expire": "weekly",
+  "category": "weekly",
+  "description": "庭院→探索→玩法→御魂→八岐大蛇；先检测玩法 tab 真蛇模块（本周次数），再检测真蛇入口 I_FIND_TS，命中则建房/确认/挑战→准备→多阶段战斗。十层×10 触发真蛇、层数选择、御魂切换、第二次存储入口未迁移。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    },
+    "no_resource": {
+      "result": "resource"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "window_closed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1800
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "week",
+      "times": 1
+    }
+  }
+}

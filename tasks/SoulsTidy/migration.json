@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "task": "SoulsTidy",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "ref": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/SoulsTidy/script_task.py",
+      "tasks/SoulsTidy/config.py",
+      "tasks/SoulsTidy/assets.py",
+      "tasks/GameUi/game_ui.py, tasks/GameUi/page.py (imported)",
+      "tasks/GlobalGame/assets.py (UI_CONFIRM 等)"
+    ]
+  },
+  "status": "🔄",
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task SoulsTidy => errors=0",
+    "live_or_replay": "none (no device / no matching replay recording in this session)",
+    "assets": "global legacy_* ids from migration/asset-map.json; T4 green"
+  },
+  "differences": [
+    "导航/动作点击用导入的 legacy 模板 id（模板 click = 匹配模板矩形，与旧引擎 RuleImage.coord() 等价）；RuleClick 用 click_target(region, sel)。",
+    "远程 while True + Timer 的重试/判停改为有界 loop / wait_until(timeout) / 步骤 retry；结束条件用页面 marker 或次数上限。",
+    "战斗统一 P-BATTLE v2（Component_GeneralBattle 素材：准备/胜利/失败/奖励→回页），不是完整 GeneralBattle（无绿标/预设/特殊奖励分支/统计页）。",
+    "OCR：RuleOcr → ocr_lines；子串/正则匹配改为规范化行匹配或 text_visible；字符串拼接/题库查询等无原语的行为记为缺口。"
+  ],
+  "gaps": [
+    "奉纳前置「按等级排序」在远程用 O_ST_SORT_LEVEL_1/2 的 keyword 命中（ocr_appear_click）实现；导入的 OCR 素材没有 expected text → 新 flow 假设列表已按等级排序（缺口）。",
+    "奉纳选中御魂远程用 RuleLongClick L_ONE（长按）；DSL 无 long_click 原语 → 用 click_target(region L_ONE) 单击近似。",
+    "O_ST_GOLD 金额：远程要求 int 且 != 0；新 flow 用 ocr_digit==0 判断（OCR 失败 → Null ≠ 0，可能继续）。",
+    "远程「+0 等级双保险」(O_ST_FIRSET_LEVEL 文本 == 古/+0) 与 stack/level-0 两模式分支未覆盖。",
+    "ui_reward_appear_click / I_ST_GOLD 等待、金币不足保护未覆盖。"
+  ]
+}

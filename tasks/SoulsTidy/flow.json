@@ -1,0 +1,908 @@
+{
+  "schema_version": 1,
+  "name": "SoulsTidy",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'SoulsTidy: 御魂整理/贪吃鬼/奉纳（庭院→式神录→御魂）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "6"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "click_point",
+                          "args": {
+                            "x": 48,
+                            "y": 43
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GameUi_I_CHECK_MAIN"
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_MAIN_GOTO_SHIKIGAMI_RECORDS",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_MAIN",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_RECORDS",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.5
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "10"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_SoulsTidy_I_ST_TIDY')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_SoulsTidy_I_ST_REPLACE')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_SoulsTidy_I_ST_REPLACE",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_SoulsTidy_I_ST_REPLACE",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_SoulsTidy_I_ST_SOULS')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_SoulsTidy_I_ST_SOULS",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_SoulsTidy_I_ST_SOULS",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_SoulsTidy_I_ST_SOULS_CLOSE')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_SoulsTidy_I_ST_SOULS_CLOSE",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_SoulsTidy_I_ST_SOULS_CLOSE",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_SoulsTidy_C_ST_DETAIL"
+                  }
+                ],
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GameUi_I_CHECK_RECORDS",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('enable_greed')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'SoulsTidy: 喂贪吃鬼（最多 3 次）'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "10"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_SoulsTidy_I_ST_GREED')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_SoulsTidy_I_ST_GREED",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_SoulsTidy_I_ST_GREED",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.8
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "10"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_SoulsTidy_I_ST_GREED_HABIT')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_SoulsTidy_I_ST_GREED_HABIT",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_SoulsTidy_I_ST_GREED_HABIT",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.8
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "set_var",
+          "args": {
+            "name": "feed",
+            "value": "0"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "12"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_SoulsTidy_I_ST_UNSELECTED')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_SoulsTidy_I_ST_UNSELECTED",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_SoulsTidy_I_ST_UNSELECTED",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.6
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.6
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "var('feed') >= 3"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_SoulsTidy_I_ST_FEED_NOW')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_SoulsTidy_I_ST_FEED_NOW",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_SoulsTidy_I_ST_FEED_NOW",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "inc_var",
+                      "args": {
+                        "name": "feed",
+                        "by": 1
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 2.0
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'SoulsTidy: 贪吃鬼完成，切到奉纳'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "12"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_SoulsTidy_I_ST_CAT')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_SoulsTidy_I_ST_UNSELECTED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_SoulsTidy_I_ST_UNSELECTED",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_SoulsTidy_I_ST_UNSELECTED",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_SoulsTidy_I_ST_GREED_CLOSE')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_SoulsTidy_I_ST_GREED_CLOSE",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_SoulsTidy_I_ST_GREED_CLOSE",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_SoulsTidy_I_ST_BONGNA')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_SoulsTidy_I_ST_BONGNA",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_SoulsTidy_I_ST_BONGNA",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.8
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('enable_maneki')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'SoulsTidy: 奉纳（按等级排序为前置假设；见 spec 缺口）'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "10"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_SoulsTidy_I_ST_ABANDONED_SELECTED')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_SoulsTidy_I_ST_ABANDONED_SELECTED",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_SoulsTidy_I_ST_ABANDONED_SELECTED",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.8
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "param('max_donations')"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "not (appear('legacy_SoulsTidy_I_ST_SOUL_STACK') or appear('legacy_SoulsTidy_I_ST_SOUL_STACK_1'))"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'SoulsTidy: 无御魂堆叠 → 奉纳结束'"
+                  }
+                },
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_SoulsTidy_L_ONE"
+                  }
+                ]
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr_digit('legacy_SoulsTidy_O_ST_GOLD') == 0"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "warn",
+                    "text": "'SoulsTidy: 金币=0 或 OCR 失败 → 跳过本次'"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_SoulsTidy_I_ST_DONATE')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_SoulsTidy_I_ST_DONATE",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_SoulsTidy_I_ST_DONATE",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "loop",
+                      "args": {
+                        "n": "8"
+                      },
+                      "body": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_CONFIRM"
+                              }
+                            },
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 0.6
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_SoulsTidy_I_ST_GOD_PRESENT')"
+                          },
+                          "then": [
+                            {
+                              "op": "click_target",
+                              "args": {
+                                "find": [
+                                  {
+                                    "kind": "region",
+                                    "sel": "legacy_SoulsTidy_C_ST_GOD_PRSENT"
+                                  }
+                                ]
+                              }
+                            },
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 1.0
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_SoulsTidy_I_ST_LUCK') or appear('legacy_SoulsTidy_I_ST_SMALL_LUCK')"
+                          },
+                          "then": [
+                            {
+                              "op": "click_target",
+                              "args": {
+                                "find": [
+                                  {
+                                    "kind": "region",
+                                    "sel": "legacy_SoulsTidy_C_ST_SOUL_OFFERING_REWARD"
+                                  }
+                                ]
+                              }
+                            },
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 1.0
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_Component_GeneralBattle_I_REWARD",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_Component_GeneralBattle_I_REWARD",
+                                  "timeout_ms": 3000
+                                }
+                              }
+                            },
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 1.0
+                              }
+                            }
+                          ],
+                          "else": [
+                            {
+                              "op": "break",
+                              "args": {}
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.0
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "8"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "click_point",
+                          "args": {
+                            "x": 48,
+                            "y": 43
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GameUi_I_CHECK_MAIN"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'SoulsTidy: done'"
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

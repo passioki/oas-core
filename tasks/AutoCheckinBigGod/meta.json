@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "AutoCheckinBigGod",
+  "name": "AutoCheckinBigGod",
+  "version": 1,
+  "category": "utility",
+  "description": "网易大神 APP 自动签到：adb 启动 APP、frida 提取登录 token、HTTP 接口领取签到奖励。不是游戏屏幕自动化任务。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [],
+  "exits": {
+    "failed": {
+      "result": "blocked"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 60
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

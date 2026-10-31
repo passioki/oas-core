@@ -1,0 +1,15 @@
+{
+  "task": "Delegation",
+  "status": "🔄",
+  "evidence": "oasd task lint 绿；覆盖：导航/领奖循环/6 种委派的选单(OCR 精确行)/4 素材槽/开始/已在委派跳过/回庭院；完成缎带下方点击未覆盖。未真机/回放验证。 bundle: tasks/Delegation/; lint green.",
+  "gaps": [
+    "check_reward 中 O_D_DONE「完成」缎带的「点其正下方同样大小的可领取区」（script_task.py:150-164）无对应原语（inline OCR 点击只会点识别行中心）→ 目前只覆盖模板类 I_REWARDS_* 领奖，OCR 完成卡片可能漏领。",
+    "远程 delegate_one 用 keyword 子串匹配（'画'/'鸟羽'/'接送'/'痕迹'），新引擎 OCR 行匹配是规范化精确相等（容 1 字编辑距离）→ 本 flow 用完整单名（弥助的画/鸟之羽/接送弥助/奇怪的痕迹），若卡片行还带其它文案会不匹配并跳过。",
+    "远程「已在委派中」分支会等 I_REWARDS_MIN 后返回 False；本 flow 只回退并跳过（无 I_REWARDS_MIN 等待语义）。",
+    "开始委派后不校验最终是否成功（远程同样只点开始循环），靠下一步页面状态体现。"
+  ],
+  "artifacts": {
+    "spec": "migration/specs/Delegation.md",
+    "bundle": "tasks/Delegation/"
+  }
+}

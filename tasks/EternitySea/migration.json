@@ -1,0 +1,48 @@
+{
+  "task": "EternitySea",
+  "name": "EternitySea",
+  "source": {
+    "repo": "https://github.com/runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/EternitySea/script_task.py",
+      "tasks/EternitySea/config.py",
+      "tasks/EternitySea/assets.py",
+      "tasks/EternitySea/res/{image,list}.json",
+      "tasks/Orochi/config.py",
+      "tasks/GameUi/page.py"
+    ]
+  },
+  "status": "🔄",
+  "evidence": [
+    "task lint --task EternitySea => errors=0",
+    "migration/specs/EternitySea.md：单人模式 7 步映射；队伍模式/精准选层列为 TODO"
+  ],
+  "assets": {
+    "reused_global": [
+      "庭院_探索灯笼",
+      "世界_章节栏",
+      "legacy_GameUi_I_CHECK_EXPLORATION",
+      "legacy_GameUi_I_CHECK_SOUL_ZONES",
+      "legacy_GameUi_I_EXPLORATION_GOTO_SOUL_ZONE",
+      "legacy_Exploration_I_CHECK_PLAY_TITLE",
+      "legacy_EternitySea_I_ETERNITY_SEA",
+      "legacy_EternitySea_I_FORM_TEAM",
+      "legacy_EternitySea_I_ETERNITY_SEA_FIRE",
+      "legacy_EternitySea_I_ETERNITYSEA_UNLOCK",
+      "legacy_EternitySea_I_NEWETERNITYSEA_LOCK",
+      "legacy_EternitySea_I_BACK_BOTTOM",
+      "legacy_Component_GeneralBattle_{...}",
+      "legacy_GlobalGame_I_UI_CONFIRM"
+    ],
+    "new": []
+  },
+  "differences": [
+    "队长/队员模式（建房/邀请/等待房间稳定）未迁移",
+    "层数选择用坐标近似（RuleList 未导入；仅 4 层固定高度，可接受但需实机复核）",
+    "御魂切换（两套）未迁移（配置职责）",
+    "limit_time/limit_count 用 max_battles 近似，时间上限未在 flow 内判",
+    "未实机/回放验证"
+  ]
+}

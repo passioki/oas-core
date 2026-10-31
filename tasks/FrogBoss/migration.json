@@ -1,0 +1,46 @@
+{
+  "task": "FrogBoss",
+  "source": "runhey/OnmyojiAutoScript@dev",
+  "source_commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+  "source_files": [
+    "tasks/FrogBoss/script_task.py",
+    "tasks/FrogBoss/config.py",
+    "tasks/FrogBoss/assets.py",
+    "tasks/FrogBoss/frog_oas.py",
+    "tasks/FrogBoss/record_reader.py",
+    "tasks/Component/RightActivity/right_activity.py",
+    "tasks/Component/GeneralBattle/assets.py"
+  ],
+  "group": "Activity Task",
+  "status": "partial",
+  "spec": "migration/specs/FrogBoss.md",
+  "assets": {
+    "referenced": 24,
+    "source": "assets/assets.json (global legacy ids)",
+    "task_local_assets": false
+  },
+  "behavior": {
+    "entry": "庭院 -> 右侧活动栏 -> 呱太",
+    "covered": [
+      "活动入口 I_TOGGLE_BUTTON -> I_FROG_BOSS_ENTER -> I_FROG_CHECK",
+      "状态循环：I_BETTED / I_FROG_BOSS_REST / I_BET_SUCCESS / I_BET_FAILURE / 可下注",
+      "策略：frog_majority / frog_minority / frog_bilibili / always_red / always_blue（OCR 票数比较）",
+      "确认下注：I_GOLD_30_CHECK 弹窗、选 30 勾玉上部区域、I_BET_SURE 提交 3 次",
+      "竞猜成功领奖 I_BET_SUCCESS_BOX / I_REWARD / I_NEXT_COMPETITION",
+      "竞猜失败 -> I_NEXT_COMPETITION",
+      "回庭院"
+    ]
+  },
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task FrogBoss => errors=0",
+    "coverage_matrix": "migration/specs/FrogBoss.md §3"
+  },
+  "differences": [
+    "frog_oas strategy BLOCKED: needs HTTP prediction API + image fingerprint + local jsonl history (no DSL network/file/fingerprint primitives); falls back to majority",
+    "frog_dashen strategy BLOCKED: scrapes 163 feed APIs; falls back to majority",
+    "record_oas_history_page (record reader) not migrated",
+    "next_run hour-window scheduling replaced by scheduler.json windows/quota",
+    "I_FROG_LAST_* / O_FROG_LAST_TIME / O_TIME_REMAIN unused (log/record helpers only)",
+    "no device/replay evidence (emulator offline)"
+  ]
+}

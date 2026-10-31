@@ -1,0 +1,55 @@
+{
+  "task": "DyeTrials",
+  "category": "daily",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "checkout": "D:\\OAS-dev\\_verify\\remote-oas",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/DyeTrials/script_task.py",
+      "tasks/DyeTrials/config.py",
+      "tasks/DyeTrials/assets.py",
+      "tasks/Restart/assets.py",
+      "tasks/GameUi/default_pages.py"
+    ]
+  },
+  "engine_contract": {
+    "meta": "crates/oas-task/src/meta.rs (ENGINE-DESIGN §22.34.2)",
+    "flow_dsl": "crates/oas-flow/src/lib.rs",
+    "asset_store": "assets/assets.json (global, ids legacy_<Task>_<const>)",
+    "asset_map": "migration/asset-map.json"
+  },
+  "status": "🔄",
+  "evidence": {
+    "lint": ".\\target\\release\\oasd.exe task lint --tasks-dir tasks --task DyeTrials => lint task=DyeTrials errors=0",
+    "device": "未真机验证"
+  },
+  "assets_used": [
+    "legacy_DyeTrials_I_BATTLE_SUCCESS",
+    "legacy_DyeTrials_I_FP_ACCESS",
+    "legacy_DyeTrials_I_FP_ACCESS_1",
+    "legacy_DyeTrials_I_FP_CHALLENGE",
+    "legacy_DyeTrials_I_TOGGLE_BUTTON",
+    "legacy_GameUi_I_CHECK_MAIN",
+    "legacy_GlobalGame_C_UI_REWARD",
+    "legacy_GlobalGame_I_UI_BACK_RED",
+    "legacy_GlobalGame_I_UI_BACK_YELLOW",
+    "legacy_GlobalGame_I_UI_REWARD",
+    "legacy_Restart_I_HARVEST_CHAT_CLOSE"
+  ],
+  "missing_assets": [],
+  "differences": [
+    "60s 计时器改为有界 max_battles 循环",
+    "O_BATTLE_NUM 三值提前退出未实现",
+    "奖励/聊天关用通用 UI 资产",
+    "switch_soul 未迁移"
+  ],
+  "gaps": [
+    "DSL 无 wall-clock（boss_timer）",
+    "DigitCounter 三值语义缺失（O_BATTLE_NUM）",
+    "SwitchSoul 页面流程未迁移",
+    "未真机验证"
+  ],
+  "assets_used_count": 11
+}

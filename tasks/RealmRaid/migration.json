@@ -1,0 +1,50 @@
+{
+  "task": "RealmRaid",
+  "source": "runhey/OnmyojiAutoScript@dev",
+  "source_commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+  "source_files": [
+    "tasks/RealmRaid/script_task.py",
+    "tasks/RealmRaid/config.py",
+    "tasks/RealmRaid/assets.py",
+    "tasks/Component/GeneralBattle/general_battle.py",
+    "tasks/Component/GeneralBattle/battle_wait.py",
+    "tasks/Component/SwitchSoul/switch_soul.py",
+    "tasks/GameUi/page.py",
+    "tasks/GameUi/default_pages.py"
+  ],
+  "group": "Guild",
+  "status": "partial",
+  "spec": "migration/specs/RealmRaid.md",
+  "assets": {
+    "referenced": 39,
+    "source": "assets/assets.json (global legacy ids incl. Component_GeneralBattle)",
+    "task_local_assets": false
+  },
+  "behavior": {
+    "entry": "庭院 -> 探索 -> 个人突破页",
+    "covered": [
+      "呱太活动弹窗 I_FROG_RAID 点掉",
+      "阵容锁定/解锁对齐（lock_team）",
+      "票数 OCR=0 -> no_resource",
+      "勋章优先级 5>4>3>2>1>0 扫描 -> 点击目标 -> I_FIRE",
+      "通用战斗（准备/胜利/失败/奖励/继续）直到 I_RR_PERSON",
+      "三胜奖励 I_SOUL_RAID 点击（近似）",
+      "无目标 -> I_FRESH 刷新 -> 确认；不可用 -> failed",
+      "可选退四打九（I_EXIT -> 确认 -> I_FALSE）",
+      "回庭院"
+    ]
+  },
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task RealmRaid => errors=0",
+    "coverage_matrix": "migration/specs/RealmRaid.md §3"
+  },
+  "differences": [
+    "呱太目标特殊判定（O_FROG_n OCR==20 / 临时解锁阵容）未迁移",
+    "partition 索引语义丢失：旧仓用勋章中心反推 1..9 分区；新 flow 直接点勋章，exit_four 变显式参数",
+    "three_refresh / when_attack_fail=EXIT|CONTINUE 未映射；固定无目标->刷新/失败",
+    "number_base 票数基准未映射（需要 cu/res/total 三元组，DSL 只有第一个数字）",
+    "三胜奖励判定用 I_SOUL_RAID 近似旧 O_TEXT 中文/数字格式判定",
+    "switch_soul 御魂/预设切换未迁移（无 DSL 原语）",
+    "no device/replay evidence (emulator offline)"
+  ]
+}

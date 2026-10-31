@@ -1,0 +1,15 @@
+{
+  "task": "MysteryShop",
+  "status": "🔄",
+  "evidence": "oasd task lint 绿；覆盖：商店入口→好友商店遍历→四类商品购买(含购买确认)→记录奖励领取→回庭院；分享邀请与价格上限未覆盖。未真机/回放验证。 bundle: tasks/MysteryShop/; lint green.",
+  "gaps": [
+    "分享（share_config：邀请 1~5 位好友）需要 GeneralInvite 完整找好友流程，未迁移 → flow 跳过。",
+    "buy_mall_one 的 max_price 单价读取（O_MALL_RESOURCE_5 等 RichMan mall 资源 OCR + 弹窗价格上限判断）与多数量窗口(more_window)未迁移；当前只做「点购买→点确认」的一键购买。",
+    "好友切换 O_MS_FRIEND 变化检测用 ocr_to_var + 固定切换次数近似，未严格比对上一帧。",
+    "开业日（周三/周六）判断与 next_time 排期无时钟原语 → 交给 scheduler.json 的 windows。"
+  ],
+  "artifacts": {
+    "spec": "migration/specs/MysteryShop.md",
+    "bundle": "tasks/MysteryShop/"
+  }
+}

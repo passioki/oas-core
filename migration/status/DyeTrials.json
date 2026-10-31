@@ -1,0 +1,15 @@
+{
+  "task": "DyeTrials",
+  "status": "🔄",
+  "evidence": {
+    "lint": "lint task=DyeTrials errors=0",
+    "coverage": "入口 / 挑战循环（奖励/成功/聊天关）/ 回庭院 覆盖；60s 计时与 50/50 提前退出未覆盖",
+    "run": "未真机"
+  },
+  "gaps": [
+    "DSL 缺 wall-clock（boss_timer）",
+    "DigitCounter(O_BATTLE_NUM) 未实现",
+    "SwitchSoul 页面流程未迁移",
+    "未真机验证"
+  ]
+}

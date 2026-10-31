@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "name": "AutoCheckinBigGod",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "warn",
+        "text": "\"AutoCheckinBigGod blocked：旧仓 AutoCheckinBigGod 不是游戏 UI 任务：通过 ADB + frida + HTTP API 操作「大神」APP\""
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "warn",
+        "text": "\"引擎 DSL 只有屏幕识别/点击，没有进程/frida/HTTP/加密存储读取能力\""
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "warn",
+        "text": "\"assets.py 为空类，没有任何游戏界面素材\""
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "warn",
+        "text": "\"原因见 README / migration.json；以下为未迁移项清单\""
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "failed"
+      }
+    }
+  ]
+}

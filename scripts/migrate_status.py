@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
 """Aggregate migration status files into migration/TASK-LEDGER.md and a summary."""
 import json
+import sys
 from pathlib import Path
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 ROOT = Path(__file__).resolve().parents[1]
 MIG = ROOT / "migration"
@@ -37,7 +43,7 @@ def main():
     (MIG / "TASK-LEDGER.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     summary = {"total": len(inventory), "counts": counts}
     (MIG / "STATUS.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps(summary, ensure_ascii=False))
+    print(json.dumps(summary, ensure_ascii=True))
     for task, d in sorted(rows.items()):
         print(f"{task}: {d.get('status')} {d.get('evidence','')}")
 

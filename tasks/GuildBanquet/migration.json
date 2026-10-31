@@ -1,0 +1,38 @@
+{
+  "task": "GuildBanquet",
+  "name": "GuildBanquet",
+  "source": {
+    "repo": "https://github.com/runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/GuildBanquet/script_task.py",
+      "tasks/GuildBanquet/config.py",
+      "tasks/GuildBanquet/assets.py",
+      "tasks/GameUi/page.py",
+      "tasks/GameUi/default_pages.py"
+    ]
+  },
+  "status": "✅",
+  "evidence": [
+    "task lint --tasks-dir tasks --task GuildBanquet => lint task=GuildBanquet errors=0",
+    "migration/specs/GuildBanquet.md 行为矩阵：导航 / 旗标等待 / 未开始分支 / 回庭院 / 出口全覆盖"
+  ],
+  "assets": {
+    "reused_global": [
+      "庭院_探索灯笼",
+      "legacy_GameUi_I_MAIN_GOTO_GUILD",
+      "legacy_GameUi_I_CHECK_GUILD",
+      "legacy_GuildBanquet_I_FLAG",
+      "legacy_GlobalGame_I_UI_BACK_YELLOW"
+    ],
+    "new": []
+  },
+  "differences": [
+    "等待轮询粒度 10s(上游含缓存)→5s；超时上限 3x230s→param(max_wait_min) 分钟硬上限，超时后同上游按结束处理(done)",
+    "set_config() 把宴会结束时间-14:55 写回配置：未迁移（调度器/玩家配置职责）",
+    "plan_next_run() 按 day_1/day_2 跨周排期：未迁移（scheduler.json 职责，schedule_hint 只给 quota 默认）",
+    "<22:00 时 +5min 重试：改为 window_closed(result=retryable) 出口，由调度器冷却策略实现",
+    "未实机验证（宴会时段限制）；legacy_GuildBanquet_I_FLAG 阈值沿用旧仓 0.8"
+  ]
+}

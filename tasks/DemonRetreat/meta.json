@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "DemonRetreat",
+  "name": "DemonRetreat",
+  "version": 1,
+  "expire": "weekly",
+  "category": "weekly",
+  "description": "庭院→阴阳寮→神社→首领退治集会/战斗（迟到则直接开战）→战后祈福/一键领奖→回庭院。周六窗口由调度器负责；switch/buff/绿标/预设等配置项未迁移。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    },
+    "no_resource": {
+      "result": "resource"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "window_closed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1800
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "week",
+      "times": 1
+    }
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "Duel",
+  "name": "斗技",
+  "version": 1,
+  "expire": "weekly",
+  "category": "weekly",
+  "description": "庭院→町中→斗技：进入斗技主界面，loop max_battles 次「点战斗→等待准备页→自动上阵/准备→P-BATTLE→回斗技页」；分数/名仕/ban/荣誉/时间窗未迁移。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "max_battles",
+      "type": "int",
+      "default": 6,
+      "min": 1,
+      "max": 30
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1800
+  },
+  "resources": [
+    "duel_ticket"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "week",
+      "times": 1
+    }
+  }
+}

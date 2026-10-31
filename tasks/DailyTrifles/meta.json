@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "DailyTrifles",
+  "name": "DailyTrifles",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "每日杂务（部分迁移）：友好度领取（好友→友情点→一键领取→领奖）与商店礼包屋签到；庭院/好友/商店导航含页面守卫。每日召唤（普通/今忆）、吉闻、买体力尚未迁移（见 migration.json/migration 规格 TODO）。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "friend_love",
+      "type": "int",
+      "default": 1,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "key": "store_sign",
+      "type": "int",
+      "default": 1,
+      "min": 0,
+      "max": 1
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 300
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

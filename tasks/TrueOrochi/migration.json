@@ -1,0 +1,51 @@
+{
+  "task": "TrueOrochi",
+  "name": "TrueOrochi",
+  "source": {
+    "repo": "https://github.com/runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/TrueOrochi/script_task.py",
+      "tasks/TrueOrochi/config.py",
+      "tasks/TrueOrochi/assets.py",
+      "tasks/TrueOrochi/st/{image,click}.json",
+      "tasks/Orochi/script_task.py",
+      "tasks/Orochi/page.py",
+      "tasks/Exploration/page.py"
+    ]
+  },
+  "status": "🔄",
+  "evidence": [
+    "task lint --task TrueOrochi => errors=0",
+    "migration/specs/TrueOrochi.md：主链路 6 步映射；十层触发与第二次入口列为 TODO"
+  ],
+  "assets": {
+    "reused_global": [
+      "庭院_探索灯笼",
+      "世界_章节栏",
+      "legacy_GameUi_I_CHECK_EXPLORATION",
+      "legacy_GameUi_I_CHECK_SOUL_ZONES",
+      "legacy_GameUi_I_EXPLORATION_GOTO_SOUL_ZONE",
+      "legacy_Exploration_I_CHECK_PLAY_TITLE",
+      "legacy_TrueOrochi_I_ST_MODULE",
+      "legacy_TrueOrochi_I_FIND_TS",
+      "legacy_TrueOrochi_I_ST_CREATE_ROOM",
+      "legacy_TrueOrochi_I_ST_FIRE",
+      "legacy_TrueOrochi_I_ST_FIRE_PREPARE",
+      "legacy_TrueOrochi_I_ST_AUTO_FALSE",
+      "legacy_TrueOrochi_I_ST_FRAME",
+      "legacy_Orochi_I_OROCHI",
+      "legacy_Orochi_I_OROCHI_CHECK_11",
+      "legacy_Component_GeneralBattle_{...}",
+      "legacy_GlobalGame_I_UI_CONFIRM"
+    ],
+    "new": []
+  },
+  "differences": [
+    "十层×10 触发真蛇路径未迁移（RuleList 选层 + 循环战斗）",
+    "第二次存储真蛇入口未迁移（战后重新导航判定）",
+    "御魂切换/绿标配置未迁移",
+    "未实机/回放验证（真蛇为低频活动）"
+  ]
+}

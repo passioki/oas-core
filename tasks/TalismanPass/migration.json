@@ -1,0 +1,56 @@
+{
+  "task": "TalismanPass",
+  "category": "daily",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "checkout": "D:\\OAS-dev\\_verify\\remote-oas",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/TalismanPass/script_task.py",
+      "tasks/TalismanPass/config.py",
+      "tasks/TalismanPass/assets.py",
+      "tasks/GameUi/default_pages.py",
+      "tasks/GameUi/navigator.py"
+    ]
+  },
+  "engine_contract": {
+    "meta": "crates/oas-task/src/meta.rs (ENGINE-DESIGN §22.34.2)",
+    "flow_dsl": "crates/oas-flow/src/lib.rs",
+    "asset_store": "assets/assets.json (global, ids legacy_<Task>_<const>)",
+    "asset_map": "migration/asset-map.json"
+  },
+  "status": "🔄",
+  "evidence": {
+    "lint": ".\\target\\release\\oasd.exe task lint --tasks-dir tasks --task TalismanPass => lint task=TalismanPass errors=0",
+    "device": "未真机验证"
+  },
+  "assets_used": [
+    "legacy_GameUi_I_CHECK_DAILY",
+    "legacy_GameUi_I_CHECK_MAIN",
+    "legacy_GameUi_I_MAIN_GOTO_DAILY",
+    "legacy_GlobalGame_C_UI_REWARD",
+    "legacy_GlobalGame_I_UI_BACK_YELLOW",
+    "legacy_GlobalGame_I_UI_REWARD",
+    "legacy_TalismanPass_I_OVERFLOW_CONFIRME",
+    "legacy_TalismanPass_I_RED_POINT_LEVEL",
+    "legacy_TalismanPass_I_TP_GET_ALL",
+    "legacy_TalismanPass_I_TP_LEVEL_1",
+    "legacy_TalismanPass_I_TP_LEVEL_2",
+    "legacy_TalismanPass_I_TP_LEVEL_3",
+    "legacy_TalismanPass_I_TP_SOUL_1",
+    "legacy_TalismanPass_I_TP_SOUL_2",
+    "legacy_TalismanPass_I_TP_SOUL_3"
+  ],
+  "missing_assets": [],
+  "differences": [
+    "静默计时器改为有界循环",
+    "多尺度识别降级为普通 appear",
+    "奖励动画用 GlobalGame 通用 UI 处理"
+  ],
+  "gaps": [
+    "多尺度识别（appear_multi_scale）DSL 无对应 op → SOUL_1 可能受缩放影响",
+    "真机未验证"
+  ],
+  "assets_used_count": 15
+}

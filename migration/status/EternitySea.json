@@ -1,0 +1,11 @@
+{
+  "task": "EternitySea",
+  "status": "🔄",
+  "evidence": "task lint --task EternitySea => errors=0；单人模式（进永生之海→选层→锁队→循环挑战→多阶段战斗→返回）覆盖；队长/队员未迁移",
+  "gaps": [
+    "队长/队员模式未迁移（建房/邀请/等待）",
+    "选层为坐标近似（RuleList 未导入）",
+    "御魂切换与时间上限未迁移",
+    "无实机/回放证据"
+  ]
+}

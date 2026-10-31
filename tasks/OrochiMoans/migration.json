@@ -1,0 +1,42 @@
+{
+  "task": "OrochiMoans",
+  "category": "utility",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "checkout": "D:\\OAS-dev\\_verify\\remote-oas",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/OrochiMoans/config.py",
+      "tasks/OrochiMoans/assets.py",
+      "tasks/Orochi/config.py",
+      "tasks/Orochi/script_task.py"
+    ]
+  },
+  "engine_contract": {
+    "meta": "crates/oas-task/src/meta.rs (ENGINE-DESIGN §22.34.2)",
+    "flow_dsl": "crates/oas-flow/src/lib.rs",
+    "asset_store": "assets/assets.json (global, ids legacy_<Task>_<const>)",
+    "asset_map": "migration/asset-map.json"
+  },
+  "status": "⛔",
+  "evidence": {
+    "lint": ".\\target\\release\\oasd.exe task lint --tasks-dir tasks --task OrochiMoans => lint task=OrochiMoans errors=0",
+    "run": "不适用（任务无法执行）",
+    "note": "旧仓 OrochiMoans 无 script/assets 逻辑；确认为配置空壳，行为属于 Orochi 任务。"
+  },
+  "assets_used": [],
+  "missing_assets": [],
+  "differences": [
+    "未迁移：被引擎能力/外部依赖阻塞（见 blockers）"
+  ],
+  "gaps": [
+    "旧仓该目录只有 config.py + 空的 assets.py，没有 `script_task.py`，无法抽象出任何屏幕行为。",
+    "「御魂悲鸣」（悲鸣）是 `Orochi` 任务的御魂 zone 选项（`tasks/Orochi/config.py: ELEVEN='悲鸣'`），不是独立任务。",
+    "`Orochi` 任务不在本批次 assigned tasks 中。",
+    "等待 `Orochi` 任务完成迁移后，用 `call_task` 调用并传入「悲鸣」zone 参数（Orochi 是否有 zone 参数由该任务迁移决定）。",
+    "或在 scheduler 中把原 OrochiMoans 条目映射到 Orochi 任务的悲鸣 zone 配置。",
+    "本批次先以 ⛔ blocked 登记，避免伪造独立行为。"
+  ],
+  "assets_used_count": 0
+}

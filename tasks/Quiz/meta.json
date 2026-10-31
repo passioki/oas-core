@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "Quiz",
+  "name": "对弈社答题",
+  "version": 1,
+  "expire": "weekly",
+  "category": "limited",
+  "description": "庭院→探索→结界突破→对弈社：进入答题活动并到达「开始」界面；每题答案需要本地题库（题目/选项 OCR 文本 → 答案索引），当前 DSL 无外部数据查询能力 → blocked 退出。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 600
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "week",
+      "times": 1
+    }
+  }
+}

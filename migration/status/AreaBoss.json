@@ -1,0 +1,17 @@
+{
+  "task": "AreaBoss",
+  "status": "🔄",
+  "evidence": [
+    "spec: migration/specs/AreaBoss.md",
+    "bundle: tasks/AreaBoss/{meta.json,flow.json,README.md,migration.json}",
+    "lint: oasd task lint --tasks-dir tasks --task AreaBoss => lint task=AreaBoss errors=0",
+    "flow covers: entry nav, filter open + famous/collect switch, no-boss no_target, reputation OCR dynamic 1/2/3 fights, boss detail open, difficulty/floor setup (ji_1/ji_10/normal_1/normal_60), fire + generic battle + close detail, return home"
+  ],
+  "gaps": [
+    "TODO(DSL): boss_reward bounty-boss search needs OCR-name similarity/common-char matching (old check_common_chars); not expressible -> warns and skips",
+    "TODO(geometry): level slider drag needs I_AB_LEVEL_HANDLE matched-centre as drag start; DSL can't derive a drag origin from a template match -> fixed inline region approximation",
+    "TODO(behavior): challenge-count/rank filters (get_num_challenge, is_group_ranked, I_AB_NUM_CHALLENGE_RAIL, O_AB_NUM_OF_CHALLENGE) not migrated",
+    "TODO(DSL): switch_soul preset switching has no primitive",
+    "no real-device/replay evidence (emulator offline); verify filter/difficulty/floor template thresholds live"
+  ]
+}

@@ -1,0 +1,797 @@
+{
+  "schema_version": 1,
+  "name": "MysteryShop",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'MysteryShop: 神秘商店（庭院→商店→好友商店购买/领奖/回庭院）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "6"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "click_point",
+                          "args": {
+                            "x": 48,
+                            "y": 43
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GameUi_I_CHECK_MAIN"
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_MAIN_GOTO_MALL",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_MAIN",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_MALL",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.5
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "10"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MysteryShop_I_MS_SHARE')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_MysteryShop_I_ME_ENTER",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GameUi_I_CHECK_MALL",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_MysteryShop_I_MS_SHARE"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'MysteryShop: 分享（远程 GeneralInvite 5 位好友）未迁移 → 跳过（缺口）'"
+      }
+    },
+    {
+      "op": "set_var",
+      "args": {
+        "name": "friends",
+        "value": "0"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "8"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "var('friends') >= 5"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'MysteryShop: 当前好友商店购买'"
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "param('mystery_amulet')"
+              },
+              "then": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_MysteryShop_I_MS_BLUE')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_MysteryShop_I_MS_BLUE",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_MysteryShop_I_MS_BLUE",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.0
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_MysteryShop_I_MS_CHECK_BLUE')"
+                      },
+                      "then": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'MysteryShop: 神秘符咒 已购买/售罄标记出现'"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                  "timeout_ms": 3000
+                                }
+                              }
+                            },
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 0.8
+                              }
+                            }
+                          ],
+                          "else": []
+                        }
+                      ]
+                    }
+                  ],
+                  "else": []
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "param('black_daruma_scrap')"
+              },
+              "then": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_MysteryShop_I_MS_BLACK')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_MysteryShop_I_MS_BLACK",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_MysteryShop_I_MS_BLACK",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.0
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_MysteryShop_I_MS_CHECK_BLACK')"
+                      },
+                      "then": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'MysteryShop: 黑达摩碎片 已购买/售罄标记出现'"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                  "timeout_ms": 3000
+                                }
+                              }
+                            },
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 0.8
+                              }
+                            }
+                          ],
+                          "else": []
+                        }
+                      ]
+                    }
+                  ],
+                  "else": []
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "param('shop_kaiko_3')"
+              },
+              "then": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_MysteryShop_I_MS_TAIKO_3')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_MysteryShop_I_MS_TAIKO_3",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_MysteryShop_I_MS_TAIKO_3",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.0
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_MysteryShop_I_MS_CHECK_TAIKO_3')"
+                      },
+                      "then": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'MysteryShop: 太鼓3 已购买/售罄标记出现'"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                  "timeout_ms": 3000
+                                }
+                              }
+                            },
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 0.8
+                              }
+                            }
+                          ],
+                          "else": []
+                        }
+                      ]
+                    }
+                  ],
+                  "else": []
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "param('shop_kaiko_4')"
+              },
+              "then": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_MysteryShop_I_MS_TAIKO_4')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_MysteryShop_I_MS_TAIKO_4",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_MysteryShop_I_MS_TAIKO_4",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.0
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_MysteryShop_I_MS_CHECK_TAIKO_4')"
+                      },
+                      "then": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'MysteryShop: 太鼓4 已购买/售罄标记出现'"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                  "timeout_ms": 3000
+                                }
+                              }
+                            },
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 0.8
+                              }
+                            }
+                          ],
+                          "else": []
+                        }
+                      ]
+                    }
+                  ],
+                  "else": []
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "ocr_to_var",
+              "args": {
+                "sel": "legacy_MysteryShop_O_MS_FRIEND",
+                "var": "prev_friend"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "10"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_MysteryShop_I_MS_NEXT')"
+                  },
+                  "then": [],
+                  "else": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'MysteryShop: 没有下一个好友了 → 结束'"
+                      }
+                    },
+                    {
+                      "op": "break",
+                      "args": {}
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_MysteryShop_I_MS_SHARE')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_MysteryShop_I_MS_NEXT",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_MysteryShop_I_MS_NEXT",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.5
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_MysteryShop_I_MS_NEXT",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_MysteryShop_I_MS_NEXT",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 2.0
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "inc_var",
+              "args": {
+                "name": "friends",
+                "by": 1
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'MysteryShop: 商店奖励（记录数 ≥3/5/10 领取）'"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "ocr_digit('legacy_MysteryShop_O_MS_RECORDS') >= 3"
+      },
+      "then": [
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_MysteryShop_I_MS_REWARD_3",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_MysteryShop_I_MS_REWARD_3",
+              "timeout_ms": 3000
+            }
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "ocr_digit('legacy_MysteryShop_O_MS_RECORDS') >= 5"
+      },
+      "then": [
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_MysteryShop_I_MS_REWARD_5",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_MysteryShop_I_MS_REWARD_5",
+              "timeout_ms": 3000
+            }
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "ocr_digit('legacy_MysteryShop_O_MS_RECORDS') >= 10"
+      },
+      "then": [
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_MysteryShop_I_MS_REWARD_10",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_MysteryShop_I_MS_REWARD_10",
+              "timeout_ms": 3000
+            }
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "8"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "click_point",
+                          "args": {
+                            "x": 48,
+                            "y": 43
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GameUi_I_CHECK_MAIN"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'MysteryShop: done'"
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

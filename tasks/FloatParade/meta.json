@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "FloatParade",
+  "name": "花车巡游",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "庭院→右侧活动面板→花车巡游：收取放置里程奖励；按 level_reward1/2 选择花车等级奖励档位，批量选择+一键领取；关闭红点/礼物弹窗；回庭院。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "level_reward1",
+      "type": "int",
+      "default": 3,
+      "min": 1,
+      "max": 3
+    },
+    {
+      "key": "level_reward2",
+      "type": "int",
+      "default": 1,
+      "min": 1,
+      "max": 3
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 240
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

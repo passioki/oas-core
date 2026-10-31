@@ -1,0 +1,19 @@
+{
+  "task": "BudokaiTournament",
+  "status": "🔄",
+  "evidence": [
+    "spec: migration/specs/BudokaiTournament.md",
+    "bundle: tasks/BudokaiTournament/{meta.json,flow.json,README.md,migration.json}",
+    "lint: oasd task lint --tasks-dir tasks --task BudokaiTournament => lint task=BudokaiTournament errors=0",
+    "flow covers both modes end-to-end at DSL level: activity entry, daily_training ticket check + challenge (O_FIRE/I_IMG3/I_IMG4) + generic battle, cultivation_drills search/detail/challenge, reward/confirm handling, bounded loop, return home"
+  ],
+  "gaps": [
+    "TODO(behavior): old run_sequence runs daily_training then cultivation_drills in one run; DSL has no in-flow mode switch -> split into two scheduler entries via mode param",
+    "TODO(DSL): switch_soul / preset team / green mark / anti-detect have no primitives",
+    "TODO(fidelity): battle_wait 270s super-long handling and random click/swipe not migrated (generic battle sample)",
+    "TODO(fidelity): O_FIRE keyword '挑战' lost at import; appear()/click() use OCR box only",
+    "TODO(DSL): limit_time / random_sleep / active_souls_clean (SoulsTidy trigger) not expressible",
+    "TODO(fidelity): I_IMG2 popup handling not used",
+    "no real-device/replay evidence (emulator offline)"
+  ]
+}

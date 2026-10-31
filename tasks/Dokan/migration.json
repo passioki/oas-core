@@ -1,0 +1,54 @@
+{
+  "task": "Dokan",
+  "source": "runhey/OnmyojiAutoScript@dev",
+  "source_commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+  "source_files": [
+    "tasks/Dokan/script_task.py",
+    "tasks/Dokan/config.py",
+    "tasks/Dokan/dokan_scene.py",
+    "tasks/Dokan/ex_green_mark.py",
+    "tasks/Dokan/utils.py",
+    "tasks/Dokan/assets.py",
+    "tasks/Component/GeneralBattle/general_battle.py",
+    "tasks/Component/SwitchSoul/switch_soul.py"
+  ],
+  "group": "Guild",
+  "status": "blocked",
+  "spec": "migration/specs/Dokan.md",
+  "assets": {
+    "referenced": 22,
+    "source": "assets/assets.json (global legacy ids)",
+    "task_local_assets": false
+  },
+  "behavior": {
+    "entry": "庭院 -> 阴阳寮 -> 神社 -> 道馆",
+    "covered": [
+      "入口导航",
+      "场景轮询 ≤60：FINISHED -> done",
+      "等待类场景（GATHERING / BOSS_WAITING / BATTLE_OVER / FIGHTING）",
+      "关闭类（TOPPA_RANK / BATTLE_OVER 关闭区）",
+      "START_CHALLENGE 点击加入战斗",
+      "放弃突破投票 / 失败投票保留赏金",
+      "回庭院"
+    ],
+    "blocked": [
+      "find_dokan 动态列表扫描 + 赏金/人数评分",
+      "enter_dokan O_DOKAN_MAP OCR 关键词框 + 偏移点击",
+      "dokan_battle 双馆主阵容 / 绿标 / 锁定 / 安全区随机点击",
+      "跨日攻击次数持久化 + 6 种馆主策略",
+      "创建道馆 / 自动加油"
+    ]
+  },
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task Dokan => errors=0",
+    "coverage_matrix": "migration/specs/Dokan.md §3/§6"
+  },
+  "differences": [
+    "BLOCKED: find_dokan/find_challengeable needs multi-hit template scan over a list, per-candidate sub-ROI OCR of bounty/people, score ranking, dynamic roi_back mutation and repeated clicks — DSL has no such primitives",
+    "BLOCKED: enter_dokan clicks (x, y-20) above an O_DOKAN_MAP keyword OCR box — DSL cannot offset from a matched text box",
+    "BLOCKED: dokan_battle two master formations + ExtendGreenMark (green mark by shikigami name) + lock team + detect_safe_area2 random safe-area click + is_battle_end composite check",
+    "BLOCKED: AttackAccountConfig cross-day persistence (remain_attack_count/attack_date) and 6 attack_dokan_master strategies — no config read/write primitive",
+    "BLOCKED: creat_dokan / start_cheering state machines",
+    "no device/replay evidence (emulator offline)"
+  ]
+}

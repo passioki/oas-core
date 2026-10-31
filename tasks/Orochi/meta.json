@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "Orochi",
+  "name": "Orochi",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "庭院→探索→玩法→御魂副本→八岐大蛇。单人模式：锁定队伍→循环点挑战→通用战斗→回庭院。层数选择（RuleList）、队长/队员/野队（建房/邀请/等待）、御魂切换、真蛇检测联动未迁移。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "max_battles",
+      "type": "int",
+      "default": 30,
+      "min": 1,
+      "max": 99
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    },
+    "no_resource": {
+      "result": "resource"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "window_closed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1800
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

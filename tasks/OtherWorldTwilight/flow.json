@@ -1,0 +1,508 @@
+{
+  "schema_version": 1,
+  "name": "OtherWorldTwilight",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: OtherWorldTwilight 开始（庭院→町中→逢魔之时→彼世逢魔）'"
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_MAIN_GOTO_TOWN",
+        "requires": {
+          "kind": "appear",
+          "sel": "庭院_探索灯笼",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_TOWN",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_TOWN_GOTO_DEMON_ENCOUNTER",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_TOWN_GOTO_DEMON_ENCOUNTER",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_DEMON_ENCOUNTER",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "wait_until",
+      "args": {
+        "cond": "appear('legacy_OtherWorldTwilight_I_DE_TO_OTHER_WORLD')",
+        "timeout_s": 10
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_OtherWorldTwilight_I_DE_TO_OTHER_WORLD",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_OtherWorldTwilight_I_DE_TO_OTHER_WORLD",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_OtherWorldTwilight_I_OWT_FIRE",
+          "timeout_ms": 15000
+        }
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('legacy_OtherWorldTwilight_I_OWT_TEAM')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "'S: 队长/队员模式未迁移：需要 建房/邀请/等待开战 的完整 GeneralRoom+GeneralInvite 子流程（素材已导入，flow 组合待下一轮）'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "12"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('庭院_探索灯笼')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "庭院_探索灯笼"
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "failed"
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 单人模式：锁定队伍后循环挑战彼世逢魔'"
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_OtherWorldTwilight_I_OWT_UNLOCK')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_OtherWorldTwilight_I_OWT_UNLOCK"
+              }
+            }
+          ]
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "param('max_battles')"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_OtherWorldTwilight_I_OWT_FIRE')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_OtherWorldTwilight_I_OWT_FIRE"
+                  }
+                },
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 战斗准备：点「准备」（I_PREPARE_HIGHLIGHT）'"
+                  }
+                },
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "5"
+                  },
+                  "body": [
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.0
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+                      },
+                      "then": [
+                        {
+                          "op": "click_target",
+                          "args": {
+                            "find": [
+                              {
+                                "kind": "template",
+                                "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT"
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "op": "break"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "wait_until",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_BATTLE_INFO')",
+                    "timeout_s": 25
+                  }
+                },
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 已进入战斗（I_BATTLE_INFO），自动战斗 + 结算处理'"
+                  }
+                },
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "80"
+                  },
+                  "body": [
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 2.2
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_WIN')"
+                      },
+                      "then": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 战斗胜利（I_WIN）'"
+                          }
+                        },
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Component_GeneralBattle_I_WIN"
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 0.6
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+                      },
+                      "then": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "warn",
+                            "text": "'S: 战斗失败（I_FALSE），点掉结算'"
+                          }
+                        },
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Component_GeneralBattle_I_FALSE"
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 0.8
+                          }
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_Component_GeneralBattle_I_FALSE"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+                      },
+                      "then": [
+                        {
+                          "op": "click_target",
+                          "args": {
+                            "find": [
+                              {
+                                "kind": "template",
+                                "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT"
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_GREED_GHOST')"
+                      },
+                      "then": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 贪吃鬼奖励（I_GREED_GHOST）'"
+                          }
+                        },
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Component_GeneralBattle_I_GREED_GHOST"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_OVER_GHOST')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Component_GeneralBattle_I_OVER_GHOST"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Component_GeneralBattle_I_REWARD"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "op": "click_point",
+                      "args": {
+                        "x": 640,
+                        "y": 690
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_OtherWorldTwilight_I_OWT_FIRE')"
+                      },
+                      "then": [
+                        {
+                          "op": "break"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "appear",
+                  "args": {
+                    "sel": "legacy_OtherWorldTwilight_I_OWT_FIRE"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 未见挑战按钮（次数用尽/非活动期），结束循环'"
+                  }
+                },
+                {
+                  "op": "break"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "12"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('庭院_探索灯笼')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "庭院_探索灯笼"
+          }
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: OtherWorldTwilight(alone) done，已回庭院'"
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "done"
+          }
+        }
+      ]
+    }
+  ]
+}

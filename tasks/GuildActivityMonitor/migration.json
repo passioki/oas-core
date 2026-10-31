@@ -1,0 +1,38 @@
+{
+  "task": "GuildActivityMonitor",
+  "name": "GuildActivityMonitor",
+  "source": {
+    "repo": "https://github.com/runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/GuildActivityMonitor/script_task.py",
+      "tasks/GuildActivityMonitor/config.py",
+      "tasks/GuildActivityMonitor/assets.py",
+      "tasks/GuildActivityMonitor/res/ocr.json"
+    ]
+  },
+  "status": "⛔",
+  "evidence": [
+    "task lint --tasks-dir tasks --task GuildActivityMonitor => lint task=GuildActivityMonitor errors=0（骨架包）",
+    "migration/specs/GuildActivityMonitor.md §3：所需原语清单"
+  ],
+  "blockers": [
+    "无读取 Android 系统通知/adb shell 的 flow 原语（上游核心是 dumpsys notification 解析）",
+    "flow 无法对其他任务 enqueue/set_next_run（上游核心是「检测到活动→立刻拉起对应任务」）",
+    "表达式无 now()/weekday()（run_days/监控时长依赖 wall-clock）",
+    "表达式无字符串包含运算（OCR 关键字匹配 keyword in text 不可表达）"
+  ],
+  "assets": {
+    "reused_global": [
+      "庭院_探索灯笼",
+      "legacy_GuildActivityMonitor_O_GUILD_ACTIVITY_NOTIFY（OCR 变体预留，当前未引用）"
+    ],
+    "new": []
+  },
+  "differences": [
+    "整任务未迁移（⛔）；flow 仅入口守卫 + window_closed 退出，不点击任何游戏 UI",
+    "run_days 建议由调度器 windows 承担（ENGINE §22.34 三层分离）；flow 内不重复实现",
+    "无实机验证（任务本身不操作游戏 UI）"
+  ]
+}

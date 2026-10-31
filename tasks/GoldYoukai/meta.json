@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "GoldYoukai",
+  "name": "GoldYoukai",
+  "version": 1,
+  "category": "daily",
+  "description": "庭院→组队→选「金币妖怪」→创建公开房间→等待队友（有界）→挑战→结算→退出房间，重复 2 次；无券时 no_resource。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_resource": {
+      "result": "resource"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 900
+  },
+  "resources": [
+    "ticket"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

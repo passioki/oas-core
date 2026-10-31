@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "name": "FindJade",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "warn",
+        "text": "\"FindJade blocked：旧仓 FindJade 是多账号编排器，不是屏幕任务\""
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "warn",
+        "text": "\"需要 SwitchAccount（登录另一账号）与 WantedQuests 任务实例（不在本任务范围）\""
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "warn",
+        "text": "\"依赖 wall-clock 时段判断与 13 小时间隔\""
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "warn",
+        "text": "\"原因见 README / migration.json；以下为未迁移项清单\""
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "failed"
+      }
+    }
+  ]
+}

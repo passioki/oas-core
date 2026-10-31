@@ -1,0 +1,45 @@
+{
+  "task": "AreaBoss",
+  "source": "runhey/OnmyojiAutoScript@dev",
+  "source_commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+  "source_files": [
+    "tasks/AreaBoss/script_task.py",
+    "tasks/AreaBoss/config.py",
+    "tasks/AreaBoss/config_boss.py",
+    "tasks/AreaBoss/assets.py",
+    "tasks/Component/GeneralBattle/general_battle.py",
+    "tasks/Component/GeneralBattle/battle_wait.py",
+    "tasks/GameUi/page.py"
+  ],
+  "group": "Daily Task",
+  "status": "partial",
+  "spec": "migration/specs/AreaBoss.md",
+  "assets": {
+    "referenced": 34,
+    "source": "assets/assets.json (global legacy ids)",
+    "task_local_assets": false
+  },
+  "behavior": {
+    "entry": "庭院 -> 探索 -> 地域鬼王",
+    "covered": [
+      "筛选面板打开 + 热门/收藏切换",
+      "无鬼王 -> no_target",
+      "声望 OCR -> 1/2/3 次挑战",
+      "开鬼王详情 I_BATTLE_n -> I_AB_CLOSE_RED",
+      "难度切换 极/普通 + 极层数 1/10 + 普通等级 60 滑条",
+      "I_FIRE 挑战 -> 通用战斗 -> 关详情回列表",
+      "回庭院"
+    ]
+  },
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task AreaBoss => errors=0",
+    "coverage_matrix": "migration/specs/AreaBoss.md §3"
+  },
+  "differences": [
+    "悬赏鬼王 fight_reward_boss（O_AB_BOSS_NAME OCR 名称相似匹配找挑战人数最多者）未迁移：boss_reward=true 时告警跳过",
+    "等级滑条：旧仓用 I_AB_LEVEL_HANDLE 命中中心做 swipe 起点；DSL 用固定 inline region 右拖近似",
+    "get_num_challenge / is_group_ranked / I_AB_NUM_CHALLENGE_RAIL / O_AB_NUM_OF_CHALLENGE 未使用",
+    "switch_soul 御魂切换未迁移（无 DSL 原语）",
+    "no device/replay evidence (emulator offline)"
+  ]
+}

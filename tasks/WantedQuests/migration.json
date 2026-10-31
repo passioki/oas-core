@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "task": "WantedQuests",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "ref": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/WantedQuests/script_task.py",
+      "tasks/WantedQuests/config.py",
+      "tasks/WantedQuests/assets.py",
+      "tasks/WantedQuests/explore.py",
+      "tasks/Secret/script_task.py (imported secret zone)",
+      "tasks/GameUi/game_ui.py, tasks/GameUi/page.py (imported)"
+    ]
+  },
+  "status": "🔄",
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task WantedQuests => errors=0",
+    "live_or_replay": "none (no device / no matching replay recording in this session)",
+    "assets": "global legacy_* ids from migration/asset-map.json; T4 green"
+  },
+  "differences": [
+    "导航/动作点击用导入的 legacy 模板 id（模板 click = 匹配模板矩形，与旧引擎 RuleImage.coord() 等价）；RuleClick 用 click_target(region, sel)。",
+    "远程 while True + Timer 的重试/判停改为有界 loop / wait_until(timeout) / 步骤 retry；结束条件用页面 marker 或次数上限。",
+    "战斗统一 P-BATTLE v2（Component_GeneralBattle 素材：准备/胜利/失败/奖励→回页），不是完整 GeneralBattle（无绿标/预设/特殊奖励分支/统计页）。",
+    "OCR：RuleOcr → ocr_lines；子串/正则匹配改为规范化行匹配或 text_visible；字符串拼接/题库查询等无原语的行为记为缺口。"
+  ],
+  "gaps": [
+    "核心逻辑量大且强依赖 OCR 文本处理：find_wq 扫描列表、O_WQ_TYPE/INFO 判定 4 类任务、O_WQ_TEXT_ALL 文本、C_WQ_D* 战斗、协作邀请（GeneralInvite 全套）、追踪开关、探索战斗（WQExplore）——本轮未逐函数映射。",
+    "远程 pre_work 依赖 I_TRACE_DISABLE/ENABLE 全量追踪判定 + 多种特判（特殊主界面 C_SPECIAL_MAIN、现世任务 I_WQ_TRACE_ONE_REALWORLD）。",
+    "before_end 时间窗口/next_run 排期无时钟原语 → scheduler windows。",
+    "此状态为「已映射入口、主循环未实现」的 🔄，不应视为可用任务。"
+  ]
+}

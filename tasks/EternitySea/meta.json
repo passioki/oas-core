@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "EternitySea",
+  "name": "EternitySea",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "庭院→探索→玩法→御魂副本→永生之海。单人模式：选层（坐标近似）→锁定队伍→循环挑战→多阶段战斗→返回庭院。队长/队员（建房/邀请/等待）未迁移；御魂切换未迁移。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "layer",
+      "type": "int",
+      "default": 4,
+      "min": 1,
+      "max": 4
+    },
+    {
+      "key": "max_battles",
+      "type": "int",
+      "default": 30,
+      "min": 1,
+      "max": 99
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    },
+    "no_resource": {
+      "result": "resource"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "window_closed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1800
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

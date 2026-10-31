@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "DemonEncounter",
+  "name": "DemonEncounter",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "逢魔之时（部分）：庭院→町中→逢魔→现世逢魔；挑战次数 0 则 skipped；点亮灯笼+红达摩奖励；搜索逢魔首领→集结→准备→通用战斗；回庭院。灯笼类型（宝箱/信件/结界/神秘/战斗/boss）与 480s 等待等未迁移（见 spec）。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "skipped": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 900
+  },
+  "resources": [
+    "demon_encounter_chance"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

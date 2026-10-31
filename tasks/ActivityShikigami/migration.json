@@ -1,0 +1,50 @@
+{
+  "task": "ActivityShikigami",
+  "source": "runhey/OnmyojiAutoScript@dev",
+  "source_commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+  "source_files": [
+    "tasks/ActivityShikigami/script_task.py",
+    "tasks/ActivityShikigami/config.py",
+    "tasks/ActivityShikigami/assets.py",
+    "tasks/ActivityShikigami/page.py",
+    "tasks/Component/BaseActivity/config_activity.py",
+    "tasks/Component/GeneralBattle/general_battle.py",
+    "tasks/Component/RightActivity/right_activity.py",
+    "tasks/GameUi/page.py"
+  ],
+  "group": "Activity Task",
+  "status": "partial",
+  "spec": "migration/specs/ActivityShikigami.md",
+  "assets": {
+    "referenced": 33,
+    "source": "assets/assets.json (global legacy ids)",
+    "task_local_assets": false
+  },
+  "behavior": {
+    "entry": "庭院 -> 右侧活动 -> 爬塔主界面",
+    "covered": [
+      "活动入口（RightActivity toggle + I_SHI + I_TO_BATTLE_MAIN）",
+      "PASS 模式：跳过剧情/领奖 -> 占领奖励点击 -> 进入挑战界面",
+      "挑战 O_FIRE -> 通用战斗 -> 计数，max_battles 有界",
+      "回庭院"
+    ],
+    "not_covered": [
+      "ap 体力模式",
+      "ap100 100体模式",
+      "boss 模式"
+    ]
+  },
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task ActivityShikigami => errors=0",
+    "coverage_matrix": "migration/specs/ActivityShikigami.md §3"
+  },
+  "differences": [
+    "ap / ap100 / boss climb modes not migrated (separate entries/tickets/reward flows)",
+    "O_FIRE keyword '挑战' lost on import (ocr_lines without keyword); appear() only tests non-empty text",
+    "PASS_8/10/11 assets missing at import (source images absent) -> flow uses PASS_5/6/7/9 only",
+    "story-skip click sequence simplified (old multi-scale/centre-click loop)",
+    "limit_time 30min / active_souls_clean cross-task scheduling / random_sleep not expressible",
+    "switch_soul preset switching not migrated",
+    "no device/replay evidence (emulator offline)"
+  ]
+}

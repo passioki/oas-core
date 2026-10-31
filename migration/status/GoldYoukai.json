@@ -1,0 +1,15 @@
+{
+  "task": "GoldYoukai",
+  "status": "🔄",
+  "evidence": {
+    "lint": "lint task=GoldYoukai errors=0",
+    "coverage": "组队/选副本/创建公开房间/等队友/战斗/结算/退出/2 轮 全覆盖；buff 与换御魂未迁移",
+    "run": "未真机"
+  },
+  "gaps": [
+    "buff 动态开关需要锚点定位",
+    "RuleList 未导入",
+    "50s 等待改为有界循环",
+    "未真机验证"
+  ]
+}

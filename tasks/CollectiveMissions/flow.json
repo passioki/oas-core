@@ -1,0 +1,2872 @@
+{
+  "schema_version": 1,
+  "name": "CollectiveMissions",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 集体任务 开始（庭院 → 阴阳寮 → 神社 → 集体任务）'"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 庭院 → 阴阳寮'"
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_MAIN_GOTO_GUILD",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_MAIN",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_GUILD",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_CollectiveMissions_I_CM_SHRINE",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_GUILD",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_CollectiveMissions_I_CM_CM",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.5
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_CollectiveMissions_I_CM_CM",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_CollectiveMissions_I_CM_CM",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_CollectiveMissions_I_CM_RECORDS",
+          "timeout_ms": 15000
+        }
+      }
+    },
+    {
+      "op": "set_var",
+      "args": {
+        "name": "exit",
+        "value": "'done'"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "var('exit') == 'done'"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 检测今日集体任务完成度（30/30 表示已完成）'"
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "ocr_digit('legacy_CollectiveMissions_O_CM_NUMBER') >= 30"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 今日集体任务 30/30 已完成 → skipped'"
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "exit",
+                "value": "'skipped'"
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 切换到目标任务类型：param mission_select'"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "20"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "ocr('legacy_CollectiveMissions_O_CM_1') == param('mission_select') or ocr('legacy_CollectiveMissions_O_CM_2') == param('mission_select')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 目标任务已选中'"
+                      }
+                    },
+                    {
+                      "op": "break",
+                      "args": {}
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_CollectiveMissions_I_CM_SWITCH')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_CollectiveMissions_I_CM_SWITCH",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_CollectiveMissions_I_CM_SWITCH",
+                          "timeout_ms": 2000
+                        },
+                        "retry": {
+                          "times": 2,
+                          "delay_ms": 600,
+                          "exponential": false
+                        }
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "warn",
+                        "text": "'S: 刷新按钮不可用 → 直接使用当前任务'"
+                      }
+                    },
+                    {
+                      "op": "break",
+                      "args": {}
+                    }
+                  ]
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.5
+                  }
+                }
+              ]
+            },
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 识别三个任务位（OCR 名称/等级）'"
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "m1",
+                "value": "''"
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "r1",
+                "value": "100"
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_1') == '契灵探查'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m1",
+                    "value": "'BL'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r1",
+                    "value": "0"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_2') == '觉醒三'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m1",
+                    "value": "'AW3'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r1",
+                    "value": "1"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_2') == '觉醒二'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m1",
+                    "value": "'AW2'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r1",
+                    "value": "2"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_2') == '觉醒一'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m1",
+                    "value": "'AW1'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r1",
+                    "value": "3"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_2') == '御灵三'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m1",
+                    "value": "'GR3'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r1",
+                    "value": "4"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_2') == '御灵二'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m1",
+                    "value": "'GR2'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r1",
+                    "value": "5"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_2') == '御灵一'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m1",
+                    "value": "'GR1'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r1",
+                    "value": "6"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_2') == '御魂二'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m1",
+                    "value": "'SO2'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r1",
+                    "value": "7"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_2') == '御魂一'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m1",
+                    "value": "'SO1'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r1",
+                    "value": "8"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_1') == '远远不够'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m1",
+                    "value": "'FEED'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r1",
+                    "value": "9"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_1') == '结伴同行'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m1",
+                    "value": "'FRIEND'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r1",
+                    "value": "100"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "m2",
+                "value": "''"
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "r2",
+                "value": "100"
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_3') == '契灵探查'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m2",
+                    "value": "'BL'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r2",
+                    "value": "0"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_4') == '觉醒三'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m2",
+                    "value": "'AW3'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r2",
+                    "value": "1"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_4') == '觉醒二'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m2",
+                    "value": "'AW2'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r2",
+                    "value": "2"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_4') == '觉醒一'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m2",
+                    "value": "'AW1'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r2",
+                    "value": "3"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_4') == '御灵三'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m2",
+                    "value": "'GR3'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r2",
+                    "value": "4"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_4') == '御灵二'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m2",
+                    "value": "'GR2'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r2",
+                    "value": "5"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_4') == '御灵一'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m2",
+                    "value": "'GR1'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r2",
+                    "value": "6"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_4') == '御魂二'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m2",
+                    "value": "'SO2'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r2",
+                    "value": "7"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_4') == '御魂一'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m2",
+                    "value": "'SO1'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r2",
+                    "value": "8"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_3') == '远远不够'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m2",
+                    "value": "'FEED'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r2",
+                    "value": "9"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_3') == '结伴同行'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m2",
+                    "value": "'FRIEND'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r2",
+                    "value": "100"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "m3",
+                "value": "''"
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "r3",
+                "value": "100"
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_5') == '契灵探查'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m3",
+                    "value": "'BL'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r3",
+                    "value": "0"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_6') == '觉醒三'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m3",
+                    "value": "'AW3'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r3",
+                    "value": "1"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_6') == '觉醒二'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m3",
+                    "value": "'AW2'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r3",
+                    "value": "2"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_6') == '觉醒一'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m3",
+                    "value": "'AW1'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r3",
+                    "value": "3"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_6') == '御灵三'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m3",
+                    "value": "'GR3'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r3",
+                    "value": "4"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_6') == '御灵二'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m3",
+                    "value": "'GR2'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r3",
+                    "value": "5"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_6') == '御灵一'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m3",
+                    "value": "'GR1'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r3",
+                    "value": "6"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_6') == '御魂二'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m3",
+                    "value": "'SO2'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r3",
+                    "value": "7"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_6') == '御魂一'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m3",
+                    "value": "'SO1'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r3",
+                    "value": "8"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_5') == '远远不够'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m3",
+                    "value": "'FEED'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r3",
+                    "value": "9"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_5') == '结伴同行'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m3",
+                    "value": "'FRIEND'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r3",
+                    "value": "100"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 按默认 missions_rule 选优先级最高的任务位'"
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "var('r1') <= var('r2') and var('r1') <= var('r3')"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "best",
+                    "value": "1"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "mission",
+                    "value": "var('m1')"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "var('r2') <= var('r3')"
+                  },
+                  "then": [
+                    {
+                      "op": "set_var",
+                      "args": {
+                        "name": "best",
+                        "value": "2"
+                      }
+                    },
+                    {
+                      "op": "set_var",
+                      "args": {
+                        "name": "mission",
+                        "value": "var('m2')"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "set_var",
+                      "args": {
+                        "name": "best",
+                        "value": "3"
+                      }
+                    },
+                    {
+                      "op": "set_var",
+                      "args": {
+                        "name": "mission",
+                        "value": "var('m3')"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 已选出任务位'"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "var('mission') == 'FEED'"
+          },
+          "then": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "var('best') == 1"
+              },
+              "then": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "region",
+                        "sel": "legacy_CollectiveMissions_C_CM_1"
+                      }
+                    ],
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_CollectiveMissions_I_CM_RECORDS",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait_until",
+                  "args": {
+                    "cond": "appear('legacy_CollectiveMissions_I_FEED_HEAP')",
+                    "timeout_s": 15
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.8
+                  }
+                },
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "region",
+                        "sel": "legacy_CollectiveMissions_L_FEED_CLICK_1"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "region",
+                        "sel": "legacy_CollectiveMissions_L_FEED_CLICK_2"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "8"
+                  },
+                  "body": [
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 0.6
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_CollectiveMissions_I_FEED_SUBMIT')"
+                      },
+                      "then": [
+                        {
+                          "op": "break",
+                          "args": {}
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "click_target",
+                          "args": {
+                            "find": [
+                              {
+                                "kind": "region",
+                                "sel": "legacy_CollectiveMissions_L_FEED_CLICK_1"
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "op": "click_target",
+                          "args": {
+                            "find": [
+                              {
+                                "kind": "region",
+                                "sel": "legacy_CollectiveMissions_L_FEED_CLICK_2"
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_CollectiveMissions_I_FEED_SUBMIT",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_CollectiveMissions_I_FEED_SUBMIT",
+                      "timeout_ms": 5000
+                    },
+                    "retry": {
+                      "times": 2,
+                      "delay_ms": 800,
+                      "exponential": false
+                    }
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "var('best') == 2"
+                  },
+                  "then": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_CollectiveMissions_C_CM_2"
+                          }
+                        ],
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_CollectiveMissions_I_CM_RECORDS",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait_until",
+                      "args": {
+                        "cond": "appear('legacy_CollectiveMissions_I_FEED_HEAP')",
+                        "timeout_s": 15
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 0.8
+                      }
+                    },
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_CollectiveMissions_L_FEED_CLICK_1"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_CollectiveMissions_L_FEED_CLICK_2"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "op": "loop",
+                      "args": {
+                        "n": "8"
+                      },
+                      "body": [
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 0.6
+                          }
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_CollectiveMissions_I_FEED_SUBMIT')"
+                          },
+                          "then": [
+                            {
+                              "op": "break",
+                              "args": {}
+                            }
+                          ],
+                          "else": [
+                            {
+                              "op": "click_target",
+                              "args": {
+                                "find": [
+                                  {
+                                    "kind": "region",
+                                    "sel": "legacy_CollectiveMissions_L_FEED_CLICK_1"
+                                  }
+                                ]
+                              }
+                            },
+                            {
+                              "op": "click_target",
+                              "args": {
+                                "find": [
+                                  {
+                                    "kind": "region",
+                                    "sel": "legacy_CollectiveMissions_L_FEED_CLICK_2"
+                                  }
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_CollectiveMissions_I_FEED_SUBMIT",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_CollectiveMissions_I_FEED_SUBMIT",
+                          "timeout_ms": 5000
+                        },
+                        "retry": {
+                          "times": 2,
+                          "delay_ms": 800,
+                          "exponential": false
+                        }
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_CollectiveMissions_C_CM_3"
+                          }
+                        ],
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_CollectiveMissions_I_CM_RECORDS",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait_until",
+                      "args": {
+                        "cond": "appear('legacy_CollectiveMissions_I_FEED_HEAP')",
+                        "timeout_s": 15
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 0.8
+                      }
+                    },
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_CollectiveMissions_L_FEED_CLICK_1"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_CollectiveMissions_L_FEED_CLICK_2"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "op": "loop",
+                      "args": {
+                        "n": "8"
+                      },
+                      "body": [
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 0.6
+                          }
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_CollectiveMissions_I_FEED_SUBMIT')"
+                          },
+                          "then": [
+                            {
+                              "op": "break",
+                              "args": {}
+                            }
+                          ],
+                          "else": [
+                            {
+                              "op": "click_target",
+                              "args": {
+                                "find": [
+                                  {
+                                    "kind": "region",
+                                    "sel": "legacy_CollectiveMissions_L_FEED_CLICK_1"
+                                  }
+                                ]
+                              }
+                            },
+                            {
+                              "op": "click_target",
+                              "args": {
+                                "find": [
+                                  {
+                                    "kind": "region",
+                                    "sel": "legacy_CollectiveMissions_L_FEED_CLICK_2"
+                                  }
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_CollectiveMissions_I_FEED_SUBMIT",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_CollectiveMissions_I_FEED_SUBMIT",
+                          "timeout_ms": 5000
+                        },
+                        "retry": {
+                          "times": 2,
+                          "delay_ms": 800,
+                          "exponential": false
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "4"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.2
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_REWARD",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GlobalGame_I_UI_REWARD",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_AWARD')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_AWARD",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GlobalGame_I_UI_AWARD",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_CollectiveMissions_I_CM_PRESENT')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_CollectiveMissions_I_SL_SUBMIT')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_CollectiveMissions_I_FEED_SUBMIT')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_CollectiveMissions_I_FEED_SUBMIT",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_CollectiveMissions_I_FEED_SUBMIT",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "var('mission') == 'BL'"
+              },
+              "then": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_CollectiveMissions_I_CM_REWARDS')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 契灵探查已完成 → 领取奖励'"
+                      }
+                    },
+                    {
+                      "op": "loop",
+                      "args": {
+                        "n": "5"
+                      },
+                      "body": [
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 1.0
+                          }
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_CollectiveMissions_I_CM_REWARDS')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_CollectiveMissions_I_CM_REWARDS",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_CollectiveMissions_I_CM_REWARDS",
+                                  "timeout_ms": 2000
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_REWARD",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_GlobalGame_I_UI_REWARD",
+                                  "timeout_ms": 2000
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        }
+                      ]
+                    },
+                    {
+                      "op": "set_var",
+                      "args": {
+                        "name": "exit",
+                        "value": "'done'"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "warn",
+                        "text": "'S: 契灵探查未完成：旧仓会转跑 BondlingFairyland 并 2h 后再来（跨任务调度，DSL 未迁移）'"
+                      }
+                    },
+                    {
+                      "op": "set_var",
+                      "args": {
+                        "name": "exit",
+                        "value": "'no_target'"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "var('mission') == 'SO1' or var('mission') == 'SO2'"
+                  },
+                  "then": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "var('best') == 1"
+                      },
+                      "then": [
+                        {
+                          "op": "click_target",
+                          "args": {
+                            "find": [
+                              {
+                                "kind": "region",
+                                "sel": "legacy_CollectiveMissions_C_CM_1"
+                              }
+                            ],
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_CollectiveMissions_I_CM_RECORDS",
+                              "timeout_ms": 3000
+                            }
+                          }
+                        },
+                        {
+                          "op": "wait_until",
+                          "args": {
+                            "cond": "appear('legacy_CollectiveMissions_I_SL_SUBMIT')",
+                            "timeout_s": 15
+                          }
+                        },
+                        {
+                          "op": "loop",
+                          "args": {
+                            "n": "10"
+                          },
+                          "body": [
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 0.8
+                              }
+                            },
+                            {
+                              "op": "click_target",
+                              "args": {
+                                "find": [
+                                  {
+                                    "kind": "region",
+                                    "sel": "legacy_CollectiveMissions_L_SL_LONG"
+                                  }
+                                ]
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                              "timeout_ms": 5000
+                            },
+                            "expect": {
+                              "kind": "vanish",
+                              "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                              "timeout_ms": 10000
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 800,
+                              "exponential": false
+                            }
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "var('best') == 2"
+                          },
+                          "then": [
+                            {
+                              "op": "click_target",
+                              "args": {
+                                "find": [
+                                  {
+                                    "kind": "region",
+                                    "sel": "legacy_CollectiveMissions_C_CM_2"
+                                  }
+                                ],
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_CollectiveMissions_I_CM_RECORDS",
+                                  "timeout_ms": 3000
+                                }
+                              }
+                            },
+                            {
+                              "op": "wait_until",
+                              "args": {
+                                "cond": "appear('legacy_CollectiveMissions_I_SL_SUBMIT')",
+                                "timeout_s": 15
+                              }
+                            },
+                            {
+                              "op": "loop",
+                              "args": {
+                                "n": "10"
+                              },
+                              "body": [
+                                {
+                                  "op": "wait",
+                                  "args": {
+                                    "seconds": 0.8
+                                  }
+                                },
+                                {
+                                  "op": "click_target",
+                                  "args": {
+                                    "find": [
+                                      {
+                                        "kind": "region",
+                                        "sel": "legacy_CollectiveMissions_L_SL_LONG"
+                                      }
+                                    ]
+                                  }
+                                }
+                              ]
+                            },
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                                  "timeout_ms": 5000
+                                },
+                                "expect": {
+                                  "kind": "vanish",
+                                  "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                                  "timeout_ms": 10000
+                                },
+                                "retry": {
+                                  "times": 2,
+                                  "delay_ms": 800,
+                                  "exponential": false
+                                }
+                              }
+                            }
+                          ],
+                          "else": [
+                            {
+                              "op": "click_target",
+                              "args": {
+                                "find": [
+                                  {
+                                    "kind": "region",
+                                    "sel": "legacy_CollectiveMissions_C_CM_3"
+                                  }
+                                ],
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_CollectiveMissions_I_CM_RECORDS",
+                                  "timeout_ms": 3000
+                                }
+                              }
+                            },
+                            {
+                              "op": "wait_until",
+                              "args": {
+                                "cond": "appear('legacy_CollectiveMissions_I_SL_SUBMIT')",
+                                "timeout_s": 15
+                              }
+                            },
+                            {
+                              "op": "loop",
+                              "args": {
+                                "n": "10"
+                              },
+                              "body": [
+                                {
+                                  "op": "wait",
+                                  "args": {
+                                    "seconds": 0.8
+                                  }
+                                },
+                                {
+                                  "op": "click_target",
+                                  "args": {
+                                    "find": [
+                                      {
+                                        "kind": "region",
+                                        "sel": "legacy_CollectiveMissions_L_SL_LONG"
+                                      }
+                                    ]
+                                  }
+                                }
+                              ]
+                            },
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                                  "timeout_ms": 5000
+                                },
+                                "expect": {
+                                  "kind": "vanish",
+                                  "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                                  "timeout_ms": 10000
+                                },
+                                "retry": {
+                                  "times": 2,
+                                  "delay_ms": 800,
+                                  "exponential": false
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "loop",
+                      "args": {
+                        "n": "4"
+                      },
+                      "body": [
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 1.2
+                          }
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_REWARD",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_GlobalGame_I_UI_REWARD",
+                                  "timeout_ms": 2000
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_AWARD')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_AWARD",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_GlobalGame_I_UI_AWARD",
+                                  "timeout_ms": 2000
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                  "timeout_ms": 2000
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_CollectiveMissions_I_CM_PRESENT')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                  "timeout_ms": 2000
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_CollectiveMissions_I_SL_SUBMIT')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                                  "timeout_ms": 2000
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_CollectiveMissions_I_FEED_SUBMIT')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_CollectiveMissions_I_FEED_SUBMIT",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_CollectiveMissions_I_FEED_SUBMIT",
+                                  "timeout_ms": 2000
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        }
+                      ]
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "var('mission') == 'AW1' or var('mission') == 'AW2' or var('mission') == 'AW3'"
+                      },
+                      "then": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "var('best') == 1"
+                          },
+                          "then": [
+                            {
+                              "op": "click_target",
+                              "args": {
+                                "find": [
+                                  {
+                                    "kind": "region",
+                                    "sel": "legacy_CollectiveMissions_C_CM_1"
+                                  }
+                                ],
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_CollectiveMissions_I_CM_RECORDS",
+                                  "timeout_ms": 3000
+                                }
+                              }
+                            },
+                            {
+                              "op": "wait_until",
+                              "args": {
+                                "cond": "appear('legacy_CollectiveMissions_I_CM_PRESENT')",
+                                "timeout_s": 15
+                              }
+                            },
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 0.8
+                              }
+                            },
+                            {
+                              "op": "log",
+                              "args": {
+                                "level": "warn",
+                                "text": "'S: 捐献页已打开（材料选择按首个材料近似，见 migration TODO）'"
+                              }
+                            },
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                  "timeout_ms": 5000
+                                },
+                                "retry": {
+                                  "times": 2,
+                                  "delay_ms": 800,
+                                  "exponential": false
+                                }
+                              }
+                            }
+                          ],
+                          "else": [
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "var('best') == 2"
+                              },
+                              "then": [
+                                {
+                                  "op": "click_target",
+                                  "args": {
+                                    "find": [
+                                      {
+                                        "kind": "region",
+                                        "sel": "legacy_CollectiveMissions_C_CM_2"
+                                      }
+                                    ],
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_CollectiveMissions_I_CM_RECORDS",
+                                      "timeout_ms": 3000
+                                    }
+                                  }
+                                },
+                                {
+                                  "op": "wait_until",
+                                  "args": {
+                                    "cond": "appear('legacy_CollectiveMissions_I_CM_PRESENT')",
+                                    "timeout_s": 15
+                                  }
+                                },
+                                {
+                                  "op": "wait",
+                                  "args": {
+                                    "seconds": 0.8
+                                  }
+                                },
+                                {
+                                  "op": "log",
+                                  "args": {
+                                    "level": "warn",
+                                    "text": "'S: 捐献页已打开（材料选择按首个材料近似，见 migration TODO）'"
+                                  }
+                                },
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                      "timeout_ms": 5000
+                                    },
+                                    "retry": {
+                                      "times": 2,
+                                      "delay_ms": 800,
+                                      "exponential": false
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": [
+                                {
+                                  "op": "click_target",
+                                  "args": {
+                                    "find": [
+                                      {
+                                        "kind": "region",
+                                        "sel": "legacy_CollectiveMissions_C_CM_3"
+                                      }
+                                    ],
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_CollectiveMissions_I_CM_RECORDS",
+                                      "timeout_ms": 3000
+                                    }
+                                  }
+                                },
+                                {
+                                  "op": "wait_until",
+                                  "args": {
+                                    "cond": "appear('legacy_CollectiveMissions_I_CM_PRESENT')",
+                                    "timeout_s": 15
+                                  }
+                                },
+                                {
+                                  "op": "wait",
+                                  "args": {
+                                    "seconds": 0.8
+                                  }
+                                },
+                                {
+                                  "op": "log",
+                                  "args": {
+                                    "level": "warn",
+                                    "text": "'S: 捐献页已打开（材料选择按首个材料近似，见 migration TODO）'"
+                                  }
+                                },
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                      "timeout_ms": 5000
+                                    },
+                                    "retry": {
+                                      "times": 2,
+                                      "delay_ms": 800,
+                                      "exponential": false
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "loop",
+                          "args": {
+                            "n": "4"
+                          },
+                          "body": [
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 1.2
+                              }
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_GlobalGame_I_UI_REWARD",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_GlobalGame_I_UI_REWARD",
+                                      "timeout_ms": 2000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_GlobalGame_I_UI_AWARD')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_GlobalGame_I_UI_AWARD",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_GlobalGame_I_UI_AWARD",
+                                      "timeout_ms": 2000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                      "timeout_ms": 2000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_CollectiveMissions_I_CM_PRESENT')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                      "timeout_ms": 2000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_CollectiveMissions_I_SL_SUBMIT')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                                      "timeout_ms": 2000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_CollectiveMissions_I_FEED_SUBMIT')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_CollectiveMissions_I_FEED_SUBMIT",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_CollectiveMissions_I_FEED_SUBMIT",
+                                      "timeout_ms": 2000
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": []
+                            }
+                          ]
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "var('mission') == 'GR1' or var('mission') == 'GR2' or var('mission') == 'GR3'"
+                          },
+                          "then": [
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "var('best') == 1"
+                              },
+                              "then": [
+                                {
+                                  "op": "click_target",
+                                  "args": {
+                                    "find": [
+                                      {
+                                        "kind": "region",
+                                        "sel": "legacy_CollectiveMissions_C_CM_1"
+                                      }
+                                    ],
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_CollectiveMissions_I_CM_RECORDS",
+                                      "timeout_ms": 3000
+                                    }
+                                  }
+                                },
+                                {
+                                  "op": "wait_until",
+                                  "args": {
+                                    "cond": "appear('legacy_CollectiveMissions_I_CM_PRESENT')",
+                                    "timeout_s": 15
+                                  }
+                                },
+                                {
+                                  "op": "wait",
+                                  "args": {
+                                    "seconds": 0.8
+                                  }
+                                },
+                                {
+                                  "op": "log",
+                                  "args": {
+                                    "level": "warn",
+                                    "text": "'S: 捐献页已打开（材料选择按首个材料近似，见 migration TODO）'"
+                                  }
+                                },
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                    "requires": {
+                                      "kind": "appear",
+                                      "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                      "timeout_ms": 5000
+                                    },
+                                    "retry": {
+                                      "times": 2,
+                                      "delay_ms": 800,
+                                      "exponential": false
+                                    }
+                                  }
+                                }
+                              ],
+                              "else": [
+                                {
+                                  "op": "if",
+                                  "args": {
+                                    "cond": "var('best') == 2"
+                                  },
+                                  "then": [
+                                    {
+                                      "op": "click_target",
+                                      "args": {
+                                        "find": [
+                                          {
+                                            "kind": "region",
+                                            "sel": "legacy_CollectiveMissions_C_CM_2"
+                                          }
+                                        ],
+                                        "requires": {
+                                          "kind": "appear",
+                                          "sel": "legacy_CollectiveMissions_I_CM_RECORDS",
+                                          "timeout_ms": 3000
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "op": "wait_until",
+                                      "args": {
+                                        "cond": "appear('legacy_CollectiveMissions_I_CM_PRESENT')",
+                                        "timeout_s": 15
+                                      }
+                                    },
+                                    {
+                                      "op": "wait",
+                                      "args": {
+                                        "seconds": 0.8
+                                      }
+                                    },
+                                    {
+                                      "op": "log",
+                                      "args": {
+                                        "level": "warn",
+                                        "text": "'S: 捐献页已打开（材料选择按首个材料近似，见 migration TODO）'"
+                                      }
+                                    },
+                                    {
+                                      "op": "click",
+                                      "args": {
+                                        "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                        "requires": {
+                                          "kind": "appear",
+                                          "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                          "timeout_ms": 5000
+                                        },
+                                        "retry": {
+                                          "times": 2,
+                                          "delay_ms": 800,
+                                          "exponential": false
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "else": [
+                                    {
+                                      "op": "click_target",
+                                      "args": {
+                                        "find": [
+                                          {
+                                            "kind": "region",
+                                            "sel": "legacy_CollectiveMissions_C_CM_3"
+                                          }
+                                        ],
+                                        "requires": {
+                                          "kind": "appear",
+                                          "sel": "legacy_CollectiveMissions_I_CM_RECORDS",
+                                          "timeout_ms": 3000
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "op": "wait_until",
+                                      "args": {
+                                        "cond": "appear('legacy_CollectiveMissions_I_CM_PRESENT')",
+                                        "timeout_s": 15
+                                      }
+                                    },
+                                    {
+                                      "op": "wait",
+                                      "args": {
+                                        "seconds": 0.8
+                                      }
+                                    },
+                                    {
+                                      "op": "log",
+                                      "args": {
+                                        "level": "warn",
+                                        "text": "'S: 捐献页已打开（材料选择按首个材料近似，见 migration TODO）'"
+                                      }
+                                    },
+                                    {
+                                      "op": "click",
+                                      "args": {
+                                        "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                        "requires": {
+                                          "kind": "appear",
+                                          "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                          "timeout_ms": 5000
+                                        },
+                                        "retry": {
+                                          "times": 2,
+                                          "delay_ms": 800,
+                                          "exponential": false
+                                        }
+                                      }
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "loop",
+                              "args": {
+                                "n": "4"
+                              },
+                              "body": [
+                                {
+                                  "op": "wait",
+                                  "args": {
+                                    "seconds": 1.2
+                                  }
+                                },
+                                {
+                                  "op": "if",
+                                  "args": {
+                                    "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+                                  },
+                                  "then": [
+                                    {
+                                      "op": "click",
+                                      "args": {
+                                        "sel": "legacy_GlobalGame_I_UI_REWARD",
+                                        "requires": {
+                                          "kind": "appear",
+                                          "sel": "legacy_GlobalGame_I_UI_REWARD",
+                                          "timeout_ms": 2000
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "else": []
+                                },
+                                {
+                                  "op": "if",
+                                  "args": {
+                                    "cond": "appear('legacy_GlobalGame_I_UI_AWARD')"
+                                  },
+                                  "then": [
+                                    {
+                                      "op": "click",
+                                      "args": {
+                                        "sel": "legacy_GlobalGame_I_UI_AWARD",
+                                        "requires": {
+                                          "kind": "appear",
+                                          "sel": "legacy_GlobalGame_I_UI_AWARD",
+                                          "timeout_ms": 2000
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "else": []
+                                },
+                                {
+                                  "op": "if",
+                                  "args": {
+                                    "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                                  },
+                                  "then": [
+                                    {
+                                      "op": "click",
+                                      "args": {
+                                        "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                        "requires": {
+                                          "kind": "appear",
+                                          "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                          "timeout_ms": 2000
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "else": []
+                                },
+                                {
+                                  "op": "if",
+                                  "args": {
+                                    "cond": "appear('legacy_CollectiveMissions_I_CM_PRESENT')"
+                                  },
+                                  "then": [
+                                    {
+                                      "op": "click",
+                                      "args": {
+                                        "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                        "requires": {
+                                          "kind": "appear",
+                                          "sel": "legacy_CollectiveMissions_I_CM_PRESENT",
+                                          "timeout_ms": 2000
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "else": []
+                                },
+                                {
+                                  "op": "if",
+                                  "args": {
+                                    "cond": "appear('legacy_CollectiveMissions_I_SL_SUBMIT')"
+                                  },
+                                  "then": [
+                                    {
+                                      "op": "click",
+                                      "args": {
+                                        "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                                        "requires": {
+                                          "kind": "appear",
+                                          "sel": "legacy_CollectiveMissions_I_SL_SUBMIT",
+                                          "timeout_ms": 2000
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "else": []
+                                },
+                                {
+                                  "op": "if",
+                                  "args": {
+                                    "cond": "appear('legacy_CollectiveMissions_I_FEED_SUBMIT')"
+                                  },
+                                  "then": [
+                                    {
+                                      "op": "click",
+                                      "args": {
+                                        "sel": "legacy_CollectiveMissions_I_FEED_SUBMIT",
+                                        "requires": {
+                                          "kind": "appear",
+                                          "sel": "legacy_CollectiveMissions_I_FEED_SUBMIT",
+                                          "timeout_ms": 2000
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "else": []
+                                }
+                              ]
+                            }
+                          ],
+                          "else": [
+                            {
+                              "op": "log",
+                              "args": {
+                                "level": "warn",
+                                "text": "'S: 最优任务为 结伴同行/未知（旧仓同样不处理）→ 结束'"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "10"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_CollectiveMissions_I_CM_SHRINE')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+                  "timeout_ms": 2000
+                }
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                      "timeout_ms": 2000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('legacy_GameUi_I_CHECK_GUILD')"
+      },
+      "then": [
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_GUILD",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_MAIN",
+              "timeout_ms": 12000
+            }
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 集体任务结束'"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "var('exit') == 'no_target'"
+      },
+      "then": [
+        {
+          "op": "finish",
+          "args": {
+            "exit": "no_target"
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "var('exit') == 'skipped'"
+          },
+          "then": [
+            {
+              "op": "finish",
+              "args": {
+                "exit": "skipped"
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "var('exit') == 'done'"
+              },
+              "then": [
+                {
+                  "op": "finish",
+                  "args": {
+                    "exit": "done"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "finish",
+                  "args": {
+                    "exit": "failed"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

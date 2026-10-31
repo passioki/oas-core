@@ -1,0 +1,16 @@
+{
+  "task": "RichMan",
+  "status": "🔄",
+  "evidence": {
+    "lint": "lint task=RichMan errors=0",
+    "coverage": "千物宝箱/神龛/功勋商店/商城各子商店导航+购买 覆盖；默认全关=进入商城后结束；数量与剩余次数用拉满/首数字近似",
+    "run": "未真机"
+  },
+  "gaps": [
+    "动态 ROI（check_remain / get_area）DSL 不支持",
+    "DigitCounter/Quantity OCR 用首数字近似（数量拉满）",
+    "RuleSwipe/RuleList 无 op → swipe 推导坐标",
+    "特殊屋中级/低级盘未迁移",
+    "未真机验证"
+  ]
+}

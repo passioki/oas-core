@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "HeroTest",
+  "name": "HeroTest",
+  "version": 1,
+  "category": "daily",
+  "description": "庭院→探索→英杰试炼→切换英杰（4 层参数）→进入模式页→锁定/解锁阵容→循环挑战（含技能面板）→回庭院。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "layer",
+      "type": "int",
+      "default": 1,
+      "min": 1,
+      "max": 4
+    },
+    {
+      "key": "max_battles",
+      "type": "int",
+      "default": 20,
+      "min": 1,
+      "max": 100
+    },
+    {
+      "key": "lock_team",
+      "type": "bool",
+      "default": false
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "resource_empty": {
+      "result": "resource"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1200
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

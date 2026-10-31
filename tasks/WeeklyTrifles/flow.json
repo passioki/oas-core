@@ -1,0 +1,1500 @@
+{
+  "schema_version": 1,
+  "name": "WeeklyTrifles",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'WeeklyTrifles: 每周琐事（图鉴分享/地鬼分享/秘闻分享/摸鱼存储/破碎符咒）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "6"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "click_point",
+                          "args": {
+                            "x": 48,
+                            "y": 43
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GameUi_I_CHECK_MAIN"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('share_collect')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'WeeklyTrifles: 图鉴分享'"
+          }
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_GameUi_I_MAIN_GOTO_COLLECTION",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_MAIN",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_COLLECTION",
+              "timeout_ms": 12000
+            }
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.5
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "12"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_WeeklyTrifles_I_WT_LOGO')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_WeeklyTrifles_I_WT_SHIKIAGMI')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_WeeklyTrifles_I_WT_SHIKIAGMI",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_WeeklyTrifles_I_WT_SHIKIAGMI",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_WeeklyTrifles_I_WT_SHARE')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_WeeklyTrifles_I_WT_SHARE",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_WeeklyTrifles_I_WT_SHARE",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "10"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_WeeklyTrifles_I_WT_QR_CODE')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_WeeklyTrifles_I_WT_COLLECT_WECHAT')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_WeeklyTrifles_I_WT_COLLECT_WECHAT",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_WeeklyTrifles_I_WT_COLLECT_WECHAT",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "8"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Component_GeneralBattle_I_REWARD",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_Component_GeneralBattle_I_REWARD",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_WeeklyTrifles_I_WT_QR_CODE')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_WeeklyTrifles_I_WT_QR_CODE",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_WeeklyTrifles_I_WT_QR_CODE",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 2.0
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "8"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_WeeklyTrifles_I_WT_SHIKIAGMI')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 1.0
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "8"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                              }
+                            }
+                          ],
+                          "else": [
+                            {
+                              "op": "click_point",
+                              "args": {
+                                "x": 48,
+                                "y": 43
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.2
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "legacy_GameUi_I_CHECK_MAIN"
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('share_area_boss')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'WeeklyTrifles: 地鬼分享'"
+          }
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_GameUi_I_MAIN_GOTO_EXPLORATION",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_MAIN",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+              "timeout_ms": 12000
+            }
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_GameUi_I_EXPLORATION_GOTO_AREA_BOSS",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_AREA_BOSS",
+              "timeout_ms": 12000
+            }
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.5
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "15"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_WeeklyTrifles_I_WT_AB_WECHAT') or appear('legacy_WeeklyTrifles_I_WT_NO_DAY')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "region",
+                        "sel": "legacy_WeeklyTrifles_C_WT_AB_CLICK"
+                      }
+                    ],
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GameUi_I_CHECK_AREA_BOSS",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_WeeklyTrifles_I_WT_DAY_BATTLE')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_WeeklyTrifles_I_WT_DAY_BATTLE",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_WeeklyTrifles_I_WT_DAY_BATTLE",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_WeeklyTrifles_I_WT_SHARE_AB')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_WeeklyTrifles_I_WT_SHARE_AB",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_WeeklyTrifles_I_WT_SHARE_AB",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'WeeklyTrifles: 本周已领取检测（I_WT_AB_JADE 不出现视为已领）'"
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_WeeklyTrifles_I_WT_AB_WECHAT') and not appear('legacy_WeeklyTrifles_I_WT_AB_JADE')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "warn",
+                "text": "'WeeklyTrifles: 地鬼分享本周已领取'"
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_WeeklyTrifles_I_WT_AB_WECHAT')"
+              },
+              "then": [
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "10"
+                  },
+                  "body": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_WeeklyTrifles_I_WT_QR_CODE')"
+                      },
+                      "then": [
+                        {
+                          "op": "break",
+                          "args": {}
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_WeeklyTrifles_I_WT_AB_WECHAT')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_WeeklyTrifles_I_WT_AB_WECHAT",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_WeeklyTrifles_I_WT_AB_WECHAT",
+                                  "timeout_ms": 3000
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 1.0
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "8"
+                  },
+                  "body": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Component_GeneralBattle_I_REWARD",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_Component_GeneralBattle_I_REWARD",
+                              "timeout_ms": 3000
+                            }
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 1.0
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_WeeklyTrifles_I_WT_QR_CODE')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_WeeklyTrifles_I_WT_QR_CODE",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_WeeklyTrifles_I_WT_QR_CODE",
+                                  "timeout_ms": 3000
+                                }
+                              }
+                            },
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 2.0
+                              }
+                            }
+                          ],
+                          "else": []
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "8"
+                  },
+                  "body": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_WeeklyTrifles_I_WT_DAY_BATTLE')"
+                      },
+                      "then": [
+                        {
+                          "op": "break",
+                          "args": {}
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                              }
+                            }
+                          ],
+                          "else": [
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+                              },
+                              "then": [
+                                {
+                                  "op": "click",
+                                  "args": {
+                                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                                  }
+                                }
+                              ],
+                              "else": [
+                                {
+                                  "op": "wait",
+                                  "args": {
+                                    "seconds": 1.0
+                                  }
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 1.0
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "else": []
+            }
+          ]
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "8"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                              }
+                            }
+                          ],
+                          "else": [
+                            {
+                              "op": "click_point",
+                              "args": {
+                                "x": 48,
+                                "y": 43
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.2
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "legacy_GameUi_I_CHECK_MAIN"
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('save_touch_fish')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'WeeklyTrifles: 惠比寿摸鱼存储'"
+          }
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_GameUi_I_MAIN_GOTO_GUILD",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_MAIN",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_GUILD",
+              "timeout_ms": 12000
+            }
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.2
+          }
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_WeeklyTrifles_I_GUILD_GOTO_TF",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_GUILD",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_WeeklyTrifles_I_WT_LAST_SAVE",
+              "timeout_ms": 12000
+            }
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_WeeklyTrifles_I_WT_SAVE_ALL')"
+          },
+          "then": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr_digit('legacy_WeeklyTrifles_O_WT_LUCKY_TICKETS') >= ocr_digit('legacy_WeeklyTrifles_O_WT_SAVE_COST')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_WeeklyTrifles_I_WT_SAVE_ALL",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_WeeklyTrifles_I_WT_SAVE_ALL",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "6"
+                  },
+                  "body": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_WeeklyTrifles_I_WT_TF_CONFIRM')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_WeeklyTrifles_I_WT_TF_CONFIRM",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_WeeklyTrifles_I_WT_TF_CONFIRM",
+                              "timeout_ms": 3000
+                            }
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 1.0
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "break",
+                          "args": {}
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "else": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "warn",
+                    "text": "'WeeklyTrifles: 福运御守不足，跳过摸鱼存储'"
+                  }
+                }
+              ]
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "8"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                              }
+                            }
+                          ],
+                          "else": [
+                            {
+                              "op": "click_point",
+                              "args": {
+                                "x": 48,
+                                "y": 43
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.2
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "legacy_GameUi_I_CHECK_MAIN"
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('broken_amulet') > 0"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'WeeklyTrifles: 破碎符咒召唤'"
+          }
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_GameUi_I_MAIN_GOTO_SUMMON",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_MAIN",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_SUMMON",
+              "timeout_ms": 12000
+            }
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.5
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "ocr_digit('legacy_WeeklyTrifles_O_BA_AMOUNT_1') <= 0"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'WeeklyTrifles: 没有破碎符咒'"
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "set_var",
+              "args": {
+                "name": "count",
+                "value": "0"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "param('broken_amulet')"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "var('count') >= param('broken_amulet')"
+                  },
+                  "then": [
+                    {
+                      "op": "break",
+                      "args": {}
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_WeeklyTrifles_I_BM_ENTER')"
+                  },
+                  "then": [],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_WeeklyTrifles_I_BM_AGAIN')"
+                      },
+                      "then": [],
+                      "else": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'WeeklyTrifles: 无召唤/再次召唤按钮 → 结束'"
+                          }
+                        },
+                        {
+                          "op": "break",
+                          "args": {}
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_WeeklyTrifles_I_BM_ENTER')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_WeeklyTrifles_I_BM_ENTER",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_WeeklyTrifles_I_BM_ENTER",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_WeeklyTrifles_I_BM_AGAIN",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_WeeklyTrifles_I_BM_AGAIN",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                },
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "10"
+                  },
+                  "body": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_WeeklyTrifles_I_BM_AGAIN')"
+                      },
+                      "then": [
+                        {
+                          "op": "break",
+                          "args": {}
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "click_point",
+                          "args": {
+                            "x": 640,
+                            "y": 400
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 0.8
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "inc_var",
+                  "args": {
+                    "name": "count",
+                    "by": 10
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ]
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "5"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_WeeklyTrifles_I_BM_CONFIRM')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_WeeklyTrifles_I_BM_CONFIRM",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_WeeklyTrifles_I_BM_CONFIRM",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.0
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "break",
+                      "args": {}
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "8"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                              }
+                            }
+                          ],
+                          "else": [
+                            {
+                              "op": "click_point",
+                              "args": {
+                                "x": 48,
+                                "y": 43
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.2
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "legacy_GameUi_I_CHECK_MAIN"
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'WeeklyTrifles: 分享类已完成（notes: 秘闻分享未迁移，见 spec）'"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('share_secret')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "'WeeklyTrifles: 秘闻分享 TODO —— 需要 I_WT_SE_* 多级进入/排名判定/分享；本轮未迁移'"
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'WeeklyTrifles: done'"
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

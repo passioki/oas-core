@@ -1,0 +1,11 @@
+{
+  "task": "DailyTrifles",
+  "status": "🔄",
+  "evidence": "task lint --task DailyTrifles => errors=0；友情点领取+礼包屋签到子流程覆盖；每日召唤/吉闻/买体力未迁移",
+  "gaps": [
+    "每日召唤（普通/今忆）未迁移",
+    "吉闻（OCR 入口点击）未迁移",
+    "买体力（动态 ROI 价格 OCR + 比较）未迁移",
+    "无实机/回放证据"
+  ]
+}

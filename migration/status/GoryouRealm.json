@@ -1,0 +1,15 @@
+{
+  "task": "GoryouRealm",
+  "status": "🔄",
+  "evidence": {
+    "lint": "lint task=GoryouRealm errors=0",
+    "coverage": "导航 / 选御灵 / 锁阵容 / count+票数限制 / 战斗主链 / 退出 全覆盖；时间限制与 RANDOM 未覆盖",
+    "run": "未真机"
+  },
+  "gaps": [
+    "DSL 缺时间函数（limit_time）",
+    "DSL 缺随机（RANDOM 御灵）",
+    "GeneralBattleConfig 可选战斗功能未迁移",
+    "未真机验证"
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "KekkaiActivation",
+  "name": "KekkaiActivation",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "结界挂卡：庭院→阴阳寮→寮结界；收卡经验；进入挂卡界面处理 已生效/已选未激活 卡；无卡选卡与式神育成换卡受 DSL 限制未迁移（见 spec）。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "card_type",
+      "type": "string",
+      "default": "taiko"
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "no_resource": {
+      "result": "resource"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 300
+  },
+  "resources": [
+    "kekkai_card"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

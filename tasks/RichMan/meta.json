@@ -1,0 +1,273 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "RichMan",
+  "name": "RichMan",
+  "version": 1,
+  "category": "daily",
+  "description": "每周商店扫货：千物宝箱、神龛、功勋商店、商城各商店（全部由参数开关，默认全关；默认行为=进入商城后结束）。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "tt_enable",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "tt_earn_money",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "tt_mystery_amulet",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "tt_black_daruma_fragment",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "tt_ap",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "shrine_enable",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "shrine_black_daruma",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "shrine_white_five",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "shrine_white_four",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "guild_enable",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "guild_mystery_amulet",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "guild_black_daruma_scrap",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "guild_skin_ticket",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "consignment_enable",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "scales_enable",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "scales_orochi",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "scales_demon",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "scales_demon_class",
+      "type": "int",
+      "default": 1,
+      "min": 1,
+      "max": 7
+    },
+    {
+      "key": "scales_demon_position",
+      "type": "int",
+      "default": 1,
+      "min": 1,
+      "max": 6
+    },
+    {
+      "key": "scales_sea",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "bondlings_enable",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "bondlings_stone",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "bondlings_souls",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "bondlings_high",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "bondlings_medium",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "special_enable",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "special_totem",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "honor_enable",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "honor_mystery",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "honor_black",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "friendship_enable",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "friendship_white",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "friendship_red",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "friendship_broken",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "medal_enable",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "medal_black",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "medal_mystery",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "medal_ap",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "medal_random_soul",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "medal_white",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "medal_challenge_pass",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "medal_red",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "medal_broken",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "charisma_enable",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "charisma_black",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "charisma_mystery",
+      "type": "bool",
+      "default": false
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1200
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

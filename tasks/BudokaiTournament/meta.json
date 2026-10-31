@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "BudokaiTournament",
+  "name": "BudokaiTournament",
+  "version": 1,
+  "expire": "limited",
+  "category": "limited",
+  "description": "斗技大会/活动爬塔（daily_training + cultivation_drills 两模式）：庭院→右侧活动→爬塔主界面；每日修行循环 挑战+通用战斗 直到 max_battles 或门票 0；修行练武 搜寻 boss→挑战；回庭院。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "mode",
+      "type": "string",
+      "default": "daily_training"
+    },
+    {
+      "key": "max_battles",
+      "type": "int",
+      "default": 200,
+      "min": 1,
+      "max": 300
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_resource": {
+      "result": "resource"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1800
+  },
+  "resources": [
+    "activity_ticket"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "task": "ActivityShikigami",
+  "status": "🔄",
+  "evidence": [
+    "spec: migration/specs/ActivityShikigami.md",
+    "bundle: tasks/ActivityShikigami/{meta.json,flow.json,README.md,migration.json}",
+    "lint: oasd task lint --tasks-dir tasks --task ActivityShikigami => lint task=ActivityShikigami errors=0",
+    "flow covers PASS mode: activity entry, story/reward skip sequence, occupation-reward clicks, O_FIRE challenge -> generic battle loop bounded by max_battles, return home"
+  ],
+  "gaps": [
+    "TODO(behavior): ap / ap100 / boss modes not migrated (each has its own entry assets, ticket OCR and reward/switch flows; O_REMAIN_AP, O_ENTER_AP100, O_REMAIN_AP100, I_TO_BATTLE_BOSS, I_CHECK_BATTLE_BOSS available in global assets)",
+    "TODO(fidelity): O_FIRE keyword=挑战 lost at import (RuleOcr keywords are not imported); appear(O_FIRE) only tests any text in the ROI -> use template or ocr text match after live calibration",
+    "TODO(asset): I_PASS_8/10/11 images missing in upstream checkout -> skipped by importer; flow only clicks PASS_5/6/7/9",
+    "TODO(fidelity): story-skip click sequence simplified vs old multi-scale/centre-click state machine",
+    "TODO(DSL): limit_time=30min, random_sleep and active_souls_clean cross-task scheduling have no primitives",
+    "TODO(DSL): switch_soul preset switching has no primitive",
+    "no real-device/replay evidence (emulator offline)"
+  ]
+}

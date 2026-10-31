@@ -1,0 +1,538 @@
+{
+  "schema_version": 1,
+  "name": "GoryouRealm",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "\"GoryouRealm 开始：庭院 → 探索 → 御灵 → 选择御灵 → 循环挑战\""
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "庭院_探索灯笼",
+        "requires": {
+          "kind": "appear",
+          "sel": "庭院_探索灯笼",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 10000
+        }
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_EXPLORATION_GOTO_GORYOU_REALM",
+        "requires": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_GORYOU",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "\"已进入御灵页面，选择御灵种类（param goryou_class 1..4）\""
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('goryou_class') == 1"
+      },
+      "then": [
+        {
+          "op": "click_target",
+          "args": {
+            "find": [
+              {
+                "kind": "region",
+                "sel": "legacy_GoryouRealm_C_GR_C_1"
+              }
+            ],
+            "requires": {
+              "kind": "appear",
+              "sel": "世界_章节栏",
+              "timeout_ms": 3000
+            }
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "param('goryou_class') == 2"
+          },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_GoryouRealm_C_GR_C_2"
+                  }
+                ],
+                "requires": {
+                  "kind": "appear",
+                  "sel": "世界_章节栏",
+                  "timeout_ms": 3000
+                }
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "param('goryou_class') == 3"
+              },
+              "then": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "region",
+                        "sel": "legacy_GoryouRealm_C_GR_C_3"
+                      }
+                    ],
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "世界_章节栏",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "region",
+                        "sel": "legacy_GoryouRealm_C_GR_C_4"
+                      }
+                    ],
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "世界_章节栏",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "10"
+      },
+      "body": [
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GoryouRealm_I_GR_FIRE')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GoryouRealm_I_GR_FIRE"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('lock_team')"
+      },
+      "then": [
+        {
+          "op": "loop",
+          "args": {
+            "n": "10"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GoryouRealm_I_GR_LOCK')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GoryouRealm_I_GR_UNLOCK')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GoryouRealm_I_GR_UNLOCK",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GoryouRealm_I_GR_UNLOCK",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 0.5
+              }
+            }
+          ]
+        }
+      ],
+      "else": [
+        {
+          "op": "loop",
+          "args": {
+            "n": "10"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GoryouRealm_I_GR_UNLOCK')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GoryouRealm_I_GR_LOCK')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GoryouRealm_I_GR_LOCK",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GoryouRealm_I_GR_LOCK",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 0.5
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "set_var",
+      "args": {
+        "name": "empty",
+        "value": "0"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "param('max_battles')"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "not appear('legacy_GoryouRealm_I_GR_FIRE')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "ocr_digit('legacy_GoryouRealm_O_GR_TICKET') == 0"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "warn",
+                "text": "\"御灵票为 0 → 结束并回庭院\""
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "empty",
+                "value": "1"
+              }
+            },
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "\"开始挑战\""
+          }
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_GoryouRealm_I_GR_FIRE",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_GoryouRealm_I_GR_FIRE",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "战斗_准备按钮",
+              "timeout_ms": 15000
+            }
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "战斗_准备按钮",
+            "requires": {
+              "kind": "appear",
+              "sel": "战斗_准备按钮",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "vanish",
+              "sel": "战斗_准备按钮",
+              "timeout_ms": 10000
+            }
+          }
+        },
+        {
+          "op": "wait_until",
+          "args": {
+            "cond": "appear('战斗_自动按钮')",
+            "timeout_s": 25
+          }
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "\"战斗中（自动战斗），点击继续直到回到御灵页\""
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "60"
+          },
+          "body": [
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 2.5
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+              },
+              "then": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "region",
+                        "sel": "legacy_GlobalGame_C_UI_REWARD"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "click_point",
+              "args": {
+                "x": 640,
+                "y": 690
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GoryouRealm_I_GR_FIRE')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": []
+            }
+          ]
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "legacy_GoryouRealm_I_GR_FIRE"
+          }
+        },
+        {
+          "op": "inc_var",
+          "args": {
+            "name": "battles",
+            "by": 1
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "\"挑战循环结束，返回庭院\""
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_GORYOU",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 10000
+        }
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+        "requires": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "庭院_探索灯笼",
+          "timeout_ms": 15000
+        }
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "var('empty') == 1"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "\"以 resource_empty（票不足）结束\""
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "resource_empty"
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "\"GoryouRealm done\""
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

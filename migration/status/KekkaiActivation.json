@@ -1,0 +1,18 @@
+{
+  "task": "KekkaiActivation",
+  "status": "⛔",
+  "evidence": [
+    "spec: migration/specs/KekkaiActivation.md",
+    "bundle: tasks/KekkaiActivation/{meta.json,flow.json,README.md,migration.json}",
+    "lint: oasd task lint --tasks-dir tasks --task KekkaiActivation => lint task=KekkaiActivation errors=0",
+    "flow covers: guild realm entry, harvest-card exp, card page entry, already-active card O_CARD_ALL_TIME read, selected-not-active activation loop, no-card blocked exit, return home"
+  ],
+  "gaps": [
+    "⛔ architecture: card screening needs multi-line OCR per-line box + numeric filter/sort + click max line box (old O_CHECK_CARD_NUMBER.detect_and_ocr + RuleClick on box); DSL only has exact-text ocr_text locators",
+    "⛔ architecture: O_CARD_ALL_TIME.ocr_duration (timedelta) + set_next_run at remaining time; no duration parse / in-flow scheduling primitive",
+    "⛔ architecture: card_not_found_count config persistence + card-type switch + 180min retry state machine",
+    "⛔ architecture: shikigami growth replacement (ReplaceShikigami) not expressible",
+    "TODO(fidelity): multi-scale template match (I_SHI_CARD) approximated by normal click",
+    "no real-device/replay evidence (emulator offline)"
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  "task": "ExperienceYoukai",
+  "category": "daily",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "checkout": "D:\\OAS-dev\\_verify\\remote-oas",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/ExperienceYoukai/script_task.py",
+      "tasks/ExperienceYoukai/config.py",
+      "tasks/ExperienceYoukai/assets.py",
+      "tasks/Component/GeneralRoom/general_room.py",
+      "tasks/Component/GeneralInvite/general_invite.py",
+      "tasks/Component/GeneralBattle/general_battle.py"
+    ]
+  },
+  "engine_contract": {
+    "meta": "crates/oas-task/src/meta.rs (ENGINE-DESIGN §22.34.2)",
+    "flow_dsl": "crates/oas-flow/src/lib.rs",
+    "asset_store": "assets/assets.json (global, ids legacy_<Task>_<const>)",
+    "asset_map": "migration/asset-map.json"
+  },
+  "status": "🔄",
+  "evidence": {
+    "lint": ".\\target\\release\\oasd.exe task lint --tasks-dir tasks --task ExperienceYoukai => lint task=ExperienceYoukai errors=0",
+    "device": "未真机验证"
+  },
+  "assets_used": [
+    "legacy_Component_GeneralBattle_C_REWARD_2",
+    "legacy_Component_GeneralBattle_I_DE_WIN",
+    "legacy_Component_GeneralBattle_I_FALSE",
+    "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+    "legacy_Component_GeneralBattle_I_REWARD",
+    "legacy_Component_GeneralBattle_I_WIN",
+    "legacy_Component_GeneralInvite_I_ADD_5_1",
+    "legacy_Component_GeneralInvite_I_FIRE",
+    "legacy_Component_GeneralInvite_I_FIRE_FAIL",
+    "legacy_Component_GeneralInvite_I_GI_EMOJI_1",
+    "legacy_Component_GeneralInvite_I_GI_EMOJI_2",
+    "legacy_Component_GeneralInvite_I_GI_SPEAK",
+    "legacy_Component_GeneralRoom_I_CREATE_ENSURE",
+    "legacy_Component_GeneralRoom_I_CREATE_ENSURE_2",
+    "legacy_Component_GeneralRoom_I_CREATE_ROOM",
+    "legacy_Component_GeneralRoom_I_ENSURE_PUBLIC",
+    "legacy_Component_GeneralRoom_I_ENSURE_PUBLIC_2",
+    "legacy_Component_GeneralRoom_I_ENSURE_PUBLIC_FALSE",
+    "legacy_Component_GeneralRoom_I_ENSURE_PUBLIC_FALSE_2",
+    "legacy_Component_GeneralRoom_I_GR_BACK_YELLOW",
+    "legacy_ExperienceYoukai_I_EXP_WIN",
+    "legacy_GameUi_I_CHECK_MAIN",
+    "legacy_GameUi_I_CHECK_TEAM",
+    "legacy_GameUi_I_MAIN_GOTO_TEAM",
+    "legacy_GlobalGame_C_UI_REWARD",
+    "legacy_GlobalGame_I_UI_BACK_YELLOW",
+    "legacy_GlobalGame_I_UI_CONFIRM",
+    "legacy_GlobalGame_I_UI_REWARD",
+    "战斗_自动按钮"
+  ],
+  "missing_assets": [],
+  "differences": [
+    "50s 等待计时器 → 有界 20×2.5s",
+    "RuleList check_zones → text_visible + 行内 OCR 点击 + swipe",
+    "buff/switch_soul 未迁移（默认关闭）",
+    "战斗主链与个人突破模式一致"
+  ],
+  "gaps": [
+    "GeneralBuff 动态开关区域需要锚点定位（DSL 缺）",
+    "RuleList 未导入（队伍列表用等价 OCR 点击）",
+    "50s 计时语义近似",
+    "未真机验证"
+  ],
+  "assets_used_count": 29
+}

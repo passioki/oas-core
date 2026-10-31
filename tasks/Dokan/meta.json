@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "Dokan",
+  "name": "Dokan",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "寮道馆突入（部分/⛔）：庭院→阴阳寮→神社→道馆；15 种场景检测中的等待/关闭/投票/加入战斗分支已表达；动态选馆（赏金/人数评分）、入寮境 OCR 点、战斗阵容预设/馆主双阵容、自动加油、跨日剩余次数记忆均未迁移（见 spec）。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "try_start_dokan",
+      "type": "bool",
+      "default": false
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1200
+  },
+  "resources": [
+    "dokan_attack_count"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 2
+    }
+  }
+}

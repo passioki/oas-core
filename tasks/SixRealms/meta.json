@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "SixRealms",
+  "name": "SixRealms",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "🔄 部分迁移：六道之门·月海。已覆盖 庭院→探索→玩法→六道之门→月海→开始（守族选择/首技能）→主地图入口；岛屿决策/进入/各岛小游戏/商店/首领战未迁移（需要 OCR 包含匹配与按 OCR 框点击原语）。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    },
+    "no_resource": {
+      "result": "resource"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "window_closed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1800
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

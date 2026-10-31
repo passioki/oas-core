@@ -1,0 +1,729 @@
+{
+  "schema_version": 1,
+  "name": "KekkaiUtilize",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 寮结界寄养/收菜 开始（庭院 → 阴阳寮 → 寮结界）'"
+      }
+    },
+    {
+      "op": "set_var",
+      "args": {
+        "name": "exit",
+        "value": "'done'"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 庭院 → 阴阳寮'"
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_MAIN_GOTO_GUILD",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_MAIN",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_GUILD",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 阴阳寮 → 寮结界'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "12"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_KekkaiUtilize_I_REALM_SHIN') or appear('legacy_KekkaiUtilize_I_SHI_DEFENSE')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_KekkaiUtilize_I_PLANT_TREE_CLOSE')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_KekkaiUtilize_I_PLANT_TREE_CLOSE",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_KekkaiUtilize_I_PLANT_TREE_CLOSE",
+                  "timeout_ms": 2500
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_KekkaiUtilize_I_GUILD_REALM')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_KekkaiUtilize_I_GUILD_REALM",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_KekkaiUtilize_I_GUILD_REALM",
+                  "timeout_ms": 2500
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('legacy_KekkaiUtilize_I_UTILIZE_EXP')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 有寄养收获 → 领取'"
+          }
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_KekkaiUtilize_I_UTILIZE_EXP",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_KekkaiUtilize_I_UTILIZE_EXP",
+              "timeout_ms": 3000
+            }
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "8"
+          },
+          "body": [
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_REWARD",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GlobalGame_I_UI_REWARD",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_AWARD')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_AWARD",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GlobalGame_I_UI_AWARD",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "break",
+                      "args": {}
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('legacy_KekkaiUtilize_I_UTILIZE_ADD')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "'S: 检测到「寄养」入口；选卡/朋友/时长逻辑受 DSL 限制未迁移（spec ⛔）'"
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('legacy_KekkaiUtilize_I_BOX_AP')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 收取体力盒子'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "8"
+          },
+          "body": [
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_REWARD",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GlobalGame_I_UI_REWARD",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_KekkaiUtilize_I_BOX_AP')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_KekkaiUtilize_I_BOX_AP",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_KekkaiUtilize_I_BOX_AP",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_KekkaiUtilize_I_AP_EXTRACT')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_KekkaiUtilize_I_AP_EXTRACT",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_KekkaiUtilize_I_AP_EXTRACT",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": []
+            }
+          ]
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('legacy_KekkaiUtilize_I_BOX_EXP') or appear('legacy_KekkaiUtilize_I_BOX_EXP_MAX')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 收取经验盒子'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "12"
+          },
+          "body": [
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_KekkaiUtilize_I_REALM_SHIN') and not appear('legacy_KekkaiUtilize_I_BOX_EXP')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_REWARD",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GlobalGame_I_UI_REWARD",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_KekkaiUtilize_I_EXP_EXTRACT')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_KekkaiUtilize_I_EXP_EXTRACT",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_KekkaiUtilize_I_EXP_EXTRACT",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_KekkaiUtilize_I_BOX_EXP')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_KekkaiUtilize_I_BOX_EXP",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_KekkaiUtilize_I_BOX_EXP",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": []
+            }
+          ]
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "6"
+      },
+      "body": [
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 0.8
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_KekkaiUtilize_I_REALM_SHIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "10"
+      },
+      "body": [
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_KekkaiUtilize_I_GUILD_EXPAND')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_KekkaiUtilize_I_GUILD_EXPAND",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_KekkaiUtilize_I_GUILD_EXPAND",
+                  "timeout_ms": 2500
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_KekkaiUtilize_I_GUILD_ASSETS_RECEIVE')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_KekkaiUtilize_I_GUILD_ASSETS_RECEIVE",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_KekkaiUtilize_I_GUILD_ASSETS_RECEIVE",
+                  "timeout_ms": 2500
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_KekkaiUtilize_I_GUILD_ASSETS')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_KekkaiUtilize_I_GUILD_ASSETS",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_KekkaiUtilize_I_GUILD_ASSETS",
+                  "timeout_ms": 2500
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_KekkaiUtilize_I_GUILD_AP')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_KekkaiUtilize_I_GUILD_AP",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_KekkaiUtilize_I_GUILD_AP",
+                  "timeout_ms": 2500
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_REWARD",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GlobalGame_I_UI_REWARD",
+                  "timeout_ms": 2500
+                }
+              }
+            }
+          ],
+          "else": []
+        }
+      ]
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "12"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_GUILD')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                  "timeout_ms": 2500
+                }
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.2
+          }
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 已回庭院'"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "var('exit') == 'done'"
+      },
+      "then": [
+        {
+          "op": "finish",
+          "args": {
+            "exit": "done"
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "var('exit') == 'no_resource'"
+          },
+          "then": [
+            {
+              "op": "finish",
+              "args": {
+                "exit": "no_resource"
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "finish",
+              "args": {
+                "exit": "done"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

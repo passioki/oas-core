@@ -1,0 +1,498 @@
+{
+  "schema_version": 1,
+  "name": "Nian",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'Nian: 年兽（庭院→组队→年兽→自动匹配→准备/战斗→回庭院）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "6"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "click_point",
+                      "args": {
+                        "x": 48,
+                        "y": 43
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GameUi_I_CHECK_MAIN"
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_MAIN_GOTO_TEAM",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_MAIN",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_TEAM",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.5
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'Nian: 在组队区域列表选择「年兽」（inline OCR，列表不可见时上滑）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "8"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "text_visible('年兽')"
+          },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "ocr_text",
+                    "roi": [
+                      26,
+                      106,
+                      360,
+                      549
+                    ],
+                    "text": "年兽"
+                  }
+                ],
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GameUi_I_CHECK_TEAM",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.8
+              }
+            },
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "swipe",
+              "args": {
+                "from": [
+                  200,
+                  600
+                ],
+                "to": [
+                  200,
+                  200
+                ],
+                "ms": 400
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 0.9
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "wait_until",
+      "args": {
+        "cond": "appear('legacy_Nian_I_N_CHECK')",
+        "timeout_s": 12
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'Nian: 冷却检测（远程 O_N_BATTLE_AGAIN keyword=再次挑战；新引擎用 text_visible）'"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "text_visible('再次挑战')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "'Nian: 检测到「再次挑战」→ 年兽冷却中 → blocked 退出'"
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "no_target"
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'Nian: 自动匹配（连续 4 次点击后仍无等待态 → 视为冷却/无次数 blocked）'"
+      }
+    },
+    {
+      "op": "set_var",
+      "args": {
+        "name": "match_clicks",
+        "value": "0"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "10"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Nian_I_N_WAITING')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Nian_I_AUTO_MATCHING')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Nian_I_AUTO_MATCHING",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_Nian_I_N_CHECK",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "inc_var",
+                  "args": {
+                    "name": "match_clicks",
+                    "by": 1
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.5
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "var('match_clicks') >= 4"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "warn",
+                    "text": "'Nian: 4 次自动匹配仍不可进入 → blocked'"
+                  }
+                },
+                {
+                  "op": "finish",
+                  "args": {
+                    "exit": "no_target"
+                  }
+                }
+              ],
+              "else": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'Nian: 等待匹配进入战斗（通用准备页，最长 180s）'"
+      }
+    },
+    {
+      "op": "wait_until",
+      "args": {
+        "cond": "appear('战斗_准备按钮')",
+        "timeout_s": 180
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "战斗_准备按钮",
+        "requires": {
+          "kind": "appear",
+          "sel": "战斗_准备按钮",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "vanish",
+          "sel": "战斗_准备按钮",
+          "timeout_ms": 10000
+        }
+      }
+    },
+    {
+      "op": "wait_until",
+      "args": {
+        "cond": "appear('战斗_自动按钮')",
+        "timeout_s": 25
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "90"
+      },
+      "body": [
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 2.5
+          }
+        },
+        {
+          "op": "click_point",
+          "args": {
+            "x": 640,
+            "y": 690
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Nian_I_N_CHECK')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GameUi_I_CHECK_TEAM')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('legacy_Nian_I_N_CHECK')"
+      },
+      "then": [],
+      "else": [
+        {
+          "op": "appear",
+          "args": {
+            "sel": "legacy_GameUi_I_CHECK_TEAM"
+          }
+        }
+      ]
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "8"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "click_point",
+                      "args": {
+                        "x": 48,
+                        "y": 43
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GameUi_I_CHECK_MAIN"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'Nian: done'"
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

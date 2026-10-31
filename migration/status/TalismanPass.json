@@ -1,0 +1,14 @@
+{
+  "task": "TalismanPass",
+  "status": "🔄",
+  "evidence": {
+    "lint": "lint task=TalismanPass errors=0",
+    "coverage": "一键收取 / 等级奖励（3 档参数）/ 可选御魂奖励 / 返回 全覆盖",
+    "run": "未真机"
+  },
+  "gaps": [
+    "缺 multi-scale appear（SOUL_1）",
+    "计时器语义为有界循环近似",
+    "未真机验证"
+  ]
+}

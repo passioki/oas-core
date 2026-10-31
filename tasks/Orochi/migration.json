@@ -1,0 +1,47 @@
+{
+  "task": "Orochi",
+  "name": "Orochi",
+  "source": {
+    "repo": "https://github.com/runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/Orochi/script_task.py",
+      "tasks/Orochi/config.py",
+      "tasks/Orochi/page.py",
+      "tasks/Orochi/assets.py",
+      "tasks/Orochi/o/image.json",
+      "tasks/GameUi/page.py"
+    ]
+  },
+  "status": "🔄",
+  "evidence": [
+    "task lint --task Orochi => errors=0",
+    "migration/specs/Orochi.md：单人模式 3 步映射；层数/队伍模式/加成列为 TODO"
+  ],
+  "assets": {
+    "reused_global": [
+      "庭院_探索灯笼",
+      "世界_章节栏",
+      "legacy_GameUi_I_CHECK_EXPLORATION",
+      "legacy_GameUi_I_CHECK_SOUL_ZONES",
+      "legacy_GameUi_I_EXPLORATION_GOTO_SOUL_ZONE",
+      "legacy_Exploration_I_CHECK_PLAY_TITLE",
+      "legacy_Orochi_I_OROCHI",
+      "legacy_Orochi_I_OROCHI_FIRE",
+      "legacy_Orochi_I_OROCHI_LOCK",
+      "legacy_Orochi_I_OROCHI_UNLOCK",
+      "legacy_Orochi_I_OROCHI_CHECK_11",
+      "legacy_Orochi_I_FORM_TEAM",
+      "legacy_Component_GeneralBattle_{...}"
+    ],
+    "new": []
+  },
+  "differences": [
+    "层数选择未迁移（RuleList 13 项需滚动；flow 无列表原语）",
+    "队长/队员/野队模式未迁移（建房/邀请/匹配/等待子流程）",
+    "御魂加成、御魂切换、真蛇调度联动未迁移",
+    "limit_time 时间上限未在 flow 内实现（仅 max_battles 次数上限）",
+    "未实机/回放验证"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "task": "GuildActivityMonitor",
+  "status": "⛔",
+  "evidence": "task lint --tasks-dir tasks --task GuildActivityMonitor => errors=0（仅骨架包）；上游核心行为未实现",
+  "gaps": [
+    "缺 adb 系统通知读取（dumpsys notification）flow 原语",
+    "缺对其他任务 enqueue/set_next_run 的调度写回原语",
+    "缺 now()/weekday() 时间日期表达式",
+    "缺 OCR 包含匹配（contains/in 字符串运算）",
+    "四项补齐后需重做本任务（core loop + trigger + monitor duration + run_days）"
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "GuildBanquet",
+  "name": "GuildBanquet",
+  "version": 1,
+  "expire": "weekly",
+  "category": "weekly",
+  "description": "庭院→阴阳寮→检测宴会旗标：宴会进行中则等待旗标消失（默认最多 15 分钟，可参数化），结束后回庭院。旗标未出现说明宴会未开始/已结束，走 window_closed(retryable) 交给调度器冷却重试。调度时间/跨周排期属 scheduler.json 职责，不在 flow 内。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "max_wait_min",
+      "type": "int",
+      "default": 15,
+      "min": 1,
+      "max": 30
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "window_closed": {
+      "result": "retryable"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 960
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "week",
+      "times": 2
+    }
+  }
+}

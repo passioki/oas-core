@@ -1,0 +1,66 @@
+{
+  "task": "KittyShop",
+  "category": "daily",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "checkout": "D:\\OAS-dev\\_verify\\remote-oas",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/KittyShop/script_task.py",
+      "tasks/KittyShop/config.py",
+      "tasks/KittyShop/assets.py",
+      "tasks/ActivityShikigami/assets.py",
+      "tasks/GameUi/default_pages.py"
+    ]
+  },
+  "engine_contract": {
+    "meta": "crates/oas-task/src/meta.rs (ENGINE-DESIGN §22.34.2)",
+    "flow_dsl": "crates/oas-flow/src/lib.rs",
+    "asset_store": "assets/assets.json (global, ids legacy_<Task>_<const>)",
+    "asset_map": "migration/asset-map.json"
+  },
+  "status": "🔄",
+  "evidence": {
+    "lint": ".\\target\\release\\oasd.exe task lint --tasks-dir tasks --task KittyShop => lint task=KittyShop errors=0",
+    "device": "未真机验证"
+  },
+  "assets_used": [
+    "legacy_ActivityShikigami_I_SHI",
+    "legacy_GameUi_I_CHECK_MAIN",
+    "legacy_GlobalGame_I_UI_BACK_YELLOW",
+    "legacy_GlobalGame_I_UI_CONFIRM",
+    "legacy_GlobalGame_I_UI_CONFIRM_SAMLL",
+    "legacy_KittyShop_C_SELECT_1",
+    "legacy_KittyShop_C_SELECT_2",
+    "legacy_KittyShop_C_SELECT_3",
+    "legacy_KittyShop_C_SELECT_4",
+    "legacy_KittyShop_I_GO1",
+    "legacy_KittyShop_I_MAIN_ADD",
+    "legacy_KittyShop_I_MAIN_BUSY_1",
+    "legacy_KittyShop_I_MAIN_BUSY_2",
+    "legacy_KittyShop_I_MAIN_BUSY_3",
+    "legacy_KittyShop_I_MAIN_BUSY_4",
+    "legacy_KittyShop_I_MAIN_BUSY_5",
+    "legacy_KittyShop_I_MAIN_FINSH",
+    "legacy_KittyShop_I_MAIN_FLAG",
+    "legacy_KittyShop_I_MAIN_FLAG1",
+    "legacy_KittyShop_I_MAIN_GIFT",
+    "legacy_KittyShop_I_MAIN_SHARE",
+    "legacy_KittyShop_I_START_ENSURE",
+    "legacy_KittyShop_I_START_FARMING",
+    "legacy_KittyShop_I_UNSELECTED"
+  ],
+  "missing_assets": [],
+  "differences": [
+    "选猫循环：计时器单点轮换 → 每轮顺序点 4 列 + 左滑（有界 5 轮）",
+    "SelectFailed 3 次重试未迁移",
+    "RuleSwipe 未导入 → swipe 用 roi 推出的坐标"
+  ],
+  "gaps": [
+    "选猫节奏需真机确认",
+    "RuleSwipe 仅有 _FROM/_TO 区域 id（无坐标读取 op）",
+    "未真机验证"
+  ],
+  "assets_used_count": 24
+}

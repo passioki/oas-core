@@ -1,0 +1,20 @@
+{
+  "task": "CollectiveMissions",
+  "status": "🔄",
+  "evidence": [
+    "spec: migration/specs/CollectiveMissions.md (behavior matrix §3, TODO list §6)",
+    "bundle: tasks/CollectiveMissions/{meta.json,flow.json,README.md,migration.json}",
+    "lint: oasd task lint --tasks-dir tasks --task CollectiveMissions => lint task=CollectiveMissions errors=0",
+    "flow covers: entry nav, 30/30 skip, mission_select refresh loop, 3-slot OCR classification + rank selection, feed branch (near-complete), donate/soul branches (approximated), bondling reward claim / no_target, back-out to main, 4 exits",
+    "assets: 26 global legacy ids referenced, all resolved (T4 green)"
+  ],
+  "gaps": [
+    "TODO(DSL): material donation must pick the max-total material; needs ocr_nth_number / ocr_digits (old code reads 3rd number of (curr,remain,total))",
+    "TODO(DSL): soul donation needs long_press primitive; currently 10 short region clicks approximate L_SL_LONG",
+    "TODO(engine): bondling branch needs cross-task scheduling (old set_next_run BondlingFairyland + 2h rerun); currently exits no_target(blocked)",
+    "TODO(fidelity): refresh-button availability check replaced by template appear (old brightness/mean-color check)",
+    "TODO(fidelity): double-reward claimed twice counting approximated by 4-round reward loop",
+    "TODO(config): missions_rule priority string not mapped; fixed default order baked into flow",
+    "no real-device/replay evidence (emulator offline); OCR classification and donation page layout need live verify"
+  ]
+}

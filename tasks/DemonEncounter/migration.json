@@ -1,0 +1,51 @@
+{
+  "task": "DemonEncounter",
+  "source": "runhey/OnmyojiAutoScript@dev",
+  "source_commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+  "source_files": [
+    "tasks/DemonEncounter/script_task.py",
+    "tasks/DemonEncounter/config.py",
+    "tasks/DemonEncounter/assets.py",
+    "tasks/Component/GeneralBattle/general_battle.py",
+    "tasks/Component/SwitchSoul/switch_soul.py",
+    "tasks/GameUi/page.py"
+  ],
+  "group": "Daily Task",
+  "status": "partial",
+  "spec": "migration/specs/DemonEncounter.md",
+  "assets": {
+    "referenced": 37,
+    "source": "assets/assets.json (global legacy ids)",
+    "task_local_assets": false
+  },
+  "behavior": {
+    "entry": "庭院 -> 町中 -> 逢魔 -> 现世逢魔",
+    "covered": [
+      "入口导航（town -> demon encounter -> realworld）",
+      "今日挑战次数 OCR=0 -> skipped",
+      "灯笼填充 I_DE_FIND 循环 + 红达摩/奖励领取",
+      "逢魔首领搜索（I_DE_BOSS/I_DE_BOSS_BEST + C_DM_BOSS_CLICK + I_DE_LOCATION/I_JADE_50 处理）",
+      "集结 I_BOSS_CONFIRM/I_BOSS_GATHER + 准备 -> 通用战斗 -> I_BOSS_DONE_CHECK",
+      "回庭院"
+    ],
+    "not_covered": [
+      "灯笼 6 类型子流程",
+      "boss 人数满 300 重选",
+      "480s 长战斗等待",
+      "御魂切换",
+      "时间窗 check_time"
+    ]
+  },
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task DemonEncounter => errors=0",
+    "coverage_matrix": "migration/specs/DemonEncounter.md §3"
+  },
+  "differences": [
+    "lantern 6 types (box/letter/mystery/realm/battle/boss) sub-flows not migrated; only fill + red-dharma reward",
+    "time window check_time not expressible (no clock) -> scheduler windows",
+    "boss full-people (O_*_BOSS_PEOPLE triple) exit-and-reselect not migrated",
+    "480s long-battle wait / preset soul switching before prepare not migrated",
+    "switch_soul per-boss-type configs not migrated",
+    "no device/replay evidence (emulator offline)"
+  ]
+}

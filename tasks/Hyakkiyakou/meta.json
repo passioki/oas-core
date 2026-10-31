@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "Hyakkiyakou",
+  "name": "百鬼夜行",
+  "version": 1,
+  "expire": "weekly",
+  "category": "weekly",
+  "description": "庭院→町中→百鬼夜行：仅迁移入口导航与页面检查；核心撒豆玩法依赖 oashya（YOLO 式神检测+跟踪）与窗口消息控制，当前引擎无模型推理/后台控制原语 → blocked。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1200
+  },
+  "resources": [
+    "hyakki_ticket"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "week",
+      "times": 1
+    }
+  }
+}

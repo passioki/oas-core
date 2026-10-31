@@ -1,0 +1,21 @@
+{
+  "task": "RyouToppa",
+  "status": "✅",
+  "evidence": [
+    "spec: migration/specs/RyouToppa.md (behavior matrix §3, DSL mapping §8, assets §9)",
+    "bundle: tasks/RyouToppa/{meta.json,flow.json,README.md,migration.json}",
+    "lint: oasd task lint --tasks-dir tasks --task RyouToppa => lint task=RyouToppa errors=0",
+    "assets: 27 global legacy ids referenced, all resolved in assets/assets.json (T4 green)",
+    "flow covers: entry nav (3 guarded clicks), raid state detect (5 states), admin start, team-lock toggle, 8-area attack loop with per-area failure/finished marks, battle prepare/auto/continue pattern, ticket OCR=0 exit, 3-round refresh bound, return-to-home, 4 exits declared"
+  ],
+  "gaps": [
+    "no real-device/replay evidence (emulator-5554 offline at migration time); first live run must validate page guards and guild-battle prepare layout",
+    "TODO(DSL): SwitchSoul preset/soul switching has no primitive -> optional config features unmapped (default disabled)",
+    "TODO(DSL): limit_time=30min time cap needs elapsed()/clock expression or run budget wiring",
+    "TODO(semantics): has_ticket simplified from (cu==0 && cu+res==total) to ocr_digit==0; recovery (res) term dropped",
+    "TODO(behavior): 21:00-05:00 unlimited attack window not implemented (needs clock)",
+    "TODO(behavior): battle win/lose detection omitted (not needed for this task's counting loop)",
+    "TODO(behavior): per-area fire-click retry (old 5x then next area) replaced by loud failure",
+    "TODO(battle): generic battle pattern uses core 战斗_准备按钮/战斗_自动按钮 assets; if guild-raid battle prepare UI differs, needs its own asset set"
+  ]
+}

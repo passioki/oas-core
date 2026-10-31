@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "Sougenbi",
+  "name": "业原火",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "庭院→探索→御魂→业原火：选贪/嗔/痴，按所选类型读顶部突破券数量（=0 → resource_empty），锁/解锁阵容，loop limit_count 次「挑战→准备→自动战斗→结算回到业原火页」，最后回庭院。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "sougenbi_class",
+      "type": "string",
+      "default": "痴"
+    },
+    {
+      "key": "limit_count",
+      "type": "int",
+      "default": 30,
+      "min": 1,
+      "max": 99
+    },
+    {
+      "key": "lock_team",
+      "type": "bool",
+      "default": false
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "resource_empty": {
+      "result": "resource"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1200
+  },
+  "resources": [
+    "stamina"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

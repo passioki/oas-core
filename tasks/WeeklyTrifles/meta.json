@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "WeeklyTrifles",
+  "name": "每周琐事",
+  "version": 1,
+  "expire": "weekly",
+  "category": "weekly",
+  "description": "每周琐事五项：图鉴分享、地鬼分享、惠比寿摸鱼存储、破碎符咒召唤；秘闻分享当前未迁移（显式 TODO）。入口/关闭分享弹窗/奖励点均用远程素材；回庭院。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "share_collect",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "share_area_boss",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "share_secret",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "save_touch_fish",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "broken_amulet",
+      "type": "int",
+      "default": 100,
+      "min": 0,
+      "max": 500
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 900
+  },
+  "resources": [
+    "broken_amulet"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "week",
+      "times": 1
+    }
+  }
+}

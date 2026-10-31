@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "FallenSun",
+  "name": "FallenSun",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "日轮之陨（单人模式）：庭院→探索→御魂→日轮之陨；阵容锁定对齐；循环 猫咪奖励+点挑战+通用战斗，直到 max_battles；回庭院。队长/队员组队模式需组队事件机（DSL 无原语，见 spec）。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "max_battles",
+      "type": "int",
+      "default": 30,
+      "min": 1,
+      "max": 50
+    },
+    {
+      "key": "lock_team",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "mode",
+      "type": "string",
+      "default": "alone"
+    },
+    {
+      "key": "layer",
+      "type": "string",
+      "default": ""
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_resource": {
+      "result": "resource"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1800
+  },
+  "resources": [
+    "soul_zone_stamina"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "task": "WeeklyTrifles",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "ref": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/WeeklyTrifles/script_task.py",
+      "tasks/WeeklyTrifles/config.py",
+      "tasks/WeeklyTrifles/assets.py",
+      "tasks/GameUi/game_ui.py, tasks/GameUi/page.py (imported)",
+      "tasks/GlobalGame/assets.py (I_UI_BACK_RED/BLUE/YELLOW)"
+    ]
+  },
+  "status": "🔄",
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task WeeklyTrifles => errors=0",
+    "live_or_replay": "none (no device / no matching replay recording in this session)",
+    "assets": "global legacy_* ids from migration/asset-map.json; T4 green"
+  },
+  "differences": [
+    "导航/动作点击用导入的 legacy 模板 id（模板 click = 匹配模板矩形，与旧引擎 RuleImage.coord() 等价）；RuleClick 用 click_target(region, sel)。",
+    "远程 while True + Timer 的重试/判停改为有界 loop / wait_until(timeout) / 步骤 retry；结束条件用页面 marker 或次数上限。",
+    "战斗统一 P-BATTLE v2（Component_GeneralBattle 素材：准备/胜利/失败/奖励→回页），不是完整 GeneralBattle（无绿标/预设/特殊奖励分支/统计页）。",
+    "OCR：RuleOcr → ocr_lines；子串/正则匹配改为规范化行匹配或 text_visible；字符串拼接/题库查询等无原语的行为记为缺口。"
+  ],
+  "gaps": [
+    "秘闻分享（_share_secret, script_task.py:227-267）未迁移：需要 I_WT_ENTER_SE/I_WT_SE_SHARE/I_WT_SE_RANK/I_WT_SE_JADE 多级判定 + I_UI_BACK_BLUE 返回链；本轮只保留参数与 TODO。",
+    "分享流程远程有 Timer(3/7s) 判停与 ui_reward_appear_click；新 flow 用固定轮数 bounded loop 近似。",
+    "地鬼分享「O? 本周已领取」判定远程用 I_WT_AB_JADE 出现与否（本 flow 部分覆盖），且 C_WT_AB_CLICK 为 RuleClick 区域。",
+    "摸鱼存储：远程 O_WT_LUCKY_TICKETS 是 DigitCounter 返回 (cu,res,total) 且 O_WT_SAVE_COST 为花费；新 flow 用 ocr_digit 比较两个数值，OCR 失败(Null)时比较为 false → 走「不足」分支。",
+    "破碎符咒：远程按 10/50 次按钮位置切换数量(I_BMT_CHECK + O_BA_TIMES 的 '10次'/'50次' OCR 定位)，新 flow 固定按 10 次累计；O_BA_AMOUNT OCR 失败保护未覆盖。",
+    "分享到微信的 C_WT_WECHAT / QR 码流程为无人值守 best-effort（远程同样等待超时后放弃）。"
+  ]
+}

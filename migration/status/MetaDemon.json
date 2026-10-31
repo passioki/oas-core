@@ -1,0 +1,11 @@
+{
+  "task": "MetaDemon",
+  "status": "🔄",
+  "evidence": "task lint --task MetaDemon => errors=0；右侧活动入口→超鬼王→找鬼王/共享鬼王→点鬼王战斗→返回覆盖（简化）；疲劳买茶/5-6星策略切队/星合成/通知未迁移",
+  "gaps": [
+    "疲劳 OCR 判定与买茶未迁移",
+    "5/6 星 full-name OCR→策略组→预设切队未迁移（配置数据不可进 flow）",
+    "星合成 crafting、通知、boss_mark、血量阈值未迁移",
+    "无实机/回放证据（限时活动）"
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "task": "AbyssShadows",
+  "status": "🔄",
+  "evidence": [
+    "spec: migration/specs/AbyssShadows.md",
+    "bundle: tasks/AbyssShadows/{meta.json,flow.json,README.md,migration.json}",
+    "lint: oasd task lint --tasks-dir tasks --task AbyssShadows => lint task=AbyssShadows errors=0",
+    "flow covers: guild/shrine/abyss entry with swipe fallback, dragon/peacock area selection, gathering wait, 6 targets per area (boss1/general2/elite3) via region clicks + goto/fire/prepare + generic battle, combat-time retreat mode, return home"
+  ],
+  "gaps": [
+    "TODO(schedule): weekday gating (Fri/Sat/Sun) and custom_next_run -> scheduler windows (no calendar primitive)",
+    "TODO(behavior): only dragon+peacock areas implemented; old code continues dragon->peacock->fox->leopard until 2/4/6 counts met",
+    "TODO(fidelity): smart-damage battle exit approximated by loop(combat_time x wait 1s) + I_EXIT/confirm/win; old has 4s prepare wait and multi-click handling",
+    "TODO(fidelity): I_IS_ATTACK / I_ABYSS_MAP_EXIT / I_ABYSS_SHIKI states not fully used",
+    "TODO(DSL): switch_soul preset switching has no primitive",
+    "no real-device/replay evidence (emulator offline)"
+  ]
+}

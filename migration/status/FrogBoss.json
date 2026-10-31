@@ -1,0 +1,18 @@
+{
+  "task": "FrogBoss",
+  "status": "🔄",
+  "evidence": [
+    "spec: migration/specs/FrogBoss.md (behavior matrix §3, blocked strategies §6)",
+    "bundle: tasks/FrogBoss/{meta.json,flow.json,README.md,migration.json}",
+    "lint: oasd task lint --tasks-dir tasks --task FrogBoss => lint task=FrogBoss errors=0",
+    "flow covers: activity entry via Component_RightActivity, 5-state loop (betted/rest/win/lose/betable), 5 offline strategies via OCR counts, full confirm-bet dialog handling (gold-30 area, submit x3), reward/next-competition handling, return home",
+    "assets: 19 global legacy ids (incl newly imported Component_RightActivity / Component_GeneralBattle), all resolved"
+  ],
+  "gaps": [
+    "⛔ api: strategy=frog_oas needs HTTP prediction API + image fingerprint + local jsonl history; DSL has no network/file/fingerprint primitives -> falls back to majority with warn",
+    "⛔ api: strategy=frog_dashen scrapes 163 feed APIs and regex/time-window analysis -> falls back to majority with warn",
+    "TODO(behavior): record_oas_history_page (record reader) not migrated (only used by Oas strategy)",
+    "TODO(schedule): old next_run() computes the next 2-hour window; replaced by scheduler.json windows/quota",
+    "no real-device/replay evidence (emulator offline); verify bet-state templates and count OCR ROIs live"
+  ]
+}

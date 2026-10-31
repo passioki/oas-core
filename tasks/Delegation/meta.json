@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "Delegation",
+  "name": "式神委派",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "庭院→探索→式神委派：循环领取已完成委派的奖励（领取/聊天气泡/完成/失败弹窗）；按 6 个开关参数用 OCR 精确行匹配选中委派单，填 4 个素材槽并开始委派；已在委派中的单跳过；回庭院。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "miyoshino_painting",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "bird_feather",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "find_earring",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "cat_boss",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "miyoshino",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "strange_trace",
+      "type": "bool",
+      "default": false
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 420
+  },
+  "resources": [
+    "stamina"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

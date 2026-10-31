@@ -1,0 +1,17 @@
+{
+  "task": "OrochiMoans",
+  "status": "⛔",
+  "evidence": {
+    "lint": "lint task=OrochiMoans errors=0",
+    "coverage": "0%（无屏幕自动化逻辑可迁移）",
+    "run": "不可运行"
+  },
+  "gaps": [
+    "旧仓该目录只有 config.py + 空的 assets.py，没有 `script_task.py`，无法抽象出任何屏幕行为。",
+    "「御魂悲鸣」（悲鸣）是 `Orochi` 任务的御魂 zone 选项（`tasks/Orochi/config.py: ELEVEN='悲鸣'`），不是独立任务。",
+    "`Orochi` 任务不在本批次 assigned tasks 中。",
+    "等待 `Orochi` 任务完成迁移后，用 `call_task` 调用并传入「悲鸣」zone 参数（Orochi 是否有 zone 参数由该任务迁移决定）。",
+    "或在 scheduler 中把原 OrochiMoans 条目映射到 Orochi 任务的悲鸣 zone 配置。",
+    "本批次先以 ⛔ blocked 登记，避免伪造独立行为。"
+  ]
+}

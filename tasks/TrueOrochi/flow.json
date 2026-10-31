@@ -1,0 +1,621 @@
+{
+  "schema_version": 1,
+  "name": "TrueOrochi",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: TrueOrochi 开始（庭院→探索→玩法tab→御魂→八岐大蛇；本周次数由 I_ST_MODULE 判定）'"
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 680,
+        "y": 152,
+        "requires": {
+          "kind": "appear",
+          "sel": "庭院_探索灯笼",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 10000
+        }
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 1216,
+        "y": 186,
+        "requires": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_Exploration_I_CHECK_PLAY_TITLE",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "not appear('legacy_TrueOrochi_I_ST_MODULE')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 玩法 tab 无真蛇模块（本周次数已用完）'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "12"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('庭院_探索灯笼')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "庭院_探索灯笼"
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "no_resource"
+          }
+        }
+      ]
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_EXPLORATION_GOTO_SOUL_ZONE",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_Exploration_I_CHECK_PLAY_TITLE",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_SOUL_ZONES",
+          "timeout_ms": 15000
+        }
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_Orochi_I_OROCHI",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_Orochi_I_OROCHI",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_Orochi_I_OROCHI_CHECK_11",
+          "timeout_ms": 15000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.0
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 已进入八岐大蛇御魂页，检测真蛇入口'"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('legacy_TrueOrochi_I_FIND_TS')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 发现真蛇入口 I_FIND_TS'"
+          }
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 真蛇战斗流程：建房/确认/挑战 → 准备 → 战斗（多阶段）→ 回御魂页'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "10"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_TrueOrochi_I_ST_CREATE_ROOM')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_TrueOrochi_I_ST_CREATE_ROOM"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_CONFIRM"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_TrueOrochi_I_ST_FIRE')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_TrueOrochi_I_ST_FIRE"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 战斗准备：点「准备」（I_PREPARE_HIGHLIGHT）'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "5"
+          },
+          "body": [
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+              },
+              "then": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "template",
+                        "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "op": "break"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "wait_until",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralBattle_I_BATTLE_INFO')",
+            "timeout_s": 25
+          }
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 已进入战斗（I_BATTLE_INFO），自动战斗 + 结算处理'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "150"
+          },
+          "body": [
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 2.2
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_WIN')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 战斗胜利（I_WIN）'"
+                  }
+                },
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Component_GeneralBattle_I_WIN"
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.6
+                  }
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "warn",
+                    "text": "'S: 战斗失败（I_FALSE），点掉结算'"
+                  }
+                },
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Component_GeneralBattle_I_FALSE"
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.8
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_FALSE"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+              },
+              "then": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "template",
+                        "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT"
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_GREED_GHOST')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 贪吃鬼奖励（I_GREED_GHOST）'"
+                  }
+                },
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Component_GeneralBattle_I_GREED_GHOST"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_OVER_GHOST')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Component_GeneralBattle_I_OVER_GHOST"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Component_GeneralBattle_I_REWARD"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "click_point",
+              "args": {
+                "x": 640,
+                "y": 690
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_TrueOrochi_I_ST_CREATE_ROOM') or appear('legacy_TrueOrochi_I_FIND_TS')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 真蛇战斗完成（第二次存储入口未迁移，见 TODO）'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "12"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('庭院_探索灯笼')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "庭院_探索灯笼"
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "done"
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "'S: 未发现真蛇入口；十层×10 触发真蛇路径未迁移（需层数 RuleList + 循环战斗），走 no_target'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "12"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('庭院_探索灯笼')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "庭院_探索灯笼"
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "no_target"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "task": "Hyakkiyakou",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "ref": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/Hyakkiyakou/script_task.py",
+      "tasks/Hyakkiyakou/config.py",
+      "tasks/Hyakkiyakou/agent/agent.py",
+      "tasks/Hyakkiyakou/slave/hya_slave.py",
+      "tasks/Hyakkiyakou/slave/hya_device.py",
+      "tasks/Component/SwitchOnmyoji/switch_onmyoji.py (imported)"
+    ]
+  },
+  "status": "⛔",
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task Hyakkiyakou => errors=0",
+    "live_or_replay": "none (no device / no matching replay recording in this session)",
+    "assets": "global legacy_* ids from migration/asset-map.json; T4 green"
+  },
+  "differences": [
+    "导航/动作点击用导入的 legacy 模板 id（模板 click = 匹配模板矩形，与旧引擎 RuleImage.coord() 等价）；RuleClick 用 click_target(region, sel)。",
+    "远程 while True + Timer 的重试/判停改为有界 loop / wait_until(timeout) / 步骤 retry；结束条件用页面 marker 或次数上限。",
+    "战斗统一 P-BATTLE v2（Component_GeneralBattle 素材：准备/胜利/失败/奖励→回页），不是完整 GeneralBattle（无绿标/预设/特殊奖励分支/统计页）。",
+    "OCR：RuleOcr → ocr_lines；子串/正则匹配改为规范化行匹配或 text_visible；字符串拼接/题库查询等无原语的行为记为缺口。"
+  ],
+  "gaps": [
+    "BLOCKER：远程核心 = oashya Tracker（ONNXRuntime YOLO，式神/豆子/加速/冻结/概率UP 等 226 类目标检测 + 跟踪），配合 hya_device 的**窗口后台截图 / 窗口消息点击**逐帧决策撒豆。当前引擎只有 ADB 截屏/点击 + 模板/OCR，没有模型推理原语，也没有窗口后台控制通道。",
+    "assets 中的 226 类 hya_* 图（beans/resf/resr/train 等）是 ML 模型输入/训练素材，不是模板匹配素材；即使全部导入也无法还原检测+跟踪策略。",
+    "SwitchOnmyoji（切换晴明/神乐等阴阳师）未迁移（素材已导入，逻辑未做）。",
+    "奖励/邀请/训练模式等分支未迁移。"
+  ]
+}

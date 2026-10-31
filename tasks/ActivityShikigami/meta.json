@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "ActivityShikigami",
+  "name": "ActivityShikigami",
+  "version": 1,
+  "expire": "limited",
+  "category": "limited",
+  "description": "活动爬塔（pass 门票模式）：庭院→右侧活动→爬塔主界面→跳过剧情/领奖→进入挑战界面→循环 挑战+通用战斗 直到 max_battles；回庭院。ap/ap100/boss 模式未迁移（见 spec）。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "mode",
+      "type": "string",
+      "default": "pass"
+    },
+    {
+      "key": "max_battles",
+      "type": "int",
+      "default": 50,
+      "min": 1,
+      "max": 300
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "no_resource": {
+      "result": "resource"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1800
+  },
+  "resources": [
+    "activity_climb_chance"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

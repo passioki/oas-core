@@ -1,0 +1,70 @@
+{
+  "task": "RyouToppa",
+  "source": "runhey/OnmyojiAutoScript@dev",
+  "source_commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+  "source_files": [
+    "tasks/RyouToppa/script_task.py",
+    "tasks/RyouToppa/config.py",
+    "tasks/RyouToppa/assets.py",
+    "tasks/RealmRaid/assets.py",
+    "tasks/GameUi/page.py",
+    "tasks/GameUi/default_pages.py",
+    "tasks/Component/GeneralBattle/general_battle.py",
+    "tasks/Component/GeneralBattle/battle_wait.py",
+    "tasks/Component/SwitchSoul/switch_soul.py"
+  ],
+  "group": "Guild",
+  "status": "implemented",
+  "spec": "migration/specs/RyouToppa.md",
+  "assets": {
+    "referenced": 66,
+    "source": "assets/assets.json (global legacy ids)",
+    "task_local_assets": false,
+    "map": "migration/asset-map.json"
+  },
+  "behavior": {
+    "entry": "庭院 -> 探索 -> 结界突破 -> 寮突页签",
+    "states_covered": [
+      "100% 攻破",
+      "寮突未开启（可开局/无权限）",
+      "寮突已开启",
+      "8 区域失败/已攻破标记",
+      "进攻机会 OCR=0",
+      "无任何可攻区域（刷新 3 轮）"
+    ],
+    "battle": "generic prepare->auto->continue-until-list pattern (core assets 战斗_准备按钮/战斗_自动按钮)",
+    "team": "lock/unlock toggle only (no soul/preset switching)",
+    "guild": "admin start raid via 选择寮/开局; 100% penetration ends run"
+  },
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task RyouToppa => errors=0",
+    "flow_ops": [
+      "click",
+      "click_target",
+      "click_point",
+      "if",
+      "while",
+      "loop",
+      "break",
+      "wait",
+      "wait_until",
+      "swipe",
+      "appear",
+      "set_var",
+      "inc_var",
+      "log",
+      "finish"
+    ],
+    "coverage_matrix": "migration/specs/RyouToppa.md §3/§8"
+  },
+  "differences": [
+    "limit_time(30min) not expressible: no clock/elapsed in DSL -> run budget/scheduler window",
+    "SwitchSoul preset/soul switching not expressible: no DSL primitive (config default disabled)",
+    "has_ticket: old cu==0 && cu+res==total -> new ocr_digit==0 (first number only)",
+    "21:00-05:00 unlimited-attack window not implemented (no clock)",
+    "battle win/lose detection omitted (task only counts battles)",
+    "area attack click-failure retry (5x -> next area) replaced by loud failure on I_FIRE click",
+    "random_delay config dropped: engine click humanization already covers it",
+    "no device/replay evidence (emulator offline during migration)"
+  ]
+}

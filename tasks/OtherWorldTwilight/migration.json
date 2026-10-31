@@ -1,0 +1,45 @@
+{
+  "task": "OtherWorldTwilight",
+  "name": "OtherWorldTwilight",
+  "source": {
+    "repo": "https://github.com/runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/OtherWorldTwilight/script_task.py",
+      "tasks/OtherWorldTwilight/config.py",
+      "tasks/OtherWorldTwilight/page.py",
+      "tasks/OtherWorldTwilight/owt/image.json",
+      "tasks/GameUi/page.py",
+      "tasks/GameUi/default_pages.py"
+    ]
+  },
+  "status": "🔄",
+  "evidence": [
+    "task lint --task OtherWorldTwilight => errors=0",
+    "migration/specs/OtherWorldTwilight.md：单人模式 5 步映射；队伍模式列为 TODO"
+  ],
+  "assets": {
+    "reused_global": [
+      "庭院_探索灯笼",
+      "legacy_GameUi_I_MAIN_GOTO_TOWN",
+      "legacy_GameUi_I_TOWN_GOTO_DEMON_ENCOUNTER",
+      "legacy_GameUi_I_CHECK_TOWN",
+      "legacy_GameUi_I_CHECK_DEMON_ENCOUNTER",
+      "legacy_OtherWorldTwilight_I_DE_TO_OTHER_WORLD",
+      "legacy_OtherWorldTwilight_I_OWT_FIRE",
+      "legacy_OtherWorldTwilight_I_OWT_TEAM",
+      "legacy_OtherWorldTwilight_I_OWT_LOCK",
+      "legacy_OtherWorldTwilight_I_OWT_UNLOCK",
+      "legacy_GlobalGame_I_UI_BACK_{RED,YELLOW}",
+      "legacy_Component_GeneralBattle_{I_PREPARE_HIGHLIGHT,I_BATTLE_INFO,I_WIN,I_FALSE,I_GREED_GHOST,I_OVER_GHOST,I_REWARD}"
+    ],
+    "new": []
+  },
+  "differences": [
+    "队伍模式（LEADER/MEMBER）未迁移（建房/邀请/等待子流程待组合）",
+    "御魂切换与邀请配置（InviteConfig）未迁移（配置职责）",
+    "limit_count(30)/limit_time(30min) 用 `max_battles` 参数近似，时间上限未在 flow 内判",
+    "未实机/回放验证"
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "task": "FallenSun",
+  "source": "runhey/OnmyojiAutoScript@dev",
+  "source_commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+  "source_files": [
+    "tasks/FallenSun/script_task.py",
+    "tasks/FallenSun/config.py",
+    "tasks/FallenSun/assets.py",
+    "tasks/Component/GeneralRoom/general_room.py",
+    "tasks/Component/GeneralInvite/general_invite.py",
+    "tasks/Component/GeneralBattle/general_battle.py",
+    "tasks/GameUi/page.py"
+  ],
+  "group": "Soul Zones",
+  "status": "partial",
+  "spec": "migration/specs/FallenSun.md",
+  "assets": {
+    "referenced": 25,
+    "source": "assets/assets.json (global legacy ids)",
+    "task_local_assets": false
+  },
+  "behavior": {
+    "entry": "庭院 -> 探索 -> 御魂 -> 日轮之陨",
+    "covered": [
+      "进入日轮 (I_FALLEN_SUN -> I_FORM_TEAM)",
+      "阵容锁定/解锁",
+      "猫咪奖励 I_PET_PRESENT -> C_WIN_3",
+      "I_FALLEN_SUN_FIRE 挑战 -> 通用战斗 -> 回日轮页，max_battles 有界",
+      "回庭院（日轮 -> 御魂 -> 探索）"
+    ],
+    "not_covered": [
+      "LEADER 组队模式",
+      "MEMBER 组队模式",
+      "层数选择",
+      "WILD（旧仓亦未实现）"
+    ]
+  },
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task FallenSun => errors=0",
+    "coverage_matrix": "migration/specs/FallenSun.md §3"
+  },
+  "differences": [
+    "BLOCKED(architecture): leader/member co-op modes need a team-event machine (create room / private / invite / accept invite / wait battle / exit room); linear DSL has no wait-for-other-players primitive -> only alone mode implemented",
+    "layer selection not migrated: L_LAYER_LIST is RuleList (not imported) and remote checkout Layer enum strings are mojibake (GBK->UTF-8)",
+    "limit_time 30min not expressible (no clock expression)",
+    "switch_soul preset switching not migrated",
+    "wild mode not implemented in upstream either",
+    "no device/replay evidence (emulator offline)"
+  ]
+}

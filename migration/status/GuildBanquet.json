@@ -1,0 +1,10 @@
+{
+  "task": "GuildBanquet",
+  "status": "✅",
+  "evidence": "task lint --tasks-dir tasks --task GuildBanquet => errors=0；flow.json+meta.json 覆盖 导航/宴会等待/未开始分支/回庭院/出口；规格 migration/specs/GuildBanquet.md",
+  "gaps": [
+    "无实机/回放证据（宴会时段限制）",
+    "宴会时间写回与跨周排期属调度器职责，未迁移",
+    "I_FLAG 模板阈值未用当前客户端真机帧复核"
+  ]
+}

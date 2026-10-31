@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "AreaBoss",
+  "name": "AreaBoss",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "地域鬼王：庭院→探索→地域鬼王；筛选热门/收藏；按声望动态决定 1/2/3 次挑战；逐个开详情→难度/层数（极·壹/拾、普通·1/60）→挑战→通用战斗→关详情；无鬼王则 no_target；回庭院。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "use_collect",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "floor_mode",
+      "type": "string",
+      "default": "default"
+    },
+    {
+      "key": "boss_reward",
+      "type": "bool",
+      "default": false
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "no_resource": {
+      "result": "resource"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 600
+  },
+  "resources": [
+    "area_boss_chance"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

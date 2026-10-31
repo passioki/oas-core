@@ -1,0 +1,40 @@
+﻿{
+  "schema_version": 1,
+  "task": "EvoZone",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "ref": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/EvoZone/script_task.py",
+      "tasks/EvoZone/config.py",
+      "tasks/EvoZone/assets.py",
+      "tasks/Component/GeneralBattle/general_battle.py (imported)",
+      "tasks/Component/GeneralRoom/general_room.py (imported)",
+      "tasks/Component/GeneralInvite/general_invite.py (imported)",
+      "tasks/Component/GeneralBuff/general_buff.py (imported)",
+      "tasks/Component/SwitchSoul/switch_soul.py (imported)"
+    ]
+  },
+  "status": "🔄",
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task EvoZone => errors=0",
+    "live_or_replay": "none (no device / no matching replay recording in this session)",
+    "assets": "global legacy_* ids from migration/asset-map.json; T4 green"
+  },
+  "differences": [
+    "导航/动作点击用导入的 legacy 模板 id（模板 click = 匹配模板矩形，与旧引擎 RuleImage.coord() 等价）；RuleClick 用 click_target(region, sel)。",
+    "远程 while True + Timer 的重试/判停改为有界 loop / wait_until(timeout) / 步骤 retry；结束条件用页面 marker 或次数上限。",
+    "战斗统一 P-BATTLE v2（Component_GeneralBattle 素材：准备/胜利/失败/奖励→回页），不是完整 GeneralBattle（无绿标/预设/特殊奖励分支/统计页）。",
+    "OCR：RuleOcr → ocr_lines；子串/正则匹配改为规范化行匹配或 text_visible；字符串拼接/题库查询等无原语的行为记为缺口。"
+  ],
+  "gaps": [
+    "层数列表：远程用 RuleList L_LAYER_LIST 的 list_find（OCR 项文本精确匹配数组 壹..拾 后点击）；新 flow 用 click_target inline OCR(roi=[124,84,77,632], text=固定字面量「拾」)；由于 ocr_text 的 text 是字面量，param('layer') 无法直接作为目标行（见下一条 TODO）。",
+    "TODO(DSL)：click_target 的 ocr_text 文本是**字面量**，不能从 param/var 拼接；因此无法把 param('layer') 直接作为 OCR 目标行。需要引擎支持表达式 text 或按 rownum/坐标定位列表项。当前 flow 保留固定行文本（拾）作为默认层数。",
+    "组队模式（default user_status=leader）：创建房间/邀请队友/成员接管/自动匹配等 GeneralRoom+GeneralInvite 流程未迁移（素材已导入，逻辑量大，未在本轮实现）。",
+    "觉醒加成开关（GeneralBuff I_AWAKE）未迁移。",
+    "御魂预设切换（SwitchSoul）未迁移。",
+    "limit_time（30 分钟）无时钟原语；limit_count 保留。",
+    "战斗为 P-BATTLE v2（准备/胜利/失败/奖励→回页），不含 battle_wait_strategy 的特殊奖励/统计页分支。"
+  ]
+}

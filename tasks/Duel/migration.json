@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "task": "Duel",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "ref": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/Duel/script_task.py",
+      "tasks/Duel/config.py",
+      "tasks/Duel/assets.py",
+      "tasks/Component/GeneralBattle/general_battle.py (imported)",
+      "tasks/Component/SwitchSoul/switch_soul.py (imported)",
+      "tasks/Component/SwitchOnmyoji/switch_onmyoji.py (imported)",
+      "tasks/GameUi/game_ui.py, tasks/GameUi/page.py (imported)"
+    ]
+  },
+  "status": "🔄",
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task Duel => errors=0",
+    "live_or_replay": "none (no device / no matching replay recording in this session)",
+    "assets": "global legacy_* ids from migration/asset-map.json; T4 green"
+  },
+  "differences": [
+    "导航/动作点击用导入的 legacy 模板 id（模板 click = 匹配模板矩形，与旧引擎 RuleImage.coord() 等价）；RuleClick 用 click_target(region, sel)。",
+    "远程 while True + Timer 的重试/判停改为有界 loop / wait_until(timeout) / 步骤 retry；结束条件用页面 marker 或次数上限。",
+    "战斗统一 P-BATTLE v2（Component_GeneralBattle 素材：准备/胜利/失败/奖励→回页），不是完整 GeneralBattle（无绿标/预设/特殊奖励分支/统计页）。",
+    "OCR：RuleOcr → ocr_lines；子串/正则匹配改为规范化行匹配或 text_visible；字符串拼接/题库查询等无原语的行为记为缺口。"
+  ],
+  "gaps": [
+    "目标分数/名仕(celeb)判定（O_D_SCORE OCR、I_BAN、O_D_BAN_NAME、C_DUEL_CLICK_5 自动上阵）未迁移：flow 只按 max_battles 次数循环，不打到分数目标不退出。",
+    "12:00-23:00 时间窗无时钟原语 → scheduler windows。",
+    "荣誉满退出（O_D_HONOR）、练习模式检测（I_BATTLE_WITH_TRAIN）、结算分享（I_D_VICTORY_SHARE）未迁移。",
+    "御魂/式神/阴阳师切换（switch_soul/switch_onmyoji/switch_all_soul）未迁移。",
+    "P-BATTLE v2 不含斗技专有的准备阶段处理（名仕 ban、I_D_CHECK_BAN 等）。"
+  ]
+}

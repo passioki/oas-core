@@ -1,0 +1,53 @@
+{
+  "task": "MetaDemon",
+  "name": "MetaDemon",
+  "source": {
+    "repo": "https://github.com/runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/MetaDemon/script_task.py",
+      "tasks/MetaDemon/config.py",
+      "tasks/MetaDemon/assets.py",
+      "tasks/MetaDemon/md/{image,ocr}.json",
+      "tasks/MetaDemon/md/image_2025.json",
+      "tasks/Component/RightActivity/right_activity.py"
+    ]
+  },
+  "status": "🔄",
+  "evidence": [
+    "task lint --task MetaDemon => errors=0",
+    "migration/specs/MetaDemon.md：入口/找鬼王/战斗/返回 4 步映射；疲劳/策略/合成/通知列 TODO"
+  ],
+  "assets": {
+    "reused_global": [
+      "庭院_探索灯笼",
+      "legacy_Component_RightActivity_I_TOGGLE_BUTTON",
+      "legacy_Component_RightActivity_I_RA_OPEN",
+      "legacy_Component_RightActivity_I_RA_CLOSE",
+      "legacy_MetaDemon_I_RIGHT_ENTER",
+      "legacy_MetaDemon_I_MD_ENTER",
+      "legacy_MetaDemon_I_MD_MAIN",
+      "legacy_MetaDemon_I_ENTER2",
+      "legacy_MetaDemon_I_ENTER_ENSURE",
+      "legacy_MetaDemon_I_FIND_DEMON",
+      "legacy_MetaDemon_I_BATTLE_DEMON",
+      "legacy_MetaDemon_I_BOSS_EMPTY",
+      "legacy_MetaDemon_I_BOSS_EMPTY_1",
+      "legacy_MetaDemon_I_BOSS_EMPTY_2",
+      "legacy_MetaDemon_I_BOSS_CONVENE",
+      "legacy_Component_GeneralBattle_{...}",
+      "legacy_GlobalGame_I_UI_CONFIRM",
+      "legacy_GlobalGame_I_UI_BACK_{RED,YELLOW}"
+    ],
+    "new": []
+  },
+  "differences": [
+    "疲劳（O_MD_EXHAUSTION）OCR 判定与买茶未迁移（含阈值 >100/90 逻辑；上游买茶为 pass 占位）",
+    "5/6 星 full-name OCR→配置策略组→预设组/队伍切换未迁移（配置数据 + 战斗内切预设）",
+    "星合成 crafting 未迁移（配置默认关）",
+    "通知推送、boss_mark、血量阈值（I_STAR56_*）未迁移",
+    "boss_timer 50s 超时与「计数/疲劳双限」用 max_battles 近似",
+    "未实机/回放验证（限时活动）"
+  ]
+}

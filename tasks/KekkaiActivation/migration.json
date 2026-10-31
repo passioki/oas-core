@@ -1,0 +1,51 @@
+{
+  "task": "KekkaiActivation",
+  "source": "runhey/OnmyojiAutoScript@dev",
+  "source_commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+  "source_files": [
+    "tasks/KekkaiActivation/script_task.py",
+    "tasks/KekkaiActivation/config.py",
+    "tasks/KekkaiActivation/assets.py",
+    "tasks/KekkaiUtilize/script_task.py",
+    "tasks/Component/ReplaceShikigami/replace_shikigami.py",
+    "tasks/GameUi/page.py"
+  ],
+  "group": "Guild",
+  "status": "blocked",
+  "spec": "migration/specs/KekkaiActivation.md",
+  "assets": {
+    "referenced": 20,
+    "source": "assets/assets.json (global legacy ids)",
+    "task_local_assets": false
+  },
+  "behavior": {
+    "entry": "庭院 -> 阴阳寮 -> 寮结界 -> 挂卡界面",
+    "covered": [
+      "寮结界入口",
+      "收卡经验（I_A_HARVEST_*）",
+      "进入挂卡界面（I_SHI_CARD / I_A_CHECK_CARD / I_A_AUTO_INVITE）",
+      "已有生效卡（I_A_INVITE）读取 O_CARD_ALL_TIME",
+      "已选未激活卡 -> 激活 -> 邀请出现",
+      "无卡 -> no_target(blocked)",
+      "回庭院"
+    ],
+    "blocked": [
+      "选最优卡（多行 OCR 行框 + 数字过滤排序）",
+      "剩余时长解析与流程内调度",
+      "未找到卡重试状态机",
+      "式神育成换满级"
+    ]
+  },
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task KekkaiActivation => errors=0",
+    "coverage_matrix": "migration/specs/KekkaiActivation.md §3/§6"
+  },
+  "differences": [
+    "BLOCKED: screening_card/check_card_num needs multi-line OCR with per-line box -> filter lines containing 勾玉/体力, take first number per line, threshold by min_*_num, sort by number, click the max line box; DSL has no per-line numeric OCR + box-click primitive",
+    "BLOCKED: O_CARD_ALL_TIME.ocr_duration (timedelta parse) + set_next_run at remaining time; DSL has no duration parse/in-flow scheduling",
+    "BLOCKED: card_not_found_count persistence + card-type switch + 180min retry state machine",
+    "BLOCKED: shikigami growth replacement (ReplaceShikigami) not expressible",
+    "multi-scale template matching (appear_then_click_multi_scale I_SHI_CARD) approximated by normal click",
+    "no device/replay evidence (emulator offline)"
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "task": "AutoCheckinBigGod",
+  "category": "utility",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "checkout": "D:\\OAS-dev\\_verify\\remote-oas",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/AutoCheckinBigGod/script_task.py",
+      "tasks/AutoCheckinBigGod/config.py",
+      "tasks/AutoCheckinBigGod/assets.py"
+    ]
+  },
+  "engine_contract": {
+    "meta": "crates/oas-task/src/meta.rs (ENGINE-DESIGN §22.34.2)",
+    "flow_dsl": "crates/oas-flow/src/lib.rs",
+    "asset_store": "assets/assets.json (global, ids legacy_<Task>_<const>)",
+    "asset_map": "migration/asset-map.json"
+  },
+  "status": "⛔",
+  "evidence": {
+    "lint": ".\\target\\release\\oasd.exe task lint --tasks-dir tasks --task AutoCheckinBigGod => lint task=AutoCheckinBigGod errors=0",
+    "run": "不适用（任务无法执行）",
+    "note": "任务无游戏界面素材与屏幕逻辑，确认为引擎范围外。"
+  },
+  "assets_used": [],
+  "missing_assets": [],
+  "differences": [
+    "未迁移：被引擎能力/外部依赖阻塞（见 blockers）"
+  ],
+  "gaps": [
+    "这是**外部服务自动化**任务，不属于 oas-core「屏幕自动化」范围：需要 ADB 子进程、frida、HTTP 客户端、SQLite/加密存储读取。",
+    "旧仓依赖 `oas-checkin-biggod` 第三方包（非本仓库代码）。",
+    "按 ENGINE-DESIGN「非目标」：引擎不做任意代码执行/网络代理。",
+    "不要用 DSL 迁移；应在 oasd 之外的独立工具（Python 脚本/服务）中实现，或作为 external job 由 scheduler 调用。",
+    "若必须在 oasd 内完成，需要新增受控的 `http_request` / `adb_shell` 原生 op（安全评审）与第三方依赖打包方案。",
+    "登记为「引擎范围外」，由用户手动/外部脚本执行。"
+  ],
+  "assets_used_count": 0
+}

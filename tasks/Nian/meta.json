@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "Nian",
+  "name": "年兽",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "庭院→组队→在组队区域列表点「年兽」→冷却检测（「再次挑战」文案）→自动匹配（>4 次不可进 → blocked）→等待准备页→自动战斗→回庭院。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 900
+  },
+  "resources": [
+    "stamina"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

@@ -1,0 +1,336 @@
+{
+  "schema_version": 1,
+  "name": "SixRealms",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: SixRealms 开始（庭院→探索→玩法→六道之门→月海）'"
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 680,
+        "y": 152,
+        "requires": {
+          "kind": "appear",
+          "sel": "庭院_探索灯笼",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 10000
+        }
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 1216,
+        "y": 186,
+        "requires": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_Exploration_I_CHECK_PLAY_TITLE",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_EXPLORATION_TO_MOON_SEA",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_EXPLORATION_TO_MOON_SEA",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_MOON_SEA",
+          "timeout_ms": 15000
+        }
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 进入六道之门·月海：等 I_MENTER 入口 → I_MSTART 开始 → 守族选择 → 首技能'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "20"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_SixRealms_I_MSTART')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_SixRealms_I_MENTER')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_SixRealms_I_MENTER"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_CONFIRM"
+              }
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "20"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_SixRealms_I_MSHOUZU')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_SixRealms_I_MSHUTEN')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_SixRealms_I_MSHUTEN"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_SixRealms_I_MSHOUZU_SELECT')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_SixRealms_I_MSHOUZU_SELECT"
+              }
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 进入肉鸽：「开始」→ 选首技能柔风 → 主地图'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "30"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_SixRealms_I_M_STORE')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_SixRealms_I_MSTART')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_SixRealms_I_MSTART"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_SixRealms_I_MFIRST_SKILL')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_SixRealms_I_MFIRST_SKILL"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_CONFIRM"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_SixRealms_I_MSKIP')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_SixRealms_I_MSKIP"
+              }
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_SixRealms_I_M_STORE"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "warn",
+        "text": "'S: 已进入月海主地图（币图标 I_M_STORE）。岛屿决策循环未迁移：需要「OCR 文本包含匹配 + 按 OCR 框位置点击」原语，见 migration/specs/SixRealms.md'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "10"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('庭院_探索灯笼')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_SixRealms_I_BACK_EXIT')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_SixRealms_I_BACK_EXIT"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+              }
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "no_target"
+      }
+    }
+  ]
+}

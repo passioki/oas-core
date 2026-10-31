@@ -1,0 +1,50 @@
+{
+  "task": "Exploration",
+  "name": "Exploration",
+  "source": {
+    "repo": "https://github.com/runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/Exploration/script_task.py",
+      "tasks/Exploration/config.py",
+      "tasks/Exploration/base.py",
+      "tasks/Exploration/solo.py",
+      "tasks/Exploration/page.py",
+      "tasks/Exploration/assets.py",
+      "tasks/Exploration/version.py",
+      "tasks/Exploration/res/{image,click,ocr,long_click,swipe}.json",
+      "tasks/GameUi/page.py"
+    ]
+  },
+  "status": "🔄",
+  "evidence": [
+    "task lint --task Exploration => errors=0",
+    "migration/specs/Exploration.md：默认配置主链路映射；高级选项/组队/滑屏尽头检测列 TODO",
+    "素材链复用 tasks/探索 的真机验收链路（该路径在引擎侧已有真机证据）"
+  ],
+  "assets": {
+    "reused_global": [
+      "庭院_探索灯笼",
+      "世界_章节栏",
+      "章节_第二十八章",
+      "入口_探索按钮",
+      "章节_固定阵容",
+      "章节_战斗图标",
+      "退出确认_确认",
+      "legacy_Exploration_I_BATTLE_REWARD",
+      "legacy_Exploration_I_BOSS_BATTLE_BUTTON",
+      "legacy_Exploration_I_NORMAL_BATTLE_BUTTON",
+      "legacy_Component_GeneralBattle_{...}"
+    ],
+    "new": []
+  },
+  "differences": [
+    "仅支持第二十八章（`exploration_level` 其他章节需滑屏选关，未迁移）",
+    "UP 定向找怪（up_type）、自动候补（auto_rotate）、宝箱、剧情弹窗清理、加成、突破票联动未迁移",
+    "滑屏尽头检测（is_swipe_unchanged 帧差分）未迁移：无怪时会在 max_battles 次内反复滑屏",
+    "组队 LEADER/MEMBER、好友邀请未迁移",
+    "limit_time（30min）未在 flow 内实现；minions_cnt 用 max_battles=30 对齐默认",
+    "未实机/回放验证（素材链来自 tasks/探索 的真机标定，行为组合需实测）"
+  ]
+}

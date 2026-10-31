@@ -1,0 +1,47 @@
+{
+  "task": "KekkaiUtilize",
+  "source": "runhey/OnmyojiAutoScript@dev",
+  "source_commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+  "source_files": [
+    "tasks/KekkaiUtilize/script_task.py",
+    "tasks/KekkaiUtilize/config.py",
+    "tasks/KekkaiUtilize/assets.py",
+    "tasks/Component/ReplaceShikigami/replace_shikigami.py",
+    "tasks/GameUi/page.py"
+  ],
+  "group": "Guild",
+  "status": "blocked",
+  "spec": "migration/specs/KekkaiUtilize.md",
+  "assets": {
+    "referenced": 23,
+    "source": "assets/assets.json (global legacy ids)",
+    "task_local_assets": false
+  },
+  "behavior": {
+    "entry": "庭院 -> 阴阳寮 -> 寮结界",
+    "covered": [
+      "寮结界入口（I_GUILD_REALM/I_REALM_SHIN/I_SHI_DEFENSE/I_PLANT_TREE_CLOSE）",
+      "寄养收获 I_UTILIZE_EXP + 奖励弹窗",
+      "体力盒子 I_BOX_AP -> I_AP_EXTRACT",
+      "经验盒子 I_BOX_EXP/_MAX -> I_EXP_EXTRACT + 确认/奖励",
+      "寮资金/寮体力 I_GUILD_EXPAND/I_GUILD_ASSETS_RECEIVE/I_GUILD_ASSETS/I_GUILD_AP",
+      "回庭院"
+    ],
+    "blocked": [
+      "蹭卡/寄养主功能（选卡/选友/时长）",
+      "式神育成换卡（ReplaceShikigami）",
+      "经验盒子上限三元组 OCR"
+    ]
+  },
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task KekkaiUtilize => errors=0",
+    "coverage_matrix": "migration/specs/KekkaiUtilize.md §3/§6"
+  },
+  "differences": [
+    "BLOCKED: utilize (寄养) core needs OCR duration parsing (O_UTILIZE_RES_TIME -> timedelta), optimal-card selection via card-class templates, friend-list OCR similarity matching, enter-friend-realm confirm flow; DSL has none of these primitives",
+    "BLOCKED: shikigami growth replacement needs ReplaceShikigami multi-step state machine (unset max-level, class filter, slot 7, long-press multi-select)",
+    "experience box max-limit check uses (curr,res,total) triple OCR and box_exp_waste confirm/cancel choice -> not migrated",
+    "next-run computed from card remaining duration -> scheduler windows instead",
+    "no device/replay evidence (emulator offline)"
+  ]
+}

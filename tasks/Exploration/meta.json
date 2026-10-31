@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "Exploration",
+  "name": "Exploration",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "庭院→探索→第二十八章→探索地图。循环：点小纸人奖励→点 BOSS/小怪战斗（click_target 优先级）→通用战斗→回到章节地图；无怪时向右滑屏；结束后退出确认链回庭院。高级配置（自动候补/UP 定向/组队邀请/加成/突破票联动/时间上限/滑屏尽头检测）未迁移。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "max_battles",
+      "type": "int",
+      "default": 30,
+      "min": 1,
+      "max": 30
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    },
+    "no_resource": {
+      "result": "resource"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "window_closed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 3600
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

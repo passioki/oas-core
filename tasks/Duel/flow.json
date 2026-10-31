@@ -1,0 +1,614 @@
+{
+  "schema_version": 1,
+  "name": "Duel",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'Duel: 斗技（庭院→町中→斗技→战斗循环；分数/名仕/ban 未迁移）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "6"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "click_point",
+                          "args": {
+                            "x": 48,
+                            "y": 43
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GameUi_I_CHECK_MAIN"
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_MAIN_GOTO_TOWN",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_MAIN",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_TOWN",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.2
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_TOWN_GOTO_DUEL",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_TOWN",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_DUEL",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.5
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'Duel: 进入斗技主界面（12:00-23:00 时间窗由 scheduler 配置，DSL 无时钟）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "param('max_battles')"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Duel_I_D_BATTLE') or appear('legacy_Duel_I_D_BATTLE2') or appear('legacy_Duel_I_D_BATTLE_PROTECT')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'Duel: 匹配斗技'"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "15"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+                  },
+                  "then": [
+                    {
+                      "op": "break",
+                      "args": {}
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Duel_I_D_BATTLE')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Duel_I_D_BATTLE"
+                          }
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Duel_I_D_BATTLE2')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Duel_I_D_BATTLE2"
+                          }
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Duel_I_D_BATTLE_PROTECT')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Duel_I_D_BATTLE_PROTECT"
+                          }
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait_until",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')",
+                "timeout_s": 180
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "8"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Duel_I_D_AUTO_ENTRY')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Duel_I_D_AUTO_ENTRY",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_Duel_I_D_AUTO_ENTRY",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Duel_I_D_PREPARE')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Duel_I_D_PREPARE",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_Duel_I_D_PREPARE",
+                              "timeout_ms": 3000
+                            }
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "break",
+                          "args": {}
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.5
+                  }
+                }
+              ]
+            },
+            {
+              "op": "wait_until",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')",
+                "timeout_s": 15
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "8"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+                          "timeout_ms": 3000
+                        },
+                        "expect": {
+                          "kind": "vanish",
+                          "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+                          "timeout_ms": 10000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "break",
+                      "args": {}
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait_until",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_WIN') or appear('legacy_Component_GeneralBattle_I_FALSE') or appear('legacy_Component_GeneralBattle_I_REWARD') or appear('legacy_Component_GeneralBattle_I_REWARD_GOLD')",
+                "timeout_s": 300
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "12"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_WIN')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_WIN",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_Component_GeneralBattle_I_WIN",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.0
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_FALSE",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_Component_GeneralBattle_I_FALSE",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.0
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_REWARD",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_Component_GeneralBattle_I_REWARD",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_REWARD_GOLD')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_REWARD_GOLD",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_Component_GeneralBattle_I_REWARD_GOLD",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            },
+            {
+              "op": "wait_until",
+              "args": {
+                "cond": "appear('legacy_GameUi_I_CHECK_DUEL')",
+                "timeout_s": 30
+              }
+            },
+            {
+              "op": "appear",
+              "args": {
+                "sel": "legacy_GameUi_I_CHECK_DUEL"
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'Duel: 没有可开始的斗技按钮 → 结束'"
+              }
+            },
+            {
+              "op": "break",
+              "args": {}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "8"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "click_point",
+                          "args": {
+                            "x": 48,
+                            "y": 43
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GameUi_I_CHECK_MAIN"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'Duel: done（基础战斗循环）'"
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

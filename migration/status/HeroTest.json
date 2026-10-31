@@ -1,0 +1,16 @@
+{
+  "task": "HeroTest",
+  "status": "🔄",
+  "evidence": {
+    "lint": "lint task=HeroTest errors=0",
+    "coverage": "导航/4 层切换/进入模式页/锁定/挑战循环(含兵藏·梦虚技能面板)/结算/回庭院 覆盖；buff/换御魂/随机点击/时间限制未覆盖",
+    "run": "未真机"
+  },
+  "gaps": [
+    "DSL 缺 wall-clock（limit_time）",
+    "GeneralBuff 动态开关需要锚点定位",
+    "DSL 缺随机 op（random_click_swipt）",
+    "PVP 技能列表旧仓为空",
+    "未真机验证"
+  ]
+}

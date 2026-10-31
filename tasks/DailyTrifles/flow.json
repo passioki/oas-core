@@ -1,0 +1,396 @@
+{
+  "schema_version": 1,
+  "name": "DailyTrifles",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: DailyTrifles 开始（friend_love / store_sign 子流程；其余见 README TODO）'"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('friend_love') != 0"
+      },
+      "then": [
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_GameUi_I_MAIN_GOTO_FRIENDS",
+            "requires": {
+              "kind": "appear",
+              "sel": "庭院_探索灯笼",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_FRIENDS",
+              "timeout_ms": 12000
+            }
+          }
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 进入好友页，切换到友情点页（I_L_LOVE）'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "20"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_DailyTrifles_I_L_LOVE')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_DailyTrifles_I_FRIENDSHIP_UP')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_DailyTrifles_I_FRIENDSHIP_UP"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_DailyTrifles_I_L_FRIENDS')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_DailyTrifles_I_L_FRIENDS"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_DailyTrifles_I_FRIEND_TAB')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_DailyTrifles_I_FRIEND_TAB"
+                              }
+                            }
+                          ],
+                          "else": []
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "legacy_DailyTrifles_I_L_LOVE"
+          }
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 领取友情点（I_L_COLLECT），出现奖励弹窗即点掉并结束'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "10"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_REWARD"
+                  }
+                },
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 友情点奖励领取完成'"
+                  }
+                },
+                {
+                  "op": "break"
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_DailyTrifles_I_L_COLLECT')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_DailyTrifles_I_L_COLLECT"
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_FRIENDS",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "庭院_探索灯笼",
+              "timeout_ms": 12000
+            }
+          }
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: friend_love 完成，已回庭院'"
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('store_sign') != 0"
+      },
+      "then": [
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_GameUi_I_MAIN_GOTO_MALL",
+            "requires": {
+              "kind": "appear",
+              "sel": "庭院_探索灯笼",
+              "timeout_ms": 3000
+            }
+          }
+        },
+        {
+          "op": "wait_until",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MALL') or appear('legacy_GameUi_I_CHECK_MALL_PURPLE')",
+            "timeout_s": 12
+          }
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 已进商店，进入礼包屋（I_ROOM_GIFT）'"
+          }
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_DailyTrifles_I_ROOM_GIFT",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_DailyTrifles_I_ROOM_GIFT",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_DailyTrifles_I_GIFT_RECOMMEND",
+              "timeout_ms": 10000
+            }
+          }
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_DailyTrifles_I_GIFT_RECOMMEND",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_DailyTrifles_I_GIFT_RECOMMEND",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_DailyTrifles_I_GIFT_SIGN",
+              "timeout_ms": 8000
+            }
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_DailyTrifles_I_GIFT_SIGN')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 礼包屋签到可领，点击 I_GIFT_SIGN 领奖'"
+              }
+            },
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_DailyTrifles_I_GIFT_SIGN"
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "log",
+              "args": {
+                "level": "warn",
+                "text": "'S: 未见礼包屋签到按钮（可能今日已领），继续返回'"
+              }
+            }
+          ]
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 关闭礼包屋/商店，返回庭院'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "8"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('庭院_探索灯笼')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                          }
+                        }
+                      ],
+                      "else": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: DailyTrifles done（已执行的子流程完成；未迁移项见 README TODO）'"
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

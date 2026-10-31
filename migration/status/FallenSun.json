@@ -1,0 +1,17 @@
+{
+  "task": "FallenSun",
+  "status": "🔄",
+  "evidence": [
+    "spec: migration/specs/FallenSun.md",
+    "bundle: tasks/FallenSun/{meta.json,flow.json,README.md,migration.json}",
+    "lint: oasd task lint --tasks-dir tasks --task FallenSun => lint task=FallenSun errors=0",
+    "flow covers ALONE mode end-to-end: entry nav (exploration->soul zones->FallenSun), team-lock toggle, pet-reward click, fire->generic battle loop bounded by max_battles, return-home chain"
+  ],
+  "gaps": [
+    "⛔ architecture: LEADER/MEMBER co-op modes need a team-event machine (create_room/ensure_private/create_ensure/run_invite/check_and_invite/check_then_accept/wait_battle/exit_room/exit_team); DSL has no wait-for-other-players/invite-popup/room-lifecycle primitive",
+    "TODO(asset): layer selection needs RuleList L_LAYER_LIST (RuleList not imported); remote Layer enum strings are mojibake so exact layer OCR text unverified -> flow keeps current layer",
+    "TODO(DSL): limit_time=30min needs elapsed()/clock or run budget wiring",
+    "TODO(DSL): switch_soul preset switching has no primitive",
+    "no real-device/replay evidence (emulator offline); verify I_FALLEN_SUN_FIRE page guard and pet-reward click area live"
+  ]
+}

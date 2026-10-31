@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "MemoryScrolls",
+  "name": "MemoryScrolls",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "庭院→召唤→绘卷入口（支持双绘卷二选一）→进入指定分卷（1~6）→捐献碎片：小/中/大各拉满两次后捐献、领取贡献动画，循环至碎片全 0 或达到轮数上限→返回召唤页。已满卷自动跳过捐献。活动开放期由调度器决定。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "scroll_number",
+      "type": "int",
+      "default": 1,
+      "min": 1,
+      "max": 6
+    },
+    {
+      "key": "double_scroll_two",
+      "type": "int",
+      "default": 0,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "key": "contribute_rounds",
+      "type": "int",
+      "default": 10,
+      "min": 1,
+      "max": 20
+    },
+    {
+      "key": "check_small_fragments",
+      "type": "int",
+      "default": 0,
+      "min": 0,
+      "max": 1
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 180
+  },
+  "resources": [
+    "memory_scroll_fragment"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

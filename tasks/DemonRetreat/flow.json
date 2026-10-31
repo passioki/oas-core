@@ -1,0 +1,580 @@
+{
+  "schema_version": 1,
+  "name": "DemonRetreat",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: DemonRetreat 开始（庭院→阴阳寮→神社→首领退治；仅周六由调度器窗口保证）'"
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_MAIN_GOTO_GUILD",
+        "requires": {
+          "kind": "appear",
+          "sel": "庭院_探索灯笼",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_GUILD",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 进入神社/退治：循环点神社 I_SHRINE 与退治 I_HUNT，直到标题 I_HUNT_CHECK 或集结 I_DEMON_GATHER'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "10"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_DemonRetreat_I_SHRINE')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_DemonRetreat_I_SHRINE"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_DemonRetreat_I_HUNT')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_DemonRetreat_I_HUNT"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_DemonRetreat_I_QUIT_BACK')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_DemonRetreat_I_QUIT_BACK"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_DemonRetreat_I_HUNT_CHECK') or appear('legacy_DemonRetreat_I_DEMON_GATHER')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_DemonRetreat_I_HUNT_CHECK"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('legacy_DemonRetreat_I_DEMON_GATHER')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 集会中：等待 I_DEMON_GATHER 消失（开始战斗）'"
+          }
+        },
+        {
+          "op": "wait_until",
+          "args": {
+            "cond": "not appear('legacy_DemonRetreat_I_DEMON_GATHER')",
+            "timeout_s": 120
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 迟到直接进战斗：等开战按钮 I_ENTER_FIRE'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "20"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_DemonRetreat_I_ENTER_FIRE')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_DemonRetreat_I_ENTER_FIRE"
+                  }
+                },
+                {
+                  "op": "break"
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 首领退治战斗（三轮；准备按钮会在轮间重现）'"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 战斗准备：点「准备」（I_PREPARE_HIGHLIGHT）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "5"
+      },
+      "body": [
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+          },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "template",
+                    "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT"
+                  }
+                ]
+              }
+            },
+            {
+              "op": "break"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "wait_until",
+      "args": {
+        "cond": "appear('legacy_Component_GeneralBattle_I_BATTLE_INFO')",
+        "timeout_s": 25
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 已进入战斗（I_BATTLE_INFO），自动战斗 + 结算处理'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "100"
+      },
+      "body": [
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 2.2
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralBattle_I_WIN')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 战斗胜利（I_WIN）'"
+              }
+            },
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralBattle_I_WIN"
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 0.6
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "warn",
+                "text": "'S: 战斗失败（I_FALSE），点掉结算'"
+              }
+            },
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralBattle_I_FALSE"
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 0.8
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Component_GeneralBattle_I_FALSE"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+          },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "template",
+                    "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralBattle_I_GREED_GHOST')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 贪吃鬼奖励（I_GREED_GHOST）'"
+              }
+            },
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralBattle_I_GREED_GHOST"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralBattle_I_OVER_GHOST')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralBattle_I_OVER_GHOST"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralBattle_I_REWARD"
+              }
+            }
+          ]
+        },
+        {
+          "op": "click_point",
+          "args": {
+            "x": 640,
+            "y": 690
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_DemonRetreat_I_REWARD_ALL') or appear('legacy_DemonRetreat_I_RANK_LSIT') or appear('legacy_DemonRetreat_I_HUNT_CHECK')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 战后领取奖励：祈福 I_PRAY / 退治 I_HUNT / 一键领取 I_REWARD_ALL / 排行 I_RANK_LSIT 判定无奖励'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "10"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_DemonRetreat_I_REWARD_ALL')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_DemonRetreat_I_REWARD_ALL"
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_REWARD"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 奖励已领取'"
+              }
+            },
+            {
+              "op": "break"
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_DemonRetreat_I_PRAY')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_DemonRetreat_I_PRAY"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_DemonRetreat_I_HUNT')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_DemonRetreat_I_HUNT"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_DemonRetreat_I_RANK_LSIT')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 无奖励可领（I_RANK_LSIT）'"
+              }
+            },
+            {
+              "op": "break"
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "12"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('庭院_探索灯笼')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+              }
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "庭院_探索灯笼"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: DemonRetreat done，已回庭院（下次周六由调度器窗口控制）'"
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

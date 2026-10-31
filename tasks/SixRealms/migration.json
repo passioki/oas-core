@@ -1,0 +1,53 @@
+{
+  "task": "SixRealms",
+  "name": "SixRealms",
+  "source": {
+    "repo": "https://github.com/runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/SixRealms/script_task.py",
+      "tasks/SixRealms/config.py",
+      "tasks/SixRealms/assets.py",
+      "tasks/SixRealms/common.py",
+      "tasks/SixRealms/oas_ocr.py",
+      "tasks/SixRealms/moon_sea/{moon_sea.py,map.py,skills.py,l101.py,l102.py,l103.py,l104.py,l105.py}",
+      "tasks/GameUi/default_pages.py",
+      "tasks/GameUi/page.py"
+    ]
+  },
+  "status": "🔄",
+  "evidence": [
+    "task lint --task SixRealms => errors=0",
+    "migration/specs/SixRealms.md：入口+月海开始映射；岛屿决策/小游戏/首领战列 TODO（附所需原语）"
+  ],
+  "assets": {
+    "reused_global": [
+      "庭院_探索灯笼",
+      "世界_章节栏",
+      "legacy_GameUi_I_CHECK_EXPLORATION",
+      "legacy_GameUi_I_CHECK_MOON_SEA",
+      "legacy_GameUi_I_EXPLORATION_TO_MOON_SEA",
+      "legacy_Exploration_I_CHECK_PLAY_TITLE",
+      "legacy_SixRealms_I_MENTER",
+      "legacy_SixRealms_I_MSTART",
+      "legacy_SixRealms_I_MSHUTEN",
+      "legacy_SixRealms_I_MSHOUZU",
+      "legacy_SixRealms_I_MSHOUZU_SELECT",
+      "legacy_SixRealms_I_MFIRST_SKILL",
+      "legacy_SixRealms_I_M_STORE",
+      "legacy_SixRealms_I_MSKIP",
+      "legacy_SixRealms_I_BACK_EXIT",
+      "legacy_GlobalGame_I_UI_CONFIRM",
+      "legacy_GlobalGame_I_UI_BACK_YELLOW"
+    ],
+    "new": []
+  },
+  "differences": [
+    "岛屿决策循环未迁移：需要 OCR 文本包含匹配（in/contains）与按 OCR 行框点击（island_name 子串判断 + C_ISLAND_ENTER 动态 ROI）",
+    "l101~l105 小游戏、商店/技能/首领战未迁移",
+    "select_shikigami_and_confirm 钩子（上滑选式神）未迁移",
+    "御魂切换与限时/限次未迁移（配置职责）",
+    "未实机/回放验证"
+  ]
+}

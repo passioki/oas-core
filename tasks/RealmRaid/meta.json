@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "RealmRaid",
+  "name": "RealmRaid",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "结界突破·个人：庭院→探索→个人突破页；呱太活动弹窗处理；阵容锁定对齐；按勋章 5>4>3>2>1>0 优先级扫描可打目标→进攻→通用战斗（准备/胜负/奖励/继续）→三胜奖励；票数 0 时 resource 退出；无目标可刷新列表，刷新不可用则 failed；可选退四打九。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "max_attacks",
+      "type": "int",
+      "default": 9,
+      "min": 1,
+      "max": 30
+    },
+    {
+      "key": "lock_team",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "refresh_when_empty",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "exit_four",
+      "type": "bool",
+      "default": false
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_resource": {
+      "result": "resource"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 900
+  },
+  "resources": [
+    "realm_raid_ticket"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

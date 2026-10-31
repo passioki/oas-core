@@ -1,0 +1,15 @@
+{
+  "task": "KittyShop",
+  "status": "🔄",
+  "evidence": {
+    "lint": "lint task=KittyShop errors=0",
+    "coverage": "入口 / 选猫 / 开始经营 / 收菜循环 / 结算回入口 / 退出 全覆盖（选猫节奏为等价实现）",
+    "run": "未真机"
+  },
+  "gaps": [
+    "选猫计时轮换改为顺序点击（需真机确认）",
+    "SelectFailed 重试未迁移",
+    "RuleSwipe 仅有 _FROM/_TO 区域 id，swipe 用字面量坐标",
+    "未真机验证"
+  ]
+}

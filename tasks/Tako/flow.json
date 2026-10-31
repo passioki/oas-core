@@ -1,0 +1,1024 @@
+{
+  "schema_version": 1,
+  "name": "Tako",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "\"Tako 开始：庭院 → 组队 石距 → 创建公开房间 → 等待队友/开战 → 结算一次 → 回庭院\""
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "10"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_TEAM')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralRoom_I_GR_BACK_YELLOW')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralRoom_I_GR_BACK_YELLOW",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_Component_GeneralRoom_I_GR_BACK_YELLOW",
+                  "timeout_ms": 3000
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_MAIN_GOTO_TEAM",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_MAIN",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_TEAM",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "\"已进入组队页面\""
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('weekend')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "\"周末副本：愤怒的石距（旧仓 OCR 重映射为「价悠的石距」）\""
+          }
+        },
+        {
+          "op": "swipe",
+          "args": {
+            "from": [
+              193,
+              180
+            ],
+            "to": [
+              193,
+              600
+            ],
+            "ms": 600
+          }
+        },
+        {
+          "op": "swipe",
+          "args": {
+            "from": [
+              193,
+              180
+            ],
+            "to": [
+              193,
+              600
+            ],
+            "ms": 600
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "14"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralRoom_I_CREATE_ROOM')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "text_visible('价悠的石距')"
+              },
+              "then": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "ocr_text",
+                        "roi": [
+                          26,
+                          106,
+                          360,
+                          549
+                        ],
+                        "text": "价悠的石距"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.5
+                  }
+                },
+                {
+                  "op": "break"
+                }
+              ],
+              "else": [
+                {
+                  "op": "swipe",
+                  "args": {
+                    "from": [
+                      193,
+                      600
+                    ],
+                    "to": [
+                      193,
+                      180
+                    ],
+                    "ms": 600
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "\"工作日副本：石距\""
+          }
+        },
+        {
+          "op": "swipe",
+          "args": {
+            "from": [
+              193,
+              180
+            ],
+            "to": [
+              193,
+              600
+            ],
+            "ms": 600
+          }
+        },
+        {
+          "op": "swipe",
+          "args": {
+            "from": [
+              193,
+              180
+            ],
+            "to": [
+              193,
+              600
+            ],
+            "ms": 600
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "14"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralRoom_I_CREATE_ROOM')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "text_visible('石距')"
+              },
+              "then": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "ocr_text",
+                        "roi": [
+                          26,
+                          106,
+                          360,
+                          549
+                        ],
+                        "text": "石距"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.5
+                  }
+                },
+                {
+                  "op": "break"
+                }
+              ],
+              "else": [
+                {
+                  "op": "swipe",
+                  "args": {
+                    "from": [
+                      193,
+                      600
+                    ],
+                    "to": [
+                      193,
+                      180
+                    ],
+                    "ms": 600
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "8"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralRoom_I_CREATE_ENSURE') or appear('legacy_Component_GeneralRoom_I_CREATE_ENSURE_2')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralRoom_I_CREATE_ROOM')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralRoom_I_CREATE_ROOM",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_Component_GeneralRoom_I_CREATE_ROOM",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.5
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 0.5
+          }
+        }
+      ]
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('legacy_Component_GeneralRoom_I_CREATE_ENSURE') or appear('legacy_Component_GeneralRoom_I_CREATE_ENSURE_2')"
+      },
+      "then": [],
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "\"创建房间失败（可能没有挑战券）\""
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "no_resource"
+          }
+        }
+      ]
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "10"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralRoom_I_ENSURE_PUBLIC') or appear('legacy_Component_GeneralRoom_I_ENSURE_PUBLIC_2')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralRoom_I_ENSURE_PUBLIC_FALSE')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralRoom_I_ENSURE_PUBLIC_FALSE",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_Component_GeneralRoom_I_ENSURE_PUBLIC_FALSE",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralRoom_I_ENSURE_PUBLIC_FALSE_2')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralRoom_I_ENSURE_PUBLIC_FALSE_2",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_Component_GeneralRoom_I_ENSURE_PUBLIC_FALSE_2",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 0.8
+          }
+        }
+      ]
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('legacy_Component_GeneralRoom_I_CREATE_ENSURE')"
+      },
+      "then": [
+        {
+          "op": "loop",
+          "args": {
+            "n": "8"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "not appear('legacy_Component_GeneralRoom_I_CREATE_ENSURE')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralRoom_I_CREATE_ENSURE",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_Component_GeneralRoom_I_CREATE_ENSURE",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.5
+              }
+            }
+          ]
+        }
+      ],
+      "else": [
+        {
+          "op": "loop",
+          "args": {
+            "n": "8"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "not appear('legacy_Component_GeneralRoom_I_CREATE_ENSURE_2')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralRoom_I_CREATE_ENSURE_2",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_Component_GeneralRoom_I_CREATE_ENSURE_2",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.5
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 2.0
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "20"
+      },
+      "body": [
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 2.5
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralInvite_I_GI_EMOJI_1') or appear('legacy_Component_GeneralInvite_I_GI_EMOJI_2') or appear('legacy_Component_GeneralInvite_I_GI_SPEAK')"
+          },
+          "then": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "not appear('legacy_Component_GeneralInvite_I_ADD_1')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "\"已有队友进房，开始挑战\""
+                  }
+                },
+                {
+                  "op": "break"
+                }
+              ],
+              "else": []
+            }
+          ],
+          "else": []
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "\"点击挑战（超时未满员也直接开）\""
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "15"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "not (appear('legacy_Component_GeneralInvite_I_GI_EMOJI_1') or appear('legacy_Component_GeneralInvite_I_GI_EMOJI_2') or appear('legacy_Component_GeneralInvite_I_GI_SPEAK'))"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralInvite_I_FIRE')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralInvite_I_FIRE",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_Component_GeneralInvite_I_FIRE",
+                  "timeout_ms": 3000
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralInvite_I_FIRE_FAIL')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralInvite_I_FIRE_FAIL",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_Component_GeneralInvite_I_FIRE_FAIL",
+                  "timeout_ms": 3000
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.0
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "10"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('战斗_自动按钮')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+                  "timeout_ms": 3000
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "wait_until",
+      "args": {
+        "cond": "appear('战斗_自动按钮')",
+        "timeout_s": 30
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "\"战斗中（自动战斗），点击继续直到结算\""
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "80"
+      },
+      "body": [
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 2.5
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralBattle_I_WIN')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralBattle_I_WIN"
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralBattle_I_DE_WIN')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralBattle_I_DE_WIN"
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralBattle_I_FALSE"
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+          },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_Component_GeneralBattle_C_REWARD_2"
+                  }
+                ]
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+          },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_GlobalGame_C_UI_REWARD"
+                  }
+                ]
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "click_point",
+          "args": {
+            "x": 640,
+            "y": 690
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_TEAM') or appear('legacy_Component_GeneralInvite_I_GI_EMOJI_1') or appear('legacy_Component_GeneralInvite_I_GI_EMOJI_2')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        }
+      ]
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "20"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_TEAM')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                  "timeout_ms": 3000
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralRoom_I_GR_BACK_YELLOW')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_GeneralRoom_I_GR_BACK_YELLOW",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_Component_GeneralRoom_I_GR_BACK_YELLOW",
+                  "timeout_ms": 3000
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "8"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_TEAM')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GameUi_I_CHECK_TEAM",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "\"Tako done，已回到庭院\""
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

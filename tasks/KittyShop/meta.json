@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "KittyShop",
+  "name": "KittyShop",
+  "version": 1,
+  "category": "daily",
+  "description": "庭院→猫咪商店→选猫→经营→收菜/加菜/分享循环→回庭院（attempts 可多次经营）。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "attempts",
+      "type": "int",
+      "default": 1,
+      "min": 0,
+      "max": 10
+    },
+    {
+      "key": "quit_when_finished",
+      "type": "bool",
+      "default": false
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 600
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "task": "Pets",
+  "category": "daily",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "checkout": "D:\\OAS-dev\\_verify\\remote-oas",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/Pets/script_task.py",
+      "tasks/Pets/config.py",
+      "tasks/Pets/assets.py",
+      "tasks/GameUi/default_pages.py"
+    ]
+  },
+  "engine_contract": {
+    "meta": "crates/oas-task/src/meta.rs (ENGINE-DESIGN §22.34.2)",
+    "flow_dsl": "crates/oas-flow/src/lib.rs",
+    "asset_store": "assets/assets.json (global, ids legacy_<Task>_<const>)",
+    "asset_map": "migration/asset-map.json"
+  },
+  "status": "✅",
+  "evidence": {
+    "lint": ".\\target\\release\\oasd.exe task lint --tasks-dir tasks --task Pets => lint task=Pets errors=0",
+    "device": "未在真机验证（本机未起游戏会话）"
+  },
+  "assets_used": [
+    "legacy_GameUi_I_CHECK_MAIN",
+    "legacy_Pets_I_PET_CLAW",
+    "legacy_Pets_I_PET_EXIT",
+    "legacy_Pets_I_PET_FEAST",
+    "legacy_Pets_I_PET_FEED",
+    "legacy_Pets_I_PET_HOUSE",
+    "legacy_Pets_I_PET_SKIP",
+    "legacy_Pets_O_PET_FEED_AP"
+  ],
+  "missing_assets": [],
+  "differences": [
+    "旧仓 `_play()` 已注释，未迁移",
+    "SKIP 消失改为有界等待",
+    "OCR 判定用 ocr_digit 等价实现"
+  ],
+  "gaps": [
+    "未真机验证",
+    "宠物小屋入口依赖旧仓页面图坐标/模板"
+  ],
+  "assets_used_count": 8
+}

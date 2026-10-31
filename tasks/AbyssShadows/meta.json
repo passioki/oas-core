@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "AbyssShadows",
+  "name": "AbyssShadows",
+  "version": 1,
+  "expire": "weekly",
+  "category": "weekly",
+  "description": "狭间暗影（周五/六/日）：庭院→阴阳寮→神社→狭间；选择神龙暗域→等待集结→首领1/副将2/精英3；切换到孔雀暗域重复；智能伤害模式可按 combat_time 主动退出战斗；回庭院。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "combat_time",
+      "type": "int",
+      "default": 0,
+      "min": 0,
+      "max": 300
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 2400
+  },
+  "resources": [
+    "abyss_shadows_chance"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "week",
+      "times": 3
+    }
+  }
+}

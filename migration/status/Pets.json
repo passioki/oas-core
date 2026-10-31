@@ -1,0 +1,14 @@
+{
+  "task": "Pets",
+  "status": "✅",
+  "evidence": {
+    "lint": "lint task=Pets errors=0",
+    "flow_steps": 9,
+    "coverage": "入口循环 / 快速喂养（含已投喂判定）/ 退出 全覆盖",
+    "run": "未真机"
+  },
+  "gaps": [
+    "未真机验证（无设备会话）",
+    "I_PET_HOUSE 主界面入口依赖旧仓模板/页面图"
+  ]
+}

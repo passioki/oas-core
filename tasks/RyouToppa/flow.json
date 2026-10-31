@@ -1,0 +1,2338 @@
+{
+  "schema_version": 1,
+  "name": "RyouToppa",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 寮突破 开始（庭院 → 探索 → 结界突破 → 寮突页签）'"
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_MAIN_GOTO_EXPLORATION",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_MAIN",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_EXPLORATION_GOTO_REALM_RAID",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_REALM_RAID",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.0
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_RyouToppa_I_RYOU_TOPPA",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_REALM_RAID",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_KEKKAI_TOPPA",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.5
+      }
+    },
+    {
+      "op": "set_var",
+      "args": {
+        "name": "exit",
+        "value": "0"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "20"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_RyouToppa_I_SUCCESS_PENETRATION')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 侦测到「攻破阴阳寮」→ 寮突已 100% 完成'"
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "exit",
+                "value": "'finished'"
+              }
+            },
+            {
+              "op": "break",
+              "args": {}
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_RyouToppa_I_SELECT_RYOU_BUTTON')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 侦测到「选择阴阳寮」→ 寮突未开启'"
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "exit",
+                "value": "'no_guild'"
+              }
+            },
+            {
+              "op": "break",
+              "args": {}
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_RyouToppa_I_NO_SELECT_RYOU')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 侦测到晴明占位 → 寮突未开启'"
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "exit",
+                "value": "'no_guild'"
+              }
+            },
+            {
+              "op": "break",
+              "args": {}
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_RyouToppa_I_RYOU_REWARD') or appear('legacy_RyouToppa_I_RYOU_REWARD_90')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 侦测到寮击破奖励 → 寮突已开启'"
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "exit",
+                "value": "'open'"
+              }
+            },
+            {
+              "op": "break",
+              "args": {}
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "var('exit') == 'no_guild'"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 寮突未开启'"
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "param('open_ryou_raid') == true"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 以寮管理员身份开启今日寮突'"
+              }
+            },
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_RyouToppa_I_SELECT_RYOU_BUTTON",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_RyouToppa_I_SELECT_RYOU_BUTTON",
+                  "timeout_ms": 3000
+                },
+                "expect": {
+                  "kind": "appear",
+                  "sel": "legacy_RyouToppa_I_GUILD_ORDERS_REWARDS",
+                  "timeout_ms": 10000
+                },
+                "retry": {
+                  "times": 2,
+                  "delay_ms": 800,
+                  "exponential": false
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            },
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_RyouToppa_C_SELECT_FIRST_RYOU"
+                  }
+                ],
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_RyouToppa_I_GUILD_ORDERS_REWARDS",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.5
+              }
+            },
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_RyouToppa_I_START_TOPPA_BUTTON",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_RyouToppa_I_START_TOPPA_BUTTON",
+                  "timeout_ms": 5000
+                },
+                "expect": {
+                  "kind": "appear",
+                  "sel": "legacy_RyouToppa_I_RYOU_REWARD",
+                  "timeout_ms": 15000
+                },
+                "retry": {
+                  "times": 3,
+                  "delay_ms": 1000,
+                  "exponential": false
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.5
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "exit",
+                "value": "'open'"
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "log",
+              "args": {
+                "level": "warn",
+                "text": "'S: 无权限/无需开寮突 → 留待寮管理开启（blocked）'"
+              }
+            }
+          ]
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "var('exit') == 'open'"
+      },
+      "then": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "param('lock_team') == true"
+          },
+          "then": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_RyouToppa_I_TOPPA_UNLOCK_TEAM')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_RyouToppa_I_TOPPA_UNLOCK_TEAM",
+                    "expect": {
+                      "kind": "appear",
+                      "sel": "legacy_RyouToppa_I_TOPPA_LOCK_TEAM",
+                      "timeout_ms": 8000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_RyouToppa_I_TOPPA_LOCK_TEAM')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_RyouToppa_I_TOPPA_LOCK_TEAM",
+                    "expect": {
+                      "kind": "appear",
+                      "sel": "legacy_RyouToppa_I_TOPPA_UNLOCK_TEAM",
+                      "timeout_ms": 8000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            }
+          ]
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 阵型锁定状态已按 lock_team 对齐（未改动阵容/御魂，那属于 SwitchSoul 组件）'"
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "var('exit') == 'open'"
+      },
+      "then": [
+        {
+          "op": "set_var",
+          "args": {
+            "name": "attacks",
+            "value": "0"
+          }
+        },
+        {
+          "op": "set_var",
+          "args": {
+            "name": "pass",
+            "value": "0"
+          }
+        },
+        {
+          "op": "set_var",
+          "args": {
+            "name": "found",
+            "value": "0"
+          }
+        },
+        {
+          "op": "while",
+          "args": {
+            "cond": "var('attacks') < param('max_attacks') and var('exit') == 'open'"
+          },
+          "body": [
+            {
+              "op": "wait_until",
+              "args": {
+                "cond": "appear('legacy_RyouToppa_I_TOPPA_RECORD')",
+                "timeout_s": 30
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr_digit('legacy_RyouToppa_number') == 0"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "warn",
+                    "text": "'S: 突破机会 0 → 资源耗尽，等 1 小时恢复'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "exit",
+                    "value": "'no_resource'"
+                  }
+                },
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "found",
+                "value": "0"
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_RyouToppa_I_AREA_1_FINISHED') or appear('legacy_RyouToppa_I_AREA_1_FINISHED_NEW')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 区域 1 已攻破 → 今日寮突目标已完成'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "exit",
+                    "value": "'finished'"
+                  }
+                },
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_RyouToppa_I_AREA_1_IS_FAILURE') or appear('legacy_RyouToppa_I_AREA_1_IS_FAILURE_NEW')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 区域 1 上次进攻失败，跳过'"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_RyouToppa_C_AREA_1"
+                          }
+                        ],
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_RyouToppa_I_TOPPA_RECORD",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_RealmRaid_I_FIRE')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_RealmRaid_I_FIRE",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_RealmRaid_I_FIRE",
+                              "timeout_ms": 2500
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 600,
+                              "exponential": false
+                            }
+                          }
+                        },
+                        {
+                          "op": "set_var",
+                          "args": {
+                            "name": "found",
+                            "value": "1"
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 2.0
+                          }
+                        },
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "战斗_准备按钮",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "战斗_准备按钮",
+                              "timeout_ms": 12000
+                            },
+                            "expect": {
+                              "kind": "vanish",
+                              "sel": "战斗_准备按钮",
+                              "timeout_ms": 10000
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 800,
+                              "exponential": false
+                            }
+                          }
+                        },
+                        {
+                          "op": "wait_until",
+                          "args": {
+                            "cond": "appear('战斗_自动按钮') or appear('战斗_自动按钮_2')",
+                            "timeout_s": 30
+                          }
+                        },
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 进入战斗（自动战斗），点「点击屏幕继续」直到回到寮突列表'"
+                          }
+                        },
+                        {
+                          "op": "loop",
+                          "args": {
+                            "n": "40"
+                          },
+                          "body": [
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 2.0
+                              }
+                            },
+                            {
+                              "op": "click_point",
+                              "args": {
+                                "x": 640,
+                                "y": 690
+                              }
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_RyouToppa_I_TOPPA_RECORD')"
+                              },
+                              "then": [
+                                {
+                                  "op": "break",
+                                  "args": {}
+                                }
+                              ],
+                              "else": []
+                            }
+                          ]
+                        },
+                        {
+                          "op": "appear",
+                          "args": {
+                            "sel": "legacy_RyouToppa_I_TOPPA_RECORD"
+                          }
+                        },
+                        {
+                          "op": "inc_var",
+                          "args": {
+                            "name": "attacks",
+                            "by": 1
+                          }
+                        },
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 区域 1 战斗结束，回到寮突列表'"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 区域 1 当前不可进攻，跳过'"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_RyouToppa_I_AREA_2_FINISHED') or appear('legacy_RyouToppa_I_AREA_2_FINISHED_NEW')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 区域 2 已攻破 → 今日寮突目标已完成'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "exit",
+                    "value": "'finished'"
+                  }
+                },
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_RyouToppa_I_AREA_2_IS_FAILURE') or appear('legacy_RyouToppa_I_AREA_2_IS_FAILURE_NEW')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 区域 2 上次进攻失败，跳过'"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_RyouToppa_C_AREA_2"
+                          }
+                        ],
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_RyouToppa_I_TOPPA_RECORD",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_RealmRaid_I_FIRE')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_RealmRaid_I_FIRE",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_RealmRaid_I_FIRE",
+                              "timeout_ms": 2500
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 600,
+                              "exponential": false
+                            }
+                          }
+                        },
+                        {
+                          "op": "set_var",
+                          "args": {
+                            "name": "found",
+                            "value": "1"
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 2.0
+                          }
+                        },
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "战斗_准备按钮",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "战斗_准备按钮",
+                              "timeout_ms": 12000
+                            },
+                            "expect": {
+                              "kind": "vanish",
+                              "sel": "战斗_准备按钮",
+                              "timeout_ms": 10000
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 800,
+                              "exponential": false
+                            }
+                          }
+                        },
+                        {
+                          "op": "wait_until",
+                          "args": {
+                            "cond": "appear('战斗_自动按钮') or appear('战斗_自动按钮_2')",
+                            "timeout_s": 30
+                          }
+                        },
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 进入战斗（自动战斗），点「点击屏幕继续」直到回到寮突列表'"
+                          }
+                        },
+                        {
+                          "op": "loop",
+                          "args": {
+                            "n": "40"
+                          },
+                          "body": [
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 2.0
+                              }
+                            },
+                            {
+                              "op": "click_point",
+                              "args": {
+                                "x": 640,
+                                "y": 690
+                              }
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_RyouToppa_I_TOPPA_RECORD')"
+                              },
+                              "then": [
+                                {
+                                  "op": "break",
+                                  "args": {}
+                                }
+                              ],
+                              "else": []
+                            }
+                          ]
+                        },
+                        {
+                          "op": "appear",
+                          "args": {
+                            "sel": "legacy_RyouToppa_I_TOPPA_RECORD"
+                          }
+                        },
+                        {
+                          "op": "inc_var",
+                          "args": {
+                            "name": "attacks",
+                            "by": 1
+                          }
+                        },
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 区域 2 战斗结束，回到寮突列表'"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 区域 2 当前不可进攻，跳过'"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_RyouToppa_I_AREA_3_FINISHED') or appear('legacy_RyouToppa_I_AREA_3_FINISHED_NEW')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 区域 3 已攻破 → 今日寮突目标已完成'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "exit",
+                    "value": "'finished'"
+                  }
+                },
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_RyouToppa_I_AREA_3_IS_FAILURE') or appear('legacy_RyouToppa_I_AREA_3_IS_FAILURE_NEW')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 区域 3 上次进攻失败，跳过'"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_RyouToppa_C_AREA_3"
+                          }
+                        ],
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_RyouToppa_I_TOPPA_RECORD",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_RealmRaid_I_FIRE')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_RealmRaid_I_FIRE",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_RealmRaid_I_FIRE",
+                              "timeout_ms": 2500
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 600,
+                              "exponential": false
+                            }
+                          }
+                        },
+                        {
+                          "op": "set_var",
+                          "args": {
+                            "name": "found",
+                            "value": "1"
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 2.0
+                          }
+                        },
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "战斗_准备按钮",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "战斗_准备按钮",
+                              "timeout_ms": 12000
+                            },
+                            "expect": {
+                              "kind": "vanish",
+                              "sel": "战斗_准备按钮",
+                              "timeout_ms": 10000
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 800,
+                              "exponential": false
+                            }
+                          }
+                        },
+                        {
+                          "op": "wait_until",
+                          "args": {
+                            "cond": "appear('战斗_自动按钮') or appear('战斗_自动按钮_2')",
+                            "timeout_s": 30
+                          }
+                        },
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 进入战斗（自动战斗），点「点击屏幕继续」直到回到寮突列表'"
+                          }
+                        },
+                        {
+                          "op": "loop",
+                          "args": {
+                            "n": "40"
+                          },
+                          "body": [
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 2.0
+                              }
+                            },
+                            {
+                              "op": "click_point",
+                              "args": {
+                                "x": 640,
+                                "y": 690
+                              }
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_RyouToppa_I_TOPPA_RECORD')"
+                              },
+                              "then": [
+                                {
+                                  "op": "break",
+                                  "args": {}
+                                }
+                              ],
+                              "else": []
+                            }
+                          ]
+                        },
+                        {
+                          "op": "appear",
+                          "args": {
+                            "sel": "legacy_RyouToppa_I_TOPPA_RECORD"
+                          }
+                        },
+                        {
+                          "op": "inc_var",
+                          "args": {
+                            "name": "attacks",
+                            "by": 1
+                          }
+                        },
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 区域 3 战斗结束，回到寮突列表'"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 区域 3 当前不可进攻，跳过'"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_RyouToppa_I_AREA_4_FINISHED') or appear('legacy_RyouToppa_I_AREA_4_FINISHED_NEW')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 区域 4 已攻破 → 今日寮突目标已完成'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "exit",
+                    "value": "'finished'"
+                  }
+                },
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_RyouToppa_I_AREA_4_IS_FAILURE') or appear('legacy_RyouToppa_I_AREA_4_IS_FAILURE_NEW')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 区域 4 上次进攻失败，跳过'"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_RyouToppa_C_AREA_4"
+                          }
+                        ],
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_RyouToppa_I_TOPPA_RECORD",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_RealmRaid_I_FIRE')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_RealmRaid_I_FIRE",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_RealmRaid_I_FIRE",
+                              "timeout_ms": 2500
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 600,
+                              "exponential": false
+                            }
+                          }
+                        },
+                        {
+                          "op": "set_var",
+                          "args": {
+                            "name": "found",
+                            "value": "1"
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 2.0
+                          }
+                        },
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "战斗_准备按钮",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "战斗_准备按钮",
+                              "timeout_ms": 12000
+                            },
+                            "expect": {
+                              "kind": "vanish",
+                              "sel": "战斗_准备按钮",
+                              "timeout_ms": 10000
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 800,
+                              "exponential": false
+                            }
+                          }
+                        },
+                        {
+                          "op": "wait_until",
+                          "args": {
+                            "cond": "appear('战斗_自动按钮') or appear('战斗_自动按钮_2')",
+                            "timeout_s": 30
+                          }
+                        },
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 进入战斗（自动战斗），点「点击屏幕继续」直到回到寮突列表'"
+                          }
+                        },
+                        {
+                          "op": "loop",
+                          "args": {
+                            "n": "40"
+                          },
+                          "body": [
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 2.0
+                              }
+                            },
+                            {
+                              "op": "click_point",
+                              "args": {
+                                "x": 640,
+                                "y": 690
+                              }
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_RyouToppa_I_TOPPA_RECORD')"
+                              },
+                              "then": [
+                                {
+                                  "op": "break",
+                                  "args": {}
+                                }
+                              ],
+                              "else": []
+                            }
+                          ]
+                        },
+                        {
+                          "op": "appear",
+                          "args": {
+                            "sel": "legacy_RyouToppa_I_TOPPA_RECORD"
+                          }
+                        },
+                        {
+                          "op": "inc_var",
+                          "args": {
+                            "name": "attacks",
+                            "by": 1
+                          }
+                        },
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 区域 4 战斗结束，回到寮突列表'"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 区域 4 当前不可进攻，跳过'"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_RyouToppa_I_AREA_5_FINISHED') or appear('legacy_RyouToppa_I_AREA_5_FINISHED_NEW')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 区域 5 已攻破 → 今日寮突目标已完成'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "exit",
+                    "value": "'finished'"
+                  }
+                },
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_RyouToppa_I_AREA_5_IS_FAILURE') or appear('legacy_RyouToppa_I_AREA_5_IS_FAILURE_NEW')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 区域 5 上次进攻失败，跳过'"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_RyouToppa_C_AREA_5"
+                          }
+                        ],
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_RyouToppa_I_TOPPA_RECORD",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_RealmRaid_I_FIRE')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_RealmRaid_I_FIRE",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_RealmRaid_I_FIRE",
+                              "timeout_ms": 2500
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 600,
+                              "exponential": false
+                            }
+                          }
+                        },
+                        {
+                          "op": "set_var",
+                          "args": {
+                            "name": "found",
+                            "value": "1"
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 2.0
+                          }
+                        },
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "战斗_准备按钮",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "战斗_准备按钮",
+                              "timeout_ms": 12000
+                            },
+                            "expect": {
+                              "kind": "vanish",
+                              "sel": "战斗_准备按钮",
+                              "timeout_ms": 10000
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 800,
+                              "exponential": false
+                            }
+                          }
+                        },
+                        {
+                          "op": "wait_until",
+                          "args": {
+                            "cond": "appear('战斗_自动按钮') or appear('战斗_自动按钮_2')",
+                            "timeout_s": 30
+                          }
+                        },
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 进入战斗（自动战斗），点「点击屏幕继续」直到回到寮突列表'"
+                          }
+                        },
+                        {
+                          "op": "loop",
+                          "args": {
+                            "n": "40"
+                          },
+                          "body": [
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 2.0
+                              }
+                            },
+                            {
+                              "op": "click_point",
+                              "args": {
+                                "x": 640,
+                                "y": 690
+                              }
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_RyouToppa_I_TOPPA_RECORD')"
+                              },
+                              "then": [
+                                {
+                                  "op": "break",
+                                  "args": {}
+                                }
+                              ],
+                              "else": []
+                            }
+                          ]
+                        },
+                        {
+                          "op": "appear",
+                          "args": {
+                            "sel": "legacy_RyouToppa_I_TOPPA_RECORD"
+                          }
+                        },
+                        {
+                          "op": "inc_var",
+                          "args": {
+                            "name": "attacks",
+                            "by": 1
+                          }
+                        },
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 区域 5 战斗结束，回到寮突列表'"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 区域 5 当前不可进攻，跳过'"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_RyouToppa_I_AREA_6_FINISHED') or appear('legacy_RyouToppa_I_AREA_6_FINISHED_NEW')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 区域 6 已攻破 → 今日寮突目标已完成'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "exit",
+                    "value": "'finished'"
+                  }
+                },
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_RyouToppa_I_AREA_6_IS_FAILURE') or appear('legacy_RyouToppa_I_AREA_6_IS_FAILURE_NEW')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 区域 6 上次进攻失败，跳过'"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_RyouToppa_C_AREA_6"
+                          }
+                        ],
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_RyouToppa_I_TOPPA_RECORD",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_RealmRaid_I_FIRE')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_RealmRaid_I_FIRE",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_RealmRaid_I_FIRE",
+                              "timeout_ms": 2500
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 600,
+                              "exponential": false
+                            }
+                          }
+                        },
+                        {
+                          "op": "set_var",
+                          "args": {
+                            "name": "found",
+                            "value": "1"
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 2.0
+                          }
+                        },
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "战斗_准备按钮",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "战斗_准备按钮",
+                              "timeout_ms": 12000
+                            },
+                            "expect": {
+                              "kind": "vanish",
+                              "sel": "战斗_准备按钮",
+                              "timeout_ms": 10000
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 800,
+                              "exponential": false
+                            }
+                          }
+                        },
+                        {
+                          "op": "wait_until",
+                          "args": {
+                            "cond": "appear('战斗_自动按钮') or appear('战斗_自动按钮_2')",
+                            "timeout_s": 30
+                          }
+                        },
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 进入战斗（自动战斗），点「点击屏幕继续」直到回到寮突列表'"
+                          }
+                        },
+                        {
+                          "op": "loop",
+                          "args": {
+                            "n": "40"
+                          },
+                          "body": [
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 2.0
+                              }
+                            },
+                            {
+                              "op": "click_point",
+                              "args": {
+                                "x": 640,
+                                "y": 690
+                              }
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_RyouToppa_I_TOPPA_RECORD')"
+                              },
+                              "then": [
+                                {
+                                  "op": "break",
+                                  "args": {}
+                                }
+                              ],
+                              "else": []
+                            }
+                          ]
+                        },
+                        {
+                          "op": "appear",
+                          "args": {
+                            "sel": "legacy_RyouToppa_I_TOPPA_RECORD"
+                          }
+                        },
+                        {
+                          "op": "inc_var",
+                          "args": {
+                            "name": "attacks",
+                            "by": 1
+                          }
+                        },
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 区域 6 战斗结束，回到寮突列表'"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 区域 6 当前不可进攻，跳过'"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_RyouToppa_I_AREA_7_FINISHED') or appear('legacy_RyouToppa_I_AREA_7_FINISHED_NEW')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 区域 7 已攻破 → 今日寮突目标已完成'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "exit",
+                    "value": "'finished'"
+                  }
+                },
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_RyouToppa_I_AREA_7_IS_FAILURE') or appear('legacy_RyouToppa_I_AREA_7_IS_FAILURE_NEW')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 区域 7 上次进攻失败，跳过'"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_RyouToppa_C_AREA_7"
+                          }
+                        ],
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_RyouToppa_I_TOPPA_RECORD",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_RealmRaid_I_FIRE')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_RealmRaid_I_FIRE",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_RealmRaid_I_FIRE",
+                              "timeout_ms": 2500
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 600,
+                              "exponential": false
+                            }
+                          }
+                        },
+                        {
+                          "op": "set_var",
+                          "args": {
+                            "name": "found",
+                            "value": "1"
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 2.0
+                          }
+                        },
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "战斗_准备按钮",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "战斗_准备按钮",
+                              "timeout_ms": 12000
+                            },
+                            "expect": {
+                              "kind": "vanish",
+                              "sel": "战斗_准备按钮",
+                              "timeout_ms": 10000
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 800,
+                              "exponential": false
+                            }
+                          }
+                        },
+                        {
+                          "op": "wait_until",
+                          "args": {
+                            "cond": "appear('战斗_自动按钮') or appear('战斗_自动按钮_2')",
+                            "timeout_s": 30
+                          }
+                        },
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 进入战斗（自动战斗），点「点击屏幕继续」直到回到寮突列表'"
+                          }
+                        },
+                        {
+                          "op": "loop",
+                          "args": {
+                            "n": "40"
+                          },
+                          "body": [
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 2.0
+                              }
+                            },
+                            {
+                              "op": "click_point",
+                              "args": {
+                                "x": 640,
+                                "y": 690
+                              }
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_RyouToppa_I_TOPPA_RECORD')"
+                              },
+                              "then": [
+                                {
+                                  "op": "break",
+                                  "args": {}
+                                }
+                              ],
+                              "else": []
+                            }
+                          ]
+                        },
+                        {
+                          "op": "appear",
+                          "args": {
+                            "sel": "legacy_RyouToppa_I_TOPPA_RECORD"
+                          }
+                        },
+                        {
+                          "op": "inc_var",
+                          "args": {
+                            "name": "attacks",
+                            "by": 1
+                          }
+                        },
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 区域 7 战斗结束，回到寮突列表'"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 区域 7 当前不可进攻，跳过'"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_RyouToppa_I_AREA_8_FINISHED') or appear('legacy_RyouToppa_I_AREA_8_FINISHED_NEW')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 区域 8 已攻破 → 今日寮突目标已完成'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "exit",
+                    "value": "'finished'"
+                  }
+                },
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_RyouToppa_I_AREA_8_IS_FAILURE') or appear('legacy_RyouToppa_I_AREA_8_IS_FAILURE_NEW')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 区域 8 上次进攻失败，跳过'"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_RyouToppa_C_AREA_8"
+                          }
+                        ],
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_RyouToppa_I_TOPPA_RECORD",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_RealmRaid_I_FIRE')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_RealmRaid_I_FIRE",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_RealmRaid_I_FIRE",
+                              "timeout_ms": 2500
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 600,
+                              "exponential": false
+                            }
+                          }
+                        },
+                        {
+                          "op": "set_var",
+                          "args": {
+                            "name": "found",
+                            "value": "1"
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 2.0
+                          }
+                        },
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "战斗_准备按钮",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "战斗_准备按钮",
+                              "timeout_ms": 12000
+                            },
+                            "expect": {
+                              "kind": "vanish",
+                              "sel": "战斗_准备按钮",
+                              "timeout_ms": 10000
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 800,
+                              "exponential": false
+                            }
+                          }
+                        },
+                        {
+                          "op": "wait_until",
+                          "args": {
+                            "cond": "appear('战斗_自动按钮') or appear('战斗_自动按钮_2')",
+                            "timeout_s": 30
+                          }
+                        },
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 进入战斗（自动战斗），点「点击屏幕继续」直到回到寮突列表'"
+                          }
+                        },
+                        {
+                          "op": "loop",
+                          "args": {
+                            "n": "40"
+                          },
+                          "body": [
+                            {
+                              "op": "wait",
+                              "args": {
+                                "seconds": 2.0
+                              }
+                            },
+                            {
+                              "op": "click_point",
+                              "args": {
+                                "x": 640,
+                                "y": 690
+                              }
+                            },
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "appear('legacy_RyouToppa_I_TOPPA_RECORD')"
+                              },
+                              "then": [
+                                {
+                                  "op": "break",
+                                  "args": {}
+                                }
+                              ],
+                              "else": []
+                            }
+                          ]
+                        },
+                        {
+                          "op": "appear",
+                          "args": {
+                            "sel": "legacy_RyouToppa_I_TOPPA_RECORD"
+                          }
+                        },
+                        {
+                          "op": "inc_var",
+                          "args": {
+                            "name": "attacks",
+                            "by": 1
+                          }
+                        },
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 区域 8 战斗结束，回到寮突列表'"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 区域 8 当前不可进攻，跳过'"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "var('found') == 1"
+              },
+              "then": [
+                {
+                  "op": "inc_var",
+                  "args": {
+                    "name": "pass",
+                    "by": 1
+                  }
+                },
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 本轮已有可攻区域，继续下一轮'"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "inc_var",
+                  "args": {
+                    "name": "pass",
+                    "by": 1
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "var('pass') >= 3"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "warn",
+                        "text": "'S: 连续 3 轮刷新后仍无任何可攻区域 → failed(retryable)'"
+                      }
+                    },
+                    {
+                      "op": "set_var",
+                      "args": {
+                        "name": "exit",
+                        "value": "'failed'"
+                      }
+                    },
+                    {
+                      "op": "break",
+                      "args": {}
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 本轮无任何可攻区域 → 上滑刷新结界列表'"
+                      }
+                    },
+                    {
+                      "op": "swipe",
+                      "args": {
+                        "from": [
+                          770,
+                          430
+                        ],
+                        "to": [
+                          770,
+                          329
+                        ],
+                        "ms": 352
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 2.0
+                      }
+                    },
+                    {
+                      "op": "swipe",
+                      "args": {
+                        "from": [
+                          820,
+                          500
+                        ],
+                        "to": [
+                          820,
+                          399
+                        ],
+                        "ms": 352
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 2.0
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "var('exit') == 'open'"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 达到 max_attacks 或本轮结束'"
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "exit",
+                "value": "'done'"
+              }
+            }
+          ],
+          "else": []
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('legacy_GameUi_I_KEKKAI_TOPPA')"
+      },
+      "then": [
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_KEKKAI_TOPPA",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+              "timeout_ms": 12000
+            }
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('legacy_GameUi_I_CHECK_EXPLORATION')"
+      },
+      "then": [
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_MAIN",
+              "timeout_ms": 15000
+            }
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 寮突破结束，已回到庭院'"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "var('exit') == 'no_target'"
+      },
+      "then": [
+        {
+          "op": "finish",
+          "args": {
+            "exit": "no_target"
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "var('exit') == 'no_resource'"
+          },
+          "then": [
+            {
+              "op": "finish",
+              "args": {
+                "exit": "no_resource"
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "var('exit') == 'finished'"
+              },
+              "then": [
+                {
+                  "op": "finish",
+                  "args": {
+                    "exit": "done"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "var('exit') == 'open'"
+                  },
+                  "then": [
+                    {
+                      "op": "finish",
+                      "args": {
+                        "exit": "done"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "finish",
+                      "args": {
+                        "exit": "failed"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

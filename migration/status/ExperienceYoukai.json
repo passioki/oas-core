@@ -1,0 +1,15 @@
+{
+  "task": "ExperienceYoukai",
+  "status": "🔄",
+  "evidence": {
+    "lint": "lint task=ExperienceYoukai errors=0",
+    "coverage": "组队/选副本/创建公开房间/等队友/战斗/结算/退出/2 轮 全覆盖；buff 与换御魂未迁移（默认关闭）",
+    "run": "未真机"
+  },
+  "gaps": [
+    "buff 动态开关需要锚点定位（DSL 缺）",
+    "RuleList 未导入（check_zones 等价实现）",
+    "50s 等待改为有界循环",
+    "未真机验证"
+  ]
+}

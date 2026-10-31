@@ -1,0 +1,884 @@
+{
+  "schema_version": 1,
+  "name": "Sougenbi",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'Sougenbi: 业原火（庭院→探索→御魂→业原火→贪/嗔/痴→挑战循环）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "6"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "click_point",
+                      "args": {
+                        "x": 48,
+                        "y": 43
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GameUi_I_CHECK_MAIN"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('legacy_GameUi_I_CHECK_SOUL_ZONES')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'Sougenbi: 已在御魂页'"
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_GameUi_I_MAIN_GOTO_EXPLORATION",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_MAIN",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+              "timeout_ms": 12000
+            }
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_GameUi_I_EXPLORATION_GOTO_SOUL_ZONE",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_SOUL_ZONES",
+              "timeout_ms": 12000
+            }
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.2
+          }
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'Sougenbi/御魂: 已进入目标页'"
+          }
+        }
+      ]
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "8"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Sougenbi_I_S_CHECK_SOUGENBI')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Sougenbi_I_S_SOUGENBI",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GameUi_I_CHECK_SOUL_ZONES",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.5
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_Sougenbi_I_S_CHECK_SOUGENBI"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'Sougenbi: 选择贪/嗔/痴（远程 C_C_* RuleClick 区域）'"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('sougenbi_class') == '贪'"
+      },
+      "then": [
+        {
+          "op": "click_target",
+          "args": {
+            "find": [
+              {
+                "kind": "region",
+                "sel": "legacy_Sougenbi_C_C_GREED"
+              }
+            ]
+          }
+        },
+        {
+          "op": "wait_until",
+          "args": {
+            "cond": "appear('legacy_Sougenbi_I_S_FIRE_GREED')",
+            "timeout_s": 12
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "param('sougenbi_class') == '嗔'"
+          },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_Sougenbi_C_C_ANGER"
+                  }
+                ]
+              }
+            },
+            {
+              "op": "wait_until",
+              "args": {
+                "cond": "appear('legacy_Sougenbi_I_S_FIRE_ANGER')",
+                "timeout_s": 12
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_Sougenbi_C_C_FOOLERY"
+                  }
+                ]
+              }
+            },
+            {
+              "op": "wait_until",
+              "args": {
+                "cond": "appear('legacy_Sougenbi_I_S_FIRE_FOOLERY')",
+                "timeout_s": 12
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('sougenbi_class') == '贪'"
+      },
+      "then": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "ocr_digit('legacy_Sougenbi_O_S_GREED') == 0"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "warn",
+                "text": "'Sougenbi: 所选类型突破券 = 0 → resource_empty 退出'"
+              }
+            },
+            {
+              "op": "finish",
+              "args": {
+                "exit": "resource_empty"
+              }
+            }
+          ],
+          "else": []
+        }
+      ],
+      "else": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "param('sougenbi_class') == '嗔'"
+          },
+          "then": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr_digit('legacy_Sougenbi_O_S_ANGER') == 0"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "warn",
+                    "text": "'Sougenbi: 所选类型突破券 = 0 → resource_empty 退出'"
+                  }
+                },
+                {
+                  "op": "finish",
+                  "args": {
+                    "exit": "resource_empty"
+                  }
+                }
+              ],
+              "else": []
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr_digit('legacy_Sougenbi_O_S_FOOLERY') == 0"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "warn",
+                    "text": "'Sougenbi: 所选类型突破券 = 0 → resource_empty 退出'"
+                  }
+                },
+                {
+                  "op": "finish",
+                  "args": {
+                    "exit": "resource_empty"
+                  }
+                }
+              ],
+              "else": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'Sougenbi: 阵容锁开关（lock_team，默认 false = 解锁）'"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('lock_team')"
+      },
+      "then": [
+        {
+          "op": "loop",
+          "args": {
+            "n": "6"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Sougenbi_I_S_TEAM_LOCK')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Sougenbi_I_S_TEAM_UNLOCK",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_Sougenbi_I_S_TEAM_UNLOCK",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "else": [
+        {
+          "op": "loop",
+          "args": {
+            "n": "6"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Sougenbi_I_S_TEAM_UNLOCK')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Sougenbi_I_S_TEAM_LOCK",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_Sougenbi_I_S_TEAM_LOCK",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'Sougenbi: 挑战循环（次数=limit_count 参数；券为 0 → resource_empty）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "param('limit_count')"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Sougenbi_I_S_CHECK_SOUGENBI')"
+          },
+          "then": [],
+          "else": [
+            {
+              "op": "log",
+              "args": {
+                "level": "warn",
+                "text": "'Sougenbi: 已不在业原火页面，结束循环'"
+              }
+            },
+            {
+              "op": "break",
+              "args": {}
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "param('sougenbi_class') == '贪'"
+          },
+          "then": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr_digit('legacy_Sougenbi_O_S_GREED') == 0"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "warn",
+                    "text": "'Sougenbi: 所选类型突破券 = 0 → resource_empty 退出'"
+                  }
+                },
+                {
+                  "op": "finish",
+                  "args": {
+                    "exit": "resource_empty"
+                  }
+                }
+              ],
+              "else": []
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "param('sougenbi_class') == '嗔'"
+              },
+              "then": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "ocr_digit('legacy_Sougenbi_O_S_ANGER') == 0"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "warn",
+                        "text": "'Sougenbi: 所选类型突破券 = 0 → resource_empty 退出'"
+                      }
+                    },
+                    {
+                      "op": "finish",
+                      "args": {
+                        "exit": "resource_empty"
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "ocr_digit('legacy_Sougenbi_O_S_FOOLERY') == 0"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "warn",
+                        "text": "'Sougenbi: 所选类型突破券 = 0 → resource_empty 退出'"
+                      }
+                    },
+                    {
+                      "op": "finish",
+                      "args": {
+                        "exit": "resource_empty"
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_Sougenbi_I_S_FIRE",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_Sougenbi_I_S_CHECK_SOUGENBI",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "战斗_准备按钮",
+              "timeout_ms": 20000
+            },
+            "retry": {
+              "times": 2,
+              "delay_ms": 1500
+            }
+          }
+        },
+        {
+          "op": "wait_until",
+          "args": {
+            "cond": "appear('战斗_准备按钮')",
+            "timeout_s": 25
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "8"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('战斗_准备按钮')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "战斗_准备按钮",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "战斗_准备按钮",
+                      "timeout_ms": 3000
+                    },
+                    "expect": {
+                      "kind": "vanish",
+                      "sel": "战斗_准备按钮",
+                      "timeout_ms": 10000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.2
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "wait_until",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralBattle_I_WIN') or appear('legacy_Component_GeneralBattle_I_FALSE') or appear('legacy_Component_GeneralBattle_I_REWARD') or appear('legacy_Component_GeneralBattle_I_REWARD_GOLD')",
+            "timeout_s": 180
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "12"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_WIN')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Component_GeneralBattle_I_WIN",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_Component_GeneralBattle_I_WIN",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Component_GeneralBattle_I_FALSE",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_Component_GeneralBattle_I_FALSE",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Component_GeneralBattle_I_REWARD",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_Component_GeneralBattle_I_REWARD",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.2
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_REWARD_GOLD')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Component_GeneralBattle_I_REWARD_GOLD",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_Component_GeneralBattle_I_REWARD_GOLD",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.2
+                  }
+                }
+              ],
+              "else": []
+            }
+          ]
+        },
+        {
+          "op": "wait_until",
+          "args": {
+            "cond": "appear('legacy_Sougenbi_I_S_CHECK_SOUGENBI')",
+            "timeout_s": 30
+          }
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "legacy_Sougenbi_I_S_CHECK_SOUGENBI"
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.2
+          }
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'Sougenbi: 返回庭院'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "8"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "click_point",
+                      "args": {
+                        "x": 48,
+                        "y": 43
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GameUi_I_CHECK_MAIN"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'Sougenbi: done'"
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

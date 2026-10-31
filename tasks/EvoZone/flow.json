@@ -1,0 +1,741 @@
+{
+  "schema_version": 1,
+  "name": "EvoZone",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'EvoZone: 觉醒业原火（单刷；庭院→探索→觉醒→麒麟→层数→挑战循环）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "6"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "click_point",
+                          "args": {
+                            "x": 48,
+                            "y": 43
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GameUi_I_CHECK_MAIN"
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_MAIN_GOTO_EXPLORATION",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_MAIN",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.0
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_EXPLORATION_GOTO_AWAKE_ZONE",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_AWAKE",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.5
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "12"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_EvoZone_I_FORM_TEAM')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "param('kirin_type') == '火麒麟'"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_EvoZone_I_FIRE_KIRIN",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GameUi_I_CHECK_AWAKE",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "param('kirin_type') == '风麒麟'"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_EvoZone_I_WIND_KIRIN",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GameUi_I_CHECK_AWAKE",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "param('kirin_type') == '水麒麟'"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_EvoZone_I_WATER_KIRIN",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_GameUi_I_CHECK_AWAKE",
+                              "timeout_ms": 3000
+                            }
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_EvoZone_I_LIGHTNING_KIRIN",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_GameUi_I_CHECK_AWAKE",
+                              "timeout_ms": 3000
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_EvoZone_I_FORM_TEAM"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'EvoZone: 选择层数（inline OCR 点击 L_LAYER_LIST 中的层数字）'"
+      }
+    },
+    {
+      "op": "click_target",
+      "args": {
+        "find": [
+          {
+            "kind": "ocr_text",
+            "roi": [
+              124,
+              84,
+              77,
+              632
+            ],
+            "text": "拾"
+          }
+        ],
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_EvoZone_I_FORM_TEAM",
+          "timeout_ms": 3000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.0
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'EvoZone: 阵容锁开关'"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('lock_team')"
+      },
+      "then": [
+        {
+          "op": "loop",
+          "args": {
+            "n": "6"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_EvoZone_I_EVOZONE_LOCK')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_EvoZone_I_EVOZONE_UNLOCK",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_EvoZone_I_EVOZONE_UNLOCK",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "else": [
+        {
+          "op": "loop",
+          "args": {
+            "n": "6"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_EvoZone_I_EVOZONE_UNLOCK')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_EvoZone_I_EVOZONE_LOCK",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_EvoZone_I_EVOZONE_LOCK",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'EvoZone: 挑战循环'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "param('limit_count')"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_EvoZone_I_EVOZONE_FIRE')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_EvoZone_I_PET_PRESENT')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_EvoZone_I_PET_PRESENT"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_EvoZone_I_EVOZONE_FIRE",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_EvoZone_I_EVOZONE_FIRE",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+              "timeout_ms": 20000
+            }
+          }
+        },
+        {
+          "op": "wait_until",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')",
+            "timeout_s": 25
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "8"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+                      "timeout_ms": 3000
+                    },
+                    "expect": {
+                      "kind": "vanish",
+                      "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+                      "timeout_ms": 10000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.2
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "wait_until",
+          "args": {
+            "cond": "appear('legacy_Component_GeneralBattle_I_WIN') or appear('legacy_Component_GeneralBattle_I_FALSE') or appear('legacy_Component_GeneralBattle_I_REWARD') or appear('legacy_Component_GeneralBattle_I_REWARD_GOLD')",
+            "timeout_s": 180
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "12"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_WIN')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Component_GeneralBattle_I_WIN",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_Component_GeneralBattle_I_WIN",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Component_GeneralBattle_I_FALSE",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_Component_GeneralBattle_I_FALSE",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Component_GeneralBattle_I_REWARD",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_Component_GeneralBattle_I_REWARD",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.2
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_REWARD_GOLD')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Component_GeneralBattle_I_REWARD_GOLD",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_Component_GeneralBattle_I_REWARD_GOLD",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.2
+                  }
+                }
+              ],
+              "else": []
+            }
+          ]
+        },
+        {
+          "op": "wait_until",
+          "args": {
+            "cond": "appear('legacy_EvoZone_I_EVOZONE_FIRE')",
+            "timeout_s": 30
+          }
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "legacy_EvoZone_I_EVOZONE_FIRE"
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.2
+          }
+        }
+      ]
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "8"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GameUi_I_BACK_YOLLOW')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GameUi_I_BACK_YOLLOW"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "click_point",
+                          "args": {
+                            "x": 48,
+                            "y": 43
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GameUi_I_CHECK_MAIN"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'EvoZone: done'"
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

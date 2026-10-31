@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "CollectiveMissions",
+  "name": "CollectiveMissions",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "阴阳寮集体任务：庭院→阴阳寮→神社→集体任务；30/30 完成则 skipped；按 mission_select 刷新目标；OCR 识别 3 个任务位并按默认优先级选最优；分别执行 喂N卡 / 御魂捐献 / 材料捐献 / 契灵探查领奖；退出回庭院。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "mission_select",
+      "type": "string",
+      "default": "觉醒一"
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "skipped": {
+      "result": "success"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 300
+  },
+  "resources": [
+    "guild_mission_chance"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

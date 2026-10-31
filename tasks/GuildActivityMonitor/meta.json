@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "GuildActivityMonitor",
+  "name": "GuildActivityMonitor",
+  "version": 1,
+  "category": "utility",
+  "description": "⛔ 未实现（架构缺原语）：上游为「Android 系统通知监听 + 到点立即拉起其他任务」的调度触发器。oas-core DSL 缺 (1) 读取系统通知/adb shell 原语、(2) 对其他任务 enqueue/set_next_run 的调度写回原语、(3) 时间日期表达式、(4) OCR 包含匹配。当前 flow 仅入口守卫 + 明确 window_closed 退出，不做任何点击。详见 migration/specs/GuildActivityMonitor.md §3。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [],
+  "exits": {
+    "window_closed": {
+      "result": "retryable"
+    },
+    "failed": {
+      "result": "fatal"
+    }
+  },
+  "capabilities": {
+    "checkpoint": false,
+    "interruptible": false,
+    "duration_hint_s": 60
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

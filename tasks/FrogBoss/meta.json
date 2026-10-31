@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "FrogBoss",
+  "name": "FrogBoss",
+  "version": 1,
+  "expire": "limited",
+  "category": "limited",
+  "description": "呱太竞猜：庭院右侧活动→呱太；状态循环（已下注/休息/竞猜成功/失败/可下注）；策略 majority/minority/bilibili/always_red/always_blue（oas/dashen 需在线数据，回退 majority）；确认下注（金袋说明弹窗/选30勾玉/提交3次）；领奖/下一局；结束回庭院。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "strategy",
+      "type": "string",
+      "default": "frog_majority"
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "skipped": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 240
+  },
+  "resources": [
+    "frog_bet_chance"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 8
+    }
+  }
+}

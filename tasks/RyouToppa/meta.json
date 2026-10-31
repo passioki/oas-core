@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "RyouToppa",
+  "name": "RyouToppa",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "阴阳寮结界突破（寮突）：庭院→探索→结界突破→寮突页签；检测寮突未开/已100%/已开启；未开且 open_ryou_raid 时以管理员开局；按 8 个区域攻破标记逐个进攻；突破机会 0 时 resource 退出；无任何可攻区域刷新 3 轮后 failed。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "max_attacks",
+      "type": "int",
+      "default": 6,
+      "min": 1,
+      "max": 50
+    },
+    {
+      "key": "lock_team",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "open_ryou_raid",
+      "type": "bool",
+      "default": false
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_resource": {
+      "result": "resource"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 600
+  },
+  "resources": [
+    "realm_raid_ticket"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

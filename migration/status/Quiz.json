@@ -1,0 +1,15 @@
+{
+  "task": "Quiz",
+  "status": "⛔",
+  "evidence": "oasd task lint 绿；已迁移：进入答题活动到 I_START 界面 + 返回庭院；核心答题（本地题库查询/选项匹配/点击确认/倒计时）被架构阻塞。 bundle: tasks/Quiz/; lint green.",
+  "gaps": [
+    "BLOCKER：远程用 tasks/DemonEncounter/data/answer.py 的本地题库按题目文本查答案索引（含模糊匹配/追加新题）。DSL/引擎没有「读取外部数据文件+文本查询」原语，也没有变量字符串比较/拼接；quiz 的核心价值在于答对，不能降级为随机选项。",
+    "倒计时判断 O_COUNTDOWN (Digit) 可 ocr_digit，但「最后两秒再选」需要时钟/秒级等待原语（wait_until 只有条件+超时，无绝对时间点）。",
+    "题目/选项 OCR 的拼接（det 多行按 y 过滤）、remove_symbols 文本清洗、新题检测（4 选项变化≥3）无可用的字符串集合原语。",
+    "I_ALONE_ENSURE/分享/失败退出等分支未迁移。"
+  ],
+  "artifacts": {
+    "spec": "migration/specs/Quiz.md",
+    "bundle": "tasks/Quiz/"
+  }
+}

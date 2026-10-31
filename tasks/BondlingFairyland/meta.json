@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "BondlingFairyland",
+  "name": "契灵之境",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "庭院→探索→契灵之境→结契区：循环「挑战→确认→战斗」；结契捕捉小游戏、契灵石头购买、搜索/邀友模式、结契设置等本轮未迁移（flow 以 blocked 退出）。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "limit_count",
+      "type": "int",
+      "default": 5,
+      "min": 1,
+      "max": 20
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1200
+  },
+  "resources": [
+    "stamina"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

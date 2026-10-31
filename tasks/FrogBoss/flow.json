@@ -1,0 +1,930 @@
+{
+  "schema_version": 1,
+  "name": "FrogBoss",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 呱太竞猜 开始（庭院 → 右侧活动 → 呱太）'"
+      }
+    },
+    {
+      "op": "set_var",
+      "args": {
+        "name": "exit",
+        "value": "'done'"
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_Component_RightActivity_I_TOGGLE_BUTTON",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_MAIN",
+          "timeout_ms": 3000
+        },
+        "retry": {
+          "times": 2,
+          "delay_ms": 600,
+          "exponential": false
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.0
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_FrogBoss_I_FROG_BOSS_ENTER",
+        "requires": {
+          "kind": "appear",
+          "sel": "legacy_FrogBoss_I_FROG_BOSS_ENTER",
+          "timeout_ms": 5000
+        },
+        "retry": {
+          "times": 3,
+          "delay_ms": 800,
+          "exponential": false
+        }
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "8"
+      },
+      "body": [
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 0.8
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_FrogBoss_I_FROG_BOSS_ENTER')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_FrogBoss_I_FROG_BOSS_ENTER",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_FrogBoss_I_FROG_BOSS_ENTER",
+                  "timeout_ms": 3000
+                }
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "wait_until",
+      "args": {
+        "cond": "appear('legacy_FrogBoss_I_FROG_CHECK') or appear('legacy_FrogBoss_I_FROG_LOG_CHECK')",
+        "timeout_s": 12
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "40"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_FrogBoss_I_BETTED')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 已下注 → 结束'"
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "exit",
+                "value": "'done'"
+              }
+            },
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_FrogBoss_I_FROG_BOSS_REST')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 呱太休息中 → 结束'"
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "exit",
+                "value": "'skipped'"
+              }
+            },
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_FrogBoss_I_BET_SUCCESS')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 竞猜成功 → 领奖并进入下一局'"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "20"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_FrogBoss_I_FROG_BOSS_REST') or appear('legacy_FrogBoss_I_BET_LEFT')"
+                  },
+                  "then": [
+                    {
+                      "op": "break",
+                      "args": {}
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_FrogBoss_I_BET_SUCCESS_BOX')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_FrogBoss_I_BET_SUCCESS_BOX",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_FrogBoss_I_BET_SUCCESS_BOX",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_REWARD",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_Component_GeneralBattle_I_REWARD",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_FrogBoss_I_NEXT_COMPETITION')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_FrogBoss_I_NEXT_COMPETITION",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_FrogBoss_I_NEXT_COMPETITION",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ]
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_FrogBoss_I_BET_FAILURE')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 竞猜失败 → 下一局'"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "8"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.8
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_FrogBoss_I_NEXT_COMPETITION')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_FrogBoss_I_NEXT_COMPETITION",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_FrogBoss_I_NEXT_COMPETITION",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "break",
+                      "args": {}
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_FrogBoss_I_BET_LEFT') and appear('legacy_FrogBoss_I_BET_RIGHT')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 检测到左右投注入口 → 按 strategy 下注'"
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "param('strategy') == 'always_red'"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_FrogBoss_I_BET_LEFT",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_FrogBoss_I_BET_LEFT",
+                      "timeout_ms": 3000
+                    },
+                    "stable_frames": 1
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "param('strategy') == 'frog_always_red'"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_FrogBoss_I_BET_LEFT",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_FrogBoss_I_BET_LEFT",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "param('strategy') == 'always_blue'"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_FrogBoss_I_BET_RIGHT",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_FrogBoss_I_BET_RIGHT",
+                              "timeout_ms": 3000
+                            }
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "param('strategy') == 'frog_always_blue'"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_FrogBoss_I_BET_RIGHT",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_FrogBoss_I_BET_RIGHT",
+                                  "timeout_ms": 3000
+                                }
+                              }
+                            }
+                          ],
+                          "else": [
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "param('strategy') == 'frog_minority'"
+                              },
+                              "then": [
+                                {
+                                  "op": "if",
+                                  "args": {
+                                    "cond": "ocr_digit('legacy_FrogBoss_O_LEFT_COUNT') < ocr_digit('legacy_FrogBoss_O_RIGHT_COUNT')"
+                                  },
+                                  "then": [
+                                    {
+                                      "op": "click",
+                                      "args": {
+                                        "sel": "legacy_FrogBoss_I_BET_LEFT",
+                                        "requires": {
+                                          "kind": "appear",
+                                          "sel": "legacy_FrogBoss_I_BET_LEFT",
+                                          "timeout_ms": 3000
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "else": [
+                                    {
+                                      "op": "click",
+                                      "args": {
+                                        "sel": "legacy_FrogBoss_I_BET_RIGHT",
+                                        "requires": {
+                                          "kind": "appear",
+                                          "sel": "legacy_FrogBoss_I_BET_RIGHT",
+                                          "timeout_ms": 3000
+                                        }
+                                      }
+                                    }
+                                  ]
+                                }
+                              ],
+                              "else": [
+                                {
+                                  "op": "if",
+                                  "args": {
+                                    "cond": "param('strategy') == 'frog_oas' or param('strategy') == 'frog_dashen'"
+                                  },
+                                  "then": [
+                                    {
+                                      "op": "log",
+                                      "args": {
+                                        "level": "warn",
+                                        "text": "'S: strategy=oas/dashen 需要在线预测/网络数据（DSL 无法表达）→ 回退 majority'"
+                                      }
+                                    },
+                                    {
+                                      "op": "if",
+                                      "args": {
+                                        "cond": "ocr_digit('legacy_FrogBoss_O_LEFT_COUNT') > ocr_digit('legacy_FrogBoss_O_RIGHT_COUNT')"
+                                      },
+                                      "then": [
+                                        {
+                                          "op": "click",
+                                          "args": {
+                                            "sel": "legacy_FrogBoss_I_BET_LEFT",
+                                            "requires": {
+                                              "kind": "appear",
+                                              "sel": "legacy_FrogBoss_I_BET_LEFT",
+                                              "timeout_ms": 3000
+                                            }
+                                          }
+                                        }
+                                      ],
+                                      "else": [
+                                        {
+                                          "op": "click",
+                                          "args": {
+                                            "sel": "legacy_FrogBoss_I_BET_RIGHT",
+                                            "requires": {
+                                              "kind": "appear",
+                                              "sel": "legacy_FrogBoss_I_BET_RIGHT",
+                                              "timeout_ms": 3000
+                                            }
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  ],
+                                  "else": [
+                                    {
+                                      "op": "log",
+                                      "args": {
+                                        "level": "info",
+                                        "text": "'S: majority/bilibili 策略：票数多的一边'"
+                                      }
+                                    },
+                                    {
+                                      "op": "if",
+                                      "args": {
+                                        "cond": "ocr_digit('legacy_FrogBoss_O_LEFT_COUNT') > ocr_digit('legacy_FrogBoss_O_RIGHT_COUNT')"
+                                      },
+                                      "then": [
+                                        {
+                                          "op": "click",
+                                          "args": {
+                                            "sel": "legacy_FrogBoss_I_BET_LEFT",
+                                            "requires": {
+                                              "kind": "appear",
+                                              "sel": "legacy_FrogBoss_I_BET_LEFT",
+                                              "timeout_ms": 3000
+                                            }
+                                          }
+                                        }
+                                      ],
+                                      "else": [
+                                        {
+                                          "op": "click",
+                                          "args": {
+                                            "sel": "legacy_FrogBoss_I_BET_RIGHT",
+                                            "requires": {
+                                              "kind": "appear",
+                                              "sel": "legacy_FrogBoss_I_BET_RIGHT",
+                                              "timeout_ms": 3000
+                                            }
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 确认下注：处理金袋说明弹窗/选择 30 勾玉/提交'"
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "gold_sel",
+                "value": "0"
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "submits",
+                "value": "0"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "25"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_FrogBoss_I_BETTED') or appear('legacy_FrogBoss_I_FROG_BOSS_REST')"
+                  },
+                  "then": [
+                    {
+                      "op": "break",
+                      "args": {}
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_FrogBoss_I_GOLD_30_CHECK')"
+                  },
+                  "then": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_Component_GeneralBattle_C_REWARD_2"
+                          }
+                        ],
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_Component_GeneralBattle_C_REWARD_2",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM_SAMLL')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_CONFIRM_SAMLL",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GlobalGame_I_UI_CONFIRM_SAMLL",
+                          "timeout_ms": 2000
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "var('gold_sel') == 0 and appear('legacy_FrogBoss_I_GOLD_30')"
+                  },
+                  "then": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "roi": [
+                              867,
+                              464,
+                              73,
+                              62
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "op": "set_var",
+                      "args": {
+                        "name": "gold_sel",
+                        "value": "1"
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "var('submits') < 3 and appear('legacy_FrogBoss_I_BET_SURE')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_FrogBoss_I_BET_SURE",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_FrogBoss_I_BET_SURE",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    },
+                    {
+                      "op": "inc_var",
+                      "args": {
+                        "name": "submits",
+                        "by": 1
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ]
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "5"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.8
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_FrogBoss_I_BET_LEFT') and appear('legacy_FrogBoss_I_BET_RIGHT')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_FrogBoss_I_BET_LEFT",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_FrogBoss_I_BET_LEFT",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "break",
+                      "args": {}
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_FrogBoss_I_FROG_CHECK')"
+          },
+          "then": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_FrogBoss_I_NEXT_COMPETITION')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_FrogBoss_I_NEXT_COMPETITION",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_FrogBoss_I_NEXT_COMPETITION",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": []
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "8"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break",
+              "args": {}
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+                  "timeout_ms": 2500
+                }
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": []
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.2
+          }
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 呱太竞猜结束'"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "var('exit') == 'skipped'"
+      },
+      "then": [
+        {
+          "op": "finish",
+          "args": {
+            "exit": "skipped"
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "var('exit') == 'failed'"
+          },
+          "then": [
+            {
+              "op": "finish",
+              "args": {
+                "exit": "failed"
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "var('exit') == 'done'"
+              },
+              "then": [
+                {
+                  "op": "finish",
+                  "args": {
+                    "exit": "done"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "finish",
+                  "args": {
+                    "exit": "done"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

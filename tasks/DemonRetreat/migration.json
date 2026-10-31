@@ -1,0 +1,49 @@
+{
+  "task": "DemonRetreat",
+  "name": "DemonRetreat",
+  "source": {
+    "repo": "https://github.com/runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/DemonRetreat/script_task.py",
+      "tasks/DemonRetreat/config.py",
+      "tasks/DemonRetreat/assets.py",
+      "tasks/DemonRetreat/DemonRetreat/image.json",
+      "tasks/DemonRetreat/DemonRetreat/ocr.json",
+      "tasks/AbyssShadows/assets.py",
+      "tasks/GameUi/page.py"
+    ]
+  },
+  "status": "✅",
+  "evidence": [
+    "task lint --task DemonRetreat => errors=0",
+    "migration/specs/DemonRetreat.md 行为矩阵 1~7：进退治/集结/三轮战斗/领奖/返回均映射"
+  ],
+  "assets": {
+    "reused_global": [
+      "庭院_探索灯笼",
+      "legacy_GameUi_I_MAIN_GOTO_GUILD",
+      "legacy_GameUi_I_CHECK_GUILD",
+      "legacy_DemonRetreat_I_SHRINE",
+      "legacy_DemonRetreat_I_HUNT",
+      "legacy_DemonRetreat_I_HUNT_CHECK",
+      "legacy_DemonRetreat_I_DEMON_GATHER",
+      "legacy_DemonRetreat_I_QUIT_BACK",
+      "legacy_DemonRetreat_I_ENTER_FIRE",
+      "legacy_DemonRetreat_I_PRAY",
+      "legacy_DemonRetreat_I_REWARD_ALL",
+      "legacy_DemonRetreat_I_RANK_LSIT",
+      "legacy_GlobalGame_I_UI_REWARD",
+      "legacy_GlobalGame_I_UI_BACK_{RED,YELLOW}",
+      "legacy_Component_GeneralBattle_{I_PREPARE_HIGHLIGHT,I_BATTLE_INFO,I_WIN,I_FALSE,I_GREED_GHOST,I_OVER_GHOST,I_REWARD}"
+    ],
+    "new": []
+  },
+  "differences": [
+    "非周六的星期判断与下次运行时间：不迁移（调度器 windows 负责周六窗口）",
+    "御魂切换/绿标/预设/战斗随机点击配置未迁移（配置职责 + 引擎 humanize）",
+    "迟到判定用 `I_DEMON_GATHER` 是否出现（等价 OCR「集结」空集）",
+    "未实机/回放验证（周六活动期限制）"
+  ]
+}

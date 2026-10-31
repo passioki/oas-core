@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "task": "MysteryShop",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "ref": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/MysteryShop/script_task.py",
+      "tasks/MysteryShop/config.py",
+      "tasks/MysteryShop/assets.py",
+      "tasks/RichMan/mall/friendship_points.py (buy_mall_one, imported)",
+      "tasks/Component/GeneralInvite/general_invite.py (share/invite, imported)"
+    ]
+  },
+  "status": "🔄",
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task MysteryShop => errors=0",
+    "live_or_replay": "none (no device / no matching replay recording in this session)",
+    "assets": "global legacy_* ids from migration/asset-map.json; T4 green"
+  },
+  "differences": [
+    "导航/动作点击用导入的 legacy 模板 id（模板 click = 匹配模板矩形，与旧引擎 RuleImage.coord() 等价）；RuleClick 用 click_target(region, sel)。",
+    "远程 while True + Timer 的重试/判停改为有界 loop / wait_until(timeout) / 步骤 retry；结束条件用页面 marker 或次数上限。",
+    "战斗统一 P-BATTLE v2（Component_GeneralBattle 素材：准备/胜利/失败/奖励→回页），不是完整 GeneralBattle（无绿标/预设/特殊奖励分支/统计页）。",
+    "OCR：RuleOcr → ocr_lines；子串/正则匹配改为规范化行匹配或 text_visible；字符串拼接/题库查询等无原语的行为记为缺口。"
+  ],
+  "gaps": [
+    "分享（share_config：邀请 1~5 位好友）需要 GeneralInvite 完整找好友流程，未迁移 → flow 跳过。",
+    "buy_mall_one 的 max_price 单价读取（O_MALL_RESOURCE_5 等 RichMan mall 资源 OCR + 弹窗价格上限判断）与多数量窗口(more_window)未迁移；当前只做「点购买→点确认」的一键购买。",
+    "好友切换 O_MS_FRIEND 变化检测用 ocr_to_var + 固定切换次数近似，未严格比对上一帧。",
+    "开业日（周三/周六）判断与 next_time 排期无时钟原语 → 交给 scheduler.json 的 windows。"
+  ]
+}

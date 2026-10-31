@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "Tako",
+  "name": "Tako",
+  "version": 1,
+  "category": "daily",
+  "description": "庭院→组队→选「石距」（周末为愤怒的石距）→创建公开房间→等待队友（有界）→挑战→结算→回庭院。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "weekend",
+      "type": "bool",
+      "default": false
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_resource": {
+      "result": "resource"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 300
+  },
+  "resources": [
+    "stamina"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

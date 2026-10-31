@@ -1,0 +1,18 @@
+{
+  "task": "Dokan",
+  "status": "⛔",
+  "evidence": [
+    "spec: migration/specs/Dokan.md",
+    "bundle: tasks/Dokan/{meta.json,flow.json,README.md,migration.json}",
+    "lint: oasd task lint --tasks-dir tasks --task Dokan => lint task=Dokan errors=0",
+    "flow covers only: guild/shrine/dokan entry, 60-round scene polling with FINISHED/WAIT/CLOSE/START_CHALLENGE/vote branches, return home"
+  ],
+  "gaps": [
+    "⛔ architecture: find_dokan/find_challengeable needs list-wide multi-hit template scan, per-candidate sub-ROI OCR of bounty/people, score ranking, dynamic roi_back mutation — no DSL primitives",
+    "⛔ architecture: enter_dokan needs O_DOKAN_MAP keyword OCR box + offset click (x, y-20) — DSL cannot offset from a matched text box",
+    "⛔ architecture: dokan_battle (two master formations, ExtendGreenMark green-mark by shikigami name, lock team, detect_safe_area2 random safe-area click, is_battle_end composite)",
+    "⛔ architecture: AttackAccountConfig cross-day persistence + 6 attack_dokan_master strategies — no config read/write primitive",
+    "⛔ architecture: creat_dokan / start_cheering state machines",
+    "no real-device/replay evidence (emulator offline)"
+  ]
+}

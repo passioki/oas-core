@@ -1,0 +1,15 @@
+{
+  "task": "Hyakkiyakou",
+  "status": "⛔",
+  "evidence": "oasd task lint 绿；仅迁移入口导航（庭院→町中→百鬼夜行）。核心玩法被架构阻塞：无 oashya/Tracker 模型推理、无窗口后台截图/消息控制、无实时决策循环。 bundle: tasks/Hyakkiyakou/; lint green.",
+  "gaps": [
+    "BLOCKER：远程核心 = oashya Tracker（ONNXRuntime YOLO，式神/豆子/加速/冻结/概率UP 等 226 类目标检测 + 跟踪），配合 hya_device 的**窗口后台截图 / 窗口消息点击**逐帧决策撒豆。当前引擎只有 ADB 截屏/点击 + 模板/OCR，没有模型推理原语，也没有窗口后台控制通道。",
+    "assets 中的 226 类 hya_* 图（beans/resf/resr/train 等）是 ML 模型输入/训练素材，不是模板匹配素材；即使全部导入也无法还原检测+跟踪策略。",
+    "SwitchOnmyoji（切换晴明/神乐等阴阳师）未迁移（素材已导入，逻辑未做）。",
+    "奖励/邀请/训练模式等分支未迁移。"
+  ],
+  "artifacts": {
+    "spec": "migration/specs/Hyakkiyakou.md",
+    "bundle": "tasks/Hyakkiyakou/"
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "EvoZone",
+  "name": "觉醒业原火",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "庭院→探索→觉醒：按 kirin_type 选麒麟，按层数点击列表，锁/解锁阵容，loop limit_count 次「挑战→准备→战斗→回页」；回庭院。仅单刷(alone)路径。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "kirin_type",
+      "type": "string",
+      "default": "雷麒麟"
+    },
+    {
+      "key": "layer",
+      "type": "string",
+      "default": "拾"
+    },
+    {
+      "key": "limit_count",
+      "type": "int",
+      "default": 30,
+      "min": 1,
+      "max": 99
+    },
+    {
+      "key": "lock_team",
+      "type": "bool",
+      "default": false
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1200
+  },
+  "resources": [
+    "stamina"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

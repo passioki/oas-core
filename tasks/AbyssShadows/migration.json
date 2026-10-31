@@ -1,0 +1,47 @@
+{
+  "task": "AbyssShadows",
+  "source": "runhey/OnmyojiAutoScript@dev",
+  "source_commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+  "source_files": [
+    "tasks/AbyssShadows/script_task.py",
+    "tasks/AbyssShadows/config.py",
+    "tasks/AbyssShadows/assets.py",
+    "tasks/Component/GeneralBattle/general_battle.py",
+    "tasks/GameUi/page.py"
+  ],
+  "group": "Guild",
+  "status": "partial",
+  "spec": "migration/specs/AbyssShadows.md",
+  "assets": {
+    "referenced": 39,
+    "source": "assets/assets.json (global legacy ids)",
+    "task_local_assets": false
+  },
+  "behavior": {
+    "entry": "庭院 -> 阴阳寮 -> 神社 -> 狭间",
+    "covered": [
+      "进入狭间（神社入口 + 上滑查找 + I_ABYSS_SHADOWS）",
+      "选择神龙暗域 / 切换孔雀暗域",
+      "等待集结 I_WAIT_TO_START",
+      "6 个目标/暗域：点目标区域 -> 前往 -> 火焰 -> 准备 -> 战斗（首领1/副将2/精英3）",
+      "智能伤害模式按 combat_time 等待后主动退出",
+      "回庭院"
+    ],
+    "not_covered": [
+      "周几判定/开放日调度",
+      "4 个暗域全展开（只做神龙+孔雀）",
+      "御魂切换"
+    ]
+  },
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task AbyssShadows => errors=0",
+    "coverage_matrix": "migration/specs/AbyssShadows.md §3"
+  },
+  "differences": [
+    "weekday gating (Fri/Sat/Sun) and custom_next_run to next open day -> scheduler windows instead (no calendar in DSL)",
+    "only 2 of 4 areas (dragon+peacock); old code switches dragon->peacock->fox->leopard when counts not met",
+    "combat-time exit approximated: loop(combat_time x wait 1s) + I_EXIT/confirm/win loop",
+    "switch_soul preset switching not migrated",
+    "no device/replay evidence (emulator offline)"
+  ]
+}

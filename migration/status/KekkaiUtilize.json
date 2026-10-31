@@ -1,0 +1,17 @@
+{
+  "task": "KekkaiUtilize",
+  "status": "⛔",
+  "evidence": [
+    "spec: migration/specs/KekkaiUtilize.md",
+    "bundle: tasks/KekkaiUtilize/{meta.json,flow.json,README.md,migration.json}",
+    "lint: oasd task lint --tasks-dir tasks --task KekkaiUtilize => lint task=KekkaiUtilize errors=0",
+    "flow covers harvest-side behavior: guild realm entry, utilize harvest, AP/EXP boxes, guild AP/assets collection, return home"
+  ],
+  "gaps": [
+    "⛔ architecture: utilize/寄养 core requires OCR duration parsing (timedelta), optimal card selection (card-class templates + priority), friend-list OCR similarity matching, enter-friend-realm confirm flow — no DSL primitives",
+    "⛔ architecture: shikigami growth replacement (ReplaceShikigami: unset max-level, class filter, slot 7, long-press multi-select) — no DSL primitives",
+    "TODO(DSL): EXP box max-limit needs (curr,res,total) triple OCR and confirm/cancel (box_exp_waste) selection",
+    "TODO(schedule): old next-run = card remaining duration -> scheduler windows",
+    "no real-device/replay evidence (emulator offline)"
+  ]
+}

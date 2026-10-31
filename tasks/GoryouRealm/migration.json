@@ -1,0 +1,61 @@
+{
+  "task": "GoryouRealm",
+  "category": "daily",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "checkout": "D:\\OAS-dev\\_verify\\remote-oas",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/GoryouRealm/script_task.py",
+      "tasks/GoryouRealm/config.py",
+      "tasks/GoryouRealm/assets.py",
+      "tasks/Component/GeneralBattle/general_battle.py",
+      "tasks/GameUi/default_pages.py"
+    ]
+  },
+  "engine_contract": {
+    "meta": "crates/oas-task/src/meta.rs (ENGINE-DESIGN §22.34.2)",
+    "flow_dsl": "crates/oas-flow/src/lib.rs",
+    "asset_store": "assets/assets.json (global, ids legacy_<Task>_<const>)",
+    "asset_map": "migration/asset-map.json"
+  },
+  "status": "🔄",
+  "evidence": {
+    "lint": ".\\target\\release\\oasd.exe task lint --tasks-dir tasks --task GoryouRealm => lint task=GoryouRealm errors=0",
+    "device": "未真机验证"
+  },
+  "assets_used": [
+    "legacy_GameUi_I_CHECK_GORYOU",
+    "legacy_GameUi_I_EXPLORATION_GOTO_GORYOU_REALM",
+    "legacy_GlobalGame_C_UI_REWARD",
+    "legacy_GlobalGame_I_UI_BACK_YELLOW",
+    "legacy_GlobalGame_I_UI_REWARD",
+    "legacy_GoryouRealm_C_GR_C_1",
+    "legacy_GoryouRealm_C_GR_C_2",
+    "legacy_GoryouRealm_C_GR_C_3",
+    "legacy_GoryouRealm_C_GR_C_4",
+    "legacy_GoryouRealm_I_GR_FIRE",
+    "legacy_GoryouRealm_I_GR_LOCK",
+    "legacy_GoryouRealm_I_GR_UNLOCK",
+    "legacy_GoryouRealm_O_GR_TICKET",
+    "世界_章节栏",
+    "庭院_探索灯笼",
+    "战斗_准备按钮",
+    "战斗_自动按钮"
+  ],
+  "missing_assets": [],
+  "differences": [
+    "时间限制（limit_time）无法表达 → 用 max_battles 参数",
+    "RANDOM 御灵改为参数 1..4",
+    "战斗结算沿用个人突破模式；胜负不判",
+    "票数用 ocr_digit 等价判定"
+  ],
+  "gaps": [
+    "DSL 缺时间函数（limit_time）",
+    "DSL 缺随机 op（RANDOM 御灵）",
+    "GeneralBattleConfig 绿标/预设/buff/随机点击未迁移",
+    "未真机验证"
+  ],
+  "assets_used_count": 17
+}

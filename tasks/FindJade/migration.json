@@ -1,0 +1,47 @@
+{
+  "task": "FindJade",
+  "category": "weekly",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "checkout": "D:\\OAS-dev\\_verify\\remote-oas",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/FindJade/script_task.py",
+      "tasks/FindJade/config.py",
+      "tasks/FindJade/assets.py",
+      "tasks/FindJade/WantedQuestsEx.py",
+      "tasks/FindJade/README.md",
+      "tasks/Component/SwitchAccount/switch_account.py",
+      "tasks/Component/SwitchAccount/login_account.py"
+    ]
+  },
+  "engine_contract": {
+    "meta": "crates/oas-task/src/meta.rs (ENGINE-DESIGN §22.34.2)",
+    "flow_dsl": "crates/oas-flow/src/lib.rs",
+    "asset_store": "assets/assets.json (global, ids legacy_<Task>_<const>)",
+    "asset_map": "migration/asset-map.json"
+  },
+  "status": "⛔",
+  "evidence": {
+    "lint": ".\\target\\release\\oasd.exe task lint --tasks-dir tasks --task FindJade => lint task=FindJade errors=0",
+    "run": "不适用（任务无法执行）",
+    "note": "FindJade 无独立可迁移的屏幕行为；阻塞与旧仓实现一一对应（多账号/动态任务）。"
+  },
+  "assets_used": [],
+  "missing_assets": [],
+  "differences": [
+    "未迁移：被引擎能力/外部依赖阻塞（见 blockers）"
+  ],
+  "gaps": [
+    "需要「多账号切换/登录」能力：当前 oas-core DSL 只有屏幕点击/识别，没有账号切换、登录页流程、多模拟器编排。",
+    "需要「运行时动态构造子任务并改方法」（旧仓 `CreatObjectFromModule` + `type()` 注入）：与引擎「DSL 无外部代码」安全设计冲突（T6）。",
+    "依赖 `WantedQuests` 任务（不在本迁移批次的 assigned tasks 中）及其协作邀请逻辑。",
+    "依赖 wall-clock 时段判断与 `last_complete_time` 持久化历史（DSL 无时间函数）。",
+    "先完成 `WantedQuests` 迁移（含悬赏协作邀请），并给 DSL 增加 `call_task` 参数化调用能力。",
+    "在引擎层实现账号切换（登录/登出/渠道登录）或明确由外部脚本切换后以 `entry` 校验登录态。",
+    "给表达式增加时间函数（`now()`/`elapsed()`）或在调度器层实现时段与间隔限制。",
+    "完成后把 FindJade 重写为「切号（外部）→ call_task WantedQuests(invite=true)」的编排任务。"
+  ],
+  "assets_used_count": 0
+}

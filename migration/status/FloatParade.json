@@ -1,0 +1,14 @@
+{
+  "task": "FloatParade",
+  "status": "🔄",
+  "evidence": "oasd task lint 绿；覆盖右侧活动入口→花车页→放置里程→等级奖励（档位选择/批量选择/一键领取/红点）；固定 20 轮替代远程 2s Timer 判停。未真机/回放验证。 bundle: tasks/FloatParade/; lint green.",
+  "gaps": [
+    "远程 get_flower 用 Timer(2) 判定「无更多奖励」结束；DSL 无时钟 → 改为固定 20 轮 bounded loop（可能提前退出或多等 20 轮）。",
+    "I_FP_GETALL1 / I_TOGGLE_BUTTON / I_FP_BATCH* 等任务页分支为 best-effort，未逐分支验证。",
+    "素材识别来自 remote dev 分支，未在当前游戏版本真机验证（等级奖励选择行的 flag 判定依赖动画图标）。"
+  ],
+  "artifacts": {
+    "spec": "migration/specs/FloatParade.md",
+    "bundle": "tasks/FloatParade/"
+  }
+}

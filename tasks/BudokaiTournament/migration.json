@@ -1,0 +1,47 @@
+{
+  "task": "BudokaiTournament",
+  "source": "runhey/OnmyojiAutoScript@dev",
+  "source_commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+  "source_files": [
+    "tasks/BudokaiTournament/script_task.py",
+    "tasks/BudokaiTournament/config.py",
+    "tasks/BudokaiTournament/assets.py",
+    "tasks/ActivityShikigami/assets.py",
+    "tasks/ActivityShikigami/config.py",
+    "tasks/ActivityShikigami/page.py",
+    "tasks/Component/BaseActivity/config_activity.py",
+    "tasks/Component/GeneralBattle/general_battle.py",
+    "tasks/Component/RightActivity/right_activity.py"
+  ],
+  "group": "Activity Task",
+  "status": "partial",
+  "spec": "migration/specs/BudokaiTournament.md",
+  "assets": {
+    "referenced": 33,
+    "source": "assets/assets.json (global legacy ids)",
+    "task_local_assets": false
+  },
+  "behavior": {
+    "entry": "庭院 -> 右侧活动 -> 爬塔主界面",
+    "covered": [
+      "活动入口",
+      "daily_training: I_TO_BATTLE_MAIN(_2) -> I_CHECK_BATTLE_MAIN",
+      "daily_training: O_REMAIN_AP ticket check -> no_resource; O_FIRE/I_IMG3/I_IMG4 challenge -> generic battle",
+      "cultivation_drills: I_TO_BATTLE_BOSS -> I_CHECK_BATTLE_BOSS; I_IMG1 search -> I_IMG3/4 detail -> challenge; C_BOSS_DETAIL_CLOSE",
+      "reward/confirm popup handling; max_battles bound; return home"
+    ]
+  },
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task BudokaiTournament => errors=0",
+    "coverage_matrix": "migration/specs/BudokaiTournament.md §3"
+  },
+  "differences": [
+    "old run_sequence runs daily_training then cultivation_drills in one run; DSL has no in-flow mode switch -> mode param (two scheduler entries)",
+    "switch_soul / preset team / green mark / anti-detect not migrated (no DSL primitives)",
+    "battle_wait 270s super-long handling and random click/swipe not migrated (generic battle sample instead)",
+    "O_FIRE keyword lost on import; appear() only tests non-empty OCR text",
+    "limit_time / random_sleep / active_souls_clean (SoulsTidy cross-task) not expressible",
+    "I_IMG2 (self-discovered popup close) not used",
+    "no device/replay evidence (emulator offline)"
+  ]
+}

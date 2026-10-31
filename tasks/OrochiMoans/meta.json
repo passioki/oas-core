@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "OrochiMoans",
+  "name": "OrochiMoans",
+  "version": 1,
+  "category": "utility",
+  "description": "御魂悲鸣：旧仓 tasks/OrochiMoans 只有 config.py（空 assets/无 script_task.py）；「悲鸣」御魂副本实际由 Orochi 任务配置项处理。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [],
+  "exits": {
+    "failed": {
+      "result": "blocked"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 60
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

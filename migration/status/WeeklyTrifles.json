@@ -1,0 +1,17 @@
+{
+  "task": "WeeklyTrifles",
+  "status": "🔄",
+  "evidence": "oasd task lint 绿；覆盖：图鉴分享、地鬼分享、摸鱼存储、破碎符咒召唤四条分支（有界循环 + 素材点击/OCR 计数）；秘闻分享显式 TODO；未真机/回放验证。 bundle: tasks/WeeklyTrifles/; lint green.",
+  "gaps": [
+    "秘闻分享（_share_secret, script_task.py:227-267）未迁移：需要 I_WT_ENTER_SE/I_WT_SE_SHARE/I_WT_SE_RANK/I_WT_SE_JADE 多级判定 + I_UI_BACK_BLUE 返回链；本轮只保留参数与 TODO。",
+    "分享流程远程有 Timer(3/7s) 判停与 ui_reward_appear_click；新 flow 用固定轮数 bounded loop 近似。",
+    "地鬼分享「O? 本周已领取」判定远程用 I_WT_AB_JADE 出现与否（本 flow 部分覆盖），且 C_WT_AB_CLICK 为 RuleClick 区域。",
+    "摸鱼存储：远程 O_WT_LUCKY_TICKETS 是 DigitCounter 返回 (cu,res,total) 且 O_WT_SAVE_COST 为花费；新 flow 用 ocr_digit 比较两个数值，OCR 失败(Null)时比较为 false → 走「不足」分支。",
+    "破碎符咒：远程按 10/50 次按钮位置切换数量(I_BMT_CHECK + O_BA_TIMES 的 '10次'/'50次' OCR 定位)，新 flow 固定按 10 次累计；O_BA_AMOUNT OCR 失败保护未覆盖。",
+    "分享到微信的 C_WT_WECHAT / QR 码流程为无人值守 best-effort（远程同样等待超时后放弃）。"
+  ],
+  "artifacts": {
+    "spec": "migration/specs/WeeklyTrifles.md",
+    "bundle": "tasks/WeeklyTrifles/"
+  }
+}

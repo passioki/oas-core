@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "task": "FloatParade",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "ref": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/FloatParade/script_task.py",
+      "tasks/FloatParade/config.py",
+      "tasks/FloatParade/assets.py",
+      "tasks/Component/RightActivity/right_activity.py (imported)",
+      "tasks/TalismanPass/assets.py (I_OVERFLOW_CONFIRME 复用)",
+      "tasks/GameUi/game_ui.py, tasks/GameUi/page.py (imported)"
+    ]
+  },
+  "status": "🔄",
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task FloatParade => errors=0",
+    "live_or_replay": "none (no device / no matching replay recording in this session)",
+    "assets": "global legacy_* ids from migration/asset-map.json; T4 green"
+  },
+  "differences": [
+    "素材点击：远端模板 click = 匹配模板矩形（导入器 v2 已无 action_roi，与旧引擎 coord() 一致）；RuleClick 用 click_target(region, sel)。",
+    "远端 while True + Timer 的重试/判停改为有界 loop / wait_until(timeout) / 步骤 retry；结束条件用页面 marker。",
+    "战斗统一 P-BATTLE 骨架（准备→自动→安全点→回页），不是完整 GeneralBattle（无绿标/预设/失败分支）。",
+    "OCR：RuleOcr → ocr_lines；字符串子串/正则匹配改为规范化精确行匹配或 text_visible。"
+  ],
+  "gaps": [
+    "远程 get_flower 用 Timer(2) 判定「无更多奖励」结束；DSL 无时钟 → 改为固定 20 轮 bounded loop（可能提前退出或多等 20 轮）。",
+    "I_FP_GETALL1 / I_TOGGLE_BUTTON / I_FP_BATCH* 等任务页分支为 best-effort，未逐分支验证。",
+    "素材识别来自 remote dev 分支，未在当前游戏版本真机验证（等级奖励选择行的 flag 判定依赖动画图标）。"
+  ]
+}

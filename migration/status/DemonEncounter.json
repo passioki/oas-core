@@ -1,0 +1,18 @@
+{
+  "task": "DemonEncounter",
+  "status": "🔄",
+  "evidence": [
+    "spec: migration/specs/DemonEncounter.md",
+    "bundle: tasks/DemonEncounter/{meta.json,flow.json,README.md,migration.json}",
+    "lint: oasd task lint --tasks-dir tasks --task DemonEncounter => lint task=DemonEncounter errors=0",
+    "flow covers: town->demon->realworld entry, challenge-count OCR skip, lantern fill loop + red-dharma reward, boss search/enter/gather, generic battle until I_BOSS_DONE_CHECK, return home"
+  ],
+  "gaps": [
+    "TODO(behavior): lantern 6 type handlers (box buy 50 jade / letter Q&A / mystery / realm / battle / boss) not migrated",
+    "TODO(behavior): boss people-full (O_DE_BOSS_PEOPLE / O_DE_BEST_BOSS_PEOPLE == 300) exit-and-reselect not migrated",
+    "TODO(DSL): time-window check_time and 480s long-battle stuck timer need clock primitives",
+    "TODO(DSL): switch_soul per-boss-type preset switching has no primitive",
+    "TODO(fidelity): I_DE_LOCATION / I_DE_BOX_CENTER / I_JADE_50 interactions simplified",
+    "no real-device/replay evidence (emulator offline)"
+  ]
+}

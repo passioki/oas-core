@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "name": "OrochiMoans",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "warn",
+        "text": "\"OrochiMoans blocked：旧仓 OrochiMoans 没有 script_task.py / 可运行逻辑\""
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "warn",
+        "text": "\"「御魂悲鸣」是 Orochi 任务的 zone 选项（Orochi/config.py ELEVEN='悲鸣'）\""
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "warn",
+        "text": "\"独立任务无法迁移；需要 Orochi 任务迁移后再以参数/子任务方式复现\""
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "warn",
+        "text": "\"原因见 README / migration.json；以下为未迁移项清单\""
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "failed"
+      }
+    }
+  ]
+}

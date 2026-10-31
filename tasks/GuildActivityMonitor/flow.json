@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "name": "GuildActivityMonitor",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "warn",
+        "text": "'S: GuildActivityMonitor 未实现（⛔ 架构缺原语）：缺 adb 系统通知读取 / 其他任务 enqueue(set_next_run) / 时间日期表达式 / OCR 包含匹配；本 flow 不做任何点击，直接 window_closed 退出'"
+      }
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "庭院_探索灯笼"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 入口守卫通过（庭院）；监控循环与触发逻辑待引擎补原语后实现，详见 migration/specs/GuildActivityMonitor.md'"
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "window_closed"
+      }
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "task": "OtherWorldTwilight",
+  "status": "🔄",
+  "evidence": "task lint --task OtherWorldTwilight => errors=0；单人模式（锁队→挑战→战斗→返回）全覆盖；队长/队员/邀请/御魂切换未迁移（TODO）",
+  "gaps": [
+    "队长/队员模式（建房/邀请/等待开战）未迁移",
+    "limit_time 时间上限未在 flow 内实现（仅 max_battles 次数上限）",
+    "无实机/回放证据"
+  ]
+}

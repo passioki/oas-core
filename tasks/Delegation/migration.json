@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "task": "Delegation",
+  "source": {
+    "repo": "runhey/OnmyojiAutoScript",
+    "ref": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/Delegation/script_task.py",
+      "tasks/Delegation/config.py",
+      "tasks/Delegation/assets.py",
+      "tasks/GameUi/game_ui.py, tasks/GameUi/page.py (imported)",
+      "tasks/GlobalGame/assets.py (I_UI_CANCEL 等)"
+    ]
+  },
+  "status": "🔄",
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task Delegation => errors=0",
+    "live_or_replay": "none (no device / no matching replay recording in this session)",
+    "assets": "global legacy_* ids from migration/asset-map.json; T4 green"
+  },
+  "differences": [
+    "素材点击：远端模板 click = 匹配模板矩形（导入器 v2 已无 action_roi，与旧引擎 coord() 一致）；RuleClick 用 click_target(region, sel)。",
+    "远端 while True + Timer 的重试/判停改为有界 loop / wait_until(timeout) / 步骤 retry；结束条件用页面 marker。",
+    "战斗统一 P-BATTLE 骨架（准备→自动→安全点→回页），不是完整 GeneralBattle（无绿标/预设/失败分支）。",
+    "OCR：RuleOcr → ocr_lines；字符串子串/正则匹配改为规范化精确行匹配或 text_visible。"
+  ],
+  "gaps": [
+    "check_reward 中 O_D_DONE「完成」缎带的「点其正下方同样大小的可领取区」（script_task.py:150-164）无对应原语（inline OCR 点击只会点识别行中心）→ 目前只覆盖模板类 I_REWARDS_* 领奖，OCR 完成卡片可能漏领。",
+    "远程 delegate_one 用 keyword 子串匹配（'画'/'鸟羽'/'接送'/'痕迹'），新引擎 OCR 行匹配是规范化精确相等（容 1 字编辑距离）→ 本 flow 用完整单名（弥助的画/鸟之羽/接送弥助/奇怪的痕迹），若卡片行还带其它文案会不匹配并跳过。",
+    "远程「已在委派中」分支会等 I_REWARDS_MIN 后返回 False；本 flow 只回退并跳过（无 I_REWARDS_MIN 等待语义）。",
+    "开始委派后不校验最终是否成功（远程同样只点开始循环），靠下一步页面状态体现。"
+  ]
+}

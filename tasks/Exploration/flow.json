@@ -1,0 +1,536 @@
+{
+  "schema_version": 1,
+  "name": "Exploration",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: Exploration 开始（庭院→探索→第二十八章→探索地图：小纸人/小怪/BOSS，循环 max_battles 次→回庭院）'"
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 680,
+        "y": 152,
+        "requires": {
+          "kind": "appear",
+          "sel": "庭院_探索灯笼",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 10000
+        }
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('章节_第二十八章')"
+      },
+      "then": [
+        {
+          "op": "click_point",
+          "args": {
+            "x": 1140,
+            "y": 462,
+            "requires": {
+              "kind": "appear",
+              "sel": "章节_第二十八章",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "入口_探索按钮",
+              "timeout_ms": 12000
+            }
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "'S: 章节列表中未看到第二十八章（需滑屏选关：RuleSwipe 未导入）→ no_target'"
+          }
+        },
+        {
+          "op": "click_point",
+          "args": {
+            "x": 56,
+            "y": 58,
+            "requires": {
+              "kind": "appear",
+              "sel": "世界_章节栏",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "庭院_探索灯笼",
+              "timeout_ms": 15000
+            }
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "no_target"
+          }
+        }
+      ]
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 1115,
+        "y": 630,
+        "requires": {
+          "kind": "appear",
+          "sel": "入口_探索按钮",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "章节_固定阵容",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.0
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 640,
+        "y": 360,
+        "requires": {
+          "kind": "appear",
+          "sel": "章节_固定阵容",
+          "timeout_ms": 3000
+        }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 0.8
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "param('max_battles')"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Exploration_I_BATTLE_REWARD')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 小纸人奖励，点掉'"
+              }
+            },
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Exploration_I_BATTLE_REWARD"
+              }
+            },
+            {
+              "op": "continue"
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Exploration_I_BOSS_BATTLE_BUTTON') or appear('legacy_Exploration_I_NORMAL_BATTLE_BUTTON')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 点 BOSS/小怪战斗图标（click_target 优先级：BOSS→普通）'"
+              }
+            },
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "template",
+                    "sel": "legacy_Exploration_I_BOSS_BATTLE_BUTTON"
+                  },
+                  {
+                    "kind": "template",
+                    "sel": "legacy_Exploration_I_NORMAL_BATTLE_BUTTON"
+                  }
+                ],
+                "requires": {
+                  "kind": "appear",
+                  "sel": "章节_固定阵容",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 战斗准备：点「准备」（I_PREPARE_HIGHLIGHT）'"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "5"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+                  },
+                  "then": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "template",
+                            "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "op": "break"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait_until",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_BATTLE_INFO')",
+                "timeout_s": 25
+              }
+            },
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 已进入战斗（I_BATTLE_INFO），自动战斗 + 结算处理'"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "60"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 2.2
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_WIN')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 战斗胜利（I_WIN）'"
+                      }
+                    },
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_WIN"
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 0.6
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "warn",
+                        "text": "'S: 战斗失败（I_FALSE），点掉结算'"
+                      }
+                    },
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_FALSE"
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 0.8
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Component_GeneralBattle_I_FALSE"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+                  },
+                  "then": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "template",
+                            "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_GREED_GHOST')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 贪吃鬼奖励（I_GREED_GHOST）'"
+                      }
+                    },
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_GREED_GHOST"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_OVER_GHOST')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_OVER_GHOST"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_REWARD"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "click_point",
+                  "args": {
+                    "x": 640,
+                    "y": 690
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('章节_固定阵容') or appear('章节_固定阵容')"
+                  },
+                  "then": [
+                    {
+                      "op": "break"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "appear",
+              "args": {
+                "sel": "章节_固定阵容"
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 当前屏无战斗图标，向右滑屏找怪'"
+              }
+            },
+            {
+              "op": "swipe",
+              "args": {
+                "from": [
+                  1100,
+                  380
+                ],
+                "to": [
+                  250,
+                  380
+                ],
+                "ms": 400
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 53,
+        "y": 32,
+        "requires": {
+          "kind": "appear",
+          "sel": "章节_固定阵容",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "退出确认_确认",
+          "timeout_ms": 5000
+        }
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 780,
+        "y": 401,
+        "requires": {
+          "kind": "appear",
+          "sel": "退出确认_确认",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "入口_探索按钮",
+          "timeout_ms": 8000
+        }
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 53,
+        "y": 32,
+        "requires": {
+          "kind": "appear",
+          "sel": "入口_探索按钮",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "vanish",
+          "sel": "入口_探索按钮",
+          "timeout_ms": 5000
+        }
+      }
+    },
+    {
+      "op": "click_point",
+      "args": {
+        "x": 53,
+        "y": 32,
+        "requires": {
+          "kind": "appear",
+          "sel": "世界_章节栏",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "庭院_探索灯笼",
+          "timeout_ms": 15000
+        }
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: Exploration done，已回庭院'"
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

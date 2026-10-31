@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "Hunt",
+  "name": "Hunt",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "庭院→町中→狩猎战：按当前页面自动区分麒麟（I_CHECK_HUNT_KIRIN）与阴界之门（I_CHECK_HUNT）。麒麟：挑战→确认→开始挑战→通用战斗（准备/胜利/失败/贪吃鬼/御魂溢出）→回庭院；阴界之门：进入→确认→挑战→房间开战 I_FIRE→通用战斗→回庭院。时间窗口与御魂切换属调度器/配置职责。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "max_battles",
+      "type": "int",
+      "default": 1,
+      "min": 1,
+      "max": 5
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    },
+    "no_resource": {
+      "result": "resource"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "window_closed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 600
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

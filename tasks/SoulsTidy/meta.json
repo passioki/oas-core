@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "SoulsTidy",
+  "name": "御魂整理",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "庭院→式神录→御魂：进入御魂界面，喂贪吃鬼（最多 3 次），切到奉纳界面，按御魂堆叠逐次奉纳并处理神赐/吉运/确认弹窗；回庭院。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "enable_greed",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "enable_maneki",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "max_donations",
+      "type": "int",
+      "default": 5,
+      "min": 1,
+      "max": 50
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 600
+  },
+  "resources": [
+    "soul"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

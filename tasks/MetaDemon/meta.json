@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "MetaDemon",
+  "name": "MetaDemon",
+  "version": 1,
+  "expire": "daily",
+  "category": "limited",
+  "description": "🔄 部分迁移：超鬼王（MetaDemon）。已覆盖 右侧活动面板→活动入口→找鬼王/共享鬼王→点鬼王战斗→通用战斗→返回。未覆盖：疲劳 OCR 判定与买茶、5/6 星 full-name OCR→配置策略组→预设切队、星合成(crafting)、通知推送、5/6 星血量阈值策略。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "庭院_探索灯笼",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "max_battles",
+      "type": "int",
+      "default": 5,
+      "min": 1,
+      "max": 20
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    },
+    "no_resource": {
+      "result": "resource"
+    },
+    "no_target": {
+      "result": "blocked"
+    },
+    "window_closed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 1800
+  },
+  "resources": [],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

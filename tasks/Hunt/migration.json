@@ -1,0 +1,51 @@
+{
+  "task": "Hunt",
+  "name": "Hunt",
+  "source": {
+    "repo": "https://github.com/runhey/OnmyojiAutoScript",
+    "branch": "dev",
+    "commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+    "files": [
+      "tasks/Hunt/script_task.py",
+      "tasks/Hunt/config.py",
+      "tasks/Hunt/assets.py",
+      "tasks/Hunt/hunt/{image,click}.json",
+      "tasks/Hunt/kirin/image.json",
+      "tasks/Hunt/netherworld/image.json",
+      "tasks/GameUi/page.py"
+    ]
+  },
+  "status": "✅",
+  "evidence": [
+    "task lint --tasks-dir tasks --task Hunt => errors=0",
+    "migration/specs/Hunt.md 行为矩阵 1~9：麒麟/阴界两条分支 + 通用战斗 + 返回均映射"
+  ],
+  "assets": {
+    "reused_global": [
+      "庭院_探索灯笼",
+      "legacy_GameUi_I_MAIN_GOTO_TOWN",
+      "legacy_GameUi_I_TOWN_GOTO_HUNT",
+      "legacy_GameUi_I_CHECK_TOWN",
+      "legacy_GameUi_I_CHECK_HUNT",
+      "legacy_GameUi_I_CHECK_HUNT_KIRIN",
+      "legacy_Hunt_I_KIRIN_CHALLAGE",
+      "legacy_Hunt_I_KIRIN_START_CHALLAGE",
+      "legacy_Hunt_I_KIRIN_END",
+      "legacy_Hunt_I_NW",
+      "legacy_Hunt_I_NW_CHALLAGE",
+      "legacy_Hunt_I_NW_DONE",
+      "legacy_Component_GeneralInvite_I_FIRE",
+      "legacy_Component_GeneralRoom_I_CREATE_ROOM",
+      "legacy_Component_GeneralBattle_{I_PREPARE_HIGHLIGHT,I_BATTLE_INFO,I_WIN,I_FALSE,I_GREED_GHOST,I_OVER_GHOST,I_REWARD}",
+      "legacy_GlobalGame_I_UI_CONFIRM",
+      "legacy_GlobalGame_I_UI_BACK_YELLOW"
+    ],
+    "new": []
+  },
+  "differences": [
+    "时间窗（周一~四/周五~日 + 6:00/17:00/19:00/23:00 判定）与次日 19:00 排期：不迁移（scheduler.json 职责）；flow 假定调度器在窗口内调用",
+    "御魂切换（`run_switch_soul`）：配置项，未迁移（SwitchSoul 素材已导入，可后续以参数化子流程加入）",
+    "战斗内随机点击/滑动防封：由引擎 humanize 承担，flow 不重复实现",
+    "未实机/回放验证（狩猎战有固定时段；素材阈值沿用旧仓）"
+  ]
+}

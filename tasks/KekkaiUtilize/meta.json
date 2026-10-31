@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "KekkaiUtilize",
+  "name": "KekkaiUtilize",
+  "version": 1,
+  "expire": "daily",
+  "category": "daily",
+  "description": "寮结界寄养：庭院→阴阳寮→寮结界；领取寄养收获；收体力/经验盒子；收寮资金/寮体力；回庭院。蹭卡（选卡/选友/时长）受 DSL 限制未迁移（见 spec）。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "harvest_boxes",
+      "type": "bool",
+      "default": true
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "no_resource": {
+      "result": "resource"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 300
+  },
+  "resources": [
+    "guild_ap",
+    "guild_assets"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

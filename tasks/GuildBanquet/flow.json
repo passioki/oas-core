@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "name": "GuildBanquet",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: GuildBanquet 开始（庭院 → 阴阳寮 → 宴会旗标等待）'"
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_MAIN_GOTO_GUILD",
+        "requires": {
+          "kind": "appear",
+          "sel": "庭院_探索灯笼",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_GUILD",
+          "timeout_ms": 10000
+        }
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('legacy_GuildBanquet_I_FLAG')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 宴会进行中（旗标可见），等待旗标消失（上限 param(max_wait_min) 分钟）'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "param('max_wait_min') * 12"
+          },
+          "body": [
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 5.0
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "not appear('legacy_GuildBanquet_I_FLAG')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": []
+            }
+          ]
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 宴会旗标消失（宴会结束或等待超时），返回庭院'"
+          }
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_GUILD",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "庭院_探索灯笼",
+              "timeout_ms": 15000
+            }
+          }
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: GuildBanquet done（宴会结束，已回庭院）'"
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "done"
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "'S: 未检测到宴会旗标（宴会未开始或已结束）→ window_closed，交给调度器冷却重试（上游是 +5min set_next_run）'"
+          }
+        },
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_GameUi_I_CHECK_GUILD",
+              "timeout_ms": 3000
+            },
+            "expect": {
+              "kind": "appear",
+              "sel": "庭院_探索灯笼",
+              "timeout_ms": 15000
+            }
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "window_closed"
+          }
+        }
+      ]
+    }
+  ]
+}

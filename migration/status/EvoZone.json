@@ -1,0 +1,18 @@
+﻿{
+  "task": "EvoZone",
+  "status": "🔄",
+  "evidence": "oasd task lint 绿；覆盖：单刷(alone)路径：导航→麒麟选择→层数(inline OCR 列表点击)→阵容锁→挑战/战斗循环→回庭院；组队(leader/member)/加成/御魂切换未迁移。未真机/回放验证。 bundle: tasks/EvoZone/; lint green.",
+  "gaps": [
+    "层数列表：远程用 RuleList L_LAYER_LIST 的 list_find（OCR 项文本精确匹配数组 壹..拾 后点击）；新 flow 用 click_target inline OCR(roi=[124,84,77,632], text=固定字面量「拾」)；由于 ocr_text 的 text 是字面量，param('layer') 无法直接作为目标行（见下一条 TODO）。",
+    "TODO(DSL)：click_target 的 ocr_text 文本是**字面量**，不能从 param/var 拼接；因此无法把 param('layer') 直接作为 OCR 目标行。需要引擎支持表达式 text 或按 rownum/坐标定位列表项。当前 flow 保留固定行文本（拾）作为默认层数。",
+    "组队模式（default user_status=leader）：创建房间/邀请队友/成员接管/自动匹配等 GeneralRoom+GeneralInvite 流程未迁移（素材已导入，逻辑量大，未在本轮实现）。",
+    "觉醒加成开关（GeneralBuff I_AWAKE）未迁移。",
+    "御魂预设切换（SwitchSoul）未迁移。",
+    "limit_time（30 分钟）无时钟原语；limit_count 保留。",
+    "战斗为 P-BATTLE v2（准备/胜利/失败/奖励→回页），不含 battle_wait_strategy 的特殊奖励/统计页分支。"
+  ],
+  "artifacts": {
+    "spec": "migration/specs/EvoZone.md",
+    "bundle": "tasks/EvoZone/"
+  }
+}

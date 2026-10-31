@@ -1,0 +1,864 @@
+{
+  "schema_version": 1,
+  "name": "MetaDemon",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: MetaDemon 开始（庭院→右侧活动面板→超鬼王；疲劳/策略切队/买茶未迁移）'"
+      }
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "庭院_探索灯笼"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 打开右侧活动面板（I_TOGGLE_BUTTON）并点活动入口 I_RIGHT_ENTER'"
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_Component_RightActivity_I_TOGGLE_BUTTON"
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 1.0
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "15"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MetaDemon_I_MD_MAIN') or appear('legacy_MetaDemon_I_FIND_DEMON') or appear('legacy_MetaDemon_I_BATTLE_DEMON')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_Component_RightActivity_I_RA_CLOSE')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_Component_RightActivity_I_RA_CLOSE"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MetaDemon_I_RIGHT_ENTER')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_MetaDemon_I_RIGHT_ENTER"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MetaDemon_I_MD_ENTER')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_MetaDemon_I_MD_ENTER"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MetaDemon_I_ENTER2')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_MetaDemon_I_ENTER2"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MetaDemon_I_ENTER_ENSURE')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_MetaDemon_I_ENTER_ENSURE"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_CONFIRM"
+              }
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 找鬼王：点 I_FIND_DEMON 直到出现 I_BATTLE_DEMON'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "20"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MetaDemon_I_BATTLE_DEMON')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MetaDemon_I_FIND_DEMON')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_MetaDemon_I_FIND_DEMON"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MetaDemon_I_ENTER_ENSURE')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_MetaDemon_I_ENTER_ENSURE"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MetaDemon_I_ENTER2')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_MetaDemon_I_ENTER2"
+              }
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "param('max_battles')"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "not appear('legacy_MetaDemon_I_FIND_DEMON') and not appear('legacy_MetaDemon_I_BATTLE_DEMON')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 已离开超鬼王活动页，退出循环'"
+              }
+            },
+            {
+              "op": "break"
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MetaDemon_I_BOSS_EMPTY') or appear('legacy_MetaDemon_I_BOSS_EMPTY_1') or appear('legacy_MetaDemon_I_BOSS_EMPTY_2')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 自/他人鬼王入口（空位）'"
+              }
+            },
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_MetaDemon_I_BOSS_EMPTY"
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_MetaDemon_I_BATTLE_DEMON')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_MetaDemon_I_BATTLE_DEMON"
+                  }
+                },
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 战斗准备：点「准备」（I_PREPARE_HIGHLIGHT）'"
+                  }
+                },
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "5"
+                  },
+                  "body": [
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.0
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+                      },
+                      "then": [
+                        {
+                          "op": "click_target",
+                          "args": {
+                            "find": [
+                              {
+                                "kind": "template",
+                                "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT"
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "op": "break"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "wait_until",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_BATTLE_INFO')",
+                    "timeout_s": 25
+                  }
+                },
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 已进入战斗（I_BATTLE_INFO），自动战斗 + 结算处理'"
+                  }
+                },
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "80"
+                  },
+                  "body": [
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 2.2
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_WIN')"
+                      },
+                      "then": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 战斗胜利（I_WIN）'"
+                          }
+                        },
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Component_GeneralBattle_I_WIN"
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 0.6
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+                      },
+                      "then": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "warn",
+                            "text": "'S: 战斗失败（I_FALSE），点掉结算'"
+                          }
+                        },
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Component_GeneralBattle_I_FALSE"
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 0.8
+                          }
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_Component_GeneralBattle_I_FALSE"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+                      },
+                      "then": [
+                        {
+                          "op": "click_target",
+                          "args": {
+                            "find": [
+                              {
+                                "kind": "template",
+                                "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT"
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_GREED_GHOST')"
+                      },
+                      "then": [
+                        {
+                          "op": "log",
+                          "args": {
+                            "level": "info",
+                            "text": "'S: 贪吃鬼奖励（I_GREED_GHOST）'"
+                          }
+                        },
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Component_GeneralBattle_I_GREED_GHOST"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_OVER_GHOST')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Component_GeneralBattle_I_OVER_GHOST"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Component_GeneralBattle_I_REWARD"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "op": "click_point",
+                      "args": {
+                        "x": 640,
+                        "y": 690
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_MetaDemon_I_BATTLE_DEMON') or appear('legacy_MetaDemon_I_FIND_DEMON')"
+                      },
+                      "then": [
+                        {
+                          "op": "break"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "continue"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MetaDemon_I_BATTLE_DEMON')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_MetaDemon_I_BATTLE_DEMON"
+              }
+            },
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 战斗准备：点「准备」（I_PREPARE_HIGHLIGHT）'"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "5"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+                  },
+                  "then": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "template",
+                            "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "op": "break"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait_until",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_BATTLE_INFO')",
+                "timeout_s": 25
+              }
+            },
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 已进入战斗（I_BATTLE_INFO），自动战斗 + 结算处理'"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "80"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 2.2
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_WIN')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 战斗胜利（I_WIN）'"
+                      }
+                    },
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_WIN"
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 0.6
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "warn",
+                        "text": "'S: 战斗失败（I_FALSE），点掉结算'"
+                      }
+                    },
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_FALSE"
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 0.8
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Component_GeneralBattle_I_FALSE"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+                  },
+                  "then": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "template",
+                            "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_GREED_GHOST')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 贪吃鬼奖励（I_GREED_GHOST）'"
+                      }
+                    },
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_GREED_GHOST"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_OVER_GHOST')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_OVER_GHOST"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_REWARD"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "click_point",
+                  "args": {
+                    "x": 640,
+                    "y": 690
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_MetaDemon_I_BATTLE_DEMON') or appear('legacy_MetaDemon_I_FIND_DEMON')"
+                  },
+                  "then": [
+                    {
+                      "op": "break"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "continue"
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MetaDemon_I_FIND_DEMON')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_MetaDemon_I_FIND_DEMON"
+              }
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.5
+          }
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 退出超鬼王活动：返回庭院'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "12"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('庭院_探索灯笼')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+              }
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "庭院_探索灯笼"
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

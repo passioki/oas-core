@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "template_version": 1,
+  "task_id": "Pets",
+  "name": "Pets",
+  "version": 1,
+  "category": "daily",
+  "description": "庭院→宠物小屋→快速喂养（体力为 0 视为已投喂）→返回庭院。",
+  "entry": {
+    "requires": {
+      "kind": "appear",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
+      "timeout_ms": 3000
+    }
+  },
+  "params": [
+    {
+      "key": "feed",
+      "type": "bool",
+      "default": true
+    }
+  ],
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "capabilities": {
+    "checkpoint": true,
+    "interruptible": false,
+    "duration_hint_s": 60
+  },
+  "resources": [
+    "ap"
+  ],
+  "schedule_hint": {
+    "windows": [],
+    "quota": {
+      "per": "day",
+      "times": 1
+    }
+  }
+}

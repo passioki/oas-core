@@ -1,0 +1,17 @@
+{
+  "task": "BondlingFairyland",
+  "status": "🔄",
+  "evidence": "oasd task lint 绿；已迁移：导航→契灵之境→结契区→挑战/确认→P-BATTLE→回庭院；结契捕捉小游戏等核心分支未迁移，flow 显式 blocked。 bundle: tasks/BondlingFairyland/; lint green.",
+  "gaps": [
+    "结契捕捉流程（run_catch + capture_setting：自动结契/极简模式/低中高品质/首次/连续开关、I_CAP_SUCCESS/I_CAP_FAILURE/I_CAP_AGAIN、回合数/球数 OCR）未迁移 —— 这是该任务的核心之一。",
+    "契灵种类识别（get_bondling_class: I_TOMB_GUARD/I_SNOWBALL/I_LITTLE_KURO/I_AZURE_BASAN）与球数/石板数 OCR 未迁移。",
+    "契灵石头购买 run_stone（I_BUY_PLUS/I_STONE_SURE）未迁移。",
+    "搜索模式 run_search（I_BF_SEARSH/I_BF_STORE）与队长/成员/邀请（GeneralRoom+GeneralInvite 全套）未迁移；仅单刷挑战骨架。",
+    "BondlingBattle（战斗内策略）未迁移；用 P-BATTLE v2 通用骨架。",
+    "limit_time/次数上限部分保留（limit_count）。"
+  ],
+  "artifacts": {
+    "spec": "migration/specs/BondlingFairyland.md",
+    "bundle": "tasks/BondlingFairyland/"
+  }
+}

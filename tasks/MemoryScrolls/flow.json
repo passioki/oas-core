@@ -1,0 +1,676 @@
+{
+  "schema_version": 1,
+  "name": "MemoryScrolls",
+  "steps": [
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: MemoryScrolls 开始（庭院→召唤→绘卷入口→指定分卷→捐献→返回）'"
+      }
+    },
+    {
+      "op": "click",
+      "args": {
+        "sel": "legacy_GameUi_I_MAIN_GOTO_SUMMON",
+        "requires": {
+          "kind": "appear",
+          "sel": "庭院_探索灯笼",
+          "timeout_ms": 3000
+        },
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_SUMMON",
+          "timeout_ms": 12000
+        }
+      }
+    },
+    {
+      "op": "wait_until",
+      "args": {
+        "cond": "appear('legacy_MemoryScrolls_I_MS_ENTER')",
+        "timeout_s": 30
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 召唤页出现绘卷铃铛，进入绘卷（双绘卷按 double_scroll_two 选择）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "30"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MemoryScrolls_I_MS_FRAGMENT_S')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_MemoryScrolls_I_MS_DOUBLE_SCROLLS_ENTER')"
+              },
+              "then": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "param('double_scroll_two') != 0"
+                  },
+                  "then": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_MemoryScrolls_C_MS_DOUBLE_SCROLLS_2"
+                          }
+                        ]
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_MemoryScrolls_I_MS_DOUBLE_SCROLLS_ENTER"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_MemoryScrolls_I_MS_ENTER')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_MemoryScrolls_I_MS_ENTER"
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_MemoryScrolls_I_MS_FRAGMENT_S"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 已进入绘卷主界面'"
+      }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "param('check_small_fragments') != 0"
+      },
+      "then": [
+        {
+          "op": "loop",
+          "args": {
+            "n": "20"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_MemoryScrolls_I_MS_FRAGMENT_S_VERIFICATION')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_MemoryScrolls_I_MS_FRAGMENT_S')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_MemoryScrolls_I_MS_FRAGMENT_S"
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MemoryScrolls_I_MS_FRAGMENT_S_50')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 小绘卷碎片已达 50（上游会安排次日探索：调度写回未迁移，记入差异）'"
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "log",
+              "args": {
+                "level": "warn",
+                "text": "'S: 小绘卷碎片未达 50 → finish(failed)（上游 success=False）'"
+              }
+            },
+            {
+              "op": "finish",
+              "args": {
+                "exit": "failed"
+              }
+            }
+          ]
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "20"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "not appear('legacy_MemoryScrolls_I_MS_FRAGMENT_S_VERIFICATION')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ],
+              "else": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_MemoryScrolls_I_MS_FRAGMENT_S"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 进入指定分卷（scroll_number=param scroll_number）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "20"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "param('scroll_number') == 1"
+              },
+              "then": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "region",
+                        "sel": "legacy_MemoryScrolls_C_MS_SCROLL_1"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "param('scroll_number') == 2"
+                  },
+                  "then": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_MemoryScrolls_C_MS_SCROLL_2"
+                          }
+                        ]
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "param('scroll_number') == 3"
+                      },
+                      "then": [
+                        {
+                          "op": "click_target",
+                          "args": {
+                            "find": [
+                              {
+                                "kind": "region",
+                                "sel": "legacy_MemoryScrolls_C_MS_SCROLL_3"
+                              }
+                            ]
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "param('scroll_number') == 4"
+                          },
+                          "then": [
+                            {
+                              "op": "click_target",
+                              "args": {
+                                "find": [
+                                  {
+                                    "kind": "region",
+                                    "sel": "legacy_MemoryScrolls_C_MS_SCROLL_4"
+                                  }
+                                ]
+                              }
+                            }
+                          ],
+                          "else": [
+                            {
+                              "op": "if",
+                              "args": {
+                                "cond": "param('scroll_number') == 5"
+                              },
+                              "then": [
+                                {
+                                  "op": "click_target",
+                                  "args": {
+                                    "find": [
+                                      {
+                                        "kind": "region",
+                                        "sel": "legacy_MemoryScrolls_C_MS_SCROLL_5"
+                                      }
+                                    ]
+                                  }
+                                }
+                              ],
+                              "else": [
+                                {
+                                  "op": "click_target",
+                                  "args": {
+                                    "find": [
+                                      {
+                                        "kind": "region",
+                                        "sel": "legacy_MemoryScrolls_C_MS_SCROLL_6"
+                                      }
+                                    ]
+                                  }
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 已进入绘卷捐献页，开始捐献（三行各拉满两次；三种碎片全 0 提前结束）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "param('contribute_rounds')"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MemoryScrolls_I_MS_ZERO_S') and appear('legacy_MemoryScrolls_I_MS_ZERO_M') and appear('legacy_MemoryScrolls_I_MS_ZERO_L')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 三种绘卷碎片均已为 0，捐献结束'"
+              }
+            },
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "click_target",
+          "args": {
+            "find": [
+              {
+                "kind": "region",
+                "sel": "legacy_MemoryScrolls_C_MS_MAX_S"
+              }
+            ]
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 0.3
+          }
+        },
+        {
+          "op": "click_target",
+          "args": {
+            "find": [
+              {
+                "kind": "region",
+                "sel": "legacy_MemoryScrolls_C_MS_MAX_S"
+              }
+            ]
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 0.3
+          }
+        },
+        {
+          "op": "click_target",
+          "args": {
+            "find": [
+              {
+                "kind": "region",
+                "sel": "legacy_MemoryScrolls_C_MS_MAX_M"
+              }
+            ]
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 0.3
+          }
+        },
+        {
+          "op": "click_target",
+          "args": {
+            "find": [
+              {
+                "kind": "region",
+                "sel": "legacy_MemoryScrolls_C_MS_MAX_M"
+              }
+            ]
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 0.3
+          }
+        },
+        {
+          "op": "click_target",
+          "args": {
+            "find": [
+              {
+                "kind": "region",
+                "sel": "legacy_MemoryScrolls_C_MS_MAX_L"
+              }
+            ]
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 0.3
+          }
+        },
+        {
+          "op": "click_target",
+          "args": {
+            "find": [
+              {
+                "kind": "region",
+                "sel": "legacy_MemoryScrolls_C_MS_MAX_L"
+              }
+            ]
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_MemoryScrolls_I_MS_CONTRIBUTE')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_MemoryScrolls_I_MS_CONTRIBUTE"
+              }
+            },
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 已点捐献，等待贡献动画（I_MS_CONTRIBUTED）'"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "5"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_MemoryScrolls_I_MS_CONTRIBUTED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_MemoryScrolls_C_MS_CONTRIBUTED"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "op": "break"
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ],
+          "else": [
+            {
+              "op": "log",
+              "args": {
+                "level": "warn",
+                "text": "'S: 未出现捐献按钮（已满/次数用完）→ 结束捐献'"
+              }
+            },
+            {
+              "op": "break"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 关闭捐献页并返回召唤页'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "8"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_SUMMON')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: MemoryScrolls done（已回召唤页）'"
+      }
+    },
+    {
+      "op": "finish",
+      "args": {
+        "exit": "done"
+      }
+    }
+  ]
+}

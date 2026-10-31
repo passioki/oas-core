@@ -1,0 +1,47 @@
+{
+  "task": "CollectiveMissions",
+  "source": "runhey/OnmyojiAutoScript@dev",
+  "source_commit": "8b4dc669b47838f42d283f14aa394844c1963c86",
+  "source_files": [
+    "tasks/CollectiveMissions/script_task.py",
+    "tasks/CollectiveMissions/config.py",
+    "tasks/CollectiveMissions/assets.py",
+    "tasks/GameUi/page.py",
+    "tasks/GameUi/default_pages.py"
+  ],
+  "group": "Guild",
+  "status": "partial",
+  "spec": "migration/specs/CollectiveMissions.md",
+  "assets": {
+    "referenced": 30,
+    "source": "assets/assets.json (global legacy ids)",
+    "task_local_assets": false
+  },
+  "behavior": {
+    "entry": "庭院 -> 阴阳寮 -> 神社 -> 集体任务",
+    "covered": [
+      "30/30 完成判定 -> skipped",
+      "mission_select 刷新循环（最多 20 次）",
+      "3 任务位 OCR 分类（BL/AW1-3/GR1-3/SO1-2/FEED/FRIEND）",
+      "按默认 missions_rule 选最优任务位",
+      "喂N卡分支（I_FEED_HEAP -> L_FEED_CLICK -> I_FEED_SUBMIT -> 领奖）",
+      "材料捐献分支（进入 I_CM_PRESENT -> 捐赠 -> 领奖；材料选择近似）",
+      "御魂捐献分支（L_SL_LONG 短点近似 -> I_SL_SUBMIT -> 领奖）",
+      "契灵探查：可领奖则领奖，否则 no_target(blocked)",
+      "退出：连点返回直到神社/庭院"
+    ]
+  },
+  "evidence": {
+    "lint": "oasd task lint --tasks-dir tasks --task CollectiveMissions => errors=0",
+    "coverage_matrix": "migration/specs/CollectiveMissions.md §3"
+  },
+  "differences": [
+    "材料捐献未选存量最大：DSL 无第 N 个数字 OCR（旧仓用 (curr,remain,total) 第 3 个）",
+    "御魂捐献无 long_press 原语：10 次短点近似旧长按 L_SL_LONG",
+    "契灵分支跨任务调度（set_next_run BondlingFairyland + 2h 重跑）未迁移 -> no_target(blocked)",
+    "刷新按钮可用性：旧仓 brightness/mean_color 检查 -> 模板 appear 近似",
+    "双倍奖励两次领取未精确计数（4 轮领奖近似）",
+    "missions_rule 配置串未映射：固定默认优先级顺序",
+    "no device/replay evidence (emulator offline)"
+  ]
+}
