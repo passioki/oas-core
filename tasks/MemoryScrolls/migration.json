@@ -15,40 +15,34 @@
       "tasks/GameUi/default_pages.py"
     ]
   },
-  "status": "✅",
+  "status": "🔄",
   "evidence": [
     "task lint --tasks-dir tasks --task MemoryScrolls => lint task=MemoryScrolls errors=0",
-    "migration/specs/MemoryScrolls.md 行为矩阵 1~11 全部映射；默认配置路径 + 参数化分卷/双绘卷/捐献轮数/小绘卷检查"
+    "migration/specs/MemoryScrolls.md 行为矩阵 1~11 全部映射；默认配置路径 + 参数化分卷/双绘卷/捐献轮数/小绘卷检查",
+    "task lint --tasks-dir tasks --task MemoryScrolls => errors=0（2026-11-01 polish 后）"
   ],
   "assets": {
     "reused_global": [
-      "legacy_MemoryScrolls_I_MS_ENTER",
-      "legacy_MemoryScrolls_I_MS_FRAGMENT_S",
-      "legacy_MemoryScrolls_I_MS_FRAGMENT_S_50",
-      "legacy_MemoryScrolls_I_MS_FRAGMENT_S_VERIFICATION",
-      "legacy_MemoryScrolls_I_MS_DOUBLE_SCROLLS_ENTER",
-      "legacy_MemoryScrolls_I_MS_CONTRIBUTE",
-      "legacy_MemoryScrolls_I_MS_CONTRIBUTED",
-      "legacy_MemoryScrolls_I_MS_COMPLETE",
-      "legacy_MemoryScrolls_I_MS_ZERO_S",
-      "legacy_MemoryScrolls_I_MS_ZERO_M",
-      "legacy_MemoryScrolls_I_MS_ZERO_L",
+      "legacy_GameUi_I_CHECK_SUMMON",
+      "legacy_GameUi_I_MAIN_GOTO_SUMMON",
+      "legacy_GlobalGame_I_UI_BACK_RED",
+      "legacy_GlobalGame_I_UI_BACK_YELLOW",
+      "legacy_MemoryScrolls_C_MS_CONTRIBUTED",
+      "legacy_MemoryScrolls_C_MS_DOUBLE_SCROLLS_2",
+      "legacy_MemoryScrolls_C_MS_MAX_L",
+      "legacy_MemoryScrolls_C_MS_MAX_M",
+      "legacy_MemoryScrolls_C_MS_MAX_S",
       "legacy_MemoryScrolls_C_MS_SCROLL_1",
       "legacy_MemoryScrolls_C_MS_SCROLL_2",
       "legacy_MemoryScrolls_C_MS_SCROLL_3",
       "legacy_MemoryScrolls_C_MS_SCROLL_4",
       "legacy_MemoryScrolls_C_MS_SCROLL_5",
       "legacy_MemoryScrolls_C_MS_SCROLL_6",
-      "legacy_MemoryScrolls_C_MS_MAX_S",
-      "legacy_MemoryScrolls_C_MS_MAX_M",
-      "legacy_MemoryScrolls_C_MS_MAX_L",
-      "legacy_MemoryScrolls_C_MS_CONTRIBUTED",
-      "legacy_MemoryScrolls_C_MS_DOUBLE_SCROLLS_2",
-      "庭院_探索灯笼",
-      "legacy_GameUi_I_MAIN_GOTO_SUMMON",
-      "legacy_GameUi_I_CHECK_SUMMON",
-      "legacy_GlobalGame_I_UI_BACK_RED",
-      "legacy_GlobalGame_I_UI_BACK_YELLOW"
+      "legacy_MemoryScrolls_I_MS_CONTRIBUTE",
+      "legacy_MemoryScrolls_I_MS_DOUBLE_SCROLLS_ENTER",
+      "legacy_MemoryScrolls_I_MS_ENTER",
+      "legacy_MemoryScrolls_I_MS_FRAGMENT_S",
+      "庭院_探索灯笼"
     ],
     "new": []
   },
@@ -58,6 +52,7 @@
     "auto_finish_exploration 的小绘卷 50 判定保留，但「安排次日探索 custom_next_run」未迁移（调度器职责）",
     "每次运行 set_next_run(success=True/False) 未迁移（调度器职责；schedule_hint 只给 quota 默认）",
     "ui_click_until_disappear（点到自己消失）用「条件点击 + 轮询」近似",
-    "未实机/回放验证；I_MS_ENTER 阈值沿用旧仓 0.5，C_MS_* 区域沿用旧仓 click.json"
+    "未实机/回放验证；I_MS_ENTER 阈值沿用旧仓 0.5，C_MS_* 区域沿用旧仓 click.json",
+    "2026-11-01 修整：捐献循环失败分支由 break 改为 continue（上游 for-loop 语义）；补 I_MS_COMPLETE 完成判定；状态 ✅→🔄（无实机证据）"
   ]
 }

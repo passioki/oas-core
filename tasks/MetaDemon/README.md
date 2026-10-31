@@ -42,3 +42,12 @@ cd D:\OAS-dev\oas-core
 4. 无实机/回放证据（限时活动）
 
 详见 `migration/specs/MetaDemon.md`、`tasks/MetaDemon/migration.json`、`migration/status/MetaDemon.json`。
+
+## 2026-11-01 静态修整（polish round）
+
+- 修复：入口链：旧 flow 点 I_RA_CLOSE 会**收起**右侧活动面板，且混入 I_MD_ENTER/I_MD_MAIN 等远端入口链未使用的按钮 → 改为镜像 RightActivity.enter()：点 I_TOGGLE_BUTTON 直到 I_RIGHT_ENTER 出现，再点 I_RIGHT_ENTER 直到其消失，进活动后再处理 UI_BACK_RED/ENTER_ENSURE/ENTER2
+- 修复：鬼王点击：旧 flow 在「空位图标不出现」时 click(I_BOSS_EMPTY)；旧引擎是点击 roi_front 坐标、新引擎 click 需匹配成功（会响亮失败）→ 改为 click_point(88,176) 点卡位中心，并镜像上游条件 `not appear(I_BOSS_EMPTY) and appear(I_BOSS_CONVENE)`
+- 修复：补奖励弹窗处理：上游每轮 ui_reward_appear_click() = appear(I_UI_REWARD)→click(C_UI_REWARD)；flow 增加 I_UI_REWARD + C_UI_REWARD 分支
+- 修复：删除原先重复两份的战斗/结算代码（flow 864→629 行），统一为单条 battle 链（准备/胜负/贪吃鬼/御魂溢出/奖励）
+- 仍存在（blocker/未迁移）：共享鬼王 I_BOSS_EMPTY_1/I_BOSS_EMPTY_2 未迁移：旧引擎 click 是「按 roi_front 坐标点未匹配模板」，新引擎 click 需匹配成功；且上游条件叠加 ocr_appear(O_BOSS_EMPTY_1) 复合判断（blocker）
+- 校验：`oasd task lint --tasks-dir tasks --task MetaDemon` => errors=0

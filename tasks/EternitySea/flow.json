@@ -60,26 +60,76 @@
       }
     },
     {
-      "op": "click",
+      "op": "log",
       "args": {
-        "sel": "legacy_EternitySea_I_ETERNITY_SEA",
-        "requires": {
-          "kind": "appear",
-          "sel": "legacy_EternitySea_I_ETERNITY_SEA",
-          "timeout_ms": 3000
+        "level": "info",
+        "text": "'S: 进永生之海：点 I_ETERNITY_SEA 直到组队界面 I_FORM_TEAM 出现（= _enter_eternity_sea）'"
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "10"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_EternitySea_I_FORM_TEAM')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ]
         },
-        "expect": {
-          "kind": "appear",
-          "sel": "legacy_EternitySea_I_FORM_TEAM",
-          "timeout_ms": 15000
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_EternitySea_I_ETERNITY_SEA')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_EternitySea_I_ETERNITY_SEA"
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_EternitySea_I_BACK_BOTTOM')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_EternitySea_I_BACK_BOTTOM"
+              }
+            }
+          ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
         }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_EternitySea_I_FORM_TEAM"
       }
     },
     {
       "op": "log",
       "args": {
         "level": "info",
-        "text": "'S: 选层（RuleList 未导入：用坐标近似 150+87*(layer-1)，层数 1~4）'"
+        "text": "'S: 选层（RuleList 未导入：坐标近似 150+87*(layer-1)，仅 1~4 层）'"
       }
     },
     {
@@ -103,23 +153,175 @@
     {
       "op": "if",
       "args": {
-        "cond": "appear('legacy_EternitySea_I_ETERNITYSEA_UNLOCK')"
+        "cond": "param('lock_team') == 0"
       },
       "then": [
         {
           "op": "log",
           "args": {
-            "level": "info",
-            "text": "'S: 点击解锁图标以锁定队伍'"
+            "level": "warn",
+            "text": "'S: lock_team=0：上游单人会 RequestHumanTakeover（必须锁队）→ finish(failed)'"
           }
         },
         {
-          "op": "click",
+          "op": "if",
           "args": {
-            "sel": "legacy_EternitySea_I_ETERNITYSEA_UNLOCK"
+            "cond": "appear('legacy_EternitySea_I_BACK_BOTTOM')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_EternitySea_I_BACK_BOTTOM"
+              }
+            }
+          ]
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "8"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('庭院_探索灯笼')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "庭院_探索灯笼"
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "failed"
           }
         }
+      ],
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: check_lock(True)：锁队（点 UNLOCK 直到 LOCK 出现）'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "8"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_EternitySea_I_NEWETERNITYSEA_LOCK')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_EternitySea_I_ETERNITYSEA_UNLOCK')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_EternitySea_I_ETERNITYSEA_UNLOCK"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_EternitySea_I_NEWETERNITYSEA_LOCK')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 队伍已锁定（I_NEWETERNITYSEA_LOCK）'"
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "log",
+              "args": {
+                "level": "warn",
+                "text": "'S: 未确认到锁定图标（素材可能过期）→ 继续但记录风险'"
+              }
+            }
+          ]
+        }
       ]
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'S: 单人挑战循环（每场用 I_ETERNITY_SEA_FIRE 判定在本页）'"
+      }
     },
     {
       "op": "loop",
@@ -143,7 +345,7 @@
               "op": "log",
               "args": {
                 "level": "info",
-                "text": "'S: 战斗准备：点「准备」（I_PREPARE_HIGHLIGHT）'"
+                "text": "'S: 战斗准备：点「准备」（I_PREPARE_HIGHLIGHT，若无准备页则直接进战斗）'"
               }
             },
             {
@@ -185,7 +387,7 @@
             {
               "op": "wait_until",
               "args": {
-                "cond": "appear('legacy_Component_GeneralBattle_I_BATTLE_INFO')",
+                "cond": "appear('legacy_Component_GeneralBattle_I_BATTLE_INFO') or appear('战斗_自动按钮')",
                 "timeout_s": 25
               }
             },
@@ -193,7 +395,7 @@
               "op": "log",
               "args": {
                 "level": "info",
-                "text": "'S: 已进入战斗（I_BATTLE_INFO），自动战斗 + 结算处理'"
+                "text": "'S: 已进入战斗（I_BATTLE_INFO/战斗_自动按钮），自动战斗 + 结算处理'"
               }
             },
             {
@@ -375,12 +577,15 @@
             {
               "op": "log",
               "args": {
-                "level": "info",
-                "text": "'S: 未见挑战按钮，结束循环'"
+                "level": "warn",
+                "text": "'S: 未见挑战按钮（加载/结算/次数用尽）→ 等待重试'"
               }
             },
             {
-              "op": "break"
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
             }
           ]
         }

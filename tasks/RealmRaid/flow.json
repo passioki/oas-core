@@ -605,6 +605,78 @@
               },
               "then": [
                 {
+                  "op": "loop",
+                  "args": {
+                    "n": "10"
+                  },
+                  "body": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                              "timeout_ms": 2000
+                            }
+                          }
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_RealmRaid_I_FIRE')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_RealmRaid_I_FIRE",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_RealmRaid_I_FIRE",
+                              "timeout_ms": 2500
+                            },
+                            "retry": {
+                              "times": 2,
+                              "delay_ms": 600,
+                              "exponential": false
+                            }
+                          }
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_EXIT')"
+                      },
+                      "then": [
+                        {
+                          "op": "break",
+                          "args": {}
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.0
+                      }
+                    }
+                  ]
+                },
+                {
                   "op": "wait_until",
                   "args": {
                     "cond": "appear('legacy_Component_GeneralBattle_I_EXIT')",
@@ -841,6 +913,78 @@
                           "exponential": false
                         }
                       }
+                    },
+                    {
+                      "op": "loop",
+                      "args": {
+                        "n": "10"
+                      },
+                      "body": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                  "timeout_ms": 2000
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_RealmRaid_I_FIRE')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_RealmRaid_I_FIRE",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_RealmRaid_I_FIRE",
+                                  "timeout_ms": 2500
+                                },
+                                "retry": {
+                                  "times": 2,
+                                  "delay_ms": 600,
+                                  "exponential": false
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT') or appear('legacy_Component_GeneralBattle_I_BATTLE_INFO') or appear('战斗_准备按钮') or appear('战斗_自动按钮')"
+                          },
+                          "then": [
+                            {
+                              "op": "break",
+                              "args": {}
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 1.0
+                          }
+                        }
+                      ]
                     },
                     {
                       "op": "wait_until",
@@ -1161,6 +1305,78 @@
                       }
                     },
                     {
+                      "op": "loop",
+                      "args": {
+                        "n": "10"
+                      },
+                      "body": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                  "timeout_ms": 2000
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_RealmRaid_I_FIRE')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_RealmRaid_I_FIRE",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_RealmRaid_I_FIRE",
+                                  "timeout_ms": 2500
+                                },
+                                "retry": {
+                                  "times": 2,
+                                  "delay_ms": 600,
+                                  "exponential": false
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT') or appear('legacy_Component_GeneralBattle_I_BATTLE_INFO') or appear('战斗_准备按钮') or appear('战斗_自动按钮')"
+                          },
+                          "then": [
+                            {
+                              "op": "break",
+                              "args": {}
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 1.0
+                          }
+                        }
+                      ]
+                    },
+                    {
                       "op": "wait_until",
                       "args": {
                         "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT') or appear('legacy_Component_GeneralBattle_I_BATTLE_INFO') or appear('战斗_准备按钮') or appear('战斗_自动按钮')",
@@ -1477,6 +1693,78 @@
                           "exponential": false
                         }
                       }
+                    },
+                    {
+                      "op": "loop",
+                      "args": {
+                        "n": "10"
+                      },
+                      "body": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                  "timeout_ms": 2000
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_RealmRaid_I_FIRE')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_RealmRaid_I_FIRE",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_RealmRaid_I_FIRE",
+                                  "timeout_ms": 2500
+                                },
+                                "retry": {
+                                  "times": 2,
+                                  "delay_ms": 600,
+                                  "exponential": false
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT') or appear('legacy_Component_GeneralBattle_I_BATTLE_INFO') or appear('战斗_准备按钮') or appear('战斗_自动按钮')"
+                          },
+                          "then": [
+                            {
+                              "op": "break",
+                              "args": {}
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 1.0
+                          }
+                        }
+                      ]
                     },
                     {
                       "op": "wait_until",
@@ -1797,6 +2085,78 @@
                       }
                     },
                     {
+                      "op": "loop",
+                      "args": {
+                        "n": "10"
+                      },
+                      "body": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                  "timeout_ms": 2000
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_RealmRaid_I_FIRE')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_RealmRaid_I_FIRE",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_RealmRaid_I_FIRE",
+                                  "timeout_ms": 2500
+                                },
+                                "retry": {
+                                  "times": 2,
+                                  "delay_ms": 600,
+                                  "exponential": false
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT') or appear('legacy_Component_GeneralBattle_I_BATTLE_INFO') or appear('战斗_准备按钮') or appear('战斗_自动按钮')"
+                          },
+                          "then": [
+                            {
+                              "op": "break",
+                              "args": {}
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 1.0
+                          }
+                        }
+                      ]
+                    },
+                    {
                       "op": "wait_until",
                       "args": {
                         "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT') or appear('legacy_Component_GeneralBattle_I_BATTLE_INFO') or appear('战斗_准备按钮') or appear('战斗_自动按钮')",
@@ -2115,6 +2475,78 @@
                       }
                     },
                     {
+                      "op": "loop",
+                      "args": {
+                        "n": "10"
+                      },
+                      "body": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                  "timeout_ms": 2000
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_RealmRaid_I_FIRE')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_RealmRaid_I_FIRE",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_RealmRaid_I_FIRE",
+                                  "timeout_ms": 2500
+                                },
+                                "retry": {
+                                  "times": 2,
+                                  "delay_ms": 600,
+                                  "exponential": false
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT') or appear('legacy_Component_GeneralBattle_I_BATTLE_INFO') or appear('战斗_准备按钮') or appear('战斗_自动按钮')"
+                          },
+                          "then": [
+                            {
+                              "op": "break",
+                              "args": {}
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 1.0
+                          }
+                        }
+                      ]
+                    },
+                    {
                       "op": "wait_until",
                       "args": {
                         "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT') or appear('legacy_Component_GeneralBattle_I_BATTLE_INFO') or appear('战斗_准备按钮') or appear('战斗_自动按钮')",
@@ -2431,6 +2863,78 @@
                           "exponential": false
                         }
                       }
+                    },
+                    {
+                      "op": "loop",
+                      "args": {
+                        "n": "10"
+                      },
+                      "body": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                                  "timeout_ms": 2000
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_RealmRaid_I_FIRE')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_RealmRaid_I_FIRE",
+                                "requires": {
+                                  "kind": "appear",
+                                  "sel": "legacy_RealmRaid_I_FIRE",
+                                  "timeout_ms": 2500
+                                },
+                                "retry": {
+                                  "times": 2,
+                                  "delay_ms": 600,
+                                  "exponential": false
+                                }
+                              }
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT') or appear('legacy_Component_GeneralBattle_I_BATTLE_INFO') or appear('战斗_准备按钮') or appear('战斗_自动按钮')"
+                          },
+                          "then": [
+                            {
+                              "op": "break",
+                              "args": {}
+                            }
+                          ],
+                          "else": []
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 1.0
+                          }
+                        }
+                      ]
                     },
                     {
                       "op": "wait_until",
@@ -2917,13 +3421,13 @@
         {
           "op": "if",
           "args": {
-            "cond": "var('exit') == 'no_target'"
+            "cond": "var('exit') == 'failed'"
           },
           "then": [
             {
               "op": "finish",
               "args": {
-                "exit": "no_target"
+                "exit": "failed"
               }
             }
           ],
@@ -2931,38 +3435,22 @@
             {
               "op": "if",
               "args": {
-                "cond": "var('exit') == 'failed'"
+                "cond": "var('exit') == 'done'"
               },
               "then": [
                 {
                   "op": "finish",
                   "args": {
-                    "exit": "failed"
+                    "exit": "done"
                   }
                 }
               ],
               "else": [
                 {
-                  "op": "if",
+                  "op": "finish",
                   "args": {
-                    "cond": "var('exit') == 'done'"
-                  },
-                  "then": [
-                    {
-                      "op": "finish",
-                      "args": {
-                        "exit": "done"
-                      }
-                    }
-                  ],
-                  "else": [
-                    {
-                      "op": "finish",
-                      "args": {
-                        "exit": "failed"
-                      }
-                    }
-                  ]
+                    "exit": "failed"
+                  }
                 }
               ]
             }

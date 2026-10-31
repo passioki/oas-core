@@ -29,7 +29,7 @@ cd D:\OAS-dev\oas-core
 | exit | result | 场景 |
 |---|---|---|
 | done | success | 收取完成 |
-| no_resource | resource | 预留 |
+| failed | retryable | 12 次尝试未进入寮结界 |
 
 ## 已知限制（⛔）
 
@@ -37,3 +37,12 @@ cd D:\OAS-dev\oas-core
 2. 式神育成换卡（ReplaceShikigami：满级下阵/按类型上阵/长按多选）无原语。
 3. 经验盒子上限 OCR 三元组判断未迁移。
 4. 下一次运行时间（按卡剩余时长）交给调度层；无实机证据。
+
+## 本轮静态修正（静态润色轮）
+
+- 收体力盒子后先返回结界再检查经验盒子（旧仓 _exit_to_realm 顺序；原流程会残留在盒子页直接判断经验盒子）
+- 收寮资金/寮体力前先退出结界到阴阳寮主界面（原流程在结界页查找 I_GUILD_* 按钮，收寮逻辑从未执行）
+- 进入结界 12 次失败增加显式守卫（failed），并 gate 后续步骤
+- 删除死出口 no_resource；新增 failed(retryable) 出口
+
+> 注：`migration/specs/KekkaiUtilize.md` 的 exit/行为表述如与本轮冲突，以本节与 flow.json 为准。

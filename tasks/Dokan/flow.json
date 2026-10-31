@@ -42,21 +42,22 @@
     {
       "op": "loop",
       "args": {
-        "n": "12"
+        "n": "14"
       },
       "body": [
         {
-          "op": "wait",
-          "args": {
-            "seconds": 1.0
-          }
-        },
-        {
           "op": "if",
           "args": {
-            "cond": "appear('legacy_GameUi_I_BACK_Y')"
+            "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_CENTER_TOP') or appear('legacy_Dokan_I_RYOU_DOKAN_FINDING_DOKAN') or appear('legacy_Dokan_I_RYOU_DOKAN_FOUND_DOKAN') or appear('legacy_Dokan_I_RYOU_DOKAN_GATHERING')"
           },
           "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 已进入道馆场景'"
+              }
+            },
             {
               "op": "break",
               "args": {}
@@ -67,17 +68,17 @@
         {
           "op": "if",
           "args": {
-            "cond": "appear('legacy_Dokan_I_RYOU_SHENSHE')"
+            "cond": "appear('legacy_Dokan_I_SCENE_SHENSHE')"
           },
           "then": [
             {
               "op": "click",
               "args": {
-                "sel": "legacy_Dokan_I_RYOU_SHENSHE",
+                "sel": "legacy_Dokan_I_RYOU_DOKAN",
                 "requires": {
                   "kind": "appear",
-                  "sel": "legacy_Dokan_I_RYOU_SHENSHE",
-                  "timeout_ms": 2500
+                  "sel": "legacy_Dokan_I_RYOU_DOKAN",
+                  "timeout_ms": 3000
                 }
               }
             }
@@ -86,17 +87,17 @@
             {
               "op": "if",
               "args": {
-                "cond": "appear('legacy_Dokan_I_RYOU_DOKAN')"
+                "cond": "appear('legacy_Dokan_I_SCENE_RYOU') or appear('legacy_Dokan_I_RYOU_SHENSHE')"
               },
               "then": [
                 {
                   "op": "click",
                   "args": {
-                    "sel": "legacy_Dokan_I_RYOU_DOKAN",
+                    "sel": "legacy_Dokan_I_RYOU_SHENSHE",
                     "requires": {
                       "kind": "appear",
-                      "sel": "legacy_Dokan_I_RYOU_DOKAN",
-                      "timeout_ms": 2500
+                      "sel": "legacy_Dokan_I_RYOU_SHENSHE",
+                      "timeout_ms": 3000
                     }
                   }
                 }
@@ -104,8 +105,37 @@
               "else": []
             }
           ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.2
+          }
         }
       ]
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "not (appear('legacy_Dokan_I_RYOU_DOKAN_CENTER_TOP') or appear('legacy_Dokan_I_RYOU_DOKAN_FINDING_DOKAN') or appear('legacy_Dokan_I_RYOU_DOKAN_FOUND_DOKAN') or appear('legacy_Dokan_I_RYOU_DOKAN_GATHERING'))"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "'S: 14 次尝试仍未进入道馆场景 → failed(retryable)'"
+          }
+        },
+        {
+          "op": "set_var",
+          "args": {
+            "name": "exit",
+            "value": "'failed'"
+          }
+        }
+      ],
+      "else": []
     },
     {
       "op": "wait",
@@ -128,133 +158,226 @@
       }
     },
     {
-      "op": "while",
+      "op": "if",
       "args": {
-        "cond": "var('loops') < 60"
+        "cond": "var('exit') == 'done'"
       },
-      "body": [
+      "then": [
         {
-          "op": "inc_var",
+          "op": "while",
           "args": {
-            "name": "loops",
-            "by": 1
-          }
-        },
-        {
-          "op": "wait",
-          "args": {
-            "seconds": 2.0
-          }
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_FINISHED')"
+            "cond": "var('loops') < 60"
           },
-          "then": [
+          "body": [
             {
-              "op": "log",
+              "op": "inc_var",
               "args": {
-                "level": "info",
-                "text": "'S: 道馆已结束'"
+                "name": "loops",
+                "by": 1
               }
             },
             {
-              "op": "set_var",
+              "op": "wait",
               "args": {
-                "name": "exit",
-                "value": "'done'"
+                "seconds": 2.0
               }
             },
-            {
-              "op": "break",
-              "args": {}
-            }
-          ],
-          "else": []
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_FINDING_DOKAN')"
-          },
-          "then": [
-            {
-              "op": "log",
-              "args": {
-                "level": "warn",
-                "text": "'S: 处于「寻找道馆」场景：动态列表扫描 + 赏金/人数评分 + 创建道馆 未迁移（spec ⛔）'"
-              }
-            },
-            {
-              "op": "set_var",
-              "args": {
-                "name": "exit",
-                "value": "'no_target'"
-              }
-            },
-            {
-              "op": "break",
-              "args": {}
-            }
-          ],
-          "else": []
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_FOUND_DOKAN')"
-          },
-          "then": [
-            {
-              "op": "log",
-              "args": {
-                "level": "warn",
-                "text": "'S: 已找到道馆：进入寮境需要 O_DOKAN_MAP OCR 地图点坐标，DSL 无法表达（spec ⛔）'"
-              }
-            },
-            {
-              "op": "set_var",
-              "args": {
-                "name": "exit",
-                "value": "'no_target'"
-              }
-            },
-            {
-              "op": "break",
-              "args": {}
-            }
-          ],
-          "else": []
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_GATHERING') or appear('legacy_Dokan_I_DOKAN_BOSS_WAITING') or appear('legacy_Dokan_I_RYOU_DOKAN_BATTLE_OVER')"
-          },
-          "then": [
-            {
-              "op": "log",
-              "args": {
-                "level": "info",
-                "text": "'S: 集结/馆主等待/战斗结束 → 等待 2s'"
-              }
-            }
-          ],
-          "else": []
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_Dokan_C_DOKAN_TOPPA_RANK_CLOSE_AREA') or appear('legacy_Dokan_I_RYOU_DOKAN_TOPPA_RANK')"
-          },
-          "then": [
             {
               "op": "if",
               "args": {
-                "cond": "appear('legacy_Dokan_C_DOKAN_TOPPA_RANK_CLOSE_AREA')"
+                "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_FINDING_DOKAN')"
               },
               "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "warn",
+                    "text": "'S: 处于「寻找道馆」场景：动态列表扫描 + 赏金/人数评分 + 创建道馆 未迁移（spec ⛔）'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "exit",
+                    "value": "'no_target'"
+                  }
+                },
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_FOUND_DOKAN')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "warn",
+                    "text": "'S: 已找到道馆：进入寮境需要 O_DOKAN_MAP OCR 关键字框 + 偏移点击，DSL 无法表达（spec ⛔）'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "exit",
+                    "value": "'no_target'"
+                  }
+                },
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_GATHERING')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 道馆集结中 → 等待'"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Dokan_I_DOKAN_BOSS_WAITING')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 等待馆主战 → 等待'"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_MASTER_BATTLE') and appear('legacy_Dokan_I_RYOU_DOKAN_START_CHALLENGE')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 馆主战可挑战 → 点右下角挑战（馆主双阵容战斗未迁移，见 spec ⛔）'"
+                  }
+                },
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Dokan_I_RYOU_DOKAN_START_CHALLENGE",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_Dokan_I_RYOU_DOKAN_START_CHALLENGE",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_BATTLE_MASTER_FIRST') or appear('legacy_Dokan_I_RYOU_DOKAN_BATTLE_MASTER_SECOND') or appear('legacy_Dokan_I_RYOU_DOKAN_IN_FIELD')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "warn",
+                    "text": "'S: 已进入战斗（馆主/寮境），战斗流程未迁移（spec ⛔）→ no_target(blocked)'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "exit",
+                    "value": "'no_target'"
+                  }
+                },
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_CD')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "warn",
+                    "text": "'S: 道馆失败 CD 中（自动加油未迁移）→ 等待'"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_START_CHALLENGE')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 右下角挑战按钮 → 点击进入战斗'"
+                  }
+                },
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Dokan_I_RYOU_DOKAN_START_CHALLENGE",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_Dokan_I_RYOU_DOKAN_START_CHALLENGE",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_BATTLE_OVER') or appear('legacy_Dokan_I_RYOU_DOKAN_TOPPA_RANK') or appear('legacy_Component_GeneralBattle_I_WIN') or appear('legacy_Component_GeneralBattle_I_FALSE')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 战斗结算/排名界面 → 点关闭区域'"
+                  }
+                },
                 {
                   "op": "click_target",
                   "args": {
@@ -263,104 +386,158 @@
                         "kind": "region",
                         "sel": "legacy_Dokan_C_DOKAN_TOPPA_RANK_CLOSE_AREA"
                       }
-                    ],
+                    ]
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_ABANDONED_TOPPA_CONTINUE')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 放弃突破投票 → 选「放弃」'"
+                  }
+                },
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Dokan_I_RYOU_DOKAN_ABANDONED_TOPPA_ABANDONED",
                     "requires": {
                       "kind": "appear",
-                      "sel": "legacy_Dokan_C_DOKAN_TOPPA_RANK_CLOSE_AREA",
+                      "sel": "legacy_Dokan_I_RYOU_DOKAN_ABANDONED_TOPPA_ABANDONED",
                       "timeout_ms": 2500
                     }
                   }
                 }
               ],
               "else": []
-            }
-          ],
-          "else": []
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_START_CHALLENGE')"
-          },
-          "then": [
-            {
-              "op": "log",
-              "args": {
-                "level": "warn",
-                "text": "'S: 点击右下角挑战进入战斗（馆主/普通战斗的阵容预设与战斗流程未迁移）'"
-              }
             },
             {
-              "op": "click",
+              "op": "if",
               "args": {
-                "sel": "legacy_Dokan_I_RYOU_DOKAN_START_CHALLENGE",
-                "requires": {
-                  "kind": "appear",
-                  "sel": "legacy_Dokan_I_RYOU_DOKAN_START_CHALLENGE",
-                  "timeout_ms": 2500
+                "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_FAILED_VOTE_KEEP_BOUNTY')"
+              },
+              "then": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "param('daily_attack_count') >= 2 and appear('legacy_Dokan_I_RYOU_DOKAN_FAILED_VOTE_BATTLE_AGAIN')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 失败投票 → 再战道馆'"
+                      }
+                    },
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Dokan_I_RYOU_DOKAN_FAILED_VOTE_BATTLE_AGAIN",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_Dokan_I_RYOU_DOKAN_FAILED_VOTE_BATTLE_AGAIN",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 失败投票 → 保留赏金'"
+                      }
+                    },
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Dokan_I_RYOU_DOKAN_FAILED_VOTE_KEEP_BOUNTY",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_Dokan_I_RYOU_DOKAN_FAILED_VOTE_KEEP_BOUNTY",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ]
                 }
-              }
-            }
-          ],
-          "else": []
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_CD')"
-          },
-          "then": [
+              ],
+              "else": []
+            },
             {
-              "op": "log",
+              "op": "if",
               "args": {
-                "level": "warn",
-                "text": "'S: 道馆失败 CD 中（自动加油未迁移）'"
-              }
-            }
-          ],
-          "else": []
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_ABANDONED_TOPPA_ABANDONED')"
-          },
-          "then": [
-            {
-              "op": "click",
-              "args": {
-                "sel": "legacy_Dokan_I_RYOU_DOKAN_ABANDONED_TOPPA_ABANDONED",
-                "requires": {
-                  "kind": "appear",
-                  "sel": "legacy_Dokan_I_RYOU_DOKAN_ABANDONED_TOPPA_ABANDONED",
-                  "timeout_ms": 2500
+                "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_WIN') or appear('legacy_Dokan_I_RYOU_DOKAN_SPOILS_OF_DOKAN')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 道馆胜利界面 → 点关闭区域'"
+                  }
+                },
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "region",
+                        "sel": "legacy_Dokan_C_DOKAN_TOPPA_RANK_CLOSE_AREA"
+                      }
+                    ]
+                  }
                 }
-              }
-            }
-          ],
-          "else": []
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_FAILED_VOTE_KEEP_BOUNTY')"
-          },
-          "then": [
+              ],
+              "else": []
+            },
             {
-              "op": "click",
+              "op": "if",
               "args": {
-                "sel": "legacy_Dokan_I_RYOU_DOKAN_FAILED_VOTE_KEEP_BOUNTY",
-                "requires": {
-                  "kind": "appear",
-                  "sel": "legacy_Dokan_I_RYOU_DOKAN_FAILED_VOTE_KEEP_BOUNTY",
-                  "timeout_ms": 2500
+                "cond": "appear('legacy_Dokan_I_RYOU_DOKAN_CENTER_TOP') and (appear('legacy_Dokan_I_RYOU_DOKAN_TODAY_ATTACK_COUNT') or appear('legacy_Dokan_I_RYOU_DOKAN_REMAIN_ATTACK_COUNT_DONE'))"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 道馆已结束 → done'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "exit",
+                    "value": "'done'"
+                  }
+                },
+                {
+                  "op": "break",
+                  "args": {}
                 }
+              ],
+              "else": []
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
               }
             }
-          ],
-          "else": []
+          ]
         }
-      ]
+      ],
+      "else": []
     },
     {
       "op": "loop",
@@ -513,38 +690,22 @@
         {
           "op": "if",
           "args": {
-            "cond": "var('exit') == 'failed'"
+            "cond": "var('exit') == 'done'"
           },
           "then": [
             {
               "op": "finish",
               "args": {
-                "exit": "failed"
+                "exit": "done"
               }
             }
           ],
           "else": [
             {
-              "op": "if",
+              "op": "finish",
               "args": {
-                "cond": "var('exit') == 'done'"
-              },
-              "then": [
-                {
-                  "op": "finish",
-                  "args": {
-                    "exit": "done"
-                  }
-                }
-              ],
-              "else": [
-                {
-                  "op": "finish",
-                  "args": {
-                    "exit": "failed"
-                  }
-                }
-              ]
+                "exit": "failed"
+              }
             }
           ]
         }

@@ -6,7 +6,7 @@
       "op": "log",
       "args": {
         "level": "info",
-        "text": "'S: Exploration 开始（庭院→探索→第二十八章→探索地图：小纸人/小怪/BOSS，循环 max_battles 次→回庭院）'"
+        "text": "'S: Exploration 开始（庭院→探索→第二十八章→探索地图：小纸人/宝箱/剧情/BOSS/小怪，循环 max_battles 次→回庭院）'"
       }
     },
     {
@@ -157,6 +157,83 @@
         {
           "op": "if",
           "args": {
+            "cond": "appear('legacy_Exploration_I_TREASURE_BOX_CLICK')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 宝箱，点掉'"
+              }
+            },
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "template",
+                    "sel": "legacy_Exploration_I_TREASURE_BOX_CLICK"
+                  }
+                ]
+              }
+            },
+            {
+              "op": "continue"
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 剧情/确认弹窗，点确认'"
+              }
+            },
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_CONFIRM"
+              }
+            },
+            {
+              "op": "continue"
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM_SAMLL')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 小确认弹窗，点掉'"
+              }
+            },
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GlobalGame_I_UI_CONFIRM_SAMLL"
+              }
+            },
+            {
+              "op": "continue"
+            }
+          ]
+        },
+        {
+          "op": "if",
+          "args": {
             "cond": "appear('legacy_Exploration_I_BOSS_BATTLE_BUTTON') or appear('legacy_Exploration_I_NORMAL_BATTLE_BUTTON')"
           },
           "then": [
@@ -191,7 +268,74 @@
               "op": "log",
               "args": {
                 "level": "info",
-                "text": "'S: 战斗准备：点「准备」（I_PREPARE_HIGHLIGHT）'"
+                "text": "'S: fire() 重试：若仍在章节地图（没进战斗）则再点一次，最多 4 次'"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "4"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 2.0
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_BATTLE_INFO') or appear('战斗_自动按钮')"
+                  },
+                  "then": [
+                    {
+                      "op": "break"
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('章节_固定阵容')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "warn",
+                        "text": "'S: 点击后仍在探索地图，重试点击怪物'"
+                      }
+                    },
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "template",
+                            "sel": "legacy_Exploration_I_BOSS_BATTLE_BUTTON"
+                          },
+                          {
+                            "kind": "template",
+                            "sel": "legacy_Exploration_I_NORMAL_BATTLE_BUTTON"
+                          }
+                        ],
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "章节_固定阵容",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 战斗准备：点「准备」（I_PREPARE_HIGHLIGHT，若无准备页则直接进战斗）'"
               }
             },
             {
@@ -233,7 +377,7 @@
             {
               "op": "wait_until",
               "args": {
-                "cond": "appear('legacy_Component_GeneralBattle_I_BATTLE_INFO')",
+                "cond": "appear('legacy_Component_GeneralBattle_I_BATTLE_INFO') or appear('战斗_自动按钮')",
                 "timeout_s": 25
               }
             },
@@ -241,7 +385,7 @@
               "op": "log",
               "args": {
                 "level": "info",
-                "text": "'S: 已进入战斗（I_BATTLE_INFO），自动战斗 + 结算处理'"
+                "text": "'S: 已进入战斗（I_BATTLE_INFO/战斗_自动按钮），自动战斗 + 结算处理'"
               }
             },
             {
@@ -402,7 +546,7 @@
                 {
                   "op": "if",
                   "args": {
-                    "cond": "appear('章节_固定阵容') or appear('章节_固定阵容')"
+                    "cond": "appear('章节_固定阵容')"
                   },
                   "then": [
                     {
@@ -424,19 +568,19 @@
               "op": "log",
               "args": {
                 "level": "info",
-                "text": "'S: 当前屏无战斗图标，向右滑屏找怪'"
+                "text": "'S: 当前屏无战斗图标，按 S_SWIPE_BACKGROUND_RIGHT 几何向右滑屏找怪'"
               }
             },
             {
               "op": "swipe",
               "args": {
                 "from": [
-                  1100,
-                  380
+                  1103,
+                  158
                 ],
                 "to": [
-                  250,
-                  380
+                  407,
+                  150
                 ],
                 "ms": 400
               }

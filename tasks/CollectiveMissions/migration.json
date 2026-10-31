@@ -43,5 +43,13 @@
     "双倍奖励两次领取未精确计数（4 轮领奖近似）",
     "missions_rule 配置串未映射：固定默认优先级顺序",
     "no device/replay evidence (emulator offline)"
-  ]
+  ],
+  "static_polish": {
+    "date": "2026-11-01",
+    "lint": "errors=0",
+    "fixes": [
+      "任务位分类顺序修正：`结伴同行`→FRIEND 判定移到等级判定之前（对齐旧 detect_one：先 name 判 结伴同行/契灵探查，再 level，最后 远远不够）",
+      "退出循环条件修复：原 `\"appear('%s')\" % X or appear(Y)` 因 `%` 优先级高于 `or` 导致第二个 appear 被丢弃（只认神社、不认庭院）→ 现为 神社 or 庭院"
+    ]
+  }
 }

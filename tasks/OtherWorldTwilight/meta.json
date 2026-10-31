@@ -6,7 +6,7 @@
   "version": 1,
   "expire": "weekly",
   "category": "weekly",
-  "description": "庭院→町中→逢魔之时→彼世逢魔。单人模式：锁定队伍→循环点挑战→通用战斗→回庭院（max_battles 次）。队长/队员模式（建房/邀请/等待）未迁移，见 migration.json。",
+  "description": "庭院→町中→逢魔之时→彼世逢魔。按 param user_status 分支：alone（默认）=check_lock(False) 保持未锁队→循环挑战→通用战斗→回庭院；leader/member 模式（建房/邀请/等待房间）未迁移，走 failed 出口并记录 blocker。上游默认 leader，本迁移默认 alone 以便可用；细节见 migration/specs/OtherWorldTwilight.md。",
   "entry": {
     "requires": {
       "kind": "appear",
@@ -15,6 +15,11 @@
     }
   },
   "params": [
+    {
+      "key": "user_status",
+      "type": "string",
+      "default": "alone"
+    },
     {
       "key": "max_battles",
       "type": "int",

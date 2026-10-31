@@ -5,7 +5,9 @@
     "spec: migration/specs/Dokan.md",
     "bundle: tasks/Dokan/{meta.json,flow.json,README.md,migration.json}",
     "lint: oasd task lint --tasks-dir tasks --task Dokan => lint task=Dokan errors=0",
-    "flow covers only: guild/shrine/dokan entry, 60-round scene polling with FINISHED/WAIT/CLOSE/START_CHALLENGE/vote branches, return home"
+    "flow covers only: guild/shrine/dokan entry, 60-round scene polling with FINISHED/WAIT/CLOSE/START_CHALLENGE/vote branches, return home",
+    "polish: entry break was GameUi.I_BACK_Y (premature) -> dokan scene markers + I_SCENE_RYOU/I_SCENE_SHENSHE; scene order matches DokanSceneDetector (FINISHED last with CENTER_TOP+attack-count); region-asset appear()/requires removed; BATTLE_OVER close branch unshadowed; vote/WIN scenes added; entry guard -> failed; lint re-run errors=0",
+    "static polish round: files updated tasks/Dokan/{flow.json,meta.json,migration.json,README.md} + this status; specs untouched per instruction"
   ],
   "gaps": [
     "⛔ architecture: find_dokan/find_challengeable needs list-wide multi-hit template scan, per-candidate sub-ROI OCR of bounty/people, score ranking, dynamic roi_back mutation — no DSL primitives",

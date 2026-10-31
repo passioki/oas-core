@@ -28,8 +28,8 @@
     "no_target": {
       "result": "blocked"
     },
-    "no_resource": {
-      "result": "resource"
+    "failed": {
+      "result": "retryable"
     }
   },
   "capabilities": {

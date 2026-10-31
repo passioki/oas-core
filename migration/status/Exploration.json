@@ -1,12 +1,13 @@
 {
   "task": "Exploration",
   "status": "🔄",
-  "evidence": "task lint --task Exploration => errors=0；默认配置主链路（28章进图→小纸人/战斗→21 次上限→退出回庭院）覆盖；UP定向/自动候补/宝箱/滑屏尽头/组队未迁移",
+  "evidence": "task lint --task Exploration => errors=0（2026-11-01 polish 后）；滑屏几何/fire 重试/进战斗 marker/弹窗宝箱分支已按远端修正",
   "gaps": [
     "仅第二十八章；其他章节滑屏选关未迁移",
     "UP 定向找怪、自动候补、宝箱、剧情弹窗、加成、突破票联动未迁移",
     "滑屏尽头检测需帧差分原语，未迁移",
     "组队 LEADER/MEMBER + 好友邀请未迁移",
-    "无本任务实机/回放证据（仅复用 tasks/探索 素材链）"
+    "无本任务实机/回放证据（仅复用 tasks/探索 素材链）",
+    "章节固定第二十八章、UP 定向、auto_rotate、滑屏尽头（帧差分）仍为 blocker（未在本轮改动）"
   ]
 }

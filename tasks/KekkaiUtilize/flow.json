@@ -116,71 +116,81 @@
     {
       "op": "if",
       "args": {
-        "cond": "appear('legacy_KekkaiUtilize_I_UTILIZE_EXP')"
+        "cond": "not (appear('legacy_KekkaiUtilize_I_REALM_SHIN') or appear('legacy_KekkaiUtilize_I_SHI_DEFENSE'))"
       },
       "then": [
         {
           "op": "log",
           "args": {
-            "level": "info",
-            "text": "'S: 有寄养收获 → 领取'"
+            "level": "warn",
+            "text": "'S: 12 次尝试仍未进入寮结界 → failed(retryable)'"
           }
         },
         {
-          "op": "click",
+          "op": "set_var",
           "args": {
-            "sel": "legacy_KekkaiUtilize_I_UTILIZE_EXP",
-            "requires": {
-              "kind": "appear",
-              "sel": "legacy_KekkaiUtilize_I_UTILIZE_EXP",
-              "timeout_ms": 3000
-            }
+            "name": "exit",
+            "value": "'failed'"
           }
-        },
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "var('exit') == 'done'"
+      },
+      "then": [
         {
-          "op": "loop",
+          "op": "if",
           "args": {
-            "n": "8"
+            "cond": "appear('legacy_KekkaiUtilize_I_UTILIZE_EXP')"
           },
-          "body": [
+          "then": [
             {
-              "op": "wait",
+              "op": "log",
               "args": {
-                "seconds": 1.0
+                "level": "info",
+                "text": "'S: 有寄养收获 → 领取'"
               }
             },
             {
-              "op": "if",
+              "op": "click",
               "args": {
-                "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_GlobalGame_I_UI_REWARD",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_GlobalGame_I_UI_REWARD",
-                      "timeout_ms": 2500
-                    }
-                  }
+                "sel": "legacy_KekkaiUtilize_I_UTILIZE_EXP",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_KekkaiUtilize_I_UTILIZE_EXP",
+                  "timeout_ms": 3000
                 }
-              ],
-              "else": [
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "8"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                },
                 {
                   "op": "if",
                   "args": {
-                    "cond": "appear('legacy_GlobalGame_I_UI_AWARD')"
+                    "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
                   },
                   "then": [
                     {
                       "op": "click",
                       "args": {
-                        "sel": "legacy_GlobalGame_I_UI_AWARD",
+                        "sel": "legacy_GlobalGame_I_UI_REWARD",
                         "requires": {
                           "kind": "appear",
-                          "sel": "legacy_GlobalGame_I_UI_AWARD",
+                          "sel": "legacy_GlobalGame_I_UI_REWARD",
                           "timeout_ms": 2500
                         }
                       }
@@ -188,46 +198,142 @@
                   ],
                   "else": [
                     {
-                      "op": "break",
-                      "args": {}
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GlobalGame_I_UI_AWARD')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GlobalGame_I_UI_AWARD",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_GlobalGame_I_UI_AWARD",
+                              "timeout_ms": 2500
+                            }
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "break",
+                          "args": {}
+                        }
+                      ]
                     }
                   ]
                 }
               ]
             }
-          ]
-        }
-      ],
-      "else": []
-    },
-    {
-      "op": "if",
-      "args": {
-        "cond": "appear('legacy_KekkaiUtilize_I_UTILIZE_ADD')"
-      },
-      "then": [
+          ],
+          "else": []
+        },
         {
-          "op": "log",
+          "op": "if",
           "args": {
-            "level": "warn",
-            "text": "'S: 检测到「寄养」入口；选卡/朋友/时长逻辑受 DSL 限制未迁移（spec ⛔）'"
-          }
-        }
-      ],
-      "else": []
-    },
-    {
-      "op": "if",
-      "args": {
-        "cond": "appear('legacy_KekkaiUtilize_I_BOX_AP')"
-      },
-      "then": [
+            "cond": "appear('legacy_KekkaiUtilize_I_UTILIZE_ADD')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "warn",
+                "text": "'S: 检测到「寄养」入口；选卡/朋友/时长逻辑受 DSL 限制未迁移（spec ⛔）'"
+              }
+            }
+          ],
+          "else": []
+        },
         {
-          "op": "log",
+          "op": "if",
           "args": {
-            "level": "info",
-            "text": "'S: 收取体力盒子'"
-          }
+            "cond": "appear('legacy_KekkaiUtilize_I_BOX_AP')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 收取体力盒子'"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "8"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_REWARD",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GlobalGame_I_UI_REWARD",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_KekkaiUtilize_I_BOX_AP')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_KekkaiUtilize_I_BOX_AP",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_KekkaiUtilize_I_BOX_AP",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_KekkaiUtilize_I_AP_EXTRACT')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_KekkaiUtilize_I_AP_EXTRACT",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_KekkaiUtilize_I_AP_EXTRACT",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ],
+          "else": []
         },
         {
           "op": "loop",
@@ -238,91 +344,241 @@
             {
               "op": "wait",
               "args": {
-                "seconds": 1.0
+                "seconds": 0.8
               }
             },
             {
               "op": "if",
               "args": {
-                "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+                "cond": "appear('legacy_KekkaiUtilize_I_REALM_SHIN')"
               },
               "then": [
                 {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_GlobalGame_I_UI_REWARD",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_GlobalGame_I_UI_REWARD",
-                      "timeout_ms": 2500
-                    }
-                  }
+                  "op": "break",
+                  "args": {}
                 }
               ],
-              "else": []
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_KekkaiUtilize_I_BOX_AP')"
-              },
-              "then": [
+              "else": [
                 {
-                  "op": "click",
+                  "op": "if",
                   "args": {
-                    "sel": "legacy_KekkaiUtilize_I_BOX_AP",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_KekkaiUtilize_I_BOX_AP",
-                      "timeout_ms": 2500
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+                          "timeout_ms": 2500
+                        }
+                      }
                     }
-                  }
+                  ],
+                  "else": []
                 }
-              ],
-              "else": []
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_KekkaiUtilize_I_AP_EXTRACT')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_KekkaiUtilize_I_AP_EXTRACT",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_KekkaiUtilize_I_AP_EXTRACT",
-                      "timeout_ms": 2500
-                    }
-                  }
-                }
-              ],
-              "else": []
+              ]
             }
           ]
-        }
-      ],
-      "else": []
-    },
-    {
-      "op": "if",
-      "args": {
-        "cond": "appear('legacy_KekkaiUtilize_I_BOX_EXP') or appear('legacy_KekkaiUtilize_I_BOX_EXP_MAX')"
-      },
-      "then": [
+        },
         {
-          "op": "log",
+          "op": "if",
           "args": {
-            "level": "info",
-            "text": "'S: 收取经验盒子'"
-          }
+            "cond": "appear('legacy_KekkaiUtilize_I_BOX_EXP') or appear('legacy_KekkaiUtilize_I_BOX_EXP_MAX')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "'S: 收取经验盒子'"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "12"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_KekkaiUtilize_I_REALM_SHIN') and not appear('legacy_KekkaiUtilize_I_BOX_EXP')"
+                  },
+                  "then": [
+                    {
+                      "op": "break",
+                      "args": {}
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_REWARD",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GlobalGame_I_UI_REWARD",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GlobalGame_I_UI_CONFIRM",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_KekkaiUtilize_I_EXP_EXTRACT')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_KekkaiUtilize_I_EXP_EXTRACT",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_KekkaiUtilize_I_EXP_EXTRACT",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_KekkaiUtilize_I_BOX_EXP')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_KekkaiUtilize_I_BOX_EXP",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_KekkaiUtilize_I_BOX_EXP",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ],
+          "else": []
         },
         {
           "op": "loop",
           "args": {
-            "n": "12"
+            "n": "10"
+          },
+          "body": [
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 0.8
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GameUi_I_CHECK_GUILD')"
+              },
+              "then": [
+                {
+                  "op": "break",
+                  "args": {}
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+                          "timeout_ms": 2500
+                        }
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                              "timeout_ms": 2500
+                            }
+                          }
+                        }
+                      ],
+                      "else": []
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "10"
           },
           "body": [
             {
@@ -334,12 +590,79 @@
             {
               "op": "if",
               "args": {
-                "cond": "appear('legacy_KekkaiUtilize_I_REALM_SHIN') and not appear('legacy_KekkaiUtilize_I_BOX_EXP')"
+                "cond": "appear('legacy_KekkaiUtilize_I_GUILD_EXPAND')"
               },
               "then": [
                 {
-                  "op": "break",
-                  "args": {}
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_KekkaiUtilize_I_GUILD_EXPAND",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_KekkaiUtilize_I_GUILD_EXPAND",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_KekkaiUtilize_I_GUILD_ASSETS_RECEIVE')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_KekkaiUtilize_I_GUILD_ASSETS_RECEIVE",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_KekkaiUtilize_I_GUILD_ASSETS_RECEIVE",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_KekkaiUtilize_I_GUILD_ASSETS')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_KekkaiUtilize_I_GUILD_ASSETS",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_KekkaiUtilize_I_GUILD_ASSETS",
+                      "timeout_ms": 2500
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_KekkaiUtilize_I_GUILD_AP')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_KekkaiUtilize_I_GUILD_AP",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_KekkaiUtilize_I_GUILD_AP",
+                      "timeout_ms": 2500
+                    }
+                  }
                 }
               ],
               "else": []
@@ -363,233 +686,11 @@
                 }
               ],
               "else": []
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_GlobalGame_I_UI_CONFIRM')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_GlobalGame_I_UI_CONFIRM",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_GlobalGame_I_UI_CONFIRM",
-                      "timeout_ms": 2500
-                    }
-                  }
-                }
-              ],
-              "else": []
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_KekkaiUtilize_I_EXP_EXTRACT')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_KekkaiUtilize_I_EXP_EXTRACT",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_KekkaiUtilize_I_EXP_EXTRACT",
-                      "timeout_ms": 2500
-                    }
-                  }
-                }
-              ],
-              "else": []
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_KekkaiUtilize_I_BOX_EXP')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_KekkaiUtilize_I_BOX_EXP",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_KekkaiUtilize_I_BOX_EXP",
-                      "timeout_ms": 2500
-                    }
-                  }
-                }
-              ],
-              "else": []
             }
           ]
         }
       ],
       "else": []
-    },
-    {
-      "op": "loop",
-      "args": {
-        "n": "6"
-      },
-      "body": [
-        {
-          "op": "wait",
-          "args": {
-            "seconds": 0.8
-          }
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_KekkaiUtilize_I_REALM_SHIN')"
-          },
-          "then": [
-            {
-              "op": "break",
-              "args": {}
-            }
-          ],
-          "else": [
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_GlobalGame_I_UI_BACK_RED",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_GlobalGame_I_UI_BACK_RED",
-                      "timeout_ms": 2500
-                    }
-                  }
-                }
-              ],
-              "else": []
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "op": "loop",
-      "args": {
-        "n": "10"
-      },
-      "body": [
-        {
-          "op": "wait",
-          "args": {
-            "seconds": 1.0
-          }
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_KekkaiUtilize_I_GUILD_EXPAND')"
-          },
-          "then": [
-            {
-              "op": "click",
-              "args": {
-                "sel": "legacy_KekkaiUtilize_I_GUILD_EXPAND",
-                "requires": {
-                  "kind": "appear",
-                  "sel": "legacy_KekkaiUtilize_I_GUILD_EXPAND",
-                  "timeout_ms": 2500
-                }
-              }
-            }
-          ],
-          "else": []
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_KekkaiUtilize_I_GUILD_ASSETS_RECEIVE')"
-          },
-          "then": [
-            {
-              "op": "click",
-              "args": {
-                "sel": "legacy_KekkaiUtilize_I_GUILD_ASSETS_RECEIVE",
-                "requires": {
-                  "kind": "appear",
-                  "sel": "legacy_KekkaiUtilize_I_GUILD_ASSETS_RECEIVE",
-                  "timeout_ms": 2500
-                }
-              }
-            }
-          ],
-          "else": []
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_KekkaiUtilize_I_GUILD_ASSETS')"
-          },
-          "then": [
-            {
-              "op": "click",
-              "args": {
-                "sel": "legacy_KekkaiUtilize_I_GUILD_ASSETS",
-                "requires": {
-                  "kind": "appear",
-                  "sel": "legacy_KekkaiUtilize_I_GUILD_ASSETS",
-                  "timeout_ms": 2500
-                }
-              }
-            }
-          ],
-          "else": []
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_KekkaiUtilize_I_GUILD_AP')"
-          },
-          "then": [
-            {
-              "op": "click",
-              "args": {
-                "sel": "legacy_KekkaiUtilize_I_GUILD_AP",
-                "requires": {
-                  "kind": "appear",
-                  "sel": "legacy_KekkaiUtilize_I_GUILD_AP",
-                  "timeout_ms": 2500
-                }
-              }
-            }
-          ],
-          "else": []
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
-          },
-          "then": [
-            {
-              "op": "click",
-              "args": {
-                "sel": "legacy_GlobalGame_I_UI_REWARD",
-                "requires": {
-                  "kind": "appear",
-                  "sel": "legacy_GlobalGame_I_UI_REWARD",
-                  "timeout_ms": 2500
-                }
-              }
-            }
-          ],
-          "else": []
-        }
-      ]
     },
     {
       "op": "loop",
@@ -704,13 +805,13 @@
         {
           "op": "if",
           "args": {
-            "cond": "var('exit') == 'no_resource'"
+            "cond": "var('exit') == 'failed'"
           },
           "then": [
             {
               "op": "finish",
               "args": {
-                "exit": "no_resource"
+                "exit": "failed"
               }
             }
           ],

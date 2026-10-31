@@ -56,37 +56,39 @@
           "kind": "appear",
           "sel": "legacy_OtherWorldTwilight_I_DE_TO_OTHER_WORLD",
           "timeout_ms": 3000
-        },
-        "expect": {
-          "kind": "appear",
-          "sel": "legacy_OtherWorldTwilight_I_OWT_FIRE",
-          "timeout_ms": 15000
         }
+      }
+    },
+    {
+      "op": "wait_until",
+      "args": {
+        "cond": "appear('legacy_OtherWorldTwilight_I_OWT_FIRE') or appear('legacy_OtherWorldTwilight_I_OWT_TEAM')",
+        "timeout_s": 15
       }
     },
     {
       "op": "if",
       "args": {
-        "cond": "appear('legacy_OtherWorldTwilight_I_OWT_TEAM')"
+        "cond": "param('user_status') == 'alone'"
       },
       "then": [
         {
           "op": "log",
           "args": {
-            "level": "warn",
-            "text": "'S: 队长/队员模式未迁移：需要 建房/邀请/等待开战 的完整 GeneralRoom+GeneralInvite 子流程（素材已导入，flow 组合待下一轮）'"
+            "level": "info",
+            "text": "'S: 单人模式（user_status=alone）：check_lock(False) 保持未锁定队伍后循环挑战'"
           }
         },
         {
           "op": "loop",
           "args": {
-            "n": "12"
+            "n": "5"
           },
           "body": [
             {
               "op": "if",
               "args": {
-                "cond": "appear('庭院_探索灯笼')"
+                "cond": "appear('legacy_OtherWorldTwilight_I_OWT_UNLOCK')"
               },
               "then": [
                 {
@@ -97,27 +99,13 @@
             {
               "op": "if",
               "args": {
-                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+                "cond": "appear('legacy_OtherWorldTwilight_I_OWT_LOCK')"
               },
               "then": [
                 {
                   "op": "click",
                   "args": {
-                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
-                  }
-                }
-              ]
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                    "sel": "legacy_OtherWorldTwilight_I_OWT_LOCK"
                   }
                 }
               ]
@@ -126,41 +114,6 @@
               "op": "wait",
               "args": {
                 "seconds": 1.0
-              }
-            }
-          ]
-        },
-        {
-          "op": "appear",
-          "args": {
-            "sel": "庭院_探索灯笼"
-          }
-        },
-        {
-          "op": "finish",
-          "args": {
-            "exit": "failed"
-          }
-        }
-      ],
-      "else": [
-        {
-          "op": "log",
-          "args": {
-            "level": "info",
-            "text": "'S: 单人模式：锁定队伍后循环挑战彼世逢魔'"
-          }
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_OtherWorldTwilight_I_OWT_UNLOCK')"
-          },
-          "then": [
-            {
-              "op": "click",
-              "args": {
-                "sel": "legacy_OtherWorldTwilight_I_OWT_UNLOCK"
               }
             }
           ]
@@ -187,7 +140,7 @@
                   "op": "log",
                   "args": {
                     "level": "info",
-                    "text": "'S: 战斗准备：点「准备」（I_PREPARE_HIGHLIGHT）'"
+                    "text": "'S: 战斗准备：点「准备」（I_PREPARE_HIGHLIGHT，若无准备页则直接进战斗）'"
                   }
                 },
                 {
@@ -229,7 +182,7 @@
                 {
                   "op": "wait_until",
                   "args": {
-                    "cond": "appear('legacy_Component_GeneralBattle_I_BATTLE_INFO')",
+                    "cond": "appear('legacy_Component_GeneralBattle_I_BATTLE_INFO') or appear('战斗_自动按钮')",
                     "timeout_s": 25
                   }
                 },
@@ -237,13 +190,13 @@
                   "op": "log",
                   "args": {
                     "level": "info",
-                    "text": "'S: 已进入战斗（I_BATTLE_INFO），自动战斗 + 结算处理'"
+                    "text": "'S: 已进入战斗（I_BATTLE_INFO/战斗_自动按钮），自动战斗 + 结算处理'"
                   }
                 },
                 {
                   "op": "loop",
                   "args": {
-                    "n": "80"
+                    "n": "70"
                   },
                   "body": [
                     {
@@ -398,7 +351,7 @@
                     {
                       "op": "if",
                       "args": {
-                        "cond": "appear('legacy_OtherWorldTwilight_I_OWT_FIRE')"
+                        "cond": "appear('legacy_OtherWorldTwilight_I_OWT_FIRE') or appear('legacy_OtherWorldTwilight_I_OWT_TEAM')"
                       },
                       "then": [
                         {
@@ -407,24 +360,21 @@
                       ]
                     }
                   ]
-                },
-                {
-                  "op": "appear",
-                  "args": {
-                    "sel": "legacy_OtherWorldTwilight_I_OWT_FIRE"
-                  }
                 }
               ],
               "else": [
                 {
                   "op": "log",
                   "args": {
-                    "level": "info",
-                    "text": "'S: 未见挑战按钮（次数用尽/非活动期），结束循环'"
+                    "level": "warn",
+                    "text": "'S: 未见挑战按钮（加载/结算/次数用尽）→ 等待重试'"
                   }
                 },
                 {
-                  "op": "break"
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
                 }
               ]
             }
@@ -500,6 +450,80 @@
           "op": "finish",
           "args": {
             "exit": "done"
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "'S: 队长/队员模式未迁移（建房/邀请/等待房间 + 计数/限时）——按上游 user_status 分支；默认请用 alone（见 meta params）'"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "12"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('庭院_探索灯笼')"
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "op": "appear",
+          "args": {
+            "sel": "庭院_探索灯笼"
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "failed"
           }
         }
       ]

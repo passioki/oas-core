@@ -66,5 +66,13 @@
     "area attack click-failure retry (5x -> next area) replaced by loud failure on I_FIRE click",
     "random_delay config dropped: engine click humanization already covers it",
     "no device/replay evidence (emulator offline during migration)"
-  ]
+  ],
+  "static_polish": {
+    "date": "2026-11-01",
+    "lint": "errors=0",
+    "fixes": [
+      "删除死出口 no_target：flow 从不产生该值；旧仓寮突未开启且无权限时 set_next_run(success=False)，语义=retryable，现有 failed 分支已覆盖",
+      "no_guild 分支日志改为明确 failed(retryable)，与旧仓 success=False 对齐"
+    ]
+  }
 }

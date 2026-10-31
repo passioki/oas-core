@@ -5,7 +5,9 @@
     "spec: migration/specs/KekkaiActivation.md",
     "bundle: tasks/KekkaiActivation/{meta.json,flow.json,README.md,migration.json}",
     "lint: oasd task lint --tasks-dir tasks --task KekkaiActivation => lint task=KekkaiActivation errors=0",
-    "flow covers: guild realm entry, harvest-card exp, card page entry, already-active card O_CARD_ALL_TIME read, selected-not-active activation loop, no-card blocked exit, return home"
+    "flow covers: guild realm entry, harvest-card exp, card page entry, already-active card O_CARD_ALL_TIME read, selected-not-active activation loop, no-card blocked exit, return home",
+    "polish: 8 harvest candidates, DEMOUNT wait, ACTIVATE_GRAY + activation-timeout -> failed, card-page entry guard, dead no_resource removed; lint re-run errors=0",
+    "static polish round: files updated tasks/KekkaiActivation/{flow.json,meta.json,migration.json,README.md} + this status; specs untouched per instruction"
   ],
   "gaps": [
     "⛔ architecture: card screening needs multi-line OCR per-line box + numeric filter/sort + click max line box (old O_CHECK_CARD_NUMBER.detect_and_ocr + RuleClick on box); DSL only has exact-text ocr_text locators",

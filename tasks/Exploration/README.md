@@ -44,3 +44,13 @@ cd D:\OAS-dev\oas-core
 5. 无本任务实机/回放证据（仅复用 tasks/探索 素材链）
 
 详见 `migration/specs/Exploration.md`、`tasks/Exploration/migration.json`、`migration/status/Exploration.json`。
+
+## 2026-11-01 静态修整（polish round）
+
+- 修复：滑屏几何：上游 S_SWIPE_BACKGROUND_RIGHT = roi_front(1093,148)→roi_back(397,140)；旧 flow 用 (1100,380)→(250,380) → 改为真实几何 swipe(1103,158 → 407,150)
+- 修复：fire() 重试：点战斗图标后若仍在章节地图（没进战斗）旧 flow 直接 wait 25s 会失败 → 增加最多 4 次有界重试（仍在 章节_固定阵容 就再 click_target 点怪）
+- 修复：进战斗 marker：旧 flow 只认 I_BATTLE_INFO；tasks/探索 真机验证链路用 战斗_自动按钮 → 改为 `I_BATTLE_INFO or 战斗_自动按钮`（OR 保持两条路径）
+- 修复：MAIN 场景缺分支：补 I_UI_CONFIRM / I_UI_CONFIRM_SAMLL 弹窗点掉与 I_TREASURE_BOX_CLICK 宝箱（上游 _handle_treasure_box / 弹窗清理）
+- 修复：清除重复条件 `or appear('章节_固定阵容') or appear('章节_固定阵容')`
+- 仍存在（blocker/未迁移）：章节固定第二十八章、UP 定向、auto_rotate、滑屏尽头（帧差分）仍为 blocker（未在本轮改动）
+- 校验：`oasd task lint --tasks-dir tasks --task Exploration` => errors=0

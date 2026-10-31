@@ -48,8 +48,7 @@ cd D:\OAS-dev\oas-core
 |---|---|---|
 | done | success | 正常打完/寮突已 100% 已攻破 |
 | no_resource | resource | 进攻机会 0 |
-| no_target | blocked | 寮突未开启且无管理员权限 |
-| failed | retryable | 3 轮刷新后无任何可攻区域 |
+| failed | retryable | 寮突未开启且无管理员权限（旧仓 success=False）/ 3 轮刷新后无任何可攻区域 |
 
 ## 参数（meta.params）
 
@@ -75,5 +74,12 @@ cd D:\OAS-dev\oas-core
    - 御魂切换：DSL 无原语（默认配置本来就是关闭）；
    - 时间上限：由 `--budget-wall`/调度窗口兜底；
    - 胜负：本任务不依赖战斗结果（只计数）。
-6. 区域进攻点击失败 5 次后旧仓会换区域；新 flow 点 `I_FIRE` 失败即响亮报错（不猜）。
+6. 区域点击后 `I_FIRE` 未出现（目标不可打）→ flow 记录告警并继续下一区域（旧仓点 5 次后换区域，语义近似）。
 7. **无实机/replay 证据**：迁移时模拟器 offline，仅 lint + 行为矩阵证据；首跑重点验证页面守卫、`I_TOPPA_RECORD` 判定与寮突战斗准备页版式。
+
+## 本轮静态修正（静态润色轮）
+
+- 删除死出口 no_target：flow 从不产生该值；旧仓寮突未开启且无权限时 set_next_run(success=False)，语义=retryable，现有 failed 分支已覆盖
+- no_guild 分支日志改为明确 failed(retryable)，与旧仓 success=False 对齐
+
+> 注：`migration/specs/RyouToppa.md` 的 exit/行为表述如与本轮冲突，以本节与 flow.json 为准。

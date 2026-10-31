@@ -6,7 +6,9 @@
     "bundle: tasks/CollectiveMissions/{meta.json,flow.json,README.md,migration.json}",
     "lint: oasd task lint --tasks-dir tasks --task CollectiveMissions => lint task=CollectiveMissions errors=0",
     "flow covers: entry nav, 30/30 skip, mission_select refresh loop, 3-slot OCR classification + rank selection, feed branch (near-complete), donate/soul branches (approximated), bondling reward claim / no_target, back-out to main, 4 exits",
-    "assets: 26 global legacy ids referenced, all resolved (T4 green)"
+    "assets: 26 global legacy ids referenced, all resolved (T4 green)",
+    "polish: FRIEND classification order aligned with detect_one; exit-loop cond precedence bug fixed (second appear() was dropped by %/or); lint re-run errors=0",
+    "static polish round: files updated tasks/CollectiveMissions/{flow.json,meta.json,migration.json,README.md} + this status; specs untouched per instruction"
   ],
   "gaps": [
     "TODO(DSL): material donation must pick the max-total material; needs ocr_nth_number / ocr_digits (old code reads 3rd number of (curr,remain,total))",

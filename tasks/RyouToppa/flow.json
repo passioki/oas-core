@@ -2267,13 +2267,13 @@
     {
       "op": "if",
       "args": {
-        "cond": "var('exit') == 'no_target'"
+        "cond": "var('exit') == 'no_resource'"
       },
       "then": [
         {
           "op": "finish",
           "args": {
-            "exit": "no_target"
+            "exit": "no_resource"
           }
         }
       ],
@@ -2281,13 +2281,13 @@
         {
           "op": "if",
           "args": {
-            "cond": "var('exit') == 'no_resource'"
+            "cond": "var('exit') == 'finished'"
           },
           "then": [
             {
               "op": "finish",
               "args": {
-                "exit": "no_resource"
+                "exit": "done"
               }
             }
           ],
@@ -2295,7 +2295,7 @@
             {
               "op": "if",
               "args": {
-                "cond": "var('exit') == 'finished'"
+                "cond": "var('exit') == 'open'"
               },
               "then": [
                 {
@@ -2307,26 +2307,10 @@
               ],
               "else": [
                 {
-                  "op": "if",
+                  "op": "finish",
                   "args": {
-                    "cond": "var('exit') == 'open'"
-                  },
-                  "then": [
-                    {
-                      "op": "finish",
-                      "args": {
-                        "exit": "done"
-                      }
-                    }
-                  ],
-                  "else": [
-                    {
-                      "op": "finish",
-                      "args": {
-                        "exit": "failed"
-                      }
-                    }
-                  ]
+                    "exit": "failed"
+                  }
                 }
               ]
             }

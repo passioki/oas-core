@@ -6,7 +6,7 @@
   "version": 1,
   "expire": "daily",
   "category": "daily",
-  "description": "庭院→探索→玩法→御魂副本→永生之海。单人模式：选层（坐标近似）→锁定队伍→循环挑战→多阶段战斗→返回庭院。队长/队员（建房/邀请/等待）未迁移；御魂切换未迁移。",
+  "description": "庭院→探索→玩法→御魂副本→永生之海。单人模式：循环进本（I_FORM_TEAM）→选层（坐标近似，1~4）→check_lock(True) 锁队（lock_team=0 时按上游 RequestHumanTakeover 走 failed）→循环挑战→多阶段战斗→返回庭院。队长/队员模式、御魂切换未迁移。",
   "entry": {
     "requires": {
       "kind": "appear",
@@ -28,6 +28,13 @@
       "default": 30,
       "min": 1,
       "max": 99
+    },
+    {
+      "key": "lock_team",
+      "type": "int",
+      "default": 1,
+      "min": 0,
+      "max": 1
     }
   ],
   "exits": {

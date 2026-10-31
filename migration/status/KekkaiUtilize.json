@@ -5,7 +5,9 @@
     "spec: migration/specs/KekkaiUtilize.md",
     "bundle: tasks/KekkaiUtilize/{meta.json,flow.json,README.md,migration.json}",
     "lint: oasd task lint --tasks-dir tasks --task KekkaiUtilize => lint task=KekkaiUtilize errors=0",
-    "flow covers harvest-side behavior: guild realm entry, utilize harvest, AP/EXP boxes, guild AP/assets collection, return home"
+    "flow covers harvest-side behavior: guild realm entry, utilize harvest, AP/EXP boxes, guild AP/assets collection, return home",
+    "polish: AP-box -> realm -> EXP-box order fixed; realm -> guild main page step added before guild AP/assets collection (previously never reached); entry guard -> failed; dead no_resource replaced by failed; lint re-run errors=0",
+    "static polish round: files updated tasks/KekkaiUtilize/{flow.json,meta.json,migration.json,README.md} + this status; specs untouched per instruction"
   ],
   "gaps": [
     "⛔ architecture: utilize/寄养 core requires OCR duration parsing (timedelta), optimal card selection (card-class templates + priority), friend-list OCR similarity matching, enter-friend-realm confirm flow — no DSL primitives",

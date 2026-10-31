@@ -237,6 +237,29 @@
             {
               "op": "if",
               "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_1') == '结伴同行'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m1",
+                    "value": "'FRIEND'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r1",
+                    "value": "100"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
                 "cond": "ocr('legacy_CollectiveMissions_O_CM_2') == '觉醒三'"
               },
               "then": [
@@ -442,29 +465,6 @@
               "else": []
             },
             {
-              "op": "if",
-              "args": {
-                "cond": "ocr('legacy_CollectiveMissions_O_CM_1') == '结伴同行'"
-              },
-              "then": [
-                {
-                  "op": "set_var",
-                  "args": {
-                    "name": "m1",
-                    "value": "'FRIEND'"
-                  }
-                },
-                {
-                  "op": "set_var",
-                  "args": {
-                    "name": "r1",
-                    "value": "100"
-                  }
-                }
-              ],
-              "else": []
-            },
-            {
               "op": "set_var",
               "args": {
                 "name": "m2",
@@ -496,6 +496,29 @@
                   "args": {
                     "name": "r2",
                     "value": "0"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_3') == '结伴同行'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m2",
+                    "value": "'FRIEND'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r2",
+                    "value": "100"
                   }
                 }
               ],
@@ -709,29 +732,6 @@
               "else": []
             },
             {
-              "op": "if",
-              "args": {
-                "cond": "ocr('legacy_CollectiveMissions_O_CM_3') == '结伴同行'"
-              },
-              "then": [
-                {
-                  "op": "set_var",
-                  "args": {
-                    "name": "m2",
-                    "value": "'FRIEND'"
-                  }
-                },
-                {
-                  "op": "set_var",
-                  "args": {
-                    "name": "r2",
-                    "value": "100"
-                  }
-                }
-              ],
-              "else": []
-            },
-            {
               "op": "set_var",
               "args": {
                 "name": "m3",
@@ -763,6 +763,29 @@
                   "args": {
                     "name": "r3",
                     "value": "0"
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "ocr('legacy_CollectiveMissions_O_CM_5') == '结伴同行'"
+              },
+              "then": [
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "m3",
+                    "value": "'FRIEND'"
+                  }
+                },
+                {
+                  "op": "set_var",
+                  "args": {
+                    "name": "r3",
+                    "value": "100"
                   }
                 }
               ],
@@ -970,29 +993,6 @@
                   "args": {
                     "name": "r3",
                     "value": "9"
-                  }
-                }
-              ],
-              "else": []
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "ocr('legacy_CollectiveMissions_O_CM_5') == '结伴同行'"
-              },
-              "then": [
-                {
-                  "op": "set_var",
-                  "args": {
-                    "name": "m3",
-                    "value": "'FRIEND'"
-                  }
-                },
-                {
-                  "op": "set_var",
-                  "args": {
-                    "name": "r3",
-                    "value": "100"
                   }
                 }
               ],
@@ -2723,7 +2723,7 @@
         {
           "op": "if",
           "args": {
-            "cond": "appear('legacy_CollectiveMissions_I_CM_SHRINE')"
+            "cond": "appear('legacy_CollectiveMissions_I_CM_SHRINE') or appear('legacy_GameUi_I_CHECK_MAIN')"
           },
           "then": [
             {

@@ -17,22 +17,27 @@
   "status": "🔄",
   "evidence": [
     "task lint --task OtherWorldTwilight => errors=0",
-    "migration/specs/OtherWorldTwilight.md：单人模式 5 步映射；队伍模式列为 TODO"
+    "migration/specs/OtherWorldTwilight.md：单人模式 5 步映射；队伍模式列为 TODO",
+    "task lint --tasks-dir tasks --task OtherWorldTwilight => errors=0（2026-11-01 polish 后）"
   ],
   "assets": {
     "reused_global": [
-      "庭院_探索灯笼",
+      "legacy_Component_GeneralBattle_I_FALSE",
+      "legacy_Component_GeneralBattle_I_GREED_GHOST",
+      "legacy_Component_GeneralBattle_I_OVER_GHOST",
+      "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+      "legacy_Component_GeneralBattle_I_REWARD",
+      "legacy_Component_GeneralBattle_I_WIN",
+      "legacy_GameUi_I_CHECK_DEMON_ENCOUNTER",
+      "legacy_GameUi_I_CHECK_TOWN",
       "legacy_GameUi_I_MAIN_GOTO_TOWN",
       "legacy_GameUi_I_TOWN_GOTO_DEMON_ENCOUNTER",
-      "legacy_GameUi_I_CHECK_TOWN",
-      "legacy_GameUi_I_CHECK_DEMON_ENCOUNTER",
+      "legacy_GlobalGame_I_UI_BACK_RED",
+      "legacy_GlobalGame_I_UI_BACK_YELLOW",
       "legacy_OtherWorldTwilight_I_DE_TO_OTHER_WORLD",
       "legacy_OtherWorldTwilight_I_OWT_FIRE",
-      "legacy_OtherWorldTwilight_I_OWT_TEAM",
       "legacy_OtherWorldTwilight_I_OWT_LOCK",
-      "legacy_OtherWorldTwilight_I_OWT_UNLOCK",
-      "legacy_GlobalGame_I_UI_BACK_{RED,YELLOW}",
-      "legacy_Component_GeneralBattle_{I_PREPARE_HIGHLIGHT,I_BATTLE_INFO,I_WIN,I_FALSE,I_GREED_GHOST,I_OVER_GHOST,I_REWARD}"
+      "庭院_探索灯笼"
     ],
     "new": []
   },
@@ -40,6 +45,7 @@
     "队伍模式（LEADER/MEMBER）未迁移（建房/邀请/等待子流程待组合）",
     "御魂切换与邀请配置（InviteConfig）未迁移（配置职责）",
     "limit_count(30)/limit_time(30min) 用 `max_battles` 参数近似，时间上限未在 flow 内判",
-    "未实机/回放验证"
+    "未实机/回放验证",
+    "2026-11-01 修整：新增 param user_status（默认 alone；上游默认 leader 但 team 模式未迁移）；锁队语义修正为 check_lock(False)；入口/瞬态等待修正"
   ]
 }

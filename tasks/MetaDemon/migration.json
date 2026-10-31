@@ -17,28 +17,27 @@
   "status": "🔄",
   "evidence": [
     "task lint --task MetaDemon => errors=0",
-    "migration/specs/MetaDemon.md：入口/找鬼王/战斗/返回 4 步映射；疲劳/策略/合成/通知列 TODO"
+    "migration/specs/MetaDemon.md：入口/找鬼王/战斗/返回 4 步映射；疲劳/策略/合成/通知列 TODO",
+    "task lint --tasks-dir tasks --task MetaDemon => errors=0（2026-11-01 polish 后）"
   ],
   "assets": {
     "reused_global": [
-      "庭院_探索灯笼",
+      "legacy_Component_GeneralBattle_I_FALSE",
+      "legacy_Component_GeneralBattle_I_GREED_GHOST",
+      "legacy_Component_GeneralBattle_I_OVER_GHOST",
+      "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+      "legacy_Component_GeneralBattle_I_REWARD",
+      "legacy_Component_GeneralBattle_I_WIN",
       "legacy_Component_RightActivity_I_TOGGLE_BUTTON",
-      "legacy_Component_RightActivity_I_RA_OPEN",
-      "legacy_Component_RightActivity_I_RA_CLOSE",
-      "legacy_MetaDemon_I_RIGHT_ENTER",
-      "legacy_MetaDemon_I_MD_ENTER",
-      "legacy_MetaDemon_I_MD_MAIN",
+      "legacy_GlobalGame_C_UI_REWARD",
+      "legacy_GlobalGame_I_UI_BACK_RED",
+      "legacy_GlobalGame_I_UI_BACK_YELLOW",
+      "legacy_MetaDemon_I_BATTLE_DEMON",
       "legacy_MetaDemon_I_ENTER2",
       "legacy_MetaDemon_I_ENTER_ENSURE",
       "legacy_MetaDemon_I_FIND_DEMON",
-      "legacy_MetaDemon_I_BATTLE_DEMON",
-      "legacy_MetaDemon_I_BOSS_EMPTY",
-      "legacy_MetaDemon_I_BOSS_EMPTY_1",
-      "legacy_MetaDemon_I_BOSS_EMPTY_2",
-      "legacy_MetaDemon_I_BOSS_CONVENE",
-      "legacy_Component_GeneralBattle_{...}",
-      "legacy_GlobalGame_I_UI_CONFIRM",
-      "legacy_GlobalGame_I_UI_BACK_{RED,YELLOW}"
+      "legacy_MetaDemon_I_RIGHT_ENTER",
+      "庭院_探索灯笼"
     ],
     "new": []
   },
@@ -48,6 +47,7 @@
     "星合成 crafting 未迁移（配置默认关）",
     "通知推送、boss_mark、血量阈值（I_STAR56_*）未迁移",
     "boss_timer 50s 超时与「计数/疲劳双限」用 max_battles 近似",
-    "未实机/回放验证（限时活动）"
+    "未实机/回放验证（限时活动）",
+    "2026-11-01 修整：入口/鬼王/奖励链按 RightActivity.enter() 与主循环重写；click(I_BOSS_EMPTY) 改为 click_point(88,176)（旧引擎 click 不要求匹配，新引擎要求）"
   ]
 }

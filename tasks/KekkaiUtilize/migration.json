@@ -43,5 +43,15 @@
     "experience box max-limit check uses (curr,res,total) triple OCR and box_exp_waste confirm/cancel choice -> not migrated",
     "next-run computed from card remaining duration -> scheduler windows instead",
     "no device/replay evidence (emulator offline)"
-  ]
+  ],
+  "static_polish": {
+    "date": "2026-11-01",
+    "lint": "errors=0",
+    "fixes": [
+      "收体力盒子后先返回结界再检查经验盒子（旧仓 _exit_to_realm 顺序；原流程会残留在盒子页直接判断经验盒子）",
+      "收寮资金/寮体力前先退出结界到阴阳寮主界面（原流程在结界页查找 I_GUILD_* 按钮，收寮逻辑从未执行）",
+      "进入结界 12 次失败增加显式守卫（failed），并 gate 后续步骤",
+      "删除死出口 no_resource；新增 failed(retryable) 出口"
+    ]
+  }
 }

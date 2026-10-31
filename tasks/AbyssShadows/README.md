@@ -29,7 +29,6 @@ cd D:\OAS-dev\oas-core
 | exit | result | 场景 |
 |---|---|---|
 | done | success | 两个暗域打完 |
-| no_target | blocked | 预留（暗域不可用） |
 | failed | retryable | 超时/异常 |
 
 ## 参数
@@ -41,3 +40,13 @@ cd D:\OAS-dev\oas-core
 ## 已知限制
 
 周几判定交给调度窗口；固定只打神龙+孔雀两个暗域（旧仓可能打 4 个）；战斗退出细节简化；御魂切换未迁移；无实机证据。
+
+## 本轮静态修正（静态润色轮）
+
+- 集结等待修正：原流程用 `appear(I_ABYSS_NAVIGATION)` 出现立即 break（等于没有等待）→ 改为 I_WAIT_TO_START 消失（对齐旧 wait_until_disappear）
+- 目标战斗块：I_ABYSS_FIRE 未出现（目标已死亡/被占用）时不再无条件点击→改为跳过，避免硬失败（12 个目标块）
+- 战斗语义对齐旧 run_general_battle_back：总是主动退出战斗（I_EXIT→确认→I_WIN→回 NAV），combat_time>0 时先动态等待 N 秒（原默认走通用战斗到结束，与旧仓不一致）
+- 查找狭间入口的上滑改用 RuleSwipe FROM/TO 的 ROI（drag 的 region 目标只支持内联 roi，不支持 asset sel）
+- 进入狭间/神龙暗域/孔雀暗域增加显式失败守卫，并 gate 后续 32 步工作区（失败直接进收尾）；删除死出口 no_target
+
+> 注：`migration/specs/AbyssShadows.md` 的 exit/行为表述如与本轮冲突，以本节与 flow.json 为准。

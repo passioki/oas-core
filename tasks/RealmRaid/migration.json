@@ -46,5 +46,14 @@
     "三胜奖励判定用 I_SOUL_RAID 近似旧 O_TEXT 中文/数字格式判定",
     "switch_soul 御魂/预设切换未迁移（无 DSL 原语）",
     "no device/replay evidence (emulator offline)"
-  ]
+  ],
+  "static_polish": {
+    "date": "2026-11-01",
+    "lint": "errors=0",
+    "fixes": [
+      "删除死出口 no_target（flow 从不产生；旧仓无目标即 success=False→retryable）",
+      "I_FIRE→战斗入口改为旧 fire() 式重试循环（点确认/重复点进攻，直到战斗 UI 出现），避免动画期间 wait_until 超时硬失败（6 个进攻分支）",
+      "退四打九在等待 I_EXIT 前增加同样的 进攻/确认 重试循环，避免准备页按钮未就绪即超时"
+    ]
+  }
 }

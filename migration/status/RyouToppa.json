@@ -6,7 +6,9 @@
     "bundle: tasks/RyouToppa/{meta.json,flow.json,README.md,migration.json}",
     "lint: oasd task lint --tasks-dir tasks --task RyouToppa => lint task=RyouToppa errors=0",
     "assets: 27 global legacy ids referenced, all resolved in assets/assets.json (T4 green)",
-    "flow covers: entry nav (3 guarded clicks), raid state detect (5 states), admin start, team-lock toggle, 8-area attack loop with per-area failure/finished marks, battle prepare/auto/continue pattern, ticket OCR=0 exit, 3-round refresh bound, return-to-home, 4 exits declared"
+    "flow covers: entry nav (3 guarded clicks), raid state detect (5 states), admin start, team-lock toggle, 8-area attack loop with per-area failure/finished marks, battle prepare/auto/continue pattern, ticket OCR=0 exit, 3-round refresh bound, return-to-home, 4 exits declared",
+    "polish: dead no_target exit removed (flow never produced it; old task uses success=False => retryable); no_guild now explicitly maps to failed; lint re-run errors=0",
+    "static polish round: files updated tasks/RyouToppa/{flow.json,meta.json,migration.json,README.md} + this status; specs untouched per instruction"
   ],
   "gaps": [
     "静态实现/lint 通过，但无实机或回放证据；按行为等价标准仍为进行中",

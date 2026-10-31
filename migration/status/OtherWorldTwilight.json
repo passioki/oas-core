@@ -1,10 +1,11 @@
 {
   "task": "OtherWorldTwilight",
   "status": "🔄",
-  "evidence": "task lint --task OtherWorldTwilight => errors=0；单人模式（锁队→挑战→战斗→返回）全覆盖；队长/队员/邀请/御魂切换未迁移（TODO）",
+  "evidence": "task lint --task OtherWorldTwilight => errors=0（2026-11-01 polish 后）；按 param user_status 分支（默认 alone），进入页/锁队方向/瞬态重试已修正",
   "gaps": [
     "队长/队员模式（建房/邀请/等待开战）未迁移",
     "limit_time 时间上限未在 flow 内实现（仅 max_battles 次数上限）",
-    "无实机/回放证据"
+    "无实机/回放证据",
+    "上游默认 user_status=LEADER；本迁移 param 默认 alone（team 模式 blocker 见下），差异已记录"
   ]
 }

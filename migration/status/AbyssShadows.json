@@ -5,7 +5,9 @@
     "spec: migration/specs/AbyssShadows.md",
     "bundle: tasks/AbyssShadows/{meta.json,flow.json,README.md,migration.json}",
     "lint: oasd task lint --tasks-dir tasks --task AbyssShadows => lint task=AbyssShadows errors=0",
-    "flow covers: guild/shrine/abyss entry with swipe fallback, dragon/peacock area selection, gathering wait, 6 targets per area (boss1/general2/elite3) via region clicks + goto/fire/prepare + generic battle, combat-time retreat mode, return home"
+    "flow covers: guild/shrine/abyss entry with swipe fallback, dragon/peacock area selection, gathering wait, 6 targets per area (boss1/general2/elite3) via region clicks + goto/fire/prepare + generic battle, combat-time retreat mode, return home",
+    "polish: gathering wait now waits I_WAIT_TO_START disappearance; dead-target blocks skip instead of hard-clicking I_ABYSS_FIRE; battle now always retreats (old run_general_battle_back) with combat_time countdown; RuleSwipe FROM/TO ROIs used; entry/area failure guards + work-section gating; dead no_target removed; lint re-run errors=0",
+    "static polish round: files updated tasks/AbyssShadows/{flow.json,meta.json,migration.json,README.md} + this status; specs untouched per instruction"
   ],
   "gaps": [
     "TODO(schedule): weekday gating (Fri/Sat/Sun) and custom_next_run -> scheduler windows (no calendar primitive)",

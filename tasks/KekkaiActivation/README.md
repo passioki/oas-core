@@ -21,6 +21,7 @@ cd D:\OAS-dev\oas-core
 | 4 | 已有生效卡 | `I_A_INVITE` → `ocr O_CARD_ALL_TIME` 记录 |
 | 5 | 已选未激活 | `I_A_ACTIVATE_YELLOW` → 确认 → `I_A_INVITE` |
 | 6 | 无卡 | `I_A_EMPTY` → `no_target`(blocked)（选卡 ⛔） |
+| 7 | 卡面动画/灰显 | `I_A_DEMOUNT` 等待；`I_A_ACTIVATE_GRAY` → `failed`(retryable) |
 | 7 | 回庭院 | 返回按钮链 |
 
 ## 退出
@@ -29,7 +30,7 @@ cd D:\OAS-dev\oas-core
 |---|---|---|
 | done | success | 激活/已有卡 |
 | no_target | blocked | 无卡（需选卡逻辑） |
-| no_resource | resource | 预留 |
+| failed | retryable | 激活灰显/激活超时/进入挂卡界面失败 |
 
 ## 已知限制（⛔）
 
@@ -38,3 +39,13 @@ cd D:\OAS-dev\oas-core
 3. 未找到卡计数/切换卡类型/180 分钟重试 → 无持久化/调度原语。
 4. 式神育成换满级（ReplaceShikigami）→ 无原语。
 5. 无实机证据。
+
+## 本轮静态修正（静态润色轮）
+
+- 收卡经验候选从 3 个补全为旧仓 8 个（I_A_HARVEST_EXP/FISH4/KAIKO_4/KAIKO_3/KAIKO_6/FISH_6/MOON_3/FISH_3）
+- 新增卡面动画等待（I_A_DEMOUNT 消失），避免动画期间误判为未知状态
+- 新增 I_A_ACTIVATE_GRAY（激活灰显=当前卡不可激活）与激活后仍未出现 I_A_INVITE 的显式失败分支（failed/retryable）
+- 进入挂卡界面 15 次失败增加显式守卫（failed），并 gate 后续步骤
+- 删除死出口 no_resource（flow 从不产生）
+
+> 注：`migration/specs/KekkaiActivation.md` 的 exit/行为表述如与本轮冲突，以本节与 flow.json 为准。

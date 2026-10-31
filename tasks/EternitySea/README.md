@@ -22,7 +22,7 @@ tasks/EternitySea/
 └─ README.md
 ```
 
-参数：`layer=4`（1~4）; `max_battles=30`（1~99）
+参数：`layer=4`（1~4）; `max_battles=30`（1~99）; `lock_team=1`（0~1）
 
 ## 运行 / 校验
 
@@ -40,3 +40,11 @@ cd D:\OAS-dev\oas-core
 4. 无实机/回放证据
 
 详见 `migration/specs/EternitySea.md`、`tasks/EternitySea/migration.json`、`migration/status/EternitySea.json`。
+
+## 2026-11-01 静态修整（polish round）
+
+- 修复：进本：旧 flow 单击 I_ETERNITY_SEA + expect I_FORM_TEAM 不稳 → 镜像 `_enter_eternity_sea()`：循环点 I_ETERNITY_SEA 直到 I_FORM_TEAM 出现（含 I_BACK_BOTTOM 兜底）
+- 修复：锁队：旧 flow 只「看到 UNLOCK 点一下」未确认锁上；上游 ALONE 要求 lock_team_enable=True 否则 RequestHumanTakeover → 新增 param lock_team（默认 1）+ 镜像 check_lock(True) 有界循环（LOCK 出现即停，UNLOCK 出现则点）；lock_team=0 时记录上游语义并走 failed
+- 修复：单人循环：瞬态无 I_ETERNITY_SEA_FIRE 就 break → 改为 warn + wait 重试（受 max_battles 有界）
+- 仍存在（blocker/未迁移）：lock_team=0 时按上游 ALONE 的 RequestHumanTakeover 语义走 failed 出口（不静默硬跑）
+- 校验：`oasd task lint --tasks-dir tasks --task EternitySea` => errors=0

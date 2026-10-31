@@ -35,7 +35,6 @@ cd D:\OAS-dev\oas-core
 | done | success | 达到 max_attacks / 正常结束 |
 | no_resource | resource | 突破券 0 |
 | failed | retryable | 无目标且刷新不可用 |
-| no_target | blocked | 预留（活动/特殊变体） |
 
 ## 参数
 
@@ -54,3 +53,11 @@ cd D:\OAS-dev\oas-core
 ## 已知限制
 
 见 spec §6：呱太目标判定、partition 索引、three_refresh、票数三元组、三胜奖励精确判定、御魂切换未迁移；无实机证据。
+
+## 本轮静态修正（静态润色轮）
+
+- 删除死出口 no_target（flow 从不产生；旧仓无目标即 success=False→retryable）
+- I_FIRE→战斗入口改为旧 fire() 式重试循环（点确认/重复点进攻，直到战斗 UI 出现），避免动画期间 wait_until 超时硬失败（6 个进攻分支）
+- 退四打九在等待 I_EXIT 前增加同样的 进攻/确认 重试循环，避免准备页按钮未就绪即超时
+
+> 注：`migration/specs/RealmRaid.md` 的 exit/行为表述如与本轮冲突，以本节与 flow.json 为准。

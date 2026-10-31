@@ -79,8 +79,7 @@
                         ]
                       }
                     }
-                  ],
-                  "else": []
+                  ]
                 },
                 {
                   "op": "click",
@@ -102,8 +101,7 @@
                         "sel": "legacy_MemoryScrolls_I_MS_ENTER"
                       }
                     }
-                  ],
-                  "else": []
+                  ]
                 }
               ]
             }
@@ -165,8 +163,7 @@
                         "sel": "legacy_MemoryScrolls_I_MS_FRAGMENT_S"
                       }
                     }
-                  ],
-                  "else": []
+                  ]
                 }
               ]
             },
@@ -188,7 +185,7 @@
               "op": "log",
               "args": {
                 "level": "info",
-                "text": "'S: 小绘卷碎片已达 50（上游会安排次日探索：调度写回未迁移，记入差异）'"
+                "text": "'S: 小绘卷碎片已达 50（上游会安排次日探索：调度写回未迁移）'"
               }
             }
           ],
@@ -235,8 +232,7 @@
             }
           ]
         }
-      ],
-      "else": []
+      ]
     },
     {
       "op": "log",
@@ -377,14 +373,14 @@
                   ]
                 }
               ]
-            },
-            {
-              "op": "wait",
-              "args": {
-                "seconds": 1.0
-              }
             }
           ]
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
         }
       ]
     },
@@ -398,199 +394,217 @@
       "op": "log",
       "args": {
         "level": "info",
-        "text": "'S: 已进入绘卷捐献页，开始捐献（三行各拉满两次；三种碎片全 0 提前结束）'"
+        "text": "'S: 已进入绘卷捐献页；上游判定 appear(CONTRIBUTE) or not appear(COMPLETE) 才捐献'"
       }
     },
     {
-      "op": "loop",
+      "op": "if",
       "args": {
-        "n": "param('contribute_rounds')"
+        "cond": "appear('legacy_MemoryScrolls_I_MS_CONTRIBUTE') or not appear('legacy_MemoryScrolls_I_MS_COMPLETE')"
       },
-      "body": [
+      "then": [
         {
-          "op": "if",
+          "op": "loop",
           "args": {
-            "cond": "appear('legacy_MemoryScrolls_I_MS_ZERO_S') and appear('legacy_MemoryScrolls_I_MS_ZERO_M') and appear('legacy_MemoryScrolls_I_MS_ZERO_L')"
+            "n": "param('contribute_rounds')"
           },
-          "then": [
+          "body": [
             {
-              "op": "log",
+              "op": "if",
               "args": {
-                "level": "info",
-                "text": "'S: 三种绘卷碎片均已为 0，捐献结束'"
-              }
-            },
-            {
-              "op": "break"
-            }
-          ],
-          "else": []
-        },
-        {
-          "op": "click_target",
-          "args": {
-            "find": [
-              {
-                "kind": "region",
-                "sel": "legacy_MemoryScrolls_C_MS_MAX_S"
-              }
-            ]
-          }
-        },
-        {
-          "op": "wait",
-          "args": {
-            "seconds": 0.3
-          }
-        },
-        {
-          "op": "click_target",
-          "args": {
-            "find": [
-              {
-                "kind": "region",
-                "sel": "legacy_MemoryScrolls_C_MS_MAX_S"
-              }
-            ]
-          }
-        },
-        {
-          "op": "wait",
-          "args": {
-            "seconds": 0.3
-          }
-        },
-        {
-          "op": "click_target",
-          "args": {
-            "find": [
-              {
-                "kind": "region",
-                "sel": "legacy_MemoryScrolls_C_MS_MAX_M"
-              }
-            ]
-          }
-        },
-        {
-          "op": "wait",
-          "args": {
-            "seconds": 0.3
-          }
-        },
-        {
-          "op": "click_target",
-          "args": {
-            "find": [
-              {
-                "kind": "region",
-                "sel": "legacy_MemoryScrolls_C_MS_MAX_M"
-              }
-            ]
-          }
-        },
-        {
-          "op": "wait",
-          "args": {
-            "seconds": 0.3
-          }
-        },
-        {
-          "op": "click_target",
-          "args": {
-            "find": [
-              {
-                "kind": "region",
-                "sel": "legacy_MemoryScrolls_C_MS_MAX_L"
-              }
-            ]
-          }
-        },
-        {
-          "op": "wait",
-          "args": {
-            "seconds": 0.3
-          }
-        },
-        {
-          "op": "click_target",
-          "args": {
-            "find": [
-              {
-                "kind": "region",
-                "sel": "legacy_MemoryScrolls_C_MS_MAX_L"
-              }
-            ]
-          }
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_MemoryScrolls_I_MS_CONTRIBUTE')"
-          },
-          "then": [
-            {
-              "op": "click",
-              "args": {
-                "sel": "legacy_MemoryScrolls_I_MS_CONTRIBUTE"
-              }
-            },
-            {
-              "op": "log",
-              "args": {
-                "level": "info",
-                "text": "'S: 已点捐献，等待贡献动画（I_MS_CONTRIBUTED）'"
-              }
-            },
-            {
-              "op": "loop",
-              "args": {
-                "n": "5"
+                "cond": "appear('legacy_MemoryScrolls_I_MS_ZERO_S') and appear('legacy_MemoryScrolls_I_MS_ZERO_M') and appear('legacy_MemoryScrolls_I_MS_ZERO_L')"
               },
-              "body": [
+              "then": [
                 {
-                  "op": "wait",
+                  "op": "log",
                   "args": {
-                    "seconds": 1.0
+                    "level": "info",
+                    "text": "'S: 三种绘卷碎片均已为 0，捐献结束'"
                   }
                 },
                 {
-                  "op": "if",
-                  "args": {
-                    "cond": "appear('legacy_MemoryScrolls_I_MS_CONTRIBUTED')"
-                  },
-                  "then": [
-                    {
-                      "op": "click_target",
-                      "args": {
-                        "find": [
-                          {
-                            "kind": "region",
-                            "sel": "legacy_MemoryScrolls_C_MS_CONTRIBUTED"
-                          }
-                        ]
-                      }
-                    },
-                    {
-                      "op": "break"
-                    }
-                  ],
-                  "else": []
+                  "op": "break"
                 }
               ]
-            }
-          ],
-          "else": [
+            },
             {
-              "op": "log",
+              "op": "click_target",
               "args": {
-                "level": "warn",
-                "text": "'S: 未出现捐献按钮（已满/次数用完）→ 结束捐献'"
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_MemoryScrolls_C_MS_MAX_S"
+                  }
+                ]
               }
             },
             {
-              "op": "break"
+              "op": "wait",
+              "args": {
+                "seconds": 0.3
+              }
+            },
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_MemoryScrolls_C_MS_MAX_S"
+                  }
+                ]
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 0.3
+              }
+            },
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_MemoryScrolls_C_MS_MAX_M"
+                  }
+                ]
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 0.3
+              }
+            },
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_MemoryScrolls_C_MS_MAX_M"
+                  }
+                ]
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 0.3
+              }
+            },
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_MemoryScrolls_C_MS_MAX_L"
+                  }
+                ]
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 0.3
+              }
+            },
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_MemoryScrolls_C_MS_MAX_L"
+                  }
+                ]
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 0.3
+              }
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_MemoryScrolls_I_MS_CONTRIBUTE')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_MemoryScrolls_I_MS_CONTRIBUTE"
+                  }
+                },
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "'S: 已点捐献，等待贡献动画（I_MS_CONTRIBUTED）'"
+                  }
+                },
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "5"
+                  },
+                  "body": [
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.0
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_MemoryScrolls_I_MS_CONTRIBUTED')"
+                      },
+                      "then": [
+                        {
+                          "op": "click_target",
+                          "args": {
+                            "find": [
+                              {
+                                "kind": "region",
+                                "sel": "legacy_MemoryScrolls_C_MS_CONTRIBUTED"
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "op": "break"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "else": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "warn",
+                    "text": "'S: 捐献按钮暂不可点，继续下一轮（上游 continue 语义）'"
+                  }
+                }
+              ]
             }
           ]
+        }
+      ],
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'S: 该分卷已完成（I_MS_COMPLETE 且无捐献按钮）→ 跳过捐献'"
+          }
         }
       ]
     },
@@ -644,8 +658,7 @@
                         "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
                       }
                     }
-                  ],
-                  "else": []
+                  ]
                 }
               ]
             }

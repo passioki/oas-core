@@ -63,3 +63,10 @@ cd D:\OAS-dev\oas-core
 4. 刷新按钮可用性（旧仓 brightness/mean_color 检查）退化为模板 `appear` 判定。
 5. 双倍奖励领取未精确计数（4 轮近似）。
 6. 无实机/replay 证据（迁移时模拟器 offline）；OCR 分类与捐献页布局需真机复验。
+
+## 本轮静态修正（静态润色轮）
+
+- 任务位分类顺序修正：`结伴同行`→FRIEND 判定移到等级判定之前（对齐旧 detect_one：先 name 判 结伴同行/契灵探查，再 level，最后 远远不够）
+- 退出循环条件修复：原 `"appear('%s')" % X or appear(Y)` 因 `%` 优先级高于 `or` 导致第二个 appear 被丢弃（只认神社、不认庭院）→ 现为 神社 or 庭院
+
+> 注：`migration/specs/CollectiveMissions.md` 的 exit/行为表述如与本轮冲突，以本节与 flow.json 为准。

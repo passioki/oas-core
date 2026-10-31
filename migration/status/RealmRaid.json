@@ -6,7 +6,9 @@
     "bundle: tasks/RealmRaid/{meta.json,flow.json,README.md,migration.json}",
     "lint: oasd task lint --tasks-dir tasks --task RealmRaid => lint task=RealmRaid errors=0",
     "assets: legacy_RealmRaid_* + newly imported legacy_Component_GeneralBattle_* + GameUi/GlobalGame; all resolved (T4 green)",
-    "flow covers: entry nav, frog modal dismiss, team-lock toggle, ticket OCR exit, medal-priority scan+attack, generic battle (prepare/win/lose/reward), 3-win reward click, refresh/confirm, optional exit-four retreat, return home, 4 exits"
+    "flow covers: entry nav, frog modal dismiss, team-lock toggle, ticket OCR exit, medal-priority scan+attack, generic battle (prepare/win/lose/reward), 3-win reward click, refresh/confirm, optional exit-four retreat, return home, 4 exits",
+    "polish: dead no_target exit removed; I_FIRE battle-entry retry loop (old fire()) added to 6 attack branches; exit_four pre-exit retry loop added; lint re-run errors=0",
+    "static polish round: files updated tasks/RealmRaid/{flow.json,meta.json,migration.json,README.md} + this status; specs untouched per instruction"
   ],
   "gaps": [
     "TODO(behavior): frog-activity target judgement (I_FROG_MEDAL + O_FROG_1..9 OCR==20 + temporary team unlock) not migrated; only a warn is logged",

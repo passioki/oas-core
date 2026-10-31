@@ -17,24 +17,29 @@
   "status": "🔄",
   "evidence": [
     "task lint --task EternitySea => errors=0",
-    "migration/specs/EternitySea.md：单人模式 7 步映射；队伍模式/精准选层列为 TODO"
+    "migration/specs/EternitySea.md：单人模式 7 步映射；队伍模式/精准选层列为 TODO",
+    "task lint --tasks-dir tasks --task EternitySea => errors=0（2026-11-01 polish 后）"
   ],
   "assets": {
     "reused_global": [
-      "庭院_探索灯笼",
-      "世界_章节栏",
-      "legacy_GameUi_I_CHECK_EXPLORATION",
+      "legacy_Component_GeneralBattle_I_FALSE",
+      "legacy_Component_GeneralBattle_I_GREED_GHOST",
+      "legacy_Component_GeneralBattle_I_OVER_GHOST",
+      "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+      "legacy_Component_GeneralBattle_I_REWARD",
+      "legacy_Component_GeneralBattle_I_WIN",
+      "legacy_EternitySea_I_BACK_BOTTOM",
+      "legacy_EternitySea_I_ETERNITYSEA_UNLOCK",
+      "legacy_EternitySea_I_ETERNITY_SEA",
+      "legacy_EternitySea_I_ETERNITY_SEA_FIRE",
+      "legacy_EternitySea_I_FORM_TEAM",
+      "legacy_Exploration_I_CHECK_PLAY_TITLE",
       "legacy_GameUi_I_CHECK_SOUL_ZONES",
       "legacy_GameUi_I_EXPLORATION_GOTO_SOUL_ZONE",
-      "legacy_Exploration_I_CHECK_PLAY_TITLE",
-      "legacy_EternitySea_I_ETERNITY_SEA",
-      "legacy_EternitySea_I_FORM_TEAM",
-      "legacy_EternitySea_I_ETERNITY_SEA_FIRE",
-      "legacy_EternitySea_I_ETERNITYSEA_UNLOCK",
-      "legacy_EternitySea_I_NEWETERNITYSEA_LOCK",
-      "legacy_EternitySea_I_BACK_BOTTOM",
-      "legacy_Component_GeneralBattle_{...}",
-      "legacy_GlobalGame_I_UI_CONFIRM"
+      "legacy_GlobalGame_I_UI_BACK_RED",
+      "legacy_GlobalGame_I_UI_BACK_YELLOW",
+      "世界_章节栏",
+      "庭院_探索灯笼"
     ],
     "new": []
   },
@@ -43,6 +48,7 @@
     "层数选择用坐标近似（RuleList 未导入；仅 4 层固定高度，可接受但需实机复核）",
     "御魂切换（两套）未迁移（配置职责）",
     "limit_time/limit_count 用 max_battles 近似，时间上限未在 flow 内判",
-    "未实机/回放验证"
+    "未实机/回放验证",
+    "2026-11-01 修整：新增 param lock_team（默认 1）；进本改为循环；锁队改为 check_lock(True)+LOCK 校验；瞬态等待修正"
   ]
 }

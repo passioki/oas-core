@@ -40,9 +40,6 @@
     "no_resource": {
       "result": "resource"
     },
-    "no_target": {
-      "result": "blocked"
-    },
     "failed": {
       "result": "retryable"
     }

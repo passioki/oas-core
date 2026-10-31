@@ -21,21 +21,29 @@
   "evidence": [
     "task lint --task Exploration => errors=0",
     "migration/specs/Exploration.md：默认配置主链路映射；高级选项/组队/滑屏尽头检测列 TODO",
-    "素材链复用 tasks/探索 的真机验收链路（该路径在引擎侧已有真机证据）"
+    "素材链复用 tasks/探索 的真机验收链路（该路径在引擎侧已有真机证据）",
+    "task lint --tasks-dir tasks --task Exploration => errors=0（2026-11-01 polish 后）"
   ],
   "assets": {
     "reused_global": [
-      "庭院_探索灯笼",
-      "世界_章节栏",
-      "章节_第二十八章",
-      "入口_探索按钮",
-      "章节_固定阵容",
-      "章节_战斗图标",
-      "退出确认_确认",
+      "legacy_Component_GeneralBattle_I_FALSE",
+      "legacy_Component_GeneralBattle_I_GREED_GHOST",
+      "legacy_Component_GeneralBattle_I_OVER_GHOST",
+      "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+      "legacy_Component_GeneralBattle_I_REWARD",
+      "legacy_Component_GeneralBattle_I_WIN",
       "legacy_Exploration_I_BATTLE_REWARD",
       "legacy_Exploration_I_BOSS_BATTLE_BUTTON",
       "legacy_Exploration_I_NORMAL_BATTLE_BUTTON",
-      "legacy_Component_GeneralBattle_{...}"
+      "legacy_Exploration_I_TREASURE_BOX_CLICK",
+      "legacy_GlobalGame_I_UI_CONFIRM",
+      "legacy_GlobalGame_I_UI_CONFIRM_SAMLL",
+      "世界_章节栏",
+      "入口_探索按钮",
+      "庭院_探索灯笼",
+      "章节_固定阵容",
+      "章节_第二十八章",
+      "退出确认_确认"
     ],
     "new": []
   },
@@ -45,6 +53,7 @@
     "滑屏尽头检测（is_swipe_unchanged 帧差分）未迁移：无怪时会在 max_battles 次内反复滑屏",
     "组队 LEADER/MEMBER、好友邀请未迁移",
     "limit_time（30min）未在 flow 内实现；minions_cnt 用 max_battles=30 对齐默认",
-    "未实机/回放验证（素材链来自 tasks/探索 的真机标定，行为组合需实测）"
+    "未实机/回放验证（素材链来自 tasks/探索 的真机标定，行为组合需实测）",
+    "2026-11-01 修整：滑屏几何对齐 S_SWIPE_BACKGROUND_RIGHT、fire 增加有界重试、进战斗 marker 加 战斗_自动按钮、补弹窗/宝箱分支、去重复条件"
   ]
 }

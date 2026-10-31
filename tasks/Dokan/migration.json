@@ -50,5 +50,18 @@
     "BLOCKED: AttackAccountConfig cross-day persistence (remain_attack_count/attack_date) and 6 attack_dokan_master strategies — no config read/write primitive",
     "BLOCKED: creat_dokan / start_cheering state machines",
     "no device/replay evidence (emulator offline)"
-  ]
+  ],
+  "static_polish": {
+    "date": "2026-11-01",
+    "lint": "errors=0",
+    "fixes": [
+      "入口循环 break 误用 GameUi.I_BACK_Y（通用返回键，导致进寮后立即退出）→ 改为道馆场景标记（CENTER_TOP/FINDING_DOKAN/FOUND_DOKAN/GATHERING）",
+      "神社→道馆导航改用旧 DokanSceneDetector 的 I_SCENE_RYOU/I_SCENE_SHENSHE 场景资产（原流程用 I_RYOU_SHENSHE 兜底、缺场景判定）",
+      "场景机按旧 DokanSceneDetector 优先级重排：FINISHED 最后判定（CENTER_TOP + TODAY_ATTACK_COUNT/REMAIN_ATTACK_COUNT_DONE），弃用旧仓未使用的 I_RYOU_DOKAN_FINISHED",
+      "修复对 region 资产 C_DOKAN_TOPPA_RANK_CLOSE_AREA 使用 appear()/requires 的非法用法（工程运行时会对 region 报错）→ 改为模板判定 + click_target(region)",
+      "BATTLE_OVER 不再被 GATHERING 等待分支吞掉（原关闭结算分支不可达）",
+      "补 ABANDON_VOTE（I_RYOU_DOKAN_ABANDONED_TOPPA_CONTINUE→点放弃）与 FAILED_VOTE（daily_attack_count>=2 点再战，否则保留赏金）场景，以及 WIN/SPOILS_OF_DOKAN 关闭结算",
+      "入口失败守卫（14 次未进道馆场景→failed），场景机仅在 exit=='done' 时运行；删除死 failed 分发分支"
+    ]
+  }
 }

@@ -1,11 +1,12 @@
 {
   "task": "MemoryScrolls",
   "status": "🔄",
-  "evidence": "task lint --tasks-dir tasks --task MemoryScrolls => errors=0；flow 覆盖 召唤导航/绘卷入口(普通+双绘卷)/指定分卷 1~6/捐献循环(拉满+捐献动画+全0/轮数上限)/已满跳过/返回召唤页；规格 migration/specs/MemoryScrolls.md",
+  "evidence": "task lint --task MemoryScrolls => errors=0（2026-11-01 polish 后）；捐献循环重试语义与「已完成卷跳过捐献」判定已按远端修正",
   "gaps": [
     "静态实现/lint 通过，但无实机或回放证据；按行为等价标准仍为进行中",
     "无实机/回放证据（绘卷活动期限制）",
     "notification_95 / auto_close_exploration / auto_finish_exploration 的调度写回未迁移（通知与调度器职责）",
-    "I_MS_ENTER 阈值 0.5 与 C_MS_* 区域坐标为旧仓值，未用当前客户端复核"
+    "I_MS_ENTER 阈值 0.5 与 C_MS_* 区域坐标为旧仓值，未用当前客户端复核",
+    "无实机/回放证据 → 状态由 ✅ 降为 🔄（2026-11-01，按「no ✅ without device」口径）"
   ]
 }

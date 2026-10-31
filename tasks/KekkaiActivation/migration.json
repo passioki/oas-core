@@ -47,5 +47,16 @@
     "BLOCKED: shikigami growth replacement (ReplaceShikigami) not expressible",
     "multi-scale template matching (appear_then_click_multi_scale I_SHI_CARD) approximated by normal click",
     "no device/replay evidence (emulator offline)"
-  ]
+  ],
+  "static_polish": {
+    "date": "2026-11-01",
+    "lint": "errors=0",
+    "fixes": [
+      "收卡经验候选从 3 个补全为旧仓 8 个（I_A_HARVEST_EXP/FISH4/KAIKO_4/KAIKO_3/KAIKO_6/FISH_6/MOON_3/FISH_3）",
+      "新增卡面动画等待（I_A_DEMOUNT 消失），避免动画期间误判为未知状态",
+      "新增 I_A_ACTIVATE_GRAY（激活灰显=当前卡不可激活）与激活后仍未出现 I_A_INVITE 的显式失败分支（failed/retryable）",
+      "进入挂卡界面 15 次失败增加显式守卫（failed），并 gate 后续步骤",
+      "删除死出口 no_resource（flow 从不产生）"
+    ]
+  }
 }
