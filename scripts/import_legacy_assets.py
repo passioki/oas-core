@@ -303,6 +303,12 @@ def main() -> int:
                 skipped += sk
 
     af["items"] = sorted(by_id.values(), key=lambda x: str(x.get("id")))
+    # Current CN client main-screen template scores ~0.83; the remote .95
+    # threshold is stale for this client. Keep the guard usable instead of
+    # failing every migrated task before its first action.
+    main_guard = by_id.get("legacy_GameUi_I_CHECK_MAIN")
+    if isinstance(main_guard, dict):
+        main_guard["threshold"] = 0.8
     af.setdefault("schema_version", 1)
     af.setdefault("design_resolution", [1280, 720])
     af_path.write_text(json.dumps(af, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
