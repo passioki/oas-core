@@ -214,6 +214,8 @@ pub struct Server {
     /// runs so `appear(ocr_asset)` / `text_visible()` work there too.
     ocr_model: Option<PathBuf>,
     det_model: Option<PathBuf>,
+    /// Open the editor URL in the default browser once the listener is ready.
+    open_browser: bool,
     #[cfg(feature = "ocr")]
     ocr: Option<Arc<Mutex<oas_ocr::onnx::RecEngine>>>,
     #[cfg(feature = "ocr")]
@@ -244,6 +246,7 @@ impl Server {
             editor_log: PathBuf::from("logs/editor.log"),
             ocr_model: None,
             det_model: None,
+            open_browser: true,
             #[cfg(feature = "ocr")]
             ocr: None,
             #[cfg(feature = "ocr")]
@@ -291,6 +294,12 @@ impl Server {
         if let Err(e) = self.load_frames_from_disk() {
             eprintln!("frames manifest load failed: {e}");
         }
+        self
+    }
+
+    /// `--no-open`: keep the server headless (tests, services, CI).
+    pub fn with_open_browser(mut self, open: bool) -> Self {
+        self.open_browser = open;
         self
     }
 
@@ -570,6 +579,9 @@ impl Server {
 
         // Capture the first frame eagerly so the UI has something to show.
         self.do_capture();
+        if self.open_browser {
+            open_editor_url(&format!("http://{addr}/"));
+        }
 
         for stream in listener.incoming() {
             match stream {
@@ -1271,6 +1283,27 @@ impl Server {
         out.write_all(head.as_bytes())?;
         out.write_all(bytes)?;
         out.flush()
+    }
+}
+
+/// Best-effort "open editor in the default browser". Never fails the server:
+/// a missing desktop/session just means the URL is printed for manual use.
+fn open_editor_url(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
     }
 }
 

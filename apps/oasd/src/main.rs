@@ -100,7 +100,7 @@ fn main() -> ExitCode {
                  oasd task new --template daily|loop|utility --id <id> --tasks-dir <dir>\n  \
                  oasd assets migrate [--tasks-dir <dir>] [--library-dir <dir>] [--assets-dir <dir>]\n  \
                  oasd assets cleanup-legacy [--tasks-dir <dir>] [--assets-dir <dir>] [--apply]\n  \
-                 oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--assets-dir <dir>] [--frames-dir <dir>] [--model <path>] [--det-model <path>]"
+                 oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--assets-dir <dir>] [--frames-dir <dir>] [--model <path>] [--det-model <path>] [--no-open]"
             );
             ExitCode::from(2)
         }
@@ -381,6 +381,7 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
     let mut library_dir = library::DEFAULT_DIR.to_string();
     let mut assets_dir = global_assets::DEFAULT_DIR.to_string();
     let mut frames_dir = "frames".to_string();
+    let mut open_browser = true;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -426,6 +427,14 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
                 frames_dir = rest[i + 1].clone();
                 i += 2;
             }
+            "--no-open" => {
+                open_browser = false;
+                i += 1;
+            }
+            "--open" => {
+                open_browser = true;
+                i += 1;
+            }
             other => {
                 eprintln!("unknown serve arg: {other}");
                 return ExitCode::from(2);
@@ -438,7 +447,8 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
         .with_runs_dir(&runs_dir)
         .with_library_dir(&library_dir)
         .with_assets_dir(&assets_dir)
-        .with_frames_dir(&frames_dir);
+        .with_frames_dir(&frames_dir)
+        .with_open_browser(open_browser);
     enable_models(&mut server, model.as_deref(), det_model.as_deref());
     match server.run(port, &ui) {
         Ok(()) => ExitCode::SUCCESS,
