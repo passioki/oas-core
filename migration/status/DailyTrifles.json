@@ -1,11 +1,11 @@
 {
   "task": "DailyTrifles",
   "status": "🔄",
-  "evidence": "task lint --task DailyTrifles => errors=0；友情点领取+礼包屋签到子流程覆盖；每日召唤/吉闻/买体力未迁移",
+  "evidence": "task lint --task DailyTrifles => errors=0；2026-11-01 实机：从庭院进入好友页并完成 4 次点击（好友入口/友情点领取相关），但流程进入有界等待循环后耗尽 100 步（outcome=Exhausted），未完成退出/签到收尾；每日召唤/吉闻/买体力未迁移",
   "gaps": [
+    "实机停在有界等待循环，需定位好友页领取后的页面状态并补退出/收尾",
     "每日召唤（普通/今忆）未迁移",
     "吉闻（OCR 入口点击）未迁移",
-    "买体力（动态 ROI 价格 OCR + 比较）未迁移",
-    "无实机/回放证据"
+    "买体力（动态 ROI 价格 OCR + 比较）未迁移"
   ]
 }
