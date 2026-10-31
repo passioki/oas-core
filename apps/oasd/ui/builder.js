@@ -292,10 +292,10 @@
     drop.addEventListener('drop', (e) => {
       e.preventDefault();
       drop.classList.remove('drop-target');
-      try {
-        const fromPath = JSON.parse(e.dataTransfer.getData('text/plain'));
-        if (Array.isArray(fromPath)) moveStepToRoot(fromPath);
-      } catch (err) { /* ignore malformed drag */ }
+      const paths = parseDragPayload(e.dataTransfer.getData('text/plain'));
+      if (!paths.length) return;
+      if (paths.length > 1) moveStepsGroup(paths, null, null, true);
+      else moveStepToRoot(paths[0]);
     });
     root.appendChild(drop);
   }
@@ -326,6 +326,87 @@
       }
     }
     return false;
+  }
+
+  function pathIsAncestor(anc, path) {
+    if (!Array.isArray(anc) || !Array.isArray(path) || anc.length >= path.length) return false;
+    for (let i = 0; i < anc.length; i++) {
+      if (anc[i] !== path[i]) return false;
+    }
+    return true;
+  }
+
+  function checkedPaths() {
+    const out = [];
+    for (const key of B.checked) {
+      try {
+        const p = JSON.parse(key);
+        if (Array.isArray(p)) out.push(p);
+      } catch (e) { /* ignore */ }
+    }
+    // Drop descendants when their parent is also checked (move parent once).
+    return out
+      .filter((p) => !out.some((q) => q !== p && pathIsAncestor(q, p)))
+      .sort((a, b) => {
+        if (a.length !== b.length) return a.length - b.length;
+        return JSON.stringify(a).localeCompare(JSON.stringify(b));
+      });
+  }
+
+  function dragPayload(fromPath) {
+    const key = JSON.stringify(fromPath);
+    if (B.checked.has(key) && B.checked.size > 1) {
+      return { paths: checkedPaths() };
+    }
+    return { path: fromPath };
+  }
+
+  function moveStepsGroup(paths, targetStepPath, key, toRoot) {
+    if (!Array.isArray(paths) || !paths.length) return;
+    const targetStep = toRoot ? null : getStep(targetStepPath);
+    if (!toRoot && (!targetStep || !Array.isArray(targetStep[key]))) return;
+    const moves = [];
+    for (const p of paths) {
+      const arr = getContainer(p);
+      const idx = p[p.length - 1];
+      if (!arr || typeof idx !== 'number') continue;
+      const step = arr[idx];
+      if (!step) continue;
+      if (!toRoot && (step === targetStep || stepContains(step, targetStep))) {
+        status('不能把父级移动到自己的子级', '#ff8a80');
+        return;
+      }
+      moves.push({ path: p, arr, idx, step });
+    }
+    // Remove deepest/last first so earlier array indices stay valid.
+    for (const m of moves.sort((a, b) => {
+      if (a.arr !== b.arr) return 0;
+      return b.idx - a.idx;
+    })) {
+      if (m.arr[m.idx] === m.step) m.arr.splice(m.idx, 1);
+    }
+    const root = getRoot();
+    let at = root.length;
+    if (at > 0 && root[at - 1] && root[at - 1].op === 'finish') at -= 1;
+    for (const m of moves) {
+      if (toRoot) root.splice(at++, 0, m.step);
+      else targetStep[key].push(m.step);
+    }
+    B.checked.clear();
+    B.selected = toRoot
+      ? [Math.max(0, at - moves.length)]
+      : targetStepPath.concat([key, targetStep[key].length - 1]);
+    renderAll();
+    status(`已移动 ${moves.length} 个勾选步骤到 ${toRoot ? '根级' : key}`);
+  }
+
+  function parseDragPayload(raw) {
+    try {
+      const v = JSON.parse(raw || 'null');
+      if (v && Array.isArray(v.paths) && v.paths.length) return v.paths;
+      if (v && Array.isArray(v.path)) return [v.path];
+    } catch (e) { /* ignore */ }
+    return [];
   }
 
   function moveStepTo(fromPath, targetStepPath, key) {
@@ -366,7 +447,7 @@
       row.draggable = true;
       if (B.selected && JSON.stringify(B.selected) === JSON.stringify(path)) row.classList.add('selected');
       row.addEventListener('dragstart', (e) => {
-        e.dataTransfer.setData('text/plain', JSON.stringify(path));
+        e.dataTransfer.setData('text/plain', JSON.stringify(dragPayload(path)));
         e.dataTransfer.effectAllowed = 'move';
         row.classList.add('dragging');
       });
@@ -375,7 +456,7 @@
       pick.type = 'checkbox';
       pick.className = 'builder-step-check';
       pick.checked = B.checked.has(JSON.stringify(path));
-      pick.title = '勾选后可整体删除';
+      pick.title = '勾选后可整体删除/拖动';
       pick.addEventListener('click', (e) => e.stopPropagation());
       pick.addEventListener('change', () => {
         const key = JSON.stringify(path);
@@ -425,10 +506,10 @@
         child.addEventListener('drop', (e) => {
           e.preventDefault();
           child.classList.remove('drop-target');
-          try {
-            const fromPath = JSON.parse(e.dataTransfer.getData('text/plain'));
-            if (Array.isArray(fromPath)) moveStepTo(fromPath, path, key);
-          } catch (err) { /* ignore malformed drag data */ }
+          const paths = parseDragPayload(e.dataTransfer.getData('text/plain'));
+          if (!paths.length) return;
+          if (paths.length > 1) moveStepsGroup(paths, path, key, false);
+          else moveStepTo(paths[0], path, key);
         });
         if (!arr.length) {
           const empty = document.createElement('div');

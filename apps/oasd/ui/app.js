@@ -158,6 +158,9 @@ let img = null;
 let livePreview = true;
 let liveTimer = null;
 let liveBusy = false;
+let liveSocket = null;
+let liveObjectUrl = null;
+let liveReconnectTimer = null;
 let roi = null; // {x,y,w,h} 识别框（前端识别/裁剪区域）
 let roiBack = null; // v1.2 操作区域（action_roi）；null = 默认识别区域
 let lastMatch = null; // v1.2.2: last image-match result; save-with-action-region source
@@ -1948,25 +1951,99 @@ async function deleteAsset(it) {
 
 async function editAssetPositions(it) {
   const task = (taskName.value || '').trim();
-  const cur = (it.positions || []).join(',');
-  const raw = window.prompt(
-    `素材「${it.id}」位置帧 id（多个用逗号分隔；清空=无位置；帧 id 见「图片」面板）`,
-    cur
-  );
-  if (raw == null) return;
-  const positions = raw
-    .split(/[,，\s]+/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => Number(s))
-    .filter((n) => Number.isInteger(n) && n > 0);
-  const r = await postJson('/task/asset/positions', { task, id: it.id, positions });
-  if (!r.ok) {
-    resultEl.textContent = '设置素材位置失败：' + (r.errors || []).join('; ');
-    return;
+  if (!task) return;
+  if (!assetFramesCache.length) {
+    await refreshAssetPositionFrames();
   }
-  resultEl.textContent = `素材「${it.id}」位置帧：${positions.length ? positions.join(',') : '（无）'}`;
-  await refreshTaskAssets(task);
+  let chosen = (it.positions || []).slice();
+  const overlay = document.createElement('div');
+  overlay.className = 'asset-modal-overlay';
+  const box = document.createElement('div');
+  box.className = 'asset-modal';
+  const title = document.createElement('h3');
+  title.textContent = `设置素材位置帧：${it.id}`;
+  const hint = document.createElement('p');
+  hint.className = 'muted small';
+  hint.textContent = '搜索分类/帧名编号，点候选加入；保存后会重新读取素材分类。';
+  const pickerHost = document.createElement('div');
+  const list = document.createElement('div');
+  list.className = 'asset-list';
+  const msg = document.createElement('div');
+  msg.className = 'muted small';
+  msg.textContent = '—';
+
+  function renderChosen() {
+    list.textContent = '';
+    if (!chosen.length) {
+      list.textContent = '（暂无位置）';
+      return;
+    }
+    for (const id of chosen) {
+      const f = assetFramesCache.find((x) => x.id === id);
+      const row = document.createElement('div');
+      row.className = 'asset-position-row';
+      const label = document.createElement('span');
+      label.textContent = f ? assetFrameLabel(f) : `#${id}`;
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'asset-test';
+      del.textContent = '删';
+      del.addEventListener('click', () => {
+        chosen = chosen.filter((x) => x !== id);
+        renderChosen();
+      });
+      row.append(label, del);
+      list.appendChild(row);
+    }
+  }
+
+  const picker = window.OASAssetUI.createSearchPicker({
+    items: assetFramesCache,
+    placeholder: '搜索分类 / 帧名 / #id，选择位置候选…',
+    className: 'asset-position-search',
+    menuClass: 'asset-position-menu',
+    label: (f) => `${(f.category || '').trim() || '未分类'} / #${f.id} ${f.name || '帧'}`,
+    onChoose: (f, input) => {
+      if (!chosen.includes(f.id)) chosen.push(f.id);
+      input.value = '';
+      renderChosen();
+      msg.textContent = `已加入 #${f.id}；当前 ${chosen.length} 个位置`;
+    },
+  });
+  pickerHost.appendChild(picker);
+
+  const actions = document.createElement('div');
+  actions.className = 'asset-modal-actions';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.textContent = '取消';
+  cancel.addEventListener('click', () => overlay.remove());
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.textContent = '保存位置';
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    msg.textContent = '保存中…';
+    const r = await postJson('/task/asset/positions', { task, id: it.id, positions: chosen });
+    if (!r.ok) {
+      msg.textContent = '保存失败：' + (r.errors || []).join('; ');
+      resultEl.textContent = `设置素材「${it.id}」位置失败：` + (r.errors || []).join('; ');
+      save.disabled = false;
+      return;
+    }
+    const text = `素材「${it.id}」位置帧：${chosen.length ? chosen.join(',') : '（无）'}`;
+    resultEl.textContent = text;
+    log(text);
+    overlay.remove();
+    await refreshTaskAssets(task);
+    await refreshAssetPositionFrames();
+  });
+  actions.append(cancel, save);
+  box.append(title, hint, pickerHost, list, msg, actions);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  renderChosen();
+  picker.input.focus();
 }
 
 async function editAsset(it) {
@@ -2997,24 +3074,86 @@ async function loadFrame(live = false) {
   });
 }
 
-async function reloadLiveFrame() {
-  if (!livePreview || liveBusy) return;
-  liveBusy = true;
+function applyLiveBlob(blob) {
+  if (!livePreview) return;
+  const url = URL.createObjectURL(blob);
+  const im = new Image();
+  im.onload = () => {
+    if (!livePreview) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    img = im;
+    canvas.width = im.width;
+    canvas.height = im.height;
+    draw();
+    if (liveObjectUrl) URL.revokeObjectURL(liveObjectUrl);
+    liveObjectUrl = url;
+  };
+  im.onerror = () => URL.revokeObjectURL(url);
+  im.src = url;
+}
+
+function openLiveSocket() {
+  if (!livePreview) return;
+  if (liveSocket && (
+    liveSocket.readyState === WebSocket.OPEN ||
+    liveSocket.readyState === WebSocket.CONNECTING
+  )) return;
   try {
-    await loadFrame(true);
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${window.location.host}/ws/live`);
+    ws.binaryType = 'blob';
+    liveSocket = ws;
+    ws.onmessage = (ev) => {
+      if (ev.data instanceof Blob) applyLiveBlob(ev.data);
+    };
+    ws.onerror = () => {
+      try { ws.close(); } catch (e) { /* ignore */ }
+    };
+    ws.onclose = () => {
+      if (liveSocket === ws) liveSocket = null;
+      if (livePreview && !liveReconnectTimer) {
+        liveReconnectTimer = setTimeout(() => {
+          liveReconnectTimer = null;
+          openLiveSocket();
+        }, 1000);
+      }
+    };
   } catch (e) {
-    // Device may be offline; keep the interval alive so reconnecting recovers.
-  } finally {
-    liveBusy = false;
+    startLivePollingFallback();
   }
+}
+
+function startLivePollingFallback() {
+  if (liveTimer) return;
+  liveTimer = setInterval(async () => {
+    if (!livePreview || liveBusy) return;
+    liveBusy = true;
+    try {
+      await loadFrame(true);
+    } catch (e) {
+      // device offline; keep polling
+    } finally {
+      liveBusy = false;
+    }
+  }, 1200);
 }
 
 function startLivePreview() {
   livePreview = true;
   updateLiveButton();
-  if (liveTimer) clearInterval(liveTimer);
-  liveTimer = setInterval(reloadLiveFrame, 1200);
-  reloadLiveFrame();
+  if (liveTimer) {
+    clearInterval(liveTimer);
+    liveTimer = null;
+  }
+  openLiveSocket();
+  // If the browser (or an older server) cannot upgrade, use polling fallback.
+  setTimeout(() => {
+    if (livePreview && !(liveSocket && liveSocket.readyState === WebSocket.OPEN)) {
+      startLivePollingFallback();
+    }
+  }, 1500);
 }
 
 function pauseLivePreview() {
@@ -3022,6 +3161,18 @@ function pauseLivePreview() {
   if (liveTimer) {
     clearInterval(liveTimer);
     liveTimer = null;
+  }
+  if (liveReconnectTimer) {
+    clearTimeout(liveReconnectTimer);
+    liveReconnectTimer = null;
+  }
+  if (liveSocket) {
+    try { liveSocket.close(); } catch (e) { /* ignore */ }
+    liveSocket = null;
+  }
+  if (liveObjectUrl) {
+    URL.revokeObjectURL(liveObjectUrl);
+    liveObjectUrl = null;
   }
   updateLiveButton();
 }

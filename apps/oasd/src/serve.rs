@@ -30,6 +30,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -220,6 +221,139 @@ pub struct Server {
     ocr: Option<Arc<Mutex<oas_ocr::onnx::RecEngine>>>,
     #[cfg(feature = "ocr")]
     det: Option<Arc<Mutex<oas_ocr::det_engine::DetEngine>>>,
+}
+
+/// Grab one device frame (used by the live preview and WebSocket stream).
+fn capture_device_frame(adb: &Adb) -> Result<(String, Frame), String> {
+    let wanted = crate::config::device_serial();
+    let serial = adb.resolve_device(wanted.as_deref())?.serial;
+    let mut screen = adb.screen(&serial);
+    let frame = screen.grab()?;
+    Ok((serial, frame))
+}
+
+// --- minimal WebSocket live preview (no extra dependency) -------------------
+// The old OAS annotator pushes JPEG over WebSocket. We do the same shape with
+// PNG frames (the codec already produces PNG) so the editor can display a
+// continuous stream instead of polling /frame.png every 1.2s.
+
+fn sha1(data: &[u8]) -> [u8; 20] {
+    let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
+    let ml = (data.len() as u64) * 8;
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&ml.to_be_bytes());
+    for chunk in msg.chunks_exact(64) {
+        let mut w = [0u32; 80];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
+        for i in 0..80 {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A827999),
+                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                _ => (b ^ c ^ d, 0xCA62C1D6),
+            };
+            let t = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(w[i]);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = t;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+    }
+    let mut out = [0u8; 20];
+    for (i, v) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&v.to_be_bytes());
+    }
+    out
+}
+
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        out.push(T[(b[0] >> 2) as usize] as char);
+        out.push(T[(((b[0] & 0x03) << 4) | (b[1] >> 4)) as usize] as char);
+        out.push(if chunk.len() > 1 { T[(((b[1] & 0x0F) << 2) | (b[2] >> 6)) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[(b[2] & 0x3F) as usize] as char } else { '=' });
+    }
+    out
+}
+
+fn ws_send_binary(stream: &mut TcpStream, payload: &[u8]) -> std::io::Result<()> {
+    let mut head = Vec::with_capacity(10);
+    head.push(0x82); // FIN + binary
+    if payload.len() < 126 {
+        head.push(payload.len() as u8);
+    } else if payload.len() <= u16::MAX as usize {
+        head.push(126);
+        head.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    } else {
+        head.push(127);
+        head.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+    }
+    stream.write_all(&head)?;
+    stream.write_all(payload)?;
+    stream.flush()
+}
+
+fn live_ws_loop(mut stream: TcpStream, adb: Adb, state: Arc<Mutex<State>>) {
+    loop {
+        match capture_device_frame(&adb) {
+            Ok((serial, frame)) => match encode_png(&frame) {
+                Ok(png) => {
+                    {
+                        let mut st = state.lock().unwrap();
+                        st.png = Some(png.clone());
+                        st.device = serial;
+                        st.error = None;
+                        st.frame = Some(frame);
+                    }
+                    if ws_send_binary(&mut stream, &png).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    if let Ok(mut st) = state.lock() {
+                        st.error = Some(format!("encode png: {e}"));
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            },
+            Err(e) => {
+                if let Ok(mut st) = state.lock() {
+                    st.error = Some(format!("capture failed: {e}"));
+                }
+                std::thread::sleep(Duration::from_millis(800));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }
 
 impl Server {
@@ -616,17 +750,8 @@ impl Server {
     /// does NOT append to the frame gallery or persist frames.json — only the
     /// explicit 截图/入库 actions do that.
     fn do_live_capture(&self) {
-        let wanted = crate::config::device_serial();
-        let serial = match self.adb.resolve_device(wanted.as_deref()) {
-            Ok(dev) => dev.serial,
-            Err(e) => {
-                self.set_error(&e);
-                return;
-            }
-        };
-        let mut screen = self.adb.screen(&serial);
-        match screen.grab() {
-            Ok(frame) => match encode_png(&frame) {
+        match capture_device_frame(&self.adb) {
+            Ok((serial, frame)) => match encode_png(&frame) {
                 Ok(png) => {
                     let mut st = self.state.lock().unwrap();
                     st.png = Some(png);
@@ -679,6 +804,26 @@ impl Server {
         st.error = Some(msg.to_string());
     }
 
+    /// Upgrade `/ws/live` to a WebSocket and stream PNG frames from a dedicated
+    /// capture thread. The main HTTP accept loop stays responsive.
+    fn handle_live_ws(&self, mut stream: TcpStream, key: &str) -> std::io::Result<()> {
+        let accept = base64(&sha1(
+            format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11").as_bytes(),
+        ));
+        let head = format!(
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+        );
+        stream.write_all(head.as_bytes())?;
+        stream.flush()?;
+        let adb = self.adb.clone();
+        let state = self.state.clone();
+        std::thread::Builder::new()
+            .name("oasd-live-ws".to_string())
+            .spawn(move || live_ws_loop(stream, adb, state))
+            .map(|_| ())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    }
+
     fn handle(&self, stream: TcpStream, ui_dir: &str) -> std::io::Result<()> {
         let mut reader = BufReader::new(stream.try_clone()?);
         let mut request_line = String::new();
@@ -690,6 +835,7 @@ impl Server {
         // consumed. Not draining it makes the OS send an RST on close, which
         // shows up in clients as a reset connection.
         let mut content_length = 0usize;
+        let mut ws_key: Option<String> = None;
         loop {
             let mut line = String::new();
             if reader.read_line(&mut line)? == 0 || line == "\r\n" || line == "\n" {
@@ -698,6 +844,11 @@ impl Server {
             let lower = line.to_ascii_lowercase();
             if let Some(rest) = lower.strip_prefix("content-length:") {
                 content_length = rest.trim().parse().unwrap_or(0);
+            }
+            if lower.starts_with("sec-websocket-key:") {
+                if let Some((_, value)) = line.split_once(':') {
+                    ws_key = Some(value.trim().to_string());
+                }
             }
         }
         // Reject oversized bodies before buffering them.
@@ -721,6 +872,13 @@ impl Server {
         let method = parts.next().unwrap_or("");
         let path = parts.next().unwrap_or("/").to_string();
         let path_only = path.split('?').next().unwrap_or("/").to_string();
+        if path_only == "/ws/live" {
+            let Some(key) = ws_key else {
+                let mut out = stream;
+                return self.send_json(&mut out, 400, r#"{"error":"missing Sec-WebSocket-Key"}"#);
+            };
+            return self.handle_live_ws(stream, &key);
+        }
         // Persist only editor data-plane actions (never the 500ms /state poll).
         const LOGGED_PREFIXES: [&str; 6] = ["/ocr", "/lines", "/match", "/task/", "/library/", "/scheduler/"];
         if LOGGED_PREFIXES
