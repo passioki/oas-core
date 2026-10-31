@@ -65,7 +65,7 @@
             ],
             "requires": {
               "kind": "appear",
-              "sel": "世界_章节栏",
+              "sel": "legacy_GameUi_I_CHECK_GORYOU",
               "timeout_ms": 3000
             }
           }
@@ -89,7 +89,7 @@
                 ],
                 "requires": {
                   "kind": "appear",
-                  "sel": "世界_章节栏",
+                  "sel": "legacy_GameUi_I_CHECK_GORYOU",
                   "timeout_ms": 3000
                 }
               }
@@ -113,7 +113,7 @@
                     ],
                     "requires": {
                       "kind": "appear",
-                      "sel": "世界_章节栏",
+                      "sel": "legacy_GameUi_I_CHECK_GORYOU",
                       "timeout_ms": 3000
                     }
                   }
@@ -131,7 +131,7 @@
                     ],
                     "requires": {
                       "kind": "appear",
-                      "sel": "世界_章节栏",
+                      "sel": "legacy_GameUi_I_CHECK_GORYOU",
                       "timeout_ms": 3000
                     }
                   }

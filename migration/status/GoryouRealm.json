@@ -3,13 +3,13 @@
   "status": "🔄",
   "evidence": {
     "lint": "lint task=GoryouRealm errors=0",
-    "coverage": "导航 / 选御灵 / 锁阵容 / count+票数限制 / 战斗主链 / 退出 全覆盖；时间限制与 RANDOM 未覆盖",
-    "run": "未真机"
+    "coverage": "导航 / 选御灵 / 锁阵容 / count+票数限制 / 战斗主链 / 退出",
+    "run": "2026-11-01 实机：庭院→探索 0.914→御灵入口 1.000→御灵页；修正 4 处 click_target 守卫为 I_CHECK_GORYOU 后不再误停；但选中的御灵卡未出现 I_GR_FIRE（best 0.319），页面显示等级/御灵等级要求，可能当前账号卡面未解锁或需卡片详情操作"
   },
   "gaps": [
+    "实机：御灵卡页面未出现 I_GR_FIRE，需确认选中卡片后的操作（卡片详情/挑战入口）与当前账号解锁状态",
     "DSL 缺时间函数（limit_time）",
     "DSL 缺随机（RANDOM 御灵）",
-    "GeneralBattleConfig 可选战斗功能未迁移",
-    "未真机验证"
+    "GeneralBattleConfig 可选战斗功能未迁移"
   ]
 }
