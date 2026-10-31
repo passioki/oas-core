@@ -3,14 +3,12 @@
   "status": "🔄",
   "evidence": {
     "lint": "lint task=DailyTrifles errors=0",
-    "live": "Lead 2026-11-01：干净主界面曾验证 friend_love/store_sign Done；已把错误的好友守卫（实际是主界面精灵）替换为新建 ui_friend_page（好友标题，a2099）；但随后实机点击 (908,639) 后 12s 内未出现好友页（ui_friend_page 0.401），入口点击/页面状态仍不稳定，未计入通过",
+    "live": "Lead 2026-11-01：登录进入游戏 + ui_main_bar_guide bootstrap 后，ui_friend_page 生效，friend_love 实机 Done（clicks 1206,679 / 899,630 / 135,681 / 1198,107）；store_sign 此前 Done；luck_msg 点 50,55 多轮仍未打开 I_LUCK_TITLE，no-op 完成",
     "round3_coverage": "luck_msg 改直点吉闻按钮（ROI 内两点交替，I_LUCK_TITLE 验证）+ 祝福/奖励 + 回庭院；失败 no-op 不中断"
   },
   "gaps": [
-    "好友入口点击后未稳定进入好友页（ui_friend_page 0.401）；需在干净主界面重测/校准点击点与等待",
-    "ui_friend_page 从旧好友页截图裁的标题模板，当前客户端需重新验证阈值",
-    "吉闻按钮候选点需实机确认（(50,55)/(50,73)）",
-    "吉闻祝福/奖励领取未实机复测",
-    "其余子流程（summon/buy_sushi）沿用上一轮，未复测"
+    "luck_msg：点 (50,55)/(50,73) 未打开吉闻页 I_LUCK_TITLE，需重新确认吉闻按钮位置/页面状态",
+    "store_sign 的“有签到按钮”分支仍未触发，只验证无签到 no-op",
+    "召唤/买体力子流程未复测"
   ]
 }
