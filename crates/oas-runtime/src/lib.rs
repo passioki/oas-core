@@ -3240,7 +3240,7 @@ mod tests {
             .with_ocr(Box::new(fake));
         let f = flow(
             r#"{"schema_version":1,"name":"t","steps":[
-                 {"op":"if","args":{"cond":"text_visible('町中')"},
+                 {"op":"if","args":{"cond":"text_visible('不存在') or text_visible('町中')"},
                   "then":[{"op":"finish","args":{"exit":"done"}}],
                   "else":[{"op":"finish","args":{"exit":"failed"}}]}]}"#,
         );

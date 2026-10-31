@@ -2194,6 +2194,7 @@ mod tests {
         assert!(parse_expr("appear('a') && appear('b')").is_ok());
         assert!(parse_expr("appear('a') || appear('b')").is_ok());
         assert!(parse_expr("!appear('a')").is_ok());
+        assert!(parse_expr("text_visible('a') or text_visible('b')").is_ok());
         // mixed words/symbols still follow and-before-or precedence
         let e = parse_expr("appear('a') || appear('b') && !appear('c')").expect("parse");
         match e {

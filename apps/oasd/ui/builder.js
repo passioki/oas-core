@@ -32,7 +32,7 @@
     appear: [{ key: 'sel', label: '素材', type: 'asset' }],
     ocr: [{ key: 'sel', label: 'OCR 素材', type: 'asset' }],
     click: [{ key: 'sel', label: '素材', type: 'asset' }],
-    click_point: [{ key: 'x', label: 'x', type: 'number' }, { key: 'y', label: 'y', type: 'number' }],
+    click_point: [{ key: 'x', label: 'x（表达式）', type: 'text' }, { key: 'y', label: 'y（表达式）', type: 'text' }],
     dismiss_popup: [{ key: 'sel', label: '弹窗素材', type: 'asset' }, { key: 'action', label: '动作（可选）', type: 'text' }, { key: 'timeout_ms', label: '超时 ms', type: 'number' }],
     swipe: [{ key: 'from', label: '起点 [x,y]', type: 'json' }, { key: 'to', label: '终点 [x,y]', type: 'json' }, { key: 'ms', label: '时长 ms', type: 'number' }],
     finish: [{ key: 'exit', label: '出口', type: 'select', options: ['done', 'failed'] }],
@@ -278,6 +278,40 @@
       return;
     }
     renderStepArray(steps, [], root, 0);
+    const drop = document.createElement('div');
+    drop.className = 'builder-root-drop muted small';
+    drop.textContent = '拖到这里 → 移到根级';
+    drop.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      drop.classList.add('drop-target');
+    });
+    drop.addEventListener('dragleave', () => drop.classList.remove('drop-target'));
+    drop.addEventListener('drop', (e) => {
+      e.preventDefault();
+      drop.classList.remove('drop-target');
+      try {
+        const fromPath = JSON.parse(e.dataTransfer.getData('text/plain'));
+        if (Array.isArray(fromPath)) moveStepToRoot(fromPath);
+      } catch (err) { /* ignore malformed drag */ }
+    });
+    root.appendChild(drop);
+  }
+
+  function moveStepToRoot(fromPath) {
+    if (!Array.isArray(fromPath) || fromPath.length <= 1) return;
+    const fromArr = getContainer(fromPath);
+    const idx = fromPath[fromPath.length - 1];
+    if (!fromArr || typeof idx !== 'number') return;
+    const step = fromArr[idx];
+    if (!step) return;
+    fromArr.splice(idx, 1);
+    const root = getRoot();
+    let at = root.length;
+    if (at > 0 && root[at - 1] && root[at - 1].op === 'finish') at -= 1;
+    root.splice(at, 0, step);
+    B.selected = [at];
+    renderAll();
+    status('已移到根级');
   }
 
   function moveStepTo(fromPath, targetStepPath, key) {
@@ -1084,7 +1118,7 @@
     box.className = 'builder-subform';
     const title = document.createElement('div');
     title.className = 'muted small';
-    title.textContent = '循环/分支条件';
+    title.textContent = '循环/分支条件（支持 and/or/not、&&/||/!、括号）';
     box.appendChild(title);
 
     const preset = parseConditionPreset(step.args.cond);
@@ -1195,6 +1229,13 @@
       root.appendChild(assetLabel);
     }
     if (step.op === 'call_task') renderCallTaskForm(root, step);
+    const exprHintOps = new Set(['log', 'wait_until', 'loop', 'set_var', 'inc_var', 'click_point']);
+    if (exprHintOps.has(step.op)) {
+      const hint = document.createElement('div');
+      hint.className = 'muted small';
+      hint.textContent = '表达式值支持 and/or/not、&&/||/!、括号、appear/ocr/param/var；数值字段按数字求值。';
+      root.appendChild(hint);
+    }
     if (step.op === 'if' || step.op === 'while') {
       renderConditionEditor(root, step);
     }

@@ -592,6 +592,8 @@ aside.side {
 .builder-step-check { width: auto; margin: 0 4px 0 0; vertical-align: middle; }
 .builder-step.dragging { opacity: 0.45; }
 .builder-children.drop-target { outline: 2px dashed #e0a040; outline-offset: 2px; }
+.builder-root-drop { margin-top: 8px; padding: 6px; border: 1px dashed #3a3d48; border-radius: 4px; text-align: center; }
+.builder-root-drop.drop-target { border-color: #e0a040; color: #ffd54a; }
 .builder-step .op { color: #8fb8e8; font-weight: 600; }
 .builder-step .summary { color: #cbd5e1; font-size: 12px; overflow-wrap: anywhere; }
 .builder-step .rowbtns { margin-left: 6px; }

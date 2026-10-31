@@ -2113,6 +2113,69 @@ impl Server {
                     _ => {
                         #[cfg(feature = "ocr")]
                         {
+                            // Multi-line-derived OCR must repeat det+rec over
+                            // the original source ROI (v1.2.1 contract).
+                            if item.kind == "ocr_line"
+                                && item.ocr_mode.as_deref() == Some("lines")
+                            {
+                                let (Some(det), Some(rec)) = (self.det.as_ref(), self.ocr.as_ref())
+                                else {
+                                    result["pass"] = serde_json::json!(false);
+                                    result["error"] = serde_json::json!("det/rec model not loaded");
+                                    results.push(result);
+                                    continue;
+                                };
+                                let Some(src) = item.ocr_source_roi.or(item.roi) else {
+                                    result["pass"] = serde_json::json!(false);
+                                    result["error"] = serde_json::json!("derived OCR has no source ROI");
+                                    results.push(result);
+                                    continue;
+                                };
+                                let rect = oas_types::Rect { x: src[0], y: src[1], w: src[2], h: src[3] };
+                                let crop = match oas_ocr::RgbCrop::from_rgba(
+                                    frame.width, frame.height, &frame.rgba, rect,
+                                ) {
+                                    Ok(c) => c,
+                                    Err(e) => {
+                                        result["pass"] = serde_json::json!(false);
+                                        result["error"] = serde_json::json!(format!("crop: {e}"));
+                                        results.push(result);
+                                        continue;
+                                    }
+                                };
+                                let mut rgba = Vec::with_capacity(crop.data.len() / 3 * 4);
+                                for px in crop.data.chunks_exact(3) {
+                                    rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
+                                }
+                                let boxes = match det.lock().unwrap().detect(&crop) {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        result["pass"] = serde_json::json!(false);
+                                        result["error"] = serde_json::json!(e);
+                                        results.push(result);
+                                        continue;
+                                    }
+                                };
+                                let expected = item.ocr_text.as_deref().unwrap_or("").trim();
+                                let mut rec_guard = rec.lock().unwrap();
+                                let mut got: Vec<(String, f32)> = Vec::new();
+                                for b in boxes {
+                                    let Ok(sub) = oas_ocr::RgbCrop::from_rgba(crop.width, crop.height, &rgba, b) else { continue };
+                                    if let Ok((text, score)) = rec_guard.recognize(&sub) {
+                                        if score >= 0.5 { got.push((text, score)); }
+                                    }
+                                }
+                                let hit = got.iter().find(|(t, _)| t.trim() == expected);
+                                result["text"] = serde_json::json!(
+                                    hit.map(|(t, _)| t.clone()).or_else(|| got.first().map(|(t, _)| t.clone()))
+                                );
+                                result["score"] = serde_json::json!(
+                                    hit.map(|(_, s)| *s).or_else(|| got.first().map(|(_, s)| *s))
+                                );
+                                result["pass"] = serde_json::json!(hit.is_some());
+                                results.push(result);
+                                continue;
+                            }
                             let Some(engine) = self.ocr.as_ref() else {
                                 result["pass"] = serde_json::json!(false);
                                 result["error"] = serde_json::json!("no OCR model loaded");
