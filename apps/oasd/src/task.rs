@@ -198,7 +198,14 @@ fn push_issue_lines(lines: &mut Vec<String>, name: &str, issues: &[LintIssue]) {
 ///
 /// Setup errors are `Err`; lint findings are counted in [`LintSummary`].
 fn lint_one_with_global(tasks_dir: &Path, name: &str) -> Result<Vec<LintIssue>, String> {
-    let assets_root = Path::new(crate::global_assets::DEFAULT_DIR);
+    lint_one_with_global_at(tasks_dir, name, Path::new(crate::global_assets::DEFAULT_DIR))
+}
+
+fn lint_one_with_global_at(
+    tasks_dir: &Path,
+    name: &str,
+    assets_root: &Path,
+) -> Result<Vec<LintIssue>, String> {
     if crate::global_assets::is_initialized(assets_root) {
         let store = crate::global_assets::open_store(assets_root)?;
         let ids: std::collections::BTreeSet<String> = store
@@ -591,13 +598,20 @@ mod tests {
     #[test]
     fn shipped_legacy_tasks_pass_lint_untouched() {
         let tasks = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tasks");
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         for name in ["S1切预设", "任务1"] {
-            let issues = lint_task(&tasks, name).unwrap_or_else(|e| panic!("task `{name}`: {e}"));
+            let issues = lint_one_with_global_at(&tasks, name, &assets)
+                .unwrap_or_else(|e| panic!("task `{name}`: {e}"));
             assert!(issues.is_empty(), "legacy task `{name}` must lint green: {issues:?}");
         }
-        // `--all` also stays green with these two present (new tasks added by
-        // other efforts must be lint-clean too; this is the upgrade gate).
-        let summary = lint(&tasks, None).expect("lint shipped tasks dir");
-        assert_eq!(summary.errors, 0, "{:?}", summary.lines);
+        // `--all` also stays green. Migrated tasks reference the global asset
+        // store, so this gate must use the same global-aware path as the CLI;
+        // the local-only `lint()` would treat every `legacy_*` id as missing.
+        let names = oas_task::list_tasks(&tasks).expect("list shipped tasks");
+        for name in names {
+            let issues = lint_one_with_global_at(&tasks, &name, &assets)
+                .unwrap_or_else(|e| panic!("task `{name}`: {e}"));
+            assert!(issues.is_empty(), "task `{name}` must lint green: {issues:?}");
+        }
     }
 }
