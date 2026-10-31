@@ -1254,7 +1254,10 @@
         if (groupNot.checked && exprs.length) expr = `not (${expr})`;
         step.args.cond = expr;
       }
-      preview.textContent = `当前条件：${step.args.cond}（每轮重新计算）`;
+      preview.textContent = `当前条件：${step.args.cond}（每轮重新计算）` +
+        (!customMode && groupNot.checked && rows.some((r) => r.neg)
+          ? ' ⚠ 行“未出现”+ 整组“非”是双重取反，请确认'
+          : '');
       joinLabel.style.display = customMode || rows.length < 2 ? 'none' : 'block';
       scheduleAutoSave();
     }
