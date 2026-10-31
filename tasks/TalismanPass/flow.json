@@ -17,12 +17,52 @@
           "kind": "appear",
           "sel": "legacy_GameUi_I_CHECK_MAIN",
           "timeout_ms": 3000
-        },
-        "expect": {
-          "kind": "appear",
-          "sel": "legacy_GameUi_I_CHECK_DAILY",
-          "timeout_ms": 12000
         }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 2.0
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "4"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_DAILY')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "click_point",
+          "args": {
+            "x": 1100,
+            "y": 660
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.5
+          }
+        }
+      ]
+    },
+    {
+      "op": "appear",
+      "args": {
+        "sel": "legacy_GameUi_I_CHECK_DAILY"
       }
     },
     {

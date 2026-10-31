@@ -3,12 +3,12 @@
   "status": "🔄",
   "evidence": {
     "lint": "lint task=TalismanPass errors=0",
-    "coverage": "一键收取 / 等级奖励（3 档参数）/ 可选御魂奖励 / 返回 全覆盖",
-    "run": "未真机"
+    "coverage": "入口弹窗关闭/I_CHECK_DAILY/一键收取/等级奖励（3 档参数）/可选御魂奖励/返回",
+    "run": "2026-11-01 实机：入口已修通（花合战 splash→I_CHECK_DAILY 0.883），但 I_RED_POINT_LEVEL 误匹配并点进“成就”页（点 1139,640），后续 I_TP_GET_ALL 0.357 失败；说明旧素材/入口资产需要重采或换目标"
   },
   "gaps": [
+    "实机确认 I_RED_POINT_LEVEL 模板误匹配成就红点，不能直接使用；需重采花合战等级奖励入口或改用页面内稳定目标",
     "缺 multi-scale appear（SOUL_1）",
-    "计时器语义为有界循环近似",
-    "未真机验证"
+    "计时器语义为有界循环近似"
   ]
 }
