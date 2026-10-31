@@ -79,6 +79,83 @@
     return b;
   }
 
+  /**
+   * Search + candidate picker shared by the builder asset field and the asset
+   * position picker. Caller supplies the candidate list and label/filter;
+   * choosing an item closes the menu and calls onChoose(item, input).
+   *
+   * opts: { items, value, placeholder, label, filter, onChoose, className }
+   */
+  function createSearchPicker(opts) {
+    const o = opts || {};
+    const wrap = document.createElement('span');
+    wrap.className = 'asset-search-picker' + (o.className ? ' ' + o.className : '');
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = o.placeholder || '输入片段，选择候选项…';
+    input.value = o.value || '';
+    const menu = document.createElement('div');
+    menu.className = 'asset-search-menu' + (o.menuClass ? ' ' + o.menuClass : '');
+    menu.style.display = 'none';
+
+    function matches(item) {
+      if (o.filter && !o.filter(item)) return false;
+      const q = input.value.trim().toLowerCase();
+      if (!q) return true;
+      const label = String(o.label ? o.label(item) : item.id || item);
+      return label.toLowerCase().includes(q);
+    }
+
+    function choose(item) {
+      menu.style.display = 'none';
+      if (o.onChoose) o.onChoose(item, input);
+    }
+
+    function show() {
+      menu.textContent = '';
+      const items = (o.items || []).filter(matches);
+      if (!items.length) {
+        const empty = document.createElement('div');
+        empty.className = 'muted small';
+        empty.textContent = '（无匹配候选）';
+        menu.appendChild(empty);
+      } else {
+        for (const item of items) {
+          const row = document.createElement('button');
+          row.type = 'button';
+          row.className = 'asset-search-option';
+          row.dataset.id = String(item.id != null ? item.id : item);
+          row.textContent = o.label ? o.label(item) : String(item.id != null ? item.id : item);
+          row.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            choose(item);
+          });
+          menu.appendChild(row);
+        }
+      }
+      menu.style.display = 'block';
+    }
+
+    input.addEventListener('focus', show);
+    input.addEventListener('input', show);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        menu.style.display = 'none';
+      } else if (e.key === 'Enter') {
+        const first = menu.querySelector('.asset-search-option');
+        if (first) {
+          e.preventDefault();
+          const items = (o.items || []).filter(matches);
+          if (items[0]) choose(items[0]);
+        }
+      }
+    });
+    input.addEventListener('blur', () => setTimeout(() => { menu.style.display = 'none'; }, 120));
+    wrap.append(input, menu);
+    wrap.input = input;
+    return wrap;
+  }
+
   function assetText(it) {
     const roi = it.roi ? `[${it.roi.join(',')}]` : '—';
     const action = it.action_roi ? ` · 操作区域[${it.action_roi.join(',')}]` : '';
@@ -190,15 +267,21 @@
       return;
     }
     if (o.group) {
+      const groupBy = o.groupBy || 'kind';
       const groups = new Map();
       for (const it of items) {
-        if (!groups.has(it.kind)) groups.set(it.kind, []);
-        groups.get(it.kind).push(it);
+        const key = groupBy === 'category'
+          ? ((it.category || '').trim() || '未分类')
+          : it.kind;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(it);
       }
-      for (const [kind, list] of groups) {
+      for (const [key, list] of groups) {
         const h = document.createElement('h4');
         h.className = 'asset-group';
-        h.textContent = `${kindLabel(kind)}（${list.length}）`;
+        h.textContent = groupBy === 'category'
+          ? `${key}（${list.length}）`
+          : `${kindLabel(key)}（${list.length}）`;
         container.appendChild(h);
         for (const it of list) container.appendChild(createRow(it, o));
       }
@@ -207,5 +290,5 @@
     }
   }
 
-  window.OASAssetUI = { KIND_LABELS, kindLabel, makeThumb, createRow, renderRows };
+  window.OASAssetUI = { KIND_LABELS, kindLabel, makeThumb, createRow, renderRows, createSearchPicker };
 })();

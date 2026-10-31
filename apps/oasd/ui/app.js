@@ -9,6 +9,7 @@ const roiEl = document.getElementById('roi');
 const resultEl = document.getElementById('result');
 const logEl = document.getElementById('log');
 const btnCapture = document.getElementById('btn-capture');
+const btnLivePreview = document.getElementById('btn-live-preview');
 const btnOcr = document.getElementById('btn-ocr');
 const btnClear = document.getElementById('btn-clear');
 const btnLines = document.getElementById('btn-lines');
@@ -48,14 +49,13 @@ const hdrDrawers = document.getElementById('hdr-drawers');
 const resultPop = document.getElementById('result-pop');
 const logPop = document.getElementById('log-pop');
 const assetSearch = document.getElementById('asset-search');
+const assetCategoryFilter = document.getElementById('asset-category-filter');
 const assetsList = document.getElementById('assets-list');
 const taskRefAssets = document.getElementById('task-ref-assets');
 const taskRefAssetsTask = document.getElementById('task-ref-assets-task');
-const assetPositionCategory = document.getElementById('asset-position-category');
-const assetPositionFrame = document.getElementById('asset-position-frame');
+const assetPositionPicker = document.getElementById('asset-position-picker');
 const assetPositionList = document.getElementById('asset-position-list');
 const assetPositionStatus = document.getElementById('asset-position-status');
-const btnAddAssetPosition = document.getElementById('btn-add-asset-position');
 let assetFramesCache = [];
 let pendingAssetPositions = [];
 const btnAssetsRefresh = document.getElementById('assets-refresh');
@@ -155,6 +155,9 @@ let runLogSeen = 0;
 let runPolling = false;
 
 let img = null;
+let livePreview = true;
+let liveTimer = null;
+let liveBusy = false;
 let roi = null; // {x,y,w,h} 识别框（前端识别/裁剪区域）
 let roiBack = null; // v1.2 操作区域（action_roi）；null = 默认识别区域
 let lastMatch = null; // v1.2.2: last image-match result; save-with-action-region source
@@ -1704,6 +1707,7 @@ function renderTaskReferencedAssets() {
       manage: false,
       actions: true,
       group: true,
+      groupBy: 'category',
       onPick: (it) => pickAssetRoi(it),
       onTest: runAssetTest,
       onClickTest: (it) => testAssetClick(it),
@@ -1732,10 +1736,12 @@ async function refreshTaskAssets(task) {
         members: c.members || [],
         threshold: c.threshold,
         action_roi: c.action_roi,
+        category: c.category || '素材集合',
         _collection: true,
       });
     }
     taskAssetsMeta = { task: s.task, design: s.design_resolution, count: s.count };
+    refreshAssetCategoryFilter();
     renderAssetList();
     renderTaskReferencedAssets();
   } catch (e) {
@@ -1755,24 +1761,53 @@ function makeAssetThumb(it) {
   return window.OASAssetUI.makeThumb(it, (taskName.value || '').trim());
 }
 
+function assetCategory(it) {
+  return ((it && it.category) || '').trim() || '未分类';
+}
+
+function refreshAssetCategoryFilter() {
+  if (!assetCategoryFilter) return;
+  const keep = assetCategoryFilter.value;
+  const cats = [...new Set((taskAssets || []).map(assetCategory))].sort((a, b) => {
+    if (a === '未分类') return 1;
+    if (b === '未分类') return -1;
+    return a.localeCompare(b, 'zh-CN');
+  });
+  assetCategoryFilter.textContent = '';
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = '全部分类';
+  assetCategoryFilter.appendChild(all);
+  for (const cat of cats) {
+    const o = document.createElement('option');
+    o.value = cat;
+    o.textContent = cat;
+    assetCategoryFilter.appendChild(o);
+  }
+  assetCategoryFilter.value = cats.includes(keep) ? keep : '';
+}
+
 function renderAssetList() {
   if (!assetsList) return;
   const q = ((assetSearch && assetSearch.value) || '').trim().toLowerCase();
+  const cat = assetCategoryFilter ? assetCategoryFilter.value : '';
   const items = (taskAssets || []).filter(
-    (it) => !q || String(it.id).toLowerCase().includes(q)
+    (it) => (!q || String(it.id).toLowerCase().includes(q)) &&
+      (!cat || assetCategory(it) === cat)
   );
   assetsList.textContent = '';
   if (taskAssetsMeta.task) {
     const res = taskAssetsMeta.design ? taskAssetsMeta.design.join('x') : '未设置';
     const head = document.createElement('div');
     head.className = 'muted small';
-    head.textContent = `素材库 ${taskAssetsMeta.task} · design ${res} · ${taskAssets.length} 个素材`;
+    head.textContent = `素材库 ${taskAssetsMeta.task} · design ${res} · ${taskAssets.length} 个素材` +
+      (cat ? ` · 分类：${cat}` : '');
     assetsList.appendChild(head);
   }
   if (!items.length) {
     const empty = document.createElement('div');
     empty.className = 'muted small';
-    empty.textContent = q ? '（没有匹配的素材 id）' : '（任务还没有素材）';
+    empty.textContent = (q || cat) ? '（没有匹配的素材）' : '（任务还没有素材）';
     assetsList.appendChild(empty);
     return;
   }
@@ -1782,8 +1817,9 @@ function renderAssetList() {
     manage: true,
     actions: true,
     group: true,
+    groupBy: 'category',
     clear: false,
-    emptyText: q ? '（没有匹配的素材 id）' : '（任务还没有素材）',
+    emptyText: (q || cat) ? '（没有匹配的素材）' : '（任务还没有素材）',
     onPick: (it) => pickAssetRoi(it),
     onTest: runAssetTest,
     onEdit: (it) => editAsset(it),
@@ -2088,48 +2124,42 @@ function renderPendingPositions() {
   }
 }
 
-function populateAssetPositionFrames() {
-  if (!assetPositionFrame) return;
-  const cat = assetPositionCategory ? assetPositionCategory.value : '';
-  const items = assetFramesCache.filter((f) => ((f.category || '').trim() || '未分类') === cat);
-  assetPositionFrame.textContent = '';
-  for (const f of items) {
-    const o = document.createElement('option');
-    o.value = String(f.id);
-    o.textContent = assetFrameLabel(f);
-    assetPositionFrame.appendChild(o);
-  }
-  if (!items.length) {
-    const o = document.createElement('option');
-    o.value = '';
-    o.textContent = '（该分类没有帧）';
-    assetPositionFrame.appendChild(o);
-  }
+function addAssetPosition(id) {
+  const n = Number(id);
+  if (!Number.isInteger(n) || n <= 0) return;
+  if (!pendingAssetPositions.includes(n)) pendingAssetPositions.push(n);
+  renderPendingPositions();
+}
+
+function renderAssetPositionPicker() {
+  if (!assetPositionPicker) return;
+  assetPositionPicker.textContent = '';
+  const picker = window.OASAssetUI.createSearchPicker({
+    items: assetFramesCache,
+    placeholder: '搜索分类 / 帧名 / #id，选择候选位置…',
+    className: 'asset-position-search',
+    menuClass: 'asset-position-menu',
+    label: (f) => `${(f.category || '').trim() || '未分类'} / #${f.id} ${f.name || '帧'}`,
+    onChoose: (f, input) => {
+      addAssetPosition(f.id);
+      input.value = '';
+      input.focus();
+    },
+  });
+  assetPositionPicker.appendChild(picker);
 }
 
 async function refreshAssetPositionFrames() {
-  if (!assetPositionCategory || !assetPositionFrame) return;
+  if (!assetPositionPicker) return;
   try {
     const r = await fetch('/frames');
     const s = await r.json();
     assetFramesCache = s.frames || [];
-    const cats = [...new Set(assetFramesCache.map((f) => (f.category || '').trim() || '未分类'))];
-    const keep = assetPositionCategory.value;
-    assetPositionCategory.textContent = '';
-    for (const cat of cats) {
-      const o = document.createElement('option');
-      o.value = cat;
-      o.textContent = cat;
-      assetPositionCategory.appendChild(o);
-    }
-    const current = assetFramesCache.find((f) => f.current);
-    const currentCat = current ? ((current.category || '').trim() || '未分类') : '';
-    assetPositionCategory.value = cats.includes(keep) ? keep : (currentCat || cats[0] || '');
-    populateAssetPositionFrames();
+    renderAssetPositionPicker();
     renderPendingPositions();
     if (assetPositionStatus) {
       assetPositionStatus.textContent = assetFramesCache.length
-        ? `共 ${assetFramesCache.length} 帧；先选分类，再选帧，点「添加位置」`
+        ? `共 ${assetFramesCache.length} 帧；搜索并选择候选即可添加位置（可多个）`
         : '（还没有帧：先到「图片」面板截图/上传，才能保存素材）';
     }
   } catch (e) {
@@ -2834,6 +2864,7 @@ async function moveFrameBefore(dragged, target, category) {
 
 async function selectFrame(id) {
   try {
+    pauseLivePreview();
     const r = await fetch('/frames/select', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2902,6 +2933,7 @@ async function fileToPngBytes(file) {
 }
 
 async function uploadFrames() {
+  pauseLivePreview();
   const files = Array.from(frameFile.files || []);
   if (!files.length) {
     framesStatus.textContent = '先选择图片文件（可多选）';
@@ -2940,7 +2972,13 @@ async function uploadFrames() {
   }
 }
 
-async function loadFrame() {
+function updateLiveButton() {
+  if (!btnLivePreview) return;
+  btnLivePreview.textContent = livePreview ? '实时：开' : '实时：暂停';
+  btnLivePreview.classList.toggle('live-on', livePreview);
+}
+
+async function loadFrame(live = false) {
   return new Promise((resolve, reject) => {
     const im = new Image();
     im.onload = () => {
@@ -2951,8 +2989,41 @@ async function loadFrame() {
       resolve(im);
     };
     im.onerror = () => reject(new Error('帧加载失败'));
-    im.src = '/frame.png?t=' + Date.now();
+    // `live=1` makes serve grab a fresh device frame for this request. The
+    // request never appends to the frame gallery; only 截图/入库 does that.
+    im.src = live
+      ? '/frame.png?live=1&t=' + Date.now()
+      : '/frame.png?t=' + Date.now();
   });
+}
+
+async function reloadLiveFrame() {
+  if (!livePreview || liveBusy) return;
+  liveBusy = true;
+  try {
+    await loadFrame(true);
+  } catch (e) {
+    // Device may be offline; keep the interval alive so reconnecting recovers.
+  } finally {
+    liveBusy = false;
+  }
+}
+
+function startLivePreview() {
+  livePreview = true;
+  updateLiveButton();
+  if (liveTimer) clearInterval(liveTimer);
+  liveTimer = setInterval(reloadLiveFrame, 1200);
+  reloadLiveFrame();
+}
+
+function pauseLivePreview() {
+  livePreview = false;
+  if (liveTimer) {
+    clearInterval(liveTimer);
+    liveTimer = null;
+  }
+  updateLiveButton();
 }
 
 async function refreshState() {
@@ -2969,6 +3040,7 @@ async function refreshState() {
 }
 
 async function doCapture() {
+  pauseLivePreview();
   btnCapture.disabled = true;
   setStatus('截图中…');
   try {
@@ -3379,6 +3451,20 @@ if (btnMatchSave) {
 }
 
 btnCapture.addEventListener('click', doCapture);
+if (btnLivePreview) {
+  btnLivePreview.addEventListener('click', async () => {
+    if (livePreview) {
+      pauseLivePreview();
+      try {
+        await loadFrame(false);
+      } catch (e) {
+        // keep the last rendered frame
+      }
+    } else {
+      startLivePreview();
+    }
+  });
+}
 
 // Generate the declaration JSON for copy/paste. `file` is intentionally NOT
 // generated: when saved, the engine assigns images/aNNN.png, so the (Chinese)
@@ -3930,19 +4016,9 @@ async function submitResetMemory() {
   syncDrawers();
   if (btnAssetsRefresh) btnAssetsRefresh.addEventListener('click', () => refreshTaskAssets());
   if (btnAssetsBatchTest) btnAssetsBatchTest.addEventListener('click', batchTestAssets);
-  if (assetPositionCategory) {
-    assetPositionCategory.addEventListener('change', populateAssetPositionFrames);
-  }
-  if (btnAddAssetPosition) {
-    btnAddAssetPosition.addEventListener('click', () => {
-      const id = Number(assetPositionFrame && assetPositionFrame.value);
-      if (!Number.isInteger(id) || id <= 0) return;
-      if (!pendingAssetPositions.includes(id)) pendingAssetPositions.push(id);
-      renderPendingPositions();
-    });
-  }
   if (btnNewCollection) btnNewCollection.addEventListener('click', createCollectionFromSelection);
   if (assetSearch) assetSearch.addEventListener('input', renderAssetList);
+  if (assetCategoryFilter) assetCategoryFilter.addEventListener('change', renderAssetList);
   if (railButtons.length) activatePanel(railButtons[0].dataset.panel);
   // 深链 ?panel=flow / ?panel=task 供验收/直达使用
   try {
@@ -4137,14 +4213,15 @@ async function submitResetMemory() {
   // Frame is optional: the click-distribution view must work even with no adb
   // device attached (canvas then keeps its default 1280x720 frame size).
   try {
-    await loadFrame();
+    await loadFrame(true);
     await refreshState();
     btnCapture.disabled = false;
     await refreshFrames();
+    startLivePreview();
     if (!ocrReady) {
       log('OCR 未加载：serve 需 `--features ocr` 构建并带 --model/--det-model（单行/多行识别不可用）');
     }
-    log('已连接，画面已加载');
+    log('已连接，实时画面已开启');
   } catch (e) {
     setStatus('没有可用帧，点「截图」');
     btnCapture.disabled = false;

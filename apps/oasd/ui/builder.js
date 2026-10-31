@@ -482,9 +482,9 @@
     return n;
   }
 
-  function gEdge(graph, from, to, label) {
+  function gEdge(graph, from, to, label, opts) {
     if (!from || !to || from === to) return;
-    graph.edges.push({ from, to, label: label || '' });
+    graph.edges.push({ from, to, label: label || '', back: Boolean(opts && opts.back), backType: opts && opts.backType });
   }
 
   function connectExits(graph, exits, to, label) {
@@ -549,8 +549,8 @@
           loopCtx
         );
         if (bodyR.entry) gEdge(graph, node, bodyR.entry, '循环');
-        for (const ex of bodyR.exits || []) gEdge(graph, ex, node, '↺ 回边');
-        for (const c of loopCtx.loop.continueNodes) gEdge(graph, c, node, 'continue');
+        for (const ex of bodyR.exits || []) gEdge(graph, ex, node, '↺ 回边', { back: true, backType: 'loop' });
+        for (const c of loopCtx.loop.continueNodes) gEdge(graph, c, node, 'continue', { back: true, backType: 'continue' });
         const exitY = Math.max(bodyR.bottom, node.y + node.h) + G.gapY;
         const exitJ = gNode(graph, { cx, y: exitY, kind: 'junction', label: '' });
         gEdge(graph, node, exitJ, '退出');
@@ -620,8 +620,45 @@
       const mid = (y1 + y2) / 2;
       return `M ${x1} ${y1} L ${x1} ${mid} L ${x2} ${mid} L ${x2} ${y2}`;
     }
-    // back edge (loop/continue): curved to distinguish from forward flow
     return `M ${x1} ${y1} C ${x1 + 70} ${y1 + 34}, ${x2 - 70} ${y2 - 28}, ${x2} ${y2}`;
+  }
+
+  // Back edges (loop return / continue) are routed in an outer lane, never
+  // through the node column. This is the usual layered-graph approach: reverse
+  // the back edge conceptually, then draw it around the subgraph perimeter.
+  function backLaneX(graph, idx) {
+    return graph.maxRight + G.pad + 24 + idx * 18;
+  }
+
+  function backEdgePath(e, graph, idx) {
+    const a = e.from;
+    const b = e.to;
+    const laneX = backLaneX(graph, idx);
+    const endX = b.cx + b.w / 2;
+    const endY = b.y + b.h / 2;
+    if (e.backType === 'continue') {
+      // continue starts mid-body: leave through the right side, then join the
+      // same outer lane and enter the loop header from its right edge.
+      return `M ${a.cx + a.w / 2} ${a.y + a.h / 2} H ${laneX} V ${endY} H ${endX}`;
+    }
+    const bottomY = graph.maxBottom + G.pad + 12 + idx * 10;
+    return `M ${a.cx} ${a.y + a.h} V ${bottomY} H ${laneX} V ${endY} H ${endX}`;
+  }
+
+  function edgeLabelPoint(e, graph, backIdx) {
+    if (e.back) {
+      const laneX = backLaneX(graph, backIdx);
+      return {
+        x: laneX + 4,
+        y: (e.from.y + e.from.h / 2 + e.to.y + e.to.h / 2) / 2,
+        anchor: 'start',
+      };
+    }
+    return {
+      x: (e.from.cx + e.to.cx) / 2,
+      y: (e.from.y + e.from.h + e.to.y) / 2 - 2,
+      anchor: 'middle',
+    };
   }
 
   function renderSvgNode(svg, graph, node) {
@@ -693,8 +730,19 @@
     for (const e of layout.exits) gEdge(graph, e, end);
     if (!layout.exits.length && !graph.finishNodes.length) gEdge(graph, start, end);
 
-    const width = Math.max(760, ...graph.nodes.map((n) => n.cx + n.w / 2 + G.pad));
-    const height = end.y + end.h + G.pad;
+    graph.maxRight = graph.nodes.reduce((m, n) => Math.max(m, n.cx + n.w / 2), 0);
+    graph.maxBottom = graph.nodes.reduce((m, n) => Math.max(m, n.y + n.h), 0);
+    const backEdges = graph.edges.filter((e) => e.back).length;
+    const backExtra = Math.max(0, backEdges - 1);
+    const width = Math.max(
+      760,
+      ...graph.nodes.map((n) => n.cx + n.w / 2 + G.pad),
+      graph.maxRight + G.pad + 64 + backExtra * 18
+    );
+    const height = Math.max(
+      end.y + end.h + G.pad,
+      graph.maxBottom + G.pad + 24 + backExtra * 10
+    );
     const svg = sEl('svg', {
       class: 'flow-svg',
       width,
@@ -719,87 +767,44 @@
     defs.appendChild(marker);
     svg.appendChild(defs);
 
+    let backIdx = 0;
     for (const e of graph.edges) {
-      const p = sEl('path', { d: edgePath(e.from, e.to), 'marker-end': 'url(#flow-arrow)' });
-      p.setAttribute('class', 'flow-svg-edge');
+      const isBack = Boolean(e.back);
+      const d = isBack ? backEdgePath(e, graph, backIdx) : edgePath(e.from, e.to);
+      const p = sEl('path', { d, 'marker-end': 'url(#flow-arrow)' });
+      p.setAttribute('class', 'flow-svg-edge' + (isBack ? ' back-edge' : ''));
       svg.appendChild(p);
       if (e.label) {
+        const lp = edgeLabelPoint(e, graph, backIdx);
         const t = sEl('text', {
-          x: (e.from.cx + e.to.cx) / 2,
-          y: (e.from.y + e.from.h + e.to.y) / 2 - 2,
-          'text-anchor': 'middle',
+          x: lp.x,
+          y: lp.y,
+          'text-anchor': lp.anchor,
         });
-        t.setAttribute('class', 'flow-svg-edge-label');
+        t.setAttribute('class', 'flow-svg-edge-label' + (isBack ? ' back-edge-label' : ''));
         t.textContent = e.label;
         svg.appendChild(t);
       }
+      if (isBack) backIdx += 1;
     }
     for (const n of graph.nodes) renderSvgNode(svg, graph, n);
     root.appendChild(svg);
   }
 
   function assetSearch(current, kinds) {
-    const wrap = document.createElement('span');
-    wrap.className = 'builder-asset-search';
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.placeholder = '输入片段，选择匹配素材…';
-    input.value = current || '';
-    const menu = document.createElement('div');
-    menu.className = 'builder-asset-menu';
-    menu.style.display = 'none';
-
-    function choose(id) {
-      input.value = id;
-      menu.style.display = 'none';
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-
-    function filter() {
-      const q = input.value.trim().toLowerCase();
-      menu.textContent = '';
-      const matches = B.assets.filter((a) => {
-        if (kinds && !kinds.includes(a.kind)) return false;
-        return !q || String(a.id).toLowerCase().includes(q);
-      });
-      if (!matches.length) {
-        const empty = document.createElement('div');
-        empty.className = 'muted small';
-        empty.textContent = '（无匹配素材）';
-        menu.appendChild(empty);
-      } else {
-        for (const a of matches) {
-          const row = document.createElement('button');
-          row.type = 'button';
-          row.className = 'builder-asset-option';
-          row.dataset.id = a.id;
-          row.textContent = `${a.id} [${a.kind}]`;
-          row.addEventListener('mousedown', (e) => {
-            e.preventDefault();
-            choose(a.id);
-          });
-          menu.appendChild(row);
-        }
-      }
-      menu.style.display = 'block';
-    }
-
-    input.addEventListener('focus', filter);
-    input.addEventListener('input', filter);
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        menu.style.display = 'none';
-      } else if (e.key === 'Enter') {
-        const first = menu.querySelector('.builder-asset-option');
-        if (first) {
-          e.preventDefault();
-          choose(first.dataset.id || first.textContent.split(' [')[0]);
-        }
-      }
+    const wrap = window.OASAssetUI.createSearchPicker({
+      items: B.assets,
+      value: current || '',
+      placeholder: '输入片段，选择匹配素材…',
+      className: 'builder-asset-search',
+      menuClass: 'builder-asset-menu',
+      filter: (a) => !kinds || kinds.includes(a.kind),
+      label: (a) => `${a.id} [${a.kind}]`,
+      onChoose: (a, input) => {
+        input.value = a.id;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      },
     });
-    input.addEventListener('blur', () => setTimeout(() => { menu.style.display = 'none'; }, 120));
-    wrap.append(input, menu);
-    wrap.input = input;
     return wrap;
   }
 
@@ -822,6 +827,7 @@
         manage: false,
         actions: false,
         group: true,
+        groupBy: 'category',
         onPick: (a) => status(`素材 ${a.id}（${a.kind}）：可在动作参数里引用`),
       });
       box.appendChild(list);

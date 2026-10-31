@@ -593,8 +593,8 @@ impl Server {
             self.runs_dir.display()
         );
 
-        // Capture the first frame eagerly so the UI has something to show.
-        self.do_capture();
+        // No eager capture at startup: the editor shows a live frame instead
+        // (GET /frame.png?live=1) so starting the app never spams the gallery.
         if self.open_browser {
             open_editor_url(&format!("http://{addr}/"));
         }
@@ -610,6 +610,34 @@ impl Server {
             }
         }
         Ok(())
+    }
+
+    /// Live preview capture: update the current frame only. It deliberately
+    /// does NOT append to the frame gallery or persist frames.json — only the
+    /// explicit 截图/入库 actions do that.
+    fn do_live_capture(&self) {
+        let wanted = crate::config::device_serial();
+        let serial = match self.adb.resolve_device(wanted.as_deref()) {
+            Ok(dev) => dev.serial,
+            Err(e) => {
+                self.set_error(&e);
+                return;
+            }
+        };
+        let mut screen = self.adb.screen(&serial);
+        match screen.grab() {
+            Ok(frame) => match encode_png(&frame) {
+                Ok(png) => {
+                    let mut st = self.state.lock().unwrap();
+                    st.png = Some(png);
+                    st.device = serial;
+                    st.error = None;
+                    st.frame = Some(frame);
+                }
+                Err(e) => self.set_error(&format!("encode png: {e}")),
+            },
+            Err(e) => self.set_error(&format!("capture failed: {e}")),
+        }
     }
 
     fn do_capture(&self) {
@@ -713,6 +741,11 @@ impl Server {
             ("GET", "/dashboard.html") => self.send_file(&mut out, &format!("{ui_dir}/dashboard.html"), "text/html; charset=utf-8"),
             ("GET", "/dashboard.js") => self.send_file(&mut out, &format!("{ui_dir}/dashboard.js"), "application/javascript; charset=utf-8"),
             ("GET", "/frame.png") => {
+                let q = parse_query(&path);
+                let live = q.iter().any(|(k, v)| k == "live" && v == "1");
+                if live {
+                    self.do_live_capture();
+                }
                 let png = self.state.lock().unwrap().png.clone();
                 match png {
                     Some(bytes) => self.send_bytes(&mut out, 200, "image/png", &bytes),
@@ -3418,13 +3451,45 @@ impl Server {
         match bundle.load_assets_file() {
             Ok(af) => {
                 let count = af.items.len() + af.collections.len();
+                // v1.2.3: assets inherit the category of their first position
+                // frame, so the asset library groups exactly like 帧管理.
+                let frame_cats: std::collections::BTreeMap<u64, String> = {
+                    let st = self.state.lock().unwrap();
+                    st.frames
+                        .iter()
+                        .map(|f| (f.id, f.category.clone()))
+                        .collect()
+                };
+                let mut items_json = Vec::with_capacity(af.items.len());
+                for item in af.items.into_iter() {
+                    let mut v = serde_json::to_value(&item).unwrap_or_else(|_| serde_json::json!({}));
+                    let cats: Vec<String> = item
+                        .positions
+                        .iter()
+                        .filter_map(|id| frame_cats.get(id))
+                        .map(|c| c.trim().to_string())
+                        .filter(|c| !c.is_empty())
+                        .collect();
+                    let category = cats.first().cloned().unwrap_or_else(|| "未分类".to_string());
+                    v["category"] = serde_json::json!(category);
+                    if !cats.is_empty() {
+                        v["categories"] = serde_json::json!(cats);
+                    }
+                    items_json.push(v);
+                }
+                let mut collections_json = Vec::with_capacity(af.collections.len());
+                for c in af.collections.into_iter() {
+                    let mut v = serde_json::to_value(&c).unwrap_or_else(|_| serde_json::json!({}));
+                    v["category"] = serde_json::json!("素材集合");
+                    collections_json.push(v);
+                }
                 let body = serde_json::json!({
                     "ok": true,
                     "task": if global_mode { "（全局素材库）".to_string() } else { task },
                     "design_resolution": af.design_resolution,
                     "count": count,
-                    "items": af.items,
-                    "collections": af.collections,
+                    "items": items_json,
+                    "collections": collections_json,
                 });
                 self.send_json(out, 200, &body.to_string())
             }

@@ -371,6 +371,12 @@ aside.side {
 .asset-position-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
 .asset-position-row span { flex: 1; }
 .asset-position-row button { flex: 0 0 40px; margin: 0; padding: 2px 0; }
+.asset-search-picker { position: relative; display: block; }
+.asset-search-picker input { width: 100%; box-sizing: border-box; }
+.asset-search-menu { position: absolute; left: 0; right: 0; top: 100%; z-index: 50; max-height: 220px; overflow: auto; background: #14181e; border: 1px solid #333c48; box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+.asset-search-option { display: block; width: 100%; text-align: left; margin: 0; padding: 4px 8px; border: 0; border-bottom: 1px solid #20262e; background: transparent; color: inherit; cursor: pointer; }
+.asset-search-option:hover { background: #26303a; }
+.asset-position-search { margin-bottom: 4px; }
 .asset-row .asset-test {
   flex: 0 0 52px;
   margin: 0;
@@ -643,7 +649,9 @@ aside.side {
 .flow-svg-label { fill: #e6edf3; font-size: 12px; font-weight: 600; }
 .flow-svg-summary { fill: #aab4c0; font-size: 10px; }
 .flow-svg-edge { fill: none; stroke: #7c8b9e; stroke-width: 1.6; }
+.flow-svg-edge.back-edge { stroke: #b08c4a; stroke-dasharray: 6 4; }
 .flow-svg-edge-label { fill: #c9a85a; font-size: 10px; }
+.flow-svg-edge-label.back-edge-label { fill: #d4a85a; font-size: 9px; }
 .flow-svg-arrow { fill: #7c8b9e; }
 .flow-svg-node.clickable { cursor: pointer; }
 .flow-svg-node.selected .flow-svg-shape { stroke: #e0a040; stroke-width: 2.6; }
