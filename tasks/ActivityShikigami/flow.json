@@ -3,6 +3,46 @@
   "name": "ActivityShikigami",
   "steps": [
     {
+      "op": "log",
+      "args": {
+        "level": "debug",
+        "text": "\"main reset prelude\""
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "5"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "click_point",
+          "args": {
+            "x": 44,
+            "y": 31
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.2
+          }
+        }
+      ]
+    },
+    {
       "op": "if",
       "args": {
         "cond": "not appear('ui_main_bar_guide')"

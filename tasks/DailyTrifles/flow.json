@@ -5,6 +5,46 @@
     {
       "op": "log",
       "args": {
+        "level": "debug",
+        "text": "\"main reset prelude\""
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "5"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "click_point",
+          "args": {
+            "x": 44,
+            "y": 31
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.2
+          }
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
         "level": "info",
         "text": "\"DailyTrifles 开始：one_summon/summon_recall → friend_love → luck_msg → store_sign → buy_sushi\""
       }
@@ -862,7 +902,8 @@
         {
           "op": "click_point",
           "args": {
-            "x": 904, "y": 635,
+            "x": 904,
+            "y": 635,
             "requires": {
               "kind": "appear",
               "sel": "legacy_GameUi_I_CHECK_MAIN",
@@ -1106,7 +1147,8 @@
         {
           "op": "click_point",
           "args": {
-            "x": 904, "y": 635,
+            "x": 904,
+            "y": 635,
             "requires": {
               "kind": "appear",
               "sel": "legacy_GameUi_I_CHECK_MAIN",

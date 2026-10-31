@@ -5,6 +5,46 @@
     {
       "op": "log",
       "args": {
+        "level": "debug",
+        "text": "\"main reset prelude\""
+      }
+    },
+    {
+      "op": "loop",
+      "args": {
+        "n": "5"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "click_point",
+          "args": {
+            "x": 44,
+            "y": 31
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.2
+          }
+        }
+      ]
+    },
+    {
+      "op": "log",
+      "args": {
         "level": "info",
         "text": "\"TalismanPass 开始：庭院 → 花合战 → 一键收取 / 花合战等级奖励 → 可选 1500 签御魂\""
       }
