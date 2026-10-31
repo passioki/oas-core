@@ -1312,8 +1312,7 @@ async function generateAssetStep(it) {
 }
 
 // v1.1: asset-list OCR action — ocr_lines uses /lines (not single-line /ocr);
-// v1.2.3: a derived `ocr_line` saved from a multi-line result must ALSO use the
-// source ROI + det+rec, otherwise the workbench test shows a different text.
+// v1.2.3: exactly one recognition ROI; legacy source ROI is migrated server-side.
 function assetRecognitionBox(it) {
   // v1.2.3: exactly one recognition ROI. Legacy source ROI is migrated by the
   // server at asset-load time, so the editor never picks a second region.

@@ -2434,8 +2434,8 @@ impl Server {
                     _ => {
                         #[cfg(feature = "ocr")]
                         {
-                            // Multi-line-derived OCR must repeat det+rec over
-                            // the original source ROI (v1.2.1 contract).
+                            // Multi-line-derived OCR repeats det+rec over the
+                            // single saved recognition ROI (v1.2.3 contract).
                             if item.kind == "ocr_line"
                                 && item.ocr_mode.as_deref() == Some("lines")
                             {

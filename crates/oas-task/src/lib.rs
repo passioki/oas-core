@@ -123,7 +123,9 @@ pub struct AssetDecl {
     /// result and must run the same det+rec path at runtime).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ocr_mode: Option<String>,
-    /// Original recognition region that produced this OCR line (multi-line path).
+    /// LEGACY provenance (pre-v1.2.3): original multi-line source region.
+    /// Loading migrates it into `roi` (union with any user-enlarged ROI) and
+    /// clears this field; runtime never reads it. Kept only for old assets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ocr_source_roi: Option<[i32; 4]>,
     /// Expected line text captured when this derived `ocr_line` was saved.
@@ -217,11 +219,27 @@ impl Default for AssetsFile {
 /// `ocr_source_roi` was provenance from the multi-line source; runtime and the
 /// editor must both recognize on exactly one `roi`. Existing assets migrate
 /// in-memory on every load and are written back in the unified shape on save.
+///
+/// Migration uses the **union** of the old line ROI and source ROI: the source
+/// is usually larger, but a user may already have enlarged the recognition ROI
+/// after authoring, and overwriting it with the older source would silently
+/// shrink their fix. Union preserves both intents.
+fn union_rect(a: [i32; 4], b: [i32; 4]) -> [i32; 4] {
+    let x0 = a[0].min(b[0]);
+    let y0 = a[1].min(b[1]);
+    let x1 = (a[0] + a[2]).max(b[0] + b[2]);
+    let y1 = (a[1] + a[3]).max(b[1] + b[3]);
+    [x0, y0, (x1 - x0).max(1), (y1 - y0).max(1)]
+}
+
 fn normalize_legacy_ocr_roi(af: &mut AssetsFile) {
     for item in &mut af.items {
         if item.kind == "ocr_line" && item.ocr_mode.as_deref() == Some("lines") {
             if let Some(source) = item.ocr_source_roi.take() {
-                item.roi = Some(source);
+                item.roi = Some(match item.roi {
+                    Some(roi) if roi[2] > 0 && roi[3] > 0 => union_rect(roi, source),
+                    _ => source,
+                });
             }
         }
     }
@@ -2897,6 +2915,25 @@ mod tests {
         assert_eq!(af.items[0].ocr_source_roi, None);
         let set = b.load_runtime_assets().expect("runtime assets");
         assert_eq!(set.derived_ocr("召唤"), Some((oas_types::Rect { x: 1, y: 2, w: 50, h: 60 }, "召唤".to_string())));
+    }
+
+    #[test]
+    fn legacy_roi_migration_preserves_a_larger_manual_roi() {
+        let td = TempDir::new("roimigrate2");
+        let b = open(&td);
+        std::fs::create_dir_all(b.root()).expect("root");
+        std::fs::write(
+            b.assets_path(),
+            r#"{"schema_version":1,"items":[
+                 {"id":"召唤","kind":"ocr_line","roi":[40,50,80,70],
+                  "ocr_mode":"lines","ocr_source_roi":[1,2,50,60],"ocr_text":"召唤"}
+               ]}"#,
+        )
+        .expect("write legacy assets");
+        let af = b.load_assets_file().expect("load");
+        // union([1,2,50,60], [40,50,80,70]) = [1,2,119,118]
+        assert_eq!(af.items[0].roi, Some([1, 2, 119, 118]));
+        assert_eq!(af.items[0].ocr_source_roi, None);
     }
 
     #[test]

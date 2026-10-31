@@ -93,9 +93,9 @@ impl AssetSet {
         self.regions.get(id).copied()
     }
 
-    /// Register a multi-line-derived OCR line: source ROI + expected text.
-    pub fn set_derived_ocr(&mut self, id: impl Into<String>, source_roi: Rect, expected: String) {
-        self.derived_ocr.insert(id.into(), (source_roi, expected));
+    /// Register a multi-line-derived OCR line: recognition ROI + expected text.
+    pub fn set_derived_ocr(&mut self, id: impl Into<String>, recognition_roi: Rect, expected: String) {
+        self.derived_ocr.insert(id.into(), (recognition_roi, expected));
     }
 
     pub fn derived_ocr(&self, id: &str) -> Option<(Rect, String)> {
@@ -5606,7 +5606,7 @@ mod tests {
                  {"op":"finish","args":{"exit":"done"}}]}"#,
         );
         assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
-        // Provider was asked with the ORIGINAL source ROI, not the tight line ROI.
+        // Provider was asked with the saved recognition ROI, not the tight line ROI.
         let seen = rois.borrow().clone();
         assert_eq!(seen.len(), 1);
         assert_eq!(
