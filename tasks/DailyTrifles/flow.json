@@ -21,7 +21,7 @@
             "sel": "legacy_GameUi_I_MAIN_GOTO_SUMMON",
             "requires": {
               "kind": "appear",
-              "sel": "庭院_探索灯笼",
+              "sel": "legacy_GameUi_I_CHECK_MAIN",
               "timeout_ms": 3000
             }
           }
@@ -759,7 +759,7 @@
             {
               "op": "if",
               "args": {
-                "cond": "appear('庭院_探索灯笼')"
+                "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
               },
               "then": [
                 {
@@ -844,7 +844,7 @@
             "y": 641,
             "requires": {
               "kind": "appear",
-              "sel": "庭院_探索灯笼",
+              "sel": "legacy_GameUi_I_CHECK_MAIN",
               "timeout_ms": 3000
             },
             "expect": {
@@ -1042,7 +1042,7 @@
             {
               "op": "if",
               "args": {
-                "cond": "appear('庭院_探索灯笼')"
+                "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
               },
               "then": [
                 {
@@ -1056,7 +1056,7 @@
         {
           "op": "appear",
           "args": {
-            "sel": "庭院_探索灯笼"
+            "sel": "legacy_GameUi_I_CHECK_MAIN"
           }
         },
         {
@@ -1089,7 +1089,7 @@
             "y": 641,
             "requires": {
               "kind": "appear",
-              "sel": "庭院_探索灯笼",
+              "sel": "legacy_GameUi_I_CHECK_MAIN",
               "timeout_ms": 3000
             }
           }
@@ -1119,6 +1119,13 @@
               }
             }
           ]
+        },
+        {
+          "op": "click_point",
+          "args": {
+            "x": 50,
+            "y": 55
+          }
         },
         {
           "op": "loop",
@@ -1308,7 +1315,7 @@
             {
               "op": "if",
               "args": {
-                "cond": "appear('庭院_探索灯笼')"
+                "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
               },
               "then": [
                 {
@@ -1392,7 +1399,7 @@
             "sel": "legacy_GameUi_I_MAIN_GOTO_MALL",
             "requires": {
               "kind": "appear",
-              "sel": "庭院_探索灯笼",
+              "sel": "legacy_GameUi_I_CHECK_MAIN",
               "timeout_ms": 3000
             }
           }
@@ -1496,7 +1503,7 @@
             {
               "op": "if",
               "args": {
-                "cond": "appear('庭院_探索灯笼')"
+                "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
               },
               "then": [
                 {
@@ -1566,7 +1573,7 @@
             "sel": "legacy_GameUi_I_MAIN_GOTO_MALL",
             "requires": {
               "kind": "appear",
-              "sel": "庭院_探索灯笼",
+              "sel": "legacy_GameUi_I_CHECK_MAIN",
               "timeout_ms": 3000
             }
           }
@@ -1802,7 +1809,7 @@
             {
               "op": "if",
               "args": {
-                "cond": "appear('庭院_探索灯笼')"
+                "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
               },
               "then": [
                 {

@@ -3,11 +3,11 @@
   "status": "🔄",
   "evidence": {
     "lint": "lint task=DailyTrifles errors=0",
-    "live": "Lead 2026-11-01：应用重启回主界面后，friend_love/store_sign 仍 Done；luck_msg 入口改 click_point(905,641) 后能进好友页，但 O_LUCK_MSG 区域 OCR 只找到 1 行且不等于“吉闻”，click_target 失败；需校准 O_LUCK_MSG ROI/关键字",
-    "round2_coverage": "新增 one_summon(默认)/summon_recall(今忆)/luck_msg/buy_sushi(次数近似) 四条分支；friend_love/store_sign 回归通过；luck_msg 入口可进但 OCR 目标未命中"
+    "live": "Lead 2026-11-01：应用重启后主界面；入口守卫从 庭院_探索灯笼(0.640) 改为 I_CHECK_MAIN(0.75) 后可正常启动；luck_msg 已补 click_point(50,52) 点吉闻，但随后 O_LUCK_MSG OCR 仍只找到 1 行且不是“吉闻”，click_target 失败；friend_love/store_sign 之前回归 Done",
+    "round2_coverage": "新增 one_summon(默认)/summon_recall(今忆)/luck_msg/buy_sushi(次数近似) 四条分支；friend_love/store_sign 回归通过；luck_msg 入口可点但 OCR 目标未命中"
   },
   "gaps": [
-    "luck_msg：O_LUCK_MSG OCR 行文本不等于“吉闻”（1 行），需重采 ROI/确认页面 tab",
+    "luck_msg：O_LUCK_MSG OCR 行文本不等于“吉闻”（1 行）；需改用 I_LUCK_TITLE 模板/重采 ROI",
     "store_sign 的“有签到按钮”分支当前未触发，只验证了 no-op；需有签到状态时复测",
     "buy_sushi 动态价格 ROI/已购次数 OCR 无法迁移（按 param 次数近似）",
     "今忆召唤左侧菜单坐标需实机复核",
