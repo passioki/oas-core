@@ -782,6 +782,7 @@ impl Server {
             ("GET", "/task/assets") => self.handle_task_assets(&mut out, &path),
             ("POST", "/task/assets/batch_test") => self.handle_assets_batch_test(&mut out, &body),
             ("GET", "/task/asset/image") => self.handle_asset_image(&mut out, &path),
+            ("GET", "/task/asset/collection/match") => self.handle_collection_match(&mut out, &path),
             ("GET", "/task/asset/match") => self.handle_asset_match(&mut out, &path),
             ("GET", "/task/flow") => self.handle_task_flow(&mut out, &path),
             ("POST", "/task/save_flow") => self.handle_save_flow(&mut out, &body),
@@ -2182,12 +2183,24 @@ impl Server {
                                     continue;
                                 };
                                 let rect = oas_types::Rect { x: src[0], y: src[1], w: src[2], h: src[3] };
+                                let poly = item.polygon.as_ref().map(|pts| {
+                                    pts.iter()
+                                        .map(|p| oas_types::Point { x: p[0], y: p[1] })
+                                        .collect::<Vec<_>>()
+                                });
+                                let masked;
+                                let oframe = if let Some(poly) = poly.as_ref() {
+                                    masked = oas_runtime::mask_frame_for_ocr(frame, rect, poly);
+                                    &masked
+                                } else {
+                                    frame
+                                };
                                 let mut det_guard = det.lock().unwrap();
                                 let mut rec_guard = rec.lock().unwrap();
                                 let lines = match crate::ocr::recognize_lines_impl(
                                     &mut det_guard,
                                     &mut rec_guard,
-                                    frame,
+                                    oframe,
                                     rect,
                                     false,
                                 ) {
@@ -2233,10 +2246,22 @@ impl Server {
                                 w: roi[2],
                                 h: roi[3],
                             };
+                            let poly = item.polygon.as_ref().map(|pts| {
+                                pts.iter()
+                                    .map(|p| oas_types::Point { x: p[0], y: p[1] })
+                                    .collect::<Vec<_>>()
+                            });
+                            let masked;
+                            let oframe = if let Some(poly) = poly.as_ref() {
+                                masked = oas_runtime::mask_frame_for_ocr(frame, rect, poly);
+                                &masked
+                            } else {
+                                frame
+                            };
                             let crop = match oas_ocr::RgbCrop::from_rgba(
-                                frame.width,
-                                frame.height,
-                                &frame.rgba,
+                                oframe.width,
+                                oframe.height,
+                                &oframe.rgba,
                                 rect,
                             ) {
                                 Ok(c) => c,
@@ -2285,6 +2310,80 @@ impl Server {
             "results": results,
         });
         self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `GET /task/asset/collection/match?task=&id=` — collection test using the
+    /// same best-member selection as runtime `locate` (helpers shared).
+    fn handle_collection_match(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
+        let q = parse_query(raw_path);
+        let mut task = String::new();
+        let mut id = String::new();
+        for (k, v) in &q {
+            match k.as_str() {
+                "task" => task = v.clone(),
+                "id" => id = v.clone(),
+                _ => {}
+            }
+        }
+        let global_mode = self.using_global_assets();
+        if id.is_empty() || (!global_mode && task.is_empty()) {
+            return self.send_errors(
+                out,
+                400,
+                vec!["`task` and `id` query params are required".to_string()],
+            );
+        }
+        let bundle = match self.asset_store(&task) {
+            Ok(b) => b,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let assets = match bundle.load_runtime_assets() {
+            Ok(a) => a,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let Some(members) = assets.collection_members(&id).map(|m| m.to_vec()) else {
+            return self.send_errors(out, 404, vec![format!("collection `{id}` not found")]);
+        };
+        let frame = {
+            let st = self.state.lock().unwrap();
+            match st.frame.as_ref() {
+                Some(f) => oas_types::Frame::new(f.width, f.height, f.rgba.clone()),
+                None => return self.send_json(out, 400, r#"{"error":"no frame yet"}"#),
+            }
+        };
+        let matcher = oas_perceive::Matcher::new(oas_perceive::GrayImage::from_frame(&frame));
+        let t0 = std::time::Instant::now();
+        let mut best: Option<(String, f32, Option<oas_types::Point>)> = None;
+        for m in members {
+            if let Some(tpl) = assets.get(&m) {
+                let (score, point) = oas_runtime::locate_template(&matcher, tpl);
+                if best.as_ref().map(|b| score > b.1).unwrap_or(true) {
+                    best = Some((m, score, point));
+                }
+            }
+        }
+        let threshold = assets.threshold_for(&id).unwrap_or(0.9);
+        let best = best.ok_or_else(|| "collection has no resolvable members".to_string());
+        let body = match best {
+            Ok((member, score, point)) => {
+                let action = assets.click_back(&member);
+                serde_json::json!({
+                    "ok": true,
+                    "task": task,
+                    "id": id,
+                    "member": member,
+                    "score": score,
+                    "x": point.map(|p| p.x).unwrap_or(-1),
+                    "y": point.map(|p| p.y).unwrap_or(-1),
+                    "threshold": threshold,
+                    "pass": score >= threshold,
+                    "action_roi": action.map(|r| [r.x, r.y, r.w, r.h]),
+                    "elapsed_ms": t0.elapsed().as_secs_f64() * 1000.0,
+                })
+            }
+            Err(e) => serde_json::json!({"ok": false, "errors": [e]}),
+        };
+        self.send_json(out, if body["ok"] == true { 200 } else { 404 }, &body.to_string())
     }
 
     /// `GET /task/asset/match?task=<name>&id=<asset>` — §22.28 行内「测试」：

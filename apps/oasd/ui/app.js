@@ -1944,34 +1944,24 @@ async function testAssetCollection(it) {
     resultEl.textContent = `集合「${it.id}」没有成员`;
     return;
   }
-  const lines = [];
-  let best = null;
-  for (const member of it.members) {
-    try {
-      const r = await fetch(
-        `/task/asset/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(member)}`
-      );
-      const s = await r.json();
-      if (s.error) {
-        lines.push(`${member}: 失败 ${s.error}`);
-        continue;
-      }
-      const score = Number(s.score);
-      lines.push(`${member}: ${score.toFixed(4)} @ (${s.x},${s.y})`);
-      if (!best || score > best.score) best = { member, score, s };
-    } catch (e) {
-      lines.push(`${member}: 异常 ${e}`);
+  try {
+    const r = await fetch(
+      `/task/asset/collection/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}`
+    );
+    const s = await r.json();
+    if (!s.ok) {
+      resultEl.textContent = `集合「${it.id}」测试失败：` + (s.errors || []).join('; ');
+      return;
     }
-  }
-  const threshold = typeof it.threshold === 'number' ? it.threshold : 0.9;
-  resultEl.textContent = `素材集合「${it.id}」测试（dry）：\n` + lines.join('\n') +
-    (best
-      ? `\n最佳：${best.member} score=${best.score.toFixed(4)} pass=${best.score >= threshold}`
-      : '') +
-    `\n集合阈值：${threshold}`;
-  if (best && Number.isFinite(best.s.w) && best.s.w > 0) {
-    boxes = [{ text: `集合 ${best.member}`, score: best.score, box: [best.s.x, best.s.y, best.s.w, best.s.h] }];
-    draw();
+    resultEl.textContent =
+      `素材集合「${it.id}」测试（dry，与 runtime 同源）：\n` +
+      `最佳成员：${s.member}\n` +
+      `score=${Number(s.score).toFixed(4)} · threshold=${Number(s.threshold).toFixed(3)} · pass=${s.pass}\n` +
+      `位置：(${s.x},${s.y})` +
+      (s.action_roi ? ` · 操作区域[${s.action_roi.join(',')}]` : '');
+    log(`集合测试「${it.id}」→ ${s.member} score=${Number(s.score).toFixed(3)} pass=${s.pass}`);
+  } catch (e) {
+    resultEl.textContent = `集合「${it.id}」测试异常：${e}`;
   }
 }
 
