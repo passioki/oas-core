@@ -213,6 +213,20 @@ impl Default for AssetsFile {
     }
 }
 
+/// v1.2.3: collapse the legacy two-ROI OCR model into one recognition ROI.
+/// `ocr_source_roi` was provenance from the multi-line source; runtime and the
+/// editor must both recognize on exactly one `roi`. Existing assets migrate
+/// in-memory on every load and are written back in the unified shape on save.
+fn normalize_legacy_ocr_roi(af: &mut AssetsFile) {
+    for item in &mut af.items {
+        if item.kind == "ocr_line" && item.ocr_mode.as_deref() == Some("lines") {
+            if let Some(source) = item.ocr_source_roi.take() {
+                item.roi = Some(source);
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Validation helpers (also unit-tested directly)
 // ---------------------------------------------------------------------------
@@ -696,8 +710,9 @@ impl TaskBundle {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(AssetsFile::default()),
             Err(e) => return Err(format!("read {}: {e}", path.display())),
         };
-        let af: AssetsFile = serde_json::from_str(&text)
+        let mut af: AssetsFile = serde_json::from_str(&text)
             .map_err(|e| format!("{}: invalid JSON: {e}", path.display()))?;
+        normalize_legacy_ocr_roi(&mut af);
         let errs = self.assets_shape_errors(&af);
         if errs.is_empty() {
             Ok(af)
@@ -899,25 +914,13 @@ impl TaskBundle {
                         h: action[3],
                     },
                 );
-                // v1.2.1: multi-line-derived ocr_line keeps its original source
-                // region + expected text, so runtime re-runs det+rec instead of
-                // a single-line rec on the tight line crop.
+                // v1.2.3: one recognition ROI for derived OCR; det+rec runs on
+                // the saved `roi` and matches `ocr_text`.
                 if item.kind == "ocr_line"
                     && item.ocr_mode.as_deref() == Some("lines")
-                    && item.ocr_source_roi.is_some()
                     && item.ocr_text.is_some()
                 {
-                    let src = item.ocr_source_roi.unwrap();
-                    set.set_derived_ocr(
-                        item.id.clone(),
-                        oas_types::Rect {
-                            x: src[0],
-                            y: src[1],
-                            w: src[2],
-                            h: src[3],
-                        },
-                        item.ocr_text.clone().unwrap(),
-                    );
+                    set.set_derived_ocr(item.id.clone(), rect, item.ocr_text.clone().unwrap());
                 }
                 // §22.10 N10b-2: OCR polygon mask (frame coordinates).
                 if let Some(poly) = &item.polygon {
@@ -1268,17 +1271,15 @@ impl TaskBundle {
                     }
                 }
                 "lines" => {
-                    let Some(src) = decl.ocr_source_roi else {
-                        return Err(format!(
-                            "asset `{}` rejected: ocr_mode=lines requires ocr_source_roi",
-                            decl.id
-                        ));
-                    };
-                    if src[2] <= 0 || src[3] <= 0 || src[0] < 0 || src[1] < 0 {
-                        return Err(format!(
-                            "asset `{}` rejected: ocr_source_roi must have x,y >= 0 and w,h > 0",
-                            decl.id
-                        ));
+                    // Legacy source is optional; recognition uses `roi` only
+                    // (see normalize_legacy_ocr_roi).
+                    if let Some(src) = decl.ocr_source_roi {
+                        if src[2] <= 0 || src[3] <= 0 || src[0] < 0 || src[1] < 0 {
+                            return Err(format!(
+                                "asset `{}` rejected: ocr_source_roi must have x,y >= 0 and w,h > 0",
+                                decl.id
+                            ));
+                        }
                     }
                     if decl.ocr_text.as_deref().unwrap_or("").trim().is_empty() {
                         return Err(format!(
@@ -1965,12 +1966,9 @@ impl TaskBundle {
                 match item.ocr_mode.as_deref().unwrap_or("single") {
                     "single" => {}
                     "lines" => {
-                        if item.ocr_source_roi.is_none() {
-                            errs.push((
-                                format!("{p}.ocr_source_roi"),
-                                "ocr_mode=lines requires ocr_source_roi".to_string(),
-                            ));
-                        }
+                        // v1.2.3: recognition ROI is the single `roi`; the old
+                        // `ocr_source_roi` is migrated on load and no longer
+                        // required for new saves.
                         if item.ocr_text.as_deref().unwrap_or("").trim().is_empty() {
                             errs.push((
                                 format!("{p}.ocr_text"),
@@ -2879,6 +2877,26 @@ mod tests {
         assert!(err.contains("not declared"), "unexpected: {err}");
         assert!(!b.flow_path().exists());
         assert!(!b.meta_path().exists());
+    }
+
+    #[test]
+    fn legacy_source_roi_migrates_to_single_recognition_roi() {
+        let td = TempDir::new("roimigrate");
+        let b = open(&td);
+        std::fs::create_dir_all(b.root()).expect("root");
+        std::fs::write(
+            b.assets_path(),
+            r#"{"schema_version":1,"items":[
+                 {"id":"召唤","kind":"ocr_line","roi":[10,20,30,40],
+                  "ocr_mode":"lines","ocr_source_roi":[1,2,50,60],"ocr_text":"召唤"}
+               ]}"#,
+        )
+        .expect("write legacy assets");
+        let af = b.load_assets_file().expect("load");
+        assert_eq!(af.items[0].roi, Some([1, 2, 50, 60]));
+        assert_eq!(af.items[0].ocr_source_roi, None);
+        let set = b.load_runtime_assets().expect("runtime assets");
+        assert_eq!(set.derived_ocr("召唤"), Some((oas_types::Rect { x: 1, y: 2, w: 50, h: 60 }, "召唤".to_string())));
     }
 
     #[test]

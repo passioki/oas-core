@@ -2402,9 +2402,9 @@ impl Server {
                                     results.push(result);
                                     continue;
                                 };
-                                let Some(src) = item.ocr_source_roi.or(item.roi) else {
+                                let Some(src) = item.roi else {
                                     result["pass"] = serde_json::json!(false);
-                                    result["error"] = serde_json::json!("derived OCR has no source ROI");
+                                    result["error"] = serde_json::json!("derived OCR has no recognition ROI");
                                     results.push(result);
                                     continue;
                                 };
