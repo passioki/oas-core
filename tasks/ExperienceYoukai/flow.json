@@ -3,6 +3,28 @@
   "name": "ExperienceYoukai",
   "steps": [
     {
+      "op": "if",
+      "args": {
+        "cond": "not appear('ui_main_bar_guide')"
+      },
+      "then": [
+        {
+          "op": "click_point",
+          "args": {
+            "x": 1200,
+            "y": 680
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.5
+          }
+        }
+      ],
+      "else": []
+    },
+    {
       "op": "log",
       "args": {
         "level": "info",
