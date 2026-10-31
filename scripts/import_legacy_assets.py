@@ -173,7 +173,15 @@ def next_image_factory():
         n += 1
         dst = ASSETS / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
+        head = src.read_bytes()[:8]
+        if head == b"\x89PNG\r\n\x1a\n":
+            shutil.copy2(src, dst)
+        else:
+            # Legacy `res/*.png` files are sometimes JPEG data with a .png name;
+            # the oas-codec asset loader requires a real PNG signature.
+            from PIL import Image
+            with Image.open(src) as im:
+                im.convert("RGB").save(dst, "PNG")
         return rel
 
     return copy_image
