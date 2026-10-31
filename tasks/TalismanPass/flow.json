@@ -166,15 +166,38 @@
           }
         },
         {
-          "op": "click",
+          "op": "if",
           "args": {
-            "sel": "legacy_TalismanPass_I_TP_GET_ALL",
-            "requires": {
-              "kind": "appear",
-              "sel": "legacy_TalismanPass_I_TP_GET_ALL",
-              "timeout_ms": 5000
+            "cond": "appear('legacy_TalismanPass_I_TP_GET_ALL')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_TalismanPass_I_TP_GET_ALL",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_TalismanPass_I_TP_GET_ALL",
+                  "timeout_ms": 3000
+                }
+              }
             }
-          }
+          ],
+          "else": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "\"花合战当前无奖励可领，no-op 完成\""
+              }
+            },
+            {
+              "op": "finish",
+              "args": {
+                "exit": "done"
+              }
+            }
+          ]
         },
         {
           "op": "loop",
