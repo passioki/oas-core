@@ -28,7 +28,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -80,10 +80,26 @@ struct RunState {
     frame_source: Option<String>,
     /// Actual clicks of the run (HB6/CD2), when the executor returned a report.
     clicks: Option<u64>,
+    /// Cooperative stop token for the current run.
+    cancel: Option<Arc<AtomicBool>>,
+    /// Live StepEvent buffer from the runtime; status polls drain it.
+    step_log: Option<Arc<Mutex<Vec<String>>>>,
     log: Vec<String>,
 }
 
 impl RunState {
+    /// Move buffered runtime StepEvents into the visible run log.
+    fn drain_step_log(&mut self) {
+        let Some(buf) = self.step_log.clone() else { return; };
+        let lines: Vec<String> = match buf.lock() {
+            Ok(mut b) => b.drain(..).collect(),
+            Err(_) => Vec::new(),
+        };
+        for line in lines {
+            self.push_log(&line);
+        }
+    }
+
     fn push_log(&mut self, line: &str) {
         self.log.push(line.to_string());
         if self.log.len() > RUN_LOG_MAX {
@@ -1016,6 +1032,7 @@ impl Server {
             // --- N38/M1: task creation + editor-triggered run ---
             ("POST", "/task/create") => self.handle_task_create(&mut out, &body),
             ("POST", "/task/run") => self.handle_task_run(&mut out, &body),
+            ("POST", "/task/run/stop") => self.handle_run_stop(&mut out),
             ("GET", "/task/run/status") => self.handle_run_status(&mut out),
             // --- M2/N37: scheduler status panel + reset-memory dialog ---
             ("GET", "/scheduler/status") => self.handle_scheduler_status(&mut out),
@@ -4520,6 +4537,8 @@ impl Server {
             "live"
         };
         let started_ms = now_ms();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let step_log = Arc::new(Mutex::new(Vec::<String>::new()));
         {
             let mut st = self.run_state.lock().unwrap();
             if st.running {
@@ -4541,6 +4560,8 @@ impl Server {
                 dry_run,
                 replay: replay.clone(),
                 seed: seed.filter(|s| *s != 0),
+                cancel: Some(cancel.clone()),
+                step_log: Some(step_log.clone()),
                 ..RunState::default()
             };
         }
@@ -4555,6 +4576,8 @@ impl Server {
         opts.assets = self.assets_dir.clone();
         opts.model = self.ocr_model.clone();
         opts.det_model = self.det_model.clone();
+        opts.cancel = Some(cancel.clone());
+        opts.step_log = Some(step_log.clone());
         // Click audit (CD2) is written even for dry/replay runs, so the editor's
         // 点击分布 panel sees editor-triggered runs exactly like CLI runs.
         opts.clicks_out = Some(
@@ -4569,6 +4592,11 @@ impl Server {
             .spawn(move || {
                 let log_state = state.clone();
                 let mut emit = move |line: &str| {
+                    // Step lines are streamed via RunState.step_log; skip the
+                    // duplicate batch emitted by execute() at finish.
+                    if line.starts_with("step seq=") {
+                        return;
+                    }
                     if let Ok(mut st) = log_state.lock() {
                         st.push_log(line);
                     }
@@ -4576,6 +4604,7 @@ impl Server {
                 let emit_ref: &mut dyn FnMut(&str) = &mut emit;
                 let result = executor(&opts, emit_ref);
                 let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+                st.drain_step_log();
                 st.running = false;
                 st.finished_ms = Some(now_ms());
                 match result {
@@ -4617,10 +4646,33 @@ impl Server {
         self.send_json(out, 200, &body.to_string())
     }
 
+    /// `POST /task/run/stop` — request cooperative cancellation of the current
+    /// editor run. The worker checks the token before each step.
+    fn handle_run_stop(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let mut st = self.run_state.lock().unwrap();
+        if !st.running {
+            return self.send_json(out, 409, r#"{"ok":false,"error":"no run is running"}"#);
+        }
+        let Some(cancel) = st.cancel.clone() else {
+            return self.send_json(out, 409, r#"{"ok":false,"error":"run has no cancel token"}"#);
+        };
+        cancel.store(true, Ordering::Relaxed);
+        st.push_log("[stop] cancellation requested by editor");
+        let task = st.task.clone().unwrap_or_default();
+        drop(st);
+        self.editor_log(&format!("run stop requested task={task}"));
+        self.send_json(
+            out,
+            200,
+            r#"{"ok":true,"stop_requested":true,"message":"已请求停止当前任务"}"#,
+        )
+    }
+
     /// `GET /task/run/status` — `{running, task, started_ms, finished_ms, exit,
     /// outcome, error, log_tail[], ...}`. Always 200 (never run == empty state).
     fn handle_run_status(&self, out: &mut TcpStream) -> std::io::Result<()> {
-        let st = self.run_state.lock().unwrap();
+        let mut st = self.run_state.lock().unwrap();
+        st.drain_step_log();
         let start = st.log.len().saturating_sub(RUN_LOG_TAIL);
         let body = serde_json::json!({
             "ok": true,

@@ -49,12 +49,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use oas_adapter_pc::Adb;
 use oas_codec;
 use oas_flow::Value;
 use oas_obs::{Recorder, ReplaySource};
-use oas_runtime::{Budget, ClickRecord, Interpreter, RunResult, StepEvent};
+use oas_runtime::{Budget, ClickRecord, Interpreter, RunResult, StepEvent, StepObserver};
 use oas_task::TaskBundle;
 use oas_types::{Exit, Frame, InputSink, Outcome, Point, ScreenSource};
 
@@ -112,6 +113,11 @@ pub struct RunOptions {
     pub model: Option<PathBuf>,
     /// Text detector — required by `ocr_lines` assets (det + rec, §17.1).
     pub det_model: Option<PathBuf>,
+    /// Cooperative stop for editor-triggered runs (POST /task/run/stop).
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Streaming step-log sink for editor runs (so a long while shows steps
+    /// before `execute()` returns).
+    pub step_log: Option<Arc<Mutex<Vec<String>>>>,
     pub budget_steps: u32,
     pub budget_wall_s: f64,
     /// `--param k=v` values for `param('key')` (M0 unified template). The
@@ -136,6 +142,8 @@ impl Default for RunOptions {
             checkpoint: None,
             model: None,
             det_model: None,
+            cancel: None,
+            step_log: None,
             budget_steps: DEFAULT_MAX_STEPS,
             budget_wall_s: DEFAULT_MAX_WALL_S,
             params: BTreeMap::new(),
@@ -356,6 +364,21 @@ pub fn run_cmd(rest: &[String]) -> ExitCode {
 
 /// Run once. Setup errors are `Err`; run outcomes (Done/Failed/Exhausted) are
 /// part of the returned report so the caller can choose the exit code.
+/// Buffers every runtime StepEvent immediately so `/task/run/status` can show
+/// progress while a long while-loop is still executing.
+struct SharedStepLog(Arc<Mutex<Vec<String>>>);
+
+impl StepObserver for SharedStepLog {
+    fn step(&mut self, event: &StepEvent) {
+        if let Ok(mut log) = self.0.lock() {
+            log.push(format!(
+                "step seq={} depth={} op={} result={} elapsed_ms={:.1} detail={}",
+                event.seq, event.depth, event.op, event.result, event.elapsed_ms, event.detail
+            ));
+        }
+    }
+}
+
 pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport, String> {
     let task_dir = opts
         .task
@@ -642,6 +665,16 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     let interp = Interpreter::new(DynScreen(src), input, assets, budget)
         .with_seed(seed)
         .with_params(params);
+    let interp = if let Some(cancel) = opts.cancel.clone() {
+        interp.with_cancel(cancel)
+    } else {
+        interp
+    };
+    let interp = if let Some(log) = opts.step_log.clone() {
+        interp.with_observer(Box::new(SharedStepLog(log)))
+    } else {
+        interp
+    };
     let interp = interp.with_vars(resume_vars);
     let interp = attach_ocr(interp, opts.model.as_deref(), opts.det_model.as_deref())?;
     let mut interp = interp

@@ -100,9 +100,7 @@
             </select>
             <button id="assets-refresh">刷新</button>
             <button id="btn-assets-batch-test" type="button">批量帧测试（dry）</button>
-            <button id="btn-new-collection" type="button" title="勾选模板图后创建素材集合">新建集合</button>
           </div>
-          <div id="collection-msg" class="muted small">—</div>
           <div id="assets-list" class="asset-list muted">（未加载任务素材）</div>
           <pre id="assets-summary" class="muted small" style="display:none">—</pre>
         </section>
@@ -200,6 +198,7 @@
           <div class="row lib-toolbar">
             <button id="btn-task-create">新建任务…</button>
             <button id="btn-task-run">运行任务</button>
+            <button id="btn-task-stop" type="button" disabled title="请求停止当前运行的任务">结束运行任务</button>
           </div>
           <h3>当前任务引用的素材</h3>
           <div id="task-ref-assets-task" class="asset-list muted">（选择任务后显示）</div>

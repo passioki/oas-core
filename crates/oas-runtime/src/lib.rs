@@ -14,6 +14,8 @@
 pub mod humanize;
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use oas_flow::{
@@ -417,6 +419,11 @@ pub trait ProgressSink {
     fn vars_changed(&mut self, _vars: &BTreeMap<String, Value>) {}
 }
 
+/// Streaming observer for editor run logs: called for every `StepEvent`.
+pub trait StepObserver {
+    fn step(&mut self, event: &StepEvent);
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Budget {
     pub max_wall_s: f64,
@@ -516,6 +523,8 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     input: I,
     assets: AssetSet,
     budget: Budget,
+    /// Cooperative stop for editor-triggered runs (`POST /task/run/stop`).
+    cancel: Option<Arc<AtomicBool>>,
     matcher: Option<Matcher>,
     /// RGBA frame the cached matcher was built from. Kept so in-flow OCR can
     /// crop the **same** frame a selector just looked at (P1-c); dropped by
@@ -536,6 +545,9 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     /// the CP3 in-frame check).
     frame_size: Option<(u32, u32)>,
     events: Vec<StepEvent>,
+    /// Optional streaming sink: the editor shows step logs while a run is
+    /// still inside a long `while` (before `run()` returns).
+    observer: Option<Box<dyn StepObserver>>,
     /// CD2 (§21) click audit: one row per SUCCESSFUL click, cleared per run.
     clicks: Vec<ClickRecord>,
     /// Seed resolved once at construction (HB5); `with_seed` pins it.
@@ -571,6 +583,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             input,
             assets,
             budget,
+            cancel: None,
             matcher: None,
             frame: None,
             ocr: None,
@@ -580,6 +593,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             start_step: 0,
             frame_size: None,
             events: Vec::new(),
+            observer: None,
             clicks: Vec::new(),
             run_seed,
             params: BTreeMap::new(),
@@ -619,6 +633,18 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.rng = crate::humanize::Rng::new(seed);
         self.run_seed = seed;
+        self
+    }
+
+    /// Cooperative cancellation: checked before every step (and each loop
+    /// iteration via `check_budget`).
+    pub fn with_cancel(mut self, cancel: Arc<AtomicBool>) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
+    pub fn with_observer(mut self, observer: Box<dyn StepObserver>) -> Self {
+        self.observer = Some(observer);
         self
     }
 
@@ -744,6 +770,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             result: result.to_string(),
             elapsed_ms,
         });
+        if let Some(observer) = self.observer.as_mut() {
+            let event = self.events[seq].clone();
+            observer.step(&event);
+        }
     }
 
     /// CD2 (§21): audit a click **after** the input sink accepted it — a click
@@ -916,6 +946,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     }
 
     fn check_budget(&self) -> Result<(), String> {
+        if let Some(cancel) = &self.cancel {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("cancelled by user (POST /task/run/stop)".to_string());
+            }
+        }
         if self.steps >= self.budget.max_steps {
             return Err(format!(
                 "{EXHAUSTED}.step budget exceeded (max_steps={})",

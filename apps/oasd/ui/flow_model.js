@@ -105,14 +105,24 @@
     if (!Array.isArray(flow.steps)) {
       throw new Error('flow.steps 必须是数组');
     }
+    const nested = [];
     const steps = flow.steps.map((s, i) => {
       if (!s || typeof s.op !== 'string' || !s.op) {
         throw new Error('steps[' + i + '] 缺少字符串 op');
       }
       if (s.op === 'if' || s.op === 'loop' || s.op === 'while') {
-        throw new Error(
-          'steps[' + i + '] 是 ' + s.op + ' 嵌套块：请用 JSON 文本模式编辑（可视化模式不 flatten，避免丢内容）'
-        );
+        // The workbench flat list cannot edit nested blocks without dropping
+        // their then/else/body. Keep a read-only placeholder instead of
+        // throwing: task switching must still load referenced assets and the
+        // JSON editor remains available.
+        nested.push({ op: s.op, index: i });
+        const all = s.then || s.else || s.body || [];
+        return {
+          op: s.op,
+          argsText: pretty(s.args || {}),
+          nested: true,
+          nestedCount: Array.isArray(all) ? all.length : 0,
+        };
       }
       const args = s.args && typeof s.args === 'object' && !Array.isArray(s.args) ? s.args : {};
       return { op: s.op, argsText: pretty(args) };
@@ -130,11 +140,16 @@
       name: typeof flow.name === 'string' ? flow.name : '',
       steps: steps,
       interrupts: interrupts,
+      nested: nested.length > 0,
+      nestedBlocks: nested,
     };
   }
 
   function buildFlow(model) {
     if (!model || !Array.isArray(model.steps)) throw new Error('model.steps 缺失');
+    if (model.nested) {
+      throw new Error('flow 含 if/loop/while 嵌套块；勿在简化流程面板保存，请用「任务构建」或 JSON 文本模式编辑');
+    }
     if (model.steps.length === 0) throw new Error('至少需要一个步骤');
     const steps = model.steps.map((s, i) => {
       if (!OPS.includes(s.op)) throw new Error('steps[' + i + '] 未知 op `' + s.op + '`');

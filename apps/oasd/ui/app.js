@@ -60,8 +60,6 @@ let assetFramesCache = [];
 let pendingAssetPositions = [];
 const btnAssetsRefresh = document.getElementById('assets-refresh');
 const btnAssetsBatchTest = document.getElementById('btn-assets-batch-test');
-const btnNewCollection = document.getElementById('btn-new-collection');
-const collectionMsg = document.getElementById('collection-msg');
 const runsSelect = document.getElementById('runs-select');
 const clickScope = document.getElementById('click-scope');
 const clickTaskFilter = document.getElementById('click-task-filter');
@@ -97,6 +95,7 @@ const taskSelect = document.getElementById('task-select');
 const btnTaskRefresh = document.getElementById('btn-task-refresh');
 const btnTaskCreate = document.getElementById('btn-task-create');
 const btnTaskRun = document.getElementById('btn-task-run');
+const btnTaskStop = document.getElementById('btn-task-stop');
 // v1.1 P2: 任务工作台 + 完成条件
 const goalMode = document.getElementById('goal-mode');
 const goalCount = document.getElementById('goal-count');
@@ -1991,7 +1990,7 @@ function renderAssetList() {
   }
   window.OASAssetUI.renderRows(assetsList, items, {
     task: (taskName.value || '').trim(),
-    pick: true,
+    pick: false,
     manage: true,
     actions: true,
     group: true,
@@ -2085,33 +2084,6 @@ async function batchTestAssets() {
   } catch (e) {
     resultEl.textContent = '批量帧测试异常：' + e;
   }
-}
-
-async function createCollectionFromSelection() {
-  const task = (taskName.value || '').trim();
-  if (!task) return;
-  const members = [...document.querySelectorAll('#assets-list .asset-pick:checked')].map((x) => x.value);
-  if (members.length < 1) {
-    window.alert('请先勾选至少一个模板图（template）作为集合成员。');
-    return;
-  }
-  const id = (window.prompt('素材集合 id（flow 将引用这个 id）', '') || '').trim();
-  if (!id) return;
-  const r = await postJson('/task/asset/collection', { task, id, members });
-  if (!r.ok) {
-    const msg = (r.errors || []).join('\n') || '未知错误';
-    if (collectionMsg) collectionMsg.textContent = '创建失败：' + msg;
-    window.alert('创建集合失败：\n' + msg);
-    return;
-  }
-  const rewritten = Number(r.tasks_rewritten || 0);
-  if (collectionMsg) {
-    collectionMsg.textContent =
-      `已创建集合「${id}」，成员 ${members.length} 张；自动切换引用任务 ${rewritten} 个。` +
-      ((r.rewrite_errors || []).length ? ` 警告：${r.rewrite_errors.join('; ')}` : '');
-  }
-  log(`已创建素材集合：${id}（${members.length} 张），自动改写任务 ${rewritten} 个`);
-  await refreshTaskAssets(task);
 }
 
 async function deleteAsset(it) {
@@ -2777,11 +2749,18 @@ async function loadTaskFlow(task) {
       flowModel = window.OAS_FLOW ? window.OAS_FLOW.parseFlow(JSON.stringify(s.flow)) : flowModel;
       flowModel.name = s.flow.name || task;
       flowRender();
-      log(`已载入任务「${task}」的 flow（${flowModel.steps.length} 步）`);
+      if (flowModel.nested) {
+        log(`已载入任务「${task}」的 flow：含 ${flowModel.nestedBlocks.length} 个 if/loop/while 嵌套块，简化流程面板只读；请用任务构建或 JSON 文本编辑`, 'INFO', {
+          nested_blocks: flowModel.nestedBlocks,
+          steps: flowModel.steps.length,
+        });
+      } else {
+        log(`已载入任务「${task}」的 flow（${flowModel.steps.length} 步）`);
+      }
     } catch (e) {
       // Nested control-flow is edited in builder/JSON; the workbench still
       // needs the raw flow for referenced-asset display.
-      log('流程可视化解析失败（仍显示引用素材）：' + e.message);
+      log('流程可视化解析失败（仍显示引用素材）：' + e.message, 'ERROR');
     }
     renderTaskReferencedAssets();
   } catch (e) {
@@ -4099,6 +4078,7 @@ async function pollRunStatus() {
   } finally {
     runPolling = false;
     if (btnTaskRun) btnTaskRun.disabled = false;
+    if (btnTaskStop) btnTaskStop.disabled = true;
   }
 }
 
@@ -4107,6 +4087,25 @@ function syncRunButtonLabel() {
   btnTaskRun.textContent = runDry && runDry.checked
     ? '测试运行（dry-run，不点击设备）'
     : '运行任务';
+}
+
+async function stopRunTask() {
+  if (btnTaskStop) btnTaskStop.disabled = true;
+  setRunStatus('正在请求停止当前任务…');
+  try {
+    const s = await postJson('/task/run/stop', {});
+    if (!s.ok) {
+      setRunStatus('停止失败：' + (s.error || (s.errors || []).join('; ') || '未知错误'));
+      log('停止任务失败', 'ERROR', s);
+      if (btnTaskStop) btnTaskStop.disabled = false;
+      return;
+    }
+    log('已请求停止当前任务；等待运行线程结束…', 'INFO', { message: s.message });
+    setRunStatus('已请求停止；等待当前动作完成后结束…');
+  } catch (e) {
+    setRunStatus('停止异常：' + (e && e.message ? e.message : e));
+    if (btnTaskStop) btnTaskStop.disabled = false;
+  }
 }
 
 // 任务面板「运行任务」：POST /task/run -> 轮询状态 -> 结果/日志窗口。
@@ -4121,6 +4120,7 @@ async function doRunTask() {
     ? `回放（${replay}）`
     : (payload.dry_run ? 'dry-run（不点击设备）' : '实机');
   if (btnTaskRun) btnTaskRun.disabled = true;
+  if (btnTaskStop) btnTaskStop.disabled = false;
   runLogSeen = 0;
   setRunStatus(`正在启动任务「${task}」（${modeLabel}）…`);
   try {
@@ -4367,7 +4367,6 @@ async function submitResetMemory() {
   syncDrawers();
   if (btnAssetsRefresh) btnAssetsRefresh.addEventListener('click', () => refreshTaskAssets());
   if (btnAssetsBatchTest) btnAssetsBatchTest.addEventListener('click', batchTestAssets);
-  if (btnNewCollection) btnNewCollection.addEventListener('click', createCollectionFromSelection);
   if (assetSearch) assetSearch.addEventListener('input', renderAssetList);
   if (assetCategoryFilter) assetCategoryFilter.addEventListener('change', renderAssetList);
   if (railButtons.length) activatePanel(railButtons[0].dataset.panel);
@@ -4431,6 +4430,7 @@ async function submitResetMemory() {
     });
   }
   if (btnTaskRun) btnTaskRun.addEventListener('click', doRunTask);
+  if (btnTaskStop) btnTaskStop.addEventListener('click', stopRunTask);
   if (runDry) runDry.addEventListener('change', syncRunButtonLabel);
   syncRunButtonLabel();
   if (btnGoalApply) btnGoalApply.addEventListener('click', applyTaskGoal);
