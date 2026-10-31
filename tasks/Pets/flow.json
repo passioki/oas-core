@@ -199,6 +199,12 @@
       "else": []
     },
     {
+      "op": "wait",
+      "args": {
+        "seconds": 2.0
+      }
+    },
+    {
       "op": "click",
       "args": {
         "sel": "legacy_Pets_I_PET_EXIT",
@@ -209,8 +215,8 @@
         },
         "expect": {
           "kind": "appear",
-          "sel": "legacy_GameUi_I_CHECK_MAIN",
-          "timeout_ms": 15000
+          "sel": "庭院_探索灯笼",
+          "timeout_ms": 20000
         }
       }
     },
