@@ -544,6 +544,12 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     /// Size of the frame `matcher` was built from (`click_point` needs it for
     /// the CP3 in-frame check).
     frame_size: Option<(u32, u32)>,
+    /// Number of live frame grabs performed by this interpreter. Included in
+    /// while-condition logs so "condition used a stale frame" is auditable.
+    frame_seq: u64,
+    /// Editor-run diagnostic: log each `appear(sel)` result. Off for tests/CLI
+    /// unless explicitly enabled, so it does not flood normal logs.
+    trace_appear: bool,
     events: Vec<StepEvent>,
     /// Optional streaming sink: the editor shows step logs while a run is
     /// still inside a long `while` (before `run()` returns).
@@ -594,6 +600,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             frame_size: None,
             events: Vec::new(),
             observer: None,
+            frame_seq: 0,
+            trace_appear: false,
             clicks: Vec::new(),
             run_seed,
             params: BTreeMap::new(),
@@ -645,6 +653,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
 
     pub fn with_observer(mut self, observer: Box<dyn StepObserver>) -> Self {
         self.observer = Some(observer);
+        self
+    }
+
+    /// Enable per-`appear()` diagnostics in the step log (editor runs).
+    pub fn with_trace_appear(mut self, trace: bool) -> Self {
+        self.trace_appear = trace;
         self
     }
 
@@ -928,6 +942,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// Grab a frame and cache its matcher (integral images) for this frame.
     fn refresh_frame(&mut self) -> Result<(), String> {
         let frame: Frame = self.src.grab()?;
+        self.frame_seq = self.frame_seq.saturating_add(1);
         self.frame_size = Some((frame.width, frame.height));
         let gray = GrayImage::from_frame(&frame);
         self.matcher = Some(Matcher::new(gray));
@@ -1608,6 +1623,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 let mut iters = 0u32;
                 loop {
                     self.check_budget()?;
+                    // A while condition describes the CURRENT screen. Drop any
+                    // frame cached by the previous body/condition so appear()
+                    // grabs a live frame; otherwise a post-click/transition
+                    // condition can keep evaluating pre-transition pixels.
+                    self.invalidate_frame();
                     let value = eval(cond, self)?;
                     let truthy = match value {
                         Value::Bool(b) => b,
@@ -1626,7 +1646,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         depth + 1,
                         "while_cond",
                         &format!(
-                            "iteration={iters} value={value:?} truthy={truthy} cond={cond:?}"
+                            "iteration={iters} value={value:?} truthy={truthy} frame_seq={} cond={cond:?}",
+                            self.frame_seq
                         ),
                         "ok",
                         0.0,
@@ -2614,22 +2635,42 @@ impl<S: ScreenSource, I: InputSink> EvalContext for Interpreter<S, I> {
         // "出现素材" covers every asset kind (user 10-31): OCR assets are
         // visible when their text can be read; template/collection assets use
         // the normal locate path.
-        if self.assets.ocr_roi(sel).is_some() {
+        let result = if self.assets.ocr_roi(sel).is_some() {
             if self.ocr.is_none() {
-                return Err(format!(
+                Err(format!(
                     "OCR is not available for appear({sel}): no OCR provider attached"
-                ));
+                ))
+            } else {
+                match self.ocr_read(sel) {
+                    Ok(OcrRead::Single(text, _)) => {
+                        Ok(text.map(|t| !t.trim().is_empty()).unwrap_or(false))
+                    }
+                    Ok(OcrRead::Lines(lines)) => Ok(!lines.is_empty()),
+                    // A multi-line-derived line that is not found means "not visible".
+                    Err(e) if e.starts_with("derived ocr_line") => Ok(false),
+                    Err(e) => Err(e),
+                }
             }
-            return match self.ocr_read(sel) {
-                Ok(OcrRead::Single(text, _)) => Ok(text.map(|t| !t.trim().is_empty()).unwrap_or(false)),
-                Ok(OcrRead::Lines(lines)) => Ok(!lines.is_empty()),
-                // A multi-line-derived line that is not found means "not visible".
-                Err(e) if e.starts_with("derived ocr_line") => Ok(false),
+        } else {
+            match self.locate(sel) {
+                Ok((score, _)) => Ok(score >= self.assets.threshold_for(sel).unwrap_or(0.9)),
                 Err(e) => Err(e),
+            }
+        };
+        if self.trace_appear {
+            let detail = match &result {
+                Ok(v) => format!("sel={sel} -> {v} frame_seq={}", self.frame_seq),
+                Err(e) => format!("sel={sel} -> ERROR {e:?} frame_seq={}", self.frame_seq),
             };
+            self.log(
+                0,
+                "appear_trace",
+                &detail,
+                if result.is_ok() { "ok" } else { "failed" },
+                0.0,
+            );
         }
-        let (score, _) = self.locate(sel)?;
-        Ok(score >= self.assets.threshold_for(sel).unwrap_or(0.9))
+        result
     }
 
     fn ocr(&mut self, sel: &str) -> Result<Option<String>, String> {

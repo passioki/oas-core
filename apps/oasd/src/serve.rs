@@ -4578,6 +4578,7 @@ impl Server {
         opts.det_model = self.det_model.clone();
         opts.cancel = Some(cancel.clone());
         opts.step_log = Some(step_log.clone());
+        opts.trace_appear = true;
         // Click audit (CD2) is written even for dry/replay runs, so the editor's
         // 点击分布 panel sees editor-triggered runs exactly like CLI runs.
         opts.clicks_out = Some(

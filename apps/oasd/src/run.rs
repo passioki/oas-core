@@ -118,6 +118,8 @@ pub struct RunOptions {
     /// Streaming step-log sink for editor runs (so a long while shows steps
     /// before `execute()` returns).
     pub step_log: Option<Arc<Mutex<Vec<String>>>>,
+    /// Editor diagnostic: log every appear(sel) result.
+    pub trace_appear: bool,
     pub budget_steps: u32,
     pub budget_wall_s: f64,
     /// `--param k=v` values for `param('key')` (M0 unified template). The
@@ -144,6 +146,7 @@ impl Default for RunOptions {
             det_model: None,
             cancel: None,
             step_log: None,
+            trace_appear: false,
             budget_steps: DEFAULT_MAX_STEPS,
             budget_wall_s: DEFAULT_MAX_WALL_S,
             params: BTreeMap::new(),
@@ -675,6 +678,7 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     } else {
         interp
     };
+    let interp = interp.with_trace_appear(opts.trace_appear);
     let interp = interp.with_vars(resume_vars);
     let interp = attach_ocr(interp, opts.model.as_deref(), opts.det_model.as_deref())?;
     let mut interp = interp

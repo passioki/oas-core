@@ -87,9 +87,11 @@
     lastSavedFlow: '',
     saving: false,
     checked: new Set(),
-    selectionHistory: [],
-    selectionIndex: -1,
-    navNavigating: false,
+    // Undo/redo of FLOW EDITS (not selection history). Every renderAll that
+    // sees a changed flow stores one snapshot; selection-only changes do not.
+    flowHistory: [],
+    historyIndex: -1,
+    restoringHistory: false,
   };
   const $ = (id) => document.getElementById(id);
 
@@ -1581,35 +1583,67 @@
     }
   }
 
-  function recordSelection() {
-    if (B.navNavigating) return;
-    const key = B.selected ? JSON.stringify(B.selected) : '';
-    if (B.selectionHistory[B.selectionIndex] === key) return;
-    B.selectionHistory = B.selectionHistory.slice(0, B.selectionIndex + 1);
-    B.selectionHistory.push(key);
-    B.selectionIndex = B.selectionHistory.length - 1;
+  function cloneJson(v) {
+    return v == null ? null : JSON.parse(JSON.stringify(v));
+  }
+
+  // Snapshot only when the FLOW CONTENT changed. Selecting a node or scrolling
+  // the graph must not create an undo step; editing args/adding/deleting/moving
+  // a step must.
+  function recordFlowHistory() {
+    if (!B.flow || B.restoringHistory) return;
+    const key = JSON.stringify(B.flow);
+    if (B.historyIndex >= 0 && B.flowHistory[B.historyIndex].key === key) return;
+    B.flowHistory = B.flowHistory.slice(0, B.historyIndex + 1);
+    B.flowHistory.push({
+      key,
+      flow: cloneJson(B.flow),
+      selected: cloneJson(B.selected),
+    });
+    if (B.flowHistory.length > 100) {
+      B.flowHistory.shift();
+    }
+    B.historyIndex = B.flowHistory.length - 1;
   }
 
   function updateHistoryButtons() {
-    const back = $('builder-back');
-    const fwd = $('builder-forward');
-    if (back) back.disabled = B.selectionIndex <= 0;
-    if (fwd) fwd.disabled = B.selectionIndex < 0 || B.selectionIndex >= B.selectionHistory.length - 1;
+    const undo = $('builder-back');
+    const redo = $('builder-forward');
+    if (undo) {
+      undo.disabled = B.historyIndex <= 0;
+      undo.title = '撤销上一次流程编辑（Ctrl+Z）';
+    }
+    if (redo) {
+      redo.disabled = B.historyIndex < 0 || B.historyIndex >= B.flowHistory.length - 1;
+      redo.title = '重做被撤销的流程编辑（Ctrl+Shift+Z）';
+    }
   }
 
-  function navigateHistory(delta) {
-    const next = B.selectionIndex + delta;
-    if (next < 0 || next >= B.selectionHistory.length) return;
-    B.selectionIndex = next;
-    B.navNavigating = true;
-    const key = B.selectionHistory[next];
-    B.selected = key ? JSON.parse(key) : null;
+  function restoreHistory(index, label) {
+    const item = B.flowHistory[index];
+    if (!item) return;
+    B.historyIndex = index;
+    B.restoringHistory = true;
+    B.flow = cloneJson(item.flow);
+    B.selected = cloneJson(item.selected);
     renderAll();
-    B.navNavigating = false;
+    B.restoringHistory = false;
+    updateHistoryButtons();
+    status(`${label}（${B.historyIndex + 1}/${B.flowHistory.length}）`);
+  }
+
+  function undoEdit() {
+    if (B.historyIndex <= 0) return;
+    restoreHistory(B.historyIndex - 1, '已撤销');
+  }
+
+  function redoEdit() {
+    if (B.historyIndex < 0 || B.historyIndex >= B.flowHistory.length - 1) return;
+    restoreHistory(B.historyIndex + 1, '已重做');
   }
 
   function renderAll() {
-    recordSelection();
+    recordFlowHistory();
     renderSteps();
     renderGraph();
     renderForm();
@@ -1642,8 +1676,8 @@
 
   async function loadTask(name) {
     B.autoSaveArmed = false;
-    B.selectionHistory = [];
-    B.selectionIndex = -1;
+    B.flowHistory = [];
+    B.historyIndex = -1;
     if (!name) {
       B.task = '';
       B.flow = null;
@@ -1816,9 +1850,19 @@
     const reload = $('builder-reload');
     if (reload) reload.addEventListener('click', async () => { await refreshTaskList(); await loadTask(taskSel ? taskSel.value : ''); });
     const back = $('builder-back');
-    if (back) back.addEventListener('click', () => navigateHistory(-1));
+    if (back) back.addEventListener('click', undoEdit);
     const forward = $('builder-forward');
-    if (forward) forward.addEventListener('click', () => navigateHistory(1));
+    if (forward) forward.addEventListener('click', redoEdit);
+    document.addEventListener('keydown', (e) => {
+      if (!(e.ctrlKey || e.metaKey) || String(e.key).toLowerCase() !== 'z') return;
+      const page = $('page-builder');
+      if (!page || !page.classList.contains('active')) return;
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      e.preventDefault();
+      if (e.shiftKey) redoEdit();
+      else undoEdit();
+    });
     const save = $('builder-save');
     if (save) save.addEventListener('click', () => saveFlow(false));
     const dry = $('builder-dry-run');
