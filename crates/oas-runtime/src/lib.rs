@@ -1027,6 +1027,21 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         } else {
             sel
         };
+        // OCR assets have no template pixels; click their explicit action
+        // region, otherwise the recognized line rect (derived OCR), otherwise
+        // the declared OCR ROI.
+        if self.assets.ocr_roi(effective_sel).is_some() {
+            if let Some(back) = self.assets.click_back(effective_sel) {
+                return Ok(back);
+            }
+            if let Some(r) = self.last_ocr_rect {
+                return Ok(r);
+            }
+            return self
+                .assets
+                .ocr_roi(effective_sel)
+                .ok_or_else(|| format!("OCR selector `{effective_sel}` has no roi"));
+        }
         let t = self.assets.get(effective_sel).ok_or_else(|| {
             format!("selector `{effective_sel}` is not declared in the task's assets")
         })?;
@@ -1645,8 +1660,33 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 let mut evidence: Vec<String> = Vec::new();
                 let mut hit: Option<(&str, f32, Point)> = None;
                 for cand in &candidates {
-                    let (score, at) = self.locate(cand)?;
-                    let th = self.assets.threshold_for(*cand).unwrap_or(0.9);
+                    // `click sel` may name a template OR an OCR asset. OCR
+                    // assets are not in the template map, so the old path
+                    // reported "selector not declared" after appear() had just
+                    // recognized the same text. Recognize first, then click the
+                    // asset's action/recognized box below.
+                    let is_ocr = self.assets.ocr_roi(cand).is_some();
+                    let (score, at) = if is_ocr {
+                        match self.ocr_read(cand)? {
+                            OcrRead::Single(Some(_), s) => (s, Some(Point { x: 0, y: 0 })),
+                            OcrRead::Single(None, _) => (0.0, None),
+                            OcrRead::Lines(lines) if !lines.is_empty() => {
+                                let s = lines
+                                    .iter()
+                                    .map(|l| l.score)
+                                    .fold(f32::MIN, f32::max);
+                                (s, Some(Point { x: 0, y: 0 }))
+                            }
+                            OcrRead::Lines(_) => (0.0, None),
+                        }
+                    } else {
+                        self.locate(cand)?
+                    };
+                    let th = if is_ocr {
+                        0.0
+                    } else {
+                        self.assets.threshold_for(*cand).unwrap_or(0.9)
+                    };
                     if let Some(p) = at.filter(|_| score >= th) {
                         hit = Some((cand, score, p));
                         break;
@@ -1662,7 +1702,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 // §22.29 H4 多帧投票：连续 N 帧都命中同一位置才允许点击，
                 // 专治动画/过场/淡入期间的抖动或误匹配。
                 let vote_frames = stable_frames.unwrap_or(1);
-                if vote_frames > 1 {
+                if vote_frames > 1 && self.assets.ocr_roi(hit_sel).is_none() {
                     let th = self
                         .assets
                         .get(hit_sel)
@@ -1692,12 +1732,16 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     x: target.x + target.w / 2,
                     y: target.y + target.h / 2,
                 };
-                let match_info = format!("template:{hit_sel}:{score:.3}");
+                let match_info = if self.assets.ocr_roi(hit_sel).is_some() {
+                    format!("ocr:{hit_sel}:{score:.3}")
+                } else {
+                    format!("template:{hit_sel}:{score:.3}")
+                };
                 let (actual, delay) = self.perform_click(
                     plan,
                     centre,
                     Some(hit_sel.to_string()),
-                    "template",
+                    if self.assets.ocr_roi(hit_sel).is_some() { "ocr" } else { "template" },
                     match_info,
                     w,
                     h,
@@ -5172,6 +5216,56 @@ mod tests {
             "OCR click should land in the operation region (jitter allowed): {p:?}"
         );
         assert_eq!(interp.clicks()[0].locator, "ocr_text");
+    }
+
+    #[test]
+    fn click_ocr_asset_uses_action_roi_not_template_lookup() {
+        let mut a = assets();
+        a.insert_ocr(
+            "O_LINE",
+            Rect {
+                x: 10,
+                y: 10,
+                w: 20,
+                h: 10,
+            },
+        );
+        a.set_click_back(
+            "O_LINE",
+            Rect {
+                x: 5,
+                y: 5,
+                w: 60,
+                h: 30,
+            },
+        );
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, a, Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(FixedLineOcr {
+                rect: Rect {
+                    x: 10,
+                    y: 10,
+                    w: 20,
+                    h: 10,
+                },
+                text: "确认".to_string(),
+            }))
+            .with_seed(11);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"O_LINE"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let clicks = shared.clicks.borrow().clone();
+        assert_eq!(clicks.len(), 1);
+        let p = clicks[0];
+        assert!(
+            p.x >= 0 && p.x <= 70 && p.y >= 0 && p.y <= 40,
+            "OCR click should land in the operation region (jitter allowed): {p:?}"
+        );
+        assert_eq!(interp.clicks()[0].locator, "ocr");
     }
 
     #[test]
