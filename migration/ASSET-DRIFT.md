@@ -46,6 +46,16 @@
 
 必须用编辑器的 ROI 工具，在**同一张目标帧**上逐图标画框并立即 `试识别`；不要用脚本按估算坐标批量裁。当前已有 `ui_main_bar_guide` 作为 UI-visible marker；其余导航模板仍需编辑器 ROI 重采。
 
+## 测试方法论修正
+
+2026-11-01 继续测试发现：很多“入口素材失败”是因为**测试从上一个任务残留的活动页/花札页起跑**，不是干净主界面。重启用 `force-stop + monkey launch` 回到主界面后再跑：
+
+- DailyTrifles `friend_love` 实机 **Done**；
+- DailyTrifles `store_sign` 实机 **Done**；
+- 同一点 `(905,641)` 在干净主界面可用，残留在花札页时才会失败。
+
+因此后续所有实机验证必须先 reset 到干净主界面（`am force-stop com.netease.onmyoji` + launch + 进入游戏），再计入证据；不能把残留页面失败误判为素材漂移。
+
 ## 结论
 
 旧仓 `tasks/GameUi/page/*.png` 的导航模板不能靠阈值/自动重采样修复，必须在**当前客户端**用 ROI 工具重新截图绑定：
