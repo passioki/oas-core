@@ -1150,15 +1150,17 @@ async function testAssetClick(it) {
       draw();
       detail = `匹配得分 ${Number(s.score).toFixed(4)} @ (${s.x},${s.y})\n`;
     } else if (it.kind === 'ocr_line' || it.kind === 'ocr_lines') {
-      const roi = it.roi;
-      const q = `x=${roi[0]}&y=${roi[1]}&w=${roi[2]}&h=${roi[3]}`;
-      const r = await fetch(it.kind === 'ocr_lines' ? '/lines?' + q : '/ocr?' + q);
+      const derived = it.kind === 'ocr_line' && it.ocr_mode === 'lines' && Array.isArray(it.ocr_source_roi);
+      const src = derived ? it.ocr_source_roi : it.roi;
+      const q = `x=${src[0]}&y=${src[1]}&w=${src[2]}&h=${src[3]}` +
+        `&task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}`;
+      const r = await fetch((it.kind === 'ocr_lines' || derived) ? '/lines?' + q : '/ocr?' + q);
       const s = await r.json();
       if (s.error) {
         resultEl.textContent = `点击测试失败：${s.error}`;
         return;
       }
-      detail = it.kind === 'ocr_lines'
+      detail = (it.kind === 'ocr_lines' || derived)
         ? `多行识别 ${s.lines ? s.lines.length : 0} 行\n`
         : `识别文字 ${JSON.stringify(s.text)} 得分 ${Number(s.score).toFixed(4)}\n`;
     }
