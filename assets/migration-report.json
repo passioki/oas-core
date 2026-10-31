@@ -1,0 +1,22 @@
+{
+  "assets": 26,
+  "tasks": 4,
+  "flows_rewritten": 3,
+  "renamed": [
+    {
+      "old": "庭院_探索灯笼",
+      "new": "庭院_探索灯笼_2",
+      "source": "task:探索"
+    },
+    {
+      "old": "世界_章节栏",
+      "new": "世界_章节栏_2",
+      "source": "task:探索"
+    },
+    {
+      "old": "战斗_自动按钮",
+      "new": "战斗_自动按钮_2",
+      "source": "task:探索"
+    }
+  ]
+}

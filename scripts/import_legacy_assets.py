@@ -63,7 +63,7 @@ def kw(call, name, default=None):
     return default
 
 
-def import_assets_py(task: str, assets_py: Path, by_id, mapping, copy_image):
+def import_assets_py(scope: str, assets_py: Path, by_id, mapping, copy_image):
     """Parse generated assets.py; returns (imported, skipped)."""
     imported = skipped = 0
     if not assets_py.is_file():
@@ -87,17 +87,21 @@ def import_assets_py(task: str, assets_py: Path, by_id, mapping, copy_image):
             kind = call.func.attr
         else:
             continue
-        if kind not in ("RuleImage", "RuleClick", "RuleLongClick", "RuleOcr"):
+        if kind not in ("RuleImage", "RuleClick", "RuleLongClick", "RuleOcr", "RuleSwipe"):
             continue
-        new_id = f"legacy_{task}_{const}"
+        new_id = f"legacy_{scope}_{const}"
         if new_id in by_id:
             continue
         try:
             rf = kw(call, "roi_front")
             rb = kw(call, "roi_back")
-            r = roi(",".join(str(x) for x in rb)) if rb else None
-            if r is None and rf:
-                r = roi(",".join(str(x) for x in rf))
+            rr = kw(call, "roi") or kw(call, "area")
+            r = None
+            for candidate in (rb, rf, rr):
+                if candidate:
+                    r = roi(",".join(str(x) for x in candidate))
+                    if r:
+                        break
             if r is None:
                 skipped += 1
                 continue
@@ -118,7 +122,6 @@ def import_assets_py(task: str, assets_py: Path, by_id, mapping, copy_image):
                     "kind": "template",
                     "file": dst_rel,
                     "roi": r,
-                    "action_roi": r,
                     "threshold": float(kw(call, "threshold", 0.8) or 0.8),
                     "rev": 1,
                 }
@@ -129,6 +132,19 @@ def import_assets_py(task: str, assets_py: Path, by_id, mapping, copy_image):
                     "roi": r,
                     "rev": 1,
                 }
+            elif kind == "RuleSwipe":
+                # one legacy swipe = two operation regions; flows use drag/ swipe
+                for suffix, reg in (("FROM", rf), ("TO", rb)):
+                    if not reg:
+                        continue
+                    r2 = roi(",".join(str(x) for x in reg))
+                    if not r2:
+                        continue
+                    sid = f"{new_id}_{suffix}"
+                    by_id[sid] = {"id": sid, "kind": "region", "roi": r2, "rev": 1}
+                    mapping[f"{scope}.{const}.{suffix}"] = sid
+                    imported += 1
+                continue
             else:
                 by_id[new_id] = {
                     "id": new_id,
@@ -136,7 +152,7 @@ def import_assets_py(task: str, assets_py: Path, by_id, mapping, copy_image):
                     "roi": r,
                     "rev": 1,
                 }
-            mapping[f"{task}.{const}"] = new_id
+            mapping[f"{scope}.{const}"] = new_id
             imported += 1
         except Exception:
             skipped += 1
@@ -204,7 +220,6 @@ def main() -> int:
                 "kind": "template",
                 "file": dst_rel,
                 "roi": r,
-                "action_roi": r,
                 "threshold": float(item.get("threshold") or 0.8),
                 "rev": 1,
             }
@@ -266,6 +281,18 @@ def main() -> int:
         imp, sk = import_assets_py(task, task_dir / "assets.py", by_id, mapping, copy_image)
         imported += imp
         skipped += sk
+
+    # Shared component assets (GeneralBattle/GeneralRoom/Invite/Buff/SwitchSoul/Buy...)
+    comp_root = REMOTE / "tasks" / "Component"
+    if comp_root.is_dir():
+        for comp_dir in sorted(comp_root.iterdir()):
+            if comp_dir.is_dir():
+                imp, sk = import_assets_py(
+                    f"Component_{comp_dir.name}",
+                    comp_dir / "assets.py", by_id, mapping, copy_image,
+                )
+                imported += imp
+                skipped += sk
 
     af["items"] = sorted(by_id.values(), key=lambda x: str(x.get("id")))
     af.setdefault("schema_version", 1)

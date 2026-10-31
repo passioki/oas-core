@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "design_resolution": [
+    1280,
+    720
+  ],
+  "items": [
+    {
+      "id": "庭院_探索灯笼",
+      "kind": "template",
+      "file": "images/a001.png",
+      "roi": [
+        638,
+        105,
+        88,
+        85
+      ],
+      "rev": 1,
+      "threshold": 0.88
+    },
+    {
+      "id": "世界_章节栏",
+      "kind": "template",
+      "file": "images/a002.png",
+      "roi": [
+        1070,
+        165,
+        160,
+        48
+      ],
+      "rev": 1,
+      "threshold": 0.8
+    },
+    {
+      "id": "章节_第二十八章",
+      "kind": "template",
+      "file": "images/a003.png",
+      "roi": [
+        1067,
+        447,
+        142,
+        42
+      ],
+      "rev": 1,
+      "threshold": 0.86
+    },
+    {
+      "id": "入口_探索按钮",
+      "kind": "template",
+      "file": "images/a004.png",
+      "roi": [
+        1058,
+        588,
+        130,
+        102
+      ],
+      "rev": 1,
+      "threshold": 0.88
+    },
+    {
+      "id": "章节_固定阵容",
+      "kind": "template",
+      "file": "images/a005.png",
+      "roi": [
+        884,
+        642,
+        175,
+        46
+      ],
+      "rev": 1,
+      "threshold": 0.9
+    },
+    {
+      "id": "章节_战斗图标",
+      "kind": "template",
+      "file": "images/a006.png",
+      "roi": [
+        912,
+        242,
+        64,
+        64
+      ],
+      "rev": 1,
+      "threshold": 0.85
+    },
+    {
+      "id": "退出确认_确认",
+      "kind": "template",
+      "file": "images/a007.png",
+      "roi": [
+        692,
+        373,
+        176,
+        57
+      ],
+      "rev": 1,
+      "threshold": 0.9
+    },
+    {
+      "id": "战斗_自动按钮",
+      "kind": "template",
+      "file": "images/a008.png",
+      "roi": [
+        20,
+        645,
+        110,
+        58
+      ],
+      "rev": 1,
+      "threshold": 0.8
+    }
+  ]
+}

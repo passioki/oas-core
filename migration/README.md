@@ -24,7 +24,10 @@
 
 ## Asset contract
 
-- Imported assets are namespaced `legacy_<Task>_<const>`.
+- Imported templates: `roi` = remote `roi_back` (search window), **no `action_roi`**; clicking resolves to the matched template rectangle (old behavior). Old `RuleClick` becomes `kind=region` with the exact operation region.
+- Old `RuleOcr` (`roi`/`area` in assets.py) becomes `ocr_lines` without `ocr_text`.
+- Shared `tasks/Component/*/assets.py` are imported as `legacy_Component_<Module>_<const>`.
+- `RuleSwipe` becomes two region ids `<id>_FROM` / `<id>_TO`; callers use `drag` with their centers.
 - Mapping: `migration/asset-map.json` (`Task.const → global asset id`).
 - Images are copied into the global `assets/images/aNNN.png` sequence by `scripts/import_legacy_assets.py`.
 - Do not reference the original repo at runtime.
@@ -46,5 +49,5 @@
 ## Current facts (2026-11-01)
 
 - Remote task dirs: 61; menu tasks 53; helper dirs 8.
-- Imported global assets: 1769 total (23 core + legacy).
+- Imported global assets: 2825 total (23 core + task/component legacy).
 - Baseline `cargo test --workspace`: 350 passed.
