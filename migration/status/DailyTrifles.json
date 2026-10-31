@@ -1,9 +1,8 @@
 {
   "task": "DailyTrifles",
   "status": "🔄",
-  "evidence": "task lint --task DailyTrifles => errors=0；2026-11-01 实机：friend_love 分支 Done（好友入口→友情点 tab 140,680→I_L_LOVE 0.965→I_L_COLLECT 0.970→奖励弹窗→退出重试→庭院 0.903）；store_sign 分支从商店页起测被入口屏幕状态挡住（庭院守卫 0.454），尚未验证；每日召唤/吉闻/买体力未迁移",
+  "evidence": "task lint --task DailyTrifles => errors=0；2026-11-01 实机两个子流程均 Done：friend_love（好友入口→友情点 tab→I_L_LOVE 0.965→领取→奖励→退出→庭院 0.903）与 store_sign（商店→I_ROOM_GIFT→I_GIFT_RECOMMEND→I_GIFT_SIGN 签到→退出→庭院）；clicks 分别 [(900,648),(143,675),(1196,109)] 与 [(672,674),(1168,664),(1203,566),(244,252),(31,35),(22,35),(37,32),(56,39)]",
   "gaps": [
-    "store_sign 分支尚未从庭院实机验证（商店页守卫已改为 I_ROOM_GIFT，待重跑）",
     "每日召唤（普通/今忆）未迁移",
     "吉闻（OCR 入口点击）未迁移",
     "买体力（动态 ROI 价格 OCR + 比较）未迁移"
