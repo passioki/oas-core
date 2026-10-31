@@ -1445,13 +1445,20 @@ impl Server {
             };
             let crop = match oas_ocr::RgbCrop::from_rgba(frame.width, frame.height, &frame.rgba, roi) {
                 Ok(c) => c,
-                Err(e) => return self.send_json(out, 400, &format!(r#"{{"error":{:?}}}"#, e)),
+                Err(e) => {
+                    self.editor_log(&format!("ocr FAIL roi={roi:?} task={task} id={id} error={e:?}"));
+                    return self.send_json(out, 400, &format!(r#"{{"error":{:?}}}"#, e));
+                }
             };
             let t0 = std::time::Instant::now();
             let mut eng = engine.lock().unwrap();
             match eng.recognize(&crop) {
                 Ok((text, score)) => {
                     let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                    self.editor_log(&format!(
+                        "ocr OK roi={roi:?} task={task} id={id} text={text:?} score={score:.4} elapsed_ms={ms:.1} polygon={}",
+                        poly.is_some()
+                    ));
                     let body = format!(
                         r#"{{"text":{},"score":{},"elapsed_ms":{},"charset":{}}}"#,
                         json_escape(&text),
@@ -1462,7 +1469,12 @@ impl Server {
                     drop(eng);
                     self.send_json(out, 200, &body)
                 }
-                Err(e) => self.send_json(out, 500, &format!(r#"{{"error":{:?}}}"#, e)),
+                Err(e) => {
+                    self.editor_log(&format!(
+                        "ocr FAIL roi={roi:?} task={task} id={id} error={e:?}"
+                    ));
+                    self.send_json(out, 500, &format!(r#"{{"error":{:?}}}"#, e))
+                }
             }
         }
     }
@@ -1777,9 +1789,24 @@ impl Server {
                 let mut rec_guard = rec.lock().unwrap();
                 match crate::ocr::recognize_lines_impl(&mut det_guard, &mut rec_guard, frame, roi, vertical_only) {
                     Ok(l) => l,
-                    Err(e) => return self.send_json(out, 400, &format!(r#"{{"error":{:?}}}"#, e)),
+                    Err(e) => {
+                        self.editor_log(&format!(
+                            "lines FAIL roi={roi:?} task={task} id={id} vertical={vertical_only} error={e:?}"
+                        ));
+                        return self.send_json(out, 400, &format!(r#"{{"error":{:?}}}"#, e));
+                    }
                 }
             };
+            let text_summary = lines
+                .iter()
+                .map(|l| format!("{:?}({:.3})", l.text, l.score))
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.editor_log(&format!(
+                "lines OK roi={roi:?} task={task} id={id} vertical={vertical_only} count={} elapsed_ms={:.1} lines=[{text_summary}]",
+                lines.len(),
+                t0.elapsed().as_secs_f64() * 1000.0
+            ));
             let items: Vec<String> = lines
                 .iter()
                 .map(|l| {
@@ -2611,6 +2638,14 @@ impl Server {
             }
             Err(e) => serde_json::json!({"ok": false, "errors": [e]}),
         };
+        if body["ok"] == true {
+            self.editor_log(&format!(
+                "collection_match OK task={task} id={id} member={} score={} threshold={} pass={} elapsed_ms={}",
+                body["member"], body["score"], body["threshold"], body["pass"], body["elapsed_ms"]
+            ));
+        } else {
+            self.editor_log(&format!("collection_match FAIL task={task} id={id} body={body}"));
+        }
         self.send_json(out, if body["ok"] == true { 200 } else { 404 }, &body.to_string())
     }
 
@@ -2676,6 +2711,12 @@ impl Server {
         let (score, point) = oas_runtime::locate_template(&matcher, tpl);
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         let (x, y) = point.map(|p| (p.x, p.y)).unwrap_or((-1, -1));
+        let pass = score >= tpl.threshold;
+        self.editor_log(&format!(
+            "asset_match {} task={task} id={id} score={score:.4} threshold={:.4} point=({x},{y}) elapsed_ms={ms:.1}",
+            if pass { "OK" } else { "MISS" },
+            tpl.threshold
+        ));
         let body = serde_json::json!({
             "ok": true,
             "task": task,
@@ -2686,7 +2727,7 @@ impl Server {
             "w": tpl.gray.width,
             "h": tpl.gray.height,
             "threshold": tpl.threshold,
-            "pass": score >= tpl.threshold,
+            "pass": pass,
             "elapsed_ms": ms,
         });
         self.send_json(out, 200, &body.to_string())

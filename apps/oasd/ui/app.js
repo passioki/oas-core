@@ -244,9 +244,19 @@ window.OAS_HEATMAP = {
   },
 };
 
-function log(msg) {
-  const t = new Date().toLocaleTimeString();
-  logEl.textContent = `[${t}] ${msg}\n` + logEl.textContent;
+function log(msg, level, detail) {
+  const now = new Date();
+  const pad = (n, w = 2) => String(n).padStart(w, '0');
+  const t = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${pad(now.getMilliseconds(), 3)}`;
+  const lv = String(level || 'INFO').toUpperCase();
+  let line = `[${t}] [${lv}] ${msg}`;
+  if (detail !== undefined) {
+    line += ' | ' + (typeof detail === 'string' ? detail : JSON.stringify(detail));
+  }
+  logEl.textContent = line + '\n' + logEl.textContent;
+  if (!window.__oasLogs) window.__oasLogs = [];
+  window.__oasLogs.push(line);
+  if (window.__oasLogs.length > 2000) window.__oasLogs.shift();
 }
 
 function setStatus(text) { statusEl.textContent = text; }
@@ -940,13 +950,35 @@ function normalizeOcrText(s) {
   return String(s || '').replace(/[\s，。！？、：；,.!?:;'"“”‘’（）()\[\]【】{}<>]/g, '').toLowerCase();
 }
 
-// Match OCR output with one CJK variant/substitution tolerance, mirroring
-// oas-runtime::ocr_text_matches. 召唤 vs 召喚 must count as the same text.
-function ocrTextMatches(expected, actual) {
-  const a = normalizeOcrText(expected);
-  const b = normalizeOcrText(actual);
-  if (a === b) return true;
-  if (a.length < 2 || b.length < 2 || Math.abs(a.length - b.length) > 1) return false;
+// Detailed match result: exact / normalized / fuzzy (one CJK substitution).
+// `ocrTextMatches` stays as the boolean convenience wrapper.
+function ocrTextMatchInfo(expected, actual) {
+  const rawExpected = String(expected ?? '');
+  const rawActual = String(actual ?? '');
+  const a = normalizeOcrText(rawExpected);
+  const b = normalizeOcrText(rawActual);
+  const out = {
+    expected: rawExpected,
+    actual: rawActual,
+    normExpected: a,
+    normActual: b,
+    match: false,
+    mode: 'none',
+    distance: null,
+  };
+  if (rawExpected.trim() === rawActual.trim()) {
+    out.match = true;
+    out.mode = 'exact';
+    out.distance = 0;
+    return out;
+  }
+  if (a === b) {
+    out.match = true;
+    out.mode = 'normalized';
+    out.distance = 0;
+    return out;
+  }
+  if (a.length < 2 || b.length < 2 || Math.abs(a.length - b.length) > 1) return out;
   const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
   for (let i = 0; i <= a.length; i++) dp[i][0] = i;
   for (let j = 0; j <= b.length; j++) dp[0][j] = j;
@@ -956,7 +988,16 @@ function ocrTextMatches(expected, actual) {
       dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
     }
   }
-  return dp[a.length][b.length] <= 1;
+  out.distance = dp[a.length][b.length];
+  if (out.distance <= 1) {
+    out.match = true;
+    out.mode = 'fuzzy';
+  }
+  return out;
+}
+
+function ocrTextMatches(expected, actual) {
+  return ocrTextMatchInfo(expected, actual).match;
 }
 
 function candidateStatusText(sourceLabel) {
@@ -1198,7 +1239,13 @@ async function testAssetClick(it) {
       detail +
       `操作区域 [${action.join(',')}] → 目标点 (${point.x}, ${point.y})\n` +
       '注意：这里只验证定位/目标点；实际点击请在 flow 中运行。';
-    log(`素材点击测试（dry-run）：${it.id} → (${point.x},${point.y})`);
+    log(`素材点击测试（dry-run）：${it.id} → (${point.x},${point.y})`, 'INFO', {
+      frame: currentFrameId ? `#${currentFrameId}` : 'live',
+      kind: it.kind,
+      action_roi: action,
+      point,
+      detail,
+    });
   } catch (e) {
     resultEl.textContent = '点击测试异常：' + e;
   }
@@ -1297,6 +1344,15 @@ async function testAssetOcr(it) {
     (action ? `；操作区域 [${action.join(',')}]（仅点击，不参与识别）` : '');
   const withFrame = `${areaLine}\n${frameLine}`;
   resultEl.textContent = `素材「${it.id}」识别中…\n${withFrame}`;
+  log(`OCR 测试开始 asset=${it.id}`, 'INFO', {
+    frame: currentFrameId ? `#${currentFrameId} ${frameMeta?.name || ''}`.trim() : 'live',
+    kind: it.kind,
+    mode: it.ocr_mode || 'single',
+    roi,
+    action,
+    expected: it.ocr_text || null,
+    task,
+  });
   try {
     if (it.kind === 'ocr_lines' || derived) {
       if (!detReady) {
@@ -1306,6 +1362,9 @@ async function testAssetOcr(it) {
       const r = await fetch('/lines?' + q);
       const s = await r.json();
       if (s.error) {
+        log(`OCR 测试 /lines 失败 asset=${it.id}`, 'ERROR', {
+          roi, frame: currentFrameId ? `#${currentFrameId}` : 'live', error: s.error,
+        });
         if (await fallbackFullscreenLines(`识别区域错误：${s.error}`)) {
           resultEl.textContent = withFrame + '\n' + resultEl.textContent;
         }
@@ -1316,18 +1375,47 @@ async function testAssetOcr(it) {
         box: [roi.x + b.box[0], roi.y + b.box[1], b.box[2], b.box[3]],
       }));
       if (!lines.length) {
+        log(`OCR 测试 /lines 无文字 asset=${it.id}`, 'WARN', {
+          roi, frame: currentFrameId ? `#${currentFrameId}` : 'live',
+        });
         if (await fallbackFullscreenLines('识别区域内没有文字')) {
           resultEl.textContent = withFrame + '\n' + resultEl.textContent;
         }
         return;
       }
+      log(`OCR 测试 /lines 返回 asset=${it.id}`, 'INFO', {
+        frame: currentFrameId ? `#${currentFrameId}` : 'live',
+        roi,
+        count: lines.length,
+        elapsed_ms: Number(s.elapsed_ms || 0).toFixed(1),
+        lines: lines.map((l) => ({ text: l.text, score: Number(l.score), box: l.box })),
+      });
       let matched = null;
+      let matchInfo = null;
       if (derived) {
-        matched = lines.find((l) => ocrTextMatches(it.ocr_text, l.text)) || null;
-        if (!matched) {
+        const rank = { exact: 0, normalized: 1, fuzzy: 2 };
+        for (const line of lines) {
+          const info = ocrTextMatchInfo(it.ocr_text, line.text);
+          if (!info.match) continue;
+          if (
+            !matchInfo ||
+            rank[info.mode] < rank[matchInfo.mode] ||
+            (info.mode === matchInfo.mode && Number(line.score) > Number(matched.score))
+          ) {
+            matched = line;
+            matchInfo = info;
+          }
+        }
+        if (!matchInfo) {
           const raw = lines
             .map((l) => `${l.text}(${Number(l.score).toFixed(3)})`)
             .join(', ');
+          log(`OCR 测试未匹配 asset=${it.id}`, 'WARN', {
+            expected: it.ocr_text,
+            frame: currentFrameId ? `#${currentFrameId}` : 'live',
+            roi,
+            lines: lines.map((l) => ({ text: l.text, score: l.score })),
+          });
           const reason = `识别区域未找到期望文字 ${JSON.stringify(it.ocr_text)}：${raw}`;
           if (await fallbackFullscreenLines(reason)) {
             resultEl.textContent = withFrame + '\n' + resultEl.textContent;
@@ -1336,31 +1424,54 @@ async function testAssetOcr(it) {
           }
           return;
         }
+        log(`OCR 测试匹配 asset=${it.id}`, 'INFO', {
+          expected: it.ocr_text,
+          actual: matched.text,
+          mode: matchInfo.mode,
+          distance: matchInfo.distance,
+          score: Number(matched.score),
+          frame: currentFrameId ? `#${currentFrameId}` : 'live',
+          roi,
+        });
       }
       resultEl.textContent =
         withFrame + '\n' +
         `${lines.length} 行 / ${Number(s.elapsed_ms || 0).toFixed(0)} ms\n` +
         lines.map((b, i) => `${i + 1}. ${b.text} (${Number(b.score).toFixed(3)})`).join('\n') +
-        (derived ? `\n期望文字：${JSON.stringify(it.ocr_text)} → 匹配` : '');
+        (derived && matchInfo
+          ? `\n期望文字：${JSON.stringify(it.ocr_text)} → 匹配（${matchInfo.mode}, distance=${matchInfo.distance}）`
+          : '');
       renderOcrLines(lines, roi, `素材「${it.id}」`);
-      log(`素材多行识别「${it.id}」→ ${lines.length} 行`);
+      log(`素材多行识别「${it.id}」→ ${lines.length} 行`, 'INFO', {
+        roi,
+        frame: currentFrameId ? `#${currentFrameId}` : 'live',
+      });
       return;
     }
     const r = await fetch('/ocr?' + q);
     const s = await r.json();
     if (s.error || !String(s.text || '').trim()) {
       const reason = s.error || '识别区域内没有文字';
+      log(`OCR 测试单行失败 asset=${it.id}`, 'WARN', {
+        roi, frame: currentFrameId ? `#${currentFrameId}` : 'live',
+        text: s.text, score: s.score, error: s.error || '',
+      });
       if (await fallbackFullscreenLines(reason)) {
         resultEl.textContent = withFrame + '\n' + resultEl.textContent;
       }
       return;
     }
+    log(`OCR 测试单行成功 asset=${it.id}`, 'INFO', {
+      roi, frame: currentFrameId ? `#${currentFrameId}` : 'live',
+      text: s.text, score: s.score, elapsed_ms: s.elapsed_ms,
+    });
     resultEl.textContent =
       withFrame + '\n' +
       `文字 = ${JSON.stringify(s.text)}\n得分 = ${Number(s.score).toFixed(4)}\n` +
       `耗时 = ${Number(s.elapsed_ms).toFixed(1)} ms`;
-    log(`素材识别：${it.id} → ${s.text}`);
+    log(`素材识别：${it.id} → ${s.text}`, 'INFO', { roi });
   } catch (e) {
+    log(`OCR 测试异常 asset=${it.id}`, 'ERROR', { error: String(e) });
     resultEl.textContent = '识别异常：' + e;
   }
 }
@@ -1922,7 +2033,14 @@ async function testAssetCollection(it) {
       `score=${Number(s.score).toFixed(4)} · threshold=${Number(s.threshold).toFixed(3)} · pass=${s.pass}\n` +
       `位置：(${s.x},${s.y})` +
       (s.action_roi ? ` · 操作区域[${s.action_roi.join(',')}]` : '');
-    log(`集合测试「${it.id}」→ ${s.member} score=${Number(s.score).toFixed(3)} pass=${s.pass}`);
+    log(`集合测试「${it.id}」`, 'INFO', {
+      frame: currentFrameId ? `#${currentFrameId}` : 'live',
+      member: s.member,
+      score: Number(s.score),
+      threshold: Number(s.threshold),
+      pass: s.pass,
+      action_roi: s.action_roi || null,
+    });
   } catch (e) {
     resultEl.textContent = `集合「${it.id}」测试异常：${e}`;
   }
@@ -2221,7 +2339,15 @@ async function testAssetMatch(it) {
       `位置 = (${s.x}, ${s.y})  尺寸 = ${s.w}x${s.h}\n耗时 = ${Number(s.elapsed_ms).toFixed(1)} ms`;
     boxes = [{ text: `测试 ${s.id} ${Number(s.score).toFixed(2)}`, score: s.score, box: [s.x, s.y, s.w, s.h] }];
     draw();
-    log(`素材测试：${s.id} → ${Number(s.score).toFixed(3)} @ (${s.x},${s.y})`);
+    log(`素材测试：${s.id}`, 'INFO', {
+      frame: currentFrameId ? `#${currentFrameId}` : 'live',
+      score: Number(s.score),
+      threshold: Number(s.threshold),
+      pass: s.pass,
+      point: [s.x, s.y],
+      size: [s.w, s.h],
+      elapsed_ms: s.elapsed_ms,
+    });
   } catch (e) {
     resultEl.textContent = '测试异常：' + e;
   }
@@ -3525,6 +3651,7 @@ btnClear.addEventListener('click', () => {
 
 async function fallbackFullscreenLines(reason) {
   if (!detReady) {
+    log('OCR 全屏回退不可用：无 det model', 'ERROR', { reason });
     resultEl.textContent = `单行识别失败（${reason}）；多行识别不可用（无 det model）`;
     return false;
   }
@@ -3532,10 +3659,11 @@ async function fallbackFullscreenLines(reason) {
   const fh = canvas.height || (img && img.naturalHeight) || (roi && roi.y + roi.h) || 720;
   const full = { x: 0, y: 0, w: fw, h: fh };
   resultEl.textContent = `单行识别失败（${reason}），改用全屏多行识别…`;
-  log(`单行 OCR 回退：全屏多行识别 ${fw}x${fh}`);
+  log(`OCR 全屏回退开始`, 'WARN', { reason, full_roi: full });
   const r = await fetch(`/lines?x=0&y=0&w=${fw}&h=${fh}`);
   const s = await r.json();
   if (s.error || !Array.isArray(s.lines)) {
+    log('OCR 全屏回退失败', 'ERROR', { reason, error: s.error || '无结果' });
     resultEl.textContent = `全屏多行回退失败：${s.error || '无结果'}`;
     return false;
   }
@@ -3543,6 +3671,11 @@ async function fallbackFullscreenLines(reason) {
     ...b,
     box: [b.box[0], b.box[1], b.box[2], b.box[3]],
   }));
+  log('OCR 全屏回退成功', 'INFO', {
+    reason, full_roi: full, count: lines.length,
+    elapsed_ms: s.elapsed_ms,
+    lines: lines.map((l) => ({ text: l.text, score: l.score })),
+  });
   renderOcrLines(lines, full, '全屏多行回退');
   resultEl.textContent =
     `单行识别失败（${reason}）→ 全屏多行识别 ${lines.length} 行；` +
