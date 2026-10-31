@@ -1753,9 +1753,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 } else {
                     String::new()
                 };
+                let report_origin = if self.assets.ocr_roi(hit_sel).is_some() {
+                    Point { x: target.x, y: target.y }
+                } else {
+                    p
+                };
                 Ok(format!(
                     "clicked {hit_sel} target=({},{}) point=({},{}){miss} delay={delay}ms score={score:.3} verified={verified} guard={guarded}{voted}",
-                    p.x, p.y, actual.x, actual.y
+                    report_origin.x, report_origin.y, actual.x, actual.y
                 ))
             }
             Step::ClickPoint { x, y, requires, expect, .. } => {
