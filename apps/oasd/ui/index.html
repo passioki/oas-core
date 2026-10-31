@@ -191,7 +191,6 @@
             <div class="row lib-toolbar">
               <button id="btn-wb-assets" type="button">② 画面/素材</button>
               <button id="btn-wb-flow" type="button">④ 流程</button>
-              <button id="btn-wb-run" type="button">⑥ 测试运行</button>
             </div>
           </div>
           <label class="opt"><input id="task-name" placeholder="任务名，如：队伍预设" value="任务1" /></label>
@@ -232,7 +231,9 @@
           <div class="row lib-toolbar">
             <input id="asset-search" placeholder="按素材 id 搜索" />
             <button id="assets-refresh">刷新</button>
+            <button id="btn-new-collection" type="button" title="勾选模板图后创建素材集合">新建集合</button>
           </div>
+          <div id="collection-msg" class="muted small">—</div>
           <div id="assets-list" class="asset-list muted">（未加载任务素材）</div>
           <pre id="assets-summary" class="muted small" style="display:none">—</pre>
         </section>
@@ -322,6 +323,14 @@
         <button id="inst-refresh" type="button">刷新</button>
       </div>
       <div id="inst-card" class="card muted">（未加载；需要服务以 --config config/live.json 启动）</div>
+      <h3>检测到的实例（自动去重，保留 serial 对）</h3>
+      <div class="row lib-toolbar">
+        <select id="inst-device-select" title="一个物理实例可能有 127.0.0.1:port 和 emulator-xxxx 两个 serial">
+          <option value="">（点「检测实例」）</option>
+        </select>
+        <button id="inst-devices-refresh" type="button">检测实例</button>
+      </div>
+      <div id="inst-devices-msg" class="muted small">—</div>
       <h3>实例配置（写入 config/live.json，重启 serve 生效）</h3>
       <label class="opt">设备 serial
         <input id="inst-serial" placeholder="如 127.0.0.1:16384" />

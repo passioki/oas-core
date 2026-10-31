@@ -112,41 +112,18 @@ fn main() -> ExitCode {
 }
 
 fn pick_device(adb: &Adb) -> Result<String, String> {
-    let devices = adb.devices()?;
-    if devices.is_empty() {
-        return Err("no adb device attached".into());
-    }
-    for d in &devices {
-        println!("device: serial={} unique={}", d.serial, d.unique);
-    }
-    if let Some(wanted) = config::device_serial() {
-        match devices.iter().find(|d| d.serial == wanted) {
-            Some(d) => {
-                println!(
-                    "picked: {} (configured; of {} deduped endpoint(s))",
-                    d.serial,
-                    devices.len()
-                );
-                return Ok(d.serial.clone());
-            }
-            None => {
-                let seen = devices
-                    .iter()
-                    .map(|d| d.serial.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(format!(
-                    "configured device `{wanted}` is not attached (seen: [{seen}])"
-                ));
-            }
-        }
-    }
+    let wanted = config::device_serial();
+    let dev = adb.resolve_device(wanted.as_deref())?;
+    println!(
+        "device: serial={} aliases={:?} unique={}",
+        dev.serial, dev.aliases, dev.unique
+    );
     println!(
         "picked: {} (of {} deduped endpoint(s))",
-        devices[0].serial,
-        devices.len()
+        dev.serial,
+        adb.devices().map(|d| d.len()).unwrap_or(0)
     );
-    Ok(devices[0].serial.clone())
+    Ok(dev.serial)
 }
 
 fn probe(rest: &[String]) -> ExitCode {

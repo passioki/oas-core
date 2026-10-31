@@ -398,7 +398,10 @@ impl Server {
     fn global_asset_ids(&self) -> Result<std::collections::BTreeSet<String>, String> {
         let store = crate::global_assets::open_store(&self.assets_dir)?;
         let af = store.load_assets_file()?;
-        Ok(af.items.into_iter().map(|a| a.id).collect())
+        let mut ids: std::collections::BTreeSet<String> =
+            af.items.into_iter().map(|a| a.id).collect();
+        ids.extend(af.collections.into_iter().map(|c| c.id));
+        Ok(ids)
     }
 
     /// Task names whose flow.json references `id` (global delete/rename guard).
@@ -478,33 +481,13 @@ impl Server {
     }
 
     fn do_capture(&self) {
-        let devices = match self.adb.devices() {
-            Ok(d) if !d.is_empty() => d,
-            Ok(_) => {
-                self.set_error("no adb device attached");
-                return;
-            }
+        let wanted = crate::config::device_serial();
+        let serial = match self.adb.resolve_device(wanted.as_deref()) {
+            Ok(dev) => dev.serial,
             Err(e) => {
-                self.set_error(&format!("adb devices failed: {e}"));
+                self.set_error(&e);
                 return;
             }
-        };
-        let serial = match crate::config::device_serial() {
-            Some(wanted) => match devices.iter().find(|d| d.serial == wanted) {
-                Some(d) => d.serial.clone(),
-                None => {
-                    let seen = devices
-                        .iter()
-                        .map(|d| d.serial.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    self.set_error(&format!(
-                        "configured device `{wanted}` not attached (seen: [{seen}])"
-                    ));
-                    return;
-                }
-            },
-            None => devices[0].serial.clone(),
         };
         let mut screen = self.adb.screen(&serial);
         match screen.grab() {
@@ -657,6 +640,8 @@ impl Server {
             ("GET", "/assets/conflicts") => self.handle_asset_conflicts(&mut out),
             ("POST", "/assets/migrate") => self.handle_assets_migrate(&mut out),
             ("POST", "/task/asset/delete") => self.handle_asset_delete(&mut out, &body),
+            ("POST", "/task/asset/collection") => self.handle_collection_save(&mut out, &body),
+            ("POST", "/task/asset/collection/delete") => self.handle_collection_delete(&mut out, &body),
             ("POST", "/task/asset/rename") => self.handle_asset_rename(&mut out, &body),
             ("POST", "/task/asset/update") => self.handle_asset_update(&mut out, &body),
             ("POST", "/task/goal") => self.handle_task_goal(&mut out, &body),
@@ -677,6 +662,7 @@ impl Server {
             ("POST", "/task/delete") => self.handle_task_delete(&mut out, &body),
             ("GET", "/config") => self.handle_config(&mut out),
             ("GET", "/instance") => self.handle_instance(&mut out),
+            ("GET", "/instance/devices") => self.handle_instance_devices(&mut out),
             ("POST", "/instance") => self.handle_instance_update(&mut out, &body),
             ("GET", "/stats") => self.handle_stats(&mut out),
             ("GET", "/match") => self.handle_match(&mut out, &path),
@@ -1803,6 +1789,91 @@ impl Server {
         self.send_json(out, 200, &body.to_string())
     }
 
+    /// POST /task/asset/collection body:
+    /// `{task?, id, members:[template ids], threshold?, action_roi?}`
+    fn handle_collection_save(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let global_mode = self.using_global_assets();
+        let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").trim();
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if id.is_empty() || (!global_mode && task.is_empty()) {
+            return self.send_errors(out, 400, vec!["`id` and `task` are required".into()]);
+        }
+        let members: Vec<String> = match v.get("members").and_then(|x| x.as_array()) {
+            Some(arr) => arr
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect(),
+            None => return self.send_errors(out, 400, vec!["`members` array is required".into()]),
+        };
+        let threshold = v.get("threshold").and_then(|x| x.as_f64()).map(|x| x as f32);
+        let action_roi = match json_opt_action_roi(&v) {
+            Ok(x) => x,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let bundle = if global_mode {
+            match self.asset_store("") {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        } else {
+            match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        };
+        let coll = oas_task::AssetCollection {
+            id: id.to_string(),
+            members,
+            threshold,
+            action_roi,
+        };
+        match bundle.save_collection(coll) {
+            Ok(saved) => self.send_json(
+                out,
+                200,
+                &serde_json::json!({"ok": true, "collection": saved}).to_string(),
+            ),
+            Err(e) => self.send_errors(out, 400, vec![e]),
+        }
+    }
+
+    /// POST /task/asset/collection/delete body `{task?, id}`.
+    fn handle_collection_delete(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let global_mode = self.using_global_assets();
+        let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").trim();
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if id.is_empty() || (!global_mode && task.is_empty()) {
+            return self.send_errors(out, 400, vec!["`id` and `task` are required".into()]);
+        }
+        let bundle = if global_mode {
+            match self.asset_store("") {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        } else {
+            match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        };
+        match bundle.delete_collection(id) {
+            Ok(item) => self.send_json(
+                out,
+                200,
+                &serde_json::json!({"ok": true, "collection": item}).to_string(),
+            ),
+            Err(e) => self.send_errors(out, 400, vec![e]),
+        }
+    }
+
     /// v1.1 asset CRUD: `POST /task/asset/delete` body `{task,id}`.
     /// v1.2: all asset/object ids visible to this editor (every task + global
     /// library), used for the global-unique naming contract.
@@ -1818,6 +1889,21 @@ impl Server {
             };
             for item in af.items {
                 out.push((item.id, format!("task:{name}")));
+            }
+            for coll in af.collections {
+                out.push((coll.id, format!("task:{name}")));
+            }
+        }
+        if self.using_global_assets() {
+            if let Ok(store) = crate::global_assets::open_store(&self.assets_dir) {
+                if let Ok(af) = store.load_assets_file() {
+                    for item in af.items {
+                        out.push((item.id, "global".to_string()));
+                    }
+                    for coll in af.collections {
+                        out.push((coll.id, "global".to_string()));
+                    }
+                }
             }
         }
         let lib = crate::library::Library::open(&self.library_dir);
@@ -2039,8 +2125,8 @@ impl Server {
                     out,
                     400,
                     vec![format!(
-                        "asset `{id}` is referenced by task(s): {}; update those flows first",
-                        refs.join(", ")
+                        "素材「{id}」仍被以下任务引用：{}；请先在任务构建中删除/替换这些引用，再删除素材",
+                        refs.join("、")
                     )],
                 );
             }
@@ -2407,6 +2493,34 @@ impl Server {
         self.send_json(out, 200, &body.to_string())
     }
 
+    /// GET /instance/devices — attached physical devices with every adb alias.
+    /// The settings UI uses this dropdown so the user picks one instance by
+    /// human-readable label instead of typing a serial they cannot see.
+    fn handle_instance_devices(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        match self.adb.devices() {
+            Ok(devices) => {
+                let rows: Vec<serde_json::Value> = devices
+                    .iter()
+                    .map(|d| {
+                        serde_json::json!({
+                            "serial": d.serial,
+                            "aliases": d.aliases,
+                            "unique": d.unique,
+                            "label": d.label(),
+                        })
+                    })
+                    .collect();
+                let body = serde_json::json!({
+                    "ok": true,
+                    "configured": crate::config::device_serial().unwrap_or_default(),
+                    "devices": rows,
+                });
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(e) => self.send_errors(out, 400, vec![format!("adb devices: {e}")]),
+        }
+    }
+
     /// v1.1 P3: update the active instance's serial/adb path in `config/live.json`.
     ///
     /// The running process keeps its already-applied env; the response says
@@ -2495,13 +2609,14 @@ impl Server {
         };
         match bundle.load_assets_file() {
             Ok(af) => {
-                let count = af.items.len();
+                let count = af.items.len() + af.collections.len();
                 let body = serde_json::json!({
                     "ok": true,
                     "task": if global_mode { "（全局素材库）".to_string() } else { task },
                     "design_resolution": af.design_resolution,
                     "count": count,
                     "items": af.items,
+                    "collections": af.collections,
                 });
                 self.send_json(out, 200, &body.to_string())
             }

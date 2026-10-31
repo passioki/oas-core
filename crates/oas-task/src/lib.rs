@@ -166,6 +166,21 @@ impl AssetDecl {
     }
 }
 
+/// v1.2.3: a logical target backed by one or more template assets. Flow steps
+/// reference the collection id; oas-task expands it into the member templates
+/// (click/click_target) before the runtime sees the flow.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AssetCollection {
+    pub id: String,
+    /// Template asset ids in this collection (at least one while referenced).
+    pub members: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<f32>,
+    /// Optional collection-level operation region; member action_roi wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_roi: Option<[i32; 4]>,
+}
+
 /// `assets.json` payload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssetsFile {
@@ -175,6 +190,9 @@ pub struct AssetsFile {
     pub design_resolution: Option<[u32; 2]>,
     #[serde(default)]
     pub items: Vec<AssetDecl>,
+    /// Logical multi-image targets (flow references `collection.id`).
+    #[serde(default)]
+    pub collections: Vec<AssetCollection>,
 }
 
 impl Default for AssetsFile {
@@ -183,6 +201,7 @@ impl Default for AssetsFile {
             schema_version: SCHEMA_VERSION,
             design_resolution: None,
             items: Vec::new(),
+            collections: Vec::new(),
         }
     }
 }
@@ -521,6 +540,75 @@ fn expand_call_steps(
     Ok(())
 }
 
+fn expand_collection_steps(
+    steps: &mut Vec<serde_json::Value>,
+    collections: &[AssetCollection],
+) -> Result<(), String> {
+    for step in steps.iter_mut() {
+        let op = step.get("op").and_then(|x| x.as_str()).unwrap_or("");
+        if op == "click" {
+            if let Some(args) = step.get_mut("args").and_then(|x| x.as_object_mut()) {
+                let sel = args.get("sel").and_then(|x| x.as_str()).map(str::to_string);
+                if let Some(sel) = sel {
+                    if let Some(coll) = collections.iter().find(|c| c.id == sel) {
+                        let first = coll.members.first().cloned().ok_or_else(|| {
+                            format!("素材集合 `{sel}` 没有成员")
+                        })?;
+                        args.insert("sel".into(), serde_json::Value::String(first));
+                        let mut alts: Vec<serde_json::Value> = args
+                            .get("alts")
+                            .and_then(|x| x.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        for m in coll.members.iter().skip(1) {
+                            if !alts.iter().any(|a| a.as_str() == Some(m)) {
+                                alts.push(serde_json::Value::String(m.clone()));
+                            }
+                        }
+                        args.insert("alts".into(), serde_json::Value::Array(alts));
+                    }
+                }
+            }
+        } else if op == "click_target" {
+            if let Some(args) = step.get_mut("args").and_then(|x| x.as_object_mut()) {
+                if let Some(find) = args.get_mut("find").and_then(|x| x.as_array_mut()) {
+                    let mut out = Vec::with_capacity(find.len());
+                    for loc in find.drain(..) {
+                        let sel = loc
+                            .get("sel")
+                            .and_then(|x| x.as_str())
+                            .map(str::to_string);
+                        let kind = loc.get("kind").and_then(|x| x.as_str()).unwrap_or("");
+                        if let (Some(sel), "template") = (sel, kind) {
+                            if let Some(coll) = collections.iter().find(|c| c.id == sel) {
+                                for m in &coll.members {
+                                    let mut next = loc.clone();
+                                    if let Some(obj) = next.as_object_mut() {
+                                        obj.insert(
+                                            "sel".into(),
+                                            serde_json::Value::String(m.clone()),
+                                        );
+                                    }
+                                    out.push(next);
+                                }
+                                continue;
+                            }
+                        }
+                        out.push(loc);
+                    }
+                    *find = out;
+                }
+            }
+        }
+        for key in ["then", "else", "body"] {
+            if let Some(arr) = step.get_mut(key).and_then(|x| x.as_array_mut()) {
+                expand_collection_steps(arr, collections)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 impl TaskBundle {
     /// Open (or prepare to create) the bundle rooted at `root`.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, String> {
@@ -611,6 +699,98 @@ impl TaskBundle {
         }
     }
 
+    /// Load `flow.json` without expanding collections/call_task. Used for
+    /// reference checks (the expanded flow no longer contains the collection id).
+    fn load_flow_raw(&self) -> Result<Option<oas_flow::Flow>, String> {
+        let path = self.flow_path();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("read {}: {e}", path.display())),
+        };
+        oas_flow::Flow::from_json(&text)
+            .map(Some)
+            .map_err(|e| format!("flow.json: {e}"))
+    }
+
+    fn flow_references_id(&self, id: &str) -> bool {
+        self.load_flow_raw()
+            .ok()
+            .flatten()
+            .map(|f| f.referenced_assets().contains(id))
+            .unwrap_or(false)
+    }
+
+    /// Save a multi-image collection. Members must be existing template assets
+    /// and a template may belong to only one collection in this version.
+    pub fn save_collection(&self, coll: AssetCollection) -> Result<AssetCollection, String> {
+        let mut af = self.load_assets_file()?;
+        let id = coll.id.trim().to_string();
+        if id.is_empty() {
+            return Err("collection id 不能为空".into());
+        }
+        if af.items.iter().any(|a| a.id == id) {
+            return Err(format!("`{id}` 已经是普通素材，不能再作为集合 id"));
+        }
+        let mut members = Vec::new();
+        for m in &coll.members {
+            if members.contains(m) {
+                return Err(format!("集合成员重复：`{m}`"));
+            }
+            let item = af
+                .items
+                .iter()
+                .find(|a| &a.id == m)
+                .ok_or_else(|| format!("集合成员 `{m}` 不存在"))?;
+            if item.kind != "template" {
+                return Err(format!("集合成员 `{m}` 必须是模板图（template）"));
+            }
+            if af
+                .collections
+                .iter()
+                .any(|c| c.id != id && c.members.iter().any(|x| x == m))
+            {
+                return Err(format!("模板 `{m}` 已经属于另一个集合"));
+            }
+            members.push(m.clone());
+        }
+        if members.is_empty() {
+            return Err("素材集合至少需要一个成员".into());
+        }
+        let saved = AssetCollection {
+            id: id.clone(),
+            members,
+            threshold: coll.threshold,
+            action_roi: coll.action_roi,
+        };
+        if let Some(pos) = af.collections.iter().position(|c| c.id == id) {
+            af.collections[pos] = saved.clone();
+        } else {
+            af.collections.push(saved.clone());
+        }
+        self.write_assets_file(&af)?;
+        Ok(saved)
+    }
+
+    /// Delete a collection. Referenced collections are blocked; members remain
+    /// ordinary assets (the editor asks the user to remove flow references first).
+    pub fn delete_collection(&self, id: &str) -> Result<AssetCollection, String> {
+        let mut af = self.load_assets_file()?;
+        let pos = af
+            .collections
+            .iter()
+            .position(|c| c.id == id)
+            .ok_or_else(|| format!("素材集合 `{id}` 不存在"))?;
+        if self.flow_references_id(id) {
+            return Err(format!(
+                "素材集合「{id}」仍被 flow 引用；请先在任务构建中删除/替换引用，再删除集合"
+            ));
+        }
+        let item = af.collections.remove(pos);
+        self.write_assets_file(&af)?;
+        Ok(item)
+    }
+
     /// Load `flow.json`, if present.
     ///
     /// v1.2.3 U-01(B): expand `call_task` references against the sibling task
@@ -637,6 +817,11 @@ impl TaskBundle {
                 .to_string();
             let mut stack = vec![current_task];
             expand_call_steps(steps, tasks_dir, &mut stack, 0)?;
+            let collections = self
+                .load_assets_file()
+                .map(|af| af.collections)
+                .unwrap_or_default();
+            expand_collection_steps(steps, &collections)?;
         }
         let expanded = serde_json::to_string(&value)
             .map_err(|e| format!("flow.json: serialize expanded flow: {e}"))?;
@@ -778,6 +963,20 @@ impl TaskBundle {
                 );
             }
         }
+        for coll in &af.collections {
+            if coll.members.is_empty() {
+                return Err(format!("素材集合 `{}` 没有成员", coll.id));
+            }
+            for m in &coll.members {
+                if !af.items.iter().any(|a| &a.id == m) {
+                    return Err(format!(
+                        "素材集合 `{}` 的成员 `{m}` 不存在",
+                        coll.id
+                    ));
+                }
+            }
+            set.insert_collection(coll.id.clone(), coll.members.clone(), coll.threshold);
+        }
         Ok(set)
     }
 
@@ -862,6 +1061,11 @@ impl TaskBundle {
     }
 
     /// v1.1 asset CRUD: delete one asset (never while the flow still references it).
+    ///
+    /// v1.2.3 collection rule: a collection referenced by a flow may keep at
+    /// least one member; deleting a member removes it from the collection. An
+    /// unreferenced collection is removed automatically when its last member is
+    /// deleted.
     pub fn delete_asset(&self, id: &str) -> Result<AssetDecl, String> {
         let mut af = self.load_assets_file()?;
         let pos = af
@@ -869,12 +1073,30 @@ impl TaskBundle {
             .iter()
             .position(|a| a.id == id)
             .ok_or_else(|| format!("asset `{id}` does not exist"))?;
-        if let Some(flow) = self.load_flow()? {
-            if flow.referenced_assets().contains(id) {
+        if self.flow_references_id(id) {
+            return Err(format!(
+                "素材「{id}」仍被当前任务 flow 引用；请先在任务构建中删除/替换引用，再删除素材"
+            ));
+        }
+        let mut remove_collections: Vec<usize> = Vec::new();
+        for (ci, coll) in af.collections.iter_mut().enumerate() {
+            if !coll.members.iter().any(|m| m == id) {
+                continue;
+            }
+            let referenced = self.flow_references_id(&coll.id);
+            if referenced && coll.members.len() <= 1 {
                 return Err(format!(
-                    "asset `{id}` is still referenced by flow.json; remove/replace it in the flow first"
+                    "素材集合「{}」仍被 flow 引用，且只剩一个成员；至少保留一个成员才能删除",
+                    coll.id
                 ));
             }
+            coll.members.retain(|m| m != id);
+            if coll.members.is_empty() {
+                remove_collections.push(ci);
+            }
+        }
+        for ci in remove_collections.into_iter().rev() {
+            af.collections.remove(ci);
         }
         let item = af.items.remove(pos);
         self.write_assets_file(&af)?;
@@ -891,7 +1113,9 @@ impl TaskBundle {
     pub fn rename_asset(&self, from: &str, to: &str) -> Result<AssetDecl, String> {
         validate_id(to)?;
         let mut af = self.load_assets_file()?;
-        if af.items.iter().any(|a| a.id == to) {
+        if af.items.iter().any(|a| a.id == to)
+            || af.collections.iter().any(|c| c.id == to)
+        {
             return Err(format!("asset `{to}` already exists"));
         }
         let pos = af
@@ -899,11 +1123,16 @@ impl TaskBundle {
             .iter()
             .position(|a| a.id == from)
             .ok_or_else(|| format!("asset `{from}` does not exist"))?;
-        if let Some(flow) = self.load_flow()? {
-            if flow.referenced_assets().contains(from) {
-                return Err(format!(
-                    "asset `{from}` is still referenced by flow.json; update the flow reference to `{to}` first"
-                ));
+        if self.flow_references_id(from) {
+            return Err(format!(
+                "asset `{from}` is still referenced by flow.json; update the flow reference to `{to}` first"
+            ));
+        }
+        for coll in af.collections.iter_mut() {
+            for m in coll.members.iter_mut() {
+                if m == from {
+                    *m = to.to_string();
+                }
             }
         }
         af.items[pos].id = to.to_string();
@@ -1287,7 +1516,8 @@ impl TaskBundle {
     /// assets before anything is written.
     pub fn save_flow(&self, flow_json: &str) -> Result<(), String> {
         let af = self.load_assets_file()?;
-        let ids: BTreeSet<String> = af.items.iter().map(|i| i.id.clone()).collect();
+        let mut ids: BTreeSet<String> = af.items.iter().map(|i| i.id.clone()).collect();
+        ids.extend(af.collections.into_iter().map(|c| c.id));
         self.save_flow_with_ids(flow_json, &ids)
     }
 
@@ -2016,6 +2246,70 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn collection_expands_into_member_template_locators() {
+        let td = TempDir::new("collection");
+        let b = open(&td);
+        let f = frame(32, 32);
+        b.save_asset(AssetDecl::template("成员甲", [0, 0, 8, 8]), Some(&f))
+            .expect("save member a");
+        b.save_asset(AssetDecl::template("成员乙", [8, 0, 8, 8]), Some(&f))
+            .expect("save member b");
+        b.save_collection(AssetCollection {
+            id: "集合目标".into(),
+            members: vec!["成员甲".into(), "成员乙".into()],
+            threshold: Some(0.8),
+            action_roi: None,
+        })
+        .expect("save collection");
+        b.save_flow(
+            r#"{"schema_version":1,"name":"任务1","steps":[
+                {"op":"click_target","args":{"find":[{"kind":"template","sel":"集合目标"}]}},
+                {"op":"finish","args":{"exit":"done"}}
+            ]}"#,
+        )
+        .expect("save flow");
+        let flow = b.load_flow().expect("load").expect("flow");
+        let oas_flow::Step::ClickTarget { find, .. } = &flow.steps[0] else {
+            panic!("expected click_target, got {:?}", flow.steps[0]);
+        };
+        assert_eq!(find.len(), 2, "collection expands to all members");
+        let chosen: Vec<&str> = find.iter().filter_map(|l| l.asset()).collect();
+        assert_eq!(chosen, vec!["成员甲", "成员乙"]);
+
+        let err = b
+            .delete_collection("集合目标")
+            .expect_err("referenced collection must be blocked");
+        assert!(err.contains("仍被"), "unexpected: {err}");
+
+        // Member deletion is allowed while two members remain; the last member
+        // of a referenced collection is blocked until the flow reference is gone.
+        b.delete_asset("成员乙").expect("delete one member");
+        let af = b.load_assets_file().expect("assets");
+        assert_eq!(af.collections[0].members, vec!["成员甲"]);
+        let err = b.delete_asset("成员甲").expect_err("last referenced member blocked");
+        assert!(err.contains("最少") || err.contains("只剩"), "unexpected: {err}");
+        b.save_flow(r#"{"schema_version":1,"name":"任务1","steps":[{"op":"finish","args":{"exit":"done"}}]}"#)
+            .expect("remove collection reference");
+        b.delete_asset("成员甲").expect("delete last member");
+        let af = b.load_assets_file().expect("assets");
+        assert!(af.collections.is_empty(), "empty unreferenced collection removed");
+    }
+
+    #[test]
+    fn delete_asset_is_blocked_while_flow_references_it() {
+        let td = TempDir::new("delete-ref");
+        let b = open(&td);
+        b.save_asset(AssetDecl::template("返回按钮", [0, 0, 8, 8]), Some(&frame(32, 32)))
+            .expect("save asset");
+        b.save_flow(&flow_json("返回按钮")).expect("save flow");
+        let err = b.delete_asset("返回按钮").expect_err("referenced asset must be blocked");
+        assert!(err.contains("仍被"), "unexpected: {err}");
+        b.save_flow(r#"{"schema_version":1,"name":"任务1","steps":[{"op":"finish","args":{"exit":"done"}}]}"#)
+            .expect("save flow without reference");
+        b.delete_asset("返回按钮").expect("unreferenced asset deletes");
     }
 
     #[test]

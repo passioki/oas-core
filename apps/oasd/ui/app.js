@@ -46,6 +46,8 @@ const logPop = document.getElementById('log-pop');
 const assetSearch = document.getElementById('asset-search');
 const assetsList = document.getElementById('assets-list');
 const btnAssetsRefresh = document.getElementById('assets-refresh');
+const btnNewCollection = document.getElementById('btn-new-collection');
+const collectionMsg = document.getElementById('collection-msg');
 const runsSelect = document.getElementById('runs-select');
 const clickScope = document.getElementById('click-scope');
 const clickTaskFilter = document.getElementById('click-task-filter');
@@ -88,7 +90,6 @@ const btnGoalApply = document.getElementById('btn-goal-apply');
 const goalStatus = document.getElementById('goal-status');
 const btnWbAssets = document.getElementById('btn-wb-assets');
 const btnWbFlow = document.getElementById('btn-wb-flow');
-const btnWbRun = document.getElementById('btn-wb-run');
 // v1.1 P3: app shell pages
 const appNav = document.getElementById('app-nav');
 const appPages = Array.from(document.querySelectorAll('.app-page'));
@@ -102,6 +103,9 @@ const instSerial = document.getElementById('inst-serial');
 const instAdb = document.getElementById('inst-adb');
 const instSave = document.getElementById('inst-save');
 const instMsg = document.getElementById('inst-msg');
+const instDevicesSelect = document.getElementById('inst-device-select');
+const instDevicesRefresh = document.getElementById('inst-devices-refresh');
+const instDevicesMsg = document.getElementById('inst-devices-msg');
 const pageSchedSummary = document.getElementById('page-sched-summary');
 const pageSchedEntries = document.getElementById('page-sched-entries');
 const pageSchedRefresh = document.getElementById('page-sched-refresh');
@@ -653,6 +657,50 @@ async function deleteTaskFromLibrary(name) {
   await refreshLibrary();
 }
 
+async function refreshInstanceDevices() {
+  if (!instDevicesSelect) return;
+  if (instDevicesMsg) instDevicesMsg.textContent = '检测中…';
+  try {
+    const r = await fetch('/instance/devices');
+    const s = await r.json();
+    if (!s.ok) {
+      if (instDevicesMsg) instDevicesMsg.textContent = '检测失败：' + ((s.errors || []).join('; ') || '未知错误');
+      return;
+    }
+    const devices = s.devices || [];
+    instDevicesSelect.textContent = '';
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = devices.length ? '（选择检测到的实例）' : '（没有检测到 adb 实例）';
+    instDevicesSelect.appendChild(blank);
+    for (const d of devices) {
+      const aliases = (d.aliases || []).join(' / ');
+      const opt = document.createElement('option');
+      opt.value = d.serial;
+      opt.textContent = d.label || `${d.serial}${aliases ? ' (' + aliases + ')' : ''}`;
+      instDevicesSelect.appendChild(opt);
+    }
+    // Match the configured serial against every alias of the physical device.
+    const configured = (s.configured || '').trim();
+    let match = null;
+    if (configured) {
+      match = devices.find((d) => (d.aliases || []).includes(configured) || d.serial === configured) || null;
+    }
+    if (!match && devices.length === 1) match = devices[0];
+    if (match) {
+      instDevicesSelect.value = match.serial;
+      if (instSerial) instSerial.value = match.serial;
+    }
+    if (instDevicesMsg) {
+      instDevicesMsg.textContent = devices.length
+        ? `检测到 ${devices.length} 个物理实例；选择后保存到 config/live.json。`
+        : '没有检测到 adb 实例；请先启动模拟器，再点「检测实例」。';
+    }
+  } catch (e) {
+    if (instDevicesMsg) instDevicesMsg.textContent = '检测异常：' + e;
+  }
+}
+
 async function refreshInstance() {
   if (!instCard) return;
   try {
@@ -681,6 +729,7 @@ async function refreshInstance() {
     if (navDevice) navDevice.textContent = `实例：${s.device_serial || '未配置'}`;
     if (instSerial) instSerial.value = s.device_serial || '';
     if (instAdb) instAdb.value = s.adb_path || '';
+    await refreshInstanceDevices();
   } catch (e) {
     instCard.textContent = '加载异常：' + e;
   }
@@ -1548,6 +1597,16 @@ async function refreshTaskAssets(task) {
       return;
     }
     taskAssets = s.items || [];
+    for (const c of s.collections || []) {
+      taskAssets.push({
+        id: c.id,
+        kind: 'template_set',
+        members: c.members || [],
+        threshold: c.threshold,
+        action_roi: c.action_roi,
+        _collection: true,
+      });
+    }
     taskAssetsMeta = { task: s.task, design: s.design_resolution, count: s.count };
     renderAssetList();
   } catch (e) {
@@ -1560,6 +1619,7 @@ const ASSET_KIND_LABELS = {
   ocr_line: '单行文字（ocr_line）',
   ocr_lines: '多行文字（ocr_lines）',
   region: '操作区域（region）',
+  template_set: '素材集合（template_set）',
 };
 
 function renderAssetList() {
@@ -1596,9 +1656,43 @@ function renderAssetList() {
     for (const it of list) {
       const row = document.createElement('div');
       row.className = 'asset-row';
+      if (it.kind === 'template_set') {
+        const main = document.createElement('button');
+        main.type = 'button';
+        main.className = 'asset-main';
+        main.textContent = `${it.id}\n集合成员 ${it.members.length} 张：${it.members.join(' / ')}`;
+        main.title = 'flow 引用该集合；运行时按成员顺序尝试匹配';
+        main.addEventListener('click', () => {
+          resultEl.textContent = `素材集合「${it.id}」\n成员：${it.members.join('、')}\n` +
+            'flow 写：click_target/find {kind:"template", sel:"' + it.id + '"}';
+        });
+        const test = document.createElement('button');
+        test.type = 'button';
+        test.className = 'asset-test';
+        test.textContent = '测集合';
+        test.title = '逐个成员全屏匹配，显示最佳分数';
+        test.addEventListener('click', () => testAssetCollection(it));
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'asset-test';
+        del.textContent = '删';
+        del.title = '删除集合（flow 引用时阻止）';
+        del.addEventListener('click', () => deleteCollection(it));
+        row.append(main, test, del);
+        assetsList.appendChild(row);
+        continue;
+      }
       const main = document.createElement('button');
       main.type = 'button';
       main.className = 'asset-main';
+      if (it.kind === 'template') {
+        const pick = document.createElement('input');
+        pick.type = 'checkbox';
+        pick.className = 'asset-pick';
+        pick.value = it.id;
+        pick.title = '勾选后点「新建集合」';
+        row.appendChild(pick);
+      }
       const roi = it.roi ? `[${it.roi.join(',')}]` : '—';
       const action = it.action_roi ? ` · 操作区域[${it.action_roi.join(',')}]` : '';
       main.textContent = `${it.id}\n识别 ${roi}${action}`;
@@ -1671,13 +1765,88 @@ function renderAssetList() {
   }
 }
 
+async function testAssetCollection(it) {
+  const task = (taskName.value || '').trim();
+  if (!task || !Array.isArray(it.members) || !it.members.length) {
+    resultEl.textContent = `集合「${it.id}」没有成员`;
+    return;
+  }
+  const lines = [];
+  let best = null;
+  for (const member of it.members) {
+    try {
+      const r = await fetch(
+        `/task/asset/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(member)}`
+      );
+      const s = await r.json();
+      if (s.error) {
+        lines.push(`${member}: 失败 ${s.error}`);
+        continue;
+      }
+      const score = Number(s.score);
+      lines.push(`${member}: ${score.toFixed(4)} @ (${s.x},${s.y})`);
+      if (!best || score > best.score) best = { member, score, s };
+    } catch (e) {
+      lines.push(`${member}: 异常 ${e}`);
+    }
+  }
+  resultEl.textContent = `素材集合「${it.id}」测试（dry）：\n` + lines.join('\n') +
+    (best ? `\n最佳：${best.member} score=${best.score.toFixed(4)}` : '');
+  if (best && Number.isFinite(best.s.w) && best.s.w > 0) {
+    boxes = [{ text: `集合 ${best.member}`, score: best.score, box: [best.s.x, best.s.y, best.s.w, best.s.h] }];
+    draw();
+  }
+}
+
+async function deleteCollection(it) {
+  const task = (taskName.value || '').trim();
+  if (!task) return;
+  if (!window.confirm(`删除素材集合「${it.id}」？\n\nflow 仍引用该集合时会被阻止。`)) return;
+  const r = await postJson('/task/asset/collection/delete', { task, id: it.id });
+  if (!r.ok) {
+    const msg = (r.errors || []).join('\n') || '未知错误';
+    resultEl.textContent = `无法删除集合「${it.id}」：\n${msg}`;
+    log(`删除集合被阻止：${it.id} — ${msg}`);
+    window.alert(`无法删除集合「${it.id}」\n\n${msg}`);
+    return;
+  }
+  log(`已删除素材集合：${it.id}`);
+  await refreshTaskAssets(task);
+}
+
+async function createCollectionFromSelection() {
+  const task = (taskName.value || '').trim();
+  if (!task) return;
+  const members = [...document.querySelectorAll('#assets-list .asset-pick:checked')].map((x) => x.value);
+  if (members.length < 1) {
+    window.alert('请先勾选至少一个模板图（template）作为集合成员。');
+    return;
+  }
+  const id = (window.prompt('素材集合 id（flow 将引用这个 id）', '') || '').trim();
+  if (!id) return;
+  const r = await postJson('/task/asset/collection', { task, id, members });
+  if (!r.ok) {
+    const msg = (r.errors || []).join('\n') || '未知错误';
+    if (collectionMsg) collectionMsg.textContent = '创建失败：' + msg;
+    window.alert('创建集合失败：\n' + msg);
+    return;
+  }
+  if (collectionMsg) collectionMsg.textContent = `已创建集合「${id}」，成员 ${members.length} 张。`;
+  log(`已创建素材集合：${id}（${members.length} 张）`);
+  await refreshTaskAssets(task);
+}
+
 async function deleteAsset(it) {
   const task = (taskName.value || '').trim();
   if (!task) return;
-  if (!window.confirm(`删除素材「${it.id}」？\n\nflow 仍在引用该素材时会被拒绝。`)) return;
+  if (!window.confirm(`删除素材「${it.id}」？\n\nflow 仍在引用该素材时会被阻止。`)) return;
   const r = await postJson('/task/asset/delete', { task, id: it.id });
   if (!r.ok) {
+    const msg = (r.errors || []).join('\n') || '未知错误';
+    resultEl.textContent = `无法删除素材「${it.id}」：\n${msg}`;
+    log(`删除素材被阻止：${it.id} — ${msg}`);
     showErrors('删除失败：', r.errors);
+    window.alert(`无法删除素材「${it.id}」\n\n${msg}`);
     return;
   }
   log(`已删除素材：${it.id}`);
@@ -3109,6 +3278,13 @@ async function pollRunStatus() {
   }
 }
 
+function syncRunButtonLabel() {
+  if (!btnTaskRun) return;
+  btnTaskRun.textContent = runDry && runDry.checked
+    ? '测试运行（dry-run，不点击设备）'
+    : '运行任务';
+}
+
 // 任务面板「运行任务」：POST /task/run -> 轮询状态 -> 结果/日志窗口。
 async function doRunTask() {
   const task = currentTask();
@@ -3363,6 +3539,7 @@ async function submitResetMemory() {
   }
   syncDrawers();
   if (btnAssetsRefresh) btnAssetsRefresh.addEventListener('click', () => refreshTaskAssets());
+  if (btnNewCollection) btnNewCollection.addEventListener('click', createCollectionFromSelection);
   if (assetSearch) assetSearch.addEventListener('input', renderAssetList);
   if (railButtons.length) activatePanel(railButtons[0].dataset.panel);
   // 深链 ?panel=flow / ?panel=task 供验收/直达使用
@@ -3425,13 +3602,11 @@ async function submitResetMemory() {
     });
   }
   if (btnTaskRun) btnTaskRun.addEventListener('click', doRunTask);
+  if (runDry) runDry.addEventListener('change', syncRunButtonLabel);
+  syncRunButtonLabel();
   if (btnGoalApply) btnGoalApply.addEventListener('click', applyTaskGoal);
   if (btnWbAssets) btnWbAssets.addEventListener('click', () => activatePanel('panel-assets'));
   if (btnWbFlow) btnWbFlow.addEventListener('click', () => activatePage('builder'));
-  if (btnWbRun) btnWbRun.addEventListener('click', () => {
-    activatePanel('panel-task');
-    setRunStatus('点「运行任务」开始测试；先确认完成条件已应用。');
-  });
   if (btnRegionClick) btnRegionClick.addEventListener('click', generateRegionClick);
   if (btnRegionDrag) btnRegionDrag.addEventListener('click', generateRegionDrag);
   // --- M2/N37: 调度面板 + 重置记忆 ---
@@ -3636,6 +3811,10 @@ async function submitResetMemory() {
   }
   if (libRefresh) libRefresh.addEventListener('click', refreshLibrary);
   if (instRefresh) instRefresh.addEventListener('click', refreshInstance);
+  if (instDevicesRefresh) instDevicesRefresh.addEventListener('click', refreshInstanceDevices);
+  if (instDevicesSelect) instDevicesSelect.addEventListener('change', () => {
+    if (instSerial && instDevicesSelect.value) instSerial.value = instDevicesSelect.value;
+  });
   if (instSave) instSave.addEventListener('click', saveInstance);
   if (pageSchedRefresh) pageSchedRefresh.addEventListener('click', refreshSchedulePage);
   if (pageSchedReset) pageSchedReset.addEventListener('click', openResetMemoryDialog);

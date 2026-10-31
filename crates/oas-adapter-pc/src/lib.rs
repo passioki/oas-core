@@ -23,10 +23,43 @@ pub struct Adb {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
-    /// Serial used by adb (`-s`).
+    /// Serial used by adb (`-s`). Prefer the configured alias when matched.
     pub serial: String,
-    /// Physical device identity (`ro.serialno`); used to dedupe.
+    /// Physical device identity (android_id/MAC/etc); used to dedupe.
     pub unique: String,
+    /// Every adb endpoint for this physical device, e.g.
+    /// `["127.0.0.1:16384", "emulator-5554"]`. The editor/config may name
+    /// either one; matching must not discard the alias.
+    pub aliases: Vec<String>,
+}
+
+impl Device {
+    pub fn matches(&self, serial: &str) -> bool {
+        self.serial == serial || self.aliases.iter().any(|a| a == serial)
+    }
+
+    /// Human-readable serial + aliases for errors and the instance picker.
+    pub fn label(&self) -> String {
+        if self.aliases.len() > 1 {
+            format!("{} ({})", self.serial, self.aliases.join(" / "))
+        } else {
+            self.serial.clone()
+        }
+    }
+}
+
+fn merge_device(out: &mut Vec<Device>, serial: String, unique: String) {
+    if let Some(existing) = out.iter_mut().find(|d| d.unique == unique) {
+        if !existing.aliases.iter().any(|a| a == &serial) {
+            existing.aliases.push(serial);
+        }
+        return;
+    }
+    out.push(Device {
+        serial: serial.clone(),
+        unique,
+        aliases: vec![serial],
+    });
 }
 
 impl Adb {
@@ -81,12 +114,57 @@ impl Adb {
         let mut out: Vec<Device> = Vec::new();
         for serial in parse_device_serials(&raw) {
             let unique = self.unique_id(&serial);
-            if out.iter().any(|d| d.unique == unique) {
-                continue; // duplicate adb endpoint for the same device
-            }
-            out.push(Device { serial, unique });
+            merge_device(&mut out, serial, unique);
         }
         Ok(out)
+    }
+
+    /// Select a physical device while honoring **every alias** of the configured
+    /// serial. `127.0.0.1:16384` and `emulator-5554` are the same MuMu instance;
+    /// a stale config must not fail just because adb happened to list the other
+    /// endpoint first.
+    pub fn resolve_device(&self, wanted: Option<&str>) -> Result<Device, String> {
+        let mut devices = self.devices()?;
+        let wanted = wanted.map(str::trim).filter(|s| !s.is_empty());
+        if let Some(serial) = wanted {
+            if !devices.iter().any(|d| d.matches(serial)) && serial.contains(':') {
+                // MuMu/emulator TCP endpoints can disappear when the adb server
+                // restarts. Reconnect the configured endpoint before giving up.
+                let _ = self.connect(serial);
+                for _ in 0..50 {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    devices = self.devices()?;
+                    if devices.iter().any(|d| d.matches(serial)) {
+                        break;
+                    }
+                }
+            }
+            if let Some(mut dev) = devices.iter().find(|d| d.matches(serial)).cloned() {
+                // Keep the user's configured endpoint as the adb serial; both
+                // endpoints are attached and the configured one is explicit.
+                if dev.aliases.iter().any(|a| a == serial) {
+                    dev.serial = serial.to_string();
+                }
+                return Ok(dev);
+            }
+            let seen = devices
+                .iter()
+                .map(Device::label)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "configured device serial `{serial}` is not attached (seen: [{seen}]; \
+                 ADB_PATH={}) — if this is the same emulator, check its TCP port or run \
+                 `adb connect {serial}`",
+                self.exe.display()
+            ));
+        }
+        devices.into_iter().next().ok_or_else(|| {
+            format!(
+                "no adb device attached (ADB_PATH={}); attach the emulator or pass --replay",
+                self.exe.display()
+            )
+        })
     }
 
     fn unique_id(&self, serial: &str) -> String {
@@ -271,5 +349,22 @@ mod tests {
     fn device_list_without_header_is_empty() {
         assert!(parse_device_serials("").is_empty());
         assert!(parse_device_serials("garbage").is_empty());
+    }
+
+    #[test]
+    fn dedupe_keeps_every_alias_of_one_physical_device() {
+        let mut out = Vec::new();
+        merge_device(&mut out, "emulator-5554".into(), "android_id:657eef".into());
+        merge_device(
+            &mut out,
+            "127.0.0.1:16384".into(),
+            "android_id:657eef".into(),
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].serial, "emulator-5554");
+        assert!(out[0].matches("emulator-5554"));
+        assert!(out[0].matches("127.0.0.1:16384"));
+        assert!(!out[0].matches("127.0.0.1:16416"));
+        assert!(out[0].label().contains("127.0.0.1:16384"));
     }
 }

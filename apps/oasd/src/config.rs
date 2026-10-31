@@ -3,8 +3,9 @@
 //! 设计原则（ENGINE §22.34 / DELIVERY-PLAN §4）：
 //! * **配置文件是实机部署的唯一入口**：端口/目录/模型/adb/serial 都从这里来；
 //! * 命令行 flags 仍然优先（`--port` 等覆盖 config）；
-//! * 所有相对路径按**进程工作目录**解析（启动脚本 `cd /d %~dp0` 后即程序根目录）；
-//! * 设备 serial 必须显式：生产环境不允许"第一个设备"隐式选择；
+//! * 所有相对路径按**配置文件所在目录/包根**解析（标准布局 `<包>/config/live.json` → `<包>/adb/adb.exe`）；
+//! * 设备 serial 必须显式：生产环境不允许"第一个设备"隐式选择；但同一物理设备的
+//!   adb serial 对（`127.0.0.1:port` / `emulator-xxxx`）都视为同一实例；
 //! * 本模块只做**解析/校验**，不碰网络/adb（便于单测）。
 //!
 //! `main.rs` 在分发子命令前处理全局 `--config <file>`：
@@ -130,7 +131,38 @@ impl OasConfig {
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("read config `{}`: {e}", path.display()))?;
-        Self::from_json(&text)
+        let mut cfg = Self::from_json(&text)?;
+        // The deployed `live.json` uses paths relative to the package root
+        // (`adb/adb.exe`, `models/...`). Resolve adb_path against the config file
+        // directory so changing the process CWD cannot make adb point elsewhere.
+        let adb = cfg.device.adb_path.trim().to_string();
+        if !adb.is_empty() {
+            let raw = PathBuf::from(&adb);
+            if raw.is_relative() {
+                let cfg_dir = path
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+                // Standard layout: <package>/config/live.json + <package>/adb/adb.exe.
+                // Also support a config file next to the executable.
+                let package_root = cfg_dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .filter(|n| n.eq_ignore_ascii_case("config"))
+                    .and_then(|_| cfg_dir.parent())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| cfg_dir.clone());
+                let a = package_root.join(&raw);
+                let b = cfg_dir.join(&raw);
+                cfg.device.adb_path = if a.is_file() {
+                    a.to_string_lossy().to_string()
+                } else {
+                    b.to_string_lossy().to_string()
+                };
+            }
+        }
+        Ok(cfg)
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -263,6 +295,33 @@ mod tests {
         assert_eq!(c.require_serial().unwrap(), "127.0.0.1:16384");
         assert_eq!(c.ocr.det_model, "models/det.onnx");
         assert_eq!(c.scheduler.state, "s.state.json");
+    }
+
+    #[test]
+    fn relative_adb_path_is_resolved_against_config_dir() {
+        let dir = std::env::temp_dir().join(format!(
+            "oas-config-resolve-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        std::fs::create_dir_all(dir.join("adb")).unwrap();
+        std::fs::write(dir.join("adb").join("adb.exe"), b"fake").unwrap();
+        let cfg_path = dir.join("config").join("live.json");
+        std::fs::write(
+            &cfg_path,
+            r#"{"schema_version":1,"device":{"adb_path":"adb/adb.exe","serial":"127.0.0.1:16384"}}"#,
+        )
+        .unwrap();
+        let c = OasConfig::load(&cfg_path).expect("load");
+        assert_eq!(
+            PathBuf::from(&c.device.adb_path),
+            dir.join("adb").join("adb.exe")
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

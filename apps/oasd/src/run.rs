@@ -584,28 +584,10 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
                 }
             }
             let wanted = crate::config::device_serial();
-            let dev = match &wanted {
-                Some(serial) => devices.iter().find(|d| &d.serial == serial).ok_or_else(|| {
-                    let seen = devices
-                        .iter()
-                        .map(|d| d.serial.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!(
-                        "configured device serial `{serial}` is not attached (seen: [{seen}]; \
-                         ADB_PATH={}); fix config/live.json device.serial or pass --replay",
-                        adb.exe.display()
-                    )
-                })?,
-                None => devices.first().ok_or_else(|| {
-                    format!(
-                        "no adb device attached (ADB_PATH={}); attach the emulator, set \
-                         device.serial in config, or pass --replay <bundle>",
-                        adb.exe.display()
-                    )
-                })?,
-            };
-            out(&format!("device={}", dev.serial));
+            // resolve_device keeps every alias of one physical device and
+            // re-connects the configured TCP endpoint when adb dropped it.
+            let dev = adb.resolve_device(wanted.as_deref())?;
+            out(&format!("device={} aliases={:?}", dev.serial, dev.aliases));
             live = Some((adb.clone(), dev.serial.clone()));
             Box::new(crate::reconnect::ReconnectingScreen::new(
                 adb.clone(),

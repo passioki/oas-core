@@ -200,6 +200,7 @@ pub fn migrate(
         schema_version: SCHEMA_VERSION,
         design_resolution: design,
         items,
+        collections: Vec::new(),
     };
     let text = serde_json::to_string_pretty(&assets_file)
         .map_err(|e| format!("serialize global assets: {e}"))?;

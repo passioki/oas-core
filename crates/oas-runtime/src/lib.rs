@@ -58,6 +58,9 @@ pub struct AssetSet {
     /// must re-run det+rec on `source_roi` and match `expected` text, instead of
     /// degrading to a single-line rec on the tight line crop.
     derived_ocr: HashMap<String, (Rect, String)>,
+    /// v1.2.3 template collections: collection id -> member template ids.
+    collections: HashMap<String, Vec<String>>,
+    collection_thresholds: HashMap<String, f32>,
 }
 
 impl AssetSet {
@@ -95,6 +98,33 @@ impl AssetSet {
 
     pub fn derived_ocr(&self, id: &str) -> Option<(Rect, String)> {
         self.derived_ocr.get(id).cloned()
+    }
+
+    /// v1.2.3: declare a template collection. Runtime tries members in order and
+    /// uses the winning member's action_roi.
+    pub fn insert_collection(
+        &mut self,
+        id: impl Into<String>,
+        members: Vec<String>,
+        threshold: Option<f32>,
+    ) {
+        let id = id.into();
+        if let Some(t) = threshold {
+            self.collection_thresholds.insert(id.clone(), t);
+        }
+        self.collections.insert(id, members);
+    }
+
+    pub fn collection_members(&self, id: &str) -> Option<&[String]> {
+        self.collections.get(id).map(|v| v.as_slice())
+    }
+
+    /// Threshold for a plain template or a collection (collection override wins).
+    pub fn threshold_for(&self, id: &str) -> Option<f32> {
+        self.collection_thresholds
+            .get(id)
+            .copied()
+            .or_else(|| self.map.get(id).map(|t| t.threshold))
     }
 }
 
@@ -443,6 +473,8 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     /// Matched line rect from the last OCR read (v1.2.1 derived ocr_line), used
     /// to translate the saved operation region to the new line position.
     last_ocr_rect: Option<Rect>,
+    /// v1.2.3: for each collection selector, which member matched last.
+    last_set_member: HashMap<String, String>,
     started: Instant,
     humanize: crate::humanize::Humanize,
     rng: crate::humanize::Rng,
@@ -477,6 +509,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             params: BTreeMap::new(),
             vars: BTreeMap::new(),
             last_ocr_rect: None,
+            last_set_member: HashMap::new(),
             started: Instant::now(),
             humanize,
             rng: crate::humanize::Rng::new(run_seed),
@@ -708,7 +741,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             last = match expect {
                 Expect::Appear { sel, .. } => {
                     let (score, at) = self.locate(sel)?;
-                    let th = self.assets.get(sel).map(|t| t.threshold).unwrap_or(0.9);
+                    let th = self.assets.threshold_for(sel).unwrap_or(0.9);
                     if at.is_some() && score >= th {
                         return Ok(());
                     }
@@ -716,7 +749,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 }
                 Expect::Vanish { sel, .. } => {
                     let (score, at) = self.locate(sel)?;
-                    let th = self.assets.get(sel).map(|t| t.threshold).unwrap_or(0.9);
+                    let th = self.assets.threshold_for(sel).unwrap_or(0.9);
                     if !(at.is_some() && score >= th) {
                         return Ok(());
                     }
@@ -920,6 +953,28 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     }
 
     fn locate(&mut self, sel: &str) -> Result<(f32, Option<Point>), String> {
+        if let Some(members) = self.assets.collection_members(sel).map(|m| m.to_vec()) {
+            if members.is_empty() {
+                return Err(format!("selector `{sel}` is an empty template collection"));
+            }
+            if self.matcher.is_none() {
+                self.refresh_frame()?;
+            }
+            let mut best: Option<(f32, Option<Point>, String)> = None;
+            for m in members {
+                let (score, at) = self.locate_one(&m)?;
+                if best.as_ref().map(|b| score > b.0).unwrap_or(true) {
+                    best = Some((score, at, m));
+                }
+            }
+            let (score, at, member) = best.ok_or_else(|| format!("collection `{sel}` has no members"))?;
+            self.last_set_member.insert(sel.to_string(), member);
+            return Ok((score, at));
+        }
+        self.locate_one(sel)
+    }
+
+    fn locate_one(&mut self, sel: &str) -> Result<(f32, Option<Point>), String> {
         if self.matcher.is_none() {
             self.refresh_frame()?;
         }
@@ -965,16 +1020,25 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// (the same rect before/after the polygon feature); the polygon now only
     /// affects MATCHING (mask, §22.10 N10b), never the click area shape.
     fn click_box_for(&self, sel: &str, p: Point) -> Result<Rect, String> {
-        let t = self
-            .assets
-            .get(sel)
-            .ok_or_else(|| format!("selector `{sel}` is not declared in the task's assets"))?;
+        // v1.2.3: a collection click uses the winning member's geometry
+        // (recognition ROI + operation region); the collection id has no pixels.
+        let effective_sel: &str = if self.assets.collection_members(sel).is_some() {
+            self.last_set_member
+                .get(sel)
+                .map(|s| s.as_str())
+                .ok_or_else(|| format!("collection `{sel}` has no matched member yet"))?
+        } else {
+            sel
+        };
+        let t = self.assets.get(effective_sel).ok_or_else(|| {
+            format!("selector `{effective_sel}` is not declared in the task's assets")
+        })?;
         // §22.25: explicit click area (`roi_back`) wins, translated by the match
         // offset; without it we keep the matched template bbox (§22.20 decision).
-        if let Some(back) = self.assets.click_back(sel) {
+        if let Some(back) = self.assets.click_back(effective_sel) {
             let roi = t.roi.ok_or_else(|| {
                 format!(
-                    "selector `{sel}` has a roi_back but no roi to translate it \
+                    "selector `{effective_sel}` has a roi_back but no roi to translate it \
                      (a click area only makes sense together with an authored roi)"
                 )
             })?;
@@ -1242,7 +1306,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         let rules = self.interrupts.clone();
         for rule in &rules {
             let (score, at) = self.locate(&rule.detect)?;
-            let th = self.assets.get(&rule.detect).map(|t| t.threshold).unwrap_or(0.9);
+            let th = self.assets.threshold_for(&rule.detect).unwrap_or(0.9);
             let Some(_detected) = at.filter(|_| score >= th) else {
                 continue;
             };
@@ -1484,7 +1548,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             }
             Step::Appear { sel } => {
                 let (score, at) = self.locate(sel)?;
-                let th = self.assets.get(sel).map(|t| t.threshold).unwrap_or(0.9);
+                let th = self.assets.threshold_for(sel).unwrap_or(0.9);
                 if score >= th {
                     Ok(format!("appear {sel} score={score:.3} at {at:?}"))
                 } else {
@@ -1501,7 +1565,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 let deadline = Instant::now() + Duration::from_millis(*timeout_ms as u64);
                 loop {
                     let (score, at) = self.locate(sel)?;
-                    let th = self.assets.get(sel).map(|t| t.threshold).unwrap_or(0.9);
+                    let th = self.assets.threshold_for(sel).unwrap_or(0.9);
                     if let Some(_detected) = at.filter(|_| score >= th) {
                         // §22.15: `action` selects the button (e.g. 接受); when
                         // omitted the detected template itself is clicked.
@@ -1576,7 +1640,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 let mut hit: Option<(&str, f32, Point)> = None;
                 for cand in &candidates {
                     let (score, at) = self.locate(cand)?;
-                    let th = self.assets.get(*cand).map(|t| t.threshold).unwrap_or(0.9);
+                    let th = self.assets.threshold_for(*cand).unwrap_or(0.9);
                     if let Some(p) = at.filter(|_| score >= th) {
                         hit = Some((cand, score, p));
                         break;
@@ -1714,7 +1778,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         Locator::Template { sel, threshold } => match self.locate(sel) {
                             Ok((score, at)) => {
                                 let th = threshold.unwrap_or_else(|| {
-                                    self.assets.get(sel).map(|t| t.threshold).unwrap_or(0.9)
+                                    self.assets.threshold_for(sel).unwrap_or(0.9)
                                 });
                                 let Some(p) = at.filter(|_| score >= th) else {
                                     evidence.push(format!(
@@ -2382,7 +2446,7 @@ fn step_name(s: &Step) -> &'static str {
 impl<S: ScreenSource, I: InputSink> EvalContext for Interpreter<S, I> {
     fn appear(&mut self, sel: &str) -> Result<bool, String> {
         let (score, _) = self.locate(sel)?;
-        Ok(score >= self.assets.get(sel).map(|t| t.threshold).unwrap_or(0.9))
+        Ok(score >= self.assets.threshold_for(sel).unwrap_or(0.9))
     }
 
     fn ocr(&mut self, sel: &str) -> Result<Option<String>, String> {
@@ -2767,6 +2831,58 @@ mod tests {
             click.detail
         );
         assert!((30..=120).contains(&detail_delay_ms(&click.detail)));
+    }
+
+    #[test]
+    fn collection_locates_best_member_and_uses_its_click_box() {
+        let mut set = assets();
+        let base = set.get("I_BRIGHT").expect("bright template").clone();
+        set.insert(
+            "I_BRIGHT_ROI",
+            Template {
+                roi: Some(Rect {
+                    x: 12,
+                    y: 10,
+                    w: 10,
+                    h: 10,
+                }),
+                ..base
+            },
+        );
+        set.insert_collection(
+            "C_BRIGHT",
+            vec!["I_NEVER".to_string(), "I_BRIGHT_ROI".to_string()],
+            None,
+        );
+        set.set_click_back(
+            "I_BRIGHT_ROI",
+            Rect {
+                x: 14,
+                y: 12,
+                w: 6,
+                h: 6,
+            },
+        );
+        let mut interp = Interpreter::new(
+            FakeScreen::new(),
+            FakeInput::new().0,
+            set,
+            Budget::default(),
+        )
+        .with_humanize(no_miss());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"C_BRIGHT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let click = &interp.events()[0];
+        let p = detail_point(&click.detail);
+        assert!(
+            (14..20).contains(&p.x) && (12..18).contains(&p.y),
+            "collection click must use the winning member action_roi: {}",
+            click.detail
+        );
     }
 
     #[test]

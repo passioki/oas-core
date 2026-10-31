@@ -650,6 +650,9 @@
     if (!a) return null;
     if (a.kind === 'region') return { kind: 'region', sel: a.id };
     if (a.kind === 'template') return { kind: 'template', sel: a.id };
+    // A collection is stored as a template locator pointing at the collection
+    // id; oas-task expands it to the member templates before runtime.
+    if (a.kind === 'template_set') return { kind: 'template', sel: a.id };
     return { kind: 'ocr_text', sel: a.id, text: a.ocr_text || a.id };
   }
 
@@ -1057,6 +1060,9 @@
       B.flow = fs.flow || { schema_version: 1, name, steps: [] };
       if (!Array.isArray(B.flow.steps)) B.flow.steps = [];
       B.assets = as.items || [];
+      for (const c of as.collections || []) {
+        B.assets.push({ id: c.id, kind: 'template_set', members: c.members || [], action_roi: c.action_roi });
+      }
       B.selected = null;
       renderAll();
       status(`已载入 ${name}：${B.flow.steps.length} 个根动作 / ${B.assets.length} 个素材`);
