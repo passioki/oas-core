@@ -3,12 +3,11 @@
   "status": "🔄",
   "evidence": {
     "lint": "lint task=DailyTrifles errors=0",
-    "live": "Lead 2026-11-01：全任务已加 ui_main_bar_guide bootstrap；实机 bootstrap 点击(1200,680)后恢复 UI，但好友入口点击(910,643)后 I_CHECK_FRIENDS 仅 0.379<0.7，friend_love 当前无法进入好友页；friend_love/store_sign 在 UI 可见且旧素材命中时曾 Done",
+    "live": "Lead 2026-11-01：重置客户端到干净主界面后，ui_main_bar_guide bootstrap 生效；friend_love Done（好友入口→友情点→领取→奖励→退出→庭院）与 store_sign Done（礼包屋→无签到 no-op→回庭院）；luck_msg 仍未能进入好友页（I_CHECK_FRIENDS 未出现），吉闻 no-op",
     "round3_coverage": "luck_msg 改直点吉闻按钮（ROI 内两点交替，I_LUCK_TITLE 验证）+ 祝福/奖励 + 回庭院；失败 no-op 不中断"
   },
   "gaps": [
-    "I_CHECK_FRIENDS 当前仅 0.379<0.7，好友页守卫模板需重采；好友入口点击坐标也需按当前布局校准",
-    "luck_msg 实机仍可能未进入好友页（I_CHECK_FRIENDS 未出现），需排查入口 click_point/延迟",
+    "luck_msg 在干净主界面仍未能进入好友页；同一点的 friend_love 分支能进入，需对比入口点击/等待差异",
     "吉闻按钮候选点需实机确认（(50,55)/(50,73)）",
     "吉闻祝福/奖励领取未实机复测",
     "其余子流程（summon/buy_sushi）沿用上一轮，未复测"
