@@ -410,6 +410,22 @@ impl Server {
         }
     }
 
+    /// Optional OCR polygon for an asset-backed editor test. Passing `id` makes
+    /// `/ocr` and `/lines` apply the same mask runtime `ocr_read` uses.
+    fn asset_ocr_polygon(&self, task: &str, id: &str) -> Option<Vec<oas_types::Point>> {
+        if id.is_empty() {
+            return None;
+        }
+        let bundle = self.asset_store(task).ok()?;
+        let af = bundle.load_assets_file().ok()?;
+        let item = af.items.into_iter().find(|a| a.id == id)?;
+        item.polygon.map(|pts| {
+            pts.into_iter()
+                .map(|p| oas_types::Point { x: p[0], y: p[1] })
+                .collect()
+        })
+    }
+
     fn global_asset_ids(&self) -> Result<std::collections::BTreeSet<String>, String> {
         let store = crate::global_assets::open_store(&self.assets_dir)?;
         let af = store.load_assets_file()?;
@@ -1142,6 +1158,8 @@ impl Server {
         let mut y = 0i32;
         let mut w = 0i32;
         let mut h = 0i32;
+        let mut task = String::new();
+        let mut id = String::new();
         for (k, v) in &q {
             let val: i32 = v.parse().unwrap_or(0);
             match k.as_str() {
@@ -1149,6 +1167,8 @@ impl Server {
                 "y" => y = val,
                 "w" => w = val,
                 "h" => h = val,
+                "task" => task = v.clone(),
+                "id" => id = v.clone(),
                 _ => {}
             }
         }
@@ -1188,6 +1208,14 @@ impl Server {
                 }
             };
             let roi = oas_types::Rect { x, y, w, h };
+            let poly = self.asset_ocr_polygon(&task, &id);
+            let masked;
+            let frame = if let Some(poly) = poly.as_ref() {
+                masked = oas_runtime::mask_frame_for_ocr(&frame, roi, poly);
+                &masked
+            } else {
+                &frame
+            };
             let crop = match oas_ocr::RgbCrop::from_rgba(frame.width, frame.height, &frame.rgba, roi) {
                 Ok(c) => c,
                 Err(e) => return self.send_json(out, 400, &format!(r#"{{"error":{:?}}}"#, e)),
@@ -1474,6 +1502,8 @@ impl Server {
             let q = parse_query(raw_path);
             let (mut x, mut y, mut w, mut h) = (0i32, 0i32, 0i32, 0i32);
             let mut vertical_only = false;
+            let mut task = String::new();
+            let mut id = String::new();
             for (k, v) in &q {
                 match k.as_str() {
                     "x" => x = v.parse().unwrap_or(0),
@@ -1481,6 +1511,8 @@ impl Server {
                     "w" => w = v.parse().unwrap_or(0),
                     "h" => h = v.parse().unwrap_or(0),
                     "vertical" => vertical_only = v == "1",
+                    "task" => task = v.clone(),
+                    "id" => id = v.clone(),
                     _ => {}
                 }
             }
@@ -1505,11 +1537,18 @@ impl Server {
                 }
             };
             let roi = oas_types::Rect { x, y, w, h };
+            let masked;
+            let frame = if let Some(poly) = self.asset_ocr_polygon(&task, &id) {
+                masked = oas_runtime::mask_frame_for_ocr(&frame, roi, &poly);
+                &masked
+            } else {
+                &frame
+            };
             let t0 = std::time::Instant::now();
             let lines = {
                 let mut det_guard = det.lock().unwrap();
                 let mut rec_guard = rec.lock().unwrap();
-                match crate::ocr::recognize_lines_impl(&mut det_guard, &mut rec_guard, &frame, roi, vertical_only) {
+                match crate::ocr::recognize_lines_impl(&mut det_guard, &mut rec_guard, frame, roi, vertical_only) {
                     Ok(l) => l,
                     Err(e) => return self.send_json(out, 400, &format!(r#"{{"error":{:?}}}"#, e)),
                 }

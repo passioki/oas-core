@@ -1242,7 +1242,9 @@ async function testAssetOcr(it) {
   const derived = it.kind === 'ocr_line' && it.ocr_mode === 'lines' && Array.isArray(it.ocr_source_roi);
   const src = derived ? it.ocr_source_roi : it.roi;
   const roi = { x: src[0], y: src[1], w: src[2], h: src[3] };
-  const q = `x=${roi.x}&y=${roi.y}&w=${roi.w}&h=${roi.h}`;
+  const task = (taskName.value || '').trim();
+  const q = `x=${roi.x}&y=${roi.y}&w=${roi.w}&h=${roi.h}` +
+    `&task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}`;
   resultEl.textContent = `素材「${it.id}」识别中…`;
   try {
     if (it.kind === 'ocr_lines' || derived) {
@@ -1961,8 +1963,12 @@ async function testAssetCollection(it) {
       lines.push(`${member}: 异常 ${e}`);
     }
   }
+  const threshold = typeof it.threshold === 'number' ? it.threshold : 0.9;
   resultEl.textContent = `素材集合「${it.id}」测试（dry）：\n` + lines.join('\n') +
-    (best ? `\n最佳：${best.member} score=${best.score.toFixed(4)}` : '');
+    (best
+      ? `\n最佳：${best.member} score=${best.score.toFixed(4)} pass=${best.score >= threshold}`
+      : '') +
+    `\n集合阈值：${threshold}`;
   if (best && Number.isFinite(best.s.w) && best.s.w > 0) {
     boxes = [{ text: `集合 ${best.member}`, score: best.score, box: [best.s.x, best.s.y, best.s.w, best.s.h] }];
     draw();
