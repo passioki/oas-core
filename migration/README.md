@@ -51,5 +51,5 @@
 - Remote task dirs: 61; menu tasks 53; helper dirs 8.
 - Imported global assets: 2825 total (23 core + task/component legacy).
 - Baseline `cargo test --workspace`: 350 passed.
-- Batch 1 status: **2 ✅ (Pets, TalismanPass 实机 Done) / 41 🔄 / 9 ⛔ / 8 ⬜**. 其余 41 个无实机/回放等价证据，不得标 ✅。
+- Batch 1 status: **1 ✅ (Pets 实机 Done) / 43 🔄 / 9 ⛔ / 8 ⬜**. 其余 43 个无实机/回放等价证据，不得标 ✅。
 - Legacy images mislabeled `.png` but actually JPEG are converted to real PNG; otherwise runtime asset load fails.

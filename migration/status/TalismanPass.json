@@ -7,9 +7,9 @@
     "round2_coverage": "get_flower 顺序（档位→溢出→奖励→无弹窗才补点 GET_ALL）、动画消失等待、回庭院；no-op 路径不变"
   },
   "gaps": [
-    "有红点的等级奖励分支未实机复测",
+    "有红点的等级奖励分支：I_RED_POINT_LEVEL 会误匹配成就红点，已临时 disabled（cond=false），需重采稳定入口后再启用",
     "2s 计时器→10 轮有界近似",
     "harvest_soul 默认关闭，未复测",
-    "未真机复测本轮改动"
+    "polish 后奖励分支未实机复测"
   ]
 }
