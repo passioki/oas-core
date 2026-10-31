@@ -51,8 +51,13 @@ const assetSearch = document.getElementById('asset-search');
 const assetsList = document.getElementById('assets-list');
 const taskRefAssets = document.getElementById('task-ref-assets');
 const taskRefAssetsTask = document.getElementById('task-ref-assets-task');
-const assetPositionFrames = document.getElementById('asset-position-frames');
+const assetPositionCategory = document.getElementById('asset-position-category');
+const assetPositionFrame = document.getElementById('asset-position-frame');
+const assetPositionList = document.getElementById('asset-position-list');
 const assetPositionStatus = document.getElementById('asset-position-status');
+const btnAddAssetPosition = document.getElementById('btn-add-asset-position');
+let assetFramesCache = [];
+let pendingAssetPositions = [];
 const btnAssetsRefresh = document.getElementById('assets-refresh');
 const btnAssetsBatchTest = document.getElementById('btn-assets-batch-test');
 const btnNewCollection = document.getElementById('btn-new-collection');
@@ -2193,24 +2198,82 @@ async function testAssetMatch(it) {
 // LAST captured frame and assigns images/aNNN.png; the (Chinese) id never
 // becomes a path.
 // R23: one save entry for every recognition result kind.
+function assetFrameLabel(f) {
+  return `#${f.id} ${f.name || '帧'} ${f.width}x${f.height}${f.current ? ' · 当前' : ''}`;
+}
+
+function renderPendingPositions() {
+  if (!assetPositionList) return;
+  assetPositionList.textContent = '';
+  // Drop ids that disappeared with a deleted frame.
+  const known = new Set(assetFramesCache.map((f) => f.id));
+  pendingAssetPositions = pendingAssetPositions.filter((id) => known.has(id));
+  if (!pendingAssetPositions.length) {
+    assetPositionList.textContent = '（还没有添加位置）';
+    return;
+  }
+  for (const id of pendingAssetPositions) {
+    const f = assetFramesCache.find((x) => x.id === id);
+    const row = document.createElement('div');
+    row.className = 'asset-position-row';
+    const label = document.createElement('span');
+    label.textContent = f ? assetFrameLabel(f) : `#${id}`;
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = '删';
+    del.className = 'asset-test';
+    del.title = '移除该位置';
+    del.addEventListener('click', () => {
+      pendingAssetPositions = pendingAssetPositions.filter((x) => x !== id);
+      renderPendingPositions();
+    });
+    row.append(label, del);
+    assetPositionList.appendChild(row);
+  }
+}
+
+function populateAssetPositionFrames() {
+  if (!assetPositionFrame) return;
+  const cat = assetPositionCategory ? assetPositionCategory.value : '';
+  const items = assetFramesCache.filter((f) => ((f.category || '').trim() || '未分类') === cat);
+  assetPositionFrame.textContent = '';
+  for (const f of items) {
+    const o = document.createElement('option');
+    o.value = String(f.id);
+    o.textContent = assetFrameLabel(f);
+    assetPositionFrame.appendChild(o);
+  }
+  if (!items.length) {
+    const o = document.createElement('option');
+    o.value = '';
+    o.textContent = '（该分类没有帧）';
+    assetPositionFrame.appendChild(o);
+  }
+}
+
 async function refreshAssetPositionFrames() {
-  if (!assetPositionFrames) return;
+  if (!assetPositionCategory || !assetPositionFrame) return;
   try {
     const r = await fetch('/frames');
     const s = await r.json();
-    const frames = s.frames || [];
-    const keep = new Set(Array.from(assetPositionFrames.selectedOptions).map((o) => o.value));
-    assetPositionFrames.textContent = '';
-    for (const f of frames) {
+    assetFramesCache = s.frames || [];
+    const cats = [...new Set(assetFramesCache.map((f) => (f.category || '').trim() || '未分类'))];
+    const keep = assetPositionCategory.value;
+    assetPositionCategory.textContent = '';
+    for (const cat of cats) {
       const o = document.createElement('option');
-      o.value = String(f.id);
-      o.textContent = `#${f.id} ${f.name || '帧'} ${f.width}x${f.height}${f.current ? ' · 当前' : ''}`;
-      if (keep.has(o.value) || (!keep.size && f.current)) o.selected = true;
-      assetPositionFrames.appendChild(o);
+      o.value = cat;
+      o.textContent = cat;
+      assetPositionCategory.appendChild(o);
     }
+    const current = assetFramesCache.find((f) => f.current);
+    const currentCat = current ? ((current.category || '').trim() || '未分类') : '';
+    assetPositionCategory.value = cats.includes(keep) ? keep : (currentCat || cats[0] || '');
+    populateAssetPositionFrames();
+    renderPendingPositions();
     if (assetPositionStatus) {
-      assetPositionStatus.textContent = frames.length
-        ? `共 ${frames.length} 帧；保存新素材时必须至少选 1 帧`
+      assetPositionStatus.textContent = assetFramesCache.length
+        ? `共 ${assetFramesCache.length} 帧；先选分类，再选帧，点「添加位置」`
         : '（还没有帧：先到「图片」面板截图/上传，才能保存素材）';
     }
   } catch (e) {
@@ -2219,10 +2282,7 @@ async function refreshAssetPositionFrames() {
 }
 
 function selectedAssetPositions() {
-  if (!assetPositionFrames) return [];
-  return Array.from(assetPositionFrames.selectedOptions)
-    .map((o) => Number(o.value))
-    .filter((n) => Number.isInteger(n) && n > 0);
+  return pendingAssetPositions.slice();
 }
 
 async function saveAssetUnified() {
@@ -2307,7 +2367,9 @@ async function saveAssetUnified() {
   log(`统一保存素材：${saved} 个`);
   replaceResults([], '');
   await refreshTaskAssets(task);
+  pendingAssetPositions = [];
   await refreshAssetPositionFrames();
+  renderPendingPositions();
 }
 
 
@@ -4012,6 +4074,17 @@ async function submitResetMemory() {
   syncDrawers();
   if (btnAssetsRefresh) btnAssetsRefresh.addEventListener('click', () => refreshTaskAssets());
   if (btnAssetsBatchTest) btnAssetsBatchTest.addEventListener('click', batchTestAssets);
+  if (assetPositionCategory) {
+    assetPositionCategory.addEventListener('change', populateAssetPositionFrames);
+  }
+  if (btnAddAssetPosition) {
+    btnAddAssetPosition.addEventListener('click', () => {
+      const id = Number(assetPositionFrame && assetPositionFrame.value);
+      if (!Number.isInteger(id) || id <= 0) return;
+      if (!pendingAssetPositions.includes(id)) pendingAssetPositions.push(id);
+      renderPendingPositions();
+    });
+  }
   if (btnNewCollection) btnNewCollection.addEventListener('click', createCollectionFromSelection);
   if (assetSearch) assetSearch.addEventListener('input', renderAssetList);
   if (railButtons.length) activatePanel(railButtons[0].dataset.panel);

@@ -87,6 +87,9 @@
     lastSavedFlow: '',
     saving: false,
     checked: new Set(),
+    selectionHistory: [],
+    selectionIndex: -1,
+    navNavigating: false,
   };
   const $ = (id) => document.getElementById(id);
 
@@ -314,21 +317,42 @@
     status('已移到根级');
   }
 
+  function stepContains(root, needle) {
+    if (!root || typeof root !== 'object') return false;
+    if (root === needle) return true;
+    for (const [_, arr] of childArrays(root)) {
+      for (const child of arr) {
+        if (stepContains(child, needle)) return true;
+      }
+    }
+    return false;
+  }
+
   function moveStepTo(fromPath, targetStepPath, key) {
     const fromArr = getContainer(fromPath);
     const idx = fromPath[fromPath.length - 1];
     const targetStep = getStep(targetStepPath);
     if (!fromArr || typeof idx !== 'number' || !targetStep || !Array.isArray(targetStep[key])) return;
-    // Refuse to move a container into itself/its descendant.
-    const fromKey = JSON.stringify(fromPath);
-    const targetKey = JSON.stringify(targetStepPath);
-    if (targetKey.startsWith(fromKey + ',') || targetKey === fromKey) return;
     const step = fromArr[idx];
     if (!step) return;
+    // Moving a container into itself/its descendant would detach the whole
+    // subtree from the flow (the invalid move used to make both levels vanish).
+    if (step === targetStep || stepContains(step, targetStep)) {
+      status('不能把父级移动到自己的子级', '#ff8a80');
+      return;
+    }
     if (fromArr === targetStep[key] && idx === targetStep[key].length - 1) return;
+    const snapshot = JSON.stringify(B.flow);
     fromArr.splice(idx, 1);
-    targetStep[key].push(step);
-    B.selected = targetStepPath.concat([key, targetStep[key].length - 1]);
+    const targetArr = targetStep[key];
+    if (!Array.isArray(targetArr)) {
+      B.flow = JSON.parse(snapshot);
+      renderAll();
+      status('移动失败：目标子级不存在', '#ff8a80');
+      return;
+    }
+    targetArr.push(step);
+    B.selected = targetStepPath.concat([key, targetArr.length - 1]);
     renderAll();
     status(`已移动步骤到 ${key}`);
   }
@@ -1466,12 +1490,41 @@
     }
   }
 
+  function recordSelection() {
+    if (B.navNavigating) return;
+    const key = B.selected ? JSON.stringify(B.selected) : '';
+    if (B.selectionHistory[B.selectionIndex] === key) return;
+    B.selectionHistory = B.selectionHistory.slice(0, B.selectionIndex + 1);
+    B.selectionHistory.push(key);
+    B.selectionIndex = B.selectionHistory.length - 1;
+  }
+
+  function updateHistoryButtons() {
+    const back = $('builder-back');
+    const fwd = $('builder-forward');
+    if (back) back.disabled = B.selectionIndex <= 0;
+    if (fwd) fwd.disabled = B.selectionIndex < 0 || B.selectionIndex >= B.selectionHistory.length - 1;
+  }
+
+  function navigateHistory(delta) {
+    const next = B.selectionIndex + delta;
+    if (next < 0 || next >= B.selectionHistory.length) return;
+    B.selectionIndex = next;
+    B.navNavigating = true;
+    const key = B.selectionHistory[next];
+    B.selected = key ? JSON.parse(key) : null;
+    renderAll();
+    B.navNavigating = false;
+  }
+
   function renderAll() {
+    recordSelection();
     renderSteps();
     renderGraph();
     renderForm();
     renderAssetPanel();
     renderCode();
+    updateHistoryButtons();
     scheduleAutoSave();
   }
 
@@ -1498,6 +1551,8 @@
 
   async function loadTask(name) {
     B.autoSaveArmed = false;
+    B.selectionHistory = [];
+    B.selectionIndex = -1;
     if (!name) {
       B.task = '';
       B.flow = null;
@@ -1669,6 +1724,10 @@
     if (taskSel) taskSel.addEventListener('change', () => loadTask(taskSel.value));
     const reload = $('builder-reload');
     if (reload) reload.addEventListener('click', async () => { await refreshTaskList(); await loadTask(taskSel ? taskSel.value : ''); });
+    const back = $('builder-back');
+    if (back) back.addEventListener('click', () => navigateHistory(-1));
+    const forward = $('builder-forward');
+    if (forward) forward.addEventListener('click', () => navigateHistory(1));
     const save = $('builder-save');
     if (save) save.addEventListener('click', () => saveFlow(false));
     const dry = $('builder-dry-run');

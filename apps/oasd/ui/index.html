@@ -84,14 +84,18 @@
             单行识别、多行识别、图片匹配和独立操作区域的结果都会进入这里。
             勾选要保存的项；全不选时点保存会提示先勾选。
           </p>
-          <h4>素材位置帧（保存必选，可多选）</h4>
-          <select id="asset-position-frames" multiple size="4"></select>
+          <h4>素材位置帧（保存必选；先选分类，再选帧）</h4>
+          <label class="opt">分类
+            <select id="asset-position-category"></select>
+          </label>
+          <label class="opt">帧
+            <select id="asset-position-frame"></select>
+          </label>
+          <button id="btn-add-asset-position" type="button">添加位置</button>
+          <div id="asset-position-list" class="asset-list muted">（还没有添加位置）</div>
           <div id="asset-position-status" class="muted small">—</div>
 
           <button id="btn-clear">清除识别/操作区域</button>
-
-          <h3>当前任务引用的素材</h3>
-          <div id="task-ref-assets" class="asset-list muted">（选择任务后显示）</div>
 
           <h3>素材库</h3>
           <div class="row lib-toolbar">
@@ -252,6 +256,8 @@
           <option value="">（选择任务）</option>
         </select>
         <button id="builder-reload" type="button">重新载入</button>
+        <button id="builder-back" type="button" title="返回上一个选中的步骤">← 返回</button>
+        <button id="builder-forward" type="button" title="前进到下一个选中的步骤">前进 →</button>
         <button id="builder-save" type="button">立即保存（自动保存已开启）</button>
         <button id="builder-dry-run" type="button">dry-run</button>
         <button id="builder-delete-checked" type="button">删除勾选步骤</button>

@@ -63,7 +63,21 @@ impl OcrProvider for OnnxOcr {
         let mut out = Vec::with_capacity(boxes.len());
         for b in boxes {
             let sub = oas_ocr::RgbCrop::from_rgba(crop.width, crop.height, &rgba, b)?;
-            let (text, score) = self.rec.recognize(&sub)?;
+            let (mut text, mut score) = self.rec.recognize(&sub)?;
+            // Vertical/rotated text (e.g. the 庭院 sign) is common in the game.
+            // The editor's /lines path already tries both rotations; the runtime
+            // provider must do the same or a saved multi-line asset can never
+            // match at run time.
+            if score < 0.6 {
+                for cand in [sub.rotate90_cw(), sub.rotate90_ccw()] {
+                    if let Ok((t2, s2)) = self.rec.recognize(&cand) {
+                        if s2 > score {
+                            text = t2;
+                            score = s2;
+                        }
+                    }
+                }
+            }
             out.push(OcrLine {
                 rect: Rect {
                     x: roi.x + b.x,

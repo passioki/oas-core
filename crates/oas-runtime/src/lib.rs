@@ -1232,9 +1232,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
             let Some(line) = hit else {
                 self.last_ocr_rect = None;
+                let found = lines
+                    .iter()
+                    .map(|l| format!("{:?}({:.3})", l.text, l.score))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 return Err(format!(
                     "derived ocr_line `{sel}`: no line equals {:?} in original source ROI {:?} \
-                     ({} lines found) - refusing to use single-line rec",
+                     ({} lines found: {found}) - refusing to use single-line rec",
                     expected,
                     source,
                     lines.len()
