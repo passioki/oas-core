@@ -50,7 +50,11 @@ const logPop = document.getElementById('log-pop');
 const assetSearch = document.getElementById('asset-search');
 const assetsList = document.getElementById('assets-list');
 const taskRefAssets = document.getElementById('task-ref-assets');
+const taskRefAssetsTask = document.getElementById('task-ref-assets-task');
+const assetPositionFrames = document.getElementById('asset-position-frames');
+const assetPositionStatus = document.getElementById('asset-position-status');
 const btnAssetsRefresh = document.getElementById('assets-refresh');
+const btnAssetsBatchTest = document.getElementById('btn-assets-batch-test');
 const btnNewCollection = document.getElementById('btn-new-collection');
 const collectionMsg = document.getElementById('collection-msg');
 const runsSelect = document.getElementById('runs-select');
@@ -175,6 +179,7 @@ let clickData = null; // {file, clicks, distinct, points}
 let clickOverlay = null;
 // §22.18 visual flow editor model: {name, steps:[{op,argsText}], interrupts:[{detect,action}]}
 let flowModel = { name: '', steps: [], interrupts: [] };
+let taskFlowRaw = null;
 // §22.28 任务素材列表（分组/搜索/行内测试）
 let taskAssets = [];
 let taskAssetsMeta = {};
@@ -1661,22 +1666,25 @@ function collectFlowAssetIds(flow) {
 }
 
 function renderTaskReferencedAssets() {
-  if (!taskRefAssets) return;
-  taskRefAssets.textContent = '';
-  const ids = collectFlowAssetIds(flowModel || {});
+  const targets = [taskRefAssets, taskRefAssetsTask].filter(Boolean);
+  if (!targets.length) return;
+  const ids = collectFlowAssetIds(taskFlowRaw || flowModel || {});
   if (!ids.size) {
-    taskRefAssets.textContent = '（当前任务 flow 未引用素材）';
+    for (const el of targets) el.textContent = '（当前任务 flow 未引用素材）';
     return;
   }
   const rows = (taskAssets || []).filter((a) => ids.has(a.id));
   if (!rows.length) {
-    taskRefAssets.textContent = '（flow 引用的素材在素材库中未找到）';
+    for (const el of targets) el.textContent = '（flow 引用的素材在素材库中未找到）';
     return;
   }
-  for (const a of rows) {
-    const row = document.createElement('div');
-    row.textContent = `${a.id} [${ASSET_KIND_LABELS[a.kind] || a.kind}]`;
-    taskRefAssets.appendChild(row);
+  for (const el of targets) {
+    el.textContent = '';
+    for (const a of rows) {
+      const row = document.createElement('div');
+      row.textContent = `${a.id} [${ASSET_KIND_LABELS[a.kind] || a.kind}]`;
+      el.appendChild(row);
+    }
   }
 }
 
@@ -1716,6 +1724,58 @@ const ASSET_KIND_LABELS = {
   region: '操作区域（region）',
   template_set: '素材集合（template_set）',
 };
+
+function makeAssetThumb(it) {
+  const box = document.createElement('span');
+  box.className = 'asset-thumb';
+  const task = (taskName.value || '').trim();
+  if (it.kind === 'template' && it.file) {
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.alt = it.id;
+    img.src = `/task/asset/image?task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}`;
+    img.addEventListener('error', () => {
+      box.textContent = 'ROI';
+      box.classList.add('asset-thumb-empty');
+    });
+    box.appendChild(img);
+    return box;
+  }
+  if (it.roi) {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = 64;
+      c.height = 44;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#0b0d10';
+      ctx.fillRect(0, 0, c.width, c.height);
+      // Crop the recognition ROI; fit by aspect ratio (letterbox rather than
+      // distorting text/icon shapes).
+      const rw = Math.max(1, it.roi[2]);
+      const rh = Math.max(1, it.roi[3]);
+      const scale = Math.min(c.width / rw, c.height / rh);
+      const dw = Math.max(1, rw * scale);
+      const dh = Math.max(1, rh * scale);
+      ctx.drawImage(img, it.roi[0], it.roi[1], rw, rh, (c.width - dw) / 2, (c.height - dh) / 2, dw, dh);
+      box.textContent = '';
+      box.appendChild(c);
+    };
+    img.onerror = () => {
+      box.textContent = 'ROI';
+      box.classList.add('asset-thumb-empty');
+    };
+    img.src = (it.positions && it.positions.length)
+      ? `/frames/image?id=${it.positions[0]}&ts=${Date.now()}`
+      : '/frame.png?ts=' + Date.now();
+    box.textContent = 'ROI';
+    box.classList.add('asset-thumb-empty');
+    return box;
+  }
+  box.textContent = '—';
+  box.classList.add('asset-thumb-empty');
+  return box;
+}
 
 function renderAssetList() {
   if (!assetsList) return;
@@ -1790,7 +1850,12 @@ function renderAssetList() {
       }
       const roi = it.roi ? `[${it.roi.join(',')}]` : '—';
       const action = it.action_roi ? ` · 操作区域[${it.action_roi.join(',')}]` : '';
-      main.textContent = `${it.id}\n识别 ${roi}${action}`;
+      const pos = (it.positions && it.positions.length) ? ` · 位置帧[${it.positions.join(',')}]` : ' · 位置帧未设置';
+      main.appendChild(makeAssetThumb(it));
+      const assetText = document.createElement('span');
+      assetText.className = 'asset-main-text';
+      assetText.textContent = `${it.id}\n识别 ${roi}${action}${pos}`;
+      main.appendChild(assetText);
       main.title = `${it.file || '（无图）'}`;
       main.addEventListener('click', () => pickAssetRoi(it));
       const test = document.createElement('button');
@@ -1820,13 +1885,19 @@ function renderAssetList() {
       edit.textContent = '改';
       edit.title = '重命名 / 修改 OCR ROI / 模板阈值';
       edit.addEventListener('click', () => editAsset(it));
+      const posBtn = document.createElement('button');
+      posBtn.type = 'button';
+      posBtn.className = 'asset-test';
+      posBtn.textContent = '帧';
+      posBtn.title = '设置素材位置帧（可多个，逗号分隔；清空=无位置）';
+      posBtn.addEventListener('click', () => editAssetPositions(it));
       const del = document.createElement('button');
       del.type = 'button';
       del.className = 'asset-test';
       del.textContent = '删';
       del.title = '删除素材（flow 仍引用时会被拒绝）';
       del.addEventListener('click', () => deleteAsset(it));
-      row.append(main, test, edit, del);
+      row.append(main, test, edit, posBtn, del);
       if (it.kind !== 'region') {
         const op = document.createElement('button');
         op.type = 'button';
@@ -1909,6 +1980,31 @@ async function deleteCollection(it) {
   await refreshTaskAssets(task);
 }
 
+async function batchTestAssets() {
+  const task = (taskName.value || '').trim();
+  resultEl.textContent = '批量帧测试中…';
+  try {
+    const r = await postJson('/task/assets/batch_test', { task });
+    if (!r.ok) {
+      resultEl.textContent = '批量帧测试失败：' + (r.errors || []).join('; ');
+      return;
+    }
+    const rows = r.results || [];
+    const lines = rows.map((x) => {
+      const where = x.frame_id == null ? '无帧' : `#${x.frame_id}`;
+      return `${x.pass ? '✅' : '❌'} ${x.id} @ ${where}` +
+        (x.score != null ? ` score=${Number(x.score).toFixed(3)}` : '') +
+        (x.text ? ` text=${JSON.stringify(x.text)}` : '') +
+        (x.error ? ` · ${x.error}` : '');
+    });
+    resultEl.textContent =
+      `批量帧测试：${r.passed}/${r.total} 通过\n` + lines.join('\n');
+    log(`批量帧测试：${r.passed}/${r.total}`);
+  } catch (e) {
+    resultEl.textContent = '批量帧测试异常：' + e;
+  }
+}
+
 async function createCollectionFromSelection() {
   const task = (taskName.value || '').trim();
   if (!task) return;
@@ -1926,8 +2022,13 @@ async function createCollectionFromSelection() {
     window.alert('创建集合失败：\n' + msg);
     return;
   }
-  if (collectionMsg) collectionMsg.textContent = `已创建集合「${id}」，成员 ${members.length} 张。`;
-  log(`已创建素材集合：${id}（${members.length} 张）`);
+  const rewritten = Number(r.tasks_rewritten || 0);
+  if (collectionMsg) {
+    collectionMsg.textContent =
+      `已创建集合「${id}」，成员 ${members.length} 张；自动切换引用任务 ${rewritten} 个。` +
+      ((r.rewrite_errors || []).length ? ` 警告：${r.rewrite_errors.join('; ')}` : '');
+  }
+  log(`已创建素材集合：${id}（${members.length} 张），自动改写任务 ${rewritten} 个`);
   await refreshTaskAssets(task);
 }
 
@@ -1945,6 +2046,29 @@ async function deleteAsset(it) {
     return;
   }
   log(`已删除素材：${it.id}`);
+  await refreshTaskAssets(task);
+}
+
+async function editAssetPositions(it) {
+  const task = (taskName.value || '').trim();
+  const cur = (it.positions || []).join(',');
+  const raw = window.prompt(
+    `素材「${it.id}」位置帧 id（多个用逗号分隔；清空=无位置；帧 id 见「图片」面板）`,
+    cur
+  );
+  if (raw == null) return;
+  const positions = raw
+    .split(/[,，\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => Number(s))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  const r = await postJson('/task/asset/positions', { task, id: it.id, positions });
+  if (!r.ok) {
+    resultEl.textContent = '设置素材位置失败：' + (r.errors || []).join('; ');
+    return;
+  }
+  resultEl.textContent = `素材「${it.id}」位置帧：${positions.length ? positions.join(',') : '（无）'}`;
   await refreshTaskAssets(task);
 }
 
@@ -2069,6 +2193,38 @@ async function testAssetMatch(it) {
 // LAST captured frame and assigns images/aNNN.png; the (Chinese) id never
 // becomes a path.
 // R23: one save entry for every recognition result kind.
+async function refreshAssetPositionFrames() {
+  if (!assetPositionFrames) return;
+  try {
+    const r = await fetch('/frames');
+    const s = await r.json();
+    const frames = s.frames || [];
+    const keep = new Set(Array.from(assetPositionFrames.selectedOptions).map((o) => o.value));
+    assetPositionFrames.textContent = '';
+    for (const f of frames) {
+      const o = document.createElement('option');
+      o.value = String(f.id);
+      o.textContent = `#${f.id} ${f.name || '帧'} ${f.width}x${f.height}${f.current ? ' · 当前' : ''}`;
+      if (keep.has(o.value) || (!keep.size && f.current)) o.selected = true;
+      assetPositionFrames.appendChild(o);
+    }
+    if (assetPositionStatus) {
+      assetPositionStatus.textContent = frames.length
+        ? `共 ${frames.length} 帧；保存新素材时必须至少选 1 帧`
+        : '（还没有帧：先到「图片」面板截图/上传，才能保存素材）';
+    }
+  } catch (e) {
+    if (assetPositionStatus) assetPositionStatus.textContent = '帧列表读取失败：' + e;
+  }
+}
+
+function selectedAssetPositions() {
+  if (!assetPositionFrames) return [];
+  return Array.from(assetPositionFrames.selectedOptions)
+    .map((o) => Number(o.value))
+    .filter((n) => Number.isInteger(n) && n > 0);
+}
+
 async function saveAssetUnified() {
   const task = currentTask();
   if (!task) {
@@ -2089,6 +2245,12 @@ async function saveAssetUnified() {
   }
   const ocrRows = chosen.filter((c) => c.kind === 'ocr_line' || c.kind === 'ocr_lines');
   const otherRows = chosen.filter((c) => c.kind !== 'ocr_line' && c.kind !== 'ocr_lines');
+  const positions = selectedAssetPositions();
+  if (!positions.length) {
+    resultEl.textContent = '请先选择素材位置帧（可多选；没有帧就先到「图片」面板截图/上传）';
+    window.alert('添加素材必须选择至少一个位置帧。');
+    return;
+  }
   const errors = [];
   let saved = 0;
   try {
@@ -2099,6 +2261,7 @@ async function saveAssetUnified() {
           kind: 'ocr_line',
           roi: [c.recognize.x, c.recognize.y, c.recognize.w, c.recognize.h],
           action_roi: [c.action.x, c.action.y, c.action.w, c.action.h],
+          positions,
         };
         if (c.fromLines && c.sourceRoi) {
           row.ocr_mode = 'lines';
@@ -2120,6 +2283,7 @@ async function saveAssetUnified() {
         id: c.name.trim(),
         kind: c.kind,
         roi: [c.recognize.x, c.recognize.y, c.recognize.w, c.recognize.h],
+        positions,
       };
       if (c.kind === 'template') payload.threshold = 0.85;
       if (c.kind !== 'region' && c.action) {
@@ -2143,6 +2307,7 @@ async function saveAssetUnified() {
   log(`统一保存素材：${saved} 个`);
   replaceResults([], '');
   await refreshTaskAssets(task);
+  await refreshAssetPositionFrames();
 }
 
 
@@ -2373,7 +2538,6 @@ async function flowSaveVisual() {
 }
 
 async function loadTaskFlow(task) {
-  if (!flowJson) return;
   if (!task) return;
   try {
     const r = await fetch('/task/flow?task=' + encodeURIComponent(task));
@@ -2384,14 +2548,24 @@ async function loadTaskFlow(task) {
     }
     if (!s.flow) {
       log(`任务「${task}」还没有 flow.json`);
+      taskFlowRaw = null;
+      flowModel = { name: task, steps: [], interrupts: [] };
+      renderTaskReferencedAssets();
       return;
     }
-    flowJson.value = JSON.stringify(s.flow, null, 2);
-    flowModel = window.OAS_FLOW ? window.OAS_FLOW.parseFlow(flowJson.value) : flowModel;
-    flowModel.name = s.flow.name || task;
-    flowRender();
+    taskFlowRaw = s.flow;
+    if (flowJson) flowJson.value = JSON.stringify(s.flow, null, 2);
+    try {
+      flowModel = window.OAS_FLOW ? window.OAS_FLOW.parseFlow(JSON.stringify(s.flow)) : flowModel;
+      flowModel.name = s.flow.name || task;
+      flowRender();
+      log(`已载入任务「${task}」的 flow（${flowModel.steps.length} 步）`);
+    } catch (e) {
+      // Nested control-flow is edited in builder/JSON; the workbench still
+      // needs the raw flow for referenced-asset display.
+      log('流程可视化解析失败（仍显示引用素材）：' + e.message);
+    }
     renderTaskReferencedAssets();
-    log(`已载入任务「${task}」的 flow（${flowModel.steps.length} 步）`);
   } catch (e) {
     log('读取任务流程异常：' + e);
   }
@@ -2658,6 +2832,7 @@ async function refreshFrames() {
       framesList.appendChild(group);
     }
     framesStatus.textContent = `共 ${frames.length} 帧；拖动排序/换分组，点行切换当前帧`;
+    await refreshAssetPositionFrames();
   } catch (e) {
     framesStatus.textContent = '图片列表异常：' + e;
   }
@@ -2769,8 +2944,10 @@ async function deleteFrame(id) {
       body: JSON.stringify({ id }),
     });
     const s = await r.json();
-    if (s.error) {
-      framesStatus.textContent = '删除失败：' + s.error;
+    if (!r.ok || s.error) {
+      const msg = s.error || (s.errors || []).join('; ') || '未知错误';
+      framesStatus.textContent = '删除失败：' + msg;
+      window.alert('无法删除该帧：\n' + msg);
       return;
     }
     log(`已删除图片 #${id}（剩 ${s.remaining} 帧）`);
@@ -3834,6 +4011,7 @@ async function submitResetMemory() {
   }
   syncDrawers();
   if (btnAssetsRefresh) btnAssetsRefresh.addEventListener('click', () => refreshTaskAssets());
+  if (btnAssetsBatchTest) btnAssetsBatchTest.addEventListener('click', batchTestAssets);
   if (btnNewCollection) btnNewCollection.addEventListener('click', createCollectionFromSelection);
   if (assetSearch) assetSearch.addEventListener('input', renderAssetList);
   if (railButtons.length) activatePanel(railButtons[0].dataset.panel);
@@ -3954,6 +4132,7 @@ async function submitResetMemory() {
   if (btnFrameUpload) btnFrameUpload.addEventListener('click', uploadFrames);
   if (btnFrameCapture) btnFrameCapture.addEventListener('click', () => doCapture());
   if (btnFramesRefresh) btnFramesRefresh.addEventListener('click', () => refreshFrames());
+  await refreshAssetPositionFrames();
   if (frameCategoryFilter) frameCategoryFilter.addEventListener('change', () => refreshFrames());
   const btnFrameCategoryApply = document.getElementById('btn-frame-category-apply');
   if (btnFrameCategoryApply) btnFrameCategoryApply.addEventListener('click', applyFrameCategoryFromSelect);

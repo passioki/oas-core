@@ -192,6 +192,7 @@ pub fn migrate(
             threshold: old.threshold,
             polygon: None,
             rev: old.rev,
+            positions: Vec::new(),
         });
     }
 

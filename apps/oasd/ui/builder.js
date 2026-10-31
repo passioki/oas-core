@@ -680,26 +680,67 @@
     root.appendChild(svg);
   }
 
-  let assetSearchSeq = 0;
   function assetSearch(current, kinds) {
     const wrap = document.createElement('span');
     wrap.className = 'builder-asset-search';
     const input = document.createElement('input');
     input.type = 'text';
-    input.placeholder = '搜索素材 id…';
+    input.placeholder = '输入片段，选择匹配素材…';
     input.value = current || '';
-    const listId = 'builder-asset-list-' + (++assetSearchSeq);
-    input.setAttribute('list', listId);
-    const list = document.createElement('datalist');
-    list.id = listId;
-    for (const a of B.assets) {
-      if (kinds && !kinds.includes(a.kind)) continue;
-      const o = document.createElement('option');
-      o.value = a.id;
-      o.label = a.kind;
-      list.appendChild(o);
+    const menu = document.createElement('div');
+    menu.className = 'builder-asset-menu';
+    menu.style.display = 'none';
+
+    function choose(id) {
+      input.value = id;
+      menu.style.display = 'none';
+      input.dispatchEvent(new Event('change', { bubbles: true }));
     }
-    wrap.append(input, list);
+
+    function filter() {
+      const q = input.value.trim().toLowerCase();
+      menu.textContent = '';
+      const matches = B.assets.filter((a) => {
+        if (kinds && !kinds.includes(a.kind)) return false;
+        return !q || String(a.id).toLowerCase().includes(q);
+      });
+      if (!matches.length) {
+        const empty = document.createElement('div');
+        empty.className = 'muted small';
+        empty.textContent = '（无匹配素材）';
+        menu.appendChild(empty);
+      } else {
+        for (const a of matches) {
+          const row = document.createElement('button');
+          row.type = 'button';
+          row.className = 'builder-asset-option';
+          row.dataset.id = a.id;
+          row.textContent = `${a.id} [${a.kind}]`;
+          row.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            choose(a.id);
+          });
+          menu.appendChild(row);
+        }
+      }
+      menu.style.display = 'block';
+    }
+
+    input.addEventListener('focus', filter);
+    input.addEventListener('input', filter);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        menu.style.display = 'none';
+      } else if (e.key === 'Enter') {
+        const first = menu.querySelector('.builder-asset-option');
+        if (first) {
+          e.preventDefault();
+          choose(first.dataset.id || first.textContent.split(' [')[0]);
+        }
+      }
+    });
+    input.addEventListener('blur', () => setTimeout(() => { menu.style.display = 'none'; }, 120));
+    wrap.append(input, menu);
     wrap.input = input;
     return wrap;
   }
@@ -1017,20 +1058,24 @@
     if (m) return { mode: 'appear', asset: m[1], text: '' };
     m = c.match(/^(?:not\s+|!)(?:appear\(\s*['"]([^'"]+)['"]\s*\))$/);
     if (m) return { mode: 'not_appear', asset: m[1], text: '' };
-    m = c.match(/^ocr\(\s*['"]([^'"]+)['"]\s*\)\s*==\s*['"]([^'"]*)['"]$/);
-    if (m) return { mode: 'ocr_eq', asset: m[1], text: m[2] };
-    m = c.match(/^ocr\(\s*['"]([^'"]+)['"]\s*\)\s*!=\s*['"]([^'"]*)['"]$/);
-    if (m) return { mode: 'ocr_ne', asset: m[1], text: m[2] };
+    m = c.match(/^text_visible\(\s*['"]([^'"]+)['"]\s*\)$/);
+    if (m) return { mode: 'text_visible', asset: '', text: m[1] };
+    m = c.match(/^(?:not\s+|!)\s*\(?\s*text_visible\(\s*['"]([^'"]+)['"]\s*\)\s*\)?$/);
+    if (m) return { mode: 'text_not_visible', asset: '', text: m[1] };
     return { mode: 'custom', asset: '', text: c };
   }
 
   function condText(mode, asset, text) {
     const a = String(asset || '').replace(/'/g, '');
-    const t = String(text || '').replace(/'/g, '');
+    const values = String(text || '')
+      .split(/[,，、]|\bor\b|\|/i)
+      .map((x) => x.trim())
+      .filter(Boolean);
+    const visible = values.map((v) => `text_visible('${v.replace(/'/g, '')}')`).join(' or ') || "text_visible('')";
     if (mode === 'appear') return `appear('${a}')`;
     if (mode === 'not_appear') return `not appear('${a}')`;
-    if (mode === 'ocr_eq') return `ocr('${a}') == '${t}'`;
-    if (mode === 'ocr_ne') return `ocr('${a}') != '${t}'`;
+    if (mode === 'text_visible') return visible;
+    if (mode === 'text_not_visible') return `not (${visible})`;
     return text || 'true';
   }
 
@@ -1047,10 +1092,10 @@
     modeLabel.textContent = '条件类型';
     const mode = document.createElement('select');
     for (const [v, label] of [
-      ['appear', '素材出现时'],
-      ['not_appear', '素材未出现时'],
-      ['ocr_eq', '文字等于'],
-      ['ocr_ne', '文字不等于'],
+      ['appear', '素材出现时（支持所有素材）'],
+      ['not_appear', '素材未出现时（支持所有素材）'],
+      ['text_visible', '文字出现（全屏多行识别）'],
+      ['text_not_visible', '文字未出现（全屏多行识别）'],
       ['custom', '自定义表达式'],
     ]) {
       const o = document.createElement('option');
@@ -1070,10 +1115,11 @@
     box.appendChild(assetLabel);
 
     const textLabel = document.createElement('label');
-    textLabel.textContent = '比较文字';
+    textLabel.textContent = '文字（多个用 /、逗号或“或”分隔）';
     const text = document.createElement('input');
     text.type = 'text';
     text.value = preset.text || '';
+    text.placeholder = '如：町中 / 召唤';
     textLabel.appendChild(text);
     box.appendChild(textLabel);
 
@@ -1091,8 +1137,9 @@
 
     function sync() {
       const modeValue = mode.value;
-      assetLabel.style.display = modeValue === 'custom' ? 'none' : 'block';
-      textLabel.style.display = modeValue === 'ocr_eq' || modeValue === 'ocr_ne' ? 'block' : 'none';
+      const assetMode = modeValue === 'appear' || modeValue === 'not_appear';
+      assetLabel.style.display = assetMode ? 'block' : 'none';
+      textLabel.style.display = assetMode ? 'none' : (modeValue === 'custom' ? 'none' : 'block');
       customLabel.style.display = modeValue === 'custom' ? 'block' : 'none';
       step.args = step.args || {};
       delete step.args.sel;

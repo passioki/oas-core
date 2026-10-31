@@ -145,6 +145,12 @@ pub struct AssetDecl {
     /// Revision counter (1 on first save).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rev: Option<u32>,
+    /// Frame ids where this asset is known to appear (v1.2.3 frame-asset link).
+    /// Multiple positions are allowed; batch dry-run tests every listed frame.
+    /// Empty is allowed for legacy assets, but new saves through the editor
+    /// require at least one position (user 10-31).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub positions: Vec<u64>,
 }
 
 impl AssetDecl {
@@ -162,6 +168,7 @@ impl AssetDecl {
             threshold: None,
             polygon: None,
             rev: None,
+            positions: Vec::new(),
         }
     }
 }
@@ -1146,8 +1153,7 @@ impl TaskBundle {
     ///
     /// Template ROI changes are rejected (the crop image would go stale); use
     /// `update_asset`/「保存素材覆盖」to re-crop a template.
-    pub fn update_asset_meta(
-        &self,
+    pub fn update_asset_meta(        &self,
         id: &str,
         roi: Option<[i32; 4]>,
         action_roi: Option<[i32; 4]>,
@@ -1196,6 +1202,26 @@ impl TaskBundle {
         if roi.is_none() && action_roi.is_none() && threshold.is_none() {
             return Err("nothing to update (pass roi, action_roi and/or threshold)".into());
         }
+        af.items[pos].rev = Some(af.items[pos].rev.unwrap_or(0) + 1);
+        let item = af.items[pos].clone();
+        self.write_assets_file(&af)?;
+        Ok(item)
+    }
+
+    /// v1.2.3 frame-asset link: replace an asset's frame positions. Empty is
+    /// allowed here so a user can clear positions before deleting a frame.
+    pub fn update_asset_positions(
+        &self,
+        id: &str,
+        positions: &[u64],
+    ) -> Result<AssetDecl, String> {
+        let mut af = self.load_assets_file()?;
+        let pos = af
+            .items
+            .iter()
+            .position(|a| a.id == id)
+            .ok_or_else(|| format!("asset `{id}` does not exist"))?;
+        af.items[pos].positions = positions.to_vec();
         af.items[pos].rev = Some(af.items[pos].rev.unwrap_or(0) + 1);
         let item = af.items[pos].clone();
         self.write_assets_file(&af)?;
@@ -2565,6 +2591,7 @@ mod tests {
             threshold: None,
             polygon: Some(vec![[10, 10], [30, 10], [30, 20], [10, 20]]),
             rev: None,
+            positions: Vec::new(),
         };        let saved = b.save_asset(decl.clone(), Some(&f)).expect("save ocr polygon");
         assert_eq!(saved.roi, Some([10, 10, 21, 11]));
         let set = b.load_runtime_assets().expect("runtime assets");
@@ -2609,6 +2636,7 @@ mod tests {
             threshold: None,
             polygon: None,
             rev: None,
+            positions: Vec::new(),
         };
         b.save_asset(ocr.clone(), Some(&f))
             .expect("OCR action region is valid");
@@ -2675,6 +2703,7 @@ mod tests {
             threshold: None,
             polygon: None,
             rev: None,
+            positions: Vec::new(),
         };
         let bad = AssetDecl {
             id: "批次乙".to_string(),
@@ -2688,6 +2717,7 @@ mod tests {
             threshold: None,
             polygon: None,
             rev: None,
+            positions: Vec::new(),
         };
         let err = b
             .save_assets_batch(vec![ok, bad], None)

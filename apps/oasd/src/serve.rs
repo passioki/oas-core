@@ -404,6 +404,103 @@ impl Server {
         Ok(ids)
     }
 
+    /// After a collection is saved, switch every task flow from any member asset
+    /// id to the collection id (user 10-31: "when an asset is added to a
+    /// collection, all tasks referencing it switch to the collection").
+    fn rewrite_tasks_to_collection(
+        &self,
+        collection_id: &str,
+        members: &[String],
+    ) -> (usize, Vec<String>) {
+        let mapping: Vec<(String, String)> = members
+            .iter()
+            .filter(|m| m.as_str() != collection_id)
+            .map(|m| (m.clone(), collection_id.to_string()))
+            .collect();
+        if mapping.is_empty() {
+            return (0, Vec::new());
+        }
+        let ids = match self.global_asset_ids() {
+            Ok(v) => v,
+            Err(e) => return (0, vec![e]),
+        };
+        let names = match oas_task::list_tasks(&self.tasks_dir) {
+            Ok(v) => v,
+            Err(e) => return (0, vec![e]),
+        };
+        let mut rewritten = 0usize;
+        let mut errors = Vec::new();
+        for name in names {
+            let bundle = match oas_task::TaskBundle::open_named(&self.tasks_dir, &name) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let path = bundle.flow_path();
+            let text = match std::fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let mut v: serde_json::Value = match serde_json::from_str(&text) {
+                Ok(v) => v,
+                Err(e) => {
+                    errors.push(format!("{name}: flow.json parse: {e}"));
+                    continue;
+                }
+            };
+            if !rewrite_flow_asset_refs(&mut v, &mapping) {
+                continue;
+            }
+            let text = match serde_json::to_string(&v) {
+                Ok(t) => t,
+                Err(e) => {
+                    errors.push(format!("{name}: serialize: {e}"));
+                    continue;
+                }
+            };
+            match bundle.save_flow_with_ids(&text, &ids) {
+                Ok(()) => rewritten += 1,
+                Err(e) => errors.push(format!("{name}: {e}")),
+            }
+        }
+        (rewritten, errors)
+    }
+
+    /// Asset ids whose `positions` contain `frame`. Used to block frame delete.
+    fn frame_position_referrers(&self, frame: u64) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut push = |af: oas_task::AssetsFile| {
+            for a in af.items {
+                if a.positions.contains(&frame) {
+                    out.push(a.id);
+                }
+            }
+        };
+        if self.using_global_assets() {
+            if let Ok(store) = crate::global_assets::open_store(&self.assets_dir) {
+                if let Ok(af) = store.load_assets_file() {
+                    push(af);
+                }
+            }
+        } else if let Ok(rd) = std::fs::read_dir(&self.tasks_dir) {
+            for e in rd.flatten() {
+                if !e.path().is_dir() {
+                    continue;
+                }
+                let Some(name) = e.file_name().to_str().map(|s| s.to_string()) else {
+                    continue;
+                };
+                if let Ok(b) = oas_task::TaskBundle::open_named(&self.tasks_dir, &name) {
+                    if let Ok(af) = b.load_assets_file() {
+                        push(af);
+                    }
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// Task names whose flow.json references `id` (global delete/rename guard).
     fn asset_referrers(&self, id: &str) -> Vec<String> {
         let mut out = Vec::new();
@@ -625,6 +722,7 @@ impl Server {
             }
             // --- §22.27 会话图片列表（旧 annotator「图片」面板）---
             ("GET", "/frames") => self.handle_frames(&mut out),
+            ("GET", "/frames/image") => self.handle_frame_image(&mut out, &path),
             ("POST", "/frames") => self.handle_frame_upload(&mut out, &body),
             ("POST", "/frames/select") => self.handle_frame_select(&mut out, &body),
             ("POST", "/frames/delete") => self.handle_frame_delete(&mut out, &body),
@@ -644,8 +742,11 @@ impl Server {
             ("POST", "/task/asset/collection/delete") => self.handle_collection_delete(&mut out, &body),
             ("POST", "/task/asset/rename") => self.handle_asset_rename(&mut out, &body),
             ("POST", "/task/asset/update") => self.handle_asset_update(&mut out, &body),
+            ("POST", "/task/asset/positions") => self.handle_asset_positions(&mut out, &body),
             ("POST", "/task/goal") => self.handle_task_goal(&mut out, &body),
             ("GET", "/task/assets") => self.handle_task_assets(&mut out, &path),
+            ("POST", "/task/assets/batch_test") => self.handle_assets_batch_test(&mut out, &body),
+            ("GET", "/task/asset/image") => self.handle_asset_image(&mut out, &path),
             ("GET", "/task/asset/match") => self.handle_asset_match(&mut out, &path),
             ("GET", "/task/flow") => self.handle_task_flow(&mut out, &path),
             ("POST", "/task/save_flow") => self.handle_save_flow(&mut out, &body),
@@ -684,6 +785,76 @@ impl Server {
     }
 
     /// `GET /frames` — 会话图片列表（不含像素，只有元信息）.
+    /// `GET /frames/image?id=N` — raw persisted frame PNG (asset thumbnails and
+    /// future batch tests crop from this without changing the current frame).
+    fn handle_frame_image(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
+        let q = parse_query(raw_path);
+        let id = q
+            .iter()
+            .find(|(k, _)| k == "id")
+            .and_then(|(_, v)| v.parse::<u32>().ok());
+        let Some(id) = id else {
+            return self.send_errors(out, 400, vec!["missing/invalid query param `id`".into()]);
+        };
+        let path = self.frames_dir.join(format!("frame-{id}.png"));
+        match std::fs::read(&path) {
+            Ok(bytes) => self.send_bytes(out, 200, "image/png", &bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.send_json(out, 404, r#"{"error":"frame image not found"}"#)
+            }
+            Err(e) => self.send_errors(out, 500, vec![format!("read {}: {e}", path.display())]),
+        }
+    }
+
+    /// `GET /task/asset/image?task=&id=` — saved template image for the asset
+    /// row thumbnail. OCR/region assets have no file and return 404; the UI
+    /// crops their ROI from a frame instead.
+    fn handle_asset_image(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
+        let q = parse_query(raw_path);
+        let task = q
+            .iter()
+            .find(|(k, _)| k == "task")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        let id = q
+            .iter()
+            .find(|(k, _)| k == "id")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        if id.is_empty() {
+            return self.send_errors(out, 400, vec!["missing query param `id`".into()]);
+        }
+        let store = match self.asset_store(&task) {
+            Ok(b) => b,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let af = match store.load_assets_file() {
+            Ok(a) => a,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let Some(item) = af.items.into_iter().find(|a| a.id == id) else {
+            return self.send_errors(out, 404, vec![format!("asset `{id}` not found")]);
+        };
+        let Some(file) = item.file else {
+            return self.send_json(out, 404, r#"{"error":"asset has no image"}"#);
+        };
+        let root = match std::fs::canonicalize(store.root()) {
+            Ok(p) => p,
+            Err(e) => return self.send_errors(out, 500, vec![format!("asset root: {e}")]),
+        };
+        let path = match std::fs::canonicalize(store.root().join(&file)) {
+            Ok(p) => p,
+            Err(e) => return self.send_errors(out, 404, vec![format!("asset image `{file}`: {e}")]),
+        };
+        if !path.starts_with(&root) {
+            return self.send_errors(out, 400, vec!["asset image escapes store root".into()]);
+        }
+        match std::fs::read(&path) {
+            Ok(bytes) => self.send_bytes(out, 200, "image/png", &bytes),
+            Err(e) => self.send_errors(out, 500, vec![format!("read {}: {e}", path.display())]),
+        }
+    }
+
     fn handle_frames(&self, out: &mut TcpStream) -> std::io::Result<()> {
         let st = self.state.lock().unwrap();
         let frames: Vec<serde_json::Value> = st
@@ -794,6 +965,19 @@ impl Server {
             Ok(v) => v,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
+        // User rule (10-31): a frame used as an asset position may not be
+        // deleted until those positions are removed.
+        let referrers = self.frame_position_referrers(id);
+        if !referrers.is_empty() {
+            return self.send_errors(
+                out,
+                400,
+                vec![format!(
+                    "帧 #{id} 被素材位置引用（{}）；请先删除/修改这些素材的位置再删帧",
+                    referrers.join("、")
+                )],
+            );
+        }
         let mut st = self.state.lock().unwrap();
         let pos = st.frames.iter().position(|f| f.id == id);
         let Some(pos) = pos else {
@@ -1108,8 +1292,63 @@ fn parse_query(raw_path: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
+/// Replace references to `old_ids` with `new_id` in a flow JSON document.
+/// Only asset-reference positions are touched (`sel`, `require_template`) and
+/// the asset-name literals inside appear/ocr functions; log text is left alone.
+fn rewrite_flow_asset_refs(v: &mut serde_json::Value, mapping: &[(String, String)]) -> bool {
+    fn repl_str(s: &str, mapping: &[(String, String)]) -> Option<String> {
+        let mut out = s.to_string();
+        let mut changed = false;
+        for (old, new) in mapping {
+            let q1 = format!("'{old}'");
+            let q2 = format!("\"{old}\"");
+            if out.contains(&q1) || out.contains(&q2) {
+                out = out.replace(&q1, &format!("'{new}'")).replace(&q2, &format!("\"{new}\""));
+                changed = true;
+            }
+        }
+        changed.then_some(out)
+    }
+    fn walk(v: &mut serde_json::Value, key: Option<&str>, mapping: &[(String, String)]) -> bool {
+        match v {
+            serde_json::Value::String(s) => {
+                let is_asset_key = matches!(key, Some("sel") | Some("require_template"));
+                let is_expr = matches!(key, Some("cond") | Some("text"));
+                if is_asset_key {
+                    if let Some((_, new)) = mapping.iter().find(|(old, _)| old == s) {
+                        *s = new.clone();
+                        return true;
+                    }
+                }
+                if is_expr {
+                    if let Some(next) = repl_str(s, mapping) {
+                        *s = next;
+                        return true;
+                    }
+                }
+                false
+            }
+            serde_json::Value::Array(a) => {
+                let mut changed = false;
+                for item in a {
+                    changed |= walk(item, key, mapping);
+                }
+                changed
+            }
+            serde_json::Value::Object(o) => {
+                let mut changed = false;
+                for (k, item) in o.iter_mut() {
+                    changed |= walk(item, Some(k), mapping);
+                }
+                changed
+            }
+            _ => false,
+        }
+    }
+    walk(v, None, mapping)
+}
+
+fn percent_decode(s: &str) -> String {    let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
@@ -1383,9 +1622,7 @@ impl Server {
                 let mut pts: Vec<[i32; 2]> = Vec::with_capacity(arr.len());
                 for (i, item) in arr.iter().enumerate() {
                     let pair = item.as_array().filter(|a| a.len() == 2);
-                    let parsed = pair.and_then(|a| {
-                        Some((a[0].as_i64()?, a[1].as_i64()?))
-                    });
+                    let parsed = pair.and_then(|a| Some((a[0].as_i64()?, a[1].as_i64()?)));
                     match parsed {
                         Some((x, y))
                             if (i32::MIN as i64..=i32::MAX as i64).contains(&x)
@@ -1397,9 +1634,7 @@ impl Server {
                             return self.send_errors(
                                 out,
                                 400,
-                                vec![format!(
-                                    "`polygon[{i}]` must be an [x,y] pair of integers"
-                                )],
+                                vec![format!("`polygon[{i}]` must be an [x,y] pair of integers")],
                             )
                         }
                     }
@@ -1407,6 +1642,39 @@ impl Server {
                 Some(pts)
             }
         };
+        let positions = match v.get("positions") {
+            None => Vec::new(),
+            Some(x) => match x.as_array() {
+                Some(arr) => {
+                    let mut out_ids = Vec::with_capacity(arr.len());
+                    for (i, item) in arr.iter().enumerate() {
+                        let Some(n) = item.as_u64() else {
+                            return self.send_errors(
+                                out,
+                                400,
+                                vec![format!("`positions[{i}]` must be a frame id (u64)")],
+                            );
+                        };
+                        out_ids.push(n);
+                    }
+                    out_ids
+                }
+                None => {
+                    return self.send_errors(
+                        out,
+                        400,
+                        vec!["`positions` must be an array of frame ids".to_string()],
+                    )
+                }
+            },
+        };
+        if positions.is_empty() {
+            return self.send_errors(
+                out,
+                400,
+                vec!["添加素材必须选择至少一个位置帧（positions）".to_string()],
+            );
+        }
         let frame = match self.state.lock().unwrap().frame.clone() {
             Some(f) => f,
             None => {
@@ -1460,6 +1728,7 @@ impl Server {
             threshold,
             polygon,
             rev: None,
+            positions,
         };
         match if replace {
             bundle.update_asset(decl, Some(&frame))
@@ -1708,6 +1977,214 @@ impl Server {
         }
     }
 
+    /// POST /task/assets/batch_test
+    /// body `{task?, assets?:[ids], frames?:[ids]}` — dry-run every asset on
+    /// each of its position frames (or the explicit frame list). Template:
+    /// full-frame match; OCR: ROI rec; region: bounds check.
+    fn handle_assets_batch_test(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let global_mode = self.using_global_assets();
+        let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").trim();
+        let only_assets: Option<std::collections::BTreeSet<String>> =
+            v.get("assets").and_then(|x| x.as_array()).map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            });
+        let only_frames: Option<std::collections::BTreeSet<u64>> =
+            v.get("frames").and_then(|x| x.as_array()).map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_u64())
+                    .collect()
+            });
+        let bundle = if global_mode {
+            match self.asset_store("") {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        } else {
+            match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        };
+        let af = match bundle.load_assets_file() {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let assets = match bundle.load_runtime_assets() {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let frame_meta: std::collections::BTreeMap<u64, (std::path::PathBuf, u32, u32)> = {
+            let st = self.state.lock().unwrap();
+            st.frames
+                .iter()
+                .map(|f| (f.id, (f.file.clone(), f.width, f.height)))
+                .collect()
+        };
+        let mut decoded: std::collections::BTreeMap<u64, oas_types::Frame> =
+            std::collections::BTreeMap::new();
+        let mut results = Vec::new();
+        for item in &af.items {
+            if let Some(only) = &only_assets {
+                if !only.contains(&item.id) {
+                    continue;
+                }
+            }
+            let mut frames = item.positions.clone();
+            if let Some(only) = &only_frames {
+                frames.retain(|f| only.contains(f));
+            }
+            if frames.is_empty() {
+                results.push(serde_json::json!({
+                    "id": item.id, "kind": item.kind, "frame_id": null,
+                    "pass": false, "error": "asset has no position frame"
+                }));
+                continue;
+            }
+            for fid in frames {
+                let Some((path, fw, fh)) = frame_meta.get(&fid) else {
+                    results.push(serde_json::json!({
+                        "id": item.id, "kind": item.kind, "frame_id": fid,
+                        "pass": false, "error": "frame id not found"
+                    }));
+                    continue;
+                };
+                if !decoded.contains_key(&fid) {
+                    match std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| {
+                        oas_codec::decode_png(&b)
+                    }) {
+                        Ok(frame) => {
+                            decoded.insert(fid, frame);
+                        }
+                        Err(e) => {
+                            results.push(serde_json::json!({
+                                "id": item.id, "kind": item.kind, "frame_id": fid,
+                                "pass": false, "error": format!("decode frame: {e}")
+                            }));
+                            continue;
+                        }
+                    }
+                }
+                let frame = decoded.get(&fid).expect("decoded");
+                let mut result = serde_json::json!({
+                    "id": item.id, "kind": item.kind, "frame_id": fid,
+                    "frame_width": fw, "frame_height": fh
+                });
+                match item.kind.as_str() {
+                    "template" => {
+                        if let Some(tpl) = assets.get(&item.id) {
+                            let gray = oas_perceive::GrayImage::from_frame(frame);
+                            let t0 = std::time::Instant::now();
+                            let best = oas_perceive::match_template_full(&gray, &tpl.gray);
+                            let (score, x, y) = best
+                                .map(|b| (b.score, b.x, b.y))
+                                .unwrap_or((-2.0f32, -1, -1));
+                            result["score"] = serde_json::json!(score);
+                            result["x"] = serde_json::json!(x);
+                            result["y"] = serde_json::json!(y);
+                            result["threshold"] = serde_json::json!(tpl.threshold);
+                            result["pass"] = serde_json::json!(score >= tpl.threshold);
+                            result["elapsed_ms"] =
+                                serde_json::json!(t0.elapsed().as_secs_f64() * 1000.0);
+                        } else {
+                            result["pass"] = serde_json::json!(false);
+                            result["error"] = serde_json::json!("template not loaded");
+                        }
+                    }
+                    "region" => {
+                        let ok = item.roi.map_or(false, |r| {
+                            r[0] >= 0
+                                && r[1] >= 0
+                                && r[2] > 0
+                                && r[3] > 0
+                                && (r[0] + r[2]) as u32 <= *fw
+                                && (r[1] + r[3]) as u32 <= *fh
+                        });
+                        result["pass"] = serde_json::json!(ok);
+                        if !ok {
+                            result["error"] = serde_json::json!("roi outside frame");
+                        }
+                    }
+                    _ => {
+                        #[cfg(feature = "ocr")]
+                        {
+                            let Some(engine) = self.ocr.as_ref() else {
+                                result["pass"] = serde_json::json!(false);
+                                result["error"] = serde_json::json!("no OCR model loaded");
+                                results.push(result);
+                                continue;
+                            };
+                            let Some(roi) = item.roi else {
+                                result["pass"] = serde_json::json!(false);
+                                result["error"] = serde_json::json!("OCR asset has no roi");
+                                results.push(result);
+                                continue;
+                            };
+                            let rect = oas_types::Rect {
+                                x: roi[0],
+                                y: roi[1],
+                                w: roi[2],
+                                h: roi[3],
+                            };
+                            let crop = match oas_ocr::RgbCrop::from_rgba(
+                                frame.width,
+                                frame.height,
+                                &frame.rgba,
+                                rect,
+                            ) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    result["pass"] = serde_json::json!(false);
+                                    result["error"] = serde_json::json!(format!("crop: {e}"));
+                                    results.push(result);
+                                    continue;
+                                }
+                            };
+                            let mut eng = engine.lock().unwrap();
+                            match eng.recognize(&crop) {
+                                Ok((text, score)) => {
+                                    let expected = item.ocr_text.as_deref().unwrap_or("");
+                                    let pass = if expected.is_empty() {
+                                        !text.trim().is_empty()
+                                    } else {
+                                        text.trim() == expected.trim()
+                                    };
+                                    result["text"] = serde_json::json!(text);
+                                    result["score"] = serde_json::json!(score);
+                                    result["pass"] = serde_json::json!(pass);
+                                }
+                                Err(e) => {
+                                    result["pass"] = serde_json::json!(false);
+                                    result["error"] = serde_json::json!(e);
+                                }
+                            }
+                        }
+                        #[cfg(not(feature = "ocr"))]
+                        {
+                            result["pass"] = serde_json::json!(false);
+                            result["error"] = serde_json::json!("batch OCR needs --features ocr");
+                        }
+                    }
+                }
+                results.push(result);
+            }
+        }
+        let passed = results.iter().filter(|r| r["pass"] == true).count();
+        let body = serde_json::json!({
+            "ok": true,
+            "task": if global_mode { "（全局素材库）" } else { task },
+            "total": results.len(),
+            "passed": passed,
+            "results": results,
+        });
+        self.send_json(out, 200, &body.to_string())
+    }
+
     /// `GET /task/asset/match?task=<name>&id=<asset>` — §22.28 行内「测试」：
     /// 用任务里**已保存的模板图**在当前帧全屏匹配（不依赖 ROI 选得准不准）.
     fn handle_asset_match(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
@@ -1832,11 +2309,21 @@ impl Server {
             action_roi,
         };
         match bundle.save_collection(coll) {
-            Ok(saved) => self.send_json(
-                out,
-                200,
-                &serde_json::json!({"ok": true, "collection": saved}).to_string(),
-            ),
+            Ok(saved) => {
+                let (rewritten, errors) =
+                    self.rewrite_tasks_to_collection(&saved.id, &saved.members);
+                self.send_json(
+                    out,
+                    200,
+                    &serde_json::json!({
+                        "ok": true,
+                        "collection": saved,
+                        "tasks_rewritten": rewritten,
+                        "rewrite_errors": errors,
+                    })
+                    .to_string(),
+                )
+            }
             Err(e) => self.send_errors(out, 400, vec![e]),
         }
     }
@@ -2076,6 +2563,34 @@ impl Server {
                 }
             };
             let ocr_text = item.get("ocr_text").and_then(|x| x.as_str()).map(|s| s.to_string());
+            let positions = match item.get("positions") {
+                None => Vec::new(),
+                Some(x) => match x.as_array() {
+                    Some(a) => {
+                        let mut ids = Vec::with_capacity(a.len());
+                        let mut ok = true;
+                        for (j, v) in a.iter().enumerate() {
+                            match v.as_u64() {
+                                Some(n) => ids.push(n),
+                                None => {
+                                    errors.push(format!("{p}.positions[{j}]: must be a frame id (u64)"));
+                                    ok = false;
+                                }
+                            }
+                        }
+                        if !ok { continue; }
+                        ids
+                    }
+                    None => {
+                        errors.push(format!("{p}.positions: must be an array of frame ids"));
+                        continue;
+                    }
+                },
+            };
+            if positions.is_empty() {
+                errors.push(format!("{p}.positions: 添加素材必须选择至少一个位置帧"));
+                continue;
+            }
             decls.push(oas_task::AssetDecl {
                 id: id.to_string(),
                 kind: kind.to_string(),
@@ -2088,6 +2603,7 @@ impl Server {
                 threshold,
                 polygon: None,
                 rev: None,
+                positions,
             });
         }
         if !errors.is_empty() {
@@ -2270,7 +2786,68 @@ impl Server {
         }
     }
 
-    /// v1.1 P2: `POST /task/goal` body `{task, goal:{mode,count?}}`.
+    /// v1.2.3: replace an asset's frame positions.
+    /// body `{task?, id, positions:[frame_id,...]}`.
+    fn handle_asset_positions(
+        &self,
+        out: &mut TcpStream,
+        body: &[u8],
+    ) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let global_mode = self.using_global_assets();
+        let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").trim();
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if id.is_empty() || (!global_mode && task.is_empty()) {
+            return self.send_errors(out, 400, vec!["`task` and `id` are required".into()]);
+        }
+        let positions = match v.get("positions").and_then(|x| x.as_array()) {
+            Some(arr) => {
+                let mut ids = Vec::with_capacity(arr.len());
+                for (i, item) in arr.iter().enumerate() {
+                    let Some(n) = item.as_u64() else {
+                        return self.send_errors(
+                            out,
+                            400,
+                            vec![format!("`positions[{i}]` must be a frame id (u64)")],
+                        );
+                    };
+                    ids.push(n);
+                }
+                ids
+            }
+            None => {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec!["`positions` must be an array of frame ids".to_string()],
+                )
+            }
+        };
+        let bundle = if global_mode {
+            match self.asset_store("") {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        } else {
+            match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        };
+        match bundle.update_asset_positions(id, &positions) {
+            Ok(item) => self.send_json(
+                out,
+                200,
+                &serde_json::json!({"ok": true, "item": item}).to_string(),
+            ),
+            Err(e) => self.send_errors(out, 400, vec![e]),
+        }
+    }
+
+    /// POST /task/goal body `{task, goal:{mode,count?}}`.
     ///
     /// Stores the task-level completion condition in `meta.json`; for
     /// `mode=battles` it also ensures `params.max_battles` exists so the flow
@@ -4043,6 +4620,28 @@ mod tests {
     use super::*;
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn collection_rewrite_maps_sel_and_expression_asset_refs() {
+        let mut v = serde_json::json!({
+            "steps": [
+                {"op":"click","args":{"sel":"甲"}},
+                {"op":"if","args":{"cond":"appear('甲') or ocr('乙') == 'x'"}},
+                {"op":"find","args":{"find":[{"kind":"template","sel":"乙"}]}}
+            ]
+        });
+        let mapping = vec![
+            ("甲".to_string(), "集合".to_string()),
+            ("乙".to_string(), "集合".to_string()),
+        ];
+        assert!(rewrite_flow_asset_refs(&mut v, &mapping));
+        let text = v.to_string();
+        assert!(text.contains("\"sel\":\"集合\""), "{text}");
+        assert!(text.contains("appear('集合')"), "{text}");
+        assert!(text.contains("ocr('集合')"), "{text}");
+        assert!(!text.contains("甲"), "{text}");
+        assert!(!text.contains("乙"), "{text}");
+    }
 
     struct TempDir(PathBuf);
 

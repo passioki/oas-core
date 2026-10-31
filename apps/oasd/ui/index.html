@@ -84,6 +84,9 @@
             单行识别、多行识别、图片匹配和独立操作区域的结果都会进入这里。
             勾选要保存的项；全不选时点保存会提示先勾选。
           </p>
+          <h4>素材位置帧（保存必选，可多选）</h4>
+          <select id="asset-position-frames" multiple size="4"></select>
+          <div id="asset-position-status" class="muted small">—</div>
 
           <button id="btn-clear">清除识别/操作区域</button>
 
@@ -94,6 +97,7 @@
           <div class="row lib-toolbar">
             <input id="asset-search" placeholder="按素材 id 搜索" />
             <button id="assets-refresh">刷新</button>
+            <button id="btn-assets-batch-test" type="button">批量帧测试（dry）</button>
             <button id="btn-new-collection" type="button" title="勾选模板图后创建素材集合">新建集合</button>
           </div>
           <div id="collection-msg" class="muted small">—</div>
@@ -195,6 +199,8 @@
             <button id="btn-task-create">新建任务…</button>
             <button id="btn-task-run">运行任务</button>
           </div>
+          <h3>当前任务引用的素材</h3>
+          <div id="task-ref-assets-task" class="asset-list muted">（选择任务后显示）</div>
           <label class="opt run-opt"><input id="run-dry" type="checkbox" /> 只演练（dry-run，不点击设备）</label>
           <label class="opt">回放目录（可选，不连设备）
             <input id="run-replay" placeholder="留空 = 实机运行；填 record 包目录 = replay" />

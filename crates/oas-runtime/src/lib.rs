@@ -2449,6 +2449,23 @@ fn step_name(s: &Step) -> &'static str {
 
 impl<S: ScreenSource, I: InputSink> EvalContext for Interpreter<S, I> {
     fn appear(&mut self, sel: &str) -> Result<bool, String> {
+        // "出现素材" covers every asset kind (user 10-31): OCR assets are
+        // visible when their text can be read; template/collection assets use
+        // the normal locate path.
+        if self.assets.ocr_roi(sel).is_some() {
+            if self.ocr.is_none() {
+                return Err(format!(
+                    "OCR is not available for appear({sel}): no OCR provider attached"
+                ));
+            }
+            return match self.ocr_read(sel) {
+                Ok(OcrRead::Single(text, _)) => Ok(text.map(|t| !t.trim().is_empty()).unwrap_or(false)),
+                Ok(OcrRead::Lines(lines)) => Ok(!lines.is_empty()),
+                // A multi-line-derived line that is not found means "not visible".
+                Err(e) if e.starts_with("derived ocr_line") => Ok(false),
+                Err(e) => Err(e),
+            };
+        }
         let (score, _) = self.locate(sel)?;
         Ok(score >= self.assets.threshold_for(sel).unwrap_or(0.9))
     }
@@ -2463,6 +2480,33 @@ impl<S: ScreenSource, I: InputSink> EvalContext for Interpreter<S, I> {
 
     fn page(&mut self) -> Result<Option<String>, String> {
         Ok(None) // page recognition lands in a later phase
+    }
+
+    fn text_visible(&mut self, text: &str) -> Result<bool, String> {
+        let target = text.trim();
+        if target.is_empty() {
+            return Ok(false);
+        }
+        if self.ocr.is_none() {
+            return Err("text_visible() requires OCR (no OCR provider attached)".to_string());
+        }
+        if self.frame.is_none() {
+            self.refresh_frame()?;
+        }
+        let frame = self
+            .frame
+            .as_ref()
+            .ok_or_else(|| "text_visible(): no frame available".to_string())?
+            .clone();
+        let roi = oas_types::Rect {
+            x: 0,
+            y: 0,
+            w: frame.width as i32,
+            h: frame.height as i32,
+        };
+        let provider = self.ocr.as_mut().expect("checked above");
+        let lines = provider.recognize_lines(&frame, roi)?;
+        Ok(lines.iter().any(|l| l.text.trim() == target))
     }
 
     fn param(&mut self, key: &str) -> Result<Value, String> {
@@ -2945,6 +2989,18 @@ mod tests {
     }
 
     #[test]
+    fn appear_supports_ocr_assets() {
+        let (mut interp, _) = mk_ocr(&[("完成", 0.9)]);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"if","args":{"cond":"appear('O_TEXT')"},
+                  "then":[{"op":"finish","args":{"exit":"done"}}],
+                  "else":[{"op":"finish","args":{"exit":"failed"}}]}]}"#,
+        );
+        assert_eq!(interp.run(&f).outcome(), Outcome::Done);
+    }
+
+    #[test]
     fn loop_zero_or_negative_runs_zero_iterations() {
         for n in ["0", "-3"] {
             let mut interp = mk(FakeScreen::new(), Budget::default());
@@ -3172,6 +3228,24 @@ mod tests {
     }
 
     // ---- multi-line OCR (`ocr_lines` => det + rec · ENGINE-DESIGN §17.1) ----
+
+    #[test]
+    fn text_visible_searches_full_screen_multiline_ocr() {
+        let (input, _) = FakeInput::new();
+        let (fake, _rois) = FakeDetOcr::new(vec![
+            line("町中", 0.9999, Rect { x: 4, y: 6, w: 40, h: 10 }),
+            line("庭院", 0.9998, Rect { x: 4, y: 20, w: 30, h: 10 }),
+        ]);
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets_with_ocr(), Budget::default())
+            .with_ocr(Box::new(fake));
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"if","args":{"cond":"text_visible('町中')"},
+                  "then":[{"op":"finish","args":{"exit":"done"}}],
+                  "else":[{"op":"finish","args":{"exit":"failed"}}]}]}"#,
+        );
+        assert_eq!(interp.run(&f).outcome(), Outcome::Done);
+    }
 
     #[test]
     fn ocr_lines_asset_uses_det_and_logs_every_line() {

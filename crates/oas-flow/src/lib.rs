@@ -400,6 +400,13 @@ pub trait EvalContext {
     fn ocr_digit(&mut self, sel: &str) -> Result<Option<f64>, String>;
     fn page(&mut self) -> Result<Option<String>, String>;
 
+    /// `text_visible('文字')` — full-screen multi-line OCR text search.
+    /// This is deliberately independent of any asset (user 10-31): text equals
+    /// means "this text is visible anywhere on the screen", not "read this ROI".
+    fn text_visible(&mut self, _text: &str) -> Result<bool, String> {
+        Err("text_visible() is only available during a flow run".to_string())
+    }
+
     /// `param('key')` — one declared task parameter (ENGINE §22.34.2, M0).
     ///
     /// The default implementation is a **loud error**, not a silent null: an
@@ -481,6 +488,16 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut dyn EvalContext) -> Result<Val
         };
         return ctx.var(&key);
     }
+    if name == "text_visible" {
+        if args.len() != 1 {
+            return Err("text_visible() takes exactly one text argument".into());
+        }
+        let text = match eval(&args[0], ctx)? {
+            Value::Str(s) => s,
+            other => return Err(format!("text_visible() expects a string, got {other:?}")),
+        };
+        return ctx.text_visible(&text).map(Value::Bool);
+    }
     let sel = match name {
         "page" => {
             if !args.is_empty() {
@@ -502,7 +519,7 @@ fn eval_call(name: &str, args: &[Expr], ctx: &mut dyn EvalContext) -> Result<Val
         }
         other => {
             return Err(format!(
-                "unknown function `{other}` (allowed: appear, ocr, ocr_digit, page, param, var)"
+                "unknown function `{other}` (allowed: appear, ocr, ocr_digit, text_visible, page, param, var)"
             ))
         }
     };
