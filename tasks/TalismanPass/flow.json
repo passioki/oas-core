@@ -110,7 +110,7 @@
     {
       "op": "if",
       "args": {
-        "cond": "appear('legacy_TalismanPass_I_RED_POINT_LEVEL')"
+        "cond": "false"
       },
       "then": [
         {
