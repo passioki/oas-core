@@ -62,6 +62,16 @@
 
 已新增 `ui_friend_page`（从旧好友页截图裁“好友”标题，a2099.png）并替换 DailyTrifles 的 3 处旧守卫；但实机入口点击后仍可能未进入好友页（0.401），入口点击/页面状态还需校准。后续其他任务若使用 `I_CHECK_FRIENDS` 也必须替换。
 
+## UI bootstrap 回归失败
+
+把 bootstrap 改成“最多 2 次 toggle + 每次校验 `ui_main_bar_guide`”后实机仍失败：
+
+- 连续点击 `(1200,680)` 两次，marker 仍未命中；
+- 随后点击好友入口 `(889,617)`，好友页没有打开；
+- 说明 `ui_main_bar_guide` 不是稳定的 UI-visible marker（可能随图标动画/UI 主题/分辨率变化），用它驱动 toggle 会反复隐藏/显示 UI。
+
+已回滚这次 bootstrap 硬化，不把失败改动提交。后续必须先解决“可靠 UI-visible marker”，再改 bootstrap；当前任务只能依赖手动/外部保证主界面 UI 状态。
+
 ## 结论
 
 旧仓 `tasks/GameUi/page/*.png` 的导航模板不能靠阈值/自动重采样修复，必须在**当前客户端**用 ROI 工具重新截图绑定：
