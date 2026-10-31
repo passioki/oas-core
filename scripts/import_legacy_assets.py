@@ -308,7 +308,7 @@ def main() -> int:
     # failing every migrated task before its first action.
     main_guard = by_id.get("legacy_GameUi_I_CHECK_MAIN")
     if isinstance(main_guard, dict):
-        main_guard["threshold"] = 0.75
+        main_guard["threshold"] = 0.73
     af.setdefault("schema_version", 1)
     af.setdefault("design_resolution", [1280, 720])
     af_path.write_text(json.dumps(af, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
