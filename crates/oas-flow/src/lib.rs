@@ -158,6 +158,8 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
             "!=" => Some("!="),
             "<=" => Some("<="),
             ">=" => Some(">="),
+            "&&" => { out.push(Tok::And); i += 2; continue; }
+            "||" => { out.push(Tok::Or); i += 2; continue; }
             _ => None,
         };
         if let Some(op) = two_op {
@@ -169,6 +171,7 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
             '(' => Some(Tok::LParen),
             ')' => Some(Tok::RParen),
             ',' => Some(Tok::Comma),
+            '!' => Some(Tok::Not),
             _ => None,
         };
         if let Some(t) = one {
@@ -2163,6 +2166,21 @@ mod tests {
         match e {
             Expr::Binary(BinOp::And, _, rhs) => {
                 assert_eq!(*rhs, Expr::Not(Box::new(Expr::Lit(Lit::Bool(false)))))
+            }
+            other => panic!("unexpected parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_symbolic_logic_operators() {
+        assert!(parse_expr("appear('a') && appear('b')").is_ok());
+        assert!(parse_expr("appear('a') || appear('b')").is_ok());
+        assert!(parse_expr("!appear('a')").is_ok());
+        // mixed words/symbols still follow and-before-or precedence
+        let e = parse_expr("appear('a') || appear('b') && !appear('c')").expect("parse");
+        match e {
+            Expr::Binary(BinOp::Or, _, rhs) => {
+                assert!(matches!(*rhs, Expr::Binary(BinOp::And, _, _)));
             }
             other => panic!("unexpected parse: {other:?}"),
         }

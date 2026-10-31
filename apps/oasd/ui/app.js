@@ -27,6 +27,7 @@ const btnClickStep = document.getElementById('btn-click-step');
 const btnAppendStep = document.getElementById('btn-append-step');
 const btnRegionClick = document.getElementById('btn-region-click');
 const btnRegionDrag = document.getElementById('btn-region-drag');
+const btnRegionSave = document.getElementById('btn-region-save');
 const btnPoly = document.getElementById('btn-poly');
 const btnBackMode = document.getElementById('btn-back-mode');
 // §22.27 会话图片列表（多帧）
@@ -36,6 +37,7 @@ const btnFrameCapture = document.getElementById('btn-frame-capture');
 const btnFramesRefresh = document.getElementById('btn-frames-refresh');
 const btnFramesClear = document.getElementById('btn-frames-clear');
 const framesList = document.getElementById('frames-list');
+const frameCategoryFilter = document.getElementById('frame-category-filter');
 const framesStatus = document.getElementById('frames-status');
 // §22.28 顶部标题行：结果/日志抽屉 + 任务素材列表
 const btnResultToggle = document.getElementById('btn-result-toggle');
@@ -386,9 +388,9 @@ function updateRoiLabel() {
     if (btnMatch) btnMatch.disabled = true;
     if (btnLibrarySave) btnLibrarySave.disabled = true;
     if (btnAsset) btnAsset.disabled = true;
-    if (btnSaveAsset) btnSaveAsset.disabled = true;
     if (btnRegionClick) btnRegionClick.disabled = true;
     if (btnRegionDrag) btnRegionDrag.disabled = true;
+    if (btnRegionSave) btnRegionSave.disabled = true;
     return;
   }
   const polyInfo =
@@ -399,10 +401,11 @@ function updateRoiLabel() {
   btnLines.disabled = roi.w < 2 || roi.h < 2;
   if (btnRegionClick) btnRegionClick.disabled = roi.w < 2 || roi.h < 2;
   if (btnRegionDrag) btnRegionDrag.disabled = roi.w < 2 || roi.h < 2;
+  if (btnRegionSave) btnRegionSave.disabled = roi.w < 2 || roi.h < 2;
   if (btnMatch) btnMatch.disabled = roi.w < 2 || roi.h < 2;
   if (btnLibrarySave) btnLibrarySave.disabled = roi.w < 2 || roi.h < 2;
   if (btnAsset) btnAsset.disabled = roi.w < 2 || roi.h < 2;
-  if (btnSaveAsset) btnSaveAsset.disabled = roi.w < 2 || roi.h < 2;
+  updateSaveButtonState();
 }
 
 // --- N2: 生成点击指令 (§19.2) ------------------------------------------------
@@ -857,6 +860,34 @@ function inlineOcrClickStep(text, roi) {
   };
 }
 
+function makeResultRow(kind, text, name, recognize, action, sourceRoi, selected, fromLines) {
+  return {
+    kind: kind || 'ocr_line',
+    text: text || name || '',
+    name: name || text || '识别结果',
+    recognize: { ...recognize },
+    action: action ? { ...action } : { ...recognize },
+    sourceRoi: sourceRoi ? { ...sourceRoi } : null,
+    selected: selected !== false && candidateNameValid(name || text || ''),
+    fromLines: !!fromLines,
+  };
+}
+
+function replaceResults(rows, sourceLabel) {
+  saveCandidates = rows || [];
+  activeCandidate = -1;
+  pendingActionAsset = null;
+  renderCandidateList(sourceLabel);
+  updateSaveButtonState();
+}
+
+function updateSaveButtonState() {
+  if (!btnSaveAsset) return;
+  // Having result rows is enough to make the button clickable; "none checked"
+  // is a user prompt, not a disabled state.
+  btnSaveAsset.disabled = saveCandidates.length === 0;
+}
+
 function renderOcrLines(lines, roi, sourceLabel) {
   lastLinesRoi = roi;
   if (!linesList) return;
@@ -864,23 +895,22 @@ function renderOcrLines(lines, roi, sourceLabel) {
   //   recognize = the OCR line bbox
   //   action    = the same rect (default operation region)
   // Both are absolute frame coords; action can be adjusted on the canvas.
-  saveCandidates = lines.map((b) => {
-    const rec = { x: b.box[0], y: b.box[1], w: b.box[2], h: b.box[3] };
-    return {
-      text: b.text,
-      score: Number(b.score || 0),
-      recognize: rec,
-      action: { ...rec },
-      // v1.2.1: remember the original multi-line recognition ROI; runtime must
-      // re-run the same det+rec over this region for this saved line.
-      sourceRoi: { x: roi.x, y: roi.y, w: roi.w, h: roi.h },
-      selected: candidateNameValid(b.text),
-      name: b.text,
-    };
-  });
-  activeCandidate = -1;
-  pendingActionAsset = null;
-  renderCandidateList(sourceLabel);
+  replaceResults(
+    lines.map((b) => {
+      const rec = { x: b.box[0], y: b.box[1], w: b.box[2], h: b.box[3] };
+      return makeResultRow(
+        'ocr_line',
+        b.text,
+        b.text,
+        rec,
+        { ...rec },
+        { x: roi.x, y: roi.y, w: roi.w, h: roi.h },
+        candidateNameValid(b.text),
+        true
+      );
+    }),
+    sourceLabel
+  );
 }
 
 function candidateNameValid(name) {
@@ -901,6 +931,7 @@ function candidateStatusText(sourceLabel) {
     batchStatus.style.color = '';
   }
   if (btnBatchSave) btnBatchSave.disabled = !sel.length || invalid.length > 0;
+  updateSaveButtonState();
 }
 
 function renderCandidateList(sourceLabel) {
@@ -921,16 +952,17 @@ function renderCandidateList(sourceLabel) {
   });
   const headText = document.createElement('span');
   headText.textContent =
-    `全选 · ${saveCandidates.length} 行 · ${sourceLabel || '多行识别'} · 勾选后用右侧「保存素材」`;
+    `全选 · ${saveCandidates.length} 项 · ${sourceLabel || '识别结果'} · 勾选后点「保存素材」`;
   head.append(selectAll, headText);
   linesList.appendChild(head);
   if (!saveCandidates.length) {
     const empty = document.createElement('div');
     empty.className = 'muted small';
-    empty.textContent = '（没有识别到文字行）';
+    empty.textContent = '（没有识别结果）';
     linesList.appendChild(empty);
     batchStatus.textContent = '—';
     if (btnBatchSave) btnBatchSave.disabled = true;
+    updateSaveButtonState();
     return;
   }
   saveCandidates.forEach((c, idx) => {
@@ -1426,6 +1458,11 @@ function drawClickStats() {
 }
 
 function drawClickOverlay() {
+  // The distribution overlay is only for the click-distribution panel. Drawing
+  // it during normal素材采集 interferes with ROI/frame selection and hides the
+  // game screen behind heat colors.
+  const clickPanel = document.getElementById('panel-click');
+  if (!clickPanel || !clickPanel.classList.contains('active')) return;
   if (!clickData) return;
   if (clickData.points && clickData.points.length) {
     if (
@@ -1973,14 +2010,81 @@ async function testAssetMatch(it) {
 // Persist the current ROI as an asset in the task bundle. The server crops the
 // LAST captured frame and assigns images/aNNN.png; the (Chinese) id never
 // becomes a path.
-// R23: one save entry. If OCR candidates exist, save the checked rows; otherwise
-// save the current ROI as a single asset.
+// R23: one save entry for every recognition result kind.
 async function saveAssetUnified() {
-  if (saveCandidates.length) {
-    await saveSelectedCandidates();
+  const task = currentTask();
+  if (!task) {
+    resultEl.textContent = '请先选择/新建任务';
     return;
   }
-  await doSaveAsset();
+  const chosen = saveCandidates.filter((c) => c.selected);
+  if (!chosen.length) {
+    resultEl.textContent = '请先在「识别结果」中勾选要保存的项';
+    window.alert('请先勾选要保存的识别结果。');
+    return;
+  }
+  const bad = chosen.filter((c) => !candidateNameValid(c.name));
+  if (bad.length) {
+    resultEl.textContent = '名称非法（需字母/中文/数字/下划线，不能以数字开头）：\n' +
+      bad.map((c) => c.name).join('\n');
+    return;
+  }
+  const ocrRows = chosen.filter((c) => c.kind === 'ocr_line' || c.kind === 'ocr_lines');
+  const otherRows = chosen.filter((c) => c.kind !== 'ocr_line' && c.kind !== 'ocr_lines');
+  const errors = [];
+  let saved = 0;
+  try {
+    if (ocrRows.length) {
+      const assets = ocrRows.map((c) => {
+        const row = {
+          id: c.name.trim(),
+          kind: 'ocr_line',
+          roi: [c.recognize.x, c.recognize.y, c.recognize.w, c.recognize.h],
+          action_roi: [c.action.x, c.action.y, c.action.w, c.action.h],
+        };
+        if (c.fromLines && c.sourceRoi) {
+          row.ocr_mode = 'lines';
+          row.ocr_source_roi = [c.sourceRoi.x, c.sourceRoi.y, c.sourceRoi.w, c.sourceRoi.h];
+          row.ocr_text = c.text;
+        }
+        return row;
+      });
+      const r = await postJson('/task/save_assets', { task, assets });
+      if (!r.ok) {
+        errors.push(...(r.errors || ['批量保存失败']));
+      } else {
+        saved += (r.saved || []).length;
+      }
+    }
+    for (const c of otherRows) {
+      const payload = {
+        task,
+        id: c.name.trim(),
+        kind: c.kind,
+        roi: [c.recognize.x, c.recognize.y, c.recognize.w, c.recognize.h],
+      };
+      if (c.kind === 'template') payload.threshold = 0.85;
+      if (c.kind !== 'region' && c.action) {
+        payload.action_roi = [c.action.x, c.action.y, c.action.w, c.action.h];
+      }
+      const r = await postJson('/task/save_asset', payload);
+      if (!r.ok) {
+        errors.push(...(r.errors || [`保存 ${c.name} 失败`]));
+      } else {
+        saved += 1;
+      }
+    }
+  } catch (e) {
+    errors.push(String(e));
+  }
+  if (errors.length) {
+    resultEl.textContent = `保存结果：成功 ${saved}，失败 ${errors.length}\n` + errors.join('\n');
+    return;
+  }
+  resultEl.textContent = `已保存 ${saved} 个素材`;
+  log(`统一保存素材：${saved} 个`);
+  replaceResults([], '');
+  await refreshTaskAssets(task);
 }
 
 
@@ -2366,6 +2470,13 @@ async function refreshFrames() {
     if (!frames.length) {
       framesList.textContent = '（暂无图片，点「截图」或上传）';
       framesStatus.textContent = '—';
+      if (frameCategoryFilter) {
+        frameCategoryFilter.textContent = '';
+        const o = document.createElement('option');
+        o.value = '';
+        o.textContent = '（暂无分类）';
+        frameCategoryFilter.appendChild(o);
+      }
       return;
     }
     const groups = new Map();
@@ -2379,7 +2490,21 @@ async function refreshFrames() {
       if (b === '未分类') return -1;
       return 0;
     });
-    for (const cat of orderedCats) {
+    if (frameCategoryFilter) {
+      const keep = frameCategoryFilter.value;
+      frameCategoryFilter.textContent = '';
+      for (const cat of orderedCats) {
+        const o = document.createElement('option');
+        o.value = cat;
+        o.textContent = `${cat}（${groups.get(cat).length}）`;
+        frameCategoryFilter.appendChild(o);
+      }
+      frameCategoryFilter.value = orderedCats.includes(keep) ? keep : (orderedCats[0] || '');
+    }
+    // Only render the selected category, not every group expanded.
+    const selectedCat = frameCategoryFilter ? frameCategoryFilter.value : orderedCats[0];
+    const visibleCats = selectedCat ? [selectedCat] : orderedCats;
+    for (const cat of visibleCats) {
       const group = document.createElement('div');
       group.className = 'frame-group';
       const head = document.createElement('div');
@@ -2894,11 +3019,39 @@ btnClear.addEventListener('click', () => {
   selectedBox = null;
   activeCandidate = -1;
   pendingActionAsset = null;
+  replaceResults([], '');
   updateRoiLabel();
   updateClickStepButtons();
   draw();
   resultEl.textContent = '—';
 });
+
+async function fallbackFullscreenLines(reason) {
+  if (!detReady) {
+    resultEl.textContent = `单行识别失败（${reason}）；多行识别不可用（无 det model）`;
+    return false;
+  }
+  const fw = canvas.width || (img && img.naturalWidth) || (roi && roi.x + roi.w) || 1280;
+  const fh = canvas.height || (img && img.naturalHeight) || (roi && roi.y + roi.h) || 720;
+  const full = { x: 0, y: 0, w: fw, h: fh };
+  resultEl.textContent = `单行识别失败（${reason}），改用全屏多行识别…`;
+  log(`单行 OCR 回退：全屏多行识别 ${fw}x${fh}`);
+  const r = await fetch(`/lines?x=0&y=0&w=${fw}&h=${fh}`);
+  const s = await r.json();
+  if (s.error || !Array.isArray(s.lines)) {
+    resultEl.textContent = `全屏多行回退失败：${s.error || '无结果'}`;
+    return false;
+  }
+  const lines = s.lines.map((b) => ({
+    ...b,
+    box: [b.box[0], b.box[1], b.box[2], b.box[3]],
+  }));
+  renderOcrLines(lines, full, '全屏多行回退');
+  resultEl.textContent =
+    `单行识别失败（${reason}）→ 全屏多行识别 ${lines.length} 行；` +
+    '请在「识别结果」勾选需要的行。';
+  return true;
+}
 
 btnOcr.addEventListener('click', async () => {
   if (!roi) return;
@@ -2914,9 +3067,22 @@ btnOcr.addEventListener('click', async () => {
     const q = `x=${roi.x}&y=${roi.y}&w=${roi.w}&h=${roi.h}`;
     const r = await fetch('/ocr?' + q);
     const s = await r.json();
-    if (s.error) {
-      resultEl.textContent = '错误：' + s.error;
+    if (s.error || !String(s.text || '').trim()) {
+      if (await fallbackFullscreenLines(s.error || 'ROI 内没有文字')) return;
+      resultEl.textContent = '错误：' + (s.error || 'ROI 内没有文字');
     } else {
+      const rec = { x: roi.x, y: roi.y, w: roi.w, h: roi.h };
+      replaceResults([
+        makeResultRow(
+          'ocr_line',
+          s.text,
+          s.text,
+          rec,
+          roiBack ? { ...roiBack } : { ...rec },
+          rec,
+          candidateNameValid(s.text)
+        ),
+      ], '单行识别');
       resultEl.textContent = `文字 = ${JSON.stringify(s.text)}\n得分 = ${s.score.toFixed(4)}\n耗时 = ${s.elapsed_ms.toFixed(1)} ms`;
       log(`OCR → ${s.text} (${s.score.toFixed(3)})`);
     }
@@ -2942,6 +3108,20 @@ async function doMatch(r) {
   const roiScore = typeof s.roi_score === 'number' ? s.roi_score : -2;
   lastMatch = s;
   if (btnMatchSave) btnMatchSave.disabled = false;
+  const rec = { x: s.x, y: s.y, w: s.w, h: s.h };
+  let action = { ...rec };
+  if (roiBack && r) {
+    action = {
+      x: rec.x + (roiBack.x - r.x),
+      y: rec.y + (roiBack.y - r.y),
+      w: roiBack.w,
+      h: roiBack.h,
+    };
+  }
+  const matchName = `模板_${Math.max(1, Math.round(Number(s.score) * 100))}_${Date.now() % 10000}`;
+  replaceResults([
+    makeResultRow('template', `图匹配 ${Number(s.score).toFixed(3)}`, matchName, rec, action, rec, true),
+  ], '图片匹配');
   boxes = [{ text: `图匹配 ${Number(s.score).toFixed(2)}`, score: Number(s.score), box: [s.x, s.y, s.w, s.h] }];
   draw();
   resultEl.textContent =
@@ -2996,7 +3176,7 @@ btnCapture.addEventListener('click', doCapture);
 // Generate the declaration JSON for copy/paste. `file` is intentionally NOT
 // generated: when saved, the engine assigns images/aNNN.png, so the (Chinese)
 // id never lands on disk as a path (ENGINE-DESIGN §18.1).
-btnAsset.addEventListener('click', async () => {
+if (btnAsset) btnAsset.addEventListener('click', async () => {
   if (!roi) return;
   const id = (assetId.value || '').trim();
   if (!id) {
@@ -3506,6 +3686,9 @@ async function submitResetMemory() {
       p.classList.toggle('active', p.id === panelId);
     }
     if (panelId === 'panel-schedule') refreshScheduler();
+    // Repaint so a cached click-distribution overlay disappears immediately
+    // when leaving that panel (and appears when entering it).
+    if (typeof draw === 'function') draw();
   }
   window.__oasActivatePanel = activatePanel;
   for (const b of railButtons) {
@@ -3609,6 +3792,16 @@ async function submitResetMemory() {
   if (btnWbFlow) btnWbFlow.addEventListener('click', () => activatePage('builder'));
   if (btnRegionClick) btnRegionClick.addEventListener('click', generateRegionClick);
   if (btnRegionDrag) btnRegionDrag.addEventListener('click', generateRegionDrag);
+  if (btnRegionSave) btnRegionSave.addEventListener('click', () => {
+    if (!roi) return;
+    const name = (window.prompt('独立操作区域素材名称（全局唯一）', '操作区域') || '').trim();
+    if (!name) return;
+    const rec = { x: roi.x, y: roi.y, w: roi.w, h: roi.h };
+    replaceResults([
+      makeResultRow('region', name, name, rec, { ...rec }, null, candidateNameValid(name)),
+    ], '独立操作区域');
+    resultEl.textContent = `已把独立操作区域「${name}」加入识别结果；勾选后点「保存素材」。`;
+  });
   // --- M2/N37: 调度面板 + 重置记忆 ---
   if (btnSchedRefresh) btnSchedRefresh.addEventListener('click', refreshScheduler);
   if (btnSchedReset) btnSchedReset.addEventListener('click', openResetMemoryDialog);
@@ -3649,6 +3842,7 @@ async function submitResetMemory() {
   if (btnFrameUpload) btnFrameUpload.addEventListener('click', uploadFrames);
   if (btnFrameCapture) btnFrameCapture.addEventListener('click', () => doCapture());
   if (btnFramesRefresh) btnFramesRefresh.addEventListener('click', () => refreshFrames());
+  if (frameCategoryFilter) frameCategoryFilter.addEventListener('change', () => refreshFrames());
   if (btnFramesClear) btnFramesClear.addEventListener('click', () => clearFrames());
   await refreshFrames();
   // §22.22 deep link: /?lib=<id> selects that library asset and runs the match.

@@ -2453,8 +2453,40 @@ impl Server {
         if let Err(e) = std::fs::remove_dir_all(&root) {
             return self.send_errors(out, 500, vec![format!("delete task `{task}`: {e}")]);
         }
-        self.editor_log(&format!("task_delete task={task}"));
-        self.send_json(out, 200, &serde_json::json!({"ok": true, "task": task}).to_string())
+        let pruned = self.prune_scheduler_task(task).unwrap_or(0);
+        self.editor_log(&format!("task_delete task={task} scheduler_entries_removed={pruned}"));
+        self.send_json(
+            out,
+            200,
+            &serde_json::json!({"ok": true, "task": task, "scheduler_entries_removed": pruned}).to_string(),
+        )
+    }
+
+    /// Remove scheduler entries that point at a deleted task. Keeping stale
+    /// entries is confusing (the schedule page still lists deleted tasks) and
+    /// dangerous (the daemon would try to open a missing bundle).
+    fn prune_scheduler_task(&self, task: &str) -> Result<usize, String> {
+        let path = self.scheduler_options().config;
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(format!("read {}: {e}", path.display())),
+        };
+        let mut v: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let Some(entries) = v.get_mut("entries").and_then(|x| x.as_array_mut()) else {
+            return Ok(0);
+        };
+        let before = entries.len();
+        entries.retain(|e| e.get("task").and_then(|x| x.as_str()) != Some(task));
+        let removed = before - entries.len();
+        if removed > 0 {
+            let text = serde_json::to_string_pretty(&v)
+                .map_err(|e| format!("serialize {}: {e}", path.display()))?;
+            std::fs::write(&path, format!("{text}\n"))
+                .map_err(|e| format!("write {}: {e}", path.display()))?;
+        }
+        Ok(removed)
     }
 
     /// v1.1 P3: current deployment config (settings page).
@@ -3586,7 +3618,39 @@ impl Server {
     /// Never takes the scheduler lock; safe while the daemon runs.
     fn handle_scheduler_status(&self, out: &mut TcpStream) -> std::io::Result<()> {
         match crate::schedule::status_json(&self.scheduler_options()) {
-            Ok(v) => self.send_json(out, 200, &v.to_string()),
+            Ok(mut v) => {
+                // A task deleted outside /task/delete (or before this cleanup
+                // existed) must not keep appearing as a schedulable entry.
+                let tasks: std::collections::BTreeSet<String> =
+                    oas_task::list_tasks(&self.tasks_dir).unwrap_or_default().into_iter().collect();
+                let task_exists = |e: &serde_json::Value| {
+                    e.get("task")
+                        .and_then(|x| x.as_str())
+                        .map(|t| tasks.contains(t))
+                        .unwrap_or(false)
+                };
+                if let Some(entries) = v.get_mut("entries").and_then(|x| x.as_array_mut()) {
+                    entries.retain(task_exists);
+                }
+                if let Some(choices) = v.get_mut("task_choices").and_then(|x| x.as_array_mut()) {
+                    choices.retain(task_exists);
+                }
+                if let Some(plan) = v.get_mut("plan").and_then(|x| x.as_object_mut()) {
+                    for key in ["runnable", "skipped"] {
+                        if let Some(arr) = plan.get_mut(key).and_then(|x| x.as_array_mut()) {
+                            arr.retain(task_exists);
+                        }
+                    }
+                }
+                let running_missing = v
+                    .get("running")
+                    .map(|r| !r.is_null() && !task_exists(r))
+                    .unwrap_or(false);
+                if running_missing {
+                    v["running"] = serde_json::Value::Null;
+                }
+                self.send_json(out, 200, &v.to_string())
+            }
             Err(e) => self.send_errors(out, 400, vec![format!("scheduler status: {e}")]),
         }
     }

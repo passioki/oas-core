@@ -82,6 +82,11 @@
     assets: [],
     selected: null, // path array
     tasks: [],
+    autoSaveArmed: false,
+    autoSaveTimer: null,
+    lastSavedFlow: '',
+    saving: false,
+    checked: new Set(),
   };
   const $ = (id) => document.getElementById(id);
 
@@ -234,6 +239,35 @@
     status(`已添加 ${meta.label}`);
   }
 
+  function removeCheckedIn(steps, basePath) {
+    let removed = 0;
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const step = steps[i];
+      const path = basePath.concat([i]);
+      if (B.checked.has(JSON.stringify(path))) {
+        steps.splice(i, 1);
+        removed += 1;
+        continue;
+      }
+      for (const [key, arr] of childArrays(step)) {
+        removed += removeCheckedIn(arr, path.concat([key]));
+      }
+    }
+    return removed;
+  }
+
+  function deleteCheckedSteps() {
+    if (!B.checked.size) {
+      status('先勾选要删除的步骤', '#ff8a80');
+      return;
+    }
+    const n = removeCheckedIn(getRoot(), []);
+    B.checked.clear();
+    B.selected = null;
+    renderAll();
+    status(`已删除 ${n} 个勾选步骤`);
+  }
+
   function renderSteps() {
     const root = $('builder-steps');
     if (!root) return;
@@ -246,20 +280,57 @@
     renderStepArray(steps, [], root, 0);
   }
 
+  function moveStepTo(fromPath, targetStepPath, key) {
+    const fromArr = getContainer(fromPath);
+    const idx = fromPath[fromPath.length - 1];
+    const targetStep = getStep(targetStepPath);
+    if (!fromArr || typeof idx !== 'number' || !targetStep || !Array.isArray(targetStep[key])) return;
+    // Refuse to move a container into itself/its descendant.
+    const fromKey = JSON.stringify(fromPath);
+    const targetKey = JSON.stringify(targetStepPath);
+    if (targetKey.startsWith(fromKey + ',') || targetKey === fromKey) return;
+    const step = fromArr[idx];
+    if (!step) return;
+    if (fromArr === targetStep[key] && idx === targetStep[key].length - 1) return;
+    fromArr.splice(idx, 1);
+    targetStep[key].push(step);
+    B.selected = targetStepPath.concat([key, targetStep[key].length - 1]);
+    renderAll();
+    status(`已移动步骤到 ${key}`);
+  }
+
   function renderStepArray(steps, basePath, container, depth) {
     steps.forEach((step, idx) => {
       if (!step || typeof step !== 'object') return;
       const path = basePath.concat([idx]);
       const row = document.createElement('div');
       row.className = 'builder-step';
+      row.draggable = true;
       if (B.selected && JSON.stringify(B.selected) === JSON.stringify(path)) row.classList.add('selected');
+      row.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/plain', JSON.stringify(path));
+        e.dataTransfer.effectAllowed = 'move';
+        row.classList.add('dragging');
+      });
+      row.addEventListener('dragend', () => row.classList.remove('dragging'));
+      const pick = document.createElement('input');
+      pick.type = 'checkbox';
+      pick.className = 'builder-step-check';
+      pick.checked = B.checked.has(JSON.stringify(path));
+      pick.title = '勾选后可整体删除';
+      pick.addEventListener('click', (e) => e.stopPropagation());
+      pick.addEventListener('change', () => {
+        const key = JSON.stringify(path);
+        if (pick.checked) B.checked.add(key);
+        else B.checked.delete(key);
+      });
       const op = document.createElement('span');
       op.className = 'op';
       op.textContent = (OP_META[step.op] && OP_META[step.op].label) || step.op;
       const sum = document.createElement('span');
       sum.className = 'summary';
       sum.textContent = ' ' + stepSummary(step);
-      row.append(op, sum);
+      row.append(pick, op, sum);
       const btns = document.createElement('span');
       btns.className = 'rowbtns';
       const up = document.createElement('button');
@@ -288,6 +359,19 @@
         label.className = 'muted small';
         label.textContent = key + ':';
         child.appendChild(label);
+        child.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          child.classList.add('drop-target');
+        });
+        child.addEventListener('dragleave', () => child.classList.remove('drop-target'));
+        child.addEventListener('drop', (e) => {
+          e.preventDefault();
+          child.classList.remove('drop-target');
+          try {
+            const fromPath = JSON.parse(e.dataTransfer.getData('text/plain'));
+            if (Array.isArray(fromPath)) moveStepTo(fromPath, path, key);
+          } catch (err) { /* ignore malformed drag data */ }
+        });
         if (!arr.length) {
           const empty = document.createElement('div');
           empty.className = 'muted small';
@@ -629,12 +713,13 @@
       : '当前任务：未选择';
     box.appendChild(head);
     if (B.assets.length) {
-      const sel = assetSelect('', null);
-      sel.title = '任务构建可用素材/操作区域（动作属性里会用到）';
-      box.appendChild(sel);
       const list = document.createElement('div');
-      list.className = 'muted small';
-      list.textContent = B.assets.map((a) => `${a.id} [${a.kind}]`).join('\n');
+      list.className = 'muted small builder-asset-list';
+      for (const a of B.assets) {
+        const row = document.createElement('div');
+        row.textContent = `${a.id} [${a.kind}]`;
+        list.appendChild(row);
+      }
       box.appendChild(list);
     } else {
       const empty = document.createElement('div');
@@ -895,6 +980,34 @@
     root.appendChild(box);
   }
 
+  function replaceSelectedStep(next) {
+    const path = B.selected;
+    const arr = getContainer(path);
+    if (!arr) return;
+    const idx = path[path.length - 1];
+    if (typeof idx !== 'number') return;
+    arr.splice(idx, 1, next);
+    B.selected = path;
+    renderAll();
+  }
+
+  function convertSelectedStep(target) {
+    const step = getStep(B.selected);
+    if (!step) return;
+    if (target === 'loop' && step.op === 'if') {
+      const body = [...(step.then || []), ...(step.else || [])];
+      replaceSelectedStep({ op: 'loop', args: { n: '1' }, body });
+      status('已把 if 转换为循环；原来的是/否子动作都放进循环体');
+    } else if (target === 'while' && step.op === 'if') {
+      const body = [...(step.then || []), ...(step.else || [])];
+      replaceSelectedStep({ op: 'while', args: { cond: 'true', max_iters: 100 }, body });
+      status('已把 if 转换为当条件循环；原来的子动作放进循环体');
+    } else if (target === 'if' && (step.op === 'loop' || step.op === 'while')) {
+      replaceSelectedStep({ op: 'if', args: { cond: 'true' }, then: step.body || [], else: [] });
+      status('已把循环转换为 if；原来的循环体放进「是」分支');
+    }
+  }
+
   function renderForm() {
     const root = $('builder-form');
     if (!root) return;
@@ -922,6 +1035,32 @@
     assetLabel.appendChild(assetPick);
     root.appendChild(assetLabel);
     if (step.op === 'call_task') renderCallTaskForm(root, step);
+    if (step.op === 'if' || step.op === 'while') {
+      const help = document.createElement('div');
+      help.className = 'muted small';
+      help.textContent = '条件支持 and/or/not、&&/||/! 和括号；素材条件写成 appear(\'素材id\') / ocr(\'素材id\') == \'文字\'。';
+      root.appendChild(help);
+    }
+    if (step.op === 'if' || step.op === 'loop' || step.op === 'while') {
+      const convert = document.createElement('div');
+      convert.className = 'builder-form-actions';
+      if (step.op === 'if') {
+        for (const [target, label] of [['loop', '转换为循环 N 次'], ['while', '转换为当条件循环']]) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = label;
+          b.addEventListener('click', () => convertSelectedStep(target));
+          convert.appendChild(b);
+        }
+      } else {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = '转换为 if';
+        b.addEventListener('click', () => convertSelectedStep('if'));
+        convert.appendChild(b);
+      }
+      root.appendChild(convert);
+    }
     for (const f of FIELDS[step.op] || []) {
       const lab = document.createElement('label');
       lab.textContent = f.label;
@@ -983,6 +1122,7 @@
     for (const [key] of childArrays(step)) {
       const row = document.createElement('div');
       row.className = 'builder-child-add';
+      const branchLabel = key === 'then' ? '是' : key === 'else' ? '否' : key === 'body' ? '循环体' : key;
       const sel = document.createElement('select');
       for (const op of Object.keys(OP_META)) {
         const o = document.createElement('option');
@@ -993,7 +1133,8 @@
       sel.value = 'log';
       const b = document.createElement('button');
       b.type = 'button';
-      b.textContent = '添加子动作到 ' + key;
+      b.textContent = branchLabel;
+      b.title = '添加子动作到 ' + key;
       b.addEventListener('click', () => {
         const arr = step[key];
         const child = makeStep(sel.value);
@@ -1002,11 +1143,36 @@
         renderAll();
         status(`已添加 ${OP_META[sel.value] ? OP_META[sel.value].label : sel.value} → ${key}`);
       });
-      row.appendChild(sel);
       row.appendChild(b);
+      row.appendChild(sel);
       actions.appendChild(row);
     }
     root.appendChild(actions);
+  }
+
+  function renderCode() {
+    const el = $('builder-code');
+    if (!el || document.activeElement === el) return;
+    el.value = B.flow ? JSON.stringify(B.flow, null, 2) : '';
+  }
+
+  function applyCode() {
+    const el = $('builder-code');
+    const st = $('builder-code-status');
+    if (!el) return;
+    try {
+      const v = JSON.parse(el.value);
+      if (!v || typeof v !== 'object' || !Array.isArray(v.steps)) {
+        throw new Error('flow 必须包含 steps 数组');
+      }
+      B.flow = v;
+      B.selected = null;
+      renderAll();
+      if (st) st.textContent = '代码已应用到流程图';
+      status('代码已应用，自动保存将写入 flow.json');
+    } catch (e) {
+      if (st) st.textContent = '代码无效：' + e.message;
+    }
   }
 
   function renderAll() {
@@ -1014,6 +1180,8 @@
     renderGraph();
     renderForm();
     renderAssetPanel();
+    renderCode();
+    scheduleAutoSave();
   }
 
   async function refreshTaskList() {
@@ -1038,6 +1206,7 @@
   }
 
   async function loadTask(name) {
+    B.autoSaveArmed = false;
     if (!name) {
       B.task = '';
       B.flow = null;
@@ -1064,18 +1233,30 @@
         B.assets.push({ id: c.id, kind: 'template_set', members: c.members || [], action_roi: c.action_roi });
       }
       B.selected = null;
+      B.lastSavedFlow = JSON.stringify(B.flow);
       renderAll();
+      B.autoSaveArmed = true;
       status(`已载入 ${name}：${B.flow.steps.length} 个根动作 / ${B.assets.length} 个素材`);
     } catch (e) {
       status('载入失败：' + e, '#ff8a80');
     }
   }
 
-  async function saveFlow() {
+  function scheduleAutoSave() {
+    if (!B.autoSaveArmed || !B.task || !B.flow) return;
+    const json = JSON.stringify(B.flow);
+    if (json === B.lastSavedFlow) return;
+    if (B.autoSaveTimer) clearTimeout(B.autoSaveTimer);
+    B.autoSaveTimer = setTimeout(() => { saveFlow(true); }, 800);
+  }
+
+  async function saveFlow(silent) {
     if (!B.task) {
-      status('请先选择任务', '#ff8a80');
+      if (!silent) status('请先选择任务', '#ff8a80');
       return;
     }
+    if (B.saving) return;
+    B.saving = true;
     try {
       const r = await fetch('/task/save_flow', {
         method: 'POST',
@@ -1087,9 +1268,12 @@
         status('保存失败：' + (s.errors || []).join('; '), '#ff8a80');
         return;
       }
-      status(`已保存 ${B.task} · flow.json`);
+      B.lastSavedFlow = JSON.stringify(B.flow);
+      status(silent ? `已自动保存 ${B.task} · ${new Date().toLocaleTimeString()}` : `已保存 ${B.task} · flow.json`);
     } catch (e) {
       status('保存异常：' + e, '#ff8a80');
+    } finally {
+      B.saving = false;
     }
   }
 
@@ -1194,9 +1378,13 @@
     const reload = $('builder-reload');
     if (reload) reload.addEventListener('click', async () => { await refreshTaskList(); await loadTask(taskSel ? taskSel.value : ''); });
     const save = $('builder-save');
-    if (save) save.addEventListener('click', saveFlow);
+    if (save) save.addEventListener('click', () => saveFlow(false));
     const dry = $('builder-dry-run');
     if (dry) dry.addEventListener('click', dryRun);
+    const codeApply = $('builder-code-apply');
+    if (codeApply) codeApply.addEventListener('click', applyCode);
+    const delChecked = $('builder-delete-checked');
+    if (delChecked) delChecked.addEventListener('click', deleteCheckedSteps);
     renderPalette();
     renderAll();
     window.OAS_BUILDER = {

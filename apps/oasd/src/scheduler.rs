@@ -779,9 +779,9 @@ pub fn validate_scheduler_with_offset(
             raw.schema_version
         ));
     }
-    if raw.entries.is_empty() {
-        return Err("scheduler config: `entries` must not be empty".to_string());
-    }
+    // An empty `entries` array is valid: deleting all tasks must leave the
+    // scheduler page in a clean "no scheduled tasks" state instead of a config
+    // parse error. The daemon simply has nothing to run.
 
     let calendar = build_calendar(&raw.config, default_offset_min)?;
 
@@ -2567,11 +2567,15 @@ mod tests {
     }
 
     #[test]
+    fn empty_entries_is_valid_after_deleting_all_tasks() {
+        assert!(validate_scheduler(r#"{"schema_version":3,"entries":[]}"#).is_ok());
+    }
+
+    #[test]
     fn config_validation_rejects_bad_documents() {
         let cases: Vec<(&str, &str)> = vec![
             (r#"{"entries":[]}"#, "schema_version"),
             (r#"{"schema_version":2,"entries":[]}"#, "schema_version"),
-            (r#"{"schema_version":3,"entries":[]}"#, "must not be empty"),
             (
                 r#"{"schema_version":3,"entries":[{"entry_id":"","task":"任务1"}]}"#,
                 "entry_id",

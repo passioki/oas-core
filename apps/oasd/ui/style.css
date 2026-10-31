@@ -31,7 +31,17 @@ button:hover:not(:disabled) { background: #3182ce; }
 main { display: flex; gap: 14px; padding: 14px; align-items: flex-start; }
 #canvas-wrap { position: relative; flex: 1; background: #0b0d10; border-radius: 8px; padding: 8px; }
 #screen { width: 100%; height: auto; display: block; border-radius: 4px; cursor: crosshair; }
-#hint { position: absolute; right: 16px; bottom: 14px; font-size: 12px; }
+#hint {
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  font-size: 12px;
+  pointer-events: none;
+  user-select: none;
+  background: rgba(15, 20, 26, 0.72);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
 
 aside { width: 320px; flex: 0 0 320px; }
 aside h3 { margin: 14px 0 6px; font-size: 13px; color: #8fb8e8; font-weight: 600; }
@@ -241,6 +251,18 @@ aside.side {
   max-height: 260px;
   overflow: auto;
 }
+/* Frame manager: use the rail's full vertical height (not full page width). */
+#panel-images.active {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 150px);
+  min-height: 420px;
+}
+#panel-images .frames-list {
+  flex: 1;
+  max-height: none;
+  min-height: 0;
+}
 .frame-row {
   display: flex;
   gap: 4px;
@@ -250,8 +272,7 @@ aside.side {
   flex: 1;
   margin: 0;
   padding: 4px 8px;
-  text-align: left;
-  font-size: 12px;
+  text-align: left;  font-size: 12px;
   font-family: Consolas, monospace;
 }
 .frame-row .frame-del {
@@ -549,6 +570,9 @@ aside.side {
 .builder-steps { font-family: Consolas, monospace; max-width: 100%; overflow: auto; }
 .builder-step { border-left: 2px solid #2b6da8; margin: 3px 0; padding: 3px 6px; cursor: pointer; overflow-wrap: anywhere; }
 .builder-step.selected { background: #24384f; border-left-color: #ffd54a; }
+.builder-step-check { width: auto; margin: 0 4px 0 0; vertical-align: middle; }
+.builder-step.dragging { opacity: 0.45; }
+.builder-children.drop-target { outline: 2px dashed #e0a040; outline-offset: 2px; }
 .builder-step .op { color: #8fb8e8; font-weight: 600; }
 .builder-step .summary { color: #cbd5e1; font-size: 12px; overflow-wrap: anywhere; }
 .builder-step .rowbtns { margin-left: 6px; }
@@ -604,6 +628,13 @@ aside.side {
 .builder-child-add { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
 .builder-child-add select { flex: 1; min-width: 0; }
 .builder-child-add button { width: auto; flex: none; margin: 0; }
+.builder-code {
+  width: 100%;
+  min-height: 220px;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  box-sizing: border-box;
+}
 /* v1.2.1 frame gallery rename/group/drag */
 .frame-group { margin: 6px 0; border-top: 1px solid #2b2f38; padding-top: 4px; }
 .frame-group-head { color: #98a0ac; font-size: 12px; padding: 2px 4px; user-select: none; }
