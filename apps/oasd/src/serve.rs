@@ -94,8 +94,14 @@ impl RunState {
 }
 
 struct State {
+    /// Analysis frame: the selected gallery frame or the last explicit capture.
+    /// OCR/match/asset crop MUST use this, never the live preview frame.
     frame: Option<Frame>,
     png: Option<Vec<u8>>,
+    /// Live preview pixels (WebSocket / `/frame.png?live=1`). Kept separate so
+    /// selecting a gallery frame cannot be overwritten by a live update.
+    live_frame: Option<Frame>,
+    live_png: Option<Vec<u8>>,
     device: String,
     error: Option<String>,
     /// §22.27 会话图片列表（旧 annotator「图片」面板）：上传/截帧都进这里，
@@ -329,10 +335,14 @@ fn live_ws_loop(mut stream: TcpStream, adb: Adb, state: Arc<Mutex<State>>) {
                 Ok(png) => {
                     {
                         let mut st = state.lock().unwrap();
-                        st.png = Some(png.clone());
+                        st.live_png = Some(png.clone());
+                        st.live_frame = Some(frame.clone());
+                        if st.current_frame_id.is_none() {
+                            st.png = Some(png.clone());
+                            st.frame = Some(frame);
+                        }
                         st.device = serial;
                         st.error = None;
-                        st.frame = Some(frame);
                     }
                     if ws_send_binary(&mut stream, &png).is_err() {
                         break;
@@ -364,6 +374,8 @@ impl Server {
             state: Arc::new(Mutex::new(State {
                 frame: None,
                 png: None,
+                live_frame: None,
+                live_png: None,
                 device: String::new(),
                 error: None,
                 frames: Vec::new(),
@@ -754,10 +766,17 @@ impl Server {
             Ok((serial, frame)) => match encode_png(&frame) {
                 Ok(png) => {
                     let mut st = self.state.lock().unwrap();
-                    st.png = Some(png);
+                    st.live_png = Some(png.clone());
+                    st.live_frame = Some(frame.clone());
+                    // Live updates the analysis frame only while no gallery
+                    // frame is selected; otherwise a selected image would be
+                    // silently replaced by the live screen before OCR/match.
+                    if st.current_frame_id.is_none() {
+                        st.png = Some(png);
+                        st.frame = Some(frame);
+                    }
                     st.device = serial;
                     st.error = None;
-                    st.frame = Some(frame);
                 }
                 Err(e) => self.set_error(&format!("encode png: {e}")),
             },
@@ -904,7 +923,14 @@ impl Server {
                 if live {
                     self.do_live_capture();
                 }
-                let png = self.state.lock().unwrap().png.clone();
+                let png = {
+                    let st = self.state.lock().unwrap();
+                    if live {
+                        st.live_png.clone().or_else(|| st.png.clone())
+                    } else {
+                        st.png.clone()
+                    }
+                };
                 match png {
                     Some(bytes) => self.send_bytes(&mut out, 200, "image/png", &bytes),
                     None => self.send_json(&mut out, 404, r#"{"error":"no frame captured yet"}"#),
