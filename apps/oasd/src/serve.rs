@@ -2091,12 +2091,10 @@ impl Server {
                 match item.kind.as_str() {
                     "template" => {
                         if let Some(tpl) = assets.get(&item.id) {
-                            let gray = oas_perceive::GrayImage::from_frame(frame);
+                            let matcher = oas_perceive::Matcher::new(oas_perceive::GrayImage::from_frame(frame));
                             let t0 = std::time::Instant::now();
-                            let best = oas_perceive::match_template_full(&gray, &tpl.gray);
-                            let (score, x, y) = best
-                                .map(|b| (b.score, b.x, b.y))
-                                .unwrap_or((-2.0f32, -1, -1));
+                            let (score, point) = oas_runtime::locate_template(&matcher, tpl);
+                            let (x, y) = point.map(|p| (p.x, p.y)).unwrap_or((-1, -1));
                             result["score"] = serde_json::json!(score);
                             result["x"] = serde_json::json!(x);
                             result["y"] = serde_json::json!(y);
@@ -2307,14 +2305,11 @@ impl Server {
                 None => return self.send_json(out, 400, r#"{"error":"no frame yet"}"#),
             }
         };
-        let gray = oas_perceive::GrayImage::from_frame(&frame);
+        let matcher = oas_perceive::Matcher::new(oas_perceive::GrayImage::from_frame(&frame));
         let t0 = std::time::Instant::now();
-        let best = oas_perceive::match_template_full(&gray, &tpl.gray);
+        let (score, point) = oas_runtime::locate_template(&matcher, tpl);
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
-        let (score, x, y) = match best {
-            Some(b) => (b.score, b.x, b.y),
-            None => (-2.0f32, -1, -1),
-        };
+        let (x, y) = point.map(|p| (p.x, p.y)).unwrap_or((-1, -1));
         let body = serde_json::json!({
             "ok": true,
             "task": task,

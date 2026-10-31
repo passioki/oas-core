@@ -203,6 +203,46 @@ pub fn point_in_polygon(p: Point, polygon: &[Point]) -> bool {    if polygon.len
     inside
 }
 
+/// Template-pixel mask from an asset polygon (frame coords → template coords).
+/// Public so the editor/batch tests can use the exact same matching semantics.
+pub fn template_polygon_mask(tpl: &Template) -> Option<Vec<bool>> {
+    let poly = tpl.click_polygon.as_ref()?;
+    let roi = tpl.roi?;
+    let tw = tpl.gray.width as i32;
+    let th = tpl.gray.height as i32;
+    let mut mask = vec![false; (tw * th) as usize];
+    for j in 0..th {
+        for i in 0..tw {
+            if point_in_polygon(Point { x: roi.x + i, y: roi.y + j }, poly) {
+                mask[(j * tw + i) as usize] = true;
+            }
+        }
+    }
+    Some(mask)
+}
+
+/// One template match: authored ROI (masked when a polygon exists) fast path,
+/// then whole-frame pyramid fallback; returns the best score + point.
+/// Shared by the interpreter, `/task/asset/match`, and batch frame tests.
+pub fn locate_template(matcher: &Matcher, tpl: &Template) -> (f32, Option<Point>) {
+    let roi_best = match template_polygon_mask(tpl) {
+        Some(mask) => matcher.match_template_masked(&tpl.gray, &mask, tpl.roi),
+        None => matcher.match_template(&tpl.gray, tpl.roi),
+    };
+    if let Some(b) = &roi_best {
+        if b.score >= 0.95 {
+            return (b.score, Some(Point { x: b.x, y: b.y }));
+        }
+    }
+    let full_best = matcher.match_template_full(&tpl.gray);
+    match (roi_best, full_best) {
+        (Some(a), Some(b)) if b.score > a.score => (b.score, Some(Point { x: b.x, y: b.y })),
+        (Some(a), _) => (a.score, Some(Point { x: a.x, y: a.y })),
+        (None, Some(b)) => (b.score, Some(Point { x: b.x, y: b.y })),
+        (None, None) => (0.0, None),
+    }
+}
+
 /// OCR mask helper (§22.10 N10b-2): copy the frame and fill every pixel inside
 /// the OCR bbox but OUTSIDE the polygon with white, so only polygon content is
 /// recognised.
@@ -858,23 +898,6 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// Borrow note: the frame/matcher is refreshed first (needs `&mut self`),
     /// then the asset and matcher are borrowed **disjointly** for the match, so
     /// no unsafe code is needed.
-    /// Template-pixel mask from the asset polygon (frame coords → template coords).
-    fn template_mask(&self, tpl: &Template) -> Option<Vec<bool>> {
-        let poly = tpl.click_polygon.as_ref()?;
-        let roi = tpl.roi?;
-        let tw = tpl.gray.width as i32;
-        let th = tpl.gray.height as i32;
-        let mut mask = vec![false; (tw * th) as usize];
-        for j in 0..th {
-            for i in 0..tw {
-                if point_in_polygon(Point { x: roi.x + i, y: roi.y + j }, poly) {
-                    mask[(j * tw + i) as usize] = true;
-                }
-            }
-        }
-        Some(mask)
-    }
-
     /// §22.29 H4：在后续 `frames - 1` 帧上继续匹配同一目标；位置漂移超过
     /// `tolerance_px` 或分数低于阈值 ⇒ 响亮失败（不点击）。
     fn verify_stable_frames(
@@ -986,33 +1009,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             .matcher
             .as_ref()
             .ok_or_else(|| "no frame available".to_string())?;
-        // §22.20: search the authored ROI first (fast); when that is not a
-        // confident hit, fall back to a WHOLE-FRAME pyramid search so a UI that
-        // shifted (or was re-laid-out) is still found — no ROI tuning needed.
-        // §22.10 N10b-1: with a polygon, match only INSIDE it (masked NCC) so
-        // background/animation outside the polygon cannot hurt the score.
-        let roi_best = match self.template_mask(tpl) {
-            Some(mask) => matcher.match_template_masked(&tpl.gray, &mask, tpl.roi),
-            None => matcher.match_template(&tpl.gray, tpl.roi),
-        };
-        if let Some(b) = &roi_best {
-            if b.score >= 0.95 {
-                return Ok((b.score, Some(Point { x: b.x, y: b.y })));
-            }
-        }
-        let full_best = matcher.match_template_full(&tpl.gray);
-        match (roi_best, full_best) {
-            (Some(a), Some(b)) => {
-                if b.score > a.score {
-                    Ok((b.score, Some(Point { x: b.x, y: b.y })))
-                } else {
-                    Ok((a.score, Some(Point { x: a.x, y: a.y })))
-                }
-            }
-            (Some(a), None) => Ok((a.score, Some(Point { x: a.x, y: a.y }))),
-            (None, Some(b)) => Ok((b.score, Some(Point { x: b.x, y: b.y }))),
-            (None, None) => Ok((0.0, None)),
-        }
+        Ok(locate_template(matcher, tpl))
     }
 
     /// Actual click box for a matched template. Explicit user decision [10-22
