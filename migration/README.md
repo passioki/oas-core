@@ -51,5 +51,5 @@
 - Remote task dirs: 61; menu tasks 53; helper dirs 8.
 - Imported global assets: 2825 total (23 core + task/component legacy).
 - Baseline `cargo test --workspace`: 350 passed.
-- Batch 1 status: **44 🔄 / 9 ⛔ / 0 ✅ / 8 ⬜**; 6 tasks had static-complete flows but were downgraded to 🔄 because no real-device/replay evidence. Do not claim behavior equivalence yet.
+- Batch 1 status: **1 ✅ (Pets 实机 Done) / 42 🔄 / 9 ⛔ / 8 ⬜**. 其余 42 个无实机/回放等价证据，不得标 ✅。
 - Legacy images mislabeled `.png` but actually JPEG are converted to real PNG; otherwise runtime asset load fails.

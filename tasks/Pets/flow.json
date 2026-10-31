@@ -205,32 +205,63 @@
       }
     },
     {
-      "op": "click",
+      "op": "loop",
       "args": {
-        "sel": "legacy_Pets_I_PET_EXIT",
-        "requires": {
-          "kind": "appear",
-          "sel": "legacy_Pets_I_PET_EXIT",
-          "timeout_ms": 5000
+        "n": "3"
+      },
+      "body": [
+        {
+          "op": "click",
+          "args": {
+            "sel": "legacy_Pets_I_PET_EXIT",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_Pets_I_PET_EXIT",
+              "timeout_ms": 3000
+            }
+          }
         },
-        "expect": {
-          "kind": "appear",
-          "sel": "庭院_探索灯笼",
-          "timeout_ms": 20000
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 2.0
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('庭院_探索灯笼')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "\"Pets done，已回到庭院\""
+              }
+            },
+            {
+              "op": "finish",
+              "args": {
+                "exit": "done"
+              }
+            }
+          ],
+          "else": []
         }
-      }
+      ]
     },
     {
       "op": "log",
       "args": {
-        "level": "info",
-        "text": "\"Pets done，已回到庭院\""
+        "level": "warn",
+        "text": "\"Pets：退出 3 次仍未回到庭院（输入/时序问题）\""
       }
     },
     {
       "op": "finish",
       "args": {
-        "exit": "done"
+        "exit": "failed"
       }
     }
   ]
