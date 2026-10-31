@@ -1,9 +1,9 @@
 {
   "task": "DailyTrifles",
   "status": "🔄",
-  "evidence": "task lint --task DailyTrifles => errors=0；2026-11-01 实机两次：从庭院进入好友页并点击好友入口/tab（clicks 910,662 / 1177,119），但 I_L_LOVE 未出现 8 轮（best 0.440<0.9），流程失败；已将等待循环从 20 降到 8，仍未解决好友页 tab 素材/状态识别",
+  "evidence": "task lint --task DailyTrifles => errors=0；2026-11-01 实机：friend_love 分支 Done（好友入口→友情点 tab 140,680→I_L_LOVE 0.965→I_L_COLLECT 0.970→奖励弹窗→退出重试→庭院 0.903）；store_sign 分支从商店页起测被入口屏幕状态挡住（庭院守卫 0.454），尚未验证；每日召唤/吉闻/买体力未迁移",
   "gaps": [
-    "实机：好友页 I_L_LOVE 未出现（0.440<0.9），需重采/校准好友页 tab 素材或改变进入路径",
+    "store_sign 分支尚未从庭院实机验证（商店页守卫已改为 I_ROOM_GIFT，待重跑）",
     "每日召唤（普通/今忆）未迁移",
     "吉闻（OCR 入口点击）未迁移",
     "买体力（动态 ROI 价格 OCR + 比较）未迁移"
