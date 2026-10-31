@@ -1619,6 +1619,18 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             ))
                         }
                     };
+                    // Detailed per-iteration condition evidence: when a loop
+                    // does not exit, this shows which appear()/selector terms
+                    // were false without guessing from the final state.
+                    self.log(
+                        depth + 1,
+                        "while_cond",
+                        &format!(
+                            "iteration={iters} value={value:?} truthy={truthy} cond={cond:?}"
+                        ),
+                        "ok",
+                        0.0,
+                    );
                     if !truthy {
                         break;
                     }
