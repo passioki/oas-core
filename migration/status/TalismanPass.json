@@ -3,11 +3,10 @@
   "status": "🔄",
   "evidence": {
     "lint": "lint task=TalismanPass errors=0",
-    "live": "Lead 2026-11-01：UI 隐藏是入口失败主因；点击右下卷轴(1200,680)恢复底部导航后，TalismanPass 实机 Done：I_MAIN_GOTO_DAILY 0.745→花合战→未见 TP 按钮/奖励页签→no-op→回庭院；奖励分支未触发",
+    "live": "Lead 2026-11-01：新增 ui_main_bar_guide UI bootstrap；实机点击右下卷轴恢复导航后 TalismanPass 实机 Done（I_MAIN_GOTO_DAILY 0.745→花合战→无 TP 奖励→no-op→回庭院）；奖励分支仍未触发",
     "round3_coverage": "奖励页签确定性路径（有界等待→领取→奖励弹窗）或 no-op；保留先领 GET_ALL、harvest_soul、回庭院"
   },
   "gaps": [
-    "UI bootstrap 尚未写进 flow（本次靠手工点击右下卷轴恢复）；自动条件 not appear(I_MAIN_GOTO_DAILY) 在 UI 可见但模板 0.579 时会误切换，需先重采稳定 UI-visible marker",
     "奖励页签坐标 (1210,250) 与有奖励时的领取路径需实机复测",
     "等级档位(1/2/3)选择功能随红点门控移除（无法按档领取）",
     "harvest_soul 与开局 GET_ALL 路径沿用上一轮，未复测"

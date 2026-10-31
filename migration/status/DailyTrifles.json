@@ -3,10 +3,11 @@
   "status": "🔄",
   "evidence": {
     "lint": "lint task=DailyTrifles errors=0",
-    "live": "Lead 2026-11-01：friends 入口 click_point(905,641) 可用；吉闻 OCR 文本不匹配导致 click_target 失败",
+    "live": "Lead 2026-11-01：新增 ui_main_bar_guide bootstrap；实机恢复底部导航后 friend_love/store_sign 回归 Done；luck_msg 入口仍有时未到好友页（I_CHECK_FRIENDS 未出现），吉闻分支 no-op",
     "round3_coverage": "luck_msg 改直点吉闻按钮（ROI 内两点交替，I_LUCK_TITLE 验证）+ 祝福/奖励 + 回庭院；失败 no-op 不中断"
   },
   "gaps": [
+    "luck_msg 实机仍可能未进入好友页（I_CHECK_FRIENDS 未出现），需排查入口 click_point/延迟",
     "吉闻按钮候选点需实机确认（(50,55)/(50,73)）",
     "吉闻祝福/奖励领取未实机复测",
     "其余子流程（summon/buy_sushi）沿用上一轮，未复测"

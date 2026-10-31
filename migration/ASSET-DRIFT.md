@@ -35,16 +35,16 @@
 
 - 点击主界面右下卷轴 `(1200,680)` 后，底部导航栏恢复（图鉴/珍旅居/纳物库/组队/阴阳寮/商店/花合战/好友/阴阳术/式神录）。
 - 恢复 UI 后，`I_MAIN_GOTO_DAILY` 等旧模板重新可用（TalismanPass 实机入口 score 0.745 通过）。
-- 但该 toggle 不是稳定幂等动作：同一轮测试中，从活动页返回主界面后点击 `(1200,680)` 有时显示导航、有时仍隐藏；因此不能把“点击右下卷轴”写成无条件 bootstrap，必须先采到稳定的 UI 显示状态 marker。
-- 当前没有可靠的“UI 已显示”marker；用 `not appear(I_MAIN_GOTO_DAILY)` 作为条件时，在 UI 已显示但旧模板只 0.579 的帧上会误判，反而把导航栏隐藏。需要先重采一个稳定的 UI-visible marker（例如当前底部导航的空白/图标组合），再写自动化。
-- 因此本次“点击右下卷轴恢复 UI”是**手工验证动作**；任务 flow 暂不加入自动 bootstrap，避免误切换。
+- 已用恢复后的帧裁出 `ui_main_bar_guide` marker（当前底部“图鉴”图标），阈值 0.85；bootstrap `if not appear(ui_main_bar_guide) -> click_point(1200,680) -> wait` 实机 `_diag_ui` Done，marker score 1.000。
+- TalismanPass / DailyTrifles 已加入该 bootstrap；TalismanPass 恢复导航后实机 Done。
+- 注意：`ui_main_bar_guide` 是当前帧 UI marker，客户端/分辨率变化需重采；不要用旧 `I_MAIN_GOTO_DAILY` 判断 UI 可见（UI 可见时它也可能只有 0.579）。
 
 
 ## 手工裁剪的失败经验
 
 在“底部导航已显示”的帧上按估算坐标裁剪 5 个导航图标，结果全部错位（裁到图鉴/角色/招财猫/探索等）。原因：底部图标间距、底栏实际 y 范围、动态角色遮挡都随界面状态变化，盲裁不可靠。
 
-必须用编辑器的 ROI 工具，在**同一张目标帧**上逐图标画框并立即 `试识别`；不要用脚本按估算坐标批量裁。当前没有可靠 UI-visible marker，暂不在 flow 中写自动 bootstrap。
+必须用编辑器的 ROI 工具，在**同一张目标帧**上逐图标画框并立即 `试识别`；不要用脚本按估算坐标批量裁。当前已有 `ui_main_bar_guide` 作为 UI-visible marker；其余导航模板仍需编辑器 ROI 重采。
 
 ## 结论
 

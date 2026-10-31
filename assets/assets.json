@@ -35250,6 +35250,19 @@
         600
       ],
       "rev": 1
+    },
+    {
+      "id": "ui_main_bar_guide",
+      "kind": "template",
+      "file": "images/a2098.png",
+      "roi": [
+        0,
+        0,
+        1280,
+        720
+      ],
+      "threshold": 0.85,
+      "rev": 1
     }
   ],
   "collections": []
