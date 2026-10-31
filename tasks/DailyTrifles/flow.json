@@ -902,8 +902,8 @@
         {
           "op": "click_point",
           "args": {
-            "x": 904,
-            "y": 635,
+            "x": 889,
+            "y": 623,
             "requires": {
               "kind": "appear",
               "sel": "legacy_GameUi_I_CHECK_MAIN",
@@ -1147,8 +1147,8 @@
         {
           "op": "click_point",
           "args": {
-            "x": 904,
-            "y": 635,
+            "x": 889,
+            "y": 623,
             "requires": {
               "kind": "appear",
               "sel": "legacy_GameUi_I_CHECK_MAIN",
