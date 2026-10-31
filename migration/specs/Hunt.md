@@ -71,3 +71,12 @@
 1. 无实机/回放证据（狩猎战时段限制）
 2. 时间窗/次日排期/御魂切换属调度器与玩家配置职责，未在 flow 内实现
 3. 阴界之门房间时序（匹配/自动匹配）未实机复核
+
+## 8. Polish round (2026-11-01)
+
+- 入口守卫：`庭院_探索灯笼`（探索灯笼模板，跨庭院皮肤不稳定）→ `legacy_GameUi_I_CHECK_MAIN`；町中→狩猎战的 `requires` 从按钮自身改为 `legacy_GameUi_I_CHECK_TOWN`。
+- 麒麟/阴界之门两条分支的战斗段改为「先检测准备页（Component_GeneralBattle_I_PREPARE_HIGHLIGHT 或 战斗_准备按钮）再进入准备/战斗/结算」，避免按钮没点到时无条件 `wait_until(BATTLE_INFO)` 超时导致整任务失败。
+- 回庭院/结束标记统一用 `legacy_GameUi_I_CHECK_MAIN`（与远程 page_main 一致）。
+
+
+

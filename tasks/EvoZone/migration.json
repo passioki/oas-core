@@ -1,4 +1,4 @@
-﻿{
+{
   "schema_version": 1,
   "task": "EvoZone",
   "source": {
@@ -36,5 +36,10 @@
     "御魂预设切换（SwitchSoul）未迁移。",
     "limit_time（30 分钟）无时钟原语；limit_count 保留。",
     "战斗为 P-BATTLE v2（准备/胜利/失败/奖励→回页），不含 battle_wait_strategy 的特殊奖励/统计页分支。"
+  ],
+  "polish_round": [
+    "修复不可达分支（关键）：挑战循环原先 `if appear(I_EVOZONE_FIRE) → break`，导致循环体里的点击挑战/准备/战斗/结算整段永远不执行（任务‘跑完’却从未战斗）。现改为 `if fire → 点击+准备+战斗+结算+回页`，`else` 处理宠物奖励并累计 miss，连续 3 次无挑战按钮才 break。",
+    "不静默成功：统计实际发生的战斗次数（`battles`），0 次时以 `failed` 退出而不是 `done`。",
+    "`meta.entry.requires` 对齐 `legacy_GameUi_I_CHECK_MAIN`。"
   ]
 }

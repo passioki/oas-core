@@ -33,6 +33,9 @@
     },
     "failed": {
       "result": "retryable"
+    },
+    "skipped": {
+      "result": "success"
     }
   },
   "capabilities": {

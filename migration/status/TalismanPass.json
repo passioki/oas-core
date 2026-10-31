@@ -1,15 +1,15 @@
 {
   "task": "TalismanPass",
-  "status": "✅",
+  "status": "🔄",
   "evidence": {
     "lint": "lint task=TalismanPass errors=0",
-    "coverage": "入口弹窗关闭/I_CHECK_DAILY/奖励页/一键收取/no-op 完成/等级奖励/可选御魂奖励",
-    "run": "2026-11-01 实机：outcome=Done；花合战 splash→I_CHECK_DAILY 0.892→奖励 tab→无 I_TP_GET_ALL→no-op finish done；clicks [(814,631),(1213,244)]"
+    "live": "Lead 2026-11-01：no-op 路径 Done（已验证）；奖励分支本轮对齐旧仓 get_flower 顺序/按弹窗门控",
+    "round2_coverage": "get_flower 顺序（档位→溢出→奖励→无弹窗才补点 GET_ALL）、动画消失等待、回庭院；no-op 路径不变"
   },
   "gaps": [
-    "当前账号 0 级无奖励，一键收取/等级奖励实际分支未触发，仅静态覆盖",
-    "I_RED_POINT_LEVEL 会误匹配成就红点，已移除该路径",
-    "缺 multi-scale appear（SOUL_1）",
-    "计时器语义为有界循环近似"
+    "有红点的等级奖励分支未实机复测",
+    "2s 计时器→10 轮有界近似",
+    "harvest_soul 默认关闭，未复测",
+    "未真机复测本轮改动"
   ]
 }

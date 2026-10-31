@@ -60,3 +60,12 @@
 3. **`I_AB_NUM_CHALLENGE_RAIL` / `O_AB_NUM_OF_CHALLENGE` / `I_AB_GROUP_RANK_NONE` / `get_num_challenge` / `is_group_ranked`** 未使用（旧仓按挑战人数/已排行筛选目标）；
 4. **switch_soul 御魂切换** 未迁移。
 5. **无实机/replay 证据**（模拟器 offline）；筛选/难度/层数素材阈值需真机复验。
+
+## 8. Polish round (2026-11-01)
+
+- 补齐 bundle 契约：新增 `assets.json`（空 items，素材全部走全局 legacy_*）+ `images/` 目录。
+- 结束标记统一 `legacy_GameUi_I_CHECK_MAIN`；`meta.entry.requires` 对齐 page_main。
+- 复核入口链（庭院→探索→地域鬼王）与过滤/选鬼王/开详情/开战/关详情链，未发现新的错误 marker；`boss_reward`/`use_collect`/`floor_mode` 分支保持原迁移（未新增功能）。
+
+
+

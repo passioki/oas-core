@@ -465,6 +465,13 @@
       }
     },
     {
+      "op": "set_var",
+      "args": {
+        "name": "empty",
+        "value": "0"
+      }
+    },
+    {
       "op": "loop",
       "args": {
         "n": "param('limit_count')"
@@ -506,13 +513,14 @@
                   "op": "log",
                   "args": {
                     "level": "warn",
-                    "text": "'Sougenbi: 所选类型突破券 = 0 → resource_empty 退出'"
+                    "text": "'Sougenbi: 所选类型突破券 = 0 → 结束挑战循环（回庭院后 resource_empty 退出）'"
                   }
                 },
                 {
-                  "op": "finish",
+                  "op": "set_var",
                   "args": {
-                    "exit": "resource_empty"
+                    "name": "empty",
+                    "value": "1"
                   }
                 }
               ],
@@ -536,13 +544,14 @@
                       "op": "log",
                       "args": {
                         "level": "warn",
-                        "text": "'Sougenbi: 所选类型突破券 = 0 → resource_empty 退出'"
+                        "text": "'Sougenbi: 所选类型突破券 = 0 → 结束挑战循环（回庭院后 resource_empty 退出）'"
                       }
                     },
                     {
-                      "op": "finish",
+                      "op": "set_var",
                       "args": {
-                        "exit": "resource_empty"
+                        "name": "empty",
+                        "value": "1"
                       }
                     }
                   ],
@@ -560,13 +569,14 @@
                       "op": "log",
                       "args": {
                         "level": "warn",
-                        "text": "'Sougenbi: 所选类型突破券 = 0 → resource_empty 退出'"
+                        "text": "'Sougenbi: 所选类型突破券 = 0 → 结束挑战循环（回庭院后 resource_empty 退出）'"
                       }
                     },
                     {
-                      "op": "finish",
+                      "op": "set_var",
                       "args": {
-                        "exit": "resource_empty"
+                        "name": "empty",
+                        "value": "1"
                       }
                     }
                   ],
@@ -866,6 +876,28 @@
       "args": {
         "sel": "legacy_GameUi_I_CHECK_MAIN"
       }
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "var('empty') == '1'"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "'Sougenbi: 突破券为 0 → resource_empty 退出（已回庭院）'"
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "resource_empty"
+          }
+        }
+      ],
+      "else": []
     },
     {
       "op": "log",

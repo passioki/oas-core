@@ -58,3 +58,12 @@
 
 - `oasd task lint --tasks-dir tasks --task Sougenbi` → 0 errors（见 migration/status/Sougenbi.json）。
 - 未真机 / 未回放验证（迁移会话无可用设备与对应场景回放）；素材 id 与 ROI 来自 remote dev 分支，素材均已在全局 `assets/assets.json` 解析（T4 绿）。
+
+## Polish round (2026-11-01)
+
+- 突破券=0 的退出路径修正：原 flow 在挑战循环内直接 `finish(resource_empty)`（停在业原火页）；现改为置位 + break，循环结束后照常回庭院，再 `finish(resource_empty)` —— 与远程「break 循环 → 返回探索/庭院」一致。
+- `meta.entry.requires` 从 `庭院_探索灯笼` 改为 `legacy_GameUi_I_CHECK_MAIN`（page_main 标记）。
+- lint: 0 errors; no real-device evidence.
+
+
+

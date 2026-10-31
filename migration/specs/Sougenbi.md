@@ -63,3 +63,11 @@
 
 - oasd task lint 绿；已映射：导航/贪嗔痴选择/阵容锁开关/顶部券 OCR(resource_empty)/挑战→准备→通用战斗→回页循环(limit_count)。未真机/回放验证。
 - 未真机/未回放：迁移会话无可用设备与对应场景回放帧；素材 T4 引用全部解析到全局 `assets/assets.json`。
+
+## 8. Polish round (2026-11-01)
+
+- 突破券=0 的退出路径修正：原 flow 在挑战循环内直接 `finish(resource_empty)`（停在业原火页）；现改为置位 + break，循环结束后照常回庭院，再 `finish(resource_empty)` —— 与远程「break 循环 → 返回探索/庭院」一致。
+- `meta.entry.requires` 从 `庭院_探索灯笼` 改为 `legacy_GameUi_I_CHECK_MAIN`（page_main 标记）。
+
+
+

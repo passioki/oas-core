@@ -18,7 +18,9 @@
   "status": "🔄",
   "evidence": [
     "task lint --task DailyTrifles => errors=0",
-    "migration/specs/DailyTrifles.md：friend_love/store_sign 已映射；召唤/吉闻/买体力列 TODO"
+    "migration/specs/DailyTrifles.md：friend_love/store_sign 已映射；召唤/吉闻/买体力列 TODO",
+    "lint: lint task=DailyTrifles errors=0",
+    "live: Lead 2026-11-01：friend_love + store_sign 实机 Done；summon_one/recall/luck_msg/buy_sushi 缺失（本轮补齐）"
   ],
   "assets": {
     "reused_global": [
@@ -46,6 +48,15 @@
     "friend_love/store_sign 参数默认 1（上游默认 False，由调度配置开启）",
     "`guild_wish` 上游为空实现，跳过",
     "`set_next_run`（调度器职责）未迁移",
-    "未实机/回放验证"
+    "未实机/回放验证",
+    "新增 one_summon / summon_recall / luck_msg / buy_sushi 四个子流程（按旧仓顺序）",
+    "买体力：动态价格 ROI OCR 不可表达 → 以 param('buy_sushi_count') 次数近似",
+    "DailyTrifles.I_SM_CONFIRM_2 上游图片缺失 → 复用 Component_Summon.I_SM_CONFIRM_2",
+    "画符 swipe 由 Component_Summon S_RANDOM_SWIPE_1 区域推出字面量坐标"
+  ],
+  "gaps": [
+    "buy_sushi 动态价格/已购次数 OCR（O_STORE_SUSHI_PRICE，旧仓运行时改 ROI）无法迁移",
+    "今忆召唤左侧 O_SELECT_SM2/3/4 菜单坐标需实机复核",
+    "新增 4 条分支未真机复测（friend_love/store_sign 保持已实机验证版本）"
   ]
 }

@@ -61,3 +61,11 @@
 
 - `oasd task lint --tasks-dir tasks --task EvoZone` → 0 errors；状态见 `migration/status/EvoZone.json`。
 - 未真机 / 未回放验证（迁移会话无可用设备与对应场景回放）。
+
+## Polish round (2026-11-01)
+
+- 修复不可达分支（关键）：挑战循环原先 `if appear(I_EVOZONE_FIRE) → break`，导致循环体里的点击挑战/准备/战斗/结算整段永远不执行（任务‘跑完’却从未战斗）。现改为 `if fire → 点击+准备+战斗+结算+回页`，`else` 处理宠物奖励并累计 miss，连续 3 次无挑战按钮才 break。
+- `meta.entry.requires` 对齐 `legacy_GameUi_I_CHECK_MAIN`。
+- lint: 0 errors; no real-device evidence.
+
+

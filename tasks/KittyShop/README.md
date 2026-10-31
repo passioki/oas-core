@@ -72,3 +72,19 @@ RuleSwipe `S_SELECTION` 未导入（roi_front=(589,239,21,258) → roi_back=(459
 cd D:\OAS-dev\oas-core
 .\target\release\oasd.exe task lint --tasks-dir tasks --task KittyShop
 ```
+
+<!-- round2:start -->
+## Polish round 2（2026-11-01 · Lead 实机反馈）
+
+实机反馈（Lead）：猫咪商店活动当前未开启。原 flow 在 20 轮入口探测后 `appear(I_START_FARMING)` 硬失败，
+调度器会记成 retryable 错误。
+
+本次修复：
+1. 入口探测有界（20 轮）；探测结束后用 **if/else 分支**判断：
+   - 出现 `I_START_FARMING` → 原经营流程（选猫/经营/收菜/结算，`param('attempts')` 次）→ 回庭院 → `done`；
+   - 未出现（活动未开启）→ 记录 warn → 回庭院 → `finish(skipped)`，meta 新增 `skipped: success`
+     （**no-op 正常日**，调度器不告警、不重试）。
+2. 回庭院循环同时尝试黄/红返回，并检查 `庭院_探索灯笼`，避免单按钮缺失时硬失败。
+
+剩余阻塞：活动开启后仍需实机复测选猫/经营循环；本次只验证了「未开启 → skipped」的空跑语义。
+<!-- round2:end -->

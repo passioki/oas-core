@@ -17,52 +17,12 @@
           "kind": "appear",
           "sel": "legacy_GameUi_I_CHECK_MAIN",
           "timeout_ms": 3000
-        }
-      }
-    },
-    {
-      "op": "wait",
-      "args": {
-        "seconds": 2.0
-      }
-    },
-    {
-      "op": "loop",
-      "args": {
-        "n": "4"
-      },
-      "body": [
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_GameUi_I_CHECK_DAILY')"
-          },
-          "then": [
-            {
-              "op": "break"
-            }
-          ],
-          "else": []
         },
-        {
-          "op": "click_point",
-          "args": {
-            "x": 1100,
-            "y": 660
-          }
-        },
-        {
-          "op": "wait",
-          "args": {
-            "seconds": 1.5
-          }
+        "expect": {
+          "kind": "appear",
+          "sel": "legacy_GameUi_I_CHECK_DAILY",
+          "timeout_ms": 12000
         }
-      ]
-    },
-    {
-      "op": "appear",
-      "args": {
-        "sel": "legacy_GameUi_I_CHECK_DAILY"
       }
     },
     {
@@ -137,94 +97,51 @@
           ]
         }
       ],
-      "else": []
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "\"未见一键收取按钮（可能今日已领取）\""
+          }
+        }
+      ]
     },
     {
       "op": "if",
       "args": {
-        "cond": "appear('legacy_GameUi_I_CHECK_DAILY')"
+        "cond": "appear('legacy_TalismanPass_I_RED_POINT_LEVEL')"
       },
       "then": [
         {
           "op": "log",
           "args": {
             "level": "info",
-            "text": "\"打开花合战奖励页\""
+            "text": "\"出现花合战等级奖励红点，打开等级奖励面板\""
           }
         },
         {
-          "op": "click_point",
+          "op": "click",
           "args": {
-            "x": 1210,
-            "y": 250
-          }
-        },
-        {
-          "op": "wait",
-          "args": {
-            "seconds": 1.5
-          }
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_TalismanPass_I_TP_GET_ALL')"
-          },
-          "then": [
-            {
-              "op": "click",
-              "args": {
-                "sel": "legacy_TalismanPass_I_TP_GET_ALL",
-                "requires": {
-                  "kind": "appear",
-                  "sel": "legacy_TalismanPass_I_TP_GET_ALL",
-                  "timeout_ms": 3000
-                }
-              }
-            }
-          ],
-          "else": [
-            {
-              "op": "log",
-              "args": {
-                "level": "info",
-                "text": "\"花合战当前无奖励可领，no-op 完成\""
-              }
+            "sel": "legacy_TalismanPass_I_RED_POINT_LEVEL",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_TalismanPass_I_RED_POINT_LEVEL",
+              "timeout_ms": 3000
             },
-            {
-              "op": "finish",
-              "args": {
-                "exit": "done"
-              }
+            "expect": {
+              "kind": "appear",
+              "sel": "legacy_TalismanPass_I_TP_GET_ALL",
+              "timeout_ms": 8000
             }
-          ]
+          }
         },
         {
           "op": "loop",
           "args": {
-            "n": "12"
+            "n": "10"
           },
           "body": [
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_TalismanPass_I_OVERFLOW_CONFIRME')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_TalismanPass_I_OVERFLOW_CONFIRME",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_TalismanPass_I_OVERFLOW_CONFIRME",
-                      "timeout_ms": 3000
-                    }
-                  }
-                }
-              ],
-              "else": []
-            },
             {
               "op": "if",
               "args": {
@@ -308,6 +225,26 @@
             {
               "op": "if",
               "args": {
+                "cond": "appear('legacy_TalismanPass_I_OVERFLOW_CONFIRME')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_TalismanPass_I_OVERFLOW_CONFIRME",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_TalismanPass_I_OVERFLOW_CONFIRME",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
                 "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
               },
               "then": [
@@ -321,6 +258,12 @@
                       }
                     ]
                   }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.8
+                  }
                 }
               ],
               "else": []
@@ -328,7 +271,7 @@
             {
               "op": "if",
               "args": {
-                "cond": "appear('legacy_TalismanPass_I_TP_GET_ALL')"
+                "cond": "not appear('legacy_GlobalGame_I_UI_REWARD') and appear('legacy_TalismanPass_I_TP_GET_ALL')"
               },
               "then": [
                 {
@@ -341,6 +284,12 @@
                       "timeout_ms": 3000
                     }
                   }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.8
+                  }
                 }
               ],
               "else": []
@@ -348,10 +297,17 @@
             {
               "op": "wait",
               "args": {
-                "seconds": 0.8
+                "seconds": 0.4
               }
             }
           ]
+        },
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "\"等待奖励动画结束（最多 8 轮点击操作区）\""
+          }
         },
         {
           "op": "loop",
@@ -359,12 +315,6 @@
             "n": "8"
           },
           "body": [
-            {
-              "op": "wait",
-              "args": {
-                "seconds": 0.8
-              }
-            },
             {
               "op": "if",
               "args": {
@@ -387,11 +337,25 @@
                   }
                 ]
               }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 0.8
+              }
             }
           ]
         }
       ],
-      "else": []
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "\"未见花合战等级奖励红点（今日已领取或无奖励）\""
+          }
+        }
+      ]
     },
     {
       "op": "if",
@@ -555,7 +519,7 @@
           "op": "log",
           "args": {
             "level": "info",
-            "text": "\"御魂奖励收取结束（5 秒空闲计时改为有界循环，见 README 差异）\""
+            "text": "\"御魂奖励收取结束（5 秒空闲计时改为有界循环）\""
           }
         }
       ],

@@ -22,8 +22,9 @@
   },
   "status": "🔄",
   "evidence": {
-    "lint": ".\\target\\release\\oasd.exe task lint --tasks-dir tasks --task KittyShop => lint task=KittyShop errors=0",
-    "device": "未真机验证"
+    "lint": "lint task=KittyShop errors=0",
+    "device": "未真机验证",
+    "live": "Lead 2026-11-01：猫咪商店活动未开启（需 no-op/blocked 出口）"
   },
   "assets_used": [
     "legacy_ActivityShikigami_I_SHI",
@@ -55,12 +56,16 @@
   "differences": [
     "选猫循环：计时器单点轮换 → 每轮顺序点 4 列 + 左滑（有界 5 轮）",
     "SelectFailed 3 次重试未迁移",
-    "RuleSwipe 未导入 → swipe 用 roi 推出的坐标"
+    "RuleSwipe 未导入 → swipe 用 roi 推出的坐标",
+    "活动未开启时 entry 探测后走 if/else：可达才经营，不可达 finish(skipped)（success no-op）",
+    "回庭院改为黄/红返回 + 页面守卫的有界循环"
   ],
   "gaps": [
     "选猫节奏需真机确认",
     "RuleSwipe 仅有 _FROM/_TO 区域 id（无坐标读取 op）",
-    "未真机验证"
+    "未真机验证",
+    "活动开启后选猫/经营循环需实机复测",
+    "未开启分支的 skip 结果由 meta.exits.skipped=success 表达（no-op 日）"
   ],
   "assets_used_count": 24
 }

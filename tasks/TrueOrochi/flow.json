@@ -16,31 +16,41 @@
         "y": 152,
         "requires": {
           "kind": "appear",
-          "sel": "庭院_探索灯笼",
+          "sel": "legacy_GameUi_I_CHECK_MAIN",
           "timeout_ms": 3000
         },
         "expect": {
           "kind": "appear",
-          "sel": "世界_章节栏",
-          "timeout_ms": 10000
+          "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+          "timeout_ms": 12000
         }
       }
     },
     {
-      "op": "click_point",
+      "op": "click_target",
       "args": {
-        "x": 1216,
-        "y": 186,
+        "find": [
+          {
+            "kind": "region",
+            "sel": "legacy_Exploration_C_CLICK_PALY_TITLE"
+          }
+        ],
         "requires": {
           "kind": "appear",
-          "sel": "世界_章节栏",
+          "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
           "timeout_ms": 3000
         },
         "expect": {
           "kind": "appear",
           "sel": "legacy_Exploration_I_CHECK_PLAY_TITLE",
-          "timeout_ms": 12000
+          "timeout_ms": 8000
         }
+      }
+    },
+    {
+      "op": "wait",
+      "args": {
+        "seconds": 0.8
       }
     },
     {
@@ -65,7 +75,7 @@
             {
               "op": "if",
               "args": {
-                "cond": "appear('庭院_探索灯笼')"
+                "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
               },
               "then": [
                 {
@@ -112,7 +122,7 @@
         {
           "op": "appear",
           "args": {
-            "sel": "庭院_探索灯笼"
+            "sel": "legacy_GameUi_I_CHECK_MAIN"
           }
         },
         {
@@ -145,14 +155,23 @@
         "sel": "legacy_Orochi_I_OROCHI",
         "requires": {
           "kind": "appear",
-          "sel": "legacy_Orochi_I_OROCHI",
+          "sel": "legacy_GameUi_I_CHECK_SOUL_ZONES",
           "timeout_ms": 3000
-        },
-        "expect": {
-          "kind": "appear",
-          "sel": "legacy_Orochi_I_OROCHI_CHECK_11",
-          "timeout_ms": 15000
         }
+      }
+    },
+    {
+      "op": "wait_until",
+      "args": {
+        "cond": "appear('legacy_Orochi_I_OROCHI_CHECK_10') or appear('legacy_Orochi_I_OROCHI_CHECK_11') or appear('legacy_Orochi_I_OROCHI_CHECK_12') or appear('legacy_Orochi_I_OROCHI_CHECK_13')",
+        "timeout_s": 15
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'TrueOrochi: 已进入目标页面'"
       }
     },
     {
@@ -245,125 +264,106 @@
           ]
         },
         {
-          "op": "log",
+          "op": "if",
           "args": {
-            "level": "info",
-            "text": "'S: 战斗准备：点「准备」（I_PREPARE_HIGHLIGHT）'"
-          }
-        },
-        {
-          "op": "loop",
-          "args": {
-            "n": "5"
+            "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT') or appear('战斗_准备按钮')"
           },
-          "body": [
+          "then": [
             {
-              "op": "wait",
+              "op": "log",
               "args": {
-                "seconds": 1.0
+                "level": "info",
+                "text": "'S: 战斗准备：点「准备」（I_PREPARE_HIGHLIGHT）'"
               }
             },
             {
-              "op": "if",
+              "op": "loop",
               "args": {
-                "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+                "n": "5"
               },
-              "then": [
+              "body": [
                 {
-                  "op": "click_target",
+                  "op": "wait",
                   "args": {
-                    "find": [
-                      {
-                        "kind": "template",
-                        "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT"
+                    "seconds": 1.0
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+                  },
+                  "then": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "template",
+                            "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT"
+                          }
+                        ]
                       }
-                    ]
-                  }
-                },
-                {
-                  "op": "break"
+                    },
+                    {
+                      "op": "break"
+                    }
+                  ]
                 }
               ]
-            }
-          ]
-        },
-        {
-          "op": "wait_until",
-          "args": {
-            "cond": "appear('legacy_Component_GeneralBattle_I_BATTLE_INFO')",
-            "timeout_s": 25
-          }
-        },
-        {
-          "op": "log",
-          "args": {
-            "level": "info",
-            "text": "'S: 已进入战斗（I_BATTLE_INFO），自动战斗 + 结算处理'"
-          }
-        },
-        {
-          "op": "loop",
-          "args": {
-            "n": "150"
-          },
-          "body": [
+            },
             {
-              "op": "wait",
+              "op": "wait_until",
               "args": {
-                "seconds": 2.2
+                "cond": "appear('legacy_Component_GeneralBattle_I_BATTLE_INFO')",
+                "timeout_s": 25
               }
             },
             {
-              "op": "if",
+              "op": "log",
               "args": {
-                "cond": "appear('legacy_Component_GeneralBattle_I_WIN')"
-              },
-              "then": [
-                {
-                  "op": "log",
-                  "args": {
-                    "level": "info",
-                    "text": "'S: 战斗胜利（I_WIN）'"
-                  }
-                },
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_Component_GeneralBattle_I_WIN"
-                  }
-                },
-                {
-                  "op": "wait",
-                  "args": {
-                    "seconds": 0.6
-                  }
-                }
-              ]
+                "level": "info",
+                "text": "'S: 已进入战斗（I_BATTLE_INFO），自动战斗 + 结算处理'"
+              }
             },
             {
-              "op": "if",
+              "op": "loop",
               "args": {
-                "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+                "n": "150"
               },
-              "then": [
-                {
-                  "op": "log",
-                  "args": {
-                    "level": "warn",
-                    "text": "'S: 战斗失败（I_FALSE），点掉结算'"
-                  }
-                },
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_Component_GeneralBattle_I_FALSE"
-                  }
-                },
+              "body": [
                 {
                   "op": "wait",
                   "args": {
-                    "seconds": 0.8
+                    "seconds": 2.2
                   }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_WIN')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 战斗胜利（I_WIN）'"
+                      }
+                    },
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_WIN"
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 0.6
+                      }
+                    }
+                  ]
                 },
                 {
                   "op": "if",
@@ -372,9 +372,190 @@
                   },
                   "then": [
                     {
+                      "op": "log",
+                      "args": {
+                        "level": "warn",
+                        "text": "'S: 战斗失败（I_FALSE），点掉结算'"
+                      }
+                    },
+                    {
                       "op": "click",
                       "args": {
                         "sel": "legacy_Component_GeneralBattle_I_FALSE"
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 0.8
+                      }
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_Component_GeneralBattle_I_FALSE"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+                  },
+                  "then": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "template",
+                            "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_GREED_GHOST')"
+                  },
+                  "then": [
+                    {
+                      "op": "log",
+                      "args": {
+                        "level": "info",
+                        "text": "'S: 贪吃鬼奖励（I_GREED_GHOST）'"
+                      }
+                    },
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_GREED_GHOST"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_OVER_GHOST')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_OVER_GHOST"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_REWARD"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "click_point",
+                  "args": {
+                    "x": 640,
+                    "y": 690
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_TrueOrochi_I_ST_CREATE_ROOM') or appear('legacy_TrueOrochi_I_FIND_TS')"
+                  },
+                  "then": [
+                    {
+                      "op": "break"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "else": [
+            {
+              "op": "log",
+              "args": {
+                "level": "warn",
+                "text": "'TrueOrochi: 真蛇战斗未开始（入口未触发准备页）→ no_target'"
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "12"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+                  },
+                  "then": [
+                    {
+                      "op": "break",
+                      "args": {}
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW"
+                          }
+                        }
+                      ],
+                      "else": [
+                        {
+                          "op": "if",
+                          "args": {
+                            "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                          },
+                          "then": [
+                            {
+                              "op": "click",
+                              "args": {
+                                "sel": "legacy_GlobalGame_I_UI_BACK_RED"
+                              }
+                            }
+                          ],
+                          "else": []
+                        }
+                      ]
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.0
                       }
                     }
                   ]
@@ -382,90 +563,16 @@
               ]
             },
             {
-              "op": "if",
+              "op": "appear",
               "args": {
-                "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
-              },
-              "then": [
-                {
-                  "op": "click_target",
-                  "args": {
-                    "find": [
-                      {
-                        "kind": "template",
-                        "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT"
-                      }
-                    ]
-                  }
-                }
-              ]
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_Component_GeneralBattle_I_GREED_GHOST')"
-              },
-              "then": [
-                {
-                  "op": "log",
-                  "args": {
-                    "level": "info",
-                    "text": "'S: 贪吃鬼奖励（I_GREED_GHOST）'"
-                  }
-                },
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_Component_GeneralBattle_I_GREED_GHOST"
-                  }
-                }
-              ]
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_Component_GeneralBattle_I_OVER_GHOST')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_Component_GeneralBattle_I_OVER_GHOST"
-                  }
-                }
-              ]
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_Component_GeneralBattle_I_REWARD"
-                  }
-                }
-              ]
-            },
-            {
-              "op": "click_point",
-              "args": {
-                "x": 640,
-                "y": 690
+                "sel": "legacy_GameUi_I_CHECK_MAIN"
               }
             },
             {
-              "op": "if",
+              "op": "finish",
               "args": {
-                "cond": "appear('legacy_TrueOrochi_I_ST_CREATE_ROOM') or appear('legacy_TrueOrochi_I_FIND_TS')"
-              },
-              "then": [
-                {
-                  "op": "break"
-                }
-              ]
+                "exit": "no_target"
+              }
             }
           ]
         },
@@ -485,7 +592,7 @@
             {
               "op": "if",
               "args": {
-                "cond": "appear('庭院_探索灯笼')"
+                "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
               },
               "then": [
                 {
@@ -532,7 +639,7 @@
         {
           "op": "appear",
           "args": {
-            "sel": "庭院_探索灯笼"
+            "sel": "legacy_GameUi_I_CHECK_MAIN"
           }
         },
         {
@@ -559,7 +666,7 @@
             {
               "op": "if",
               "args": {
-                "cond": "appear('庭院_探索灯笼')"
+                "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
               },
               "then": [
                 {
@@ -606,7 +713,7 @@
         {
           "op": "appear",
           "args": {
-            "sel": "庭院_探索灯笼"
+            "sel": "legacy_GameUi_I_CHECK_MAIN"
           }
         },
         {

@@ -28,6 +28,9 @@
     },
     "failed": {
       "result": "retryable"
+    },
+    "no_target": {
+      "result": "blocked"
     }
   },
   "capabilities": {

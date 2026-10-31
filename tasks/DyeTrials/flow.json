@@ -6,13 +6,13 @@
       "op": "log",
       "args": {
         "level": "info",
-        "text": "\"DyeTrials 开始：庭院 → 灵染试炼 → 循环挑战（自动战斗/结算）\""
+        "text": "\"DyeTrials 开始：庭院 → 灵染试炼入口（ACCESS → ACCESS_1 → TOGGLE，每次外层只动一个）→ 挑战循环\""
       }
     },
     {
       "op": "loop",
       "args": {
-        "n": "30"
+        "n": "6"
       },
       "body": [
         {
@@ -33,6 +33,13 @@
             "cond": "appear('legacy_DyeTrials_I_FP_ACCESS')"
           },
           "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "\"点活动入口 I_FP_ACCESS\""
+              }
+            },
             {
               "op": "click",
               "args": {
@@ -56,9 +63,28 @@
         {
           "op": "if",
           "args": {
+            "cond": "appear('legacy_DyeTrials_I_FP_CHALLENGE')"
+          },
+          "then": [
+            {
+              "op": "break"
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
             "cond": "appear('legacy_DyeTrials_I_FP_ACCESS_1')"
           },
           "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "\"点 I_FP_ACCESS_1 进入战斗界面\""
+              }
+            },
             {
               "op": "click",
               "args": {
@@ -73,8 +99,20 @@
             {
               "op": "wait",
               "args": {
-                "seconds": 1.5
+                "seconds": 1.8
               }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_DyeTrials_I_FP_CHALLENGE')"
+          },
+          "then": [
+            {
+              "op": "break"
             }
           ],
           "else": []
@@ -85,6 +123,13 @@
             "cond": "appear('legacy_DyeTrials_I_TOGGLE_BUTTON')"
           },
           "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "info",
+                "text": "\"点 I_TOGGLE_BUTTON 切换活动页（每个外层轮次最多一次，避免来回切换）\""
+              }
+            },
             {
               "op": "click",
               "args": {
@@ -108,142 +153,251 @@
         {
           "op": "wait",
           "args": {
-            "seconds": 0.8
+            "seconds": 1.0
           }
         }
       ]
     },
     {
-      "op": "appear",
+      "op": "if",
       "args": {
-        "sel": "legacy_DyeTrials_I_FP_CHALLENGE"
-      }
-    },
-    {
-      "op": "log",
-      "args": {
-        "level": "info",
-        "text": "\"已进入灵染试炼挑战页\""
-      }
-    },
-    {
-      "op": "set_var",
-      "args": {
-        "name": "battles",
-        "value": "0"
-      }
-    },
-    {
-      "op": "loop",
-      "args": {
-        "n": "param('max_battles')"
+        "cond": "appear('legacy_DyeTrials_I_FP_CHALLENGE')"
       },
-      "body": [
+      "then": [
         {
-          "op": "if",
+          "op": "log",
           "args": {
-            "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+            "level": "info",
+            "text": "\"已到达灵染试炼挑战页\""
+          }
+        },
+        {
+          "op": "set_var",
+          "args": {
+            "name": "battles",
+            "value": "0"
+          }
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "param('max_battles')"
           },
-          "then": [
+          "body": [
             {
-              "op": "click_target",
+              "op": "if",
               "args": {
-                "find": [
-                  {
-                    "kind": "region",
-                    "sel": "legacy_GlobalGame_C_UI_REWARD"
+                "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+              },
+              "then": [
+                {
+                  "op": "click_target",
+                  "args": {
+                    "find": [
+                      {
+                        "kind": "region",
+                        "sel": "legacy_GlobalGame_C_UI_REWARD"
+                      }
+                    ]
                   }
-                ]
-              }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.8
+                  }
+                }
+              ],
+              "else": []
             },
             {
-              "op": "wait",
+              "op": "if",
               "args": {
-                "seconds": 0.8
-              }
+                "cond": "appear('legacy_Restart_I_HARVEST_CHAT_CLOSE')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_Restart_I_HARVEST_CHAT_CLOSE",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_Restart_I_HARVEST_CHAT_CLOSE",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_DyeTrials_I_BATTLE_SUCCESS')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_DyeTrials_I_BATTLE_SUCCESS",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_DyeTrials_I_BATTLE_SUCCESS",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_DyeTrials_I_FP_CHALLENGE')"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "\"挑战一次\""
+                  }
+                },
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_DyeTrials_I_FP_CHALLENGE",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_DyeTrials_I_FP_CHALLENGE",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "inc_var",
+                  "args": {
+                    "name": "battles",
+                    "by": 1
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 2.0
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+                  },
+                  "then": [
+                    {
+                      "op": "click_target",
+                      "args": {
+                        "find": [
+                          {
+                            "kind": "region",
+                            "sel": "legacy_GlobalGame_C_UI_REWARD"
+                          }
+                        ]
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ]
             }
-          ],
-          "else": []
+          ]
+        }
+      ],
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "\"I_FP_CHALLENGE 始终未出现：活动未开启或入口结构变化，blocked 退出（不再循环点击入口）\""
+          }
         },
         {
-          "op": "if",
+          "op": "loop",
           "args": {
-            "cond": "appear('legacy_Restart_I_HARVEST_CHAT_CLOSE')"
+            "n": "8"
           },
-          "then": [
+          "body": [
             {
-              "op": "click",
+              "op": "if",
               "args": {
-                "sel": "legacy_Restart_I_HARVEST_CHAT_CLOSE",
-                "requires": {
-                  "kind": "appear",
-                  "sel": "legacy_Restart_I_HARVEST_CHAT_CLOSE",
-                  "timeout_ms": 3000
+                "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+              },
+              "then": [
+                {
+                  "op": "break"
                 }
-              }
-            }
-          ],
-          "else": []
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_DyeTrials_I_BATTLE_SUCCESS')"
-          },
-          "then": [
-            {
-              "op": "click",
-              "args": {
-                "sel": "legacy_DyeTrials_I_BATTLE_SUCCESS",
-                "requires": {
-                  "kind": "appear",
-                  "sel": "legacy_DyeTrials_I_BATTLE_SUCCESS",
-                  "timeout_ms": 3000
-                }
-              }
-            }
-          ],
-          "else": []
-        },
-        {
-          "op": "if",
-          "args": {
-            "cond": "appear('legacy_DyeTrials_I_FP_CHALLENGE')"
-          },
-          "then": [
-            {
-              "op": "log",
-              "args": {
-                "level": "info",
-                "text": "\"挑战一次\""
-              }
+              ],
+              "else": []
             },
             {
-              "op": "click",
+              "op": "if",
               "args": {
-                "sel": "legacy_DyeTrials_I_FP_CHALLENGE",
-                "requires": {
-                  "kind": "appear",
-                  "sel": "legacy_DyeTrials_I_FP_CHALLENGE",
-                  "timeout_ms": 3000
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
                 }
-              }
+              ],
+              "else": []
             },
             {
-              "op": "inc_var",
+              "op": "if",
               "args": {
-                "name": "battles",
-                "by": 1
-              }
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+                      "timeout_ms": 3000
+                    }
+                  }
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ],
+              "else": []
             },
-            {
-              "op": "wait",
-              "args": {
-                "seconds": 2.0
-              }
-            }
-          ],
-          "else": [
             {
               "op": "wait",
               "args": {
@@ -251,6 +405,12 @@
               }
             }
           ]
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "no_target"
+          }
         }
       ]
     },

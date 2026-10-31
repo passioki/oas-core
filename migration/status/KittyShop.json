@@ -3,13 +3,12 @@
   "status": "🔄",
   "evidence": {
     "lint": "lint task=KittyShop errors=0",
-    "coverage": "入口 / 选猫 / 开始经营 / 收菜循环 / 结算回入口 / 退出 全覆盖（选猫节奏为等价实现）",
-    "run": "未真机"
+    "live": "Lead 2026-11-01：猫咪商店活动未开启；原 flow 在入口断言处硬失败",
+    "round2_coverage": "入口有界探测 + if/else：未开启 → skipped(success no-op)；开启 → 原经营流程"
   },
   "gaps": [
-    "选猫计时轮换改为顺序点击（需真机确认）",
-    "SelectFailed 重试未迁移",
-    "RuleSwipe 仅有 _FROM/_TO 区域 id，swipe 用字面量坐标",
-    "未真机验证"
+    "活动开启后的选猫/经营循环未实机复测",
+    "skip 分支为本轮修复点，需实机确认 exited=skipped/Done 语义",
+    "未真机复测回庭院多按钮回退"
   ]
 }

@@ -22,8 +22,9 @@
   },
   "status": "🔄",
   "evidence": {
-    "lint": ".\\target\\release\\oasd.exe task lint --tasks-dir tasks --task GoryouRealm => lint task=GoryouRealm errors=0",
-    "device": "未真机验证"
+    "lint": "lint task=GoryouRealm errors=0",
+    "device": "未真机验证",
+    "live": "Lead 2026-11-01：导航已通；御灵卡片显示 40级/御灵等级要求，I_GR_FIRE 缺失（原 flow 会卡死）"
   },
   "assets_used": [
     "legacy_GameUi_I_CHECK_GORYOU",
@@ -49,13 +50,16 @@
     "时间限制（limit_time）无法表达 → 用 max_battles 参数",
     "RANDOM 御灵改为参数 1..4",
     "战斗结算沿用个人突破模式；胜负不判",
-    "票数用 ocr_digit 等价判定"
+    "票数用 ocr_digit 等价判定",
+    "御灵卡片不可用（等级/御灵等级要求）时依次尝试 4 张卡，仍不可用则 blocked(no_target)"
   ],
   "gaps": [
     "DSL 缺时间函数（limit_time）",
     "DSL 缺随机 op（RANDOM 御灵）",
     "GeneralBattleConfig 绿标/预设/buff/随机点击未迁移",
-    "未真机验证"
+    "未真机验证",
+    "御灵解锁条件（40级/御灵等级）无法自动满足，只能 blocked 退出",
+    "text_visible('40级') 仅用于日志证据，不作为硬判定"
   ],
   "assets_used_count": 17
 }

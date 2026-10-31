@@ -10,7 +10,7 @@
   "entry": {
     "requires": {
       "kind": "appear",
-      "sel": "庭院_探索灯笼",
+      "sel": "legacy_GameUi_I_CHECK_MAIN",
       "timeout_ms": 3000
     }
   },

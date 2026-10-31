@@ -43,3 +43,13 @@ cd D:\OAS-dev\oas-core
 4. 无实机/回放证据
 
 详见 `migration/specs/TrueOrochi.md`、`tasks/TrueOrochi/migration.json`、`migration/status/TrueOrochi.json`。
+
+## Polish round (2026-11-01)
+
+- 入口链补守卫：探索灯笼点击加 `requires=page_main / expect=page_exploration`；玩法 tab 改用远程 RuleClick 资产 `legacy_Exploration_C_CLICK_PALY_TITLE` 并 `expect=legacy_Exploration_I_CHECK_PLAY_TITLE`（真蛇次数入口 I_ST_MODULE 在玩法 tab 上）。
+- 八岐大蛇入口改为 `requires=legacy_GameUi_I_CHECK_SOUL_ZONES`，页面判定从单一 `I_OROCHI_CHECK_11` 改为 `CHECK_10/11/12/13` 任一（与远程 `any_of` 一致）。
+- 真蛇战斗段加准备页门禁：未出现准备页时不再无条件 `wait_until(BATTLE_INFO)` 超时，而是回庭院 `no_target` 退出。
+- 回庭院/结束标记统一 `legacy_GameUi_I_CHECK_MAIN`；`meta.entry.requires` 对齐。
+- lint: 0 errors; no real-device evidence.
+
+

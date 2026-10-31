@@ -44,3 +44,13 @@ cd D:\OAS-dev\oas-core
 ## 已知限制
 
 见 spec §6：悬赏鬼王 OCR 名称匹配未迁移、等级滑条手柄动态坐标用固定 region 近似、部分筛选（挑战人数/已排行）未使用、御魂切换未迁移、无实机证据。
+
+## Polish round (2026-11-01)
+
+- 补齐 bundle 契约：新增 `assets.json`（空 items，素材全部走全局 legacy_*）+ `images/` 目录。
+- 结束标记统一 `legacy_GameUi_I_CHECK_MAIN`；`meta.entry.requires` 对齐 page_main。
+- 复核入口链（庭院→探索→地域鬼王）与过滤/选鬼王/开详情/开战/关详情链，未发现新的错误 marker；`boss_reward`/`use_collect`/`floor_mode` 分支保持原迁移（未新增功能）。
+- lint: 0 errors; no real-device evidence.
+
+
+

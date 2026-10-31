@@ -45,7 +45,7 @@
       "op": "log",
       "args": {
         "level": "info",
-        "text": "\"已进入御灵页面，选择御灵种类（param goryou_class 1..4）\""
+        "text": "\"已进入御灵页面，先尝试 param('goryou_class') 指定御灵\""
       }
     },
     {
@@ -65,7 +65,7 @@
             ],
             "requires": {
               "kind": "appear",
-              "sel": "legacy_GameUi_I_CHECK_GORYOU",
+              "sel": "世界_章节栏",
               "timeout_ms": 3000
             }
           }
@@ -89,7 +89,7 @@
                 ],
                 "requires": {
                   "kind": "appear",
-                  "sel": "legacy_GameUi_I_CHECK_GORYOU",
+                  "sel": "世界_章节栏",
                   "timeout_ms": 3000
                 }
               }
@@ -113,7 +113,7 @@
                     ],
                     "requires": {
                       "kind": "appear",
-                      "sel": "legacy_GameUi_I_CHECK_GORYOU",
+                      "sel": "世界_章节栏",
                       "timeout_ms": 3000
                     }
                   }
@@ -131,7 +131,7 @@
                     ],
                     "requires": {
                       "kind": "appear",
-                      "sel": "legacy_GameUi_I_CHECK_GORYOU",
+                      "sel": "世界_章节栏",
                       "timeout_ms": 3000
                     }
                   }
@@ -169,10 +169,304 @@
       ]
     },
     {
-      "op": "appear",
+      "op": "if",
       "args": {
-        "sel": "legacy_GoryouRealm_I_GR_FIRE"
-      }
+        "cond": "not appear('legacy_GoryouRealm_I_GR_FIRE')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "\"配置御灵不可用（卡片显示等级/御灵等级要求），依次尝试其余御灵\""
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "not appear('legacy_GoryouRealm_I_GR_FIRE')"
+          },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_GoryouRealm_C_GR_C_1"
+                  }
+                ],
+                "requires": {
+                  "kind": "appear",
+                  "sel": "世界_章节栏",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "4"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GoryouRealm_I_GR_FIRE')"
+                  },
+                  "then": [
+                    {
+                      "op": "break"
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "not appear('legacy_GoryouRealm_I_GR_FIRE')"
+          },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_GoryouRealm_C_GR_C_2"
+                  }
+                ],
+                "requires": {
+                  "kind": "appear",
+                  "sel": "世界_章节栏",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "4"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GoryouRealm_I_GR_FIRE')"
+                  },
+                  "then": [
+                    {
+                      "op": "break"
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "not appear('legacy_GoryouRealm_I_GR_FIRE')"
+          },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_GoryouRealm_C_GR_C_3"
+                  }
+                ],
+                "requires": {
+                  "kind": "appear",
+                  "sel": "世界_章节栏",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "4"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GoryouRealm_I_GR_FIRE')"
+                  },
+                  "then": [
+                    {
+                      "op": "break"
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "not appear('legacy_GoryouRealm_I_GR_FIRE')"
+          },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  {
+                    "kind": "region",
+                    "sel": "legacy_GoryouRealm_C_GR_C_4"
+                  }
+                ],
+                "requires": {
+                  "kind": "appear",
+                  "sel": "世界_章节栏",
+                  "timeout_ms": 3000
+                }
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "4"
+              },
+              "body": [
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GoryouRealm_I_GR_FIRE')"
+                  },
+                  "then": [
+                    {
+                      "op": "break"
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            }
+          ],
+          "else": []
+        }
+      ],
+      "else": []
+    },
+    {
+      "op": "if",
+      "args": {
+        "cond": "appear('legacy_GoryouRealm_I_GR_FIRE')"
+      },
+      "then": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "\"御灵卡片可用，进入挑战\""
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "\"御灵页面没有可用挑战按钮（卡片显示 40级/御灵等级要求，账号未解锁）：blocked\""
+          }
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "text_visible('40级')"
+          },
+          "then": [
+            {
+              "op": "log",
+              "args": {
+                "level": "warn",
+                "text": "\"画面存在「40级」要求文本，确认是御灵等级不足\""
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "loop",
+          "args": {
+            "n": "6"
+          },
+          "body": [
+            {
+              "op": "if",
+              "args": {
+                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+              },
+              "then": [
+                {
+                  "op": "click",
+                  "args": {
+                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                    "requires": {
+                      "kind": "appear",
+                      "sel": "legacy_GameUi_I_CHECK_GORYOU",
+                      "timeout_ms": 3000
+                    }
+                  }
+                }
+              ],
+              "else": []
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "no_target"
+          }
+        }
+      ]
     },
     {
       "op": "if",

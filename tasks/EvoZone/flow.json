@@ -388,6 +388,20 @@
       }
     },
     {
+      "op": "set_var",
+      "args": {
+        "name": "miss",
+        "value": "0"
+      }
+    },
+    {
+      "op": "set_var",
+      "args": {
+        "name": "battles",
+        "value": "0"
+      }
+    },
+    {
       "op": "loop",
       "args": {
         "n": "param('limit_count')"
@@ -400,8 +414,223 @@
           },
           "then": [
             {
-              "op": "break",
-              "args": {}
+              "op": "set_var",
+              "args": {
+                "name": "miss",
+                "value": "0"
+              }
+            },
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_EvoZone_I_EVOZONE_FIRE",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_EvoZone_I_EVOZONE_FIRE",
+                  "timeout_ms": 3000
+                },
+                "expect": {
+                  "kind": "appear",
+                  "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+                  "timeout_ms": 20000
+                }
+              }
+            },
+            {
+              "op": "wait_until",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')",
+                "timeout_s": 25
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "8"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+                          "timeout_ms": 3000
+                        },
+                        "expect": {
+                          "kind": "vanish",
+                          "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
+                          "timeout_ms": 10000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "break",
+                      "args": {}
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "wait_until",
+              "args": {
+                "cond": "appear('legacy_Component_GeneralBattle_I_WIN') or appear('legacy_Component_GeneralBattle_I_FALSE') or appear('legacy_Component_GeneralBattle_I_REWARD') or appear('legacy_Component_GeneralBattle_I_REWARD_GOLD')",
+                "timeout_s": 180
+              }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "12"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_WIN')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_WIN",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_Component_GeneralBattle_I_WIN",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.0
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_FALSE",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_Component_GeneralBattle_I_FALSE",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.0
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_REWARD",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_Component_GeneralBattle_I_REWARD",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_Component_GeneralBattle_I_REWARD_GOLD')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_Component_GeneralBattle_I_REWARD_GOLD",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_Component_GeneralBattle_I_REWARD_GOLD",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    }
+                  ],
+                  "else": []
+                }
+              ]
+            },
+            {
+              "op": "wait_until",
+              "args": {
+                "cond": "appear('legacy_EvoZone_I_EVOZONE_FIRE')",
+                "timeout_s": 30
+              }
+            },
+            {
+              "op": "appear",
+              "args": {
+                "sel": "legacy_EvoZone_I_EVOZONE_FIRE"
+              }
+            },
+            {
+              "op": "wait",
+              "args": {
+                "seconds": 1.2
+              }
+            },
+            {
+              "op": "inc_var",
+              "args": {
+                "name": "battles",
+                "by": 1
+              }
             }
           ],
           "else": [
@@ -425,213 +654,35 @@
               "args": {
                 "seconds": 1.0
               }
-            }
-          ]
-        },
-        {
-          "op": "click",
-          "args": {
-            "sel": "legacy_EvoZone_I_EVOZONE_FIRE",
-            "requires": {
-              "kind": "appear",
-              "sel": "legacy_EvoZone_I_EVOZONE_FIRE",
-              "timeout_ms": 3000
             },
-            "expect": {
-              "kind": "appear",
-              "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
-              "timeout_ms": 20000
-            }
-          }
-        },
-        {
-          "op": "wait_until",
-          "args": {
-            "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')",
-            "timeout_s": 25
-          }
-        },
-        {
-          "op": "loop",
-          "args": {
-            "n": "8"
-          },
-          "body": [
+            {
+              "op": "inc_var",
+              "args": {
+                "name": "miss",
+                "by": 1
+              }
+            },
             {
               "op": "if",
               "args": {
-                "cond": "appear('legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT')"
+                "cond": "var('miss') >= 3"
               },
               "then": [
                 {
-                  "op": "click",
+                  "op": "log",
                   "args": {
-                    "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
-                      "timeout_ms": 3000
-                    },
-                    "expect": {
-                      "kind": "vanish",
-                      "sel": "legacy_Component_GeneralBattle_I_PREPARE_HIGHLIGHT",
-                      "timeout_ms": 10000
-                    }
+                    "level": "warn",
+                    "text": "'EvoZone: 连续 3 轮未见挑战按钮 → 结束循环'"
                   }
                 },
-                {
-                  "op": "wait",
-                  "args": {
-                    "seconds": 1.2
-                  }
-                }
-              ],
-              "else": [
                 {
                   "op": "break",
                   "args": {}
                 }
-              ]
-            }
-          ]
-        },
-        {
-          "op": "wait_until",
-          "args": {
-            "cond": "appear('legacy_Component_GeneralBattle_I_WIN') or appear('legacy_Component_GeneralBattle_I_FALSE') or appear('legacy_Component_GeneralBattle_I_REWARD') or appear('legacy_Component_GeneralBattle_I_REWARD_GOLD')",
-            "timeout_s": 180
-          }
-        },
-        {
-          "op": "loop",
-          "args": {
-            "n": "12"
-          },
-          "body": [
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_Component_GeneralBattle_I_WIN')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_Component_GeneralBattle_I_WIN",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_Component_GeneralBattle_I_WIN",
-                      "timeout_ms": 3000
-                    }
-                  }
-                },
-                {
-                  "op": "wait",
-                  "args": {
-                    "seconds": 1.0
-                  }
-                }
-              ],
-              "else": []
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_Component_GeneralBattle_I_FALSE')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_Component_GeneralBattle_I_FALSE",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_Component_GeneralBattle_I_FALSE",
-                      "timeout_ms": 3000
-                    }
-                  }
-                },
-                {
-                  "op": "wait",
-                  "args": {
-                    "seconds": 1.0
-                  }
-                }
-              ],
-              "else": []
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_Component_GeneralBattle_I_REWARD')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_Component_GeneralBattle_I_REWARD",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_Component_GeneralBattle_I_REWARD",
-                      "timeout_ms": 3000
-                    }
-                  }
-                },
-                {
-                  "op": "wait",
-                  "args": {
-                    "seconds": 1.2
-                  }
-                }
-              ],
-              "else": []
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_Component_GeneralBattle_I_REWARD_GOLD')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_Component_GeneralBattle_I_REWARD_GOLD",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_Component_GeneralBattle_I_REWARD_GOLD",
-                      "timeout_ms": 3000
-                    }
-                  }
-                },
-                {
-                  "op": "wait",
-                  "args": {
-                    "seconds": 1.2
-                  }
-                }
               ],
               "else": []
             }
           ]
-        },
-        {
-          "op": "wait_until",
-          "args": {
-            "cond": "appear('legacy_EvoZone_I_EVOZONE_FIRE')",
-            "timeout_s": 30
-          }
-        },
-        {
-          "op": "appear",
-          "args": {
-            "sel": "legacy_EvoZone_I_EVOZONE_FIRE"
-          }
-        },
-        {
-          "op": "wait",
-          "args": {
-            "seconds": 1.2
-          }
         }
       ]
     },
@@ -732,10 +783,33 @@
       }
     },
     {
-      "op": "finish",
+      "op": "if",
       "args": {
-        "exit": "done"
-      }
+        "cond": "var('battles') > 0"
+      },
+      "then": [
+        {
+          "op": "finish",
+          "args": {
+            "exit": "done"
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "'EvoZone: 挑战循环未发生任何战斗 → failed（不静默成功）'"
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "failed"
+          }
+        }
+      ]
     }
   ]
 }

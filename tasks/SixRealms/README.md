@@ -42,3 +42,13 @@ cd D:\OAS-dev\oas-core
 3. 无实机/回放证据（六道活动期限制）
 
 详见 `migration/specs/SixRealms.md`、`tasks/SixRealms/migration.json`、`migration/status/SixRealms.json`。
+
+## Polish round (2026-11-01)
+
+- 入口链修复：删除无守卫的硬编码 `click_point(1216,186)`（玩法 tab，对六道之门入口并非必需）；探索灯笼点击改为带 `requires=page_main / expect=page_exploration` 的 `click_point`。
+- 六道之门入口按远程 `exploration_to_six_gates` 语义改为「六种入口变体（月海/香界/季灵/净佛/真言/孔雀）逐个 appear→click」，再 `wait_until` 任意页面 marker；不再用单变体 + 自守卫。
+- 回庭院标记统一 `legacy_GameUi_I_CHECK_MAIN`；修正日志中「玩法 tab」的过期描述。
+- lint: 0 errors; no real-device evidence.
+
+
+

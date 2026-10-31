@@ -3,13 +3,13 @@
   "status": "🔄",
   "evidence": {
     "lint": "lint task=DyeTrials errors=0",
-    "coverage": "入口 / 挑战循环（奖励/成功/聊天关）/ 回庭院 覆盖；60s 计时与 50/50 提前退出未覆盖",
-    "run": "未真机"
+    "live": "Lead 2026-11-01：原 flow 无限循环 I_FP_ACCESS/I_TOGGLE_BUTTON，未到 I_FP_CHALLENGE",
+    "round2_coverage": "入口有界 6 轮单动作+settle；不可达→no_target(blocked)；可达后挑战循环不变"
   },
   "gaps": [
-    "DSL 缺 wall-clock（boss_timer）",
-    "DigitCounter(O_BATTLE_NUM) 未实现",
-    "SwitchSoul 页面流程未迁移",
-    "未真机验证"
+    "入口结构/顺序需实机复测",
+    "TOGGLE 节流为流程内近似（旧仓 interval）",
+    "未在活动开启时复测挑战循环",
+    "未真机复测本轮修复"
   ]
 }

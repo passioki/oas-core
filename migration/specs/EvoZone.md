@@ -64,3 +64,10 @@
 
 - oasd task lint 绿；覆盖：单刷(alone)路径：导航→麒麟选择→层数(inline OCR 列表点击)→阵容锁→挑战/战斗循环→回庭院；组队(leader/member)/加成/御魂切换未迁移。未真机/回放验证。
 - 未真机/未回放：无设备、无对应场景回放帧；T4 素材引用全部解析到全局 `assets/assets.json`。
+
+## 8. Polish round (2026-11-01)
+
+- 修复不可达分支（关键）：挑战循环原先 `if appear(I_EVOZONE_FIRE) → break`，导致循环体里的点击挑战/准备/战斗/结算整段永远不执行（任务‘跑完’却从未战斗）。现改为 `if fire → 点击+准备+战斗+结算+回页`，`else` 处理宠物奖励并累计 miss，连续 3 次无挑战按钮才 break。
+- `meta.entry.requires` 对齐 `legacy_GameUi_I_CHECK_MAIN`。
+
+

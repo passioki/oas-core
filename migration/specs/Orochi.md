@@ -65,3 +65,12 @@
 2. 队长/队员/野队模式未迁移
 3. 御魂加成/御魂切换/真蛇调度联动未迁移
 4. 无实机/回放证据
+
+## 8. Polish round (2026-11-01)
+
+- 入口链修复：删除无守卫的硬编码 `click_point(1216,186)`（玩法 tab，非必需）；探索灯笼点击加 `requires=page_main / expect=page_exploration`；御魂入口 `requires` 从玩法 tab 标记改为 `legacy_GameUi_I_CHECK_EXPLORATION`。
+- 八岐大蛇入口守卫改为 `legacy_GameUi_I_CHECK_SOUL_ZONES`，页面判定从单一 `CHECK_11` 改为 `CHECK_10/11/12/13` 任一。
+- 阵容锁方向修正：默认 `lock_team_enable=false` 的语义是「确保解锁」——原 flow 在 `I_OROCHI_UNLOCK` 出现时点 UNLOCK（反而上锁）；现改为 `I_OROCHI_LOCK` 出现时点 LOCK 解锁，否则记录已解锁。
+- 回庭院标记统一 `legacy_GameUi_I_CHECK_MAIN`；`meta.entry.requires` 对齐。
+
+

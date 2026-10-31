@@ -22,8 +22,9 @@
   },
   "status": "🔄",
   "evidence": {
-    "lint": ".\\target\\release\\oasd.exe task lint --tasks-dir tasks --task DyeTrials => lint task=DyeTrials errors=0",
-    "device": "未真机验证"
+    "lint": "lint task=DyeTrials errors=0",
+    "device": "未真机验证",
+    "live": "Lead 2026-11-01：原 flow 无限循环 I_FP_ACCESS/I_TOGGLE_BUTTON，未到 I_FP_CHALLENGE"
   },
   "assets_used": [
     "legacy_DyeTrials_I_BATTLE_SUCCESS",
@@ -43,13 +44,17 @@
     "60s 计时器改为有界 max_battles 循环",
     "O_BATTLE_NUM 三值提前退出未实现",
     "奖励/聊天关用通用 UI 资产",
-    "switch_soul 未迁移"
+    "switch_soul 未迁移",
+    "入口改为「每轮一个动作 + settle + 有界 6 轮」，TOGGLE 每轮最多一次（对齐旧仓 interval 节流）",
+    "入口不可达时 no_target(blocked) 退出，不再无界循环"
   ],
   "gaps": [
     "DSL 无 wall-clock（boss_timer）",
     "DigitCounter 三值语义缺失（O_BATTLE_NUM）",
     "SwitchSoul 页面流程未迁移",
-    "未真机验证"
+    "未真机验证",
+    "入口真实结构（ACCESS→ACCESS_1→TOGGLE 顺序与 settle）需实机复测",
+    "活动未开启时以 no_target(blocked) 结束（非自动重试）"
   ],
   "assets_used_count": 11
 }

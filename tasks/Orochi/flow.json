@@ -6,7 +6,7 @@
       "op": "log",
       "args": {
         "level": "info",
-        "text": "'S: Orochi 开始（庭院→探索→玩法→御魂副本→八岐大蛇；单人模式）'"
+        "text": "'S: Orochi 开始（庭院→探索→御魂→八岐大蛇；单人模式）'"
       }
     },
     {
@@ -16,29 +16,12 @@
         "y": 152,
         "requires": {
           "kind": "appear",
-          "sel": "庭院_探索灯笼",
+          "sel": "legacy_GameUi_I_CHECK_MAIN",
           "timeout_ms": 3000
         },
         "expect": {
           "kind": "appear",
-          "sel": "世界_章节栏",
-          "timeout_ms": 10000
-        }
-      }
-    },
-    {
-      "op": "click_point",
-      "args": {
-        "x": 1216,
-        "y": 186,
-        "requires": {
-          "kind": "appear",
-          "sel": "世界_章节栏",
-          "timeout_ms": 3000
-        },
-        "expect": {
-          "kind": "appear",
-          "sel": "legacy_Exploration_I_CHECK_PLAY_TITLE",
+          "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
           "timeout_ms": 12000
         }
       }
@@ -49,7 +32,7 @@
         "sel": "legacy_GameUi_I_EXPLORATION_GOTO_SOUL_ZONE",
         "requires": {
           "kind": "appear",
-          "sel": "legacy_Exploration_I_CHECK_PLAY_TITLE",
+          "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
           "timeout_ms": 3000
         },
         "expect": {
@@ -65,14 +48,23 @@
         "sel": "legacy_Orochi_I_OROCHI",
         "requires": {
           "kind": "appear",
-          "sel": "legacy_Orochi_I_OROCHI",
+          "sel": "legacy_GameUi_I_CHECK_SOUL_ZONES",
           "timeout_ms": 3000
-        },
-        "expect": {
-          "kind": "appear",
-          "sel": "legacy_Orochi_I_OROCHI_CHECK_11",
-          "timeout_ms": 15000
         }
+      }
+    },
+    {
+      "op": "wait_until",
+      "args": {
+        "cond": "appear('legacy_Orochi_I_OROCHI_CHECK_10') or appear('legacy_Orochi_I_OROCHI_CHECK_11') or appear('legacy_Orochi_I_OROCHI_CHECK_12') or appear('legacy_Orochi_I_OROCHI_CHECK_13')",
+        "timeout_s": 15
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'Orochi: 已进入目标页面'"
       }
     },
     {
@@ -91,23 +83,50 @@
     {
       "op": "if",
       "args": {
-        "cond": "appear('legacy_Orochi_I_OROCHI_UNLOCK')"
+        "cond": "appear('legacy_Orochi_I_OROCHI_LOCK')"
       },
       "then": [
         {
           "op": "log",
           "args": {
             "level": "info",
-            "text": "'S: 点击解锁图标以锁定队伍'"
+            "text": "'Orochi: 默认不锁阵容 → 点击锁定图标解锁'"
           }
         },
         {
           "op": "click",
           "args": {
-            "sel": "legacy_Orochi_I_OROCHI_UNLOCK"
+            "sel": "legacy_Orochi_I_OROCHI_LOCK",
+            "requires": {
+              "kind": "appear",
+              "sel": "legacy_Orochi_I_OROCHI_LOCK",
+              "timeout_ms": 3000
+            }
+          }
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 0.8
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "info",
+            "text": "'Orochi: 阵容已是解锁状态'"
           }
         }
       ]
+    },
+    {
+      "op": "set_var",
+      "args": {
+        "name": "did",
+        "value": "0"
+      }
     },
     {
       "op": "loop",
@@ -121,6 +140,13 @@
             "cond": "appear('legacy_Orochi_I_OROCHI_FIRE')"
           },
           "then": [
+            {
+              "op": "set_var",
+              "args": {
+                "name": "did",
+                "value": "1"
+              }
+            },
             {
               "op": "click",
               "args": {
@@ -377,7 +403,7 @@
         {
           "op": "if",
           "args": {
-            "cond": "appear('庭院_探索灯笼')"
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
           },
           "then": [
             {
@@ -424,7 +450,7 @@
     {
       "op": "appear",
       "args": {
-        "sel": "庭院_探索灯笼"
+        "sel": "legacy_GameUi_I_CHECK_MAIN"
       }
     },
     {
@@ -435,10 +461,33 @@
       }
     },
     {
-      "op": "finish",
+      "op": "if",
       "args": {
-        "exit": "done"
-      }
+        "cond": "var('did') == '1'"
+      },
+      "then": [
+        {
+          "op": "finish",
+          "args": {
+            "exit": "done"
+          }
+        }
+      ],
+      "else": [
+        {
+          "op": "log",
+          "args": {
+            "level": "warn",
+            "text": "'Orochi: 未发生任何战斗（挑战按钮从未出现）→ failed（不静默成功）'"
+          }
+        },
+        {
+          "op": "finish",
+          "args": {
+            "exit": "failed"
+          }
+        }
+      ]
     }
   ]
 }

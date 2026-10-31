@@ -6,7 +6,7 @@
       "op": "log",
       "args": {
         "level": "info",
-        "text": "'S: SixRealms 开始（庭院→探索→玩法→六道之门→月海）'"
+        "text": "'S: SixRealms 开始（庭院→探索→六道之门（入口变体自动识别）；岛屿决策循环未迁移）'"
       }
     },
     {
@@ -16,47 +16,162 @@
         "y": 152,
         "requires": {
           "kind": "appear",
-          "sel": "庭院_探索灯笼",
+          "sel": "legacy_GameUi_I_CHECK_MAIN",
           "timeout_ms": 3000
         },
         "expect": {
           "kind": "appear",
-          "sel": "世界_章节栏",
-          "timeout_ms": 10000
-        }
-      }
-    },
-    {
-      "op": "click_point",
-      "args": {
-        "x": 1216,
-        "y": 186,
-        "requires": {
-          "kind": "appear",
-          "sel": "世界_章节栏",
-          "timeout_ms": 3000
-        },
-        "expect": {
-          "kind": "appear",
-          "sel": "legacy_Exploration_I_CHECK_PLAY_TITLE",
+          "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
           "timeout_ms": 12000
         }
       }
     },
     {
-      "op": "click",
+      "op": "loop",
       "args": {
-        "sel": "legacy_GameUi_I_EXPLORATION_TO_MOON_SEA",
-        "requires": {
-          "kind": "appear",
-          "sel": "legacy_GameUi_I_EXPLORATION_TO_MOON_SEA",
-          "timeout_ms": 3000
+        "n": "4"
+      },
+      "body": [
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_EXPLORATION_TO_MOON_SEA')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GameUi_I_EXPLORATION_TO_MOON_SEA",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+                  "timeout_ms": 3000
+                }
+              }
+            }
+          ],
+          "else": []
         },
-        "expect": {
-          "kind": "appear",
-          "sel": "legacy_GameUi_I_CHECK_MOON_SEA",
-          "timeout_ms": 15000
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_EXPLORATION_TO_INCENSE_REALM')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GameUi_I_EXPLORATION_TO_INCENSE_REALM",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+                  "timeout_ms": 3000
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_EXPLORATION_TO_SEASONRIFT_FOREST')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GameUi_I_EXPLORATION_TO_SEASONRIFT_FOREST",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+                  "timeout_ms": 3000
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_EXPLORATION_TO_PURE_BUDDHA_REALM')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GameUi_I_EXPLORATION_TO_PURE_BUDDHA_REALM",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+                  "timeout_ms": 3000
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_EXPLORATION_TO_MANTRA_TOWER')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GameUi_I_EXPLORATION_TO_MANTRA_TOWER",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+                  "timeout_ms": 3000
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": {
+            "cond": "appear('legacy_GameUi_I_EXPLORATION_TO_PEACOCK_KINGDOM')"
+          },
+          "then": [
+            {
+              "op": "click",
+              "args": {
+                "sel": "legacy_GameUi_I_EXPLORATION_TO_PEACOCK_KINGDOM",
+                "requires": {
+                  "kind": "appear",
+                  "sel": "legacy_GameUi_I_CHECK_EXPLORATION",
+                  "timeout_ms": 3000
+                }
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "wait",
+          "args": {
+            "seconds": 1.0
+          }
         }
+      ]
+    },
+    {
+      "op": "wait_until",
+      "args": {
+        "cond": "appear('legacy_GameUi_I_CHECK_MOON_SEA') or appear('legacy_GameUi_I_CHECK_INCENSE_REALM') or appear('legacy_GameUi_I_CHECK_SEASONRIFT_FOREST') or appear('legacy_GameUi_I_CHECK_PURE_BUDDHA_REALM') or appear('legacy_GameUi_I_CHECK_MANTRA_TOWER') or appear('legacy_GameUi_I_CHECK_PEACOCK_KINGDOM')",
+        "timeout_s": 15
+      }
+    },
+    {
+      "op": "log",
+      "args": {
+        "level": "info",
+        "text": "'SixRealms: 已进入六道之门页面'"
       }
     },
     {
@@ -282,7 +397,7 @@
         {
           "op": "if",
           "args": {
-            "cond": "appear('庭院_探索灯笼')"
+            "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
           },
           "then": [
             {

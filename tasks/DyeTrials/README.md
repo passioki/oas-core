@@ -63,3 +63,22 @@
 cd D:\OAS-dev\oas-core
 .\target\release\oasd.exe task lint --tasks-dir tasks --task DyeTrials
 ```
+
+<!-- round2:start -->
+## Polish round 2（2026-11-01 · Lead 实机反馈）
+
+实机反馈（Lead）：flow 一直循环点 `I_FP_ACCESS` / `I_TOGGLE_BUTTON`，永远到不了 `I_FP_CHALLENGE`。
+
+原因：旧仓入口循环每个按钮都有 `interval` 节流（ACCESS 0.8s / ACCESS_1 1.5s / TOGGLE 3s），
+原 flow 每次迭代「谁出现点谁」，导致 `I_TOGGLE_BUTTON` 被反复点击、活动页来回切换。
+
+本次修复：
+1. 入口外层最多 6 轮，**每轮只执行一个入口动作**（顺序 ACCESS → ACCESS_1 → TOGGLE），
+   每次点击后固定 settle（1.2s / 1.8s / 2.0s），并立即检查 `I_FP_CHALLENGE`；
+2. 6 轮后仍无 `I_FP_CHALLENGE` → 记录「活动未开启/入口结构变化」→ 回庭院 → `finish(no_target)`（meta 新增 blocked），
+   **不再无界循环**；
+3. 到达挑战页后循环挑战逻辑保持（奖励/聊天关/成功/挑战、`max_battles` 上限）。
+
+剩余阻塞：若实机入口结构不是「ACCESS→ACCESS_1→TOGGLE」，需要 Lead 提供实机截图重新标定顺序；
+`I_FP_ACCESS_1` 的真实跳转目标与 settle 时长未在实机复测。
+<!-- round2:end -->

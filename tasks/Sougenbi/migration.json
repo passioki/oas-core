@@ -32,5 +32,9 @@
     "御魂预设切换（SwitchSoul: run_switch_soul / run_switch_soul_by_name）未迁移：DSL 无预设/御魂切换原语。",
     "战斗用通用 P-BATTLE 骨架（准备→自动→安全点直到回页），不含 GeneralBattle 的绿标/预设阵容/失败分支/奖励统计页处理。",
     "class 页检测与券 OCR ROI 来自 remote dev 分支，未在当前游戏版本真机验证。"
+  ],
+  "polish_round": [
+    "突破券=0 的退出路径修正：原 flow 在挑战循环内直接 `finish(resource_empty)`（停在业原火页）；现改为置位 + break，循环结束后照常回庭院，再 `finish(resource_empty)` —— 与远程「break 循环 → 返回探索/庭院」一致。",
+    "`meta.entry.requires` 从 `庭院_探索灯笼` 改为 `legacy_GameUi_I_CHECK_MAIN`（page_main 标记）。"
   ]
 }

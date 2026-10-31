@@ -47,5 +47,11 @@
     "御魂切换（`run_switch_soul`）：配置项，未迁移（SwitchSoul 素材已导入，可后续以参数化子流程加入）",
     "战斗内随机点击/滑动防封：由引擎 humanize 承担，flow 不重复实现",
     "未实机/回放验证（狩猎战有固定时段；素材阈值沿用旧仓）"
+  ],
+  "polish_round": [
+    "入口守卫：`庭院_探索灯笼`（探索灯笼模板，跨庭院皮肤不稳定）→ `legacy_GameUi_I_CHECK_MAIN`；町中→狩猎战的 `requires` 从按钮自身改为 `legacy_GameUi_I_CHECK_TOWN`。",
+    "麒麟/阴界之门两条分支的战斗段改为「先检测准备页（Component_GeneralBattle_I_PREPARE_HIGHLIGHT 或 战斗_准备按钮）再进入准备/战斗/结算」，避免按钮没点到时无条件 `wait_until(BATTLE_INFO)` 超时导致整任务失败。",
+    "回庭院/结束标记统一用 `legacy_GameUi_I_CHECK_MAIN`（与远程 page_main 一致）。",
+    "不静默成功：新增 `did` 标记（进入准备页/已挑战才置 1）；两条分支若一次战斗都没发生则以 `failed` 退出，避免‘卡住记成功’。"
   ]
 }

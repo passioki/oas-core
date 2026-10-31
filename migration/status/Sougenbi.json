@@ -1,7 +1,7 @@
 {
   "task": "Sougenbi",
   "status": "🔄",
-  "evidence": "oasd task lint 绿；已映射：导航/贪嗔痴选择/阵容锁开关/顶部券 OCR(resource_empty)/挑战→准备→通用战斗→回页循环(limit_count)。未真机/回放验证。 bundle: tasks/Sougenbi/; lint green.",
+  "evidence": "oasd task lint 绿；已映射：导航/贪嗔痴选择/阵容锁开关/顶部券 OCR(resource_empty)/挑战→准备→通用战斗→回页循环(limit_count)。未真机/回放验证。 bundle: tasks/Sougenbi/; lint green. polish: 突破券=0 的退出路径修正：原 flow 在挑战循环内直接 `finish(resource_empty)`（停在业原火页）；现改为置位 + break，循环结束后照常回庭院，再 `finish(resource_empty)` —— 与远程「break 循环 → 返回探索/庭院」一致。 `meta.entry.requires` 从 `庭院_探索灯笼` 改为 `legacy_GameUi_I_CHECK_MAIN`（page_main 标记）。",
   "gaps": [
     "limit_time（30 分钟时间上限）无 DSL 时钟原语 → 只保留 limit_count 次数上限（调度层可用 --budget-wall 兜底）。",
     "加成开关（GeneralBuff: gold_50/gold_100/exp_50/exp_100）未迁移：Component/GeneralBuff 素材未导入全局。",
@@ -12,5 +12,14 @@
   "artifacts": {
     "spec": "migration/specs/Sougenbi.md",
     "bundle": "tasks/Sougenbi/"
+  },
+  "polish_round": {
+    "date": "2026-11-01",
+    "lint": "oasd task lint --tasks-dir tasks --task Sougenbi => errors=0",
+    "changes": [
+      "突破券=0 的退出路径修正：原 flow 在挑战循环内直接 `finish(resource_empty)`（停在业原火页）；现改为置位 + break，循环结束后照常回庭院，再 `finish(resource_empty)` —— 与远程「break 循环 → 返回探索/庭院」一致。",
+      "`meta.entry.requires` 从 `庭院_探索灯笼` 改为 `legacy_GameUi_I_CHECK_MAIN`（page_main 标记）。"
+    ],
+    "no_device": "no real-device/replay evidence; ✅ not claimed"
   }
 }

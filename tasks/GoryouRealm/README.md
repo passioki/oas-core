@@ -70,3 +70,18 @@
 cd D:\OAS-dev\oas-core
 .\target\release\oasd.exe task lint --tasks-dir tasks --task GoryouRealm
 ```
+
+<!-- round2:start -->
+## Polish round 2（2026-11-01 · Lead 实机反馈）
+
+实机反馈（Lead）：导航已通；进入御灵页后 4 张御灵卡片显示「40级 / 御灵等级」要求，`I_GR_FIRE` 不出现。
+
+本次修复：
+1. 选御灵后不再直接 `appear(I_GR_FIRE)` 硬失败，改为有界等待 `wait_fire(10)`；
+2. 配置御灵不可用时**依次尝试其余 3 张卡片**（每张点击后 4×1s 等挑战按钮）；
+3. 4 张都不可用 → 记录「40级/御灵等级不足」证据（`text_visible('40级')` 辅助日志）→
+   `finish(no_target)`（meta 新增 `no_target: blocked`），**不再卡死/无限重试**；
+4. 卡片可用后继续原有循环挑战逻辑（票 OCR、准备、自动战斗、结算、回庭院）。
+
+剩余阻塞：御灵卡片解锁条件（等级/御灵等级）无法在流程内提升，只能 blocked 退出等待玩家满足；未验证 4 张卡全部尝试的真实耗时。
+<!-- round2:end -->

@@ -64,3 +64,21 @@
 cd D:\OAS-dev\oas-core
 .\target\release\oasd.exe task lint --tasks-dir tasks --task TalismanPass
 ```
+
+<!-- round2:start -->
+## Polish round 2（2026-11-01 · Lead 实机反馈）
+
+实机反馈（Lead）：无奖励可领的 no-op 路径已 Done；本轮对照旧仓 `get_flower()` 校对奖励分支。
+
+本次修复/对齐：
+1. **顺序对齐**：每轮先点所选档位 `I_TP_LEVEL_1/2/3`，再点 `I_OVERFLOW_CONFIRME`（旧仓顺序；
+   原 flow 先 overflow 后档位）。
+2. **奖励弹窗优先**：出现 `获得奖励`（GlobalGame `I_UI_REWARD`）时先点其操作区；
+   `I_TP_GET_ALL` 只在**奖励弹窗不显示**时补点（旧仓 `ui_reward_appear_click(False)` 后的补点逻辑；
+   原 flow 可能在奖励弹窗上误点一键收取）。
+3. 红点 `ui_click(I_RED_POINT_LEVEL, stop=I_TP_GET_ALL)` 保持 expect `I_TP_GET_ALL`。
+4. 2 秒无动作退出 → 10 轮有界；奖励动画消失等待 8 轮。
+5. 未出现红点/一键收取按钮时记录 info 日志并继续（no-op 正常日，保持已实机验证的 Done 语义）。
+
+剩余阻塞：等级奖励分支需在「有红点奖励」的日期实机复测；2s 计时器为有界近似。
+<!-- round2:end -->
