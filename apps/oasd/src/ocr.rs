@@ -50,47 +50,68 @@ impl OcrProvider for OnnxOcr {
     }
 
     fn recognize_lines(&mut self, frame: &Frame, roi: Rect) -> Result<Vec<OcrLine>, String> {
-        let crop = oas_ocr::RgbCrop::from_rgba(frame.width, frame.height, &frame.rgba, roi)?;
         let det = self.det.as_mut().ok_or_else(|| {
             "no text detector loaded: `ocr_lines` needs det+rec - pass \
              --det-model <det.onnx> (or declare the asset as `ocr_line`)"
                 .to_string()
         })?;
-        let boxes = det.detect(&crop)?;
-        // det boxes are local to the ROI crop; re-crop each one from an RGBA copy
-        // (RgbCrop::from_rgba works on RGBA, the rec engine wants RGB internally).
-        let rgba = rgb_to_rgba(&crop);
-        let mut out = Vec::with_capacity(boxes.len());
-        for b in boxes {
-            let sub = oas_ocr::RgbCrop::from_rgba(crop.width, crop.height, &rgba, b)?;
-            let (mut text, mut score) = self.rec.recognize(&sub)?;
-            // Vertical/rotated text (e.g. the 庭院 sign) is common in the game.
-            // The editor's /lines path already tries both rotations; the runtime
-            // provider must do the same or a saved multi-line asset can never
-            // match at run time.
-            if score < 0.6 {
-                for cand in [sub.rotate90_cw(), sub.rotate90_ccw()] {
-                    if let Ok((t2, s2)) = self.rec.recognize(&cand) {
-                        if s2 > score {
-                            text = t2;
-                            score = s2;
-                        }
+        recognize_lines_impl(det, &mut self.rec, frame, roi, false)
+    }
+}
+
+/// Shared det+rec implementation used by:
+/// - the runtime [`OcrProvider`] (task execution),
+/// - the editor `GET /lines` endpoint,
+/// - the frame-based `POST /task/assets/batch_test`.
+///
+/// This is the single source of truth for orientation retry and noise filtering;
+/// otherwise editor tests and runtime can disagree (the 庭院 vertical sign bug
+/// was exactly such a drift).
+pub fn recognize_lines_impl(
+    det: &mut oas_ocr::det_engine::DetEngine,
+    rec: &mut oas_ocr::onnx::RecEngine,
+    frame: &Frame,
+    roi: Rect,
+    vertical_only: bool,
+) -> Result<Vec<OcrLine>, String> {
+    let crop = oas_ocr::RgbCrop::from_rgba(frame.width, frame.height, &frame.rgba, roi)?;
+    let boxes = det.detect(&crop)?;
+    // det boxes are local to the ROI crop; re-crop each one from an RGBA copy
+    // (RgbCrop::from_rgba works on RGBA, the rec engine wants RGB internally).
+    let rgba = rgb_to_rgba(&crop);
+    let mut out = Vec::with_capacity(boxes.len());
+    for b in boxes {
+        let sub = oas_ocr::RgbCrop::from_rgba(crop.width, crop.height, &rgba, b)?;
+        let (mut text, mut score) = rec.recognize(&sub)?;
+        // Vertical/rotated text (e.g. the 庭院 sign) is common in the game.
+        // Both editor and runtime must try the same orientations.
+        if vertical_only || score < 0.6 {
+            for cand in [sub.rotate90_cw(), sub.rotate90_ccw()] {
+                if let Ok((t2, s2)) = rec.recognize(&cand) {
+                    if s2 > score {
+                        text = t2;
+                        score = s2;
                     }
                 }
             }
-            out.push(OcrLine {
-                rect: Rect {
-                    x: roi.x + b.x,
-                    y: roi.y + b.y,
-                    w: b.w,
-                    h: b.h,
-                },
-                text,
-                score,
-            });
         }
-        Ok(out)
+        // Drop low-confidence noise boxes consistently (the old editor path did
+        // this; runtime used to keep everything).
+        if score < 0.5 {
+            continue;
+        }
+        out.push(OcrLine {
+            rect: Rect {
+                x: roi.x + b.x,
+                y: roi.y + b.y,
+                w: b.w,
+                h: b.h,
+            },
+            text,
+            score,
+        });
     }
+    Ok(out)
 }
 
 fn rgb_to_rgba(c: &oas_ocr::RgbCrop) -> Vec<u8> {

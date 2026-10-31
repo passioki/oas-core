@@ -1505,57 +1505,29 @@ impl Server {
                 }
             };
             let roi = oas_types::Rect { x, y, w, h };
-            let crop = match oas_ocr::RgbCrop::from_rgba(frame.width, frame.height, &frame.rgba, roi) {
-                Ok(c) => c,
-                Err(e) => return self.send_json(out, 400, &format!(r#"{{"error":{:?}}}"#, e)),
-            };
-            // RGB crop -> RGBA so sub-boxes can be cut with the same helper
-            let mut rgba = Vec::with_capacity(crop.data.len() / 3 * 4);
-            for px in crop.data.chunks_exact(3) {
-                rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
-            }
-
             let t0 = std::time::Instant::now();
-            let boxes = match det.lock().unwrap().detect(&crop) {
-                Ok(b) => b,
-                Err(e) => return self.send_json(out, 500, &format!(r#"{{"error":{:?}}}"#, e)),
+            let lines = {
+                let mut det_guard = det.lock().unwrap();
+                let mut rec_guard = rec.lock().unwrap();
+                match crate::ocr::recognize_lines_impl(&mut det_guard, &mut rec_guard, &frame, roi, vertical_only) {
+                    Ok(l) => l,
+                    Err(e) => return self.send_json(out, 400, &format!(r#"{{"error":{:?}}}"#, e)),
+                }
             };
-            let mut items: Vec<String> = Vec::new();
-            let mut rec_guard = rec.lock().unwrap();
-            for b in boxes.iter() {
-                let sub = match oas_ocr::RgbCrop::from_rgba(crop.width, crop.height, &rgba, *b) {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-                let (mut text, mut score) = match rec_guard.recognize(&sub) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                // vertical / rotated fallback: keep the best orientation
-                if vertical_only || score < 0.6 {
-                    for cand in [sub.rotate90_cw(), sub.rotate90_ccw()] {
-                        if let Ok((t2, s2)) = rec_guard.recognize(&cand) {
-                            if s2 > score {
-                                text = t2;
-                                score = s2;
-                            }
-                        }
-                    }
-                }
-                if score < 0.5 {
-                    continue; // drop noise boxes (e.g. a lone "o" at 0.46)
-                }
-                items.push(format!(
-                    r#"{{"box":[{},{},{},{}],"text":{},"score":{:.4}}}"#,
-                    b.x,
-                    b.y,
-                    b.w,
-                    b.h,
-                    json_escape(&text),
-                    score
-                ));
-            }
-            drop(rec_guard);
+            let items: Vec<String> = lines
+                .iter()
+                .map(|l| {
+                    format!(
+                        r#"{{"box":[{},{},{},{}],"text":{},"score":{:.4}}}"#,
+                        l.rect.x - roi.x,
+                        l.rect.y - roi.y,
+                        l.rect.w,
+                        l.rect.h,
+                        json_escape(&l.text),
+                        l.score
+                    )
+                })
+                .collect();
             let ms = t0.elapsed().as_secs_f64() * 1000.0;
             let body = format!(
                 r#"{{"lines":[{}],"count":{},"elapsed_ms":{:.1}}}"#,
@@ -2173,23 +2145,16 @@ impl Server {
                                     continue;
                                 };
                                 let rect = oas_types::Rect { x: src[0], y: src[1], w: src[2], h: src[3] };
-                                let crop = match oas_ocr::RgbCrop::from_rgba(
-                                    frame.width, frame.height, &frame.rgba, rect,
+                                let mut det_guard = det.lock().unwrap();
+                                let mut rec_guard = rec.lock().unwrap();
+                                let lines = match crate::ocr::recognize_lines_impl(
+                                    &mut det_guard,
+                                    &mut rec_guard,
+                                    frame,
+                                    rect,
+                                    false,
                                 ) {
-                                    Ok(c) => c,
-                                    Err(e) => {
-                                        result["pass"] = serde_json::json!(false);
-                                        result["error"] = serde_json::json!(format!("crop: {e}"));
-                                        results.push(result);
-                                        continue;
-                                    }
-                                };
-                                let mut rgba = Vec::with_capacity(crop.data.len() / 3 * 4);
-                                for px in crop.data.chunks_exact(3) {
-                                    rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
-                                }
-                                let boxes = match det.lock().unwrap().detect(&crop) {
-                                    Ok(b) => b,
+                                    Ok(l) => l,
                                     Err(e) => {
                                         result["pass"] = serde_json::json!(false);
                                         result["error"] = serde_json::json!(e);
@@ -2198,14 +2163,10 @@ impl Server {
                                     }
                                 };
                                 let expected = item.ocr_text.as_deref().unwrap_or("").trim();
-                                let mut rec_guard = rec.lock().unwrap();
-                                let mut got: Vec<(String, f32)> = Vec::new();
-                                for b in boxes {
-                                    let Ok(sub) = oas_ocr::RgbCrop::from_rgba(crop.width, crop.height, &rgba, b) else { continue };
-                                    if let Ok((text, score)) = rec_guard.recognize(&sub) {
-                                        if score >= 0.5 { got.push((text, score)); }
-                                    }
-                                }
+                                let got: Vec<(String, f32)> = lines
+                                    .iter()
+                                    .map(|l| (l.text.clone(), l.score))
+                                    .collect();
                                 let hit = got.iter().find(|(t, _)| t.trim() == expected);
                                 result["text"] = serde_json::json!(
                                     hit.map(|(t, _)| t.clone()).or_else(|| got.first().map(|(t, _)| t.clone()))
