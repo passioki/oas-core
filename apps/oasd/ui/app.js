@@ -1245,15 +1245,34 @@ async function generateAssetStep(it) {
 // v1.1: asset-list OCR action — ocr_lines uses /lines (not single-line /ocr);
 // v1.2.3: a derived `ocr_line` saved from a multi-line result must ALSO use the
 // source ROI + det+rec, otherwise the workbench test shows a different text.
+function assetRecognitionBox(it) {
+  // OCR tests must use the recognition ROI (or the original multi-line source
+  // ROI), never action_roi. action_roi only controls where a click lands.
+  if (!it) return null;
+  if (it.kind === 'ocr_line' && it.ocr_mode === 'lines' && Array.isArray(it.ocr_source_roi)) {
+    return it.ocr_source_roi;
+  }
+  return Array.isArray(it.roi) ? it.roi : null;
+}
+
 async function testAssetOcr(it) {
-  if (!it.roi) return;
+  const rec = assetRecognitionBox(it);
+  if (!rec) {
+    resultEl.textContent = `素材「${it.id}」没有识别区域（roi）`;
+    return;
+  }
   const derived = it.kind === 'ocr_line' && it.ocr_mode === 'lines' && Array.isArray(it.ocr_source_roi);
-  const src = derived ? it.ocr_source_roi : it.roi;
-  const roi = { x: src[0], y: src[1], w: src[2], h: src[3] };
+  const roi = { x: rec[0], y: rec[1], w: rec[2], h: rec[3] };
+  const action = assetActionBox(it);
   const task = (taskName.value || '').trim();
   const q = `x=${roi.x}&y=${roi.y}&w=${roi.w}&h=${roi.h}` +
     `&task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}`;
-  resultEl.textContent = `素材「${it.id}」识别中…`;
+  const areaLine =
+    (derived
+      ? `多行来源 ROI [${rec.join(',')}]；行 ROI [${(it.roi || []).join(',')}]`
+      : `识别区域 [${rec.join(',')}]`) +
+    (action ? `；操作区域 [${action.join(',')}]（仅点击，不参与识别）` : '');
+  resultEl.textContent = `素材「${it.id}」识别中…\n${areaLine}`;
   try {
     if (it.kind === 'ocr_lines' || derived) {
       if (!detReady) {
@@ -1263,19 +1282,33 @@ async function testAssetOcr(it) {
       const r = await fetch('/lines?' + q);
       const s = await r.json();
       if (s.error) {
-        resultEl.textContent = '多行识别失败：' + s.error;
-        log('素材多行识别失败：' + s.error);
+        if (await fallbackFullscreenLines(`识别区域错误：${s.error}`)) {
+          resultEl.textContent = areaLine + '\n' + resultEl.textContent;
+        }
         return;
       }
       const lines = (s.lines || []).map((b) => ({
         ...b,
         box: [roi.x + b.box[0], roi.y + b.box[1], b.box[2], b.box[3]],
       }));
+      if (!lines.length) {
+        if (await fallbackFullscreenLines('识别区域内没有文字')) {
+          resultEl.textContent = areaLine + '\n' + resultEl.textContent;
+        }
+        return;
+      }
       let matched = null;
       if (derived && it.ocr_text) {
         matched = lines.find((l) => String(l.text).trim() === String(it.ocr_text).trim()) || null;
       }
+      if (derived && !matched) {
+        if (await fallbackFullscreenLines(`识别区域未找到期望文字 ${JSON.stringify(it.ocr_text)}`)) {
+          resultEl.textContent = areaLine + '\n' + resultEl.textContent;
+        }
+        return;
+      }
       resultEl.textContent =
+        areaLine + '\n' +
         `${lines.length} 行 / ${Number(s.elapsed_ms || 0).toFixed(0)} ms\n` +
         lines.map((b, i) => `${i + 1}. ${b.text} (${Number(b.score).toFixed(3)})`).join('\n') +
         (derived
@@ -1287,12 +1320,15 @@ async function testAssetOcr(it) {
     }
     const r = await fetch('/ocr?' + q);
     const s = await r.json();
-    if (s.error) {
-      resultEl.textContent = '识别失败：' + s.error;
-      log('素材识别失败：' + s.error);
+    if (s.error || !String(s.text || '').trim()) {
+      const reason = s.error || '识别区域内没有文字';
+      if (await fallbackFullscreenLines(reason)) {
+        resultEl.textContent = areaLine + '\n' + resultEl.textContent;
+      }
       return;
     }
     resultEl.textContent =
+      areaLine + '\n' +
       `文字 = ${JSON.stringify(s.text)}\n得分 = ${Number(s.score).toFixed(4)}\n` +
       `耗时 = ${Number(s.elapsed_ms).toFixed(1)} ms`;
     log(`素材识别：${it.id} → ${s.text}`);
