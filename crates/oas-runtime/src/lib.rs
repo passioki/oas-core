@@ -518,6 +518,69 @@ enum OcrRead {
     Lines(Vec<OcrLine>),
 }
 
+/// Single owner of every screenshot-derived value used by one interpreter.
+///
+/// ALL screen reads go through this cache so we never mix pixels from different
+/// moments inside one logical observation (e.g. two `appear()` calls in a
+/// condition) and never evaluate a selector against a frame captured before a
+/// click/wait/swipe/drag.
+///
+/// Lifecycle:
+/// - `refresh(src)`: grab a fresh frame and gray matcher.
+/// - `ensure(src)`: grab only when no observation is cached (used inside one
+///   evaluation, so multiple selectors share the same pixels).
+/// - `invalidate()`: drop it after any input that may change the screen.
+pub struct ScreenCache {
+    frame: Option<Frame>,
+    matcher: Option<Matcher>,
+    size: Option<(u32, u32)>,
+    /// Monotonic grab counter (diagnostics / stale-frame assertions).
+    seq: u64,
+}
+
+impl ScreenCache {
+    fn new() -> Self {
+        Self {
+            frame: None,
+            matcher: None,
+            size: None,
+            seq: 0,
+        }
+    }
+
+    /// Grab a fresh frame, replacing any previous observation.
+    fn refresh<S: ScreenSource>(&mut self, src: &mut S) -> Result<(), String> {
+        let frame: Frame = src.grab()?;
+        self.seq = self.seq.saturating_add(1);
+        self.size = Some((frame.width, frame.height));
+        self.matcher = Some(Matcher::new(GrayImage::from_frame(&frame)));
+        self.frame = Some(frame);
+        Ok(())
+    }
+
+    /// Use the cached observation if present; grab only when missing.
+    fn ensure<S: ScreenSource>(&mut self, src: &mut S) -> Result<(), String> {
+        if self.frame.is_none() || self.matcher.is_none() {
+            self.refresh(src)?;
+        }
+        Ok(())
+    }
+
+    /// Drop pixels after any action that may change the screen.
+    fn invalidate(&mut self) {
+        self.matcher = None;
+        self.frame = None;
+    }
+
+    fn size(&self) -> Option<(u32, u32)> {
+        self.size
+    }
+
+    fn seq(&self) -> u64 {
+        self.seq
+    }
+}
+
 pub struct Interpreter<S: ScreenSource, I: InputSink> {
     src: S,
     input: I,
@@ -525,11 +588,8 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     budget: Budget,
     /// Cooperative stop for editor-triggered runs (`POST /task/run/stop`).
     cancel: Option<Arc<AtomicBool>>,
-    matcher: Option<Matcher>,
-    /// RGBA frame the cached matcher was built from. Kept so in-flow OCR can
-    /// crop the **same** frame a selector just looked at (P1-c); dropped by
-    /// [`Self::invalidate_frame`] exactly like the matcher.
-    frame: Option<Frame>,
+    /// All screenshot-derived state; only this cache may own pixels/matcher.
+    screen: ScreenCache,
     /// Injected OCR engine. `None` means "this run cannot do OCR": `ocr()` must
     /// fail loudly instead of returning `""` (ENGINE-DESIGN §3.2).
     ocr: Option<Box<dyn OcrProvider>>,
@@ -541,12 +601,6 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     progress: Option<Box<dyn ProgressSink>>,
     /// Resume offset: skip this many TOP-LEVEL steps (§22.16 checkpoint recovery).
     start_step: usize,
-    /// Size of the frame `matcher` was built from (`click_point` needs it for
-    /// the CP3 in-frame check).
-    frame_size: Option<(u32, u32)>,
-    /// Number of live frame grabs performed by this interpreter. Included in
-    /// while-condition logs so "condition used a stale frame" is auditable.
-    frame_seq: u64,
     /// Editor-run diagnostic: log each `appear(sel)` result. Off for tests/CLI
     /// unless explicitly enabled, so it does not flood normal logs.
     trace_appear: bool,
@@ -590,17 +644,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             assets,
             budget,
             cancel: None,
-            matcher: None,
-            frame: None,
+            screen: ScreenCache::new(),
             ocr: None,
             coords: None,
             interrupts: Vec::new(),
             progress: None,
             start_step: 0,
-            frame_size: None,
             events: Vec::new(),
             observer: None,
-            frame_seq: 0,
             trace_appear: false,
             clicks: Vec::new(),
             run_seed,
@@ -627,7 +678,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
 
     /// Last frame the interpreter looked at (for failure screenshots, §22.11 审计).
     pub fn last_frame(&self) -> Option<Frame> {
-        self.frame.clone()
+        self.screen.frame.clone()
     }
 
     /// The seed this run actually used (HB5). Unlike [`Self::seed_now`] (which
@@ -857,7 +908,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         let start = std::time::Instant::now();
         let mut last;
         loop {
-            self.invalidate_frame();
+            self.reobserve_screen()?;
             last = match expect {
                 Expect::Appear { sel, .. } => {
                     let (score, at) = self.locate(sel)?;
@@ -941,23 +992,27 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
 
     /// Grab a frame and cache its matcher (integral images) for this frame.
     fn refresh_frame(&mut self) -> Result<(), String> {
-        let frame: Frame = self.src.grab()?;
-        self.frame_seq = self.frame_seq.saturating_add(1);
-        self.frame_size = Some((frame.width, frame.height));
-        let gray = GrayImage::from_frame(&frame);
-        self.matcher = Some(Matcher::new(gray));
-        self.frame = Some(frame);
-        Ok(())
+        self.screen.refresh(&mut self.src)
     }
 
-    /// Discard the cached frame. Called after every successful click: the click
-    /// may have changed the screen, so the **next** selector must not match
-    /// against the pre-click pixels (that stale-frame bug is exactly what this
-    /// rewrite exists to kill: it produces "clicked the old position" runs).
-    /// It also discards the cached RGBA frame used by in-flow OCR.
+    /// Ensure there is a frame, but reuse the current observation if present.
+    /// Used *inside* one logical read (e.g. two selectors in one condition).
+    fn observe_screen(&mut self) -> Result<(), String> {
+        self.screen.ensure(&mut self.src)
+    }
+
+    /// Start a NEW observation: discard pixels from any previous action and
+    /// grab the live screen. This is the only API steps should use when they
+    /// decide something about the current screen (conditions, clicks, OCR).
+    fn reobserve_screen(&mut self) -> Result<(), String> {
+        self.screen.refresh(&mut self.src)
+    }
+
+    /// Discard the cached frame. Called after every successful click/swipe/drag:
+    /// the screen may have changed, so the next selector must not match against
+    /// the pre-action pixels.
     fn invalidate_frame(&mut self) {
-        self.matcher = None;
-        self.frame = None;
+        self.screen.invalidate();
     }
 
     fn check_budget(&self) -> Result<(), String> {
@@ -1029,9 +1084,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         rect: Rect,
         expand: i32,
     ) -> Result<bool, String> {
-        if self.matcher.is_none() {
-            self.refresh_frame()?;
-        }
+        self.observe_screen()?;
         let Some(tpl) = self.assets.get(sel) else {
             return Err(format!(
                 "require_template `{sel}` is not declared in the task's assets"
@@ -1039,7 +1092,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         };
         let th = tpl.threshold;
         let (fw, fh) = self
-            .frame_size
+            .screen.size()
             .ok_or_else(|| "require_template: no frame available".to_string())?;
         let (fw, fh) = (fw as i32, fh as i32);
         let x0 = (rect.x - expand).max(0);
@@ -1052,7 +1105,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             return Ok(false);
         }
         let matcher = self
-            .matcher
+            .screen.matcher
             .as_ref()
             .ok_or_else(|| "require_template: no frame available".to_string())?;
         Ok(matcher
@@ -1066,9 +1119,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             if members.is_empty() {
                 return Err(format!("selector `{sel}` is an empty template collection"));
             }
-            if self.matcher.is_none() {
-                self.refresh_frame()?;
-            }
+            self.observe_screen()?;
             let mut best: Option<(f32, Option<Point>, String)> = None;
             for m in members {
                 let (score, at) = if self.assets.ocr_roi(&m).is_some() {
@@ -1105,15 +1156,13 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     }
 
     fn locate_one(&mut self, sel: &str) -> Result<(f32, Option<Point>), String> {
-        if self.matcher.is_none() {
-            self.refresh_frame()?;
-        }
+        self.observe_screen()?;
         let tpl = self
             .assets
             .get(sel)
             .ok_or_else(|| format!("selector `{sel}` is not declared in the task's assets"))?;
         let matcher = self
-            .matcher
+            .screen.matcher
             .as_ref()
             .ok_or_else(|| "no frame available".to_string())?;
         Ok(locate_template(matcher, tpl))
@@ -1219,11 +1268,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     .into(),
             );
         }
-        if self.frame.is_none() {
-            self.refresh_frame()?;
-        }
+        self.observe_screen()?;
         let frame = self
-            .frame
+            .screen.frame
             .as_ref()
             .ok_or_else(|| "OCR: no frame available".to_string())?;
         let provider = self.ocr.as_mut().expect("provider checked above");
@@ -1332,11 +1379,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         }
         let multiline = self.assets.ocr_is_multiline(sel);
         let ocr_polygon = self.assets.ocr_polygon(sel).map(|p| p.to_vec());
-        if self.frame.is_none() {
-            self.refresh_frame()?;
-        }
+        self.observe_screen()?;
         let frame = self
-            .frame
+            .screen.frame
             .as_ref()
             .ok_or_else(|| "OCR: no frame available".to_string())?;
         // v1.2.1: a line saved from a multi-line det+rec result must use the SAME
@@ -1457,7 +1502,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             };
             let target = self.click_box_for(&action_sel, ap)?;
             let (w, h) = self
-                .frame_size
+                .screen.size()
                 .ok_or_else(|| "interrupt: no frame available".to_string())?;
             let plan = self.humanize.template_click(target, w, &mut self.rng);
             let centre = Point {
@@ -1589,7 +1634,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             } => {
                 // A condition must describe the CURRENT screen, not a frame
                 // cached before a wait/transition.
-                self.invalidate_frame();
+                self.reobserve_screen()?;
                 let v = eval(cond, self)?;
                 let taken = matches!(v, Value::Bool(true));
                 let body = if taken { then } else { otherwise };
@@ -1630,7 +1675,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     // frame cached by the previous body/condition so appear()
                     // grabs a live frame; otherwise a post-click/transition
                     // condition can keep evaluating pre-transition pixels.
-                    self.invalidate_frame();
+                    self.reobserve_screen()?;
                     let value = eval(cond, self)?;
                     let truthy = match value {
                         Value::Bool(b) => b,
@@ -1650,7 +1695,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         "while_cond",
                         &format!(
                             "iteration={iters} value={value:?} truthy={truthy} frame_seq={} cond={cond:?}",
-                            self.frame_seq
+                            self.screen.seq()
                         ),
                         "ok",
                         0.0,
@@ -1696,7 +1741,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 let deadline = Instant::now() + Duration::from_secs_f64(*timeout_s);
                 loop {
                     // First check must also be fresh; only poll frames after.
-                    self.invalidate_frame();
+                    self.reobserve_screen()?;
                     if matches!(eval(cond, self)?, Value::Bool(true)) {
                         return Ok("condition met".into());
                     }
@@ -1707,7 +1752,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 }
             }
             Step::Appear { sel } => {
-                self.invalidate_frame();
+                self.reobserve_screen()?;
                 let (score, at) = self.locate(sel)?;
                 let th = self.assets.threshold_for(sel).unwrap_or(0.9);
                 if score >= th {
@@ -1725,7 +1770,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             } => {
                 let deadline = Instant::now() + Duration::from_millis(*timeout_ms as u64);
                 loop {
-                    self.invalidate_frame();
+                    self.reobserve_screen()?;
                     let (score, at) = self.locate(sel)?;
                     let th = self.assets.threshold_for(sel).unwrap_or(0.9);
                     if let Some(_detected) = at.filter(|_| score >= th) {
@@ -1746,7 +1791,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         };
                         let target = self.click_box_for(&action_sel, ap)?;
                         let (w, h) = self
-                            .frame_size
+                            .screen.size()
                             .ok_or_else(|| "dismiss_popup: no frame available".to_string())?;
                         let plan = self.humanize.template_click(target, w, &mut self.rng);
                         let centre = Point {
@@ -1790,7 +1835,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 stable_frames,
                 ..
             } => {
-                self.invalidate_frame();
+                self.reobserve_screen()?;
                 let guarded = self.require_guard(requires.as_ref())?;
                 // ENGINE §22.11 补充层 "多模板变体": try `sel` first, then the
                 // alternatives in declaration order; the first one reaching its
@@ -1867,7 +1912,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 // inside the target rect; with 1~3% probability the click MISSES
                 // the box (still performed, audited as `miss=true`).
                 let (w, h) = self
-                    .frame_size
+                    .screen.size()
                     .ok_or_else(|| "click: no frame available".to_string())?;
                 let plan = self.humanize.template_click(target, w, &mut self.rng);
                 let centre = Point {
@@ -1906,7 +1951,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 ))
             }
             Step::ClickPoint { x, y, requires, expect, .. } => {
-                self.invalidate_frame();
+                self.reobserve_screen()?;
                 let guarded = self.require_guard(requires.as_ref())?;
                 // CP2: both coordinates are expressions (literal or computed).
                 let tx = self.eval_coord(x, "x")?;
@@ -1917,11 +1962,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 };
                 // CP3 needs the frame dimensions; grab one lazily if nothing has
                 // looked at the screen yet in this run.
-                if self.matcher.is_none() {
-                    self.refresh_frame()?;
-                }
+                self.observe_screen()?;
                 let (w, h) = self
-                    .frame_size
+                    .screen.size()
                     .ok_or_else(|| "click_point: no frame available".to_string())?;
                 // CP3: an off-screen click must fail loudly - never "clicked
                 // outside the screen, counted as success".
@@ -1958,16 +2001,16 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 expect,
                 ..
             } => {
-                self.invalidate_frame();
+                self.reobserve_screen()?;
                 let guarded = self.require_guard(requires.as_ref())?;
                 // ENGINE §22.11: fixed priority image > text > memory; every
                 // locator failure is kept as evidence, and ALL failing is a loud
                 // step failure (never a silent skip).
-                if self.frame_size.is_none() {
-                    self.refresh_frame()?;
+                if self.screen.size().is_none() {
+                    self.observe_screen()?;
                 }
                 let (w, h) = self
-                    .frame_size
+                    .screen.size()
                     .ok_or_else(|| "click_target: no frame available".to_string())?;
                 let mut order: Vec<&Locator> = find.iter().collect();
                 order.sort_by_key(|l| l.priority());
@@ -2254,11 +2297,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             }
                         }
                         Locator::Region { roi } => {
-                            if self.matcher.is_none() {
-                                self.refresh_frame()?;
-                            }
+                            self.observe_screen()?;
                             let (fw, fh) = self
-                                .frame_size
+                                .screen.size()
                                 .ok_or_else(|| "region click: no frame available".to_string())?;
                             let rect = oas_types::Rect {
                                 x: roi[0],
@@ -2303,11 +2344,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                      (kind: region)"
                                 )
                             })?;
-                            if self.matcher.is_none() {
-                                self.refresh_frame()?;
-                            }
+                            self.observe_screen()?;
                             let (fw, fh) = self
-                                .frame_size
+                                .screen.size()
                                 .ok_or_else(|| "region click: no frame available".to_string())?;
                             if rect.x < 0
                                 || rect.y < 0
@@ -2399,11 +2438,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 };
                 // Same CP3 posture as click_point: both endpoints must be
                 // on-screen, otherwise the swipe is a loud failure.
-                if self.matcher.is_none() {
-                    self.refresh_frame()?;
-                }
+                self.observe_screen()?;
                 let (w, h) = self
-                    .frame_size
+                    .screen.size()
                     .ok_or_else(|| "swipe: no frame available".to_string())?;
                 let outside = |p: Point| {
                     p.x < 0 || p.y < 0 || p.x >= w as i32 || p.y >= h as i32
@@ -2430,13 +2467,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 duration_ms,
                 margin,
             } => {
-                self.invalidate_frame();
+                self.reobserve_screen()?;
                 let src_rect = self.drag_target_rect(from)?;
-                if self.matcher.is_none() {
-                    self.refresh_frame()?;
-                }
+                self.observe_screen()?;
                 let (w, h) = self
-                    .frame_size
+                    .screen.size()
                     .ok_or_else(|| "drag: no frame available".to_string())?;
                 let start = self.random_point_in(src_rect, *margin);
                 let (ux, uy) = match direction {
@@ -2554,7 +2589,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 Ok(format!("ocr_to_var {sel} -> {var} = {text:?}"))
             }
             Step::Ocr { sel } => {
-                self.invalidate_frame();
+                self.reobserve_screen()?;
                 // The standalone `ocr` step exists so an editor-authored flow can
                 // PROVE what a selector reads without branching on it (a plain
                 // expression has no step log). `ocr_lines` assets log EVERY line
@@ -2673,8 +2708,8 @@ impl<S: ScreenSource, I: InputSink> EvalContext for Interpreter<S, I> {
         };
         if self.trace_appear {
             let detail = match &result {
-                Ok(v) => format!("sel={sel} -> {v} frame_seq={}", self.frame_seq),
-                Err(e) => format!("sel={sel} -> ERROR {e:?} frame_seq={}", self.frame_seq),
+                Ok(v) => format!("sel={sel} -> {v} frame_seq={}", self.screen.seq()),
+                Err(e) => format!("sel={sel} -> ERROR {e:?} frame_seq={}", self.screen.seq()),
             };
             self.log(
                 0,
@@ -2707,11 +2742,9 @@ impl<S: ScreenSource, I: InputSink> EvalContext for Interpreter<S, I> {
         if self.ocr.is_none() {
             return Err("text_visible() requires OCR (no OCR provider attached)".to_string());
         }
-        if self.frame.is_none() {
-            self.refresh_frame()?;
-        }
+        self.observe_screen()?;
         let frame = self
-            .frame
+            .screen.frame
             .as_ref()
             .ok_or_else(|| "text_visible(): no frame available".to_string())?
             .clone();
@@ -2926,6 +2959,28 @@ mod tests {
             text: text.to_string(),
             score,
         }
+    }
+
+    #[test]
+    fn screen_cache_shares_one_observation_until_invalidated() {
+        let mut src = FakeScreen::new();
+        let mut cache = ScreenCache::new();
+        cache.ensure(&mut src).expect("first observation");
+        assert_eq!(src.grabs, 1);
+        let first_seq = cache.seq();
+        // Multiple selectors inside one condition must reuse the same pixels.
+        cache.ensure(&mut src).expect("same observation");
+        assert_eq!(src.grabs, 1);
+        assert_eq!(cache.seq(), first_seq);
+        // Any screen-changing action invalidates; next read grabs a new frame.
+        cache.invalidate();
+        assert!(cache.frame.is_none());
+        cache.ensure(&mut src).expect("fresh observation");
+        assert_eq!(src.grabs, 2);
+        assert!(cache.seq() > first_seq);
+        // Explicit re-observation always grabs.
+        cache.refresh(&mut src).expect("forced observation");
+        assert_eq!(src.grabs, 3);
     }
 
     fn assets() -> AssetSet {
