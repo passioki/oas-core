@@ -51,3 +51,4 @@
 - Remote task dirs: 61; menu tasks 53; helper dirs 8.
 - Imported global assets: 2825 total (23 core + task/component legacy).
 - Baseline `cargo test --workspace`: 350 passed.
+- Batch 1 status: **43 🔄 / 9 ⛔ / 0 ✅**; 6 tasks had static-complete flows but were downgraded to 🔄 because no real-device/replay evidence. Do not claim behavior equivalence yet.

@@ -1,6 +1,6 @@
 {
   "task": "Pets",
-  "status": "✅",
+  "status": "🔄",
   "evidence": {
     "lint": "lint task=Pets errors=0",
     "flow_steps": 9,
@@ -8,6 +8,7 @@
     "run": "未真机"
   },
   "gaps": [
+    "静态实现/lint 通过，但无实机或回放证据；按行为等价标准仍为进行中",
     "未真机验证（无设备会话）",
     "I_PET_HOUSE 主界面入口依赖旧仓模板/页面图"
   ]

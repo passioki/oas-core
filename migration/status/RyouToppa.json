@@ -1,6 +1,6 @@
 {
   "task": "RyouToppa",
-  "status": "✅",
+  "status": "🔄",
   "evidence": [
     "spec: migration/specs/RyouToppa.md (behavior matrix §3, DSL mapping §8, assets §9)",
     "bundle: tasks/RyouToppa/{meta.json,flow.json,README.md,migration.json}",
@@ -9,6 +9,7 @@
     "flow covers: entry nav (3 guarded clicks), raid state detect (5 states), admin start, team-lock toggle, 8-area attack loop with per-area failure/finished marks, battle prepare/auto/continue pattern, ticket OCR=0 exit, 3-round refresh bound, return-to-home, 4 exits declared"
   ],
   "gaps": [
+    "静态实现/lint 通过，但无实机或回放证据；按行为等价标准仍为进行中",
     "no real-device/replay evidence (emulator-5554 offline at migration time); first live run must validate page guards and guild-battle prepare layout",
     "TODO(DSL): SwitchSoul preset/soul switching has no primitive -> optional config features unmapped (default disabled)",
     "TODO(DSL): limit_time=30min time cap needs elapsed()/clock expression or run budget wiring",
