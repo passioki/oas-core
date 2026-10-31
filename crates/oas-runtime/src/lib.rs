@@ -985,7 +985,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             }
             let mut best: Option<(f32, Option<Point>, String)> = None;
             for m in members {
-                let (score, at) = self.locate_one(&m)?;
+                let (score, at) = if self.assets.ocr_roi(&m).is_some() {
+                    self.locate_ocr(&m)?
+                } else {
+                    self.locate_one(&m)?
+                };
                 if best.as_ref().map(|b| score > b.0).unwrap_or(true) {
                     best = Some((score, at, m));
                 }
@@ -994,7 +998,24 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             self.last_set_member.insert(sel.to_string(), member);
             return Ok((score, at));
         }
+        if self.assets.ocr_roi(sel).is_some() {
+            return self.locate_ocr(sel);
+        }
         self.locate_one(sel)
+    }
+
+    /// Resolve an OCR asset to (score, found-point). The point is a marker only:
+    /// `click_box_for` uses the asset action ROI/recognized rect for OCR.
+    fn locate_ocr(&mut self, sel: &str) -> Result<(f32, Option<Point>), String> {
+        match self.ocr_read(sel)? {
+            OcrRead::Single(Some(_), score) => Ok((score, Some(Point { x: 0, y: 0 }))),
+            OcrRead::Single(None, _) => Ok((0.0, None)),
+            OcrRead::Lines(lines) if !lines.is_empty() => {
+                let score = lines.iter().map(|l| l.score).fold(f32::MIN, f32::max);
+                Ok((score, Some(Point { x: 0, y: 0 })))
+            }
+            OcrRead::Lines(_) => Ok((0.0, None)),
+        }
     }
 
     fn locate_one(&mut self, sel: &str) -> Result<(f32, Option<Point>), String> {
@@ -1306,6 +1327,17 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         }
     }
 
+    /// Threshold for a selector. OCR assets have no template score; a
+    /// recognized line is a hit, so their threshold is 0 (never reject a
+    /// successful OCR read because it is below the template default 0.9).
+    fn selector_threshold(&self, sel: &str) -> f32 {
+        if self.assets.ocr_roi(sel).is_some() || self.assets.derived_ocr(sel).is_some() {
+            0.0
+        } else {
+            self.assets.threshold_for(sel).unwrap_or(0.9)
+        }
+    }
+
     fn ocr_digit_value(&mut self, sel: &str) -> Result<Option<f64>, String> {
         match self.ocr_run(sel)? {
             (Some(text), _) => Ok(parse_digit(&text)),
@@ -1323,17 +1355,13 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         let rules = self.interrupts.clone();
         for rule in &rules {
             let (score, at) = self.locate(&rule.detect)?;
-            let th = self.assets.threshold_for(&rule.detect).unwrap_or(0.9);
+            let th = self.selector_threshold(&rule.detect);
             let Some(_detected) = at.filter(|_| score >= th) else {
                 continue;
             };
             let action_sel = rule.action.clone().unwrap_or_else(|| rule.detect.clone());
             let (ascore, aat) = self.locate(&action_sel)?;
-            let ath = self
-                .assets
-                .get(&action_sel)
-                .map(|t| t.threshold)
-                .unwrap_or(0.9);
+            let ath = self.selector_threshold(&action_sel);
             let Some(ap) = aat.filter(|_| ascore >= ath) else {
                 return Err(format!(
                     "interrupt: popup `{}` detected (score {score:.3}) but action `{action_sel}` \
@@ -5271,6 +5299,55 @@ mod tests {
             "OCR click should land in the operation region (jitter allowed): {p:?}"
         );
         assert_eq!(interp.clicks()[0].locator, "ocr");
+    }
+
+    #[test]
+    fn click_target_template_locator_also_accepts_ocr_assets() {
+        let mut a = assets();
+        a.insert_ocr(
+            "O_LINE",
+            Rect {
+                x: 10,
+                y: 10,
+                w: 20,
+                h: 10,
+            },
+        );
+        a.set_click_back(
+            "O_LINE",
+            Rect {
+                x: 5,
+                y: 5,
+                w: 60,
+                h: 30,
+            },
+        );
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, a, Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(FixedLineOcr {
+                rect: Rect {
+                    x: 10,
+                    y: 10,
+                    w: 20,
+                    h: 10,
+                },
+                text: "确认".to_string(),
+            }))
+            .with_seed(11);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[{"kind":"template","sel":"O_LINE"}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let clicks = shared.clicks.borrow().clone();
+        assert_eq!(clicks.len(), 1);
+        let p = clicks[0];
+        assert!(
+            p.x >= 0 && p.x <= 70 && p.y >= 0 && p.y <= 40,
+            "OCR template-locator click should land in the action region: {p:?}"
+        );
     }
 
     #[test]

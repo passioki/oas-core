@@ -1674,6 +1674,16 @@ function collectFlowAssetIds(flow) {
   return ids;
 }
 
+function runAssetTest(it) {
+  if (it.kind === 'template') testAssetMatch(it);
+  else if (it.kind === 'region') {
+    pickAssetRoi(it);
+    resultEl.textContent =
+      `操作区域「${it.id}」[${(it.roi || []).join(',')}]\n` +
+      `流程引用：click_target/find {kind:"region", sel:"${it.id}"}`;
+  } else testAssetOcr(it);
+}
+
 function renderTaskReferencedAssets() {
   const targets = [taskRefAssets, taskRefAssetsTask].filter(Boolean);
   if (!targets.length) return;
@@ -1688,12 +1698,19 @@ function renderTaskReferencedAssets() {
     return;
   }
   for (const el of targets) {
-    el.textContent = '';
-    for (const a of rows) {
-      const row = document.createElement('div');
-      row.textContent = `${a.id} [${ASSET_KIND_LABELS[a.kind] || a.kind}]`;
-      el.appendChild(row);
-    }
+    window.OASAssetUI.renderRows(el, rows, {
+      task: (taskName.value || '').trim(),
+      pick: false,
+      manage: false,
+      actions: true,
+      group: true,
+      onPick: (it) => pickAssetRoi(it),
+      onTest: runAssetTest,
+      onClickTest: (it) => testAssetClick(it),
+      onDragTest: (it) => testAssetDrag(it),
+      onStep: (it) => generateAssetStep(it),
+      onCollectionTest: (it) => testAssetCollection(it),
+    });
   }
 }
 
@@ -1735,55 +1752,7 @@ const ASSET_KIND_LABELS = {
 };
 
 function makeAssetThumb(it) {
-  const box = document.createElement('span');
-  box.className = 'asset-thumb';
-  const task = (taskName.value || '').trim();
-  if (it.kind === 'template' && it.file) {
-    const img = document.createElement('img');
-    img.loading = 'lazy';
-    img.alt = it.id;
-    img.src = `/task/asset/image?task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}`;
-    img.addEventListener('error', () => {
-      box.textContent = 'ROI';
-      box.classList.add('asset-thumb-empty');
-    });
-    box.appendChild(img);
-    return box;
-  }
-  if (it.roi) {
-    const img = new Image();
-    img.onload = () => {
-      const c = document.createElement('canvas');
-      c.width = 64;
-      c.height = 44;
-      const ctx = c.getContext('2d');
-      ctx.fillStyle = '#0b0d10';
-      ctx.fillRect(0, 0, c.width, c.height);
-      // Crop the recognition ROI; fit by aspect ratio (letterbox rather than
-      // distorting text/icon shapes).
-      const rw = Math.max(1, it.roi[2]);
-      const rh = Math.max(1, it.roi[3]);
-      const scale = Math.min(c.width / rw, c.height / rh);
-      const dw = Math.max(1, rw * scale);
-      const dh = Math.max(1, rh * scale);
-      ctx.drawImage(img, it.roi[0], it.roi[1], rw, rh, (c.width - dw) / 2, (c.height - dh) / 2, dw, dh);
-      box.textContent = '';
-      box.appendChild(c);
-    };
-    img.onerror = () => {
-      box.textContent = 'ROI';
-      box.classList.add('asset-thumb-empty');
-    };
-    img.src = (it.positions && it.positions.length)
-      ? `/frames/image?id=${it.positions[0]}&ts=${Date.now()}`
-      : '/frame.png?ts=' + Date.now();
-    box.textContent = 'ROI';
-    box.classList.add('asset-thumb-empty');
-    return box;
-  }
-  box.textContent = '—';
-  box.classList.add('asset-thumb-empty');
-  return box;
+  return window.OASAssetUI.makeThumb(it, (taskName.value || '').trim());
 }
 
 function renderAssetList() {
@@ -1807,137 +1776,26 @@ function renderAssetList() {
     assetsList.appendChild(empty);
     return;
   }
-  const groups = new Map();
-  for (const it of items) {
-    if (!groups.has(it.kind)) groups.set(it.kind, []);
-    groups.get(it.kind).push(it);
-  }
-  for (const [kind, list] of groups) {
-    const h = document.createElement('h4');
-    h.className = 'asset-group';
-    h.textContent = `${ASSET_KIND_LABELS[kind] || kind}（${list.length}）`;
-    assetsList.appendChild(h);
-    for (const it of list) {
-      const row = document.createElement('div');
-      row.className = 'asset-row';
-      if (it.kind === 'template_set') {
-        const main = document.createElement('button');
-        main.type = 'button';
-        main.className = 'asset-main';
-        main.textContent = `${it.id}\n集合成员 ${it.members.length} 张：${it.members.join(' / ')}`;
-        main.title = 'flow 引用该集合；运行时按成员顺序尝试匹配';
-        main.addEventListener('click', () => {
-          resultEl.textContent = `素材集合「${it.id}」\n成员：${it.members.join('、')}\n` +
-            'flow 写：click_target/find {kind:"template", sel:"' + it.id + '"}';
-        });
-        const test = document.createElement('button');
-        test.type = 'button';
-        test.className = 'asset-test';
-        test.textContent = '测集合';
-        test.title = '逐个成员全屏匹配，显示最佳分数';
-        test.addEventListener('click', () => testAssetCollection(it));
-        const del = document.createElement('button');
-        del.type = 'button';
-        del.className = 'asset-test';
-        del.textContent = '删';
-        del.title = '删除集合（flow 引用时阻止）';
-        del.addEventListener('click', () => deleteCollection(it));
-        row.append(main, test, del);
-        assetsList.appendChild(row);
-        continue;
-      }
-      const main = document.createElement('button');
-      main.type = 'button';
-      main.className = 'asset-main';
-      if (it.kind === 'template') {
-        const pick = document.createElement('input');
-        pick.type = 'checkbox';
-        pick.className = 'asset-pick';
-        pick.value = it.id;
-        pick.title = '勾选后点「新建集合」';
-        row.appendChild(pick);
-      }
-      const roi = it.roi ? `[${it.roi.join(',')}]` : '—';
-      const action = it.action_roi ? ` · 操作区域[${it.action_roi.join(',')}]` : '';
-      const pos = (it.positions && it.positions.length) ? ` · 位置帧[${it.positions.join(',')}]` : ' · 位置帧未设置';
-      main.appendChild(makeAssetThumb(it));
-      const assetText = document.createElement('span');
-      assetText.className = 'asset-main-text';
-      assetText.textContent = `${it.id}\n识别 ${roi}${action}${pos}`;
-      main.appendChild(assetText);
-      main.title = `${it.file || '（无图）'}`;
-      main.addEventListener('click', () => pickAssetRoi(it));
-      const test = document.createElement('button');
-      test.type = 'button';
-      test.className = 'asset-test';
-      if (it.kind === 'template') {
-        test.textContent = '测试';
-        test.title = '用已保存的模板图在当前帧全屏匹配';
-        test.addEventListener('click', () => testAssetMatch(it));
-      } else if (it.kind === 'region') {
-        test.textContent = '区域';
-        test.title = '选中该操作区域（区域点击/拖动可直接引用）';
-        test.addEventListener('click', () => {
-          pickAssetRoi(it);
-          resultEl.textContent =
-            `操作区域「${it.id}」[${(it.roi || []).join(',')}]\n` +
-            `流程引用：click_target/find {kind:"region", sel:"${it.id}"}`;
-        });
-      } else {
-        test.textContent = '识别';
-        test.title = '在当前帧用该 ROI 试识别文字';
-        test.addEventListener('click', () => testAssetOcr(it));
-      }
-      const edit = document.createElement('button');
-      edit.type = 'button';
-      edit.className = 'asset-test';
-      edit.textContent = '改';
-      edit.title = '重命名 / 修改 OCR ROI / 模板阈值';
-      edit.addEventListener('click', () => editAsset(it));
-      const posBtn = document.createElement('button');
-      posBtn.type = 'button';
-      posBtn.className = 'asset-test';
-      posBtn.textContent = '帧';
-      posBtn.title = '设置素材位置帧（可多个，逗号分隔；清空=无位置）';
-      posBtn.addEventListener('click', () => editAssetPositions(it));
-      const del = document.createElement('button');
-      del.type = 'button';
-      del.className = 'asset-test';
-      del.textContent = '删';
-      del.title = '删除素材（flow 仍引用时会被拒绝）';
-      del.addEventListener('click', () => deleteAsset(it));
-      row.append(main, test, edit, posBtn, del);
-      if (it.kind !== 'region') {
-        const op = document.createElement('button');
-        op.type = 'button';
-        op.className = 'asset-test';
-        op.textContent = '操作区';
-        op.title = '在画布上拖拽设置该素材的操作区域（默认=识别结果）';
-        op.addEventListener('click', () => editAssetActionRoi(it));
-        row.appendChild(op);
-      }
-      const clickTest = document.createElement('button');
-      clickTest.type = 'button';
-      clickTest.className = 'asset-test';
-      clickTest.textContent = '点测';
-      clickTest.title = '点击测试（dry-run：验证定位并显示目标点）';
-      clickTest.addEventListener('click', () => testAssetClick(it));
-      const dragTest = document.createElement('button');
-      dragTest.type = 'button';
-      dragTest.className = 'asset-test';
-      dragTest.textContent = '拖测';
-      dragTest.title = '拖动测试（dry-run：生成方向/起终点）';
-      dragTest.addEventListener('click', () => testAssetDrag(it));
-      const genStep = document.createElement('button');
-      genStep.type = 'button';
-      genStep.className = 'asset-test';
-      genStep.textContent = '步骤';
-      genStep.title = '生成 click_target 步骤并复制到剪贴板';
-      genStep.addEventListener('click', () => generateAssetStep(it));
-      row.append(clickTest, dragTest, genStep);
-      assetsList.appendChild(row);
-    }
-  }
+  window.OASAssetUI.renderRows(assetsList, items, {
+    task: (taskName.value || '').trim(),
+    pick: true,
+    manage: true,
+    actions: true,
+    group: true,
+    clear: false,
+    emptyText: q ? '（没有匹配的素材 id）' : '（任务还没有素材）',
+    onPick: (it) => pickAssetRoi(it),
+    onTest: runAssetTest,
+    onEdit: (it) => editAsset(it),
+    onPosition: (it) => editAssetPositions(it),
+    onDelete: (it) => deleteAsset(it),
+    onAction: (it) => editAssetActionRoi(it),
+    onClickTest: (it) => testAssetClick(it),
+    onDragTest: (it) => testAssetDrag(it),
+    onStep: (it) => generateAssetStep(it),
+    onCollectionTest: (it) => testAssetCollection(it),
+    onCollectionDelete: (it) => deleteCollection(it),
+  });
 }
 
 async function testAssetCollection(it) {

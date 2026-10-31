@@ -706,6 +706,7 @@ impl Server {
         match (method, path_only.as_str()) {
             ("GET", "/") => self.send_file(&mut out, &format!("{ui_dir}/index.html"), "text/html; charset=utf-8"),
             ("GET", "/app.js") => self.send_file(&mut out, &format!("{ui_dir}/app.js"), "application/javascript; charset=utf-8"),
+            ("GET", "/asset_ui.js") => self.send_file(&mut out, &format!("{ui_dir}/asset_ui.js"), "application/javascript; charset=utf-8"),
             ("GET", "/builder.js") => self.send_file(&mut out, &format!("{ui_dir}/builder.js"), "application/javascript; charset=utf-8"),
             ("GET", "/style.css") => self.send_file(&mut out, &format!("{ui_dir}/style.css"), "text/css; charset=utf-8"),
             ("GET", "/flow_model.js") => self.send_file(&mut out, &format!("{ui_dir}/flow_model.js"), "application/javascript; charset=utf-8"),

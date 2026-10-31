@@ -815,11 +815,15 @@
     if (B.assets.length) {
       const list = document.createElement('div');
       list.className = 'muted small builder-asset-list';
-      for (const a of B.assets) {
-        const row = document.createElement('div');
-        row.textContent = `${a.id} [${a.kind}]`;
-        list.appendChild(row);
-      }
+      window.OASAssetUI.renderRows(list, B.assets, {
+        task: B.task,
+        compact: true,
+        pick: false,
+        manage: false,
+        actions: false,
+        group: true,
+        onPick: (a) => status(`素材 ${a.id}（${a.kind}）：可在动作参数里引用`),
+      });
       box.appendChild(list);
     } else {
       const empty = document.createElement('div');
