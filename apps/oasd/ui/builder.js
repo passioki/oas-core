@@ -38,7 +38,7 @@
     finish: [{ key: 'exit', label: '出口', type: 'select', options: ['done', 'failed'] }],
     if: [{ key: 'cond', label: '条件表达式', type: 'text' }],
     loop: [{ key: 'n', label: '次数（表达式）', type: 'text' }],
-    while: [{ key: 'cond', label: '条件表达式', type: 'text' }, { key: 'max_iters', label: '最大迭代（可选）', type: 'number' }],
+    while: [{ key: 'cond', label: '条件表达式', type: 'text' }, { key: 'max_iters', label: '最大迭代（0=无限，受预算限制）', type: 'number' }],
     click_target: [],
     drag: [],
     set_var: [{ key: 'name', label: '变量名', type: 'text' }, { key: 'value', label: '值（表达式）', type: 'text' }],
@@ -59,7 +59,7 @@
     finish: { exit: 'done' },
     if: { cond: 'true' },
     loop: { n: '3' },
-    while: { cond: 'true' },
+    while: { cond: 'true', max_iters: 0 },
     click_target: { find: [{ kind: 'template', sel: 'I_A' }] },
     drag: {
       from: { kind: 'region', roi: [100, 400, 300, 200] },
@@ -680,27 +680,28 @@
     root.appendChild(svg);
   }
 
-  function assetSelect(current, kinds) {
-    const sel = document.createElement('select');
-    const blank = document.createElement('option');
-    blank.value = '';
-    blank.textContent = '（选择素材）';
-    sel.appendChild(blank);
+  let assetSearchSeq = 0;
+  function assetSearch(current, kinds) {
+    const wrap = document.createElement('span');
+    wrap.className = 'builder-asset-search';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = '搜索素材 id…';
+    input.value = current || '';
+    const listId = 'builder-asset-list-' + (++assetSearchSeq);
+    input.setAttribute('list', listId);
+    const list = document.createElement('datalist');
+    list.id = listId;
     for (const a of B.assets) {
       if (kinds && !kinds.includes(a.kind)) continue;
       const o = document.createElement('option');
       o.value = a.id;
-      o.textContent = `${a.id} (${a.kind})`;
-      sel.appendChild(o);
+      o.label = a.kind;
+      list.appendChild(o);
     }
-    if (current && !Array.from(sel.options).some((o) => o.value === current)) {
-      const o = document.createElement('option');
-      o.value = current;
-      o.textContent = current;
-      sel.appendChild(o);
-    }
-    sel.value = current || '';
-    return sel;
+    wrap.append(input, list);
+    wrap.input = input;
+    return wrap;
   }
 
   function renderAssetPanel() {
@@ -781,8 +782,9 @@
 
     const assetLab = document.createElement('label');
     assetLab.textContent = '素材/操作区域';
-    const asset = assetSelect(loc.sel || '', null);
-    assetLab.appendChild(asset);
+    const assetSearchWrap2 = assetSearch(loc.sel || '');
+    const asset = assetSearchWrap2.input;
+    assetLab.appendChild(assetSearchWrap2);
     box.appendChild(assetLab);
 
     const textLab = document.createElement('label');
@@ -980,32 +982,33 @@
     root.appendChild(box);
   }
 
-  function replaceSelectedStep(next) {
-    const path = B.selected;
-    const arr = getContainer(path);
-    if (!arr) return;
-    const idx = path[path.length - 1];
-    if (typeof idx !== 'number') return;
-    arr.splice(idx, 1, next);
-    B.selected = path;
-    renderAll();
+  function normalizeStepArgs(step) {
+    if (!step || typeof step !== 'object') return;
+    step.args = step.args || {};
+    if (step.op === 'if') {
+      delete step.args.sel;
+      delete step.args.n;
+      delete step.args.max_iters;
+      if (step.args.cond == null || step.args.cond === '') step.args.cond = 'true';
+    } else if (step.op === 'while') {
+      delete step.args.sel;
+      delete step.args.n;
+      if (step.args.cond == null || step.args.cond === '') step.args.cond = 'true';
+      if (step.args.max_iters == null) step.args.max_iters = 0;
+    } else if (step.op === 'loop') {
+      delete step.args.sel;
+      delete step.args.cond;
+      delete step.args.max_iters;
+      if (step.args.n == null || step.args.n === '') step.args.n = '1';
+    }
+    for (const key of ['then', 'else', 'body']) {
+      if (Array.isArray(step[key])) for (const child of step[key]) normalizeStepArgs(child);
+    }
   }
 
-  function convertSelectedStep(target) {
-    const step = getStep(B.selected);
-    if (!step) return;
-    if (target === 'loop' && step.op === 'if') {
-      const body = [...(step.then || []), ...(step.else || [])];
-      replaceSelectedStep({ op: 'loop', args: { n: '1' }, body });
-      status('已把 if 转换为循环；原来的是/否子动作都放进循环体');
-    } else if (target === 'while' && step.op === 'if') {
-      const body = [...(step.then || []), ...(step.else || [])];
-      replaceSelectedStep({ op: 'while', args: { cond: 'true', max_iters: 100 }, body });
-      status('已把 if 转换为当条件循环；原来的子动作放进循环体');
-    } else if (target === 'if' && (step.op === 'loop' || step.op === 'while')) {
-      replaceSelectedStep({ op: 'if', args: { cond: 'true' }, then: step.body || [], else: [] });
-      status('已把循环转换为 if；原来的循环体放进「是」分支');
-    }
+  function normalizeFlow(flow) {
+    if (!flow || !Array.isArray(flow.steps)) return;
+    for (const step of flow.steps) normalizeStepArgs(step);
   }
 
   function renderForm() {
@@ -1024,7 +1027,8 @@
     // Always expose the task asset/region list at the top of the inspector.
     const assetLabel = document.createElement('label');
     assetLabel.textContent = `任务素材/操作区域（${B.assets.length}）`;
-    const assetPick = assetSelect(step.args.sel || '', null);
+    const assetSearchWrap = assetSearch(step.args.sel || '');
+    const assetPick = assetSearchWrap.input;
     assetPick.addEventListener('change', () => {
       if (assetPick.value) {
         step.args.sel = assetPick.value;
@@ -1032,7 +1036,7 @@
         renderAll();
       }
     });
-    assetLabel.appendChild(assetPick);
+    assetLabel.appendChild(assetSearchWrap);
     root.appendChild(assetLabel);
     if (step.op === 'call_task') renderCallTaskForm(root, step);
     if (step.op === 'if' || step.op === 'while') {
@@ -1040,26 +1044,6 @@
       help.className = 'muted small';
       help.textContent = '条件支持 and/or/not、&&/||/! 和括号；素材条件写成 appear(\'素材id\') / ocr(\'素材id\') == \'文字\'。';
       root.appendChild(help);
-    }
-    if (step.op === 'if' || step.op === 'loop' || step.op === 'while') {
-      const convert = document.createElement('div');
-      convert.className = 'builder-form-actions';
-      if (step.op === 'if') {
-        for (const [target, label] of [['loop', '转换为循环 N 次'], ['while', '转换为当条件循环']]) {
-          const b = document.createElement('button');
-          b.type = 'button';
-          b.textContent = label;
-          b.addEventListener('click', () => convertSelectedStep(target));
-          convert.appendChild(b);
-        }
-      } else {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.textContent = '转换为 if';
-        b.addEventListener('click', () => convertSelectedStep('if'));
-        convert.appendChild(b);
-      }
-      root.appendChild(convert);
     }
     for (const f of FIELDS[step.op] || []) {
       const lab = document.createElement('label');
@@ -1075,9 +1059,10 @@
         }
         input.value = step.args[f.key] == null ? (f.options ? f.options[0] : '') : step.args[f.key];
       } else if (f.type === 'asset') {
-        input = assetSelect(step.args[f.key], null);
+        const search = assetSearch(step.args[f.key], null);
+        const input = search.input;
         input.addEventListener('change', () => { step.args[f.key] = input.value; renderAll(); });
-        lab.appendChild(input);
+        lab.appendChild(search);
         root.appendChild(lab);
         continue;
       } else if (f.type === 'json') {
@@ -1166,6 +1151,7 @@
         throw new Error('flow 必须包含 steps 数组');
       }
       B.flow = v;
+      normalizeFlow(B.flow);
       B.selected = null;
       renderAll();
       if (st) st.textContent = '代码已应用到流程图';
@@ -1228,6 +1214,7 @@
       if (!as.ok) throw new Error((as.errors || []).join('; ') || '素材读取失败');
       B.flow = fs.flow || { schema_version: 1, name, steps: [] };
       if (!Array.isArray(B.flow.steps)) B.flow.steps = [];
+      normalizeFlow(B.flow);
       B.assets = as.items || [];
       for (const c of as.collections || []) {
         B.assets.push({ id: c.id, kind: 'template_set', members: c.members || [], action_roi: c.action_roi });

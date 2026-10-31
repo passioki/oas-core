@@ -1493,10 +1493,16 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 max_iters,
                 body,
             } => {
+                // 0 = no user limit; the finite step budget still applies.
+                let cap = if *max_iters == 0 {
+                    self.budget.max_steps
+                } else {
+                    *max_iters
+                };
                 let mut iters = 0u32;
                 loop {
                     self.check_budget()?;
-                    if iters >= *max_iters {
+                    if iters >= cap {
                         return Err(format!("{EXHAUSTED}.iteration limit reached"));
                     }
                     if !matches!(eval(cond, self)?, Value::Bool(true)) {

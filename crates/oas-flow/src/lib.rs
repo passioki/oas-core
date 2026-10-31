@@ -1436,15 +1436,13 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
             )?,
         }),
         "while" => {
-            let max_iters = match args.get("max_iters").and_then(|x| x.as_u64()) {
-                Some(n) if n > 0 => n as u32,
-                _ => {
-                    return Err(FlowError::new(
-                        a_path,
-                        "`while` requires `max_iters` > 0 (no unbounded loops)",
-                    ))
-                }
-            };
+            // 0 / omitted means "unbounded by this field"; the runtime still
+            // enforces its finite step budget, so a user cannot hang the app.
+            let max_iters = args
+                .get("max_iters")
+                .and_then(|x| x.as_u64())
+                .map(|n| n as u32)
+                .unwrap_or(0);
             Ok(Step::While {
                 cond: parse_expr_field(&args, "cond", &a_path)?,
                 max_iters,
@@ -2172,6 +2170,14 @@ mod tests {
     }
 
     #[test]
+    fn while_zero_max_iters_is_valid_and_budget_limited() {
+        let v = serde_json::json!({
+            "op":"while","args":{"cond":"false","max_iters":0},"body":[]
+        });
+        assert!(parse_step(&v, "steps[0]").is_ok());
+    }
+
+    #[test]
     fn parses_symbolic_logic_operators() {
         assert!(parse_expr("appear('a') && appear('b')").is_ok());
         assert!(parse_expr("appear('a') || appear('b')").is_ok());
@@ -2585,12 +2591,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_while_without_max_iters() {
-        let e = errs(
-            r#"{"schema_version":1,"name":"t","steps":[
-                 {"op":"while","args":{"cond":"true"},"body":[]}]}"#,
-        );
-        assert!(e[0].msg.contains("max_iters"), "{}", e[0]);
+    fn while_without_max_iters_uses_runtime_budget() {
+        // 0/omitted means "no user limit"; the interpreter still enforces its
+        // finite step budget. This is the "0 = 无限（受预算限制）" contract.
+        let v = serde_json::json!({
+            "schema_version":1,"name":"t","steps":[
+                {"op":"while","args":{"cond":"true"},"body":[]}
+            ]
+        });
+        assert!(parse_step(&v["steps"][0], "steps[0]").is_ok());
     }
 
     #[test]

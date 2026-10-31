@@ -86,6 +86,19 @@
           </p>
 
           <button id="btn-clear">清除识别/操作区域</button>
+
+          <h3>当前任务引用的素材</h3>
+          <div id="task-ref-assets" class="asset-list muted">（选择任务后显示）</div>
+
+          <h3>素材库</h3>
+          <div class="row lib-toolbar">
+            <input id="asset-search" placeholder="按素材 id 搜索" />
+            <button id="assets-refresh">刷新</button>
+            <button id="btn-new-collection" type="button" title="勾选模板图后创建素材集合">新建集合</button>
+          </div>
+          <div id="collection-msg" class="muted small">—</div>
+          <div id="assets-list" class="asset-list muted">（未加载任务素材）</div>
+          <pre id="assets-summary" class="muted small" style="display:none">—</pre>
         </section>
 
         <section class="panel" id="panel-images">
@@ -104,6 +117,12 @@
               <option value="">（暂无分类）</option>
             </select>
           </label>
+          <label class="opt">当前帧分类（可选已有分类）
+            <select id="frame-category-set">
+              <option value="">（先选择当前帧）</option>
+            </select>
+          </label>
+          <button id="btn-frame-category-apply" type="button">应用到当前帧</button>
           <div id="frames-list" class="frames-list muted">（暂无图片，点「截图」或上传）</div>
           <div id="frames-status" class="muted small">—</div>
           <p class="muted small">
@@ -198,16 +217,6 @@
           <p class="muted small">
             完成条件属于任务（一次运行打几场）；调度器的 quota 是“一天/一周跑几次任务”，两者分开。
           </p>
-
-          <h3>素材库（全任务统一）</h3>
-          <div class="row lib-toolbar">
-            <input id="asset-search" placeholder="按素材 id 搜索" />
-            <button id="assets-refresh">刷新</button>
-            <button id="btn-new-collection" type="button" title="勾选模板图后创建素材集合">新建集合</button>
-          </div>
-          <div id="collection-msg" class="muted small">—</div>
-          <div id="assets-list" class="asset-list muted">（未加载任务素材）</div>
-          <pre id="assets-summary" class="muted small" style="display:none">—</pre>
         </section>
 
         <section class="panel" id="panel-schedule">

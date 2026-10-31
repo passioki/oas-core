@@ -38,6 +38,8 @@ const btnFramesRefresh = document.getElementById('btn-frames-refresh');
 const btnFramesClear = document.getElementById('btn-frames-clear');
 const framesList = document.getElementById('frames-list');
 const frameCategoryFilter = document.getElementById('frame-category-filter');
+const frameCategorySet = document.getElementById('frame-category-set');
+let currentFrameId = null;
 const framesStatus = document.getElementById('frames-status');
 // §22.28 顶部标题行：结果/日志抽屉 + 任务素材列表
 const btnResultToggle = document.getElementById('btn-result-toggle');
@@ -47,6 +49,7 @@ const resultPop = document.getElementById('result-pop');
 const logPop = document.getElementById('log-pop');
 const assetSearch = document.getElementById('asset-search');
 const assetsList = document.getElementById('assets-list');
+const taskRefAssets = document.getElementById('task-ref-assets');
 const btnAssetsRefresh = document.getElementById('assets-refresh');
 const btnNewCollection = document.getElementById('btn-new-collection');
 const collectionMsg = document.getElementById('collection-msg');
@@ -1222,14 +1225,17 @@ async function generateAssetStep(it) {
 }
 
 // v1.1: asset-list OCR action — ocr_lines uses /lines (not single-line /ocr);
-// this is the fix for "整屏多行识别保存素材后点识别出现错误结果".
+// v1.2.3: a derived `ocr_line` saved from a multi-line result must ALSO use the
+// source ROI + det+rec, otherwise the workbench test shows a different text.
 async function testAssetOcr(it) {
   if (!it.roi) return;
-  const roi = { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] };
+  const derived = it.kind === 'ocr_line' && it.ocr_mode === 'lines' && Array.isArray(it.ocr_source_roi);
+  const src = derived ? it.ocr_source_roi : it.roi;
+  const roi = { x: src[0], y: src[1], w: src[2], h: src[3] };
   const q = `x=${roi.x}&y=${roi.y}&w=${roi.w}&h=${roi.h}`;
   resultEl.textContent = `素材「${it.id}」识别中…`;
   try {
-    if (it.kind === 'ocr_lines') {
+    if (it.kind === 'ocr_lines' || derived) {
       if (!detReady) {
         resultEl.textContent = '多行识别不可用：serve 需 --features ocr 且带 --det-model';
         return;
@@ -1245,10 +1251,18 @@ async function testAssetOcr(it) {
         ...b,
         box: [roi.x + b.box[0], roi.y + b.box[1], b.box[2], b.box[3]],
       }));
-      resultEl.textContent = `${lines.length} 行 / ${Number(s.elapsed_ms || 0).toFixed(0)} ms\n` +
-        lines.map((b, i) => `${i + 1}. ${b.text} (${Number(b.score).toFixed(3)})`).join('\n');
-      renderOcrLines(lines, roi, `素材「${it.id}」`);
-      log(`素材多行识别「${it.id}」→ ${lines.length} 行`);
+      let matched = null;
+      if (derived && it.ocr_text) {
+        matched = lines.find((l) => String(l.text).trim() === String(it.ocr_text).trim()) || null;
+      }
+      resultEl.textContent =
+        `${lines.length} 行 / ${Number(s.elapsed_ms || 0).toFixed(0)} ms\n` +
+        lines.map((b, i) => `${i + 1}. ${b.text} (${Number(b.score).toFixed(3)})`).join('\n') +
+        (derived
+          ? `\n期望文字：${JSON.stringify(it.ocr_text)} → ${matched ? '匹配' : '未找到（运行时会失败）'}`
+          : '');
+      renderOcrLines(lines, roi, derived ? `素材「${it.id}」多行来源` : `素材「${it.id}」`);
+      log(`素材多行识别「${it.id}」→ ${lines.length} 行${derived ? `, expected=${it.ocr_text}` : ''}`);
       return;
     }
     const r = await fetch('/ocr?' + q);
@@ -1623,6 +1637,49 @@ async function postJson(url, payload) {
 }
 
 // Show what is actually on disk for this task (/task/assets summary).
+function collectFlowAssetIds(flow) {
+  const ids = new Set();
+  const textRe = /(?:appear|ocr|ocr_digit|require_template)\(\s*['"]([^'"]+)['"]/g;
+  function scan(v, key) {
+    if (typeof v === 'string') {
+      if (key === 'sel' || key === 'require_template') ids.add(v);
+      let m;
+      textRe.lastIndex = 0;
+      while ((m = textRe.exec(v))) ids.add(m[1]);
+      return;
+    }
+    if (Array.isArray(v)) {
+      for (const x of v) scan(x, key);
+      return;
+    }
+    if (v && typeof v === 'object') {
+      for (const [k, x] of Object.entries(v)) scan(x, k);
+    }
+  }
+  scan(flow || {}, '');
+  return ids;
+}
+
+function renderTaskReferencedAssets() {
+  if (!taskRefAssets) return;
+  taskRefAssets.textContent = '';
+  const ids = collectFlowAssetIds(flowModel || {});
+  if (!ids.size) {
+    taskRefAssets.textContent = '（当前任务 flow 未引用素材）';
+    return;
+  }
+  const rows = (taskAssets || []).filter((a) => ids.has(a.id));
+  if (!rows.length) {
+    taskRefAssets.textContent = '（flow 引用的素材在素材库中未找到）';
+    return;
+  }
+  for (const a of rows) {
+    const row = document.createElement('div');
+    row.textContent = `${a.id} [${ASSET_KIND_LABELS[a.kind] || a.kind}]`;
+    taskRefAssets.appendChild(row);
+  }
+}
+
 async function refreshTaskAssets(task) {
   if (!task) task = (taskName.value || '').trim();
   if (!task) return;
@@ -1646,6 +1703,7 @@ async function refreshTaskAssets(task) {
     }
     taskAssetsMeta = { task: s.task, design: s.design_resolution, count: s.count };
     renderAssetList();
+    renderTaskReferencedAssets();
   } catch (e) {
     if (assetsList) assetsList.textContent = '读取异常：' + e;
   }
@@ -2332,6 +2390,7 @@ async function loadTaskFlow(task) {
     flowModel = window.OAS_FLOW ? window.OAS_FLOW.parseFlow(flowJson.value) : flowModel;
     flowModel.name = s.flow.name || task;
     flowRender();
+    renderTaskReferencedAssets();
     log(`已载入任务「${task}」的 flow（${flowModel.steps.length} 步）`);
   } catch (e) {
     log('读取任务流程异常：' + e);
@@ -2477,14 +2536,25 @@ async function refreshFrames() {
         o.textContent = '（暂无分类）';
         frameCategoryFilter.appendChild(o);
       }
+      if (frameCategorySet) {
+        frameCategorySet.textContent = '';
+        const o = document.createElement('option');
+        o.value = '';
+        o.textContent = '（先选择当前帧）';
+        frameCategorySet.appendChild(o);
+      }
+      currentFrameId = null;
       return;
     }
     const groups = new Map();
+    let currentFrame = null;
     for (const f of frames) {
+      if (f.current) currentFrame = f;
       const cat = (f.category || '').trim() || '未分类';
       if (!groups.has(cat)) groups.set(cat, []);
       groups.get(cat).push(f);
     }
+    currentFrameId = currentFrame ? currentFrame.id : null;
     const orderedCats = Array.from(groups.keys()).sort((a, b) => {
       if (a === '未分类') return 1;
       if (b === '未分类') return -1;
@@ -2500,6 +2570,27 @@ async function refreshFrames() {
         frameCategoryFilter.appendChild(o);
       }
       frameCategoryFilter.value = orderedCats.includes(keep) ? keep : (orderedCats[0] || '');
+    }
+    if (frameCategorySet) {
+      const keep = frameCategorySet.value;
+      frameCategorySet.textContent = '';
+      const blank = document.createElement('option');
+      blank.value = '';
+      blank.textContent = currentFrame ? '（未分类）' : '（先选择当前帧）';
+      frameCategorySet.appendChild(blank);
+      for (const cat of orderedCats) {
+        if (cat === '未分类') continue;
+        const o = document.createElement('option');
+        o.value = cat;
+        o.textContent = cat;
+        frameCategorySet.appendChild(o);
+      }
+      const fresh = document.createElement('option');
+      fresh.value = '__new__';
+      fresh.textContent = '+ 新建分类…';
+      frameCategorySet.appendChild(fresh);
+      const curCat = currentFrame ? ((currentFrame.category || '').trim() || '') : '';
+      frameCategorySet.value = currentFrame && orderedCats.includes(curCat) ? curCat : (keep || '');
     }
     // Only render the selected category, not every group expanded.
     const selectedCat = frameCategoryFilter ? frameCategoryFilter.value : orderedCats[0];
@@ -2578,6 +2669,27 @@ async function renameFrame(f) {
   const r = await postJson('/frames/rename', { id: f.id, name: name.trim() });
   if (!r.ok) {
     framesStatus.textContent = '重命名失败：' + (r.errors || []).join('; ');
+    return;
+  }
+  await refreshFrames();
+}
+
+async function applyFrameCategoryFromSelect() {
+  if (!currentFrameId || !frameCategorySet) {
+    framesStatus.textContent = '请先点一帧设为当前帧，再应用分类';
+    return;
+  }
+  let cat = frameCategorySet.value;
+  if (cat === '__new__') {
+    cat = (window.prompt('新分类名称', '') || '').trim();
+    if (!cat) return;
+  }
+  const r = await postJson('/frames/category', {
+    id: currentFrameId,
+    category: cat === '（未分类）' ? '' : cat,
+  });
+  if (!r.ok) {
+    framesStatus.textContent = '设置分类失败：' + (r.errors || []).join('; ');
     return;
   }
   await refreshFrames();
@@ -3843,6 +3955,8 @@ async function submitResetMemory() {
   if (btnFrameCapture) btnFrameCapture.addEventListener('click', () => doCapture());
   if (btnFramesRefresh) btnFramesRefresh.addEventListener('click', () => refreshFrames());
   if (frameCategoryFilter) frameCategoryFilter.addEventListener('change', () => refreshFrames());
+  const btnFrameCategoryApply = document.getElementById('btn-frame-category-apply');
+  if (btnFrameCategoryApply) btnFrameCategoryApply.addEventListener('click', applyFrameCategoryFromSelect);
   if (btnFramesClear) btnFramesClear.addEventListener('click', () => clearFrames());
   await refreshFrames();
   // §22.22 deep link: /?lib=<id> selects that library asset and runs the match.

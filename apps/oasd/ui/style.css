@@ -628,6 +628,8 @@ aside.side {
 .builder-child-add { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
 .builder-child-add select { flex: 1; min-width: 0; }
 .builder-child-add button { width: auto; flex: none; margin: 0; }
+.builder-asset-search { display: block; }
+.builder-asset-search input { width: 100%; }
 .builder-code {
   width: 100%;
   min-height: 220px;
