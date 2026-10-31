@@ -3,11 +3,11 @@
   "status": "🔄",
   "evidence": {
     "lint": "lint task=DailyTrifles errors=0",
-    "live": "Lead 2026-11-01：friend_love 回归 Done；store_sign 回归 Done（礼包屋商品页未出现 I_GIFT_SIGN，改为无签到 no-op 后正常退出庭院）；clicks 分别 [(905,641),(140,685),(1197,111)] 与 [(684,673),(1169,679),(1193,553),(36,38),(48,48)]",
-    "round2_coverage": "新增 one_summon(默认)/summon_recall(今忆)/luck_msg/buy_sushi(次数近似) 四条分支；friend_love/store_sign 回归通过"
+    "live": "Lead 2026-11-01：应用重启回主界面后，friend_love/store_sign 仍 Done；luck_msg 入口改 click_point(905,641) 后能进好友页，但 O_LUCK_MSG 区域 OCR 只找到 1 行且不等于“吉闻”，click_target 失败；需校准 O_LUCK_MSG ROI/关键字",
+    "round2_coverage": "新增 one_summon(默认)/summon_recall(今忆)/luck_msg/buy_sushi(次数近似) 四条分支；friend_love/store_sign 回归通过；luck_msg 入口可进但 OCR 目标未命中"
   },
   "gaps": [
-    "luck_msg 实机：好友页 O_LUCK_MSG OCR 0.856，旧 requires 0.9 失败；已移除 requires 并给 click_target 加 threshold .8，但后续因当前屏幕不在庭院未重测",
+    "luck_msg：O_LUCK_MSG OCR 行文本不等于“吉闻”（1 行），需重采 ROI/确认页面 tab",
     "store_sign 的“有签到按钮”分支当前未触发，只验证了 no-op；需有签到状态时复测",
     "buy_sushi 动态价格 ROI/已购次数 OCR 无法迁移（按 param 次数近似）",
     "今忆召唤左侧菜单坐标需实机复核",

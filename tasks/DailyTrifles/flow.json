@@ -838,9 +838,10 @@
       },
       "then": [
         {
-          "op": "click",
+          "op": "click_point",
           "args": {
-            "sel": "legacy_GameUi_I_MAIN_GOTO_FRIENDS",
+            "x": 905,
+            "y": 641,
             "requires": {
               "kind": "appear",
               "sel": "庭院_探索灯笼",
@@ -1082,9 +1083,10 @@
           }
         },
         {
-          "op": "click",
+          "op": "click_point",
           "args": {
-            "sel": "legacy_GameUi_I_MAIN_GOTO_FRIENDS",
+            "x": 905,
+            "y": 641,
             "requires": {
               "kind": "appear",
               "sel": "庭院_探索灯笼",
