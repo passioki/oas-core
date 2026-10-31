@@ -182,6 +182,42 @@ pub struct OcrLine {
     pub score: f32,
 }
 
+/// OCR text comparison. OCR models often emit a traditional/variant CJK glyph
+/// for the same on-screen word (e.g. 召喚 vs 召唤). Exact equality made a saved
+/// asset fail even though the workbench showed the text. Normalize whitespace
+/// and allow one substitution/insertion/deletion for multi-character strings.
+pub fn ocr_text_matches(expected: &str, actual: &str) -> bool {
+    fn norm(s: &str) -> String {
+        s.chars()
+            .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation())
+            .flat_map(|c| c.to_lowercase())
+            .collect()
+    }
+    let a = norm(expected);
+    let b = norm(actual);
+    if a == b {
+        return true;
+    }
+    let ac: Vec<char> = a.chars().collect();
+    let bc: Vec<char> = b.chars().collect();
+    if ac.len() < 2 || bc.len() < 2 || ac.len().abs_diff(bc.len()) > 1 {
+        return false;
+    }
+    // Levenshtein distance with a cap of 1.
+    let n = ac.len();
+    let m = bc.len();
+    let mut prev: Vec<usize> = (0..=m).collect();
+    for i in 1..=n {
+        let mut cur = vec![i; m + 1];
+        for j in 1..=m {
+            let cost = usize::from(ac[i - 1] != bc[j - 1]);
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        prev = cur;
+    }
+    prev[m] <= 1
+}
+
 /// Point-in-polygon (ray casting, even-odd). Boundary points are unspecified.
 pub fn point_in_polygon(p: Point, polygon: &[Point]) -> bool {    if polygon.len() < 3 {
         return false;
@@ -799,9 +835,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     let read = self.ocr_read(sel)?;
                     let ok = match &read {
                         OcrRead::Lines(lines) => {
-                            lines.iter().any(|l| l.text.trim() == text.trim())
+                            lines.iter().any(|l| ocr_text_matches(text, l.text.as_str()))
                         }
-                        OcrRead::Single(Some(t), _) => t.trim() == text.trim(),
+                        OcrRead::Single(Some(t), _) => ocr_text_matches(text, &t),
                         OcrRead::Single(None, _) => false,
                     };
                     if ok {
@@ -1191,7 +1227,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 match read {
                     OcrRead::Lines(lines) => lines
                         .iter()
-                        .find(|l| l.text.trim() == text.trim())
+                        .find(|l| ocr_text_matches(text, l.text.as_str()))
                         .map(|l| l.rect)
                         .ok_or_else(|| {
                             format!("drag ocr_text: no line equals {text:?} in the region")
@@ -1261,7 +1297,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             let lines = provider.recognize_lines(frame, source)?;
             let hit = lines
                 .iter()
-                .filter(|l| l.text.trim() == expected.trim())
+                .filter(|l| ocr_text_matches(expected.as_str(), l.text.as_str()))
                 .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
             let Some(line) = hit else {
                 self.last_ocr_rect = None;
@@ -1903,7 +1939,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             Ok(OcrRead::Lines(lines)) => {
                                 let hit = lines
                                     .iter()
-                                    .filter(|l| l.text.trim() == text.trim())
+                                    .filter(|l| ocr_text_matches(text, l.text.as_str()))
                                     .max_by(|a, b| {
                                         a.score
                                             .partial_cmp(&b.score)
@@ -1958,7 +1994,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 }
                             }
                             Ok(OcrRead::Single(Some(t), score)) => {
-                                if t.trim() == text.trim() {
+                                if ocr_text_matches(text, &t) {
                                     let recognition = self
                                         .assets
                                         .ocr_roi(sel)
@@ -2041,7 +2077,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 Ok(OcrRead::Lines(lines)) => {
                                     let hit = lines
                                         .iter()
-                                        .filter(|l| l.text.trim() == text.trim())
+                                        .filter(|l| ocr_text_matches(text, l.text.as_str()))
                                         .max_by(|a, b| {
                                             a.score
                                                 .partial_cmp(&b.score)
@@ -2103,7 +2139,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                     }
                                 }
                                 Ok(OcrRead::Single(Some(t), score)) => {
-                                    if t.trim() == text.trim() {
+                                    if ocr_text_matches(text, &t) {
                                         let plan = self.humanize.template_click(rect, w, &mut self.rng);
                                         let centre = Point {
                                             x: rect.x + rect.w / 2,
@@ -2585,7 +2621,7 @@ impl<S: ScreenSource, I: InputSink> EvalContext for Interpreter<S, I> {
         };
         let provider = self.ocr.as_mut().expect("checked above");
         let lines = provider.recognize_lines(&frame, roi)?;
-        Ok(lines.iter().any(|l| l.text.trim() == target))
+        Ok(lines.iter().any(|l| ocr_text_matches(target, l.text.as_str())))
     }
 
     fn param(&mut self, key: &str) -> Result<Value, String> {
@@ -3077,6 +3113,15 @@ mod tests {
                   "else":[{"op":"finish","args":{"exit":"failed"}}]}]}"#,
         );
         assert_eq!(interp.run(&f).outcome(), Outcome::Done);
+    }
+
+    #[test]
+    fn ocr_text_matches_variant_glyphs_but_not_unrelated_text() {
+        assert!(ocr_text_matches("召唤", "召喚"));
+        assert!(ocr_text_matches("图鉴", "图鑑"));
+        assert!(ocr_text_matches(" 召 唤 ", "召喚"));
+        assert!(!ocr_text_matches("召唤", "取消"));
+        assert!(!ocr_text_matches("确定", "确定按钮"));
     }
 
     #[test]

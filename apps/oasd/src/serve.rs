@@ -2435,7 +2435,9 @@ impl Server {
                                     .iter()
                                     .map(|l| (l.text.clone(), l.score))
                                     .collect();
-                                let hit = got.iter().find(|(t, _)| t.trim() == expected);
+                                let hit = got
+                                    .iter()
+                                    .find(|(t, _)| oas_runtime::ocr_text_matches(expected, t));
                                 result["text"] = serde_json::json!(
                                     hit.map(|(t, _)| t.clone()).or_else(|| got.first().map(|(t, _)| t.clone()))
                                 );
@@ -2497,7 +2499,7 @@ impl Server {
                                     let pass = if expected.is_empty() {
                                         !text.trim().is_empty()
                                     } else {
-                                        text.trim() == expected.trim()
+                                        oas_runtime::ocr_text_matches(expected.trim(), &text)
                                     };
                                     result["text"] = serde_json::json!(text);
                                     result["score"] = serde_json::json!(score);

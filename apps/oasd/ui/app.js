@@ -936,6 +936,29 @@ function candidateNameValid(name) {
   return /^[A-Za-z_\u4e00-\u9fa5][A-Za-z0-9_\u4e00-\u9fa5]*$/.test((name || '').trim());
 }
 
+function normalizeOcrText(s) {
+  return String(s || '').replace(/[\s，。！？、：；,.!?:;'"“”‘’（）()\[\]【】{}<>]/g, '').toLowerCase();
+}
+
+// Match OCR output with one CJK variant/substitution tolerance, mirroring
+// oas-runtime::ocr_text_matches. 召唤 vs 召喚 must count as the same text.
+function ocrTextMatches(expected, actual) {
+  const a = normalizeOcrText(expected);
+  const b = normalizeOcrText(actual);
+  if (a === b) return true;
+  if (a.length < 2 || b.length < 2 || Math.abs(a.length - b.length) > 1) return false;
+  const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i++) dp[i][0] = i;
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+    }
+  }
+  return dp[a.length][b.length] <= 1;
+}
+
 function candidateStatusText(sourceLabel) {
   if (!batchStatus) return;
   const sel = saveCandidates.filter((c) => c.selected);
@@ -1299,7 +1322,7 @@ async function testAssetOcr(it) {
       }
       let matched = null;
       if (derived && it.ocr_text) {
-        matched = lines.find((l) => String(l.text).trim() === String(it.ocr_text).trim()) || null;
+        matched = lines.find((l) => ocrTextMatches(it.ocr_text, l.text)) || null;
       }
       if (derived && !matched) {
         if (await fallbackFullscreenLines(`识别区域未找到期望文字 ${JSON.stringify(it.ocr_text)}`)) {
