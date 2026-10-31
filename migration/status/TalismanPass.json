@@ -3,13 +3,13 @@
   "status": "🔄",
   "evidence": {
     "lint": "lint task=TalismanPass errors=0",
-    "live": "Lead 2026-11-01：no-op 路径 Done（已验证）；奖励分支本轮对齐旧仓 get_flower 顺序/按弹窗门控",
-    "round2_coverage": "get_flower 顺序（档位→溢出→奖励→无弹窗才补点 GET_ALL）、动画消失等待、回庭院；no-op 路径不变"
+    "live": "Lead 2026-11-01：红点误匹配（成就）；本轮改 click_point(1210,250) 确定性奖励页签 + I_TP_GET_ALL 领取/no-op；但实机入口 I_MAIN_GOTO_DAILY 0.558<0.7，任务未能进入花合战页，新增路径未验证",
+    "round3_coverage": "奖励页签确定性路径（有界等待→领取→奖励弹窗）或 no-op；保留先领 GET_ALL、harvest_soul、回庭院"
   },
   "gaps": [
-    "有红点的等级奖励分支：I_RED_POINT_LEVEL 会误匹配成就红点，已临时 disabled（cond=false），需重采稳定入口后再启用",
-    "2s 计时器→10 轮有界近似",
-    "harvest_soul 默认关闭，未复测",
-    "polish 后奖励分支未实机复测"
+    "实机入口 I_MAIN_GOTO_DAILY 0.558<0.7，需改用更稳入口（click_point/守卫）",
+    "奖励页签坐标 (1210,250) 需实机复测",
+    "等级档位(1/2/3)选择功能随红点门控移除（无法按档领取）",
+    "harvest_soul 与开局 GET_ALL 路径沿用上一轮，未复测"
   ]
 }

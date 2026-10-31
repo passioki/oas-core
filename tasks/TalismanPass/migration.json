@@ -24,7 +24,7 @@
   "evidence": {
     "lint": "lint task=TalismanPass errors=0",
     "device": "未真机验证",
-    "live": "Lead 2026-11-01：无奖励 no-op 路径已 Done；本轮按旧仓 get_flower 校对奖励分支"
+    "live": "Lead 2026-11-01：I_RED_POINT_LEVEL 误匹配成就红点；改确定性奖励页签路径，红点匹配不再启用"
   },
   "assets_used": [
     "legacy_GameUi_I_CHECK_DAILY",
@@ -49,13 +49,17 @@
     "多尺度识别降级为普通 appear",
     "奖励动画用 GlobalGame 通用 UI 处理",
     "get_flower 顺序对齐旧仓：档位→溢出确认→奖励弹窗→（无弹窗时）补点 GET_ALL",
-    "奖励弹窗期间不点一键收取（避免误点）；2s 计时器仍为有界循环"
+    "奖励弹窗期间不点一键收取（避免误点）；2s 计时器仍为有界循环",
+    "奖励分支改为确定性页签 click_point(1210,250) + I_TP_GET_ALL 判定；移除红点门控的等级档位分支",
+    "meta.params.level_reward 删除（档位选择仅能通过误判红点到达，已不可用）"
   ],
   "gaps": [
     "多尺度识别（appear_multi_scale）DSL 无对应 op → SOUL_1 可能受缩放影响",
     "真机未验证",
     "等级奖励分支需在「有红点」的日期实机复测",
-    "2 秒无动作计时器为 10 轮有界近似"
+    "2 秒无动作计时器为 10 轮有界近似",
+    "奖励页签坐标 (1210,250) 与一键收取覆盖范围需实机复测",
+    "等级档位（1/2/3）选择功能随红点门控移除，暂无法按档位领取"
   ],
   "assets_used_count": 15
 }

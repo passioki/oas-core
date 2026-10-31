@@ -3,15 +3,12 @@
   "status": "🔄",
   "evidence": {
     "lint": "lint task=DailyTrifles errors=0",
-    "live": "Lead 2026-11-01：应用重启后主界面；入口守卫从 庭院_探索灯笼(0.640) 改为 I_CHECK_MAIN(0.75) 后可正常启动；luck_msg 已补 click_point(50,52) 点吉闻，但随后 O_LUCK_MSG OCR 仍只找到 1 行且不是“吉闻”，click_target 失败；friend_love/store_sign 之前回归 Done",
-    "round2_coverage": "新增 one_summon(默认)/summon_recall(今忆)/luck_msg/buy_sushi(次数近似) 四条分支；friend_love/store_sign 回归通过；luck_msg 入口可点但 OCR 目标未命中"
+    "live": "Lead 2026-11-01：friends 入口 click_point(905,641) 可用；吉闻 OCR 文本不匹配导致 click_target 失败",
+    "round3_coverage": "luck_msg 改直点吉闻按钮（ROI 内两点交替，I_LUCK_TITLE 验证）+ 祝福/奖励 + 回庭院；失败 no-op 不中断"
   },
   "gaps": [
-    "luck_msg：O_LUCK_MSG OCR 行文本不等于“吉闻”（1 行）；需改用 I_LUCK_TITLE 模板/重采 ROI",
-    "store_sign 的“有签到按钮”分支当前未触发，只验证了 no-op；需有签到状态时复测",
-    "buy_sushi 动态价格 ROI/已购次数 OCR 无法迁移（按 param 次数近似）",
-    "今忆召唤左侧菜单坐标需实机复核",
-    "新增 4 条分支未全部实机复测",
-    "I_SM_CONFIRM_2 复用 Component_Summon 资产（上游 DailyTrifles 图片缺失）"
+    "吉闻按钮候选点需实机确认（(50,55)/(50,73)）",
+    "吉闻祝福/奖励领取未实机复测",
+    "其余子流程（summon/buy_sushi）沿用上一轮，未复测"
   ]
 }

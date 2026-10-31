@@ -82,3 +82,21 @@ cd D:\OAS-dev\oas-core
 
 剩余阻塞：等级奖励分支需在「有红点奖励」的日期实机复测；2s 计时器为有界近似。
 <!-- round2:end -->
+
+<!-- round3:start -->
+## Round 3（2026-11-01 · Lead 实机反馈）
+
+实机反馈（Lead）：`I_RED_POINT_LEVEL` 匹配到错误的红点（成就），原等级奖励分支已用 `cond:"false"` 禁用。
+要求改为确定性路径，且**不得重新启用**通用红点匹配。
+
+本次修复（只用现有 DSL / 现有 legacy id 与坐标，未新增素材）：
+1. 移除红点门控的等级奖励分支（`I_RED_POINT_LEVEL` / `I_TP_LEVEL_1/2/3` / `I_OVERFLOW_CONFIRME` 不再出现在 flow）；
+2. 新增确定性奖励页签路径：`click_point(1210,250)`（requires `I_CHECK_DAILY`）→ 有界 10 轮等待
+   `I_TP_GET_ALL` → 出现则点击领取 + 「获得奖励」操作区 8 轮；未出现则 warn + **no-op**；
+3. 进入花合战页的判定用 `I_TP_GOTO` / `I_TP_EXP` / `I_TP_GET_ALL`（任一），不依赖红点；
+4. 保留：开局若已可见 `I_TP_GET_ALL` 的先领取逻辑、`harvest_soul` 1500 签御魂、回庭院。
+5. `meta.params.level_reward` 删除（该档位选择只通过误判红点可达，已不可用）。
+
+剩余阻塞：奖励页签坐标 (1210,250) 与「一键收取」是否覆盖全部奖励需实机复测；
+等级档位（1/2/3）选择功能随红点门控一起移除，若仍需按档位领取需要新的确定性入口（例如页签内固定按钮）。
+<!-- round3:end -->

@@ -77,3 +77,21 @@ cd D:\OAS-dev\oas-core
 - 本次只做了流程/守卫修复 + lint，**未在真机复测新增分支**（Lead 已实机验证的两条子流程除外）。
 <!-- round2:end -->
 
+<!-- round3:start -->
+## Round 3（2026-11-01 · Lead 实机反馈）
+
+实机反馈（Lead）：好友入口 `click_point(905,641)` 可用；吉闻分支失败原因是
+`O_LUCK_MSG` OCR 只识别到一行文本、内容不是「吉闻」，`click_target(ocr_text,"吉闻")` 直接报错。
+
+本次修复（只用现有 DSL / 现有 legacy id 与坐标，未新增素材）：
+1. **移除** `O_LUCK_MSG` 的 OCR 文本 `click_target`（不再依赖 OCR 文本内容）；
+2. 好友页用**直接 UI 点击**吉闻按钮：`O_LUCK_MSG` ROI=(15,38,70,70)，候选点 (50,55) / (50,73)
+   交替点击（`inc_var('luck_try')` + `var % 2`），最多 5 轮；`I_FRIENDSHIP_UP` 弹窗先关；
+3. 每轮点击后用 `I_LUCK_TITLE` **验证**是否进入吉闻页（`var('luck_open')` 标记）；
+4. 进入后：`I_CLICK_BLESS` / `I_ONE_CLICK_BLESS` 点击 + 「获得奖励」操作区点击（12 轮有界）；
+5. 未打开吉闻页 → 记录 warn，**no-op 继续**，不失败；最后统一回庭院；
+6. 全程保持 `finish(done)` 语义（吉闻不可达不再中断任务）。
+
+剩余：吉闻按钮真实位置（候选点哪一个是正解）需实机复测；祝福奖励是否已领完需实机确认。
+<!-- round3:end -->
+

@@ -1079,7 +1079,7 @@
           "op": "log",
           "args": {
             "level": "info",
-            "text": "\"吉闻：进入好友页\""
+            "text": "\"吉闻：进入好友页（直点吉闻按钮，不再用 OCR 文本匹配）\""
           }
         },
         {
@@ -1121,115 +1121,53 @@
           ]
         },
         {
-          "op": "click_point",
-          "args": {
-            "x": 50,
-            "y": 55
-          }
-        },
-        {
-          "op": "loop",
-          "args": {
-            "n": "12"
-          },
-          "body": [
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_DailyTrifles_I_LUCK_TITLE')"
-              },
-              "then": [
-                {
-                  "op": "break"
-                }
-              ],
-              "else": []
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_DailyTrifles_I_FRIENDSHIP_UP')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_DailyTrifles_I_FRIENDSHIP_UP",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_DailyTrifles_I_FRIENDSHIP_UP",
-                      "timeout_ms": 3000
-                    }
-                  }
-                }
-              ],
-              "else": []
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_DailyTrifles_O_LUCK_MSG')"
-              },
-              "then": [
-                {
-                  "op": "click_target",
-                  "args": {
-                    "find": [
-                      {
-                        "kind": "ocr_text",
-                        "sel": "legacy_DailyTrifles_O_LUCK_MSG",
-                        "text": "吉闻",
-                        "threshold": 0.8
-                      }
-                    ]
-                  }
-                }
-              ],
-              "else": []
-            },
-            {
-              "op": "wait",
-              "args": {
-                "seconds": 1.0
-              }
-            }
-          ]
-        },
-        {
           "op": "if",
           "args": {
-            "cond": "appear('legacy_DailyTrifles_I_LUCK_TITLE')"
+            "cond": "appear('legacy_GameUi_I_CHECK_FRIENDS')"
           },
           "then": [
             {
               "op": "log",
               "args": {
                 "level": "info",
-                "text": "\"已进入吉闻页，开始祝福/领取\""
+                "text": "\"好友页已打开，直点吉闻按钮（O_LUCK_MSG 区域 (15,38,70,70) 内候选点）\""
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "luck_open",
+                "value": "0"
+              }
+            },
+            {
+              "op": "set_var",
+              "args": {
+                "name": "luck_try",
+                "value": "0"
               }
             },
             {
               "op": "loop",
               "args": {
-                "n": "12"
+                "n": "5"
               },
               "body": [
                 {
                   "op": "if",
                   "args": {
-                    "cond": "appear('legacy_DailyTrifles_I_CLICK_BLESS')"
+                    "cond": "appear('legacy_DailyTrifles_I_LUCK_TITLE')"
                   },
                   "then": [
                     {
-                      "op": "click",
+                      "op": "set_var",
                       "args": {
-                        "sel": "legacy_DailyTrifles_I_CLICK_BLESS",
-                        "requires": {
-                          "kind": "appear",
-                          "sel": "legacy_DailyTrifles_I_CLICK_BLESS",
-                          "timeout_ms": 3000
-                        }
+                        "name": "luck_open",
+                        "value": "1"
                       }
+                    },
+                    {
+                      "op": "break"
                     }
                   ],
                   "else": []
@@ -1237,38 +1175,18 @@
                 {
                   "op": "if",
                   "args": {
-                    "cond": "appear('legacy_DailyTrifles_I_ONE_CLICK_BLESS')"
+                    "cond": "appear('legacy_DailyTrifles_I_FRIENDSHIP_UP')"
                   },
                   "then": [
                     {
                       "op": "click",
                       "args": {
-                        "sel": "legacy_DailyTrifles_I_ONE_CLICK_BLESS",
+                        "sel": "legacy_DailyTrifles_I_FRIENDSHIP_UP",
                         "requires": {
                           "kind": "appear",
-                          "sel": "legacy_DailyTrifles_I_ONE_CLICK_BLESS",
+                          "sel": "legacy_DailyTrifles_I_FRIENDSHIP_UP",
                           "timeout_ms": 3000
                         }
-                      }
-                    }
-                  ],
-                  "else": []
-                },
-                {
-                  "op": "if",
-                  "args": {
-                    "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
-                  },
-                  "then": [
-                    {
-                      "op": "click_target",
-                      "args": {
-                        "find": [
-                          {
-                            "kind": "region",
-                            "sel": "legacy_GlobalGame_C_UI_REWARD"
-                          }
-                        ]
                       }
                     },
                     {
@@ -1281,9 +1199,176 @@
                   "else": []
                 },
                 {
+                  "op": "inc_var",
+                  "args": {
+                    "name": "luck_try",
+                    "by": 1
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "var('luck_try') % 2 == 0"
+                  },
+                  "then": [
+                    {
+                      "op": "click_point",
+                      "args": {
+                        "x": 50,
+                        "y": 73
+                      }
+                    }
+                  ],
+                  "else": [
+                    {
+                      "op": "click_point",
+                      "args": {
+                        "x": 50,
+                        "y": 55
+                      }
+                    }
+                  ]
+                },
+                {
                   "op": "wait",
                   "args": {
-                    "seconds": 0.6
+                    "seconds": 1.5
+                  }
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_DailyTrifles_I_LUCK_TITLE')"
+                  },
+                  "then": [
+                    {
+                      "op": "set_var",
+                      "args": {
+                        "name": "luck_open",
+                        "value": "1"
+                      }
+                    },
+                    {
+                      "op": "break"
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 0.8
+                  }
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "args": {
+                "cond": "var('luck_open') == 1"
+              },
+              "then": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "\"已进入吉闻页，开始祝福/领取\""
+                  }
+                },
+                {
+                  "op": "loop",
+                  "args": {
+                    "n": "12"
+                  },
+                  "body": [
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_DailyTrifles_I_CLICK_BLESS')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_DailyTrifles_I_CLICK_BLESS",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_DailyTrifles_I_CLICK_BLESS",
+                              "timeout_ms": 3000
+                            }
+                          }
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_DailyTrifles_I_ONE_CLICK_BLESS')"
+                      },
+                      "then": [
+                        {
+                          "op": "click",
+                          "args": {
+                            "sel": "legacy_DailyTrifles_I_ONE_CLICK_BLESS",
+                            "requires": {
+                              "kind": "appear",
+                              "sel": "legacy_DailyTrifles_I_ONE_CLICK_BLESS",
+                              "timeout_ms": 3000
+                            }
+                          }
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "if",
+                      "args": {
+                        "cond": "appear('legacy_GlobalGame_I_UI_REWARD')"
+                      },
+                      "then": [
+                        {
+                          "op": "click_target",
+                          "args": {
+                            "find": [
+                              {
+                                "kind": "region",
+                                "sel": "legacy_GlobalGame_C_UI_REWARD"
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "op": "wait",
+                          "args": {
+                            "seconds": 0.8
+                          }
+                        }
+                      ],
+                      "else": []
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 0.6
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "info",
+                    "text": "\"吉闻处理完成\""
+                  }
+                }
+              ],
+              "else": [
+                {
+                  "op": "log",
+                  "args": {
+                    "level": "warn",
+                    "text": "\"吉闻页未打开（5 轮直点按钮后 I_LUCK_TITLE 仍未出现）：no-op 继续后续子流程\""
                   }
                 }
               ]
@@ -1292,8 +1377,86 @@
               "op": "log",
               "args": {
                 "level": "info",
-                "text": "\"吉闻处理完成\""
+                "text": "\"吉闻分支收尾：回庭院\""
               }
+            },
+            {
+              "op": "loop",
+              "args": {
+                "n": "10"
+              },
+              "body": [
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
+                  },
+                  "then": [
+                    {
+                      "op": "break"
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GlobalGame_I_UI_BACK_RED",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "if",
+                  "args": {
+                    "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
+                  },
+                  "then": [
+                    {
+                      "op": "click",
+                      "args": {
+                        "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                        "requires": {
+                          "kind": "appear",
+                          "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
+                          "timeout_ms": 3000
+                        }
+                      }
+                    },
+                    {
+                      "op": "wait",
+                      "args": {
+                        "seconds": 1.2
+                      }
+                    }
+                  ],
+                  "else": []
+                },
+                {
+                  "op": "wait",
+                  "args": {
+                    "seconds": 1.0
+                  }
+                }
+              ]
             }
           ],
           "else": [
@@ -1301,85 +1464,7 @@
               "op": "log",
               "args": {
                 "level": "warn",
-                "text": "\"未进入吉闻页（I_LUCK_TITLE 未出现），跳过\""
-              }
-            }
-          ]
-        },
-        {
-          "op": "loop",
-          "args": {
-            "n": "8"
-          },
-          "body": [
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_GameUi_I_CHECK_MAIN')"
-              },
-              "then": [
-                {
-                  "op": "break"
-                }
-              ],
-              "else": []
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_GlobalGame_I_UI_BACK_YELLOW')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_GlobalGame_I_UI_BACK_YELLOW",
-                      "timeout_ms": 3000
-                    }
-                  }
-                },
-                {
-                  "op": "wait",
-                  "args": {
-                    "seconds": 1.2
-                  }
-                }
-              ],
-              "else": []
-            },
-            {
-              "op": "if",
-              "args": {
-                "cond": "appear('legacy_GlobalGame_I_UI_BACK_RED')"
-              },
-              "then": [
-                {
-                  "op": "click",
-                  "args": {
-                    "sel": "legacy_GlobalGame_I_UI_BACK_RED",
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_GlobalGame_I_UI_BACK_RED",
-                      "timeout_ms": 3000
-                    }
-                  }
-                },
-                {
-                  "op": "wait",
-                  "args": {
-                    "seconds": 1.2
-                  }
-                }
-              ],
-              "else": []
-            },
-            {
-              "op": "wait",
-              "args": {
-                "seconds": 1.0
+                "text": "\"未到达好友页（I_CHECK_FRIENDS 未出现）：吉闻 no-op\""
               }
             }
           ]

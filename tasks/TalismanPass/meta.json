@@ -5,7 +5,7 @@
   "name": "TalismanPass",
   "version": 1,
   "category": "daily",
-  "description": "庭院→花合战：一键收取全部、收取花合战等级奖励（可选 1/2/3 档）、可选收取 1500 签御魂。",
+  "description": "庭院→花合战：点右侧奖励页签(1210,250) 确定性领取一键收取奖励；可选收取 1500 签御魂（Red-point 匹配用于成就红点误判已移除）。",
   "entry": {
     "requires": {
       "kind": "appear",
@@ -14,13 +14,6 @@
     }
   },
   "params": [
-    {
-      "key": "level_reward",
-      "type": "int",
-      "default": 2,
-      "min": 1,
-      "max": 3
-    },
     {
       "key": "harvest_soul",
       "type": "bool",

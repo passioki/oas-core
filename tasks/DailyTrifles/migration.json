@@ -20,7 +20,8 @@
     "task lint --task DailyTrifles => errors=0",
     "migration/specs/DailyTrifles.md：friend_love/store_sign 已映射；召唤/吉闻/买体力列 TODO",
     "lint: lint task=DailyTrifles errors=0",
-    "live: Lead 2026-11-01：friend_love + store_sign 实机 Done；summon_one/recall/luck_msg/buy_sushi 缺失（本轮补齐）"
+    "live: Lead 2026-11-01：friend_love + store_sign 实机 Done；summon_one/recall/luck_msg/buy_sushi 缺失（本轮补齐）",
+    "live: Lead 2026-11-01：friends 入口 click_point(905,641) 可用；O_LUCK_MSG OCR 文本非「吉闻」导致 click_target 报错（本轮改为直点按钮）"
   ],
   "assets": {
     "reused_global": [
@@ -52,11 +53,15 @@
     "新增 one_summon / summon_recall / luck_msg / buy_sushi 四个子流程（按旧仓顺序）",
     "买体力：动态价格 ROI OCR 不可表达 → 以 param('buy_sushi_count') 次数近似",
     "DailyTrifles.I_SM_CONFIRM_2 上游图片缺失 → 复用 Component_Summon.I_SM_CONFIRM_2",
-    "画符 swipe 由 Component_Summon S_RANDOM_SWIPE_1 区域推出字面量坐标"
+    "画符 swipe 由 Component_Summon S_RANDOM_SWIPE_1 区域推出字面量坐标",
+    "luck_msg 改为直点吉闻按钮（O_LUCK_MSG ROI 内候选点交替），不再 OCR 文本 click_target",
+    "吉闻页未打开时 no-op 继续（finish done），不再因 OCR 不匹配中断任务"
   ],
   "gaps": [
     "buy_sushi 动态价格/已购次数 OCR（O_STORE_SUSHI_PRICE，旧仓运行时改 ROI）无法迁移",
     "今忆召唤左侧 O_SELECT_SM2/3/4 菜单坐标需实机复核",
-    "新增 4 条分支未真机复测（friend_love/store_sign 保持已实机验证版本）"
+    "新增 4 条分支未真机复测（friend_love/store_sign 保持已实机验证版本）",
+    "吉闻按钮候选点 (50,55)/(50,73) 哪一个是真实按钮中心需实机复测",
+    "吉闻祝福/一键祝福奖励领取需实机复测"
   ]
 }
