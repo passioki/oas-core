@@ -959,6 +959,29 @@ function ocrTextMatches(expected, actual) {
   return dp[a.length][b.length] <= 1;
 }
 
+// Multi-line OCR can split one vertical word into several lines (召 + 唤).
+// Return a matching line, or a synthetic concatenation of the CJK lines.
+function matchedOcrLine(expected, lines) {
+  const hit = (lines || []).find((l) => ocrTextMatches(expected, l.text));
+  if (hit) return { ...hit, joined: false };
+  const cjk = (lines || []).filter((l) =>
+    /[^\x00-\x7F]/.test(String(l.text || '')) && Number(l.score) >= 0.5
+  );
+  if (!cjk.length) return null;
+  const text = cjk.map((l) => String(l.text || '').trim()).join('');
+  if (!ocrTextMatches(expected, text)) return null;
+  const xs = cjk.map((l) => l.box[0]);
+  const ys = cjk.map((l) => l.box[1]);
+  const xe = cjk.map((l) => l.box[0] + l.box[2]);
+  const ye = cjk.map((l) => l.box[1] + l.box[3]);
+  return {
+    text,
+    score: Math.min(...cjk.map((l) => Number(l.score) || 0)),
+    box: [Math.min(...xs), Math.min(...ys), Math.max(...xe) - Math.min(...xs), Math.max(...ye) - Math.min(...ys)],
+    joined: true,
+  };
+}
+
 function candidateStatusText(sourceLabel) {
   if (!batchStatus) return;
   const sel = saveCandidates.filter((c) => c.selected);
@@ -1290,13 +1313,87 @@ async function testAssetOcr(it) {
   const task = (taskName.value || '').trim();
   const q = `x=${roi.x}&y=${roi.y}&w=${roi.w}&h=${roi.h}` +
     `&task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}`;
+  const frameMeta = currentFrameId
+    ? (assetFramesCache.find((f) => f.id === currentFrameId) || {})
+    : null;
+  const frameLine = currentFrameId
+    ? `当前帧 #${currentFrameId}${frameMeta.name ? ` ${frameMeta.name}` : ''}`
+    : '当前帧：实时画面';
   const areaLine =
     (derived
       ? `多行来源 ROI [${rec.join(',')}]；行 ROI [${(it.roi || []).join(',')}]`
       : `识别区域 [${rec.join(',')}]`) +
     (action ? `；操作区域 [${action.join(',')}]（仅点击，不参与识别）` : '');
-  resultEl.textContent = `素材「${it.id}」识别中…\n${areaLine}`;
+  const withFrame = `${areaLine}\n${frameLine}`;
+  resultEl.textContent = `素材「${it.id}」识别中…\n${withFrame}`;
   try {
+    if (derived && it.ocr_text) {
+      if (!detReady) {
+        resultEl.textContent = '多行识别不可用：serve 需 --features ocr 且带 --det-model';
+        return;
+      }
+      // Test BOTH the original multi-line source ROI and the saved line ROI.
+      // The manual workbench test uses the line ROI; runtime used source only,
+      // so one could succeed while the other failed.
+      const seen = new Set();
+      const specs = [];
+      for (const [label, box] of [['多行来源 ROI', it.ocr_source_roi], ['行 ROI', it.roi]]) {
+        if (!Array.isArray(box)) continue;
+        const key = box.join(',');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const r = { x: box[0], y: box[1], w: box[2], h: box[3] };
+        const qq = `x=${r.x}&y=${r.y}&w=${r.w}&h=${r.h}` +
+          `&task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}`;
+        const resp = await fetch('/lines?' + qq);
+        const data = await resp.json();
+        const lines = (data.lines || []).map((b) => ({
+          ...b,
+          box: [r.x + b.box[0], r.y + b.box[1], b.box[2], b.box[3]],
+        }));
+        specs.push({ label, r, lines, error: data.error || '', ms: data.elapsed_ms });
+      }
+      for (const a of specs) {
+        a.match = matchedOcrLine(it.ocr_text, a.lines);
+      }
+      const hit = specs.find((a) => a.label === '行 ROI' && a.match) ||
+        specs.find((a) => a.match);
+      const statusText = specs.map((a) => {
+        if (a.error) return `${a.label} [${a.r.x},${a.r.y},${a.r.w},${a.r.h}]：错误 ${a.error}`;
+        return `${a.label} [${a.r.x},${a.r.y},${a.r.w},${a.r.h}]：` +
+          `${a.lines.length} 行，期望 ${a.match ? '匹配' : '未匹配'}`;
+      }).join('\n');
+      if (hit) {
+        const unmatchedOther = specs
+          .filter((a) => a !== hit && !a.match)
+          .map((a) => a.label)
+          .join(' / ');
+        resultEl.textContent =
+          withFrame + '\n' + statusText +
+          `\n测试使用：${hit.label}` +
+          (unmatchedOther
+            ? `\n注意：${unmatchedOther} 未匹配；运行期优先 source，失败时回退行 ROI。`
+            : '') +
+          `\n${hit.lines.length} 行 / ${Number(hit.ms || 0).toFixed(0)} ms\n` +
+          hit.lines.map((b, i) => `${i + 1}. ${b.text} (${Number(b.score).toFixed(3)})`).join('\n');
+        renderOcrLines(hit.lines, hit.r, `素材「${it.id}」${hit.label}`);
+        log(`素材多行识别「${it.id}」→ ${hit.label} 匹配`);
+        return;
+      }
+      const raw = specs.map((a) => {
+        if (a.error) return `${a.label}：错误 ${a.error}`;
+        const texts = a.lines.map((l) => `${l.text}(${Number(l.score).toFixed(3)})`).join(', ');
+        return `${a.label}：${a.lines.length ? texts : '（无文字）'}`;
+      }).join('\n');
+      if (await fallbackFullscreenLines(
+        `行 ROI 与来源 ROI 均未找到期望文字 ${JSON.stringify(it.ocr_text)}`
+      )) {
+        resultEl.textContent = withFrame + '\n' + statusText + '\n' + raw + '\n' + resultEl.textContent;
+      } else {
+        resultEl.textContent = withFrame + '\n' + statusText + '\n' + raw;
+      }
+      return;
+    }
     if (it.kind === 'ocr_lines' || derived) {
       if (!detReady) {
         resultEl.textContent = '多行识别不可用：serve 需 --features ocr 且带 --det-model';
@@ -1306,7 +1403,7 @@ async function testAssetOcr(it) {
       const s = await r.json();
       if (s.error) {
         if (await fallbackFullscreenLines(`识别区域错误：${s.error}`)) {
-          resultEl.textContent = areaLine + '\n' + resultEl.textContent;
+          resultEl.textContent = withFrame + '\n' + resultEl.textContent;
         }
         return;
       }
@@ -1316,29 +1413,16 @@ async function testAssetOcr(it) {
       }));
       if (!lines.length) {
         if (await fallbackFullscreenLines('识别区域内没有文字')) {
-          resultEl.textContent = areaLine + '\n' + resultEl.textContent;
-        }
-        return;
-      }
-      let matched = null;
-      if (derived && it.ocr_text) {
-        matched = lines.find((l) => ocrTextMatches(it.ocr_text, l.text)) || null;
-      }
-      if (derived && !matched) {
-        if (await fallbackFullscreenLines(`识别区域未找到期望文字 ${JSON.stringify(it.ocr_text)}`)) {
-          resultEl.textContent = areaLine + '\n' + resultEl.textContent;
+          resultEl.textContent = withFrame + '\n' + resultEl.textContent;
         }
         return;
       }
       resultEl.textContent =
-        areaLine + '\n' +
+        withFrame + '\n' +
         `${lines.length} 行 / ${Number(s.elapsed_ms || 0).toFixed(0)} ms\n` +
-        lines.map((b, i) => `${i + 1}. ${b.text} (${Number(b.score).toFixed(3)})`).join('\n') +
-        (derived
-          ? `\n期望文字：${JSON.stringify(it.ocr_text)} → ${matched ? '匹配' : '未找到（运行时会失败）'}`
-          : '');
-      renderOcrLines(lines, roi, derived ? `素材「${it.id}」多行来源` : `素材「${it.id}」`);
-      log(`素材多行识别「${it.id}」→ ${lines.length} 行${derived ? `, expected=${it.ocr_text}` : ''}`);
+        lines.map((b, i) => `${i + 1}. ${b.text} (${Number(b.score).toFixed(3)})`).join('\n');
+      renderOcrLines(lines, roi, `素材「${it.id}」`);
+      log(`素材多行识别「${it.id}」→ ${lines.length} 行`);
       return;
     }
     const r = await fetch('/ocr?' + q);
@@ -1346,12 +1430,12 @@ async function testAssetOcr(it) {
     if (s.error || !String(s.text || '').trim()) {
       const reason = s.error || '识别区域内没有文字';
       if (await fallbackFullscreenLines(reason)) {
-        resultEl.textContent = areaLine + '\n' + resultEl.textContent;
+        resultEl.textContent = withFrame + '\n' + resultEl.textContent;
       }
       return;
     }
     resultEl.textContent =
-      areaLine + '\n' +
+      withFrame + '\n' +
       `文字 = ${JSON.stringify(s.text)}\n得分 = ${Number(s.score).toFixed(4)}\n` +
       `耗时 = ${Number(s.elapsed_ms).toFixed(1)} ms`;
     log(`素材识别：${it.id} → ${s.text}`);

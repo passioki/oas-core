@@ -218,6 +218,47 @@ pub fn ocr_text_matches(expected: &str, actual: &str) -> bool {
     prev[m] <= 1
 }
 
+/// Match text against OCR lines, including one vertical word split into several
+/// lines by the detector (e.g. 召 + 唤). Returns the matched/synthetic line.
+pub fn match_ocr_line(expected: &str, lines: &[OcrLine]) -> Option<OcrLine> {
+    if let Some(line) = lines
+        .iter()
+        .filter(|l| ocr_text_matches(expected, l.text.as_str()))
+        .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal))
+    {
+        return Some(line.clone());
+    }
+    let cjk: Vec<&OcrLine> = lines
+        .iter()
+        .filter(|l| {
+            l.score >= 0.5
+                && l.text
+                    .chars()
+                    .any(|c| c.is_alphabetic() && !c.is_ascii())
+        })
+        .collect();
+    if cjk.len() < 2 {
+        return None;
+    }
+    let joined = cjk.iter().map(|l| l.text.trim()).collect::<String>();
+    if !ocr_text_matches(expected, joined.as_str()) {
+        return None;
+    }
+    let x0 = cjk.iter().map(|l| l.rect.x).min()?;
+    let y0 = cjk.iter().map(|l| l.rect.y).min()?;
+    let x1 = cjk.iter().map(|l| l.rect.x + l.rect.w).max()?;
+    let y1 = cjk.iter().map(|l| l.rect.y + l.rect.h).max()?;
+    let score = cjk
+        .iter()
+        .map(|l| l.score)
+        .fold(f32::INFINITY, f32::min);
+    Some(OcrLine {
+        rect: Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 },
+        text: joined,
+        score,
+    })
+}
+
 /// Point-in-polygon (ray casting, even-odd). Boundary points are unspecified.
 pub fn point_in_polygon(p: Point, polygon: &[Point]) -> bool {    if polygon.len() < 3 {
         return false;
@@ -1293,29 +1334,36 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         // source region + det+rec path at runtime. Falling back to single-line
         // rec on the tight line crop can change the recognized text.
         if let Some((source, expected)) = self.assets.derived_ocr(sel) {
-            let provider = self.ocr.as_mut().expect("provider checked above");
-            let lines = provider.recognize_lines(frame, source)?;
-            let hit = lines
-                .iter()
-                .filter(|l| ocr_text_matches(expected.as_str(), l.text.as_str()))
-                .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
-            let Some(line) = hit else {
-                self.last_ocr_rect = None;
-                let found = lines
-                    .iter()
-                    .map(|l| format!("{:?}({:.3})", l.text, l.score))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(format!(
-                    "derived ocr_line `{sel}`: no line equals {:?} in original source ROI {:?} \
-                     ({} lines found: {found}) - refusing to use single-line rec",
-                    expected,
-                    source,
-                    lines.len()
-                ));
-            };
-            self.last_ocr_rect = Some(line.rect);
-            return Ok(OcrRead::Single(Some(line.text.clone()), line.score));
+            // Try the original multi-line source first, then the saved line ROI.
+            // Both are det+rec; the line ROI fallback exists because the source
+            // crop can merge/split characters differently from the authored
+            // line (and the editor's manual multi-line test uses that line ROI).
+            let mut regions = vec![source];
+            if roi != source {
+                regions.push(roi);
+            }
+            let mut found_all: Vec<String> = Vec::new();
+            for region in regions {
+                let provider = self.ocr.as_mut().expect("provider checked above");
+                let lines = provider.recognize_lines(frame, region)?;
+                let hit = match_ocr_line(expected.as_str(), &lines);
+                if let Some(line) = hit {
+                    self.last_ocr_rect = Some(line.rect);
+                    return Ok(OcrRead::Single(Some(line.text.clone()), line.score));
+                }
+                for l in &lines {
+                    found_all.push(format!("{:?}({:.3})@ROI{:?}", l.text, l.score, region));
+                }
+            }
+            self.last_ocr_rect = None;
+            return Err(format!(
+                "derived ocr_line `{sel}`: no line equals {:?} in source ROI {:?} or line ROI {:?} \
+                 (lines found: {}) - refusing to use single-line rec",
+                expected,
+                source,
+                roi,
+                found_all.join(", ")
+            ));
         }
         self.last_ocr_rect = None;
         // §22.10 N10b-2: polygon OCR mask = bbox crop, outside-polygon pixels
@@ -3122,6 +3170,17 @@ mod tests {
         assert!(ocr_text_matches(" 召 唤 ", "召喚"));
         assert!(!ocr_text_matches("召唤", "取消"));
         assert!(!ocr_text_matches("确定", "确定按钮"));
+    }
+
+    #[test]
+    fn ocr_text_matches_split_vertical_lines() {
+        let lines = vec![
+            OcrLine { rect: Rect { x: 10, y: 10, w: 20, h: 20 }, text: "召".into(), score: 0.9 },
+            OcrLine { rect: Rect { x: 10, y: 32, w: 20, h: 20 }, text: "唤".into(), score: 0.8 },
+        ];
+        let hit = match_ocr_line("召唤", &lines).expect("split lines should join");
+        assert_eq!(hit.text, "召唤");
+        assert_eq!((hit.rect.x, hit.rect.y, hit.rect.w, hit.rect.h), (10, 10, 20, 42));
     }
 
     #[test]

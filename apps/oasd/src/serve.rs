@@ -943,15 +943,23 @@ impl Server {
                     .as_ref()
                     .map(|f| (f.width, f.height))
                     .unwrap_or((0, 0));
+                let current_name = st
+                    .current_frame_id
+                    .and_then(|id| st.frames.iter().find(|f| f.id == id))
+                    .map(|f| f.name.clone())
+                    .unwrap_or_default();
                 let body = format!(
-                    r#"{{"captured":{},"width":{},"height":{},"device":{:?},"error":{:?},"ocr":{},"det":{}}}"#,
+                    r#"{{"captured":{},"width":{},"height":{},"device":{:?},"error":{:?},"ocr":{},"det":{},"current_frame_id":{},"current_frame_name":{:?},"live":{}}}"#,
                     st.png.is_some(),
                     w,
                     h,
                     st.device,
                     st.error.clone().unwrap_or_default(),
                     self.ocr_ready(),
-                    self.det_ready()
+                    self.det_ready(),
+                    serde_json::to_string(&st.current_frame_id).unwrap_or_else(|_| "null".into()),
+                    current_name,
+                    st.live_png.is_some()
                 );
                 drop(st);
                 self.send_json(&mut out, 200, &body)
