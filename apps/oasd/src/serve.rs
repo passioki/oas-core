@@ -210,6 +210,10 @@ pub struct Server {
     run_state: Arc<Mutex<RunState>>,
     /// Executor used by `POST /task/run`; replaceable in tests.
     run_executor: Arc<RunExecutor>,
+    /// Paths of the OCR models loaded by serve; passed to editor-triggered
+    /// runs so `appear(ocr_asset)` / `text_visible()` work there too.
+    ocr_model: Option<PathBuf>,
+    det_model: Option<PathBuf>,
     #[cfg(feature = "ocr")]
     ocr: Option<Arc<Mutex<oas_ocr::onnx::RecEngine>>>,
     #[cfg(feature = "ocr")]
@@ -238,6 +242,8 @@ impl Server {
             run_state: Arc::new(Mutex::new(RunState::default())),
             run_executor: default_executor,
             editor_log: PathBuf::from("logs/editor.log"),
+            ocr_model: None,
+            det_model: None,
             #[cfg(feature = "ocr")]
             ocr: None,
             #[cfg(feature = "ocr")]
@@ -548,6 +554,7 @@ impl Server {
         let engine = oas_ocr::onnx::RecEngine::from_file(model_path)?;
         let n = engine.charset().len();
         self.ocr = Some(Arc::new(Mutex::new(engine)));
+        self.ocr_model = Some(PathBuf::from(model_path));
         Ok(n)
     }
 
@@ -1414,6 +1421,7 @@ impl Server {
     pub fn enable_det(&mut self, model_path: &str) -> Result<(), String> {
         let det = oas_ocr::det_engine::DetEngine::from_file(model_path)?;
         self.det = Some(Arc::new(Mutex::new(det)));
+        self.det_model = Some(PathBuf::from(model_path));
         Ok(())
     }
 
@@ -4117,6 +4125,8 @@ impl Server {
         opts.dry_run = dry_run;
         opts.library = self.library_dir.clone();
         opts.assets = self.assets_dir.clone();
+        opts.model = self.ocr_model.clone();
+        opts.det_model = self.det_model.clone();
         // Click audit (CD2) is written even for dry/replay runs, so the editor's
         // 点击分布 panel sees editor-triggered runs exactly like CLI runs.
         opts.clicks_out = Some(
