@@ -3,10 +3,11 @@
   "status": "🔄",
   "evidence": {
     "lint": "lint task=DailyTrifles errors=0",
-    "live": "Lead 2026-11-01：friend_love + store_sign 实机 Done（原样保留）",
-    "round2_coverage": "新增 one_summon(默认)/summon_recall(今忆)/luck_msg/buy_sushi(次数近似) 四条分支；friend_love/store_sign 逐字保留"
+    "live": "Lead 2026-11-01：friend_love 回归 Done；store_sign 回归失败——进入礼包屋商店页后 I_GIFT_RECOMMEND 点击未打开签到，I_GIFT_SIGN 未出现（0.565<0.8），页面为礼包屋商品列表；需按当前商店页调整签到入口或判定已签到 no-op",
+    "round2_coverage": "新增 one_summon(默认)/summon_recall(今忆)/luck_msg/buy_sushi(次数近似) 四条分支；friend_love 保留，store_sign 入口需修"
   },
   "gaps": [
+    "store_sign 当前版本回归失败：I_GIFT_RECOMMEND 后未出现 I_GIFT_SIGN，需重采/调整签到入口",
     "buy_sushi 动态价格 ROI/已购次数 OCR 无法迁移（按 param 次数近似）",
     "今忆召唤左侧菜单坐标需实机复核",
     "新增 4 条分支未真机复测",
