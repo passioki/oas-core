@@ -1587,6 +1587,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 then,
                 otherwise,
             } => {
+                // A condition must describe the CURRENT screen, not a frame
+                // cached before a wait/transition.
+                self.invalidate_frame();
                 let v = eval(cond, self)?;
                 let taken = matches!(v, Value::Bool(true));
                 let body = if taken { then } else { otherwise };
@@ -1684,11 +1687,16 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     return Err("wait seconds must be >= 0".into());
                 }
                 std::thread::sleep(Duration::from_secs_f64(s));
+                // The next selector/condition must re-grab: a wait is often
+                // used exactly because the screen is transitioning.
+                self.invalidate_frame();
                 Ok(format!("waited {s}s"))
             }
             Step::WaitUntil { cond, timeout_s } => {
                 let deadline = Instant::now() + Duration::from_secs_f64(*timeout_s);
                 loop {
+                    // First check must also be fresh; only poll frames after.
+                    self.invalidate_frame();
                     if matches!(eval(cond, self)?, Value::Bool(true)) {
                         return Ok("condition met".into());
                     }
@@ -1696,10 +1704,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         return Err(format!("wait_until timed out after {timeout_s}s"));
                     }
                     std::thread::sleep(Duration::from_millis(20));
-                    self.invalidate_frame(); // next eval grabs a fresh frame
                 }
             }
             Step::Appear { sel } => {
+                self.invalidate_frame();
                 let (score, at) = self.locate(sel)?;
                 let th = self.assets.threshold_for(sel).unwrap_or(0.9);
                 if score >= th {
@@ -1717,6 +1725,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             } => {
                 let deadline = Instant::now() + Duration::from_millis(*timeout_ms as u64);
                 loop {
+                    self.invalidate_frame();
                     let (score, at) = self.locate(sel)?;
                     let th = self.assets.threshold_for(sel).unwrap_or(0.9);
                     if let Some(_detected) = at.filter(|_| score >= th) {
@@ -1781,6 +1790,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 stable_frames,
                 ..
             } => {
+                self.invalidate_frame();
                 let guarded = self.require_guard(requires.as_ref())?;
                 // ENGINE §22.11 补充层 "多模板变体": try `sel` first, then the
                 // alternatives in declaration order; the first one reaching its
@@ -1896,6 +1906,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 ))
             }
             Step::ClickPoint { x, y, requires, expect, .. } => {
+                self.invalidate_frame();
                 let guarded = self.require_guard(requires.as_ref())?;
                 // CP2: both coordinates are expressions (literal or computed).
                 let tx = self.eval_coord(x, "x")?;
@@ -1947,6 +1958,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 expect,
                 ..
             } => {
+                self.invalidate_frame();
                 let guarded = self.require_guard(requires.as_ref())?;
                 // ENGINE §22.11: fixed priority image > text > memory; every
                 // locator failure is kept as evidence, and ALL failing is a loud
@@ -2418,6 +2430,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 duration_ms,
                 margin,
             } => {
+                self.invalidate_frame();
                 let src_rect = self.drag_target_rect(from)?;
                 if self.matcher.is_none() {
                     self.refresh_frame()?;
@@ -2541,6 +2554,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 Ok(format!("ocr_to_var {sel} -> {var} = {text:?}"))
             }
             Step::Ocr { sel } => {
+                self.invalidate_frame();
                 // The standalone `ocr` step exists so an editor-authored flow can
                 // PROVE what a selector reads without branching on it (a plain
                 // expression has no step log). `ocr_lines` assets log EVERY line
