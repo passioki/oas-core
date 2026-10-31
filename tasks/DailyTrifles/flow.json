@@ -1437,11 +1437,6 @@
               "kind": "appear",
               "sel": "legacy_DailyTrifles_I_GIFT_RECOMMEND",
               "timeout_ms": 3000
-            },
-            "expect": {
-              "kind": "appear",
-              "sel": "legacy_DailyTrifles_I_GIFT_SIGN",
-              "timeout_ms": 8000
             }
           }
         },
