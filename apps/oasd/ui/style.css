@@ -676,6 +676,11 @@ aside.side {
 }
 .builder-asset-option:hover { background: #2b6cb0; }
 .builder-subform { border-top: 1px solid #2b2f38; margin-top: 8px; padding-top: 6px; }
+.builder-condition-row { display: flex; gap: 4px; align-items: center; margin: 4px 0; }
+.builder-condition-row select { width: auto; flex: 0 0 auto; }
+.builder-condition-row input[type="text"] { flex: 1; min-width: 0; }
+.builder-condition-row button { width: auto; flex: 0 0 auto; margin: 0; }
+.builder-subform > button { width: auto; }
 .builder-code {
   width: 100%;
   min-height: 220px;

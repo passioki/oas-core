@@ -1089,28 +1089,30 @@
   function parseConditionPreset(cond) {
     const c = String(cond || '').trim();
     let m = c.match(/^appear\(\s*['"]([^'"]+)['"]\s*\)$/);
-    if (m) return { mode: 'appear', asset: m[1], text: '' };
+    if (m) return { custom: false, rows: [{ kind: 'asset', neg: false, value: m[1] }], join: 'and', groupNot: false };
     m = c.match(/^(?:not\s+|!)(?:appear\(\s*['"]([^'"]+)['"]\s*\))$/);
-    if (m) return { mode: 'not_appear', asset: m[1], text: '' };
+    if (m) return { custom: false, rows: [{ kind: 'asset', neg: true, value: m[1] }], join: 'and', groupNot: false };
     m = c.match(/^text_visible\(\s*['"]([^'"]+)['"]\s*\)$/);
-    if (m) return { mode: 'text_visible', asset: '', text: m[1] };
+    if (m) return { custom: false, rows: [{ kind: 'text', neg: false, value: m[1] }], join: 'or', groupNot: false };
     m = c.match(/^(?:not\s+|!)\s*\(?\s*text_visible\(\s*['"]([^'"]+)['"]\s*\)\s*\)?$/);
-    if (m) return { mode: 'text_not_visible', asset: '', text: m[1] };
-    return { mode: 'custom', asset: '', text: c };
+    if (m) return { custom: false, rows: [{ kind: 'text', neg: true, value: m[1] }], join: 'or', groupNot: false };
+    if (!c) return { custom: false, rows: [], join: 'and', groupNot: false };
+    return { custom: true, rows: [], join: 'and', groupNot: false, raw: c };
   }
 
-  function condText(mode, asset, text) {
-    const a = String(asset || '').replace(/'/g, '');
-    const values = String(text || '')
-      .split(/[,，、]|\bor\b|\|/i)
-      .map((x) => x.trim())
-      .filter(Boolean);
-    const visible = values.map((v) => `text_visible('${v.replace(/'/g, '')}')`).join(' or ') || "text_visible('')";
-    if (mode === 'appear') return `appear('${a}')`;
-    if (mode === 'not_appear') return `not appear('${a}')`;
-    if (mode === 'text_visible') return visible;
-    if (mode === 'text_not_visible') return `not (${visible})`;
-    return text || 'true';
+  function conditionRowExpr(row) {
+    const v = String(row.value || '').trim();
+    if (!v) return '';
+    let expr;
+    if (row.kind === 'asset') {
+      expr = `appear('${v.replace(/'/g, '')}')`;
+    } else {
+      // A text row still uses the same underlying logical expression; multiple
+      // texts inside one row stay OR-compatible with the previous preset.
+      const values = v.split(/[,，、]|\bor\b|\|/i).map((x) => x.trim()).filter(Boolean);
+      expr = values.map((x) => `text_visible('${x.replace(/'/g, '')}')`).join(' or ') || "text_visible('')";
+    }
+    return row.neg ? `not (${expr})` : expr;
   }
 
   function renderConditionEditor(root, step) {
@@ -1118,50 +1120,55 @@
     box.className = 'builder-subform';
     const title = document.createElement('div');
     title.className = 'muted small';
-    title.textContent = '循环/分支条件（支持 and/or/not、&&/||/!、括号）';
+    title.textContent = '循环/分支条件（谓词行 + and/or/not、&&/||/!、括号）';
     box.appendChild(title);
 
     const preset = parseConditionPreset(step.args.cond);
-    const modeLabel = document.createElement('label');
-    modeLabel.textContent = '条件类型';
-    const mode = document.createElement('select');
-    for (const [v, label] of [
-      ['appear', '素材出现时（支持所有素材）'],
-      ['not_appear', '素材未出现时（支持所有素材）'],
-      ['text_visible', '文字出现（全屏多行识别）'],
-      ['text_not_visible', '文字未出现（全屏多行识别）'],
-      ['custom', '自定义表达式'],
-    ]) {
+    const rows = (preset.rows || []).slice();
+    let join = preset.join || 'and';
+
+    const customCheckLabel = document.createElement('label');
+    customCheckLabel.className = 'run-opt';
+    const customCheck = document.createElement('input');
+    customCheck.type = 'checkbox';
+    customCheck.checked = !!preset.custom;
+    customCheckLabel.append(customCheck, document.createTextNode(' 自定义表达式'));
+    box.appendChild(customCheckLabel);
+
+    const rowsBox = document.createElement('div');
+    box.appendChild(rowsBox);
+
+    const joinLabel = document.createElement('label');
+    joinLabel.textContent = '行之间';
+    const joinSel = document.createElement('select');
+    for (const [v, label] of [['and', '且（and）'], ['or', '或（or）']]) {
       const o = document.createElement('option');
       o.value = v;
       o.textContent = label;
-      mode.appendChild(o);
+      joinSel.appendChild(o);
     }
-    mode.value = preset.mode;
-    modeLabel.appendChild(mode);
-    box.appendChild(modeLabel);
+    joinSel.value = join;
+    joinLabel.appendChild(joinSel);
+    box.appendChild(joinLabel);
 
-    const assetLabel = document.createElement('label');
-    assetLabel.textContent = '条件素材';
-    const assetSearchWrap = assetSearch(preset.asset, null);
-    const asset = assetSearchWrap.input;
-    assetLabel.appendChild(assetSearchWrap);
-    box.appendChild(assetLabel);
+    const groupLabel = document.createElement('label');
+    groupLabel.className = 'run-opt';
+    const groupNot = document.createElement('input');
+    groupNot.type = 'checkbox';
+    groupNot.checked = !!preset.groupNot;
+    groupLabel.append(groupNot, document.createTextNode(' 非（整组取反）'));
+    box.appendChild(groupLabel);
 
-    const textLabel = document.createElement('label');
-    textLabel.textContent = '文字（多个用 /、逗号或“或”分隔）';
-    const text = document.createElement('input');
-    text.type = 'text';
-    text.value = preset.text || '';
-    text.placeholder = '如：町中 / 召唤';
-    textLabel.appendChild(text);
-    box.appendChild(textLabel);
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.textContent = '+ 添加条件行';
+    box.appendChild(addBtn);
 
     const customLabel = document.createElement('label');
-    customLabel.textContent = '自定义表达式（0=不循环，非 0=循环；也可写 appear(...)/ocr(...)）';
+    customLabel.textContent = '自定义表达式（0=不循环，非 0=循环；可写 appear(...)/text_visible(...)）';
     const custom = document.createElement('input');
     custom.type = 'text';
-    custom.value = step.args.cond || 'true';
+    custom.value = preset.raw || step.args.cond || 'true';
     customLabel.appendChild(custom);
     box.appendChild(customLabel);
 
@@ -1169,31 +1176,131 @@
     preview.className = 'muted small';
     box.appendChild(preview);
 
+    function renderRows() {
+      rowsBox.textContent = '';
+      if (!rows.length) {
+        const empty = document.createElement('div');
+        empty.className = 'muted small';
+        empty.textContent = '（没有条件行；添加一行，或勾选自定义表达式）';
+        rowsBox.appendChild(empty);
+        return;
+      }
+      rows.forEach((row, i) => {
+        const line = document.createElement('div');
+        line.className = 'builder-condition-row';
+        const kind = document.createElement('select');
+        for (const [v, label] of [['asset', '素材'], ['text', '文字（全屏）']]) {
+          const o = document.createElement('option');
+          o.value = v;
+          o.textContent = label;
+          kind.appendChild(o);
+        }
+        kind.value = row.kind;
+        kind.addEventListener('change', () => {
+          row.kind = kind.value;
+          row.value = '';
+          renderRows();
+          sync();
+        });
+        const negLabel = document.createElement('label');
+        negLabel.className = 'run-opt';
+        const neg = document.createElement('input');
+        neg.type = 'checkbox';
+        neg.checked = !!row.neg;
+        neg.addEventListener('change', () => { row.neg = neg.checked; sync(); });
+        negLabel.append(neg, document.createTextNode('未出现'));
+        let valueEl;
+        if (row.kind === 'asset') {
+          const search = assetSearch(row.value || '', null);
+          valueEl = search.input;
+          valueEl.addEventListener('change', () => { row.value = valueEl.value.trim(); sync(); });
+          line.append(kind, negLabel, search);
+        } else {
+          valueEl = document.createElement('input');
+          valueEl.type = 'text';
+          valueEl.placeholder = '文字，多个用 / 或逗号';
+          valueEl.value = row.value || '';
+          valueEl.addEventListener('change', () => { row.value = valueEl.value.trim(); sync(); });
+          line.append(kind, negLabel, valueEl);
+        }
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.textContent = '删';
+        del.title = '删除该条件行';
+        del.addEventListener('click', () => {
+          rows.splice(i, 1);
+          renderRows();
+          sync();
+        });
+        line.appendChild(del);
+        rowsBox.appendChild(line);
+      });
+    }
+
     function sync() {
-      const modeValue = mode.value;
-      const assetMode = modeValue === 'appear' || modeValue === 'not_appear';
-      assetLabel.style.display = assetMode ? 'block' : 'none';
-      textLabel.style.display = assetMode ? 'none' : (modeValue === 'custom' ? 'none' : 'block');
-      customLabel.style.display = modeValue === 'custom' ? 'block' : 'none';
+      const customMode = customCheck.checked;
+      rowsBox.style.display = customMode ? 'none' : 'block';
+      joinLabel.style.display = customMode || rows.length < 2 ? 'none' : 'block';
+      groupLabel.style.display = customMode ? 'none' : 'block';
+      addBtn.style.display = customMode ? 'none' : 'inline-block';
+      customLabel.style.display = customMode ? 'block' : 'none';
       step.args = step.args || {};
       delete step.args.sel;
-      if (modeValue === 'custom') {
+      if (customMode) {
         step.args.cond = custom.value.trim() || 'true';
       } else {
-        step.args.cond = condText(modeValue, asset.value, text.value);
+        const exprs = rows.map(conditionRowExpr).filter(Boolean);
+        let expr = exprs.length ? exprs.join(join === 'or' ? ' or ' : ' and ') : 'true';
+        if (groupNot.checked && exprs.length) expr = `not (${expr})`;
+        step.args.cond = expr;
       }
       preview.textContent = `当前条件：${step.args.cond}（每轮重新计算）`;
+      joinLabel.style.display = customMode || rows.length < 2 ? 'none' : 'block';
       scheduleAutoSave();
     }
-    mode.addEventListener('change', () => {
-      if (mode.value === 'custom') custom.value = step.args.cond || 'true';
+
+    customCheck.addEventListener('change', () => {
+      if (customCheck.checked) custom.value = step.args.cond || 'true';
       sync();
     });
-    asset.addEventListener('change', sync);
-    text.addEventListener('change', sync);
+    joinSel.addEventListener('change', () => { join = joinSel.value; sync(); });
+    groupNot.addEventListener('change', sync);
+    addBtn.addEventListener('click', () => {
+      rows.push({ kind: 'asset', neg: false, value: '' });
+      joinSel.value = join;
+      renderRows();
+      sync();
+    });
     custom.addEventListener('change', sync);
+
+    renderRows();
     sync();
     root.appendChild(box);
+  }
+
+  function renderClickAlts(root, step) {
+    const label = document.createElement('label');
+    label.textContent = '备选素材（任一命中即可；可选多个）';
+    const sel = document.createElement('select');
+    sel.multiple = true;
+    sel.size = Math.min(6, Math.max(2, B.assets.filter((a) => a.kind === 'template').length));
+    const current = new Set(step.args.alts || []);
+    for (const a of B.assets) {
+      if (a.kind !== 'template') continue;
+      const o = document.createElement('option');
+      o.value = a.id;
+      o.textContent = a.id;
+      o.selected = current.has(a.id);
+      sel.appendChild(o);
+    }
+    sel.addEventListener('change', () => {
+      const picked = Array.from(sel.selectedOptions).map((o) => o.value);
+      if (picked.length) step.args.alts = picked;
+      else delete step.args.alts;
+      scheduleAutoSave();
+    });
+    label.appendChild(sel);
+    root.appendChild(label);
   }
 
   function renderForm() {
@@ -1283,6 +1390,7 @@
       root.appendChild(lab);
     }
     if (step.op === 'click_target') structuredClickTarget(root, step);
+    if (step.op === 'click') renderClickAlts(root, step);
     if (step.op === 'drag') structuredDrag(root, step);
     // raw args JSON fallback for complex actions (click_target/drag)
     const raw = document.createElement('label');
