@@ -36,9 +36,9 @@
     dismiss_popup: [{ key: 'sel', label: '弹窗素材', type: 'asset' }, { key: 'action', label: '动作（可选）', type: 'text' }, { key: 'timeout_ms', label: '超时 ms', type: 'number' }],
     swipe: [{ key: 'from', label: '起点 [x,y]', type: 'json' }, { key: 'to', label: '终点 [x,y]', type: 'json' }, { key: 'ms', label: '时长 ms', type: 'number' }],
     finish: [{ key: 'exit', label: '出口', type: 'select', options: ['done', 'failed'] }],
-    if: [{ key: 'cond', label: '条件表达式', type: 'text' }],
+    if: [],
     loop: [{ key: 'n', label: '次数（表达式）', type: 'text' }],
-    while: [{ key: 'cond', label: '条件表达式', type: 'text' }, { key: 'max_iters', label: '最大迭代（0=无限，受预算限制）', type: 'number' }],
+    while: [{ key: 'max_iters', label: '最大迭代（0=无限，受预算限制）', type: 'number' }],
     click_target: [],
     drag: [],
     set_var: [{ key: 'name', label: '变量名', type: 'text' }, { key: 'value', label: '值（表达式）', type: 'text' }],
@@ -1011,6 +1011,110 @@
     for (const step of flow.steps) normalizeStepArgs(step);
   }
 
+  function parseConditionPreset(cond) {
+    const c = String(cond || '').trim();
+    let m = c.match(/^appear\(\s*['"]([^'"]+)['"]\s*\)$/);
+    if (m) return { mode: 'appear', asset: m[1], text: '' };
+    m = c.match(/^(?:not\s+|!)(?:appear\(\s*['"]([^'"]+)['"]\s*\))$/);
+    if (m) return { mode: 'not_appear', asset: m[1], text: '' };
+    m = c.match(/^ocr\(\s*['"]([^'"]+)['"]\s*\)\s*==\s*['"]([^'"]*)['"]$/);
+    if (m) return { mode: 'ocr_eq', asset: m[1], text: m[2] };
+    m = c.match(/^ocr\(\s*['"]([^'"]+)['"]\s*\)\s*!=\s*['"]([^'"]*)['"]$/);
+    if (m) return { mode: 'ocr_ne', asset: m[1], text: m[2] };
+    return { mode: 'custom', asset: '', text: c };
+  }
+
+  function condText(mode, asset, text) {
+    const a = String(asset || '').replace(/'/g, '');
+    const t = String(text || '').replace(/'/g, '');
+    if (mode === 'appear') return `appear('${a}')`;
+    if (mode === 'not_appear') return `not appear('${a}')`;
+    if (mode === 'ocr_eq') return `ocr('${a}') == '${t}'`;
+    if (mode === 'ocr_ne') return `ocr('${a}') != '${t}'`;
+    return text || 'true';
+  }
+
+  function renderConditionEditor(root, step) {
+    const box = document.createElement('div');
+    box.className = 'builder-subform';
+    const title = document.createElement('div');
+    title.className = 'muted small';
+    title.textContent = '循环/分支条件';
+    box.appendChild(title);
+
+    const preset = parseConditionPreset(step.args.cond);
+    const modeLabel = document.createElement('label');
+    modeLabel.textContent = '条件类型';
+    const mode = document.createElement('select');
+    for (const [v, label] of [
+      ['appear', '素材出现时'],
+      ['not_appear', '素材未出现时'],
+      ['ocr_eq', '文字等于'],
+      ['ocr_ne', '文字不等于'],
+      ['custom', '自定义表达式'],
+    ]) {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = label;
+      mode.appendChild(o);
+    }
+    mode.value = preset.mode;
+    modeLabel.appendChild(mode);
+    box.appendChild(modeLabel);
+
+    const assetLabel = document.createElement('label');
+    assetLabel.textContent = '条件素材';
+    const assetSearchWrap = assetSearch(preset.asset, null);
+    const asset = assetSearchWrap.input;
+    assetLabel.appendChild(assetSearchWrap);
+    box.appendChild(assetLabel);
+
+    const textLabel = document.createElement('label');
+    textLabel.textContent = '比较文字';
+    const text = document.createElement('input');
+    text.type = 'text';
+    text.value = preset.text || '';
+    textLabel.appendChild(text);
+    box.appendChild(textLabel);
+
+    const customLabel = document.createElement('label');
+    customLabel.textContent = '自定义条件表达式';
+    const custom = document.createElement('input');
+    custom.type = 'text';
+    custom.value = step.args.cond || 'true';
+    customLabel.appendChild(custom);
+    box.appendChild(customLabel);
+
+    const preview = document.createElement('div');
+    preview.className = 'muted small';
+    box.appendChild(preview);
+
+    function sync() {
+      const modeValue = mode.value;
+      assetLabel.style.display = modeValue === 'custom' ? 'none' : 'block';
+      textLabel.style.display = modeValue === 'ocr_eq' || modeValue === 'ocr_ne' ? 'block' : 'none';
+      customLabel.style.display = modeValue === 'custom' ? 'block' : 'none';
+      step.args = step.args || {};
+      delete step.args.sel;
+      if (modeValue === 'custom') {
+        step.args.cond = custom.value.trim() || 'true';
+      } else {
+        step.args.cond = condText(modeValue, asset.value, text.value);
+      }
+      preview.textContent = `当前条件：${step.args.cond}（每轮重新计算）`;
+      scheduleAutoSave();
+    }
+    mode.addEventListener('change', () => {
+      if (mode.value === 'custom') custom.value = step.args.cond || 'true';
+      sync();
+    });
+    asset.addEventListener('change', sync);
+    text.addEventListener('change', sync);
+    custom.addEventListener('change', sync);
+    sync();
+    root.appendChild(box);
+  }
+
   function renderForm() {
     const root = $('builder-form');
     if (!root) return;
@@ -1024,26 +1128,28 @@
     title.innerHTML = `<strong>${esc((OP_META[step.op] && OP_META[step.op].label) || step.op)}</strong>`;
     root.appendChild(title);
     step.args = step.args || {};
-    // Always expose the task asset/region list at the top of the inspector.
-    const assetLabel = document.createElement('label');
-    assetLabel.textContent = `任务素材/操作区域（${B.assets.length}）`;
-    const assetSearchWrap = assetSearch(step.args.sel || '');
-    const assetPick = assetSearchWrap.input;
-    assetPick.addEventListener('change', () => {
-      if (assetPick.value) {
-        step.args.sel = assetPick.value;
-        status(`已选择素材：${assetPick.value}`);
-        renderAll();
-      }
-    });
-    assetLabel.appendChild(assetSearchWrap);
-    root.appendChild(assetLabel);
+    // Only actions that actually consume `sel` get the generic top asset picker.
+    // For if/while this picker used to write a stray `args.sel`; the condition
+    // editor below owns the asset choice instead.
+    const SEL_OPS = new Set(['appear', 'ocr', 'click', 'dismiss_popup', 'ocr_to_var']);
+    if (SEL_OPS.has(step.op)) {
+      const assetLabel = document.createElement('label');
+      assetLabel.textContent = `任务素材/操作区域（${B.assets.length}）`;
+      const assetSearchWrap = assetSearch(step.args.sel || '');
+      const assetPick = assetSearchWrap.input;
+      assetPick.addEventListener('change', () => {
+        if (assetPick.value) {
+          step.args.sel = assetPick.value;
+          status(`已选择素材：${assetPick.value}`);
+          renderAll();
+        }
+      });
+      assetLabel.appendChild(assetSearchWrap);
+      root.appendChild(assetLabel);
+    }
     if (step.op === 'call_task') renderCallTaskForm(root, step);
     if (step.op === 'if' || step.op === 'while') {
-      const help = document.createElement('div');
-      help.className = 'muted small';
-      help.textContent = '条件支持 and/or/not、&&/||/! 和括号；素材条件写成 appear(\'素材id\') / ocr(\'素材id\') == \'文字\'。';
-      root.appendChild(help);
+      renderConditionEditor(root, step);
     }
     for (const f of FIELDS[step.op] || []) {
       const lab = document.createElement('label');
