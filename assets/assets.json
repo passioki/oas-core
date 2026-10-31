@@ -13636,7 +13636,8 @@
         70,
         70
       ],
-      "rev": 1
+      "rev": 1,
+      "threshold": 0.8
     },
     {
       "id": "legacy_DailyTrifles_O_RECALL_TICKET_AREA",

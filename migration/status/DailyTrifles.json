@@ -7,10 +7,11 @@
     "round2_coverage": "新增 one_summon(默认)/summon_recall(今忆)/luck_msg/buy_sushi(次数近似) 四条分支；friend_love/store_sign 回归通过"
   },
   "gaps": [
+    "luck_msg 实机：好友页 O_LUCK_MSG OCR 0.856，旧 requires 0.9 失败；已移除 requires 并给 click_target 加 threshold .8，但后续因当前屏幕不在庭院未重测",
     "store_sign 的“有签到按钮”分支当前未触发，只验证了 no-op；需有签到状态时复测",
     "buy_sushi 动态价格 ROI/已购次数 OCR 无法迁移（按 param 次数近似）",
     "今忆召唤左侧菜单坐标需实机复核",
-    "新增 4 条分支未真机复测",
+    "新增 4 条分支未全部实机复测",
     "I_SM_CONFIRM_2 复用 Component_Summon 资产（上游 DailyTrifles 图片缺失）"
   ]
 }

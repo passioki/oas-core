@@ -1169,14 +1169,10 @@
                       {
                         "kind": "ocr_text",
                         "sel": "legacy_DailyTrifles_O_LUCK_MSG",
-                        "text": "吉闻"
+                        "text": "吉闻",
+                        "threshold": 0.8
                       }
-                    ],
-                    "requires": {
-                      "kind": "appear",
-                      "sel": "legacy_DailyTrifles_O_LUCK_MSG",
-                      "timeout_ms": 3000
-                    }
+                    ]
                   }
                 }
               ],
