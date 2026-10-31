@@ -35263,6 +35263,19 @@
       ],
       "threshold": 0.85,
       "rev": 1
+    },
+    {
+      "id": "ui_friend_page",
+      "kind": "template",
+      "file": "images/a2099.png",
+      "roi": [
+        500,
+        0,
+        600,
+        180
+      ],
+      "threshold": 0.85,
+      "rev": 1
     }
   ],
   "collections": []
