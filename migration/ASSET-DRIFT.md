@@ -56,6 +56,16 @@
 
 因此后续所有实机验证必须先 reset 到干净主界面（`am force-stop com.netease.onmyoji` + launch + 进入游戏），再计入证据；不能把残留页面失败误判为素材漂移。
 
+## 额外发现：`I_CHECK_FRIENDS` 不是好友页守卫
+
+`legacy_GameUi_I_CHECK_FRIENDS` 的模板图像实际是主界面左侧“精灵”按钮（查看 a649.png），不是好友页标题/按钮。迁移 flow 里把它当“已进入好友页”的守卫是错误的：
+
+- 在好友页只有 0.331~0.379；
+- 在主界面反而可能命中；
+- friend_love 的通过有偶然性；luck_msg 就因为等它而失败。
+
+后续必须重采真正的好友页 marker（例如“好友/最近”页标题或关闭 X），并替换所有 `I_CHECK_FRIENDS` 守卫。
+
 ## 结论
 
 旧仓 `tasks/GameUi/page/*.png` 的导航模板不能靠阈值/自动重采样修复，必须在**当前客户端**用 ROI 工具重新截图绑定：
