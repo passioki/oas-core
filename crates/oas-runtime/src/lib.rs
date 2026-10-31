@@ -1488,24 +1488,22 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 }
                 Ok(format!("loop {done}/{count}"))
             }
-            Step::While {
-                cond,
-                max_iters,
-                body,
-            } => {
-                // 0 = no user limit; the finite step budget still applies.
-                let cap = if *max_iters == 0 {
-                    self.budget.max_steps
-                } else {
-                    *max_iters
-                };
+            Step::While { cond, body } => {
                 let mut iters = 0u32;
                 loop {
                     self.check_budget()?;
-                    if iters >= cap {
-                        return Err(format!("{EXHAUSTED}.iteration limit reached"));
-                    }
-                    if !matches!(eval(cond, self)?, Value::Bool(true)) {
+                    let value = eval(cond, self)?;
+                    let truthy = match value {
+                        Value::Bool(b) => b,
+                        // Common-language truthiness: 0 is false, nonzero is true.
+                        Value::Num(n) => n != 0.0,
+                        other => {
+                            return Err(format!(
+                                "while condition must be bool or number, got {other:?}"
+                            ))
+                        }
+                    };
+                    if !truthy {
                         break;
                     }
                     iters += 1;
@@ -2929,15 +2927,51 @@ mod tests {
 
     #[test]
     fn while_exhaustion_is_exhausted_not_success() {
-        let mut interp = mk(FakeScreen::new(), Budget::default());
+        let mut interp = mk(
+            FakeScreen::new(),
+            Budget {
+                max_wall_s: 60.0,
+                max_steps: 5,
+            },
+        );
         let f = flow(
             r#"{"schema_version":1,"name":"t","steps":[
-                 {"op":"while","args":{"cond":"true","max_iters":3},
+                 {"op":"while","args":{"cond":"true"},
                   "body":[{"op":"log","args":{"text":"'spin'"}}]},
                  {"op":"finish","args":{"exit":"done"}}]}"#,
         );
         let r = interp.run(&f);
         assert_eq!(r.outcome(), Outcome::Exhausted);
+    }
+
+    #[test]
+    fn loop_zero_or_negative_runs_zero_iterations() {
+        for n in ["0", "-3"] {
+            let mut interp = mk(FakeScreen::new(), Budget::default());
+            let raw = r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"loop","args":{"n":"__N__"},
+                  "body":[{"op":"click","args":{"sel":"I_MISSING"}}]},
+                 {"op":"finish","args":{"exit":"done"}}]}"#
+                .replace("__N__", n);
+            let f = flow(&raw);
+            assert_eq!(
+                interp.run(&f).outcome(),
+                Outcome::Done,
+                "loop n={n} must not enter body"
+            );
+        }
+    }
+
+    #[test]
+    fn while_numeric_zero_does_not_enter_loop() {
+        let mut interp = mk(FakeScreen::new(), Budget::default());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"while","args":{"cond":"0"},
+                  "body":[{"op":"log","args":{"text":"'must not run'"}}]},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f).outcome(), Outcome::Done);
     }
 
     #[test]

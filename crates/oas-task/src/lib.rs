@@ -1633,9 +1633,9 @@ impl TaskBundle {
     /// * `T5`   — every declared asset is well-formed and its image exists.
     /// * `T6`   — the flow is DSL-only (no external-code keys).
     ///
-    /// T2 (bounded loops) is enforced earlier by the DSL parser (`while`
-    /// requires `max_iters > 0`) plus the runtime step budget. `flow.json` is
-    /// optional (old tasks may not have one yet).
+    /// T2 (bounded loops) is enforced by the runtime step budget; `while` has
+    /// only a condition (like a normal language), `loop` owns the numeric count.
+    /// `flow.json` is optional (old tasks may not have one yet).
     pub fn lint(&self) -> Result<(), Vec<LintIssue>> {
         let mut issues = Vec::new();
         self.lint_into(&mut issues);

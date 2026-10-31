@@ -37,8 +37,8 @@
     swipe: [{ key: 'from', label: '起点 [x,y]', type: 'json' }, { key: 'to', label: '终点 [x,y]', type: 'json' }, { key: 'ms', label: '时长 ms', type: 'number' }],
     finish: [{ key: 'exit', label: '出口', type: 'select', options: ['done', 'failed'] }],
     if: [],
-    loop: [{ key: 'n', label: '次数（表达式）', type: 'text' }],
-    while: [{ key: 'max_iters', label: '最大迭代（0=无限，受预算限制）', type: 'number' }],
+    loop: [{ key: 'n', label: '次数（<=0 不循环；>0 循环次数）', type: 'text' }],
+    while: [],
     click_target: [],
     drag: [],
     set_var: [{ key: 'name', label: '变量名', type: 'text' }, { key: 'value', label: '值（表达式）', type: 'text' }],
@@ -59,7 +59,7 @@
     finish: { exit: 'done' },
     if: { cond: 'true' },
     loop: { n: '3' },
-    while: { cond: 'true', max_iters: 0 },
+    while: { cond: 'true' },
     click_target: { find: [{ kind: 'template', sel: 'I_A' }] },
     drag: {
       from: { kind: 'region', roi: [100, 400, 300, 200] },
@@ -993,8 +993,8 @@
     } else if (step.op === 'while') {
       delete step.args.sel;
       delete step.args.n;
+      delete step.args.max_iters;
       if (step.args.cond == null || step.args.cond === '') step.args.cond = 'true';
-      if (step.args.max_iters == null) step.args.max_iters = 0;
     } else if (step.op === 'loop') {
       delete step.args.sel;
       delete step.args.cond;
@@ -1078,7 +1078,7 @@
     box.appendChild(textLabel);
 
     const customLabel = document.createElement('label');
-    customLabel.textContent = '自定义条件表达式';
+    customLabel.textContent = '自定义表达式（0=不循环，非 0=循环；也可写 appear(...)/ocr(...)）';
     const custom = document.createElement('input');
     custom.type = 'text';
     custom.value = step.args.cond || 'true';

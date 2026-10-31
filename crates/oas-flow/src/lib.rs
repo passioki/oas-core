@@ -792,9 +792,12 @@ pub enum Step {
         n: Expr,
         body: Vec<Step>,
     },
+    /// `while`: loop while `cond` is truthy. There is deliberately no numeric
+    /// iteration field here — that belongs to `loop`. `false`/`0` means zero
+    /// iterations; `true`/nonzero loops until `break`/budget, like a normal
+    /// programming language.
     While {
         cond: Expr,
-        max_iters: u32,
         body: Vec<Step>,
     },
     Break,
@@ -1435,24 +1438,14 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
                 &format!("{path}.body"),
             )?,
         }),
-        "while" => {
-            // 0 / omitted means "unbounded by this field"; the runtime still
-            // enforces its finite step budget, so a user cannot hang the app.
-            let max_iters = args
-                .get("max_iters")
-                .and_then(|x| x.as_u64())
-                .map(|n| n as u32)
-                .unwrap_or(0);
-            Ok(Step::While {
-                cond: parse_expr_field(&args, "cond", &a_path)?,
-                max_iters,
-                body: parse_steps(
-                    v.get("body")
-                        .ok_or_else(|| FlowError::new(path, "`while` needs `body`"))?,
-                    &format!("{path}.body"),
-                )?,
-            })
-        }
+        "while" => Ok(Step::While {
+            cond: parse_expr_field(&args, "cond", &a_path)?,
+            body: parse_steps(
+                v.get("body")
+                    .ok_or_else(|| FlowError::new(path, "`while` needs `body`"))?,
+                &format!("{path}.body"),
+            )?,
+        }),
         "break" => Ok(Step::Break),
         "continue" => Ok(Step::Continue),
         "wait" => Ok(Step::Wait {
@@ -2170,9 +2163,11 @@ mod tests {
     }
 
     #[test]
-    fn while_zero_max_iters_is_valid_and_budget_limited() {
+    fn while_has_no_iteration_limit_arg() {
+        // max_iters belongs to `loop`, not `while`; unknown args are ignored, and
+        // the condition alone controls entry/false/true (0 is falsy at runtime).
         let v = serde_json::json!({
-            "op":"while","args":{"cond":"false","max_iters":0},"body":[]
+            "op":"while","args":{"cond":"0","max_iters":3},"body":[]
         });
         assert!(parse_step(&v, "steps[0]").is_ok());
     }
@@ -2591,9 +2586,8 @@ mod tests {
     }
 
     #[test]
-    fn while_without_max_iters_uses_runtime_budget() {
-        // 0/omitted means "no user limit"; the interpreter still enforces its
-        // finite step budget. This is the "0 = 无限（受预算限制）" contract.
+    fn while_condition_only_is_valid() {
+        // `while` has only cond+body; no numeric iteration field.
         let v = serde_json::json!({
             "schema_version":1,"name":"t","steps":[
                 {"op":"while","args":{"cond":"true"},"body":[]}
