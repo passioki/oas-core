@@ -4,7 +4,7 @@
 >
 > 本文是旧 `backend/frontend`（旧仓，已冻结）的设计规格，来源为 10-06~10-12 会话。
 > OAS 当前主线已迁至 **`oas-core`（Rust workspace）**；现行设计与实现以
-> **`ENGINE-DESIGN.md §22` + `PENDING-LEDGER.md` + `RESUME.md`** 为准。
+> **`ENGINE-DESIGN.md §22` + `PENDING-LEDGER.md` + `RESUME.md` + `UI-MAP.md`（全局界面关系图设计稿）** 为准。
 > 阅读旧仓历史/资产设计时可参考本文；不要用本文覆盖 oas-core 的现行裁定。
 
 > ★★★ **文档定位** ★★★

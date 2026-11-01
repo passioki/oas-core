@@ -17,6 +17,14 @@
 | `DESIGN-SPEC-PROGRESS.md` | 设计规格覆盖台账 |
 | `SESSION-INDEX.md` | 会话分类索引 |
 | `DELIVERY-PLAN.md` | V1.0 交付路线/DoD |
+| `UI-MAP.md` | 全局界面关系图设计稿（待实现） |
+
+## 当前基线（2026-11-01）
+
+- 分支 `dev`；`main` = `385d611`（v1.2.3 恢复节点）。
+- 当前任务：`tasks/返回庭院`。
+- 测试：`--skip shipped_legacy_tasks_pass_lint_untouched` = 351 passed；完整测试有 1 条已知数据依赖失败，见 `PENDING-LEDGER §E-58`。
+- 待做：前端 `key`/`restart_app`、全局 `ui-map`、界面参考帧/素材归档、图校验/生成。
 
 ## 维护规则
 

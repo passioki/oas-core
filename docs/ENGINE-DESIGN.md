@@ -1995,3 +1995,40 @@ tasks/<任务名>/
 - **U-56（近一周审计 + ROI 迁移补强）**：`d360d05`：全量读 10-30~10-31 双向 transcript（35 段）；审计发现旧资产迁移 `roi:=source` 会覆盖用户已调大的 ROI ⇒ 改为 `union(roi, source)`，新增回归测试；修正 START-HERE/ENGINE R13/E-51/E-52 等过时“双 ROI/缺退出分支”口径。350 tests。
 - **U-02/U-03/U-04**：✅ `cbfbab4`：素材统一保存+全选、builder 可拖拽列宽+localStorage、子动作选择器。
 - **N48 签名/APK**：✅ 范围关闭（Windows 继续 unsigned + SHA256；APK/Android 不在 oas-core 仓库，需另立项）。
+
+### 22.40 ★★★ [11-01] **截图两阶段 / 恢复 DSL / 全局界面关系图（进行中）**
+
+#### 22.40.1 截图两阶段（已实现）
+
+- `POST /capture/preview`：抓取模拟器当前画面到内存，不写帧、不改当前帧；
+- `GET /capture/preview.png`：弹窗显示本次预览；
+- `POST /capture/commit`：带 name/category 保存帧，始终 `select:false`；
+- UI：点击「截取当前帧入库」立即抓图 → 弹窗预览 → 保存；保存后实时恢复；
+- Enter：搜索框内 = 确认输入并聚焦保存按钮；弹窗 = 保存截图；
+- OCR/region 缩略图只认 `positions[0]`；无位置帧不回退 `/frame.png`；
+- 首次保存素材无位置帧时自动使用当前帧。
+
+#### 22.40.2 恢复 DSL（已实现）
+
+- 新增步骤：
+  - `{"op":"key","args":{"keycode":4}}`（Android keyevent）；
+  - `{"op":"restart_app","args":{"package":"com.netease.onmyoji"}}`（force-stop + launcher）；
+- `InputSink` 增加默认不支持实现；ADB/Logged/Reconnecting sink 转发；
+- `tasks/返回庭院` 使用 OCR 判定（町中/召唤）、设置 X、式神录/通用左上返回、退出弹窗取消、重启兜底；
+- 前端 builder/flow_model 尚未补齐这两个步骤 → 待办。
+
+#### 22.40.3 全局界面关系图（设计已确认，未实现）
+
+- 现行设计：`docs/UI-MAP.md`；
+- 数据：`ui-map/ui-map.json`（全局唯一，不属于任务）；
+- 关系：`Asset.positions → Frame.interface_id → Interface`，不在 asset 重复存 interface；
+- 节点：界面/弹窗/加载/启动/未知；OCR 标记优先；
+- 边：动作（OCR/区域/key/restart/wait）→ 目标界面；
+- 阶段：先图生成 flow，不立即做 runtime 动态图执行器；
+- 前端先做只读图视图；Obsidian/Mermaid 只作视图。
+
+#### 22.40.4 已知测试/待办
+
+- `shipped_legacy_tasks_pass_lint_untouched` 依赖旧任务 `S1切预设`/`任务1`，当前 dev 数据只剩 `返回庭院` ⇒ 完整测试 1 failed；
+- 当前测试基线：`cargo test --workspace -- --skip shipped_legacy_tasks_pass_lint_untouched` = 351 passed；
+- 待办：前端 key/restart、ui-map、Frame.interface_id 迁移、参考帧/素材归档、校验/生成器、测试收尾。

@@ -6372,3 +6372,4 @@
 | 6335 | 10-31 18:00~24:00 | U/A | 前端/OCR/实时帧/流程图/文档 | 进文档 §E-45~§E-55 | 段覆盖：帧-素材联系、appear 覆盖素材、text_visible 全屏、逻辑符审计、OCR provider、自动开浏览器、选中帧隔离、识别 ROI、单 ROI 统一、日志、停止/嵌套/撤销/缓存帧/ScreenCache |
 | 6336 | 11-01 00:00~01:10 | U/A | 文档/审计/测试 | 进文档 §E-56 | 段覆盖：U-52~U-56；完整会话从 DSH session.v4 解压；代码审计 ROI union；文档口径修正 |
 | 6337 | 11-01 09:30 | U/A | 文档/环境 | 进文档 §E-57 | 文档从旧 backend 仓 2861d8ba 迁入 oas-core/docs；新增 session-memory.config/README/MIGRATION-NOTES；START-HERE 改为 oas-core 文档入口；只复制有效文档 |
+| 6338 | 11-01 14:30 | U/A | 前端/截图/OCR/文档/审计 | 进文档 §E-58 | 截图两阶段/Enter/缩略图验收；审计发现前端 key/restart 缺失、全局 ui-map 未实现、legacy 测试红灯；新增 UI-MAP 设计稿并更新入口/断点/台账 |

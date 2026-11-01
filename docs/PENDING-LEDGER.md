@@ -2332,3 +2332,59 @@ invalidate_frame() // 输入动作后丢弃
 - 文档提交在 oas-core `dev`；main 不动
 
 | 状态 | ✅ 文档迁移完成；旧 backend 文档仓不再作为 oas-core 文档入口 |
+
+---
+
+# ★ §E-58 ★★★ [11-01 14:30] **截图/Enter/缩略图验收 + 代码审计 + 全局界面关系图立项**
+
+> 触发：用户验收截图两阶段/Enter/缩略图后，要求加载 skill、读 START-HERE、审计代码并更新文档，再确认下一阶段。
+> 证据：`apps/oasd/src/serve.rs`（`/capture/preview`、`/capture/preview.png`、`/capture/commit`）；`apps/oasd/ui/app.js`、`asset_ui.js`；`tasks/返回庭院/flow.json`；`docs/UI-MAP.md`。
+
+## 已完成（已验收）
+
+- 两阶段截图：点击立即抓图到内存 → 弹窗预览 → 名称/分类 → 保存；保存前不写帧；
+- 保存后不切当前帧；实时暂停时自动恢复；实时开启时保持实时；
+- 名称/分类输入框 Enter = 确认输入并聚焦保存按钮；弹窗 Enter = 保存截图；
+- OCR/region 缩略图只认 `positions[0]`，删除当前帧回退；无位置显示占位；
+- 首次保存素材无位置帧时自动使用当前帧；
+- `返回庭院` flow + `key`/`restart_app` 后端能力；
+- 引擎测试 skip 数据依赖项 = 351 passed。
+
+## 审计发现
+
+1. **前端缺 key/restart**：
+   - `apps/oasd/ui/builder.js` 的 `OP_META/FIELDS/DEFAULTS/summary` 没有 `key`、`restart_app`；
+   - `apps/oasd/ui/flow_model.js` 的 `OPS/OP_LABELS/defaultArgs` 没有；
+   - 结果：后端支持，但任务构建器不可见、不可编辑；人类只能改 JSON。
+2. **全局界面关系图尚未实现**：
+   - `ui-map/`、`docs/UI-MAP.md` 之前不存在；现已新增设计稿，但 `ui-map/ui-map.json` 未创建；
+   - `frames/frames.json` 没有 `interface_id`；素材与界面关系仍只靠 `asset.positions` 间接推导。
+3. **测试红灯**：
+   - `cargo test --workspace` 当前 1 failed：`task::tests::shipped_legacy_tasks_pass_lint_untouched`；
+   - 原因：测试硬编码旧 shipped 任务 `S1切预设`/`任务1`，当前 dev `tasks/` 只有 `返回庭院`；
+   - 待裁定：恢复旧任务数据 vs 改成 fixture/data-independent。
+4. **参考帧/素材未系统归档**：
+   - 目前只有零散帧与 `预设` OCR 素材；庭院/设置/式神录/探索/退出弹窗/启动未逐界面归档。
+
+## 用户已确认的设计（必须遵守）
+
+- **全局界面关系图**，不归任务目录；数据 `ui-map/ui-map.json`，文档 `docs/UI-MAP.md`。
+- 节点 = 界面/弹窗/加载/未知；边 = 动作与目标；OCR 作为界面识别优先手段。
+- **一帧一界面**：`Frame.interface_id`；旧帧按 `category` 迁移，无法映射归 `unknown`。
+- **位置帧统一**：`Asset.positions → Frame → Interface`；不在 asset 重复存 `interface_id`。
+- 图是**有向标签图**，不是神经网络；Obsidian/Mermaid 只是可视化。
+- 第一阶段：图生成 recovery flow；runtime 暂不做动态图执行器。
+- 集合优先级/成员拖动排序：继续暂缓。
+
+## 下一步（优先级）
+
+1. `builder.js` / `flow_model.js` 补 `key`、`restart_app`；
+2. 建 `ui-map/ui-map.json`；`Frame.interface_id` + 迁移；
+3. 捕获并归档已知界面参考帧/素材；
+4. 图校验 + Mermaid 生成；
+5. `ui-map.json → 返回庭院 flow` 生成器；
+6. 前端只读界面关系图视图；
+7. 测试收尾（legacy 任务测试）。
+
+| 状态 | 🔄 截图/Enter/缩略图已完成；前端 key/restart、全局 ui-map、帧归档、测试收尾待做 |
+
