@@ -2642,6 +2642,50 @@ Asset.positions = [frame_id, ...]
 
 | 状态 | ✅ 位置帧继承完成；替换模式/跨任务继承未做 |
 
+---
+
+# ★ §E-66 ★★★ [11-01 18:45] **编辑器 UX / 选择模型 / 实时帧 / 区域有效性计划**
+
+> 触发：用户提出 7 项编辑器问题与功能要求；本轮只做理解、方案和文档，**未改代码**。
+> 完整计划：`docs/EDITOR-UX-PLAN.md`。
+
+## 现状审计
+
+- 画布：`#canvas-wrap` flex + `overflow:hidden`；`#screen` 仅 max-width/max-height，存在底部裁切风险；结果/日志/提示在画布附近。
+- 选择：`polygon` 只用于**识别掩膜**；操作区域仍只有 `action_roi` 矩形；无共享框选函数。
+- 测试帧：`testAssetClick` 使用 `boxCenter(action)`；OCR/template API 使用 `State.frame`，没有显式 live/position 来源。
+- 点测/拖测：dry-run 固定中心，不调用 runtime humanize；拖测 X 固定。
+- 区域有效性：无识别 bbox 与操作区域重叠校验。
+- 排序：素材列表无拖拽 reorder。
+- 分类：无分类重命名。
+
+## 用户要求
+
+1. 位置帧详情显示在侧栏，不覆盖画面；修正底部裁切/悬浮遮挡；
+2. 框选抽函数；支持反选；操作区域支持多边形；
+3. 实时开时全部测试用实时帧；实时关时用位置帧；
+4. 点测/拖测固定点 bug；
+5. 识别区域与操作区域重叠有效性；显式独立操作区域允许；
+6. 素材拖动排序；
+7. 帧分类重命名。
+
+## 计划顺序
+
+1. Phase A：画布 16:9 fit、信息移出画布、位置帧详情、humanize 采样修复；
+2. Phase B：实时帧/位置帧来源、区域重叠校验；
+3. Phase C：`SelectionTool`、操作区域多边形+反选；
+4. Phase D：素材排序、分类重命名。
+
+## 待用户确认
+
+- 多边形字段：`action_polygon`+`action_invert` vs `action_shape`；
+- 是否新增 `action_source`（recognition/fixed）；
+- 实时关闭时单素材多位置：全部测试 vs 只测第一帧；
+- 分类重命名为空时的处理。
+
+| 状态 | 📝 计划/文档完成；代码待实现 |
+
+
 
 
 

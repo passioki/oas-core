@@ -60,7 +60,7 @@
 | 新 DSL | `key`、`restart_app` 已实现，前端 builder/flow_model 已补齐 |
 | 帧归档 | 已补庭院/设置/式神录/探索/町中/御魂/斗技/结界突破/逢魔/悬赏/宠物小屋/退出弹窗/加载/启动参考帧 |
 | 帧安全 | 清空列表必须确认；清空前自动备份到 `frames/.backup/clear-<时间>/`（含 frames.json + PNG） |
-| 待办 | 活动页参考帧继续补；帧-素材关系继续扩展（替代/依赖/transition）；不引入 interface/ui-map |
+| 待办 | 活动页参考帧继续补；帧-素材关系继续扩展（替代/依赖/transition）；按 `docs/EDITOR-UX-PLAN.md` 做编辑器 UX/选择模型改版；不引入 interface/ui-map |
 | 关系证据 | `relations/observations.jsonl` append-only；`relations/annotations.json` 人工标注；图片页「录制关系」「标注关系」写入 |
 
 ---
@@ -84,8 +84,8 @@
 | ⓪ | `docs/RESUME.md` + `docs/RESUME-INDEX.md` | ★ **长任务/压缩后恢复的第一入口**（skill 强制 6）：当前断点、验收清单、下一步精确命令、证据索引 |
 | ① | `docs/SESSION-HANDOFF.md` | 当前在哪、下一步、最近提交、活跃坑 |
 | ② | `docs/ENGINE-DESIGN.md` **§22** | 引擎规格/进度/判据；**调度 v3 设计看 §22.34** |
-| ③ | `docs/PENDING-LEDGER.md` 的 §E-24/§E-25/§E-26 段 + 最新 §E-64 | 引擎/版本/用户裁定（R1~R21）台账 + 帧安全/清空恢复记录 |
-| ④ | 旧仓路径/流程（仅在碰旧仓时） | `D:\OAS-dev\backend\docs\LAYOUT.md` · `DEV-WORKFLOW.md`（冻结） |
+| ③ | `docs/PENDING-LEDGER.md` 的 §E-24/§E-25/§E-26 段 + 最新 §E-66 | 引擎/版本/用户裁定（R1~R21）台账 + 编辑器 UX 计划 |
+| ④ | `docs/EDITOR-UX-PLAN.md` + 旧仓路径/流程（仅在碰旧仓时） | 画布/选择/实时帧/区域有效性/排序/分类改版计划；旧仓 `D:\OAS-dev\backend\docs\LAYOUT.md` · `DEV-WORKFLOW.md`（冻结） |
 
 ## 1.3 用代码核实（不许信文档自述）
 
@@ -295,6 +295,7 @@ run-tests.bat …                                  REM 旧仓守卫基线 171 pa
 |---|---|
 | **长任务断点/续接（先读）** | `RESUME.md` · `RESUME-INDEX.md`（skill 强制 6） |
 | **帧-素材关系** | `../frames/frames.json` + 全局/任务 `assets.json` 的 `positions`；无 interface 文件 |
+| **编辑器 UX / 选择模型计划** | `EDITOR-UX-PLAN.md`（画布、位置详情、多边形/反选、实时帧、点测/拖测、区域有效性、素材排序、分类重命名） |
 | **当前任务（返回庭院）** | `../tasks/返回庭院/flow.json` · 全局素材 `../assets/` · 帧 `../frames/` |
 | 引擎规格/进度 | `ENGINE-DESIGN.md` §22 |
 | **调度 v3 + 统一任务模板设计定稿** | `ENGINE-DESIGN.md` **§22.34** |

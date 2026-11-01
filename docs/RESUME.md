@@ -5,10 +5,10 @@
 
 ```yaml
 task_id: oas-core-frame-asset-relation
-checkpoint_seq: 75
-updated_at: 2026-11-01T17:05:00+08:00
-trigger: 素材位置帧可从其他素材继承；清空恢复后继续
-status: in_progress
+checkpoint_seq: 76
+updated_at: 2026-11-01T18:45:00+08:00
+trigger: 编辑器 UX/选择模型/实时帧/区域有效性/排序/分类改版计划（未实现）
+status: planned
 ```
 
 ## 0. 当前状态（磁盘实测）
@@ -17,6 +17,7 @@ status: in_progress
 - 测试：`cargo test --workspace` = **356 passed / 0 failed**。
 - 任务：`tasks/返回庭院`；`task lint` = 1 task / 0 errors。
 - 帧：22 帧已恢复（git tracked）；`next_id=35`；31~34 是清空前新录制帧，PNG 不可恢复，observations 仍保留。
+- 编辑器 UX 计划：`docs/EDITOR-UX-PLAN.md`（本轮仅设计/文档，未改代码）。
 - 素材关系：唯一关系 = `Asset.positions`；帧行显示关联素材数量；只读关系浏览器显示帧→素材、素材→帧、素材共现、帧共享素材、录制 transition、人工标注与覆盖概览。
 - 位置帧继承：新素材保存区/已有素材位置编辑弹窗都能从其他任务素材追加 `positions`，不新增持久化引用。
 - 帧安全：清空列表必须 `confirm:true`；清空前自动备份到 `frames/.backup/clear-<时间>/`。
@@ -46,10 +47,11 @@ status: in_progress
 
 ## 3. 下一步
 
-1. 真实动作录制回归（需停在正确画面）；
-2. 任务构建进一步关系感知（按当前帧过滤素材/推荐 transition）；
-3. 继续补活动页参考帧/标注；
-4. 发布前跑完整测试 + `task lint`。
+1. Phase A（可见问题）：画布 16:9 fit、结果/日志/提示移出画布、位置帧详情侧栏、点测/拖测 humanize 采样；
+2. Phase B：实时帧/位置帧测试来源、识别/操作区域重叠校验；
+3. Phase C：抽 `SelectionTool`、操作区域多边形 + 反选；
+4. Phase D：素材拖动排序、帧分类重命名；
+5. 真实动作录制回归 + 活动页参考帧。
 
 ## 4. 约束
 
@@ -66,5 +68,6 @@ status: in_progress
 - `apps/oasd/ui/app.js`（关系浏览器、录制/标注弹窗、覆盖概览）；
 - `apps/oasd/ui/builder.js`（任务构建关系提示）；
 - `relations/README.md`（observations/annotations schema）；
+- `docs/EDITOR-UX-PLAN.md`（本轮待实现设计）；
 - `frames/frames.json`（22 帧，无 interface_id）；
-- 测试：`cargo test --workspace` = 356 passed；提交 `951253b`。
+- 测试：`cargo test --workspace` = 356 passed；清空安全提交 `951253b`。
