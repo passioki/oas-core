@@ -194,17 +194,66 @@ pre {
   min-height: 0;
   overflow: hidden;
 }
+/* v0.1 editor layout: the canvas gets its own fitted 16:9 stage; result/log
+   live below it and are collapsed by default so they never cover the picture. */
 #canvas-wrap {
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+#canvas-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #05070a;
+  border-radius: 6px;
 }
 #screen {
+  display: block;
   width: auto;
   height: auto;
   max-width: 100%;
   max-height: 100%;
   margin: 0 auto;
+  cursor: crosshair;
+}
+#canvas-footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 4px;
+}
+#hint {
+  flex: 1 1 auto;
+  position: static;
+  right: auto;
+  bottom: auto;
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  pointer-events: none;
+  user-select: none;
+}
+#canvas-windows.collapsed { display: none; }
+#canvas-windows {
+  flex: 0 1 auto;
+  max-height: 170px;
+  overflow: hidden;
+}
+.frame-detail {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border: 1px solid #243244;
+  border-radius: 6px;
+  background: #0d1117;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
 aside.side { height: 100%; }
 .canvas-windows { flex: 0 0 auto; }
@@ -365,6 +414,9 @@ aside.side {
   gap: 4px;
   align-items: stretch;
 }
+.asset-row[draggable="true"] { cursor: grab; }
+.asset-row-dragging { opacity: .45; }
+.asset-drag-over { outline: 2px solid #31d0aa; outline-offset: -1px; }
 .asset-row .asset-main {
   flex: 1;
   margin: 0;

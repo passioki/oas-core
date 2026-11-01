@@ -2690,7 +2690,22 @@ Asset.positions = [frame_id, ...]
 
 - 版本号是否从 `1.2.3` 重置到 `0.1.0`（旧 v1.x tag 保留为历史，见 `EDITOR-UX-PLAN.md §14`）。
 
-| 状态 | 📝 计划/文档完成；代码待实现 |
+## 已实现（首轮）
+
+- 画布 16:9 stage；结果/日志默认收起；帧详情侧栏；
+- 点测/拖测随机采样（action shape 内/反选外）；
+- `ActionShape` + `action_source` schema；`action_roi`/`roi_back` 删除；当前 assets 迁移；
+- 操作区域矩形/多边形/全屏反选 UI；
+- 帧分类重命名、素材拖动排序；
+- 单素材测试 `live`/`frame_id` 来源 + 真实识别 bbox 有效性提示。
+
+## 待补
+
+- runtime 对 polygon/invert 的精确采样（当前 bbox fallback）；
+- live 批量测试；
+- 完整真实动作回归。
+
+| 状态 | 🟡 Phase A/C/D 首轮完成；runtime polygon/live 批量待补 |
 
 ---
 
@@ -2723,7 +2738,7 @@ Asset.positions = [frame_id, ...]
 - 0.3.0：没有 0.x 历史，语义不如 0.1.0 清晰；
 - 删除旧 tag/Release：需要用户明确授权，不建议默认做。
 
-| 状态 | ⏳ 待用户确认是否重置 0.1.0 |
+| 状态 | ✅ 已执行：dev `workspace.package.version = 0.1.0`；`oasd --version` = 0.1.0；旧 v1.x tag 保留 |
 
 
 

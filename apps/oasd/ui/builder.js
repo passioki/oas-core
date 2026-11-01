@@ -1749,7 +1749,7 @@
       normalizeFlow(B.flow);
       B.assets = as.items || [];
       for (const c of as.collections || []) {
-        B.assets.push({ id: c.id, kind: 'template_set', members: c.members || [], action_roi: c.action_roi });
+        B.assets.push({ id: c.id, kind: 'template_set', members: c.members || [], action_shape: c.action_shape, action_source: c.action_source });
       }
       B.selected = null;
       B.lastSavedFlow = JSON.stringify(B.flow);

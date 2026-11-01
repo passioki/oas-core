@@ -223,7 +223,19 @@
 
   function assetText(it) {
     const roi = it.roi ? `[${it.roi.join(',')}]` : '—';
-    const action = it.action_roi ? ` · 操作区域[${it.action_roi.join(',')}]` : '';
+    const actionBox = it.action_shape
+      ? (it.action_shape.roi || (() => {
+          const pts = it.action_shape.points || [];
+          if (!pts.length) return null;
+          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+          for (const p of pts) {
+            x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]);
+            x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]);
+          }
+          return [x0, y0, x1 - x0 + 1, y1 - y0 + 1];
+        })())
+      : null;
+    const action = actionBox ? ` · 操作区域[${actionBox.join(',')}]${it.action_shape.invert ? '(反选)' : ''}` : '';
     const pos = (it.positions && it.positions.length)
       ? ` · 位置帧[${it.positions.join(',')}]`
       : ' · 位置帧未设置';
@@ -243,6 +255,8 @@
     const task = o.task || '';
     const row = document.createElement('div');
     row.className = 'asset-row' + (o.compact ? ' asset-row-compact' : '');
+    row.dataset.assetId = it.id;
+    row.draggable = it.kind !== 'template_set';
 
     if (it.kind === 'template_set') {
       const main = makeButton('', `${it.id}：flow 引用该集合；运行时按成员顺序尝试匹配`, 'asset-main');

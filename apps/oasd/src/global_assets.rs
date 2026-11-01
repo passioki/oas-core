@@ -185,7 +185,8 @@ pub fn migrate(
             file: Some(new_file),
             // Old library templates had no authored ROI; full-frame search.
             roi: None,
-            action_roi: None,
+            action_shape: None,
+            action_source: "recognition".to_string(),
             ocr_mode: None,
             ocr_source_roi: None,
             ocr_text: None,

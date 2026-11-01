@@ -1134,6 +1134,9 @@ impl Server {
             ("POST", "/frames/delete") => self.handle_frame_delete(&mut out, &body),
             ("POST", "/frames/rename") => self.handle_frame_rename(&mut out, &body),
             ("POST", "/frames/category") => self.handle_frame_category(&mut out, &body),
+            ("POST", "/frames/category/rename") => {
+                self.handle_frame_category_rename(&mut out, &body)
+            }
             ("POST", "/frames/reorder") => self.handle_frames_reorder(&mut out, &body),
             ("POST", "/frames/clear") => self.handle_frames_clear(&mut out, &body),
             ("GET", "/ocr") => self.handle_ocr(&mut out, &path),
@@ -1149,6 +1152,7 @@ impl Server {
             ("POST", "/task/asset/rename") => self.handle_asset_rename(&mut out, &body),
             ("POST", "/task/asset/update") => self.handle_asset_update(&mut out, &body),
             ("POST", "/task/asset/positions") => self.handle_asset_positions(&mut out, &body),
+            ("POST", "/task/assets/reorder") => self.handle_assets_reorder(&mut out, &body),
             ("POST", "/task/goal") => self.handle_task_goal(&mut out, &body),
             ("GET", "/task/assets") => self.handle_task_assets(&mut out, &path),
             ("GET", "/relations/frame-assets") => self.handle_frame_asset_relations(&mut out, &path),
@@ -1499,6 +1503,50 @@ impl Server {
         )
     }
 
+    /// `POST /frames/category/rename` body `{from,to}` — rename/merge a whole
+    /// frame category. Empty `to` is rejected (no implicit “未分类” move).
+    fn handle_frame_category_rename(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let from = v.get("from").and_then(|x| x.as_str()).unwrap_or("").trim();
+        let to = v.get("to").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if from.is_empty() {
+            return self.send_errors(out, 400, vec!["`from` category is required".into()]);
+        }
+        if to.is_empty() {
+            return self.send_errors(out, 400, vec!["`to` category must not be empty".into()]);
+        }
+        if to.chars().count() > 80 {
+            return self.send_errors(out, 400, vec!["`to` category is longer than 80".into()]);
+        }
+        let mut st = self.state.lock().unwrap();
+        let mut changed = 0usize;
+        for f in &mut st.frames {
+            if f.category.trim() == from {
+                f.category = to.to_string();
+                f.seen = true;
+                changed += 1;
+            }
+        }
+        if changed == 0 {
+            drop(st);
+            return self.send_errors(out, 404, vec![format!("category `{from}` not found")]);
+        }
+        let _ = self.persist_frames(&st);
+        drop(st);
+        self.editor_log(&format!(
+            "frames category rename from={from} to={to} changed={changed}"
+        ));
+        self.send_json(
+            out,
+            200,
+            &serde_json::json!({"ok": true, "from": from, "to": to, "changed": changed})
+                .to_string(),
+        )
+    }
+
     /// v1.2.1: reorder frames. `ids` may be a partial permutation; listed ids
     /// come first in the given order, remaining frames keep their relative order.
     fn handle_frames_reorder(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
@@ -1616,6 +1664,51 @@ impl Server {
         self.send_json(out, 200, &body.to_string())
     }
 
+    /// Resolve the frame used by an editor test.
+    ///
+    /// - `live=1` → the latest live-preview frame;
+    /// - `frame_id=<id>` → that persisted position frame;
+    /// - otherwise → the current analysis frame.
+    fn frame_for_test(&self, q: &[(String, String)]) -> Result<(Frame, String), String> {
+        let mut live = false;
+        let mut frame_id: Option<u64> = None;
+        for (k, v) in q {
+            match k.as_str() {
+                "live" => live = v == "1" || v == "true",
+                "frame_id" => frame_id = v.parse::<u64>().ok(),
+                _ => {}
+            }
+        }
+        if live {
+            let st = self.state.lock().unwrap();
+            return st
+                .live_frame
+                .as_ref()
+                .map(|f| (Frame::new(f.width, f.height, f.rgba.clone()), "live".to_string()))
+                .ok_or_else(|| "no live frame yet".to_string());
+        }
+        if let Some(id) = frame_id {
+            let path = {
+                let st = self.state.lock().unwrap();
+                st.frames
+                    .iter()
+                    .find(|f| f.id == id)
+                    .map(|f| f.file.clone())
+                    .ok_or_else(|| format!("frame #{id} not found"))?
+            };
+            let bytes = std::fs::read(&path)
+                .map_err(|e| format!("read frame #{}: {e}", id))?;
+            let frame = oas_codec::decode_png(&bytes)
+                .map_err(|e| format!("decode frame #{}: {e}", id))?;
+            return Ok((frame, format!("position:#{id}")));
+        }
+        let st = self.state.lock().unwrap();
+        st.frame
+            .as_ref()
+            .map(|f| (Frame::new(f.width, f.height, f.rgba.clone()), "current".to_string()))
+            .ok_or_else(|| "no frame yet".to_string())
+    }
+
     #[allow(unused_variables)]
     fn handle_ocr(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
         let q = parse_query(raw_path);
@@ -1665,12 +1758,9 @@ impl Server {
                     )
                 }
             };
-            let frame = {
-                let st = self.state.lock().unwrap();
-                match st.frame.as_ref() {
-                    Some(f) => oas_types::Frame::new(f.width, f.height, f.rgba.clone()),
-                    None => return self.send_json(out, 400, r#"{"error":"no frame yet"}"#),
-                }
+            let (frame, frame_source) = match self.frame_for_test(&q) {
+                Ok(v) => v,
+                Err(e) => return self.send_json(out, 400, &format!(r#"{{"error":{:?}}}"#, e)),
             };
             let roi = oas_types::Rect { x, y, w, h };
             let poly = self.asset_ocr_polygon(&task, &id);
@@ -1694,15 +1784,16 @@ impl Server {
                 Ok((text, score)) => {
                     let ms = t0.elapsed().as_secs_f64() * 1000.0;
                     self.editor_log(&format!(
-                        "ocr OK roi={roi:?} task={task} id={id} text={text:?} score={score:.4} elapsed_ms={ms:.1} polygon={}",
+                        "ocr OK roi={roi:?} task={task} id={id} text={text:?} score={score:.4} elapsed_ms={ms:.1} polygon={} source={frame_source}",
                         poly.is_some()
                     ));
                     let body = format!(
-                        r#"{{"text":{},"score":{},"elapsed_ms":{},"charset":{}}}"#,
+                        r#"{{"text":{},"score":{},"elapsed_ms":{},"charset":{},"frame_source":{}}}"#,
                         json_escape(&text),
                         score,
                         ms,
-                        eng.charset().len()
+                        eng.charset().len(),
+                        json_escape(&frame_source)
                     );
                     drop(eng);
                     self.send_json(out, 200, &body)
@@ -2263,12 +2354,9 @@ impl Server {
                     )
                 }
             };
-            let frame = {
-                let st = self.state.lock().unwrap();
-                match st.frame.as_ref() {
-                    Some(f) => oas_types::Frame::new(f.width, f.height, f.rgba.clone()),
-                    None => return self.send_json(out, 400, r#"{"error":"no frame yet"}"#),
-                }
+            let (frame, frame_source) = match self.frame_for_test(&q) {
+                Ok(v) => v,
+                Err(e) => return self.send_json(out, 400, &format!(r#"{{"error":{:?}}}"#, e)),
             };
             let roi = oas_types::Rect { x, y, w, h };
             let masked;
@@ -2298,7 +2386,7 @@ impl Server {
                 .collect::<Vec<_>>()
                 .join(", ");
             self.editor_log(&format!(
-                "lines OK roi={roi:?} task={task} id={id} vertical={vertical_only} count={} elapsed_ms={:.1} lines=[{text_summary}]",
+                "lines OK roi={roi:?} task={task} id={id} vertical={vertical_only} count={} elapsed_ms={:.1} source={frame_source} lines=[{text_summary}]",
                 lines.len(),
                 t0.elapsed().as_secs_f64() * 1000.0
             ));
@@ -2318,10 +2406,11 @@ impl Server {
                 .collect();
             let ms = t0.elapsed().as_secs_f64() * 1000.0;
             let body = format!(
-                r#"{{"lines":[{}],"count":{},"elapsed_ms":{:.1}}}"#,
+                r#"{{"lines":[{}],"count":{},"elapsed_ms":{:.1},"frame_source":{}}}"#,
                 items.join(","),
                 items.len(),
-                ms
+                ms,
+                json_escape(&frame_source)
             );
             self.send_json(out, 200, &body)
         }
@@ -2372,11 +2461,17 @@ impl Server {
             Ok(r) => r,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
-        // §22.25: optional explicit operation region (`action_roi`, legacy `roi_back`).
-        let roi_back = match json_opt_action_roi(&v) {
+        // Operation region: one canonical `action_shape` + explicit source.
+        let action_shape = match json_opt_action_shape(&v) {
             Ok(r) => r,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
+        let action_source = v
+            .get("action_source")
+            .and_then(|x| x.as_str())
+            .unwrap_or("recognition")
+            .trim()
+            .to_string();
         let threshold = match v.get("threshold") {
             None => None,
             Some(x) => match x.as_f64() {
@@ -2522,7 +2617,8 @@ impl Server {
             kind,
             file: None,
             roi: Some(roi),
-            action_roi: roi_back,
+            action_shape,
+            action_source,
             ocr_mode: None,
             ocr_source_roi: None,
             ocr_text: None,
@@ -3127,7 +3223,7 @@ impl Server {
                     "y": point.map(|p| p.y).unwrap_or(-1),
                     "threshold": threshold,
                     "pass": score >= threshold,
-                    "action_roi": action.map(|r| [r.x, r.y, r.w, r.h]),
+                    "action_box": action.map(|r| [r.x, r.y, r.w, r.h]),
                     "elapsed_ms": t0.elapsed().as_secs_f64() * 1000.0,
                 })
             }
@@ -3194,12 +3290,9 @@ impl Server {
                 )],
             );
         };
-        let frame = {
-            let st = self.state.lock().unwrap();
-            match st.frame.as_ref() {
-                Some(f) => oas_types::Frame::new(f.width, f.height, f.rgba.clone()),
-                None => return self.send_json(out, 400, r#"{"error":"no frame yet"}"#),
-            }
+        let (frame, frame_source) = match self.frame_for_test(&q) {
+            Ok(v) => v,
+            Err(e) => return self.send_json(out, 400, &format!(r#"{{"error":{:?}}}"#, e)),
         };
         let matcher = oas_perceive::Matcher::new(oas_perceive::GrayImage::from_frame(&frame));
         let t0 = std::time::Instant::now();
@@ -3208,7 +3301,7 @@ impl Server {
         let (x, y) = point.map(|p| (p.x, p.y)).unwrap_or((-1, -1));
         let pass = score >= tpl.threshold;
         self.editor_log(&format!(
-            "asset_match {} task={task} id={id} score={score:.4} threshold={:.4} point=({x},{y}) elapsed_ms={ms:.1}",
+            "asset_match {} task={task} id={id} score={score:.4} threshold={:.4} point=({x},{y}) elapsed_ms={ms:.1} source={frame_source}",
             if pass { "OK" } else { "MISS" },
             tpl.threshold
         ));
@@ -3224,12 +3317,13 @@ impl Server {
             "threshold": tpl.threshold,
             "pass": pass,
             "elapsed_ms": ms,
+            "frame_source": frame_source,
         });
         self.send_json(out, 200, &body.to_string())
     }
 
     /// POST /task/asset/collection body:
-    /// `{task?, id, members:[template ids], threshold?, action_roi?}`
+    /// `{task?, id, members:[template ids], threshold?, action_shape?, action_source?}`
     fn handle_collection_save(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
         let v: serde_json::Value = match serde_json::from_slice(body) {
             Ok(v) => v,
@@ -3249,10 +3343,16 @@ impl Server {
             None => return self.send_errors(out, 400, vec!["`members` array is required".into()]),
         };
         let threshold = v.get("threshold").and_then(|x| x.as_f64()).map(|x| x as f32);
-        let action_roi = match json_opt_action_roi(&v) {
+        let action_shape = match json_opt_action_shape(&v) {
             Ok(x) => x,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
+        let action_source = v
+            .get("action_source")
+            .and_then(|x| x.as_str())
+            .unwrap_or("recognition")
+            .trim()
+            .to_string();
         let bundle = if global_mode {
             match self.asset_store("") {
                 Ok(b) => b,
@@ -3268,7 +3368,8 @@ impl Server {
             id: id.to_string(),
             members,
             threshold,
-            action_roi,
+            action_shape,
+            action_source,
         };
         match bundle.save_collection(coll) {
             Ok(saved) => {
@@ -3415,7 +3516,7 @@ impl Server {
     }
 
     /// v1.2: batch save recognized candidates. Body:
-    /// `{task, assets:[{id,kind,roi,action_roi?,threshold?}]}`
+    /// `{task, assets:[{id,kind,roi,action_shape?,action_source?,threshold?}]}`
     ///
     /// All ids are checked against the **global** namespace (all tasks + library)
     /// before anything is written; the batch is all-or-nothing.
@@ -3492,13 +3593,19 @@ impl Server {
             } else {
                 None
             };
-            let action_roi = match json_opt_action_roi(item) {
+            let action_shape = match json_opt_action_shape(item) {
                 Ok(r) => r,
                 Err(e) => {
-                    errors.push(format!("{p}.action_roi: {e}"));
+                    errors.push(format!("{p}.action_shape: {e}"));
                     continue;
                 }
             };
+            let action_source = item
+                .get("action_source")
+                .and_then(|x| x.as_str())
+                .unwrap_or("recognition")
+                .trim()
+                .to_string();
             let threshold = item.get("threshold").and_then(|x| x.as_f64()).map(|t| t as f32);
             let ocr_mode = item.get("ocr_mode").and_then(|x| x.as_str()).map(|s| s.to_string());
             let ocr_source_roi = match item.get("ocr_source_roi") {
@@ -3558,7 +3665,8 @@ impl Server {
                 kind: kind.to_string(),
                 file: None,
                 roi,
-                action_roi,
+                action_shape,
+                action_source,
                 ocr_mode,
                 ocr_source_roi,
                 ocr_text,
@@ -3735,11 +3843,15 @@ impl Server {
                 Err(e) => return self.send_errors(out, 400, vec![e]),
             }
         };
-        let action_roi = match json_opt_action_roi(&v) {
+        let action_shape = match json_opt_action_shape(&v) {
             Ok(r) => r,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
-        match b.update_asset_meta(id, roi, action_roi, threshold) {
+        let action_source = v
+            .get("action_source")
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim().to_string());
+        match b.update_asset_meta(id, roi, action_shape, action_source, threshold) {
             Ok(item) => {
                 self.editor_log(&format!("asset_update task={task} id={id}"));
                 self.send_json(out, 200, &serde_json::json!({"ok": true, "item": item}).to_string())
@@ -3804,6 +3916,46 @@ impl Server {
                 out,
                 200,
                 &serde_json::json!({"ok": true, "item": item}).to_string(),
+            ),
+            Err(e) => self.send_errors(out, 400, vec![e]),
+        }
+    }
+
+    /// `POST /task/assets/reorder` body `{task?, ids:[...]}` — persist asset
+    /// display order as the `items` array order.
+    fn handle_assets_reorder(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let global_mode = self.using_global_assets();
+        let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if !global_mode && task.is_empty() {
+            return self.send_errors(out, 400, vec!["`task` is required".into()]);
+        }
+        let ids: Vec<String> = match v.get("ids").and_then(|x| x.as_array()) {
+            Some(arr) => arr
+                .iter()
+                .map(|x| x.as_str().unwrap_or("").trim().to_string())
+                .collect(),
+            None => return self.send_errors(out, 400, vec!["`ids` array is required".into()]),
+        };
+        let bundle = if global_mode {
+            match self.asset_store("") {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        } else {
+            match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        };
+        match bundle.reorder_assets(&ids) {
+            Ok(ids) => self.send_json(
+                out,
+                200,
+                &serde_json::json!({"ok": true, "ids": ids}).to_string(),
             ),
             Err(e) => self.send_errors(out, 400, vec![e]),
         }
@@ -4344,12 +4496,16 @@ impl Server {
         let Some(asset) = af.items.into_iter().find(|a| a.id == asset_id) else {
             return self.send_errors(out, 404, vec![format!("asset `{asset_id}` not found")]);
         };
-        let roi = asset.action_roi.or(asset.roi);
+        let roi = asset
+            .action_shape
+            .as_ref()
+            .and_then(|s| s.bbox())
+            .or(asset.roi);
         let Some(roi) = roi else {
             return self.send_errors(
                 out,
                 400,
-                vec![format!("asset `{asset_id}` has no action_roi/roi")],
+                vec![format!("asset `{asset_id}` has no action_shape/roi")],
             );
         };
         let x = roi[0] + roi[2] / 2;
@@ -5231,29 +5387,20 @@ fn json_roi_field(v: &serde_json::Value) -> Result<[i32; 4], String> {
     Ok(out)
 }
 
-/// §22.25: optional `action_roi` (operation region; legacy `roi_back`).
-fn json_opt_action_roi(v: &serde_json::Value) -> Result<Option<[i32; 4]>, String> {
-    let Some(x) = v.get("action_roi").or_else(|| v.get("roi_back")) else {
+/// Optional operation geometry. `action_shape` is the only accepted field;
+/// `action_roi`/`roi_back` are deliberately gone (no legacy compatibility).
+fn json_opt_action_shape(
+    v: &serde_json::Value,
+) -> Result<Option<oas_task::ActionShape>, String> {
+    let Some(x) = v.get("action_shape") else {
         return Ok(None);
     };
-    let arr = x
-        .as_array()
-        .ok_or_else(|| "`action_roi` must be an array of 4 integers [x,y,w,h]".to_string())?;
-    if arr.len() != 4 {
-        return Err(format!(
-            "`action_roi` must have exactly 4 integers [x,y,w,h], got {}",
-            arr.len()
-        ));
+    if x.is_null() {
+        return Ok(None);
     }
-    let mut out = [0i32; 4];
-    for (i, item) in arr.iter().enumerate() {
-        let n = item
-            .as_i64()
-            .ok_or_else(|| format!("`action_roi[{i}]` must be an integer"))?;
-        out[i] = i32::try_from(n)
-            .map_err(|_| format!("`action_roi[{i}]` = {n} does not fit in i32"))?;
-    }
-    Ok(Some(out))
+    serde_json::from_value::<oas_task::ActionShape>(x.clone())
+        .map(Some)
+        .map_err(|e| format!("`action_shape` is invalid: {e}"))
 }
 
 // ---------------------------------------------------------------------------

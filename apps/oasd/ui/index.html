@@ -29,7 +29,14 @@
   <div id="page-workbench" class="app-page active">
   <main>
     <section id="canvas-wrap">
-      <div class="canvas-windows">
+      <div id="canvas-stage">
+        <canvas id="screen" width="1280" height="720"></canvas>
+      </div>
+      <div id="canvas-footer">
+        <div id="hint" class="muted small">在画面上拖拽选择识别 ROI；可再画一个「点击框」</div>
+        <button id="btn-canvas-panels" type="button">显示结果/日志</button>
+      </div>
+      <div id="canvas-windows" class="canvas-windows collapsed">
         <section class="hdr-window">
           <h4>结果窗口</h4>
           <pre id="result" class="muted">—</pre>
@@ -39,8 +46,6 @@
           <pre id="log"></pre>
         </section>
       </div>
-      <canvas id="screen" width="1280" height="720"></canvas>
-      <div id="hint" class="muted">在画面上拖拽选择识别 ROI；可再画一个「点击框」</div>
     </section>
 
     <aside class="side">
@@ -63,6 +68,8 @@
           <button id="btn-match" disabled>试匹配（图片识别，全屏搜索）</button>
           <button id="btn-poly">多边形框选（点顶点，双击闭合）</button>
           <button id="btn-back-mode">绘制操作区域（默认=识别区域）</button>
+          <button id="btn-action-poly">操作区域多边形（点顶点，双击闭合）</button>
+          <button id="btn-action-invert">操作区域反选：关</button>
 
           <button id="btn-click-step" disabled>生成点击指令（选中识别区块）</button>
           <button id="btn-append-step" disabled>复制步骤到剪贴板</button>
@@ -127,7 +134,9 @@
             </select>
           </label>
           <button id="btn-frame-category-apply" type="button">应用到当前帧</button>
+          <button id="btn-frame-category-rename" type="button">重命名分类</button>
           <div id="frames-list" class="frames-list muted">（暂无图片，点「截图」或上传）</div>
+          <div id="frame-detail" class="frame-detail muted small">（选择一帧查看详情）</div>
           <div id="frames-status" class="muted small">—</div>
           <p class="muted small">
             点图片即切换「当前帧」：识别/匹配/裁剪都以当前帧为准（多帧可测试素材稳定性）。

@@ -31,6 +31,8 @@ const btnRegionDrag = document.getElementById('btn-region-drag');
 const btnRegionSave = document.getElementById('btn-region-save');
 const btnPoly = document.getElementById('btn-poly');
 const btnBackMode = document.getElementById('btn-back-mode');
+const btnActionPoly = document.getElementById('btn-action-poly');
+const btnActionInvert = document.getElementById('btn-action-invert');
 // §22.27 会话图片列表（多帧）
 const frameFile = document.getElementById('frame-file');
 const btnFrameUpload = document.getElementById('btn-frame-upload');
@@ -39,6 +41,10 @@ const btnFrameRelations = document.getElementById('btn-frame-relations');
 const btnFramesRefresh = document.getElementById('btn-frames-refresh');
 const btnFramesClear = document.getElementById('btn-frames-clear');
 const framesList = document.getElementById('frames-list');
+const frameDetail = document.getElementById('frame-detail');
+const canvasStage = document.getElementById('canvas-stage');
+const canvasWindows = document.getElementById('canvas-windows');
+const btnCanvasPanels = document.getElementById('btn-canvas-panels');
 const frameCategoryFilter = document.getElementById('frame-category-filter');
 const frameCategorySet = document.getElementById('frame-category-set');
 let currentFrameId = null;
@@ -201,6 +207,10 @@ let roi = null; // {x,y,w,h} 识别框（前端识别/裁剪区域）
 let roiBack = null; // v1.2 操作区域（action_roi）；null = 默认识别区域
 let lastMatch = null; // v1.2.2: last image-match result; save-with-action-region source
 let backMode = false; // 正在绘制操作区域
+let actionPoly = null; // 操作区域多边形顶点
+let actionPolyClosed = false;
+let actionPolyMode = false;
+let actionInvert = false;
 let dragTarget = 'roi'; // 'roi' | 'back'
 let dragStart = null;
 let boxes = []; // detection boxes from the multi-line route
@@ -398,8 +408,27 @@ function draw() {
     );
     ctx.restore();
   }
-  // v1.2 multi-select candidates: show their operation regions (active one is
-  // brighter) so the user can compare "识别区域 vs 操作区域" before saving.
+  // Operation polygon (action_shape): orange solid; invert means screen minus shape.
+  if (actionPoly && actionPoly.length) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(actionPoly[0].x, actionPoly[0].y);
+    for (let i = 1; i < actionPoly.length; i++) ctx.lineTo(actionPoly[i].x, actionPoly[i].y);
+    if (actionPolyClosed) ctx.closePath();
+    ctx.strokeStyle = '#ffb020';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    if (actionPolyClosed) {
+      ctx.fillStyle = 'rgba(255,176,32,0.12)';
+      ctx.fill();
+    }
+    if (actionInvert) {
+      ctx.setLineDash([10, 6]);
+      ctx.strokeStyle = '#ffb020';
+      ctx.strokeRect(0.5, 0.5, canvas.width - 1, canvas.height - 1);
+    }
+    ctx.restore();
+  }
   saveCandidates.forEach((c, idx) => {
     if (!c.action || c.action.w <= 0 || c.action.h <= 0) return;
     const active = idx === activeCandidate;
@@ -490,9 +519,13 @@ function polygonBBox(poly) {
 }
 
 function updateRoiLabel() {
-  const backInfo = roiBack
-    ? ` · 操作区域 ${roiBack.w}x${roiBack.h} @ ${roiBack.x},${roiBack.y}`
-    : ' · 操作区域未设置（=识别区域）';
+  const aShape = currentActionShape();
+  let backInfo = ' · 操作区域未设置（=真实识别结果）';
+  if (aShape) {
+    const b = actionShapeBBox(aShape);
+    const geom = aShape.kind === 'polygon' ? `多边形 ${aShape.points.length} 顶点` : `矩形 ${b ? `${b[2]}x${b[3]} @ ${b[0]},${b[1]}` : ''}`;
+    backInfo = ` · 操作区域 ${geom}${aShape.invert ? '（反选：屏幕−区域）' : ''}`;
+  }
   if (!roi) {
     roiEl.textContent = polygon
       ? `多边形：${polygon.length} 个顶点（未闭合）`
@@ -1237,7 +1270,8 @@ async function saveSelectedCandidates() {
     kind: 'ocr_line',
     // v1.2.3: single recognition ROI = the multi-line region the user tested.
     roi: [c.sourceRoi.x, c.sourceRoi.y, c.sourceRoi.w, c.sourceRoi.h],
-    action_roi: [c.action.x, c.action.y, c.action.w, c.action.h],
+    action_shape: { kind: 'rect', roi: [c.action.x, c.action.y, c.action.w, c.action.h] },
+    action_source: 'fixed',
     ocr_mode: 'lines',
     ocr_text: c.text,
   }));
@@ -1264,12 +1298,171 @@ async function saveSelectedCandidates() {
 }
 
 // v1.2.3 (R19): per-asset click/drag dry-run tests + step generation.
+function actionShapeBBox(shape) {
+  if (!shape) return null;
+  if (Array.isArray(shape.roi) && shape.roi.length === 4) return shape.roi;
+  const pts = shape.points || [];
+  if (!pts.length) return null;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of pts) {
+    x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]);
+    x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]);
+  }
+  return [x0, y0, x1 - x0 + 1, y1 - y0 + 1];
+}
+
+function actionShapeContains(shape, x, y) {
+  if (!shape) return true;
+  if (shape.kind === 'rect') {
+    const r = shape.roi;
+    if (!r) return false;
+    return x >= r[0] && y >= r[1] && x < r[0] + r[2] && y < r[1] + r[3];
+  }
+  const pts = shape.points || [];
+  if (pts.length < 3) return false;
+  let inside = false;
+  let j = pts.length - 1;
+  for (let i = 0; i < pts.length; i++) {
+    const [xi, yi] = pts[i];
+    const [xj, yj] = pts[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi || 1) + xi) inside = !inside;
+    j = i;
+  }
+  return inside;
+}
+
+function actionShapeEffectiveContains(shape, x, y) {
+  if (!shape) return true;
+  const inside = actionShapeContains(shape, x, y);
+  return shape.invert ? !inside : inside;
+}
+
+function currentActionShape() {
+  if (actionPoly && actionPolyClosed && actionPoly.length >= 3) {
+    return {
+      kind: 'polygon',
+      points: actionPoly.map((p) => [p.x, p.y]),
+      invert: actionInvert,
+    };
+  }
+  if (roiBack && roiBack.w > 0 && roiBack.h > 0) {
+    return {
+      kind: 'rect',
+      roi: [roiBack.x, roiBack.y, roiBack.w, roiBack.h],
+      invert: actionInvert,
+    };
+  }
+  return null;
+}
+
+function loadActionShapeForEdit(shape) {
+  actionPoly = null;
+  actionPolyClosed = false;
+  actionInvert = !!(shape && shape.invert);
+  if (shape && shape.kind === 'polygon' && Array.isArray(shape.points)) {
+    actionPoly = shape.points.map((p) => ({ x: p[0], y: p[1] }));
+    actionPolyClosed = actionPoly.length >= 3;
+    roiBack = actionShapeBBox(shape)
+      ? { x: actionShapeBBox(shape)[0], y: actionShapeBBox(shape)[1], w: actionShapeBBox(shape)[2], h: actionShapeBBox(shape)[3] }
+      : null;
+  } else if (shape && shape.kind === 'rect' && Array.isArray(shape.roi)) {
+    roiBack = { x: shape.roi[0], y: shape.roi[1], w: shape.roi[2], h: shape.roi[3] };
+  }
+  if (btnActionInvert) btnActionInvert.textContent = `操作区域反选：${actionInvert ? '开' : '关'}`;
+}
+
+function rectsOverlap(a, b) {
+  return a[0] < b[0] + b[2] && a[0] + a[2] > b[0] && a[1] < b[1] + b[3] && a[1] + a[3] > b[1];
+}
+
+function actionValidity(it, recognizedBox) {
+  if (!recognizedBox) return { valid: null, text: '无法计算：没有真实识别框' };
+  const shape = it.action_shape;
+  const source = it.action_source || 'recognition';
+  if (!shape) {
+    if (source === 'recognition') return { valid: true, text: '有效（操作区=真实识别框）' };
+    return { valid: false, text: '无效：action_source=fixed 但没有 action_shape' };
+  }
+  let effective = [0, 0, canvas.width || 1280, canvas.height || 720];
+  if (shape.kind === 'rect' && Array.isArray(shape.roi)) effective = shape.roi;
+  if (!shape.invert) {
+    const hit = rectsOverlap(recognizedBox, effective);
+    if (source === 'fixed') {
+      return { valid: hit, text: hit ? '有效（固定操作区与识别框重叠）' : '独立操作区域（fixed，允许不重叠）', independent: !hit };
+    }
+    return { valid: hit, text: hit ? '有效（识别框在操作区内）' : '无效：真实识别框与操作区不重叠' };
+  }
+  // inverted: effective region is screen minus shape; overlap if any corner of
+  // the recognized box is outside the shape.
+  const corners = [
+    [recognizedBox[0], recognizedBox[1]],
+    [recognizedBox[0] + recognizedBox[2] - 1, recognizedBox[1]],
+    [recognizedBox[0], recognizedBox[1] + recognizedBox[3] - 1],
+    [recognizedBox[0] + recognizedBox[2] - 1, recognizedBox[1] + recognizedBox[3] - 1],
+  ];
+  const outside = corners.some(([x, y]) => !actionShapeContains(shape, x, y));
+  if (source === 'fixed') return { valid: outside, text: outside ? '有效（反选固定操作区与识别框相交）' : '独立操作区域（反选；识别框完全在排除区内）', independent: !outside };
+  return { valid: outside, text: outside ? '有效（反选操作区与识别框相交）' : '无效：真实识别框完全落在反选排除区内' };
+}
+
+function randomPointInAction(it) {
+  const shape = it && it.action_shape;
+  const fw = canvas.width || 1280;
+  const fh = canvas.height || 720;
+  if (!shape) {
+    const box = (it && it.roi) || [0, 0, fw, fh];
+    return randomPointInBox(box, 0.12);
+  }
+  const bbox = actionShapeBBox(shape);
+  for (let attempt = 0; attempt < 4000; attempt++) {
+    let x, y;
+    if (shape.invert) {
+      x = randomInt(0, fw - 1);
+      y = randomInt(0, fh - 1);
+    } else if (shape.kind === 'rect' && bbox) {
+      return randomPointInBox(bbox, 0.12);
+    } else if (bbox) {
+      x = randomInt(bbox[0], bbox[0] + bbox[2] - 1);
+      y = randomInt(bbox[1], bbox[1] + bbox[3] - 1);
+    } else {
+      break;
+    }
+    if (actionShapeEffectiveContains(shape, x, y)) return { x, y };
+  }
+  return { x: Math.floor(fw / 2), y: Math.floor(fh / 2) };
+}
+
 function assetActionBox(it) {
-  return it.action_roi || it.roi || null;
+  const shape = it.action_shape;
+  if (shape) {
+    const b = actionShapeBBox(shape);
+    if (b) return b;
+  }
+  return it.roi || null;
 }
 
 function boxCenter(box) {
   return { x: box[0] + Math.floor(box[2] / 2), y: box[1] + Math.floor(box[3] / 2) };
+}
+
+function randomInt(min, max) {
+  return min + Math.floor(Math.random() * Math.max(1, max - min + 1));
+}
+
+function randomPointInBox(box, margin = 0.15) {
+  const insetX = Math.floor(box[2] * Math.max(0, Math.min(0.45, margin)));
+  const insetY = Math.floor(box[3] * Math.max(0, Math.min(0.45, margin)));
+  const x0 = box[0] + insetX;
+  const y0 = box[1] + insetY;
+  const x1 = Math.max(x0, box[0] + box[2] - 1 - insetX);
+  const y1 = Math.max(y0, box[1] + box[3] - 1 - insetY);
+  return { x: randomInt(x0, x1), y: randomInt(y0, y1) };
+}
+
+function testFrameQuery(it) {
+  if (livePreview) return '&live=1';
+  const fid = Array.isArray(it && it.positions) && it.positions.length ? it.positions[0] : null;
+  return fid != null ? `&frame_id=${fid}` : '';
 }
 
 async function testAssetClick(it) {
@@ -1280,11 +1473,12 @@ async function testAssetClick(it) {
     return;
   }
   try {
-    let point = boxCenter(action);
+    let point = randomPointInAction(it);
     let detail = '';
+    let recognizedBox = null;
     if (it.kind === 'template') {
       const r = await fetch(
-        `/task/asset/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}`
+        `/task/asset/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}${testFrameQuery(it)}`
       );
       const s = await r.json();
       if (s.error) {
@@ -1295,20 +1489,17 @@ async function testAssetClick(it) {
         resultEl.textContent = `素材「${it.id}」没有 roi`;
         return;
       }
-      const dx = s.x - it.roi[0];
-      const dy = s.y - it.roi[1];
-      point = {
-        x: action[0] + dx + Math.floor(action[2] / 2),
-        y: action[1] + dy + Math.floor(action[3] / 2),
-      };
+      point = randomPointInAction(it);
       boxes = [{ text: `点测 ${s.id}`, score: Number(s.score), box: [s.x, s.y, s.w, s.h] }];
+      recognizedBox = [s.x, s.y, s.w, s.h];
       draw();
       detail = `匹配得分 ${Number(s.score).toFixed(4)} @ (${s.x},${s.y})\n`;
     } else if (it.kind === 'ocr_line' || it.kind === 'ocr_lines') {
       const derived = it.kind === 'ocr_line' && it.ocr_mode === 'lines' && !!it.ocr_text;
       const src = it.roi;
       const q = `x=${src[0]}&y=${src[1]}&w=${src[2]}&h=${src[3]}` +
-        `&task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}`;
+        `&task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}` +
+        testFrameQuery(it);
       const r = await fetch((it.kind === 'ocr_lines' || derived) ? '/lines?' + q : '/ocr?' + q);
       const s = await r.json();
       if (s.error) {
@@ -1318,16 +1509,32 @@ async function testAssetClick(it) {
       detail = (it.kind === 'ocr_lines' || derived)
         ? `多行识别 ${s.lines ? s.lines.length : 0} 行\n`
         : `识别文字 ${JSON.stringify(s.text)} 得分 ${Number(s.score).toFixed(4)}\n`;
+      if (Array.isArray(s.lines) && s.lines.length) {
+        const line = (it.ocr_text && s.lines.find((l) => (l.text || '').trim() === it.ocr_text.trim())) || s.lines[0];
+        if (line && Array.isArray(line.box) && line.box.length === 4) {
+          recognizedBox = [src[0] + line.box[0], src[1] + line.box[1], line.box[2], line.box[3]];
+          detail += `真实识别框：${JSON.stringify(recognizedBox)}（${JSON.stringify(line.text || '')}）\n`;
+        }
+      } else if (!derived && it.kind === 'ocr_line') {
+        recognizedBox = [src[0], src[1], src[2], src[3]];
+        detail += `单行 OCR 无独立 bbox，按识别 ROI 计算：${JSON.stringify(recognizedBox)}\n`;
+      }
     }
+    const validity = actionValidity(it, recognizedBox);
+    if (validity.text) detail += `区域有效性：${validity.text}\n`;
+    const frameSource = (typeof s !== 'undefined' && s.frame_source)
+      ? s.frame_source
+      : (livePreview ? 'live' : (it.positions && it.positions.length ? `position:#${it.positions[0]}` : 'current'));
+    detail += `帧来源：${frameSource}\n`;
     resultEl.textContent =
       `点击测试（dry-run，不实际点击）「${it.id}」\n` +
       detail +
       `操作区域 [${action.join(',')}] → 目标点 (${point.x}, ${point.y})\n` +
       '注意：这里只验证定位/目标点；实际点击请在 flow 中运行。';
     log(`素材点击测试（dry-run）：${it.id} → (${point.x},${point.y})`, 'INFO', {
-      frame: currentFrameId ? `#${currentFrameId}` : 'live',
+      frame: frameSource,
       kind: it.kind,
-      action_roi: action,
+      action_box: action,
       point,
       detail,
     });
@@ -1347,12 +1554,20 @@ function testAssetDrag(it) {
     resultEl.textContent = '拖动方向必须是 up/down/left/right';
     return;
   }
-  const from = boxCenter(action);
+  const from = randomPointInAction(it);
   const dist = 150 + Math.floor(Math.random() * 200);
+  const lateralMargin = Math.max(4, Math.floor((direction === 'up' || direction === 'down' ? action[2] : action[3]) * 0.3));
+  const jitter = randomInt(-lateralMargin, lateralMargin);
+  const fw = canvas.width || 1280;
+  const fh = canvas.height || 720;
   const to = {
-    x: from.x + (direction === 'left' ? -dist : direction === 'right' ? dist : 0),
-    y: from.y + (direction === 'up' ? -dist : direction === 'down' ? dist : 0),
+    x: from.x + (direction === 'left' ? -dist : direction === 'right' ? dist : jitter),
+    y: from.y + (direction === 'up' ? -dist : direction === 'down' ? dist : jitter),
   };
+  to.x = Math.max(0, Math.min(fw - 1, to.x));
+  to.y = Math.max(0, Math.min(fh - 1, to.y));
+  if (direction === 'up' || direction === 'down') to.x = Math.max(0, Math.min(fw - 1, from.x + jitter));
+  if (direction === 'left' || direction === 'right') to.y = Math.max(0, Math.min(fh - 1, from.y + jitter));
   const step = {
     op: 'drag',
     args: {
@@ -1416,7 +1631,8 @@ async function testAssetOcr(it) {
   const action = assetActionBox(it);
   const task = (taskName.value || '').trim();
   const q = `x=${roi.x}&y=${roi.y}&w=${roi.w}&h=${roi.h}` +
-    `&task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}`;
+    `&task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}` +
+    testFrameQuery(it);
   const frameMeta = currentFrameId
     ? (assetFramesCache.find((f) => f.id === currentFrameId) || {})
     : null;
@@ -1997,7 +2213,8 @@ async function refreshTaskAssets(task) {
         kind: 'template_set',
         members: c.members || [],
         threshold: c.threshold,
-        action_roi: c.action_roi,
+        action_shape: c.action_shape,
+        action_source: c.action_source,
         category: c.category || '素材集合',
         _collection: true,
       });
@@ -2100,6 +2317,63 @@ function renderAssetList() {
     onCollectionTest: (it) => testAssetCollection(it),
     onCollectionDelete: (it) => deleteCollection(it),
   });
+  attachAssetDragReorder();
+}
+
+function attachAssetDragReorder() {
+  if (!assetsList) return;
+  let draggedId = '';
+  const rows = Array.from(assetsList.querySelectorAll('.asset-row[data-asset-id][draggable="true"]'));
+  const itemIds = (taskAssets || [])
+    .filter((a) => a.kind !== 'template_set')
+    .map((a) => a.id);
+  for (const row of rows) {
+    row.addEventListener('dragstart', (e) => {
+      draggedId = row.dataset.assetId || '';
+      row.classList.add('asset-row-dragging');
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', draggedId);
+      }
+    });
+    row.addEventListener('dragend', () => {
+      draggedId = '';
+      row.classList.remove('asset-row-dragging');
+      for (const r of rows) r.classList.remove('asset-drag-over');
+    });
+    row.addEventListener('dragover', (e) => {
+      if (!draggedId || row.dataset.assetId === draggedId) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      row.classList.add('asset-drag-over');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('asset-drag-over'));
+    row.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      row.classList.remove('asset-drag-over');
+      const targetId = row.dataset.assetId || '';
+      const fromId = draggedId || (e.dataTransfer ? e.dataTransfer.getData('text/plain') : '');
+      if (!fromId || !targetId || fromId === targetId) return;
+      const order = itemIds.filter((id) => id !== fromId);
+      const at = order.indexOf(targetId);
+      if (at < 0) return;
+      order.splice(at, 0, fromId);
+      await saveAssetOrder(order);
+    });
+  }
+}
+
+async function saveAssetOrder(ids) {
+  const task = currentTask();
+  const body = { ids };
+  if (task) body.task = task;
+  const r = await postJson('/task/assets/reorder', body);
+  if (!r.ok) {
+    resultEl.textContent = '素材排序失败：' + (r.errors || []).join('; ');
+    return;
+  }
+  log(`素材顺序已保存（${r.ids.length} 个）`);
+  await refreshTaskAssets(task);
 }
 
 async function testAssetCollection(it) {
@@ -2122,14 +2396,14 @@ async function testAssetCollection(it) {
       `最佳成员：${s.member}\n` +
       `score=${Number(s.score).toFixed(4)} · threshold=${Number(s.threshold).toFixed(3)} · pass=${s.pass}\n` +
       `位置：(${s.x},${s.y})` +
-      (s.action_roi ? ` · 操作区域[${s.action_roi.join(',')}]` : '');
+      (s.action_box ? ` · 操作区域[${s.action_box.join(',')}]` : '');
     log(`集合测试「${it.id}」`, 'INFO', {
       frame: currentFrameId ? `#${currentFrameId}` : 'live',
       member: s.member,
       score: Number(s.score),
       threshold: Number(s.threshold),
       pass: s.pass,
-      action_roi: s.action_roi || null,
+      action_box: s.action_box || null,
     });
   } catch (e) {
     resultEl.textContent = `集合「${it.id}」测试异常：${e}`;
@@ -2364,25 +2638,30 @@ function editAssetActionRoi(it) {
   activeCandidate = -1;
   backMode = true;
   roi = { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] };
-  roiBack = it.action_roi
-    ? { x: it.action_roi[0], y: it.action_roi[1], w: it.action_roi[2], h: it.action_roi[3] }
+  const actionBox = actionShapeBBox(it.action_shape);
+  roiBack = actionBox
+    ? { x: actionBox[0], y: actionBox[1], w: actionBox[2], h: actionBox[3] }
     : { ...roi };
+  loadActionShapeForEdit(it.action_shape);
+  if (!actionBox) roiBack = { ...roi };
   if (btnBackMode) btnBackMode.textContent = '退出操作区域编辑（拖拽画操作区域）';
   updateRoiLabel();
   draw();
   log(`编辑素材「${it.id}」操作区域：在画布上拖拽画框`);
 }
 
-async function updateAssetActionRoi(id, rect) {
+async function updateAssetActionRoi(id) {
   const task = (taskName.value || '').trim();
-  if (!task || !rect) {
+  const shape = currentActionShape();
+  if (!task || !shape) {
     pendingActionAsset = null;
     return;
   }
   const r = await postJson('/task/asset/update', {
     task,
     id,
-    action_roi: [rect.x, rect.y, rect.w, rect.h],
+    action_shape: shape,
+    action_source: 'fixed',
   });
   pendingActionAsset = null;
   backMode = false;
@@ -2400,15 +2679,17 @@ function pickAssetRoi(it) {
     resultEl.textContent = `素材「${it.id}」没有 roi`;
     return;
   }
+  const shapeBox = actionShapeBBox(it.action_shape);
   roi = { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] };
-  roiBack = it.action_roi
-    ? { x: it.action_roi[0], y: it.action_roi[1], w: it.action_roi[2], h: it.action_roi[3] }
+  roiBack = shapeBox
+    ? { x: shapeBox[0], y: shapeBox[1], w: shapeBox[2], h: shapeBox[3] }
     : null;
+  loadActionShapeForEdit(it.action_shape);
   polygon = null;
   polyClosed = false;
   updateRoiLabel();
   draw();
-  log(`已用素材「${it.id}」设置识别区域${it.action_roi ? '（含操作区域）' : ''}`);
+  log(`已用素材「${it.id}」设置识别区域${shapeBox ? '（含操作区域）' : ''}`);
 }
 
 async function testAssetMatch(it) {
@@ -2417,7 +2698,7 @@ async function testAssetMatch(it) {
   resultEl.textContent = `素材「${it.id}」全屏匹配中…`;
   try {
     const r = await fetch(
-      `/task/asset/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}`
+      `/task/asset/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}${testFrameQuery(it)}`
     );
     const s = await r.json();
     if (s.error) {
@@ -2427,7 +2708,8 @@ async function testAssetMatch(it) {
     const pass = s.pass ? '通过' : '未过阈值';
     resultEl.textContent =
       `素材「${s.id}」测试：${pass}\n得分 = ${Number(s.score).toFixed(4)}（阈值 ${Number(s.threshold).toFixed(2)}）\n` +
-      `位置 = (${s.x}, ${s.y})  尺寸 = ${s.w}x${s.h}\n耗时 = ${Number(s.elapsed_ms).toFixed(1)} ms`;
+      `位置 = (${s.x}, ${s.y})  尺寸 = ${s.w}x${s.h}\n耗时 = ${Number(s.elapsed_ms).toFixed(1)} ms\n` +
+      `帧来源 = ${s.frame_source || (livePreview ? 'live' : 'current')}`;
     boxes = [{ text: `测试 ${s.id} ${Number(s.score).toFixed(2)}`, score: s.score, box: [s.x, s.y, s.w, s.h] }];
     draw();
     log(`素材测试：${s.id}`, 'INFO', {
@@ -2610,7 +2892,8 @@ async function saveAssetUnified() {
           id: c.name.trim(),
           kind: 'ocr_line',
           roi: [rec.x, rec.y, rec.w, rec.h],
-          action_roi: [c.action.x, c.action.y, c.action.w, c.action.h],
+          action_shape: { kind: 'rect', roi: [c.action.x, c.action.y, c.action.w, c.action.h] },
+          action_source: 'fixed',
           positions,
         };
         if (c.fromLines && c.sourceRoi) {
@@ -2636,7 +2919,8 @@ async function saveAssetUnified() {
       };
       if (c.kind === 'template') payload.threshold = 0.85;
       if (c.kind !== 'region' && c.action) {
-        payload.action_roi = [c.action.x, c.action.y, c.action.w, c.action.h];
+        payload.action_shape = { kind: 'rect', roi: [c.action.x, c.action.y, c.action.w, c.action.h] };
+        payload.action_source = 'fixed';
       }
       const r = await postJson('/task/save_asset', payload);
       if (!r.ok) {
@@ -2680,8 +2964,12 @@ async function doSaveAsset() {
   const payload = { task, id, kind, roi: [roi.x, roi.y, roi.w, roi.h] };
   if (kind === 'template') payload.threshold = 0.85;
   // v1.2: 显式操作区域（action_roi）；不设时运行期用识别结果。
-  if (kind !== 'region' && roiBack) {
-    payload.action_roi = [roiBack.x, roiBack.y, roiBack.w, roiBack.h];
+  if (kind !== 'region') {
+    const shape = currentActionShape();
+    if (shape) {
+      payload.action_shape = shape;
+      payload.action_source = 'fixed';
+    }
   }
   // §22.10: a closed polygon is an identification mask (match/OCR); the click
   // area stays the matched bbox unless roi_back is set above.
@@ -3083,6 +3371,29 @@ function updateFrameCategoryPicker(items) {
   picker.setValue(chosen ? chosen.label : '全部分类');
 }
 
+function renderFrameDetail(f, assetIds) {
+  if (!frameDetail) return;
+  if (!f) {
+    frameDetail.textContent = '（选择一帧查看详情）';
+    return;
+  }
+  const cats = (taskAssets || [])
+    .filter((a) => (a.positions || []).includes(f.id))
+    .map((a) => a.id);
+  const ids = assetIds || cats;
+  const when = f.ts_ms ? new Date(Number(f.ts_ms)).toLocaleString() : '—';
+  const size = f.bytes ? `${(Number(f.bytes) / 1024).toFixed(1)} KiB` : '—';
+  frameDetail.textContent =
+    `#${f.id} ${f.name || '帧'}\n` +
+    `分类：${(f.category || '').trim() || '未分类'}\n` +
+    `尺寸：${f.width || '?'}x${f.height || '?'}\n` +
+    `来源：${f.source || '—'}\n` +
+    `时间：${when}\n` +
+    `大小：${size}\n` +
+    `状态：${f.current ? '当前帧' : '非当前'}${f.seen === false ? ' · 未看过' : ''}\n` +
+    `关联素材：${ids && ids.length ? ids.join('、') : '（无）'}`;
+}
+
 async function refreshFrames() {
   if (!framesList) return;
   try {
@@ -3107,6 +3418,7 @@ async function refreshFrames() {
         frameCategorySet.appendChild(o);
       }
       currentFrameId = null;
+      renderFrameDetail(null);
       return;
     }
     const groups = new Map();
@@ -3132,6 +3444,7 @@ async function refreshFrames() {
       }
     }
     currentFrameId = currentFrame ? currentFrame.id : null;
+    renderFrameDetail(currentFrame, currentFrame ? assetsByFrame.get(currentFrame.id) : null);
     const orderedCats = Array.from(groups.keys()).sort((a, b) => {
       if (a === '未分类') return 1;
       if (b === '未分类') return -1;
@@ -3258,6 +3571,26 @@ async function renameFrame(f) {
     framesStatus.textContent = '重命名失败：' + (r.errors || []).join('; ');
     return;
   }
+  await refreshFrames();
+}
+
+async function renameFrameCategory() {
+  const from = window.prompt('要重命名的分类（整类改名，不能为空）', '');
+  if (from == null || !from.trim()) return;
+  const to = window.prompt(`把分类「${from.trim()}」改为（不能为空）`, '');
+  if (to == null || !to.trim()) {
+    framesStatus.textContent = '分类重命名取消：新分类不能为空';
+    return;
+  }
+  const r = await postJson('/frames/category/rename', {
+    from: from.trim(),
+    to: to.trim(),
+  });
+  if (!r.ok) {
+    framesStatus.textContent = '分类重命名失败：' + (r.errors || []).join('; ');
+    return;
+  }
+  log(`分类重命名：${r.from} → ${r.to}（${r.changed} 帧）`);
   await refreshFrames();
 }
 
@@ -3740,6 +4073,22 @@ function updateLiveButton() {
   }
 }
 
+function fitCanvasToStage() {
+  if (!canvasStage) return;
+  const sw = canvasStage.clientWidth;
+  const sh = canvasStage.clientHeight;
+  if (sw < 16 || sh < 16) return;
+  const ar = (canvas.width || 1280) / (canvas.height || 720);
+  let w = sw;
+  let h = w / ar;
+  if (h > sh) {
+    h = sh;
+    w = h * ar;
+  }
+  canvas.style.width = `${Math.max(1, Math.floor(w))}px`;
+  canvas.style.height = `${Math.max(1, Math.floor(h))}px`;
+}
+
 async function loadFrame(live = false) {
   return new Promise((resolve, reject) => {
     const im = new Image();
@@ -3747,6 +4096,7 @@ async function loadFrame(live = false) {
       img = im;
       canvas.width = im.width;
       canvas.height = im.height;
+      fitCanvasToStage();
       draw();
       resolve(im);
     };
@@ -3771,6 +4121,7 @@ function applyLiveBlob(blob) {
     img = im;
     canvas.width = im.width;
     canvas.height = im.height;
+    fitCanvasToStage();
     draw();
     if (liveObjectUrl) URL.revokeObjectURL(liveObjectUrl);
     liveObjectUrl = url;
@@ -4018,6 +4369,20 @@ canvas.addEventListener('mousedown', (ev) => {
   // a box selects that block (ROI := box) so 生成素材 JSON applies to it, and
   // shows only that block's text.
   const p0 = toFrame(ev);
+  if (actionPolyMode) {
+    if (ev.detail >= 2) {
+      ev.preventDefault();
+      return;
+    }
+    if (!actionPoly || actionPolyClosed) {
+      actionPoly = [];
+      actionPolyClosed = false;
+    }
+    actionPoly.push(p0);
+    updateRoiLabel();
+    draw();
+    return;
+  }
   // §22.10 多边形模式：未闭合时逐点点击、双击闭合；闭合后可拖动顶点、双击删顶点。
   if (polyMode) {
     if (ev.detail >= 2) {
@@ -4138,7 +4503,7 @@ canvas.addEventListener('mouseup', (ev) => {
       renderCandidateList(lastLinesRoi ? '本次识别' : '识别结果');
       log(`操作区域已更新：${finished ? `${finished.w}x${finished.h} @ ${finished.x},${finished.y}` : '默认=识别区域'}`);
     } else if (pendingActionAsset) {
-      updateAssetActionRoi(pendingActionAsset, finished);
+      updateAssetActionRoi(pendingActionAsset);
     }
     updateRoiLabel();
     draw();
@@ -4176,6 +4541,17 @@ function nearestVertex(p) {
 // §22.10：双击行为 —— 未闭合则闭合；已闭合且双击顶点则删除该顶点（保持 >=3）。
 canvas.addEventListener('dblclick', (ev) => {
   if (liveInputAllowed()) return;
+  if (actionPolyMode) {
+    if (!actionPoly || actionPoly.length < 3) return;
+    ev.preventDefault();
+    actionPolyClosed = true;
+    actionPolyMode = false;
+    if (btnActionPoly) btnActionPoly.textContent = '操作区域多边形（点顶点，双击闭合）';
+    log(`操作区域多边形已闭合：${actionPoly.length} 顶点${actionInvert ? '（反选：屏幕−区域）' : ''}`);
+    updateRoiLabel();
+    draw();
+    return;
+  }
   if (!polyMode || !polygon || polygon.length < 3) return;
   ev.preventDefault();
   const p = toFrame(ev);
@@ -4220,6 +4596,31 @@ btnPoly.addEventListener('click', () => {
   } else {
     btnPoly.textContent = '多边形框选（点顶点，双击闭合）';
   }
+  updateRoiLabel();
+  draw();
+});
+
+btnActionPoly.addEventListener('click', () => {
+  actionPolyMode = !actionPolyMode;
+  if (actionPolyMode) {
+    actionPoly = null;
+    actionPolyClosed = false;
+    backMode = false;
+    polyMode = false;
+    if (btnBackMode) btnBackMode.textContent = '绘制操作区域（默认=识别区域）';
+    btnActionPoly.textContent = '退出操作区域多边形（点顶点，双击闭合）';
+    log(`操作区域多边形模式：逐点点击，双击闭合${actionInvert ? '（反选=整个屏幕−区域）' : ''}`);
+  } else {
+    btnActionPoly.textContent = '操作区域多边形（点顶点，双击闭合）';
+  }
+  updateRoiLabel();
+  draw();
+});
+
+btnActionInvert.addEventListener('click', () => {
+  actionInvert = !actionInvert;
+  btnActionInvert.textContent = `操作区域反选：${actionInvert ? '开' : '关'}`;
+  log(`操作区域反选：${actionInvert ? '开（有效区=整个屏幕−区域）' : '关'}`);
   updateRoiLabel();
   draw();
 });
@@ -5161,7 +5562,22 @@ async function submitResetMemory() {
   await refreshAssetPositionFrames();
   const btnFrameCategoryApply = document.getElementById('btn-frame-category-apply');
   if (btnFrameCategoryApply) btnFrameCategoryApply.addEventListener('click', applyFrameCategoryFromSelect);
+  const btnFrameCategoryRename = document.getElementById('btn-frame-category-rename');
+  if (btnFrameCategoryRename) btnFrameCategoryRename.addEventListener('click', renameFrameCategory);
   if (btnFramesClear) btnFramesClear.addEventListener('click', () => clearFrames());
+  if (btnCanvasPanels) {
+    btnCanvasPanels.addEventListener('click', () => {
+      if (!canvasWindows) return;
+      const collapsed = canvasWindows.classList.toggle('collapsed');
+      btnCanvasPanels.textContent = collapsed ? '显示结果/日志' : '收起结果/日志';
+      fitCanvasToStage();
+    });
+  }
+  if (canvasStage && window.ResizeObserver) {
+    new ResizeObserver(() => fitCanvasToStage()).observe(canvasStage);
+  }
+  window.addEventListener('resize', fitCanvasToStage);
+  fitCanvasToStage();
   await refreshFrames();
   // §22.22 deep link: /?lib=<id> selects that library asset and runs the match.
   try {

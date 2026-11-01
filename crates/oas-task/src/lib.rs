@@ -87,6 +87,119 @@ impl fmt::Display for LintIssue {
 // Public data model (serde: this is the on-disk contract)
 // ---------------------------------------------------------------------------
 
+/// Operation-region geometry. One canonical shape for click/drag sampling.
+/// `kind=rect` uses `roi`; `kind=polygon` uses `points`.
+/// `invert=true` means the effective region is the **whole screen minus shape**.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActionShape {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roi: Option<[i32; 4]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub points: Option<Vec<[i32; 2]>>,
+    #[serde(default)]
+    pub invert: bool,
+}
+
+fn default_action_source() -> String {
+    "recognition".to_string()
+}
+
+impl ActionShape {
+    pub fn rect(roi: [i32; 4]) -> Self {
+        Self {
+            kind: "rect".to_string(),
+            roi: Some(roi),
+            points: None,
+            invert: false,
+        }
+    }
+
+    /// Bounding box of the selected shape (not of the inverted effective region).
+    pub fn bbox(&self) -> Option<[i32; 4]> {
+        if let Some(roi) = self.roi {
+            return Some(roi);
+        }
+        let pts = self.points.as_ref()?;
+        if pts.is_empty() {
+            return None;
+        }
+        let mut min_x = i32::MAX;
+        let mut min_y = i32::MAX;
+        let mut max_x = i32::MIN;
+        let mut max_y = i32::MIN;
+        for p in pts {
+            min_x = min_x.min(p[0]);
+            min_y = min_y.min(p[1]);
+            max_x = max_x.max(p[0]);
+            max_y = max_y.max(p[1]);
+        }
+        Some([min_x, min_y, max_x - min_x + 1, max_y - min_y + 1])
+    }
+
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        if self.kind == "rect" {
+            if let Some([rx, ry, rw, rh]) = self.roi {
+                return x >= rx && y >= ry && x < rx + rw && y < ry + rh;
+            }
+            return false;
+        }
+        let Some(pts) = self.points.as_ref() else {
+            return false;
+        };
+        if pts.len() < 3 {
+            return false;
+        }
+        let mut inside = false;
+        let mut j = pts.len() - 1;
+        for i in 0..pts.len() {
+            let (xi, yi) = (pts[i][0], pts[i][1]);
+            let (xj, yj) = (pts[j][0], pts[j][1]);
+            if ((yi > y) != (yj > y))
+                && (x < (xj - xi) * (y - yi) / (yj - yi).max(1) + xi)
+            {
+                inside = !inside;
+            }
+            j = i;
+        }
+        inside
+    }
+}
+
+fn validate_action_shape(shape: &ActionShape, path: &str) -> Result<(), String> {
+    match shape.kind.as_str() {
+        "rect" => {
+            let Some([x, y, w, h]) = shape.roi else {
+                return Err(format!("{path}.roi is required for kind=rect"));
+            };
+            if x < 0 || y < 0 || w <= 0 || h <= 0 {
+                return Err(format!(
+                    "{path}.roi must satisfy x,y>=0 and w,h>0 (got [{x},{y},{w},{h}])"
+                ));
+            }
+            if shape.points.is_some() {
+                return Err(format!("{path}.points is only valid for kind=polygon"));
+            }
+        }
+        "polygon" => {
+            let Some(pts) = shape.points.as_ref() else {
+                return Err(format!("{path}.points is required for kind=polygon"));
+            };
+            if pts.len() < 3 {
+                return Err(format!("{path}.points needs at least 3 vertices"));
+            }
+            if pts.iter().any(|p| p[0] < 0 || p[1] < 0) {
+                return Err(format!("{path}.points must be non-negative"));
+            }
+            if shape.roi.is_some() {
+                return Err(format!("{path}.roi is only valid for kind=rect"));
+            }
+        }
+        other => return Err(format!("{path}.kind must be rect or polygon (got `{other}`)")),
+    }
+    Ok(())
+}
+
 /// One declared asset, exactly as stored in `assets.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssetDecl {
@@ -105,19 +218,14 @@ pub struct AssetDecl {
     /// - `region`: this is the operation region itself (no separate recognition).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roi: Option<[i32; 4]>,
-    /// **Operation region** `[x, y, w, h]` in frame coordinates: where a click/drag
-    /// actually lands. Missing => default to the recognition result (template match
-    /// bbox / OCR line bbox / OCR asset ROI). For `region` assets the operation
-    /// region is `roi` and this field is normally None.
-    ///
-    /// v1.2 renames the legacy `roi_back` (click box) to this unified concept;
-    /// old assets with `"roi_back"` still load via serde alias.
-    #[serde(
-        default,
-        alias = "roi_back",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub action_roi: Option<[i32; 4]>,
+    /// **Operation region** in frame coordinates. `action_source=fixed` requires
+    /// this; `recognition` leaves it absent and uses the real recognized bbox.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_shape: Option<ActionShape>,
+    /// `recognition` (follow real OCR/template bbox) or `fixed` (independent
+    /// operation region). Persisted explicitly; no legacy inference.
+    #[serde(default = "default_action_source")]
+    pub action_source: String,
     /// v1.2.1 recognition provenance for `ocr_line` assets:
     /// `single` (default, rec only) or `lines` (came from a multi-line det+rec
     /// result and must run the same det+rec path at runtime).
@@ -163,7 +271,8 @@ impl AssetDecl {
             kind: "template".to_string(),
             file: None,
             roi: Some(roi),
-            action_roi: None,
+            action_shape: None,
+            action_source: "recognition".to_string(),
             ocr_mode: None,
             ocr_source_roi: None,
             ocr_text: None,
@@ -185,9 +294,11 @@ pub struct AssetCollection {
     pub members: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold: Option<f32>,
-    /// Optional collection-level operation region; member action_roi wins.
+    /// Optional collection-level operation geometry; member shape wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action_roi: Option<[i32; 4]>,
+    pub action_shape: Option<ActionShape>,
+    #[serde(default = "default_action_source")]
+    pub action_source: String,
 }
 
 /// `assets.json` payload.
@@ -801,7 +912,8 @@ impl TaskBundle {
             id: id.clone(),
             members,
             threshold: coll.threshold,
-            action_roi: coll.action_roi,
+            action_shape: coll.action_shape,
+            action_source: coll.action_source,
         };
         if let Some(pos) = af.collections.iter().position(|c| c.id == id) {
             af.collections[pos] = saved.clone();
@@ -878,14 +990,18 @@ impl TaskBundle {
         let mut set = oas_runtime::AssetSet::new();
         for (i, item) in af.items.iter().enumerate() {
             if item.kind == "region" {
-                // v1.2 pure operation region: no pixels, no recognition.
-                let roi = item.roi.ok_or_else(|| {
-                    format!(
-                        "assets.json: items[{i}].roi: region `{}` has no roi \
-                         (operation region)",
-                        item.id
-                    )
-                })?;
+                // Pure operation region: no pixels, no recognition.
+                let roi = item
+                    .action_shape
+                    .as_ref()
+                    .and_then(|s| s.bbox())
+                    .or(item.roi)
+                    .ok_or_else(|| {
+                        format!(
+                            "assets.json: items[{i}] region `{}` has no action_shape/roi",
+                            item.id
+                        )
+                    })?;
                 set.insert_region(
                     item.id.clone(),
                     oas_types::Rect {
@@ -921,17 +1037,21 @@ impl TaskBundle {
                 } else {
                     set.insert_ocr(item.id.clone(), rect);
                 }
-                // v1.2 operation region (default: OCR asset ROI).
-                let action = item.action_roi.unwrap_or(roi);
-                set.set_click_back(
-                    item.id.clone(),
-                    oas_types::Rect {
-                        x: action[0],
-                        y: action[1],
-                        w: action[2],
-                        h: action[3],
-                    },
-                );
+                // Operation region: fixed shapes are wired as a bbox for now;
+                // recognition sources follow the OCR result at runtime.
+                if let Some(shape) = &item.action_shape {
+                    if let Some(action) = shape.bbox() {
+                        set.set_click_back(
+                            item.id.clone(),
+                            oas_types::Rect {
+                                x: action[0],
+                                y: action[1],
+                                w: action[2],
+                                h: action[3],
+                            },
+                        );
+                    }
+                }
                 // v1.2.3: one recognition ROI for derived OCR; det+rec runs on
                 // the saved `roi` and matches `ocr_text`.
                 if item.kind == "ocr_line"
@@ -979,16 +1099,18 @@ impl TaskBundle {
                 }),
             };
             set.insert(item.id.clone(), tpl);
-            if let Some(back) = item.action_roi {
-                set.set_click_back(
-                    item.id.clone(),
-                    oas_types::Rect {
-                        x: back[0],
-                        y: back[1],
-                        w: back[2],
-                        h: back[3],
-                    },
-                );
+            if let Some(shape) = &item.action_shape {
+                if let Some(back) = shape.bbox() {
+                    set.set_click_back(
+                        item.id.clone(),
+                        oas_types::Rect {
+                            x: back[0],
+                            y: back[1],
+                            w: back[2],
+                            h: back[3],
+                        },
+                    );
+                }
             }
         }
         for coll in &af.collections {
@@ -1094,6 +1216,35 @@ impl TaskBundle {
     /// least one member; deleting a member removes it from the collection. An
     /// unreferenced collection is removed automatically when its last member is
     /// deleted.
+    /// Reorder assets by id. Listed ids come first in the given order; any
+    /// unspecified assets keep their relative order after them. This is the
+    /// only persisted ordering (the `items` array order in `assets.json`).
+    pub fn reorder_assets(&self, ids: &[String]) -> Result<Vec<String>, String> {
+        if ids.is_empty() {
+            return Err("`ids` must not be empty".into());
+        }
+        let mut af = self.load_assets_file()?;
+        let mut seen = std::collections::BTreeSet::new();
+        for id in ids {
+            if !seen.insert(id.clone()) {
+                return Err(format!("duplicate asset id in reorder list: `{id}`"));
+            }
+            if !af.items.iter().any(|a| &a.id == id) {
+                return Err(format!("asset `{id}` does not exist"));
+            }
+        }
+        let mut ordered: Vec<AssetDecl> = Vec::with_capacity(af.items.len());
+        for id in ids {
+            if let Some(pos) = af.items.iter().position(|a| &a.id == id) {
+                ordered.push(af.items.remove(pos));
+            }
+        }
+        ordered.append(&mut af.items);
+        af.items = ordered;
+        self.write_assets_file(&af)?;
+        Ok(ids.to_vec())
+    }
+
     pub fn delete_asset(&self, id: &str) -> Result<AssetDecl, String> {
         let mut af = self.load_assets_file()?;
         let pos = af
@@ -1174,10 +1325,12 @@ impl TaskBundle {
     ///
     /// Template ROI changes are rejected (the crop image would go stale); use
     /// `update_asset`/「保存素材覆盖」to re-crop a template.
-    pub fn update_asset_meta(        &self,
+    pub fn update_asset_meta(
+        &self,
         id: &str,
         roi: Option<[i32; 4]>,
-        action_roi: Option<[i32; 4]>,
+        action_shape: Option<ActionShape>,
+        action_source: Option<String>,
         threshold: Option<f32>,
     ) -> Result<AssetDecl, String> {
         let mut af = self.load_assets_file()?;
@@ -1199,17 +1352,23 @@ impl TaskBundle {
             }
             af.items[pos].roi = Some(r);
         }
-        if let Some(a) = action_roi {
-            if a[2] <= 0 || a[3] <= 0 || a[0] < 0 || a[1] < 0 {
-                return Err("action_roi (操作区域) must have x,y >= 0 and w,h > 0".into());
-            }
+        if let Some(shape) = action_shape {
             if kind == "region" {
-                return Err(
-                    "region objects use roi as the operation region; action_roi must be empty"
-                        .into(),
-                );
+                return Err("region objects use their action_shape; no update needed".into());
             }
-            af.items[pos].action_roi = Some(a);
+            validate_action_shape(&shape, "action_shape")?;
+            af.items[pos].action_shape = Some(shape);
+            af.items[pos].action_source = "fixed".to_string();
+        }
+        let had_source = action_source.is_some();
+        if let Some(source) = action_source {
+            if source != "recognition" && source != "fixed" {
+                return Err("action_source must be recognition or fixed".into());
+            }
+            if source == "recognition" {
+                af.items[pos].action_shape = None;
+            }
+            af.items[pos].action_source = source;
         }
         if let Some(t) = threshold {
             if !(0.0..=1.0).contains(&t) {
@@ -1220,8 +1379,8 @@ impl TaskBundle {
             }
             af.items[pos].threshold = Some(t);
         }
-        if roi.is_none() && action_roi.is_none() && threshold.is_none() {
-            return Err("nothing to update (pass roi, action_roi and/or threshold)".into());
+        if roi.is_none() && af.items[pos].action_shape.is_none() && threshold.is_none() && !had_source {
+            return Err("nothing to update (pass roi, action_shape/action_source and/or threshold)".into());
         }
         af.items[pos].rev = Some(af.items[pos].rev.unwrap_or(0) + 1);
         let item = af.items[pos].clone();
@@ -1383,39 +1542,6 @@ impl TaskBundle {
             decl.roi = Some([min_x, min_y, max_x - min_x + 1, max_y - min_y + 1]);
         }
 
-        // v1.2 `action_roi`: unified **operation region** for recognizable
-        // objects (template/ocr_line/ocr_lines); bounds must fit the design frame.
-        // Pure `region` objects carry their operation region in `roi` instead.
-        if let Some(action) = decl.action_roi {
-            if decl.kind == "region" {
-                return Err(format!(
-                    "asset `{}` rejected: region `{}` uses its roi as the operation \
-                     region; action_roi must be empty",
-                    decl.id, decl.id
-                ));
-            }
-            let [bx, by, bw, bh] = action;
-            if bw <= 0 || bh <= 0 || bx < 0 || by < 0 {
-                return Err(format!(
-                    "asset `{}` rejected: action_roi (操作区域) [x,y,w,h] = {action:?} must have \
-                     x,y >= 0 and w,h > 0; nothing written",
-                    decl.id
-                ));
-            }
-            let bounds = match frame {
-                Some(f) => Some((f.width as i32, f.height as i32)),
-                None => af.design_resolution.map(|[w, h]| (w as i32, h as i32)),
-            };
-            if let Some((fw, fh)) = bounds {
-                if bx + bw > fw || by + bh > fh {
-                    return Err(format!(
-                        "asset `{}` rejected: action_roi (操作区域) [x,y,w,h] = {action:?} \
-                         is outside the {fw}x{fh} frame; nothing written",
-                        decl.id
-                    ));
-                }
-            }
-        }
         if decl.kind == "region" {
             if decl.file.is_some() {
                 return Err(format!(
@@ -1435,6 +1561,32 @@ impl TaskBundle {
                     decl.id
                 ));
             }
+            if decl.action_shape.is_none() {
+                decl.action_shape = decl.roi.map(ActionShape::rect);
+            }
+            decl.action_source = "fixed".to_string();
+        }
+        if decl.action_source != "recognition" && decl.action_source != "fixed" {
+            return Err(format!(
+                "asset `{}` rejected: action_source must be recognition or fixed",
+                decl.id
+            ));
+        }
+        match (decl.action_source.as_str(), decl.action_shape.as_ref()) {
+            ("recognition", Some(_)) => {
+                return Err(format!(
+                    "asset `{}` rejected: action_source=recognition must not carry action_shape",
+                    decl.id
+                ))
+            }
+            ("fixed", None) => {
+                return Err(format!(
+                    "asset `{}` rejected: action_source=fixed requires action_shape",
+                    decl.id
+                ))
+            }
+            ("fixed", Some(shape)) => validate_action_shape(shape, "action_shape")?,
+            _ => {}
         }
         let existing = af.items.iter().position(|it| it.id == decl.id);        let old_file = existing.and_then(|i| af.items[i].file.clone());
         let rev = match (replace, existing) {
@@ -2000,21 +2152,27 @@ impl TaskBundle {
                     )),
                 }
             }
-            if let Some([x, y, w, h]) = item.action_roi {
-                if x < 0 || y < 0 || w <= 0 || h <= 0 {
-                    errs.push((
-                        format!("{p}.action_roi"),
-                        format!(
-                            "[x,y,w,h] = {x},{y},{w},{h} must have x,y >= 0 and w,h > 0"
-                        ),
-                    ));
-                }
-                if item.kind == "region" {
-                    errs.push((
-                        format!("{p}.action_roi"),
-                        "region objects use roi as the operation region; action_roi must be empty"
-                            .to_string(),
-                    ));
+            if item.action_source != "recognition" && item.action_source != "fixed" {
+                errs.push((
+                    format!("{p}.action_source"),
+                    format!("must be recognition or fixed (got `{}`)", item.action_source),
+                ));
+            }
+            if item.action_source == "recognition" && item.action_shape.is_some() {
+                errs.push((
+                    format!("{p}.action_shape"),
+                    "action_source=recognition must not carry action_shape".to_string(),
+                ));
+            }
+            if item.action_source == "fixed" && item.action_shape.is_none() {
+                errs.push((
+                    format!("{p}.action_shape"),
+                    "action_source=fixed requires action_shape".to_string(),
+                ));
+            }
+            if let Some(shape) = item.action_shape.as_ref() {
+                if let Err(e) = validate_action_shape(shape, &format!("{p}.action_shape")) {
+                    errs.push((format!("{p}.action_shape"), e));
                 }
             }
             match item.roi {
@@ -2291,6 +2449,28 @@ mod tests {
     }
 
     #[test]
+    fn reorder_assets_persists_items_order_and_rejects_unknown_ids() {
+        let td = TempDir::new("reorder");
+        let b = open(&td);
+        let f = frame(32, 32);
+        for id in ["甲", "乙", "丙"] {
+            b.save_asset(AssetDecl::template(id, [0, 0, 8, 8]), Some(&f))
+                .expect("save");
+        }
+        b.reorder_assets(&["丙".into(), "甲".into(), "乙".into()])
+            .expect("reorder");
+        let af = b.load_assets_file().expect("load");
+        let ids: Vec<&str> = af.items.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, vec!["丙", "甲", "乙"]);
+        let before = std::fs::read(b.assets_path()).expect("assets");
+        let err = b
+            .reorder_assets(&["甲".into(), "不存在".into()])
+            .expect_err("unknown id");
+        assert!(err.contains("does not exist"), "{err}");
+        assert_eq!(std::fs::read(b.assets_path()).expect("assets"), before);
+    }
+
+    #[test]
     fn collection_expands_into_member_template_locators() {
         let td = TempDir::new("collection");
         let b = open(&td);
@@ -2303,7 +2483,8 @@ mod tests {
             id: "集合目标".into(),
             members: vec!["成员甲".into(), "成员乙".into()],
             threshold: Some(0.8),
-            action_roi: None,
+            action_shape: None,
+            action_source: "recognition".into(),
         })
         .expect("save collection");
         b.save_flow(
@@ -2600,7 +2781,8 @@ mod tests {
             kind: "ocr_lines".to_string(),
             file: None,
             roi: Some([10, 10, 21, 11]),
-            action_roi: None,
+            action_shape: None,
+            action_source: "recognition".to_string(),
             ocr_mode: None,
             ocr_source_roi: None,
             ocr_text: None,
@@ -2620,23 +2802,56 @@ mod tests {
     }
 
     #[test]
-    fn action_roi_is_persisted_and_wired_into_the_runtime_operation_region() {
+    fn action_shape_is_persisted_and_wired_into_the_runtime_operation_region() {
         let td = TempDir::new("back");
         let b = open(&td);
         let f = frame(64, 48);
         let mut decl = AssetDecl::template("点击区按钮", [10, 10, 21, 11]);
-        decl.action_roi = Some([8, 8, 30, 30]);
-        let saved = b.save_asset(decl, Some(&f)).expect("save with action_roi");
-        assert_eq!(saved.action_roi, Some([8, 8, 30, 30]));
+        decl.action_source = "fixed".into();
+        decl.action_shape = Some(ActionShape::rect([8, 8, 30, 30]));
+        let saved = b.save_asset(decl, Some(&f)).expect("save with action_shape");
+        assert_eq!(
+            saved.action_shape.as_ref().and_then(|s| s.bbox()),
+            Some([8, 8, 30, 30])
+        );
+        assert_eq!(saved.action_source, "fixed");
         let text = std::fs::read_to_string(b.assets_path()).expect("read assets");
-        assert!(text.contains("action_roi"), "{text}");
+        assert!(text.contains("action_shape"), "{text}");
+        assert!(!text.contains("action_roi"), "legacy field must be gone: {text}");
         let set = b.load_runtime_assets().expect("runtime assets");
         let back = set.click_back("点击区按钮").expect("click_back wired");
         assert_eq!((back.x, back.y, back.w, back.h), (8, 8, 30, 30));
     }
 
     #[test]
-    fn action_roi_is_valid_for_ocr_and_bounded_region_is_a_pure_region() {
+    fn fixed_polygon_action_shape_is_persisted_and_invert_is_kept() {
+        let td = TempDir::new("polyshape");
+        let b = open(&td);
+        let f = frame(64, 48);
+        let mut decl = AssetDecl::template("多边形操作区", [10, 10, 21, 11]);
+        decl.action_source = "fixed".into();
+        decl.action_shape = Some(ActionShape {
+            kind: "polygon".into(),
+            roi: None,
+            points: Some(vec![[8, 8], [40, 8], [40, 30], [8, 30]]),
+            invert: true,
+        });
+        let saved = b.save_asset(decl, Some(&f)).expect("save polygon shape");
+        assert_eq!(saved.action_source, "fixed");
+        let text = std::fs::read_to_string(b.assets_path()).expect("read");
+        assert!(text.contains("\"polygon\""), "{text}");
+        assert!(text.contains("\"invert\": true"), "{text}");
+        let af = b.load_assets_file().expect("load");
+        let shape = af.items[0].action_shape.as_ref().expect("shape");
+        assert!(shape.invert);
+        assert_eq!(shape.points.as_ref().map(|p| p.len()), Some(4));
+        let set = b.load_runtime_assets().expect("runtime");
+        let back = set.click_back("多边形操作区").expect("bbox fallback");
+        assert_eq!((back.x, back.y, back.w, back.h), (8, 8, 33, 23));
+    }
+
+    #[test]
+    fn fixed_shape_is_valid_for_ocr_and_region_derives_its_own_shape() {
         let td = TempDir::new("backbad");
         let b = open(&td);
         let f = frame(64, 48);
@@ -2645,7 +2860,8 @@ mod tests {
             kind: "ocr_lines".to_string(),
             file: None,
             roi: Some([10, 10, 21, 11]),
-            action_roi: Some([12, 12, 30, 30]),
+            action_shape: Some(ActionShape::rect([12, 12, 30, 30])),
+            action_source: "fixed".to_string(),
             ocr_mode: None,
             ocr_source_roi: None,
             ocr_text: None,
@@ -2655,52 +2871,31 @@ mod tests {
             positions: Vec::new(),
         };
         b.save_asset(ocr.clone(), Some(&f))
-            .expect("OCR action region is valid");
+            .expect("OCR fixed shape is valid");
         let set = b.load_runtime_assets().expect("runtime assets");
         let op = set.click_back("文字").expect("OCR operation region");
         assert_eq!((op.x, op.y, op.w, op.h), (12, 12, 30, 30));
 
-        let mut bad = ocr.clone();
-        bad.id = "文字越界".to_string();
-        bad.action_roi = Some([50, 40, 30, 30]);
-        let err = b.save_asset(bad, Some(&f)).expect_err("outside must reject");
-        assert!(err.contains("outside"), "{err}");
-
-        // Pure operation region: roi is the operation region, no action_roi.
         let mut region = AssetDecl::template("占位", [1, 1, 2, 2]);
         region.id = "右侧列表".to_string();
         region.kind = "region".to_string();
         region.roi = Some([40, 10, 20, 20]);
         region.file = None;
         region.threshold = None;
-        region.action_roi = None;
+        region.action_shape = None;
+        region.action_source = "recognition".to_string();
         b.save_asset(region.clone(), Some(&f))
             .expect("pure region save");
+        let af = b.load_assets_file().expect("assets");
+        let saved_region = af.items.iter().find(|a| a.id == "右侧列表").expect("region");
+        assert_eq!(saved_region.action_source, "fixed");
+        assert_eq!(
+            saved_region.action_shape.as_ref().and_then(|s| s.bbox()),
+            Some([40, 10, 20, 20])
+        );
         let set = b.load_runtime_assets().expect("runtime assets");
         let r = set.region("右侧列表").expect("region wired");
         assert_eq!((r.x, r.y, r.w, r.h), (40, 10, 20, 20));
-
-        let mut bad_region = region.clone();
-        bad_region.id = "坏区域".to_string();
-        bad_region.action_roi = Some([1, 1, 2, 2]);
-        let err = b.save_asset(bad_region, Some(&f)).expect_err("region action_roi");
-        assert!(err.contains("action_roi"), "{err}");
-    }
-
-    #[test]
-    fn legacy_roi_back_alias_loads_as_action_roi() {
-        let td = TempDir::new("alias");
-        let b = open(&td);
-        std::fs::create_dir_all(b.root()).expect("root");
-        std::fs::write(
-            b.assets_path(),
-            r#"{"schema_version":1,"items":[
-                 {"id":"旧点击框","kind":"ocr_line","roi":[1,2,30,20],"roi_back":[0,0,40,30]}
-               ]}"#,
-        )
-        .expect("write old assets");
-        let af = b.load_assets_file().expect("legacy assets load");
-        assert_eq!(af.items[0].action_roi, Some([0, 0, 40, 30]));
     }
 
     #[test]
@@ -2712,7 +2907,8 @@ mod tests {
             kind: "ocr_line".to_string(),
             file: None,
             roi: Some([1, 2, 30, 20]),
-            action_roi: Some([0, 0, 40, 30]),
+            action_shape: Some(ActionShape::rect([0, 0, 40, 30])),
+            action_source: "fixed".to_string(),
             ocr_mode: None,
             ocr_source_roi: None,
             ocr_text: None,
@@ -2726,7 +2922,8 @@ mod tests {
             kind: "region".to_string(),
             file: None,
             roi: None, // region requires roi
-            action_roi: None,
+            action_shape: None,
+            action_source: "recognition".to_string(),
             ocr_mode: None,
             ocr_source_roi: None,
             ocr_text: None,

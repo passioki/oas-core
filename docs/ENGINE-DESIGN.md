@@ -1573,7 +1573,7 @@ tasks/<任务名>/
 
 ### 22.25 ★★ [10-23 23:5x] **双 ROI：识别框 / 点击框**（参考旧 OAS annotator `roiFront`/`roiBack` · 引擎提交 `ce2de42`）
 
-> ★ **[11-01 口径]** 本节“双 ROI”指 **识别区域 + 操作区域**，不是两个识别区域。v1.2.3 U-49 已明确：识别只有一个 `roi`，操作区域是 `action_roi`；`ocr_source_roi` 不再是第二识别区域。
+> ★ **[11-01 口径]** 本节“双 ROI”指 **识别区域 + 操作区域**，不是两个识别区域。v1.2.3 U-49 已明确：识别只有一个 `roi`；**v0.1.0 dev 起操作区域改为 `action_shape` + `action_source`，旧 `action_roi`/`roi_back` 已删除且不兼容**；`ocr_source_roi` 不再是第二识别区域。
 
 > ★ 来源：旧 OAS 标注系统的 `RuleImage.roiFront`（识别/裁剪）/ `roiBack`（点击区域，常大于识别框）—— 示例 `backend/tasks/AbyssShadows/res/image.json`。
 
@@ -2043,7 +2043,7 @@ tasks/<任务名>/
 #### 22.40.4 测试
 
 - legacy shipped task 测试已改为临时 fixture；
-- 当前测试基线：`cargo test --workspace` = **356 passed / 0 failed**。
+- 当前测试基线：`cargo test --workspace` = **357 passed / 0 failed**（dev `0.1.0`）。
 
 ### 22.41 ★★★ [11-01] **帧-素材关系（现行唯一关系）**
 

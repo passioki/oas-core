@@ -1,6 +1,6 @@
 {
-  "next_id": 35,
-  "current_id": 4,
+  "next_id": 41,
+  "current_id": 16,
   "frames": [
     {
       "id": 1,
@@ -66,7 +66,7 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793511189584,
-      "seen": false
+      "seen": true
     },
     {
       "id": 9,
@@ -99,7 +99,7 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793511517536,
-      "seen": false
+      "seen": true
     },
     {
       "id": 13,
@@ -110,7 +110,7 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793511601713,
-      "seen": false
+      "seen": true
     },
     {
       "id": 14,
@@ -121,7 +121,7 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793511620765,
-      "seen": false
+      "seen": true
     },
     {
       "id": 15,
@@ -132,7 +132,7 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793511687623,
-      "seen": false
+      "seen": true
     },
     {
       "id": 16,
@@ -143,7 +143,7 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793511737947,
-      "seen": false
+      "seen": true
     },
     {
       "id": 17,
@@ -154,7 +154,7 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793511803428,
-      "seen": false
+      "seen": true
     },
     {
       "id": 18,
@@ -165,7 +165,7 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793511845351,
-      "seen": false
+      "seen": true
     },
     {
       "id": 20,
@@ -176,7 +176,7 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793512578505,
-      "seen": false
+      "seen": true
     },
     {
       "id": 21,
@@ -187,7 +187,7 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793512627400,
-      "seen": false
+      "seen": true
     },
     {
       "id": 23,
@@ -198,7 +198,7 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793513261532,
-      "seen": false
+      "seen": true
     },
     {
       "id": 26,
@@ -209,7 +209,7 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793514094873,
-      "seen": false
+      "seen": true
     },
     {
       "id": 28,
@@ -220,7 +220,7 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793514115660,
-      "seen": false
+      "seen": true
     },
     {
       "id": 29,
@@ -242,7 +242,73 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793514164708,
-      "seen": false
+      "seen": true
+    },
+    {
+      "id": 35,
+      "name": "式神御魂装备界面",
+      "category": "式神录",
+      "file": "frame-35.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793522548158,
+      "seen": true
+    },
+    {
+      "id": 36,
+      "name": "御魂奉纳界面",
+      "category": "式神录",
+      "file": "frame-36.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793522736041,
+      "seen": true
+    },
+    {
+      "id": 37,
+      "name": "奉纳御魂排序下拉弹窗",
+      "category": "式神录",
+      "file": "frame-37.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793523382532,
+      "seen": true
+    },
+    {
+      "id": 38,
+      "name": "御魂奉纳星级升序",
+      "category": "式神录",
+      "file": "frame-38.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793523821194,
+      "seen": true
+    },
+    {
+      "id": 39,
+      "name": "选中御魂状态",
+      "category": "式神录",
+      "file": "frame-39.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793526224120,
+      "seen": true
+    },
+    {
+      "id": 40,
+      "name": "御魂奉纳获得奖励",
+      "category": "式神录",
+      "file": "frame-40.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793526361222,
+      "seen": true
     }
   ]
 }
