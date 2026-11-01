@@ -111,3 +111,31 @@
 7. 补 UI 自动化测试；否则 361 Rust tests 仍会假绿。
 
 > 本文件只做审计记录；未改代码/数据。下一轮修复前先备份并确认优先级。
+
+## 6. 修复状态（2026-11-01 22:20）
+
+> 用户确认“P0/P1 一起做、恢复 flow/meta、纳入审计报告”后，由两个实现子进程完成。
+
+- 代码提交：`b910a2b fix(editor/runtime): close P0/P1 audit findings`
+- 数据提交：`45c1f32 data: restore 返回庭院 flow/meta from 8ee414c`
+- 审计报告提交：`30d3145 docs: add independent subprocess audit reports`
+- 测试：`cargo test --workspace` = **381 passed / 0 failed**（runtime 110 / task 55 / oasd 131）
+- UI：`node apps/oasd/ui/ui_pure_test.js` = **42 checks passed**；页面浏览器实测全局 34、任务页“显示全部”34、全局刷新按钮存在、无 JS 错误。
+- `oasd task lint --tasks-dir tasks --all` = `linted=1 errors=0`。
+
+| 项 | 状态 |
+|---|---|
+| P0-1 双库消失/刷新 | ✅ 保存后刷新两库；全局库刷新/管理；任务页未引用提示+显示全部 |
+| P0-2 批量保存语义 | ✅ 默认 recognition；仅显式操作写 fixed+shape；region 保持语义 |
+| P0-3 polygon/反选保存 | ✅ 候选/已有素材闭合写回；矩形清旧 polygon；清除/模式互切复位；死代码删除 |
+| P1-1 UI 模板 shape 平移 | ✅ `translateActionShape` 用于点测/拖测/有效性 |
+| P1-2 runtime click_target OCR | ✅ Lines/Single 走精确 shape；polygon/invert 测试 |
+| P1-3 采样失败 loud error | ✅ sample 返回 Result；空有效区不点击 |
+| P1-4 region jitter | ✅ 抖动后校验/重采样，窄 shape 测试 |
+| P1-5 shape 校验 | ✅ 越界/零面积/collection；保存/加载一致 |
+| P1-6 主 OCR live | ✅ btnOcr/btnLines/fallback 带 `testFrameQuery` 并显示 `frame_source` |
+| P1-7 多位置循环 | ✅ click/OCR/match/drag/collection 逐帧；任务批量传 assets 子集 |
+| P1-8 SelectionTool | ⚠ 行为串状态已修（统一 reset）；两套几何存储未强行合并 |
+| boxCenter | ✅ 只保留正确对象版本 |
+| OCR 识别 polygon 保存 | ⚠ 后端仍有限制（非操作区 action_shape；需要单独扩展字段） |
+| `frame_for_test live` 强制重抓 | ⬜ 仍取缓存 live_frame（P2） |

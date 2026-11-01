@@ -152,7 +152,7 @@ f6be0f0 16:21   干净基线（22 帧 / 返回庭院 3 素材）
 | P1-1 drag shape | ⬜ 未修 | 需要 drag DSL 增加 shape asset 语义 |
 | P1-5 SelectionTool | ⬜ 未修 | 需要统一重构，风险较高 |
 
-测试：`cargo test --workspace` = **361 passed / 0 failed**（新增 3 个测试）。
+测试：`cargo test --workspace` = **381 passed / 0 failed**（`b910a2b` 后；新增 20 个测试）。
 
 ## 7. 子进程复核修正（2026-11-01 21:50）
 
