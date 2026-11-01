@@ -1702,6 +1702,19 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         if let Some((source, expected)) = self.assets.derived_ocr(sel) {
             // v1.2.3: exactly one recognition ROI. It is the saved `roi`
             // (legacy source ROIs are migrated at asset-load time).
+            //
+            // §22.10 N10b-2 parity: a derived line saved from a multi-line region
+            // must honour the SAME polygon mask as the plain path. `source` is the
+            // det+rec input, so mask its bbox (polygon is in frame coordinates)
+            // BEFORE the provider sees the pixels; otherwise neighbour text
+            // inside the source region can be detected and match the wrong line.
+            let masked_frame;
+            let frame: &Frame = if let Some(poly) = &ocr_polygon {
+                masked_frame = mask_frame_for_ocr(frame, source, poly);
+                &masked_frame
+            } else {
+                frame
+            };
             let provider = self.ocr.as_mut().expect("provider checked above");
             let lines = provider.recognize_lines(frame, source)?;
             let hit = lines
@@ -3344,6 +3357,49 @@ mod tests {
             rect,
             text: text.to_string(),
             score,
+        }
+    }
+
+    /// det+rec provider that records the FRAME it was handed (not only the ROI),
+    /// so a test can prove the *derived* OCR path applied the polygon mask before
+    /// calling the engine — a ROI-only assertion cannot catch an unmasked frame.
+    struct FrameProbeDetOcr {
+        lines: Vec<OcrLine>,
+        rois: std::rc::Rc<std::cell::RefCell<Vec<Rect>>>,
+        frames: std::rc::Rc<std::cell::RefCell<Vec<Frame>>>,
+    }
+
+    impl FrameProbeDetOcr {
+        fn new(
+            lines: Vec<OcrLine>,
+        ) -> (
+            Self,
+            std::rc::Rc<std::cell::RefCell<Vec<Rect>>>,
+            std::rc::Rc<std::cell::RefCell<Vec<Frame>>>,
+        ) {
+            let rois = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let frames = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            (
+                Self {
+                    lines,
+                    rois: rois.clone(),
+                    frames: frames.clone(),
+                },
+                rois,
+                frames,
+            )
+        }
+    }
+
+    impl OcrProvider for FrameProbeDetOcr {
+        fn recognize(&mut self, _frame: &Frame, _roi: Rect) -> Result<(String, f32), String> {
+            Err("FrameProbeDetOcr only supports det+rec".into())
+        }
+
+        fn recognize_lines(&mut self, frame: &Frame, roi: Rect) -> Result<Vec<OcrLine>, String> {
+            self.rois.borrow_mut().push(roi);
+            self.frames.borrow_mut().push(frame.clone());
+            Ok(self.lines.clone())
         }
     }
 
@@ -6117,6 +6173,233 @@ mod tests {
         assert!(
             p.x >= 0 && p.x <= 40 && p.y >= 8 && p.y <= 38,
             "click should land in translated operation region: {p:?}"
+        );
+    }
+
+    // ---- derived OCR polygon mask (OCR_LINES §22.10 N10b-2 parity) ----
+
+    /// Triangle used by the derived-OCR mask tests: (10,5) is INSIDE it, while
+    /// (30,5) is inside the 32x16 source ROI but OUTSIDE the polygon.
+    fn probe_triangle() -> Vec<Point> {
+        vec![
+            Point { x: 0, y: 0 },
+            Point { x: 20, y: 0 },
+            Point { x: 0, y: 15 },
+        ]
+    }
+
+    /// 64x48 probe frame: outside-polygon pixels carry a sentinel 50, so a test
+    /// can tell "raw frame" (50) from "polygon-masked frame" (255).
+    fn derived_polygon_probe_frame() -> Frame {
+        let (w, h) = (64u32, 48u32);
+        let mut rgba = vec![10u8; (w * h * 4) as usize];
+        for i in (3..rgba.len()).step_by(4) {
+            rgba[i] = 255;
+        }
+        let idx = |x: u32, y: u32| ((y * w + x) * 4) as usize;
+        rgba[idx(10, 5)] = 100; // inside the triangle: must survive any masking
+        rgba[idx(30, 5)] = 50; // outside the triangle: white iff masked
+        Frame::new(w, h, rgba)
+    }
+
+    fn frame_pixel(frame: &Frame, x: u32, y: u32) -> u8 {
+        frame.rgba[((y * frame.width + x) * 4) as usize]
+    }
+
+    /// A derived line (`ocr_mode=lines`, saved from a multi-line det+rec result)
+    /// must honour the asset's `ocr_polygon` exactly like the plain OCR path: the
+    /// mask has to be applied to the frame BEFORE the provider sees it. The probe
+    /// provider clones the frame it receives, so the previous implementation
+    /// (raw frame straight into `recognize_lines`) fails this test: pixel (30,5)
+    /// would still be 50 there, only masking turns it into 255.
+    #[test]
+    fn derived_ocr_with_polygon_masks_the_frame_before_det_rec() {
+        let source = Rect {
+            x: 0,
+            y: 0,
+            w: 32,
+            h: 16,
+        };
+        let mut a = assets();
+        a.insert_ocr(
+            "O_DERIVED_MASK",
+            Rect {
+                x: 10,
+                y: 5,
+                w: 20,
+                h: 8,
+            },
+        );
+        a.set_derived_ocr("O_DERIVED_MASK", source, "确认".to_string());
+        a.set_ocr_polygon("O_DERIVED_MASK", probe_triangle());
+        let matched = line(
+            "确认",
+            0.97,
+            Rect {
+                x: 10,
+                y: 5,
+                w: 20,
+                h: 8,
+            },
+        );
+        let (ocr, rois, frames) = FrameProbeDetOcr::new(vec![matched.clone()]);
+        let screen = TwoFrameScreen {
+            frames: vec![derived_polygon_probe_frame()],
+            idx: 0,
+        };
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(screen, input, a, Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(ocr))
+            .with_seed(41);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"ocr","args":{"sel":"O_DERIVED_MASK"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        // Return semantics unchanged: det+rec still runs on the saved SOURCE ROI.
+        assert_eq!(rois.borrow().as_slice(), &[source]);
+        let seen = frames.borrow();
+        assert_eq!(seen.len(), 1, "exactly one det+rec call");
+        assert_eq!(
+            frame_pixel(&seen[0], 10, 5),
+            100,
+            "polygon content must survive the mask"
+        );
+        assert_eq!(
+            frame_pixel(&seen[0], 30, 5),
+            255,
+            "outside-polygon pixel must reach det+rec white (mask applied)"
+        );
+        // `last_ocr_rect` still comes from the provider's matched line.
+        assert_eq!(interp.last_ocr_rect, Some(matched.rect));
+    }
+
+    /// No polygon => the new branch is a no-op: the raw frame must reach det+rec
+    /// unchanged (sentinel 50 survives), so assets that never declared a polygon
+    /// keep their exact previous behaviour.
+    #[test]
+    fn derived_ocr_without_polygon_keeps_the_raw_frame() {
+        let source = Rect {
+            x: 0,
+            y: 0,
+            w: 32,
+            h: 16,
+        };
+        let mut a = assets();
+        a.insert_ocr(
+            "O_DERIVED_RAW",
+            Rect {
+                x: 10,
+                y: 5,
+                w: 20,
+                h: 8,
+            },
+        );
+        a.set_derived_ocr("O_DERIVED_RAW", source, "确认".to_string());
+        let matched = line(
+            "确认",
+            0.96,
+            Rect {
+                x: 10,
+                y: 5,
+                w: 20,
+                h: 8,
+            },
+        );
+        let (ocr, rois, frames) = FrameProbeDetOcr::new(vec![matched.clone()]);
+        let screen = TwoFrameScreen {
+            frames: vec![derived_polygon_probe_frame()],
+            idx: 0,
+        };
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(screen, input, a, Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(ocr))
+            .with_seed(43);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"ocr","args":{"sel":"O_DERIVED_RAW"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert_eq!(rois.borrow().as_slice(), &[source]);
+        let seen = frames.borrow();
+        assert_eq!(seen.len(), 1, "exactly one det+rec call");
+        assert_eq!(frame_pixel(&seen[0], 10, 5), 100);
+        assert_eq!(
+            frame_pixel(&seen[0], 30, 5),
+            50,
+            "no polygon => raw frame, never masked"
+        );
+        assert_eq!(interp.last_ocr_rect, Some(matched.rect));
+    }
+
+    /// The mask must not soften failure semantics: with a polygon declared, a
+    /// derived line whose expected text is missing is still a loud run failure
+    /// (no `Null` fallback) and `last_ocr_rect` stays cleared.
+    #[test]
+    fn derived_ocr_with_polygon_still_fails_loudly_when_the_line_is_missing() {
+        let mut a = assets();
+        a.insert_ocr(
+            "O_DERIVED_MASK",
+            Rect {
+                x: 10,
+                y: 5,
+                w: 20,
+                h: 8,
+            },
+        );
+        a.set_derived_ocr(
+            "O_DERIVED_MASK",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 32,
+                h: 16,
+            },
+            "确认".to_string(),
+        );
+        a.set_ocr_polygon("O_DERIVED_MASK", probe_triangle());
+        let (ocr, _rois, _frames) = FrameProbeDetOcr::new(vec![line(
+            "取消",
+            0.90,
+            Rect {
+                x: 10,
+                y: 5,
+                w: 20,
+                h: 8,
+            },
+        )]);
+        let screen = TwoFrameScreen {
+            frames: vec![derived_polygon_probe_frame()],
+            idx: 0,
+        };
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(screen, input, a, Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(ocr))
+            .with_seed(44);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"ocr","args":{"sel":"O_DERIVED_MASK"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("derived ocr_line `O_DERIVED_MASK`"), "{msg}");
+                assert!(msg.contains("no line equals"), "{msg}");
+                assert!(
+                    msg.contains("取消"),
+                    "failure must list what det+rec did find: {msg}"
+                );
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert_eq!(
+            interp.last_ocr_rect, None,
+            "a missing derived line clears the last rect"
         );
     }
 
