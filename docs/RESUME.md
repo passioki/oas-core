@@ -5,23 +5,24 @@
 
 ```yaml
 task_id: oas-core-repo-recovery
-checkpoint_seq: 82
-updated_at: 2026-11-01T22:25:00+08:00
-trigger: 修复子进程完成 P0/P1；恢复 返回庭院 flow/meta；纳入审计报告
+checkpoint_seq: 83
+updated_at: 2026-11-01T22:50:00+08:00
+trigger: 全局素材搜索/分类；OCR polygon 保存；live 强制抓帧；死 DOM id 清零
 status: in_progress
 ```
 
 ## 0. 当前状态（磁盘 + git 实测）
 
-- 分支 `dev`，HEAD `30d3145`；`main`/`origin/main` = `385d611`（v1.2.3）。
-- 测试：`cargo test --workspace` = **381 passed / 0 failed**（runtime 110 / task 55 / oasd 131）；UI pure test 42 checks；task lint 1/0。
-- 工作区**不干净**：
-  - `frames/frames.json` modified（用户数据，未动）；
-  - `tasks/返回庭院/assets.json` deleted（全局模式下任务不需要 task assets；flow/meta 已恢复）。
-- 当前 `tasks/返回庭院`：flow.json + meta.json 已从 `8ee414c` 恢复（提交 `45c1f32`）；flow 使用内联 OCR，不引用 34 个全局素材，所以任务页显示“34 未引用提示 + 显示全部”。
-- 当前 `assets/`：**34 个素材 / 18 张模板图**，来自按 task 历史恢复（`0bc69ba`/`1f73f17`），**不是 archive 迁移库**；待用户决定清理/恢复。
+- 分支 `dev`，HEAD `c6cae94`（`origin/dev` 同）；`main`/`origin/main` = `385d611`（v1.2.3）。
+- 测试：`cargo test --workspace` = **390 passed / 0 failed**（runtime 110 / task 55 / oasd 140）；UI pure test **106 checks / 0 dead ids**；task lint 2/0。
+- 工作区**不干净（用户正在操作）**：
+  - `frames/frames.json` modified（current_id=40，用户数据，未动）；
+  - `assets/assets.json` + 17 张图被用户在 UI 删除（当前 14 素材 / 1 图；未恢复/未提交）；
+  - `tasks/返回庭院/assets.json` deleted；`tasks/测试/` 用户新建未跟踪。
+- 当前任务：`返回庭院`（flow/meta 已从 `8ee414c` 恢复，`45c1f32`）+ `测试`（用户新建）；flow 使用内联 OCR。
+- **代码修复**：`b910a2b`（第一轮 P0/P1）、`c6cae94`（全局搜索/分类、OCR polygon/live、死 id）。P1-8 模式/reset 已收敛，识别掩膜/操作区 shape 两套几何按语义保留。
+- 剩余：derived OCR lines 运行期掩膜、真实设备回归；用户数据未提交。
 - 4:21 干净基线：`f6be0f0`（22 帧 / 返回庭院 3 素材 / 无全局 assets）；18:42~19:14 为 docs-only；19:30 `9618cb5` 起进入实现。详见 `RECOVERY-AUDIT.md`。
-- **代码修复**：提交 `b910a2b`；独立审计 P0-1~P0-3、P1-1~P1-7 已修，P1-8 行为复位已修但双状态存储未合并；P2 `live` 强制重抓、OCR 识别 polygon 保存仍有限制。见 `AUDIT-SUBPROCESS-2026-11-01.md §6`。
 - 真正的迁移归档在：
   - `archive/migration-20261101` = `29b696f`；
   - 2827 个素材 / 2099 张图 / 55 个任务包；
@@ -59,19 +60,20 @@ status: in_progress
 
 ## 3. 下一步
 
-已完成（2026-11-01 22:20）：
+已完成：
 
-1. 代码修复 `b910a2b`：P0-1~P0-3、P1-1~P1-7 已修；P1-8 行为复位已修，双状态存储未合并；
-2. `8ee414c` 的 `返回庭院` flow/meta 已恢复（`45c1f32`）；
-3. 审计报告已纳入 git（`30d3145`）；
-4. `cargo test --workspace` = 381 passed；UI pure test 42 checks；task lint 1/0。
+1. `b910a2b`：P0-1~P0-3、P1-1~P1-7；P1-8 模式/reset 收敛；
+2. `45c1f32`：`返回庭院` flow/meta 恢复；
+3. `30d3145`：审计报告纳入 git；
+4. `c6cae94`：全局素材搜索/分类、OCR polygon 单条/批量保存、`live=1` 强制抓帧、死 DOM id 25→0；
+5. 测试：390 passed；UI 106 checks / 0 dead ids；task lint 2/0。
 
 剩余：
 
-1. OCR 识别 polygon 后端保存限制；
-2. `frame_for_test live` 强制重抓（P2）；
+1. derived OCR (`ocr_mode=lines`) 运行期 polygon 掩膜；
+2. 真实浏览器/设备点选回归；
 3. 素材恢复路线 A/B/C（见 `RECOVERY-AUDIT.md`）；
-4. 真实浏览器点选/实机回归；25 个旧 DOM 死 id 清理（P3）。
+4. 用户当前 assets/tasks/frames 数据未提交（用户实时操作，助手未动）。
 
 ## 4. 恢复路线（待裁定）
 

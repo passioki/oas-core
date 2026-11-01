@@ -9,9 +9,9 @@
 |---|---|
 | 分支/HEAD | `dev` / `983c740` |
 | 恢复节点 | `main` = `385d611`（v1.2.3） |
-| 测试 | `cargo test --workspace` = **381 passed / 0 failed**；UI pure test 42 checks；task lint 1/0 |
+| 测试 | `cargo test --workspace` = **390 passed / 0 failed**；UI pure test 106 checks / 0 dead ids；task lint 2/0 |
 | 工作区 | **不干净**：`frames/frames.json` 改动；`tasks/返回庭院` 删除未提交 |
-| 任务 | `返回庭院` flow/meta 已从 `8ee414c` 恢复（`45c1f32`）；task assets 文件删除，flow 使用内联 OCR |
+| 任务 | `返回庭院` flow/meta 已恢复（`45c1f32`）+ 用户新建 `测试`；task assets 文件删除，flow 使用内联 OCR |
 | 当前 `assets/` | **34 个素材 / 18 图（助手错误恢复，非权威）** |
 | 迁移归档 | `archive/migration-20261101 = 29b696f`：2827 素材 / 2099 图 / 55 任务 |
 | 版本 | dev Cargo `0.1.0` |

@@ -2996,3 +2996,12 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - 剩余：OCR 识别 polygon 后端保存限制；live 强制重抓未做（P2）
 
 | 状态 | 🔄 主体已修，剩余项见上 |
+
+## 第二轮修复（22:45）
+
+- 全局搜索/分类下拉：`#global-asset-search` + `#global-asset-category-filter`，复用任务库过滤；死 DOM id 25→0。
+- OCR polygon 单条/批量保存 + live=1 强制抓帧：后端 `c6cae94`。
+- 测试：390 passed；UI 106 checks；task lint 2/0。
+- 剩余：derived OCR lines 运行期掩膜；真实设备回归；用户数据未提交。
+
+| 状态 | 🔄 代码主体完成；数据由用户实时操作，未提交 |

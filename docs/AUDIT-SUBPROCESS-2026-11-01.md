@@ -139,3 +139,22 @@
 | boxCenter | ✅ 只保留正确对象版本 |
 | OCR 识别 polygon 保存 | ⚠ 后端仍有限制（非操作区 action_shape；需要单独扩展字段） |
 | `frame_for_test live` 强制重抓 | ⬜ 仍取缓存 live_frame（P2） |
+
+## 7. 第二轮（2026-11-01 22:45）
+
+用户追加要求：全局素材库补搜索/分类下拉；仍未解决 1-6 急处理；尽量子进程。
+
+由 2 个子进程完成：
+
+- UI：全局 `#global-asset-search` + `#global-asset-category-filter`（复用任务库过滤），SelectionTool 模式收敛/reset，死 DOM id 25→0，OCR polygon UI payload，测试 42→106。
+- Backend：`/task/save_asset`、`/task/save_assets` 支持 OCR polygon/ocr_mode/ocr_text/ocr_source_roi；`live=1` 真实抓帧失败不再回退缓存；serve 测试 28→37。
+- 代码提交：`c6cae94 fix(editor): global asset filters and OCR polygon/live save`
+- 测试：`cargo test --workspace` = **390 passed / 0 failed**；`node ui_pure_test.js` = **106 checks / 0 dead ids**；`task lint` = 2/0（返回庭院 + 用户新建“测试”）。
+- 浏览器（8791 临时服）实测：全局库 14→搜索“返回” 1 行→分类“式神录”1 行；状态“共 14 / 显示 1”；无 JS 错误。
+
+剩余：
+
+- 识别 polygon 的 **derived OCR (`ocr_mode=lines`) 运行期掩膜** 尚未应用（保存已修；runtime 路径提前 return）。
+- SelectionTool 模式/reset 已收敛；识别掩膜与操作区 shape 两套几何按语义保留，不强行合并。
+- 真实设备点选未做；仅 headless + Node + Rust 测试。
+- 工作区数据由用户实时操作（assets 14、任务测试、frames current_id 40），未由助手提交。
