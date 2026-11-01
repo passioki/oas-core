@@ -62,6 +62,7 @@
 | 帧-素材关系 | 唯一关系 = `Asset.positions`；帧行显示关联素材数；只读关系浏览器显示帧→素材、素材→帧、素材共现、帧共享素材、录制 transition；支持 alternative/requires/similar/overlay 标注；**无 interface 概念** |
 | 新 DSL | `key`、`restart_app` 已实现，前端 builder/flow_model 已补齐 |
 | 帧归档 | 已补庭院/设置/式神录/探索/町中/御魂/斗技/结界突破/逢魔/悬赏/宠物小屋/退出弹窗/加载/启动参考帧 |
+| 信息架构 | 素材页 = 全局素材库 + 识别/区域；任务页 = 当前任务素材库 + 运行/完成条件；素材列表不再按任务显示在素材页 |
 | 帧安全 | 清空列表必须确认；清空前自动备份到 `frames/.backup/clear-<时间>/`（含 frames.json + PNG） |
 | 待办 | 活动页参考帧继续补；帧-素材关系继续扩展（替代/依赖/transition）；按 `docs/EDITOR-UX-PLAN.md` 做编辑器 UX/选择模型改版；不引入 interface/ui-map |
 | 关系证据 | `relations/observations.jsonl` append-only；`relations/annotations.json` 人工标注；图片页「录制关系」「标注关系」写入 |

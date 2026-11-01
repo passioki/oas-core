@@ -2738,6 +2738,32 @@ Asset.positions = [frame_id, ...]
 
 | 状态 | ✅ 已执行：dev `workspace.package.version = 0.1.0`；`oasd --version` = 0.1.0；旧 v1.x tag 保留 |
 
+---
+
+# ★ §E-68 ★★★ [11-01 20:05] **任务素材库信息架构修正**
+
+> 触发：用户指出素材页的「素材库」实际依赖当前任务，应放在任务页；素材页应显示全局素材库。
+
+## 调整
+
+- **任务页**新增「任务素材库（跟随当前任务）」：
+  - 搜索、分类筛选、刷新、批量帧测试；
+  - 素材列表、排序、编辑、位置帧、操作区、点测/拖测；
+  - 该列表只在选中任务时有内容。
+- **素材页**改为「素材库（全局）」：
+  - 恢复 `library-id` / `btn-library-save` / `library-select` / `btn-library-refresh` / `btn-library-match` / `library-status`；
+  - 保存当前 ROI 到全局库、全屏匹配库素材；
+  - 不再显示任务依赖的素材列表。
+
+## 验证
+
+- DOM 检查：`#assets-list` 唯一且父节点为 `#panel-task`；
+- `#library-select` 在 `#panel-assets`；
+- 无 JS 错误；全局库读取 0 个素材时显示「素材库：0 个素材」。
+
+| 状态 | ✅ 信息架构已修正；当前 `tasks/返回庭院` 目录被删除，任务素材库暂为空 |
+
+
 
 
 

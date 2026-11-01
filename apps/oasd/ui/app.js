@@ -2285,7 +2285,7 @@ function renderAssetList() {
     const res = taskAssetsMeta.design ? taskAssetsMeta.design.join('x') : '未设置';
     const head = document.createElement('div');
     head.className = 'muted small';
-    head.textContent = `素材库 ${taskAssetsMeta.task} · design ${res} · ${taskAssets.length} 个素材` +
+    head.textContent = `任务素材库 ${taskAssetsMeta.task} · design ${res} · ${taskAssets.length} 个素材` +
       (cat ? ` · 分类：${cat}` : '');
     assetsList.appendChild(head);
   }
