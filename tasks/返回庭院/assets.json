@@ -1,4 +1,32 @@
 {
-  "items": [],
-  "schema_version": 1
+  "schema_version": 1,
+  "items": [
+    {
+      "id": "预设",
+      "kind": "ocr_line",
+      "roi": [
+        338,
+        75,
+        83,
+        44
+      ],
+      "action_roi": [
+        334,
+        74,
+        87,
+        47
+      ],
+      "ocr_mode": "lines",
+      "ocr_text": "预设",
+      "rev": 2,
+      "positions": [
+        4,
+        6,
+        7,
+        20,
+        21
+      ]
+    }
+  ],
+  "collections": []
 }

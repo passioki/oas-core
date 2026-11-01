@@ -1,6 +1,6 @@
 {
-  "next_id": 20,
-  "current_id": 9,
+  "next_id": 23,
+  "current_id": 4,
   "frames": [
     {
       "id": 1,
@@ -165,6 +165,28 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793511845351,
+      "seen": false
+    },
+    {
+      "id": 20,
+      "name": "装备御魂成功状态",
+      "category": "式神录",
+      "file": "frame-20.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793512578505,
+      "seen": false
+    },
+    {
+      "id": 21,
+      "name": "正在使用该预设御魂状态",
+      "category": "式神录",
+      "file": "frame-21.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793512627400,
       "seen": false
     }
   ]
