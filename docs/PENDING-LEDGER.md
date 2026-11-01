@@ -3026,3 +3026,11 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - 测试：393 passed；UI 179 checks；task lint 2/0。
 
 | 状态 | ✅ 验收项代码/浏览器/真机 tap 已验；真实 UI 手势未在游戏内再点 |
+
+## ResizeObserver loop（00:15）
+
+- 修复 `a2b4b12`：rAF 合并 canvas fit、幂等写 style、live 帧不每帧 fit。
+- UI checks 203；headless 点击式神委派识别无 `__oasErrors`。
+- 未加全局错误屏蔽。
+
+| 状态 | ✅ 根因修复；用户硬刷新加载新 app.js |

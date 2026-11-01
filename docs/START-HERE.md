@@ -52,7 +52,7 @@
 | 恢复节点 | `main` = `385d611`（v1.2.3） |
 | 当前分支 | `dev`（文档/编辑器/任务数据提交；不自动合并 main） |
 | 文档 | 已独立到 `oas-core/docs`；当前设计以 ENGINE-DESIGN + PENDING-LEDGER + RESUME 为准 |
-| 当前计划 | **先读 `AUDIT-SUBPROCESS-2026-11-01.md` + `RECOVERY-AUDIT.md`**：P0/P1 + 全局搜索/分类 + OCR polygon + live + derived mask + boot + 点击分布/反选/真实测试开关已完成（`b910a2b`/`c6cae94`/`4d5759f`/`6f36a6b`/`a804848`）；393 tests + UI 179 checks + E2E 36/36 + 真机 tap；剩真实 UI 手势点选回归与 collection 真实点击 |
+| 当前计划 | **先读 `AUDIT-SUBPROCESS-2026-11-01.md` + `RECOVERY-AUDIT.md`**：P0/P1 + 全局搜索/分类 + OCR polygon + live + derived mask + boot + 点击分布/反选/真实测试开关已完成（`b910a2b`/`c6cae94`/`4d5759f`/`6f36a6b`/`a804848`）；393 tests + UI 203 checks + E2E 36/36 + 真机 tap；剩真实 UI 手势点选回归与 collection 真实点击 |
 | 截图 | 两阶段：点击立即抓取 → 弹窗预览 → 名称/分类 → 保存；无当前帧跳转 |
 | Enter | 输入框 Enter = 确认输入；弹窗 Enter = 保存截图 |
 | 实时操作 | 实时开启时画布单击/拖拽 = tap/swipe；实时暂停 = ROI 编辑 |

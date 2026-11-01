@@ -149,7 +149,7 @@
 - UI：全局 `#global-asset-search` + `#global-asset-category-filter`（复用任务库过滤），SelectionTool 模式收敛/reset，死 DOM id 25→0，OCR polygon UI payload，测试 42→106。
 - Backend：`/task/save_asset`、`/task/save_assets` 支持 OCR polygon/ocr_mode/ocr_text/ocr_source_roi；`live=1` 真实抓帧失败不再回退缓存；serve 测试 28→37。
 - 代码提交：`c6cae94 fix(editor): global asset filters and OCR polygon/live save`
-- 测试：`cargo test --workspace` = **393 passed / 0 failed**；`node ui_pure_test.js` = **179 checks / 0 dead ids**；`task lint` = 2/0（返回庭院 + 用户新建“测试”）。
+- 测试：`cargo test --workspace` = **393 passed / 0 failed**；`node ui_pure_test.js` = **203 checks / 0 dead ids**；`task lint` = 2/0（返回庭院 + 用户新建“测试”）。
 - 浏览器（8791 临时服）实测：全局库 14→搜索“返回” 1 行→分类“式神录”1 行；状态“共 14 / 显示 1”；无 JS 错误。
 
 剩余：
@@ -163,8 +163,8 @@
 
 - **derived OCR lines polygon mask**：`crates/oas-runtime/src/lib.rs:1702-1719` 在 derived 分支调用 provider 前应用 `mask_frame_for_ocr`；新增 3 个测试（有 mask/无 mask/loud failure），带变异验证。提交 `4d5759f`。
 - **E2E 真实浏览器**：Edge headless + CDP 36/36 PASS；报告 `_verify/audit-20261101/D-e2e.md`；提交 `92b4241`。全局搜索“返回”1 行、分类“式神录”3 行、刷新按钮真实 GET；任务页显示全部/搜索/分类正常；模式/reset 正常；无 JS 错误/无写请求。
-- **boot 任务素材加载**：`app.js:5768-5783` 改为先 `refreshTaskList` 再 `refreshTaskAssets/loadTaskFlow`；修复“select 已选任务但素材区空”；提交 `6f36a6b`；UI 179 checks。
-- 最终测试：`cargo test --workspace` = **393 passed / 0 failed**；UI 179 checks / 0 dead ids；task lint 2/0。
+- **boot 任务素材加载**：`app.js:5768-5783` 改为先 `refreshTaskList` 再 `refreshTaskAssets/loadTaskFlow`；修复“select 已选任务但素材区空”；提交 `6f36a6b`；UI 203 checks。
+- 最终测试：`cargo test --workspace` = **393 passed / 0 failed**；UI 203 checks / 0 dead ids；task lint 2/0。
 - 剩余：真实设备点选（无设备）；SelectionTool 两套几何按语义保留；用户当前数据未提交。
 
 ## 9. 验收修复（23:55）
@@ -175,6 +175,17 @@
 - 点击分布：`drawClickStats` 删除，只画热力/散点；侧栏统计保留。
 - 反选：rect/polygon 都带 invert；`editAssetActionRoi` 加载/保存；有效区冷色、原选中区暖橙；多边形统一虚线。
 - 真实测试：`#btn-test-mode`（实时按钮旁，默认演练）；真实模式 `POST /input/tap` / `/input/swipe`，二次确认；实时关闭拒绝。
-- 测试：`ui_pure_test` 179 checks / 0 dead ids；cargo 393 passed；E2E 36/36。
+- 测试：`ui_pure_test` 203 checks / 0 dead ids；cargo 393 passed；E2E 36/36。
 - 真实设备：`emulator-5554`，`POST /input/tap` 实测 `ok:true`（640,40），画面响应；已恢复游戏界面。
 - 报告：`_verify/audit-20261101/E-acceptance.md`。
+
+## 10. ResizeObserver loop 修复（2026-11-02 00:15）
+
+用户报错：点击“式神委派”素材的“识别”出现 `ResizeObserver loop completed with undelivered notifications`。
+
+- 根因：RO 回调同步 `fitCanvasToStage()`，该函数写 canvas style 尺寸；live 帧路径每帧也同步 fit → Chromium RO loop。
+- 修复（`apps/oasd/ui/app.js:4483-4535`）：`scheduleCanvasFit()` 用 rAF 合并；`fitCanvasToStage` 幂等（尺寸缓存+逐项比较，不重复写 style）；`setCanvasFrameSize` 只在固有分辨率变化时调度；RO 回调/面板切换/window resize 全部走调度；启动保留一次同步 fit。
+- 测试：`ui_pure_test` 179→203 checks；新增 RO 回调静态断言、rAF 合并、幂等写入、竖屏/面板 resize 行为。
+- 浏览器（Edge headless/CDP）：点击式神委派识别，OCR 命中，`window.__oasErrors=[]`，无 RO 错误；5s 4 个 live 帧 fitCalls=0；多档 resize 正常。
+- 提交：`a2b4b12 fix(ui): coalesce canvas resize to prevent ResizeObserver loop`。
+- 说明：headless 未能 100% 重现原 warning；根因路径已移除且回归测试锁定，未加全局错误屏蔽。

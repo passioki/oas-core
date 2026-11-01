@@ -13,14 +13,14 @@ status: in_progress
 
 ## 0. 当前状态（磁盘 + git 实测）
 
-- 分支 `dev`，HEAD `a804848`；`main`/`origin/main` = `385d611`（v1.2.3）。
-- 测试：`cargo test --workspace` = **393 passed / 0 failed**（runtime 113+2 / task 55 / oasd 140）；UI pure test **179 checks / 0 dead ids**；task lint 2/0；E2E 36/36。
+- 分支 `dev`，HEAD `a2b4b12`；`main`/`origin/main` = `385d611`（v1.2.3）。
+- 测试：`cargo test --workspace` = **393 passed / 0 failed**（runtime 113+2 / task 55 / oasd 140）；UI pure test **203 checks / 0 dead ids**；task lint 2/0；E2E 36/36。
 - 工作区**不干净（用户正在操作）**：
   - `frames/frames.json` modified（current_id=40，用户数据，未动）；
   - `assets/assets.json` + 17 张图被用户在 UI 删除（当前 14 素材 / 1 图；未恢复/未提交）；
   - `tasks/返回庭院/assets.json` deleted；`tasks/测试/` 用户新建（是否已跟踪以 git 为准）。
 - 当前任务：`返回庭院`（flow/meta 已从 `8ee414c` 恢复，`45c1f32`）+ `测试`（用户新建）；flow 使用内联 OCR。
-- **代码修复**：`b910a2b`（P0/P1）、`c6cae94`（全局搜索/分类、OCR polygon/live、死 id）、`4d5759f`（derived OCR lines polygon mask）、`6f36a6b`（boot 任务素材加载）、`92b4241`（E2E 报告）、`a804848`（点击分布/反选/真实测试开关）。
+- **代码修复**：`b910a2b`（P0/P1）、`c6cae94`（全局搜索/分类、OCR polygon/live、死 id）、`4d5759f`（derived OCR lines polygon mask）、`6f36a6b`（boot 任务素材加载）、`92b4241`（E2E 报告）、`a804848`（点击分布/反选/真实测试开关）、`a2b4b12`（ResizeObserver 循环修复）。
 - P1-8 模式/reset 已收敛；识别掩膜/操作区 shape 两套几何按语义保留。
 - 剩余：真实设备/人工点选；用户数据未提交；`#btn-task-refresh` 与素材区同步仍是 P2。
 - 4:21 干净基线：`f6be0f0`（22 帧 / 返回庭院 3 素材 / 无全局 assets）；18:42~19:14 为 docs-only；19:30 `9618cb5` 起进入实现。详见 `RECOVERY-AUDIT.md`。
@@ -68,7 +68,7 @@ status: in_progress
 3. `6f36a6b`：boot 后自动加载已选任务素材；
 4. `92b4241`：E2E 报告（36/36 PASS）；
 5. `45c1f32`：返回庭院 flow/meta；`30d3145`：审计报告入 git；
-6. 测试：393 passed；UI 179 checks / 0 dead ids；task lint 2/0。
+6. 测试：393 passed；UI 203 checks / 0 dead ids；task lint 2/0。
 
 剩余：
 
