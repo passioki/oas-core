@@ -2937,7 +2937,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - “框选抽函数”未落地：`polygon/polyMode` 与 `actionPoly/actionPolyMode` 两套。
 - `validate_action_shape` 缺 polygon 自交/越界校验（`oas-task lib.rs:169`）。
 
-| 状态 | ⛔ 待用户确认修复顺序；未改代码 |
+| 状态 | 🔄 已修 P0-1~P0-4 + P1-2/3/4/6；剩 P1-1 drag、P1-5 SelectionTool |
 
 ## 修复进度（21:20）
 
