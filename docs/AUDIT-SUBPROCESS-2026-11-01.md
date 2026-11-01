@@ -149,7 +149,7 @@
 - UI：全局 `#global-asset-search` + `#global-asset-category-filter`（复用任务库过滤），SelectionTool 模式收敛/reset，死 DOM id 25→0，OCR polygon UI payload，测试 42→106。
 - Backend：`/task/save_asset`、`/task/save_assets` 支持 OCR polygon/ocr_mode/ocr_text/ocr_source_roi；`live=1` 真实抓帧失败不再回退缓存；serve 测试 28→37。
 - 代码提交：`c6cae94 fix(editor): global asset filters and OCR polygon/live save`
-- 测试：`cargo test --workspace` = **390 passed / 0 failed**；`node ui_pure_test.js` = **106 checks / 0 dead ids**；`task lint` = 2/0（返回庭院 + 用户新建“测试”）。
+- 测试：`cargo test --workspace` = **393 passed / 0 failed**；`node ui_pure_test.js` = **108 checks / 0 dead ids**；`task lint` = 2/0（返回庭院 + 用户新建“测试”）。
 - 浏览器（8791 临时服）实测：全局库 14→搜索“返回” 1 行→分类“式神录”1 行；状态“共 14 / 显示 1”；无 JS 错误。
 
 剩余：
@@ -158,3 +158,11 @@
 - SelectionTool 模式/reset 已收敛；识别掩膜与操作区 shape 两套几何按语义保留，不强行合并。
 - 真实设备点选未做；仅 headless + Node + Rust 测试。
 - 工作区数据由用户实时操作（assets 14、任务测试、frames current_id 40），未由助手提交。
+
+## 8. 第三轮收口（2026-11-01 23:15）
+
+- **derived OCR lines polygon mask**：`crates/oas-runtime/src/lib.rs:1702-1719` 在 derived 分支调用 provider 前应用 `mask_frame_for_ocr`；新增 3 个测试（有 mask/无 mask/loud failure），带变异验证。提交 `4d5759f`。
+- **E2E 真实浏览器**：Edge headless + CDP 36/36 PASS；报告 `_verify/audit-20261101/D-e2e.md`；提交 `92b4241`。全局搜索“返回”1 行、分类“式神录”3 行、刷新按钮真实 GET；任务页显示全部/搜索/分类正常；模式/reset 正常；无 JS 错误/无写请求。
+- **boot 任务素材加载**：`app.js:5768-5783` 改为先 `refreshTaskList` 再 `refreshTaskAssets/loadTaskFlow`；修复“select 已选任务但素材区空”；提交 `6f36a6b`；UI 108 checks。
+- 最终测试：`cargo test --workspace` = **393 passed / 0 failed**；UI 108 checks / 0 dead ids；task lint 2/0。
+- 剩余：真实设备点选（无设备）；SelectionTool 两套几何按语义保留；用户当前数据未提交。

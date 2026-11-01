@@ -3005,3 +3005,13 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - 剩余：derived OCR lines 运行期掩膜；真实设备回归；用户数据未提交。
 
 | 状态 | 🔄 代码主体完成；数据由用户实时操作，未提交 |
+
+## 第三轮收口（23:15）
+
+- derived OCR lines polygon mask：`4d5759f`；新增 3 测试。
+- E2E：36/36 PASS，报告 `_verify/audit-20261101/D-e2e.md`，提交 `92b4241`。
+- boot 任务素材加载：`6f36a6b`；UI 108 checks。
+- 393 passed；task lint 2/0。
+- 剩余：真实设备/人工点选；用户数据未提交。
+
+| 状态 | ✅ 代码/测试/E2E 主体收口；仅剩真实设备与用户数据 |
