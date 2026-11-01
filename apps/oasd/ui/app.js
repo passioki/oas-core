@@ -4,6 +4,7 @@
 
 const canvas = document.getElementById('screen');
 const ctx = canvas.getContext('2d');
+const hintEl = document.getElementById('hint');
 const statusEl = document.getElementById('status');
 const roiEl = document.getElementById('roi');
 const resultEl = document.getElementById('result');
@@ -160,6 +161,8 @@ let liveBusy = false;
 let liveSocket = null;
 let liveObjectUrl = null;
 let liveReconnectTimer = null;
+// Live-preview passthrough: a pending mouse gesture on the live canvas.
+let liveInputDrag = null;
 let roi = null; // {x,y,w,h} 识别框（前端识别/裁剪区域）
 let roiBack = null; // v1.2 操作区域（action_roi）；null = 默认识别区域
 let lastMatch = null; // v1.2.2: last image-match result; save-with-action-region source
@@ -269,6 +272,55 @@ function toFrame(ev) {
     x: Math.round((ev.clientX - r.left) * sx),
     y: Math.round((ev.clientY - r.top) * sy),
   };
+}
+
+// Live passthrough: only while the live preview is current. Click -> tap,
+// drag -> swipe. ROI/polygon editing is intentionally paused in this mode.
+const LIVE_TAP_SLOP = 6;
+function clampToFrame(p) {
+  return {
+    x: Math.max(0, Math.min(Math.max(0, canvas.width - 1), p.x)),
+    y: Math.max(0, Math.min(Math.max(0, canvas.height - 1), p.y)),
+  };
+}
+function liveInputAllowed() {
+  return livePreview === true;
+}
+async function sendLiveTap(p) {
+  const r = await postJson('/input/tap', { x: p.x, y: p.y });
+  if (!r || !r.ok) {
+    throw new Error((r && r.errors || []).join('; ') || 'tap failed');
+  }
+  resultEl.textContent = `实时操作：点击 (${p.x}, ${p.y})\n设备：${r.device}`;
+  log(`[实时] tap (${p.x}, ${p.y}) device=${r.device}`);
+}
+async function sendLiveSwipe(from, to, ms) {
+  const r = await postJson('/input/swipe', { from: [from.x, from.y], to: [to.x, to.y], ms });
+  if (!r || !r.ok) {
+    throw new Error((r && r.errors || []).join('; ') || 'swipe failed');
+  }
+  resultEl.textContent = `实时操作：滑动 (${from.x}, ${from.y}) → (${to.x}, ${to.y}) ${ms}ms\n设备：${r.device}`;
+  log(`[实时] swipe (${from.x}, ${from.y}) -> (${to.x}, ${to.y}) ${ms}ms device=${r.device}`);
+}
+function finishLiveInput(ev) {
+  if (!liveInputDrag || !liveInputAllowed()) return;
+  const d = liveInputDrag;
+  liveInputDrag = null;
+  const dx = ev.clientX - d.clientX;
+  const dy = ev.clientY - d.clientY;
+  if (Math.abs(dx) <= LIVE_TAP_SLOP && Math.abs(dy) <= LIVE_TAP_SLOP) {
+    void sendLiveTap(d.start).catch((e) => {
+      resultEl.textContent = '实时操作失败：' + (e && e.message ? e.message : e);
+      log('[实时] tap 失败：' + (e && e.message ? e.message : e));
+    });
+    return;
+  }
+  const end = clampToFrame(toFrame(ev));
+  const ms = Math.max(50, Math.min(2000, Math.round(performance.now() - d.t)));
+  void sendLiveSwipe(d.start, end, ms).catch((e) => {
+    resultEl.textContent = '实时操作失败：' + (e && e.message ? e.message : e);
+    log('[实时] swipe 失败：' + (e && e.message ? e.message : e));
+  });
 }
 
 function normalizeRect(a, b) {
@@ -3224,6 +3276,11 @@ function updateLiveButton() {
   if (!btnLivePreview) return;
   btnLivePreview.textContent = livePreview ? '实时：开' : '实时：暂停';
   btnLivePreview.classList.toggle('live-on', livePreview);
+  if (hintEl) {
+    hintEl.textContent = livePreview
+      ? '实时：开 · 画布直接操作设备（单击=点击，拖拽=滑动）；暂停实时可框选 ROI'
+      : '实时：暂停 · 画布用于 ROI/多边形编辑；点「实时：开」恢复设备操作';
+  }
 }
 
 async function loadFrame(live = false) {
@@ -3313,6 +3370,7 @@ function startLivePollingFallback() {
 
 function startLivePreview() {
   livePreview = true;
+  liveInputDrag = null;
   updateLiveButton();
   if (liveTimer) {
     clearInterval(liveTimer);
@@ -3329,6 +3387,7 @@ function startLivePreview() {
 
 function pauseLivePreview() {
   livePreview = false;
+  liveInputDrag = null;
   if (liveTimer) {
     clearInterval(liveTimer);
     liveTimer = null;
@@ -3398,6 +3457,19 @@ async function doCapture() {
 }
 
 canvas.addEventListener('mousedown', (ev) => {
+  // Live passthrough: current screen is the device, so a click/drag is sent to
+  // the emulator. Pause 实时 to get the ROI/polygon editing behavior back.
+  if (liveInputAllowed()) {
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    liveInputDrag = {
+      start: clampToFrame(toFrame(ev)),
+      clientX: ev.clientX,
+      clientY: ev.clientY,
+      t: performance.now(),
+    };
+    return;
+  }
   // P1-d2 step 3: every detected block is individually operable. Clicking inside
   // a box selects that block (ROI := box) so 生成素材 JSON applies to it, and
   // shows only that block's text.
@@ -3471,6 +3543,10 @@ canvas.addEventListener('mousedown', (ev) => {
 });
 
 canvas.addEventListener('mousemove', (ev) => {
+  if (liveInputAllowed()) {
+    if (liveInputDrag) ev.preventDefault();
+    return;
+  }
   if (polyMode) {
     if (polyDrag === null || !polygon) return;
     polygon[polyDrag] = toFrame(ev);
@@ -3491,7 +3567,11 @@ canvas.addEventListener('mousemove', (ev) => {
   draw();
 });
 
-canvas.addEventListener('mouseup', () => {
+canvas.addEventListener('mouseup', (ev) => {
+  if (liveInputAllowed() && liveInputDrag) {
+    finishLiveInput(ev);
+    return;
+  }
   if (polyMode) {
     if (polyDrag === null) return;
     polyDrag = null;
@@ -3526,6 +3606,12 @@ canvas.addEventListener('mouseup', () => {
   if (roi) log(`选中识别框 ${roi.w}x${roi.h} @ ${roi.x},${roi.y}`);
 });
 
+// Mouse release outside the canvas still ends a live gesture; otherwise the
+// browser leaves liveInputDrag set until the next click.
+window.addEventListener('mouseup', (ev) => {
+  if (liveInputAllowed() && liveInputDrag) finishLiveInput(ev);
+});
+
 // 最近顶点（8px 内）——用于闭合后编辑顶点
 function nearestVertex(p) {
   if (!polygon) return -1;
@@ -3545,6 +3631,7 @@ function nearestVertex(p) {
 
 // §22.10：双击行为 —— 未闭合则闭合；已闭合且双击顶点则删除该顶点（保持 >=3）。
 canvas.addEventListener('dblclick', (ev) => {
+  if (liveInputAllowed()) return;
   if (!polyMode || !polygon || polygon.length < 3) return;
   ev.preventDefault();
   const p = toFrame(ev);

@@ -11,6 +11,8 @@
 //!   GET  /frame.png       -> last captured frame (404 before the first capture)
 //!   POST /capture         -> capture a fresh frame, returns JSON {width,height}
 //!   GET  /state           -> JSON {captured, width, height, device, ocr, det}
+//!   POST /input/tap       -> live-preview passthrough: tap current device
+//!   POST /input/swipe     -> live-preview passthrough: swipe current device
 //!   GET  /ocr?x&y&w&h     -> single-line OCR
 //!   GET  /lines?x&y&w&h   -> multi-line det+rec
 //!   POST /task/save_asset -> crop the LAST captured frame -> task bundle
@@ -37,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use oas_adapter_pc::Adb;
 use oas_codec::encode_png;
 use oas_runtime::RunResult;
-use oas_types::{Frame, Outcome, ScreenSource};
+use oas_types::{Frame, InputSink, Outcome, Point, ScreenSource};
 
 use crate::run::{RunOptions, RunReport};
 use crate::schedule::{ResetOptions, SchedulerOptions};
@@ -252,6 +254,37 @@ fn capture_device_frame(adb: &Adb) -> Result<(String, Frame), String> {
     let mut screen = adb.screen(&serial);
     let frame = screen.grab()?;
     Ok((serial, frame))
+}
+
+/// One live-preview passthrough tap. Coordinates are in the current live frame.
+#[derive(Debug, Deserialize)]
+struct InputTapRequest {
+    x: i32,
+    y: i32,
+}
+
+/// One live-preview passthrough swipe. Coordinates are in the current live frame.
+#[derive(Debug, Deserialize)]
+struct InputSwipeRequest {
+    from: [i32; 2],
+    to: [i32; 2],
+    #[serde(default)]
+    ms: Option<u32>,
+}
+
+/// Validate a live-preview input point against the frame just shown to the user.
+/// Returning 400 here prevents an accidental desktop click from landing outside
+/// the device screen (or on a stale/non-live frame).
+fn validate_live_input_point(x: i32, y: i32, width: u32, height: u32) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Err("no live frame size available".to_string());
+    }
+    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+        return Err(format!(
+            "point ({x},{y}) outside live frame {width}x{height}"
+        ));
+    }
+    Ok(())
 }
 
 // --- minimal WebSocket live preview (no extra dependency) -------------------
@@ -997,6 +1030,10 @@ impl Server {
                 );
                 self.send_json(&mut out, 200, &body)
             }
+            // Live-preview passthrough: only meaningful while the WebSocket
+            // live frame is current. The UI gates this on `livePreview`.
+            ("POST", "/input/tap") => self.handle_input_tap(&mut out, &body),
+            ("POST", "/input/swipe") => self.handle_input_swipe(&mut out, &body),
             // --- §22.27 会话图片列表（旧 annotator「图片」面板）---
             ("GET", "/frames") => self.handle_frames(&mut out),
             ("GET", "/frames/image") => self.handle_frame_image(&mut out, &path),
@@ -1536,6 +1573,119 @@ impl Server {
     ) -> std::io::Result<()> {
         let body = serde_json::json!({ "ok": false, "errors": errors });
         self.send_json(out, code, &body.to_string())
+    }
+
+    /// Input passthrough is legal only while a live frame exists. The UI gates
+    /// this on the 实时 toggle; a selected gallery frame pauses that toggle.
+    fn live_input_context(&self) -> Result<(String, u32, u32), String> {
+        let (serial, width, height) = {
+            let st = self
+                .state
+                .lock()
+                .map_err(|_| "state lock poisoned".to_string())?;
+            let Some(frame) = st.live_frame.as_ref() else {
+                return Err("no live frame yet; wait for live preview or press 实时：开".to_string());
+            };
+            (st.device.clone(), frame.width, frame.height)
+        };
+        if width == 0 || height == 0 {
+            return Err("live frame has zero size".to_string());
+        }
+        let serial = if serial.trim().is_empty() {
+            let wanted = crate::config::device_serial();
+            self.adb
+                .resolve_device(wanted.as_deref())
+                .map_err(|e| format!("resolve device: {e}"))?
+                .serial
+        } else {
+            serial
+        };
+        Ok((serial, width, height))
+    }
+
+    /// `POST /input/tap` — send one tap to the live device.
+    fn handle_input_tap(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let req: InputTapRequest = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let (serial, width, height) = match self.live_input_context() {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        if let Err(e) = validate_live_input_point(req.x, req.y, width, height) {
+            return self.send_errors(out, 400, vec![e]);
+        }
+        let mut input = self.adb.input(&serial);
+        match input.click(Point {
+            x: req.x,
+            y: req.y,
+        }) {
+            Ok(()) => {
+                let body = serde_json::json!({
+                    "ok": true,
+                    "device": serial,
+                    "gesture": "tap",
+                    "x": req.x,
+                    "y": req.y,
+                });
+                self.editor_log(&format!("input tap device={serial} x={} y={}", req.x, req.y));
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(e) => {
+                self.editor_log(&format!("input tap FAIL device={serial} error={e}"));
+                self.send_errors(out, 500, vec![format!("adb input tap failed: {e}")])
+            }
+        }
+    }
+
+    /// `POST /input/swipe` — send one swipe to the live device.
+    fn handle_input_swipe(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let req: InputSwipeRequest = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let (serial, width, height) = match self.live_input_context() {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        if let Err(e) = validate_live_input_point(req.from[0], req.from[1], width, height) {
+            return self.send_errors(out, 400, vec![format!("from: {e}")]);
+        }
+        if let Err(e) = validate_live_input_point(req.to[0], req.to[1], width, height) {
+            return self.send_errors(out, 400, vec![format!("to: {e}")]);
+        }
+        let ms = req.ms.unwrap_or(300).clamp(50, 2000);
+        let from = Point {
+            x: req.from[0],
+            y: req.from[1],
+        };
+        let to = Point {
+            x: req.to[0],
+            y: req.to[1],
+        };
+        let mut input = self.adb.input(&serial);
+        match input.swipe(from, to, ms) {
+            Ok(()) => {
+                let body = serde_json::json!({
+                    "ok": true,
+                    "device": serial,
+                    "gesture": "swipe",
+                    "from": req.from,
+                    "to": req.to,
+                    "ms": ms,
+                });
+                self.editor_log(&format!(
+                    "input swipe device={serial} from={:?} to={:?} ms={ms}",
+                    req.from, req.to
+                ));
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(e) => {
+                self.editor_log(&format!("input swipe FAIL device={serial} error={e}"));
+                self.send_errors(out, 500, vec![format!("adb input swipe failed: {e}")])
+            }
+        }
     }
 
     fn send_file(&self, out: &mut TcpStream, path: &str, ctype: &str) -> std::io::Result<()> {
@@ -5195,6 +5345,18 @@ mod tests {
         assert!(text.contains("ocr('集合')"), "{text}");
         assert!(!text.contains("甲"), "{text}");
         assert!(!text.contains("乙"), "{text}");
+    }
+
+    #[test]
+    fn live_input_point_validation_rejects_bad_coordinates() {
+        assert!(validate_live_input_point(0, 0, 1280, 720).is_ok());
+        assert!(validate_live_input_point(1279, 719, 1280, 720).is_ok());
+        let err = validate_live_input_point(1280, 10, 1280, 720).unwrap_err();
+        assert!(err.contains("outside"), "{err}");
+        let err = validate_live_input_point(-1, 10, 1280, 720).unwrap_err();
+        assert!(err.contains("outside"), "{err}");
+        let err = validate_live_input_point(1, 1, 0, 720).unwrap_err();
+        assert!(err.contains("frame size"), "{err}");
     }
 
     struct TempDir(PathBuf);
