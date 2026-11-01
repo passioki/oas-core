@@ -60,5 +60,5 @@ status: in_progress
 - `apps/oasd/src/serve.rs`（移除 interface，保留 capture/帧/素材）；
 - `apps/oasd/ui/app.js`（移除界面 UI，帧行显示关联素材数）；
 - `apps/oasd/ui/builder.js` / `flow_model.js`（保留 key/restart）；
-- `frames/frames.json`（22 帧，无 interface_id）；
+- `frames/frames.json`（22 帧，无 interface_id）；提交 `1c315c1`；
 - 测试：`cargo test --workspace` = 352 passed。
