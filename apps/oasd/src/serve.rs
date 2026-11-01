@@ -1675,7 +1675,14 @@ impl Server {
         for (k, v) in q {
             match k.as_str() {
                 "live" => live = v == "1" || v == "true",
-                "frame_id" => frame_id = v.parse::<u64>().ok(),
+                "frame_id" => {
+                    // B-11: an unparseable id is a client error, never a silent
+                    // fallback to "current frame" (which would make the test
+                    // report a different frame than the user asked for).
+                    frame_id = Some(v.parse::<u64>().map_err(|_| {
+                        format!("invalid frame_id `{v}` (must be an unsigned integer)")
+                    })?);
+                }
                 _ => {}
             }
         }
@@ -3017,17 +3024,17 @@ impl Server {
                         }
                     }
                     "region" => {
-                        let ok = item.roi.map_or(false, |r| {
-                            r[0] >= 0
-                                && r[1] >= 0
-                                && r[2] > 0
-                                && r[3] > 0
-                                && (r[0] + r[2]) as u32 <= *fw
-                                && (r[1] + r[3]) as u32 <= *fh
-                        });
-                        result["pass"] = serde_json::json!(ok);
-                        if !ok {
-                            result["error"] = serde_json::json!("roi outside frame");
+                        // B-06/B-09: validate the geometry the runtime will use
+                        // (`action_shape.bbox()` first), not only the legacy roi.
+                        match region_batch_geometry(item, *fw, *fh) {
+                            Ok(geom) => {
+                                result["pass"] = serde_json::json!(true);
+                                result["action_box"] = serde_json::json!(geom);
+                            }
+                            Err(e) => {
+                                result["pass"] = serde_json::json!(false);
+                                result["error"] = serde_json::json!(e);
+                            }
                         }
                     }
                     _ => {
@@ -3234,7 +3241,10 @@ impl Server {
         let best = best.ok_or_else(|| "collection has no resolvable members".to_string());
         let body = match best {
             Ok((member, score, point)) => {
-                let action = assets.click_back(&member);
+                // B-10: report the operation box in the CURRENT frame (winner
+                // shape translated by the match offset), not the authored one.
+                let action =
+                    collection_action_box(&assets, &id, &member, point, frame.width, frame.height);
                 serde_json::json!({
                     "ok": true,
                     "task": task,
@@ -3245,7 +3255,7 @@ impl Server {
                     "y": point.map(|p| p.y).unwrap_or(-1),
                     "threshold": threshold,
                     "pass": score >= threshold,
-                    "action_box": action.map(|r| [r.x, r.y, r.w, r.h]),
+                    "action_box": action,
                     "elapsed_ms": t0.elapsed().as_secs_f64() * 1000.0,
                     "frame_source": frame_source,
                 })
@@ -4198,27 +4208,51 @@ impl Server {
         )
     }
 
-    /// Copy a task's `assets.json` + `images/` into a timestamped recovery dir
-    /// before the task directory is removed.
+    /// Copy a task's material files into a timestamped recovery dir before the
+    /// task directory is removed.
+    ///
+    /// B-14: `assets.json` missing must NOT skip the backup — a bundle can have
+    /// `images/` (or only flow/meta) without a manifest. Everything that exists
+    /// is copied; only a truly empty bundle returns `Ok(None)`.
     fn backup_task_assets(&self, task: &str, root: &Path) -> Result<Option<PathBuf>, String> {
         let assets_json = root.join("assets.json");
-        if !assets_json.is_file() {
+        let src_images = root.join("images");
+        let flow_json = root.join("flow.json");
+        let meta_json = root.join("meta.json");
+        let has_assets = assets_json.is_file();
+        let has_images = src_images.is_dir();
+        let has_flow = flow_json.is_file();
+        let has_meta = meta_json.is_file();
+        if !has_assets && !has_images && !has_flow && !has_meta {
             return Ok(None);
         }
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let dest = self
-            .assets_dir
-            .join("_deleted-tasks")
-            .join(format!("{task}-{stamp}"));
+        let base = self.assets_dir.join("_deleted-tasks");
+        let mut dest = base.join(format!("{task}-{stamp}"));
+        // Two deletes inside one millisecond must not overwrite the first backup.
+        let mut seq = 1;
+        while dest.exists() {
+            dest = base.join(format!("{task}-{stamp}-{seq}"));
+            seq += 1;
+        }
         std::fs::create_dir_all(&dest)
             .map_err(|e| format!("create {}: {e}", dest.display()))?;
-        std::fs::copy(&assets_json, dest.join("assets.json"))
-            .map_err(|e| format!("copy assets.json: {e}"))?;
-        let src_images = root.join("images");
-        if src_images.is_dir() {
+        if has_assets {
+            std::fs::copy(&assets_json, dest.join("assets.json"))
+                .map_err(|e| format!("copy assets.json: {e}"))?;
+        }
+        // The flow/meta mapping is needed to restore steps after the user
+        // recovers the media; copy them with the assets.
+        for (name, src) in [("flow.json", &flow_json), ("meta.json", &meta_json)] {
+            if src.is_file() {
+                std::fs::copy(src, dest.join(name))
+                    .map_err(|e| format!("copy {name}: {e}"))?;
+            }
+        }
+        if has_images {
             let dst_images = dest.join("images");
             std::fs::create_dir_all(&dst_images)
                 .map_err(|e| format!("create {}: {e}", dst_images.display()))?;
@@ -5490,6 +5524,88 @@ fn json_opt_action_shape(
 // ---------------------------------------------------------------------------
 // N38/M1: task creation + editor-triggered runs
 // ---------------------------------------------------------------------------
+
+/// Geometry a `kind=region` asset actually clicks at runtime.
+///
+/// B-06/B-09: the runtime prefers `action_shape.bbox()` over the legacy `roi`;
+/// the batch dry-run must validate the same geometry, otherwise an out-of-frame
+/// shape is reported `pass:true` while the real click is clamped at the screen
+/// edge.
+fn region_batch_geometry(
+    item: &oas_task::AssetDecl,
+    fw: u32,
+    fh: u32,
+) -> Result<[i32; 4], String> {
+    let (geom, invert) = match item.action_shape.as_ref() {
+        Some(shape) => (
+            shape
+                .bbox()
+                .ok_or_else(|| "action_shape has no bbox".to_string())?,
+            shape.invert,
+        ),
+        None => (
+            item.roi
+                .ok_or_else(|| "region has no action_shape/roi".to_string())?,
+            false,
+        ),
+    };
+    let [x, y, w, h] = geom;
+    if x < 0 || y < 0 || w <= 0 || h <= 0 {
+        return Err(format!("geometry [{x},{y},{w},{h}] must have x,y>=0 and w,h>0"));
+    }
+    if x as i64 + w as i64 > fw as i64 || y as i64 + h as i64 > fh as i64 {
+        return Err(format!(
+            "geometry [{x},{y},{w},{h}] is outside the {fw}x{fh} frame"
+        ));
+    }
+    if invert && x <= 0 && y <= 0 && (x as i64 + w as i64) >= fw as i64 && (y as i64 + h as i64) >= fh as i64 {
+        // Only a rect can prove the effective region is empty from its bbox;
+        // for a polygon the bbox may cover the screen while the polygon does not.
+        if item.action_shape.as_ref().is_some_and(|s| s.kind == "rect") {
+            return Err("inverted action_shape leaves no effective region".to_string());
+        }
+    }
+    Ok(geom)
+}
+
+/// Operation box for a collection dry-run, in **current frame** coordinates.
+/// The winning member shape is translated by `point - template.roi`; a
+/// collection-level shape is an absolute fallback (B-10).
+fn collection_action_box(
+    assets: &oas_runtime::AssetSet,
+    collection: &str,
+    member: &str,
+    point: Option<oas_types::Point>,
+    fw: u32,
+    fh: u32,
+) -> Option<[i32; 4]> {
+    let matched = point?;
+    let member_shape = assets.click_shape(member);
+    let shape = member_shape.or_else(|| assets.click_shape(collection));
+    if let Some(shape) = shape {
+        if shape.invert {
+            return Some([0, 0, fw as i32, fh as i32]);
+        }
+        let b = shape.bbox()?;
+        let (dx, dy) = if member_shape.is_some() {
+            assets
+                .get(member)
+                .and_then(|t| t.roi)
+                .map(|roi| (matched.x - roi.x, matched.y - roi.y))
+                .unwrap_or((0, 0))
+        } else {
+            (0, 0)
+        };
+        return Some([b.x + dx, b.y + dy, b.w, b.h]);
+    }
+    let back = assets.click_back(member).or_else(|| assets.click_back(collection))?;
+    let (dx, dy) = assets
+        .get(member)
+        .and_then(|t| t.roi)
+        .map(|roi| (matched.x - roi.x, matched.y - roi.y))
+        .unwrap_or((0, 0));
+    Some([back.x + dx, back.y + dy, back.w, back.h])
+}
 
 /// Templates accepted by `POST /task/create` (the same names as M0
 /// `oasd task new --template daily|loop|utility`).
@@ -7314,5 +7430,234 @@ mod tests {
             .filter_map(|l| l.as_str())
             .collect();
         assert!(tail.iter().any(|l| l.contains("error=no adb device")), "{tail:?}");
+    }
+
+    // ---- B-06/B-09/B-11/B-14: frame source, region batch, delete backup ----
+
+    #[test]
+    fn frame_for_test_rejects_an_invalid_frame_id() {
+        // B-11: `frame_id=abc` must be an error (the HTTP layer maps every
+        // `frame_for_test` error to 400), never a silent "current frame".
+        let td = TempDir::new("frame-id-invalid");
+        let server = server_with_runs(td.path());
+        for bad in ["abc", "-1", "", "1.5"] {
+            let q = vec![("frame_id".to_string(), bad.to_string())];
+            let err = server
+                .frame_for_test(&q)
+                .expect_err("invalid frame_id must fail");
+            assert!(
+                err.contains("invalid frame_id"),
+                "frame_id={bad:?} => {err}"
+            );
+        }
+        let q = vec![("frame_id".to_string(), "999".to_string())];
+        let err = server.frame_for_test(&q).expect_err("unknown frame");
+        assert!(err.contains("not found"), "{err}");
+    }
+
+    #[test]
+    fn asset_match_route_returns_400_for_invalid_frame_id() {
+        let td = TempDir::new("frame-id-http");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path()).with_assets_dir(td.path().join("assets"));
+        make_task(&tasks_dir, "t1");
+        let bundle = oas_task::TaskBundle::open_named(&tasks_dir, "t1").expect("bundle");
+        // `make_task` authors the skeleton at 1280x720, so the template frame
+        // must match the bundle design resolution.
+        bundle
+            .save_asset(
+                oas_task::AssetDecl::template("tpl", [0, 0, 2, 2]),
+                Some(&Frame::new(1280, 720, vec![255u8; 1280 * 720 * 4])),
+            )
+            .expect("template asset");
+
+        for url in [
+            "/task/asset/match?task=t1&id=tpl&frame_id=abc",
+            "/task/asset/match?task=t1&id=tpl&frame_id=999",
+        ] {
+            let (status, body) = get_route(&server, url);
+            assert!(status.contains("400"), "{url} => {status} {body}");
+        }
+    }
+
+    #[test]
+    fn region_batch_uses_action_shape_geometry_not_the_legacy_roi() {
+        // B-06/B-09: runtime clicks `action_shape.bbox()`; the dry-run must not
+        // report fail just because the legacy `roi` is stale/out of frame.
+        let td = TempDir::new("region-batch");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path())
+            .with_frames_dir(td.path().join("frames"))
+            .with_assets_dir(td.path().join("assets"));
+        let frame = Frame::new(64, 48, vec![0u8; 64 * 48 * 4]);
+        let png = oas_codec::encode_png(&frame).expect("png");
+        let (status, out) = post_route(&server, "/frames", "image/png", &png);
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("upload json");
+        let frame_id = v["id"].as_u64().expect("frame id");
+
+        make_task(&tasks_dir, "t1");
+        let assets = serde_json::json!({
+            "schema_version": 1,
+            "design_resolution": [64, 48],
+            "items": [{
+                "id": "R",
+                "kind": "region",
+                // Stale legacy roi outside the frame; the action shape is what
+                // the runtime actually uses.
+                "roi": [100, 100, 10, 10],
+                "action_shape": {"kind": "rect", "roi": [10, 10, 20, 20], "invert": false},
+                "action_source": "fixed",
+                "positions": [frame_id]
+            }],
+            "collections": []
+        });
+        std::fs::write(
+            tasks_dir.join("t1").join("assets.json"),
+            serde_json::to_string_pretty(&assets).expect("json"),
+        )
+        .expect("write assets");
+
+        let (status, out) = post_route(
+            &server,
+            "/task/assets/batch_test",
+            "application/json",
+            br#"{"task":"t1","assets":["R"]}"#,
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("batch json");
+        let result = v["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .find(|r| r["id"] == "R")
+            .expect("region result");
+        assert_eq!(result["pass"], serde_json::Value::Bool(true), "{out}");
+        assert_eq!(result["action_box"], serde_json::json!([10, 10, 20, 20]));
+    }
+
+    #[test]
+    fn region_batch_geometry_validates_the_action_shape() {
+        let mk = |shape: serde_json::Value| -> oas_task::AssetDecl {
+            serde_json::from_value(serde_json::json!({
+                "id": "R",
+                "kind": "region",
+                "roi": [10, 10, 20, 20],
+                "action_shape": shape,
+                "action_source": "fixed"
+            }))
+            .expect("AssetDecl")
+        };
+        // In-frame shape wins over the (also in-frame) legacy roi.
+        let ok = mk(serde_json::json!({"kind":"rect","roi":[5,5,30,20],"invert":false}));
+        assert_eq!(region_batch_geometry(&ok, 64, 48).expect("valid"), [5, 5, 30, 20]);
+
+        // Out-of-frame shape must fail even when roi looks fine.
+        let bad = mk(serde_json::json!({"kind":"rect","roi":[100,100,10,10],"invert":false}));
+        let err = region_batch_geometry(&bad, 64, 48).expect_err("out of frame");
+        assert!(err.contains("outside the 64x48 frame"), "{err}");
+
+        // Inverted full-screen shape has no effective region.
+        let empty = mk(serde_json::json!({"kind":"rect","roi":[0,0,64,48],"invert":true}));
+        let err = region_batch_geometry(&empty, 64, 48).expect_err("empty effective region");
+        assert!(err.contains("no effective region"), "{err}");
+    }
+
+    #[test]
+    fn collection_action_box_is_translated_to_the_current_match() {
+        let mut assets = oas_runtime::AssetSet::new();
+        assets.insert(
+            "m",
+            oas_runtime::Template {
+                gray: oas_perceive::GrayImage::new(1, 1, vec![7u8]),
+                roi: Some(oas_types::Rect {
+                    x: 10,
+                    y: 10,
+                    w: 20,
+                    h: 20,
+                }),
+                threshold: 0.9,
+                click_polygon: None,
+            },
+        );
+        assets.set_click_shape(
+            "m",
+            oas_runtime::ClickShape {
+                rect: Some(oas_types::Rect {
+                    x: 10,
+                    y: 10,
+                    w: 20,
+                    h: 20,
+                }),
+                points: None,
+                invert: false,
+            },
+        );
+        // Match at (40,30) shifts the authored box by (+30,+20).
+        let b = collection_action_box(
+            &assets,
+            "集合",
+            "m",
+            Some(oas_types::Point { x: 40, y: 30 }),
+            64,
+            48,
+        )
+        .expect("action box");
+        assert_eq!(b, [40, 30, 20, 20]);
+    }
+
+    #[test]
+    fn task_delete_backs_up_images_even_without_assets_json() {
+        // B-14: a bundle with `images/` but no `assets.json` used to be deleted
+        // without any backup.
+        let td = TempDir::new("delete-images-only");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path()).with_assets_dir(td.path().join("assets"));
+        let root = tasks_dir.join("t1");
+        std::fs::create_dir_all(root.join("images")).expect("task dirs");
+        std::fs::write(root.join("meta.json"), "{}").expect("meta");
+        std::fs::write(root.join("images/a001.png"), b"png-bytes").expect("image");
+
+        let (status, out) = post_route(
+            &server,
+            "/task/delete",
+            "application/json",
+            br#"{"task":"t1"}"#,
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("delete json");
+        let backup = v["asset_backup"].as_str().expect("backup path");
+        assert!(
+            Path::new(backup).join("images/a001.png").is_file(),
+            "images must be backed up: {backup}"
+        );
+        assert!(!root.exists(), "task dir must be removed after backup");
+    }
+
+    #[test]
+    fn task_delete_backup_contains_assets_flow_meta_and_images() {
+        let td = TempDir::new("delete-full-bundle");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path()).with_assets_dir(td.path().join("assets"));
+        let root = tasks_dir.join("t1");
+        std::fs::create_dir_all(root.join("images")).expect("task dirs");
+        std::fs::write(root.join("meta.json"), "{}").expect("meta");
+        std::fs::write(root.join("flow.json"), "{}").expect("flow");
+        std::fs::write(root.join("assets.json"), "{}").expect("assets");
+        std::fs::write(root.join("images/a001.png"), b"png-bytes").expect("image");
+
+        let (status, out) = post_route(
+            &server,
+            "/task/delete",
+            "application/json",
+            br#"{"task":"t1"}"#,
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("delete json");
+        let backup = Path::new(v["asset_backup"].as_str().expect("backup path"));
+        for f in ["assets.json", "flow.json", "meta.json", "images/a001.png"] {
+            assert!(backup.join(f).is_file(), "backup missing {f}: {}", backup.display());
+        }
+        assert!(!root.exists());
     }
 }

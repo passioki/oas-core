@@ -256,7 +256,9 @@
     const row = document.createElement('div');
     row.className = 'asset-row' + (o.compact ? ' asset-row-compact' : '');
     row.dataset.assetId = it.id;
-    row.draggable = it.kind !== 'template_set';
+    // Only lists that actually persist /task/assets/reorder may advertise a
+    // drag handle. Referenced/global lists pass draggable:false.
+    row.draggable = o.draggable !== false && it.kind !== 'template_set';
 
     if (it.kind === 'template_set') {
       const main = makeButton('', `${it.id}：flow 引用该集合；运行时按成员顺序尝试匹配`, 'asset-main');

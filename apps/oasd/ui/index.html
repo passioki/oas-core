@@ -100,6 +100,9 @@
           <button id="btn-clear">清除识别/操作区域</button>
 
           <h3>素材库（全局）</h3>
+          <div class="row lib-toolbar">
+            <button id="btn-library-refresh" type="button">刷新全局库</button>
+          </div>
           <div id="global-assets-status" class="muted small">—</div>
           <div id="global-assets-list" class="asset-list muted">（未加载全局素材）</div>
         </section>
@@ -210,6 +213,8 @@
             <button id="assets-refresh">刷新</button>
             <button id="btn-assets-batch-test" type="button">批量帧测试（dry）</button>
           </div>
+          <div id="task-assets-hint" class="muted small">—</div>
+          <label class="opt"><input id="task-show-all-assets" type="checkbox" /> 显示全部全局素材（含未被当前任务 flow 引用）</label>
           <div id="assets-list" class="asset-list muted">（未加载任务素材）</div>
           <pre id="assets-summary" class="muted small" style="display:none">—</pre>
           <label class="opt run-opt"><input id="run-dry" type="checkbox" /> 只演练（dry-run，不点击设备）</label>

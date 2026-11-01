@@ -108,34 +108,108 @@ impl ClickShape {
         }
     }
 
-    pub fn sample(&self, w: u32, h: u32, rng: &mut crate::humanize::Rng) -> Option<Point> {
-        let bbox = self.bbox()?;
+    /// Sample one integer point that the **effective** operation region contains.
+    ///
+    /// Unlike the old silent implementation this is a loud `Result`:
+    /// * an empty effective region (e.g. a full-screen `invert` shape) is an
+    ///   error, never "click the excluded area";
+    /// * a degenerate polygon (collinear points, zero area, fewer than 3 points)
+    ///   is an error, never the bbox centre;
+    /// * the deterministic scan fallback only returns a point that
+    ///   [`Self::effective_contains`] accepts.
+    pub fn sample(&self, w: u32, h: u32, rng: &mut crate::humanize::Rng) -> Result<Point, String> {
+        if w == 0 || h == 0 {
+            return Err("exact operation shape needs a non-empty screen".to_string());
+        }
+        let bbox = self
+            .bbox()
+            .ok_or_else(|| "exact operation shape has no geometry".to_string())?;
+        let in_frame = |p: Point| p.x >= 0 && p.y >= 0 && p.x < w as i32 && p.y < h as i32;
         if self.invert {
+            // 1) Random rejection sampling (fast for normal popups).
             for _ in 0..4096 {
                 let p = Point {
                     x: rng.range_i32(0, w.saturating_sub(1) as i32),
                     y: rng.range_i32(0, h.saturating_sub(1) as i32),
                 };
                 if !self.contains(p) {
-                    return Some(p);
+                    return Ok(p);
                 }
             }
-            return None;
+            // 2) Deterministic proof that the effective region is empty. Only
+            //    pays the full-frame scan when random sampling already failed.
+            for y in 0..h as i32 {
+                for x in 0..w as i32 {
+                    let p = Point { x, y };
+                    if !self.contains(p) {
+                        return Ok(p);
+                    }
+                }
+            }
+            return Err(format!(
+                "inverted operation shape leaves no clickable point on the {}x{} screen",
+                w, h
+            ));
         }
-        for _ in 0..4096 {
-            let p = Point {
-                x: rng.range_i32(bbox.x, bbox.x + bbox.w - 1),
-                y: rng.range_i32(bbox.y, bbox.y + bbox.h - 1),
-            };
-            if self.contains(p) {
-                return Some(p);
+        if let Some(pts) = self.points.as_ref() {
+            if pts.len() < 3 {
+                return Err(format!(
+                    "operation polygon needs at least 3 points (got {})",
+                    pts.len()
+                ));
+            }
+            if polygon_area2(pts) == 0 {
+                return Err("operation polygon has zero area (collinear points)".to_string());
             }
         }
-        Some(Point {
-            x: bbox.x + bbox.w / 2,
-            y: bbox.y + bbox.h / 2,
-        })
+        // 1) Random inside the bbox.
+        for _ in 0..4096 {
+            let p = Point {
+                x: rng.range_i32(bbox.x, bbox.x.saturating_add(bbox.w).saturating_sub(1)),
+                y: rng.range_i32(bbox.y, bbox.y.saturating_add(bbox.h).saturating_sub(1)),
+            };
+            if in_frame(p) && self.contains(p) {
+                return Ok(p);
+            }
+        }
+        // 2) Deterministic scan inside the bbox ∩ screen. Catches thin polygons
+        //    that random sampling can miss without ever inventing a point.
+        let x0 = bbox.x.max(0);
+        let y0 = bbox.y.max(0);
+        let x1 = bbox
+            .x
+            .saturating_add(bbox.w)
+            .saturating_sub(1)
+            .min(w as i32 - 1);
+        let y1 = bbox
+            .y
+            .saturating_add(bbox.h)
+            .saturating_sub(1)
+            .min(h as i32 - 1);
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let p = Point { x, y };
+                if self.contains(p) {
+                    return Ok(p);
+                }
+            }
+        }
+        Err(format!(
+            "operation shape has no clickable point inside the {}x{} frame",
+            w, h
+        ))
     }
+}
+
+/// Shoelace area × 2. `0` means the vertices are collinear/degenerate.
+fn polygon_area2(points: &[Point]) -> i64 {
+    let mut area2: i64 = 0;
+    for i in 0..points.len() {
+        let a = points[i];
+        let b = points[(i + 1) % points.len()];
+        area2 += a.x as i64 * b.y as i64 - b.x as i64 * a.y as i64;
+    }
+    area2
 }
 
 /// The task's declared assets (`assets/<Name>.json` in a later phase).
@@ -1284,13 +1358,24 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// authored relative to the template ROI, so they must be translated by the
     /// current match offset before validation/sampling.
     fn translated_click_shape(&self, sel: &str, matched: Point) -> Option<ClickShape> {
-        let effective_sel: &str = if self.assets.collection_members(sel).is_some() {
-            self.last_set_member.get(sel)?.as_str()
-        } else {
-            sel
-        };
-        let mut shape = self.assets.click_shape(effective_sel)?.clone();
-        if let Some(t) = self.assets.get(effective_sel) {
+        if self.assets.collection_members(sel).is_some() {
+            // A collection-level shape is an absolute fallback; the winning
+            // member's own shape wins and is translated by its match offset.
+            if let Some(member) = self.last_set_member.get(sel) {
+                if let Some(shape) = self.assets.click_shape(member) {
+                    return Some(self.translate_shape(shape.clone(), member, matched));
+                }
+            }
+            return self.assets.click_shape(sel).cloned();
+        }
+        let shape = self.assets.click_shape(sel)?.clone();
+        Some(self.translate_shape(shape, sel, matched))
+    }
+
+    /// Translate a template's operation shape by `matched - roi` (OCR/region
+    /// shapes are absolute and therefore never translated).
+    fn translate_shape(&self, mut shape: ClickShape, sel: &str, matched: Point) -> ClickShape {
+        if let Some(t) = self.assets.get(sel) {
             if let Some(roi) = t.roi {
                 let dx = matched.x - roi.x;
                 let dy = matched.y - roi.y;
@@ -1308,10 +1393,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 }
             }
         }
-        Some(shape)
+        shape
     }
 
     /// Re-sample a click plan if it landed outside an exact operation shape.
+    ///
+    /// **Loud failure** (B-03): when the shape's effective region is empty or
+    /// degenerate, sampling returns `Err` and the step fails instead of silently
+    /// clicking the bbox centre / the excluded area.
     fn adjust_plan_for_shape(
         &mut self,
         sel: &str,
@@ -1319,20 +1408,33 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         w: u32,
         h: u32,
         matched: Point,
-    ) -> crate::humanize::ClickPlan {
+    ) -> Result<crate::humanize::ClickPlan, String> {
         let Some(shape) = self.translated_click_shape(sel, matched) else {
-            return plan;
+            return Ok(plan);
         };
-        if shape.effective_contains(plan.point) {
-            return plan;
+        let in_frame = plan.point.x >= 0
+            && plan.point.y >= 0
+            && plan.point.x < w as i32
+            && plan.point.y < h as i32;
+        if in_frame && shape.effective_contains(plan.point) {
+            return Ok(plan);
         }
-        match shape.sample(w, h, &mut self.rng) {
-            Some(point) => crate::humanize::ClickPlan {
-                point,
-                miss: false,
-            },
-            None => plan,
-        }
+        let point = shape.sample(w, h, &mut self.rng)?;
+        Ok(crate::humanize::ClickPlan {
+            point,
+            miss: false,
+        })
+    }
+
+    /// True when `p` is inside the **effective** operation shape and on screen.
+    /// Used by the region path, whose point-`click` jitter must never leave a
+    /// narrow region (B-04).
+    fn click_shape_accepts(&self, shape: &ClickShape, p: Point, w: u32, h: u32) -> bool {
+        p.x >= 0
+            && p.y >= 0
+            && p.x < w as i32
+            && p.y < h as i32
+            && shape.effective_contains(p)
     }
 
     /// Actual click box for a matched template. Explicit user decision [10-22
@@ -1715,7 +1817,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 .screen.size()
                 .ok_or_else(|| "interrupt: no frame available".to_string())?;
             let plan = self.humanize.template_click(target, w, &mut self.rng);
-            let plan = self.adjust_plan_for_shape(&action_sel, plan, w, h, ap);
+            let plan = self.adjust_plan_for_shape(&action_sel, plan, w, h, ap)?;
             let centre = Point {
                 x: target.x + target.w / 2,
                 y: target.y + target.h / 2,
@@ -1979,7 +2081,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             Step::Appear { sel } => {
                 self.reobserve_screen()?;
                 let (score, at) = self.locate(sel)?;
-                let th = self.assets.threshold_for(sel).unwrap_or(0.9);
+                // B-12: same threshold policy as click/interrupts: OCR assets
+                // have no template score, so a successful read (0.0) counts.
+                let th = self.selector_threshold(sel);
                 if score >= th {
                     Ok(format!("appear {sel} score={score:.3} at {at:?}"))
                 } else {
@@ -1997,17 +2101,13 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 loop {
                     self.reobserve_screen()?;
                     let (score, at) = self.locate(sel)?;
-                    let th = self.assets.threshold_for(sel).unwrap_or(0.9);
+                    let th = self.selector_threshold(sel);
                     if let Some(_detected) = at.filter(|_| score >= th) {
                         // §22.15: `action` selects the button (e.g. 接受); when
                         // omitted the detected template itself is clicked.
                         let action_sel = action.clone().unwrap_or_else(|| sel.clone());
                         let (ascore, aat) = self.locate(&action_sel)?;
-                        let ath = self
-                            .assets
-                            .get(&action_sel)
-                            .map(|t| t.threshold)
-                            .unwrap_or(0.9);
+                        let ath = self.selector_threshold(&action_sel);
                         let Some(ap) = aat.filter(|_| ascore >= ath) else {
                             return Err(format!(
                                 "dismiss_popup: popup `{sel}` detected but action `{action_sel}` \
@@ -2019,7 +2119,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             .screen.size()
                             .ok_or_else(|| "dismiss_popup: no frame available".to_string())?;
                         let plan = self.humanize.template_click(target, w, &mut self.rng);
-                        let plan = self.adjust_plan_for_shape(&action_sel, plan, w, h, ap);
+                        let plan = self.adjust_plan_for_shape(&action_sel, plan, w, h, ap)?;
                         let centre = Point {
                             x: target.x + target.w / 2,
                             y: target.y + target.h / 2,
@@ -2141,7 +2241,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     .screen.size()
                     .ok_or_else(|| "click: no frame available".to_string())?;
                 let plan = self.humanize.template_click(target, w, &mut self.rng);
-                let plan = self.adjust_plan_for_shape(hit_sel, plan, w, h, p);
+                let plan = self.adjust_plan_for_shape(hit_sel, plan, w, h, p)?;
                 let centre = Point {
                     x: target.x + target.w / 2,
                     y: target.y + target.h / 2,
@@ -2257,7 +2357,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 };
                                 let target = self.click_box_for(sel, p)?;
                                 let plan = self.humanize.template_click(target, w, &mut self.rng);
-                                let plan = self.adjust_plan_for_shape(sel, plan, w, h, p);
+                                let plan = self.adjust_plan_for_shape(sel, plan, w, h, p)?;
                                 let centre = Point {
                                     x: target.x + target.w / 2,
                                     y: target.y + target.h / 2,
@@ -2312,11 +2412,27 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                                 Err(e) => return Err(e),
                                             }
                                         }
-                                        let plan =
-                                            self.humanize.template_click(line.rect, w, &mut self.rng);
                                         let centre = Point {
                                             x: line.rect.x + line.rect.w / 2,
                                             y: line.rect.y + line.rect.h / 2,
+                                        };
+                                        // B-02: an explicit operation region
+                                        // (action_shape / click_back) must win over
+                                        // the recognized line box, including invert.
+                                        let explicit_action = self.assets.click_shape(sel).is_some()
+                                            || self.assets.click_back(sel).is_some();
+                                        let target = if explicit_action {
+                                            self.click_box_for(sel, centre)?
+                                        } else {
+                                            line.rect
+                                        };
+                                        let plan =
+                                            self.humanize.template_click(target, w, &mut self.rng);
+                                        let plan =
+                                            self.adjust_plan_for_shape(sel, plan, w, h, centre)?;
+                                        let centre = Point {
+                                            x: target.x + target.w / 2,
+                                            y: target.y + target.h / 2,
                                         };
                                         let match_info =
                                             format!("ocr_text:{sel}:{}:{:.3}", line.text, line.score);
@@ -2365,6 +2481,15 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                             rect.y += matched.y - saved_line.y;
                                         }
                                     }
+                                    // B-02: the exact operation shape (polygon /
+                                    // invert) overrides the bbox fallback above.
+                                    let explicit_action = self.assets.click_shape(sel).is_some();
+                                    let marker = Point { x: recognition.x, y: recognition.y };
+                                    let target = if explicit_action {
+                                        self.click_box_for(sel, marker)?
+                                    } else {
+                                        rect
+                                    };
                                     if let Some(rt) = require_template {
                                         match self.template_in_region(rt, recognition, 16) {
                                             Ok(true) => {}
@@ -2379,10 +2504,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                             Err(e) => return Err(e),
                                         }
                                     }
-                                    let plan = self.humanize.template_click(rect, w, &mut self.rng);
+                                    let plan = self.humanize.template_click(target, w, &mut self.rng);
+                                    let plan =
+                                        self.adjust_plan_for_shape(sel, plan, w, h, marker)?;
                                     let centre = Point {
-                                        x: rect.x + rect.w / 2,
-                                        y: rect.y + rect.h / 2,
+                                        x: target.x + target.w / 2,
+                                        y: target.y + target.h / 2,
                                     };
                                     let match_info =
                                         format!("ocr_text:{sel}:{t}:{score:.3}");
@@ -2590,12 +2717,34 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 continue;
                             }
                             let p = match exact_shape.as_ref() {
-                                Some(shape) => shape.sample(fw, fh, &mut self.rng).ok_or_else(|| {
-                                    format!("region `{sel}` exact shape has no sampleable point")
+                                Some(shape) => shape.sample(fw, fh, &mut self.rng).map_err(|e| {
+                                    format!("region `{sel}` exact shape: {e}")
                                 })?,
                                 None => self.random_point_in(rect, 0.15),
                             };
-                            let plan = self.humanize.point_click(p, &mut self.rng);
+                            // B-04: `point_click` adds ±jitter_px (and a deliberate
+                            // miss can land much farther). A narrow region would
+                            // otherwise click outside its shape. Re-sample until
+                            // the jittered point is still accepted; fall back to
+                            // the un-jittered sampled point (never outside).
+                            let mut plan = self.humanize.point_click(p, &mut self.rng);
+                            if let Some(shape) = exact_shape.as_ref() {
+                                if !self.click_shape_accepts(shape, plan.point, fw, fh) {
+                                    let mut accepted = None;
+                                    for _ in 0..8 {
+                                        let q = shape.sample(fw, fh, &mut self.rng)?;
+                                        let candidate = self.humanize.point_click(q, &mut self.rng);
+                                        if self.click_shape_accepts(shape, candidate.point, fw, fh) {
+                                            accepted = Some(candidate);
+                                            break;
+                                        }
+                                    }
+                                    plan = accepted.unwrap_or(crate::humanize::ClickPlan {
+                                        point: p,
+                                        miss: false,
+                                    });
+                                }
+                            }
                             let (actual, _delay) = self.perform_click(
                                 plan,
                                 p,
@@ -4357,6 +4506,61 @@ mod tests {
     }
 
     #[test]
+    fn exact_polygon_shape_translates_when_the_template_moved() {
+        // B-01: the translation must apply to polygon shapes too, not just rect.
+        let pattern: Vec<u8> = (0..100)
+            .map(|i| (((i % 10) * 7 + (i / 10) * 13) % 251 + 3) as u8)
+            .collect();
+        let mut assets = assets();
+        assets.insert(
+            "I_SHAPE_POLY",
+            Template {
+                gray: GrayImage::new(10, 10, pattern),
+                roi: Some(Rect {
+                    x: 12,
+                    y: 10,
+                    w: 10,
+                    h: 10,
+                }),
+                threshold: 0.8,
+                click_polygon: None,
+            },
+        );
+        assets.set_click_shape(
+            "I_SHAPE_POLY",
+            ClickShape {
+                rect: None,
+                points: Some(vec![
+                    Point { x: 10, y: 8 },
+                    Point { x: 30, y: 8 },
+                    Point { x: 30, y: 28 },
+                    Point { x: 10, y: 28 },
+                ]),
+                invert: false,
+            },
+        );
+        let screen = TwoFrameScreen {
+            frames: vec![frame_with_tile(40, 30)],
+            idx: 0,
+        };
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(screen, input, assets, Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(7);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_SHAPE_POLY"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            p.x >= 38 && p.x < 58 && p.y >= 28 && p.y < 48,
+            "polygon must translate with the match (shift +28,+20), got {p:?}"
+        );
+    }
+
+    #[test]
     fn stable_frames_requires_the_same_position_on_two_frames() {
         // §22.29 H4: two consecutive frames with the target at the same place
         // => one click. A moving target => loud failure and NO click.
@@ -6045,6 +6249,322 @@ mod tests {
             other => panic!("expected Failed, got {other:?}"),
         }
     }
+
+    // ---- B-02/B-03/B-04/B-12: exact operation geometry on OCR/region paths ----
+
+    #[test]
+    fn click_target_ocr_lines_uses_the_action_polygon_not_the_line_rect() {
+        // B-02: `ocr_lines` used to click the recognized line rect even when the
+        // asset carried an explicit polygon operation region.
+        let mut a = assets();
+        a.insert_ocr_lines(
+            "O_LINES",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 64,
+                h: 48,
+            },
+        );
+        a.set_click_shape(
+            "O_LINES",
+            ClickShape {
+                rect: None,
+                points: Some(vec![
+                    Point { x: 4, y: 4 },
+                    Point { x: 12, y: 4 },
+                    Point { x: 12, y: 12 },
+                    Point { x: 4, y: 12 },
+                ]),
+                invert: false,
+            },
+        );
+        let (ocr, _rois) = FakeDetOcr::new(vec![line(
+            "确认",
+            0.99,
+            Rect {
+                x: 30,
+                y: 30,
+                w: 10,
+                h: 10,
+            },
+        )]);
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, a, Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(ocr))
+            .with_seed(5);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[{"kind":"ocr_text","sel":"O_LINES","text":"确认"}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            p.x >= 4 && p.x < 12 && p.y >= 4 && p.y < 12,
+            "click must land in the action polygon (4,4,8,8), not the line rect, got {p:?}"
+        );
+    }
+
+    #[test]
+    fn click_target_ocr_single_invert_clicks_outside_the_excluded_shape() {
+        // B-02: the old OCR click_target path ignored `invert` and clicked the
+        // recognition/action bbox — i.e. inside the excluded area here.
+        let mut a = assets();
+        a.insert_ocr(
+            "O_INVERT",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 64,
+                h: 48,
+            },
+        );
+        a.set_click_shape(
+            "O_INVERT",
+            ClickShape {
+                rect: Some(Rect {
+                    x: 0,
+                    y: 0,
+                    w: 32,
+                    h: 48,
+                }),
+                points: None,
+                invert: true,
+            },
+        );
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, a, Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(FixedLineOcr {
+                rect: Rect {
+                    x: 10,
+                    y: 10,
+                    w: 20,
+                    h: 10,
+                },
+                text: "确认".to_string(),
+            }))
+            .with_seed(5);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[{"kind":"ocr_text","sel":"O_INVERT","text":"确认"}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            p.x >= 32,
+            "invert must click outside the excluded x<32 shape, got {p:?}"
+        );
+    }
+
+    #[test]
+    fn click_target_ocr_single_full_screen_invert_fails_without_clicking() {
+        // B-02/B-03: invert must reach the OCR path, and an empty effective area
+        // must fail loudly instead of clicking the excluded rect.
+        let mut a = assets();
+        a.insert_ocr(
+            "O_FULL",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 64,
+                h: 48,
+            },
+        );
+        a.set_click_shape(
+            "O_FULL",
+            ClickShape {
+                rect: Some(Rect {
+                    x: 0,
+                    y: 0,
+                    w: 64,
+                    h: 48,
+                }),
+                points: None,
+                invert: true,
+            },
+        );
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, a, Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(FixedLineOcr {
+                rect: Rect {
+                    x: 10,
+                    y: 10,
+                    w: 20,
+                    h: 10,
+                },
+                text: "确认".to_string(),
+            }))
+            .with_seed(5);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[{"kind":"ocr_text","sel":"O_FULL","text":"确认"}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => assert!(
+                msg.contains("no clickable point"),
+                "must explain the empty effective region: {msg}"
+            ),
+            other => panic!("full-screen invert must fail, got {other:?}"),
+        }
+        assert!(
+            shared.clicks.borrow().is_empty(),
+            "an empty effective region must never produce a click"
+        );
+    }
+
+    #[test]
+    fn full_screen_invert_shape_fails_loudly_without_clicking() {
+        // Same B-03 guarantee on the template `click` path.
+        let pattern: Vec<u8> = (0..100)
+            .map(|i| (((i % 10) * 7 + (i / 10) * 13) % 251 + 3) as u8)
+            .collect();
+        let mut a = assets();
+        a.insert(
+            "I_FULL_INVERT",
+            Template {
+                gray: GrayImage::new(10, 10, pattern),
+                roi: Some(Rect {
+                    x: 12,
+                    y: 10,
+                    w: 10,
+                    h: 10,
+                }),
+                threshold: 0.8,
+                click_polygon: None,
+            },
+        );
+        a.set_click_shape(
+            "I_FULL_INVERT",
+            ClickShape {
+                rect: Some(Rect {
+                    x: 0,
+                    y: 0,
+                    w: 64,
+                    h: 48,
+                }),
+                points: None,
+                invert: true,
+            },
+        );
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, a, Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(5);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_FULL_INVERT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => assert!(
+                msg.contains("no clickable point"),
+                "must explain the empty effective region: {msg}"
+            ),
+            other => panic!("full-screen invert must fail, got {other:?}"),
+        }
+        assert!(shared.clicks.borrow().is_empty());
+    }
+
+    #[test]
+    fn narrow_region_exact_shape_never_jitters_outside() {
+        // B-04: point_click adds ±6 px of jitter; a 1px-wide (or very thin)
+        // region must still be clicked strictly inside the shape.
+        for roi in [
+            Rect {
+                x: 10,
+                y: 20,
+                w: 1,
+                h: 20,
+            },
+            Rect {
+                x: 10,
+                y: 20,
+                w: 12,
+                h: 2,
+            },
+            Rect {
+                x: 10,
+                y: 20,
+                w: 2,
+                h: 12,
+            },
+        ] {
+            let mut a = assets();
+            a.insert_region("R_NARROW", roi);
+            a.set_click_shape(
+                "R_NARROW",
+                ClickShape {
+                    rect: Some(roi),
+                    points: None,
+                    invert: false,
+                },
+            );
+            let (input, shared) = FakeInput::new();
+            let mut interp = Interpreter::new(FakeScreen::new(), input, a, Budget::default())
+                .with_humanize(crate::humanize::Humanize {
+                    miss_chance_min: 0.0,
+                    miss_chance_max: 0.0,
+                    ..crate::humanize::Humanize::default()
+                })
+                .with_seed(9);
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"click_target","args":{"find":[{"kind":"region","sel":"R_NARROW"}]}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+            let p = shared.clicks.borrow()[0];
+            assert!(
+                p.x >= roi.x
+                    && p.x < roi.x + roi.w
+                    && p.y >= roi.y
+                    && p.y < roi.y + roi.h,
+                "jittered region click {p:?} must stay inside {roi:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn appear_and_dismiss_popup_use_the_ocr_selector_threshold() {
+        // B-12: OCR assets have no template score; a successful read must count
+        // for `appear`/`dismiss_popup` exactly like it does for `click`.
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"appear","args":{"sel":"O_TEXT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let (mut interp, _) = mk_ocr(&[("完成", 0.4)]);
+        assert_eq!(interp.run(&f).outcome(), Outcome::Done);
+
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"dismiss_popup","args":{"sel":"O_TEXT","timeout_ms":0,"required":true}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let (input, shared) = FakeInput::new();
+        let (fake_ocr, _rois) = FakeOcr::new(&[("完成", 0.4)]);
+        let mut interp = Interpreter::new(
+            FakeScreen::new(),
+            input,
+            assets_with_ocr(),
+            Budget::default(),
+        )
+        .with_humanize(no_miss())
+        .with_ocr(Box::new(fake_ocr))
+        .with_seed(5);
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert_eq!(
+            shared.clicks.borrow().len(),
+            1,
+            "dismiss_popup must click the OCR action region"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -6094,6 +6614,52 @@ mod click_shape_tests {
         assert!(tri.contains(Point { x: 120, y: 120 }));
         assert!(tri.contains(Point { x: 200, y: 180 }));
         assert!(!tri.contains(Point { x: 350, y: 350 }));
+    }
+
+    #[test]
+    fn empty_invert_and_degenerate_polygon_samples_are_loud_errors() {
+        // B-03: a full-screen invert has no effective point; the old code
+        // returned `None`/bbox centre and the click still happened.
+        let mut rng = crate::humanize::Rng::new(3);
+        let full = ClickShape {
+            rect: Some(Rect {
+                x: 0,
+                y: 0,
+                w: 64,
+                h: 48,
+            }),
+            points: None,
+            invert: true,
+        };
+        let err = full
+            .sample(64, 48, &mut rng)
+            .expect_err("empty effective region must fail");
+        assert!(err.contains("no clickable point"), "{err}");
+
+        // Collinear polygon: bbox exists but no pixel is inside.
+        let collinear = ClickShape {
+            rect: None,
+            points: Some(vec![
+                Point { x: 10, y: 10 },
+                Point { x: 20, y: 10 },
+                Point { x: 30, y: 10 },
+            ]),
+            invert: false,
+        };
+        let err = collinear
+            .sample(640, 360, &mut rng)
+            .expect_err("degenerate polygon must fail");
+        assert!(err.contains("zero area"), "{err}");
+
+        let too_few = ClickShape {
+            rect: None,
+            points: Some(vec![Point { x: 10, y: 10 }, Point { x: 20, y: 20 }]),
+            invert: false,
+        };
+        let err = too_few
+            .sample(640, 360, &mut rng)
+            .expect_err("2-point polygon must fail");
+        assert!(err.contains("at least 3"), "{err}");
     }
 }
 

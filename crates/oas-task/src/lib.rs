@@ -150,23 +150,69 @@ impl ActionShape {
         if pts.len() < 3 {
             return false;
         }
+        // B-07: use the same f64 edge test as `oas_runtime::ClickShape`. The old
+        // integer `(yj - yi).max(1)` formula rejected points inside triangles
+        // with a negative-slope edge.
         let mut inside = false;
         let mut j = pts.len() - 1;
         for i in 0..pts.len() {
             let (xi, yi) = (pts[i][0], pts[i][1]);
             let (xj, yj) = (pts[j][0], pts[j][1]);
-            if ((yi > y) != (yj > y))
-                && (x < (xj - xi) * (y - yi) / (yj - yi).max(1) + xi)
-            {
-                inside = !inside;
+            if (yi > y) != (yj > y) {
+                let denom = (yj - yi) as f64;
+                let cross_x = (xj - xi) as f64 * (y - yi) as f64 / denom + xi as f64;
+                if (x as f64) < cross_x {
+                    inside = !inside;
+                }
             }
             j = i;
         }
         inside
     }
+
+    /// Convert to the runtime's exact operation geometry (same fields, same
+    /// semantics). Used by `load_runtime_assets` so asset and collection shapes
+    /// go through one translation.
+    pub fn to_click_shape(&self) -> oas_runtime::ClickShape {
+        oas_runtime::ClickShape {
+            rect: self.roi.map(|r| oas_types::Rect {
+                x: r[0],
+                y: r[1],
+                w: r[2],
+                h: r[3],
+            }),
+            points: self.points.as_ref().map(|pts| {
+                pts.iter()
+                    .map(|p| oas_types::Point { x: p[0], y: p[1] })
+                    .collect()
+            }),
+            invert: self.invert,
+        }
+    }
 }
 
-fn validate_action_shape(shape: &ActionShape, path: &str) -> Result<(), String> {
+/// Shoelace area × 2 for an action polygon (`0` = collinear/degenerate).
+fn action_polygon_area2(points: &[[i32; 2]]) -> i64 {
+    let mut area2: i64 = 0;
+    for i in 0..points.len() {
+        let a = points[i];
+        let b = points[(i + 1) % points.len()];
+        area2 += a[0] as i64 * b[1] as i64 - b[0] as i64 * a[1] as i64;
+    }
+    area2
+}
+
+/// Validate one action shape.
+///
+/// `bounds` is the frame/design resolution when known; then rect and polygon
+/// bboxes must stay inside it (B-05). A degenerate polygon (collinear, zero
+/// area) is rejected as well. Callers that know the frame pass it so the save
+/// and load paths reject identical geometry.
+fn validate_action_shape(
+    shape: &ActionShape,
+    path: &str,
+    bounds: Option<(u32, u32)>,
+) -> Result<(), String> {
     match shape.kind.as_str() {
         "rect" => {
             let Some([x, y, w, h]) = shape.roi else {
@@ -179,6 +225,13 @@ fn validate_action_shape(shape: &ActionShape, path: &str) -> Result<(), String> 
             }
             if shape.points.is_some() {
                 return Err(format!("{path}.points is only valid for kind=polygon"));
+            }
+            if let Some((fw, fh)) = bounds {
+                if x as i64 + w as i64 > fw as i64 || y as i64 + h as i64 > fh as i64 {
+                    return Err(format!(
+                        "{path}.roi [{x},{y},{w},{h}] is outside the {fw}x{fh} frame"
+                    ));
+                }
             }
         }
         "polygon" => {
@@ -195,8 +248,29 @@ fn validate_action_shape(shape: &ActionShape, path: &str) -> Result<(), String> 
             if polygon_self_intersects(&raw) {
                 return Err(format!("{path}.points must not self-intersect"));
             }
+            if action_polygon_area2(&raw) == 0 {
+                return Err(format!(
+                    "{path}.points has zero area (collinear/degenerate polygon)"
+                ));
+            }
             if shape.roi.is_some() {
                 return Err(format!("{path}.roi is only valid for kind=rect"));
+            }
+            if let Some((fw, fh)) = bounds {
+                let (mut min_x, mut min_y) = (i32::MAX, i32::MAX);
+                let (mut max_x, mut max_y) = (i32::MIN, i32::MIN);
+                for p in &raw {
+                    min_x = min_x.min(p[0]);
+                    min_y = min_y.min(p[1]);
+                    max_x = max_x.max(p[0]);
+                    max_y = max_y.max(p[1]);
+                }
+                if max_x as i64 >= fw as i64 || max_y as i64 >= fh as i64 {
+                    return Err(format!(
+                        "{path}.points bbox [{}..{}, {}..{}] is outside the {fw}x{fh} frame",
+                        min_x, max_x, min_y, max_y
+                    ));
+                }
             }
         }
         other => return Err(format!("{path}.kind must be rect or polygon (got `{other}`)")),
@@ -912,6 +986,33 @@ impl TaskBundle {
         if members.is_empty() {
             return Err("素材集合至少需要一个成员".into());
         }
+        // B-10: a collection-level operation shape is accepted by the API, so
+        // it must be validated exactly like an asset shape (bounds from the
+        // bundle design resolution) instead of being silently copied.
+        if coll.action_source != "recognition" && coll.action_source != "fixed" {
+            return Err(format!(
+                "集合 `{id}`: action_source must be recognition or fixed (got `{}`)",
+                coll.action_source
+            ));
+        }
+        match (coll.action_source.as_str(), coll.action_shape.as_ref()) {
+            ("recognition", Some(_)) => {
+                return Err(format!(
+                    "集合 `{id}`: action_source=recognition must not carry action_shape"
+                ))
+            }
+            ("fixed", None) => {
+                return Err(format!(
+                    "集合 `{id}`: action_source=fixed requires action_shape"
+                ))
+            }
+            ("fixed", Some(shape)) => validate_action_shape(
+                shape,
+                &format!("collection `{id}` action_shape"),
+                af.design_resolution.map(|[w, h]| (w, h)),
+            )?,
+            _ => {}
+        }
         let saved = AssetCollection {
             id: id.clone(),
             members,
@@ -1016,20 +1117,7 @@ impl TaskBundle {
                     },
                 );
                 let click_shape = match item.action_shape.as_ref() {
-                    Some(shape) => oas_runtime::ClickShape {
-                        rect: shape.roi.map(|r| oas_types::Rect {
-                            x: r[0],
-                            y: r[1],
-                            w: r[2],
-                            h: r[3],
-                        }),
-                        points: shape.points.as_ref().map(|pts| {
-                            pts.iter()
-                                .map(|p| oas_types::Point { x: p[0], y: p[1] })
-                                .collect()
-                        }),
-                        invert: shape.invert,
-                    },
+                    Some(shape) => shape.to_click_shape(),
                     None => oas_runtime::ClickShape {
                         rect: Some(oas_types::Rect {
                             x: roi[0],
@@ -1082,23 +1170,7 @@ impl TaskBundle {
                             },
                         );
                     }
-                    set.set_click_shape(
-                        item.id.clone(),
-                        oas_runtime::ClickShape {
-                            rect: shape.roi.map(|r| oas_types::Rect {
-                                x: r[0],
-                                y: r[1],
-                                w: r[2],
-                                h: r[3],
-                            }),
-                            points: shape.points.as_ref().map(|pts| {
-                                pts.iter()
-                                    .map(|p| oas_types::Point { x: p[0], y: p[1] })
-                                    .collect()
-                            }),
-                            invert: shape.invert,
-                        },
-                    );
+                    set.set_click_shape(item.id.clone(), shape.to_click_shape());
                 }
                 // v1.2.3: one recognition ROI for derived OCR; det+rec runs on
                 // the saved `roi` and matches `ocr_text`.
@@ -1159,23 +1231,7 @@ impl TaskBundle {
                         },
                     );
                 }
-                set.set_click_shape(
-                    item.id.clone(),
-                    oas_runtime::ClickShape {
-                        rect: shape.roi.map(|r| oas_types::Rect {
-                            x: r[0],
-                            y: r[1],
-                            w: r[2],
-                            h: r[3],
-                        }),
-                        points: shape.points.as_ref().map(|pts| {
-                            pts.iter()
-                                .map(|p| oas_types::Point { x: p[0], y: p[1] })
-                                .collect()
-                        }),
-                        invert: shape.invert,
-                    },
-                );
+                set.set_click_shape(item.id.clone(), shape.to_click_shape());
             }
         }
         for coll in &af.collections {
@@ -1188,6 +1244,22 @@ impl TaskBundle {
                         "素材集合 `{}` 的成员 `{m}` 不存在",
                         coll.id
                     ));
+                }
+            }
+            // B-10: wire a collection-level shape as the fallback geometry.
+            // The winning member's own shape still takes precedence in runtime.
+            if let Some(shape) = &coll.action_shape {
+                set.set_click_shape(coll.id.clone(), shape.to_click_shape());
+                if let Some(back) = shape.bbox() {
+                    set.set_click_back(
+                        coll.id.clone(),
+                        oas_types::Rect {
+                            x: back[0],
+                            y: back[1],
+                            w: back[2],
+                            h: back[3],
+                        },
+                    );
                 }
             }
             set.insert_collection(coll.id.clone(), coll.members.clone(), coll.threshold);
@@ -1405,6 +1477,8 @@ impl TaskBundle {
             .position(|a| a.id == id)
             .ok_or_else(|| format!("asset `{id}` does not exist"))?;
         let kind = af.items[pos].kind.clone();
+        // B-05: same bounds source as the save path (`design_resolution`).
+        let shape_bounds = af.design_resolution.map(|[w, h]| (w, h));
         if let Some(r) = roi {
             if r[2] <= 0 || r[3] <= 0 {
                 return Err("roi width/height must be > 0".into());
@@ -1416,12 +1490,26 @@ impl TaskBundle {
                 );
             }
             af.items[pos].roi = Some(r);
+            // B-08: a pure region's `roi` is a fallback alias of its operation
+            // shape; keep them in sync instead of leaving a stale shape that
+            // runtime would silently prefer.
+            if kind == "region" && action_shape.is_none() {
+                let shape = ActionShape::rect(r);
+                validate_action_shape(&shape, "region roi", shape_bounds)?;
+                af.items[pos].action_shape = Some(shape);
+                af.items[pos].action_source = "fixed".to_string();
+            }
         }
         if let Some(shape) = action_shape {
+            validate_action_shape(&shape, "action_shape", shape_bounds)?;
             if kind == "region" {
-                return Err("region objects use their action_shape; no update needed".into());
+                // B-08: for a pure region the action_shape IS the operation
+                // region; keep `roi` (the load fallback / bbox) in sync.
+                let bbox = shape.bbox().ok_or_else(|| {
+                    "region action_shape has no bbox (needs rect.roi or polygon.points)".to_string()
+                })?;
+                af.items[pos].roi = Some(bbox);
             }
-            validate_action_shape(&shape, "action_shape")?;
             af.items[pos].action_shape = Some(shape);
             af.items[pos].action_source = "fixed".to_string();
         }
@@ -1429,6 +1517,11 @@ impl TaskBundle {
         if let Some(source) = action_source {
             if source != "recognition" && source != "fixed" {
                 return Err("action_source must be recognition or fixed".into());
+            }
+            if kind == "region" && source == "recognition" {
+                return Err(
+                    "region objects always have a fixed action_shape; recognition is invalid".into(),
+                );
             }
             if source == "recognition" {
                 af.items[pos].action_shape = None;
@@ -1541,8 +1634,11 @@ impl TaskBundle {
         }
 
         let mut af = self.load_assets_file()?;
-
-        // §22.10: optional polygon => validate it and derive `roi` = bounding box.
+        // B-05: validate operation geometry against the frame the asset is
+        // authored on (frame wins; otherwise the bundle design resolution).
+        let shape_bounds = frame
+            .map(|f| (f.width, f.height))
+            .or(af.design_resolution.map(|[w, h]| (w, h)));
         // Matching uses a masked NCC inside the polygon; OCR uses the bbox crop
         // with outside-polygon pixels filled white; click uses the bbox.
         if let Some(poly) = &decl.polygon {
@@ -1650,7 +1746,9 @@ impl TaskBundle {
                     decl.id
                 ))
             }
-            ("fixed", Some(shape)) => validate_action_shape(shape, "action_shape")?,
+            ("fixed", Some(shape)) => {
+                validate_action_shape(shape, "action_shape", shape_bounds)?
+            }
             _ => {}
         }
         let existing = af.items.iter().position(|it| it.id == decl.id);        let old_file = existing.and_then(|i| af.items[i].file.clone());
@@ -2166,6 +2264,7 @@ impl TaskBundle {
                 ));
             }
         }
+        let shape_bounds = af.design_resolution.map(|[w, h]| (w, h));
         let mut seen = BTreeSet::new();
         for (i, item) in af.items.iter().enumerate() {
             let p = format!("assets.json: items[{i}]");
@@ -2236,7 +2335,9 @@ impl TaskBundle {
                 ));
             }
             if let Some(shape) = item.action_shape.as_ref() {
-                if let Err(e) = validate_action_shape(shape, &format!("{p}.action_shape")) {
+                if let Err(e) =
+                    validate_action_shape(shape, &format!("{p}.action_shape"), shape_bounds)
+                {
                     errs.push((format!("{p}.action_shape"), e));
                 }
             }
@@ -2295,6 +2396,39 @@ impl TaskBundle {
                     format!("{p}.threshold"),
                     "region objects must not carry a threshold".to_string(),
                 ));
+            }
+        }
+        // B-10: collection-level operation geometry must obey the same contract
+        // as per-asset geometry (otherwise it is saved but unusable at runtime).
+        for (ci, coll) in af.collections.iter().enumerate() {
+            let p = format!("assets.json: collections[{ci}]");
+            if coll.action_source != "recognition" && coll.action_source != "fixed" {
+                errs.push((
+                    format!("{p}.action_source"),
+                    format!(
+                        "must be recognition or fixed (got `{}`)",
+                        coll.action_source
+                    ),
+                ));
+            }
+            if coll.action_source == "recognition" && coll.action_shape.is_some() {
+                errs.push((
+                    format!("{p}.action_shape"),
+                    "action_source=recognition must not carry action_shape".to_string(),
+                ));
+            }
+            if coll.action_source == "fixed" && coll.action_shape.is_none() {
+                errs.push((
+                    format!("{p}.action_shape"),
+                    "action_source=fixed requires action_shape".to_string(),
+                ));
+            }
+            if let Some(shape) = coll.action_shape.as_ref() {
+                if let Err(e) =
+                    validate_action_shape(shape, &format!("{p}.action_shape"), shape_bounds)
+                {
+                    errs.push((format!("{p}.action_shape"), e));
+                }
             }
         }
         errs
@@ -3602,6 +3736,234 @@ mod tests {
         assert!(lint_task(&tasks, "好任务").expect("lint one").is_empty());
         assert!(lint_task(&tasks, "不存在").is_err(), "missing dir is a setup error");
         assert!(lint_task(&tasks, "../evil").is_err(), "traversal rejected");
+    }
+
+    // ---- B-05/B-07/B-08/B-10: exact action geometry validation -------------
+
+    #[test]
+    fn action_shape_contains_uses_the_runtime_f64_edge_test() {
+        // B-07: the old `.max(1)` integer formula returned false for points
+        // inside this triangle's negative-slope edge.
+        let tri = ActionShape {
+            kind: "polygon".into(),
+            roi: None,
+            points: Some(vec![[100, 100], [400, 100], [100, 400]]),
+            invert: false,
+        };
+        assert!(tri.contains(120, 120));
+        assert!(tri.contains(200, 180));
+        assert!(!tri.contains(350, 350));
+    }
+
+    #[test]
+    fn action_shape_out_of_bounds_and_zero_area_are_rejected_on_save() {
+        // B-05: the save path must reject geometry the runtime would have to
+        // clamp onto the screen edge.
+        let td = TempDir::new("shape-bounds");
+        let b = open(&td);
+        let f = frame(64, 48);
+        b.save_asset(AssetDecl::template("底图", [0, 0, 8, 8]), Some(&f))
+            .expect("baseline template sets design_resolution");
+        let before = std::fs::read_to_string(b.assets_path()).expect("assets bytes");
+        let ocr = |id: &str, shape: ActionShape| AssetDecl {
+            id: id.to_string(),
+            kind: "ocr_line".to_string(),
+            file: None,
+            roi: Some([10, 10, 10, 10]),
+            action_shape: Some(shape),
+            action_source: "fixed".to_string(),
+            ocr_mode: None,
+            ocr_source_roi: None,
+            ocr_text: None,
+            threshold: None,
+            polygon: None,
+            rev: None,
+            positions: Vec::new(),
+        };
+
+        let err = b
+            .save_asset(ocr("越界", ActionShape::rect([100, 100, 10, 10])), Some(&f))
+            .expect_err("out-of-frame rect must be rejected");
+        assert!(err.contains("outside the 64x48 frame"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(b.assets_path()).expect("assets bytes"),
+            before,
+            "rejected shape must not write assets.json"
+        );
+
+        let collinear = ActionShape {
+            kind: "polygon".into(),
+            roi: None,
+            points: Some(vec![[10, 10], [20, 10], [30, 10]]),
+            invert: false,
+        };
+        let err = b
+            .save_asset(ocr("共线", collinear), Some(&f))
+            .expect_err("collinear polygon must be rejected");
+        assert!(err.contains("zero area"), "{err}");
+
+        let legal = ActionShape {
+            kind: "polygon".into(),
+            roi: None,
+            points: Some(vec![[5, 5], [30, 5], [5, 30]]),
+            invert: false,
+        };
+        b.save_asset(ocr("合法", legal), Some(&f))
+            .expect("in-frame non-degenerate polygon is valid");
+    }
+
+    #[test]
+    fn action_shape_out_of_bounds_is_rejected_on_load_too() {
+        // B-05: load must apply the same validation as save (no bypass by
+        // editing assets.json by hand).
+        let td = TempDir::new("shape-load");
+        let b = open(&td);
+        let f = frame(64, 48);
+        b.save_asset(AssetDecl::template("底图", [0, 0, 8, 8]), Some(&f))
+            .expect("baseline");
+        let mut af = b.load_assets_file().expect("assets");
+        af.items.push(AssetDecl {
+            id: "手改越界".to_string(),
+            kind: "ocr_line".to_string(),
+            file: None,
+            roi: Some([10, 10, 10, 10]),
+            action_shape: Some(ActionShape::rect([100, 100, 10, 10])),
+            action_source: "fixed".to_string(),
+            ocr_mode: None,
+            ocr_source_roi: None,
+            ocr_text: None,
+            threshold: None,
+            polygon: None,
+            rev: None,
+            positions: Vec::new(),
+        });
+        std::fs::write(
+            b.assets_path(),
+            serde_json::to_string_pretty(&af).expect("json"),
+        )
+        .expect("write assets");
+        let err = b.load_assets_file().expect_err("load must reject the shape");
+        assert!(err.contains("outside the 64x48 frame"), "{err}");
+    }
+
+    #[test]
+    fn region_action_shape_update_is_allowed_and_syncs_roi() {
+        // B-08: region objects failed every action_shape update; they must
+        // accept it (region geometry IS the operation region).
+        let td = TempDir::new("region-update");
+        let b = open(&td);
+        let f = frame(64, 48);
+        b.save_asset(AssetDecl::template("底图", [0, 0, 8, 8]), Some(&f))
+            .expect("baseline");
+        let mut region = AssetDecl::template("列表", [10, 20, 30, 20]);
+        region.kind = "region".to_string();
+        region.file = None;
+        region.threshold = None;
+        region.action_shape = None;
+        region.action_source = "recognition".to_string();
+        b.save_asset(region, Some(&f)).expect("region save");
+
+        let poly = ActionShape {
+            kind: "polygon".into(),
+            roi: None,
+            points: Some(vec![[5, 5], [25, 5], [25, 25], [5, 25]]),
+            invert: false,
+        };
+        let updated = b
+            .update_asset_meta("列表", None, Some(poly), None, None)
+            .expect("region action_shape update must be accepted");
+        assert_eq!(updated.action_source, "fixed");
+        assert_eq!(updated.roi, Some([5, 5, 21, 21]));
+        assert_eq!(
+            updated.action_shape.as_ref().and_then(|s| s.points.as_ref()).map(|p| p.len()),
+            Some(4)
+        );
+
+        let err = b
+            .update_asset_meta(
+                "列表",
+                None,
+                Some(ActionShape::rect([100, 100, 10, 10])),
+                None,
+                None,
+            )
+            .expect_err("out-of-frame region update must fail");
+        assert!(err.contains("outside"), "{err}");
+        let af = b.load_assets_file().expect("assets");
+        assert_eq!(af.items[1].roi, Some([5, 5, 21, 21]), "failed update writes nothing");
+
+        // Updating only the region roi must re-derive the operation shape too.
+        let updated = b
+            .update_asset_meta("列表", Some([10, 10, 20, 10]), None, None, None)
+            .expect("region roi update");
+        assert_eq!(updated.roi, Some([10, 10, 20, 10]));
+        assert_eq!(
+            updated.action_shape.as_ref().and_then(|s| s.bbox()),
+            Some([10, 10, 20, 10])
+        );
+
+        let err = b
+            .update_asset_meta("列表", None, None, Some("recognition".into()), None)
+            .expect_err("region cannot switch to recognition");
+        assert!(err.contains("region"), "{err}");
+    }
+
+    #[test]
+    fn collection_action_shape_is_validated_and_loaded() {
+        // B-10: collection-level geometry was accepted without validation and
+        // ignored by the runtime loader.
+        let td = TempDir::new("collection-shape");
+        let b = open(&td);
+        let f = frame(64, 48);
+        b.save_asset(AssetDecl::template("成员甲", [0, 0, 8, 8]), Some(&f))
+            .expect("member a");
+        b.save_asset(AssetDecl::template("成员乙", [8, 0, 8, 8]), Some(&f))
+            .expect("member b");
+        let coll = |shape: Option<ActionShape>, source: &str| AssetCollection {
+            id: "集合目标".into(),
+            members: vec!["成员甲".into(), "成员乙".into()],
+            threshold: None,
+            action_shape: shape,
+            action_source: source.to_string(),
+        };
+
+        let err = b
+            .save_collection(coll(
+                Some(ActionShape::rect([100, 100, 10, 10])),
+                "fixed",
+            ))
+            .expect_err("out-of-frame collection shape must be rejected");
+        assert!(err.contains("outside the 64x48 frame"), "{err}");
+        let err = b
+            .save_collection(coll(Some(ActionShape::rect([10, 10, 20, 20])), "recognition"))
+            .expect_err("recognition must not carry a shape");
+        assert!(err.contains("must not carry"), "{err}");
+        let err = b
+            .save_collection(coll(None, "fixed"))
+            .expect_err("fixed requires a shape");
+        assert!(err.contains("requires action_shape"), "{err}");
+
+        b.save_collection(coll(Some(ActionShape::rect([10, 10, 20, 20])), "fixed"))
+            .expect("valid collection shape");
+        let set = b.load_runtime_assets().expect("runtime assets");
+        let shape = set
+            .click_shape("集合目标")
+            .expect("collection shape must be wired");
+        assert_eq!(
+            shape.rect.map(|r| (r.x, r.y, r.w, r.h)),
+            Some((10, 10, 20, 20))
+        );
+
+        // Load path: a hand-edited out-of-frame collection shape is rejected.
+        let mut af = b.load_assets_file().expect("assets");
+        af.collections[0].action_shape = Some(ActionShape::rect([100, 100, 10, 10]));
+        std::fs::write(
+            b.assets_path(),
+            serde_json::to_string_pretty(&af).expect("json"),
+        )
+        .expect("write assets");
+        let err = b.load_assets_file().expect_err("load must validate collection shape");
+        assert!(err.contains("outside the 64x48 frame"), "{err}");
     }
 }
 
