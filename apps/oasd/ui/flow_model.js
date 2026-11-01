@@ -20,6 +20,8 @@
     dismiss_popup: '关弹窗',
     swipe: '滑动',
     drag: '拖动（拟人）',
+    key: '发送按键',
+    restart_app: '重启 App',
     ocr: '识别文字',
     set_var: '设置变量',
     inc_var: '变量自增',
@@ -38,6 +40,8 @@
     'dismiss_popup',
     'swipe',
     'drag',
+    'key',
+    'restart_app',
     'ocr',
     'set_var',
     'inc_var',
@@ -65,6 +69,10 @@
         return { sel: 'POPUP', timeout_ms: 0 };
       case 'swipe':
         return { from: [1180, 260], to: [1180, 660], ms: 400 };
+      case 'key':
+        return { keycode: 4 };
+      case 'restart_app':
+        return { package: 'com.netease.onmyoji' };
       case 'drag':
         return {
           from: { kind: 'region', roi: [100, 400, 300, 200] },

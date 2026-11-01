@@ -586,18 +586,44 @@ mod tests {
         assert!(lint_task(&tasks, "../evil").is_err(), "traversal rejected");
     }
 
-    /// M0 acceptance: the two shipped legacy tasks must pass lint **without being
-    /// edited** (they only have the old `{schema_version,name,expire}` meta).
+    /// M0 acceptance: legacy `{schema_version,name,expire}` meta must pass lint
+    /// without being edited. Use a temporary fixture instead of the repo `tasks/`
+    /// directory: `tasks/` is user-owned data and may be replaced at any time.
     #[test]
-    fn shipped_legacy_tasks_pass_lint_untouched() {
-        let tasks = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tasks");
+    fn legacy_meta_tasks_pass_lint_without_shipped_data() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tasks = std::env::temp_dir().join(format!(
+            "oasd-legacy-lint-{}-{stamp}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tasks);
+        std::fs::create_dir_all(&tasks).expect("temp tasks dir");
+        for name in ["S1切预设", "任务1"] {
+            let dir = tasks.join(name);
+            std::fs::create_dir_all(&dir).expect("task dir");
+            // Deliberately the old meta shape only: schema_version/name/expire.
+            std::fs::write(
+                dir.join("meta.json"),
+                r#"{"schema_version":1,"name":"legacy","expire":"never"}"#,
+            )
+            .expect("meta");
+            std::fs::write(
+                dir.join("flow.json"),
+                r#"{"schema_version":1,"name":"legacy","steps":[
+                    {"op":"finish","args":{"exit":"done"}}
+                ]}"#,
+            )
+            .expect("flow");
+        }
         for name in ["S1切预设", "任务1"] {
             let issues = lint_task(&tasks, name).unwrap_or_else(|e| panic!("task `{name}`: {e}"));
             assert!(issues.is_empty(), "legacy task `{name}` must lint green: {issues:?}");
         }
-        // `--all` also stays green with these two present (new tasks added by
-        // other efforts must be lint-clean too; this is the upgrade gate).
-        let summary = lint(&tasks, None).expect("lint shipped tasks dir");
+        let summary = lint(&tasks, None).expect("lint fixture");
         assert_eq!(summary.errors, 0, "{:?}", summary.lines);
+        let _ = std::fs::remove_dir_all(&tasks);
     }
 }

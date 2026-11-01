@@ -18,6 +18,8 @@
     dismiss_popup: { label: '关闭弹窗', group: '动作' },
     swipe: { label: '滑动', group: '动作' },
     drag: { label: '拖动（拟人）', group: '动作' },
+    key: { label: '发送按键', group: '动作' },
+    restart_app: { label: '重启 App', group: '动作' },
     set_var: { label: '设置变量', group: '数据/结束' },
     inc_var: { label: '变量自增', group: '数据/结束' },
     ocr_to_var: { label: 'OCR 结果写入变量', group: '数据/结束' },
@@ -35,6 +37,8 @@
     click_point: [{ key: 'x', label: 'x（表达式）', type: 'text' }, { key: 'y', label: 'y（表达式）', type: 'text' }],
     dismiss_popup: [{ key: 'sel', label: '弹窗素材', type: 'asset' }, { key: 'action', label: '动作（可选）', type: 'text' }, { key: 'timeout_ms', label: '超时 ms', type: 'number' }],
     swipe: [{ key: 'from', label: '起点 [x,y]', type: 'json' }, { key: 'to', label: '终点 [x,y]', type: 'json' }, { key: 'ms', label: '时长 ms', type: 'number' }],
+    key: [{ key: 'keycode', label: 'Android keycode（BACK=4 / HOME=3）', type: 'number' }],
+    restart_app: [{ key: 'package', label: '包名', type: 'text' }],
     finish: [{ key: 'exit', label: '出口', type: 'select', options: ['done', 'failed'] }],
     if: [],
     loop: [{ key: 'n', label: '次数（<=0 不循环；>0 循环次数）', type: 'text' }],
@@ -56,6 +60,8 @@
     click_point: { x: 100, y: 100 },
     dismiss_popup: { sel: 'POPUP', timeout_ms: 0 },
     swipe: { from: [1180, 260], to: [1180, 660], ms: 400 },
+    key: { keycode: 4 },
+    restart_app: { package: 'com.netease.onmyoji' },
     finish: { exit: 'done' },
     if: { cond: 'true' },
     loop: { n: '3' },
@@ -171,6 +177,8 @@
       case 'click_target': return JSON.stringify(a.find || []).slice(0, 60);
       case 'dismiss_popup': return esc(a.sel);
       case 'swipe': return `${JSON.stringify(a.from)}→${JSON.stringify(a.to)}`;
+      case 'key': return `keycode ${esc(a.keycode)}`;
+      case 'restart_app': return esc(a.package) || '（未填包名）';
       case 'drag': return `${a.direction || '?'} ${a.from ? JSON.stringify(a.from).slice(0, 30) : ''}`;
       case 'finish': return esc(a.exit);
       case 'set_var': return `${esc(a.name)} = ${esc(a.value)}`;
@@ -1843,6 +1851,75 @@
     });
   }
 
+  async function loadUiMapView() {
+    const view = $('ui-map-view');
+    const st = $('ui-map-status');
+    if (!view) return;
+    if (st) st.textContent = '加载中…';
+    try {
+      const [mr, fr] = await Promise.all([fetch('/ui-map'), fetch('/frames')]);
+      const map = await mr.json();
+      const frames = await fr.json();
+      if (!map || !map.interfaces) {
+        if (st) st.textContent = '加载失败：ui-map 无 interfaces';
+        return;
+      }
+      const counts = new Map();
+      for (const f of (frames.frames || [])) {
+        const id = f.interface_id || 'unknown';
+        counts.set(id, (counts.get(id) || 0) + 1);
+      }
+      view.textContent = '';
+      const nodes = document.createElement('div');
+      nodes.className = 'ui-map-nodes';
+      for (const [id, it] of Object.entries(map.interfaces)) {
+        const card = document.createElement('div');
+        card.className = 'ui-map-node';
+        const h = document.createElement('div');
+        h.className = 'ui-map-node-title';
+        h.textContent = `${it.title || id} · ${id} · ${it.type || 'screen'}`;
+        card.appendChild(h);
+        const mk = document.createElement('div');
+        mk.className = 'muted small';
+        mk.textContent = 'OCR: ' + ((it.markers || []).map((m) => m.text).filter(Boolean).join(' / ') || '（无）');
+        card.appendChild(mk);
+        const ac = document.createElement('div');
+        ac.className = 'muted small';
+        ac.textContent = '动作: ' + (Object.keys(it.actions || {}).join(', ') || '（无）');
+        card.appendChild(ac);
+        const fc = document.createElement('div');
+        fc.className = 'muted small';
+        fc.textContent = `参考帧: ${counts.get(id) || 0}`;
+        card.appendChild(fc);
+        nodes.appendChild(card);
+      }
+      view.appendChild(nodes);
+      const edges = document.createElement('div');
+      edges.className = 'ui-map-edges';
+      const eh = document.createElement('div');
+      eh.className = 'ui-map-node-title';
+      eh.textContent = '导航关系';
+      edges.appendChild(eh);
+      for (const tr of (map.transitions || [])) {
+        const row = document.createElement('div');
+        row.className = 'ui-map-edge';
+        row.textContent = `${tr.from} → ${tr.to} · ${tr.action || '?'}${tr.label ? ' · ' + tr.label : ''}`;
+        edges.appendChild(row);
+      }
+      view.appendChild(edges);
+      if (st) st.textContent = `${Object.keys(map.interfaces).length} 个界面 / ${(map.transitions || []).length} 条关系（只读；数据源 ui-map/ui-map.json）`;
+    } catch (e) {
+      if (st) st.textContent = '加载失败：' + e;
+    }
+  }
+
+  async function openUiMapDialog() {
+    const dlg = $('ui-map-dialog');
+    if (!dlg) return;
+    await loadUiMapView();
+    dlg.showModal();
+  }
+
   function init() {
     initBuilderLayout();
     const taskSel = $('builder-task');
@@ -1867,6 +1944,15 @@
     if (save) save.addEventListener('click', () => saveFlow(false));
     const dry = $('builder-dry-run');
     if (dry) dry.addEventListener('click', dryRun);
+    const uiMap = $('builder-ui-map');
+    if (uiMap) uiMap.addEventListener('click', openUiMapDialog);
+    const uiMapClose = $('ui-map-close');
+    if (uiMapClose) uiMapClose.addEventListener('click', () => {
+      const dlg = $('ui-map-dialog');
+      if (dlg) dlg.close();
+    });
+    const uiMapRefresh = $('ui-map-refresh');
+    if (uiMapRefresh) uiMapRefresh.addEventListener('click', loadUiMapView);
     const codeApply = $('builder-code-apply');
     if (codeApply) codeApply.addEventListener('click', applyCode);
     const delChecked = $('builder-delete-checked');
