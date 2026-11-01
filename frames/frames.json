@@ -1,6 +1,6 @@
 {
-  "next_id": 4,
-  "current_id": 3,
+  "next_id": 6,
+  "current_id": 5,
   "frames": [
     {
       "id": 1,
@@ -15,7 +15,7 @@
     {
       "id": 2,
       "name": "庭院-卷轴关闭",
-      "category": "",
+      "category": "庭院",
       "file": "frame-2.png",
       "width": 1280,
       "height": 720,
@@ -25,12 +25,32 @@
     {
       "id": 3,
       "name": "庭院-卷轴打开",
-      "category": "",
+      "category": "庭院",
       "file": "frame-3.png",
       "width": 1280,
       "height": 720,
       "source": "capture",
       "ts_ms": 1793500934002
+    },
+    {
+      "id": 4,
+      "name": "我的式神",
+      "category": "式神录",
+      "file": "frame-4.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793502333324
+    },
+    {
+      "id": 5,
+      "name": "帧 5",
+      "category": "",
+      "file": "frame-5.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793502409498
     }
   ]
 }
