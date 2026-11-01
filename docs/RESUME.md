@@ -8,12 +8,12 @@ task_id: oas-core-docs-independent
 checkpoint_seq: 67
 updated_at: 2026-11-01T09:30:00+08:00
 trigger: 文档从旧 backend 仓迁入 oas-core/docs（独立文档/skill 适配）
-status: in_progress
+status: done
 ```
 
 ## 0. 当前状态（磁盘实测）
 
-- oas-core `main` = `385d611`（v1.2.3 恢复节点）；`dev` = `4b4795d`（docs migration，后续还会有记录提交）。
+- oas-core `main` = `385d611`（v1.2.3 恢复节点）；`dev` 含文档迁移提交 `4b4795d`，记录提交 `318086c`；main 未动。
 - oas-core 文档已独立到 `D:\OAS-dev\oas-core\docs`；旧 backend 文档仓已冻结，不再作为 oas-core 文档入口。
 - 源文档提交：旧仓 `2861d8ba`（v1.2.3 release 文档节点）。
 - `cargo test --workspace` = **350 passed / 0 failed**。
