@@ -67,4 +67,4 @@ status: in_progress
 - `relations/README.md`（append-only 证据 schema）；
 - `apps/oasd/ui/builder.js` / `flow_model.js`（保留 key/restart）；
 - `frames/frames.json`（22 帧，无 interface_id）；
-- 测试：`cargo test --workspace` = 355 passed。
+- 测试：`cargo test --workspace` = 355 passed；提交 `3f13c63`。
