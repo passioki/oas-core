@@ -1,6 +1,8 @@
 # 子进程独立代码审计（2026-11-01 16:00 → 21:50）
 
-> 本报告汇总 3 个独立子进程的只读审计，不照抄上一轮 `CODE-AUDIT-2026-11-01.md` 的结论。
+> ⚠ **范围/时效（2026-11-02 加注）**：本报告主体写于 2026-11-01 21:50，HEAD `983c740` / 361 tests；之后的修复状态见 §7~§10 与 `PENDING-LEDGER §E-72`。**当前（2026-11-02 00:58）HEAD `cd0ac34` / 393 tests / UI 203 checks / task lint 1/0**；不要把顶部 361/983c740 当现状。
+
+> 本报告汇总 3 个独立子进程的只读审计，不照抄上一轮 `docs/archive/CODE-AUDIT-2026-11-01.md` 的结论。
 > 原始报告：
 > - `_verify/audit-20261101/A-session-git.md`（session↔git↔需求）
 > - `_verify/audit-20261101/B-runtime.md`（runtime/task/server + probe）
@@ -149,23 +151,23 @@
 - UI：全局 `#global-asset-search` + `#global-asset-category-filter`（复用任务库过滤），SelectionTool 模式收敛/reset，死 DOM id 25→0，OCR polygon UI payload，测试 42→106。
 - Backend：`/task/save_asset`、`/task/save_assets` 支持 OCR polygon/ocr_mode/ocr_text/ocr_source_roi；`live=1` 真实抓帧失败不再回退缓存；serve 测试 28→37。
 - 代码提交：`c6cae94 fix(editor): global asset filters and OCR polygon/live save`
-- 测试：`cargo test --workspace` = **393 passed / 0 failed**；`node ui_pure_test.js` = **203 checks / 0 dead ids**；`task lint` = 2/0（返回庭院 + 用户新建“测试”）。
+- 测试：`cargo test --workspace` = **393 passed / 0 failed**；`node ui_pure_test.js` = **203 checks / 0 dead ids**；`task lint` = 2/0（当时：返回庭院 + 用户新建“测试”；**当前 1/0**，`测试` 已删除并随 `cd0ac34` 提交）。
 - 浏览器（8791 临时服）实测：全局库 14→搜索“返回” 1 行→分类“式神录”1 行；状态“共 14 / 显示 1”；无 JS 错误。
 
 剩余：
 
 - 识别 polygon 的 **derived OCR (`ocr_mode=lines`) 运行期掩膜** 尚未应用（保存已修；runtime 路径提前 return）。
 - SelectionTool 模式/reset 已收敛；识别掩膜与操作区 shape 两套几何按语义保留，不强行合并。
-- 真实设备点选未做；仅 headless + Node + Rust 测试。
-- 工作区数据由用户实时操作（assets 14、任务测试、frames current_id 40），未由助手提交。
+- 真实设备点选未做；仅 headless + Node + Rust 测试。（**后由 §9 真机 `emulator-5554` tap 补做；用户 00:37 验收真实模式**）
+- 工作区数据由用户实时操作（当时 assets 14、任务“测试”、frames current_id 40），未由助手提交。（**当前 16 条 / 1 图、只有返回庭院、current_id=20；`cd0ac34` 已快照**）
 
 ## 8. 第三轮收口（2026-11-01 23:15）
 
 - **derived OCR lines polygon mask**：`crates/oas-runtime/src/lib.rs:1702-1719` 在 derived 分支调用 provider 前应用 `mask_frame_for_ocr`；新增 3 个测试（有 mask/无 mask/loud failure），带变异验证。提交 `4d5759f`。
 - **E2E 真实浏览器**：Edge headless + CDP 36/36 PASS；报告 `_verify/audit-20261101/D-e2e.md`；提交 `92b4241`。全局搜索“返回”1 行、分类“式神录”3 行、刷新按钮真实 GET；任务页显示全部/搜索/分类正常；模式/reset 正常；无 JS 错误/无写请求。
 - **boot 任务素材加载**：`app.js:5768-5783` 改为先 `refreshTaskList` 再 `refreshTaskAssets/loadTaskFlow`；修复“select 已选任务但素材区空”；提交 `6f36a6b`；UI 203 checks。
-- 最终测试：`cargo test --workspace` = **393 passed / 0 failed**；UI 203 checks / 0 dead ids；task lint 2/0。
-- 剩余：真实设备点选（无设备）；SelectionTool 两套几何按语义保留；用户当前数据未提交。
+- 最终测试：`cargo test --workspace` = **393 passed / 0 failed**；UI 203 checks / 0 dead ids；task lint 2/0（当时；**当前 1/0**）。
+- 剩余：真实设备点选（无设备；**§9 已补真机 tap，用户 00:37 验收**）；SelectionTool 两套几何按语义保留；用户当前数据未提交（**`cd0ac34` 已快照**）。
 
 ## 9. 验收修复（23:55）
 

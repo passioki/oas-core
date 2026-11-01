@@ -5,6 +5,8 @@
 
 **阅读顺序**：`START-HERE` → `RESUME.md` → 本文件最新行 → 行内"文档锚点/证据"。
 
+> 2026-11-02 注：历史行里出现的 `docs/DELIVERY-PLAN.md`、`docs/CODE-AUDIT-2026-11-01.md`、`docs/MIGRATION-NOTES.md` 等路径已归档到 `docs/archive/`；按“只追加、不改旧行”规则，历史行保留原样，引用时按 archive 路径理解。
+
 | seq | task_id | 阶段 | 焦点 | 文档锚点 | 证据 | 下一步 | 状态 |
 |---|---|---|---|---|---|---|---|
 | 1 | scheduler-v3-task-template | P0 | 设计定稿 + START-HERE 引擎版；实现未开始 | `docs/ENGINE-DESIGN.md §22.34` | backend `309a4a89` · `_verify/n38/` | 完成 | done |
@@ -90,3 +92,6 @@
 | 81 | oas-core-audit-subprocess | 独立审计 | 3 子进程复核 A/B/C：3 P0 + 8 P1；P1-2/P1-4/P1-6 仅部分修复；361 tests 仍假绿 | `docs/AUDIT-SUBPROCESS-2026-11-01.md` · `PENDING §E-72` | HEAD `983c740` · B 实测 361 | 用户选择修复优先级 | in_progress |
 | 82 | oas-core-fix-p0-p1 | 实现/回归 | 两个实现子进程修 P0/P1；恢复 返回庭院 flow/meta；纳入审计报告；381 tests + UI 42 checks | `docs/AUDIT-SUBPROCESS-2026-11-01.md §6` · `PENDING §E-72` | HEAD `30d3145` · 381 tests · task lint 1/0 | 真实浏览器/实机；OCR polygon；live 强制抓帧 | in_progress |
 | 83 | oas-core-second-round | 实现/回归 | 全局素材搜索+分类；OCR polygon 保存；live=1 强制抓帧；SelectionTool 模式收敛；死 DOM id 25→0 | `docs/AUDIT-SUBPROCESS-2026-11-01.md §7` · `PENDING §E-72` | HEAD `c6cae94` · 390 tests · UI 106 checks · task lint 2/0 | derived OCR 掩膜；真实设备回归；用户数据未提交 | in_progress |
+| 84 | oas-core-release-node | 验收修复/真机 | 点击分布只点位、反选覆盖、真实/演练开关；真机 `emulator-5554` tap；derived OCR mask/E2E/boot 收口 | `docs/AUDIT-SUBPROCESS-2026-11-01.md §7~§9` · `PENDING §E-72` | `a804848`/`4d5759f`/`92b4241`/`6f36a6b` · 393 tests · UI 203 | RO 修复；用户 00:37 验收 | done |
+| 85 | oas-core-release-node | RO/恢复节点数据 | ResizeObserver 循环修复（`a2b4b12`）+ 文档记录（`7a3869f`）+ 最终数据快照（`cd0ac34`）；用户 00:37 验收“没问题” | `docs/AUDIT-SUBPROCESS-2026-11-01.md §10` · `PENDING §E-72` | HEAD `7a3869f`/`cd0ac34` · 393 tests · UI 203 · 16 素材/1 图 · 28 帧 current 20 | docs 审计 + 0.1.0 恢复节点 | done |
+| 86 | oas-core-release-node | 文档归档/发布准备 | F 审计 37 条 C0：归档 7 份历史 docs、config 改 archive、现行文档事实同步、EDITOR/ENGINE/PENDING 定点修正、新增 RELEASE-NODE | `docs/RELEASE-NODE-2026-11-02.md` · `docs/archive/README.md` · `PENDING §E-73` | HEAD `cd0ac34` · 393/203/1-0 · 16/1 · 28 current 20 · main `385d611` 待同步 | 父进程提交 docs；构建 0.1.0 release 并同步 main/dev | in_progress |

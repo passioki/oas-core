@@ -1,113 +1,91 @@
 # RESUME — 断点续接卡（session-memory 强制 6）
 
 > 规则：本文件**每次断点覆盖重写**；≤150 行；另一个会话只读本文件 + `RESUME-INDEX.md` 最新行
-> 就能继续。细节放 `ENGINE-DESIGN.md` / `ASSET-DATA-MODEL.md`。
+> 就能继续。细节放 `ENGINE-DESIGN.md` / `ASSET-DATA-MODEL.md` / `RELEASE-NODE-2026-11-02.md`。
 
 ```yaml
-task_id: oas-core-repo-recovery
-checkpoint_seq: 84
-updated_at: 2026-11-01T23:18:00+08:00
-trigger: derived OCR 掩膜、E2E 回归、boot 任务素材加载收口
+task_id: oas-core-release-node-0.1.0
+checkpoint_seq: 86
+updated_at: 2026-11-02T01:05:00+08:00
+trigger: 文档归档 + C0 现行文档更新 + 0.1.0 恢复节点索引
 status: in_progress
 ```
 
-## 0. 当前状态（磁盘 + git 实测）
+## 0. 当前状态（磁盘 + git 实测，2026-11-02 00:58 后）
 
-- 分支 `dev`，HEAD `a2b4b12`；`main`/`origin/main` = `385d611`（v1.2.3）。
-- 测试：`cargo test --workspace` = **393 passed / 0 failed**（runtime 113+2 / task 55 / oasd 140）；UI pure test **203 checks / 0 dead ids**；task lint 2/0；E2E 36/36。
-- 工作区**不干净（用户正在操作）**：
-  - `frames/frames.json` modified（current_id=40，用户数据，未动）；
-  - `assets/assets.json` + 17 张图被用户在 UI 删除（当前 14 素材 / 1 图；未恢复/未提交）；
-  - `tasks/返回庭院/assets.json` deleted；`tasks/测试/` 用户新建（是否已跟踪以 git 为准）。
-- 当前任务：`返回庭院`（flow/meta 已从 `8ee414c` 恢复，`45c1f32`）+ `测试`（用户新建）；flow 使用内联 OCR。
-- **代码修复**：`b910a2b`（P0/P1）、`c6cae94`（全局搜索/分类、OCR polygon/live、死 id）、`4d5759f`（derived OCR lines polygon mask）、`6f36a6b`（boot 任务素材加载）、`92b4241`（E2E 报告）、`a804848`（点击分布/反选/真实测试开关）、`a2b4b12`（ResizeObserver 循环修复）。
-- P1-8 模式/reset 已收敛；识别掩膜/操作区 shape 两套几何按语义保留。
-- 剩余：真实设备/人工点选；用户数据未提交；`#btn-task-refresh` 与素材区同步仍是 P2。
-- 4:21 干净基线：`f6be0f0`（22 帧 / 返回庭院 3 素材 / 无全局 assets）；18:42~19:14 为 docs-only；19:30 `9618cb5` 起进入实现。详见 `RECOVERY-AUDIT.md`。
-- 真正的迁移归档在：
-  - `archive/migration-20261101` = `29b696f`；
-  - 2827 个素材 / 2099 张图 / 55 个任务包；
-  - 已被 force-push 前的 rollback 保留，远程同名分支存在。
+- 分支 `dev`，HEAD **`cd0ac34`**（`data: final recovery-node data snapshot`，00:58:21）；`origin/dev` = `7a3869f`（本地领先 1）。
+- `main`/`origin/main` = **`385d611`**（v1.2.3，发布前恢复点）；用户 00:48 已要求构建 0.1.0 release 后同步 main/dev；本地包已构建，**tag/Release 与 main 同步尚未执行**。
+- 测试：`cargo test --workspace` = **393 passed / 0 failed**；UI pure test = **203 checks / 0 dead ids**；task lint = **1/0**（仅 `返回庭院`）。
+  - 2026-11-02 01:00 复核实测：`cargo test --workspace` 12 个有测试 suite 合计 393；`node apps/oasd/ui/ui_pure_test.js` 203 checks；`oasd task lint --tasks-dir tasks --all` → `linted=1 errors=0`。
+- 数据：全局素材 **16 条 / 1 图**（15 `ocr_line` + 1 `template`）；帧 **28 个 / `current_id=20` / `next_id=41`**；任务只有 `返回庭院`（flow 11 steps / meta 400 B）；`tasks/测试` 已删除并随 `cd0ac34` 提交。
+- 工作区：本次文档维护的 `docs/**` 修改 + `session-memory.config.json` 修改 **未提交**（子进程不 commit）；另有 `_verify/audit-20261101/{F-docs-audit,G-repo-hygiene}.md` 与 `B-cargo-test.log` 未跟踪（父进程决定是否入库）。
+- 发布：`Cargo.toml` = `0.1.0`，`oasd --version` = `0.1.0`；**没有新的 tag/Release**；本地 0.1.0 包已构建（`dist/oasd-v0.1.0-win64.zip`，01:01；SHA256 见同名 `.sha256` 旁文件）。
+- 文档：7 份历史文档已 `git mv` 到 `docs/archive/`；顶层保留 10 份 + 新增 `RELEASE-NODE-2026-11-02.md`；`session-memory.config.json` 的 `spec`/`progress`/`index` 指向 `archive/...`。
 
-## 1. 已核实的历史事实
+## 1. 验收清单（本次文档维护 + 恢复节点）
 
-1. `ENGINE §22.39 R11` 用户原话：
-   > “不再区分任务素材和全局素材，因为名称是唯一的”
-   ⇒ 唯一 `assets/`；任务只持有 meta/flow 并引用全局 id。
-2. `2026-11-01 09:02:04` 用户原话：
-   > “回滚到恢复节点，请理解和计划，与我确认。当前的迁移全部撤销”
-   09:11 执行后：
-   - dev → `385d611`；
-   - `assets/` 被删除；
-   - `migration/` 删除；
-   - 53 个迁移任务 + 2825 素材从 dev 移除；
-   - 归档分支 `archive/migration-20261101 = 29b696f` 保留。
-3. 之后用户继续在 dev 工作，并删除 `返回庭院` 任务；任务目录里的旧 assets 随之删除。
-4. 本轮我们（助手）错误地：
-   - 从 task 历史中恢复 34 个素材进 `assets/`；
-   - 声称“全局素材已恢复”；
-   - 删除旧 `library/` UI、添加自定义全局列表、修改多份文档；
-   - 没有先读 archive 分支和 09:02 的 rollback 语境。
+- ☑ 7 份历史文档归档（`git mv`，未删除，git 历史保留）：DESIGN-SPEC、DESIGN-SPEC-PROGRESS、SESSION-INDEX、DELIVERY-PLAN、RECOVERY-AUDIT、CODE-AUDIT-2026-11-01、MIGRATION-NOTES。
+- ☑ `session-memory.config.json` 的 `spec`/`progress`/`index` = `archive/...`。
+- ☑ 现行文档事实同步：HEAD `cd0ac34` / 393 / 203 / lint 1/0 / 16 素材 1 图 / 28 帧 current 20 / main 待同步 / version 0.1.0。
+- ☑ `EDITOR-UX-PLAN` 三处矛盾修正 + 实现前证据标历史；`ENGINE-DESIGN §22.34` 定点修正；`PENDING-LEDGER` 追加/标注；`RESUME-INDEX` 追加 84~86。
+- ☑ `RELEASE-NODE-2026-11-02.md` 建立（本地包与 SHA256 已回填；tag/Release 待填）。
+- ☐ 父进程 review + 提交 docs/config 到 `dev`（子进程按指令未 commit/push）。
+- ☐ 0.1.0 release 收尾：本地包已构建、stage 已确认 16 个全局素材；**tag/Release + 同步 `main`/`dev` 待完成**。
+- ☐ 产品剩余开口（不阻塞文档节点，发布前确认是否接受）：collection 真实点击、drag step shape、SelectionTool。
 
-## 2. 设计 vs 现状
+## 2. 本次已做（2026-11-02 01:0x）
 
-| 项 | 设计（用户口径） | 现状 | 结论 |
-|---|---|---|---|
-| 唯一素材库 | `assets/` 全量，任务引用子集 | 当前 `assets/` 只有 34 个按 task 历史拼出的素材 | ❌ 不是全量 |
-| 迁移归档 | archive 分支保留 2827 素材/55 任务 | 未导入当前 dev | ❌ 未恢复 |
-| 旧 `library/` | v1.2.1 后应被统一，最多兼容 | 我们曾恢复其 UI，后又删除 | ⚠ 需最终定案 |
-| 任务删除 | 删除任务不应销毁全局素材 | 旧实现 remove_dir_all 会删任务目录 assets；已加备份 | ⚠ 现状待恢复后重验 |
-| 任务素材 UI | 任务页只显示任务引用子集 | 无任务时应为空；代码已改但无真实任务验证 | 🔄 |
+1. 归档 7 份历史文档到 `docs/archive/`（`git mv`），新增 `docs/archive/README.md`。
+2. 更新 `README.md`、`START-HERE.md`、`RESUME.md`（本文件）、`SESSION-HANDOFF.md`、`ASSET-DATA-MODEL.md`。
+3. `EDITOR-UX-PLAN.md`：`action_roi` 兼容段、`action_source` 待确认、版本待确认三处矛盾修正；§13 标“实现前快照”；新增 §15 实现后状态与 00:37~00:38 口径。
+4. `ENGINE-DESIGN.md §22.34`：标题改“V1.0 已交付”；任务包 schema 改为 `tasks/<id>/{meta,flow}` + 全局 `assets/`；N36/N37 标已交付；DELIVERY-PLAN 链接改 archive。
+5. `PENDING-LEDGER.md`：顶部归档说明；E-66/68/70/72 状态标注；新增“验收补记（00:37~00:38）”与 §E-73 文档归档/恢复节点记录（append-only，未改旧证据正文）。
+6. `RESUME-INDEX.md`：追加 seq 84/85/86（旧行未改）。
+7. `AUDIT-SUBPROCESS-2026-11-01.md`：顶部范围横幅；任务数/真实设备/`CODE-AUDIT` 链接标历史。
 
-## 3. 下一步
+## 3. 下一步精确动作
 
-已完成：
+```powershell
+# 0) 父进程先看工作区（子进程未 commit）
+cd D:\OAS-dev\oas-core
+git status --short
+git diff --stat -- docs session-memory.config.json
 
-1. `b910a2b`：P0/P1 第一轮；`c6cae94`：全局搜索/分类、OCR polygon 保存、live 强制抓帧、死 id 25→0；
-2. `4d5759f`：derived OCR `ocr_mode=lines` 运行期 polygon mask + 3 测试；
-3. `6f36a6b`：boot 后自动加载已选任务素材；
-4. `92b4241`：E2E 报告（36/36 PASS）；
-5. `45c1f32`：返回庭院 flow/meta；`30d3145`：审计报告入 git；
-6. 测试：393 passed；UI 203 checks / 0 dead ids；task lint 2/0。
+# 1) 审阅后提交文档（父进程执行）
+git add docs session-memory.config.json
+git commit -m "docs: archive historical docs and sync 0.1.0 recovery-node state"
 
-剩余：
+# 2) 发布包已由父进程构建（01:01）：dist/oasd-v0.1.0-win64.zip + .sha256
+#    复核 scripts/package.ps1 与 packaging 版本 = 0.1.0；dist/stage/assets/assets.json = 16 条
 
-1. 真实设备/人工点选（当前无设备）；
-2. `#btn-task-refresh` 与素材区同步（P2）；
-3. 素材恢复路线 A/B/C（见 `RECOVERY-AUDIT.md`）；
-4. 用户当前 assets/tasks/frames 数据未提交（用户实时操作，助手未动）。
+# 3) 用户确认发布后：tag/release v0.1.0，main 快进/同步到恢复节点，dev 同步推送
+```
 
-## 4. 恢复路线（待裁定）
+- 继续产品工作的入口：`apps/oasd/src/serve.rs` 的 `handle_collection_match`（collection 真实点击）、`apps/oasd/ui/app.js` 的 drag step 生成（当前仍 bbox）、`SelectionTool`（两套几何未合并）。
+- 发布前复核：`_verify/audit-20261101/D-e2e.md` 的执行范围是 `4d5759f`，**未覆盖** 23:39 点击分布/反选/真实开关与 00:02 RO 修复；不要把 E2E 36/36 当最终全量状态。
 
-需要用户选一条恢复路线：
+## 4. 已知开口 / 边界
 
-- A. 从 `archive/migration-20261101` 导入全量 `assets/`（2827）到当前 dev；是否也导入 55 个任务？
-- B. 只保留当前 34 个素材，删除我们错误恢复的 docs/commit 影响；
-- C. 回到 `1f73f17` 前/某个干净点，只保留编辑器代码改动，不恢复任何数据。
+1. `collection` 集合测试仍是 **dry-run**：`handle_collection_match` 只返回 `action_box`，没有 `/input/tap`；它和“素材行真实点击”不是同一条路径（session 00:38）。
+2. drag 生成的 flow step 仍是 **bbox region**（CODE-AUDIT P1-1 未修）；`AUDIT-SUBPROCESS` 的 P1-1 是另一件事（UI 模板 shape 未平移，已修）——引用时写明编号来源。
+3. `SelectionTool` 未抽出；`polygon`/`actionPoly` 两套状态按语义保留。
+4. 真实 UI 手势：用户 00:37 说已测试；助手独立证据只有真机 `/input/tap`（`emulator-5554`），不是完整 UI 手势回放。文档区分“用户验收”与“助手实测”。
+5. 数据：当前 16/1；34/18 是 11-01 错误恢复（§E-70 推翻）；archive 2827/2099 未导入（用户 21:02 “先不管素材，素材可以重建”）。
 
-在执行前必须：
+## 5. 历史事实（只读，不再指导操作）
 
-1. 备份当前 `assets/`、`tasks/`、`frames/`；
-2. 明确 archive 的 schema（旧 `action_roi`）如何迁移成当前 `action_shape/action_source`；
-3. 逐项验证 `task lint`、`cargo test`、全局 API 和 UI；
-4. 经用户确认后才覆盖工作区。
-
-## 5. 阻塞/待裁定
-
-- 恢复哪一份素材库：archive 2827 / 当前 34 / 其他备份？
-- 是否同时恢复 archive 的 55 个任务包？
-- 当前工作区的 `tasks/返回庭院` 删除是否保留？
-- 代码修复顺序是否按 `CODE-AUDIT-2026-11-01.md` 执行？
+- 4:21 干净基线：`f6be0f0`（22 帧 / 返回庭院 3 素材 / 无全局 assets）；18:42~19:14 为 docs-only；19:30 `9618cb5` 起进入实现。
+- 11-01 09:02 用户要求回滚，09:11 执行；archive 分支 `archive/migration-20261101 = 29b696f`（2827 素材 / 2099 图 / 57 个任务目录，docs 旧写 55 需按 git 为准）。
+- 34 素材事故的完整审计已归档：`docs/archive/RECOVERY-AUDIT.md`；首轮代码审计：`docs/archive/CODE-AUDIT-2026-11-01.md`。
 
 ## 6. 证据
 
-- session 导出：`_verify/n44/session-current-both-full.txt`
-  - 11-01 09:02 回滚原话；
-  - 09:11 删除 assets/migration；
-  - R11 10-30 23:36 原话。
-- `git branch -avv`：`archive/migration-20261101 = 29b696f`。
-- `archive/migration-20261101:assets/assets.json`：2827 items。
-- 当前 `assets/assets.json`：34 items。
-- 提交：`1f73f17`（错误恢复+UI 改动）、`0bc69ba`、`1a021f8`、`385d611`。
+- 本次审计：`_verify/audit-20261101/F-docs-audit.md`（37 条 C0）、`G-repo-hygiene.md`（仓库卫生）。
+- 已入库审计：`_verify/audit-20261101/{A-session-git,B-runtime,C-ui,D-e2e,E-acceptance}.md`。
+- session 导出：`D:\OAS-dev\_verify\n44\session-current-both-full.txt`（仓外证据，不是 `oas-core/_verify`）。
+- 备份：`D:\OAS-dev\_backups\oas-core-20261102-005826\`（docs 已备份）。
+- 发布节点：`docs/RELEASE-NODE-2026-11-02.md`。
 
-> 结论：**当前仓库的数据状态不可信，恢复方案未定，禁止继续写代码/灌数据。**
+## 7. 阻塞
+
+- 无技术阻塞。发布（tag/Release/同步 main）需要用户确认，且先修 scripts/packaging 版本号——不在本次 docs 子进程权限内。

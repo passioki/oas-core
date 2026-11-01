@@ -1,6 +1,7 @@
 # 编辑器 UX / 选择模型改版计划（2026-11-01）
 
-> 状态：**Phase A/B/C/D 已实现；runtime template/OCR/region 点击均 exact shape；live/position 批量已实测**。版本 `0.1.0`。
+> 状态：**Phase A/B/C/D 行为层已实现**（runtime template/OCR/region 主点击 exact shape；live/position 批量已实测）。版本 `0.1.0`。
+> ⚠ 未完成的结构项：`SelectionTool` 未抽出（识别掩膜/操作区两套几何按语义保留）；drag 生成的 flow step 仍是 bbox；UI dry-run 与 runtime 是两套采样实现。**实现后状态与 00:37~00:38 口径见 §15**。
 > 目标：让素材/帧编辑更可维护、测试更可信、画面与操作区域不互相遮挡。
 > 不引入 interface；唯一关系仍是 `Asset.positions`。
 
@@ -88,6 +89,8 @@ SelectionTool:
 
 只保留一套 canvas 事件处理，避免 ROI 和 action 两套逻辑分叉。
 
+> **现状（2026-11-02）**：`SelectionTool` 未抽出；`polygon/polyMode` 与 `actionPoly/actionPolyMode` 仍是两套状态，按语义保留（见 §15.2）。
+
 ## 3. 反选 + 操作区域多边形（已确认：方案 B）
 
 ### 用户明确的反选定义
@@ -135,10 +138,8 @@ invert=true   有效操作区域 = 整个画面 − shape
 
 - 反选范围的“整个画面”按素材/任务设计分辨率（当前 1280x720）计算；
 - 识别侧继续沿用现有 `polygon` 掩膜语义，不把操作多边形混进识别掩膜；
-- 旧字段 `action_roi` 保留读取兼容：
-  - 读取时若无 `action_shape`，转换为 `kind=rect, invert=false`；
-  - 新保存以 `action_shape` 为主；
-  - `action_roi` 可作为旧客户端 fallback，不作为新数据唯一真相。
+- 旧字段 `action_roi` **已删除，不保留读取兼容**（见 §10；JSON/UI 已不读取）。
+- runtime 内部 `click_back` 仅作为 region/collection 的 bbox 快捷路径保留，不是旧 JSON 字段兼容层。
 
 ### 运行时点击采样
 
@@ -149,7 +150,7 @@ invert=true   有效操作区域 = 整个画面 − shape
   - 拒绝落在 shape 内部的点；
   - 保证最终点有效；
 - 多边形使用点在多边形内测试；
-- 旧 `action_roi` 无 shape 时仍按矩形处理。
+- 反选/多边形均按 `action_shape` 精确采样；runtime 内部 `click_back` 只覆盖 region/collection 的 bbox 快捷路径，新数据不写 `action_roi`。
 
 ### 验收
 
@@ -217,7 +218,7 @@ sampleDrag(asset, direction, rng) -> {from,to}
   - 终点沿方向 + 横向抖动；
   - 终点仍落在允许区域/方向边界内；
 - 每次测试记录 seed/采样点；
-- dry-run 和真实 runtime 使用同一采样实现。
+- **现状（2026-11-02）**：dry-run（UI JS）与真实 runtime（Rust）是两套采样实现，语义对齐但未共用同一函数；这是已知结构项。
 
 ### 验收
 
@@ -290,9 +291,9 @@ recognized_bbox 是否有任何部分落在 effective_action_region
 
 如果实际识别目标完全在排除区域内，则视为不重叠。
 
-### `action_source`（待确认）
+### `action_source`（已确认，§10.2 已落地）
 
-拟新增：
+已新增（`§10.2` 确认，JSON/UI 已落地）：
 
 ```json
 "action_source": "recognition" | "fixed"
@@ -303,10 +304,11 @@ recognized_bbox 是否有任何部分落在 effective_action_region
 - `recognition`：操作区域应跟随真实识别结果；
 - `fixed`：用户明确固定操作区域，允许和真实识别 bbox 不重叠。
 
-旧数据：
+旧数据迁移（一次性，已完成）：
 
 - 无显式操作区域 → `recognition`；
-- 有显式操作区域但无 `action_source` → 先按 `fixed` 兼容，并标“旧数据来源未知”。
+- 有旧 `action_roi` → `fixed` + `action_shape{kind:rect,invert:false}`；
+- 迁移后不再读取旧字段（见 §10）。
 
 ### 防错目的
 
@@ -529,11 +531,13 @@ action_source = fixed:
 7. **不保留旧兼容**：删除 `action_roi`/`roi_back`；旧数据一次性迁移。
 8. 没有外部用户，可以接受 schema 断代。
 
-## 12. 仍待确认
+## 12. 已确认（原“仍待确认”）
 
-1. 是否把版本号从 `1.2.3` 重置到 `<1` 的 `0.1.0`（需决定是否保留旧 v1.x tag 作为历史）。
+1. 版本号已从 `1.2.3` 重置到 `0.1.0`（`§E-67` 已执行；`oasd --version` = 0.1.0）；旧 v1.x tag 保留为历史。
 
-## 13. 当前代码证据
+## 13. 实现前代码证据（2026-11-01 19:30 前快照，历史，勿作现状）
+
+> ⚠ 以下记录是 Phase A~D 实现**之前**的代码状态，仅保留作对照。当前实现状态见 §15。
 
 - 画布：`apps/oasd/ui/index.html` `#canvas-wrap`/`#screen`；`apps/oasd/ui/style.css` flex/max-height；
 - 位置详情：当前无独立详情区；
@@ -544,7 +548,7 @@ action_source = fixed:
 - 帧分类：当前只有 category set/rename 不涉及分类本身；
 - 旧 `action_roi`：全仓约 105 处引用，需一次性收口。
 
-## 14. 版本号评估
+## 14. 版本号评估（2026-11-01 19:20 评估记录；已执行 0.1.0）
 
 当前：
 
@@ -583,6 +587,34 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 
 没有 0.x 版本线，`0.1.0` 是最清晰的起点；如果强调“已经迭代很多”，也可以选 `0.3.0`，但那会暗示存在 0.1/0.2 历史，不如 0.1.0 直接。
 
-**待确认：是否重置到 0.1.0。**
+**已执行（2026-11-01 19:30）：`workspace.package.version = 0.1.0`；`oasd --version` = 0.1.0；旧 v1.x tag 保留（§E-67）。**
+
+## 15. 实现后状态（2026-11-02）
+
+> 本节是 §1~§14 计划/快照的**现行口径**；与旧段落冲突时以本节 + 代码为准。
+
+### 15.1 已实现（行为层）
+
+- 画布 16:9 stage、帧详情侧栏、结果/日志收起（`a804848`/`a2b4b12`）；
+- 随机点测/拖测、`action_shape`+`action_source`、操作区多边形/全屏反选、runtime template/OCR/region 主点击 exact shape；
+- `live=1` 强制抓帧、单素材多位置逐个位置帧测试、素材拖动排序、帧分类重命名；
+- 点击分布只画点位/热力（无左上指示条）、真实/演练开关（`#btn-test-mode`，默认演练；真实模式 `/input/tap` `/input/swipe` + 二次确认）；
+- ResizeObserver 循环修复（`a2b4b12`）：rAF 合并 + 幂等 fit；用户 00:37 验收“没问题”。
+
+### 15.2 未完成/边界（发布前确认是否接受）
+
+- `SelectionTool` 未抽出：`polygon/polyMode` 与 `actionPoly/actionPolyMode` 两套状态按语义保留；
+- drag 生成的 flow step 仍是 `{kind:'region', roi: bbox}`（`CODE-AUDIT P1-1`；注意与 `AUDIT-SUBPROCESS P1-1` 的“UI 模板 shape 未平移”不是同一问题）；
+- UI dry-run（JS）与 runtime（Rust）是两套采样实现，未共用同一函数；
+- `collection` 集合测试仍是 dry-run：只返回 `action_box`，没有 `/input/tap`；与“素材行真实点击”不是同一条路径。
+
+### 15.3 00:37~00:38 会话口径（补入文档）
+
+| 项 | 结论 |
+|---|---|
+| drag/swipe 是否写点击分布 | **不写**。`record_click()` 只在 `perform_click()` 路径调用；`Step::Drag` 走 `input.swipe`，不产生 click 记录。 |
+| 拖测 `margin` | 默认 **0.15**，合法范围 **0~0.45**；作用于**起点**（配置了 `to` 时也作用于终点）候选矩形的**内缩**；不是像素、不是拖动距离。 |
+| collection 真实点击 | **仍未实现/未承诺**：集合匹配 dry-run；与素材真实点击不同路径。 |
+| 真实 UI 手势 | 用户 00:37 说“测试过了”；助手独立证据只有真机 `emulator-5554` 的 `POST /input/tap`，不是完整 UI 手势回放。 |
 
 

@@ -2,7 +2,7 @@
 # Usage:  pwsh -File scripts/package.ps1 [-Version 0.1.0] [-SkipBuild]
 # Output: dist/oasd-v<version>-win64.zip + .sha256 + BUILD-INFO.txt
 param(
-  [string]$Version = "1.2.3",
+  [string]$Version = "0.1.0",
   [switch]$SkipBuild
 )
 $ErrorActionPreference = "Stop"
@@ -29,7 +29,8 @@ foreach ($d in @("ui", "models", "adb", "tasks", "library", "assets", "frames", 
   New-Item -ItemType Directory -Force -Path (Join-Path $Stage $d) | Out-Null
 }
 
-Copy-Item $Exe (Join-Path $Stage "oasd.exe")
+$StageExe = Join-Path $Stage "oasd.exe"
+Copy-Item $Exe $StageExe
 
 # editor UI (static)
 Copy-Item (Join-Path $Root "apps\oasd\ui\*") (Join-Path $Stage "ui") -Recurse -Force
@@ -81,22 +82,60 @@ if (Test-Path (Join-Path $Root "library")) {
   Copy-Item (Join-Path $Root "library\*") (Join-Path $Stage "library") -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# v1.2.1: migrate the shipped tasks + old library into the unified global asset
-# store. This rewrites task flows (duplicates get _2 suffix, references kept).
-Write-Host "-- migrate packaged assets (auto-suffix, rewrite flows)"
-$StageExe = Join-Path $Stage "oasd.exe"
+# v0.1.0: the root global asset store (assets/assets.json + assets/images/) is
+# DATA and must ship verbatim. Older packages had no global store and relied on
+# `assets migrate` to build one from per-task assets + library; keep that path
+# only when the root store is absent.
+$RootAssets = Join-Path $Root "assets"
+$RootAssetsJson = Join-Path $RootAssets "assets.json"
+$MigratedLegacy = $false
+$RootAssetCount = -1
+
+if (Test-Path $RootAssetsJson) {
+  Write-Host "-- copy root global assets (assets.json + images/)"
+  Copy-Item $RootAssetsJson (Join-Path $Stage "assets\assets.json") -Force
+  $RootImages = Join-Path $RootAssets "images"
+  $StageImages = Join-Path $Stage "assets\images"
+  New-Item -ItemType Directory -Force -Path $StageImages | Out-Null
+  if (Test-Path $RootImages) {
+    Copy-Item (Join-Path $RootImages "*") $StageImages -Recurse -Force
+  }
+  $RootAssetCount = @((Get-Content -Raw -Encoding UTF8 $RootAssetsJson | ConvertFrom-Json).items).Count
+} else {
+  # Legacy package (pre-global store): migrate the shipped tasks + old library
+  # into the unified store. This rewrites task flows (duplicates get _2 suffix).
+  Write-Host "-- migrate packaged assets (auto-suffix, rewrite flows)"
+  $MigratedLegacy = $true
+  Push-Location $Stage
+  try {
+    & $StageExe assets migrate --tasks-dir tasks --library-dir library --assets-dir assets
+    if ($LASTEXITCODE -ne 0) { throw "assets migrate failed (exit $LASTEXITCODE)" }
+    if (-not (Test-Path (Join-Path $Stage "assets\assets.json"))) {
+      throw "assets migrate did not produce assets/assets.json"
+    }
+  } finally {
+    Pop-Location
+  }
+}
+
+# Verify the stage store really carries the source data before lint/zip.
+$StageAssetsJson = Join-Path $Stage "assets\assets.json"
+if (-not (Test-Path $StageAssetsJson)) { throw "missing stage assets/assets.json" }
+$StageAssetCount = @((Get-Content -Raw -Encoding UTF8 $StageAssetsJson | ConvertFrom-Json).items).Count
+if ($RootAssetCount -ge 0 -and $StageAssetCount -ne $RootAssetCount) {
+  throw "stage assets count $StageAssetCount != root assets count $RootAssetCount"
+}
+Write-Host "-- stage assets: $StageAssetCount item(s)"
+
 Push-Location $Stage
 try {
-  & $StageExe assets migrate --tasks-dir tasks --library-dir library --assets-dir assets
-  if ($LASTEXITCODE -ne 0) { throw "assets migrate failed (exit $LASTEXITCODE)" }
-  if (-not (Test-Path (Join-Path $Stage "assets\assets.json"))) {
-    throw "assets migrate did not produce assets/assets.json"
-  }
   & $StageExe task lint --tasks-dir tasks --all
-  if ($LASTEXITCODE -ne 0) { throw "packaged task lint failed after migration" }
-  # N46: package ships no per-task legacy assets after global migration.
-  & $StageExe assets cleanup-legacy --tasks-dir tasks --assets-dir assets --apply
-  if ($LASTEXITCODE -ne 0) { throw "packaged legacy asset cleanup failed" }
+  if ($LASTEXITCODE -ne 0) { throw "packaged task lint failed" }
+  if ($MigratedLegacy) {
+    # N46: package ships no per-task legacy assets after global migration.
+    & $StageExe assets cleanup-legacy --tasks-dir tasks --assets-dir assets --apply
+    if ($LASTEXITCODE -ne 0) { throw "packaged legacy asset cleanup failed" }
+  }
 } finally {
   Pop-Location
 }

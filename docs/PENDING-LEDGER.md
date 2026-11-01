@@ -12,6 +12,11 @@
 > 4. ★ 状态只允许：★ `⬜ 未开始` / `🔄 进行中` / `✅ 已完成` / `⛔ 阻塞`
 > 5. ★ **"已完成"必须有可核查证据**（测试输出 / 日志 / diff），★ 不许凭感觉标
 
+> ★ **文档归档说明（2026-11-02）**：`DESIGN-SPEC.md`、`DESIGN-SPEC-PROGRESS.md`、`SESSION-INDEX.md`、
+> `DELIVERY-PLAN.md`、`RECOVERY-AUDIT.md`、`CODE-AUDIT-2026-11-01.md`、`MIGRATION-NOTES.md` 已 `git mv`
+> 到 `docs/archive/`。本台账中**旧段**（尤其 **§一~§D**）里对这些文件名的引用是**历史指代**（按 `docs/archive/<name>`
+> 理解），旧证据正文未改；当前入口见 `README.md` / `RESUME.md` / `RELEASE-NODE-2026-11-02.md`。
+
 ---
 
 ## 一、★★★ 调度改造主任务（★ 用户说"四五遍还没完成"）
@@ -280,7 +285,7 @@
 ```
 
 | **T11** | 移植到 `D:\OAS` | `D:\OAS\` | 🔄 子智能体 `684a5265` |
-| **T12** | 规格书矛盾收敛（§1.3 → 时间戳 · §5 定案 · §4.1 订正 · 新增 §1.6.x）| `docs/DESIGN-SPEC.md`（1785 → **1974 行**）| ✅ **已完成**：新增 **§1.6.x**（`session_start`，Z1~Z7）+ **分歧块⑪**（轮次号→时间戳）+ **§6.6** 巡检 + **§4.5-⑮~⑳**；§4.1 第 13/15/16 条由 ✅ **重判 ❌**；§4.4 汇总 `22/8/5` → **`21/7/7`**（★ 并指出旧数从来对不上）；Q5/Q6 **✅ 已定案**；校正 **17 处行号** |
+| **T12** | 规格书矛盾收敛（§1.3 → 时间戳 · §5 定案 · §4.1 订正 · 新增 §1.6.x）| `docs/archive/DESIGN-SPEC.md`（1785 → **1974 行**）| ✅ **已完成**：新增 **§1.6.x**（`session_start`，Z1~Z7）+ **分歧块⑪**（轮次号→时间戳）+ **§6.6** 巡检 + **§4.5-⑮~⑳**；§4.1 第 13/15/16 条由 ✅ **重判 ❌**；§4.4 汇总 `22/8/5` → **`21/7/7`**（★ 并指出旧数从来对不上）；Q5/Q6 **✅ 已定案**；校正 **17 处行号** |
 | **T13** | ★ 台账改 `PENDING-LEDGER.md`（本节 B）| 本文件 | ✅ |
 | **T14** | ★ 端到端验收（★ **必须你双击/实机确认**）| — | ⬜ **待你确认**（★ 旧阻塞"我的 `pwsh` 不可用"**已解除** · [10-15]）|
 
@@ -337,7 +342,7 @@
 | **T10b** | ★★ **`entry_target_reached()` 零覆盖** ⇒ ★ 新增 `tests/module/config/test_entry_target_reached.py` | ★ 台账 `T10b` · SPEC §1.6.x-Z6 / §4.5-⑱ | ✅ **已完成** | ★ **11 passed**；★★ **注入验证 3/3 都真红**：注入①"临时任务→False" ⇒ **5 failed**；注入②"周期任务→True" ⇒ **3 failed**；注入③"塞回 `runs>=target`" ⇒ **1 failed**（静态守卫）；★ 还原后 SHA256 与原始**逐字节一致** + `git diff` 空 |
 | **N9-1-fix** | ★★★ **P0**：`Function('Restart')` ➜ `Function('restart')`（★ 待命占位**必须构造成功**）| ★ `config.py:4518` · `config_model.py:314` | ✅ **已完成** | ★ 实机日志的 `KeyError: 'Restart'` ⇒ `RequestHumanTakeover` 链路**已断** |
 | **N9-1-test** | ★ 守卫：**待命占位必须成功**（不抛 `RequestHumanTakeover`）+ 两条反向守卫 | ★ 新增 `tests/module/config/test_standby_placeholder.py`（5 条）| ✅ **已完成** | ★ **5 passed**；★★ **注入验证真红**（把 `'restart'` 改回 `'Restart'` ⇒ **3 failed @ `config.py:4533`**）；★ 还原后 SHA256 **逐字节一致**（`FCD71335…`）|
-| **N9-1-spec** | ★ 规格书落正文：**§1.5.x（SB1~SB5）** + `§4.5-㉑` | `docs/DESIGN-SPEC.md` | ✅ **已完成** | ★ 规则 5 条 + 实机日志证据 + **空转教训**（★ `update_scheduler` 会覆盖外部设定）|
+| **N9-1-spec** | ★ 规格书落正文：**§1.5.x（SB1~SB5）** + `§4.5-㉑` | `docs/archive/DESIGN-SPEC.md` | ✅ **已完成** | ★ 规则 5 条 + 实机日志证据 + **空转教训**（★ `update_scheduler` 会覆盖外部设定）|
 | **F-baseline** | ★★ 全量基线**实测**（★ 台账旧值 `35 failed / 1696 passed` **对不上**）| `pytest tests/ -q` | ✅ **已归因** | ★ **对照实验**：★ **无**我的新测试文件 ⇒ **50 failed / 1694 passed / 12 skipped**；★ **有** ⇒ **15 failed / 1706 passed** ⇒ ★ ★ **+12 passed（全是我新增的用例）· −1 failed**；★ 逐条比对 ⇒ ★ 差的唯一一条是 `tests/test_docs_no_dead_refs.py::test_all_referenced_py_paths_exist`（★ 单独跑 **20 passed**，★ 与本文件同跑也 **31 passed**）⇒ ★ **它是全量套件里的顺序相关 flaky**，★ **不是**我的回归（★ 证据：加文件只会 +passed，**不可能**把红变绿）|
 | **F-cwd** | ★★ **我自己踩的坑（已修）**：新测试文件 `os.chdir(REPO)` **不还原** ⇒ ★ 污染**共享测试进程的 `cwd`** | `tests/module/config/test_entry_target_reached.py:93-118` | ✅ **已修** | ★ fixture 里 `cwd_before = os.getcwd()` ⇒ `finally: os.chdir(cwd_before)`；★ 修后本文件仍 **11 passed** |
 | **F-baseline-attrib** | ★★ **15 failed 的归因**（★ 给"完成定义"用）| ★ 实测 | ✅ **已归因完毕** | ★ **逐条实测取证**：★ **43 条** = 测试去读 **`D:/OAS-dev/OASX-src`**（★ `FileNotFoundError`）⇒ **"前端仓库不在本机"类**（★ `DEV-WORKFLOW §3.1` 的已知项，★ 但**路径名已漂移**：期望 `OASX-src`，本机是 `frontend`）；★ **4 条** = 缺 **`module/config/i18n/zh-CN.json`**（★ 实测 `FileNotFoundError` ⇒ ★ 已查明它是**前端经 `/chinese_translate` 推来的运行时产物**，★ 见 §A.3；★ 本机没开前端 ⇒ 文件不存在）；★ **2 条** = 读**用户/实机状态**（`test_task_catalog::test_interval_from_user_config` · `test_schema_router::test_at_least_one_task_outside_window`）；★ **1 条** `test_queue_clear_and_settings::test_disables_auto_queue_tasks`（读 live 配置的 `auto_queue`）；★ **1 条** `test_docs_no_dead_refs` = **顺序相关 flaky**（★ 单跑 20 passed）|
@@ -350,7 +355,7 @@
 |---|---|---|---|---|
 | **N9-9-fix** | ★★ `_parse_switch_target()` **先校验**（组 1-7 · 队 1-4）+ `switch_soul_one()` 校验**移到取素材之前**；非法 ⇒ ★ `logger.error` **响亮跳过** | `tasks/Component/SwitchSoul/switch_soul.py` | ✅ **已完成** | ★ 出厂默认 `-1,-1` ⇒ 不再抛 `KeyError` |
 | **N9-9-test** | ★ 守卫 **38 条**（非法只跳过 · **不碰 UI** · 合法**照常换**（反向）· 元组入口 · `error` 日志 · ★★ **运行时**断言抛 `ValueError` 而非 `KeyError`）| ★ 新增 `tests/tasks/Component/SwitchSoul/test_switch_soul_validation.py` | ✅ **已完成** | ★ **38 passed**；★★ 注入（校验置 `if False:`）⇒ **5 failed**；★ 还原 SHA256 一致 |
-| **N9-9-spec** | ★ 规格书：**§1.5.y（SS1~SS5）** + `§4.5-㉒` | `docs/DESIGN-SPEC.md` | ✅ **已完成** | ★ 规则 5 条 + 真因 + 已定案依据（`SESSION-INDEX.md:1162`）|
+| **N9-9-spec** | ★ 规格书：**§1.5.y（SS1~SS5）** + `§4.5-㉒` | `docs/archive/DESIGN-SPEC.md` | ✅ **已完成** | ★ 规则 5 条 + 真因 + 已定案依据（`SESSION-INDEX.md:1162`）|
 | **★ 教训-C** | ★★★ **源码级"比行序"的守卫是空转的**（★ 本会话**第三次**抓到空转守卫）| — | ✅ 已记录 | ★ 证据：把 `if not 1 <= int(group) <= 7:` 改成 `if False:`（★ 校验**形同不存在**）⇒ ★ 那条**只比行序**的守卫**照样绿**（★ `raise` 字样还在）⇒ ★★ **必须有【运行时】断言**（`pytest.raises(ValueError)`）；★ 已补上 ⇒ 注入后**真的变红**（5 failed）|
 | **★ 教训-D** | ★★ **`pwsh -replace` 是正则 + `$` 会展开 ⇒ 注入会"静默不生效"** | — | ✅ 已记录 | ★ 实测：同一注入连试 **3 次**都"没生效"（★ 却让我一度误判守卫有效）⇒ ★ **注入验证要用 Python 做**（`str.replace` + 打印"是否生效" + 还原后比 SHA256）|
 
@@ -438,7 +443,7 @@
 
 | # | 交付物 | 规模 | 可核查方式 |
 |---|---|---|---|
-| **N9-10** | ★★ **SPEC §1.19「流程控制抽象」** —— 把用户的 4 条粗分类拆成 **9 个控制面 + 2 个支撑面**：★ `C1 准入`（7 个调度门 + 任务内前置）· `C2 准备`（环境/界面/配置三级）· `C3 骨架`（实测 5 种形状）· `C4 判断` · `C5 动作` · `C6 出口`（**8 类具名出口**）· `C7 结果`（三态 + 2 上报对象 + 2 排期基准）· `C8 收尾` · `C9 容错` · `C10 记忆` · `C11 接管` | ★ 每面都给：★ **具体分类** · ★ **现状实现（`file:line`）** · ★ **缺口**；★ 另含 **API 草案**（可照着写）+ ★ **与 M2/DSL 的映射** + ★ **落地顺序（接 §1.18 的 P0~P3）** | ★ [DESIGN-SPEC.md §1.19](DESIGN-SPEC.md)（★ 搜 `1.19`）|
+| **N9-10** | ★★ **SPEC §1.19「流程控制抽象」** —— 把用户的 4 条粗分类拆成 **9 个控制面 + 2 个支撑面**：★ `C1 准入`（7 个调度门 + 任务内前置）· `C2 准备`（环境/界面/配置三级）· `C3 骨架`（实测 5 种形状）· `C4 判断` · `C5 动作` · `C6 出口`（**8 类具名出口**）· `C7 结果`（三态 + 2 上报对象 + 2 排期基准）· `C8 收尾` · `C9 容错` · `C10 记忆` · `C11 接管` | ★ 每面都给：★ **具体分类** · ★ **现状实现（`file:line`）** · ★ **缺口**；★ 另含 **API 草案**（可照着写）+ ★ **与 M2/DSL 的映射** + ★ **落地顺序（接 §1.18 的 P0~P3）** | ★ [DESIGN-SPEC.md §1.19](archive/DESIGN-SPEC.md)（★ 搜 `1.19`）|
 | **N9-10-a** | ★★ **8 任务 × 控制点 覆盖矩阵**（★ **脚本实测**，不是印象）| ★ 12 个控制点 × 8 个任务；★ 关键：★ **`raise_if_paused` = `Tako`/`AreaBoss`/`DailyTrifles`/`WeeklyTrifles` 全 0** · ★ `mark_entry_completed` 全仓**只有 2 处**（`RealmRaid:198`/`RyouToppa:214`）· ★ `goto_page(page_main)` = `AreaBoss 0`/`AutoCheckin 0` · ★ `while 1` = 12/2/15/5/12/8/12/**0** | ★ 复现命令：对 `tasks/<Name>/script_task.py` 做正则计数（★ 本节矩阵即由该脚本产出）|
 | **N9-10-b** | ★★★ **三个红灯**（★ 矩阵直接暴露）| ①★ **出口语义靠各任务自觉** · ②★ **收尾与准备不对称** · ③★ **暂停检查点只有一半任务有**（★ 详见 SPEC §1.19-四）| 台账 §D.6 · SPEC §1.19-四 | ⏸ **用户裁定 [10-14]：待定**（★ 原话"**1.待定，可记录下。后期可能重构，暂不处理。**"）|
 
@@ -2312,10 +2317,12 @@ invalidate_frame() // 输入动作后丢弃
 
 `START-HERE.md`、`RESUME.md`、`RESUME-INDEX.md`、`SESSION-HANDOFF.md`、`ENGINE-DESIGN.md`、`PENDING-LEDGER.md`、`DESIGN-SPEC.md`、`DESIGN-SPEC-PROGRESS.md`、`SESSION-INDEX.md`、`DELIVERY-PLAN.md`
 
+> 2026-11-02 标注：其中 `DESIGN-SPEC.md`、`DESIGN-SPEC-PROGRESS.md`、`SESSION-INDEX.md`、`DELIVERY-PLAN.md` 已归档至 `docs/archive/`；本段为迁移历史。
+
 ## 新增
 
 - `docs/README.md`
-- `docs/MIGRATION-NOTES.md`
+- `docs/archive/MIGRATION-NOTES.md`
 - `session-memory.config.json`（oas-core 根目录）
 
 ## 适配
@@ -2688,7 +2695,7 @@ Asset.positions = [frame_id, ...]
 
 ## 待用户确认
 
-- 版本号是否从 `1.2.3` 重置到 `0.1.0`（旧 v1.x tag 保留为历史，见 `EDITOR-UX-PLAN.md §14`）。
+- 版本号是否从 `1.2.3` 重置到 `0.1.0`（旧 v1.x tag 保留为历史，见 `EDITOR-UX-PLAN.md §14`）。**已由 §E-67 执行（0.1.0）。**
 
 ## 已实现
 
@@ -2762,6 +2769,8 @@ Asset.positions = [frame_id, ...]
 - 无 JS 错误；全局库读取 0 个素材时显示「素材库：0 个素材」。
 
 | 状态 | ✅ 信息架构已修正；当前 `tasks/返回庭院` 目录被删除，任务素材库暂为空 |
+
+> **后续（2026-11-02 标注）**：`1f73f17` 之后旧 `library` UI 已移除（全局素材页改用 `assets/` 列表）；本节恢复的 `library-select`/`btn-library-save` 等只是中间态，现行无 library UI。见 §E-70 / §E-73。
 
 ---
 
@@ -2903,16 +2912,18 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - 18:42:19 `f157dae`、18:57:30 `2b22b77`、19:05:23 `7e16063`、19:14:09 `8ee414c` 均为 **docs-only**，没有代码/数据改动。
 - 19:15 用户“开始吧”；19:30:51 `9618cb5` 才是第一笔实现提交。
 - 20:23/20:33 的 `0bc69ba`/`1f73f17` 是助手超出会话要求的素材恢复，导致当前 34 个错误素材。
-- 完整审计：`docs/RECOVERY-AUDIT.md`。
+- 完整审计：`docs/archive/RECOVERY-AUDIT.md`。
 
 | 状态 | ⛔ 阻塞：等待恢复路线确认（A/B/C） |
+
+> **后续（2026-11-02 标注）**：用户 21:02 决定“先不管素材，素材可以重建”，**不恢复 archive 全量**；`e749c10` 提交用户数据，`cd0ac34` 为最终恢复节点快照；当前 assets **16/1**、只有 `返回庭院`、**不阻塞**。34/18 不再作为当前状态；archive 2827/2099 保留备查。
 
 ---
 
 # ★ §E-71 ★★★ [11-01 21:05] **16:00~21:00 代码审计：4 P0 / 4 P1**
 
 > 触发：用户要求先不管素材，扫描 16:00~21:00 git 改动，对照 session 与代码逻辑。
-> 完整审计：`docs/CODE-AUDIT-2026-11-01.md`。
+> 完整审计：`docs/archive/CODE-AUDIT-2026-11-01.md`。
 
 ## 结论
 
@@ -2993,6 +3004,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - 代码：`b910a2b`；数据：`45c1f32`；审计报告：`30d3145`
 - 测试：381 passed；UI pure test 42 checks；task lint 1/0
 - P0-1/P0-2/P0-3、P1-1~P1-7 已修；P1-8 行为复位已修但双状态存储未合并
+  - **注：此处的 P1-1 指“UI 模板 shape 未平移”（AUDIT-SUBPROCESS 编号，已修）；`CODE-AUDIT-2026-11-01.md` 的 P1-1（drag step 仍是 bbox）仍未修**，不能被“P1-1~P1-7 已修”覆盖。
 - 剩余：OCR 识别 polygon 后端保存限制；live 强制重抓未做（P2）
 
 | 状态 | 🔄 主体已修，剩余项见上 |
@@ -3034,3 +3046,43 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - 未加全局错误屏蔽。
 
 | 状态 | ✅ 根因修复；用户硬刷新加载新 app.js |
+
+> **验收（2026-11-02 00:37）**：用户硬刷新后确认“没问题”，RO 修复验收通过。真实 UI 手势用户也在此轮说“测试过了”；助手独立证据仅为真机 `/input/tap`，不是完整 UI 手势回放。
+
+## 验收补记（2026-11-02 00:37~00:38）
+
+> 触发：用户追问拖动是否叠加点击记录、drag margin、collection 真实点击是否完成。以下为会话口径，补入台账（此前只存在于 session）。
+
+1. **drag/swipe 不写点击分布**：`record_click()` 只被 `perform_click()` 调用；`Step::Drag` 走 `input.swipe`，不写 clicks/点击分布。
+2. **拖测 margin**：默认 `0.15`，合法范围 `0~0.45`，作用于起点（配置了 `to` 时也作用于终点）候选矩形的内缩；不是像素，也不是拖动距离。
+3. **collection 仍是 dry-run**：`handle_collection_match` 只返回 `action_box`，没有 `/input/tap`；它和“素材行真实点击”不是同一条路径。当前未实现/未承诺。
+4. 真实 UI 手势：用户 00:37 说已测试；助手独立证据只有真机 `emulator-5554` 的 `POST /input/tap`；文档区分“用户验收”与“助手实测”。
+
+| 状态 | ✅ RO/点击分布/真实开关用户已验收；🔄 drag step 仍 bbox；⬜ collection 真实点击未实现 |
+
+---
+
+# ★ §E-73 ★★★ [11-02 01:0x] **文档归档 + 0.1.0 恢复节点索引**
+
+> 触发：F 审计（37 条 C0）+ 用户授权“更新文档、可适当清理旧文档/过时文件，清理必须审慎且本地备份”。
+
+## 事实基线（2026-11-02 00:58，HEAD `cd0ac34`）
+
+- `dev` = `cd0ac34`（data snapshot）；`origin/dev` = `7a3869f`（本地领先 1）；`main` = `385d611`（v1.2.3，发布前）。
+- `cargo test --workspace` = 393 passed / 0 failed；UI pure test = 203 checks / 0 dead ids；task lint = 1/0。
+- 全局素材 16 条 / 1 图；帧 28 个 / `current_id=20` / `next_id=41`；任务只有 `返回庭院`（`tasks/测试` 已删除并提交）。
+- 版本 `0.1.0`；本地 0.1.0 包已构建（01:01）；**没有新的 tag/Release**。
+
+## 文档处置（未 commit，等父进程）
+
+- 7 份历史文档 `git mv` → `docs/archive/`（未删除）：DESIGN-SPEC、DESIGN-SPEC-PROGRESS、SESSION-INDEX、DELIVERY-PLAN、RECOVERY-AUDIT、CODE-AUDIT-2026-11-01、MIGRATION-NOTES；新增 `docs/archive/README.md`。
+- `session-memory.config.json` 的 `spec`/`progress`/`index` → `archive/...`。
+- 更新：README、START-HERE、RESUME、SESSION-HANDOFF、ASSET-DATA-MODEL、EDITOR-UX-PLAN、ENGINE-DESIGN §22.34、AUDIT-SUBPROCESS、RESUME-INDEX；新增 `RELEASE-NODE-2026-11-02.md`。
+- 本地备份：`D:\OAS-dev\_backups\oas-core-20261102-005826\`。
+
+## 发布前开口（非 docs 范围）
+
+- `scripts/package.ps1` 与 packaging 版本已改为 `0.1.0`（父进程工作区改动）；发布前复核 stage 的 `assets/assets.json` = 16 条。
+- collection 真实点击、drag step shape、SelectionTool 仍 open。
+
+| 状态 | 🔄 文档已就绪待父进程提交；本地包已出，tag/Release/main 待同步 |

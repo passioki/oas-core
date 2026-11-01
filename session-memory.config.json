@@ -1,8 +1,8 @@
 {
   "docs_dir": "docs",
-  "spec": "DESIGN-SPEC.md",
-  "progress": "DESIGN-SPEC-PROGRESS.md",
-  "index": "SESSION-INDEX.md",
+  "spec": "archive/DESIGN-SPEC.md",
+  "progress": "archive/DESIGN-SPEC-PROGRESS.md",
+  "index": "archive/SESSION-INDEX.md",
   "ledger": "PENDING-LEDGER.md",
   "resume": "RESUME.md",
   "resume_index": "RESUME-INDEX.md",

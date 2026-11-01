@@ -1712,7 +1712,7 @@ tasks/<任务名>/
 
 ---
 
-### 22.34 ★★★ [10-24 02:0x] **调度 v3 + 统一任务模板（设计定稿，待实现）**
+### 22.34 ★★★ [10-24 02:0x] **调度 v3 + 统一任务模板（设计定稿；V1.0 已交付，见 §22.35）**
 
 > ★ 用户 [10-24] 裁决：
 > - "**调度的完美实现，统一的任务模板**"；
@@ -1726,7 +1726,7 @@ tasks/<任务名>/
 
 | 层 | 内容 | 是否含游戏常量 |
 |---|---|---|
-| **统一任务模板** | `tasks/<id>/{meta.json, flow.json, assets.json, images/}`；`meta.json` 契约；flow 统一骨架；`templates/` 骨架；`oasd task new/lint` | ❌ |
+| **统一任务模板** | `tasks/<id>/{meta.json, flow.json}`；素材统一在全局 `assets/{assets.json, images/}`（见 `ASSET-DATA-MODEL.md`）；`meta.json` 契约；flow 统一骨架；`templates/` 骨架；`oasd task new/lint` | ❌ |
 | **调度器 v3** | 周期时钟 / 护栏 / 候选过滤 / 唤醒 / 执行 / 状态 / 报告 | ❌ |
 | **玩家配置** | `scheduler.json`：calendar/guards/entries（顺序、窗口、quota、params）| ✅ 玩家自己填 |
 
@@ -1812,9 +1812,9 @@ tasks/<任务名>/
 | **P3** | serve 调度面板：今日清单/下次唤醒/临时任务/「重置记忆」多选框（全选/反选）| headless 验收 |
 | **P4** | v1 plan 迁移工具 + 实机/replay 长跑验收 + 文档收尾 | dry-run + 实机 2 轮；台账/交接更新 |
 
-★ 待实现：N36（任务模板）、N37（调度 v3 + 重置记忆 + 面板）。
+★ N36（任务模板）/ N37（调度 v3 + 重置记忆 + 面板）**已交付**（V1.0，§22.35；台账 §E-24）。
 
-★ **从当前到"实机可创建任务并运行"的完整交付路线**：见 `docs/DELIVERY-PLAN.md`（M0~M5、DoD、部署/升级/风险）。
+★ **从当前到"实机可创建任务并运行"的完整交付路线**（历史，V1.0~V1.2.1 已交付）：见 `docs/archive/DELIVERY-PLAN.md`（M0~M5、DoD、部署/升级/风险）。
 
 ---
 

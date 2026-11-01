@@ -1,9 +1,9 @@
-# OAS V1.2.2 部署说明（实机 / 模拟器）
+# OAS V0.1.0 部署说明（实机 / 模拟器）
 
 > 本包 = `oasd.exe` + 编辑器 UI + OCR 模型 + adb + 配置 + 启停脚本；数据在 `tasks/`、`assets/`、`library/`、`frames/`、`runs/`、`logs/`。
 > 目标环境：Windows 10/11 x64；Android 模拟器（MuMu 12）或 Android 真机（adb）；阴阳师 Android 客户端。
 
-## 0. V1.2.2 新增
+## 0. V0.1.0 新增
 
 - **帧持久化**：帧图/名称/分类/顺序写入 `frames/frames.json` + `frames/frame-<id>.png`；重启编辑器后列表仍在；当前帧像素按需加载；
 - **图片匹配建素材**：图识别结果可一键设为识别区域，调整操作区域后保存模板（`action_roi`）；

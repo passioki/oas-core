@@ -2,6 +2,8 @@
 
 > 目的：固定“全局素材 / 任务素材 / 旧模板库”三者的边界，避免再出现两套素材库 UI。
 > 相关：`ENGINE-DESIGN.md §22.38/§22.39`（R11）、`START-HERE.md`。
+> 当前快照（2026-11-02，HEAD `cd0ac34`）：`assets/` = **16 条 / 1 图**；任务只有 `返回庭院`；帧 28 个（`current_id=20`）。
+
 
 ## 1. 唯一素材存储：`assets/`
 
@@ -72,15 +74,15 @@ v0.1 起：
 2. 备份失败则拒绝删除；
 3. 已迁移到全局库的素材不受影响。
 
-## 5. 历史丢失与恢复
+## 5. 历史丢失与恢复（34/18 已推翻，只作历史）
+
+> ⚠ 2026-11-01 `§E-70` 裁定：下面的 34/18 是助手从 `tasks/*/assets.json` git 历史拼出的**错误恢复**，不是 archive 全量；用户 21:02 决定“先不管素材，素材可以重建”。**当前 `assets/` = 16 条 / 1 图**，不要再用这组脚本恢复。
 
 - 旧任务删除时曾直接 `remove_dir_all`，任务目录里的 `assets.json` 随任务消失；
-- 已从 git 全部历史 `tasks/*/assets.json` 快照恢复：
-  - 34 个唯一素材；
-  - 18 个模板图片；
-  - 合并进 `assets/assets.json`；
-- 恢复报告：`assets/history-recovery-report.json`；
-- 工具：
+- 11-01 曾按 task 历史恢复 34 个唯一素材 / 18 个模板图，合并进 `assets/assets.json`（**已被 §E-70 推翻**）；
+- 当前权威迁移归档：`archive/migration-20261101 = 29b696f`（2827 素材 / 2099 图 / 57 个任务目录），**未导入当前 dev**；
+- 历史恢复报告：`assets/history-recovery-report.json`（`after=34`，与当前 16 不符；属数据区，由数据 owner 处理）；
+- 历史工具（**不要重跑**）：
   - `scripts/audit_asset_history.py`（只读审计）
   - `scripts/recover_historical_assets.py`（带备份恢复）
 
