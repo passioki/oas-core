@@ -28,7 +28,7 @@
 | 项 | 状态 |
 |---|---|
 | 引擎 | `oasd`（serve/run/queue/stats/scheduler）+ 编辑器 UI + 素材库；`oasd --version` = **1.2.3** |
-| 测试 | `cargo test --workspace -- --skip shipped_legacy_tasks_pass_lint_untouched` = **351 passed / 0 failed**；不带 skip 的完整测试当前有 1 条已知失败（shipped 旧任务数据被用户替换，见 §0.2） |
+| 测试 | `cargo test --workspace` = **356 passed / 0 failed**（legacy shipped 数据测试已改为临时 fixture，不再依赖 `tasks/` 现状） |
 | 当前任务 | `tasks/返回庭院`（OCR + 返回按钮 + 弹窗取消 + 重启兜底）；素材 1 个 `预设` OCR；其他任务已由用户清理 |
 | 引擎特性 | flow DSL、素材/掩膜/多边形、点击定位链、HB1/HB7、整帧搜索、**单识别 ROI + 操作区域**、库、queue、stats、checkpoint/resume、reconnect、多帧投票、OCR+模板互证、**统一任务模板/task lint、任务创建/编辑器运行、调度 v3、交付包** |
 | 编辑器 | 工作台（素材/图片/任务/点击分布/调度）+ 顶部页面（任务构建/任务库/实例/调度/设置）、标题行常驻结果/日志窗口、新建任务对话框、重置记忆多选、调试页 `/dashboard.html`；流程编辑统一在任务构建 |
@@ -51,15 +51,15 @@
 |---|---|
 | 恢复节点 | `main` = `385d611`（v1.2.3） |
 | 当前分支 | `dev`（文档/编辑器/任务数据提交；不自动合并 main） |
-| 文档 | 已独立到 `oas-core/docs`；`docs/UI-MAP.md` 是全局界面关系图设计稿（未实现） |
-| 截图 | 已改为两阶段：点击立即抓取 → 弹窗预览 → 名称/分类 → 保存；无当前帧跳转 |
+| 文档 | 已独立到 `oas-core/docs`；`docs/UI-MAP.md` 是全局界面关系图设计 + 当前实现状态；`docs/UI-MAP.generated.md` 是生成视图 |
+| 截图 | 两阶段：点击立即抓取 → 弹窗预览 → 名称/分类/界面 → 保存；无当前帧跳转 |
 | Enter | 输入框 Enter = 确认输入；弹窗 Enter = 保存截图 |
-| OCR 缩略图 | 只认 `positions[0]`，无位置帧显示占位；首次保存自动用当前帧 |
 | 实时操作 | 实时开启时画布单击/拖拽 = tap/swipe；实时暂停 = ROI 编辑 |
-| 新 DSL | 已实现 `key`、`restart_app`；前端 builder 尚未补齐（待办） |
-| 待办 | 前端 key/restart、全局 `ui-map/ui-map.json`、Frame.interface_id、参考帧/素材归档、图校验/生成 |
-
-> ★ **已知测试问题**：`shipped_legacy_tasks_pass_lint_untouched` 依赖旧 shipped 任务 `S1切预设`/`任务1`，当前 dev 数据已按用户要求替换为 `返回庭院`。需要决定：恢复旧任务数据，或把该测试改成 fixture/data-independent。
+| OCR 缩略图 | 只认 `positions[0]`，无位置帧显示占位；首次保存自动用当前帧 |
+| 界面关系 | `ui-map/ui-map.json` = 15 interfaces / 14 transitions；帧带 `interface_id`；`ui-map lint/render/flow/migrate-frames` 已可用；任务构建顶部有只读图视图 |
+| 新 DSL | `key`、`restart_app` 已实现，前端 builder/flow_model 已补齐 |
+| 帧归档 | 已补庭院/设置/式神录/探索/町中/御魂/斗技/结界突破/逢魔/悬赏/宠物小屋/退出弹窗/加载/启动参考帧 |
+| 待办 | 图编辑（先只读视图已完成）；生成 flow 评审后决定是否替换手写；活动页参考帧继续补 |
 
 ---
 
@@ -82,7 +82,7 @@
 | ⓪ | `docs/RESUME.md` + `docs/RESUME-INDEX.md` | ★ **长任务/压缩后恢复的第一入口**（skill 强制 6）：当前断点、验收清单、下一步精确命令、证据索引 |
 | ① | `docs/SESSION-HANDOFF.md` | 当前在哪、下一步、最近提交、活跃坑 |
 | ② | `docs/ENGINE-DESIGN.md` **§22** | 引擎规格/进度/判据；**调度 v3 设计看 §22.34** |
-| ③ | `docs/PENDING-LEDGER.md` 的 §E-24/§E-25/§E-26 段 + 最新 §E-58 | 引擎/版本/用户裁定（R1~R21）台账 + 当前修复/界面关系图待办 |
+| ③ | `docs/PENDING-LEDGER.md` 的 §E-24/§E-25/§E-26 段 + 最新 §E-59 | 引擎/版本/用户裁定（R1~R21）台账 + 当前界面图/帧迁移实现 |
 | ④ | `docs/UI-MAP.md` + 旧仓路径/流程（仅在碰旧仓时） | 全局界面关系图设计；旧仓 `D:\OAS-dev\backend\docs\LAYOUT.md` · `DEV-WORKFLOW.md`（冻结） |
 
 ## 1.3 用代码核实（不许信文档自述）
@@ -93,8 +93,8 @@ cd D:\OAS-dev\oas-core
 git log -1 --format="%h %ci %s"
 git status --porcelain
 
-REM ② 引擎测试（当前基线：351 passed / 0 failed；完整测试有 1 条已知数据依赖失败）
-cargo test --workspace -- --skip shipped_legacy_tasks_pass_lint_untouched
+REM ② 引擎测试（当前基线：356 passed / 0 failed）
+cargo test --workspace
 
 REM ③ OCR 构建（serve/run 需要；不带 feature 会报 "this build has no OCR"）
 cargo build -p oasd --features ocr
@@ -181,7 +181,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 
 【2. 代码与我核实的台账】
    oas-core commit = <hash> · 分支 = dev · worktree 干净 = 是/否
-   cargo test --workspace -- --skip shipped_legacy_tasks_pass_lint_untouched = __ passed / __ failed（当前基线 = 351）
+   cargo test --workspace = __ passed / __ failed（当前基线 = 356）
    serve 状态：/state = <captured/device/ocr/det>
    oas-core docs commit = <hash> · dev 是否已推 = 是/否
 
@@ -220,7 +220,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 | **E7** | 旧仓已冻结 | 旧仓 `backend/frontend` 只读；不要在旧仓上开发/提交 |
 | **E8** | 新引擎的验收看 ENGINE §22 判据 | 不要拿旧仓 pytest 基线当引擎验收 |
 | **E9** | headless Edge 截图做 UI 验收 | `msedge --headless=new --screenshot=...`；需要时加 `--user-data-dir` |
-| **E10** | 测试数会随提交增长 | 当前 **351**（`--skip shipped_legacy_tasks_pass_lint_untouched`）；完整测试有 1 条数据依赖失败（旧 shipped 任务已被用户替换），以实测为准 |
+| **E10** | 测试数会随提交增长 | 当前 **356**；以 `cargo test --workspace` 实测为准 |
 
 ---
 
@@ -260,7 +260,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 ```bat
 REM ---------- 构建/测试 ----------
 cd D:\OAS-dev\oas-core
-cargo test --workspace -- --skip shipped_legacy_tasks_pass_lint_untouched   REM 当前基线 351 passed
+cargo test --workspace   REM 当前基线 356 passed
 cargo build -p oasd --features ocr              REM serve/run 的 OCR 构建
 
 REM ---------- 编辑器 ----------
@@ -273,6 +273,12 @@ REM           http://127.0.0.1:8787/dashboard.html （点击分布/长跑统计�
 REM 手动 serve（调试时；参数按实际路径补全）
 target\debug\oasd.exe serve --port 8787 --ui apps\oasd\ui --tasks-dir tasks --assets-dir assets --frames-dir frames --runs-dir runs --library-dir library --no-open ^
   --model …\PP-OCRv6_rec_small.onnx --det-model …\PP-OCRv6_det_small.onnx
+
+REM ---------- 全局界面关系图 ----------
+target\debug\oasd.exe ui-map lint --file ui-map\ui-map.json --frames frames\frames.json
+target\debug\oasd.exe ui-map render --file ui-map\ui-map.json --out docs\UI-MAP.generated.md
+target\debug\oasd.exe ui-map flow --file ui-map\ui-map.json --out tasks\返回庭院\flow.generated.json
+REM   generated flow 是评审稿，不自动替换手写 flow.json
 
 REM ---------- 运行/调度 ----------
 target\debug\oasd.exe run --task tasks\S1切预设 --replay <recording-dir>
@@ -292,7 +298,8 @@ run-tests.bat …                                  REM 旧仓守卫基线 171 pa
 | 主题 | 位置 |
 |---|---|
 | **长任务断点/续接（先读）** | `RESUME.md` · `RESUME-INDEX.md`（skill 强制 6） |
-| **全局界面关系图（设计稿，待实现）** | `UI-MAP.md` |
+| **全局界面关系图** | `UI-MAP.md`（设计/状态）· `UI-MAP.generated.md`（Mermaid 生成）· `../ui-map/ui-map.json`（数据） |
+| **界面图命令** | `oasd ui-map lint|render|flow|migrate-frames` |
 | **当前任务（返回庭院）** | `../tasks/返回庭院/flow.json` · 全局素材 `../assets/` · 帧 `../frames/` |
 | 引擎规格/进度 | `ENGINE-DESIGN.md` §22 |
 | **调度 v3 + 统一任务模板设计定稿** | `ENGINE-DESIGN.md` **§22.34** |

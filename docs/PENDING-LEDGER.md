@@ -2388,3 +2388,33 @@ invalidate_frame() // 输入动作后丢弃
 
 | 状态 | 🔄 截图/Enter/缩略图已完成；前端 key/restart、全局 ui-map、帧归档、测试收尾待做 |
 
+---
+
+# ★ §E-59 ★★★ [11-01 14:45] **界面关系图落地 + 前端 key/restart + 帧 interface 迁移**
+
+> 触发：用户确认 §E-58 的 1/2/3（前端动作、全局图、测试改 fixture）后实施。
+> 证据：`apps/oasd/src/ui_map.rs`、`apps/oasd/src/serve.rs`、`apps/oasd/ui/*`、`ui-map/ui-map.json`、`frames/frames.json`。
+
+## 已完成
+
+- **前端**：`builder.js`/`flow_model.js` 增加 `key`/`restart_app` 动作、字段、默认值、摘要；
+- **图数据**：`ui-map/ui-map.json` 全局唯一，15 interfaces / 14 transitions；
+- **帧**：`Frame.interface_id` 全链路（结构/持久化/`/frames`/`/frames/interface`/capture commit）；22 帧已迁移；
+- **CLI**：
+  - `oasd ui-map lint --frames frames/frames.json`
+  - `oasd ui-map render --out docs/UI-MAP.generated.md`
+  - `oasd ui-map flow --out tasks/返回庭院/flow.generated.json`
+  - `oasd ui-map migrate-frames`
+- **UI**：截图弹窗选择界面；帧列表显示界面 +「界」修改；素材位置帧显示界面；任务构建顶部只读“界面关系图”视图；
+- **测试**：legacy shipped task 测试改临时 fixture；`cargo test --workspace` = **356 passed / 0 failed**；
+- **参考帧**：新增设置（26）、退出确认（28）、启动加载（29）、登录/进入游戏（30）；删除误采重复帧 25/27。
+
+## 仍待
+
+1. 评审 `flow.generated.json` 是否替换手写 flow；
+2. 活动页参考帧/素材继续补；
+3. 图编辑（先只读，后拖拽）。
+
+| 状态 | ✅ 本轮核心落地完成；生成 flow 评审/活动页扩展/图编辑仍待 |
+
+

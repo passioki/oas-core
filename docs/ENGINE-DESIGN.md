@@ -2015,20 +2015,27 @@ tasks/<任务名>/
   - `{"op":"restart_app","args":{"package":"com.netease.onmyoji"}}`（force-stop + launcher）；
 - `InputSink` 增加默认不支持实现；ADB/Logged/Reconnecting sink 转发；
 - `tasks/返回庭院` 使用 OCR 判定（町中/召唤）、设置 X、式神录/通用左上返回、退出弹窗取消、重启兜底；
-- 前端 builder/flow_model 尚未补齐这两个步骤 → 待办。
+- 前端 `builder.js` / `flow_model.js` 已补齐这两个步骤（动作库/字段/默认值/摘要）。
 
-#### 22.40.3 全局界面关系图（设计已确认，未实现）
+#### 22.40.3 全局界面关系图（已实现数据/校验/生成）
 
-- 现行设计：`docs/UI-MAP.md`；
-- 数据：`ui-map/ui-map.json`（全局唯一，不属于任务）；
+- 现行设计：`docs/UI-MAP.md`；生成视图：`docs/UI-MAP.generated.md`；
+- 数据：`ui-map/ui-map.json`（全局唯一，不属于任务）——15 interfaces / 14 transitions；
 - 关系：`Asset.positions → Frame.interface_id → Interface`，不在 asset 重复存 interface；
 - 节点：界面/弹窗/加载/启动/未知；OCR 标记优先；
 - 边：动作（OCR/区域/key/restart/wait）→ 目标界面；
-- 阶段：先图生成 flow，不立即做 runtime 动态图执行器；
-- 前端先做只读图视图；Obsidian/Mermaid 只作视图。
+- `Frame.interface_id` 已全链路（结构/持久化/`/frames`/`/frames/interface`/capture commit），现有 22 帧已迁移；
+- 截图弹窗有界面选择器，帧列表显示界面并可修改；
+- CLI：
+  - `oasd ui-map lint [--frames frames/frames.json]`
+  - `oasd ui-map render --out docs/UI-MAP.generated.md`
+  - `oasd ui-map flow --out tasks/返回庭院/flow.generated.json`
+  - `oasd ui-map migrate-frames`
+- 任务构建顶部已加只读“界面关系图”视图（界面/OCR/动作/参考帧数/关系）；
+- 阶段：已实现静态图生成 flow（评审稿，不自动替换手写 flow）；runtime 动态图执行器暂不做。
 
-#### 22.40.4 已知测试/待办
+#### 22.40.4 测试/待办
 
-- `shipped_legacy_tasks_pass_lint_untouched` 依赖旧任务 `S1切预设`/`任务1`，当前 dev 数据只剩 `返回庭院` ⇒ 完整测试 1 failed；
-- 当前测试基线：`cargo test --workspace -- --skip shipped_legacy_tasks_pass_lint_untouched` = 351 passed；
-- 待办：前端 key/restart、ui-map、Frame.interface_id 迁移、参考帧/素材归档、校验/生成器、测试收尾。
+- legacy shipped task 测试已改为**临时 fixture**，不再依赖用户 `tasks/` 数据；
+- 当前测试基线：`cargo test --workspace` = **356 passed / 0 failed**；
+- 待办：生成 flow 评审/替换、活动页参考帧/素材继续补、图编辑。

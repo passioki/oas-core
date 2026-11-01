@@ -8,43 +8,36 @@
 | 项 | 值 |
 |---|---|
 | 恢复节点 | oas-core `main` = `385d611`（v1.2.3，tag/Release 均已发布） |
-| 开发分支 | `dev`；文档/编辑器/任务数据提交在此分支；main 保持恢复节点 |
-| 最近提交 | `38c41a7`（最新帧 + `预设` OCR 素材）；上一功能提交 `a141b72`（Enter 行为） |
-| 文档入口 | ★ `docs/START-HERE.md`；全局界面关系图设计稿 `docs/UI-MAP.md` |
-| 引擎 | `oasd --version` = 1.2.3 |
-| 测试 | skip legacy 数据测试 = **351 passed / 0 failed**；完整测试有 1 条已知数据依赖失败 |
+| 开发分支 | `dev`；编辑器/图/任务数据提交在此分支；main 保持恢复节点 |
+| 文档入口 | `docs/START-HERE.md`；界面图设计/状态 `docs/UI-MAP.md`；生成视图 `docs/UI-MAP.generated.md` |
+| 测试 | `cargo test --workspace` = **356 passed / 0 failed** |
 | 任务 | `task lint --tasks-dir tasks --all` = 1 task / 0 errors（`返回庭院`） |
+| 全局图 | `ui-map/ui-map.json` = 15 interfaces / 14 transitions；lint ok |
+| 帧 | 22 帧，均有 `interface_id`；新增设置/退出确认/加载/启动参考帧 |
+| 新 DSL | `key` / `restart_app` 前端+后端可用 |
 | 工作区 | `D:\OAS-dev\oas-core` |
 
 ## 1. 本轮完成
 
-### 编辑器截图
-
-- 两阶段截图：`/capture/preview` 立即抓图到内存 → 弹窗预览 → `/capture/commit` 保存；
-- 弹窗阶段显示本次截取帧；保存后恢复实时，不切当前帧；
-- 输入框 Enter = 确认输入；弹窗 Enter = 保存截图；
-- OCR/region 缩略图只认 `positions[0]`，删除当前帧回退；
-- 首次保存素材无位置帧时自动使用当前帧。
-
-### 返回庭院
-
-- `tasks/返回庭院` 使用 OCR（町中/召唤）判定庭院、左上返回区域、设置右上关闭、退出弹窗取消、重启游戏兜底；
-- 新增引擎步骤 `key` / `restart_app`；
-- 实机验证通过常见路径。
+- 全局界面关系图数据/CLI/生成：`lint`、`render`、`flow`、`migrate-frames`；
+- `Frame.interface_id` 与现有帧迁移；截图弹窗选界面；帧列表显示/修改界面；
+- 前端动作库补齐 `key` / `restart_app`；
+- 任务构建顶部有只读“界面关系图”视图（界面/OCR/动作/帧数/关系）；
+- 从图生成静态 recovery flow（`tasks/返回庭院/flow.generated.json`），未替换手写 flow；
+- legacy shipped task 测试改为临时 fixture，完整测试恢复全绿。
 
 ## 2. 下一步
 
-1. 前端 `builder.js` / `flow_model.js` 补齐 `key` / `restart_app`；
-2. 建全局 `ui-map/ui-map.json` + `Frame.interface_id`；
-3. 归档所有已知界面参考帧与素材；
-4. 写图校验、Mermaid 生成、`ui-map.json → 返回庭院 flow` 生成器；
-5. 决定 legacy shipped task 测试：恢复旧数据或改 fixture。
+1. 评审 `flow.generated.json`，决定是否替换手写 `flow.json`；
+2. 补齐活动页参考帧/素材并设置 interface；
+3. 视需要增加图编辑（先只读）；
+4. 发布前跑完整测试 + `ui-map lint` + `task lint`。
 
 ## 3. 活跃的坑
 
-- `shipped_legacy_tasks_pass_lint_untouched` 依赖旧任务 `S1切预设`/`任务1`，当前 `tasks/` 只剩 `返回庭院`，完整测试会红；已用 `--skip` 作为当前基线，但发布/CI 前必须处理。
-- 重新构建 `oasd.exe` 前必须停掉 8787 的 dev serve，否则 `failed to remove target\debug\oasd.exe`。
-- `D:\OAS-dev\backend\toolkit` 仍是本机 ADB/OCR 模型外部路径；源码/构建不依赖 backend。
-- 全局 UI 关系图尚未实现，目前只有 `docs/UI-MAP.md` 设计稿；不要声称已落地。
-- OCR/区域素材缩略图必须来自位置帧；素材所属界面最终通过 `Frame.interface_id` 推导，不要在 asset 里重复存。
-- 旧 backend 文档冻结，不要回写；所有更新只写 `oas-core/docs/`。
+- `flow.generated.json` 是生成评审稿，**不要直接当现行 flow**；手写 `flow.json` 仍为运行入口。
+- 图生成器只支持 region/ocr_click/key/restart_app/wait；新增 action 要同时改 `ui_map.rs` 和测试。
+- 全局图 `ui-map/ui-map.json` 与 `--frames` 一致性用 `oasd ui-map lint --frames frames/frames.json` 校验。
+- 重新构建前必须停 8787 dev serve（E2）。
+- 旧 backend toolkit 仍是本机 ADB/OCR 模型路径；源码/构建不依赖 backend。
+- 旧 backend 文档冻结，不要回写。
