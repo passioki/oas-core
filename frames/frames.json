@@ -1,6 +1,6 @@
 {
-  "next_id": 6,
-  "current_id": 5,
+  "next_id": 7,
+  "current_id": 6,
   "frames": [
     {
       "id": 1,
@@ -10,7 +10,8 @@
       "width": 1280,
       "height": 720,
       "source": "capture",
-      "ts_ms": 1793500181607
+      "ts_ms": 1793500181607,
+      "seen": true
     },
     {
       "id": 2,
@@ -20,7 +21,8 @@
       "width": 1280,
       "height": 720,
       "source": "capture",
-      "ts_ms": 1793500918945
+      "ts_ms": 1793500918945,
+      "seen": true
     },
     {
       "id": 3,
@@ -30,7 +32,8 @@
       "width": 1280,
       "height": 720,
       "source": "capture",
-      "ts_ms": 1793500934002
+      "ts_ms": 1793500934002,
+      "seen": true
     },
     {
       "id": 4,
@@ -40,17 +43,19 @@
       "width": 1280,
       "height": 720,
       "source": "capture",
-      "ts_ms": 1793502333324
+      "ts_ms": 1793502333324,
+      "seen": true
     },
     {
-      "id": 5,
-      "name": "帧 5",
-      "category": "",
-      "file": "frame-5.png",
+      "id": 6,
+      "name": "预设界面",
+      "category": "式神录",
+      "file": "frame-6.png",
       "width": 1280,
       "height": 720,
       "source": "capture",
-      "ts_ms": 1793502409498
+      "ts_ms": 1793506423724,
+      "seen": true
     }
   ]
 }
