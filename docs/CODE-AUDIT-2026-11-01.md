@@ -124,7 +124,7 @@ f6be0f0 16:21   干净基线（22 帧 / 返回庭院 3 素材）
 - 点测/拖测随机点：UI 采样符合。
 - 素材拖动排序、帧分类重命名：符合。
 - 版本 0.1.0、action_source/action_shape 字段：符合用户 19:12 裁定。
-- 测试：`cargo test --workspace` = 358 passed；但未覆盖上述场景。
+- 测试：审计时 `cargo test --workspace` = 358 passed；修复后 361 passed。
 
 ## 5. 建议修复顺序
 

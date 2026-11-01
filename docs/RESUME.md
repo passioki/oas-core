@@ -14,7 +14,7 @@ status: in_progress
 ## 0. 当前状态（磁盘 + git 实测）
 
 - 分支 `dev`，HEAD `1f73f17`；`main`/`origin/main` = `385d611`（v1.2.3）。
-- 测试：`cargo test --workspace` = **358 passed / 0 failed**（代码本身绿）。
+- 测试：`cargo test --workspace` = **361 passed / 0 failed**（代码本身绿）。
 - 工作区**不干净**：
   - `frames/frames.json` modified；
   - `tasks/返回庭院/assets.json`、`meta.json` deleted；

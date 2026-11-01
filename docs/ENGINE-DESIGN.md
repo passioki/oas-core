@@ -2043,7 +2043,7 @@ tasks/<任务名>/
 #### 22.40.4 测试
 
 - legacy shipped task 测试已改为临时 fixture；
-- 当前测试基线：`cargo test --workspace` = **358 passed / 0 failed**（dev `0.1.0`）。
+- 当前测试基线：`cargo test --workspace` = **361 passed / 0 failed**（dev `0.1.0`）。
 
 ### 22.41 ★★★ [11-01] **帧-素材关系（现行唯一关系）**
 

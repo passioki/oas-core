@@ -28,7 +28,7 @@
 | 项 | 状态 |
 |---|---|
 | 引擎 | `oasd`（serve/run/queue/stats/scheduler）+ 编辑器 UI + 素材库；`oasd --version` = **0.1.0**（dev；旧 v1.x 为历史内部 tag） |
-| 测试 | `cargo test --workspace` = **358 passed / 0 failed**（legacy shipped 数据测试已改为临时 fixture，不再依赖 `tasks/` 现状） |
+| 测试 | `cargo test --workspace` = **361 passed / 0 failed**（legacy shipped 数据测试已改为临时 fixture，不再依赖 `tasks/` 现状） |
 | 当前任务 | 无（用户已删除 `返回庭院`；任务目录未恢复）；全局素材 34 个 / 18 张模板图 |
 | 引擎特性 | flow DSL、素材/掩膜/多边形、点击定位链、HB1/HB7、整帧搜索、**单识别 ROI + 操作区域**、库、queue、stats、checkpoint/resume、reconnect、多帧投票、OCR+模板互证、**统一任务模板/task lint、任务创建/编辑器运行、调度 v3、交付包** |
 | 编辑器 | 工作台（素材/图片/任务/点击分布/调度）+ 顶部页面（任务构建/任务库/实例/调度/设置）、标题行常驻结果/日志窗口、新建任务对话框、重置记忆多选、调试页 `/dashboard.html`；流程编辑统一在任务构建 |
@@ -100,7 +100,7 @@ cd D:\OAS-dev\oas-core
 git log -1 --format="%h %ci %s"
 git status --porcelain
 
-REM ② 引擎测试（当前基线：358 passed / 0 failed）
+REM ② 引擎测试（当前基线：361 passed / 0 failed）
 cargo test --workspace
 
 REM ③ OCR 构建（serve/run 需要；不带 feature 会报 "this build has no OCR"）
@@ -188,7 +188,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 
 【2. 代码与我核实的台账】
    oas-core commit = <hash> · 分支 = dev · worktree 干净 = 是/否
-   cargo test --workspace = __ passed / __ failed（当前基线 = 358）
+   cargo test --workspace = __ passed / __ failed（当前基线 = 361）
    serve 状态：/state = <captured/device/ocr/det>
    oas-core docs commit = <hash> · dev 是否已推 = 是/否
 
@@ -227,7 +227,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 | **E7** | 旧仓已冻结 | 旧仓 `backend/frontend` 只读；不要在旧仓上开发/提交 |
 | **E8** | 新引擎的验收看 ENGINE §22 判据 | 不要拿旧仓 pytest 基线当引擎验收 |
 | **E9** | headless Edge 截图做 UI 验收 | `msedge --headless=new --screenshot=...`；需要时加 `--user-data-dir` |
-| **E10** | 测试数会随提交增长 | 当前 **358**；以 `cargo test --workspace` 实测为准 |
+| **E10** | 测试数会随提交增长 | 当前 **361**；以 `cargo test --workspace` 实测为准 |
 
 ---
 
@@ -267,7 +267,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 ```bat
 REM ---------- 构建/测试 ----------
 cd D:\OAS-dev\oas-core
-cargo test --workspace   REM 当前基线 358 passed
+cargo test --workspace   REM 当前基线 361 passed
 cargo build -p oasd --features ocr              REM serve/run 的 OCR 构建
 
 REM ---------- 编辑器 ----------

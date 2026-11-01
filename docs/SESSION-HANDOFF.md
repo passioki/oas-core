@@ -9,7 +9,7 @@
 |---|---|
 | 分支/HEAD | `dev` / `1f73f17` |
 | 恢复节点 | `main` = `385d611`（v1.2.3） |
-| 测试 | `cargo test --workspace` = **358 passed / 0 failed** |
+| 测试 | `cargo test --workspace` = **361 passed / 0 failed** |
 | 工作区 | **不干净**：`frames/frames.json` 改动；`tasks/返回庭院` 删除未提交 |
 | 任务 | `tasks/` 空（用户删除 `返回庭院`） |
 | 当前 `assets/` | **34 个素材 / 18 图（助手错误恢复，非权威）** |
