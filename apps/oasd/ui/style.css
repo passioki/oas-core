@@ -1,7 +1,11 @@
 /* OAS engine editor - minimal tool UI */
 * { box-sizing: border-box; }
+html, body { height: 100%; }
 body {
   margin: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   font: 14px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
   background: #14161a;
   color: #e6e6e6;
@@ -180,9 +184,30 @@ pre {
 .nav-link:hover { border-color: #8fb8e8; }
 #log {
   white-space: pre-wrap;
-  max-height: 220px;
-  overflow: auto;
 }
+
+/* v1.2.3 UX: keep the workbench canvas in view; only the right rail scrolls. */
+#page-workbench { flex: 1 1 auto; min-height: 0; }
+#page-workbench.active { display: flex; }
+#page-workbench > main {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+#canvas-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+#screen {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  margin: 0 auto;
+}
+aside.side { height: 100%; }
+.canvas-windows { flex: 0 0 auto; }
 
 /* 22.26 三栏 IDE 布局（参考旧 OAS annotator） */
 main { align-items: stretch; }
@@ -410,23 +435,28 @@ aside.side {
 .hdr-window {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
   background: #0b0d10;
   border: 1px solid #2a2d38;
   border-radius: 6px;
   padding: 3px 8px 4px;
   max-height: 118px;
-  overflow: auto;
+  overflow: hidden;
 }
 .hdr-window h4 {
   margin: 0 0 2px;
   font-size: 12px;
   color: #8fb8e8;
+  flex: 0 0 auto;
 }
 .hdr-window pre {
   margin: 0;
   white-space: pre-wrap;
-  max-height: 90px;
+  max-height: 88px;
   overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 /* 22.31 结果/日志窗口移到截图上方、rail 左侧 */
