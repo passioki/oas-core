@@ -2679,12 +2679,14 @@ Asset.positions = [frame_id, ...]
 ## 已确认
 
 - 实时关闭时，单素材多位置**全部测试**；
-- 帧分类重命名 `to` 为空**禁止**。
+- 帧分类重命名 `to` 为空**禁止**；
+- 操作区域字段采用 **方案 B `action_shape`**；
+- 反选 = **整个屏幕 − 选择区域**，不是外接矩形减去 shape；
+- 有效性比较对象 = **OCR/模板真实识别 bbox**，不是配置的识别 ROI。
 
 ## 待用户确认
 
-- 多边形字段：`action_polygon`+`action_invert` vs `action_shape`（完整方案见 `EDITOR-UX-PLAN.md §10.1`，建议 A）；
-- 是否新增 `action_source`（recognition/fixed，见 §10.2，建议新增）。
+- 是否新增 `action_source`（recognition/fixed，见 `EDITOR-UX-PLAN.md §10.2`，建议新增）。
 
 | 状态 | 📝 计划/文档完成；代码待实现 |
 

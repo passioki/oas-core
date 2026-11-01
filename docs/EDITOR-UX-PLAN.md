@@ -88,29 +88,75 @@ SelectionTool:
 
 只保留一套 canvas 事件处理，避免 ROI 和 action 两套逻辑分叉。
 
-## 3. 反选 + 操作区域多边形
+## 3. 反选 + 操作区域多边形（已确认：方案 B）
+
+### 用户明确的反选定义
+
+```text
+反选 = 整个屏幕 − 选择区域
+```
+
+不是“识别外接矩形 − 多边形”。反选后的有效操作区域覆盖整个画面，只是排除用户画出的区域。
 
 ### 目标
 
 - 识别区域、操作区域都支持：
   - 矩形；
   - 多边形；
-  - 反选（invert，选择多边形外部）。
-- 现有 `AssetDecl.roi`（识别边框）不能承载多边形绝对区域，因此：
-  - `roi` 继续保存多边形外接矩形（兼容旧运行时）；
-  - 新增 `action_polygon` / `action_invert`（或通用 `action_shape`）描述操作区域；
-  - 识别侧沿用现有 `polygon` 掩膜语义，不把操作多边形混进识别掩膜。
-- 运行时点击采样：
-  - 多边形内随机点；
-  - `invert=true` 时在外接矩形减去多边形后随机点；
-  - 没有多边形时沿用矩形随机点；
-  - `action_roi` 仍作为兼容/bbox。
+  - 反选（整个屏幕减去选择区域）。
+- 操作区域使用统一 `action_shape` 对象（方案 B）：
+
+```json
+{
+  "action_shape": {
+    "kind": "rect",
+    "roi": [80, 90, 340, 220],
+    "invert": false
+  }
+}
+```
+
+```json
+{
+  "action_shape": {
+    "kind": "polygon",
+    "points": [[80,90],[420,90],[420,310],[80,310]],
+    "invert": true
+  }
+}
+```
+
+语义：
+
+```text
+invert=false  有效操作区域 = shape 自身
+invert=true   有效操作区域 = 整个画面 − shape
+```
+
+- 反选范围的“整个画面”按素材/任务设计分辨率（当前 1280x720）计算；
+- 识别侧继续沿用现有 `polygon` 掩膜语义，不把操作多边形混进识别掩膜；
+- 旧字段 `action_roi` 保留读取兼容：
+  - 读取时若无 `action_shape`，转换为 `kind=rect, invert=false`；
+  - 新保存以 `action_shape` 为主；
+  - `action_roi` 可作为旧客户端 fallback，不作为新数据唯一真相。
+
+### 运行时点击采样
+
+- 非反选：
+  - 在 shape 内部随机采样；
+- 反选：
+  - 在整个画面内随机采样；
+  - 拒绝落在 shape 内部的点；
+  - 保证最终点有效；
+- 多边形使用点在多边形内测试；
+- 旧 `action_roi` 无 shape 时仍按矩形处理。
 
 ### 验收
 
-- 画一个多边形并反选后，保存能读回；
-- dry-run 目标点落在有效区域（反选时落在外部）；
-- 旧素材没有新字段仍可加载/运行。
+- 画一个区域并反选后，保存能读回 `action_shape.invert=true`；
+- dry-run 目标点落在“整个屏幕减去选择区域”内；
+- 旧素材没有新字段仍可加载/运行；
+- 反选区域不会因为外接矩形 bbox 而错误缩小。
 
 ## 4. 实时帧 / 位置帧测试语义
 
@@ -180,41 +226,106 @@ sampleDrag(asset, direction, rng) -> {from,to}
 
 ## 6. 识别区域 vs 操作区域有效性判断
 
-### 目标
+### 先澄清三个不同概念
 
-测试结果增加：
+用户指出的关键误解：
 
-```text
-识别区域
-操作区域
-是否重叠
-有效性
-```
+> “识别到的区域”不是配置的识别 ROI，而是 OCR/模板**真实识别出来的 bbox**。
 
-规则（拟）：
-
-- 没有显式操作区域：操作区域=识别区域，有效；
-- 有显式 `action_roi`/`action_polygon`：
-  - 识别 bbox 与操作区域相交 → 有效；
-  - 不相交但操作区域被标记为**独立操作区域** → 允许，但显示“独立区域”；
-- 增加来源字段（拟）：
+因此必须区分：
 
 ```text
-action_source: "recognition" | "fixed"
+1. roi
+   配置的识别输入区域（OCR 送到哪里识别 / 模板从哪里裁剪）
+
+2. recognized_bbox
+   本次 OCR/template 真实识别出来的目标框
+
+3. action_shape
+   实际点击/拖动允许的操作区域
 ```
 
-- 旧数据：
-  - `action_roi` 缺失 → `recognition`；
-  - 存在但无法判断 → 保守推断为 `fixed` 或 `recognition`（需最终裁定）。
+例如：
+
+```text
+roi = [0,0,1280,720]                 整屏识别
+recognized_bbox = [600,300,80,40]    OCR 实际找到「主线」的位置
+action_shape = rect [580,280,120,80] 操作区域
+```
+
+重叠判断：
+
+```text
+recognized_bbox ∩ effective_action_region
+```
+
+**不是**：
+
+```text
+roi ∩ action_shape
+```
+
+### 有效性规则
+
+- 没有显式操作区域：
+  - 运行时操作区域 = `recognized_bbox`；
+  - 有效；
+- 有显式操作区域：
+  - `recognized_bbox` 与有效操作区域相交 → 有效；
+  - 不相交：
+    - `action_source=fixed` → 允许，显示“独立操作区域”；
+    - `action_source=recognition` → 无效/醒目警告。
+
+### 反选时的重叠
+
+```text
+effective_action_region = 整个屏幕 − action_shape
+```
+
+判断：
+
+```text
+recognized_bbox 是否有任何部分落在 effective_action_region
+```
+
+如果实际识别目标完全在排除区域内，则视为不重叠。
+
+### `action_source`（待确认）
+
+拟新增：
+
+```json
+"action_source": "recognition" | "fixed"
+```
+
+含义：
+
+- `recognition`：操作区域应跟随真实识别结果；
+- `fixed`：用户明确固定操作区域，允许和真实识别 bbox 不重叠。
+
+旧数据：
+
+- 无显式操作区域 → `recognition`；
+- 有显式操作区域但无 `action_source` → 先按 `fixed` 兼容，并标“旧数据来源未知”。
 
 ### 防错目的
 
-防止“识别 ROI 很大，识别目标移动到旧操作区域外面，但仍用旧操作区域点击”的静默错误。
+防止：
+
+```text
+识别 ROI 很大
+→ 识别目标实际移动到别处
+→ 旧操作区域仍在原位置
+→ 静默点击错误位置
+```
 
 ### 验收
 
-- 识别框移动后如果不重叠且来源是 recognition，结果醒目提示无效；
-- 用户显式固定操作区域时不误报，标为“独立操作区域”。
+- 测试结果显示实际 `recognized_bbox`（不是配置 roi）；
+- 显示实际 bbox 与有效操作区域的重叠结果；
+- `fixed` 独立区域不误报；
+- `recognition` 不重叠必须醒目提示无效。
+
 
 ## 7. 素材拖动排序
 
@@ -272,54 +383,13 @@ POST /frames/category/rename {from,to}
 9. 素材拖动排序；
 10. 帧分类重命名。
 
-## 10. 字段方案详解（待确认）
+## 10. 字段设计（已确认：方案 B）
 
-### 10.1 操作区域多边形：方案 A / 方案 B
+### 10.1 操作区域使用 `action_shape`
 
-当前素材结构：
+用户已确认采用 **方案 B：统一 shape 对象**。
 
-```json
-{
-  "roi": [100, 100, 300, 200],
-  "action_roi": [80, 90, 340, 220]
-}
-```
-
-`roi` 是识别区域，`action_roi` 是点击操作区域（矩形）。要加多边形和反选，有两个方案。
-
-#### 方案 A：新增并列字段
-
-```json
-{
-  "roi": [100, 100, 300, 200],
-  "action_roi": [80, 90, 340, 220],
-  "action_polygon": [[80,90],[420,90],[420,310],[80,310]],
-  "action_invert": false
-}
-```
-
-语义：
-
-- `action_roi` 仍保存多边形的**外接矩形**，兼容旧代码；
-- 有 `action_polygon` 时，实际采样/命中用多边形；
-- `action_invert=true` 时，有效区域是 `action_roi` 减去多边形；
-- 没有 `action_polygon` 时，仍按矩形 `action_roi`；
-- 识别侧的 `polygon` 保持原义（识别掩膜），不混用。
-
-优点：
-
-- 旧素材/旧客户端完全兼容；
-- 改动集中在操作区域采样和保存；
-- 字段直观，便于手工检查；
-- 可以逐步迁移。
-
-缺点：
-
-- `action_roi` 与 `action_polygon` 需要保持 bbox 一致；
-- 多个字段需要校验；
-- 以后加圆形/自由笔刷时字段会继续增加。
-
-#### 方案 B：统一 shape 对象
+新素材结构：
 
 ```json
 {
@@ -332,33 +402,63 @@ POST /frames/category/rename {from,to}
 }
 ```
 
-优点：
+矩形操作区：
 
-- 一个字段表达所有形状，扩展性好；
-- 不会出现 bbox 与多边形不一致；
-- 长期看结构更清晰。
-
-缺点：
-
-- 需要迁移现有全部 `action_roi` 读取点（编辑器、runtime、批测、保存、集合）；
-- 旧 flow/旧客户端/旧数据需要 fallback；
-- 改动面和回归风险明显更大。
-
-#### 建议
-
-第一阶段采用 **方案 A**：
-
-```text
-action_roi     保留为多边形 bbox / 矩形操作区
-action_polygon 可选，表示多边形操作区
-action_invert  可选，表示反选
+```json
+{
+  "action_shape": {
+    "kind": "rect",
+    "roi": [80, 90, 340, 220],
+    "invert": false
+  }
+}
 ```
 
-等以下条件满足后再评估迁移到 `action_shape`：
+反选语义：
 
-- 多边形采样 runtime 稳定；
-- 旧数据迁移完成；
-- 有明确的圆形/自由笔刷需求。
+```text
+invert = false  → 有效操作区域 = shape 自身
+invert = true   → 有效操作区域 = 整个屏幕 − shape
+```
+
+用户明确：
+
+> 反选 = 整个屏幕 − 选择区域。
+> 不是“识别外接矩形 − 多边形”。
+
+因此：
+
+- 反选时的采样范围是整个画面（当前 1280x720）；
+- 不是外接矩形，不会因 bbox 变小而缩小可点击区域；
+- 矩形反选 = 整个屏幕减去矩形；
+- 多边形反选 = 整个屏幕减去多边形；
+- 选择区域仍然用于显示和命中排除。
+
+### 兼容策略
+
+- 旧 `action_roi` 继续可读：
+  - 没有 `action_shape` → 视为 `kind=rect, invert=false`；
+  - runtime/批测/编辑器通过统一 shape 适配层读取；
+- 新保存以 `action_shape` 为主；
+- `action_roi` 只作为旧客户端 fallback，不再作为新数据唯一真相；
+- 识别掩膜 `polygon` 保持原义，不参与操作区域反选。
+
+### 为什么选 B
+
+- 一个字段表达矩形/多边形/反选；
+- 不会出现 `action_roi` 与 `action_polygon` bbox 不一致；
+- 后续圆形/自由笔刷可自然扩展；
+- 虽然需要迁移所有读取点，但一次收口比长期维护双字段更稳。
+
+### 迁移步骤
+
+1. 增加 shape 读写适配层：`shape → 旧 action_roi` 与 `旧 action_roi → shape`；
+2. 编辑器保存优先写 `action_shape`；
+3. runtime/批测/点击采样统一调用 shape 适配；
+4. 旧数据不动，读取时转换；
+5. 回归旧素材后删除重复字段路径。
+
+
 
 ### 10.2 `action_source`：操作区域来源
 
@@ -391,15 +491,17 @@ action_invert  可选，表示反选
 
 ```text
 action_source = recognition:
-    识别 bbox 与操作区域必须重叠
+    真实识别 bbox 与有效操作区域必须重叠
 
 action_source = fixed:
     不要求重叠；显示“独立操作区域”即可
 ```
 
+注意：这里比较的是 **OCR/模板实际识别出来的 bbox**，不是配置的识别 ROI。
+
 旧数据推断：
 
-- 无 `action_roi`/`action_polygon` → `recognition`；
+- 无 `action_shape` / `action_roi` → `recognition`；
 - 有显式操作区域但无 `action_source` → 先按 `fixed` 兼容，并在 UI 标记“旧数据来源未知”；
 - 新保存由 UI 明确写入 `action_source`。
 
@@ -409,11 +511,13 @@ action_source = fixed:
 
 1. 实时关闭时：单素材多位置**全部测试**。
 2. 帧分类重命名：`to` 为空**禁止**。
+3. 操作区域字段采用 **方案 B：`action_shape`**。
+4. 反选 = **整个屏幕 − 选择区域**，不是外接矩形减去 shape。
+5. 有效性比较对象 = **OCR/模板真实识别出的 bbox**，不是配置的识别 ROI。
 
 ## 12. 仍待确认
 
-1. 操作区域多边形采用方案 A 还是方案 B（建议 A）。
-2. 是否新增正式字段 `action_source`（建议新增）。
+1. 是否新增正式字段 `action_source`（建议新增）。
 
 ## 13. 当前代码证据
 
