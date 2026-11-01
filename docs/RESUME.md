@@ -70,4 +70,4 @@ status: in_progress
 - `apps/oasd/ui/builder.js`（任务构建关系提示）；
 - `relations/README.md`（observations/annotations schema）；
 - `frames/frames.json`（22 帧，无 interface_id）；
-- 测试：`cargo test --workspace` = 356 passed。
+- 测试：`cargo test --workspace` = 356 passed；提交 `ba61815`。
