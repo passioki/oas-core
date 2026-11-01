@@ -1,5 +1,5 @@
 {
-  "next_id": 23,
+  "next_id": 24,
   "current_id": 4,
   "frames": [
     {
@@ -187,6 +187,17 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793512627400,
+      "seen": false
+    },
+    {
+      "id": 23,
+      "name": "悬赏封印总界面",
+      "category": "悬赏封印",
+      "file": "frame-23.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793513261532,
       "seen": false
     }
   ]
