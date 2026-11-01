@@ -817,3 +817,20 @@ aside.side {
   object-fit: contain;
 }
 .capture-preview img:not([src]) { display: none; }
+
+.relations-dialog { width: min(900px, 92vw); }
+.relations-view {
+  max-height: 62vh;
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+}
+.relations-section {
+  border: 1px solid #333944;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #12151a;
+}
+.relations-section-title { font-weight: 600; margin-bottom: 5px; }
+.relations-line { font-size: 12px; color: #c7cdd6; padding: 2px 0; }
+.relations-line.muted { color: #6b7280; }

@@ -113,6 +113,7 @@
           <div class="row lib-toolbar">
             <button id="btn-frame-capture">截取当前帧入库</button>
             <button id="btn-frames-refresh">刷新列表</button>
+            <button id="btn-frame-relations" type="button">帧-素材关系</button>
             <button id="btn-frames-clear">清空列表</button>
           </div>
           <label class="opt">分类
@@ -446,6 +447,17 @@
       }
     });
   </script>
+  <dialog id="relations-dialog" class="task-dialog relations-dialog">
+    <h3>帧-素材关系</h3>
+    <p id="relations-status" class="muted small">—</p>
+    <div class="row dialog-actions">
+      <button id="relations-refresh" type="button">刷新</button>
+      <span class="spacer"></span>
+      <button id="relations-close" type="button">关闭</button>
+    </div>
+    <div id="relations-view" class="relations-view muted">（未加载）</div>
+  </dialog>
+
   <script src="/flow_model.js"></script>
   <script src="/asset_ui.js"></script>
   <script src="/builder.js"></script>

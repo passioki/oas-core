@@ -24,6 +24,7 @@ mod scheduler;
 mod config;
 mod task;
 mod global_assets;
+mod relations;
 #[cfg(feature = "ocr")]
 mod ocr;
 

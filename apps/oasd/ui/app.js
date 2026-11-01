@@ -35,6 +35,7 @@ const btnBackMode = document.getElementById('btn-back-mode');
 const frameFile = document.getElementById('frame-file');
 const btnFrameUpload = document.getElementById('btn-frame-upload');
 const btnFrameCapture = document.getElementById('btn-frame-capture');
+const btnFrameRelations = document.getElementById('btn-frame-relations');
 const btnFramesRefresh = document.getElementById('btn-frames-refresh');
 const btnFramesClear = document.getElementById('btn-frames-clear');
 const framesList = document.getElementById('frames-list');
@@ -53,6 +54,9 @@ const capturePreviewImg = document.getElementById('capture-preview-img');
 const captureError = document.getElementById('capture-error');
 const captureCancel = document.getElementById('capture-cancel');
 const captureSubmit = document.getElementById('capture-submit');
+const relationsDialog = document.getElementById('relations-dialog');
+const relationsStatus = document.getElementById('relations-status');
+const relationsView = document.getElementById('relations-view');
 let captureNamePicker = null;
 let captureCategoryPicker = null;
 let captureBusy = false;
@@ -3194,6 +3198,86 @@ async function applyFrameCategoryFromSelect() {
   await refreshFrames();
 }
 
+function relationTaskName() {
+  const direct = (taskName && taskName.value || '').trim();
+  if (direct) return direct;
+  const builder = document.getElementById('builder-task');
+  return builder && builder.value ? builder.value.trim() : '';
+}
+
+async function loadFrameAssetRelations() {
+  if (!relationsView || !relationsDialog) return;
+  const task = relationTaskName();
+  relationsView.textContent = '';
+  if (relationsStatus) relationsStatus.textContent = '加载中…';
+  if (!task) {
+    if (relationsStatus) relationsStatus.textContent = '请先选择任务（任务页或任务构建页）';
+    return;
+  }
+  try {
+    const r = await fetch('/relations/frame-assets?task=' + encodeURIComponent(task));
+    const s = await r.json();
+    if (!s.ok) {
+      if (relationsStatus) relationsStatus.textContent = '加载失败：' + (s.errors || []).join('; ');
+      return;
+    }
+    const rel = s.relations || {};
+    if (relationsStatus) {
+      relationsStatus.textContent = `${rel.task || task} · ${(rel.frames || []).length} 帧 / ${(rel.assets || []).length} 素材（只读，派生自 Asset.positions）`;
+    }
+
+    function section(title) {
+      const box = document.createElement('div');
+      box.className = 'relations-section';
+      const h = document.createElement('div');
+      h.className = 'relations-section-title';
+      h.textContent = title;
+      box.appendChild(h);
+      relationsView.appendChild(box);
+      return box;
+    }
+    function line(box, text, cls) {
+      const d = document.createElement('div');
+      d.className = 'relations-line' + (cls ? ' ' + cls : '');
+      d.textContent = text;
+      box.appendChild(d);
+    }
+
+    const frameBox = section('帧 → 素材');
+    for (const f of (rel.frames || [])) {
+      const assets = (f.assets || []).join('、') || '（无）';
+      line(frameBox, `#${f.id} ${f.name || '帧'} [${f.category || '未分类'}] → ${assets}`);
+    }
+
+    const assetBox = section('素材 → 位置帧');
+    for (const a of (rel.assets || [])) {
+      const pos = (a.positions || []).map((id) => '#' + id).join('、') || '（无位置帧）';
+      line(assetBox, `${a.id} (${a.kind || '?'}) → ${pos}`);
+    }
+
+    const coBox = section('素材 ↔ 素材共现');
+    if (!(rel.asset_cooccurrence || []).length) line(coBox, '（暂无可共现素材）', 'muted');
+    for (const p of (rel.asset_cooccurrence || [])) {
+      const frames = (p.frames || []).map((id) => '#' + id).join('、');
+      line(coBox, `${p.a} ↔ ${p.b} · ${p.count} 次 · ${frames}`);
+    }
+
+    const sharedBox = section('帧 ↔ 帧共享素材');
+    if (!(rel.frame_shared_assets || []).length) line(sharedBox, '（暂无共享素材的帧对）', 'muted');
+    for (const p of (rel.frame_shared_assets || [])) {
+      line(sharedBox, `#${p.a} ↔ #${p.b} · 共享 ${p.assets.length} 个：${(p.assets || []).join('、')}`);
+    }
+  } catch (e) {
+    if (relationsStatus) relationsStatus.textContent = '加载异常：' + e;
+  }
+}
+
+async function openFrameAssetRelations() {
+  if (!relationsDialog) return;
+  await loadFrameAssetRelations();
+  relationsDialog.showModal();
+}
+
 async function setFrameCategory(f) {
   const cat = window.prompt('分类（自由文本，留空=未分类）', f.category || '');
   if (cat == null) return;
@@ -4735,6 +4819,13 @@ async function submitResetMemory() {
   // §22.27 会话图片列表
   if (btnFrameUpload) btnFrameUpload.addEventListener('click', uploadFrames);
   if (btnFrameCapture) btnFrameCapture.addEventListener('click', openCaptureFrameDialog);
+  if (btnFrameRelations) btnFrameRelations.addEventListener('click', openFrameAssetRelations);
+  const relationsClose = document.getElementById('relations-close');
+  if (relationsClose) relationsClose.addEventListener('click', () => {
+    if (relationsDialog) relationsDialog.close();
+  });
+  const relationsRefresh = document.getElementById('relations-refresh');
+  if (relationsRefresh) relationsRefresh.addEventListener('click', loadFrameAssetRelations);
   if (captureCancel) captureCancel.addEventListener('click', () => {
     if (capturePreviewImg) capturePreviewImg.removeAttribute('src');
     if (captureDialog) captureDialog.close();

@@ -2041,7 +2041,7 @@ tasks/<任务名>/
 #### 22.40.4 测试
 
 - legacy shipped task 测试已改为临时 fixture；
-- 当前测试基线：`cargo test --workspace` = **352 passed / 0 failed**。
+- 当前测试基线：`cargo test --workspace` = **354 passed / 0 failed**。
 
 ### 22.41 ★★★ [11-01] **帧-素材关系（现行唯一关系）**
 
@@ -2057,4 +2057,20 @@ Asset.positions = [frame_id, ...]
 - 帧分类/名称只是人类可读分组，不是强制界面；
 - 页面恢复继续用 flow 的 OCR 条件（`text_visible` 等），不依赖界面图；
 - 如以后需要导航关系，应基于实际帧/动作证据，不再回到 interface 抽象。
+
+#### 22.41.1 已实现（Phase 1 派生层）
+
+- `apps/oasd/src/relations.rs`：纯函数派生，无持久化；
+  - frame → assets；
+  - asset → positions（过滤未知帧）；
+  - 素材共现（同一帧的素材对）；
+  - 帧共享素材（同一素材出现在多帧的帧对）；
+- `GET /relations/frame-assets?task=<task>`：读取任务/全局素材 + 当前帧清单，返回派生快照；
+- 帧行显示 `素材 N`；
+- 只读“帧-素材关系”浏览器：
+  - 帧 → 素材；
+  - 素材 → 位置帧；
+  - 素材 ↔ 素材共现；
+  - 帧 ↔ 帧共享素材；
+- 不新增持久化关系表；`Asset.positions` 仍是唯一存储关系。
 

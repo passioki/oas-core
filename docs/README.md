@@ -22,8 +22,8 @@
 
 - 分支 `dev`；`main` = `385d611`（v1.2.3 恢复节点）。
 - 当前任务：`tasks/返回庭院`；帧 22 个；**唯一关系 = `Asset.positions`（帧-素材）**。
-- 测试：`cargo test --workspace` = **352 passed / 0 failed**。
-- 已实现：`key`/`restart_app` 前端、两阶段截图、Enter、OCR 缩略图只用位置帧、帧行关联素材数。
+- 测试：`cargo test --workspace` = **354 passed / 0 failed**。
+- 已实现：`key`/`restart_app` 前端、两阶段截图、Enter、OCR 缩略图只用位置帧、帧行关联素材数、只读帧-素材关系浏览器。
 - 已回退：interface 抽象、`ui-map/`、`Frame.interface_id`、界面图视图（用户裁定不需要）。
 
 ## 维护规则

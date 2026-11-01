@@ -1114,6 +1114,7 @@ impl Server {
             ("POST", "/task/asset/positions") => self.handle_asset_positions(&mut out, &body),
             ("POST", "/task/goal") => self.handle_task_goal(&mut out, &body),
             ("GET", "/task/assets") => self.handle_task_assets(&mut out, &path),
+            ("GET", "/relations/frame-assets") => self.handle_frame_asset_relations(&mut out, &path),
             ("POST", "/task/assets/batch_test") => self.handle_assets_batch_test(&mut out, &body),
             ("GET", "/task/asset/image") => self.handle_asset_image(&mut out, &path),
             ("GET", "/task/asset/collection/match") => self.handle_collection_match(&mut out, &path),
@@ -4115,6 +4116,66 @@ impl Server {
             }
             Err(e) => self.send_errors(out, 400, vec![e]),
         }
+    }
+
+    /// `GET /relations/frame-assets?task=<task>` — read-only derived relations.
+    /// No new persisted relation data: everything comes from `Asset.positions`
+    /// plus the frame manifest.
+    fn handle_frame_asset_relations(
+        &self,
+        out: &mut TcpStream,
+        raw_path: &str,
+    ) -> std::io::Result<()> {
+        let global_mode = self.using_global_assets();
+        let q = parse_query(raw_path);
+        let task = q
+            .iter()
+            .find(|(k, _)| k == "task")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        if !global_mode {
+            if task.is_empty() {
+                return self.send_errors(out, 400, vec!["missing query param `task`".to_string()]);
+            }
+            if let Err(e) = oas_task::validate_task_name(&task) {
+                return self.send_errors(out, 400, vec![e]);
+            }
+        }
+        let bundle = if global_mode {
+            match self.asset_store("") {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        } else {
+            match oas_task::TaskBundle::open_named(&self.tasks_dir, &task) {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        };
+        let af = match bundle.load_assets_file() {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let frames: Vec<(u64, String, String)> = {
+            let st = self.state.lock().unwrap();
+            st.frames
+                .iter()
+                .map(|f| (f.id, f.name.clone(), f.category.clone()))
+                .collect()
+        };
+        let assets: Vec<(String, String, Vec<u64>)> = af
+            .items
+            .into_iter()
+            .map(|a| (a.id, a.kind, a.positions))
+            .collect();
+        let label = if global_mode {
+            "（全局素材库）".to_string()
+        } else {
+            task
+        };
+        let snap = crate::relations::build(&label, &frames, &assets);
+        let body = serde_json::json!({"ok": true, "relations": snap});
+        self.send_json(out, 200, &body.to_string())
     }
 
     /// POST /task/save_flow body: {"task":"任务1","flow":{...}}

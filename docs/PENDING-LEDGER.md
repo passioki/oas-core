@@ -2468,5 +2468,44 @@ Asset.positions = [frame_id, ...]
 
 | 状态 | ✅ interface 回退完成；帧-素材派生展示继续完善，活动页参考帧继续补 |
 
+---
+
+# ★ §E-61 ★★★ [11-01 15:30] **帧-素材关系 Phase 1：只读派生层**
+
+> 触发：用户确认“都先按你的来做做看”；先做派生关系，不加持久化、不加 interface。
+
+## 已完成
+
+- `apps/oasd/src/relations.rs`：纯派生模型 + 2 个测试；
+  - frame → assets；
+  - asset → positions（过滤未知帧）；
+  - asset co-occurrence；
+  - frame shared assets；
+- `GET /relations/frame-assets?task=<task>`：不写盘，读取任务/全局素材 + 当前帧派生；
+- 帧行显示 `素材 N`；
+- 只读“帧-素材关系”浏览器：
+  - 帧→素材；
+  - 素材→位置帧；
+  - 素材↔素材共现；
+  - 帧↔帧共享素材；
+- 无 interface/ui-map，无额外关系表。
+
+## 验证
+
+- `cargo test --workspace` = **354 passed / 0 failed**；
+- `task lint --all` = 1/0；
+- API 实测：返回庭院 = 22 帧 / 1 素材 / 10 组帧共享素材；
+- 无头 UI：关系弹窗正常显示，无 JS 错误。
+
+## 下一步
+
+1. Phase 2：录制 frame transition（before/after + action）；
+2. 人工标注 alternative/requires/similar；
+3. 任务构建关系感知；
+4. 活动页参考帧继续补。
+
+| 状态 | ✅ Phase 1 派生关系完成；transition 录制/标注/任务构建集成待做 |
+
+
 
 
