@@ -459,6 +459,19 @@ ok(!/saveSelectedCandidates/.test(source), 'dead saveSelectedCandidates is gone'
 ok(!/btn-batch-save/.test(source), 'dead #btn-batch-save binding is gone');
 ok(!/action_roi/.test(source), 'no stale action_roi text remains in app.js');
 
+// Boot regression (E2E O1): #task-select must be populated BEFORE the task
+// panels load. The old boot refreshed assets while the select still had only
+// the empty placeholder, then refreshTaskList() auto-selected tasks[0]; the
+// asset panel stayed on "未选择任务" until the user switched tasks manually.
+ok(
+  /await refreshTaskList\(taskName\.value\.trim\(\)\);\s*let bootTask = [\s\S]{0,500}await refreshTaskAssets\(bootTask \|\| undefined\);/.test(source),
+  'boot resolves #task-select before loading the task asset panel'
+);
+ok(
+  /if \(!bootTask && deepTask\) bootTask = deepTask;/.test(source),
+  'boot keeps a ?task= deep link usable when /task/list has no matching option'
+);
+
 const saveUnified = extractFunction('saveAssetUnified');
 ok(
   /postJson\('\/task\/save_assets'/.test(saveUnified) && /postJson\('\/task\/save_asset'/.test(saveUnified),

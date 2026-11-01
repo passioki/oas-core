@@ -5756,12 +5756,6 @@ async function submitResetMemory() {
     log('帧加载失败（点击分布仍可用）：' + (e && e.message ? e.message : e));
   }
 
-  try {
-    await refreshTaskAssets();
-  } catch (e) {
-    log('任务素材读取失败：' + e);
-  }
-
   // §22.18: load the task's existing flow into the visual editor; `?task=<name>`
   // is a deep link used by the headless acceptance run.
   let deepTask = '';
@@ -5771,10 +5765,22 @@ async function submitResetMemory() {
     deepTask = '';
   }
   if (deepTask) taskName.value = deepTask;
-  await refreshTaskAssets(deepTask || undefined);
-  await loadTaskFlow((taskName.value || '').trim());
-  // M1：任务列表下拉框（深链任务会被选中）。
+  // Boot ordering: populate #task-select BEFORE painting the task-scoped panels.
+  // refreshTaskList() auto-selects tasks[0] and mirrors it into #task-name; when
+  // the assets loaded first they saw only the empty placeholder option, so the
+  // panel stayed on "未选择任务" until the user switched tasks manually.
+  // 先填任务下拉框，再按它的选中值加载素材/流程。
   await refreshTaskList(taskName.value.trim());
+  let bootTask = ((taskSelect && taskSelect.value) || '').trim();
+  // A ?task= deep link stays usable when /task/list could not resolve a real
+  // option (route failure); with no deep link bootTask stays empty (无任务状态).
+  if (!bootTask && deepTask) bootTask = deepTask;
+  try {
+    await refreshTaskAssets(bootTask || undefined);
+    await loadTaskFlow(bootTask);
+  } catch (e) {
+    log('任务素材读取失败：' + e);
+  }
 
   // §22.21 deep link for the headless acceptance:
   //   /?match=1&x=330&y=69&w=95&h=55  -> select that ROI and run the image test.
