@@ -409,6 +409,31 @@
       "positions": [
         40
       ]
+    },
+    {
+      "id": "管理分组",
+      "kind": "ocr_line",
+      "roi": [
+        1138,
+        649,
+        92,
+        33
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          1086,
+          89,
+          158,
+          538
+        ],
+        "invert": false
+      },
+      "action_source": "fixed",
+      "rev": 1,
+      "positions": [
+        20
+      ]
     }
   ],
   "collections": []
