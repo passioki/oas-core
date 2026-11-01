@@ -13,7 +13,7 @@ status: in_progress
 
 ## 0. 当前状态（磁盘实测）
 
-- oas-core `main` = `385d611`（v1.2.3 恢复节点）；`dev` = 本文档迁移提交（尚未记录 hash）。
+- oas-core `main` = `385d611`（v1.2.3 恢复节点）；`dev` = `4b4795d`（docs migration，后续还会有记录提交）。
 - oas-core 文档已独立到 `D:\OAS-dev\oas-core\docs`；旧 backend 文档仓已冻结，不再作为 oas-core 文档入口。
 - 源文档提交：旧仓 `2861d8ba`（v1.2.3 release 文档节点）。
 - `cargo test --workspace` = **350 passed / 0 failed**。
@@ -29,7 +29,7 @@ status: in_progress
 - [x] 新增 `session-memory.config.json`，`continuity.py status` 可读取
 - [x] `START-HERE.md` 改为 oas-core 文档入口/工作目录
 - [x] `RESUME`/`RESUME-INDEX`/`PENDING-LEDGER`/`SESSION-INDEX` 记录文档迁移
-- [ ] 提交并推送 docs 到 oas-core `dev`
+- [x] 提交并推送 docs 到 oas-core `dev`（docs commit `4b4795d`）
 - [x] `cargo test --workspace` = 350 passed
 - [x] `task lint --all` = 4/0
 
@@ -81,4 +81,4 @@ status: in_progress
 - `docs/README.md`、`docs/MIGRATION-NOTES.md`
 - 源提交：旧仓 `2861d8ba`
 - 测试：350 passed；lint：4/0
-- 文档迁移 commit：见 `git log -1 -- docs`
+- 文档迁移 commit：`4b4795d`（后续记录提交在 dev）
