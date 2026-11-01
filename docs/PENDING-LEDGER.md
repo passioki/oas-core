@@ -2701,11 +2701,11 @@ Asset.positions = [frame_id, ...]
 
 ## 待补
 
-- runtime 对 polygon/invert 的精确采样（当前 bbox fallback）；
+- runtime `region` 引用的 polygon/invert 精确采样（template/OCR 主点击已 exact）；
 - live 批量测试；
 - 完整真实动作回归。
 
-| 状态 | 🟡 Phase A/C/D 首轮完成；runtime polygon/live 批量待补 |
+| 状态 | 🟡 Phase A/C/D 已完成；runtime `region` 精确采样/live 批量待补 |
 
 ---
 

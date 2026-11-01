@@ -37,6 +37,105 @@ pub struct Template {
     pub click_polygon: Option<Vec<Point>>,
 }
 
+/// Operation-region shape used by click sampling.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClickShape {
+    pub rect: Option<Rect>,
+    pub points: Option<Vec<Point>>,
+    pub invert: bool,
+}
+
+impl ClickShape {
+    pub fn bbox(&self) -> Option<Rect> {
+        if let Some(r) = self.rect {
+            return Some(r);
+        }
+        let pts = self.points.as_ref()?;
+        if pts.is_empty() {
+            return None;
+        }
+        let mut x0 = i32::MAX;
+        let mut y0 = i32::MAX;
+        let mut x1 = i32::MIN;
+        let mut y1 = i32::MIN;
+        for p in pts {
+            x0 = x0.min(p.x);
+            y0 = y0.min(p.y);
+            x1 = x1.max(p.x);
+            y1 = y1.max(p.y);
+        }
+        Some(Rect {
+            x: x0,
+            y: y0,
+            w: x1 - x0 + 1,
+            h: y1 - y0 + 1,
+        })
+    }
+
+    pub fn contains(&self, p: Point) -> bool {
+        if let Some(r) = self.rect {
+            return p.x >= r.x && p.y >= r.y && p.x < r.x + r.w && p.y < r.y + r.h;
+        }
+        let Some(pts) = self.points.as_ref() else {
+            return false;
+        };
+        if pts.len() < 3 {
+            return false;
+        }
+        let mut inside = false;
+        let mut j = pts.len() - 1;
+        for i in 0..pts.len() {
+            let (xi, yi) = (pts[i].x, pts[i].y);
+            let (xj, yj) = (pts[j].x, pts[j].y);
+            if ((yi > p.y) != (yj > p.y))
+                && (p.x < (xj - xi) * (p.y - yi) / (yj - yi).max(1) + xi)
+            {
+                inside = !inside;
+            }
+            j = i;
+        }
+        inside
+    }
+
+    pub fn effective_contains(&self, p: Point) -> bool {
+        let inside = self.contains(p);
+        if self.invert {
+            !inside
+        } else {
+            inside
+        }
+    }
+
+    pub fn sample(&self, w: u32, h: u32, rng: &mut crate::humanize::Rng) -> Option<Point> {
+        let bbox = self.bbox()?;
+        if self.invert {
+            for _ in 0..4096 {
+                let p = Point {
+                    x: rng.range_i32(0, w.saturating_sub(1) as i32),
+                    y: rng.range_i32(0, h.saturating_sub(1) as i32),
+                };
+                if !self.contains(p) {
+                    return Some(p);
+                }
+            }
+            return None;
+        }
+        for _ in 0..4096 {
+            let p = Point {
+                x: rng.range_i32(bbox.x, bbox.x + bbox.w - 1),
+                y: rng.range_i32(bbox.y, bbox.y + bbox.h - 1),
+            };
+            if self.contains(p) {
+                return Some(p);
+            }
+        }
+        Some(Point {
+            x: bbox.x + bbox.w / 2,
+            y: bbox.y + bbox.h / 2,
+        })
+    }
+}
+
 /// The task's declared assets (`assets/<Name>.json` in a later phase).
 #[derive(Default, Clone)]
 pub struct AssetSet {
@@ -53,6 +152,9 @@ pub struct AssetSet {
     /// per recognizable object: frame coords at design resolution; translated by
     /// the match offset on use. OCR objects use it directly.
     click_back: HashMap<String, Rect>,
+    /// Exact operation geometry (v0.1): polygon / invert aware. `click_back`
+    /// remains the bbox fallback for old tests and simple rectangles.
+    click_shapes: HashMap<String, ClickShape>,
     /// Pure operation regions (`kind: region`, v1.2): no recognition, the rect is
     /// the operation region itself.
     regions: HashMap<String, Rect>,
@@ -82,6 +184,14 @@ impl AssetSet {
 
     pub fn click_back(&self, id: &str) -> Option<Rect> {
         self.click_back.get(id).copied()
+    }
+
+    pub fn set_click_shape(&mut self, id: impl Into<String>, shape: ClickShape) {
+        self.click_shapes.insert(id.into(), shape);
+    }
+
+    pub fn click_shape(&self, id: &str) -> Option<&ClickShape> {
+        self.click_shapes.get(id)
     }
 
     /// Declare a pure operation region (`kind: region`, v1.2).
@@ -1168,6 +1278,29 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         Ok(locate_template(matcher, tpl))
     }
 
+    /// Re-sample a click plan if it landed outside an exact operation shape.
+    fn adjust_plan_for_shape(
+        &mut self,
+        sel: &str,
+        plan: crate::humanize::ClickPlan,
+        w: u32,
+        h: u32,
+    ) -> crate::humanize::ClickPlan {
+        let Some(shape) = self.assets.click_shape(sel).cloned() else {
+            return plan;
+        };
+        if shape.effective_contains(plan.point) {
+            return plan;
+        }
+        match shape.sample(w, h, &mut self.rng) {
+            Some(point) => crate::humanize::ClickPlan {
+                point,
+                miss: false,
+            },
+            None => plan,
+        }
+    }
+
     /// Actual click box for a matched template. Explicit user decision [10-22
     /// 23:0x]: the click area is the matched template's **bounding rectangle**
     /// (the same rect before/after the polygon feature); the polygon now only
@@ -1187,6 +1320,22 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         // region, otherwise the recognized line rect (derived OCR), otherwise
         // the declared OCR ROI.
         if self.assets.ocr_roi(effective_sel).is_some() {
+            if let Some(shape) = self.assets.click_shape(effective_sel) {
+                if shape.invert {
+                    let (w, h) = self.screen.size().ok_or_else(|| {
+                        "inverted OCR operation region needs a screen size".to_string()
+                    })?;
+                    return Ok(Rect {
+                        x: 0,
+                        y: 0,
+                        w: w as i32,
+                        h: h as i32,
+                    });
+                }
+                if let Some(b) = shape.bbox() {
+                    return Ok(b);
+                }
+            }
             if let Some(back) = self.assets.click_back(effective_sel) {
                 return Ok(back);
             }
@@ -1201,6 +1350,33 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         let t = self.assets.get(effective_sel).ok_or_else(|| {
             format!("selector `{effective_sel}` is not declared in the task's assets")
         })?;
+        // Exact operation shape (v0.1): polygon or screen-invert target.
+        if let Some(shape) = self.assets.click_shape(effective_sel) {
+            if shape.invert {
+                let (w, h) = self.screen.size().ok_or_else(|| {
+                    "inverted operation region needs a screen size".to_string()
+                })?;
+                return Ok(Rect {
+                    x: 0,
+                    y: 0,
+                    w: w as i32,
+                    h: h as i32,
+                });
+            }
+            if let Some(back) = shape.bbox() {
+                let roi = t.roi.ok_or_else(|| {
+                    format!(
+                        "selector `{effective_sel}` has an operation shape but no roi to translate it"
+                    )
+                })?;
+                return Ok(Rect {
+                    x: back.x + (p.x - roi.x),
+                    y: back.y + (p.y - roi.y),
+                    w: back.w,
+                    h: back.h,
+                });
+            }
+        }
         // §22.25: explicit click area (`roi_back`) wins, translated by the match
         // offset; without it we keep the matched template bbox (§22.20 decision).
         if let Some(back) = self.assets.click_back(effective_sel) {
@@ -1505,6 +1681,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 .screen.size()
                 .ok_or_else(|| "interrupt: no frame available".to_string())?;
             let plan = self.humanize.template_click(target, w, &mut self.rng);
+            let plan = self.adjust_plan_for_shape(&action_sel, plan, w, h);
             let centre = Point {
                 x: target.x + target.w / 2,
                 y: target.y + target.h / 2,
@@ -1808,6 +1985,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             .screen.size()
                             .ok_or_else(|| "dismiss_popup: no frame available".to_string())?;
                         let plan = self.humanize.template_click(target, w, &mut self.rng);
+                        let plan = self.adjust_plan_for_shape(&action_sel, plan, w, h);
                         let centre = Point {
                             x: target.x + target.w / 2,
                             y: target.y + target.h / 2,
@@ -1929,6 +2107,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     .screen.size()
                     .ok_or_else(|| "click: no frame available".to_string())?;
                 let plan = self.humanize.template_click(target, w, &mut self.rng);
+                let plan = self.adjust_plan_for_shape(hit_sel, plan, w, h);
                 let centre = Point {
                     x: target.x + target.w / 2,
                     y: target.y + target.h / 2,
@@ -2044,6 +2223,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 };
                                 let target = self.click_box_for(sel, p)?;
                                 let plan = self.humanize.template_click(target, w, &mut self.rng);
+                                let plan = self.adjust_plan_for_shape(sel, plan, w, h);
                                 let centre = Point {
                                     x: target.x + target.w / 2,
                                     y: target.y + target.h / 2,
@@ -5766,6 +5946,40 @@ mod tests {
                 assert!(msg.contains("param"), "must mention param(): {msg}");
             }
             other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod click_shape_tests {
+    use super::*;
+
+    #[test]
+    fn polygon_and_invert_samples_are_effective() {
+        let mut rng = crate::humanize::Rng::new(7);
+        let poly = ClickShape {
+            rect: None,
+            points: Some(vec![
+                Point { x: 100, y: 100 },
+                Point { x: 400, y: 100 },
+                Point { x: 400, y: 300 },
+                Point { x: 100, y: 300 },
+            ]),
+            invert: false,
+        };
+        for _ in 0..64 {
+            let p = poly.sample(640, 360, &mut rng).expect("polygon sample");
+            assert!(poly.contains(p), "sample outside polygon: {p:?}");
+        }
+
+        let inverted = ClickShape {
+            rect: Some(Rect { x: 100, y: 100, w: 100, h: 100 }),
+            points: None,
+            invert: true,
+        };
+        for _ in 0..64 {
+            let p = inverted.sample(640, 360, &mut rng).expect("invert sample");
+            assert!(!inverted.contains(p), "sample inside excluded rect: {p:?}");
         }
     }
 }

@@ -10,7 +10,7 @@
 | 恢复节点 | oas-core `main` = `385d611`（历史 v1.2.3；当前 dev 版本 **0.1.0**） |
 | 开发分支 | `dev`；编辑器/帧/素材/任务数据提交在此分支 |
 | 文档入口 | `docs/START-HERE.md` |
-| 测试 | `cargo test --workspace` = **357 passed / 0 failed** |
+| 测试 | `cargo test --workspace` = **358 passed / 0 failed** |
 | 任务 | `返回庭院` 仍在用户编辑中（flow 被删除）；不强行恢复 |
 | 帧 | 当前 28 帧；旧 22 帧恢复记录 + 用户新增 35~40 |
 | 操作区 | `action_shape`（rect/polygon，invert=整个屏幕−区域）+ `action_source`；旧 `action_roi` 已删 |
@@ -37,11 +37,11 @@
 - 操作区域：`ActionShape`/`action_source` schema；当前任务 assets 已迁移；UI 支持矩形、多边形、全屏反选；旧 `action_roi`/`roi_back` 删除。
 - 素材拖动排序 + 帧分类重命名（空名禁止）已实现。
 - 单素材测试带 live/frame_id 来源；真实识别 bbox 有效性提示。
-- 文档回退并更新测试基线 357。
+- 文档回退并更新测试基线 358。
 
 ## 2. 下一步
 
-1. runtime 精确 polygon/invert 采样（当前 bbox fallback）；
+1. runtime `region` 引用 polygon/invert 精确采样（template/OCR 主点击已 exact）；
 2. live 批量测试；
 3. 真实动作录制回归；
 4. 任务构建进一步关系感知；

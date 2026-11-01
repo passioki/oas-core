@@ -14,14 +14,14 @@ status: in_progress
 ## 0. 当前状态（磁盘实测）
 
 - 分支 `dev`；版本 `workspace.package.version = 0.1.0`；`main` = `385d611`（历史恢复点）。
-- 测试：`cargo test --workspace` = **357 passed / 0 failed**。
+- 测试：`cargo test --workspace` = **358 passed / 0 failed**。
 - 任务：`tasks/返回庭院` 当前仍在用户手上编辑（flow 删除）；不强行恢复。
 - 帧：当前 28 帧（用户新增 35~40）；旧 22 帧恢复记录仍在。
 - 编辑器 UX：画布 16:9 stage、结果/日志可收起、帧详情侧栏已实现。
 - 操作区域：`action_shape`（rect/polygon + invert=整个屏幕−区域）+ `action_source` 已落地；旧 `action_roi`/`roi_back` 从代码与当前 assets 数据移除。
 - 已实现测试来源：单素材测试带 `live=1` 或 `frame_id`；批量测试仍按位置帧（live 批量待补）。
 - 已实现：素材拖动排序接口/UI、帧分类重命名接口/UI、点测/拖测随机采样。
-- 待补：runtime 对 polygon/invert 的精确采样（目前 runtime bbox fallback）；live 批量；真实动作回归。
+- 待补：runtime 的 `region` 引用仍走 bbox（template/OCR 主点击路径已用 exact shape）；live 批量；真实动作回归。
 - 素材关系：唯一关系 = `Asset.positions`；帧行显示关联素材数量；只读关系浏览器显示帧→素材、素材→帧、素材共现、帧共享素材、录制 transition、人工标注与覆盖概览。
 - 位置帧继承：新素材保存区/已有素材位置编辑弹窗都能从其他任务素材追加 `positions`，不新增持久化引用。
 - 帧安全：清空列表必须 `confirm:true`；清空前自动备份到 `frames/.backup/clear-<时间>/`。
@@ -44,21 +44,21 @@ status: in_progress
 - [x] 后端 `/frames/clear` 必须 `{confirm:true}`，否则 400；
 - [x] 清空前自动备份 `frames.json` + 所有 PNG 到 `frames/.backup/clear-<时间>/`；
 - [x] 增加帧清空测试（无确认拒绝 + 备份存在）；
-- [x] 全量测试 357 passed；task lint 1/0；
+- [x] 全量测试 358 passed；task lint 1/0；
 - [x] 文档记录事故与恢复边界。
 - [x] 位置帧继承：`asset-position-inherit-host` 源素材 picker；已有素材编辑弹窗也可继承；只追加 positions。
-- [x] 全量测试 357 passed；task lint 1/0。
+- [x] 全量测试 358 passed；task lint 1/0。
 - [x] 版本重置 dev `0.1.0`（旧 v1.x tag 保留）。
 - [x] 画布 16:9 stage + 结果/日志收起 + 位置帧详情侧栏。
 - [x] 点测/拖测随机采样（同区域多次不同点）。
 - [x] `action_shape` + `action_source` schema；当前任务 assets 已迁移；`action_roi`/`roi_back` 代码删除。
 - [x] 素材拖动排序 + 帧分类重命名。
 - [x] 单素材测试 live/frame_id 来源与真实识别 bbox 有效性提示。
-- [x] 全量测试 357 passed。
+- [x] 全量测试 358 passed。
 
 ## 3. 下一步
 
-1. runtime 精确支持 polygon/invert 操作区（当前 bbox fallback）；
+1. runtime `region` 引用的 polygon/invert 精确采样；template/OCR 主点击已支持；
 2. 批量测试 live 帧来源；
 3. 真实动作录制回归 + 完整验收；
 4. 任务构建按当前帧过滤素材/推荐 transition；
@@ -83,4 +83,4 @@ status: in_progress
 - `relations/README.md`（observations/annotations schema）；
 - `docs/EDITOR-UX-PLAN.md`（现行方案；部分 runtime 待补）；
 - `frames/frames.json`（当前 28 帧，无 interface_id）；
-- 测试：`cargo test --workspace` = 357 passed；版本 `0.1.0`。
+- 测试：`cargo test --workspace` = 358 passed；版本 `0.1.0`。

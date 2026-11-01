@@ -28,7 +28,7 @@
 | 项 | 状态 |
 |---|---|
 | 引擎 | `oasd`（serve/run/queue/stats/scheduler）+ 编辑器 UI + 素材库；`oasd --version` = **0.1.0**（dev；旧 v1.x 为历史内部 tag） |
-| 测试 | `cargo test --workspace` = **357 passed / 0 failed**（legacy shipped 数据测试已改为临时 fixture，不再依赖 `tasks/` 现状） |
+| 测试 | `cargo test --workspace` = **358 passed / 0 failed**（legacy shipped 数据测试已改为临时 fixture，不再依赖 `tasks/` 现状） |
 | 当前任务 | `tasks/返回庭院`（OCR + 返回按钮 + 弹窗取消 + 重启兜底）；素材 1 个 `预设` OCR；其他任务已由用户清理 |
 | 引擎特性 | flow DSL、素材/掩膜/多边形、点击定位链、HB1/HB7、整帧搜索、**单识别 ROI + 操作区域**、库、queue、stats、checkpoint/resume、reconnect、多帧投票、OCR+模板互证、**统一任务模板/task lint、任务创建/编辑器运行、调度 v3、交付包** |
 | 编辑器 | 工作台（素材/图片/任务/点击分布/调度）+ 顶部页面（任务构建/任务库/实例/调度/设置）、标题行常驻结果/日志窗口、新建任务对话框、重置记忆多选、调试页 `/dashboard.html`；流程编辑统一在任务构建 |
@@ -52,7 +52,7 @@
 | 恢复节点 | `main` = `385d611`（v1.2.3） |
 | 当前分支 | `dev`（文档/编辑器/任务数据提交；不自动合并 main） |
 | 文档 | 已独立到 `oas-core/docs`；当前设计以 ENGINE-DESIGN + PENDING-LEDGER + RESUME 为准 |
-| 当前计划 | **`EDITOR-UX-PLAN.md`**：首轮已落地画布/帧详情/随机采样、`action_shape`+`action_source`、全屏反选 UI、素材排序、分类重命名；待补 runtime polygon 精确采样/live 批量 |
+| 当前计划 | **`EDITOR-UX-PLAN.md`**：已落地画布/帧详情/随机采样、`action_shape`+`action_source`、全屏反选 UI、素材排序、分类重命名；runtime template/OCR 主点击已 exact shape；待补 region 引用/live 批量 |
 | 截图 | 两阶段：点击立即抓取 → 弹窗预览 → 名称/分类 → 保存；无当前帧跳转 |
 | Enter | 输入框 Enter = 确认输入；弹窗 Enter = 保存截图 |
 | 实时操作 | 实时开启时画布单击/拖拽 = tap/swipe；实时暂停 = ROI 编辑 |
@@ -98,7 +98,7 @@ cd D:\OAS-dev\oas-core
 git log -1 --format="%h %ci %s"
 git status --porcelain
 
-REM ② 引擎测试（当前基线：357 passed / 0 failed）
+REM ② 引擎测试（当前基线：358 passed / 0 failed）
 cargo test --workspace
 
 REM ③ OCR 构建（serve/run 需要；不带 feature 会报 "this build has no OCR"）
@@ -186,7 +186,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 
 【2. 代码与我核实的台账】
    oas-core commit = <hash> · 分支 = dev · worktree 干净 = 是/否
-   cargo test --workspace = __ passed / __ failed（当前基线 = 357）
+   cargo test --workspace = __ passed / __ failed（当前基线 = 358）
    serve 状态：/state = <captured/device/ocr/det>
    oas-core docs commit = <hash> · dev 是否已推 = 是/否
 
@@ -225,7 +225,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 | **E7** | 旧仓已冻结 | 旧仓 `backend/frontend` 只读；不要在旧仓上开发/提交 |
 | **E8** | 新引擎的验收看 ENGINE §22 判据 | 不要拿旧仓 pytest 基线当引擎验收 |
 | **E9** | headless Edge 截图做 UI 验收 | `msedge --headless=new --screenshot=...`；需要时加 `--user-data-dir` |
-| **E10** | 测试数会随提交增长 | 当前 **357**；以 `cargo test --workspace` 实测为准 |
+| **E10** | 测试数会随提交增长 | 当前 **358**；以 `cargo test --workspace` 实测为准 |
 
 ---
 
@@ -265,7 +265,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 ```bat
 REM ---------- 构建/测试 ----------
 cd D:\OAS-dev\oas-core
-cargo test --workspace   REM 当前基线 357 passed
+cargo test --workspace   REM 当前基线 358 passed
 cargo build -p oasd --features ocr              REM serve/run 的 OCR 构建
 
 REM ---------- 编辑器 ----------

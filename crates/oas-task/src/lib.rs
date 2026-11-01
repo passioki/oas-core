@@ -1051,6 +1051,23 @@ impl TaskBundle {
                             },
                         );
                     }
+                    set.set_click_shape(
+                        item.id.clone(),
+                        oas_runtime::ClickShape {
+                            rect: shape.roi.map(|r| oas_types::Rect {
+                                x: r[0],
+                                y: r[1],
+                                w: r[2],
+                                h: r[3],
+                            }),
+                            points: shape.points.as_ref().map(|pts| {
+                                pts.iter()
+                                    .map(|p| oas_types::Point { x: p[0], y: p[1] })
+                                    .collect()
+                            }),
+                            invert: shape.invert,
+                        },
+                    );
                 }
                 // v1.2.3: one recognition ROI for derived OCR; det+rec runs on
                 // the saved `roi` and matches `ocr_text`.
@@ -1111,6 +1128,23 @@ impl TaskBundle {
                         },
                     );
                 }
+                set.set_click_shape(
+                    item.id.clone(),
+                    oas_runtime::ClickShape {
+                        rect: shape.roi.map(|r| oas_types::Rect {
+                            x: r[0],
+                            y: r[1],
+                            w: r[2],
+                            h: r[3],
+                        }),
+                        points: shape.points.as_ref().map(|pts| {
+                            pts.iter()
+                                .map(|p| oas_types::Point { x: p[0], y: p[1] })
+                                .collect()
+                        }),
+                        invert: shape.invert,
+                    },
+                );
             }
         }
         for coll in &af.collections {
