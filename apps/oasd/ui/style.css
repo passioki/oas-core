@@ -817,26 +817,3 @@ aside.side {
   object-fit: contain;
 }
 .capture-preview img:not([src]) { display: none; }
-
-.ui-map-view {
-  max-height: 62vh;
-  overflow: auto;
-  display: grid;
-  grid-template-columns: minmax(320px, 1.2fr) minmax(280px, 1fr);
-  gap: 12px;
-}
-.ui-map-nodes { display: grid; gap: 8px; align-content: start; }
-.ui-map-node {
-  border: 1px solid #333944;
-  border-radius: 6px;
-  padding: 7px 9px;
-  background: #12151a;
-}
-.ui-map-node-title { font-weight: 600; margin-bottom: 3px; }
-.ui-map-edges { display: grid; gap: 4px; align-content: start; }
-.ui-map-edge {
-  border-left: 2px solid #4b5563;
-  padding: 3px 8px;
-  font-size: 12px;
-  color: #c7cdd6;
-}

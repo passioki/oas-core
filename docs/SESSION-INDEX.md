@@ -6374,3 +6374,4 @@
 | 6337 | 11-01 09:30 | U/A | 文档/环境 | 进文档 §E-57 | 文档从旧 backend 仓 2861d8ba 迁入 oas-core/docs；新增 session-memory.config/README/MIGRATION-NOTES；START-HERE 改为 oas-core 文档入口；只复制有效文档 |
 | 6338 | 11-01 14:30 | U/A | 前端/截图/OCR/文档/审计 | 进文档 §E-58 | 截图两阶段/Enter/缩略图验收；审计发现前端 key/restart 缺失、全局 ui-map 未实现、legacy 测试红灯；新增 UI-MAP 设计稿并更新入口/断点/台账 |
 | 6339 | 11-01 14:45 | U/A | 前端/图/帧/测试/文档 | 进文档 §E-59 | 实施 key/restart 前端、ui-map JSON/CLI、Frame.interface_id 迁移、截图界面选择、图生成 flow；legacy 测试改 fixture，356 tests |
+| 6340 | 11-01 15:05 | U/A | 前端/帧/素材/文档/回退 | 进文档 §E-60 | 用户裁定 interface 太生硬；回退 ui-map/interface/图视图/CLI/生成 flow；只保留 Asset.positions（帧-素材）；帧保留；352 tests |

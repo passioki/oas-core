@@ -24,7 +24,6 @@ mod scheduler;
 mod config;
 mod task;
 mod global_assets;
-mod ui_map;
 #[cfg(feature = "ocr")]
 mod ocr;
 
@@ -86,7 +85,6 @@ fn main() -> ExitCode {
         "scheduler" => schedule::scheduler_cmd(&args[1..]),
         "stats" => stats::stats_cmd(&args[1..]),
         "task" => task::task_cmd(&args[1..]),
-        "ui-map" => ui_map::cmd(&args[1..]),
         "assets" => assets_cmd(&args[1..]),
         "serve" => serve_cmd(&args[1..]),
         "" | "-h" | "--help" => {
@@ -100,7 +98,6 @@ fn main() -> ExitCode {
                  [--budget-steps N] [--budget-wall S] [--param k=v]...\n  \
                  oasd task lint --tasks-dir <dir> [--all | --task <name>]\n  \
                  oasd task new --template daily|loop|utility --id <id> --tasks-dir <dir>\n  \
-                 oasd ui-map lint|render|flow|migrate-frames [--file <ui-map.json>] [--frames <frames.json>] [--out <file>]\n  \
                  oasd assets migrate [--tasks-dir <dir>] [--library-dir <dir>] [--assets-dir <dir>]\n  \
                  oasd assets cleanup-legacy [--tasks-dir <dir>] [--assets-dir <dir>] [--apply]\n  \
                  oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--assets-dir <dir>] [--frames-dir <dir>] [--model <path>] [--det-model <path>] [--no-open]"

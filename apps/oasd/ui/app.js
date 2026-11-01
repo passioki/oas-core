@@ -49,16 +49,12 @@ const framesStatus = document.getElementById('frames-status');
 const captureDialog = document.getElementById('capture-frame-dialog');
 const captureNameHost = document.getElementById('capture-name-host');
 const captureCategoryHost = document.getElementById('capture-category-host');
-const captureInterfaceHost = document.getElementById('capture-interface-host');
 const capturePreviewImg = document.getElementById('capture-preview-img');
 const captureError = document.getElementById('capture-error');
 const captureCancel = document.getElementById('capture-cancel');
 const captureSubmit = document.getElementById('capture-submit');
 let captureNamePicker = null;
 let captureCategoryPicker = null;
-let captureInterfacePicker = null;
-let captureInterfaceId = 'unknown';
-let uiMapInterfaces = {};
 let captureBusy = false;
 // §22.28 顶部标题行：结果/日志抽屉 + 任务素材列表
 const btnResultToggle = document.getElementById('btn-result-toggle');
@@ -1989,6 +1985,11 @@ async function refreshTaskAssets(task) {
     refreshAssetCategoryFilter();
     renderAssetList();
     renderTaskReferencedAssets();
+    // Frame rows show how many current-task assets reference each frame; keep
+    // that derived relation in sync after asset CRUD/load.
+    if (typeof refreshFrames === 'function') {
+      try { await refreshFrames(); } catch (e) { /* frame panel may be hidden */ }
+    }
   } catch (e) {
     if (assetsList) assetsList.textContent = '读取异常：' + e;
   }
@@ -2224,7 +2225,7 @@ async function editAssetPositions(it) {
     placeholder: '搜索分类 / 帧名 / #id，选择位置候选…',
     className: 'asset-position-search',
     menuClass: 'asset-position-menu',
-    label: (f) => `${(f.category || '').trim() || '未分类'} / #${f.id} ${f.name || '帧'} · ${interfaceLabel(f.interface_id || 'unknown')}`,
+    label: (f) => `${(f.category || '').trim() || '未分类'} / #${f.id} ${f.name || '帧'}`,
     onChoose: (f, input) => {
       if (!chosen.includes(f.id)) chosen.push(f.id);
       input.value = '';
@@ -2398,8 +2399,7 @@ async function testAssetMatch(it) {
 // becomes a path.
 // R23: one save entry for every recognition result kind.
 function assetFrameLabel(f) {
-  const iface = f.interface_id ? interfaceLabel(f.interface_id) : 'unknown';
-  return `#${f.id} ${f.name || '帧'} ${f.width}x${f.height} · ${iface}${f.current ? ' · 当前' : ''}`;
+  return `#${f.id} ${f.name || '帧'} ${f.width}x${f.height}${f.current ? ' · 当前' : ''}`;
 }
 
 function renderPendingPositions() {
@@ -2447,7 +2447,7 @@ function renderAssetPositionPicker() {
     placeholder: '搜索分类 / 帧名 / #id，选择候选位置…',
     className: 'asset-position-search',
     menuClass: 'asset-position-menu',
-    label: (f) => `${(f.category || '').trim() || '未分类'} / #${f.id} ${f.name || '帧'} · ${interfaceLabel(f.interface_id || 'unknown')}`,
+    label: (f) => `${(f.category || '').trim() || '未分类'} / #${f.id} ${f.name || '帧'}`,
     onChoose: (f, input) => {
       addAssetPosition(f.id);
       input.value = '';
@@ -2463,7 +2463,6 @@ async function refreshAssetPositionFrames() {
     const r = await fetch('/frames');
     const s = await r.json();
     assetFramesCache = s.frames || [];
-    await loadUiMapInterfaces();
     renderAssetPositionPicker();
     renderPendingPositions();
     if (assetPositionStatus) {
@@ -3007,7 +3006,6 @@ async function refreshFrames() {
     }
     const frames = s.frames || [];
     framesCache = frames;
-    await loadUiMapInterfaces();
     framesList.textContent = '';
     if (!frames.length) {
       framesList.textContent = '（暂无图片，点「截取当前帧入库」或上传）';
@@ -3025,6 +3023,14 @@ async function refreshFrames() {
     }
     const groups = new Map();
     const unseenByCat = new Map();
+    const assetsByFrame = new Map();
+    for (const a of (taskAssets || [])) {
+      const positions = Array.isArray(a.positions) ? a.positions : [];
+      for (const fid of positions) {
+        if (!assetsByFrame.has(fid)) assetsByFrame.set(fid, []);
+        assetsByFrame.get(fid).push(a.id);
+      }
+    }
     let totalUnseen = 0;
     let currentFrame = null;
     for (const f of frames) {
@@ -3119,11 +3125,12 @@ async function refreshFrames() {
             moveFrameBefore(dragged, f.id, cat === '未分类' ? '' : cat);
           }
         });
+        const linked = assetsByFrame.get(f.id) || [];
         const pick = document.createElement('button');
         pick.type = 'button';
         pick.className = 'frame-pick';
-        pick.textContent = `${f.name || '帧'} · #${f.id} ${f.width}x${f.height} · ${interfaceLabel(f.interface_id)}${f.current ? ' · 当前' : ''}`;
-        pick.title = `来源 ${f.source} · 时间 ${f.ts_ms} · ${f.bytes} 字节 · 界面 ${f.interface_id || 'unknown'}`;
+        pick.textContent = `${f.name || '帧'} · #${f.id} ${f.width}x${f.height}${f.current ? ' · 当前' : ''} · 素材 ${linked.length}`;
+        pick.title = `来源 ${f.source} · 时间 ${f.ts_ms} · ${f.bytes} 字节 · 关联素材：${linked.join('、') || '无'}`;
         pick.addEventListener('click', () => selectFrame(f.id));
         const rename = document.createElement('button');
         rename.type = 'button';
@@ -3137,19 +3144,13 @@ async function refreshFrames() {
         catBtn.textContent = '类';
         catBtn.title = '设置分类（自由文本）';
         catBtn.addEventListener('click', () => setFrameCategory(f));
-        const ifaceBtn = document.createElement('button');
-        ifaceBtn.type = 'button';
-        ifaceBtn.className = 'frame-del';
-        ifaceBtn.textContent = '界';
-        ifaceBtn.title = '设置帧所属界面（全局 ui-map）';
-        ifaceBtn.addEventListener('click', () => setFrameInterface(f));
         const del = document.createElement('button');
         del.type = 'button';
         del.className = 'frame-del';
         del.textContent = '删';
         del.title = '删除该帧';
         del.addEventListener('click', () => deleteFrame(f.id));
-        row.append(pick, rename, catBtn, ifaceBtn, del);
+        row.append(pick, rename, catBtn, del);
         group.appendChild(row);
       }
       framesList.appendChild(group);
@@ -3199,25 +3200,6 @@ async function setFrameCategory(f) {
   const r = await postJson('/frames/category', { id: f.id, category: cat.trim() });
   if (!r.ok) {
     framesStatus.textContent = '设置分类失败：' + (r.errors || []).join('; ');
-    return;
-  }
-  await refreshFrames();
-}
-
-async function setFrameInterface(f) {
-  await loadUiMapInterfaces();
-  const ids = Object.keys(uiMapInterfaces);
-  const list = ids.map((id) => `${id} = ${(uiMapInterfaces[id] || {}).title || ''}`).join('\n');
-  const value = window.prompt(
-    `界面 ID（必须存在于全局 ui-map）：\n${list || '（ui-map 未加载）'}`,
-    f.interface_id || 'unknown'
-  );
-  if (value == null) return;
-  const interfaceId = value.trim();
-  if (!interfaceId) return;
-  const r = await postJson('/frames/interface', { id: f.id, interface_id: interfaceId });
-  if (!r.ok) {
-    framesStatus.textContent = '设置界面失败：' + (r.errors || []).join('; ');
     return;
   }
   await refreshFrames();
@@ -3514,23 +3496,6 @@ async function refreshState() {
   setStatus(`${s.device} · ${s.width}x${s.height} · ${caps}`);
 }
 
-function interfaceLabel(id) {
-  const it = uiMapInterfaces[id];
-  if (!it) return id || 'unknown';
-  return `${it.title || id} (${id})`;
-}
-
-async function loadUiMapInterfaces() {
-  try {
-    const r = await fetch('/ui-map', { cache: 'no-store' });
-    const s = await r.json();
-    uiMapInterfaces = s && s.interfaces ? s.interfaces : {};
-  } catch (e) {
-    uiMapInterfaces = {};
-  }
-  return uiMapInterfaces;
-}
-
 function ensureCapturePickers() {
   if (!window.OASAssetUI || !window.OASAssetUI.createSearchPicker) return;
   if (!captureNamePicker && captureNameHost) {
@@ -3563,22 +3528,6 @@ function ensureCapturePickers() {
     captureCategoryHost.textContent = '';
     captureCategoryHost.appendChild(captureCategoryPicker);
   }
-  if (!captureInterfacePicker && captureInterfaceHost) {
-    captureInterfacePicker = window.OASAssetUI.createSearchPicker({
-      items: [],
-      value: '',
-      placeholder: '搜索界面 ID 或名称…',
-      enterChooses: false,
-      label: (item) => item.label,
-      onChoose: (item, input) => {
-        captureInterfaceId = item.id || 'unknown';
-        input.value = item.label;
-      },
-      onEnter: () => confirmCaptureInput(captureInterfacePicker),
-    });
-    captureInterfaceHost.textContent = '';
-    captureInterfaceHost.appendChild(captureInterfacePicker);
-  }
 }
 
 // Enter inside an input confirms that field only (closes the dropdown), then
@@ -3594,7 +3543,7 @@ function confirmCaptureInput(picker) {
 async function openCaptureFrameDialog() {
   if (captureBusy) return;
   ensureCapturePickers();
-  if (!captureDialog || !captureNamePicker || !captureCategoryPicker || !captureInterfacePicker) return;
+  if (!captureDialog || !captureNamePicker || !captureCategoryPicker) return;
   captureBusy = true;
   if (btnFrameCapture) btnFrameCapture.disabled = true;
   try {
@@ -3605,7 +3554,6 @@ async function openCaptureFrameDialog() {
       log('截取失败：' + msg);
       return;
     }
-    await loadUiMapInterfaces();
     const names = Array.from(new Set((framesCache || []).map((f) => (f.name || '').trim()).filter(Boolean)));
     const cats = Array.from(new Set((framesCache || []).map((f) => (f.category || '').trim()).filter(Boolean)));
     captureNamePicker.setItems(names.map((name) => ({ id: name, label: name })));
@@ -3613,13 +3561,6 @@ async function openCaptureFrameDialog() {
       { id: '', label: '未分类' },
       ...cats.map((cat) => ({ id: cat, label: cat })),
     ]);
-    const interfaceItems = Object.entries(uiMapInterfaces).map(([id, it]) => ({
-      id,
-      label: `${(it && it.title) || id} (${id})`,
-    }));
-    if (!interfaceItems.some((x) => x.id === captureInterfaceId)) captureInterfaceId = 'unknown';
-    captureInterfacePicker.setItems(interfaceItems);
-    captureInterfacePicker.setValue(interfaceLabel(captureInterfaceId));
     const now = new Date();
     const stamp = [now.getHours(), now.getMinutes(), now.getSeconds()]
       .map((n) => String(n).padStart(2, '0'))
@@ -3653,17 +3594,13 @@ async function submitCaptureFrame() {
   captureBusy = true;
   if (captureSubmit) captureSubmit.disabled = true;
   try {
-    const r = await postJson('/capture/commit', {
-      name,
-      category,
-      interface_id: captureInterfaceId || 'unknown',
-    });
+    const r = await postJson('/capture/commit', { name, category });
     if (!r || !r.ok) {
       const msg = (r && r.errors || []).join('; ') || '保存截图失败';
       if (captureError) captureError.textContent = msg;
       return;
     }
-    log(`已保存帧 #${r.id}：${r.name} / ${(r.category || '').trim() || '未分类'} / ${r.interface_id || 'unknown'}（实时/当前帧未改变）`);
+    log(`已保存帧 #${r.id}：${r.name} / ${(r.category || '').trim() || '未分类'}（实时/当前帧未改变）`);
     if (captureDialog) captureDialog.close();
     if (capturePreviewImg) capturePreviewImg.removeAttribute('src');
     await refreshFrames();

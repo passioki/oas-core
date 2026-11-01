@@ -144,8 +144,6 @@ struct SessionFrame {
     name: String,
     /// Free-form category/group used by the frame gallery.
     category: String,
-    /// Global interface id from `ui-map/ui-map.json`; `unknown` when unassigned.
-    interface_id: String,
     /// v1.2.2: PNG is persisted under `frames_dir`; the gallery only keeps
     /// metadata, the current frame's pixels live in `State.png`.
     file: PathBuf,
@@ -164,8 +162,6 @@ struct FrameMeta {
     name: String,
     #[serde(default)]
     category: String,
-    #[serde(default)]
-    interface_id: String,
     file: String,
     width: u32,
     height: u32,
@@ -203,7 +199,6 @@ impl State {
         source: &str,
         name: Option<String>,
         category: String,
-        interface_id: String,
         seen: bool,
         select: bool,
     ) -> Result<u64, String> {
@@ -232,14 +227,6 @@ impl State {
             id,
             name: unique,
             category: category.trim().to_string(),
-            interface_id: {
-                let id = interface_id.trim();
-                if id.is_empty() {
-                    crate::ui_map::interface_for_category(&category)
-                } else {
-                    id.to_string()
-                }
-            },
             file,
             bytes,
             width,
@@ -276,9 +263,6 @@ pub struct Server {
     /// v1.2.2 disk-backed frame gallery (`--frames-dir`): `frames.json` +
     /// `frame-<id>.png`. Metadata is always in memory; pixels are lazy.
     frames_dir: PathBuf,
-    /// Global UI relationship graph (`ui-map/ui-map.json`). Kept configurable
-    /// for tests/portable packaging; default is the repo-root path.
-    ui_map_path: PathBuf,
     /// Editor action log (`logs/editor.log`): OCR/asset/task requests are
     /// persisted so a user's reproduction can be diagnosed after the browser
     /// log window is closed (v1.1).
@@ -323,8 +307,6 @@ struct CaptureRequest {
     name: Option<String>,
     #[serde(default)]
     category: String,
-    #[serde(default)]
-    interface_id: Option<String>,
     #[serde(default)]
     select: Option<bool>,
 }
@@ -503,7 +485,6 @@ impl Server {
             library_dir: PathBuf::from(crate::library::DEFAULT_DIR),
             assets_dir: PathBuf::from(crate::global_assets::DEFAULT_DIR),
             frames_dir: PathBuf::from("frames"),
-            ui_map_path: PathBuf::from(crate::ui_map::DEFAULT_PATH),
             run_state: Arc::new(Mutex::new(RunState::default())),
             run_executor: default_executor,
             editor_log: PathBuf::from("logs/editor.log"),
@@ -560,12 +541,6 @@ impl Server {
         self
     }
 
-    /// Set the global UI map path (default `ui-map/ui-map.json`).
-    pub fn with_ui_map_path(mut self, path: impl Into<PathBuf>) -> Self {
-        self.ui_map_path = path.into();
-        self
-    }
-
     /// `--no-open`: keep the server headless (tests, services, CI).
     pub fn with_open_browser(mut self, open: bool) -> Self {
         self.open_browser = open;
@@ -582,7 +557,6 @@ impl Server {
                 id: f.id,
                 name: f.name.clone(),
                 category: f.category.clone(),
-                interface_id: f.interface_id.clone(),
                 file: f
                     .file
                     .file_name()
@@ -624,19 +598,10 @@ impl Server {
         for meta in manifest.frames {
             let file = self.frames_dir.join(&meta.file);
             let bytes = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
-            let interface_id = {
-                let id = meta.interface_id.trim();
-                if id.is_empty() {
-                    crate::ui_map::interface_for_frame(&meta.category, &meta.name)
-                } else {
-                    id.to_string()
-                }
-            };
             frames.push(SessionFrame {
                 id: meta.id,
                 name: meta.name,
-                category: meta.category.clone(),
-                interface_id,
+                category: meta.category,
                 file,
                 bytes,
                 width: meta.width,
@@ -939,7 +904,6 @@ impl Server {
         let png = encode_png(&frame)?;
         let (w, h) = (frame.width, frame.height);
         let select = req.select.unwrap_or(true);
-        let interface_id = req.interface_id.clone().unwrap_or_default();
         let mut st = self.state.lock().map_err(|_| "state lock poisoned".to_string())?;
         let id = st.push_frame(
             &self.frames_dir,
@@ -949,7 +913,6 @@ impl Server {
             "capture",
             req.name,
             req.category,
-            interface_id,
             false,
             select,
         )?;
@@ -1128,7 +1091,6 @@ impl Server {
             ("POST", "/input/swipe") => self.handle_input_swipe(&mut out, &body),
             // --- §22.27 会话图片列表（旧 annotator「图片」面板）---
             ("GET", "/frames") => self.handle_frames(&mut out),
-            ("POST", "/frames/interface") => self.handle_frame_interface(&mut out, &body),
             ("GET", "/frames/image") => self.handle_frame_image(&mut out, &path),
             ("POST", "/frames") => self.handle_frame_upload(&mut out, &body),
             ("POST", "/frames/select") => self.handle_frame_select(&mut out, &body),
@@ -1137,7 +1099,6 @@ impl Server {
             ("POST", "/frames/category") => self.handle_frame_category(&mut out, &body),
             ("POST", "/frames/reorder") => self.handle_frames_reorder(&mut out, &body),
             ("POST", "/frames/clear") => self.handle_frames_clear(&mut out),
-            ("GET", "/ui-map") => self.handle_ui_map(&mut out),
             ("GET", "/ocr") => self.handle_ocr(&mut out, &path),
             ("GET", "/lines") => self.handle_lines(&mut out, &path),
             // --- N3: task bundle save routes ---
@@ -1275,7 +1236,6 @@ impl Server {
                     "id": f.id,
                     "name": f.name,
                     "category": f.category,
-                    "interface_id": f.interface_id,
                     "width": f.width,
                     "height": f.height,
                     "source": f.source,
@@ -1316,7 +1276,6 @@ impl Server {
             "upload",
             None,
             String::new(),
-            "unknown".to_string(),
             false,
             true,
         ) {
@@ -1462,77 +1421,6 @@ impl Server {
         let _ = self.persist_frames(&st);
         drop(st);
         self.send_json(out, 200, &serde_json::json!({"ok": true, "id": id, "name": name}).to_string())
-    }
-
-    /// `GET /ui-map` — global interface graph consumed by the capture dialog and
-    /// the frame interface picker. Returns the canonical JSON unchanged.
-    fn handle_ui_map(&self, out: &mut TcpStream) -> std::io::Result<()> {
-        match std::fs::read_to_string(&self.ui_map_path) {
-            Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
-                Ok(v) => self.send_json(out, 200, &v.to_string()),
-                Err(e) => self.send_errors(
-                    out,
-                    500,
-                    vec![format!("{}: invalid JSON: {e}", self.ui_map_path.display())],
-                ),
-            },
-            Err(e) => self.send_errors(
-                out,
-                500,
-                vec![format!("read {}: {e}", self.ui_map_path.display())],
-            ),
-        }
-    }
-
-    /// `POST /frames/interface` — body `{id, interface_id}`. The interface must
-    /// exist in the global UI map; this is the single place Frame and Interface
-    /// are linked.
-    fn handle_frame_interface(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
-        let id = match json_u64_field(body, "id") {
-            Ok(v) => v,
-            Err(e) => return self.send_errors(out, 400, vec![e]),
-        };
-        let v: serde_json::Value = match serde_json::from_slice(body) {
-            Ok(v) => v,
-            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
-        };
-        let interface_id = v
-            .get("interface_id")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .trim();
-        if interface_id.is_empty() {
-            return self.send_errors(out, 400, vec!["interface_id must not be empty".into()]);
-        }
-        let map = match crate::ui_map::UiMap::load(&self.ui_map_path) {
-            Ok(m) => m,
-            Err(e) => return self.send_errors(out, 500, vec![format!("load ui-map: {e}")]),
-        };
-        if !map.interfaces.contains_key(interface_id) {
-            return self.send_errors(
-                out,
-                400,
-                vec![format!(
-                    "unknown interface `{interface_id}` (see {})",
-                    self.ui_map_path.display()
-                )],
-            );
-        }
-        let mut st = self.state.lock().unwrap();
-        let Some(f) = st.frames.iter_mut().find(|f| f.id == id) else {
-            drop(st);
-            return self.send_errors(out, 404, vec![format!("frame id {id} not found")]);
-        };
-        f.interface_id = interface_id.to_string();
-        f.seen = true;
-        let interface_id = f.interface_id.clone();
-        let _ = self.persist_frames(&st);
-        drop(st);
-        self.send_json(
-            out,
-            200,
-            &serde_json::json!({"ok": true, "id": id, "interface_id": interface_id}).to_string(),
-        )
     }
 
     /// `POST /frames/category` — v1.2.1 free-form category/group.
@@ -1812,19 +1700,6 @@ impl Server {
                 Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
             }
         };
-        if let Some(id) = req.interface_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            let map = match crate::ui_map::UiMap::load(&self.ui_map_path) {
-                Ok(m) => m,
-                Err(e) => return self.send_errors(out, 500, vec![format!("load ui-map: {e}")]),
-            };
-            if !map.interfaces.contains_key(id) {
-                return self.send_errors(
-                    out,
-                    400,
-                    vec![format!("unknown interface `{id}` (see {})", self.ui_map_path.display())],
-                );
-            }
-        }
         let pending = {
             let mut st = self.state.lock().unwrap();
             st.pending_capture.take()
@@ -1833,7 +1708,6 @@ impl Server {
             return self.send_errors(out, 400, vec!["no pending capture; click 截取当前帧入库 first".into()]);
         };
         let mut st = self.state.lock().unwrap();
-        let interface_id = req.interface_id.clone().unwrap_or_default();
         let id = match st.push_frame(
             &self.frames_dir,
             pending.png,
@@ -1842,7 +1716,6 @@ impl Server {
             "capture",
             req.name,
             req.category,
-            interface_id,
             false,
             false,
         ) {
@@ -1856,17 +1729,9 @@ impl Server {
             .frames
             .iter()
             .find(|f| f.id == id)
-            .map(|f| {
-                (
-                    f.name.clone(),
-                    f.category.clone(),
-                    f.interface_id.clone(),
-                    f.width,
-                    f.height,
-                )
-            })
+            .map(|f| (f.name.clone(), f.category.clone(), f.width, f.height))
             .ok_or_else(|| "captured frame disappeared".to_string());
-        let (name, category, interface_id, width, height) = match saved {
+        let (name, category, width, height) = match saved {
             Ok(v) => v,
             Err(e) => {
                 drop(st);
@@ -1883,7 +1748,6 @@ impl Server {
                 "id": id,
                 "name": name,
                 "category": category,
-                "interface_id": interface_id,
                 "width": width,
                 "height": height,
                 "seen": false,

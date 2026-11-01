@@ -254,7 +254,6 @@
         <button id="builder-forward" type="button" title="重做被撤销的流程编辑（Ctrl+Shift+Z）">↷ 重做</button>
         <button id="builder-save" type="button">立即保存（自动保存已开启）</button>
         <button id="builder-dry-run" type="button">dry-run</button>
-        <button id="builder-ui-map" type="button">界面关系图</button>
         <button id="builder-delete-checked" type="button">删除勾选步骤</button>
         <span class="spacer"></span>
         <span id="builder-status" class="muted small">—</span>
@@ -427,9 +426,6 @@
     <label class="opt">分类（可空，可搜索已有分类）
       <div id="capture-category-host"></div>
     </label>
-    <label class="opt">界面（存入全局界面关系图；默认 unknown）
-      <div id="capture-interface-host"></div>
-    </label>
     <pre id="capture-error" class="muted small dialog-error"></pre>
     <div class="row dialog-actions">
       <button id="capture-cancel" type="button">取消</button>
@@ -450,17 +446,6 @@
       }
     });
   </script>
-  <dialog id="ui-map-dialog" class="task-dialog ui-map-dialog">
-    <h3>全局界面关系图</h3>
-    <p id="ui-map-status" class="muted small">—</p>
-    <div class="row dialog-actions">
-      <button id="ui-map-refresh" type="button">刷新</button>
-      <span class="spacer"></span>
-      <button id="ui-map-close" type="button">关闭</button>
-    </div>
-    <div id="ui-map-view" class="ui-map-view muted">（未加载）</div>
-  </dialog>
-
   <script src="/flow_model.js"></script>
   <script src="/asset_ui.js"></script>
   <script src="/builder.js"></script>

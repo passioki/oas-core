@@ -1996,7 +1996,7 @@ tasks/<任务名>/
 - **U-02/U-03/U-04**：✅ `cbfbab4`：素材统一保存+全选、builder 可拖拽列宽+localStorage、子动作选择器。
 - **N48 签名/APK**：✅ 范围关闭（Windows 继续 unsigned + SHA256；APK/Android 不在 oas-core 仓库，需另立项）。
 
-### 22.40 ★★★ [11-01] **截图两阶段 / 恢复 DSL / 全局界面关系图（进行中）**
+### 22.40 ★★★ [11-01] **截图两阶段 / 恢复 DSL / 帧-素材关系（现行）**
 
 #### 22.40.1 截图两阶段（已实现）
 
@@ -2017,25 +2017,44 @@ tasks/<任务名>/
 - `tasks/返回庭院` 使用 OCR 判定（町中/召唤）、设置 X、式神录/通用左上返回、退出弹窗取消、重启兜底；
 - 前端 `builder.js` / `flow_model.js` 已补齐这两个步骤（动作库/字段/默认值/摘要）。
 
-#### 22.40.3 全局界面关系图（已实现数据/校验/生成）
+#### 22.40.3 界面抽象回退（用户 11-01 裁定）
 
-- 现行设计：`docs/UI-MAP.md`；生成视图：`docs/UI-MAP.generated.md`；
-- 数据：`ui-map/ui-map.json`（全局唯一，不属于任务）——15 interfaces / 14 transitions；
-- 关系：`Asset.positions → Frame.interface_id → Interface`，不在 asset 重复存 interface；
-- 节点：界面/弹窗/加载/启动/未知；OCR 标记优先；
-- 边：动作（OCR/区域/key/restart/wait）→ 目标界面；
-- `Frame.interface_id` 已全链路（结构/持久化/`/frames`/`/frames/interface`/capture commit），现有 22 帧已迁移；
-- 截图弹窗有界面选择器，帧列表显示界面并可修改；
-- CLI：
-  - `oasd ui-map lint [--frames frames/frames.json]`
-  - `oasd ui-map render --out docs/UI-MAP.generated.md`
-  - `oasd ui-map flow --out tasks/返回庭院/flow.generated.json`
-  - `oasd ui-map migrate-frames`
-- 任务构建顶部已加只读“界面关系图”视图（界面/OCR/动作/参考帧数/关系）；
-- 阶段：已实现静态图生成 flow（评审稿，不自动替换手写 flow）；runtime 动态图执行器暂不做。
+用户裁定：**“界面”设定太生硬，不需要这个概念；应该是帧-素材的联系。**
 
-#### 22.40.4 测试/待办
+已回退：
 
-- legacy shipped task 测试已改为**临时 fixture**，不再依赖用户 `tasks/` 数据；
-- 当前测试基线：`cargo test --workspace` = **356 passed / 0 failed**；
-- 待办：生成 flow 评审/替换、活动页参考帧/素材继续补、图编辑。
+- `Frame.interface_id`、`/frames/interface`、`/ui-map`；
+- `ui-map/ui-map.json` + `oasd ui-map` 命令；
+- 截图界面选择器、帧列表「界」按钮、任务构建界面图视图；
+- `docs/UI-MAP*`、`tasks/返回庭院/flow.generated.json`；
+- ui_map 相关测试。
+
+保留：
+
+- 帧名称/分类/参考帧；
+- `Asset.positions`（资产→帧）；
+- 两阶段截图、Enter、缩略图来源；
+- `key`/`restart_app`；
+- 返回庭院手写 flow；
+- legacy 测试 fixture。
+
+#### 22.40.4 测试
+
+- legacy shipped task 测试已改为临时 fixture；
+- 当前测试基线：`cargo test --workspace` = **352 passed / 0 failed**。
+
+### 22.41 ★★★ [11-01] **帧-素材关系（现行唯一关系）**
+
+```text
+Asset.positions = [frame_id, ...]
+```
+
+规则：
+
+- 不新增 `Asset.interface_id` / `Frame.interface_id` / 关系表；
+- 帧 → 素材：由 `assets[].positions` 反查，派生显示；
+- 素材 → 帧：直接读 `positions`；
+- 帧分类/名称只是人类可读分组，不是强制界面；
+- 页面恢复继续用 flow 的 OCR 条件（`text_visible` 等），不依赖界面图；
+- 如以后需要导航关系，应基于实际帧/动作证据，不再回到 interface 抽象。
+

@@ -1851,75 +1851,6 @@
     });
   }
 
-  async function loadUiMapView() {
-    const view = $('ui-map-view');
-    const st = $('ui-map-status');
-    if (!view) return;
-    if (st) st.textContent = '加载中…';
-    try {
-      const [mr, fr] = await Promise.all([fetch('/ui-map'), fetch('/frames')]);
-      const map = await mr.json();
-      const frames = await fr.json();
-      if (!map || !map.interfaces) {
-        if (st) st.textContent = '加载失败：ui-map 无 interfaces';
-        return;
-      }
-      const counts = new Map();
-      for (const f of (frames.frames || [])) {
-        const id = f.interface_id || 'unknown';
-        counts.set(id, (counts.get(id) || 0) + 1);
-      }
-      view.textContent = '';
-      const nodes = document.createElement('div');
-      nodes.className = 'ui-map-nodes';
-      for (const [id, it] of Object.entries(map.interfaces)) {
-        const card = document.createElement('div');
-        card.className = 'ui-map-node';
-        const h = document.createElement('div');
-        h.className = 'ui-map-node-title';
-        h.textContent = `${it.title || id} · ${id} · ${it.type || 'screen'}`;
-        card.appendChild(h);
-        const mk = document.createElement('div');
-        mk.className = 'muted small';
-        mk.textContent = 'OCR: ' + ((it.markers || []).map((m) => m.text).filter(Boolean).join(' / ') || '（无）');
-        card.appendChild(mk);
-        const ac = document.createElement('div');
-        ac.className = 'muted small';
-        ac.textContent = '动作: ' + (Object.keys(it.actions || {}).join(', ') || '（无）');
-        card.appendChild(ac);
-        const fc = document.createElement('div');
-        fc.className = 'muted small';
-        fc.textContent = `参考帧: ${counts.get(id) || 0}`;
-        card.appendChild(fc);
-        nodes.appendChild(card);
-      }
-      view.appendChild(nodes);
-      const edges = document.createElement('div');
-      edges.className = 'ui-map-edges';
-      const eh = document.createElement('div');
-      eh.className = 'ui-map-node-title';
-      eh.textContent = '导航关系';
-      edges.appendChild(eh);
-      for (const tr of (map.transitions || [])) {
-        const row = document.createElement('div');
-        row.className = 'ui-map-edge';
-        row.textContent = `${tr.from} → ${tr.to} · ${tr.action || '?'}${tr.label ? ' · ' + tr.label : ''}`;
-        edges.appendChild(row);
-      }
-      view.appendChild(edges);
-      if (st) st.textContent = `${Object.keys(map.interfaces).length} 个界面 / ${(map.transitions || []).length} 条关系（只读；数据源 ui-map/ui-map.json）`;
-    } catch (e) {
-      if (st) st.textContent = '加载失败：' + e;
-    }
-  }
-
-  async function openUiMapDialog() {
-    const dlg = $('ui-map-dialog');
-    if (!dlg) return;
-    await loadUiMapView();
-    dlg.showModal();
-  }
-
   function init() {
     initBuilderLayout();
     const taskSel = $('builder-task');
@@ -1944,15 +1875,6 @@
     if (save) save.addEventListener('click', () => saveFlow(false));
     const dry = $('builder-dry-run');
     if (dry) dry.addEventListener('click', dryRun);
-    const uiMap = $('builder-ui-map');
-    if (uiMap) uiMap.addEventListener('click', openUiMapDialog);
-    const uiMapClose = $('ui-map-close');
-    if (uiMapClose) uiMapClose.addEventListener('click', () => {
-      const dlg = $('ui-map-dialog');
-      if (dlg) dlg.close();
-    });
-    const uiMapRefresh = $('ui-map-refresh');
-    if (uiMapRefresh) uiMapRefresh.addEventListener('click', loadUiMapView);
     const codeApply = $('builder-code-apply');
     if (codeApply) codeApply.addEventListener('click', applyCode);
     const delChecked = $('builder-delete-checked');

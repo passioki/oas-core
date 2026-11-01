@@ -2417,4 +2417,56 @@ invalidate_frame() // 输入动作后丢弃
 
 | 状态 | ✅ 本轮核心落地完成；生成 flow 评审/活动页扩展/图编辑仍待 |
 
+---
+
+# ★ §E-60 ★★★ [11-01 15:05] **interface 抽象回退：改用帧-素材关系**
+
+> 触发：用户验收后裁定“界面设定太生硬，不需要这个概念；应该是帧-素材的联系”。
+> 结论：§E-58/§E-59 的 interface/ui-map 设计**被推翻**，不再作为现行口径。
+
+## 用户裁定
+
+- 不需要“界面”概念；
+- 唯一关系 = `Asset.positions`（素材在哪些帧）；
+- 帧分类/名称只是自由分组，不是强制界面；
+- 不新增 interface 字段、不新增持久化关系表；
+- 帧 26/28/29/30 保留，只删 interface 字段；
+- 用新提交回退，不改写 git 历史。
+
+## 已回退
+
+- `Frame.interface_id`、`/frames/interface`、`/ui-map`；
+- `apps/oasd/src/ui_map.rs`、`oasd ui-map` 命令；
+- `ui-map/ui-map.json`、`docs/UI-MAP*`、`tasks/返回庭院/flow.generated.json`；
+- 截图界面选择器、帧列表「界」、任务构建界面图视图；
+- `frames/frames.json` 的 interface 字段（22 帧保留）。
+
+## 保留
+
+- 两阶段截图、Enter、OCR 缩略图只用位置帧、首次保存自动当前帧；
+- `key` / `restart_app` 前后端；
+- `返回庭院` 手写 flow；
+- legacy 测试临时 fixture；
+- 新增设置/退出/加载/启动参考帧。
+
+## 现行关系
+
+```text
+Asset.positions = [frame_id, ...]
+```
+
+- 帧 → 素材：由 `assets[].positions` 反查，帧行显示关联素材数；
+- 素材 → 帧：直接读 `positions`；
+- 恢复/导航继续用 flow OCR 条件，不依赖界面图。
+
+## 验证
+
+- `cargo test --workspace` = **352 passed / 0 failed**；
+- `task lint --all` = 1/0；
+- 无头 UI：截图弹窗、帧行“素材 N”、动作库 key/restart 正常；
+- 界面选择器/图视图/`ui-map` API 已不存在。
+
+| 状态 | ✅ interface 回退完成；帧-素材派生展示继续完善，活动页参考帧继续补 |
+
+
 
