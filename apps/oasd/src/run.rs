@@ -889,6 +889,20 @@ impl InputSink for LoggedInput {
             None => Ok(()),
         }
     }
+
+    fn key(&mut self, keycode: u32) -> Result<(), String> {
+        match &mut self.inner {
+            Some(sink) => sink.key(keycode),
+            None => Ok(()),
+        }
+    }
+
+    fn restart_app(&mut self, package: &str) -> Result<(), String> {
+        match &mut self.inner {
+            Some(sink) => sink.restart_app(package),
+            None => Ok(()),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

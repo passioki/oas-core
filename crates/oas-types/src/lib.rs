@@ -46,6 +46,14 @@ pub trait ScreenSource { fn grab(&mut self) -> Result<Frame, String>; }
 pub trait InputSink {
     fn click(&mut self, p: Point) -> Result<(), String>;
     fn swipe(&mut self, from: Point, to: Point, ms: u32) -> Result<(), String>;
+    /// Android key event (e.g. BACK=4, HOME=3). Platform adapters may override.
+    fn key(&mut self, _keycode: u32) -> Result<(), String> {
+        Err("key events are not supported by this input sink".to_string())
+    }
+    /// Restart an installed Android app by package name.
+    fn restart_app(&mut self, _package: &str) -> Result<(), String> {
+        Err("app restart is not supported by this input sink".to_string())
+    }
 }
 
 #[cfg(test)]

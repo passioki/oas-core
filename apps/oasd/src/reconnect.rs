@@ -107,4 +107,12 @@ impl InputSink for ReconnectingInput {
     fn swipe(&mut self, from: Point, to: Point, ms: u32) -> Result<(), String> {
         self.retry(|input| input.swipe(from, to, ms))
     }
+
+    fn key(&mut self, keycode: u32) -> Result<(), String> {
+        self.retry(|input| input.key(keycode))
+    }
+
+    fn restart_app(&mut self, package: &str) -> Result<(), String> {
+        self.retry(|input| input.restart_app(package))
+    }
 }

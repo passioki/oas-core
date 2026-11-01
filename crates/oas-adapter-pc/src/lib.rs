@@ -311,6 +311,40 @@ impl InputSink for AdbInput {
             ])
             .map(|_| ())
     }
+
+    fn key(&mut self, keycode: u32) -> Result<(), String> {
+        self.adb
+            .run(&[
+                "-s",
+                &self.serial,
+                "shell",
+                "input",
+                "keyevent",
+                &keycode.to_string(),
+            ])
+            .map(|_| ())
+    }
+
+    fn restart_app(&mut self, package: &str) -> Result<(), String> {
+        let pkg = package.trim();
+        if pkg.is_empty() {
+            return Err("restart_app: package is empty".to_string());
+        }
+        self.adb
+            .run(&["-s", &self.serial, "shell", "am", "force-stop", pkg])?;
+        self.adb.run(&[
+            "-s",
+            &self.serial,
+            "shell",
+            "monkey",
+            "-p",
+            pkg,
+            "-c",
+            "android.intent.category.LAUNCHER",
+            "1",
+        ])?;
+        Ok(())
+    }
 }
 
 impl AdbInput {

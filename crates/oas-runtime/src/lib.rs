@@ -1737,6 +1737,20 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 self.invalidate_frame();
                 Ok(format!("waited {s}s"))
             }
+            Step::Key { keycode } => {
+                self.input
+                    .key(*keycode)
+                    .map_err(|e| format!("key {keycode}: {e}"))?;
+                self.invalidate_frame();
+                Ok(format!("key {keycode}"))
+            }
+            Step::RestartApp { package } => {
+                self.input
+                    .restart_app(package)
+                    .map_err(|e| format!("restart_app {package}: {e}"))?;
+                self.invalidate_frame();
+                Ok(format!("restart_app {package}"))
+            }
             Step::WaitUntil { cond, timeout_s } => {
                 let deadline = Instant::now() + Duration::from_secs_f64(*timeout_s);
                 loop {
@@ -2661,6 +2675,8 @@ fn step_name(s: &Step) -> &'static str {
         Step::Break => "break",
         Step::Continue => "continue",
         Step::Wait { .. } => "wait",
+        Step::Key { .. } => "key",
+        Step::RestartApp { .. } => "restart_app",
         Step::WaitUntil { .. } => "wait_until",
         Step::Appear { .. } => "appear",
         Step::Click { .. } => "click",

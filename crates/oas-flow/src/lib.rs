@@ -822,6 +822,14 @@ pub enum Step {
     Wait {
         seconds: f64,
     },
+    /// Send one Android key event (4 = BACK, 3 = HOME). Used by recovery flows.
+    Key {
+        keycode: u32,
+    },
+    /// Force-stop and relaunch an installed Android app (game recovery fallback).
+    RestartApp {
+        package: String,
+    },
     /// `timeout_s` is REQUIRED: a wait without a bound is a load error.
     WaitUntil {
         cond: Expr,
@@ -1468,6 +1476,26 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
         "wait" => Ok(Step::Wait {
             seconds: req_f64(&args, "seconds", &a_path)?,
         }),
+        "key" => {
+            let keycode = args
+                .get("keycode")
+                .and_then(|x| x.as_u64())
+                .ok_or_else(|| {
+                    FlowError::new(format!("{a_path}.keycode"), "`key` needs integer keycode")
+                })?;
+            if keycode == 0 || keycode > u32::MAX as u64 {
+                return Err(FlowError::new(
+                    format!("{a_path}.keycode"),
+                    "keycode must be a positive u32",
+                ));
+            }
+            Ok(Step::Key {
+                keycode: keycode as u32,
+            })
+        }
+        "restart_app" => Ok(Step::RestartApp {
+            package: req_str(&args, "package", &a_path)?,
+        }),
         "wait_until" => {
             // timeout is mandatory; a default of "infinite" is exactly the bug
             // class this rewrite exists to kill.
@@ -1976,6 +2004,8 @@ fn collect_param_steps(steps: &[Step], prefix: &str, out: &mut Vec<ParamUse>) {
             Step::Break
             | Step::Continue
             | Step::Wait { .. }
+            | Step::Key { .. }
+            | Step::RestartApp { .. }
             | Step::Appear { .. }
             | Step::Click { .. }
             | Step::Ocr { .. }
@@ -2066,7 +2096,12 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {    for s i
                 collect_assets_expr(cond, out);
                 collect_assets_steps(body, out);
             }
-            Step::Wait { .. } | Step::Break | Step::Continue | Step::CallTask { .. } => {}
+            Step::Wait { .. }
+            | Step::Key { .. }
+            | Step::RestartApp { .. }
+            | Step::Break
+            | Step::Continue
+            | Step::CallTask { .. } => {}
             Step::WaitUntil { cond, .. } => collect_assets_expr(cond, out),
             Step::Appear { sel } | Step::Ocr { sel } => {
                 out.insert(sel.clone());
@@ -2176,6 +2211,22 @@ mod tests {
                 assert_eq!(*rhs, Expr::Not(Box::new(Expr::Lit(Lit::Bool(false)))))
             }
             other => panic!("unexpected parse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_key_and_restart_app_recovery_steps() {
+        let key = serde_json::json!({"op":"key","args":{"keycode":4}});
+        match parse_step(&key, "steps[0]").expect("key step") {
+            Step::Key { keycode } => assert_eq!(keycode, 4),
+            other => panic!("unexpected key parse: {other:?}"),
+        }
+        let app = serde_json::json!({
+            "op":"restart_app","args":{"package":"com.netease.onmyoji"}
+        });
+        match parse_step(&app, "steps[1]").expect("restart step") {
+            Step::RestartApp { package } => assert_eq!(package, "com.netease.onmyoji"),
+            other => panic!("unexpected restart parse: {other:?}"),
         }
     }
 
