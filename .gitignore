@@ -20,3 +20,6 @@
 
 # editor request logs (runtime)
 **/logs/
+
+# local frame backups from clear (recoverable but not source data)
+/frames/.backup/

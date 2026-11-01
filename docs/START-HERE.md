@@ -59,6 +59,7 @@
 | 帧-素材关系 | 唯一关系 = `Asset.positions`；帧行显示关联素材数；只读关系浏览器显示帧→素材、素材→帧、素材共现、帧共享素材、录制 transition；支持 alternative/requires/similar/overlay 标注；**无 interface 概念** |
 | 新 DSL | `key`、`restart_app` 已实现，前端 builder/flow_model 已补齐 |
 | 帧归档 | 已补庭院/设置/式神录/探索/町中/御魂/斗技/结界突破/逢魔/悬赏/宠物小屋/退出弹窗/加载/启动参考帧 |
+| 帧安全 | 清空列表必须确认；清空前自动备份到 `frames/.backup/clear-<时间>/`（含 frames.json + PNG） |
 | 待办 | 活动页参考帧继续补；帧-素材关系继续扩展（替代/依赖/transition）；不引入 interface/ui-map |
 | 关系证据 | `relations/observations.jsonl` append-only；`relations/annotations.json` 人工标注；图片页「录制关系」「标注关系」写入 |
 
@@ -83,7 +84,7 @@
 | ⓪ | `docs/RESUME.md` + `docs/RESUME-INDEX.md` | ★ **长任务/压缩后恢复的第一入口**（skill 强制 6）：当前断点、验收清单、下一步精确命令、证据索引 |
 | ① | `docs/SESSION-HANDOFF.md` | 当前在哪、下一步、最近提交、活跃坑 |
 | ② | `docs/ENGINE-DESIGN.md` **§22** | 引擎规格/进度/判据；**调度 v3 设计看 §22.34** |
-| ③ | `docs/PENDING-LEDGER.md` 的 §E-24/§E-25/§E-26 段 + 最新 §E-63 | 引擎/版本/用户裁定（R1~R21）台账 + interface 回退/帧-素材关系/transition/标注 |
+| ③ | `docs/PENDING-LEDGER.md` 的 §E-24/§E-25/§E-26 段 + 最新 §E-64 | 引擎/版本/用户裁定（R1~R21）台账 + 帧安全/清空恢复记录 |
 | ④ | 旧仓路径/流程（仅在碰旧仓时） | `D:\OAS-dev\backend\docs\LAYOUT.md` · `DEV-WORKFLOW.md`（冻结） |
 
 ## 1.3 用代码核实（不许信文档自述）

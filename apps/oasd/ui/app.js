@@ -3576,10 +3576,29 @@ async function deleteFrame(id) {
 }
 
 async function clearFrames() {
+  const count = (framesCache || []).length;
+  if (!count) {
+    framesStatus.textContent = '列表已经是空的';
+    return;
+  }
+  const ok = window.confirm(
+    `确认清空全部 ${count} 帧？\n\n会先备份到 frames/.backup/clear-<时间>/，但仍会从当前列表移除。`
+  );
+  if (!ok) return;
   try {
-    await fetch('/frames/clear', { method: 'POST' });
+    const r = await fetch('/frames/clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true }),
+    });
+    const s = await r.json();
+    if (!s.ok) {
+      framesStatus.textContent = '清空失败：' + (s.errors || []).join('; ');
+      return;
+    }
+    const backup = s.backup_dir ? `；备份：${s.backup_dir}` : '';
+    log(`已清空会话图片列表 ${s.frames || count} 帧${backup}`);
     await refreshFrames();
-    log('已清空会话图片列表');
   } catch (e) {
     framesStatus.textContent = '清空异常：' + e;
   }

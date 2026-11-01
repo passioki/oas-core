@@ -2583,6 +2583,40 @@ Asset.positions = [frame_id, ...]
 
 | 状态 | ✅ Phase 3/4/5 基础完成；真实回归/更深构建智能待做 |
 
+---
+
+# ★ §E-64 ★★★ [11-01 16:45] **帧清空事故恢复 + 清空确认/自动备份**
+
+> 触发：用户误点「清空列表」，全帧被删除；要求加确认并尽量恢复。
+> 证据：`frames/frames.json` 恢复为 22 帧/`next_id=35`；`relations/observations.jsonl` 保留 31~34 记录；git tracked PNG 全部恢复。
+
+## 恢复结果
+
+- ✅ 22 个 git tracked 帧 + `frames.json` 已恢复；
+- ✅ `next_id=35`，避免复用已删除的 31~34；
+- ❌ 31~34 是清空前新录制帧（`关系录制-前/后-预设`），PNG 未提交，且回收站/影子副本无副本，无法恢复；
+- ✅ `relations/observations.jsonl` 保留两条 transition 证据（31→32、33→34），但对应帧缺失；
+- 可重新录制补回 31~34 的新帧。
+
+## 清空安全修复
+
+- 前端 `clearFrames()`：`window.confirm` 显示帧数与备份说明；
+- 后端 `/frames/clear`：
+  - 必须 `{"confirm":true}`，否则 400；
+  - 清空前写 `frames/.backup/clear-<timestamp>/`：
+    - 所有 frame PNG；
+    - `frames.json`；
+  - 备份失败则拒绝清空；
+- 测试覆盖：无确认拒绝、确认后备份存在、列表清空。
+
+## 验证
+
+- `cargo test --workspace` = **356 passed / 0 failed**；
+- 前端无头：取消确认时 22 帧保持不变；确认框显示帧数/备份路径。
+
+| 状态 | ✅ 22 帧恢复；31~34 不可恢复；清空确认/备份已落地 |
+
+
 
 
 

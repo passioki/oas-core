@@ -12,8 +12,9 @@
 | 文档入口 | `docs/START-HERE.md` |
 | 测试 | `cargo test --workspace` = **356 passed / 0 failed** |
 | 任务 | `task lint --tasks-dir tasks --all` = 1 task / 0 errors（`返回庭院`） |
-| 帧 | 22 帧；无 `interface_id`；新增设置/退出/加载/启动参考帧 |
+| 帧 | 22 帧（已从 git 恢复）；无 `interface_id`；31~34 新录制帧 PNG 丢失、observations 保留 |
 | 关系 | **唯一关系 = `Asset.positions`（帧-素材）**；只读关系浏览器已可用；无 interface/ui-map |
+| 帧安全 | 清空列表需确认；清空前自动备份到 `frames/.backup/clear-<时间>/` |
 | 新 DSL | `key` / `restart_app` 前后端保留 |
 | 工作区 | `D:\OAS-dev\oas-core` |
 
@@ -29,14 +30,17 @@
 - Phase 2：`POST /relations/record` 抓前帧 → 点素材动作区域 → 等待 → 抓后帧；追加 `relations/observations.jsonl` transition 证据。
 - Phase 3：`relations/annotations.json` + `/relations/annotate`/delete；alternative/requires/similar/overlay；自反/重复/未知节点校验。
 - 关系浏览器增加覆盖概览、人工标注、删除；任务构建 inspector 显示选中素材的帧/transition/标注提示。
+- 帧清空事故：22 个 git tracked 帧已恢复，`next_id=35`；31~34 新录制帧 PNG 无法恢复，observations 保留。
+- 清空列表：前端 confirm + 后端 `confirm:true` + 自动备份 `frames/.backup/`。
 - 文档回退并更新测试基线 356。
 
 ## 2. 下一步
 
-1. 真实动作录制回归（需停在正确画面）；
-2. 任务构建进一步关系感知（按当前帧过滤素材/推荐 transition）；
-3. 继续补活动页参考帧/标注；
-4. 发布前跑完整测试 + `task lint`。
+1. 在正确画面重新录制 31~34 对应动作（可选）；
+2. 真实动作录制回归；
+3. 任务构建进一步关系感知（按当前帧过滤素材/推荐 transition）；
+4. 继续补活动页参考帧/标注；
+5. 发布前跑完整测试 + `task lint`。
 
 ## 3. 活跃的坑
 

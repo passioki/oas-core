@@ -2007,6 +2007,8 @@ tasks/<任务名>/
 - Enter：搜索框内 = 确认输入并聚焦保存按钮；弹窗 = 保存截图；
 - OCR/region 缩略图只认 `positions[0]`；无位置帧不回退 `/frame.png`；
 - 首次保存素材无位置帧时自动使用当前帧。
+- 清空帧列表必须 `{"confirm":true}`；前端先 confirm；清空前自动备份到
+  `frames/.backup/clear-<timestamp>/`（PNG + frames.json），备份失败则不清空。
 
 #### 22.40.2 恢复 DSL（已实现）
 

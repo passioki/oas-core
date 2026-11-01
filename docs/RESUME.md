@@ -5,9 +5,9 @@
 
 ```yaml
 task_id: oas-core-frame-asset-relation
-checkpoint_seq: 73
-updated_at: 2026-11-01T16:20:00+08:00
-trigger: Phase 3/4/5：人工标注、覆盖概览、任务构建关系提示
+checkpoint_seq: 74
+updated_at: 2026-11-01T16:45:00+08:00
+trigger: 帧清空事故恢复 + 清空确认/自动备份
 status: in_progress
 ```
 
@@ -16,8 +16,9 @@ status: in_progress
 - 分支 `dev`；`main` = `385d611`（v1.2.3 恢复节点）。
 - 测试：`cargo test --workspace` = **356 passed / 0 failed**。
 - 任务：`tasks/返回庭院`；`task lint` = 1 task / 0 errors。
-- 帧：22 帧，无 `interface_id`；新增设置/退出/加载/启动参考帧保留。
+- 帧：22 帧已恢复（git tracked）；`next_id=35`；31~34 是清空前新录制帧，PNG 不可恢复，observations 仍保留。
 - 素材关系：唯一关系 = `Asset.positions`；帧行显示关联素材数量；只读关系浏览器显示帧→素材、素材→帧、素材共现、帧共享素材、录制 transition、人工标注与覆盖概览。
+- 帧安全：清空列表必须 `confirm:true`；清空前自动备份到 `frames/.backup/clear-<时间>/`。
 - 新 DSL：`key` / `restart_app` 前后端保留。
 - 已删除：`ui-map/`、`docs/UI-MAP*`、`flow.generated.json`、`Frame.interface_id`、界面选择/图视图、`ui_map.rs`。
 
@@ -31,26 +32,19 @@ status: in_progress
 
 ## 2. 本轮完成
 
-- [x] 前端/后端移除 `Frame.interface_id`；
-- [x] 删除 `/ui-map`、`/frames/interface`、界面选择器、帧「界」按钮、界面图视图；
-- [x] 删除 `ui_map.rs` / `oasd ui-map` 命令 / ui-map 数据/文档/生成 flow；
-- [x] `frames.json` 清除 `interface_id`；
-- [x] 保留两阶段截图、Enter、缩略图、key/restart、返回庭院 flow、测试 fixture；
-- [x] 帧行增加“关联素材数”派生显示（基于 `Asset.positions`）；
-- [x] 新增 `GET /relations/frame-assets`（纯派生，不持久化）；
-- [x] 新增只读“帧-素材关系”浏览器：帧→素材、素材→位置帧、素材共现、帧共享素材；
-- [x] Phase 2：`POST /relations/record` 抓前帧 → 点素材动作区域 → 等待 → 抓后帧；
-- [x] `relations/observations.jsonl` 追加 transition 证据；关系浏览器显示 transition；
-- [x] Phase 3：`relations/annotations.json` + `/relations/annotate`/`delete`；alternative/requires/similar/overlay；校验自反/重复/未知节点；
-- [x] 关系快照增加 `coverage`；浏览器显示覆盖概览、人工标注、删除；
-- [x] Phase 4：任务构建 inspector 显示选中素材的帧/transition/标注提示；
+- [x] **帧清空事故恢复**：22 个 git tracked 帧 + manifest 已恢复；`next_id=35`；
+- [x] 31~34 新录制帧 PNG 无法从 git/回收站/影子副本恢复；保留 `relations/observations.jsonl` 证据；
+- [x] 前端「清空列表」增加 `window.confirm`，显示帧数/备份说明；
+- [x] 后端 `/frames/clear` 必须 `{confirm:true}`，否则 400；
+- [x] 清空前自动备份 `frames.json` + 所有 PNG 到 `frames/.backup/clear-<时间>/`；
+- [x] 增加帧清空测试（无确认拒绝 + 备份存在）；
 - [x] 全量测试 356 passed；task lint 1/0；
-- [x] 文档更新：START-HERE/RESUME/HANDOFF/README/ENGINE-DESIGN/PENDING。
+- [x] 文档记录事故与恢复边界。
 
 ## 3. 下一步
 
-1. 真实动作录制回归（需停在正确画面）；
-2. 任务构建进一步关系感知：按当前帧过滤素材、transition 推荐；
+1. 如需找回 31~34：在正确画面重新录制即可；证据 observations 保留但对应帧缺失；
+2. 真实动作录制回归 + 关系浏览器确认；
 3. 继续补活动页参考帧/标注；
 4. 发布前跑完整测试 + `task lint`。
 

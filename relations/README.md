@@ -103,3 +103,11 @@ GET  /relations/frame-assets?task=<task>   （返回派生关系 + transitions +
 
 用于判断哪些帧/素材还没有进入关系网络。
 
+## 已知缺失证据
+
+- `observations.jsonl` 里曾记录 `31→32`、`33→34` 两条 transition；
+- 对应 PNG 在 2026-11-01 的一次误清空中丢失，无法恢复；
+- 帧 ID 31~34 不复用（frames.json `next_id=35`），重新录制会生成新帧；
+- 缺失帧的 transition 仅作为历史证据保留，不应视为可执行路径。
+
+

@@ -1135,7 +1135,7 @@ impl Server {
             ("POST", "/frames/rename") => self.handle_frame_rename(&mut out, &body),
             ("POST", "/frames/category") => self.handle_frame_category(&mut out, &body),
             ("POST", "/frames/reorder") => self.handle_frames_reorder(&mut out, &body),
-            ("POST", "/frames/clear") => self.handle_frames_clear(&mut out),
+            ("POST", "/frames/clear") => self.handle_frames_clear(&mut out, &body),
             ("GET", "/ocr") => self.handle_ocr(&mut out, &path),
             ("GET", "/lines") => self.handle_lines(&mut out, &path),
             // --- N3: task bundle save routes ---
@@ -1535,8 +1535,68 @@ impl Server {
     }
 
     /// `POST /frames/clear` — 清空会话图片列表（当前帧像素保留在内存里，避免画面突然消失）.
-    fn handle_frames_clear(&self, out: &mut TcpStream) -> std::io::Result<()> {
+    /// Requires `{"confirm":true}` and writes a local backup under
+    /// `<frames-dir>/.backup/clear-<timestamp>/` before deleting anything.
+    fn handle_frames_clear(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = if body.is_empty() {
+            serde_json::json!({})
+        } else {
+            match serde_json::from_slice(body) {
+                Ok(v) => v,
+                Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+            }
+        };
+        let confirmed = v.get("confirm").and_then(|x| x.as_bool()).unwrap_or(false);
+        if !confirmed {
+            return self.send_errors(
+                out,
+                400,
+                vec!["refusing to clear frames without `confirm:true`".into()],
+            );
+        }
         let mut st = self.state.lock().unwrap();
+        if st.frames.is_empty() {
+            drop(st);
+            return self.send_json(out, 200, r#"{"ok":true,"frames":0,"backup_dir":null}"#);
+        }
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        // Make sure the manifest on disk matches the in-memory list before
+        // backing it up (upload paths may have written only the PNGs).
+        let _ = self.persist_frames(&st);
+        let backup_dir = self
+            .frames_dir
+            .join(".backup")
+            .join(format!("clear-{stamp}"));
+        if let Err(e) = std::fs::create_dir_all(&backup_dir) {
+            drop(st);
+            return self.send_errors(out, 500, vec![format!("create backup dir: {e}")]);
+        }
+        for frame in &st.frames {
+            let name = match frame.file.file_name() {
+                Some(n) => n.to_os_string(),
+                None => continue,
+            };
+            let src = frame.file.clone();
+            if let Err(e) = std::fs::copy(&src, backup_dir.join(&name)) {
+                drop(st);
+                return self.send_errors(
+                    out,
+                    500,
+                    vec![format!("backup {}: {e}", src.display())],
+                );
+            }
+        }
+        let manifest = self.frames_dir.join("frames.json");
+        if manifest.is_file() {
+            if let Err(e) = std::fs::copy(&manifest, backup_dir.join("frames.json")) {
+                drop(st);
+                return self.send_errors(out, 500, vec![format!("backup frames.json: {e}")]);
+            }
+        }
+        let n = st.frames.len();
         for frame in &st.frames {
             let _ = std::fs::remove_file(&frame.file);
         }
@@ -1544,7 +1604,16 @@ impl Server {
         st.current_frame_id = None;
         let _ = self.persist_frames(&st);
         drop(st);
-        self.send_json(out, 200, r#"{"ok":true}"#)
+        self.editor_log(&format!(
+            "frames clear count={n} backup={}",
+            backup_dir.display()
+        ));
+        let body = serde_json::json!({
+            "ok": true,
+            "frames": n,
+            "backup_dir": backup_dir.to_string_lossy(),
+        });
+        self.send_json(out, 200, &body.to_string())
     }
 
     #[allow(unused_variables)]
@@ -6368,8 +6437,8 @@ mod tests {
     #[test]
     fn session_frames_upload_select_delete_roundtrip() {
         let td = TempDir::new("frames-roundtrip");
-        let server = Server::new(Adb::from_env())
-            .with_frames_dir(td.path().join("frames"));
+        let frames_dir = td.path().join("frames");
+        let server = Server::new(Adb::from_env()).with_frames_dir(frames_dir.clone());
         // frame A: 2x2; frame B: 3x2 (different size proves select really swaps).
         let a = Frame::new(
             2,
@@ -6427,7 +6496,31 @@ mod tests {
         assert!(id_b > id_a);
 
         let (status, out) = post_route(&server, "/frames/clear", "application/json", b"{}");
+        assert!(status.contains("400"), "clear without confirm must be rejected: {status} {out}");
+        let (status, out) = post_route(
+            &server,
+            "/frames/clear",
+            "application/json",
+            br#"{"confirm":true}"#,
+        );
         assert!(status.contains("200"), "{status} {out}");
+        let cleared: serde_json::Value = serde_json::from_str(&out).expect("clear json");
+        let backup = cleared
+            .get("backup_dir")
+            .and_then(|v| v.as_str())
+            .expect("backup dir");
+        assert!(Path::new(backup).is_dir(), "backup dir must exist: {backup}");
+        let entries: Vec<String> = std::fs::read_dir(backup)
+            .expect("backup entries")
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .collect();
+        assert_eq!(
+            entries.len(),
+            2,
+            "backup must contain frames.json + the remaining frame png"
+        );
+        assert!(entries.iter().any(|n| n == "frames.json"));
+        assert!(entries.iter().any(|n| n.ends_with(".png")));
         let (_, out) = get_route(&server, "/frames");
         let v: serde_json::Value = serde_json::from_str(&out).expect("frames json");
         assert_eq!(
