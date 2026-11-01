@@ -52,7 +52,7 @@
 | 恢复节点 | `main` = `385d611`（v1.2.3） |
 | 当前分支 | `dev`（文档/编辑器/任务数据提交；不自动合并 main） |
 | 文档 | 已独立到 `oas-core/docs`；当前设计以 ENGINE-DESIGN + PENDING-LEDGER + RESUME 为准 |
-| 当前计划 | **先读 `RECOVERY-AUDIT.md` + `CODE-AUDIT-2026-11-01.md`**：4:21 基线 `f6be0f0`；19:30 `9618cb5` 才开始实现；P0-1~P0-4 + P1-2/3/4/6 已修，361 tests；剩 P1-1 drag shape、P1-5 SelectionTool；当前 `assets/` 34 是错误恢复，archive 2827 在归档分支 |
+| 当前计划 | **先读 `AUDIT-SUBPROCESS-2026-11-01.md` + `RECOVERY-AUDIT.md`**：4:21 基线 `f6be0f0`；19:30 `9618cb5` 才开始实现；独立子进程审计发现 3 P0 + 8 P1，上一轮 P1-2/P1-4/P1-6 仅部分修复；当前 `assets/` 34 是错误恢复，archive 2827 在归档分支 |
 | 截图 | 两阶段：点击立即抓取 → 弹窗预览 → 名称/分类 → 保存；无当前帧跳转 |
 | Enter | 输入框 Enter = 确认输入；弹窗 Enter = 保存截图 |
 | 实时操作 | 实时开启时画布单击/拖拽 = tap/swipe；实时暂停 = ROI 编辑 |

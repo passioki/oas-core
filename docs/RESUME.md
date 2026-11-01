@@ -5,23 +5,23 @@
 
 ```yaml
 task_id: oas-core-repo-recovery
-checkpoint_seq: 79
-updated_at: 2026-11-01T20:50:00+08:00
-trigger: 用户指出仓库被搞乱；重读 START-HERE/RESUME/完整 session transcript
+checkpoint_seq: 81
+updated_at: 2026-11-01T21:55:00+08:00
+trigger: 子进程独立代码审计（A/B/C）；修正上一轮修复状态
 status: in_progress
 ```
 
 ## 0. 当前状态（磁盘 + git 实测）
 
-- 分支 `dev`，HEAD `1f73f17`；`main`/`origin/main` = `385d611`（v1.2.3）。
-- 测试：`cargo test --workspace` = **361 passed / 0 failed**（代码本身绿）。
+- 分支 `dev`，HEAD `983c740`；`main`/`origin/main` = `385d611`（v1.2.3）。
+- 测试：`cargo test --workspace` = **361 passed / 0 failed**（B 子进程实测；UI 无自动化测试，不能证明交互路径正确）。
 - 工作区**不干净**：
   - `frames/frames.json` modified；
   - `tasks/返回庭院/assets.json`、`meta.json` deleted；
   - 当前 `tasks/` 无任务目录。
 - 当前 `assets/`：**34 个素材 / 18 张模板图**，来自按 task 历史恢复（`0bc69ba`/`1f73f17`），**不是 archive 迁移库**。
 - 4:21 干净基线：`f6be0f0`（22 帧 / 返回庭院 3 素材 / 无全局 assets）；18:42~19:14 为 docs-only；19:30 `9618cb5` 起进入实现。详见 `RECOVERY-AUDIT.md`。
-- 代码审计：`CODE-AUDIT-2026-11-01.md`；P0-1~P0-4、P1-2/3/4/6 已修复并新增 3 个测试；P1-1 drag shape、P1-5 SelectionTool 仍未修。**361 tests passed**。
+- **代码审计（独立子进程）**：`AUDIT-SUBPROCESS-2026-11-01.md`。上一轮 P1-2/P1-4/P1-6 只是部分修复；新发现 P0（新素材双库消失、批量固定 fixed、polygon 保存丢失）和 P1（UI 模板 shape 未平移、runtime OCR click_target、采样失败静默、region jitter、越界校验、主 OCR 不带 live、单素材只测 positions[0]、SelectionTool）。P1-1/P1-5 确认未修。
 - 真正的迁移归档在：
   - `archive/migration-20261101` = `29b696f`；
   - 2827 个素材 / 2099 张图 / 55 个任务包；
@@ -59,9 +59,12 @@ status: in_progress
 
 ## 3. 下一步（等用户裁定，不先动）
 
-1. **代码修复**（`CODE-AUDIT-2026-11-01.md`）：P0 actionValidity/runtime 斜边/template 平移；P1 drag/批量保存/collection live/OCR 标签；
+1. **代码修复**（以 `AUDIT-SUBPROCESS-2026-11-01.md` 为准）：
+   - P0：新素材保存后刷新全局库；批量保存默认 recognition/显式 fixed 分离；polygon/反选保存入口统一；
+   - P1：UI template shape 平移；runtime click_target OCR；采样失败 loud error；region jitter；越界/零面积；主 OCR live；多位置循环；SelectionTool；
 2. 素材恢复路线 A/B/C（见 `RECOVERY-AUDIT.md`）；
-3. 修复后重新跑 `cargo test --workspace` + UI/API 回归。
+3. 修复前先处理 `063c329` 之前的 `9618cb5` 数据删除（flow/meta 恢复或明确不恢复）；
+4. 修复后重新跑 `cargo test --workspace` + 浏览器/API 回归，并补 UI 自动化测试。
 
 ## 4. 恢复路线（待裁定）
 

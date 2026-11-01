@@ -2916,7 +2916,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 
 ## 结论
 
-代码主方向符合 7 项需求，但存在确定性缺陷，**尚未修复**。
+代码主方向符合 7 项需求；首轮修复后仍有独立子进程审计发现的缺陷，见 §E-72。
 
 ## P0
 
@@ -2937,7 +2937,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - “框选抽函数”未落地：`polygon/polyMode` 与 `actionPoly/actionPolyMode` 两套。
 - `validate_action_shape` 缺 polygon 自交/越界校验（`oas-task lib.rs:169`）。
 
-| 状态 | 🔄 已修 P0-1~P0-4 + P1-2/3/4/6；剩 P1-1 drag、P1-5 SelectionTool |
+| 状态 | 🔄 首轮修复仅部分有效；独立子进程审计（§E-72）发现 3 P0 + 8 P1，P1-2/P1-4/P1-6 只是部分修复 |
 
 ## 修复进度（21:20）
 
@@ -2945,11 +2945,45 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - ✅ P0-2 polygon 有效性
 - ✅ P0-3 runtime 斜边命中
 - ✅ P0-4 template 平移 shape
-- ✅ P1-2 批量保存 shape
+- ✅ P1-2 批量保存 shape（仅 OCR 路径；非 OCR 仍 rect，且实际入口未用候选 shape）
 - ✅ P1-3 collection live
-- ✅ P1-4 OCR 帧标签
-- ✅ P1-6 polygon 自交校验
+- ✅ P1-4 OCR 帧标签（仅单素材；主 btnOcr/btnLines 仍不带 live）
+- ✅ P1-6 polygon 自交校验（越界/零面积仍缺）
 - ⬜ P1-1 drag shape（需 DSL）
 - ⬜ P1-5 SelectionTool
 
 测试：361 passed / 0 failed。
+
+---
+
+# ★ §E-72 ★★★ [11-01 21:55] **子进程独立代码审计（A/B/C）**
+
+> 触发：用户要求用子进程重新审计 16:00 至今，避免会话记忆压缩。
+> 完整报告：`docs/AUDIT-SUBPROCESS-2026-11-01.md`；原始 A/B/C：
+> `_verify/audit-20261101/{A-session-git,B-runtime,C-ui}.md`。
+
+## P0
+
+1. 新素材保存后任务库/全局库同时不显示（全局库只在 boot 加载；`#btn-library-refresh` 不存在）。
+2. 批量保存把“无显式操作区”强制写 `fixed` + rect；UI 无 recognition 写入，识别目标移动后操作区不跟随。
+3. 操作区多边形/反选无法可靠保存：`actionPoly` 闭合不写候选/不调 update；非 OCR 仍 rect；`saveSelectedCandidates` 因 `#btn-batch-save` 不存在而不可达。
+
+## P1
+
+1. UI 模板点测/拖测/有效性使用未平移 action_shape。
+2. runtime `click_target` OCR 路径忽略 action_shape/invert。
+3. `ClickShape::sample` 失败静默返回 bbox 中心/原 plan，全屏反选仍点击排除区。
+4. region 采样后被 ±6px jitter 带出 shape。
+5. action_shape 缺越界/零面积校验。
+6. 主 btnOcr/btnLines 不带 live/frame_id。
+7. 单素材多位置只测 positions[0]（用户 18:56“3 都测”）。
+8. SelectionTool 未抽且模式/清除串状态；`boxCenter` 重复声明（f6 已存在）。
+
+## 已确认修复
+
+- P0-1 actionValidity、P0-2 polygon 重叠、P0-3 斜边、P0-4 runtime template 平移；
+- P1-3 collection live；
+- P1-6 仅自交；
+- 361 Rust tests 绿，但 UI 无自动化测试，多个测试假绿。
+
+| 状态 | ⛔ 待用户确认修复优先级；未改代码 |

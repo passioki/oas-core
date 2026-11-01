@@ -20,13 +20,14 @@
 | `EDITOR-UX-PLAN.md` | 编辑器 UX/选择模型/实时帧/区域有效性改版计划 |
 | `ASSET-DATA-MODEL.md` | 全局 `assets/`、任务素材=flow 引用子集、旧 `library/` 兼容边界 |
 | `RECOVERY-AUDIT.md` | session↔git↔代码恢复审计；4:21 基线 / 19:30 实现起点 / archive 2827 |
-| `CODE-AUDIT-2026-11-01.md` | 16:00~21:00 代码审计：4 P0 / 4 P1，尚未修复 |
+| `CODE-AUDIT-2026-11-01.md` | 首轮 16:00~21:00 代码审计（4 P0 / 4 P1 + 结构项） |
+| `AUDIT-SUBPROCESS-2026-11-01.md` | 子进程独立复核：新增 P0/P1、修正 P1-2/P1-4/P1-6 状态 |
 
 ## 当前基线（2026-11-01）
 
 - 版本：dev `0.1.0`；`main` 的 `385d611`（v1.2.3）只作为历史恢复点，旧 v1.x tag 保留但不代表可用版本。
-- 当前任务：`tasks/返回庭院`；帧 22 个；**唯一关系 = `Asset.positions`（帧-素材）**。
-- 测试：`cargo test --workspace` = **361 passed / 0 failed**。
+- 当前任务：`tasks/` 为空（用户已删除 `返回庭院`；未恢复）；帧 28 个；**唯一关系 = `Asset.positions`（帧-素材）**。
+- 测试：`cargo test --workspace` = **361 passed / 0 failed**；UI 无自动化测试，361 不能证明 UI/交互路径正确。
 - 已实现：`key`/`restart_app` 前端、两阶段截图、Enter、OCR 缩略图只用位置帧、位置帧可从其他素材继承、帧行关联素材数、只读帧-素材关系浏览器、transition 录制、人工标注、覆盖概览、任务构建关系提示。
 - 编辑器首轮：16:9 stage、帧详情侧栏、结果/日志收起、随机点测/拖测、`action_shape`+`action_source`、操作区多边形/全屏反选、runtime exact shape、素材拖动排序、帧分类重命名、live/position 批量测试。
 - 已回退：interface 抽象、`ui-map/`、`Frame.interface_id`、界面图视图（用户裁定不需要）。

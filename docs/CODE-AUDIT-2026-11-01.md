@@ -1,7 +1,7 @@
 # 代码审计：2026-11-01 16:00 → 21:00
 
-> 范围：`f6be0f0`（16:21 干净基线）→ HEAD `1f73f17` 的 git 改动，对照 session 中 18:40~19:15 的 7 项要求与后续 UI 反馈。
-> 结论：**代码主方向对，但实现中存在 7 个确定不一致/缺陷；另有 1 项结构要求未真正落地。**
+> 范围：`f6be0f0`（16:21 干净基线）→ HEAD `983c740` 的 git 改动，对照 session 中 18:40~19:15 的 7 项要求与后续 UI 反馈。
+> 结论：**代码主方向对，但实现中存在确定不一致/缺陷。本文件只记录了首轮 4 P0/4 P1+结构项；后续独立子进程审计又发现多项漏项，见 `AUDIT-SUBPROCESS-2026-11-01.md`。**
 
 ## 1. 提交边界
 
@@ -145,11 +145,20 @@ f6be0f0 16:21   干净基线（22 帧 / 返回庭院 3 素材）
 | P0-2 polygon 有效性用整屏 | ✅ 已修 | 新增 `polygonOverlapsRect`；浏览器实测 |
 | P0-3 runtime 斜边命中 | ✅ 已修 | `ClickShape::contains` 去 `.max(1)`；新增斜边测试 |
 | P0-4 template 平移 shape | ✅ 已修 | `translated_click_shape`；新增平移测试 |
-| P1-2 批量保存丢 shape | ✅ 已修 | candidate `actionShape` + 批量 payload |
+| P1-2 批量保存丢 shape | ⚠ **部分** | OCR 分支用 `c.actionShape`；非 OCR 仍写死 rect；polygon 闭合不写候选；`saveSelectedCandidates` 因 `#btn-batch-save` 不存在而不可达（见 `AUDIT-SUBPROCESS` P0-2/P0-3） |
 | P1-3 collection live | ✅ 已修 | `frame_for_test(&q)` + `frame_source` |
-| P1-4 OCR 帧标签 | ✅ 已修 | `testFrameLabel` |
-| P1-6 shape 自交校验 | ✅ 已修 | `polygon_self_intersects` + 测试 |
+| P1-4 OCR 帧标签 | ⚠ **部分** | 单素材 `testFrameLabel` 已修；主 `btnOcr/btnLines` 仍不带 live/frame_id |
+| P1-6 shape 自交校验 | ✅ 自交已修 | `polygon_self_intersects` + 测试；**越界/零面积仍缺** |
 | P1-1 drag shape | ⬜ 未修 | 需要 drag DSL 增加 shape asset 语义 |
 | P1-5 SelectionTool | ⬜ 未修 | 需要统一重构，风险较高 |
 
 测试：`cargo test --workspace` = **361 passed / 0 failed**（新增 3 个测试）。
+
+## 7. 子进程复核修正（2026-11-01 21:50）
+
+> 首轮审计漏了以下确定问题；以 `AUDIT-SUBPROCESS-2026-11-01.md` 为准。
+
+- **P0**：新素材保存后任务库/全局库同时不显示（全局库无刷新入口）；批量保存强制 `fixed`（无显式操作区也写矩形）；操作区多边形/反选无法可靠保存（`actionPoly` 闭合不写候选、非 OCR 仍硬编码 rect、`saveSelectedCandidates` 不可达）。
+- **P1**：UI 模板点测/拖测/有效性未平移 shape；runtime `click_target` OCR 忽略 shape；精确 shape 采样失败静默放过；region 采样后被 jitter 带出；shape 缺越界/零面积校验；主 OCR 按钮不带 live/frame_id；单素材多位置只测第一个；SelectionTool 未抽且串状态。
+- **P1/P2**：`boxCenter` 重复定义（f6 已存在）；全局库只读不刷新；`ActionShape::contains` 潜伏旧算法；region update 失败；batch region 假绿；frame_for_test 静默回退；task delete backup 无测试。
+- **验证修正**：P1-2 不是“已修”，P1-4 只修了单素材路径，P1-6 只修自交。
