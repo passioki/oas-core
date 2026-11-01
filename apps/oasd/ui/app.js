@@ -3290,11 +3290,16 @@ async function loadFrameAssetRelations() {
     }
 
     const transBox = section('帧 → 帧 transition（录制证据）');
+    const knownFrames = new Set((rel.frames || []).map((f) => f.id));
     if (!(rel.transitions || []).length) line(transBox, '（尚无录制证据）', 'muted');
     for (const t of (rel.transitions || [])) {
       const task = t.task ? ` · ${t.task}` : '';
       const asset = t.asset || '?';
-      line(transBox, `#${t.from_frame} → #${t.to_frame} · 点击 ${asset}${task}`);
+      const missing = !knownFrames.has(t.from_frame) || !knownFrames.has(t.to_frame);
+      line(
+        transBox,
+        `#${t.from_frame} → #${t.to_frame} · 点击 ${asset}${task}${missing ? ' · 帧缺失（历史证据）' : ''}`
+      );
     }
 
     const annBox = section('人工标注');
