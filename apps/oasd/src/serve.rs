@@ -127,6 +127,15 @@ struct State {
     frames: Vec<SessionFrame>,
     next_frame_id: u64,
     current_frame_id: Option<u64>,
+    /// Two-phase manual capture: preview is held in memory until the user
+    /// confirms name/category; only commit writes a frame into the gallery.
+    pending_capture: Option<PendingCapture>,
+}
+
+struct PendingCapture {
+    png: Vec<u8>,
+    width: u32,
+    height: u32,
 }
 
 struct SessionFrame {
@@ -469,6 +478,7 @@ impl Server {
                 frames: Vec::new(),
                 next_frame_id: 1,
                 current_frame_id: None,
+                pending_capture: None,
             })),
             tasks_dir: PathBuf::from("tasks"),
             runs_dir: PathBuf::from("runs"),
@@ -874,6 +884,15 @@ impl Server {
         }
     }
 
+    fn capture_device_png(&self) -> Result<(Vec<u8>, u32, u32), String> {
+        let wanted = crate::config::device_serial();
+        let serial = self.adb.resolve_device(wanted.as_deref())?.serial;
+        let mut screen = self.adb.screen(&serial);
+        let frame = screen.grab()?;
+        let png = encode_png(&frame)?;
+        Ok((png, frame.width, frame.height))
+    }
+
     fn capture_frame(
         &self,
         req: CaptureRequest,
@@ -1061,6 +1080,11 @@ impl Server {
                 self.send_json(&mut out, 200, &body)
             }
             ("POST", "/capture") => self.handle_capture(&mut out, &body),
+            // Two-phase manual capture: preview now, commit only after the
+            // name/category dialog is confirmed.
+            ("POST", "/capture/preview") => self.handle_capture_preview(&mut out),
+            ("GET", "/capture/preview.png") => self.handle_capture_preview_png(&mut out),
+            ("POST", "/capture/commit") => self.handle_capture_commit(&mut out, &body),
             // Live-preview passthrough: only meaningful while the WebSocket
             // live frame is current. The UI gates this on `livePreview`.
             ("POST", "/input/tap") => self.handle_input_tap(&mut out, &body),
@@ -1623,6 +1647,114 @@ impl Server {
     ) -> std::io::Result<()> {
         let body = serde_json::json!({ "ok": false, "errors": errors });
         self.send_json(out, code, &body.to_string())
+    }
+
+    /// Phase 1 of the manual capture dialog: grab the emulator screen into
+    /// memory only. No gallery frame/current frame is touched until commit.
+    fn handle_capture_preview(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        match self.capture_device_png() {
+            Ok((png, width, height)) => {
+                let mut st = self.state.lock().unwrap();
+                st.pending_capture = Some(PendingCapture { png, width, height });
+                drop(st);
+                self.send_json(
+                    out,
+                    200,
+                    &serde_json::json!({
+                        "ok": true,
+                        "width": width,
+                        "height": height,
+                        "preview_url": "/capture/preview.png",
+                    })
+                    .to_string(),
+                )
+            }
+            Err(e) => {
+                let _ = self.set_error(&format!("capture preview failed: {e}"));
+                self.send_errors(out, 500, vec![format!("capture preview failed: {e}")])
+            }
+        }
+    }
+
+    /// `GET /capture/preview.png` — pixels of the pending capture, shown inside
+    /// the metadata dialog. Not persisted to the gallery yet.
+    fn handle_capture_preview_png(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let png = {
+            let st = self.state.lock().unwrap();
+            st.pending_capture.as_ref().map(|p| p.png.clone())
+        };
+        match png {
+            Some(bytes) => self.send_bytes(out, 200, "image/png", &bytes),
+            None => self.send_json(out, 404, r#"{"error":"no pending capture"}"#),
+        }
+    }
+
+    /// Phase 2 of manual capture: commit the pending pixels with user metadata.
+    /// Always `select:false`: the gallery/current analysis frame is untouched.
+    fn handle_capture_commit(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let req: CaptureRequest = if body.is_empty() {
+            CaptureRequest::default()
+        } else {
+            match serde_json::from_slice(body) {
+                Ok(v) => v,
+                Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+            }
+        };
+        let pending = {
+            let mut st = self.state.lock().unwrap();
+            st.pending_capture.take()
+        };
+        let Some(pending) = pending else {
+            return self.send_errors(out, 400, vec!["no pending capture; click 截取当前帧入库 first".into()]);
+        };
+        let mut st = self.state.lock().unwrap();
+        let id = match st.push_frame(
+            &self.frames_dir,
+            pending.png,
+            pending.width,
+            pending.height,
+            "capture",
+            req.name,
+            req.category,
+            false,
+            false,
+        ) {
+            Ok(id) => id,
+            Err(e) => {
+                drop(st);
+                return self.send_errors(out, 500, vec![format!("save frame: {e}")]);
+            }
+        };
+        let saved = st
+            .frames
+            .iter()
+            .find(|f| f.id == id)
+            .map(|f| (f.name.clone(), f.category.clone(), f.width, f.height))
+            .ok_or_else(|| "captured frame disappeared".to_string());
+        let (name, category, width, height) = match saved {
+            Ok(v) => v,
+            Err(e) => {
+                drop(st);
+                return self.send_errors(out, 500, vec![e]);
+            }
+        };
+        let _ = self.persist_frames(&st);
+        drop(st);
+        self.send_json(
+            out,
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "id": id,
+                "name": name,
+                "category": category,
+                "width": width,
+                "height": height,
+                "seen": false,
+                "selected": false,
+            })
+            .to_string(),
+        )
     }
 
     /// `POST /capture` — always grab the current emulator screen. Optional body

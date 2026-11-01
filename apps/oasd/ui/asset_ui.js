@@ -33,6 +33,16 @@
       return box;
     }
     if (it.roi) {
+      // OCR/region assets have no pixels of their own: their thumbnail MUST be
+      // one of their declared position frames. Never fall back to the current
+      // canvas frame, otherwise switching frames changes the thumbnail and the
+      // asset looks like it belongs to the wrong interface.
+      const positions = it.positions || [];
+      if (!positions.length) {
+        box.textContent = '未设位置帧';
+        box.classList.add('asset-thumb-empty');
+        return box;
+      }
       const img = new Image();
       img.onload = () => {
         const c = document.createElement('canvas');
@@ -55,13 +65,11 @@
         box.appendChild(c);
       };
       img.onerror = () => {
-        box.textContent = 'ROI';
+        box.textContent = '位置帧失效';
         box.classList.add('asset-thumb-empty');
       };
-      img.src = (it.positions && it.positions.length)
-        ? `/frames/image?id=${it.positions[0]}&ts=${Date.now()}`
-        : '/frame.png?ts=' + Date.now();
-      box.textContent = 'ROI';
+      img.src = `/frames/image?id=${positions[0]}&ts=${Date.now()}`;
+      box.textContent = '位置帧…';
       box.classList.add('asset-thumb-empty');
       return box;
     }
@@ -178,10 +186,13 @@
         input.blur();
       } else if (e.key === 'Enter') {
         const first = menu.querySelector('.asset-search-option');
-        if (first) {
+        if (o.enterChooses !== false && first) {
           e.preventDefault();
           const items = (o.items || []).filter((item) => matches(item, false));
           if (items[0]) choose(items[0]);
+        } else if (o.onEnter) {
+          e.preventDefault();
+          o.onEnter();
         }
       }
     });

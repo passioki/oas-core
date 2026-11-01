@@ -417,6 +417,9 @@
   <!-- 统一截图入口：名称/分类 -> POST /capture(select:false)，不跳帧、不暂停实时 -->
   <dialog id="capture-frame-dialog" class="task-dialog capture-dialog">
     <h3>截取当前帧入库</h3>
+    <div class="capture-preview">
+      <img id="capture-preview-img" alt="刚截取的模拟器画面" />
+    </div>
     <label class="opt">名称（必填，可搜索已有名称）
       <div id="capture-name-host"></div>
     </label>
@@ -426,7 +429,7 @@
     <pre id="capture-error" class="muted small dialog-error"></pre>
     <div class="row dialog-actions">
       <button id="capture-cancel" type="button">取消</button>
-      <button id="capture-submit" type="button">截取并入库</button>
+      <button id="capture-submit" type="button">保存截图</button>
     </div>
   </dialog>
 

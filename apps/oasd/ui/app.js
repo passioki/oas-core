@@ -49,6 +49,7 @@ const framesStatus = document.getElementById('frames-status');
 const captureDialog = document.getElementById('capture-frame-dialog');
 const captureNameHost = document.getElementById('capture-name-host');
 const captureCategoryHost = document.getElementById('capture-category-host');
+const capturePreviewImg = document.getElementById('capture-preview-img');
 const captureError = document.getElementById('capture-error');
 const captureCancel = document.getElementById('capture-cancel');
 const captureSubmit = document.getElementById('capture-submit');
@@ -2470,7 +2471,11 @@ async function refreshAssetPositionFrames() {
 }
 
 function selectedAssetPositions() {
-  return pendingAssetPositions.slice();
+  const chosen = pendingAssetPositions.slice();
+  // First save convenience: attach the current frame automatically. After the
+  // asset exists, its positions are explicit and thumbnails only use those.
+  if (!chosen.length && currentFrameId != null) return [currentFrameId];
+  return chosen;
 }
 
 async function saveAssetUnified() {
@@ -3484,9 +3489,13 @@ function ensureCapturePickers() {
       items: [],
       value: '',
       placeholder: '搜索已有名称，或输入新名称…',
+      enterChooses: false,
       label: (item) => item.label,
       onChoose: (item, input) => {
         input.value = item.label;
+      },
+      onEnter: () => {
+        if (captureDialog && captureDialog.open) submitCaptureFrame();
       },
     });
     captureNameHost.textContent = '';
@@ -3497,9 +3506,13 @@ function ensureCapturePickers() {
       items: [],
       value: '',
       placeholder: '搜索已有分类，或输入新分类…',
+      enterChooses: false,
       label: (item) => item.label,
       onChoose: (item, input) => {
         input.value = item.id || '';
+      },
+      onEnter: () => {
+        if (captureDialog && captureDialog.open) submitCaptureFrame();
       },
     });
     captureCategoryHost.textContent = '';
@@ -3507,25 +3520,47 @@ function ensureCapturePickers() {
   }
 }
 
-function openCaptureFrameDialog() {
+async function openCaptureFrameDialog() {
+  if (captureBusy) return;
   ensureCapturePickers();
   if (!captureDialog || !captureNamePicker || !captureCategoryPicker) return;
-  const names = Array.from(new Set((framesCache || []).map((f) => (f.name || '').trim()).filter(Boolean)));
-  const cats = Array.from(new Set((framesCache || []).map((f) => (f.category || '').trim()).filter(Boolean)));
-  captureNamePicker.setItems(names.map((name) => ({ id: name, label: name })));
-  captureCategoryPicker.setItems([
-    { id: '', label: '未分类' },
-    ...cats.map((cat) => ({ id: cat, label: cat })),
-  ]);
-  const now = new Date();
-  const stamp = [now.getHours(), now.getMinutes(), now.getSeconds()]
-    .map((n) => String(n).padStart(2, '0'))
-    .join('');
-  captureNamePicker.setValue(`帧 ${stamp}`);
-  captureCategoryPicker.setValue(categoryFilterValue || '');
-  if (captureError) captureError.textContent = '';
-  captureDialog.showModal();
-  setTimeout(() => captureNamePicker.input.focus(), 0);
+  captureBusy = true;
+  if (btnFrameCapture) btnFrameCapture.disabled = true;
+  try {
+    const r = await postJson('/capture/preview', {});
+    if (!r || !r.ok) {
+      const msg = (r && r.errors || []).join('; ') || '截取失败';
+      resultEl.textContent = '截取失败：' + msg;
+      log('截取失败：' + msg);
+      return;
+    }
+    const names = Array.from(new Set((framesCache || []).map((f) => (f.name || '').trim()).filter(Boolean)));
+    const cats = Array.from(new Set((framesCache || []).map((f) => (f.category || '').trim()).filter(Boolean)));
+    captureNamePicker.setItems(names.map((name) => ({ id: name, label: name })));
+    captureCategoryPicker.setItems([
+      { id: '', label: '未分类' },
+      ...cats.map((cat) => ({ id: cat, label: cat })),
+    ]);
+    const now = new Date();
+    const stamp = [now.getHours(), now.getMinutes(), now.getSeconds()]
+      .map((n) => String(n).padStart(2, '0'))
+      .join('');
+    captureNamePicker.setValue(`帧 ${stamp}`);
+    captureCategoryPicker.setValue(categoryFilterValue || '');
+    if (capturePreviewImg) {
+      capturePreviewImg.src = (r.preview_url || '/capture/preview.png') + '?t=' + Date.now();
+    }
+    if (captureError) captureError.textContent = '';
+    captureDialog.showModal();
+    setTimeout(() => captureNamePicker.input.focus(), 0);
+  } catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    resultEl.textContent = '截取异常：' + msg;
+    log('截取异常：' + msg);
+  } finally {
+    captureBusy = false;
+    if (btnFrameCapture) btnFrameCapture.disabled = false;
+  }
 }
 
 async function submitCaptureFrame() {
@@ -3539,17 +3574,25 @@ async function submitCaptureFrame() {
   captureBusy = true;
   if (captureSubmit) captureSubmit.disabled = true;
   try {
-    const r = await postJson('/capture', { name, category, select: false });
+    const r = await postJson('/capture/commit', { name, category });
     if (!r || !r.ok) {
-      const msg = (r && r.errors || []).join('; ') || '截取失败';
+      const msg = (r && r.errors || []).join('; ') || '保存截图失败';
       if (captureError) captureError.textContent = msg;
       return;
     }
-    log(`已截取帧 #${r.id}：${r.name} / ${(r.category || '').trim() || '未分类'}（实时/当前帧未改变）`);
+    log(`已保存帧 #${r.id}：${r.name} / ${(r.category || '').trim() || '未分类'}（实时/当前帧未改变）`);
     if (captureDialog) captureDialog.close();
+    if (capturePreviewImg) capturePreviewImg.removeAttribute('src');
     await refreshFrames();
+    // 保存后回到实时画面；截图过程中从未暂停实时。
+    if (!livePreview) startLivePreview();
+    try {
+      await loadFrame(true);
+    } catch (e) {
+      // 设备离线时保留当前画面
+    }
   } catch (e) {
-    if (captureError) captureError.textContent = '截取异常：' + (e && e.message ? e.message : e);
+    if (captureError) captureError.textContent = '保存异常：' + (e && e.message ? e.message : e);
   } finally {
     captureBusy = false;
     if (captureSubmit) captureSubmit.disabled = false;
@@ -4672,7 +4715,13 @@ async function submitResetMemory() {
   // §22.27 会话图片列表
   if (btnFrameUpload) btnFrameUpload.addEventListener('click', uploadFrames);
   if (btnFrameCapture) btnFrameCapture.addEventListener('click', openCaptureFrameDialog);
-  if (captureCancel) captureCancel.addEventListener('click', () => { if (captureDialog) captureDialog.close(); });
+  if (captureCancel) captureCancel.addEventListener('click', () => {
+    if (capturePreviewImg) capturePreviewImg.removeAttribute('src');
+    if (captureDialog) captureDialog.close();
+  });
+  if (captureDialog) captureDialog.addEventListener('close', () => {
+    if (capturePreviewImg) capturePreviewImg.removeAttribute('src');
+  });
   if (captureSubmit) captureSubmit.addEventListener('click', submitCaptureFrame);
   if (btnFramesRefresh) btnFramesRefresh.addEventListener('click', () => refreshFrames());
   await refreshAssetPositionFrames();
