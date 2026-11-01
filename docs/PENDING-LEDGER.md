@@ -3085,4 +3085,4 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - `scripts/package.ps1` 与 packaging 版本已改为 `0.1.0`（父进程工作区改动）；发布前复核 stage 的 `assets/assets.json` = 16 条。
 - collection 真实点击、drag step shape、SelectionTool 仍 open。
 
-| 状态 | 🔄 文档已就绪待父进程提交；本地包已出，tag/Release/main 待同步 |
+| 状态 | ✅ 文档已提交；tag `v0.1.0` 已创建；main/dev 同步；本地包 SHA256 `E6112A33…5F5687`；GitHub Release 未创建 |

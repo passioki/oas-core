@@ -23,11 +23,11 @@
 ★ 唯一真相 = git + 磁盘证据；**不信"我记得"** ⇒ 必须贴 `文件:行号` / commit / 测试输出
 ```
 
-## 0.1 当前状态快照（2026-11-02 · dev v0.1.0 / HEAD `cd0ac34`）
+## 0.1 当前状态快照（2026-11-02 · v0.1.0 / tag `v0.1.0`）
 
 | 项 | 状态 |
 |---|---|
-| 分支/HEAD | `dev` = **`cd0ac34`**（data snapshot，00:58）；`origin/dev` = `7a3869f`（本地领先 1）；`main` = **`385d611`**（v1.2.3，待 0.1.0 发布同步） |
+| 分支/HEAD | `dev` = `main` = **tag `v0.1.0` target**；`origin/dev`/`origin/main` 已同步；包构建 commit `42567c1` |
 | 引擎 | `oasd`（serve/run/queue/stats/scheduler）+ 编辑器 UI + 素材库；`oasd --version` = **0.1.0**（dev；旧 v1.x 为历史内部 tag） |
 | 测试 | `cargo test --workspace` = **393 passed / 0 failed**（2026-11-02 01:00 实测；legacy shipped 数据测试已改为临时 fixture，不再依赖 `tasks/` 现状） |
 | 当前任务 | 只有 `返回庭院`（flow 11 steps / meta 400 B）；`tasks/测试` 已删除并随 `cd0ac34` 提交 |
@@ -52,10 +52,10 @@
 
 | 项 | 值 |
 |---|---|
-| 恢复节点 | `main` = `385d611`（v1.2.3，发布前）；用户 00:48 要求 0.1.0 release 构建后同步 main/dev |
-| 当前分支 | `dev`；HEAD **`cd0ac34`**（data snapshot），`origin/dev` = `7a3869f`（本地领先 1）；发布前不自动合并 main |
+| 恢复节点 | tag `v0.1.0`（2026-11-02）；`dev` = `main` 已同步；包构建 commit `42567c1`；本地包 SHA256 `E6112A33…5F5687` |
+| 当前分支 | `dev` = `main` = tag `v0.1.0`；`origin/dev`/`origin/main` 已同步 |
 | 文档 | 已独立到 `oas-core/docs`；现行 = ENGINE-DESIGN + PENDING-LEDGER + RESUME + ASSET-DATA-MODEL + RELEASE-NODE；历史 7 份在 `docs/archive/` |
-| 当前计划 | **先读 `RESUME.md` + `PENDING-LEDGER §E-66~§E-73` + `RELEASE-NODE-2026-11-02.md`**：文档/数据快照已收口（393 tests + UI 203 + lint 1/0 + 真机 tap + 用户 00:37 验收）；本地 0.1.0 包已构建，下一步 tag/Release 并同步 main/dev；产品剩 collection 真实点击、drag step shape、SelectionTool |
+| 当前计划 | **先读 `RESUME.md` + `PENDING-LEDGER §E-66~§E-73` + `RELEASE-NODE-2026-11-02.md`**：0.1.0 恢复节点已完成（393 tests + UI 203 + lint 1/0 + 真机 tap + 用户 00:37 验收 + tag/main/dev + 本地包）；产品剩 collection 真实点击、drag step shape、SelectionTool；如需 GitHub Release 另行创建 |
 | 截图 | 两阶段：点击立即抓取 → 弹窗预览 → 名称/分类 → 保存；无当前帧跳转 |
 | Enter | 输入框 Enter = 确认输入；弹窗 Enter = 保存截图 |
 | 实时操作 | 实时开启时画布单击/拖拽 = tap/swipe；实时暂停 = ROI 编辑 |
@@ -258,7 +258,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 ★ ② 更新 SESSION-HANDOFF（当前状态/下一步/新坑）
 ★ ③ ★ 更新断点：RESUME.md（覆盖重写）+ RESUME-INDEX.md（追加一行）
 ★ ④ 有实质进展就 commit：
-     - oas-core：提交到 `dev`；`main` 当前仍是 v1.2.3 恢复节点 `385d611`，按 00:48 指令在 0.1.0 release 构建后同步 main/dev
+     - oas-core：提交到 `dev` 并同步 `main`；0.1.0 恢复节点 tag `v0.1.0` 已完成（本地包 + 文档归档 + 审计证据）
      - oas-core docs：git add docs session-memory.config.json && git commit && git push origin dev
 ★ ⑤ 验收证据进 _verify/nNN/，并写进文档判据
 ```
