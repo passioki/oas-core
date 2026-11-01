@@ -3494,9 +3494,7 @@ function ensureCapturePickers() {
       onChoose: (item, input) => {
         input.value = item.label;
       },
-      onEnter: () => {
-        if (captureDialog && captureDialog.open) submitCaptureFrame();
-      },
+      onEnter: () => confirmCaptureInput(captureNamePicker),
     });
     captureNameHost.textContent = '';
     captureNameHost.appendChild(captureNamePicker);
@@ -3511,13 +3509,21 @@ function ensureCapturePickers() {
       onChoose: (item, input) => {
         input.value = item.id || '';
       },
-      onEnter: () => {
-        if (captureDialog && captureDialog.open) submitCaptureFrame();
-      },
+      onEnter: () => confirmCaptureInput(captureCategoryPicker),
     });
     captureCategoryHost.textContent = '';
     captureCategoryHost.appendChild(captureCategoryPicker);
   }
+}
+
+// Enter inside an input confirms that field only (closes the dropdown), then
+// moves focus to the save button. A subsequent Enter on the dialog saves.
+function confirmCaptureInput(picker) {
+  if (picker && picker.close) picker.close();
+  if (picker && picker.input) picker.input.blur();
+  setTimeout(() => {
+    if (captureDialog && captureDialog.open && captureSubmit) captureSubmit.focus();
+  }, 0);
 }
 
 async function openCaptureFrameDialog() {
@@ -4721,6 +4727,15 @@ async function submitResetMemory() {
   });
   if (captureDialog) captureDialog.addEventListener('close', () => {
     if (capturePreviewImg) capturePreviewImg.removeAttribute('src');
+  });
+  if (captureDialog) captureDialog.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.defaultPrevented) return;
+    const tag = e.target && e.target.tagName ? e.target.tagName : '';
+    // Input Enter is consumed above to confirm the field; button Enter is the
+    // native click on 保存截图. Anywhere else on the dialog = save directly.
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON') return;
+    e.preventDefault();
+    submitCaptureFrame();
   });
   if (captureSubmit) captureSubmit.addEventListener('click', submitCaptureFrame);
   if (btnFramesRefresh) btnFramesRefresh.addEventListener('click', () => refreshFrames());
