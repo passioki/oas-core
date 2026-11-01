@@ -57,6 +57,13 @@ const captureSubmit = document.getElementById('capture-submit');
 const relationsDialog = document.getElementById('relations-dialog');
 const relationsStatus = document.getElementById('relations-status');
 const relationsView = document.getElementById('relations-view');
+const relationRecordDialog = document.getElementById('relation-record-dialog');
+const relationRecordTask = document.getElementById('relation-record-task');
+const relationRecordAssetHost = document.getElementById('relation-record-asset-host');
+const relationRecordResult = document.getElementById('relation-record-result');
+const relationRecordSubmit = document.getElementById('relation-record-submit');
+let relationRecordAssetPicker = null;
+let relationRecordAssetId = '';
 let captureNamePicker = null;
 let captureCategoryPicker = null;
 let captureBusy = false;
@@ -3267,6 +3274,14 @@ async function loadFrameAssetRelations() {
     for (const p of (rel.frame_shared_assets || [])) {
       line(sharedBox, `#${p.a} ↔ #${p.b} · 共享 ${p.assets.length} 个：${(p.assets || []).join('、')}`);
     }
+
+    const transBox = section('帧 → 帧 transition（录制证据）');
+    if (!(rel.transitions || []).length) line(transBox, '（尚无录制证据）', 'muted');
+    for (const t of (rel.transitions || [])) {
+      const task = t.task ? ` · ${t.task}` : '';
+      const asset = t.asset || '?';
+      line(transBox, `#${t.from_frame} → #${t.to_frame} · 点击 ${asset}${task}`);
+    }
   } catch (e) {
     if (relationsStatus) relationsStatus.textContent = '加载异常：' + e;
   }
@@ -3276,6 +3291,79 @@ async function openFrameAssetRelations() {
   if (!relationsDialog) return;
   await loadFrameAssetRelations();
   relationsDialog.showModal();
+}
+
+function ensureRelationRecordPicker() {
+  if (!relationRecordAssetHost || !window.OASAssetUI || !window.OASAssetUI.createSearchPicker) return;
+  if (!relationRecordAssetPicker) {
+    relationRecordAssetPicker = window.OASAssetUI.createSearchPicker({
+      items: [],
+      value: '',
+      placeholder: '搜索/选择要点击的素材…',
+      label: (item) => item.label,
+      onChoose: (item, input) => {
+        relationRecordAssetId = item.id || '';
+        input.value = item.label;
+      },
+    });
+    relationRecordAssetHost.textContent = '';
+    relationRecordAssetHost.appendChild(relationRecordAssetPicker);
+  }
+}
+
+async function openRelationRecordDialog() {
+  if (!relationRecordDialog) return;
+  const task = relationTaskName();
+  if (!task) {
+    window.alert('请先选择任务');
+    return;
+  }
+  await refreshTaskAssets(task);
+  ensureRelationRecordPicker();
+  const items = (taskAssets || [])
+    .filter((a) => a.kind !== 'template_set')
+    .map((a) => ({ id: a.id, label: `${a.id} (${a.kind || '?'})` }));
+  relationRecordAssetPicker.setItems(items);
+  relationRecordAssetId = items.length ? items[0].id : '';
+  relationRecordAssetPicker.setValue(relationRecordAssetId);
+  if (relationRecordTask) relationRecordTask.textContent = `任务：${task} · 先停留在动作前的画面`;
+  if (relationRecordResult) relationRecordResult.textContent = '';
+  relationRecordDialog.showModal();
+}
+
+async function submitRelationRecord() {
+  if (!relationRecordSubmit || relationRecordSubmit.disabled) return;
+  const task = relationTaskName();
+  if (!task || !relationRecordAssetId) {
+    if (relationRecordResult) relationRecordResult.textContent = '缺少任务或动作素材';
+    return;
+  }
+  const wait = Number(document.getElementById('relation-record-wait')?.value || 900);
+  relationRecordSubmit.disabled = true;
+  if (relationRecordResult) relationRecordResult.textContent = '录制中：抓前帧 → 点击 → 等待 → 抓后帧…';
+  try {
+    const r = await postJson('/relations/record', {
+      task,
+      asset: relationRecordAssetId,
+      wait_ms: Number.isFinite(wait) ? wait : 900,
+    });
+    if (!r.ok) {
+      if (relationRecordResult) relationRecordResult.textContent = '录制失败：' + (r.errors || []).join('; ');
+      return;
+    }
+    const obs = r.observation || {};
+    if (relationRecordResult) {
+      relationRecordResult.textContent =
+        `已录制：#${obs.from_frame} → #${obs.to_frame} · 点击 ${obs.asset}` +
+        `（${r.before?.name || ''} → ${r.after?.name || ''}）`;
+    }
+    await refreshFrames();
+    if (relationsDialog && relationsDialog.open) await loadFrameAssetRelations();
+  } catch (e) {
+    if (relationRecordResult) relationRecordResult.textContent = '录制异常：' + e;
+  } finally {
+    relationRecordSubmit.disabled = false;
+  }
 }
 
 async function setFrameCategory(f) {
@@ -4826,6 +4914,13 @@ async function submitResetMemory() {
   });
   const relationsRefresh = document.getElementById('relations-refresh');
   if (relationsRefresh) relationsRefresh.addEventListener('click', loadFrameAssetRelations);
+  const btnRelationRecord = document.getElementById('btn-relation-record');
+  if (btnRelationRecord) btnRelationRecord.addEventListener('click', openRelationRecordDialog);
+  const relationRecordClose = document.getElementById('relation-record-close');
+  if (relationRecordClose) relationRecordClose.addEventListener('click', () => {
+    if (relationRecordDialog) relationRecordDialog.close();
+  });
+  if (relationRecordSubmit) relationRecordSubmit.addEventListener('click', submitRelationRecord);
   if (captureCancel) captureCancel.addEventListener('click', () => {
     if (capturePreviewImg) capturePreviewImg.removeAttribute('src');
     if (captureDialog) captureDialog.close();

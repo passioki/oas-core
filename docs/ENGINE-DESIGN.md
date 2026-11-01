@@ -2041,7 +2041,7 @@ tasks/<任务名>/
 #### 22.40.4 测试
 
 - legacy shipped task 测试已改为临时 fixture；
-- 当前测试基线：`cargo test --workspace` = **354 passed / 0 failed**。
+- 当前测试基线：`cargo test --workspace` = **355 passed / 0 failed**。
 
 ### 22.41 ★★★ [11-01] **帧-素材关系（现行唯一关系）**
 
@@ -2073,4 +2073,16 @@ Asset.positions = [frame_id, ...]
   - 素材 ↔ 素材共现；
   - 帧 ↔ 帧共享素材；
 - 不新增持久化关系表；`Asset.positions` 仍是唯一存储关系。
+
+#### 22.41.2 Phase 2：transition 录制（已实现）
+
+- `POST /relations/record {task,asset,wait_ms?}`：
+  - 抓前帧并入库；
+  - 点击素材 `action_roi` 中心（无则 `roi` 中心）；
+  - 等待；
+  - 抓后帧并入库；
+  - 追加 `relations/observations.jsonl` 一条 `transition`；
+- `GET /relations/frame-assets` 读取 observations 并在关系浏览器显示“帧 → 帧 transition”；
+- 证据 schema 见 `relations/README.md`；
+- 约束：不自动替换帧/素材；证据 append-only；删除帧/素材不会删证据。
 

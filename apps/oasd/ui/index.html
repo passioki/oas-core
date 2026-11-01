@@ -114,6 +114,7 @@
             <button id="btn-frame-capture">截取当前帧入库</button>
             <button id="btn-frames-refresh">刷新列表</button>
             <button id="btn-frame-relations" type="button">帧-素材关系</button>
+            <button id="btn-relation-record" type="button">录制关系</button>
             <button id="btn-frames-clear">清空列表</button>
           </div>
           <label class="opt">分类
@@ -447,6 +448,27 @@
       }
     });
   </script>
+  <dialog id="relation-record-dialog" class="task-dialog relation-record-dialog">
+    <h3>录制一次关系</h3>
+    <p class="muted small">
+      请先把模拟器停留在“动作前”的画面。点击「录制一次」会抓前帧 → 点击素材操作区域 →
+      等待 → 抓后帧，并保存一条 transition 证据。
+    </p>
+    <p id="relation-record-task" class="muted small">任务：—</p>
+    <label class="opt">动作素材
+      <div id="relation-record-asset-host"></div>
+    </label>
+    <label class="opt">点击后等待（ms）
+      <input id="relation-record-wait" type="number" min="100" max="5000" value="900" />
+    </label>
+    <pre id="relation-record-result" class="muted small dialog-error"></pre>
+    <div class="row dialog-actions">
+      <button id="relation-record-submit" type="button">录制一次</button>
+      <span class="spacer"></span>
+      <button id="relation-record-close" type="button">关闭</button>
+    </div>
+  </dialog>
+
   <dialog id="relations-dialog" class="task-dialog relations-dialog">
     <h3>帧-素材关系</h3>
     <p id="relations-status" class="muted small">—</p>

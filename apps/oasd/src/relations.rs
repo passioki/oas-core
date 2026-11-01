@@ -10,8 +10,63 @@
 //! usable even while captures/assets are still incomplete.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TransitionObservation {
+    #[serde(default = "default_schema")]
+    pub schema_version: u32,
+    pub id: String,
+    #[serde(default = "default_transition_type")]
+    pub r#type: String,
+    pub from_frame: u64,
+    pub to_frame: u64,
+    #[serde(default)]
+    pub task: String,
+    #[serde(default)]
+    pub asset: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub created_at: u64,
+}
+
+fn default_schema() -> u32 {
+    1
+}
+fn default_transition_type() -> String {
+    "transition".to_string()
+}
+
+/// Append-only evidence reader. Malformed lines are reported, not silently
+/// dropped; the relation endpoint must not invent evidence.
+pub fn load_observations(path: &Path) -> Result<Vec<TransitionObservation>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(v) => v,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("read {}: {e}", path.display())),
+    };
+    let mut out = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<TransitionObservation>(line) {
+            Ok(v) => out.push(v),
+            Err(e) => {
+                return Err(format!(
+                    "{}:{}: invalid observation JSON: {e}",
+                    path.display(),
+                    i + 1
+                ))
+            }
+        }
+    }
+    Ok(out)
+}
+
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct FrameRelation {
@@ -50,6 +105,7 @@ pub struct RelationSnapshot {
     pub assets: Vec<AssetRelation>,
     pub asset_cooccurrence: Vec<AssetCooccurrence>,
     pub frame_shared_assets: Vec<FrameSharedAssets>,
+    pub transitions: Vec<TransitionObservation>,
 }
 
 const MAX_PAIRS_OUT: usize = 2000;
@@ -185,6 +241,7 @@ pub fn build(
         assets: asset_relations,
         asset_cooccurrence,
         frame_shared_assets,
+        transitions: Vec::new(),
     }
 }
 
@@ -230,5 +287,32 @@ mod tests {
             .unwrap();
         assert_eq!(shared.assets, vec!["预设"]);
         assert!(snap.frames.iter().all(|f| f.id != 999));
+    }
+
+    #[test]
+    fn observations_load_and_malformed_line_is_rejected() {
+        let base = std::env::temp_dir().join(format!(
+            "oas-rel-obs-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        let path = base.join("observations.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"schema_version":1,"id":"o1","type":"transition","from_frame":4,"to_frame":6,"task":"返回庭院","asset":"预设","source":"recorded","created_at":1}
+"#,
+        )
+        .unwrap();
+        let got = load_observations(&path).expect("load");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].from_frame, 4);
+        assert_eq!(got[0].to_frame, 6);
+        std::fs::write(&path, "{bad json}\n").unwrap();
+        assert!(load_observations(&path).is_err());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

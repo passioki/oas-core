@@ -2506,6 +2506,42 @@ Asset.positions = [frame_id, ...]
 
 | 状态 | ✅ Phase 1 派生关系完成；transition 录制/标注/任务构建集成待做 |
 
+---
+
+# ★ §E-62 ★★★ [11-01 15:55] **Phase 2：transition 录制**
+
+> 触发：用户确认继续；在帧-素材派生层上增加真实动作证据。
+
+## 已完成
+
+- `POST /relations/record {task,asset,wait_ms?}`：
+  - 抓取前帧并入库；
+  - 按素材 `action_roi`（缺失则 `roi`）中心点击真实设备；
+  - 等待；
+  - 抓取后帧并入库；
+  - 追加 `relations/observations.jsonl` 一条 transition；
+- `relations/README.md` 记录 append-only schema；
+- 关系浏览器增加“帧 → 帧 transition（录制证据）”；
+- 图片页增加“录制关系”弹窗：选择任务素材、等待毫秒、录制一次；
+- observation 读取容忍缺失文件，但拒绝坏 JSON（不静默丢证据）。
+
+## 验证
+
+- `cargo test --workspace` = **355 passed / 0 failed**；
+- `task lint --all` = 1/0；
+- 无头 UI：录制关系弹窗正常打开，素材候选显示 `预设 (ocr_line)`；
+- 无效素材录制返回 400；未实际点击真实游戏（避免误操作）。
+
+## 下一步
+
+1. Phase 3：人工标注 alternative/requires/similar；
+2. 任务构建关系感知；
+3. 真实动作录制回归（需用户停在正确画面）；
+4. 活动页参考帧继续补。
+
+| 状态 | ✅ Phase 2 录制链路完成；真实动作回归/Phase3 待做 |
+
+
 
 
 

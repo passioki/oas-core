@@ -834,3 +834,4 @@ aside.side {
 .relations-section-title { font-weight: 600; margin-bottom: 5px; }
 .relations-line { font-size: 12px; color: #c7cdd6; padding: 2px 0; }
 .relations-line.muted { color: #6b7280; }
+.relation-record-dialog { width: min(680px, 92vw); }

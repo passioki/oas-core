@@ -263,6 +263,8 @@ pub struct Server {
     /// v1.2.2 disk-backed frame gallery (`--frames-dir`): `frames.json` +
     /// `frame-<id>.png`. Metadata is always in memory; pixels are lazy.
     frames_dir: PathBuf,
+    /// Append-only frame-transition evidence for the relation browser.
+    relation_obs_path: PathBuf,
     /// Editor action log (`logs/editor.log`): OCR/asset/task requests are
     /// persisted so a user's reproduction can be diagnosed after the browser
     /// log window is closed (v1.1).
@@ -309,6 +311,16 @@ struct CaptureRequest {
     category: String,
     #[serde(default)]
     select: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RelationRecordRequest {
+    #[serde(default)]
+    task: String,
+    #[serde(default)]
+    asset: String,
+    #[serde(default)]
+    wait_ms: Option<u64>,
 }
 
 /// One live-preview passthrough swipe. Coordinates are in the current live frame.
@@ -485,6 +497,7 @@ impl Server {
             library_dir: PathBuf::from(crate::library::DEFAULT_DIR),
             assets_dir: PathBuf::from(crate::global_assets::DEFAULT_DIR),
             frames_dir: PathBuf::from("frames"),
+            relation_obs_path: PathBuf::from("relations/observations.jsonl"),
             run_state: Arc::new(Mutex::new(RunState::default())),
             run_executor: default_executor,
             editor_log: PathBuf::from("logs/editor.log"),
@@ -538,6 +551,13 @@ impl Server {
         if let Err(e) = self.load_frames_from_disk() {
             eprintln!("frames manifest load failed: {e}");
         }
+        self
+    }
+
+    /// Set the append-only relation evidence path (default
+    /// `relations/observations.jsonl`).
+    pub fn with_relation_obs_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.relation_obs_path = path.into();
         self
     }
 
@@ -1115,6 +1135,7 @@ impl Server {
             ("POST", "/task/goal") => self.handle_task_goal(&mut out, &body),
             ("GET", "/task/assets") => self.handle_task_assets(&mut out, &path),
             ("GET", "/relations/frame-assets") => self.handle_frame_asset_relations(&mut out, &path),
+            ("POST", "/relations/record") => self.handle_record_relation(&mut out, &body),
             ("POST", "/task/assets/batch_test") => self.handle_assets_batch_test(&mut out, &body),
             ("GET", "/task/asset/image") => self.handle_asset_image(&mut out, &path),
             ("GET", "/task/asset/collection/match") => self.handle_collection_match(&mut out, &path),
@@ -4174,7 +4195,203 @@ impl Server {
             task
         };
         let snap = crate::relations::build(&label, &frames, &assets);
+        let mut snap = snap;
+        match crate::relations::load_observations(&self.relation_obs_path) {
+            Ok(v) => snap.transitions = v,
+            Err(e) => return self.send_errors(out, 500, vec![e]),
+        }
         let body = serde_json::json!({"ok": true, "relations": snap});
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `POST /relations/record` body `{task,asset,wait_ms?}`.
+    ///
+    /// Evidence capture: grab before frame -> click the asset's action ROI on
+    /// the real device -> wait -> grab after frame -> save both frames and append
+    /// one transition observation. This is the only place Phase 2 writes data.
+    fn handle_record_relation(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let req: RelationRecordRequest = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let global_mode = self.using_global_assets();
+        let task = req.task.trim().to_string();
+        let asset_id = req.asset.trim().to_string();
+        if !global_mode {
+            if task.is_empty() {
+                return self.send_errors(out, 400, vec!["`task` is required".into()]);
+            }
+            if let Err(e) = oas_task::validate_task_name(&task) {
+                return self.send_errors(out, 400, vec![e]);
+            }
+        }
+        if asset_id.is_empty() {
+            return self.send_errors(out, 400, vec!["`asset` is required".into()]);
+        }
+        let bundle = if global_mode {
+            match self.asset_store("") {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        } else {
+            match oas_task::TaskBundle::open_named(&self.tasks_dir, &task) {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        };
+        let af = match bundle.load_assets_file() {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let Some(asset) = af.items.into_iter().find(|a| a.id == asset_id) else {
+            return self.send_errors(out, 404, vec![format!("asset `{asset_id}` not found")]);
+        };
+        let roi = asset.action_roi.or(asset.roi);
+        let Some(roi) = roi else {
+            return self.send_errors(
+                out,
+                400,
+                vec![format!("asset `{asset_id}` has no action_roi/roi")],
+            );
+        };
+        let x = roi[0] + roi[2] / 2;
+        let y = roi[1] + roi[3] / 2;
+
+        let wanted = crate::config::device_serial();
+        let serial = match self.adb.resolve_device(wanted.as_deref()) {
+            Ok(d) => d.serial,
+            Err(e) => return self.send_errors(out, 500, vec![format!("resolve device: {e}")]),
+        };
+        let mut screen = self.adb.screen(&serial);
+        let before = match screen.grab() {
+            Ok(f) => f,
+            Err(e) => return self.send_errors(out, 500, vec![format!("before capture: {e}")]),
+        };
+        let before_png = match encode_png(&before) {
+            Ok(p) => p,
+            Err(e) => return self.send_errors(out, 500, vec![format!("before png: {e}")]),
+        };
+        let mut input = self.adb.input(&serial);
+        if let Err(e) = input.click(Point { x, y }) {
+            return self.send_errors(out, 500, vec![format!("click asset: {e}")]);
+        }
+        let wait = req.wait_ms.unwrap_or(900).clamp(100, 5000);
+        std::thread::sleep(Duration::from_millis(wait));
+        let mut screen2 = self.adb.screen(&serial);
+        let after = match screen2.grab() {
+            Ok(f) => f,
+            Err(e) => return self.send_errors(out, 500, vec![format!("after capture: {e}")]),
+        };
+        let after_png = match encode_png(&after) {
+            Ok(p) => p,
+            Err(e) => return self.send_errors(out, 500, vec![format!("after png: {e}")]),
+        };
+
+        let before_name = format!("关系录制-前-{asset_id}");
+        let after_name = format!("关系录制-后-{asset_id}");
+        let mut st = self.state.lock().unwrap();
+        let before_id = match st.push_frame(
+            &self.frames_dir,
+            before_png,
+            before.width,
+            before.height,
+            "relation",
+            Some(before_name.clone()),
+            "关系录制".to_string(),
+            false,
+            false,
+        ) {
+            Ok(id) => id,
+            Err(e) => {
+                drop(st);
+                return self.send_errors(out, 500, vec![format!("save before frame: {e}")]);
+            }
+        };
+        let after_id = match st.push_frame(
+            &self.frames_dir,
+            after_png,
+            after.width,
+            after.height,
+            "relation",
+            Some(after_name.clone()),
+            "关系录制".to_string(),
+            false,
+            false,
+        ) {
+            Ok(id) => id,
+            Err(e) => {
+                drop(st);
+                return self.send_errors(out, 500, vec![format!("save after frame: {e}")]);
+            }
+        };
+        let _ = self.persist_frames(&st);
+        drop(st);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let observation = crate::relations::TransitionObservation {
+            schema_version: 1,
+            id: format!("obs-{now}-{before_id}-{after_id}"),
+            r#type: "transition".to_string(),
+            from_frame: before_id,
+            to_frame: after_id,
+            task: if global_mode { String::new() } else { task.clone() },
+            asset: asset_id.clone(),
+            source: "recorded".to_string(),
+            created_at: now,
+        };
+        if let Some(parent) = self.relation_obs_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    return self.send_errors(
+                        out,
+                        500,
+                        vec![format!("create relation dir: {e}")],
+                    );
+                }
+            }
+        }
+        let line = match serde_json::to_string(&observation) {
+            Ok(s) => s,
+            Err(e) => return self.send_errors(out, 500, vec![format!("serialize observation: {e}")]),
+        };
+        {
+            use std::io::Write as _;
+            let mut f = match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.relation_obs_path)
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    return self.send_errors(
+                        out,
+                        500,
+                        vec![format!("open {}: {e}", self.relation_obs_path.display())],
+                    )
+                }
+            };
+            if let Err(e) = writeln!(f, "{line}") {
+                return self.send_errors(
+                    out,
+                    500,
+                    vec![format!("append {}: {e}", self.relation_obs_path.display())],
+                );
+            }
+        }
+        self.editor_log(&format!(
+            "relation record task={} asset={} from={} to={} point=({x},{y})",
+            task, asset_id, before_id, after_id
+        ));
+        let body = serde_json::json!({
+            "ok": true,
+            "observation": observation,
+            "before": {"id": before_id, "name": before_name},
+            "after": {"id": after_id, "name": after_name},
+            "click": {"x": x, "y": y},
+        });
         self.send_json(out, 200, &body.to_string())
     }
 
