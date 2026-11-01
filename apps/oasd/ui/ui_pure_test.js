@@ -10,7 +10,8 @@
 //   - the two asset libraries sharing one search/category filter,
 //   - zero static dead DOM ids (every getElementById target exists in HTML),
 //   - the OCR/single save payloads carrying polygon + recognition metadata,
-//   - the mutually-exclusive selection mode dispatch.
+//   - the mutually-exclusive selection mode dispatch,
+//   - ResizeObserver-driven canvas fitting staying rAF-coalesced + idempotent.
 'use strict';
 
 const fs = require('fs');
@@ -834,6 +835,134 @@ ok(
   missingIds.length === 0,
   `dead DOM ids must be 0 (still dead: ${missingIds.join(', ') || 'none'})`
 );
+
+// --- ResizeObserver / canvas fit contract (no synchronous layout writes) ---
+// #canvas-stage is observed, while fitCanvasToStage() writes inline CSS on its
+// child canvas. A synchronous fit inside the observer callback re-queues the
+// observer in the same frame and Chromium reports
+// "ResizeObserver loop completed with undelivered notifications". The callback
+// must only schedule a coalesced rAF pass, and a fit that computes the same
+// width/height must not touch style at all.
+const roBlock = /new ResizeObserver\(([\s\S]*?)\)\.observe\(canvasStage\)/.exec(source);
+ok(roBlock, '#canvas-stage ResizeObserver is still registered');
+if (roBlock) {
+  ok(/scheduleCanvasFit/.test(roBlock[1]), 'ResizeObserver callback defers through scheduleCanvasFit');
+  ok(
+    !/fitCanvasToStage\s*\(/.test(roBlock[1]),
+    'ResizeObserver callback never calls fitCanvasToStage synchronously'
+  );
+}
+ok(
+  /window\.addEventListener\('resize', \(\) => scheduleCanvasFit\(\)\)/.test(source),
+  'window resize also goes through the rAF scheduler'
+);
+const scheduleCanvasFitFn = extractFunction('scheduleCanvasFit');
+ok(/requestAnimationFrame/.test(scheduleCanvasFitFn), 'scheduleCanvasFit uses requestAnimationFrame');
+ok(/canvasFitScheduled/.test(scheduleCanvasFitFn), 'scheduleCanvasFit coalesces pending requests');
+const fitCanvasFn = extractFunction('fitCanvasToStage');
+ok(
+  /if \(w === canvasFitW && h === canvasFitH\) return;/.test(fitCanvasFn),
+  'fitCanvasToStage early-returns when the target size did not change'
+);
+ok(
+  /canvas\.style\.width !== wpx/.test(fitCanvasFn) && /canvas\.style\.height !== hpx/.test(fitCanvasFn),
+  'fitCanvasToStage only assigns style values that actually changed'
+);
+const loadFrameFn = extractFunction('loadFrame');
+ok(
+  /setCanvasFrameSize\(im\.width, im\.height\)/.test(loadFrameFn) &&
+    !/fitCanvasToStage\s*\(/.test(loadFrameFn),
+  'loadFrame only requests a fit when the intrinsic frame size changes'
+);
+const applyLiveBlobFn = extractFunction('applyLiveBlob');
+ok(
+  /setCanvasFrameSize\(im\.width, im\.height\)/.test(applyLiveBlobFn) &&
+    !/fitCanvasToStage\s*\(/.test(applyLiveBlobFn),
+  'applyLiveBlob does not fit on every live frame'
+);
+
+// Behavioural idempotency: stub canvas/stage and count style writes. Two fits
+// with identical stage + intrinsic sizes must produce exactly one write pair.
+function makeFitHarness() {
+  const writes = [];
+  const style = {
+    _w: '',
+    _h: '',
+    get width() { return this._w; },
+    set width(v) { this._w = v; writes.push(['width', v]); },
+    get height() { return this._h; },
+    set height(v) { this._h = v; writes.push(['height', v]); },
+  };
+  const canvas = { width: 1280, height: 720, style };
+  const stage = { clientWidth: 800, clientHeight: 600 };
+  const sb = { canvasStage: stage, canvas };
+  vm.createContext(sb);
+  vm.runInContext(
+    'let canvasFitW = 0;\nlet canvasFitH = 0;\n' +
+      extractFunction('fitCanvasToStage') + '\n' +
+      extractFunction('setCanvasFrameSize'),
+    sb,
+    { filename: 'app.js#canvas-fit' }
+  );
+  return { sb, canvas, style, stage, writes };
+}
+
+const fitH = makeFitHarness();
+fitH.sb.fitCanvasToStage();
+eq(fitH.writes.map((w) => w.join('=')), ['width=800px', 'height=450px'], 'first fit writes one width/height pair');
+fitH.sb.fitCanvasToStage();
+eq(fitH.writes.length, 2, 'same stage size never rewrites canvas style (idempotent)');
+fitH.stage.clientWidth = 400;
+fitH.stage.clientHeight = 600;
+fitH.sb.fitCanvasToStage();
+eq(fitH.writes.length, 4, 'a real stage resize writes exactly one new width/height pair');
+fitH.stage.clientWidth = 10;
+fitH.stage.clientHeight = 10;
+fitH.sb.fitCanvasToStage();
+eq(fitH.writes.length, 4, 'a degenerate hidden stage never writes style');
+// Intrinsic size change must be requested explicitly (live frame path).
+eq(fitH.sb.setCanvasFrameSize(1280, 720), false, 'same intrinsic frame size does not request a refit');
+eq(fitH.sb.setCanvasFrameSize(1920, 1080), true, 'new intrinsic frame size requests a refit');
+eq(fitH.sb.setCanvasFrameSize(1920, 1080), false, 'repeated intrinsic size does not request a refit');
+fitH.stage.clientWidth = 800;
+fitH.stage.clientHeight = 600;
+fitH.canvas.width = 720;
+fitH.canvas.height = 1280;
+fitH.sb.fitCanvasToStage();
+eq(fitH.writes.length, 6, 'aspect change writes a new width/height pair');
+eq(fitH.style.width, '337px', 'portrait aspect fits the stage height');
+eq(fitH.style.height, '600px', 'portrait aspect fills the available height');
+
+// Behavioural coalescing: many schedule calls before the frame produce one fit.
+const rafQueue = [];
+const schedSb = {
+  __fitCalls: 0,
+  rafQueue,
+  window: {
+    requestAnimationFrame(cb) {
+      rafQueue.push(cb);
+      return rafQueue.length;
+    },
+  },
+};
+vm.createContext(schedSb);
+vm.runInContext(
+  'let canvasFitScheduled = false;\n' +
+    'function fitCanvasToStage() { globalThis.__fitCalls += 1; }\n' +
+    extractFunction('scheduleCanvasFit'),
+  schedSb,
+  { filename: 'app.js#canvas-schedule' }
+);
+schedSb.scheduleCanvasFit();
+schedSb.scheduleCanvasFit();
+schedSb.scheduleCanvasFit();
+eq(rafQueue.length, 1, 'repeated fit requests are coalesced into one rAF callback');
+rafQueue.shift()();
+eq(schedSb.__fitCalls, 1, 'the coalesced callback runs fit once');
+schedSb.scheduleCanvasFit();
+eq(rafQueue.length, 1, 'a later request schedules a fresh rAF callback');
+rafQueue.shift()();
+eq(schedSb.__fitCalls, 2, 'the later fit still runs');
 
 checkAssetTestWiring()
   .then(() => checkSavePathWiring(saveUnified))

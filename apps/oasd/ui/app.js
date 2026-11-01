@@ -4474,8 +4474,30 @@ function updateLiveButton() {
   }
 }
 
+// Canvas sizing writes inline CSS on #screen, which is a child of the observed
+// #canvas-stage. Doing that synchronously from the ResizeObserver callback
+// re-queues the observer in the same frame and Chromium reports
+// "ResizeObserver loop completed with undelivered notifications". Coalesce all
+// fit requests into one rAF pass and make the style writes idempotent so a
+// no-op fit cannot feed the observer again.
+let canvasFitScheduled = false;
+let canvasFitW = 0;
+let canvasFitH = 0;
+
+function scheduleCanvasFit() {
+  if (canvasFitScheduled) return;
+  canvasFitScheduled = true;
+  const raf = (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function')
+    ? window.requestAnimationFrame.bind(window)
+    : (cb) => setTimeout(cb, 16);
+  raf(() => {
+    canvasFitScheduled = false;
+    fitCanvasToStage();
+  });
+}
+
 function fitCanvasToStage() {
-  if (!canvasStage) return;
+  if (!canvasStage || !canvas) return;
   const sw = canvasStage.clientWidth;
   const sh = canvasStage.clientHeight;
   if (sw < 16 || sh < 16) return;
@@ -4486,8 +4508,28 @@ function fitCanvasToStage() {
     h = sh;
     w = h * ar;
   }
-  canvas.style.width = `${Math.max(1, Math.floor(w))}px`;
-  canvas.style.height = `${Math.max(1, Math.floor(h))}px`;
+  w = Math.max(1, Math.floor(w));
+  h = Math.max(1, Math.floor(h));
+  // Same target as the last applied fit => no style write, so no observer
+  // notification and no layout invalidation.
+  if (w === canvasFitW && h === canvasFitH) return;
+  const wpx = `${w}px`;
+  const hpx = `${h}px`;
+  if (canvas.style.width !== wpx) canvas.style.width = wpx;
+  if (canvas.style.height !== hpx) canvas.style.height = hpx;
+  canvasFitW = w;
+  canvasFitH = h;
+}
+
+// Live frames arrive continuously. The canvas only needs a re-fit when the
+// intrinsic frame size actually changes; stage resizes stay the sole job of the
+// ResizeObserver, so the per-frame path never writes CSS dimensions.
+function setCanvasFrameSize(w, h) {
+  if (!canvas || !(w > 0) || !(h > 0)) return false;
+  if (canvas.width === w && canvas.height === h) return false;
+  canvas.width = w;
+  canvas.height = h;
+  return true;
 }
 
 async function loadFrame(live = false) {
@@ -4495,9 +4537,7 @@ async function loadFrame(live = false) {
     const im = new Image();
     im.onload = () => {
       img = im;
-      canvas.width = im.width;
-      canvas.height = im.height;
-      fitCanvasToStage();
+      if (setCanvasFrameSize(im.width, im.height)) scheduleCanvasFit();
       draw();
       resolve(im);
     };
@@ -4520,9 +4560,7 @@ function applyLiveBlob(blob) {
       return;
     }
     img = im;
-    canvas.width = im.width;
-    canvas.height = im.height;
-    fitCanvasToStage();
+    if (setCanvasFrameSize(im.width, im.height)) scheduleCanvasFit();
     draw();
     if (liveObjectUrl) URL.revokeObjectURL(liveObjectUrl);
     liveObjectUrl = url;
@@ -5957,13 +5995,18 @@ async function submitResetMemory() {
       if (!canvasWindows) return;
       const collapsed = canvasWindows.classList.toggle('collapsed');
       btnCanvasPanels.textContent = collapsed ? '显示结果/日志' : '收起结果/日志';
-      fitCanvasToStage();
+      scheduleCanvasFit();
     });
   }
   if (canvasStage && window.ResizeObserver) {
-    new ResizeObserver(() => fitCanvasToStage()).observe(canvasStage);
+    // Never fit synchronously inside the observer callback: that is what makes
+    // Chromium emit "ResizeObserver loop completed with undelivered
+    // notifications". The rAF scheduler coalesces this with other fits.
+    new ResizeObserver(() => scheduleCanvasFit()).observe(canvasStage);
   }
-  window.addEventListener('resize', fitCanvasToStage);
+  window.addEventListener('resize', () => scheduleCanvasFit());
+  // Boot is not inside a ResizeObserver callback, so an immediate fit avoids a
+  // first-paint jump; later fits are rAF-coalesced and idempotent.
   fitCanvasToStage();
   await refreshFrames();
   // N2: 生成点击指令 / 追加到 flow
