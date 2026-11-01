@@ -27,7 +27,7 @@
 
 - 版本：dev `0.1.0`；`main` 的 `385d611`（v1.2.3）只作为历史恢复点，旧 v1.x tag 保留但不代表可用版本。
 - 当前任务：`返回庭院`（flow/meta 已从 `8ee414c` 恢复）+ 用户新建的 `测试`；task assets 文件删除，flow 使用内联 OCR；帧 28 个；**唯一关系 = `Asset.positions`（帧-素材）**。
-- 测试：`cargo test --workspace` = **393 passed / 0 failed**；UI pure test = 108 checks / 0 dead ids；task lint = 2/0。
+- 测试：`cargo test --workspace` = **393 passed / 0 failed**；UI pure test = 179 checks / 0 dead ids；task lint = 2/0。
 - 已实现：`key`/`restart_app` 前端、两阶段截图、Enter、OCR 缩略图只用位置帧、位置帧可从其他素材继承、帧行关联素材数、只读帧-素材关系浏览器、transition 录制、人工标注、覆盖概览、任务构建关系提示。
 - 编辑器首轮：16:9 stage、帧详情侧栏、结果/日志收起、随机点测/拖测、`action_shape`+`action_source`、操作区多边形/全屏反选、runtime exact shape、素材拖动排序、帧分类重命名、live/position 批量测试。
 - 已回退：interface 抽象、`ui-map/`、`Frame.interface_id`、界面图视图（用户裁定不需要）。
