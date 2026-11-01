@@ -2428,16 +2428,16 @@ async function deleteCollection(it) {
 
 async function batchTestAssets() {
   const task = (taskName.value || '').trim();
-  resultEl.textContent = '批量帧测试中…';
+  resultEl.textContent = livePreview ? '批量实时帧测试中…' : '批量位置帧测试中…';
   try {
-    const r = await postJson('/task/assets/batch_test', { task });
+    const r = await postJson('/task/assets/batch_test', { task, live: !!livePreview });
     if (!r.ok) {
       resultEl.textContent = '批量帧测试失败：' + (r.errors || []).join('; ');
       return;
     }
     const rows = r.results || [];
     const lines = rows.map((x) => {
-      const where = x.frame_id == null ? '无帧' : `#${x.frame_id}`;
+      const where = x.frame_source === 'live' ? '实时帧' : (x.frame_id == null ? '无帧' : `#${x.frame_id}`);
       return `${x.pass ? '✅' : '❌'} ${x.id} @ ${where}` +
         (x.score != null ? ` score=${Number(x.score).toFixed(3)}` : '') +
         (x.text ? ` text=${JSON.stringify(x.text)}` : '') +
@@ -2445,7 +2445,7 @@ async function batchTestAssets() {
     });
     resultEl.textContent =
       `批量帧测试：${r.passed}/${r.total} 通过\n` + lines.join('\n');
-    log(`批量帧测试：${r.passed}/${r.total}`);
+    log(`批量帧测试：${r.passed}/${r.total}（${livePreview ? '实时帧' : '位置帧'}）`);
   } catch (e) {
     resultEl.textContent = '批量帧测试异常：' + e;
   }

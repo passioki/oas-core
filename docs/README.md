@@ -25,7 +25,7 @@
 - 当前任务：`tasks/返回庭院`；帧 22 个；**唯一关系 = `Asset.positions`（帧-素材）**。
 - 测试：`cargo test --workspace` = **358 passed / 0 failed**。
 - 已实现：`key`/`restart_app` 前端、两阶段截图、Enter、OCR 缩略图只用位置帧、位置帧可从其他素材继承、帧行关联素材数、只读帧-素材关系浏览器、transition 录制、人工标注、覆盖概览、任务构建关系提示。
-- 编辑器首轮：16:9 stage、帧详情侧栏、结果/日志收起、随机点测/拖测、`action_shape`+`action_source`、操作区多边形/全屏反选、素材拖动排序、帧分类重命名。
+- 编辑器首轮：16:9 stage、帧详情侧栏、结果/日志收起、随机点测/拖测、`action_shape`+`action_source`、操作区多边形/全屏反选、runtime exact shape、素材拖动排序、帧分类重命名、live/position 批量测试。
 - 已回退：interface 抽象、`ui-map/`、`Frame.interface_id`、界面图视图（用户裁定不需要）。
 - 帧安全：清空列表必须确认；清空前自动备份到 `frames/.backup/clear-<时间>/`；31~34 新录制帧已在一次误清空中丢失（不可恢复），22 个 git tracked 帧已恢复。
 

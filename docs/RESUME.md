@@ -21,7 +21,8 @@ status: in_progress
 - 操作区域：`action_shape`（rect/polygon + invert=整个屏幕−区域）+ `action_source` 已落地；旧 `action_roi`/`roi_back` 从代码与当前 assets 数据移除。
 - 已实现测试来源：单素材测试带 `live=1` 或 `frame_id`；批量测试仍按位置帧（live 批量待补）。
 - 已实现：素材拖动排序接口/UI、帧分类重命名接口/UI、点测/拖测随机采样。
-- 待补：runtime 的 `region` 引用仍走 bbox（template/OCR 主点击路径已用 exact shape）；live 批量；真实动作回归。
+- 已完成：runtime template/OCR/region 主点击路径均使用 exact `ClickShape`；批量测试支持 live/position 两种来源。
+- 待补：真实动作回归、任务构建按当前帧过滤、活动页参考帧。
 - 素材关系：唯一关系 = `Asset.positions`；帧行显示关联素材数量；只读关系浏览器显示帧→素材、素材→帧、素材共现、帧共享素材、录制 transition、人工标注与覆盖概览。
 - 位置帧继承：新素材保存区/已有素材位置编辑弹窗都能从其他任务素材追加 `positions`，不新增持久化引用。
 - 帧安全：清空列表必须 `confirm:true`；清空前自动备份到 `frames/.backup/clear-<时间>/`。
@@ -58,11 +59,10 @@ status: in_progress
 
 ## 3. 下一步
 
-1. runtime `region` 引用的 polygon/invert 精确采样；template/OCR 主点击已支持；
-2. 批量测试 live 帧来源；
-3. 真实动作录制回归 + 完整验收；
-4. 任务构建按当前帧过滤素材/推荐 transition；
-5. 活动页参考帧/标注继续补。
+1. 真实动作回归；
+2. 批量 live/position 已验证，后续补 UI 回归；
+3. 任务构建按当前帧过滤素材/推荐 transition；
+4. 活动页参考帧/标注继续补。
 
 ## 4. 约束
 

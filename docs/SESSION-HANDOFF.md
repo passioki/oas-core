@@ -41,11 +41,10 @@
 
 ## 2. 下一步
 
-1. runtime `region` 引用 polygon/invert 精确采样（template/OCR 主点击已 exact）；
-2. live 批量测试；
-3. 真实动作录制回归；
-4. 任务构建进一步关系感知；
-5. 活动页参考帧/标注。
+1. 真实动作回归；
+2. 批量 live/position 已实现并实测；
+3. 任务构建按当前帧过滤素材/推荐 transition；
+4. 活动页参考帧/标注。
 
 ## 3. 活跃的坑
 

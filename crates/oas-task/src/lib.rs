@@ -1011,6 +1011,33 @@ impl TaskBundle {
                         h: roi[3],
                     },
                 );
+                let click_shape = match item.action_shape.as_ref() {
+                    Some(shape) => oas_runtime::ClickShape {
+                        rect: shape.roi.map(|r| oas_types::Rect {
+                            x: r[0],
+                            y: r[1],
+                            w: r[2],
+                            h: r[3],
+                        }),
+                        points: shape.points.as_ref().map(|pts| {
+                            pts.iter()
+                                .map(|p| oas_types::Point { x: p[0], y: p[1] })
+                                .collect()
+                        }),
+                        invert: shape.invert,
+                    },
+                    None => oas_runtime::ClickShape {
+                        rect: Some(oas_types::Rect {
+                            x: roi[0],
+                            y: roi[1],
+                            w: roi[2],
+                            h: roi[3],
+                        }),
+                        points: None,
+                        invert: false,
+                    },
+                };
+                set.set_click_shape(item.id.clone(), click_shape);
                 continue;
             }
             if item.kind != "template" {

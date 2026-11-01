@@ -1,6 +1,6 @@
 # 编辑器 UX / 选择模型改版计划（2026-11-01）
 
-> 状态：**Phase A/C/D 已实现；Phase B 单测已实现；runtime template/OCR 点击已 exact shape，`region` 引用与 live 批量待补**。版本已重置 `0.1.0`。
+> 状态：**Phase A/B/C/D 已实现；runtime template/OCR/region 点击均 exact shape；live/position 批量已实测**。版本 `0.1.0`。
 > 目标：让素材/帧编辑更可维护、测试更可信、画面与操作区域不互相遮挡。
 > 不引入 interface；唯一关系仍是 `Asset.positions`。
 

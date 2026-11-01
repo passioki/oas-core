@@ -2897,6 +2897,16 @@ impl Server {
                     .filter_map(|x| x.as_u64())
                     .collect()
             });
+        let live = v.get("live").and_then(|x| x.as_bool()).unwrap_or(false);
+        let live_frame = if live {
+            let st = self.state.lock().unwrap();
+            match st.live_frame.as_ref() {
+                Some(f) => Some(oas_types::Frame::new(f.width, f.height, f.rgba.clone())),
+                None => return self.send_errors(out, 400, vec!["no live frame yet".into()]),
+            }
+        } else {
+            None
+        };
         let bundle = if global_mode {
             match self.asset_store("") {
                 Ok(b) => b,
@@ -2916,7 +2926,7 @@ impl Server {
             Ok(v) => v,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
-        let frame_meta: std::collections::BTreeMap<u64, (std::path::PathBuf, u32, u32)> = {
+        let mut frame_meta: std::collections::BTreeMap<u64, (std::path::PathBuf, u32, u32)> = {
             let st = self.state.lock().unwrap();
             st.frames
                 .iter()
@@ -2925,6 +2935,13 @@ impl Server {
         };
         let mut decoded: std::collections::BTreeMap<u64, oas_types::Frame> =
             std::collections::BTreeMap::new();
+        if let Some(frame) = &live_frame {
+            frame_meta.insert(
+                u64::MAX,
+                (std::path::PathBuf::new(), frame.width, frame.height),
+            );
+            decoded.insert(u64::MAX, frame.clone());
+        }
         let mut results = Vec::new();
         for item in &af.items {
             if let Some(only) = &only_assets {
@@ -2932,9 +2949,15 @@ impl Server {
                     continue;
                 }
             }
-            let mut frames = item.positions.clone();
-            if let Some(only) = &only_frames {
-                frames.retain(|f| only.contains(f));
+            let mut frames = if live {
+                vec![u64::MAX]
+            } else {
+                item.positions.clone()
+            };
+            if !live {
+                if let Some(only) = &only_frames {
+                    frames.retain(|f| only.contains(f));
+                }
             }
             if frames.is_empty() {
                 results.push(serde_json::json!({
@@ -2969,7 +2992,9 @@ impl Server {
                 }
                 let frame = decoded.get(&fid).expect("decoded");
                 let mut result = serde_json::json!({
-                    "id": item.id, "kind": item.kind, "frame_id": fid,
+                    "id": item.id, "kind": item.kind,
+                    "frame_id": if fid == u64::MAX { serde_json::Value::Null } else { serde_json::json!(fid) },
+                    "frame_source": if fid == u64::MAX { "live" } else { "position" },
                     "frame_width": fw, "frame_height": fh
                 });
                 match item.kind.as_str() {

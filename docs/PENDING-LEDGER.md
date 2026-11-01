@@ -2690,22 +2690,20 @@ Asset.positions = [frame_id, ...]
 
 - 版本号是否从 `1.2.3` 重置到 `0.1.0`（旧 v1.x tag 保留为历史，见 `EDITOR-UX-PLAN.md §14`）。
 
-## 已实现（首轮）
+## 已实现
 
-- 画布 16:9 stage；结果/日志默认收起；帧详情侧栏；
-- 点测/拖测随机采样（action shape 内/反选外）；
-- `ActionShape` + `action_source` schema；`action_roi`/`roi_back` 删除；当前 assets 迁移；
-- 操作区域矩形/多边形/全屏反选 UI；
-- 帧分类重命名、素材拖动排序；
-- 单素材测试 `live`/`frame_id` 来源 + 真实识别 bbox 有效性提示。
+- 画布、帧详情、随机采样、action_shape/action_source、排序、分类；
+- runtime template/OCR/region 主点击 exact shape；
+- 批量测试 live/position 来源；
+- 单测真实识别 bbox 有效性。
 
 ## 待补
 
-- runtime `region` 引用的 polygon/invert 精确采样（template/OCR 主点击已 exact）；
-- live 批量测试；
-- 完整真实动作回归。
+- 真实动作回归；
+- 任务构建按当前帧过滤/推荐；
+- 活动页参考帧。
 
-| 状态 | 🟡 Phase A/C/D 已完成；runtime `region` 精确采样/live 批量待补 |
+| 状态 | ✅ 编辑器 UX/选择模型/实时语义首轮闭环；真实回归待做 |
 
 ---
 

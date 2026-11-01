@@ -52,7 +52,7 @@
 | 恢复节点 | `main` = `385d611`（v1.2.3） |
 | 当前分支 | `dev`（文档/编辑器/任务数据提交；不自动合并 main） |
 | 文档 | 已独立到 `oas-core/docs`；当前设计以 ENGINE-DESIGN + PENDING-LEDGER + RESUME 为准 |
-| 当前计划 | **`EDITOR-UX-PLAN.md`**：已落地画布/帧详情/随机采样、`action_shape`+`action_source`、全屏反选 UI、素材排序、分类重命名；runtime template/OCR 主点击已 exact shape；待补 region 引用/live 批量 |
+| 当前计划 | **`EDITOR-UX-PLAN.md`**：已落地画布/帧详情/随机采样、`action_shape`+`action_source`、全屏反选 UI、runtime exact shape、素材排序、分类重命名、live/position 批量；待补真实回归/build 过滤 |
 | 截图 | 两阶段：点击立即抓取 → 弹窗预览 → 名称/分类 → 保存；无当前帧跳转 |
 | Enter | 输入框 Enter = 确认输入；弹窗 Enter = 保存截图 |
 | 实时操作 | 实时开启时画布单击/拖拽 = tap/swipe；实时暂停 = ROI 编辑 |

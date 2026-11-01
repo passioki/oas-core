@@ -2538,14 +2538,16 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                      (kind: region)"
                                 )
                             })?;
+                            let exact_shape = self.assets.click_shape(sel).cloned();
                             self.observe_screen()?;
                             let (fw, fh) = self
                                 .screen.size()
                                 .ok_or_else(|| "region click: no frame available".to_string())?;
-                            if rect.x < 0
-                                || rect.y < 0
-                                || rect.x + rect.w > fw as i32
-                                || rect.y + rect.h > fh as i32
+                            if exact_shape.is_none()
+                                && (rect.x < 0
+                                    || rect.y < 0
+                                    || rect.x + rect.w > fw as i32
+                                    || rect.y + rect.h > fh as i32)
                             {
                                 evidence.push(format!(
                                     "region `{sel}` rect ({},{},{},{}) is outside the frame ({}x{})",
@@ -2553,7 +2555,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 ));
                                 continue;
                             }
-                            let p = self.random_point_in(rect, 0.15);
+                            let p = match exact_shape.as_ref() {
+                                Some(shape) => shape.sample(fw, fh, &mut self.rng).ok_or_else(|| {
+                                    format!("region `{sel}` exact shape has no sampleable point")
+                                })?,
+                                None => self.random_point_in(rect, 0.15),
+                            };
                             let plan = self.humanize.point_click(p, &mut self.rng);
                             let (actual, _delay) = self.perform_click(
                                 plan,
