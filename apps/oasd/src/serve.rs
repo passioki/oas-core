@@ -281,11 +281,19 @@ pub struct Server {
     det_model: Option<PathBuf>,
     /// Open the editor URL in the default browser once the listener is ready.
     open_browser: bool,
+    /// Test seam: replaces the live device grab so `live=1` can be checked
+    /// without shelling out to adb. Production always captures for real.
+    #[cfg(test)]
+    live_capture_override: Option<Arc<LiveCaptureFn>>,
     #[cfg(feature = "ocr")]
     ocr: Option<Arc<Mutex<oas_ocr::onnx::RecEngine>>>,
     #[cfg(feature = "ocr")]
     det: Option<Arc<Mutex<oas_ocr::det_engine::DetEngine>>>,
 }
+
+/// Test-only replacement for one device grab (serial + frame).
+#[cfg(test)]
+type LiveCaptureFn = dyn Fn() -> Result<(String, Frame), String> + Send + Sync;
 
 /// Grab one device frame (used by the live preview and WebSocket stream).
 fn capture_device_frame(adb: &Adb) -> Result<(String, Frame), String> {
@@ -521,6 +529,8 @@ impl Server {
             ocr_model: None,
             det_model: None,
             open_browser: true,
+            #[cfg(test)]
+            live_capture_override: None,
             #[cfg(feature = "ocr")]
             ocr: None,
             #[cfg(feature = "ocr")]
@@ -532,6 +542,17 @@ impl Server {
     /// the run state machine can be checked without a device).
     pub fn with_run_executor(mut self, executor: Arc<RunExecutor>) -> Self {
         self.run_executor = executor;
+        self
+    }
+
+    /// Test seam: replace the device grab used by `live=1` (no adb in unit
+    /// tests; the production path always captures for real).
+    #[cfg(test)]
+    fn with_live_capture(
+        mut self,
+        capture: impl Fn() -> Result<(String, Frame), String> + Send + Sync + 'static,
+    ) -> Self {
+        self.live_capture_override = Some(Arc::new(capture));
         self
     }
 
@@ -899,26 +920,55 @@ impl Server {
     /// does NOT append to the frame gallery or persist frames.json — only the
     /// explicit 截图/入库 actions do that.
     fn do_live_capture(&self) {
-        match capture_device_frame(&self.adb) {
-            Ok((serial, frame)) => match encode_png(&frame) {
-                Ok(png) => {
-                    let mut st = self.state.lock().unwrap();
-                    st.live_png = Some(png.clone());
-                    st.live_frame = Some(frame.clone());
-                    // Live updates the analysis frame only while no gallery
-                    // frame is selected; otherwise a selected image would be
-                    // silently replaced by the live screen before OCR/match.
-                    if st.current_frame_id.is_none() {
-                        st.png = Some(png);
-                        st.frame = Some(frame);
-                    }
-                    st.device = serial;
-                    st.error = None;
-                }
-                Err(e) => self.set_error(&format!("encode png: {e}")),
-            },
-            Err(e) => self.set_error(&format!("capture failed: {e}")),
+        if let Err(e) = self.live_capture() {
+            self.set_error(&e);
         }
+    }
+
+    /// Grab one **fresh** device frame and publish it as the live frame.
+    ///
+    /// Returns the captured frame so an editor test with `live=1` can use
+    /// exactly the pixels the next `/frame.png?live=1` shows. Errors are
+    /// explicit (`capture failed: …` / `encode png: …`): a stale cached frame
+    /// must never be reported as a successful live result.
+    ///
+    /// The state lock is **not** held across the device grab/PNG encode, so a
+    /// slow adb screencap cannot block the 500 ms `/state` poll.
+    fn live_capture(&self) -> Result<Frame, String> {
+        let (serial, frame) = self
+            .grab_device_frame()
+            .map_err(|e| format!("capture failed: {e}"))?;
+        self.publish_live_frame(serial, frame)
+    }
+
+    /// One device grab for the live preview. Test builds substitute a fake
+    /// frame; production goes through adb.
+    fn grab_device_frame(&self) -> Result<(String, Frame), String> {
+        #[cfg(test)]
+        {
+            if let Some(capture) = self.live_capture_override.as_ref() {
+                return capture();
+            }
+        }
+        capture_device_frame(&self.adb)
+    }
+
+    /// Publish a captured frame as the live frame (memory only) and return it.
+    fn publish_live_frame(&self, serial: String, frame: Frame) -> Result<Frame, String> {
+        let png = encode_png(&frame).map_err(|e| format!("encode png: {e}"))?;
+        let mut st = self.state.lock().unwrap();
+        st.live_png = Some(png.clone());
+        st.live_frame = Some(frame.clone());
+        // Live updates the analysis frame only while no gallery frame is
+        // selected; otherwise a selected image would be silently replaced by
+        // the live screen before OCR/match.
+        if st.current_frame_id.is_none() {
+            st.png = Some(png);
+            st.frame = Some(frame.clone());
+        }
+        st.device = serial;
+        st.error = None;
+        Ok(frame)
     }
 
     fn capture_device_png(&self) -> Result<(Vec<u8>, u32, u32), String> {
@@ -1666,7 +1716,7 @@ impl Server {
 
     /// Resolve the frame used by an editor test.
     ///
-    /// - `live=1` → the latest live-preview frame;
+    /// - `live=1` → a **fresh** live capture (updates the preview as well);
     /// - `frame_id=<id>` → that persisted position frame;
     /// - otherwise → the current analysis frame.
     fn frame_for_test(&self, q: &[(String, String)]) -> Result<(Frame, String), String> {
@@ -1687,12 +1737,11 @@ impl Server {
             }
         }
         if live {
-            let st = self.state.lock().unwrap();
-            return st
-                .live_frame
-                .as_ref()
-                .map(|f| (Frame::new(f.width, f.height, f.rgba.clone()), "live".to_string()))
-                .ok_or_else(|| "no live frame yet".to_string());
+            // `live=1` must grab a real frame. Returning the cached
+            // `state.live_frame` silently tested whatever was on screen at the
+            // last preview poll, so "实时" OCR/match reported stale results.
+            // Capture failures become an explicit error instead.
+            return self.live_capture().map(|f| (f, "live".to_string()));
         }
         if let Some(id) = frame_id {
             let path = {
@@ -2509,41 +2558,26 @@ impl Server {
         };
         // §22.10: optional polygon (frame coords, ≥3 points) — validated by
         // oas-task (which also derives roi = its bounding box).
-        let polygon = match v.get("polygon") {
-            None => None,
-            Some(x) => {
-                let arr = match x.as_array() {
-                    Some(a) => a,
-                    None => {
-                        return self.send_errors(
-                            out,
-                            400,
-                            vec!["`polygon` must be an array of [x,y] integer pairs".to_string()],
-                        )
-                    }
-                };
-                let mut pts: Vec<[i32; 2]> = Vec::with_capacity(arr.len());
-                for (i, item) in arr.iter().enumerate() {
-                    let pair = item.as_array().filter(|a| a.len() == 2);
-                    let parsed = pair.and_then(|a| Some((a[0].as_i64()?, a[1].as_i64()?)));
-                    match parsed {
-                        Some((x, y))
-                            if (i32::MIN as i64..=i32::MAX as i64).contains(&x)
-                                && (i32::MIN as i64..=i32::MAX as i64).contains(&y) =>
-                        {
-                            pts.push([x as i32, y as i32])
-                        }
-                        _ => {
-                            return self.send_errors(
-                                out,
-                                400,
-                                vec![format!("`polygon[{i}]` must be an [x,y] pair of integers")],
-                            )
-                        }
-                    }
-                }
-                Some(pts)
-            }
+        let polygon = match json_opt_polygon_field(&v, "polygon") {
+            Ok(p) => p,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        // v1.2.1 OCR provenance. This route used to hardcode these three to
+        // `None`, so saving one OCR row (instead of a batch) silently lost
+        // `ocr_mode="lines"` + the expected text. Parse them here so the editor
+        // can persist an OCR line's semantics together with its recognition
+        // polygon; all cross-field rules stay in `oas_task::save_asset`.
+        let ocr_mode = match json_opt_str_field(&v, "ocr_mode") {
+            Ok(s) => s,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let ocr_source_roi = match json_opt_roi_field(&v, "ocr_source_roi") {
+            Ok(r) => r,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let ocr_text = match json_opt_str_field(&v, "ocr_text") {
+            Ok(s) => s,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
         };
         let positions = match v.get("positions") {
             None => Vec::new(),
@@ -2626,9 +2660,9 @@ impl Server {
             roi: Some(roi),
             action_shape,
             action_source,
-            ocr_mode: None,
-            ocr_source_roi: None,
-            ocr_text: None,
+            ocr_mode,
+            ocr_source_roi,
+            ocr_text,
             threshold,
             polygon,
             rev: None,
@@ -3640,31 +3674,41 @@ impl Server {
                 .trim()
                 .to_string();
             let threshold = item.get("threshold").and_then(|x| x.as_f64()).map(|t| t as f32);
-            let ocr_mode = item.get("ocr_mode").and_then(|x| x.as_str()).map(|s| s.to_string());
-            let ocr_source_roi = match item.get("ocr_source_roi") {
-                None => None,
-                Some(x) => {
-                    let arr = x.as_array().filter(|a| a.len() == 4);
-                    let Some(a) = arr else {
-                        errors.push(format!("{p}.ocr_source_roi: must be [x,y,w,h]"));
-                        continue;
-                    };
-                    let mut r = [0i32; 4];
-                    let mut ok = true;
-                    for (j, v) in a.iter().enumerate() {
-                        match v.as_i64() {
-                            Some(n) => r[j] = n as i32,
-                            None => ok = false,
-                        }
-                    }
-                    if !ok {
-                        errors.push(format!("{p}.ocr_source_roi: values must be integers"));
-                        continue;
-                    }
-                    Some(r)
+            // Same optional fields/shape as the single-asset route. `null` means
+            // "absent"; a wrong JSON type is an error instead of being dropped.
+            let ocr_mode = match json_opt_str_field(item, "ocr_mode") {
+                Ok(s) => s,
+                Err(e) => {
+                    errors.push(format!("{p}.ocr_mode: {e}"));
+                    continue;
                 }
             };
-            let ocr_text = item.get("ocr_text").and_then(|x| x.as_str()).map(|s| s.to_string());
+            let ocr_source_roi = match json_opt_roi_field(item, "ocr_source_roi") {
+                Ok(r) => r,
+                Err(e) => {
+                    errors.push(format!("{p}.ocr_source_roi: {e}"));
+                    continue;
+                }
+            };
+            let ocr_text = match json_opt_str_field(item, "ocr_text") {
+                Ok(s) => s,
+                Err(e) => {
+                    errors.push(format!("{p}.ocr_text: {e}"));
+                    continue;
+                }
+            };
+            // v1.2.3 recognition polygon: this route used to hardcode `None`,
+            // so the batch save (the route OCR rows use to keep
+            // ocr_mode/ocr_text) silently dropped a drawn recognition mask.
+            // Parsed/validated exactly like the single-asset route; oas-task
+            // derives roi from the polygon bbox and rejects bad geometry.
+            let polygon = match json_opt_polygon_field(item, "polygon") {
+                Ok(p) => p,
+                Err(e) => {
+                    errors.push(format!("{p}.polygon: {e}"));
+                    continue;
+                }
+            };
             let positions = match item.get("positions") {
                 None => Vec::new(),
                 Some(x) => match x.as_array() {
@@ -3704,7 +3748,7 @@ impl Server {
                 ocr_source_roi,
                 ocr_text,
                 threshold,
-                polygon: None,
+                polygon,
                 rev: None,
                 positions,
             });
@@ -5505,6 +5549,83 @@ fn json_roi_field(v: &serde_json::Value) -> Result<[i32; 4], String> {
     Ok(out)
 }
 
+/// Optional string field. `null`/absent = `None`; any other non-string type is
+/// a client error rather than a silently dropped value.
+fn json_opt_str_field(v: &serde_json::Value, key: &str) -> Result<Option<String>, String> {
+    match v.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(x) => x
+            .as_str()
+            .map(|s| Some(s.to_string()))
+            .ok_or_else(|| format!("`{key}` must be a string")),
+    }
+}
+
+/// Optional `[x,y,w,h]` (i32) field, e.g. `ocr_source_roi`. `null`/absent =
+/// `None`; out-of-range integers are rejected, never truncated.
+fn json_opt_roi_field(
+    v: &serde_json::Value,
+    key: &str,
+) -> Result<Option<[i32; 4]>, String> {
+    let Some(x) = v.get(key) else {
+        return Ok(None);
+    };
+    if x.is_null() {
+        return Ok(None);
+    }
+    let arr = x
+        .as_array()
+        .filter(|a| a.len() == 4)
+        .ok_or_else(|| format!("`{key}` must be exactly 4 integers [x,y,w,h]"))?;
+    let mut out = [0i32; 4];
+    for (i, item) in arr.iter().enumerate() {
+        let n = item
+            .as_i64()
+            .ok_or_else(|| format!("`{key}[{i}]` must be an integer"))?;
+        out[i] = i32::try_from(n).map_err(|_| format!("`{key}[{i}]` = {n} does not fit in i32"))?;
+    }
+    Ok(Some(out))
+}
+
+/// Optional polygon (frame coords) as `[[x,y], ...]`. `null`/absent = `None`.
+///
+/// Only the JSON shape is checked here; geometry rules (≥3 points, no repeated
+/// vertex/zero area/self-intersection, inside the frame) are enforced once, in
+/// `oas_task::save_asset`, for both the single and the batch save routes.
+fn json_opt_polygon_field(
+    v: &serde_json::Value,
+    key: &str,
+) -> Result<Option<Vec<[i32; 2]>>, String> {
+    let Some(x) = v.get(key) else {
+        return Ok(None);
+    };
+    if x.is_null() {
+        return Ok(None);
+    }
+    let arr = x
+        .as_array()
+        .ok_or_else(|| format!("`{key}` must be an array of [x,y] integer pairs"))?;
+    let mut pts: Vec<[i32; 2]> = Vec::with_capacity(arr.len());
+    for (i, item) in arr.iter().enumerate() {
+        let pair = item.as_array().filter(|a| a.len() == 2);
+        let parsed = pair.and_then(|a| Some((a[0].as_i64()?, a[1].as_i64()?)));
+        match parsed {
+            Some((x, y))
+                if (i32::MIN as i64..=i32::MAX as i64).contains(&x)
+                    && (i32::MIN as i64..=i32::MAX as i64).contains(&y) =>
+            {
+                pts.push([x as i32, y as i32])
+            }
+            _ => {
+                return Err(format!(
+                    "`{key}[{i}]` must be an [x,y] pair of integers"
+                ))
+            }
+        }
+    }
+    Ok(Some(pts))
+}
+
 /// Optional operation geometry. `action_shape` is the only accepted field;
 /// `action_roi`/`roi_back` are deliberately gone (no legacy compatibility).
 fn json_opt_action_shape(
@@ -6947,6 +7068,17 @@ mod tests {
             .expect("valid json")
     }
 
+    /// Upload a PNG frame through the real `/frames` route, return its gallery id.
+    fn upload_test_frame(server: &Server, frame: &Frame) -> u64 {
+        let png = oas_codec::encode_png(frame).expect("encode test frame");
+        let (status, out) = post_route(server, "/frames", "image/png", &png);
+        assert!(status.contains("200"), "frame upload: {status} {out}");
+        serde_json::from_str::<serde_json::Value>(&out)
+            .expect("upload json")["id"]
+            .as_u64()
+            .expect("frame id")
+    }
+
     fn source_entries(dir: &Path) -> Vec<String> {
         match std::fs::read_dir(dir) {
             Ok(rd) => rd
@@ -7456,10 +7588,450 @@ mod tests {
     }
 
     #[test]
+    fn frame_for_test_live_captures_fresh_instead_of_the_cached_frame() {
+        // Bug: `live=1` returned `state.live_frame` (whatever the last preview
+        // poll saw), so a "实时" OCR/match tested a stale screen.
+        let td = TempDir::new("live-capture-fresh");
+        let fresh_rgba = vec![9u8; 4 * 3 * 4];
+        let expected = fresh_rgba.clone();
+        let server = server_with_runs(td.path()).with_live_capture(move || {
+            Ok(("fake-serial".to_string(), Frame::new(4, 3, fresh_rgba.clone())))
+        });
+        // Seed a cached live frame that must NOT be returned.
+        {
+            let mut st = server.state.lock().unwrap();
+            st.live_frame = Some(Frame::new(2, 2, vec![1u8; 2 * 2 * 4]));
+            st.live_png = Some(vec![0xAA]);
+        }
+        let q = vec![("live".to_string(), "1".to_string())];
+        let (frame, source) = server.frame_for_test(&q).expect("live capture");
+        assert_eq!(source, "live");
+        assert_eq!((frame.width, frame.height), (4, 3));
+        assert_eq!(frame.rgba, expected);
+
+        let st = server.state.lock().unwrap();
+        let live = st.live_frame.as_ref().expect("published live frame");
+        assert_eq!((live.width, live.height), (4, 3), "cache refreshed");
+        assert_eq!(live.rgba, expected);
+        assert_eq!(st.device, "fake-serial");
+        assert!(st.live_png.is_some(), "live preview PNG refreshed");
+        // No gallery frame is selected, so the analysis frame follows live.
+        assert_eq!(
+            st.frame.as_ref().map(|f| (f.width, f.height)),
+            Some((4, 3))
+        );
+    }
+
+    #[test]
+    fn frame_for_test_live_reports_capture_failure_without_stale_fallback() {
+        let td = TempDir::new("live-capture-fail");
+        let server = server_with_runs(td.path())
+            .with_live_capture(|| Err("no adb device attached (fake)".to_string()));
+        {
+            let mut st = server.state.lock().unwrap();
+            st.live_frame = Some(Frame::new(2, 2, vec![1u8; 2 * 2 * 4]));
+        }
+        let q = vec![("live".to_string(), "1".to_string())];
+        let err = server.frame_for_test(&q).expect_err("capture failure");
+        assert!(err.contains("capture failed"), "{err}");
+        assert!(err.contains("no adb device"), "{err}");
+        // The cached frame is left untouched; it is never reported as a result.
+        assert_eq!(
+            server
+                .state
+                .lock()
+                .unwrap()
+                .live_frame
+                .as_ref()
+                .map(|f| f.width),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn frame_png_live_uses_the_same_fresh_capture() {
+        let td = TempDir::new("live-png");
+        let server = server_with_runs(td.path()).with_live_capture(|| {
+            Ok(("fake".to_string(), Frame::new(3, 2, vec![7u8; 3 * 2 * 4])))
+        });
+        let (status, body) = get_route(&server, "/frame.png?live=1");
+        assert!(status.contains("200"), "{status} {body}");
+        let st = server.state.lock().unwrap();
+        assert_eq!(
+            st.live_frame.as_ref().map(|f| (f.width, f.height)),
+            Some((3, 2))
+        );
+        assert!(st.live_png.as_ref().is_some_and(|p| !p.is_empty()));
+    }
+
+    #[test]
+    fn save_asset_persists_ocr_mode_text_and_recognition_polygon() {
+        // Bug: /task/save_asset hardcoded ocr_mode/ocr_text/polygon to None, so
+        // one OCR row could never round-trip `lines` semantics + its mask.
+        let td = TempDir::new("save-ocr-polygon");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path())
+            .with_frames_dir(td.path().join("frames"))
+            .with_assets_dir(td.path().join("assets"));
+        make_task(&tasks_dir, "t1");
+        let frame_id = upload_test_frame(&server, &Frame::new(64, 48, vec![255u8; 64 * 48 * 4]));
+        let polygon = serde_json::json!([[12, 12], [40, 12], [40, 30], [12, 30]]);
+        let payload = serde_json::json!({
+            "task": "t1",
+            "id": "开始行",
+            "kind": "ocr_line",
+            "roi": [10, 10, 30, 12],
+            "positions": [frame_id],
+            "ocr_mode": "lines",
+            "ocr_text": "开始",
+            "polygon": polygon,
+            // The existing operation-region path must keep working together
+            // with the recognition polygon and the OCR provenance.
+            "action_shape": {"kind": "rect", "roi": [12, 12, 29, 19], "invert": false},
+            "action_source": "fixed",
+        });
+        let (status, out) = post_route(
+            &server,
+            "/task/save_asset",
+            "application/json",
+            payload.to_string().as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("save json");
+        let item = &v["item"];
+        assert_eq!(item["ocr_mode"], "lines", "{out}");
+        assert_eq!(item["ocr_text"], "开始", "{out}");
+        assert_eq!(item["polygon"], polygon, "{out}");
+        // §22.10: oas-task derives the recognition roi from the polygon bbox.
+        assert_eq!(item["roi"], serde_json::json!([12, 12, 29, 19]), "{out}");
+        assert_eq!(item["action_source"], "fixed", "{out}");
+        assert_eq!(item["action_shape"]["kind"], "rect", "{out}");
+        assert_eq!(
+            item["action_shape"]["roi"],
+            serde_json::json!([12, 12, 29, 19]),
+            "{out}"
+        );
+
+        // Persisted, not just echoed back in the response.
+        let saved = read_json(&tasks_dir.join("t1").join("assets.json"));
+        let saved_item = saved["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|a| a["id"] == "开始行")
+            .expect("saved asset");
+        assert_eq!(saved_item["ocr_mode"], "lines");
+        assert_eq!(saved_item["ocr_text"], "开始");
+        assert_eq!(saved_item["polygon"], polygon);
+        assert_eq!(saved_item["action_source"], "fixed");
+        assert_eq!(saved_item["action_shape"]["kind"], "rect");
+    }
+
+    #[test]
+    fn save_asset_ocr_polygon_works_in_global_asset_mode() {
+        // The deployed editor runs against the unified global store, so the new
+        // fields must reach THAT manifest too (not only a task bundle).
+        let td = TempDir::new("global-ocr-polygon");
+        let assets_dir = td.path().join("assets");
+        std::fs::create_dir_all(&assets_dir).expect("assets dir");
+        std::fs::write(
+            assets_dir.join("assets.json"),
+            r#"{"schema_version":1,"design_resolution":[64,48]}"#,
+        )
+        .expect("global manifest");
+        let server = server_with_tasks(td.path())
+            .with_frames_dir(td.path().join("frames"))
+            .with_assets_dir(assets_dir.clone());
+        assert!(server.using_global_assets(), "global mode must be active");
+        let frame_id = upload_test_frame(&server, &Frame::new(64, 48, vec![0u8; 64 * 48 * 4]));
+        let payload = serde_json::json!({
+            "task": "",
+            "id": "全局行",
+            "kind": "ocr_line",
+            "roi": [10, 10, 30, 12],
+            "positions": [frame_id],
+            "ocr_mode": "lines",
+            "ocr_text": "全局",
+            "polygon": [[12, 12], [40, 12], [40, 30], [12, 30]],
+        });
+        let (status, out) = post_route(
+            &server,
+            "/task/save_asset",
+            "application/json",
+            payload.to_string().as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let saved = read_json(&assets_dir.join("assets.json"));
+        let item = saved["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|a| a["id"] == "全局行")
+            .expect("global asset");
+        assert_eq!(item["ocr_mode"], "lines");
+        assert_eq!(item["ocr_text"], "全局");
+        assert_eq!(
+            item["polygon"],
+            serde_json::json!([[12, 12], [40, 12], [40, 30], [12, 30]])
+        );
+        assert_eq!(item["roi"], serde_json::json!([12, 12, 29, 19]));
+    }
+
+    #[test]
+    fn save_assets_batch_persists_ocr_polygons() {
+        let td = TempDir::new("batch-ocr-polygon");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path())
+            .with_frames_dir(td.path().join("frames"))
+            .with_assets_dir(td.path().join("assets"));
+        make_task(&tasks_dir, "t1");
+        let frame_id = upload_test_frame(&server, &Frame::new(64, 48, vec![128u8; 64 * 48 * 4]));
+        let payload = serde_json::json!({
+            "task": "t1",
+            "assets": [
+                {
+                    "id": "行一",
+                    "kind": "ocr_line",
+                    "roi": [10, 10, 30, 12],
+                    "positions": [frame_id],
+                    "ocr_mode": "lines",
+                    "ocr_text": "开始",
+                    "polygon": [[12, 12], [40, 12], [40, 30], [12, 30]],
+                    "action_shape": {"kind": "rect", "roi": [12, 12, 29, 19], "invert": false},
+                    "action_source": "fixed",
+                },
+                {
+                    "id": "行二",
+                    "kind": "ocr_line",
+                    "roi": [5, 5, 20, 10],
+                    "positions": [frame_id],
+                    "ocr_mode": "lines",
+                    "ocr_text": "结束",
+                    "polygon": [[6, 6], [24, 6], [24, 16], [6, 16]],
+                    "action_shape": {"kind": "rect", "roi": [6, 6, 19, 11], "invert": false},
+                    "action_source": "fixed",
+                }
+            ]
+        });
+        let (status, out) = post_route(
+            &server,
+            "/task/save_assets",
+            "application/json",
+            payload.to_string().as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("batch json");
+        let saved = v["saved"].as_array().expect("saved");
+        assert_eq!(saved.len(), 2, "{out}");
+        let expected = [
+            (
+                "行一",
+                "开始",
+                serde_json::json!([[12, 12], [40, 12], [40, 30], [12, 30]]),
+                serde_json::json!([12, 12, 29, 19]),
+            ),
+            (
+                "行二",
+                "结束",
+                serde_json::json!([[6, 6], [24, 6], [24, 16], [6, 16]]),
+                serde_json::json!([6, 6, 19, 11]),
+            ),
+        ];
+        for (item, (id, text, poly, roi)) in saved.iter().zip(expected) {
+            assert_eq!(item["id"], id, "{out}");
+            assert_eq!(item["ocr_mode"], "lines", "{out}");
+            assert_eq!(item["ocr_text"], text, "{out}");
+            assert_eq!(item["polygon"], poly, "{out}");
+            assert_eq!(item["roi"], roi, "{out}");
+            // The operation-region fields ride along untouched.
+            assert_eq!(item["action_source"], "fixed", "{out}");
+            assert_eq!(item["action_shape"]["kind"], "rect", "{out}");
+        }
+        let persisted = read_json(&tasks_dir.join("t1").join("assets.json"));
+        let items = persisted["items"].as_array().expect("items");
+        assert_eq!(items.len(), 2);
+        assert!(
+            items.iter().all(|a| a["ocr_mode"] == "lines"
+                && a["polygon"].is_array()
+                && a["action_source"] == "fixed"),
+            "{persisted}"
+        );
+    }
+
+    #[test]
+    fn save_asset_rejects_an_invalid_polygon() {
+        let td = TempDir::new("save-bad-polygon");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path())
+            .with_frames_dir(td.path().join("frames"))
+            .with_assets_dir(td.path().join("assets"));
+        make_task(&tasks_dir, "t1");
+        let frame_id = upload_test_frame(&server, &Frame::new(64, 48, vec![0u8; 64 * 48 * 4]));
+        let base = serde_json::json!({
+            "task": "t1",
+            "id": "坏多边形",
+            "kind": "ocr_line",
+            "roi": [4, 4, 20, 10],
+            "positions": [frame_id],
+        });
+        let cases = [
+            // JSON-shape errors (serve layer).
+            (
+                serde_json::json!("not-an-array"),
+                "must be an array of [x,y] integer pairs",
+            ),
+            (
+                serde_json::json!([[1, 2, 3]]),
+                "must be an [x,y] pair of integers",
+            ),
+            // Geometry errors (oas-task: >= 3 points, inside the frame).
+            (serde_json::json!([[1, 1], [10, 10]]), ">= 3 points"),
+            (
+                serde_json::json!([[0, 0], [100, 0], [100, 100]]),
+                "outside the 64x48 frame",
+            ),
+        ];
+        for (polygon, expected) in cases {
+            let mut payload = base.clone();
+            payload["polygon"] = polygon.clone();
+            let (status, out) = post_route(
+                &server,
+                "/task/save_asset",
+                "application/json",
+                payload.to_string().as_bytes(),
+            );
+            assert!(
+                status.contains("400"),
+                "polygon={polygon} => {status} {out}"
+            );
+            assert!(out.contains(expected), "polygon={polygon} => {out}");
+        }
+        // Rejected saves write nothing.
+        let assets = read_json(&tasks_dir.join("t1").join("assets.json"));
+        assert_eq!(
+            assets["items"].as_array().map(|a| a.len()),
+            Some(0),
+            "{assets}"
+        );
+    }
+
+    #[test]
+    fn save_assets_batch_rejects_an_invalid_polygon() {
+        let td = TempDir::new("batch-bad-polygon");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path())
+            .with_frames_dir(td.path().join("frames"))
+            .with_assets_dir(td.path().join("assets"));
+        make_task(&tasks_dir, "t1");
+        let frame_id = upload_test_frame(&server, &Frame::new(64, 48, vec![0u8; 64 * 48 * 4]));
+        // Parse-level rejection: the item index must be reported.
+        let bad_shape = serde_json::json!({
+            "task": "t1",
+            "assets": [{
+                "id": "坏多边形",
+                "kind": "ocr_line",
+                "roi": [4, 4, 20, 10],
+                "positions": [frame_id],
+                "polygon": "nope",
+            }]
+        });
+        let (status, out) = post_route(
+            &server,
+            "/task/save_assets",
+            "application/json",
+            bad_shape.to_string().as_bytes(),
+        );
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("assets[0].polygon"), "{out}");
+        // Geometry rejection: oas-task owns the polygon rules.
+        let bad_geometry = serde_json::json!({
+            "task": "t1",
+            "assets": [{
+                "id": "坏多边形",
+                "kind": "ocr_line",
+                "roi": [4, 4, 20, 10],
+                "positions": [frame_id],
+                "ocr_mode": "lines",
+                "ocr_text": "坏",
+                "polygon": [[1, 1], [20, 1]],
+            }]
+        });
+        let (status, out) = post_route(
+            &server,
+            "/task/save_assets",
+            "application/json",
+            bad_geometry.to_string().as_bytes(),
+        );
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("polygon needs >= 3 points"), "{out}");
+        // A rejected batch writes nothing (all-or-nothing).
+        let assets = read_json(&tasks_dir.join("t1").join("assets.json"));
+        assert_eq!(
+            assets["items"].as_array().map(|a| a.len()),
+            Some(0),
+            "{assets}"
+        );
+    }
+
+    #[test]
+    fn optional_ocr_and_polygon_fields_parse_strictly() {
+        let v = serde_json::json!({
+            "ocr_mode": "lines",
+            "ocr_text": "开始",
+            "ocr_source_roi": [1, 2, 30, 40],
+        });
+        assert_eq!(
+            json_opt_str_field(&v, "ocr_mode").unwrap().as_deref(),
+            Some("lines")
+        );
+        assert_eq!(
+            json_opt_str_field(&v, "ocr_text").unwrap().as_deref(),
+            Some("开始")
+        );
+        assert_eq!(
+            json_opt_roi_field(&v, "ocr_source_roi").unwrap(),
+            Some([1, 2, 30, 40])
+        );
+        // Absent/null = unused (the editor may send null explicitly).
+        let empty = serde_json::json!({
+            "ocr_mode": null,
+            "polygon": null,
+            "ocr_source_roi": null,
+        });
+        assert_eq!(json_opt_str_field(&empty, "ocr_mode").unwrap(), None);
+        assert_eq!(json_opt_polygon_field(&empty, "polygon").unwrap(), None);
+        assert_eq!(json_opt_roi_field(&empty, "ocr_source_roi").unwrap(), None);
+        // Wrong types are errors, never silently dropped.
+        let bad = serde_json::json!({
+            "ocr_mode": 1,
+            "polygon": "x",
+            "ocr_source_roi": [1, 2, 3],
+        });
+        assert!(json_opt_str_field(&bad, "ocr_mode")
+            .unwrap_err()
+            .contains("must be a string"));
+        assert!(json_opt_polygon_field(&bad, "polygon")
+            .unwrap_err()
+            .contains("must be an array"));
+        assert!(json_opt_roi_field(&bad, "ocr_source_roi")
+            .unwrap_err()
+            .contains("4 integers"));
+        // Out-of-i32 values must be rejected, not truncated.
+        let huge = serde_json::json!({"ocr_source_roi": [0, 0, 4294967296i64, 10]});
+        assert!(json_opt_roi_field(&huge, "ocr_source_roi")
+            .unwrap_err()
+            .contains("does not fit in i32"));
+        let huge_poly = serde_json::json!({"polygon": [[0, 0], [10, 0], [10, 4294967296i64]]});
+        assert!(json_opt_polygon_field(&huge_poly, "polygon").is_err());
+    }
+
+    #[test]
     fn asset_match_route_returns_400_for_invalid_frame_id() {
         let td = TempDir::new("frame-id-http");
         let tasks_dir = td.path().join("tasks");
-        let server = server_with_tasks(td.path()).with_assets_dir(td.path().join("assets"));
+        let server = server_with_tasks(td.path())
+            .with_assets_dir(td.path().join("assets"))
+            .with_live_capture(|| Err("no adb device attached (fake)".to_string()));
         make_task(&tasks_dir, "t1");
         let bundle = oas_task::TaskBundle::open_named(&tasks_dir, "t1").expect("bundle");
         // `make_task` authors the skeleton at 1280x720, so the template frame
@@ -7474,9 +8046,16 @@ mod tests {
         for url in [
             "/task/asset/match?task=t1&id=tpl&frame_id=abc",
             "/task/asset/match?task=t1&id=tpl&frame_id=999",
+            // live=1 must force a capture; a failure is a 400, never a stale
+            // cached frame reported as a successful live test.
+            "/task/asset/match?task=t1&id=tpl&live=1",
         ] {
             let (status, body) = get_route(&server, url);
             assert!(status.contains("400"), "{url} => {status} {body}");
+            if url.contains("live=1") {
+                assert!(body.contains("capture failed"), "{body}");
+                assert!(body.contains("no adb device"), "{body}");
+            }
         }
     }
 

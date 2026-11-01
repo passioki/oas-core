@@ -15,15 +15,8 @@ const btnClear = document.getElementById('btn-clear');
 const btnLines = document.getElementById('btn-lines');
 const linesList = document.getElementById('lines-list');
 const btnMatch = document.getElementById('btn-match');
-const btnMatchSave = document.getElementById('btn-match-save');
-const btnAsset = document.getElementById('btn-asset');
-const assetId = document.getElementById('asset-id');
-const assetKind = document.getElementById('asset-kind');
 const taskName = document.getElementById('task-name');
 const btnSaveAsset = document.getElementById('btn-save-asset');
-const flowJson = document.getElementById('flow-json');
-const btnSaveFlow = document.getElementById('btn-save-flow');
-const assetsSummary = document.getElementById('assets-summary');
 const btnClickStep = document.getElementById('btn-click-step');
 const btnAppendStep = document.getElementById('btn-append-step');
 const btnRegionClick = document.getElementById('btn-region-click');
@@ -81,17 +74,10 @@ let lastRelationsTask = '';
 let captureNamePicker = null;
 let captureCategoryPicker = null;
 let captureBusy = false;
-// §22.28 顶部标题行：结果/日志抽屉 + 任务素材列表
-const btnResultToggle = document.getElementById('btn-result-toggle');
-const btnLogToggle = document.getElementById('btn-log-toggle');
-const hdrDrawers = document.getElementById('hdr-drawers');
-const resultPop = document.getElementById('result-pop');
-const logPop = document.getElementById('log-pop');
+// §22.28 任务素材列表（搜索 + 分类筛选）
 const assetSearch = document.getElementById('asset-search');
 const assetCategoryFilter = document.getElementById('asset-category-filter');
 const assetsList = document.getElementById('assets-list');
-const taskRefAssets = document.getElementById('task-ref-assets');
-const taskRefAssetsTask = document.getElementById('task-ref-assets-task');
 const assetPositionPicker = document.getElementById('asset-position-picker');
 const assetPositionInheritHost = document.getElementById('asset-position-inherit-host');
 const assetPositionList = document.getElementById('asset-position-list');
@@ -112,15 +98,6 @@ const btnClicksOverlay = document.getElementById('btn-clicks-overlay');
 const btnClicksClear = document.getElementById('btn-clicks-clear');
 const clickStats = document.getElementById('click-stats');
 const clicksStatus = document.getElementById('clicks-status');
-// §22.18 visual flow editor
-const flowOp = document.getElementById('flow-op');
-const flowSteps = document.getElementById('flow-steps');
-const flowInterrupts = document.getElementById('flow-interrupts');
-const btnFlowAddStep = document.getElementById('flow-add-step');
-const btnFlowFromJson = document.getElementById('flow-from-json');
-const btnFlowToJson = document.getElementById('flow-to-json');
-const btnFlowSaveViz = document.getElementById('flow-save-viz');
-const btnFlowAddInterrupt = document.getElementById('flow-add-interrupt');
 // §22.19 long-run stats
 const btnStatsRefresh = document.getElementById('btn-stats-refresh');
 const statsSummary = document.getElementById('stats-summary');
@@ -130,6 +107,10 @@ const statsSummary = document.getElementById('stats-summary');
 const btnLibraryRefresh = document.getElementById('btn-library-refresh');
 const globalAssetsStatus = document.getElementById('global-assets-status');
 const globalAssetsList = document.getElementById('global-assets-list');
+// Same two controls the task library has, scoped to the global cache:
+// #global-asset-search (id search) and #global-asset-category-filter (category).
+const globalAssetSearch = document.getElementById('global-asset-search');
+const globalAssetCategoryFilter = document.getElementById('global-asset-category-filter');
 const taskAssetsHint = document.getElementById('task-assets-hint');
 const taskShowAllAssetsEl = document.getElementById('task-show-all-assets');
 // Backend global mode labels /task/assets with this task field; the frontend
@@ -210,7 +191,6 @@ let liveReconnectTimer = null;
 let liveInputDrag = null;
 let roi = null; // {x,y,w,h} 识别框（前端识别/裁剪区域）
 let roiBack = null; // v1.2 操作区域矩形（保存为 action_shape）；null = 默认识别区域
-let lastMatch = null; // v1.2.2: last image-match result; save-with-action-region source
 let backMode = false; // 正在绘制操作区域
 let actionPoly = null; // 操作区域多边形顶点
 let actionPolyClosed = false;
@@ -234,24 +214,15 @@ let pendingActionAsset = null; // existing asset whose operation region is being
 let taskShowAllAssets = false;
 let assetsGlobalMode = false; // last /task/assets response was the global store
 let globalAssetsCache = []; // full global library rows (items + collections)
-const btnAssetConflicts = document.getElementById('btn-asset-conflicts');
-const assetConflicts = document.getElementById('asset-conflicts');
-const btnAssetsMigrate = document.getElementById('btn-assets-migrate');
-const assetsMigrateStatus = document.getElementById('assets-migrate-status');
 const batchStatus = document.getElementById('batch-status');
 // N4 click-distribution state (§21): the run list, the loaded points + metrics,
 // and a cached offscreen bitmap so draw() stays cheap.
 let runs = [];
 let clickData = null; // {file, clicks, distinct, points}
 let clickOverlay = null;
-// §22.18 visual flow editor model: {name, steps:[{op,argsText}], interrupts:[{detect,action}]}
-let flowModel = { name: '', steps: [], interrupts: [] };
-let taskFlowRaw = null;
 // §22.28 任务素材列表（分组/搜索/行内测试）
 let taskAssets = [];
 let taskAssetsMeta = {};
-let resultOpen = false;
-let logOpen = false;
 // §22.22: serve 能力位（OCR 模型是否就绪），避免"无模型/无 feature 构建"静默 501
 let ocrReady = true;
 let detReady = true;
@@ -543,7 +514,6 @@ function updateRoiLabel() {
     btnOcr.disabled = true;
     btnLines.disabled = true;
     if (btnMatch) btnMatch.disabled = true;
-    if (btnAsset) btnAsset.disabled = true;
     if (btnRegionClick) btnRegionClick.disabled = true;
     if (btnRegionDrag) btnRegionDrag.disabled = true;
     if (btnRegionSave) btnRegionSave.disabled = true;
@@ -559,7 +529,6 @@ function updateRoiLabel() {
   if (btnRegionDrag) btnRegionDrag.disabled = roi.w < 2 || roi.h < 2;
   if (btnRegionSave) btnRegionSave.disabled = roi.w < 2 || roi.h < 2;
   if (btnMatch) btnMatch.disabled = roi.w < 2 || roi.h < 2;
-  if (btnAsset) btnAsset.disabled = roi.w < 2 || roi.h < 2;
   updateSaveButtonState();
 }
 
@@ -606,35 +575,13 @@ async function doGenerateClickStep() {
 // non-array `steps`) must leave the textarea untouched - never corrupt user
 // input. Shared by the local-point path and the v1.1 inline-OCR path.
 function appendStepToFlow(step, label) {
-  // v1.2.2: workbench flow panel is removed; flow editing lives in 任务构建.
-  // Copy the generated step instead of mutating a hidden textarea.
-  if (!flowJson) {
-    const json = JSON.stringify(step, null, 2);
-    resultEl.textContent = `已复制${label || '步骤'}到剪贴板（到「任务构建」粘贴/添加）：\n${json}`;
-    log(`已复制${label || '步骤'}到剪贴板（任务构建编辑）`);
-    if (navigator.clipboard) navigator.clipboard.writeText(json).catch(() => {});
-    return true;
-  }
-  const raw = (flowJson.value || '').trim();
-  if (!raw) {
-    resultEl.textContent = '追加失败：flow 为空，请先粘贴/保存一个 flow.json（textarea 未改动）';
-    return false;
-  }
-  let flow;
-  try {
-    flow = JSON.parse(raw);
-  } catch (e) {
-    resultEl.textContent = `追加失败：现有 flow 不是合法 JSON（${e.message}）。textarea 未改动。`;
-    return false;
-  }
-  if (!Array.isArray(flow.steps)) {
-    resultEl.textContent = '追加失败：flow.steps 不是数组。textarea 未改动。';
-    return false;
-  }
-  flow.steps.push(step);
-  flowJson.value = JSON.stringify(flow, null, 2);
-  resultEl.textContent = `已追加到流程（共 ${flow.steps.length} 步）\n` + JSON.stringify(step, null, 2);
-  log(`已追加${label || '步骤'}到流程（${flow.steps.length} 步）`);
+  // v1.2.2: the workbench flow panel was removed; flow editing lives in
+  // 任务构建. Copy the generated step to the clipboard instead of mutating a
+  // hidden textarea.
+  const json = JSON.stringify(step, null, 2);
+  resultEl.textContent = `已复制${label || '步骤'}到剪贴板（到「任务构建」粘贴/添加）：\n${json}`;
+  log(`已复制${label || '步骤'}到剪贴板（任务构建编辑）`);
+  if (navigator.clipboard) navigator.clipboard.writeText(json).catch(() => {});
   return true;
 }
 
@@ -1038,8 +985,9 @@ function replaceResults(rows, sourceLabel) {
   activeCandidate = -1;
   pendingActionAsset = null;
   // New recognition results must never inherit an old action polygon/invert
-  // from a previous candidate or asset (P0-3 / P1-8).
-  resetActionGeometry({ keepTarget: true, clearInvert: true, redraw: false });
+  // from a previous candidate or asset (P0-3 / P1-8). The rect too: a fresh
+  // candidate follows its own recognized bbox.
+  resetActionGeometry({ keepTarget: true, clearInvert: true, clearRect: true, redraw: false });
   renderCandidateList(sourceLabel);
   updateSaveButtonState();
 }
@@ -1223,7 +1171,7 @@ function renderCandidateList(sourceLabel) {
       // P1-8: entering a mode resets stale geometry from the previous target.
       resetActionGeometry({ keepTarget: true, clearInvert: true, redraw: false });
       activeCandidate = idx;
-      backMode = true;
+      setSelectionMode('actionRect');
       pendingActionAsset = null;
       // Show the candidate's existing fixed shape (if any) while editing.
       if (c.actionShape) {
@@ -1231,7 +1179,6 @@ function renderCandidateList(sourceLabel) {
       } else {
         roiBack = { ...c.action };
       }
-      if (btnBackMode) btnBackMode.textContent = '退出操作区域编辑（拖拽画操作区域）';
       updateRoiLabel();
       draw();
       log(`编辑「${c.name || c.text}」的操作区域：在画布上拖拽或画多边形`);
@@ -1246,10 +1193,8 @@ function renderCandidateList(sourceLabel) {
       c.actionSource = 'recognition';
       if (activeCandidate === idx) {
         roiBack = null;
-        actionPoly = null;
-        actionPolyClosed = false;
-        actionInvert = false;
-        if (btnActionInvert) btnActionInvert.textContent = '操作区域反选：关';
+        // Unified reset: geometry, invert and any active action mode all go.
+        resetActionGeometry({ keepTarget: true, clearInvert: true, redraw: false });
       }
       renderCandidateList(sourceLabel);
       draw();
@@ -1358,18 +1303,61 @@ function candidateActionPayload(c) {
   return { action_source: 'recognition' };
 }
 
-// P1-8: single reset path for the two selection state machines. The geometry
-// storage stays separate for now (recognition polygon vs action polygon are
-// different semantics), but every mode entry / clear goes through this reset so
-// one mode can never keep operating while another is active.
+// P1-8: the editor has two geometries (recognition polygon mask vs. action
+// region shape) but they must never be drawable at the same time. These helpers
+// are the single convergence point:
+//   - `selectionModeFromFlags` is pure and mirrors the mousedown dispatch order;
+//   - `setSelectionMode` is the ONLY place that flips the three mode flags;
+//   - `syncSelectionButtons` is the only place that writes the mode button text.
+// Geometry is cleared separately by resetSelection/resetActionGeometry.
+const SELECTION_MODES = ['none', 'recognitionPolygon', 'actionPolygon', 'actionRect'];
+
+function selectionModeFromFlags(polyModeFlag, actionPolyModeFlag, backModeFlag) {
+  if (actionPolyModeFlag) return 'actionPolygon';
+  if (polyModeFlag) return 'recognitionPolygon';
+  if (backModeFlag) return 'actionRect';
+  return 'none';
+}
+
+function selectionActiveMode() {
+  return selectionModeFromFlags(polyMode, actionPolyMode, backMode);
+}
+
+function syncSelectionButtons() {
+  if (btnPoly) {
+    btnPoly.textContent = polyMode
+      ? '退出多边形模式（点顶点，双击闭合；闭合后可拖/双击删顶点）'
+      : '多边形框选（点顶点，双击闭合）';
+  }
+  if (btnActionPoly) {
+    btnActionPoly.textContent = actionPolyMode
+      ? '退出操作区域多边形（点顶点，双击闭合）'
+      : '操作区域多边形（点顶点，双击闭合）';
+  }
+  if (btnBackMode) {
+    btnBackMode.textContent = backMode
+      ? '退出操作区域编辑（拖拽画操作区域）'
+      : '绘制操作区域（默认=识别区域）';
+  }
+}
+
+// Enter/leave a selection mode. The guards keep the states mutually exclusive:
+// no stale action polygon while the recognition polygon mode is active, and no
+// stale rect mode while a polygon mode is active.
+function setSelectionMode(mode) {
+  const m = SELECTION_MODES.includes(mode) ? mode : 'none';
+  polyMode = m === 'recognitionPolygon';
+  actionPolyMode = m === 'actionPolygon';
+  backMode = m === 'actionRect';
+  syncSelectionButtons();
+  return m;
+}
+
 function resetActionGeometry(opts) {
   const o = opts || {};
   actionPoly = null;
   actionPolyClosed = false;
-  actionPolyMode = false;
-  backMode = false;
-  if (btnActionPoly) btnActionPoly.textContent = '操作区域多边形（点顶点，双击闭合）';
-  if (btnBackMode) btnBackMode.textContent = '绘制操作区域（默认=识别区域）';
+  setSelectionMode(selectionModeFromFlags(polyMode, false, false));
   if (o.clearInvert) {
     actionInvert = false;
     if (btnActionInvert) btnActionInvert.textContent = '操作区域反选：关';
@@ -1382,6 +1370,9 @@ function resetActionGeometry(opts) {
     dragStart = null;
     dragTarget = 'roi';
   }
+  // New recognition results must not keep a rectangle drawn for a previous
+  // asset/candidate: the fresh candidate's operation area is its own bbox.
+  if (o.clearRect) roiBack = null;
   if (o.redraw !== false) {
     updateRoiLabel();
     draw();
@@ -1396,11 +1387,10 @@ function resetSelection(opts) {
     clearDrag: true,
     redraw: false,
   });
-  polyMode = false;
   polygon = null;
   polyClosed = false;
   polyDrag = null;
-  if (btnPoly) btnPoly.textContent = '多边形框选（点顶点，双击闭合）';
+  setSelectionMode('none');
   if (o.clearBoxes) {
     boxes = [];
     selectedBox = null;
@@ -1409,8 +1399,6 @@ function resetSelection(opts) {
   if (o.clearRoi) {
     roi = null;
     roiBack = null;
-    lastMatch = null;
-    if (btnMatchSave) btnMatchSave.disabled = true;
   }
   updateRoiLabel();
   if (o.redraw !== false) draw();
@@ -2366,10 +2354,6 @@ function refreshTaskAssetsForScope(scopeTask) {
   return refreshTaskAssets(assetsGlobalMode ? undefined : scopeTask);
 }
 
-function isValidAssetId(id) {
-  return /^[\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_]*$/.test(id);
-}
-
 function showErrors(prefix, errors) {
   const list = (errors || []).map((e) => '· ' + e).join('\n');
   resultEl.textContent = `${prefix}\n${list || '（无错误信息）'}`;
@@ -2418,38 +2402,6 @@ function runAssetTest(it) {
   } else testAssetOcr(it);
 }
 
-function renderTaskReferencedAssets() {
-  const targets = [taskRefAssets, taskRefAssetsTask].filter(Boolean);
-  if (!targets.length) return;
-  const ids = collectFlowAssetIds(taskFlowRaw || flowModel || {});
-  if (!ids.size) {
-    for (const el of targets) el.textContent = '（当前任务 flow 未引用素材）';
-    return;
-  }
-  const rows = (taskAssets || []).filter((a) => ids.has(a.id));
-  if (!rows.length) {
-    for (const el of targets) el.textContent = '（flow 引用的素材在素材库中未找到）';
-    return;
-  }
-  for (const el of targets) {
-    window.OASAssetUI.renderRows(el, rows, {
-      task: (taskName.value || '').trim(),
-      pick: false,
-      manage: false,
-      actions: true,
-      group: true,
-      groupBy: 'category',
-      draggable: false,
-      onPick: (it) => pickAssetRoi(it),
-      onTest: runAssetTest,
-      onClickTest: (it) => testAssetClick(it),
-      onDragTest: (it) => testAssetDrag(it),
-      onStep: (it) => generateAssetStep(it),
-      onCollectionTest: (it) => testAssetCollection(it),
-    });
-  }
-}
-
 function collectionAssetRows(collections) {
   return (collections || []).map((c) => ({
     id: c.id,
@@ -2496,7 +2448,6 @@ async function refreshTaskAssets(task) {
     if (assetsList) {
       assetsList.textContent = '（未选择任务；任务素材库为空）';
     }
-    if (taskRefAssetsTask) taskRefAssetsTask.textContent = '（未选择任务）';
     renderTaskAssetsHint();
     renderAssetPositionInheritPicker();
     return;
@@ -2547,7 +2498,6 @@ async function refreshTaskAssets(task) {
     refreshAssetCategoryFilter();
     renderAssetList();
     renderTaskAssetsHint();
-    renderTaskReferencedAssets();
     renderAssetPositionInheritPicker();
     // Frame rows show how many current-task assets reference each frame; keep
     // that derived relation in sync after asset CRUD/load.
@@ -2579,36 +2529,56 @@ function assetCategory(it) {
   return ((it && it.category) || '').trim() || '未分类';
 }
 
-function refreshAssetCategoryFilter() {
-  if (!assetCategoryFilter) return;
-  const keep = assetCategoryFilter.value;
-  const cats = [...new Set((taskAssets || []).map(assetCategory))].sort((a, b) => {
+// Shared filter used by BOTH asset libraries (task panel + global panel). One
+// implementation so the two search/category toolbars cannot drift apart.
+function assetMatchesFilter(it, query, category) {
+  const q = String(query || '').trim().toLowerCase();
+  const cat = String(category || '');
+  const id = String((it && it.id) || '').toLowerCase();
+  return (!q || id.includes(q)) && (!cat || assetCategory(it) === cat);
+}
+
+function filterAssets(items, query, category) {
+  const list = Array.isArray(items) ? items : [];
+  return list.filter((it) => assetMatchesFilter(it, query, category));
+}
+
+function assetCategoryNames(items) {
+  return [...new Set((items || []).map(assetCategory))].sort((a, b) => {
     if (a === '未分类') return 1;
     if (b === '未分类') return -1;
     return a.localeCompare(b, 'zh-CN');
   });
-  assetCategoryFilter.textContent = '';
+}
+
+function fillAssetCategoryFilter(select, items) {
+  if (!select) return;
+  const keep = select.value;
+  const cats = assetCategoryNames(items);
+  select.textContent = '';
   const all = document.createElement('option');
   all.value = '';
   all.textContent = '全部分类';
-  assetCategoryFilter.appendChild(all);
+  select.appendChild(all);
   for (const cat of cats) {
     const o = document.createElement('option');
     o.value = cat;
     o.textContent = cat;
-    assetCategoryFilter.appendChild(o);
+    select.appendChild(o);
   }
-  assetCategoryFilter.value = cats.includes(keep) ? keep : '';
+  // Keep the current selection across refreshes when it still exists.
+  select.value = cats.includes(keep) ? keep : '';
+}
+
+function refreshAssetCategoryFilter() {
+  fillAssetCategoryFilter(assetCategoryFilter, taskAssets);
 }
 
 function renderAssetList() {
   if (!assetsList) return;
-  const q = ((assetSearch && assetSearch.value) || '').trim().toLowerCase();
+  const q = ((assetSearch && assetSearch.value) || '').trim();
   const cat = assetCategoryFilter ? assetCategoryFilter.value : '';
-  const items = (taskAssets || []).filter(
-    (it) => (!q || String(it.id).toLowerCase().includes(q)) &&
-      (!cat || assetCategory(it) === cat)
-  );
+  const items = filterAssets(taskAssets, q, cat);
   assetsList.textContent = '';
   if (taskAssetsMeta.task) {
     const res = taskAssetsMeta.design ? taskAssetsMeta.design.join('x') : '未设置';
@@ -3009,7 +2979,7 @@ function editAssetActionRoi(it) {
   resetActionGeometry({ keepTarget: true, clearInvert: true, redraw: false });
   pendingActionAsset = it.id;
   activeCandidate = -1;
-  backMode = true;
+  setSelectionMode('actionRect');
   roi = { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] };
   const actionBox = actionShapeBBox(it.action_shape);
   roiBack = actionBox
@@ -3017,7 +2987,6 @@ function editAssetActionRoi(it) {
     : { ...roi };
   loadActionShapeForEdit(it.action_shape);
   if (!actionBox) roiBack = { ...roi };
-  if (btnBackMode) btnBackMode.textContent = '退出操作区域编辑（拖拽画操作区域）';
   updateRoiLabel();
   draw();
   log(`编辑素材「${it.id}」操作区域：在画布上拖拽画框`);
@@ -3260,6 +3229,51 @@ function currentRecognitionPolygon() {
     : null;
 }
 
+// The recognition polygon is the OCR/match mask drawn in polygon mode. Once a
+// candidate is saved, the mask must travel in the same payload as the ROI so the
+// runtime can reuse it (backend field: `polygon`). `candidate.polygon` wins when
+// a caller ever snapshots a per-candidate mask; otherwise the current canvas
+// polygon is used. Never invent a polygon: absent state => field omitted.
+function recognitionPolygonPayload(poly) {
+  if (!Array.isArray(poly) || poly.length < 3) return null;
+  return poly.map((p) => [p[0], p[1]]);
+}
+
+// Pure payload builders shared by the save path and ui_pure_test.js.
+// OCR rows keep the multi-line recognition metadata (`ocr_mode`/`ocr_text`) and
+// use the multi-line source ROI as the recognition roi (v1.2.3 semantics).
+function ocrAssetPayload(c, positions, recognitionPolygon) {
+  const rec = (c.fromLines && c.sourceRoi) ? c.sourceRoi : c.recognize;
+  const row = {
+    id: String(c.name || '').trim(),
+    kind: 'ocr_line',
+    roi: [rec.x, rec.y, rec.w, rec.h],
+    positions: Array.isArray(positions) ? positions.slice() : [],
+    ...candidateActionPayload(c),
+  };
+  if (c.fromLines && c.sourceRoi) {
+    row.ocr_mode = 'lines';
+    row.ocr_text = c.text;
+  }
+  const poly = recognitionPolygonPayload(c.polygon || recognitionPolygon);
+  if (poly) row.polygon = poly;
+  return row;
+}
+
+function singleAssetPayload(c, positions, recognitionPolygon) {
+  const payload = {
+    id: String(c.name || '').trim(),
+    kind: c.kind,
+    roi: [c.recognize.x, c.recognize.y, c.recognize.w, c.recognize.h],
+    positions: Array.isArray(positions) ? positions.slice() : [],
+    ...candidateActionPayload(c),
+  };
+  if (c.kind === 'template') payload.threshold = 0.85;
+  const poly = recognitionPolygonPayload(c.polygon || recognitionPolygon);
+  if (poly) payload.polygon = poly;
+  return payload;
+}
+
 async function saveAssetUnified() {
   // In unified global mode the store is task-independent; allow saving a new
   // global asset without inventing a task name. The API ignores `task` there.
@@ -3294,31 +3308,9 @@ async function saveAssetUnified() {
   let saved = 0;
   try {
     if (ocrRows.length) {
-      const assets = ocrRows.map((c) => {
-        // v1.2.3: one recognition ROI. For a line saved from multi-line OCR the
-        // recognition ROI is the multi-line region the user actually tested;
-        // the operation area follows the real recognized bbox unless the user
-        // explicitly fixed one (P0-2).
-        const rec = (c.fromLines && c.sourceRoi) ? c.sourceRoi : c.recognize;
-        const row = {
-          id: c.name.trim(),
-          kind: 'ocr_line',
-          roi: [rec.x, rec.y, rec.w, rec.h],
-          positions,
-          ...candidateActionPayload(c),
-        };
-        if (c.fromLines && c.sourceRoi) {
-          row.ocr_mode = 'lines';
-          row.ocr_text = c.text;
-        }
-        // NOTE: `/task/save_assets` in the serve layer does not parse `polygon`
-        // (it hardcodes polygon=None), and `/task/save_asset` hardcodes
-        // ocr_mode/ocr_text=None. A recognition mask therefore cannot be
-        // persisted for OCR rows from the UI without a backend change; do not
-        // send a field that would be silently ignored.
-        return row;
-      });
       // Keep the batch endpoint for OCR rows so ocr_mode/ocr_text survive.
+      // Both endpoints now receive the recognition polygon when one exists.
+      const assets = ocrRows.map((c) => ocrAssetPayload(c, positions, recognitionPolygon));
       const r = await postJson('/task/save_assets', { task, assets });
       if (!r.ok) {
         errors.push(...(r.errors || ['批量保存失败']));
@@ -3327,16 +3319,7 @@ async function saveAssetUnified() {
       }
     }
     for (const c of otherRows) {
-      const payload = {
-        task,
-        id: c.name.trim(),
-        kind: c.kind,
-        roi: [c.recognize.x, c.recognize.y, c.recognize.w, c.recognize.h],
-        positions,
-        ...candidateActionPayload(c),
-      };
-      if (c.kind === 'template') payload.threshold = 0.85;
-      if (recognitionPolygon) payload.polygon = recognitionPolygon;
+      const payload = { task, ...singleAssetPayload(c, positions, recognitionPolygon) };
       const r = await postJson('/task/save_asset', payload);
       if (!r.ok) {
         errors.push(...(r.errors || [`保存 ${c.name} 失败`]));
@@ -3369,237 +3352,10 @@ async function saveAssetUnified() {
 }
 
 
-async function doSaveAsset() {
-  if (!roi) return;
-  const task = currentTask();
-  if (!task) return;
-  const id = (assetId.value || '').trim();
-  if (!id) {
-    resultEl.textContent = '请先填素材 id';
-    assetId.focus();
-    return;
-  }
-  if (!isValidAssetId(id)) {
-    resultEl.textContent = 'id 可用中文/字母/数字/下划线，但不能以数字开头、不能含空格或标点';
-    return;
-  }
-  const kind = assetKind.value;
-  const payload = { task, id, kind, roi: [roi.x, roi.y, roi.w, roi.h] };
-  if (kind === 'template') payload.threshold = 0.85;
-  // v1.2: explicit operation area (action_shape + action_source=fixed); when
-  // unset the runtime follows the real recognized bbox.
-  if (kind !== 'region') {
-    const shape = currentActionShape();
-    if (shape) {
-      payload.action_shape = shape;
-      payload.action_source = 'fixed';
-    }
-  }
-  // §22.10: a closed polygon is an identification mask (match/OCR); the click
-  // area stays the matched bbox unless roi_back is set above.
-  if (polygon && polyClosed && polygon.length >= 3) {
-    payload.polygon = polygon.map((p) => [p.x, p.y]);
-  }
-  btnSaveAsset.disabled = true;
-  try {
-    let s = await postJson('/task/save_asset', payload);
-    // §4 rev: an existing id is a *re-crop*, not an error — ask once, then
-    // overwrite with rev+1. Cancelling writes nothing (old asset stays).
-    if (!s.ok && (s.errors || []).some((e) => e.includes('already exists'))) {
-      const ok = window.confirm(
-        `素材 id「${id}」已存在。\n\n覆盖它并升版（rev+1）吗？\n` +
-          '· 确定 = 用当前截图的 ROI 覆盖\n' +
-          '· 取消 = 不写入任何文件（想保留旧素材请换个 id）'
-      );
-      if (!ok) {
-        resultEl.textContent = '已取消：未写入任何文件（旧素材保留）';
-        log(`保存素材取消：${id} 已存在`);
-        return;
-      }
-      s = await postJson('/task/save_asset', { ...payload, replace: true });
-    }
-    if (!s.ok) {
-      showErrors('保存失败（未写入任何文件）：', s.errors);
-      log(`保存素材失败：${id}`);
-      return;
-    }
-    resultEl.textContent = JSON.stringify(s.item, null, 2);
-    log(`已保存素材：${s.item.id} rev=${s.item.rev} → ${s.item.file || '（无图）'}`);
-    await refreshTaskAssets(task);
-  } catch (e) {
-    resultEl.textContent = '保存异常：' + e;
-  } finally {
-    updateRoiLabel();
-  }
-}
 
-async function doSaveFlow() {
-  if (!flowJson || !btnSaveFlow) return;
-  const task = currentTask();
-  if (!task) return;
-  const text = (flowJson.value || '').trim();
-  if (!text) {
-    resultEl.textContent = '请先粘贴 flow.json';
-    return;
-  }
-  let flow;
-  try {
-    flow = JSON.parse(text);
-  } catch (e) {
-    resultEl.textContent = 'flow.json 不是合法 JSON：' + e.message;
-    return;
-  }
-  btnSaveFlow.disabled = true;
-  try {
-    const s = await postJson('/task/save_flow', { task, flow });
-    if (!s.ok) {
-      showErrors('保存 flow 失败（未写入任何文件）：', s.errors);
-      log('保存 flow 失败');
-      return;
-    }
-    resultEl.textContent = `flow.json 已保存到任务「${s.task}」（引用校验通过）`;
-    log(`flow.json 已保存：${s.task}`);
-    await refreshTaskAssets(task);
-  } catch (e) {
-    resultEl.textContent = '保存 flow 异常：' + e;
-  } finally {
-    btnSaveFlow.disabled = false;
-  }
-}
-
-// --- §22.18 流程编辑器（可视化） --------------------------------------------
-function flowEnsureOps() {
-  if (!flowOp || flowOp.options.length) return;
-  const ops = (window.OAS_FLOW && window.OAS_FLOW.OPS) || [];
-  const labels = (window.OAS_FLOW && window.OAS_FLOW.OP_LABELS) || {};
-  for (const op of ops) {
-    const o = document.createElement('option');
-    o.value = op;
-    o.textContent = `${labels[op] || op}（${op}）`;
-    flowOp.appendChild(o);
-  }
-}
-
-function flowRender() {
-  if (!flowSteps) return;
-  flowEnsureOps();
-  flowSteps.textContent = '';
-  if (!flowModel.steps.length) flowSteps.textContent = '（无步骤）';
-  flowModel.steps.forEach((step, i) => {
-    const row = document.createElement('div');
-    row.className = 'flow-step';
-    const op = document.createElement('span');
-    op.className = 'flow-op';
-    const labels = (window.OAS_FLOW && window.OAS_FLOW.OP_LABELS) || {};
-    op.textContent = step.op;
-    op.title = labels[step.op] ? `${labels[step.op]}（${step.op}）` : step.op;
-    const args = document.createElement('input');
-    args.className = 'flow-args';
-    args.spellcheck = false;
-    args.value = step.argsText;
-    args.title = step.argsText;
-    args.addEventListener('input', () => { step.argsText = args.value; });
-    const up = document.createElement('button');
-    up.textContent = '↑';
-    up.disabled = i === 0;
-    up.addEventListener('click', () => {
-      if (i === 0) return;
-      [flowModel.steps[i - 1], flowModel.steps[i]] = [flowModel.steps[i], flowModel.steps[i - 1]];
-      flowRender();
-    });
-    const down = document.createElement('button');
-    down.textContent = '↓';
-    down.disabled = i === flowModel.steps.length - 1;
-    down.addEventListener('click', () => {
-      if (i >= flowModel.steps.length - 1) return;
-      [flowModel.steps[i + 1], flowModel.steps[i]] = [flowModel.steps[i], flowModel.steps[i + 1]];
-      flowRender();
-    });
-    const del = document.createElement('button');
-    del.textContent = '✕';
-    del.title = '删除该步骤';
-    del.addEventListener('click', () => {
-      flowModel.steps.splice(i, 1);
-      flowRender();
-    });
-    row.append(op, args, up, down, del);
-    flowSteps.appendChild(row);
-  });
-
-  flowInterrupts.textContent = '';
-  if (!flowModel.interrupts.length) flowInterrupts.textContent = '（无）';
-  flowModel.interrupts.forEach((rule, i) => {
-    const row = document.createElement('div');
-    row.className = 'flow-step';
-    const detect = document.createElement('input');
-    detect.className = 'flow-args';
-    detect.placeholder = 'detect（弹窗模板 id）';
-    detect.value = rule.detect || '';
-    detect.addEventListener('input', () => { rule.detect = detect.value; });
-    const action = document.createElement('input');
-    action.className = 'flow-args';
-    action.placeholder = 'action（要点的按钮 id，空=点 detect）';
-    action.value = rule.action || '';
-    action.addEventListener('input', () => { rule.action = action.value; });
-    const del = document.createElement('button');
-    del.textContent = '✕';
-    del.addEventListener('click', () => {
-      flowModel.interrupts.splice(i, 1);
-      flowRender();
-    });
-    row.append(detect, action, del);
-    flowInterrupts.appendChild(row);
-  });
-}
-
-function flowLoadFromJson() {
-  if (!window.OAS_FLOW) {
-    resultEl.textContent = 'flow_model.js 未加载（换页/清缓存后重试）';
-    return;
-  }
-  try {
-    const text = (flowJson.value || '').trim();
-    if (!text) {
-      resultEl.textContent = 'flow.json 为空：先载入任务流程或粘贴 JSON';
-      return;
-    }
-    flowModel = window.OAS_FLOW.parseFlow(text);
-    flowRender();
-    resultEl.textContent =
-      `流程编辑器已载入：${flowModel.steps.length} 个步骤 / ${flowModel.interrupts.length} 条弹窗规则`;
-    log(`流程编辑器：载入 ${flowModel.steps.length} 步`);
-  } catch (e) {
-    resultEl.textContent = '可视化载入失败：' + (e && e.message ? e.message : e);
-    log('流程可视化载入失败：' + (e && e.message ? e.message : e));
-  }
-}
-
-function flowBuildToJson() {
-  if (!window.OAS_FLOW) {
-    resultEl.textContent = 'flow_model.js 未加载';
-    return null;
-  }
-  try {
-    const text = window.OAS_FLOW.buildFlow(flowModel);
-    flowJson.value = text;
-    resultEl.textContent = '已生成 flow.json（保存前仍会做服务端校验）';
-    return text;
-  } catch (e) {
-    resultEl.textContent = '生成 flow.json 失败：' + (e && e.message ? e.message : e);
-    return null;
-  }
-}
-
-async function flowSaveVisual() {
-  const errs = window.OAS_FLOW ? window.OAS_FLOW.validateModel(flowModel) : [];
-  if (errs.length) {
-    resultEl.textContent = '流程检查未通过：\n· ' + errs.join('\n· ');
-    return;
-  }
-  if (!flowBuildToJson()) return;
-  await doSaveFlow();
-}
-
+// The visual flow editor was removed with the old workbench DOM. This loader
+// is still reachable (task switch / boot / ?task= deep link) and validates that
+// the bundle has a flow; the task asset panel filters by flow on its own.
 async function loadTaskFlow(task) {
   if (!task) return;
   try {
@@ -3611,31 +3367,10 @@ async function loadTaskFlow(task) {
     }
     if (!s.flow) {
       log(`任务「${task}」还没有 flow.json`);
-      taskFlowRaw = null;
-      flowModel = { name: task, steps: [], interrupts: [] };
-      renderTaskReferencedAssets();
       return;
     }
-    taskFlowRaw = s.flow;
-    if (flowJson) flowJson.value = JSON.stringify(s.flow, null, 2);
-    try {
-      flowModel = window.OAS_FLOW ? window.OAS_FLOW.parseFlow(JSON.stringify(s.flow)) : flowModel;
-      flowModel.name = s.flow.name || task;
-      flowRender();
-      if (flowModel.nested) {
-        log(`已载入任务「${task}」的 flow：含 ${flowModel.nestedBlocks.length} 个 if/loop/while 嵌套块，简化流程面板只读；请用任务构建或 JSON 文本编辑`, 'INFO', {
-          nested_blocks: flowModel.nestedBlocks,
-          steps: flowModel.steps.length,
-        });
-      } else {
-        log(`已载入任务「${task}」的 flow（${flowModel.steps.length} 步）`);
-      }
-    } catch (e) {
-      // Nested control-flow is edited in builder/JSON; the workbench still
-      // needs the raw flow for referenced-asset display.
-      log('流程可视化解析失败（仍显示引用素材）：' + e.message, 'ERROR');
-    }
-    renderTaskReferencedAssets();
+    const steps = Array.isArray(s.flow.steps) ? s.flow.steps.length : 0;
+    log(`已载入任务「${task}」的 flow（${steps} 步）`);
   } catch (e) {
     log('读取任务流程异常：' + e);
   }
@@ -3678,59 +3413,100 @@ async function refreshGlobalAssets() {
   setStatus(ok ? '全局素材库已刷新' : '全局素材库刷新失败（见素材库状态）');
 }
 
+// Status line contract for both filtered and unfiltered views:
+//   全局素材库：共 N / 显示 M ...
+function globalAssetStatusText(total, shown, opts) {
+  const o = opts || {};
+  let text = `全局素材库：共 ${total} / 显示 ${shown}`;
+  if (o.collections) text += `（含 ${o.collections} 个集合）`;
+  if (o.query) text += ` · 搜索：${o.query}`;
+  if (o.category) text += ` · 分类：${o.category}`;
+  return text;
+}
+
+function refreshGlobalAssetCategoryFilter() {
+  fillAssetCategoryFilter(globalAssetCategoryFilter, globalAssetsCache);
+}
+
+// Render the CACHED global rows through the same filterAssets() the task panel
+// uses. Re-rendering after refresh/save keeps the current search/category
+// because neither input is reset here (the <select> only drops a category that
+// no longer exists).
+function renderGlobalAssets() {
+  if (!globalAssetsList) return false;
+  const q = (globalAssetSearch && globalAssetSearch.value) || '';
+  const cat = globalAssetCategoryFilter ? globalAssetCategoryFilter.value : '';
+  const all = Array.isArray(globalAssetsCache) ? globalAssetsCache : [];
+  const items = filterAssets(all, q, cat);
+  const collections = all.filter((a) => a.kind === 'template_set').length;
+  if (globalAssetsStatus) {
+    globalAssetsStatus.textContent = globalAssetStatusText(all.length, items.length, {
+      collections,
+      query: q.trim(),
+      category: cat,
+    });
+  }
+  globalAssetsList.textContent = '';
+  if (!items.length) {
+    globalAssetsList.textContent = (q.trim() || cat)
+      ? '（没有匹配的全局素材）'
+      : '（暂无全局素材）';
+    return true;
+  }
+  if (window.OASAssetUI && window.OASAssetUI.renderRows) {
+    window.OASAssetUI.renderRows(globalAssetsList, items, {
+      task: '',
+      pick: false,
+      manage: true,
+      actions: true,
+      group: true,
+      groupBy: 'category',
+      clear: true,
+      draggable: false,
+      emptyText: (q.trim() || cat) ? '（没有匹配的全局素材）' : '（暂无全局素材）',
+      onPick: (it) => pickAssetRoi(it),
+      onTest: runAssetTest,
+      onEdit: (it) => editAsset(it),
+      onPosition: (it) => editAssetPositions(it),
+      onDelete: (it) => deleteAsset(it),
+      onAction: (it) => editAssetActionRoi(it),
+      onClickTest: (it) => testAssetClick(it),
+      onDragTest: (it) => testAssetDrag(it),
+      onStep: (it) => generateAssetStep(it),
+      onCollectionTest: (it) => testAssetCollection(it),
+      onCollectionDelete: (it) => deleteCollection(it),
+    });
+    return true;
+  }
+  for (const it of items) {
+    const row = document.createElement('div');
+    row.className = 'asset-row';
+    row.textContent = `${it.id} · ${it.kind}`;
+    globalAssetsList.appendChild(row);
+  }
+  return true;
+}
+
 async function loadGlobalAssets() {
   if (!globalAssetsList) return false;
   try {
     const r = await fetch('/task/assets?task=');
     const s = await r.json();
     if (!s.ok) {
-      globalAssetsStatus.textContent = '统一全局素材库未初始化：' + (s.errors || []).join('; ');
+      globalAssetsCache = [];
+      refreshGlobalAssetCategoryFilter();
+      if (globalAssetsStatus) {
+        globalAssetsStatus.textContent = '统一全局素材库未初始化：' + (s.errors || []).join('; ');
+      }
       globalAssetsList.textContent = '（暂无全局素材）';
       return false;
     }
     assetsGlobalMode = s.task === GLOBAL_SCOPE_TASK;
-    const all = (s.items || []).concat(collectionAssetRows(s.collections));
-    globalAssetsCache = all;
-    globalAssetsStatus.textContent = `全局素材库：${all.length} 个素材` +
-      (s.collections && s.collections.length ? `（含 ${s.collections.length} 个集合）` : '');
-    globalAssetsList.textContent = '';
-    if (!all.length) {
-      globalAssetsList.textContent = '（暂无全局素材）';
-      return true;
-    }
-    if (window.OASAssetUI && window.OASAssetUI.renderRows) {
-      window.OASAssetUI.renderRows(globalAssetsList, all, {
-        task: '',
-        pick: false,
-        manage: true,
-        actions: true,
-        group: true,
-        groupBy: 'category',
-        clear: true,
-        draggable: false,
-        onPick: (it) => pickAssetRoi(it),
-        onTest: runAssetTest,
-        onEdit: (it) => editAsset(it),
-        onPosition: (it) => editAssetPositions(it),
-        onDelete: (it) => deleteAsset(it),
-        onAction: (it) => editAssetActionRoi(it),
-        onClickTest: (it) => testAssetClick(it),
-        onDragTest: (it) => testAssetDrag(it),
-        onStep: (it) => generateAssetStep(it),
-        onCollectionTest: (it) => testAssetCollection(it),
-        onCollectionDelete: (it) => deleteCollection(it),
-      });
-      return true;
-    }
-    for (const it of all) {
-      const row = document.createElement('div');
-      row.className = 'asset-row';
-      row.textContent = `${it.id} · ${it.kind}`;
-      globalAssetsList.appendChild(row);
-    }
-    return true;
+    globalAssetsCache = (s.items || []).concat(collectionAssetRows(s.collections));
+    refreshGlobalAssetCategoryFilter();
+    return renderGlobalAssets();
   } catch (e) {
-    globalAssetsStatus.textContent = '全局素材库读取异常：' + e;
+    if (globalAssetsStatus) globalAssetsStatus.textContent = '全局素材库读取异常：' + e;
     return false;
   }
 }
@@ -4770,7 +4546,10 @@ canvas.addEventListener('mousedown', (ev) => {
   // a box selects that block (ROI := box) so 生成素材 JSON applies to it, and
   // shows only that block's text.
   const p0 = toFrame(ev);
-  if (actionPolyMode) {
+  // One dispatch point: selectionActiveMode() derives from the same flags that
+  // setSelectionMode() writes, so two modes can never both handle this event.
+  const mode = selectionActiveMode();
+  if (mode === 'actionPolygon') {
     if (ev.detail >= 2) {
       ev.preventDefault();
       return;
@@ -4785,7 +4564,7 @@ canvas.addEventListener('mousedown', (ev) => {
     return;
   }
   // §22.10 多边形模式：未闭合时逐点点击、双击闭合；闭合后可拖动顶点、双击删顶点。
-  if (polyMode) {
+  if (mode === 'recognitionPolygon') {
     if (ev.detail >= 2) {
       ev.preventDefault();
       return; // 交给 dblclick 处理（闭合/删顶点），避免多加一个重复点
@@ -4810,13 +4589,12 @@ canvas.addEventListener('mousedown', (ev) => {
     return;
   }
   // §22.25 操作区域模式：拖出一个 ROI 作为「操作区域」（roi_back），识别框保持不变。
-  if (backMode) {
+  if (mode === 'actionRect') {
     // P0-3: a new rectangle is an explicit replacement. Clear the previously
     // closed action polygon so currentActionShape() cannot return the old
     // polygon and save the wrong geometry.
     actionPoly = null;
     actionPolyClosed = false;
-    backMode = true;
     dragStart = p0;
     dragTarget = 'back';
     draw();
@@ -4848,8 +4626,6 @@ canvas.addEventListener('mousedown', (ev) => {
   dragTarget = 'roi';
   roi = null;
   roiBack = null;
-  lastMatch = null;
-  if (btnMatchSave) btnMatchSave.disabled = true;
   boxes = [];
   polygon = null;
   polyClosed = false;
@@ -4863,7 +4639,7 @@ canvas.addEventListener('mousemove', (ev) => {
     if (liveInputDrag) ev.preventDefault();
     return;
   }
-  if (polyMode) {
+  if (selectionActiveMode() === 'recognitionPolygon') {
     if (polyDrag === null || !polygon) return;
     polygon[polyDrag] = toFrame(ev);
     if (polygon.length >= 3) roi = polygonBBox(polygon);
@@ -4888,7 +4664,7 @@ canvas.addEventListener('mouseup', (ev) => {
     finishLiveInput(ev);
     return;
   }
-  if (polyMode) {
+  if (selectionActiveMode() === 'recognitionPolygon') {
     if (polyDrag === null) return;
     polyDrag = null;
     if (polygon && polygon.length >= 3) roi = polygonBBox(polygon);
@@ -4910,8 +4686,7 @@ canvas.addEventListener('mouseup', (ev) => {
       row.actionShape = finished ? currentActionShape() : null;
       row.actionSource = row.actionShape ? 'fixed' : 'recognition';
       activeCandidate = -1;
-      backMode = false;
-      if (btnBackMode) btnBackMode.textContent = '绘制操作区域（默认=识别区域）';
+      setSelectionMode('none');
       renderCandidateList(lastLinesRoi ? '本次识别' : '识别结果');
       log(
         `操作区域已更新：${row.actionSource === 'fixed' && row.actionShape
@@ -4957,14 +4732,12 @@ function nearestVertex(p) {
 // §22.10：双击行为 —— 未闭合则闭合；已闭合且双击顶点则删除该顶点（保持 >=3）。
 canvas.addEventListener('dblclick', (ev) => {
   if (liveInputAllowed()) return;
-  if (actionPolyMode) {
+  const mode = selectionActiveMode();
+  if (mode === 'actionPolygon') {
     if (!actionPoly || actionPoly.length < 3) return;
     ev.preventDefault();
     actionPolyClosed = true;
-    actionPolyMode = false;
-    backMode = false;
-    if (btnActionPoly) btnActionPoly.textContent = '操作区域多边形（点顶点，双击闭合）';
-    if (btnBackMode) btnBackMode.textContent = '绘制操作区域（默认=识别区域）';
+    setSelectionMode('none');
     const shape = currentActionShape();
     const bbox = shape ? actionShapeBBox(shape) : null;
     if (activeCandidate >= 0 && saveCandidates[activeCandidate]) {
@@ -4996,7 +4769,7 @@ canvas.addEventListener('dblclick', (ev) => {
     draw();
     return;
   }
-  if (!polyMode || !polygon || polygon.length < 3) return;
+  if (mode !== 'recognitionPolygon' || !polygon || polygon.length < 3) return;
   ev.preventDefault();
   const p = toFrame(ev);
   if (polyClosed) {
@@ -5027,48 +4800,38 @@ canvas.addEventListener('dblclick', (ev) => {
 });
 
 btnPoly.addEventListener('click', () => {
-  const want = !polyMode;
+  const want = selectionActiveMode() !== 'recognitionPolygon';
   // P1-8: entering recognition polygon mode drops any action polygon/invert/
   // backMode so mouse events can never keep drawing the previous operation
   // area. Leaving the mode keeps the current ROI/shape untouched.
   if (want) {
     resetSelection({ clearInvert: true, clearRoi: true, redraw: false });
-    polyMode = true;
     polygon = null;
     polyClosed = false;
     polyDrag = null;
     roi = null;
     roiBack = null;
     dragStart = null;
-    btnPoly.textContent = '退出多边形模式（点顶点，双击闭合；闭合后可拖/双击删顶点）';
+    setSelectionMode('recognitionPolygon');
     log('多边形模式：逐点点击，双击闭合；闭合后可拖动顶点、双击删除顶点');
   } else {
-    polyMode = false;
+    setSelectionMode('none');
     polyDrag = null;
-    btnPoly.textContent = '多边形框选（点顶点，双击闭合）';
   }
   updateRoiLabel();
   draw();
 });
 
 btnActionPoly.addEventListener('click', () => {
-  const want = !actionPolyMode;
+  const want = selectionActiveMode() !== 'actionPolygon';
   if (want) {
     // Keep the target (candidate/pending asset) and the invert flag, but leave
     // rect mode / recognition polygon mode and any stale action polygon behind.
     resetActionGeometry({ keepTarget: true, clearInvert: false, redraw: false });
-    polyMode = false;
-    if (btnPoly) btnPoly.textContent = '多边形框选（点顶点，双击闭合）';
-    actionPolyMode = true;
-    actionPoly = null;
-    actionPolyClosed = false;
-    backMode = false;
-    if (btnBackMode) btnBackMode.textContent = '绘制操作区域（默认=识别区域）';
-    btnActionPoly.textContent = '退出操作区域多边形（点顶点，双击闭合）';
+    setSelectionMode('actionPolygon');
     log(`操作区域多边形模式：逐点点击，双击闭合${actionInvert ? '（反选=整个屏幕−区域）' : ''}`);
   } else {
-    actionPolyMode = false;
-    btnActionPoly.textContent = '操作区域多边形（点顶点，双击闭合）';
+    setSelectionMode('none');
   }
   updateRoiLabel();
   draw();
@@ -5083,18 +4846,14 @@ btnActionInvert.addEventListener('click', () => {
 });
 
 btnBackMode.addEventListener('click', () => {
-  const want = !backMode;
+  const want = selectionActiveMode() !== 'actionRect';
   if (want) {
     resetActionGeometry({ keepTarget: true, clearInvert: false, redraw: false });
-    polyMode = false;
-    if (btnPoly) btnPoly.textContent = '多边形框选（点顶点，双击闭合）';
-    backMode = true;
-    btnBackMode.textContent = '退出操作区域编辑（拖拽画操作区域）';
+    setSelectionMode('actionRect');
   } else {
-    backMode = false;
+    setSelectionMode('none');
     activeCandidate = -1;
     pendingActionAsset = null;
-    btnBackMode.textContent = '绘制操作区域（默认=识别区域）';
   }
   log(
     want
@@ -5213,8 +4972,6 @@ async function doMatch(r) {
     return s;
   }
   const roiScore = typeof s.roi_score === 'number' ? s.roi_score : -2;
-  lastMatch = s;
-  if (btnMatchSave) btnMatchSave.disabled = false;
   const rec = { x: s.x, y: s.y, w: s.w, h: s.h };
   let action = { ...rec };
   if (roiBack && r) {
@@ -5256,28 +5013,6 @@ if (btnMatch) {
   });
 }
 
-if (btnMatchSave) {
-  btnMatchSave.addEventListener('click', () => {
-    if (!lastMatch) return;
-    roi = { x: lastMatch.x, y: lastMatch.y, w: lastMatch.w, h: lastMatch.h };
-    // Image-match result: recognition region = matched bbox; operation region
-    // defaults to it and can be enlarged/moved via 「绘制操作区域」.
-    roiBack = null;
-    polygon = null;
-    polyClosed = false;
-    selectedBox = null;
-    boxes = [{ text: `图匹配 ${Number(lastMatch.score).toFixed(2)}`, score: Number(lastMatch.score), box: [roi.x, roi.y, roi.w, roi.h] }];
-    if (assetKind && assetKind.value !== 'template') assetKind.value = 'template';
-    updateRoiLabel();
-    draw();
-    resultEl.textContent =
-      `已用图匹配结果设置识别区域：[${roi.x}, ${roi.y}, ${roi.w}, ${roi.h}]\n` +
-      '1) 填素材 id → 保存素材（模板图）；2) 需要更大点击范围时点「绘制操作区域」再拖拽；\n' +
-      '3) 保存时 action_shape/action_source 会一并写入。';
-    log('图匹配结果 → 识别区域已设置；可调整操作区域后保存模板素材');
-  });
-}
-
 if (btnLivePreview) {
   btnLivePreview.addEventListener('click', async () => {
     if (livePreview) {
@@ -5292,43 +5027,6 @@ if (btnLivePreview) {
     }
   });
 }
-
-// Generate the declaration JSON for copy/paste. `file` is intentionally NOT
-// generated: when saved, the engine assigns images/aNNN.png, so the (Chinese)
-// id never lands on disk as a path (ENGINE-DESIGN §18.1).
-if (btnAsset) btnAsset.addEventListener('click', async () => {
-  if (!roi) return;
-  const id = (assetId.value || '').trim();
-  if (!id) {
-    resultEl.textContent = '请先填素材 id';
-    assetId.focus();
-    return;
-  }
-  if (!isValidAssetId(id)) {
-    resultEl.textContent = 'id 可用中文/字母/数字/下划线，但不能以数字开头、不能含空格或标点';
-    return;
-  }
-  const kind = assetKind.value;
-  const task = (taskName.value || '').trim();
-  const decl = {
-    ...(task ? { task } : {}),
-    id,
-    kind,
-    roi: [roi.x, roi.y, roi.w, roi.h],
-    ...(kind === 'template' ? { threshold: 0.85 } : {}),
-    ...(polygon && polyClosed && polygon.length >= 3
-      ? { polygon: polygon.map((p) => [p.x, p.y]) }
-      : {}),
-  };
-  const json = JSON.stringify(decl, null, 2);
-  resultEl.textContent = `${json}\n\n（保存时由引擎分配 images/aNNN.png；id 不会变成路径）`;
-  try {
-    await navigator.clipboard.writeText(json);
-    log(`素材 JSON 已复制：${id} (${kind})`);
-  } catch (e) {
-    log(`素材 JSON 已生成（复制失败，请手动选中）：${id}`);
-  }
-});
 
 btnLines.addEventListener('click', async () => {
   if (!roi) return;
@@ -5844,27 +5542,7 @@ async function submitResetMemory() {
       activatePanel(b.dataset.panel);
     });
   }
-  // §22.28 顶部标题行：结果 / 日志 抽屉
-  function syncDrawers() {
-    if (hdrDrawers) hdrDrawers.classList.toggle('hidden', !(resultOpen || logOpen));
-    if (resultPop) resultPop.classList.toggle('open', resultOpen);
-    if (logPop) logPop.classList.toggle('open', logOpen);
-    if (btnResultToggle) btnResultToggle.classList.toggle('active', resultOpen);
-    if (btnLogToggle) btnLogToggle.classList.toggle('active', logOpen);
-  }
-  if (btnResultToggle) {
-    btnResultToggle.addEventListener('click', () => {
-      resultOpen = !resultOpen;
-      syncDrawers();
-    });
-  }
-  if (btnLogToggle) {
-    btnLogToggle.addEventListener('click', () => {
-      logOpen = !logOpen;
-      syncDrawers();
-    });
-  }
-  syncDrawers();
+  // §22.28 任务素材列表（搜索/分类）+ 全局素材库（同一套过滤函数）
   if (btnAssetsRefresh) {
     btnAssetsRefresh.addEventListener('click', async () => {
       await refreshTaskAssets((taskName.value || '').trim() || undefined);
@@ -5874,6 +5552,8 @@ async function submitResetMemory() {
   if (btnAssetsBatchTest) btnAssetsBatchTest.addEventListener('click', batchTestAssets);
   if (assetSearch) assetSearch.addEventListener('input', renderAssetList);
   if (assetCategoryFilter) assetCategoryFilter.addEventListener('change', renderAssetList);
+  if (globalAssetSearch) globalAssetSearch.addEventListener('input', renderGlobalAssets);
+  if (globalAssetCategoryFilter) globalAssetCategoryFilter.addEventListener('change', renderGlobalAssets);
   if (railButtons.length) activatePanel(railButtons[0].dataset.panel);
   // 深链 ?panel=flow / ?panel=task 供验收/直达使用
   try {
@@ -5897,7 +5577,6 @@ async function submitResetMemory() {
   }
 
   btnSaveAsset.addEventListener('click', saveAssetUnified);
-  if (btnSaveFlow) btnSaveFlow.addEventListener('click', doSaveFlow);
   taskName.addEventListener('change', async () => {
     syncTaskSelect(taskName.value);
     await refreshTaskAssets((taskName.value || '').trim() || undefined);
@@ -5963,25 +5642,7 @@ async function submitResetMemory() {
   if (btnResetCancel) btnResetCancel.addEventListener('click', () => {
     if (resetMemoryDialog) resetMemoryDialog.close();
   });
-  // §22.18 可视化流程编辑器
-  if (btnFlowAddStep) {
-    btnFlowAddStep.addEventListener('click', () => {
-      if (!flowOp) return;
-      const defaults = window.OAS_FLOW ? window.OAS_FLOW.defaultArgs(flowOp.value) : {};
-      flowModel.steps.push({ op: flowOp.value, argsText: JSON.stringify(defaults, null, 2) });
-      flowRender();
-    });
-  }
-  if (btnFlowFromJson) btnFlowFromJson.addEventListener('click', flowLoadFromJson);
-  if (btnFlowToJson) btnFlowToJson.addEventListener('click', () => { flowBuildToJson(); });
-  if (btnFlowSaveViz) btnFlowSaveViz.addEventListener('click', flowSaveVisual);
-  if (btnFlowAddInterrupt) {
-    btnFlowAddInterrupt.addEventListener('click', () => {
-      flowModel.interrupts.push({ detect: '', action: '' });
-      flowRender();
-    });
-  }
-  if (flowSteps) flowRender();
+  // §22.19 长跑统计
   if (btnStatsRefresh) btnStatsRefresh.addEventListener('click', () => loadStats());
   await loadStats();
   // §22.22 全局素材库（旧 library/ UI 已移除；此按钮现在真实存在）
@@ -6064,44 +5725,6 @@ async function submitResetMemory() {
   // N2: 生成点击指令 / 追加到 flow
   if (btnClickStep) btnClickStep.addEventListener('click', doGenerateClickStep);
   if (btnAppendStep) btnAppendStep.addEventListener('click', doAppendStepToFlow);
-  if (btnAssetsMigrate) {
-    btnAssetsMigrate.addEventListener('click', async () => {
-      if (!window.confirm('把现有所有任务素材和旧素材库迁移到统一素材库？\n\n重名会自动加后缀，并按任务重写 flow 引用；迁移报告会生成。')) return;
-      if (assetsMigrateStatus) assetsMigrateStatus.textContent = '迁移中…';
-      try {
-        const r = await postJson('/assets/migrate', {});
-        if (!r.ok) {
-          if (assetsMigrateStatus) assetsMigrateStatus.textContent = '迁移失败：' + (r.errors || []).join('; ');
-          return;
-        }
-        const rep = r.report || {};
-        if (assetsMigrateStatus) {
-          assetsMigrateStatus.textContent =
-            `迁移完成：${rep.assets || 0} 素材 / ${rep.tasks || 0} 任务 / ${rep.flows_rewritten || 0} flow，重命名 ${(rep.renamed || []).length} 个`;
-        }
-        await refreshTaskAssets();
-        await refreshTaskList(taskName.value);
-      } catch (e) {
-        if (assetsMigrateStatus) assetsMigrateStatus.textContent = '迁移异常：' + e;
-      }
-    });
-  }
-  if (btnAssetConflicts) {
-    btnAssetConflicts.addEventListener('click', async () => {
-      if (!assetConflicts) return;
-      assetConflicts.textContent = '扫描中…';
-      try {
-        const r = await fetch('/assets/conflicts');
-        const s = await r.json();
-        if (!s.ok) throw new Error((s.errors || []).join('; ') || 'ok=false');
-        assetConflicts.textContent = s.conflicts.length
-          ? '重名（需处理）：\n' + s.conflicts.map((c) => `${c.id} ← ${c.sources.join(', ')}`).join('\n')
-          : '没有跨任务/素材库的重名。';
-      } catch (e) {
-        assetConflicts.textContent = '扫描失败：' + (e && e.message ? e.message : e);
-      }
-    });
-  }
   updateClickStepButtons();
   // N4: 点击分布 controls
   if (btnRunsRefresh) btnRunsRefresh.addEventListener('click', () => refreshRuns());
@@ -6172,12 +5795,6 @@ async function submitResetMemory() {
   } catch (e) {
     log('图识别深链失败：' + e);
   }
-  window.OAS_FLOW_UI = {
-    getModel: () => flowModel,
-    render: flowRender,
-    load: loadTaskFlow,
-    build: flowBuildToJson,
-  };
 
   // N4: refresh /runs once on boot, then honour the `?run=<file>` deep link so
   // a headless screenshot can land directly on the rendered distribution.
