@@ -18,8 +18,8 @@ status: planned
 - 任务：`tasks/返回庭院`；`task lint` = 1 task / 0 errors。
 - 帧：22 帧已恢复（git tracked）；`next_id=35`；31~34 是清空前新录制帧，PNG 不可恢复，observations 仍保留。
 - 编辑器 UX 计划：`docs/EDITOR-UX-PLAN.md`（本轮仅设计/文档，未改代码）。
-- 已确认：实时关闭时单素材多位置全部测试；帧分类重命名 `to` 为空禁止；操作区域用 `action_shape`（方案 B）；反选=整个屏幕−选择区域；有效性比较真实识别 bbox。
-- 待确认：是否新增 `action_source`。
+- 已确认：实时关闭时单素材多位置全部测试；帧分类重命名 `to` 为空禁止；操作区域用 `action_shape`（方案 B）；反选=整个屏幕−选择区域；有效性比较真实识别 bbox；新增 `action_source`；不再兼容 `action_roi`。
+- 待确认：版本号是否从 1.2.3 重置为 0.1.0（旧 v1.x tag 保留历史）。
 - 素材关系：唯一关系 = `Asset.positions`；帧行显示关联素材数量；只读关系浏览器显示帧→素材、素材→帧、素材共现、帧共享素材、录制 transition、人工标注与覆盖概览。
 - 位置帧继承：新素材保存区/已有素材位置编辑弹窗都能从其他任务素材追加 `positions`，不新增持久化引用。
 - 帧安全：清空列表必须 `confirm:true`；清空前自动备份到 `frames/.backup/clear-<时间>/`。
@@ -51,9 +51,9 @@ status: planned
 
 1. Phase A（可见问题）：画布 16:9 fit、结果/日志/提示移出画布、位置帧详情侧栏、点测/拖测 humanize 采样；
 2. Phase B：实时帧/位置帧测试来源（关闭时全部位置帧都测）、识别/操作区域重叠校验；
-3. Phase C：抽 `SelectionTool`、操作区域 `action_shape` 多边形 + 全屏反选；
+3. Phase C：抽 `SelectionTool`、操作区域 `action_shape` 多边形 + 全屏反选；删除 `action_roi`，迁移到 `action_shape`+`action_source`；
 4. Phase D：素材拖动排序、帧分类重命名（`to` 为空禁止）；
-5. 先确认是否新增 `action_source`（其余字段/语义已确认）。
+5. 先确认版本重置（建议 0.1.0）。
 
 ## 4. 约束
 

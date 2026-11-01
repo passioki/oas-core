@@ -52,7 +52,7 @@
 | 恢复节点 | `main` = `385d611`（v1.2.3） |
 | 当前分支 | `dev`（文档/编辑器/任务数据提交；不自动合并 main） |
 | 文档 | 已独立到 `oas-core/docs`；当前设计以 ENGINE-DESIGN + PENDING-LEDGER + RESUME 为准 |
-| 当前计划 | **`EDITOR-UX-PLAN.md`**：7 项编辑器改版——画布/位置详情、框选/多边形/反选、实时/位置帧、点测拖测采样、区域有效性、素材排序、分类重命名（入口另见 §1.2 ④ / §7） |
+| 当前计划 | **`EDITOR-UX-PLAN.md`**：7 项编辑器改版——画布/位置详情、框选/多边形/全屏反选、实时/位置帧、点测拖测采样、区域有效性、素材排序、分类重命名；字段改为 `action_shape`+`action_source`，删除旧 `action_roi`（入口另见 §1.2 ④ / §7） |
 | 截图 | 两阶段：点击立即抓取 → 弹窗预览 → 名称/分类 → 保存；无当前帧跳转 |
 | Enter | 输入框 Enter = 确认输入；弹窗 Enter = 保存截图 |
 | 实时操作 | 实时开启时画布单击/拖拽 = tap/swipe；实时暂停 = ROI 编辑 |
@@ -85,7 +85,7 @@
 | ⓪ | `docs/RESUME.md` + `docs/RESUME-INDEX.md` | ★ **长任务/压缩后恢复的第一入口**（skill 强制 6）：当前断点、验收清单、下一步精确命令、证据索引 |
 | ① | `docs/SESSION-HANDOFF.md` | 当前在哪、下一步、最近提交、活跃坑 |
 | ② | `docs/ENGINE-DESIGN.md` **§22** | 引擎规格/进度/判据；**调度 v3 设计看 §22.34** |
-| ③ | `docs/PENDING-LEDGER.md` 的 §E-24/§E-25/§E-26 段 + 最新 §E-66 | 引擎/版本/用户裁定（R1~R21）台账 + 编辑器 UX 计划 |
+| ③ | `docs/PENDING-LEDGER.md` 的 §E-24/§E-25/§E-26 段 + 最新 §E-67 | 引擎/版本/用户裁定（R1~R21）台账 + 编辑器 UX 计划 + 版本重置评估 |
 | ④ | `docs/EDITOR-UX-PLAN.md` + 旧仓路径/流程（仅在碰旧仓时） | 画布/选择/实时帧/区域有效性/排序/分类改版计划；旧仓 `D:\OAS-dev\backend\docs\LAYOUT.md` · `DEV-WORKFLOW.md`（冻结） |
 
 ## 1.3 用代码核实（不许信文档自述）

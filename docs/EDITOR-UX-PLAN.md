@@ -375,8 +375,9 @@ POST /frames/category/rename {from,to}
 ### Phase C（选择模型）
 
 6. 抽 `SelectionTool`；
-7. 操作区域多边形 + 反选；
-8. 旧数据兼容与回归。
+7. 操作区域多边形 + 全屏反选；
+8. 删除 `action_roi`，本地数据一次性迁移到 `action_shape` + `action_source`；
+9. 回归旧素材（迁移后数据）。
 
 ### Phase D（维护操作）
 
@@ -434,35 +435,47 @@ invert = true   → 有效操作区域 = 整个屏幕 − shape
 - 多边形反选 = 整个屏幕减去多边形；
 - 选择区域仍然用于显示和命中排除。
 
-### 兼容策略
+### 数据策略：不保留旧兼容
 
-- 旧 `action_roi` 继续可读：
-  - 没有 `action_shape` → 视为 `kind=rect, invert=false`；
-  - runtime/批测/编辑器通过统一 shape 适配层读取；
-- 新保存以 `action_shape` 为主；
-- `action_roi` 只作为旧客户端 fallback，不再作为新数据唯一真相；
+用户明确：**目前没有旧客户端使用人，不需要兼容旧格式**。
+
+因此：
+
+- **删除 `action_roi`**；
+- 删除 `roi_back` 旧别名；
+- 不再保留“`action_roi` 作为 fallback”的双字段路径；
+- 操作区域唯一 canonical 字段：
+
+```json
+"action_source": "recognition" | "fixed",
+"action_shape": { ... }           // source=fixed 时必填
+```
+
+- `action_source=recognition`：不存 `action_shape`，操作区域 = 实际识别 bbox；
+- `action_source=fixed`：`action_shape` 必填，操作区域 = shape / 全屏反选；
+- 旧 `action_roi` 只在一次性迁移脚本中读取，迁移完成后从 schema/代码/编辑器删除；
 - 识别掩膜 `polygon` 保持原义，不参与操作区域反选。
 
-### 为什么选 B
+### 为什么删除 action_roi
 
-- 一个字段表达矩形/多边形/反选；
-- 不会出现 `action_roi` 与 `action_polygon` bbox 不一致；
-- 后续圆形/自由笔刷可自然扩展；
-- 虽然需要迁移所有读取点，但一次收口比长期维护双字段更稳。
+- 两套字段会产生“shape 与 bbox 不一致”的第二真相；
+- 没有外部兼容需求，保留 fallback 只会增加长期维护量；
+- 105 处引用可以集中收敛到统一 shape 适配层，一次改完；
+- 新保存/运行/批测全部只认 `action_shape` + `action_source`。
 
 ### 迁移步骤
 
-1. 增加 shape 读写适配层：`shape → 旧 action_roi` 与 `旧 action_roi → shape`；
-2. 编辑器保存优先写 `action_shape`；
-3. runtime/批测/点击采样统一调用 shape 适配；
-4. 旧数据不动，读取时转换；
-5. 回归旧素材后删除重复字段路径。
+1. 加一次性迁移：`action_roi` → `action_shape{kind:rect,invert:false}` + `action_source=fixed`；
+2. 无 `action_roi` 的素材/集合 → `action_source=recognition`；
+3. 编辑器/保存/runtime/批测/集合全部改用新字段；
+4. 删除 `action_roi`、`roi_back`、旧 fallback；
+5. 全量测试 + 真实素材回归。
 
 
 
-### 10.2 `action_source`：操作区域来源
+### 10.2 `action_source`：操作区域来源（已确认新增）
 
-`action_source` 不是形状，而是**这个操作区域是怎么来的**：
+`action_source` 是操作区域的来源/语义，**确认写入 `assets.json`**：
 
 ```json
 "action_source": "recognition"
@@ -476,18 +489,16 @@ invert = true   → 有效操作区域 = 整个屏幕 − shape
 
 含义：
 
-- `recognition`：操作区域跟随识别结果。适合“识别出按钮，点击识别框内部/附近”的场景；识别目标移动时，操作区域应随之更新。
-- `fixed`：用户明确固定了一块操作区域，可能和识别内容不重叠（例如识别标题文字，但固定点击下方按钮）。这是独立操作区域，不要求重叠。
+- `recognition`：操作区域跟随真实识别 bbox；
+  - 不存 `action_shape`；
+  - 运行时使用本次 OCR/模板识别出来的 bbox；
+  - 识别目标移动，操作区域随之移动。
+- `fixed`：用户明确固定操作区域；
+  - 必须提供 `action_shape`；
+  - 可能和识别内容不重叠（例如识别标题文字，但固定点击下方按钮）；
+  - 是独立操作区域。
 
-为什么需要它：
-
-- 目前只有 `action_roi` 是否存在，无法区分：
-  - 用户手动画的固定区域；
-  - 保存时自动生成的操作区域；
-  - 旧素材遗留的操作区域。
-- 没有来源字段时，重叠校验只能“猜”，容易误报或漏报。
-
-校验规则拟定为：
+校验规则：
 
 ```text
 action_source = recognition:
@@ -499,13 +510,13 @@ action_source = fixed:
 
 注意：这里比较的是 **OCR/模板实际识别出来的 bbox**，不是配置的识别 ROI。
 
-旧数据推断：
+数据迁移：
 
-- 无 `action_shape` / `action_roi` → `recognition`；
-- 有显式操作区域但无 `action_source` → 先按 `fixed` 兼容，并在 UI 标记“旧数据来源未知”；
-- 新保存由 UI 明确写入 `action_source`。
-
-**待确认：是否把 `action_source` 作为正式字段写入 `assets.json`。**
+- 有旧 `action_roi` → 一次性转成
+  `action_source=fixed` + `action_shape{kind:rect, invert:false}`；
+- 无旧 `action_roi` → `action_source=recognition`；
+- 迁移完成后代码/编辑器不再读取 `action_roi`；
+- 不保留旧客户端兼容。
 
 ## 11. 已确认事项
 
@@ -514,10 +525,13 @@ action_source = fixed:
 3. 操作区域字段采用 **方案 B：`action_shape`**。
 4. 反选 = **整个屏幕 − 选择区域**，不是外接矩形减去 shape。
 5. 有效性比较对象 = **OCR/模板真实识别出的 bbox**，不是配置的识别 ROI。
+6. 新增正式字段 `action_source`（`recognition` / `fixed`）。
+7. **不保留旧兼容**：删除 `action_roi`/`roi_back`；旧数据一次性迁移。
+8. 没有外部用户，可以接受 schema 断代。
 
 ## 12. 仍待确认
 
-1. 是否新增正式字段 `action_source`（建议新增）。
+1. 是否把版本号从 `1.2.3` 重置到 `<1` 的 `0.1.0`（需决定是否保留旧 v1.x tag 作为历史）。
 
 ## 13. 当前代码证据
 
@@ -527,4 +541,48 @@ action_source = fixed:
 - 点测/拖测：`app.js` `testAssetClick`/`testAssetDrag`；
 - 帧来源：测试接口当前主要走 `State.frame`，未区分 live/position；
 - 素材排序：当前只有列表渲染，无 reorder；
-- 帧分类：当前只有 category set/rename 不涉及分类本身。
+- 帧分类：当前只有 category set/rename 不涉及分类本身；
+- 旧 `action_roi`：全仓约 105 处引用，需一次性收口。
+
+## 14. 版本号评估
+
+当前：
+
+```text
+workspace.package.version = 1.2.3
+tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
+```
+
+用户判断：软件目前还不能实际使用，按语义化版本应小于 1。
+
+### 建议
+
+重置到：
+
+```text
+0.1.0
+```
+
+理由：
+
+- 没有外部客户端/兼容责任；
+- 当前 API/数据 schema 还在快速断代；
+- `0.x` 明确表达“初始开发、随时可能 breaking”；
+- 继续用 1.x 会让维护者误以为已经稳定。
+
+### 处理旧 tag
+
+不删除：
+
+- v1.0.0 ~ v1.2.3 保留为历史内部构建；
+- 文档标注“v1.x 是 reset 前的内部里程碑，不代表可用版本”；
+- 下一次正式发布从 `v0.1.0` 开始；
+- `main` 的 v1.2.3 恢复点不强制改历史，只改后续 dev 的 `workspace.package.version`。
+
+### 为什么不是 0.2/0.3
+
+没有 0.x 版本线，`0.1.0` 是最清晰的起点；如果强调“已经迭代很多”，也可以选 `0.3.0`，但那会暗示存在 0.1/0.2 历史，不如 0.1.0 直接。
+
+**待确认：是否重置到 0.1.0。**
+
+
