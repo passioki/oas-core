@@ -1,6 +1,6 @@
 {
-  "next_id": 7,
-  "current_id": 6,
+  "next_id": 20,
+  "current_id": 9,
   "frames": [
     {
       "id": 1,
@@ -56,6 +56,116 @@
       "source": "capture",
       "ts_ms": 1793506423724,
       "seen": true
+    },
+    {
+      "id": 7,
+      "name": "即将更换预设",
+      "category": "式神录",
+      "file": "frame-7.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793511189584,
+      "seen": false
+    },
+    {
+      "id": 9,
+      "name": "町中总界面",
+      "category": "町中",
+      "file": "frame-9.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793511394778,
+      "seen": true
+    },
+    {
+      "id": 10,
+      "name": "斗技",
+      "category": "斗技",
+      "file": "frame-10.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793511465878,
+      "seen": false
+    },
+    {
+      "id": 11,
+      "name": "探索总界面",
+      "category": "探索总界面",
+      "file": "frame-11.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793511517536,
+      "seen": false
+    },
+    {
+      "id": 13,
+      "name": "御魂总界面",
+      "category": "御魂",
+      "file": "frame-13.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793511601713,
+      "seen": false
+    },
+    {
+      "id": 14,
+      "name": "八岐大蛇",
+      "category": "御魂",
+      "file": "frame-14.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793511620765,
+      "seen": false
+    },
+    {
+      "id": 15,
+      "name": "困二八",
+      "category": "探索总界面",
+      "file": "frame-15.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793511687623,
+      "seen": false
+    },
+    {
+      "id": 16,
+      "name": "个人突破",
+      "category": "结界突破",
+      "file": "frame-16.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793511737947,
+      "seen": false
+    },
+    {
+      "id": 17,
+      "name": "逢魔之时",
+      "category": "弹窗",
+      "file": "frame-17.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793511803428,
+      "seen": false
+    },
+    {
+      "id": 18,
+      "name": "逢魔总界面",
+      "category": "逢魔之时",
+      "file": "frame-18.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793511845351,
+      "seen": false
     }
   ]
 }
