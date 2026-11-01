@@ -23,3 +23,7 @@
 
 # local frame backups from clear (recoverable but not source data)
 /frames/.backup/
+
+# local asset backups / deleted-task recovery (machine-local, not source)
+/assets/.backup/
+/assets/_deleted-tasks/

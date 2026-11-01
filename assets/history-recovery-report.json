@@ -1,0 +1,171 @@
+{
+  "backup": "D:\\OAS-dev\\oas-core\\assets\\.backup\\recover-20261101-203006",
+  "before": 11,
+  "historical_unique": 34,
+  "recovered": 23,
+  "after": 34,
+  "failed": [],
+  "recovered_items": [
+    {
+      "id": "预设",
+      "kind": "ocr_line",
+      "from_task": "返回庭院",
+      "commit": "f6be0f08532cf947bc6d29397c8dd09b51b4038c",
+      "file": null
+    },
+    {
+      "id": "返回箭头",
+      "kind": "template",
+      "from_task": "返回庭院",
+      "commit": "f6be0f08532cf947bc6d29397c8dd09b51b4038c",
+      "file": "images/a001.png"
+    },
+    {
+      "id": "育成",
+      "kind": "ocr_line",
+      "from_task": "返回庭院",
+      "commit": "f6be0f08532cf947bc6d29397c8dd09b51b4038c",
+      "file": null
+    },
+    {
+      "id": "式神录",
+      "kind": "template",
+      "from_task": "S1切预设",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a002.png"
+    },
+    {
+      "id": "关闭",
+      "kind": "template",
+      "from_task": "S1切预设",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a003.png"
+    },
+    {
+      "id": "返回",
+      "kind": "template",
+      "from_task": "S1切预设",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a004.png"
+    },
+    {
+      "id": "分组2",
+      "kind": "ocr_line",
+      "from_task": "S1切预设",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": null
+    },
+    {
+      "id": "默认分组",
+      "kind": "ocr_line",
+      "from_task": "S1切预设",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": null
+    },
+    {
+      "id": "庭院_探索灯笼",
+      "kind": "template",
+      "from_task": "个人突破",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a005.png"
+    },
+    {
+      "id": "世界_章节栏",
+      "kind": "template",
+      "from_task": "个人突破",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a006.png"
+    },
+    {
+      "id": "探索_结界突破图标",
+      "kind": "template",
+      "from_task": "个人突破",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a007.png"
+    },
+    {
+      "id": "结界突破_个人页签",
+      "kind": "template",
+      "from_task": "个人突破",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a008.png"
+    },
+    {
+      "id": "进攻按钮",
+      "kind": "template",
+      "from_task": "个人突破",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a009.png"
+    },
+    {
+      "id": "战斗_准备按钮",
+      "kind": "template",
+      "from_task": "个人突破",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a010.png"
+    },
+    {
+      "id": "结界突破_返回X",
+      "kind": "template",
+      "from_task": "个人突破",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a011.png"
+    },
+    {
+      "id": "战斗_自动按钮",
+      "kind": "template",
+      "from_task": "个人突破",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a012.png"
+    },
+    {
+      "id": "突破券",
+      "kind": "ocr_line",
+      "from_task": "个人突破",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": null
+    },
+    {
+      "id": "探索入口",
+      "kind": "template",
+      "from_task": "任务1",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a013.png"
+    },
+    {
+      "id": "章节_第二十八章",
+      "kind": "template",
+      "from_task": "探索",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a014.png"
+    },
+    {
+      "id": "入口_探索按钮",
+      "kind": "template",
+      "from_task": "探索",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a015.png"
+    },
+    {
+      "id": "章节_固定阵容",
+      "kind": "template",
+      "from_task": "探索",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a016.png"
+    },
+    {
+      "id": "章节_战斗图标",
+      "kind": "template",
+      "from_task": "探索",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a017.png"
+    },
+    {
+      "id": "退出确认_确认",
+      "kind": "template",
+      "from_task": "探索",
+      "commit": "84a63a2db517f638cd6a1a2a449ebcf69bb917f6",
+      "file": "images/a018.png"
+    }
+  ]
+}

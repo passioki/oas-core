@@ -2791,10 +2791,28 @@ POST /task/delete
 
 ## 恢复
 
-从提交 `9618cb5` 恢复任务 assets（11 个 OCR 素材）到统一全局库：
+从 git **全部历史** `tasks/*/assets.json` 快照恢复：
+
+```text
+历史唯一素材：34
+恢复缺失：23
+模板图片：18
+合并后全局素材：34
+```
+
+写入：
 
 ```text
 assets/assets.json
+assets/images/aNNN.png
+assets/history-recovery-report.json
+```
+
+恢复报告与工具：
+
+```text
+scripts/audit_asset_history.py
+scripts/recover_historical_assets.py
 ```
 
 不再恢复任务目录；素材现在位于全局素材库。
@@ -2809,18 +2827,19 @@ assets/_deleted-tasks/<task>-<timestamp>/
 
 2. 备份失败则拒绝删除任务；
 3. 返回 `asset_backup` 路径；
-4. 素材页增加统一全局素材列表（读取 `/task/assets` 的 global 模式）；
-5. 旧 `library/` 保留为「旧模板库」，不再冒充全局素材库。
+4. 素材页只有一个全局素材库（复用 `asset_ui.js` 行组件，不再自定义一套样式）；
+5. 任务页素材库只显示当前任务 flow 引用的全局素材子集；
+6. 旧 `library/` UI 已移除，仅保留后端 `lib:` 兼容。
 
 ## 验证
 
 ```text
-GET /task/assets?task= → 11 个素材（全局模式）
-素材页：全局素材库：11 个素材
-图片/素材页无 JS 错误
+GET /task/assets?task= → 34 个素材（全局模式）
+素材页：全局素材库：34 个素材
+无任务时任务素材库为空
 ```
 
-| 状态 | ✅ 已恢复 11 个素材到全局库；删除任务改为先备份 |
+| 状态 | ✅ 已恢复 34 个历史素材 / 18 张图；任务删除先备份；UI 收口 |
 
 
 

@@ -15,7 +15,8 @@ status: in_progress
 
 - 分支 `dev`；版本 `workspace.package.version = 0.1.0`；`main` = `385d611`（历史恢复点）。
 - 测试：`cargo test --workspace` = **358 passed / 0 failed**。
-- 任务：`tasks/返回庭院` 当前仍在用户手上编辑（flow 删除）；不强行恢复。
+- 任务：`tasks/` 为空（用户删除 `返回庭院`，未恢复）；任务页素材库应跟随任务引用。
+- 全局素材：`assets/` 34 个素材 / 18 张模板图（git 历史恢复，见 `ASSET-DATA-MODEL.md`）。
 - 帧：当前 28 帧（用户新增 35~40）；旧 22 帧恢复记录仍在。
 - 编辑器 UX：画布 16:9 stage、结果/日志可收起、帧详情侧栏已实现。
 - 操作区域：`action_shape`（rect/polygon + invert=整个屏幕−区域）+ `action_source` 已落地；旧 `action_roi`/`roi_back` 从代码与当前 assets 数据移除。
@@ -57,9 +58,10 @@ status: in_progress
 - [x] 单素材测试 live/frame_id 来源与真实识别 bbox 有效性提示。
 - [x] 全量测试 358 passed。
 - [x] 信息架构：任务页放当前任务素材库；素材页恢复全局素材库。
-- [x] 删除任务事故：`tasks/返回庭院` 的 11 个 assets 已恢复到 `assets/assets.json`；任务目录不恢复。
+- [x] 删除任务事故：从 git 全历史恢复 **34 个唯一素材 / 18 张模板图** 到 `assets/`；任务目录不恢复。
 - [x] 任务删除改为先备份到 `assets/_deleted-tasks/<task>-<ts>/`，备份失败拒绝删除。
-- [x] 素材页新增统一全局素材列表；旧 `library/` 标为旧模板库。
+- [x] 素材页只保留唯一全局素材库（复用 `asset_ui.js`）；旧 `library/` UI 移除；任务页只显示当前任务 flow 引用的全局子集。
+- [x] 新增 `docs/ASSET-DATA-MODEL.md` 固定“任务素材=全局子集”模型。
 
 ## 3. 下一步
 

@@ -29,7 +29,7 @@
 |---|---|
 | 引擎 | `oasd`（serve/run/queue/stats/scheduler）+ 编辑器 UI + 素材库；`oasd --version` = **0.1.0**（dev；旧 v1.x 为历史内部 tag） |
 | 测试 | `cargo test --workspace` = **358 passed / 0 failed**（legacy shipped 数据测试已改为临时 fixture，不再依赖 `tasks/` 现状） |
-| 当前任务 | `tasks/返回庭院`（OCR + 返回按钮 + 弹窗取消 + 重启兜底）；素材 1 个 `预设` OCR；其他任务已由用户清理 |
+| 当前任务 | 无（用户已删除 `返回庭院`；任务目录未恢复）；全局素材 34 个 / 18 张模板图 |
 | 引擎特性 | flow DSL、素材/掩膜/多边形、点击定位链、HB1/HB7、整帧搜索、**单识别 ROI + 操作区域**、库、queue、stats、checkpoint/resume、reconnect、多帧投票、OCR+模板互证、**统一任务模板/task lint、任务创建/编辑器运行、调度 v3、交付包** |
 | 编辑器 | 工作台（素材/图片/任务/点击分布/调度）+ 顶部页面（任务构建/任务库/实例/调度/设置）、标题行常驻结果/日志窗口、新建任务对话框、重置记忆多选、调试页 `/dashboard.html`；流程编辑统一在任务构建 |
 | 纵向 | ① 弹窗 ② 重试/恢复 ③ queue ④ 流程编辑器 ⑤ 统计 ⑥ 周期调度（v1 原型）· **V1.0 已交付**（模板+创建+调度 v3+实机包）|
@@ -62,8 +62,8 @@
 | 帧-素材关系 | 唯一关系 = `Asset.positions`；帧行显示关联素材数；只读关系浏览器显示帧→素材、素材→帧、素材共现、帧共享素材、录制 transition；支持 alternative/requires/similar/overlay 标注；**无 interface 概念** |
 | 新 DSL | `key`、`restart_app` 已实现，前端 builder/flow_model 已补齐 |
 | 帧归档 | 已补庭院/设置/式神录/探索/町中/御魂/斗技/结界突破/逢魔/悬赏/宠物小屋/退出弹窗/加载/启动参考帧 |
-| 信息架构 | 素材页 = 统一全局素材库（`assets/`）+ 旧模板库 + 识别/区域；任务页 = 当前任务素材库 + 运行/完成条件；删除任务前自动备份 `assets/_deleted-tasks/` |
-| 全局素材 | `assets/assets.json` 当前 11 个素材（从 `9618cb5` 恢复）；`GET /task/assets?task=` 在全局模式下返回它们 |
+| 信息架构 | **素材页 = 唯一全局素材库 `assets/`（全部素材）**；任务页 = 当前任务 flow 引用的全局素材子集；旧 `library/` UI 已移除，仅保留后端 `lib:` 兼容；模型见 `ASSET-DATA-MODEL.md` |
+| 全局素材 | `assets/assets.json` 当前 34 个素材 / 18 张模板图（含 git 历史恢复）；`GET /task/assets?task=` 在全局模式下返回它们 |
 | 帧安全 | 清空列表必须确认；清空前自动备份到 `frames/.backup/clear-<时间>/`（含 frames.json + PNG） |
 | 待办 | 活动页参考帧继续补；帧-素材关系继续扩展（替代/依赖/transition）；按 `docs/EDITOR-UX-PLAN.md` 做编辑器 UX/选择模型改版；不引入 interface/ui-map |
 | 关系证据 | `relations/observations.jsonl` append-only；`relations/annotations.json` 人工标注；图片页「录制关系」「标注关系」写入 |
@@ -299,7 +299,8 @@ run-tests.bat …                                  REM 旧仓守卫基线 171 pa
 | 主题 | 位置 |
 |---|---|
 | **长任务断点/续接（先读）** | `RESUME.md` · `RESUME-INDEX.md`（skill 强制 6） |
-| **帧-素材关系** | `../frames/frames.json` + 全局/任务 `assets.json` 的 `positions`；无 interface 文件 |
+| **帧-素材关系** | `../frames/frames.json` + 全局 `assets.json` 的 `positions`；无 interface 文件 |
+| **素材数据模型** | `ASSET-DATA-MODEL.md`（全局 `assets/`、任务素材=flow 引用子集、旧 library 仅后端兼容） |
 | **编辑器 UX / 选择模型计划** | `EDITOR-UX-PLAN.md`（画布、位置详情、多边形/反选、实时帧、点测/拖测、区域有效性、素材排序、分类重命名） |
 | **当前任务（返回庭院）** | `../tasks/返回庭院/flow.json` · 全局素材 `../assets/` · 帧 `../frames/` |
 | 引擎规格/进度 | `ENGINE-DESIGN.md` §22 |

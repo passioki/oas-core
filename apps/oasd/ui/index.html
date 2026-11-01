@@ -102,19 +102,6 @@
           <h3>素材库（全局）</h3>
           <div id="global-assets-status" class="muted small">—</div>
           <div id="global-assets-list" class="asset-list muted">（未加载全局素材）</div>
-          <h4>旧模板库（library/）</h4>
-          <div class="row lib-toolbar">
-            <input id="library-id" placeholder="库素材 id" />
-            <button id="btn-library-save" type="button" disabled>存入库</button>
-          </div>
-          <div class="row lib-toolbar">
-            <select id="library-select" title="全局素材库">
-              <option value="">（素材库为空）</option>
-            </select>
-            <button id="btn-library-refresh" type="button">刷新</button>
-            <button id="btn-library-match" type="button" disabled>全屏匹配</button>
-          </div>
-          <div id="library-status" class="muted small">—</div>
         </section>
 
         <section class="panel" id="panel-images">
@@ -214,8 +201,6 @@
             <button id="btn-task-run">运行任务</button>
             <button id="btn-task-stop" type="button" disabled title="请求停止当前运行的任务">结束运行任务</button>
           </div>
-          <h3>当前任务引用的素材</h3>
-          <div id="task-ref-assets-task" class="asset-list muted">（选择任务后显示）</div>
           <h3>任务素材库（跟随当前任务）</h3>
           <div class="row lib-toolbar">
             <input id="asset-search" placeholder="按素材 id 搜索" />

@@ -299,6 +299,365 @@
       "positions": [
         11
       ]
+    },
+    {
+      "id": "预设",
+      "kind": "ocr_line",
+      "roi": [
+        338,
+        75,
+        83,
+        44
+      ],
+      "ocr_mode": "lines",
+      "ocr_text": "预设",
+      "rev": 2,
+      "positions": [
+        4,
+        6,
+        7,
+        20,
+        21
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          334,
+          74,
+          87,
+          47
+        ],
+        "invert": false
+      },
+      "action_source": "fixed"
+    },
+    {
+      "id": "返回箭头",
+      "kind": "template",
+      "file": "images/a001.png",
+      "roi": [
+        22,
+        9,
+        43,
+        39
+      ],
+      "threshold": 0.85,
+      "rev": 1,
+      "positions": [
+        4
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          22,
+          9,
+          43,
+          39
+        ],
+        "invert": false
+      },
+      "action_source": "fixed"
+    },
+    {
+      "id": "育成",
+      "kind": "ocr_line",
+      "roi": [
+        614,
+        593,
+        55,
+        108
+      ],
+      "ocr_mode": "lines",
+      "ocr_text": "育成",
+      "rev": 1,
+      "positions": [
+        4
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          537,
+          605,
+          99,
+          92
+        ],
+        "invert": false
+      },
+      "action_source": "fixed"
+    },
+    {
+      "id": "式神录",
+      "kind": "template",
+      "file": "images/a002.png",
+      "roi": [
+        1206,
+        615,
+        45,
+        44
+      ],
+      "threshold": 0.85,
+      "rev": 1,
+      "action_source": "recognition"
+    },
+    {
+      "id": "关闭",
+      "kind": "template",
+      "file": "images/a003.png",
+      "roi": [
+        1178,
+        105,
+        53,
+        52
+      ],
+      "threshold": 0.85,
+      "rev": 1,
+      "action_source": "recognition"
+    },
+    {
+      "id": "返回",
+      "kind": "template",
+      "file": "images/a004.png",
+      "roi": [
+        16,
+        5,
+        57,
+        52
+      ],
+      "threshold": 0.85,
+      "rev": 1,
+      "action_source": "recognition"
+    },
+    {
+      "id": "分组2",
+      "kind": "ocr_line",
+      "roi": [
+        1080,
+        80,
+        200,
+        600
+      ],
+      "rev": 1,
+      "action_source": "recognition"
+    },
+    {
+      "id": "默认分组",
+      "kind": "ocr_line",
+      "roi": [
+        1080,
+        80,
+        200,
+        600
+      ],
+      "rev": 1,
+      "action_source": "recognition"
+    },
+    {
+      "id": "庭院_探索灯笼",
+      "kind": "template",
+      "file": "images/a005.png",
+      "roi": [
+        638,
+        105,
+        88,
+        85
+      ],
+      "rev": 1,
+      "threshold": 0.88,
+      "action_source": "recognition"
+    },
+    {
+      "id": "世界_章节栏",
+      "kind": "template",
+      "file": "images/a006.png",
+      "roi": [
+        1070,
+        165,
+        160,
+        48
+      ],
+      "rev": 1,
+      "threshold": 0.8,
+      "action_source": "recognition"
+    },
+    {
+      "id": "探索_结界突破图标",
+      "kind": "template",
+      "file": "images/a007.png",
+      "roi": [
+        266,
+        626,
+        62,
+        46
+      ],
+      "rev": 1,
+      "threshold": 0.88,
+      "action_source": "recognition"
+    },
+    {
+      "id": "结界突破_个人页签",
+      "kind": "template",
+      "file": "images/a008.png",
+      "roi": [
+        1185,
+        255,
+        62,
+        85
+      ],
+      "rev": 1,
+      "threshold": 0.9,
+      "action_source": "recognition"
+    },
+    {
+      "id": "进攻按钮",
+      "kind": "template",
+      "file": "images/a009.png",
+      "roi": [
+        340,
+        358,
+        98,
+        66
+      ],
+      "rev": 1,
+      "threshold": 0.88,
+      "action_source": "recognition"
+    },
+    {
+      "id": "战斗_准备按钮",
+      "kind": "template",
+      "file": "images/a010.png",
+      "roi": [
+        1118,
+        542,
+        110,
+        105
+      ],
+      "rev": 1,
+      "threshold": 0.88,
+      "action_source": "recognition"
+    },
+    {
+      "id": "结界突破_返回X",
+      "kind": "template",
+      "file": "images/a011.png",
+      "roi": [
+        1182,
+        100,
+        58,
+        58
+      ],
+      "rev": 1,
+      "threshold": 0.88,
+      "action_source": "recognition"
+    },
+    {
+      "id": "战斗_自动按钮",
+      "kind": "template",
+      "file": "images/a012.png",
+      "roi": [
+        20,
+        645,
+        110,
+        58
+      ],
+      "rev": 1,
+      "threshold": 0.85,
+      "action_source": "recognition"
+    },
+    {
+      "id": "突破券",
+      "kind": "ocr_line",
+      "roi": [
+        1160,
+        6,
+        112,
+        38
+      ],
+      "rev": 1,
+      "action_source": "recognition"
+    },
+    {
+      "id": "探索入口",
+      "kind": "template",
+      "file": "images/a013.png",
+      "roi": [
+        658,
+        134,
+        40,
+        44
+      ],
+      "threshold": 0.85,
+      "rev": 2,
+      "action_source": "recognition"
+    },
+    {
+      "id": "章节_第二十八章",
+      "kind": "template",
+      "file": "images/a014.png",
+      "roi": [
+        1067,
+        447,
+        142,
+        42
+      ],
+      "rev": 1,
+      "threshold": 0.86,
+      "action_source": "recognition"
+    },
+    {
+      "id": "入口_探索按钮",
+      "kind": "template",
+      "file": "images/a015.png",
+      "roi": [
+        1058,
+        588,
+        130,
+        102
+      ],
+      "rev": 1,
+      "threshold": 0.88,
+      "action_source": "recognition"
+    },
+    {
+      "id": "章节_固定阵容",
+      "kind": "template",
+      "file": "images/a016.png",
+      "roi": [
+        884,
+        642,
+        175,
+        46
+      ],
+      "rev": 1,
+      "threshold": 0.9,
+      "action_source": "recognition"
+    },
+    {
+      "id": "章节_战斗图标",
+      "kind": "template",
+      "file": "images/a017.png",
+      "roi": [
+        912,
+        242,
+        64,
+        64
+      ],
+      "rev": 1,
+      "threshold": 0.85,
+      "action_source": "recognition"
+    },
+    {
+      "id": "退出确认_确认",
+      "kind": "template",
+      "file": "images/a018.png",
+      "roi": [
+        692,
+        373,
+        176,
+        57
+      ],
+      "rev": 1,
+      "threshold": 0.9,
+      "action_source": "recognition"
     }
   ],
   "collections": []

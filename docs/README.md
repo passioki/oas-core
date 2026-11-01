@@ -17,7 +17,8 @@
 | `DESIGN-SPEC-PROGRESS.md` | 设计规格覆盖台账 |
 | `SESSION-INDEX.md` | 会话分类索引 |
 | `DELIVERY-PLAN.md` | V1.0 交付路线/DoD |
-| `EDITOR-UX-PLAN.md` | 编辑器 UX/选择模型/实时帧/区域有效性改版计划（未实现） |
+| `EDITOR-UX-PLAN.md` | 编辑器 UX/选择模型/实时帧/区域有效性改版计划 |
+| `ASSET-DATA-MODEL.md` | 全局 `assets/`、任务素材=flow 引用子集、旧 `library/` 兼容边界 |
 
 ## 当前基线（2026-11-01）
 

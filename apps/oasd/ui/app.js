@@ -2199,8 +2199,19 @@ function renderTaskReferencedAssets() {
 }
 
 async function refreshTaskAssets(task) {
-  if (!task) task = (taskName.value || '').trim();
-  if (!task) return;
+  const explicit = task != null && String(task).trim();
+  const selected = explicit || ((taskSelect && taskSelect.value) || '').trim();
+  if (!selected) {
+    taskAssets = [];
+    taskAssetsMeta = { task: '', design: null, count: 0 };
+    if (assetsList) {
+      assetsList.textContent = '（未选择任务；任务素材库为空）';
+    }
+    if (taskRefAssetsTask) taskRefAssetsTask.textContent = '（未选择任务）';
+    renderAssetPositionInheritPicker();
+    return;
+  }
+  task = selected;
   try {
     const r = await fetch('/task/assets?task=' + encodeURIComponent(task));
     const s = await r.json();
@@ -2221,7 +2232,20 @@ async function refreshTaskAssets(task) {
         _collection: true,
       });
     }
-    taskAssetsMeta = { task: s.task, design: s.design_resolution, count: s.count };
+    // Unified global mode: the task panel shows the subset referenced by this
+    // task's flow, not every global asset.
+    let referenced = null;
+    if (s.task === '（全局素材库）') {
+      try {
+        const fr = await fetch('/task/flow?task=' + encodeURIComponent(task));
+        const fs = await fr.json();
+        referenced = fs.ok && fs.flow ? collectFlowAssetIds(fs.flow) : new Set();
+      } catch (e) {
+        referenced = new Set();
+      }
+      taskAssets = taskAssets.filter((a) => referenced.has(a.id));
+    }
+    taskAssetsMeta = { task, design: s.design_resolution, count: taskAssets.length };
     refreshAssetCategoryFilter();
     renderAssetList();
     renderTaskReferencedAssets();
@@ -3294,13 +3318,23 @@ async function loadGlobalAssets() {
       globalAssetsList.textContent = '（暂无全局素材）';
       return;
     }
+    if (window.OASAssetUI && window.OASAssetUI.renderRows) {
+      window.OASAssetUI.renderRows(globalAssetsList, items, {
+        task: '',
+        pick: false,
+        manage: false,
+        actions: false,
+        group: true,
+        groupBy: 'kind',
+        clear: true,
+        onPick: (it) => pickAssetRoi(it),
+      });
+      return;
+    }
     for (const it of items) {
       const row = document.createElement('div');
       row.className = 'asset-row';
-      const box = it.action_shape && (it.action_shape.roi || it.action_shape.points)
-        ? JSON.stringify(it.action_shape.roi || it.action_shape.points)
-        : '无操作区';
-      row.textContent = `${it.id} · ${it.kind} · roi=${JSON.stringify(it.roi)} · ${box} · 位置帧[${(it.positions || []).join(',') || '—'}]`;
+      row.textContent = `${it.id} · ${it.kind}`;
       globalAssetsList.appendChild(row);
     }
   } catch (e) {
