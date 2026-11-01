@@ -60,4 +60,5 @@ status: in_progress
 - `apps/oasd/ui/app.js`、`index.html`（截图界面选择、帧界面显示/修改）；
 - `ui-map/ui-map.json`、`docs/UI-MAP.md`、`docs/UI-MAP.generated.md`；
 - `tasks/返回庭院/flow.generated.json`；
+- 提交：代码 `f4c35e5`、数据/文档 `21ec55d`；
 - 测试：`cargo test --workspace` = 356 passed。
