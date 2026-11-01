@@ -110,4 +110,10 @@ GET  /relations/frame-assets?task=<task>   （返回派生关系 + transitions +
 - 帧 ID 31~34 不复用（frames.json `next_id=35`），重新录制会生成新帧；
 - 缺失帧的 transition 仅作为历史证据保留，不应视为可执行路径。
 
+## 位置帧继承
+
+- 新素材保存区、已有素材位置编辑弹窗都可以从其他素材继承位置帧；
+- 继承是**复制 positions 并追加**，最终保存到目标素材自己的 `positions`；
+- 不新增 asset→asset 引用关系，也不会在源素材后续变化时自动同步。
+
 

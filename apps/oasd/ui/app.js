@@ -87,10 +87,12 @@ const assetsList = document.getElementById('assets-list');
 const taskRefAssets = document.getElementById('task-ref-assets');
 const taskRefAssetsTask = document.getElementById('task-ref-assets-task');
 const assetPositionPicker = document.getElementById('asset-position-picker');
+const assetPositionInheritHost = document.getElementById('asset-position-inherit-host');
 const assetPositionList = document.getElementById('asset-position-list');
 const assetPositionStatus = document.getElementById('asset-position-status');
 let assetFramesCache = [];
 let pendingAssetPositions = [];
+let assetPositionInheritPicker = null;
 const btnAssetsRefresh = document.getElementById('assets-refresh');
 const btnAssetsBatchTest = document.getElementById('btn-assets-batch-test');
 const runsSelect = document.getElementById('runs-select');
@@ -2004,6 +2006,7 @@ async function refreshTaskAssets(task) {
     refreshAssetCategoryFilter();
     renderAssetList();
     renderTaskReferencedAssets();
+    renderAssetPositionInheritPicker();
     // Frame rows show how many current-task assets reference each frame; keep
     // that derived relation in sync after asset CRUD/load.
     if (typeof refreshFrames === 'function') {
@@ -2206,8 +2209,9 @@ async function editAssetPositions(it) {
   title.textContent = `设置素材位置帧：${it.id}`;
   const hint = document.createElement('p');
   hint.className = 'muted small';
-  hint.textContent = '搜索分类/帧名编号，点候选加入；保存后会重新读取素材分类。';
+  hint.textContent = '搜索分类/帧名编号，点候选加入；也可以从其他素材继承位置帧；保存后会重新读取素材分类。';
   const pickerHost = document.createElement('div');
+  const inheritHost = document.createElement('div');
   const list = document.createElement('div');
   list.className = 'asset-list';
   const msg = document.createElement('div');
@@ -2254,6 +2258,33 @@ async function editAssetPositions(it) {
   });
   pickerHost.appendChild(picker);
 
+  const inheritLabel = document.createElement('div');
+  inheritLabel.className = 'muted small';
+  inheritLabel.textContent = '从其他素材继承位置帧（只追加）：';
+  inheritHost.appendChild(inheritLabel);
+  const inheritItems = (taskAssets || [])
+    .filter((a) => a.id !== it.id && a.kind !== 'template_set' && Array.isArray(a.positions) && a.positions.length)
+    .map((a) => ({
+      id: a.id,
+      label: `${a.id}（${a.positions.length} 个位置帧）`,
+      positions: a.positions.slice(),
+    }));
+  const inheritPicker = window.OASAssetUI.createSearchPicker({
+    items: inheritItems,
+    value: '',
+    placeholder: '搜索其他素材，选择后追加它的位置帧…',
+    label: (item) => item.label,
+    onChoose: (item, input) => {
+      for (const id of item.positions) {
+        if (!chosen.includes(id)) chosen.push(id);
+      }
+      input.value = '';
+      renderChosen();
+      msg.textContent = `已继承「${item.id}」的 ${item.positions.length} 个位置帧；当前 ${chosen.length} 个`;
+    },
+  });
+  inheritHost.appendChild(inheritPicker);
+
   const actions = document.createElement('div');
   actions.className = 'asset-modal-actions';
   const cancel = document.createElement('button');
@@ -2281,7 +2312,7 @@ async function editAssetPositions(it) {
     await refreshAssetPositionFrames();
   });
   actions.append(cancel, save);
-  box.append(title, hint, pickerHost, list, msg, actions);
+  box.append(title, hint, pickerHost, inheritHost, list, msg, actions);
   overlay.appendChild(box);
   document.body.appendChild(overlay);
   renderChosen();
@@ -2458,6 +2489,43 @@ function addAssetPosition(id) {
   renderPendingPositions();
 }
 
+function renderAssetPositionInheritPicker() {
+  if (!assetPositionInheritHost || !window.OASAssetUI || !window.OASAssetUI.createSearchPicker) return;
+  if (!assetPositionInheritPicker) {
+    assetPositionInheritPicker = window.OASAssetUI.createSearchPicker({
+      items: [],
+      value: '',
+      placeholder: '从其他素材继承位置帧…',
+      label: (item) => item.label,
+      onChoose: (item, input) => {
+        const positions = Array.isArray(item.positions) ? item.positions : [];
+        for (const id of positions) {
+          if (!pendingAssetPositions.includes(id)) pendingAssetPositions.push(id);
+        }
+        input.value = '';
+        renderPendingPositions();
+        if (assetPositionStatus) {
+          assetPositionStatus.textContent = `已继承「${item.id}」的 ${positions.length} 个位置帧；当前 ${pendingAssetPositions.length} 个`;
+        }
+      },
+    });
+    assetPositionInheritHost.textContent = '';
+    const label = document.createElement('div');
+    label.className = 'muted small';
+    label.textContent = '继承其他素材的位置帧（只追加，不会删除已选帧）：';
+    assetPositionInheritHost.appendChild(label);
+    assetPositionInheritHost.appendChild(assetPositionInheritPicker);
+  }
+  const items = (taskAssets || [])
+    .filter((a) => a.kind !== 'template_set' && Array.isArray(a.positions) && a.positions.length)
+    .map((a) => ({
+      id: a.id,
+      label: `${a.id}（${a.positions.length} 个位置帧）`,
+      positions: a.positions.slice(),
+    }));
+  assetPositionInheritPicker.setItems(items);
+}
+
 function renderAssetPositionPicker() {
   if (!assetPositionPicker) return;
   assetPositionPicker.textContent = '';
@@ -2474,6 +2542,7 @@ function renderAssetPositionPicker() {
     },
   });
   assetPositionPicker.appendChild(picker);
+  renderAssetPositionInheritPicker();
 }
 
 async function refreshAssetPositionFrames() {

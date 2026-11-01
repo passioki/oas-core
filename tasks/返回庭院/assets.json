@@ -1,5 +1,9 @@
 {
   "schema_version": 1,
+  "design_resolution": [
+    1280,
+    720
+  ],
   "items": [
     {
       "id": "预设",
@@ -25,6 +29,50 @@
         7,
         20,
         21
+      ]
+    },
+    {
+      "id": "返回箭头",
+      "kind": "template",
+      "file": "images/a001.png",
+      "roi": [
+        22,
+        9,
+        43,
+        39
+      ],
+      "action_roi": [
+        22,
+        9,
+        43,
+        39
+      ],
+      "threshold": 0.85,
+      "rev": 1,
+      "positions": [
+        4
+      ]
+    },
+    {
+      "id": "育成",
+      "kind": "ocr_line",
+      "roi": [
+        614,
+        593,
+        55,
+        108
+      ],
+      "action_roi": [
+        537,
+        605,
+        99,
+        92
+      ],
+      "ocr_mode": "lines",
+      "ocr_text": "育成",
+      "rev": 1,
+      "positions": [
+        4
       ]
     }
   ],

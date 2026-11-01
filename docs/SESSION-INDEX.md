@@ -6379,3 +6379,4 @@
 | 6342 | 11-01 15:55 | U/A | 前端/帧/素材/测试 | 进文档 §E-62 | Phase2 transition 录制：`/relations/record` 前后帧+素材点击；observations.jsonl append-only；关系浏览器显示 transition；355 tests |
 | 6343 | 11-01 16:20 | U/A | 前端/帧/素材/测试 | 进文档 §E-63 | Phase3/4/5：annotations.json + annotate/delete；coverage；关系浏览器标注/覆盖；任务构建关系提示；356 tests |
 | 6344 | 11-01 16:45 | U/A | 帧/数据/测试/文档 | 进文档 §E-64 | 清空列表事故：git 恢复 22 帧；31~34 新录制帧无法恢复；清空确认 + 自动备份 `.backup/clear-*`；356 tests |
+| 6345 | 11-01 17:05 | U/A | 前端/素材/位置帧 | 进文档 §E-65 | 新素材/已有素材位置帧可从其他素材继承；只追加 positions，无新持久化关系；无头 UI 验证 |

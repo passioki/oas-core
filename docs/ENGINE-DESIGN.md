@@ -2075,6 +2075,7 @@ Asset.positions = [frame_id, ...]
   - 素材 ↔ 素材共现；
   - 帧 ↔ 帧共享素材；
 - 不新增持久化关系表；`Asset.positions` 仍是唯一存储关系。
+- 位置帧可从其他素材继承：编辑器把源素材 `positions` 复制到目标（只追加），最终仍写回目标素材的 `positions`；不新增引用关系。
 
 #### 22.41.2 Phase 2：transition 录制（已实现）
 
