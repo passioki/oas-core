@@ -2676,12 +2676,15 @@ Asset.positions = [frame_id, ...]
 3. Phase C：`SelectionTool`、操作区域多边形+反选；
 4. Phase D：素材排序、分类重命名。
 
+## 已确认
+
+- 实时关闭时，单素材多位置**全部测试**；
+- 帧分类重命名 `to` 为空**禁止**。
+
 ## 待用户确认
 
-- 多边形字段：`action_polygon`+`action_invert` vs `action_shape`；
-- 是否新增 `action_source`（recognition/fixed）；
-- 实时关闭时单素材多位置：全部测试 vs 只测第一帧；
-- 分类重命名为空时的处理。
+- 多边形字段：`action_polygon`+`action_invert` vs `action_shape`（完整方案见 `EDITOR-UX-PLAN.md §10.1`，建议 A）；
+- 是否新增 `action_source`（recognition/fixed，见 §10.2，建议新增）。
 
 | 状态 | 📝 计划/文档完成；代码待实现 |
 
