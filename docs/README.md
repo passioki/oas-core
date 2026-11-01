@@ -1,0 +1,37 @@
+# OAS-CORE 文档入口
+
+> 本目录是 **oas-core 的独立项目文档**，从旧 backend 文档仓迁移而来。
+> 旧仓库 `D:\OAS-dev\backend` 已冻结，仅作为资产/历史资源；oas-core 的构建、运行、测试、发布不依赖它。
+
+## 当前有效文档
+
+| 文件 | 用途 |
+|---|---|
+| `START-HERE.md` | ★ 新会话唯一入口 |
+| `RESUME.md` | 断点续接卡（每次覆盖重写） |
+| `RESUME-INDEX.md` | 断点索引（只追加） |
+| `SESSION-HANDOFF.md` | 一页交接：当前状态/下一步/坑 |
+| `ENGINE-DESIGN.md` | 引擎规格（含 §22，调度 v3 在 §22.34） |
+| `PENDING-LEDGER.md` | 未完成台账 |
+| `DESIGN-SPEC.md` | 设计规格书 |
+| `DESIGN-SPEC-PROGRESS.md` | 设计规格覆盖台账 |
+| `SESSION-INDEX.md` | 会话分类索引 |
+| `DELIVERY-PLAN.md` | V1.0 交付路线/DoD |
+
+## 维护规则
+
+1. 所有文档更新都在 **oas-core 仓库**完成，不再回写 backend 文档仓。
+2. 文档随 `oas-core dev` 提交；`main` 保持 v1.2.3 恢复节点 `385d611`，直到下一次发布。
+3. 新会话固定：
+   - 工作目录 `D:\OAS-dev\oas-core`
+   - 先加载 skill `session-memory`
+   - 再读 `docs/START-HERE.md`
+4. skill 配置：仓库根目录 `session-memory.config.json`。
+5. 旧 backend 文档仍位于 `D:\OAS-dev\backend\docs`，仅供历史查证；其中的 `DEV-WORKFLOW.md`、`LAYOUT.md`、旧架构/验收文档已不迁入。
+
+## 迁移来源
+
+- 源仓库：`https://github.com/passioki/OnmyojiAutoScript.git`（旧 OAS backend）
+- 源提交：`2861d8ba`（v1.2.3 发布文档节点）
+- 迁移日期：2026-11-01
+- 详细对照：`MIGRATION-NOTES.md`

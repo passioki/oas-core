@@ -1,0 +1,12 @@
+{
+  "docs_dir": "docs",
+  "spec": "DESIGN-SPEC.md",
+  "progress": "DESIGN-SPEC-PROGRESS.md",
+  "index": "SESSION-INDEX.md",
+  "ledger": "PENDING-LEDGER.md",
+  "resume": "RESUME.md",
+  "resume_index": "RESUME-INDEX.md",
+  "input": "_both.txt",
+  "checkpoint_ops": 10,
+  "checkpoint_chars": 25000
+}
