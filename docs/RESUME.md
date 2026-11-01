@@ -57,6 +57,9 @@ status: in_progress
 - [x] 单素材测试 live/frame_id 来源与真实识别 bbox 有效性提示。
 - [x] 全量测试 358 passed。
 - [x] 信息架构：任务页放当前任务素材库；素材页恢复全局素材库。
+- [x] 删除任务事故：`tasks/返回庭院` 的 11 个 assets 已恢复到 `assets/assets.json`；任务目录不恢复。
+- [x] 任务删除改为先备份到 `assets/_deleted-tasks/<task>-<ts>/`，备份失败拒绝删除。
+- [x] 素材页新增统一全局素材列表；旧 `library/` 标为旧模板库。
 
 ## 3. 下一步
 

@@ -2763,6 +2763,66 @@ Asset.positions = [frame_id, ...]
 
 | 状态 | ✅ 信息架构已修正；当前 `tasks/返回庭院` 目录被删除，任务素材库暂为空 |
 
+---
+
+# ★ §E-69 ★★★ [11-01 20:25] **删除任务导致任务素材丢失：原因与修复**
+
+> 触发：用户手动删除 `返回庭院` 后全局素材库为空，确认任务素材与全局素材的关系。
+
+## 结论
+
+是。当前实现里：
+
+```text
+POST /task/delete
+  → remove_dir_all(tasks/<task>/)
+  → 同时删除 tasks/<task>/assets.json + images/
+```
+
+因此删除任务会把它自己的 `assets.json` 一起删除。  
+这不是全局库被清空，而是 **任务素材在任务目录中**，旧实现没有先迁移/备份。
+
+## 证据
+
+- 日志 `task_delete task=返回庭院`；
+- `tasks/` 当前为空；
+- `assets/` 原先没有 `assets.json`；
+- 全局库从未执行过 `/assets/migrate` 或 `/library/save_asset`。
+
+## 恢复
+
+从提交 `9618cb5` 恢复任务 assets（11 个 OCR 素材）到统一全局库：
+
+```text
+assets/assets.json
+```
+
+不再恢复任务目录；素材现在位于全局素材库。
+
+## 修复
+
+1. 删除任务前先把 `assets.json` + `images/` 备份到：
+
+```text
+assets/_deleted-tasks/<task>-<timestamp>/
+```
+
+2. 备份失败则拒绝删除任务；
+3. 返回 `asset_backup` 路径；
+4. 素材页增加统一全局素材列表（读取 `/task/assets` 的 global 模式）；
+5. 旧 `library/` 保留为「旧模板库」，不再冒充全局素材库。
+
+## 验证
+
+```text
+GET /task/assets?task= → 11 个素材（全局模式）
+素材页：全局素材库：11 个素材
+图片/素材页无 JS 错误
+```
+
+| 状态 | ✅ 已恢复 11 个素材到全局库；删除任务改为先备份 |
+
+
 
 
 

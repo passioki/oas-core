@@ -131,6 +131,8 @@ const librarySelect = document.getElementById('library-select');
 const btnLibraryRefresh = document.getElementById('btn-library-refresh');
 const btnLibraryMatch = document.getElementById('btn-library-match');
 const libraryStatus = document.getElementById('library-status');
+const globalAssetsStatus = document.getElementById('global-assets-status');
+const globalAssetsList = document.getElementById('global-assets-list');
 // N38/M1: 任务列表 / 新建任务对话框 / 运行任务
 const taskSelect = document.getElementById('task-select');
 const btnTaskRefresh = document.getElementById('btn-task-refresh');
@@ -3260,7 +3262,7 @@ async function loadLibrary() {
     librarySelect.textContent = '';
     const opt0 = document.createElement('option');
     opt0.value = '';
-    opt0.textContent = items.length ? '（选择库素材）' : '（素材库为空）';
+    opt0.textContent = items.length ? '（选择旧模板）' : '（旧模板库为空）';
     librarySelect.appendChild(opt0);
     for (const it of items) {
       const o = document.createElement('option');
@@ -3268,10 +3270,41 @@ async function loadLibrary() {
       o.textContent = `${it.id}（阈值 ${Number(it.threshold ?? 0.85).toFixed(2)}）`;
       librarySelect.appendChild(o);
     }
-    libraryStatus.textContent = `素材库：${items.length} 个素材`;
+    libraryStatus.textContent = `旧模板库：${items.length} 个素材`;
     if (btnLibraryMatch) btnLibraryMatch.disabled = items.length === 0;
   } catch (e) {
-    libraryStatus.textContent = '素材库读取异常：' + e;
+    libraryStatus.textContent = '旧模板库读取异常：' + e;
+  }
+}
+
+async function loadGlobalAssets() {
+  if (!globalAssetsList) return;
+  try {
+    const r = await fetch('/task/assets?task=');
+    const s = await r.json();
+    if (!s.ok) {
+      globalAssetsStatus.textContent = '统一全局素材库未初始化';
+      globalAssetsList.textContent = '（暂无全局素材）';
+      return;
+    }
+    const items = s.items || [];
+    globalAssetsStatus.textContent = `全局素材库：${items.length} 个素材`;
+    globalAssetsList.textContent = '';
+    if (!items.length) {
+      globalAssetsList.textContent = '（暂无全局素材）';
+      return;
+    }
+    for (const it of items) {
+      const row = document.createElement('div');
+      row.className = 'asset-row';
+      const box = it.action_shape && (it.action_shape.roi || it.action_shape.points)
+        ? JSON.stringify(it.action_shape.roi || it.action_shape.points)
+        : '无操作区';
+      row.textContent = `${it.id} · ${it.kind} · roi=${JSON.stringify(it.roi)} · ${box} · 位置帧[${(it.positions || []).join(',') || '—'}]`;
+      globalAssetsList.appendChild(row);
+    }
+  } catch (e) {
+    globalAssetsStatus.textContent = '全局素材库读取异常：' + e;
   }
 }
 
@@ -3298,8 +3331,8 @@ async function saveLibraryAsset() {
       libraryStatus.textContent = '保存到素材库失败：' + (s.errors || []).join('; ');
       return;
     }
-    libraryStatus.textContent = `已存入素材库：${s.asset.id}（rev ${s.asset.rev}）`;
-    log(`素材库：已保存「${s.asset.id}」（${roi.w}x${roi.h}）`);
+    libraryStatus.textContent = `已存入旧模板库：${s.asset.id}（rev ${s.asset.rev}）`;
+    log(`旧模板库：已保存「${s.asset.id}」（${roi.w}x${roi.h}）`);
     await loadLibrary();
   } catch (e) {
     libraryStatus.textContent = '保存到素材库异常：' + e;
@@ -5511,9 +5544,10 @@ async function submitResetMemory() {
   await loadStats();
   // §22.22 全局素材库
   if (btnLibrarySave) btnLibrarySave.addEventListener('click', saveLibraryAsset);
-  if (btnLibraryRefresh) btnLibraryRefresh.addEventListener('click', () => loadLibrary());
+  if (btnLibraryRefresh) btnLibraryRefresh.addEventListener('click', () => { loadLibrary(); loadGlobalAssets(); });
   if (btnLibraryMatch) btnLibraryMatch.addEventListener('click', matchLibrary);
   await loadLibrary();
+  await loadGlobalAssets();
   // §22.27 会话图片列表
   if (btnFrameUpload) btnFrameUpload.addEventListener('click', uploadFrames);
   if (btnFrameCapture) btnFrameCapture.addEventListener('click', openCaptureFrameDialog);

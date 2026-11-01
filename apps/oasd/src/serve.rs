@@ -4166,16 +4166,77 @@ impl Server {
         if root.parent() != Some(tasks_root.as_path()) {
             return self.send_errors(out, 400, vec!["refusing to delete outside tasks dir".into()]);
         }
+        // Never lose task assets on delete. They are preserved under
+        // assets/_deleted-tasks/<task>-<timestamp>/ until the user restores or
+        // migrates them into the global store.
+        let backup = match self.backup_task_assets(task, &root) {
+            Ok(p) => p,
+            Err(e) => {
+                return self.send_errors(
+                    out,
+                    500,
+                    vec![format!("backup task assets before delete: {e}")],
+                )
+            }
+        };
         if let Err(e) = std::fs::remove_dir_all(&root) {
             return self.send_errors(out, 500, vec![format!("delete task `{task}`: {e}")]);
         }
         let pruned = self.prune_scheduler_task(task).unwrap_or(0);
-        self.editor_log(&format!("task_delete task={task} scheduler_entries_removed={pruned}"));
+        self.editor_log(&format!(
+            "task_delete task={task} scheduler_entries_removed={pruned} backup={}",
+            backup.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
+        ));
         self.send_json(
             out,
             200,
-            &serde_json::json!({"ok": true, "task": task, "scheduler_entries_removed": pruned}).to_string(),
+            &serde_json::json!({
+                "ok": true,
+                "task": task,
+                "scheduler_entries_removed": pruned,
+                "asset_backup": backup.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            })
+            .to_string(),
         )
+    }
+
+    /// Copy a task's `assets.json` + `images/` into a timestamped recovery dir
+    /// before the task directory is removed.
+    fn backup_task_assets(&self, task: &str, root: &Path) -> Result<Option<PathBuf>, String> {
+        let assets_json = root.join("assets.json");
+        if !assets_json.is_file() {
+            return Ok(None);
+        }
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let dest = self
+            .assets_dir
+            .join("_deleted-tasks")
+            .join(format!("{task}-{stamp}"));
+        std::fs::create_dir_all(&dest)
+            .map_err(|e| format!("create {}: {e}", dest.display()))?;
+        std::fs::copy(&assets_json, dest.join("assets.json"))
+            .map_err(|e| format!("copy assets.json: {e}"))?;
+        let src_images = root.join("images");
+        if src_images.is_dir() {
+            let dst_images = dest.join("images");
+            std::fs::create_dir_all(&dst_images)
+                .map_err(|e| format!("create {}: {e}", dst_images.display()))?;
+            for entry in std::fs::read_dir(&src_images)
+                .map_err(|e| format!("read {}: {e}", src_images.display()))?
+            {
+                let entry = entry.map_err(|e| format!("read images entry: {e}"))?;
+                let path = entry.path();
+                if path.is_file() {
+                    let name = entry.file_name();
+                    std::fs::copy(&path, dst_images.join(name))
+                        .map_err(|e| format!("copy {}: {e}", path.display()))?;
+                }
+            }
+        }
+        Ok(Some(dest))
     }
 
     /// Remove scheduler entries that point at a deleted task. Keeping stale
