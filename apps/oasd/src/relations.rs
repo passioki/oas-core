@@ -40,6 +40,84 @@ fn default_transition_type() -> String {
     "transition".to_string()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Annotation {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub a: String,
+    pub b: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AnnotationFile {
+    #[serde(default = "default_schema")]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub annotations: Vec<Annotation>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Coverage {
+    pub frames_total: usize,
+    pub frames_with_assets: usize,
+    pub assets_total: usize,
+    pub assets_with_positions: usize,
+    pub transitions: usize,
+    pub annotations: usize,
+}
+
+pub fn load_annotations(path: &Path) -> Result<Vec<Annotation>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(v) => v,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("read {}: {e}", path.display())),
+    };
+    let file: AnnotationFile = serde_json::from_str(&text)
+        .map_err(|e| format!("{}: invalid annotation JSON: {e}", path.display()))?;
+    Ok(file.annotations)
+}
+
+pub fn save_annotations(path: &Path, annotations: &[Annotation]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        }
+    }
+    let file = AnnotationFile {
+        schema_version: 1,
+        annotations: annotations.to_vec(),
+    };
+    let text = serde_json::to_string_pretty(&file)
+        .map_err(|e| format!("serialize annotations: {e}"))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, format!("{text}\n"))
+        .map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), path.display()))
+}
+
+pub fn coverage(
+    frames: &[FrameRelation],
+    assets: &[AssetRelation],
+    transitions: usize,
+    annotations: usize,
+) -> Coverage {
+    Coverage {
+        frames_total: frames.len(),
+        frames_with_assets: frames.iter().filter(|f| !f.assets.is_empty()).count(),
+        assets_total: assets.len(),
+        assets_with_positions: assets.iter().filter(|a| !a.positions.is_empty()).count(),
+        transitions,
+        annotations,
+    }
+}
+
 /// Append-only evidence reader. Malformed lines are reported, not silently
 /// dropped; the relation endpoint must not invent evidence.
 pub fn load_observations(path: &Path) -> Result<Vec<TransitionObservation>, String> {
@@ -106,6 +184,8 @@ pub struct RelationSnapshot {
     pub asset_cooccurrence: Vec<AssetCooccurrence>,
     pub frame_shared_assets: Vec<FrameSharedAssets>,
     pub transitions: Vec<TransitionObservation>,
+    pub annotations: Vec<Annotation>,
+    pub coverage: Coverage,
 }
 
 const MAX_PAIRS_OUT: usize = 2000;
@@ -235,6 +315,7 @@ pub fn build(
     });
     frame_shared_assets.truncate(MAX_PAIRS_OUT);
 
+    let cov = coverage(&frames_out, &asset_relations, 0, 0);
     RelationSnapshot {
         task: task.to_string(),
         frames: frames_out,
@@ -242,6 +323,8 @@ pub fn build(
         asset_cooccurrence,
         frame_shared_assets,
         transitions: Vec::new(),
+        annotations: Vec::new(),
+        coverage: cov,
     }
 }
 
@@ -313,6 +396,55 @@ mod tests {
         assert_eq!(got[0].to_frame, 6);
         std::fs::write(&path, "{bad json}\n").unwrap();
         assert!(load_observations(&path).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn annotations_roundtrip_and_coverage_counts() {
+        let base = std::env::temp_dir().join(format!(
+            "oas-rel-ann-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        let path = base.join("annotations.json");
+        let ann = Annotation {
+            id: "ann-1".into(),
+            kind: "alternative".into(),
+            a: "asset:返回庭院/预设".into(),
+            b: "asset:返回庭院/确认".into(),
+            note: "same button".into(),
+            created_at: 1,
+        };
+        save_annotations(&path, std::slice::from_ref(&ann)).expect("save");
+        let got = load_annotations(&path).expect("load");
+        assert_eq!(got, vec![ann]);
+        let frames = vec![FrameRelation {
+            id: 4,
+            name: "f".into(),
+            category: "c".into(),
+            assets: vec!["预设".into()],
+        }];
+        let assets = vec![
+            AssetRelation {
+                id: "预设".into(),
+                kind: "ocr_line".into(),
+                positions: vec![4],
+            },
+            AssetRelation {
+                id: "确认".into(),
+                kind: "ocr_line".into(),
+                positions: vec![],
+            },
+        ];
+        let cov = coverage(&frames, &assets, 2, 1);
+        assert_eq!(cov.frames_total, 1);
+        assert_eq!(cov.frames_with_assets, 1);
+        assert_eq!(cov.assets_total, 2);
+        assert_eq!(cov.assets_with_positions, 1);
         let _ = std::fs::remove_dir_all(&base);
     }
 }

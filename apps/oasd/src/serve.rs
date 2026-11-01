@@ -265,6 +265,8 @@ pub struct Server {
     frames_dir: PathBuf,
     /// Append-only frame-transition evidence for the relation browser.
     relation_obs_path: PathBuf,
+    /// Curated alternative/requires/similar/overlay annotations.
+    relation_annotations_path: PathBuf,
     /// Editor action log (`logs/editor.log`): OCR/asset/task requests are
     /// persisted so a user's reproduction can be diagnosed after the browser
     /// log window is closed (v1.1).
@@ -321,6 +323,20 @@ struct RelationRecordRequest {
     asset: String,
     #[serde(default)]
     wait_ms: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RelationAnnotationRequest {
+    #[serde(default)]
+    task: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    a: String,
+    #[serde(default)]
+    b: String,
+    #[serde(default)]
+    note: String,
 }
 
 /// One live-preview passthrough swipe. Coordinates are in the current live frame.
@@ -498,6 +514,7 @@ impl Server {
             assets_dir: PathBuf::from(crate::global_assets::DEFAULT_DIR),
             frames_dir: PathBuf::from("frames"),
             relation_obs_path: PathBuf::from("relations/observations.jsonl"),
+            relation_annotations_path: PathBuf::from("relations/annotations.json"),
             run_state: Arc::new(Mutex::new(RunState::default())),
             run_executor: default_executor,
             editor_log: PathBuf::from("logs/editor.log"),
@@ -1136,6 +1153,8 @@ impl Server {
             ("GET", "/task/assets") => self.handle_task_assets(&mut out, &path),
             ("GET", "/relations/frame-assets") => self.handle_frame_asset_relations(&mut out, &path),
             ("POST", "/relations/record") => self.handle_record_relation(&mut out, &body),
+            ("POST", "/relations/annotate") => self.handle_relation_annotate(&mut out, &body),
+            ("POST", "/relations/annotate/delete") => self.handle_relation_annotate_delete(&mut out, &body),
             ("POST", "/task/assets/batch_test") => self.handle_assets_batch_test(&mut out, &body),
             ("GET", "/task/asset/image") => self.handle_asset_image(&mut out, &path),
             ("GET", "/task/asset/collection/match") => self.handle_collection_match(&mut out, &path),
@@ -4200,6 +4219,16 @@ impl Server {
             Ok(v) => snap.transitions = v,
             Err(e) => return self.send_errors(out, 500, vec![e]),
         }
+        match crate::relations::load_annotations(&self.relation_annotations_path) {
+            Ok(v) => snap.annotations = v,
+            Err(e) => return self.send_errors(out, 500, vec![e]),
+        }
+        snap.coverage = crate::relations::coverage(
+            &snap.frames,
+            &snap.assets,
+            snap.transitions.len(),
+            snap.annotations.len(),
+        );
         let body = serde_json::json!({"ok": true, "relations": snap});
         self.send_json(out, 200, &body.to_string())
     }
@@ -4393,6 +4422,187 @@ impl Server {
             "click": {"x": x, "y": y},
         });
         self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `POST /relations/annotate` — add one curated relation.
+    /// Node IDs are `frame:<id>` or `asset:<scope>/<asset-id>`.
+    fn handle_relation_annotate(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let req: RelationAnnotationRequest = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let global_mode = self.using_global_assets();
+        let task = req.task.trim().to_string();
+        if !global_mode {
+            if task.is_empty() {
+                return self.send_errors(out, 400, vec!["`task` is required".into()]);
+            }
+            if let Err(e) = oas_task::validate_task_name(&task) {
+                return self.send_errors(out, 400, vec![e]);
+            }
+        }
+        let kind = req.kind.trim();
+        if !matches!(kind, "alternative" | "requires" | "similar" | "overlay") {
+            return self.send_errors(
+                out,
+                400,
+                vec![format!(
+                    "unsupported relation type `{kind}` (allowed: alternative, requires, similar, overlay)"
+                )],
+            );
+        }
+        let a = req.a.trim();
+        let b = req.b.trim();
+        if a.is_empty() || b.is_empty() {
+            return self.send_errors(out, 400, vec!["`a` and `b` are required".into()]);
+        }
+        if a == b {
+            return self.send_errors(out, 400, vec!["a and b must differ".into()]);
+        }
+        if req.note.chars().count() > 200 {
+            return self.send_errors(out, 400, vec!["note is too long (<=200 chars)".into()]);
+        }
+        let bundle = if global_mode {
+            match self.asset_store("") {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        } else {
+            match oas_task::TaskBundle::open_named(&self.tasks_dir, &task) {
+                Ok(b) => b,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        };
+        let af = match bundle.load_assets_file() {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let asset_ids: std::collections::BTreeSet<String> =
+            af.items.into_iter().map(|a| a.id).collect();
+        let frame_ids: std::collections::BTreeSet<u64> = {
+            let st = self.state.lock().unwrap();
+            st.frames.iter().map(|f| f.id).collect()
+        };
+        let scope = if global_mode { "global" } else { task.as_str() };
+        let validate_node = |node: &str| -> Result<(), String> {
+            if let Some(raw) = node.strip_prefix("frame:") {
+                let id: u64 = raw
+                    .parse()
+                    .map_err(|_| format!("invalid frame node `{node}`"))?;
+                if !frame_ids.contains(&id) {
+                    return Err(format!("unknown frame `{id}`"));
+                }
+                return Ok(());
+            }
+            if let Some(rest) = node.strip_prefix("asset:") {
+                let (node_scope, id) = match rest.split_once('/') {
+                    Some((s, i)) => (s, i),
+                    None => (scope, rest),
+                };
+                if node_scope != scope && !(global_mode && node_scope == "global") {
+                    return Err(format!(
+                        "asset scope `{node_scope}` does not match `{scope}`"
+                    ));
+                }
+                if id.trim().is_empty() || !asset_ids.contains(id) {
+                    return Err(format!("unknown asset `{id}`"));
+                }
+                return Ok(());
+            }
+            Err(format!(
+                "invalid node `{node}` (expected frame:<id> or asset:<scope>/<id>)"
+            ))
+        };
+        if let Err(e) = validate_node(a).and_then(|_| validate_node(b)) {
+            return self.send_errors(out, 400, vec![e]);
+        }
+        let a_is_frame = a.starts_with("frame:");
+        let b_is_frame = b.starts_with("frame:");
+        match kind {
+            "similar" | "overlay" if !(a_is_frame && b_is_frame) => {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec![format!("`{kind}` requires two frame:<id> nodes")],
+                )
+            }
+            "alternative" if a_is_frame != b_is_frame => {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec!["`alternative` requires both frames or both assets".into()],
+                )
+            }
+            _ => {}
+        }
+        let mut annotations = match crate::relations::load_annotations(&self.relation_annotations_path) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 500, vec![e]),
+        };
+        let duplicate = annotations.iter().any(|x| {
+            x.kind == kind
+                && ((x.a == a && x.b == b)
+                    || (kind == "alternative" && x.a == b && x.b == a))
+        });
+        if duplicate {
+            return self.send_errors(out, 400, vec!["duplicate annotation".into()]);
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        let ann = crate::relations::Annotation {
+            id: format!("ann-{now}"),
+            kind: kind.to_string(),
+            a: a.to_string(),
+            b: b.to_string(),
+            note: req.note.trim().to_string(),
+            created_at: now,
+        };
+        annotations.push(ann.clone());
+        if let Err(e) = crate::relations::save_annotations(&self.relation_annotations_path, &annotations)
+        {
+            return self.send_errors(out, 500, vec![e]);
+        }
+        self.editor_log(&format!(
+            "relation annotate {kind} {a} {b} note={}",
+            ann.note
+        ));
+        self.send_json(
+            out,
+            200,
+            &serde_json::json!({"ok": true, "annotation": ann}).to_string(),
+        )
+    }
+
+    /// `POST /relations/annotate/delete {id}`.
+    fn handle_relation_annotate_delete(
+        &self,
+        out: &mut TcpStream,
+        body: &[u8],
+    ) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if id.is_empty() {
+            return self.send_errors(out, 400, vec!["`id` is required".into()]);
+        }
+        let mut annotations = match crate::relations::load_annotations(&self.relation_annotations_path) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 500, vec![e]),
+        };
+        let before = annotations.len();
+        annotations.retain(|a| a.id != id);
+        if annotations.len() == before {
+            return self.send_errors(out, 404, vec![format!("annotation `{id}` not found")]);
+        }
+        if let Err(e) = crate::relations::save_annotations(&self.relation_annotations_path, &annotations)
+        {
+            return self.send_errors(out, 500, vec![e]);
+        }
+        self.send_json(out, 200, &serde_json::json!({"ok": true, "deleted": id}).to_string())
     }
 
     /// POST /task/save_flow body: {"task":"任务1","flow":{...}}

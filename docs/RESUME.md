@@ -5,19 +5,19 @@
 
 ```yaml
 task_id: oas-core-frame-asset-relation
-checkpoint_seq: 72
-updated_at: 2026-11-01T15:55:00+08:00
-trigger: Phase 2 transition 录制：前后帧 + 素材动作 → 追加 observations.jsonl
+checkpoint_seq: 73
+updated_at: 2026-11-01T16:20:00+08:00
+trigger: Phase 3/4/5：人工标注、覆盖概览、任务构建关系提示
 status: in_progress
 ```
 
 ## 0. 当前状态（磁盘实测）
 
 - 分支 `dev`；`main` = `385d611`（v1.2.3 恢复节点）。
-- 测试：`cargo test --workspace` = **355 passed / 0 failed**。
+- 测试：`cargo test --workspace` = **356 passed / 0 failed**。
 - 任务：`tasks/返回庭院`；`task lint` = 1 task / 0 errors。
 - 帧：22 帧，无 `interface_id`；新增设置/退出/加载/启动参考帧保留。
-- 素材关系：唯一关系 = `Asset.positions`；帧行显示关联素材数量；只读关系浏览器已显示帧→素材、素材→帧、素材共现、帧共享素材、录制 transition。
+- 素材关系：唯一关系 = `Asset.positions`；帧行显示关联素材数量；只读关系浏览器显示帧→素材、素材→帧、素材共现、帧共享素材、录制 transition、人工标注与覆盖概览。
 - 新 DSL：`key` / `restart_app` 前后端保留。
 - 已删除：`ui-map/`、`docs/UI-MAP*`、`flow.generated.json`、`Frame.interface_id`、界面选择/图视图、`ui_map.rs`。
 
@@ -41,14 +41,17 @@ status: in_progress
 - [x] 新增只读“帧-素材关系”浏览器：帧→素材、素材→位置帧、素材共现、帧共享素材；
 - [x] Phase 2：`POST /relations/record` 抓前帧 → 点素材动作区域 → 等待 → 抓后帧；
 - [x] `relations/observations.jsonl` 追加 transition 证据；关系浏览器显示 transition；
-- [x] 全量测试 355 passed；task lint 1/0；
-- [x] 文档回退/更新：START-HERE/RESUME/HANDOFF/README/ENGINE-DESIGN/PENDING。
+- [x] Phase 3：`relations/annotations.json` + `/relations/annotate`/`delete`；alternative/requires/similar/overlay；校验自反/重复/未知节点；
+- [x] 关系快照增加 `coverage`；浏览器显示覆盖概览、人工标注、删除；
+- [x] Phase 4：任务构建 inspector 显示选中素材的帧/transition/标注提示；
+- [x] 全量测试 356 passed；task lint 1/0；
+- [x] 文档更新：START-HERE/RESUME/HANDOFF/README/ENGINE-DESIGN/PENDING。
 
 ## 3. 下一步
 
-1. Phase 3：人工标注 alternative/requires/similar；
-2. 任务构建关系感知（按帧过滤素材、显示 transition 提示）；
-3. 真实动作录制回归 + 继续补活动页参考帧；
+1. 真实动作录制回归（需停在正确画面）；
+2. 任务构建进一步关系感知：按当前帧过滤素材、transition 推荐；
+3. 继续补活动页参考帧/标注；
 4. 发布前跑完整测试 + `task lint`。
 
 ## 4. 约束
@@ -61,10 +64,10 @@ status: in_progress
 
 ## 5. 证据
 
-- `apps/oasd/src/serve.rs`（capture/帧/素材；`/relations/frame-assets`、`/relations/record`）；
-- `apps/oasd/src/relations.rs`（派生关系 + observation 读取 + 测试）；
-- `apps/oasd/ui/app.js`（只读关系浏览器、录制关系弹窗；帧行显示关联素材数）；
-- `relations/README.md`（append-only 证据 schema）；
-- `apps/oasd/ui/builder.js` / `flow_model.js`（保留 key/restart）；
+- `apps/oasd/src/serve.rs`（`/relations/frame-assets`、`/relations/record`、`/relations/annotate`、delete）；
+- `apps/oasd/src/relations.rs`（派生关系 + observation/annotation 读取 + coverage + 测试）；
+- `apps/oasd/ui/app.js`（关系浏览器、录制/标注弹窗、覆盖概览）；
+- `apps/oasd/ui/builder.js`（任务构建关系提示）；
+- `relations/README.md`（observations/annotations schema）；
 - `frames/frames.json`（22 帧，无 interface_id）；
-- 测试：`cargo test --workspace` = 355 passed；提交 `3f13c63`。
+- 测试：`cargo test --workspace` = 356 passed。

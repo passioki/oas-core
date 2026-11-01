@@ -474,10 +474,39 @@
     <p id="relations-status" class="muted small">—</p>
     <div class="row dialog-actions">
       <button id="relations-refresh" type="button">刷新</button>
+      <button id="relations-annotate" type="button">标注关系</button>
       <span class="spacer"></span>
       <button id="relations-close" type="button">关闭</button>
     </div>
     <div id="relations-view" class="relations-view muted">（未加载）</div>
+  </dialog>
+
+  <dialog id="annotation-dialog" class="task-dialog annotation-dialog">
+    <h3>标注关系</h3>
+    <p class="muted small">只标注无法自动派生的关系；证据/备注尽量填写。</p>
+    <label class="opt">关系类型
+      <select id="annotation-type">
+        <option value="alternative">替代素材/帧</option>
+        <option value="requires">前置依赖</option>
+        <option value="similar">相似帧</option>
+        <option value="overlay">弹窗覆盖帧</option>
+      </select>
+    </label>
+    <label class="opt">节点 A
+      <select id="annotation-a"></select>
+    </label>
+    <label class="opt">节点 B
+      <select id="annotation-b"></select>
+    </label>
+    <label class="opt">备注（可选）
+      <input id="annotation-note" type="text" maxlength="200" />
+    </label>
+    <pre id="annotation-error" class="muted small dialog-error"></pre>
+    <div class="row dialog-actions">
+      <button id="annotation-submit" type="button">保存标注</button>
+      <span class="spacer"></span>
+      <button id="annotation-close" type="button">关闭</button>
+    </div>
   </dialog>
 
   <script src="/flow_model.js"></script>

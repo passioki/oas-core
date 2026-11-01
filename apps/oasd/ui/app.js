@@ -62,8 +62,16 @@ const relationRecordTask = document.getElementById('relation-record-task');
 const relationRecordAssetHost = document.getElementById('relation-record-asset-host');
 const relationRecordResult = document.getElementById('relation-record-result');
 const relationRecordSubmit = document.getElementById('relation-record-submit');
+const annotationDialog = document.getElementById('annotation-dialog');
+const annotationType = document.getElementById('annotation-type');
+const annotationA = document.getElementById('annotation-a');
+const annotationB = document.getElementById('annotation-b');
+const annotationNote = document.getElementById('annotation-note');
+const annotationError = document.getElementById('annotation-error');
 let relationRecordAssetPicker = null;
 let relationRecordAssetId = '';
+let lastRelationsSnapshot = null;
+let lastRelationsTask = '';
 let captureNamePicker = null;
 let captureCategoryPicker = null;
 let captureBusy = false;
@@ -3229,6 +3237,8 @@ async function loadFrameAssetRelations() {
       return;
     }
     const rel = s.relations || {};
+    lastRelationsSnapshot = rel;
+    lastRelationsTask = task;
     if (relationsStatus) {
       relationsStatus.textContent = `${rel.task || task} · ${(rel.frames || []).length} 帧 / ${(rel.assets || []).length} 素材（只读，派生自 Asset.positions）`;
     }
@@ -3249,6 +3259,10 @@ async function loadFrameAssetRelations() {
       d.textContent = text;
       box.appendChild(d);
     }
+
+    const cov = rel.coverage || {};
+    const covBox = section('覆盖概览');
+    line(covBox, `帧：${cov.frames_with_assets || 0}/${cov.frames_total || 0} 有素材；素材：${cov.assets_with_positions || 0}/${cov.assets_total || 0} 有位置帧；transition：${cov.transitions || 0}；标注：${cov.annotations || 0}`);
 
     const frameBox = section('帧 → 素材');
     for (const f of (rel.frames || [])) {
@@ -3282,6 +3296,22 @@ async function loadFrameAssetRelations() {
       const asset = t.asset || '?';
       line(transBox, `#${t.from_frame} → #${t.to_frame} · 点击 ${asset}${task}`);
     }
+
+    const annBox = section('人工标注');
+    if (!(rel.annotations || []).length) line(annBox, '（暂无标注）', 'muted');
+    for (const ann of (rel.annotations || [])) {
+      const row = document.createElement('div');
+      row.className = 'relations-line annotation-row';
+      const text = document.createElement('span');
+      text.textContent = `${ann.type} · ${ann.a} ↔ ${ann.b}${ann.note ? ' · ' + ann.note : ''}`;
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'asset-test';
+      del.textContent = '删除';
+      del.addEventListener('click', () => deleteRelationAnnotation(ann.id));
+      row.append(text, del);
+      annBox.appendChild(row);
+    }
   } catch (e) {
     if (relationsStatus) relationsStatus.textContent = '加载异常：' + e;
   }
@@ -3291,6 +3321,92 @@ async function openFrameAssetRelations() {
   if (!relationsDialog) return;
   await loadFrameAssetRelations();
   relationsDialog.showModal();
+}
+
+function relationAssetScope(rel, task) {
+  if (rel && rel.task === '（全局素材库）') return 'global';
+  return task || lastRelationsTask || '';
+}
+
+function fillAnnotationOptions() {
+  if (!annotationA || !annotationB || !lastRelationsSnapshot) return;
+  const rel = lastRelationsSnapshot;
+  const scope = relationAssetScope(rel, lastRelationsTask);
+  const kind = annotationType ? annotationType.value : 'alternative';
+  const frames = (rel.frames || []).map((f) => ({
+    id: `frame:${f.id}`,
+    label: `帧 #${f.id} ${f.name || ''}`,
+  }));
+  const assets = (rel.assets || []).map((a) => ({
+    id: `asset:${scope}/${a.id}`,
+    label: `素材 ${a.id}`,
+  }));
+  const opts = (kind === 'similar' || kind === 'overlay') ? frames : [...frames, ...assets];
+  for (const sel of [annotationA, annotationB]) {
+    sel.textContent = '';
+    for (const o of opts) {
+      const el = document.createElement('option');
+      el.value = o.id;
+      el.textContent = o.label;
+      sel.appendChild(el);
+    }
+    if (opts.length > 1 && sel === annotationB) sel.selectedIndex = 1;
+  }
+}
+
+async function openAnnotationDialog() {
+  if (!annotationDialog) return;
+  if (!lastRelationsSnapshot) await loadFrameAssetRelations();
+  if (!lastRelationsSnapshot) return;
+  if (annotationError) annotationError.textContent = '';
+  if (annotationNote) annotationNote.value = '';
+  fillAnnotationOptions();
+  annotationDialog.showModal();
+}
+
+async function submitRelationAnnotation() {
+  if (!annotationDialog || !annotationA || !annotationB) return;
+  const task = lastRelationsTask || relationTaskName();
+  if (!task && lastRelationsSnapshot?.task !== '（全局素材库）') {
+    if (annotationError) annotationError.textContent = '缺少任务上下文';
+    return;
+  }
+  const payload = {
+    task,
+    kind: annotationType ? annotationType.value : 'alternative',
+    a: annotationA.value,
+    b: annotationB.value,
+    note: annotationNote ? annotationNote.value.trim() : '',
+  };
+  const btn = document.getElementById('annotation-submit');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await postJson('/relations/annotate', payload);
+    if (!r.ok) {
+      if (annotationError) annotationError.textContent = '保存失败：' + (r.errors || []).join('; ');
+      return;
+    }
+    annotationDialog.close();
+    await loadFrameAssetRelations();
+  } catch (e) {
+    if (annotationError) annotationError.textContent = '保存异常：' + e;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function deleteRelationAnnotation(id) {
+  if (!id) return;
+  try {
+    const r = await postJson('/relations/annotate/delete', { id });
+    if (!r.ok) {
+      if (relationsStatus) relationsStatus.textContent = '删除标注失败：' + (r.errors || []).join('; ');
+      return;
+    }
+    await loadFrameAssetRelations();
+  } catch (e) {
+    if (relationsStatus) relationsStatus.textContent = '删除标注异常：' + e;
+  }
 }
 
 function ensureRelationRecordPicker() {
@@ -4914,6 +5030,16 @@ async function submitResetMemory() {
   });
   const relationsRefresh = document.getElementById('relations-refresh');
   if (relationsRefresh) relationsRefresh.addEventListener('click', loadFrameAssetRelations);
+  const relationsAnnotate = document.getElementById('relations-annotate');
+  if (relationsAnnotate) relationsAnnotate.addEventListener('click', openAnnotationDialog);
+  const annotationTypeEl = document.getElementById('annotation-type');
+  if (annotationTypeEl) annotationTypeEl.addEventListener('change', fillAnnotationOptions);
+  const annotationClose = document.getElementById('annotation-close');
+  if (annotationClose) annotationClose.addEventListener('click', () => {
+    if (annotationDialog) annotationDialog.close();
+  });
+  const annotationSubmit = document.getElementById('annotation-submit');
+  if (annotationSubmit) annotationSubmit.addEventListener('click', submitRelationAnnotation);
   const btnRelationRecord = document.getElementById('btn-relation-record');
   if (btnRelationRecord) btnRelationRecord.addEventListener('click', openRelationRecordDialog);
   const relationRecordClose = document.getElementById('relation-record-close');

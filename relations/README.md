@@ -41,3 +41,65 @@ asset↔frame 关系。
   `/relations/frame-assets` 实时计算；
 - 同一素材/帧的重复录制可以保留多条证据，前端只展示记录；
 - 删除帧/素材不会自动删证据；证据是历史观察，不应当作当前真相。
+
+## annotations.json
+
+人工标注，保存 `alternative` / `requires` / `similar` / `overlay`：
+
+```json
+{
+  "schema_version": 1,
+  "annotations": [
+    {
+      "id": "ann-...",
+      "type": "alternative",
+      "a": "asset:返回庭院/预设",
+      "b": "asset:返回庭院/确认",
+      "note": "功能等价",
+      "created_at": 1793500000000000000
+    }
+  ]
+}
+```
+
+节点 ID：
+
+```text
+frame:<frame_id>
+asset:<task>/<asset_id>      任务素材
+asset:global/<asset_id>      全局素材库
+```
+
+API：
+
+```text
+POST /relations/annotate
+POST /relations/annotate/delete
+GET  /relations/frame-assets?task=<task>   （返回派生关系 + transitions + annotations + coverage）
+```
+
+规则：
+
+- `alternative`：两个素材或两个帧；
+- `similar` / `overlay`：两个帧；
+- `requires`：任意两个已存在节点；
+- 不允许自反；重复标注会被拒绝；
+- 标注删除通过 annotation id。
+
+## 覆盖概览
+
+`GET /relations/frame-assets` 返回：
+
+```json
+"coverage": {
+  "frames_total": 22,
+  "frames_with_assets": 5,
+  "assets_total": 1,
+  "assets_with_positions": 1,
+  "transitions": 0,
+  "annotations": 0
+}
+```
+
+用于判断哪些帧/素材还没有进入关系网络。
+

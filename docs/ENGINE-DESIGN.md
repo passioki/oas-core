@@ -2041,7 +2041,7 @@ tasks/<任务名>/
 #### 22.40.4 测试
 
 - legacy shipped task 测试已改为临时 fixture；
-- 当前测试基线：`cargo test --workspace` = **355 passed / 0 failed**。
+- 当前测试基线：`cargo test --workspace` = **356 passed / 0 failed**。
 
 ### 22.41 ★★★ [11-01] **帧-素材关系（现行唯一关系）**
 
@@ -2085,4 +2085,18 @@ Asset.positions = [frame_id, ...]
 - `GET /relations/frame-assets` 读取 observations 并在关系浏览器显示“帧 → 帧 transition”；
 - 证据 schema 见 `relations/README.md`；
 - 约束：不自动替换帧/素材；证据 append-only；删除帧/素材不会删证据。
+
+#### 22.41.3 Phase 3/4/5：标注、覆盖概览、任务构建提示（已实现）
+
+- `relations/annotations.json`：人工标注 alternative / requires / similar / overlay；
+- `POST /relations/annotate`、`POST /relations/annotate/delete`：
+  - 节点 ID `frame:<id>` / `asset:<scope>/<id>`；
+  - 自反/重复/未知节点/错误类型拒绝；
+- 关系快照增加 `annotations` + `coverage`；
+- 关系浏览器显示：覆盖概览、人工标注、删除标注、标注关系弹窗；
+- 任务构建 inspector 对选中的素材显示关系提示：
+  - 该素材出现在哪些帧；
+  - 已录制的 transition；
+  - 人工标注；
+- `relations/README.md` 记录 observations/annotations schema 与 API。
 

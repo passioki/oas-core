@@ -6377,3 +6377,4 @@
 | 6340 | 11-01 15:05 | U/A | 前端/帧/素材/文档/回退 | 进文档 §E-60 | 用户裁定 interface 太生硬；回退 ui-map/interface/图视图/CLI/生成 flow；只保留 Asset.positions（帧-素材）；帧保留；352 tests |
 | 6341 | 11-01 15:30 | U/A | 前端/帧/素材/测试 | 进文档 §E-61 | Phase1 只读派生关系层：relations.rs + `/relations/frame-assets` + 关系浏览器；帧→素材/素材→帧/素材共现/帧共享素材；354 tests |
 | 6342 | 11-01 15:55 | U/A | 前端/帧/素材/测试 | 进文档 §E-62 | Phase2 transition 录制：`/relations/record` 前后帧+素材点击；observations.jsonl append-only；关系浏览器显示 transition；355 tests |
+| 6343 | 11-01 16:20 | U/A | 前端/帧/素材/测试 | 进文档 §E-63 | Phase3/4/5：annotations.json + annotate/delete；coverage；关系浏览器标注/覆盖；任务构建关系提示；356 tests |

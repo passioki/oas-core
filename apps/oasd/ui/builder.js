@@ -86,6 +86,7 @@
     task: '',
     flow: null,
     assets: [],
+    relations: null,
     selected: null, // path array
     tasks: [],
     autoSaveArmed: false,
@@ -1431,6 +1432,42 @@
     root.appendChild(label);
   }
 
+  function renderBuilderRelationHint(root, step) {
+    if (!B.relations || !step || !step.args) return;
+    const asset = step.args.sel;
+    if (!asset) return;
+    const rel = B.relations;
+    const frames = (rel.frames || []).filter((f) => (f.assets || []).includes(asset));
+    const transitions = (rel.transitions || []).filter((t) => t.asset === asset);
+    const annotations = (rel.annotations || []).filter((a) => {
+      const hay = `${a.a || ''} ${a.b || ''}`;
+      return hay.includes(`/${asset}`) || hay.endsWith(`:${asset}`);
+    });
+    if (!frames.length && !transitions.length && !annotations.length) return;
+    const box = document.createElement('div');
+    box.className = 'builder-relation-hint';
+    const h = document.createElement('div');
+    h.className = 'builder-relation-title';
+    h.textContent = '关系提示（只读）';
+    box.appendChild(h);
+    if (frames.length) {
+      const d = document.createElement('div');
+      d.textContent = `该素材出现在帧：${frames.map((f) => `#${f.id} ${f.name || ''}`).join('、')}`;
+      box.appendChild(d);
+    }
+    for (const t of transitions.slice(0, 8)) {
+      const d = document.createElement('div');
+      d.textContent = `录制 transition：#${t.from_frame} → #${t.to_frame}${t.task ? ' · ' + t.task : ''}`;
+      box.appendChild(d);
+    }
+    for (const a of annotations.slice(0, 8)) {
+      const d = document.createElement('div');
+      d.textContent = `标注 ${a.type}：${a.a} ↔ ${a.b}${a.note ? ' · ' + a.note : ''}`;
+      box.appendChild(d);
+    }
+    root.appendChild(box);
+  }
+
   function renderForm() {
     const root = $('builder-form');
     if (!root) return;
@@ -1520,6 +1557,7 @@
     if (step.op === 'click_target') structuredClickTarget(root, step);
     if (step.op === 'click') renderClickAlts(root, step);
     if (step.op === 'drag') structuredDrag(root, step);
+    renderBuilderRelationHint(root, step);
     // raw args JSON fallback for complex actions (click_target/drag)
     const raw = document.createElement('label');
     raw.textContent = '高级：args JSON';
@@ -1690,6 +1728,7 @@
       B.task = '';
       B.flow = null;
       B.assets = [];
+      B.relations = null;
       B.selected = null;
       renderAll();
       return;
@@ -1714,6 +1753,13 @@
       }
       B.selected = null;
       B.lastSavedFlow = JSON.stringify(B.flow);
+      try {
+        const rr = await fetch('/relations/frame-assets?task=' + encodeURIComponent(name));
+        const rs = await rr.json();
+        B.relations = rs.ok ? rs.relations : null;
+      } catch (e) {
+        B.relations = null;
+      }
       renderAll();
       B.autoSaveArmed = true;
       status(`已载入 ${name}：${B.flow.steps.length} 个根动作 / ${B.assets.length} 个素材`);

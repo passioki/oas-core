@@ -2541,6 +2541,49 @@ Asset.positions = [frame_id, ...]
 
 | 状态 | ✅ Phase 2 录制链路完成；真实动作回归/Phase3 待做 |
 
+---
+
+# ★ §E-63 ★★★ [11-01 16:20] **Phase 3/4/5：人工标注 + 覆盖概览 + 任务构建提示**
+
+> 触发：用户“继续做吧，做完我再验收”。
+
+## 已完成
+
+- `relations/annotations.json`：alternative / requires / similar / overlay；
+- `POST /relations/annotate`：
+  - 节点 ID `frame:<id>` / `asset:<scope>/<id>`；
+  - 校验未知节点、自反、重复、错误类型；
+  - `alternative` = 两素材或两帧；`similar`/`overlay` = 两帧；`requires` = 任意节点；
+- `POST /relations/annotate/delete`；
+- 关系快照增加 `annotations` + `coverage`；
+- 关系浏览器：
+  - 覆盖概览；
+  - 人工标注列表 + 删除；
+  - “标注关系”弹窗；
+- 任务构建 inspector：
+  - 选中素材时显示位置帧、已录制 transition、人工标注；
+- `relations/README.md` 补充 annotations/coverage schema。
+
+## 验证
+
+- `cargo test --workspace` = **356 passed / 0 failed**；
+- `task lint --all` = 1/0；
+- 无头 UI：
+  - 关系浏览器显示覆盖概览；
+  - 标注弹窗选项正常；
+  - 添加 similar/alternative 标注后可删除；
+  - 无 JS 错误。
+
+## 下一步
+
+1. 真实动作录制回归（需停在正确画面）；
+2. 任务构建按当前帧过滤素材/推荐 transition；
+3. 活动页参考帧/标注继续补；
+4. 发布前完整测试 + lint。
+
+| 状态 | ✅ Phase 3/4/5 基础完成；真实回归/更深构建智能待做 |
+
+
 
 
 
