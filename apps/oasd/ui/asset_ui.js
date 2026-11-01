@@ -80,9 +80,13 @@
   }
 
   /**
-   * Search + candidate picker shared by the builder asset field and the asset
-   * position picker. Caller supplies the candidate list and label/filter;
-   * choosing an item closes the menu and calls onChoose(item, input).
+   * Search + candidate picker shared by the builder asset field, asset position
+   * picker, capture metadata dialog, and category filter.
+   *
+   * UX rule (all call sites): clicking the input (or the arrow) opens the FULL
+   * candidate list even when the input already contains a selected label.
+   * Typing filters; choosing fills the input. This keeps “click -> choose”
+   * usable without manually deleting the current text first.
    *
    * opts: { items, value, placeholder, label, filter, onChoose, className }
    */
@@ -94,26 +98,41 @@
     input.type = 'text';
     input.placeholder = o.placeholder || '输入片段，选择候选项…';
     input.value = o.value || '';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'asset-search-toggle';
+    toggle.tabIndex = -1;
+    toggle.textContent = '▾';
+    toggle.title = '展开全部候选';
     const menu = document.createElement('div');
     menu.className = 'asset-search-menu' + (o.menuClass ? ' ' + o.menuClass : '');
     menu.style.display = 'none';
 
-    function matches(item) {
+    function labelOf(item) {
+      return String(o.label ? o.label(item) : item.id != null ? item.id : item);
+    }
+
+    function matches(item, all) {
       if (o.filter && !o.filter(item)) return false;
+      if (all) return true;
       const q = input.value.trim().toLowerCase();
       if (!q) return true;
-      const label = String(o.label ? o.label(item) : item.id || item);
-      return label.toLowerCase().includes(q);
+      return labelOf(item).toLowerCase().includes(q);
+    }
+
+    function close() {
+      menu.style.display = 'none';
+      wrap.classList.remove('open');
     }
 
     function choose(item) {
-      menu.style.display = 'none';
+      close();
       if (o.onChoose) o.onChoose(item, input);
     }
 
-    function show() {
+    function show(all) {
       menu.textContent = '';
-      const items = (o.items || []).filter(matches);
+      const items = (o.items || []).filter((item) => matches(item, all));
       if (!items.length) {
         const empty = document.createElement('div');
         empty.className = 'muted small';
@@ -125,7 +144,7 @@
           row.type = 'button';
           row.className = 'asset-search-option';
           row.dataset.id = String(item.id != null ? item.id : item);
-          row.textContent = o.label ? o.label(item) : String(item.id != null ? item.id : item);
+          row.textContent = labelOf(item);
           if (o.renderOption) o.renderOption(row, item);
           row.addEventListener('mousedown', (e) => {
             e.preventDefault();
@@ -135,27 +154,55 @@
         }
       }
       menu.style.display = 'block';
+      wrap.classList.add('open');
     }
 
-    input.addEventListener('focus', show);
-    input.addEventListener('input', show);
+    function openAll() {
+      show(true);
+    }
+
+    input.addEventListener('focus', () => {
+      const opening = menu.style.display === 'none';
+      openAll();
+      // Select the current label so the first keystroke replaces it instead of
+      // appending to the old category/name.
+      if (opening) input.select();
+    });
+    input.addEventListener('click', () => {
+      if (menu.style.display === 'none') openAll();
+    });
+    input.addEventListener('input', () => show(false));
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
-        menu.style.display = 'none';
+        close();
+        input.blur();
       } else if (e.key === 'Enter') {
         const first = menu.querySelector('.asset-search-option');
         if (first) {
           e.preventDefault();
-          const items = (o.items || []).filter(matches);
+          const items = (o.items || []).filter((item) => matches(item, false));
           if (items[0]) choose(items[0]);
         }
       }
     });
-    input.addEventListener('blur', () => setTimeout(() => { menu.style.display = 'none'; }, 120));
-    wrap.append(input, menu);
+    input.addEventListener('blur', () => setTimeout(close, 120));
+    toggle.addEventListener('mousedown', (e) => e.preventDefault());
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (menu.style.display === 'none') {
+        input.focus();
+        openAll();
+        input.select();
+      } else {
+        close();
+      }
+    });
+    wrap.append(input, toggle, menu);
     wrap.input = input;
+    wrap.close = close;
     wrap.setItems = function (items) {
       o.items = items || [];
+      if (menu.style.display !== 'none') show(false);
     };
     wrap.setValue = function (value) {
       input.value = value || '';
