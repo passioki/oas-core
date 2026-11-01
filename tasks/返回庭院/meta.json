@@ -1,5 +1,23 @@
 {
-  "expire": "daily",
+  "capabilities": {
+    "checkpoint": true,
+    "duration_hint_s": 60,
+    "interruptible": false
+  },
+  "category": "utility",
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
   "name": "返回庭院",
-  "schema_version": 1
+  "params": [],
+  "resources": [],
+  "schema_version": 1,
+  "task_id": "返回庭院",
+  "template_version": 1,
+  "version": 1
 }

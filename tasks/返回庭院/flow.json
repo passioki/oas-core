@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "name": "返回庭院",
+  "steps": [
+    {
+      "op": "log",
+      "args": { "level": "info", "text": "'返回庭院：开始（OCR 判定 + 返回按钮逐级返回 + 弹窗取消 + 重启兜底）'" }
+    },
+    {
+      "op": "if",
+      "args": { "cond": "text_visible('确定退出阴阳师')" },
+      "then": [
+        {
+          "op": "click_target",
+          "args": {
+            "find": [
+              { "kind": "ocr_text", "roi": [0, 0, 1280, 720], "text": "取消" }
+            ]
+          }
+        },
+        { "op": "wait", "args": { "seconds": 0.6 } }
+      ],
+      "else": []
+    },
+    {
+      "op": "loop",
+      "args": { "n": "8" },
+      "body": [
+        {
+          "op": "if",
+          "args": { "cond": "text_visible('确定退出阴阳师')" },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  { "kind": "ocr_text", "roi": [0, 0, 1280, 720], "text": "取消" }
+                ]
+              }
+            },
+            { "op": "wait", "args": { "seconds": 0.6 } },
+            { "op": "continue" }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": { "cond": "text_visible('设置')" },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  { "kind": "region", "roi": [1045, 88, 78, 72] }
+                ]
+              }
+            },
+            { "op": "wait", "args": { "seconds": 0.8 } },
+            { "op": "continue" }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": { "cond": "text_visible('式神录')" },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  { "kind": "region", "roi": [5, 5, 62, 62] }
+                ]
+              }
+            },
+            { "op": "wait", "args": { "seconds": 0.8 } },
+            { "op": "continue" }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": { "cond": "text_visible('町中') or text_visible('召唤')" },
+          "then": [
+            { "op": "log", "args": { "level": "info", "text": "'已在庭院'" } },
+            { "op": "finish", "args": { "exit": "done" } }
+          ],
+          "else": []
+        },
+        {
+          "op": "click_target",
+          "args": {
+            "find": [
+              { "kind": "region", "roi": [5, 5, 72, 72] }
+            ]
+          }
+        },
+        { "op": "wait", "args": { "seconds": 0.9 } }
+      ]
+    },
+    {
+      "op": "if",
+      "args": { "cond": "text_visible('町中') or text_visible('召唤')" },
+      "then": [
+        { "op": "log", "args": { "level": "info", "text": "'返回庭院：逐级返回后到达庭院'" } },
+        { "op": "finish", "args": { "exit": "done" } }
+      ],
+      "else": []
+    },
+    {
+      "op": "log",
+      "args": { "level": "warn", "text": "'返回庭院：逐级返回未到达庭院，重启游戏兜底'" }
+    },
+    {
+      "op": "restart_app",
+      "args": { "package": "com.netease.onmyoji" }
+    },
+    { "op": "wait", "args": { "seconds": 18 } },
+    {
+      "op": "loop",
+      "args": { "n": "20" },
+      "body": [
+        {
+          "op": "if",
+          "args": { "cond": "text_visible('确定退出阴阳师')" },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  { "kind": "ocr_text", "roi": [0, 0, 1280, 720], "text": "取消" }
+                ]
+              }
+            },
+            { "op": "wait", "args": { "seconds": 0.6 } },
+            { "op": "continue" }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": { "cond": "text_visible('町中') or text_visible('召唤')" },
+          "then": [
+            { "op": "log", "args": { "level": "info", "text": "'返回庭院：重启后到达庭院'" } },
+            { "op": "finish", "args": { "exit": "done" } }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": { "cond": "text_visible('点击屏幕')" },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  { "kind": "ocr_text", "roi": [0, 0, 1280, 720], "text": "点击屏幕" }
+                ]
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": { "cond": "text_visible('进入游戏')" },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  { "kind": "ocr_text", "roi": [0, 0, 1280, 720], "text": "进入游戏" }
+                ]
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": { "cond": "text_visible('开始游戏')" },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  { "kind": "ocr_text", "roi": [0, 0, 1280, 720], "text": "开始游戏" }
+                ]
+              }
+            }
+          ],
+          "else": []
+        },
+        {
+          "op": "if",
+          "args": { "cond": "text_visible('跳过')" },
+          "then": [
+            {
+              "op": "click_target",
+              "args": {
+                "find": [
+                  { "kind": "ocr_text", "roi": [0, 0, 1280, 720], "text": "跳过" }
+                ]
+              }
+            }
+          ],
+          "else": []
+        },
+        { "op": "wait", "args": { "seconds": 1 } }
+      ]
+    },
+    {
+      "op": "if",
+      "args": { "cond": "text_visible('町中') or text_visible('召唤')" },
+      "then": [
+        { "op": "finish", "args": { "exit": "done" } }
+      ],
+      "else": []
+    },
+    { "op": "log", "args": { "level": "error", "text": "'返回庭院：重启后仍未识别到庭院'" } },
+    { "op": "finish", "args": { "exit": "failed" } }
+  ]
+}
