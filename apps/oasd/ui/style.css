@@ -30,6 +30,12 @@ button {
 }
 button:disabled { background: #3a3f4a; color: #8a8f99; cursor: default; }
 button:hover:not(:disabled) { background: #3182ce; }
+/* v1.2.4: asset-test dry-run / real-click switch (header, next to live preview). */
+#btn-test-mode { flex: none; font-size: 12px; padding: 5px 10px; }
+#btn-test-mode.test-dry { background: #2f6f5e; }
+#btn-test-mode.test-dry:hover:not(:disabled) { background: #37836f; }
+#btn-test-mode.test-real { background: #b23b3b; }
+#btn-test-mode.test-real:hover:not(:disabled) { background: #c94a4a; }
 .muted { color: #9aa0aa; }
 
 main { display: flex; gap: 14px; padding: 14px; align-items: flex-start; }

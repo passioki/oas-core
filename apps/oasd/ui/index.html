@@ -12,6 +12,7 @@
       <span id="status" class="muted">连接中…</span>
       <span class="spacer"></span>
       <button id="btn-live-preview" title="实时画面：自动刷新当前设备画面；点暂停后看已选帧">实时：开</button>
+      <button id="btn-test-mode" class="test-dry" aria-pressed="false" title="演练模式（默认）：素材行「点击测试/拖动测试」只计算定位，不操作设备">素材测试：演练</button>
     </div>
   </header>
 
@@ -180,7 +181,8 @@
           <button id="btn-stats-refresh">刷新统计</button>
           <pre id="stats-summary" class="muted">—</pre>
           <p class="muted small">
-            叠加分布会把点击热力/散点画到左侧画布上；全屏调试页仍可访问
+            叠加分布只在左侧画布画点击热力/散点（不覆盖左上角）；计数与图例在本面板。
+            全屏调试页仍可访问
             <a href="/dashboard.html">/dashboard.html</a>。
           </p>
         </section>

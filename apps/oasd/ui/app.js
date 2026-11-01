@@ -10,6 +10,7 @@ const roiEl = document.getElementById('roi');
 const resultEl = document.getElementById('result');
 const logEl = document.getElementById('log');
 const btnLivePreview = document.getElementById('btn-live-preview');
+const btnTestMode = document.getElementById('btn-test-mode');
 const btnOcr = document.getElementById('btn-ocr');
 const btnClear = document.getElementById('btn-clear');
 const btnLines = document.getElementById('btn-lines');
@@ -182,6 +183,9 @@ let runPolling = false;
 
 let img = null;
 let livePreview = true;
+// 素材列表的「点击测试 / 拖动测试」默认只演练，绝不误点设备。切到真实模式时
+// 需要用户确认；每次真正发送前还有一次 window.confirm 二次确认。
+let assetTestReal = false;
 let liveTimer = null;
 let liveBusy = false;
 let liveSocket = null;
@@ -371,45 +375,9 @@ function draw() {
     ctx.fillText(`识别 ${roi.w}x${roi.h} @ ${roi.x},${roi.y}`, roi.x + 4, Math.max(14, roi.y - 6));
     ctx.restore();
   }
-  // §22.25 / v1.2 操作区域（action_shape）：橙色虚线；未设置时运行期跟随识别结果。
-  if (roiBack && roiBack.w > 0 && roiBack.h > 0) {
-    ctx.save();
-    ctx.setLineDash([8, 5]);
-    ctx.strokeStyle = '#ff9f40';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(roiBack.x + 0.5, roiBack.y + 0.5, roiBack.w, roiBack.h);
-    ctx.fillStyle = 'rgba(255,159,64,0.10)';
-    ctx.fillRect(roiBack.x, roiBack.y, roiBack.w, roiBack.h);
-    ctx.fillStyle = '#ff9f40';
-    ctx.font = '14px Consolas, monospace';
-    ctx.fillText(
-      `操作区域 ${roiBack.w}x${roiBack.h} @ ${roiBack.x},${roiBack.y}`,
-      roiBack.x + 4,
-      Math.max(14, roiBack.y - 6)
-    );
-    ctx.restore();
-  }
-  // Operation polygon (action_shape): orange solid; invert means screen minus shape.
-  if (actionPoly && actionPoly.length) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(actionPoly[0].x, actionPoly[0].y);
-    for (let i = 1; i < actionPoly.length; i++) ctx.lineTo(actionPoly[i].x, actionPoly[i].y);
-    if (actionPolyClosed) ctx.closePath();
-    ctx.strokeStyle = '#ffb020';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    if (actionPolyClosed) {
-      ctx.fillStyle = 'rgba(255,176,32,0.12)';
-      ctx.fill();
-    }
-    if (actionInvert) {
-      ctx.setLineDash([10, 6]);
-      ctx.strokeStyle = '#ffb020';
-      ctx.strokeRect(0.5, 0.5, canvas.width - 1, canvas.height - 1);
-    }
-    ctx.restore();
-  }
+  // §22.25 / v1.2.4 操作区域（action_shape）：矩形和多边形共用同一个渲染器，
+  // 统一橙色虚线；反选时“有效区域”（屏幕−区域）与“原选中区域”用不同底色。
+  drawActionShapeOverlay();
   saveCandidates.forEach((c, idx) => {
     if (!c.action || c.action.w <= 0 || c.action.h <= 0) return;
     const active = idx === activeCandidate;
@@ -480,8 +448,9 @@ function draw() {
     ctx.fillText(label, x + 4, ly + 12);
     ctx.restore();
   }
-  // Draw order (§21): frame -> ROI/boxes -> click heatmap + scatter, then the
-  // on-canvas metrics label and legend.
+  // Draw order (§21): frame -> ROI/boxes -> click heatmap + scatter. Click
+  // metrics/legend deliberately stay in the sidebar (#click-stats /
+  // #clicks-legend): no on-canvas plate covers the game's top-left corner.
   drawClickOverlay();
 }
 
@@ -1435,38 +1404,144 @@ function polygonOverlapsRect(points, box) {
   return false;
 }
 
-function currentActionShape() {
-  if (actionPoly && actionPolyClosed && actionPoly.length >= 3) {
+// v1.2.4: geometry -> action_shape is pure so both kinds are testable and the
+// invert flag can never be dropped on one of them. Polygon wins when closed;
+// otherwise the last drawn rectangle is the shape. The flag applies to BOTH.
+function actionShapeFromGeometry(poly, closed, rect, invert) {
+  const flag = !!invert;
+  if (Array.isArray(poly) && closed === true && poly.length >= 3) {
     return {
       kind: 'polygon',
-      points: actionPoly.map((p) => [p.x, p.y]),
-      invert: actionInvert,
+      points: poly.map((p) => [Number(p.x), Number(p.y)]),
+      invert: flag,
     };
   }
-  if (roiBack && roiBack.w > 0 && roiBack.h > 0) {
+  if (rect && Number(rect.w) > 0 && Number(rect.h) > 0) {
     return {
       kind: 'rect',
-      roi: [roiBack.x, roiBack.y, roiBack.w, roiBack.h],
-      invert: actionInvert,
+      roi: [Number(rect.x), Number(rect.y), Number(rect.w), Number(rect.h)],
+      invert: flag,
     };
   }
   return null;
 }
 
+function currentActionShape() {
+  return actionShapeFromGeometry(actionPoly, actionPolyClosed, roiBack, actionInvert);
+}
+
+// v1.2.4: normalize a saved action_shape for edit-loading. Pure so the tests can
+// prove rect and polygon both restore `invert` (the old loader only painted the
+// invert hint for polygons and left a stray bbox rect over polygon shapes).
+function actionShapeEditState(shape) {
+  const invert = !!(shape && shape.invert);
+  if (shape && shape.kind === 'polygon' && Array.isArray(shape.points) && shape.points.length >= 3) {
+    return {
+      kind: 'polygon',
+      points: shape.points.map((p) => [Number(p[0]), Number(p[1])]),
+      roi: null,
+      invert,
+    };
+  }
+  if (shape && shape.kind === 'rect' && Array.isArray(shape.roi) && shape.roi.length === 4) {
+    return {
+      kind: 'rect',
+      points: null,
+      roi: [Number(shape.roi[0]), Number(shape.roi[1]), Number(shape.roi[2]), Number(shape.roi[3])],
+      invert,
+    };
+  }
+  return { kind: null, points: null, roi: null, invert };
+}
+
 function loadActionShapeForEdit(shape) {
+  const st = actionShapeEditState(shape);
   actionPoly = null;
   actionPolyClosed = false;
-  actionInvert = !!(shape && shape.invert);
-  if (shape && shape.kind === 'polygon' && Array.isArray(shape.points)) {
-    actionPoly = shape.points.map((p) => ({ x: p[0], y: p[1] }));
-    actionPolyClosed = actionPoly.length >= 3;
-    roiBack = actionShapeBBox(shape)
-      ? { x: actionShapeBBox(shape)[0], y: actionShapeBBox(shape)[1], w: actionShapeBBox(shape)[2], h: actionShapeBBox(shape)[3] }
-      : null;
-  } else if (shape && shape.kind === 'rect' && Array.isArray(shape.roi)) {
-    roiBack = { x: shape.roi[0], y: shape.roi[1], w: shape.roi[2], h: shape.roi[3] };
+  roiBack = null;
+  actionInvert = st.invert;
+  if (st.kind === 'polygon') {
+    actionPoly = st.points.map(([x, y]) => ({ x, y }));
+    actionPolyClosed = true;
+  } else if (st.kind === 'rect') {
+    roiBack = { x: st.roi[0], y: st.roi[1], w: st.roi[2], h: st.roi[3] };
   }
   if (btnActionInvert) btnActionInvert.textContent = `操作区域反选：${actionInvert ? '开' : '关'}`;
+}
+
+// v1.2.4: one renderer for BOTH action_shape kinds.
+// - solid -> dashed [8,5] (the rectangle's old style; the polygon used to be
+//   solid, which made the two edit paths look like different features);
+// - invert -> the effective region (whole screen minus shape) gets a cool teal
+//   wash, while the original/excluded shape keeps the warm orange wash. The
+//   difference is visible for rectangles and polygons alike.
+const ACTION_SHAPE_DASH = [8, 5];
+const ACTION_SHAPE_STROKE = '#ff9f40';
+const ACTION_SHAPE_FILL = 'rgba(255,159,64,0.14)';
+const ACTION_EXCLUDED_FILL = 'rgba(255,159,64,0.26)';
+const ACTION_EFFECTIVE_FILL = 'rgba(49,208,170,0.10)';
+const ACTION_EFFECTIVE_STROKE = 'rgba(49,208,170,0.55)';
+
+function actionShapePath(shape) {
+  ctx.beginPath();
+  if (shape.kind === 'rect') {
+    const [x, y, w, h] = shape.roi;
+    ctx.rect(x + 0.5, y + 0.5, w, h);
+    return;
+  }
+  const pts = shape.points || [];
+  if (!pts.length) return;
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.closePath();
+}
+
+function drawActionShapeOverlay() {
+  const shape = currentActionShape();
+  const openPoly = actionPoly && !actionPolyClosed && actionPoly.length ? actionPoly : null;
+  if (!shape && !openPoly) return;
+  ctx.save();
+  if (shape) {
+    const invert = !!shape.invert;
+    if (invert) {
+      // “反选后的有效区域”底色：整屏冷色。
+      ctx.fillStyle = ACTION_EFFECTIVE_FILL;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.setLineDash(ACTION_SHAPE_DASH);
+      ctx.strokeStyle = ACTION_EFFECTIVE_STROKE;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(0.5, 0.5, canvas.width - 1, canvas.height - 1);
+    }
+    actionShapePath(shape);
+    // “原选中区域”底色：暖橙色，与有效区域明显不同。
+    ctx.fillStyle = invert ? ACTION_EXCLUDED_FILL : ACTION_SHAPE_FILL;
+    ctx.fill();
+    ctx.setLineDash(ACTION_SHAPE_DASH);
+    ctx.strokeStyle = ACTION_SHAPE_STROKE;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    const bbox = actionShapeBBox(shape);
+    if (bbox) {
+      const label = shape.kind === 'polygon'
+        ? `操作区域 多边形 ${shape.points.length} 顶点${invert ? '（反选：有效=屏幕−区域）' : ''}`
+        : `操作区域 ${shape.roi[2]}x${shape.roi[3]} @ ${shape.roi[0]},${shape.roi[1]}${invert ? '（反选：有效=屏幕−区域）' : ''}`;
+      ctx.setLineDash([]);
+      ctx.font = '14px Consolas, monospace';
+      ctx.fillStyle = ACTION_SHAPE_STROKE;
+      ctx.fillText(label, bbox[0] + 4, Math.max(14, bbox[1] - 6));
+    }
+  }
+  if (openPoly) {
+    // In-progress polygon: still dashed, no fill until the user closes it.
+    ctx.setLineDash(ACTION_SHAPE_DASH);
+    ctx.strokeStyle = ACTION_SHAPE_STROKE;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(openPoly[0].x, openPoly[0].y);
+    for (let i = 1; i < openPoly.length; i++) ctx.lineTo(openPoly[i].x, openPoly[i].y);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function rectsOverlap(a, b) {
@@ -1622,11 +1697,108 @@ function translatedActionShapeForMatch(it, match) {
   );
 }
 
+// v1.2.4: asset-test real/dry-run mode.
+// Default is dry-run. Real gestures are created by a pure request builder (so
+// the payload contract is testable) and only sent when:
+//   1) the user switched the header button to 真实点击 and confirmed that switch,
+//   2) live preview is on (the server only accepts points from the live frame),
+//   3) the user confirms the concrete gesture batch with window.confirm().
+function assetTestModeLabel(real) {
+  return real ? '真实点击' : '演练';
+}
+
+function assetTestGestureRequest(real, gesture, from, to, ms) {
+  if (!real) return null;
+  if (gesture === 'tap') {
+    const x = Math.round(Number(from && from.x));
+    const y = Math.round(Number(from && from.y));
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return {
+      url: '/input/tap',
+      payload: { x, y },
+      gesture: 'tap',
+      text: `真实已点击 (${x}, ${y})`,
+    };
+  }
+  if (gesture === 'swipe') {
+    const fx = Math.round(Number(from && from.x));
+    const fy = Math.round(Number(from && from.y));
+    const tx = Math.round(Number(to && to.x));
+    const ty = Math.round(Number(to && to.y));
+    if (![fx, fy, tx, ty].every((n) => Number.isFinite(n))) return null;
+    const duration = Math.max(50, Math.min(2000, Math.round(Number(ms) || 300)));
+    return {
+      url: '/input/swipe',
+      payload: { from: [fx, fy], to: [tx, ty], ms: duration },
+      gesture: 'swipe',
+      text: `真实已滑动 (${fx},${fy}) → (${tx},${ty}) ${duration}ms`,
+    };
+  }
+  return null;
+}
+
+async function sendAssetTestGesture(real, gesture, from, to, ms) {
+  const req = assetTestGestureRequest(real, gesture, from, to, ms);
+  if (!req) return { ok: true, dry: true, text: '演练：未发送设备请求' };
+  const r = await postJson(req.url, req.payload);
+  if (!r || !r.ok) {
+    throw new Error(((r && r.errors) || []).join('; ') || `${gesture} 请求失败`);
+  }
+  const device = r.device || '未知设备';
+  const actual = r.gesture || gesture;
+  return {
+    ok: true,
+    dry: false,
+    device,
+    gesture: actual,
+    text: `${req.text} · device=${device} gesture=${actual}`,
+  };
+}
+
+function realAssetTestGuard() {
+  if (!assetTestReal) return { real: false, ok: true };
+  if (!livePreview) {
+    const msg =
+      '真实操作已拒绝：实时预览已暂停。\n' +
+      '请先点顶部「实时：开」恢复实时画面，再执行素材测试。';
+    resultEl.textContent = msg;
+    log('素材测试真实模式被拒绝：实时预览未开启', 'WARN');
+    return { real: true, ok: false, message: msg };
+  }
+  return { real: true, ok: true };
+}
+
+function confirmAssetTestGestures(kind, operations) {
+  const ops = operations || [];
+  if (!ops.length) return false;
+  const head = kind === 'drag' ? '真实拖动（滑动）' : '真实点击';
+  const shown = ops.slice(0, 8).map((op) => `· ${op.label}`).join('\n');
+  const extra = ops.length > 8 ? `\n… 共 ${ops.length} 个手势` : '';
+  return window.confirm(
+    `即将对真实设备执行${head}，这不是演练。\n\n${shown}${extra}\n\n` +
+    '实时画面可能仍在变化，将按上面的定位发送。确认发送？'
+  );
+}
+
+function updateAssetTestModeButton() {
+  if (!btnTestMode) return;
+  btnTestMode.textContent = `素材测试：${assetTestModeLabel(assetTestReal)}`;
+  btnTestMode.classList.toggle('test-real', assetTestReal);
+  btnTestMode.classList.toggle('test-dry', !assetTestReal);
+  btnTestMode.setAttribute('aria-pressed', assetTestReal ? 'true' : 'false');
+  btnTestMode.title = assetTestReal
+    ? '真实模式：素材行「点击测试/拖动测试」会操作设备；必须开启实时预览，且每次发送前会二次确认'
+    : '演练模式（默认）：素材行「点击测试/拖动测试」只计算定位，不操作设备';
+}
+
 async function testAssetClick(it) {
+  const mode = realAssetTestGuard();
+  if (!mode.ok) return;
   const task = assetScopeTask(false);
   const frames = testFrames(it);
   const details = [];
   const boxesForFrames = [];
+  const realOps = [];
   try {
     for (const frame of frames) {
       if (it.kind === 'template') {
@@ -1663,6 +1835,9 @@ async function testAssetClick(it) {
           score: Number(s.score),
           box: recognizedBox,
         });
+        if (assetTestReal) {
+          realOps.push({ label: `${frame.label} 点击 (${point.x},${point.y})`, x: point.x, y: point.y });
+        }
       } else if (it.kind === 'ocr_line' || it.kind === 'ocr_lines') {
         const probe = await probeAssetOcrFrame(it, frame, task);
         if (!probe.ok) {
@@ -1686,6 +1861,9 @@ async function testAssetClick(it) {
         if (recognizedBox) {
           boxesForFrames.push({ text: `点测 ${it.id} ${frame.label}`, score: Number(probe.score || 0), box: recognizedBox });
         }
+        if (assetTestReal) {
+          realOps.push({ label: `${frame.label} 点击 (${point.x},${point.y})`, x: point.x, y: point.y });
+        }
       } else {
         const action = assetActionBox(it) || it.roi;
         if (!action) {
@@ -1694,34 +1872,79 @@ async function testAssetClick(it) {
         }
         const point = randomPointInAction(it, undefined, it.roi);
         details.push(`${frame.label}: 操作区[${action.join(',')}] · 目标点 (${point.x},${point.y}) · 帧来源：${frame.source}`);
+        if (assetTestReal) {
+          realOps.push({ label: `${frame.label} 点击 (${point.x},${point.y})`, x: point.x, y: point.y });
+        }
       }
     }
     boxes = boxesForFrames;
     draw();
+    let modeNote = '';
+    if (assetTestReal) {
+      if (!realOps.length) {
+        modeNote = '真实模式：没有可执行的点击（未发送设备请求）。';
+      } else if (!confirmAssetTestGestures('click', realOps)) {
+        modeNote = '真实模式：已取消，未发送设备请求。';
+      } else {
+        let sentOk = 0;
+        let sentFail = 0;
+        const sent = [];
+        for (const op of realOps) {
+          try {
+            const res = await sendAssetTestGesture(true, 'tap', { x: op.x, y: op.y });
+            sentOk += 1;
+            sent.push(`${op.label}: ${res.text}`);
+          } catch (e) {
+            sentFail += 1;
+            sent.push(`${op.label}: ❌ 真实点击失败：${e && e.message ? e.message : e}`);
+          }
+        }
+        details.push(...sent);
+        modeNote =
+          `真实模式：已发送 ${sentOk}/${realOps.length} 个点击` +
+          (sentFail ? `，失败 ${sentFail}` : '') +
+          '（服务端 device/gesture 见上）。';
+      }
+    }
+    const header = assetTestReal
+      ? `点击测试（真实点击模式）「${it.id}」`
+      : `点击测试（演练，不实际点击）「${it.id}」`;
+    const tail = assetTestReal
+      ? (modeNote || '真实模式。')
+      : '注意：这里只验证定位/目标点；实际点击请在 flow 中运行。';
     resultEl.textContent =
-      `点击测试（dry-run，不实际点击）「${it.id}」\n` +
+      `${header}\n` +
       `测试帧：${testFrameLabel(it)}（${frames.length} 帧）\n` +
       details.join('\n') +
-      '\n注意：这里只验证定位/目标点；实际点击请在 flow 中运行。';
-    log(`素材点击测试（dry-run）：${it.id}`, 'INFO', {
-      frames: frames.map((f) => f.label),
-      kind: it.kind,
-      details,
-    });
+      '\n' + tail;
+    log(
+      assetTestReal ? `素材点击测试（真实点击模式）：${it.id}` : `素材点击测试（演练）：${it.id}`,
+      assetTestReal ? 'WARN' : 'INFO',
+      {
+        frames: frames.map((f) => f.label),
+        kind: it.kind,
+        details,
+        gestures: realOps.length,
+      }
+    );
   } catch (e) {
-    resultEl.textContent = '点击测试异常：' + e;
+    resultEl.textContent =
+      `${assetTestReal ? '真实点击模式' : '演练'}点击测试异常：` + e;
   }
 }
 
 async function testAssetDrag(it) {
+  const mode = realAssetTestGuard();
+  if (!mode.ok) return;
   const direction = (window.prompt('拖动方向（up/down/left/right）', 'up') || '').trim();
   if (!['up', 'down', 'left', 'right'].includes(direction)) {
-    resultEl.textContent = '拖动方向必须是 up/down/left/right';
+    resultEl.textContent = `${assetTestReal ? '真实滑动模式' : '演练'}拖动方向必须是 up/down/left/right`;
     return;
   }
   const task = assetScopeTask(false);
   const frames = testFrames(it);
   const lines = [];
+  const realOps = [];
   let stepAction = null;
   const fw = canvas.width || 1280;
   const fh = canvas.height || 720;
@@ -1767,9 +1990,20 @@ async function testAssetDrag(it) {
         `${frame.label}: ${direction} (${from.x},${from.y}) → (${to.x},${to.y}) · ` +
         `操作区[${action.join(',')}]${it.kind === 'template' ? '（已按匹配平移）' : ''}`
       );
+      if (assetTestReal) {
+        const swipeMs = 300 + Math.floor(Math.random() * 351);
+        realOps.push({
+          label: `${frame.label} 滑动 (${from.x},${from.y}) → (${to.x},${to.y}) ${swipeMs}ms`,
+          from,
+          to,
+          ms: swipeMs,
+        });
+      }
     }
     if (!stepAction) {
-      resultEl.textContent = `拖动测试失败：「${it.id}」没有可用操作区域\n` + lines.join('\n');
+      resultEl.textContent =
+        `${assetTestReal ? '真实滑动模式' : '演练'}拖动测试失败：「${it.id}」没有可用操作区域\n` +
+        lines.join('\n');
       return;
     }
     const step = {
@@ -1782,17 +2016,55 @@ async function testAssetDrag(it) {
         margin: 0.15,
       },
     };
+    let modeNote = '';
+    if (assetTestReal) {
+      if (!realOps.length) {
+        modeNote = '真实模式：没有可执行的滑动（未发送设备请求）。';
+      } else if (!confirmAssetTestGestures('drag', realOps)) {
+        modeNote = '真实模式：已取消，未发送设备请求。';
+      } else {
+        let sentOk = 0;
+        let sentFail = 0;
+        const sent = [];
+        for (const op of realOps) {
+          try {
+            const res = await sendAssetTestGesture(true, 'swipe', op.from, op.to, op.ms);
+            sentOk += 1;
+            sent.push(`${op.label}: ${res.text}`);
+          } catch (e) {
+            sentFail += 1;
+            sent.push(`${op.label}: ❌ 真实滑动失败：${e && e.message ? e.message : e}`);
+          }
+        }
+        lines.push(...sent);
+        modeNote =
+          `真实模式：已发送 ${sentOk}/${realOps.length} 个滑动` +
+          (sentFail ? `，失败 ${sentFail}` : '') +
+          '（服务端 device/gesture 见上）。';
+      }
+    }
+    const header = assetTestReal
+      ? `拖动测试（真实滑动模式）「${it.id}」`
+      : `拖动测试（演练，不实际滑动）「${it.id}」`;
     resultEl.textContent =
-      `拖动测试（dry-run，不实际滑动）「${it.id}」\n` +
+      `${header}\n` +
       `方向 ${direction} · 测试帧 ${testFrameLabel(it)}（${frames.length} 帧）\n` +
       lines.join('\n') +
-      '\n\n' + JSON.stringify(step, null, 2);
-    log(`素材拖动测试（dry-run）：${it.id} ${direction}`, 'INFO', {
-      frames: frames.map((f) => f.label),
-      details: lines,
-    });
+      (assetTestReal ? '\n' + modeNote : '\n\n' + JSON.stringify(step, null, 2));
+    log(
+      assetTestReal
+        ? `素材拖动测试（真实滑动模式）：${it.id} ${direction}`
+        : `素材拖动测试（演练）：${it.id} ${direction}`,
+      assetTestReal ? 'WARN' : 'INFO',
+      {
+        frames: frames.map((f) => f.label),
+        details: lines,
+        gestures: realOps.length,
+      }
+    );
   } catch (e) {
-    resultEl.textContent = '拖动测试异常：' + e;
+    resultEl.textContent =
+      `${assetTestReal ? '真实滑动模式' : '演练'}拖动测试异常：` + e;
   }
 }
 
@@ -2140,53 +2412,10 @@ function buildClickOverlay() {
   clickOverlay = overlay;
 }
 
-// On-canvas `clicks=N distinct=K` label + tiny legend for screenshot evidence.
-function drawClickStats() {
-  if (!clickData) return;
-  const label = `clicks=${clickData.clicks} distinct=${clickData.distinct}`;
-  ctx.save();
-  ctx.font = 'bold 15px Consolas, monospace';
-  const pad = 10;
-  const plateW = ctx.measureText(label).width + pad * 2;
-  const plateH = 26;
-  const x0 = 10;
-  const y0 = 10;
-  ctx.fillStyle = 'rgba(0,0,0,0.75)';
-  ctx.fillRect(x0, y0, plateW, plateH);
-  ctx.strokeStyle = 'rgba(255,255,255,0.28)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(x0 + 0.5, y0 + 0.5, plateW - 1, plateH - 1);
-  ctx.fillStyle = '#ffd54a';
-  ctx.fillText(label, x0 + pad, y0 + 19);
-  // legend: cool -> hot ramp + the single-click dot marker
-  const lw = 110;
-  const lh = 8;
-  const lx = x0 + 8;
-  const ly = y0 + plateH + 12;
-  ctx.font = '12px Consolas, monospace';
-  const caption = '稀疏 → 密集    ● 单次点击';
-  const capW = ctx.measureText(caption).width;
-  ctx.fillStyle = 'rgba(0,0,0,0.65)';
-  ctx.fillRect(x0, ly - 8, Math.max(lw + 48, capW + 16), lh + 32);
-  const grad = ctx.createLinearGradient(lx, 0, lx + lw, 0);
-  grad.addColorStop(0, 'rgba(0,120,255,0.55)');
-  grad.addColorStop(0.5, 'rgba(255,220,40,0.7)');
-  grad.addColorStop(1, 'rgba(255,48,0,0.9)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(lx, ly, lw, lh);
-  ctx.beginPath();
-  ctx.arc(lx + lw + 20, ly + lh / 2, 3.2, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(0,0,0,0.85)';
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(lx + lw + 20, ly + lh / 2, 1.7, 0, Math.PI * 2);
-  ctx.fillStyle = '#f2f7ff';
-  ctx.fill();
-  ctx.fillStyle = '#cbd5e1';
-  ctx.fillText(caption, lx, ly + lh + 14);
-  ctx.restore();
-}
-
+// v1.2.4: the click-distribution canvas shows ONLY heat + scatter points.
+// The old top-left `clicks=N distinct=K` plate and mini legend were removed so
+// the game's top-left corner stays readable; the same numbers remain in the
+// sidebar (#click-stats) and its legend (#clicks-legend).
 function drawClickOverlay() {
   // The distribution overlay is only for the click-distribution panel. Drawing
   // it during normal素材采集 interferes with ROI/frame selection and hides the
@@ -2204,7 +2433,6 @@ function drawClickOverlay() {
     }
     if (clickOverlay) ctx.drawImage(clickOverlay, 0, 0);
   }
-  drawClickStats();
 }
 
 // v1.1 P4: aggregate view (all/recent/latest, optional task filter). Raw per-run
@@ -2982,9 +3210,8 @@ function editAssetActionRoi(it) {
   setSelectionMode('actionRect');
   roi = { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] };
   const actionBox = actionShapeBBox(it.action_shape);
-  roiBack = actionBox
-    ? { x: actionBox[0], y: actionBox[1], w: actionBox[2], h: actionBox[3] }
-    : { ...roi };
+  // v1.2.4: restore BOTH kinds (rect + polygon) and their invert flag. The
+  // loader clears the stale rect first; a polygon must not keep a bbox rect.
   loadActionShapeForEdit(it.action_shape);
   if (!actionBox) roiBack = { ...roi };
   updateRoiLabel();
@@ -3029,9 +3256,6 @@ function pickAssetRoi(it) {
   }
   const shapeBox = actionShapeBBox(it.action_shape);
   roi = { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] };
-  roiBack = shapeBox
-    ? { x: shapeBox[0], y: shapeBox[1], w: shapeBox[2], h: shapeBox[3] }
-    : null;
   loadActionShapeForEdit(it.action_shape);
   polygon = null;
   polyClosed = false;
@@ -5012,6 +5236,26 @@ if (btnMatch) {
     }
   });
 }
+
+if (btnTestMode) {
+  btnTestMode.addEventListener('click', () => {
+    if (!assetTestReal) {
+      const ok = window.confirm(
+        '切换到素材测试「真实点击」模式？\n\n' +
+        '切换后，素材行的「点击测试/拖动测试」会操作真实设备；\n' +
+        '必须开启实时预览，每次真正发送前还会再次确认。'
+      );
+      if (!ok) return;
+      assetTestReal = true;
+      log('素材测试模式：真实点击（每次发送前仍会二次确认）', 'WARN');
+    } else {
+      assetTestReal = false;
+      log('素材测试模式：演练（不会操作设备）');
+    }
+    updateAssetTestModeButton();
+  });
+}
+updateAssetTestModeButton();
 
 if (btnLivePreview) {
   btnLivePreview.addEventListener('click', async () => {

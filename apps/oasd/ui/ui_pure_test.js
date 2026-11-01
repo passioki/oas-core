@@ -87,6 +87,16 @@ const PURE_FUNCTIONS = [
   'actionShapeBBox',
   'actionShapeContains',
   'actionShapeEffectiveContains',
+  'actionShapeFromGeometry',
+  'actionShapeEditState',
+  'loadActionShapeForEdit',
+  'currentActionShape',
+  'assetTestModeLabel',
+  'assetTestGestureRequest',
+  'sendAssetTestGesture',
+  'realAssetTestGuard',
+  'confirmAssetTestGestures',
+  'updateAssetTestModeButton',
   'segmentIntersects',
   'polygonOverlapsRect',
   'rectsOverlap',
@@ -113,6 +123,16 @@ vm.runInContext(PURE_FUNCTIONS.map(extractFunction).join('\n\n'), sandbox, {
 });
 
 const {
+  actionShapeFromGeometry,
+  actionShapeEditState,
+  loadActionShapeForEdit,
+  currentActionShape,
+  assetTestModeLabel,
+  assetTestGestureRequest,
+  sendAssetTestGesture,
+  realAssetTestGuard,
+  confirmAssetTestGestures,
+  updateAssetTestModeButton,
   actionValidity,
   polygonOverlapsRect,
   boxCenter,
@@ -213,6 +233,183 @@ eq(
   'translate polygon action_shape'
 );
 eq(translateActionShape(null, 1, 2), null, 'translate null shape');
+
+// --- v1.2.4: action_shape invert travels with BOTH rect and polygon ---
+const testPolyPoints = [{ x: 1, y: 2 }, { x: 9, y: 2 }, { x: 9, y: 8 }];
+eq(
+  actionShapeFromGeometry(null, false, { x: 10, y: 20, w: 30, h: 40 }, true),
+  { kind: 'rect', roi: [10, 20, 30, 40], invert: true },
+  'rect action_shape keeps invert=true'
+);
+eq(
+  actionShapeFromGeometry(testPolyPoints, true, { x: 100, y: 100, w: 5, h: 5 }, true),
+  { kind: 'polygon', points: [[1, 2], [9, 2], [9, 8]], invert: true },
+  'closed polygon wins over rect and keeps invert=true'
+);
+eq(
+  actionShapeFromGeometry(testPolyPoints, false, { x: 1, y: 2, w: 3, h: 4 }, true).kind,
+  'rect',
+  'open polygon falls back to the rect shape'
+);
+eq(actionShapeFromGeometry(testPolyPoints, false, null, true), null, 'open polygon without rect is not savable');
+eq(actionShapeFromGeometry(null, false, { x: 1, y: 2, w: 0, h: 4 }, true), null, 'zero-size rect rejected');
+eq(actionShapeFromGeometry(testPolyPoints, true, null, false).invert, false, 'invert defaults off');
+
+// currentActionShape is what rect dragging / save payloads use. A rect drag with
+// the invert toggle on must still produce invert=true.
+sandbox.actionPoly = null;
+sandbox.actionPolyClosed = false;
+sandbox.roiBack = { x: 7, y: 8, w: 9, h: 10 };
+sandbox.actionInvert = true;
+eq(currentActionShape(), { kind: 'rect', roi: [7, 8, 9, 10], invert: true }, 'rect drag keeps invert');
+sandbox.actionPoly = testPolyPoints;
+sandbox.actionPolyClosed = true;
+eq(
+  currentActionShape(),
+  { kind: 'polygon', points: [[1, 2], [9, 2], [9, 8]], invert: true },
+  'polygon keeps invert'
+);
+
+// Loading an existing asset's action_shape (素材行「操作区」).
+sandbox.btnActionInvert = { textContent: '' };
+sandbox.actionPoly = null;
+sandbox.actionPolyClosed = false;
+sandbox.roiBack = null;
+loadActionShapeForEdit({ kind: 'rect', roi: [3, 4, 5, 6], invert: true });
+eq(sandbox.actionInvert, true, 'load rect restores invert');
+eq(sandbox.roiBack, { x: 3, y: 4, w: 5, h: 6 }, 'load rect restores roiBack');
+eq(sandbox.btnActionInvert.textContent, '操作区域反选：开', 'load rect syncs the invert button label');
+loadActionShapeForEdit({ kind: 'polygon', points: [[0, 0], [10, 0], [10, 10]], invert: true });
+eq(sandbox.actionInvert, true, 'load polygon restores invert');
+eq(sandbox.actionPolyClosed, true, 'load polygon closes the shape');
+eq(sandbox.actionPoly, [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }], 'load polygon restores points');
+eq(sandbox.roiBack, null, 'load polygon leaves no stray bbox rect over the polygon');
+eq(
+  actionShapeEditState({ kind: 'rect', roi: [1, 2, 3, 4], invert: true }),
+  { kind: 'rect', points: null, roi: [1, 2, 3, 4], invert: true },
+  'edit-state normalization for inverted rect'
+);
+eq(
+  actionShapeEditState({ kind: 'polygon', points: [[0, 0], [1, 0], [0, 1]], invert: true }),
+  { kind: 'polygon', points: [[0, 0], [1, 0], [0, 1]], roi: null, invert: true },
+  'edit-state normalization for inverted polygon'
+);
+eq(actionShapeEditState(null), { kind: null, points: null, roi: null, invert: false }, 'edit-state for no shape');
+
+// --- v1.2.4: asset test real/dry-run payload contract ---
+eq(assetTestModeLabel(false), '演练', 'dry-run label');
+eq(assetTestModeLabel(true), '真实点击', 'real mode label');
+eq(assetTestGestureRequest(false, 'tap', { x: 1, y: 2 }), null, 'dry-run builds no device request');
+eq(
+  assetTestGestureRequest(true, 'tap', { x: 10.4, y: 20.6 }),
+  { url: '/input/tap', payload: { x: 10, y: 21 }, gesture: 'tap', text: '真实已点击 (10, 21)' },
+  'real tap payload is POST /input/tap {x,y}'
+);
+eq(
+  assetTestGestureRequest(true, 'swipe', { x: 1, y: 2 }, { x: 30, y: 40 }, 123.4),
+  {
+    url: '/input/swipe',
+    payload: { from: [1, 2], to: [30, 40], ms: 123 },
+    gesture: 'swipe',
+    text: '真实已滑动 (1,2) → (30,40) 123ms',
+  },
+  'real swipe payload is POST /input/swipe {from,to,ms}'
+);
+eq(
+  assetTestGestureRequest(true, 'swipe', { x: 1, y: 2 }, { x: 3, y: 4 }, 9999).payload.ms,
+  2000,
+  'swipe duration clamps to the server range'
+);
+eq(assetTestGestureRequest(true, 'tap', { x: 'bad', y: 2 }), null, 'invalid coordinate builds no request');
+
+async function checkAssetTestWiring() {
+  const calls = [];
+  sandbox.postJson = async (url, payload) => {
+    calls.push({ url, payload });
+    return {
+      ok: true,
+      device: 'dev-1',
+      gesture: url.endsWith('/swipe') ? 'swipe' : 'tap',
+    };
+  };
+  const dry = await sendAssetTestGesture(false, 'tap', { x: 1, y: 2 });
+  eq(calls.length, 0, 'dry-run sends zero device requests');
+  eq(dry.dry, true, 'dry-run result is marked dry');
+  const tap = await sendAssetTestGesture(true, 'tap', { x: 5, y: 6 });
+  eq(calls.length, 1, 'real tap sends exactly one request');
+  eq(calls[0], { url: '/input/tap', payload: { x: 5, y: 6 } }, 'real tap request contract');
+  eq(tap.device, 'dev-1', 'real tap surfaces the server device');
+  eq(tap.gesture, 'tap', 'real tap surfaces the server gesture');
+  ok(/device=dev-1/.test(tap.text) && /gesture=tap/.test(tap.text), 'tap result shows device/gesture');
+  const swipe = await sendAssetTestGesture(true, 'swipe', { x: 1, y: 2 }, { x: 30, y: 40 }, 500);
+  eq(calls.length, 2, 'real swipe sends exactly one request');
+  eq(
+    calls[1],
+    { url: '/input/swipe', payload: { from: [1, 2], to: [30, 40], ms: 500 } },
+    'real swipe request contract'
+  );
+  eq(swipe.gesture, 'swipe', 'real swipe surfaces the server gesture');
+  sandbox.postJson = async () => ({ ok: false, errors: ['boom'] });
+  let failed = false;
+  try {
+    await sendAssetTestGesture(true, 'tap', { x: 1, y: 2 });
+  } catch (e) {
+    failed = /boom/.test(e.message);
+  }
+  ok(failed, 'real gesture surfaces server errors');
+}
+
+// Real-mode gate: no live preview -> explicit refusal with no request; with live
+// preview -> allowed. This is the branch testAssetClick/testAssetDrag run first.
+sandbox.resultEl = { textContent: '' };
+sandbox.log = () => {};
+sandbox.assetTestReal = true;
+sandbox.livePreview = false;
+const refused = realAssetTestGuard();
+eq(refused.ok, false, 'real mode is refused while live preview is paused');
+ok(/实时预览已暂停/.test(sandbox.resultEl.textContent), 'refusal tells the user to switch live preview on');
+sandbox.livePreview = true;
+eq(realAssetTestGuard().ok, true, 'real mode is allowed while live preview is on');
+sandbox.assetTestReal = false;
+eq(realAssetTestGuard().real, false, 'dry mode bypasses the live-preview gate');
+eq(
+  confirmAssetTestGestures('click', []),
+  false,
+  'empty gesture batch never asks for confirmation'
+);
+let confirmText = '';
+sandbox.window = {
+  confirm: (text) => { confirmText = text; return true; },
+};
+eq(
+  confirmAssetTestGestures('drag', [{ label: '实时帧 滑动 (1,2) → (3,4)' }]),
+  true,
+  'non-empty real batch asks for confirmation'
+);
+ok(/这不是演练/.test(confirmText) && /实时帧 滑动/.test(confirmText), 'confirmation text names real mode and the gesture');
+
+// Mode button label/aria reflects the state (no device request involved).
+const fakeClassList = {
+  values: new Set(),
+  add(c) { this.values.add(c); },
+  remove(c) { this.values.delete(c); },
+  toggle(c, on) { if (on) this.values.add(c); else this.values.delete(c); },
+};
+sandbox.btnTestMode = {
+  textContent: '',
+  title: '',
+  classList: fakeClassList,
+  setAttribute(k, v) { this[k] = v; },
+};
+sandbox.assetTestReal = false;
+updateAssetTestModeButton();
+eq(sandbox.btnTestMode.textContent, '素材测试：演练', 'header button defaults to 演练');
+eq(sandbox.btnTestMode['aria-pressed'], 'false', 'dry button aria-pressed=false');
+sandbox.assetTestReal = true;
+updateAssetTestModeButton();
+eq(sandbox.btnTestMode.textContent, '素材测试：真实点击', 'header button shows 真实点击');
+eq(sandbox.btnTestMode['aria-pressed'], 'true', 'real button aria-pressed=true');
+sandbox.assetTestReal = false;
 
 // --- P0-2: save payload branch (recognition vs fixed vs region) ---
 eq(
@@ -568,6 +765,50 @@ ok(
 );
 ok(/btn-library-refresh/.test(html), 'real global refresh button exists');
 
+// --- v1.2.4: static contracts for overlay removal, invert rendering, mode ---
+const drawOverlayFn = extractFunction('drawClickOverlay');
+ok(!/drawClickStats/.test(source), 'on-canvas click-stats helper is removed');
+ok(!/clicks=/.test(drawOverlayFn), 'click overlay no longer draws a clicks=N plate');
+ok(!/稀疏 → 密集/.test(source), 'old on-canvas legend caption is gone');
+ok(/drawImage\(clickOverlay/.test(drawOverlayFn), 'click overlay still paints heat/scatter');
+ok(/id="click-stats"/.test(html) && /id="clicks-legend"/.test(html), 'sidebar click stats and legend remain');
+ok(/id="btn-test-mode"[\s\S]{0,400}id="btn-live-preview"|id="btn-live-preview"[\s\S]{0,400}id="btn-test-mode"/.test(html), 'test-mode button sits next to #btn-live-preview');
+ok(/id="run-dry"/.test(html), 'task-run #run-dry stays untouched');
+ok(/let assetTestReal = false;/.test(source), 'asset-test mode defaults to dry-run');
+
+const drawActionFn = extractFunction('drawActionShapeOverlay');
+ok(
+  /ACTION_SHAPE_DASH/.test(drawActionFn) &&
+    /ACTION_EFFECTIVE_FILL/.test(drawActionFn) &&
+    /ACTION_EXCLUDED_FILL/.test(drawActionFn),
+  'action renderer paints different effective/excluded fills and a shared dash'
+);
+ok(/const ACTION_SHAPE_DASH = \[8, 5\];/.test(source), 'action rect+polygon use the dashed [8,5] style');
+ok(!/setLineDash\(\[10, 6\]\)/.test(source), 'old polygon-only invert dash is gone');
+ok(/drawActionShapeOverlay\(\)/.test(extractFunction('draw')), 'draw() uses the unified action renderer');
+
+const editActionFn = extractFunction('editAssetActionRoi');
+ok(/loadActionShapeForEdit\(it\.action_shape\)/.test(editActionFn), 'asset-row 操作区 loads the saved shape (incl. invert)');
+ok(!/roiBack = actionBox/.test(editActionFn), 'polygon edit no longer paints a stray bbox rect');
+const updateActionFn = extractFunction('updateAssetActionRoi');
+ok(
+  /action_shape: shape/.test(updateActionFn) && /currentActionShape\(\)/.test(updateActionFn),
+  'save payload uses currentActionShape (invert included)'
+);
+
+const clickTestFn = extractFunction('testAssetClick');
+ok(/realAssetTestGuard\(\)/.test(clickTestFn), 'click test is gated by the real/dry-run mode');
+ok(/confirmAssetTestGestures\('click'/.test(clickTestFn), 'real click confirms before sending');
+ok(/sendAssetTestGesture\(true, 'tap'/.test(clickTestFn), 'real click sends POST /input/tap');
+ok(/真实点击模式/.test(clickTestFn) && /演练/.test(clickTestFn), 'click result text distinguishes 演练/真实');
+const dragTestFn = extractFunction('testAssetDrag');
+ok(/realAssetTestGuard\(\)/.test(dragTestFn), 'drag test is gated by the real/dry-run mode');
+ok(/confirmAssetTestGestures\('drag'/.test(dragTestFn), 'real drag confirms before sending');
+ok(/sendAssetTestGesture\(true, 'swipe'/.test(dragTestFn), 'real drag sends POST /input/swipe');
+ok(/真实滑动模式/.test(dragTestFn) && /演练/.test(dragTestFn), 'drag result text distinguishes 演练/真实');
+const guardFn = extractFunction('realAssetTestGuard');
+ok(/livePreview/.test(guardFn) && /实时预览已暂停/.test(guardFn), 'real mode refuses when live preview is off');
+
 // DOM id audit: the whole point of this round is ZERO static dead ids. Every
 // getElementById target must exist in index.html; if an id is genuinely needed,
 // add a real element to the HTML instead of keeping a fake reference.
@@ -594,7 +835,8 @@ ok(
   `dead DOM ids must be 0 (still dead: ${missingIds.join(', ') || 'none'})`
 );
 
-checkSavePathWiring(saveUnified)
+checkAssetTestWiring()
+  .then(() => checkSavePathWiring(saveUnified))
   .then(() => {
     console.log(
       `dom_id_audit: ${referencedIds.length} referenced ids, ${missingIds.length} dead ids` +
