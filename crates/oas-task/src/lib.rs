@@ -191,6 +191,10 @@ fn validate_action_shape(shape: &ActionShape, path: &str) -> Result<(), String> 
             if pts.iter().any(|p| p[0] < 0 || p[1] < 0) {
                 return Err(format!("{path}.points must be non-negative"));
             }
+            let raw: Vec<[i32; 2]> = pts.iter().map(|p| [p[0], p[1]]).collect();
+            if polygon_self_intersects(&raw) {
+                return Err(format!("{path}.points must not self-intersect"));
+            }
             if shape.roi.is_some() {
                 return Err(format!("{path}.roi is only valid for kind=rect"));
             }
@@ -2909,6 +2913,23 @@ mod tests {
         let set = b.load_runtime_assets().expect("runtime");
         let back = set.click_back("多边形操作区").expect("bbox fallback");
         assert_eq!((back.x, back.y, back.w, back.h), (8, 8, 33, 23));
+    }
+
+    #[test]
+    fn self_intersecting_action_polygon_is_rejected() {
+        let td = TempDir::new("polyself");
+        let b = open(&td);
+        let f = frame(64, 48);
+        let mut decl = AssetDecl::template("自交多边形", [10, 10, 21, 11]);
+        decl.action_source = "fixed".into();
+        decl.action_shape = Some(ActionShape {
+            kind: "polygon".into(),
+            roi: None,
+            points: Some(vec![[8, 8], [40, 30], [40, 8], [8, 30]]),
+            invert: false,
+        });
+        let err = b.save_asset(decl, Some(&f)).expect_err("self-intersection must fail");
+        assert!(err.contains("self-intersect"), "{err}");
     }
 
     #[test]

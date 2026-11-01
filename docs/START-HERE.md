@@ -52,7 +52,7 @@
 | 恢复节点 | `main` = `385d611`（v1.2.3） |
 | 当前分支 | `dev`（文档/编辑器/任务数据提交；不自动合并 main） |
 | 文档 | 已独立到 `oas-core/docs`；当前设计以 ENGINE-DESIGN + PENDING-LEDGER + RESUME 为准 |
-| 当前计划 | **`EDITOR-UX-PLAN.md`**：已落地画布/帧详情/随机采样、`action_shape`+`action_source`、全屏反选 UI、runtime exact shape、素材排序、分类重命名、live/position 批量；待补真实回归/build 过滤 |
+| 当前计划 | **先读 `RECOVERY-AUDIT.md` + `CODE-AUDIT-2026-11-01.md`**：4:21 基线 `f6be0f0`；19:30 `9618cb5` 才开始实现；P0-1~P0-4 + P1-2/3/4/6 已修，361 tests；剩 P1-1 drag shape、P1-5 SelectionTool；当前 `assets/` 34 是错误恢复，archive 2827 在归档分支 |
 | 截图 | 两阶段：点击立即抓取 → 弹窗预览 → 名称/分类 → 保存；无当前帧跳转 |
 | Enter | 输入框 Enter = 确认输入；弹窗 Enter = 保存截图 |
 | 实时操作 | 实时开启时画布单击/拖拽 = tap/swipe；实时暂停 = ROI 编辑 |
@@ -62,8 +62,8 @@
 | 帧-素材关系 | 唯一关系 = `Asset.positions`；帧行显示关联素材数；只读关系浏览器显示帧→素材、素材→帧、素材共现、帧共享素材、录制 transition；支持 alternative/requires/similar/overlay 标注；**无 interface 概念** |
 | 新 DSL | `key`、`restart_app` 已实现，前端 builder/flow_model 已补齐 |
 | 帧归档 | 已补庭院/设置/式神录/探索/町中/御魂/斗技/结界突破/逢魔/悬赏/宠物小屋/退出弹窗/加载/启动参考帧 |
-| 信息架构 | **素材页 = 唯一全局素材库 `assets/`（全部素材）**；任务页 = 当前任务 flow 引用的全局素材子集；旧 `library/` UI 已移除，仅保留后端 `lib:` 兼容；模型见 `ASSET-DATA-MODEL.md` |
-| 全局素材 | `assets/assets.json` 当前 34 个素材 / 18 张模板图（含 git 历史恢复）；`GET /task/assets?task=` 在全局模式下返回它们 |
+| 信息架构 | **设计：素材页 = 唯一全局素材库 `assets/`；任务页 = 任务 flow 引用子集**。当前数据状态不可信：见 `RESUME.md`（archive 迁移库 2827 素材在 `archive/migration-20261101`，当前 `assets/` 仅 34 个是错误拼出的） |
+| 全局素材 | **当前 `assets/` = 34（错误恢复，非权威）**；权威迁移数据在 `archive/migration-20261101`：2827 素材 / 2099 图 / 55 任务 |
 | 帧安全 | 清空列表必须确认；清空前自动备份到 `frames/.backup/clear-<时间>/`（含 frames.json + PNG） |
 | 待办 | 活动页参考帧继续补；帧-素材关系继续扩展（替代/依赖/transition）；按 `docs/EDITOR-UX-PLAN.md` 做编辑器 UX/选择模型改版；不引入 interface/ui-map |
 | 关系证据 | `relations/observations.jsonl` append-only；`relations/annotations.json` 人工标注；图片页「录制关系」「标注关系」写入 |

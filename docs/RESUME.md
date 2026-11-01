@@ -1,92 +1,99 @@
 # RESUME — 断点续接卡（session-memory 强制 6）
 
 > 规则：本文件**每次断点覆盖重写**；≤150 行；另一个会话只读本文件 + `RESUME-INDEX.md` 最新行
-> 就能继续。细节放 `ENGINE-DESIGN.md` / `DELIVERY-PLAN.md`。
+> 就能继续。细节放 `ENGINE-DESIGN.md` / `ASSET-DATA-MODEL.md`。
 
 ```yaml
-task_id: oas-core-editor-ux
-checkpoint_seq: 77
-updated_at: 2026-11-01T19:40:00+08:00
-trigger: v0.1.0 + action_shape 清理 + 画布/位置详情/排序/分类首轮实现
+task_id: oas-core-repo-recovery
+checkpoint_seq: 79
+updated_at: 2026-11-01T20:50:00+08:00
+trigger: 用户指出仓库被搞乱；重读 START-HERE/RESUME/完整 session transcript
 status: in_progress
 ```
 
-## 0. 当前状态（磁盘实测）
+## 0. 当前状态（磁盘 + git 实测）
 
-- 分支 `dev`；版本 `workspace.package.version = 0.1.0`；`main` = `385d611`（历史恢复点）。
-- 测试：`cargo test --workspace` = **358 passed / 0 failed**。
-- 任务：`tasks/` 为空（用户删除 `返回庭院`，未恢复）；任务页素材库应跟随任务引用。
-- 全局素材：`assets/` 34 个素材 / 18 张模板图（git 历史恢复，见 `ASSET-DATA-MODEL.md`）。
-- 帧：当前 28 帧（用户新增 35~40）；旧 22 帧恢复记录仍在。
-- 编辑器 UX：画布 16:9 stage、结果/日志可收起、帧详情侧栏已实现。
-- 操作区域：`action_shape`（rect/polygon + invert=整个屏幕−区域）+ `action_source` 已落地；旧 `action_roi`/`roi_back` 从代码与当前 assets 数据移除。
-- 已实现测试来源：单素材测试带 `live=1` 或 `frame_id`；批量测试仍按位置帧（live 批量待补）。
-- 已实现：素材拖动排序接口/UI、帧分类重命名接口/UI、点测/拖测随机采样。
-- 已完成：runtime template/OCR/region 主点击路径均使用 exact `ClickShape`；批量测试支持 live/position 两种来源。
-- 待补：真实动作回归、任务构建按当前帧过滤、活动页参考帧。
-- 素材关系：唯一关系 = `Asset.positions`；帧行显示关联素材数量；只读关系浏览器显示帧→素材、素材→帧、素材共现、帧共享素材、录制 transition、人工标注与覆盖概览。
-- 位置帧继承：新素材保存区/已有素材位置编辑弹窗都能从其他任务素材追加 `positions`，不新增持久化引用。
-- 帧安全：清空列表必须 `confirm:true`；清空前自动备份到 `frames/.backup/clear-<时间>/`。
-- 新 DSL：`key` / `restart_app` 前后端保留。
-- 已删除：`ui-map/`、`docs/UI-MAP*`、`flow.generated.json`、`Frame.interface_id`、界面选择/图视图、`ui_map.rs`。
+- 分支 `dev`，HEAD `1f73f17`；`main`/`origin/main` = `385d611`（v1.2.3）。
+- 测试：`cargo test --workspace` = **358 passed / 0 failed**（代码本身绿）。
+- 工作区**不干净**：
+  - `frames/frames.json` modified；
+  - `tasks/返回庭院/assets.json`、`meta.json` deleted；
+  - 当前 `tasks/` 无任务目录。
+- 当前 `assets/`：**34 个素材 / 18 张模板图**，来自按 task 历史恢复（`0bc69ba`/`1f73f17`），**不是 archive 迁移库**。
+- 4:21 干净基线：`f6be0f0`（22 帧 / 返回庭院 3 素材 / 无全局 assets）；18:42~19:14 为 docs-only；19:30 `9618cb5` 起进入实现。详见 `RECOVERY-AUDIT.md`。
+- 代码审计：`CODE-AUDIT-2026-11-01.md`；P0-1~P0-4、P1-2/3/4/6 已修复并新增 3 个测试；P1-1 drag shape、P1-5 SelectionTool 仍未修。**361 tests passed**。
+- 真正的迁移归档在：
+  - `archive/migration-20261101` = `29b696f`；
+  - 2827 个素材 / 2099 张图 / 55 个任务包；
+  - 已被 force-push 前的 rollback 保留，远程同名分支存在。
 
-## 1. 用户裁定（现行）
+## 1. 已核实的历史事实
 
-- **不需要“界面”概念**；接口分类太生硬。
-- **帧-素材关系是唯一关系**：素材出现在哪些帧 = `Asset.positions`。
-- 不新增 interface 字段、不新增持久化关系表；关系由帧/素材数据派生。
-- 保留帧 26/28/29/30，只删 interface 字段。
-- 回退用新提交，不改写 git 历史。
+1. `ENGINE §22.39 R11` 用户原话：
+   > “不再区分任务素材和全局素材，因为名称是唯一的”
+   ⇒ 唯一 `assets/`；任务只持有 meta/flow 并引用全局 id。
+2. `2026-11-01 09:02:04` 用户原话：
+   > “回滚到恢复节点，请理解和计划，与我确认。当前的迁移全部撤销”
+   09:11 执行后：
+   - dev → `385d611`；
+   - `assets/` 被删除；
+   - `migration/` 删除；
+   - 53 个迁移任务 + 2825 素材从 dev 移除；
+   - 归档分支 `archive/migration-20261101 = 29b696f` 保留。
+3. 之后用户继续在 dev 工作，并删除 `返回庭院` 任务；任务目录里的旧 assets 随之删除。
+4. 本轮我们（助手）错误地：
+   - 从 task 历史中恢复 34 个素材进 `assets/`；
+   - 声称“全局素材已恢复”；
+   - 删除旧 `library/` UI、添加自定义全局列表、修改多份文档；
+   - 没有先读 archive 分支和 09:02 的 rollback 语境。
 
-## 2. 本轮完成
+## 2. 设计 vs 现状
 
-- [x] **帧清空事故恢复**：22 个 git tracked 帧 + manifest 已恢复；`next_id=35`；
-- [x] 31~34 新录制帧 PNG 无法从 git/回收站/影子副本恢复；保留 `relations/observations.jsonl` 证据；
-- [x] 前端「清空列表」增加 `window.confirm`，显示帧数/备份说明；
-- [x] 后端 `/frames/clear` 必须 `{confirm:true}`，否则 400；
-- [x] 清空前自动备份 `frames.json` + 所有 PNG 到 `frames/.backup/clear-<时间>/`；
-- [x] 增加帧清空测试（无确认拒绝 + 备份存在）；
-- [x] 全量测试 358 passed；task lint 1/0；
-- [x] 文档记录事故与恢复边界。
-- [x] 位置帧继承：`asset-position-inherit-host` 源素材 picker；已有素材编辑弹窗也可继承；只追加 positions。
-- [x] 全量测试 358 passed；task lint 1/0。
-- [x] 版本重置 dev `0.1.0`（旧 v1.x tag 保留）。
-- [x] 画布 16:9 stage + 结果/日志收起 + 位置帧详情侧栏。
-- [x] 点测/拖测随机采样（同区域多次不同点）。
-- [x] `action_shape` + `action_source` schema；当前任务 assets 已迁移；`action_roi`/`roi_back` 代码删除。
-- [x] 素材拖动排序 + 帧分类重命名。
-- [x] 单素材测试 live/frame_id 来源与真实识别 bbox 有效性提示。
-- [x] 全量测试 358 passed。
-- [x] 信息架构：任务页放当前任务素材库；素材页恢复全局素材库。
-- [x] 删除任务事故：从 git 全历史恢复 **34 个唯一素材 / 18 张模板图** 到 `assets/`；任务目录不恢复。
-- [x] 任务删除改为先备份到 `assets/_deleted-tasks/<task>-<ts>/`，备份失败拒绝删除。
-- [x] 素材页只保留唯一全局素材库（复用 `asset_ui.js`）；旧 `library/` UI 移除；任务页只显示当前任务 flow 引用的全局子集。
-- [x] 新增 `docs/ASSET-DATA-MODEL.md` 固定“任务素材=全局子集”模型。
+| 项 | 设计（用户口径） | 现状 | 结论 |
+|---|---|---|---|
+| 唯一素材库 | `assets/` 全量，任务引用子集 | 当前 `assets/` 只有 34 个按 task 历史拼出的素材 | ❌ 不是全量 |
+| 迁移归档 | archive 分支保留 2827 素材/55 任务 | 未导入当前 dev | ❌ 未恢复 |
+| 旧 `library/` | v1.2.1 后应被统一，最多兼容 | 我们曾恢复其 UI，后又删除 | ⚠ 需最终定案 |
+| 任务删除 | 删除任务不应销毁全局素材 | 旧实现 remove_dir_all 会删任务目录 assets；已加备份 | ⚠ 现状待恢复后重验 |
+| 任务素材 UI | 任务页只显示任务引用子集 | 无任务时应为空；代码已改但无真实任务验证 | 🔄 |
 
-## 3. 下一步
+## 3. 下一步（等用户裁定，不先动）
 
-1. 真实动作回归；
-2. 批量 live/position 已验证，后续补 UI 回归；
-3. 任务构建按当前帧过滤素材/推荐 transition；
-4. 活动页参考帧/标注继续补。
+1. **代码修复**（`CODE-AUDIT-2026-11-01.md`）：P0 actionValidity/runtime 斜边/template 平移；P1 drag/批量保存/collection live/OCR 标签；
+2. 素材恢复路线 A/B/C（见 `RECOVERY-AUDIT.md`）；
+3. 修复后重新跑 `cargo test --workspace` + UI/API 回归。
 
-## 4. 约束
+## 4. 恢复路线（待裁定）
 
-- 不自行 tag/release；`main` 保持 `385d611`。
-- `Asset.positions` 是唯一关系；不要再加 interface/额外关系表。
-- 帧分类只是自由分组，不是强制界面。
-- OCR/region 素材缩略图只认 `positions`；不回退当前帧。
-- 旧 backend 文档冻结；所有更新只写 `oas-core/docs/`。
+需要用户选一条恢复路线：
 
-## 5. 证据
+- A. 从 `archive/migration-20261101` 导入全量 `assets/`（2827）到当前 dev；是否也导入 55 个任务？
+- B. 只保留当前 34 个素材，删除我们错误恢复的 docs/commit 影响；
+- C. 回到 `1f73f17` 前/某个干净点，只保留编辑器代码改动，不恢复任何数据。
 
-- `apps/oasd/src/serve.rs`（`/relations/frame-assets`、`/relations/record`、`/relations/annotate`、delete）；
-- `apps/oasd/src/relations.rs`（派生关系 + observation/annotation 读取 + coverage + 测试）；
-- `apps/oasd/ui/app.js`（画布 stage、帧详情、关系浏览器、操作区采样、排序/分类）；
-- `apps/oasd/ui/asset_ui.js`（拖动排序行）；
-- `apps/oasd/ui/index.html` + `style.css`（stage/详情/操作区按钮）；
-- `crates/oas-task/src/lib.rs`（`ActionShape`、`action_source`、reorder）；
-- `relations/README.md`（observations/annotations schema）；
-- `docs/EDITOR-UX-PLAN.md`（现行方案；部分 runtime 待补）；
-- `frames/frames.json`（当前 28 帧，无 interface_id）；
-- 测试：`cargo test --workspace` = 358 passed；版本 `0.1.0`。
+在执行前必须：
+
+1. 备份当前 `assets/`、`tasks/`、`frames/`；
+2. 明确 archive 的 schema（旧 `action_roi`）如何迁移成当前 `action_shape/action_source`；
+3. 逐项验证 `task lint`、`cargo test`、全局 API 和 UI；
+4. 经用户确认后才覆盖工作区。
+
+## 5. 阻塞/待裁定
+
+- 恢复哪一份素材库：archive 2827 / 当前 34 / 其他备份？
+- 是否同时恢复 archive 的 55 个任务包？
+- 当前工作区的 `tasks/返回庭院` 删除是否保留？
+- 代码修复顺序是否按 `CODE-AUDIT-2026-11-01.md` 执行？
+
+## 6. 证据
+
+- session 导出：`_verify/n44/session-current-both-full.txt`
+  - 11-01 09:02 回滚原话；
+  - 09:11 删除 assets/migration；
+  - R11 10-30 23:36 原话。
+- `git branch -avv`：`archive/migration-20261101 = 29b696f`。
+- `archive/migration-20261101:assets/assets.json`：2827 items。
+- 当前 `assets/assets.json`：34 items。
+- 提交：`1f73f17`（错误恢复+UI 改动）、`0bc69ba`、`1a021f8`、`385d611`。
+
+> 结论：**当前仓库的数据状态不可信，恢复方案未定，禁止继续写代码/灌数据。**

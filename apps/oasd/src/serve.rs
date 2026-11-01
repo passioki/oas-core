@@ -3215,12 +3215,9 @@ impl Server {
         let Some(members) = assets.collection_members(&id).map(|m| m.to_vec()) else {
             return self.send_errors(out, 404, vec![format!("collection `{id}` not found")]);
         };
-        let frame = {
-            let st = self.state.lock().unwrap();
-            match st.frame.as_ref() {
-                Some(f) => oas_types::Frame::new(f.width, f.height, f.rgba.clone()),
-                None => return self.send_json(out, 400, r#"{"error":"no frame yet"}"#),
-            }
+        let (frame, frame_source) = match self.frame_for_test(&q) {
+            Ok(v) => v,
+            Err(e) => return self.send_json(out, 400, &format!(r#"{{"error":{:?}}}"#, e)),
         };
         let matcher = oas_perceive::Matcher::new(oas_perceive::GrayImage::from_frame(&frame));
         let t0 = std::time::Instant::now();
@@ -3250,13 +3247,14 @@ impl Server {
                     "pass": score >= threshold,
                     "action_box": action.map(|r| [r.x, r.y, r.w, r.h]),
                     "elapsed_ms": t0.elapsed().as_secs_f64() * 1000.0,
+                    "frame_source": frame_source,
                 })
             }
             Err(e) => serde_json::json!({"ok": false, "errors": [e]}),
         };
         if body["ok"] == true {
             self.editor_log(&format!(
-                "collection_match OK task={task} id={id} member={} score={} threshold={} pass={} elapsed_ms={}",
+                "collection_match OK task={task} id={id} member={} score={} threshold={} pass={} elapsed_ms={} source={frame_source}",
                 body["member"], body["score"], body["threshold"], body["pass"], body["elapsed_ms"]
             ));
         } else {

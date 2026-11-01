@@ -87,10 +87,12 @@ impl ClickShape {
         for i in 0..pts.len() {
             let (xi, yi) = (pts[i].x, pts[i].y);
             let (xj, yj) = (pts[j].x, pts[j].y);
-            if ((yi > p.y) != (yj > p.y))
-                && (p.x < (xj - xi) * (p.y - yi) / (yj - yi).max(1) + xi)
-            {
-                inside = !inside;
+            if (yi > p.y) != (yj > p.y) {
+                let denom = (yj - yi) as f64;
+                let cross_x = (xj - xi) as f64 * (p.y - yi) as f64 / denom + xi as f64;
+                if (p.x as f64) < cross_x {
+                    inside = !inside;
+                }
             }
             j = i;
         }
@@ -1278,6 +1280,37 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         Ok(locate_template(matcher, tpl))
     }
 
+    /// Return the operation shape in *screen* coordinates. Template shapes are
+    /// authored relative to the template ROI, so they must be translated by the
+    /// current match offset before validation/sampling.
+    fn translated_click_shape(&self, sel: &str, matched: Point) -> Option<ClickShape> {
+        let effective_sel: &str = if self.assets.collection_members(sel).is_some() {
+            self.last_set_member.get(sel)?.as_str()
+        } else {
+            sel
+        };
+        let mut shape = self.assets.click_shape(effective_sel)?.clone();
+        if let Some(t) = self.assets.get(effective_sel) {
+            if let Some(roi) = t.roi {
+                let dx = matched.x - roi.x;
+                let dy = matched.y - roi.y;
+                if dx != 0 || dy != 0 {
+                    if let Some(r) = shape.rect.as_mut() {
+                        r.x += dx;
+                        r.y += dy;
+                    }
+                    if let Some(pts) = shape.points.as_mut() {
+                        for p in pts {
+                            p.x += dx;
+                            p.y += dy;
+                        }
+                    }
+                }
+            }
+        }
+        Some(shape)
+    }
+
     /// Re-sample a click plan if it landed outside an exact operation shape.
     fn adjust_plan_for_shape(
         &mut self,
@@ -1285,8 +1318,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         plan: crate::humanize::ClickPlan,
         w: u32,
         h: u32,
+        matched: Point,
     ) -> crate::humanize::ClickPlan {
-        let Some(shape) = self.assets.click_shape(sel).cloned() else {
+        let Some(shape) = self.translated_click_shape(sel, matched) else {
             return plan;
         };
         if shape.effective_contains(plan.point) {
@@ -1681,7 +1715,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 .screen.size()
                 .ok_or_else(|| "interrupt: no frame available".to_string())?;
             let plan = self.humanize.template_click(target, w, &mut self.rng);
-            let plan = self.adjust_plan_for_shape(&action_sel, plan, w, h);
+            let plan = self.adjust_plan_for_shape(&action_sel, plan, w, h, ap);
             let centre = Point {
                 x: target.x + target.w / 2,
                 y: target.y + target.h / 2,
@@ -1985,7 +2019,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             .screen.size()
                             .ok_or_else(|| "dismiss_popup: no frame available".to_string())?;
                         let plan = self.humanize.template_click(target, w, &mut self.rng);
-                        let plan = self.adjust_plan_for_shape(&action_sel, plan, w, h);
+                        let plan = self.adjust_plan_for_shape(&action_sel, plan, w, h, ap);
                         let centre = Point {
                             x: target.x + target.w / 2,
                             y: target.y + target.h / 2,
@@ -2107,7 +2141,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     .screen.size()
                     .ok_or_else(|| "click: no frame available".to_string())?;
                 let plan = self.humanize.template_click(target, w, &mut self.rng);
-                let plan = self.adjust_plan_for_shape(hit_sel, plan, w, h);
+                let plan = self.adjust_plan_for_shape(hit_sel, plan, w, h, p);
                 let centre = Point {
                     x: target.x + target.w / 2,
                     y: target.y + target.h / 2,
@@ -2223,7 +2257,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 };
                                 let target = self.click_box_for(sel, p)?;
                                 let plan = self.humanize.template_click(target, w, &mut self.rng);
-                                let plan = self.adjust_plan_for_shape(sel, plan, w, h);
+                                let plan = self.adjust_plan_for_shape(sel, plan, w, h, p);
                                 let centre = Point {
                                     x: target.x + target.w / 2,
                                     y: target.y + target.h / 2,
@@ -4267,6 +4301,62 @@ mod tests {
     }
 
     #[test]
+    fn exact_shape_translates_when_the_template_moved() {
+        // Same shift as roi_back test, but through click_shape: the authored
+        // operation shape must move with the matched template.
+        let pattern: Vec<u8> = (0..100)
+            .map(|i| (((i % 10) * 7 + (i / 10) * 13) % 251 + 3) as u8)
+            .collect();
+        let mut assets = assets();
+        assets.insert(
+            "I_SHAPE_SHIFT",
+            Template {
+                gray: GrayImage::new(10, 10, pattern),
+                roi: Some(Rect {
+                    x: 12,
+                    y: 10,
+                    w: 10,
+                    h: 10,
+                }),
+                threshold: 0.8,
+                click_polygon: None,
+            },
+        );
+        assets.set_click_shape(
+            "I_SHAPE_SHIFT",
+            ClickShape {
+                rect: Some(Rect {
+                    x: 10,
+                    y: 8,
+                    w: 20,
+                    h: 20,
+                }),
+                points: None,
+                invert: false,
+            },
+        );
+        let screen = TwoFrameScreen {
+            frames: vec![frame_with_tile(40, 30)],
+            idx: 0,
+        };
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(screen, input, assets, Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(7);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_SHAPE_SHIFT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            p.x >= 38 && p.x < 58 && p.y >= 28 && p.y < 48,
+            "click must follow the translated action shape (38,28,20,20), got {p:?}"
+        );
+    }
+
+    #[test]
     fn stable_frames_requires_the_same_position_on_two_frames() {
         // §22.29 H4: two consecutive frames with the target at the same place
         // => one click. A moving target => loud failure and NO click.
@@ -5988,6 +6078,22 @@ mod click_shape_tests {
             let p = inverted.sample(640, 360, &mut rng).expect("invert sample");
             assert!(!inverted.contains(p), "sample inside excluded rect: {p:?}");
         }
+    }
+
+    #[test]
+    fn polygon_contains_handles_negative_slope_edges() {
+        let tri = ClickShape {
+            rect: None,
+            points: Some(vec![
+                Point { x: 100, y: 100 },
+                Point { x: 400, y: 100 },
+                Point { x: 100, y: 400 },
+            ]),
+            invert: false,
+        };
+        assert!(tri.contains(Point { x: 120, y: 120 }));
+        assert!(tri.contains(Point { x: 200, y: 180 }));
+        assert!(!tri.contains(Point { x: 350, y: 350 }));
     }
 }
 

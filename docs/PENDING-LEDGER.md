@@ -2839,7 +2839,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 无任务时任务素材库为空
 ```
 
-| 状态 | ✅ 已恢复 34 个历史素材 / 18 张图；任务删除先备份；UI 收口 |
+| 状态 | ⛔ 该恢复方案已被 §E-70 推翻：34 是从 task 历史拼出的，不是 archive 2827 全量 |
 
 
 
@@ -2852,3 +2852,104 @@ GET /task/assets?task= → 34 个素材（全局模式）
 
 
 
+
+---
+
+# ★ §E-70 ★★★ [11-01 20:50] **仓库数据被搞乱：archive 恢复审计**
+
+> 触发：用户指出助手未读代码/逻辑，素材多次丢失，仓库被搞乱；要求加载 skill、读 START-HERE、读 session。
+
+## 已核实
+
+- 2026-11-01 09:02 用户要求：
+  “回滚到恢复节点，请理解和计划，与我确认。当前的迁移全部撤销”
+- 09:11 回滚执行：
+  - dev → `385d611`；
+  - `assets/`、`migration/`、53 个迁移任务、2825 素材从 dev 移除；
+  - 归档 `archive/migration-20261101 = 29b696f`。
+- archive 分支现状：
+  - 2827 个素材
+  - 2099 张图
+  - 55 个任务包
+- 当前 `dev` 现状：
+  - 任务为空；
+  - `assets/` 仅 34 个（助手从 task 历史错误拼出的，不是 archive 全量）；
+  - `frames.json`、tasks 删除未提交；
+  - HEAD `1f73f17`，358 tests。
+
+## 助手错误
+
+1. 未先读 archive 分支和 09:02 rollback 语境；
+2. 把 task 历史恢复成“全局素材已恢复”；
+3. 恢复/移除 library UI、加自定义全局列表，制造重复；
+4. 文档写成“34 个已恢复”，误导当前状态。
+
+## 待用户裁定
+
+1. 恢复 archive 2827 素材到当前 dev，还是只保留 34？
+2. 是否同时恢复 55 个 archive 任务？
+3. 旧 `library/` 最终是移除还是保留兼容 UI？
+
+## 禁止
+
+- 在用户确认前继续灌数据；
+- 再声称“素材已恢复/仓库已修好”。
+
+| 状态 | ⛔ 阻塞：等待恢复路线确认 |
+
+## 补充：session↔git 边界（已核实）
+
+- `f6be0f0` 2026-11-01 16:21:33 = 用户所说 4:21 干净版本（22 帧 / 返回庭院 3 素材 / 无全局 assets）。
+- 18:42:19 `f157dae`、18:57:30 `2b22b77`、19:05:23 `7e16063`、19:14:09 `8ee414c` 均为 **docs-only**，没有代码/数据改动。
+- 19:15 用户“开始吧”；19:30:51 `9618cb5` 才是第一笔实现提交。
+- 20:23/20:33 的 `0bc69ba`/`1f73f17` 是助手超出会话要求的素材恢复，导致当前 34 个错误素材。
+- 完整审计：`docs/RECOVERY-AUDIT.md`。
+
+| 状态 | ⛔ 阻塞：等待恢复路线确认（A/B/C） |
+
+---
+
+# ★ §E-71 ★★★ [11-01 21:05] **16:00~21:00 代码审计：4 P0 / 4 P1**
+
+> 触发：用户要求先不管素材，扫描 16:00~21:00 git 改动，对照 session 与代码逻辑。
+> 完整审计：`docs/CODE-AUDIT-2026-11-01.md`。
+
+## 结论
+
+代码主方向符合 7 项需求，但存在确定性缺陷，**尚未修复**。
+
+## P0
+
+1. `actionValidity`：fixed 不重叠返回 `valid:false`，与“独立操作区允许”矛盾（`apps/oasd/ui/app.js:1393`）。
+2. `actionValidity`：polygon 非反选时 `effective` 仍是整屏，重叠校验恒为 true（`app.js:1388-1391`）。
+3. runtime `ClickShape::contains` 使用 `(yj-yi).max(1)`，负斜率边判定错误（`crates/oas-runtime/src/lib.rs:91`）。
+4. template 平移后 `click_box_for` 平移 shape bbox，但 `adjust_plan_for_shape` 用未平移 shape（`lib.rs:1282/1353`）。
+
+## P1
+
+1. 拖测 step 的 `from` 仍写 bbox region（`app.js:1573-1581`），polygon/invert 只在 UI 展示。
+2. 批量保存固定 `kind:rect`（`app.js:1275/2921/2948`），单素材 `doSaveAsset` 才用 currentActionShape。
+3. collection match 直接读 `st.frame`（`serve.rs:3218`），不支持 live/frame_id。
+4. OCR 测试标签用 `currentFrameId`（`app.js:1635`），请求可能用 live/position，日志不一致。
+
+## 结构
+
+- “框选抽函数”未落地：`polygon/polyMode` 与 `actionPoly/actionPolyMode` 两套。
+- `validate_action_shape` 缺 polygon 自交/越界校验（`oas-task lib.rs:169`）。
+
+| 状态 | ⛔ 待用户确认修复顺序；未改代码 |
+
+## 修复进度（21:20）
+
+- ✅ P0-1 fixed 独立区有效
+- ✅ P0-2 polygon 有效性
+- ✅ P0-3 runtime 斜边命中
+- ✅ P0-4 template 平移 shape
+- ✅ P1-2 批量保存 shape
+- ✅ P1-3 collection live
+- ✅ P1-4 OCR 帧标签
+- ✅ P1-6 polygon 自交校验
+- ⬜ P1-1 drag shape（需 DSL）
+- ⬜ P1-5 SelectionTool
+
+测试：361 passed / 0 failed。

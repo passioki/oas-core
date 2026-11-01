@@ -19,6 +19,8 @@
 | `DELIVERY-PLAN.md` | V1.0 交付路线/DoD |
 | `EDITOR-UX-PLAN.md` | 编辑器 UX/选择模型/实时帧/区域有效性改版计划 |
 | `ASSET-DATA-MODEL.md` | 全局 `assets/`、任务素材=flow 引用子集、旧 `library/` 兼容边界 |
+| `RECOVERY-AUDIT.md` | session↔git↔代码恢复审计；4:21 基线 / 19:30 实现起点 / archive 2827 |
+| `CODE-AUDIT-2026-11-01.md` | 16:00~21:00 代码审计：4 P0 / 4 P1，尚未修复 |
 
 ## 当前基线（2026-11-01）
 

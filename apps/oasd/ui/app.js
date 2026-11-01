@@ -1016,6 +1016,7 @@ function makeResultRow(kind, text, name, recognize, action, sourceRoi, selected,
     name: name || text || '识别结果',
     recognize: { ...recognize },
     action: action ? { ...action } : { ...recognize },
+    actionShape: null,
     sourceRoi: sourceRoi ? { ...sourceRoi } : null,
     selected: selected !== false && candidateNameValid(name || text || ''),
     fromLines: !!fromLines,
@@ -1222,6 +1223,7 @@ function renderCandidateList(sourceLabel) {
     reset.title = '操作区域恢复为识别区域';
     reset.addEventListener('click', () => {
       c.action = { ...c.recognize };
+      c.actionShape = null;
       if (activeCandidate === idx) roiBack = { ...c.action };
       renderCandidateList(sourceLabel);
       draw();
@@ -1272,7 +1274,7 @@ async function saveSelectedCandidates() {
     kind: 'ocr_line',
     // v1.2.3: single recognition ROI = the multi-line region the user tested.
     roi: [c.sourceRoi.x, c.sourceRoi.y, c.sourceRoi.w, c.sourceRoi.h],
-    action_shape: { kind: 'rect', roi: [c.action.x, c.action.y, c.action.w, c.action.h] },
+    action_shape: c.actionShape || { kind: 'rect', roi: [c.action.x, c.action.y, c.action.w, c.action.h] },
     action_source: 'fixed',
     ocr_mode: 'lines',
     ocr_text: c.text,
@@ -1339,6 +1341,37 @@ function actionShapeEffectiveContains(shape, x, y) {
   return shape.invert ? !inside : inside;
 }
 
+function segmentIntersects(a, b, c, d) {
+  const cross = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  const d1 = cross(c, d, a);
+  const d2 = cross(c, d, b);
+  const d3 = cross(a, b, c);
+  const d4 = cross(a, b, d);
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+    ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+}
+
+function polygonOverlapsRect(points, box) {
+  if (!Array.isArray(points) || points.length < 3 || !box) return false;
+  const [x, y, w, h] = box;
+  const corners = [[x, y], [x + w - 1, y], [x + w - 1, y + h - 1], [x, y + h - 1]];
+  // any polygon vertex inside rect
+  if (points.some(([px, py]) => px >= x && px < x + w && py >= y && py < y + h)) return true;
+  // any rect corner inside polygon
+  for (const [cx, cy] of corners) {
+    if (actionShapeContains({ kind: 'polygon', points }, cx, cy)) return true;
+  }
+  // any polygon edge crosses any rect edge
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    for (let j = 0; j < 4; j++) {
+      if (segmentIntersects(a, b, corners[j], corners[(j + 1) % 4])) return true;
+    }
+  }
+  return false;
+}
+
 function currentActionShape() {
   if (actionPoly && actionPolyClosed && actionPoly.length >= 3) {
     return {
@@ -1385,17 +1418,24 @@ function actionValidity(it, recognizedBox) {
     if (source === 'recognition') return { valid: true, text: '有效（操作区=真实识别框）' };
     return { valid: false, text: '无效：action_source=fixed 但没有 action_shape' };
   }
-  let effective = [0, 0, canvas.width || 1280, canvas.height || 720];
-  if (shape.kind === 'rect' && Array.isArray(shape.roi)) effective = shape.roi;
+  const isRect = shape.kind === 'rect' && Array.isArray(shape.roi);
+  const hit = shape.invert
+    ? false
+    : isRect
+      ? rectsOverlap(recognizedBox, shape.roi)
+      : polygonOverlapsRect(shape.points || [], recognizedBox);
   if (!shape.invert) {
-    const hit = rectsOverlap(recognizedBox, effective);
     if (source === 'fixed') {
-      return { valid: hit, text: hit ? '有效（固定操作区与识别框重叠）' : '独立操作区域（fixed，允许不重叠）', independent: !hit };
+      return {
+        valid: true,
+        text: hit ? '有效（固定操作区与识别框重叠）' : '独立操作区域（fixed，允许不重叠）',
+        independent: !hit,
+      };
     }
     return { valid: hit, text: hit ? '有效（识别框在操作区内）' : '无效：真实识别框与操作区不重叠' };
   }
-  // inverted: effective region is screen minus shape; overlap if any corner of
-  // the recognized box is outside the shape.
+  // Inverted shape: effective region is the whole screen minus shape. A
+  // recognized box overlaps it if any corner is outside the excluded shape.
   const corners = [
     [recognizedBox[0], recognizedBox[1]],
     [recognizedBox[0] + recognizedBox[2] - 1, recognizedBox[1]],
@@ -1403,7 +1443,13 @@ function actionValidity(it, recognizedBox) {
     [recognizedBox[0] + recognizedBox[2] - 1, recognizedBox[1] + recognizedBox[3] - 1],
   ];
   const outside = corners.some(([x, y]) => !actionShapeContains(shape, x, y));
-  if (source === 'fixed') return { valid: outside, text: outside ? '有效（反选固定操作区与识别框相交）' : '独立操作区域（反选；识别框完全在排除区内）', independent: !outside };
+  if (source === 'fixed') {
+    return {
+      valid: true,
+      text: outside ? '有效（反选固定操作区与识别框相交）' : '独立操作区域（反选；识别框完全在排除区内）',
+      independent: !outside,
+    };
+  }
   return { valid: outside, text: outside ? '有效（反选操作区与识别框相交）' : '无效：真实识别框完全落在反选排除区内' };
 }
 
@@ -1465,6 +1511,13 @@ function testFrameQuery(it) {
   if (livePreview) return '&live=1';
   const fid = Array.isArray(it && it.positions) && it.positions.length ? it.positions[0] : null;
   return fid != null ? `&frame_id=${fid}` : '';
+}
+
+function testFrameLabel(it) {
+  if (livePreview) return '实时帧';
+  const fid = Array.isArray(it && it.positions) && it.positions.length ? it.positions[0] : null;
+  if (fid != null) return `位置帧 #${fid}`;
+  return currentFrameId ? `当前帧 #${currentFrameId}` : '当前帧';
 }
 
 async function testAssetClick(it) {
@@ -1635,19 +1688,14 @@ async function testAssetOcr(it) {
   const q = `x=${roi.x}&y=${roi.y}&w=${roi.w}&h=${roi.h}` +
     `&task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}` +
     testFrameQuery(it);
-  const frameMeta = currentFrameId
-    ? (assetFramesCache.find((f) => f.id === currentFrameId) || {})
-    : null;
-  const frameLine = currentFrameId
-    ? `当前帧 #${currentFrameId}${frameMeta.name ? ` ${frameMeta.name}` : ''}`
-    : '当前帧：实时画面';
+  const frameLine = testFrameLabel(it);
   const areaLine =
     `识别区域 [${rec.join(',')}]` +
     (action ? `；操作区域 [${action.join(',')}]（仅点击，不参与识别）` : '');
   const withFrame = `${areaLine}\n${frameLine}`;
   resultEl.textContent = `素材「${it.id}」识别中…\n${withFrame}`;
   log(`OCR 测试开始 asset=${it.id}`, 'INFO', {
-    frame: currentFrameId ? `#${currentFrameId} ${frameMeta?.name || ''}`.trim() : 'live',
+    frame: testFrameLabel(it),
     kind: it.kind,
     mode: it.ocr_mode || 'single',
     roi,
@@ -1665,7 +1713,7 @@ async function testAssetOcr(it) {
       const s = await r.json();
       if (s.error) {
         log(`OCR 测试 /lines 失败 asset=${it.id}`, 'ERROR', {
-          roi, frame: currentFrameId ? `#${currentFrameId}` : 'live', error: s.error,
+          roi, frame: testFrameLabel(it), error: s.error,
         });
         if (await fallbackFullscreenLines(`识别区域错误：${s.error}`)) {
           resultEl.textContent = withFrame + '\n' + resultEl.textContent;
@@ -1678,7 +1726,7 @@ async function testAssetOcr(it) {
       }));
       if (!lines.length) {
         log(`OCR 测试 /lines 无文字 asset=${it.id}`, 'WARN', {
-          roi, frame: currentFrameId ? `#${currentFrameId}` : 'live',
+          roi, frame: testFrameLabel(it),
         });
         if (await fallbackFullscreenLines('识别区域内没有文字')) {
           resultEl.textContent = withFrame + '\n' + resultEl.textContent;
@@ -1686,7 +1734,7 @@ async function testAssetOcr(it) {
         return;
       }
       log(`OCR 测试 /lines 返回 asset=${it.id}`, 'INFO', {
-        frame: currentFrameId ? `#${currentFrameId}` : 'live',
+        frame: testFrameLabel(it),
         roi,
         count: lines.length,
         elapsed_ms: Number(s.elapsed_ms || 0).toFixed(1),
@@ -1714,7 +1762,7 @@ async function testAssetOcr(it) {
             .join(', ');
           log(`OCR 测试未匹配 asset=${it.id}`, 'WARN', {
             expected: it.ocr_text,
-            frame: currentFrameId ? `#${currentFrameId}` : 'live',
+            frame: testFrameLabel(it),
             roi,
             lines: lines.map((l) => ({ text: l.text, score: l.score })),
           });
@@ -1732,7 +1780,7 @@ async function testAssetOcr(it) {
           mode: matchInfo.mode,
           distance: matchInfo.distance,
           score: Number(matched.score),
-          frame: currentFrameId ? `#${currentFrameId}` : 'live',
+          frame: testFrameLabel(it),
           roi,
         });
       }
@@ -1746,7 +1794,7 @@ async function testAssetOcr(it) {
       renderOcrLines(lines, roi, `素材「${it.id}」`);
       log(`素材多行识别「${it.id}」→ ${lines.length} 行`, 'INFO', {
         roi,
-        frame: currentFrameId ? `#${currentFrameId}` : 'live',
+        frame: testFrameLabel(it),
       });
       return;
     }
@@ -1755,7 +1803,7 @@ async function testAssetOcr(it) {
     if (s.error || !String(s.text || '').trim()) {
       const reason = s.error || '识别区域内没有文字';
       log(`OCR 测试单行失败 asset=${it.id}`, 'WARN', {
-        roi, frame: currentFrameId ? `#${currentFrameId}` : 'live',
+        roi, frame: testFrameLabel(it),
         text: s.text, score: s.score, error: s.error || '',
       });
       if (await fallbackFullscreenLines(reason)) {
@@ -1764,7 +1812,7 @@ async function testAssetOcr(it) {
       return;
     }
     log(`OCR 测试单行成功 asset=${it.id}`, 'INFO', {
-      roi, frame: currentFrameId ? `#${currentFrameId}` : 'live',
+      roi, frame: testFrameLabel(it),
       text: s.text, score: s.score, elapsed_ms: s.elapsed_ms,
     });
     resultEl.textContent =
@@ -2410,21 +2458,22 @@ async function testAssetCollection(it) {
   }
   try {
     const r = await fetch(
-      `/task/asset/collection/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}`
+      `/task/asset/collection/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}${testFrameQuery(it)}`
     );
     const s = await r.json();
     if (!s.ok) {
       resultEl.textContent = `集合「${it.id}」测试失败：` + (s.errors || []).join('; ');
       return;
     }
+    const source = s.frame_source || (livePreview ? 'live' : 'current');
     resultEl.textContent =
       `素材集合「${it.id}」测试（dry，与 runtime 同源）：\n` +
       `最佳成员：${s.member}\n` +
       `score=${Number(s.score).toFixed(4)} · threshold=${Number(s.threshold).toFixed(3)} · pass=${s.pass}\n` +
-      `位置：(${s.x},${s.y})` +
+      `位置：(${s.x},${s.y}) · 帧来源：${source}` +
       (s.action_box ? ` · 操作区域[${s.action_box.join(',')}]` : '');
     log(`集合测试「${it.id}」`, 'INFO', {
-      frame: currentFrameId ? `#${currentFrameId}` : 'live',
+      frame: source,
       member: s.member,
       score: Number(s.score),
       threshold: Number(s.threshold),
@@ -2739,7 +2788,7 @@ async function testAssetMatch(it) {
     boxes = [{ text: `测试 ${s.id} ${Number(s.score).toFixed(2)}`, score: s.score, box: [s.x, s.y, s.w, s.h] }];
     draw();
     log(`素材测试：${s.id}`, 'INFO', {
-      frame: currentFrameId ? `#${currentFrameId}` : 'live',
+      frame: testFrameLabel(it),
       score: Number(s.score),
       threshold: Number(s.threshold),
       pass: s.pass,
@@ -2918,7 +2967,7 @@ async function saveAssetUnified() {
           id: c.name.trim(),
           kind: 'ocr_line',
           roi: [rec.x, rec.y, rec.w, rec.h],
-          action_shape: { kind: 'rect', roi: [c.action.x, c.action.y, c.action.w, c.action.h] },
+          action_shape: c.actionShape || { kind: 'rect', roi: [c.action.x, c.action.y, c.action.w, c.action.h] },
           action_source: 'fixed',
           positions,
         };
@@ -4564,6 +4613,7 @@ canvas.addEventListener('mouseup', (ev) => {
     const finished = roiBack ? { ...roiBack } : null;
     if (activeCandidate >= 0 && saveCandidates[activeCandidate]) {
       saveCandidates[activeCandidate].action = finished || { ...saveCandidates[activeCandidate].recognize };
+      saveCandidates[activeCandidate].actionShape = currentActionShape();
       activeCandidate = -1;
       backMode = false;
       if (btnBackMode) btnBackMode.textContent = '绘制操作区域（默认=识别区域）';
