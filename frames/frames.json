@@ -1,6 +1,6 @@
 {
-  "next_id": 2,
-  "current_id": 1,
+  "next_id": 4,
+  "current_id": 3,
   "frames": [
     {
       "id": 1,
@@ -11,6 +11,26 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793500181607
+    },
+    {
+      "id": 2,
+      "name": "庭院-卷轴关闭",
+      "category": "",
+      "file": "frame-2.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793500918945
+    },
+    {
+      "id": 3,
+      "name": "庭院-卷轴打开",
+      "category": "",
+      "file": "frame-3.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793500934002
     }
   ]
 }
