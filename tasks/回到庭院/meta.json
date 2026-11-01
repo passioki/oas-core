@@ -1,0 +1,25 @@
+{
+  "capabilities": {
+    "checkpoint": true,
+    "duration_hint_s": 60,
+    "interruptible": false
+  },
+  "category": "utility",
+  "description": "回到庭院，初始化界面",
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "expire": "daily",
+  "name": "回到庭院",
+  "params": [],
+  "resources": [],
+  "schema_version": 1,
+  "task_id": "回到庭院",
+  "template_version": 1,
+  "version": 1
+}

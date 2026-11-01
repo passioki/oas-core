@@ -1,0 +1,19 @@
+{
+  "name": "回到庭院",
+  "schema_version": 1,
+  "steps": [
+    {
+      "args": {
+        "level": "info",
+        "text": "\"任务「回到庭院」骨架已创建（utility 模板）：在编辑器里添加素材/步骤后点「运行任务」\""
+      },
+      "op": "log"
+    },
+    {
+      "args": {
+        "exit": "done"
+      },
+      "op": "finish"
+    }
+  ]
+}
