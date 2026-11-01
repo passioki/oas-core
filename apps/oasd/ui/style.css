@@ -744,3 +744,39 @@ aside.side {
 .builder-subform label { display: block; margin: 4px 0; }
 .builder-inline { display: flex; gap: 6px; flex-wrap: wrap; }
 .builder-inline label { flex: 1 1 80px; }
+
+/* Unified capture metadata + new-frame markers */
+.category-filter-host { display: block; }
+.category-filter-host .asset-search-picker { display: block; }
+.filter-new-badge {
+  display: inline-block;
+  min-width: 16px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #d93025;
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-weight: 700;
+}
+.frame-row { position: relative; padding-right: 22px; }
+.frame-new-badge {
+  position: absolute;
+  top: -3px;
+  right: 0;
+  z-index: 2;
+  min-width: 18px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #d93025;
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-weight: 700;
+  pointer-events: none;
+}
+.capture-dialog .asset-search-picker { display: block; }
+.capture-dialog .asset-search-picker input { margin-top: 4px; }

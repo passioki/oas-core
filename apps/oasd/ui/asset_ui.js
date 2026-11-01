@@ -126,6 +126,7 @@
           row.className = 'asset-search-option';
           row.dataset.id = String(item.id != null ? item.id : item);
           row.textContent = o.label ? o.label(item) : String(item.id != null ? item.id : item);
+          if (o.renderOption) o.renderOption(row, item);
           row.addEventListener('mousedown', (e) => {
             e.preventDefault();
             choose(item);
@@ -153,6 +154,12 @@
     input.addEventListener('blur', () => setTimeout(() => { menu.style.display = 'none'; }, 120));
     wrap.append(input, menu);
     wrap.input = input;
+    wrap.setItems = function (items) {
+      o.items = items || [];
+    };
+    wrap.setValue = function (value) {
+      input.value = value || '';
+    };
     return wrap;
   }
 

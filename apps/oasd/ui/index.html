@@ -12,7 +12,6 @@
       <span id="status" class="muted">连接中…</span>
       <span class="spacer"></span>
       <button id="btn-live-preview" title="实时画面：自动刷新当前设备画面；点暂停后看已选帧">实时：开</button>
-      <button id="btn-capture">截图</button>
     </div>
   </header>
 
@@ -117,9 +116,7 @@
             <button id="btn-frames-clear">清空列表</button>
           </div>
           <label class="opt">分类
-            <select id="frame-category-filter">
-              <option value="">（暂无分类）</option>
-            </select>
+            <div id="frame-category-filter" class="category-filter-host"></div>
           </label>
           <label class="opt">当前帧分类（可选已有分类）
             <select id="frame-category-set">
@@ -414,6 +411,22 @@
     <div class="row dialog-actions">
       <button id="btn-reset-cancel" type="button">取消</button>
       <button id="btn-reset-submit" type="button">确认重置</button>
+    </div>
+  </dialog>
+
+  <!-- 统一截图入口：名称/分类 -> POST /capture(select:false)，不跳帧、不暂停实时 -->
+  <dialog id="capture-frame-dialog" class="task-dialog capture-dialog">
+    <h3>截取当前帧入库</h3>
+    <label class="opt">名称（必填，可搜索已有名称）
+      <div id="capture-name-host"></div>
+    </label>
+    <label class="opt">分类（可空，可搜索已有分类）
+      <div id="capture-category-host"></div>
+    </label>
+    <pre id="capture-error" class="muted small dialog-error"></pre>
+    <div class="row dialog-actions">
+      <button id="capture-cancel" type="button">取消</button>
+      <button id="capture-submit" type="button">截取并入库</button>
     </div>
   </dialog>
 

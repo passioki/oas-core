@@ -9,7 +9,6 @@ const statusEl = document.getElementById('status');
 const roiEl = document.getElementById('roi');
 const resultEl = document.getElementById('result');
 const logEl = document.getElementById('log');
-const btnCapture = document.getElementById('btn-capture');
 const btnLivePreview = document.getElementById('btn-live-preview');
 const btnOcr = document.getElementById('btn-ocr');
 const btnClear = document.getElementById('btn-clear');
@@ -42,7 +41,20 @@ const framesList = document.getElementById('frames-list');
 const frameCategoryFilter = document.getElementById('frame-category-filter');
 const frameCategorySet = document.getElementById('frame-category-set');
 let currentFrameId = null;
+let framesCache = [];
+let categoryFilterValue = '';
+let frameCategoryPicker = null;
 const framesStatus = document.getElementById('frames-status');
+// Unified capture dialog (image page only).
+const captureDialog = document.getElementById('capture-frame-dialog');
+const captureNameHost = document.getElementById('capture-name-host');
+const captureCategoryHost = document.getElementById('capture-category-host');
+const captureError = document.getElementById('capture-error');
+const captureCancel = document.getElementById('capture-cancel');
+const captureSubmit = document.getElementById('capture-submit');
+let captureNamePicker = null;
+let captureCategoryPicker = null;
+let captureBusy = false;
 // §22.28 顶部标题行：结果/日志抽屉 + 任务素材列表
 const btnResultToggle = document.getElementById('btn-result-toggle');
 const btnLogToggle = document.getElementById('btn-log-toggle');
@@ -2937,6 +2949,42 @@ async function matchLibrary() {
 }
 
 // --- §22.27 会话图片列表（多帧，参考旧 annotator「图片」面板） ---
+function ensureFrameCategoryPicker() {
+  if (!frameCategoryFilter || frameCategoryPicker) return frameCategoryPicker;
+  if (!window.OASAssetUI || !window.OASAssetUI.createSearchPicker) return null;
+  frameCategoryPicker = window.OASAssetUI.createSearchPicker({
+    items: [],
+    value: '全部分类',
+    placeholder: '搜索分类…',
+    label: (item) => item.label || item.id || '',
+    renderOption: (row, item) => {
+      if (item.unseen > 0) {
+        const badge = document.createElement('span');
+        badge.className = 'filter-new-badge';
+        badge.textContent = String(item.unseen);
+        row.appendChild(badge);
+      }
+    },
+    onChoose: (item, input) => {
+      categoryFilterValue = item.id || '';
+      input.value = item.label || '全部分类';
+      refreshFrames();
+    },
+  });
+  frameCategoryFilter.textContent = '';
+  frameCategoryFilter.appendChild(frameCategoryPicker);
+  return frameCategoryPicker;
+}
+
+function updateFrameCategoryPicker(items) {
+  const picker = ensureFrameCategoryPicker();
+  if (!picker) return;
+  picker.setItems(items);
+  const chosen = items.find((it) => it.id === categoryFilterValue) || items[0];
+  categoryFilterValue = chosen ? chosen.id : '';
+  picker.setValue(chosen ? chosen.label : '全部分类');
+}
+
 async function refreshFrames() {
   if (!framesList) return;
   try {
@@ -2947,17 +2995,12 @@ async function refreshFrames() {
       return;
     }
     const frames = s.frames || [];
+    framesCache = frames;
     framesList.textContent = '';
     if (!frames.length) {
-      framesList.textContent = '（暂无图片，点「截图」或上传）';
+      framesList.textContent = '（暂无图片，点「截取当前帧入库」或上传）';
       framesStatus.textContent = '—';
-      if (frameCategoryFilter) {
-        frameCategoryFilter.textContent = '';
-        const o = document.createElement('option');
-        o.value = '';
-        o.textContent = '（暂无分类）';
-        frameCategoryFilter.appendChild(o);
-      }
+      updateFrameCategoryPicker([{ id: '', label: '全部分类', unseen: 0, count: 0 }]);
       if (frameCategorySet) {
         frameCategorySet.textContent = '';
         const o = document.createElement('option');
@@ -2969,12 +3012,18 @@ async function refreshFrames() {
       return;
     }
     const groups = new Map();
+    const unseenByCat = new Map();
+    let totalUnseen = 0;
     let currentFrame = null;
     for (const f of frames) {
       if (f.current) currentFrame = f;
       const cat = (f.category || '').trim() || '未分类';
       if (!groups.has(cat)) groups.set(cat, []);
       groups.get(cat).push(f);
+      if (f.seen === false) {
+        unseenByCat.set(cat, (unseenByCat.get(cat) || 0) + 1);
+        totalUnseen += 1;
+      }
     }
     currentFrameId = currentFrame ? currentFrame.id : null;
     const orderedCats = Array.from(groups.keys()).sort((a, b) => {
@@ -2982,17 +3031,16 @@ async function refreshFrames() {
       if (b === '未分类') return -1;
       return 0;
     });
-    if (frameCategoryFilter) {
-      const keep = frameCategoryFilter.value;
-      frameCategoryFilter.textContent = '';
-      for (const cat of orderedCats) {
-        const o = document.createElement('option');
-        o.value = cat;
-        o.textContent = `${cat}（${groups.get(cat).length}）`;
-        frameCategoryFilter.appendChild(o);
-      }
-      frameCategoryFilter.value = orderedCats.includes(keep) ? keep : (orderedCats[0] || '');
-    }
+    const filterItems = [
+      { id: '', label: `全部分类（${frames.length}）`, unseen: totalUnseen, count: frames.length },
+      ...orderedCats.map((cat) => ({
+        id: cat,
+        label: `${cat}（${(groups.get(cat) || []).length}）`,
+        unseen: unseenByCat.get(cat) || 0,
+        count: (groups.get(cat) || []).length,
+      })),
+    ];
+    updateFrameCategoryPicker(filterItems);
     if (frameCategorySet) {
       const keep = frameCategorySet.value;
       frameCategorySet.textContent = '';
@@ -3015,9 +3063,10 @@ async function refreshFrames() {
       frameCategorySet.value = currentFrame && orderedCats.includes(curCat) ? curCat : (keep || '');
     }
     // Only render the selected category, not every group expanded.
-    const selectedCat = frameCategoryFilter ? frameCategoryFilter.value : orderedCats[0];
+    const selectedCat = categoryFilterValue || '';
     const visibleCats = selectedCat ? [selectedCat] : orderedCats;
     for (const cat of visibleCats) {
+      if (!groups.has(cat)) continue;
       const group = document.createElement('div');
       group.className = 'frame-group';
       const head = document.createElement('div');
@@ -3034,6 +3083,14 @@ async function refreshFrames() {
       for (const f of groups.get(cat)) {
         const row = document.createElement('div');
         row.className = 'frame-row' + (f.current ? ' current' : '');
+        if (f.seen === false) {
+          row.classList.add('frame-row-new');
+          const newBadge = document.createElement('span');
+          newBadge.className = 'frame-new-badge';
+          newBadge.textContent = '新';
+          newBadge.title = '尚未点击或编辑过该帧';
+          row.appendChild(newBadge);
+        }
         row.draggable = true;
         row.dataset.id = String(f.id);
         row.addEventListener('dragstart', (e) => {
@@ -3420,39 +3477,82 @@ async function refreshState() {
   setStatus(`${s.device} · ${s.width}x${s.height} · ${caps}`);
 }
 
-async function doCapture() {
-  pauseLivePreview();
-  btnCapture.disabled = true;
-  setStatus('截图中…');
+function ensureCapturePickers() {
+  if (!window.OASAssetUI || !window.OASAssetUI.createSearchPicker) return;
+  if (!captureNamePicker && captureNameHost) {
+    captureNamePicker = window.OASAssetUI.createSearchPicker({
+      items: [],
+      value: '',
+      placeholder: '搜索已有名称，或输入新名称…',
+      label: (item) => item.label,
+      onChoose: (item, input) => {
+        input.value = item.label;
+      },
+    });
+    captureNameHost.textContent = '';
+    captureNameHost.appendChild(captureNamePicker);
+  }
+  if (!captureCategoryPicker && captureCategoryHost) {
+    captureCategoryPicker = window.OASAssetUI.createSearchPicker({
+      items: [],
+      value: '',
+      placeholder: '搜索已有分类，或输入新分类…',
+      label: (item) => item.label,
+      onChoose: (item, input) => {
+        input.value = item.id || '';
+      },
+    });
+    captureCategoryHost.textContent = '';
+    captureCategoryHost.appendChild(captureCategoryPicker);
+  }
+}
+
+function openCaptureFrameDialog() {
+  ensureCapturePickers();
+  if (!captureDialog || !captureNamePicker || !captureCategoryPicker) return;
+  const names = Array.from(new Set((framesCache || []).map((f) => (f.name || '').trim()).filter(Boolean)));
+  const cats = Array.from(new Set((framesCache || []).map((f) => (f.category || '').trim()).filter(Boolean)));
+  captureNamePicker.setItems(names.map((name) => ({ id: name, label: name })));
+  captureCategoryPicker.setItems([
+    { id: '', label: '未分类' },
+    ...cats.map((cat) => ({ id: cat, label: cat })),
+  ]);
+  const now = new Date();
+  const stamp = [now.getHours(), now.getMinutes(), now.getSeconds()]
+    .map((n) => String(n).padStart(2, '0'))
+    .join('');
+  captureNamePicker.setValue(`帧 ${stamp}`);
+  captureCategoryPicker.setValue(categoryFilterValue || '');
+  if (captureError) captureError.textContent = '';
+  captureDialog.showModal();
+  setTimeout(() => captureNamePicker.input.focus(), 0);
+}
+
+async function submitCaptureFrame() {
+  if (captureBusy) return;
+  const name = (captureNamePicker && captureNamePicker.input.value || '').trim();
+  const category = (captureCategoryPicker && captureCategoryPicker.input.value || '').trim();
+  if (!name) {
+    if (captureError) captureError.textContent = '名称不能为空';
+    return;
+  }
+  captureBusy = true;
+  if (captureSubmit) captureSubmit.disabled = true;
   try {
-    const r = await fetch('/capture', { method: 'POST' });
-    const s = await r.json();
-    if (!s.ok) {
-      setStatus(`截图失败：${s.error}`);
-      log(`截图失败：${s.error}`);
+    const r = await postJson('/capture', { name, category, select: false });
+    if (!r || !r.ok) {
+      const msg = (r && r.errors || []).join('; ') || '截取失败';
+      if (captureError) captureError.textContent = msg;
       return;
     }
-    // A new capture invalidates detection boxes (their frame coordinates came
-    // from the old frame); the click distribution overlay is kept but its
-    // cached bitmap is dropped so draw() rebuilds it over the fresh frame.
-    boxes = [];
-    polygon = null;
-    polyClosed = false;
-    roiBack = null;
-    lastMatch = null;
-    if (btnMatchSave) btnMatchSave.disabled = true;
-    selectedBox = null;
-    clickOverlay = null;
-    updateClickStepButtons();
-    await loadFrame();
-    await refreshState();
-    log(`已截图 ${s.width}x${s.height}`);
+    log(`已截取帧 #${r.id}：${r.name} / ${(r.category || '').trim() || '未分类'}（实时/当前帧未改变）`);
+    if (captureDialog) captureDialog.close();
     await refreshFrames();
   } catch (e) {
-    setStatus('截图异常');
-    log('截图异常：' + e);
+    if (captureError) captureError.textContent = '截取异常：' + (e && e.message ? e.message : e);
   } finally {
-    btnCapture.disabled = false;
+    captureBusy = false;
+    if (captureSubmit) captureSubmit.disabled = false;
   }
 }
 
@@ -3866,7 +3966,6 @@ if (btnMatchSave) {
   });
 }
 
-btnCapture.addEventListener('click', doCapture);
 if (btnLivePreview) {
   btnLivePreview.addEventListener('click', async () => {
     if (livePreview) {
@@ -4572,10 +4671,11 @@ async function submitResetMemory() {
   await loadLibrary();
   // §22.27 会话图片列表
   if (btnFrameUpload) btnFrameUpload.addEventListener('click', uploadFrames);
-  if (btnFrameCapture) btnFrameCapture.addEventListener('click', () => doCapture());
+  if (btnFrameCapture) btnFrameCapture.addEventListener('click', openCaptureFrameDialog);
+  if (captureCancel) captureCancel.addEventListener('click', () => { if (captureDialog) captureDialog.close(); });
+  if (captureSubmit) captureSubmit.addEventListener('click', submitCaptureFrame);
   if (btnFramesRefresh) btnFramesRefresh.addEventListener('click', () => refreshFrames());
   await refreshAssetPositionFrames();
-  if (frameCategoryFilter) frameCategoryFilter.addEventListener('change', () => refreshFrames());
   const btnFrameCategoryApply = document.getElementById('btn-frame-category-apply');
   if (btnFrameCategoryApply) btnFrameCategoryApply.addEventListener('click', applyFrameCategoryFromSelect);
   if (btnFramesClear) btnFramesClear.addEventListener('click', () => clearFrames());
@@ -4652,7 +4752,6 @@ async function submitResetMemory() {
   try {
     await loadFrame(true);
     await refreshState();
-    btnCapture.disabled = false;
     await refreshFrames();
     startLivePreview();
     if (!ocrReady) {
@@ -4660,8 +4759,7 @@ async function submitResetMemory() {
     }
     log('已连接，实时画面已开启');
   } catch (e) {
-    setStatus('没有可用帧，点「截图」');
-    btnCapture.disabled = false;
+    setStatus('没有可用帧，点「截取当前帧入库」');
     log('帧加载失败（点击分布仍可用）：' + (e && e.message ? e.message : e));
   }
 

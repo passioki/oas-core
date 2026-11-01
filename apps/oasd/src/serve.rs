@@ -143,6 +143,8 @@ struct SessionFrame {
     height: u32,
     source: String,
     ts_ms: u64,
+    /// false until the user views/edits this frame; drives the red new-frame badge.
+    seen: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +158,12 @@ struct FrameMeta {
     height: u32,
     source: String,
     ts_ms: u64,
+    #[serde(default = "default_seen")]
+    seen: bool,
+}
+
+fn default_seen() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,6 +188,10 @@ impl State {
         width: u32,
         height: u32,
         source: &str,
+        name: Option<String>,
+        category: String,
+        seen: bool,
+        select: bool,
     ) -> Result<u64, String> {
         let id = self.next_frame_id;
         self.next_frame_id += 1;
@@ -190,10 +202,22 @@ impl State {
         std::fs::write(&file, &png)
             .map_err(|e| format!("write frame {}: {e}", file.display()))?;
         let bytes = png.len() as u64;
+        let base = name
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| format!("帧 {id}"));
+        // Name uniqueness: candidate hints are only hints; the capture path
+        // auto-suffixes collisions so a batch can never fail on a duplicate.
+        let mut unique = base.clone();
+        let mut n = 2;
+        while self.frames.iter().any(|f| f.name == unique) {
+            unique = format!("{base}-{n}");
+            n += 1;
+        }
         self.frames.push(SessionFrame {
             id,
-            name: format!("帧 {id}"),
-            category: String::new(),
+            name: unique,
+            category: category.trim().to_string(),
             file,
             bytes,
             width,
@@ -203,10 +227,13 @@ impl State {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
+            seen,
         });
         // v1.2.2: no hard 20-frame cap and frames are persisted under
         // `<frames-dir>/frames.json` + `frame-<id>.png`.
-        self.current_frame_id = Some(id);
+        if select {
+            self.current_frame_id = Some(id);
+        }
         Ok(id)
     }
 }
@@ -261,6 +288,18 @@ fn capture_device_frame(adb: &Adb) -> Result<(String, Frame), String> {
 struct InputTapRequest {
     x: i32,
     y: i32,
+}
+
+/// Metadata for one manual capture. The screenshot always comes from adb; the
+/// workbench canvas/selection is deliberately not part of this data path.
+#[derive(Debug, Default, Deserialize)]
+struct CaptureRequest {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    category: String,
+    #[serde(default)]
+    select: Option<bool>,
 }
 
 /// One live-preview passthrough swipe. Coordinates are in the current live frame.
@@ -517,6 +556,7 @@ impl Server {
                 height: f.height,
                 source: f.source.clone(),
                 ts_ms: f.ts_ms,
+                seen: f.seen,
             })
             .collect();
         let manifest = FramesManifest {
@@ -558,6 +598,7 @@ impl Server {
                 height: meta.height,
                 source: meta.source,
                 ts_ms: meta.ts_ms,
+                seen: meta.seen,
             });
         }
         let mut max_id = frames.iter().map(|f| f.id).max().unwrap_or(0);
@@ -833,37 +874,43 @@ impl Server {
         }
     }
 
-    fn do_capture(&self) {
+    fn capture_frame(
+        &self,
+        req: CaptureRequest,
+    ) -> Result<(u64, String, String, u32, u32, bool), String> {
         let wanted = crate::config::device_serial();
-        let serial = match self.adb.resolve_device(wanted.as_deref()) {
-            Ok(dev) => dev.serial,
-            Err(e) => {
-                self.set_error(&e);
-                return;
-            }
-        };
+        let serial = self.adb.resolve_device(wanted.as_deref())?.serial;
         let mut screen = self.adb.screen(&serial);
-        match screen.grab() {
-            Ok(frame) => match encode_png(&frame) {
-                Ok(png) => {
-                    let mut st = self.state.lock().unwrap();
-                    if let Err(e) =
-                        st.push_frame(&self.frames_dir, png.clone(), frame.width, frame.height, "capture")
-                    {
-                        drop(st);
-                        self.set_error(&format!("save frame: {e}"));
-                        return;
-                    }
-                    st.png = Some(png);
-                    st.device = serial;
-                    st.error = None;
-                    st.frame = Some(frame);
-                    let _ = self.persist_frames(&st);
-                }
-                Err(e) => self.set_error(&format!("encode png: {e}")),
-            },
-            Err(e) => self.set_error(&format!("capture failed: {e}")),
+        let frame = screen.grab()?;
+        let png = encode_png(&frame)?;
+        let (w, h) = (frame.width, frame.height);
+        let select = req.select.unwrap_or(true);
+        let mut st = self.state.lock().map_err(|_| "state lock poisoned".to_string())?;
+        let id = st.push_frame(
+            &self.frames_dir,
+            png.clone(),
+            w,
+            h,
+            "capture",
+            req.name,
+            req.category,
+            false,
+            select,
+        )?;
+        let saved = st
+            .frames
+            .iter()
+            .find(|f| f.id == id)
+            .map(|f| (f.name.clone(), f.category.clone(), f.seen))
+            .ok_or_else(|| "captured frame disappeared".to_string())?;
+        if select {
+            st.png = Some(png);
+            st.frame = Some(frame);
         }
+        st.device = serial;
+        st.error = None;
+        let _ = self.persist_frames(&st);
+        Ok((id, saved.0, saved.1, w, h, saved.2))
     }
 
     fn set_error(&self, msg: &str) {
@@ -1013,23 +1060,7 @@ impl Server {
                 drop(st);
                 self.send_json(&mut out, 200, &body)
             }
-            ("POST", "/capture") => {
-                self.do_capture();
-                let st = self.state.lock().unwrap();
-                let (w, h) = st
-                    .frame
-                    .as_ref()
-                    .map(|f| (f.width, f.height))
-                    .unwrap_or((0, 0));
-                let ok = st.png.is_some();
-                let err = st.error.clone().unwrap_or_default();
-                drop(st);
-                let body = format!(
-                    r#"{{"ok":{},"width":{},"height":{},"error":{:?}}}"#,
-                    ok, w, h, err
-                );
-                self.send_json(&mut out, 200, &body)
-            }
+            ("POST", "/capture") => self.handle_capture(&mut out, &body),
             // Live-preview passthrough: only meaningful while the WebSocket
             // live frame is current. The UI gates this on `livePreview`.
             ("POST", "/input/tap") => self.handle_input_tap(&mut out, &body),
@@ -1187,6 +1218,7 @@ impl Server {
                     "ts_ms": f.ts_ms,
                     "bytes": f.bytes,
                     "current": st.current_frame_id == Some(f.id),
+                    "seen": f.seen,
                 })
             })
             .collect();
@@ -1212,7 +1244,17 @@ impl Server {
         };
         let (w, h) = (frame.width, frame.height);
         let mut st = self.state.lock().unwrap();
-        let id = match st.push_frame(&self.frames_dir, body.to_vec(), w, h, "upload") {
+        let id = match st.push_frame(
+            &self.frames_dir,
+            body.to_vec(),
+            w,
+            h,
+            "upload",
+            None,
+            String::new(),
+            false,
+            true,
+        ) {
             Ok(id) => id,
             Err(e) => {
                 drop(st);
@@ -1237,9 +1279,12 @@ impl Server {
         let mut st = self.state.lock().unwrap();
         let found = st
             .frames
-            .iter()
+            .iter_mut()
             .find(|f| f.id == id)
-            .map(|f| (f.file.clone(), f.width, f.height));
+            .map(|f| {
+                f.seen = true;
+                (f.file.clone(), f.width, f.height)
+            });
         let Some((path, w, h)) = found else {
             drop(st);
             return self.send_errors(
@@ -1347,6 +1392,7 @@ impl Server {
             return self.send_errors(out, 404, vec![format!("frame id {id} not found")]);
         };
         f.name = name.to_string();
+        f.seen = true;
         let name = f.name.clone();
         let _ = self.persist_frames(&st);
         drop(st);
@@ -1377,6 +1423,7 @@ impl Server {
             return self.send_errors(out, 404, vec![format!("frame id {id} not found")]);
         };
         f.category = category.to_string();
+        f.seen = true;
         let category = f.category.clone();
         let _ = self.persist_frames(&st);
         drop(st);
@@ -1413,6 +1460,9 @@ impl Server {
         }
         ordered.append(&mut st.frames);
         st.frames = ordered;
+        for f in &mut st.frames {
+            f.seen = true;
+        }
         let ids: Vec<u64> = st.frames.iter().map(|f| f.id).collect();
         let _ = self.persist_frames(&st);
         drop(st);
@@ -1573,6 +1623,42 @@ impl Server {
     ) -> std::io::Result<()> {
         let body = serde_json::json!({ "ok": false, "errors": errors });
         self.send_json(out, code, &body.to_string())
+    }
+
+    /// `POST /capture` — always grab the current emulator screen. Optional body
+    /// `{name,category,select}`. UI sends `select:false` so capture never jumps
+    /// the gallery/current analysis frame and never pauses live preview.
+    fn handle_capture(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let req: CaptureRequest = if body.is_empty() {
+            CaptureRequest::default()
+        } else {
+            match serde_json::from_slice(body) {
+                Ok(v) => v,
+                Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+            }
+        };
+        let selected = req.select.unwrap_or(true);
+        match self.capture_frame(req) {
+            Ok((id, name, category, width, height, seen)) => self.send_json(
+                out,
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "id": id,
+                    "name": name,
+                    "category": category,
+                    "width": width,
+                    "height": height,
+                    "seen": seen,
+                    "selected": selected,
+                })
+                .to_string(),
+            ),
+            Err(e) => {
+                let _ = self.set_error(&format!("capture failed: {e}"));
+                self.send_errors(out, 500, vec![format!("capture failed: {e}")])
+            }
+        }
     }
 
     /// Input passthrough is legal only while a live frame exists. The UI gates
