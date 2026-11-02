@@ -3136,7 +3136,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 ## E. 代码 / 测试 / 状态
 
 - 代码提交：`54c715b`（初版 6 files +1413/−103）、`d1a7fcd`（评审修复 6 files +1436/−225）。
-- 当前 `dev` = `d1a7fcd`；本轮 docs 订正提交 = HEAD（父 `d1a7fcd`，hash 提交时确定）；`origin/dev` = `e8edbef`（未 push）；`main` = `e8edbef`，随后 Lead 推送 dev 并快进同步 main。
+- `dev` = `main` = `origin/dev` = `origin/main` = `906bbed`（**已同步 origin**，2026-11-02 13:55 实测；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`）。
 - 最终验证（Lead 2026-11-02 13:35）：`cargo test --workspace` = **426 passed / 0 failed**；oasd **153** / flow **57** / runtime **125**（+2 integration = 127）；UI **259 checks / 0 dead ids**；task lint **1 task / 0 errors**；`cargo build -p oasd --features ocr` exit 0（6 条既有 warning）；DSL E2E（临时 task lint）`linted=8 errors=5`；serve 由 Lead 以最终构建 `-SkipBuild` 重启于 **8787**。
 - ⚠ **v0.1.0 发布包（`42567c1` 构建）仍是 393/203 基线，不含 O-1/O-2**；O-1/O-2 自 `54c715b` 起，评审修复 `d1a7fcd`。
 - 仍未闭合：`SelectionTool` 未抽出；E2E 36/36 证据停在 `4d5759f`；真实 UI 手势仅用户验收 + 真机 `/input/tap` 独立证据；collection `real=1` 真机 E2E 未做（MuMu 未运行、`adb devices` 为空）；P2-10；Plan B；活动页参考帧。
@@ -3149,4 +3149,4 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - PS 5.1 重定向日志为 UTF-16LE（读时 `-Encoding Unicode` 或转 UTF-8）。
 - `adb devices` 为空（MuMu `emulator-5554` 未运行）；真机任务需先启动模拟器。
 
-| 状态 | ✅ Release 已上传（`431080249`，latest）· ✅ O-1（含 P1 修复）· ✅ O-2（含 P1 修复）· ⬜ `SelectionTool` · ⬜ 真机 E2E（collection real=1）· ⚠ 混版本 invert · ⚠ P2-10 · ⚠ Plan B（生成时快照）· ⚠ 评审残留 P2（P2-11/P2-12 等，见 REVIEW2.md）· ⚠ `main` 待快进同步 |
+| 状态 | ✅ Release 已上传（`431080249`，latest）· ✅ O-1（含 P1 修复）· ✅ O-2（含 P1 修复）· ⬜ `SelectionTool` · ⬜ 真机 E2E（collection real=1）· ⚠ 混版本 invert · ⚠ P2-10 · ⚠ Plan B（生成时快照）· ⚠ 评审残留 P2（P2-11/P2-12 等，见 REVIEW2.md）· ✅ `main` 已同步 |

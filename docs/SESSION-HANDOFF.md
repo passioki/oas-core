@@ -1,20 +1,20 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
 > ★★★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（seq 89）。
-> 当前是 **0.1.0 恢复节点发布完成态**：tag `v0.1.0` 未移动、**GitHub Release 已上传**、`dev` `d1a7fcd` 经两轮评审收口 O-1/O-2，`main` 待快进同步。不要再灌 34/18 旧素材。
+> 当前是 **0.1.0 恢复节点发布完成态**：tag `v0.1.0` 未移动、**GitHub Release 已上传**、`dev` `d1a7fcd` 经两轮评审收口 O-1/O-2，`dev`/`main` 已同步 origin。不要再灌 34/18 旧素材。
 
 ## 0. 当前状态（2026-11-02 13:5x）
 
 | 项 | 值 |
 |---|---|
-| 分支/HEAD | `dev` = `d1a7fcd`（父 `54c715b`；+ 本轮 docs 提交 = HEAD）；`origin/dev` = `e8edbef`（待推送）；`main` **待快进同步**；包构建 commit `42567c1` |
+| 分支/HEAD | `dev` = `main` = `origin/dev` = `origin/main` = `906bbed`（**已同步 origin**，2026-11-02 13:55 实测）；包构建 commit `42567c1` |
 | 恢复节点 | tag `v0.1.0`（annotated `cf123b8` → commit `e8edbef`，**未移动**）；**GitHub Release 已上传** |
 | 发布 | `https://github.com/passioki/oas-core/releases/tag/v0.1.0`（id `431080249`，draft=false / prerelease=false，即 latest）；附件 zip（asset `700544587`，37,089,992 B，digest `sha256:e6112a33…5f5687`）+ `.sha256`（asset `700545142`，89 B）；本地同物 SHA256 `E6112A33…5F5687` |
 | 版本 | `0.1.0`；**包不含 O-1/O-2**（包构建 `42567c1`，O-1/O-2 自 `54c715b` 起，评审修复 `d1a7fcd`） |
 | 测试 | `cargo test --workspace` = **426 passed / 0 failed**（oasd 153 / flow 57 / runtime 125 + 2 integration）；UI pure test = **259 checks / 0 dead ids**；task lint = **1/0**（13:35 最终实测；发布包是 393/203 时构建） |
 | 数据 | 全局素材 **16 条 / 1 图**；帧 **28 个 / current_id=20 / next_id=41** |
 | 任务 | 只有 `返回庭院`（flow 11 steps / meta 400 B）；`tasks/测试` 已删除（随 `cd0ac34` 提交） |
-| 工作区 | `d1a7fcd` 时 clean；本轮 docs 订正（8 份，终态）待 Lead 提交，仅 `docs/` |
+| 工作区 | `d1a7fcd` 时 clean；本轮 docs 订正（8 份，终态）已提交（`906bbed`），仅 `docs/` |
 | 服务 | serve **8787**：最终构建已重建，Lead 以 `-SkipBuild` 重启（使用本版二进制） |
 | 文档 | 7 份历史文档已归档 `docs/archive/`；顶层 10 份 + `RELEASE-NODE-2026-11-02.md` |
 
@@ -26,17 +26,16 @@
 - `e8edbef`：docs 定稿为 tag `v0.1.0` target；**GitHub Release 上传**（13:0x，id `431080249`，即 latest）。
 - `54c715b`：**O-1 collection 真实点击 + O-2 drag action shape** 初版（6 files +1413/−103）；146/54/119 tests（中间态）。
 - `d1a7fcd`：**O-1/O-2 评审修复**（P1-1..P1-4 + P2，6 files +1436/−225）——exact shape 采样 / 409 / plain rect / 溢出校验；最终 **426/259** 回归。
-- 本轮 docs 订正 8 份（RELEASE-NODE / PENDING-LEDGER §E-74 / RESUME / RESUME-INDEX / START-HERE / EDITOR-UX-PLAN / README / 本文件）到最终事实——待 Lead 提交。
+- 本轮 docs 订正 8 份（RELEASE-NODE / PENDING-LEDGER §E-74 / RESUME / RESUME-INDEX / START-HERE / EDITOR-UX-PLAN / README / 本文件）到最终事实——已提交 `906bbed`，dev 推送 + main 快进同步已完成（13:55）。
 
 ## 2. 下一步
 
 ```text
-1. Lead 提交并推送 docs 订正：git add docs && git commit && git push origin dev
-2. main 快进同步 dev：git checkout main && git merge --ff-only dev && git push origin main
-   → 之后回填 RELEASE-NODE §5「main 同步 commit」+ §7
-3. 真机（先启动 MuMu emulator-5554）：collection real=1 端到端 + 真实 UI 手势复验
-4. SelectionTool 结构债（抽后须 >=3 处调用）
-5. 可选：P2-10（保存 flow 校验）与 drag 模板移动的 Plan B（asset 引用 + 运行时跟随识别）
+1. ✅ 已执行（2026-11-02 13:55）：docs 提交 906bbed → push dev → main ff-only → push main
+   → RELEASE-NODE §5「main 同步 commit」+ §7 已按已同步口径回填
+2. 真机（先启动 MuMu emulator-5554）：collection real=1 端到端 + 真实 UI 手势复验
+3. SelectionTool 结构债（抽后须 >=3 处调用）
+4. 可选：P2-10（保存 flow 校验）与 drag 模板移动的 Plan B（asset 引用 + 运行时跟随识别）
 ```
 
 ## 3. 关键事实（防止再记错）

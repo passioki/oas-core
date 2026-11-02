@@ -19,8 +19,8 @@ status: done
 
 | 项 | 值 |
 |---|---|
-| `dev` | `d1a7fcd`（`fix: address O-1/O-2 review findings (P1-1..P1-4, P2)`，6 files +1436/−225；父 `54c715b`）；本轮 docs 提交 = HEAD（父 `d1a7fcd`，hash 提交时确定） |
-| `main` | = `e8edbef`，**待 Lead 快进同步**到本轮 docs 提交；`origin/dev` 仍 = `e8edbef`（dev 未 push） |
+| `dev` | `d1a7fcd`（`fix: address O-1/O-2 review findings (P1-1..P1-4, P2)`，6 files +1436/−225；父 `54c715b`）；docs 终态订正提交 `906bbed`（父 `d1a7fcd`），**已推送 origin** |
+| `main` | = `dev` = `origin/dev` = `origin/main` = `906bbed`（**已同步 origin**，2026-11-02 13:55 实测；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`）；tag `v0.1.0` → `e8edbef`（未移动）；包构建 commit `42567c1` |
 | tag `v0.1.0` | annotated `cf123b8` → commit `e8edbef`（**未移动**）；发布包构建 commit `42567c1` |
 | GitHub Release | `https://github.com/passioki/oas-core/releases/tag/v0.1.0` · id `431080249` · draft=false / prerelease=false · repo latest |
 | 附件 | `oasd-v0.1.0-win64.zip`（asset `700544587`，37,089,992 B，digest `sha256:e6112a33…5f5687`）+ `.sha256`（asset `700545142`，89 B） |
@@ -29,7 +29,7 @@ status: done
 | 发布包基线 | v0.1.0 包（`42567c1` 构建）内仍是 **393 tests / 203 UI checks**（历史事实，**不含 O-1/O-2**） |
 | 数据 | 全局素材 **16 条 / 1 图**（15 `ocr_line` + 1 `template`）；帧 **28 / current_id=20 / next_id=41**；任务仅 `返回庭院`（flow 11 steps / meta 400 B） |
 | 服务 | serve **8787**：最终构建已重建，Lead 在最终提交后以 `-SkipBuild` 重启（使用本版二进制） |
-| 工作区 | 本轮 docs 订正 8 份为待提交改动，仅 `docs/` |
+| 工作区 | 本轮 docs 订正 8 份已提交（`906bbed`），仅 `docs/` |
 | 版本 | `0.1.0`（`oasd --version` = 0.1.0） |
 
 ## 2. 验收清单（全部 ☑）
@@ -43,6 +43,7 @@ status: done
 - ☑ **最终回归**：workspace **426/0**、UI **259/0 dead ids**、lint **1/0**、OCR build exit 0、DSL E2E **8/5** — Lead 13:35 实跑。
 - ☑ **代码提交**：`54c715b`（初版 6 files +1413/−103）、`d1a7fcd`（评审修复 6 files +1436/−225）。
 - ☑ **docs 8 份订正到最终事实**（seq 89）：RELEASE-NODE / PENDING-LEDGER §E-74 / RESUME / RESUME-INDEX / START-HERE / EDITOR-UX-PLAN / README / SESSION-HANDOFF — 证据 `CORRECTIONS-REPORT.md`。
+- ☑ **docs push + main ff 同步 origin**（2026-11-02 13:55 实测；`dev` = `main` = `origin/dev` = `origin/main` = `906bbed`）。
 
 ## 3. O-1 最终交付（collection 真实点击，dev `d1a7fcd`）
 
@@ -78,17 +79,9 @@ status: done
 
 ## 6. 下一步精确动作
 
-1. **Lead 提交并推送 docs**：
-
-```bat
-git add docs
-git commit -m "docs: correct v0.1.0 + O-1/O-2 final state (post d1a7fcd)"
-git push origin dev
-```
-
-2. **main 快进同步（Lead）**：`git checkout main && git merge --ff-only dev && git push origin main`；**不移动 tag `v0.1.0`**。
-3. 真机：启动 MuMu（`emulator-5554`）→ 对一条 collection 做 `real=1` E2E；可选真实 UI 手势复验。
-4. 结构债：`SelectionTool` 抽取（抽取后须 ≥3 处调用，避免过度抽象）；P2-10 视用户裁定。
+1. ✅ **已执行（2026-11-02 13:55）**：docs 提交 `906bbed` → `git push origin dev` → `git checkout main && git merge --ff-only dev` → `git push origin main`；**不移动 tag `v0.1.0`**。
+2. 真机：启动 MuMu（`emulator-5554`）→ 对一条 collection 做 `real=1` E2E；可选真实 UI 手势复验。
+3. 结构债：`SelectionTool` 抽取（抽取后须 ≥3 处调用，避免过度抽象）；P2-10 视用户裁定。
 
 ## 7. 最终验证（Lead 2026-11-02 13:35 实跑）
 
@@ -119,4 +112,4 @@ serve 8787 = 最终构建（Lead 以 -SkipBuild 重启）
 
 ## 10. 阻塞
 
-- **无**。`dev` push 与 `main` 快进同步待 Lead 执行（流程项）；真机 E2E 待 MuMu 启动。
+- **无**（push 与 main 同步已完成）。真机 E2E 待 MuMu 启动。
