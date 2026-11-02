@@ -1027,8 +1027,10 @@
     if (from.kind === 'region' && Array.isArray(from.roi) && from.roi.length === 4) {
       const roi = from.roi.slice();
       // O-2: keep the optional inline operation shape while editing roi. The
-      // shape and roi are independent (roi is the old-runtime bbox fallback),
-      // so a roi edit must not silently delete the polygon/invert shape.
+      // shape must never be silently deleted, but the two fields have different
+      // runtime roles: a polygon/invert shape is what gets sampled (roi is the
+      // old-runtime bbox fallback), while a plain non-inverted rect is sampled
+      // from `roi` (the shape key is ignored by the runtime).
       const shape = from.shape;
       const row = document.createElement('div');
       row.className = 'builder-inline';
@@ -1047,8 +1049,10 @@
       if (shape) {
         const hint = document.createElement('div');
         hint.className = 'muted small';
-        hint.textContent =
-          '含 shape（polygon/invert）；改 roi 不会改 shape，需用高级 JSON 同步';
+        const shapeSampled = shape.kind === 'polygon' || !!shape.invert;
+        hint.textContent = shapeSampled
+          ? '含 polygon/反选 shape：runtime 按 shape 采样（margin 忽略）；改 roi 不会改 shape，需用高级 JSON 同步'
+          : '含 rect shape（非反选）：runtime 实际只使用上面的 roi（shape 不参与采样）；改 roi 即改拖动区域';
         box.appendChild(hint);
       }
     } else {

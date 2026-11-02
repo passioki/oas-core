@@ -1133,15 +1133,142 @@ fn parse_drag_axis(s: &str, path: &str) -> Result<DragAxis, FlowError> {
     }
 }
 
-/// Shoelace area × 2 for an inline drag polygon (`0` = collinear/degenerate).
-fn drag_polygon_area2(points: &[[i32; 2]]) -> i64 {
-    let mut area2: i64 = 0;
+/// Hard upper bound for one inline drag-shape coordinate.
+///
+/// Frame coordinates are far below this; the cap keeps every geometric
+/// predicate (shoelace area, self-intersection) inside `i64` and stops absurd
+/// values from overflowing the runtime's `i32` rectangle math (P1-4).
+const MAX_DRAG_SHAPE_COORD: i64 = 1_000_000;
+
+/// Cap on inline drag polygon vertices: the self-intersection test is O(n²).
+const MAX_DRAG_SHAPE_POINTS: usize = 256;
+
+/// Parse one inline drag-shape coordinate: integer, `0..=MAX_DRAG_SHAPE_COORD`.
+///
+/// Unlike [`parse_roi4`] (shared with older region/OCR targets) this never
+/// truncates an `i64` with `as i32`: every out-of-range value is a loud parse
+/// error with the exact JSON path.
+fn parse_drag_shape_coord(v: &serde_json::Value, path: &str) -> Result<i32, FlowError> {
+    let raw = v
+        .as_i64()
+        .ok_or_else(|| FlowError::new(path, "drag shape coordinates must be integers"))?;
+    if !(0..=MAX_DRAG_SHAPE_COORD).contains(&raw) {
+        return Err(FlowError::new(
+            path,
+            format!("drag shape coordinate must be within 0..={MAX_DRAG_SHAPE_COORD}, got {raw}"),
+        ));
+    }
+    i32::try_from(raw)
+        .map_err(|_| FlowError::new(path, format!("drag shape coordinate {raw} does not fit i32")))
+}
+
+/// Parse `[x,y,w,h]` for a `rect` drag shape.
+///
+/// Stricter than the legacy [`parse_roi4`] on purpose: x/y must be `>= 0`,
+/// w/h must be `> 0`, every value and the `x+w` / `y+h` edges must stay within
+/// [`MAX_DRAG_SHAPE_COORD`]. The checked edges are what keep the runtime bbox
+/// math from overflowing.
+fn parse_drag_shape_roi(v: &serde_json::Value, path: &str) -> Result<[i32; 4], FlowError> {
+    let arr = v
+        .as_array()
+        .ok_or_else(|| FlowError::new(path, "rect drag shape `roi` must be [x,y,w,h]"))?;
+    if arr.len() != 4 {
+        return Err(FlowError::new(
+            path,
+            "rect drag shape `roi` must be exactly 4 integers [x,y,w,h]",
+        ));
+    }
+    let mut out = [0i32; 4];
+    for (i, item) in arr.iter().enumerate() {
+        out[i] = parse_drag_shape_coord(item, &format!("{path}[{i}]"))?;
+    }
+    if out[2] <= 0 || out[3] <= 0 {
+        return Err(FlowError::new(
+            path,
+            "rect drag shape `roi` width/height must be > 0",
+        ));
+    }
+    let right = out[0] as i64 + out[2] as i64;
+    let bottom = out[1] as i64 + out[3] as i64;
+    if right > MAX_DRAG_SHAPE_COORD || bottom > MAX_DRAG_SHAPE_COORD {
+        return Err(FlowError::new(
+            path,
+            format!(
+                "rect drag shape `roi` x+w/y+h must be <= {MAX_DRAG_SHAPE_COORD} \
+                 (got x+w={right}, y+h={bottom})"
+            ),
+        ));
+    }
+    Ok(out)
+}
+
+/// Shoelace area × 2 (i128) for an inline drag polygon (`0` = collinear).
+///
+/// `i128` keeps the accumulation exact even at the maximum accepted coordinate
+/// (1e6): an `i64` accumulator could still wrap on adversarial vertex counts.
+fn drag_polygon_area2(points: &[[i32; 2]]) -> i128 {
+    let mut area2: i128 = 0;
     for i in 0..points.len() {
         let a = points[i];
         let b = points[(i + 1) % points.len()];
-        area2 += a[0] as i64 * b[1] as i64 - b[0] as i64 * a[1] as i64;
+        area2 += a[0] as i128 * b[1] as i128 - b[0] as i128 * a[1] as i128;
     }
     area2
+}
+
+/// O(n²) self-intersection test for an inline drag polygon.
+///
+/// Mirrors `oas_task`'s `polygon_self_intersects` (the dependency direction
+/// forbids importing it from `oas-task`). Coordinates are bounded by
+/// [`MAX_DRAG_SHAPE_COORD`], so each cross product fits in `i64`.
+fn drag_polygon_self_intersects(poly: &[[i32; 2]]) -> bool {
+    let n = poly.len();
+    if n < 4 {
+        return false;
+    }
+    let cross = |o: [i32; 2], a: [i32; 2], b: [i32; 2]| -> i64 {
+        (a[0] as i64 - o[0] as i64) * (b[1] as i64 - o[1] as i64)
+            - (a[1] as i64 - o[1] as i64) * (b[0] as i64 - o[0] as i64)
+    };
+    let on_seg = |a: [i32; 2], b: [i32; 2], p: [i32; 2]| -> bool {
+        p[0] >= a[0].min(b[0])
+            && p[0] <= a[0].max(b[0])
+            && p[1] >= a[1].min(b[1])
+            && p[1] <= a[1].max(b[1])
+    };
+    for i in 0..n {
+        let a1 = poly[i];
+        let a2 = poly[(i + 1) % n];
+        for j in 0..n {
+            if j == i {
+                continue;
+            }
+            let b1 = poly[j];
+            let b2 = poly[(j + 1) % n];
+            // Adjacent edges share a vertex by construction: skip them.
+            if (i + 1) % n == j || (j + 1) % n == i {
+                continue;
+            }
+            let d1 = cross(b1, b2, a1);
+            let d2 = cross(b1, b2, a2);
+            let d3 = cross(a1, a2, b1);
+            let d4 = cross(a1, a2, b2);
+            let proper = ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0))
+                && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+            if proper {
+                return true;
+            }
+            // Collinear touching/overlap.
+            if (d1 == 0 && on_seg(b1, b2, a1))
+                || (d2 == 0 && on_seg(b1, b2, a2))
+                || (d3 == 0 && on_seg(a1, a2, b1))
+                || (d4 == 0 && on_seg(a1, a2, b2))
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// v1.2.5 (O-2): parse the optional inline `shape` of a `region` drag target.
@@ -1170,7 +1297,7 @@ fn parse_drag_shape(v: &serde_json::Value, path: &str) -> Result<DragShape, Flow
                     "rect drag shape must use `roi`, not `points`",
                 ));
             }
-            let roi = parse_roi4(
+            let roi = parse_drag_shape_roi(
                 v.get("roi")
                     .ok_or_else(|| FlowError::new(format!("{path}.roi"), "rect drag shape needs `roi`"))?,
                 &format!("{path}.roi"),
@@ -1202,6 +1329,15 @@ fn parse_drag_shape(v: &serde_json::Value, path: &str) -> Result<DragShape, Flow
                     ),
                 ));
             }
+            if arr.len() > MAX_DRAG_SHAPE_POINTS {
+                return Err(FlowError::new(
+                    pts_path.clone(),
+                    format!(
+                        "polygon drag shape allows at most {MAX_DRAG_SHAPE_POINTS} points (got {})",
+                        arr.len()
+                    ),
+                ));
+            }
             let mut points = Vec::with_capacity(arr.len());
             for (i, p) in arr.iter().enumerate() {
                 let pair = p.as_array().ok_or_else(|| {
@@ -1213,19 +1349,15 @@ fn parse_drag_shape(v: &serde_json::Value, path: &str) -> Result<DragShape, Flow
                         "each point must be exactly [x,y]",
                     ));
                 }
-                let x = pair[0].as_i64().ok_or_else(|| {
-                    FlowError::new(format!("{pts_path}[{i}][0]"), "x must be an integer")
-                })? as i32;
-                let y = pair[1].as_i64().ok_or_else(|| {
-                    FlowError::new(format!("{pts_path}[{i}][1]"), "y must be an integer")
-                })? as i32;
-                if x < 0 || y < 0 {
-                    return Err(FlowError::new(
-                        format!("{pts_path}[{i}]"),
-                        format!("coordinates must be >= 0, got [{x},{y}]"),
-                    ));
-                }
+                let x = parse_drag_shape_coord(&pair[0], &format!("{pts_path}[{i}][0]"))?;
+                let y = parse_drag_shape_coord(&pair[1], &format!("{pts_path}[{i}][1]"))?;
                 points.push([x, y]);
+            }
+            if drag_polygon_self_intersects(&points) {
+                return Err(FlowError::new(
+                    pts_path,
+                    "polygon drag shape must not self-intersect",
+                ));
             }
             if drag_polygon_area2(&points) == 0 {
                 return Err(FlowError::new(
@@ -1243,6 +1375,24 @@ fn parse_drag_shape(v: &serde_json::Value, path: &str) -> Result<DragShape, Flow
         other => Err(FlowError::new(
             path,
             format!("unknown drag shape `{other}` (allowed: rect, polygon)"),
+        )),
+    }
+}
+
+/// P2-4: `shape` is only meaningful on a `region` drag target.
+///
+/// Silently ignoring it on `point`/`ocr_text` would execute a different gesture
+/// than the author wrote, so the misplaced key is a loud parse error. A JSON
+/// `null` still counts as "absent" (same as on `region`).
+fn reject_drag_shape_on_non_region(
+    v: &serde_json::Value,
+    path: &str,
+) -> Result<(), FlowError> {
+    match v.get("shape") {
+        None | Some(serde_json::Value::Null) => Ok(()),
+        Some(_) => Err(FlowError::new(
+            format!("{path}.shape"),
+            "shape is only supported on `region` drag targets",
         )),
     }
 }
@@ -1266,6 +1416,7 @@ fn parse_drag_target(v: &serde_json::Value, path: &str) -> Result<DragTarget, Fl
             },
         }),
         "point" => {
+            reject_drag_shape_on_non_region(v, path)?;
             let x = v
                 .get("x")
                 .and_then(|x| x.as_i64())
@@ -1277,6 +1428,7 @@ fn parse_drag_target(v: &serde_json::Value, path: &str) -> Result<DragTarget, Fl
             Ok(DragTarget::Point { x, y })
         }
         "ocr_text" => {
+            reject_drag_shape_on_non_region(v, path)?;
             let text = v
                 .get("text")
                 .and_then(|x| x.as_str())
@@ -2546,8 +2698,41 @@ mod tests {
             ),
             (
                 r#"{"kind":"polygon","points":[[-1,0],[10,0],[0,10]]}"#,
-                "steps[0].args.from.shape.points[0]",
-                ">= 0",
+                "steps[0].args.from.shape.points[0][0]",
+                "0..=1000000",
+            ),
+            (
+                r#"{"kind":"polygon","points":[[0,0],[2147483647,0],[0,2147483647]]}"#,
+                "steps[0].args.from.shape.points[1][0]",
+                "0..=1000000",
+            ),
+            (
+                // Review repro: 2e9-long square with every vertex repeated.
+                // The old i64 shoelace accumulated to ~1.6e19 and panicked in
+                // debug; the coordinate bound rejects it before any arithmetic.
+                r#"{"kind":"polygon","points":[[0,0],[2000000000,0],[2000000000,2000000000],[0,2000000000],[0,0],[2000000000,0],[2000000000,2000000000],[0,2000000000]]}"#,
+                "steps[0].args.from.shape.points[1][0]",
+                "0..=1000000",
+            ),
+            (
+                r#"{"kind":"polygon","points":[[0,0],[10,10],[0,10],[10,0]]}"#,
+                "steps[0].args.from.shape.points",
+                "self-intersect",
+            ),
+            (
+                r#"{"kind":"rect","roi":[-5,0,10,10]}"#,
+                "steps[0].args.from.shape.roi[0]",
+                "0..=1000000",
+            ),
+            (
+                r#"{"kind":"rect","roi":[2147483647,0,1,1],"invert":true}"#,
+                "steps[0].args.from.shape.roi[0]",
+                "0..=1000000",
+            ),
+            (
+                r#"{"kind":"rect","roi":[600000,0,600000,10]}"#,
+                "steps[0].args.from.shape.roi",
+                "x+w",
             ),
             (
                 r#"{"kind":"polygon","points":[[0,0],[10,10],[20,20]]}"#,
@@ -2592,20 +2777,96 @@ mod tests {
     }
 
     #[test]
-    fn drag_shape_is_only_inlined_on_region_targets() {
-        // A `shape` on a `point` target stays an ignored unknown key (only
-        // `region` grew the field); pin it so nobody assumes shape validation
-        // happens for other drag targets.
+    fn rejects_drag_polygon_with_too_many_points() {
+        // 257 vertices is over MAX_DRAG_SHAPE_POINTS: rejected before parsing
+        // coordinates or running the O(n²) self-intersection test.
+        let points: Vec<String> = (0..257).map(|i| format!("[{i},0]")).collect();
+        let json = format!(r#"{{"kind":"polygon","points":[{}]}}"#, points.join(","));
+        let err = drag_with_from_shape(&json).expect_err("257 points must be rejected");
+        assert_eq!(err.path, "steps[0].args.from.shape.points");
+        assert!(err.msg.contains("at most 256"), "{}", err.msg);
+    }
+
+    #[test]
+    fn drag_region_shape_null_is_treated_as_absent() {
+        let flow = drag_with_from_shape("null").expect("shape:null must parse as no shape");
+        match &flow.steps[0] {
+            Step::Drag { from, .. } => match from {
+                DragTarget::Region { roi, shape } => {
+                    assert_eq!(*roi, [0, 0, 80, 60]);
+                    assert!(shape.is_none(), "shape:null must stay None (bbox path)");
+                }
+                other => panic!("unexpected drag target: {other:?}"),
+            },
+            other => panic!("unexpected step: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_drag_shape_on_non_region_targets() {
+        // P2-4: a `shape` on `point`/`ocr_text` used to be silently ignored,
+        // which runs a different gesture than the author wrote. It is now a
+        // loud parse error with the misplaced field's exact path.
+        let point = r#"{"schema_version":1,"name":"t","steps":[
+             {"op":"drag","args":{
+               "from":{"kind":"point","x":10,"y":10,
+                       "shape":{"kind":"rect","roi":[0,0,10,10]}},
+               "direction":"up","distance":[5,9]}}]}"#;
+        let err = Flow::from_json(point).expect_err("shape on a point target must be rejected");
+        assert_eq!(err.path, "steps[0].args.from.shape");
+        assert!(
+            err.msg.contains("only supported on `region`"),
+            "{}",
+            err.msg
+        );
+
+        let ocr = r#"{"schema_version":1,"name":"t","steps":[
+             {"op":"drag","args":{
+               "from":{"kind":"ocr_text","sel":"O_TEXT","text":"x",
+                       "shape":{"kind":"polygon","points":[[0,0],[1,0],[0,1]]}},
+               "direction":"up","distance":[5,9]}}]}"#;
+        let err = Flow::from_json(ocr).expect_err("shape on an ocr_text target must be rejected");
+        assert_eq!(err.path, "steps[0].args.from.shape");
+        assert!(
+            err.msg.contains("only supported on `region`"),
+            "{}",
+            err.msg
+        );
+
+        // `shape:null` is still just "absent" on a non-region target.
+        let null_point = r#"{"schema_version":1,"name":"t","steps":[
+             {"op":"drag","args":{
+               "from":{"kind":"point","x":10,"y":10,"shape":null},
+               "direction":"up","distance":[5,9]}}]}"#;
+        let flow = Flow::from_json(null_point).expect("shape:null on a point target is absent");
+        match &flow.steps[0] {
+            Step::Drag { from, .. } => assert!(matches!(from, DragTarget::Point { x: 10, y: 10 })),
+            other => panic!("unexpected step: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_drag_to_shape_with_invert() {
+        // P2-9: the `to` endpoint accepts the same inline shape contract,
+        // including `invert:true` (not just `from`).
         let flow = Flow::from_json(
             r#"{"schema_version":1,"name":"t","steps":[
                  {"op":"drag","args":{
-                   "from":{"kind":"point","x":10,"y":10,
-                           "shape":{"kind":"nonsense"}},
-                   "direction":"up","distance":[5,9]}}]}"#,
+                   "from":{"kind":"region","roi":[0,0,10,10]},
+                   "to":{"kind":"region","roi":[20,0,10,48],
+                         "shape":{"kind":"rect","roi":[20,0,10,48],"invert":true}},
+                   "direction":"right"}}]}"#,
         )
-        .expect("shape on a point target is ignored, not parsed");
+        .expect("to shape with invert must parse");
         match &flow.steps[0] {
-            Step::Drag { from, .. } => assert!(matches!(from, DragTarget::Point { x: 10, y: 10 })),
+            Step::Drag { to, .. } => match to {
+                Some(DragTarget::Region { shape, .. }) => {
+                    let shape = shape.as_ref().expect("to shape");
+                    assert_eq!(shape.kind, "rect");
+                    assert!(shape.invert, "to shape invert must be preserved");
+                }
+                other => panic!("unexpected drag to target: {other:?}"),
+            },
             other => panic!("unexpected step: {other:?}"),
         }
     }

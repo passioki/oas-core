@@ -47,6 +47,13 @@ pub struct ClickShape {
 }
 
 impl ClickShape {
+    /// Axis-aligned bbox of the shape (frame coordinates).
+    ///
+    /// Math is done in `i64` (P1-4): with `i32` points, `x1 - x0 + 1` can
+    /// overflow at `i32::MAX`, which used to panic in debug and wrap in
+    /// release. A bbox that cannot be represented back as an `i32` rect
+    /// returns `None`; [`Self::sample`] then fails loudly instead of inventing
+    /// a point.
     pub fn bbox(&self) -> Option<Rect> {
         if let Some(r) = self.rect {
             return Some(r);
@@ -65,17 +72,29 @@ impl ClickShape {
             x1 = x1.max(p.x);
             y1 = y1.max(p.y);
         }
+        let w = x1 as i64 - x0 as i64 + 1;
+        let h = y1 as i64 - y0 as i64 + 1;
+        if w <= 0 || h <= 0 || w > i32::MAX as i64 || h > i32::MAX as i64 {
+            return None;
+        }
         Some(Rect {
             x: x0,
             y: y0,
-            w: x1 - x0 + 1,
-            h: y1 - y0 + 1,
+            w: w as i32,
+            h: h as i32,
         })
     }
 
     pub fn contains(&self, p: Point) -> bool {
         if let Some(r) = self.rect {
-            return p.x >= r.x && p.y >= r.y && p.x < r.x + r.w && p.y < r.y + r.h;
+            // i64 keeps `r.x + r.w` from overflowing when a rect touches
+            // i32::MAX (P1-4); the comparison is otherwise identical.
+            let px = p.x as i64;
+            let py = p.y as i64;
+            return px >= r.x as i64
+                && py >= r.y as i64
+                && px < r.x as i64 + r.w as i64
+                && py < r.y as i64 + r.h as i64;
         }
         let Some(pts) = self.points.as_ref() else {
             return false;
@@ -89,8 +108,12 @@ impl ClickShape {
             let (xi, yi) = (pts[i].x, pts[i].y);
             let (xj, yj) = (pts[j].x, pts[j].y);
             if (yi > p.y) != (yj > p.y) {
-                let denom = (yj - yi) as f64;
-                let cross_x = (xj - xi) as f64 * (p.y - yi) as f64 / denom + xi as f64;
+                // f64 subtraction avoids an `i32` overflow in `xj - xi` for
+                // extreme (programmatic) coordinates; integer frame coords keep
+                // exactly the same result.
+                let denom = yj as f64 - yi as f64;
+                let cross_x = (xj as f64 - xi as f64) * (p.y as f64 - yi as f64) / denom
+                    + xi as f64;
                 if (p.x as f64) < cross_x {
                     inside = !inside;
                 }
@@ -122,9 +145,26 @@ impl ClickShape {
         if w == 0 || h == 0 {
             return Err("exact operation shape needs a non-empty screen".to_string());
         }
-        let bbox = self
-            .bbox()
-            .ok_or_else(|| "exact operation shape has no geometry".to_string())?;
+        // Defense in depth (P1-4): the flow parser already rejects these, but
+        // ClickShape is also built from asset action_shapes and tests. A
+        // degenerate geometry is a loud error, never a panic or a silent
+        // bbox/centre fallback.
+        if let Some(r) = self.rect {
+            if r.w <= 0 || r.h <= 0 {
+                return Err(format!(
+                    "operation shape rect has non-positive size {}x{}",
+                    r.w, r.h
+                ));
+            }
+        }
+        if let Some(pts) = self.points.as_ref() {
+            if pts.is_empty() {
+                return Err("exact operation shape has no geometry".to_string());
+            }
+        }
+        let bbox = self.bbox().ok_or_else(|| {
+            "operation shape bbox does not fit the i32 coordinate range".to_string()
+        })?;
         let in_frame = |p: Point| p.x >= 0 && p.y >= 0 && p.x < w as i32 && p.y < h as i32;
         if self.invert {
             // 1) Random rejection sampling (fast for normal popups).
@@ -163,6 +203,25 @@ impl ClickShape {
                 return Err("operation polygon has zero area (collinear points)".to_string());
             }
         }
+        // P1-4: intersect the shape bbox with the frame before sampling. A
+        // shape that is entirely off-screen is a loud failure, not "sample the
+        // bbox centre". Computed in i64 so no edge can wrap. Invert is exempt:
+        // its effective region is the whole frame minus the shape, so an
+        // off-screen excluded shape is still fully sampleable.
+        let bx0 = bbox.x as i64;
+        let by0 = bbox.y as i64;
+        let bx1 = bbox.x as i64 + bbox.w as i64 - 1;
+        let by1 = bbox.y as i64 + bbox.h as i64 - 1;
+        let x0 = bx0.max(0);
+        let y0 = by0.max(0);
+        let x1 = bx1.min(w as i64 - 1);
+        let y1 = by1.min(h as i64 - 1);
+        if x0 > x1 || y0 > y1 {
+            return Err(format!(
+                "operation shape has no clickable point: bbox [{},{},{}x{}] does not intersect the {}x{} frame",
+                bbox.x, bbox.y, bbox.w, bbox.h, w, h
+            ));
+        }
         // 1) Random inside the bbox.
         for _ in 0..4096 {
             let p = Point {
@@ -175,20 +234,8 @@ impl ClickShape {
         }
         // 2) Deterministic scan inside the bbox ∩ screen. Catches thin polygons
         //    that random sampling can miss without ever inventing a point.
-        let x0 = bbox.x.max(0);
-        let y0 = bbox.y.max(0);
-        let x1 = bbox
-            .x
-            .saturating_add(bbox.w)
-            .saturating_sub(1)
-            .min(w as i32 - 1);
-        let y1 = bbox
-            .y
-            .saturating_add(bbox.h)
-            .saturating_sub(1)
-            .min(h as i32 - 1);
-        for y in y0..=y1 {
-            for x in x0..=x1 {
+        for y in y0 as i32..=y1 as i32 {
+            for x in x0 as i32..=x1 as i32 {
                 let p = Point { x, y };
                 if self.contains(p) {
                     return Ok(p);
@@ -226,9 +273,12 @@ impl DragEndpoint {
     }
 
     /// `margin` only has the documented "inset the candidate rectangle" meaning
-    /// (EDITOR-UX-PLAN §15.3). A polygon or an inverted shape samples its own
-    /// effective region, so the inset is ignored there (the step detail records
-    /// `margin=ignored`). A non-inverted rect shape keeps the bbox path.
+    /// (EDITOR-UX-PLAN §15.3), so it exists **only** on the bbox path: no shape,
+    /// or a **non-inverted rect** shape (which is sampled from `endpoint.rect`,
+    /// not from the shape). Those keep `margin` active with no extra detail
+    /// token. A polygon or an inverted shape samples its own effective region,
+    /// where an inset has no defined meaning, so `margin` is ignored and the
+    /// step detail records `margin=ignored`.
     fn ignores_margin(&self) -> bool {
         match self.shape.as_ref() {
             None => false,
@@ -326,6 +376,39 @@ impl AssetSet {
 
     pub fn click_shape(&self, id: &str) -> Option<&ClickShape> {
         self.click_shapes.get(id)
+    }
+
+    /// Translate a template's exact operation shape from authoring coordinates
+    /// into current-frame coordinates by `matched - roi` (the same translation
+    /// the runtime click path applies). Exposed so the editor's collection
+    /// `real=1` test samples the identical shape instead of re-implementing it.
+    /// OCR/region/collection-level shapes are absolute: callers pass the id
+    /// that actually owns the shape, and assets without an roi are unchanged.
+    pub fn translate_click_shape(
+        &self,
+        mut shape: ClickShape,
+        id: &str,
+        matched: Point,
+    ) -> ClickShape {
+        if let Some(t) = self.map.get(id) {
+            if let Some(roi) = t.roi {
+                let dx = matched.x - roi.x;
+                let dy = matched.y - roi.y;
+                if dx != 0 || dy != 0 {
+                    if let Some(r) = shape.rect.as_mut() {
+                        r.x += dx;
+                        r.y += dy;
+                    }
+                    if let Some(pts) = shape.points.as_mut() {
+                        for p in pts {
+                            p.x += dx;
+                            p.y += dy;
+                        }
+                    }
+                }
+            }
+        }
+        shape
     }
 
     /// Declare a pure operation region (`kind: region`, v1.2).
@@ -1431,27 +1514,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     }
 
     /// Translate a template's operation shape by `matched - roi` (OCR/region
-    /// shapes are absolute and therefore never translated).
-    fn translate_shape(&self, mut shape: ClickShape, sel: &str, matched: Point) -> ClickShape {
-        if let Some(t) = self.assets.get(sel) {
-            if let Some(roi) = t.roi {
-                let dx = matched.x - roi.x;
-                let dy = matched.y - roi.y;
-                if dx != 0 || dy != 0 {
-                    if let Some(r) = shape.rect.as_mut() {
-                        r.x += dx;
-                        r.y += dy;
-                    }
-                    if let Some(pts) = shape.points.as_mut() {
-                        for p in pts {
-                            p.x += dx;
-                            p.y += dy;
-                        }
-                    }
-                }
-            }
-        }
-        shape
+    /// shapes are absolute and therefore never translated). Delegates to the
+    /// public [`AssetSet::translate_click_shape`] so the editor test and the
+    /// runtime click path share one implementation.
+    fn translate_shape(&self, shape: ClickShape, sel: &str, matched: Point) -> ClickShape {
+        self.assets.translate_click_shape(shape, sel, matched)
     }
 
     /// Re-sample a click plan if it landed outside an exact operation shape.
@@ -1726,13 +1793,16 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// Sample one drag endpoint (v1.2.5 O-2).
     ///
     /// * no shape, or a **non-inverted rect** shape: the historical bbox path
-    ///   `random_point_in(rect, margin)`, bit-for-bit unchanged.
+    ///   `random_point_in(rect, margin)`, bit-for-bit unchanged. This is the
+    ///   **only** case where `margin` is applied (P2-2).
     /// * polygon or inverted shape: the same [`ClickShape::sample`] the click
     ///   path uses (point-in-polygon; full screen minus the shape for invert).
     ///   `margin` has no defined meaning there and is ignored.
     ///
     /// Sampling failures stay **loud** — they never fall back to the bbox or its
-    /// centre (that was the §E-72 P1-3 defect on the click path).
+    /// centre (that was the §E-72 P1-3 defect on the click path). In particular
+    /// a polygon/invert shape whose bbox misses the frame fails with
+    /// `... does not intersect the ... frame` and suppresses the swipe.
     fn sample_drag_point(
         &mut self,
         endpoint: &DragEndpoint,
@@ -1760,9 +1830,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         let span_y = (h - 2 * my).max(1);
         let dx = (self.rng.unit_f64() * span_x as f64).floor() as i32;
         let dy = (self.rng.unit_f64() * span_y as f64).floor() as i32;
+        // i64 + clamp (P1-4): a pathological rect near i32::MAX must not panic
+        // in debug / wrap in release. The caller's on-screen check turns a
+        // clamped off-screen point into a loud failure.
+        let x = rect.x as i64 + mx as i64 + dx.min(span_x - 1) as i64;
+        let y = rect.y as i64 + my as i64 + dy.min(span_y - 1) as i64;
         Point {
-            x: rect.x + mx + dx.min(span_x - 1),
-            y: rect.y + my + dy.min(span_y - 1),
+            x: x.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            y: y.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
         }
     }
 
@@ -3023,6 +3098,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     dst = Some(ep);
                     target_end
                 } else {
+                    // P2-3 (documented semantics, intentionally unchanged):
+                    // without `to`, the end point is *derived* from
+                    // `start + direction × random distance`. `from.shape`
+                    // constrains the sampled START only; the derived end is
+                    // constrained by the frame, not by the shape. With an
+                    // invert shape this can re-enter the excluded area (e.g.
+                    // the only free row drags up). Do NOT clamp it to the
+                    // shape: distance mode is deliberately path-free.
                     let range = distance.ok_or_else(|| "drag needs to or distance".to_string())?;
                     let span = (range[1] - range[0]).max(1) as f64;
                     let len = range[0] + (self.rng.unit_f64() * span).round() as i32;
@@ -6217,6 +6300,173 @@ mod tests {
     }
 
     #[test]
+    fn drag_polygon_shape_outside_frame_fails_loudly_without_swipe() {
+        // P1-4 runtime defense: the parser bounds coordinates (<= 1e6) but a
+        // shape bbox can still sit entirely outside the current frame. That is
+        // a loud failure, not a bbox fallback (and must not panic on the scan).
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"region","roi":[0,0,64,48],
+                           "shape":{"kind":"polygon",
+                                    "points":[[900000,900000],[900010,900000],[900000,900010]],
+                                    "invert":false}},
+                   "direction":"right","distance":[5,10]
+                 }},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("does not intersect"), "{msg}");
+                assert!(msg.contains("drag from target"), "{msg}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(
+            input.swipes.borrow().is_empty(),
+            "an off-frame shape must never swipe (no bbox/centre fallback)"
+        );
+    }
+
+    #[test]
+    fn drag_region_bbox_near_i32_max_fails_loudly_without_panic() {
+        // P1-4 defense on the bbox path: a region roi near i32::MAX used to
+        // overflow `rect.x + mx + dx` (debug panic). The point is clamped and
+        // the existing on-screen check turns it into a loud failure.
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"region","roi":[2147483600,0,100,10]},
+                   "direction":"right","distance":[5,10]
+                 }},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("outside the frame"), "{msg}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(
+            input.swipes.borrow().is_empty(),
+            "an off-frame bbox must never swipe"
+        );
+    }
+
+    #[test]
+    fn drag_distance_endpoint_is_not_constrained_by_from_shape() {
+        // P2-3 documented semantics: with `to=None` the end point is derived
+        // from start + direction × random distance. The invert shape below
+        // excludes y 0..=46, so the effective region is exactly row y=47; an
+        // `up` distance drag necessarily starts at y=47 and ends at y<47 —
+        // inside the excluded shape. That is the established distance semantics
+        // (the shape constrains the sampled START, not the derived path end),
+        // pinned here so nobody "fixes" it by clamping to the shape.
+        let excluded = ClickShape {
+            rect: Some(Rect {
+                x: 0,
+                y: 0,
+                w: 64,
+                h: 47,
+            }),
+            points: None,
+            invert: true,
+        };
+        for i in 0..8 {
+            let (mut interp, input) = mk_inspect(FakeScreen::new());
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"drag","args":{
+                       "from":{"kind":"region","roi":[0,0,64,48],
+                               "shape":{"kind":"rect","roi":[0,0,64,47],"invert":true}},
+                       "direction":"up","distance":[5,10],"duration_ms":[100,120]
+                     }},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done), "run {i}");
+            let swipes = input.swipes.borrow().clone();
+            assert_eq!(swipes.len(), 1, "run {i}: exactly one swipe");
+            let (from, to, _ms) = swipes[0];
+            assert_eq!(from.y, 47, "run {i}: the only free row is y=47: {from:?}");
+            assert!(
+                to.y < 47,
+                "run {i}: distance end {to:?} is derived, not shape-sampled"
+            );
+            assert!(
+                excluded.contains(to),
+                "run {i}: distance end may re-enter the excluded shape: {to:?}"
+            );
+            assert!(
+                !excluded.effective_contains(to),
+                "run {i}: effective region still excludes the end point: {to:?}"
+            );
+            let ev = interp
+                .events()
+                .iter()
+                .rev()
+                .find(|e| e.op == "drag")
+                .expect("drag event");
+            assert!(ev.detail.contains("from_invert=true"), "{}", ev.detail);
+            assert!(ev.detail.contains("margin=ignored"), "{}", ev.detail);
+        }
+    }
+
+    #[test]
+    fn drag_to_invert_shape_samples_endpoint_outside_excluded_rect() {
+        // P2-9: `to` also supports invert. The target shape excludes
+        // x 20..=29, so the effective target region is x<20 or x>=30. Every
+        // sampled end must land in one of those bands and never inside the
+        // excluded rect (a plain-bbox sample would land exactly there).
+        let excluded = ClickShape {
+            rect: Some(Rect {
+                x: 20,
+                y: 0,
+                w: 10,
+                h: 48,
+            }),
+            points: None,
+            invert: true,
+        };
+        for i in 0..16 {
+            let (mut interp, input) = mk_inspect(FakeScreen::new());
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"drag","args":{
+                       "from":{"kind":"region","roi":[0,0,3,48]},
+                       "to":{"kind":"region","roi":[20,0,10,48],
+                             "shape":{"kind":"rect","roi":[20,0,10,48],"invert":true}},
+                       "direction":"right","duration_ms":[100,120]
+                     }},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done), "run {i}");
+            let swipes = input.swipes.borrow().clone();
+            assert_eq!(swipes.len(), 1, "run {i}: exactly one swipe");
+            let (from, to, _ms) = swipes[0];
+            assert!(to.x > from.x, "run {i}: direction right {from:?} -> {to:?}");
+            assert!(
+                !excluded.contains(to),
+                "run {i}: to-invert end {to:?} fell into the excluded rect"
+            );
+            assert!(
+                excluded.effective_contains(to),
+                "run {i}: to-invert end {to:?} must be in the effective region"
+            );
+            let ev = interp
+                .events()
+                .iter()
+                .rev()
+                .find(|e| e.op == "drag")
+                .expect("drag event");
+            assert!(ev.detail.contains("to_shape=rect"), "{}", ev.detail);
+            assert!(ev.detail.contains("to_invert=true"), "{}", ev.detail);
+            assert!(ev.detail.contains("margin=ignored"), "{}", ev.detail);
+        }
+    }
+
+    #[test]
     fn drag_region_without_shape_keeps_bbox_margin_behavior() {
         // bbox [4,4,40,30], margin 0.25 => inset x=10, y=7 => x in [14,33],
         // y in [11,26]. The endpoint only moves down 5..8px (<=34), still in frame.
@@ -7310,6 +7560,104 @@ mod click_shape_tests {
             .sample(640, 360, &mut rng)
             .expect_err("2-point polygon must fail");
         assert!(err.contains("at least 3"), "{err}");
+    }
+
+    #[test]
+    fn bbox_and_contains_handle_i32_limits_without_overflow() {
+        // P1-4: `rect.x + rect.w` used to overflow for a rect at i32::MAX.
+        let at_max = ClickShape {
+            rect: Some(Rect {
+                x: i32::MAX,
+                y: 0,
+                w: 1,
+                h: 1,
+            }),
+            points: None,
+            invert: false,
+        };
+        assert_eq!(
+            at_max.bbox(),
+            Some(Rect {
+                x: i32::MAX,
+                y: 0,
+                w: 1,
+                h: 1
+            })
+        );
+        assert!(at_max.contains(Point { x: i32::MAX, y: 0 }));
+        assert!(!at_max.contains(Point { x: i32::MIN, y: 0 }));
+        assert!(!at_max.contains(Point { x: i32::MAX, y: 1 }));
+
+        // A polygon spanning 2^31 pixels cannot be expressed as an i32 rect:
+        // bbox must be None (no `x1 - x0 + 1` overflow/panic), and `contains`
+        // must still answer without integer overflow.
+        let wide = ClickShape {
+            rect: None,
+            points: Some(vec![
+                Point { x: 0, y: 0 },
+                Point { x: i32::MAX, y: 0 },
+                Point { x: i32::MAX, y: i32::MAX },
+            ]),
+            invert: false,
+        };
+        assert!(wide.bbox().is_none(), "2^31-wide bbox cannot fit i32");
+        assert!(wide.contains(Point {
+            x: i32::MAX - 1,
+            y: 1
+        }));
+        assert!(!wide.contains(Point { x: 0, y: i32::MAX }));
+    }
+
+    #[test]
+    fn sample_off_frame_and_overflowing_bbox_are_loud_errors() {
+        // P1-4: sample must reject geometry it cannot represent or that is
+        // entirely off-screen, loudly and without panicking.
+        let mut rng = crate::humanize::Rng::new(11);
+        let off_frame = ClickShape {
+            rect: Some(Rect {
+                x: i32::MAX,
+                y: 0,
+                w: 1,
+                h: 1,
+            }),
+            points: None,
+            invert: false,
+        };
+        let err = off_frame
+            .sample(64, 48, &mut rng)
+            .expect_err("off-frame rect must fail");
+        assert!(err.contains("does not intersect"), "{err}");
+
+        let overflowing = ClickShape {
+            rect: None,
+            points: Some(vec![
+                Point { x: 0, y: 0 },
+                Point { x: i32::MAX, y: 0 },
+                Point { x: i32::MAX, y: i32::MAX },
+            ]),
+            invert: false,
+        };
+        let err = overflowing
+            .sample(64, 48, &mut rng)
+            .expect_err("overflowing bbox must fail");
+        assert!(err.contains("does not fit the i32"), "{err}");
+
+        // A degenerate rect is a loud error too (parser rejects it, runtime
+        // defense keeps programmatic shapes honest).
+        let degenerate = ClickShape {
+            rect: Some(Rect {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 10,
+            }),
+            points: None,
+            invert: false,
+        };
+        let err = degenerate
+            .sample(64, 48, &mut rng)
+            .expect_err("zero-width rect must fail");
+        assert!(err.contains("non-positive size"), "{err}");
     }
 }
 

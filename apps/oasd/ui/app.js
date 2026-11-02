@@ -898,16 +898,20 @@ function generateRegionClick() {
 }
 
 // v1.2.5 (O-2): build the `drag` step for a region drag. `shape` is the current
-// operation shape in frame coordinates ({kind,roi|points,invert}); a polygon or
-// an inverted shape is inlined next to the mandatory bbox `roi` (roi = shape
-// bbox so an older runtime still lands close to the marked area). Without a
-// polygon/invert shape the historical bbox-only step is returned unchanged.
+// operation shape in frame coordinates ({kind,roi|points,invert}) or null.
+//
+// - `from.roi` is always the shape's bbox when a shape exists (the user's
+//   roiBack / polygon bbox), falling back to the recognized ROI only when the
+//   shape has no usable geometry. This is what older runtimes and the bbox
+//   path sample, so the user's marked area is never silently dropped.
+// - `from.shape` is inlined only for a polygon or an inverted shape: a plain
+//   non-inverted rect is already fully described by `roi` (runtime samples that
+//   bbox with margin), so the historical bbox-only output is preserved there.
 // Pure so the contract is testable without the DOM.
 function regionDragStep(roi, shape, direction, distance) {
-  const needsShape = !!(shape && (shape.kind === 'polygon' || shape.invert));
-  const box = needsShape ? actionShapeBBox(shape) || roi : roi;
+  const box = shape ? actionShapeBBox(shape) || roi : roi;
   const from = { kind: 'region', roi: box };
-  if (needsShape) from.shape = shape;
+  if (shape && (shape.kind === 'polygon' || shape.invert)) from.shape = shape;
   return {
     op: 'drag',
     args: {
@@ -1781,15 +1785,19 @@ function realAssetTestGuard() {
   return { real: true, ok: true };
 }
 
-function confirmAssetTestGestures(kind, operations) {
+// P2-6: `note` replaces the generic "上面的定位" caveat when the concrete
+// gesture is decided by a second server request (collection match re-runs and
+// samples inside the exact action shape).
+function confirmAssetTestGestures(kind, operations, note) {
   const ops = operations || [];
   if (!ops.length) return false;
   const head = kind === 'drag' ? '真实拖动（滑动）' : '真实点击';
   const shown = ops.slice(0, 8).map((op) => `· ${op.label}`).join('\n');
   const extra = ops.length > 8 ? `\n… 共 ${ops.length} 个手势` : '';
+  const caveat = note || '实时画面可能仍在变化，将按上面的定位发送。';
   return window.confirm(
     `即将对真实设备执行${head}，这不是演练。\n\n${shown}${extra}\n\n` +
-    '实时画面可能仍在变化，将按上面的定位发送。确认发送？'
+    `${caveat}确认发送？`
   );
 }
 
@@ -2926,8 +2934,10 @@ async function saveAssetOrder(ids) {
 }
 
 // Collection test helpers. The URL builder is shared by the dry-run preview and
-// the real request so a dry-run call stays byte-identical to the old URL, and
-// the predicted point mirrors the server's action-box centre.
+// the real request so a dry-run call stays byte-identical to the old URL. The
+// preview's action-box centre is only an estimate: the real request re-matches
+// and the server samples inside the exact operation shape, so the authoritative
+// point is the returned `click_point`.
 function assetCollectionMatchUrl(task, id, frameQuery, real) {
   return `/task/asset/collection/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(id)}` +
     `${frameQuery || ''}${real ? '&real=1' : ''}`;
@@ -3004,7 +3014,7 @@ async function testAssetCollection(it) {
       }
       const confirmed = confirmAssetTestGestures('click', [{
         label: `${frame.label} 集合「${it.id}」成员 ${s.member} 点击 (${point[0]}, ${point[1]})`,
-      }]);
+      }], '服务端将重新匹配并点击最新操作区（shape 内采样）；实际点击点以返回 click_point 为准。');
       if (!confirmed) {
         summaries.push(`${frame.label}: 真实模式已取消（未点击）`);
         continue;
@@ -3014,10 +3024,16 @@ async function testAssetCollection(it) {
       );
       s = await response.json();
       if (!s.ok) {
-        summaries.push(
-          `${frame.label}: ❌ 真实点击失败：` +
-          ((s.errors || []).join('; ') || `HTTP ${response.status}`)
-        );
+        // P1-2: the server answers 409 when the re-match is below threshold;
+        // that is a refused real click, not a generic transport exception.
+        if (response.status === 409) {
+          summaries.push(`${frame.label}: ⚠ 真实点击未执行：重新匹配未过阈值（未点击）`);
+        } else {
+          summaries.push(
+            `${frame.label}: ❌ 真实点击失败：` +
+            ((s.errors || []).join('; ') || `HTTP ${response.status}`)
+          );
+        }
         continue;
       }
       const [x, y] = s.click_point || [];

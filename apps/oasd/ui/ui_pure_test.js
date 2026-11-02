@@ -437,6 +437,27 @@ eq(
   'non-empty real batch asks for confirmation'
 );
 ok(/这不是演练/.test(confirmText) && /实时帧 滑动/.test(confirmText), 'confirmation text names real mode and the gesture');
+ok(
+  /实时画面可能仍在变化，将按上面的定位发送。确认发送？/.test(confirmText),
+  'default confirmation keeps the legacy caveat sentence'
+);
+// P2-6: collection real mode replaces the generic caveat with the actual
+// two-request behaviour (server re-matches + samples inside the shape).
+eq(
+  confirmAssetTestGestures('click', [{ label: '实时帧 集合「COL」成员 M 点击 (24, 24)' }],
+    '服务端将重新匹配并点击最新操作区（shape 内采样）；实际点击点以返回 click_point 为准。'),
+  true,
+  'collection confirmation with a note still asks'
+);
+ok(
+  /服务端将重新匹配并点击最新操作区（shape 内采样）/.test(confirmText) &&
+    /click_point/.test(confirmText),
+  'collection confirmation explains the second match and the authoritative click_point'
+);
+ok(
+  !/实时画面可能仍在变化，将按上面的定位发送/.test(confirmText),
+  'the generic "above positioning" caveat is replaced for collection'
+);
 
 // Mode button label/aria reflects the state (no device request involved).
 const fakeClassList = {
@@ -855,10 +876,14 @@ ok(/真实点击模式/.test(clickTestFn) && /演练/.test(clickTestFn), 'click 
 // The 区域拖动 button and the asset drag test share regionDragStep, so this is
 // the single place the DSL shape contract is pinned.
 const polyDragShape = { kind: 'polygon', points: [[10, 10], [70, 10], [70, 50]], invert: true };
-const polyDrag = regionDragStep([10, 10, 61, 41], polyDragShape, 'up');
+const polyDrag = regionDragStep([0, 0, 100, 100], polyDragShape, 'up');
 eq(polyDrag.op, 'drag', 'regionDragStep builds a drag step');
 eq(polyDrag.args.from.kind, 'region', 'drag `from` stays a region target');
-eq(polyDrag.args.from.roi, [10, 10, 61, 41], 'from.roi is the shape bbox (old-runtime fallback)');
+eq(
+  polyDrag.args.from.roi,
+  [10, 10, 61, 41],
+  'from.roi is derived from the shape bbox, not the recognition ROI'
+);
 eq(polyDrag.args.from.shape.kind, 'polygon', 'polygon shape is inlined into the flow');
 eq(polyDrag.args.from.shape.invert, true, 'invert is preserved on the flow shape');
 eq(polyDrag.args.direction, 'up', 'direction is passed through');
@@ -866,10 +891,31 @@ eq(polyDrag.args.distance, [150, 500], 'default distance stays [150,500]');
 eq(polyDrag.args.duration_ms, [300, 650], 'default duration stays [300,650]');
 eq(polyDrag.args.margin, 0.15, 'default margin stays 0.15');
 
+const polyNoInvertDrag = regionDragStep(
+  [0, 0, 100, 100],
+  { kind: 'polygon', points: [[0, 0], [20, 0], [0, 20]], invert: false },
+  'up'
+);
+eq(
+  polyNoInvertDrag.args.from.roi,
+  [0, 0, 21, 21],
+  'polygon bbox is derived from its points (recognition ROI ignored)'
+);
+eq(
+  polyNoInvertDrag.args.from.shape,
+  { kind: 'polygon', points: [[0, 0], [20, 0], [0, 20]], invert: false },
+  'a non-inverted polygon is still inlined (rect-only bbox would lose the shape)'
+);
+
 const rectInvertDrag = regionDragStep(
-  [4, 5, 6, 7],
+  [0, 0, 100, 100],
   { kind: 'rect', roi: [4, 5, 6, 7], invert: true },
   'left'
+);
+eq(
+  rectInvertDrag.args.from.roi,
+  [4, 5, 6, 7],
+  'rect+invert uses the action rect as roi (recognition ROI ignored)'
 );
 eq(
   rectInvertDrag.args.from.shape,
@@ -881,15 +927,32 @@ const bareDrag = regionDragStep([1, 2, 3, 4], null, 'down');
 eq(bareDrag.args.from, { kind: 'region', roi: [1, 2, 3, 4] }, 'no shape => legacy bbox-only `from`');
 ok(!('shape' in bareDrag.args.from), 'a missing shape never grows a shape key');
 
+// P1-3: the plain-rect case used to keep the recognition ROI and drop the
+// user's roiBack. A differing roi/shape input is what makes that visible.
 const plainRectDrag = regionDragStep(
+  [0, 0, 100, 100],
+  { kind: 'rect', roi: [200, 200, 50, 50], invert: false },
+  'right'
+);
+eq(
+  plainRectDrag.args.from,
+  { kind: 'region', roi: [200, 200, 50, 50] },
+  'plain rect: from.roi is the user action rect, not the recognition ROI'
+);
+ok(
+  !('shape' in plainRectDrag.args.from),
+  'plain rect stays bbox-only (runtime samples roi with margin; no shape key)'
+);
+
+const legacyPlainRectDrag = regionDragStep(
   [9, 8, 7, 6],
   { kind: 'rect', roi: [9, 8, 7, 6], invert: false },
   'right'
 );
 eq(
-  plainRectDrag.args.from,
+  legacyPlainRectDrag.args.from,
   { kind: 'region', roi: [9, 8, 7, 6] },
-  'a plain non-inverted rect is the bbox, so output stays byte-identical'
+  'plain rect where roi === shape bbox stays byte-identical to the old output'
 );
 
 const customDistanceDrag = regionDragStep([0, 0, 5, 5], null, 'up', [150, 350]);
@@ -928,6 +991,15 @@ ok(
   /改 roi 不会改 shape/.test(structuredDragFn),
   'builder tells the user that roi and shape are edited separately'
 );
+ok(
+  /polygon\/反选 shape：runtime 按 shape 采样/.test(structuredDragFn) &&
+    /margin 忽略/.test(structuredDragFn),
+  'builder says polygon/invert is sampled from shape and ignores margin'
+);
+ok(
+  /runtime 实际只使用上面的 roi/.test(structuredDragFn),
+  'builder says a plain rect is sampled from roi (shape is ignored by runtime)'
+);
 ok(/可选 shape/.test(structuredDragFn), 'builder drag form title mentions the optional shape');
 const collectionTestFn = extractFunction('testAssetCollection');
 ok(/realAssetTestGuard\(\)/.test(collectionTestFn), 'collection test is gated by the real/dry-run mode');
@@ -950,6 +1022,20 @@ ok(
 );
 ok(/真实点击（已点击/.test(collectionTestFn), 'collection real result names the actual clicked point');
 ok(/演练（未点击）/.test(collectionTestFn), 'collection dry-run result says 演练（未点击）');
+ok(
+  /assetCollectionMatchUrl\(task, it\.id, frame\.query, false\)/.test(collectionTestFn),
+  'collection dry preview explicitly builds a real=0 URL'
+);
+ok(
+  /response\.status === 409/.test(collectionTestFn) &&
+    /真实点击未执行：重新匹配未过阈值（未点击）/.test(collectionTestFn),
+  'collection real below-threshold 409 is a refused click, not a generic failure'
+);
+ok(
+  /服务端将重新匹配并点击最新操作区（shape 内采样）/.test(collectionTestFn) &&
+    /click_point 为准/.test(collectionTestFn),
+  'collection confirmation explains the server re-match and click_point authority'
+);
 ok(
   !/\/input\/tap/.test(collectionTestFn),
   'collection test never duplicates the tap route (the backend owns the click)'

@@ -600,6 +600,14 @@ impl Server {
         self
     }
 
+    /// Test seam: write the editor log under the tempdir so tests can pin the
+    /// exact `collection_match` log format (P2-5).
+    #[cfg(test)]
+    fn with_editor_log(mut self, path: impl Into<PathBuf>) -> Self {
+        self.editor_log = path.into();
+        self
+    }
+
     /// Set the task-bundle root (default `tasks`).
     pub fn with_tasks_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.tasks_dir = dir.into();
@@ -3280,14 +3288,18 @@ impl Server {
         self.send_json(out, 200, &body.to_string())
     }
 
-    /// `GET /task/asset/collection/match?task=&id=[&real=1]` — collection test
-    /// using the same best-member selection as runtime `locate` (helpers shared).
+    /// `GET /task/asset/collection/match?task=&id=[&real=1][&live=1]`
+    /// — collection test using the same best-member selection as runtime
+    /// `locate` (helpers shared).
     ///
     /// Dry-run is the default and its response is unchanged. `real=1` keeps the
-    /// same dry-run fields and adds `real` / `clicked` / `click_point` / `tap_ok`;
-    /// when the match passes it taps the centre of the current-frame
-    /// `action_box` through the exact `/input/tap` execution path. No device or
-    /// a failed adb click is a loud non-200 error, never a silent "ok".
+    /// same dry-run fields and adds `real` / `clicked` / `click_point` /
+    /// `tap_ok`; when the match passes it samples a point inside the winning
+    /// member's exact operation shape (same translation + sampler as the
+    /// runtime click path) and taps it through the shared `/input/tap`
+    /// execution path. `real=1` requires a live frame (`live=1`). No live
+    /// frame, a below-threshold match, an unsampleable/out-of-frame shape and a
+    /// failed adb click are loud non-200 errors, never a silent "ok".
     fn handle_collection_match(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
         let q = parse_query(raw_path);
         let mut task = String::new();
@@ -3297,7 +3309,23 @@ impl Server {
             match k.as_str() {
                 "task" => task = v.clone(),
                 "id" => id = v.clone(),
-                "real" => real = v == "1" || v == "true",
+                // A real click is a side effect: never silently downgrade an
+                // unrecognised value to a dry run (P2-8).
+                "real" => {
+                    real = match v.as_str() {
+                        "1" | "true" => true,
+                        "0" | "false" => false,
+                        other => {
+                            return self.send_errors(
+                                out,
+                                400,
+                                vec![format!(
+                                    "invalid `real` value `{other}` (accepted: 0, 1, true, false)"
+                                )],
+                            )
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -3324,6 +3352,22 @@ impl Server {
             Ok(v) => v,
             Err(e) => return self.send_json(out, 400, &format!(r#"{{"error":{:?}}}"#, e)),
         };
+        // P2-7: a real click is validated by `perform_live_tap` against the
+        // live frame, so the match/sample frame must be the live frame too. A
+        // position/analysis frame would click coordinates from another screen.
+        if real && frame_source != "live" {
+            let msg = format!(
+                "real click requires live frame (got frame_source `{frame_source}`); use live=1"
+            );
+            self.editor_log(&format!(
+                "collection_match REAL FAIL task={task} id={id} error={msg}"
+            ));
+            return self.send_json(
+                out,
+                400,
+                &collection_real_error(vec![msg], serde_json::Value::Null).to_string(),
+            );
+        }
         let matcher = oas_perceive::Matcher::new(oas_perceive::GrayImage::from_frame(&frame));
         let t0 = std::time::Instant::now();
         let mut best: Option<(String, f32, Option<oas_types::Point>)> = None;
@@ -3364,10 +3408,64 @@ impl Server {
                     body["clicked"] = serde_json::json!(false);
                     body["click_point"] = serde_json::Value::Null;
                     body["tap_ok"] = serde_json::json!(false);
-                    if body["pass"] == true {
-                        let Some(action_box) = action else {
-                            let msg =
-                                format!("collection `{id}` matched but has no action_box to click");
+                    // P1-2: a below-threshold match is a failed real test, not a
+                    // successful one. Machine callers must see a loud 409 (the
+                    // dry-run keeps its historical 200).
+                    if body["pass"] != true {
+                        let msg = "match below threshold; no click performed".to_string();
+                        self.editor_log(&format!(
+                            "collection_match REAL FAIL task={task} id={id} member={} score={} threshold={} error={msg}",
+                            body["member"], body["score"], body["threshold"]
+                        ));
+                        return self.send_json(
+                            out,
+                            409,
+                            &collection_real_error(vec![msg], serde_json::Value::Null)
+                                .to_string(),
+                        );
+                    }
+                    let Some(action_box) = action else {
+                        let msg =
+                            format!("collection `{id}` matched but has no action_box to click");
+                        self.editor_log(&format!(
+                            "collection_match REAL FAIL task={task} id={id} error={msg}"
+                        ));
+                        return self.send_json(
+                            out,
+                            400,
+                            &collection_real_error(vec![msg], serde_json::Value::Null)
+                                .to_string(),
+                        );
+                    };
+                    let Some(matched) = point else {
+                        let msg = format!(
+                            "collection `{id}` matched but has no match point to translate its action shape"
+                        );
+                        self.editor_log(&format!(
+                            "collection_match REAL FAIL task={task} id={id} error={msg}"
+                        ));
+                        return self.send_json(
+                            out,
+                            400,
+                            &collection_real_error(vec![msg], serde_json::Value::Null)
+                                .to_string(),
+                        );
+                    };
+                    // P1-1: sample INSIDE the exact operation shape (invert /
+                    // polygon aware, same translation+sampler as the runtime
+                    // click path). No bbox / whole-screen centre fallback.
+                    let (cx, cy) = match collection_real_click_point(
+                        &assets,
+                        &id,
+                        &member,
+                        matched,
+                        action_box,
+                        frame.width,
+                        frame.height,
+                    ) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            let msg = format!("collection real click: {e}");
                             self.editor_log(&format!(
                                 "collection_match REAL FAIL task={task} id={id} error={msg}"
                             ));
@@ -3377,50 +3475,35 @@ impl Server {
                                 &collection_real_error(vec![msg], serde_json::Value::Null)
                                     .to_string(),
                             );
-                        };
-                        let (cx, cy) = match action_box_center(action_box) {
-                            Ok(p) => p,
-                            Err(e) => {
-                                let msg = format!("collection real click: {e}");
-                                self.editor_log(&format!(
-                                    "collection_match REAL FAIL task={task} id={id} error={msg}"
-                                ));
-                                return self.send_json(
-                                    out,
-                                    400,
-                                    &collection_real_error(vec![msg], serde_json::Value::Null)
-                                        .to_string(),
-                                );
-                            }
-                        };
-                        body["click_point"] = serde_json::json!([cx, cy]);
-                        match self.perform_live_tap(cx, cy) {
-                            Ok(serial) => {
-                                body["clicked"] = serde_json::json!(true);
-                                body["tap_ok"] = serde_json::json!(true);
-                                self.editor_log(&format!(
-                                    "collection_match REAL CLICK task={task} id={id} member={} x={cx} y={cy} device={serial}",
-                                    body["member"]
-                                ));
-                            }
-                            Err(e) => {
-                                let msg = format!(
-                                    "collection real click failed: {}",
-                                    e.message()
-                                );
-                                self.editor_log(&format!(
-                                    "collection_match REAL FAIL task={task} id={id} x={cx} y={cy} error={msg}"
-                                ));
-                                return self.send_json(
-                                    out,
-                                    e.status(),
-                                    &collection_real_error(
-                                        vec![msg],
-                                        serde_json::json!([cx, cy]),
-                                    )
-                                    .to_string(),
-                                );
-                            }
+                        }
+                    };
+                    body["click_point"] = serde_json::json!([cx, cy]);
+                    match self.perform_live_tap(cx, cy) {
+                        Ok(serial) => {
+                            body["clicked"] = serde_json::json!(true);
+                            body["tap_ok"] = serde_json::json!(true);
+                            self.editor_log(&format!(
+                                "collection_match REAL CLICK task={task} id={id} member={} x={cx} y={cy} device={serial}",
+                                body["member"]
+                            ));
+                        }
+                        Err(e) => {
+                            let msg = format!(
+                                "collection real click failed: {}",
+                                e.message()
+                            );
+                            self.editor_log(&format!(
+                                "collection_match REAL FAIL task={task} id={id} x={cx} y={cy} error={msg}"
+                            ));
+                            return self.send_json(
+                                out,
+                                e.status(),
+                                &collection_real_error(
+                                    vec![msg],
+                                    serde_json::json!([cx, cy]),
+                                )
+                                .to_string(),
+                            );
                         }
                     }
                 }
@@ -3429,11 +3512,21 @@ impl Server {
             Err(e) => serde_json::json!({"ok": false, "errors": [e]}),
         };
         if body["ok"] == true {
-            self.editor_log(&format!(
-                "collection_match OK task={task} id={id} member={} score={} threshold={} pass={} real={} clicked={} elapsed_ms={} source={frame_source}",
-                body["member"], body["score"], body["threshold"], body["pass"], body["real"],
-                body["clicked"], body["elapsed_ms"]
-            ));
+            // P2-5: the dry-run log line stays byte-identical to the pre-O-1
+            // format. `real`/`clicked` are appended only for an actual real
+            // request (an explicit `real=0` is still a dry run).
+            if real {
+                self.editor_log(&format!(
+                    "collection_match OK task={task} id={id} member={} score={} threshold={} pass={} real={} clicked={} elapsed_ms={} source={frame_source}",
+                    body["member"], body["score"], body["threshold"], body["pass"], body["real"],
+                    body["clicked"], body["elapsed_ms"]
+                ));
+            } else {
+                self.editor_log(&format!(
+                    "collection_match OK task={task} id={id} member={} score={} threshold={} pass={} elapsed_ms={} source={frame_source}",
+                    body["member"], body["score"], body["threshold"], body["pass"], body["elapsed_ms"]
+                ));
+            }
         } else {
             self.editor_log(&format!("collection_match FAIL task={task} id={id} body={body}"));
         }
@@ -5822,6 +5915,23 @@ fn region_batch_geometry(
     Ok(geom)
 }
 
+/// Exact operation shape of a collection match in **current-frame**
+/// coordinates. Mirrors the runtime click path (`translated_click_shape`): the
+/// winning member's own shape wins and is translated by `matched - member.roi`;
+/// a collection-level shape is an absolute fallback. `None` when neither has an
+/// exact shape (legacy `click_back`/roi assets).
+fn collection_exact_shape(
+    assets: &oas_runtime::AssetSet,
+    collection: &str,
+    member: &str,
+    matched: oas_types::Point,
+) -> Option<oas_runtime::ClickShape> {
+    if let Some(shape) = assets.click_shape(member) {
+        return Some(assets.translate_click_shape(shape.clone(), member, matched));
+    }
+    assets.click_shape(collection).cloned()
+}
+
 /// Operation box for a collection dry-run, in **current frame** coordinates.
 /// The winning member shape is translated by `point - template.roi`; a
 /// collection-level shape is an absolute fallback (B-10).
@@ -5834,23 +5944,12 @@ fn collection_action_box(
     fh: u32,
 ) -> Option<[i32; 4]> {
     let matched = point?;
-    let member_shape = assets.click_shape(member);
-    let shape = member_shape.or_else(|| assets.click_shape(collection));
-    if let Some(shape) = shape {
+    if let Some(shape) = collection_exact_shape(assets, collection, member, matched) {
         if shape.invert {
             return Some([0, 0, fw as i32, fh as i32]);
         }
         let b = shape.bbox()?;
-        let (dx, dy) = if member_shape.is_some() {
-            assets
-                .get(member)
-                .and_then(|t| t.roi)
-                .map(|roi| (matched.x - roi.x, matched.y - roi.y))
-                .unwrap_or((0, 0))
-        } else {
-            (0, 0)
-        };
-        return Some([b.x + dx, b.y + dy, b.w, b.h]);
+        return Some([b.x, b.y, b.w, b.h]);
     }
     let back = assets.click_back(member).or_else(|| assets.click_back(collection))?;
     let (dx, dy) = assets
@@ -5859,6 +5958,46 @@ fn collection_action_box(
         .map(|roi| (matched.x - roi.x, matched.y - roi.y))
         .unwrap_or((0, 0));
     Some([back.x + dx, back.y + dy, back.w, back.h])
+}
+
+/// Fixed RNG seed for one collection real click: the editor test stays
+/// reproducible for a given shape/frame, while [`ClickShape::sample`]'s
+/// deterministic scan still finds a point whenever one exists.
+const COLLECTION_REAL_SAMPLE_SEED: u64 = 0x00C0_FFEE;
+
+/// Click point for a collection real test.
+///
+/// P1-1: when the winning member (or the collection) has an exact operation
+/// shape, the point is sampled **inside that shape** after the same match-offset
+/// translation the runtime click path uses. An invert shape therefore never
+/// clicks its excluded area, and a concave polygon never clicks its bbox centre.
+/// An unsampleable/degenerate/out-of-frame shape is a loud error; there is no
+/// bbox or whole-screen centre fallback. Legacy assets without an exact shape
+/// keep the historical operation-box centre, which lies inside their own
+/// `click_back` rect.
+fn collection_real_click_point(
+    assets: &oas_runtime::AssetSet,
+    collection: &str,
+    member: &str,
+    matched: oas_types::Point,
+    action_box: [i32; 4],
+    fw: u32,
+    fh: u32,
+) -> Result<(i32, i32), String> {
+    let Some(shape) = collection_exact_shape(assets, collection, member, matched) else {
+        return action_box_center(action_box);
+    };
+    let mut rng = oas_runtime::humanize::Rng::new(COLLECTION_REAL_SAMPLE_SEED);
+    let p = shape.sample(fw, fh, &mut rng)?;
+    if !shape.effective_contains(p) {
+        // `sample` promises an effective point; keep the guarantee local so a
+        // future sampler change can never silently click an excluded area.
+        return Err(format!(
+            "sampled point ({},{}) is outside the effective operation shape",
+            p.x, p.y
+        ));
+    }
+    Ok((p.x, p.y))
 }
 
 /// Deterministic click point for a collection real test: the centre of the
@@ -7272,6 +7411,25 @@ mod tests {
     /// member `M` whose ROI is exactly its 8x8 crop at (20,20), and collection
     /// `COL`. The frame is uploaded through the real route and becomes current.
     fn collection_match_fixture(td: &Path, collection_threshold: f32) -> Server {
+        collection_match_fixture_with_shapes(
+            td,
+            collection_threshold,
+            [20, 20, 8, 8],
+            Some(serde_json::json!({"kind": "rect", "roi": [20, 20, 8, 8], "invert": false})),
+            None,
+        )
+    }
+
+    /// Same fixture with explicit member/collection operation shapes. `None`
+    /// member shape means a `recognition`-source asset (no exact shape); `None`
+    /// collection shape means the member shape is the only geometry.
+    fn collection_match_fixture_with_shapes(
+        td: &Path,
+        collection_threshold: f32,
+        member_roi: [i32; 4],
+        member_shape: Option<serde_json::Value>,
+        collection_shape: Option<serde_json::Value>,
+    ) -> Server {
         let frame = collection_frame();
         let assets_dir = td.join("assets");
         std::fs::create_dir_all(assets_dir.join("images")).expect("assets images dir");
@@ -7281,24 +7439,35 @@ mod tests {
             oas_codec::encode_png(&tpl).expect("template png"),
         )
         .expect("write template png");
+        let mut item = serde_json::json!({
+            "id": "M",
+            "kind": "template",
+            "file": "images/a001.png",
+            "roi": member_roi,
+            "threshold": 0.9,
+            "positions": [1]
+        });
+        match member_shape {
+            Some(shape) => {
+                item["action_shape"] = shape;
+                item["action_source"] = serde_json::json!("fixed");
+            }
+            None => item["action_source"] = serde_json::json!("recognition"),
+        }
+        let mut collection = serde_json::json!({
+            "id": "COL",
+            "members": ["M"],
+            "threshold": collection_threshold
+        });
+        if let Some(shape) = collection_shape {
+            collection["action_shape"] = shape;
+            collection["action_source"] = serde_json::json!("fixed");
+        }
         let assets = serde_json::json!({
             "schema_version": 1,
             "design_resolution": [64, 48],
-            "items": [{
-                "id": "M",
-                "kind": "template",
-                "file": "images/a001.png",
-                "roi": [20, 20, 8, 8],
-                "threshold": 0.9,
-                "action_shape": {"kind": "rect", "roi": [20, 20, 8, 8], "invert": false},
-                "action_source": "fixed",
-                "positions": [1]
-            }],
-            "collections": [{
-                "id": "COL",
-                "members": ["M"],
-                "threshold": collection_threshold
-            }]
+            "items": [item],
+            "collections": [collection]
         });
         std::fs::write(assets_dir.join("assets.json"), assets.to_string())
             .expect("write global assets.json");
@@ -7307,6 +7476,20 @@ mod tests {
             .with_assets_dir(assets_dir);
         upload_test_frame(&server, &frame);
         server
+    }
+
+    /// `live=1` seam: return the deterministic collection frame so real-mode
+    /// requests can be exercised without a device.
+    fn live_collection_frame(server: Server) -> Server {
+        with_live_frame(server, collection_frame())
+    }
+
+    /// `live=1` seam with an explicit frame (e.g. a smaller "device screen").
+    fn with_live_frame(server: Server, frame: Frame) -> Server {
+        let (w, h, rgba) = (frame.width, frame.height, frame.rgba);
+        server.with_live_capture(move || {
+            Ok(("test-device".to_string(), Frame::new(w, h, rgba.clone())))
+        })
     }
 
     fn install_live_frame(server: &Server) {
@@ -8412,14 +8595,65 @@ mod tests {
         for key in ["real", "clicked", "click_point", "tap_ok"] {
             assert!(v.get(key).is_none(), "dry-run must not add `{key}`: {out}");
         }
+        // P2-8: an explicit `real=0` is still a dry run with the same payload.
+        let (status, out) = get_route(&server, "/task/asset/collection/match?id=COL&real=0");
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("dry json");
+        for key in ["real", "clicked", "click_point", "tap_ok"] {
+            assert!(v.get(key).is_none(), "real=0 must stay a dry run: {out}");
+        }
         assert!(taps.lock().unwrap().is_empty(), "dry-run must never tap: {out}");
     }
 
     #[test]
-    fn collection_match_real_without_a_live_device_fails_loudly() {
-        let td = TempDir::new("collection-real-nodevice");
+    fn collection_match_logs_keep_the_dry_run_format_and_tag_real_requests() {
+        let td = TempDir::new("collection-log");
+        let log_path = td.path().join("logs/editor.log");
+        let server = live_collection_frame(
+            collection_match_fixture(td.path(), 0.8)
+                .with_tap_override(|_, _| Ok(()))
+                .with_editor_log(log_path.clone()),
+        );
+
+        let (status, out) = get_route(&server, "/task/asset/collection/match?id=COL");
+        assert!(status.contains("200"), "{status} {out}");
+        let text = std::fs::read_to_string(&log_path).expect("editor log");
+        let dry = text
+            .lines()
+            .find(|l| l.contains("collection_match OK"))
+            .expect("dry log line");
+        // P2-5: byte-identical to the pre-O-1 dry-run format (no null tokens).
+        assert!(
+            !dry.contains("real=") && !dry.contains("clicked="),
+            "dry-run log must keep the old format: {dry}"
+        );
+        assert!(
+            dry.contains("pass=true elapsed_ms=") && dry.ends_with("source=current"),
+            "{dry}"
+        );
+
+        let (status, out) =
+            get_route(&server, "/task/asset/collection/match?id=COL&live=1&real=1");
+        assert!(status.contains("200"), "{status} {out}");
+        let text = std::fs::read_to_string(&log_path).expect("editor log");
+        let real = text
+            .lines()
+            .filter(|l| l.contains("collection_match OK"))
+            .nth(1)
+            .expect("real log line");
+        assert!(
+            real.contains("pass=true real=true clicked=true elapsed_ms=")
+                && real.ends_with("source=live"),
+            "a real request appends its real/clicked tokens: {real}"
+        );
+    }
+
+    #[test]
+    fn collection_match_real_requires_a_live_frame() {
+        let td = TempDir::new("collection-real-nolive");
         let taps = Arc::new(Mutex::new(Vec::new()));
         let seen = taps.clone();
+        // A current (position) frame exists, but no live frame was requested.
         let server = collection_match_fixture(td.path(), 0.8).with_tap_override(move |x, y| {
             seen.lock().unwrap().push((x, y));
             Ok(())
@@ -8432,13 +8666,11 @@ mod tests {
         assert_eq!(v["real"], true, "{out}");
         assert_eq!(v["clicked"], false, "{out}");
         assert_eq!(v["tap_ok"], false, "{out}");
-        let errors = v["errors"].as_array().expect("errors array");
-        let text = errors
-            .iter()
-            .filter_map(|e| e.as_str())
-            .collect::<Vec<_>>()
-            .join("; ");
-        assert!(text.contains("no live frame"), "{out}");
+        let text = v["errors"][0].as_str().unwrap_or_default();
+        assert!(
+            text.contains("real click requires live frame"),
+            "a non-live frame must be rejected before matching: {out}"
+        );
         assert!(
             taps.lock().unwrap().is_empty(),
             "a failed real test must never fake a tap: {out}"
@@ -8446,17 +8678,19 @@ mod tests {
     }
 
     #[test]
-    fn collection_match_real_clicks_the_action_box_centre_through_the_shared_tap_path() {
+    fn collection_match_real_samples_inside_the_action_shape_through_the_shared_tap_path() {
         let td = TempDir::new("collection-real-ok");
         let taps = Arc::new(Mutex::new(Vec::new()));
         let seen = taps.clone();
-        let server = collection_match_fixture(td.path(), 0.8).with_tap_override(move |x, y| {
-            seen.lock().unwrap().push((x, y));
-            Ok(())
-        });
-        install_live_frame(&server);
+        let server = live_collection_frame(
+            collection_match_fixture(td.path(), 0.8).with_tap_override(move |x, y| {
+                seen.lock().unwrap().push((x, y));
+                Ok(())
+            }),
+        );
 
-        let (status, out) = get_route(&server, "/task/asset/collection/match?id=COL&real=1");
+        let (status, out) =
+            get_route(&server, "/task/asset/collection/match?id=COL&live=1&real=1");
         assert!(status.contains("200"), "{status} {out}");
         let v: serde_json::Value = serde_json::from_str(&out).expect("real json");
         assert_eq!(v["ok"], true, "{out}");
@@ -8464,60 +8698,322 @@ mod tests {
         assert_eq!(v["real"], true, "{out}");
         assert_eq!(v["clicked"], true, "{out}");
         assert_eq!(v["tap_ok"], true, "{out}");
+        // Dry-run display semantics are untouched: the box is the authored 8x8
+        // operation box translated to the current match.
         assert_eq!(v["action_box"], serde_json::json!([20, 20, 8, 8]), "{out}");
-        assert_eq!(v["click_point"], serde_json::json!([24, 24]), "{out}");
+        let px = v["click_point"][0].as_i64().expect("click x") as i32;
+        let py = v["click_point"][1].as_i64().expect("click y") as i32;
+        assert!(
+            (20..28).contains(&px) && (20..28).contains(&py),
+            "the sampled point must stay inside the 8x8 action rect: {out}"
+        );
         assert_eq!(
             *taps.lock().unwrap(),
-            vec![(24, 24)],
-            "exactly one tap at the box centre: {out}"
+            vec![(px, py)],
+            "exactly one tap at the sampled point: {out}"
         );
     }
 
     #[test]
     fn collection_match_real_click_failure_is_not_reported_as_success() {
         let td = TempDir::new("collection-real-fail");
-        let server = collection_match_fixture(td.path(), 0.8)
-            .with_tap_override(|_, _| Err("simulated adb failure".to_string()));
-        install_live_frame(&server);
+        let server = live_collection_frame(
+            collection_match_fixture(td.path(), 0.8)
+                .with_tap_override(|_, _| Err("simulated adb failure".to_string())),
+        );
 
-        let (status, out) = get_route(&server, "/task/asset/collection/match?id=COL&real=1");
+        let (status, out) =
+            get_route(&server, "/task/asset/collection/match?id=COL&live=1&real=1");
         assert!(status.contains("500"), "{status} {out}");
         let v: serde_json::Value = serde_json::from_str(&out).expect("error json");
         assert_eq!(v["ok"], false, "{out}");
         assert_eq!(v["real"], true, "{out}");
         assert_eq!(v["clicked"], false, "{out}");
         assert_eq!(v["tap_ok"], false, "{out}");
-        assert_eq!(v["click_point"], serde_json::json!([24, 24]), "{out}");
+        let px = v["click_point"][0].as_i64().expect("click x") as i32;
+        let py = v["click_point"][1].as_i64().expect("click y") as i32;
+        assert!(
+            (20..28).contains(&px) && (20..28).contains(&py),
+            "the attempted point is reported inside the action rect: {out}"
+        );
         let text = v["errors"][0].as_str().unwrap_or_default();
         assert!(text.contains("collection real click failed"), "{out}");
         assert!(text.contains("simulated adb failure"), "{out}");
     }
 
     #[test]
-    fn collection_match_real_below_threshold_does_not_click() {
+    fn collection_match_real_below_threshold_is_a_loud_409_and_does_not_click() {
         let td = TempDir::new("collection-real-below");
         let taps = Arc::new(Mutex::new(Vec::new()));
         let seen = taps.clone();
         // An exact crop scores <= 1.0; a 1.01 threshold proves the click branch
         // is gated on `pass`, not merely on a resolvable member.
-        let server = collection_match_fixture(td.path(), 1.01).with_tap_override(move |x, y| {
+        let server = live_collection_frame(
+            collection_match_fixture(td.path(), 1.01).with_tap_override(move |x, y| {
+                seen.lock().unwrap().push((x, y));
+                Ok(())
+            }),
+        );
+
+        let (status, out) =
+            get_route(&server, "/task/asset/collection/match?id=COL&live=1&real=1");
+        // P1-2: a failed threshold is not a successful real test.
+        assert!(status.contains("409"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(v["ok"], false, "{out}");
+        assert_eq!(v["real"], true, "{out}");
+        assert_eq!(v["clicked"], false, "{out}");
+        assert_eq!(v["tap_ok"], false, "{out}");
+        assert!(v["click_point"].is_null(), "{out}");
+        let text = v["errors"][0].as_str().unwrap_or_default();
+        assert!(
+            text.contains("match below threshold") && text.contains("no click performed"),
+            "the 409 must name the failed threshold: {out}"
+        );
+        assert!(
+            taps.lock().unwrap().is_empty(),
+            "a below-threshold match must never tap: {out}"
+        );
+    }
+
+    #[test]
+    fn collection_match_real_invert_shape_never_taps_the_excluded_area() {
+        let td = TempDir::new("collection-real-invert");
+        let taps = Arc::new(Mutex::new(Vec::new()));
+        let seen = taps.clone();
+        // Excluded rect [16,16,32,16] covers the screen centre (32,24):
+        // a bbox/whole-screen centre click would land exactly in the exclusion.
+        let server = live_collection_frame(
+            collection_match_fixture_with_shapes(
+                td.path(),
+                0.8,
+                [20, 20, 8, 8],
+                Some(serde_json::json!({
+                    "kind": "rect",
+                    "roi": [16, 16, 32, 16],
+                    "invert": true
+                })),
+                None,
+            )
+            .with_tap_override(move |x, y| {
+                seen.lock().unwrap().push((x, y));
+                Ok(())
+            }),
+        );
+
+        let (status, out) =
+            get_route(&server, "/task/asset/collection/match?id=COL&live=1&real=1");
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(v["clicked"], true, "{out}");
+        assert_eq!(v["tap_ok"], true, "{out}");
+        // Dry-run keeps the historical whole-screen display box for invert.
+        assert_eq!(v["action_box"], serde_json::json!([0, 0, 64, 48]), "{out}");
+        let px = v["click_point"][0].as_i64().expect("click x") as i32;
+        let py = v["click_point"][1].as_i64().expect("click y") as i32;
+        let excluded = (16..48).contains(&px) && (16..32).contains(&py);
+        assert!(
+            !excluded,
+            "an invert shape must never click its excluded rect: {out}"
+        );
+        assert!(
+            (0..64).contains(&px) && (0..48).contains(&py),
+            "the point still has to be on screen: {out}"
+        );
+        assert_eq!(*taps.lock().unwrap(), vec![(px, py)], "{out}");
+    }
+
+    #[test]
+    fn collection_match_real_concave_polygon_samples_inside_the_shape() {
+        let td = TempDir::new("collection-real-polygon");
+        let taps = Arc::new(Mutex::new(Vec::new()));
+        let seen = taps.clone();
+        // L-shaped polygon: its bbox centre (32,22) is outside the effective
+        // area, so a bbox-centre click would be wrong even without invert.
+        let points = serde_json::json!([
+            [2, 2],
+            [62, 2],
+            [62, 12],
+            [12, 12],
+            [12, 42],
+            [2, 42]
+        ]);
+        let shape = oas_runtime::ClickShape {
+            rect: None,
+            points: Some(vec![
+                oas_types::Point { x: 2, y: 2 },
+                oas_types::Point { x: 62, y: 2 },
+                oas_types::Point { x: 62, y: 12 },
+                oas_types::Point { x: 12, y: 12 },
+                oas_types::Point { x: 12, y: 42 },
+                oas_types::Point { x: 2, y: 42 },
+            ]),
+            invert: false,
+        };
+        assert!(
+            !shape.contains(oas_types::Point { x: 32, y: 22 }),
+            "sanity: the bbox centre must be outside the concave polygon"
+        );
+        let server = live_collection_frame(
+            collection_match_fixture_with_shapes(
+                td.path(),
+                0.8,
+                [20, 20, 8, 8],
+                Some(serde_json::json!({
+                    "kind": "polygon",
+                    "points": points,
+                    "invert": false
+                })),
+                None,
+            )
+            .with_tap_override(move |x, y| {
+                seen.lock().unwrap().push((x, y));
+                Ok(())
+            }),
+        );
+
+        let (status, out) =
+            get_route(&server, "/task/asset/collection/match?id=COL&live=1&real=1");
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(v["clicked"], true, "{out}");
+        let px = v["click_point"][0].as_i64().expect("click x") as i32;
+        let py = v["click_point"][1].as_i64().expect("click y") as i32;
+        assert!(
+            shape.contains(oas_types::Point { x: px, y: py }),
+            "the sampled point must be inside the concave polygon: {out}"
+        );
+        assert_eq!(*taps.lock().unwrap(), vec![(px, py)], "{out}");
+    }
+
+    #[test]
+    fn collection_match_real_out_of_frame_shape_is_a_loud_400() {
+        let td = TempDir::new("collection-real-oob");
+        let taps = Arc::new(Mutex::new(Vec::new()));
+        let seen = taps.clone();
+        // The live "device screen" is 64x40 while the assets were authored for
+        // 64x48; the collection-level shape [20,45,8,3] is legal at design
+        // resolution but entirely outside the live frame. Sampling must fail
+        // loudly, never clamp to the frame edge or fall back to a centre.
+        let server = with_live_frame(
+            collection_match_fixture_with_shapes(
+                td.path(),
+                0.8,
+                [20, 20, 8, 8],
+                None,
+                Some(serde_json::json!({"kind": "rect", "roi": [20, 45, 8, 3], "invert": false})),
+            )
+            .with_tap_override(move |x, y| {
+                seen.lock().unwrap().push((x, y));
+                Ok(())
+            }),
+            crop_frame(&collection_frame(), 0, 0, 64, 40),
+        );
+
+        // The dry-run still reports the translated (out-of-frame) box.
+        let (status, out) = get_route(&server, "/task/asset/collection/match?id=COL&live=1");
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("dry json");
+        assert_eq!(v["action_box"], serde_json::json!([20, 45, 8, 3]), "{out}");
+        assert_eq!(v["pass"], true, "{out}");
+
+        let (status, out) =
+            get_route(&server, "/task/asset/collection/match?id=COL&live=1&real=1");
+        assert!(status.contains("400"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("error json");
+        assert_eq!(v["ok"], false, "{out}");
+        assert_eq!(v["clicked"], false, "{out}");
+        assert!(v["click_point"].is_null(), "{out}");
+        let text = v["errors"][0].as_str().unwrap_or_default();
+        assert!(
+            text.contains("collection real click") && text.contains("no clickable point"),
+            "an unsampleable shape must fail loudly: {out}"
+        );
+        assert!(
+            taps.lock().unwrap().is_empty(),
+            "an out-of-frame shape must never tap: {out}"
+        );
+    }
+
+    #[test]
+    fn collection_match_real_without_any_geometry_is_a_loud_400() {
+        let td = TempDir::new("collection-real-nogeom");
+        let taps = Arc::new(Mutex::new(Vec::new()));
+        let seen = taps.clone();
+        // Recognition-source member and no collection-level shape: the match
+        // passes but there is nothing to click, which must be loud (400), not a
+        // made-up centre.
+        let server = live_collection_frame(
+            collection_match_fixture_with_shapes(td.path(), 0.8, [20, 20, 8, 8], None, None)
+                .with_tap_override(move |x, y| {
+                    seen.lock().unwrap().push((x, y));
+                    Ok(())
+                }),
+        );
+
+        let (status, out) =
+            get_route(&server, "/task/asset/collection/match?id=COL&live=1&real=1");
+        assert!(status.contains("400"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("error json");
+        assert_eq!(v["ok"], false, "{out}");
+        assert_eq!(v["clicked"], false, "{out}");
+        assert!(v["click_point"].is_null(), "{out}");
+        let text = v["errors"][0].as_str().unwrap_or_default();
+        assert!(text.contains("no action_box"), "{out}");
+        assert!(taps.lock().unwrap().is_empty(), "{out}");
+    }
+
+    #[test]
+    fn collection_match_real_rejects_unknown_values() {
+        let td = TempDir::new("collection-real-invalid");
+        let taps = Arc::new(Mutex::new(Vec::new()));
+        let seen = taps.clone();
+        let server = collection_match_fixture(td.path(), 0.8).with_tap_override(move |x, y| {
+            seen.lock().unwrap().push((x, y));
+            Ok(())
+        });
+
+        let (status, out) = get_route(&server, "/task/asset/collection/match?id=COL&real=yes");
+        assert!(status.contains("400"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("error json");
+        assert_eq!(v["ok"], false, "{out}");
+        let text = v["errors"][0].as_str().unwrap_or_default();
+        assert!(
+            text.contains("invalid `real` value `yes`"),
+            "an unknown real value must never silently downgrade to dry: {out}"
+        );
+        assert!(taps.lock().unwrap().is_empty(), "{out}");
+    }
+
+    #[test]
+    fn input_tap_route_taps_the_live_frame_and_rejects_out_of_bounds_points() {
+        let taps = Arc::new(Mutex::new(Vec::new()));
+        let seen = taps.clone();
+        let server = Server::new(Adb::from_env()).with_tap_override(move |x, y| {
             seen.lock().unwrap().push((x, y));
             Ok(())
         });
         install_live_frame(&server);
 
-        let (status, out) = get_route(&server, "/task/asset/collection/match?id=COL&real=1");
+        let (status, out) =
+            post_route(&server, "/input/tap", "application/json", br#"{"x":10,"y":12}"#);
         assert!(status.contains("200"), "{status} {out}");
-        let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("tap json");
         assert_eq!(v["ok"], true, "{out}");
-        assert_eq!(v["pass"], false, "{out}");
-        assert_eq!(v["real"], true, "{out}");
-        assert_eq!(v["clicked"], false, "{out}");
-        assert_eq!(v["tap_ok"], false, "{out}");
-        assert!(v["click_point"].is_null(), "{out}");
-        assert!(
-            taps.lock().unwrap().is_empty(),
-            "a below-threshold match must never tap: {out}"
+        assert_eq!(v["device"], "test-device", "{out}");
+        assert_eq!(v["gesture"], "tap", "{out}");
+        assert_eq!(v["x"], 10, "{out}");
+        assert_eq!(v["y"], 12, "{out}");
+        assert_eq!(*taps.lock().unwrap(), vec![(10, 12)], "{out}");
+
+        // 64x48 live frame: x == width is out of bounds → 400, no second tap.
+        let (status, out) =
+            post_route(&server, "/input/tap", "application/json", br#"{"x":64,"y":12}"#);
+        assert!(status.contains("400"), "{status} {out}");
+        assert_eq!(
+            taps.lock().unwrap().len(),
+            1,
+            "an out-of-bounds tap must never reach the device: {out}"
         );
     }
 
