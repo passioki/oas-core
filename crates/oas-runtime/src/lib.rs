@@ -19,7 +19,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use oas_flow::{
-    eval, DragAxis, DragTarget, EvalContext, Expect, Expr, Flow, InterruptRule, Locator, Step, Value,
+    eval, DragAxis, DragShape, DragTarget, EvalContext, Expect, Expr, Flow, InterruptRule, Locator,
+    Step, Value,
 };
 use oas_perceive::{GrayImage, Matcher};
 use oas_types::{Exit, Frame, InputSink, Outcome, Point, Rect, ScreenSource};
@@ -198,6 +199,63 @@ impl ClickShape {
             "operation shape has no clickable point inside the {}x{} frame",
             w, h
         ))
+    }
+}
+
+/// One resolved `drag` endpoint (v1.2.5 O-2).
+///
+/// `rect` is the historical bbox (the margin domain and the fallback when the
+/// flow carries no `shape`); `shape` is the optional exact operation shape,
+/// converted field-for-field into the same [`ClickShape`] the click path uses.
+struct DragEndpoint {
+    rect: Rect,
+    shape: Option<ClickShape>,
+}
+
+impl DragEndpoint {
+    fn shape_label(&self) -> &'static str {
+        match self.shape.as_ref() {
+            None => "none",
+            Some(s) if s.rect.is_some() => "rect",
+            Some(_) => "polygon",
+        }
+    }
+
+    fn invert(&self) -> bool {
+        self.shape.as_ref().is_some_and(|s| s.invert)
+    }
+
+    /// `margin` only has the documented "inset the candidate rectangle" meaning
+    /// (EDITOR-UX-PLAN §15.3). A polygon or an inverted shape samples its own
+    /// effective region, so the inset is ignored there (the step detail records
+    /// `margin=ignored`). A non-inverted rect shape keeps the bbox path.
+    fn ignores_margin(&self) -> bool {
+        match self.shape.as_ref() {
+            None => false,
+            Some(s) => s.rect.is_none() || s.invert,
+        }
+    }
+}
+
+/// v1.2.5 (O-2): a flow `region` drag shape is the same geometry as an asset
+/// `action_shape`, so drag sampling and click sampling share one algorithm.
+/// `oas_task::ActionShape::to_click_shape` does the identical mapping.
+impl From<&DragShape> for ClickShape {
+    fn from(shape: &DragShape) -> Self {
+        ClickShape {
+            rect: shape.roi.map(|r| Rect {
+                x: r[0],
+                y: r[1],
+                w: r[2],
+                h: r[3],
+            }),
+            points: shape.points.as_ref().map(|pts| {
+                pts.iter()
+                    .map(|p| Point { x: p[0], y: p[1] })
+                    .collect()
+            }),
+            invert: shape.invert,
+        }
     }
 }
 
@@ -1597,29 +1655,38 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         }
     }
 
-    /// Resolve a `drag` endpoint to a frame rectangle.
+    /// Resolve a `drag` endpoint to its bbox rectangle + optional exact shape.
     ///
     /// `region`/`point` need no assets; `ocr_text` reads the line's bbox from an
     /// OCR asset or an inline ROI. A single-line OCR target has no line bbox by
     /// design, so it is rejected with a clear message.
-    fn drag_target_rect(&mut self, t: &DragTarget) -> Result<oas_types::Rect, String> {
+    ///
+    /// v1.2.5 (O-2): only a `region` target can carry a `shape`; `point` and
+    /// `ocr_text` keep `shape: None` and thus their historical behaviour.
+    fn drag_target(&mut self, t: &DragTarget) -> Result<DragEndpoint, String> {
         match t {
-            DragTarget::Region { roi } => Ok(oas_types::Rect {
-                x: roi[0],
-                y: roi[1],
-                w: roi[2],
-                h: roi[3],
+            DragTarget::Region { roi, shape } => Ok(DragEndpoint {
+                rect: Rect {
+                    x: roi[0],
+                    y: roi[1],
+                    w: roi[2],
+                    h: roi[3],
+                },
+                shape: shape.as_ref().map(ClickShape::from),
             }),
-            DragTarget::Point { x, y } => Ok(oas_types::Rect {
-                x: *x,
-                y: *y,
-                w: 1,
-                h: 1,
+            DragTarget::Point { x, y } => Ok(DragEndpoint {
+                rect: Rect {
+                    x: *x,
+                    y: *y,
+                    w: 1,
+                    h: 1,
+                },
+                shape: None,
             }),
             DragTarget::OcrText { sel, roi, text } => {
                 let read = if let Some(roi) = roi {
                     self.ocr_read_rect(
-                        oas_types::Rect {
+                        Rect {
                             x: roi[0],
                             y: roi[1],
                             w: roi[2],
@@ -1633,20 +1700,53 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         .ok_or_else(|| "ocr_text drag target needs sel or roi".to_string())?;
                     self.ocr_read(&sel)?
                 };
-                match read {
+                let rect = match read {
                     OcrRead::Lines(lines) => lines
                         .iter()
                         .find(|l| ocr_text_matches(text, l.text.as_str()))
                         .map(|l| l.rect)
                         .ok_or_else(|| {
                             format!("drag ocr_text: no line equals {text:?} in the region")
-                        }),
-                    OcrRead::Single(..) => Err(
-                        "drag ocr_text target must use ocr_lines/inline det (single-line has no bbox)"
-                            .into(),
-                    ),
-                }
+                        })?,
+                    OcrRead::Single(..) => {
+                        return Err(
+                            "drag ocr_text target must use ocr_lines/inline det (single-line has no bbox)"
+                                .into(),
+                        )
+                    }
+                };
+                Ok(DragEndpoint {
+                    rect,
+                    shape: None,
+                })
             }
+        }
+    }
+
+    /// Sample one drag endpoint (v1.2.5 O-2).
+    ///
+    /// * no shape, or a **non-inverted rect** shape: the historical bbox path
+    ///   `random_point_in(rect, margin)`, bit-for-bit unchanged.
+    /// * polygon or inverted shape: the same [`ClickShape::sample`] the click
+    ///   path uses (point-in-polygon; full screen minus the shape for invert).
+    ///   `margin` has no defined meaning there and is ignored.
+    ///
+    /// Sampling failures stay **loud** — they never fall back to the bbox or its
+    /// centre (that was the §E-72 P1-3 defect on the click path).
+    fn sample_drag_point(
+        &mut self,
+        endpoint: &DragEndpoint,
+        margin: f32,
+        w: u32,
+        h: u32,
+    ) -> Result<Point, String> {
+        let exact = endpoint
+            .shape
+            .as_ref()
+            .filter(|s| s.rect.is_none() || s.invert);
+        match exact {
+            None => Ok(self.random_point_in(endpoint.rect, margin)),
+            Some(shape) => shape.sample(w, h, &mut self.rng),
         }
     }
 
@@ -2865,12 +2965,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 margin,
             } => {
                 self.reobserve_screen()?;
-                let src_rect = self.drag_target_rect(from)?;
+                let src = self.drag_target(from)?;
                 self.observe_screen()?;
                 let (w, h) = self
                     .screen.size()
                     .ok_or_else(|| "drag: no frame available".to_string())?;
-                let start = self.random_point_in(src_rect, *margin);
+                let start = self
+                    .sample_drag_point(&src, *margin, w, h)
+                    .map_err(|e| format!("drag from target: {e}"))?;
                 let (ux, uy) = match direction {
                     DragAxis::Up => (0, -1),
                     DragAxis::Down => (0, 1),
@@ -2886,13 +2988,18 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         start.x, start.y, w, h
                     ));
                 }
+                let mut dst: Option<DragEndpoint> = None;
                 let end = if let Some(target) = to {
-                    let rect = self.drag_target_rect(target)?;
+                    let ep = self.drag_target(target)?;
                     // Random end inside the target region, but only accept it when
-                    // it really lies in `direction` (v1.1 方向性要求).
+                    // it really lies in `direction` (v1.1 方向性要求). With an
+                    // exact shape the candidate already lies inside the shape, so
+                    // only the direction/distance filter can reject it.
                     let mut picked = None;
                     for _ in 0..24 {
-                        let p = self.random_point_in(rect, *margin);
+                        let p = self
+                            .sample_drag_point(&ep, *margin, w, h)
+                            .map_err(|e| format!("drag to target: {e}"))?;
                         let dx = p.x - start.x;
                         let dy = p.y - start.y;
                         let dot = dx * ux + dy * uy;
@@ -2902,15 +3009,19 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             break;
                         }
                     }
-                    picked.ok_or_else(|| {
+                    let target_end = picked.ok_or_else(|| {
                         format!(
-                            "drag target in direction `{}` is unreachable from ({},{}) (no point with positive {}-ward distance)",
+                            "drag target in direction `{}` is unreachable from ({},{}) (no point with positive {}-ward distance, target shape={}{})",
                             direction.as_str(),
                             start.x,
                             start.y,
-                            direction.as_str()
+                            direction.as_str(),
+                            ep.shape_label(),
+                            if ep.invert() { ", invert=true" } else { "" }
                         )
-                    })?
+                    })?;
+                    dst = Some(ep);
+                    target_end
                 } else {
                     let range = distance.ok_or_else(|| "drag needs to or distance".to_string())?;
                     let span = (range[1] - range[0]).max(1) as f64;
@@ -2938,8 +3049,13 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 }
                 self.input.swipe(start, end, ms)?;
                 self.invalidate_frame();
+                // v1.2.5 (O-2): record which endpoints used an exact shape so a
+                // flow can be audited; polygon/invert sampling ignores `margin`
+                // (the pure-bbox detail stays byte-identical).
+                let margin_ignored = src.ignores_margin()
+                    || dst.as_ref().is_some_and(DragEndpoint::ignores_margin);
                 Ok(format!(
-                    "dragged direction={} from=({},{}) to=({},{}) ms={} randomized=true frame={}x{}",
+                    "dragged direction={} from=({},{}) to=({},{}) ms={} randomized=true frame={}x{} from_shape={} from_invert={} to_shape={} to_invert={}{}",
                     direction.as_str(),
                     start.x,
                     start.y,
@@ -2947,7 +3063,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     end.y,
                     ms,
                     w,
-                    h
+                    h,
+                    src.shape_label(),
+                    src.invert(),
+                    dst.as_ref().map_or("none", DragEndpoint::shape_label),
+                    dst.as_ref().is_some_and(DragEndpoint::invert),
+                    if margin_ignored { " margin=ignored" } else { "" }
                 ))
             }
             Step::SetVar { name, value } => {
@@ -5932,6 +6053,252 @@ mod tests {
         );
         match interp.run(&f) {
             RunResult::Failed(msg) => assert!(msg.contains("unreachable"), "{msg}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(input.swipes.borrow().is_empty(), "invalid drag must not swipe");
+    }
+
+    // ---- v1.2.5 (O-2): drag endpoints with an inline operation shape ----
+
+    /// Triangle used by the O-2 drag tests: screen 64x48, `[[4,4],[40,4],[4,40]]`.
+    fn triangle_shape() -> ClickShape {
+        ClickShape {
+            rect: None,
+            points: Some(vec![
+                Point { x: 4, y: 4 },
+                Point { x: 40, y: 4 },
+                Point { x: 4, y: 40 },
+            ]),
+            invert: false,
+        }
+    }
+
+    #[test]
+    fn drag_from_polygon_samples_inside_polygon() {
+        let shape = triangle_shape();
+        for i in 0..32 {
+            let (mut interp, input) = mk_inspect(FakeScreen::new());
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"drag","args":{
+                       "from":{"kind":"region","roi":[0,0,64,48],
+                               "shape":{"kind":"polygon","points":[[4,4],[40,4],[4,40]],"invert":false}},
+                       "direction":"right","distance":[5,10],"duration_ms":[100,120],"margin":0.0
+                     }},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done), "run {i}");
+            let swipes = input.swipes.borrow().clone();
+            assert_eq!(swipes.len(), 1, "run {i}: exactly one swipe");
+            let (from, _to, _ms) = swipes[0];
+            assert!(
+                shape.contains(from),
+                "run {i}: drag start {from:?} must lie inside the polygon"
+            );
+            let ev = interp
+                .events()
+                .iter()
+                .rev()
+                .find(|e| e.op == "drag")
+                .expect("drag event");
+            assert!(ev.detail.contains("from_shape=polygon"), "{}", ev.detail);
+            assert!(ev.detail.contains("from_invert=false"), "{}", ev.detail);
+            assert!(
+                ev.detail.contains("margin=ignored"),
+                "polygon sampling ignores margin: {}",
+                ev.detail
+            );
+        }
+    }
+
+    #[test]
+    fn drag_invert_shape_start_is_outside_excluded_shape() {
+        // Invert excludes the right band [40,0,24,48]; any start is x<40, so the
+        // right-ward distance endpoint can never leave the 64x48 frame.
+        for i in 0..16 {
+            let (mut interp, input) = mk_inspect(FakeScreen::new());
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"drag","args":{
+                       "from":{"kind":"region","roi":[40,0,24,48],
+                               "shape":{"kind":"rect","roi":[40,0,24,48],"invert":true}},
+                       "direction":"right","distance":[5,10],"duration_ms":[100,120]
+                     }},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done), "run {i}");
+            let swipes = input.swipes.borrow().clone();
+            assert_eq!(swipes.len(), 1, "run {i}: exactly one swipe");
+            let (from, _to, _ms) = swipes[0];
+            assert!(
+                from.x < 40,
+                "run {i}: inverted drag start {from:?} fell into the excluded rect"
+            );
+            let ev = interp
+                .events()
+                .iter()
+                .rev()
+                .find(|e| e.op == "drag")
+                .expect("drag event");
+            assert!(ev.detail.contains("from_invert=true"), "{}", ev.detail);
+            assert!(ev.detail.contains("from_shape=rect"), "{}", ev.detail);
+            assert!(ev.detail.contains("margin=ignored"), "{}", ev.detail);
+        }
+    }
+
+    #[test]
+    fn drag_to_polygon_shape_samples_endpoint_inside_target_shape() {
+        // Target triangle lives on the right (x>=30); a right-ward drag from the
+        // left region always satisfies dot>0 and dist>=20, so every run works.
+        let target = ClickShape {
+            rect: None,
+            points: Some(vec![
+                Point { x: 30, y: 0 },
+                Point { x: 63, y: 0 },
+                Point { x: 63, y: 40 },
+            ]),
+            invert: false,
+        };
+        for i in 0..16 {
+            let (mut interp, input) = mk_inspect(FakeScreen::new());
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"drag","args":{
+                       "from":{"kind":"region","roi":[0,0,10,10]},
+                       "to":{"kind":"region","roi":[30,0,34,41],
+                             "shape":{"kind":"polygon","points":[[30,0],[63,0],[63,40]],"invert":false}},
+                       "direction":"right","duration_ms":[100,120]
+                     }},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done), "run {i}");
+            let swipes = input.swipes.borrow().clone();
+            assert_eq!(swipes.len(), 1, "run {i}: exactly one swipe");
+            let (from, to, _ms) = swipes[0];
+            assert!(to.x > from.x, "run {i}: direction right {from:?} -> {to:?}");
+            assert!(
+                target.contains(to),
+                "run {i}: drag end {to:?} must lie inside the target polygon"
+            );
+            let ev = interp
+                .events()
+                .iter()
+                .rev()
+                .find(|e| e.op == "drag")
+                .expect("drag event");
+            assert!(ev.detail.contains("to_shape=polygon"), "{}", ev.detail);
+            assert!(ev.detail.contains("margin=ignored"), "{}", ev.detail);
+        }
+    }
+
+    #[test]
+    fn drag_invert_shape_covering_screen_fails_loudly_without_swipe() {
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"region","roi":[0,0,64,48],
+                           "shape":{"kind":"rect","roi":[0,0,64,48],"invert":true}},
+                   "direction":"right","distance":[5,10]
+                 }},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("no clickable point"), "{msg}");
+                assert!(msg.contains("drag from target"), "{msg}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(
+            input.swipes.borrow().is_empty(),
+            "a drag with no valid shape point must never swipe (no bbox/centre fallback)"
+        );
+    }
+
+    #[test]
+    fn drag_region_without_shape_keeps_bbox_margin_behavior() {
+        // bbox [4,4,40,30], margin 0.25 => inset x=10, y=7 => x in [14,33],
+        // y in [11,26]. The endpoint only moves down 5..8px (<=34), still in frame.
+        for i in 0..32 {
+            let (mut interp, input) = mk_inspect(FakeScreen::new());
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"drag","args":{
+                       "from":{"kind":"region","roi":[4,4,40,30]},
+                       "direction":"down","distance":[5,8],"duration_ms":[100,120],"margin":0.25
+                     }},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done), "run {i}");
+            let swipes = input.swipes.borrow().clone();
+            let (from, _to, _ms) = swipes[0];
+            assert!(
+                (14..=33).contains(&from.x) && (11..=26).contains(&from.y),
+                "run {i}: bbox margin lost, start {from:?}"
+            );
+            let ev = interp
+                .events()
+                .iter()
+                .rev()
+                .find(|e| e.op == "drag")
+                .expect("drag event");
+            assert!(ev.detail.contains("from_shape=none"), "{}", ev.detail);
+            assert!(
+                !ev.detail.contains("margin=ignored"),
+                "the pure-bbox path keeps margin: {}",
+                ev.detail
+            );
+        }
+        // A non-inverted rect shape is exactly the bbox path, so the documented
+        // margin inset must still apply (only polygon/invert ignore it).
+        for i in 0..8 {
+            let (mut interp, input) = mk_inspect(FakeScreen::new());
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"drag","args":{
+                       "from":{"kind":"region","roi":[4,4,40,30],
+                               "shape":{"kind":"rect","roi":[4,4,40,30],"invert":false}},
+                       "direction":"down","distance":[5,8],"duration_ms":[100,120],"margin":0.25
+                     }},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done), "run {i}");
+            let (from, _to, _ms) = input.swipes.borrow()[0];
+            assert!(
+                (14..=33).contains(&from.x) && (11..=26).contains(&from.y),
+                "run {i}: rect shape must keep the bbox margin, start {from:?}"
+            );
+            let ev = interp
+                .events()
+                .iter()
+                .rev()
+                .find(|e| e.op == "drag")
+                .expect("drag event");
+            assert!(ev.detail.contains("from_shape=rect"), "{}", ev.detail);
+            assert!(!ev.detail.contains("margin=ignored"), "{}", ev.detail);
+        }
+    }
+
+    #[test]
+    fn drag_wrong_direction_with_shape_still_errors() {
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"region","roi":[40,10,10,10],
+                           "shape":{"kind":"rect","roi":[40,10,10,10],"invert":false}},
+                   "to":{"kind":"region","roi":[5,10,10,10],
+                         "shape":{"kind":"rect","roi":[5,10,10,10],"invert":false}},
+                   "direction":"right"
+                 }},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("unreachable"), "{msg}");
+                assert!(msg.contains("target shape=rect"), "{msg}");
+            }
             other => panic!("expected Failed, got {other:?}"),
         }
         assert!(input.swipes.borrow().is_empty(), "invalid drag must not swipe");

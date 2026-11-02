@@ -21,23 +21,25 @@ const assert = require('assert');
 
 const appPath = path.join(__dirname, 'app.js');
 const htmlPath = path.join(__dirname, 'index.html');
+const builderPath = path.join(__dirname, 'builder.js');
 const source = fs.readFileSync(appPath, 'utf8');
 const html = fs.readFileSync(htmlPath, 'utf8');
+const builderSource = fs.readFileSync(builderPath, 'utf8');
 
-function extractFunction(name) {
-  const re = new RegExp(`(?:^|\\n)(?:async\\s+)?function\\s+${name}\\s*\\(`);
-  const m = re.exec(source);
-  if (!m) throw new Error(`function ${name} not found in app.js`);
+function extractFunctionFrom(text, name, label) {
+  const re = new RegExp(`(?:^|\\n)[ \\t]*(?:async\\s+)?function\\s+${name}\\s*\\(`);
+  const m = re.exec(text);
+  if (!m) throw new Error(`function ${name} not found in ${label}`);
   const start = m.index + (m[0][0] === '\n' ? 1 : 0);
-  let i = source.indexOf('{', m.index);
+  let i = text.indexOf('{', m.index);
   let depth = 0;
   let quote = null;
   let esc = false;
   let lineComment = false;
   let blockComment = false;
-  for (; i < source.length; i++) {
-    const ch = source[i];
-    const next = source[i + 1];
+  for (; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
     if (lineComment) {
       if (ch === '\n') lineComment = false;
       continue;
@@ -78,10 +80,14 @@ function extractFunction(name) {
     if (ch === '{') depth++;
     else if (ch === '}') {
       depth--;
-      if (depth === 0) return source.slice(start, i + 1);
+      if (depth === 0) return text.slice(start, i + 1);
     }
   }
   throw new Error(`unterminated function ${name}`);
+}
+
+function extractFunction(name) {
+  return extractFunctionFrom(source, name, 'app.js');
 }
 
 const PURE_FUNCTIONS = [
@@ -92,12 +98,16 @@ const PURE_FUNCTIONS = [
   'actionShapeEditState',
   'loadActionShapeForEdit',
   'currentActionShape',
+  'regionDragStep',
   'assetTestModeLabel',
   'assetTestGestureRequest',
   'sendAssetTestGesture',
   'realAssetTestGuard',
   'confirmAssetTestGestures',
   'updateAssetTestModeButton',
+  'assetCollectionMatchUrl',
+  'assetCollectionClickPoint',
+  'assetCollectionMatchLine',
   'segmentIntersects',
   'polygonOverlapsRect',
   'rectsOverlap',
@@ -128,12 +138,16 @@ const {
   actionShapeEditState,
   loadActionShapeForEdit,
   currentActionShape,
+  regionDragStep,
   assetTestModeLabel,
   assetTestGestureRequest,
   sendAssetTestGesture,
   realAssetTestGuard,
   confirmAssetTestGestures,
   updateAssetTestModeButton,
+  assetCollectionMatchUrl,
+  assetCollectionClickPoint,
+  assetCollectionMatchLine,
   actionValidity,
   polygonOverlapsRect,
   boxCenter,
@@ -322,6 +336,41 @@ eq(
   'swipe duration clamps to the server range'
 );
 eq(assetTestGestureRequest(true, 'tap', { x: 'bad', y: 2 }), null, 'invalid coordinate builds no request');
+
+// --- O-1: collection test real=1 URL / point / result-line contract ---
+eq(
+  assetCollectionMatchUrl('任务', '集合', '&live=1', false),
+  '/task/asset/collection/match?task=%E4%BB%BB%E5%8A%A1&id=%E9%9B%86%E5%90%88&live=1',
+  'collection dry-run URL is byte-identical to the old call (no real param)'
+);
+eq(
+  assetCollectionMatchUrl('t', 'C', '&frame_id=3', true),
+  '/task/asset/collection/match?task=t&id=C&frame_id=3&real=1',
+  'collection real URL appends real=1 after the frame query'
+);
+eq(assetCollectionClickPoint([20, 20, 8, 8]), [24, 24], 'collection click point is the action-box centre');
+eq(assetCollectionClickPoint([0, 0, 1, 1]), [0, 0], '1x1 action box centre');
+eq(assetCollectionClickPoint(null), null, 'missing action box has no click point');
+eq(assetCollectionClickPoint([1, 2, 3]), null, 'malformed action box has no click point');
+eq(assetCollectionClickPoint([0, 0, 0, 4]), null, 'zero-width action box has no click point');
+eq(
+  assetCollectionMatchLine(
+    '实时帧',
+    { member: 'M', score: 0.98765, threshold: 0.8, pass: true, x: 20, y: 20, action_box: [20, 20, 8, 8] },
+    'live'
+  ),
+  '实时帧: 最佳成员 M · score=0.9877 · threshold=0.800 · pass=true · 位置 (20,20) · 帧来源：live · 操作区域[20,20,8,8]',
+  'collection match line keeps the dry-run wording and formats numbers'
+);
+eq(
+  assetCollectionMatchLine(
+    '',
+    { member: 'M', score: 1, threshold: 0.8, pass: false, x: 1, y: 2 },
+    'position:#3'
+  ),
+  '最佳成员 M · score=1.0000 · threshold=0.800 · pass=false · 位置 (1,2) · 帧来源：position:#3',
+  'collection match line supports an empty label and a fallback frame source'
+);
 
 async function checkAssetTestWiring() {
   const calls = [];
@@ -802,11 +851,109 @@ ok(/realAssetTestGuard\(\)/.test(clickTestFn), 'click test is gated by the real/
 ok(/confirmAssetTestGestures\('click'/.test(clickTestFn), 'real click confirms before sending');
 ok(/sendAssetTestGesture\(true, 'tap'/.test(clickTestFn), 'real click sends POST /input/tap');
 ok(/真实点击模式/.test(clickTestFn) && /演练/.test(clickTestFn), 'click result text distinguishes 演练/真实');
+// --- O-2: drag steps carry the operation shape (polygon / invert) ---
+// The 区域拖动 button and the asset drag test share regionDragStep, so this is
+// the single place the DSL shape contract is pinned.
+const polyDragShape = { kind: 'polygon', points: [[10, 10], [70, 10], [70, 50]], invert: true };
+const polyDrag = regionDragStep([10, 10, 61, 41], polyDragShape, 'up');
+eq(polyDrag.op, 'drag', 'regionDragStep builds a drag step');
+eq(polyDrag.args.from.kind, 'region', 'drag `from` stays a region target');
+eq(polyDrag.args.from.roi, [10, 10, 61, 41], 'from.roi is the shape bbox (old-runtime fallback)');
+eq(polyDrag.args.from.shape.kind, 'polygon', 'polygon shape is inlined into the flow');
+eq(polyDrag.args.from.shape.invert, true, 'invert is preserved on the flow shape');
+eq(polyDrag.args.direction, 'up', 'direction is passed through');
+eq(polyDrag.args.distance, [150, 500], 'default distance stays [150,500]');
+eq(polyDrag.args.duration_ms, [300, 650], 'default duration stays [300,650]');
+eq(polyDrag.args.margin, 0.15, 'default margin stays 0.15');
+
+const rectInvertDrag = regionDragStep(
+  [4, 5, 6, 7],
+  { kind: 'rect', roi: [4, 5, 6, 7], invert: true },
+  'left'
+);
+eq(
+  rectInvertDrag.args.from.shape,
+  { kind: 'rect', roi: [4, 5, 6, 7], invert: true },
+  'rect+invert is inlined too (invert changes the effective region)'
+);
+
+const bareDrag = regionDragStep([1, 2, 3, 4], null, 'down');
+eq(bareDrag.args.from, { kind: 'region', roi: [1, 2, 3, 4] }, 'no shape => legacy bbox-only `from`');
+ok(!('shape' in bareDrag.args.from), 'a missing shape never grows a shape key');
+
+const plainRectDrag = regionDragStep(
+  [9, 8, 7, 6],
+  { kind: 'rect', roi: [9, 8, 7, 6], invert: false },
+  'right'
+);
+eq(
+  plainRectDrag.args.from,
+  { kind: 'region', roi: [9, 8, 7, 6] },
+  'a plain non-inverted rect is the bbox, so output stays byte-identical'
+);
+
+const customDistanceDrag = regionDragStep([0, 0, 5, 5], null, 'up', [150, 350]);
+eq(customDistanceDrag.args.distance, [150, 350], 'the asset drag test keeps its [150,350] distance');
+
 const dragTestFn = extractFunction('testAssetDrag');
 ok(/realAssetTestGuard\(\)/.test(dragTestFn), 'drag test is gated by the real/dry-run mode');
 ok(/confirmAssetTestGestures\('drag'/.test(dragTestFn), 'real drag confirms before sending');
 ok(/sendAssetTestGesture\(true, 'swipe'/.test(dragTestFn), 'real drag sends POST /input/swipe');
 ok(/真实滑动模式/.test(dragTestFn) && /演练/.test(dragTestFn), 'drag result text distinguishes 演练/真实');
+ok(/let stepShape = null;/.test(dragTestFn), 'asset drag snapshots a frame shape');
+ok(
+  /if \(!stepShape && effShape\) stepShape = effShape;/.test(dragTestFn),
+  'shape snapshot is taken on the first successful frame (template shape already translated)'
+);
+ok(
+  /regionDragStep\(stepAction, stepShape, direction, \[150, 350\]\)/.test(dragTestFn),
+  'asset drag step is built by regionDragStep with the snapshot'
+);
+const genDragFn = extractFunction('generateRegionDrag');
+ok(/regionDragStep\(/.test(genDragFn), '区域拖动 goes through the pure regionDragStep builder');
+ok(/currentActionShape\(\)/.test(genDragFn), '区域拖动 inlines the current polygon/invert shape');
+ok(!/roi: stepAction/.test(source), 'the old shape-less asset drag `from` is gone');
+ok(
+  !/from: \{ kind: 'region', roi: r \}/.test(source),
+  'the old shape-less 区域拖动 `from` is gone'
+);
+// builder.js must not eat the new field when the user edits roi.
+const structuredDragFn = extractFunctionFrom(builderSource, 'structuredDrag', 'builder.js');
+ok(/const shape = from\.shape;/.test(structuredDragFn), 'builder keeps the drag from.shape');
+ok(
+  /shape\s*\n?\s*\? \{ kind: 'region', roi, shape \}/.test(structuredDragFn),
+  'editing roi re-emits from.shape instead of eating it'
+);
+ok(
+  /改 roi 不会改 shape/.test(structuredDragFn),
+  'builder tells the user that roi and shape are edited separately'
+);
+ok(/可选 shape/.test(structuredDragFn), 'builder drag form title mentions the optional shape');
+const collectionTestFn = extractFunction('testAssetCollection');
+ok(/realAssetTestGuard\(\)/.test(collectionTestFn), 'collection test is gated by the real/dry-run mode');
+ok(
+  /assetCollectionMatchUrl\(/.test(collectionTestFn),
+  'collection test builds both requests through the shared URL helper'
+);
+ok(
+  /real=1/.test(extractFunction('assetCollectionMatchUrl')),
+  'collection real request carries real=1'
+);
+ok(
+  /confirmAssetTestGestures\('click'/.test(collectionTestFn),
+  'collection real mode confirms the concrete click before sending'
+);
+ok(
+  collectionTestFn.indexOf("confirmAssetTestGestures('click'") <
+    collectionTestFn.indexOf('frame.query, true'),
+  'collection real request is sent only after the confirmation'
+);
+ok(/真实点击（已点击/.test(collectionTestFn), 'collection real result names the actual clicked point');
+ok(/演练（未点击）/.test(collectionTestFn), 'collection dry-run result says 演练（未点击）');
+ok(
+  !/\/input\/tap/.test(collectionTestFn),
+  'collection test never duplicates the tap route (the backend owns the click)'
+);
 const guardFn = extractFunction('realAssetTestGuard');
 ok(/livePreview/.test(guardFn) && /实时预览已暂停/.test(guardFn), 'real mode refuses when live preview is off');
 

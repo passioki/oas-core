@@ -897,22 +897,35 @@ function generateRegionClick() {
   appendStepToFlow(step, '区域点击');
 }
 
+// v1.2.5 (O-2): build the `drag` step for a region drag. `shape` is the current
+// operation shape in frame coordinates ({kind,roi|points,invert}); a polygon or
+// an inverted shape is inlined next to the mandatory bbox `roi` (roi = shape
+// bbox so an older runtime still lands close to the marked area). Without a
+// polygon/invert shape the historical bbox-only step is returned unchanged.
+// Pure so the contract is testable without the DOM.
+function regionDragStep(roi, shape, direction, distance) {
+  const needsShape = !!(shape && (shape.kind === 'polygon' || shape.invert));
+  const box = needsShape ? actionShapeBBox(shape) || roi : roi;
+  const from = { kind: 'region', roi: box };
+  if (needsShape) from.shape = shape;
+  return {
+    op: 'drag',
+    args: {
+      from,
+      direction,
+      distance: Array.isArray(distance) && distance.length === 2 ? distance.slice() : [150, 500],
+      duration_ms: [300, 650],
+      margin: 0.15,
+    },
+  };
+}
+
 function generateRegionDrag() {
   const r = regionRoiArray();
   if (!r) return;
   const direction = promptDragDirection();
   if (!direction) return;
-  const step = {
-    op: 'drag',
-    args: {
-      from: { kind: 'region', roi: r },
-      direction,
-      distance: [150, 500],
-      duration_ms: [300, 650],
-      margin: 0.15,
-    },
-  };
-  appendStepToFlow(step, '区域拖动');
+  appendStepToFlow(regionDragStep(r, currentActionShape(), direction), '区域拖动');
 }
 
 // --- v1.1: 多行 OCR 行级操作（内联 ROI，不强制建素材） --------------------
@@ -1946,6 +1959,7 @@ async function testAssetDrag(it) {
   const lines = [];
   const realOps = [];
   let stepAction = null;
+  let stepShape = null;
   const fw = canvas.width || 1280;
   const fh = canvas.height || 720;
   try {
@@ -1986,6 +2000,9 @@ async function testAssetDrag(it) {
       if (direction === 'up' || direction === 'down') to.x = Math.max(0, Math.min(fw - 1, from.x + jitter));
       if (direction === 'left' || direction === 'right') to.y = Math.max(0, Math.min(fh - 1, from.y + jitter));
       if (!stepAction) stepAction = action.slice();
+      // O-2: snapshot the frame shape too (template branch already translated
+      // it via translatedActionShapeForMatch); the step stays frame-absolute.
+      if (!stepShape && effShape) stepShape = effShape;
       lines.push(
         `${frame.label}: ${direction} (${from.x},${from.y}) → (${to.x},${to.y}) · ` +
         `操作区[${action.join(',')}]${it.kind === 'template' ? '（已按匹配平移）' : ''}`
@@ -2006,16 +2023,8 @@ async function testAssetDrag(it) {
         lines.join('\n');
       return;
     }
-    const step = {
-      op: 'drag',
-      args: {
-        from: { kind: 'region', roi: stepAction },
-        direction,
-        distance: [150, 350],
-        duration_ms: [300, 650],
-        margin: 0.15,
-      },
-    };
+    // O-2: same builder as 区域拖动; stepShape is the frame snapshot above.
+    const step = regionDragStep(stepAction, stepShape, direction, [150, 350]);
     let modeNote = '';
     if (assetTestReal) {
       if (!realOps.length) {
@@ -2916,7 +2925,34 @@ async function saveAssetOrder(ids) {
   await refreshTaskAssets(task);
 }
 
+// Collection test helpers. The URL builder is shared by the dry-run preview and
+// the real request so a dry-run call stays byte-identical to the old URL, and
+// the predicted point mirrors the server's action-box centre.
+function assetCollectionMatchUrl(task, id, frameQuery, real) {
+  return `/task/asset/collection/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(id)}` +
+    `${frameQuery || ''}${real ? '&real=1' : ''}`;
+}
+
+function assetCollectionClickPoint(actionBox) {
+  if (!Array.isArray(actionBox) || actionBox.length !== 4) return null;
+  const [x, y, w, h] = actionBox.map(Number);
+  if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return null;
+  return [x + Math.floor(w / 2), y + Math.floor(h / 2)];
+}
+
+function assetCollectionMatchLine(label, s, fallbackSource) {
+  const prefix = label ? `${label}: ` : '';
+  const source = s.frame_source || fallbackSource || '';
+  return `${prefix}最佳成员 ${s.member} · score=${Number(s.score).toFixed(4)} · ` +
+    `threshold=${Number(s.threshold).toFixed(3)} · pass=${s.pass} · ` +
+    `位置 (${s.x},${s.y}) · 帧来源：${source}` +
+    (s.action_box ? ` · 操作区域[${s.action_box.join(',')}]` : '');
+}
+
 async function testAssetCollection(it) {
+  const mode = realAssetTestGuard();
+  if (!mode.ok) return;
+  const real = assetTestReal;
   const task = assetScopeTask(false);
   if (!Array.isArray(it.members) || !it.members.length) {
     resultEl.textContent = `集合「${it.id}」没有成员`;
@@ -2926,34 +2962,96 @@ async function testAssetCollection(it) {
   const summaries = [];
   try {
     for (const frame of frames) {
-      const r = await fetch(
-        `/task/asset/collection/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}${frame.query}`
-      );
-      const s = await r.json();
+      // Dry preview first: it never taps, and in real mode it gives the user a
+      // concrete point to confirm before the one request allowed to click.
+      let s = await fetch(
+        assetCollectionMatchUrl(task, it.id, frame.query, false)
+      ).then((r) => r.json());
       if (!s.ok) {
         summaries.push(`${frame.label}: ❌ ` + (s.errors || []).join('; '));
         continue;
       }
-      const source = s.frame_source || frame.source;
-      summaries.push(
-        `${frame.label}: 最佳成员 ${s.member} · score=${Number(s.score).toFixed(4)} · ` +
-        `threshold=${Number(s.threshold).toFixed(3)} · pass=${s.pass} · ` +
-        `位置 (${s.x},${s.y}) · 帧来源：${source}` +
-        (s.action_box ? ` · 操作区域[${s.action_box.join(',')}]` : '')
+      if (!real) {
+        summaries.push(assetCollectionMatchLine(frame.label, s, frame.source));
+        log(`集合测试「${it.id}」`, 'INFO', {
+          frame: frame.label,
+          frame_source: s.frame_source || frame.source,
+          member: s.member,
+          score: Number(s.score),
+          threshold: Number(s.threshold),
+          pass: s.pass,
+          action_box: s.action_box || null,
+        });
+        continue;
+      }
+      if (s.pass !== true) {
+        summaries.push(
+          `${frame.label}: ⚠ 未过阈值（未点击）· ` +
+          assetCollectionMatchLine('', s, frame.source)
+        );
+        log(`集合测试「${it.id}」未过阈值，未点击`, 'INFO', {
+          frame: frame.label,
+          member: s.member,
+          score: Number(s.score),
+          threshold: Number(s.threshold),
+        });
+        continue;
+      }
+      const point = assetCollectionClickPoint(s.action_box);
+      if (!point) {
+        summaries.push(`${frame.label}: ❌ 匹配通过但没有可点击的操作区域（未点击）`);
+        continue;
+      }
+      const confirmed = confirmAssetTestGestures('click', [{
+        label: `${frame.label} 集合「${it.id}」成员 ${s.member} 点击 (${point[0]}, ${point[1]})`,
+      }]);
+      if (!confirmed) {
+        summaries.push(`${frame.label}: 真实模式已取消（未点击）`);
+        continue;
+      }
+      const response = await fetch(
+        assetCollectionMatchUrl(task, it.id, frame.query, true)
       );
-      log(`集合测试「${it.id}」`, 'INFO', {
+      s = await response.json();
+      if (!s.ok) {
+        summaries.push(
+          `${frame.label}: ❌ 真实点击失败：` +
+          ((s.errors || []).join('; ') || `HTTP ${response.status}`)
+        );
+        continue;
+      }
+      const [x, y] = s.click_point || [];
+      if (s.clicked === true && s.tap_ok === true) {
+        summaries.push(
+          `${frame.label}: 真实点击（已点击 ${x},${y}）· ` +
+          assetCollectionMatchLine('', s, frame.source)
+        );
+      } else if (s.pass === false) {
+        summaries.push(
+          `${frame.label}: ⚠ 重新匹配未过阈值（未点击）· ` +
+          assetCollectionMatchLine('', s, frame.source)
+        );
+      } else {
+        summaries.push(
+          `${frame.label}: ⚠ 服务端未确认点击（未点击）· ` +
+          assetCollectionMatchLine('', s, frame.source)
+        );
+      }
+      log(`集合测试「${it.id}」真实点击`, 'WARN', {
         frame: frame.label,
-        frame_source: source,
         member: s.member,
-        score: Number(s.score),
-        threshold: Number(s.threshold),
-        pass: s.pass,
-        action_box: s.action_box || null,
+        clicked: s.clicked === true,
+        click_point: s.click_point || null,
+        frame_source: s.frame_source || frame.source,
       });
     }
-    resultEl.textContent =
-      `素材集合「${it.id}」测试（dry，与 runtime 同源；${frames.length} 帧）：\n` +
-      summaries.join('\n');
+    const header = real
+      ? `素材集合「${it.id}」测试（真实点击模式；${frames.length} 帧；与 runtime 同源）：`
+      : `素材集合「${it.id}」测试（${frames.length} 帧；与 runtime 同源）：`;
+    const modeLine = real
+      ? '模式：真实点击（匹配通过后先确认，再发真实点击；匹配失败/取消不点击）'
+      : '模式：演练（未点击）——只计算定位/操作区域，绝不发真实点击';
+    resultEl.textContent = header + '\n' + modeLine + '\n' + summaries.join('\n');
   } catch (e) {
     resultEl.textContent = `集合「${it.id}」测试异常：${e}`;
   }

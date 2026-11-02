@@ -616,15 +616,41 @@ pub struct Flow {
 ///
 /// `region` is the "独立区域操作" path: the user marks any rectangle (no
 /// recognition) and the runtime picks a random point inside it.
+///
+/// v1.2.5 (O-2): a `region` may additionally carry an **inline** `shape`
+/// (rect/polygon + `invert`), field-for-field the same contract as the asset
+/// `action_shape`. `roi` stays mandatory: it is the bbox fallback for runtimes
+/// that predate `shape` and the human-readable bounds. An old flow without
+/// `shape` keeps the pure-bbox behaviour (no behaviour change at all).
 #[derive(Debug, Clone, PartialEq)]
 pub enum DragTarget {
-    Region { roi: [i32; 4] },
+    Region {
+        roi: [i32; 4],
+        /// Optional exact operation shape (frame-absolute). `None` => bbox only.
+        shape: Option<DragShape>,
+    },
     OcrText {
         sel: Option<String>,
         roi: Option<[i32; 4]>,
         text: String,
     },
     Point { x: i32, y: i32 },
+}
+
+/// v1.2.5 (O-2): inline operation shape of a `region` drag endpoint.
+///
+/// Same JSON contract as `oas_task::ActionShape` (`kind`/`roi`/`points`/
+/// `invert`) so the editor can pass its `action_shape` unchanged:
+/// `kind:"rect"` uses `roi`, `kind:"polygon"` uses `points`, and
+/// `invert:true` means "everything **except** the shape". It is inline (no
+/// asset id), so it adds no asset reference and needs no translation at run
+/// time: coordinates are frame-absolute, exactly like the sibling `roi`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DragShape {
+    pub kind: String,
+    pub roi: Option<[i32; 4]>,
+    pub points: Option<Vec<[i32; 2]>>,
+    pub invert: bool,
 }
 
 /// Drag direction is mandatory (v1.1 拟人拖动): the end point must lie in this
@@ -1107,6 +1133,120 @@ fn parse_drag_axis(s: &str, path: &str) -> Result<DragAxis, FlowError> {
     }
 }
 
+/// Shoelace area × 2 for an inline drag polygon (`0` = collinear/degenerate).
+fn drag_polygon_area2(points: &[[i32; 2]]) -> i64 {
+    let mut area2: i64 = 0;
+    for i in 0..points.len() {
+        let a = points[i];
+        let b = points[(i + 1) % points.len()];
+        area2 += a[0] as i64 * b[1] as i64 - b[0] as i64 * a[1] as i64;
+    }
+    area2
+}
+
+/// v1.2.5 (O-2): parse the optional inline `shape` of a `region` drag target.
+///
+/// The contract mirrors the asset `action_shape` (`kind`/`roi`|`points`/
+/// `invert`) but is validated here so a broken shape fails loudly with a JSON
+/// path instead of silently degrading to the bbox at run time. `path` points at
+/// `...from.shape` / `...to.shape`; nested errors add `.roi` / `.points[i]` /
+/// `.invert`.
+fn parse_drag_shape(v: &serde_json::Value, path: &str) -> Result<DragShape, FlowError> {
+    let kind = v
+        .get("kind")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| FlowError::new(path, "drag shape needs `kind` (allowed: rect, polygon)"))?;
+    let invert = match v.get("invert") {
+        None => false,
+        Some(b) => b.as_bool().ok_or_else(|| {
+            FlowError::new(format!("{path}.invert"), "`invert` must be a boolean")
+        })?,
+    };
+    match kind {
+        "rect" => {
+            if v.get("points").is_some() {
+                return Err(FlowError::new(
+                    format!("{path}.points"),
+                    "rect drag shape must use `roi`, not `points`",
+                ));
+            }
+            let roi = parse_roi4(
+                v.get("roi")
+                    .ok_or_else(|| FlowError::new(format!("{path}.roi"), "rect drag shape needs `roi`"))?,
+                &format!("{path}.roi"),
+            )?;
+            Ok(DragShape {
+                kind: "rect".to_string(),
+                roi: Some(roi),
+                points: None,
+                invert,
+            })
+        }
+        "polygon" => {
+            if v.get("roi").is_some() {
+                return Err(FlowError::new(
+                    format!("{path}.roi"),
+                    "polygon drag shape must use `points`, not `roi`",
+                ));
+            }
+            let pts_path = format!("{path}.points");
+            let arr = v.get("points").and_then(|x| x.as_array()).ok_or_else(|| {
+                FlowError::new(pts_path.clone(), "polygon drag shape needs `points`: [[x,y],...]")
+            })?;
+            if arr.len() < 3 {
+                return Err(FlowError::new(
+                    pts_path.clone(),
+                    format!(
+                        "polygon drag shape needs at least 3 points (got {})",
+                        arr.len()
+                    ),
+                ));
+            }
+            let mut points = Vec::with_capacity(arr.len());
+            for (i, p) in arr.iter().enumerate() {
+                let pair = p.as_array().ok_or_else(|| {
+                    FlowError::new(format!("{pts_path}[{i}]"), "each point must be [x,y]")
+                })?;
+                if pair.len() != 2 {
+                    return Err(FlowError::new(
+                        format!("{pts_path}[{i}]"),
+                        "each point must be exactly [x,y]",
+                    ));
+                }
+                let x = pair[0].as_i64().ok_or_else(|| {
+                    FlowError::new(format!("{pts_path}[{i}][0]"), "x must be an integer")
+                })? as i32;
+                let y = pair[1].as_i64().ok_or_else(|| {
+                    FlowError::new(format!("{pts_path}[{i}][1]"), "y must be an integer")
+                })? as i32;
+                if x < 0 || y < 0 {
+                    return Err(FlowError::new(
+                        format!("{pts_path}[{i}]"),
+                        format!("coordinates must be >= 0, got [{x},{y}]"),
+                    ));
+                }
+                points.push([x, y]);
+            }
+            if drag_polygon_area2(&points) == 0 {
+                return Err(FlowError::new(
+                    pts_path,
+                    "polygon drag shape has zero area (collinear points)",
+                ));
+            }
+            Ok(DragShape {
+                kind: "polygon".to_string(),
+                roi: None,
+                points: Some(points),
+                invert,
+            })
+        }
+        other => Err(FlowError::new(
+            path,
+            format!("unknown drag shape `{other}` (allowed: rect, polygon)"),
+        )),
+    }
+}
+
 fn parse_drag_target(v: &serde_json::Value, path: &str) -> Result<DragTarget, FlowError> {
     let kind = v
         .get("kind")
@@ -1119,6 +1259,11 @@ fn parse_drag_target(v: &serde_json::Value, path: &str) -> Result<DragTarget, Fl
                     .ok_or_else(|| FlowError::new(path, "region needs `roi`"))?,
                 &format!("{path}.roi"),
             )?,
+            // O-2: optional inline shape; a JSON `null` means "no shape" too.
+            shape: match v.get("shape") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(s) => Some(parse_drag_shape(s, &format!("{path}.shape"))?),
+            },
         }),
         "point" => {
             let x = v
@@ -2300,6 +2445,167 @@ mod tests {
                 }
                 other => panic!("unexpected locator: {other:?}"),
             },
+            other => panic!("unexpected step: {other:?}"),
+        }
+    }
+
+    // ---- v1.2.5 (O-2): drag `region` inline shape ----
+
+    /// Parse one `drag` step whose `from` is a region with `shape_json`
+    /// (an already-serialized shape object), returning the parse error on failure.
+    fn drag_with_from_shape(shape_json: &str) -> Result<Flow, FlowError> {
+        let text = format!(
+            r#"{{"schema_version":1,"name":"t","steps":[
+                 {{"op":"drag","args":{{
+                   "from":{{"kind":"region","roi":[0,0,80,60],"shape":{shape_json}}},
+                   "direction":"up","distance":[10,20]}}}}]}}"#
+        );
+        Flow::from_json(&text)
+    }
+
+    #[test]
+    fn parses_drag_region_with_polygon_shape() {
+        let flow =
+            drag_with_from_shape(r#"{"kind":"polygon","points":[[0,0],[80,0],[0,60]],"invert":false}"#)
+                .expect("polygon drag shape must parse");
+        match &flow.steps[0] {
+            Step::Drag { from, .. } => match from {
+                DragTarget::Region { roi, shape } => {
+                    assert_eq!(*roi, [0, 0, 80, 60], "roi stays mandatory");
+                    let shape = shape.as_ref().expect("shape");
+                    assert_eq!(shape.kind, "polygon");
+                    assert_eq!(shape.points, Some(vec![[0, 0], [80, 0], [0, 60]]));
+                    assert!(shape.roi.is_none());
+                    assert!(!shape.invert);
+                }
+                other => panic!("unexpected drag target: {other:?}"),
+            },
+            other => panic!("unexpected step: {other:?}"),
+        }
+        assert!(
+            flow.referenced_assets().is_empty(),
+            "inline drag shape must not add an asset reference"
+        );
+    }
+
+    #[test]
+    fn parses_drag_region_shape_invert_true() {
+        let flow = drag_with_from_shape(r#"{"kind":"rect","roi":[10,10,30,20],"invert":true}"#)
+            .expect("invert drag shape must parse");
+        match &flow.steps[0] {
+            Step::Drag { from, .. } => match from {
+                DragTarget::Region { shape, .. } => {
+                    let shape = shape.as_ref().expect("shape");
+                    assert_eq!(shape.kind, "rect");
+                    assert_eq!(shape.roi, Some([10, 10, 30, 20]));
+                    assert!(shape.points.is_none());
+                    assert!(shape.invert, "invert must be preserved, not defaulted");
+                }
+                other => panic!("unexpected drag target: {other:?}"),
+            },
+            other => panic!("unexpected step: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drag_region_without_shape_keeps_bbox_only_semantics() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"region","roi":[5,6,10,20]},
+                   "direction":"down","distance":[5,9]}}]}"#,
+        )
+        .expect("legacy drag flow must parse unchanged");
+        match &flow.steps[0] {
+            Step::Drag { from, to, .. } => {
+                assert!(to.is_none());
+                match from {
+                    DragTarget::Region { roi, shape } => {
+                        assert_eq!(*roi, [5, 6, 10, 20]);
+                        assert!(shape.is_none(), "absent `shape` must stay None (bbox path)");
+                    }
+                    other => panic!("unexpected drag target: {other:?}"),
+                }
+            }
+            other => panic!("unexpected step: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_drag_shape_geometry_with_exact_path() {
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                r#"{"kind":"circle"}"#,
+                "steps[0].args.from.shape",
+                "unknown drag shape",
+            ),
+            (
+                r#"{"kind":"polygon","points":[[0,0],[10,10]]}"#,
+                "steps[0].args.from.shape.points",
+                "at least 3",
+            ),
+            (
+                r#"{"kind":"polygon","points":[[-1,0],[10,0],[0,10]]}"#,
+                "steps[0].args.from.shape.points[0]",
+                ">= 0",
+            ),
+            (
+                r#"{"kind":"polygon","points":[[0,0],[10,10],[20,20]]}"#,
+                "steps[0].args.from.shape.points",
+                "zero area",
+            ),
+            (
+                r#"{"kind":"polygon","roi":[0,0,10,10],"points":[[0,0],[10,0],[0,10]]}"#,
+                "steps[0].args.from.shape.roi",
+                "not `roi`",
+            ),
+            (
+                r#"{"kind":"rect","roi":[0,0,0,10]}"#,
+                "steps[0].args.from.shape.roi",
+                "> 0",
+            ),
+            (
+                r#"{"kind":"rect"}"#,
+                "steps[0].args.from.shape.roi",
+                "needs `roi`",
+            ),
+            (
+                r#"{"kind":"rect","roi":[0,0,10,10],"points":[[0,0],[10,0],[0,10]]}"#,
+                "steps[0].args.from.shape.points",
+                "not `points`",
+            ),
+            (
+                r#"{"kind":"rect","roi":[0,0,10,10],"invert":"yes"}"#,
+                "steps[0].args.from.shape.invert",
+                "boolean",
+            ),
+        ];
+        for (json, path, needle) in cases {
+            let err = drag_with_from_shape(json).expect_err(&format!("{json} must be rejected"));
+            assert_eq!(err.path, *path, "wrong path for {json}: {err:?}");
+            assert!(
+                err.msg.contains(needle),
+                "message for {json} must contain {needle:?}: {}",
+                err.msg
+            );
+        }
+    }
+
+    #[test]
+    fn drag_shape_is_only_inlined_on_region_targets() {
+        // A `shape` on a `point` target stays an ignored unknown key (only
+        // `region` grew the field); pin it so nobody assumes shape validation
+        // happens for other drag targets.
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"point","x":10,"y":10,
+                           "shape":{"kind":"nonsense"}},
+                   "direction":"up","distance":[5,9]}}]}"#,
+        )
+        .expect("shape on a point target is ignored, not parsed");
+        match &flow.steps[0] {
+            Step::Drag { from, .. } => assert!(matches!(from, DragTarget::Point { x: 10, y: 10 })),
             other => panic!("unexpected step: {other:?}"),
         }
     }

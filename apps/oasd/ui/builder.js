@@ -1009,7 +1009,7 @@
   }
 
   function structuredDrag(root, step) {
-    const box = formBox('拖动（from 区域 + 方向/距离/时长；其它 from/to 形态用下方高级 JSON）');
+    const box = formBox('拖动（from 区域 + 可选 shape + 方向/距离/时长；其它 from/to 形态用下方高级 JSON）');
     const dirLab = document.createElement('label');
     dirLab.textContent = '方向（必填）';
     const dir = document.createElement('select');
@@ -1026,18 +1026,31 @@
     const from = step.args.from || {};
     if (from.kind === 'region' && Array.isArray(from.roi) && from.roi.length === 4) {
       const roi = from.roi.slice();
+      // O-2: keep the optional inline operation shape while editing roi. The
+      // shape and roi are independent (roi is the old-runtime bbox fallback),
+      // so a roi edit must not silently delete the polygon/invert shape.
+      const shape = from.shape;
       const row = document.createElement('div');
       row.className = 'builder-inline';
       ['x', 'y', 'w', 'h'].forEach((k, i) =>
         row.appendChild(
           numberInput(k, roi[i], (v) => {
             roi[i] = v;
-            step.args.from = { kind: 'region', roi };
+            step.args.from = shape
+              ? { kind: 'region', roi, shape }
+              : { kind: 'region', roi };
             renderAll();
           })
         )
       );
       box.appendChild(row);
+      if (shape) {
+        const hint = document.createElement('div');
+        hint.className = 'muted small';
+        hint.textContent =
+          '含 shape（polygon/invert）；改 roi 不会改 shape，需用高级 JSON 同步';
+        box.appendChild(hint);
+      }
     } else {
       const n = document.createElement('div');
       n.className = 'muted small';
