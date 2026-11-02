@@ -795,13 +795,10 @@ impl Scheduler {
 
     /// Serialize the normalized config as a **schema v4** JSON document.
     ///
-    /// Pure (no IO): P3's config writer can call this after
-    /// [`validate_scheduler_with_offset`] to write v4 back, which is how a v3
-    /// document gets upgraded on disk. The result round-trips: re-validating it
-    /// yields an equal `Scheduler`.
-    // P3's `POST /scheduler/config` is the first production caller; P1 proves
-    // the contract with the round-trip tests (hence the allow).
-    #[allow(dead_code)]
+    /// Pure (no IO): `POST /scheduler/config` calls this after
+    /// [`validate_scheduler_with_offset`] to upgrade a v3 document on disk (a v4
+    /// document is written back as submitted, so unknown fields are kept). The
+    /// result round-trips: re-validating it yields an equal `Scheduler`.
     pub fn to_json(&self) -> Value {
         let windows = |windows: &[TimeWindow]| -> Vec<Value> {
             windows
@@ -954,7 +951,9 @@ impl Scheduler {
 /// order, not insertion order. The output is deterministic (same document ->
 /// same bytes) and round-trips; the pair list here is only for source
 /// readability, it does not control the emitted key order.
-#[allow(dead_code)] // only caller today is `Scheduler::to_json` (P3 write-back)
+///
+/// Only caller: [`Scheduler::to_json`] (reachable in production through
+/// `POST /scheduler/config`).
 fn json_obj(pairs: Vec<(&str, Value)>) -> Value {
     let mut map = serde_json::Map::new();
     for (key, value) in pairs {

@@ -281,6 +281,10 @@ pub struct Server {
     det_model: Option<PathBuf>,
     /// Open the editor URL in the default browser once the listener is ready.
     open_browser: bool,
+    /// Test seam: pin the scheduler plan/state paths so the P3 API tests never
+    /// read or write the real `scheduler.json` next to the serve process.
+    #[cfg(test)]
+    scheduler_options_override: Option<SchedulerOptions>,
     /// Test seam: replaces the live device grab so `live=1` can be checked
     /// without shelling out to adb. Production always captures for real.
     #[cfg(test)]
@@ -562,6 +566,8 @@ impl Server {
             det_model: None,
             open_browser: true,
             #[cfg(test)]
+            scheduler_options_override: None,
+            #[cfg(test)]
             live_capture_override: None,
             #[cfg(test)]
             tap_override: None,
@@ -611,6 +617,13 @@ impl Server {
     /// Set the task-bundle root (default `tasks`).
     pub fn with_tasks_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.tasks_dir = dir.into();
+        self
+    }
+
+    /// Test seam: pin the scheduler plan/state paths (P3 config API tests).
+    #[cfg(test)]
+    fn with_scheduler_options(mut self, opts: SchedulerOptions) -> Self {
+        self.scheduler_options_override = Some(opts);
         self
     }
 
@@ -1276,6 +1289,11 @@ impl Server {
             // --- M2/N37: scheduler status panel + reset-memory dialog ---
             ("GET", "/scheduler/status") => self.handle_scheduler_status(&mut out),
             ("POST", "/scheduler/reset") => self.handle_scheduler_reset(&mut out, &body),
+            // --- P3: scheduler config read/write (UI productization) ---
+            ("GET", "/scheduler/config") => self.handle_scheduler_config_get(&mut out),
+            ("POST", "/scheduler/config") => {
+                self.handle_scheduler_config_post(&mut out, &body)
+            }
             // --- v1.1 P3: app shell data routes (task library / instance / settings) ---
             ("GET", "/task/library") => self.handle_task_library(&mut out),
             ("POST", "/task/delete") => self.handle_task_delete(&mut out, &body),
@@ -4444,6 +4462,13 @@ impl Server {
         if root.parent() != Some(tasks_root.as_path()) {
             return self.send_errors(out, 400, vec!["refusing to delete outside tasks dir".into()]);
         }
+        // P3: a queue member is scheduled through its queue, so deleting the
+        // bundle would leave a dangling member. Refuse before touching assets or
+        // scheduler.json; the user must edit the queue first.
+        let queue_owners = self.scheduler_queues_with_member(task);
+        if !queue_owners.is_empty() {
+            return self.send_errors(out, 400, vec![queue_member_error(task, &queue_owners)]);
+        }
         // Never lose task assets on delete. They are preserved under
         // assets/_deleted-tasks/<task>-<timestamp>/ until the user restores or
         // migrates them into the global store.
@@ -4460,7 +4485,27 @@ impl Server {
         if let Err(e) = std::fs::remove_dir_all(&root) {
             return self.send_errors(out, 500, vec![format!("delete task `{task}`: {e}")]);
         }
-        let pruned = self.prune_scheduler_task(task).unwrap_or(0);
+        // P1-2: prune errors must never be swallowed (`unwrap_or(0)` used to
+        // report a clean 200 while scheduler.json kept the stale entry). The
+        // bundle is already gone at this point, so the message names that half
+        // explicitly: the user has to fix the config by hand.
+        let pruned = match self.prune_scheduler_task(task) {
+            Ok(n) => n,
+            Err(e) => {
+                self.editor_log(&format!(
+                    "task_delete task={task} scheduler_prune_error={e} backup={}",
+                    backup.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
+                ));
+                return self.send_errors(
+                    out,
+                    500,
+                    vec![format!(
+                        "task `{task}` bundle was deleted, but pruning scheduler.json failed: \
+                         {e}; remove the stale entry manually"
+                    )],
+                );
+            }
+        };
         self.editor_log(&format!(
             "task_delete task={task} scheduler_entries_removed={pruned} backup={}",
             backup.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
@@ -4541,9 +4586,33 @@ impl Server {
         Ok(Some(dest))
     }
 
+    /// Queue ids that list `task` in `queues[].members` (P3 delete guard).
+    ///
+    /// A missing config means there is nothing to prune; an unreadable/invalid
+    /// config is treated as "no membership" so a stale file never blocks
+    /// deleting a task bundle (the prune below stays best-effort, as before).
+    fn scheduler_queues_with_member(&self, task: &str) -> Vec<String> {
+        let path = self.scheduler_options().config;
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Vec::new();
+        };
+        let Ok(config) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return Vec::new();
+        };
+        queue_member_owners(&config, task)
+    }
+
     /// Remove scheduler entries that point at a deleted task. Keeping stale
     /// entries is confusing (the schedule page still lists deleted tasks) and
     /// dangerous (the daemon would try to open a missing bundle).
+    ///
+    /// P3: a task still referenced by a queue is **not** pruned — the caller
+    /// must reject the delete first (removing the task would leave the queue
+    /// pointing at a missing member).
+    ///
+    /// P1-2: the removal is kind-aware (a queue entry's `task` is a *queue_id*)
+    /// and writes through [`write_text_atomic`]. The parsed document is edited in
+    /// place, so unknown top-level/entry/queue fields survive the prune.
     fn prune_scheduler_task(&self, task: &str) -> Result<usize, String> {
         let path = self.scheduler_options().config;
         let text = match std::fs::read_to_string(&path) {
@@ -4553,16 +4622,27 @@ impl Server {
         };
         let mut v: serde_json::Value =
             serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let owners = queue_member_owners(&v, task);
+        if !owners.is_empty() {
+            return Err(queue_member_error(task, &owners));
+        }
         let Some(entries) = v.get_mut("entries").and_then(|x| x.as_array_mut()) else {
             return Ok(0);
         };
         let before = entries.len();
-        entries.retain(|e| e.get("task").and_then(|x| x.as_str()) != Some(task));
+        entries.retain(|e| {
+            // `kind` missing means a v3/pre-P3 task entry; only *task* entries
+            // are candidates. A queue entry keeps its queue_id in `task`, so a
+            // kind-blind retain would delete a queue trigger whenever the
+            // deleted task name equals that queue_id.
+            let kind = e.get("kind").and_then(|x| x.as_str()).unwrap_or("task");
+            !(kind == "task" && e.get("task").and_then(|x| x.as_str()) == Some(task))
+        });
         let removed = before - entries.len();
         if removed > 0 {
             let text = serde_json::to_string_pretty(&v)
                 .map_err(|e| format!("serialize {}: {e}", path.display()))?;
-            std::fs::write(&path, format!("{text}\n"))
+            write_text_atomic(&path, &(text + "\n"))
                 .map_err(|e| format!("write {}: {e}", path.display()))?;
         }
         Ok(removed)
@@ -6391,9 +6471,16 @@ impl Server {
         self.send_json(out, 200, &body.to_string())
     }
 
-    /// Scheduler options for the read-only panel: paths come from the global
-    /// live config (`scheduler.plan/state`), never shell out to another process.
+    /// Scheduler options for the status panel and the config read/write routes:
+    /// paths come from the global live config (`scheduler.plan/state`), never
+    /// shell out to another process.
     fn scheduler_options(&self) -> SchedulerOptions {
+        #[cfg(test)]
+        {
+            if let Some(o) = &self.scheduler_options_override {
+                return o.clone();
+            }
+        }
         let mut o = SchedulerOptions {
             tasks_dir: self.tasks_dir.clone(),
             library: self.library_dir.clone(),
@@ -6439,6 +6526,140 @@ impl Server {
         o
     }
 
+    /// `GET /scheduler/config` — raw `scheduler.json` + live lock probe (P3).
+    /// Read-only: never takes the scheduler lock, so the settings form can be
+    /// rendered while the daemon runs.
+    fn handle_scheduler_config_get(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let opts = self.scheduler_options();
+        let path = opts.config.clone();
+        let state_path = opts.state_path();
+        let exists = path.is_file();
+        let config = if exists {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        return self.send_errors(
+                            out,
+                            400,
+                            vec![format!("scheduler config parse: {e}")],
+                        )
+                    }
+                },
+                Err(e) => {
+                    return self.send_errors(
+                        out,
+                        500,
+                        vec![format!("scheduler config read: {e}")],
+                    )
+                }
+            }
+        } else {
+            None
+        };
+        let running = crate::schedule::lock_held_by_live_process(&state_path);
+        let body = serde_json::json!({
+            "ok": true,
+            "path": path.display().to_string(),
+            "exists": exists,
+            "schema_version": crate::scheduler::SCHEDULE_SCHEMA_VERSION,
+            "config": config,
+            "running": running.is_some(),
+            "state_path": state_path.display().to_string(),
+        });
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `POST /scheduler/config` — validate + atomic write of `scheduler.json`
+    /// (P3). Payload: `{"config": <whole scheduler.json>}`. A v4 document is
+    /// written back **as submitted** after validation, so unknown top-level,
+    /// entry and queue fields a user keeps in the file survive an UI edit. A v3
+    /// document is upgraded to v4 on write (`Scheduler::to_json`), so an existing
+    /// install can be edited without a manual migration. An invalid document
+    /// writes nothing; a running daemon is never overwritten (409).
+    fn handle_scheduler_config_post(
+        &self,
+        out: &mut TcpStream,
+        body: &[u8],
+    ) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let Some(config) = v.get("config").filter(|c| c.is_object()) else {
+            return self.send_errors(out, 400, vec!["missing `config` object".into()]);
+        };
+        let text = match serde_json::to_string(config) {
+            Ok(t) => t,
+            Err(e) => {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec![format!("scheduler config serialize: {e}")],
+                )
+            }
+        };
+        // The config's own offset is the default for window/calendar checks.
+        let offset = config
+            .get("config")
+            .and_then(|c| c.get("utc_offset_min"))
+            .and_then(|x| x.as_i64())
+            .and_then(|x| i32::try_from(x).ok())
+            .unwrap_or(crate::scheduler::DEFAULT_UTC_OFFSET_MIN);
+        let sched = match crate::scheduler::validate_scheduler_with_offset(&text, offset) {
+            Ok(s) => s,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let opts = self.scheduler_options();
+        let state_path = opts.state_path();
+        if let Some(pid) = crate::schedule::lock_held_by_live_process(&state_path) {
+            return self.send_errors(
+                out,
+                409,
+                vec![format!("scheduler is running (pid {pid})")],
+            );
+        }
+        let path = opts.config;
+        // Never lose the previous config on an overwrite (the UI may offer a
+        // restore); a missing file has nothing to back up.
+        let backup = match backup_scheduler_config(&path) {
+            Ok(b) => b,
+            Err(e) => return self.send_errors(out, 500, vec![e]),
+        };
+        // P1-1: GET returns the raw file, so the write must not silently drop
+        // unknown keys the UI round-tripped. A v4 document is written back as
+        // submitted (it already validated); only a v3 document goes through
+        // `to_json`, which is how the schema is upgraded.
+        let from_v3 = config.get("schema_version").and_then(|x| x.as_u64()) == Some(3);
+        let written = if from_v3 {
+            sched.to_json()
+        } else {
+            config.clone()
+        };
+        let text = match serde_json::to_string_pretty(&written) {
+            Ok(t) => t + "\n",
+            Err(e) => {
+                return self.send_errors(
+                    out,
+                    500,
+                    vec![format!("scheduler config serialize: {e}")],
+                )
+            }
+        };
+        let bytes = text.len();
+        if let Err(e) = write_text_atomic(&path, &text) {
+            return self.send_errors(out, 500, vec![format!("scheduler config write: {e}")]);
+        }
+        let body = serde_json::json!({
+            "ok": true,
+            "path": path.display().to_string(),
+            "schema_version": crate::scheduler::SCHEDULE_SCHEMA_VERSION,
+            "bytes": bytes,
+            "backup": backup.as_ref().map(|p| p.display().to_string()),
+        });
+        self.send_json(out, 200, &body.to_string())
+    }
+
     /// `GET /scheduler/status` — read-only scheduler panel data (M2/N37).
     /// Never takes the scheduler lock; safe while the daemon runs.
     fn handle_scheduler_status(&self, out: &mut TcpStream) -> std::io::Result<()> {
@@ -6448,28 +6669,134 @@ impl Server {
                 // existed) must not keep appearing as a schedulable entry.
                 let tasks: std::collections::BTreeSet<String> =
                     oas_task::list_tasks(&self.tasks_dir).unwrap_or_default().into_iter().collect();
-                let task_exists = |e: &serde_json::Value| {
-                    e.get("task")
-                        .and_then(|x| x.as_str())
-                        .map(|t| tasks.contains(t))
-                        .unwrap_or(false)
+                // P3 kind-aware filtering. A queue entry stores its **queue_id**
+                // in `task` (the entry has no task bundle), so the old
+                // `entry.task` directory test silently dropped every
+                // `kind = "queue"` entry. Queue entries are now kept while the
+                // queue is still declared in `queues[]`; task entries keep the
+                // bundle-directory test.
+                let queue_ids: std::collections::BTreeSet<String> = v
+                    .get("queues")
+                    .and_then(|x| x.as_array())
+                    .map(|queues| {
+                        queues
+                            .iter()
+                            .filter_map(|q| q.get("queue_id").and_then(|x| x.as_str()))
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // Queue members are tasks for the reset dialog even when they
+                // have no bundle directory of their own (they are scheduled via
+                // the queue, not as standalone entries).
+                let queue_members: std::collections::BTreeSet<String> = v
+                    .get("queues")
+                    .and_then(|x| x.as_array())
+                    .map(|queues| {
+                        queues
+                            .iter()
+                            .flat_map(|q| {
+                                q.get("members")
+                                    .and_then(|x| x.as_array())
+                                    .map(|ms| {
+                                        ms.iter()
+                                            .filter_map(|m| m.as_str())
+                                            .map(str::to_string)
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .unwrap_or_default()
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // entry_id -> (kind, target): `plan`/`running` rows carry only
+                // `entry_id`/`task`, so their kind must come from `entries[]`.
+                let mut kinds: std::collections::BTreeMap<String, (String, String)> =
+                    std::collections::BTreeMap::new();
+                if let Some(entries) = v.get("entries").and_then(|x| x.as_array()) {
+                    for e in entries {
+                        let Some(entry_id) = e.get("entry_id").and_then(|x| x.as_str()) else {
+                            continue;
+                        };
+                        let kind = e.get("kind").and_then(|x| x.as_str()).unwrap_or("task");
+                        let target = if kind == "queue" {
+                            e.get("queue_id").and_then(|x| x.as_str())
+                        } else {
+                            e.get("task").and_then(|x| x.as_str())
+                        }
+                        .unwrap_or("");
+                        kinds.insert(entry_id.to_string(), (kind.to_string(), target.to_string()));
+                    }
+                }
+                let task_exists = |t: &str| tasks.contains(t);
+                let entry_alive = |e: &serde_json::Value| {
+                    let Some(entry_id) = e.get("entry_id").and_then(|x| x.as_str()) else {
+                        return false;
+                    };
+                    match kinds.get(entry_id) {
+                        Some((kind, target)) if kind == "queue" => queue_ids.contains(target),
+                        Some((_, target)) => task_exists(target),
+                        None => false,
+                    }
                 };
                 if let Some(entries) = v.get_mut("entries").and_then(|x| x.as_array_mut()) {
-                    entries.retain(task_exists);
+                    entries.retain(entry_alive);
                 }
                 if let Some(choices) = v.get_mut("task_choices").and_then(|x| x.as_array_mut()) {
-                    choices.retain(task_exists);
+                    choices.retain(|c| {
+                        c.get("task")
+                            .and_then(|x| x.as_str())
+                            .map(|t| task_exists(t) || queue_members.contains(t))
+                            .unwrap_or(false)
+                    });
                 }
                 if let Some(plan) = v.get_mut("plan").and_then(|x| x.as_object_mut()) {
                     for key in ["runnable", "skipped"] {
                         if let Some(arr) = plan.get_mut(key).and_then(|x| x.as_array_mut()) {
-                            arr.retain(task_exists);
+                            arr.retain(|p| {
+                                match p
+                                    .get("entry_id")
+                                    .and_then(|x| x.as_str())
+                                    .and_then(|id| kinds.get(id))
+                                {
+                                    Some((kind, target)) if kind == "queue" => {
+                                        queue_ids.contains(target)
+                                    }
+                                    Some((_, target)) => task_exists(target),
+                                    None => p
+                                        .get("task")
+                                        .and_then(|x| x.as_str())
+                                        .map(|t| task_exists(t) || queue_ids.contains(t))
+                                        .unwrap_or(false),
+                                }
+                            });
                         }
                     }
                 }
                 let running_missing = v
                     .get("running")
-                    .map(|r| !r.is_null() && !task_exists(r))
+                    .map(|r| {
+                        if r.is_null() {
+                            return false;
+                        }
+                        // A queue run records the **member task** in
+                        // `running.task`; liveness comes from the queue_id in
+                        // `entries[]`, never from that member bundle.
+                        match r
+                            .get("entry_id")
+                            .and_then(|x| x.as_str())
+                            .and_then(|id| kinds.get(id))
+                        {
+                            Some((kind, target)) if kind == "queue" => {
+                                !queue_ids.contains(target)
+                            }
+                            _ => !r
+                                .get("task")
+                                .and_then(|x| x.as_str())
+                                .map(task_exists)
+                                .unwrap_or(false),
+                        }
+                    })
                     .unwrap_or(false);
                 if running_missing {
                     v["running"] = serde_json::Value::Null;
@@ -6581,6 +6908,56 @@ fn write_text_atomic(path: &Path, text: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Snapshot the scheduler config to `<config>.bak` before an overwrite (P3).
+///
+/// Returns `Ok(None)` when there is no existing file. The previous backup is
+/// overwritten (only the latest pre-save snapshot is kept).
+fn backup_scheduler_config(path: &Path) -> Result<Option<PathBuf>, String> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let mut os = path.as_os_str().to_os_string();
+    os.push(".bak");
+    let backup = PathBuf::from(os);
+    std::fs::copy(path, &backup).map_err(|e| {
+        format!(
+            "scheduler config backup `{}` -> `{}`: {e}",
+            path.display(),
+            backup.display()
+        )
+    })?;
+    Ok(Some(backup))
+}
+
+/// Queue ids in a parsed `scheduler.json` that list `task` in `queues[].members`.
+fn queue_member_owners(config: &serde_json::Value, task: &str) -> Vec<String> {
+    config
+        .get("queues")
+        .and_then(|x| x.as_array())
+        .map(|queues| {
+            queues
+                .iter()
+                .filter(|q| {
+                    q.get("members")
+                        .and_then(|x| x.as_array())
+                        .map(|members| members.iter().any(|m| m.as_str() == Some(task)))
+                        .unwrap_or(false)
+                })
+                .filter_map(|q| q.get("queue_id").and_then(|x| x.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Stable 400 message for deleting a task that a queue still schedules.
+fn queue_member_error(task: &str, owners: &[String]) -> String {
+    format!(
+        "task `{task}` is a queue member of `{}`; edit the queue first",
+        owners.join("`, `")
+    )
 }
 
 fn json_pretty(v: &serde_json::Value) -> Result<String, String> {
@@ -6944,6 +7321,47 @@ mod tests {
             .expect("set mtime");
     }
 
+    /// Read one HTTP response and return `(status line, body)`.
+    ///
+    /// Reads exactly `Content-Length` bytes instead of `read_to_end`: under the
+    /// parallel test suite Windows loopback occasionally delivers an RST right
+    /// after a complete response, and `read_to_end` surfaces that as an error
+    /// even though the whole response is already buffered. Reading the declared
+    /// body length keeps the assertion on the response, not on FIN/RST timing.
+    fn read_http_response(client: &mut TcpStream) -> (String, String) {
+        let mut raw = Vec::new();
+        let header_end = loop {
+            let mut chunk = [0u8; 1024];
+            let n = client.read(&mut chunk).expect("read response headers");
+            assert!(n > 0, "connection closed before the response headers");
+            raw.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&raw[..header_end]).into_owned();
+        let content_length = head
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .map(|v| v.trim().parse::<usize>().expect("content-length"))
+            })
+            .unwrap_or(0);
+        let mut body = raw[header_end..].to_vec();
+        while body.len() < content_length {
+            let mut chunk = [0u8; 4096];
+            let n = client.read(&mut chunk).expect("read response body");
+            assert!(n > 0, "connection closed before the response body completed");
+            body.extend_from_slice(&chunk[..n]);
+        }
+        body.truncate(content_length);
+        (
+            head.lines().next().unwrap_or_default().to_string(),
+            String::from_utf8_lossy(&body).into_owned(),
+        )
+    }
+
     /// Drive one GET through the REAL [`Server::handle`] over a loopback socket
     /// pair and return `(status line, body)`.
     fn get_route(server: &Server, target: &str) -> (String, String) {
@@ -6955,14 +7373,7 @@ mod tests {
             .write_all(format!("GET {target} HTTP/1.1\r\nHost: test\r\n\r\n").as_bytes())
             .expect("write request");
         server.handle(srv, "ui").expect("handle request");
-        let mut raw = Vec::new();
-        client.read_to_end(&mut raw).expect("read response");
-        let text = String::from_utf8_lossy(&raw).into_owned();
-        let (head, body) = text.split_once("\r\n\r\n").expect("header/body split");
-        (
-            head.lines().next().unwrap_or_default().to_string(),
-            body.to_string(),
-        )
+        read_http_response(&mut client)
     }
 
     const ROW_A: &str =
@@ -7193,14 +7604,7 @@ mod tests {
         client.write_all(head.as_bytes()).expect("write head");
         client.write_all(body).expect("write body");
         server.handle(srv, "ui").expect("handle request");
-        let mut raw = Vec::new();
-        client.read_to_end(&mut raw).expect("read response");
-        let text = String::from_utf8_lossy(&raw).into_owned();
-        let (head, body) = text.split_once("\r\n\r\n").expect("header/body split");
-        (
-            head.lines().next().unwrap_or_default().to_string(),
-            body.to_string(),
-        )
+        read_http_response(&mut client)
     }
 
     #[test]
@@ -9113,5 +9517,770 @@ mod tests {
             assert!(backup.join(f).is_file(), "backup missing {f}: {}", backup.display());
         }
         assert!(!root.exists());
+    }
+
+    // -----------------------------------------------------------------------
+    // P3: scheduler config read/write, kind-aware status, queue-member delete
+    // -----------------------------------------------------------------------
+
+    /// A valid schema-v4 `scheduler.json` document (the UI's write payload shape).
+    fn scheduler_config(
+        entries: serde_json::Value,
+        queues: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 4,
+            "config": {
+                "mode": "stop",
+                "loop_interval_s": 30,
+                "loop_rounds": 0,
+                "calendar": {
+                    "day_reset": "05:00",
+                    "week_reset": {"weekday": 0, "time": "05:00"},
+                },
+                "guards": {"active_hours": [], "blackouts": []},
+                "defaults": {"retry": 1, "cooldown": 30},
+            },
+            "queues": queues,
+            "entries": entries,
+        })
+    }
+
+    fn task_entry(entry_id: &str, task: &str) -> serde_json::Value {
+        serde_json::json!({
+            "entry_id": entry_id,
+            "task": task,
+            "enabled": true,
+            "lifecycle": "periodic",
+            "windows": [],
+            "params": {},
+            "retry": 1,
+            "cooldown": 30,
+        })
+    }
+
+    fn queue_entry(entry_id: &str, queue_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "entry_id": entry_id,
+            "task": queue_id,
+            "kind": "queue",
+            "enabled": true,
+            "lifecycle": "periodic",
+            "windows": [],
+            "params": {},
+            "retry": 1,
+            "cooldown": 30,
+        })
+    }
+
+    fn queue_fixture(queue_id: &str, members: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "queue_id": queue_id,
+            "name": queue_id,
+            "members": members,
+            "total_rounds": 0,
+            "on_failure": "continue",
+            "between_ms": 0,
+        })
+    }
+
+    /// `scheduler.json` -> `scheduler.state.json` sibling (same rule as
+    /// `SchedulerOptions::state_path`).
+    fn scheduler_state_path(td: &Path) -> PathBuf {
+        td.join("scheduler.state.json")
+    }
+
+    /// Lock file used by the real scheduler: `state_path.with_extension("lock")`.
+    /// The test constructs it with the same rule as `SchedulerLock::lock_path`;
+    /// the production code only ever probes via `lock_held_by_live_process`.
+    fn scheduler_lock_path(td: &Path) -> PathBuf {
+        scheduler_state_path(td).with_extension("lock")
+    }
+
+    /// Write (or omit) the scheduler plan and pin every scheduler path under the
+    /// tempdir: no test may read or write the real `scheduler.json`.
+    fn scheduler_server(td: &Path, config: Option<&serde_json::Value>) -> Server {
+        let tasks_dir = td.join("tasks");
+        std::fs::create_dir_all(&tasks_dir).expect("tasks dir");
+        let config_path = td.join("scheduler.json");
+        if let Some(config) = config {
+            std::fs::write(
+                &config_path,
+                serde_json::to_string_pretty(config).expect("serialize config") + "\n",
+            )
+            .expect("write scheduler config");
+        }
+        server_with_tasks(td)
+            .with_assets_dir(td.join("assets"))
+            .with_editor_log(td.join("logs/editor.log"))
+            .with_scheduler_options(SchedulerOptions {
+                config: config_path,
+                tasks_dir,
+                library: td.join("library"),
+                ..SchedulerOptions::default()
+            })
+    }
+
+    fn entry_ids(v: &serde_json::Value, array_key: &str) -> Vec<String> {
+        v.get(array_key)
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e.get("entry_id").and_then(|x| x.as_str()))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn plan_entry_ids(v: &serde_json::Value) -> Vec<String> {
+        let mut ids = Vec::new();
+        for key in ["runnable", "skipped"] {
+            if let Some(arr) = v.get("plan").and_then(|p| p.get(key)).and_then(|x| x.as_array()) {
+                ids.extend(
+                    arr.iter()
+                        .filter_map(|p| p.get("entry_id").and_then(|x| x.as_str()))
+                        .map(str::to_string),
+                );
+            }
+        }
+        ids
+    }
+
+    fn choice_tasks(v: &serde_json::Value) -> Vec<String> {
+        v.get("task_choices")
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|c| c.get("task").and_then(|x| x.as_str()))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn scheduler_config_get_returns_the_raw_file_and_metadata() {
+        let td = TempDir::new("sched-config-get");
+        let mut config = scheduler_config(serde_json::json!([]), serde_json::json!([]));
+        // Unknown keys are UI-owned: GET must return the raw file, not a
+        // validated/normalized copy.
+        config["ui_note"] = serde_json::json!("keep me");
+        let server = scheduler_server(td.path(), Some(&config));
+
+        let (status, body) = get_route(&server, "/scheduler/config");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("config json");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["exists"], true);
+        assert_eq!(v["schema_version"], 4);
+        assert_eq!(v["config"], config, "GET returns the raw scheduler.json object");
+        assert_eq!(v["running"], false);
+        assert_eq!(
+            v["path"],
+            td.path().join("scheduler.json").display().to_string()
+        );
+        assert_eq!(
+            v["state_path"],
+            scheduler_state_path(td.path()).display().to_string()
+        );
+    }
+
+    #[test]
+    fn scheduler_config_get_missing_file_is_exists_false() {
+        let td = TempDir::new("sched-config-missing");
+        let server = scheduler_server(td.path(), None);
+        let (status, body) = get_route(&server, "/scheduler/config");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("config json");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["exists"], false);
+        assert_eq!(v["config"], serde_json::Value::Null);
+        assert_eq!(v["running"], false);
+        assert_eq!(v["schema_version"], 4);
+    }
+
+    #[test]
+    fn scheduler_config_get_bad_json_is_400_not_a_panic() {
+        let td = TempDir::new("sched-config-bad-json");
+        let server = scheduler_server(td.path(), None);
+        std::fs::write(td.path().join("scheduler.json"), "{ not json")
+            .expect("write broken config");
+        let (status, body) = get_route(&server, "/scheduler/config");
+        assert!(status.contains("400"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("error json");
+        assert_eq!(v["ok"], false);
+        let err = v["errors"][0].as_str().expect("error string");
+        assert!(err.contains("scheduler config parse"), "{err}");
+    }
+
+    #[test]
+    fn scheduler_config_post_writes_validated_v4_and_backs_up() {
+        let td = TempDir::new("sched-config-post");
+        let original = scheduler_config(serde_json::json!([]), serde_json::json!([]));
+        let server = scheduler_server(td.path(), Some(&original));
+        let config_path = td.path().join("scheduler.json");
+        let before = std::fs::read_to_string(&config_path).expect("read old config");
+
+        let updated = scheduler_config(
+            serde_json::json!([task_entry("e1", "real")]),
+            serde_json::json!([]),
+        );
+        let payload = serde_json::json!({"config": updated}).to_string();
+        let (status, body) = post_route(
+            &server,
+            "/scheduler/config",
+            "application/json",
+            payload.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("post json");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["schema_version"], 4);
+
+        let written = std::fs::read_to_string(&config_path).expect("read written config");
+        assert_eq!(
+            v["bytes"].as_u64(),
+            Some(written.len() as u64),
+            "bytes must be the written byte count"
+        );
+        assert!(written.ends_with('\n'), "config files end with a newline");
+        let on_disk: serde_json::Value = serde_json::from_str(&written).expect("written json");
+        assert_eq!(
+            on_disk, updated,
+            "POST writes the submitted v4 document back (validated, not normalized)"
+        );
+        assert_eq!(on_disk["entries"][0]["task"], "real");
+
+        let mut expected_backup = config_path.as_os_str().to_os_string();
+        expected_backup.push(".bak");
+        let backup = v["backup"].as_str().expect("backup path");
+        assert_eq!(Path::new(backup), Path::new(&expected_backup));
+        assert_eq!(
+            std::fs::read_to_string(backup).expect("read backup"),
+            before,
+            "the pre-save config is preserved byte-for-byte"
+        );
+        let leftovers: Vec<String> = std::fs::read_dir(td.path())
+            .expect("read tempdir")
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .filter(|n| n.contains(".tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "atomic write must not leave tmp files: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn scheduler_config_post_invalid_writes_nothing() {
+        let td = TempDir::new("sched-config-invalid");
+        let original = scheduler_config(
+            serde_json::json!([task_entry("e1", "real")]),
+            serde_json::json!([]),
+        );
+        let server = scheduler_server(td.path(), Some(&original));
+        let config_path = td.path().join("scheduler.json");
+        let before = std::fs::read(&config_path).expect("read old config");
+
+        // kind="queue" pointing at a queue that does not exist in queues[].
+        let invalid = scheduler_config(
+            serde_json::json!([{
+                "entry_id": "e-q",
+                "task": "nope",
+                "kind": "queue",
+                "enabled": true,
+                "lifecycle": "periodic",
+            }]),
+            serde_json::json!([]),
+        );
+        let payload = serde_json::json!({"config": invalid}).to_string();
+        let (status, body) = post_route(
+            &server,
+            "/scheduler/config",
+            "application/json",
+            payload.as_bytes(),
+        );
+        assert!(status.contains("400"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("error json");
+        assert_eq!(v["ok"], false);
+        let err = v["errors"][0].as_str().expect("error string");
+        assert!(err.contains("unknown queue `nope`"), "{err}");
+        assert_eq!(
+            std::fs::read(&config_path).expect("read config after 400"),
+            before,
+            "an invalid config must not write a byte"
+        );
+        assert!(
+            !config_path.with_extension("json.bak").exists(),
+            "no backup is taken when validation fails"
+        );
+    }
+
+    #[test]
+    fn scheduler_config_post_409_while_running() {
+        let td = TempDir::new("sched-config-running");
+        let original = scheduler_config(serde_json::json!([]), serde_json::json!([]));
+        let server = scheduler_server(td.path(), Some(&original));
+        let config_path = td.path().join("scheduler.json");
+        let before = std::fs::read(&config_path).expect("read old config");
+        let lock_path = scheduler_lock_path(td.path());
+        std::fs::write(
+            &lock_path,
+            serde_json::json!({"pid": std::process::id(), "started_ms": 0}).to_string(),
+        )
+        .expect("write live lock");
+
+        let updated = scheduler_config(
+            serde_json::json!([task_entry("e2", "other")]),
+            serde_json::json!([]),
+        );
+        let payload = serde_json::json!({"config": updated}).to_string();
+        let (status, body) = post_route(
+            &server,
+            "/scheduler/config",
+            "application/json",
+            payload.as_bytes(),
+        );
+        assert!(status.contains("409"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("error json");
+        assert_eq!(v["ok"], false);
+        let err = v["errors"][0].as_str().expect("error string");
+        assert!(err.contains("scheduler is running (pid"), "{err}");
+        assert_eq!(
+            std::fs::read(&config_path).expect("read config after 409"),
+            before,
+            "a running scheduler config must not be overwritten"
+        );
+
+        // GET surfaces the same probe.
+        let (status, body) = get_route(&server, "/scheduler/config");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("config json");
+        assert_eq!(v["running"], true);
+
+        // Test cleanup: drop the fake live lock; the next save succeeds.
+        std::fs::remove_file(&lock_path).expect("remove test lock");
+        let (status, body) = post_route(
+            &server,
+            "/scheduler/config",
+            "application/json",
+            payload.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {body}");
+    }
+
+    #[test]
+    fn scheduler_config_post_missing_config_body_is_400() {
+        let td = TempDir::new("sched-config-body");
+        let original = scheduler_config(serde_json::json!([]), serde_json::json!([]));
+        let server = scheduler_server(td.path(), Some(&original));
+        let config_path = td.path().join("scheduler.json");
+        let before = std::fs::read(&config_path).expect("read old config");
+
+        for (payload, needle) in [
+            ("{}", "missing `config` object"),
+            (r#"{"config":[]}"#, "missing `config` object"),
+            ("not json", "invalid JSON"),
+        ] {
+            let (status, body) = post_route(
+                &server,
+                "/scheduler/config",
+                "application/json",
+                payload.as_bytes(),
+            );
+            assert!(status.contains("400"), "{payload} => {status} {body}");
+            let v: serde_json::Value = serde_json::from_str(&body).expect("error json");
+            assert_eq!(v["ok"], false);
+            let err = v["errors"][0].as_str().expect("error string");
+            assert!(err.contains(needle), "{payload} => {err}");
+        }
+        assert_eq!(
+            std::fs::read(&config_path).expect("read config after 400s"),
+            before
+        );
+    }
+
+    #[test]
+    fn scheduler_config_post_migrates_a_v3_document_to_v4() {
+        let td = TempDir::new("sched-config-v3");
+        let v3 = serde_json::json!({
+            "schema_version": 3,
+            "config": {"mode": "stop", "loop_interval_s": 30},
+            "entries": [{
+                "entry_id": "e1",
+                "task": "real",
+                "enabled": true,
+                "lifecycle": "periodic",
+            }],
+        });
+        let server = scheduler_server(td.path(), Some(&v3));
+        let payload = serde_json::json!({"config": v3}).to_string();
+        let (status, body) = post_route(
+            &server,
+            "/scheduler/config",
+            "application/json",
+            payload.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(td.path().join("scheduler.json")).expect("read"))
+                .expect("written json");
+        assert_eq!(
+            written["schema_version"], 4,
+            "a v3 write is upgraded to v4 instead of persisting a stale schema"
+        );
+        assert_eq!(written["entries"][0]["kind"], "task");
+        assert_eq!(written["entries"][0]["task"], "real");
+    }
+
+    #[test]
+    fn scheduler_config_post_preserves_unknown_fields_of_a_v4_document() {
+        let td = TempDir::new("sched-config-unknown");
+        // The file does not exist yet: this also covers the create path (the
+        // response must report `backup: null`).
+        let server = scheduler_server(td.path(), None);
+        let mut submitted = scheduler_config(
+            serde_json::json!([task_entry("e1", "real")]),
+            serde_json::json!([queue_fixture("q1", &["memberA"])]),
+        );
+        // Unknown keys at every level a hand-edited file can carry. GET returns
+        // them, so POST must not silently drop them (P1-1).
+        submitted["future"] = serde_json::json!({"keep": true, "note": "手写字段"});
+        submitted["config"]["ui_theme"] = serde_json::json!("dark");
+        submitted["entries"][0]["ui_label"] = serde_json::json!("日常");
+        submitted["entries"][0]["future_entry"] = serde_json::json!([1, 2, 3]);
+        submitted["queues"][0]["ui_color"] = serde_json::json!("blue");
+
+        let payload = serde_json::json!({"config": submitted}).to_string();
+        let (status, body) = post_route(
+            &server,
+            "/scheduler/config",
+            "application/json",
+            payload.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("post json");
+        assert_eq!(v["ok"], true);
+        assert_eq!(
+            v["backup"],
+            serde_json::Value::Null,
+            "a missing file has nothing to back up"
+        );
+
+        let on_disk: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(td.path().join("scheduler.json"))
+                .expect("read written config"),
+        )
+        .expect("written json");
+        assert_eq!(
+            on_disk, submitted,
+            "a v4 POST writes the submitted document back verbatim"
+        );
+        assert_eq!(on_disk["schema_version"], 4);
+
+        // GET raw / POST raw symmetry: the preserved keys are readable again.
+        let (status, body) = get_route(&server, "/scheduler/config");
+        assert!(status.contains("200"), "{status} {body}");
+        let got: serde_json::Value = serde_json::from_str(&body).expect("config json");
+        assert_eq!(
+            got["config"], submitted,
+            "GET reads the preserved fields back"
+        );
+    }
+
+    #[test]
+    fn scheduler_status_is_kind_aware_for_queue_entries() {
+        let td = TempDir::new("sched-status-kind");
+        let tasks_dir = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks_dir).expect("tasks dir");
+        make_task(&tasks_dir, "real");
+        let config = scheduler_config(
+            serde_json::json!([
+                queue_entry("e-q", "q1"),
+                task_entry("e-real", "real"),
+                task_entry("e-ghost", "ghost"),
+            ]),
+            serde_json::json!([queue_fixture("q1", &["memberA"])]),
+        );
+        let server = scheduler_server(td.path(), Some(&config));
+
+        let (status, body) = get_route(&server, "/scheduler/status");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("status json");
+        let ids = entry_ids(&v, "entries");
+        assert!(
+            ids.iter().any(|id| id == "e-q"),
+            "kind=queue entries must survive the task-directory filter: {ids:?}"
+        );
+        assert!(ids.iter().any(|id| id == "e-real"), "{ids:?}");
+        assert!(
+            !ids.iter().any(|id| id == "e-ghost"),
+            "task entries without a bundle dir stay hidden: {ids:?}"
+        );
+
+        let plan_ids = plan_entry_ids(&v);
+        assert!(
+            plan_ids.iter().any(|id| id == "e-q"),
+            "queue plan rows must not be filtered out: {plan_ids:?}"
+        );
+        assert!(plan_ids.iter().any(|id| id == "e-real"), "{plan_ids:?}");
+        assert!(!plan_ids.iter().any(|id| id == "e-ghost"), "{plan_ids:?}");
+
+        // The reset dialog needs queue members (they have no entry of their own).
+        let choices = choice_tasks(&v);
+        assert!(choices.iter().any(|t| t == "memberA"), "{choices:?}");
+        assert!(choices.iter().any(|t| t == "real"), "{choices:?}");
+        assert!(!choices.iter().any(|t| t == "ghost"), "{choices:?}");
+        let member = v["task_choices"]
+            .as_array()
+            .expect("choices")
+            .iter()
+            .find(|c| c["task"] == "memberA")
+            .expect("member choice");
+        assert_eq!(member["bundle_exists"], false);
+        assert_eq!(v["running"], serde_json::Value::Null);
+
+        // A queue run records the *member task* in `running.task`; liveness is
+        // decided by the queue_id, so the marker must survive (old filter dropped
+        // it because no `memberA` bundle directory exists).
+        std::fs::write(
+            scheduler_state_path(td.path()),
+            serde_json::json!({
+                "schema_version": 4,
+                "running": {
+                    "entry_id": "e-q",
+                    "task": "memberA",
+                    "pass": 1,
+                    "attempt": 1,
+                    "since_ms": 1,
+                    "resume": false,
+                },
+            })
+            .to_string(),
+        )
+        .expect("write running queue state");
+        let (status, body) = get_route(&server, "/scheduler/status");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("status json");
+        assert_eq!(
+            v["running"]["entry_id"], "e-q",
+            "running queue entry must be kept: {v}"
+        );
+
+        // A running task entry whose bundle vanished is still cleared.
+        std::fs::write(
+            scheduler_state_path(td.path()),
+            serde_json::json!({
+                "schema_version": 4,
+                "running": {
+                    "entry_id": "e-ghost",
+                    "task": "ghost",
+                    "pass": 1,
+                    "attempt": 1,
+                    "since_ms": 1,
+                    "resume": false,
+                },
+            })
+            .to_string(),
+        )
+        .expect("write running ghost state");
+        let (status, body) = get_route(&server, "/scheduler/status");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("status json");
+        assert_eq!(
+            v["running"],
+            serde_json::Value::Null,
+            "a missing task bundle clears the running marker"
+        );
+    }
+
+    #[test]
+    fn task_delete_rejects_a_queue_member() {
+        let td = TempDir::new("sched-delete-member");
+        let tasks_dir = td.path().join("tasks");
+        let server = scheduler_server(
+            td.path(),
+            Some(&scheduler_config(
+                serde_json::json!([]),
+                serde_json::json!([queue_fixture("q1", &["memberA"])]),
+            )),
+        );
+        make_task(&tasks_dir, "memberA");
+        let config_path = td.path().join("scheduler.json");
+        let before = std::fs::read(&config_path).expect("read config");
+
+        let (status, body) = post_route(
+            &server,
+            "/task/delete",
+            "application/json",
+            br#"{"task":"memberA"}"#,
+        );
+        assert!(status.contains("400"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("error json");
+        assert_eq!(v["ok"], false);
+        assert_eq!(
+            v["errors"][0].as_str(),
+            Some("task `memberA` is a queue member of `q1`; edit the queue first")
+        );
+        assert!(
+            tasks_dir.join("memberA").is_dir(),
+            "a queue member bundle must not be deleted"
+        );
+        assert_eq!(
+            std::fs::read(&config_path).expect("read config after 400"),
+            before,
+            "scheduler.json must not be partially modified"
+        );
+        assert!(
+            !td.path().join("assets/_deleted-tasks").exists(),
+            "the refusal happens before any asset backup"
+        );
+    }
+
+    #[test]
+    fn task_delete_prunes_entries_of_a_non_member_task() {
+        let td = TempDir::new("sched-delete-solo");
+        let tasks_dir = td.path().join("tasks");
+        let server = scheduler_server(
+            td.path(),
+            Some(&scheduler_config(
+                serde_json::json!([task_entry("e1", "solo")]),
+                serde_json::json!([]),
+            )),
+        );
+        make_task(&tasks_dir, "solo");
+
+        let (status, body) = post_route(
+            &server,
+            "/task/delete",
+            "application/json",
+            br#"{"task":"solo"}"#,
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("delete json");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["scheduler_entries_removed"], 1);
+        assert!(!tasks_dir.join("solo").exists(), "the bundle is deleted");
+        let on_disk: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(td.path().join("scheduler.json")).expect("read config"),
+        )
+        .expect("config json");
+        assert_eq!(on_disk["schema_version"], 4);
+        assert_eq!(
+            on_disk["entries"].as_array().map(|a| a.len()),
+            Some(0),
+            "the stale task entry is pruned: {on_disk}"
+        );
+    }
+
+    #[test]
+    fn task_delete_prunes_only_task_entries_and_keeps_queue_entries_and_unknown_fields() {
+        let td = TempDir::new("sched-delete-kind");
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "solo");
+        // The queue has the same id as the deleted task, and its trigger entry
+        // stores that id in `task`: exactly what a kind-blind retain would remove
+        // by mistake. The unknown fields must survive the prune too.
+        let mut config = scheduler_config(
+            serde_json::json!([
+                task_entry("e-task", "solo"),
+                task_entry("e-other", "other"),
+                queue_entry("e-queue", "solo"),
+            ]),
+            serde_json::json!([queue_fixture("solo", &["memberA"])]),
+        );
+        config["future"] = serde_json::json!({"keep": true});
+        config["entries"][2]["ui_label"] = serde_json::json!("队列触发");
+        config["queues"][0]["ui_color"] = serde_json::json!("blue");
+        let server = scheduler_server(td.path(), Some(&config));
+
+        let (status, body) = post_route(
+            &server,
+            "/task/delete",
+            "application/json",
+            br#"{"task":"solo"}"#,
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("delete json");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["scheduler_entries_removed"], 1);
+        assert!(!tasks_dir.join("solo").exists(), "the task bundle is deleted");
+
+        let on_disk: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(td.path().join("scheduler.json")).expect("read config"),
+        )
+        .expect("config json");
+        assert_eq!(
+            entry_ids(&on_disk, "entries"),
+            vec!["e-other".to_string(), "e-queue".to_string()],
+            "only the kind=task entry of the deleted task is pruned: {on_disk}"
+        );
+        assert_eq!(on_disk["entries"][1]["kind"], "queue");
+        assert_eq!(
+            on_disk["entries"][1]["task"], "solo",
+            "the queue trigger (queue_id == deleted task name) is untouched"
+        );
+        assert_eq!(on_disk["entries"][1]["ui_label"], "队列触发");
+        assert_eq!(on_disk["queues"][0]["queue_id"], "solo");
+        assert_eq!(on_disk["queues"][0]["members"][0], "memberA");
+        assert_eq!(on_disk["queues"][0]["ui_color"], "blue");
+        assert_eq!(on_disk["future"], serde_json::json!({"keep": true}));
+        let leftovers: Vec<String> = std::fs::read_dir(td.path())
+            .expect("read tempdir")
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .filter(|n| n.contains(".tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "prune goes through the atomic writer: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn task_delete_reports_a_scheduler_prune_failure() {
+        let td = TempDir::new("sched-delete-prune-err");
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "solo");
+        let server = scheduler_server(td.path(), None);
+        let config_path = td.path().join("scheduler.json");
+        let broken = "{ not json";
+        std::fs::write(&config_path, broken).expect("write broken config");
+
+        // Direct call: the error is returned, never swallowed.
+        let err = server
+            .prune_scheduler_task("solo")
+            .expect_err("a broken config must surface as Err");
+        assert!(err.contains("scheduler.json"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&config_path).expect("read broken config"),
+            broken,
+            "a failed prune never rewrites the config"
+        );
+
+        // Endpoint: the bundle deletion already happened, but the response is a
+        // 500 with an explicit message instead of a silent
+        // `scheduler_entries_removed: 0`.
+        let (status, body) = post_route(
+            &server,
+            "/task/delete",
+            "application/json",
+            br#"{"task":"solo"}"#,
+        );
+        assert!(status.contains("500"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("error json");
+        assert_eq!(v["ok"], false);
+        let err = v["errors"][0].as_str().expect("error string");
+        assert!(err.contains("bundle was deleted"), "{err}");
+        assert!(err.contains("pruning scheduler.json failed"), "{err}");
+        assert!(
+            !tasks_dir.join("solo").exists(),
+            "the bundle deletion already happened"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&config_path).expect("read config after 500"),
+            broken,
+            "the broken config is left untouched for the user to repair"
+        );
     }
 }

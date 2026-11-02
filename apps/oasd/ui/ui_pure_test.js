@@ -125,6 +125,48 @@ const PURE_FUNCTIONS = [
   'globalAssetStatusText',
   'renderGlobalAssets',
   'selectionModeFromFlags',
+  // P3: scheduler config editing (pure JSON transforms / builders / validation)
+  'schedEntryKindLabel',
+  'schedSanitizeIdSegment',
+  'schedHasUnsafeNameChar',
+  'schedUniqueId',
+  'schedEntryIdForTarget',
+  'schedEmptyConfig',
+  'schedNormalizeConfig',
+  'schedDefaultTaskEntry',
+  'schedWindowsToText',
+  'schedParseWindowsText',
+  'schedParseWindowsJson',
+  'schedParseParamsText',
+  'schedEntryToForm',
+  'schedBuildEntryFromForm',
+  'schedValidateEntryForm',
+  'schedFindTaskEntries',
+  'schedFindTaskQueueMember',
+  'schedQueueEntryConflict',
+  'schedUpsertEntry',
+  'schedRemoveEntryById',
+  'schedMoveEntry',
+  'schedQueueToForm',
+  'schedQueueMemberAdd',
+  'schedQueueMemberRemove',
+  'schedQueueMemberMove',
+  'schedBuildQueueFromForm',
+  'schedValidateQueueForm',
+  'schedUpsertQueue',
+  'schedRemoveQueue',
+  'schedQueueProgressText',
+  'schedQueueSummary',
+  'schedEntrySummary',
+  'schedQuotaSummary',
+  'schedStatusErrorText',
+  'schedCanonicalJson',
+  'schedConfigSnapshotText',
+  'schedConfigSnapshotChanged',
+  'schedExternalConfigChangeText',
+  'schedResponseErrorText',
+  'schedSaveBlockedReason',
+  'schedParseConfigJson',
 ];
 
 const sandbox = {};
@@ -160,6 +202,47 @@ const {
   filterAssets,
   globalAssetStatusText,
   selectionModeFromFlags,
+  schedEntryKindLabel,
+  schedSanitizeIdSegment,
+  schedHasUnsafeNameChar,
+  schedUniqueId,
+  schedEntryIdForTarget,
+  schedEmptyConfig,
+  schedNormalizeConfig,
+  schedDefaultTaskEntry,
+  schedWindowsToText,
+  schedParseWindowsText,
+  schedParseWindowsJson,
+  schedParseParamsText,
+  schedEntryToForm,
+  schedBuildEntryFromForm,
+  schedValidateEntryForm,
+  schedFindTaskEntries,
+  schedFindTaskQueueMember,
+  schedQueueEntryConflict,
+  schedUpsertEntry,
+  schedRemoveEntryById,
+  schedMoveEntry,
+  schedQueueToForm,
+  schedQueueMemberAdd,
+  schedQueueMemberRemove,
+  schedQueueMemberMove,
+  schedBuildQueueFromForm,
+  schedValidateQueueForm,
+  schedUpsertQueue,
+  schedRemoveQueue,
+  schedQueueProgressText,
+  schedQueueSummary,
+  schedEntrySummary,
+  schedQuotaSummary,
+  schedStatusErrorText,
+  schedCanonicalJson,
+  schedConfigSnapshotText,
+  schedConfigSnapshotChanged,
+  schedExternalConfigChangeText,
+  schedResponseErrorText,
+  schedSaveBlockedReason,
+  schedParseConfigJson,
 } = sandbox;
 
 let checks = 0;
@@ -1042,6 +1125,497 @@ ok(
 );
 const guardFn = extractFunction('realAssetTestGuard');
 ok(/livePreview/.test(guardFn) && /实时预览已暂停/.test(guardFn), 'real mode refuses when live preview is off');
+
+// --- P3: scheduler config editing (entry/queue payload + validation) ---
+// Entry ids are generated from the task/queue target, sanitized and kept unique.
+eq(schedEntryKindLabel('queue'), 'queue', 'entry kind queue');
+eq(schedEntryKindLabel(undefined), 'task', 'entry kind defaults to task');
+eq(schedSanitizeIdSegment(''), 'entry', 'empty id segment falls back to entry');
+eq(schedSanitizeIdSegment('../A:B'), 'A-B', 'path/control characters are replaced and dots trimmed');
+eq(schedEntryIdForTarget('task', '每日探索', schedEmptyConfig()), 'task-每日探索', 'task entry id is task-<任务名>');
+eq(schedEntryIdForTarget('queue', 'q1', schedEmptyConfig()), 'queue-q1', 'queue entry id is queue-<queue_id>');
+const idCfg = schedEmptyConfig();
+idCfg.entries = [{ entry_id: 'task-T' }];
+eq(schedEntryIdForTarget('task', 'T', idCfg), 'task-T-2', 'generated entry id avoids collisions');
+eq(schedUniqueId('x', ['x', 'x-2']), 'x-3', 'unique id keeps incrementing');
+
+const emptyCfg = schedEmptyConfig();
+eq(emptyCfg.schema_version, 4, 'empty config is schema 4');
+eq(emptyCfg.config.mode, 'loop', 'empty config defaults to loop mode (P2-2)');
+eq(emptyCfg.config.loop_interval_s, 60, 'empty config keeps a 60s loop interval');
+eq(emptyCfg.entries, [], 'empty config has no entries');
+eq(emptyCfg.queues, [], 'empty config has no queues');
+eq(schedNormalizeConfig(null), JSON.parse(JSON.stringify(emptyCfg)), 'normalizing a missing config yields the empty document');
+
+const v3Raw = {
+  schema_version: 3,
+  config: { mode: 'loop', loop_interval_s: 5 },
+  unknown_top_key: { keep: true },
+  entries: [{ entry_id: 'e1', task: '任务1', lifecycle: 'periodic' }],
+};
+const v3Norm = schedNormalizeConfig(v3Raw);
+eq(v3Norm.schema_version, 4, 'v3 document is normalized to schema 4');
+eq(v3Norm.entries[0].kind, 'task', 'v3 entry gains kind=task');
+eq(v3Norm.entries[0].windows, [], 'v3 entry gains an empty windows array');
+eq(v3Norm.unknown_top_key, { keep: true }, 'normalization preserves unknown top-level keys');
+eq(schedNormalizeConfig(v3Norm), JSON.parse(JSON.stringify(v3Norm)), 'config normalization is idempotent');
+
+const defaultEntry = schedDefaultTaskEntry('T', emptyCfg);
+eq(defaultEntry, {
+  entry_id: 'task-T',
+  task: 'T',
+  kind: 'task',
+  enabled: true,
+  lifecycle: 'periodic',
+  windows: [],
+  quota: { per: 'day', times: 1 },
+  params: {},
+  retry: 1,
+  cooldown: 300,
+}, 'new task entry uses the documented defaults (full-day window, quota day/1)');
+const customDefaultsCfg = schedEmptyConfig();
+customDefaultsCfg.config.defaults = { retry: 2, cooldown: 60 };
+eq(schedDefaultTaskEntry('T', customDefaultsCfg).retry, 2, 'new entry inherits config.defaults.retry');
+eq(schedDefaultTaskEntry('T', customDefaultsCfg).cooldown, 60, 'new entry inherits config.defaults.cooldown');
+eq(schedDefaultTaskEntry('q1', emptyCfg, 'queue').kind, 'queue', 'queue entry builder sets kind=queue');
+eq(schedDefaultTaskEntry('q1', emptyCfg, 'queue').entry_id, 'queue-q1', 'queue entry id is queue-<queue_id>');
+
+eq(schedParseWindowsText(''), { ok: true, windows: [], error: '' }, 'empty window text means full day');
+eq(schedParseWindowsText('全天').windows, [], '全天 is accepted for an unrestricted window');
+eq(schedParseWindowsText('08:00-12:00, 18:00-23:00').windows, [
+  { days: [], start: '08:00', end: '12:00' },
+  { days: [], start: '18:00', end: '23:00' },
+], 'comma separated windows parse');
+eq(schedParseWindowsText('[1,3]08:00-12:00; [5]23:00-02:00').windows, [
+  { days: [1, 3], start: '08:00', end: '12:00' },
+  { days: [5], start: '23:00', end: '02:00' },
+], 'weekday prefix and cross-midnight windows parse');
+eq(schedParseWindowsText('8:00-9:00').windows, [{ days: [], start: '08:00', end: '09:00' }], 'single digit hours are padded');
+eq(schedParseWindowsText('8-9').ok, false, 'malformed window text is rejected');
+eq(schedParseWindowsText('[7]08:00-09:00').ok, false, 'weekday 7 is rejected');
+eq(schedParseWindowsText('[1]25:00-26:00').ok, false, 'hour 25 is rejected');
+const winList = [
+  { days: [1, 3], start: '08:00', end: '12:00' },
+  { days: [], start: '18:00', end: '23:00' },
+];
+eq(schedWindowsToText(winList), '[1,3]08:00-12:00, 18:00-23:00', 'windows render back to the simple text');
+eq(schedWindowsToText([]), '全天', 'no windows renders as 全天');
+eq(schedParseWindowsText(schedWindowsToText(winList)).windows, winList, 'windows text round-trips');
+eq(
+  schedParseWindowsJson('[{"days":[1],"start":"8:00","end":"9:00"}]').windows,
+  [{ days: [1], start: '08:00', end: '09:00' }],
+  'windows JSON parses and normalizes HH:MM'
+);
+eq(schedParseWindowsJson('{}').ok, false, 'windows JSON must be an array');
+eq(schedParseWindowsJson('[{"days":[9],"start":"08:00","end":"09:00"}]').ok, false, 'windows JSON validates days');
+eq(schedParseWindowsJson('[{"days":[],"start":"bad","end":"09:00"}]').ok, false, 'windows JSON validates HH:MM');
+
+eq(schedParseParamsText(''), { ok: true, params: {}, error: '' }, 'empty params is an empty object');
+eq(schedParseParamsText('{"a":1}').params, { a: 1 }, 'params JSON parses');
+eq(schedParseParamsText('[1]').ok, false, 'params JSON must be an object');
+eq(schedParseParamsText('{bad}').ok, false, 'broken params JSON is rejected');
+
+eq(schedEntryToForm(defaultEntry), {
+  entry_id: 'task-T', kind: 'task', task: 'T', enabled: true, lifecycle: 'periodic',
+  windows_text: '全天', windows_json: '', quota_per: 'day', quota_times: '1',
+  retry: '1', cooldown: '300', params_text: '',
+}, 'entry -> form maps every editable field');
+eq(schedEntryToForm({ lifecycle: 'temp', entry_id: 'x', task: 'T', enabled: false }).quota_per, '', 'temp form has no quota');
+
+const tempBuilt = schedBuildEntryFromForm({
+  kind: 'task', task: 'T', enabled: false, lifecycle: 'temp',
+  windows: [{ days: [], start: '08:00', end: '09:00' }], quota_per: 'day', quota_times: '3',
+  retry: '2', cooldown: '60', params: { a: 1 },
+}, { entry_id: 'e-temp' }, emptyCfg);
+eq(tempBuilt.windows, [], 'temp entries clear windows');
+eq(tempBuilt.quota, null, 'temp entries clear quota');
+eq(tempBuilt.enabled, false, 'entry enabled flag is preserved');
+eq(tempBuilt.entry_id, 'e-temp', 'editing keeps the entry_id');
+eq(tempBuilt.retry, 2, 'entry form retry is numeric');
+eq(tempBuilt.cooldown, 60, 'entry form cooldown is numeric');
+eq(tempBuilt.params, { a: 1 }, 'entry form params are preserved');
+
+const periodicBuilt = schedBuildEntryFromForm({
+  kind: 'task', task: 'T', enabled: true, lifecycle: 'periodic',
+  windows: [{ days: [2], start: '10:00', end: '11:00' }], quota_per: 'week', quota_times: '2',
+  retry: '1', cooldown: '300', params: {},
+}, {}, emptyCfg);
+eq(periodicBuilt.windows, [{ days: [2], start: '10:00', end: '11:00' }], 'periodic keeps windows');
+eq(periodicBuilt.quota, { per: 'week', times: 2 }, 'periodic keeps quota');
+
+function schedEntryForm(over) {
+  return Object.assign({
+    kind: 'task', task: 'T', enabled: true, lifecycle: 'periodic',
+    windows_text: '', windows_json: '', quota_per: 'day', quota_times: '1',
+    retry: '1', cooldown: '300', params_text: '',
+  }, over || {});
+}
+const validNewEntry = schedValidateEntryForm(schedEntryForm(), emptyCfg, '', null);
+eq(validNewEntry.ok, true, 'default form validates');
+eq(validNewEntry.entry.entry_id, 'task-T', 'new entry id is generated on save');
+eq(validNewEntry.entry.windows, [], 'new entry defaults to a full-day window');
+const changedTarget = schedValidateEntryForm(
+  schedEntryForm({ task: 'U' }), emptyCfg, '', schedDefaultTaskEntry('T', emptyCfg)
+);
+eq(changedTarget.entry.entry_id, 'task-U', 'create re-generates the entry_id when the target changes');
+const tempValid = schedValidateEntryForm(
+  schedEntryForm({ lifecycle: 'temp', windows_text: '08:00-09:00', quota_per: 'day', quota_times: '2' }),
+  emptyCfg, '', null
+);
+eq(tempValid.ok, true, 'temp entry validates even with stale window/quota form values');
+eq(tempValid.entry.windows, [], 'validated temp entry drops windows');
+eq(tempValid.entry.quota, null, 'validated temp entry drops quota');
+eq(schedValidateEntryForm(schedEntryForm({ windows_text: '8-9' }), emptyCfg, '', null).ok, false, 'bad window text fails validation');
+eq(schedValidateEntryForm(schedEntryForm({ quota_per: 'day', quota_times: '0' }), emptyCfg, '', null).ok, false, 'quota times 0 fails validation');
+eq(schedValidateEntryForm(schedEntryForm({ retry: '11' }), emptyCfg, '', null).ok, false, 'retry > 10 fails validation');
+eq(schedValidateEntryForm(schedEntryForm({ cooldown: '604801' }), emptyCfg, '', null).ok, false, 'cooldown above the max fails validation');
+eq(schedValidateEntryForm(schedEntryForm({ params_text: '[1]' }), emptyCfg, '', null).ok, false, 'non-object params fail validation');
+eq(schedValidateEntryForm(schedEntryForm({ windows_json: '{bad}' }), emptyCfg, '', null).ok, false, 'broken windows JSON fails validation');
+
+const queueCfgForEntry = schedEmptyConfig();
+queueCfgForEntry.queues = [{ queue_id: 'q1', name: '日常', members: ['T1'], total_rounds: 0, on_failure: 'continue', between_ms: 500 }];
+const unknownQueue = schedValidateEntryForm(schedEntryForm({ kind: 'queue', task: 'nope' }), queueCfgForEntry, '', null);
+eq(unknownQueue.ok, false, 'queue entry requires an existing queue');
+ok(unknownQueue.errors.some((e) => /不存在/.test(e)), 'unknown queue error names the missing queue');
+const firstQueueEntry = { entry_id: 'qe', task: 'q1', kind: 'queue', enabled: true, lifecycle: 'periodic', windows: [], quota: null, params: {}, retry: 0, cooldown: 0 };
+queueCfgForEntry.entries = [firstQueueEntry];
+const secondQueueEntry = schedValidateEntryForm(schedEntryForm({ kind: 'queue', task: 'q1' }), queueCfgForEntry, '', null);
+eq(secondQueueEntry.ok, false, 'a queue cannot get a second trigger entry');
+ok(secondQueueEntry.errors.some((e) => e.includes('qe')), 'queue conflict names the existing entry');
+eq(schedQueueEntryConflict(queueCfgForEntry, 'q1', 'qe'), '', 'the edited entry does not conflict with itself');
+eq(schedQueueEntryConflict(queueCfgForEntry, 'q1', ''), 'qe', 'queue conflict finds the other entry');
+const overlappingCfg = schedEmptyConfig();
+overlappingCfg.entries = [{ entry_id: 'te', task: 'T', kind: 'task' }];
+const overlap = schedValidateEntryForm(schedEntryForm(), overlappingCfg, '', null);
+eq(overlap.ok, true, 'a second task entry for the same task is allowed (only queue overlap is forbidden)');
+const queueMemberOverlap = schedEmptyConfig();
+queueMemberOverlap.queues = [{ queue_id: 'q1', members: ['T'], total_rounds: 0, on_failure: 'continue', between_ms: 0 }];
+const memberOverlap = schedValidateEntryForm(schedEntryForm(), queueMemberOverlap, '', null);
+ok(memberOverlap.ok === false && memberOverlap.errors.some((e) => e.includes('q1')), 'task entry cannot duplicate a queue member');
+
+eq(schedFindTaskEntries(queueCfgForEntry, 'T1'), [], 'queue entry is not a task entry');
+eq(schedFindTaskEntries(overlappingCfg, 'T').map((e) => e.entry_id), ['te'], 'find task entries by task');
+eq(schedFindTaskQueueMember(queueMemberOverlap, 'T'), 'q1', 'find the queue containing a task');
+eq(schedFindTaskQueueMember(queueMemberOverlap, 'other'), '', 'task not in any queue');
+
+let upsertCfg = schedEmptyConfig();
+upsertCfg = schedUpsertEntry(upsertCfg, firstQueueEntry);
+upsertCfg = schedUpsertEntry(upsertCfg, Object.assign({}, firstQueueEntry, { enabled: false }));
+eq(upsertCfg.entries.length, 1, 'upsert replaces by entry_id instead of appending');
+eq(upsertCfg.entries[0].enabled, false, 'upsert applies the new entry body');
+const untouchedCfg = schedEmptyConfig();
+schedUpsertEntry(untouchedCfg, firstQueueEntry);
+eq(untouchedCfg.entries.length, 0, 'upsert does not mutate the input config');
+eq(schedRemoveEntryById(upsertCfg, 'qe').entries, [], 'remove entry by id');
+
+function schedTestEntry(id) {
+  return { entry_id: id, task: id, kind: 'task', enabled: true, lifecycle: 'periodic', windows: [], quota: null, params: {}, retry: 1, cooldown: 300 };
+}
+const moveCfg = schedEmptyConfig();
+moveCfg.entries = [schedTestEntry('a'), schedTestEntry('b'), schedTestEntry('c')];
+eq(schedMoveEntry(moveCfg, 0, 1).entries.map((e) => e.entry_id), ['b', 'a', 'c'], 'move entry down swaps order');
+eq(schedMoveEntry(moveCfg, 2, -1).entries.map((e) => e.entry_id), ['a', 'c', 'b'], 'move entry up swaps order');
+eq(schedMoveEntry(moveCfg, 0, -1).entries.map((e) => e.entry_id), ['a', 'b', 'c'], 'move at the edge is a no-op');
+eq(moveCfg.entries.map((e) => e.entry_id), ['a', 'b', 'c'], 'move entry does not mutate the input');
+
+eq(schedQueueToForm({ queue_id: 'q1', name: '日常', members: ['A'], total_rounds: 2, on_failure: 'fail_fast', between_ms: 500 }), {
+  queue_id: 'q1', name: '日常', members: ['A'], total_rounds: '2', on_failure: 'fail_fast', between_ms: '500',
+}, 'queue -> form maps every editable field');
+eq(schedQueueMemberAdd(['A'], 'B'), ['A', 'B'], 'queue member add appends');
+eq(schedQueueMemberAdd(['A'], 'A'), ['A'], 'queue member add ignores duplicates');
+eq(schedQueueMemberRemove(['A', 'B'], 'A'), ['B'], 'queue member remove');
+eq(schedQueueMemberMove(['A', 'B', 'C'], 2, -1), ['A', 'C', 'B'], 'queue member move up');
+eq(schedQueueMemberMove(['A', 'B', 'C'], 0, 1), ['B', 'A', 'C'], 'queue member move down');
+eq(schedQueueMemberMove(['A'], 0, -1), ['A'], 'queue member move at the edge is a no-op');
+eq(schedBuildQueueFromForm({
+  queue_id: ' q1 ', name: '', members: [' A ', 'A', ''], total_rounds: '3', on_failure: 'bogus', between_ms: '700',
+}, {}), {
+  queue_id: 'q1', name: '', members: ['A', 'A'], total_rounds: 3, on_failure: 'continue', between_ms: 700,
+}, 'queue form trims ids/members and defaults on_failure to continue');
+
+const queueForm = { queue_id: 'q1', name: '日常', members: ['T1', 'T2'], total_rounds: '2', on_failure: 'continue', between_ms: '500' };
+const validQueue = schedValidateQueueForm(queueForm, schedEmptyConfig(), '', null);
+eq(validQueue.ok, true, 'queue form validates');
+eq(validQueue.queue.total_rounds, 2, 'queue total_rounds is numeric');
+const noMembers = schedValidateQueueForm(Object.assign({}, queueForm, { members: [] }), schedEmptyConfig(), '', null);
+eq(noMembers.ok, false, 'queue needs at least one member');
+const dupQueueCfg = schedEmptyConfig();
+dupQueueCfg.queues = [{ queue_id: 'q1', members: ['T1'] }];
+eq(schedValidateQueueForm(queueForm, dupQueueCfg, '', null).ok, false, 'duplicate queue_id fails validation');
+const queueOverlapCfg = schedEmptyConfig();
+queueOverlapCfg.entries = [{ entry_id: 'te', task: 'T1', kind: 'task' }];
+const queueOverlap = schedValidateQueueForm(queueForm, queueOverlapCfg, '', null);
+ok(queueOverlap.ok === false && queueOverlap.errors.some((e) => e.includes('te')), 'queue member already scheduled as a task entry is rejected');
+eq(schedValidateQueueForm(Object.assign({}, queueForm, { total_rounds: '-1' }), schedEmptyConfig(), '', null).ok, false, 'negative total_rounds fails validation');
+eq(schedValidateQueueForm(Object.assign({}, queueForm, { between_ms: '700000' }), schedEmptyConfig(), '', null).ok, false, 'between_ms above the max fails validation');
+eq(schedValidateQueueForm(Object.assign({}, queueForm, { queue_id: 'q2' }), schedEmptyConfig(), 'q1', null).ok, false, 'queue_id cannot change while editing');
+eq(schedValidateQueueForm(Object.assign({}, queueForm, { members: ['T1', 'T1'] }), schedEmptyConfig(), '', null).ok, false, 'duplicate members fail validation');
+
+const queueUpsert = schedUpsertQueue(schedEmptyConfig(), { queue_id: 'q1', name: 'A', members: ['T1'], total_rounds: 0, on_failure: 'continue', between_ms: 0 });
+eq(schedUpsertQueue(queueUpsert, { queue_id: 'q1', name: 'B', members: ['T2'], total_rounds: 1, on_failure: 'fail_fast', between_ms: 100 }).queues.length, 1, 'queue upsert replaces by queue_id');
+const removeQueueCfg = schedEmptyConfig();
+removeQueueCfg.queues = [{ queue_id: 'q1', members: ['T1'], total_rounds: 0, on_failure: 'continue', between_ms: 0 }];
+removeQueueCfg.entries = [
+  { entry_id: 'qe', task: 'q1', kind: 'queue' },
+  { entry_id: 'te', task: 'T2', kind: 'task' },
+];
+const removedQueue = schedRemoveQueue(removeQueueCfg, 'q1');
+eq(removedQueue.removed_entry_ids, ['qe'], 'removing a queue reports the removed trigger entry');
+eq(removedQueue.config.queues, [], 'removing a queue drops it');
+eq(removedQueue.config.entries.map((e) => e.entry_id), ['te'], 'removing a queue keeps unrelated entries');
+eq(schedRemoveQueue(removeQueueCfg, 'q1').config.entries.length, 1, 'removing a queue leaves one unrelated entry');
+eq(removeQueueCfg.entries.length, 2, 'remove queue does not mutate the input config');
+
+eq(schedQueueProgressText({ total_rounds: 0 }, { rounds_completed: 3, empty_rounds: 1, current_round: { index: 4, member_index: 1 } }),
+  '轮次 3/无限 · 空轮 1 · 进行中：第 4 轮 · 成员 2', 'queue progress shows unlimited rounds + current member');
+eq(schedQueueProgressText({ total_rounds: 2 }, { rounds_completed: 2, empty_rounds: 0, finished: true }),
+  '轮次 2/2 · 已完成', 'queue progress shows finished');
+const queueSummaryText = schedQueueSummary(
+  { queue_id: 'q1', members: ['A', 'B'], total_rounds: 2, on_failure: 'fail_fast', between_ms: 500 },
+  { rounds_completed: 1, empty_rounds: 0 }
+);
+ok(/成员 2：A → B/.test(queueSummaryText), 'queue summary lists ordered members');
+ok(/失败策略 fail_fast/.test(queueSummaryText), 'queue summary names the failure policy');
+ok(/轮次 1\/2/.test(queueSummaryText), 'queue summary includes round progress');
+
+eq(schedEntrySummary({ enabled: true, lifecycle: 'temp', retry: 0, cooldown: 0 }, {}),
+  '已启用 · temp（每 pass 一次） · retry 0 · 冷却 0s', 'temp entry summary omits windows/quota');
+eq(
+  schedEntrySummary(
+    { enabled: false, lifecycle: 'periodic', windows: [], quota: { per: 'day', times: 2 }, retry: 1, cooldown: 300, params: { a: 1 } },
+    { last_result: 'success', last_outcome: 'Done', blocked_reason: 'quota_exhausted' }
+  ),
+  '已禁用 · periodic · 窗口 全天 · quota 日 2 · retry 1 · 冷却 300s · params {"a":1} · 上次 success(Done) · 等待 quota_exhausted',
+  'periodic entry summary includes window/quota/last result'
+);
+
+eq(schedQuotaSummary({ entries: [] }), 'quota：无限制', 'quota summary with no quota');
+eq(schedQuotaSummary({ entries: [
+  { quota: { per: 'day', times: 2, used: 1 } },
+  { quota: { per: 'week', times: 3, used: 2 } },
+  { quota: null },
+] }), 'quota：2 条限制 · 本周期已用 3/5', 'quota summary aggregates used/times');
+
+// P1-3: status read failures have a fixed message and must never look healthy.
+eq(schedStatusErrorText('HTTP 500'), '调度器状态读取失败：HTTP 500', 'status error text keeps the detail');
+eq(schedStatusErrorText(''), '调度器状态读取失败：未知错误', 'empty status error falls back to 未知错误');
+eq(schedStatusErrorText(null), '调度器状态读取失败：未知错误', 'missing status error falls back to 未知错误');
+
+// P1-4: canonical snapshots ignore object key order but see any value change.
+eq(
+  schedConfigSnapshotText({ b: 1, a: { d: 2, c: [3, { y: 1, x: 2 }] } }),
+  schedConfigSnapshotText({ a: { c: [3, { x: 2, y: 1 }], d: 2 }, b: 1 }),
+  'config snapshot is canonical over object key order'
+);
+eq(schedConfigSnapshotText(null), '', 'a missing config file snapshots as an empty string');
+ok(
+  !schedConfigSnapshotChanged(
+    schedConfigSnapshotText({ schema_version: 4, entries: [] }),
+    schedConfigSnapshotText({ entries: [], schema_version: 4 })
+  ),
+  'same content in a different key order is not an external change'
+);
+ok(
+  schedConfigSnapshotChanged(
+    schedConfigSnapshotText({ entries: [] }),
+    schedConfigSnapshotText({ entries: [{ entry_id: 'e1' }] })
+  ),
+  'a value change is detected as an external change'
+);
+ok(!schedConfigSnapshotChanged('', ''), 'two missing files do not count as an external change');
+ok(
+  schedConfigSnapshotChanged('', schedConfigSnapshotText({ entries: [] })),
+  'a file created outside the page counts as an external change'
+);
+ok(/配置已被外部修改/.test(schedExternalConfigChangeText()), 'external change text says the config was modified');
+ok(/重新加载/.test(schedExternalConfigChangeText()), 'external change text asks the user to reload');
+
+ok(/调度器运行中/.test(schedResponseErrorText(409, { errors: ['lock held'] })), '409 text says the scheduler is running');
+ok(/stop-scheduler\.bat/.test(schedResponseErrorText(409, null)), '409 text tells the user to stop the daemon');
+ok(/lock held/.test(schedResponseErrorText(409, { errors: ['lock held'] })), '409 text includes server errors');
+ok(/配置校验失败/.test(schedResponseErrorText(400, { errors: ['entries[0].task must not be empty'] })), '400 text includes validation errors');
+ok(/写入失败/.test(schedResponseErrorText(500, null)), '500 text says the write failed');
+ok(/\/scheduler\/config/.test(schedResponseErrorText(404, null)), '404 text names the missing route');
+ok(/网络错误/.test(schedResponseErrorText(0, null)), 'network error text');
+eq(schedSaveBlockedReason(false), '', 'no blocked-save reason when the scheduler is idle');
+ok(/409/.test(schedSaveBlockedReason(true)) && /stop-scheduler/.test(schedSaveBlockedReason(true)), 'running scheduler warns that save will 409');
+
+eq(schedParseConfigJson('').ok, false, 'empty JSON text is rejected');
+eq(schedParseConfigJson('{bad}').ok, false, 'broken JSON text is rejected');
+eq(schedParseConfigJson('[1]').ok, false, 'JSON array config is rejected');
+eq(schedParseConfigJson('{"entries":{}}').ok, false, 'entries must be an array');
+const roundTripCfg = schedNormalizeConfig(v3Raw);
+eq(
+  schedParseConfigJson(JSON.stringify(roundTripCfg)).config,
+  JSON.parse(JSON.stringify(roundTripCfg)),
+  'config JSON round-trips through parse/normalize'
+);
+
+// Behavioural render smoke test: the new schedule page renderers must produce
+// one card per entry/queue without touching a real browser. A tiny DOM stub
+// mirrors the fakeElement pattern used for the global asset renderer.
+function fakeSchedElement() {
+  return {
+    textContent: '',
+    className: '',
+    children: [],
+    disabled: false,
+    checked: false,
+    value: '',
+    appendChild(child) { this.children.push(child); return child; },
+    append(...children) { this.children.push(...children); },
+    addEventListener() {},
+  };
+}
+
+function installScheduleRenderHarness() {
+  sandbox.document = {
+    createElement: () => fakeSchedElement(),
+    createTextNode: (text) => ({ textContent: String(text) }),
+  };
+  sandbox.schedBadge = (text, cls) => {
+    const node = fakeSchedElement();
+    node.className = 'badge ' + (cls || '');
+    node.textContent = text;
+    return node;
+  };
+  sandbox.pageSchedEntries = fakeSchedElement();
+  sandbox.pageSchedQueues = fakeSchedElement();
+  for (const name of ['pageSchedMode', 'pageSchedPasses', 'pageSchedNextWake',
+    'pageSchedRunning', 'pageSchedQuota', 'pageSchedSummary', 'pageSchedConfigStatus']) {
+    sandbox[name] = fakeSchedElement();
+  }
+  sandbox.scheduleConfigMeta = { running: true, path: 'scheduler.json', exists: true, state_path: 'scheduler.state.json', schema_version: 4 };
+  sandbox.scheduleConfigError = '';
+  sandbox.scheduleStatusError = '';
+  sandbox.scheduleLocked = () => true;
+  sandbox.schedEntryKindLabel = schedEntryKindLabel;
+  sandbox.schedStatusErrorText = schedStatusErrorText;
+  const sourceFns = [
+    extractFunction('scheduleStatusEntryMap'),
+    extractFunction('renderScheduleStatusCard'),
+    extractFunction('renderScheduleEntries'),
+    extractFunction('renderScheduleQueues'),
+  ].join('\n\n');
+  vm.runInContext(sourceFns, sandbox, { filename: 'app.js#schedule-render' });
+}
+
+installScheduleRenderHarness();
+const renderCfg = schedEmptyConfig();
+renderCfg.queues = [{
+  queue_id: 'q1', name: '日常', members: ['B'], total_rounds: 2,
+  on_failure: 'continue', between_ms: 500,
+}];
+renderCfg.entries = [
+  schedDefaultTaskEntry('A', renderCfg),
+  schedDefaultTaskEntry('q1', renderCfg, 'queue'),
+];
+const renderStatus = {
+  mode: 'loop',
+  passes: 7,
+  next_wake_local: '2026-11-03 09:00:00',
+  guards: { blocked: false },
+  entries: [
+    { entry_id: 'task-A', runnable_now: true, last_result: 'success', last_outcome: 'Done' },
+    { entry_id: 'queue-q1', queue: { total_rounds: 2, rounds_completed: 1, empty_rounds: 0, finished: false, current_round: { index: 2, member_index: 0 } } },
+  ],
+  queues: [{
+    queue_id: 'q1', name: '日常', members: ['B'], total_rounds: 2, rounds_completed: 1,
+    empty_rounds: 0, finished: false, on_failure: 'continue', between_ms: 500,
+    current_round: { index: 2, member_index: 0 },
+  }],
+};
+// P1-3: a failed /scheduler/status read renders an unknown state, not "正常".
+sandbox.scheduleStatusError = 'HTTP 500';
+sandbox.renderScheduleStatusCard(null);
+eq(sandbox.pageSchedMode.textContent, '模式：—', 'status read failure shows an unknown mode');
+eq(sandbox.pageSchedPasses.textContent, 'passes=—', 'status read failure does not fake passes=0');
+eq(sandbox.pageSchedNextWake.textContent, '下次唤醒=—', 'status read failure shows an unknown next wake');
+eq(sandbox.pageSchedQuota.textContent, 'quota：—', 'status read failure shows an unknown quota');
+eq(sandbox.pageSchedRunning.textContent, '锁=—', 'status read failure does not claim an idle lock');
+ok(
+  /调度器状态读取失败：HTTP 500/.test(sandbox.pageSchedSummary.textContent),
+  'status summary carries the read error'
+);
+ok(
+  !/调度器状态正常/.test(sandbox.pageSchedSummary.textContent),
+  'status summary never claims everything is normal after a read failure'
+);
+sandbox.scheduleStatusError = '';
+
+sandbox.renderScheduleStatusCard(renderStatus);
+eq(sandbox.pageSchedMode.textContent, '模式：loop', 'status card shows mode');
+eq(sandbox.pageSchedPasses.textContent, 'passes=7', 'status card shows passes');
+eq(sandbox.pageSchedNextWake.textContent, '下次唤醒=2026-11-03 09:00:00', 'status card shows next wake');
+ok(/调度器运行中/.test(sandbox.pageSchedRunning.textContent), 'status card shows the running lock');
+eq(sandbox.pageSchedQuota.textContent, 'quota：无限制', 'status card shows the quota summary');
+ok(/stop-scheduler\.bat/.test(sandbox.pageSchedConfigStatus.textContent), 'config status warns how to save while locked');
+
+sandbox.renderScheduleEntries(renderStatus, renderCfg);
+eq(sandbox.pageSchedEntries.children.length, 2, 'entry renderer emits one card per entry');
+const firstEntryCard = sandbox.pageSchedEntries.children[0];
+eq(firstEntryCard.children[0].children[0].textContent, 'task-A · 任务 A', 'task entry card title');
+ok(/quota 日 1/.test(firstEntryCard.children[0].children[1].textContent), 'task entry card summary includes quota');
+eq(firstEntryCard.children[2].disabled, true, 'first entry cannot move up');
+eq(firstEntryCard.children[3].disabled, false, 'first entry can move down');
+const secondEntryCard = sandbox.pageSchedEntries.children[1];
+eq(secondEntryCard.children[0].children[0].textContent, 'queue-q1 · 队列 q1', 'queue entry card title');
+ok(
+  secondEntryCard.children[0].children[2].children.some((b) => /轮次 1\/2/.test(b.textContent)),
+  'queue entry card shows round progress'
+);
+
+sandbox.renderScheduleQueues(renderStatus, renderCfg);
+eq(sandbox.pageSchedQueues.children.length, 1, 'queue renderer emits one card per queue');
+const queueCard = sandbox.pageSchedQueues.children[0];
+eq(queueCard.children[0].children[0].textContent, 'q1 · 日常', 'queue card title');
+ok(/成员 1：B/.test(queueCard.children[0].children[1].textContent), 'queue card lists members in order');
+ok(/进行中：第 2 轮/.test(queueCard.children[0].children[1].textContent), 'queue card shows the current round');
+ok(
+  queueCard.children[0].children[2].children.some((b) => /触发条目：queue-q1/.test(b.textContent)),
+  'queue card shows the trigger entry id'
+);
+
+sandbox.renderScheduleEntries(renderStatus, null);
+ok(/调度配置不可用/.test(sandbox.pageSchedEntries.textContent), 'entry renderer explains a missing config');
+sandbox.renderScheduleQueues(renderStatus, null);
+ok(/调度配置不可用/.test(sandbox.pageSchedQueues.textContent), 'queue renderer explains a missing config');
+
+// Static wiring for the new editable scheduler UI.
+ok(/id="page-sched-add-entry"/.test(html), 'index.html provides the add-entry button');
+ok(/id="page-sched-add-queue"/.test(html), 'index.html provides the add-queue button');
+ok(/id="page-sched-json"/.test(html) && /id="page-sched-json-save"/.test(html), 'index.html provides the advanced JSON editor');
+ok(/id="page-sched-queues"/.test(html), 'index.html provides the queue panel container');
+ok(/id="page-sched-running"/.test(html), 'index.html provides the running/lock badge');
+ok(/id="sched-entry-dialog"/.test(html) && /id="sched-entry-windows"/.test(html) && /id="sched-entry-params"/.test(html), 'entry dialog fields exist');
+ok(/id="sched-queue-dialog"/.test(html) && /id="sched-queue-members"/.test(html) && /id="sched-queue-task-pool"/.test(html), 'queue dialog fields exist');
+ok(/id="btn-sched-open-page"/.test(html), 'index.html provides the workbench open-page button');
+const htmlIds = [...html.matchAll(/id=["']([^"']+)["']/g)].map((m) => m[1]);
+const dupHtmlIds = [...new Set(htmlIds.filter((id, i) => htmlIds.indexOf(id) !== i))];
+ok(dupHtmlIds.length === 0, `index.html has no duplicate DOM ids (duplicates: ${dupHtmlIds.join(', ') || 'none'})`);
+ok(
+  (html.match(/<dialog\b/g) || []).length === (html.match(/<\/dialog>/g) || []).length,
+  'index.html dialog tags are balanced'
+);
+ok(/调度设置…/.test(source) && /openTaskScheduleDialog\(t\.name\)/.test(source), 'task library card opens the scheduler dialog');
+ok(/fetch\('\/scheduler\/config'\)/.test(source), 'GET /scheduler/config is wired');
+ok(/body: JSON\.stringify\(\{ config: cfg \}\)/.test(source), 'POST /scheduler/config sends {config}');
+ok(/btnSchedOpenPage\.addEventListener\('click', \(\) => activatePage\('schedule'\)\)/.test(source), 'workbench button opens the schedule page');
+ok(/if \(pageSchedJson\)[\s\S]{0,200}scheduleJsonDirty = true/.test(source), 'advanced JSON tracks unsaved edits');
+ok(/id="page-sched-entries"[^>]*>（未加载）<\/div>/.test(html), 'entry list container starts in the unloaded state');
+ok(/id="page-sched-queues"[^>]*>（未加载）<\/div>/.test(html), 'queue list container starts in the unloaded state');
+
+// P1-3/P1-4 wiring: the save button is GET-first + snapshot-guarded, and a
+// status read failure is recorded, logged and rendered on the card.
+const saveConfigFn = extractFunction('saveSchedulePageConfig');
+ok(/fetchScheduleConfigOnce\(\)/.test(saveConfigFn), '保存配置 GETs the latest config before POSTing');
+ok(/schedConfigSnapshotChanged\(scheduleConfigBase, freshRaw\)/.test(saveConfigFn), '保存配置 compares the fresh config with the page snapshot');
+ok(/schedExternalConfigChangeText\(\)/.test(saveConfigFn), '保存配置 aborts with the reload hint on an external change');
+const loadConfigFn = extractFunction('loadScheduleConfig');
+ok(/scheduleConfigBase = schedConfigSnapshotText\(/.test(loadConfigFn), 'loadScheduleConfig records the base config snapshot');
+const refreshPageFn = extractFunction('refreshSchedulePage');
+ok(/scheduleStatusError = /.test(refreshPageFn) && /schedStatusErrorText\(/.test(refreshPageFn), 'status read failures are recorded and logged');
+ok(/schedStatusErrorText\(statusError\)/.test(extractFunction('renderScheduleStatusCard')), 'status card renders the read error');
 
 // DOM id audit: the whole point of this round is ZERO static dead ids. Every
 // getElementById target must exist in index.html; if an id is genuinely needed,

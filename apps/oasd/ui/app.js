@@ -151,6 +151,57 @@ const pageSchedSummary = document.getElementById('page-sched-summary');
 const pageSchedEntries = document.getElementById('page-sched-entries');
 const pageSchedRefresh = document.getElementById('page-sched-refresh');
 const pageSchedReset = document.getElementById('page-sched-reset');
+// P3: editable scheduler page (status card / entries / queues / advanced JSON).
+const pageSchedMode = document.getElementById('page-sched-mode');
+const pageSchedPasses = document.getElementById('page-sched-passes');
+const pageSchedNextWake = document.getElementById('page-sched-next-wake');
+const pageSchedRunning = document.getElementById('page-sched-running');
+const pageSchedQuota = document.getElementById('page-sched-quota');
+const pageSchedConfigStatus = document.getElementById('page-sched-config-status');
+const pageSchedSave = document.getElementById('page-sched-save');
+const pageSchedReload = document.getElementById('page-sched-reload');
+const pageSchedAddEntry = document.getElementById('page-sched-add-entry');
+const pageSchedQueues = document.getElementById('page-sched-queues');
+const pageSchedAddQueue = document.getElementById('page-sched-add-queue');
+const pageSchedJson = document.getElementById('page-sched-json');
+const pageSchedJsonSave = document.getElementById('page-sched-json-save');
+const pageSchedJsonReload = document.getElementById('page-sched-json-reload');
+const pageSchedJsonStatus = document.getElementById('page-sched-json-status');
+const btnSchedOpenPage = document.getElementById('btn-sched-open-page');
+const schedEntryDialog = document.getElementById('sched-entry-dialog');
+const schedEntryTitle = document.getElementById('sched-entry-title');
+const schedEntryModeHint = document.getElementById('sched-entry-mode-hint');
+const schedEntryKind = document.getElementById('sched-entry-kind');
+const schedEntryTarget = document.getElementById('sched-entry-target');
+const schedEntryIdEl = document.getElementById('sched-entry-id');
+const schedEntryEnabled = document.getElementById('sched-entry-enabled');
+const schedEntryLifecycle = document.getElementById('sched-entry-lifecycle');
+const schedEntryTempHint = document.getElementById('sched-entry-temp-hint');
+const schedEntryWindows = document.getElementById('sched-entry-windows');
+const schedEntryWindowsJson = document.getElementById('sched-entry-windows-json');
+const schedEntryQuotaPer = document.getElementById('sched-entry-quota-per');
+const schedEntryQuotaTimes = document.getElementById('sched-entry-quota-times');
+const schedEntryRetry = document.getElementById('sched-entry-retry');
+const schedEntryCooldown = document.getElementById('sched-entry-cooldown');
+const schedEntryParams = document.getElementById('sched-entry-params');
+const schedEntryError = document.getElementById('sched-entry-error');
+const schedEntryCancel = document.getElementById('sched-entry-cancel');
+const schedEntrySave = document.getElementById('sched-entry-save');
+const schedQueueDialog = document.getElementById('sched-queue-dialog');
+const schedQueueTitle = document.getElementById('sched-queue-title');
+const schedQueueId = document.getElementById('sched-queue-id');
+const schedQueueName = document.getElementById('sched-queue-name');
+const schedQueueMemberAddBtn = document.getElementById('sched-queue-member-add');
+const schedQueueMembers = document.getElementById('sched-queue-members');
+const schedQueueTaskPool = document.getElementById('sched-queue-task-pool');
+const schedQueueTotalRounds = document.getElementById('sched-queue-total-rounds');
+const schedQueueOnFailure = document.getElementById('sched-queue-on-failure');
+const schedQueueBetweenMs = document.getElementById('sched-queue-between-ms');
+const schedQueueRoundsHint = document.getElementById('sched-queue-rounds-hint');
+const schedQueueLockHint = document.getElementById('sched-queue-lock-hint');
+const schedQueueError = document.getElementById('sched-queue-error');
+const schedQueueCancel = document.getElementById('sched-queue-cancel');
+const schedQueueSave = document.getElementById('sched-queue-save');
 const settingsConfig = document.getElementById('settings-config');
 const settingsRefresh = document.getElementById('settings-refresh');
 const runDry = document.getElementById('run-dry');
@@ -177,6 +228,22 @@ const btnResetNone = document.getElementById('btn-reset-none');
 const btnResetSubmit = document.getElementById('btn-reset-submit');
 const btnResetCancel = document.getElementById('btn-reset-cancel');
 let schedulerStatus = null;
+// P3: full scheduler.json document + the GET /scheduler/config response shape.
+let scheduleConfig = null;
+let scheduleConfigMeta = null;
+let scheduleConfigError = '';
+// P1-3: a failed /scheduler/status read must be visible on the status card; the
+// page must never present passes=0 / 锁=空闲 / quota：无限制 for an unknown state.
+let scheduleStatusError = '';
+// P1-4: canonical JSON of the GET /scheduler/config document this page was loaded
+// from. The toolbar save compares a fresh GET against it before POSTing, so a
+// stale in-memory snapshot can never overwrite an external edit.
+let scheduleConfigBase = '';
+let scheduleTasksCache = [];
+let scheduleBusy = false;
+let scheduleJsonDirty = false;
+let scheduleEntryDialogState = null;
+let scheduleQueueDialogState = null;
 // M1 运行状态轮询：已消费的日志行数 / 是否已有轮询在跑（避免重复轮询）
 let runLogSeen = 0;
 let runPolling = false;
@@ -678,6 +745,7 @@ async function refreshLibrary() {
       return;
     }
     libList.textContent = '';
+    scheduleTasksCache = (s.tasks || []).map((t) => t.name).filter(Boolean);
     if (!s.tasks.length) {
       libList.textContent = '（还没有任务；点「新建任务…」）';
       return;
@@ -699,11 +767,17 @@ async function refreshLibrary() {
       open.type = 'button';
       open.textContent = '打开';
       open.addEventListener('click', () => openTaskInWorkbench(t.name));
+      // P3: edit this task's scheduler entry (create / update via /scheduler/config).
+      const sched = document.createElement('button');
+      sched.type = 'button';
+      sched.textContent = '调度设置…';
+      sched.title = '为该任务加入调度，或编辑它已有的调度条目';
+      sched.addEventListener('click', () => openTaskScheduleDialog(t.name));
       const del = document.createElement('button');
       del.type = 'button';
       del.textContent = '删除';
       del.addEventListener('click', () => deleteTaskFromLibrary(t.name));
-      card.append(meta, open, del);
+      card.append(meta, open, sched, del);
       libList.appendChild(card);
     }
   } catch (e) {
@@ -827,40 +901,45 @@ async function saveInstance() {
 
 async function refreshSchedulePage() {
   if (!pageSchedSummary) return;
+  setScheduleBusy(true);
   try {
-    const r = await fetch('/scheduler/status');
-    const s = await r.json();
-    if (s.ok === false) {
-      pageSchedSummary.textContent = '读取失败：' + ((s.errors || []).join('; ') || '未知');
-      return;
+    let status = null;
+    // P1-3: remember a failed status read so the card can never claim "正常".
+    scheduleStatusError = '';
+    try {
+      const r = await fetch('/scheduler/status');
+      let body = null;
+      try { body = await r.json(); } catch (e) { body = null; }
+      if (!r.ok || !body || body.ok === false) {
+        scheduleStatusError = (body && Array.isArray(body.errors) && body.errors.length)
+          ? body.errors.join('；')
+          : (r.ok ? '响应不是 JSON 对象' : `HTTP ${r.status}`);
+        log(schedStatusErrorText(scheduleStatusError), 'ERROR');
+      } else {
+        status = body;
+      }
+    } catch (e) {
+      scheduleStatusError = String(e);
+      log(schedStatusErrorText(e), 'WARN');
     }
-    schedulerStatus = s;
-    const guards = s.guards || {};
-    pageSchedSummary.textContent =
-      `模式=${s.mode || '—'} · 轮次=${s.passes ?? 0} · 下一唤醒=${s.next_wake_local || '—'} · ` +
-      `护栏=${guards.blocked ? '已阻断' : '正常'} · 计划=${s.config_path || '—'}`;
-    pageSchedEntries.textContent = '';
-    for (const e of s.entries || []) {
-      const card = document.createElement('div');
-      card.className = 'task-card';
-      const meta = document.createElement('div');
-      meta.className = 'task-meta';
-      const title = document.createElement('div');
-      title.className = 'task-title';
-      title.textContent = `${e.entry_id} · ${e.task}`;
-      const sub = document.createElement('div');
-      sub.className = 'task-sub';
-      const q = e.quota || {};
-      sub.textContent =
-        `${e.lifecycle} · ${e.runnable_now ? '现在可跑' : (e.blocked_reason || '等待')}` +
-        (q.per ? ` · quota ${q.used ?? 0}/${q.times ?? '?'}` : '') +
-        (e.next_due_local ? ` · 下次 ${e.next_due_local}` : '');
-      meta.append(title, sub);
-      card.append(meta);
-      pageSchedEntries.appendChild(card);
+    const cfg = await loadScheduleConfig(true);
+    renderScheduleStatusCard(status);
+    if (cfg) {
+      if (pageSchedJson && !scheduleJsonDirty) {
+        pageSchedJson.value = JSON.stringify(cfg, null, 2);
+        if (pageSchedJsonStatus) pageSchedJsonStatus.textContent = '已从磁盘载入';
+      }
+    } else if (pageSchedJson && !scheduleJsonDirty) {
+      pageSchedJson.value = '';
     }
+    renderScheduleEntries(status, cfg);
+    renderScheduleQueues(status, cfg);
+    if (status) schedulerStatus = status;
   } catch (e) {
-    pageSchedSummary.textContent = '读取异常：' + e;
+    if (pageSchedSummary) pageSchedSummary.textContent = '读取异常：' + e;
+    log('刷新调度页异常：' + e, 'ERROR');
+  } finally {
+    setScheduleBusy(false);
   }
 }
 
@@ -5739,6 +5818,1514 @@ async function doRunTask() {
   }
 }
 
+// --- P3: 调度配置纯函数（可被 ui_pure_test.js 提取；不碰 DOM） ---------------
+// Everything below is plain data in -> plain data out so the JSON transform /
+// entry builder / queue payload / error-text rules are testable without a
+// browser. UI functions live further down and call these.
+
+function schedEntryKindLabel(kind) {
+  return kind === 'queue' ? 'queue' : 'task';
+}
+
+// `task-<任务名>` entry ids must stay unique and control-character free. Task
+// names may contain Chinese (keep them), but never path separators. Split/join
+// instead of one quoted regex keeps this function extractable by ui_pure_test.js.
+function schedSanitizeIdSegment(name) {
+  let s = String(name == null ? '' : name).trim();
+  s = s.replace(/[\u0000-\u001f\u007f]/g, '-');
+  s = s.split('').map((c) => ('<>:"/\\|?*'.indexOf(c) >= 0 ? '-' : c)).join('');
+  s = s.replace(/\.\.+/g, '.');
+  s = s.replace(/^[.\s-]+|[.\s-]+$/g, '');
+  if (!s) s = 'entry';
+  if (s.length > 96) s = s.slice(0, 96).replace(/[.\s-]+$/g, '');
+  return s || 'entry';
+}
+
+// Task-name/queue-id grammar shared by the UI validators: no separators, no
+// control characters (the backend additionally checks Windows reserved names).
+function schedHasUnsafeNameChar(value) {
+  const s = String(value == null ? '' : value);
+  for (const c of s) {
+    const code = c.charCodeAt(0);
+    if (code < 32 || code === 127) return true;
+    if ('<>:"/\\|?*'.indexOf(c) >= 0) return true;
+  }
+  return false;
+}
+
+function schedUniqueId(base, used) {
+  const taken = used instanceof Set ? used : new Set(used || []);
+  let id = String(base || 'entry');
+  let n = 2;
+  while (taken.has(id)) {
+    id = String(base || 'entry') + '-' + n;
+    n += 1;
+  }
+  return id;
+}
+
+function schedEntryIdForTarget(kind, target, config) {
+  const prefix = schedEntryKindLabel(kind) === 'queue' ? 'queue' : 'task';
+  const used = new Set(((config && config.entries) || []).map((e) => String((e && e.entry_id) || '')));
+  return schedUniqueId(prefix + '-' + schedSanitizeIdSegment(target), used);
+}
+
+function schedEmptyConfig() {
+  return {
+    schema_version: 4,
+    config: {
+      // P2-2: a newly created scheduler.json must actually keep scheduling, like
+      // the shipped dist/stage default (`start-scheduler.bat` passes no --mode).
+      // mode=stop would run a single pass and exit, which looks like "调度没生效".
+      mode: 'loop',
+      loop_interval_s: 60,
+      loop_rounds: 0,
+      utc_offset_min: 480,
+      calendar: { day_reset: '00:00', week_reset: { weekday: 0, time: '00:00' } },
+      guards: { active_hours: [], blackouts: [] },
+      defaults: { retry: 1, cooldown: 300 },
+    },
+    queues: [],
+    entries: [],
+  };
+}
+
+// Normalize whatever GET /scheduler/config returned into the v4 document the UI
+// edits: schema 4, entries[].kind defaulted, arrays/objects guaranteed. Unknown
+// keys are preserved here; the backend also writes a submitted v4 document back
+// verbatim, so they survive a save (only a v3 document is re-normalized/upgraded).
+function schedNormalizeConfig(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return schedEmptyConfig();
+  const base = schedEmptyConfig();
+  const out = Object.assign({}, base, raw);
+  out.schema_version = 4;
+  out.config = Object.assign(
+    {},
+    base.config,
+    raw.config && typeof raw.config === 'object' && !Array.isArray(raw.config) ? raw.config : {}
+  );
+  out.queues = Array.isArray(raw.queues)
+    ? raw.queues.filter((q) => q && typeof q === 'object').map((q) => Object.assign({}, q))
+    : [];
+  out.entries = Array.isArray(raw.entries)
+    ? raw.entries.filter((e) => e && typeof e === 'object').map((e) => {
+      const entry = Object.assign({}, e);
+      entry.kind = schedEntryKindLabel(entry.kind);
+      if (!Array.isArray(entry.windows)) entry.windows = [];
+      if (!entry.params || typeof entry.params !== 'object' || Array.isArray(entry.params)) entry.params = {};
+      return entry;
+    })
+    : [];
+  return out;
+}
+
+// New-entry defaults required by the P3 spec: kind=task, enabled, periodic,
+// full-day windows (empty array = always in window), quota day/1, config defaults.
+function schedDefaultTaskEntry(task, config, kind) {
+  const cfg = config || schedEmptyConfig();
+  const k = schedEntryKindLabel(kind || 'task');
+  const defaults = (cfg.config && cfg.config.defaults) || {};
+  const retry = Number.isInteger(defaults.retry) ? defaults.retry : 1;
+  const cooldown = Number.isInteger(defaults.cooldown) ? defaults.cooldown : 300;
+  return {
+    entry_id: schedEntryIdForTarget(k, task, cfg),
+    task: String(task == null ? '' : task),
+    kind: k,
+    enabled: true,
+    lifecycle: 'periodic',
+    windows: [],
+    quota: { per: 'day', times: 1 },
+    params: {},
+    retry,
+    cooldown,
+  };
+}
+
+function schedWindowsToText(windows) {
+  const list = Array.isArray(windows) ? windows : [];
+  if (!list.length) return '全天';
+  return list.map((w) => {
+    const days = Array.isArray(w.days) ? w.days : [];
+    const prefix = days.length ? '[' + days.join(',') + ']' : '';
+    return prefix + (w.start || '00:00') + '-' + (w.end || '00:00');
+  }).join(', ');
+}
+
+// Simplified windows text: `HH:MM-HH:MM`, comma separated, optional `[1,3]`
+// weekday prefix per window. Empty (or 全天) = no window restriction.
+function schedParseWindowsText(text) {
+  const raw = String(text == null ? '' : text).trim();
+  if (!raw || raw === '全天' || raw === '全天候') return { ok: true, windows: [], error: '' };
+  // Commas inside `[1,3]` separate weekdays, not windows: mask them first.
+  const guarded = raw.replace(/\[([^\]]*)\]/g, (m, inner) => '[' + inner.replace(/[,，]/g, ' ') + ']');
+  const parts = guarded.split(/[,，;；\n]+/).map((s) => s.trim()).filter(Boolean);
+  const windows = [];
+  for (const part of parts) {
+    let days = [];
+    let rest = part;
+    const m = /^\[([0-9\s]+)\](.*)$/.exec(part);
+    if (m) {
+      const set = new Set();
+      for (const d of m[1].split(/\s+/).filter(Boolean)) {
+        const n = Number(d);
+        if (!Number.isInteger(n) || n < 0 || n > 6) {
+          return { ok: false, windows: [], error: `周几必须是 0..6（0=周一）：${part}` };
+        }
+        set.add(n);
+      }
+      days = Array.from(set).sort((a, b) => a - b);
+      rest = m[2].trim();
+    }
+    const hm = /^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$/.exec(rest);
+    if (!hm) {
+      return { ok: false, windows: [], error: `时间窗口格式应为 HH:MM-HH:MM（可加 [1,3] 前缀）：${part}` };
+    }
+    const h1 = Number(hm[1]);
+    const h2 = Number(hm[3]);
+    if (h1 > 23 || h2 > 23 || Number(hm[2]) > 59 || Number(hm[4]) > 59) {
+      return { ok: false, windows: [], error: `时间超出范围：${part}` };
+    }
+    windows.push({
+      days,
+      start: String(h1).padStart(2, '0') + ':' + hm[2],
+      end: String(h2).padStart(2, '0') + ':' + hm[4],
+    });
+  }
+  return { ok: true, windows, error: '' };
+}
+
+function schedParseWindowsJson(text) {
+  const raw = String(text == null ? '' : text).trim();
+  if (!raw) return { ok: true, windows: [], error: '' };
+  let v;
+  try {
+    v = JSON.parse(raw);
+  } catch (e) {
+    return { ok: false, windows: [], error: 'windows JSON 解析失败：' + (e && e.message ? e.message : e) };
+  }
+  if (!Array.isArray(v)) return { ok: false, windows: [], error: 'windows JSON 必须是数组' };
+  const windows = [];
+  for (let i = 0; i < v.length; i++) {
+    const w = v[i];
+    if (!w || typeof w !== 'object' || Array.isArray(w)) {
+      return { ok: false, windows: [], error: `windows[${i}] 必须是对象` };
+    }
+    const days = w.days == null ? [] : w.days;
+    if (!Array.isArray(days)) return { ok: false, windows: [], error: `windows[${i}].days 必须是数组` };
+    const outDays = [];
+    for (const d of days) {
+      const n = Number(d);
+      if (!Number.isInteger(n) || n < 0 || n > 6) {
+        return { ok: false, windows: [], error: `windows[${i}].days 必须是 0..6` };
+      }
+      if (!outDays.includes(n)) outDays.push(n);
+    }
+    outDays.sort((a, b) => a - b);
+    const start = String(w.start == null ? '' : w.start);
+    const end = String(w.end == null ? '' : w.end);
+    const hhmm = /^(\d{1,2}):(\d{2})$/;
+    const sm = hhmm.exec(start);
+    const em = hhmm.exec(end);
+    if (!sm || !em || Number(sm[1]) > 23 || Number(em[1]) > 23 || Number(sm[2]) > 59 || Number(em[2]) > 59) {
+      return { ok: false, windows: [], error: `windows[${i}] 的 start/end 需要 HH:MM` };
+    }
+    windows.push({
+      days: outDays,
+      start: String(Number(sm[1])).padStart(2, '0') + ':' + sm[2],
+      end: String(Number(em[1])).padStart(2, '0') + ':' + em[2],
+    });
+  }
+  return { ok: true, windows, error: '' };
+}
+
+function schedParseParamsText(text) {
+  const raw = String(text == null ? '' : text).trim();
+  if (!raw) return { ok: true, params: {}, error: '' };
+  try {
+    const v = JSON.parse(raw);
+    if (!v || typeof v !== 'object' || Array.isArray(v)) {
+      return { ok: false, params: {}, error: 'params 必须是 JSON 对象（{...}）' };
+    }
+    return { ok: true, params: v, error: '' };
+  } catch (e) {
+    return { ok: false, params: {}, error: 'params JSON 解析失败：' + (e && e.message ? e.message : e) };
+  }
+}
+
+function schedEntryToForm(entry, defaults) {
+  const e = entry || {};
+  const d = defaults || {};
+  const quota = e.quota && typeof e.quota === 'object' ? e.quota : null;
+  const defaultRetry = Number.isInteger(d.retry) ? d.retry : 1;
+  const defaultCooldown = Number.isInteger(d.cooldown) ? d.cooldown : 300;
+  return {
+    entry_id: String(e.entry_id || ''),
+    kind: schedEntryKindLabel(e.kind),
+    task: String(e.task || ''),
+    enabled: e.enabled !== false,
+    lifecycle: e.lifecycle === 'temp' ? 'temp' : 'periodic',
+    windows_text: schedWindowsToText(e.windows),
+    windows_json: '',
+    quota_per: quota && (quota.per === 'day' || quota.per === 'week') ? quota.per : '',
+    quota_times: quota && quota.times ? String(quota.times) : '1',
+    retry: e.retry == null ? String(defaultRetry) : String(e.retry),
+    cooldown: e.cooldown == null ? String(defaultCooldown) : String(e.cooldown),
+    params_text: e.params && Object.keys(e.params).length ? JSON.stringify(e.params, null, 2) : '',
+  };
+}
+
+// Build one entry from form values. `base` supplies editable entry_id/unknown
+// keys; temp forces windows=[] and quota=null (the backend rejects both).
+function schedBuildEntryFromForm(form, base, config) {
+  const f = form || {};
+  const b = base || {};
+  const cfg = config || schedEmptyConfig();
+  const kind = schedEntryKindLabel(f.kind || b.kind);
+  const task = String(f.task == null ? (b.task || '') : f.task).trim();
+  const lifecycle = f.lifecycle === 'temp' ? 'temp' : 'periodic';
+  const temp = lifecycle === 'temp';
+  const id = String(f.entry_id || b.entry_id || '').trim() || schedEntryIdForTarget(kind, task, cfg);
+  let windows = [];
+  let quota = null;
+  if (!temp) {
+    if (Array.isArray(f.windows)) windows = f.windows.map((w) => Object.assign({}, w));
+    else if (Array.isArray(b.windows)) windows = b.windows.map((w) => Object.assign({}, w));
+    if (f.quota_per === 'day' || f.quota_per === 'week') {
+      const times = Math.floor(Number(f.quota_times));
+      quota = { per: f.quota_per, times: Math.max(1, Math.min(1000, Number.isFinite(times) ? times : 1)) };
+    } else if (f.quota_per === '') {
+      quota = null;
+    } else if (b.quota && (b.quota.per === 'day' || b.quota.per === 'week')) {
+      quota = { per: b.quota.per, times: b.quota.times };
+    }
+  }
+  let params = {};
+  if (f.params && typeof f.params === 'object' && !Array.isArray(f.params)) params = f.params;
+  else if (b.params && typeof b.params === 'object' && !Array.isArray(b.params)) params = b.params;
+  const retryNum = Number(f.retry);
+  const cooldownNum = Number(f.cooldown);
+  const retry = Number.isInteger(retryNum) && String(f.retry == null ? '' : f.retry).trim() !== ''
+    ? retryNum
+    : (Number.isInteger(b.retry) ? b.retry : 1);
+  const cooldown = Number.isInteger(cooldownNum) && String(f.cooldown == null ? '' : f.cooldown).trim() !== ''
+    ? cooldownNum
+    : (Number.isInteger(b.cooldown) ? b.cooldown : 300);
+  return Object.assign({}, b, {
+    entry_id: id,
+    task,
+    kind,
+    enabled: f.enabled == null ? b.enabled !== false : !!f.enabled,
+    lifecycle,
+    windows,
+    quota,
+    params,
+    retry,
+    cooldown,
+  });
+}
+
+function schedFindTaskEntries(config, task) {
+  const t = String(task == null ? '' : task);
+  return (((config && config.entries) || [])).filter(
+    (e) => schedEntryKindLabel(e.kind) === 'task' && e.task === t
+  );
+}
+
+function schedFindTaskQueueMember(config, task) {
+  const t = String(task == null ? '' : task);
+  for (const q of (config && config.queues) || []) {
+    if (Array.isArray(q.members) && q.members.includes(t)) return String(q.queue_id || '');
+  }
+  return '';
+}
+
+// Rule 2: one queue has at most one trigger entry.
+function schedQueueEntryConflict(config, queueId, exceptEntryId) {
+  const qid = String(queueId == null ? '' : queueId);
+  const except = String(exceptEntryId == null ? '' : exceptEntryId);
+  const hit = ((config && config.entries) || []).find(
+    (e) => schedEntryKindLabel(e.kind) === 'queue' && e.task === qid && e.entry_id !== except
+  );
+  return hit ? String(hit.entry_id || '') : '';
+}
+
+function schedValidateEntryForm(form, config, entryId, baseEntry) {
+  const cfg = schedNormalizeConfig(config || schedEmptyConfig());
+  const f = form || {};
+  const errors = [];
+  const kind = schedEntryKindLabel(f.kind);
+  const target = String(f.task == null ? '' : f.task).trim();
+  const lifecycle = f.lifecycle === 'temp' ? 'temp' : 'periodic';
+  if (!target) errors.push(kind === 'queue' ? '请选择要触发的队列（queue_id）' : '请选择任务');
+  if (kind === 'queue') {
+    if (target && !(cfg.queues || []).some((q) => q.queue_id === target)) {
+      errors.push(`队列「${target}」不存在；请先在队列面板新建`);
+    }
+    if (target) {
+      const other = schedQueueEntryConflict(cfg, target, entryId || '');
+      if (other) errors.push(`队列「${target}」已有触发条目「${other}」；一个队列最多一个 entry（防双跑）`);
+    }
+  } else if (target) {
+    const queueId = schedFindTaskQueueMember(cfg, target);
+    if (queueId) errors.push(`任务「${target}」已是队列「${queueId}」的成员，不能再单独加入调度（防双跑）`);
+  }
+  let windows = [];
+  let quota = null;
+  if (lifecycle !== 'temp') {
+    const jsonText = String(f.windows_json == null ? '' : f.windows_json).trim();
+    if (jsonText) {
+      const parsedJson = schedParseWindowsJson(jsonText);
+      if (!parsedJson.ok) errors.push(parsedJson.error);
+      else windows = parsedJson.windows;
+    } else {
+      const parsedText = schedParseWindowsText(f.windows_text);
+      if (!parsedText.ok) errors.push(parsedText.error);
+      else windows = parsedText.windows;
+    }
+    if (f.quota_per === 'day' || f.quota_per === 'week') {
+      const times = Number(f.quota_times);
+      if (!Number.isInteger(times) || times < 1 || times > 1000) errors.push('quota 次数必须是 1..1000 的整数');
+      else quota = { per: f.quota_per, times };
+    } else if (f.quota_per != null && f.quota_per !== '') {
+      errors.push('quota 只能是 无 / day / week');
+    }
+  }
+  const retry = Number(f.retry);
+  if (!Number.isInteger(retry) || retry < 0 || retry > 10) errors.push('retry 必须是 0..10 的整数');
+  const cooldown = Number(f.cooldown);
+  if (!Number.isInteger(cooldown) || cooldown < 0 || cooldown > 604800) {
+    errors.push('cooldown_s 必须是 0..604800 的整数');
+  }
+  const params = schedParseParamsText(f.params_text);
+  if (!params.ok) errors.push(params.error);
+  const entry = schedBuildEntryFromForm(Object.assign({}, f, {
+    entry_id: String(entryId || '').trim(),
+    windows,
+    quota_per: quota ? quota.per : '',
+    quota_times: quota ? quota.times : '',
+    params: params.params,
+    retry: Number.isInteger(retry) ? retry : 0,
+    cooldown: Number.isInteger(cooldown) ? cooldown : 0,
+  }), entryId ? (baseEntry || {}) : Object.assign({}, baseEntry || {}, { entry_id: '' }), cfg);
+  if (entry.entry_id.length > 128) errors.push('entry_id 超过 128 字符');
+  return { ok: errors.length === 0, errors, entry };
+}
+
+function schedUpsertEntry(config, entry) {
+  const cfg = schedNormalizeConfig(config);
+  const idx = cfg.entries.findIndex((e) => e.entry_id === entry.entry_id);
+  if (idx >= 0) cfg.entries[idx] = Object.assign({}, entry);
+  else cfg.entries.push(Object.assign({}, entry));
+  return cfg;
+}
+
+function schedRemoveEntryById(config, entryId) {
+  const cfg = schedNormalizeConfig(config);
+  cfg.entries = cfg.entries.filter((e) => e.entry_id !== entryId);
+  return cfg;
+}
+
+function schedMoveEntry(config, index, delta) {
+  const cfg = schedNormalizeConfig(config);
+  const from = Number(index);
+  const to = from + Number(delta);
+  if (!Number.isInteger(from) || from < 0 || from >= cfg.entries.length) return cfg;
+  if (!Number.isInteger(to) || to < 0 || to >= cfg.entries.length || to === from) return cfg;
+  const moved = cfg.entries.splice(from, 1)[0];
+  cfg.entries.splice(to, 0, moved);
+  return cfg;
+}
+
+function schedQueueToForm(queue) {
+  const q = queue || {};
+  return {
+    queue_id: String(q.queue_id || ''),
+    name: String(q.name || ''),
+    members: Array.isArray(q.members) ? q.members.slice() : [],
+    total_rounds: q.total_rounds == null ? '0' : String(q.total_rounds),
+    on_failure: q.on_failure === 'fail_fast' ? 'fail_fast' : 'continue',
+    between_ms: q.between_ms == null ? '500' : String(q.between_ms),
+  };
+}
+
+function schedQueueMemberAdd(members, task) {
+  const out = (Array.isArray(members) ? members : []).slice();
+  const t = String(task == null ? '' : task).trim();
+  if (t && !out.includes(t)) out.push(t);
+  return out;
+}
+
+function schedQueueMemberRemove(members, task) {
+  return (Array.isArray(members) ? members : []).filter((m) => m !== task);
+}
+
+function schedQueueMemberMove(members, index, delta) {
+  const out = (Array.isArray(members) ? members : []).slice();
+  const from = Number(index);
+  const to = from + Number(delta);
+  if (!Number.isInteger(from) || from < 0 || from >= out.length) return out;
+  if (!Number.isInteger(to) || to < 0 || to >= out.length || to === from) return out;
+  const moved = out.splice(from, 1)[0];
+  out.splice(to, 0, moved);
+  return out;
+}
+
+function schedBuildQueueFromForm(form, base) {
+  const f = form || {};
+  const b = base || {};
+  const roundsRaw = Number(String(f.total_rounds == null ? '' : f.total_rounds).trim() || 0);
+  const betweenRaw = Number(String(f.between_ms == null ? '' : f.between_ms).trim() || 0);
+  return {
+    queue_id: String(f.queue_id == null ? (b.queue_id || '') : f.queue_id).trim(),
+    name: String(f.name == null ? (b.name || '') : f.name).trim(),
+    members: (Array.isArray(f.members) ? f.members : (b.members || [])).map((m) => String(m).trim()).filter(Boolean),
+    total_rounds: Number.isFinite(roundsRaw) ? Math.max(0, Math.min(1000000, Math.floor(roundsRaw))) : 0,
+    on_failure: f.on_failure === 'fail_fast' ? 'fail_fast' : 'continue',
+    between_ms: Number.isFinite(betweenRaw) ? Math.max(0, Math.min(600000, Math.floor(betweenRaw))) : 0,
+  };
+}
+
+function schedValidateQueueForm(form, config, selfId, baseQueue) {
+  const cfg = schedNormalizeConfig(config || schedEmptyConfig());
+  const f = form || {};
+  const errors = [];
+  const queueId = String(f.queue_id == null ? '' : f.queue_id).trim();
+  if (!queueId) errors.push('queue_id 不能为空');
+  if (queueId.length > 120) errors.push('queue_id 最长 120 字符');
+  if (queueId === '.' || queueId === '..') errors.push('queue_id 不能是 . 或 ..');
+  if (schedHasUnsafeNameChar(queueId)) errors.push('queue_id 不能包含路径/控制字符');
+  if (queueId.endsWith('.')) errors.push('queue_id 不能以 . 结尾');
+  if (selfId && queueId !== String(selfId)) errors.push('queue_id 不可修改；如需改 id 请删除该队列后重建');
+  if (queueId && (cfg.queues || []).some((q) => q.queue_id === queueId && q.queue_id !== selfId)) {
+    errors.push(`queue_id「${queueId}」已存在`);
+  }
+  const members = (Array.isArray(f.members) ? f.members : []).map((m) => String(m).trim()).filter(Boolean);
+  if (!members.length) errors.push('至少选择一个成员任务');
+  if (members.length > 200) errors.push('成员最多 200 个');
+  const seen = new Set();
+  for (const m of members) {
+    if (seen.has(m)) errors.push(`成员「${m}」重复`);
+    seen.add(m);
+    if (m.length > 120) errors.push(`成员「${m}」超过 120 字符`);
+    if (schedHasUnsafeNameChar(m)) errors.push(`成员「${m}」包含路径/控制字符`);
+    const hit = (cfg.entries || []).find((e) => schedEntryKindLabel(e.kind) === 'task' && e.task === m);
+    if (hit) {
+      errors.push(`成员「${m}」已是任务条目「${hit.entry_id}」的目标；同一任务不能同时在任务条目和队列成员中（防双跑）`);
+    }
+  }
+  const roundsRaw = Number(String(f.total_rounds == null ? '' : f.total_rounds).trim() || 0);
+  if (!Number.isInteger(roundsRaw) || roundsRaw < 0 || roundsRaw > 1000000) {
+    errors.push('total_rounds 必须是 0..1000000 的整数（0=无限）');
+  }
+  const betweenRaw = Number(String(f.between_ms == null ? '' : f.between_ms).trim() || 0);
+  if (!Number.isInteger(betweenRaw) || betweenRaw < 0 || betweenRaw > 600000) {
+    errors.push('between_ms 必须是 0..600000 的整数');
+  }
+  const queue = schedBuildQueueFromForm(f, baseQueue || {});
+  return { ok: errors.length === 0, errors, queue };
+}
+
+function schedUpsertQueue(config, queue) {
+  const cfg = schedNormalizeConfig(config);
+  const idx = cfg.queues.findIndex((q) => q.queue_id === queue.queue_id);
+  if (idx >= 0) cfg.queues[idx] = Object.assign({}, queue);
+  else cfg.queues.push(Object.assign({}, queue));
+  return cfg;
+}
+
+// Removing a queue also removes every queue entry pointing at it (otherwise the
+// remaining entry would reference an unknown queue and fail validation).
+function schedRemoveQueue(config, queueId) {
+  const cfg = schedNormalizeConfig(config);
+  const removed = cfg.entries
+    .filter((e) => schedEntryKindLabel(e.kind) === 'queue' && e.task === queueId)
+    .map((e) => String(e.entry_id || ''));
+  cfg.entries = cfg.entries.filter(
+    (e) => !(schedEntryKindLabel(e.kind) === 'queue' && e.task === queueId)
+  );
+  cfg.queues = cfg.queues.filter((q) => q.queue_id !== queueId);
+  return { config: cfg, removed_entry_ids: removed };
+}
+
+function schedQueueProgressText(queue, progress) {
+  const q = queue || {};
+  const p = progress || {};
+  const total = Number(q.total_rounds) || 0;
+  const done = Number(p.rounds_completed) || 0;
+  const parts = [total === 0 ? `轮次 ${done}/无限` : `轮次 ${done}/${total}`];
+  const empty = Number(p.empty_rounds) || 0;
+  if (empty) parts.push(`空轮 ${empty}`);
+  if (p.finished || (total > 0 && done >= total)) parts.push('已完成');
+  else if (p.current_round) {
+    const idx = Number(p.current_round.index) || 0;
+    const mem = Number(p.current_round.member_index) || 0;
+    parts.push(`进行中：第 ${idx} 轮 · 成员 ${mem + 1}`);
+  }
+  return parts.join(' · ');
+}
+
+function schedQueueSummary(queue, progress) {
+  const q = queue || {};
+  const members = Array.isArray(q.members) ? q.members : [];
+  return [
+    `成员 ${members.length}：${members.join(' → ') || '—'}`,
+    schedQueueProgressText(q, progress),
+    `失败策略 ${q.on_failure === 'fail_fast' ? 'fail_fast（本轮中止）' : 'continue'}`,
+    `成员间隔 ${q.between_ms == null ? '?' : q.between_ms}ms`,
+  ].join(' · ');
+}
+
+function schedEntrySummary(entry, statusEntry) {
+  const e = entry || {};
+  const st = statusEntry || {};
+  const parts = [];
+  parts.push(e.enabled === false ? '已禁用' : '已启用');
+  parts.push(e.lifecycle === 'temp' ? 'temp（每 pass 一次）' : 'periodic');
+  if (e.lifecycle !== 'temp') {
+    parts.push('窗口 ' + schedWindowsToText(e.windows));
+    parts.push(e.quota && e.quota.per ? `quota ${e.quota.per === 'week' ? '周' : '日'} ${e.quota.times}` : '无配额');
+  }
+  parts.push(`retry ${e.retry == null ? '?' : e.retry}`);
+  parts.push(`冷却 ${e.cooldown == null ? '?' : e.cooldown}s`);
+  if (e.params && Object.keys(e.params).length) parts.push('params ' + JSON.stringify(e.params));
+  if (st.last_result) parts.push(`上次 ${st.last_result}${st.last_outcome ? '(' + st.last_outcome + ')' : ''}`);
+  if (st.blocked_reason) parts.push(`等待 ${st.blocked_reason}`);
+  return parts.join(' · ');
+}
+
+function schedQuotaSummary(status) {
+  const entries = (status && status.entries) || [];
+  const limited = entries.filter((e) => e.quota && e.quota.per);
+  if (!limited.length) return 'quota：无限制';
+  const used = limited.reduce((n, e) => n + (Number(e.quota.used) || 0), 0);
+  const times = limited.reduce((n, e) => n + (Number(e.quota.times) || 0), 0);
+  return `quota：${limited.length} 条限制 · 本周期已用 ${used}/${times}`;
+}
+
+// P1-3: /scheduler/status failures need a stable, testable sentence. The status
+// card renders every value as `—` for an unknown state, never the normal values.
+function schedStatusErrorText(err) {
+  const detail = String(err == null ? '' : err).trim();
+  return '调度器状态读取失败：' + (detail || '未知错误');
+}
+
+// P1-4: canonical JSON (object keys sorted, array order kept) so comparing the
+// loaded snapshot with a fresh GET is insensitive to key order but sensitive to
+// any value change.
+function schedCanonicalJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map(schedCanonicalJson).join(',') + ']';
+  return '{' + Object.keys(value).sort().map((k) =>
+    JSON.stringify(k) + ':' + schedCanonicalJson(value[k])).join(',') + '}';
+}
+
+// Snapshot of the raw GET /scheduler/config document (`''` when the file does not
+// exist yet). loadScheduleConfig stores it as `scheduleConfigBase`.
+function schedConfigSnapshotText(config) {
+  if (config == null) return '';
+  return schedCanonicalJson(config);
+}
+
+function schedConfigSnapshotChanged(base, fresh) {
+  return String(base == null ? '' : base) !== String(fresh == null ? '' : fresh);
+}
+
+function schedExternalConfigChangeText() {
+  return '配置已被外部修改，请先【重新加载】';
+}
+
+function schedResponseErrorText(status, body) {
+  const errors = body && Array.isArray(body.errors) ? body.errors.filter(Boolean).map(String) : [];
+  const detail = errors.length ? errors.join('；') : '';
+  if (status === 409) {
+    return '调度器运行中：请先在外部停止守护进程（stop-scheduler.bat）再保存。' +
+      (detail ? ' 服务端：' + detail : '');
+  }
+  if (status === 400) return '配置校验失败：' + (detail || '服务端返回 400');
+  if (status === 500) return '写入失败（500）：' + (detail || '未知错误');
+  if (status === 404) return '服务端未提供 /scheduler/config（需要 P3A 后端）：' + (detail || 'HTTP 404');
+  if (!status) return '网络错误：' + (detail || '请求未送达');
+  return `保存失败（HTTP ${status}）：` + (detail || '未知错误');
+}
+
+function schedSaveBlockedReason(running) {
+  return running
+    ? '调度器运行中：保存会返回 409，请先在外部运行 stop-scheduler.bat 再保存。'
+    : '';
+}
+
+function schedParseConfigJson(text) {
+  const raw = String(text == null ? '' : text).trim();
+  if (!raw) return { ok: false, config: null, error: 'JSON 为空' };
+  let v;
+  try {
+    v = JSON.parse(raw);
+  } catch (e) {
+    return { ok: false, config: null, error: 'JSON 解析失败：' + (e && e.message ? e.message : e) };
+  }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) {
+    return { ok: false, config: null, error: '配置必须是 JSON 对象' };
+  }
+  if (v.entries != null && !Array.isArray(v.entries)) {
+    return { ok: false, config: null, error: 'entries 必须是数组' };
+  }
+  if (v.queues != null && !Array.isArray(v.queues)) {
+    return { ok: false, config: null, error: 'queues 必须是数组' };
+  }
+  return { ok: true, config: schedNormalizeConfig(v), error: '' };
+}
+
+// --- P3: 调度页/对话框（DOM 层） --------------------------------------------
+function setScheduleBusy(busy) {
+  scheduleBusy = !!busy;
+  for (const el of [pageSchedSave, pageSchedReload, pageSchedAddEntry, pageSchedAddQueue,
+    pageSchedJsonSave, pageSchedJsonReload]) {
+    if (el) el.disabled = !!busy;
+  }
+}
+
+function scheduleLocked() {
+  return !!(scheduleConfigMeta && scheduleConfigMeta.running);
+}
+
+// One raw GET /scheduler/config. Never mutates page state: page loading and the
+// P1-4 pre-save check decide separately how a failure is surfaced.
+async function fetchScheduleConfigOnce() {
+  try {
+    const r = await fetch('/scheduler/config');
+    let body = null;
+    try { body = await r.json(); } catch (e) { body = null; }
+    if (!r.ok || !body || body.ok === false) {
+      const error = (body && Array.isArray(body.errors) && body.errors.length)
+        ? body.errors.join('；')
+        : (r.status === 404
+          ? '服务端未提供 /scheduler/config（需要 P3A 后端）'
+          : `HTTP ${r.status}`);
+      return { ok: false, status: r.status, body, error };
+    }
+    return { ok: true, status: r.status, body, error: '' };
+  } catch (e) {
+    return { ok: false, status: 0, body: null, error: '网络错误：' + e };
+  }
+}
+
+async function loadScheduleConfig(force) {
+  if (scheduleConfig && !force) return scheduleConfig;
+  const res = await fetchScheduleConfigOnce();
+  if (!res.ok) {
+    scheduleConfig = null;
+    scheduleConfigMeta = null;
+    scheduleConfigBase = '';
+    scheduleConfigError = res.error;
+    log('读取调度配置失败：' + scheduleConfigError, 'ERROR');
+    return null;
+  }
+  scheduleConfigError = '';
+  scheduleConfigMeta = res.body;
+  scheduleConfig = schedNormalizeConfig(res.body.config);
+  // P1-4: remember what this page state is based on, so a later save can refuse
+  // to overwrite a file that changed in the meantime.
+  scheduleConfigBase = schedConfigSnapshotText(res.body.config);
+  if (!res.body.config) {
+    log('调度配置文件不存在（' + (res.body.path || 'scheduler.json') + '）；保存后会创建', 'WARN');
+  }
+  return scheduleConfig;
+}
+
+async function ensureScheduleTaskChoices() {
+  if (scheduleTasksCache.length) return scheduleTasksCache;
+  try {
+    const r = await fetch('/task/library');
+    const s = await r.json();
+    if (s && s.ok) scheduleTasksCache = (s.tasks || []).map((t) => t.name).filter(Boolean);
+  } catch (e) {
+    log('读取任务库失败：' + e, 'WARN');
+  }
+  return scheduleTasksCache;
+}
+
+async function postScheduleConfig(cfg) {
+  try {
+    const r = await fetch('/scheduler/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: cfg }),
+    });
+    let body = null;
+    try { body = await r.json(); } catch (e) { body = null; }
+    return { ok: r.ok && !!body && body.ok !== false, status: r.status, body };
+  } catch (e) {
+    return { ok: false, status: 0, body: { errors: [String(e)] }, network: true };
+  }
+}
+
+function scheduleStatusEntryMap(status) {
+  const map = {};
+  for (const e of (status && status.entries) || []) map[e.entry_id] = e;
+  return map;
+}
+
+function renderScheduleStatusCard(s) {
+  const status = s || {};
+  const meta = scheduleConfigMeta || {};
+  // P1-3: with a failed /scheduler/status read the scheduler state is unknown.
+  // Show `—` everywhere and put the error into the summary instead of rendering
+  // the healthy-looking defaults (passes=0 / 锁=空闲 / quota：无限制).
+  const statusError = String(scheduleStatusError || '');
+  const known = !statusError;
+  if (pageSchedMode) pageSchedMode.textContent = `模式：${known ? status.mode || '—' : '—'}`;
+  if (pageSchedPasses) pageSchedPasses.textContent = `passes=${known ? (status.passes ?? 0) : '—'}`;
+  if (pageSchedNextWake) {
+    pageSchedNextWake.textContent = `下次唤醒=${known ? (status.next_wake_local || fmtLocal(status.next_wake_ms)) : '—'}`;
+  }
+  if (pageSchedQuota) pageSchedQuota.textContent = known ? schedQuotaSummary(status) : 'quota：—';
+  if (pageSchedRunning) {
+    if (!known) {
+      pageSchedRunning.textContent = '锁=—';
+      pageSchedRunning.className = 'badge';
+    } else {
+      const lock = scheduleLocked() ? '锁=调度器运行中' : '锁=空闲';
+      const run = status.running
+        ? ` · 正在执行 ${status.running.entry_id || '?'}/${status.running.task || '?'}`
+        : '';
+      pageSchedRunning.textContent = lock + run;
+      pageSchedRunning.className = 'badge ' + (scheduleLocked() ? 'warn' : 'ok');
+    }
+  }
+  const parts = [];
+  if (!known) {
+    parts.push(schedStatusErrorText(statusError));
+  } else {
+    const guards = status.guards || {};
+    if (guards.blocked) {
+      parts.push('护栏=已阻断' + (guards.blackout_reason ? '（' + guards.blackout_reason + '）' : ''));
+    }
+    if (status.last_stop) {
+      parts.push('上次停止=' + (typeof status.last_stop === 'string' ? status.last_stop : JSON.stringify(status.last_stop)));
+    }
+  }
+  if (scheduleConfigError) parts.push('配置读取失败：' + scheduleConfigError);
+  if (pageSchedSummary) pageSchedSummary.textContent = parts.join(' · ') || '调度器状态正常';
+  if (pageSchedConfigStatus) {
+    const bits = [];
+    if (meta.path) bits.push('路径=' + meta.path);
+    if (meta.exists === false) bits.push('文件不存在（首次保存会创建）');
+    if (meta.state_path) bits.push('state=' + meta.state_path);
+    if (meta.schema_version) bits.push('schema=' + meta.schema_version);
+    if (scheduleLocked()) bits.push('运行中：保存会被 409 拒绝，请先 stop-scheduler.bat');
+    if (scheduleConfigError) bits.push('错误=' + scheduleConfigError);
+    pageSchedConfigStatus.textContent = bits.join(' · ') || '配置：—';
+  }
+}
+
+function renderScheduleEntries(status, cfg) {
+  if (!pageSchedEntries) return;
+  pageSchedEntries.textContent = '';
+  if (!cfg) {
+    pageSchedEntries.textContent = '（调度配置不可用：' + (scheduleConfigError || '未知') + '）';
+    return;
+  }
+  const entries = cfg.entries || [];
+  if (!entries.length) {
+    pageSchedEntries.textContent = '（还没有调度条目；到任务库点「调度设置…」或点「+ 添加条目…」）';
+    return;
+  }
+  const stMap = scheduleStatusEntryMap(status);
+  const queueStatus = {};
+  for (const q of (status && status.queues) || []) queueStatus[q.queue_id] = q;
+  entries.forEach((e, i) => {
+    const card = document.createElement('div');
+    card.className = 'task-card';
+    const meta = document.createElement('div');
+    meta.className = 'task-meta';
+    const title = document.createElement('div');
+    title.className = 'task-title';
+    const isQueue = schedEntryKindLabel(e.kind) === 'queue';
+    title.textContent = `${e.entry_id} · ${isQueue ? '队列' : '任务'} ${e.task}`;
+    const sub = document.createElement('div');
+    sub.className = 'task-sub';
+    sub.textContent = schedEntrySummary(e, stMap[e.entry_id]);
+    meta.append(title, sub);
+
+    const badges = document.createElement('div');
+    badges.className = 'row';
+    badges.appendChild(schedBadge(isQueue ? 'queue' : 'task', 'kind'));
+    badges.appendChild(schedBadge(e.lifecycle || 'periodic', 'kind'));
+    if (e.enabled === false) badges.appendChild(schedBadge('已禁用', 'warn'));
+    const st = stMap[e.entry_id];
+    if (st && st.runnable_now) badges.appendChild(schedBadge('现在可跑', 'ok'));
+    else if (st && st.blocked_reason) badges.appendChild(schedBadge('等待：' + st.blocked_reason, 'warn'));
+    if (isQueue) {
+      const progress = (st && st.queue) || queueStatus[e.task];
+      if (progress) {
+        badges.appendChild(schedBadge(schedQueueProgressText(progress, progress), 'kind'));
+        if (progress.finished) badges.appendChild(schedBadge('队列已完成', 'warn'));
+      }
+    }
+    meta.appendChild(badges);
+    card.appendChild(meta);
+
+    const enableLabel = document.createElement('label');
+    enableLabel.className = 'opt small';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = e.enabled !== false;
+    cb.title = '启用/禁用该调度条目（立即保存）';
+    cb.addEventListener('change', () => toggleScheduleEntry(e.entry_id, cb.checked));
+    enableLabel.append(cb, document.createTextNode(' 启用'));
+
+    const up = document.createElement('button');
+    up.type = 'button';
+    up.textContent = '上移';
+    up.disabled = i === 0;
+    up.addEventListener('click', () => moveScheduleEntry(e.entry_id, -1));
+    const down = document.createElement('button');
+    down.type = 'button';
+    down.textContent = '下移';
+    down.disabled = i === entries.length - 1;
+    down.addEventListener('click', () => moveScheduleEntry(e.entry_id, 1));
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.textContent = '编辑';
+    edit.addEventListener('click', () => openScheduleEntryDialog({ mode: 'edit', entryId: e.entry_id, entry: e }));
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = '删除';
+    del.addEventListener('click', () => deleteScheduleEntry(e.entry_id, isQueue));
+    card.append(enableLabel, up, down, edit, del);
+    pageSchedEntries.appendChild(card);
+  });
+}
+
+function renderScheduleQueues(status, cfg) {
+  if (!pageSchedQueues) return;
+  pageSchedQueues.textContent = '';
+  if (!cfg) {
+    pageSchedQueues.textContent = '（调度配置不可用：' + (scheduleConfigError || '未知') + '）';
+    return;
+  }
+  const queues = cfg.queues || [];
+  if (!queues.length) {
+    pageSchedQueues.textContent = '（还没有队列；点「+ 新建队列…」把任务按顺序串起来）';
+    return;
+  }
+  const progress = {};
+  for (const q of (status && status.queues) || []) progress[q.queue_id] = q;
+  for (const q of queues) {
+    const card = document.createElement('div');
+    card.className = 'task-card';
+    const meta = document.createElement('div');
+    meta.className = 'task-meta';
+    const title = document.createElement('div');
+    title.className = 'task-title';
+    title.textContent = `${q.queue_id}${q.name && q.name !== q.queue_id ? ' · ' + q.name : ''}`;
+    const sub = document.createElement('div');
+    sub.className = 'task-sub';
+    sub.textContent = schedQueueSummary(q, progress[q.queue_id]);
+    meta.append(title, sub);
+    const badges = document.createElement('div');
+    badges.className = 'row';
+    const entryId = schedQueueEntryConflict(cfg, q.queue_id);
+    badges.appendChild(entryId
+      ? schedBadge('触发条目：' + entryId, 'kind')
+      : schedBadge('无触发条目（不会被调度）', 'warn'));
+    const prog = progress[q.queue_id];
+    if (prog && prog.finished) badges.appendChild(schedBadge('已完成', 'warn'));
+    if (q.total_rounds === 0) badges.appendChild(schedBadge('无限轮', 'kind'));
+    meta.appendChild(badges);
+    card.appendChild(meta);
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.textContent = '编辑';
+    edit.addEventListener('click', () => openScheduleQueueDialog(q.queue_id));
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = '删除';
+    del.addEventListener('click', () => deleteScheduleQueue(q.queue_id));
+    card.append(edit, del);
+    pageSchedQueues.appendChild(card);
+  }
+}
+
+async function toggleScheduleEntry(entryId, enabled) {
+  if (scheduleBusy) return;
+  const cfg = await loadScheduleConfig(true);
+  if (!cfg) {
+    log('启用/禁用失败：调度配置不可用', 'ERROR');
+    return;
+  }
+  const idx = (cfg.entries || []).findIndex((e) => e.entry_id === entryId);
+  if (idx < 0) {
+    log('启用/禁用失败：条目「' + entryId + '」不存在（可能已被外部修改）', 'WARN');
+    await refreshSchedulePage();
+    return;
+  }
+  cfg.entries[idx].enabled = !!enabled;
+  const res = await postScheduleConfig(cfg);
+  if (!res.ok) {
+    const msg = schedResponseErrorText(res.status, res.body);
+    log('保存调度条目失败：' + msg, 'WARN');
+    if (pageSchedConfigStatus) pageSchedConfigStatus.textContent = msg;
+    await refreshSchedulePage();
+    return;
+  }
+  log(`已${enabled ? '启用' : '禁用'}调度条目「${entryId}」`);
+  await refreshSchedulePage();
+}
+
+async function moveScheduleEntry(entryId, delta) {
+  if (scheduleBusy) return;
+  const cfg = await loadScheduleConfig(true);
+  if (!cfg) {
+    log('排序失败：调度配置不可用', 'ERROR');
+    return;
+  }
+  const index = (cfg.entries || []).findIndex((e) => e.entry_id === entryId);
+  if (index < 0) {
+    log('排序失败：条目「' + entryId + '」不存在', 'WARN');
+    return;
+  }
+  const next = schedMoveEntry(cfg, index, delta);
+  if (next.entries[index] && next.entries[index].entry_id === entryId) return; // already at the edge
+  const res = await postScheduleConfig(next);
+  if (!res.ok) {
+    const msg = schedResponseErrorText(res.status, res.body);
+    log('保存条目顺序失败：' + msg, 'WARN');
+    if (pageSchedConfigStatus) pageSchedConfigStatus.textContent = msg;
+    return;
+  }
+  log(`已移动调度条目「${entryId}」（entries 顺序 = 执行顺序）`);
+  await refreshSchedulePage();
+}
+
+async function deleteScheduleEntry(entryId, isQueue) {
+  if (scheduleBusy) return;
+  const note = isQueue ? '\n只删除触发条目，队列本身和成员任务不受影响。' : '';
+  if (!window.confirm(`删除调度条目「${entryId}」？${note}`)) return;
+  const cfg = await loadScheduleConfig(true);
+  if (!cfg) {
+    log('删除失败：调度配置不可用', 'ERROR');
+    return;
+  }
+  if (!(cfg.entries || []).some((e) => e.entry_id === entryId)) {
+    log('删除失败：条目「' + entryId + '」不存在', 'WARN');
+    await refreshSchedulePage();
+    return;
+  }
+  const res = await postScheduleConfig(schedRemoveEntryById(cfg, entryId));
+  if (!res.ok) {
+    const msg = schedResponseErrorText(res.status, res.body);
+    log('删除调度条目失败：' + msg, 'WARN');
+    if (pageSchedConfigStatus) pageSchedConfigStatus.textContent = msg;
+    return;
+  }
+  log(`已删除调度条目「${entryId}」`);
+  await refreshSchedulePage();
+}
+
+function populateScheduleEntryTargets(kind, selected) {
+  if (!schedEntryTarget) return;
+  const k = schedEntryKindLabel(kind);
+  const value = String(selected || '');
+  schedEntryTarget.textContent = '';
+  const values = [];
+  if (k === 'queue') {
+    for (const q of (scheduleConfig && scheduleConfig.queues) || []) values.push(q.queue_id);
+  } else {
+    for (const t of scheduleTasksCache) values.push(t);
+  }
+  if (value && !values.includes(value)) values.unshift(value);
+  if (!values.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = k === 'queue' ? '（还没有队列：先到队列面板新建）' : '（任务库为空）';
+    schedEntryTarget.appendChild(opt);
+    return;
+  }
+  for (const v of values) {
+    const opt = document.createElement('option');
+    opt.value = v;
+    opt.textContent = v;
+    schedEntryTarget.appendChild(opt);
+  }
+  schedEntryTarget.value = value && values.includes(value) ? value : values[0];
+}
+
+function updateScheduleEntryTargetHint() {
+  if (!schedEntryModeHint) return;
+  const locked = schedSaveBlockedReason(scheduleLocked());
+  if (locked) {
+    schedEntryModeHint.textContent = '注意：' + locked;
+    return;
+  }
+  const st = scheduleEntryDialogState;
+  const kind = schedEntryKind ? schedEntryKind.value : 'task';
+  const target = schedEntryTarget ? schedEntryTarget.value : '';
+  const cfg = scheduleConfig || schedEmptyConfig();
+  if (kind === 'queue' && target) {
+    const other = schedQueueEntryConflict(cfg, target, st && st.entryId);
+    if (other) {
+      schedEntryModeHint.textContent =
+        `队列「${target}」已有触发条目「${other}」：保存会被拒绝（一个队列最多一个 entry）。`;
+      return;
+    }
+  }
+  if (kind === 'task' && target) {
+    const qid = schedFindTaskQueueMember(cfg, target);
+    if (qid) {
+      schedEntryModeHint.textContent = `任务「${target}」已在队列「${qid}」中：保存会被拒绝（防双跑）。`;
+      return;
+    }
+  }
+  schedEntryModeHint.textContent = st && st.mode === 'create'
+    ? '新建条目：保存后追加到 entries 末尾（顺序 = 执行顺序）。'
+    : '修改后保存会先 GET 当前配置再整体写回。';
+}
+
+function updateScheduleEntryLifecycleUi() {
+  const temp = schedEntryLifecycle && schedEntryLifecycle.value === 'temp';
+  for (const el of [schedEntryWindows, schedEntryWindowsJson, schedEntryQuotaPer, schedEntryQuotaTimes]) {
+    if (el) el.disabled = temp;
+  }
+  if (schedEntryTempHint) {
+    schedEntryTempHint.textContent = temp
+      ? 'temp：每个 pass 按 entries 顺序执行一次；没有窗口/quota/完成记忆，保存时 windows 与 quota 会被清空。'
+      : 'periodic：按窗口/quota/冷却触发；窗口留空 = 全天。';
+  }
+}
+
+function readScheduleEntryForm() {
+  return {
+    kind: schedEntryKind ? schedEntryKind.value : 'task',
+    task: schedEntryTarget ? schedEntryTarget.value : '',
+    enabled: schedEntryEnabled ? schedEntryEnabled.checked : true,
+    lifecycle: schedEntryLifecycle ? schedEntryLifecycle.value : 'periodic',
+    windows_text: schedEntryWindows ? schedEntryWindows.value : '',
+    windows_json: schedEntryWindowsJson ? schedEntryWindowsJson.value : '',
+    quota_per: schedEntryQuotaPer ? schedEntryQuotaPer.value : '',
+    quota_times: schedEntryQuotaTimes ? schedEntryQuotaTimes.value : '1',
+    retry: schedEntryRetry ? schedEntryRetry.value : '1',
+    cooldown: schedEntryCooldown ? schedEntryCooldown.value : '300',
+    params_text: schedEntryParams ? schedEntryParams.value : '',
+  };
+}
+
+function openScheduleEntryDialog(opts) {
+  if (!schedEntryDialog) return;
+  const o = opts || {};
+  const cfg = scheduleConfig || schedEmptyConfig();
+  const mode = o.mode === 'create' ? 'create' : 'edit';
+  let entry = o.entry || null;
+  if (!entry && o.entryId) {
+    entry = (cfg.entries || []).find((e) => e.entry_id === o.entryId) || null;
+  }
+  if (mode === 'edit' && !entry) {
+    log('打开调度条目失败：条目不存在', 'WARN');
+    return;
+  }
+  if (!entry) entry = schedDefaultTaskEntry(o.task || scheduleTasksCache[0] || '', cfg, o.kind || 'task');
+  scheduleEntryDialogState = {
+    mode,
+    entryId: mode === 'edit' ? entry.entry_id : '',
+    baseEntry: entry,
+  };
+  const form = schedEntryToForm(entry, (cfg.config && cfg.config.defaults) || {});
+  if (schedEntryTitle) {
+    schedEntryTitle.textContent = o.title
+      || (mode === 'create' ? '添加调度条目' : `编辑调度条目：${entry.entry_id}`);
+  }
+  if (schedEntrySave) schedEntrySave.textContent = mode === 'create' ? '加入调度' : '保存';
+  if (schedEntryIdEl) {
+    schedEntryIdEl.textContent = mode === 'create'
+      ? 'entry_id：保存时自动生成（task-<任务名> / queue-<queue_id>）'
+      : 'entry_id：' + entry.entry_id;
+  }
+  if (schedEntryEnabled) schedEntryEnabled.checked = form.enabled;
+  if (schedEntryLifecycle) schedEntryLifecycle.value = form.lifecycle;
+  if (schedEntryWindows) schedEntryWindows.value = (entry.windows && entry.windows.length) ? schedWindowsToText(entry.windows) : '';
+  if (schedEntryWindowsJson) schedEntryWindowsJson.value = '';
+  if (schedEntryQuotaPer) schedEntryQuotaPer.value = form.quota_per;
+  if (schedEntryQuotaTimes) schedEntryQuotaTimes.value = form.quota_times;
+  if (schedEntryRetry) schedEntryRetry.value = form.retry;
+  if (schedEntryCooldown) schedEntryCooldown.value = form.cooldown;
+  if (schedEntryParams) schedEntryParams.value = form.params_text;
+  if (schedEntryKind) {
+    schedEntryKind.value = form.kind;
+    schedEntryKind.disabled = mode === 'edit';
+  }
+  populateScheduleEntryTargets(form.kind, form.task);
+  if (schedEntryTarget) schedEntryTarget.disabled = mode === 'edit';
+  updateScheduleEntryLifecycleUi();
+  updateScheduleEntryTargetHint();
+  if (schedEntryError) schedEntryError.textContent = '';
+  if (schedEntryDialog.open) schedEntryDialog.close();
+  schedEntryDialog.showModal();
+}
+
+async function openTaskScheduleDialog(task) {
+  const t = String(task == null ? '' : task).trim();
+  if (!t) return;
+  await ensureScheduleTaskChoices();
+  await loadScheduleConfig(true);
+  if (!scheduleConfig) {
+    window.alert('读取调度配置失败：' + (scheduleConfigError || '未知错误'));
+    return;
+  }
+  const cfg = scheduleConfig;
+  const hits = schedFindTaskEntries(cfg, t);
+  const queueId = schedFindTaskQueueMember(cfg, t);
+  if (!hits.length && queueId) {
+    const msg = `任务「${t}」已是队列「${queueId}」的成员，不能再单独加入调度（会双跑）。\n请先在调度页调整队列成员。`;
+    log(msg, 'WARN');
+    window.alert(msg);
+    return;
+  }
+  if (hits.length > 1) {
+    const ids = hits.map((e) => e.entry_id).join('、');
+    log(`任务「${t}」有 ${hits.length} 条调度条目（${ids}），只编辑第一条`, 'WARN');
+    window.alert(`任务「${t}」有 ${hits.length} 条调度条目：${ids}。\n本次只编辑第一条；其余条目可在调度页查看/删除。`);
+  }
+  if (hits.length) {
+    openScheduleEntryDialog({ mode: 'edit', entry: hits[0] });
+  } else {
+    openScheduleEntryDialog({
+      mode: 'create',
+      entry: schedDefaultTaskEntry(t, cfg, 'task'),
+      title: `加入调度：${t}`,
+    });
+  }
+}
+
+async function openScheduleAddEntryDialog() {
+  await ensureScheduleTaskChoices();
+  await loadScheduleConfig(true);
+  if (!scheduleConfig) {
+    window.alert('读取调度配置失败：' + (scheduleConfigError || '未知错误'));
+    return;
+  }
+  const target = scheduleTasksCache[0] || ((scheduleConfig.queues || [])[0] || {}).queue_id || '';
+  openScheduleEntryDialog({
+    mode: 'create',
+    entry: schedDefaultTaskEntry(target, scheduleConfig, 'task'),
+  });
+}
+
+async function saveScheduleEntryDialog() {
+  const st = scheduleEntryDialogState;
+  if (!st || !schedEntryDialog) return;
+  if (schedEntryError) schedEntryError.textContent = '';
+  const form = readScheduleEntryForm();
+  const local = schedValidateEntryForm(form, scheduleConfig || schedEmptyConfig(), st.entryId, st.baseEntry);
+  if (!local.ok) {
+    if (schedEntryError) schedEntryError.textContent = local.errors.join('\n');
+    return;
+  }
+  const fresh = await loadScheduleConfig(true);
+  if (!fresh) {
+    if (schedEntryError) schedEntryError.textContent = '读取调度配置失败：' + (scheduleConfigError || '未知错误');
+    return;
+  }
+  const freshEntry = (fresh.entries || []).find((e) => e.entry_id === st.entryId) || st.baseEntry;
+  const check = schedValidateEntryForm(form, fresh, st.entryId, freshEntry);
+  if (!check.ok) {
+    if (schedEntryError) schedEntryError.textContent = check.errors.join('\n');
+    return;
+  }
+  let next;
+  if (st.mode === 'create') {
+    next = schedUpsertEntry(fresh, check.entry);
+  } else {
+    const idx = (fresh.entries || []).findIndex((e) => e.entry_id === st.entryId);
+    if (idx < 0) {
+      if (schedEntryError) schedEntryError.textContent = '条目已被外部删除，请关闭后重新打开。';
+      return;
+    }
+    next = schedNormalizeConfig(fresh);
+    next.entries[idx] = Object.assign({}, next.entries[idx], check.entry);
+  }
+  if (schedEntrySave) schedEntrySave.disabled = true;
+  const res = await postScheduleConfig(next);
+  if (schedEntrySave) schedEntrySave.disabled = false;
+  if (!res.ok) {
+    const msg = schedResponseErrorText(res.status, res.body);
+    if (schedEntryError) schedEntryError.textContent = msg;
+    log('保存调度条目失败：' + msg, res.status === 409 ? 'WARN' : 'ERROR');
+    return;
+  }
+  schedEntryDialog.close();
+  log(`已保存调度条目「${check.entry.entry_id}」${st.mode === 'create' ? '（新建）' : ''}`);
+  await refreshSchedulePage();
+}
+
+function renderScheduleQueueMembers() {
+  if (!schedQueueMembers) return;
+  const st = scheduleQueueDialogState;
+  const members = st ? st.members : [];
+  schedQueueMembers.textContent = '';
+  if (!members.length) {
+    schedQueueMembers.textContent = '（还没有成员：从下方任务池勾选后点「添加勾选任务」）';
+    return;
+  }
+  members.forEach((task, i) => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const label = document.createElement('span');
+    label.className = 'small';
+    label.textContent = `${i + 1}. ${task}`;
+    const up = document.createElement('button');
+    up.type = 'button';
+    up.textContent = '↑';
+    up.disabled = i === 0;
+    up.addEventListener('click', () => {
+      st.members = schedQueueMemberMove(st.members, i, -1);
+      renderScheduleQueueMembers();
+      renderScheduleQueuePool();
+    });
+    const down = document.createElement('button');
+    down.type = 'button';
+    down.textContent = '↓';
+    down.disabled = i === members.length - 1;
+    down.addEventListener('click', () => {
+      st.members = schedQueueMemberMove(st.members, i, 1);
+      renderScheduleQueueMembers();
+      renderScheduleQueuePool();
+    });
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.textContent = '移除';
+    rm.addEventListener('click', () => {
+      st.members = schedQueueMemberRemove(st.members, task);
+      renderScheduleQueueMembers();
+      renderScheduleQueuePool();
+    });
+    row.append(label, up, down, rm);
+    schedQueueMembers.appendChild(row);
+  });
+}
+
+function renderScheduleQueuePool() {
+  if (!schedQueueTaskPool) return;
+  const st = scheduleQueueDialogState;
+  const members = st ? st.members : [];
+  schedQueueTaskPool.textContent = '';
+  const available = scheduleTasksCache.filter((t) => !members.includes(t));
+  if (!available.length) {
+    schedQueueTaskPool.textContent = '（任务库没有更多可添加的任务）';
+    return;
+  }
+  for (const task of available) {
+    const label = document.createElement('label');
+    label.className = 'opt';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = task;
+    cb.dataset.task = task;
+    label.append(cb, document.createTextNode(' ' + task));
+    schedQueueTaskPool.appendChild(label);
+  }
+}
+
+function updateScheduleQueueRoundsHint() {
+  if (!schedQueueRoundsHint) return;
+  const rounds = Number(schedQueueTotalRounds ? schedQueueTotalRounds.value : 0);
+  schedQueueRoundsHint.textContent = rounds === 0
+    ? 'total_rounds=0：无限轮，直到手动停止/重置。'
+    : `total_rounds=${rounds}：跑满 ${rounds} 轮后 finished，不再触发（不自动重置）。`;
+}
+
+async function openScheduleQueueDialog(queueId) {
+  await ensureScheduleTaskChoices();
+  await loadScheduleConfig(true);
+  if (!scheduleConfig) {
+    window.alert('读取调度配置失败：' + (scheduleConfigError || '未知错误'));
+    return;
+  }
+  const q = queueId
+    ? (scheduleConfig.queues || []).find((x) => x.queue_id === queueId)
+    : null;
+  if (queueId && !q) {
+    log('打开队列失败：队列「' + queueId + '」不存在', 'WARN');
+    return;
+  }
+  scheduleQueueDialogState = {
+    mode: q ? 'edit' : 'create',
+    queueId: q ? q.queue_id : '',
+    base: q || null,
+    members: q && Array.isArray(q.members) ? q.members.slice() : [],
+  };
+  const form = schedQueueToForm(q || {});
+  if (schedQueueTitle) schedQueueTitle.textContent = q ? `编辑队列：${q.queue_id}` : '新建队列';
+  if (schedQueueId) {
+    schedQueueId.value = form.queue_id;
+    schedQueueId.disabled = !!q;
+  }
+  if (schedQueueName) schedQueueName.value = form.name;
+  if (schedQueueTotalRounds) schedQueueTotalRounds.value = form.total_rounds;
+  if (schedQueueOnFailure) schedQueueOnFailure.value = form.on_failure;
+  if (schedQueueBetweenMs) schedQueueBetweenMs.value = form.between_ms;
+  renderScheduleQueueMembers();
+  renderScheduleQueuePool();
+  updateScheduleQueueRoundsHint();
+  if (schedQueueLockHint) {
+    const locked = schedSaveBlockedReason(scheduleLocked());
+    schedQueueLockHint.textContent = locked ? '注意：' + locked : '—';
+  }
+  if (schedQueueError) schedQueueError.textContent = '';
+  if (schedQueueDialog.open) schedQueueDialog.close();
+  schedQueueDialog.showModal();
+}
+
+async function saveScheduleQueueDialog() {
+  const st = scheduleQueueDialogState;
+  if (!st || !schedQueueDialog) return;
+  if (schedQueueError) schedQueueError.textContent = '';
+  const form = {
+    queue_id: schedQueueId ? schedQueueId.value : '',
+    name: schedQueueName ? schedQueueName.value : '',
+    members: st.members.slice(),
+    total_rounds: schedQueueTotalRounds ? schedQueueTotalRounds.value : '0',
+    on_failure: schedQueueOnFailure ? schedQueueOnFailure.value : 'continue',
+    between_ms: schedQueueBetweenMs ? schedQueueBetweenMs.value : '500',
+  };
+  const local = schedValidateQueueForm(form, scheduleConfig || schedEmptyConfig(), st.queueId, st.base);
+  if (!local.ok) {
+    if (schedQueueError) schedQueueError.textContent = local.errors.join('\n');
+    return;
+  }
+  const fresh = await loadScheduleConfig(true);
+  if (!fresh) {
+    if (schedQueueError) schedQueueError.textContent = '读取调度配置失败：' + (scheduleConfigError || '未知错误');
+    return;
+  }
+  const freshQueue = (fresh.queues || []).find((q) => q.queue_id === st.queueId) || st.base;
+  const check = schedValidateQueueForm(form, fresh, st.queueId, freshQueue);
+  if (!check.ok) {
+    if (schedQueueError) schedQueueError.textContent = check.errors.join('\n');
+    return;
+  }
+  let next;
+  if (st.mode === 'create') {
+    next = schedUpsertQueue(fresh, check.queue);
+  } else {
+    const idx = (fresh.queues || []).findIndex((q) => q.queue_id === st.queueId);
+    if (idx < 0) {
+      if (schedQueueError) schedQueueError.textContent = '队列已被外部删除，请关闭后重新打开。';
+      return;
+    }
+    next = schedNormalizeConfig(fresh);
+    next.queues[idx] = Object.assign({}, next.queues[idx], check.queue);
+  }
+  if (schedQueueSave) schedQueueSave.disabled = true;
+  const res = await postScheduleConfig(next);
+  if (schedQueueSave) schedQueueSave.disabled = false;
+  if (!res.ok) {
+    const msg = schedResponseErrorText(res.status, res.body);
+    if (schedQueueError) schedQueueError.textContent = msg;
+    log('保存队列失败：' + msg, res.status === 409 ? 'WARN' : 'ERROR');
+    return;
+  }
+  schedQueueDialog.close();
+  log(`已保存队列「${check.queue.queue_id}」${st.mode === 'create' ? '（新建）' : ''}`);
+  await refreshSchedulePage();
+}
+
+async function deleteScheduleQueue(queueId) {
+  if (scheduleBusy) return;
+  const cfg = await loadScheduleConfig(true);
+  if (!cfg) {
+    log('删除队列失败：调度配置不可用', 'ERROR');
+    return;
+  }
+  if (!(cfg.queues || []).some((q) => q.queue_id === queueId)) {
+    log('删除队列失败：队列「' + queueId + '」不存在', 'WARN');
+    return;
+  }
+  const removed = schedRemoveQueue(cfg, queueId);
+  const entryNote = removed.removed_entry_ids.length
+    ? `\n同时删除触发条目：${removed.removed_entry_ids.join('、')}`
+    : '';
+  if (!window.confirm(`删除队列「${queueId}」？${entryNote}\n成员任务目录不受影响。`)) return;
+  const res = await postScheduleConfig(removed.config);
+  if (!res.ok) {
+    const msg = schedResponseErrorText(res.status, res.body);
+    log('删除队列失败：' + msg, 'WARN');
+    if (pageSchedConfigStatus) pageSchedConfigStatus.textContent = msg;
+    return;
+  }
+  log(`已删除队列「${queueId}」` + (removed.removed_entry_ids.length
+    ? `（同时删除条目 ${removed.removed_entry_ids.join('、')}）` : ''));
+  await refreshSchedulePage();
+}
+
+async function saveSchedulePageConfig() {
+  if (scheduleBusy) return;
+  if (scheduleJsonDirty) {
+    const msg = '高级 JSON 有未保存修改：请用「保存 JSON」写入，或先「重新加载」放弃修改。';
+    log(msg, 'WARN');
+    if (pageSchedConfigStatus) pageSchedConfigStatus.textContent = msg;
+    return;
+  }
+  // P1-4: GET first. The toolbar save must not POST the cached document over an
+  // edit made outside this page (hand edit / another tab / a script). Compare the
+  // current file with the snapshot this page was loaded from; a mismatch aborts
+  // the save and asks for a reload.
+  const freshRes = await fetchScheduleConfigOnce();
+  if (!freshRes.ok) {
+    const msg = '保存配置失败：' + freshRes.error;
+    log(msg, 'ERROR');
+    if (pageSchedConfigStatus) pageSchedConfigStatus.textContent = msg;
+    return;
+  }
+  const freshRaw = schedConfigSnapshotText(freshRes.body.config);
+  if (schedConfigSnapshotChanged(scheduleConfigBase, freshRaw)) {
+    const msg = schedExternalConfigChangeText();
+    log(msg, 'WARN');
+    if (pageSchedConfigStatus) pageSchedConfigStatus.textContent = msg;
+    return;
+  }
+  const cfg = scheduleConfig || schedNormalizeConfig(freshRes.body.config);
+  const res = await postScheduleConfig(cfg);
+  if (!res.ok) {
+    const msg = schedResponseErrorText(res.status, res.body);
+    log('保存调度配置失败：' + msg, res.status === 409 ? 'WARN' : 'ERROR');
+    if (pageSchedConfigStatus) pageSchedConfigStatus.textContent = msg;
+    return;
+  }
+  const bytes = res.body && res.body.bytes != null ? `（${res.body.bytes} bytes）` : '';
+  const backup = res.body && res.body.backup ? ` · 备份=${res.body.backup}` : '';
+  log(`调度配置已保存${bytes}${backup}`);
+  if (pageSchedConfigStatus) pageSchedConfigStatus.textContent = `已保存${bytes}${backup}`;
+  await refreshSchedulePage();
+}
+
+async function saveScheduleJson() {
+  if (scheduleBusy || !pageSchedJson) return;
+  const parsed = schedParseConfigJson(pageSchedJson.value);
+  if (!parsed.ok) {
+    if (pageSchedJsonStatus) pageSchedJsonStatus.textContent = '本地校验失败：' + parsed.error;
+    log('调度配置 JSON 本地校验失败：' + parsed.error, 'WARN');
+    return;
+  }
+  const res = await postScheduleConfig(parsed.config);
+  if (!res.ok) {
+    const msg = schedResponseErrorText(res.status, res.body);
+    if (pageSchedJsonStatus) pageSchedJsonStatus.textContent = msg;
+    log('保存调度配置 JSON 失败：' + msg, res.status === 409 ? 'WARN' : 'ERROR');
+    return;
+  }
+  scheduleJsonDirty = false;
+  const bytes = res.body && res.body.bytes != null ? `（${res.body.bytes} bytes）` : '';
+  log('调度配置 JSON 已保存' + bytes);
+  await refreshSchedulePage();
+  if (pageSchedJsonStatus) pageSchedJsonStatus.textContent = '已保存' + bytes;
+}
+
+async function reloadScheduleJson() {
+  scheduleJsonDirty = false;
+  if (pageSchedJsonStatus) pageSchedJsonStatus.textContent = '重新载入中…';
+  await refreshSchedulePage();
+}
+
 // --- M2/N37: 调度面板 + 重置记忆 -------------------------------------------
 function fmtLocal(ms) {
   if (!ms) return '—';
@@ -5773,7 +7360,7 @@ function renderScheduler(s) {
   schedEntries.textContent = '';
   const entries = Array.isArray(s.entries) ? s.entries : [];
   if (!entries.length) {
-    schedEntries.textContent = '（无调度条目：编辑 scheduler.json 后刷新）';
+    schedEntries.textContent = '（无调度条目：到「调度」页添加，或点上方「打开调度页 →」）';
     return;
   }
   for (const e of entries) {
@@ -5784,6 +7371,7 @@ function renderScheduler(s) {
     const name = document.createElement('strong');
     name.textContent = `${e.entry_id || '?'} · ${e.task || '?'}`;
     head.appendChild(name);
+    if (e.kind === 'queue') head.appendChild(schedBadge('queue', 'kind'));
     head.appendChild(schedBadge(e.lifecycle || '?', 'kind'));
     if (e.enabled === false) head.appendChild(schedBadge('已禁用', 'warn'));
     if (e.runnable_now) head.appendChild(schedBadge('现在可跑', 'ok'));
@@ -6239,7 +7827,54 @@ async function submitResetMemory() {
   });
   if (instSave) instSave.addEventListener('click', saveInstance);
   if (pageSchedRefresh) pageSchedRefresh.addEventListener('click', refreshSchedulePage);
+  if (pageSchedReload) pageSchedReload.addEventListener('click', refreshSchedulePage);
   if (pageSchedReset) pageSchedReset.addEventListener('click', openResetMemoryDialog);
+  // P3: editable scheduler page actions.
+  if (pageSchedSave) pageSchedSave.addEventListener('click', saveSchedulePageConfig);
+  if (pageSchedAddEntry) pageSchedAddEntry.addEventListener('click', openScheduleAddEntryDialog);
+  if (pageSchedAddQueue) pageSchedAddQueue.addEventListener('click', () => openScheduleQueueDialog(''));
+  if (pageSchedJsonSave) pageSchedJsonSave.addEventListener('click', saveScheduleJson);
+  if (pageSchedJsonReload) pageSchedJsonReload.addEventListener('click', reloadScheduleJson);
+  if (pageSchedJson) {
+    pageSchedJson.addEventListener('input', () => {
+      scheduleJsonDirty = true;
+      if (pageSchedJsonStatus) pageSchedJsonStatus.textContent = '有未保存修改（用「保存 JSON」写入）';
+    });
+  }
+  if (btnSchedOpenPage) btnSchedOpenPage.addEventListener('click', () => activatePage('schedule'));
+  if (schedEntryKind) {
+    schedEntryKind.addEventListener('change', () => {
+      populateScheduleEntryTargets(schedEntryKind.value, '');
+      updateScheduleEntryTargetHint();
+    });
+  }
+  if (schedEntryTarget) schedEntryTarget.addEventListener('change', updateScheduleEntryTargetHint);
+  if (schedEntryLifecycle) schedEntryLifecycle.addEventListener('change', updateScheduleEntryLifecycleUi);
+  if (schedEntryCancel) {
+    schedEntryCancel.addEventListener('click', () => {
+      if (schedEntryDialog) schedEntryDialog.close();
+    });
+  }
+  if (schedEntrySave) schedEntrySave.addEventListener('click', saveScheduleEntryDialog);
+  if (schedQueueMemberAddBtn) {
+    schedQueueMemberAddBtn.addEventListener('click', () => {
+      const st = scheduleQueueDialogState;
+      if (!st || !schedQueueTaskPool) return;
+      const checked = Array.from(
+        schedQueueTaskPool.querySelectorAll('input[type=checkbox]:checked')
+      ).map((cb) => cb.value);
+      for (const task of checked) st.members = schedQueueMemberAdd(st.members, task);
+      renderScheduleQueueMembers();
+      renderScheduleQueuePool();
+    });
+  }
+  if (schedQueueTotalRounds) schedQueueTotalRounds.addEventListener('input', updateScheduleQueueRoundsHint);
+  if (schedQueueCancel) {
+    schedQueueCancel.addEventListener('click', () => {
+      if (schedQueueDialog) schedQueueDialog.close();
+    });
+  }
+  if (schedQueueSave) schedQueueSave.addEventListener('click', saveScheduleQueueDialog);
   if (settingsRefresh) settingsRefresh.addEventListener('click', refreshSettings);
   if (libNew) {
     libNew.addEventListener('click', () => {

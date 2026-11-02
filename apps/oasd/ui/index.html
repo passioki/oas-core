@@ -248,15 +248,17 @@
         </section>
 
         <section class="panel" id="panel-schedule">
-          <h3>调度（v3）</h3>
+          <h3>调度（v4）</h3>
           <div class="row lib-toolbar">
             <button id="btn-sched-refresh" type="button">刷新状态</button>
             <button id="btn-sched-reset" type="button">重置记忆…</button>
+            <button id="btn-sched-open-page" type="button">打开调度页 →</button>
           </div>
           <div id="sched-summary" class="muted small">—</div>
           <div id="sched-entries" class="asset-list muted">（未加载调度状态）</div>
           <p class="muted small">
-            状态来自 <code>scheduler.json</code>（v3）；启动/停止守护进程用
+            本面板只读；条目/队列的启用、排序与编辑在「调度」页。
+            状态来自 <code>scheduler.json</code>（v4）；启动/停止守护进程用
             <code>start-scheduler.bat</code> / <code>stop-scheduler.bat</code>。
           </p>
         </section>
@@ -361,18 +363,56 @@
     </div>
   </div>
 
-  <!-- v1.1 P3: 调度 -->
+  <!-- v1.1 P3 / P3: 调度（entries + 队列可编辑、状态卡、高级 JSON） -->
   <div id="page-schedule" class="app-page">
     <div class="page-wrap">
       <div class="row page-head">
         <h2>调度</h2>
-        <span class="muted small">scheduler.json v3 · periodic/temp · 重置记忆</span>
+        <span class="muted small">scheduler.json v4 · periodic/temp · 队列轮次 · 条目顺序=执行顺序</span>
         <span class="spacer"></span>
-        <button id="page-sched-refresh" type="button">刷新状态</button>
+        <button id="page-sched-refresh" type="button">刷新</button>
+        <button id="page-sched-save" type="button">保存配置</button>
+        <button id="page-sched-reload" type="button">重新加载</button>
         <button id="page-sched-reset" type="button">重置记忆…</button>
       </div>
-      <div id="page-sched-summary" class="muted small">—</div>
+      <div class="card sched-status-card">
+        <div class="row">
+          <strong id="page-sched-mode">模式：—</strong>
+          <span id="page-sched-passes" class="muted small">passes=—</span>
+          <span id="page-sched-next-wake" class="muted small">下次唤醒=—</span>
+          <span id="page-sched-running" class="badge">锁=—</span>
+          <span id="page-sched-quota" class="muted small">quota=—</span>
+        </div>
+        <div id="page-sched-summary" class="muted small">—</div>
+        <div id="page-sched-config-status" class="muted small">配置：—</div>
+      </div>
+      <div class="row page-head">
+        <h3>调度条目</h3>
+        <span class="muted small">顺序即执行顺序；调度器运行中保存会被 409 拒绝</span>
+        <span class="spacer"></span>
+        <button id="page-sched-add-entry" type="button">+ 添加条目…</button>
+      </div>
       <div id="page-sched-entries" class="task-library muted">（未加载）</div>
+      <div class="row page-head">
+        <h3>队列（一轮 = 按顺序走完成员）</h3>
+        <span class="muted small">total_rounds=0 表示无限轮；一个队列最多一个触发条目</span>
+        <span class="spacer"></span>
+        <button id="page-sched-add-queue" type="button">+ 新建队列…</button>
+      </div>
+      <div id="page-sched-queues" class="task-library muted">（未加载）</div>
+      <details id="page-sched-advanced" class="sched-advanced">
+        <summary>高级 JSON（完整 scheduler.json）</summary>
+        <p class="muted small">
+          直接编辑完整配置；保存前先本地 JSON.parse 校验，服务端仍会做 schema 校验。
+          调度器运行中保存会返回 409。
+        </p>
+        <textarea id="page-sched-json" class="builder-code" spellcheck="false"></textarea>
+        <div class="row lib-toolbar">
+          <button id="page-sched-json-save" type="button">保存 JSON</button>
+          <button id="page-sched-json-reload" type="button">从磁盘重新载入</button>
+          <span id="page-sched-json-status" class="muted small">—</span>
+        </div>
+      </details>
     </div>
   </div>
 
@@ -435,6 +475,110 @@
     <div class="row dialog-actions">
       <button id="btn-reset-cancel" type="button">取消</button>
       <button id="btn-reset-submit" type="button">确认重置</button>
+    </div>
+  </dialog>
+
+  <!-- P3：调度条目编辑/新建（任务库「调度设置…」与调度页「+ 添加条目…」共用） -->
+  <dialog id="sched-entry-dialog" class="task-dialog sched-entry-dialog">
+    <h3 id="sched-entry-title">调度条目</h3>
+    <div id="sched-entry-mode-hint" class="muted small">—</div>
+    <label class="opt">类型
+      <select id="sched-entry-kind">
+        <option value="task">task（单任务）</option>
+        <option value="queue">queue（队列触发，一轮 = 走完成员一遍）</option>
+      </select>
+    </label>
+    <label class="opt">目标（task=任务名 / queue=queue_id）
+      <select id="sched-entry-target"></select>
+    </label>
+    <div id="sched-entry-id" class="muted small">entry_id：—</div>
+    <label class="opt"><input id="sched-entry-enabled" type="checkbox" checked /> 启用（enabled）</label>
+    <label class="opt">生命周期
+      <select id="sched-entry-lifecycle">
+        <option value="periodic">periodic（按窗口/quota/冷却触发）</option>
+        <option value="temp">temp（每 pass 一次；无窗口、无 quota）</option>
+      </select>
+    </label>
+    <div id="sched-entry-temp-hint" class="muted small">—</div>
+    <label class="opt">时间窗口（简化文本；留空=全天）
+      <input id="sched-entry-windows" autocomplete="off"
+        placeholder="如 08:00-12:00, 18:00-23:00；可选周几前缀 [1,3]08:00-12:00" />
+    </label>
+    <details class="opt">
+      <summary>高级：windows JSON（非空时优先于上面的简化文本）</summary>
+      <textarea id="sched-entry-windows-json" class="builder-code" spellcheck="false"
+        placeholder='[{"days":[],"start":"08:00","end":"12:00"}]'></textarea>
+    </details>
+    <div class="row lib-toolbar">
+      <label class="opt">quota
+        <select id="sched-entry-quota-per">
+          <option value="">无配额（每 pass 可跑）</option>
+          <option value="day">按天 day</option>
+          <option value="week">按周 week</option>
+        </select>
+      </label>
+      <label class="opt">次数
+        <input id="sched-entry-quota-times" type="number" min="1" max="1000" value="1" />
+      </label>
+    </div>
+    <div class="row lib-toolbar">
+      <label class="opt">retry（额外尝试次数）
+        <input id="sched-entry-retry" type="number" min="0" max="10" value="1" />
+      </label>
+      <label class="opt">cooldown_s
+        <input id="sched-entry-cooldown" type="number" min="0" max="604800" value="300" />
+      </label>
+    </div>
+    <label class="opt">params（JSON 对象，可空）
+      <textarea id="sched-entry-params" rows="3" class="builder-code" spellcheck="false"
+        placeholder='{"max_battles":3}'></textarea>
+    </label>
+    <pre id="sched-entry-error" class="muted small dialog-error"></pre>
+    <div class="row dialog-actions">
+      <button id="sched-entry-cancel" type="button">取消</button>
+      <button id="sched-entry-save" type="button">保存</button>
+    </div>
+  </dialog>
+
+  <!-- P3：队列编辑/新建（成员从任务库多选并排序） -->
+  <dialog id="sched-queue-dialog" class="task-dialog sched-queue-dialog">
+    <h3 id="sched-queue-title">队列</h3>
+    <label class="opt">queue_id（唯一；不能含路径字符）
+      <input id="sched-queue-id" autocomplete="off" placeholder="如：daily" />
+    </label>
+    <label class="opt">名称（可空，默认=queue_id）
+      <input id="sched-queue-name" autocomplete="off" placeholder="如：日常队列" />
+    </label>
+    <div class="row lib-toolbar">
+      <strong class="small">成员（按顺序串行执行）</strong>
+      <span class="spacer"></span>
+      <button id="sched-queue-member-add" type="button">添加勾选任务</button>
+    </div>
+    <div id="sched-queue-members" class="asset-list muted">（还没有成员）</div>
+    <details class="opt">
+      <summary>从任务库勾选成员</summary>
+      <div id="sched-queue-task-pool" class="asset-list"></div>
+    </details>
+    <div class="row lib-toolbar">
+      <label class="opt">total_rounds（0=无限）
+        <input id="sched-queue-total-rounds" type="number" min="0" max="1000000" value="0" />
+      </label>
+      <label class="opt">on_failure
+        <select id="sched-queue-on-failure">
+          <option value="continue">continue（记录失败继续）</option>
+          <option value="fail_fast">fail_fast（本轮中止，仍计 1 轮）</option>
+        </select>
+      </label>
+      <label class="opt">between_ms（成员之间暂停）
+        <input id="sched-queue-between-ms" type="number" min="0" max="600000" value="500" />
+      </label>
+    </div>
+    <div id="sched-queue-rounds-hint" class="muted small">total_rounds=0：无限轮，直到手动停止/重置。</div>
+    <div id="sched-queue-lock-hint" class="muted small">—</div>
+    <pre id="sched-queue-error" class="muted small dialog-error"></pre>
+    <div class="row dialog-actions">
+      <button id="sched-queue-cancel" type="button">取消</button>
+      <button id="sched-queue-save" type="button">保存队列</button>
     </div>
   </dialog>
 

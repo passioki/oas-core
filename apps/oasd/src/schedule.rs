@@ -839,7 +839,11 @@ fn process_alive(pid: u32) -> bool {
     }
 }
 
-fn lock_held_by_live_process(state_path: &Path) -> Option<u32> {
+/// Pid of a live scheduler holding `<state_path>.lock` (`None` when the lock is
+/// absent or stale). Read-only: never creates, steals or removes the lock; the
+/// lock path comes from the same [`SchedulerLock::lock_path`] used by
+/// [`SchedulerLock::acquire`], so it is never hardcoded in callers.
+pub fn lock_held_by_live_process(state_path: &Path) -> Option<u32> {
     let path = SchedulerLock::lock_path(state_path);
     if !path.is_file() {
         return None;
