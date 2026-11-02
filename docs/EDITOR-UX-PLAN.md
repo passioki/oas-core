@@ -1,7 +1,7 @@
 # 编辑器 UX / 选择模型改版计划（2026-11-01）
 
 > 状态：**Phase A/B/C/D 行为层已实现**（runtime template/OCR/region 主点击 exact shape；live/position 批量已实测）。版本 `0.1.0`。
-> ⚠ 未完成的结构项：`SelectionTool` 未抽出（识别掩膜/操作区两套几何按语义保留）；drag 生成的 flow step 仍是 bbox；UI dry-run 与 runtime 是两套采样实现。**实现后状态与 00:37~00:38 口径见 §15**。
+> ⚠ 未完成的结构项：`SelectionTool` 未抽出（识别掩膜/操作区两套几何按语义保留）；UI dry-run 与 runtime 仍是两套采样实现。**O-1（collection 真实点击）/ O-2（drag action shape）经两轮评审后在 dev `d1a7fcd` 收口**（第一轮 4 个 P1 + P2 已修）；**实现后状态与最终口径见 §15**。
 > 目标：让素材/帧编辑更可维护、测试更可信、画面与操作区域不互相遮挡。
 > 不引入 interface；唯一关系仍是 `Asset.positions`。
 
@@ -601,20 +601,25 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 - 点击分布只画点位/热力（无左上指示条）、真实/演练开关（`#btn-test-mode`，默认演练；真实模式 `/input/tap` `/input/swipe` + 二次确认）；
 - ResizeObserver 循环修复（`a2b4b12`）：rAF 合并 + 幂等 fit；用户 00:37 验收“没问题”。
 
-### 15.2 未完成/边界（发布前确认是否接受）
+### 15.2 未完成/边界（11-02 终态复核）
 
-- `SelectionTool` 未抽出：`polygon/polyMode` 与 `actionPoly/actionPolyMode` 两套状态按语义保留；
-- drag 生成的 flow step 仍是 `{kind:'region', roi: bbox}`（`CODE-AUDIT P1-1`；注意与 `AUDIT-SUBPROCESS P1-1` 的“UI 模板 shape 未平移”不是同一问题）；
-- UI dry-run（JS）与 runtime（Rust）是两套采样实现，未共用同一函数；
-- `collection` 集合测试仍是 dry-run：只返回 `action_box`，没有 `/input/tap`；与“素材行真实点击”不是同一条路径。
+- ✅ `collection` 集合测试真实点击（O-1，dev `d1a7fcd`）：`GET /task/asset/collection/match` 可选 `real`（严格 `0/1/true/false`）；缺省/`real=0` dry-run 响应与 editor 日志逐字不变；`real=1` 要求 live 帧；匹配通过后在当前帧精确 `action_shape` 内采样（polygon 内 / invert 排除区外，`translate_click_shape` + `ClickShape::sample`）；未过阈值 → **409** + `clicked:false`；成功 → 200 + `real/clicked/click_point/tap_ok`；无 live/越界/无 box → 400，adb 失败 → 500；UI 真实模式 dry 预览 → 二次确认 → 只发一次 `real=1`，409 显示「未执行」。
+- ✅ drag 生成的 flow step 带 action shape（O-2，dev `d1a7fcd`）：`from`/`to` 的 region target 可选 `shape`（`rect`/`polygon` + `invert`）；polygon/invert 走与点击同源的 `ClickShape::sample`；**plain rect 操作区也保留**（`from.roi` = action shape bbox，仅 polygon/invert 内联 `shape`）；**无 shape 的旧 flow 行为完全不变**（roi bbox 兜底）。
+- ✅ 解析/运行时防护（O-2 评审 P1）：坐标 0..=1e6/i32、rect x/y≥0、x+w/y+h checked、顶点 3..=256、拒绝自交、i128 面积；bbox/contains i64 安全；退化/帧外几何 loud；`shape` 仅 region target（point/ocr_text → FlowError）；`margin` 仅 rect 非反选保留（polygon/invert 记 `margin=ignored`）。
+- ⚠ **混版本风险**：旧 runtime 静默忽略 drag `shape`、按 roi bbox 采样（**invert 会点到排除区**）⇒ invert 拖动需本版 runtime。
+- ⚠ **P2-10**：保存 flow 不校验解析错误——本轮明确不做；模板移动/多位置仍是「生成时 shape 快照」，Plan B（asset 引用 + 运行时跟随识别）未做。
+- ⚠ collection `real=1` **未做真机 E2E**（`adb devices` 为空、MuMu 未运行）；成功路径由 `#[cfg(test)]` tap seam 覆盖。
+- `SelectionTool` 未抽出（仍 open）：`polygon/polyMode` 与 `actionPoly/actionPolyMode` 两套状态按语义保留；
+- UI dry-run（JS）与 runtime（Rust）是两套采样实现，未共用同一函数（drag 的 `regionDragStep` 与 runtime `ClickShape::sample` 语义对齐，但仍是两份实现）。
 
 ### 15.3 00:37~00:38 会话口径（补入文档）
 
 | 项 | 结论 |
 |---|---|
 | drag/swipe 是否写点击分布 | **不写**。`record_click()` 只在 `perform_click()` 路径调用；`Step::Drag` 走 `input.swipe`，不产生 click 记录。 |
-| 拖测 `margin` | 默认 **0.15**，合法范围 **0~0.45**；作用于**起点**（配置了 `to` 时也作用于终点）候选矩形的**内缩**；不是像素、不是拖动距离。 |
-| collection 真实点击 | **仍未实现/未承诺**：集合匹配 dry-run；与素材真实点击不同路径。 |
+| 拖测 `margin` | 默认 **0.15**，合法范围 **0~0.45**；作用于**起点**（配置了 `to` 时也作用于终点）候选矩形的**内缩**；不是像素、不是拖动距离。**有 drag shape 时仅 rect 非反选生效**；polygon/invert 忽略并在 detail 记 `margin=ignored`。 |
+| collection 真实点击 | **00:38 时未实现**；11-02 经两轮评审在 dev `d1a7fcd` 收口（O-1：`real` 严格取值、强制 live 帧、精确 shape 内采样、未过阈值 409；默认 dry-run 不变）；仍缺真机 E2E。 |
 | 真实 UI 手势 | 用户 00:37 说“测试过了”；助手独立证据只有真机 `emulator-5554` 的 `POST /input/tap`，不是完整 UI 手势回放。 |
+| drag action shape | 11-02 经两轮评审在 dev `d1a7fcd` 收口（O-2）：`shape` 为**可选**字段，无 shape 旧 flow 不变；plain rect 操作区保留（`from.roi`=shape bbox，仅 polygon/invert 内联 shape）；解析校验齐全；`margin` 仅 rect 非反选生效，polygon/invert 记 `margin=ignored`；detail 记 `from_shape/from_invert/to_shape/to_invert`。 |
 
 

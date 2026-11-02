@@ -3086,3 +3086,67 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - collection 真实点击、drag step shape、SelectionTool 仍 open。
 
 | 状态 | ✅ 文档已提交；tag `v0.1.0` 已创建；main/dev 同步；本地包 SHA256 `E6112A33…5F5687`；GitHub Release 未创建 |
+
+---
+
+# ★ §E-74 ★★★ [11-02 13:5x 终态] **0.1.0 GitHub Release 上传 + O-1/O-2 收口（两轮评审后）**
+
+> 触发：用户明确要求把 v0.1.0 发布到 GitHub Release；随后收口两项产品开口（collection 真实点击、drag action shape），并按第一轮评审修复（`d1a7fcd`）订正到最终事实。
+
+## A. GitHub Release（已上传）
+
+- URL：`https://github.com/passioki/oas-core/releases/tag/v0.1.0` · release id `431080249`。
+- 标题：`OAS 0.1.0 — 恢复节点（引擎/编辑器/全局素材库）`；**draft=false / prerelease=false**，创建后即 repo **latest**。
+- 附件（均 `state=uploaded`）：
+  - `oasd-v0.1.0-win64.zip`：asset id `700544587`，37,089,992 B，GitHub digest `sha256:e6112a33…5f5687`；
+  - `oasd-v0.1.0-win64.zip.sha256`：asset id `700545142`，89 B。
+- **tag `v0.1.0` 未移动**：annotated tag `cf123b8` → commit `e8edbef`；包构建 commit 仍是 `42567c1`。
+- 验证证据：`D:\OAS-dev\_verify\release-v0.1.0\REPORT.md`（发布前 404 → 创建 201 → body 逐字符一致 → zip/旁文件/页面 SHA256 三方一致 → 页面 200 → rate limit 正常）。
+
+## B. 两轮评审与修复（第一轮 P1×4 + P2 → commit `d1a7fcd`）
+
+- 第一轮评审对 `54c715b` 提出 **4 个 P1** + 若干 P2；修复提交 `d1a7fcd`（`fix: address O-1/O-2 review findings (P1-1..P1-4, P2)`，6 files +1436/−225）：
+  - **P1-1**：collection `real=1` 必须点**精确 action shape 内**（polygon 内 / invert 排除区外），不得用 bbox/整屏中心；采样失败 loud 400。
+  - **P1-2**：真实测试重新匹配未过阈值必须是 **409 + `clicked:false`**，不能按成功返回。
+  - **P1-3**：`generateRegionDrag` 的 **plain rect 操作区被丢弃**（退回识别 ROI）——修复为 `from.roi` 始终取 action shape bbox。
+  - **P1-4**：drag shape 坐标/矩形的**溢出与退化几何**——DSL 坐标 0..=1e6/i32、checked 加法、i128 面积；runtime bbox/contains i64 安全、帧外/退化 loud。
+- P2 一并收口：`real` 严格只收 `0/1/true/false`（其它 400）；`real=1` 强制 live 帧；dry-run 响应/editor 日志逐字不变；`shape` 只允许 region target（point/ocr_text → FlowError）；`margin` 仅 rect 非反选生效（polygon/invert 记 `margin=ignored`）；`to=None` 的 distance 终点只受帧约束并写入注释/测试；builder 提示区分 rect 与 polygon/invert。
+- 第二轮复核：最终回归 **426/0**、UI **259/0**、lint **1/0**、OCR build exit 0、DSL E2E **8/5**，无新增 P1。
+
+## C. O-1 最终行为：collection 集合测试真实点击（dev `d1a7fcd`）
+
+- `GET /task/asset/collection/match` 可选 `real`（严格 `0/1/true/false`，其它 400）；缺省 / `real=0` dry-run **响应与 editor 日志逐字不变**。
+- `real=1` **要求 live 帧**（非 live → 400 `real click requires live frame`，提示 `live=1`）。
+- 匹配通过后在**当前帧精确 action shape** 内采样：成员/集合 shape 经 `AssetSet::translate_click_shape` 平移，采样用 `ClickShape::sample`；polygon 在多边形内、invert 在排除区外；不可采样/越界 → 400 loud，绝不回退 bbox/整屏中心（无 exact shape 的 legacy 素材仍取 action_box 中心，在其 click_back 矩形内）。
+- 未过阈值 → **409** + `clicked:false`（不点击）；成功 → 200 + `real/clicked/click_point/tap_ok`；adb 失败 → 500；点击与 `/input/tap` 共用 `perform_live_tap`。
+- UI：真实模式（顶部「素材测试」开关）先 dry 预览 → 二次确认（「服务端将重新匹配并点击最新操作区（shape 内采样）；实际点击点以返回 click_point 为准」）→ 只发一次 `real=1`；409 显示「真实点击未执行：重新匹配未过阈值（未点击）」；演练模式明确「演练（未点击）」，绝不真实点击。
+- 测试：oasd **153**（+13，含 invert 排除区覆盖屏幕中心、凹 polygon、`/input/tap` 路由回归、无 live/越界/无 box/`real=yes` 400）；**真机 E2E 未做**（MuMu 未运行，tap seam 仅 `#[cfg(test)]`）。
+- 代码：`serve.rs:1266`（路由）· `3303-3534`（handler）· `2137`（`perform_live_tap`）· `5923-6001`（shape/采样）· `6018`（error body）· `8574+`（测试）；`app.js:2941-3074`。
+
+## D. O-2 最终行为：drag step 带 action shape（dev `d1a7fcd`）
+
+- DSL：drag `from`/`to` 的 **region** target 可选 `shape`：`{"kind":"rect"|"polygon","roi":[x,y,w,h],"points":[[x,y],…],"invert":bool}`；`shape:null` = 缺省；旧 flow 无 shape 行为不变。
+- 解析（`FlowError` path 精确到 `steps[i].args.from.shape...`）：坐标 0..=1e6 且 i32 可表示；rect x/y≥0、x+w/y+h checked；顶点 3..=256、**拒绝自交**、i128 鞋带面积；`shape` 只允许 region target（point/ocr_text 上出现 → FlowError）。
+- runtime：polygon/invert 用与点击同源的 `ClickShape::sample`（失败 loud，不回退）；bbox/contains i64 安全；退化/帧外几何 loud；direction/旧 distance 语义不变；`margin` 仅 **rect 非反选**保留（polygon/invert 忽略并记 `margin=ignored`）；`to=None` 的 distance 终点只受帧约束（注释/测试明确）。
+- UI：`generateRegionDrag` 的 **plain rect 操作区也保留**（`from.roi` = action shape bbox；仅 polygon/invert 内联 `shape`）；`testAssetDrag` 生成时快照当帧 shape；`builder.js` 改 roi 时保留 `from.shape`，并区分「polygon/invert 按 shape 采样、margin 忽略」与「rect 非反选以 roi 为准」。
+- 测试：flow **57**（+8）、runtime **125**（+12，含评审 4 个溢出/非法复现；另 2 个 integration = 127）。
+- 代码：`oas-flow/src/lib.rs:626-654/1136-1431`；`oas-runtime/src/lib.rs:252-310/1733-1821/3035-3155`；`app.js:911-925`；`builder.js:1030-1060`。
+- 风险：**混版本**（旧 runtime 静默忽略 shape、按 bbox 采样，invert 会点到排除区）；Plan B（asset 引用 + 运行时跟随识别）未做（生成时快照）；P2-10「保存 flow 不校验解析错误」本轮明确不做。
+
+## E. 代码 / 测试 / 状态
+
+- 代码提交：`54c715b`（初版 6 files +1413/−103）、`d1a7fcd`（评审修复 6 files +1436/−225）。
+- 当前 `dev` = `d1a7fcd`；本轮 docs 订正提交 = HEAD（父 `d1a7fcd`，hash 提交时确定）；`origin/dev` = `e8edbef`（未 push）；`main` = `e8edbef`，随后 Lead 推送 dev 并快进同步 main。
+- 最终验证（Lead 2026-11-02 13:35）：`cargo test --workspace` = **426 passed / 0 failed**；oasd **153** / flow **57** / runtime **125**（+2 integration = 127）；UI **259 checks / 0 dead ids**；task lint **1 task / 0 errors**；`cargo build -p oasd --features ocr` exit 0（6 条既有 warning）；DSL E2E（临时 task lint）`linted=8 errors=5`；serve 由 Lead 以最终构建 `-SkipBuild` 重启于 **8787**。
+- ⚠ **v0.1.0 发布包（`42567c1` 构建）仍是 393/203 基线，不含 O-1/O-2**；O-1/O-2 自 `54c715b` 起，评审修复 `d1a7fcd`。
+- 仍未闭合：`SelectionTool` 未抽出；E2E 36/36 证据停在 `4d5759f`；真实 UI 手势仅用户验收 + 真机 `/input/tap` 独立证据；collection `real=1` 真机 E2E 未做（MuMu 未运行、`adb devices` 为空）；P2-10；Plan B；活动页参考帧。
+- 第二轮评审（`D:\OAS-dev\_verify\final-review-20261102\REVIEW2.md`）残留 P2（不阻断）：**P2-12** 显式闭合环/重复顶点 polygon 被自交检查误判（新误报，UI 生成的多边形不含闭合重复点故当前不触发）；**P2-11** 极端 `distance`（i32::MAX）debug 溢出 panic（既有、非 shape 路径）；P2-13~16 注释/UI note 措辞与少量 `as i32` 截断；UI 接线测试以静态断言为主。
+
+## F. 环境事实（本轮新发现）
+
+- 本会话 PowerShell 实为 **5.1**，执行策略 Undefined：直接 `.\scripts\dev-serve.ps1` 报 UnauthorizedAccess ⇒ 用 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-serve.ps1 -NoOpen`。
+- `node` 不在 PATH；UI 测试用 bundled node：`C:\Users\passioki\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe`（v24.21.0）。
+- PS 5.1 重定向日志为 UTF-16LE（读时 `-Encoding Unicode` 或转 UTF-8）。
+- `adb devices` 为空（MuMu `emulator-5554` 未运行）；真机任务需先启动模拟器。
+
+| 状态 | ✅ Release 已上传（`431080249`，latest）· ✅ O-1（含 P1 修复）· ✅ O-2（含 P1 修复）· ⬜ `SelectionTool` · ⬜ 真机 E2E（collection real=1）· ⚠ 混版本 invert · ⚠ P2-10 · ⚠ Plan B（生成时快照）· ⚠ 评审残留 P2（P2-11/P2-12 等，见 REVIEW2.md）· ⚠ `main` 待快进同步 |
