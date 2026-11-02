@@ -1066,7 +1066,7 @@
 | **N37** | ★★★ **调度 v3**（周期任务+temp 临时任务 B 触发、执行前后重置、无 one_shot/continue、重置记忆 CLI+UI 多选框全选/反选、serve 调度面板；替换 v1 every_s）| ENGINE §22.34 · 用户 [10-24] 调度决策 | ✅ **已完成**（`7a4c58c`） | 纯函数 30 + 集成 22 测试；实机 2 轮调度报告；`temp_state_reset before/after`；重置记忆 API/UI 截图 |
 | **N38** | ★★★ **任务创建闭环**（`POST /task/create` + 名称校验/原子骨架；编辑器「新建任务」对话框；编辑器「运行任务」后台 + 状态轮询；保存前 lint）| DELIVERY-PLAN §3 M1 · 用户 [10-23] "能创建任务" | ✅ **已完成**（`7a4c58c`） | 发布包实机创建 200；编辑器运行探索 **Done/exit0/14 clicks**；headless `editor_create_dialog.png` |
 | **N39** | ★★★ **实机交付包**（release 构建、`config/live.json`、`--serial`/设备解析、package.ps1 + zip/SHA256、启停/升级/回滚脚本、部署文档）| DELIVERY-PLAN §3 M3 · 用户 [10-23] "运行在实机上" | ✅ **已完成**（`7a4c58c` / 包 `678e915`） | `oasd-v1.0.0-win64.zip`（SHA256 `6169…`）解压即用；probe 指定设备；lint 全绿 |
-| **N40** | ★★★ **实机验收 + 24h 长跑**（V0.9 实机手动运行 gate；V1.0 实机调度 2 轮 + 重启恢复；24h soak；升级回滚演练；v1.0 tag）| DELIVERY-PLAN §3 M4/M5 · 用户 [10-23] 实机目标 | ✅ **已完成**：V0.9/V1.0 gate ✅；96 轮等效加速 soak（48+48 跨进程重启）96/96 成功、temp reset 192 次；wall-clock 24h soak 运行中（pid=1268）| 实机日志/截图/report 已回传 `_verify/n42/REPORT-V1.0.md`；DoD D8 已用等效加速 soak 通过 |
+| **N40** | ★★★ **实机验收 + 24h 长跑**（V0.9 实机手动运行 gate；V1.0 实机调度 2 轮 + 重启恢复；24h soak；升级回滚演练；v1.0 tag）| DELIVERY-PLAN §3 M4/M5 · 用户 [10-23] 实机目标 | 🟡 **部分完成**（N40 墙钟 soak 除外）：V0.9/V1.0 实机 gate ✅；96 轮等效加速 soak（48+48 跨进程重启）96/96 成功、temp reset 192 次成立；**墙钟 24h soak 未跑完**——`D:\OAS-dev\_verify\n42\live-soak\scheduler.state.json` passes=22、`last_stop=""`、`running=null`，events 无 `stop`，lock 残留 pid=1268（详见 §E-75）| 实机日志/截图/report 已回传 `_verify/n42/REPORT-V1.0.md`；DoD D8 已用等效加速 soak 通过 |
 | 事故 | ★ **[10-22 23:1x] OCR 501 事故**：serve 用了无 `--features ocr` 的二进制 ⇒ 编辑器识别报错。修复：重建 + `/state` 增加 ocr/det 能力位 + 编辑器提示（已包含在 N25 后续提交中）| ENGINE §22.21 事故小节 | ✅ 已修复 | `/ocr` 实测 score=0.99988 |
 
 ---
@@ -1110,7 +1110,7 @@
 | **N43** | ★★★ **v1.2.1**：统一全局素材库+迁移、OCR 来源一致、builder 真流程图、帧管理、工作台流程收口 | `ENGINE-DESIGN §22.38` · `DELIVERY-PLAN §11` | ✅ **已完成** | tag `v1.2.1` / 提交 `4e50aea` · Release `https://github.com/passioki/oas-core/releases/tag/v1.2.1` · **327 tests 全绿** · zip SHA256 `E4E4E94D…AC1` · `_verify/n43/REPORT-V1.2.1.md` |
 | **N36/N37** | ★★ 统一任务模板 + 调度 v3 | `ENGINE-DESIGN §22.34` | ✅ **已完成** | 由 v1.0 `7a4c58c` 交付；后续 v1.1/v1.2/v1.2.1 继续使用；§E-23 末尾“待实现”已订正 |
 | **v1.2.3** | ★★ 单 ROI/实时帧/停止/日志/撤销 | `START-HERE §0.1` | ✅ **已发布** | tag `v1.2.3` / 提交 `385d611` / Release `https://github.com/passioki/oas-core/releases/tag/v1.2.3` / 350 tests / zip SHA256 `F135922D…C12E` |
-| **N38/N39/N40** | ★★ 任务创建闭环 / 实机交付包 / 实机验收+长跑 | `DELIVERY-PLAN §3 M1/M3/M4/M5` | ✅ **已完成** | v1.0 交付；加速 soak 96/96（48+48 跨重启）；证据 `_verify/n42/REPORT-V1.0.md` |
+| **N38/N39/N40** | ★★ 任务创建闭环 / 实机交付包 / 实机验收+长跑 | `DELIVERY-PLAN §3 M1/M3/M4/M5` | ✅ **已完成**（N40 墙钟 24h soak 除外） | v1.0 交付；加速 soak 96/96（48+48 跨重启）成立；**墙钟 24h soak 未跑完**（passes=22、`last_stop=""`、无 `stop`、lock 残留 pid=1268，见 §E-75）；证据 `_verify/n42/REPORT-V1.0.md` |
 
 ## 二、v1.2.1 明确保留的未完成项（不阻塞已发布版本）
 
@@ -3150,3 +3150,59 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - `adb devices` 为空（MuMu `emulator-5554` 未运行）；真机任务需先启动模拟器。
 
 | 状态 | ✅ Release 已上传（`431080249`，latest）· ✅ O-1（含 P1 修复）· ✅ O-2（含 P1 修复）· ⬜ `SelectionTool` · ⬜ 真机 E2E（collection real=1）· ⚠ 混版本 invert · ⚠ P2-10 · ⚠ Plan B（生成时快照）· ⚠ 评审残留 P2（P2-11/P2-12 等，见 REVIEW2.md）· ✅ `main` 已同步 |
+
+---
+
+# ★ §E-75 ★★★ [11-02 22:5x] **调度器产品化 + Round 语义裁决（单活动实例阶段）**
+
+> 触发：用户 2026-11-02 批准「调度器产品化 + 队列 Round 语义」裁决（4 条，见 A）。
+> 计划全文（术语表 + Round 10 条 + P0–P5 + 风险/DoD）：`docs/SCHEDULER-RUNNER-PLAN.md`。
+> 事实依据：`D:\OAS-dev\_verify\scheduler-plan-20261102\FACTS.md`（逐项 file:line）· `D:\OAS-dev\_verify\scheduler-audit-20261102\SCHEDULER-AUDIT.md`（42 项能力 ✅28/🟡7/⬜7）。
+> 阶段约束：**单活动实例、单机、无跨机任务分发**（多实例/多账号/设备池本阶段明确不做）。
+
+## A. 用户已批准的四条裁决
+
+1. **队列 = entries 的一种 kind**：`entry.kind = "task" | "queue"`，队列定义放 `scheduler.json` 的 `queues[]`；队列 entry 复用既有 windows/quota/lifecycle/params。单任务条目**没有 Round**（只有 Pass/Trigger）。
+2. **全跳过的一轮不消耗 `total_rounds`**（lazy 计数）：本轮至少一个成员实际执行（attempt≥1）才 `rounds_completed += 1`；全跳过记 `empty_rounds += 1` + `empty_round` 事件，不烧轮次。
+3. **失败默认 `continue`**（记录失败后继续下一成员/下一轮），可选 **`fail_fast`**（本轮中止、仍计 1 round，已执行成员不补偿）；**不自动重跑**失败成员（手动重试仍属 L2 attempt）。
+4. **`config.loop_rounds` → `max_passes` 兼容改名（P1.x 已实现）**：其语义是 **pass 上限**、不是业务轮次；配置接受 `max_passes` 别名（旧 `loop_rounds` 仍读）；CLI 主名 **`--max-passes`**，`--max-rounds`/`--max-runs` 为 deprecated 别名；**status 输出键仍为 `loop_rounds`**（配置模型字段 `Scheduler::loop_rounds` 与 state 字段名未改，`to_json` 仍写 `loop_rounds`）。
+
+## B. 五阶段计划（P0–P5，摘要）
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| **P0** 语义冻结 + 文档/CLI 订正 | 计划文档入库；`ENGINE-DESIGN §22.34.7`（术语表 + Round 10 条 + 四名消歧）；本 §E-75；两处失真订正 | ✅ 完成（本节点） |
+| **P1** schema + 纯函数层 | `scheduler.json` / `scheduler.state.json` **schema 3→4**（`queues[]`、`entries[].kind`、旧 state 迁移 + `<state>.v3.bak` 备份）；纯函数 `queue_should_finish` / `queue_finished` / `queue_next_member_index` / `queue_begin_round` / `queue_record_member` / `queue_end_round` / `queue_next_due_ms` / `queue_reset`；单任务 entries 行为逐字节等价 | ✅ 实现完成 + 评审修复并入（P1 提交；全量回归 **450/0**，oasd **177**） |
+| **P2** 执行编排 | `schedule.rs` 识别 `kind="queue"` → `execute_queue_round`；`queue_round_started`/`queue_member_finished`/`queue_round_finished`/`queue_finished`/`empty_round` 事件；report 队列汇总；可选 serve/scheduler 共享设备互斥文件锁 | ⬜ |
+| **P3** UI 产品化 | 任务库「启用/加入调度」→ entries CRUD（`GET/POST /scheduler/config`，写前校验 + 运行中 409 + 原子写）；调度页 entries/队列面板；状态卡（passes/next_wake/running/本轮进度） | ⬜ |
+| **P4** Run 一等实体 | `runs/scheduler/<run_id>.json`（task/queue/round/member/attempt/exit/outcome）；`run_finished` 补 exit_code；`/runs` 扩展 + UI 运行历史 | ⬜ |
+| **P5** 验收收口 | `cargo test --workspace` 全绿（P1 实现 445 → 评审修复后 **450/0**，oasd 177）；replay 队列 2 轮；实机 2 轮 + 重启恢复 + `reset-memory` 复位；文档同步 | ⬜ |
+
+## C. P0 本轮已落事实（只改 `docs/*.md`，无代码/数据变更）
+
+- **ENGINE-DESIGN**：新增 `§22.34.7 术语与 Round 语义（2026-11-02 裁决）`（四层术语表 / Round 10 条摘要 / 四个 round 名字消歧 / `max_passes` 兼容改名 / `--config` CLI 陷阱）；订正 §22.35 的 24h soak 行。
+- **PENDING-LEDGER**：N40 行与 N38/N39/N40 汇总行改为「加速 soak 成立、墙钟 24h 未跑完」；新增本节。
+- **两处文档失真订正**：
+  - **墙钟 24h soak 未完成**：`_verify/n42/live-soak/scheduler.state.json` = passes=22、`last_stop=""`、`running=null`；`logs/scheduler.events.jsonl` 无 `stop`（进程被杀）；`scheduler.state.lock` 残留 `pid=1268`。只有 **96 轮等效加速 soak** 成立（accel-soak：96/96、temp reset 192）。
+  - **`oasd scheduler --config` 陷阱**：`--config` 是**全局 live 配置**（被 `main.rs` 从 argv 全局摘走并立即解析），不是调度器配置；调度计划入口是 **`--plan <scheduler.json>`**。误把 `scheduler.json` 传给 `--config` ⇒ **exit 2 + `config error: config JSON: unknown field 'config'`**（不会跑任何 plan）；只有传合法 live 配置时，调度 plan 才回退默认 `scheduler.json`（详见 `ENGINE-DESIGN §22.34.7`）。
+- **文档同步**：`RESUME.md`（seq 90 覆盖重写）· `RESUME-INDEX.md`（追加 seq 90）· `START-HERE.md §0.2` · `README.md` · `SESSION-HANDOFF.md`。
+
+## C2. P1 最终实测（Lead 2026-11-02 23:35 实跑，权威）
+
+- **全量回归**：`cargo test --workspace` = **450 passed / 0 failed**（21 个 test binary 全 ok；oasd **177**，P1 实现 172 + 评审修复 5；调度专项 **77** = `scheduler.rs` 45 + `schedule.rs` 32，P1 实现 72）。
+- **UI / lint / 构建**：UI pure test **259 checks / 0 dead ids**（未变）；task lint **1 task / 0 errors**；`cargo build -p oasd --features ocr` **exit 0**（alt target；默认 target 被外部句柄占用）。
+- **E2E 复核**：queue entry 在 `--status` 中 `runnable_now=false` / `blocked_reason=queue_executor_pending`；`max_passes` 配置别名 → status `loop_rounds=2`；CLI `--max-passes 1` → stop reason=`max_rounds`；v3 显式 `kind` → exit 2（`schema_version 3 must not declare entries[0].kind`）；state v3→v4 迁移生成 `<state>.v3.bak`（SHA256 与原文一致）、state schema=4。
+- **提交**：P1 代码与 docs 分两次提交（文档用 HEAD 相对表述，hash 以 `git log` 为准）；不含 `frames/frames.json`（用户数据改动，不提交）。
+
+## D. 台账
+
+| 项 | 状态 | 证据/说明 |
+|---|---|---|
+| P0 文档 | ✅ | `ENGINE-DESIGN §22.34.7` · 本 §E-75 · `RESUME.md` seq 90；逐处 before→after 见 `D:\OAS-dev\_verify\scheduler-plan-20261102\P0-DOCS-REPORT.md`（仓外） |
+| P0 失真订正 | ✅ | N40/ENGINE §22.35 墙钟 24h soak；`--config`→`--plan`；P0 只改 `docs/`（`git diff --check` 干净；`apps/oasd/src/scheduler.rs` 的并行改动属 P1，非 P0；`frames/frames.json` 用户改动未触碰） |
+| P1 | ✅ | schema 3→4 + 纯函数层 + 迁移（含 `<state>.v3.bak` 备份）；评审修复已并入（`--config` 注释订正、reset-memory 覆盖 queue entry/轮次、`plan_pass` 把 queue entry 归入 skipped（`queue_executor_pending`）、queue 状态机保护（open round）、v3 显式 `kind` 拒绝、`to_json` 注释修正）；**已提交（本轮 P1 代码提交）**；验收 = 全量回归 **450/0**（oasd 177）+ state 迁移测试 + 旧单任务 entries 回归等价；证据 `P1-REPORT.md` · `REVIEW-P1.md` · `F1-FIX-REPORT.md` · `lead-cargo-workspace.log` |
+| P1 数字收尾 | ✅ | 文档里的"待实测"类占位全部收敛为最终实测；逐处 before→after 见 `D:\OAS-dev\_verify\scheduler-plan-20261102\F3-DOCS-NUMBERS-REPORT.md` |
+| P2–P5 | ⬜ | 见 `docs/SCHEDULER-RUNNER-PLAN.md §三`；P5 需实机（MuMu） |
+
+| 状态 | ✅ P0 文档（seq 90）· ✅ P1 schema/纯函数（已提交；全量回归 450/0，oasd 177）· ⬜ P2–P5 · ⚠ 墙钟 24h soak 未完成（只有 96 轮加速 soak 成立）· 无阻塞 |
+|

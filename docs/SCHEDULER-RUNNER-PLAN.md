@@ -1,6 +1,6 @@
 # 调度器产品化 + 队列轮次（Round）语义与计划（2026-11-02 · 单活动实例阶段）
 
-> 状态：**设计裁决已由 Lead 给出（待用户确认后执行）**；本阶段约束 = **单活动实例、单机、无跨机任务分发**。
+> 状态：**设计裁决已由用户批准（2026-11-02 22:5x）**；P0 文档已入库（`ENGINE-DESIGN §22.34.7` + `PENDING-LEDGER §E-75`）；**P1 ✅ 已提交（全量回归 450/0，oasd 177；实现 445 + 评审修复 +5；调度专项 77）**；P2–P5 未开始。本阶段约束 = **单活动实例、单机、无跨机任务分发**。
 > 事实依据：`_verify/scheduler-plan-20261102/FACTS.md`（逐项 file:line）· `_verify/scheduler-audit-20261102/SCHEDULER-AUDIT.md`（能力矩阵 42 项 ✅28/🟡7/⬜7）· `_verify/scheduler-audit-20261102/ORCH8-RESEARCH.md`（外接对比参考）。
 > 相关文档：`ENGINE-DESIGN.md §22.34/§22.35` · `PENDING-LEDGER.md §E-73/§E-74` · `RESUME.md`。
 
@@ -17,8 +17,8 @@
 | L3 | **Pass / Trigger（调度迭代与触发）** | 调度器守护进程 | 每 pass 每个可跑 entry 至多一次；`entry.quota` 管 day/week 次数 | `scheduler.state.json` | "每天最多 2 次" |
 | L4 | **Round（队列编排轮次）** | 队列（使用端） | 把队列成员按序走完一遍的编排尝试 | `scheduler.state.json`（新增 queue 字段） | "日常队列跑 2 轮" |
 
-**命名整顿（必须做）**：
-- `config.loop_rounds` / `--max-rounds` / `state.passes` = **pass 上限**，不是业务轮次。文档与 USAGE 统一称 "pass"；建议代码改名 `max_passes`（配置兼容读旧 `loop_rounds`，CLI 保留 `--max-rounds`/`--max-runs` 为 deprecated 别名）。
+**命名整顿（P1.x 已完成兼容改名）**：
+- `config.loop_rounds` / `--max-rounds` / `state.passes` = **pass 上限**，不是业务轮次。文档与 USAGE 统一称 "pass"；**P1.x 已实现兼容别名**：配置接受 `max_passes`（旧 `loop_rounds` 仍读），CLI 主名 **`--max-passes`**（`--max-rounds`/`--max-runs` 保留为 deprecated 别名），**status 输出键仍为 `loop_rounds`**（配置模型字段 `Scheduler::loop_rounds` 与 state 字段名未改，`to_json` 仍写 `loop_rounds`）。
 - `flow param('max_rounds')` = L1 的 loop 迭代次数；**只改文档/模板注释，不改现有任务数据**。
 - `queue --rounds` = L4 的 Round，保留。
 - `goal.battles.count` = L1，保留。
@@ -32,7 +32,7 @@
 5. **Round 计数（lazy）**：本轮**至少一个成员实际执行**（attempt≥1）才 `rounds_completed += 1`；全跳过的一轮记 `empty_rounds += 1`、**不消耗** `total_rounds`（防时段不对空烧轮次），同时记 `empty_round` 事件并设连续空轮告警阈值。
 6. **生命周期**：`total_rounds = 0` 表示无限（沿用现有 0=unlimited 约定）；`rounds_completed >= total_rounds` → 队列 `finished`（发 `queue_finished` 事件，之后不再被触发）；**不自动重置**，复位靠 reset-memory 或 UI 手动。
 7. **失败策略**：默认 `continue`（记录失败，继续下一个成员/下一轮）；可选 `fail_fast`（本轮中止，仍计 1 round，已执行成员不补偿）。**不做自动重跑失败成员**；"重试本轮失败成员"只作为 UI 手动动作（后续可选项），重试语义仍属 L2 attempt。
-8. **持久化与恢复**：queue 状态并入 `scheduler.state.json`（schema 3→4，旧 state 自动迁移、新字段 serde default）：`queues{qid:{total_rounds,rounds_completed,empty_rounds,current_round{index,member_index},member_results[],status}}`；每次状态变化原子写；重启后**从 current_round/member_index 继续**，本轮不重复计数（round 计数在轮开始时以 lazy 规则决定是否计入，member_results 追加）；reset-memory 清 queue 状态并复位 finished。
+8. **持久化与恢复**：queue 状态并入 `scheduler.state.json`（schema 3→4，旧 state 自动迁移并备份 `<state>.v3.bak`、新字段 serde default）：`queues{qid:{total_rounds,rounds_completed,empty_rounds,current_round{index,member_index},member_results[],finished}}`（代码字段是 **`finished: bool`**，不是 `status`；`status_json` 也只输出 `finished`）；每次状态变化原子写；重启后**从 current_round/member_index 继续**，本轮不重复计数（round 计数在轮开始时以 lazy 规则决定是否计入，member_results 追加）；reset-memory 清 queue 状态并复位 finished。
 9. **与 Goal 的边界**：调度/队列只回答"跑不跑、跑几次"，**不读取、不推导** `meta.goal`；任务内"打几场"由 flow 决定。禁止"队列 N 轮 × 每轮 M 场"自动相乘当配额——需要时由用户在队列 entry params 里显式传参。
 10. **单活动实例**：整机同时 1 个调度器守护进程（现有 `<state>.lock`，注意实际文件名是 `scheduler.state.lock`）+ 1 个执行中 run；队列成员串行；跨天时正在跑的一轮**继续跑完**，不中途切换。编辑器/serve 与守护进程的设备互斥目前只是文字规则（`packaging/README-DEPLOY.md:81`）→ 列为 P2 可选补强（共享 run 互斥文件锁）。
 
@@ -52,18 +52,20 @@
 - 本文件提交；`ENGINE-DESIGN §22.34` 补"术语表 + Round 语义"小节；`PENDING-LEDGER` 新增 §E-75（本计划 + 裁决）。
 - 修正已知文档/CLI 失真：
   - `PENDING-LEDGER:1069` / `ENGINE-DESIGN:1834`：24h 墙钟 soak **未跑完**（`live-soak` passes=22、stop=0、lock 残留 pid=1268）；只有 96 轮加速 soak 成立。
-  - `oasd scheduler --config X` 陷阱：`--config` 被 `main.rs:44-51` 全局摘走 → 静默跑默认 `scheduler.json`；`schedule.rs:92-99` USAGE 与 `start-scheduler.bat` 说明需改为 `--plan`。
+  - `oasd scheduler --config X` 失败模式（实测）：`--config` 是**全局 live 配置**（被 `main.rs` 在子命令分发前全局摘走并**立即解析**）；误把 `scheduler.json` 传给 `--config` ⇒ **exit 2** + `config error: config JSON: unknown field 'config', expected one of schema_version/serve/paths/ocr/device/scheduler`，**不会跑任何 plan**（旧文档的"静默回退"说法对 scheduler.json 不成立）。调度计划入口是 **`--plan <scheduler.json>`**；仅当 `--config` 传合法 live 配置时，调度 plan 才回退默认 `scheduler.json`（这才是"静默"的那一半）。`schedule.rs` USAGE 与 `start-scheduler.bat` 说明已改为 `--plan`。
   - 事件清单补 `scheduler_start` / `recovery_dropped`（`schedule.rs:52-56` 漂移）。
 - 验收：文档与代码一致；无代码行为变更。
 
-### P1 · schema 升级 + 纯函数层（M）
+### P1 · schema 升级 + 纯函数层（M，✅ 已提交）
+
 - `scheduler.json` schema 3→4：新增 `queues[]`、`entries[].kind`（缺省 `"task"`）、队列 entry 复用既有 windows/quota/lifecycle/params；`validate_scheduler_with_offset` 扩展校验（队列 id/成员存在/成员不得同时出现在 entries/rounds 上限/total_rounds 语义）。
-- `state.json` schema 3→4：新增 queue 字段；`load_state` 兼容读 3（迁移 + 提示）；`write_json_atomic` 不变。
-- 纯函数（`scheduler.rs`，天然可单测）：`plan_queue_round`、`record_queue_member_result`、`queue_should_finish`、`queue_next_due`；`next_wake` 增加 queue 相关候选。
+- `state.json` schema 3→4：新增 queue 字段；`load_state` 兼容读 3（迁移 + 备份 `<state>.v3.bak` + 提示）；`write_json_atomic` 不变。
+- 纯函数（`scheduler.rs`，天然可单测）：`queue_should_finish` / `queue_finished` / `queue_next_member_index` / `queue_begin_round` / `queue_record_member` / `queue_end_round` / `queue_next_due_ms` / `queue_reset`（以上为代码实际函数名）；`next_wake` 的 queue 候选 P1 未接（P2）。
 - 测试：lazy round 计数、全跳过不消耗、fail_fast、total_rounds=0/∞、跨天、重启恢复、reset 复位、非法配置零写（沿用 validate 语义）。
 - 不变量：现有单任务 entries 行为**逐字节等价**（回归测试保护）。
+- **状态（2026-11-02 23:3x，已提交）**：实现完成；评审修复已并入——`--config` 注释订正、state 迁移备份 `<state>.v3.bak`、reset-memory 覆盖 queue entry/轮次状态、`plan_pass` 把 queue entry 归入 skipped（reason `queue_executor_pending`）、queue 状态机保护（open round）、v3 显式 `kind` 拒绝、`to_json` 注释修正。测试（Lead 2026-11-02 23:35 实跑）：`cargo test --workspace` = **450 passed / 0 failed**（21 个 test binary 全 ok；oasd **177**，P1 172 + 评审修复 5；调度专项 **77** = `scheduler.rs` 45 + `schedule.rs` 32，P1 72）；UI 259 checks / 0 dead ids；task lint 1/0；`cargo build -p oasd --features ocr` exit 0（alt target）。E2E 复核：queue entry 在 `--status` 中 `runnable_now=false` / `blocked_reason=queue_executor_pending`；`max_passes` 配置别名 → `loop_rounds=2`；CLI `--max-passes 1` → stop reason=`max_rounds`；v3 显式 `kind` → exit 2；state v3→v4 生成 `<state>.v3.bak`（SHA256 一致）、schema=4。
 
-### P2 · 执行编排（M）
+### P2 · 执行编排（M，⬜ 未开始）
 - `schedule.rs` `execute_pass` 识别 `entry.kind="queue"` → `execute_queue_round`：按成员顺序 `run::execute`（复用 `run.rs:385` 唯一入口 + params/checkpoint）；成员 attempts/backoff 语义与 `queue.rs` 对齐（把"单成员执行"抽成小 helper，**2 处调用不强行抽整层**，注释说明 DRY 判据）。
 - 每轮写状态/事件：`queue_round_started`、`queue_member_finished`、`queue_round_finished`、`queue_finished`、`empty_round`；`scheduler-report.json` 增队列汇总。
 - 可选（本次可不做）：serve/scheduler 共享设备互斥文件锁（当前只有文字规则）。
@@ -78,7 +80,7 @@
 - `runs/scheduler/<run_id>.json`（run_id/task/queue/round/member/attempt/started/ended/outcome/exit/clicks）；`run_finished` 事件补 exit_code；`GET /runs` 扩展并兼容现有 `*.clicks.jsonl`；UI 运行历史 + 失败原因 + 点击聚合关联；`stats.rs` 纳入（注意其只认 `results[]`，需扩展）。
 
 ### P5 · 验收与收口（S）
-- 单元/集成：`cargo test --workspace` 426+ 全绿；replay 集成（队列 2 轮）；UI pure test。
+- 单元/集成：`cargo test --workspace` 全绿（含新增 round 语义测试；P1 实现为 445，评审修复后 **450/0**、oasd 177）；replay 集成（队列 2 轮）；UI pure test。
 - 实机（需启动 MuMu）：单任务 periodic quota 2/2 + temp 每轮 + **队列 2 轮** + 重启恢复；`reset-memory` 后复位验证。
 - 文档：RELEASE-NODE/RESUME/README/PENDING 更新；版本是否升 0.2.0 由用户定。
 

@@ -1816,6 +1816,56 @@ tasks/<任务名>/
 
 ★ **从当前到"实机可创建任务并运行"的完整交付路线**（历史，V1.0~V1.2.1 已交付）：见 `docs/archive/DELIVERY-PLAN.md`（M0~M5、DoD、部署/升级/风险）。
 
+#### 22.34.7 术语与 Round 语义（2026-11-02 裁决）
+
+> 编号说明：本节按时间追加在 §22.34 末尾；`22.34.6` 已由「实现计划（P0~P4）」占用。
+> 裁决：用户 2026-11-02 批准「调度器产品化 + 队列 Round 语义」；完整规则、边界反例与 P0–P5 计划见 `docs/SCHEDULER-RUNNER-PLAN.md`，台账 `PENDING-LEDGER.md §E-75`。本阶段约束 = **单活动实例、单机、无跨机任务分发**。
+
+**四层术语（不得混用）**
+
+| 层 | 裁决名称 | 归属 | 计数对象 | 持久化位置 |
+|---|---|---|---|---|
+| L1 | **Goal（完成条件）** | 任务定义 `meta.goal`（编辑器 / `POST /task/goal`） | 一次运行内的动作量（打几场/循环几次）；`count` 1..=999 | 无（单次运行内）；`goal` 运行期不被引擎读取，落地为 flow 的 `loop n=param('max_battles')` |
+| L2 | **Run / Attempt（执行与重试）** | 执行器 `run::execute` | 1 次任务执行；`attempt ≤ retry+1` | 事件 `run_finished`（现无 run id；P4 起落 `runs/scheduler/<run_id>.json`） |
+| L3 | **Pass / Trigger（调度迭代与触发）** | 调度器守护进程（`schedule.rs` 主循环） | 每 pass 每个可跑 entry 至多一次；`entry.quota` 管 day/week 次数 | `scheduler.state.json`（`passes`、`entries{}`） |
+| L4 | **Round（队列编排轮次）** | 队列：`entries[].kind="queue"`，队列定义在 `scheduler.json.queues[]` | 把队列成员按序走完一遍的编排尝试 | `scheduler.state.json` 的 `queues{}`（P1 起 schema 4：`total_rounds/rounds_completed/empty_rounds/current_round/member_results` + **`finished: bool`**；**无 `status` 字段**，`status_json` 也只输出 `finished`） |
+
+**Round 语义 10 条（摘要；全文以计划文档为准）**
+
+1. **归属**：Round 只存在于队列；单任务 entry 没有 Round（只有 Pass/Trigger）。
+2. **唯一触发器**：队列就是调度器 entries 的一种 kind；窗口/quota/冷却只作用在队列 entry 上，队列内部没有独立触发器（消除两级调度双跑）。
+3. **一轮定义**：队首→队尾，对每个 enabled 成员各做一次决策（执行或跳过）；成员串行，单个成员结果不影响本轮继续。
+4. **准入**：执行前只做轻量检查（任务存在、设备/实例可用、成员未禁用）；成员**不套**窗口/quota/冷却；同一任务不得同时出现在 entries 与队列成员中（校验期拒绝）。
+5. **Round 计数（lazy）**：本轮至少一个成员实际执行（attempt≥1）才 `rounds_completed += 1`；全跳过记 `empty_rounds += 1` 且**不消耗** `total_rounds`，同时记 `empty_round` 事件。
+6. **生命周期**：`total_rounds = 0` = 无限；`rounds_completed >= total_rounds` ⇒ 队列 `finished`（`queue_finished`，之后不再被触发）；不自动重置，复位靠 reset-memory 或 UI 手动。
+7. **失败策略**：默认 `continue`（记录失败后继续）；可选 `fail_fast`（本轮中止、仍计 1 round，已执行成员不补偿）；**不自动重跑**失败成员（手动重试仍属 L2 attempt）。
+8. **持久化与恢复**：queue 状态并入 `scheduler.state.json`（schema 3→4，旧 state 自动迁移 / 新字段 serde default）；每次状态变化原子写；重启后从 `current_round/member_index` 继续，本轮不重复计数。
+9. **与 Goal 的边界**：调度/队列只回答"跑不跑、跑几次"，**不读取、不推导** `meta.goal`；禁止"队列 N 轮 × 每轮 M 场"自动相乘当配额（需要就由用户在队列 entry `params` 里显式传参）。
+10. **单活动实例**：整机同时 1 个调度器守护进程（锁文件 `scheduler.state.lock`）+ 1 个执行中 run；队列成员串行；跨天时正在跑的一轮**跑完再切换**。
+
+**四个"轮次/次数"名字的消歧**
+
+| 名字 | 实际语义 | 层 | 范围与生命周期 |
+|---|---|---|---|
+| `config.max_passes`（兼容读旧 `loop_rounds`）/ `--max-passes`（别名 `--max-rounds`/`--max-runs`）/ `state.passes` | **pass 上限 / pass 计数**（守护进程 tick，空 pass 也算），**不是业务轮次** | L3 | `max_passes`/`--max-passes` 比较的是**进程内** `session_passes` ⇒ **重启归零**；`state.passes` 持久累计，不与上限比较；status 输出键仍为 `loop_rounds` |
+| `oasd queue --rounds N` | 队列把任务列表重复 N 遍（离线补跑 CLI） | L4 | 单次 CLI 进程；与调度器**零状态共享** |
+| `flow param('max_rounds')`（`loop n=…`） | flow 内循环迭代次数（任务内动作量） | L1 | 单次运行内 |
+| `param('max_battles')` / `goal.battles.count` | 一次运行打几场 | L1 | 单次运行内，不跨运行累计 |
+| `entry.quota{per,times}` | 每天/每周允许执行次数 | L3 | 按 day/week cycle 重置 |
+
+**命名整顿（P1.x 已实现兼容别名；内部/状态字段名未改）**
+
+- `max_passes` 兼容改名：配置**接受** `max_passes` 别名（旧 `loop_rounds` 仍读）；CLI 主名 **`--max-passes`**，`--max-rounds`/`--max-runs` 保留为 **deprecated 别名**；**status 输出键仍为 `loop_rounds`**，配置模型字段 `Scheduler::loop_rounds` 与 `state` 字段名未改（`to_json` 仍写 `loop_rounds`）。文档与 USAGE 统一称 **pass**。
+- `flow param('max_rounds')` **只改文档/模板注释，不改现有任务数据**；`goal.battles.count` 与 `queue --rounds` 保留原名。
+
+**CLI 入口陷阱（勿把 `--config` 当调度配置）**
+
+- 调度计划的唯一入口是 **`--plan <scheduler.json>`**；`--config` 是**全局 live 部署配置**（`config/live.json`），被 `main.rs` 在子命令分发前从 argv 摘走并**立即解析**。
+- **失败模式（实测）**：误把 `scheduler.json` 传给 `--config` ⇒ **exit 2** + `config error: config JSON: unknown field 'config', expected one of schema_version/serve/paths/ocr/device/scheduler`，**不会跑任何 plan**（旧文档的"静默回退"说法不成立）；只有 `--config` 传合法 live 配置时，调度 plan 才回退默认 `scheduler.json`。
+- `start-scheduler.bat` 同时传 `--plan` 与 `--config` 是**正当组合**（前者调度计划、后者部署配置），勿据此推断 `--config` 是调度参数。
+
+**状态（2026-11-02 23:3x）**：P0 文档已入库（本节 + `PENDING-LEDGER §E-75`）；**P1 ✅ 已提交（全量回归 450/0，oasd 177；实现 445 + 评审修复 +5；调度专项 77）**；P2–P5 未开始。P1 期间队列 entry 不执行：`plan_pass` 记为 `skipped`（reason `queue_executor_pending`），不计入 runnable，避免把 queue_id 当任务包跑。
+
 ---
 
 ### 22.35 ★★★ [10-23 03:1x] **V1.0 实机可用交付记录**（引擎提交 `7a4c58c`）
@@ -1831,7 +1881,7 @@ tasks/<任务名>/
 | Android 验收 | 解压 zip 后：编辑器创建「实机验收任务」→ 运行「探索」**Done/exit 0/14 clicks**；调度 2 轮：探索 Done（quota 2/2，第二轮 quota_exhausted）+ 个人突破 temp 每轮执行（首轮 Done 真实挑战、后续 resource 出口）|
 | 任务验收 | 探索：庭院→探索→真实战斗（胜利）→结算→回庭院，13 击 ≈31s；个人突破：庭院→结界突破→个人突破→挑战→真实战斗→结算→回庭院，15 击 ≈43s（本场战败，流程完整）|
 | 重置记忆 | CLI `scheduler reset-memory` + 编辑器调度面板「重置记忆」多选/全选/反选/全不选 + 清 checkpoint 勾选；实测 API `ok:true`、审计 `memory_reset` |
-| 24h soak | ✅ **等效加速 soak 通过**：replay 任务 `soak_probe`，48+48 轮跨进程重启（state passes 48→96），96/96 成功、0 失败、temp reset 192 次；另 wall-clock 实机 soak 已启动（pid=1268，`2026-10-23T03:11:45+08:00`，`loop_interval_s=900`；首轮探索 Done 31.1s、个人突破 resource 10.0s）持续观察 |
+| 24h soak | 🟡 **部分成立**：**等效加速 soak 通过**——replay 任务 `soak_probe`，48+48 轮跨进程重启（state passes 48→96），96/96 成功、0 失败、temp reset 192 次；**墙钟 24h soak 未跑完**——`D:\OAS-dev\_verify\n42\live-soak\scheduler.state.json` 只有 passes=22、`last_stop=""`、`running=null`，events 无 `stop`（进程被杀），lock 残留 pid=1268；对外只能宣称 96 轮加速 soak |
 | 已知限制 | 起始须庭院；探索假设第二十八章+游戏内自动挑战开启；个人突破阵容弱通常战败但流程完整、目标/票耗尽走 resource；个人突破需 OCR 模型；调度器无 SIGINT 处理/固定 UTC offset；启动未强制 lint；release 未签名；**APK=P4 未做** |\n| 发布 | GitHub 仓库 `https://github.com/passioki/oas-core` · Release `https://github.com/passioki/oas-core/releases/tag/v1.0.0`（tag `v1.0.0`，4 个资产）|
 
 

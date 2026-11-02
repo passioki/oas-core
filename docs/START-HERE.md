@@ -29,7 +29,7 @@
 |---|---|
 | 分支/HEAD | `dev` = `main` = `origin/dev` = `origin/main`（**已同步 origin**，2026-11-02 13:55 实测；最新 docs 提交 = HEAD；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`，其后为 docs 同步回填提交 `11d53a5`）；tag `v0.1.0` → `e8edbef`（**未移动**）；包构建 commit `42567c1` |
 | 引擎 | `oasd`（serve/run/queue/stats/scheduler）+ 编辑器 UI + 素材库；`oasd --version` = **0.1.0**（dev；旧 v1.x 为历史内部 tag） |
-| 测试 | `cargo test --workspace` = **426 passed / 0 failed**（oasd 153 / flow 57 / runtime 125 + 2 integration）；UI = **259 checks / 0 dead ids**；task lint = **1 task / 0 errors**（2026-11-02 13:35 最终实测；DSL E2E `linted=8 errors=5`；**v0.1.0 发布包仍是 393/203 时构建**） |
+| 测试 | 上一发布基线：`cargo test --workspace` = **426 passed / 0 failed**（oasd 153 / flow 57 / runtime 125 + 2 integration）；UI = **259 checks / 0 dead ids**；task lint = **1 task / 0 errors**（2026-11-02 13:35 实测；DSL E2E `linted=8 errors=5`；**v0.1.0 发布包仍是 393/203 时构建**）。当前（调度器 P1 已提交，Lead 2026-11-02 23:35 实跑）：`cargo test --workspace` = **450 passed / 0 failed**（21 个 test binary 全 ok；oasd **177**，P1 实现 172 + 评审修复 5；调度专项 **77** = `scheduler.rs` 45 + `schedule.rs` 32）；task lint **1/0**；`cargo build -p oasd --features ocr` exit 0（alt target） |
 | 发布 | ✅ **GitHub Release `v0.1.0` 已上传** `https://github.com/passioki/oas-core/releases/tag/v0.1.0`（id `431080249`，draft=false / prerelease=false，即 latest）；本地包 `dist/oasd-v0.1.0-win64.zip`，SHA256 `E6112A33…5F5687`（37,089,992 B）+ 旁文件 `.sha256` |
 | 当前任务 | 只有 `返回庭院`（flow 11 steps / meta 400 B）；`tasks/测试` 已删除并随 `cd0ac34` 提交 |
 | 数据 | 全局素材 **16 条 / 1 图**（15 `ocr_line` + 1 `template`）；帧 **28 个 / `current_id=20` / `next_id=41`**；唯一关系 = `Asset.positions` |
@@ -56,7 +56,7 @@
 | 恢复节点 | tag `v0.1.0`（2026-11-02，→ `e8edbef`，**未移动**）；**GitHub Release 已上传**（id `431080249`，latest）；`dev` = `main` = `origin/dev` = `origin/main`（已同步 origin，最新 docs 提交 = HEAD）；包构建 commit `42567c1`；本地包 SHA256 `E6112A33…5F5687` |
 | 当前分支 | `dev` = `main` = `origin/dev` = `origin/main`（**已同步 origin**，2026-11-02 13:55 实测；最新 docs 提交 = HEAD） |
 | 文档 | 已独立到 `oas-core/docs`；现行 = ENGINE-DESIGN + PENDING-LEDGER + RESUME + ASSET-DATA-MODEL + RELEASE-NODE；历史 7 份在 `docs/archive/` |
-| 当前计划 | **先读 `RESUME.md`（seq 89）+ `PENDING-LEDGER §E-74` + `RELEASE-NODE-2026-11-02.md`**：0.1.0 GitHub Release 已上传；**O-1/O-2 经两轮评审后在 dev `d1a7fcd` 收口**（426 tests / UI 259 / lint 1-0，**不在 v0.1.0 包内**）；剩 `SelectionTool` 与真机 collection E2E |
+| 当前计划 | **先读 `RESUME.md`（seq 91）+ `SCHEDULER-RUNNER-PLAN.md` + `PENDING-LEDGER §E-75`**：调度器产品化 + 队列 Round 语义（单活动实例）——**P0 ✅ 文档已落地 / P1 ✅ 已提交（全量回归 450/0，oasd 177）/ P2–P5 ⬜**；上一节点 0.1.0 Release 与 O-1/O-2 收口见 §E-74（426 tests / UI 259 / lint 1-0，**不在 v0.1.0 包内**）；剩 `SelectionTool` 与真机 collection E2E |
 | 截图 | 两阶段：点击立即抓取 → 弹窗预览 → 名称/分类 → 保存；无当前帧跳转 |
 | Enter | 输入框 Enter = 确认输入；弹窗 Enter = 保存截图 |
 | 实时操作 | 实时开启时画布单击/拖拽 = tap/swipe；实时暂停 = ROI 编辑 |
@@ -69,7 +69,7 @@
 | 信息架构 | **设计：素材页 = 唯一全局素材库 `assets/`；任务页 = 任务 flow 引用子集**。当前 `assets/` = 16 条 / 1 图；34 是 `§E-70` 已推翻的错误恢复；archive 2827 未导入（用户裁定素材可重建） |
 | 全局素材 | **当前 16 条 / 1 图**（15 `ocr_line` + 1 `template`；全部 `action_source=fixed`，有 `action_shape`/`positions`）；权威迁移归档 `archive/migration-20261101` = 2827 素材 / 2099 图 / 57 个任务目录，未导入当前 dev |
 | 帧安全 | 清空列表必须确认；清空前自动备份到 `frames/.backup/clear-<时间>/`（含 frames.json + PNG） |
-| 待办 | ✅ 0.1.0 GitHub Release 已上传、O-1 collection 真实点击、O-2 drag step shape 已收口（初版 `54c715b` + 评审修复 `d1a7fcd`）；剩 `SelectionTool` 抽取、真机 collection `real=1` E2E、混版本 invert 提醒、P2-10（保存 flow 校验）、Plan B（drag 运行时跟随识别）、活动页参考帧；帧-素材关系继续扩展；不引入 interface/ui-map |
+| 待办 | 🔄 **调度器产品化（当前主线）**：P0 ✅ 文档 → **P1 ✅ 已提交（全量回归 450/0，oasd 177）** → P2 执行编排 → P3 UI → P4 Run 实体 → P5 验收，计划 `SCHEDULER-RUNNER-PLAN.md`；⚠ 墙钟 24h soak 未跑完（只有 96 轮加速 soak 成立）。其余：`SelectionTool` 抽取、真机 collection `real=1` E2E、混版本 invert 提醒、P2-10（保存 flow 校验）、Plan B（drag 运行时跟随识别）、活动页参考帧；帧-素材关系继续扩展；不引入 interface/ui-map |
 | 关系证据 | `relations/observations.jsonl` append-only；`relations/annotations.json` 人工标注；图片页「录制关系」「标注关系」写入 |
 
 ---
@@ -93,7 +93,7 @@
 | ⓪ | `docs/RESUME.md` + `docs/RESUME-INDEX.md` | ★ **长任务/压缩后恢复的第一入口**（skill 强制 6）：当前断点、验收清单、下一步精确命令、证据索引 |
 | ① | `docs/SESSION-HANDOFF.md` | 当前在哪、下一步、最近提交、活跃坑 |
 | ② | `docs/ENGINE-DESIGN.md` **§22** | 引擎规格/进度/判据；§22.34 调度 v3 **已交付**（见 §22.35）；当前素材/关系模型看 §22.38/§22.39 |
-| ③ | `docs/PENDING-LEDGER.md` 的 **§E-66~§E-74** | 编辑器 UX/版本重置/任务素材架构/34 事故/静态审计/文档归档/Release+O-1/O-2 台账；§E-24~§E-26 为历史交付台账 |
+| ③ | `docs/PENDING-LEDGER.md` 的 **§E-66~§E-75** | 编辑器 UX/版本重置/任务素材架构/34 事故/静态审计/文档归档/Release+O-1/O-2/**调度器产品化 + Round 语义**台账；§E-24~§E-26 为历史交付台账 |
 | ④ | `docs/EDITOR-UX-PLAN.md` + `docs/ASSET-DATA-MODEL.md` + 旧仓路径/流程（仅在碰旧仓时） | 画布/选择/实时帧/区域有效性/排序/分类改版及**实现后状态（§15）**；全局素材/任务素材边界；旧仓 `D:\OAS-dev\backend\docs\LAYOUT.md` · `DEV-WORKFLOW.md`（冻结） |
 
 ## 1.3 用代码核实（不许信文档自述）
@@ -104,7 +104,7 @@ cd D:\OAS-dev\oas-core
 git log -1 --format="%h %ci %s"
 git status --porcelain
 
-REM ② 引擎测试（当前基线：426 passed / 0 failed）
+REM ② 引擎测试（上一发布基线 426 passed / 0 failed；当前 450/0、oasd 177；P1 实现 445 + 评审修复 5）
 cargo test --workspace
 
 REM ③ OCR 构建（serve/run 需要；不带 feature 会报 "this build has no OCR"）
@@ -275,7 +275,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 ```bat
 REM ---------- 构建/测试 ----------
 cd D:\OAS-dev\oas-core
-cargo test --workspace   REM 当前基线 426 passed
+cargo test --workspace   REM 上一发布基线 426；当前 450/0（oasd 177；P1 实现 445 + 评审修复 5）
 cargo build -p oasd --features ocr              REM serve/run 的 OCR 构建
 
 REM ---------- 编辑器 ----------
@@ -292,8 +292,11 @@ target\debug\oasd.exe serve --port 8787 --ui apps\oasd\ui --tasks-dir tasks --as
 REM ---------- 运行/调度 ----------
 target\debug\oasd.exe run --task tasks\返回庭院 --replay <recording-dir>
 target\debug\oasd.exe queue --tasks tasks\A,tasks\B --replay <dir> --report report.json
+target\debug\oasd.exe scheduler --plan scheduler.json --status
+REM   ⚠ 调度计划入口是 --plan <scheduler.json>；--config 是全局 live 配置（main.rs 全局摘走并立即解析），
+REM     误传 scheduler.json 会 exit 2（config error: unknown field 'config'），不会跑任何 plan
 target\debug\oasd.exe stats --runs runs --html runs\stats.html
-REM   ✅ schedule v3 已交付（V1.0）；设计/交付见 ENGINE §22.34/§22.35
+REM   ✅ schedule v3 已交付（V1.0）；设计/交付见 ENGINE §22.34/§22.35，Round 语义见 §22.34.7
 
 REM ---------- 旧仓（冻结，仅参考） ----------
 cd D:\OAS-dev\backend
@@ -312,9 +315,9 @@ run-tests.bat …                                  REM 旧仓守卫基线 171 pa
 | **编辑器 UX / 选择模型计划** | `EDITOR-UX-PLAN.md`（画布、位置详情、多边形/反选、实时帧、点测/拖测、区域有效性、素材排序、分类重命名） |
 | **当前任务（返回庭院）** | `../tasks/返回庭院/flow.json` · 全局素材 `../assets/` · 帧 `../frames/` |
 | 引擎规格/进度 | `ENGINE-DESIGN.md` §22 |
-| **调度 v3 + 统一任务模板（已交付 V1.0）** | `ENGINE-DESIGN.md` **§22.34 / §22.35** |
+| **调度 v3 + 统一任务模板（已交付 V1.0）** | `ENGINE-DESIGN.md` **§22.34 / §22.35**；Round 语义裁决见 **§22.34.7** + `SCHEDULER-RUNNER-PLAN.md` |
 | **发布/恢复节点（当前）** | `RELEASE-NODE-2026-11-02.md` · Release `https://github.com/passioki/oas-core/releases/tag/v0.1.0` |
 | 到实机可用的交付路线（历史，V1.0~V1.2.1 已交付） | `archive/DELIVERY-PLAN.md` |
 | 当前状态/下一步/坑 | `SESSION-HANDOFF.md` |
-| 台账/证据（当前） | `PENDING-LEDGER.md` §E-66~§E-74 |
+| 台账/证据（当前） | `PENDING-LEDGER.md` §E-66~§E-75 |
 | 旧仓历史（冻结，仍在旧仓）| `D:\OAS-dev\backend\docs\SESSION-HANDOFF.md` 历史段 · `D:\OAS-dev\frontend\docs\scheduler-architecture.md`（旧调度设计，参考）|

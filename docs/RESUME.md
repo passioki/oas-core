@@ -1,99 +1,89 @@
 # RESUME — 断点续接卡（session-memory 强制 6）
 
 > 规则：本文件每次断点覆盖重写；≤150 行；另一个会话只读本文件 + `RESUME-INDEX.md` 最新行
-> 就能继续。细节放 `ENGINE-DESIGN.md` / `ASSET-DATA-MODEL.md` / `RELEASE-NODE-2026-11-02.md`。
+> 就能继续。细节放 `ENGINE-DESIGN.md` / `SCHEDULER-RUNNER-PLAN.md` / `PENDING-LEDGER.md`。
 
 ```yaml
-task_id: oas-core-0.1.0-release-and-o1-o2
-checkpoint_seq: 89
-updated_at: 2026-11-02T13:50+08:00
-trigger: 终态（O-1/O-2 第二轮评审修复 d1a7fcd + docs 订正到最终事实）
-status: done
+task_id: oas-core-scheduler-productization
+checkpoint_seq: 91
+updated_at: 2026-11-02T23:3x+08:00
+trigger: 调度器产品化 + 队列 Round 语义：P0 文档 / P1 实现 + 评审修复并入并提交；全量回归 450/0（oasd 177）
+status: in_progress
 ```
 
 ## 0. 目标（一句话）
 
-把 0.1.0 恢复节点发布到 **GitHub Release**（tag `v0.1.0` 不移动），收口 **O-1 collection 真实点击** / **O-2 drag action shape**，并把两轮评审后的**最终事实**回填 `docs/`。
+把**调度器产品化 + 队列 Round 语义**（单活动实例阶段）按 P0→P5 落地：P0 语义冻结与文档订正、P1 schema 3→4 + 纯函数层（均已完成并提交，P1 评审修复已并入），随后 P2 执行编排、P3 UI 产品化、P4 Run 一等实体、P5 验收收口。
 
-## 1. 当前状态（2026-11-02 13:5x）
+计划与裁决全文：**`docs/SCHEDULER-RUNNER-PLAN.md`**（术语表 + Round 10 条 + P0–P5 + 风险/DoD）。
+
+## 1. 当前状态（2026-11-02 23:3x）
 
 | 项 | 值 |
 |---|---|
-| `dev` | `d1a7fcd`（`fix: address O-1/O-2 review findings (P1-1..P1-4, P2)`，6 files +1436/−225；父 `54c715b`）；docs 终态订正提交 `906bbed`（父 `d1a7fcd`），其后 docs 同步回填提交 `11d53a5`；最新 docs 提交 = HEAD，**均已推送 origin** |
-| `main` | = `dev` = `origin/dev` = `origin/main`（**已同步 origin**，2026-11-02 13:55 实测；最新 docs 提交 = HEAD；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`，其后为 docs 同步回填提交 `11d53a5`）；tag `v0.1.0` → `e8edbef`（未移动）；包构建 commit `42567c1` |
-| tag `v0.1.0` | annotated `cf123b8` → commit `e8edbef`（**未移动**）；发布包构建 commit `42567c1` |
-| GitHub Release | `https://github.com/passioki/oas-core/releases/tag/v0.1.0` · id `431080249` · draft=false / prerelease=false · repo latest |
-| 附件 | `oasd-v0.1.0-win64.zip`（asset `700544587`，37,089,992 B，digest `sha256:e6112a33…5f5687`）+ `.sha256`（asset `700545142`，89 B） |
-| 测试 | workspace **426 passed / 0 failed**；oasd **153** / flow **57** / runtime **125**（+2 integration = 127）；UI **259 checks / 0 dead ids**；lint **1 task / 0 errors**；`cargo build -p oasd --features ocr` exit 0（6 条既有 warning） |
-| DSL E2E | 临时 task lint：**linted=8 errors=5**——3 个合法变体（polygon+invert / 旧 flow 无 shape / rect+invert）ok；5 个非法变体（自交、坐标>1e6、负坐标 rect、point 上带 shape、点数<3）全部报错且路径精确 |
-| 发布包基线 | v0.1.0 包（`42567c1` 构建）内仍是 **393 tests / 203 UI checks**（历史事实，**不含 O-1/O-2**） |
-| 数据 | 全局素材 **16 条 / 1 图**（15 `ocr_line` + 1 `template`）；帧 **28 / current_id=20 / next_id=41**；任务仅 `返回庭院`（flow 11 steps / meta 400 B） |
-| 服务 | serve **8787**：最终构建已重建，Lead 在最终提交后以 `-SkipBuild` 重启（使用本版二进制） |
-| 工作区 | 本轮 docs 订正 8 份（终态，`906bbed`）与同步回填（`11d53a5`）均已提交；最新 docs 提交 = HEAD，仅 `docs/` |
-| 版本 | `0.1.0`（`oasd --version` = 0.1.0） |
+| 分支/HEAD | `dev` = 本轮 docs 提交（HEAD，父 = 本轮 P1 代码提交）+ 本轮 P1 代码提交（父 `131d6a7`）；hash 以 `git log` 为准（不写死）；未 tag/release |
+| 当前阶段 | **P0 ✅ 完成**（语义冻结 + 文档/CLI 订正）；**P1 ✅ 已提交**（P1 代码 + docs 两次提交；全量回归 450/0，oasd 177）；**P2–P5 ⬜ 未开始**（任务 status 仍 in_progress） |
+| 任务 ID | `oas-core-scheduler-productization`；checkpoint **91** |
+| 测试基线 | `cargo test --workspace` = **450 passed / 0 failed**（21 个 test binary 全 ok；oasd **177**；调度专项 **77** = `scheduler.rs` 45 + `schedule.rs` 32；P1 实现 445/172 → 评审修复 +5）；UI pure test **259 checks / 0 dead ids**（未变）；task lint **1 task / 0 errors**；`cargo build -p oasd --features ocr` exit 0（alt target，默认 target 被外部句柄占用）。上一发布基线 426/153（seq 89，见 `RELEASE-NODE-2026-11-02.md`） |
+| 上一节点 | seq 90：P0 文档（ENGINE §22.34.7 / PENDING §E-75 / RESUME 等）；seq 89：0.1.0 Release 上传 + O-1/O-2 两轮评审收口（`d1a7fcd`） |
+| 本阶段约束 | **单活动实例、单机、无跨机任务分发**（多实例/多账号/设备池明确不做） |
+| 工作区 | 已提交（本轮两次提交：P1 代码 + docs）；`frames/frames.json` 是**用户数据改动**，不在本轮提交内、不要动 |
 
-## 2. 验收清单（全部 ☑）
+## 2. 阶段看板（P0–P5）
 
-- ☑ **GitHub Release 上传**：URL/id、draft=false / prerelease=false、创建后即 latest — 证据 `D:\OAS-dev\_verify\release-v0.1.0\REPORT.md`。
-- ☑ **附件两份**均 `state=uploaded`：zip 37,089,992 B、旁文件 89 B — 同上。
-- ☑ **tag 未移动**：`cf123b8` → `e8edbef`，包 commit `42567c1` — `git rev-parse 'v0.1.0^{commit}'`。
-- ☑ **O-1**：`real` 严格取值 + 强制 live 帧 + 精确 shape 内采样 + 未过阈值 409；缺省 dry-run 响应/日志逐字不变 — `serve.rs` +13 tests。
-- ☑ **O-2**：drag `from`/`to` 可选 `shape`；解析校验齐全、plain rect 操作区保留、runtime polygon/invert 走 `ClickShape::sample`；旧 flow 不变 — flow +8 / runtime +12 tests。
-- ☑ **两轮评审**：第一轮 4 个 P1（P1-1 shape 采样 / P1-2 409 / P1-3 plain rect / P1-4 溢出）+ P2；修复提交 `d1a7fcd`，第二轮复核通过。
-- ☑ **最终回归**：workspace **426/0**、UI **259/0 dead ids**、lint **1/0**、OCR build exit 0、DSL E2E **8/5** — Lead 13:35 实跑。
-- ☑ **代码提交**：`54c715b`（初版 6 files +1413/−103）、`d1a7fcd`（评审修复 6 files +1436/−225）。
-- ☑ **docs 8 份订正到最终事实**（seq 89）：RELEASE-NODE / PENDING-LEDGER §E-74 / RESUME / RESUME-INDEX / START-HERE / EDITOR-UX-PLAN / README / SESSION-HANDOFF — 证据 `CORRECTIONS-REPORT.md`。
-- ☑ **docs push + main ff 同步 origin**（2026-11-02 13:55 实测；`dev` = `main` = `origin/dev` = `origin/main`，最新 docs 提交 = HEAD）。
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| **P0** | 语义冻结 + 文档/CLI 订正（ENGINE §22.34.7、§E-75、RESUME 等 7 份 + 计划文档状态行） | ✅ 完成（seq 90） |
+| **P1** | `scheduler.json`/`scheduler.state.json` schema 3→4（`queues[]`、`entries[].kind`、迁移 + `<state>.v3.bak` 备份）+ queue 纯函数 `queue_should_finish`/`queue_finished`/`queue_next_member_index`/`queue_begin_round`/`queue_record_member`/`queue_end_round`/`queue_next_due_ms`/`queue_reset` | ✅ 已提交（本轮 P1 代码提交；全量回归 450/0，oasd 177） |
+| **P2** | 执行编排 `execute_queue_round` + `queue_*`/`empty_round` 事件 + report 队列汇总（`next_wake` queue 候选一并在 P2 接入） | ⬜ 未开始 |
+| **P3** | UI 产品化（entries CRUD、队列面板、状态卡） | ⬜ 未开始 |
+| **P4** | Run 一等实体（`runs/scheduler/<run_id>.json` + `/runs` + UI 历史） | ⬜ 未开始 |
+| **P5** | 验收收口（全量回归、replay 队列 2 轮、实机 2 轮 + 重启恢复 + reset） | ⬜ 未开始（需 MuMu） |
 
-## 3. O-1 最终交付（collection 真实点击，dev `d1a7fcd`）
+## 3. 已批准的四条裁决（摘要）
 
-- `GET /task/asset/collection/match` 可选 `real`：**只接受 `0/1/true/false`**，其它值 **400**；缺省 / `real=0` 的 dry-run **响应与 editor 日志逐字不变**。
-- `real=1` **要求 live 帧**（frame_source 非 live → 400 `real click requires live frame`，提示 `live=1`）。
-- 匹配通过后在**当前帧精确 action shape** 内采样：shape 平移复用 `AssetSet::translate_click_shape`（成员 shape 优先、集合 shape 绝对兜底），采样复用 `ClickShape::sample`；polygon 在多边形内、invert 在排除区外；采样不可用/越界 → **400 loud**，绝不回退 bbox/整屏中心。无 exact shape 的 legacy 素材仍取历史 action_box 中心（在其 click_back 矩形内）。
-- `real=1` 且匹配未过阈值 → **409** + `clicked:false`（不点击）；成功 → **200** + `real/clicked/click_point/tap_ok`；adb 失败 → **500**。点击与 `POST /input/tap` 共用 `perform_live_tap`。
-- UI：真实模式（顶部「素材测试」开关）先 dry 预览 → 二次确认（提示「服务端将重新匹配并点击最新操作区（shape 内采样）；实际点击点以返回 click_point 为准」）→ 只发一次 `real=1`；409 显示「真实点击未执行：重新匹配未过阈值（未点击）」；演练模式明确「演练（未点击）」，绝不真实点击。
-- 代码：`serve.rs:1266`（路由）· `3303-3534`（handler）· `2137`（`perform_live_tap`）· `5923-6001`（exact shape/采样）· `6018`（error body）；`app.js:2941-3074`。
-- 遗留：**无真机 E2E**（MuMu 未运行；成功路径用 `#[cfg(test)]` tap seam 覆盖）。
+1. **队列 = entries 的一种 kind**（`entry.kind="task"|"queue"`，队列定义在 `scheduler.json.queues[]`）；单任务条目没有 Round。
+2. **全跳过的一轮不消耗 `total_rounds`**（lazy：至少一个成员 attempt≥1 才 `rounds_completed+1`；全跳过只记 `empty_rounds` + `empty_round` 事件）。
+3. **失败默认 `continue`**，可选 **`fail_fast`**（本轮中止仍计 1 round）；不自动重跑失败成员（手动重试属 L2 attempt）。
+4. **`config.loop_rounds` → `max_passes` 兼容改名（P1.x 已实现）**：配置接受 `max_passes` 别名（旧 `loop_rounds` 仍读）；CLI 主名 `--max-passes`，`--max-rounds`/`--max-runs` 为 deprecated 别名；**status 输出键仍为 `loop_rounds`**（配置模型字段 `Scheduler::loop_rounds` 与 state 字段名未改）。
 
-## 4. O-2 最终交付（drag action shape，dev `d1a7fcd`）
+Round 语义 10 条全文与边界反例见 `docs/SCHEDULER-RUNNER-PLAN.md §二`；ENGINE 摘要见 `§22.34.7`。
 
-- DSL：drag `from`/`to` 的 **region** target 可选 `shape`：`{"kind":"rect"|"polygon","roi":[x,y,w,h],"points":[[x,y],…],"invert":bool}`；`shape:null` = 缺省；旧 flow 无 shape 行为不变。
-- 解析校验（`FlowError` path 精确到 `steps[i].args.from.shape...`）：坐标 0..=1e6 且 i32 可表示；rect x/y≥0、x+w/y+h checked；顶点 3..=256、**拒绝自交**、i128 鞋带面积；`shape` 只允许 region target（point/ocr_text 上出现 → FlowError）。
-- runtime：polygon/invert 用与点击同源的 `ClickShape::sample`（失败 loud，不回退）；bbox/contains i64 安全；退化/帧外几何 loud；direction/旧 distance 语义不变；`margin` 仅 **rect 非反选**保留（polygon/invert 忽略并记 `margin=ignored`）；`to=None` 的 distance 终点只受帧约束（注释/测试已明确）。
-- UI：`generateRegionDrag` 现在 **plain rect 操作区也保留**（`from.roi` = action shape bbox；仅 polygon/invert 内联 `shape`）；`testAssetDrag` 生成时快照当帧 shape；`builder.js` 改 roi 时保留 `from.shape`，并区分「polygon/invert 按 shape 采样、margin 忽略」与「rect 非反选以 roi 为准」。
-- 代码：`oas-flow/src/lib.rs:626-654`（类型）· `1136-1431`（解析）· `2604+`（测试）；`oas-runtime/src/lib.rs:252-310`（DragEndpoint）· `1733-1821`（target/sampler）· `3035-3155`（执行/detail）；`app.js:911-925` · `builder.js:1030-1060`。
-- 测试：flow 49→**57**（+8）、runtime 113→**125**（+12，含评审 4 个溢出/非法复现样例；另 2 个 integration）。
-- 风险：**混版本**——旧 runtime 静默忽略 `shape`、按 bbox 采样，invert 会点到排除区 ⇒ invert 拖动需本版 runtime；Plan B（asset 引用 + 运行时跟随识别）未做（生成时快照）；P2-10「保存 flow 不校验解析错误」本轮明确不做。
+## 4. 本轮已落文档（P0 + F2 订正 + F3 数字收尾）
 
-## 5. 已知开口（不阻塞本节点）
+- `ENGINE-DESIGN.md`：新增 **§22.34.7 术语与 Round 语义（2026-11-02 裁决）**（四层术语表 / 10 条摘要 / 四个 round 名字消歧 / `max_passes` 兼容改名 / `--config` 陷阱）；订正 §22.35 的 24h soak 行（加速 soak 成立、**墙钟 24h 未跑完**）。
+- `PENDING-LEDGER.md`：N40 行 + N38/N39/N40 汇总行订正；新增 **§E-75**（4 裁决 / P0–P5 / 台账）；P1 状态与评审修复项已同步。
+- `RESUME.md`（本文件，seq 91 覆盖重写）· `RESUME-INDEX.md`（追加 seq 91）· `START-HERE.md §0.2` · `README.md` · `SESSION-HANDOFF.md` · `SCHEDULER-RUNNER-PLAN.md`（状态行 / P1 段 / 契约命名）。
 
-1. `SelectionTool` 未抽出（识别掩膜/操作区两套几何按语义保留）。
-2. E2E 36/36 证据停在 `4d5759f`；不含 23:39 点击分布/反选/真实开关与 00:02 RO 修复。
-3. collection `real=1` **真机 E2E 未做**（MuMu 未运行、`adb devices` 为空）。
-4. **混版本**：旧 runtime 忽略 drag `shape`（invert 会点到排除区）；invert 拖动需本版 runtime。
-5. **P2-10**：保存 flow 不校验解析错误 — 本轮明确不做。
-6. 模板移动/多位置仍是生成时 shape 快照；Plan B 未做。
-7. 活动页参考帧未补齐。
-8. v0.1.0 发布包（`42567c1`）**不含 O-1/O-2**。
-9. 第二轮评审残留 P2（不阻断）：**P2-12** 显式闭合环/重复顶点 polygon 会被自交检查误判；**P2-11** 极端 `distance`（i32::MAX）在 debug 可溢出 panic（既有、非 shape 路径）；P2-13~16 注释/UI note 措辞与少量 `as i32` 截断；UI 接线测试仍以静态断言为主 — 详见 `D:\OAS-dev\_verify\final-review-20261102\REVIEW2.md`。
+两处事实订正：
+- **墙钟 24h soak 未跑完**：`D:\OAS-dev\_verify\n42\live-soak\scheduler.state.json` = passes=22、`last_stop=""`、`running=null`；events 无 `stop`；lock 残留 pid=1268。只有 96 轮加速 soak（96/96、temp reset 192）成立。
+- **`oasd scheduler --config` 失败模式**：`--config` 是全局 live 配置（被 `main.rs` 在分发前摘走并立即解析）；误把 `scheduler.json` 传给 `--config` ⇒ **exit 2 + `config error: config JSON: unknown field 'config'`**，不会跑任何 plan；调度计划入口是 **`--plan <scheduler.json>`**；只有传合法 live 配置时 plan 才回退默认 `scheduler.json`。
 
-## 6. 下一步精确动作
+F2 文档订正（2026-11-02 23:1x，只改 `docs/*.md`）：`--config` 失败模式（exit 2 · unknown field）、queue 状态字段 `finished: bool`（无 `status` 字段）、纯函数名对齐代码、`max_passes` 兼容改名状态、P1 评审修复项、测试数字（P1 实现 445；评审修复后实测 450/0，oasd 177）。
 
-1. ✅ **已执行（2026-11-02 13:55）**：docs 提交 `906bbed` → `git push origin dev` → `git checkout main && git merge --ff-only dev` → `git push origin main`；其后 docs 同步回填提交 `11d53a5` 同样已推送 dev 与 main（最新 docs 提交 = HEAD，`dev` = `main` = `origin/dev` = `origin/main`）；**不移动 tag `v0.1.0`**。
-2. 真机：启动 MuMu（`emulator-5554`）→ 对一条 collection 做 `real=1` E2E；可选真实 UI 手势复验。
-3. 结构债：`SelectionTool` 抽取（抽取后须 ≥3 处调用，避免过度抽象）；P2-10 视用户裁定。
+F3 数字收尾（2026-11-02 23:3x，只改 `docs/*.md`）：把"待实测"类占位全部收敛为 Lead 最终实测（2026-11-02 23:35）。全量 `cargo test --workspace` = **450 passed / 0 failed**（21 个 test binary 全 ok；oasd **177**，P1 172 + 评审修复 5；调度专项 **77** = `scheduler.rs` 45 + `schedule.rs` 32，P1 72）；UI pure test **259 checks / 0 dead ids**（未变）；task lint **1 task / 0 errors**；`cargo build -p oasd --features ocr` **exit 0**（alt target，默认 target 被外部句柄占用）。E2E 复核：queue entry 在 `--status` 中 `runnable_now=false` / `blocked_reason=queue_executor_pending`；`max_passes` 配置别名 → status `loop_rounds=2`；CLI `--max-passes 1` → stop reason=`max_rounds`；v3 显式 `kind` → exit 2（`schema_version 3 must not declare entries[0].kind`）；state v3→v4 迁移生成 `<state>.v3.bak`（SHA256 与原文一致）、state schema=4。P1 状态行收尾为 ✅（评审修复已并入并提交）。
 
-## 7. 最终验证（Lead 2026-11-02 13:35 实跑）
+## 5. 下一步精确动作
 
-```text
-cargo test --workspace = 426 passed / 0 failed
-cargo test -p oasd = 153 · oas-flow = 57 · oas-runtime = 125 (+2 integration = 127)
-node ui_pure_test.js = 259 checks / 0 dead ids
-oasd task lint --tasks-dir tasks --all = 1 task / 0 errors
-cargo build -p oasd --features ocr = exit 0（6 条既有 warning）
-DSL E2E（临时 task lint）= linted=8 errors=5（3 合法 ok / 5 非法精确报错）
-serve 8787 = 最终构建（Lead 以 -SkipBuild 重启）
-```
+1. ✅ **本轮收口已完成（2026-11-02 23:35）**：`cargo test --workspace` = **450 passed / 0 failed**（oasd 177、调度专项 77；允许数增加，不允许 existing 变红）；审 diff 完成；已分两次提交（P1 代码 + docs；**不 tag、不 release**；排除 `frames/frames.json`）。
+2. **P2 执行编排**：`schedule.rs` 把 `kind="queue"` 接到 `execute_queue_round`；每轮写 `queue_round_started`/`queue_member_finished`/`queue_round_finished`/`queue_finished`/`empty_round`；`scheduler-report.json` 加队列汇总；`next_wake` 接 `queue_next_due_ms` 候选；单成员执行抽小 helper（2 处调用，注释写 DRY 判据）。
+3. **P3 → P5**：按计划文档 §三 推进；P5 实机需先启动 MuMu `emulator-5554`。
+
+## 6. 已知开口 / 阻塞
+
+- **阻塞：无**。
+- 已知开口（不阻塞）：P2–P5 未开始；墙钟 24h soak 未完成（历史项）；实机验收需 MuMu（当前 `adb devices` 为空）；P1 的 `next_wake` queue 候选与队列执行编排留 P2。
+
+## 7. 证据
+
+- 计划/裁决：`docs/SCHEDULER-RUNNER-PLAN.md`；台账 `docs/PENDING-LEDGER.md §E-75`。
+- 事实提取：`D:\OAS-dev\_verify\scheduler-plan-20261102\FACTS.md`（逐项 file:line）。
+- P0 文档报告：`D:\OAS-dev\_verify\scheduler-plan-20261102\P0-DOCS-REPORT.md`。
+- P1 报告 / 复核：`D:\OAS-dev\_verify\scheduler-plan-20261102\P1-REPORT.md` · `REVIEW-P1.md`。
+- F2 文档订正报告：`D:\OAS-dev\_verify\scheduler-plan-20261102\F2-DOCS-FIX-REPORT.md`（逐处 before→after + 残留检查）。
+- F3 数字收尾报告：`D:\OAS-dev\_verify\scheduler-plan-20261102\F3-DOCS-NUMBERS-REPORT.md`（逐处 before→after + 残留检查）；Lead 最终实测日志 `lead-cargo-workspace.log`（450/0，21 binary）· `lead-ui-pure.log` · `lead-task-lint.log` · `lead-build-alt2.log`；E2E 复核证据 `e2e/`。
+- 调度审计：`D:\OAS-dev\_verify\scheduler-audit-20261102\SCHEDULER-AUDIT.md`（42 项能力 ✅28/🟡7/⬜7）。
+- 历史长跑：`D:\OAS-dev\_verify\n42\accel-soak\`（96/96 成立）· `live-soak\`（21 轮即断，未完成）。
 
 ## 8. 环境（E11~E14，详见 START-HERE §3）
 
@@ -101,15 +91,10 @@ serve 8787 = 最终构建（Lead 以 -SkipBuild 重启）
 - `node` 不在 PATH；bundled `C:\Users\passioki\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe`（v24.21.0）。
 - PS 5.1 重定向日志是 **UTF-16LE**（`-Encoding Unicode` 或转 UTF-8）。
 - `adb devices` 为空（MuMu `emulator-5554` 未运行）。
+- 中文文件用 `read`/`edit`/`write` 工具，不要用 PowerShell 重写 UTF-8。
 
-## 9. 证据
+## 9. 本节点（seq 91）与上一节点（seq 90，P0 文档）
 
-- 发布：`D:\OAS-dev\_verify\release-v0.1.0\REPORT.md`。
-- 文档订正：`D:\OAS-dev\_verify\docs-backfill-20261102\CORRECTIONS-REPORT.md`（上一轮 `DOCS-REPORT.md` 为中间态）。
-- 节点索引：`docs/RELEASE-NODE-2026-11-02.md`；台账：`docs/PENDING-LEDGER.md §E-74`。
-- 历史审计：`_verify/audit-20261101/{A-session-git,B-runtime,C-ui,D-e2e,E-acceptance}.md`。
-- 备份：`D:\OAS-dev\_backups\oas-core-20261102-005826\`。
+本节点 seq 91：P1 schema 4 + queue 纯函数 + 评审修复（F1）+ 文档订正（F2）+ 数字收尾（F3），已提交；最终实测见 §1「测试基线」，评审修复项见 `REVIEW-P1.md` 与 `PENDING-LEDGER §E-75`。
 
-## 10. 阻塞
-
-- **无**（push 与 main 同步已完成）。真机 E2E 待 MuMu 启动。
+上一节点 P0 语义冻结 + 文档/CLI 订正已落：`ENGINE-DESIGN §22.34.7`（四层术语 / Round 10 条 / 四名消歧 / `--config` 陷阱）、`PENDING-LEDGER §E-75`（4 裁决 / P0–P5 / 台账）、`RESUME` seq 90、`RESUME-INDEX` 追加 seq 90、`START-HERE §0.2`、`README`、`SESSION-HANDOFF`、`SCHEDULER-RUNNER-PLAN` 状态行；订正「墙钟 24h soak 未跑完」。更早节点 seq 89 = 0.1.0 Release 上传 + O-1/O-2 收口（`d1a7fcd`），细节见 `docs/RELEASE-NODE-2026-11-02.md` 与 `PENDING-LEDGER.md §E-74`。
