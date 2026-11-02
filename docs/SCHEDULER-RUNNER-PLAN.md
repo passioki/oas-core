@@ -1,6 +1,6 @@
 # 调度器产品化 + 队列轮次（Round）语义与计划（2026-11-02 · 单活动实例阶段）
 
-> 状态：**设计裁决已由用户批准（2026-11-02 22:5x）**；P0 文档已入库（`ENGINE-DESIGN §22.34.7` + `PENDING-LEDGER §E-75`）；P1 ✅ 已提交（450/0，oasd 177）；**P2 ✅ 本轮提交（全量回归 474/0，oasd 201；调度专项 101）**；**P3–P5 ⬜ 未开始**。本阶段约束 = **单活动实例、单机、无跨机任务分发**。
+> 状态：**设计裁决已由用户批准（2026-11-02 22:5x）**；P0 文档已入库（`ENGINE-DESIGN §22.34.7` + `PENDING-LEDGER §E-75`）；P1 ✅ 已提交（450/0，oasd 177）；P2 ✅ 已提交（474/0，oasd 201；调度专项 101）；**P3 ✅ 本轮提交（全量回归 488/0，oasd 215；UI 453 checks / 205 ids / 0 dead）**；**P4–P5 ⬜ 未开始**。本阶段约束 = **单活动实例、单机、无跨机任务分发**。
 > 事实依据：`_verify/scheduler-plan-20261102/FACTS.md`（逐项 file:line）· `_verify/scheduler-audit-20261102/SCHEDULER-AUDIT.md`（能力矩阵 42 项 ✅28/🟡7/⬜7）· `_verify/scheduler-audit-20261102/ORCH8-RESEARCH.md`（外接对比参考）。
 > 相关文档：`ENGINE-DESIGN.md §22.34/§22.35` · `PENDING-LEDGER.md §E-73/§E-74` · `RESUME.md`。
 
@@ -78,20 +78,28 @@
 - **report/status**：`SchedulerReport.queues[]`（additive，schema 4）＋ status entry 的 `queue` 进度对象（rounds/empty/finished/current/last_round）；旧键保留。
 - **最终测试（Lead 2026-11-03 01:3x 权威）**：`cargo test --workspace` = **474 passed / 0 failed**（21 个 test binary 全 ok）、`cargo test -p oasd` = **201**；调度专项 **101**（`scheduler.rs` 49 + `schedule.rs` 52，P2 实现 91 → 评审修复 +10）；UI 259 checks / 0 dead ids；task lint 1/0；OCR build（alt target）exit 0；warning 基线无新增。
 - **E2E 冒烟（子进程 + Lead 独立复核）**：replay 任务 2 成员串行跑 2 轮 → rounds=2、finished=true、`queue_finished` 事件、report/status 形状正确；崩溃恢复（预置 open round `member_index=1`）只跑剩余成员、rounds 只计 1；pending 补记只一次；重复 queue entry exit 2；`queue_between` 与 `next_due` 一致。
-- **遗留**（P3 起处理）：① 补记使用恢复时 cycle（跨逻辑日会把该轮记到当天）；② 补记不计本次 session `report.runs`；③ `member_results` 200 环假设本轮成员 ≤200；④ end→record 已由 pending 状态机修复，但**成员执行中外部杀进程**仍按 checkpoint/resume 重跑（成员级 exactly-once 副作用不保证，属轮级承诺之外）；⑤ P3：serve 按 kind 过滤（`serve.rs:6449-6469`）、`prune_scheduler_task` 不清队列 members、UI 编辑 entries；P4：Run 一等实体；P5：实机验收（需 MuMu）。可选的 serve/scheduler 共享设备互斥文件锁本轮未做（仍为文字规则）。
+- **遗留**（P3 起处理）：① 补记使用恢复时 cycle（跨逻辑日会把该轮记到当天）；② 补记不计本次 session `report.runs`；③ `member_results` 200 环假设本轮成员 ≤200；④ end→record 已由 pending 状态机修复，但**成员执行中外部杀进程**仍按 checkpoint/resume 重跑（成员级 exactly-once 副作用不保证，属轮级承诺之外）；⑤ P3 已处理：serve 按 kind 过滤、`prune_scheduler_task` kind-aware + 队列成员守卫、UI 编辑 entries/队列/状态卡（见 P3 段）；P4：Run 一等实体；P5：实机验收（需 MuMu）。可选的 serve/scheduler 共享设备互斥文件锁本轮未做（仍为文字规则）。
 
 
-### P3 · UI 产品化（M–L，前端为主，⬜ 未开始）
-- 任务库页：任务「启用 / 加入调度」→ 创建/更新 entries（`GET/POST /scheduler/config`，写前 `validate_scheduler_with_offset` + 运行中拒绝（`lock_held_by_live_process`）+ 原子写）。
-- 调度页：entries 编辑（启用/禁用、窗口、quota、params、排序）；队列面板（新建/成员选择/排序/`total_rounds`/失败策略）；状态卡（passes、next_wake、running、queue 本轮进度/成员结果/失败原因）。
-- 启停仍用 `start-scheduler.bat`/`stop-scheduler.bat`（单实例锁保证唯一）；**serve 托管子进程本轮不做**（生命周期/日志收益低）。
-- UI pure test 扩展。
+### P3 · UI 产品化（M–L，前端为主，✅ 本轮提交）
 
-### P4 · Run 一等实体 + 可见性（M）
+- **后端配置 API（`serve.rs`）**：新增 `GET /scheduler/config`（200 返回 `ok/path/exists/schema_version/config/running/state_path`；文件缺失 `exists:false`/`config:null`；坏 JSON 400；只读、不拿锁）与 `POST /scheduler/config`（body `{config:<完整 scheduler.json>}`；先 `validate_scheduler_with_offset` 后写；运行中 409；写前 `.bak` 备份 + 原子写）。
+- **未知字段语义（最终）**：提交 **v4** → 只校验不规范化，磁盘 = 提交对象（pretty + 换行），未知顶层/entry/queue 字段保留、GET 可读回；提交 **v3** → 仍用 `Scheduler::to_json()` 规范化升级 v4（该路径未知字段按迁移语义丢弃）；GET 始终返回磁盘原始对象；GET 顶层 `schema_version` 恒 4。
+- **status kind-aware**：task entry 按任务目录存在过滤、queue entry 按 `queues[]` 存在过滤；`running`/`task_choices` 同步（queue 成员即使无 bundle 也保留在 `task_choices`）。
+- **`/task/delete` 队列成员守卫**：被删任务是队列成员 → 400 拒绝（错误含 `queue_id`），目录/资产/配置零改动；prune 改 kind-aware（只删 `kind=task` 且 task 命中的 entries，queue entry/queues 不动）+ 原子写 + 失败明确 500（不再静默吞错）。
+- **任务库**：每任务「调度设置…」——无条目→加入调度（默认 entry：`kind=task`、enabled、periodic、全天、day×1、继承 `config.defaults`）；多条→WARN 只编辑第一条；已是队列成员→拒绝（防双跑）。
+- **调度页可编辑**：状态卡（mode/passes/next_wake/running 锁/quota/config 状态）、entries 列表（启用/禁用、编辑、删除、上移/下移=执行顺序）、队列面板（新建/编辑/删除、任务池多选 + 有序成员、`total_rounds=0` 无限、`on_failure`、`between_ms`）、「+ 添加条目」、折叠**高级 JSON**（本地 parse 校验后保存）。
+- **保存路径**：先 GET 最新配置 → 与加载快照比较（外部修改则中止并提示先重新加载）→ POST；409 提示调度器运行中；400 显示服务端 errors；状态读取失败时状态卡显示「调度器状态读取失败：<err>」且各字段显示 `—`（不误报正常）。
+- **默认值/兼容**：新建空配置默认 `mode:"loop"`、`loop_interval_s:60`（其余安全默认）；工作台调度面板保持只读 + 「打开调度页 →」；纯函数 **75** 个（`PURE_FUNCTIONS`），UI 检查 **453**。
+- **最终测试（Lead 2026-11-03 02:2x 权威）**：`cargo test --workspace` = **488 passed / 0 failed**（21 binaries）、`cargo test -p oasd` = **215**、serve 测试 **64**（P3A 50→61，F3P +3）；调度专项 **101** 不变；UI pure test **453 checks / 205 referenced ids / 0 dead ids**；task lint **1/0**；OCR build（alt target）exit 0、warning 与基线一致；`node --check app.js/ui_pure_test.js` exit 0。
+- **E2E 复核（Lead）**：alt 二进制 + 真实 serve 8790 + 绝对路径 live 配置——GET 缺失 → POST v4（1017B）→ GET 读回（queue entry + 中文成员名完好）→ 非法 400 且文件不变 → 锁模拟 409 `scheduler is running` → status `entries=qe:queue`、plan runnable、`task_choices=返回庭院` → `GET /` 含新 DOM id、app.js 含 `/scheduler/config`；仓库根 `scheduler.json` 未被动。
+- **遗留**：① GET 顶层 `schema_version` 恒 4、UI 强制 4（未来 >4 文档保存会被降级，P2-1）；② 高级 JSON 保存路径没有 GET-first 快照守卫（P2-6；仅工具栏按钮有）；③ 坏 `scheduler.json` 时删除前的队列成员守卫无法判定（prune 会 500 明确失败）；④ `.bak` 单份（覆盖式）；无真实浏览器 E2E（仅 API E2E + UI pure tests）；状态读取失败路径仅单测覆盖；⑤ 同任务多条 task entry 仍允许（既定语义；一个 pass 可能跑同一任务两次，UI/文档需提示，后续再议）；⑥ `utc_offset_min` 缺失时 POST 校验按 480，可能覆盖 `--tz-offset-min`（P2-12）；⑦ 无 CSS 新 class（沿用现有样式）；`scheduleTasksCache` 可能过期（P2）；⑧ 无浏览器/真机 E2E；P4 Run 一等实体、P5 实机验收仍待做。
+
+### P4 · Run 一等实体 + 可见性（M，⬜ 未开始）
 - `runs/scheduler/<run_id>.json`（run_id/task/queue/round/member/attempt/started/ended/outcome/exit/clicks）；`run_finished` 事件补 exit_code；`GET /runs` 扩展并兼容现有 `*.clicks.jsonl`；UI 运行历史 + 失败原因 + 点击聚合关联；`stats.rs` 纳入（注意其只认 `results[]`，需扩展）。
 
-### P5 · 验收与收口（S）
-- 单元/集成：`cargo test --workspace` 全绿（含新增 round 语义测试；P1 实现 445 → 评审修复后 **450/0**、oasd 177；P2 后 **474/0**、oasd **201**、调度专项 101）；replay 集成（队列 2 轮）；UI pure test。
+### P5 · 验收与收口（S，⬜ 未开始）
+- 单元/集成：`cargo test --workspace` 全绿（含新增 round 语义测试；P1 实现 445 → 评审修复后 **450/0**、oasd 177；P2 后 **474/0**、oasd **201**；P3 后 **488/0**、oasd **215**、UI **453**；调度专项 101 不变）；replay 集成（队列 2 轮）；UI pure test。
 - 实机（需启动 MuMu）：单任务 periodic quota 2/2 + temp 每轮 + **队列 2 轮** + 重启恢复；`reset-memory` 后复位验证。
 - 文档：RELEASE-NODE/RESUME/README/PENDING 更新；版本是否升 0.2.0 由用户定。
 
@@ -116,6 +124,6 @@
 
 ## 五、完成定义（DoD）
 - P1/P2：`cargo test --workspace` 全绿（含新增 round 语义测试），旧单任务 entries 回归等价，state 3→4 迁移测试通过。
-- P3：UI 可编辑 entries/队列并原子落盘；运行中修改被拒绝（409）；UI pure test 全绿。
+- P3：UI 可编辑 entries/队列并原子落盘；运行中修改被拒绝（409）；UI pure test 全绿（**453 checks / 0 dead ids**）。
 - P4：每次运行有 run_id 落盘，UI 可查失败原因。
 - P5：实机队列 2 轮 + 重启恢复 + reset 验证通过，文档与台账同步。

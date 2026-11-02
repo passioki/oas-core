@@ -1864,7 +1864,7 @@ tasks/<任务名>/
 - **失败模式（实测）**：误把 `scheduler.json` 传给 `--config` ⇒ **exit 2** + `config error: config JSON: unknown field 'config', expected one of schema_version/serve/paths/ocr/device/scheduler`，**不会跑任何 plan**（旧文档的"静默回退"说法不成立）；只有 `--config` 传合法 live 配置时，调度 plan 才回退默认 `scheduler.json`。
 - `start-scheduler.bat` 同时传 `--plan` 与 `--config` 是**正当组合**（前者调度计划、后者部署配置），勿据此推断 `--config` 是调度参数。
 
-**状态（2026-11-03 01:3x）**：P0 文档已入库（本节 + `PENDING-LEDGER §E-75`）；P1 ✅ 已提交（450/0，oasd 177）；**P2 ✅ 本轮提交（全量回归 474/0，oasd 201；调度专项 101）**；P3–P5 未开始。P1 期间队列 entry 不执行（`plan_pass` 记 `skipped`，reason `queue_executor_pending`）；**P2 起 queue entry 正常执行**，见下段。
+**状态（2026-11-03 02:4x）**：P0 文档已入库（本节 + `PENDING-LEDGER §E-75`）；P1 ✅ 已提交（450/0，oasd 177）；P2 ✅ 已提交（474/0，oasd 201；调度专项 101）；**P3 ✅ 本轮提交（全量回归 488/0，oasd 215，UI 453）**；P4–P5 未开始。P1 期间队列 entry 不执行（`plan_pass` 记 `skipped`，reason `queue_executor_pending`）；**P2 起 queue entry 正常执行**，见下段；**P3 起可在 UI 编辑 entries/队列并写盘**，见下两段。
 
 **P2 队列 Round 执行（2026-11-03 01:3x 完成）**
 
@@ -1876,6 +1876,19 @@ tasks/<任务名>/
 - **事件**：`queue_round_started`、`queue_round_resumed`、`queue_member_started`、`queue_member_finished`、`queue_round_finished`、`empty_round`、`queue_finished`、`queue_missing`、`queue_entry_record_recovered`；每轮另有 `run_finished(kind=queue, round, clicks, quota_used)`。
 - **report/status**：`SchedulerReport.queues[]`（additive，schema 4）；status entry 增 `queue` 进度对象；旧键保留。
 - **实测**：`cargo test --workspace` **474/0**（21 binary）、`cargo test -p oasd` **201**、调度专项 **101**；E2E（replay 2 轮 / 崩溃续跑只计 1 / 补记只一次 / 重复 entry exit 2 / `queue_between` 对齐）。实现与逐项证据见 `SCHEDULER-RUNNER-PLAN.md §三 P2`、`PENDING-LEDGER §E-75 §C3`；遗留（补记 cycle、session report、200 环、成员级副作用、P3 serve 过滤）同见 §C3。
+
+**P3 配置 API + UI 编辑（2026-11-03 02:2x 完成）**
+
+- **API 契约**：
+  - `GET /scheduler/config` → 200 `{ok,path,exists,schema_version,config,running,state_path}`；`config` 是磁盘原始对象（文件不存在则 `null`、`exists:false`）；坏 JSON → 400；**只读、不拿锁**（守护进程运行时可读）。
+  - `POST /scheduler/config`，body `{config:<完整 scheduler.json>}`（缺 `config` 对象 → 400）；先 `validate_scheduler_with_offset`（offset 取 `config.config.utc_offset_min`，缺失按 480）→ 运行中（`lock_held_by_live_process`）→ **409** `scheduler is running (pid N)` → 写前 `scheduler.json.bak` → 原子写；返回 `{ok,path,schema_version,bytes,backup}`；校验失败零写盘。
+- **未知字段语义（P1-1 修复，最终）**：提交 **v4** → 只校验、不规范化，磁盘 = 提交对象（pretty + 换行），未知顶层/entry/queue 字段保留、GET 可读回；提交 **v3** → `Scheduler::to_json()` 规范化升级 schema 4（该路径未知字段按迁移语义丢弃）；GET 始终返回磁盘原始对象；GET 顶层 `schema_version` 恒 4（已知遗留 P2-1）。
+- **status kind-aware（P3）**：task entry 按任务目录存在过滤；queue entry 按 `queues[]` 的 `queue_id` 存在过滤（queue entry 的 `task` 是 queue_id，旧的任务目录测试会把 queue entry 全过滤掉）；`running` 与 `task_choices` 同步（queue 成员即使无独立 bundle 也保留在 `task_choices`，供重置对话框）。
+- **`/task/delete` 与 prune guard**：被删任务是队列成员 → **400**（错误含 `queue_id`），目录/资产/配置零改动；prune 只删 `kind="task"` 且 `task` 命中项（queue entry/queues 不动）+ 原子写；prune 失败 → **500** + 明确文案（任务目录已删、需手改配置），不再 `unwrap_or(0)` 静默吞错；坏 `scheduler.json` 时无法判定队列成员，prune 会 500 明确失败。
+- **UI 编辑面**：任务库每任务「调度设置…」（无条目→加入调度：默认 `kind=task`/enabled/periodic/全天/day×1/继承 `config.defaults`；多条→WARN 只编辑第一条；已是队列成员→拒绝防双跑）；调度页状态卡（mode/passes/next_wake/running 锁/quota/config 状态）、entries 列表（启用禁用、编辑、删除、上移下移=执行顺序）、队列面板（新建编辑删除、任务池多选 + 有序成员、`total_rounds=0` 无限、`on_failure`、`between_ms`）、「+ 添加条目」、折叠高级 JSON（本地 parse 校验后保存）；保存先 GET 最新 → 与加载快照比较（外部修改中止并提示重新加载）→ POST；409/400 分别提示；状态读取失败时状态卡显示「调度器状态读取失败：<err>」+ 各字段 `—`。
+- **默认值**：新建空配置默认 `mode:"loop"`、`loop_interval_s:60`（其余安全默认）；工作台调度面板保持只读 + 「打开调度页 →」。
+- **实测（Lead 2026-11-03 02:2x）**：`cargo test --workspace` **488/0**（21 binaries）、`cargo test -p oasd` **215**、serve **64**、调度专项 **101** 不变；UI pure test **453 checks / 205 referenced ids / 0 dead ids**；纯函数 **75**；task lint 1/0；OCR build（alt target）exit 0 且 warning 与基线一致；`node --check` exit 0。E2E：alt 二进制 + 真实 serve 8790 + 绝对路径 live 配置（GET 缺失→POST v4→GET 读回中文/queue entry 完好→非法 400 文件不变→锁 409→status kind 正确→`GET /` 含新 DOM id）。
+- **遗留**：GET 顶层 schema_version 恒 4 / UI 强制 4（>4 文档保存降级）；高级 JSON 保存无 GET-first 快照守卫；坏 config 时删除守卫无法判定；`.bak` 单份；无真实浏览器 E2E；同任务多条 task entry 仍允许；`utc_offset_min` 缺失按 480 可能覆盖 `--tz-offset-min`；无 CSS 新 class / `scheduleTasksCache` 可能过期。详见 `PENDING-LEDGER §E-75 §C4`、`SCHEDULER-RUNNER-PLAN.md §三 P3`。
 
 ---
 
