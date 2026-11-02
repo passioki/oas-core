@@ -75,13 +75,51 @@
 //! task state and starts fresh (temp — no completion memory by design). Queue
 //! rounds additionally persist `current_round{index, member_index}` so a
 //! restart resumes the round without double-counting it (plan §二 rule 8).
+//! A closed round stages its entry-level result in `pending_entry_record` in
+//! the **same atomic write** as the round close; the next write applies
+//! `record_result` and clears the stage. A crash between the two writes is
+//! replayed exactly once at startup (`queue_entry_record_recovered`), so the
+//! entry's quota/statistics can no longer be lost after the round was counted.
+//! Every queue transition (round begin, each member record, round end) is
+//! written with `save_state` = atomic tmp+rename, so the persisted state is
+//! always a consistent snapshot; a member that finished but was not recorded
+//! yet simply re-runs (at-least-once, the round is still counted once).
 //!
 //! # Audit events (`scheduler.events.jsonl`)
 //! Append-only JSONL next to the state file (`<config>.events.jsonl` by
 //! default): `scheduler_start`, `state_recovered`, `recovery_dropped`, `pass`,
-//! `run_finished`, `temp_state_reset`, `alert`, `wake`, `stop`, `memory_reset`.
-//! `--report` additionally writes the full machine-readable summary of the
-//! session.
+//! `run_finished`, `temp_state_reset`, `alert`, `wake`, `stop`, `memory_reset`,
+//! plus the queue-round events (P2): `queue_round_started`,
+//! `queue_round_resumed` (restart continues `current_round`),
+//! `queue_member_started`, `queue_member_finished` (the `skipped` flag marks a
+//! member that failed the lightweight precheck and was recorded with
+//! `attempts = 0`), `queue_round_finished`, `empty_round` (a round where no
+//! member executed — lazy counting, rule 5), `queue_finished` (rule 6) and
+//! `queue_missing` (defence in depth). `queue_entry_record_recovered` records
+//! the startup replay of a staged entry result (P1-2). `--report` additionally
+//! writes the full machine-readable summary of the session.
+//!
+//! # Execution (task entries vs queue entries, P2)
+//! `plan_pass` filters `entries[]` in order; `execute_pass` dispatches on
+//! `entry.kind`:
+//! * `task` → [`Session::run_entry`]: one L2 run per pass, `entry.retry`
+//!   extra attempts on `retryable`.
+//! * `queue` → [`Session::execute_queue_round`]: one L4 **round** per pass.
+//!   It opens (or, after a crash, resumes) `state.queues[qid].current_round`,
+//!   runs the members from `member_index` to the tail serially, records each
+//!   member (`state.queues[qid].member_results`), and closes the round with the
+//!   pure lazy-count rule (`queue_end_round`: `rounds_completed` only when a
+//!   member actually executed, otherwise `empty_rounds`). Every state
+//!   transition is written with `save_state` (atomic tmp+rename) **before** the
+//!   next side effect, so a crash resumes the round without double-counting it
+//!   (plan §二 rule 8). A member gets `1 + entry.retry` attempts (the same
+//!   `entry.retry` as a task entry; `0` = one attempt); retries sleep
+//!   `queue.between_ms` and resume from `state/checkpoint.json` when it exists
+//!   (same `resume_on_retry` default as `oasd queue`). The round's entry-level
+//!   result (quota/cooldown/statistics) is recorded once with `record_result`:
+//!   >=1 member `success`/`resource` → `success`; executed but all failed →
+//!   `retryable`; empty round → `blocked`; any member `fatal` → `fatal` (and
+//!   the round aborts like `fail_fast`, so `--keep-going` keeps its meaning).
 //!
 //! # Reset memory
 //! `reset-memory` clears, for the selected tasks: ① the scheduler entry state
@@ -111,10 +149,10 @@ use oas_runtime::RunResult;
 use crate::run::{self, RunOptions, RunReport};
 use crate::scheduler::{
     self, classify_signal, clear_running, cycle_ids, entry_next_due_ms, format_local_datetime,
-    guard_reason, mark_running, next_wake, plan_pass, quota_remaining, quota_used, record_result,
-    roll_cycles, should_retry, validate_scheduler_with_offset, Entry, EntryKind, GuardBlock,
-    Lifecycle, PassPlan, ResultClass, RunMode, RunSignal, Scheduler, SchedulerState,
-    DEFAULT_UTC_OFFSET_MIN, MAX_SLEEP_MS, SCHEDULE_SCHEMA_VERSION, STATE_SCHEMA_VERSION,
+    guard_reason, next_wake, plan_pass, quota_remaining, quota_used, record_result, roll_cycles,
+    should_retry, validate_scheduler_with_offset, Entry, EntryKind, GuardBlock, Lifecycle, PassPlan,
+    ResultClass, RunMode, RunSignal, Scheduler, SchedulerState, DEFAULT_UTC_OFFSET_MIN, MAX_SLEEP_MS,
+    SCHEDULE_SCHEMA_VERSION, STATE_SCHEMA_VERSION,
 };
 
 /// Default player config (§22.34 / M3 `config::SchedulerConfig::plan`).
@@ -139,6 +177,120 @@ pub const USAGE: &str = "usage: oasd scheduler [run] --plan <scheduler.json> [--
 // ---------------------------------------------------------------------------
 // Options
 // ---------------------------------------------------------------------------
+
+/// Scripted attempt result for the deterministic executor seam (tests only).
+///
+/// Production always goes through `run::execute` + `classify_signal`; tests
+/// inject one of these per `(task, attempt)` so a queue round can be exercised
+/// without a device/replay (P2 task D).
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TestExecResult {
+    pub class: ResultClass,
+    pub exit: String,
+    pub outcome: String,
+    pub clicks: usize,
+    pub error: Option<String>,
+}
+
+#[cfg(test)]
+impl TestExecResult {
+    pub(crate) fn new(class: ResultClass, exit: &str, outcome: &str) -> Self {
+        TestExecResult {
+            class,
+            exit: exit.to_string(),
+            outcome: outcome.to_string(),
+            clicks: 0,
+            error: None,
+        }
+    }
+
+    pub(crate) fn with_clicks(mut self, clicks: usize) -> Self {
+        self.clicks = clicks;
+        self
+    }
+}
+
+/// One call observed by the test seam (`calls()` asserts execution order).
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TestExecCall {
+    pub task: String,
+    pub attempt: u32,
+    pub resume: bool,
+}
+
+/// Test-only scripted executor: task name → per-attempt results (the last entry
+/// repeats), plus a set of members that fail the lightweight precheck.
+#[cfg(test)]
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TestExec {
+    script: BTreeMap<String, Vec<TestExecResult>>,
+    skip: BTreeSet<String>,
+    calls: std::sync::Arc<std::sync::Mutex<Vec<TestExecCall>>>,
+    /// `state.running` snapshot observed by the seam right before every attempt
+    /// (asserts `mark_running` named the current member task; B5 test gap).
+    observed_running: std::sync::Arc<
+        std::sync::Mutex<Vec<Option<scheduler::RunningEntry>>>,
+    >,
+}
+
+#[cfg(test)]
+impl TestExec {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn with(mut self, task: &str, steps: Vec<TestExecResult>) -> Self {
+        self.script.insert(task.to_string(), steps);
+        self
+    }
+
+    /// Make this member fail the "task still exists" precheck (empty-round
+    /// test): it is recorded with `attempts = 0` and never executed.
+    pub(crate) fn skip_member(mut self, task: &str) -> Self {
+        self.skip.insert(task.to_string());
+        self
+    }
+
+    fn next(&self, task: &str, attempt: u32, resume: bool) -> Option<TestExecResult> {
+        self.calls.lock().expect("test exec calls").push(TestExecCall {
+            task: task.to_string(),
+            attempt,
+            resume,
+        });
+        let steps = self.script.get(task)?;
+        if steps.is_empty() {
+            return None;
+        }
+        let idx = (attempt as usize).saturating_sub(1).min(steps.len() - 1);
+        Some(steps[idx].clone())
+    }
+
+    fn skips(&self, task: &str) -> bool {
+        self.skip.contains(task)
+    }
+
+    pub(crate) fn calls(&self) -> Vec<TestExecCall> {
+        self.calls.lock().expect("test exec calls").clone()
+    }
+
+    /// Record the `state.running` marker the production seam just wrote (the
+    /// engine call is replaced by the script, the bookkeeping is not).
+    fn observe_running(&self, running: Option<scheduler::RunningEntry>) {
+        self.observed_running
+            .lock()
+            .expect("test exec running")
+            .push(running);
+    }
+
+    pub(crate) fn observed_running(&self) -> Vec<Option<scheduler::RunningEntry>> {
+        self.observed_running
+            .lock()
+            .expect("test exec running")
+            .clone()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SchedulerOptions {
@@ -179,6 +331,11 @@ pub struct SchedulerOptions {
     pub max_sleep_ms: u64,
     /// Override `config.loop_interval_s`.
     pub loop_interval_s: Option<u64>,
+    /// Deterministic executor seam (tests only). Production leaves it `None`
+    /// and `run_task_attempt` calls `run::execute` + `classify_signal`; tests
+    /// script `(task, attempt)` results via this field.
+    #[cfg(test)]
+    pub(crate) test_exec: Option<TestExec>,
 }
 
 impl Default for SchedulerOptions {
@@ -204,6 +361,8 @@ impl Default for SchedulerOptions {
             tz_offset_min: None,
             max_sleep_ms: DEFAULT_MAX_SLEEP_MS,
             loop_interval_s: None,
+            #[cfg(test)]
+            test_exec: None,
         }
     }
 }
@@ -720,15 +879,55 @@ pub struct EntryReport {
     pub next_due_ms: Option<i64>,
 }
 
+/// One completed queue round, summarised from the persisted `member_results`
+/// (P2 `--report`). Only rounds with at least one recorded member can be
+/// summarised: an **empty** round leaves no member result by definition (its
+/// evidence is `empty_rounds` + the `empty_round` audit event).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QueueRoundReport {
+    /// Round ordinal (see `scheduler::QueueRoundState::index`).
+    pub round: u64,
+    /// Members that actually executed (`attempts >= 1`).
+    pub executed: u64,
+    /// Members present in `member_results` for this round (skipped ones have
+    /// `attempts = 0`).
+    pub recorded: u64,
+    pub members: Vec<scheduler::QueueMemberResult>,
+}
+
+/// Per-queue summary in `scheduler-report.json` (P2; additive to the report,
+/// `#[serde(default)]` on [`SchedulerReport::queues`] keeps older reports/readers
+/// compatible).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QueueReport {
+    pub queue_id: String,
+    pub name: String,
+    pub total_rounds: u64,
+    pub on_failure: String,
+    pub between_ms: u64,
+    pub rounds_completed: u64,
+    pub empty_rounds: u64,
+    /// Rule 6 (`finished` is sticky until reset-memory / the UI).
+    pub finished: bool,
+    pub current_round: Option<scheduler::QueueRoundState>,
+    pub last_round: Option<QueueRoundReport>,
+    pub next_due_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SchedulerReport {
+    /// Report schema version. By the existing convention it tracks
+    /// [`SCHEDULE_SCHEMA_VERSION`] (P1 bumped both 3→4 together); P2 only
+    /// *adds* `queues[]` with `#[serde(default)]`, so it stays 4 and an older
+    /// reader simply ignores the new key (additive change, no break).
     pub schema_version: u32,
     pub started_ms: u64,
     pub finished_ms: u64,
     pub dry_run: bool,
     pub mode: String,
     pub passes: u64,
-    /// Entry executions (one per planned entry per pass, retries included).
+    /// Entry executions (one per planned entry per pass, retries included);
+    /// a queue entry counts **one per round**, not per member.
     pub runs: u64,
     pub successes: u64,
     pub resources: u64,
@@ -741,6 +940,9 @@ pub struct SchedulerReport {
     pub state_path: String,
     pub next_wake_ms: Option<i64>,
     pub entries: Vec<EntryReport>,
+    /// P2 queue summaries (additive; absent in older reports / older readers).
+    #[serde(default)]
+    pub queues: Vec<QueueReport>,
 }
 
 impl SchedulerReport {
@@ -832,6 +1034,162 @@ impl<'a> Session<'a> {
             ));
         }
     }
+
+    /// Replay a round whose entry-level result was staged by `queue_end_round`
+    /// but never applied (P1-2 exactly-once window).
+    ///
+    /// The queue may already be `finished`, so `plan_pass` will never trigger it
+    /// again: this must run at startup, before the first pass. The mutation is
+    /// persisted by the caller's first `save_state` (always before the first
+    /// pass); a crash before that write simply replays the record on the next
+    /// start — the flag is cleared in the same write as `record_result`, so the
+    /// accounting is applied **exactly once**.
+    ///
+    /// A record whose entry disappeared (or stopped being a queue entry) cannot
+    /// be attributed any more: it is dropped **loudly** (log + audit) instead of
+    /// silently double-applying or bricking the daemon on corrupt state.
+    ///
+    /// The staged class is not trusted blindly: it is recomputed from the round's
+    /// persisted `member_results` (P1-1's source of truth). The staged value is
+    /// still written to the audit as `staged_class` for traceability.
+    fn recover_pending_entry_records(&mut self, out: &mut dyn FnMut(&str)) {
+        let pending: Vec<(String, scheduler::PendingEntryRecord)> = self
+            .state
+            .queues
+            .iter()
+            .filter_map(|(queue_id, st)| {
+                st.pending_entry_record
+                    .clone()
+                    .map(|rec| (queue_id.clone(), rec))
+            })
+            .collect();
+        for (queue_id, rec) in pending {
+            let entry = self.sched().entry(&rec.entry_id).cloned();
+            let Some(entry) = entry else {
+                self.drop_pending_entry_record(&queue_id, &rec, "entry_missing", out);
+                continue;
+            };
+            if entry.kind != EntryKind::Queue {
+                self.drop_pending_entry_record(&queue_id, &rec, "entry_not_queue", out);
+                continue;
+            }
+            let queue = self.sched().queue(&queue_id).cloned();
+            let Some(queue) = queue else {
+                self.drop_pending_entry_record(&queue_id, &rec, "queue_missing", out);
+                continue;
+            };
+            // P1-1/P1-2: recompute the class from the persisted member results
+            // (the same source of truth a resumed round uses) instead of
+            // trusting the staged string. No rows for the round means the state
+            // is corrupt/hand-edited: drop loudly, never invent a round result.
+            let summary = self
+                .state
+                .queues
+                .get(&queue_id)
+                .map(|st| scheduler::queue_round_summary(&queue, st, rec.round));
+            let Some(summary) = summary else {
+                self.drop_pending_entry_record(&queue_id, &rec, "queue_state_missing", out);
+                continue;
+            };
+            if summary.recorded_members == 0 {
+                self.drop_pending_entry_record(&queue_id, &rec, "round_results_missing", out);
+                continue;
+            }
+            let class = summary.class();
+            let (exit, outcome) = summary.exit_outcome();
+            let now = now_ms() as i64;
+            let cycles = cycle_ids(&self.sched().calendar, now);
+            let effects = record_result(
+                &mut self.state,
+                &entry,
+                &cycles,
+                now,
+                class,
+                exit,
+                outcome,
+                summary.attempts,
+                rec.duration_ms,
+            );
+            if let Some(st) = self.state.queues.get_mut(&queue_id) {
+                st.pending_entry_record = None;
+            }
+            // The round is closed, so a dirty marker that still names this entry
+            // is stale (the original process died before clearing it).
+            let running_was_this_entry = self
+                .state
+                .running
+                .as_ref()
+                .map(|r| r.entry_id == rec.entry_id)
+                .unwrap_or(false);
+            if running_was_this_entry {
+                self.state.running = None;
+                if self
+                    .recovery
+                    .as_ref()
+                    .map(|r| r.entry_id == rec.entry_id)
+                    .unwrap_or(false)
+                {
+                    self.recovery = None;
+                }
+            }
+            out(&format!(
+                "scheduler_queue_entry_record_recovered entry={} queue={queue_id} round={} class={} attempts={} clicks={} quota_used={} cooldown_until_ms={}",
+                rec.entry_id,
+                rec.round,
+                class.as_str(),
+                summary.attempts,
+                summary.clicks,
+                effects
+                    .quota_used
+                    .map(|used| used.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                effects.cooldown_until_ms
+            ));
+            self.audit(json!({
+                "event": "queue_entry_record_recovered",
+                "applied": true,
+                "entry_id": rec.entry_id,
+                "queue_id": queue_id,
+                "round": rec.round,
+                "class": class.as_str(),
+                "staged_class": rec.class,
+                "exit": exit,
+                "outcome": outcome,
+                "attempts": summary.attempts,
+                "clicks": summary.clicks,
+                "duration_ms": rec.duration_ms,
+                "quota_used": effects.quota_used,
+                "cooldown_until_ms": effects.cooldown_until_ms,
+                "finished_ms": rec.finished_ms,
+            }));
+        }
+    }
+
+    /// Drop a staged entry result that can no longer be attributed (loudly).
+    fn drop_pending_entry_record(
+        &mut self,
+        queue_id: &str,
+        rec: &scheduler::PendingEntryRecord,
+        reason: &str,
+        out: &mut dyn FnMut(&str),
+    ) {
+        if let Some(st) = self.state.queues.get_mut(queue_id) {
+            st.pending_entry_record = None;
+        }
+        out(&format!(
+            "scheduler_queue_entry_record_dropped entry={} queue={queue_id} round={} reason={reason}",
+            rec.entry_id, rec.round
+        ));
+        self.audit(json!({
+            "event": "queue_entry_record_recovered",
+            "applied": false,
+            "reason": reason,
+            "entry_id": rec.entry_id,
+            "queue_id": queue_id,
+            "round": rec.round,
+            "class": rec.class,
+        }));
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -893,7 +1251,153 @@ fn signal_of(report: &RunReport) -> RunSignal {
     }
 }
 
+/// The outcome of **one execution attempt** (L2). Production = `run::execute`
+/// + `classify_signal`; tests script it through the `test_exec` seam so a queue
+/// round is deterministic without a device/replay (P2 task D).
+#[derive(Debug, Clone)]
+struct AttemptResult {
+    class: ResultClass,
+    exit: String,
+    outcome: String,
+    clicks: usize,
+    error: Option<String>,
+}
+
 impl<'a> Session<'a> {
+    /// Execute **one attempt** of `task` for `entry` — the single execution
+    /// seam shared by task entries and queue members (P2 task D: one helper,
+    /// not two).
+    ///
+    /// Writes the `running` marker with the **executed task name** (for a queue
+    /// entry that is the member, not the queue_id — `reset-memory` and
+    /// `--status` match on it), saves state, logs `scheduler_run`, then calls
+    /// the engine (`run::execute` + `classify_signal`). Under `#[cfg(test)]` a
+    /// scripted result from `SchedulerOptions::test_exec` replaces only the
+    /// engine call: the marker/state/log bookkeeping stays identical.
+    fn run_task_attempt(
+        &mut self,
+        entry: &Entry,
+        task: &str,
+        pass: u64,
+        attempt: u32,
+        resume: bool,
+        out: &mut dyn FnMut(&str),
+    ) -> Result<AttemptResult, String> {
+        let meta = meta_exits_for(&self.loaded.metas, task);
+        scheduler::mark_running_for(
+            &mut self.state,
+            &entry.entry_id,
+            task,
+            pass,
+            attempt,
+            now_ms(),
+            resume,
+        );
+        self.save_state(out)?;
+
+        // Test seam: capture the marker that was just persisted so a test can
+        // assert `mark_running` named the member (not the queue_id).
+        #[cfg(test)]
+        if let Some(exec) = &self.opts.test_exec {
+            exec.observe_running(self.state.running.clone());
+        }
+
+        let seq = self.seq;
+        self.seq += 1;
+        let clicks_out = self.opts.clicks_dir.as_ref().map(|dir| {
+            dir.join(format!("{seq:05}-{task}-p{pass}-a{attempt}.clicks.jsonl"))
+        });
+        out(&format!(
+            "scheduler_run entry={} task={task} pass={pass} attempt={attempt} resume={resume} lifecycle={}",
+            entry.entry_id,
+            entry.lifecycle.as_str()
+        ));
+
+        #[cfg(test)]
+        if let Some(scripted) = self
+            .opts
+            .test_exec
+            .as_ref()
+            .and_then(|exec| exec.next(task, attempt, resume))
+        {
+            return Ok(AttemptResult {
+                class: scripted.class,
+                exit: scripted.exit,
+                outcome: scripted.outcome,
+                clicks: scripted.clicks,
+                error: scripted.error,
+            });
+        }
+
+        let run_opts = RunOptions {
+            task: Some(self.opts.tasks_dir.join(task)),
+            replay: self.opts.replay.clone(),
+            seed: self
+                .opts
+                .seed
+                .map(|s| s.saturating_add(u64::from(attempt.saturating_sub(1)))),
+            clicks_out,
+            shots_dir: self.opts.shots_dir.clone(),
+            library: self.opts.library.clone(),
+            resume,
+            model: self.opts.model.clone(),
+            det_model: self.opts.det_model.clone(),
+            params: entry_run_params(entry),
+            ..RunOptions::default()
+        };
+        let started = now_ms();
+        let result = run::execute(&run_opts, out);
+        let _attempt_duration_ms = now_ms().saturating_sub(started);
+        Ok(match result {
+            Ok(report) => {
+                let signal = signal_of(&report);
+                AttemptResult {
+                    class: classify_signal(signal, &meta),
+                    exit: signal.name().to_string(),
+                    outcome: format!("{:?}", report.outcome()),
+                    clicks: report.clicks.len(),
+                    error: None,
+                }
+            }
+            Err(e) => {
+                out(&format!(
+                    "scheduler_run_error entry={} task={task} attempt={attempt}: {e}",
+                    entry.entry_id
+                ));
+                AttemptResult {
+                    class: classify_signal(RunSignal::RunFailed, &meta),
+                    exit: "run_error".to_string(),
+                    outcome: "error".to_string(),
+                    clicks: 0,
+                    error: Some(e),
+                }
+            }
+        })
+    }
+
+    /// Resolve `resume` for one attempt: only when requested, and only when a
+    /// checkpoint actually exists (degrade loudly to a fresh run otherwise).
+    fn attempt_resume(
+        &self,
+        entry: &Entry,
+        task: &str,
+        want_resume: bool,
+        out: &mut dyn FnMut(&str),
+    ) -> bool {
+        if !want_resume {
+            return false;
+        }
+        if task_checkpoint_path(&self.opts.tasks_dir, task).is_file() {
+            true
+        } else {
+            out(&format!(
+                "scheduler_resume_skipped entry={} task={task} reason=no_checkpoint",
+                entry.entry_id
+            ));
+            false
+        }
+    }
+
     fn run_entry(
         &mut self,
         entry: &Entry,
@@ -901,16 +1405,14 @@ impl<'a> Session<'a> {
         pass: u64,
         out: &mut dyn FnMut(&str),
     ) -> Result<ResultClass, String> {
-        let meta = meta_exits_for(&self.loaded.metas, &entry.task);
         let mut want_resume = planned.resume;
-        let mut attempt: u32 = 0;
         let mut attempts: u32 = 0;
         let mut clicks_total: usize = 0;
         let exec_started = now_ms();
 
         let (class, exit, outcome, error) = loop {
-            attempt += 1;
             attempts += 1;
+            let attempt = attempts;
 
             // Temp rule: execution state is reset before *and* after every run
             // (§22.34.3) — retries included, so a stale checkpoint never leaks.
@@ -932,93 +1434,22 @@ impl<'a> Session<'a> {
                 }));
             }
 
-            let resume = if want_resume {
-                let ckpt = task_checkpoint_path(&self.opts.tasks_dir, &entry.task);
-                if ckpt.is_file() {
-                    true
-                } else {
-                    out(&format!(
-                        "scheduler_resume_skipped entry={} task={} reason=no_checkpoint",
-                        entry.entry_id, entry.task
-                    ));
-                    false
-                }
-            } else {
-                false
-            };
-
-            mark_running(&mut self.state, entry, pass, attempt, now_ms(), resume);
-            self.save_state(out)?;
-
-            let seq = self.seq;
-            self.seq += 1;
-            let clicks_out = self.opts.clicks_dir.as_ref().map(|dir| {
-                dir.join(format!(
-                    "{seq:05}-{}-p{pass}-a{attempt}.clicks.jsonl",
-                    entry.task
-                ))
-            });
-            let run_opts = RunOptions {
-                task: Some(self.opts.tasks_dir.join(&entry.task)),
-                replay: self.opts.replay.clone(),
-                seed: self
-                    .opts
-                    .seed
-                    .map(|s| s.saturating_add(u64::from(attempt.saturating_sub(1)))),
-                clicks_out,
-                shots_dir: self.opts.shots_dir.clone(),
-                library: self.opts.library.clone(),
-                resume,
-                model: self.opts.model.clone(),
-                det_model: self.opts.det_model.clone(),
-                params: entry_run_params(entry),
-                ..RunOptions::default()
-            };
-            out(&format!(
-                "scheduler_run entry={} task={} pass={pass} attempt={attempt} resume={resume} lifecycle={}",
-                entry.entry_id,
-                entry.task,
-                entry.lifecycle.as_str()
-            ));
-            let started = now_ms();
-            let result = run::execute(&run_opts, out);
-            let _attempt_duration_ms = now_ms().saturating_sub(started);
-
-            let (class, exit, outcome, error): (ResultClass, String, String, Option<String>) =
-                match result {
-                    Ok(report) => {
-                        let signal = signal_of(&report);
-                        let class = classify_signal(signal, &meta);
-                        clicks_total += report.clicks.len();
-                        (
-                            class,
-                            signal.name().to_string(),
-                            format!("{:?}", report.outcome()),
-                            None,
-                        )
-                    }
-                    Err(e) => {
-                        out(&format!(
-                            "scheduler_run_error entry={} task={} attempt={attempt}: {e}",
-                            entry.entry_id, entry.task
-                        ));
-                        let class = classify_signal(RunSignal::RunFailed, &meta);
-                        (class, "run_error".to_string(), "error".to_string(), Some(e))
-                    }
-                };
-            if should_retry(class, attempt, entry) {
+            let resume = self.attempt_resume(entry, &entry.task, want_resume, out);
+            let result = self.run_task_attempt(entry, &entry.task, pass, attempt, resume, out)?;
+            clicks_total += result.clicks;
+            if should_retry(result.class, attempt, entry) {
                 out(&format!(
                     "scheduler_retry entry={} task={} attempt={attempt} class={}",
                     entry.entry_id,
                     entry.task,
-                    class.as_str()
+                    result.class.as_str()
                 ));
                 // Retry after a failure: resume from the checkpoint when the
                 // run left one (periodic only; temp state is reset above).
                 want_resume = entry.lifecycle == Lifecycle::Periodic;
                 continue;
             }
-            break (class, exit, outcome, error);
+            break (result.class, result.exit, result.outcome, result.error);
         };
 
         let total_duration = now_ms().saturating_sub(exec_started);
@@ -1128,6 +1559,557 @@ impl<'a> Session<'a> {
         Ok(class)
     }
 
+    /// Rule 4 lightweight member precheck: the bundle must still exist.
+    ///
+    /// `load_full` already fail-fasts on a missing member at startup; this
+    /// catches a bundle deleted while the daemon runs. A skipped member is
+    /// recorded with `attempts = 0` (lazy counting then treats the round as
+    /// empty, rule 5). Tests inject skips through the same seam
+    /// (`TestExec::skip_member`) to exercise the empty-round path
+    /// deterministically.
+    fn member_skip_reason(&self, member: &str) -> Option<String> {
+        #[cfg(test)]
+        if let Some(exec) = &self.opts.test_exec {
+            if exec.skips(member) {
+                return Some("test_injected".to_string());
+            }
+        }
+        if !self
+            .opts
+            .tasks_dir
+            .join(member)
+            .join("meta.json")
+            .is_file()
+        {
+            return Some("task_missing".to_string());
+        }
+        None
+    }
+
+    /// Run one queue member with `1 + entry.retry` attempts (queue.rs parity:
+    /// `entry.retry = 0` ⇒ exactly one attempt). Only `retryable` retries (the
+    /// same `should_retry` as a task entry); between attempts it sleeps
+    /// `queue.between_ms` and resumes from `tasks/<member>/state/checkpoint.json`
+    /// when one exists (`oasd queue` `resume_on_retry` default = true).
+    fn run_queue_member(
+        &mut self,
+        entry: &Entry,
+        queue: &scheduler::Queue,
+        member: &str,
+        pass: u64,
+        round: u64,
+        resume_first: bool,
+        out: &mut dyn FnMut(&str),
+    ) -> Result<scheduler::QueueMemberOutcome, String> {
+        let started = now_ms();
+        let mut attempts: u32 = 0;
+        let mut clicks: usize = 0;
+        let mut want_resume = resume_first;
+        loop {
+            attempts += 1;
+            let resume = self.attempt_resume(entry, member, want_resume, out);
+            if attempts == 1 {
+                self.audit(json!({
+                    "event": "queue_member_started",
+                    "entry_id": entry.entry_id,
+                    "queue_id": queue.queue_id,
+                    "round": round,
+                    "task": member,
+                    "pass": pass,
+                    "resume": resume,
+                    "max_attempts": entry.max_attempts(),
+                }));
+            }
+            let result = self.run_task_attempt(entry, member, pass, attempts, resume, out)?;
+            clicks += result.clicks;
+            if should_retry(result.class, attempts, entry) {
+                out(&format!(
+                    "scheduler_queue_member_retry entry={} queue={} round={round} task={member} attempt={attempts} class={}",
+                    entry.entry_id,
+                    queue.queue_id,
+                    result.class.as_str()
+                ));
+                // queue.rs `resume_on_retry` default: resume on retry when the
+                // failed attempt left a checkpoint.
+                want_resume = true;
+                if queue.between_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(queue.between_ms));
+                }
+                continue;
+            }
+            let duration = now_ms().saturating_sub(started);
+            return Ok(scheduler::QueueMemberOutcome::new(
+                result.class,
+                &result.exit,
+                &result.outcome,
+                attempts,
+                duration,
+            )
+            .with_clicks(clicks));
+        }
+    }
+
+    /// Execute one queue **round** for a `kind = "queue"` entry (L4; plan §二
+    /// rules 3/5/6/7/8 and §三 P2).
+    ///
+    /// 1. resolve the queue (`entry.task` is the queue_id) — a missing queue is
+    ///    recorded as `blocked` loudly, never a panic;
+    /// 2. `queue_should_finish` ⇒ skip (rule 6);
+    /// 3. resume `current_round` (restart) or open a new one (rule 8);
+    /// 4. run the members from `member_index` serially, recording each one and
+    ///    saving state before the next side effect;
+    /// 5. close the round with the pure lazy-count rule (`queue_end_round`) and
+    ///    record one entry-level result through `record_result` (quota/cooldown
+    ///    live on the entry, rule 2).
+    fn execute_queue_round(
+        &mut self,
+        entry: &Entry,
+        planned: &scheduler::PlannedRun,
+        pass: u64,
+        out: &mut dyn FnMut(&str),
+    ) -> Result<ResultClass, String> {
+        let Some(queue) = entry
+            .queue_id()
+            .and_then(|queue_id| self.sched().queue(queue_id))
+            .cloned()
+        else {
+            // Validation rejects an unknown queue reference; this is defence in
+            // depth. Record a blocked result (with cooldown) instead of running.
+            out(&format!(
+                "scheduler_queue_error entry={} queue={} reason=queue_missing",
+                entry.entry_id, entry.task
+            ));
+            self.audit(json!({
+                "event": "queue_missing",
+                "entry_id": entry.entry_id,
+                "queue_id": entry.task,
+                "pass": pass,
+            }));
+            self.alert(
+                out,
+                "queue_missing",
+                &entry.entry_id,
+                &format!("queue={} missing from queues[]", entry.task),
+            );
+            scheduler::clear_running(&mut self.state);
+            let now = now_ms() as i64;
+            let cycles = cycle_ids(&self.sched().calendar, now);
+            record_result(
+                &mut self.state,
+                entry,
+                &cycles,
+                now,
+                ResultClass::Blocked,
+                "queue_missing",
+                "error",
+                0,
+                0,
+            );
+            self.save_state(out)?;
+            self.report.runs += 1;
+            self.report.blocked += 1;
+            return Ok(ResultClass::Blocked);
+        };
+        let queue_id = queue.queue_id.clone();
+
+        // 1) Ensure the per-queue state exists (config mirror) and apply rule 6.
+        {
+            let st = self
+                .state
+                .queues
+                .entry(queue_id.clone())
+                .or_insert_with(|| scheduler::QueueState {
+                    total_rounds: queue.total_rounds,
+                    ..scheduler::QueueState::default()
+                });
+            if scheduler::queue_should_finish(&queue, st) {
+                out(&format!(
+                    "scheduler_queue_skip entry={} queue={queue_id} reason=queue_finished",
+                    entry.entry_id
+                ));
+                return Ok(ResultClass::Blocked);
+            }
+        }
+
+        // 2) Resume the open round (rule 8) or open a new one. Re-beginning an
+        //    open round would be a state-machine error (`queue_begin_round`
+        //    rejects it) and would double-count the round after a crash.
+        let open_round = self
+            .state
+            .queues
+            .get(&queue_id)
+            .and_then(|st| st.current_round.clone());
+        let round_index: u64;
+        if let Some(round) = open_round {
+            round_index = round.index;
+            out(&format!(
+                "scheduler_queue_round_resume entry={} queue={queue_id} round={round_index} member_index={} pass={pass}",
+                entry.entry_id, round.member_index
+            ));
+            self.audit(json!({
+                "event": "queue_round_resumed",
+                "entry_id": entry.entry_id,
+                "queue_id": queue_id,
+                "round": round_index,
+                "member_index": round.member_index,
+                "pass": pass,
+            }));
+        } else {
+            round_index = {
+                let st = self
+                    .state
+                    .queues
+                    .get_mut(&queue_id)
+                    .ok_or_else(|| format!("queue round: `{queue_id}` state vanished"))?;
+                scheduler::queue_begin_round(&queue, st, now_ms() as i64)
+                    .map_err(|e| format!("queue round: {e}"))?
+            };
+            self.save_state(out)?;
+            out(&format!(
+                "scheduler_queue_round_start entry={} queue={queue_id} round={round_index} members={} pass={pass}",
+                entry.entry_id,
+                queue.members.len()
+            ));
+            self.audit(json!({
+                "event": "queue_round_started",
+                "entry_id": entry.entry_id,
+                "queue_id": queue_id,
+                "round": round_index,
+                "members": queue.members.len(),
+                "pass": pass,
+            }));
+        }
+
+        let member_total = queue.members.len();
+        let start_index = {
+            let st = self
+                .state
+                .queues
+                .get(&queue_id)
+                .ok_or_else(|| format!("queue round: `{queue_id}` state vanished"))?;
+            scheduler::queue_next_member_index(&queue, st)
+        };
+        if start_index > 0 {
+            out(&format!(
+                "scheduler_queue_round_resume_from entry={} queue={queue_id} round={round_index} member_index={start_index}",
+                entry.entry_id
+            ));
+        }
+
+        let round_started = now_ms();
+        // P1-1: the round's aggregates come from the **whole persisted round**
+        // (members recorded before a crash) plus every member this process
+        // records below. Classifying from process-local counters alone lost a
+        // prior member's class: `success` + later failure became `retryable`
+        // (no quota) and a recorded `fatal` disappeared.
+        let mut summary = self
+            .state
+            .queues
+            .get(&queue_id)
+            .map(|st| scheduler::queue_round_summary(&queue, st, round_index))
+            .ok_or_else(|| format!("queue round: `{queue_id}` state vanished"))?;
+        let mut aborted = summary.aborted;
+        if aborted {
+            // The crash happened after a member that already decided the round
+            // (a `fatal` member, or a `fail_fast` failure) was recorded but
+            // before the round was closed. Do not run the remaining members:
+            // the in-process path aborts at that member too (rule 7).
+            out(&format!(
+                "scheduler_queue_round_abort entry={} queue={queue_id} round={round_index} reason={} resumed=true",
+                entry.entry_id,
+                if summary.fatal { "fatal" } else { "fail_fast" }
+            ));
+        }
+
+        // 3) Members from the persisted cursor to the tail, serially (rule 3/10).
+        for member_index in start_index..member_total {
+            if aborted {
+                // The round was already decided before this process started
+                // (logged above); never run another member.
+                break;
+            }
+            let member = queue.members[member_index].clone();
+            let skip_reason = self.member_skip_reason(&member);
+            let skipped = skip_reason.is_some();
+            let outcome: scheduler::QueueMemberOutcome = match skip_reason {
+                Some(reason) => {
+                    out(&format!(
+                        "scheduler_queue_member_skip entry={} queue={queue_id} round={round_index} member={member_index} task={member} reason={reason}",
+                        entry.entry_id
+                    ));
+                    // No execution (rule 4 precheck): attempts = 0 keeps rule 5
+                    // lazy counting honest.
+                    scheduler::QueueMemberOutcome::new(
+                        ResultClass::Blocked,
+                        "skipped",
+                        &reason,
+                        0,
+                        0,
+                    )
+                }
+                None => {
+                    // Resume only the member the dirty `running` marker names
+                    // (the one that was executing when the process died). Other
+                    // members start fresh even when the *round* is resumed, so a
+                    // stale checkpoint from an earlier round is never replayed.
+                    let resume_member = planned.resume
+                        && self
+                            .state
+                            .running
+                            .as_ref()
+                            .map(|r| r.entry_id == entry.entry_id && r.task == member)
+                            .unwrap_or(false);
+                    let outcome = self.run_queue_member(
+                        entry,
+                        &queue,
+                        &member,
+                        pass,
+                        round_index,
+                        resume_member,
+                        out,
+                    )?;
+                    outcome
+                }
+            };
+
+            // Record the member (advances `member_index`) and clear the running
+            // marker in the **same atomic write**: a crash before this point
+            // re-runs the member; the round is still counted exactly once.
+            {
+                let st = self
+                    .state
+                    .queues
+                    .get_mut(&queue_id)
+                    .ok_or_else(|| format!("queue round: `{queue_id}` state vanished"))?;
+                scheduler::queue_record_member(st, &member, &outcome, now_ms() as i64)
+                    .map_err(|e| format!("queue round: {e}"))?;
+            }
+            scheduler::clear_running(&mut self.state);
+            self.save_state(out)?;
+
+            // P1-1: recompute the round aggregates from the persisted results
+            // (never from process-local counters); this is the single source of
+            // truth for the abort decision and the final entry-level class.
+            summary = {
+                let st = self
+                    .state
+                    .queues
+                    .get(&queue_id)
+                    .ok_or_else(|| format!("queue round: `{queue_id}` state vanished"))?;
+                scheduler::queue_round_summary(&queue, st, round_index)
+            };
+            aborted = summary.aborted;
+
+            self.audit(json!({
+                "event": "queue_member_finished",
+                "entry_id": entry.entry_id,
+                "queue_id": queue_id,
+                "round": round_index,
+                "member_index": member_index,
+                "task": member,
+                "class": outcome.class.as_str(),
+                "exit": outcome.exit.clone(),
+                "outcome": outcome.outcome.clone(),
+                "attempts": outcome.attempts,
+                "clicks": outcome.clicks,
+                "duration_ms": outcome.duration_ms,
+                "skipped": skipped,
+                "pass": pass,
+            }));
+            out(&format!(
+                "scheduler_queue_member_done entry={} queue={queue_id} round={round_index} member={member_index} task={member} attempts={} class={} exit={} outcome={} clicks={} duration_ms={} skipped={skipped}",
+                entry.entry_id,
+                outcome.attempts,
+                outcome.class.as_str(),
+                outcome.exit,
+                outcome.outcome,
+                outcome.clicks,
+                outcome.duration_ms
+            ));
+
+            if aborted {
+                out(&format!(
+                    "scheduler_queue_round_abort entry={} queue={queue_id} round={round_index} reason={}",
+                    entry.entry_id,
+                    if summary.fatal { "fatal" } else { "fail_fast" }
+                ));
+                break;
+            }
+            // Pause between member executions (never after the last one).
+            if member_index + 1 < member_total && queue.between_ms > 0 {
+                std::thread::sleep(Duration::from_millis(queue.between_ms));
+            }
+        }
+
+        // 4) Close the round with lazy counting (rule 5): only a round where at
+        //    least one member actually executed consumes `total_rounds`; a fully
+        //    skipped round only bumps `empty_rounds` (no quota burn, no spin).
+        //    The entry-level class is decided from the whole round and staged in
+        //    the same atomic write (P1-2 exactly-once window).
+        let class = summary.class();
+        let (exit, outcome) = summary.exit_outcome();
+        let round_duration = now_ms().saturating_sub(round_started);
+        let end = {
+            let st = self
+                .state
+                .queues
+                .get_mut(&queue_id)
+                .ok_or_else(|| format!("queue round: `{queue_id}` state vanished"))?;
+            let end = scheduler::queue_end_round(&queue, st, summary.executed_any())
+                .map_err(|e| format!("queue round: {e}"))?;
+            // `record_result` below clears the stage in the next save; a crash
+            // in between is replayed exactly once at startup.
+            st.pending_entry_record = Some(scheduler::PendingEntryRecord {
+                entry_id: entry.entry_id.clone(),
+                round: end.index,
+                class: class.as_str().to_string(),
+                exit: exit.to_string(),
+                outcome: outcome.to_string(),
+                attempts: summary.attempts,
+                duration_ms: round_duration,
+                finished_ms: now_ms(),
+            });
+            end
+        };
+        self.save_state(out)?;
+
+        out(&format!(
+            "scheduler_queue_round_done entry={} queue={queue_id} round={round_index} members={member_total} executed={} empty={} aborted={aborted} rounds_completed={} empty_rounds={} finished={} duration_ms={round_duration}",
+            entry.entry_id,
+            summary.executed_members,
+            !summary.executed_any(),
+            end.rounds_completed,
+            end.empty_rounds,
+            end.finished
+        ));
+        self.audit(json!({
+            "event": "queue_round_finished",
+            "entry_id": entry.entry_id,
+            "queue_id": queue_id,
+            "round": end.index,
+            "members": member_total,
+            "executed_members": summary.executed_members,
+            "executed": summary.executed_any(),
+            "empty": !summary.executed_any(),
+            "aborted": aborted,
+            "rounds_completed": end.rounds_completed,
+            "empty_rounds": end.empty_rounds,
+            "finished": end.finished,
+            "duration_ms": round_duration,
+            "pass": pass,
+        }));
+        if !summary.executed_any() {
+            out(&format!(
+                "scheduler_queue_empty_round entry={} queue={queue_id} round={round_index} empty_rounds={}",
+                entry.entry_id, end.empty_rounds
+            ));
+            self.audit(json!({
+                "event": "empty_round",
+                "entry_id": entry.entry_id,
+                "queue_id": queue_id,
+                "round": end.index,
+                "empty_rounds": end.empty_rounds,
+                "pass": pass,
+            }));
+        }
+        if end.finished {
+            out(&format!(
+                "scheduler_queue_finished entry={} queue={queue_id} rounds_completed={} total_rounds={}",
+                entry.entry_id, end.rounds_completed, queue.total_rounds
+            ));
+            self.audit(json!({
+                "event": "queue_finished",
+                "entry_id": entry.entry_id,
+                "queue_id": queue_id,
+                "rounds_completed": end.rounds_completed,
+                "total_rounds": queue.total_rounds,
+                "pass": pass,
+            }));
+        }
+
+        // 5) One entry-level result per round (P2 task C7). The queue itself has
+        //    no quota/cooldown (rule 2); they live on the entry. Clear the
+        //    pending stage in the **same atomic write** as `record_result`, so
+        //    the result is applied exactly once across crashes.
+        scheduler::clear_running(&mut self.state);
+        let now = now_ms() as i64;
+        let cycles = cycle_ids(&self.sched().calendar, now);
+        let effects = record_result(
+            &mut self.state,
+            entry,
+            &cycles,
+            now,
+            class,
+            exit,
+            outcome,
+            summary.attempts,
+            round_duration,
+        );
+        if let Some(st) = self.state.queues.get_mut(&queue_id) {
+            st.pending_entry_record = None;
+        }
+        self.save_state(out)?;
+
+        if let Some(recovered) = &self.recovery {
+            if recovered.entry_id == entry.entry_id {
+                self.recovery = None;
+            }
+        }
+
+        out(&format!(
+            "scheduler_run_done entry={} task={} pass={pass} attempts={} class={} exit={exit} outcome={outcome} clicks={} duration_ms={round_duration} cooldown_until_ms={}",
+            entry.entry_id,
+            queue_id,
+            summary.attempts,
+            class.as_str(),
+            summary.clicks,
+            effects.cooldown_until_ms
+        ));
+        self.audit(json!({
+            "event": "run_finished",
+            "entry_id": entry.entry_id,
+            "task": queue_id,
+            "kind": "queue",
+            "pass": pass,
+            "round": end.index,
+            "attempts": summary.attempts,
+            "class": class.as_str(),
+            "exit": exit,
+            "outcome": outcome,
+            "clicks": summary.clicks,
+            "duration_ms": round_duration,
+            "cooldown_until_ms": effects.cooldown_until_ms,
+            "quota_used": effects.quota_used,
+        }));
+
+        self.report.runs += 1;
+        match class {
+            ResultClass::Success => self.report.successes += 1,
+            ResultClass::Resource => self.report.resources += 1,
+            ResultClass::Blocked => {
+                self.report.blocked += 1;
+                self.alert(
+                    out,
+                    "queue_blocked",
+                    &entry.entry_id,
+                    &format!("queue={queue_id} empty_round={}", !summary.executed_any()),
+                );
+            }
+            ResultClass::Retryable => self.report.failures += 1,
+            ResultClass::Fatal => {
+                self.report.fatals += 1;
+                self.alert(
+                    out,
+                    "queue_fatal",
+                    &entry.entry_id,
+                    &format!("queue={queue_id} round={round_index}"),
+                );
+            }
+        }
+
+        Ok(class)
+    }
+
     fn execute_pass(
         &mut self,
         pass: u64,
@@ -1172,17 +2154,13 @@ impl<'a> Session<'a> {
             else {
                 continue;
             };
-            // Queue-round execution is P2: `plan_pass` puts every queue entry
-            // into `skipped` (`queue_executor_pending`), so nothing but task
-            // entries can reach this loop. Keeping the plan as the single
-            // source of truth is what makes `runnable`/`stats.ran` truthful.
-            debug_assert_eq!(
-                entry.kind,
-                EntryKind::Task,
-                "queue entries must never be planned as runnable in P1"
-            );
+            // One planned entry per pass. A task entry runs one L2 execution; a
+            // queue entry runs one L4 **round** (counted as one `stats.ran`).
             stats.ran += 1;
-            let class = self.run_entry(&entry, planned, pass, out)?;
+            let class = match entry.kind {
+                EntryKind::Task => self.run_entry(&entry, planned, pass, out)?,
+                EntryKind::Queue => self.execute_queue_round(&entry, planned, pass, out)?,
+            };
             if class == ResultClass::Fatal && !self.opts.keep_going {
                 out(&format!(
                     "scheduler_fatal_stop entry={} (use --keep-going to continue)",
@@ -1241,6 +2219,58 @@ fn write_report(path: &Path, report: &SchedulerReport) -> Result<(), String> {
     write_json_atomic(path, report).map_err(|e| format!("--report: {e}"))
 }
 
+/// Summarise the newest round present in `member_results` (P2 `--report` /
+/// `--status`). `None` when no member has been recorded yet.
+///
+/// The `member_results` ring buffer is capped (`MAX_QUEUE_MEMBER_RESULTS`), so
+/// the newest round is always complete for queues with <= 200 members.
+fn last_round_report(results: &[scheduler::QueueMemberResult]) -> Option<QueueRoundReport> {
+    let round = results.iter().map(|m| m.round).max()?;
+    let members: Vec<scheduler::QueueMemberResult> = results
+        .iter()
+        .filter(|m| m.round == round)
+        .cloned()
+        .collect();
+    let executed = members.iter().filter(|m| m.attempts > 0).count() as u64;
+    Some(QueueRoundReport {
+        round,
+        executed,
+        recorded: members.len() as u64,
+        members,
+    })
+}
+
+/// Build the per-queue summary used by both `--report` and `--status`
+/// (P2: "`--report` 与 status 输出同步").
+fn build_queue_reports(sched: &Scheduler, state: &SchedulerState, now: i64) -> Vec<QueueReport> {
+    sched
+        .queues
+        .iter()
+        .map(|q| {
+            let st = state.queues.get(&q.queue_id);
+            let finished = st.map(|s| scheduler::queue_should_finish(q, s)).unwrap_or(false);
+            // No state yet = never started = due whenever the entry allows it.
+            let next_due = match st {
+                Some(s) => scheduler::queue_next_due_ms(q, s, now),
+                None => Some(now),
+            };
+            QueueReport {
+                queue_id: q.queue_id.clone(),
+                name: q.name.clone(),
+                total_rounds: q.total_rounds,
+                on_failure: q.on_failure.as_str().to_string(),
+                between_ms: q.between_ms,
+                rounds_completed: st.map(|s| s.rounds_completed).unwrap_or(0),
+                empty_rounds: st.map(|s| s.empty_rounds).unwrap_or(0),
+                finished,
+                current_round: st.and_then(|s| s.current_round.clone()),
+                last_round: st.and_then(|s| last_round_report(&s.member_results)),
+                next_due_ms: next_due,
+            }
+        })
+        .collect()
+}
+
 /// Machine-readable status for the editor panel (`GET /scheduler`).
 ///
 /// Available as a public function so `serve.rs` (M1 panel) can render the same
@@ -1275,11 +2305,35 @@ pub fn status_json(opts: &SchedulerOptions) -> Result<Value, String> {
         .map(|entry| {
             let st = state.entries.get(&entry.entry_id);
             let used = quota_used(&state, entry, &cycles);
+            // P2: queue progress on the entry itself (rule 5/6/8) so the panel
+            // does not have to join `entries[]` with `queues[]` by queue_id.
+            let queue = entry.queue_id().map(|queue_id| {
+                let qst = state.queues.get(queue_id);
+                let queue = sched.queue(queue_id);
+                json!({
+                    "queue_id": queue_id,
+                    "total_rounds": queue.map(|q| q.total_rounds).unwrap_or(0),
+                    "rounds_completed": qst.map(|s| s.rounds_completed).unwrap_or(0),
+                    "empty_rounds": qst.map(|s| s.empty_rounds).unwrap_or(0),
+                    "finished": queue
+                        .map(|q| qst.map(|s| scheduler::queue_should_finish(q, s)).unwrap_or(false))
+                        .unwrap_or(false),
+                    "current_round": qst.and_then(|s| s.current_round.as_ref()).map(|r| json!({
+                        "index": r.index,
+                        "member_index": r.member_index,
+                        "started_ms": r.started_ms,
+                    })),
+                    "last_round": qst
+                        .and_then(|s| last_round_report(&s.member_results))
+                        .and_then(|r| serde_json::to_value(r).ok()),
+                })
+            });
             json!({
                 "entry_id": entry.entry_id,
                 "task": entry.task,
                 "kind": entry.kind.as_str(),
                 "queue_id": entry.queue_id(),
+                "queue": queue,
                 "enabled": entry.enabled,
                 "lifecycle": entry.lifecycle.as_str(),
                 "windows": entry.windows.iter().map(|w| json!({
@@ -1349,8 +2403,8 @@ pub fn status_json(opts: &SchedulerOptions) -> Result<Value, String> {
         })
         .collect();
 
-    // Read-only queue view for P2/P3 (`docs/SCHEDULER-RUNNER-PLAN.md` §二 rules
-    // 5/6/8). P1 never writes queue state from here.
+    // Read-only queue view for P3 (`docs/SCHEDULER-RUNNER-PLAN.md` §二 rules
+    // 5/6/8). `--status` never writes queue state; it only reads it.
     let queues: Vec<Value> = sched
         .queues
         .iter()
@@ -1362,14 +2416,20 @@ pub fn status_json(opts: &SchedulerOptions) -> Result<Value, String> {
                 Some(s) => scheduler::queue_next_due_ms(q, s, now),
                 None => Some(now),
             };
+            let rounds_completed = st.map(|s| s.rounds_completed).unwrap_or(0);
             json!({
                 "queue_id": q.queue_id,
                 "name": q.name,
                 "members": q.members,
                 "total_rounds": q.total_rounds,
+                "rounds_completed": rounds_completed,
+                "rounds_remaining": if q.total_rounds == 0 {
+                    None
+                } else {
+                    Some(q.total_rounds.saturating_sub(rounds_completed))
+                },
                 "on_failure": q.on_failure.as_str(),
                 "between_ms": q.between_ms,
-                "rounds_completed": st.map(|s| s.rounds_completed).unwrap_or(0),
                 "empty_rounds": st.map(|s| s.empty_rounds).unwrap_or(0),
                 "finished": finished,
                 "current_round": st.and_then(|s| s.current_round.as_ref()).map(|r| json!({
@@ -1377,6 +2437,9 @@ pub fn status_json(opts: &SchedulerOptions) -> Result<Value, String> {
                     "member_index": r.member_index,
                     "started_ms": r.started_ms,
                 })),
+                "last_round": st
+                    .and_then(|s| last_round_report(&s.member_results))
+                    .and_then(|r| serde_json::to_value(r).ok()),
                 "member_results": st.map(|s| s.member_results.iter().map(|m| json!({
                     "round": m.round,
                     "member_index": m.member_index,
@@ -1384,6 +2447,7 @@ pub fn status_json(opts: &SchedulerOptions) -> Result<Value, String> {
                     "class": m.class,
                     "exit": m.exit,
                     "outcome": m.outcome,
+                    "clicks": m.clicks,
                     "attempts": m.attempts,
                     "duration_ms": m.duration_ms,
                     "finished_ms": m.finished_ms,
@@ -1578,6 +2642,7 @@ pub fn run_scheduler(
         let plan = plan_dry_run(&sched, &plan_state, now, out);
         report.next_wake_ms = Some(next_wake(&sched, &plan_state, now).at_ms);
         report.entries = build_entry_reports(&sched, &plan_state, now);
+        report.queues = build_queue_reports(&sched, &plan_state, now);
         report.stopped_reason = "dry_run".to_string();
         report.finished_ms = now_ms();
         out(&format!(
@@ -1616,6 +2681,12 @@ pub fn run_scheduler(
         recovery: recovery.clone(),
         seq: 0,
     };
+    // P1-2 exactly-once: a round that was closed on disk but whose entry-level
+    // `record_result` was not saved must be replayed before the first pass (the
+    // queue may already be `finished`, so `plan_pass` can never trigger it). The
+    // replay happens in memory here; the `save_state` below — always before the
+    // first pass — persists the applied result and the cleared flag atomically.
+    session.recover_pending_entry_records(out);
     // A marker that no longer maps to an enabled entry can never be finished:
     // drop it loudly instead of leaving the state dirty forever. A finished
     // queue entry counts as "not configured any more" (rule 6: it will never be
@@ -1738,22 +2809,9 @@ pub fn run_scheduler(
         if reason.is_none() && !session.sched().entries.iter().any(|e| e.enabled) {
             reason = Some("no_enabled_entries");
         }
-        // P1 convergence rule: queue execution is P2, so a stop-mode daemon
-        // whose only configured work is queue entries has nothing that could
-        // ever run. Stop loudly instead of sleeping forever (the P1 report
-        // flagged the old never-stopping behaviour).
-        if reason.is_none()
-            && session.sched().mode == RunMode::Stop
-            && plan.runnable.is_empty()
-            && session.sched().entries.iter().any(|e| e.enabled)
-            && !session
-                .sched()
-                .entries
-                .iter()
-                .any(|e| e.enabled && e.kind == EntryKind::Task)
-        {
-            reason = Some(scheduler::QUEUE_EXECUTOR_PENDING);
-        }
+        // (P1's `queue_executor_pending` stop-mode convergence rule is gone:
+        // P2 executes queue rounds, so a queue-only stop-mode config stops with
+        // `reason=stop` after the round instead of pretending nothing can run.)
         if let Some(r) = reason {
             stopped_reason = r.to_string();
             break;
@@ -1796,6 +2854,7 @@ pub fn run_scheduler(
     session.report.stopped_reason = stopped_reason.clone();
     session.report.finished_ms = now_ms();
     session.report.entries = build_entry_reports(&session.sched(), &session.state, now);
+    session.report.queues = build_queue_reports(&session.sched(), &session.state, now);
     session.report.next_wake_ms = Some(next_wake(&session.sched(), &session.state, now).at_ms);
     out(&format!(
         "scheduler_stop reason={stopped_reason} passes={} runs={} successes={} resources={} blocked={} failures={} fatals={}",
@@ -2344,6 +3403,53 @@ mod tests {
             clicks_dir: Some(td.join("clicks")),
             ..SchedulerOptions::default()
         }
+    }
+
+    // -- P2 queue-round test helpers (deterministic executor seam) ----------
+
+    /// One scripted attempt result (see `SchedulerOptions::test_exec`).
+    fn step(class: ResultClass) -> TestExecResult {
+        match class {
+            ResultClass::Success => TestExecResult::new(class, "done", "Done").with_clicks(2),
+            ResultClass::Resource => TestExecResult::new(class, "no_resource", "Failed"),
+            ResultClass::Blocked => TestExecResult::new(class, "window_closed", "Blocked"),
+            ResultClass::Retryable => TestExecResult::new(class, "failed", "Failed"),
+            ResultClass::Fatal => TestExecResult::new(class, "exhausted", "Fatal"),
+        }
+    }
+
+    fn queue_opts(td: &Path, config: PathBuf, exec: TestExec) -> SchedulerOptions {
+        let mut o = base_opts(td, config, None);
+        o.test_exec = Some(exec);
+        o
+    }
+
+    /// A v4 queue config with one `kind=queue` entry; `members`/`total_rounds`/
+    /// `on_failure`/`between_ms`/`retry`/`quota` are all explicit so every test
+    /// is independent of the defaults.
+    fn queue_config_text(
+        members: &[&str],
+        total_rounds: u64,
+        on_failure: &str,
+        retry: u32,
+        entry_extra: &str,
+        config_extra: &str,
+    ) -> String {
+        let members: Vec<String> = members.iter().map(|m| format!("\"{m}\"")).collect();
+        format!(
+            r#"{{"schema_version":4,
+                "config":{{"mode":"loop","loop_interval_s":0{config_extra}}},
+                "queues":[{{"queue_id":"q1","members":[{}],"total_rounds":{total_rounds},
+                           "on_failure":"{on_failure}","between_ms":0}}],
+                "entries":[{{"entry_id":"qe","task":"q1","kind":"queue","retry":{retry}{entry_extra}}}]}}"#,
+            members.join(",")
+        )
+    }
+
+    fn exec_two(first: ResultClass, second: ResultClass) -> TestExec {
+        TestExec::new()
+            .with("成员1", vec![step(first)])
+            .with("成员2", vec![step(second)])
     }
 
     fn write_config(td: &Path, text: &str) -> PathBuf {
@@ -3193,7 +4299,20 @@ mod tests {
         assert_eq!(v["entries"][0]["entry_id"], "e1");
         assert_eq!(v["entries"][0]["quota_used"], 1);
         assert_eq!(v["stopped_reason"], "once");
+        assert!(
+            v["queues"].as_array().map(|a| a.is_empty()).unwrap_or(false),
+            "task-only configs report an empty queue list: {v}"
+        );
         assert_eq!(report.entries[0].quota_remaining, Some(0));
+
+        // Backward compatibility: an older report has no `queues` key; the
+        // `#[serde(default)]` field reads as an empty list (additive P2 change).
+        let mut old = serde_json::to_value(&report).expect("report to json");
+        old.as_object_mut().expect("report object").remove("queues");
+        let reparsed: SchedulerReport =
+            serde_json::from_value(old).expect("older report still parses");
+        assert!(reparsed.queues.is_empty());
+        assert_eq!(reparsed.runs, report.runs);
         std::fs::remove_dir_all(&td).ok();
     }
 
@@ -3275,6 +4394,7 @@ mod tests {
                     member_index: 1,
                     started_ms: 500,
                 }),
+                pending_entry_record: None,
                 member_results: vec![scheduler::QueueMemberResult {
                     round: 2,
                     member_index: 0,
@@ -3282,6 +4402,7 @@ mod tests {
                     class: "success".to_string(),
                     exit: "done".to_string(),
                     outcome: "Done".to_string(),
+                    clicks: 0,
                     attempts: 1,
                     duration_ms: 10,
                     finished_ms: 600,
@@ -3339,6 +4460,7 @@ mod tests {
                     member_index: 0,
                     started_ms: 1,
                 }),
+                pending_entry_record: None,
                 member_results: vec![scheduler::QueueMemberResult {
                     round: 1,
                     member_index: 0,
@@ -3346,6 +4468,7 @@ mod tests {
                     class: "success".to_string(),
                     exit: "done".to_string(),
                     outcome: "Done".to_string(),
+                    clicks: 0,
                     attempts: 1,
                     duration_ms: 5,
                     finished_ms: 10,
@@ -3368,9 +4491,21 @@ mod tests {
         assert_eq!(q["member_results"][0]["task"], "任务1");
         assert_eq!(q["finished"], false);
         assert!(!q["next_due_ms"].is_null(), "an open round is due now");
-        // The queue entry is labelled and carries the queue_id (not a task name).
+        // P2 status additions: last-round summary + rounds_remaining.
+        assert_eq!(q["last_round"]["round"], 1);
+        assert_eq!(q["last_round"]["executed"], 1);
+        assert_eq!(q["last_round"]["members"][0]["task"], "任务1");
+        assert_eq!(q["last_round"]["members"][0]["clicks"], 0);
+        assert_eq!(q["rounds_remaining"], 1);
+        // The queue entry is labelled and carries the queue_id (not a task name)
+        // plus its P2 round progress (rule 5/6/8).
         assert_eq!(v["entries"][0]["kind"], "queue");
         assert_eq!(v["entries"][0]["queue_id"], "q1");
+        assert_eq!(v["entries"][0]["queue"]["rounds_completed"], 1);
+        assert_eq!(v["entries"][0]["queue"]["current_round"]["index"], 2);
+        assert_eq!(v["entries"][0]["queue"]["finished"], false);
+        assert_eq!(v["entries"][0]["queue"]["last_round"]["round"], 1);
+
         // Queue members are tasks for the reset-memory multi-select.
         let tasks: Vec<&str> = v["task_choices"]
             .as_array()
@@ -3385,6 +4520,7 @@ mod tests {
         let fresh = status_json(&opts).expect("status without state");
         assert_eq!(fresh["queues"][0]["rounds_completed"], 0);
         assert_eq!(fresh["queues"][0]["finished"], false);
+        assert!(fresh["queues"][0]["last_round"].is_null());
         assert!(!fresh["queues"][0]["next_due_ms"].is_null());
         std::fs::remove_dir_all(&td).ok();
     }
@@ -3409,69 +4545,561 @@ mod tests {
         std::fs::remove_dir_all(&td).ok();
     }
 
+    // -- queue rounds (P2): executor, lazy counting, recovery, policies ------
+
     #[test]
-    fn queue_entry_is_not_executed_in_p1() {
-        let td = tmpdir("queue-p1");
-        write_task(&td, "任务1", OK_FLOW, None);
+    fn queue_round_runs_two_members_and_counts_one_round() {
+        let td = tmpdir("q-round");
+        write_task(&td, "成员1", OK_FLOW, None);
+        write_task(&td, "成员2", OK_FLOW, None);
         let config = write_config(
             &td,
-            r#"{"schema_version":4,
-                "queues":[{"queue_id":"q1","members":["任务1"],"total_rounds":1}],
-                "entries":[{"entry_id":"qe","task":"q1","kind":"queue","lifecycle":"temp"}]}"#,
+            &queue_config_text(
+                &["成员1", "成员2"],
+                2,
+                "continue",
+                0,
+                r#","quota":{"per":"day","times":2}"#,
+                "",
+            ),
         );
-        let mut opts = base_opts(&td, config.clone(), None);
+        let mut opts = queue_opts(
+            &td,
+            config,
+            exec_two(ResultClass::Success, ResultClass::Success),
+        );
+        let report_path = td.join("report.json");
+        opts.report = Some(report_path.clone());
         let mut lines = Vec::new();
         let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run");
-        assert_eq!(report.runs, 0, "P1 ships no queue execution: {report:?}");
-        assert!(
-            lines
-                .iter()
-                .any(|l| l.contains("scheduler_skip entry=qe")
-                    && l.contains("queue_executor_pending")),
-            "the queue entry is planned as a *skipped* entry: {lines:?}"
-        );
-        assert!(
-            !lines
-                .iter()
-                .any(|l| l.contains("scheduler_queue_pending")),
-            "the old runnable-but-skipped log line must be gone: {lines:?}"
-        );
-        assert_eq!(report.stopped_reason, "once", "--once still wins");
-        let clicks = std::fs::read_dir(td.join("clicks"))
-            .map(|d| d.count())
-            .unwrap_or(0);
-        assert_eq!(clicks, 0, "nothing may be executed");
 
-        // STOP mode without --once must converge instead of sleeping forever:
-        // queue entries are the only enabled work and P1 has no executor.
-        opts.once = false;
-        let mut lines = Vec::new();
-        let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run stop");
-        assert_eq!(report.runs, 0, "{report:?}");
+        // One queue round = ONE entry run (members are not entry runs).
+        assert_eq!(report.runs, 1, "{report:?}");
+        assert_eq!(report.successes, 1, "{report:?}");
+        assert_eq!(report.stopped_reason, "once");
+        let state = state_of(&opts);
+        let q = &state.queues["q1"];
+        assert_eq!(q.rounds_completed, 1);
+        assert_eq!(q.empty_rounds, 0);
+        assert!(!q.finished);
+        assert_eq!(q.member_results.len(), 2);
+        assert_eq!(q.member_results[0].task, "成员1");
+        assert_eq!(q.member_results[1].task, "成员2");
+        assert_eq!(q.member_results[0].clicks, 2, "member clicks are recorded");
         assert_eq!(
-            report.stopped_reason, scheduler::QUEUE_EXECUTOR_PENDING,
-            "a queue-only stop-mode config stops loudly: {lines:?}"
+            state.entries["qe"].quota_day.used, 1,
+            "one successful round consumes one entry quota"
         );
-        assert_eq!(load_state(&opts.state_path()).unwrap().last_stop,
-            scheduler::QUEUE_EXECUTOR_PENDING);
+        // Members ran serially in queue order.
+        let calls = opts.test_exec.as_ref().unwrap().calls();
+        assert_eq!(
+            calls.iter().map(|c| c.task.as_str()).collect::<Vec<_>>(),
+            vec!["成员1", "成员2"],
+            "{calls:?}"
+        );
+        // Events are complete (`queue_round_started` ... `queue_round_finished`).
+        let events = std::fs::read_to_string(opts.events_path()).unwrap();
+        for event in [
+            "queue_round_started",
+            "queue_member_started",
+            "queue_member_finished",
+            "queue_round_finished",
+            "run_finished",
+        ] {
+            assert!(
+                events.contains(&format!("\"event\":\"{event}\"")),
+                "missing {event}: {events}"
+            );
+        }
+        assert!(events.contains("\"queue_id\":\"q1\""), "{events}");
+        // Report carries the queue summary (P2: --report + status synced).
+        assert_eq!(report.queues.len(), 1);
+        assert_eq!(report.queues[0].queue_id, "q1");
+        assert_eq!(report.queues[0].rounds_completed, 1);
+        let last = report.queues[0].last_round.as_ref().expect("last round");
+        assert_eq!(last.round, 1);
+        assert_eq!(last.executed, 2);
+        assert_eq!(last.recorded, 2);
+        // ... and the same shape is serialized to `--report`.
+        let raw: Value =
+            serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+        assert_eq!(raw["schema_version"], 4);
+        assert_eq!(raw["queues"][0]["queue_id"], "q1");
+        assert_eq!(raw["queues"][0]["rounds_completed"], 1);
+        assert_eq!(raw["queues"][0]["last_round"]["round"], 1);
+        assert_eq!(raw["queues"][0]["last_round"]["members"][1]["task"], "成员2");
+        assert_eq!(raw["queues"][0]["last_round"]["members"][0]["clicks"], 2);
+        assert!(lines.iter().any(|l| l.contains("scheduler_queue_round_done")));
+        std::fs::remove_dir_all(&td).ok();
+    }
 
-        // --dry-run: same plan classification, still zero writes.
-        std::fs::remove_file(opts.state_path()).unwrap();
-        opts.dry_run = true;
+    #[test]
+    fn queue_member_failure_continues_by_default() {
+        let td = tmpdir("q-continue");
+        write_task(&td, "成员1", OK_FLOW, None);
+        write_task(&td, "成员2", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(
+                &["成员1", "成员2"],
+                0,
+                "continue",
+                0,
+                "",
+                "",
+            ),
+        );
+        let opts = queue_opts(
+            &td,
+            config,
+            exec_two(ResultClass::Retryable, ResultClass::Success),
+        );
+        let report = run_scheduler(&opts, &mut |_| {}).expect("run");
+        assert_eq!(report.runs, 1, "{report:?}");
+        assert_eq!(report.successes, 1, "one member succeeded: {report:?}");
+        assert_eq!(report.failures, 0);
+        let state = state_of(&opts);
+        let q = &state.queues["q1"];
+        assert_eq!(q.rounds_completed, 1, "the round still counts (rule 5)");
+        assert_eq!(q.member_results.len(), 2);
+        assert_eq!(q.member_results[0].class, "retryable");
+        assert_eq!(q.member_results[1].class, "success");
+        assert_eq!(
+            opts.test_exec.as_ref().unwrap().calls().len(),
+            2,
+            "continue policy runs the next member"
+        );
+        assert_eq!(state.entries["qe"].last_result, "success");
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_fail_fast_aborts_the_round_but_still_counts_it() {
+        let td = tmpdir("q-failfast");
+        write_task(&td, "成员1", OK_FLOW, None);
+        write_task(&td, "成员2", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(&["成员1", "成员2"], 0, "fail_fast", 0, "", ""),
+        );
+        let opts = queue_opts(
+            &td,
+            config,
+            exec_two(ResultClass::Retryable, ResultClass::Success),
+        );
+        let report = run_scheduler(&opts, &mut |_| {}).expect("run");
+        assert_eq!(report.runs, 1, "{report:?}");
+        assert_eq!(
+            report.failures, 1,
+            "executed but all executed members failed -> retryable: {report:?}"
+        );
+        let state = state_of(&opts);
+        let q = &state.queues["q1"];
+        assert_eq!(q.rounds_completed, 1, "fail_fast still counts the round (rule 7)");
+        assert_eq!(q.member_results.len(), 1, "the second member was not run");
+        assert_eq!(q.member_results[0].class, "retryable");
+        assert_eq!(
+            opts.test_exec.as_ref().unwrap().calls().len(),
+            1,
+            "fail_fast aborts the remaining members"
+        );
+        let events = std::fs::read_to_string(opts.events_path()).unwrap();
+        assert!(
+            events.contains("\"event\":\"queue_round_finished\"")
+                && events.contains("\"aborted\":true"),
+            "{events}"
+        );
+        assert!(
+            state.entries["qe"].cooldown_until_ms > 0,
+            "retryable puts the entry into cooldown"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_empty_round_does_not_consume_total_rounds() {
+        let td = tmpdir("q-empty");
+        write_task(&td, "成员1", OK_FLOW, None);
+        write_task(&td, "成员2", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(&["成员1", "成员2"], 2, "continue", 0, "", ""),
+        );
+        // Both members fail the rule-4 precheck (simulated mid-run deletion).
+        let exec = TestExec::new().skip_member("成员1").skip_member("成员2");
+        let opts = queue_opts(&td, config, exec);
+        let report = run_scheduler(&opts, &mut |_| {}).expect("run");
+        assert_eq!(report.runs, 1, "{report:?}");
+        assert_eq!(report.blocked, 1, "an empty round is blocked: {report:?}");
+        let state = state_of(&opts);
+        let q = &state.queues["q1"];
+        assert_eq!(q.rounds_completed, 0, "lazy counting: no total_rounds burned");
+        assert_eq!(q.empty_rounds, 1);
+        assert!(!q.finished, "an empty round cannot finish the queue");
+        assert_eq!(q.member_results.len(), 2, "skipped members are recorded");
+        assert!(q.member_results.iter().all(|m| m.attempts == 0));
+        assert!(
+            opts.test_exec.as_ref().unwrap().calls().is_empty(),
+            "skipped members are never executed"
+        );
+        let events = std::fs::read_to_string(opts.events_path()).unwrap();
+        assert!(events.contains("\"event\":\"empty_round\""), "{events}");
+        assert_eq!(state.entries["qe"].last_result, "blocked");
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_finishes_at_total_rounds_and_the_plan_skips_it() {
+        let td = tmpdir("q-finish");
+        write_task(&td, "成员1", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(&["成员1"], 1, "continue", 0, "", ""),
+        );
+        let mut opts = queue_opts(
+            &td,
+            config,
+            TestExec::new().with("成员1", vec![step(ResultClass::Success)]),
+        );
+        opts.once = false;
+        opts.max_passes = Some(2);
         let mut lines = Vec::new();
-        run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("dry run");
+        let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run");
+        assert_eq!(report.passes, 2, "{report:?}");
+        assert_eq!(report.runs, 1, "the second pass plans nothing");
+        assert_eq!(report.stopped_reason, "max_rounds");
+        let state = state_of(&opts);
+        let q = &state.queues["q1"];
+        assert_eq!(q.rounds_completed, 1);
+        assert!(q.finished, "rule 6: total_rounds reached");
+        assert_eq!(q.current_round, None, "the round was closed");
         assert!(
             lines.iter().any(|l| l.contains("scheduler_skip entry=qe")
-                && l.contains("queue_executor_pending")),
-            "{lines:?}"
+                && l.contains("queue_finished")),
+            "a finished queue is planned as skipped: {lines:?}"
         );
+        assert!(report.queues[0].finished);
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_resumes_an_open_round_after_a_crash() {
+        let td = tmpdir("q-resume");
+        write_task(&td, "成员1", OK_FLOW, None);
+        write_task(&td, "成员2", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(&["成员1", "成员2"], 2, "continue", 0, "", ""),
+        );
+        let opts = queue_opts(
+            &td,
+            config,
+            exec_two(ResultClass::Success, ResultClass::Success),
+        );
+        // Crash residue: round 1 is open at member 1 (member 0 was recorded),
+        // plus the dirty `running` marker of the member that was executing.
+        let mut state = SchedulerState::new();
+        state.queues.insert(
+            "q1".to_string(),
+            scheduler::QueueState {
+                total_rounds: 2,
+                rounds_completed: 0,
+                empty_rounds: 0,
+                finished: false,
+                current_round: Some(scheduler::QueueRoundState {
+                    index: 1,
+                    member_index: 1,
+                    started_ms: 1,
+                }),
+                pending_entry_record: None,
+                member_results: vec![scheduler::QueueMemberResult {
+                    round: 1,
+                    member_index: 0,
+                    task: "成员1".to_string(),
+                    class: "success".to_string(),
+                    exit: "done".to_string(),
+                    outcome: "Done".to_string(),
+                    clicks: 1,
+                    attempts: 1,
+                    duration_ms: 1,
+                    finished_ms: 1,
+                }],
+            },
+        );
+        state.running = Some(scheduler::RunningEntry {
+            entry_id: "qe".to_string(),
+            task: "成员2".to_string(),
+            pass: 1,
+            attempt: 1,
+            since_ms: 1,
+            resume: false,
+        });
+        write_json_atomic(&opts.state_path(), &state).unwrap();
+
+        let mut lines = Vec::new();
+        let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run");
+        assert_eq!(report.runs, 1, "{report:?}");
+        let after = state_of(&opts);
+        let q = &after.queues["q1"];
+        assert_eq!(q.current_round, None);
+        assert_eq!(q.rounds_completed, 1, "the resumed round is counted exactly once");
+        assert_eq!(q.member_results.len(), 2, "member 0 was not re-run");
+        assert_eq!(q.member_results[1].task, "成员2");
+        let calls = opts.test_exec.as_ref().unwrap().calls();
+        assert_eq!(calls.len(), 1, "only the remaining member ran: {calls:?}");
+        assert_eq!(calls[0].task, "成员2");
+        assert!(after.running.is_none(), "the running marker is cleared");
         assert!(
-            lines.iter().any(|l| l.contains("scheduler_summary dry_run=true")
-                && l.contains("runnable=0")
-                && l.contains("skipped=1")),
+            lines.iter().any(|l| l.contains("scheduler_queue_round_resume")),
             "{lines:?}"
         );
-        assert!(!opts.state_path().exists(), "dry-run never writes state");
+        let events = std::fs::read_to_string(opts.events_path()).unwrap();
+        assert!(events.contains("\"event\":\"queue_round_resumed\""), "{events}");
+        assert!(
+            !events.contains("\"event\":\"queue_round_started\""),
+            "a resumed round must not begin a new one: {events}"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_member_retries_one_plus_entry_retry_times() {
+        let td = tmpdir("q-retry");
+        write_task(&td, "成员1", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(&["成员1"], 0, "continue", 1, "", ""),
+        );
+        let opts = queue_opts(
+            &td,
+            config,
+            TestExec::new().with(
+                "成员1",
+                vec![step(ResultClass::Retryable), step(ResultClass::Success)],
+            ),
+        );
+        let report = run_scheduler(&opts, &mut |_| {}).expect("run");
+        assert_eq!(report.runs, 1, "{report:?}");
+        assert_eq!(report.successes, 1);
+        let state = state_of(&opts);
+        let q = &state.queues["q1"];
+        assert_eq!(q.member_results.len(), 1);
+        assert_eq!(q.member_results[0].attempts, 2, "1 + entry.retry = 2 attempts");
+        assert_eq!(q.member_results[0].class, "success", "the retry succeeded");
+        let calls = opts.test_exec.as_ref().unwrap().calls();
+        assert_eq!(
+            calls.iter().map(|c| c.attempt).collect::<Vec<_>>(),
+            vec![1, 2],
+            "{calls:?}"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_member_retry_resumes_from_the_checkpoint() {
+        let td = tmpdir("q-resume-retry");
+        write_task(&td, "成员1", OK_FLOW, None);
+        let state_dir = td.join("成员1").join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(state_dir.join("checkpoint.json"), "{}").unwrap();
+        let config = write_config(
+            &td,
+            &queue_config_text(&["成员1"], 0, "continue", 1, "", ""),
+        );
+        let opts = queue_opts(
+            &td,
+            config,
+            TestExec::new().with(
+                "成员1",
+                vec![step(ResultClass::Retryable), step(ResultClass::Success)],
+            ),
+        );
+        run_scheduler(&opts, &mut |_| {}).expect("run");
+        let calls = opts.test_exec.as_ref().unwrap().calls();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(!calls[0].resume, "the first attempt starts fresh");
+        assert!(calls[1].resume, "the retry resumes from the checkpoint");
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_entry_quota_limits_rounds_per_day() {
+        let td = tmpdir("q-quota");
+        write_task(&td, "成员1", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(
+                &["成员1"],
+                0,
+                "continue",
+                0,
+                r#","quota":{"per":"day","times":1}"#,
+                "",
+            ),
+        );
+        let mut opts = queue_opts(
+            &td,
+            config,
+            TestExec::new().with("成员1", vec![step(ResultClass::Success)]),
+        );
+        opts.once = false;
+        opts.max_passes = Some(2);
+        let mut lines = Vec::new();
+        let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run");
+        assert_eq!(report.passes, 2, "{report:?}");
+        assert_eq!(report.runs, 1, "quota blocks the second round: {report:?}");
+        let state = state_of(&opts);
+        assert_eq!(state.queues["q1"].rounds_completed, 1);
+        assert_eq!(state.entries["qe"].quota_day.used, 1);
+        assert!(
+            lines.iter().any(|l| l.contains("scheduler_skip entry=qe")
+                && l.contains("quota_exhausted")),
+            "{lines:?}"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn stop_mode_runs_one_queue_round_then_stops() {
+        let td = tmpdir("q-stop");
+        write_task(&td, "成员1", OK_FLOW, None);
+        write_task(&td, "成员2", OK_FLOW, None);
+        let mut text = queue_config_text(&["成员1", "成员2"], 0, "continue", 0, "", "");
+        text = text.replace(r#""mode":"loop""#, r#""mode":"stop""#);
+        let config = write_config(&td, &text);
+        let mut opts = queue_opts(
+            &td,
+            config,
+            exec_two(ResultClass::Success, ResultClass::Success),
+        );
+        opts.once = false;
+        let report = run_scheduler(&opts, &mut |_| {}).expect("run");
+        assert_eq!(report.stopped_reason, "stop", "{report:?}");
+        assert_eq!(report.passes, 1);
+        assert_eq!(report.runs, 1);
+        let state = state_of(&opts);
+        assert_eq!(state.queues["q1"].rounds_completed, 1);
+        assert_eq!(state.last_stop, "stop");
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_rounds_are_counted_lazily_across_passes() {
+        let td = tmpdir("q-lazy");
+        write_task(&td, "成员1", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(&["成员1"], 2, "continue", 0, "", ""),
+        );
+        let mut opts = queue_opts(
+            &td,
+            config,
+            TestExec::new().with("成员1", vec![step(ResultClass::Success)]),
+        );
+        opts.once = false;
+        opts.max_passes = Some(3);
+        let report = run_scheduler(&opts, &mut |_| {}).expect("run");
+        assert_eq!(report.passes, 3, "{report:?}");
+        assert_eq!(report.runs, 2, "exactly total_rounds rounds ran: {report:?}");
+        assert_eq!(report.stopped_reason, "max_rounds");
+        let state = state_of(&opts);
+        let q = &state.queues["q1"];
+        assert_eq!(q.rounds_completed, 2);
+        assert_eq!(q.empty_rounds, 0);
+        assert!(q.finished);
+        assert_eq!(q.member_results.len(), 2);
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_fatal_member_stops_the_daemon() {
+        let td = tmpdir("q-fatal");
+        write_task(&td, "成员1", OK_FLOW, None);
+        write_task(&td, "成员2", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(&["成员1", "成员2"], 0, "continue", 0, "", ""),
+        );
+        let opts = queue_opts(
+            &td,
+            config,
+            exec_two(ResultClass::Fatal, ResultClass::Success),
+        );
+        let mut lines = Vec::new();
+        let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run");
+        assert_eq!(report.stopped_reason, "fatal", "{report:?}");
+        assert_eq!(report.fatals, 1);
+        assert_eq!(
+            opts.test_exec.as_ref().unwrap().calls().len(),
+            1,
+            "a fatal member always aborts the round (fail_fast semantics)"
+        );
+        let state = state_of(&opts);
+        assert_eq!(state.queues["q1"].rounds_completed, 1, "the executed round counts");
+        assert_eq!(state.entries["qe"].last_result, "fatal");
+        assert!(
+            lines.iter().any(|l| l.contains("scheduler_queue_round_abort")
+                && l.contains("reason=fatal")),
+            "{lines:?}"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn reset_memory_reopens_a_finished_queue() {
+        let td = tmpdir("q-reset-reopen");
+        write_task(&td, "成员1", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(&["成员1"], 1, "continue", 0, "", ""),
+        );
+        let opts = queue_opts(
+            &td,
+            config.clone(),
+            TestExec::new().with("成员1", vec![step(ResultClass::Success)]),
+        );
+        run_scheduler(&opts, &mut |_| {}).expect("first run");
+        assert!(state_of(&opts).queues["q1"].finished);
+
+        let reset = ResetOptions {
+            config,
+            tasks_dir: td.clone(),
+            tasks: vec!["成员1".to_string()],
+            include_checkpoint: true,
+            ..ResetOptions::default()
+        };
+        reset_memory(&reset, &mut |_| {}).expect("reset");
+        assert!(!state_of(&opts).queues.contains_key("q1"));
+
+        let report = run_scheduler(&opts, &mut |_| {}).expect("second run");
+        assert_eq!(report.runs, 1, "reset-memory makes the queue runnable again");
+        let q = &state_of(&opts).queues["q1"];
+        assert_eq!(q.rounds_completed, 1);
+        assert!(q.finished);
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_fatal_option_keeps_going_with_keep_going() {
+        // `--keep-going` must keep the session alive after a fatal member; the
+        // round itself is still aborted (fail_fast semantics).
+        let td = tmpdir("q-fatal-keep");
+        write_task(&td, "成员1", OK_FLOW, None);
+        write_task(&td, "成员2", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(&["成员1", "成员2"], 0, "continue", 0, "", ""),
+        );
+        let mut opts = queue_opts(
+            &td,
+            config,
+            exec_two(ResultClass::Fatal, ResultClass::Success),
+        );
+        opts.keep_going = true;
+        let report = run_scheduler(&opts, &mut |_| {}).expect("run");
+        assert_ne!(report.stopped_reason, "fatal", "{report:?}");
+        assert_eq!(report.fatals, 1);
+        assert_eq!(opts.test_exec.as_ref().unwrap().calls().len(), 1);
         std::fs::remove_dir_all(&td).ok();
     }
 
@@ -3494,6 +5122,7 @@ mod tests {
                 empty_rounds: 0,
                 finished: true,
                 current_round: None,
+                pending_entry_record: None,
                 member_results: vec![scheduler::QueueMemberResult {
                     round: 1,
                     member_index: 0,
@@ -3501,6 +5130,7 @@ mod tests {
                     class: "success".to_string(),
                     exit: "done".to_string(),
                     outcome: "Done".to_string(),
+                    clicks: 0,
                     attempts: 1,
                     duration_ms: 1,
                     finished_ms: 1,
@@ -3599,6 +5229,552 @@ mod tests {
         let migrated: Value =
             serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
         assert_eq!(migrated["schema_version"], 4);
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    // -- P1/P2 review fixes (resume classification, exactly-once, gates) -----
+
+    #[test]
+    fn queue_resume_after_success_plus_failure_classifies_success() {
+        // P1-1: member 0 succeeded before the crash; the only member this
+        // process runs fails. The whole round is still a success (quota is
+        // consumed, no retryable/cooldown).
+        let td = tmpdir("q-resume-class");
+        write_task(&td, "成员1", OK_FLOW, None);
+        write_task(&td, "成员2", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(
+                &["成员1", "成员2"],
+                0,
+                "continue",
+                0,
+                r#","quota":{"per":"day","times":2}"#,
+                "",
+            ),
+        );
+        let opts = queue_opts(
+            &td,
+            config,
+            TestExec::new().with("成员2", vec![step(ResultClass::Retryable)]),
+        );
+        let mut state = SchedulerState::new();
+        state.queues.insert(
+            "q1".to_string(),
+            scheduler::QueueState {
+                current_round: Some(scheduler::QueueRoundState {
+                    index: 1,
+                    member_index: 1,
+                    started_ms: 1,
+                }),
+                member_results: vec![scheduler::QueueMemberResult {
+                    round: 1,
+                    member_index: 0,
+                    task: "成员1".to_string(),
+                    class: "success".to_string(),
+                    exit: "done".to_string(),
+                    outcome: "Done".to_string(),
+                    clicks: 2,
+                    attempts: 1,
+                    duration_ms: 1,
+                    finished_ms: 1,
+                }],
+                ..scheduler::QueueState::default()
+            },
+        );
+        state.running = Some(scheduler::RunningEntry {
+            entry_id: "qe".to_string(),
+            task: "成员2".to_string(),
+            pass: 1,
+            attempt: 1,
+            since_ms: 1,
+            resume: false,
+        });
+        write_json_atomic(&opts.state_path(), &state).unwrap();
+
+        let mut lines = Vec::new();
+        let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run");
+        assert_eq!(report.runs, 1, "{report:?}");
+        assert_eq!(report.successes, 1, "{report:?}");
+        assert_eq!(report.failures, 0, "the round is not retryable: {report:?}");
+        let after = state_of(&opts);
+        let q = &after.queues["q1"];
+        assert_eq!(q.current_round, None);
+        assert_eq!(q.rounds_completed, 1, "the resumed round counts once");
+        assert_eq!(q.member_results.len(), 2);
+        assert_eq!(q.member_results[1].class, "retryable");
+        let e = &after.entries["qe"];
+        assert_eq!(
+            e.last_result, "success",
+            "classification must consider the persisted member 0"
+        );
+        assert_eq!(e.quota_day.used, 1, "a successful round consumes quota");
+        assert_eq!(e.cooldown_until_ms, 0, "success sets no cooldown");
+        assert_eq!(
+            opts.test_exec.as_ref().unwrap().calls().len(),
+            1,
+            "only the remaining member runs"
+        );
+        let events = std::fs::read_to_string(opts.events_path()).unwrap();
+        assert!(
+            events.contains("\"event\":\"queue_round_finished\"")
+                && events.contains("\"executed_members\":2")
+                && events.contains("\"executed\":true"),
+            "the resumed round reports both members: {events}"
+        );
+        assert!(
+            events.contains("\"event\":\"run_finished\"")
+                && events.contains("\"attempts\":2")
+                && events.contains("\"clicks\":2"),
+            "run_finished aggregates the whole round: {events}"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_resume_after_a_recorded_fatal_stays_fatal() {
+        // P1-1: a fatal member was recorded before the crash; the remaining
+        // member must not run and the round must not become a success.
+        let td = tmpdir("q-resume-fatal");
+        write_task(&td, "成员1", OK_FLOW, None);
+        write_task(&td, "成员2", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(&["成员1", "成员2"], 0, "continue", 0, "", ""),
+        );
+        let opts = queue_opts(
+            &td,
+            config,
+            TestExec::new().with("成员2", vec![step(ResultClass::Success)]),
+        );
+        let mut state = SchedulerState::new();
+        state.queues.insert(
+            "q1".to_string(),
+            scheduler::QueueState {
+                current_round: Some(scheduler::QueueRoundState {
+                    index: 1,
+                    member_index: 1,
+                    started_ms: 1,
+                }),
+                member_results: vec![scheduler::QueueMemberResult {
+                    round: 1,
+                    member_index: 0,
+                    task: "成员1".to_string(),
+                    class: "fatal".to_string(),
+                    exit: "exhausted".to_string(),
+                    outcome: "Fatal".to_string(),
+                    clicks: 0,
+                    attempts: 1,
+                    duration_ms: 1,
+                    finished_ms: 1,
+                }],
+                ..scheduler::QueueState::default()
+            },
+        );
+        write_json_atomic(&opts.state_path(), &state).unwrap();
+
+        let mut lines = Vec::new();
+        let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run");
+        assert!(
+            opts.test_exec.as_ref().unwrap().calls().is_empty(),
+            "remaining members must not run after a recorded fatal"
+        );
+        assert_eq!(report.fatals, 1, "{report:?}");
+        assert_eq!(report.stopped_reason, "fatal");
+        let after = state_of(&opts);
+        let q = &after.queues["q1"];
+        assert_eq!(q.current_round, None);
+        assert_eq!(q.rounds_completed, 1, "the executed round still counts once");
+        assert_eq!(q.member_results.len(), 1, "the second member never ran");
+        assert_eq!(after.entries["qe"].last_result, "fatal");
+        assert_eq!(
+            after.entries["qe"].quota_day.used, 0,
+            "fatal consumes no quota"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("scheduler_queue_round_abort")
+                && l.contains("reason=fatal")
+                && l.contains("resumed=true")),
+            "{lines:?}"
+        );
+        let events = std::fs::read_to_string(opts.events_path()).unwrap();
+        assert!(events.contains("\"aborted\":true"), "{events}");
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_resume_after_a_recorded_failure_aborts_the_fail_fast_round() {
+        // P1-1: the `aborted` flag is rebuilt from the persisted round too; a
+        // fail_fast round does not run the remaining members after a restart.
+        let td = tmpdir("q-resume-failfast");
+        write_task(&td, "成员1", OK_FLOW, None);
+        write_task(&td, "成员2", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(&["成员1", "成员2"], 0, "fail_fast", 0, "", ""),
+        );
+        let opts = queue_opts(
+            &td,
+            config,
+            TestExec::new().with("成员2", vec![step(ResultClass::Success)]),
+        );
+        let mut state = SchedulerState::new();
+        state.queues.insert(
+            "q1".to_string(),
+            scheduler::QueueState {
+                current_round: Some(scheduler::QueueRoundState {
+                    index: 1,
+                    member_index: 1,
+                    started_ms: 1,
+                }),
+                member_results: vec![scheduler::QueueMemberResult {
+                    round: 1,
+                    member_index: 0,
+                    task: "成员1".to_string(),
+                    class: "retryable".to_string(),
+                    exit: "failed".to_string(),
+                    outcome: "Failed".to_string(),
+                    clicks: 0,
+                    attempts: 1,
+                    duration_ms: 1,
+                    finished_ms: 1,
+                }],
+                ..scheduler::QueueState::default()
+            },
+        );
+        write_json_atomic(&opts.state_path(), &state).unwrap();
+
+        let report = run_scheduler(&opts, &mut |_| {}).expect("run");
+        assert!(
+            opts.test_exec.as_ref().unwrap().calls().is_empty(),
+            "fail_fast abort survives the restart"
+        );
+        assert_eq!(report.failures, 1, "{report:?}");
+        let after = state_of(&opts);
+        let q = &after.queues["q1"];
+        assert_eq!(q.rounds_completed, 1);
+        assert_eq!(q.member_results.len(), 1);
+        assert_eq!(after.entries["qe"].last_result, "retryable");
+        assert!(
+            after.entries["qe"].cooldown_until_ms > 0,
+            "retryable puts the entry into cooldown"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn pending_entry_record_is_recovered_exactly_once_at_startup() {
+        // P1-2: the round was closed (the queue is already finished) but the
+        // entry-level result was never applied. The next start must apply it
+        // once — plan_pass can never trigger a finished queue again.
+        let td = tmpdir("q-pending-record");
+        write_task(&td, "成员1", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(
+                &["成员1"],
+                1,
+                "continue",
+                0,
+                r#","quota":{"per":"day","times":2}"#,
+                "",
+            ),
+        );
+        let opts = queue_opts(&td, config, TestExec::new());
+        let finished_ms = now_ms();
+        let mut state = SchedulerState::new();
+        state.queues.insert(
+            "q1".to_string(),
+            scheduler::QueueState {
+                total_rounds: 1,
+                rounds_completed: 1,
+                empty_rounds: 0,
+                finished: true,
+                current_round: None,
+                member_results: vec![scheduler::QueueMemberResult {
+                    round: 1,
+                    member_index: 0,
+                    task: "成员1".to_string(),
+                    class: "success".to_string(),
+                    exit: "done".to_string(),
+                    outcome: "Done".to_string(),
+                    clicks: 2,
+                    attempts: 1,
+                    duration_ms: 7,
+                    finished_ms,
+                }],
+                pending_entry_record: Some(scheduler::PendingEntryRecord {
+                    entry_id: "qe".to_string(),
+                    round: 1,
+                    // Deliberately wrong staged class: recovery must recompute
+                    // it from `member_results` (which say success).
+                    class: "retryable".to_string(),
+                    exit: "queue_failed".to_string(),
+                    outcome: "Failed".to_string(),
+                    attempts: 1,
+                    duration_ms: 7,
+                    finished_ms,
+                }),
+            },
+        );
+        state.running = Some(scheduler::RunningEntry {
+            entry_id: "qe".to_string(),
+            task: "成员1".to_string(),
+            pass: 1,
+            attempt: 1,
+            since_ms: 1,
+            resume: false,
+        });
+        write_json_atomic(&opts.state_path(), &state).unwrap();
+
+        let mut lines = Vec::new();
+        let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run");
+        assert_eq!(report.runs, 0, "nothing executed in this session");
+        assert!(opts.test_exec.as_ref().unwrap().calls().is_empty());
+        let after = state_of(&opts);
+        let e = &after.entries["qe"];
+        assert_eq!(e.runs, 1, "the staged result is applied exactly once");
+        assert_eq!(e.successes, 1);
+        assert_eq!(
+            e.last_result, "success",
+            "the class is recomputed from member_results, not taken from the stage"
+        );
+        assert_eq!(e.last_exit, "queue_done");
+        assert_eq!(e.quota_day.used, 1, "the recovered round consumes its quota");
+        assert_eq!(e.cooldown_until_ms, 0, "a success sets no cooldown");
+        assert!(
+            after.queues["q1"].pending_entry_record.is_none(),
+            "the stage is cleared in the same write"
+        );
+        assert!(after.running.is_none(), "the stale running marker is cleared");
+        assert_eq!(
+            after.queues["q1"].rounds_completed, 1,
+            "the round was already counted and is not re-run"
+        );
+        let raw: Value =
+            serde_json::from_str(&std::fs::read_to_string(opts.state_path()).unwrap()).unwrap();
+        assert!(
+            raw["queues"]["q1"].get("pending_entry_record").is_none(),
+            "the cleared stage is not serialized: {raw}"
+        );
+        assert!(
+            lines.iter().any(|l| l
+                .contains("scheduler_queue_entry_record_recovered")
+                && l.contains("entry=qe")
+                && l.contains("class=success")
+                && l.contains("quota_used=1")),
+            "{lines:?}"
+        );
+        let events = std::fs::read_to_string(opts.events_path()).unwrap();
+        assert!(
+            events.contains("\"event\":\"queue_entry_record_recovered\"")
+                && events.contains("\"applied\":true")
+                && events.contains("\"staged_class\":\"retryable\""),
+            "the recomputed class and the staged value are both audited: {events}"
+        );
+
+        // A second start must not record it again.
+        let report2 = run_scheduler(&opts, &mut |_| {}).expect("second run");
+        assert_eq!(report2.runs, 0);
+        let after2 = state_of(&opts);
+        assert_eq!(after2.entries["qe"].runs, 1, "exactly once, not twice");
+        assert_eq!(after2.entries["qe"].quota_day.used, 1);
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_between_gate_delays_the_next_round() {
+        // P2-1: the inter-round pause is enforced by plan_pass, so status
+        // (`runnable_now`) and `next_due_ms` stay consistent.
+        let td = tmpdir("q-between");
+        write_task(&td, "成员1", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            r#"{"schema_version":4,
+                "config":{"mode":"loop","loop_interval_s":0},
+                "queues":[{"queue_id":"q1","members":["成员1"],"total_rounds":0,
+                           "on_failure":"continue","between_ms":600000}],
+                "entries":[{"entry_id":"qe","task":"q1","kind":"queue","retry":0}]}"#,
+        );
+        let opts = queue_opts(
+            &td,
+            config,
+            TestExec::new().with("成员1", vec![step(ResultClass::Success)]),
+        );
+        let now = now_ms();
+        let mut state = SchedulerState::new();
+        state.queues.insert(
+            "q1".to_string(),
+            scheduler::QueueState {
+                rounds_completed: 1,
+                member_results: vec![scheduler::QueueMemberResult {
+                    round: 1,
+                    member_index: 0,
+                    task: "成员1".to_string(),
+                    class: "success".to_string(),
+                    exit: "done".to_string(),
+                    outcome: "Done".to_string(),
+                    clicks: 1,
+                    attempts: 1,
+                    duration_ms: 5,
+                    finished_ms: now,
+                }],
+                ..scheduler::QueueState::default()
+            },
+        );
+        write_json_atomic(&opts.state_path(), &state).unwrap();
+
+        let mut lines = Vec::new();
+        let r1 = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run 1");
+        assert_eq!(r1.runs, 0, "the between_ms gate blocks the next round: {r1:?}");
+        assert!(opts.test_exec.as_ref().unwrap().calls().is_empty());
+        assert!(
+            lines.iter().any(|l| l.contains("scheduler_skip entry=qe")
+                && l.contains("reason=queue_between")),
+            "{lines:?}"
+        );
+        assert_eq!(state_of(&opts).queues["q1"].rounds_completed, 1);
+
+        let v = status_json(&opts).expect("status");
+        assert_eq!(v["entries"][0]["runnable_now"], false, "{v}");
+        assert_eq!(v["entries"][0]["blocked_reason"], "queue_between");
+        let due = v["entries"][0]["next_due_ms"].as_i64().expect("next due");
+        assert!(
+            due > v["generated_ms"].as_i64().unwrap(),
+            "the pause is in the future: {v}"
+        );
+        assert_eq!(
+            v["queues"][0]["next_due_ms"].as_i64(),
+            Some(due),
+            "entry and queue report the same due instant"
+        );
+
+        // Time advanced past the pause: the following pass runs the round.
+        let mut state = state_of(&opts);
+        state.queues.get_mut("q1").unwrap().member_results[0].finished_ms =
+            now.saturating_sub(600_100);
+        write_json_atomic(&opts.state_path(), &state).unwrap();
+        let r2 = run_scheduler(&opts, &mut |_| {}).expect("run 2");
+        assert_eq!(r2.runs, 1, "{r2:?}");
+        assert_eq!(opts.test_exec.as_ref().unwrap().calls().len(), 1);
+        let after = state_of(&opts);
+        assert_eq!(after.queues["q1"].rounds_completed, 2);
+        assert_eq!(after.queues["q1"].member_results.len(), 2);
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_member_execution_marks_running_with_the_member_task() {
+        // B5 test gap: `state.running.task` must name the member that is about
+        // to run (not the queue_id) and must be cleared afterwards.
+        let td = tmpdir("q-mark-running");
+        write_task(&td, "成员1", OK_FLOW, None);
+        write_task(&td, "成员2", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(&["成员1", "成员2"], 0, "continue", 0, "", ""),
+        );
+        let opts = queue_opts(
+            &td,
+            config,
+            exec_two(ResultClass::Success, ResultClass::Success),
+        );
+        run_scheduler(&opts, &mut |_| {}).expect("run");
+        let observed = opts.test_exec.as_ref().unwrap().observed_running();
+        assert_eq!(observed.len(), 2, "one marker per attempt");
+        let first = observed[0].as_ref().expect("running marker before member 1");
+        assert_eq!(
+            first.task, "成员1",
+            "the marker names the member, not the queue_id"
+        );
+        assert_eq!(first.entry_id, "qe");
+        assert_eq!(first.pass, 1);
+        assert_eq!(first.attempt, 1);
+        assert!(!first.resume);
+        let second = observed[1].as_ref().expect("running marker before member 2");
+        assert_eq!(second.task, "成员2");
+        assert_eq!(second.attempt, 1);
+        assert!(
+            state_of(&opts).running.is_none(),
+            "the marker is cleared after the round"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_member_missing_at_runtime_is_recorded_and_skipped() {
+        // B5 test gap: the production rule-4 precheck (`member_skip_reason`
+        // -> `task_missing`), exercised without the startup fail-fast and
+        // without the `skip_member` test injection.
+        let td = tmpdir("q-member-missing");
+        write_task(&td, "成员1", OK_FLOW, None);
+        write_task(&td, "成员2", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(&["成员1", "成员2"], 0, "continue", 0, "", ""),
+        );
+        let opts = queue_opts(
+            &td,
+            config,
+            TestExec::new().with("成员1", vec![step(ResultClass::Success)]),
+        );
+        // Load while both bundles exist (startup fail-fast is happy), then
+        // delete the second member: only the runtime precheck can see it.
+        let loaded = load_full(&opts).expect("load");
+        std::fs::remove_dir_all(td.join("成员2")).expect("remove member 2");
+        let state_path = opts.state_path();
+        let events_path = opts.events_path();
+        let mut session = Session {
+            opts: &opts,
+            loaded,
+            state: SchedulerState::new(),
+            state_path,
+            events_path,
+            report: SchedulerReport::default(),
+            recovery: None,
+            seq: 0,
+        };
+        let entry = session.sched().entry("qe").cloned().expect("queue entry");
+        let planned = scheduler::PlannedRun {
+            entry_index: 0,
+            entry_id: "qe".to_string(),
+            task: "q1".to_string(),
+            lifecycle: Lifecycle::Periodic,
+            resume: false,
+            reason: "periodic".to_string(),
+        };
+        let mut lines = Vec::new();
+        let class = session
+            .execute_queue_round(&entry, &planned, 1, &mut |l| lines.push(l.to_string()))
+            .expect("round");
+        assert_eq!(class, ResultClass::Success, "member 1 still succeeded");
+        let q = &session.state.queues["q1"];
+        assert_eq!(q.member_results.len(), 2);
+        let skipped = &q.member_results[1];
+        assert_eq!(skipped.task, "成员2");
+        assert_eq!(skipped.class, "blocked");
+        assert_eq!(skipped.exit, "skipped");
+        assert_eq!(skipped.outcome, "task_missing");
+        assert_eq!(skipped.attempts, 0, "the missing member never executed");
+        assert_eq!(q.rounds_completed, 1, "member 1 executed, so the round counts");
+        assert_eq!(q.current_round, None);
+        assert!(q.pending_entry_record.is_none());
+        assert_eq!(
+            opts.test_exec.as_ref().unwrap().calls().len(),
+            1,
+            "only the existing member ran"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("scheduler_queue_member_skip")
+                && l.contains("reason=task_missing")),
+            "{lines:?}"
+        );
+        let events = std::fs::read_to_string(&opts.events_path()).unwrap();
+        assert!(
+            events.contains("\"event\":\"queue_member_finished\"")
+                && events.contains("\"skipped\":true"),
+            "{events}"
+        );
         std::fs::remove_dir_all(&td).ok();
     }
 }

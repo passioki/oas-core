@@ -162,17 +162,7 @@ pub const DEFAULT_QUEUE_BETWEEN_MS: u64 = 500;
 pub const MAX_QUEUE_BETWEEN_MS: u64 = 600_000;
 /// Retain at most this many `member_results` in the state file (an infinite
 /// queue otherwise grows without bound); the newest entries are kept.
-// P2's queue execution keeps using this through `queue_record_member`; the
-// daemon in P1 never records members, hence the allow.
-#[allow(dead_code)]
 pub const MAX_QUEUE_MEMBER_RESULTS: usize = 200;
-
-/// `PassPlan.skipped` reason for a queue entry that is valid and due but cannot
-/// execute yet: P1 ships the schema + pure round layer only; the queue round
-/// executor lands in P2 (`docs/SCHEDULER-RUNNER-PLAN.md` §三). `plan_pass` puts
-/// such entries into `skipped`, never into `runnable`, so the plan/runnable and
-/// `stats.ran` counters stay truthful.
-pub const QUEUE_EXECUTOR_PENDING: &str = "queue_executor_pending";
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -1294,6 +1284,27 @@ pub fn validate_scheduler_with_offset(
         }
     }
 
+    // Rule 2 (docs/SCHEDULER-RUNNER-PLAN.md §二): a queue has **one** trigger.
+    // Two `kind = "queue"` entries pointing at the same queue would both be
+    // planned in one pass and run two rounds back to back (the inter-round
+    // `between_ms` pause is not a trigger), and the second round could hit the
+    // finished state or record inconsistent counters. Reject the config.
+    let mut queue_entries: BTreeMap<String, String> = BTreeMap::new();
+    for entry in &entries {
+        let Some(queue_id) = entry.queue_id() else {
+            continue;
+        };
+        if let Some(first_entry_id) = queue_entries.get(queue_id) {
+            return Err(format!(
+                "scheduler config: queue `{queue_id}` is referenced by two entries \
+                 (`{first_entry_id}` and `{}`) — rule 2 allows only one trigger per \
+                 queue (remove one entry, disable it, or use two queues)",
+                entry.entry_id
+            ));
+        }
+        queue_entries.insert(queue_id.to_string(), entry.entry_id.clone());
+    }
+
     Ok(Scheduler {
         schema_version: SCHEDULE_SCHEMA_VERSION,
         mode,
@@ -1797,6 +1808,43 @@ pub struct QueueMemberResult {
     pub exit: String,
     #[serde(default)]
     pub outcome: String,
+    /// Clicks performed during the member execution (summed over its attempts;
+    /// `0` for a skipped member). Additive v4 state field — an older state file
+    /// reads as `0`.
+    #[serde(default)]
+    pub clicks: usize,
+    #[serde(default)]
+    pub attempts: u32,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub finished_ms: u64,
+}
+
+/// The entry-level result of a closed round, staged on [`QueueState`] in the
+/// **same atomic write** as `queue_end_round` (P1-2 fix).
+///
+/// `record_result` needs the config `Entry` (quota/cooldown), so the pure queue
+/// layer cannot apply it itself. The executor stages this snapshot while it
+/// closes the round, applies `record_result`, then clears the field in a second
+/// atomic write. A crash between the two writes leaves the snapshot on disk and
+/// the next start replays it **exactly once**
+/// (`schedule::Session::recover_pending_entry_records`) instead of losing the
+/// entry accounting (the old at-most-once window).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PendingEntryRecord {
+    #[serde(default)]
+    pub entry_id: String,
+    /// Round ordinal that was closed (`QueueRoundState::index`).
+    #[serde(default)]
+    pub round: u64,
+    /// [`ResultClass::as_str`] of the closed round.
+    #[serde(default)]
+    pub class: String,
+    #[serde(default)]
+    pub exit: String,
+    #[serde(default)]
+    pub outcome: String,
     #[serde(default)]
     pub attempts: u32,
     #[serde(default)]
@@ -1824,6 +1872,10 @@ pub struct QueueState {
     pub current_round: Option<QueueRoundState>,
     #[serde(default)]
     pub member_results: Vec<QueueMemberResult>,
+    /// Entry-level result already decided but maybe not yet applied (P1-2;
+    /// absent in older state files, omitted from the JSON when `None`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_entry_record: Option<PendingEntryRecord>,
 }
 
 /// `scheduler.state.json` — **runtime state only**, never "completed" flags.
@@ -1947,17 +1999,26 @@ pub fn quota_remaining(state: &SchedulerState, entry: &Entry, cycles: &Cycles) -
 }
 
 /// Mark the entry as running (crash-recovery marker). Written before execution.
-pub fn mark_running(
+///
+/// `task` is the **executed** task, not `entry.task`: a queue entry's
+/// `entry.task` is the queue_id, but the thing that actually runs is one of its
+/// members. The marker must name the member so `reset-memory` (which matches
+/// `running.task` against task names) and an operator reading `--status` see
+/// what was executing (P1 report §9.1-2). P2 uses this from
+/// `schedule::Session::run_task_attempt`; P1's `mark_running(&Entry)` wrapper is
+/// gone because this is now the only spelling.
+pub fn mark_running_for(
     state: &mut SchedulerState,
-    entry: &Entry,
+    entry_id: &str,
+    task: &str,
     pass: u64,
     attempt: u32,
     now_utc_ms: u64,
     resume: bool,
 ) {
     state.running = Some(RunningEntry {
-        entry_id: entry.entry_id.clone(),
-        task: entry.task.clone(),
+        entry_id: entry_id.to_string(),
+        task: task.to_string(),
         pass,
         attempt,
         since_ms: now_utc_ms,
@@ -1973,8 +2034,9 @@ pub fn clear_running(state: &mut SchedulerState) {
 // Queue Round（纯函数；docs/SCHEDULER-RUNNER-PLAN.md §二 规则 1-10）
 // ---------------------------------------------------------------------------
 //
-// 本层只做决策/记账，不执行、不睡眠、不写盘。P2 的 `execute_queue_round`
-// 按 docs/SCHEDULER-RUNNER-PLAN.md §三 P2 依次调用：
+// 本层只做决策/记账，不执行、不睡眠、不写盘。P2 的
+// `schedule::Session::execute_queue_round` 按 docs/SCHEDULER-RUNNER-PLAN.md
+// §三 P2 依次调用：
 //   queue_should_finish（真 → 跳过）
 //   → 有 current_round？续跑 : queue_begin_round
 //   → queue_next_member_index → (每成员) queue_record_member
@@ -1982,11 +2044,9 @@ pub fn clear_running(state: &mut SchedulerState) {
 // 状态机误用一律 loud（`Result`）：`queue_begin_round` 在已有开轮或队列已
 // finished 时失败，`queue_record_member`/`queue_end_round` 在没有开轮时失败，
 // 避免"静默多计一轮"（规则 8）。
-// P1 只发布这组纯函数并用单测锁住语义，daemon 尚未调用它们（故有 allow）。
 
 /// One member execution outcome, reduced to what the queue state records
 /// (kept engine-neutral so this module stays a pure data layer).
-#[allow(dead_code)] // P2 constructs these from `run::execute` results
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueMemberOutcome {
     pub class: ResultClass,
@@ -1994,9 +2054,10 @@ pub struct QueueMemberOutcome {
     pub outcome: String,
     pub attempts: u32,
     pub duration_ms: u64,
+    /// Clicks performed (summed over the member's attempts).
+    pub clicks: usize,
 }
 
-#[allow(dead_code)] // P2 + unit tests
 impl QueueMemberOutcome {
     pub fn new(
         class: ResultClass,
@@ -2011,18 +2072,18 @@ impl QueueMemberOutcome {
             outcome: outcome.to_string(),
             attempts,
             duration_ms,
+            clicks: 0,
         }
     }
 
-    /// Rule 7: did this member count as a failure for `on_failure`?
-    /// `success` / `resource` are normal endings (resource = 任务正常结束).
-    pub fn failed(&self) -> bool {
-        !matches!(self.class, ResultClass::Success | ResultClass::Resource)
+    /// Attach the clicks performed by the member (P2 executor / report).
+    pub fn with_clicks(mut self, clicks: usize) -> Self {
+        self.clicks = clicks;
+        self
     }
 }
 
 /// Result of closing one queue round (`docs/SCHEDULER-RUNNER-PLAN.md` rule 5/6).
-#[allow(dead_code)] // returned by `queue_end_round` (P2 + unit tests)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RoundEnd {
     /// Round ordinal that was closed.
@@ -2058,7 +2119,6 @@ pub fn queue_finished(q: &Queue, state: &SchedulerState) -> bool {
 ///
 /// Restart resumes from the persisted `current_round.member_index`; with no open
 /// round the next round starts at the head of the queue.
-#[allow(dead_code)] // P2 queue execution + unit tests
 pub fn queue_next_member_index(q: &Queue, st: &QueueState) -> usize {
     st.current_round
         .as_ref()
@@ -2079,7 +2139,6 @@ pub fn queue_next_member_index(q: &Queue, st: &QueueState) -> usize {
 ///   ([`queue_next_member_index`] / [`queue_record_member`]) or close it with
 ///   [`queue_end_round`]; opening a second round would double-count (rule 8);
 /// * the queue is already `finished` (rule 6: no automatic reset).
-#[allow(dead_code)] // P2 queue execution + unit tests
 pub fn queue_begin_round(
     q: &Queue,
     st: &mut QueueState,
@@ -2118,7 +2177,6 @@ pub fn queue_begin_round(
 /// keeps the round ordinal + member index so the UI can show progress. The ring
 /// buffer keeps the newest [`MAX_QUEUE_MEMBER_RESULTS`] entries so an unlimited
 /// queue cannot grow the state file forever.
-#[allow(dead_code)] // P2 queue execution + unit tests
 pub fn queue_record_member(
     st: &mut QueueState,
     task: &str,
@@ -2138,6 +2196,7 @@ pub fn queue_record_member(
         class: outcome.class.as_str().to_string(),
         exit: outcome.exit.clone(),
         outcome: outcome.outcome.clone(),
+        clicks: outcome.clicks,
         attempts: outcome.attempts,
         duration_ms: outcome.duration_ms,
         finished_ms: now_utc_ms.max(0) as u64,
@@ -2162,7 +2221,6 @@ pub fn queue_record_member(
 /// # Errors
 /// There is no open round — closing one that was never opened (or is already
 /// closed) is a state-machine misuse and must not invent/count a round (rule 8).
-#[allow(dead_code)] // P2 queue execution + unit tests
 pub fn queue_end_round(
     q: &Queue,
     st: &mut QueueState,
@@ -2190,6 +2248,113 @@ pub fn queue_end_round(
         empty_rounds: st.empty_rounds,
         finished: st.finished,
     })
+}
+
+/// Aggregates of one round, recomputed from the **persisted** `member_results`
+/// (P1-1 fix).
+///
+/// The executor used to classify a round from the counters of the current
+/// process only; after a crash a resumed round lost the classes/attempts of the
+/// members recorded before the crash (a `success` + later failure was reported
+/// as `retryable` and did not consume quota; a recorded `fatal` was forgotten).
+/// [`queue_round_summary`] is the single source of truth for the executed /
+/// aborted flags and for the entry-level class, so persisted + new results are
+/// always considered together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct QueueRoundSummary {
+    /// Round ordinal the summary belongs to.
+    pub round: u64,
+    /// Members recorded for the round (executed **and** skipped).
+    pub recorded_members: u64,
+    /// Members that actually executed (`attempts >= 1`).
+    pub executed_members: u64,
+    /// Executed (or recorded) `success` / `resource` members.
+    pub ok_members: u64,
+    /// Sum of the members' L2 attempts.
+    pub attempts: u32,
+    /// Sum of the members' clicks.
+    pub clicks: usize,
+    /// At least one member ended `fatal` (always aborts the round).
+    pub fatal: bool,
+    /// The round was aborted (`fatal`, or `fail_fast` + a failed member).
+    pub aborted: bool,
+}
+
+impl QueueRoundSummary {
+    /// Did this round execute at least one member (rule 5 lazy counting)?
+    pub fn executed_any(&self) -> bool {
+        self.executed_members > 0
+    }
+
+    /// Entry-level class of the round (P2 precedence, now over the whole
+    /// round): `fatal` > any `success`/`resource` > executed-but-all-failed >
+    /// empty. `resource` never escapes as a round class (a resource member is a
+    /// normal ending and the round counts as success).
+    pub fn class(&self) -> ResultClass {
+        if self.fatal {
+            ResultClass::Fatal
+        } else if self.executed_any() && self.ok_members > 0 {
+            ResultClass::Success
+        } else if self.executed_any() {
+            ResultClass::Retryable
+        } else {
+            ResultClass::Blocked
+        }
+    }
+
+    /// `(exit, outcome)` of the entry-level result for [`Self::class`].
+    pub fn exit_outcome(&self) -> (&'static str, &'static str) {
+        queue_class_markers(self.class())
+    }
+}
+
+/// `(exit, outcome)` marker pair recorded for one queue-round class.
+///
+/// `--report` readers match on these strings (`queue_done` / `queue_failed` /
+/// `queue_empty` / `queue_fatal`); `resource` never escapes as a round class
+/// (a resource member is a normal ending, so the round is a success).
+pub fn queue_class_markers(class: ResultClass) -> (&'static str, &'static str) {
+    match class {
+        ResultClass::Success => ("queue_done", "Done"),
+        ResultClass::Retryable => ("queue_failed", "Failed"),
+        ResultClass::Blocked => ("queue_empty", "Empty"),
+        _ => ("queue_fatal", "Fatal"),
+    }
+}
+
+/// Summarise one round from the persisted member results (P1-1).
+///
+/// Only results with `round == round` are considered, so a resumed round sees
+/// the members recorded before the crash **and** the ones just recorded. The
+/// `member_results` ring buffer keeps the newest
+/// [`MAX_QUEUE_MEMBER_RESULTS`] rows, which always covers the newest round for
+/// queues with <= 200 members (the same assumption `last_round_report` makes).
+pub fn queue_round_summary(q: &Queue, st: &QueueState, round: u64) -> QueueRoundSummary {
+    let mut s = QueueRoundSummary {
+        round,
+        ..QueueRoundSummary::default()
+    };
+    let mut executed_failure = false;
+    for m in st.member_results.iter().filter(|m| m.round == round) {
+        s.recorded_members = s.recorded_members.saturating_add(1);
+        if m.attempts > 0 {
+            s.executed_members = s.executed_members.saturating_add(1);
+            s.attempts = s.attempts.saturating_add(m.attempts);
+            s.clicks = s.clicks.saturating_add(m.clicks);
+            if !matches!(m.class.as_str(), "success" | "resource") {
+                executed_failure = true;
+            }
+        }
+        match m.class.as_str() {
+            "success" | "resource" => {
+                s.ok_members = s.ok_members.saturating_add(1);
+            }
+            "fatal" => s.fatal = true,
+            _ => {}
+        }
+    }
+    s.aborted = s.fatal || (q.on_failure == OnFailure::FailFast && executed_failure);
+    s
 }
 
 /// When may this queue start its next round? (`docs/SCHEDULER-RUNNER-PLAN.md`
@@ -2434,7 +2599,7 @@ pub struct SkippedEntry {
     pub task: String,
     /// `disabled` | `outside_window` | `quota_exhausted` | `cooldown` |
     /// `queue_finished` (rule 6) | `queue_missing` (defence in depth) |
-    /// `queue_executor_pending` (P2 executor not implemented yet).
+    /// `queue_between` (the inter-round `between_ms` pause is still running).
     pub reason: String,
 }
 
@@ -2456,6 +2621,12 @@ pub struct PassPlan {
 /// not re-filtered by window/quota/cooldown — finishing an interrupted run
 /// takes priority. Temp entries have no completion memory, so they are planned
 /// fresh (the executor resets their `state/` first).
+///
+/// Queue entries go through the same filters (rule 2: the entry is the only
+/// trigger); only `queue_finished` (rule 6) and `queue_missing` short-circuit.
+/// A queue with an **open round** (`current_round`) is always planned runnable
+/// (`recover` / `recover_temp`) so a restart finishes it before any new round,
+/// even if the entry's quota/cooldown would block a new one (rule 8).
 pub fn plan_pass(
     sched: &Scheduler,
     state: &SchedulerState,
@@ -2485,41 +2656,76 @@ pub fn plan_pass(
             });
             continue;
         }
-        // Queue entries: a finished queue is never triggered again (rule 6), a
-        // queue that disappeared from `queues[]` (validation rejects it, this
-        // is defence in depth) is skipped loudly, and **every remaining queue
-        // entry is still skipped** because the round executor is P2: it must
-        // never enter `runnable` (that used to inflate `runnable`/plan counters
-        // while `execute_pass` skipped it anyway). P2 replaces the pending skip
-        // with actual round execution.
+        // Queue entries (rule 2/3/6/8): the entry is the only trigger, so it
+        // goes through the **same** window/quota/cooldown/lifecycle filtering
+        // as a task entry below. Two extra hard skips only:
+        //   `queue_finished` — a finished queue is never triggered again
+        //     (rule 6; `finished` is sticky until reset-memory / the UI);
+        //   `queue_missing` — defence in depth, validation already rejects an
+        //     unknown queue reference.
+        // An **open round** (`current_round`) short-circuits the filtering like
+        // the crash `recovering` marker does (rule 8): a restart must finish the
+        // interrupted round even when the entry's quota/cooldown/window would
+        // block a *new* round.
         if let Some(queue_id) = entry.queue_id() {
-            match sched.queue(queue_id) {
-                Some(q) if queue_finished(q, state) => {
-                    skipped.push(SkippedEntry {
-                        entry_index: idx,
-                        entry_id: entry.entry_id.clone(),
-                        task: entry.task.clone(),
-                        reason: "queue_finished".to_string(),
-                    });
-                    continue;
-                }
-                Some(_) => {
-                    skipped.push(SkippedEntry {
-                        entry_index: idx,
-                        entry_id: entry.entry_id.clone(),
-                        task: entry.task.clone(),
-                        reason: QUEUE_EXECUTOR_PENDING.to_string(),
-                    });
-                    continue;
-                }
-                None => {
-                    skipped.push(SkippedEntry {
-                        entry_index: idx,
-                        entry_id: entry.entry_id.clone(),
-                        task: entry.task.clone(),
-                        reason: "queue_missing".to_string(),
-                    });
-                    continue;
+            let Some(queue) = sched.queue(queue_id) else {
+                skipped.push(SkippedEntry {
+                    entry_index: idx,
+                    entry_id: entry.entry_id.clone(),
+                    task: entry.task.clone(),
+                    reason: "queue_missing".to_string(),
+                });
+                continue;
+            };
+            if queue_finished(queue, state) {
+                skipped.push(SkippedEntry {
+                    entry_index: idx,
+                    entry_id: entry.entry_id.clone(),
+                    task: entry.task.clone(),
+                    reason: "queue_finished".to_string(),
+                });
+                continue;
+            }
+            let open_round = state
+                .queues
+                .get(queue_id)
+                .and_then(|st| st.current_round.as_ref())
+                .is_some();
+            if open_round {
+                let reason = match entry.lifecycle {
+                    Lifecycle::Periodic => "recover",
+                    Lifecycle::Temp => "recover_temp",
+                };
+                runnable.push(PlannedRun {
+                    entry_index: idx,
+                    entry_id: entry.entry_id.clone(),
+                    task: entry.task.clone(),
+                    lifecycle: entry.lifecycle,
+                    // Queue members keep their checkpoints (queue entries have
+                    // no temp-state reset: rounds are stateful, rule 1), so an
+                    // interrupted member can resume from its checkpoint.
+                    resume: true,
+                    reason: reason.to_string(),
+                });
+                continue;
+            }
+            // P2-1: the inter-round `between_ms` pause is a **gate**, not just
+            // a `next_due`/`next_wake` hint. Without this check `--status` could
+            // report `runnable_now` and a future `next_due_ms` at the same time,
+            // and a loop interval shorter than `between_ms` would ignore the
+            // configured rhythm. An open round (above) bypasses the gate: rule
+            // 8 says finish the interrupted round first.
+            if let Some(st) = state.queues.get(queue_id) {
+                if let Some(due) = queue_next_due_ms(queue, st, utc_ms) {
+                    if due > utc_ms {
+                        skipped.push(SkippedEntry {
+                            entry_index: idx,
+                            entry_id: entry.entry_id.clone(),
+                            task: entry.task.clone(),
+                            reason: "queue_between".to_string(),
+                        });
+                        continue;
+                    }
                 }
             }
         }
@@ -2607,6 +2813,9 @@ pub fn plan_pass(
 ///
 /// A finished queue entry never runs again (rule 6) → `None`. A queue entry with
 /// an open round reports "due now" (rule 8: finish the interrupted round first).
+/// Otherwise a queue entry is due when **both** gates are open: the entry-level
+/// gate (window/quota/cooldown) and the queue's inter-round `between_ms` pause
+/// ([`queue_next_due_ms`]) — the later of the two.
 pub fn entry_next_due_ms(
     sched: &Scheduler,
     state: &SchedulerState,
@@ -2616,41 +2825,54 @@ pub fn entry_next_due_ms(
     if !entry.enabled {
         return None;
     }
+    // Queue entry: rule 6/8 shortcuts + the inter-round `between_ms` pause from
+    // [`queue_next_due_ms`]. The entry-level filters below still apply (rule 2:
+    // the queue has no trigger of its own); the later of the two gates wins.
+    let mut queue_due: Option<i64> = None;
     if let Some(queue_id) = entry.queue_id() {
         let queue = sched.queue(queue_id)?;
         if queue_finished(queue, state) {
             return None;
         }
-        if state
-            .queues
-            .get(queue_id)
-            .and_then(|st| st.current_round.as_ref())
-            .is_some()
-        {
+        let qst = state.queues.get(queue_id);
+        if qst.and_then(|st| st.current_round.as_ref()).is_some() {
             return Some(utc_ms);
+        }
+        if let Some(st) = qst {
+            queue_due = queue_next_due_ms(queue, st, utc_ms);
+            if queue_due.is_none() {
+                // `queue_should_finish` was already checked; defensive only.
+                return None;
+            }
         }
     }
     let cycles = cycle_ids(&sched.calendar, utc_ms);
     let local = sched.calendar.to_local(utc_ms);
-    match entry.lifecycle {
+    let entry_due = match entry.lifecycle {
         Lifecycle::Temp => Some(utc_ms),
         Lifecycle::Periodic => {
             if quota_remaining(state, entry, &cycles) == Some(0) {
-                return Some(match entry.quota.as_ref().map(|q| q.per) {
+                Some(match entry.quota.as_ref().map(|q| q.per) {
                     Some(QuotaPer::Week) => next_week_reset_ms(&sched.calendar, utc_ms),
                     _ => next_day_reset_ms(&sched.calendar, utc_ms),
-                });
-            }
-            if !in_window(entry, local) {
-                return next_window_start_ms(entry, local).map(|l| sched.calendar.from_local(l));
-            }
-            if let Some(st) = state.entries.get(&entry.entry_id) {
+                })
+            } else if !in_window(entry, local) {
+                next_window_start_ms(entry, local).map(|l| sched.calendar.from_local(l))
+            } else if let Some(st) = state.entries.get(&entry.entry_id) {
                 if st.cooldown_until_ms > utc_ms.max(0) as u64 {
-                    return Some(st.cooldown_until_ms as i64);
+                    Some(st.cooldown_until_ms as i64)
+                } else {
+                    Some(utc_ms)
                 }
+            } else {
+                Some(utc_ms)
             }
-            Some(utc_ms)
         }
+    };
+    match (entry_due, queue_due) {
+        // Both gates must open: the later of "entry allows" and "queue allows".
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
     }
 }
 
@@ -2663,7 +2885,8 @@ pub struct NextWake {
     /// When the daemon should re-evaluate next (capped by [`MAX_SLEEP_MS`]).
     pub at_ms: i64,
     /// Why: `day_reset`, `week_reset`, `active_hours_start`, `blackout_end`,
-    /// `window_start:<id>`, `quota_reset:<id>`, `cooldown:<id>`, `cap`.
+    /// `window_start:<id>`, `quota_reset:<id>`, `cooldown:<id>`,
+    /// `queue_round:<id>` (inter-round `between_ms` pause), `cap`.
     pub reasons: Vec<String>,
 }
 
@@ -2698,7 +2921,29 @@ pub fn next_wake(sched: &Scheduler, state: &SchedulerState, utc_ms: i64) -> Next
     }
 
     for entry in &sched.entries {
-        if !entry.enabled || entry.lifecycle != Lifecycle::Periodic {
+        if !entry.enabled {
+            continue;
+        }
+        // Queue entries (rule 2/6/8): a finished queue never wakes the daemon;
+        // an **open** round reports "due now" and `plan_pass` plans it in the
+        // very next pass, so it needs no sleep candidate (the daemon will not
+        // idle); only the inter-round `between_ms` pause is a real wake reason.
+        if let Some(queue_id) = entry.queue_id() {
+            let Some(queue) = sched.queue(queue_id) else {
+                continue;
+            };
+            let qst = state.queues.get(queue_id);
+            if qst.map(|st| queue_should_finish(queue, st)).unwrap_or(false) {
+                continue;
+            }
+            if let Some(at) = qst
+                .and_then(|st| queue_next_due_ms(queue, st, utc_ms))
+                .filter(|at| *at > utc_ms)
+            {
+                cands.push((at, format!("queue_round:{}", entry.entry_id)));
+            }
+        }
+        if entry.lifecycle != Lifecycle::Periodic {
             continue;
         }
         let st = state.entries.get(&entry.entry_id);
@@ -4047,12 +4292,19 @@ mod tests {
         let mut st = QueueState::default();
         queue_begin_round(q, &mut st, 0).expect("begin");
         let failed = QueueMemberOutcome::new(ResultClass::Retryable, "failed", "Failed", 2, 100);
-        assert!(failed.failed(), "retryable counts as a failure");
         assert!(
-            !QueueMemberOutcome::new(ResultClass::Success, "done", "Done", 1, 1).failed()
+            !matches!(failed.class, ResultClass::Success | ResultClass::Resource),
+            "retryable counts as a failure"
         );
+        assert!(matches!(
+            QueueMemberOutcome::new(ResultClass::Success, "done", "Done", 1, 1).class,
+            ResultClass::Success | ResultClass::Resource
+        ));
         assert!(
-            !QueueMemberOutcome::new(ResultClass::Resource, "no_target", "Failed", 1, 1).failed(),
+            matches!(
+                QueueMemberOutcome::new(ResultClass::Resource, "no_target", "Failed", 1, 1).class,
+                ResultClass::Success | ResultClass::Resource
+            ),
             "resource = 任务正常结束, not a failure"
         );
         queue_record_member(&mut st, "任务1", &failed, 10).expect("record");
@@ -4153,31 +4405,78 @@ mod tests {
     }
 
     #[test]
-    fn plan_pass_marks_queue_entries_pending_instead_of_runnable() {
-        let s = queue_config(1, &["任务1"], "continue");
+    fn plan_pass_plans_queue_entries_like_task_entries() {
+        let s = sched(
+            r#"{"schema_version":4,
+                "queues":[{"queue_id":"q1","members":["任务1"],"total_rounds":1,
+                           "between_ms":0}],
+                "entries":[{"entry_id":"q1e","task":"q1","kind":"queue",
+                            "lifecycle":"periodic","quota":{"per":"day","times":2}}]}"#,
+        );
         let now = at(&s.calendar, 2026, 10, 23, 9, 0);
         let mut state = SchedulerState::new();
 
-        // P1: a due queue entry is *skipped*, never planned as runnable —
-        // otherwise `runnable`/`stats.ran` would claim work the executor does
-        // not do (queue execution is P2).
+        // A due queue entry is runnable exactly like a task entry (rule 2: the
+        // entry is the only trigger). `PlannedRun.task` carries the queue_id
+        // for logging; the executor branches on `entry.kind`.
         let plan = plan_pass(&s, &state, now, None);
-        assert!(plan.runnable.is_empty(), "{plan:?}");
-        assert_eq!(plan.skipped.len(), 1, "{plan:?}");
-        assert_eq!(plan.skipped[0].entry_id, "q1e");
-        assert_eq!(plan.skipped[0].reason, QUEUE_EXECUTOR_PENDING);
-        // ... but it is still "due now" for the panel.
+        assert_eq!(plan.runnable.len(), 1, "{plan:?}");
+        assert_eq!(plan.runnable[0].entry_id, "q1e");
+        assert_eq!(plan.runnable[0].task, "q1");
+        assert_eq!(plan.runnable[0].reason, "periodic");
         assert_eq!(entry_next_due_ms(&s, &state, &s.entries[0], now), Some(now));
 
-        // A finished queue switches to the lifecycle skip reason (rule 6).
-        let q = &s.queues[0];
-        let mut st = QueueState::default();
-        queue_begin_round(q, &mut st, now).expect("begin");
-        queue_end_round(q, &mut st, true).expect("end");
-        assert!(!queue_finished(q, &state), "no state yet = not finished");
-        state.queues.insert(q.queue_id.clone(), st);
-        assert!(queue_finished(q, &state));
+        // Entry-level filters still gate a queue entry (here: quota).
+        let cycles = cycle_ids(&s.calendar, now);
+        state.entries.insert(
+            "q1e".to_string(),
+            EntryState {
+                task: "q1".to_string(),
+                quota_day: QuotaCounter {
+                    cycle: cycles.day.clone(),
+                    used: 2,
+                },
+                ..EntryState::default()
+            },
+        );
+        let plan = plan_pass(&s, &state, now, None);
+        assert!(plan.runnable.is_empty(), "{plan:?}");
+        assert_eq!(plan.skipped[0].reason, "quota_exhausted");
+        assert!(
+            entry_next_due_ms(&s, &state, &s.entries[0], now).unwrap() > now,
+            "the quota reset gates the next round"
+        );
 
+        // An open round bypasses the filters (rule 8: finish it before a new
+        // round) and plans `recover`.
+        state.queues.insert(
+            "q1".to_string(),
+            QueueState {
+                total_rounds: 1,
+                current_round: Some(QueueRoundState {
+                    index: 1,
+                    member_index: 0,
+                    started_ms: 1,
+                }),
+                ..QueueState::default()
+            },
+        );
+        let plan = plan_pass(&s, &state, now, None);
+        assert_eq!(plan.runnable.len(), 1, "{plan:?}");
+        assert_eq!(plan.runnable[0].reason, "recover");
+        assert!(plan.runnable[0].resume, "an interrupted queue member resumes");
+
+        // Finished queue: never triggered again (rule 6), even if the entry's
+        // own filters would allow it.
+        state.queues.insert(
+            "q1".to_string(),
+            QueueState {
+                total_rounds: 1,
+                rounds_completed: 1,
+                finished: true,
+                ..QueueState::default()
+            },
+        );
         let plan = plan_pass(&s, &state, now, None);
         assert!(plan.runnable.is_empty(), "{plan:?}");
         assert_eq!(plan.skipped[0].reason, "queue_finished");
@@ -4186,6 +4485,66 @@ mod tests {
             None,
             "rule 6: finished queues are never triggered again"
         );
+
+        // `queue_missing` is defence in depth (validation rejects it first).
+        let mut broken = s.clone();
+        broken.entries[0].task = "gone".to_string();
+        let plan = plan_pass(&broken, &SchedulerState::new(), now, None);
+        assert_eq!(plan.skipped[0].reason, "queue_missing");
+    }
+
+    #[test]
+    fn next_wake_honours_the_queue_between_pause_and_finished_queues() {
+        let s = sched(
+            r#"{"schema_version":4,
+                "queues":[{"queue_id":"q1","members":["任务1"],"between_ms":500}],
+                "entries":[{"entry_id":"q1e","task":"q1","kind":"queue",
+                            "lifecycle":"periodic"}]}"#,
+        );
+        let now = at(&s.calendar, 2026, 10, 23, 9, 0);
+        let mut state = SchedulerState::new();
+        // A member finished 100 ms ago ⇒ the next round is due in 400 ms.
+        state.queues.insert(
+            "q1".to_string(),
+            QueueState {
+                member_results: vec![QueueMemberResult {
+                    round: 1,
+                    member_index: 0,
+                    task: "任务1".to_string(),
+                    class: "success".to_string(),
+                    exit: "done".to_string(),
+                    outcome: "Done".to_string(),
+                    clicks: 0,
+                    attempts: 1,
+                    duration_ms: 1,
+                    finished_ms: (now - 100) as u64,
+                }],
+                ..QueueState::default()
+            },
+        );
+        let wake = next_wake(&s, &state, now);
+        assert_eq!(wake.at_ms, now + 400, "{wake:?}");
+        assert!(
+            wake.reasons.iter().any(|r| r == "queue_round:q1e"),
+            "the inter-round pause is a wake reason: {wake:?}"
+        );
+        assert_eq!(
+            entry_next_due_ms(&s, &state, &s.entries[0], now),
+            Some(now + 400),
+            "the entry is due after the between pause"
+        );
+
+        // A finished queue adds no candidate at all → the 30 s cap wins.
+        state.queues.insert(
+            "q1".to_string(),
+            QueueState {
+                finished: true,
+                ..QueueState::default()
+            },
+        );
+        let wake = next_wake(&s, &state, now);
+        assert_eq!(wake.at_ms, now + MAX_SLEEP_MS, "{wake:?}");
+        assert_eq!(wake.reasons, vec!["cap".to_string()]);
     }
 
     #[test]
@@ -4230,5 +4589,217 @@ mod tests {
             1,
             "reset re-opens the lifecycle and round ordinals restart"
         );
+    }
+
+    // -- P1/P2 review fixes -------------------------------------------------
+
+    #[test]
+    fn config_rejects_two_entries_referencing_the_same_queue() {
+        // P1-3: a queue has exactly one trigger (rule 2). Two queue entries
+        // would both be planned in one pass and run two rounds back to back.
+        let err = validate_scheduler(
+            r#"{"schema_version":4,
+                "queues":[{"queue_id":"q1","members":["任务1"]}],
+                "entries":[{"entry_id":"a","task":"q1","kind":"queue"},
+                           {"entry_id":"b","task":"q1","kind":"queue"}]}"#,
+        )
+        .expect_err("one queue must have exactly one trigger");
+        assert!(
+            err.contains("queue `q1` is referenced by two entries"),
+            "{err}"
+        );
+        assert!(err.contains("`a`") && err.contains("`b`"), "both entry ids: {err}");
+
+        // Disabling one entry does not make the config valid: the one-trigger
+        // rule is structural, not runtime filtering.
+        assert!(
+            validate_scheduler(
+                r#"{"schema_version":4,
+                    "queues":[{"queue_id":"q1","members":["任务1"]}],
+                    "entries":[{"entry_id":"a","task":"q1","kind":"queue","enabled":false},
+                               {"entry_id":"b","task":"q1","kind":"queue"}]}"#
+            )
+            .is_err(),
+            "a disabled duplicate is still a duplicate"
+        );
+
+        // Two distinct queues keep working (no false positive).
+        let ok = validate_scheduler(
+            r#"{"schema_version":4,
+                "queues":[{"queue_id":"q1","members":["任务1"]},
+                          {"queue_id":"q2","members":["任务2"]}],
+                "entries":[{"entry_id":"a","task":"q1","kind":"queue"},
+                           {"entry_id":"b","task":"q2","kind":"queue"}]}"#,
+        )
+        .expect("distinct queues are valid");
+        assert_eq!(ok.queues.len(), 2);
+    }
+
+    #[test]
+    fn queue_round_summary_classifies_the_whole_round() {
+        // P1-1: the summary is computed from the persisted `member_results`, so
+        // a member recorded before the crash still decides the round's class.
+        let s = queue_config(0, &["任务1", "任务2", "任务3"], "continue");
+        let q = &s.queues[0];
+        let mut st = QueueState::default();
+        queue_begin_round(q, &mut st, 0).expect("begin");
+
+        queue_record_member(
+            &mut st,
+            "任务1",
+            &QueueMemberOutcome::new(ResultClass::Success, "done", "Done", 1, 1).with_clicks(2),
+            10,
+        )
+        .expect("record");
+        let one = queue_round_summary(q, &st, 1);
+        assert_eq!(one.executed_members, 1);
+        assert_eq!(one.ok_members, 1);
+        assert_eq!(one.attempts, 1);
+        assert_eq!(one.clicks, 2);
+        assert!(!one.aborted);
+        assert_eq!(one.class(), ResultClass::Success);
+        assert_eq!(one.exit_outcome(), ("queue_done", "Done"));
+
+        queue_record_member(
+            &mut st,
+            "任务2",
+            &QueueMemberOutcome::new(ResultClass::Retryable, "failed", "Failed", 2, 1),
+            20,
+        )
+        .expect("record");
+        let two = queue_round_summary(q, &st, 1);
+        assert_eq!(two.executed_members, 2);
+        assert_eq!(two.ok_members, 1);
+        assert_eq!(two.attempts, 3);
+        assert_eq!(
+            two.class(),
+            ResultClass::Success,
+            "a recorded success wins over a later failure"
+        );
+        assert!(!two.aborted, "the continue policy does not abort");
+
+        queue_record_member(
+            &mut st,
+            "任务3",
+            &QueueMemberOutcome::new(ResultClass::Fatal, "exhausted", "Fatal", 1, 1),
+            30,
+        )
+        .expect("record");
+        let three = queue_round_summary(q, &st, 1);
+        assert!(three.fatal);
+        assert!(three.aborted);
+        assert_eq!(three.class(), ResultClass::Fatal);
+        assert_eq!(three.exit_outcome(), ("queue_fatal", "Fatal"));
+
+        // fail_fast + an executed failure aborts; a skipped member (attempts 0)
+        // is recorded but neither executes nor aborts on its own.
+        let ff = queue_config(0, &["任务1", "任务2"], "fail_fast");
+        let qf = &ff.queues[0];
+        let mut stf = QueueState::default();
+        queue_begin_round(qf, &mut stf, 0).expect("begin");
+        queue_record_member(
+            &mut stf,
+            "任务1",
+            &QueueMemberOutcome::new(ResultClass::Retryable, "failed", "Failed", 1, 1),
+            1,
+        )
+        .expect("record");
+        let failed = queue_round_summary(qf, &stf, 1);
+        assert_eq!(failed.class(), ResultClass::Retryable);
+        assert!(failed.aborted, "fail_fast aborts on an executed failure");
+        queue_record_member(
+            &mut stf,
+            "任务2",
+            &QueueMemberOutcome::new(ResultClass::Blocked, "task_missing", "task_missing", 0, 0),
+            2,
+        )
+        .expect("record");
+        let skipped = queue_round_summary(qf, &stf, 1);
+        assert_eq!(skipped.recorded_members, 2);
+        assert_eq!(skipped.executed_members, 1);
+        assert_eq!(skipped.class(), ResultClass::Retryable);
+
+        // A round with no results is an empty round (rule 5).
+        let empty = queue_round_summary(q, &st, 99);
+        assert!(!empty.executed_any());
+        assert_eq!(empty.class(), ResultClass::Blocked);
+        assert_eq!(empty.exit_outcome(), ("queue_empty", "Empty"));
+
+        // A fatal member recorded *and* then failed round (crashed between two
+        // members): the fatal still wins after the crash.
+        let mut crashed = QueueState::default();
+        queue_begin_round(q, &mut crashed, 0).expect("begin");
+        queue_record_member(
+            &mut crashed,
+            "任务1",
+            &QueueMemberOutcome::new(ResultClass::Fatal, "exhausted", "Fatal", 1, 1),
+            1,
+        )
+        .expect("record");
+        queue_record_member(
+            &mut crashed,
+            "任务2",
+            &QueueMemberOutcome::new(ResultClass::Success, "done", "Done", 1, 1),
+            2,
+        )
+        .expect("record");
+        let resumed = queue_round_summary(q, &crashed, 1);
+        assert_eq!(resumed.class(), ResultClass::Fatal);
+        assert!(resumed.aborted);
+    }
+
+    #[test]
+    fn plan_pass_skips_a_queue_until_the_between_pause_expires() {
+        // P2-1: `between_ms` is a real plan gate, so `runnable_now` and
+        // `next_due_ms` cannot disagree any more.
+        let s = sched(
+            r#"{"schema_version":4,
+                "queues":[{"queue_id":"q1","members":["任务1"],"between_ms":500}],
+                "entries":[{"entry_id":"q1e","task":"q1","kind":"queue"}]}"#,
+        );
+        let now = at(&s.calendar, 2026, 10, 23, 9, 0);
+        let mut state = SchedulerState::new();
+        state.queues.insert(
+            "q1".to_string(),
+            QueueState {
+                member_results: vec![QueueMemberResult {
+                    round: 1,
+                    member_index: 0,
+                    task: "任务1".to_string(),
+                    class: "success".to_string(),
+                    exit: "done".to_string(),
+                    outcome: "Done".to_string(),
+                    clicks: 0,
+                    attempts: 1,
+                    duration_ms: 1,
+                    finished_ms: (now - 100) as u64,
+                }],
+                ..QueueState::default()
+            },
+        );
+        let plan = plan_pass(&s, &state, now, None);
+        assert!(plan.runnable.is_empty(), "{plan:?}");
+        assert_eq!(plan.skipped.len(), 1);
+        assert_eq!(plan.skipped[0].reason, "queue_between");
+        assert_eq!(
+            entry_next_due_ms(&s, &state, &s.entries[0], now),
+            Some(now + 400),
+            "the status/next_due gate agrees with the plan"
+        );
+
+        // Time advanced past the pause: the entry is runnable again.
+        let plan = plan_pass(&s, &state, now + 400, None);
+        assert_eq!(plan.runnable.len(), 1, "{plan:?}");
+        assert_eq!(plan.runnable[0].reason, "periodic");
+
+        // Rule 8: an interrupted round is due immediately and bypasses the gate.
+        state.queues.get_mut("q1").unwrap().current_round = Some(QueueRoundState {
+            index: 2,
+            member_index: 0,
+            started_ms: 1,
+        });
+        let plan = plan_pass(&s, &state, now, None);
+        assert_eq!(plan.runnable.len(), 1, "{plan:?}");
+        assert_eq!(plan.runnable[0].reason, "recover");
     }
 }
