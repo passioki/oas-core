@@ -3136,7 +3136,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 ## E. 代码 / 测试 / 状态
 
 - 代码提交：`54c715b`（初版 6 files +1413/−103）、`d1a7fcd`（评审修复 6 files +1436/−225）。
-- `dev` = `main` = `origin/dev` = `origin/main` = `906bbed`（**已同步 origin**，2026-11-02 13:55 实测；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`）。
+- `dev` = `main` = `origin/dev` = `origin/main`（**已同步 origin**，2026-11-02 13:55 实测；最新 docs 提交 = HEAD；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`，其后为 docs 同步回填提交 `11d53a5`）。
 - 最终验证（Lead 2026-11-02 13:35）：`cargo test --workspace` = **426 passed / 0 failed**；oasd **153** / flow **57** / runtime **125**（+2 integration = 127）；UI **259 checks / 0 dead ids**；task lint **1 task / 0 errors**；`cargo build -p oasd --features ocr` exit 0（6 条既有 warning）；DSL E2E（临时 task lint）`linted=8 errors=5`；serve 由 Lead 以最终构建 `-SkipBuild` 重启于 **8787**。
 - ⚠ **v0.1.0 发布包（`42567c1` 构建）仍是 393/203 基线，不含 O-1/O-2**；O-1/O-2 自 `54c715b` 起，评审修复 `d1a7fcd`。
 - 仍未闭合：`SelectionTool` 未抽出；E2E 36/36 证据停在 `4d5759f`；真实 UI 手势仅用户验收 + 真机 `/input/tap` 独立证据；collection `real=1` 真机 E2E 未做（MuMu 未运行、`adb devices` 为空）；P2-10；Plan B；活动页参考帧。

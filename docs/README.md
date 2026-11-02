@@ -26,7 +26,7 @@
 
 ## 当前基线（2026-11-02 13:5x，tag `v0.1.0` + GitHub Release）
 
-- 版本：`0.1.0`（`oasd --version` = 0.1.0）；`dev` = `main` = `origin/dev` = `origin/main` = `906bbed`（**已同步 origin**，2026-11-02 13:55 实测；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`）；tag `v0.1.0` → `e8edbef`（**未移动**）。
+- 版本：`0.1.0`（`oasd --version` = 0.1.0）；`dev` = `main` = `origin/dev` = `origin/main`（**已同步 origin**，2026-11-02 13:55 实测；最新 docs 提交 = HEAD；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`，其后为 docs 同步回填提交 `11d53a5`）；tag `v0.1.0` → `e8edbef`（**未移动**）。
 - 发布：**GitHub Release 已上传** [`v0.1.0`](https://github.com/passioki/oas-core/releases/tag/v0.1.0)（release id `431080249`，draft=false / prerelease=false，即 latest）；附件 `oasd-v0.1.0-win64.zip`（37,089,992 B，digest `sha256:e6112a33…5f5687`）+ `.sha256`（89 B）；本地同物 `dist/oasd-v0.1.0-win64.zip`，SHA256 `E6112A33…5F5687`；**包构建 commit `42567c1`（不含 O-1/O-2）**。
 - 当前任务：只有 `返回庭院`（flow 11 steps / meta 400 B）；`tasks/测试` 已删除。帧 **28 个**，`current_id=20`，`next_id=41`；**唯一关系 = `Asset.positions`（帧-素材）**。
 - 全局素材：**16 条 / 1 图**（15 `ocr_line` + 1 `template`；全部 `action_source=fixed`，有 `action_shape` 与 `positions`）。34/18 是 11-01 错误恢复（§E-70 已推翻）；`archive/migration-20261101` 的 2827 素材 / 2099 图 / 57 个任务目录是权威迁移归档，但未导入当前 dev（用户裁定素材可重建）。
@@ -40,7 +40,7 @@
 ## 维护规则
 
 1. 所有文档更新都在 **oas-core 仓库**完成，不再回写 backend 文档仓。
-2. 文档随 `oas-core dev` 提交；0.1.0 恢复节点已打 tag `v0.1.0` 并上传 GitHub Release；`dev`/`main` 已同步 origin（`906bbed`，2026-11-02 13:55 实测）。
+2. 文档随 `oas-core dev` 提交；0.1.0 恢复节点已打 tag `v0.1.0` 并上传 GitHub Release；`dev`/`main` 已同步 origin（2026-11-02 13:55 实测；最新 docs 提交 = HEAD）。
 3. 新会话固定：
    - 工作目录 `D:\OAS-dev\oas-core`
    - 先加载 skill `session-memory`

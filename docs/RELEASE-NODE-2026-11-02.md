@@ -1,19 +1,19 @@
 # 关键恢复节点 / 发布索引 — 2026-11-02
 
 > 状态：**0.1.0 恢复节点已发布**（tag `v0.1.0` + **GitHub Release 已上传** + 本地包 + 文档归档）；O-1/O-2 经两轮评审后在 `d1a7fcd` 收口（**不在 v0.1.0 包内**）。本文件是当前节点的一页索引；细节见 `RESUME.md` / `PENDING-LEDGER §E-73~§E-74`。
-> HEAD：`dev` = `main` = `origin/dev` = `origin/main` = `906bbed`（**已同步 origin**，2026-11-02 13:55 实测；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`）；tag `v0.1.0` → `e8edbef`（**未移动**）；包构建 commit = `42567c1`。
+> HEAD：`dev` = `main` = `origin/dev` = `origin/main`（**已同步 origin**，2026-11-02 13:55 实测；最新 docs 提交 = HEAD；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`，其后为 docs 同步回填提交 `11d53a5`）；tag `v0.1.0` → `e8edbef`（**未移动**）；包构建 commit = `42567c1`。
 
 ## 1. 当前状态（实测）
 
 | 项 | 值 |
 |---|---|
 | 版本 | `0.1.0`（`Cargo.toml` workspace；`oasd --version` = 0.1.0） |
-| 分支 | `dev` = `main` = `origin/dev` = `origin/main` = `906bbed`（**已同步 origin**，2026-11-02 13:55 实测；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`）；tag `v0.1.0` → `e8edbef`（**未移动**）；包构建 commit = `42567c1` |
+| 分支 | `dev` = `main` = `origin/dev` = `origin/main`（**已同步 origin**，2026-11-02 13:55 实测；最新 docs 提交 = HEAD；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`，其后为 docs 同步回填提交 `11d53a5`）；tag `v0.1.0` → `e8edbef`（**未移动**）；包构建 commit = `42567c1` |
 | 测试 | cargo **426 passed / 0 failed**；UI **259 checks / 0 dead ids**；task lint **1/0**（最终值；发布包仍是 393/203 时构建，见 §3） |
 | 任务 | 只有 `返回庭院`（flow 11 steps / meta 400 B）；`tasks/测试` 已删除并提交 |
 | 素材 | 全局 `assets/` = **16 条 / 1 图**（15 `ocr_line` + 1 `template`；全部 `action_source=fixed`；有 `action_shape`/`positions`） |
 | 帧 | **28 个**，`current_id=20`，`next_id=41`；唯一关系 = `Asset.positions` |
-| 工作区 | `dev` `d1a7fcd` 时 clean；本轮 docs 订正（8 份，终态）已提交（`906bbed`），仅 `docs/` |
+| 工作区 | `dev` `d1a7fcd` 时 clean；本轮 docs 订正（8 份，终态，`906bbed`）与同步回填（`11d53a5`）均已提交；最新 docs 提交 = HEAD，仅 `docs/` |
 | 发布 | tag `v0.1.0` 已推送且**未移动**（→ `e8edbef`）；**GitHub Release 已上传** `https://github.com/passioki/oas-core/releases/tag/v0.1.0`（release id `431080249`，draft=false / prerelease=false，创建后即 repo **latest**）；附件 `oasd-v0.1.0-win64.zip`（asset `700544587`，37,089,992 B，GitHub digest `sha256:e6112a33…5f5687`）+ `oasd-v0.1.0-win64.zip.sha256`（asset `700545142`，89 B）；包构建 commit 仍 `42567c1`。`dist/` 另有历史 v1.2.2 / v1.2.3 包 |
 
 ## 2. 关键 commit（由旧到新）
@@ -66,7 +66,7 @@
 | zip 文件名 | `oasd-v0.1.0-win64.zip`（asset id `700544587`，37,089,992 B）+ `oasd-v0.1.0-win64.zip.sha256`（asset id `700545142`，89 B）；本地同物在 `dist/` |
 | zip SHA256 | `E6112A33BE78D00850B4F1D0D5AEAC8E0A8172130231BB87145B43A0595F5687`（GitHub digest `sha256:e6112a33…5f5687`；zip 与旁文件、页面三方一致） |
 | 构建时间/机器 | 2026-11-02 01:08 / 本机（`dist/stage/BUILD-INFO.txt`：git `42567c1`、built_at 01:08:05、tasks=返回庭院） |
-| main 同步 commit | `dev` = `main` = `origin/dev` = `origin/main` = `906bbed`（docs 终态订正提交，父 `d1a7fcd`；2026-11-02 13:55 已同步 origin） |
+| main 同步 commit | `dev` = `main` = `origin/dev` = `origin/main`（已同步 origin，2026-11-02 13:55 实测；最新 docs 提交 = HEAD；docs 终态订正提交 `906bbed`，父 `d1a7fcd`；其后为 docs 同步回填提交 `11d53a5`） |
 
 > 以上为 2026-11-02 01:08 本地构建实测（`dist/stage/BUILD-INFO.txt`：git `42567c1`、built_at 01:08:05、tasks=返回庭院）。tag 指向 docs-only 更新后的同一代码树；以 `dist/*.sha256` 旁文件为准。
 
@@ -75,7 +75,7 @@
 1. ✅ `scripts/package.ps1` 与 `packaging/*` 版本 = `0.1.0`（已随 `42567c1` 提交）。
 2. ✅ 发布前基线 `cargo test --workspace` 393 / UI 203 / lint 1-0（**发布包就是此基线构建**；O-1/O-2 之后的最终 426/259 见 §3）。
 3. ✅ 本地构建 01:08（E611…5687）；`dist/stage/assets/assets.json` = 16 条；`packaging/start-editor.bat` 版本 = 0.1.0。
-4. ✅ tag `v0.1.0`（→ `e8edbef`，未移动）；**GitHub Release 已上传**（`431080249`，draft=false / prerelease=false，即 latest）；**`dev` / `main` 已同步 origin**（`dev` = `main` = `origin/dev` = `origin/main` = `906bbed`，2026-11-02 13:55 实测；见 §7）。
+4. ✅ tag `v0.1.0`（→ `e8edbef`，未移动）；**GitHub Release 已上传**（`431080249`，draft=false / prerelease=false，即 latest）；**`dev` / `main` 已同步 origin**（`dev` = `main` = `origin/dev` = `origin/main`，2026-11-02 13:55 实测，最新 docs 提交 = HEAD；见 §7）。
 5. ✅ 本表已回填；`RESUME-INDEX` seq 89 标 done（seq 88 为中间态，保留）。
 
 ## 6. 恢复与备份
@@ -91,7 +91,7 @@
 - **附件**（均 state=uploaded）：`oasd-v0.1.0-win64.zip`（id `700544587`，37,089,992 B，GitHub digest `sha256:e6112a33…5f5687`）；`oasd-v0.1.0-win64.zip.sha256`（id `700545142`，89 B）。
 - **tag 未移动**：annotated tag `cf123b8` → commit `e8edbef`；包构建 commit 仍是 `42567c1`。
 - **验证证据**：`D:\OAS-dev\_verify\release-v0.1.0\REPORT.md`（发布前 404 → 创建 201 → body 逐字符一致 → zip/旁文件/页面 SHA256 三方一致 → 页面 200 → rate limit 正常）。
-- **同步状态**：`dev` = `main` = `origin/dev` = `origin/main` = `906bbed`（**已同步 origin**，2026-11-02 13:55 实测；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`）；tag `v0.1.0` → `e8edbef`（未移动）；包构建 commit `42567c1`。
+- **同步状态**：`dev` = `main` = `origin/dev` = `origin/main`（**已同步 origin**，2026-11-02 13:55 实测；最新 docs 提交 = HEAD；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`，其后为 docs 同步回填提交 `11d53a5`）；tag `v0.1.0` → `e8edbef`（未移动）；包构建 commit `42567c1`。
 - **最终验证（13:35）**：workspace **426/0**；oasd 153 / flow 57 / runtime 125（+2 integration = 127）；UI **259/0 dead ids**；lint **1/0**；`cargo build -p oasd --features ocr` exit 0；DSL E2E `linted=8 errors=5`。
 - **⚠ 包内容边界**：v0.1.0 发布包**不含 O-1（collection 真实点击）/ O-2（drag action shape）**；两者自 `dev` `54c715b` 起，评审修复在 `d1a7fcd`。
 - **本轮订正**：8 份 docs 由中间态（`54c715b` / 410 / 245）订正到最终事实（`d1a7fcd` / 426 / 259）；证据 `_verify/docs-backfill-20261102/CORRECTIONS-REPORT.md`。

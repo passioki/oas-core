@@ -27,7 +27,7 @@
 
 | 项 | 状态 |
 |---|---|
-| 分支/HEAD | `dev` = `main` = `origin/dev` = `origin/main` = `906bbed`（**已同步 origin**，2026-11-02 13:55 实测；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`）；tag `v0.1.0` → `e8edbef`（**未移动**）；包构建 commit `42567c1` |
+| 分支/HEAD | `dev` = `main` = `origin/dev` = `origin/main`（**已同步 origin**，2026-11-02 13:55 实测；最新 docs 提交 = HEAD；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`，其后为 docs 同步回填提交 `11d53a5`）；tag `v0.1.0` → `e8edbef`（**未移动**）；包构建 commit `42567c1` |
 | 引擎 | `oasd`（serve/run/queue/stats/scheduler）+ 编辑器 UI + 素材库；`oasd --version` = **0.1.0**（dev；旧 v1.x 为历史内部 tag） |
 | 测试 | `cargo test --workspace` = **426 passed / 0 failed**（oasd 153 / flow 57 / runtime 125 + 2 integration）；UI = **259 checks / 0 dead ids**；task lint = **1 task / 0 errors**（2026-11-02 13:35 最终实测；DSL E2E `linted=8 errors=5`；**v0.1.0 发布包仍是 393/203 时构建**） |
 | 发布 | ✅ **GitHub Release `v0.1.0` 已上传** `https://github.com/passioki/oas-core/releases/tag/v0.1.0`（id `431080249`，draft=false / prerelease=false，即 latest）；本地包 `dist/oasd-v0.1.0-win64.zip`，SHA256 `E6112A33…5F5687`（37,089,992 B）+ 旁文件 `.sha256` |
@@ -53,8 +53,8 @@
 
 | 项 | 值 |
 |---|---|
-| 恢复节点 | tag `v0.1.0`（2026-11-02，→ `e8edbef`，**未移动**）；**GitHub Release 已上传**（id `431080249`，latest）；`dev` = `main` = `origin/dev` = `origin/main` = `906bbed`（已同步 origin）；包构建 commit `42567c1`；本地包 SHA256 `E6112A33…5F5687` |
-| 当前分支 | `dev` = `main` = `origin/dev` = `origin/main` = `906bbed`（**已同步 origin**，2026-11-02 13:55 实测） |
+| 恢复节点 | tag `v0.1.0`（2026-11-02，→ `e8edbef`，**未移动**）；**GitHub Release 已上传**（id `431080249`，latest）；`dev` = `main` = `origin/dev` = `origin/main`（已同步 origin，最新 docs 提交 = HEAD）；包构建 commit `42567c1`；本地包 SHA256 `E6112A33…5F5687` |
+| 当前分支 | `dev` = `main` = `origin/dev` = `origin/main`（**已同步 origin**，2026-11-02 13:55 实测；最新 docs 提交 = HEAD） |
 | 文档 | 已独立到 `oas-core/docs`；现行 = ENGINE-DESIGN + PENDING-LEDGER + RESUME + ASSET-DATA-MODEL + RELEASE-NODE；历史 7 份在 `docs/archive/` |
 | 当前计划 | **先读 `RESUME.md`（seq 89）+ `PENDING-LEDGER §E-74` + `RELEASE-NODE-2026-11-02.md`**：0.1.0 GitHub Release 已上传；**O-1/O-2 经两轮评审后在 dev `d1a7fcd` 收口**（426 tests / UI 259 / lint 1-0，**不在 v0.1.0 包内**）；剩 `SelectionTool` 与真机 collection E2E |
 | 截图 | 两阶段：点击立即抓取 → 弹窗预览 → 名称/分类 → 保存；无当前帧跳转 |
