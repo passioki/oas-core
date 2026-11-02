@@ -1864,7 +1864,18 @@ tasks/<任务名>/
 - **失败模式（实测）**：误把 `scheduler.json` 传给 `--config` ⇒ **exit 2** + `config error: config JSON: unknown field 'config', expected one of schema_version/serve/paths/ocr/device/scheduler`，**不会跑任何 plan**（旧文档的"静默回退"说法不成立）；只有 `--config` 传合法 live 配置时，调度 plan 才回退默认 `scheduler.json`。
 - `start-scheduler.bat` 同时传 `--plan` 与 `--config` 是**正当组合**（前者调度计划、后者部署配置），勿据此推断 `--config` 是调度参数。
 
-**状态（2026-11-02 23:3x）**：P0 文档已入库（本节 + `PENDING-LEDGER §E-75`）；**P1 ✅ 已提交（全量回归 450/0，oasd 177；实现 445 + 评审修复 +5；调度专项 77）**；P2–P5 未开始。P1 期间队列 entry 不执行：`plan_pass` 记为 `skipped`（reason `queue_executor_pending`），不计入 runnable，避免把 queue_id 当任务包跑。
+**状态（2026-11-03 01:3x）**：P0 文档已入库（本节 + `PENDING-LEDGER §E-75`）；P1 ✅ 已提交（450/0，oasd 177）；**P2 ✅ 本轮提交（全量回归 474/0，oasd 201；调度专项 101）**；P3–P5 未开始。P1 期间队列 entry 不执行（`plan_pass` 记 `skipped`，reason `queue_executor_pending`）；**P2 起 queue entry 正常执行**，见下段。
+
+**P2 队列 Round 执行（2026-11-03 01:3x 完成）**
+
+- **分派与准入**：`execute_pass` 按 `entry.kind` 分派（Task → `run_entry`；Queue → `execute_queue_round`，一轮计 1 个 `stats.ran`）。queue entry 与 task entry 共用 window/quota/cooldown/lifecycle 过滤链；硬 skip 仅 `queue_finished`/`queue_missing`，新增 `queue_between`（非 open-round 且距上一轮结束不足 `between_ms`）；open round 走 `recover`/`recover_temp` + resume（规则 8）。
+- **Round 执行**：有 `current_round` 续跑（不再 begin），否则 `queue_begin_round`；成员按 `member_index` 串行（轻量预检 `task_missing` → skipped → 推进）；每个成员 `mark_running` 写成员任务名 + save → 执行 → `queue_record_member` + `clear_running` 同一次 save → 审计；每步原子 `save_state`。成员 attempts = `1+entry.retry`（只 retryable、`between_ms` 退避、有 checkpoint 默认 resume）；`continue`/`fail_fast`/`fatal` 语义。
+- **入口分类**：以本轮全部 `member_results` 重算：Fatal > 有 Success/Resource → Success（耗 quota）> executed 全失败 → Retryable（cooldown）> 空轮 → Blocked（cooldown）；空轮只 `empty_rounds+1`，不耗 `total_rounds`。
+- **exactly-once**：`QueueState.pending_entry_record`；`queue_end_round` + pending 同一次 save；`record_result` + 清 pending 同一次 save；启动首 pass 前 `recover_pending_entry_records` 补记（事件 `queue_entry_record_recovered`）。
+- **校验**：一个 queue 至多被一个 entry 引用（重复 → 配置错误，错误文本含两个 entry_id）。
+- **事件**：`queue_round_started`、`queue_round_resumed`、`queue_member_started`、`queue_member_finished`、`queue_round_finished`、`empty_round`、`queue_finished`、`queue_missing`、`queue_entry_record_recovered`；每轮另有 `run_finished(kind=queue, round, clicks, quota_used)`。
+- **report/status**：`SchedulerReport.queues[]`（additive，schema 4）；status entry 增 `queue` 进度对象；旧键保留。
+- **实测**：`cargo test --workspace` **474/0**（21 binary）、`cargo test -p oasd` **201**、调度专项 **101**；E2E（replay 2 轮 / 崩溃续跑只计 1 / 补记只一次 / 重复 entry exit 2 / `queue_between` 对齐）。实现与逐项证据见 `SCHEDULER-RUNNER-PLAN.md §三 P2`、`PENDING-LEDGER §E-75 §C3`；遗留（补记 cycle、session report、200 环、成员级副作用、P3 serve 过滤）同见 §C3。
 
 ---
 

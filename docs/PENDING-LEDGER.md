@@ -3173,10 +3173,10 @@ GET /task/assets?task= → 34 个素材（全局模式）
 |---|---|---|
 | **P0** 语义冻结 + 文档/CLI 订正 | 计划文档入库；`ENGINE-DESIGN §22.34.7`（术语表 + Round 10 条 + 四名消歧）；本 §E-75；两处失真订正 | ✅ 完成（本节点） |
 | **P1** schema + 纯函数层 | `scheduler.json` / `scheduler.state.json` **schema 3→4**（`queues[]`、`entries[].kind`、旧 state 迁移 + `<state>.v3.bak` 备份）；纯函数 `queue_should_finish` / `queue_finished` / `queue_next_member_index` / `queue_begin_round` / `queue_record_member` / `queue_end_round` / `queue_next_due_ms` / `queue_reset`；单任务 entries 行为逐字节等价 | ✅ 实现完成 + 评审修复并入（P1 提交；全量回归 **450/0**，oasd **177**） |
-| **P2** 执行编排 | `schedule.rs` 识别 `kind="queue"` → `execute_queue_round`；`queue_round_started`/`queue_member_finished`/`queue_round_finished`/`queue_finished`/`empty_round` 事件；report 队列汇总；可选 serve/scheduler 共享设备互斥文件锁 | ⬜ |
+| **P2** 执行编排 | `schedule.rs` 识别 `kind="queue"` → `execute_queue_round`；`queue_round_started`/`queue_round_resumed`/`queue_member_started`/`queue_member_finished`/`queue_round_finished`/`queue_finished`/`empty_round`/`queue_missing`/`queue_entry_record_recovered` 事件；report/status 队列汇总；成员串行 + 每步原子 save + `pending_entry_record` exactly-once；one-queue-one-entry 校验 | ✅ 实现完成 + 评审修复并入（P1-1/2/3 + P2-1，F2P；全量回归 **474/0**，oasd **201**，调度专项 101） |
 | **P3** UI 产品化 | 任务库「启用/加入调度」→ entries CRUD（`GET/POST /scheduler/config`，写前校验 + 运行中 409 + 原子写）；调度页 entries/队列面板；状态卡（passes/next_wake/running/本轮进度） | ⬜ |
 | **P4** Run 一等实体 | `runs/scheduler/<run_id>.json`（task/queue/round/member/attempt/exit/outcome）；`run_finished` 补 exit_code；`/runs` 扩展 + UI 运行历史 | ⬜ |
-| **P5** 验收收口 | `cargo test --workspace` 全绿（P1 实现 445 → 评审修复后 **450/0**，oasd 177）；replay 队列 2 轮；实机 2 轮 + 重启恢复 + `reset-memory` 复位；文档同步 | ⬜ |
+| **P5** 验收收口 | `cargo test --workspace` 全绿（P1 450/0 → P2 **474/0**，oasd 201）；replay 队列 2 轮；实机 2 轮 + 重启恢复 + `reset-memory` 复位；文档同步 | ⬜ |
 
 ## C. P0 本轮已落事实（只改 `docs/*.md`，无代码/数据变更）
 
@@ -3194,6 +3194,20 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - **E2E 复核**：queue entry 在 `--status` 中 `runnable_now=false` / `blocked_reason=queue_executor_pending`；`max_passes` 配置别名 → status `loop_rounds=2`；CLI `--max-passes 1` → stop reason=`max_rounds`；v3 显式 `kind` → exit 2（`schema_version 3 must not declare entries[0].kind`）；state v3→v4 迁移生成 `<state>.v3.bak`（SHA256 与原文一致）、state schema=4。
 - **提交**：P1 代码与 docs 分两次提交（文档用 HEAD 相对表述，hash 以 `git log` 为准）；不含 `frames/frames.json`（用户数据改动，不提交）。
 
+## C3. P2 最终实测（2026-11-03 01:3x，Lead 权威）
+
+- **实现**：`execute_pass` 按 `entry.kind` 分派（Task → `run_entry`，Queue → `execute_queue_round`）；queue entry 与 task entry 走同一条 window/quota/cooldown/lifecycle 过滤链；硬 skip 仅 `queue_finished`/`queue_missing`，新增 `queue_between`（非 open-round 且距上一轮结束不足 `between_ms`）；open round 走 `recover`/`recover_temp` + resume（规则 8）。
+- **Round 执行**：有 `current_round` 续跑否则 begin；成员串行（`mark_running` 写成员任务名 + save → 执行 → `queue_record_member` + `clear_running` 同一次 save → audit）；每步原子 `save_state`。成员 attempts = `1 + entry.retry`（仅 `retryable` 重试、`between_ms` 退避、有 checkpoint 默认 resume）；`continue`/`fail_fast`/`fatal` 语义。
+- **入口分类**（以本轮全部 `member_results` 重算）：Fatal > 有 Success/Resource → Success（耗 quota）> executed 全失败 → Retryable（cooldown）> 空轮 → Blocked（cooldown）；空轮只 `empty_rounds+1`，不耗 `total_rounds`。
+- **exactly-once**：`QueueState.pending_entry_record`；`queue_end_round` + pending 同一次 save；`record_result` + 清 pending 同一次 save；启动首 pass 前 `recover_pending_entry_records` 补记（事件 `queue_entry_record_recovered`）。
+- **校验**：一个 queue 至多被一个 entry 引用（重复 → 配置错误，错误文本含两个 entry_id）。
+- **事件**：`queue_round_started`、`queue_round_resumed`、`queue_member_started`、`queue_member_finished`、`queue_round_finished`、`empty_round`、`queue_finished`、`queue_missing`、`queue_entry_record_recovered`；每轮另有 `run_finished(kind=queue, round, clicks, quota_used)`。
+- **report/status**：`SchedulerReport.queues[]`（additive，schema 4）；status entry 增 `queue` 进度对象；旧键保留。
+- **测试**：`cargo test --workspace` = **474 passed / 0 failed**（21 个 test binary 全 ok）；`cargo test -p oasd` = **201**；调度专项 **101**（`scheduler.rs` 49 + `schedule.rs` 52）；UI **259 checks / 0 dead ids**；task lint **1/0**；OCR build（alt target）exit 0；warning 基线无新增。证据 `_f2p-test-workspace-final.txt` · `_f2p-test-oasd-final.txt` · `P2-REPORT.md` · `REVIEW-P2.md` · `F2P-REPORT.md`。
+- **E2E 冒烟（子进程 + Lead 独立复核）**：replay 任务 2 成员串行跑 2 轮 → rounds=2、finished=true、`queue_finished` 事件、report/status 形状正确；崩溃恢复（预置 open round `member_index=1`）只跑剩余成员、rounds 只计 1；pending 补记只一次；重复 queue entry exit 2；`queue_between` 与 `next_due` 一致。
+- **遗留（P3 起）**：① 补记使用恢复时 cycle（跨逻辑日会记到当天）；② 补记不计本次 session `report.runs`；③ `member_results` 200 环假设本轮成员 ≤200；④ end→record 已由 pending 状态机修复，但**成员执行中外部杀进程**仍按 checkpoint/resume 重跑（不保证成员级 exactly-once 副作用）；⑤ P3：serve 按 kind 过滤（`serve.rs:6449-6469`）、`prune_scheduler_task` 不清队列 members、UI 编辑 entries；P4：Run 一等实体；P5：实机验收（需 MuMu）。
+- **提交**：P2 代码 + 本轮 docs 分两次提交（`dev` = P2 代码提交（父 `865724d`）+ docs 提交（HEAD）；hash 以 `git log` 为准）；不含 `frames/frames.json`（用户数据改动）。
+
 ## D. 台账
 
 | 项 | 状态 | 证据/说明 |
@@ -3202,7 +3216,8 @@ GET /task/assets?task= → 34 个素材（全局模式）
 | P0 失真订正 | ✅ | N40/ENGINE §22.35 墙钟 24h soak；`--config`→`--plan`；P0 只改 `docs/`（`git diff --check` 干净；`apps/oasd/src/scheduler.rs` 的并行改动属 P1，非 P0；`frames/frames.json` 用户改动未触碰） |
 | P1 | ✅ | schema 3→4 + 纯函数层 + 迁移（含 `<state>.v3.bak` 备份）；评审修复已并入（`--config` 注释订正、reset-memory 覆盖 queue entry/轮次、`plan_pass` 把 queue entry 归入 skipped（`queue_executor_pending`）、queue 状态机保护（open round）、v3 显式 `kind` 拒绝、`to_json` 注释修正）；**已提交（本轮 P1 代码提交）**；验收 = 全量回归 **450/0**（oasd 177）+ state 迁移测试 + 旧单任务 entries 回归等价；证据 `P1-REPORT.md` · `REVIEW-P1.md` · `F1-FIX-REPORT.md` · `lead-cargo-workspace.log` |
 | P1 数字收尾 | ✅ | 文档里的"待实测"类占位全部收敛为最终实测；逐处 before→after 见 `D:\OAS-dev\_verify\scheduler-plan-20261102\F3-DOCS-NUMBERS-REPORT.md` |
-| P2–P5 | ⬜ | 见 `docs/SCHEDULER-RUNNER-PLAN.md §三`；P5 需实机（MuMu） |
+| P2 | ✅ | 队列 Round 执行编排（`execute_queue_round` / 成员串行 / 每步原子 save / lazy 计数 / `pending_entry_record` exactly-once / `queue_between` / one-queue-one-entry 校验 / report+status 队列汇总）；评审修复 P1-1/2/3 + P2-1 并入（F2P）；**已提交（本轮 P2 代码提交）**；验收 = 全量回归 **474/0**（oasd 201，调度专项 101）+ E2E（2 轮 / 崩溃续跑 / 补记只一次 / 重复 entry exit 2 / between）；证据 `P2-REPORT.md` · `REVIEW-P2.md` · `F2P-REPORT.md` · `_f2p-test-workspace-final.txt` · `_f2p-test-oasd-final.txt` · `p2-smoke-f2p/` |
+| P3–P5 | ⬜ | 见 `docs/SCHEDULER-RUNNER-PLAN.md §三`；P3 先做（UI entries CRUD / 队列面板 / 状态卡），P4 Run 实体，P5 需实机（MuMu） |
 
-| 状态 | ✅ P0 文档（seq 90）· ✅ P1 schema/纯函数（已提交；全量回归 450/0，oasd 177）· ⬜ P2–P5 · ⚠ 墙钟 24h soak 未完成（只有 96 轮加速 soak 成立）· 无阻塞 |
+| 状态 | ✅ P0 文档（seq 90）· ✅ P1 schema/纯函数（450/0，oasd 177）· ✅ P2 队列 Round 执行编排（本轮提交；全量回归 474/0，oasd 201，调度专项 101）· ⬜ P3–P5 · ⚠ 墙钟 24h soak 未完成（只有 96 轮加速 soak 成立）· 无阻塞 |
 |
