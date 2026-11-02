@@ -1,5 +1,12 @@
 @echo off
 REM OAS V1.0 scheduler launcher (single-instance lock; log to logs\)
+REM --plan   = the SCHEDULE plan file: scheduler.json (schema v4; v3 is read as a
+REM            legacy document and upgraded in memory).
+REM --config = the GLOBAL live deployment config (config\live.json), consumed by
+REM            main.rs before the subcommand is dispatched. It is NOT the
+REM            schedule plan: pointing it at scheduler.json fails immediately
+REM            with "config error ... unknown field `config`" (exit 2) and no
+REM            plan runs.
 setlocal
 cd /d "%~dp0"
 set "ADB_PATH=%~dp0adb\adb.exe"

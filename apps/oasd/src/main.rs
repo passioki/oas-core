@@ -39,6 +39,18 @@ fn main() -> ExitCode {
     //   oasd [--config config/live.json] <command> ...
     // The flag is consumed here so every subcommand can rely on the env/global
     // values without growing a `--config` parser of its own.
+    //
+    // NOTE (docs/SCHEDULER-RUNNER-PLAN.md §三 P0): `--config` is the GLOBAL live
+    // deployment config (`config/live.json`) and is stripped *before* dispatch,
+    // so it never reaches the scheduler parser. The failure modes are asymmetric:
+    // * `oasd scheduler --config scheduler.json` fails loudly here — the plan
+    //   file is validated as an `OasConfig` (`deny_unknown_fields`) and the
+    //   process exits 2 with `config error: config JSON: unknown field
+    //   'config'`; no plan runs at all;
+    // * `oasd scheduler --config config/live.json` loads a valid live config,
+    //   the flag is consumed here, and the scheduler parser silently falls back
+    //   to the default `scheduler.json` (this is the only "silent" half).
+    // The schedule plan is selected with `--plan <scheduler.json>`.
     let mut config_path: Option<String> = None;
     let mut i = 0usize;
     while i < args.len() {

@@ -1,31 +1,47 @@
-//! 调度器 v3 主循环 / CLI（ENGINE-DESIGN §22.34 · DELIVERY-PLAN M2 · N37）。
+//! 调度器主循环 / CLI（ENGINE-DESIGN §22.34 · `docs/SCHEDULER-RUNNER-PLAN.md`）。
 //!
-//! Replaces the v1 `every_s` plan (`ENGINE §22.33`) with the v3 player config:
-//! `scheduler.json` (schema_version 3) = calendar / guards / entries. The pure
-//! scheduling matrix lives in [`crate::scheduler`]; this module owns all IO:
-//! config/state files, the single-instance lock, execution via `run::execute`,
-//! crash recovery, audit events and reports.
+//! Replaces the v1 `every_s` plan (`ENGINE §22.33`) with the v4 player config:
+//! `scheduler.json` (schema_version 4) = calendar / guards / queues / entries.
+//! Schema v3 documents are still read (no `queues` / `kind` → empty queue list,
+//! `kind = "task"`) and are upgraded to v4 in memory; a v3 state file is
+//! migrated on load and copied to `<state>.v3.bak` before the first v4 write
+//! (`scheduler_state_backup path=...`). The pure scheduling matrix lives in
+//! [`crate::scheduler`]; this module owns all IO: config/state files, the
+//! single-instance lock, execution via `run::execute`, crash recovery, audit
+//! events and reports.
 //!
 //! # CLI
 //! ```text
-//! oasd scheduler [run] --config <scheduler.json> [--state <file>] [--tasks-dir tasks]
-//!              [--once] [--max-rounds N] [--dry-run] [--status] [--report <file.json>]
+//! oasd scheduler [run] --plan <scheduler.json> [--state <file>] [--tasks-dir tasks]
+//!              [--once] [--max-passes N] [--dry-run] [--status] [--report <file.json>]
 //!              [--library <dir>] [--model rec.onnx] [--det-model det.onnx]
 //!              [--replay <bundle>] [--clicks-dir <dir>] [--shots-dir <dir>] [--seed N]
 //!              [--keep-going] [--tz-offset-min M] [--tick-ms MS] [--events <file.jsonl>]
 //! oasd scheduler reset-memory --tasks a,b [--all] [--include-checkpoint]
-//!              [--config <scheduler.json>] [--state <file>] [--tasks-dir tasks]
+//!              [--plan <scheduler.json>] [--state <file>] [--tasks-dir tasks]
 //! ```
-//! `--plan` is accepted as an alias of `--config` (v1 flag spelling) and the
-//! old `--max-runs` as an alias of `--max-rounds`. `oasd schedule ...` is kept
-//! as the historical entry point (`schedule_cmd`), so old start scripts still
-//! dispatch here; a v1 plan file is rejected with a migration hint.
+//! **`--plan` selects the schedule plan** (`scheduler.json`). `--config` is the
+//! **global live deployment config** (`config/live.json`): `main.rs` consumes it
+//! before dispatching any subcommand, so in a normal `oasd` invocation it never
+//! reaches this parser. Two distinct failure modes follow:
+//! * `oasd scheduler --config scheduler.json` fails before the subcommand runs:
+//!   `OasConfig` is `deny_unknown_fields`, so the plan file is rejected as a
+//!   live config with `config error: config JSON: unknown field 'config'` and
+//!   exit code 2 — it does **not** silently run the default plan;
+//! * `oasd scheduler --config config/live.json` loads a valid live config, the
+//!   flag is stripped here, and the scheduler parser silently falls back to the
+//!   default `scheduler.json` (that is the "silent" half of the trap).
+//! `--plan` remains accepted as an alias of the parser's `--config` field
+//! (`SchedulerOptions::config`) for API callers. `--max-passes` is the primary
+//! spelling of the L3 pass cap; `--max-rounds`/`--max-runs` are deprecated
+//! aliases. `oasd schedule ...` is kept as the historical entry point
+//! (`schedule_cmd`); a v1 plan file is rejected with a migration hint.
 //!
 //! # State file (`scheduler.state.json`)
 //! Atomic (tmp + rename) writes of **runtime state only**:
 //! ```json
 //! {
-//!   "schema_version": 3,
+//!   "schema_version": 4,
 //!   "created_ms": 1760000000000,
 //!   "last_pass_ms": 1760000000000,
 //!   "passes": 12,
@@ -39,6 +55,15 @@
 //!            "last_duration_ms":1234,"cooldown_until_ms":0,
 //!            "quota_day":{"cycle":"2026-10-23","used":1},
 //!            "quota_week":{"cycle":"2026-10-19","used":1}}
+//!   },
+//!   "queues": {                            // schema v4; absent in a v3 state
+//!     "q1": {"total_rounds":2,"rounds_completed":1,"empty_rounds":0,
+//!            "finished":false,
+//!            "current_round":{"index":2,"member_index":1,"started_ms":0},
+//!            "member_results":[{"round":2,"member_index":0,"task":"任务1",
+//!                               "class":"success","exit":"done","outcome":"Done",
+//!                               "attempts":1,"duration_ms":1200,
+//!                               "finished_ms":1760000000000}]}
 //!   }
 //! }
 //! ```
@@ -47,22 +72,30 @@
 //! counters, quota counters and cooldown. The `running` marker is written
 //! before every execution; if the process dies, the next start sees a dirty
 //! `running` entry and re-runs it with `--resume` (periodic) or resets the temp
-//! task state and starts fresh (temp — no completion memory by design).
+//! task state and starts fresh (temp — no completion memory by design). Queue
+//! rounds additionally persist `current_round{index, member_index}` so a
+//! restart resumes the round without double-counting it (plan §二 rule 8).
 //!
 //! # Audit events (`scheduler.events.jsonl`)
 //! Append-only JSONL next to the state file (`<config>.events.jsonl` by
-//! default): `state_recovered`, `pass`, `run_finished`, `temp_state_reset`,
-//! `alert`, `wake`, `stop`, `memory_reset`. `--report` additionally writes the
-//! full machine-readable summary of the session.
+//! default): `scheduler_start`, `state_recovered`, `recovery_dropped`, `pass`,
+//! `run_finished`, `temp_state_reset`, `alert`, `wake`, `stop`, `memory_reset`.
+//! `--report` additionally writes the full machine-readable summary of the
+//! session.
 //!
 //! # Reset memory
 //! `reset-memory` clears, for the selected tasks: ① the scheduler entry state
-//! (attempts/cooldown/quota counters) and ② `tasks/<id>/state/` (checkpoint,
-//! learned coordinates — the task's memory), and appends a `memory_reset`
-//! audit event. It refuses to run while a scheduler holds the lock, and leaves
-//! run statistics (`runs/ *.clicks.jsonl`) untouched. Checkpoint clearing is
-//! **on by default** (`--include-checkpoint` is the explicit spelling);
-//! `--keep-checkpoint` keeps `checkpoint.json` while clearing the rest.
+//! (attempts/cooldown/quota counters) — including the queue entry that schedules
+//! a selected queue, whose `EntryState.task` is the queue_id; ② the round state
+//! of every queue containing a selected task (rounds/finished/`member_results`,
+//! and a dirty `running` marker pointing at the queue entry or one of its
+//! members); and ③ `tasks/<id>/state/` (checkpoint, learned coordinates — the
+//! task's memory). It appends a `memory_reset` audit event carrying the reset
+//! queue ids under `queues_reset`, refuses to run while a scheduler holds the
+//! lock, and leaves run statistics (`runs/ *.clicks.jsonl`) untouched.
+//! Checkpoint clearing is **on by default** (`--include-checkpoint` is the
+//! explicit spelling); `--keep-checkpoint` keeps `checkpoint.json` while
+//! clearing the rest.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as IoWrite;
@@ -79,9 +112,9 @@ use crate::run::{self, RunOptions, RunReport};
 use crate::scheduler::{
     self, classify_signal, clear_running, cycle_ids, entry_next_due_ms, format_local_datetime,
     guard_reason, mark_running, next_wake, plan_pass, quota_remaining, quota_used, record_result,
-    roll_cycles, should_retry, validate_scheduler_with_offset, Entry, GuardBlock, Lifecycle,
-    PassPlan, ResultClass, RunMode, RunSignal, Scheduler, SchedulerState, DEFAULT_UTC_OFFSET_MIN,
-    MAX_SLEEP_MS, SCHEDULE_SCHEMA_VERSION,
+    roll_cycles, should_retry, validate_scheduler_with_offset, Entry, EntryKind, GuardBlock,
+    Lifecycle, PassPlan, ResultClass, RunMode, RunSignal, Scheduler, SchedulerState,
+    DEFAULT_UTC_OFFSET_MIN, MAX_SLEEP_MS, SCHEDULE_SCHEMA_VERSION, STATE_SCHEMA_VERSION,
 };
 
 /// Default player config (§22.34 / M3 `config::SchedulerConfig::plan`).
@@ -89,14 +122,19 @@ pub const DEFAULT_CONFIG: &str = "scheduler.json";
 pub const DEFAULT_TASKS_DIR: &str = "tasks";
 pub const DEFAULT_MAX_SLEEP_MS: u64 = MAX_SLEEP_MS as u64;
 
-pub const USAGE: &str = "usage: oasd scheduler [run] [--config <scheduler.json>] [--state <file>] \
-                         [--tasks-dir tasks] [--once] [--max-rounds N] [--dry-run] [--status] \
+pub const USAGE: &str = "usage: oasd scheduler [run] --plan <scheduler.json> [--state <file>] \
+                         [--tasks-dir tasks] [--once] [--max-passes N] [--dry-run] [--status] \
                          [--report <file.json>] [--library <dir>] [--model <rec.onnx>] \
                          [--det-model <det.onnx>] [--replay <bundle>] [--clicks-dir <dir>] \
                          [--shots-dir <dir>] [--seed N] [--keep-going] [--tz-offset-min M] \
                          [--tick-ms MS] [--events <file.jsonl>]
        oasd scheduler reset-memory --tasks <a,b> [--all] [--include-checkpoint] \
-                         [--config <scheduler.json>] [--state <file>] [--tasks-dir tasks]";
+                         [--plan <scheduler.json>] [--state <file>] [--tasks-dir tasks]
+       note: --plan is the SCHEDULE plan (scheduler.json). --config is the GLOBAL live
+             deployment config (config/live.json, consumed by main.rs before the
+             subcommand) and is NOT the schedule file: pointing it at scheduler.json
+             fails with `config error ... unknown field 'config'` (exit 2).
+             --max-passes is the pass cap; --max-rounds/--max-runs are deprecated aliases.";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -104,7 +142,12 @@ pub const USAGE: &str = "usage: oasd scheduler [run] [--config <scheduler.json>]
 
 #[derive(Debug, Clone)]
 pub struct SchedulerOptions {
-    /// `scheduler.json` v3 (`--config` / `--plan`).
+    /// The schedule plan `scheduler.json` (schema v4; v3 read as compat).
+    ///
+    /// CLI spelling: `--plan`. (`--config` is consumed globally by `main.rs` as
+    /// the live deployment config and never reaches this field in a normal
+    /// `oasd` invocation; the parser still accepts it as an alias for API
+    /// callers such as `serve.rs`.)
     pub config: PathBuf,
     /// `scheduler.state.json` (default: `<config stem>.state.json`).
     pub state: Option<PathBuf>,
@@ -118,8 +161,10 @@ pub struct SchedulerOptions {
     pub seed: Option<u64>,
     /// One pass, then exit (no sleeping).
     pub once: bool,
-    /// Maximum passes in this session.
-    pub max_rounds: Option<u64>,
+    /// L3 pass cap for this session (`--max-passes`; the deprecated aliases are
+    /// `--max-rounds`/`--max-runs`). **Not** a queue Round (L4): see
+    /// `docs/SCHEDULER-RUNNER-PLAN.md` §一 for the four layers.
+    pub max_passes: Option<u64>,
     /// Preview the pass plan: no state writes, no lock, no execution.
     pub dry_run: bool,
     /// Print the machine-readable status JSON (panel contract) and exit.
@@ -150,7 +195,7 @@ impl Default for SchedulerOptions {
             shots_dir: None,
             seed: None,
             once: false,
-            max_rounds: None,
+            max_passes: None,
             dry_run: false,
             status: false,
             report: None,
@@ -210,15 +255,13 @@ impl SchedulerOptions {
                 "--seed" => {
                     o.seed = Some(parse_u64(&take_value(rest, &mut i, "--seed")?, "--seed")?)
                 }
-                "--max-rounds" | "--max-runs" => {
-                    let v = parse_u64(
-                        &take_value(rest, &mut i, "--max-rounds")?,
-                        "--max-rounds",
-                    )?;
+                "--max-passes" | "--max-rounds" | "--max-runs" => {
+                    let flag = rest[i].clone();
+                    let v = parse_u64(&take_value(rest, &mut i, &flag)?, &flag)?;
                     if v == 0 {
-                        return Err("--max-rounds must be >= 1".to_string());
+                        return Err(format!("{flag} must be >= 1"));
                     }
-                    o.max_rounds = Some(v);
+                    o.max_passes = Some(v);
                 }
                 "--tz-offset-min" => {
                     let raw = take_value(rest, &mut i, "--tz-offset-min")?;
@@ -354,23 +397,74 @@ fn append_jsonl(path: &Path, value: &Value) -> Result<(), String> {
 }
 
 fn load_state(path: &Path) -> Result<SchedulerState, String> {
+    load_state_migrating(path).map(|(state, _)| state)
+}
+
+/// `<state>.v3.bak` (`scheduler.state.json` -> `scheduler.state.json.v3.bak`).
+fn state_v3_backup_path(state_path: &Path) -> PathBuf {
+    let mut os = state_path.as_os_str().to_os_string();
+    os.push(".v3.bak");
+    PathBuf::from(os)
+}
+
+/// Copy the pre-migration v3 state to `<state>.v3.bak` and log the path.
+///
+/// Called only when [`load_state_migrating`] reported a v3 migration and just
+/// **before** the first v4 write (plan §四 "读 3 自动迁移 + 备份 state"). An
+/// existing `.v3.bak` is overwritten (the latest pre-upgrade snapshot wins).
+/// `Err` aborts before v4 is written, leaving the original v3 file untouched.
+fn backup_state_v3(state_path: &Path, out: &mut dyn FnMut(&str)) -> Result<PathBuf, String> {
+    let backup = state_v3_backup_path(state_path);
+    std::fs::copy(state_path, &backup).map_err(|e| {
+        format!(
+            "scheduler state: backup `{}` -> `{}`: {e}",
+            state_path.display(),
+            backup.display()
+        )
+    })?;
+    out(&format!("scheduler_state_backup path={}", backup.display()));
+    Ok(backup)
+}
+
+/// [`load_state`] plus a migration note.
+///
+/// Schema v3 (`scheduler.state.json` before queues) is accepted and upgraded in
+/// memory to v4 with an empty `queues` map — `#[serde(default)]` already
+/// produces it, the version bump is the migration. Any other version is an
+/// error; the caller decides whether the next save rewrites v4 (the daemon
+/// saves right after startup, `reset-memory` only writes when it changed
+/// something, `--status`/`--dry-run` never write).
+///
+/// The migration is **in memory only**: a caller that will write v4 must call
+/// [`backup_state_v3`] first, while the file on disk is still v3.
+fn load_state_migrating(path: &Path) -> Result<(SchedulerState, Option<String>), String> {
     if !path.is_file() {
-        return Ok(SchedulerState::new());
+        return Ok((SchedulerState::new(), None));
     }
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("scheduler state: read `{}`: {e}", path.display()))?;
-    let state: SchedulerState = serde_json::from_str(&text)
+    let mut state: SchedulerState = serde_json::from_str(&text)
         .map_err(|e| format!("scheduler state `{}`: invalid JSON: {e}", path.display()))?;
-    if state.schema_version != SCHEDULE_SCHEMA_VERSION {
-        return Err(format!(
-            "scheduler state `{}`: schema_version {} unsupported (expect {}); \
-             delete it (memory reset) or point --state elsewhere",
-            path.display(),
-            state.schema_version,
-            SCHEDULE_SCHEMA_VERSION
-        ));
-    }
-    Ok(state)
+    let note = match state.schema_version {
+        STATE_SCHEMA_VERSION => None,
+        3 => {
+            state.schema_version = STATE_SCHEMA_VERSION;
+            Some(format!(
+                "scheduler state `{}`: schema_version 3 migrated to {STATE_SCHEMA_VERSION} \
+                 (queue state starts empty)",
+                path.display()
+            ))
+        }
+        other => {
+            return Err(format!(
+                "scheduler state `{}`: schema_version {other} unsupported \
+                 (expect 3 or {STATE_SCHEMA_VERSION}); delete it (memory reset) \
+                 or point --state elsewhere",
+                path.display()
+            ));
+        }
+    };
+    Ok((state, note))
 }
 
 fn default_utc_offset() -> i32 {
@@ -415,32 +509,58 @@ struct Loaded {
 fn load_full(opts: &SchedulerOptions) -> Result<Loaded, String> {
     let sched = load_scheduler(opts)?;
     let mut metas = BTreeMap::new();
+    // Task entries and queue members both name task bundles; a queue entry's
+    // `task` is a queue_id, never a bundle (rule 2/3).
     for entry in &sched.entries {
-        if metas.contains_key(&entry.task) {
+        if entry.kind != EntryKind::Task || metas.contains_key(&entry.task) {
             continue;
         }
-        let dir = opts.tasks_dir.join(&entry.task);
-        if !dir.is_dir() {
-            return Err(format!(
-                "scheduler config: entry `{}` task `{}` not found under `{}`",
-                entry.entry_id,
-                entry.task,
-                opts.tasks_dir.display()
-            ));
-        }
-        let meta_path = dir.join("meta.json");
-        let text = std::fs::read_to_string(&meta_path).map_err(|e| {
-            format!(
-                "scheduler config: entry `{}` task `{}`: meta.json: {e} \
-                 (not a task bundle)",
-                entry.entry_id, entry.task
-            )
-        })?;
-        let exits = scheduler::parse_meta_exits(&text)
-            .map_err(|e| format!("scheduler config: task `{}`: {e}", entry.task))?;
+        let exits = load_task_metas(
+            &opts.tasks_dir,
+            &entry.task,
+            &format!("entry `{}`", entry.entry_id),
+        )?;
         metas.insert(entry.task.clone(), exits);
     }
+    for queue in &sched.queues {
+        for member in &queue.members {
+            if metas.contains_key(member) {
+                continue;
+            }
+            let exits = load_task_metas(
+                &opts.tasks_dir,
+                member,
+                &format!("queue `{}` member", queue.queue_id),
+            )?;
+            metas.insert(member.clone(), exits);
+        }
+    }
     Ok(Loaded { sched, metas })
+}
+
+/// Fail fast when a referenced task bundle is missing/unreadable (before any
+/// byte of state is written) and collect its `meta.exits`.
+fn load_task_metas(
+    tasks_dir: &Path,
+    task: &str,
+    ctx: &str,
+) -> Result<BTreeMap<String, ResultClass>, String> {
+    let dir = tasks_dir.join(task);
+    if !dir.is_dir() {
+        return Err(format!(
+            "scheduler config: {ctx} task `{task}` not found under `{}`",
+            tasks_dir.display()
+        ));
+    }
+    let meta_path = dir.join("meta.json");
+    let text = std::fs::read_to_string(&meta_path).map_err(|e| {
+        format!(
+            "scheduler config: {ctx} task `{task}`: meta.json: {e} \
+             (not a task bundle)"
+        )
+    })?;
+    scheduler::parse_meta_exits(&text)
+        .map_err(|e| format!("scheduler config: task `{task}`: {e}"))
 }
 
 /// Collect `meta.exits` for one task (tolerated when absent).
@@ -1052,6 +1172,15 @@ impl<'a> Session<'a> {
             else {
                 continue;
             };
+            // Queue-round execution is P2: `plan_pass` puts every queue entry
+            // into `skipped` (`queue_executor_pending`), so nothing but task
+            // entries can reach this loop. Keeping the plan as the single
+            // source of truth is what makes `runnable`/`stats.ran` truthful.
+            debug_assert_eq!(
+                entry.kind,
+                EntryKind::Task,
+                "queue entries must never be planned as runnable in P1"
+            );
             stats.ran += 1;
             let class = self.run_entry(&entry, planned, pass, out)?;
             if class == ResultClass::Fatal && !self.opts.keep_going {
@@ -1149,6 +1278,8 @@ pub fn status_json(opts: &SchedulerOptions) -> Result<Value, String> {
             json!({
                 "entry_id": entry.entry_id,
                 "task": entry.task,
+                "kind": entry.kind.as_str(),
+                "queue_id": entry.queue_id(),
                 "enabled": entry.enabled,
                 "lifecycle": entry.lifecycle.as_str(),
                 "windows": entry.windows.iter().map(|w| json!({
@@ -1190,12 +1321,20 @@ pub fn status_json(opts: &SchedulerOptions) -> Result<Value, String> {
         .collect();
 
     // Tasks for the "reset memory" multi-select box (deduped, entries grouped).
+    // Queue members are tasks too (they are not scheduler entries of their own).
     let mut choices: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for entry in &sched.entries {
-        choices
-            .entry(entry.task.clone())
-            .or_default()
-            .push(entry.entry_id.clone());
+        if entry.kind == EntryKind::Task {
+            choices
+                .entry(entry.task.clone())
+                .or_default()
+                .push(entry.entry_id.clone());
+        }
+    }
+    for queue in &sched.queues {
+        for member in &queue.members {
+            choices.entry(member.clone()).or_default();
+        }
     }
     let task_choices: Vec<Value> = choices
         .iter()
@@ -1210,8 +1349,54 @@ pub fn status_json(opts: &SchedulerOptions) -> Result<Value, String> {
         })
         .collect();
 
+    // Read-only queue view for P2/P3 (`docs/SCHEDULER-RUNNER-PLAN.md` §二 rules
+    // 5/6/8). P1 never writes queue state from here.
+    let queues: Vec<Value> = sched
+        .queues
+        .iter()
+        .map(|q| {
+            let st = state.queues.get(&q.queue_id);
+            let finished = st.map(|s| scheduler::queue_should_finish(q, s)).unwrap_or(false);
+            // No state yet = never started = due whenever the entry allows it.
+            let next_due = match st {
+                Some(s) => scheduler::queue_next_due_ms(q, s, now),
+                None => Some(now),
+            };
+            json!({
+                "queue_id": q.queue_id,
+                "name": q.name,
+                "members": q.members,
+                "total_rounds": q.total_rounds,
+                "on_failure": q.on_failure.as_str(),
+                "between_ms": q.between_ms,
+                "rounds_completed": st.map(|s| s.rounds_completed).unwrap_or(0),
+                "empty_rounds": st.map(|s| s.empty_rounds).unwrap_or(0),
+                "finished": finished,
+                "current_round": st.and_then(|s| s.current_round.as_ref()).map(|r| json!({
+                    "index": r.index,
+                    "member_index": r.member_index,
+                    "started_ms": r.started_ms,
+                })),
+                "member_results": st.map(|s| s.member_results.iter().map(|m| json!({
+                    "round": m.round,
+                    "member_index": m.member_index,
+                    "task": m.task,
+                    "class": m.class,
+                    "exit": m.exit,
+                    "outcome": m.outcome,
+                    "attempts": m.attempts,
+                    "duration_ms": m.duration_ms,
+                    "finished_ms": m.finished_ms,
+                })).collect::<Vec<_>>()).unwrap_or_default(),
+                "next_due_ms": next_due,
+                "next_due_local": next_due.map(|at| format_local_datetime(at, offset)),
+            })
+        })
+        .collect();
+
     Ok(json!({
         "schema_version": SCHEDULE_SCHEMA_VERSION,
+        "state_schema_version": state.schema_version,
         "generated_ms": now,
         "generated_local": format_local_datetime(now, offset),
         "config_path": opts.config.display().to_string(),
@@ -1220,6 +1405,8 @@ pub fn status_json(opts: &SchedulerOptions) -> Result<Value, String> {
         "utc_offset_min": offset,
         "mode": sched.mode.as_str(),
         "loop_interval_s": sched.loop_interval_s,
+        // Compatibility key: the value is the L3 **pass** cap (new spelling
+        // `max_passes`); no duplicate `max_passes` key is emitted.
         "loop_rounds": sched.loop_rounds,
         "calendar": {
             "day_reset": scheduler::format_hhmm(sched.calendar.day_reset_min),
@@ -1275,6 +1462,7 @@ pub fn status_json(opts: &SchedulerOptions) -> Result<Value, String> {
         "next_wake_ms": wake.at_ms,
         "next_wake_local": format_local_datetime(wake.at_ms, offset),
         "next_wake_reasons": wake.reasons,
+        "queues": queues,
         "entries": entries,
         "task_choices": task_choices,
     }))
@@ -1361,8 +1549,11 @@ pub fn run_scheduler(
     let sched = loaded.sched;
     let state_path = opts.state_path();
     let events_path = opts.events_path();
-    let mut state = load_state(&state_path)?;
+    let (mut state, state_migrated) = load_state_migrating(&state_path)?;
     let now = now_ms() as i64;
+    if let Some(note) = &state_migrated {
+        out(&format!("scheduler_state_migrated note={note}"));
+    }
 
     let mut report = SchedulerReport {
         schema_version: SCHEDULE_SCHEMA_VERSION,
@@ -1426,12 +1617,22 @@ pub fn run_scheduler(
         seq: 0,
     };
     // A marker that no longer maps to an enabled entry can never be finished:
-    // drop it loudly instead of leaving the state dirty forever.
+    // drop it loudly instead of leaving the state dirty forever. A finished
+    // queue entry counts as "not configured any more" (rule 6: it will never be
+    // triggered again, so its recovery marker could never be consumed).
     if let Some(stale) = session.recovery.clone() {
         let still_configured = session
             .sched()
             .entry(&stale.entry_id)
-            .map(|e| e.enabled)
+            .map(|e| {
+                e.enabled
+                    && !(e.kind == EntryKind::Queue
+                        && session
+                            .sched()
+                            .queue(&e.task)
+                            .map(|q| scheduler::queue_finished(q, &session.state))
+                            .unwrap_or(false))
+            })
             .unwrap_or(false);
         if !still_configured {
             out(&format!(
@@ -1463,13 +1664,13 @@ pub fn run_scheduler(
         }));
     }
     out(&format!(
-        "scheduler_start config={} state={} tasks_dir={} mode={} once={} max_rounds={}",
+        "scheduler_start config={} state={} tasks_dir={} mode={} once={} max_passes={}",
         opts.config.display(),
         state_path.display(),
         opts.tasks_dir.display(),
         session.sched().mode.as_str(),
         opts.once,
-        opts.max_rounds
+        opts.max_passes
             .map(|v| v.to_string())
             .unwrap_or_else(|| "-".to_string())
     ));
@@ -1478,13 +1679,19 @@ pub fn run_scheduler(
         "config": opts.config.display().to_string(),
         "mode": session.sched().mode.as_str(),
         "once": opts.once,
-        "max_rounds": opts.max_rounds,
+        "max_passes": opts.max_passes,
         "utc_offset_min": session.sched().calendar.utc_offset_min,
     }));
+    if state_migrated.is_some() {
+        // Plan §四 risk table: "读 3 自动迁移 + 备份 state". The copy happens
+        // before the first v4 write below; a failed copy aborts without
+        // touching the v3 file.
+        backup_state_v3(&state_path, out)?;
+    }
     session.save_state(out)?;
 
-    let cli_max = opts.max_rounds;
-    let loop_rounds = session.sched().loop_rounds;
+    let cli_max_passes = opts.max_passes;
+    let config_max_passes = session.sched().loop_rounds;
     let mut session_passes: u64 = 0;
     let stopped_reason: String;
     loop {
@@ -1505,15 +1712,18 @@ pub fn run_scheduler(
         session.save_state(out)?;
 
         // -- stopping rules --------------------------------------------------
+        // Historical reason strings `max_rounds`/`loop_rounds` are kept (they
+        // are persisted in `state.last_stop` and reported); both mean "L3 pass
+        // cap reached", not a queue Round.
         let mut reason: Option<&'static str> = None;
         if stats.fatal_stop {
             reason = Some("fatal");
-        } else if let Some(max) = cli_max {
+        } else if let Some(max) = cli_max_passes {
             if session_passes >= max {
                 reason = Some("max_rounds");
             }
         }
-        if reason.is_none() && loop_rounds > 0 && session_passes >= loop_rounds {
+        if reason.is_none() && config_max_passes > 0 && session_passes >= config_max_passes {
             reason = Some("loop_rounds");
         }
         if reason.is_none() && opts.once {
@@ -1527,6 +1737,22 @@ pub fn run_scheduler(
         }
         if reason.is_none() && !session.sched().entries.iter().any(|e| e.enabled) {
             reason = Some("no_enabled_entries");
+        }
+        // P1 convergence rule: queue execution is P2, so a stop-mode daemon
+        // whose only configured work is queue entries has nothing that could
+        // ever run. Stop loudly instead of sleeping forever (the P1 report
+        // flagged the old never-stopping behaviour).
+        if reason.is_none()
+            && session.sched().mode == RunMode::Stop
+            && plan.runnable.is_empty()
+            && session.sched().entries.iter().any(|e| e.enabled)
+            && !session
+                .sched()
+                .entries
+                .iter()
+                .any(|e| e.enabled && e.kind == EntryKind::Task)
+        {
+            reason = Some(scheduler::QUEUE_EXECUTOR_PENDING);
         }
         if let Some(r) = reason {
             stopped_reason = r.to_string();
@@ -1653,6 +1879,9 @@ pub struct ResetOptions {
 pub struct ResetReport {
     pub tasks: Vec<String>,
     pub entries: Vec<String>,
+    /// Queue ids whose round state and queue-entry state were cleared (schema
+    /// v4, plan §二 rule 6/8). Always serialized (CLI + serve report contract).
+    pub queues: Vec<String>,
     pub files_removed: u64,
     pub state_path: String,
     pub events_path: String,
@@ -1769,9 +1998,9 @@ pub fn reset_memory(
     }
     if opts.all {
         if let Some(sched) = &sched {
-            for entry in &sched.entries {
-                targets.insert(entry.task.clone());
-            }
+            // Task entries AND queue members are tasks (a queue entry's `task`
+            // is a queue_id, never a bundle).
+            targets.extend(sched.task_names());
         }
         if targets.is_empty() {
             // No config: fall back to every task bundle under --tasks-dir.
@@ -1784,7 +2013,7 @@ pub fn reset_memory(
         return Err("reset-memory: nothing selected (no matching tasks)".to_string());
     }
 
-    let mut state = load_state(&state_path)?;
+    let (mut state, state_migrated) = load_state_migrating(&state_path)?;
     let mut report = ResetReport {
         tasks: targets.iter().cloned().collect(),
         state_path: state_path.display().to_string(),
@@ -1792,10 +2021,35 @@ pub fn reset_memory(
         ..ResetReport::default()
     };
 
+    // Queues touched by the selection + the ids of the queue entries that
+    // schedule them. A queue entry's `EntryState.task` is the queue_id (not a
+    // bundle name), so it can never be matched through `targets`.
+    let mut reset_queues: Vec<String> = Vec::new();
+    let mut queue_entry_ids: BTreeSet<String> = BTreeSet::new();
+    if let Some(sched) = &sched {
+        for queue in &sched.queues {
+            let hit = opts.all || queue.members.iter().any(|m| targets.contains(m));
+            if !hit {
+                continue;
+            }
+            reset_queues.push(queue.queue_id.clone());
+            for entry in &sched.entries {
+                if entry.kind == EntryKind::Queue && entry.task == queue.queue_id {
+                    queue_entry_ids.insert(entry.entry_id.clone());
+                }
+            }
+        }
+    }
+
     // ① Scheduler entry state (attempts/cooldown/quota AND a dirty running
-    // marker: an offline crash residue is exactly "memory").
+    // marker: an offline crash residue is exactly "memory"). Queue entries are
+    // matched by entry_id (their task is a queue_id, not a bundle name).
     let mut clear_ids: Vec<String> = Vec::new();
     for (entry_id, st) in &state.entries {
+        if queue_entry_ids.contains(entry_id) {
+            clear_ids.push(entry_id.clone());
+            continue;
+        }
         let task = if st.task.is_empty() {
             sched
                 .as_ref()
@@ -1809,6 +2063,8 @@ pub fn reset_memory(
             clear_ids.push(entry_id.clone());
         }
     }
+    clear_ids.sort();
+    clear_ids.dedup();
     let mut state_changed = !clear_ids.is_empty();
     for id in &clear_ids {
         state.entries.remove(id);
@@ -1823,7 +2079,13 @@ pub fn reset_memory(
         } else {
             running.task.clone()
         };
-        if targets.contains(&running_task) {
+        // The running marker points either at the queue entry itself (P2) or
+        // at one of its member tasks; both are memory of the reset queue.
+        let points_at_queue_entry = queue_entry_ids.contains(&running.entry_id);
+        let points_at_queue = reset_queues
+            .iter()
+            .any(|q| q == &running.task || q == &running_task);
+        if points_at_queue_entry || points_at_queue || targets.contains(&running_task) {
             state.running = None;
             state_changed = true;
             out(&format!(
@@ -1832,13 +2094,28 @@ pub fn reset_memory(
             ));
         }
     }
+    // ② Queue round state is memory too (plan §二 rules 6/8): drop the whole
+    // `state.queues[qid]` entry (counters / finished / open round /
+    // member_results) for every selected queue. A missing entry is a no-op.
+    for queue_id in &reset_queues {
+        if state.queues.remove(queue_id).is_some() {
+            state_changed = true;
+        }
+    }
+    report.queues = reset_queues.clone();
+    report.entries = clear_ids;
+
     if state_changed {
+        if state_migrated.is_some() {
+            // Keep the pre-migration v3 file before the first v4 write here too
+            // (the daemon path does the same in `run_scheduler`).
+            backup_state_v3(&state_path, out)?;
+        }
         write_json_atomic(&state_path, &state)
             .map_err(|e| format!("reset-memory: state: {e}"))?;
     }
-    report.entries = clear_ids;
 
-    // ② Task state/ (checkpoint + learned coords + counters) — memory, not stats.
+    // ③ Task state/ (checkpoint + learned coords + counters) — memory, not stats.
     let mut files_removed: u64 = 0;
     for task in &targets {
         let dir = opts.tasks_dir.join(task).join("state");
@@ -1887,8 +2164,9 @@ pub fn reset_memory(
     }
     report.files_removed = files_removed;
 
-    // ③ Audit event (fatal on failure: a reset without an audit trail is not
-    // acceptable — §22.34.5 "审计 memory_reset").
+    // ④ Audit event (fatal on failure: a reset without an audit trail is not
+    // acceptable — §22.34.5 "审计 memory_reset"). `queues` stays for backward
+    // compatibility; `queues_reset` names the queue-state cleanup explicitly.
     append_jsonl(
         &events_path,
         &json!({
@@ -1896,6 +2174,8 @@ pub fn reset_memory(
             "event": "memory_reset",
             "tasks": report.tasks,
             "entry_ids": report.entries,
+            "queues": report.queues,
+            "queues_reset": report.queues,
             "files_removed": files_removed,
             "checkpoint_kept": opts.keep_checkpoint,
             "state_path": report.state_path,
@@ -1905,6 +2185,7 @@ pub fn reset_memory(
 
     out(&format!("reset_memory_tasks={}", report.tasks.join(",")));
     out(&format!("reset_memory_entries={}", report.entries.len()));
+    out(&format!("reset_memory_queues={}", report.queues.join(",")));
     out(&format!("reset_memory_files_removed={files_removed}"));
     out(&format!("reset_memory_state={}", report.state_path));
     out(&format!("reset_memory_audit={}", report.events_path));
@@ -2156,7 +2437,7 @@ mod tests {
         );
         let mut opts = base_opts(&td, config, Some(replay));
         opts.once = false;
-        opts.max_rounds = Some(2);
+        opts.max_passes = Some(2);
         let mut lines = Vec::new();
         let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run");
         assert_eq!(report.passes, 2, "two loop passes: {report:?}");
@@ -2234,6 +2515,31 @@ mod tests {
     }
 
     #[test]
+    fn config_max_passes_caps_the_session_passes() {
+        let td = tmpdir("max-passes");
+        let replay = td.join("replay");
+        write_task(&td, "临时", OK_FLOW, None);
+        write_replay(&replay);
+        // New spelling in the document: accepted and effective (L3 pass cap).
+        let config = write_config(
+            &td,
+            r#"{"schema_version":4,
+                "config":{"mode":"loop","loop_interval_s":0,"max_passes":2},
+                "entries":[{"entry_id":"t1","task":"临时","lifecycle":"temp"}]}"#,
+        );
+        let mut opts = base_opts(&td, config, Some(replay));
+        opts.once = false;
+        let report = run_scheduler(&opts, &mut |_| {}).expect("run");
+        assert_eq!(report.passes, 2, "max_passes is the session pass cap: {report:?}");
+        assert_eq!(report.runs, 2, "the temp entry runs each capped pass");
+        assert_eq!(
+            report.stopped_reason, "loop_rounds",
+            "historical stop-reason string for the pass cap"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
     fn status_json_exposes_the_panel_contract() {
         let td = tmpdir("status");
         let replay = td.join("replay");
@@ -2253,7 +2559,8 @@ mod tests {
         assert_eq!(r.runs, 2, "periodic + temp both ran");
 
         let v = status_json(&opts).expect("status");
-        assert_eq!(v["schema_version"], 3);
+        assert_eq!(v["schema_version"], 4);
+        assert_eq!(v["state_schema_version"], 4);
         assert_eq!(v["entries"].as_array().unwrap().len(), 2);
         assert!(v["cycles"]["day"].is_string());
         assert!(v["next_wake_ms"].is_i64());
@@ -2369,7 +2676,7 @@ mod tests {
                            {"entry_id":"ok","task":"正常","lifecycle":"temp"}]}"#,
         );
         let mut opts = base_opts(&td, config, Some(replay));
-        opts.max_rounds = Some(5);
+        opts.max_passes = Some(5);
         let mut lines = Vec::new();
         let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run");
         assert_eq!(report.fatals, 1);
@@ -2612,8 +2919,8 @@ mod tests {
         );
         let err = run_scheduler(&base_opts(&td, config, None), &mut |_| {})
             .expect_err("v1 must be rejected");
-        assert!(err.contains("schema_version must be 3"), "{err}");
-        assert!(err.contains("v3") || err.contains("§22.34"), "{err}");
+        assert!(err.contains("schema_version must be 4"), "{err}");
+        assert!(err.contains("v4") || err.contains("§22.34"), "{err}");
         std::fs::remove_dir_all(&td).ok();
     }
 
@@ -2766,7 +3073,7 @@ mod tests {
             "--seed",
             "7",
             "--once",
-            "--max-rounds",
+            "--max-passes",
             "3",
             "--dry-run",
             "--status",
@@ -2799,7 +3106,7 @@ mod tests {
         assert_eq!(o.shots_dir, Some(PathBuf::from("shots")));
         assert_eq!(o.seed, Some(7));
         assert!(o.once && o.dry_run && o.status && o.keep_going);
-        assert_eq!(o.max_rounds, Some(3));
+        assert_eq!(o.max_passes, Some(3));
         assert_eq!(o.report, Some(PathBuf::from("r.json")));
         assert_eq!(o.events, Some(PathBuf::from("e.jsonl")));
         assert_eq!(o.tz_offset_min, Some(480));
@@ -2807,16 +3114,27 @@ mod tests {
         assert_eq!(o.loop_interval_s, Some(2));
         assert_eq!(o.model, Some(PathBuf::from("rec.onnx")));
         assert_eq!(o.det_model, Some(PathBuf::from("det.onnx")));
-        // `--plan` and `--max-runs` are accepted as v1-compatible aliases.
+        // `--plan` is the schedule-file spelling and `--max-passes` is the
+        // primary pass-cap flag; `--max-rounds`/`--max-runs` stay as deprecated
+        // aliases (all three spellings must be equivalent).
         let alias: Vec<String> = ["--plan", "p.json", "--max-runs", "2"]
             .iter()
             .map(|s| s.to_string())
             .collect();
         let o = SchedulerOptions::parse(&alias).expect("alias parse");
         assert_eq!(o.config, PathBuf::from("p.json"));
-        assert_eq!(o.max_rounds, Some(2));
+        assert_eq!(o.max_passes, Some(2));
+        for spelling in ["--max-passes", "--max-rounds", "--max-runs"] {
+            let argv = [spelling.to_string(), "2".to_string()];
+            let parsed = SchedulerOptions::parse(&argv).expect(spelling);
+            assert_eq!(parsed.max_passes, Some(2), "{spelling} is the pass cap");
+        }
         assert!(SchedulerOptions::parse(&["--nope".to_string()]).is_err());
-        assert!(SchedulerOptions::parse(&["--max-rounds".to_string(), "0".to_string()]).is_err());
+        for spelling in ["--max-passes", "--max-rounds", "--max-runs"] {
+            let err = SchedulerOptions::parse(&[spelling.to_string(), "0".to_string()])
+                .expect_err("0 is not a pass cap");
+            assert!(err.contains(spelling), "{spelling}: {err}");
+        }
     }
 
     #[test]
@@ -2869,13 +3187,418 @@ mod tests {
         assert!(opts.report.as_ref().unwrap().is_file());
         let raw = std::fs::read_to_string(opts.report.as_ref().unwrap()).unwrap();
         let v: Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(v["schema_version"], 3);
+        assert_eq!(v["schema_version"], 4);
         assert_eq!(v["runs"], 1);
         assert_eq!(v["successes"], 1);
         assert_eq!(v["entries"][0]["entry_id"], "e1");
         assert_eq!(v["entries"][0]["quota_used"], 1);
         assert_eq!(v["stopped_reason"], "once");
         assert_eq!(report.entries[0].quota_remaining, Some(0));
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    // -- state schema v3 -> v4 migration ------------------------------------
+
+    #[test]
+    fn v3_state_migrates_to_v4_with_empty_queues() {
+        let td = tmpdir("state-v3");
+        let state_path = td.join("scheduler.state.json");
+        // Exactly what the previous release wrote: schema 3, no `queues`.
+        let v3 = r#"{"schema_version":3,"created_ms":1,"passes":7,
+                     "last_stop":"once","cycle":{"day":"2026-10-23","week":"2026-10-19"},
+                     "entries":{"e1":{"task":"任务1","runs":2,"successes":2,
+                                      "quota_day":{"cycle":"2026-10-23","used":2}}}}"#;
+        std::fs::write(&state_path, v3).unwrap();
+
+        let (state, note) = load_state_migrating(&state_path).expect("v3 state loads");
+        assert_eq!(state.schema_version, 4, "v3 is upgraded on load");
+        assert!(state.queues.is_empty(), "v3 had no queue state");
+        assert_eq!(state.passes, 7, "old fields survive the migration");
+        assert_eq!(state.entries["e1"].runs, 2);
+        assert_eq!(state.entries["e1"].quota_day.used, 2);
+        let note = note.expect("migration is announced");
+        assert!(note.contains("migrated"), "{note}");
+
+        // Saving always writes v4 (the daemon saves right after startup).
+        write_json_atomic(&state_path, &state).unwrap();
+        let text = std::fs::read_to_string(&state_path).unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["schema_version"], 4);
+        assert_eq!(v["entries"]["e1"]["runs"], 2);
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn v3_state_migration_backs_up_the_original_before_writing_v4() {
+        let td = tmpdir("state-backup");
+        let config = write_config(&td, r#"{"schema_version":3,"entries":[]}"#);
+        let opts = base_opts(&td, config, None);
+        let state_path = opts.state_path();
+        let v3 = r#"{"schema_version":3,"created_ms":1,"passes":7,
+                     "last_stop":"once","entries":{"e1":{"task":"任务1","runs":2}}}"#;
+        std::fs::write(&state_path, v3).unwrap();
+        let mut lines = Vec::new();
+        run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run");
+        let backup = state_v3_backup_path(&state_path);
+        assert_eq!(
+            std::fs::read_to_string(&backup).expect("v3 backup exists"),
+            v3,
+            "the backup is the exact pre-migration v3 file"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("scheduler_state_backup path=") && l.contains("v3.bak")),
+            "{lines:?}"
+        );
+        let migrated: Value =
+            serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+        assert_eq!(migrated["schema_version"], 4, "the state was rewritten as v4");
+        assert_eq!(migrated["passes"], 8, "the migrated counters continue");
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn v4_state_roundtrips_queue_rounds() {
+        let td = tmpdir("state-v4");
+        let state_path = td.join("scheduler.state.json");
+        let mut state = SchedulerState::new();
+        state.queues.insert(
+            "q1".to_string(),
+            scheduler::QueueState {
+                total_rounds: 2,
+                rounds_completed: 1,
+                empty_rounds: 3,
+                finished: false,
+                current_round: Some(scheduler::QueueRoundState {
+                    index: 2,
+                    member_index: 1,
+                    started_ms: 500,
+                }),
+                member_results: vec![scheduler::QueueMemberResult {
+                    round: 2,
+                    member_index: 0,
+                    task: "任务1".to_string(),
+                    class: "success".to_string(),
+                    exit: "done".to_string(),
+                    outcome: "Done".to_string(),
+                    attempts: 1,
+                    duration_ms: 10,
+                    finished_ms: 600,
+                }],
+            },
+        );
+        write_json_atomic(&state_path, &state).expect("write v4");
+        let (loaded, note) = load_state_migrating(&state_path).expect("load v4");
+        assert!(note.is_none(), "v4 needs no migration");
+        assert_eq!(loaded, state, "queue state round-trips exactly");
+        assert_eq!(
+            loaded.queues["q1"].current_round.as_ref().unwrap().member_index,
+            1,
+            "the restart cursor survives"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn unsupported_state_schema_is_rejected() {
+        let td = tmpdir("state-v5");
+        let state_path = td.join("scheduler.state.json");
+        std::fs::write(&state_path, r#"{"schema_version":5}"#).unwrap();
+        let err = load_state(&state_path).expect_err("v5 unsupported");
+        assert!(err.contains("schema_version 5 unsupported"), "{err}");
+        std::fs::write(&state_path, r#"{"schema_version":2}"#).unwrap();
+        assert!(load_state(&state_path).is_err(), "v2 stays unsupported");
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    // -- queue schema in the IO layer (status / fail-fast / reset) -----------
+
+    #[test]
+    fn status_json_exposes_queue_state_read_only() {
+        let td = tmpdir("status-queue");
+        write_task(&td, "任务1", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            r#"{"schema_version":4,
+                "queues":[{"queue_id":"q1","name":"日常","members":["任务1"],
+                           "total_rounds":2,"on_failure":"fail_fast","between_ms":250}],
+                "entries":[{"entry_id":"qe","task":"q1","kind":"queue","lifecycle":"temp"}]}"#,
+        );
+        let opts = base_opts(&td, config, None);
+        let mut state = SchedulerState::new();
+        state.queues.insert(
+            "q1".to_string(),
+            scheduler::QueueState {
+                total_rounds: 2,
+                rounds_completed: 1,
+                empty_rounds: 0,
+                finished: false,
+                current_round: Some(scheduler::QueueRoundState {
+                    index: 2,
+                    member_index: 0,
+                    started_ms: 1,
+                }),
+                member_results: vec![scheduler::QueueMemberResult {
+                    round: 1,
+                    member_index: 0,
+                    task: "任务1".to_string(),
+                    class: "success".to_string(),
+                    exit: "done".to_string(),
+                    outcome: "Done".to_string(),
+                    attempts: 1,
+                    duration_ms: 5,
+                    finished_ms: 10,
+                }],
+            },
+        );
+        write_json_atomic(&opts.state_path(), &state).unwrap();
+
+        let v = status_json(&opts).expect("status");
+        assert_eq!(v["state_schema_version"], 4);
+        let q = &v["queues"][0];
+        assert_eq!(q["queue_id"], "q1");
+        assert_eq!(q["name"], "日常");
+        assert_eq!(q["total_rounds"], 2);
+        assert_eq!(q["rounds_completed"], 1);
+        assert_eq!(q["on_failure"], "fail_fast");
+        assert_eq!(q["between_ms"], 250);
+        assert_eq!(q["current_round"]["index"], 2);
+        assert_eq!(q["current_round"]["member_index"], 0);
+        assert_eq!(q["member_results"][0]["task"], "任务1");
+        assert_eq!(q["finished"], false);
+        assert!(!q["next_due_ms"].is_null(), "an open round is due now");
+        // The queue entry is labelled and carries the queue_id (not a task name).
+        assert_eq!(v["entries"][0]["kind"], "queue");
+        assert_eq!(v["entries"][0]["queue_id"], "q1");
+        // Queue members are tasks for the reset-memory multi-select.
+        let tasks: Vec<&str> = v["task_choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["task"].as_str().unwrap())
+            .collect();
+        assert_eq!(tasks, vec!["任务1"], "{tasks:?}");
+
+        // A queue that never ran reports "due now" instead of null.
+        std::fs::remove_file(opts.state_path()).unwrap();
+        let fresh = status_json(&opts).expect("status without state");
+        assert_eq!(fresh["queues"][0]["rounds_completed"], 0);
+        assert_eq!(fresh["queues"][0]["finished"], false);
+        assert!(!fresh["queues"][0]["next_due_ms"].is_null());
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn invalid_queue_config_writes_no_state() {
+        let td = tmpdir("queue-invalid");
+        let config = write_config(
+            &td,
+            r#"{"schema_version":4,
+                "queues":[{"queue_id":"q1","members":["不存在"]}],
+                "entries":[{"entry_id":"qe","task":"q1","kind":"queue"}]}"#,
+        );
+        let opts = base_opts(&td, config, None);
+        let err = run_scheduler(&opts, &mut |_| {}).expect_err("missing member fails fast");
+        assert!(err.contains("queue `q1` member"), "{err}");
+        assert!(err.contains("not found"), "{err}");
+        assert!(
+            !opts.state_path().exists(),
+            "invalid config must not write state"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_entry_is_not_executed_in_p1() {
+        let td = tmpdir("queue-p1");
+        write_task(&td, "任务1", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            r#"{"schema_version":4,
+                "queues":[{"queue_id":"q1","members":["任务1"],"total_rounds":1}],
+                "entries":[{"entry_id":"qe","task":"q1","kind":"queue","lifecycle":"temp"}]}"#,
+        );
+        let mut opts = base_opts(&td, config.clone(), None);
+        let mut lines = Vec::new();
+        let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run");
+        assert_eq!(report.runs, 0, "P1 ships no queue execution: {report:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("scheduler_skip entry=qe")
+                    && l.contains("queue_executor_pending")),
+            "the queue entry is planned as a *skipped* entry: {lines:?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("scheduler_queue_pending")),
+            "the old runnable-but-skipped log line must be gone: {lines:?}"
+        );
+        assert_eq!(report.stopped_reason, "once", "--once still wins");
+        let clicks = std::fs::read_dir(td.join("clicks"))
+            .map(|d| d.count())
+            .unwrap_or(0);
+        assert_eq!(clicks, 0, "nothing may be executed");
+
+        // STOP mode without --once must converge instead of sleeping forever:
+        // queue entries are the only enabled work and P1 has no executor.
+        opts.once = false;
+        let mut lines = Vec::new();
+        let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run stop");
+        assert_eq!(report.runs, 0, "{report:?}");
+        assert_eq!(
+            report.stopped_reason, scheduler::QUEUE_EXECUTOR_PENDING,
+            "a queue-only stop-mode config stops loudly: {lines:?}"
+        );
+        assert_eq!(load_state(&opts.state_path()).unwrap().last_stop,
+            scheduler::QUEUE_EXECUTOR_PENDING);
+
+        // --dry-run: same plan classification, still zero writes.
+        std::fs::remove_file(opts.state_path()).unwrap();
+        opts.dry_run = true;
+        let mut lines = Vec::new();
+        run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("dry run");
+        assert!(
+            lines.iter().any(|l| l.contains("scheduler_skip entry=qe")
+                && l.contains("queue_executor_pending")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("scheduler_summary dry_run=true")
+                && l.contains("runnable=0")
+                && l.contains("skipped=1")),
+            "{lines:?}"
+        );
+        assert!(!opts.state_path().exists(), "dry-run never writes state");
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn reset_memory_resets_queue_state_and_audits_it() {
+        let td = tmpdir("reset-queue");
+        let config = write_config(
+            &td,
+            r#"{"schema_version":4,
+                "queues":[{"queue_id":"q1","members":["任务1"],"total_rounds":1}],
+                "entries":[{"entry_id":"qe","task":"q1","kind":"queue","lifecycle":"temp"}]}"#,
+        );
+        let opts = base_opts(&td, config.clone(), None);
+        let mut state = SchedulerState::new();
+        state.queues.insert(
+            "q1".to_string(),
+            scheduler::QueueState {
+                total_rounds: 1,
+                rounds_completed: 1,
+                empty_rounds: 0,
+                finished: true,
+                current_round: None,
+                member_results: vec![scheduler::QueueMemberResult {
+                    round: 1,
+                    member_index: 0,
+                    task: "任务1".to_string(),
+                    class: "success".to_string(),
+                    exit: "done".to_string(),
+                    outcome: "Done".to_string(),
+                    attempts: 1,
+                    duration_ms: 1,
+                    finished_ms: 1,
+                }],
+            },
+        );
+        // P2-style residue: the queue entry has its own EntryState (its `task`
+        // is the queue_id) and a dirty running marker pointing at it.
+        state.entries.insert(
+            "qe".to_string(),
+            scheduler::EntryState {
+                task: "q1".to_string(),
+                runs: 1,
+                ..scheduler::EntryState::default()
+            },
+        );
+        state.running = Some(scheduler::RunningEntry {
+            entry_id: "qe".to_string(),
+            task: "q1".to_string(),
+            pass: 1,
+            attempt: 1,
+            since_ms: 1,
+            resume: false,
+        });
+        write_json_atomic(&opts.state_path(), &state).unwrap();
+
+        let reset = ResetOptions {
+            config,
+            tasks_dir: td.clone(),
+            tasks: vec!["任务1".to_string()],
+            include_checkpoint: true,
+            ..ResetOptions::default()
+        };
+        let mut lines = Vec::new();
+        let report = reset_memory(&reset, &mut |l| lines.push(l.to_string())).expect("reset");
+        assert_eq!(report.queues, vec!["q1".to_string()]);
+        assert_eq!(
+            report.entries,
+            vec!["qe".to_string()],
+            "the queue entry's own EntryState is memory too"
+        );
+        let after = state_of(&opts);
+        assert!(
+            !after.queues.contains_key("q1"),
+            "the whole queue state entry is removed"
+        );
+        assert!(!after.entries.contains_key("qe"), "queue entry state gone");
+        assert!(after.running.is_none(), "dirty running marker cleared");
+        assert!(
+            lines.iter().any(|l| l.contains("reset_memory_queues=q1")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("reset_memory_cleared_dirty_running=qe")),
+            "{lines:?}"
+        );
+        let events = std::fs::read_to_string(opts.events_path()).unwrap();
+        assert!(events.contains("\"queues\":[\"q1\"]"), "{events}");
+        assert!(events.contains("\"queues_reset\":[\"q1\"]"), "{events}");
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn reset_memory_backs_up_a_v3_state_before_writing_v4() {
+        let td = tmpdir("reset-v3-backup");
+        let config = write_config(
+            &td,
+            r#"{"schema_version":3,"entries":[{"entry_id":"e1","task":"任务1"}]}"#,
+        );
+        let opts = base_opts(&td, config.clone(), None);
+        let state_path = opts.state_path();
+        let v3 = r#"{"schema_version":3,"passes":3,
+                     "entries":{"e1":{"task":"任务1","runs":1}}}"#;
+        std::fs::write(&state_path, v3).unwrap();
+        let reset = ResetOptions {
+            config,
+            tasks_dir: td.clone(),
+            tasks: vec!["任务1".to_string()],
+            include_checkpoint: true,
+            ..ResetOptions::default()
+        };
+        let mut lines = Vec::new();
+        reset_memory(&reset, &mut |l| lines.push(l.to_string())).expect("reset");
+        let backup = state_v3_backup_path(&state_path);
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            v3,
+            "the backup is the exact pre-migration v3 file"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("scheduler_state_backup path=") && l.contains("v3.bak")),
+            "{lines:?}"
+        );
+        let migrated: Value =
+            serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+        assert_eq!(migrated["schema_version"], 4);
         std::fs::remove_dir_all(&td).ok();
     }
 }

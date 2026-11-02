@@ -1,20 +1,20 @@
-//! 调度器 v3 纯函数层（ENGINE-DESIGN §22.34 / DELIVERY-PLAN M2 · N37）。
+//! 调度器 schema v4 纯函数层（ENGINE-DESIGN §22.34 / `docs/SCHEDULER-RUNNER-PLAN.md`）。
 //!
 //! This module is the **mechanism** layer: no filesystem, no clock, no globals.
 //! Everything that needs IO lives in `schedule.rs`; everything here is a pure
 //! function over `(config, state, now)` so the whole scheduling matrix is unit
 //! testable (cross-midnight windows, weekly quota resets, cooldowns, pass
-//! order, wake calculation, temp rules, exit classification).
+//! order, wake calculation, temp rules, exit classification, queue rounds).
 //!
 //! # 三层分离（§22.34.1）
 //! * **统一任务模板**（M0）: only `meta.exits` is consumed here — result
 //!   classification via [`parse_meta_exits`]. Missing `exits` keeps the
 //!   documented default (`done -> success`, everything else retryable).
-//! * **调度器 v3**: periodic clock / guards / candidate filtering / wake /
-//!   result recording. **No game constants** (no 05:00, no maintenance day, no
-//!   built-in task list — §22.34.4).
-//! * **玩家配置** `scheduler.json` v3: calendar / guards / entries — every
-//!   value comes from the player.
+//! * **调度器 v4**: periodic clock / guards / candidate filtering / wake /
+//!   result recording / queue rounds. **No game constants** (no 05:00, no
+//!   maintenance day, no built-in task list — §22.34.4).
+//! * **玩家配置** `scheduler.json` v4: calendar / guards / queues / entries —
+//!   every value comes from the player.
 //!
 //! # Time model
 //! Instants are **epoch milliseconds (UTC)**. "Local time" is
@@ -41,14 +41,36 @@
 //! * `one_shot` / `continue` are deleted by design: a run only classifies as
 //!   success / resource / blocked / retryable / fatal.
 //!
-//! # scheduler.json v3（玩家配置）
+//! # Queue / Round semantics（`docs/SCHEDULER-RUNNER-PLAN.md` §二 规则 1-10）
+//! * **Round 只属于队列**（规则 1）。队列是 `entries` 的一种
+//!   （`entry.kind = "task" | "queue"`，规则 2），队列内部**没有**独立触发器：
+//!   窗口 / quota / 冷却都属于队列 entry。
+//! * `kind = "queue"` 时 [`Entry::task`] 承载 **queue_id**（历史字段继续用
+//!   `String`，校验期保证它就是已声明的 `queues[].queue_id`）；队列成员与
+//!   轮次上限在顶层 `queues[]`（见 [`Queue`]）。
+//! * 一轮 = 队首→队尾，对每个成员各做一次决策（执行或跳过，规则 3）；成员
+//!   串行（单活动实例）。
+//! * **lazy 计数**（规则 5）：本轮至少一个成员实际执行（attempt >= 1）才
+//!   `rounds_completed += 1`；全跳过只记 `empty_rounds += 1`，不消耗
+//!   `total_rounds`（见 [`queue_end_round`]）。
+//! * `total_rounds = 0` = 无限（沿用 0=unlimited 约定）；达标后 `finished`，
+//!   **不自动重置**（规则 6，复位靠 reset-memory / UI）。
+//! * 失败策略 `on_failure = "continue" | "fail_fast"`（规则 7）：`fail_fast`
+//!   本轮中止但仍计 1 round，已执行成员不补偿；本层只记录字段与成员结果，
+//!   实际执行编排属于 P2。
+//! * **重启恢复**（规则 8）：状态里保留 `current_round{index, member_index}`，
+//!   重启后从该成员继续，本轮不重复计数（见 [`queue_next_member_index`]）。
+//! * 调度/队列只回答"跑不跑、跑几次"，**不读取** `meta.goal`（规则 9）。
+//!
+//! # scheduler.json v4（玩家配置）
 //! ```json
 //! {
-//!   "schema_version": 3,
+//!   "schema_version": 4,
 //!   "config": {
 //!     "mode": "loop",                    // "loop" | "stop" (default stop)
 //!     "loop_interval_s": 60,             // seconds between passes in loop mode
-//!     "loop_rounds": 0,                  // 0 = unlimited passes in loop mode
+//!     "max_passes": 0,                   // 0 = unlimited passes in loop mode
+//!                                        //   (legacy key "loop_rounds" still accepted)
 //!     "utc_offset_min": 480,             // optional; local = utc + offset
 //!     "calendar": {
 //!       "day_reset": "05:00",            // logical day boundary (default 00:00)
@@ -61,9 +83,18 @@
 //!     },
 //!     "defaults": { "retry": 1, "cooldown": 300 }
 //!   },
+//!   "queues": [{
+//!     "queue_id": "q1",                 // unique; referenced by entry.task
+//!     "name": "日常",                    // optional label (default = queue_id)
+//!     "members": ["任务1", "任务2"],      // ordered, serial, no duplicates
+//!     "total_rounds": 2,                // 0 = unlimited rounds
+//!     "on_failure": "continue",         // "continue" | "fail_fast"
+//!     "between_ms": 500                 // pause between members (P2 executes)
+//!   }],
 //!   "entries": [{
 //!     "entry_id": "e1",
-//!     "task": "任务1",
+//!     "task": "任务1",                   // kind=queue: the queue_id, e.g. "q1"
+//!     "kind": "task",                    // "task" (default) | "queue"
 //!     "enabled": true,
 //!     "lifecycle": "periodic",          // "periodic" | "temp"
 //!     "windows": [{"days": [], "start": "08:00", "end": "12:00"}],
@@ -74,6 +105,12 @@
 //!   }]
 //! }
 //! ```
+//! **v3 compatibility** (plan §三 P1): a `schema_version: 3` document is still
+//! read (no `queues`, no `kind` → empty queue list, `kind = "task"`) and is
+//! normalized to v4 in memory; [`Scheduler::to_json`] always writes v4.
+//! A v3 document that declares `queues` or any `entries[].kind` key (even
+//! `"kind": "task"`) is rejected with a migration hint — a v3 document must
+//! not use the v4-only shapes (fail fast, no partial state).
 //!
 //! Windows / active_hours / blackouts are **time-of-day ranges** with an
 //! optional weekday filter (empty = every day). `end <= start` crosses
@@ -87,10 +124,12 @@ use serde_json::Value;
 
 use oas_types::Exit;
 
-/// Schema version of `scheduler.json` (v3 replaces the v1 `every_s` plan).
-pub const SCHEDULE_SCHEMA_VERSION: u32 = 3;
-/// State file schema version (same document family as the config).
-pub const STATE_SCHEMA_VERSION: u32 = 3;
+/// Schema version of `scheduler.json` (v4 adds `queues[]` + `entries[].kind`;
+/// v3 is still read for compatibility, see [`validate_scheduler_with_offset`]).
+pub const SCHEDULE_SCHEMA_VERSION: u32 = 4;
+/// Schema version of `scheduler.state.json` (v4 adds the `queues` map; a v3
+/// state is migrated on load, see `schedule::load_state_migrating`).
+pub const STATE_SCHEMA_VERSION: u32 = 4;
 
 pub const MS_PER_MIN: i64 = 60_000;
 pub const MS_PER_SEC: i64 = 1_000;
@@ -108,6 +147,32 @@ pub const MAX_RETRY: u32 = 10;
 pub const MAX_COOLDOWN_S: u64 = 7 * 24 * 3600;
 pub const MAX_QUOTA_TIMES: u32 = 1000;
 pub const MAX_ENTRY_ID_LEN: usize = 128;
+
+/// Queue ids share the entry-id grammar/limits (they are status keys and the
+/// value carried by `entry.task` when `kind = "queue"`).
+pub const MAX_QUEUE_ID_LEN: usize = MAX_ENTRY_ID_LEN;
+/// Upper bound for `queues[].total_rounds` (`0` = unlimited).
+pub const MAX_TOTAL_ROUNDS: u64 = 1_000_000;
+/// Upper bound for `queues[].members` (a round is serial; 200 is plenty).
+pub const MAX_QUEUE_MEMBERS: usize = 200;
+/// Default pause between two member executions of one round (same 500 ms as
+/// `oasd queue --between-ms`).
+pub const DEFAULT_QUEUE_BETWEEN_MS: u64 = 500;
+/// Upper bound for `queues[].between_ms` (10 minutes).
+pub const MAX_QUEUE_BETWEEN_MS: u64 = 600_000;
+/// Retain at most this many `member_results` in the state file (an infinite
+/// queue otherwise grows without bound); the newest entries are kept.
+// P2's queue execution keeps using this through `queue_record_member`; the
+// daemon in P1 never records members, hence the allow.
+#[allow(dead_code)]
+pub const MAX_QUEUE_MEMBER_RESULTS: usize = 200;
+
+/// `PassPlan.skipped` reason for a queue entry that is valid and due but cannot
+/// execute yet: P1 ships the schema + pure round layer only; the queue round
+/// executor lands in P2 (`docs/SCHEDULER-RUNNER-PLAN.md` §三). `plan_pass` puts
+/// such entries into `skipped`, never into `runnable`, so the plan/runnable and
+/// `stats.ran` counters stay truthful.
+pub const QUEUE_EXECUTOR_PENDING: &str = "queue_executor_pending";
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -127,6 +192,51 @@ impl Lifecycle {
         match self {
             Lifecycle::Periodic => "periodic",
             Lifecycle::Temp => "temp",
+        }
+    }
+}
+
+/// What one `entries[]` item schedules: a single task or a queue round.
+///
+/// `kind` is optional in the document (`"task"` is the default), so every v3
+/// entry keeps its meaning. `kind = "queue"` reuses [`Entry::task`] to carry the
+/// **queue_id** (documented on the field) to avoid touching the many existing
+/// `Entry.task` uses; [`Entry::queue_id`] names that reading explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EntryKind {
+    /// A single task entry (v3 behaviour, unchanged).
+    #[default]
+    Task,
+    /// A queue entry: `entry.task` is the queue_id of a `queues[]` item.
+    Queue,
+}
+
+impl EntryKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EntryKind::Task => "task",
+            EntryKind::Queue => "queue",
+        }
+    }
+}
+
+/// What a queue does when one member fails (`docs/SCHEDULER-RUNNER-PLAN.md`
+/// rule 7). `continue` records the failure and keeps going; `fail_fast` aborts
+/// the round but still counts it (already executed members are not compensated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnFailure {
+    #[default]
+    Continue,
+    FailFast,
+}
+
+impl OnFailure {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OnFailure::Continue => "continue",
+            OnFailure::FailFast => "fail_fast",
         }
     }
 }
@@ -582,11 +692,36 @@ pub struct Quota {
     pub times: u32,
 }
 
+/// One validated `queues[]` item (`docs/SCHEDULER-RUNNER-PLAN.md` §二).
+///
+/// A queue is only reachable through an `entries[]` item with `kind = "queue"`
+/// (rule 2: the queue has no trigger of its own; the entry's windows/quota/
+/// cooldown decide when a round starts). Members run serially (rule 3/10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Queue {
+    pub queue_id: String,
+    /// Human label (`name` is optional; defaults to `queue_id`).
+    pub name: String,
+    /// Ordered task names; no duplicates, and no overlap with task entries.
+    pub members: Vec<String>,
+    /// `0` = unlimited (the project-wide 0 = unlimited convention, rule 6).
+    pub total_rounds: u64,
+    pub on_failure: OnFailure,
+    /// Pause between two member executions of one round (P2 executes it).
+    pub between_ms: u64,
+}
+
 /// One validated `entries[]` item. `entries` order is the execution order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     pub entry_id: String,
+    /// `kind = "task"`: a task bundle name. `kind = "queue"`: the queue_id of a
+    /// [`Queue`] (kept in this field for backward compatibility of the many
+    /// `Entry.task` uses; read it via [`Entry::queue_id`] when the kind is
+    /// `Queue`). Cross-checked by [`validate_scheduler_with_offset`].
     pub task: String,
+    /// `"task"` (default) or `"queue"` (schema v4).
+    pub kind: EntryKind,
     pub enabled: bool,
     pub lifecycle: Lifecycle,
     pub windows: Vec<TimeWindow>,
@@ -601,18 +736,40 @@ impl Entry {
     pub fn max_attempts(&self) -> u32 {
         self.retry.saturating_add(1)
     }
+
+    /// The queue_id this entry schedules (`None` for a plain task entry).
+    pub fn queue_id(&self) -> Option<&str> {
+        match self.kind {
+            EntryKind::Task => None,
+            EntryKind::Queue => Some(&self.task),
+        }
+    }
 }
 
 /// Fully validated scheduler config (pure value — safe to pass around/tests).
+///
+/// The value is **version-normalized**: a v3 document and the equivalent v4
+/// document produce the same `Scheduler` (`schema_version` is always
+/// [`SCHEDULE_SCHEMA_VERSION`]), and [`Scheduler::to_json`] writes v4.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scheduler {
+    /// Always [`SCHEDULE_SCHEMA_VERSION`] for a validated value.
+    pub schema_version: u32,
     pub mode: RunMode,
     pub loop_interval_s: u64,
+    /// Pass cap in `loop` mode (`0` = unlimited passes; docs/SCHEDULER-RUNNER-
+    /// PLAN.md §一: this is L3 **passes**, not L4 queue rounds).
+    ///
+    /// The document key stays `loop_rounds` for compatibility; the new spelling
+    /// `max_passes` is accepted in `scheduler.json` (serde alias) and
+    /// `--max-passes` on the CLI.
     pub loop_rounds: u64,
     pub calendar: Calendar,
     pub active_hours: Vec<TimeWindow>,
     pub blackouts: Vec<Blackout>,
     pub defaults: Defaults,
+    /// Schema v4 queues (empty for a validated v3 document).
+    pub queues: Vec<Queue>,
     pub entries: Vec<Entry>,
 }
 
@@ -620,6 +777,200 @@ impl Scheduler {
     pub fn entry(&self, entry_id: &str) -> Option<&Entry> {
         self.entries.iter().find(|e| e.entry_id == entry_id)
     }
+
+    pub fn queue(&self, queue_id: &str) -> Option<&Queue> {
+        self.queues.iter().find(|q| q.queue_id == queue_id)
+    }
+
+    /// Task bundles this config references (task entries + queue members),
+    /// in a stable, de-duplicated order. Used by the IO layer to fail fast
+    /// before any byte is written.
+    pub fn task_names(&self) -> Vec<String> {
+        let mut seen = BTreeSet::new();
+        let mut out = Vec::new();
+        for entry in &self.entries {
+            if entry.kind == EntryKind::Task && seen.insert(entry.task.clone()) {
+                out.push(entry.task.clone());
+            }
+        }
+        for queue in &self.queues {
+            for member in &queue.members {
+                if seen.insert(member.clone()) {
+                    out.push(member.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Serialize the normalized config as a **schema v4** JSON document.
+    ///
+    /// Pure (no IO): P3's config writer can call this after
+    /// [`validate_scheduler_with_offset`] to write v4 back, which is how a v3
+    /// document gets upgraded on disk. The result round-trips: re-validating it
+    /// yields an equal `Scheduler`.
+    // P3's `POST /scheduler/config` is the first production caller; P1 proves
+    // the contract with the round-trip tests (hence the allow).
+    #[allow(dead_code)]
+    pub fn to_json(&self) -> Value {
+        let windows = |windows: &[TimeWindow]| -> Vec<Value> {
+            windows
+                .iter()
+                .map(|w| {
+                    json_obj(vec![
+                        ("days", Value::from(w.days.clone())),
+                        ("start", Value::from(w.start.clone())),
+                        ("end", Value::from(w.end.clone())),
+                    ])
+                })
+                .collect()
+        };
+        let quotas = |q: &Option<Quota>| match q {
+            Some(q) => json_obj(vec![
+                ("per", Value::from(q.per.as_str())),
+                ("times", Value::from(q.times)),
+            ]),
+            None => Value::Null,
+        };
+        let entries: Vec<Value> = self
+            .entries
+            .iter()
+            .map(|e| {
+                let params = Value::Object(
+                    e.params
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                );
+                json_obj(vec![
+                    ("entry_id", Value::from(e.entry_id.clone())),
+                    ("task", Value::from(e.task.clone())),
+                    ("kind", Value::from(e.kind.as_str())),
+                    ("enabled", Value::from(e.enabled)),
+                    ("lifecycle", Value::from(e.lifecycle.as_str())),
+                    ("windows", Value::Array(windows(&e.windows))),
+                    ("quota", quotas(&e.quota)),
+                    ("params", params),
+                    ("retry", Value::from(e.retry)),
+                    ("cooldown", Value::from(e.cooldown_s)),
+                ])
+            })
+            .collect();
+        let queues: Vec<Value> = self
+            .queues
+            .iter()
+            .map(|q| {
+                json_obj(vec![
+                    ("queue_id", Value::from(q.queue_id.clone())),
+                    ("name", Value::from(q.name.clone())),
+                    ("members", Value::Array(
+                        q.members.iter().cloned().map(Value::from).collect(),
+                    )),
+                    ("total_rounds", Value::from(q.total_rounds)),
+                    ("on_failure", Value::from(q.on_failure.as_str())),
+                    ("between_ms", Value::from(q.between_ms)),
+                ])
+            })
+            .collect();
+        let blackouts: Vec<Value> = self
+            .blackouts
+            .iter()
+            .map(|b| {
+                json_obj(vec![
+                    ("days", Value::from(b.window.days.clone())),
+                    ("start", Value::from(b.window.start.clone())),
+                    ("end", Value::from(b.window.end.clone())),
+                    ("reason", Value::from(b.reason.clone())),
+                ])
+            })
+            .collect();
+        json_obj(vec![
+            ("schema_version", Value::from(SCHEDULE_SCHEMA_VERSION)),
+            (
+                "config",
+                json_obj(vec![
+                    ("mode", Value::from(self.mode.as_str())),
+                    ("loop_interval_s", Value::from(self.loop_interval_s)),
+                    // Compatibility: the v3 key name is kept on write (no
+                    // duplicate `max_passes` key); readers accept both.
+                    ("loop_rounds", Value::from(self.loop_rounds)),
+                    (
+                        "utc_offset_min",
+                        Value::from(self.calendar.utc_offset_min),
+                    ),
+                    (
+                        "calendar",
+                        json_obj(vec![
+                            (
+                                "day_reset",
+                                Value::from(format_hhmm(self.calendar.day_reset_min)),
+                            ),
+                            (
+                                "week_reset",
+                                json_obj(vec![
+                                    (
+                                        "weekday",
+                                        Value::from(self.calendar.week_reset_weekday),
+                                    ),
+                                    (
+                                        "time",
+                                        Value::from(format_hhmm(
+                                            self.calendar.week_reset_min,
+                                        )),
+                                    ),
+                                ]),
+                            ),
+                        ]),
+                    ),
+                    (
+                        "guards",
+                        json_obj(vec![
+                            (
+                                "active_hours",
+                                Value::Array(
+                                    self.active_hours
+                                        .iter()
+                                        .map(|w| {
+                                            Value::Array(vec![
+                                                Value::from(w.start.clone()),
+                                                Value::from(w.end.clone()),
+                                            ])
+                                        })
+                                        .collect(),
+                                ),
+                            ),
+                            ("blackouts", Value::Array(blackouts)),
+                        ]),
+                    ),
+                    (
+                        "defaults",
+                        json_obj(vec![
+                            ("retry", Value::from(self.defaults.retry)),
+                            ("cooldown", Value::from(self.defaults.cooldown_s)),
+                        ]),
+                    ),
+                ]),
+            ),
+            ("queues", Value::Array(queues)),
+            ("entries", Value::Array(entries)),
+        ])
+    }
+}
+
+/// Build a JSON object from key/value pairs.
+///
+/// The workspace's `serde_json` is built without `preserve_order`, so
+/// `Value::Object` is a `BTreeMap`: serialization emits keys in **lexicographic**
+/// order, not insertion order. The output is deterministic (same document ->
+/// same bytes) and round-trips; the pair list here is only for source
+/// readability, it does not control the emitted key order.
+#[allow(dead_code)] // only caller today is `Scheduler::to_json` (P3 write-back)
+fn json_obj(pairs: Vec<(&str, Value)>) -> Value {
+    let mut map = serde_json::Map::new();
+    for (key, value) in pairs {
+        map.insert(key.to_string(), value);
+    }
+    Value::Object(map)
 }
 
 // ---------------------------------------------------------------------------
@@ -632,6 +983,9 @@ struct RawScheduler {
     schema_version: u32,
     #[serde(default)]
     config: RawConfig,
+    /// Schema v4: queue definitions referenced by `entries[].kind = "queue"`.
+    #[serde(default)]
+    queues: Vec<RawQueue>,
     #[serde(default)]
     entries: Vec<RawEntry>,
 }
@@ -642,7 +996,12 @@ struct RawConfig {
     mode: Option<RunMode>,
     #[serde(default)]
     loop_interval_s: Option<u64>,
-    #[serde(default)]
+    /// L3 pass cap (`0` = unlimited). Primary spelling: `max_passes`; the
+    /// historical v3 key `loop_rounds` is kept as the struct name and `max_passes`
+    /// is a serde alias, so both documents are accepted. If both keys appear in
+    /// one document serde reports a duplicate-field error (accepted behaviour:
+    /// ambiguous documents fail loudly instead of silently picking one).
+    #[serde(default, alias = "max_passes")]
     loop_rounds: Option<u64>,
     #[serde(default)]
     utc_offset_min: Option<i32>,
@@ -704,6 +1063,9 @@ struct RawEntry {
     entry_id: String,
     #[serde(default)]
     task: String,
+    /// Schema v4: `"task"` (default) | `"queue"`.
+    #[serde(default)]
+    kind: Option<EntryKind>,
     #[serde(default = "default_true")]
     enabled: bool,
     #[serde(default)]
@@ -718,6 +1080,24 @@ struct RawEntry {
     retry: Option<u32>,
     #[serde(default)]
     cooldown: Option<u64>,
+}
+
+/// Schema v4 `queues[]` item (all fields optional in the raw form so missing
+/// values fall back to the documented defaults).
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RawQueue {
+    #[serde(default)]
+    queue_id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    members: Vec<String>,
+    #[serde(default)]
+    total_rounds: Option<u64>,
+    #[serde(default)]
+    on_failure: Option<OnFailure>,
+    #[serde(default)]
+    between_ms: Option<u64>,
 }
 
 fn default_true() -> bool {
@@ -764,20 +1144,59 @@ pub fn validate_scheduler_with_offset(
     text: &str,
     default_offset_min: i32,
 ) -> Result<Scheduler, String> {
+    // Typed view first (keeps serde's duplicate-field/unknown-variant errors);
+    // v3 additionally re-reads the raw JSON to detect key presence.
     let raw: RawScheduler = serde_json::from_str(text)
         .map_err(|e| format!("scheduler config: invalid JSON: {e}"))?;
 
-    if raw.schema_version != SCHEDULE_SCHEMA_VERSION {
-        let hint = if raw.schema_version == 1 || raw.schema_version == 2 {
-            " — the v1 `every_s` plan is replaced by scheduler v3 (ENGINE §22.34); \
-             rewrite it as {schema_version:3, config:{...}, entries:[...]}"
-        } else {
-            ""
-        };
-        return Err(format!(
-            "scheduler config: schema_version must be {SCHEDULE_SCHEMA_VERSION}, got {}{hint}",
-            raw.schema_version
-        ));
+    // Schema v4 adds `queues[]` + `entries[].kind`. v3 documents are still read
+    // (plan §三 P1: 读 3 自动迁移) but must not use the v4-only shapes.
+    let from_v3 = match raw.schema_version {
+        SCHEDULE_SCHEMA_VERSION => false,
+        3 => true,
+        other => {
+            let hint = if other == 1 || other == 2 {
+                " — the v1 `every_s` plan is replaced by scheduler v4 (ENGINE §22.34 / \
+                 docs/SCHEDULER-RUNNER-PLAN.md); rewrite it as \
+                 {schema_version:4, config:{...}, entries:[...]}"
+            } else {
+                ""
+            };
+            return Err(format!(
+                "scheduler config: schema_version must be {SCHEDULE_SCHEMA_VERSION} \
+                 (3 is read for v3 compatibility), got {other}{hint}"
+            ));
+        }
+    };
+    if from_v3 {
+        if !raw.queues.is_empty() {
+            return Err(format!(
+                "scheduler config: schema_version 3 must not declare `queues` \
+                 (got {} queue(s)); bump schema_version to {SCHEDULE_SCHEMA_VERSION}",
+                raw.queues.len()
+            ));
+        }
+        // v3 predates `entries[].kind`: declaring the key at all asserts a v4
+        // contract, even `"kind": "task"`. Detect the raw key so a v3 document
+        // is rejected for what it says, not for what serde's Option happens to
+        // accept (`"kind": null` is also a declaration).
+        let document: Value = serde_json::from_str(text)
+            .map_err(|e| format!("scheduler config: invalid JSON: {e}"))?;
+        if let Some(entries) = document.get("entries").and_then(Value::as_array) {
+            for (i, entry) in entries.iter().enumerate() {
+                let declares_kind = entry
+                    .as_object()
+                    .map(|obj| obj.contains_key("kind"))
+                    .unwrap_or(false);
+                if declares_kind {
+                    return Err(format!(
+                        "scheduler config: schema_version 3 must not declare \
+                         entries[{i}].kind (any value, including \"task\"); bump \
+                         schema_version to {SCHEDULE_SCHEMA_VERSION}"
+                    ));
+                }
+            }
+        }
     }
     // An empty `entries` array is valid: deleting all tasks must leave the
     // scheduler page in a clean "no scheduled tasks" state instead of a config
@@ -838,10 +1257,12 @@ pub fn validate_scheduler_with_offset(
         },
     };
 
+    let queues = validate_queues(&raw.queues)?;
+
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut entries = Vec::with_capacity(raw.entries.len());
     for (i, e) in raw.entries.iter().enumerate() {
-        let entry = validate_entry(e, i, &defaults)?;
+        let entry = validate_entry(e, i, &defaults, &queues)?;
         if !seen.insert(entry.entry_id.clone()) {
             return Err(format!(
                 "scheduler config: duplicate entry_id `{}` (entries[{i}])",
@@ -851,7 +1272,30 @@ pub fn validate_scheduler_with_offset(
         entries.push(entry);
     }
 
+    // Rule 4 (docs/SCHEDULER-RUNNER-PLAN.md §二): a task must not be scheduled
+    // twice — either as a single-task entry or as a queue member. Two different
+    // queues sharing a member is allowed (the user asked for it explicitly).
+    let mut task_entries: BTreeMap<String, String> = BTreeMap::new();
+    for entry in &entries {
+        if entry.kind == EntryKind::Task {
+            task_entries.entry(entry.task.clone()).or_insert(entry.entry_id.clone());
+        }
+    }
+    for queue in &queues {
+        for member in &queue.members {
+            if let Some(entry_id) = task_entries.get(member) {
+                return Err(format!(
+                    "scheduler config: task `{member}` is both a queue member of `{}` \
+                     and entries[].task of `{entry_id}` — rule 4 forbids double-running \
+                     (either remove the task entry or remove the member)",
+                    queue.queue_id
+                ));
+            }
+        }
+    }
+
     Ok(Scheduler {
+        schema_version: SCHEDULE_SCHEMA_VERSION,
         mode,
         loop_interval_s,
         loop_rounds,
@@ -859,6 +1303,7 @@ pub fn validate_scheduler_with_offset(
         active_hours,
         blackouts,
         defaults,
+        queues,
         entries,
     })
 }
@@ -899,7 +1344,103 @@ fn build_calendar(raw: &RawConfig, default_offset_min: i32) -> Result<Calendar, 
     })
 }
 
-fn validate_entry(raw: &RawEntry, i: usize, defaults: &Defaults) -> Result<Entry, String> {
+/// Validate the schema v4 `queues[]` block (pure; no cross-checks that need
+/// the entries — those run after `validate_entry`).
+fn validate_queues(raw: &[RawQueue]) -> Result<Vec<Queue>, String> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut out = Vec::with_capacity(raw.len());
+    for (i, q) in raw.iter().enumerate() {
+        let ctx = format!("queues[{i}]");
+        let queue_id = q.queue_id.trim().to_string();
+        if queue_id.is_empty() {
+            return Err(format!("{ctx}.queue_id must not be empty"));
+        }
+        if queue_id.len() > MAX_QUEUE_ID_LEN {
+            return Err(format!(
+                "{ctx}.queue_id must be <= {MAX_QUEUE_ID_LEN} chars, got {}",
+                queue_id.len()
+            ));
+        }
+        if queue_id.chars().any(|c| c.is_control()) {
+            return Err(format!("{ctx}.queue_id must not contain control characters"));
+        }
+        // Queue ids double as status/report keys and as `entry.task`; keep the
+        // same path-safe grammar as task names (no separators, no "..").
+        oas_task::validate_task_name(&queue_id)
+            .map_err(|e| format!("{ctx}.queue_id: {e}"))?;
+        if !seen.insert(queue_id.clone()) {
+            return Err(format!(
+                "scheduler config: duplicate queue_id `{queue_id}` ({ctx})"
+            ));
+        }
+        let name = q.name.trim();
+        let name = if name.is_empty() {
+            queue_id.clone()
+        } else {
+            name.to_string()
+        };
+        if name.chars().any(|c| c.is_control()) {
+            return Err(format!("{ctx}.name must not contain control characters"));
+        }
+        if q.members.is_empty() {
+            return Err(format!(
+                "{ctx}.members must not be empty (a queue needs at least one task)"
+            ));
+        }
+        if q.members.len() > MAX_QUEUE_MEMBERS {
+            return Err(format!(
+                "{ctx}.members must be <= {MAX_QUEUE_MEMBERS}, got {}",
+                q.members.len()
+            ));
+        }
+        let mut members = Vec::with_capacity(q.members.len());
+        let mut member_seen: BTreeSet<String> = BTreeSet::new();
+        for (m, raw_member) in q.members.iter().enumerate() {
+            let mctx = format!("{ctx}.members[{m}]");
+            let member = raw_member.trim().to_string();
+            if member.is_empty() {
+                return Err(format!("{mctx} must not be empty"));
+            }
+            oas_task::validate_task_name(&member)
+                .map_err(|e| format!("{mctx}: {e}"))?;
+            if !member_seen.insert(member.clone()) {
+                return Err(format!(
+                    "{ctx}: duplicate member `{member}` (a round must not run the same \
+                     task twice)"
+                ));
+            }
+            members.push(member);
+        }
+        let total_rounds = q.total_rounds.unwrap_or(0);
+        if total_rounds > MAX_TOTAL_ROUNDS {
+            return Err(format!(
+                "{ctx}.total_rounds must be <= {MAX_TOTAL_ROUNDS} (0 = unlimited), got {total_rounds}"
+            ));
+        }
+        let between_ms = q.between_ms.unwrap_or(DEFAULT_QUEUE_BETWEEN_MS);
+        if between_ms > MAX_QUEUE_BETWEEN_MS {
+            return Err(format!(
+                "{ctx}.between_ms must be <= {MAX_QUEUE_BETWEEN_MS}, got {between_ms}"
+            ));
+        }
+        out.push(Queue {
+            queue_id,
+            name,
+            members,
+            total_rounds,
+            on_failure: q.on_failure.unwrap_or_default(),
+            between_ms,
+        });
+    }
+    Ok(out)
+}
+
+fn validate_entry(
+    raw: &RawEntry,
+    i: usize,
+    defaults: &Defaults,
+    queues: &[Queue],
+) -> Result<Entry, String> {
     let ctx = format!("entries[{i}]");
     let entry_id = raw.entry_id.trim().to_string();
     if entry_id.is_empty() {
@@ -914,11 +1455,18 @@ fn validate_entry(raw: &RawEntry, i: usize, defaults: &Defaults) -> Result<Entry
     if entry_id.chars().any(|c| c.is_control()) {
         return Err(format!("{ctx}.entry_id must not contain control characters"));
     }
+    let kind = raw.kind.unwrap_or_default();
     let task = raw.task.trim().to_string();
     if task.is_empty() {
         return Err(format!("{ctx}.task must not be empty"));
     }
     oas_task::validate_task_name(&task).map_err(|e| format!("{ctx}.task: {e}"))?;
+    if kind == EntryKind::Queue && !queues.iter().any(|q| q.queue_id == task) {
+        return Err(format!(
+            "{ctx}.kind=\"queue\" references unknown queue `{task}` \
+             (declare it in `queues[]` first)"
+        ));
+    }
 
     let lifecycle = raw.lifecycle.unwrap_or(Lifecycle::Periodic);
 
@@ -987,6 +1535,7 @@ fn validate_entry(raw: &RawEntry, i: usize, defaults: &Defaults) -> Result<Entry
     Ok(Entry {
         entry_id,
         task,
+        kind,
         enabled: raw.enabled,
         lifecycle,
         windows,
@@ -1215,6 +1764,68 @@ pub struct StateCycle {
     pub week: String,
 }
 
+/// The round currently being worked on (`docs/SCHEDULER-RUNNER-PLAN.md` rule 8).
+///
+/// `index` is the 1-based ordinal of the orchestration attempt (empty rounds
+/// included); `member_index` is the 0-based cursor into [`Queue::members`] of
+/// the *next* member to run — restart resumes from exactly there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QueueRoundState {
+    #[serde(default)]
+    pub index: u64,
+    #[serde(default)]
+    pub member_index: usize,
+    #[serde(default)]
+    pub started_ms: u64,
+}
+
+/// One finished member execution inside a queue round (rule 7: failures are
+/// recorded, never auto-retried by the queue; retry stays L2 `attempt`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QueueMemberResult {
+    /// Round ordinal this member belonged to (see [`QueueRoundState::index`]).
+    #[serde(default)]
+    pub round: u64,
+    #[serde(default)]
+    pub member_index: usize,
+    #[serde(default)]
+    pub task: String,
+    /// [`ResultClass::as_str`] (`success` / `resource` / `blocked` / ...).
+    #[serde(default)]
+    pub class: String,
+    #[serde(default)]
+    pub exit: String,
+    #[serde(default)]
+    pub outcome: String,
+    #[serde(default)]
+    pub attempts: u32,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub finished_ms: u64,
+}
+
+/// Persistent per-queue state (`docs/SCHEDULER-RUNNER-PLAN.md` rules 5/6/8).
+///
+/// `total_rounds` mirrors the config value at the last write (a config edit is
+/// picked up by [`queue_begin_round`]); `finished` is sticky and is only reset
+/// by `reset-memory` / the UI (rule 6: 不自动重置).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QueueState {
+    #[serde(default)]
+    pub total_rounds: u64,
+    #[serde(default)]
+    pub rounds_completed: u64,
+    #[serde(default)]
+    pub empty_rounds: u64,
+    #[serde(default)]
+    pub finished: bool,
+    #[serde(default)]
+    pub current_round: Option<QueueRoundState>,
+    #[serde(default)]
+    pub member_results: Vec<QueueMemberResult>,
+}
+
 /// `scheduler.state.json` — **runtime state only**, never "completed" flags.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SchedulerState {
@@ -1234,6 +1845,10 @@ pub struct SchedulerState {
     pub last_stop: String,
     #[serde(default)]
     pub entries: BTreeMap<String, EntryState>,
+    /// Schema v4 queue state keyed by `queue_id` (`#[serde(default)]` keeps a v3
+    /// state file readable: it simply has no queues).
+    #[serde(default)]
+    pub queues: BTreeMap<String, QueueState>,
 }
 
 impl Default for SchedulerState {
@@ -1247,6 +1862,7 @@ impl Default for SchedulerState {
             cycle: StateCycle::default(),
             last_stop: String::new(),
             entries: BTreeMap::new(),
+            queues: BTreeMap::new(),
         }
     }
 }
@@ -1351,6 +1967,268 @@ pub fn mark_running(
 
 pub fn clear_running(state: &mut SchedulerState) {
     state.running = None;
+}
+
+// ---------------------------------------------------------------------------
+// Queue Round（纯函数；docs/SCHEDULER-RUNNER-PLAN.md §二 规则 1-10）
+// ---------------------------------------------------------------------------
+//
+// 本层只做决策/记账，不执行、不睡眠、不写盘。P2 的 `execute_queue_round`
+// 按 docs/SCHEDULER-RUNNER-PLAN.md §三 P2 依次调用：
+//   queue_should_finish（真 → 跳过）
+//   → 有 current_round？续跑 : queue_begin_round
+//   → queue_next_member_index → (每成员) queue_record_member
+//   → 本轮结束 queue_end_round → 保存 state。
+// 状态机误用一律 loud（`Result`）：`queue_begin_round` 在已有开轮或队列已
+// finished 时失败，`queue_record_member`/`queue_end_round` 在没有开轮时失败，
+// 避免"静默多计一轮"（规则 8）。
+// P1 只发布这组纯函数并用单测锁住语义，daemon 尚未调用它们（故有 allow）。
+
+/// One member execution outcome, reduced to what the queue state records
+/// (kept engine-neutral so this module stays a pure data layer).
+#[allow(dead_code)] // P2 constructs these from `run::execute` results
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueueMemberOutcome {
+    pub class: ResultClass,
+    pub exit: String,
+    pub outcome: String,
+    pub attempts: u32,
+    pub duration_ms: u64,
+}
+
+#[allow(dead_code)] // P2 + unit tests
+impl QueueMemberOutcome {
+    pub fn new(
+        class: ResultClass,
+        exit: &str,
+        outcome: &str,
+        attempts: u32,
+        duration_ms: u64,
+    ) -> Self {
+        QueueMemberOutcome {
+            class,
+            exit: exit.to_string(),
+            outcome: outcome.to_string(),
+            attempts,
+            duration_ms,
+        }
+    }
+
+    /// Rule 7: did this member count as a failure for `on_failure`?
+    /// `success` / `resource` are normal endings (resource = 任务正常结束).
+    pub fn failed(&self) -> bool {
+        !matches!(self.class, ResultClass::Success | ResultClass::Resource)
+    }
+}
+
+/// Result of closing one queue round (`docs/SCHEDULER-RUNNER-PLAN.md` rule 5/6).
+#[allow(dead_code)] // returned by `queue_end_round` (P2 + unit tests)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoundEnd {
+    /// Round ordinal that was closed.
+    pub index: u64,
+    /// `true` = counted as a completed round (`rounds_completed += 1`);
+    /// `false` = it was an empty round (`empty_rounds += 1`, rule 5).
+    pub counted: bool,
+    pub rounds_completed: u64,
+    pub empty_rounds: u64,
+    /// The queue reached `total_rounds` and will no longer be triggered (rule 6).
+    pub finished: bool,
+}
+
+/// Has this queue finished its lifecycle? (`docs/SCHEDULER-RUNNER-PLAN.md` rule 6)
+///
+/// `finished` is sticky (no automatic reset), and `total_rounds = 0` means
+/// unlimited — such a queue only reports `finished` if the flag was set by hand.
+pub fn queue_should_finish(q: &Queue, st: &QueueState) -> bool {
+    st.finished || (q.total_rounds > 0 && st.rounds_completed >= q.total_rounds)
+}
+
+/// [`queue_should_finish`] against the persisted state map (missing state = not
+/// started = not finished).
+pub fn queue_finished(q: &Queue, state: &SchedulerState) -> bool {
+    state
+        .queues
+        .get(&q.queue_id)
+        .map(|st| queue_should_finish(q, st))
+        .unwrap_or(false)
+}
+
+/// Index of the next member to execute in the open round (rule 3/8).
+///
+/// Restart resumes from the persisted `current_round.member_index`; with no open
+/// round the next round starts at the head of the queue.
+#[allow(dead_code)] // P2 queue execution + unit tests
+pub fn queue_next_member_index(q: &Queue, st: &QueueState) -> usize {
+    st.current_round
+        .as_ref()
+        .map(|r| r.member_index)
+        .unwrap_or(0)
+        .min(q.members.len())
+}
+
+/// Open a new round for this queue (rule 8 restart is handled by *resuming*
+/// the open round instead of calling this again).
+///
+/// The round ordinal counts orchestration attempts, empty rounds included:
+/// `rounds_completed + empty_rounds + 1`. `total_rounds` is re-synced from the
+/// config so a config edit takes effect on the next round.
+///
+/// # Errors
+/// * an open round already exists — the caller must resume it
+///   ([`queue_next_member_index`] / [`queue_record_member`]) or close it with
+///   [`queue_end_round`]; opening a second round would double-count (rule 8);
+/// * the queue is already `finished` (rule 6: no automatic reset).
+#[allow(dead_code)] // P2 queue execution + unit tests
+pub fn queue_begin_round(
+    q: &Queue,
+    st: &mut QueueState,
+    now_utc_ms: i64,
+) -> Result<u64, String> {
+    if let Some(round) = &st.current_round {
+        return Err(format!(
+            "queue `{}`: round #{} is already open (member_index {}); resume it or \
+             close it with queue_end_round instead of starting a new one",
+            q.queue_id, round.index, round.member_index
+        ));
+    }
+    if queue_should_finish(q, st) {
+        return Err(format!(
+            "queue `{}`: already finished (rounds_completed={} total_rounds={}); \
+             reset it first (rule 6 forbids an automatic reset)",
+            q.queue_id, st.rounds_completed, q.total_rounds
+        ));
+    }
+    st.total_rounds = q.total_rounds;
+    let index = st
+        .rounds_completed
+        .saturating_add(st.empty_rounds)
+        .saturating_add(1);
+    st.current_round = Some(QueueRoundState {
+        index,
+        member_index: 0,
+        started_ms: now_utc_ms.max(0) as u64,
+    });
+    Ok(index)
+}
+
+/// Record one member execution and advance the round cursor (rule 3/5/7).
+///
+/// `task` must be the member that is due (`queue_next_member_index`); the record
+/// keeps the round ordinal + member index so the UI can show progress. The ring
+/// buffer keeps the newest [`MAX_QUEUE_MEMBER_RESULTS`] entries so an unlimited
+/// queue cannot grow the state file forever.
+#[allow(dead_code)] // P2 queue execution + unit tests
+pub fn queue_record_member(
+    st: &mut QueueState,
+    task: &str,
+    outcome: &QueueMemberOutcome,
+    now_utc_ms: i64,
+) -> Result<(), String> {
+    let Some(round) = st.current_round.as_mut() else {
+        return Err(format!(
+            "queue: cannot record member `{task}`: no open round \
+             (call queue_begin_round first)"
+        ));
+    };
+    let result = QueueMemberResult {
+        round: round.index,
+        member_index: round.member_index,
+        task: task.to_string(),
+        class: outcome.class.as_str().to_string(),
+        exit: outcome.exit.clone(),
+        outcome: outcome.outcome.clone(),
+        attempts: outcome.attempts,
+        duration_ms: outcome.duration_ms,
+        finished_ms: now_utc_ms.max(0) as u64,
+    };
+    round.member_index = round.member_index.saturating_add(1);
+    st.member_results.push(result);
+    if st.member_results.len() > MAX_QUEUE_MEMBER_RESULTS {
+        let drop = st.member_results.len() - MAX_QUEUE_MEMBER_RESULTS;
+        st.member_results.drain(0..drop);
+    }
+    Ok(())
+}
+
+/// Close the open round with **lazy counting** (rule 5): a round counts as
+/// completed only when at least one member actually executed (`executed_any`,
+/// i.e. a run with `attempt >= 1`); a fully skipped round only increases
+/// `empty_rounds` and does **not** consume `total_rounds`.
+///
+/// `fail_fast` aborts a round *after* a member executed, so it still counts
+/// (rule 7: 仍计 1 round，已执行成员不补偿).
+///
+/// # Errors
+/// There is no open round — closing one that was never opened (or is already
+/// closed) is a state-machine misuse and must not invent/count a round (rule 8).
+#[allow(dead_code)] // P2 queue execution + unit tests
+pub fn queue_end_round(
+    q: &Queue,
+    st: &mut QueueState,
+    executed_any: bool,
+) -> Result<RoundEnd, String> {
+    let Some(round) = st.current_round.take() else {
+        return Err(format!(
+            "queue `{}`: cannot end a round: no open round (call queue_begin_round first)",
+            q.queue_id
+        ));
+    };
+    st.total_rounds = q.total_rounds;
+    if executed_any {
+        st.rounds_completed = st.rounds_completed.saturating_add(1);
+    } else {
+        st.empty_rounds = st.empty_rounds.saturating_add(1);
+    }
+    if q.total_rounds > 0 && st.rounds_completed >= q.total_rounds {
+        st.finished = true;
+    }
+    Ok(RoundEnd {
+        index: round.index,
+        counted: executed_any,
+        rounds_completed: st.rounds_completed,
+        empty_rounds: st.empty_rounds,
+        finished: st.finished,
+    })
+}
+
+/// When may this queue start its next round? (`docs/SCHEDULER-RUNNER-PLAN.md`
+/// rules 2/6/8; wired into `next_wake` in P2.)
+///
+/// * `None` — the queue is finished, it will never run again.
+/// * `Some(now)` — an open round must be resumed (restart), or the queue is
+///   ready; the queue has no trigger of its own (rule 2), so the entry's
+///   windows/quota/cooldown still decide *whether* the pass runs it.
+/// * `Some(t)` — the inter-round `between_ms` pause is still running.
+pub fn queue_next_due_ms(q: &Queue, st: &QueueState, utc_ms: i64) -> Option<i64> {
+    if queue_should_finish(q, st) {
+        return None;
+    }
+    if st.current_round.is_some() {
+        // Rule 8: finish the interrupted round before anything else.
+        return Some(utc_ms);
+    }
+    if let Some(last) = st.member_results.last() {
+        let ready = (last.finished_ms as i64).saturating_add(q.between_ms as i64);
+        if ready > utc_ms {
+            return Some(ready);
+        }
+    }
+    Some(utc_ms)
+}
+
+/// Reset one queue's memory (rule 6): clears counters, finished and in-flight
+/// round; keeps the config mirror.
+///
+/// P1's `reset-memory` removes the whole `state.queues[queue_id]` entry instead
+/// (a missing entry reads as an all-zero state); this helper stays for P2/P3
+/// callers that want to keep the `total_rounds` mirror.
+#[allow(dead_code)] // P2/P3 callers (rule 6); P1 reset-memory removes the state entry instead
+pub fn queue_reset(q: &Queue, st: &mut QueueState) {
+    *st = QueueState {
+        total_rounds: q.total_rounds,
+        ..QueueState::default()
+    };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1554,7 +2432,9 @@ pub struct SkippedEntry {
     pub entry_index: usize,
     pub entry_id: String,
     pub task: String,
-    /// `disabled` | `outside_window` | `quota_exhausted` | `cooldown`.
+    /// `disabled` | `outside_window` | `quota_exhausted` | `cooldown` |
+    /// `queue_finished` (rule 6) | `queue_missing` (defence in depth) |
+    /// `queue_executor_pending` (P2 executor not implemented yet).
     pub reason: String,
 }
 
@@ -1604,6 +2484,44 @@ pub fn plan_pass(
                 reason: "disabled".to_string(),
             });
             continue;
+        }
+        // Queue entries: a finished queue is never triggered again (rule 6), a
+        // queue that disappeared from `queues[]` (validation rejects it, this
+        // is defence in depth) is skipped loudly, and **every remaining queue
+        // entry is still skipped** because the round executor is P2: it must
+        // never enter `runnable` (that used to inflate `runnable`/plan counters
+        // while `execute_pass` skipped it anyway). P2 replaces the pending skip
+        // with actual round execution.
+        if let Some(queue_id) = entry.queue_id() {
+            match sched.queue(queue_id) {
+                Some(q) if queue_finished(q, state) => {
+                    skipped.push(SkippedEntry {
+                        entry_index: idx,
+                        entry_id: entry.entry_id.clone(),
+                        task: entry.task.clone(),
+                        reason: "queue_finished".to_string(),
+                    });
+                    continue;
+                }
+                Some(_) => {
+                    skipped.push(SkippedEntry {
+                        entry_index: idx,
+                        entry_id: entry.entry_id.clone(),
+                        task: entry.task.clone(),
+                        reason: QUEUE_EXECUTOR_PENDING.to_string(),
+                    });
+                    continue;
+                }
+                None => {
+                    skipped.push(SkippedEntry {
+                        entry_index: idx,
+                        entry_id: entry.entry_id.clone(),
+                        task: entry.task.clone(),
+                        reason: "queue_missing".to_string(),
+                    });
+                    continue;
+                }
+            }
         }
         if let Some(rec) = recovering {
             if rec.entry_id == entry.entry_id {
@@ -1686,6 +2604,9 @@ pub fn plan_pass(
 }
 
 /// When can this entry run next? Used by `--status` and the panel's "今日清单".
+///
+/// A finished queue entry never runs again (rule 6) → `None`. A queue entry with
+/// an open round reports "due now" (rule 8: finish the interrupted round first).
 pub fn entry_next_due_ms(
     sched: &Scheduler,
     state: &SchedulerState,
@@ -1694,6 +2615,20 @@ pub fn entry_next_due_ms(
 ) -> Option<i64> {
     if !entry.enabled {
         return None;
+    }
+    if let Some(queue_id) = entry.queue_id() {
+        let queue = sched.queue(queue_id)?;
+        if queue_finished(queue, state) {
+            return None;
+        }
+        if state
+            .queues
+            .get(queue_id)
+            .and_then(|st| st.current_round.as_ref())
+            .is_some()
+        {
+            return Some(utc_ms);
+        }
     }
     let cycles = cycle_ids(&sched.calendar, utc_ms);
     let local = sched.calendar.to_local(utc_ms);
@@ -2567,6 +3502,34 @@ mod tests {
     }
 
     #[test]
+    fn config_accepts_max_passes_as_the_new_spelling() {
+        // New primary key (`docs/SCHEDULER-RUNNER-PLAN.md` §一 命名整顿).
+        let s = sched(r#"{"schema_version":4,"config":{"max_passes":3},"entries":[]}"#);
+        assert_eq!(s.loop_rounds, 3, "max_passes sets the L3 pass cap");
+        let written = s.to_json();
+        assert_eq!(
+            written["config"]["loop_rounds"], 3,
+            "the compat key is kept on write"
+        );
+        assert!(
+            written["config"].get("max_passes").is_none(),
+            "no duplicate key in the output: {written}"
+        );
+
+        // Legacy spelling produces the identical config.
+        let legacy = sched(r#"{"schema_version":4,"config":{"loop_rounds":3},"entries":[]}"#);
+        assert_eq!(legacy.loop_rounds, 3);
+        assert_eq!(legacy, s, "old and new spellings normalize to one value");
+
+        // Both keys at once are ambiguous -> serde duplicate-field error.
+        let err = validate_scheduler(
+            r#"{"schema_version":4,"config":{"loop_rounds":1,"max_passes":2},"entries":[]}"#,
+        )
+        .expect_err("ambiguous pass cap must fail loudly");
+        assert!(err.contains("duplicate field"), "{err}");
+    }
+
+    #[test]
     fn empty_entries_is_valid_after_deleting_all_tasks() {
         assert!(validate_scheduler(r#"{"schema_version":3,"entries":[]}"#).is_ok());
     }
@@ -2691,6 +3654,581 @@ mod tests {
             entry_next_due_ms(&s, &state, &s.entries[2], now),
             Some(now),
             "temp runs any pass"
+        );
+    }
+
+    // -- schema v4: queues / kind / migration (docs/SCHEDULER-RUNNER-PLAN.md) --
+
+    /// A v4 config with two queues and three entries (one plain task, two queue
+    /// entries) — exercised by the schema + round tests below.
+    const V4_FULL: &str = r#"{
+        "schema_version": 4,
+        "config": {
+          "mode":"loop","loop_interval_s":30,"loop_rounds":2,"utc_offset_min":480,
+          "calendar":{"day_reset":"05:00","week_reset":{"weekday":0,"time":"05:00"}},
+          "guards":{"active_hours":[["08:00","23:00"]],
+                    "blackouts":[{"days":[1],"start":"02:00","end":"02:10","reason":"维护"}]},
+          "defaults":{"retry":1,"cooldown":300}
+        },
+        "queues": [
+          {"queue_id":"q1","name":"日常","members":["任务1","任务2"],
+           "total_rounds":2,"on_failure":"continue","between_ms":500},
+          {"queue_id":"q2","members":["任务3"],"on_failure":"fail_fast"}
+        ],
+        "entries": [
+          {"entry_id":"qt","task":"任务9","lifecycle":"periodic",
+           "windows":[{"days":[],"start":"00:00","end":"00:00"}]},
+          {"entry_id":"qq","task":"q1","kind":"queue","lifecycle":"periodic",
+           "quota":{"per":"day","times":2}},
+          {"entry_id":"qq2","task":"q2","kind":"queue","lifecycle":"temp"}
+        ]}"#;
+
+    fn queue_config(total_rounds: u64, members: &[&str], on_failure: &str) -> Scheduler {
+        let members: Vec<String> = members.iter().map(|m| format!("\"{m}\"")).collect();
+        sched(&format!(
+            r#"{{"schema_version":4,
+                "queues":[{{"queue_id":"q1","members":[{}],
+                            "total_rounds":{total_rounds},"on_failure":"{on_failure}"}}],
+                "entries":[{{"entry_id":"q1e","task":"q1","kind":"queue",
+                             "lifecycle":"temp"}}]}}"#,
+            members.join(",")
+        ))
+    }
+
+    #[test]
+    fn v3_config_is_accepted_and_normalized_to_v4() {
+        let v3 = sched(
+            r#"{"schema_version":3,
+                "config":{"calendar":{"day_reset":"05:00"}},
+                "entries":[{"entry_id":"e1","task":"任务1","lifecycle":"periodic",
+                            "quota":{"per":"day","times":2}}]}"#,
+        );
+        assert_eq!(v3.schema_version, 4, "v3 is upgraded in memory");
+        assert!(v3.queues.is_empty(), "v3 has no queues");
+        assert_eq!(v3.entries[0].kind, EntryKind::Task, "kind defaults to task");
+        assert_eq!(v3.entries[0].queue_id(), None);
+
+        let written = v3.to_json();
+        assert_eq!(written["schema_version"], 4, "write-back is v4");
+        assert_eq!(written["queues"].as_array().unwrap().len(), 0);
+        assert_eq!(written["entries"][0]["kind"], "task");
+        assert_eq!(written["entries"][0]["quota"]["per"], "day");
+        let reloaded = validate_scheduler(&written.to_string()).expect("v4 round-trip");
+        assert_eq!(reloaded, v3, "normalized config round-trips losslessly");
+    }
+
+    #[test]
+    fn v4_config_with_queues_roundtrips_through_to_json() {
+        let s = sched(V4_FULL);
+        assert_eq!(s.schema_version, 4);
+        assert_eq!(s.queues.len(), 2);
+        let q1 = s.queue("q1").expect("q1 declared");
+        assert_eq!(q1.name, "日常");
+        assert_eq!(q1.members, vec!["任务1".to_string(), "任务2".to_string()]);
+        assert_eq!(q1.total_rounds, 2);
+        assert_eq!(q1.on_failure, OnFailure::Continue);
+        assert_eq!(q1.between_ms, 500);
+        let q2 = s.queue("q2").expect("q2 declared");
+        assert_eq!(q2.name, "q2", "name defaults to the queue_id");
+        assert_eq!(q2.on_failure, OnFailure::FailFast);
+        assert_eq!(q2.between_ms, DEFAULT_QUEUE_BETWEEN_MS);
+        assert_eq!(q2.total_rounds, 0, "0 = unlimited rounds");
+        assert_eq!(s.entries[0].kind, EntryKind::Task);
+        assert_eq!(s.entries[1].kind, EntryKind::Queue);
+        assert_eq!(s.entries[1].queue_id(), Some("q1"));
+        assert_eq!(s.entries[2].lifecycle, Lifecycle::Temp);
+        assert_eq!(
+            s.task_names(),
+            vec![
+                "任务9".to_string(),
+                "任务1".to_string(),
+                "任务2".to_string(),
+                "任务3".to_string()
+            ],
+            "task bundles = task entries + queue members, de-duplicated"
+        );
+
+        let written = s.to_json();
+        assert_eq!(written["schema_version"], 4);
+        assert_eq!(written["queues"][0]["queue_id"], "q1");
+        assert_eq!(written["queues"][1]["on_failure"], "fail_fast");
+        assert_eq!(written["entries"][1]["kind"], "queue");
+        let reloaded = validate_scheduler(&written.to_string()).expect("v4 round-trip");
+        assert_eq!(reloaded, s, "every v4 field survives a write/read cycle");
+    }
+
+    #[test]
+    fn queue_config_validation_rejects_bad_documents() {
+        let cases: Vec<(String, &str)> = vec![
+            (
+                r#"{"schema_version":4,
+                    "queues":[{"queue_id":"","members":["任务1"]}],
+                    "entries":[]}"#
+                    .to_string(),
+                "queue_id must not be empty",
+            ),
+            (
+                r#"{"schema_version":4,
+                    "queues":[{"queue_id":"q1","members":["任务1"]},
+                              {"queue_id":"q1","members":["任务2"]}],
+                    "entries":[]}"#
+                    .to_string(),
+                "duplicate queue_id",
+            ),
+            (
+                r#"{"schema_version":4,
+                    "queues":[{"queue_id":"q1","members":[]}],
+                    "entries":[]}"#
+                    .to_string(),
+                "members must not be empty",
+            ),
+            (
+                r#"{"schema_version":4,
+                    "queues":[{"queue_id":"q1","members":["../x"]}],
+                    "entries":[]}"#
+                    .to_string(),
+                "members[0]",
+            ),
+            (
+                r#"{"schema_version":4,
+                    "queues":[{"queue_id":"q1","members":["任务1","任务1"]}],
+                    "entries":[]}"#
+                    .to_string(),
+                "duplicate member",
+            ),
+            (
+                r#"{"schema_version":4,
+                    "queues":[{"queue_id":"q1","members":["任务1"],"total_rounds":1000001}],
+                    "entries":[]}"#
+                    .to_string(),
+                "total_rounds must be <=",
+            ),
+            (
+                r#"{"schema_version":4,
+                    "queues":[{"queue_id":"q1","members":["任务1"],"on_failure":"sometimes"}],
+                    "entries":[]}"#
+                    .to_string(),
+                "unknown variant",
+            ),
+            (
+                r#"{"schema_version":4,
+                    "queues":[{"queue_id":"q1","members":["任务1"],"between_ms":600001}],
+                    "entries":[]}"#
+                    .to_string(),
+                "between_ms must be <=",
+            ),
+            (
+                r#"{"schema_version":4,
+                    "queues":[{"queue_id":"a/b","members":["任务1"]}],
+                    "entries":[]}"#
+                    .to_string(),
+                "queue_id",
+            ),
+            (
+                r#"{"schema_version":4,
+                    "entries":[{"entry_id":"e1","task":"q1","kind":"queue"}]}"#
+                    .to_string(),
+                "unknown queue",
+            ),
+            (
+                r#"{"schema_version":4,
+                    "queues":[{"queue_id":"q1","members":["任务1"]}],
+                    "entries":[{"entry_id":"e1","task":"任务1"}]}"#
+                    .to_string(),
+                "rule 4",
+            ),
+            (
+                r#"{"schema_version":4,
+                    "queues":[{"queue_id":"q1","members":["任务1"],"on_failure":"fail_fast"}],
+                    "entries":[{"entry_id":"e1","task":"任务1"}]}"#
+                    .to_string(),
+                "rule 4",
+            ),
+            (
+                r#"{"schema_version":3,
+                    "queues":[{"queue_id":"q1","members":["任务1"]}],
+                    "entries":[]}"#
+                    .to_string(),
+                "must not declare `queues`",
+            ),
+            (
+                r#"{"schema_version":3,
+                    "entries":[{"entry_id":"e1","task":"q1","kind":"queue"}]}"#
+                    .to_string(),
+                "must not declare entries[0].kind",
+            ),
+            (
+                // v3 must not declare the v4-only `kind` key even with its
+                // default value: the key itself asserts a v4 document.
+                r#"{"schema_version":3,
+                    "entries":[{"entry_id":"e1","task":"任务1","kind":"task"}]}"#
+                    .to_string(),
+                "must not declare entries[0].kind",
+            ),
+            (
+                // ... and a null value is still a declaration (raw key check,
+                // not serde's Option handling).
+                r#"{"schema_version":3,
+                    "entries":[{"entry_id":"e1","task":"任务1","kind":null}]}"#
+                    .to_string(),
+                "must not declare entries[0].kind",
+            ),
+            (
+                r#"{"schema_version":4,
+                    "queues":[{"queue_id":"q1","members":["任务1"]}],
+                    "entries":[{"entry_id":"e1","task":"q1","kind":"queue",
+                                "lifecycle":"temp","quota":{"per":"day","times":1}}]}"#
+                    .to_string(),
+                "temp must not declare `quota`",
+            ),
+        ];
+        for (json, needle) in cases {
+            let err = validate_scheduler(&json).expect_err(&json);
+            assert!(
+                err.contains(needle),
+                "`{json}` error should contain `{needle}`, got: {err}"
+            );
+        }
+    }
+
+    // -- queue round pure functions (lazy counting / finished / restart) ------
+
+    #[test]
+    fn queue_round_starts_at_the_head_and_counts_when_a_member_executed() {
+        let s = queue_config(0, &["任务1", "任务2"], "continue");
+        let q = &s.queues[0];
+        let mut st = QueueState::default();
+        assert_eq!(queue_next_member_index(q, &st), 0, "no open round => head");
+        assert_eq!(
+            queue_begin_round(q, &mut st, 1_000).expect("begin"),
+            1,
+            "first round is #1"
+        );
+        let round = st.current_round.as_ref().expect("open round");
+        assert_eq!((round.index, round.member_index, round.started_ms), (1, 0, 1_000));
+
+        queue_record_member(
+            &mut st,
+            "任务1",
+            &QueueMemberOutcome::new(ResultClass::Success, "done", "Done", 1, 10),
+            2_000,
+        )
+        .expect("record");
+        assert_eq!(queue_next_member_index(q, &st), 1, "cursor moves to member 2");
+        let rec = &st.member_results[0];
+        assert_eq!((rec.round, rec.member_index), (1, 0));
+        assert_eq!(rec.task, "任务1");
+        assert_eq!(rec.class, "success");
+        assert_eq!(rec.exit, "done");
+        assert_eq!(rec.finished_ms, 2_000);
+
+        let end = queue_end_round(q, &mut st, true).expect("end");
+        assert_eq!(end.index, 1);
+        assert!(end.counted);
+        assert_eq!((st.rounds_completed, st.empty_rounds), (1, 0));
+        assert!(st.current_round.is_none(), "round closed");
+        assert!(!queue_should_finish(q, &st), "total_rounds=0 = unlimited");
+    }
+
+    #[test]
+    fn queue_empty_rounds_do_not_consume_total_rounds() {
+        let s = queue_config(2, &["任务1"], "continue");
+        let q = &s.queues[0];
+        let mut st = QueueState::default();
+        for k in 0..3u64 {
+            assert_eq!(
+                queue_begin_round(q, &mut st, 1_000 + k as i64).expect("begin"),
+                k + 1
+            );
+            let end = queue_end_round(q, &mut st, false).expect("end");
+            assert!(!end.counted, "a fully skipped round is an empty round");
+            assert_eq!(
+                st.rounds_completed, 0,
+                "empty rounds must not consume total_rounds"
+            );
+            assert_eq!(st.empty_rounds, k + 1);
+        }
+        assert!(!queue_should_finish(q, &st), "quota not burned by empty rounds");
+        // ... and a later round that does execute consumes exactly one.
+        queue_begin_round(q, &mut st, 9_000).expect("begin");
+        let end = queue_end_round(q, &mut st, true).expect("end");
+        assert!(end.counted);
+        assert_eq!((st.rounds_completed, st.empty_rounds), (1, 3));
+    }
+
+    #[test]
+    fn queue_finishes_at_total_rounds_and_finished_is_sticky() {
+        let s = queue_config(2, &["任务1"], "continue");
+        let q = &s.queues[0];
+        let mut st = QueueState::default();
+        for _ in 0..2 {
+            queue_begin_round(q, &mut st, 0).expect("begin");
+            queue_end_round(q, &mut st, true).expect("end");
+        }
+        assert_eq!(st.rounds_completed, 2);
+        assert!(st.finished);
+        assert!(queue_should_finish(q, &st));
+        // Rule 6: no automatic reset — even a later config bump stays finished
+        // until reset-memory / the UI clears it.
+        let mut bumped = q.clone();
+        bumped.total_rounds = 5;
+        assert!(
+            queue_should_finish(&bumped, &st),
+            "finished is sticky until an explicit reset"
+        );
+
+        // total_rounds = 0 means unlimited: never finished spontaneously.
+        let unlimited = queue_config(0, &["任务1"], "continue");
+        let q0 = &unlimited.queues[0];
+        let mut st0 = QueueState::default();
+        for _ in 0..5 {
+            queue_begin_round(q0, &mut st0, 0).expect("begin");
+            queue_end_round(q0, &mut st0, true).expect("end");
+        }
+        assert_eq!(st0.rounds_completed, 5);
+        assert!(!st0.finished);
+        assert!(!queue_should_finish(q0, &st0));
+    }
+
+    #[test]
+    fn queue_state_survives_a_restart_mid_round() {
+        let s = queue_config(0, &["任务1", "任务2", "任务3"], "continue");
+        let q = &s.queues[0];
+        let mut st = QueueState::default();
+        queue_begin_round(q, &mut st, 1_000).expect("begin");
+        queue_record_member(
+            &mut st,
+            "任务1",
+            &QueueMemberOutcome::new(ResultClass::Success, "done", "Done", 1, 5),
+            2_000,
+        )
+        .expect("record");
+
+        // What schedule.rs writes + reads on a restart.
+        let text = serde_json::to_string(&st).expect("serialize");
+        let mut reloaded: QueueState = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(reloaded.current_round.as_ref().unwrap().index, 1);
+        assert_eq!(reloaded.current_round.as_ref().unwrap().member_index, 1);
+        assert_eq!(queue_next_member_index(q, &reloaded), 1, "resume at 任务2");
+        assert_eq!(
+            queue_next_due_ms(q, &reloaded, 3_000),
+            Some(3_000),
+            "an interrupted round is due immediately (rule 8)"
+        );
+
+        // Continue the same round: opening a second round is a misuse, and the
+        // interrupted round counts once, not twice (rule 8).
+        let err = queue_begin_round(q, &mut reloaded, 3_000)
+            .expect_err("an open round must be resumed, not re-opened");
+        assert!(err.contains("already open"), "{err}");
+        queue_record_member(
+            &mut reloaded,
+            "任务2",
+            &QueueMemberOutcome::new(ResultClass::Retryable, "failed", "Failed", 2, 7),
+            4_000,
+        )
+        .expect("record");
+        let end = queue_end_round(q, &mut reloaded, true).expect("end");
+        assert_eq!(end.rounds_completed, 1, "restart must not double-count");
+        assert_eq!(end.index, 1, "the resumed round keeps its ordinal");
+        assert_eq!(reloaded.member_results.len(), 2);
+        assert_eq!(reloaded.member_results[1].round, 1);
+        assert_eq!(reloaded.member_results[1].member_index, 1);
+    }
+
+    #[test]
+    fn queue_fail_fast_policy_and_member_failures_are_recorded() {
+        let s = queue_config(0, &["任务1", "任务2"], "fail_fast");
+        let q = &s.queues[0];
+        assert_eq!(q.on_failure, OnFailure::FailFast);
+        assert_eq!(q.on_failure.as_str(), "fail_fast");
+        assert_eq!(OnFailure::Continue.as_str(), "continue");
+
+        let mut st = QueueState::default();
+        queue_begin_round(q, &mut st, 0).expect("begin");
+        let failed = QueueMemberOutcome::new(ResultClass::Retryable, "failed", "Failed", 2, 100);
+        assert!(failed.failed(), "retryable counts as a failure");
+        assert!(
+            !QueueMemberOutcome::new(ResultClass::Success, "done", "Done", 1, 1).failed()
+        );
+        assert!(
+            !QueueMemberOutcome::new(ResultClass::Resource, "no_target", "Failed", 1, 1).failed(),
+            "resource = 任务正常结束, not a failure"
+        );
+        queue_record_member(&mut st, "任务1", &failed, 10).expect("record");
+        // fail_fast stops the round here; it still counts as one round (rule 7).
+        let end = queue_end_round(q, &mut st, true).expect("end");
+        assert!(end.counted);
+        assert_eq!(st.member_results[0].class, "retryable");
+        assert_eq!(st.member_results[0].attempts, 2);
+        assert_eq!(st.member_results[0].outcome, "Failed");
+    }
+
+    #[test]
+    fn queue_member_results_keep_only_the_newest_and_need_an_open_round() {
+        let s = queue_config(0, &["任务1"], "continue");
+        let q = &s.queues[0];
+        let mut st = QueueState::default();
+        queue_begin_round(q, &mut st, 0).expect("begin");
+        for k in 0..(MAX_QUEUE_MEMBER_RESULTS + 5) {
+            queue_record_member(
+                &mut st,
+                "任务1",
+                &QueueMemberOutcome::new(ResultClass::Success, "done", "Done", 1, 1),
+                k as i64,
+            )
+            .expect("record");
+        }
+        assert_eq!(st.member_results.len(), MAX_QUEUE_MEMBER_RESULTS);
+        assert_eq!(
+            st.member_results.last().unwrap().finished_ms as usize,
+            MAX_QUEUE_MEMBER_RESULTS + 4,
+            "newest results are kept"
+        );
+        let mut empty = QueueState::default();
+        let err = queue_record_member(
+            &mut empty,
+            "任务1",
+            &QueueMemberOutcome::new(ResultClass::Success, "done", "Done", 1, 1),
+            0,
+        )
+        .expect_err("recording outside a round is a misuse");
+        assert!(err.contains("no open round"), "{err}");
+    }
+
+    #[test]
+    fn queue_reset_clears_memory_and_finished() {
+        let s = queue_config(1, &["任务1"], "continue");
+        let q = &s.queues[0];
+        let mut st = QueueState::default();
+        queue_begin_round(q, &mut st, 0).expect("begin");
+        queue_record_member(
+            &mut st,
+            "任务1",
+            &QueueMemberOutcome::new(ResultClass::Success, "done", "Done", 1, 1),
+            1,
+        )
+        .expect("record");
+        queue_end_round(q, &mut st, true).expect("end");
+        assert!(queue_should_finish(q, &st));
+
+        queue_reset(q, &mut st);
+        assert!(!queue_should_finish(q, &st), "reset re-opens the lifecycle");
+        assert_eq!((st.rounds_completed, st.empty_rounds), (0, 0));
+        assert!(st.current_round.is_none());
+        assert!(st.member_results.is_empty());
+        assert_eq!(st.total_rounds, q.total_rounds, "config mirror kept");
+    }
+
+    #[test]
+    fn queue_next_due_honours_finished_and_the_between_pause() {
+        let s = queue_config(1, &["任务1"], "continue");
+        let q = &s.queues[0];
+        let mut st = QueueState::default();
+        queue_begin_round(q, &mut st, 0).expect("begin");
+        queue_record_member(
+            &mut st,
+            "任务1",
+            &QueueMemberOutcome::new(ResultClass::Success, "done", "Done", 1, 1),
+            10_000,
+        )
+        .expect("record");
+        queue_end_round(q, &mut st, true).expect("end");
+        assert_eq!(
+            queue_next_due_ms(q, &st, 20_000),
+            None,
+            "a finished queue is never due again"
+        );
+
+        let open = queue_config(0, &["任务1"], "continue");
+        let q2 = &open.queues[0];
+        let open_st = QueueState {
+            member_results: st.member_results.clone(),
+            ..QueueState::default()
+        };
+        let ready = 10_000 + q2.between_ms as i64;
+        assert_eq!(queue_next_due_ms(q2, &open_st, ready - 1), Some(ready), "pause");
+        assert_eq!(queue_next_due_ms(q2, &open_st, ready), Some(ready));
+        assert_eq!(queue_next_due_ms(q2, &open_st, 60_000), Some(60_000));
+    }
+
+    #[test]
+    fn plan_pass_marks_queue_entries_pending_instead_of_runnable() {
+        let s = queue_config(1, &["任务1"], "continue");
+        let now = at(&s.calendar, 2026, 10, 23, 9, 0);
+        let mut state = SchedulerState::new();
+
+        // P1: a due queue entry is *skipped*, never planned as runnable —
+        // otherwise `runnable`/`stats.ran` would claim work the executor does
+        // not do (queue execution is P2).
+        let plan = plan_pass(&s, &state, now, None);
+        assert!(plan.runnable.is_empty(), "{plan:?}");
+        assert_eq!(plan.skipped.len(), 1, "{plan:?}");
+        assert_eq!(plan.skipped[0].entry_id, "q1e");
+        assert_eq!(plan.skipped[0].reason, QUEUE_EXECUTOR_PENDING);
+        // ... but it is still "due now" for the panel.
+        assert_eq!(entry_next_due_ms(&s, &state, &s.entries[0], now), Some(now));
+
+        // A finished queue switches to the lifecycle skip reason (rule 6).
+        let q = &s.queues[0];
+        let mut st = QueueState::default();
+        queue_begin_round(q, &mut st, now).expect("begin");
+        queue_end_round(q, &mut st, true).expect("end");
+        assert!(!queue_finished(q, &state), "no state yet = not finished");
+        state.queues.insert(q.queue_id.clone(), st);
+        assert!(queue_finished(q, &state));
+
+        let plan = plan_pass(&s, &state, now, None);
+        assert!(plan.runnable.is_empty(), "{plan:?}");
+        assert_eq!(plan.skipped[0].reason, "queue_finished");
+        assert_eq!(
+            entry_next_due_ms(&s, &state, &s.entries[0], now),
+            None,
+            "rule 6: finished queues are never triggered again"
+        );
+    }
+
+    #[test]
+    fn queue_round_state_machine_rejects_misuse() {
+        let s = queue_config(1, &["任务1"], "continue");
+        let q = &s.queues[0];
+        let mut st = QueueState::default();
+
+        // end without begin: loud, and no phantom round is counted (rule 8).
+        let err = queue_end_round(q, &mut st, true).expect_err("end without begin");
+        assert!(err.contains("no open round"), "{err}");
+        assert_eq!((st.rounds_completed, st.empty_rounds), (0, 0));
+
+        // begin while a round is open: loud, and no extra count.
+        assert_eq!(queue_begin_round(q, &mut st, 1).expect("begin"), 1);
+        let err = queue_begin_round(q, &mut st, 2).expect_err("begin while open");
+        assert!(err.contains("already open"), "{err}");
+        assert_eq!(st.rounds_completed, 0, "a failed begin must not count");
+
+        queue_record_member(
+            &mut st,
+            "任务1",
+            &QueueMemberOutcome::new(ResultClass::Success, "done", "Done", 1, 1),
+            3,
+        )
+        .expect("record");
+        let end = queue_end_round(q, &mut st, true).expect("end");
+        assert!(end.counted);
+        assert_eq!(st.rounds_completed, 1);
+
+        // double end: loud, no second count.
+        let err = queue_end_round(q, &mut st, true).expect_err("double end");
+        assert!(err.contains("no open round"), "{err}");
+        assert_eq!(st.rounds_completed, 1, "a failed end must not count");
+
+        // total_rounds reached -> begin refuses until an explicit reset (rule 6).
+        let err = queue_begin_round(q, &mut st, 4).expect_err("begin after finished");
+        assert!(err.contains("already finished"), "{err}");
+        queue_reset(q, &mut st);
+        assert_eq!(
+            queue_begin_round(q, &mut st, 5).expect("begin after reset"),
+            1,
+            "reset re-opens the lifecycle and round ordinals restart"
         );
     }
 }
