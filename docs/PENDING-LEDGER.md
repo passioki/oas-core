@@ -1427,7 +1427,7 @@
 | **U-31a** | 「返回庭院」修改 `not appear('町中')` 后应能运行 | ✅ 已修：`appear()` 现在覆盖所有素材（OCR 资产用 `ocr_read` 判断文本/多行非空；derived 不匹配=false）；新增 `text_visible()` 全屏 det+rec 文字搜索。release dry-run 已实际执行 while/if/click（dry-run 不点击，所以按设计会跑到预算耗尽） | ✅ |
 | **U-31b** | 条件素材输入文字时显示**所有匹配候选项**，不需输入全称 | ✅ 已修：`assetSearch()` 改自定义子串过滤下拉（含 kind 标签、Enter/点击选择），条件编辑器/动作字段共用 | ✅ |
 | **U-32a** | 所有素材增加**位置属性**（可多个，值=帧 id） | ✅ 已实现：`AssetDecl.positions: Vec<u64>`；保存必须至少 1 个位置帧；素材行「帧」可改多帧；帧删除被引用位置阻止；集合保存后自动把所有任务 flow 的成员引用改写为集合 id；集合本身不加位置（用户 10-31） | ✅ |
-| **U-32b** | 批量 **dry-run 测试**通过帧来跑（每个素材按其位置帧验证） | ✅ **已完成（用户实帧日志 30/30 通过）**：`POST /task/assets/batch_test` + UI「批量帧测试」；template 全帧匹配、region 边界、OCR 单行 rec、derived OCR 单识别 ROI det+rec 均已实现。证据为用户 2026-11-01 报告“只看日志功能没问题，显示 30/30 通过”；未独立复跑 | ✅ |
+| **U-32b** | 批量 **dry-run 测试**通过帧来跑（每个素材按其位置帧验证） | ✅ **已完成（用户实帧日志 30/30 通过）**：`POST /task/assets/batch_test` + UI「批量帧测试」；template 全帧匹配、region 边界、OCR 单行 rec、derived OCR 单识别 ROI det+rec 均已实现。证据为用户 2026-11-01 报告“只看日志功能没问题，显示 30/30 通过”；未独立复跑。**2026-11-04 收窄（§E-76）**：批量帧测试仍=所有可见素材 × 各自 `positions`；但「单素材测试」已改为**当前选中帧**（旧“单素材多位置逐个测”被推翻，见 `EDITOR-UX-PLAN.md §16`） | ✅ |
 
 ## 设计草案（等确认后实施）
 
@@ -2685,6 +2685,8 @@ Asset.positions = [frame_id, ...]
 
 ## 已确认
 
+> **2026-11-04 注（§E-76）**：下面第 1 条「实时关闭时单素材多位置全部测试」已被取代——现行口径：**单素材测试 = 当前选中帧，批量帧测试 = 所有位置帧，live 恒优先**；用户要求的第 3 条（实时关用位置帧）同此更正。见 `EDITOR-UX-PLAN.md §16`。
+
 - 实时关闭时，单素材多位置**全部测试**；
 - 帧分类重命名 `to` 为空**禁止**；
 - 操作区域字段采用 **方案 B `action_shape`**；
@@ -2987,7 +2989,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 4. region 采样后被 ±6px jitter 带出 shape。
 5. action_shape 缺越界/零面积校验。
 6. 主 btnOcr/btnLines 不带 live/frame_id。
-7. 单素材多位置只测 positions[0]（用户 18:56“3 都测”）。
+7. 单素材多位置只测 positions[0]（用户 18:56“3 都测”）。（**2026-11-04 注**：旧 P1-7 的“单素材多位置逐个测”已被 §E-76 取代——单素材测试=当前帧，批量=所有位置帧；本条仅保留历史编号。）
 8. SelectionTool 未抽且模式/清除串状态；`boxCenter` 重复声明（f6 已存在）。
 
 ## 已确认修复
@@ -3267,4 +3269,80 @@ GET /task/assets?task= → 34 个素材（全局模式）
 | P5 | ✅ | 实机验收 A–F 全部真机通过（MuMu `127.0.0.1:16384`）：A periodic quota 2/2（2 次 Done ~7.2s，第 3 pass `quota_exhausted`）· B temp 2 pass 各一次 + temp reset 前后 + state 清空 · C 队列 2 轮（`rounds_completed=2`/`finished`/`queue_finished`/第 3 pass `queue_finished` skip）· D 成员执行中强杀 → `scheduler_queue_round_resume` 续跑且 round 只计 1 次 → 3 轮完成 · E `reset-memory` 复位 entries/queues/running/task state + 审计 · F `/runs/scheduler` 9 条真实运行 + `/stats` scheduler 块（files=9/runs=9/failed=0/Done:9/total_ms 65185）；**+ 实机顺手修复 `GET /instance/devices` 自动 connect（`auto_connect`）**，随本轮提交；**代码待 Lead 提交（父 `9134a70`）+ docs**；验收 = **501/0**（oasd 228，serve 68，UI 662/219/0） |
 
 | 状态 | ✅ P0 文档（seq 90）· ✅ P1 schema/纯函数（450/0，oasd 177）· ✅ P2 队列 Round 执行编排（474/0，oasd 201）· ✅ P3 UI 产品化（488/0，oasd 215，UI 453）· ✅ P4 Run 一等实体（501/0，oasd 228，serve 68，UI 662）· ✅ P5 验收收口（实机 A–F；**501/0**，oasd 228，UI **662/219/0**；含 `/instance/devices` adb 自动连接修复）· **调度器产品化 P0–P5 全部完成**（P5 本轮提交，seq 95）· ⚠ 墙钟 24h soak 未完成（只有 96 轮加速 soak 成立）· 无阻塞 |
-|
+
+---
+
+# ★ §E-76 ★★★ [11-04 00:4x] **编辑器帧页：帧搜索 / 帧详情素材库 / 素材测试帧错位修复**
+
+> 触发：用户三项需求（图片帧页搜索、当前帧显示该帧素材、素材测试「框选不更新」）→ 根因诊断 → 修复 → 只读评审（P0=0，P1×2）→ 修复 P1/P2 → 测试 828 / 224 / 0。
+> 改动仅 UI：`apps/oasd/ui/{index.html,app.js,ui_pure_test.js}`（未提交；Lead 本轮先提交代码（父 `5d8eae3`），再提交 docs（HEAD）；hash 以 `git log` 为准）。
+> 现行口径：`docs/EDITOR-UX-PLAN.md §16`；旧 §E-66/U-32b/`AUDIT-SUBPROCESS` P1-7 已标注取代。
+> 证据：`D:\OAS-dev\_verify\ui-frames-20261103\`（`MATCH-BUG-DIAGNOSIS.md` · `FRAMES-UI-REPORT.md` · `MATCH-FIX-REPORT.md` · `REVIEW-UI.md` · `FIX-P1-REPORT.md` · `api-*.json` · `match-23/26.json` · `editor-page.png` · 日志）。
+
+## A. 需求 → 实现
+
+| 需求 | 实现 |
+|---|---|
+| ① 图片帧页搜索 | `#frame-search`（名称 / `#id` / 分类；大小写不敏感 + trim；`12`/`#12` 精确 ID）+ `#frame-search-clear` + `#frame-search-status`；**纯前端过滤**（不改 `/frames` 请求）；先搜索后按分类分组，组空不渲染，全空「没有匹配的帧」；切分类/刷新保留搜索词；纯函数 `frameMatchesQuery`/`filterFramesByQuery`/`frameSearchStatusText` |
+| ② 当前帧素材库 | 点击具体帧（或当前帧刷新）后 `#frame-detail` 增加「该帧素材：N 条」+ `#frame-assets-list`；显示**全局素材库 + 任务素材**中 `positions` 含该帧 id 的全部素材，按 id 去重、来源合并「全局/任务」；行与全局/任务素材库同一套 `asset-row`：抽出共享 `assetRowElement`/`renderAssetRows`，三处真实复用（`renderGlobalAssets`/`renderAssetList`/新 `renderFrameAssets`），行 DOM 仍由 `OASAssetUI.createRow` 生成；帧详情行只保留测试类动作（改/删等危险操作仍只在素材库页）；空态「该帧没有素材记录」 |
+| ③ 素材测试帧错位 | `testFramePlan` 优先级 **live > 显式 frameId > 当前帧 currentFrameId > positions 兜底**；五个测试函数透传 frameId；帧详情行测试传 `f.id`；切帧清旧框；miss 不画框；单行 OCR 不再把存储 ROI 冒充真实检测框 |
+
+## B. 根因（需求③）
+
+- 实时关闭时 `testFrames(it)` **优先返回素材 `positions`（位置帧）**，忽略用户选中/画布帧；而保存素材时 `positions` 必填 ≥1 ⇒ 永远测**静态截图**；模板在截图里仍在保存位置，`/task/asset/match` 在该帧上重新匹配，识别框必然 = 存储 ROI；`live=1` 每次抓当前屏幕所以准确。
+- **后端 `/task/asset/match` 正确**（按 `frame_id` 取帧重新匹配，`x/y` = 本次匹配点），不是返回缓存位置。实测 `悬赏封印_关闭弹窗`：`frame_id=23` → score 1.0 @ (1208,68)；`frame_id=26` → score 0.9933 @ **(1082,75)**。
+- 结论：**UI 请求了错误的帧**，无需改 Rust。
+
+## C. 修复（需求③ + P1/P2）
+
+- `app.js` 新增纯函数 `testFramePlan`；`testFrames(it, frameId)` 变薄封装；`runAssetTest`/`testAssetMatch`/`testAssetClick`/`testAssetDrag`/`testAssetOcr`/`testAssetCollection` 全部透传 frameId；帧详情素材行测试传 `f.id`。
+- `selectFrame` 成功切帧后、`loadFrame()` 前清 `boxes/selectedBox`（放在 loadFrame 前是避免旧框在 `refreshState` 往返期间叠在新帧上）。
+- `matchBoxValid`（x/y≥0 且 w/h>0）：`/task/asset/match` miss（x=y=-1）不再画框。
+- 单行 OCR `recognizedBox:null` + `roiBox`，结果文案「识别区域（存储 ROI，无独立检测框）」；多行/derived det 框不变。
+- **P1（评审唯一代码 P1）**：全局素材库保存/删除/改位置/改名/阈值/ROI/操作区/集合/排序后，`refreshGlobalAssets()` 成功即调 `renderFrameAssetViews()`——用最新缓存本地重绘帧列表 + 当前帧详情/素材列表；0 额外请求、0 递归（不复用 `refreshFrames()` 以免重复 GET `/frames`）。
+- **P2 顺手**：`fallbackFullscreenLines` 透传 frameId；删除当前帧清旧框。
+
+## D. 新口径（必须与旧文档区分）
+
+- **单素材测试 = 当前选中帧**（帧详情行 = 该帧）；**批量帧测试 = 所有位置帧**（`POST /task/assets/batch_test`，覆盖全部可见素材）；**没有「单素材多帧」入口**。
+- **live 恒优先、真实点击强制 live**。
+- **`/ocr` 协议无 bbox ⇒ 单行 OCR 没有真实检测框**（多行/derived 才有 det 框）。
+- `frame_source` 线上仍回 `position:#<id>`（后端把显式 frame_id 当位置帧），UI 标签显示「当前帧 #N」；P2 文案待统一。
+- 旧口径（实时关=位置帧、单素材多位置逐个测）已被本节与 `EDITOR-UX-PLAN §16` 取代。
+
+## E. 测试
+
+- UI pure test：**662 → 744（帧搜索+帧详情）→ 802（测试帧修复）→ 828（P1/P2 修复）= 828 checks / 224 referenced ids / 0 dead ids**；旧 662 无删除；新增 `testFramePlan` 32 条、帧详情四按钮传 `f.id`、静态契约等。
+- `node --check app.js/ui_pure_test.js` exit 0；`git diff --check` clean；task lint **1/0**。
+- **无 Rust 改动 ⇒ `cargo test --workspace` 仍 501/0**（oasd 228；UI 无 Rust 测试）。Lead 日志 `lead-final-workspace.log`（21 binary 求和 501/0）· `lead-final-ui.log`（828/224/0）。
+
+## F. E2E（Lead，2026-11-03 23:5x~11-04 00:3x）
+
+- serve **8787**（真机 `emulator-5554`，实时预览可用）；`GET /` 200、含 5 个新 DOM id；app.js 含 `testFramePlan/matchBoxValid/assetsForFrame/renderFrameAssets/assetRowElement/filterFramesByQuery`。
+- 数据：`/frames` = **30 帧**；`/task/assets?task=`（全局素材库）= **26 素材**（4 模板 / 22 `ocr_line`）；帧素材映射 **#23=3、#26=1、#41=2、#42=2**（与用户数据一致）。
+- `match` API 对比见 §B；headless Edge 截图 `_verify/ui-frames-20261103/editor-page.png` 页面正常渲染。
+- 边界：**无真实浏览器自动化 E2E**（仅 headless 截图 + API/纯测试）。
+
+## G. 提交 / 数据边界
+
+- 待提交 = 3 个 UI 文件 + 本批 docs；**用户数据不提交**：`assets/assets.json`、`frames/frames.json`、`assets/images/a002.png`/`a003.png`/`a004.png`、`frames/frame-41.png`/`frame-42.png`、`scheduler.json`、`scheduler.json.bak`。
+- 代码由 Lead 先提交（父 `5d8eae3`），docs 随后提交（HEAD）；不写死 hash。
+
+## H. 遗留（P2/P3，不阻塞）
+
+- 帧搜索无 Enter/防抖（P3）；分类 + 搜索状态计数跨分类（P2）；纯数字查询既精确又子串（P2）；全局模式下来源可能重复计数（P2）；
+- `frame_source` 文案（`position:#N` vs 「当前帧 #N」）待统一（P2）；切帧只清测试框不清 ROI 覆盖层（P2）；单行 OCR 点测画布无框（P2 沟通项）；`renderAssetRows` 与 `OASAssetUI.renderRows` 仍有 DRY 复制（P2）；
+- 帧详情操作按钮只放测试类（故意）；产品 backlog 不变（`SelectionTool` / collection real=1 真机 E2E / drag Plan B / P2-10 / 版本决策）。
+
+## 台账
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| ① 帧搜索 | ✅ | `#frame-search`/`#frame-search-clear`/`#frame-search-status`；`frameMatchesQuery`/`filterFramesByQuery`/`frameSearchStatusText`；UI 744 checks 起 |
+| ② 帧详情素材库 | ✅ | `#frame-detail` 素材数 + `#frame-assets-list`；`assetsForFrame` 去重/来源合并；`assetRowElement`/`renderAssetRows` 三处复用；P1 刷新已修 |
+| ③ 测试帧错位 | ✅ | `testFramePlan` 优先级；frameId 五函数透传；切帧清框；`matchBoxValid`；单行 OCR 无真实框 |
+| 测试 | ✅ | UI **828/224/0**；workspace **501/0**（oasd 228）；`node --check` exit 0；`git diff --check` clean；lint 1/0 |
+| E2E | ✅（有限） | serve 8787 真机；30 帧/26 素材；#23=3/#26=1/#41=2/#42=2；match API 见 §B；headless 截图 |
+| 文档 | ✅ | `EDITOR-UX-PLAN §16` + 本节 + `AUDIT` P1-7 注 + `RESUME` seq 96 + `RESUME-INDEX` + `START-HERE` + `README` + `SESSION-HANDOFF` |
+
+| 状态 | ✅ 帧搜索 / 帧详情素材 / 测试帧修复完成（UI 828/224/0；workspace 501/0）；代码待 Lead 提交（父 `5d8eae3`），docs 随后提交；⚠ P2/P3 见 §H · 无阻塞 |

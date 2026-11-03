@@ -75,6 +75,7 @@
 - `app.js:1510-1521` 的 `testFrameQuery/testFrameLabel` 只取 `positions[0]`；18:56 用户明确“3 都测”。
 - batch 测全部，但任务页按钮不传 assets 过滤（`serve.rs:2946`）。
 - 证据：C-05。
+- **已被 2026-11-04 修复取代（§E-76）**：现行口径 = **单素材测试用当前选中帧、批量帧测试=所有位置帧**；`testFramePlan` 优先级 live > 显式 frameId > 当前帧 > positions。见 `docs/PENDING-LEDGER.md §E-76` / `docs/EDITOR-UX-PLAN.md §16`。
 
 ### P1-8 SelectionTool 未抽 + 串状态
 - `polygon/polyMode` 与 `actionPoly/actionPolyMode` 两套；`btnClear` 不清 actionPoly/invert/mode（`app.js:4762-4777`）；模式互切不清状态。
@@ -141,6 +142,8 @@
 | boxCenter | ✅ 只保留正确对象版本 |
 | OCR 识别 polygon 保存 | ⚠ 后端仍有限制（非操作区 action_shape；需要单独扩展字段） |
 | `frame_for_test live` 强制重抓 | ⬜ 仍取缓存 live_frame（P2） |
+
+> **2026-11-04 注**：表中 P1-7「多位置循环」口径已被 §E-76 取代——单素材测试 = 当前选中帧，批量帧测试 = 所有位置帧；本节其余内容为 2026-11-01 历史审计，保持原样。
 
 ## 7. 第二轮（2026-11-01 22:45）
 

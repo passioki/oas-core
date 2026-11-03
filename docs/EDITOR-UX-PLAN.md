@@ -159,7 +159,9 @@ invert=true   有效操作区域 = 整个画面 − shape
 - 旧素材没有新字段仍可加载/运行；
 - 反选区域不会因为外接矩形 bbox 而错误缩小。
 
-## 4. 实时帧 / 位置帧测试语义
+## 4. 实时帧 / 位置帧测试语义（2026-11-04 更新）
+
+> **2026-11-04 更新（§E-76）**：本节原「实时关闭 → 位置帧 / 单素材多位置逐个测 / 不用当前选中帧」口径已被**推翻**；现行口径见 §16.4。下面已按新实现改写，旧口径保留为一行历史注记。
 
 ### 目标
 
@@ -167,7 +169,7 @@ invert=true   有效操作区域 = 整个画面 − shape
 
 ```text
 live=1        使用当前实时帧（每次测试前强制抓新帧）
-live=0/false  使用素材位置帧
+live=0/false  使用显式/当前选中帧；单素材测试 = 当前帧，批量 = 素材 positions
 ```
 
 规则：
@@ -175,23 +177,25 @@ live=0/false  使用素材位置帧
 - 实时开启：
   - 识别、点测、拖测、模板匹配、OCR 都使用**实时帧**；
   - 不允许使用旧缓存帧；
-  - 结果记录 `frame_source=live` 与 `frame_seq`。
+  - 结果记录 `frame_source=live` 与 `frame_seq`；
+  - **live 恒优先**（即使同时给了显式帧 id）；真实点击强制 live。
 - 实时关闭：
-  - 素材测试使用**位置帧**；
-  - **已确认：单素材多位置时逐个位置帧测试并分别返回结果**；
-  - 结果记录 `frame_source=position`、`frame_id`、位置序号。
+  - **单素材测试使用当前选中帧**（帧详情素材行使用该行帧 id；无当前帧时才兜底素材 `positions`）；
+  - **批量帧测试使用所有位置帧**（`POST /task/assets/batch_test`，每个素材按其 `positions` 逐帧）；
+  - 结果记录 `frame_source=position`、`frame_id`；后端对显式 `frame_id` 仍回 `position:#<id>`，UI 标签显示「当前帧 #N」。
 - 页面/日志显示明确标签：
 
 ```text
 [实时帧] #live
-[位置帧] #4 我的式神
+[当前帧] #26 悬赏封印_关闭弹窗
+[位置帧] #4 我的式神        （仅批量 / 无当前帧兜底）
 ```
 
 ### 验收
 
 - 实时开/关各跑一次，同一素材结果来源不同；
-- 实时关闭时不再隐式用当前选中帧代替位置帧；
-- 多位置素材能列出每帧通过/失败。
+- 实时关闭时按**当前选中帧**测试（旧「不再隐式用当前选中帧代替位置帧」的验收已作废）；
+- 批量帧测试能列出每个位置帧通过/失败；没有「单素材多帧」入口。
 
 ## 5. 点测/拖测固定点问题
 
@@ -522,7 +526,7 @@ action_source = fixed:
 
 ## 11. 已确认事项
 
-1. 实时关闭时：单素材多位置**全部测试**。
+1. ~~实时关闭时：单素材多位置**全部测试**。~~ **2026-11-04 取代（§16.4）：单素材测试 = 当前选中帧；批量帧测试 = 所有位置帧。**
 2. 帧分类重命名：`to` 为空**禁止**。
 3. 操作区域字段采用 **方案 B：`action_shape`**。
 4. 反选 = **整个屏幕 − 选择区域**，不是外接矩形减去 shape。
@@ -597,7 +601,7 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 
 - 画布 16:9 stage、帧详情侧栏、结果/日志收起（`a804848`/`a2b4b12`）；
 - 随机点测/拖测、`action_shape`+`action_source`、操作区多边形/全屏反选、runtime template/OCR/region 主点击 exact shape；
-- `live=1` 强制抓帧、单素材多位置逐个位置帧测试、素材拖动排序、帧分类重命名；
+- `live=1` 强制抓帧；**单素材测试 = 当前选中帧、批量帧测试 = 所有位置帧**（2026-11-04 更正，旧“单素材多位置逐个测”已推翻，见 §16）、素材拖动排序、帧分类重命名；
 - 点击分布只画点位/热力（无左上指示条）、真实/演练开关（`#btn-test-mode`，默认演练；真实模式 `/input/tap` `/input/swipe` + 二次确认）；
 - ResizeObserver 循环修复（`a2b4b12`）：rAF 合并 + 幂等 fit；用户 00:37 验收“没问题”。
 
@@ -622,4 +626,51 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 | 真实 UI 手势 | 用户 00:37 说“测试过了”；助手独立证据只有真机 `emulator-5554` 的 `POST /input/tap`，不是完整 UI 手势回放。 |
 | drag action shape | 11-02 经两轮评审在 dev `d1a7fcd` 收口（O-2）：`shape` 为**可选**字段，无 shape 旧 flow 不变；plain rect 操作区保留（`from.roi`=shape bbox，仅 polygon/invert 内联 shape）；解析校验齐全；`margin` 仅 rect 非反选生效，polygon/invert 记 `margin=ignored`；detail 记 `from_shape/from_invert/to_shape/to_invert`。 |
 
+## 16. 2026-11-04 帧页三项需求 + 素材测试帧错位修复（现行口径）
 
+> 台账：`PENDING-LEDGER.md §E-76`；证据：`D:\OAS-dev\_verify\ui-frames-20261103\`。本节是 §4 / §11 / §15 相关口径的最新版本；与旧段落冲突时以本节 + 代码为准。
+
+### 16.1 图片帧页搜索（需求①）
+
+- `#frame-search`（名称 / `#id` / 分类；大小写不敏感 + `trim`；`12` / `#12` 精确 ID）+ `#frame-search-clear` + `#frame-search-status`；
+- **纯前端过滤**：只重绘 `framesCache`，不改 `/frames` 请求；先搜索、再按分类分组，空组不渲染，全空显示「没有匹配的帧」；切分类/刷新保留搜索词；
+- 纯函数 `frameMatchesQuery` / `filterFramesByQuery` / `frameSearchStatusText`（`app.js`）。
+
+### 16.2 当前帧素材（需求②）
+
+- 选中具体帧（或刷新当前帧）后，`#frame-detail` 增加「该帧素材：N 条」+ `#frame-assets-list`；
+- 数据 = **全局素材库 + 任务素材**中 `positions` 含该帧 id 的全部素材；按 id 去重、来源合并「全局/任务」；空态「该帧没有素材记录」；
+- 行样式与全局/任务素材库**同一套** `asset-row`：抽出共享 `assetRowElement` / `renderAssetRows`，三处（`renderGlobalAssets` / `renderAssetList` / 新 `renderFrameAssets`）真实复用；行 DOM 仍由 `OASAssetUI.createRow` 生成；
+- 帧详情行只保留测试类动作（改/删/操作区等危险操作仍只在素材库页）；帧详情行测试传该行帧 id（`f.id`）。
+
+### 16.3 素材测试帧错位（需求③，已修复）
+
+**根因**：实时关闭时 `testFrames(it)` 优先返回素材 `positions`（位置帧），忽略用户选中/画布帧；`positions` 保存必填 ≥1 ⇒ 永远测静态截图，模板在截图里仍在保存位置，识别框必然 = 存储 ROI（`live=1` 每次抓当前屏幕所以准确）。**后端 `/task/asset/match` 正确**：按 `frame_id` 取帧重新匹配，`x/y` = 本次匹配点（实测 `悬赏封印_关闭弹窗`：`frame_id=23` → score 1.0 @ (1208,68)；`frame_id=26` → score 0.9933 @ (1082,75)），不是缓存位置。
+
+**修复**：
+
+- 纯函数 `testFramePlan`，优先级 **live > 显式 frameId > 当前帧 currentFrameId > positions 兜底**；`testFrames(it, frameId)` 薄封装；
+- `runAssetTest` 与五个测试函数（match/click/drag/ocr/collection）全部透传 `frameId`；帧详情素材行测试传 `f.id`；
+- `selectFrame` 成功切帧后、`loadFrame()` 前清 `boxes/selectedBox`；
+- `matchBoxValid`（x/y≥0 且 w/h>0）：miss（x=y=-1）不再画框；
+- 单行 OCR：`recognizedBox:null` + `roiBox`，结果文案「识别区域（存储 ROI，无独立检测框）」；**`/ocr` 协议无 bbox ⇒ 单行 OCR 没有真实检测框**（多行/derived 才有 det 框，不变）；
+- P1：全局素材库保存/删除/改位置/改名/阈值/ROI/操作区/集合/排序后，`refreshGlobalAssets()` 成功即调 `renderFrameAssetViews()`（用最新缓存本地重绘帧列表 + 当前帧详情/素材列表；0 额外请求、0 递归，不复用 `refreshFrames()` 以免重复 GET `/frames`）；
+- P2：`fallbackFullscreenLines` 透传 frameId；删除当前帧清旧框。
+
+### 16.4 现行测试帧口径（取代旧 P1-7 / U-32b 的「单素材多位置」）
+
+| 场景 | 用的帧 | 入口 |
+|---|---|---|
+| 单素材测试（匹配/点测/拖测/OCR/集合） | **当前选中帧**（帧详情行 = 该行帧） | 素材行按钮 / 帧详情行 |
+| 批量帧测试 | **所有位置帧** | `POST /task/assets/batch_test`，覆盖全部可见素材 |
+| 实时 = 开 | 实时帧，**恒优先** | 所有测试（真实点击强制 live） |
+
+- **没有「单素材多帧」入口**：旧「单素材多位置逐个测」已推翻；
+- `/ocr` 无 bbox ⇒ 单行 OCR 没有真实检测框（见 16.3）；
+- `frame_source` 线上仍回 `position:#<id>`（后端把显式 `frame_id` 当位置帧），UI 标签显示「当前帧 #N」；两者会同时出现在结果行（P2 文案待统一）。
+
+### 16.5 遗留（P2/P3，不阻塞）
+
+- 帧搜索无 Enter/防抖（P3）；分类 + 搜索状态计数跨分类（P2）；纯数字查询既精确又子串（P2）；全局模式下来源可能重复计数（P2）；
+- `frame_source` 文案（`position:#N` vs「当前帧 #N」）待统一（P2）；切帧只清测试框、不清 ROI 覆盖层（P2）；单行 OCR 点测画布无框（P2 沟通项）；
+- 本轮只有 headless Edge 截图 + API/纯测试，**无真实浏览器自动化 E2E**（P3）。
