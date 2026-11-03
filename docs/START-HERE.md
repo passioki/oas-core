@@ -27,9 +27,9 @@
 
 | 项 | 状态 |
 |---|---|
-| 分支/HEAD | **发布节点时**：`dev` = `main` = `origin/dev` = `origin/main`（已同步 origin，2026-11-02 13:55 实测；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`，其后为 docs 同步回填提交 `11d53a5`）；tag `v0.1.0` → `e8edbef`（**未移动**）；包构建 commit `42567c1`。**当前调度器分支状态见 §0.2 与 `RESUME.md`（seq 94）** |
+| 分支/HEAD | **发布节点时**：`dev` = `main` = `origin/dev` = `origin/main`（已同步 origin，2026-11-02 13:55 实测；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`，其后为 docs 同步回填提交 `11d53a5`）；tag `v0.1.0` → `e8edbef`（**未移动**）；包构建 commit `42567c1`。**当前调度器分支状态见 §0.2 与 `RESUME.md`（seq 95，任务 done）** |
 | 引擎 | `oasd`（serve/run/queue/stats/scheduler）+ 编辑器 UI + 素材库；`oasd --version` = **0.1.0**（dev；旧 v1.x 为历史内部 tag） |
-| 测试 | 上一发布基线：`cargo test --workspace` = **426 passed / 0 failed**（oasd 153 / flow 57 / runtime 125 + 2 integration）；UI = **259 checks / 0 dead ids**；task lint = **1 task / 0 errors**（2026-11-02 13:35 实测；DSL E2E `linted=8 errors=5`；**v0.1.0 发布包仍是 393/203 时构建**）。当前（调度器 P4 已实现，Lead 2026-11-03 03:0x + 12:23 复跑）：`cargo test --workspace` = **501 passed / 0 failed**（21 个 test binary 全 ok；oasd **228**；serve **68**；调度专项 **107** = `scheduler.rs` 49 + `schedule.rs` 58；stats 6）；UI **662 checks / 219 referenced ids / 0 dead ids**；task lint **1/0**；`cargo build -p oasd --features ocr` exit 0（alt target；warning 与基线一致） |
+| 测试 | 上一发布基线：`cargo test --workspace` = **426 passed / 0 failed**（oasd 153 / flow 57 / runtime 125 + 2 integration）；UI = **259 checks / 0 dead ids**；task lint = **1 task / 0 errors**（2026-11-02 13:35 实测；DSL E2E `linted=8 errors=5`；**v0.1.0 发布包仍是 393/203 时构建**）。当前（调度器 P0–P5 全部完成；P5 实机验收后 Lead 2026-11-03 复跑）：`cargo test --workspace` = **501 passed / 0 failed**（21 个 test binary 全 ok；oasd **228**；serve **68**；调度专项 **107** = `scheduler.rs` 49 + `schedule.rs` 58；stats 6）；UI **662 checks / 219 referenced ids / 0 dead ids**；task lint **1/0**；`cargo build -p oasd --features ocr` exit 0（alt target；warning 与基线一致） |
 | 发布 | ✅ **GitHub Release `v0.1.0` 已上传** `https://github.com/passioki/oas-core/releases/tag/v0.1.0`（id `431080249`，draft=false / prerelease=false，即 latest）；本地包 `dist/oasd-v0.1.0-win64.zip`，SHA256 `E6112A33…5F5687`（37,089,992 B）+ 旁文件 `.sha256` |
 | 当前任务 | 只有 `返回庭院`（flow 11 steps / meta 400 B）；`tasks/测试` 已删除并随 `cd0ac34` 提交 |
 | 数据 | 全局素材 **16 条 / 1 图**（15 `ocr_line` + 1 `template`）；帧 **28 个 / `current_id=20` / `next_id=41`**；唯一关系 = `Asset.positions` |
@@ -49,14 +49,14 @@
 > ★ [11-01] 用户已明确要求发布 v1.2.3；main/tag/Release 已推送，作为恢复节点。
 > ★ **历史说明**：以上 V1.0~V1.2.3 是 reset 前的内部交付记录；当前 dev 版本 = `0.1.0`，0.1.0 恢复节点见 `RELEASE-NODE-2026-11-02.md`。
 
-## 0.2 当前开发工作区（2026-11-03 12:3x）
+## 0.2 当前开发工作区（2026-11-03 19:0x）
 
 | 项 | 值 |
 |---|---|
 | 恢复节点 | tag `v0.1.0`（2026-11-02，→ `e8edbef`，**未移动**）；**GitHub Release 已上传**（id `431080249`，latest）；**发布节点时** `dev` = `main` = `origin/dev` = `origin/main`（已同步 origin）；包构建 commit `42567c1`；本地包 SHA256 `E6112A33…5F5687` |
-| 当前分支 | `dev` = 本轮 docs 提交（HEAD，父 = 本轮 P4 代码提交；P4 代码提交的父 `f99c36a`）；hash 以 `git log` 为准；推送状态以 `git status -sb` 实测为准 |
+| 当前分支 | `dev` = 本轮 docs 提交（HEAD，父 = 本轮 P5 代码提交；**P5 代码提交的父 `9134a70`**）；hash 以 `git log` 为准；推送状态以 `git status -sb` 实测为准 |
 | 文档 | 已独立到 `oas-core/docs`；现行 = ENGINE-DESIGN + PENDING-LEDGER + RESUME + ASSET-DATA-MODEL + RELEASE-NODE；历史 7 份在 `docs/archive/` |
-| 当前计划 | **先读 `RESUME.md`（seq 94）+ `SCHEDULER-RUNNER-PLAN.md` + `PENDING-LEDGER §E-75`**：调度器产品化 + 队列 Round 语义（单活动实例）——**P0 ✅ 文档 / P1 ✅ 已提交（450/0，oasd 177）/ P2 ✅ 已提交（474/0，oasd 201）/ P3 ✅ 已提交（488/0，oasd 215，UI 453）/ P4 ✅ 本轮提交（全量回归 501/0，oasd 228，serve 68，UI 662）/ P5 ⬜（实机验收，需 MuMu）**；上一节点 0.1.0 Release 与 O-1/O-2 收口见 §E-74（426 tests / UI 259 / lint 1-0，**不在 v0.1.0 包内**）；剩 `SelectionTool` 与真机 collection E2E |
+| 当前计划 | **先读 `RESUME.md`（seq 95，任务 done）+ `SCHEDULER-RUNNER-PLAN.md` + `PENDING-LEDGER §E-75`**：调度器产品化 + 队列 Round 语义（单活动实例）——**P0–P5 全部 ✅ 完成**（P0 文档 / P1 450/0 / P2 474/0 / P3 488/0 + UI 453 / P4 501/0 + serve 68 + UI 662 / **P5 实机验收 A–F 全部真机通过 + `/instance/devices` adb 自动连接修复**）；上一节点 0.1.0 Release 与 O-1/O-2 收口见 §E-74（426 tests / UI 259 / lint 1-0，**不在 v0.1.0 包内**）；下一步 = 产品 backlog（`SelectionTool`、collection real=1 真机 E2E、drag Plan B、P2-10、运行记录/口径收口、版本决策） |
 | 截图 | 两阶段：点击立即抓取 → 弹窗预览 → 名称/分类 → 保存；无当前帧跳转 |
 | Enter | 输入框 Enter = 确认输入；弹窗 Enter = 保存截图 |
 | 实时操作 | 实时开启时画布单击/拖拽 = tap/swipe；实时暂停 = ROI 编辑 |
@@ -69,7 +69,7 @@
 | 信息架构 | **设计：素材页 = 唯一全局素材库 `assets/`；任务页 = 任务 flow 引用子集**。当前 `assets/` = 16 条 / 1 图；34 是 `§E-70` 已推翻的错误恢复；archive 2827 未导入（用户裁定素材可重建） |
 | 全局素材 | **当前 16 条 / 1 图**（15 `ocr_line` + 1 `template`；全部 `action_source=fixed`，有 `action_shape`/`positions`）；权威迁移归档 `archive/migration-20261101` = 2827 素材 / 2099 图 / 57 个任务目录，未导入当前 dev |
 | 帧安全 | 清空列表必须确认；清空前自动备份到 `frames/.backup/clear-<时间>/`（含 frames.json + PNG） |
-| 待办 | 🔄 **调度器产品化（当前主线）**：P0 ✅ 文档 → **P1 ✅ 已提交（450/0，oasd 177）** → **P2 ✅ 已提交（474/0，oasd 201）** → **P3 ✅ 已提交（488/0，oasd 215，UI 453；config API + 任务库/调度页编辑）** → **P4 ✅ 本轮提交（501/0，oasd 228，serve 68，UI 662；Run 实体 + `/runs/scheduler*` + 写失败可观测 + 调度页运行记录）** → **P5 验收（实机，需 MuMu）**，计划 `SCHEDULER-RUNNER-PLAN.md`；P4 遗留（事件 attempt/entry 粒度、stats attempt 级 vs report entry 级、UI 状态卡失败含 resource/blocked、点击聚合未接、无分页/保留策略、run_id 无跨进程锁、detail/list 契约差异、`--status` 无 run_file_errors、runs-dir/CWD 须一致、无真机 E2E）见 `RESUME §5`；P3 遗留（GET 顶层 schema_version 恒 4/UI 强制 4、高级 JSON 无 GET-first 守卫、坏 config 时删除守卫无法判定、`.bak` 单份、同任务多条 task entry、`utc_offset_min` 缺失按 480）仍在；⚠ 墙钟 24h soak 未跑完（只有 96 轮加速 soak 成立）。其余：`SelectionTool` 抽取、真机 collection `real=1` E2E、混版本 invert 提醒、P2-10（保存 flow 校验）、Plan B（drag 运行时跟随识别）、活动页参考帧；帧-素材关系继续扩展；不引入 interface/ui-map |
+| 待办 | ✅ **调度器产品化已完成（P0–P5，任务 done）**：实机 A–F（periodic quota 2/2、temp 每轮、队列 2 轮、崩溃续跑、reset-memory、UI/API 可见性）+ `GET /instance/devices` adb 自动连接修复；测试 501/0（oasd 228，serve 68，UI 662/219/0）。**新主线 = 产品 backlog**：① `SelectionTool` 抽取；② collection `real=1` 真机 E2E（设备现已可用）；③ drag Plan B；④ P2-10（保存 flow 校验）；⑤ 运行记录收口（点击聚合关联、分页/保留、run_id 跨进程唯一、detail 契约、`--status` 的 run_file_errors）；⑥ 口径统一（事件 attempt/entry、stats attempt 级 vs report entry 级、UI 失败口径）；⑦ P3 遗留（schema_version 恒 4、高级 JSON 无 GET-first、坏 config 删除守卫、`.bak` 单份、同任务多 entry、`utc_offset_min` 按 480）；⑧ P2 遗留（补记 cycle、session report、200 环、成员级 exactly-once）；⑨ 版本决策（是否升 0.2.0）。⚠ 墙钟 24h soak 未跑完（只有 96 轮加速 soak 成立）。其余：混版本 invert 提醒、活动页参考帧；帧-素材关系继续扩展；不引入 interface/ui-map |
 | 关系证据 | `relations/observations.jsonl` append-only；`relations/annotations.json` 人工标注；图片页「录制关系」「标注关系」写入 |
 
 ---
@@ -104,7 +104,7 @@ cd D:\OAS-dev\oas-core
 git log -1 --format="%h %ci %s"
 git status --porcelain
 
-REM ② 引擎测试（上一发布基线 426 passed / 0 failed；当前 501/0、oasd 228；P1 445 + 评审修复 5；P2 464 + 评审修复 10；P3 485 + 评审修复 3；P4 499 + 评审修复 2）
+REM ② 引擎测试（上一发布基线 426 passed / 0 failed；当前 501/0、oasd 228；P1 445 + 评审修复 5；P2 464 + 评审修复 10；P3 485 + 评审修复 3；P4 499 + 评审修复 2；P5 无新增测试，501 不变）
 cargo test --workspace
 
 REM ③ OCR 构建（serve/run 需要；不带 feature 会报 "this build has no OCR"）
@@ -192,7 +192,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 
 【2. 代码与我核实的台账】
    oas-core commit = <hash> · 分支 = dev · worktree 干净 = 是/否
-   cargo test --workspace = __ passed / __ failed（当前基线 = 426）
+   cargo test --workspace = __ passed / __ failed（当前基线 = 501）
    serve 状态：/state = <captured/device/ocr/det>
    oas-core docs commit = <hash> · dev 是否已推 = 是/否
 
@@ -231,11 +231,11 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 | **E7** | 旧仓已冻结 | 旧仓 `backend/frontend` 只读；不要在旧仓上开发/提交 |
 | **E8** | 新引擎的验收看 ENGINE §22 判据 | 不要拿旧仓 pytest 基线当引擎验收 |
 | **E9** | headless Edge 截图做 UI 验收 | `msedge --headless=new --screenshot=...`；需要时加 `--user-data-dir` |
-| **E10** | 测试数会随提交增长 | 当前 **501**（oasd 228；serve 68；UI **662**）；上一发布基线 426；以 `cargo test --workspace` 实测为准 |
+| **E10** | 测试数会随提交增长 | 当前 **501**（oasd 228；serve 68；UI **662**；P5 未新增测试）；上一发布基线 426；以 `cargo test --workspace` 实测为准 |
 | **E11** | 本会话 PowerShell 实为 **5.1**，执行策略 Undefined | 直接 `.\scripts\dev-serve.ps1` 报 UnauthorizedAccess ⇒ 用 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-serve.ps1 -NoOpen` |
 | **E12** | `node` 不在 PATH | UI 测试用 bundled node：`C:\Users\passioki\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe`（v24.21.0）|
 | **E13** | PS 5.1 重定向日志是 **UTF-16LE** | 读日志用 `-Encoding Unicode` 或先转 UTF-8，否则中文/换行乱码 |
-| **E14** | `adb devices` 为空（MuMu `emulator-5554` 未运行） | 真机任务（`/input/tap`、collection `real=1` E2E）需先启动模拟器 |
+| **E14** | 实机 adb 为空 → 先确认 MuMu 运行中（serial **`127.0.0.1:16384`**，不是 `emulator-5554`） | 真机任务（`/input/tap`、collection `real=1` E2E）需先启动模拟器；**P5 起 `GET /instance/devices` 在列表为空时会自动 `adb connect` 16384**（配置 serial → `device.reconnect_endpoints` → 默认），响应带 `auto_connect`；仍为空再查 adb server / MuMu 网络设置 |
 
 ---
 
@@ -275,7 +275,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 ```bat
 REM ---------- 构建/测试 ----------
 cd D:\OAS-dev\oas-core
-cargo test --workspace   REM 上一发布基线 426；当前 501/0（oasd 228；P1 445 + 5；P2 464 + 10；P3 485 + 3；P4 499 + 2）
+cargo test --workspace   REM 上一发布基线 426；当前 501/0（oasd 228；P1 445 + 5；P2 464 + 10；P3 485 + 3；P4 499 + 2；P5 无新增）
 cargo build -p oasd --features ocr              REM serve/run 的 OCR 构建
 
 REM ---------- 编辑器 ----------

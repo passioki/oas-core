@@ -1,6 +1,6 @@
 # 调度器产品化 + 队列轮次（Round）语义与计划（2026-11-02 · 单活动实例阶段）
 
-> 状态：**设计裁决已由用户批准（2026-11-02 22:5x）**；P0 文档已入库（`ENGINE-DESIGN §22.34.7` + `PENDING-LEDGER §E-75`）；P1 ✅ 已提交（450/0，oasd 177）；P2 ✅ 已提交（474/0，oasd 201；调度专项 101）；P3 ✅ 已提交（488/0，oasd 215；UI 453 checks / 205 ids / 0 dead）；**P4 ✅ 本轮提交（全量回归 501/0，oasd 228；UI 662 checks / 219 ids / 0 dead；serve 68、schedule 58）**；**P5 ⬜ 未开始（实机验收，需 MuMu）**。本阶段约束 = **单活动实例、单机、无跨机任务分发**。本轮代码与 docs 提交以 HEAD 相对表述（P4 代码父 `f99c36a`）；hash 以 `git log` 为准。
+> 状态：**设计裁决已由用户批准（2026-11-02 22:5x）**；P0 文档已入库（`ENGINE-DESIGN §22.34.7` + `PENDING-LEDGER §E-75`）；P1 ✅ 已提交（450/0，oasd 177）；P2 ✅ 已提交（474/0，oasd 201；调度专项 101）；P3 ✅ 已提交（488/0，oasd 215；UI 453 checks / 205 ids / 0 dead）；P4 ✅ 已提交（全量回归 501/0，oasd 228；UI 662 checks / 219 ids / 0 dead；serve 68、schedule 58）；**P5 ✅ 本轮提交（实机验收 A–F 全部真机通过；全量回归 501/0，oasd 228；UI 662/219/0；含 `GET /instance/devices` adb 自动连接修复）**。**P0–P5 全部完成**，本阶段约束 = **单活动实例、单机、无跨机任务分发**。本轮代码（`apps/oasd/src/serve.rs` adb 自动连接）提交的父 = P4 docs 提交 `9134a70`，docs 提交 = 其后 HEAD；hash 以 `git log` 为准。
 > 事实依据：`_verify/scheduler-plan-20261102/FACTS.md`（逐项 file:line）· `_verify/scheduler-audit-20261102/SCHEDULER-AUDIT.md`（能力矩阵 42 项 ✅28/🟡7/⬜7）· `_verify/scheduler-audit-20261102/ORCH8-RESEARCH.md`（外接对比参考）。
 > 相关文档：`ENGINE-DESIGN.md §22.34/§22.35` · `PENDING-LEDGER.md §E-73/§E-74` · `RESUME.md`。
 
@@ -78,7 +78,7 @@
 - **report/status**：`SchedulerReport.queues[]`（additive，schema 4）＋ status entry 的 `queue` 进度对象（rounds/empty/finished/current/last_round）；旧键保留。
 - **最终测试（Lead 2026-11-03 01:3x 权威）**：`cargo test --workspace` = **474 passed / 0 failed**（21 个 test binary 全 ok）、`cargo test -p oasd` = **201**；调度专项 **101**（`scheduler.rs` 49 + `schedule.rs` 52，P2 实现 91 → 评审修复 +10）；UI 259 checks / 0 dead ids；task lint 1/0；OCR build（alt target）exit 0；warning 基线无新增。
 - **E2E 冒烟（子进程 + Lead 独立复核）**：replay 任务 2 成员串行跑 2 轮 → rounds=2、finished=true、`queue_finished` 事件、report/status 形状正确；崩溃恢复（预置 open round `member_index=1`）只跑剩余成员、rounds 只计 1；pending 补记只一次；重复 queue entry exit 2；`queue_between` 与 `next_due` 一致。
-- **遗留**（P3 起处理）：① 补记使用恢复时 cycle（跨逻辑日会把该轮记到当天）；② 补记不计本次 session `report.runs`；③ `member_results` 200 环假设本轮成员 ≤200；④ end→record 已由 pending 状态机修复，但**成员执行中外部杀进程**仍按 checkpoint/resume 重跑（成员级 exactly-once 副作用不保证，属轮级承诺之外）；⑤ P3 已处理：serve 按 kind 过滤、`prune_scheduler_task` kind-aware + 队列成员守卫、UI 编辑 entries/队列/状态卡（见 P3 段）；**P4 ✅ 已处理：Run 一等实体（见 P4 段）**；P5：实机验收（需 MuMu）。可选的 serve/scheduler 共享设备互斥文件锁本轮未做（仍为文字规则）。
+- **遗留**（P3 起处理）：① 补记使用恢复时 cycle（跨逻辑日会把该轮记到当天）；② 补记不计本次 session `report.runs`；③ `member_results` 200 环假设本轮成员 ≤200；④ end→record 已由 pending 状态机修复，但**成员执行中外部杀进程**仍按 checkpoint/resume 重跑（成员级 exactly-once 副作用不保证，属轮级承诺之外）；⑤ P3 已处理：serve 按 kind 过滤、`prune_scheduler_task` kind-aware + 队列成员守卫、UI 编辑 entries/队列/状态卡（见 P3 段）；**P4 ✅ 已处理：Run 一等实体（见 P4 段）**；**P5 ✅ 已处理：实机验收 A–F（见 P5 段）**。可选的 serve/scheduler 共享设备互斥文件锁仍未做（仍为文字规则）；①~④ 转产品 backlog。
 
 
 ### P3 · UI 产品化（M–L，前端为主，✅ 本轮提交）
@@ -93,7 +93,7 @@
 - **默认值/兼容**：新建空配置默认 `mode:"loop"`、`loop_interval_s:60`（其余安全默认）；工作台调度面板保持只读 + 「打开调度页 →」；纯函数 **75** 个（`PURE_FUNCTIONS`），UI 检查 **453**。
 - **最终测试（Lead 2026-11-03 02:2x 权威）**：`cargo test --workspace` = **488 passed / 0 failed**（21 binaries）、`cargo test -p oasd` = **215**、serve 测试 **64**（P3A 50→61，F3P +3）；调度专项 **101** 不变；UI pure test **453 checks / 205 referenced ids / 0 dead ids**；task lint **1/0**；OCR build（alt target）exit 0、warning 与基线一致；`node --check app.js/ui_pure_test.js` exit 0。
 - **E2E 复核（Lead）**：alt 二进制 + 真实 serve 8790 + 绝对路径 live 配置——GET 缺失 → POST v4（1017B）→ GET 读回（queue entry + 中文成员名完好）→ 非法 400 且文件不变 → 锁模拟 409 `scheduler is running` → status `entries=qe:queue`、plan runnable、`task_choices=返回庭院` → `GET /` 含新 DOM id、app.js 含 `/scheduler/config`；仓库根 `scheduler.json` 未被动。
-- **遗留**：① GET 顶层 `schema_version` 恒 4、UI 强制 4（未来 >4 文档保存会被降级，P2-1）；② 高级 JSON 保存路径没有 GET-first 快照守卫（P2-6；仅工具栏按钮有）；③ 坏 `scheduler.json` 时删除前的队列成员守卫无法判定（prune 会 500 明确失败）；④ `.bak` 单份（覆盖式）；无真实浏览器 E2E（仅 API E2E + UI pure tests）；状态读取失败路径仅单测覆盖；⑤ 同任务多条 task entry 仍允许（既定语义；一个 pass 可能跑同一任务两次，UI/文档需提示，后续再议）；⑥ `utc_offset_min` 缺失时 POST 校验按 480，可能覆盖 `--tz-offset-min`（P2-12）；⑦ 无 CSS 新 class（沿用现有样式）；`scheduleTasksCache` 可能过期（P2）；⑧ 无浏览器/真机 E2E；**P4 已完成（见 P4 段）**、P5 实机验收仍待做。
+- **遗留**：① GET 顶层 `schema_version` 恒 4、UI 强制 4（未来 >4 文档保存会被降级，P2-1）；② 高级 JSON 保存路径没有 GET-first 快照守卫（P2-6；仅工具栏按钮有）；③ 坏 `scheduler.json` 时删除前的队列成员守卫无法判定（prune 会 500 明确失败）；④ `.bak` 单份（覆盖式）；无真实浏览器 E2E（仅 API E2E + UI pure tests）；状态读取失败路径仅单测覆盖；⑤ 同任务多条 task entry 仍允许（既定语义；一个 pass 可能跑同一任务两次，UI/文档需提示，后续再议）；⑥ `utc_offset_min` 缺失时 POST 校验按 480，可能覆盖 `--tz-offset-min`（P2-12）；⑦ 无 CSS 新 class（沿用现有样式）；`scheduleTasksCache` 可能过期（P2）；⑧ 无独立浏览器 E2E；**P4 ✅（见 P4 段）、P5 ✅ 实机验收 A–F（见 P5 段）**，以上 ①~⑦ 转产品 backlog。
 
 ### P4 · Run 一等实体 + 可见性（M，✅ 本轮提交）
 
@@ -102,17 +102,26 @@
 - **事件增量（additive）**：`run_finished` 补 `exit_code`、`run_file`（相对 `runs_dir` 的 `scheduler/<id>.json`；语义 = 该 entry/round 的**最后一次 attempt**，空轮/未执行 = `null`）、`run_file_error`（写失败明细，健康 = `null`）；旧字段全保留。**实体是 attempt 级、事件是条目/轮级**（粒度差异见遗留 1）。
 - **写失败可观测（非致命）**：写 run 文件失败不中断执行；但不再静默——`alert` 事件 `kind=run_file_write` + ALERT 行 + `SchedulerReport.run_file_errors: u32`（additive；`scheduler_stop`/`scheduler_summary` 输出 `run_file_errors=N`，`--report` 含该字段）。`--status` 未加该计数（会话级、不持久化）；写失败也**不改变退出码**。
 - **API（新增路由，旧 `/runs` 未改）**：`GET /runs/scheduler?limit=200&task=&outcome=` → `{ok,dir,count,runs[]}`（`started_ms` 倒序；limit 默认 200/上限 2000；task/outcome 精确匹配；坏文件跳过；缺目录 200 空列表）；`GET /runs/scheduler/run?run_id=` → `{ok,run}`（完整对象；缺参/非法 id 400、未知 404、读失败/坏 JSON 500；`run_id` 白名单 `[A-Za-z0-9._-]`，拒绝 `.`/`..`/斜杠/盘符/NUL）。**旧 `/runs`、`/runs/clicks`、`/runs/aggregate`、`/runs/delete` 行为未变**。
-- **契约与计划偏差（必须记）**：计划原写"`GET /runs` 扩展 + 点击聚合关联"；实际为**新增 `/runs/scheduler*` 路由**（旧 `/runs` 不改以保兼容），run 实体记录 `clicks` 计数与 `clicks_file` 路径，但**未接"点击聚合关联" UI/聚合**（留 P5/后续，见遗留 2）。
+- **契约与计划偏差（必须记）**：计划原写"`GET /runs` 扩展 + 点击聚合关联"；实际为**新增 `/runs/scheduler*` 路由**（旧 `/runs` 不改以保兼容），run 实体记录 `clicks` 计数与 `clicks_file` 路径，但**未接"点击聚合关联" UI/聚合**（未做，转产品 backlog，见遗留 2）。
 - **stats（`stats.rs`）**：`Summary.scheduler` additive `{files,runs,failed,fatal,total_clicks,total_ms,by_outcome}`；**attempt 级口径**——`failed=class retryable`、`fatal=class fatal`，`resource/blocked` 不计失败；`files` 含坏文件、`runs` 只计合法实体；坏文件进 `alerts`。与 `SchedulerReport` 的 **entry/round 级** `failures/fatals` 粒度不同：`retryable→success` 的条目会 `stats.failed=1` 而 `report.failures=0`（必须写清）。
 - **UI（调度页「运行记录」区）**：刷新/任务+结果+limit 筛选/清除/状态行/列表（14 个新 DOM id，`page-sched-runs-*`）；详情对话框再 `GET /runs/scheduler/run` 取单条，展示全字段 + 完整 JSON + 错误全文；行点击/Enter/Space 打开；状态卡显示最近运行/失败数；任务库/entry/queue 提供快捷筛选；空/失败态明确（「运行记录读取失败：<err>」+ WARN）。旧 `/runs` 点击分布页未改；纯函数 **111**（P3 75 + P4 36）；新代码全部 `textContent`（无 `innerHTML`/`eval`）。
 - **最终测试（Lead 2026-11-03 03:0x 权威）**：`cargo test --workspace` = **501 passed / 0 failed**（21 binaries）、`cargo test -p oasd` = **228**；**既有调度专项 101 不变**（`scheduler.rs` 49 + `schedule.rs` P3 52），P4 新增 6 条（P4A +5、F4P +1）→ `schedule.rs` **58**、合计 **107**；serve 测试 **64 → 68**（P4A +4）；stats 测试 **3 → 6**（P4A +2、F4P +1）；UI pure test **662 checks / 219 referenced ids / 0 dead ids**（P3 453/205 → P4 659/219 → F4P 662/219）；task lint **1/0**；OCR build（alt target）exit 0、warning 与基线一致；`node --check app.js/ui_pure_test.js` exit 0。
 - **E2E（Lead，真实 serve + alt 二进制）**：`--runs-dir` 指向 e2e 临时目录，queue 2 轮跑出 4 个成员 attempt 实体（task entry 实体由 `schedule.rs` P4 测试覆盖）→ `GET /runs/scheduler` 列表（含中文 task、倒序、limit/task/outcome 筛选）→ `GET /runs/scheduler/run` 完整对象 → 旧 `/runs`、`/runs/clicks`、`/runs/aggregate` 仍 200 → `oasd stats` 汇总含 scheduler 块 → `GET /` 含新 DOM id；证据 `e2e/`（`api-list.json`/`api-detail.json`/`api-stats.json`/`events.jsonl`/`page.html`）。
-- **遗留（P5 起，不阻塞本轮提交）**：① 事件 `run_file` 与实体 attempt 级粒度差异；stats attempt 级 vs `SchedulerReport` entry 级；UI 状态卡"失败"把 resource/blocked 也算失败（P2 口径，待统一）。② 未接点击聚合关联；无分页/保留策略（每次扫描目录全量，attempt 无界增长）。③ `run_id` 唯一性依赖单活动实例 + 磁盘检查（无跨进程锁）；`<id>.json.tmp` 写失败残留不清理（列表忽略）。④ detail 只要求合法 JSON，非实体 JSON 也能读（列表会跳过，契约不一致）；`limit=0` 被 clamp 成 1；list 500 与 detail 500 错误体形状不同。⑤ `--status` 无 `run_file_errors`；写失败不改退出码；queue 写失败未单独测试（共用路径）。⑥ 运维：CLI 与 serve 的 `--runs-dir`/CWD 必须一致；`oasd stats` 遇坏 run 文件会因 alerts 非空 exit 1。⑦ 无真实浏览器/真机 E2E（仅 HTTP API E2E + UI pure tests）；REST 无保留/清理 API。⑧ P5 待做：实机验收（需 MuMu）、点击聚合关联、口径统一、P4 收口项。
+- **遗留（P5 起，不阻塞本轮提交）**：① 事件 `run_file` 与实体 attempt 级粒度差异；stats attempt 级 vs `SchedulerReport` entry 级；UI 状态卡"失败"把 resource/blocked 也算失败（P2 口径，待统一）。② 未接点击聚合关联；无分页/保留策略（每次扫描目录全量，attempt 无界增长）。③ `run_id` 唯一性依赖单活动实例 + 磁盘检查（无跨进程锁）；`<id>.json.tmp` 写失败残留不清理（列表忽略）。④ detail 只要求合法 JSON，非实体 JSON 也能读（列表会跳过，契约不一致）；`limit=0` 被 clamp 成 1；list 500 与 detail 500 错误体形状不同。⑤ `--status` 无 `run_file_errors`；写失败不改退出码；queue 写失败未单独测试（共用路径）。⑥ 运维：CLI 与 serve 的 `--runs-dir`/CWD 必须一致；`oasd stats` 遇坏 run 文件会因 alerts 非空 exit 1。⑦ 无独立浏览器 E2E（HTTP API E2E + UI pure tests）；REST 无保留/清理 API。⑧ **P5 ✅ 已完成实机验收 A–F（见 P5 段）；①~⑦ 未做，转产品 backlog**（不再算 P5 阻塞）。
 
-### P5 · 验收与收口（S，⬜ 未开始）
-- 单元/集成：`cargo test --workspace` 全绿（含新增 round 语义测试；P1 实现 445 → 评审修复后 **450/0**、oasd 177；P2 后 **474/0**、oasd **201**；P3 后 **488/0**、oasd **215**、UI **453**；**P4 后 501/0、oasd 228、UI 662、serve 68、调度专项 107**）；replay 集成（队列 2 轮）；UI pure test。
-- 实机（需启动 MuMu）：单任务 periodic quota 2/2 + temp 每轮 + **队列 2 轮** + 重启恢复；`reset-memory` 后复位验证。
-- 文档：RELEASE-NODE/RESUME/README/PENDING 更新；版本是否升 0.2.0 由用户定。
+### P5 · 验收与收口（S，✅ 本轮提交）
+
+- **单元/集成（提交前 Lead 复跑，权威）**：`cargo test --workspace` = **501 passed / 0 failed**（21 个 test binary 全 ok；P1 450 → P2 474 → P3 488 → P4 501，P5 未新增测试）；`cargo test -p oasd` = **228**；serve **68** / `schedule.rs` **58** / `scheduler.rs` **49** / `stats.rs` **6**（调度专项 **107**）；UI pure test **662 checks / 219 referenced ids / 0 dead ids**；task lint **1/0**；`cargo build -p oasd --features ocr` exit 0。
+- **实机环境**：MuMu 模拟器 **`127.0.0.1:16384`**（Android 12 / V2284A / 720x1280；Onmyoji `com.netease.onmyoji` 前台庭院）；`adb devices` = device。
+- **A periodic quota（真机）**：单任务 `返回庭院` 每日 quota **2/2** → 第 1、2 次真实运行均 `Done`（~**7.2s**，OCR 识别「已在庭院」，quota used=2）；第 3 pass `scheduler_skip reason=quota_exhausted`（未运行）。
+- **B temp（真机）**：temp 条目连续 **2 pass 各跑一次**（每次都有 `scheduler_temp_reset_before`/`scheduler_temp_reset_after`），runs=2 / successes=2；运行后 `tasks/返回庭院/state/` 为空（重置生效）。
+- **C 队列 2 轮（真机）**：queue `q1`（1 成员）2 轮均成功 → `rounds_completed=2`、`finished=true`、`queue_finished` 事件；第 3 pass `scheduler_skip reason=queue_finished`；run 实体 `kind=queue_member`（`queue_id=q1` / `round` / `member_index` / `exit_code=0`）落盘。
+- **D 重启恢复（真机崩溃续跑）**：循环模式下在成员执行中**强杀守护进程**（state 保留 `running` + `current_round{index:1,member_index:0}`）；重启后日志 `scheduler_queue_round_resume` 从 `member_index=0` 续跑、round **只计 1 次**；随后 round 2/3 完成 → `rounds_completed=3 finished=true`。
+- **E reset-memory（真机）**：`reset_memory_entries=1`、`reset_memory_queues=q1`；state 的 `entries`/`queues` 清空、`running` 清空、`tasks/返回庭院/state/` 清空，审计事件生成；periodic 条目同样复位。
+- **F UI/API 可见性（真机 + serve 8787）**：`GET /runs/scheduler` 返回 **9 条真实运行**（queue_member + task，全部 success/`Done`、`exit_code=0`、约 7.1–7.3s）；`/stats` scheduler 块 = `files=9 runs=9 failed=0 fatal=0 by_outcome{Done:9} total_ms≈65185`；调度页「运行记录」可查（API 证据）。
+- **实机顺手修复（随本轮提交）**：`serve.rs` 的 `GET /instance/devices` 原来只列 `adb devices`；MuMu 重启后 adb TCP 设备未 attach，UI「检测实例」显示“没有检测到 adb 实例”。现改为：**列表为空时自动尝试 connect**（配置 serial → live config `device.reconnect_endpoints` → 默认 `127.0.0.1:16384`），再重列，响应新增 **`auto_connect`** 字段。实测 `adb disconnect` 后调检测 → 自动 `connect 127.0.0.1:16384` 并返回 device（`auto_connect:["127.0.0.1:16384"]`）。提交信息 `fix(serve): auto-connect adb endpoint on instance detection`。
+- **遗留清零/转移**：原 P5 清单中「实机验收」全部完成；**未做的工程项转产品 backlog**（不再算 P5 阻塞）：点击聚合关联（run 的 `clicks`/`clicks_file` 未接点击分布/聚合）、事件 attempt/entry 口径统一、分页/保留策略、`run_id` 跨进程唯一、detail 实体校验、`--status` 的 `run_file_errors`。P2/P3/P4 其余遗留保持原状（见各段）；P5 未新增代码债。下一阶段 backlog 另含 `SelectionTool` 抽取、collection `real=1` 真机 E2E、drag Plan B、P2-10、版本决策（是否升 0.2.0，由用户定，本轮未升）。
+- **文档**：`RESUME`（seq 95）/`RESUME-INDEX`/`START-HERE`/`README`/`SESSION-HANDOFF`/`PENDING-LEDGER §E-75 §C6`/`SCHEDULER-RUNNER-PLAN`/`ENGINE-DESIGN §22.34.7` 同步；`RELEASE-NODE-2026-11-02.md` 是 **v0.1.0 发布节点**记录，保持原状（不在 P5 文档范围）；证据 `D:\OAS-dev\_verify\p5-realdevice-20261103\`（`periodic.*`/`temp.*`/`queue.*`/`resume.*`/`reset-*.txt`/`ui-runs.json`/`ui-stats.json`/`instance-autoconnect.json`/`workspace-test.log`/`build.log`/`lint.log`）。
 
 ### 明确不做（本阶段）
 - 多实例/多账号/设备池（需用户改判；当前 ENGINE 非目标 + 10-30 裁定"单活动实例"）。
@@ -130,11 +139,11 @@
 | 队列与 entries 双跑 | 校验期拒绝"同一任务同时出现在两处"（P1） |
 | 队列轮次与 quota 双重计数 | 规则 2：队列触发只有调度器一层；round 计数只在 queue 状态 |
 | 空轮烧配额 | 规则 5 lazy 计数 + `empty_rounds` 告警阈值 |
-| 单活动实例下并发（编辑器 vs 守护进程） | 现有锁 + 文字规则；P2 可选共享互斥锁；P5 实机同机验证 |
+| 单活动实例下并发（编辑器 vs 守护进程） | 现有锁 + 文字规则；共享互斥文件锁仍未做；**P5 ✅ 实机同机验证（A–F，含守护进程强杀后恢复）** |
 | 文档漂移（soak/CLI/事件清单） | P0 先订正，之后每次改行为同步文档 |
 
 ## 五、完成定义（DoD）
 - P1/P2：`cargo test --workspace` 全绿（含新增 round 语义测试），旧单任务 entries 回归等价，state 3→4 迁移测试通过。
 - P3：UI 可编辑 entries/队列并原子落盘；运行中修改被拒绝（409）；UI pure test 全绿（**453 checks / 0 dead ids**）。
 - P4：每次运行有 run_id 落盘，UI 可查失败原因（✅ 实测：全量 **501/0**、oasd **228**、UI **662/219/0**；`GET /runs/scheduler*` + 调度页「运行记录」）。
-- P5：实机队列 2 轮 + 重启恢复 + reset 验证通过，文档与台账同步。
+- P5 ✅（2026-11-03 实机）：队列 2 轮 + 重启恢复 + reset-memory 验证通过（A–F 全真机），单任务 periodic quota 2/2、temp 每轮、UI/API 可见性同时通过；最终 **501/0**、oasd **228**、UI **662/219/0**；文档与台账同步（§E-75 §C6）。含 `GET /instance/devices` 自动 connect + `auto_connect` 修复。

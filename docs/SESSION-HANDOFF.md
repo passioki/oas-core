@@ -1,23 +1,23 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★★★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（seq 94）。
-> 当前是 **调度器产品化阶段（单活动实例）**：P0 ✅ 文档（`docs/SCHEDULER-RUNNER-PLAN.md` + ENGINE §22.34.7 + PENDING §E-75）/ P1 ✅ 已提交（450/0，oasd 177）/ P2 ✅ 已提交（474/0，oasd 201；调度专项 101）/ P3 ✅ 已提交（488/0，oasd 215，serve 64，UI 453）/ **P4 ✅ 本轮提交（全量回归 501/0，oasd 228，serve 68，UI 662）** / P5 ⬜（实机验收，需 MuMu）。更早节点：0.1.0 Release 已上传、tag `v0.1.0` 未移动、O-1/O-2 收口（`d1a7fcd`），`dev`/`main` 已同步 origin。不要再灌 34/18 旧素材。
+> ★★★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（seq 95，任务 done）。
+> **调度器产品化（单活动实例）已完成 P0–P5**：P0 ✅ 文档（`docs/SCHEDULER-RUNNER-PLAN.md` + ENGINE §22.34.7 + PENDING §E-75）/ P1 ✅（450/0，oasd 177）/ P2 ✅（474/0，oasd 201）/ P3 ✅（488/0，oasd 215，serve 64，UI 453）/ P4 ✅（501/0，oasd 228，serve 68，UI 662）/ **P5 ✅ 本轮提交（实机验收 A–F 全部真机通过 + `GET /instance/devices` adb 自动连接修复；501/0，oasd 228，serve 68，UI 662/219/0）**。更早节点：0.1.0 Release 已上传、tag `v0.1.0` 未移动、O-1/O-2 收口（`d1a7fcd`），`dev`/`main` 已同步 origin。不要再灌 34/18 旧素材。
 
-## 0. 当前状态（2026-11-03 12:3x）
+## 0. 当前状态（2026-11-03 19:0x）
 
 | 项 | 值 |
 |---|---|
-| 当前阶段 | 调度器产品化 + 队列 Round 语义：**P0 ✅ / P1 ✅ / P2 ✅ / P3 ✅ / P4 ✅ 本轮提交（501/0，oasd 228，serve 68，UI 662）/ P5 ⬜**；计划 `docs/SCHEDULER-RUNNER-PLAN.md`，台账 `PENDING-LEDGER §E-75`（§C3 = P2、§C4 = P3、§C5 = P4 最终实测） |
-| 工作区（本轮） | P4 代码 + docs 由 Lead 分两次提交；`frames/frames.json` 是**用户数据改动，不属于本轮**，勿动 |
-| 分支/HEAD | `dev` = 本轮 docs 提交（HEAD，父 = 本轮 P4 代码提交；P4 代码提交的父 `f99c36a`）；推送状态以 `git status -sb` 实测为准；包构建 commit `42567c1` |
+| 当前阶段 | 调度器产品化 + 队列 Round 语义：**P0–P5 全部 ✅ 完成（P5 本轮提交；任务 done）**；计划 `docs/SCHEDULER-RUNNER-PLAN.md`，台账 `PENDING-LEDGER §E-75`（§C3 = P2、§C4 = P3、§C5 = P4、**§C6 = P5 最终实测**） |
+| 工作区（本轮） | P5 代码（`apps/oasd/src/serve.rs` adb 自动连接）+ docs 由 Lead 分两次提交；`frames/frames.json` / `scheduler.json`（P3 UI 编辑产物）/ `scheduler.json.bak` 是**用户数据，不属于本轮提交**，勿动 |
+| 分支/HEAD | `dev` = 本轮 docs 提交（HEAD，父 = 本轮 P5 代码提交；**P5 代码提交的父 `9134a70`**）；推送状态以 `git status -sb` 实测为准；包构建 commit `42567c1` |
 | 恢复节点 | tag `v0.1.0`（annotated `cf123b8` → commit `e8edbef`，**未移动**）；**GitHub Release 已上传** |
 | 发布 | `https://github.com/passioki/oas-core/releases/tag/v0.1.0`（id `431080249`，draft=false / prerelease=false，即 latest）；附件 zip（asset `700544587`，37,089,992 B，digest `sha256:e6112a33…5f5687`）+ `.sha256`（asset `700545142`，89 B）；本地同物 SHA256 `E6112A33…5F5687` |
 | 版本 | `0.1.0`；**包不含 O-1/O-2**（包构建 `42567c1`，O-1/O-2 自 `54c715b` 起，评审修复 `d1a7fcd`） |
-| 测试 | `cargo test --workspace` = **501 passed / 0 failed**（21 个 test binary 全 ok；oasd **228**，P4A 499 + F4P 2；serve **68**；调度专项 **107** = `scheduler.rs` 49 + `schedule.rs` 58；stats 6）；UI pure test **662 checks / 219 referenced ids / 0 dead ids**；task lint 1/0；`node --check` exit 0；`cargo build -p oasd --features ocr` exit 0（alt target）；warning 与基线一致。上一发布基线 426/0（oasd 153 / flow 57 / runtime 125 + 2 integration，13:35 实测） |
+| 测试 | `cargo test --workspace` = **501 passed / 0 failed**（21 个 test binary 全 ok；oasd **228**，P4A 499 + F4P 2，**P5 未新增测试**；serve **68**；调度专项 **107** = `scheduler.rs` 49 + `schedule.rs` 58；stats 6）；UI pure test **662 checks / 219 referenced ids / 0 dead ids**；task lint 1/0；`node --check` exit 0；`cargo build -p oasd --features ocr` exit 0（alt target）；warning 与基线一致。上一发布基线 426/0（oasd 153 / flow 57 / runtime 125 + 2 integration，13:35 实测） |
 | 数据 | 全局素材 **16 条 / 1 图**；帧 **28 个 / current_id=20 / next_id=41** |
 | 任务 | 只有 `返回庭院`（flow 11 steps / meta 400 B）；`tasks/测试` 已删除（随 `cd0ac34` 提交） |
 | 上一轮工作区 | `d1a7fcd` 时 clean；seq 89 docs 订正（8 份，终态，`906bbed`）与同步回填（`11d53a5`）均已提交 |
-| 服务 | serve **8787**：未用主 target 重建/重启（P4 E2E 用 alt 二进制 + e2e 临时 `--runs-dir`，仓库数据未动）；需要 UI 验证时按 START-HERE §1.3 重建并重启 |
+| 服务 | serve **8787**：P5 实机 F 项实测用（`GET /runs/scheduler` = 9 条真实运行、`/stats` scheduler `files=9/runs=9/failed=0/Done:9/total_ms 65185`）；P5 代码（`/instance/devices` adb 自动连接）需重建 serve 才生效；仓库根 `scheduler.json`/`frames/frames.json` 是用户数据，未提交 |
 | 文档 | 7 份历史文档已归档 `docs/archive/`；顶层 11 份 + `RELEASE-NODE-2026-11-02.md` |
 
 ## 1. 最近发生了什么
@@ -47,24 +47,28 @@
 - 02:5x **REVIEW-P4**（`REVIEW-P4.md`）：P0=0（可提交）；P1-1 文档/契约漂移（计划仍写扩 `/runs` + 点击聚合）；P1-2 stats attempt 级 vs report entry 级；P1-3 写失败静默；P2 detail 非实体 JSON/`limit=0`/500 形状等。
 - 03:0x **F4P 修复并入**（`F4P-REPORT.md`）：P1-3 写失败可观测（`alert(kind=run_file_write)` + `report.run_file_errors` + 事件 `run_file_error`）、UI 测试 fixture 改真实 `outcome=Done` + 静态安全断言（+3 checks）、stats 口径测试缺口（+2）；`cargo test --workspace` 499→**501/0**、oasd 226→**228**、UI 659→**662**。
 - 03:0x **Lead P4 E2E**：alt 二进制 + 真实 serve + e2e `--runs-dir`——queue 2 轮跑出 4 个成员 attempt 实体（task entry 实体由 `schedule.rs` P4 测试覆盖）→ `GET /runs/scheduler`（中文/倒序/筛选）→ `GET /runs/scheduler/run` 完整对象 → 旧 `/runs`、`/runs/clicks`、`/runs/aggregate` 仍 200 → `oasd stats` 含 scheduler 块 → `GET /` 含新 DOM id；证据 `D:\OAS-dev\_verify\scheduler-plan-20261103-p4\e2e\`。
-- 03:0x **本轮 docs 子进程中断**（只完成计划文档 §P4）；12:23 Lead 复跑 `cargo test --workspace` **501/0**、UI **662/219/0**（`recovery-workspace.log` / `recovery-ui.log`），与首轮一致；03:0x 前 docs 未完成（PENDING/RESUME/INDEX/START-HERE/README/本文件/ENGINE §22.34.7），由 P4-DOCS-RETRY 补齐。
+- 03:0x **本轮 docs 子进程中断**（只完成计划文档 §P4）；12:23 Lead 复跑 `cargo test --workspace` **501/0**、UI **662/219/0**（`recovery-workspace.log` / `recovery-ui.log`），与首轮一致；当时未完成的 docs 由 P4-DOCS-RETRY 补齐（`9134a70`，seq 94）。
+- 本轮 **P5 实机验收（Lead，MuMu `127.0.0.1:16384`）**：A 单任务 periodic quota **2/2**（2 次真实运行 Done ~7.2s，OCR「已在庭院」，第 3 pass `scheduler_skip reason=quota_exhausted`）；B temp 连续 2 pass 各一次（每次 `scheduler_temp_reset_before/after`，runs=2/successes=2，运行后 task `state/` 为空）；C 队列 `q1` 2 轮（`rounds_completed=2`/`finished=true`/`queue_finished`，第 3 pass `queue_finished` skip，run 实体 `kind=queue_member`）；D 成员执行中**强杀守护进程** → 重启日志 `scheduler_queue_round_resume` 从 `member_index=0` 续跑、round 只计 1 次 → round 2/3 完成（`rounds_completed=3`）；E `reset-memory`（`reset_memory_entries=1`/`reset_memory_queues=q1`，entries/queues/running 与 task `state/` 清空 + 审计，periodic 同样复位）；F serve 8787 `/runs/scheduler` **9 条真实运行** + `/stats` scheduler `files=9 runs=9 failed=0 fatal=0 by_outcome{Done:9} total_ms≈65185`。证据 `D:\OAS-dev\_verify\p5-realdevice-20261103\`。
+- **实机顺手修复（随 P5 提交）**：`serve.rs` 的 `GET /instance/devices` 原来只列 `adb devices`，MuMu 重启后 adb TCP 未 attach 时 UI「检测实例」显示“没有检测到 adb 实例”；现改为**列表为空时自动 `adb connect`**（配置 serial → live config `device.reconnect_endpoints` → 默认 `127.0.0.1:16384`）后重列，响应新增 `auto_connect`；实测 `adb disconnect` 后检测自动连回 16384（`instance-autoconnect.json`）。提交信息 `fix(serve): auto-connect adb endpoint on instance detection`。
+- **提交前 Lead 复跑（权威）**：`cargo test --workspace` **501/0**、oasd **228**、serve **68**、UI **662/219/0**、task lint **1/0**、OCR build exit 0。**P5 未新增测试**（501 与 P4 相同）。
+- 本轮 **docs 收尾 8 份**（RESUME seq 95 / RESUME-INDEX / START-HERE / README / 本文件 / PENDING §E-75 §C6 / SCHEDULER-RUNNER-PLAN / ENGINE §22.34.7）随本轮 docs 提交入库；docs 提交 = HEAD，P5 代码提交的父 `9134a70`。
 
 ## 2. 下一步
 
 ```text
-1. ✅ 本轮已收口：全量回归 501/0（oasd 228、serve 68、UI 662）→ 审 diff（P4 Run 实体 / 事件增量 /
-   /runs/scheduler* / stats / 写失败可观测 / UI 运行记录面）→ 由 Lead 分两次提交（P4 代码 + docs；
-   不 tag/release；不含 frames/frames.json）→ RESUME seq 94 收尾（本文件与 RESUME/RESUME-INDEX/PENDING/
-   SCHEDULER-PLAN/ENGINE 已同步）。
-2. P5 实机验收（需 MuMu emulator-5554）：单任务 periodic quota 2/2 + temp 每轮 + replay/实机队列 2 轮
-   + 重启恢复 + reset-memory 复位；先启动模拟器。
-3. P5 起遗留：点击聚合关联（run.clicks/clicks_file 已有但未接 UI/聚合）、口径统一（事件 attempt/entry、
-   stats attempt 级 vs report entry 级、UI 状态卡失败含 resource/blocked）、P4 收口（分页/保留策略、
-   run_id 跨进程唯一性、detail 实体校验、list/detail 500 统一、--status 的 run_file_errors 取舍）。
-4. 旧开口（不阻塞）：SelectionTool 结构债、真机 collection real=1 E2E、P2-10、drag Plan B。
-   P3 遗留：GET 顶层 schema_version 恒 4/UI 强制 4、高级 JSON 无 GET-first 守卫、坏 config 时
-   删除守卫无法判定、.bak 单份、同任务多条 task entry、utc_offset_min 缺失按 480。
-   P2 遗留：补记恢复时 cycle、不计 session report.runs、member_results 200 环、成员级 exactly-once 副作用。
+1. ✅ 已完成并提交：调度器产品化 P0–P5（P5 = 实机验收 A–F + `/instance/devices` adb 自动连接）。
+   全量回归 501/0（oasd 228、serve 68、UI 662/219/0）；不 tag/release；不含 frames/frames.json /
+   scheduler.json 等用户数据。
+2. 新主线 = 产品 backlog（P5 之后，按需排序）：
+   a) `SelectionTool` 抽取（结构债）；b) collection `real=1` 真机 E2E（MuMu 127.0.0.1:16384 已可用）；
+   c) drag Plan B（asset 引用/运行时跟随）；d) P2-10（保存 flow 校验）；
+   e) 运行记录收口：点击聚合关联、分页/保留、run_id 跨进程唯一、detail 实体校验、list/detail 500 统一、
+      --status 的 run_file_errors 取舍；f) 口径统一（事件 attempt/entry、stats vs report、UI 失败口径）；
+   g) 版本决策（是否升 0.2.0，由用户定；本轮未升）。
+3. 台账遗留：P3（schema_version 恒 4/UI 强制 4、高级 JSON 无 GET-first、坏 config 删除守卫、.bak 单份、
+   同任务多 task entry、utc_offset_min 缺失按 480）；P2（补记恢复时 cycle、不计 session report.runs、
+   member_results 200 环、成员级 exactly-once 副作用）。
+4. 对外口径：墙钟 24h soak 未跑完（只有 96 轮加速 soak 成立），宣称前需补跑。
 ```
 
 ## 3. 关键事实（防止再记错）
@@ -77,7 +81,9 @@
 - 拖测 `margin`：默认 **0.15**，合法 **0~0.45**，作用于起点（配置了 `to` 时也作用于终点）候选矩形内缩；**仅 rect 非反选生效**；有 polygon/invert `shape` 时忽略并记 `margin=ignored`。
 - **collection 真实点击已终态收口**（dev `d1a7fcd`）：`real` 严格 `0/1/true/false`；`real=1` 强制 live 帧；匹配通过后在**精确 action shape 内采样**（polygon 内/invert 排除区外）；未过阈值 **409**（不点击）。**默认仍是 dry-run**，响应/日志不变；与“素材行真实点击”共用 `perform_live_tap`；**无真机 E2E**。
 - **v0.1.0 发布包不含 O-1/O-2**；混版本 runtime 会忽略 drag `shape`（invert 会点到排除区）⇒ invert 拖动需本版 runtime；**P2-10**（保存 flow 不校验解析错误）本轮不做。
-- 当前测试基线 **501/228/1-0**（03:0x + 12:23；21 binary；serve 68；调度专项 107 = scheduler 49 + schedule 58；stats 6；UI 662/219/0）；上一发布基线 **426/259/1-0**（oasd 153 / flow 57 / runtime 125 + 2 integration；DSL E2E `linted=8 errors=5`）。
+- 当前测试基线 **501/228/1-0**（P5 实机验收后 Lead 复跑；**P5 未新增测试**；21 binary；serve 68；调度专项 107 = scheduler 49 + schedule 58；stats 6；UI 662/219/0）；上一发布基线 **426/259/1-0**（oasd 153 / flow 57 / runtime 125 + 2 integration；DSL E2E `linted=8 errors=5`）。
+- **P5 实机环境**：MuMu serial **`127.0.0.1:16384`**（Android 12 / V2284A / 720x1280；Onmyoji 前台庭院），不是 `emulator-5554`；`adb devices` = device。A–F 全部真机通过（quota 2/2、temp 每轮、队列 2 轮、强杀续跑、reset-memory、9 条 run 记录）；证据 `D:\OAS-dev\_verify\p5-realdevice-20261103\`。
+- **P5 adb 自动连接**：`GET /instance/devices` 列表为空时自动 `adb connect`（配置 serial → live config `device.reconnect_endpoints` → 默认 `127.0.0.1:16384`）后重列，响应新增 `auto_connect`；`emulator-5554` 这类非 TCP serial 跳过。实测 `adb disconnect` 后检测自动连回 16384。P5 代码未重建 serve 前该行为不生效。
 - **P2 起 queue entry 真正执行**：`execute_pass` 按 `entry.kind` 分派；`plan.runnable` 会包含 queue entry，勿再假设 runnable 只有 task；queue entry 的 `task` 是 **queue_id**（不是任务 bundle）。
 - **queue 轮次真相在 `state.queues[qid]`**：`current_round.member_index` = 下一个待跑成员；`member_results` 200 环；`pending_entry_record` 是 end→record 的 exactly-once 暂存（正常路径不落盘）。
 - **一个 queue 至多一个 entry**（重复 → 配置错误含两个 entry_id）；`queue_between` 是非 open-round 的轮间门，open round 不受门限制（规则 8）。
@@ -109,5 +115,6 @@
 - 长期口径：**墙钟 24h soak 未跑完**（`_verify/n42/live-soak` passes=22、`last_stop=""`、events 无 `stop`、lock 残留 pid=1268）；对外只宣称 **96 轮加速 soak** 成立。
 - **P4 run 目录**：调度器写 `<runs-dir>/scheduler/`（默认 `runs/scheduler`）；serve 也按**自己的** `--runs-dir` 读。CLI/serve 的 `--runs-dir`/CWD 不一致时 UI「运行记录」为空，不要先怀疑代码。
 - **`oasd stats` 与坏 run 文件**：坏 `scheduler/*.json` 只跳过 + 进 alerts，但 alerts 非空会让 `oasd stats` **exit 1**；这不是回归。
-- **run 详情契约**：`GET /runs/scheduler/run` 只校验"合法 JSON"，非实体 JSON 也能读出（列表会跳过）；`limit=0` 被 clamp 成 1；list 500 与 detail 500 错误体形状不同（P5 收口）。
+- **run 详情契约**：`GET /runs/scheduler/run` 只校验"合法 JSON"，非实体 JSON 也能读出（列表会跳过）；`limit=0` 被 clamp 成 1；list 500 与 detail 500 错误体形状不同（未做，转 backlog）。
 - **P4 写失败**：run 文件写失败只影响"可查性"（alert + `report.run_file_errors` + 事件 `run_file_error`），不影响执行/重试/退出码；排查先看 `alert(kind=run_file_write)` 与 `scheduler_run_file_error` 日志。
+- **实机检测不到 adb**：MuMu 重启后 adb TCP 设备常掉（`adb devices` 为空）；P5 起 `GET /instance/devices` 会**自动 connect `127.0.0.1:16384`**（配置 serial → `device.reconnect_endpoints` → 默认；响应 `auto_connect` 可核对），仍失败再查 adb server / MuMu 网络设置，不要先怀疑 UI 或代码。
