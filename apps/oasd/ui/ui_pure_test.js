@@ -113,6 +113,9 @@ const PURE_FUNCTIONS = [
   'rectsOverlap',
   'actionValidity',
   'boxCenter',
+  // MATCH-BUG: frame selection for single asset tests + match-box validity
+  'testFramePlan',
+  'matchBoxValid',
   'translateActionShape',
   'candidateActionPayload',
   'recognitionPolygonPayload',
@@ -123,7 +126,20 @@ const PURE_FUNCTIONS = [
   'assetMatchesFilter',
   'filterAssets',
   'globalAssetStatusText',
+  'assetRowElement',
+  'renderAssetRows',
   'renderGlobalAssets',
+  'frameMatchesQuery',
+  'filterFramesByQuery',
+  'frameSearchStatusText',
+  'assetHasFramePosition',
+  'assetsForFrame',
+  'assetSourceLabel',
+  'frameAssetsSummary',
+  'frameAssetIdsByFrame',
+  // P1-1: cache-only repaint of the frame rows + current-frame detail after a
+  // global-library change (save/delete/positions).
+  'renderFrameAssetViews',
   'selectionModeFromFlags',
   // P3: scheduler config editing (pure JSON transforms / builders / validation)
   'schedEntryKindLabel',
@@ -797,13 +813,24 @@ function installGlobalRenderDom(items) {
   ]) {
     sandbox[fn] = () => {};
   }
-  sandbox.window = {
-    OASAssetUI: {
-      renderRows(container, rows) {
-        rendered.ids = rows.map((r) => r.id);
-        container.textContent = 'rendered';
-      },
+  // The renderer now goes through app.js assetRowElement -> OASAssetUI.createRow.
+  // The stub records every item that actually becomes a row so the existing
+  // filter/status assertions keep testing real rendering, not just filtering.
+  const OASAssetUI = {
+    createRow(it) {
+      rendered.ids.push(it.id);
+      const row = fakeElement();
+      row.dataset = { assetId: it.id };
+      return row;
     },
+  };
+  sandbox.window = { OASAssetUI };
+  // renderGlobalAssets clears + repaints the list on every call; the stub only
+  // sees createRow calls, so reset the recorded ids at the same boundary.
+  const renderOnce = sandbox.renderGlobalAssets;
+  sandbox.renderGlobalAssets = () => {
+    rendered.ids = [];
+    return renderOnce();
   };
   return { list, status, search, category, rendered };
 }
@@ -834,6 +861,507 @@ eq(gdom.status.textContent, '全局素材库：共 5 / 显示 0（含 1 个集�
 const gdomEmpty = installGlobalRenderDom([]);
 sandbox.renderGlobalAssets();
 eq(gdomEmpty.list.textContent, '（暂无全局素材）', 'unfiltered empty state stays 暂无全局素材');
+
+// assetRowElement adds the frame-detail source badge without changing the row
+// returned by the shared OASAssetUI.createRow (and adds nothing without it).
+const savedWindow = sandbox.window;
+const savedDocument = sandbox.document;
+sandbox.window = {
+  OASAssetUI: {
+    createRow: () => ({ children: [], appendChild(child) { this.children.push(child); } }),
+  },
+};
+sandbox.document = {
+  createElement: () => ({ className: '', textContent: '', title: '', appendChild() {} }),
+};
+const rowWithBadge = sandbox.assetRowElement({ id: 'a' }, { sourceLabel: '全局/任务' });
+eq(rowWithBadge.children.length, 1, 'source badge is appended to the shared row');
+eq(rowWithBadge.children[0].textContent, '全局/任务', 'source badge text merges both libraries');
+eq(rowWithBadge.children[0].className, 'run-badge kind frame-asset-source', 'source badge reuses the run-badge style');
+const rowWithoutBadge = sandbox.assetRowElement({ id: 'b' }, {});
+eq(rowWithoutBadge.children.length, 0, 'library rows stay badge-free');
+sandbox.window = savedWindow;
+sandbox.document = savedDocument;
+
+// Task library regression: it uses the same shared row wrapper, keeps its
+// header, and keeps the old empty text. The row builder is stubbed so the
+// recorded ids prove renderAssetRows actually produced the rows.
+function installTaskRenderDom(items) {
+  const list = fakeElement();
+  const search = fakeElement();
+  const category = fakeElement();
+  search.value = '';
+  category.value = '';
+  const rendered = { ids: [], opts: null };
+  sandbox.assetsList = list;
+  sandbox.assetSearch = search;
+  sandbox.assetCategoryFilter = category;
+  sandbox.taskAssets = items;
+  sandbox.taskAssetsMeta = { task: '任务甲', design: [1280, 720], count: items.length, scope: 'task' };
+  sandbox.taskShowAllAssets = false;
+  sandbox.taskName = { value: '任务甲' };
+  sandbox.document = { createElement: () => fakeElement() };
+  sandbox.attachAssetDragReorder = () => {};
+  sandbox.assetRowElement = (it, opts) => {
+    rendered.ids.push(it.id);
+    rendered.opts = opts;
+    const row = fakeElement();
+    row.dataset = { assetId: it.id };
+    return row;
+  };
+  for (const fn of ['pickAssetRoi', 'runAssetTest', 'editAsset', 'editAssetPositions',
+    'deleteAsset', 'editAssetActionRoi', 'testAssetClick', 'testAssetDrag',
+    'generateAssetStep', 'testAssetCollection', 'deleteCollection']) {
+    sandbox[fn] = () => {};
+  }
+  vm.runInContext(extractFunction('renderAssetList'), sandbox, {
+    filename: 'app.js#task-assets-render',
+  });
+  const renderOnce = sandbox.renderAssetList;
+  sandbox.renderAssetList = () => {
+    rendered.ids = [];
+    return renderOnce();
+  };
+  return { list, search, category, rendered };
+}
+const tdom = installTaskRenderDom(globalRows);
+sandbox.renderAssetList();
+eq(tdom.rendered.ids, ['按钮甲', 'button-b', '弹窗丙', '集合丁', '未标记'], 'task library renders every row through the shared builder');
+eq(tdom.rendered.opts.task, '任务甲', 'task library passes the task scope to the shared row builder');
+eq(tdom.list.children[0].textContent, '任务素材库 任务甲 · design 1280x720 · 5 个素材', 'task library keeps its header');
+tdom.search.value = 'BUTTON';
+sandbox.renderAssetList();
+eq(tdom.rendered.ids, ['button-b'], 'task library search still uses the shared filter');
+tdom.search.value = '找不到';
+sandbox.renderAssetList();
+eq(
+  tdom.list.children[tdom.list.children.length - 1].textContent,
+  '（没有匹配的素材）',
+  'task library keeps its filtered empty text'
+);
+
+// --- frame list search: pure front-end filtering, never a /frames parameter ---
+const searchFrames = [
+  { id: 1, name: '宠物小屋', category: '宠物小屋' },
+  { id: 12, name: '庭院-卷轴打开', category: '庭院' },
+  { id: 21, name: 'Backyard', category: '庭院' },
+  { id: 33, name: '未命名', category: '' },
+];
+ok(sandbox.frameMatchesQuery(searchFrames[0], ''), 'empty frame query matches all');
+ok(sandbox.frameMatchesQuery(searchFrames[0], '   '), 'whitespace-only frame query matches all');
+ok(sandbox.frameMatchesQuery(searchFrames[1], '12'), 'plain numeric query matches the frame id');
+ok(sandbox.frameMatchesQuery(searchFrames[1], '#12'), '#id query matches the frame id');
+ok(sandbox.frameMatchesQuery(searchFrames[1], '  #12  '), '#id query is trimmed');
+ok(sandbox.frameMatchesQuery(searchFrames[1], '卷轴'), 'frame name substring is searchable');
+ok(sandbox.frameMatchesQuery(searchFrames[1], '庭院'), 'frame category is searchable');
+ok(sandbox.frameMatchesQuery(searchFrames[2], 'back'), 'frame search is case-insensitive');
+ok(!sandbox.frameMatchesQuery(searchFrames[1], '#1'), 'numeric #id match is exact, not a prefix');
+ok(!sandbox.frameMatchesQuery(searchFrames[1], '找不到'), 'unmatched frame query is false');
+eq(sandbox.filterFramesByQuery(searchFrames, '').map((f) => f.id), [1, 12, 21, 33], 'empty query keeps all frames');
+eq(sandbox.filterFramesByQuery(searchFrames, '#12').map((f) => f.id), [12], 'filterFramesByQuery keeps only the matching frame');
+eq(sandbox.filterFramesByQuery(searchFrames, '庭院').map((f) => f.id), [12, 21], 'category filter preserves frame order');
+eq(sandbox.frameSearchStatusText(30, 3), '共 30 帧 · 匹配 3 帧', 'frame search status shows the match count');
+eq(sandbox.frameSearchStatusText(30, 0), '共 30 帧 · 没有匹配的帧', 'frame search status shows the empty state');
+eq(sandbox.frameSearchStatusText(0, 0), '共 0 帧', 'frame search status handles no frames');
+
+// --- frame detail assets: global + task, deduped by id, sources merged ---
+const frameGlobalAssets = [
+  { id: 'a', kind: 'ocr_line', positions: [1, 2], category: '庭院' },
+  { id: 'b', kind: 'template', positions: [2], category: '庭院' },
+  { id: 'empty', kind: 'ocr_line', positions: [] },
+  { id: 'other', kind: 'region', positions: [3] },
+  { id: 'nopos', kind: 'ocr_line' },
+];
+const frameTaskAssets = [
+  { id: 'a', kind: 'ocr_line', positions: [2], category: '庭院' },
+  { id: 'c', kind: 'region', positions: [2, 3], category: '庭院' },
+  { id: 'd', kind: 'ocr_line', positions: [] },
+];
+const frame2Rows = sandbox.assetsForFrame(frameGlobalAssets, frameTaskAssets, 2);
+eq(frame2Rows.map((r) => r.id), ['a', 'b', 'c'], 'assetsForFrame keeps only frame records and dedupes by id');
+eq(frame2Rows[0].sources, ['global', 'task'], 'asset present in both libraries reports both sources');
+eq(frame2Rows[1].sources, ['global'], 'global-only asset reports global source');
+eq(frame2Rows[2].sources, ['task'], 'task-only asset reports task source');
+ok(frame2Rows.every((r) => Array.isArray(r.positions) && r.positions.includes(2)), 'every frame row keeps its positions');
+eq(sandbox.assetsForFrame(frameGlobalAssets, frameTaskAssets, 3).map((r) => r.id), ['other', 'c'], 'frame 3 combines global and task rows');
+eq(sandbox.assetsForFrame(frameGlobalAssets, frameTaskAssets, 99), [], 'a frame with no records yields an empty list');
+eq(sandbox.assetsForFrame(null, undefined, 2), [], 'missing libraries are safe');
+ok(sandbox.assetHasFramePosition({ positions: ['2'] }, 2), 'string positions compare numerically');
+ok(!sandbox.assetHasFramePosition({ positions: [2] }, 99), 'asset without the frame is rejected');
+ok(!sandbox.assetHasFramePosition({}, 2), 'missing positions are rejected');
+eq(sandbox.assetSourceLabel(['global', 'task']), '全局/任务', 'source label merges global and task');
+eq(sandbox.assetSourceLabel(['task']), '任务', 'source label handles task only');
+eq(sandbox.assetSourceLabel([]), '', 'source label is empty without sources');
+const frame2Summary = sandbox.frameAssetsSummary(frame2Rows, 2);
+eq(frame2Summary.total, 3, 'frame summary counts every row');
+eq(frame2Summary.global, 2, 'frame summary counts global rows');
+eq(frame2Summary.task, 2, 'frame summary counts task rows');
+eq(frame2Summary.text, '该帧素材 3 条（全局 2 · 任务 2）', 'frame summary text keeps the source split');
+eq(sandbox.frameAssetsSummary([], 2).text, '该帧没有素材记录', 'frame summary empty state');
+
+// Runtime smoke test for the frame detail list: it must go through the same
+// assetRowElement row builder and pass the per-source scope + source label.
+function installFrameAssetsRenderHarness() {
+  const status = fakeElement();
+  const list = fakeElement();
+  const calls = [];
+  const actions = [];
+  sandbox.frameAssetsStatus = status;
+  sandbox.frameAssetsList = list;
+  sandbox.taskName = { value: '任务甲' };
+  sandbox.assetRowElement = (it, opts) => {
+    calls.push({ id: it.id, opts });
+    return fakeElement();
+  };
+  // MATCH-BUG: record which frame id each frame-detail row action targets.
+  sandbox.runAssetTest = (it, frameId) => actions.push({ action: 'test', id: it.id, frameId });
+  sandbox.testAssetClick = (it, frameId) => actions.push({ action: 'click', id: it.id, frameId });
+  sandbox.testAssetDrag = (it, frameId) => actions.push({ action: 'drag', id: it.id, frameId });
+  sandbox.testAssetCollection = (it, frameId) => actions.push({ action: 'collection', id: it.id, frameId });
+  for (const fn of ['pickAssetRoi', 'generateAssetStep', 'deleteCollection']) {
+    sandbox[fn] = () => {};
+  }
+  vm.runInContext(extractFunction('renderFrameAssets'), sandbox, {
+    filename: 'app.js#frame-assets-render',
+  });
+  return { status, list, calls, actions };
+}
+const frameDom = installFrameAssetsRenderHarness();
+const frameDomRows = sandbox.assetsForFrame(frameGlobalAssets, frameTaskAssets, 2);
+sandbox.renderFrameAssets({ id: 2 }, frameDomRows);
+eq(frameDom.status.textContent, '该帧素材 3 条（全局 2 · 任务 2）', 'frame detail count line');
+eq(frameDom.calls.map((c) => c.id), ['a', 'b', 'c'], 'frame detail builds one shared row per asset');
+eq(frameDom.calls[0].opts.task, '', 'global rows use the global thumbnail scope');
+eq(frameDom.calls[0].opts.sourceLabel, '全局/任务', 'both-source row is badged 全局/任务');
+eq(frameDom.calls[1].opts.sourceLabel, '全局', 'global-only row is badged 全局');
+eq(frameDom.calls[2].opts.task, '任务甲', 'task-only rows use the task thumbnail scope');
+eq(frameDom.calls[2].opts.sourceLabel, '任务', 'task-only row is badged 任务');
+ok(frameDom.calls.every((c) => c.opts.manage === false), 'frame rows keep management actions in the libraries');
+eq(frameDom.list.children.length, 3, 'frame detail appends every shared row');
+// MATCH-BUG: every frame-detail row action must pin the frame it was rendered
+// for; otherwise this new surface would silently re-run the saved-position bug.
+const frame2RowOpts = frameDom.calls[0].opts;
+frame2RowOpts.onTest({ id: 'a' });
+frame2RowOpts.onClickTest({ id: 'a' });
+frame2RowOpts.onDragTest({ id: 'a' });
+frame2RowOpts.onCollectionTest({ id: 'a' });
+eq(
+  frameDom.actions,
+  [
+    { action: 'test', id: 'a', frameId: 2 },
+    { action: 'click', id: 'a', frameId: 2 },
+    { action: 'drag', id: 'a', frameId: 2 },
+    { action: 'collection', id: 'a', frameId: 2 },
+  ],
+  'frame detail row actions all pass the rendered frame id'
+);
+sandbox.renderFrameAssets({ id: 2 }, []);
+eq(frameDom.list.textContent, '该帧没有素材记录', 'frame detail empty state');
+eq(frameDom.status.textContent, '该帧没有素材记录', 'frame detail empty count line');
+sandbox.renderFrameAssets(null, []);
+eq(frameDom.list.textContent, '（选择一帧查看该帧素材）', 'no current frame placeholder');
+eq(frameDom.status.textContent, '—', 'no current frame leaves count as —');
+
+// Runtime smoke test for the filtered frame list: search is applied to the
+// cached rows, category filtering comes afterwards, and the status count
+// follows the visible rows.
+function fakeFrameDomElement() {
+  const el = {
+    className: '',
+    title: '',
+    draggable: false,
+    dataset: {},
+    children: [],
+    classList: { add() {}, remove() {}, toggle() {} },
+    appendChild(child) { el.children.push(child); return child; },
+    append(...children) { el.children.push(...children); },
+    addEventListener() {},
+  };
+  Object.defineProperty(el, 'textContent', {
+    get() { return el._text || ''; },
+    set(v) { el._text = String(v); el.children = []; },
+  });
+  return el;
+}
+
+function installFrameListRenderHarness() {
+  const list = fakeFrameDomElement();
+  const status = fakeFrameDomElement();
+  sandbox.framesList = list;
+  sandbox.frameSearch = { value: '' };
+  sandbox.frameSearchStatus = status;
+  sandbox.framesCache = searchFrames;
+  sandbox.categoryFilterValue = '';
+  sandbox.globalAssetsCache = [];
+  sandbox.taskAssets = [];
+  sandbox.document = { createElement: () => fakeFrameDomElement() };
+  for (const fn of ['moveFrameToCategory', 'moveFrameBefore', 'selectFrame',
+    'renameFrame', 'setFrameCategory', 'deleteFrame']) {
+    sandbox[fn] = () => {};
+  }
+  vm.runInContext(extractFunction('renderFramesList'), sandbox, {
+    filename: 'app.js#frames-list-render',
+  });
+  const ids = () => {
+    const out = [];
+    for (const group of list.children) {
+      for (const child of group.children || []) {
+        if (child.dataset && child.dataset.id) out.push(child.dataset.id);
+      }
+    }
+    return out;
+  };
+  return { list, status, ids };
+}
+const framesDom = installFrameListRenderHarness();
+sandbox.renderFramesList();
+eq(framesDom.status.textContent, '共 4 帧 · 匹配 4 帧', 'frame list renders all frames without a query');
+eq(framesDom.ids(), ['1', '12', '21', '33'], 'frame list keeps grouping order');
+sandbox.frameSearch.value = '庭院';
+sandbox.renderFramesList();
+eq(framesDom.status.textContent, '共 4 帧 · 匹配 2 帧', 'frame list updates the count while typing');
+eq(framesDom.ids(), ['12', '21'], 'frame list shows only matching frames');
+sandbox.frameSearch.value = '找不到';
+sandbox.renderFramesList();
+eq(framesDom.list.textContent, '没有匹配的帧', 'frame list shows the no-match message');
+eq(framesDom.status.textContent, '共 4 帧 · 没有匹配的帧', 'frame list status shows zero matches');
+sandbox.frameSearch.value = '庭院';
+sandbox.categoryFilterValue = '宠物小屋';
+sandbox.renderFramesList();
+eq(framesDom.list.textContent, '没有匹配的帧', 'category + search with no overlap stays explicit');
+sandbox.categoryFilterValue = '';
+sandbox.frameSearch.value = '  #12  ';
+sandbox.renderFramesList();
+eq(framesDom.ids(), ['12'], 'search survives a category reset and trims #id');
+sandbox.frameSearch.value = '';
+sandbox.renderFramesList();
+eq(framesDom.ids(), ['1', '12', '21', '33'], 'clearing the query restores the cached list');
+
+// --- P1-1: a global-library change must repaint the frame surfaces ---
+// Every asset CRUD path refreshes the task panel first (whose refreshFrames()
+// still reads the OLD globalAssetsCache) and only then calls
+// refreshGlobalAssets(). renderFrameAssetViews() is the cache-only repaint that
+// closes the gap, so the frame row "素材 N" and the frame detail list must
+// follow a swapped globalAssetsCache. This drives the real renderers.
+function installFrameAssetViewsHarness() {
+  const detail = fakeFrameDomElement();
+  const assetsStatus = fakeFrameDomElement();
+  const assetsList = fakeFrameDomElement();
+  const rowIds = [];
+  sandbox.frameDetail = detail;
+  sandbox.frameAssetsStatus = assetsStatus;
+  sandbox.frameAssetsList = assetsList;
+  sandbox.assetRowElement = (it) => {
+    rowIds.push(it.id);
+    return fakeFrameDomElement();
+  };
+  sandbox.framesCache = [
+    { id: 7, name: '帧甲', category: '庭院', width: 1280, height: 720, current: true },
+  ];
+  sandbox.currentFrameId = 7;
+  sandbox.categoryFilterValue = '';
+  sandbox.frameSearch.value = '';
+  sandbox.globalAssetsCache = [];
+  sandbox.taskAssets = [];
+  // A second /frames round trip after an asset save would be redundant and is
+  // exactly what the fix avoids; count any accidental call.
+  sandbox.refreshFramesCalls = 0;
+  sandbox.refreshFrames = () => {
+    sandbox.refreshFramesCalls += 1;
+    return Promise.resolve();
+  };
+  vm.runInContext(extractFunction('renderFrameDetail'), sandbox, {
+    filename: 'app.js#frame-detail-render',
+  });
+  const pickText = () => {
+    for (const group of sandbox.framesList.children) {
+      for (const child of group.children || []) {
+        if (child.dataset && child.dataset.id === '7') {
+          const pick = (child.children || [])[0];
+          return pick ? pick.textContent : '';
+        }
+      }
+    }
+    return '';
+  };
+  return { detail, assetsStatus, assetsList, rowIds, pickText };
+}
+const frameViews = installFrameAssetViewsHarness();
+sandbox.renderFrameAssetViews();
+ok(frameViews.pickText().includes('素材 0'), 'frame row starts with zero linked assets');
+ok(frameViews.detail.textContent.includes('该帧素材：0 条'), 'frame detail starts with zero assets');
+eq(frameViews.assetsStatus.textContent, '该帧没有素材记录', 'frame asset count starts empty');
+
+// Save-asset round trip: loadGlobalAssets() replaces the cache array wholesale.
+sandbox.globalAssetsCache = [
+  { id: 'a', kind: 'ocr_line', positions: [7], category: '庭院' },
+  { id: 'b', kind: 'template', positions: [7, 8], category: '庭院' },
+];
+sandbox.renderFrameAssetViews();
+ok(frameViews.pickText().includes('素材 2'), 'a saved global asset updates the frame row count');
+ok(
+  frameViews.detail.textContent.includes('该帧素材：2 条'),
+  'a saved global asset updates the frame detail count'
+);
+ok(
+  frameViews.detail.textContent.includes('关联素材：a、b'),
+  'the frame detail lists the refreshed asset ids'
+);
+eq(
+  frameViews.assetsStatus.textContent,
+  '该帧素材 2 条（全局 2 · 任务 0）',
+  'the frame asset list follows the refreshed global cache'
+);
+eq(frameViews.assetsList.children.length, 2, 'the frame asset list rebuilds one row per refreshed asset');
+eq(frameViews.rowIds, ['a', 'b'], 'the frame asset rows are built from the refreshed cache');
+
+// Edit-positions round trip: the asset moves away from frame 7.
+sandbox.globalAssetsCache = [{ id: 'b', kind: 'template', positions: [8], category: '庭院' }];
+sandbox.renderFrameAssetViews();
+ok(frameViews.pickText().includes('素材 0'), 'moving positions drops the asset from the frame row');
+ok(
+  frameViews.detail.textContent.includes('该帧素材：0 条'),
+  'moving positions drops the asset from the frame detail'
+);
+eq(frameViews.assetsStatus.textContent, '该帧没有素材记录', 'moving positions empties the frame asset list');
+
+// No current frame: the detail surfaces keep their placeholders.
+sandbox.currentFrameId = null;
+sandbox.renderFrameAssetViews();
+eq(frameViews.detail.textContent, '（选择一帧查看详情）', 'no current frame keeps the detail placeholder');
+eq(
+  frameViews.assetsList.textContent,
+  '（选择一帧查看该帧素材）',
+  'no current frame keeps the asset list placeholder'
+);
+eq(sandbox.refreshFramesCalls, 0, 'the frame repaint never issues a second /frames request');
+
+// --- MATCH-BUG: a single asset test targets the frame the user is viewing ---
+// Regression: every saved asset has positions>=1, so the old "positions first"
+// order made currentFrameId unreachable and tested a static screenshot (the
+// template is still at its saved ROI there, so the drawn box never moved).
+const { testFramePlan, matchBoxValid } = sandbox;
+const liveFramePlan = testFramePlan({ positions: [23] }, {
+  livePreview: true,
+  currentFrameId: 41,
+  frameId: 26,
+});
+eq(liveFramePlan.map((f) => f.query), ['&live=1'], 'live preview always tests the live frame');
+eq(liveFramePlan[0].label, '实时帧', 'live frame label');
+eq(liveFramePlan[0].source, 'live', 'live frame source');
+eq(liveFramePlan[0].frameId, null, 'live frame carries no frame id');
+eq(liveFramePlan[0].live, true, 'live frame is flagged live');
+
+const currentFramePlan = testFramePlan({ positions: [23] }, {
+  livePreview: false,
+  currentFrameId: 41,
+});
+eq(currentFramePlan.length, 1, 'the current frame is a single request, not one per position');
+eq(
+  currentFramePlan[0].query,
+  '&frame_id=41',
+  'current frame wins over the saved position frame (pre-fix this was &frame_id=23)'
+);
+eq(currentFramePlan[0].label, '当前帧 #41', 'current frame label names the frame');
+eq(currentFramePlan[0].source, 'current:#41', 'current frame source names the frame');
+eq(currentFramePlan[0].frameId, 41, 'current frame keeps the numeric frame id');
+eq(currentFramePlan[0].live, false, 'current frame is not live');
+
+const explicitFramePlan = testFramePlan({ positions: [23] }, {
+  livePreview: false,
+  currentFrameId: 41,
+  frameId: 26,
+});
+eq(explicitFramePlan[0].query, '&frame_id=26', 'an explicit frame id overrides the current frame');
+eq(explicitFramePlan[0].label, '当前帧 #26', 'explicit frame label names the frame');
+eq(explicitFramePlan[0].source, 'current:#26', 'explicit frame source names the frame');
+
+const positionFramePlan = testFramePlan({ positions: [1, 2] }, {
+  livePreview: false,
+  currentFrameId: null,
+});
+eq(
+  positionFramePlan.map((f) => f.query),
+  ['&frame_id=1', '&frame_id=2'],
+  'without a current frame every position frame is still tested'
+);
+eq(positionFramePlan.map((f) => f.label), ['位置帧 #1', '位置帧 #2'], 'position frames keep their old labels');
+eq(positionFramePlan.map((f) => f.source), ['position:#1', 'position:#2'], 'position frames keep their old sources');
+
+const fallbackFramePlan = testFramePlan({}, { livePreview: false, currentFrameId: null });
+eq(fallbackFramePlan.length, 1, 'no current frame and no positions yields one request');
+eq(fallbackFramePlan[0].query, '', 'the fallback lets the server use its current frame');
+eq(fallbackFramePlan[0].label, '当前帧', 'the fallback keeps the old 当前帧 label');
+eq(fallbackFramePlan[0].source, 'current', 'the fallback keeps the old current source');
+eq(fallbackFramePlan[0].live, false, 'the fallback is not live');
+eq(
+  testFramePlan({ positions: ['9', 9, 0, -1, 'x'] }, { livePreview: false, currentFrameId: null })
+    .map((f) => f.query),
+  ['&frame_id=9'],
+  'position ids are normalized (deduped, positive integers only)'
+);
+eq(
+  testFramePlan({ positions: [5] }, { livePreview: false, currentFrameId: '41' }).map((f) => f.query),
+  ['&frame_id=41'],
+  'a numeric-string current frame id is accepted'
+);
+eq(
+  testFramePlan({}, { livePreview: false, currentFrameId: 41, frameId: 0 }).map((f) => f.query),
+  ['&frame_id=41'],
+  'frame id 0 is not a valid override'
+);
+
+// --- P2-4: the full-screen OCR fallback follows the frame it was called for ---
+// It used to call testFrameQuery(it)/testFrameLabel(it) without the frame id, so
+// a frame-detail row could fail on its own frame and then retry /lines on the
+// editor's current frame. The fetch URL is produced synchronously before the
+// first await, so a never-settling fetch captures it without any async test.
+function installFallbackFrameHarness() {
+  sandbox.detReady = true;
+  sandbox.canvas = { width: 1280, height: 720 };
+  sandbox.img = null;
+  sandbox.roi = null;
+  sandbox.resultEl = fakeElement();
+  sandbox.logs = [];
+  sandbox.log = (msg, level, data) => sandbox.logs.push({ msg, level, data });
+  sandbox.renderOcrLines = () => {};
+  sandbox.livePreview = false;
+  sandbox.currentFrameId = 41;
+  const urls = [];
+  sandbox.fetch = (url) => {
+    urls.push(url);
+    return new Promise(() => {});
+  };
+  for (const fn of ['testFrames', 'testFrameQuery', 'testFrameLabel', 'fallbackFullscreenLines']) {
+    vm.runInContext(extractFunction(fn), sandbox, { filename: `app.js#${fn}` });
+  }
+  return { urls };
+}
+const fallbackHarness = installFallbackFrameHarness();
+void sandbox.fallbackFullscreenLines('ROI 内没有文字', { id: 'a', positions: [23] }, 26);
+ok(
+  fallbackHarness.urls[0] && fallbackHarness.urls[0].includes('&frame_id=26'),
+  'the full-screen fallback asks for the explicitly tested frame, not the current one'
+);
+eq(
+  sandbox.logs[0].data.frames,
+  '当前帧 #26',
+  'the full-screen fallback logs the same frame it requests'
+);
+void sandbox.fallbackFullscreenLines('ROI 内没有文字', { id: 'a' }, undefined);
+ok(
+  fallbackHarness.urls[1] && fallbackHarness.urls[1].includes('&frame_id=41'),
+  'without an explicit frame the fallback still resolves the current frame'
+);
+
+// A /task/asset/match miss is x=y=-1 while w/h still equal the template size.
+ok(matchBoxValid([10, 20, 43, 39]), 'a real match box is valid');
+ok(matchBoxValid([0, 0, 1, 1]), 'a match at the origin is valid');
+ok(!matchBoxValid([-1, -1, 43, 39]), 'a miss at (-1,-1) is not drawn even though w/h stay positive');
+ok(!matchBoxValid([10, 20, 0, 39]), 'zero width is invalid');
+ok(!matchBoxValid([10, 20, 43, 0]), 'zero height is invalid');
+ok(!matchBoxValid(null), 'a missing match box is invalid');
+ok(!matchBoxValid(['x', 1, 2, 3]), 'a non-numeric origin is invalid');
 
 // --- P1-8: one selection mode at a time ---
 eq(selectionModeFromFlags(false, false, false), 'none', 'no flags -> no selection mode');
@@ -879,9 +1407,152 @@ ok(
   'index.html provides the global category filter with 全部分类'
 );
 ok(/id="global-assets-list"/.test(html), 'index.html provides the global asset list');
+// Frame search + frame-detail asset list are real DOM nodes (static audit keeps
+// getElementById references honest).
+ok(/id="frame-search"/.test(html), 'index.html provides the frame search input');
+ok(/id="frame-search-clear"/.test(html), 'index.html provides the frame search clear button');
+ok(/id="frame-search-status"/.test(html), 'index.html provides the frame search status line');
+ok(/id="frame-assets-status"/.test(html), 'index.html provides the frame asset count line');
+ok(/id="frame-assets-list"/.test(html), 'index.html provides the frame asset list');
+ok(
+  /placeholder="搜索帧：名称 \/ #id \/ 分类"/.test(html),
+  'the frame search placeholder documents name/#id/category'
+);
+ok(/该帧素材：\$\{ids/.test(source), 'frame detail text reports 该帧素材 N 条');
+// DRY-3: all three asset-library surfaces build their rows through one helper.
+const renderGlobalFn = extractFunction('renderGlobalAssets');
+const renderTaskFn = extractFunction('renderAssetList');
+const renderFrameAssetsFn = extractFunction('renderFrameAssets');
+const renderAssetRowsFn = extractFunction('renderAssetRows');
+ok(/renderAssetRows\(/.test(renderGlobalFn), 'global library renders through renderAssetRows');
+ok(/renderAssetRows\(/.test(renderTaskFn), 'task library renders through renderAssetRows');
+ok(/assetRowElement\(/.test(renderAssetRowsFn), 'renderAssetRows builds rows through assetRowElement');
+ok(/assetRowElement\(/.test(renderFrameAssetsFn), 'frame detail builds rows through assetRowElement');
+ok(
+  (source.match(/(?:^|\n)function assetRowElement\s*\(/g) || []).length === 1,
+  'assetRowElement is declared exactly once'
+);
+const refreshFramesFn = extractFunction('refreshFrames');
+ok(/assetsForFrame\(/.test(refreshFramesFn), 'refreshFrames combines global + task records for the current frame');
+ok(/renderFrameAssets\(/.test(refreshFramesFn), 'refreshFrames paints the frame asset list');
+ok(/renderFramesList\(/.test(refreshFramesFn), 'refreshFrames paints the filtered frame list');
+// P1-1: every global-library change must repaint the frame surfaces, from the
+// caches only (a second /frames request would be redundant and `refreshFrames`
+// is already called by the task-panel refresh that precedes this one).
+const refreshGlobalFn = extractFunction('refreshGlobalAssets');
+ok(
+  // Match a real statement line, not a comment: a commented-out or merely
+  // mentioned call must not satisfy this contract.
+  /^[ \t]*renderFrameAssetViews\(\);[ \t]*$/m.test(refreshGlobalFn),
+  'refreshGlobalAssets repaints the frame rows/detail after a global-library change'
+);
+ok(
+  /^[ \t]*await refreshGlobalAssets\(\);[ \t]*$/m.test(extractFunction('saveAssetOrder')),
+  'saving the asset order refreshes the shared global cache too'
+);
+const renderFrameAssetViewsFn = extractFunction('renderFrameAssetViews');
+ok(
+  /assetsForFrame\(globalAssetsCache, taskAssets, f\.id\)/.test(renderFrameAssetViewsFn) &&
+    /renderFrameDetail\(f, rows\.map/.test(renderFrameAssetViewsFn) &&
+    /renderFrameAssets\(f, rows\)/.test(renderFrameAssetViewsFn),
+  'renderFrameAssetViews recomputes the current frame from the refreshed caches'
+);
+ok(
+  !/refreshFrames\(/.test(renderFrameAssetViewsFn),
+  'renderFrameAssetViews stays cache-only (no duplicate GET /frames)'
+);
+ok(
+  !/refreshGlobalAssets\(/.test(renderFrameAssetViewsFn) && !/loadGlobalAssets\(/.test(renderFrameAssetViewsFn),
+  'renderFrameAssetViews cannot recurse into the global-library refresh'
+);
+ok(
+  /frameSearch\.addEventListener\('input', \(\) => renderFramesList\(\)\)/.test(source),
+  'frame search input re-renders the cached list without fetching /frames'
+);
 ok(!/saveSelectedCandidates/.test(source), 'dead saveSelectedCandidates is gone');
 ok(!/btn-batch-save/.test(source), 'dead #btn-batch-save binding is gone');
 ok(!/action_roi/.test(source), 'no stale action_roi text remains in app.js');
+
+// --- MATCH-BUG static contracts: frame-id plumbing + no stale result boxes ---
+const testFramesFn = extractFunction('testFrames');
+ok(
+  /testFramePlan\(it, \{ livePreview, currentFrameId, frameId \}\)/.test(testFramesFn),
+  'testFrames is a thin wrapper over the pure testFramePlan (globals passed explicitly)'
+);
+const runAssetTestFn = extractFunction('runAssetTest');
+ok(/testAssetMatch\(it, frameId\)/.test(runAssetTestFn), 'runAssetTest passes the optional frame id to the template test');
+ok(/testAssetOcr\(it, frameId\)/.test(runAssetTestFn), 'runAssetTest passes the optional frame id to the OCR test');
+for (const fn of ['testAssetMatch', 'testAssetClick', 'testAssetDrag', 'testAssetOcr', 'testAssetCollection']) {
+  const body = extractFunction(fn);
+  ok(new RegExp(`function ${fn}\\(it, frameId\\)`).test(body), `${fn} accepts an optional frame id`);
+  ok(/testFrames\(it, frameId\)/.test(body), `${fn} resolves frames through testFrames(it, frameId)`);
+}
+ok(
+  /function testFrameLabel\(it, frameId\)/.test(extractFunction('testFrameLabel')),
+  'testFrameLabel can name an explicitly requested frame'
+);
+for (const fn of ['testAssetClick', 'testAssetDrag', 'testAssetOcr']) {
+  ok(
+    /testFrameLabel\(it, frameId\)/.test(extractFunction(fn)),
+    `${fn} reports the frame it actually tested`
+  );
+}
+ok(
+  /onTest: \(it\) => runAssetTest\(it, f\.id\)/.test(renderFrameAssetsFn),
+  'frame detail 测试 forces the rendered frame id'
+);
+ok(
+  /onClickTest: \(it\) => testAssetClick\(it, f\.id\)/.test(renderFrameAssetsFn) &&
+    /onDragTest: \(it\) => testAssetDrag\(it, f\.id\)/.test(renderFrameAssetsFn) &&
+    /onCollectionTest: \(it\) => testAssetCollection\(it, f\.id\)/.test(renderFrameAssetsFn),
+  'frame detail click/drag/collection tests force the rendered frame id too'
+);
+const selectFrameFn = extractFunction('selectFrame');
+ok(
+  /boxes = \[\];/.test(selectFrameFn) && /selectedBox = null;/.test(selectFrameFn),
+  'switching frames drops result boxes measured on the previous image'
+);
+// P2-2: deleting the CURRENT frame falls back to another one; the old boxes must
+// not be repainted over it (same illusion the selectFrame clearing fixes).
+const deleteFrameFn = extractFunction('deleteFrame');
+ok(
+  /const wasCurrent = currentFrameId != null/.test(deleteFrameFn) &&
+    /if \(wasCurrent\) \{\s*boxes = \[\];\s*selectedBox = null;/.test(deleteFrameFn),
+  'deleting the current frame drops result boxes measured on the removed image'
+);
+// P2-4: the single-frame full-screen fallback must stay on the frame it was
+// called for instead of silently reading testFrameQuery(it) on the current frame.
+const fallbackFullscreenFn = extractFunction('fallbackFullscreenLines');
+ok(
+  /function fallbackFullscreenLines\(reason, it, frameId\)/.test(fallbackFullscreenFn) &&
+    /testFrameQuery\(it, frameId\)/.test(fallbackFullscreenFn) &&
+    /testFrameLabel\(it, frameId\)/.test(fallbackFullscreenFn),
+  'the full-screen OCR fallback carries the tested frame id through'
+);
+ok(
+  /fallbackFullscreenLines\(probe\.error, it, frame\.frameId\)/.test(extractFunction('testAssetOcr')),
+  'the OCR probe hands its own frame id to the full-screen fallback'
+);
+ok(
+  /matchBoxValid\(recognizedBox\)/.test(extractFunction('testAssetMatch')) &&
+    /matchBoxValid\(recognizedBox\)/.test(extractFunction('testAssetClick')) &&
+    /matchBoxValid\(recognizedBox\)/.test(extractFunction('testAssetDrag')),
+  'template tests reject a miss (-1,-1) through matchBoxValid before drawing'
+);
+const probeOcrFrameFn = extractFunction('probeAssetOcrFrame');
+ok(/recognizedBox: null/.test(probeOcrFrameFn), 'single-line OCR reports no independent detection box');
+ok(
+  /roiBox: \[rec\[0\], rec\[1\], rec\[2\], rec\[3\]\]/.test(probeOcrFrameFn),
+  'single-line OCR keeps the stored ROI as roiBox only'
+);
+ok(
+  !/recognizedBox: \[rec\[0\]/.test(probeOcrFrameFn),
+  'the stored ROI is no longer labelled a recognized box'
+);
+ok(
+  /识别区域（存储 ROI，无独立检测框）/.test(extractFunction('testAssetClick')),
+  'the click test names the stored ROI a recognition area, not a detection box'
+);
 
 // Boot regression (E2E O1): #task-select must be populated BEFORE the task
 // panels load. The old boot refreshed assets while the select still had only

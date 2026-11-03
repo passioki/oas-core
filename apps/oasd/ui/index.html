@@ -153,6 +153,11 @@
             <button id="btn-relation-record" type="button">录制关系</button>
             <button id="btn-frames-clear">清空列表</button>
           </div>
+          <div class="row lib-toolbar">
+            <input id="frame-search" placeholder="搜索帧：名称 / #id / 分类" />
+            <button id="frame-search-clear" type="button" title="清空帧搜索">清空搜索</button>
+          </div>
+          <div id="frame-search-status" class="muted small">—</div>
           <label class="opt">分类
             <div id="frame-category-filter" class="category-filter-host"></div>
           </label>
@@ -165,6 +170,8 @@
           <button id="btn-frame-category-rename" type="button">重命名分类</button>
           <div id="frames-list" class="frames-list muted">（暂无图片，点「截图」或上传）</div>
           <div id="frame-detail" class="frame-detail muted small">（选择一帧查看详情）</div>
+          <div id="frame-assets-status" class="muted small">—</div>
+          <div id="frame-assets-list" class="asset-list" style="max-height: 200px;">（选择一帧查看该帧素材）</div>
           <div id="frames-status" class="muted small">—</div>
           <p class="muted small">
             点图片即切换「当前帧」：识别/匹配/裁剪都以当前帧为准（多帧可测试素材稳定性）。

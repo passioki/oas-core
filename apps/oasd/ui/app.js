@@ -36,6 +36,11 @@ const btnFramesRefresh = document.getElementById('btn-frames-refresh');
 const btnFramesClear = document.getElementById('btn-frames-clear');
 const framesList = document.getElementById('frames-list');
 const frameDetail = document.getElementById('frame-detail');
+const frameSearch = document.getElementById('frame-search');
+const frameSearchClear = document.getElementById('frame-search-clear');
+const frameSearchStatus = document.getElementById('frame-search-status');
+const frameAssetsStatus = document.getElementById('frame-assets-status');
+const frameAssetsList = document.getElementById('frame-assets-list');
 const canvasStage = document.getElementById('canvas-stage');
 const canvasWindows = document.getElementById('canvas-windows');
 const btnCanvasPanels = document.getElementById('btn-canvas-panels');
@@ -1774,11 +1779,41 @@ function randomPointInBox(box, margin = 0.15) {
   return { x: randomInt(x0, x1), y: randomInt(y0, y1) };
 }
 
-// P1-7: a single asset test must cover every declared position frame (18:56
-// user ruling "3 都测"), while live preview always means the one live frame.
-function testFrames(it) {
-  if (livePreview) {
+// MATCH-BUG fix (was P1-7): a single asset test must run on the frame the user
+// is actually looking at. Every saved asset has positions>=1, so the old
+// "positions first" order silently ignored currentFrameId and tested a static
+// screenshot — the template was still at its saved place there, hence the box
+// never moved. Order is now: live preview > explicit frameId > current frame >
+// saved position frames (fallback only when no frame is selected at all).
+// Batch testing (POST /task/assets/batch_test) keeps covering every position
+// frame. Live preview ignores frameId because the server gives live=1 priority.
+//
+// Pure on purpose: opts carries the editor globals so ui_pure_test can pin the
+// frame-selection contract without a browser.
+function testFramePlan(it, opts) {
+  const o = opts || {};
+  const live = 'livePreview' in o
+    ? !!o.livePreview
+    : (typeof livePreview !== 'undefined' && !!livePreview);
+  if (live) {
     return [{ query: '&live=1', label: '实时帧', source: 'live', live: true, frameId: null }];
+  }
+  const current = 'currentFrameId' in o
+    ? o.currentFrameId
+    : (typeof currentFrameId !== 'undefined' ? currentFrameId : null);
+  const explicit = o.frameId != null ? Number(o.frameId) : NaN;
+  const cur = Number(current);
+  const fid = Number.isInteger(explicit) && explicit > 0
+    ? explicit
+    : (Number.isInteger(cur) && cur > 0 ? cur : null);
+  if (fid != null) {
+    return [{
+      query: `&frame_id=${fid}`,
+      label: `当前帧 #${fid}`,
+      source: `current:#${fid}`,
+      live: false,
+      frameId: fid,
+    }];
   }
   const positions = Array.isArray(it && it.positions) ? it.positions : [];
   const ids = [];
@@ -1795,26 +1830,33 @@ function testFrames(it) {
       frameId: id,
     }));
   }
-  return [{
-    query: currentFrameId != null ? `&frame_id=${currentFrameId}` : '',
-    label: currentFrameId ? `当前帧 #${currentFrameId}` : '当前帧',
-    source: currentFrameId ? `current:#${currentFrameId}` : 'current',
-    live: false,
-    frameId: currentFrameId,
-  }];
+  return [{ query: '', label: '当前帧', source: 'current', live: false, frameId: null }];
+}
+
+// Thin wrapper: the real editor state comes from the page globals.
+function testFrames(it, frameId) {
+  return testFramePlan(it, { livePreview, currentFrameId, frameId });
 }
 
 // Kept for single-frame callers (collection etc.); multi-position callers use
 // testFrames() directly.
-function testFrameQuery(it) {
-  return testFrames(it)[0].query;
+function testFrameQuery(it, frameId) {
+  return testFrames(it, frameId)[0].query;
 }
 
-function testFrameLabel(it) {
-  const frames = testFrames(it);
+function testFrameLabel(it, frameId) {
+  const frames = testFrames(it, frameId);
   if (frames.length === 1) return frames[0].label;
   if (frames[0].live) return '实时帧';
   return `位置帧 ${frames.map((f) => `#${f.frameId}`).join('、')}`;
+}
+
+// /task/asset/match reports a miss as x=y=-1 while w/h stay the template size,
+// so checking w/h alone would still draw a box at (-1,-1) and log ❌ next to it.
+function matchBoxValid(box) {
+  return Array.isArray(box) && box.length >= 4 &&
+    Number(box[0]) >= 0 && Number(box[1]) >= 0 &&
+    Number(box[2]) > 0 && Number(box[3]) > 0;
 }
 
 function translatedActionShapeForMatch(it, match) {
@@ -1925,11 +1967,11 @@ function updateAssetTestModeButton() {
     : '演练模式（默认）：素材行「点击测试/拖动测试」只计算定位，不操作设备';
 }
 
-async function testAssetClick(it) {
+async function testAssetClick(it, frameId) {
   const mode = realAssetTestGuard();
   if (!mode.ok) return;
   const task = assetScopeTask(false);
-  const frames = testFrames(it);
+  const frames = testFrames(it, frameId);
   const details = [];
   const boxesForFrames = [];
   const realOps = [];
@@ -1949,7 +1991,7 @@ async function testAssetClick(it) {
           continue;
         }
         const recognizedBox = [Number(s.x), Number(s.y), Number(s.w), Number(s.h)];
-        if (!(recognizedBox[2] > 0 && recognizedBox[3] > 0)) {
+        if (!matchBoxValid(recognizedBox)) {
           details.push(`${frame.label}: ❌ 匹配坐标无效 (${s.x},${s.y},${s.w},${s.h})`);
           continue;
         }
@@ -1979,6 +2021,13 @@ async function testAssetClick(it) {
           continue;
         }
         const recognizedBox = probe.recognizedBox || null;
+        // Single-line /ocr has no bbox: probeAssetOcrFrame reports the stored
+        // ROI as roiBox only, so a stale-looking saved rectangle is never
+        // labelled (or drawn) as a real detection box.
+        const roiBox = Array.isArray(probe.roiBox) ? probe.roiBox : null;
+        const boxNote = recognizedBox
+          ? `真实识别框 [${recognizedBox.join(',')}]`
+          : `识别区域（存储 ROI，无独立检测框）${roiBox ? ` [${roiBox.join(',')}]` : '（无）'}`;
         const effShape = it.action_shape || null;
         const action = assetActionBox(it, effShape, recognizedBox || it.roi) || it.roi;
         const point = randomPointInAction(it, effShape, recognizedBox || it.roi);
@@ -1988,7 +2037,7 @@ async function testAssetClick(it) {
           : `文字 ${JSON.stringify(probe.text || '')}`;
         details.push(
           `${frame.label}: ✅ ${what} score=${Number(probe.score || 0).toFixed(4)} · ` +
-          `真实识别框 ${recognizedBox ? `[${recognizedBox.join(',')}]` : '（无独立 bbox）'} · ` +
+          `${boxNote} · ` +
           `操作区[${action.join(',')}] · 目标点 (${point.x},${point.y}) · 区域有效性：${validity.text} · ` +
           `帧来源：${probe.frameSource || frame.source}`
         );
@@ -2048,7 +2097,7 @@ async function testAssetClick(it) {
       : '注意：这里只验证定位/目标点；实际点击请在 flow 中运行。';
     resultEl.textContent =
       `${header}\n` +
-      `测试帧：${testFrameLabel(it)}（${frames.length} 帧）\n` +
+      `测试帧：${testFrameLabel(it, frameId)}（${frames.length} 帧）\n` +
       details.join('\n') +
       '\n' + tail;
     log(
@@ -2067,7 +2116,7 @@ async function testAssetClick(it) {
   }
 }
 
-async function testAssetDrag(it) {
+async function testAssetDrag(it, frameId) {
   const mode = realAssetTestGuard();
   if (!mode.ok) return;
   const direction = (window.prompt('拖动方向（up/down/left/right）', 'up') || '').trim();
@@ -2076,7 +2125,7 @@ async function testAssetDrag(it) {
     return;
   }
   const task = assetScopeTask(false);
-  const frames = testFrames(it);
+  const frames = testFrames(it, frameId);
   const lines = [];
   const realOps = [];
   let stepAction = null;
@@ -2101,6 +2150,10 @@ async function testAssetDrag(it) {
           continue;
         }
         recognizedBox = [Number(s.x), Number(s.y), Number(s.w), Number(s.h)];
+        if (!matchBoxValid(recognizedBox)) {
+          lines.push(`${frame.label}: ❌ 匹配坐标无效 (${s.x},${s.y},${s.w},${s.h})（未生成该帧拖动点）`);
+          continue;
+        }
         effShape = translatedActionShapeForMatch(it, s);
       }
       const action = assetActionBox(it, effShape, recognizedBox || it.roi) || it.roi;
@@ -2178,7 +2231,7 @@ async function testAssetDrag(it) {
       : `拖动测试（演练，不实际滑动）「${it.id}」`;
     resultEl.textContent =
       `${header}\n` +
-      `方向 ${direction} · 测试帧 ${testFrameLabel(it)}（${frames.length} 帧）\n` +
+      `方向 ${direction} · 测试帧 ${testFrameLabel(it, frameId)}（${frames.length} 帧）\n` +
       lines.join('\n') +
       (assetTestReal ? '\n' + modeNote : '\n\n' + JSON.stringify(step, null, 2));
     log(
@@ -2316,7 +2369,11 @@ async function probeAssetOcrFrame(it, frame, task) {
       ok: true,
       text: s.text,
       score: Number(s.score),
-      recognizedBox: [rec[0], rec[1], rec[2], rec[3]],
+      // Single-line /ocr returns text+score only (no bbox). The stored ROI is
+      // the recognition area, not a detected box — report it as roiBox so the
+      // caller never paints/labels it as a real detection box.
+      recognizedBox: null,
+      roiBox: [rec[0], rec[1], rec[2], rec[3]],
       s,
       frame,
       frameSource: s.frame_source || (frame && frame.source) || 'current',
@@ -2326,19 +2383,19 @@ async function probeAssetOcrFrame(it, frame, task) {
   }
 }
 
-async function testAssetOcr(it) {
+async function testAssetOcr(it, frameId) {
   const rec = assetRecognitionBox(it);
   if (!rec) {
     resultEl.textContent = `素材「${it.id}」没有识别区域（roi）`;
     return;
   }
-  const frames = testFrames(it);
+  const frames = testFrames(it, frameId);
   const task = assetScopeTask(false);
   const action = assetActionBox(it);
   const areaLine =
     `识别区域 [${rec.join(',')}]` +
     (action ? `；操作区域 [${action.join(',')}]（仅点击，不参与识别）` : '');
-  const header = `${areaLine}\n测试帧：${testFrameLabel(it)}（${frames.length} 帧）`;
+  const header = `${areaLine}\n测试帧：${testFrameLabel(it, frameId)}（${frames.length} 帧）`;
   resultEl.textContent = `素材「${it.id}」识别中…\n${header}`;
   log(`OCR 测试开始 asset=${it.id}`, 'INFO', {
     frames: frames.map((f) => f.label),
@@ -2363,7 +2420,9 @@ async function testAssetOcr(it) {
         });
         // Preserve the old single-frame full-screen fallback; multi-frame tests
         // stay a compact per-frame summary instead of replacing candidates.
-        if (frames.length === 1 && await fallbackFullscreenLines(probe.error, it)) {
+        // P2-4: hand it the probe's own frame so the fallback cannot land on the
+        // editor's current frame when a different frame was explicitly tested.
+        if (frames.length === 1 && await fallbackFullscreenLines(probe.error, it, frame.frameId)) {
           resultEl.textContent = header + '\n' + resultEl.textContent;
           return;
         }
@@ -2750,14 +2809,14 @@ function collectFlowAssetIds(flow) {
   return ids;
 }
 
-function runAssetTest(it) {
-  if (it.kind === 'template') testAssetMatch(it);
+function runAssetTest(it, frameId) {
+  if (it.kind === 'template') testAssetMatch(it, frameId);
   else if (it.kind === 'region') {
     pickAssetRoi(it);
     resultEl.textContent =
       `操作区域「${it.id}」[${(it.roi || []).join(',')}]\n` +
       `流程引用：click_target/find {kind:"region", sel:"${it.id}"}`;
-  } else testAssetOcr(it);
+  } else testAssetOcr(it, frameId);
 }
 
 function collectionAssetRows(collections) {
@@ -2928,6 +2987,72 @@ function fillAssetCategoryFilter(select, items) {
   select.value = cats.includes(keep) ? keep : '';
 }
 
+// One row builder for every asset library (task, global, and the frame detail
+// list). The row DOM itself still comes from the shared OASAssetUI.createRow;
+// this app-level entry adds the frame-detail source badge and a minimal
+// fallback so all three call sites cannot drift apart. No HTML strings.
+function assetRowElement(it, opts) {
+  const o = opts || {};
+  let row = null;
+  if (window.OASAssetUI && typeof window.OASAssetUI.createRow === 'function') {
+    row = window.OASAssetUI.createRow(it, o);
+  } else {
+    row = document.createElement('div');
+    row.className = 'asset-row';
+    row.dataset.assetId = it.id;
+    const main = document.createElement('button');
+    main.type = 'button';
+    main.className = 'asset-main';
+    main.textContent = `${it.id} · ${it.kind || '?'}`;
+    row.appendChild(main);
+  }
+  if (o.sourceLabel) {
+    const badge = document.createElement('span');
+    badge.className = 'run-badge kind frame-asset-source';
+    badge.textContent = o.sourceLabel;
+    badge.title = `素材来源：${o.sourceLabel}`;
+    row.appendChild(badge);
+  }
+  return row;
+}
+
+// Shared grouping/empty-state wrapper. renderGlobalAssets and renderAssetList
+// both go through this; the frame detail list needs per-row source metadata, so
+// it calls assetRowElement directly (same row DOM, different context).
+function renderAssetRows(container, items, opts) {
+  if (!container) return;
+  const o = opts || {};
+  if (o.clear !== false) container.textContent = '';
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) {
+    const empty = document.createElement('div');
+    empty.className = 'muted small';
+    empty.textContent = o.emptyText || '（没有素材）';
+    container.appendChild(empty);
+    return;
+  }
+  if (o.group) {
+    const groupBy = o.groupBy || 'kind';
+    const groups = new Map();
+    for (const it of list) {
+      const key = groupBy === 'category' ? assetCategory(it) : (it.kind || '');
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(it);
+    }
+    for (const [key, groupItems] of groups) {
+      const h = document.createElement('h4');
+      h.className = 'asset-group';
+      h.textContent = groupBy === 'category'
+        ? `${key}（${groupItems.length}）`
+        : `${ASSET_KIND_LABELS[key] || key}（${groupItems.length}）`;
+      container.appendChild(h);
+      for (const it of groupItems) container.appendChild(assetRowElement(it, o));
+    }
+    return;
+  }
+  for (const it of list) container.appendChild(assetRowElement(it, o));
+}
+
 function refreshAssetCategoryFilter() {
   fillAssetCategoryFilter(assetCategoryFilter, taskAssets);
 }
@@ -2966,7 +3091,7 @@ function renderAssetList() {
     assetsList.appendChild(empty);
     return;
   }
-  window.OASAssetUI.renderRows(assetsList, items, {
+  renderAssetRows(assetsList, items, {
     task: (taskName.value || '').trim(),
     pick: false,
     manage: true,
@@ -3044,6 +3169,10 @@ async function saveAssetOrder(ids) {
   }
   log(`素材顺序已保存（${r.ids.length} 个）`);
   await refreshTaskAssets(task);
+  // P1-1: a reorder is a write to the shared asset store too; refresh the global
+  // cache so the global library keeps the new order and the frame detail list
+  // (global rows come first) is repainted from the same order.
+  await refreshGlobalAssets();
 }
 
 // Collection test helpers. The URL builder is shared by the dry-run preview and
@@ -3072,7 +3201,7 @@ function assetCollectionMatchLine(label, s, fallbackSource) {
     (s.action_box ? ` · 操作区域[${s.action_box.join(',')}]` : '');
 }
 
-async function testAssetCollection(it) {
+async function testAssetCollection(it, frameId) {
   const mode = realAssetTestGuard();
   if (!mode.ok) return;
   const real = assetTestReal;
@@ -3081,7 +3210,7 @@ async function testAssetCollection(it) {
     resultEl.textContent = `集合「${it.id}」没有成员`;
     return;
   }
-  const frames = testFrames(it);
+  const frames = testFrames(it, frameId);
   const summaries = [];
   try {
     for (const frame of frames) {
@@ -3491,9 +3620,9 @@ function pickAssetRoi(it) {
   log(`已用素材「${it.id}」设置识别区域${shapeBox ? '（含操作区域）' : ''}`);
 }
 
-async function testAssetMatch(it) {
+async function testAssetMatch(it, frameId) {
   const task = assetScopeTask(false);
-  const frames = testFrames(it);
+  const frames = testFrames(it, frameId);
   const summaries = [];
   const framesBoxes = [];
   resultEl.textContent = `素材「${it.id}」全屏匹配中…（${frames.length} 帧）`;
@@ -3509,7 +3638,8 @@ async function testAssetMatch(it) {
       }
       const pass = s.pass !== false ? '通过' : '未过阈值';
       const recognizedBox = [Number(s.x), Number(s.y), Number(s.w), Number(s.h)];
-      if (!(recognizedBox[2] > 0 && recognizedBox[3] > 0)) {
+      // A miss still carries w/h (template size) with x=y=-1: never draw it.
+      if (!matchBoxValid(recognizedBox)) {
         summaries.push(`${frame.label}: ❌ 匹配坐标无效 (${s.x},${s.y},${s.w},${s.h})`);
         continue;
       }
@@ -3861,6 +3991,11 @@ async function loadStats() {
 // `#btn-library-refresh` button, and after every save/delete/position/ROI edit.
 async function refreshGlobalAssets() {
   const ok = await loadGlobalAssets();
+  // P1-1: the frame detail list and every frame row's 素材 N are derived from
+  // globalAssetsCache, so a global-library save/delete/position edit must repaint
+  // them too (taskAssets alone is empty in global mode). Cache-only => no extra
+  // /frames request and no recursion (renderFrameAssetViews never reloads).
+  renderFrameAssetViews();
   setStatus(ok ? '全局素材库已刷新' : '全局素材库刷新失败（见素材库状态）');
 }
 
@@ -3904,37 +4039,28 @@ function renderGlobalAssets() {
       : '（暂无全局素材）';
     return true;
   }
-  if (window.OASAssetUI && window.OASAssetUI.renderRows) {
-    window.OASAssetUI.renderRows(globalAssetsList, items, {
-      task: '',
-      pick: false,
-      manage: true,
-      actions: true,
-      group: true,
-      groupBy: 'category',
-      clear: true,
-      draggable: false,
-      emptyText: (q.trim() || cat) ? '（没有匹配的全局素材）' : '（暂无全局素材）',
-      onPick: (it) => pickAssetRoi(it),
-      onTest: runAssetTest,
-      onEdit: (it) => editAsset(it),
-      onPosition: (it) => editAssetPositions(it),
-      onDelete: (it) => deleteAsset(it),
-      onAction: (it) => editAssetActionRoi(it),
-      onClickTest: (it) => testAssetClick(it),
-      onDragTest: (it) => testAssetDrag(it),
-      onStep: (it) => generateAssetStep(it),
-      onCollectionTest: (it) => testAssetCollection(it),
-      onCollectionDelete: (it) => deleteCollection(it),
-    });
-    return true;
-  }
-  for (const it of items) {
-    const row = document.createElement('div');
-    row.className = 'asset-row';
-    row.textContent = `${it.id} · ${it.kind}`;
-    globalAssetsList.appendChild(row);
-  }
+  renderAssetRows(globalAssetsList, items, {
+    task: '',
+    pick: false,
+    manage: true,
+    actions: true,
+    group: true,
+    groupBy: 'category',
+    clear: true,
+    draggable: false,
+    emptyText: (q.trim() || cat) ? '（没有匹配的全局素材）' : '（暂无全局素材）',
+    onPick: (it) => pickAssetRoi(it),
+    onTest: runAssetTest,
+    onEdit: (it) => editAsset(it),
+    onPosition: (it) => editAssetPositions(it),
+    onDelete: (it) => deleteAsset(it),
+    onAction: (it) => editAssetActionRoi(it),
+    onClickTest: (it) => testAssetClick(it),
+    onDragTest: (it) => testAssetDrag(it),
+    onStep: (it) => generateAssetStep(it),
+    onCollectionTest: (it) => testAssetCollection(it),
+    onCollectionDelete: (it) => deleteCollection(it),
+  });
   return true;
 }
 
@@ -3999,16 +4125,122 @@ function updateFrameCategoryPicker(items) {
   picker.setValue(chosen ? chosen.label : '全部分类');
 }
 
+// --- 帧搜索纯函数：只做前端过滤，绝不改变 /frames 的请求参数 ---
+function frameMatchesQuery(frame, query) {
+  const f = frame || {};
+  const raw = String(query == null ? '' : query).trim().toLowerCase();
+  if (!raw) return true;
+  let idQuery = raw;
+  if (idQuery.charAt(0) === '#') idQuery = idQuery.slice(1).trim();
+  if (!idQuery) return true;
+  if (/^\d+$/.test(idQuery) && String(f.id == null ? '' : f.id) === idQuery) return true;
+  const name = String(f.name || '').toLowerCase();
+  const category = String(f.category || '').toLowerCase();
+  const idText = String(f.id == null ? '' : f.id).toLowerCase();
+  return name.includes(raw) || category.includes(raw) || idText.includes(raw);
+}
+
+function filterFramesByQuery(frames, query) {
+  const list = Array.isArray(frames) ? frames : [];
+  return list.filter((f) => frameMatchesQuery(f, query));
+}
+
+function frameSearchStatusText(total, shown) {
+  const all = Math.max(0, Number(total) || 0);
+  const visible = Math.max(0, Number(shown) || 0);
+  if (!all) return '共 0 帧';
+  if (!visible) return `共 ${all} 帧 · 没有匹配的帧`;
+  return `共 ${all} 帧 · 匹配 ${visible} 帧`;
+}
+
+// --- 帧详情素材纯函数：全局库 + 任务素材按 asset id 去重并合并来源 ---
+function assetHasFramePosition(it, frameId) {
+  const fid = Number(frameId);
+  if (!Number.isFinite(fid)) return false;
+  const positions = it && Array.isArray(it.positions) ? it.positions : [];
+  return positions.some((p) => Number(p) === fid);
+}
+
+function assetsForFrame(globalItems, taskItems, frameId) {
+  const out = [];
+  const byId = new Map();
+  function add(list, source) {
+    for (const it of (Array.isArray(list) ? list : [])) {
+      if (!it || it.id == null) continue;
+      if (!assetHasFramePosition(it, frameId)) continue;
+      const key = String(it.id);
+      let row = byId.get(key);
+      if (!row) {
+        row = Object.assign({}, it, { sources: [] });
+        byId.set(key, row);
+        out.push(row);
+      }
+      if (!row.sources.includes(source)) row.sources.push(source);
+    }
+  }
+  add(globalItems, 'global');
+  add(taskItems, 'task');
+  return out;
+}
+
+function assetSourceLabel(sources) {
+  const labels = { global: '全局', task: '任务' };
+  const list = (Array.isArray(sources) ? sources : [])
+    .map((s) => labels[s] || s)
+    .filter(Boolean);
+  return list.join('/');
+}
+
+function frameAssetsSummary(items, frameId) {
+  const list = Array.isArray(items) ? items : [];
+  function count(source) {
+    return list.filter((it) => {
+      const sources = it && Array.isArray(it.sources) ? it.sources : [];
+      return sources.includes(source);
+    }).length;
+  }
+  const globalCount = count('global');
+  const taskCount = count('task');
+  const total = list.length;
+  return {
+    frameId: frameId == null ? null : frameId,
+    total,
+    global: globalCount,
+    task: taskCount,
+    text: total
+      ? `该帧素材 ${total} 条（全局 ${globalCount} · 任务 ${taskCount}）`
+      : '该帧没有素材记录',
+  };
+}
+
+function frameAssetIdsByFrame() {
+  const map = new Map();
+  function add(list) {
+    for (const a of (Array.isArray(list) ? list : [])) {
+      const positions = a && Array.isArray(a.positions) ? a.positions : [];
+      for (const fid of positions) {
+        const key = Number(fid);
+        if (!Number.isFinite(key)) continue;
+        if (!map.has(key)) map.set(key, []);
+        const ids = map.get(key);
+        if (!ids.includes(a.id)) ids.push(a.id);
+      }
+    }
+  }
+  add(globalAssetsCache);
+  add(taskAssets);
+  return map;
+}
+
 function renderFrameDetail(f, assetIds) {
   if (!frameDetail) return;
   if (!f) {
     frameDetail.textContent = '（选择一帧查看详情）';
     return;
   }
-  const cats = (taskAssets || [])
-    .filter((a) => (a.positions || []).includes(f.id))
-    .map((a) => a.id);
-  const ids = assetIds || cats;
+  const ids = Array.isArray(assetIds)
+    ? assetIds
+    : assetsForFrame(globalAssetsCache, taskAssets, f.id).map((a) => a.id);
   const when = f.ts_ms ? new Date(Number(f.ts_ms)).toLocaleString() : '—';
   const size = f.bytes ? `${(Number(f.bytes) / 1024).toFixed(1)} KiB` : '—';
   frameDetail.textContent =
@@ -4019,7 +4251,190 @@ function renderFrameDetail(f, assetIds) {
     `时间：${when}\n` +
     `大小：${size}\n` +
     `状态：${f.current ? '当前帧' : '非当前'}${f.seen === false ? ' · 未看过' : ''}\n` +
+    `该帧素材：${ids && ids.length ? ids.length : 0} 条\n` +
     `关联素材：${ids && ids.length ? ids.join('、') : '（无）'}`;
+}
+
+// The frame detail list is the third asset-library surface. It reuses the same
+// asset-row DOM as the task/global libraries and only adds a source badge.
+function renderFrameAssets(f, rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (frameAssetsStatus) {
+    frameAssetsStatus.textContent = f ? frameAssetsSummary(list, f.id).text : '—';
+  }
+  if (!frameAssetsList) return;
+  frameAssetsList.textContent = '';
+  if (!f) {
+    frameAssetsList.textContent = '（选择一帧查看该帧素材）';
+    return;
+  }
+  if (!list.length) {
+    frameAssetsList.textContent = '该帧没有素材记录';
+    return;
+  }
+  for (const row of list) {
+    const sources = Array.isArray(row.sources) ? row.sources : [];
+    const scopedTask = sources.includes('global')
+      ? ''
+      : ((taskName && taskName.value) || '').trim();
+    frameAssetsList.appendChild(assetRowElement(row, {
+      task: scopedTask,
+      pick: false,
+      manage: false,
+      actions: true,
+      group: false,
+      draggable: false,
+      sourceLabel: assetSourceLabel(sources),
+      onPick: (it) => pickAssetRoi(it),
+      onTest: (it) => runAssetTest(it, f.id),
+      onClickTest: (it) => testAssetClick(it, f.id),
+      onDragTest: (it) => testAssetDrag(it, f.id),
+      onStep: (it) => generateAssetStep(it),
+      onCollectionTest: (it) => testAssetCollection(it, f.id),
+      onCollectionDelete: (it) => deleteCollection(it),
+    }));
+  }
+}
+
+// Re-render the frame list from the cache so typing in #frame-search never
+// issues a /frames request. Category grouping is applied AFTER search.
+function renderFramesList() {
+  if (!framesList) return;
+  const all = Array.isArray(framesCache) ? framesCache : [];
+  const q = (frameSearch && frameSearch.value) || '';
+  const filtered = filterFramesByQuery(all, q);
+  if (frameSearchStatus) {
+    frameSearchStatus.textContent = frameSearchStatusText(all.length, filtered.length);
+  }
+  framesList.textContent = '';
+  if (!all.length) {
+    framesList.textContent = '（暂无图片，点「截取当前帧入库」或上传）';
+    return;
+  }
+  if (!filtered.length) {
+    framesList.textContent = '没有匹配的帧';
+    return;
+  }
+  const groups = new Map();
+  for (const f of filtered) {
+    const cat = (f.category || '').trim() || '未分类';
+    if (!groups.has(cat)) groups.set(cat, []);
+    groups.get(cat).push(f);
+  }
+  const orderedCats = Array.from(groups.keys()).sort((a, b) => {
+    if (a === '未分类') return 1;
+    if (b === '未分类') return -1;
+    return 0;
+  });
+  // Only render the selected category, not every group expanded.
+  const selectedCat = categoryFilterValue || '';
+  const visibleCats = selectedCat ? [selectedCat] : orderedCats;
+  const assetsByFrame = frameAssetIdsByFrame();
+  let groupsShown = 0;
+  for (const cat of visibleCats) {
+    if (!groups.has(cat)) continue;
+    groupsShown += 1;
+    const group = document.createElement('div');
+    group.className = 'frame-group';
+    const head = document.createElement('div');
+    head.className = 'frame-group-head';
+    head.textContent = `${cat}（${groups.get(cat).length}）`;
+    head.title = '把帧拖到分组标题上可改分类';
+    head.addEventListener('dragover', (e) => e.preventDefault());
+    head.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const id = Number(e.dataTransfer.getData('text/plain'));
+      if (id) moveFrameToCategory(id, cat === '未分类' ? '' : cat);
+    });
+    group.appendChild(head);
+    for (const f of groups.get(cat)) {
+      const linked = assetsByFrame.get(f.id) || [];
+      const row = document.createElement('div');
+      row.className = 'frame-row' + (f.current ? ' current' : '');
+      if (f.seen === false) {
+        row.classList.add('frame-row-new');
+        const newBadge = document.createElement('span');
+        newBadge.className = 'frame-new-badge';
+        newBadge.textContent = '新';
+        newBadge.title = '尚未点击或编辑过该帧';
+        row.appendChild(newBadge);
+      }
+      row.draggable = true;
+      row.dataset.id = String(f.id);
+      row.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/plain', String(f.id));
+        e.dataTransfer.effectAllowed = 'move';
+        row.classList.add('dragging');
+      });
+      row.addEventListener('dragend', () => row.classList.remove('dragging'));
+      row.addEventListener('dragover', (e) => e.preventDefault());
+      row.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const dragged = Number(e.dataTransfer.getData('text/plain'));
+        if (dragged && dragged !== f.id) {
+          moveFrameBefore(dragged, f.id, cat === '未分类' ? '' : cat);
+        }
+      });
+      const pick = document.createElement('button');
+      pick.type = 'button';
+      pick.className = 'frame-pick';
+      pick.textContent = `${f.name || '帧'} · #${f.id} ${f.width}x${f.height}${f.current ? ' · 当前' : ''} · 素材 ${linked.length}`;
+      pick.title = `来源 ${f.source} · 时间 ${f.ts_ms} · ${f.bytes} 字节 · 关联素材：${linked.join('、') || '无'}`;
+      pick.addEventListener('click', () => selectFrame(f.id));
+      const rename = document.createElement('button');
+      rename.type = 'button';
+      rename.className = 'frame-del';
+      rename.textContent = '名';
+      rename.title = '重命名该帧';
+      rename.addEventListener('click', () => renameFrame(f));
+      const catBtn = document.createElement('button');
+      catBtn.type = 'button';
+      catBtn.className = 'frame-del';
+      catBtn.textContent = '类';
+      catBtn.title = '设置分类（自由文本）';
+      catBtn.addEventListener('click', () => setFrameCategory(f));
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'frame-del';
+      del.textContent = '删';
+      del.title = '删除该帧';
+      del.addEventListener('click', () => deleteFrame(f.id));
+      row.append(pick, rename, catBtn, del);
+      group.appendChild(row);
+    }
+    framesList.appendChild(group);
+  }
+  if (!groupsShown) framesList.textContent = '没有匹配的帧';
+}
+
+// P1-1: asset saves/deletes/position edits change the frame<->asset relation but
+// never the frames themselves. Every asset CRUD path refreshes the task panel
+// first, and refreshTaskAssets() calls refreshFrames() *before* the global
+// library is reloaded — so the frame detail list and each frame row's 素材 N
+// would keep reading the previous globalAssetsCache until the next manual
+// refresh. Repaint both surfaces from the refreshed caches.
+// Deliberately cache-only: calling refreshFrames() here would issue a second
+// GET /frames (plus one more through refreshAssetPositionFrames) right after the
+// request refreshTaskAssets() just made, while nothing about the frames changed.
+// Nothing on this path calls refreshGlobalAssets(), so it cannot recurse either.
+function renderFrameAssetViews() {
+  const frames = Array.isArray(framesCache) ? framesCache : [];
+  // Before the frame list has ever loaded there is nothing to repaint; doing it
+  // anyway would overwrite the panel with a false "no frames" empty state.
+  if (!frames.length && currentFrameId == null) return false;
+  const f = currentFrameId == null
+    ? null
+    : frames.find((x) => Number(x.id) === Number(currentFrameId)) || null;
+  renderFramesList();
+  if (!f) {
+    renderFrameDetail(null);
+    renderFrameAssets(null, []);
+    return false;
+  }
+  const rows = assetsForFrame(globalAssetsCache, taskAssets, f.id);
+  renderFrameDetail(f, rows.map((a) => a.id));
+  renderFrameAssets(f, rows);
+  return true;
 }
 
 async function refreshFrames() {
@@ -4033,9 +4448,7 @@ async function refreshFrames() {
     }
     const frames = s.frames || [];
     framesCache = frames;
-    framesList.textContent = '';
     if (!frames.length) {
-      framesList.textContent = '（暂无图片，点「截取当前帧入库」或上传）';
       framesStatus.textContent = '—';
       updateFrameCategoryPicker([{ id: '', label: '全部分类', unseen: 0, count: 0 }]);
       if (frameCategorySet) {
@@ -4047,18 +4460,12 @@ async function refreshFrames() {
       }
       currentFrameId = null;
       renderFrameDetail(null);
+      renderFrameAssets(null, []);
+      renderFramesList();
       return;
     }
     const groups = new Map();
     const unseenByCat = new Map();
-    const assetsByFrame = new Map();
-    for (const a of (taskAssets || [])) {
-      const positions = Array.isArray(a.positions) ? a.positions : [];
-      for (const fid of positions) {
-        if (!assetsByFrame.has(fid)) assetsByFrame.set(fid, []);
-        assetsByFrame.get(fid).push(a.id);
-      }
-    }
     let totalUnseen = 0;
     let currentFrame = null;
     for (const f of frames) {
@@ -4072,7 +4479,11 @@ async function refreshFrames() {
       }
     }
     currentFrameId = currentFrame ? currentFrame.id : null;
-    renderFrameDetail(currentFrame, currentFrame ? assetsByFrame.get(currentFrame.id) : null);
+    const currentAssets = currentFrame
+      ? assetsForFrame(globalAssetsCache, taskAssets, currentFrame.id)
+      : [];
+    renderFrameDetail(currentFrame, currentAssets.map((a) => a.id));
+    renderFrameAssets(currentFrame, currentAssets);
     const orderedCats = Array.from(groups.keys()).sort((a, b) => {
       if (a === '未分类') return 1;
       if (b === '未分类') return -1;
@@ -4109,81 +4520,7 @@ async function refreshFrames() {
       const curCat = currentFrame ? ((currentFrame.category || '').trim() || '') : '';
       frameCategorySet.value = currentFrame && orderedCats.includes(curCat) ? curCat : (keep || '');
     }
-    // Only render the selected category, not every group expanded.
-    const selectedCat = categoryFilterValue || '';
-    const visibleCats = selectedCat ? [selectedCat] : orderedCats;
-    for (const cat of visibleCats) {
-      if (!groups.has(cat)) continue;
-      const group = document.createElement('div');
-      group.className = 'frame-group';
-      const head = document.createElement('div');
-      head.className = 'frame-group-head';
-      head.textContent = `${cat}（${groups.get(cat).length}）`;
-      head.title = '把帧拖到分组标题上可改分类';
-      head.addEventListener('dragover', (e) => e.preventDefault());
-      head.addEventListener('drop', (e) => {
-        e.preventDefault();
-        const id = Number(e.dataTransfer.getData('text/plain'));
-        if (id) moveFrameToCategory(id, cat === '未分类' ? '' : cat);
-      });
-      group.appendChild(head);
-      for (const f of groups.get(cat)) {
-        const row = document.createElement('div');
-        row.className = 'frame-row' + (f.current ? ' current' : '');
-        if (f.seen === false) {
-          row.classList.add('frame-row-new');
-          const newBadge = document.createElement('span');
-          newBadge.className = 'frame-new-badge';
-          newBadge.textContent = '新';
-          newBadge.title = '尚未点击或编辑过该帧';
-          row.appendChild(newBadge);
-        }
-        row.draggable = true;
-        row.dataset.id = String(f.id);
-        row.addEventListener('dragstart', (e) => {
-          e.dataTransfer.setData('text/plain', String(f.id));
-          e.dataTransfer.effectAllowed = 'move';
-          row.classList.add('dragging');
-        });
-        row.addEventListener('dragend', () => row.classList.remove('dragging'));
-        row.addEventListener('dragover', (e) => e.preventDefault());
-        row.addEventListener('drop', (e) => {
-          e.preventDefault();
-          const dragged = Number(e.dataTransfer.getData('text/plain'));
-          if (dragged && dragged !== f.id) {
-            moveFrameBefore(dragged, f.id, cat === '未分类' ? '' : cat);
-          }
-        });
-        const linked = assetsByFrame.get(f.id) || [];
-        const pick = document.createElement('button');
-        pick.type = 'button';
-        pick.className = 'frame-pick';
-        pick.textContent = `${f.name || '帧'} · #${f.id} ${f.width}x${f.height}${f.current ? ' · 当前' : ''} · 素材 ${linked.length}`;
-        pick.title = `来源 ${f.source} · 时间 ${f.ts_ms} · ${f.bytes} 字节 · 关联素材：${linked.join('、') || '无'}`;
-        pick.addEventListener('click', () => selectFrame(f.id));
-        const rename = document.createElement('button');
-        rename.type = 'button';
-        rename.className = 'frame-del';
-        rename.textContent = '名';
-        rename.title = '重命名该帧';
-        rename.addEventListener('click', () => renameFrame(f));
-        const catBtn = document.createElement('button');
-        catBtn.type = 'button';
-        catBtn.className = 'frame-del';
-        catBtn.textContent = '类';
-        catBtn.title = '设置分类（自由文本）';
-        catBtn.addEventListener('click', () => setFrameCategory(f));
-        const del = document.createElement('button');
-        del.type = 'button';
-        del.className = 'frame-del';
-        del.textContent = '删';
-        del.title = '删除该帧';
-        del.addEventListener('click', () => deleteFrame(f.id));
-        row.append(pick, rename, catBtn, del);
-        group.appendChild(row);
-      }
-      framesList.appendChild(group);
-    }
+    renderFramesList();
     framesStatus.textContent = `共 ${frames.length} 帧；拖动排序/换分组，点行切换当前帧`;
     await refreshAssetPositionFrames();
   } catch (e) {
@@ -4574,6 +4911,12 @@ async function selectFrame(id) {
       framesStatus.textContent = '切换失败：' + s.error;
       return;
     }
+    // MATCH-BUG: result boxes belong to the frame they were measured on. Clear
+    // them before loading the new image (loadFrame draws), otherwise the last
+    // test's rectangles paint over the new frame during the /state round-trip
+    // and look like "the box never changes".
+    boxes = [];
+    selectedBox = null;
     await loadFrame();
     await refreshState();
     draw();
@@ -4585,6 +4928,9 @@ async function selectFrame(id) {
 }
 
 async function deleteFrame(id) {
+  // P2-2: capture this before refreshFrames() replaces currentFrameId, so the
+  // fallback repaint below can drop test boxes measured on the removed image.
+  const wasCurrent = currentFrameId != null && Number(currentFrameId) === Number(id);
   try {
     const r = await fetch('/frames/delete', {
       method: 'POST',
@@ -4599,6 +4945,13 @@ async function deleteFrame(id) {
       return;
     }
     log(`已删除图片 #${id}（剩 ${s.remaining} 帧）`);
+    // Same "the box never changes" illusion as selectFrame: the fallback frame
+    // is painted by loadFrame()+draw() below and must not inherit boxes that
+    // were measured on the deleted frame.
+    if (wasCurrent) {
+      boxes = [];
+      selectedBox = null;
+    }
     await refreshFrames();
     const st = await (await fetch('/state')).json();
     if (st.captured) {
@@ -5369,7 +5722,12 @@ btnClear.addEventListener('click', () => {
   setStatus('已清除识别/操作区域与选择状态');
 });
 
-async function fallbackFullscreenLines(reason, it) {
+// P2-4: keep the full-screen fallback on the SAME frame the failed single-line
+// probe ran on. Without frameId it silently fell back to the editor's current
+// frame, which can differ from the frame-detail row that was clicked (stale row,
+// another tab). `it` may be null (main OCR button), so `it`'s positions are only
+// a last resort.
+async function fallbackFullscreenLines(reason, it, frameId) {
   if (!detReady) {
     log('OCR 全屏回退不可用：无 det model', 'ERROR', { reason });
     resultEl.textContent = `单行识别失败（${reason}）；多行识别不可用（无 det model）`;
@@ -5379,12 +5737,12 @@ async function fallbackFullscreenLines(reason, it) {
   const fh = canvas.height || (img && img.naturalHeight) || (roi && roi.y + roi.h) || 720;
   const full = { x: 0, y: 0, w: fw, h: fh };
   resultEl.textContent = `单行识别失败（${reason}），改用全屏多行识别…`;
-  log(`OCR 全屏回退开始`, 'WARN', { reason, full_roi: full, frames: testFrameLabel(it) });
-  const r = await fetch(`/lines?x=0&y=0&w=${fw}&h=${fh}${testFrameQuery(it)}`);
+  log(`OCR 全屏回退开始`, 'WARN', { reason, full_roi: full, frames: testFrameLabel(it, frameId) });
+  const r = await fetch(`/lines?x=0&y=0&w=${fw}&h=${fh}${testFrameQuery(it, frameId)}`);
   const s = await r.json();
   if (s.error || !Array.isArray(s.lines)) {
     log('OCR 全屏回退失败', 'ERROR', { reason, error: s.error || '无结果' });
-    resultEl.textContent = `全屏多行回退失败：${s.error || '无结果'}（帧来源：${s.frame_source || testFrameLabel(it)}）`;
+    resultEl.textContent = `全屏多行回退失败：${s.error || '无结果'}（帧来源：${s.frame_source || testFrameLabel(it, frameId)}）`;
     return false;
   }
   const lines = s.lines.map((b) => ({
@@ -5394,12 +5752,12 @@ async function fallbackFullscreenLines(reason, it) {
   log('OCR 全屏回退成功', 'INFO', {
     reason, full_roi: full, count: lines.length,
     elapsed_ms: s.elapsed_ms,
-    frame_source: s.frame_source || testFrameLabel(it),
+    frame_source: s.frame_source || testFrameLabel(it, frameId),
     lines: lines.map((l) => ({ text: l.text, score: l.score })),
   });
   renderOcrLines(lines, full, '全屏多行回退');
   resultEl.textContent =
-    `单行识别失败（${reason}）→ 全屏多行识别 ${lines.length} 行（帧来源：${s.frame_source || testFrameLabel(it)}）；` +
+    `单行识别失败（${reason}）→ 全屏多行识别 ${lines.length} 行（帧来源：${s.frame_source || testFrameLabel(it, frameId)}）；` +
     '请在「识别结果」勾选需要的行。';
   return true;
 }
@@ -8483,6 +8841,24 @@ async function submitResetMemory() {
   });
   if (captureSubmit) captureSubmit.addEventListener('click', submitCaptureFrame);
   if (btnFramesRefresh) btnFramesRefresh.addEventListener('click', () => refreshFrames());
+  // 帧搜索只过滤本地 framesCache；不改变 /frames 请求，也不重置分类。
+  if (frameSearch) {
+    frameSearch.addEventListener('input', () => renderFramesList());
+    frameSearch.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        frameSearch.value = '';
+        renderFramesList();
+      }
+    });
+  }
+  if (frameSearchClear) {
+    frameSearchClear.addEventListener('click', () => {
+      if (!frameSearch) return;
+      frameSearch.value = '';
+      renderFramesList();
+      frameSearch.focus();
+    });
+  }
   await refreshAssetPositionFrames();
   const btnFrameCategoryApply = document.getElementById('btn-frame-category-apply');
   if (btnFrameCategoryApply) btnFrameCategoryApply.addEventListener('click', applyFrameCategoryFromSelect);
