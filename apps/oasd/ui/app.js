@@ -167,6 +167,21 @@ const pageSchedJson = document.getElementById('page-sched-json');
 const pageSchedJsonSave = document.getElementById('page-sched-json-save');
 const pageSchedJsonReload = document.getElementById('page-sched-json-reload');
 const pageSchedJsonStatus = document.getElementById('page-sched-json-status');
+// P4: scheduler run history (list / filters / detail dialog).
+const pageSchedRunsSummary = document.getElementById('page-sched-runs-summary');
+const pageSchedRunsRefresh = document.getElementById('page-sched-runs-refresh');
+const pageSchedRunsTask = document.getElementById('page-sched-runs-task');
+const pageSchedRunsOutcome = document.getElementById('page-sched-runs-outcome');
+const pageSchedRunsLimit = document.getElementById('page-sched-runs-limit');
+const pageSchedRunsClear = document.getElementById('page-sched-runs-clear');
+const pageSchedRunsStatus = document.getElementById('page-sched-runs-status');
+const pageSchedRunsList = document.getElementById('page-sched-runs-list');
+const schedRunDialog = document.getElementById('page-sched-runs-dialog');
+const schedRunDialogTitle = document.getElementById('page-sched-runs-detail-title');
+const schedRunDialogBody = document.getElementById('page-sched-runs-detail-body');
+const schedRunDialogError = document.getElementById('page-sched-runs-detail-error');
+const schedRunDialogRefresh = document.getElementById('page-sched-runs-detail-refresh');
+const schedRunDialogClose = document.getElementById('page-sched-runs-detail-close');
 const btnSchedOpenPage = document.getElementById('btn-sched-open-page');
 const schedEntryDialog = document.getElementById('sched-entry-dialog');
 const schedEntryTitle = document.getElementById('sched-entry-title');
@@ -244,6 +259,14 @@ let scheduleBusy = false;
 let scheduleJsonDirty = false;
 let scheduleEntryDialogState = null;
 let scheduleQueueDialogState = null;
+// P4: scheduler run history state. `scheduleRunsFilter.queueId` is a local-only
+// filter (the backend list endpoint filters by task/outcome only); it is set by
+// a queue row's 「运行记录」 shortcut and cleared by the clear button.
+let scheduleRunsData = null;
+let scheduleRunsError = '';
+let scheduleRunsLoading = false;
+let scheduleRunsFilter = { limit: 200, task: '', outcome: '', queueId: '' };
+let scheduleRunDetailRunId = '';
 // M1 运行状态轮询：已消费的日志行数 / 是否已有轮询在跑（避免重复轮询）
 let runLogSeen = 0;
 let runPolling = false;
@@ -773,11 +796,17 @@ async function refreshLibrary() {
       sched.textContent = '调度设置…';
       sched.title = '为该任务加入调度，或编辑它已有的调度条目';
       sched.addEventListener('click', () => openTaskScheduleDialog(t.name));
+      // P4: jump to the schedule page's run history filtered to this task.
+      const runsBtn = document.createElement('button');
+      runsBtn.type = 'button';
+      runsBtn.textContent = '运行记录';
+      runsBtn.title = '打开调度页并筛选该任务的运行记录';
+      runsBtn.addEventListener('click', () => showScheduleRunsForTask(t.name));
       const del = document.createElement('button');
       del.type = 'button';
       del.textContent = '删除';
       del.addEventListener('click', () => deleteTaskFromLibrary(t.name));
-      card.append(meta, open, sched, del);
+      card.append(meta, open, sched, runsBtn, del);
       libList.appendChild(card);
     }
   } catch (e) {
@@ -923,6 +952,12 @@ async function refreshSchedulePage() {
       log(schedStatusErrorText(e), 'WARN');
     }
     const cfg = await loadScheduleConfig(true);
+    if (status) schedulerStatus = status;
+    // P4: run history is a soft dependency — a failed read is rendered in its
+    // own section and must never abort the status card / entries / queues.
+    populateScheduleRunsTaskOptions();
+    await refreshScheduleRuns();
+    syncScheduleRunsControls();
     renderScheduleStatusCard(status);
     if (cfg) {
       if (pageSchedJson && !scheduleJsonDirty) {
@@ -934,7 +969,6 @@ async function refreshSchedulePage() {
     }
     renderScheduleEntries(status, cfg);
     renderScheduleQueues(status, cfg);
-    if (status) schedulerStatus = status;
   } catch (e) {
     if (pageSchedSummary) pageSchedSummary.textContent = '读取异常：' + e;
     log('刷新调度页异常：' + e, 'ERROR');
@@ -6475,11 +6509,445 @@ function schedParseConfigJson(text) {
   return { ok: true, config: schedNormalizeConfig(v), error: '' };
 }
 
+// --- P4: 调度运行记录（/runs/scheduler）纯函数 -------------------------------
+// Contract (P4A): GET /runs/scheduler?limit=200&task=&outcome= returns
+// {ok, dir, count, runs:[{run_id,file,task,kind,entry_id,queue_id,round,
+//  member_index,attempt,started_ms,finished_ms,duration_ms,class,outcome,exit,
+//  exit_code,clicks,error}]} newest→oldest; GET /runs/scheduler/run?run_id=
+// returns one full run. Legacy GET /runs (clicks JSONL) is untouched.
+// Keep every helper self-contained: ui_pure_test extracts functions one by one.
+function schedRunValueText(value) {
+  if (value === undefined || value === null || value === '') return '—';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    const text = JSON.stringify(value);
+    return text == null ? '—' : text;
+  } catch (e) {
+    return String(value);
+  }
+}
+
+function schedRunLimitValue(value) {
+  const allowed = [100, 200, 500, 1000];
+  const n = Number(value);
+  return allowed.indexOf(n) >= 0 ? n : 200;
+}
+
+function schedRunsBuildQuery(opts) {
+  // P4A filters on the persisted `outcome` (Done/Failed/Exhausted/error). The
+  // plan's class words (success/resource/blocked/retryable/fatal) live in the
+  // separate `class` field, which the list endpoint cannot filter; those are
+  // applied locally by schedRunsFilterLocal so both spellings work.
+  const classOutcomes = ['success', 'resource', 'blocked', 'retryable', 'fatal'];
+  const persistedOutcomes = ['Done', 'Failed', 'Exhausted', 'error'];
+  const o = opts || {};
+  const parts = ['limit=' + schedRunLimitValue(o.limit)];
+  const task = String(o.task == null ? '' : o.task).trim();
+  if (task) parts.push('task=' + encodeURIComponent(task));
+  const rawOutcome = String(o.outcome == null ? '' : o.outcome).trim();
+  if (rawOutcome) {
+    const isClassWord = classOutcomes.some((v) => v.toLowerCase() === rawOutcome.toLowerCase());
+    if (!isClassWord) {
+      const canonical = persistedOutcomes.find((v) => v.toLowerCase() === rawOutcome.toLowerCase()) || '';
+      if (canonical) parts.push('outcome=' + encodeURIComponent(canonical));
+    }
+  }
+  return parts.join('&');
+}
+
+function schedRunsBuildUrl(opts) {
+  return '/runs/scheduler?' + schedRunsBuildQuery(opts);
+}
+
+function schedRunDetailUrl(runId) {
+  return '/runs/scheduler/run?run_id=' + encodeURIComponent(String(runId == null ? '' : runId).trim());
+}
+
+function schedRunTimeText(ms) {
+  if (ms === undefined || ms === null || ms === '') return '—';
+  const n = Number(ms);
+  if (!isFinite(n) || n <= 0) return '—';
+  try {
+    return new Date(n).toLocaleString('zh-CN', { hour12: false });
+  } catch (e) {
+    return String(ms);
+  }
+}
+
+function schedRunDurationMs(run) {
+  const r = run || {};
+  const direct = Number(r.duration_ms);
+  if (r.duration_ms !== undefined && r.duration_ms !== null && r.duration_ms !== '' &&
+      isFinite(direct) && direct >= 0) {
+    return direct;
+  }
+  const start = Number(r.started_ms);
+  const end = Number(r.finished_ms);
+  if (r.started_ms !== undefined && r.started_ms !== null && r.started_ms !== '' &&
+      r.finished_ms !== undefined && r.finished_ms !== null && r.finished_ms !== '' &&
+      isFinite(start) && isFinite(end) && end >= start) {
+    return end - start;
+  }
+  return null;
+}
+
+function schedRunDurationText(ms) {
+  if (ms === undefined || ms === null || ms === '') return '—';
+  const n = Number(ms);
+  if (!isFinite(n) || n < 0) return '—';
+  if (n < 1000) return Math.round(n) + 'ms';
+  if (n < 60000) return (n / 1000).toFixed(1) + 's';
+  const total = Math.round(n / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return h + 'h' + m + 'm';
+  return m + 'm' + s + 's';
+}
+
+function schedRunOutcomeLabel(outcome) {
+  const raw = String(outcome == null ? '' : outcome).trim();
+  const key = raw.toLowerCase();
+  const labels = {
+    success: '成功',
+    done: '完成',
+    resource: '资源不足',
+    blocked: '被阻断',
+    retryable: '可重试',
+    fatal: '致命',
+    failed: '失败',
+    exhausted: '耗尽',
+    error: '错误',
+  };
+  return labels[key] || raw || '未知';
+}
+
+function schedRunOutcomeBadgeClass(outcome) {
+  const key = String(outcome == null ? '' : outcome).trim().toLowerCase();
+  if (key === 'success' || key === 'done') return 'ok';
+  if (key === 'fatal' || key === 'failed' || key === 'error') return 'err';
+  if (key === 'resource' || key === 'blocked' || key === 'retryable' || key === 'exhausted') return 'warn';
+  return 'kind';
+}
+
+// Colour by the failure class first (success/resource/blocked/retryable/fatal),
+// then by the persisted outcome (Done/Failed/Exhausted/error) for older files.
+function schedRunStatusBadgeClass(run) {
+  const r = run || {};
+  const byClass = schedRunOutcomeBadgeClass(r.class);
+  if (byClass !== 'kind') return byClass;
+  return schedRunOutcomeBadgeClass(r.outcome);
+}
+
+function schedRunKindText(kind) {
+  const key = String(kind == null ? '' : kind).trim().toLowerCase();
+  if (key === 'queue_member') return 'queue_member';
+  return key === 'queue' ? 'queue' : 'task';
+}
+
+function schedRunIsQueueRun(run) {
+  const kind = schedRunKindText((run || {}).kind);
+  return kind === 'queue' || kind === 'queue_member';
+}
+
+function schedQueueDisplayName(cfg, queueId) {
+  const id = String(queueId == null ? '' : queueId).trim();
+  if (!id) return '';
+  for (const q of (cfg && cfg.queues) || []) {
+    if (!q || String(q.queue_id == null ? '' : q.queue_id) !== id) continue;
+    const name = String(q.name == null ? '' : q.name).trim();
+    return name && name !== id ? name : id;
+  }
+  return id;
+}
+
+function schedRunTaskLabel(run, cfg) {
+  const r = run || {};
+  const task = String(r.task == null ? '' : r.task).trim() || '—';
+  if (!schedRunIsQueueRun(r)) return task;
+  const queueId = String(r.queue_id == null ? '' : r.queue_id).trim();
+  const queueName = schedQueueDisplayName(cfg, queueId) || queueId;
+  return queueName ? queueName + '/' + task : task;
+}
+
+function schedRunRoundMemberText(run) {
+  const r = run || {};
+  if (!schedRunIsQueueRun(r)) return '—';
+  const bits = [];
+  if (r.round !== undefined && r.round !== null && r.round !== '') bits.push('第' + r.round + '轮');
+  const mi = Number(r.member_index);
+  if (r.member_index !== undefined && r.member_index !== null && r.member_index !== '' &&
+      isFinite(mi) && mi >= 0) {
+    bits.push('成员' + (Math.floor(mi) + 1));
+  }
+  return bits.length ? bits.join(' · ') : '—';
+}
+
+function schedRunAttemptText(run) {
+  const r = run || {};
+  const n = Number(r.attempt);
+  if (r.attempt === undefined || r.attempt === null || r.attempt === '' || !isFinite(n) || n <= 0) {
+    return '—';
+  }
+  return String(Math.floor(n));
+}
+
+function schedRunExitText(run) {
+  const r = run || {};
+  if (r.exit_code !== undefined && r.exit_code !== null && r.exit_code !== '') {
+    return schedRunValueText(r.exit_code);
+  }
+  if (r.exit !== undefined && r.exit !== null && r.exit !== '') return schedRunValueText(r.exit);
+  return '—';
+}
+
+function schedRunClicksText(run) {
+  const r = run || {};
+  const c = r.clicks;
+  if (c === undefined || c === null || c === '') return '—';
+  if (typeof c === 'number' || typeof c === 'string') return String(c);
+  return schedRunValueText(c);
+}
+
+function schedRunErrorText(error) {
+  if (error === undefined || error === null) return '';
+  if (typeof error === 'string') return error.trim();
+  if (typeof error === 'number' || typeof error === 'boolean') return String(error);
+  try {
+    const text = JSON.stringify(error);
+    return text == null ? '' : text;
+  } catch (e) {
+    return String(error);
+  }
+}
+
+function schedRunErrorSummary(error, maxLen) {
+  const text = schedRunErrorText(error).replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  const limit = Number(maxLen) > 0 ? Math.floor(Number(maxLen)) : 80;
+  return text.length > limit ? text.slice(0, Math.max(0, limit - 1)) + '…' : text;
+}
+
+function schedRunResumeText(run) {
+  const r = run || {};
+  if (r.resume === true) return '是';
+  if (r.resume === false) return '否';
+  return '—';
+}
+
+function schedRunDetailRows(run) {
+  const r = run || {};
+  const rows = [];
+  const known = {};
+  const add = (key, value) => {
+    known[key] = true;
+    rows.push([key, value]);
+  };
+  add('run_id', schedRunValueText(r.run_id));
+  add('file', schedRunValueText(r.file));
+  add('schema_version', schedRunValueText(r.schema_version));
+  add('source', schedRunValueText(r.source));
+  add('task', schedRunValueText(r.task));
+  add('kind', schedRunKindText(r.kind));
+  add('entry_id', schedRunValueText(r.entry_id));
+  add('queue_id', schedRunValueText(r.queue_id));
+  add('round', schedRunValueText(r.round));
+  add('member_index', schedRunValueText(r.member_index));
+  add('attempt', schedRunAttemptText(r));
+  add('class', schedRunValueText(r.class));
+  const rawOutcome = schedRunValueText(r.outcome);
+  add('outcome', rawOutcome === '—'
+    ? schedRunOutcomeLabel(r.outcome)
+    : schedRunOutcomeLabel(r.outcome) + '（' + rawOutcome + '）');
+  add('exit', schedRunExitText(r));
+  add('exit_code', schedRunValueText(r.exit_code));
+  add('clicks', schedRunClicksText(r));
+  const durationMs = schedRunDurationMs(r);
+  add('duration_ms', durationMs == null
+    ? '—'
+    : schedRunValueText(durationMs) + '（' + schedRunDurationText(durationMs) + '）');
+  add('started_ms', r.started_ms === undefined || r.started_ms === null || r.started_ms === ''
+    ? '—'
+    : schedRunValueText(r.started_ms) + '（' + schedRunTimeText(r.started_ms) + '）');
+  add('finished_ms', r.finished_ms === undefined || r.finished_ms === null || r.finished_ms === ''
+    ? '—'
+    : schedRunValueText(r.finished_ms) + '（' + schedRunTimeText(r.finished_ms) + '）');
+  add('resume', schedRunResumeText(r));
+  add('clicks_file', schedRunValueText(r.clicks_file));
+  add('error', schedRunErrorText(r.error) || '—');
+  // "全字段"：unknown/future keys are appended (sorted) instead of being hidden.
+  for (const key of Object.keys(r).sort()) {
+    if (!known[key]) rows.push([key, schedRunValueText(r[key])]);
+  }
+  return rows;
+}
+
+function schedRunDetailTitle(run, cfg) {
+  const r = run || {};
+  return '运行详情 · ' + schedRunTaskLabel(r, cfg) + ' · ' +
+    schedRunOutcomeLabel(r.outcome) + ' · ' + schedRunTimeText(r.started_ms);
+}
+
+function schedRunRowCells(run, cfg) {
+  const r = run || {};
+  return {
+    time: schedRunTimeText(r.started_ms),
+    task: schedRunTaskLabel(r, cfg),
+    kind: schedRunKindText(r.kind),
+    round_member: schedRunRoundMemberText(r),
+    attempt: schedRunAttemptText(r),
+    class: schedRunValueText(r.class),
+    outcome: schedRunOutcomeLabel(r.outcome),
+    outcome_class: schedRunStatusBadgeClass(r),
+    exit: schedRunExitText(r),
+    duration: schedRunDurationText(schedRunDurationMs(r)),
+    clicks: schedRunClicksText(r),
+    error: schedRunErrorSummary(r.error, 80),
+    error_full: schedRunErrorText(r.error),
+  };
+}
+
+function schedRunIsFailure(run) {
+  const r = run || {};
+  const cls = String(r.class == null ? '' : r.class).trim().toLowerCase();
+  if (cls) return cls !== 'success';
+  const outcome = String(r.outcome == null ? '' : r.outcome).trim().toLowerCase();
+  return !!outcome && outcome !== 'done' && outcome !== 'success';
+}
+
+function schedRunsFailureCount(runs) {
+  let n = 0;
+  for (const r of (Array.isArray(runs) ? runs : [])) {
+    if (schedRunIsFailure(r)) n += 1;
+  }
+  return n;
+}
+
+function schedRunsStatusCardText(data, error) {
+  if (error) return '运行记录：读取失败（见下方运行记录区）';
+  if (!data) return '运行记录：—';
+  const runs = Array.isArray(data.runs) ? data.runs : [];
+  if (!runs.length) return '运行记录：暂无';
+  const last = runs[0] || {};
+  return '运行记录：最近 ' + schedRunOutcomeLabel(last.outcome) + ' · ' +
+    (String(last.task == null ? '' : last.task).trim() || '?') + ' · ' +
+    schedRunTimeText(last.started_ms) + ' · 失败 ' +
+    schedRunsFailureCount(runs) + '/' + runs.length;
+}
+
+function schedRunBodyErrors(body) {
+  if (!body || typeof body !== 'object') return '';
+  if (Array.isArray(body.errors) && body.errors.length) {
+    return body.errors.filter((e) => e !== null && e !== undefined && e !== '').map((e) => String(e)).join('；');
+  }
+  if (body.error !== undefined && body.error !== null && body.error !== '') return String(body.error);
+  if (body.message !== undefined && body.message !== null && body.message !== '') return String(body.message);
+  return '';
+}
+
+function schedRunsErrorText(reason) {
+  const text = String(reason == null ? '' : reason).trim();
+  return '运行记录读取失败：' + (text || '未知错误');
+}
+
+function schedRunsResponseErrorText(status, body) {
+  const detail = schedRunBodyErrors(body);
+  const suffix = detail ? '：' + detail : '';
+  if (!status) return '运行记录读取失败：网络错误' + suffix;
+  if (status === 404) return '运行记录读取失败：服务端未提供 /runs/scheduler（需要 P4A 后端）' + suffix;
+  return '运行记录读取失败：HTTP ' + status + suffix;
+}
+
+function schedRunDetailErrorText(status, body) {
+  const detail = schedRunBodyErrors(body);
+  const suffix = detail ? '：' + detail : '';
+  if (!status) return '详情读取失败：网络错误' + suffix;
+  if (status === 400) return '详情读取失败：run_id 无效（HTTP 400）' + suffix;
+  if (status === 404) return '详情读取失败：运行记录不存在或已被删除（HTTP 404）' + suffix;
+  return '详情读取失败：HTTP ' + status + suffix;
+}
+
+function schedRunsTaskChoices(status, cfg) {
+  const seen = {};
+  const out = [];
+  const add = (value) => {
+    const text = String(value == null ? '' : value).trim();
+    if (!text || seen[text]) return;
+    seen[text] = true;
+    out.push(text);
+  };
+  for (const c of (status && status.task_choices) || []) add(c);
+  for (const e of (status && status.entries) || []) {
+    if (!e || String(e.kind || '') === 'queue') continue;
+    add(e.task);
+  }
+  for (const e of (cfg && cfg.entries) || []) {
+    if (!e || String(e.kind || '') === 'queue') continue;
+    add(e.task);
+  }
+  for (const q of (cfg && cfg.queues) || []) {
+    for (const m of (q && q.members) || []) add(m);
+  }
+  return out;
+}
+
+function schedRunsFilterLocal(runs, opts) {
+  const o = opts || {};
+  const task = String(o.task == null ? '' : o.task).trim();
+  const outcome = String(o.outcome == null ? '' : o.outcome).trim().toLowerCase();
+  const queueId = String(o.queueId == null ? '' : o.queueId).trim();
+  return (Array.isArray(runs) ? runs : []).filter((run) => {
+    if (!run) return false;
+    if (task && String(run.task == null ? '' : run.task) !== task) return false;
+    if (outcome) {
+      // Match the persisted outcome (Done/Failed/...) or the result class
+      // (success/resource/...); the two live in separate run fields.
+      const runOutcome = String(run.outcome == null ? '' : run.outcome).trim().toLowerCase();
+      const runClass = String(run.class == null ? '' : run.class).trim().toLowerCase();
+      if (runOutcome !== outcome && runClass !== outcome) return false;
+    }
+    if (queueId && String(run.queue_id == null ? '' : run.queue_id) !== queueId) return false;
+    return true;
+  });
+}
+
+function schedRunsFilterActive(filter) {
+  const f = filter || {};
+  return !!String(f.task == null ? '' : f.task).trim() ||
+    !!String(f.outcome == null ? '' : f.outcome).trim() ||
+    !!String(f.queueId == null ? '' : f.queueId).trim();
+}
+
+function schedRunsListStatusText(opts) {
+  const o = opts || {};
+  if (o.error) return String(o.error);
+  const data = o.data || null;
+  const filter = o.filter || {};
+  if (!data) return '运行记录：—';
+  const rows = Array.isArray(o.rows) ? o.rows : null;
+  const total = Number.isFinite(Number(data.count))
+    ? Number(data.count)
+    : (Array.isArray(data.runs) ? data.runs.length : 0);
+  const parts = ['共 ' + total + ' 条'];
+  if (filter.task) parts.push('任务=' + String(filter.task));
+  if (filter.outcome) {
+    const classWords = ['success', 'resource', 'blocked', 'retryable', 'fatal'];
+    const isClassWord = classWords.indexOf(String(filter.outcome).trim().toLowerCase()) >= 0;
+    parts.push('结果=' + schedRunOutcomeLabel(filter.outcome) + (isClassWord ? '（本地筛选）' : ''));
+  }
+  if (filter.queueId) parts.push('队列=' + String(filter.queueId) + '（本地筛选）');
+  if (rows && rows.length !== total && schedRunsFilterActive(filter)) {
+    parts.push('显示 ' + rows.length + ' 条');
+  }
+  return '运行记录：' + parts.join(' · ');
+}
+
 // --- P3: 调度页/对话框（DOM 层） --------------------------------------------
 function setScheduleBusy(busy) {
   scheduleBusy = !!busy;
   for (const el of [pageSchedSave, pageSchedReload, pageSchedAddEntry, pageSchedAddQueue,
-    pageSchedJsonSave, pageSchedJsonReload]) {
+    pageSchedJsonSave, pageSchedJsonReload, pageSchedRunsRefresh]) {
     if (el) el.disabled = !!busy;
   }
 }
@@ -6616,6 +7084,11 @@ function renderScheduleStatusCard(s) {
     if (scheduleConfigError) bits.push('错误=' + scheduleConfigError);
     pageSchedConfigStatus.textContent = bits.join(' · ') || '配置：—';
   }
+  // P4: latest run + failure count from the loaded list (soft: read failure
+  // only changes this line; the rest of the card is unaffected).
+  if (pageSchedRunsSummary) {
+    pageSchedRunsSummary.textContent = schedRunsStatusCardText(scheduleRunsData, scheduleRunsError);
+  }
 }
 
 function renderScheduleEntries(status, cfg) {
@@ -6688,11 +7161,17 @@ function renderScheduleEntries(status, cfg) {
     edit.type = 'button';
     edit.textContent = '编辑';
     edit.addEventListener('click', () => openScheduleEntryDialog({ mode: 'edit', entryId: e.entry_id, entry: e }));
+    // P4: one-click run history filtered to this entry (task or queue member).
+    const runsBtn = document.createElement('button');
+    runsBtn.type = 'button';
+    runsBtn.textContent = '运行记录';
+    runsBtn.title = isQueue ? '筛选该队列的运行记录' : '筛选该任务的运行记录';
+    runsBtn.addEventListener('click', () => showScheduleRunsForEntry(e));
     const del = document.createElement('button');
     del.type = 'button';
     del.textContent = '删除';
     del.addEventListener('click', () => deleteScheduleEntry(e.entry_id, isQueue));
-    card.append(enableLabel, up, down, edit, del);
+    card.append(enableLabel, up, down, runsBtn, edit, del);
     pageSchedEntries.appendChild(card);
   });
 }
@@ -6738,13 +7217,331 @@ function renderScheduleQueues(status, cfg) {
     edit.type = 'button';
     edit.textContent = '编辑';
     edit.addEventListener('click', () => openScheduleQueueDialog(q.queue_id));
+    // P4: queue members' runs share queue_id; filter them locally.
+    const runsBtn = document.createElement('button');
+    runsBtn.type = 'button';
+    runsBtn.textContent = '运行记录';
+    runsBtn.title = '筛选该队列成员的运行记录（本地筛选）';
+    runsBtn.addEventListener('click', () => showScheduleRunsForQueue(q.queue_id));
     const del = document.createElement('button');
     del.type = 'button';
     del.textContent = '删除';
     del.addEventListener('click', () => deleteScheduleQueue(q.queue_id));
-    card.append(edit, del);
+    card.append(runsBtn, edit, del);
     pageSchedQueues.appendChild(card);
   }
+}
+
+// --- P4: 调度运行记录（列表 / 筛选 / 详情）DOM 层 ---------------------------
+function populateScheduleRunsTaskOptions() {
+  if (!pageSchedRunsTask) return;
+  const choices = schedRunsTaskChoices(schedulerStatus, scheduleConfig);
+  const current = String(scheduleRunsFilter.task || '');
+  const values = choices.slice();
+  if (current && values.indexOf(current) < 0) values.unshift(current);
+  pageSchedRunsTask.textContent = '';
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = '全部任务';
+  pageSchedRunsTask.appendChild(all);
+  for (const value of values) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = value;
+    pageSchedRunsTask.appendChild(opt);
+  }
+  pageSchedRunsTask.value = values.indexOf(current) >= 0 ? current : '';
+}
+
+function syncScheduleRunsControls() {
+  if (pageSchedRunsTask) {
+    const task = String(scheduleRunsFilter.task || '');
+    const options = Array.from(pageSchedRunsTask.options || []);
+    if (task && !options.some((opt) => opt.value === task)) {
+      const opt = document.createElement('option');
+      opt.value = task;
+      opt.textContent = task;
+      pageSchedRunsTask.appendChild(opt);
+    }
+    pageSchedRunsTask.value = task;
+  }
+  if (pageSchedRunsOutcome) pageSchedRunsOutcome.value = String(scheduleRunsFilter.outcome || '');
+  if (pageSchedRunsLimit) pageSchedRunsLimit.value = String(schedRunLimitValue(scheduleRunsFilter.limit));
+  if (pageSchedRunsClear) pageSchedRunsClear.disabled = !schedRunsFilterActive(scheduleRunsFilter);
+}
+
+function scrollScheduleRunsIntoView() {
+  if (!pageSchedRunsList || typeof pageSchedRunsList.scrollIntoView !== 'function') return;
+  try {
+    pageSchedRunsList.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  } catch (e) {
+    /* ignore: scrolling is cosmetic */
+  }
+}
+
+// Task-library shortcut: open the schedule page with the run list filtered to
+// this task. The filter survives the page refresh because refreshSchedulePage
+// reads `scheduleRunsFilter` instead of resetting it.
+function showScheduleRunsForTask(task) {
+  const name = String(task == null ? '' : task).trim();
+  scheduleRunsFilter.task = name;
+  scheduleRunsFilter.outcome = '';
+  scheduleRunsFilter.queueId = '';
+  activatePage('schedule');
+  syncScheduleRunsControls();
+  scrollScheduleRunsIntoView();
+}
+
+// Entry-row shortcut: task entries filter server-side by task; queue entries
+// filter their members' runs locally by queue_id (the list endpoint has no
+// queue filter parameter in the P4A contract).
+function showScheduleRunsForEntry(entry) {
+  const e = entry || {};
+  const isQueue = String(e.kind == null ? '' : e.kind) === 'queue';
+  const target = String(e.task == null ? '' : e.task).trim();
+  scheduleRunsFilter.task = isQueue ? '' : target;
+  scheduleRunsFilter.outcome = '';
+  scheduleRunsFilter.queueId = isQueue ? target : '';
+  syncScheduleRunsControls();
+  refreshScheduleRuns();
+  scrollScheduleRunsIntoView();
+}
+
+function showScheduleRunsForQueue(queueId) {
+  scheduleRunsFilter.task = '';
+  scheduleRunsFilter.outcome = '';
+  scheduleRunsFilter.queueId = String(queueId == null ? '' : queueId).trim();
+  syncScheduleRunsControls();
+  refreshScheduleRuns();
+  scrollScheduleRunsIntoView();
+}
+
+function makeSchedRunBadge(text, cls) {
+  const span = document.createElement('span');
+  span.className = 'run-badge ' + (cls || '');
+  span.textContent = String(text == null ? '' : text);
+  return span;
+}
+
+function renderScheduleRuns() {
+  if (!pageSchedRunsList) return;
+  const runs = (scheduleRunsData && Array.isArray(scheduleRunsData.runs)) ? scheduleRunsData.runs : [];
+  const rows = schedRunsFilterLocal(runs, scheduleRunsFilter);
+  if (pageSchedRunsStatus) {
+    pageSchedRunsStatus.textContent = scheduleRunsLoading
+      ? '读取中…'
+      : schedRunsListStatusText({
+        data: scheduleRunsData,
+        error: scheduleRunsError,
+        filter: scheduleRunsFilter,
+        rows,
+      });
+  }
+  pageSchedRunsList.textContent = '';
+  if (scheduleRunsError) {
+    pageSchedRunsList.textContent = scheduleRunsError;
+    return;
+  }
+  if (!scheduleRunsData) {
+    pageSchedRunsList.textContent = '（未加载）';
+    return;
+  }
+  if (!rows.length) {
+    pageSchedRunsList.textContent = schedRunsFilterActive(scheduleRunsFilter)
+      ? '（没有符合当前筛选的运行记录；点「清除筛选」看全部）'
+      : '（暂无调度运行记录；调度器跑过一次后这里会出现记录）';
+    return;
+  }
+  const table = document.createElement('table');
+  table.className = 'sched-runs-table';
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  for (const label of ['时间', '任务', 'kind', '轮次/成员', 'attempt', 'class/outcome',
+    'exit/exit_code', 'duration', 'clicks', 'error']) {
+    const th = document.createElement('th');
+    th.textContent = label;
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  const tbody = document.createElement('tbody');
+  for (const run of rows) {
+    const cells = schedRunRowCells(run, scheduleConfig);
+    const tr = document.createElement('tr');
+    tr.tabIndex = 0;
+    tr.title = '点击查看运行详情' + (run && run.run_id ? '：' + run.run_id : '');
+    const open = () => openScheduleRunDetail(run);
+    tr.addEventListener('click', open);
+    tr.addEventListener('keydown', (ev) => {
+      if (!ev || (ev.key !== 'Enter' && ev.key !== ' ')) return;
+      if (ev.preventDefault) ev.preventDefault();
+      open();
+    });
+    const addCell = (text, cls) => {
+      const td = document.createElement('td');
+      td.textContent = String(text == null ? '' : text);
+      if (cls) td.className = cls;
+      tr.appendChild(td);
+      return td;
+    };
+    addCell(cells.time);
+    addCell(cells.task);
+    const kindCell = document.createElement('td');
+    kindCell.appendChild(makeSchedRunBadge(cells.kind, 'kind'));
+    tr.appendChild(kindCell);
+    addCell(cells.round_member);
+    addCell(cells.attempt);
+    const outcomeCell = document.createElement('td');
+    if (cells.class !== '—') outcomeCell.appendChild(makeSchedRunBadge(cells.class, 'kind'));
+    outcomeCell.appendChild(makeSchedRunBadge(cells.outcome, cells.outcome_class));
+    tr.appendChild(outcomeCell);
+    addCell(cells.exit);
+    addCell(cells.duration);
+    addCell(cells.clicks);
+    addCell(cells.error || '—', cells.error ? 'run-error-cell' : '');
+    tbody.appendChild(tr);
+  }
+  table.appendChild(thead);
+  table.appendChild(tbody);
+  pageSchedRunsList.appendChild(table);
+}
+
+// List read. Always resolves (never rejects): the runs section is a soft
+// dependency of the schedule page, and its failure is shown verbatim + logged
+// as WARN instead of being swallowed.
+async function refreshScheduleRuns() {
+  if (!pageSchedRunsList) return { ok: false, error: '运行记录区不可用' };
+  if (scheduleRunsLoading) return { ok: false, error: '运行记录读取中' };
+  scheduleRunsLoading = true;
+  if (pageSchedRunsRefresh) pageSchedRunsRefresh.disabled = true;
+  if (pageSchedRunsStatus) pageSchedRunsStatus.textContent = '读取中…';
+  const url = schedRunsBuildUrl(scheduleRunsFilter);
+  try {
+    const r = await fetch(url);
+    let body = null;
+    try { body = await r.json(); } catch (e) { body = null; }
+    if (!r.ok || !body || body.ok === false) {
+      scheduleRunsData = null;
+      scheduleRunsError = schedRunsResponseErrorText(r.status, body);
+      log(scheduleRunsError, 'WARN');
+      return { ok: false, error: scheduleRunsError };
+    }
+    scheduleRunsData = body;
+    scheduleRunsError = '';
+    return { ok: true, data: body };
+  } catch (e) {
+    scheduleRunsData = null;
+    scheduleRunsError = schedRunsErrorText('网络错误：' + (e && e.message ? e.message : e));
+    log(scheduleRunsError, 'WARN');
+    return { ok: false, error: scheduleRunsError };
+  } finally {
+    scheduleRunsLoading = false;
+    if (pageSchedRunsRefresh) pageSchedRunsRefresh.disabled = false;
+    renderScheduleRuns();
+    if (pageSchedRunsSummary) {
+      pageSchedRunsSummary.textContent = schedRunsStatusCardText(scheduleRunsData, scheduleRunsError);
+    }
+  }
+}
+
+// Single-run read for the detail dialog (GET /runs/scheduler/run?run_id=).
+async function fetchScheduleRunOnce(runId) {
+  try {
+    const r = await fetch(schedRunDetailUrl(runId));
+    let body = null;
+    try { body = await r.json(); } catch (e) { body = null; }
+    if (!r.ok || !body || body.ok === false) {
+      return { ok: false, status: r.status, body, error: schedRunDetailErrorText(r.status, body) };
+    }
+    const run = (body.run && typeof body.run === 'object') ? body.run : null;
+    if (!run) return { ok: false, status: r.status, body, error: '详情读取失败：响应缺少 run 对象' };
+    return { ok: true, status: r.status, body, run, error: '' };
+  } catch (e) {
+    return {
+      ok: false,
+      status: 0,
+      body: null,
+      error: schedRunDetailErrorText(0, { errors: [String(e)] }),
+    };
+  }
+}
+
+function renderScheduleRunDetail(run) {
+  if (!schedRunDialogBody) return;
+  const r = run || {};
+  if (schedRunDialogTitle) schedRunDialogTitle.textContent = schedRunDetailTitle(r, scheduleConfig);
+  schedRunDialogBody.textContent = '';
+  const table = document.createElement('table');
+  table.className = 'sched-runs-table run-detail-table';
+  const tbody = document.createElement('tbody');
+  for (const [key, value] of schedRunDetailRows(r)) {
+    const tr = document.createElement('tr');
+    const label = document.createElement('td');
+    label.textContent = key;
+    const cell = document.createElement('td');
+    cell.textContent = value;
+    if (key === 'error') cell.className = 'dialog-error';
+    tr.append(label, cell);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  schedRunDialogBody.appendChild(table);
+  const errorText = schedRunErrorText(r.error);
+  if (errorText) {
+    const label = document.createElement('div');
+    label.className = 'muted small';
+    label.textContent = '错误全文';
+    const pre = document.createElement('pre');
+    pre.className = 'dialog-error';
+    pre.textContent = errorText;
+    schedRunDialogBody.append(label, pre);
+  }
+  const details = document.createElement('details');
+  const summary = document.createElement('summary');
+  summary.textContent = '完整 JSON（所有字段，含 resume / clicks_file）';
+  const pre = document.createElement('pre');
+  try {
+    pre.textContent = JSON.stringify(r, null, 2);
+  } catch (e) {
+    pre.textContent = String(r);
+  }
+  details.append(summary, pre);
+  schedRunDialogBody.appendChild(details);
+}
+
+function closeScheduleRunDetail() {
+  scheduleRunDetailRunId = '';
+  if (schedRunDialog && schedRunDialog.open) schedRunDialog.close();
+}
+
+async function openScheduleRunDetail(run) {
+  if (!schedRunDialog) return;
+  const runId = typeof run === 'string'
+    ? String(run).trim()
+    : String((run && run.run_id) || '').trim();
+  scheduleRunDetailRunId = runId;
+  if (schedRunDialogTitle) schedRunDialogTitle.textContent = '运行详情' + (runId ? ' · ' + runId : '');
+  if (schedRunDialogBody) schedRunDialogBody.textContent = '读取中…';
+  if (schedRunDialogError) schedRunDialogError.textContent = '';
+  if (typeof schedRunDialog.showModal === 'function' && !schedRunDialog.open) {
+    try { schedRunDialog.showModal(); } catch (e) { /* already open */ }
+  }
+  if (!runId) {
+    const msg = '详情读取失败：该运行记录缺少 run_id';
+    if (schedRunDialogBody) schedRunDialogBody.textContent = '';
+    if (schedRunDialogError) schedRunDialogError.textContent = msg;
+    log(msg, 'WARN');
+    return;
+  }
+  const res = await fetchScheduleRunOnce(runId);
+  if (scheduleRunDetailRunId !== runId) return; // a newer row click supersedes this read
+  if (!res.ok) {
+    if (schedRunDialogBody) schedRunDialogBody.textContent = '';
+    if (schedRunDialogError) schedRunDialogError.textContent = res.error;
+    log(res.error, 'WARN');
+    return;
+  }
+  if (schedRunDialogError) schedRunDialogError.textContent = '';
+  renderScheduleRunDetail(res.run);
 }
 
 async function toggleScheduleEntry(entryId, enabled) {
@@ -7839,6 +8636,45 @@ async function submitResetMemory() {
     pageSchedJson.addEventListener('input', () => {
       scheduleJsonDirty = true;
       if (pageSchedJsonStatus) pageSchedJsonStatus.textContent = '有未保存修改（用「保存 JSON」写入）';
+    });
+  }
+  // P4: run history controls (list filters + detail dialog).
+  if (pageSchedRunsRefresh) pageSchedRunsRefresh.addEventListener('click', () => refreshScheduleRuns());
+  if (pageSchedRunsTask) {
+    pageSchedRunsTask.addEventListener('change', () => {
+      scheduleRunsFilter.task = pageSchedRunsTask.value;
+      scheduleRunsFilter.queueId = '';
+      syncScheduleRunsControls();
+      refreshScheduleRuns();
+    });
+  }
+  if (pageSchedRunsOutcome) {
+    pageSchedRunsOutcome.addEventListener('change', () => {
+      scheduleRunsFilter.outcome = pageSchedRunsOutcome.value;
+      syncScheduleRunsControls();
+      refreshScheduleRuns();
+    });
+  }
+  if (pageSchedRunsLimit) {
+    pageSchedRunsLimit.addEventListener('change', () => {
+      scheduleRunsFilter.limit = schedRunLimitValue(pageSchedRunsLimit.value);
+      syncScheduleRunsControls();
+      refreshScheduleRuns();
+    });
+  }
+  if (pageSchedRunsClear) {
+    pageSchedRunsClear.addEventListener('click', () => {
+      scheduleRunsFilter.task = '';
+      scheduleRunsFilter.outcome = '';
+      scheduleRunsFilter.queueId = '';
+      syncScheduleRunsControls();
+      refreshScheduleRuns();
+    });
+  }
+  if (schedRunDialogClose) schedRunDialogClose.addEventListener('click', closeScheduleRunDetail);
+  if (schedRunDialogRefresh) {
+    schedRunDialogRefresh.addEventListener('click', () => {
+      if (scheduleRunDetailRunId) openScheduleRunDetail(scheduleRunDetailRunId);
     });
   }
   if (btnSchedOpenPage) btnSchedOpenPage.addEventListener('click', () => activatePage('schedule'));

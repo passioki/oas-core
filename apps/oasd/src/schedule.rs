@@ -15,7 +15,7 @@
 //! oasd scheduler [run] --plan <scheduler.json> [--state <file>] [--tasks-dir tasks]
 //!              [--once] [--max-passes N] [--dry-run] [--status] [--report <file.json>]
 //!              [--library <dir>] [--model rec.onnx] [--det-model det.onnx]
-//!              [--replay <bundle>] [--clicks-dir <dir>] [--shots-dir <dir>] [--seed N]
+//!              [--replay <bundle>] [--clicks-dir <dir>] [--runs-dir <dir>] [--shots-dir <dir>] [--seed N]
 //!              [--keep-going] [--tz-offset-min M] [--tick-ms MS] [--events <file.jsonl>]
 //! oasd scheduler reset-memory --tasks a,b [--all] [--include-checkpoint]
 //!              [--plan <scheduler.json>] [--state <file>] [--tasks-dir tasks]
@@ -99,6 +99,24 @@
 //! the startup replay of a staged entry result (P1-2). `--report` additionally
 //! writes the full machine-readable summary of the session.
 //!
+//! # Run entities (P4)
+//! Every execution attempt writes one immutable, first-class run entity to
+//! `<runs-dir>/scheduler/<run_id>.json` (`--runs-dir`, default `runs`; the
+//! directory is created on demand). A task entry writes one file per attempt
+//! (retries included); a queue entry writes one file per member attempt.
+//! `run_id = <started_ms>-<seq:04>` is process-unique and collision-checked on
+//! disk; writes are atomic pretty JSON + newline (`write_json_atomic`). The
+//! `run_finished` audit event additionally carries `exit_code`, `run_file`
+//! (the last attempt's file, relative to `--runs-dir`, e.g.
+//! `scheduler/1760000000000-0000.json`) and `run_file_error` (`null` unless
+//! that attempt's entity could not be written). A write failure stays
+//! **non-fatal** (the run already happened and state must still be saved) but
+//! is observable: a `scheduler_run_file_error` log line + stderr, an `alert`
+//! event with `kind=run_file_write` (audit log + `SchedulerReport::alerts`),
+//! the additive `SchedulerReport::run_file_errors` counter, and a summary line
+//! from the CLI. The legacy `*.clicks.jsonl` files and `GET /runs` are
+//! untouched.
+//!
 //! # Execution (task entries vs queue entries, P2)
 //! `plan_pass` filters `entries[]` in order; `execute_pass` dispatches on
 //! `entry.kind`:
@@ -158,14 +176,23 @@ use crate::scheduler::{
 /// Default player config (§22.34 / M3 `config::SchedulerConfig::plan`).
 pub const DEFAULT_CONFIG: &str = "scheduler.json";
 pub const DEFAULT_TASKS_DIR: &str = "tasks";
+pub const DEFAULT_RUNS_DIR: &str = "runs";
 pub const DEFAULT_MAX_SLEEP_MS: u64 = MAX_SLEEP_MS as u64;
+
+/// Subdirectory of `--runs-dir` that holds the first-class Run entities:
+/// `<runs_dir>/scheduler/<run_id>.json` (P4). The `scheduler/` prefix keeps the
+/// legacy click JSONL files at the root untouched (`GET /runs` compatibility).
+pub(crate) const SCHEDULER_RUN_DIR: &str = "scheduler";
+/// Schema version of one run entity file (P4; independent of the plan/state
+/// schema versions because run files are append-only immutable history).
+pub(crate) const RUN_SCHEMA_VERSION: u32 = 1;
 
 pub const USAGE: &str = "usage: oasd scheduler [run] --plan <scheduler.json> [--state <file>] \
                          [--tasks-dir tasks] [--once] [--max-passes N] [--dry-run] [--status] \
                          [--report <file.json>] [--library <dir>] [--model <rec.onnx>] \
                          [--det-model <det.onnx>] [--replay <bundle>] [--clicks-dir <dir>] \
-                         [--shots-dir <dir>] [--seed N] [--keep-going] [--tz-offset-min M] \
-                         [--tick-ms MS] [--events <file.jsonl>]
+                         [--runs-dir <dir>] [--shots-dir <dir>] [--seed N] [--keep-going] \
+                         [--tz-offset-min M] [--tick-ms MS] [--events <file.jsonl>]
        oasd scheduler reset-memory --tasks <a,b> [--all] [--include-checkpoint] \
                          [--plan <scheduler.json>] [--state <file>] [--tasks-dir tasks]
        note: --plan is the SCHEDULE plan (scheduler.json). --config is the GLOBAL live
@@ -191,6 +218,8 @@ pub(crate) struct TestExecResult {
     pub outcome: String,
     pub clicks: usize,
     pub error: Option<String>,
+    /// Mirrors `RunReport::exit_code()` for the scripted attempt (0 = Done).
+    pub exit_code: u8,
 }
 
 #[cfg(test)]
@@ -202,6 +231,7 @@ impl TestExecResult {
             outcome: outcome.to_string(),
             clicks: 0,
             error: None,
+            exit_code: if outcome == "Done" { 0 } else { 1 },
         }
     }
 
@@ -309,6 +339,10 @@ pub struct SchedulerOptions {
     pub det_model: Option<PathBuf>,
     pub replay: Option<PathBuf>,
     pub clicks_dir: Option<PathBuf>,
+    /// Root for the first-class Run entities (P4): each attempt writes
+    /// `<runs_dir>/scheduler/<run_id>.json` (default `runs`). Independent of
+    /// `clicks_dir` so the click audit can live elsewhere.
+    pub runs_dir: PathBuf,
     pub shots_dir: Option<PathBuf>,
     pub seed: Option<u64>,
     /// One pass, then exit (no sleeping).
@@ -349,6 +383,7 @@ impl Default for SchedulerOptions {
             det_model: None,
             replay: None,
             clicks_dir: None,
+            runs_dir: PathBuf::from(DEFAULT_RUNS_DIR),
             shots_dir: None,
             seed: None,
             once: false,
@@ -407,6 +442,9 @@ impl SchedulerOptions {
                 }
                 "--clicks-dir" => {
                     o.clicks_dir = Some(PathBuf::from(take_value(rest, &mut i, "--clicks-dir")?))
+                }
+                "--runs-dir" => {
+                    o.runs_dir = PathBuf::from(take_value(rest, &mut i, "--runs-dir")?)
                 }
                 "--shots-dir" => {
                     o.shots_dir = Some(PathBuf::from(take_value(rest, &mut i, "--shots-dir")?))
@@ -947,12 +985,128 @@ pub struct SchedulerReport {
     /// P2 queue summaries (additive; absent in older reports / older readers).
     #[serde(default)]
     pub queues: Vec<QueueReport>,
+    /// P4 additive: run entity writes that failed during this session.
+    ///
+    /// A failure is **not** a run failure (the attempt already happened and the
+    /// state was still saved); this counter exists so the lost history is
+    /// visible in `--report`/the CLI summary instead of only in the scheduler
+    /// log. `0` on a healthy session.
+    #[serde(default)]
+    pub run_file_errors: u32,
 }
 
 impl SchedulerReport {
     pub fn all_ok(&self) -> bool {
         self.fatals == 0 && self.blocked == 0 && self.failures == 0
     }
+}
+
+// ---------------------------------------------------------------------------
+// First-class Run entities (P4)
+// ---------------------------------------------------------------------------
+
+/// One immutable run entity: `<runs_dir>/scheduler/<run_id>.json`.
+///
+/// Written once per **attempt** (task entry) / **member attempt** (queue
+/// entry) by [`Session::write_run_entity`]. `queue_id` / `round` /
+/// `member_index` are present only for queue members; `error` / `clicks_file`
+/// only when the attempt produced them. The file name comes from `run_id`
+/// (`<started_ms>-<seq:04>`): unique within the process, collision-checked on
+/// disk, sortable by `started_ms`, and safe as a file name by construction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SchedulerRun {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub run_id: String,
+    /// Always `"scheduler"` for these files (future producers reuse the dir).
+    #[serde(default)]
+    pub source: String,
+    /// `"task"` (task entry attempt) or `"queue_member"` (queue member attempt).
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub entry_id: String,
+    /// Task entry: the task name. Queue member: the member task name (never the
+    /// queue_id — that lives in `queue_id`).
+    #[serde(default)]
+    pub task: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_index: Option<usize>,
+    #[serde(default)]
+    pub attempt: u32,
+    #[serde(default)]
+    pub resume: bool,
+    #[serde(default)]
+    pub started_ms: u64,
+    #[serde(default)]
+    pub finished_ms: u64,
+    #[serde(default)]
+    pub duration_ms: u64,
+    /// [`ResultClass::as_str`] (`success` / `resource` / `blocked` / ...).
+    #[serde(default)]
+    pub class: String,
+    /// Exit signal name (the existing `run_finished` `exit` string).
+    #[serde(default)]
+    pub exit: String,
+    /// `RunReport::exit_code()` (0 = Done, 1 = Failed/Exhausted; a setup error
+    /// without a report is recorded as 1).
+    #[serde(default)]
+    pub exit_code: u8,
+    /// `Outcome` debug string (`Done` / `Failed` / `Exhausted`; `error` for a
+    /// setup error, matching the `run_finished` event).
+    #[serde(default)]
+    pub outcome: String,
+    #[serde(default)]
+    pub clicks: usize,
+    /// Failure text (only when the attempt failed with an error).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Click audit file, when `--clicks-dir` produced one for this attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clicks_file: Option<String>,
+}
+
+impl SchedulerRun {
+    /// A file is only a run entity when it carries the mandatory identity
+    /// fields; arbitrary/hand-edited JSON under `scheduler/` is skipped (a bad
+    /// file never fails the list/detail/stats call). `schema_version >= 1`
+    /// keeps a future additive version readable instead of silently ignored.
+    pub(crate) fn is_run_entity(&self) -> bool {
+        self.schema_version >= 1
+            && !self.run_id.is_empty()
+            && !self.task.is_empty()
+            && (self.kind == "task" || self.kind == "queue_member")
+    }
+}
+
+/// `<runs_dir>/scheduler` — the run entity directory (P4).
+pub(crate) fn scheduler_runs_dir(runs_dir: &Path) -> PathBuf {
+    runs_dir.join(SCHEDULER_RUN_DIR)
+}
+
+/// Reference to the run entity written by the most recent attempt.
+///
+/// The `run_finished` audit event summarises a whole entry execution while run
+/// files are per attempt; the last attempt is the representative one for the
+/// additive `exit_code` / `run_file` event fields.
+#[derive(Debug, Clone)]
+struct RunRef {
+    /// Path relative to `runs_dir` (`scheduler/<run_id>.json`, `/` separated).
+    run_file: String,
+    exit_code: u8,
+}
+
+/// Queue-member identity of one attempt (`kind = "queue_member"`).
+#[derive(Debug, Clone, Copy)]
+struct MemberRunContext<'a> {
+    queue_id: &'a str,
+    round: u64,
+    member_index: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -970,6 +1124,19 @@ struct Session<'a> {
     /// entry's recovered execution).
     recovery: Option<scheduler::RunningEntry>,
     seq: u64,
+    /// Monotonic run entity sequence (`<started_ms>-<seq:04>`); independent of
+    /// the clicks-file `seq` so a run id never depends on `--clicks-dir`.
+    run_seq: u64,
+    /// Run entity of the most recent attempt (cleared at the start of every
+    /// planned entry execution so a previous entry can never leak into the
+    /// aggregate `run_finished` event).
+    last_run: Option<RunRef>,
+    /// Error of the most recent attempt's run-entity write (`Some` only when
+    /// that attempt failed to persist its entity). Cleared together with
+    /// `last_run` and by every successful write, so the aggregate event can
+    /// tell "no attempt ran" (`run_file: null`, `run_file_error: null`) apart
+    /// from "the evidence was lost" (`run_file: null`, `run_file_error: "..."`).
+    last_run_error: Option<String>,
 }
 
 impl<'a> Session<'a> {
@@ -1008,6 +1175,155 @@ impl<'a> Session<'a> {
             "entry_id": entry_id,
             "message": message,
         }));
+    }
+
+    /// Next globally unique, filename-safe run id: `<started_ms>-<seq:04>`.
+    ///
+    /// `run_seq` is process-local; the on-disk existence check upgrades that to
+    /// "unique unless two live processes write the same millisecond **and** the
+    /// same sequence" — there is only one active scheduler instance by design
+    /// (`docs/SCHEDULER-RUNNER-PLAN.md` §三), and a restart after a crash finds
+    /// the previous files and skips the colliding sequence number.
+    fn next_run_id(&mut self, started_ms: u64) -> String {
+        loop {
+            let seq = self.run_seq;
+            self.run_seq += 1;
+            let id = format!("{started_ms}-{seq:04}");
+            let path = self
+                .opts
+                .runs_dir
+                .join(SCHEDULER_RUN_DIR)
+                .join(format!("{id}.json"));
+            if !path.exists() {
+                return id;
+            }
+        }
+    }
+
+    /// Exit code used by the aggregate `run_finished` event when no run entity
+    /// was written (an empty queue round, or a run-file write failure):
+    /// completed classes are 0, everything else 1 (`RunReport::exit_code`
+    /// mapping).
+    fn class_exit_code(class: ResultClass) -> u8 {
+        match class {
+            ResultClass::Success | ResultClass::Resource => 0,
+            _ => 1,
+        }
+    }
+
+    /// Persist one first-class Run entity (`<runs_dir>/scheduler/<run_id>.json`)
+    /// and remember its relative path for the aggregate `run_finished` event.
+    ///
+    /// The write is atomic (`write_json_atomic`: pretty JSON + newline, tmp +
+    /// rename). A write failure is loud but **not fatal**: the run already
+    /// happened and the scheduler state must still be persisted/cleared; the
+    /// event then carries `run_file: null` **and** `run_file_error: "<detail>"`
+    /// (never a path to a missing file). The failure is surfaced as an `alert`
+    /// event/`report.alerts` entry (`kind=run_file_write`) and counted in
+    /// `report.run_file_errors` (P1-3), so it never degrades into a silent
+    /// "no run history" state.
+    #[allow(clippy::too_many_arguments)]
+    fn write_run_entity(
+        &mut self,
+        entry: &Entry,
+        task: &str,
+        attempt: u32,
+        resume: bool,
+        member: Option<MemberRunContext<'_>>,
+        result: &AttemptResult,
+        clicks_file: Option<String>,
+        out: &mut dyn FnMut(&str),
+    ) -> Option<RunRef> {
+        let run_id = self.next_run_id(result.started_ms);
+        let run_file = format!("{SCHEDULER_RUN_DIR}/{run_id}.json");
+        let (kind, queue_id, round, member_index) = match member {
+            Some(m) => (
+                "queue_member",
+                Some(m.queue_id.to_string()),
+                Some(m.round),
+                Some(m.member_index),
+            ),
+            None => ("task", None, None, None),
+        };
+        let record = SchedulerRun {
+            schema_version: RUN_SCHEMA_VERSION,
+            run_id: run_id.clone(),
+            source: "scheduler".to_string(),
+            kind: kind.to_string(),
+            entry_id: entry.entry_id.clone(),
+            task: task.to_string(),
+            queue_id,
+            round,
+            member_index,
+            attempt,
+            resume,
+            started_ms: result.started_ms,
+            finished_ms: result.finished_ms,
+            duration_ms: result.duration_ms,
+            class: result.class.as_str().to_string(),
+            exit: result.exit.clone(),
+            exit_code: result.exit_code,
+            outcome: result.outcome.clone(),
+            clicks: result.clicks,
+            error: result.error.clone(),
+            clicks_file,
+        };
+        let path = self
+            .opts
+            .runs_dir
+            .join(SCHEDULER_RUN_DIR)
+            .join(format!("{run_id}.json"));
+        match write_json_atomic(&path, &record) {
+            Ok(()) => {
+                self.last_run_error = None;
+                out(&format!(
+                    "scheduler_run_file run_id={run_id} file={run_file} class={} exit_code={}",
+                    record.class, record.exit_code
+                ));
+                Some(RunRef {
+                    run_file,
+                    exit_code: result.exit_code,
+                })
+            }
+            Err(e) => {
+                out(&format!(
+                    "scheduler_run_file_error run_id={run_id} file={run_file} error={e}"
+                ));
+                eprintln!("scheduler: run file warn: {e}");
+                // P1-3: a lost run entity is never silent. The attempt already
+                // ran, so this stays non-fatal (execution/state continue); the
+                // alert + counter only make the lost evidence observable.
+                self.report.run_file_errors += 1;
+                self.last_run_error =
+                    Some(format!("run_id={run_id} file={run_file} error={e}"));
+                self.alert(
+                    out,
+                    "run_file_write",
+                    &entry.entry_id,
+                    &format!(
+                        "entry={} task={task} attempt={attempt} run_id={run_id} \
+                         file={run_file} error={e}",
+                        entry.entry_id
+                    ),
+                );
+                None
+            }
+        }
+    }
+
+    /// `(exit_code, run_file, run_file_error)` of the most recent attempt for
+    /// the aggregate `run_finished` event. `run_file` is `None` when that
+    /// attempt produced no run entity; `run_file_error` distinguishes a write
+    /// failure (`Some`) from "no attempt ran" (`None`). `exit_code` falls back
+    /// to the entry class.
+    fn last_run_event_fields(
+        &self,
+        class: ResultClass,
+    ) -> (u8, Option<String>, Option<String>) {
+        match &self.last_run {
+            Some(r) => (r.exit_code, Some(r.run_file.clone()), None),
+            None => (Self::class_exit_code(class), None, self.last_run_error.clone()),
+        }
     }
 
     fn plan_now(&self, now: i64) -> PassPlan {
@@ -1258,6 +1574,9 @@ fn signal_of(report: &RunReport) -> RunSignal {
 /// The outcome of **one execution attempt** (L2). Production = `run::execute`
 /// + `classify_signal`; tests script it through the `test_exec` seam so a queue
 /// round is deterministic without a device/replay (P2 task D).
+///
+/// P4: also carries the per-attempt timing and the report exit code so exactly
+/// one immutable run entity can be written per attempt.
 #[derive(Debug, Clone)]
 struct AttemptResult {
     class: ResultClass,
@@ -1265,6 +1584,12 @@ struct AttemptResult {
     outcome: String,
     clicks: usize,
     error: Option<String>,
+    /// `RunReport::exit_code()` (0 = Done, 1 = Failed/Exhausted; a setup error
+    /// without a report is 1).
+    exit_code: u8,
+    started_ms: u64,
+    finished_ms: u64,
+    duration_ms: u64,
 }
 
 impl<'a> Session<'a> {
@@ -1278,6 +1603,10 @@ impl<'a> Session<'a> {
     /// the engine (`run::execute` + `classify_signal`). Under `#[cfg(test)]` a
     /// scripted result from `SchedulerOptions::test_exec` replaces only the
     /// engine call: the marker/state/log bookkeeping stays identical.
+    ///
+    /// P4: every attempt (retries and scripted test attempts included) writes
+    /// one run entity `<runs_dir>/scheduler/<run_id>.json` and leaves its
+    /// reference in `Session::last_run` for the aggregate `run_finished` event.
     fn run_task_attempt(
         &mut self,
         entry: &Entry,
@@ -1285,6 +1614,7 @@ impl<'a> Session<'a> {
         pass: u64,
         attempt: u32,
         resume: bool,
+        member: Option<MemberRunContext<'_>>,
         out: &mut dyn FnMut(&str),
     ) -> Result<AttemptResult, String> {
         let meta = meta_exits_for(&self.loaded.metas, task);
@@ -1317,6 +1647,8 @@ impl<'a> Session<'a> {
             entry.lifecycle.as_str()
         ));
 
+        let started_ms = now_ms();
+
         #[cfg(test)]
         if let Some(scripted) = self
             .opts
@@ -1324,13 +1656,24 @@ impl<'a> Session<'a> {
             .as_ref()
             .and_then(|exec| exec.next(task, attempt, resume))
         {
-            return Ok(AttemptResult {
+            let finished_ms = now_ms();
+            let result = AttemptResult {
                 class: scripted.class,
                 exit: scripted.exit,
                 outcome: scripted.outcome,
                 clicks: scripted.clicks,
                 error: scripted.error,
-            });
+                exit_code: scripted.exit_code,
+                started_ms,
+                finished_ms,
+                duration_ms: finished_ms.saturating_sub(started_ms),
+            };
+            // The scripted seam never runs `run::execute`, so no click audit
+            // file exists: `clicks_file` stays absent (the run entity is still
+            // written, exactly like production).
+            self.last_run =
+                self.write_run_entity(entry, task, attempt, resume, member, &result, None, out);
+            return Ok(result);
         }
 
         let run_opts = RunOptions {
@@ -1349,10 +1692,7 @@ impl<'a> Session<'a> {
             params: entry_run_params(entry),
             ..RunOptions::default()
         };
-        let started = now_ms();
-        let result = run::execute(&run_opts, out);
-        let _attempt_duration_ms = now_ms().saturating_sub(started);
-        Ok(match result {
+        let result = match run::execute(&run_opts, out) {
             Ok(report) => {
                 let signal = signal_of(&report);
                 AttemptResult {
@@ -1361,6 +1701,10 @@ impl<'a> Session<'a> {
                     outcome: format!("{:?}", report.outcome()),
                     clicks: report.clicks.len(),
                     error: None,
+                    exit_code: report.exit_code(),
+                    started_ms,
+                    finished_ms: 0, // filled below, after the engine returned
+                    duration_ms: 0,
                 }
             }
             Err(e) => {
@@ -1374,9 +1718,29 @@ impl<'a> Session<'a> {
                     outcome: "error".to_string(),
                     clicks: 0,
                     error: Some(e),
+                    exit_code: 1,
+                    started_ms,
+                    finished_ms: 0,
+                    duration_ms: 0,
                 }
             }
-        })
+        };
+        let finished_ms = now_ms();
+        let result = AttemptResult {
+            finished_ms,
+            duration_ms: finished_ms.saturating_sub(started_ms),
+            ..result
+        };
+        // A click audit file exists only when the engine got far enough to write
+        // it (setup errors may abort earlier); never claim a missing file.
+        let clicks_file = run_opts
+            .clicks_out
+            .as_ref()
+            .filter(|p| p.is_file())
+            .map(|p| p.display().to_string());
+        self.last_run =
+            self.write_run_entity(entry, task, attempt, resume, member, &result, clicks_file, out);
+        Ok(result)
     }
 
     /// Resolve `resume` for one attempt: only when requested, and only when a
@@ -1413,6 +1777,9 @@ impl<'a> Session<'a> {
         let mut attempts: u32 = 0;
         let mut clicks_total: usize = 0;
         let exec_started = now_ms();
+        // The run_finished event must never reference the previous entry's file.
+        self.last_run = None;
+        self.last_run_error = None;
 
         let (class, exit, outcome, error) = loop {
             attempts += 1;
@@ -1439,7 +1806,8 @@ impl<'a> Session<'a> {
             }
 
             let resume = self.attempt_resume(entry, &entry.task, want_resume, out);
-            let result = self.run_task_attempt(entry, &entry.task, pass, attempt, resume, out)?;
+            let result =
+                self.run_task_attempt(entry, &entry.task, pass, attempt, resume, None, out)?;
             clicks_total += result.clicks;
             if should_retry(result.class, attempt, entry) {
                 out(&format!(
@@ -1517,6 +1885,7 @@ impl<'a> Session<'a> {
                 entry.entry_id
             ));
         }
+        let (run_exit_code, run_file, run_file_error) = self.last_run_event_fields(class);
         self.audit(json!({
             "event": "run_finished",
             "entry_id": entry.entry_id,
@@ -1530,6 +1899,13 @@ impl<'a> Session<'a> {
             "duration_ms": total_duration,
             "cooldown_until_ms": effects.cooldown_until_ms,
             "quota_used": effects.quota_used,
+            // P4 additive fields (the per-attempt run entity of the last attempt;
+            // `run_file` is relative to `--runs-dir`). `run_file_error` is
+            // non-null only when that attempt's entity could not be written
+            // (P1-3), so consumers can tell "no attempt" from "lost evidence".
+            "exit_code": run_exit_code,
+            "run_file": run_file,
+            "run_file_error": run_file_error,
         }));
 
         self.report.runs += 1;
@@ -1602,6 +1978,7 @@ impl<'a> Session<'a> {
         member: &str,
         pass: u64,
         round: u64,
+        member_index: usize,
         resume_first: bool,
         out: &mut dyn FnMut(&str),
     ) -> Result<scheduler::QueueMemberOutcome, String> {
@@ -1624,7 +2001,20 @@ impl<'a> Session<'a> {
                     "max_attempts": entry.max_attempts(),
                 }));
             }
-            let result = self.run_task_attempt(entry, member, pass, attempts, resume, out)?;
+            let member_ctx = MemberRunContext {
+                queue_id: &queue.queue_id,
+                round,
+                member_index,
+            };
+            let result = self.run_task_attempt(
+                entry,
+                member,
+                pass,
+                attempts,
+                resume,
+                Some(member_ctx),
+                out,
+            )?;
             clicks += result.clicks;
             if should_retry(result.class, attempts, entry) {
                 out(&format!(
@@ -1672,6 +2062,10 @@ impl<'a> Session<'a> {
         pass: u64,
         out: &mut dyn FnMut(&str),
     ) -> Result<ResultClass, String> {
+        // The run_finished event must never reference the previous entry's file
+        // (an empty round has no run entity at all).
+        self.last_run = None;
+        self.last_run_error = None;
         let Some(queue) = entry
             .queue_id()
             .and_then(|queue_id| self.sched().queue(queue_id))
@@ -1869,6 +2263,7 @@ impl<'a> Session<'a> {
                         &member,
                         pass,
                         round_index,
+                        member_index,
                         resume_member,
                         out,
                     )?;
@@ -2069,6 +2464,12 @@ impl<'a> Session<'a> {
             summary.clicks,
             effects.cooldown_until_ms
         ));
+        // P4 additive fields: the last executed member attempt's run entity is
+        // the representative file for this round (all per-member attempts are
+        // independently listed by `GET /runs/scheduler`). `run_file_error` is
+        // non-null only when that attempt's entity could not be written (P1-3);
+        // an empty round leaves both null.
+        let (run_exit_code, run_file, run_file_error) = self.last_run_event_fields(class);
         self.audit(json!({
             "event": "run_finished",
             "entry_id": entry.entry_id,
@@ -2084,6 +2485,9 @@ impl<'a> Session<'a> {
             "duration_ms": round_duration,
             "cooldown_until_ms": effects.cooldown_until_ms,
             "quota_used": effects.quota_used,
+            "exit_code": run_exit_code,
+            "run_file": run_file,
+            "run_file_error": run_file_error,
         }));
 
         self.report.runs += 1;
@@ -2684,6 +3088,9 @@ pub fn run_scheduler(
         report,
         recovery: recovery.clone(),
         seq: 0,
+        run_seq: 0,
+        last_run: None,
+        last_run_error: None,
     };
     // P1-2 exactly-once: a round that was closed on disk but whose entry-level
     // `record_result` was not saved must be replayed before the first pass (the
@@ -2861,23 +3268,25 @@ pub fn run_scheduler(
     session.report.queues = build_queue_reports(&session.sched(), &session.state, now);
     session.report.next_wake_ms = Some(next_wake(&session.sched(), &session.state, now).at_ms);
     out(&format!(
-        "scheduler_stop reason={stopped_reason} passes={} runs={} successes={} resources={} blocked={} failures={} fatals={}",
+        "scheduler_stop reason={stopped_reason} passes={} runs={} successes={} resources={} blocked={} failures={} fatals={} run_file_errors={}",
         session.report.passes,
         session.report.runs,
         session.report.successes,
         session.report.resources,
         session.report.blocked,
         session.report.failures,
-        session.report.fatals
+        session.report.fatals,
+        session.report.run_file_errors
     ));
     out(&format!(
-        "scheduler_summary runs={} successes={} resources={} blocked={} failures={} fatals={} dry_run=false",
+        "scheduler_summary runs={} successes={} resources={} blocked={} failures={} fatals={} run_file_errors={} dry_run=false",
         session.report.runs,
         session.report.successes,
         session.report.resources,
         session.report.blocked,
         session.report.failures,
-        session.report.fatals
+        session.report.fatals,
+        session.report.run_file_errors
     ));
     if let Some(path) = &opts.report {
         write_report(path, &session.report)?;
@@ -3405,6 +3814,7 @@ mod tests {
             tz_offset_min: Some(0),
             library: td.join("library"),
             clicks_dir: Some(td.join("clicks")),
+            runs_dir: td.join("runs"),
             ..SchedulerOptions::default()
         }
     }
@@ -5737,6 +6147,9 @@ mod tests {
             report: SchedulerReport::default(),
             recovery: None,
             seq: 0,
+            run_seq: 0,
+            last_run: None,
+            last_run_error: None,
         };
         let entry = session.sched().entry("qe").cloned().expect("queue entry");
         let planned = scheduler::PlannedRun {
@@ -5779,6 +6192,399 @@ mod tests {
                 && events.contains("\"skipped\":true"),
             "{events}"
         );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    // -- P4: first-class Run entities (`runs/scheduler/<run_id>.json`) --------
+
+    /// Every run entity file under `<runs_dir>/scheduler`, parsed and sorted by
+    /// `started_ms` (then `run_id`) so assertions are independent of readdir
+    /// order.
+    fn run_entities(opts: &SchedulerOptions) -> Vec<serde_json::Value> {
+        let dir = opts.runs_dir.join(SCHEDULER_RUN_DIR);
+        let mut runs: Vec<serde_json::Value> = std::fs::read_dir(&dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_name().to_string_lossy().ends_with(".json"))
+                    .map(|e| {
+                        serde_json::from_str(
+                            &std::fs::read_to_string(e.path()).expect("read run entity"),
+                        )
+                        .expect("run entity JSON")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        runs.sort_by(|a, b| {
+            a["started_ms"]
+                .as_u64()
+                .cmp(&b["started_ms"].as_u64())
+                .then_with(|| a["run_id"].as_str().cmp(&b["run_id"].as_str()))
+        });
+        runs
+    }
+
+    /// Raw file names under `<runs_dir>/scheduler` (atomic-write residue check).
+    fn run_file_names(opts: &SchedulerOptions) -> Vec<String> {
+        let dir = opts.runs_dir.join(SCHEDULER_RUN_DIR);
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// One `kind=task` entry for `任务1`.
+    fn task_entry_config(retry: u32, lifecycle: &str) -> String {
+        format!(
+            r#"{{"schema_version":4,"config":{{"mode":"stop"}},
+                "entries":[{{"entry_id":"e1","task":"任务1","lifecycle":"{lifecycle}",
+                            "retry":{retry}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn task_entry_writes_one_run_entity_per_attempt() {
+        let td = tmpdir("p4-task-retry");
+        write_task(&td, "任务1", OK_FLOW, None);
+        let config = write_config(&td, &task_entry_config(1, "periodic"));
+        let opts = queue_opts(
+            &td,
+            config,
+            TestExec::new().with(
+                "任务1",
+                vec![
+                    step(ResultClass::Retryable),
+                    step(ResultClass::Success).with_clicks(3),
+                ],
+            ),
+        );
+        let report = run_scheduler(&opts, &mut |_l| {}).expect("scheduler");
+        assert_eq!(report.runs, 1, "{report:?}");
+        assert_eq!(report.successes, 1, "the final attempt succeeded: {report:?}");
+
+        let runs = run_entities(&opts);
+        assert_eq!(runs.len(), 2, "one run entity per attempt: {runs:?}");
+        // Attempt 1: retryable failure, exit code 1, no clicks.
+        assert_eq!(runs[0]["schema_version"], 1);
+        assert_eq!(runs[0]["source"], "scheduler");
+        assert_eq!(runs[0]["kind"], "task");
+        assert_eq!(runs[0]["entry_id"], "e1");
+        assert_eq!(runs[0]["task"], "任务1");
+        assert_eq!(runs[0]["attempt"], 1);
+        assert_eq!(runs[0]["resume"], false);
+        assert_eq!(runs[0]["class"], "retryable");
+        assert_eq!(runs[0]["exit"], "failed");
+        assert_eq!(runs[0]["exit_code"], 1);
+        assert_eq!(runs[0]["outcome"], "Failed");
+        assert_eq!(runs[0]["clicks"], 0);
+        assert!(
+            runs[0].get("queue_id").is_none()
+                && runs[0].get("round").is_none()
+                && runs[0].get("member_index").is_none(),
+            "task entries carry no queue fields: {runs:?}"
+        );
+        assert!(runs[0].get("clicks_file").is_none());
+        // Attempt 2: success, exit code 0 and the scripted click count.
+        assert_eq!(runs[1]["attempt"], 2);
+        assert_eq!(runs[1]["class"], "success");
+        assert_eq!(runs[1]["exit"], "done");
+        assert_eq!(runs[1]["exit_code"], 0);
+        assert_eq!(runs[1]["outcome"], "Done");
+        assert_eq!(runs[1]["clicks"], 3);
+        let started = runs[1]["started_ms"].as_u64().expect("started_ms");
+        let finished = runs[1]["finished_ms"].as_u64().expect("finished_ms");
+        assert!(finished >= started, "{runs:?}");
+        assert_eq!(
+            runs[1]["duration_ms"].as_u64(),
+            Some(finished - started),
+            "duration_ms must be finished-started"
+        );
+        // Unique ids and no atomic-write temp residue.
+        assert_ne!(runs[0]["run_id"], runs[1]["run_id"]);
+        let names = run_file_names(&opts);
+        assert_eq!(names.len(), 2, "only the two run entities: {names:?}");
+        assert!(
+            names.iter().all(|n| n.ends_with(".json") && !n.contains(".tmp")),
+            "{names:?}"
+        );
+        for run in &runs {
+            let id = run["run_id"].as_str().expect("run_id");
+            assert!(
+                id.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')),
+                "filename-safe run_id: {id}"
+            );
+            assert!(names.contains(&format!("{id}.json")), "{id} / {names:?}");
+        }
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn task_entry_run_entity_captures_error_text_and_exit_code() {
+        let td = tmpdir("p4-task-error");
+        write_task(&td, "任务1", OK_FLOW, None);
+        let config = write_config(&td, &task_entry_config(0, "periodic"));
+        let mut scripted = TestExecResult::new(ResultClass::Fatal, "run_error", "error");
+        scripted.error = Some("task bundle vanished".to_string());
+        scripted.exit_code = 1;
+        let opts = queue_opts(
+            &td,
+            config,
+            TestExec::new().with("任务1", vec![scripted]),
+        );
+        let report = run_scheduler(&opts, &mut |_l| {}).expect("scheduler");
+        assert_eq!(report.fatals, 1, "{report:?}");
+
+        let runs = run_entities(&opts);
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert_eq!(runs[0]["class"], "fatal");
+        assert_eq!(runs[0]["exit"], "run_error");
+        assert_eq!(runs[0]["exit_code"], 1);
+        assert_eq!(runs[0]["outcome"], "error");
+        assert_eq!(runs[0]["error"], "task bundle vanished");
+        assert_eq!(runs[0]["clicks"], 0);
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_member_run_entities_carry_queue_round_and_member_index() {
+        let td = tmpdir("p4-queue-members");
+        write_task(&td, "成员1", OK_FLOW, None);
+        write_task(&td, "成员2", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            &queue_config_text(&["成员1", "成员2"], 1, "continue", 0, "", ""),
+        );
+        let opts = queue_opts(
+            &td,
+            config,
+            exec_two(ResultClass::Success, ResultClass::Success),
+        );
+        let report = run_scheduler(&opts, &mut |_l| {}).expect("scheduler");
+        assert_eq!(report.runs, 1, "{report:?}");
+
+        let runs = run_entities(&opts);
+        assert_eq!(runs.len(), 2, "one run entity per member attempt: {runs:?}");
+        for (i, run) in runs.iter().enumerate() {
+            assert_eq!(run["kind"], "queue_member");
+            assert_eq!(run["entry_id"], "qe");
+            assert_eq!(run["queue_id"], "q1");
+            assert_eq!(run["round"], 1);
+            assert_eq!(run["member_index"], i);
+            assert_eq!(run["task"], ["成员1", "成员2"][i]);
+            assert_eq!(run["attempt"], 1);
+            assert_eq!(run["class"], "success");
+            assert_eq!(run["exit_code"], 0);
+            assert_eq!(run["clicks"], 2);
+        }
+        assert_ne!(runs[0]["run_id"], runs[1]["run_id"]);
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn run_finished_event_carries_exit_code_and_run_file_without_losing_fields() {
+        let td = tmpdir("p4-event");
+        write_task(&td, "任务1", OK_FLOW, None);
+        let config = write_config(&td, &task_entry_config(0, "periodic"));
+        let opts = queue_opts(
+            &td,
+            config,
+            TestExec::new().with("任务1", vec![step(ResultClass::Success)]),
+        );
+        let report = run_scheduler(&opts, &mut |_l| {}).expect("scheduler");
+        assert_eq!(
+            report.run_file_errors, 0,
+            "a healthy session never counts a write failure: {report:?}"
+        );
+
+        let runs = run_entities(&opts);
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        let events = std::fs::read_to_string(opts.events_path()).expect("events");
+        let finished = events
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event JSON"))
+            .find(|v| v["event"] == "run_finished")
+            .expect("run_finished event");
+        assert_eq!(finished["exit_code"], 0, "{finished}");
+        assert_eq!(
+            finished["run_file"],
+            format!(
+                "{SCHEDULER_RUN_DIR}/{}.json",
+                runs[0]["run_id"].as_str().expect("run_id")
+            )
+        );
+        assert!(
+            finished.get("run_file_error").is_some() && finished["run_file_error"].is_null(),
+            "a successful write reports run_file_error: null: {finished}"
+        );
+        // Existing fields must still be present (additive change only).
+        for key in [
+            "entry_id",
+            "task",
+            "pass",
+            "attempts",
+            "class",
+            "exit",
+            "outcome",
+            "clicks",
+            "duration_ms",
+            "cooldown_until_ms",
+            "quota_used",
+        ] {
+            assert!(finished.get(key).is_some(), "missing `{key}`: {finished}");
+        }
+        assert_eq!(finished["task"], "任务1");
+        assert_eq!(finished["attempts"], 1);
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn run_file_write_failure_alerts_and_counts_without_failing_the_run() {
+        // P1-3: a lost run entity is observable (alert event + report counter +
+        // `run_file_error` on the aggregate event) but never changes the run's
+        // outcome or stops execution/state persistence.
+        let td = tmpdir("p4-run-write-fail");
+        write_task(&td, "任务1", OK_FLOW, None);
+        let config = write_config(&td, &task_entry_config(0, "periodic"));
+        let mut opts = queue_opts(
+            &td,
+            config,
+            TestExec::new().with("任务1", vec![step(ResultClass::Success)]),
+        );
+        opts.report = Some(td.join("scheduler-report.json"));
+        // Cross-platform "unwritable": a *file* where `<runs_dir>/scheduler/`
+        // must be created makes `create_dir_all` fail inside write_json_atomic.
+        std::fs::create_dir_all(&opts.runs_dir).expect("runs dir");
+        std::fs::write(opts.runs_dir.join(SCHEDULER_RUN_DIR), "not a directory")
+            .expect("blocker file");
+
+        let mut lines = Vec::new();
+        let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("scheduler");
+        // The run itself still succeeded and its state was persisted/cleared.
+        assert_eq!(report.runs, 1, "{report:?}");
+        assert_eq!(report.successes, 1, "{report:?}");
+        assert!(
+            report.all_ok(),
+            "a lost run file is not a run failure: {report:?}"
+        );
+        assert_eq!(report.run_file_errors, 1, "{report:?}");
+        assert_eq!(
+            report.alerts.len(),
+            1,
+            "one run_file_write alert: {:?}",
+            report.alerts
+        );
+        let alert = &report.alerts[0];
+        assert!(alert.starts_with("run_file_write:e1:"), "{alert}");
+        assert!(
+            alert.contains("task=任务1") && alert.contains("run_id=") && alert.contains("error="),
+            "the alert names the task/run/error: {alert}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("scheduler_run_file_error")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("ALERT level=warn kind=run_file_write")),
+            "the write failure is an ALERT line: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("scheduler_summary") && l.contains("run_file_errors=1")),
+            "the CLI summary counts the write failure: {lines:?}"
+        );
+        assert_eq!(
+            state_of(&opts).running,
+            None,
+            "state was still cleared/saved"
+        );
+        assert!(
+            !opts.runs_dir.join(SCHEDULER_RUN_DIR).is_dir(),
+            "no run dir/entity was produced"
+        );
+        // The exit report (`--report`) exposes the additive counter + alert.
+        let report_text =
+            std::fs::read_to_string(opts.report.as_ref().expect("report path")).expect("report");
+        let report_json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("report JSON");
+        assert_eq!(report_json["run_file_errors"], 1, "{report_json}");
+        assert!(
+            report_json["alerts"][0]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("run_file_write:e1:"),
+            "{report_json}"
+        );
+
+        let events = std::fs::read_to_string(opts.events_path()).expect("events");
+        let parsed: Vec<serde_json::Value> = events
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("event JSON"))
+            .collect();
+        let alert_event = parsed
+            .iter()
+            .find(|v| v["event"] == "alert" && v["kind"] == "run_file_write")
+            .expect("run_file_write alert event");
+        assert_eq!(alert_event["entry_id"], "e1");
+        assert!(
+            alert_event["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("任务1"),
+            "{alert_event}"
+        );
+        let finished = parsed
+            .iter()
+            .find(|v| v["event"] == "run_finished")
+            .expect("run_finished event");
+        assert!(finished["run_file"].is_null(), "{finished}");
+        let err = finished["run_file_error"]
+            .as_str()
+            .expect("run_file_error names the write failure");
+        assert!(
+            err.contains("run_id=") && err.contains("scheduler/") && err.contains("error="),
+            "{err}"
+        );
+        assert_eq!(
+            finished["exit_code"], 0,
+            "the run itself still succeeded: {finished}"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn run_ids_are_unique_across_scheduler_restarts() {
+        let td = tmpdir("p4-unique");
+        write_task(&td, "任务1", OK_FLOW, None);
+        // `temp` runs on every pass, so two independent sessions both write.
+        let config = write_config(&td, &task_entry_config(0, "temp"));
+        let opts = queue_opts(
+            &td,
+            config,
+            TestExec::new().with("任务1", vec![step(ResultClass::Success)]),
+        );
+        run_scheduler(&opts, &mut |_l| {}).expect("run 1");
+        run_scheduler(&opts, &mut |_l| {}).expect("run 2");
+        let runs = run_entities(&opts);
+        assert_eq!(runs.len(), 2, "{runs:?}");
+        let ids: BTreeSet<&str> = runs
+            .iter()
+            .map(|r| r["run_id"].as_str().expect("run_id"))
+            .collect();
+        assert_eq!(ids.len(), 2, "run ids must stay unique: {ids:?}");
+        assert_eq!(run_file_names(&opts).len(), 2);
         std::fs::remove_dir_all(&td).ok();
     }
 }

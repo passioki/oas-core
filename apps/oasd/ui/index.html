@@ -4,6 +4,34 @@
 <meta charset="utf-8" />
 <title>OAS 引擎编辑器 · MVP</title>
 <link rel="stylesheet" href="/style.css" />
+<style>
+  /* P4：调度运行记录（本次只改 index.html/app.js；style.css 未动） */
+  .sched-runs-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  #page-sched-runs-list { overflow-x: auto; }
+  .sched-runs-table th, .sched-runs-table td {
+    text-align: left; padding: 4px 6px; border-bottom: 1px solid #2b2f38; vertical-align: top;
+  }
+  .sched-runs-table td { color: #dfe3e8; }
+  .sched-runs-table th { color: #9aa0aa; font-weight: 600; white-space: nowrap; }
+  .sched-runs-table td:first-child { white-space: nowrap; }
+  .sched-runs-table tbody tr { cursor: pointer; }
+  .sched-runs-table tbody tr:hover, .sched-runs-table tbody tr:focus { background: #24384f; outline: none; }
+  .sched-runs-table .run-error-cell {
+    color: #ff8a80; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .run-badge {
+    display: inline-block; padding: 0 5px; border-radius: 4px; font-size: 11px; line-height: 16px;
+    border: 1px solid #3a3f48; white-space: nowrap;
+  }
+  .run-badge.ok { color: #7bd88f; border-color: #2f6b3f; background: #16281b; }
+  .run-badge.warn { color: #e8c46a; border-color: #6b5a2f; background: #2a2416; }
+  .run-badge.err { color: #ff8a80; border-color: #6b2f2f; background: #2a1618; }
+  .run-badge.kind { color: #9ec1ea; border-color: #2f4a6b; background: #161f2a; }
+  .run-badge + .run-badge { margin-left: 4px; }
+  .sched-run-dialog { max-width: min(820px, calc(100vw - 40px)); }
+  .sched-run-dialog pre { max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+  .sched-run-dialog .run-detail-table td:first-child { white-space: nowrap; color: #9aa0aa; }
+</style>
 </head>
 <body>
   <header class="app-header">
@@ -385,6 +413,7 @@
         </div>
         <div id="page-sched-summary" class="muted small">—</div>
         <div id="page-sched-config-status" class="muted small">配置：—</div>
+        <div id="page-sched-runs-summary" class="muted small">运行记录：—</div>
       </div>
       <div class="row page-head">
         <h3>调度条目</h3>
@@ -400,6 +429,48 @@
         <button id="page-sched-add-queue" type="button">+ 新建队列…</button>
       </div>
       <div id="page-sched-queues" class="task-library muted">（未加载）</div>
+      <div class="row page-head">
+        <h3>运行记录</h3>
+        <span class="muted small">调度器每次运行一条（新→旧）；点行查看完整字段与错误全文</span>
+        <span class="spacer"></span>
+        <button id="page-sched-runs-refresh" type="button">刷新运行记录</button>
+      </div>
+      <div class="row lib-toolbar">
+        <label class="opt">任务
+          <select id="page-sched-runs-task">
+            <option value="">全部任务</option>
+          </select>
+        </label>
+        <label class="opt">结果
+          <select id="page-sched-runs-outcome">
+            <option value="">全部结果</option>
+            <optgroup label="class 词（成功/失败分类）">
+              <option value="success">success（成功）</option>
+              <option value="resource">resource（资源不足）</option>
+              <option value="blocked">blocked（被阻断）</option>
+              <option value="retryable">retryable（可重试）</option>
+              <option value="fatal">fatal（致命）</option>
+            </optgroup>
+            <optgroup label="落盘 outcome（P4A: Done/Failed/Exhausted/error）">
+              <option value="Done">Done（完成）</option>
+              <option value="Failed">Failed（失败）</option>
+              <option value="Exhausted">Exhausted（耗尽）</option>
+              <option value="error">error（错误）</option>
+            </optgroup>
+          </select>
+        </label>
+        <label class="opt">条数
+          <select id="page-sched-runs-limit">
+            <option value="100">100</option>
+            <option value="200" selected>200</option>
+            <option value="500">500</option>
+            <option value="1000">1000</option>
+          </select>
+        </label>
+        <button id="page-sched-runs-clear" type="button">清除筛选</button>
+        <span id="page-sched-runs-status" class="muted small">—</span>
+      </div>
+      <div id="page-sched-runs-list" class="task-library muted">（未加载）</div>
       <details id="page-sched-advanced" class="sched-advanced">
         <summary>高级 JSON（完整 scheduler.json）</summary>
         <p class="muted small">
@@ -579,6 +650,18 @@
     <div class="row dialog-actions">
       <button id="sched-queue-cancel" type="button">取消</button>
       <button id="sched-queue-save" type="button">保存队列</button>
+    </div>
+  </dialog>
+
+  <!-- P4：调度运行详情（再次 GET 单条；全字段 + 错误全文） -->
+  <dialog id="page-sched-runs-dialog" class="task-dialog sched-run-dialog">
+    <h3 id="page-sched-runs-detail-title">运行详情</h3>
+    <div id="page-sched-runs-detail-body" class="run-detail muted small">（未加载）</div>
+    <pre id="page-sched-runs-detail-error" class="muted small dialog-error"></pre>
+    <div class="row dialog-actions">
+      <button id="page-sched-runs-detail-refresh" type="button">重新读取</button>
+      <span class="spacer"></span>
+      <button id="page-sched-runs-detail-close" type="button">关闭</button>
     </div>
   </dialog>
 

@@ -4,6 +4,7 @@
 //!   * `*.clicks.jsonl`  — CD2 click audit (clicks / misses / locators)
 //!   * `*.events.jsonl`  — step events (failed steps / retries / popup dismissals)
 //!   * queue report JSON — `{results:[{outcome, attempts, clicks, misses}]}`
+//!   * `scheduler/*.json` — P4 first-class run entities (one per attempt)
 //!   * `shots/*.png`     — failure screenshots
 //!
 //! Output: a JSON summary, an optional self-contained HTML dashboard, and
@@ -14,6 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use serde::{Deserialize, Serialize};
+
+use crate::schedule::{scheduler_runs_dir, SchedulerRun};
 
 pub const USAGE: &str = "usage: oasd stats --runs <dir> [--report <file.json>] [--html <file.html>] \
                          [--alert-fail-rate 0.10] [--alert-failures 0]";
@@ -52,6 +55,26 @@ pub struct ShotStats {
     pub files: Vec<String>,
 }
 
+/// P4: first-class scheduler Run entities (`<runs_dir>/scheduler/*.json`).
+///
+/// `files` counts every `*.json` file scanned (bad ones included), `runs` only
+/// the valid run entities; a bad file is skipped and added to
+/// [`Summary::alerts`] (never an error). `failed` counts `class == "retryable"`
+/// and `fatal` counts `class == "fatal"` — the same two failure buckets as
+/// [`crate::schedule::SchedulerReport`] (`failures` / `fatals`), so a
+/// `resource`/`blocked` run is not misreported as a failure. The full outcome
+/// distribution stays available in `by_outcome`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SchedulerStats {
+    pub files: u32,
+    pub runs: u32,
+    pub failed: u32,
+    pub fatal: u32,
+    pub total_clicks: u64,
+    pub total_ms: u64,
+    pub by_outcome: BTreeMap<String, u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Summary {
     pub schema_version: u32,
@@ -61,6 +84,9 @@ pub struct Summary {
     pub queue: QueueStats,
     pub events: EventStats,
     pub shots: ShotStats,
+    /// P4 additive scheduler run-entity stats (old reports deserialize as 0).
+    #[serde(default)]
+    pub scheduler: SchedulerStats,
     pub alerts: Vec<String>,
 }
 
@@ -167,6 +193,7 @@ pub fn collect(runs_dir: &Path) -> Result<Summary, String> {
         }
     }
     s.clicks.distinct = distinct.len() as u64;
+    collect_scheduler_runs(runs_dir, &mut s);
 
     let shots_dir = runs_dir.join("shots");
     if let Ok(entries) = std::fs::read_dir(&shots_dir) {
@@ -182,6 +209,57 @@ pub fn collect(runs_dir: &Path) -> Result<Summary, String> {
         s.shots.files.sort();
     }
     Ok(s)
+}
+
+/// P4: fold `<runs_dir>/scheduler/*.json` (immutable per-attempt run entities)
+/// into [`Summary::scheduler`]. A bad file is skipped and reported as an alert;
+/// a missing directory is simply "no scheduler runs yet".
+fn collect_scheduler_runs(runs_dir: &Path, s: &mut Summary) {
+    let dir = scheduler_runs_dir(runs_dir);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            s.alerts
+                .push(format!("scan scheduler runs `{}`: {e}", dir.display()));
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
+        if !is_file {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".json") || name.ends_with(".tmp") {
+            continue;
+        }
+        s.scheduler.files += 1;
+        let parsed = std::fs::read_to_string(entry.path())
+            .map_err(|e| format!("read: {e}"))
+            .and_then(|text| {
+                serde_json::from_str::<SchedulerRun>(&text).map_err(|e| format!("invalid JSON: {e}"))
+            });
+        match parsed {
+            Ok(run) if run.is_run_entity() => {
+                s.scheduler.runs += 1;
+                match run.class.as_str() {
+                    "retryable" => s.scheduler.failed += 1,
+                    "fatal" => s.scheduler.fatal += 1,
+                    _ => {}
+                }
+                s.scheduler.total_clicks += run.clicks as u64;
+                s.scheduler.total_ms = s.scheduler.total_ms.saturating_add(run.duration_ms);
+                *s.scheduler.by_outcome.entry(run.outcome).or_insert(0) += 1;
+            }
+            Ok(_) => s
+                .alerts
+                .push(format!("scheduler run `{name}` skipped: not a run entity")),
+            Err(e) => s
+                .alerts
+                .push(format!("scheduler run `{name}` skipped: {e}")),
+        }
+    }
 }
 
 /// Compute alerts from the summary + thresholds.
@@ -383,6 +461,15 @@ pub fn stats_cmd(rest: &[String]) -> ExitCode {
         summary.queue.total_ms
     );
     println!(
+        "scheduler files={} runs={} failed={} fatal={} clicks={} total_ms={}",
+        summary.scheduler.files,
+        summary.scheduler.runs,
+        summary.scheduler.failed,
+        summary.scheduler.fatal,
+        summary.scheduler.total_clicks,
+        summary.scheduler.total_ms
+    );
+    println!(
         "events files={} steps={} failed={} retries={} popups={}",
         summary.events.files,
         summary.events.steps,
@@ -516,6 +603,175 @@ mod tests {
         )
         .unwrap();
         let s = alerts_for(collect(&dir).unwrap(), 0.10, 0);
+        assert!(s.alerts.is_empty(), "{:?}", s.alerts);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // -- P4: scheduler run entities (`runs/scheduler/*.json`) ----------------
+
+    fn write_scheduler_run(
+        runs_dir: &Path,
+        run_id: &str,
+        outcome: &str,
+        class: &str,
+        clicks: u64,
+        duration_ms: u64,
+    ) {
+        let dir = runs_dir.join("scheduler");
+        std::fs::create_dir_all(&dir).expect("scheduler dir");
+        let run = serde_json::json!({
+            "schema_version": 1,
+            "run_id": run_id,
+            "source": "scheduler",
+            "kind": "task",
+            "entry_id": "e1",
+            "task": "任务1",
+            "attempt": 1,
+            "resume": false,
+            "started_ms": 1_700_000_000_000u64,
+            "finished_ms": 1_700_000_000_000u64 + duration_ms,
+            "duration_ms": duration_ms,
+            "class": class,
+            "exit": if outcome == "Done" { "done" } else { "failed" },
+            "exit_code": if outcome == "Done" { 0 } else { 1 },
+            "outcome": outcome,
+            "clicks": clicks,
+        });
+        std::fs::write(
+            dir.join(format!("{run_id}.json")),
+            serde_json::to_string_pretty(&run).expect("serialize run") + "\n",
+        )
+        .expect("write scheduler run");
+    }
+
+    #[test]
+    fn collect_includes_scheduler_run_entities_and_skips_bad_files() {
+        let dir = tmpdir("scheduler-stats");
+        write_scheduler_run(&dir, "1700000000000-0000", "Done", "success", 2, 500);
+        write_scheduler_run(&dir, "1700000001000-0000", "Failed", "retryable", 3, 700);
+        write_scheduler_run(&dir, "1700000002000-0000", "Failed", "fatal", 0, 900);
+        // Bad files are skipped and surfaced as alerts, never an error.
+        std::fs::write(dir.join("scheduler").join("broken.json"), "{ not json")
+            .expect("write broken");
+        std::fs::write(
+            dir.join("scheduler").join("not-a-run.json"),
+            r#"{"hello":"world"}"#,
+        )
+        .expect("write non-run");
+        // Atomic-write residue (`.json.tmp`) is not a scanned `*.json`.
+        std::fs::write(
+            dir.join("scheduler").join("1700000009000-0000.json.tmp"),
+            "{}",
+        )
+        .expect("write tmp residue");
+
+        let s = collect(&dir).expect("collect");
+        assert_eq!(s.scheduler.files, 5, "every *.json scanned: {s:?}");
+        assert_eq!(s.scheduler.runs, 3, "only valid run entities: {s:?}");
+        assert_eq!(s.scheduler.failed, 1, "class == retryable: {s:?}");
+        assert_eq!(s.scheduler.fatal, 1, "class == fatal: {s:?}");
+        assert_eq!(s.scheduler.total_clicks, 5);
+        assert_eq!(s.scheduler.total_ms, 2100);
+        assert_eq!(s.scheduler.by_outcome.get("Done"), Some(&1));
+        assert_eq!(s.scheduler.by_outcome.get("Failed"), Some(&2));
+        assert_eq!(s.alerts.len(), 2, "one alert per bad file: {:?}", s.alerts);
+        assert!(
+            s.alerts.iter().all(|a| a.contains("scheduler run")),
+            "{:?}",
+            s.alerts
+        );
+        // Legacy counters are untouched by scheduler files.
+        assert_eq!(s.clicks.files, 0);
+        assert_eq!(s.clicks.clicks, 0);
+        assert_eq!(s.queue.reports, 0);
+        assert_eq!(s.events.files, 0);
+        assert_eq!(s.shots.count, 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scheduler_stats_do_not_count_resource_or_blocked_as_failures() {
+        // P1-2 round-trip: `failed` = class retryable, `fatal` = class fatal,
+        // both attempt-level. `resource` / `blocked` attempts are non-success
+        // but must never inflate either failure bucket; they stay visible in
+        // `by_outcome` (and in the totals).
+        let dir = tmpdir("scheduler-classes");
+        write_scheduler_run(&dir, "1700000000000-0000", "Done", "success", 1, 100);
+        write_scheduler_run(&dir, "1700000001000-0000", "Failed", "resource", 2, 200);
+        write_scheduler_run(&dir, "1700000002000-0000", "Blocked", "blocked", 3, 300);
+        write_scheduler_run(&dir, "1700000003000-0000", "Failed", "retryable", 4, 400);
+        write_scheduler_run(&dir, "1700000004000-0000", "Failed", "fatal", 5, 500);
+        // One bad file: counted in `files`, never in `runs`, and alerted once.
+        std::fs::write(dir.join("scheduler").join("broken.json"), "{ not json")
+            .expect("write broken");
+
+        let s = collect(&dir).expect("collect");
+        assert_eq!(
+            s.scheduler.files, 6,
+            "every *.json including the bad one: {s:?}"
+        );
+        assert_eq!(s.scheduler.runs, 5, "only valid run entities: {s:?}");
+        assert_eq!(
+            s.scheduler.failed, 1,
+            "failed counts class=retryable only: {s:?}"
+        );
+        assert_eq!(
+            s.scheduler.fatal, 1,
+            "fatal counts class=fatal only: {s:?}"
+        );
+        assert_eq!(s.scheduler.total_clicks, 15, "clicks sum every attempt");
+        assert_eq!(s.scheduler.total_ms, 1500, "duration sums every attempt");
+        assert_eq!(s.scheduler.by_outcome.get("Done"), Some(&1), "{s:?}");
+        assert_eq!(s.scheduler.by_outcome.get("Failed"), Some(&3), "{s:?}");
+        assert_eq!(s.scheduler.by_outcome.get("Blocked"), Some(&1), "{s:?}");
+        // resource/blocked attempts raise no alert of their own.
+        assert_eq!(s.alerts.len(), 1, "only the bad file: {:?}", s.alerts);
+        assert!(
+            s.alerts[0].contains("scheduler run") && s.alerts[0].contains("skipped"),
+            "{:?}",
+            s.alerts
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scheduler_stats_are_additive_to_the_legacy_summary() {
+        let dir = tmpdir("scheduler-additive");
+        std::fs::write(
+            dir.join("a.clicks.jsonl"),
+            "{\"x\":1,\"y\":2,\"miss\":false,\"locator\":\"template\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("a.events.jsonl"),
+            "{\"op\":\"click\",\"result\":\"failed\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("queue.json"),
+            r#"{"schema_version":1,"results":[{"outcome":"done","attempts":1,"started_ms":10,"finished_ms":20}]}"#,
+        )
+        .unwrap();
+        write_scheduler_run(&dir, "1700000000000-0000", "Done", "success", 4, 300);
+
+        let s = collect(&dir).expect("collect");
+        // Pre-P4 fields keep their exact values.
+        assert_eq!(s.clicks.files, 1);
+        assert_eq!(s.clicks.clicks, 1);
+        assert_eq!(s.queue.reports, 1);
+        assert_eq!(s.queue.done, 1);
+        assert_eq!(s.queue.attempts, 1);
+        assert_eq!(s.queue.total_ms, 10);
+        assert_eq!(s.events.files, 1);
+        assert_eq!(s.events.failed_steps, 1);
+        // The new block is additive.
+        assert_eq!(s.scheduler.files, 1);
+        assert_eq!(s.scheduler.runs, 1);
+        assert_eq!(s.scheduler.total_clicks, 4);
+        assert_eq!(s.scheduler.total_ms, 300);
+        assert_eq!(s.scheduler.by_outcome.get("Done"), Some(&1));
+        assert_eq!(s.scheduler.failed, 0);
+        assert_eq!(s.scheduler.fatal, 0);
         assert!(s.alerts.is_empty(), "{:?}", s.alerts);
         std::fs::remove_dir_all(&dir).ok();
     }

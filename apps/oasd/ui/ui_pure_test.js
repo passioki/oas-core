@@ -167,6 +167,43 @@ const PURE_FUNCTIONS = [
   'schedResponseErrorText',
   'schedSaveBlockedReason',
   'schedParseConfigJson',
+  // P4: scheduler run history (list URL / row formatting / detail / errors)
+  'schedRunValueText',
+  'schedRunLimitValue',
+  'schedRunsBuildQuery',
+  'schedRunsBuildUrl',
+  'schedRunDetailUrl',
+  'schedRunTimeText',
+  'schedRunDurationMs',
+  'schedRunDurationText',
+  'schedRunOutcomeLabel',
+  'schedRunOutcomeBadgeClass',
+  'schedRunStatusBadgeClass',
+  'schedRunKindText',
+  'schedRunIsQueueRun',
+  'schedQueueDisplayName',
+  'schedRunTaskLabel',
+  'schedRunRoundMemberText',
+  'schedRunAttemptText',
+  'schedRunExitText',
+  'schedRunClicksText',
+  'schedRunErrorText',
+  'schedRunErrorSummary',
+  'schedRunResumeText',
+  'schedRunDetailRows',
+  'schedRunDetailTitle',
+  'schedRunRowCells',
+  'schedRunIsFailure',
+  'schedRunsFailureCount',
+  'schedRunsStatusCardText',
+  'schedRunBodyErrors',
+  'schedRunsErrorText',
+  'schedRunsResponseErrorText',
+  'schedRunDetailErrorText',
+  'schedRunsTaskChoices',
+  'schedRunsFilterLocal',
+  'schedRunsFilterActive',
+  'schedRunsListStatusText',
 ];
 
 const sandbox = {};
@@ -243,6 +280,42 @@ const {
   schedResponseErrorText,
   schedSaveBlockedReason,
   schedParseConfigJson,
+  schedRunValueText,
+  schedRunLimitValue,
+  schedRunsBuildQuery,
+  schedRunsBuildUrl,
+  schedRunDetailUrl,
+  schedRunTimeText,
+  schedRunDurationMs,
+  schedRunDurationText,
+  schedRunOutcomeLabel,
+  schedRunOutcomeBadgeClass,
+  schedRunStatusBadgeClass,
+  schedRunKindText,
+  schedRunIsQueueRun,
+  schedQueueDisplayName,
+  schedRunTaskLabel,
+  schedRunRoundMemberText,
+  schedRunAttemptText,
+  schedRunExitText,
+  schedRunClicksText,
+  schedRunErrorText,
+  schedRunErrorSummary,
+  schedRunResumeText,
+  schedRunDetailRows,
+  schedRunDetailTitle,
+  schedRunRowCells,
+  schedRunIsFailure,
+  schedRunsFailureCount,
+  schedRunsStatusCardText,
+  schedRunBodyErrors,
+  schedRunsErrorText,
+  schedRunsResponseErrorText,
+  schedRunDetailErrorText,
+  schedRunsTaskChoices,
+  schedRunsFilterLocal,
+  schedRunsFilterActive,
+  schedRunsListStatusText,
 } = sandbox;
 
 let checks = 0;
@@ -1451,6 +1524,299 @@ eq(
   'config JSON round-trips through parse/normalize'
 );
 
+// --- P4: scheduler run history (list URL / row formatting / detail / errors) ---
+const runCfg = schedEmptyConfig();
+runCfg.queues = [{
+  queue_id: 'q1', name: '日常', members: ['任务2', '任务3'], total_rounds: 2,
+  on_failure: 'continue', between_ms: 500,
+}];
+runCfg.entries = [
+  schedDefaultTaskEntry('任务1', runCfg),
+  schedDefaultTaskEntry('q1', runCfg, 'queue'),
+];
+const taskRun = {
+  run_id: 'run-1', file: 'run-1.json', task: '任务1', kind: 'task', entry_id: 'task-任务1',
+  queue_id: '', round: null, member_index: null, attempt: 1,
+  started_ms: 1762100000000, finished_ms: 1762100001234, duration_ms: 1234,
+  class: 'success', outcome: 'Done', exit: 'done', exit_code: 0, clicks: 12,
+  error: '', resume: true, clicks_file: 'runs/clicks/run-1.clicks.jsonl',
+};
+const queueRun = {
+  run_id: 'run-2', file: 'run-2.json', task: '任务2', kind: 'queue_member', entry_id: 'queue-q1',
+  queue_id: 'q1', round: 2, member_index: 0, attempt: 2,
+  started_ms: 1762100100000, finished_ms: 1762100102500, duration_ms: 2500,
+  class: 'success', outcome: 'Done', exit: 'done', exit_code: 0, clicks: 3,
+  error: '', resume: false, clicks_file: 'runs/clicks/run-2.clicks.jsonl',
+};
+
+// limit 校验 / URL 构造（task/outcome 编码，空筛选省略）。
+eq(schedRunLimitValue(undefined), 200, 'run list limit defaults to 200');
+eq(schedRunLimitValue('500'), 500, 'a string limit value is accepted');
+eq(schedRunLimitValue(300), 200, 'an unsupported limit falls back to 200');
+eq(schedRunLimitValue(0), 200, 'limit 0 falls back to 200');
+eq(schedRunsBuildQuery({}), 'limit=200', 'empty run filter only sends the default limit');
+eq(
+  schedRunsBuildQuery({ limit: 1000, task: ' 任务 A&1 ', outcome: 'Failed' }),
+  'limit=1000&task=' + encodeURIComponent('任务 A&1') + '&outcome=Failed',
+  'task is trimmed and URL-encoded; limit/outcome appended'
+);
+eq(schedRunsBuildQuery({ task: '', outcome: '' }), 'limit=200', 'empty task/outcome are omitted');
+eq(schedRunsBuildQuery({ outcome: 'weird' }), 'limit=200', 'an unknown outcome is not sent');
+eq(
+  schedRunsBuildQuery({ outcome: 'FATAL' }),
+  'limit=200',
+  'class words are filtered locally (the list endpoint only filters persisted outcome)'
+);
+eq(schedRunsBuildQuery({ outcome: 'failed' }), 'limit=200&outcome=Failed', 'persisted outcome keeps its server casing');
+eq(schedRunsBuildQuery({ outcome: 'Done' }), 'limit=200&outcome=Done', 'Done outcome is sent verbatim');
+eq(schedRunsBuildQuery({ queueId: 'q1' }), 'limit=200', 'the local queue filter is never sent to the server');
+eq(schedRunsBuildUrl({ limit: 500, task: 'x' }), '/runs/scheduler?limit=500&task=x', 'run list URL points at /runs/scheduler');
+eq(
+  schedRunDetailUrl('run 1/2'),
+  '/runs/scheduler/run?run_id=' + encodeURIComponent('run 1/2'),
+  'detail URL encodes run_id'
+);
+eq(schedRunDetailUrl(null), '/runs/scheduler/run?run_id=', 'empty detail run_id stays empty');
+
+// 时间 / duration 格式化。
+eq(schedRunTimeText(0), '—', 'missing run time renders as a dash');
+eq(schedRunTimeText(null), '—', 'null run time renders as a dash');
+eq(schedRunTimeText(''), '—', 'empty run time renders as a dash');
+eq(
+  schedRunTimeText(1762100000000),
+  new Date(1762100000000).toLocaleString('zh-CN', { hour12: false }),
+  'run time is localized'
+);
+eq(schedRunDurationText(850), '850ms', 'sub-second duration stays in ms');
+eq(schedRunDurationText(1234), '1.2s', 'seconds duration keeps one decimal');
+eq(schedRunDurationText(65000), '1m5s', 'minute duration is human readable');
+eq(schedRunDurationText(3725000), '1h2m', 'hour duration is human readable');
+eq(schedRunDurationText(null), '—', 'missing duration renders as a dash');
+eq(schedRunDurationText(-5), '—', 'negative duration renders as a dash');
+eq(schedRunDurationMs({ duration_ms: 0 }), 0, 'duration_ms=0 is kept (not treated as missing)');
+eq(schedRunDurationMs({ started_ms: 1000, finished_ms: 3500 }), 2500, 'duration falls back to finished-started');
+eq(schedRunDurationMs({}), null, 'missing duration and timestamps yield null');
+
+// outcome 徽章标签/颜色 + kind。
+eq(schedRunOutcomeLabel('success'), '成功', 'success label');
+eq(schedRunOutcomeLabel('resource'), '资源不足', 'resource label');
+eq(schedRunOutcomeLabel('blocked'), '被阻断', 'blocked label');
+eq(schedRunOutcomeLabel('retryable'), '可重试', 'retryable label');
+eq(schedRunOutcomeLabel('fatal'), '致命', 'fatal label');
+eq(schedRunOutcomeLabel('Done'), '完成', 'persisted Done outcome label');
+eq(schedRunOutcomeLabel('Failed'), '失败', 'persisted Failed outcome label');
+eq(schedRunOutcomeLabel('Exhausted'), '耗尽', 'persisted Exhausted outcome label');
+eq(schedRunOutcomeLabel('error'), '错误', 'persisted error outcome label');
+eq(schedRunOutcomeLabel(''), '未知', 'missing outcome label');
+eq(schedRunOutcomeLabel('weird'), 'weird', 'unknown outcome keeps its raw value');
+eq(schedRunOutcomeBadgeClass('success'), 'ok', 'success badge is green');
+eq(schedRunOutcomeBadgeClass('fatal'), 'err', 'fatal badge is red');
+eq(schedRunOutcomeBadgeClass('retryable'), 'warn', 'retryable badge is yellow');
+eq(schedRunOutcomeBadgeClass('Failed'), 'err', 'persisted Failed outcome badge is red');
+eq(schedRunOutcomeBadgeClass('Done'), 'ok', 'persisted Done outcome badge is green');
+eq(schedRunOutcomeBadgeClass('Exhausted'), 'warn', 'persisted Exhausted outcome badge is yellow');
+eq(schedRunOutcomeBadgeClass(''), 'kind', 'unknown badge uses the neutral class');
+eq(schedRunStatusBadgeClass({ class: 'fatal', outcome: 'Failed' }), 'err', 'class wins over outcome for colour');
+eq(schedRunStatusBadgeClass({ class: '', outcome: 'Failed' }), 'err', 'outcome colours older runs without class');
+eq(schedRunKindText('queue'), 'queue', 'queue run kind');
+eq(schedRunKindText('queue_member'), 'queue_member', 'P4A queue_member kind is preserved');
+eq(schedRunKindText(''), 'task', 'missing kind defaults to task');
+eq(schedRunIsQueueRun({ kind: 'queue' }), true, 'kind=queue is a queue run');
+eq(schedRunIsQueueRun({ kind: 'queue_member' }), true, 'kind=queue_member is a queue run');
+eq(schedRunIsQueueRun({ kind: 'task' }), false, 'kind=task is not a queue run');
+
+// queue member naming: 队列名/成员名, queue_id fallback.
+eq(schedQueueDisplayName(runCfg, 'q1'), '日常', 'queue display name comes from config');
+eq(schedQueueDisplayName(runCfg, 'nope'), 'nope', 'unknown queue falls back to its id');
+eq(schedRunTaskLabel({ task: '任务1', kind: 'task' }, runCfg), '任务1', 'task run label is the task name');
+eq(schedRunTaskLabel(queueRun, runCfg), '日常/任务2', 'queue member label is 队列名/成员名');
+eq(
+  schedRunTaskLabel({ task: '任务2', kind: 'queue', queue_id: 'qX' }, runCfg),
+  'qX/任务2',
+  'queue member label falls back to queue_id'
+);
+eq(schedRunRoundMemberText(queueRun), '第2轮 · 成员1', 'queue round/member is 1-based for display');
+eq(schedRunRoundMemberText({ kind: 'queue', round: 1, member_index: 2 }), '第1轮 · 成员3', 'member_index is 0-based');
+eq(schedRunRoundMemberText(taskRun), '—', 'task runs have no round/member');
+eq(schedRunAttemptText({ attempt: 2 }), '2', 'attempt is rendered');
+eq(schedRunAttemptText({}), '—', 'missing attempt is a dash');
+eq(schedRunExitText({ exit_code: 0, exit: 'done' }), '0', 'exit_code wins over exit string');
+eq(schedRunExitText({ exit: 'timeout' }), 'timeout', 'exit string is used when exit_code is absent');
+eq(schedRunExitText({}), '—', 'missing exit is a dash');
+eq(schedRunClicksText({ clicks: 12 }), '12', 'clicks count is rendered');
+eq(schedRunClicksText({}), '—', 'missing clicks is a dash');
+
+// 错误文本 / 列表与详情读取错误。
+eq(schedRunErrorText('  boom \n'), 'boom', 'error text is trimmed');
+eq(schedRunErrorText({ code: 1 }), '{"code":1}', 'object error is JSON encoded');
+eq(schedRunErrorSummary(null), '', 'missing error summary is empty');
+eq(schedRunErrorSummary('a\nb\tc'), 'a b c', 'error summary collapses whitespace');
+eq(schedRunErrorSummary('x'.repeat(20), 10), 'xxxxxxxxx…', 'error summary truncates with an ellipsis');
+eq(schedRunsErrorText('HTTP 500'), '运行记录读取失败：HTTP 500', 'list read error has the required prefix');
+eq(
+  schedRunsResponseErrorText(500, { errors: ['disk full'] }),
+  '运行记录读取失败：HTTP 500：disk full',
+  'list HTTP error includes server errors'
+);
+ok(/P4A/.test(schedRunsResponseErrorText(404, null)), '404 list error names the missing P4A route');
+eq(
+  schedRunDetailErrorText(404, null),
+  '详情读取失败：运行记录不存在或已被删除（HTTP 404）',
+  'detail 404 explains the missing run'
+);
+eq(schedRunDetailErrorText(400, null), '详情读取失败：run_id 无效（HTTP 400）', 'detail 400 explains bad run_id');
+ok(/网络错误/.test(schedRunDetailErrorText(0, { errors: ['x'] })), 'detail network error is explicit');
+
+// 行格式化：时间/任务/kind/轮次/attempt/outcome/exit/duration/clicks/error。
+const taskCells = schedRunRowCells(taskRun, runCfg);
+eq(taskCells.task, '任务1', 'row task label');
+eq(taskCells.kind, 'task', 'row kind badge');
+eq(taskCells.round_member, '—', 'task row has no round/member');
+eq(taskCells.attempt, '1', 'row attempt');
+eq(taskCells.class, 'success', 'row class');
+eq(taskCells.outcome, '完成', 'row outcome label uses the persisted Done value');
+eq(taskCells.outcome_class, 'ok', 'row outcome color');
+eq(taskCells.exit, '0', 'row exit');
+eq(taskCells.duration, '1.2s', 'row duration');
+eq(taskCells.clicks, '12', 'row clicks');
+eq(taskCells.error, '', 'success row has no error summary');
+const queueCells = schedRunRowCells(queueRun, runCfg);
+eq(queueCells.task, '日常/任务2', 'queue row task label');
+eq(queueCells.kind, 'queue_member', 'P4A queue_member row kind');
+eq(queueCells.round_member, '第2轮 · 成员1', 'queue row round/member');
+eq(queueCells.outcome, '完成', 'queue row outcome uses the persisted Done value');
+const fatalRun = {
+  run_id: 'run-3', task: '任务1', kind: 'task', attempt: 3, duration_ms: 900,
+  class: 'fatal', outcome: 'fatal', exit: 'error', exit_code: 1, clicks: 0,
+  error: '第一行\n第二行',
+};
+const fatalCells = schedRunRowCells(fatalRun, runCfg);
+eq(fatalCells.outcome, '致命', 'fatal row outcome');
+eq(fatalCells.outcome_class, 'err', 'fatal row is red');
+eq(fatalCells.exit, '1', 'fatal row exit_code');
+eq(fatalCells.error, '第一行 第二行', 'fatal row error summary is one line');
+eq(fatalCells.error_full, '第一行\n第二行', 'fatal row keeps the full error text');
+
+// 详情字段（含 resume / clicks_file / started / finished / extras）。
+const detailRows = schedRunDetailRows(taskRun);
+const detailMap = {};
+for (const [key, value] of detailRows) detailMap[key] = value;
+eq(detailMap.run_id, 'run-1', 'detail run_id');
+eq(detailMap.kind, 'task', 'detail kind');
+eq(detailMap.attempt, '1', 'detail attempt');
+eq(detailMap.outcome, '完成（Done）', 'detail outcome label + raw persisted value');
+eq(detailMap.duration_ms, '1234（1.2s）', 'detail duration shows raw + readable');
+ok(detailMap.started_ms.includes('（') && detailMap.started_ms.startsWith('1762100000000'), 'detail started_ms shows raw + local');
+ok(detailMap.finished_ms.includes('（') && detailMap.finished_ms.startsWith('1762100001234'), 'detail finished_ms shows raw + local');
+eq(detailMap.resume, '是', 'detail resume=true is 是');
+eq(schedRunResumeText({ resume: false }), '否', 'resume=false is 否');
+eq(schedRunResumeText({}), '—', 'missing resume is a dash');
+eq(detailMap.clicks_file, 'runs/clicks/run-1.clicks.jsonl', 'detail clicks_file');
+eq(detailMap.error, '—', 'detail empty error is a dash');
+const extraRows = schedRunDetailRows(Object.assign({}, taskRun, { future_field: 'kept' }));
+ok(extraRows.some(([k, v]) => k === 'future_field' && v === 'kept'), 'unknown run fields are appended to the detail');
+ok(
+  /日常\/任务2/.test(schedRunDetailTitle(queueRun, runCfg)) &&
+    /完成/.test(schedRunDetailTitle(queueRun, runCfg)),
+  'detail title summarizes task + persisted outcome'
+);
+
+// 任务下拉来源：status entries/task_choices + config entries/queue members。
+eq(
+  schedRunsTaskChoices({
+    task_choices: ['b', 'a'],
+    entries: [{ entry_id: 'task-a', kind: 'task', task: 'a' }, { entry_id: 'queue-q1', kind: 'queue', task: 'q1' }],
+  }, runCfg),
+  ['b', 'a', '任务1', '任务2', '任务3'],
+  'task filter choices are merged from status/config without duplicates'
+);
+
+// 本地筛选（排序保持） + 状态文本。
+const orderedRuns = [queueRun, fatalRun, taskRun];
+eq(
+  schedRunsFilterLocal(orderedRuns, {}).map((r) => r.run_id),
+  ['run-2', 'run-3', 'run-1'],
+  'local filtering preserves newest→oldest order'
+);
+eq(
+  schedRunsFilterLocal(orderedRuns, { task: ' 任务1 ' }).map((r) => r.run_id),
+  ['run-3', 'run-1'],
+  'local task filter trims and preserves order'
+);
+eq(
+  schedRunsFilterLocal(orderedRuns, { outcome: 'fatal' }).map((r) => r.run_id),
+  ['run-3'],
+  'local outcome filter'
+);
+eq(
+  schedRunsFilterLocal([taskRun, fatalRun, Object.assign({}, queueRun, { class: 'success' })], { outcome: 'success' })
+    .map((r) => r.run_id),
+  ['run-1', 'run-2'],
+  'local class word matches class=success even when the persisted outcome is Done'
+);
+eq(
+  schedRunsFilterLocal([taskRun, Object.assign({}, fatalRun, { outcome: 'Failed' })], { outcome: 'Failed' })
+    .map((r) => r.run_id),
+  ['run-3'],
+  'local filter matches the persisted outcome too'
+);
+eq(
+  schedRunsFilterLocal(orderedRuns, { queueId: 'q1' }).map((r) => r.run_id),
+  ['run-2'],
+  'local queue filter selects queue members'
+);
+eq(schedRunsFilterActive({}), false, 'empty filter is inactive');
+eq(schedRunsFilterActive({ task: 'x' }), true, 'task filter is active');
+eq(schedRunsFilterActive({ queueId: 'q1' }), true, 'queue filter is active');
+eq(schedRunIsFailure({ outcome: 'success' }), false, 'success is not a failure');
+eq(schedRunIsFailure({ outcome: 'fatal' }), true, 'fatal is a failure');
+eq(schedRunIsFailure({ class: 'success', outcome: 'Failed' }), false, 'class=success wins over an odd outcome');
+eq(schedRunIsFailure({ class: 'resource' }), true, 'a non-success class is a failure');
+eq(schedRunIsFailure({ outcome: 'Done' }), false, 'persisted Done is not a failure');
+eq(schedRunIsFailure({ outcome: 'Failed' }), true, 'persisted Failed is a failure');
+eq(schedRunIsFailure({}), false, 'missing outcome is not counted as a failure');
+eq(schedRunsFailureCount([taskRun, fatalRun, { outcome: 'retryable' }, {}]), 2, 'failure count excludes success/missing');
+eq(schedRunsStatusCardText(null, ''), '运行记录：—', 'status card shows the unloaded state');
+eq(schedRunsStatusCardText({ runs: [] }, ''), '运行记录：暂无', 'status card shows the empty state');
+eq(
+  schedRunsStatusCardText(null, '运行记录读取失败：HTTP 500'),
+  '运行记录：读取失败（见下方运行记录区）',
+  'status card shows the read failure state'
+);
+ok(
+  /最近 完成/.test(schedRunsStatusCardText({ runs: [taskRun, fatalRun] }, '')) &&
+    /失败 1\/2/.test(schedRunsStatusCardText({ runs: [taskRun, fatalRun] }, '')),
+  'status card summarizes the latest persisted outcome and failure count'
+);
+eq(schedRunsListStatusText({ data: null }), '运行记录：—', 'list status shows the unloaded state');
+eq(schedRunsListStatusText({ data: { count: 0, runs: [] }, rows: [] }), '运行记录：共 0 条', 'list status shows the empty count');
+ok(
+  /共 2 条/.test(schedRunsListStatusText({ data: { count: 2, runs: orderedRuns }, rows: orderedRuns, filter: {} })),
+  'list status shows the total count'
+);
+ok(
+  /任务=任务1/.test(schedRunsListStatusText({ data: { count: 2, runs: orderedRuns }, rows: orderedRuns, filter: { task: '任务1' } })),
+  'list status echoes the task filter'
+);
+ok(
+  /结果=致命（本地筛选）/.test(schedRunsListStatusText({ data: { count: 2, runs: orderedRuns }, rows: orderedRuns, filter: { outcome: 'fatal' } })),
+  'list status labels a class filter as local'
+);
+ok(
+  /结果=失败/.test(schedRunsListStatusText({ data: { count: 2, runs: orderedRuns }, rows: orderedRuns, filter: { outcome: 'Failed' } })),
+  'list status shows the persisted outcome label'
+);
+ok(
+  /队列=q1（本地筛选）/.test(schedRunsListStatusText({ data: { count: 2, runs: orderedRuns }, rows: [queueRun], filter: { queueId: 'q1' } })) &&
+    /显示 1 条/.test(schedRunsListStatusText({ data: { count: 2, runs: orderedRuns }, rows: [queueRun], filter: { queueId: 'q1' } })),
+  'list status explains the local queue filter and visible rows'
+);
+eq(
+  schedRunsListStatusText({ error: '运行记录读取失败：HTTP 500', data: null }),
+  '运行记录读取失败：HTTP 500',
+  'list status surfaces the read error verbatim'
+);
+
 // Behavioural render smoke test: the new schedule page renderers must produce
 // one card per entry/queue without touching a real browser. A tiny DOM stub
 // mirrors the fakeElement pattern used for the global asset renderer.
@@ -1481,6 +1847,16 @@ function installScheduleRenderHarness() {
   };
   sandbox.pageSchedEntries = fakeSchedElement();
   sandbox.pageSchedQueues = fakeSchedElement();
+  sandbox.pageSchedRunsList = fakeSchedElement();
+  sandbox.pageSchedRunsStatus = fakeSchedElement();
+  sandbox.pageSchedRunsSummary = fakeSchedElement();
+  sandbox.schedRunDialogBody = fakeSchedElement();
+  sandbox.schedRunDialogTitle = fakeSchedElement();
+  sandbox.scheduleRunsData = null;
+  sandbox.scheduleRunsError = '';
+  sandbox.scheduleRunsLoading = false;
+  sandbox.scheduleRunsFilter = { limit: 200, task: '', outcome: '', queueId: '' };
+  sandbox.openScheduleRunDetail = () => {};
   for (const name of ['pageSchedMode', 'pageSchedPasses', 'pageSchedNextWake',
     'pageSchedRunning', 'pageSchedQuota', 'pageSchedSummary', 'pageSchedConfigStatus']) {
     sandbox[name] = fakeSchedElement();
@@ -1496,6 +1872,9 @@ function installScheduleRenderHarness() {
     extractFunction('renderScheduleStatusCard'),
     extractFunction('renderScheduleEntries'),
     extractFunction('renderScheduleQueues'),
+    extractFunction('makeSchedRunBadge'),
+    extractFunction('renderScheduleRuns'),
+    extractFunction('renderScheduleRunDetail'),
   ].join('\n\n');
   vm.runInContext(sourceFns, sandbox, { filename: 'app.js#schedule-render' });
 }
@@ -1581,6 +1960,83 @@ ok(/调度配置不可用/.test(sandbox.pageSchedEntries.textContent), 'entry re
 sandbox.renderScheduleQueues(renderStatus, null);
 ok(/调度配置不可用/.test(sandbox.pageSchedQueues.textContent), 'queue renderer explains a missing config');
 
+// P4: run list renderer smoke test (DOM stub, no browser).
+sandbox.scheduleConfig = renderCfg;
+function resetFake(el) {
+  el.textContent = '';
+  el.children.length = 0;
+  return el;
+}
+sandbox.scheduleRunsData = { ok: true, dir: 'runs/scheduler', count: 2, runs: [queueRun, fatalRun] };
+sandbox.scheduleRunsError = '';
+sandbox.scheduleRunsLoading = false;
+sandbox.scheduleRunsFilter = { limit: 200, task: '', outcome: '', queueId: '' };
+resetFake(sandbox.pageSchedRunsList);
+resetFake(sandbox.pageSchedRunsStatus);
+sandbox.renderScheduleRuns();
+eq(sandbox.pageSchedRunsList.children.length, 1, 'run renderer emits one table for a non-empty list');
+const runTable = sandbox.pageSchedRunsList.children[0];
+eq(runTable.children.length, 2, 'run table has thead + tbody');
+eq(runTable.children[1].children.length, 2, 'run table emits one row per run');
+const firstRunRow = runTable.children[1].children[0];
+eq(firstRunRow.children.length, 10, 'run row has all ten columns');
+eq(firstRunRow.children[1].textContent, '日常/任务2', 'run row task uses 队列名/成员名');
+eq(firstRunRow.children[2].children[0].textContent, 'queue_member', 'run row kind badge');
+eq(firstRunRow.children[3].textContent, '第2轮 · 成员1', 'run row shows round/member');
+eq(firstRunRow.children[4].textContent, '2', 'run row shows attempt');
+eq(firstRunRow.children[5].children[1].textContent, '完成', 'run row outcome badge uses the persisted Done label');
+ok(/ok/.test(firstRunRow.children[5].children[1].className), 'run row outcome badge color class');
+eq(firstRunRow.children[7].textContent, '2.5s', 'run row duration is human readable');
+eq(firstRunRow.children[8].textContent, '3', 'run row clicks');
+eq(firstRunRow.children[9].textContent, '—', 'successful run row has no error');
+const fatalRunRow = runTable.children[1].children[1];
+ok(/第一行 第二行/.test(fatalRunRow.children[9].textContent), 'fatal run row shows the error summary');
+eq(fatalRunRow.children[9].className, 'run-error-cell', 'fatal run row error cell styling');
+ok(/共 2 条/.test(sandbox.pageSchedRunsStatus.textContent), 'run status shows the total count');
+// Status card: latest run + failure count from the loaded list.
+resetFake(sandbox.pageSchedRunsSummary);
+sandbox.renderScheduleStatusCard(renderStatus);
+ok(/最近 完成/.test(sandbox.pageSchedRunsSummary.textContent), 'status card shows the latest persisted outcome');
+ok(/失败 1\/2/.test(sandbox.pageSchedRunsSummary.textContent), 'status card shows the failure count');
+// Empty + failed read states stay explicit.
+sandbox.scheduleRunsData = { ok: true, count: 0, runs: [] };
+sandbox.scheduleRunsError = '';
+resetFake(sandbox.pageSchedRunsList);
+sandbox.renderScheduleRuns();
+ok(/暂无调度运行记录/.test(sandbox.pageSchedRunsList.textContent), 'run renderer shows the empty state');
+sandbox.scheduleRunsData = null;
+sandbox.scheduleRunsError = '运行记录读取失败：HTTP 500';
+resetFake(sandbox.pageSchedRunsList);
+sandbox.renderScheduleRuns();
+eq(sandbox.pageSchedRunsList.textContent, '运行记录读取失败：HTTP 500', 'run renderer shows the read error verbatim');
+ok(/运行记录读取失败/.test(sandbox.pageSchedRunsStatus.textContent), 'run status shows the read error');
+sandbox.scheduleRunsError = '';
+
+// P4: run detail renderer smoke test (field rows + full error + raw JSON).
+sandbox.scheduleConfig = renderCfg;
+resetFake(sandbox.schedRunDialogBody);
+resetFake(sandbox.schedRunDialogTitle);
+sandbox.renderScheduleRunDetail(queueRun);
+eq(sandbox.schedRunDialogBody.children.length, 2, 'detail body has the field table + full JSON');
+const detailTable = sandbox.schedRunDialogBody.children[0];
+const detailSmokeMap = {};
+for (const row of detailTable.children[0].children) detailSmokeMap[row.children[0].textContent] = row.children[1].textContent;
+eq(detailSmokeMap.resume, '否', 'detail dialog shows resume');
+eq(detailSmokeMap.clicks_file, 'runs/clicks/run-2.clicks.jsonl', 'detail dialog shows clicks_file');
+ok(/^1762100100000（/.test(detailSmokeMap.started_ms), 'detail dialog shows raw + local started_ms');
+ok(/^1762100102500（/.test(detailSmokeMap.finished_ms), 'detail dialog shows raw + local finished_ms');
+ok(/日常\/任务2/.test(sandbox.schedRunDialogTitle.textContent), 'detail dialog title includes 队列名/成员名');
+resetFake(sandbox.schedRunDialogBody);
+sandbox.renderScheduleRunDetail(fatalRun);
+eq(sandbox.schedRunDialogBody.children.length, 4, 'fatal detail adds the full-error block');
+ok(/第一行\n第二行/.test(sandbox.schedRunDialogBody.children[2].textContent), 'detail dialog shows the error verbatim');
+resetFake(sandbox.schedRunDialogBody);
+sandbox.renderScheduleRunDetail(Object.assign({}, queueRun, { future_field: 'kept' }));
+ok(
+  /future_field/.test(sandbox.schedRunDialogBody.children[1].children[1].textContent),
+  'detail full JSON includes unknown fields'
+);
+
 // Static wiring for the new editable scheduler UI.
 ok(/id="page-sched-add-entry"/.test(html), 'index.html provides the add-entry button');
 ok(/id="page-sched-add-queue"/.test(html), 'index.html provides the add-queue button');
@@ -1605,6 +2061,51 @@ ok(/if \(pageSchedJson\)[\s\S]{0,200}scheduleJsonDirty = true/.test(source), 'ad
 ok(/id="page-sched-entries"[^>]*>（未加载）<\/div>/.test(html), 'entry list container starts in the unloaded state');
 ok(/id="page-sched-queues"[^>]*>（未加载）<\/div>/.test(html), 'queue list container starts in the unloaded state');
 
+// P4 static contracts: real DOM ids for the run history + API call sites.
+for (const id of [
+  'page-sched-runs-summary', 'page-sched-runs-refresh', 'page-sched-runs-task',
+  'page-sched-runs-outcome', 'page-sched-runs-limit', 'page-sched-runs-clear',
+  'page-sched-runs-status', 'page-sched-runs-list', 'page-sched-runs-dialog',
+  'page-sched-runs-detail-title', 'page-sched-runs-detail-body',
+  'page-sched-runs-detail-error', 'page-sched-runs-detail-refresh',
+  'page-sched-runs-detail-close',
+]) {
+  ok(new RegExp(`id="${id}"`).test(html), `index.html provides #${id}`);
+}
+ok(/id="page-sched-runs-list"[^>]*>（未加载）<\/div>/.test(html), 'run list starts in the unloaded state');
+ok(/id="page-sched-runs-outcome"[\s\S]{0,900}<option value="fatal">/.test(html), 'outcome filter offers fatal');
+ok(/id="page-sched-runs-outcome"[\s\S]{0,1400}<option value="Failed">/.test(html), 'outcome filter also offers the persisted Failed value');
+ok(/id="page-sched-runs-limit"[\s\S]{0,200}<option value="200" selected>/.test(html), 'limit defaults to 200');
+ok(/const url = schedRunsBuildUrl\(scheduleRunsFilter\);/.test(source), 'run list builds the /runs/scheduler URL from the filter');
+ok(/fetch\(schedRunDetailUrl\(runId\)\)/.test(source), 'detail fetch uses schedRunDetailUrl(runId)');
+ok(/\/runs\/scheduler\/run\?run_id=/.test(source), 'detail route is /runs/scheduler/run?run_id=');
+ok(/log\(scheduleRunsError, 'WARN'\)/.test(source), 'run list read failures are logged as WARN');
+ok(/log\(res\.error, 'WARN'\)/.test(source), 'run detail read failures are logged as WARN');
+ok(/schedRunsErrorText\(/.test(source), 'run list error uses the 运行记录读取失败 prefix');
+ok(/fetch\('\/runs'\)/.test(source) && /loadClicks\(/.test(source), 'legacy /runs click-distribution path is untouched');
+ok(/showScheduleRunsForTask\(t\.name\)/.test(source), 'task library row links to the run history');
+ok(/showScheduleRunsForEntry\(e\)/.test(source), 'schedule entry row links to the run history');
+ok(/showScheduleRunsForQueue\(q\.queue_id\)/.test(source), 'queue row links to the run history');
+ok(/scheduleRunsFilter\.queueId/.test(source), 'queue shortcut uses the local queue filter');
+
+// P2: the whole P4 run-history block (pure helpers + list/detail renderers +
+// the detail dialog) must stay DOM-safe: task/error/run_id text is only ever
+// assigned through textContent, never HTML strings or dynamic code. The block
+// is delimited by two grep-able function names: the first P4 pure helper and
+// the next schedule helper after the dialog code.
+const p4UiStart = source.indexOf('function schedRunValueText');
+const p4UiEnd = source.indexOf('async function toggleScheduleEntry');
+ok(p4UiStart > 0 && p4UiEnd > p4UiStart, 'the P4 run-history UI block is discoverable in app.js');
+const p4UiSegment = p4UiStart > 0 && p4UiEnd > p4UiStart ? source.slice(p4UiStart, p4UiEnd) : '';
+ok(
+  !/innerHTML|insertAdjacentHTML|outerHTML/.test(p4UiSegment),
+  'the P4 run-history UI block never writes raw HTML'
+);
+ok(
+  !/\beval\s*\(|new Function\s*\(/.test(p4UiSegment),
+  'the P4 run-history UI block never evaluates dynamic code'
+);
+
 // P1-3/P1-4 wiring: the save button is GET-first + snapshot-guarded, and a
 // status read failure is recorded, logged and rendered on the card.
 const saveConfigFn = extractFunction('saveSchedulePageConfig');
@@ -1615,7 +2116,10 @@ const loadConfigFn = extractFunction('loadScheduleConfig');
 ok(/scheduleConfigBase = schedConfigSnapshotText\(/.test(loadConfigFn), 'loadScheduleConfig records the base config snapshot');
 const refreshPageFn = extractFunction('refreshSchedulePage');
 ok(/scheduleStatusError = /.test(refreshPageFn) && /schedStatusErrorText\(/.test(refreshPageFn), 'status read failures are recorded and logged');
+ok(/await refreshScheduleRuns\(\)/.test(refreshPageFn), 'schedule page refresh loads the run history');
+ok(/populateScheduleRunsTaskOptions\(\)/.test(refreshPageFn), 'schedule page refresh repopulates the run task filter');
 ok(/schedStatusErrorText\(statusError\)/.test(extractFunction('renderScheduleStatusCard')), 'status card renders the read error');
+ok(/pageSchedRunsSummary\.textContent = schedRunsStatusCardText\(/.test(extractFunction('renderScheduleStatusCard')), 'status card renders the latest-run/failure summary');
 
 // DOM id audit: the whole point of this round is ZERO static dead ids. Every
 // getElementById target must exist in index.html; if an id is genuinely needed,
