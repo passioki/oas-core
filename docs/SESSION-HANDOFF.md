@@ -1,24 +1,24 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★★★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（seq 96，编辑器帧页 in_progress）。
-> **本轮（2026-11-04，seq 96）**：编辑器帧页三项需求 + 素材测试帧错位修复——帧搜索（`#frame-search`，纯前端）/ 帧详情素材库（全局+任务）/ **单素材测试=当前选中帧、批量帧测试=所有位置帧、live 恒优先**；UI **828/224/0**，workspace 仍 **501/0**（无 Rust 改动）；代码 + docs 待 Lead 提交。
+> ★★★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（seq 97，帧页布局回归 in_progress）。
+> **本轮（2026-11-04，seq 97）**：帧页布局回归修复——用户报告「分类展示图片帧的区域没了」；根因 fixed-height flex + `frames-list min-height:0` ⇒ 1440×900 下 0px；修复 `min-height:200px` + `#frame-details` 默认折叠 + 点帧展开 + 空搜索隐藏状态行；UI **835/225/0**，workspace 仍 **501/0**（无 Rust 改动）；代码 + docs 待 Lead 提交。上一节点 seq 96：编辑器帧页三项需求 + 素材测试帧错位修复（UI 828/224/0，已提交）。
 > **上一阶段**：调度器产品化（单活动实例）P0–P5 全部 ✅ 完成（seq 95，done）——P0 文档 / P1 450/0 / P2 474/0 / P3 488/0，UI 453 / P4 501/0，oasd 228，UI 662 / **P5 实机验收 A–F 全部真机通过 + `GET /instance/devices` adb 自动连接修复**。更早节点：0.1.0 Release 已上传、tag `v0.1.0` 未移动、O-1/O-2 收口（`d1a7fcd`），`dev`/`main` 已同步 origin。不要再灌 34/18 旧素材。
 
-## 0. 当前状态（2026-11-04 00:4x）
+## 0. 当前状态（2026-11-04 01:0x）
 
 | 项 | 值 |
 |---|---|
-| 当前阶段 | **编辑器帧页三项需求 + 素材测试帧错位修复（seq 96，in_progress）**：帧搜索 / 帧详情素材库 / 测试帧修复 + 评审 P1/P2；现行口径 `EDITOR-UX-PLAN §16`，台账 `PENDING-LEDGER §E-76`。上一阶段调度器产品化 P0–P5 全部 ✅ 完成（seq 95，done；台账 `§E-75`） |
-| 工作区（本轮） | 仅 UI 3 文件 `apps/oasd/ui/{index.html,app.js,ui_pure_test.js}` + 本批 docs 待提交；`assets/assets.json` / `frames/frames.json` / `assets/images/a002-4.png` / `frames/frame-41/42.png` / `scheduler.json` / `scheduler.json.bak` 是**用户数据，不属于本轮提交**，勿动 |
-| 分支/HEAD | `dev`；HEAD = 本轮 docs 提交（父 = 本轮代码提交；**代码提交的父 `5d8eae3`**）；推送状态以 `git status -sb` 实测为准；包构建 commit `42567c1` |
+| 当前阶段 | **帧页布局回归修复（seq 97，in_progress）**：分类帧区域被固定内容挤成 0 高 → `min-height:200px` + 详情默认折叠 + 点帧展开；台账 `PENDING-LEDGER §E-76 §I`，现行口径 `EDITOR-UX-PLAN §16.6`。上一节点 seq 96 = 编辑器帧页三项需求 + 素材测试帧错位修复（已提交；`§E-76 §A~§H`）；上一阶段调度器产品化 P0–P5 全部 ✅ 完成（seq 95，done；台账 `§E-75`） |
+| 工作区（本轮） | 仅 UI **4 文件** `apps/oasd/ui/{app.js,index.html,style.css,ui_pure_test.js}` + 本批 docs 待提交；`assets/assets.json` / `frames/frames.json` / `assets/images/a002-4.png` / `frames/frame-41/42.png` / `scheduler.json` / `scheduler.json.bak` / `tasks/关闭弹窗/` 是**用户数据，不属于本轮提交**，勿动 |
+| 分支/HEAD | `dev`；HEAD = 本轮 docs 提交（父 = 本轮代码提交；代码提交父 = **修复前 HEAD**，即 seq 96 docs 提交）；推送状态以 `git status -sb` 实测为准；包构建 commit `42567c1` |
 | 恢复节点 | tag `v0.1.0`（annotated `cf123b8` → commit `e8edbef`，**未移动**）；**GitHub Release 已上传** |
 | 发布 | `https://github.com/passioki/oas-core/releases/tag/v0.1.0`（id `431080249`，draft=false / prerelease=false，即 latest）；附件 zip（asset `700544587`，37,089,992 B，digest `sha256:e6112a33…5f5687`）+ `.sha256`（asset `700545142`，89 B）；本地同物 SHA256 `E6112A33…5F5687` |
 | 版本 | `0.1.0`；**包不含 O-1/O-2**（包构建 `42567c1`，O-1/O-2 自 `54c715b` 起，评审修复 `d1a7fcd`） |
-| 测试 | 本轮（无 Rust 改动）：`cargo test --workspace` = **501 passed / 0 failed**（21 binary；oasd **228**；serve 68）；UI pure test **828 checks / 224 referenced ids / 0 dead ids**（662→744→802→828）；task lint 1/0；`node --check` exit 0；`git diff --check` clean。上一节点 P5：501/0，UI 662/219/0；上一发布基线 426/0（oasd 153 / flow 57 / runtime 125 + 2 integration） |
+| 测试 | 本轮（无 Rust 改动）：`cargo test --workspace` = **501 passed / 0 failed**（21 binary；oasd **228**；serve 68）；UI pure test **835 checks / 225 referenced ids / 0 dead ids**（828→835，+7：布局结构/点帧展开/空搜索状态行）；task lint 1/0；`node --check` exit 0；`git diff --check` clean。上一节点 seq 96：501/0，UI 828/224/0；上一节点 P5：501/0，UI 662/219/0；上一发布基线 426/0（oasd 153 / flow 57 / runtime 125 + 2 integration） |
 | 数据 | **已提交基线**：全局素材 16 条 / 1 图；帧 28 个 / current_id=20 / next_id=41。**工作区未提交用户数据（本轮 E2E 实测）**：全局素材 **26 条**（4 模板 + 22 `ocr_line`）、帧 **30 个**（含 #41/#42）；帧素材映射 **#23=3、#26=1、#41=2、#42=2** |
 | 任务 | 只有 `返回庭院`（flow 11 steps / meta 400 B）；`tasks/测试` 已删除（随 `cd0ac34` 提交） |
 | 上一轮工作区 | `d1a7fcd` 时 clean；seq 89 docs 订正（8 份，终态，`906bbed`）与同步回填（`11d53a5`）均已提交 |
-| 服务 | 本轮 serve **8787**（真机 `emulator-5554`，实时预览可用）：`GET /` 200 含 5 个新 DOM id；`/frames`=30、`/task/assets?task=`=26；`match` API 见 `PENDING-LEDGER §E-76 §B`；headless 截图 `_verify/ui-frames-20261103/editor-page.png`。上一节点 P5 用 8787 测 `/runs/scheduler`；P5 的 adb 自动连接需重建 serve 才生效。仓库根 `scheduler.json`/`frames/frames.json` 是用户数据，未提交 |
+| 服务 | 本轮 serve **8787**（真机 `emulator-5554`，实时预览可用）：`GET /` 200 含 5 个新 DOM id；`/frames`=30、`/task/assets?task=`=26；`match` API 见 `PENDING-LEDGER §E-76 §B`；headless 截图 `_verify/ui-frames-20261103/editor-page.png`；**布局回归另用 CDP 1440×900 实测**（修复前帧列表 0px → 修复后 257px；`frames-fixed.png` / `frames-fixed-detail.png`）。上一节点 P5 用 8787 测 `/runs/scheduler`；P5 的 adb 自动连接需重建 serve 才生效。仓库根 `scheduler.json`/`frames/frames.json` 是用户数据，未提交 |
 | 文档 | 7 份历史文档已归档 `docs/archive/`；顶层 11 份 + `RELEASE-NODE-2026-11-02.md` |
 
 ## 1. 最近发生了什么
@@ -58,13 +58,14 @@
 - 00:1x **修复需求③**（`MATCH-FIX-REPORT.md`）：`testFramePlan`（live > 显式 frameId > 当前帧 > positions）、五测试函数透传、切帧清框、`matchBoxValid`、单行 OCR 无真实检测框；UI 744→**802** checks。
 - 00:2x **只读评审**（`REVIEW-UI.md`）：P0=0，P1×2（P1-1 全局库变更后帧视图不刷新；P1-2 旧文档口径与实现相反 → 本轮 docs 同步）；P2 若干；**00:3x F-UI 修复**（`FIX-P1-REPORT.md`）：`renderFrameAssetViews()` 本地重绘（0 额外请求/0 递归）、`fallbackFullscreenLines` 透传 frameId、删除当前帧清框；UI 802→**828** checks。
 - 本轮 **E2E（Lead）**：serve 8787 真机 `emulator-5554`；`GET /` 200 含 5 个新 DOM id；30 帧 / 26 全局素材（4 模板 + 22 `ocr_line`）；帧素材映射 #23=3、#26=1、#41=2、#42=2；headless Edge 截图 `editor-page.png`。**无真实浏览器自动化 E2E**。
+- 2026-11-04 00:5x **帧页布局回归修复**（Lead，CDP 1440×900）：用户报告「图片页丢失按分类展示帧的区域」；根因 = 上一轮新增搜索框/状态行/帧详情/该帧素材（约 +296px 固定内容）+ `#panel-images` 固定高 flex（`calc(100vh - 150px)`）+ `frames-list { flex:1; min-height:0 }` ⇒ 1440×900 下列表计算高度 **0px**（12 组 / 30 行仍在，`scrollHeight=1832` 不可见）。修复 4 文件：`min-height:200px` + `overflow-y:auto`；`#frame-detail`/`#frame-assets-status`/`#frame-assets-list` 包进默认折叠 `<details id="frame-details">`（summary「帧详情 / 该帧素材（点击一帧展开）」）；`selectFrame()` 成功即 `details.open=true`；空搜索隐藏 `#frame-search-status`；UI +7 checks。修复后列表 **257px**、12 组可见；点帧 #1 → details 打开、「该帧素材 1 条（全局 1 · 任务 0）」、列表仍 200px；截图 `frames-fixed.png` / `frames-fixed-detail.png`。
 
 ## 2. 下一步
 
 ```text
-1. 本轮（seq 96，in_progress）：编辑器帧页三项需求 + 测试帧修复已落 UI；代码 + docs 待 Lead 分两次提交
-   （代码父 `5d8eae3`，docs = HEAD）。提交前复核：cargo test --workspace 501/0（无 Rust 改动）、
-   UI 828/224/0、node --check exit 0、git diff --check clean；不含 assets/、frames/、tasks/、scheduler.json 等用户数据。
+1. 本轮（seq 97，in_progress）：帧页布局回归修复已落 UI（4 文件）；代码 + docs 待 Lead 分两次提交
+   （代码父 = 修复前 HEAD；docs = 新 HEAD）。提交前复核：cargo test --workspace 501/0（无 Rust 改动）、
+   UI 835/225/0、node --check exit 0、git diff --check clean；不含 assets/、frames/、tasks/、scheduler.json 等用户数据。
 2. 本轮 P2/P3（不阻塞）：帧搜索 Enter/防抖；分类+搜索状态计数跨分类；纯数字查询既精确又子串；
    全局模式来源重复计数；`frame_source` 文案；切帧不清 ROI；单行 OCR 画布无框；无真实浏览器自动化 E2E。
 3. ✅ 上一阶段已完成并提交：调度器产品化 P0–P5（P5 = 实机验收 A–F + `/instance/devices` adb 自动连接）。
@@ -93,7 +94,7 @@
 - 拖测 `margin`：默认 **0.15**，合法 **0~0.45**，作用于起点（配置了 `to` 时也作用于终点）候选矩形内缩；**仅 rect 非反选生效**；有 polygon/invert `shape` 时忽略并记 `margin=ignored`。
 - **collection 真实点击已终态收口**（dev `d1a7fcd`）：`real` 严格 `0/1/true/false`；`real=1` 强制 live 帧；匹配通过后在**精确 action shape 内采样**（polygon 内/invert 排除区外）；未过阈值 **409**（不点击）。**默认仍是 dry-run**，响应/日志不变；与“素材行真实点击”共用 `perform_live_tap`；**无真机 E2E**。
 - **v0.1.0 发布包不含 O-1/O-2**；混版本 runtime 会忽略 drag `shape`（invert 会点到排除区）⇒ invert 拖动需本版 runtime；**P2-10**（保存 flow 不校验解析错误）本轮不做。
-- 当前测试基线 **501/228/1-0**（2026-11-04 帧页后复核；**无 Rust 改动**；21 binary；serve 68；调度专项 107 = scheduler 49 + schedule 58；stats 6；**UI 828/224/0**）；上一发布基线 **426/259/1-0**（oasd 153 / flow 57 / runtime 125 + 2 integration；DSL E2E `linted=8 errors=5`）。
+- 当前测试基线 **501/228/1-0**（2026-11-04 帧页布局修复后复核；**无 Rust 改动**；21 binary；serve 68；调度专项 107 = scheduler 49 + schedule 58；stats 6；**UI 835/225/0**，seq 96 为 828/224/0）；上一发布基线 **426/259/1-0**（oasd 153 / flow 57 / runtime 125 + 2 integration；DSL E2E `linted=8 errors=5`）。
 - **P5 实机环境**：MuMu serial **`127.0.0.1:16384`**（Android 12 / V2284A / 720x1280；Onmyoji 前台庭院），不是 `emulator-5554`；`adb devices` = device。A–F 全部真机通过（quota 2/2、temp 每轮、队列 2 轮、强杀续跑、reset-memory、9 条 run 记录）；证据 `D:\OAS-dev\_verify\p5-realdevice-20261103\`。
 - **P5 adb 自动连接**：`GET /instance/devices` 列表为空时自动 `adb connect`（配置 serial → live config `device.reconnect_endpoints` → 默认 `127.0.0.1:16384`）后重列，响应新增 `auto_connect`；`emulator-5554` 这类非 TCP serial 跳过。实测 `adb disconnect` 后检测自动连回 16384。P5 代码未重建 serve 前该行为不生效。
 - **P2 起 queue entry 真正执行**：`execute_pass` 按 `entry.kind` 分派；`plan.runnable` 会包含 queue entry，勿再假设 runnable 只有 task；queue entry 的 `task` 是 **queue_id**（不是任务 bundle）。
@@ -131,3 +132,4 @@
 - **P4 写失败**：run 文件写失败只影响"可查性"（alert + `report.run_file_errors` + 事件 `run_file_error`），不影响执行/重试/退出码；排查先看 `alert(kind=run_file_write)` 与 `scheduler_run_file_error` 日志。
 - **实机检测不到 adb**：MuMu 重启后 adb TCP 设备常掉（`adb devices` 为空）；P5 起 `GET /instance/devices` 会**自动 connect `127.0.0.1:16384`**（配置 serial → `device.reconnect_endpoints` → 默认；响应 `auto_connect` 可核对），仍失败再查 adb server / MuMu 网络设置，不要先怀疑 UI 或代码。
 - **帧页测试帧（2026-11-04）**：不要再写/实现「实时关=位置帧」；单素材测试走 `testFramePlan` 的当前帧分支，批量才按 `positions`。单行 OCR 的存储 ROI 不是真实检测框，不要再画成检测框；帧详情行故意只放测试类动作（管理动作在素材库页）。
+- **帧页布局（2026-11-04）**：`#panel-images` 是 `height: calc(100vh - 150px)` 固定高 flex 列；往帧列表上方加固定内容时必须同时保 `#panel-images .frames-list` 的 `min-height`（现 **200px**）或把内容放进默认折叠的 `#frame-details`——否则 1440×900 下列表会被挤成 **0 高**，表现为「分类帧区域消失」。点帧会展开详情；空搜索隐藏状态行。

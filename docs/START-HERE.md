@@ -27,9 +27,9 @@
 
 | 项 | 状态 |
 |---|---|
-| 分支/HEAD | **发布节点时**：`dev` = `main` = `origin/dev` = `origin/main`（已同步 origin，2026-11-02 13:55 实测；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`，其后为 docs 同步回填提交 `11d53a5`）；tag `v0.1.0` → `e8edbef`（**未移动**）；包构建 commit `42567c1`。**当前状态见 §0.2 与 `RESUME.md`（seq 96，编辑器帧页 in_progress）** |
+| 分支/HEAD | **发布节点时**：`dev` = `main` = `origin/dev` = `origin/main`（已同步 origin，2026-11-02 13:55 实测；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`，其后为 docs 同步回填提交 `11d53a5`）；tag `v0.1.0` → `e8edbef`（**未移动**）；包构建 commit `42567c1`。**当前状态见 §0.2 与 `RESUME.md`（seq 97，编辑器帧页布局回归 in_progress）** |
 | 引擎 | `oasd`（serve/run/queue/stats/scheduler）+ 编辑器 UI + 素材库；`oasd --version` = **0.1.0**（dev；旧 v1.x 为历史内部 tag） |
-| 测试 | 上一发布基线：`cargo test --workspace` = **426 passed / 0 failed**（oasd 153 / flow 57 / runtime 125 + 2 integration）；UI = **259 checks / 0 dead ids**；task lint = **1 task / 0 errors**（2026-11-02 13:35 实测；DSL E2E `linted=8 errors=5`；**v0.1.0 发布包仍是 393/203 时构建**）。当前（调度器 P0–P5 全部完成；P5 实机验收后 Lead 2026-11-03 复跑）：`cargo test --workspace` = **501 passed / 0 failed**（21 个 test binary 全 ok；oasd **228**；serve **68**；调度专项 **107** = `scheduler.rs` 49 + `schedule.rs` 58；stats 6）；UI **662 checks / 219 referenced ids / 0 dead ids**；task lint **1/0**；`cargo build -p oasd --features ocr` exit 0（alt target；warning 与基线一致）。**2026-11-04 编辑器帧页后（无 Rust 改动）**：workspace 仍 **501/0**，UI **828 checks / 224 referenced ids / 0 dead ids**（seq 96，详见 §0.2） |
+| 测试 | 上一发布基线：`cargo test --workspace` = **426 passed / 0 failed**（oasd 153 / flow 57 / runtime 125 + 2 integration）；UI = **259 checks / 0 dead ids**；task lint = **1 task / 0 errors**（2026-11-02 13:35 实测；DSL E2E `linted=8 errors=5`；**v0.1.0 发布包仍是 393/203 时构建**）。当前（调度器 P0–P5 全部完成；P5 实机验收后 Lead 2026-11-03 复跑）：`cargo test --workspace` = **501 passed / 0 failed**（21 个 test binary 全 ok；oasd **228**；serve **68**；调度专项 **107** = `scheduler.rs` 49 + `schedule.rs` 58；stats 6）；UI **662 checks / 219 referenced ids / 0 dead ids**；task lint **1/0**；`cargo build -p oasd --features ocr` exit 0（alt target；warning 与基线一致）。**2026-11-04 编辑器帧页后（无 Rust 改动）**：workspace 仍 **501/0**，UI **835 checks / 225 referenced ids / 0 dead ids**（seq 97 = 帧页布局回归修复；帧列表 `min-height:200px` + 详情折叠，详见 §0.2） |
 | 发布 | ✅ **GitHub Release `v0.1.0` 已上传** `https://github.com/passioki/oas-core/releases/tag/v0.1.0`（id `431080249`，draft=false / prerelease=false，即 latest）；本地包 `dist/oasd-v0.1.0-win64.zip`，SHA256 `E6112A33…5F5687`（37,089,992 B）+ 旁文件 `.sha256` |
 | 当前任务 | 只有 `返回庭院`（flow 11 steps / meta 400 B）；`tasks/测试` 已删除并随 `cd0ac34` 提交 |
 | 数据 | 全局素材 **16 条 / 1 图**（15 `ocr_line` + 1 `template`）；帧 **28 个 / `current_id=20` / `next_id=41`**；唯一关系 = `Asset.positions` |
@@ -49,14 +49,14 @@
 > ★ [11-01] 用户已明确要求发布 v1.2.3；main/tag/Release 已推送，作为恢复节点。
 > ★ **历史说明**：以上 V1.0~V1.2.3 是 reset 前的内部交付记录；当前 dev 版本 = `0.1.0`，0.1.0 恢复节点见 `RELEASE-NODE-2026-11-02.md`。
 
-## 0.2 当前开发工作区（2026-11-04 00:4x）
+## 0.2 当前开发工作区（2026-11-04 01:0x）
 
 | 项 | 值 |
 |---|---|
 | 恢复节点 | tag `v0.1.0`（2026-11-02，→ `e8edbef`，**未移动**）；**GitHub Release 已上传**（id `431080249`，latest）；**发布节点时** `dev` = `main` = `origin/dev` = `origin/main`（已同步 origin）；包构建 commit `42567c1`；本地包 SHA256 `E6112A33…5F5687` |
-| 当前分支 | `dev`；HEAD = 本轮 docs 提交（父 = 本轮代码提交，**代码提交的父 `5d8eae3`**）；hash 以 `git log` 为准；推送状态以 `git status -sb` 实测为准 |
+| 当前分支 | `dev`；HEAD = 本轮 docs 提交（父 = 本轮代码提交；代码提交父 = **修复前 HEAD**，即 seq 96 docs 提交）；hash 以 `git log` 为准；推送状态以 `git status -sb` 实测为准 |
 | 文档 | 已独立到 `oas-core/docs`；现行 = ENGINE-DESIGN + PENDING-LEDGER + RESUME + ASSET-DATA-MODEL + RELEASE-NODE；历史 7 份在 `docs/archive/` |
-| 当前计划 | **先读 `RESUME.md`（seq 96，编辑器帧页 in_progress）+ `PENDING-LEDGER §E-76` / `EDITOR-UX-PLAN §16`**；上一阶段调度器产品化 + 队列 Round 语义（单活动实例）——**P0–P5 全部 ✅ 完成**（P0 文档 / P1 450/0 / P2 474/0 / P3 488/0 + UI 453 / P4 501/0 + serve 68 + UI 662 / **P5 实机验收 A–F 全部真机通过 + `/instance/devices` adb 自动连接修复**）；上一节点 0.1.0 Release 与 O-1/O-2 收口见 §E-74（426 tests / UI 259 / lint 1-0，**不在 v0.1.0 包内**）；下一步 = 产品 backlog（`SelectionTool`、collection real=1 真机 E2E、drag Plan B、P2-10、运行记录/口径收口、版本决策）。**2026-11-04 本轮（seq 96）**：编辑器帧页三项需求 + 素材测试帧错位修复已落 UI（未提交）——帧搜索 / 帧详情素材库（全局+任务）/ **单素材测试=当前选中帧、批量帧测试=所有位置帧、live 恒优先**；UI **828/224/0**；代码待 Lead 先提交（父 `5d8eae3`），docs 随后（HEAD）；本轮 P2/P3 见 `PENDING-LEDGER §E-76 §H` |
+| 当前计划 | **先读 `RESUME.md`（seq 97，编辑器帧页布局回归 in_progress）+ `PENDING-LEDGER §E-76` / `EDITOR-UX-PLAN §16`**；上一阶段调度器产品化 + 队列 Round 语义（单活动实例）——**P0–P5 全部 ✅ 完成**（P0 文档 / P1 450/0 / P2 474/0 / P3 488/0 + UI 453 / P4 501/0 + serve 68 + UI 662 / **P5 实机验收 A–F 全部真机通过 + `/instance/devices` adb 自动连接修复**）；上一节点 0.1.0 Release 与 O-1/O-2 收口见 §E-74（426 tests / UI 259 / lint 1-0，**不在 v0.1.0 包内**）；下一步 = 产品 backlog（`SelectionTool`、collection real=1 真机 E2E、drag Plan B、P2-10、运行记录/口径收口、版本决策）。**2026-11-04 本轮（seq 97）**：帧页布局回归修复（用户报告「分类展示图片帧的区域没了」；根因 fixed-height flex + frames-list `min-height:0` ⇒ 1440×900 下列表 0px；修复 `min-height:200px` + `#frame-details` 默认折叠 + 点帧展开 + 空搜索隐藏状态行），帧页三项需求口径不变——帧搜索 / 帧详情素材库（全局+任务）/ **单素材测试=当前选中帧、批量帧测试=所有位置帧、live 恒优先**；UI **835/225/0**；代码 4 文件待 Lead 先提交（父 = 修复前 HEAD），docs 随后（新 HEAD）；本轮 P2/P3 见 `PENDING-LEDGER §E-76 §H` |
 | 截图 | 两阶段：点击立即抓取 → 弹窗预览 → 名称/分类 → 保存；无当前帧跳转 |
 | Enter | 输入框 Enter = 确认输入；弹窗 Enter = 保存截图 |
 | 实时操作 | 实时开启时画布单击/拖拽 = tap/swipe；实时暂停 = ROI 编辑 |
@@ -69,7 +69,7 @@
 | 信息架构 | **设计：素材页 = 唯一全局素材库 `assets/`；任务页 = 任务 flow 引用子集**。当前 `assets/` = 16 条 / 1 图；34 是 `§E-70` 已推翻的错误恢复；archive 2827 未导入（用户裁定素材可重建） |
 | 全局素材 | **当前 16 条 / 1 图**（15 `ocr_line` + 1 `template`；全部 `action_source=fixed`，有 `action_shape`/`positions`）；权威迁移归档 `archive/migration-20261101` = 2827 素材 / 2099 图 / 57 个任务目录，未导入当前 dev |
 | 帧安全 | 清空列表必须确认；清空前自动备份到 `frames/.backup/clear-<时间>/`（含 frames.json + PNG） |
-| 待办 | ✅ **2026-11-04 编辑器帧页三项需求 + 素材测试帧修复**（帧搜索 / 帧详情素材库 / 单素材测试=当前帧、批量=位置帧、单行 OCR 无真实框；UI **828/224/0**；代码 + docs 待 Lead 提交，seq 96）。✅ **调度器产品化已完成（P0–P5，任务 done）**：实机 A–F（periodic quota 2/2、temp 每轮、队列 2 轮、崩溃续跑、reset-memory、UI/API 可见性）+ `GET /instance/devices` adb 自动连接修复；测试 501/0（oasd 228，serve 68，UI 828/224/0）。**新主线 = 产品 backlog**：① `SelectionTool` 抽取；② collection `real=1` 真机 E2E（设备现已可用）；③ drag Plan B；④ P2-10（保存 flow 校验）；⑤ 运行记录收口（点击聚合关联、分页/保留、run_id 跨进程唯一、detail 契约、`--status` 的 run_file_errors）；⑥ 口径统一（事件 attempt/entry、stats attempt 级 vs report entry 级、UI 失败口径）；⑦ P3 遗留（schema_version 恒 4、高级 JSON 无 GET-first、坏 config 删除守卫、`.bak` 单份、同任务多 entry、`utc_offset_min` 按 480）；⑧ P2 遗留（补记 cycle、session report、200 环、成员级 exactly-once）；⑨ 版本决策（是否升 0.2.0）。⚠ 墙钟 24h soak 未跑完（只有 96 轮加速 soak 成立）。其余：混版本 invert 提醒、活动页参考帧；帧-素材关系继续扩展；不引入 interface/ui-map。**本轮新遗留（P2/P3）**：帧搜索 Enter/防抖、分类+搜索计数跨分类、纯数字查询既精确又子串、全局模式来源重复计数、`frame_source` 文案、切帧不清 ROI、单行 OCR 画布无框、无真实浏览器自动化 E2E |
+| 待办 | ✅ **2026-11-04 编辑器帧页三项需求 + 素材测试帧修复**（帧搜索 / 帧详情素材库 / 单素材测试=当前帧、批量=位置帧、单行 OCR 无真实框；UI 828/224/0，已提交）+ ✅ **帧页布局回归修复**（用户报告分类帧区域消失 → 帧列表被挤成 0 高；修复 `min-height:200px` + `#frame-details` 默认折叠 + 点帧展开；UI **835/225/0**；代码 + docs 待 Lead 提交，seq 97）。✅ **调度器产品化已完成（P0–P5，任务 done）**：实机 A–F（periodic quota 2/2、temp 每轮、队列 2 轮、崩溃续跑、reset-memory、UI/API 可见性）+ `GET /instance/devices` adb 自动连接修复；测试 501/0（oasd 228，serve 68，UI 835/225/0）。**新主线 = 产品 backlog**：① `SelectionTool` 抽取；② collection `real=1` 真机 E2E（设备现已可用）；③ drag Plan B；④ P2-10（保存 flow 校验）；⑤ 运行记录收口（点击聚合关联、分页/保留、run_id 跨进程唯一、detail 契约、`--status` 的 run_file_errors）；⑥ 口径统一（事件 attempt/entry、stats attempt 级 vs report entry 级、UI 失败口径）；⑦ P3 遗留（schema_version 恒 4、高级 JSON 无 GET-first、坏 config 删除守卫、`.bak` 单份、同任务多 entry、`utc_offset_min` 按 480）；⑧ P2 遗留（补记 cycle、session report、200 环、成员级 exactly-once）；⑨ 版本决策（是否升 0.2.0）。⚠ 墙钟 24h soak 未跑完（只有 96 轮加速 soak 成立）。其余：混版本 invert 提醒、活动页参考帧；帧-素材关系继续扩展；不引入 interface/ui-map。**本轮新遗留（P2/P3）**：帧搜索 Enter/防抖、分类+搜索计数跨分类、纯数字查询既精确又子串、全局模式来源重复计数、`frame_source` 文案、切帧不清 ROI、单行 OCR 画布无框、无真实浏览器自动化 E2E |
 | 关系证据 | `relations/observations.jsonl` append-only；`relations/annotations.json` 人工标注；图片页「录制关系」「标注关系」写入 |
 
 ---
@@ -231,7 +231,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 | **E7** | 旧仓已冻结 | 旧仓 `backend/frontend` 只读；不要在旧仓上开发/提交 |
 | **E8** | 新引擎的验收看 ENGINE §22 判据 | 不要拿旧仓 pytest 基线当引擎验收 |
 | **E9** | headless Edge 截图做 UI 验收 | `msedge --headless=new --screenshot=...`；需要时加 `--user-data-dir` |
-| **E10** | 测试数会随提交增长 | 当前 **501**（oasd 228；serve 68；UI **828/224/0**；2026-11-04 帧页只改 UI，Rust 仍 501）；上一发布基线 426；以 `cargo test --workspace` 实测为准 |
+| **E10** | 测试数会随提交增长 | 当前 **501**（oasd 228；serve 68；UI **835/225/0**；2026-11-04 帧页布局修复只改 UI，Rust 仍 501）；上一发布基线 426；以 `cargo test --workspace` 实测为准 |
 | **E11** | 本会话 PowerShell 实为 **5.1**，执行策略 Undefined | 直接 `.\scripts\dev-serve.ps1` 报 UnauthorizedAccess ⇒ 用 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-serve.ps1 -NoOpen` |
 | **E12** | `node` 不在 PATH | UI 测试用 bundled node：`C:\Users\passioki\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe`（v24.21.0）|
 | **E13** | PS 5.1 重定向日志是 **UTF-16LE** | 读日志用 `-Encoding Unicode` 或先转 UTF-8，否则中文/换行乱码 |

@@ -626,7 +626,7 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 | 真实 UI 手势 | 用户 00:37 说“测试过了”；助手独立证据只有真机 `emulator-5554` 的 `POST /input/tap`，不是完整 UI 手势回放。 |
 | drag action shape | 11-02 经两轮评审在 dev `d1a7fcd` 收口（O-2）：`shape` 为**可选**字段，无 shape 旧 flow 不变；plain rect 操作区保留（`from.roi`=shape bbox，仅 polygon/invert 内联 shape）；解析校验齐全；`margin` 仅 rect 非反选生效，polygon/invert 记 `margin=ignored`；detail 记 `from_shape/from_invert/to_shape/to_invert`。 |
 
-## 16. 2026-11-04 帧页三项需求 + 素材测试帧错位修复（现行口径）
+## 16. 2026-11-04 帧页三项需求 + 素材测试帧错位修复 + 布局回归修复（现行口径）
 
 > 台账：`PENDING-LEDGER.md §E-76`；证据：`D:\OAS-dev\_verify\ui-frames-20261103\`。本节是 §4 / §11 / §15 相关口径的最新版本；与旧段落冲突时以本节 + 代码为准。
 
@@ -673,4 +673,19 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 
 - 帧搜索无 Enter/防抖（P3）；分类 + 搜索状态计数跨分类（P2）；纯数字查询既精确又子串（P2）；全局模式下来源可能重复计数（P2）；
 - `frame_source` 文案（`position:#N` vs「当前帧 #N」）待统一（P2）；切帧只清测试框、不清 ROI 覆盖层（P2）；单行 OCR 点测画布无框（P2 沟通项）；
-- 本轮只有 headless Edge 截图 + API/纯测试，**无真实浏览器自动化 E2E**（P3）。
+- 本轮 UI 验收 = headless Edge 截图 + CDP 1440×900 布局实测 + API/纯测试；仍**无真实浏览器自动化 E2E**（P3）。
+
+### 16.6 布局回归修复（2026-11-04）
+
+**用户报告**：图片页「丢失了原先按分类展示图片帧的区域页面」。
+
+**根因（实测）**：上一轮给帧页新增搜索框 / 搜索状态行 / 帧详情 / 该帧素材列表（约 **+296px** 固定内容），而 `#panel-images` 是固定高度 flex 列（`height: calc(100vh - 150px)`），`#panel-images .frames-list` 规则为 `flex: 1; min-height: 0` ⇒ 1440×900 下帧列表计算高度 **0px**：12 个分类组 / 30 行内容仍在（`scrollHeight=1832`）但不可见。
+
+**修复（UI 4 文件：`app.js` / `index.html` / `style.css` / `ui_pure_test.js`）**：
+
+- `style.css`：`#panel-images .frames-list { flex: 1 1 auto; min-height: 200px; overflow-y: auto; }`（帧列表永不为 0）；新增 `#frame-details` / `#frame-details > summary` / `[open]` 样式；
+- `index.html`：`#frame-detail` + `#frame-assets-status` + `#frame-assets-list` 包进 `<details id="frame-details" class="frame-details">`，summary「帧详情 / 该帧素材（点击一帧展开）」，**默认折叠**（不再挤占帧列表高度）；
+- `app.js`：`selectFrame()` 成功后 `frameDetails.open = true`（点帧即展开该帧详情/素材）；`renderFramesList()` 在搜索词为空时隐藏 `#frame-search-status`（查询时才显示，省一行）；
+- `ui_pure_test.js`：**+7 checks**（`<details>` 结构 / summary 文案、`selectFrame` 展开、空查询隐藏状态行、fake DOM `style`/`display` 断言）。
+
+**验证（Lead，CDP 1440×900）**：修复前帧列表 `height=0`（12 组已渲染但不可见）→ 修复后 `height=257px`、12 组可见、details 折叠；点击一帧 #1 → details 打开、详情文本 /「该帧素材 1 条（全局 1 · 任务 0）」/ 1 行素材，帧列表仍 200px 可见。截图 `D:\OAS-dev\_verify\ui-frames-20261103\frames-fixed.png`（分组列表恢复）、`frames-fixed-detail.png`（点帧展开素材）。`node --check` 两文件 exit 0；`git diff --check` clean；无 Rust 改动 ⇒ workspace 仍 **501/0**；UI **835 checks / 225 ids / 0 dead**。

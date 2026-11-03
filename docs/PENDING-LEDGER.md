@@ -3272,12 +3272,12 @@ GET /task/assets?task= → 34 个素材（全局模式）
 
 ---
 
-# ★ §E-76 ★★★ [11-04 00:4x] **编辑器帧页：帧搜索 / 帧详情素材库 / 素材测试帧错位修复**
+# ★ §E-76 ★★★ [11-04 00:4x~01:0x] **编辑器帧页：帧搜索 / 帧详情素材库 / 素材测试帧错位修复 / 布局回归修复**
 
-> 触发：用户三项需求（图片帧页搜索、当前帧显示该帧素材、素材测试「框选不更新」）→ 根因诊断 → 修复 → 只读评审（P0=0，P1×2）→ 修复 P1/P2 → 测试 828 / 224 / 0。
-> 改动仅 UI：`apps/oasd/ui/{index.html,app.js,ui_pure_test.js}`（未提交；Lead 本轮先提交代码（父 `5d8eae3`），再提交 docs（HEAD）；hash 以 `git log` 为准）。
+> 触发：用户三项需求（图片帧页搜索、当前帧显示该帧素材、素材测试「框选不更新」）→ 根因诊断 → 修复 → 只读评审（P0=0，P1×2）→ 修复 P1/P2 → **帧页布局回归修复（用户报告「丢失了原先按分类展示图片帧的区域页面」；帧列表被固定内容挤成 0 高）** → 测试 **835 / 225 / 0**。
+> 改动仅 UI：`apps/oasd/ui/{index.html,app.js,style.css,ui_pure_test.js}`（本轮布局修复 4 文件，均未提交；前一轮帧搜索 3 文件已随 seq 96 提交，本轮新增 `style.css` 并改动其余 3 文件；Lead 本轮先提交代码（父 = 修复前 HEAD，即 seq 96 docs 提交），再提交 docs（新 HEAD）；hash 以 `git log` 为准）。
 > 现行口径：`docs/EDITOR-UX-PLAN.md §16`；旧 §E-66/U-32b/`AUDIT-SUBPROCESS` P1-7 已标注取代。
-> 证据：`D:\OAS-dev\_verify\ui-frames-20261103\`（`MATCH-BUG-DIAGNOSIS.md` · `FRAMES-UI-REPORT.md` · `MATCH-FIX-REPORT.md` · `REVIEW-UI.md` · `FIX-P1-REPORT.md` · `api-*.json` · `match-23/26.json` · `editor-page.png` · 日志）。
+> 证据：`D:\OAS-dev\_verify\ui-frames-20261103\`（`MATCH-BUG-DIAGNOSIS.md` · `FRAMES-UI-REPORT.md` · `MATCH-FIX-REPORT.md` · `REVIEW-UI.md` · `FIX-P1-REPORT.md` · `api-*.json` · `match-23/26.json` · `frames-fixed.png` / `frames-fixed-detail.png`（布局修复） · `editor-page.png` · 日志）。
 
 ## A. 需求 → 实现
 
@@ -3312,27 +3312,34 @@ GET /task/assets?task= → 34 个素材（全局模式）
 
 ## E. 测试
 
-- UI pure test：**662 → 744（帧搜索+帧详情）→ 802（测试帧修复）→ 828（P1/P2 修复）= 828 checks / 224 referenced ids / 0 dead ids**；旧 662 无删除；新增 `testFramePlan` 32 条、帧详情四按钮传 `f.id`、静态契约等。
+- UI pure test：**662 → 744（帧搜索+帧详情）→ 802（测试帧修复）→ 828（P1/P2 修复）→ 835（布局回归 +7）= 835 checks / 225 referenced ids / 0 dead ids**；旧 662 无删除；新增 `testFramePlan` 32 条、帧详情四按钮传 `f.id`、静态契约等；布局修复新增 7 条（`<details>` 结构 / summary 文案、`selectFrame` 展开、空查询隐藏状态行、fake DOM `style`/`display`）。
 - `node --check app.js/ui_pure_test.js` exit 0；`git diff --check` clean；task lint **1/0**。
-- **无 Rust 改动 ⇒ `cargo test --workspace` 仍 501/0**（oasd 228；UI 无 Rust 测试）。Lead 日志 `lead-final-workspace.log`（21 binary 求和 501/0）· `lead-final-ui.log`（828/224/0）。
+- **无 Rust 改动 ⇒ `cargo test --workspace` 仍 501/0**（oasd 228；UI 无 Rust 测试）。Lead 日志 `lead-final-workspace.log`（21 binary 求和 501/0）· `lead-final-ui.log`（828/224/0，布局修复前）；布局修复后 Lead CDP 1440×900 实测 + `ui_pure_test.js` 835/225/0。
 
-## F. E2E（Lead，2026-11-03 23:5x~11-04 00:3x）
+## F. E2E（Lead，2026-11-03 23:5x~11-04 01:0x）
 
 - serve **8787**（真机 `emulator-5554`，实时预览可用）；`GET /` 200、含 5 个新 DOM id；app.js 含 `testFramePlan/matchBoxValid/assetsForFrame/renderFrameAssets/assetRowElement/filterFramesByQuery`。
 - 数据：`/frames` = **30 帧**；`/task/assets?task=`（全局素材库）= **26 素材**（4 模板 / 22 `ocr_line`）；帧素材映射 **#23=3、#26=1、#41=2、#42=2**（与用户数据一致）。
 - `match` API 对比见 §B；headless Edge 截图 `_verify/ui-frames-20261103/editor-page.png` 页面正常渲染。
-- 边界：**无真实浏览器自动化 E2E**（仅 headless 截图 + API/纯测试）。
+- 边界：**无真实浏览器自动化 E2E**（仅 headless 截图 + CDP 1440×900 布局实测 + API/纯测试）。
 
 ## G. 提交 / 数据边界
 
-- 待提交 = 3 个 UI 文件 + 本批 docs；**用户数据不提交**：`assets/assets.json`、`frames/frames.json`、`assets/images/a002.png`/`a003.png`/`a004.png`、`frames/frame-41.png`/`frame-42.png`、`scheduler.json`、`scheduler.json.bak`。
-- 代码由 Lead 先提交（父 `5d8eae3`），docs 随后提交（HEAD）；不写死 hash。
+- 待提交 = **4 个 UI 文件**（`app.js`/`index.html`/`style.css`/`ui_pure_test.js`）+ 本批 docs；**用户数据不提交**：`assets/assets.json`、`frames/frames.json`、`assets/images/a002.png`/`a003.png`/`a004.png`、`frames/frame-41.png`/`frame-42.png`、`scheduler.json`、`scheduler.json.bak`。
+- 代码由 Lead 先提交（**父 = 修复前 HEAD，即 seq 96 docs 提交**），docs 随后提交（**新 HEAD**）；不写死 hash。
 
 ## H. 遗留（P2/P3，不阻塞）
 
 - 帧搜索无 Enter/防抖（P3）；分类 + 搜索状态计数跨分类（P2）；纯数字查询既精确又子串（P2）；全局模式下来源可能重复计数（P2）；
 - `frame_source` 文案（`position:#N` vs 「当前帧 #N」）待统一（P2）；切帧只清测试框不清 ROI 覆盖层（P2）；单行 OCR 点测画布无框（P2 沟通项）；`renderAssetRows` 与 `OASAssetUI.renderRows` 仍有 DRY 复制（P2）；
 - 帧详情操作按钮只放测试类（故意）；产品 backlog 不变（`SelectionTool` / collection real=1 真机 E2E / drag Plan B / P2-10 / 版本决策）。
+
+## I. 布局回归修复（2026-11-04，已修）
+
+- **用户报告**：图片页「丢失了原先按分类展示图片帧的区域页面」。
+- **根因（实测）**：上一轮给帧页新增搜索框 / 搜索状态行 / 帧详情 / 该帧素材列表（约 **+296px** 固定内容），`#panel-images` 是固定高度 flex 列（`height: calc(100vh - 150px)`），`#panel-images .frames-list` 为 `flex: 1; min-height: 0` ⇒ 1440×900 下帧列表计算高度 **0px**；12 个分类组 / 30 行内容仍在（`scrollHeight=1832`）但不可见。
+- **修复（4 文件）**：`style.css` 改为 `#panel-images .frames-list { flex: 1 1 auto; min-height: 200px; overflow-y: auto; }` + `#frame-details`/summary/`[open]` 样式；`index.html` 把 `#frame-detail` + `#frame-assets-status` + `#frame-assets-list` 包进默认折叠的 `<details id="frame-details">`（summary「帧详情 / 该帧素材（点击一帧展开）」）；`app.js` `selectFrame()` 成功后 `frameDetails.open = true`、`renderFramesList()` 空查询隐藏 `#frame-search-status`；`ui_pure_test.js` **+7 checks**。
+- **验证（Lead，CDP 1440×900）**：修复前帧列表 `height=0`（12 组已渲染但不可见）→ 修复后 **257px**、12 组可见、details 折叠；点击一帧 #1 → details 打开、详情文本 /「该帧素材 1 条（全局 1 · 任务 0）」/ 1 行素材，帧列表仍 200px 可见。截图 `frames-fixed.png` / `frames-fixed-detail.png`；`node --check` 两文件 exit 0；`git diff --check` clean；workspace 仍 **501/0**；UI **835/225/0**。
 
 ## 台账
 
@@ -3341,8 +3348,9 @@ GET /task/assets?task= → 34 个素材（全局模式）
 | ① 帧搜索 | ✅ | `#frame-search`/`#frame-search-clear`/`#frame-search-status`；`frameMatchesQuery`/`filterFramesByQuery`/`frameSearchStatusText`；UI 744 checks 起 |
 | ② 帧详情素材库 | ✅ | `#frame-detail` 素材数 + `#frame-assets-list`；`assetsForFrame` 去重/来源合并；`assetRowElement`/`renderAssetRows` 三处复用；P1 刷新已修 |
 | ③ 测试帧错位 | ✅ | `testFramePlan` 优先级；frameId 五函数透传；切帧清框；`matchBoxValid`；单行 OCR 无真实框 |
-| 测试 | ✅ | UI **828/224/0**；workspace **501/0**（oasd 228）；`node --check` exit 0；`git diff --check` clean；lint 1/0 |
-| E2E | ✅（有限） | serve 8787 真机；30 帧/26 素材；#23=3/#26=1/#41=2/#42=2；match API 见 §B；headless 截图 |
-| 文档 | ✅ | `EDITOR-UX-PLAN §16` + 本节 + `AUDIT` P1-7 注 + `RESUME` seq 96 + `RESUME-INDEX` + `START-HERE` + `README` + `SESSION-HANDOFF` |
+| ④ 布局回归 | ✅ | 用户报告帧区域消失；根因 fixed-height flex + `min-height:0` ⇒ 0px；修复 `min-height:200` + details 默认折叠 + 点帧展开 + 空搜索隐藏状态行；CDP 1440×900 **0→257px**、12 组可见；UI **835/225/0** |
+| 测试 | ✅ | UI **835/225/0**；workspace **501/0**（oasd 228）；`node --check` exit 0；`git diff --check` clean；lint 1/0 |
+| E2E | ✅（有限） | serve 8787 真机；30 帧/26 素材；#23=3/#26=1/#41=2/#42=2；match API 见 §B；headless 截图 + 布局修复 CDP 1440×900 实测 |
+| 文档 | ✅ | `EDITOR-UX-PLAN §16`（含 §16.6 布局回归） + 本节 + `AUDIT` P1-7 注 + `RESUME` seq 97 + `RESUME-INDEX` + `START-HERE` + `README` + `SESSION-HANDOFF` |
 
-| 状态 | ✅ 帧搜索 / 帧详情素材 / 测试帧修复完成（UI 828/224/0；workspace 501/0）；代码待 Lead 提交（父 `5d8eae3`），docs 随后提交；⚠ P2/P3 见 §H · 无阻塞 |
+| 状态 | ✅ 帧搜索 / 帧详情素材 / 测试帧修复 / 布局回归修复完成（UI 835/225/0；workspace 501/0）；代码待 Lead 提交（父 = 修复前 HEAD），docs 随后提交；⚠ P2/P3 见 §H · 无阻塞 |
