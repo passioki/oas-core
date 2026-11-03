@@ -41,6 +41,7 @@ const frameSearchClear = document.getElementById('frame-search-clear');
 const frameSearchStatus = document.getElementById('frame-search-status');
 const frameAssetsStatus = document.getElementById('frame-assets-status');
 const frameAssetsList = document.getElementById('frame-assets-list');
+const frameDetails = document.getElementById('frame-details');
 const canvasStage = document.getElementById('canvas-stage');
 const canvasWindows = document.getElementById('canvas-windows');
 const btnCanvasPanels = document.getElementById('btn-canvas-panels');
@@ -4305,6 +4306,9 @@ function renderFramesList() {
   const filtered = filterFramesByQuery(all, q);
   if (frameSearchStatus) {
     frameSearchStatus.textContent = frameSearchStatusText(all.length, filtered.length);
+    // Only reserve the extra line while a query is active: the static count is
+    // already in framesStatus, and every saved pixel keeps the frame list visible.
+    frameSearchStatus.style.display = String(q).trim() ? '' : 'none';
   }
   framesList.textContent = '';
   if (!all.length) {
@@ -4922,6 +4926,9 @@ async function selectFrame(id) {
     draw();
     log(`已切换当前帧 #${id}（${s.width}x${s.height}）`);
     await refreshFrames();
+    // Clicking a frame is the explicit request to inspect it: reveal the
+    // (collapsed by default) frame-detail / per-frame asset section.
+    if (frameDetails) frameDetails.open = true;
   } catch (e) {
     framesStatus.textContent = '切换异常：' + e;
   }

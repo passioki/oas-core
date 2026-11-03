@@ -1071,6 +1071,7 @@ function fakeFrameDomElement() {
     title: '',
     draggable: false,
     dataset: {},
+    style: {},
     children: [],
     classList: { add() {}, remove() {}, toggle() {} },
     appendChild(child) { el.children.push(child); return child; },
@@ -1116,10 +1117,12 @@ function installFrameListRenderHarness() {
 const framesDom = installFrameListRenderHarness();
 sandbox.renderFramesList();
 eq(framesDom.status.textContent, '共 4 帧 · 匹配 4 帧', 'frame list renders all frames without a query');
+eq(framesDom.status.style.display, 'none', 'an empty search hides the status line so the frame list keeps its height');
 eq(framesDom.ids(), ['1', '12', '21', '33'], 'frame list keeps grouping order');
 sandbox.frameSearch.value = '庭院';
 sandbox.renderFramesList();
 eq(framesDom.status.textContent, '共 4 帧 · 匹配 2 帧', 'frame list updates the count while typing');
+eq(framesDom.status.style.display, '', 'typing a query reveals the search status line');
 eq(framesDom.ids(), ['12', '21'], 'frame list shows only matching frames');
 sandbox.frameSearch.value = '找不到';
 sandbox.renderFramesList();
@@ -1414,6 +1417,12 @@ ok(/id="frame-search-clear"/.test(html), 'index.html provides the frame search c
 ok(/id="frame-search-status"/.test(html), 'index.html provides the frame search status line');
 ok(/id="frame-assets-status"/.test(html), 'index.html provides the frame asset count line');
 ok(/id="frame-assets-list"/.test(html), 'index.html provides the frame asset list');
+// LAYOUT-REGRESSION: the frame detail/assets block must be collapsible so the
+// category-grouped frame list keeps its height (it collapsed to 0px at 1440x900
+// when these nodes were rendered inline).
+ok(/id="frame-details"/.test(html), 'index.html provides the frame-details container');
+ok(/<details id="frame-details"/.test(html), 'frame detail/assets live in a <details> element');
+ok(/<summary>帧详情 \/ 该帧素材/.test(html), 'the frame-details summary documents what it contains');
 ok(
   /placeholder="搜索帧：名称 \/ #id \/ 分类"/.test(html),
   'the frame search placeholder documents name/#id/category'
@@ -1511,6 +1520,12 @@ const selectFrameFn = extractFunction('selectFrame');
 ok(
   /boxes = \[\];/.test(selectFrameFn) && /selectedBox = null;/.test(selectFrameFn),
   'switching frames drops result boxes measured on the previous image'
+);
+// LAYOUT-REGRESSION: clicking a frame reveals the collapsed detail/asset section.
+ok(/frameDetails\.open = true/.test(selectFrameFn), 'selectFrame opens the frame detail/assets section');
+ok(
+  /frameSearchStatus\.style\.display/.test(extractFunction('renderFramesList')),
+  'the empty frame-search status line is hidden so the frame list keeps its height'
 );
 // P2-2: deleting the CURRENT frame falls back to another one; the old boxes must
 // not be repainted over it (same illusion the selectFrame clearing fixes).

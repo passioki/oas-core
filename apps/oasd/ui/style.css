@@ -339,10 +339,30 @@ aside.side {
   min-height: 420px;
 }
 #panel-images .frames-list {
-  flex: 1;
+  /* Keep the category-grouped frame list visible: the fixed content added above
+     (search box, category controls, frame detail/assets) used to squeeze this
+     flex item to 0 height, which made the whole frame region disappear. */
+  flex: 1 1 auto;
   max-height: none;
-  min-height: 0;
+  min-height: 200px;
+  overflow-y: auto;
 }
+/* Frame detail / per-frame asset library: collapsed by default so it cannot
+   steal the height the frame list needs; selectFrame() opens it on demand. */
+#frame-details {
+  flex: 0 0 auto;
+  margin: 6px 0;
+  border-top: 1px solid #2b2f38;
+  padding-top: 4px;
+}
+#frame-details > summary {
+  cursor: pointer;
+  color: #98a0ac;
+  font-size: 12px;
+  padding: 2px 0;
+  user-select: none;
+}
+#frame-details[open] > summary { color: #d8dce2; }
 .frame-row {
   display: flex;
   gap: 4px;
