@@ -1826,7 +1826,7 @@ tasks/<任务名>/
 | 层 | 裁决名称 | 归属 | 计数对象 | 持久化位置 |
 |---|---|---|---|---|
 | L1 | **Goal（完成条件）** | 任务定义 `meta.goal`（编辑器 / `POST /task/goal`） | 一次运行内的动作量（打几场/循环几次）；`count` 1..=999 | 无（单次运行内）；`goal` 运行期不被引擎读取，落地为 flow 的 `loop n=param('max_battles')` |
-| L2 | **Run / Attempt（执行与重试）** | 执行器 `run::execute` | 1 次任务执行；`attempt ≤ retry+1` | 事件 `run_finished`（现无 run id；P4 起落 `runs/scheduler/<run_id>.json`） |
+| L2 | **Run / Attempt（执行与重试）** | 执行器 `run::execute` | 1 次任务执行；`attempt ≤ retry+1` | 事件 `run_finished`（无 run id）；**P4 起每次 attempt 另落 `runs/scheduler/<run_id>.json`**，事件带 additive `run_file`（最后 attempt）/`run_file_error` |
 | L3 | **Pass / Trigger（调度迭代与触发）** | 调度器守护进程（`schedule.rs` 主循环） | 每 pass 每个可跑 entry 至多一次；`entry.quota` 管 day/week 次数 | `scheduler.state.json`（`passes`、`entries{}`） |
 | L4 | **Round（队列编排轮次）** | 队列：`entries[].kind="queue"`，队列定义在 `scheduler.json.queues[]` | 把队列成员按序走完一遍的编排尝试 | `scheduler.state.json` 的 `queues{}`（P1 起 schema 4：`total_rounds/rounds_completed/empty_rounds/current_round/member_results` + **`finished: bool`**；**无 `status` 字段**，`status_json` 也只输出 `finished`） |
 
@@ -1864,7 +1864,7 @@ tasks/<任务名>/
 - **失败模式（实测）**：误把 `scheduler.json` 传给 `--config` ⇒ **exit 2** + `config error: config JSON: unknown field 'config', expected one of schema_version/serve/paths/ocr/device/scheduler`，**不会跑任何 plan**（旧文档的"静默回退"说法不成立）；只有 `--config` 传合法 live 配置时，调度 plan 才回退默认 `scheduler.json`。
 - `start-scheduler.bat` 同时传 `--plan` 与 `--config` 是**正当组合**（前者调度计划、后者部署配置），勿据此推断 `--config` 是调度参数。
 
-**状态（2026-11-03 02:4x）**：P0 文档已入库（本节 + `PENDING-LEDGER §E-75`）；P1 ✅ 已提交（450/0，oasd 177）；P2 ✅ 已提交（474/0，oasd 201；调度专项 101）；**P3 ✅ 本轮提交（全量回归 488/0，oasd 215，UI 453）**；P4–P5 未开始。P1 期间队列 entry 不执行（`plan_pass` 记 `skipped`，reason `queue_executor_pending`）；**P2 起 queue entry 正常执行**，见下段；**P3 起可在 UI 编辑 entries/队列并写盘**，见下两段。
+**状态（2026-11-03 12:3x）**：P0 文档已入库（本节 + `PENDING-LEDGER §E-75`）；P1 ✅ 已提交（450/0，oasd 177）；P2 ✅ 已提交（474/0，oasd 201；调度专项 101）；P3 ✅ 已提交（488/0，oasd 215，UI 453）；**P4 ✅ 本轮提交（全量回归 501/0，oasd 228，serve 68，UI 662；见下段）**；P5 ⬜（实机验收，需 MuMu）。P1 期间队列 entry 不执行（`plan_pass` 记 `skipped`，reason `queue_executor_pending`）；**P2 起 queue entry 正常执行**，见下段；**P3 起可在 UI 编辑 entries/队列并写盘**；**P4 起每次 attempt 落 run 实体、调度页可查运行记录**，见下三段。
 
 **P2 队列 Round 执行（2026-11-03 01:3x 完成）**
 
@@ -1889,6 +1889,19 @@ tasks/<任务名>/
 - **默认值**：新建空配置默认 `mode:"loop"`、`loop_interval_s:60`（其余安全默认）；工作台调度面板保持只读 + 「打开调度页 →」。
 - **实测（Lead 2026-11-03 02:2x）**：`cargo test --workspace` **488/0**（21 binaries）、`cargo test -p oasd` **215**、serve **64**、调度专项 **101** 不变；UI pure test **453 checks / 205 referenced ids / 0 dead ids**；纯函数 **75**；task lint 1/0；OCR build（alt target）exit 0 且 warning 与基线一致；`node --check` exit 0。E2E：alt 二进制 + 真实 serve 8790 + 绝对路径 live 配置（GET 缺失→POST v4→GET 读回中文/queue entry 完好→非法 400 文件不变→锁 409→status kind 正确→`GET /` 含新 DOM id）。
 - **遗留**：GET 顶层 schema_version 恒 4 / UI 强制 4（>4 文档保存降级）；高级 JSON 保存无 GET-first 快照守卫；坏 config 时删除守卫无法判定；`.bak` 单份；无真实浏览器 E2E；同任务多条 task entry 仍允许；`utc_offset_min` 缺失按 480 可能覆盖 `--tz-offset-min`；无 CSS 新 class / `scheduleTasksCache` 可能过期。详见 `PENDING-LEDGER §E-75 §C4`、`SCHEDULER-RUNNER-PLAN.md §三 P3`。
+
+**P4 Run 一等实体 + 运行可见性（2026-11-03 03:0x 完成，F4P 收口）**
+
+- **Run 实体（`schedule.rs`）**：`<runs_dir>/scheduler/<run_id>.json`，**每次 attempt 一份**（task entry 含 retry；queue entry 每个成员 attempt 一份）。`run_id=<started_ms>-<seq:04>`（进程内递增 + 磁盘 `exists()` 防碰撞）；tmp+rename 原子写、pretty + 换行、目录按需创建。字段：`schema_version(=1)/run_id/source="scheduler"/kind("task"|"queue_member")/entry_id/task/queue_id?/round?/member_index?/attempt/resume/started_ms/finished_ms/duration_ms/class/exit/exit_code/outcome/clicks/error?/clicks_file?`（`?` = 仅该场景出现）；`task` 是任务名（queue 成员是成员任务名，queue 本身在 `queue_id`）；`exit_code` 来自 `RunReport::exit_code()`（0=Done，1=Failed/Exhausted），无 report 的 setup error 记 1；`clicks_file` 仅当 `--clicks-dir` 产生点击审计时出现。**一次尝试一个不可变文件；列表/统计按文件（attempt）计**。
+- **runs_dir 注入**：`SchedulerOptions.runs_dir` + CLI `--runs-dir`（默认 `runs`）；serve 的 `scheduler_options()` 注入 `self.runs_dir`。**CLI 与 serve 各自使用自己的 `--runs-dir`/CWD**——不一致会出现"调度器写、UI 看不到"（运维/验收必须同目录）。
+- **事件增量（additive）**：`run_finished` 补 `exit_code`、`run_file`（相对 `runs_dir` 的 `scheduler/<id>.json`；语义 = 该 entry/round 的**最后一次 attempt**；空轮/未执行 = `null`）、`run_file_error`（写失败明细；健康 = `null`）；旧字段全保留。**实体是 attempt 级、事件是 entry/round 级**（P5 待统一）。
+- **API（新增路由，旧 `/runs*` 未变）**：`GET /runs/scheduler?limit=200&task=&outcome=` → `{ok,dir,count,runs[]}`（`started_ms` 倒序，limit 默认 200/上限 2000，task/outcome 精确匹配，坏文件跳过，缺目录 200 空；500 用 `{ok:false,errors:[...]}`）；`GET /runs/scheduler/run?run_id=` → `{ok,run}`（完整对象；缺参/非法 id 400、未知 404、读失败/坏 JSON 500）；`run_id` 白名单 `[A-Za-z0-9._-]`，拒绝空/`.`/`..`/斜杠/反斜杠/盘符/NUL。**旧 `/runs`、`/runs/clicks`、`/runs/aggregate`、`/runs/delete` 行为未变**。
+- **stats（`stats.rs`）**：`Summary.scheduler` additive `{files,runs,failed,fatal,total_clicks,total_ms,by_outcome}`；**attempt 级口径**——`failed=class retryable`、`fatal=class fatal`，`resource/blocked` 不计失败；`files` = 扫描的 `scheduler/*.json`（含坏文件、不含 `.tmp`），`runs` = 合法实体；坏文件进 `alerts`。与 `SchedulerReport` 的 **entry/round 级** `failures/fatals` 粒度不同：`retryable→success` 的条目 `stats.failed=1` 而 `report.failures=0`（P5 统一口径）；`oasd stats` 遇坏 run 文件会因 alerts 非空 exit 1。
+- **写失败可观测（非致命）**：写 run 文件失败不中断执行、不改退出码、不影响 state 清理/重试；但不再静默——`alert` 事件 `kind=run_file_write` + ALERT 行 + `SchedulerReport.run_file_errors: u32`（additive）；`scheduler_stop`/`scheduler_summary` 输出 `run_file_errors=N`，`--report` 含该字段；`run_finished.run_file_error` 带明细。`--status` 未加该计数（会话级、不持久化）。
+- **UI（调度页「运行记录」区）**：刷新/任务+结果+limit 筛选/清除/状态行/列表（14 个新 DOM id，`page-sched-runs-*`）；详情对话框再 `GET /runs/scheduler/run` 取单条，展示全字段 + 完整 JSON + 错误全文；行点击/Enter/Space 打开；状态卡显示最近运行/失败数；任务库/entry/queue 提供快捷筛选；空/失败态明确（「运行记录读取失败：<err>」+ WARN）。旧 `/runs` 点击分布页未改；纯函数 **111**；新代码全部 `textContent`（无 `innerHTML`/`eval`）。
+- **计划偏差（必须记）**：计划原写"`GET /runs` 扩展 + 点击聚合关联"；实际为**新增 `/runs/scheduler*` 路由**（旧 `/runs` 保兼容），run 实体记录 `clicks` 与 `clicks_file`，但**未接点击聚合关联**（留 P5/后续）。
+- **实测（Lead 2026-11-03 03:0x + 12:23 复跑）**：`cargo test --workspace` **501/0**（21 binaries）、`cargo test -p oasd` **228**、serve **68**、调度专项 **107**（`scheduler.rs` 49 + `schedule.rs` 58）、`stats.rs` 6；UI pure test **662 checks / 219 referenced ids / 0 dead ids**；task lint 1/0；OCR build（alt target）exit 0 且 warning 与基线一致；`node --check` exit 0。E2E：alt 二进制 + 真实 serve + e2e `--runs-dir`（queue 2 轮跑出 4 个成员 attempt 实体，task entry 实体由 `schedule.rs` P4 测试覆盖 → 列表/详情/筛选 → 旧路由 200 → stats 含 scheduler 块 → `GET /` 含新 DOM id）。**P4 代码先提交（父 `f99c36a`），docs 随后（HEAD）**。
+- **遗留（P5 起）**：① 事件 attempt/entry 粒度差异；stats attempt 级 vs report entry 级；UI 状态卡"失败"含 resource/blocked。② 点击聚合关联未接；无分页/保留策略（attempt 无界增长）。③ `run_id` 唯一性依赖单活动实例 + 磁盘检查；`.json.tmp` 残留不清理。④ detail 非实体 JSON 也能读、`limit=0` clamp 1、list/detail 500 形状不同。⑤ `--status` 无 `run_file_errors`；写失败不改退出码；queue 写失败未单独测。⑥ CLI/serve 的 runs-dir/CWD 须一致；`oasd stats` 遇坏 run 文件 exit 1。⑦ 无真实浏览器/真机 E2E（仅 HTTP API E2E + UI pure tests）。详见 `PENDING-LEDGER §E-75 §C5`、`SCHEDULER-RUNNER-PLAN.md §三 P4`。
 
 ---
 
