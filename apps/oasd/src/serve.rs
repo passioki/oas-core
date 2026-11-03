@@ -371,6 +371,32 @@ struct InputSwipeRequest {
     ms: Option<u32>,
 }
 
+/// P5: TCP endpoints worth `adb connect` when `/instance/devices` lists nothing.
+///
+/// Order: configured serial (if it looks like a TCP endpoint), the live config's
+/// `device.reconnect_endpoints`, then the usual MuMu endpoint. `emulator-5554`
+/// style serials are not TCP endpoints and are skipped — the adb server
+/// discovers emulators by itself.
+fn instance_connect_candidates() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |raw: &str| {
+        let v = raw.trim();
+        if !v.is_empty() && v.contains(':') && !out.iter().any(|x| x == v) {
+            out.push(v.to_string());
+        }
+    };
+    if let Some(serial) = crate::config::device_serial() {
+        push(&serial);
+    }
+    if let Some(cfg) = crate::config::global() {
+        for endpoint in &cfg.device.reconnect_endpoints {
+            push(endpoint);
+        }
+    }
+    push("127.0.0.1:16384");
+    out
+}
+
 /// Validate a live-preview input point against the frame just shown to the user.
 /// Returning 400 here prevents an accidental desktop click from landing outside
 /// the device screen (or on a stale/non-live frame).
@@ -4691,11 +4717,31 @@ impl Server {
     }
 
     /// GET /instance/devices — attached physical devices with every adb alias.
+    ///
     /// The settings UI uses this dropdown so the user picks one instance by
     /// human-readable label instead of typing a serial they cannot see.
+    ///
+    /// P5: when nothing is listed (e.g. MuMu is running but its TCP endpoint was
+    /// never connected after a restart), try the configured serial, the live
+    /// config's `reconnect_endpoints` and the usual MuMu endpoint once, then
+    /// re-list. `auto_connect` reports every endpoint we tried so the UI can
+    /// explain why the list is still empty.
     fn handle_instance_devices(&self, out: &mut TcpStream) -> std::io::Result<()> {
         match self.adb.devices() {
-            Ok(devices) => {
+            Ok(mut devices) => {
+                let mut auto_connect: Vec<String> = Vec::new();
+                if devices.is_empty() {
+                    for endpoint in instance_connect_candidates() {
+                        auto_connect.push(endpoint.clone());
+                        let _ = self.adb.connect(&endpoint);
+                    }
+                    if !auto_connect.is_empty() {
+                        // `adb connect` returns before the device shows up in
+                        // `adb devices`; give the adb server a moment.
+                        std::thread::sleep(Duration::from_millis(500));
+                        devices = self.adb.devices().unwrap_or_default();
+                    }
+                }
                 let rows: Vec<serde_json::Value> = devices
                     .iter()
                     .map(|d| {
@@ -4711,6 +4757,7 @@ impl Server {
                     "ok": true,
                     "configured": crate::config::device_serial().unwrap_or_default(),
                     "devices": rows,
+                    "auto_connect": auto_connect,
                 });
                 self.send_json(out, 200, &body.to_string())
             }
