@@ -58,6 +58,7 @@ use oas_obs::{Recorder, ReplaySource};
 use oas_runtime::{Budget, ClickRecord, Interpreter, RunResult, StepEvent, StepObserver};
 use oas_task::TaskBundle;
 use oas_types::{Exit, Frame, InputSink, Outcome, Point, ScreenSource};
+use serde_json::Value as JsonValue;
 
 pub const USAGE: &str = "usage: oasd run --task <bundle-dir> [--replay <bundle-dir>] \
                          [--seed <u64>] [--dry-run] [--record <bundle-dir>] \
@@ -122,10 +123,20 @@ pub struct RunOptions {
     pub trace_appear: bool,
     pub budget_steps: u32,
     pub budget_wall_s: f64,
-    /// `--param k=v` values for `param('key')` (M0 unified template). The
-    /// bundle's `meta.params[].default` is the fallback; CLI wins on conflict.
-    pub params: BTreeMap<String, String>,
+    /// Explicit parameter layer of the four-layer priority (design §C.3):
+    /// `CLI --param` > scheduler/queue entry `params` > Runner
+    /// `config/values.json` > `meta.params[].default`.
+    ///
+    /// Values stay JSON (`"007"` is a string, `3` a number, `true` a bool): the
+    /// callers inject their own source type unchanged, and [`execute`] converts
+    /// once at the single merge point. Non-scalar values fall back to compact
+    /// JSON text (the pre-PR3 entry-params behaviour).
+    pub params: ParamMap,
 }
+
+/// One explicit parameter layer (`RunOptions.params`): JSON values as written by
+/// `--param`, `scheduler.json` entries, `config/values.json` or `POST /task/run`.
+pub type ParamMap = BTreeMap<String, JsonValue>;
 
 impl Default for RunOptions {
     fn default() -> Self {
@@ -235,7 +246,10 @@ impl RunOptions {
                         ));
                     }
                     // Last one wins (explicit rebinding of a scheduler-passed value).
-                    o.params.insert(key.to_string(), value.to_string());
+                    // The CLI is the top priority layer, but its value still goes
+                    // through the documented string->scalar rule once, here.
+                    o.params
+                        .insert(key.to_string(), parse_param_value(value));
                 }
                 other => return Err(format!("unknown run argument `{other}`\n{USAGE}")),
             }
@@ -254,15 +268,75 @@ fn take_value(rest: &[String], i: &mut usize, flag: &str) -> Result<String, Stri
 
 /// Parse one `--param k=v` value: `true`/`false` => bool, a finite number => num,
 /// everything else => string. The flow expression decides how it is used.
-fn parse_param_value(raw: &str) -> Value {
+///
+/// This is the **only** place that guesses a type (CLI text is inherently
+/// untyped). Scheduler/queue entry params, Runner values and Studio
+/// `POST /task/run` params are already JSON and stay typed.
+///
+/// Escape hatch: a value wrapped in a **pair** of double quotes is parsed as a
+/// JSON string literal (`"007"` -> `Str("007")`, `"a\"b"` -> `Str("a\"b")`), so
+/// a numeric-looking CLI value can be forced to a string when the task schema
+/// declares `type=string` and the post-merge check would otherwise reject the
+/// guessed number. The quotes must survive into the process argument text; on
+/// Windows PowerShell 5.1 the command line therefore needs the quotes escaped,
+/// e.g. `--param 'code=\"007\"'` (single quotes stop PowerShell from parsing,
+/// `\"` stops the Windows argv parser from stripping them). Unquoted values
+/// keep the old rule; no schema-aware re-parsing is done here.
+fn parse_param_value(raw: &str) -> JsonValue {
+    if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
+        // Valid JSON string literal: decode escapes. A malformed one (e.g. a
+        // stray inner quote) still stays a string; only the outer quotes go.
+        return match serde_json::from_str::<String>(raw) {
+            Ok(s) => JsonValue::String(s),
+            Err(_) => JsonValue::String(raw[1..raw.len() - 1].to_string()),
+        };
+    }
     match raw {
-        "true" => Value::Bool(true),
-        "false" => Value::Bool(false),
+        "true" => JsonValue::Bool(true),
+        "false" => JsonValue::Bool(false),
         _ => match raw.parse::<f64>() {
-            Ok(n) if n.is_finite() => Value::Num(n),
-            _ => Value::Str(raw.to_string()),
+            Ok(n) if n.is_finite() => serde_json::Number::from_f64(n)
+                .map(JsonValue::Number)
+                .unwrap_or_else(|| JsonValue::String(raw.to_string())),
+            _ => JsonValue::String(raw.to_string()),
         },
     }
+}
+
+/// Convert one stored JSON parameter value to the runtime expression value
+/// consumed by `Interpreter::with_params`.
+///
+/// Scalars map 1:1 (`true` -> `Bool(true)`, `3` -> `Num(3.0)`, `"007"` ->
+/// `Str("007")`), so a scheduler entry `{"code":"007"}` is no longer re-parsed
+/// into `Num(7.0)` (design §C.3 problem 1 / risk R7). Non-scalars keep the
+/// legacy pre-PR3 fallback (compact JSON text) so old entry params with
+/// object/array values still reach `param()` unchanged.
+pub fn json_param_value(value: &JsonValue) -> Value {
+    match value {
+        JsonValue::Bool(b) => Value::Bool(*b),
+        JsonValue::Number(n) => n
+            .as_f64()
+            .map(Value::Num)
+            .unwrap_or_else(|| Value::Str(n.to_string())),
+        JsonValue::String(s) => Value::Str(s.clone()),
+        other => Value::Str(other.to_string()),
+    }
+}
+
+/// Runner values layer (design §C.3 priority 3) for one **executed** task.
+///
+/// A missing `config/values.json` (or a task without an entry in it) is an empty
+/// layer; a corrupt/unsupported store is a loud error carrying the task and path
+/// — `runner_config`'s contract is "never silently reset". The caller merges its
+/// entry/CLI layer on top, and `run::execute` still merges `meta.params[].default`
+/// underneath.
+pub fn runner_values_layer(values_path: &Path, task: &str) -> Result<ParamMap, String> {
+    let stored = crate::runner_config::task_values(values_path, task)
+        .map_err(|e| format!("task `{task}`: {e}"))?;
+    Ok(match stored {
+        Some(stored) => stored.values.into_iter().collect(),
+        None => ParamMap::new(),
+    })
 }
 
 /// Attach the in-flow OCR provider when `--model` / `--det-model` are given.
@@ -459,8 +533,15 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     out(&format!("assets={}", assets.len()));
 
     // ---- task parameters (M0 unified template, §22.34.2) --------------------
-    // Defaults come from meta.params[].default; `--param k=v` wins. A parameter
-    // used by `param('key')` but never provided is a loud runtime failure.
+    // The single merge point for the four entry points (design §C.3):
+    //   `RunOptions.params` (already the winning explicit layers: CLI /
+    //   entry / Runner values / Studio params) > `meta.params[].default`.
+    // After the merge the resulting values are re-checked against
+    // `meta.params` (design §C.3: type/min/max/enum/required/unknown keys) —
+    // before any step can run or click. A task whose `meta.params` is empty
+    // keeps the legacy contract (any `--param` key is injectable, no check),
+    // and a parameter the flow uses but nobody declared/provided is still a
+    // loud runtime failure from `param()`.
     let meta = bundle
         .load_meta()
         .map_err(|e| format!("task bundle `{}`: {e}", task_dir.display()))?;
@@ -470,14 +551,41 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
             .map_err(|e| format!("task bundle `{}`: {e}", task_dir.display()))?,
         None => BTreeMap::new(),
     };
-    let cli_param_count = opts.params.len();
-    for (key, raw) in &opts.params {
-        params.insert(key.clone(), parse_param_value(raw));
+    // Explicit layers are JSON already: convert once, preserving the source
+    // type instead of re-guessing it from a string.
+    let explicit_param_count = opts.params.len();
+    for (key, value) in &opts.params {
+        params.insert(key.clone(), json_param_value(value));
+    }
+    // Design §C.3: re-check the **merged** values (defaults + every explicit
+    // layer) against `meta.params` before the runtime is built, so a bad
+    // `values.json` / entry / Studio body / `--param` value fails here with a
+    // precise `task config:` error instead of later with the generic
+    // "declare it in meta.params" message. The check runs on the runtime values
+    // that are about to be injected (all scalars), which also keeps the legacy
+    // non-scalar -> compact-JSON-string fallback working.
+    //
+    // `meta.params` empty = legacy task: no schema exists, so any key stays
+    // injectable (old tasks / old CLI invocations must not start failing).
+    if let Some(meta) = &meta {
+        if !meta.params.is_empty() {
+            let merged_json: serde_json::Map<String, JsonValue> = params
+                .iter()
+                .map(|(key, value)| (key.clone(), crate::checkpoint::value_to_json(value)))
+                .collect();
+            if let Err(errors) = oas_task::validate_param_values(&meta.params, &merged_json) {
+                return Err(format!(
+                    "task config: parameter values do not match `meta.params` of `{}`:\n  - {}",
+                    task_dir.display(),
+                    errors.join("\n  - ")
+                ));
+            }
+        }
     }
     out(&format!(
         "params={} cli_params={}",
         params.len(),
-        cli_param_count
+        explicit_param_count
     ));
 
     // ---- checkpoint / resume (§22.16) --------------------------------------
@@ -1932,7 +2040,8 @@ mod tests {
 
         // --param max_rounds=7 wins => 7 * 2 = 14.
         let mut opts = replay_options(&task, &replay, 1);
-        opts.params.insert("max_rounds".to_string(), "7".to_string());
+        opts.params
+            .insert("max_rounds".to_string(), parse_param_value("7"));
         let (r, lines) = run_capture(&opts);
         assert_eq!(r.outcome(), Outcome::Done);
         assert_eq!(line_with(&lines, "params="), "params=1 cli_params=1");
@@ -1941,6 +2050,366 @@ mod tests {
             "{:?}",
             r.events
         );
+    }
+
+    // PR3: the explicit layer (`RunOptions.params`) carries JSON values straight
+    // from the scheduler/queue/Studio sources; only `--param` text is guessed.
+    const TYPED_PARAM_FLOW: &str = r#"{"schema_version":1,"name":"typed-params","steps":[
+        {"op":"log","args":{"level":"info","text":"param('code')"}},
+        {"op":"log","args":{"level":"info","text":"param('n')"}},
+        {"op":"log","args":{"level":"info","text":"param('flag')"}},
+        {"op":"finish","args":{"exit":"done"}}]}"#;
+    const TYPED_PARAM_META: &str = r#"{"schema_version":1,"name":"typed-params",
+        "params":[
+            {"key":"code","type":"string","default":"000"},
+            {"key":"n","type":"int","default":5},
+            {"key":"flag","type":"bool","default":false}],
+        "exits":{"done":{"result":"success"},"failed":{"result":"retryable"}}}"#;
+
+    #[test]
+    fn run_param_keeps_json_types_injected_by_the_scheduler_entry_layer() {
+        // Design §C.3 problem 1 / R7: an entry `{"code":"007"}` must reach
+        // `param('code')` as the STRING "007", not be re-guessed into Num(7.0).
+        let td = TempDir::new("param-typed");
+        let task = td.path().join("task");
+        let replay = td.path().join("replay");
+        write_task_bundle_with(&task, TYPED_PARAM_FLOW, TYPED_PARAM_META);
+        write_replay_bundle(&replay);
+
+        let mut opts = replay_options(&task, &replay, 1);
+        opts.params = BTreeMap::from([
+            ("code".to_string(), serde_json::json!("007")),
+            ("n".to_string(), serde_json::json!(3)),
+            ("flag".to_string(), serde_json::json!(true)),
+        ]);
+        let (r, lines) = run_capture(&opts);
+        assert_eq!(r.outcome(), Outcome::Done, "events: {:?}", r.events);
+        assert_eq!(line_with(&lines, "params="), "params=3 cli_params=3");
+        let details: Vec<&str> = r.events.iter().map(|e| e.detail.as_str()).collect();
+        assert!(
+            details.iter().any(|d| d.contains("Str(\"007\")")),
+            "string must stay a string: {details:?}"
+        );
+        assert!(
+            details.iter().any(|d| d.contains("Num(3.0)")),
+            "number must stay a number: {details:?}"
+        );
+        assert!(
+            details.iter().any(|d| d.contains("Bool(true)")),
+            "bool must stay a bool: {details:?}"
+        );
+        assert!(
+            !details.iter().any(|d| d.contains("Num(7.0)")),
+            "007 must never become 7.0: {details:?}"
+        );
+    }
+
+    #[test]
+    fn run_param_meta_defaults_fill_only_keys_the_explicit_layer_omits() {
+        let td = TempDir::new("param-default-fill");
+        let task = td.path().join("task");
+        let replay = td.path().join("replay");
+        write_task_bundle_with(&task, TYPED_PARAM_FLOW, TYPED_PARAM_META);
+        write_replay_bundle(&replay);
+
+        let mut opts = replay_options(&task, &replay, 1);
+        opts.params
+            .insert("code".to_string(), serde_json::json!("007"));
+        let (r, lines) = run_capture(&opts);
+        assert_eq!(r.outcome(), Outcome::Done, "events: {:?}", r.events);
+        assert_eq!(line_with(&lines, "params="), "params=3 cli_params=1");
+        let details: Vec<&str> = r.events.iter().map(|e| e.detail.as_str()).collect();
+        assert!(
+            details.iter().any(|d| d.contains("Str(\"007\")")),
+            "{details:?}"
+        );
+        // Unset keys keep the declared defaults (n=5, flag=false).
+        assert!(
+            details.iter().any(|d| d.contains("Num(5.0)")),
+            "{details:?}"
+        );
+        assert!(
+            details.iter().any(|d| d.contains("Bool(false)")),
+            "{details:?}"
+        );
+    }
+
+    #[test]
+    fn param_cli_values_are_typed_and_bad_shapes_rejected() {
+        // CLI text is the one untyped source: the documented rule applies once.
+        assert_eq!(parse_param_value("3"), serde_json::json!(3.0));
+        assert_eq!(parse_param_value("-2.5"), serde_json::json!(-2.5));
+        assert_eq!(parse_param_value("true"), serde_json::json!(true));
+        assert_eq!(parse_param_value("false"), serde_json::json!(false));
+        assert_eq!(parse_param_value("fast"), serde_json::json!("fast"));
+        // Non-finite text stays a string (never a silent NaN injection).
+        assert_eq!(parse_param_value("NaN"), serde_json::json!("NaN"));
+        // The JSON layer converts 1:1 into the runtime value.
+        assert_eq!(json_param_value(&parse_param_value("3")), Value::Num(3.0));
+        assert_eq!(
+            json_param_value(&parse_param_value("true")),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            json_param_value(&parse_param_value("fast")),
+            Value::Str("fast".to_string())
+        );
+
+        let args: Vec<String> = ["--task", "t", "--param", "a=1", "--param", "mode=fast"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let o = RunOptions::parse(&args).expect("parse");
+        assert_eq!(o.params["a"], serde_json::json!(1.0));
+        assert_eq!(o.params["mode"], serde_json::json!("fast"));
+
+        for bad in [
+            vec!["--task", "t", "--param", "novalue"],
+            vec!["--task", "t", "--param", "=x"],
+            vec!["--task", "t", "--param", " a=1"],
+            vec!["--task", "t", "--param"],
+        ] {
+            let bad: Vec<String> = bad.iter().map(|s| s.to_string()).collect();
+            assert!(RunOptions::parse(&bad).is_err(), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn run_param_unknown_keys_stay_injectable_when_the_schema_is_empty() {
+        // Legacy compat (design §C.3): `meta.params` empty = no schema exists,
+        // so no post-merge check runs and an entry key the (possibly older)
+        // bundle does not declare still reaches `param()` and is not dropped.
+        // Tasks that DO declare params are re-checked (see the schema tests).
+        let td = TempDir::new("param-unknown");
+        let task = td.path().join("task");
+        let replay = td.path().join("replay");
+        let flow = r#"{"schema_version":1,"name":"t","steps":[
+             {"op":"log","args":{"level":"info","text":"param('legacy_key')"}},
+             {"op":"finish","args":{"exit":"done"}}]}"#;
+        write_task_bundle_with(&task, flow, r#"{"schema_version":1,"name":"t"}"#);
+        write_replay_bundle(&replay);
+        let mut opts = replay_options(&task, &replay, 1);
+        opts.params
+            .insert("legacy_key".to_string(), serde_json::json!("kept"));
+        let (r, lines) = run_capture(&opts);
+        assert_eq!(r.outcome(), Outcome::Done, "events: {:?}", r.events);
+        assert_eq!(line_with(&lines, "params="), "params=1 cli_params=1");
+        assert!(
+            r.events
+                .iter()
+                .any(|e| e.detail.contains(r#"Str("kept")"#)),
+            "{:?}",
+            r.events
+        );
+    }
+
+    #[test]
+    fn json_param_conversion_preserves_scalars_and_legacy_non_scalars() {
+        // Scalars: type fidelity (the PR3 contract).
+        assert_eq!(
+            json_param_value(&serde_json::json!("007")),
+            Value::Str("007".to_string())
+        );
+        assert_eq!(json_param_value(&serde_json::json!(3)), Value::Num(3.0));
+        assert_eq!(json_param_value(&serde_json::json!(true)), Value::Bool(true));
+        // Non-scalars keep the pre-PR3 compact-JSON string fallback so old
+        // `scheduler.json` entry params do not start failing.
+        assert_eq!(
+            json_param_value(&serde_json::json!({"a":1})),
+            Value::Str("{\"a\":1}".to_string())
+        );
+        assert_eq!(
+            json_param_value(&serde_json::json!(null)),
+            Value::Str("null".to_string())
+        );
+    }
+
+    // ---- PR3 P1: post-merge `meta.params` re-check (design §C.3) ----------
+
+    /// Execute `opts` and require a **setup** error before any step runs: the
+    /// engine's step log must stay empty (no step executed, no click sent).
+    fn setup_error(opts: &RunOptions) -> String {
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut opts = opts.clone();
+        opts.step_log = Some(log.clone());
+        let err = execute(&opts, &mut |_: &str| {}).expect_err("setup must fail");
+        assert!(
+            log.lock().expect("step log").is_empty(),
+            "no step may run before the schema re-check: {err}"
+        );
+        err
+    }
+
+    #[test]
+    fn run_rejects_a_schema_type_mismatch_before_any_step() {
+        let td = TempDir::new("schema-type");
+        let task = td.path().join("task");
+        let replay = td.path().join("replay");
+        write_task_bundle_with(&task, TYPED_PARAM_FLOW, TYPED_PARAM_META);
+        write_replay_bundle(&replay);
+
+        // `code` is declared `type=string`; a hand-edited values.json / a JSON
+        // caller can still inject a number. It must fail in setup, not later at
+        // `param('code')` with the generic missing-key message.
+        let mut opts = replay_options(&task, &replay, 1);
+        opts.params.insert("code".to_string(), serde_json::json!(7));
+        let err = setup_error(&opts);
+        assert!(err.starts_with("task config: "), "{err}");
+        assert!(err.contains("code"), "{err}");
+        assert!(err.contains("string"), "{err}");
+    }
+
+    #[test]
+    fn run_rejects_an_unknown_param_key_with_the_allowed_list() {
+        let td = TempDir::new("schema-unknown");
+        let task = td.path().join("task");
+        let replay = td.path().join("replay");
+        write_task_bundle_with(&task, TYPED_PARAM_FLOW, TYPED_PARAM_META);
+        write_replay_bundle(&replay);
+
+        let mut opts = replay_options(&task, &replay, 1);
+        opts.params
+            .insert("ghost".to_string(), serde_json::json!(1));
+        let err = setup_error(&opts);
+        assert!(err.starts_with("task config: "), "{err}");
+        assert!(err.contains("ghost"), "{err}");
+        assert!(err.contains("unknown parameter"), "{err}");
+        // The validation error carries the declared keys.
+        assert!(err.contains("code, n, flag"), "allowed list missing: {err}");
+    }
+
+    const REQUIRED_FLOW: &str = r#"{"schema_version":1,"name":"required","steps":[
+        {"op":"log","args":{"level":"info","text":"param('needed')"}},
+        {"op":"finish","args":{"exit":"done"}}]}"#;
+
+    #[test]
+    fn run_rejects_a_missing_required_param_without_a_default() {
+        let td = TempDir::new("schema-required");
+        let task = td.path().join("task");
+        let replay = td.path().join("replay");
+        write_task_bundle_with(
+            &task,
+            REQUIRED_FLOW,
+            r#"{"schema_version":1,"name":"required",
+                "params":[{"key":"needed","type":"string","required":true}],
+                "exits":{"done":{"result":"success"}}}"#,
+        );
+        write_replay_bundle(&replay);
+
+        let err = setup_error(&replay_options(&task, &replay, 1));
+        assert!(err.starts_with("task config: "), "{err}");
+        assert!(err.contains("needed"), "{err}");
+        assert!(err.contains("缺少必填参数"), "{err}");
+    }
+
+    #[test]
+    fn run_accepts_a_missing_required_param_that_has_a_default() {
+        let td = TempDir::new("schema-required-default");
+        let task = td.path().join("task");
+        let replay = td.path().join("replay");
+        write_task_bundle_with(
+            &task,
+            REQUIRED_FLOW,
+            r#"{"schema_version":1,"name":"required",
+                "params":[{"key":"needed","type":"string","required":true,"default":"fallback"}],
+                "exits":{"done":{"result":"success"}}}"#,
+        );
+        write_replay_bundle(&replay);
+
+        // required == true is satisfied by the declared default (design §C.3);
+        // the default is the value the runtime receives.
+        let (r, lines) = run_capture(&replay_options(&task, &replay, 1));
+        assert_eq!(r.outcome(), Outcome::Done, "events: {:?}", r.events);
+        assert!(
+            lines.iter().any(|l| l.contains(r#"Str("fallback")"#)),
+            "{lines:?}"
+        );
+    }
+
+    const RANGE_FLOW: &str = r#"{"schema_version":1,"name":"ranges","steps":[
+        {"op":"log","args":{"level":"info","text":"param('rounds')"}},
+        {"op":"log","args":{"level":"info","text":"param('mode')"}},
+        {"op":"finish","args":{"exit":"done"}}]}"#;
+    const RANGE_META: &str = r#"{"schema_version":1,"name":"ranges",
+        "params":[{"key":"rounds","type":"int","min":1,"max":9},
+                  {"key":"mode","type":"string","enum":["fast","safe"]}],
+        "exits":{"done":{"result":"success"}}}"#;
+
+    #[test]
+    fn run_rejects_min_max_and_enum_violations() {
+        let td = TempDir::new("schema-range");
+        let task = td.path().join("task");
+        let replay = td.path().join("replay");
+        write_task_bundle_with(&task, RANGE_FLOW, RANGE_META);
+        write_replay_bundle(&replay);
+
+        for (params, needle) in [
+            (serde_json::json!({"rounds": 0}), "below min"),
+            (serde_json::json!({"rounds": 10}), "above max"),
+            (serde_json::json!({"mode": "turbo"}), "enum"),
+        ] {
+            let mut opts = replay_options(&task, &replay, 1);
+            opts.params = params
+                .as_object()
+                .expect("object")
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let err = setup_error(&opts);
+            assert!(err.starts_with("task config: "), "{err}");
+            assert!(err.contains(needle), "expected `{needle}` in {err}");
+        }
+    }
+
+    #[test]
+    fn cli_quoted_param_forces_a_string_and_passes_the_schema_check() {
+        // The escape hatch: paired double quotes in the argument TEXT make a
+        // JSON string literal (escapes decoded), so a numeric-looking code can
+        // be sent as a string to a `type=string` parameter.
+        assert_eq!(parse_param_value("\"007\""), serde_json::json!("007"));
+        assert_eq!(parse_param_value("\"true\""), serde_json::json!("true"));
+        assert_eq!(parse_param_value("\"a\\\"b\""), serde_json::json!("a\"b"));
+        assert_eq!(parse_param_value("\"\""), serde_json::json!(""));
+        // Unquoted text keeps the legacy guess; that is exactly what the schema
+        // re-check rejects for a `type=string` parameter.
+        assert_eq!(parse_param_value("007"), serde_json::json!(7.0));
+
+        let td = TempDir::new("param-quoted");
+        let task = td.path().join("task");
+        let replay = td.path().join("replay");
+        write_task_bundle_with(&task, TYPED_PARAM_FLOW, TYPED_PARAM_META);
+        write_replay_bundle(&replay);
+
+        let args: Vec<String> = [
+            "--task",
+            task.to_str().expect("task path"),
+            "--replay",
+            replay.to_str().expect("replay path"),
+            "--seed",
+            "1",
+            "--param",
+            "code=\"007\"",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let opts = RunOptions::parse(&args).expect("parse quoted --param");
+        assert_eq!(opts.params["code"], serde_json::json!("007"));
+        let (r, lines) = run_capture(&opts);
+        assert_eq!(r.outcome(), Outcome::Done, "events: {:?}", r.events);
+        assert!(
+            lines.iter().any(|l| l.contains(r#"Str("007")"#)),
+            "{lines:?}"
+        );
+        assert!(!lines.iter().any(|l| l.contains("Num(7.0)")), "{lines:?}");
+
+        // Same text without the quotes is guessed as a number and rejected.
+        let mut unquoted = replay_options(&task, &replay, 1);
+        unquoted
+            .params
+            .insert("code".to_string(), parse_param_value("007"));
+        let err = setup_error(&unquoted);
+        assert!(err.contains("code"), "{err}");
     }
 
     #[test]
@@ -1962,34 +2431,5 @@ mod tests {
             other => panic!("expected Failed, got {other:?}"),
         }
         assert_eq!(r.outcome(), Outcome::Failed);
-    }
-
-    #[test]
-    fn param_cli_values_are_typed_and_bad_shapes_rejected() {
-        assert_eq!(parse_param_value("3"), Value::Num(3.0));
-        assert_eq!(parse_param_value("-2.5"), Value::Num(-2.5));
-        assert_eq!(parse_param_value("true"), Value::Bool(true));
-        assert_eq!(parse_param_value("false"), Value::Bool(false));
-        assert_eq!(parse_param_value("fast"), Value::Str("fast".to_string()));
-        // Non-finite text stays a string (never a silent NaN injection).
-        assert_eq!(parse_param_value("NaN"), Value::Str("NaN".to_string()));
-
-        let args: Vec<String> = ["--task", "t", "--param", "a=1", "--param", "mode=fast"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let o = RunOptions::parse(&args).expect("parse");
-        assert_eq!(o.params["a"], "1");
-        assert_eq!(o.params["mode"], "fast");
-
-        for bad in [
-            vec!["--task", "t", "--param", "novalue"],
-            vec!["--task", "t", "--param", "=x"],
-            vec!["--task", "t", "--param", " a=1"],
-            vec!["--task", "t", "--param"],
-        ] {
-            let bad: Vec<String> = bad.iter().map(|s| s.to_string()).collect();
-            assert!(RunOptions::parse(&bad).is_err(), "should reject {bad:?}");
-        }
     }
 }

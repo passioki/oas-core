@@ -37,6 +37,11 @@ pub struct QueueOptions {
     pub resume_on_retry: bool,
     pub model: Option<PathBuf>,
     pub det_model: Option<PathBuf>,
+    /// Runner values layer (design §C.3 priority 3) source: `None` (production)
+    /// resolves `config/values.json` next to the live `--config` file through
+    /// [`crate::runner_config::runner_values_path`]. Tests pin a temp path here
+    /// so they never read the operator's real values store.
+    pub values_path: Option<PathBuf>,
 }
 
 impl Default for QueueOptions {
@@ -55,6 +60,7 @@ impl Default for QueueOptions {
             resume_on_retry: true,
             model: None,
             det_model: None,
+            values_path: None,
         }
     }
 }
@@ -209,6 +215,14 @@ pub fn execute_queue(
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "task".to_string());
+            // §C.3 layer 3: Runner task values. `oasd queue` has no entry-params
+            // layer; `meta.params[].default` is merged last inside run::execute.
+            // A corrupt values store is a loud error (never a silent reset).
+            let values_path = opts
+                .values_path
+                .clone()
+                .unwrap_or_else(crate::runner_config::runner_values_path);
+            let params = run::runner_values_layer(&values_path, &stem)?;
             let task_started = now_ms();
             let mut attempt = 0u32;
             let mut last_error: Option<String> = None;
@@ -232,6 +246,7 @@ pub fn execute_queue(
                     resume,
                     model: opts.model.clone(),
                     det_model: opts.det_model.clone(),
+                    params: params.clone(),
                     ..RunOptions::default()
                 };
                 out(&format!(
@@ -391,6 +406,126 @@ mod tests {
         b.save_flow(flow).expect("save flow");
     }
 
+    fn write_task_with_meta(dir: &std::path::Path, flow: &str, meta: &str) {
+        let b = TaskBundle::open(dir).expect("open task");
+        b.save_flow(flow).expect("save flow");
+        std::fs::write(b.meta_path(), meta).expect("write meta");
+    }
+
+    const PARAM_FLOW: &str = r#"{"schema_version":1,"name":"queue-params","steps":[
+         {"op":"log","args":{"level":"info","text":"param('x')"}},
+         {"op":"log","args":{"level":"info","text":"param('code')"}},
+         {"op":"finish","args":{"exit":"done"}}]}"#;
+    const PARAM_META: &str = r#"{"schema_version":1,"name":"queue-params",
+         "params":[{"key":"x","type":"int","default":1},
+                   {"key":"code","type":"string","default":"000"}],
+         "exits":{"done":{"result":"success"}}}"#;
+
+    #[test]
+    fn queue_injects_the_runner_values_layer_and_keeps_json_types() {
+        // §C.3 layer 3 for `oasd queue`: values.json is the only explicit layer
+        // (no entry params); `meta.params[].default` stays underneath.
+        let td = tmpdir("values");
+        let task = td.join("带值");
+        let replay = td.join("replay");
+        write_task_with_meta(&task, PARAM_FLOW, PARAM_META);
+        write_replay(&replay);
+        let values_path = td.join("config").join("values.json");
+        let values = serde_json::json!({"x":7,"code":"007"});
+        crate::runner_config::set_task_values(
+            &values_path,
+            "带值",
+            values.as_object().expect("object").clone(),
+            1,
+        )
+        .expect("write values");
+        let opts = QueueOptions {
+            tasks: vec![task],
+            replay: Some(replay),
+            between_ms: 0,
+            values_path: Some(values_path),
+            ..QueueOptions::default()
+        };
+        let mut lines = Vec::new();
+        let report = execute_queue(&opts, &mut |l| lines.push(l.to_string())).expect("queue");
+        assert!(report.all_done(), "{report:?}");
+        assert!(
+            lines.iter().any(|l| l.contains(r#"Str("007")"#)),
+            "string value must keep its type: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("Num(7.0)")),
+            "number value must keep its type: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("params=") && l.contains("cli_params=2")),
+            "both explicit values reached RunOptions.params: {lines:?}"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_values_are_keyed_by_the_executed_task_not_shared() {
+        // A values entry for another task must not leak into this task's run.
+        let td = tmpdir("values-other");
+        let task = td.join("任务A");
+        let replay = td.join("replay");
+        write_task_with_meta(&task, PARAM_FLOW, PARAM_META);
+        write_replay(&replay);
+        let values_path = td.join("config").join("values.json");
+        crate::runner_config::set_task_values(
+            &values_path,
+            "别的任务",
+            serde_json::json!({"x":9,"code":"other"})
+                .as_object()
+                .expect("object")
+                .clone(),
+            1,
+        )
+        .expect("write values");
+        let opts = QueueOptions {
+            tasks: vec![task],
+            replay: Some(replay),
+            between_ms: 0,
+            values_path: Some(values_path),
+            ..QueueOptions::default()
+        };
+        let mut lines = Vec::new();
+        let report = execute_queue(&opts, &mut |l| lines.push(l.to_string())).expect("queue");
+        assert!(report.all_done(), "{report:?}");
+        let has = |s: &str| lines.iter().any(|l| l.contains(s));
+        assert!(has("Num(1.0)"), "own default, not the other task's value: {lines:?}");
+        assert!(has(r#"Str("000")"#), "{lines:?}");
+        assert!(!has("Num(9.0)"), "{lines:?}");
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn queue_without_a_values_store_keeps_the_meta_defaults() {
+        let td = tmpdir("values-missing");
+        let task = td.join("默认值");
+        let replay = td.join("replay");
+        write_task_with_meta(&task, PARAM_FLOW, PARAM_META);
+        write_replay(&replay);
+        let opts = QueueOptions {
+            tasks: vec![task],
+            replay: Some(replay),
+            between_ms: 0,
+            // Missing file = empty layer (never a silent reset of the file).
+            values_path: Some(td.join("config").join("values.json")),
+            ..QueueOptions::default()
+        };
+        let mut lines = Vec::new();
+        let report = execute_queue(&opts, &mut |l| lines.push(l.to_string())).expect("queue");
+        assert!(report.all_done(), "{report:?}");
+        let has = |s: &str| lines.iter().any(|l| l.contains(s));
+        assert!(has("Num(1.0)"), "{lines:?}");
+        assert!(has(r#"Str("000")"#), "{lines:?}");
+        std::fs::remove_dir_all(&td).ok();
+    }
+
     fn write_replay(dir: &std::path::Path) {
         let mut rec = Recorder::create(dir, "queue-test").expect("recorder");
         rec.capture_frame(&frame(10)).expect("f0");
@@ -416,6 +551,9 @@ mod tests {
             report: Some(td.join("report.json")),
             clicks_dir: Some(td.join("clicks")),
             between_ms: 0,
+            // Hermetic: absence of this file is an empty values layer; never
+            // read the operator's real `config/values.json`.
+            values_path: Some(td.join("config").join("values.json")),
             ..QueueOptions::default()
         };
         let mut lines = Vec::new();
@@ -444,6 +582,7 @@ mod tests {
             replay: Some(replay),
             max_attempts: 2,
             between_ms: 0,
+            values_path: Some(td.join("config").join("values.json")),
             ..QueueOptions::default()
         };
         let mut lines = Vec::new();

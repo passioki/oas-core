@@ -6829,12 +6829,18 @@ impl Server {
         }
     }
 
-    /// `POST /task/run` — body `{task, dry_run?, seed?, replay?}`.
+    /// `POST /task/run` — body `{task, dry_run?, seed?, replay?, params?}`.
     ///
     /// Starts the run in a background thread through [`Server::run_executor`]
     /// (the real one calls `run::execute`); the state lives in `run_state` and is
     /// polled via `GET /task/run/status`. Only one run at a time: a second start
     /// while running answers 409.
+    ///
+    /// `params` is the Studio-only explicit layer (design §C.3 priority 1): the
+    /// editor can run a task with typed values without writing
+    /// `config/values.json`. The Studio surface deliberately does **not** inject
+    /// Runner values — those belong to the usage side; `meta.params[].default`
+    /// is still merged inside `run::execute`. A non-object `params` is a 400.
     fn handle_task_run(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
         let v: serde_json::Value = match serde_json::from_slice(body) {
             Ok(v) => v,
@@ -6872,6 +6878,25 @@ impl Server {
                 );
             }
         }
+        // Studio-only explicit params: already JSON, so keep the source type
+        // (`{"code":"007"}` stays a string). Studio never reads Runner values
+        // (design §C.3: the usage-side store is not a Studio dependency).
+        let params: std::collections::BTreeMap<String, serde_json::Value> = match v.get("params") {
+            None | Some(serde_json::Value::Null) => std::collections::BTreeMap::new(),
+            Some(serde_json::Value::Object(map)) => map
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            Some(other) => {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec![format!(
+                        "`params` 必须是 JSON 对象（key → 值），收到 {other}"
+                    )],
+                )
+            }
+        };
         let task_dir = self.tasks_dir.join(&task);
         if !task_dir.join("meta.json").is_file() {
             return self.send_errors(
@@ -6929,6 +6954,7 @@ impl Server {
         opts.assets = self.assets_dir.clone();
         opts.model = self.ocr_model.clone();
         opts.det_model = self.det_model.clone();
+        opts.params = params;
         opts.cancel = Some(cancel.clone());
         opts.step_log = Some(step_log.clone());
         opts.trace_appear = true;
@@ -9712,6 +9738,129 @@ mod tests {
             .filter_map(|l| l.as_str())
             .collect();
         assert!(tail.iter().any(|l| l.contains("error=no adb device")), "{tail:?}");
+    }
+
+    // ---- PR3: POST /task/run explicit params layer (§C.3) -----------------
+
+    type CapturedParams = Arc<Mutex<Option<std::collections::BTreeMap<String, serde_json::Value>>>>;
+
+    /// Executor that records the exact `RunOptions.params` it was handed.
+    fn capturing_executor(
+        captured: CapturedParams,
+    ) -> Arc<dyn Fn(&RunOptions, &mut dyn FnMut(&str)) -> Result<RunReport, String> + Send + Sync>
+    {
+        Arc::new(move |opts: &RunOptions, out: &mut dyn FnMut(&str)| {
+            *captured.lock().unwrap() = Some(opts.params.clone());
+            out("seed=42");
+            out("outcome=Done reason=Done");
+            Ok(done_report())
+        })
+    }
+
+    fn captured_params(
+        captured: &CapturedParams,
+    ) -> std::collections::BTreeMap<String, serde_json::Value> {
+        captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("executor must have been called")
+    }
+
+    #[test]
+    fn run_route_passes_a_typed_params_object_to_run_options() {
+        let td = TempDir::new("run-params");
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "带参任务");
+        let captured: CapturedParams = Arc::new(Mutex::new(None));
+        let server = server_with_tasks(td.path())
+            .with_run_executor(capturing_executor(captured.clone()));
+        let (status, body) = post_route(
+            &server,
+            "/task/run",
+            "application/json",
+            r#"{"task":"带参任务","params":{"code":"007","n":3,"flag":true}}"#.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let st = wait_run_finished(&server, 5000);
+        assert_eq!(st["outcome"], "Done");
+        let got = captured_params(&captured);
+        assert_eq!(got["code"], serde_json::json!("007"), "{got:?}");
+        assert_eq!(got["n"], serde_json::json!(3), "{got:?}");
+        assert_eq!(got["flag"], serde_json::json!(true), "{got:?}");
+        assert_eq!(got.len(), 3, "{got:?}");
+    }
+
+    #[test]
+    fn run_route_rejects_a_non_object_params_field() {
+        let td = TempDir::new("run-params-bad");
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "坏参数任务");
+        let server = server_with_tasks(td.path());
+        for bad in [
+            r#"{"task":"坏参数任务","params":[]}"#,
+            r#"{"task":"坏参数任务","params":"x"}"#,
+            r#"{"task":"坏参数任务","params":3}"#,
+            r#"{"task":"坏参数任务","params":true}"#,
+        ] {
+            let (status, body) = post_route(
+                &server,
+                "/task/run",
+                "application/json",
+                bad.as_bytes(),
+            );
+            assert!(status.contains("400"), "{bad}: {status} {body}");
+            assert!(body.contains("params"), "{bad}: {body}");
+        }
+        // Rejected requests never start a background run.
+        assert_eq!(poll_run_status(&server)["running"], false);
+    }
+
+    #[test]
+    fn studio_run_does_not_inject_the_runner_values_layer() {
+        // Design §C.3: `config/values.json` belongs to the usage side. A Studio
+        // run without `params` must not read it; an explicit null is a no-op.
+        let td = TempDir::new("run-params-studio");
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "无参任务");
+        let values_path = td.path().join("config").join("values.json");
+        crate::runner_config::set_task_values(
+            &values_path,
+            "无参任务",
+            serde_json::json!({"code":"should-not-appear"})
+                .as_object()
+                .expect("object")
+                .clone(),
+            1,
+        )
+        .expect("write values");
+        let captured: CapturedParams = Arc::new(Mutex::new(None));
+        let server = server_with_tasks(td.path())
+            .with_values_path(values_path)
+            .with_run_executor(capturing_executor(captured.clone()));
+
+        let (status, body) = post_route(
+            &server,
+            "/task/run",
+            "application/json",
+            r#"{"task":"无参任务"}"#.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        wait_run_finished(&server, 5000);
+        assert!(captured_params(&captured).is_empty(), "Studio must not read values.json");
+
+        let (status, body) = post_route(
+            &server,
+            "/task/run",
+            "application/json",
+            r#"{"task":"无参任务","params":null}"#.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        wait_run_finished(&server, 5000);
+        assert!(
+            captured_params(&captured).is_empty(),
+            "explicit null params = no layer"
+        );
     }
 
     // ---- B-06/B-09/B-11/B-14: frame source, region batch, delete backup ----

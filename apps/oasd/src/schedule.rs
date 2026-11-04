@@ -370,6 +370,11 @@ pub struct SchedulerOptions {
     /// script `(task, attempt)` results via this field.
     #[cfg(test)]
     pub(crate) test_exec: Option<TestExec>,
+    /// Runner values layer (design §C.3 priority 3) source: `None` (production)
+    /// resolves `config/values.json` next to the live `--config` file through
+    /// [`crate::runner_config::runner_values_path`]. Tests pin a temp path here
+    /// so they never read the operator's real values store.
+    pub values_path: Option<PathBuf>,
 }
 
 impl Default for SchedulerOptions {
@@ -398,6 +403,7 @@ impl Default for SchedulerOptions {
             loop_interval_s: None,
             #[cfg(test)]
             test_exec: None,
+            values_path: None,
         }
     }
 }
@@ -1617,6 +1623,11 @@ impl<'a> Session<'a> {
         member: Option<MemberRunContext<'_>>,
         out: &mut dyn FnMut(&str),
     ) -> Result<AttemptResult, String> {
+        // Resolve the explicit param layers before touching scheduler state: a
+        // corrupt Runner values store is a loud config error and must fail fast
+        // without leaving a dirty `running` marker behind (same contract as an
+        // invalid `scheduler.json`).
+        let params = attempt_run_params(&self.opts, task, entry)?;
         let meta = meta_exits_for(&self.loaded.metas, task);
         scheduler::mark_running_for(
             &mut self.state,
@@ -1676,6 +1687,9 @@ impl<'a> Session<'a> {
             return Ok(result);
         }
 
+        // Priority §C.3 layers 2+3 were resolved above (`params`): Runner task
+        // values underneath, entry params on top; no CLI layer on this path, and
+        // `meta.params[].default` is merged last inside `run::execute`.
         let run_opts = RunOptions {
             task: Some(self.opts.tasks_dir.join(task)),
             replay: self.opts.replay.clone(),
@@ -1689,7 +1703,7 @@ impl<'a> Session<'a> {
             resume,
             model: self.opts.model.clone(),
             det_model: self.opts.det_model.clone(),
-            params: entry_run_params(entry),
+            params,
             ..RunOptions::default()
         };
         let result = match run::execute(&run_opts, out) {
@@ -3730,23 +3744,39 @@ pub fn scheduler_cmd(rest: &[String]) -> ExitCode {
     schedule_cmd(rest)
 }
 
-/// Entry `params` -> `RunOptions.params` (`--param k=v` equivalent).
+/// Where the Runner values layer comes from: the test seam when set, otherwise
+/// the live `config/values.json` next to `--config` (design §C.3 layer 3).
+fn values_path_of(opts: &SchedulerOptions) -> PathBuf {
+    opts.values_path
+        .clone()
+        .unwrap_or_else(crate::runner_config::runner_values_path)
+}
+
+/// Explicit `RunOptions.params` layers for one attempt (design §C.3):
+/// **entry params (layer 2) over Runner values (layer 3)**.
 ///
-/// Config values are JSON scalars (`3`, `true`, `"fast"`); `run.rs` parses the
-/// string forms and merges the bundle's `meta.params[].default` underneath.
-/// Non-scalar values are passed as compact JSON (treated as a string parameter).
-fn entry_run_params(entry: &Entry) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
-    for (key, value) in &entry.params {
-        let text = match value {
-            Value::String(s) => s.clone(),
-            Value::Bool(b) => b.to_string(),
-            Value::Number(n) => n.to_string(),
-            other => serde_json::to_string(other).unwrap_or_default(),
-        };
-        out.insert(key.clone(), text);
-    }
-    out
+/// The bundle's `meta.params[].default` (layer 4) is merged under both inside
+/// `run::execute`; a CLI layer does not exist on the scheduler path. Keeping the
+/// merge in one function is what makes the priority matrix directly unit-testable.
+fn attempt_run_params(
+    opts: &SchedulerOptions,
+    task: &str,
+    entry: &Entry,
+) -> Result<run::ParamMap, String> {
+    let mut params = run::runner_values_layer(&values_path_of(opts), task)?;
+    params.extend(entry_run_params(entry));
+    Ok(params)
+}
+
+/// Scheduler entry `params` (design §C.3 layer 2) -> `RunOptions.params`.
+///
+/// Directly clones the JSON values: the pre-PR3 version stringified every scalar
+/// (`"007"` -> `"007"` text, `3` -> `"3"`), so `run.rs` had to guess the type
+/// again and `"007"` became `Num(7.0)`. Entry params keep their JSON type now;
+/// only the CLI `--param` text is parsed. `run.rs` merges Runner values below
+/// and `meta.params[].default` last.
+fn entry_run_params(entry: &Entry) -> run::ParamMap {
+    entry.params.clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -3815,6 +3845,10 @@ mod tests {
             library: td.join("library"),
             clicks_dir: Some(td.join("clicks")),
             runs_dir: td.join("runs"),
+            // Hermetic: never read the operator's real `config/values.json`.
+            // The path does not exist in the tempdir => empty values layer;
+            // tests that exercise values override this seam explicitly.
+            values_path: Some(td.join("config").join("values.json")),
             ..SchedulerOptions::default()
         }
     }
@@ -4377,6 +4411,234 @@ mod tests {
             "entry params must override the meta default: {row}"
         );
         assert_eq!(row["target_y"], 10);
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn entry_params_failing_the_schema_check_fail_the_entry_not_the_scheduler() {
+        // P1: the post-merge schema re-check inside `run::execute` is a per-entry
+        // setup error. The scheduler must record it as this entry's failure and
+        // keep the pass alive (only a corrupt values store may abort the loop).
+        let td = tmpdir("params-schema-reject");
+        let replay = td.join("replay");
+        let flow = r#"{"schema_version":1,"name":"params","steps":[
+             {"op":"log","args":{"level":"info","text":"param('x')"}},
+             {"op":"finish","args":{"exit":"done"}}]}"#;
+        write_task(
+            &td,
+            "参数",
+            flow,
+            Some(
+                r#"{"schema_version":1,"name":"参数",
+                    "params":[{"key":"x","type":"int","default":10}],
+                    "exits":{"done":{"result":"success"}}}"#,
+            ),
+        );
+        write_replay(&replay);
+        let config = write_config(
+            &td,
+            r#"{"schema_version":3,
+                "entries":[{"entry_id":"bad","task":"参数","lifecycle":"temp",
+                             "params":{"x":"not-an-int"}}]}"#,
+        );
+        let opts = base_opts(&td, config, Some(replay));
+        let mut lines = Vec::new();
+        let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("scheduler");
+        assert_eq!(report.successes, 0, "{report:?}");
+        assert_eq!(report.failures, 1, "{report:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("scheduler_run_error")
+                && l.contains("task config:")
+                && l.contains("x")),
+            "the entry must surface the schema error: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("scheduler_run_done") && l.contains("class=retryable")),
+            "{lines:?}"
+        );
+        // The failed attempt is not left as a dirty `running` marker.
+        let state = state_of(&opts);
+        assert!(state.running.is_none(), "running marker: {:?}", state.running);
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    // -- PR3: JSON type fidelity + four-layer priority (§C.3) --------------
+
+    const TYPED_PARAM_FLOW: &str = r#"{"schema_version":1,"name":"类型","steps":[
+         {"op":"log","args":{"level":"info","text":"param('code')"}},
+         {"op":"log","args":{"level":"info","text":"param('n')"}},
+         {"op":"log","args":{"level":"info","text":"param('flag')"}},
+         {"op":"log","args":{"level":"info","text":"param('from_values')"}},
+         {"op":"finish","args":{"exit":"done"}}]}"#;
+    const TYPED_PARAM_META: &str = r#"{"schema_version":1,"name":"类型",
+         "params":[
+            {"key":"code","type":"string","default":"000"},
+            {"key":"n","type":"int","default":5},
+            {"key":"flag","type":"bool","default":false},
+            {"key":"from_values","type":"string","default":"meta_fallback"}],
+         "exits":{"done":{"result":"success"},"failed":{"result":"retryable"}}}"#;
+
+    /// Write `config/values.json` for `task` and return the seam path.
+    fn write_runner_values(td: &Path, task: &str, values_json: &str) -> PathBuf {
+        let path = td.join("config").join("values.json");
+        let values: Value = serde_json::from_str(values_json).expect("values JSON");
+        let values = values.as_object().expect("values object").clone();
+        crate::runner_config::set_task_values(&path, task, values, 1).expect("write values");
+        path
+    }
+
+    fn typed_entry_config(params: &str) -> String {
+        format!(
+            r#"{{"schema_version":3,
+                "entries":[{{"entry_id":"tp","task":"类型","lifecycle":"temp"{params}}}]}}"#
+        )
+    }
+
+    fn entry_with_params(params: BTreeMap<String, Value>) -> Entry {
+        Entry {
+            entry_id: "tp".to_string(),
+            task: "类型".to_string(),
+            kind: EntryKind::Task,
+            enabled: true,
+            lifecycle: Lifecycle::Temp,
+            windows: Vec::new(),
+            quota: None,
+            params,
+            retry: 0,
+            cooldown_s: 0,
+        }
+    }
+
+    #[test]
+    fn entry_params_keep_json_scalar_types_end_to_end() {
+        // R7 regression: entry `{"code":"007"}` must reach param() as Str("007"),
+        // not be stringified and re-guessed into Num(7.0).
+        let td = tmpdir("params-typed");
+        let replay = td.join("replay");
+        write_task(&td, "类型", TYPED_PARAM_FLOW, Some(TYPED_PARAM_META));
+        write_replay(&replay);
+        let config = write_config(
+            &td,
+            &typed_entry_config(r#", "params":{"code":"007","n":3,"flag":true}"#),
+        );
+        let mut opts = base_opts(&td, config, Some(replay));
+        opts.values_path = Some(td.join("config").join("values.json"));
+        let mut lines = Vec::new();
+        let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run");
+        assert_eq!(report.successes, 1, "{report:?}");
+        assert!(
+            lines.iter().any(|l| l.contains(r#"Str("007")"#)),
+            "string must reach the runtime as a string: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("Num(3.0)")),
+            "number must reach the runtime as a number: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("Bool(true)")),
+            "bool must reach the runtime as a bool: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("Num(7.0)")),
+            "007 must never be re-guessed as 7.0: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("params=") && l.contains("cli_params=3")),
+            "explicit layer count: {lines:?}"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn four_layer_priority_entry_then_values_then_default() {
+        // meta default: code "000", n 5, flag false, from_values "meta_fallback"
+        // values:       code "999", n 99, flag true, from_values "v"
+        // entry:        code "007", n 3
+        // => entry wins for code/n, values win for flag/from_values.
+        let td = tmpdir("params-layers-e2e");
+        let replay = td.join("replay");
+        write_task(&td, "类型", TYPED_PARAM_FLOW, Some(TYPED_PARAM_META));
+        write_replay(&replay);
+        let values_path = write_runner_values(
+            &td,
+            "类型",
+            r#"{"code":"999","n":99,"flag":true,"from_values":"v"}"#,
+        );
+        let config = write_config(
+            &td,
+            &typed_entry_config(r#", "params":{"code":"007","n":3}"#),
+        );
+        let mut opts = base_opts(&td, config, Some(replay));
+        opts.values_path = Some(values_path);
+        let mut lines = Vec::new();
+        let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run");
+        assert_eq!(report.successes, 1, "{report:?}");
+        let has = |s: &str| lines.iter().any(|l| l.contains(s));
+        assert!(has(r#"Str("007")"#), "entry beats values: {lines:?}");
+        assert!(has("Num(3.0)"), "entry beats values: {lines:?}");
+        assert!(has("Bool(true)"), "values beat default: {lines:?}");
+        assert!(has(r#"Str("v")"#), "values-only key reaches param(): {lines:?}");
+        assert!(!has(r#"Str("999")"#), "values must not beat entry: {lines:?}");
+        assert!(!has("Num(99.0)"), "values must not beat entry: {lines:?}");
+        assert!(
+            !has(r#"Str("meta_fallback")"#),
+            "values must beat the default: {lines:?}"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn runner_values_apply_when_the_entry_has_no_params() {
+        let td = tmpdir("params-values-only");
+        let replay = td.join("replay");
+        write_task(&td, "类型", TYPED_PARAM_FLOW, Some(TYPED_PARAM_META));
+        write_replay(&replay);
+        let values_path = write_runner_values(&td, "类型", r#"{"code":"abc","n":42}"#);
+        let config = write_config(&td, &typed_entry_config(""));
+        let mut opts = base_opts(&td, config, Some(replay));
+        opts.values_path = Some(values_path);
+        let mut lines = Vec::new();
+        let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run");
+        assert_eq!(report.successes, 1, "{report:?}");
+        let has = |s: &str| lines.iter().any(|l| l.contains(s));
+        assert!(has(r#"Str("abc")"#), "{lines:?}");
+        assert!(has("Num(42.0)"), "{lines:?}");
+        // Unset key still falls back to the declared default.
+        assert!(has("Bool(false)"), "{lines:?}");
+        assert!(has(r#"Str("meta_fallback")"#), "{lines:?}");
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn attempt_params_merge_is_type_preserving_and_loud_on_corrupt_values() {
+        let td = tmpdir("params-merge-unit");
+        let values_path = write_runner_values(&td, "任务1", r#"{"code":"999","n":99}"#);
+        let opts = SchedulerOptions {
+            values_path: Some(values_path.clone()),
+            ..SchedulerOptions::default()
+        };
+        let entry = entry_with_params(BTreeMap::from([
+            ("code".to_string(), json!("007")),
+            ("flag".to_string(), json!(true)),
+        ]));
+        let merged = attempt_run_params(&opts, "任务1", &entry).expect("merge");
+        assert_eq!(merged["code"], json!("007"), "entry wins over values");
+        assert_eq!(merged["n"], json!(99), "values survive under entry");
+        assert_eq!(merged["flag"], json!(true));
+
+        // A task without an entry in values.json gets only the entry layer.
+        let other = attempt_run_params(&opts, "任务2", &entry).expect("merge");
+        assert_eq!(other.len(), 2, "{other:?}");
+        assert!(other.get("n").is_none(), "{other:?}");
+
+        // A corrupt store is a loud error carrying the task (never a silent
+        // empty layer: runner_config's contract).
+        std::fs::write(&values_path, "{ not json").expect("corrupt values");
+        let err = attempt_run_params(&opts, "任务1", &entry).expect_err("must be loud");
+        assert!(err.contains("任务1"), "{err}");
+        assert!(err.contains("invalid JSON"), "{err}");
         std::fs::remove_dir_all(&td).ok();
     }
 
