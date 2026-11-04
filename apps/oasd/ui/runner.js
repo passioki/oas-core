@@ -1,6 +1,7 @@
-// OAS Runner（使用端）只读 UI。
+// OAS Runner（使用端）UI。
 // 独立于 Studio 的编辑器脚本：不加载构建/流程/素材模块，也不调用创作或构建接口。
-// 所有请求都是只读 GET，统一经过 runnerFetchJson（超时、HTTP 错误、JSON 错误归一化）。
+// 除「任务配置值」的 GET/PUT 外，其余请求都是只读 GET；所有请求统一经过
+// runnerFetchJson（超时、HTTP 错误、JSON 错误归一化）。
 'use strict';
 
 (function () {
@@ -39,6 +40,12 @@
   };
 
   const el = {};
+
+  // PR2: 当前打开的任务配置对话框状态（运行值保存在 Runner 本机）。
+  let configTask = '';
+  let configParams = [];
+  let configLoaded = false;
+  let configBusy = false;
 
   // --- 纯格式化辅助（无 DOM 依赖；ui_pure_test 会单独抽取验证） ---------------
 
@@ -245,6 +252,106 @@
     return String(value);
   }
 
+  // --- PR2: 任务配置值（纯函数，ui_pure_test 单独抽取执行） -------------------
+  // schema 来自发布包的 meta.params（Studio 定义）；这里只负责生成表单、
+  // 收集/转换本机运行值并拼 API URL。不依赖 DOM。
+
+  function runnerConfigFieldKind(param) {
+    const p = param && typeof param === 'object' ? param : {};
+    const type = String(p.type === undefined || p.type === null ? '' : p.type).trim().toLowerCase();
+    if (type === 'bool' || type === 'boolean') return 'bool';
+    if (type === 'int' || type === 'integer' || type === 'float' || type === 'number') {
+      return 'number';
+    }
+    if (Array.isArray(p.enum) && p.enum.length) return 'select';
+    return 'text';
+  }
+
+  function runnerConfigIsIntegerType(param) {
+    const p = param && typeof param === 'object' ? param : {};
+    const type = String(p.type === undefined || p.type === null ? '' : p.type).trim().toLowerCase();
+    return type === 'int' || type === 'integer';
+  }
+
+  function runnerConfigInitialValue(param, values) {
+    const p = param && typeof param === 'object' ? param : {};
+    const key = p.key === undefined || p.key === null ? '' : String(p.key).trim();
+    const src = values && typeof values === 'object' ? values : {};
+    if (key && Object.prototype.hasOwnProperty.call(src, key)) {
+      const current = src[key];
+      if (current !== undefined && current !== null) return current;
+    }
+    if (p.default !== undefined && p.default !== null) return p.default;
+    return runnerConfigFieldKind(p) === 'bool' ? false : '';
+  }
+
+  function runnerConfigCollectValues(params, fieldValues) {
+    const list = Array.isArray(params) ? params : [];
+    const fields = fieldValues && typeof fieldValues === 'object' ? fieldValues : {};
+    const values = {};
+    const errors = [];
+    for (const param of list) {
+      if (!param || typeof param !== 'object' || Array.isArray(param)) continue;
+      const key = param.key === undefined || param.key === null ? '' : String(param.key).trim();
+      if (!key) continue;
+      const rawLabel = param.label === undefined || param.label === null ? '' : String(param.label).trim();
+      const label = rawLabel || key;
+      const kind = runnerConfigFieldKind(param);
+      const raw = Object.prototype.hasOwnProperty.call(fields, key) ? fields[key] : undefined;
+      let present = true;
+      let value;
+      if (kind === 'bool') {
+        value = raw === true || raw === 'true' || raw === 1 || raw === '1';
+      } else if (kind === 'number') {
+        const text = raw === undefined || raw === null ? '' : String(raw).trim();
+        if (!text) {
+          present = false;
+        } else {
+          const num = Number(text);
+          if (!isFinite(num)) {
+            errors.push('「' + label + '」必须是数字（当前：' + text + '）');
+            continue;
+          }
+          if (runnerConfigIsIntegerType(param) && !Number.isInteger(num)) {
+            errors.push('「' + label + '」必须是整数');
+            continue;
+          }
+          // min/max/enum are authoritative on the server: send the value and
+          // let a 400 name the key + range/options (the dialog renders every
+          // server error line verbatim). Local checks stay limited to
+          // conversion so the UI never hides the real API contract.
+          value = num;
+        }
+      } else {
+        const text = raw === undefined || raw === null ? '' : String(raw);
+        if (!text) {
+          present = false;
+        } else {
+          const options = Array.isArray(param.enum) ? param.enum.map(String) : [];
+          if (options.length && options.indexOf(text) < 0) {
+            errors.push('「' + label + '」必须是以下之一：' + options.join(' / '));
+            continue;
+          }
+          value = text;
+        }
+      }
+      if (!present) {
+        const hasDefault = param.default !== undefined && param.default !== null;
+        if (param.required === true && !hasDefault) {
+          errors.push('「' + label + '」是必填项');
+        }
+        continue;
+      }
+      values[key] = value;
+    }
+    return { ok: errors.length === 0, values: values, errors: errors };
+  }
+
+  function runnerConfigUrl(task) {
+    const name = String(task === undefined || task === null ? '' : task).trim();
+    return '/runner/tasks/' + encodeURIComponent(name) + '/config';
+  }
+
   // --- HTTP：所有请求的唯一入口 ------------------------------------------------
 
   function runnerBodyErrors(body) {
@@ -262,14 +369,23 @@
     return '';
   }
 
-  async function runnerFetchJson(url) {
+  async function runnerFetchJson(url, opts) {
+    const options = opts && typeof opts === 'object' ? opts : {};
+    const method = options.method ? String(options.method).toUpperCase() : 'GET';
+    const headers = { Accept: 'application/json' };
+    let payload;
+    if (options.body !== undefined && options.body !== null) {
+      headers['Content-Type'] = 'application/json';
+      payload = JSON.stringify(options.body);
+    }
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     const timer = controller ? setTimeout(function () { controller.abort(); }, RUNNER_FETCH_TIMEOUT_MS) : null;
     try {
       const res = await fetch(url, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
+        method: method,
+        headers: headers,
         cache: 'no-store',
+        body: payload,
         signal: controller ? controller.signal : undefined,
       });
       const text = await res.text();
@@ -281,7 +397,12 @@
       }
       const detail = runnerBodyErrors(body);
       if (!res.ok) {
-        throw new Error('HTTP ' + res.status + (detail ? '：' + detail : ''));
+        const err = new Error('HTTP ' + res.status + (detail ? '：' + detail : ''));
+        err.status = res.status;
+        if (body && Array.isArray(body.errors) && body.errors.length) {
+          err.details = body.errors.map(String);
+        }
+        throw err;
       }
       if (!body || typeof body !== 'object') throw new Error('响应不是 JSON 对象');
       if (body.ok === false) throw new Error(detail || '服务端返回 ok=false');
@@ -429,6 +550,15 @@
     el.tasksCount = document.getElementById('runner-tasks-count');
     el.tasksStatus = document.getElementById('runner-tasks-status');
     el.tasksList = document.getElementById('runner-tasks-list');
+
+    el.configDialog = document.getElementById('runner-config-dialog');
+    el.configTitle = document.getElementById('runner-config-title');
+    el.configForm = document.getElementById('runner-config-form');
+    el.configFields = document.getElementById('runner-config-fields');
+    el.configError = document.getElementById('runner-config-error');
+    el.configStatus = document.getElementById('runner-config-status');
+    el.configSave = document.getElementById('runner-config-save');
+    el.configClose = document.getElementById('runner-config-close');
 
     el.queueRefresh = document.getElementById('runner-queue-refresh');
     el.queueStatus = document.getElementById('runner-queue-status');
@@ -585,6 +715,12 @@
       const title = t.meta_error
         ? 'meta.json 读取失败：' + t.meta_error
         : (t.version !== undefined && t.version !== null ? '版本 ' + t.version : '');
+      const configBtn = document.createElement('button');
+      configBtn.type = 'button';
+      configBtn.className = 'runner-config-open';
+      configBtn.textContent = '配置';
+      configBtn.title = '编辑该任务的运行值（保存在本机 config/values.json）';
+      configBtn.addEventListener('click', function () { openRunnerConfigDialog(t.task); });
       return [
         { text: runnerValueText(t.task), title: title },
         runnerFlagText(t.has_flow),
@@ -592,9 +728,15 @@
         runnerFlagText(t.has_assets),
         runnerParamKeys(t.params).join(', ') || '—',
         runnerTaskStatusText(t),
+        t.has_meta === true ? configBtn : { text: '—' },
       ];
     });
-    renderTable(el.tasksList, ['任务', 'flow', 'meta', 'assets', '参数 schema', '状态'], rows, '（没有任务）');
+    renderTable(
+      el.tasksList,
+      ['任务', 'flow', 'meta', 'assets', '参数 key', '状态', '操作'],
+      rows,
+      '（没有任务）'
+    );
   }
 
   async function loadTasksPage() {
@@ -609,6 +751,274 @@
       if (el.tasksStatus) el.tasksStatus.textContent = message;
       if (el.tasksList) el.tasksList.textContent = message;
       return [message];
+    }
+  }
+
+  // --- 任务配置值（Runner 本机 config/values.json） ---------------------------
+
+  function runnerConfigDefaultText(value) {
+    if (value === '') return '（空字符串）';
+    return runnerValueText(value);
+  }
+
+  function runnerConfigHintText(param, kind) {
+    const p = param || {};
+    const bits = [];
+    if (kind === 'number') {
+      const hasMin = p.min !== undefined && p.min !== null && p.min !== '' && isFinite(Number(p.min));
+      const hasMax = p.max !== undefined && p.max !== null && p.max !== '' && isFinite(Number(p.max));
+      if (hasMin && hasMax) bits.push('范围 ' + Number(p.min) + ' ~ ' + Number(p.max));
+      else if (hasMin) bits.push('最小 ' + Number(p.min));
+      else if (hasMax) bits.push('最大 ' + Number(p.max));
+      if (runnerConfigIsIntegerType(p)) bits.push('整数');
+    }
+    if ((kind === 'select' || kind === 'number') && Array.isArray(p.enum) && p.enum.length) {
+      bits.push('可选：' + p.enum.map(String).join(' / '));
+    }
+    if (p.default !== undefined && p.default !== null) {
+      bits.push('默认：' + runnerConfigDefaultText(p.default));
+    }
+    return bits.join(' · ');
+  }
+
+  function renderRunnerConfigFields(params, values) {
+    if (!el.configFields) return;
+    clearNode(el.configFields);
+    el.configFields.className = '';
+    if (!params.length) {
+      el.configFields.textContent = '该任务没有配置项';
+      el.configFields.className = 'runner-config-empty';
+      return;
+    }
+    for (let i = 0; i < params.length; i++) {
+      const param = params[i] && typeof params[i] === 'object' ? params[i] : {};
+      const key = param.key === undefined || param.key === null ? '' : String(param.key).trim();
+      if (!key) continue;
+      const kind = runnerConfigFieldKind(param);
+      const initial = runnerConfigInitialValue(param, values);
+      const rawLabel = param.label === undefined || param.label === null ? '' : String(param.label).trim();
+      const labelText = rawLabel || key;
+      const controlId = 'runner-cfg-' + i;
+
+      const field = document.createElement('div');
+      field.className = 'runner-config-field';
+
+      const label = document.createElement('label');
+      label.setAttribute('for', controlId);
+      label.textContent = labelText;
+      if (param.required === true) {
+        const required = document.createElement('span');
+        required.className = 'runner-config-required';
+        required.textContent = '＊必填';
+        label.appendChild(required);
+      }
+      field.appendChild(label);
+
+      if (param.description) {
+        const desc = document.createElement('div');
+        desc.className = 'runner-config-desc';
+        desc.textContent = String(param.description);
+        field.appendChild(desc);
+      }
+
+      let control;
+      if (kind === 'bool') {
+        control = document.createElement('input');
+        control.type = 'checkbox';
+        control.checked = initial === true;
+      } else if (kind === 'number') {
+        control = document.createElement('input');
+        control.type = 'number';
+        control.inputMode = 'decimal';
+        control.step = runnerConfigIsIntegerType(param) ? '1' : 'any';
+        if (param.min !== undefined && param.min !== null && param.min !== '' &&
+            isFinite(Number(param.min))) {
+          control.min = String(Number(param.min));
+        }
+        if (param.max !== undefined && param.max !== null && param.max !== '' &&
+            isFinite(Number(param.max))) {
+          control.max = String(Number(param.max));
+        }
+        control.value = initial === undefined || initial === null || initial === ''
+          ? '' : String(initial);
+      } else if (kind === 'select') {
+        control = document.createElement('select');
+        const options = param.enum.map(String);
+        const current = initial === undefined || initial === null ? '' : String(initial);
+        const emptyOption = document.createElement('option');
+        emptyOption.value = '';
+        emptyOption.textContent = param.default !== undefined && param.default !== null
+          ? '（默认：' + runnerConfigDefaultText(param.default) + '）'
+          : '（未设置）';
+        control.appendChild(emptyOption);
+        for (const optionText of options) {
+          const option = document.createElement('option');
+          option.value = optionText;
+          option.textContent = optionText;
+          control.appendChild(option);
+        }
+        control.value = options.indexOf(current) >= 0 ? current : '';
+      } else {
+        control = document.createElement('input');
+        control.type = 'text';
+        control.value = initial === undefined || initial === null ? '' : String(initial);
+      }
+      control.id = controlId;
+      control.name = controlId;
+      control.setAttribute('data-key', key);
+      if (param.required === true) control.setAttribute('aria-required', 'true');
+      field.appendChild(control);
+
+      const hintText = runnerConfigHintText(param, kind);
+      if (hintText) {
+        const hint = document.createElement('div');
+        hint.className = 'runner-config-hint';
+        hint.textContent = hintText;
+        field.appendChild(hint);
+      }
+      el.configFields.appendChild(field);
+    }
+  }
+
+  function closeRunnerConfigDialog() {
+    if (!el.configDialog) return;
+    if (typeof el.configDialog.close === 'function') {
+      if (el.configDialog.open) el.configDialog.close();
+    } else {
+      el.configDialog.removeAttribute('open');
+    }
+  }
+
+  async function loadRunnerConfig(task) {
+    configLoaded = false;
+    try {
+      const body = await runnerFetchJson(runnerConfigUrl(task));
+      if (configTask !== task) return; // 已关闭/切换到别的任务，丢弃过期响应
+      const params = Array.isArray(body.params) ? body.params : [];
+      const values = body.values && typeof body.values === 'object' ? body.values : {};
+      configParams = params;
+      configLoaded = true;
+      renderRunnerConfigFields(params, values);
+      if (el.configError) el.configError.textContent = '';
+      if (el.configStatus) {
+        let statusText = '已加载 ' + params.length + ' 项配置';
+        if (body.updated_ms !== undefined && body.updated_ms !== null) {
+          statusText += ' · 上次保存 ' + runnerTimeText(body.updated_ms);
+        }
+        el.configStatus.textContent = statusText;
+        el.configStatus.className = 'muted small';
+      }
+      if (el.configSave) el.configSave.disabled = params.length === 0;
+    } catch (e) {
+      if (configTask !== task) return;
+      const message = '配置读取失败：' + runnerErrorText(e);
+      if (el.configError) el.configError.textContent = message;
+      if (el.configStatus) {
+        el.configStatus.textContent = '读取失败';
+        el.configStatus.className = 'muted small err';
+      }
+      if (el.configFields) {
+        clearNode(el.configFields);
+        el.configFields.textContent = '（读取失败）';
+        el.configFields.className = 'runner-config-empty';
+      }
+      if (el.configSave) el.configSave.disabled = true;
+    }
+  }
+
+  function openRunnerConfigDialog(task) {
+    const name = String(task === undefined || task === null ? '' : task).trim();
+    if (!el.configDialog || !name) return;
+    configTask = name;
+    configParams = [];
+    configLoaded = false;
+    configBusy = false;
+    if (el.configTitle) el.configTitle.textContent = '任务配置 · ' + name;
+    if (el.configStatus) {
+      el.configStatus.textContent = '读取中…';
+      el.configStatus.className = 'muted small';
+    }
+    if (el.configError) el.configError.textContent = '';
+    if (el.configFields) {
+      clearNode(el.configFields);
+      el.configFields.textContent = '（读取中…）';
+      el.configFields.className = 'runner-config-empty';
+    }
+    if (el.configSave) el.configSave.disabled = true;
+    if (typeof el.configDialog.showModal === 'function') {
+      if (!el.configDialog.open) el.configDialog.showModal();
+    } else {
+      el.configDialog.setAttribute('open', '');
+    }
+    loadRunnerConfig(name);
+  }
+
+  async function saveRunnerConfig() {
+    if (configBusy || !configLoaded || !configTask) return;
+    const task = configTask;
+    const fieldValues = {};
+    if (el.configFields) {
+      const controls = Array.prototype.slice.call(
+        el.configFields.querySelectorAll('input[data-key], select[data-key]')
+      );
+      for (const control of controls) {
+        const key = control.getAttribute('data-key');
+        if (!key) continue;
+        fieldValues[key] = control.type === 'checkbox' ? control.checked : control.value;
+      }
+    }
+    const collected = runnerConfigCollectValues(configParams, fieldValues);
+    if (!collected.ok) {
+      if (el.configError) {
+        el.configError.textContent = collected.errors.map(function (line) {
+          return '· ' + line;
+        }).join('\n');
+      }
+      if (el.configStatus) {
+        el.configStatus.textContent = '未保存：' + collected.errors.length + ' 处校验错误';
+        el.configStatus.className = 'muted small err';
+      }
+      return;
+    }
+    configBusy = true;
+    if (el.configSave) el.configSave.disabled = true;
+    if (el.configError) el.configError.textContent = '';
+    if (el.configStatus) {
+      el.configStatus.textContent = '保存中…';
+      el.configStatus.className = 'muted small';
+    }
+    try {
+      const body = await runnerFetchJson(runnerConfigUrl(task), {
+        method: 'PUT',
+        body: { values: collected.values },
+      });
+      const saved = body.values && typeof body.values === 'object' ? body.values : collected.values;
+      const savedCount = Object.keys(saved).length;
+      setPageStatus('已保存任务配置：' + task + '（' + savedCount + ' 项）', 'ok');
+      closeRunnerConfigDialog();
+      // 刷新列表（值本身不显示在列表里，但保持页面数据新鲜）。
+      await loadTasksPage();
+    } catch (e) {
+      let message;
+      if (e && e.status === 404) {
+        message = '任务已不存在：' + task + '（可能已被卸载）';
+      } else if (e && Array.isArray(e.details) && e.details.length) {
+        message = '配置保存失败：\n' + e.details.map(function (line) {
+          return '· ' + line;
+        }).join('\n');
+      } else {
+        message = '配置保存失败：' + runnerErrorText(e);
+      }
+      if (el.configError) el.configError.textContent = message;
+      if (el.configStatus) {
+        el.configStatus.textContent = '保存失败';
+        el.configStatus.className = 'muted small err';
+      }
+    } finally {
+      configBusy = false;
+      if (el.configSave && configLoaded && configTask === task) {
+        el.configSave.disabled = configParams.length === 0;
+      }
     }
   }
 
@@ -915,6 +1325,21 @@
     if (el.queueRefresh) el.queueRefresh.addEventListener('click', function () { refreshCurrentPage(); });
     if (el.runsRefresh) el.runsRefresh.addEventListener('click', function () { refreshCurrentPage(); });
     if (el.settingsRefresh) el.settingsRefresh.addEventListener('click', function () { refreshCurrentPage(); });
+    if (el.configSave) el.configSave.addEventListener('click', function () { saveRunnerConfig(); });
+    if (el.configClose) el.configClose.addEventListener('click', closeRunnerConfigDialog);
+    if (el.configForm) {
+      el.configForm.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        saveRunnerConfig();
+      });
+    }
+    if (el.configDialog) {
+      el.configDialog.addEventListener('close', function () {
+        configTask = '';
+        configLoaded = false;
+        configBusy = false;
+      });
+    }
     for (const button of el.navButtons) {
       button.addEventListener('click', function () {
         const page = button.getAttribute('data-page');

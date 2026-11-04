@@ -217,6 +217,89 @@ main.runner-main {
   padding: 8px 2px;
 }
 
+/* PR2: 任务运行值表单（WebView / 窄屏友好，不依赖平台） */
+.runner-config-dialog {
+  width: min(520px, calc(100vw - 24px));
+}
+
+.runner-config-dialog > .muted.small {
+  line-height: 1.5;
+}
+
+#runner-config-status {
+  margin: 4px 0 2px;
+}
+
+#runner-config-status.ok { color: var(--runner-ok); }
+#runner-config-status.err { color: var(--runner-err); }
+
+#runner-config-fields {
+  max-height: 54vh;
+  overflow-y: auto;
+  margin: 8px 0 4px;
+  padding-right: 2px;
+}
+
+.runner-config-field {
+  border-top: 1px solid var(--runner-border);
+  padding: 8px 0;
+}
+
+.runner-config-field:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.runner-config-field label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--runner-text);
+}
+
+.runner-config-required {
+  margin-left: 4px;
+  color: var(--runner-warn);
+  font-size: 11px;
+}
+
+.runner-config-desc {
+  margin-bottom: 5px;
+  color: var(--runner-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.runner-config-hint {
+  margin-top: 4px;
+  color: var(--runner-muted);
+  font-size: 11px;
+}
+
+.runner-config-field input[type="text"],
+.runner-config-field input[type="number"],
+.runner-config-field select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.runner-config-field input[type="checkbox"] {
+  width: auto;
+}
+
+.runner-config-empty {
+  padding: 6px 0;
+  color: var(--runner-muted);
+}
+
+.runner-config-open {
+  white-space: nowrap;
+}
+
+.runner-config-dialog .dialog-actions button {
+  width: auto;
+}
+
 @media (max-width: 720px) {
   .runner-header {
     padding: 8px 10px;
@@ -266,5 +349,14 @@ main.runner-main {
   .runner-table th,
   .runner-table td {
     padding: 5px 6px;
+  }
+
+  .runner-config-dialog {
+    width: calc(100vw - 16px);
+    padding: 12px;
+  }
+
+  #runner-config-fields {
+    max-height: 46vh;
   }
 }

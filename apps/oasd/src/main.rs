@@ -27,6 +27,7 @@ mod config;
 mod task;
 mod global_assets;
 mod relations;
+mod runner_config;
 #[cfg(feature = "ocr")]
 mod ocr;
 

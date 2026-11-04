@@ -548,6 +548,27 @@
     </div>
   </dialog>
 
+  <!-- PR2：任务配置项 schema 编辑（写 meta.params；运行值由 Runner 填写） -->
+  <dialog id="task-config-dialog" class="task-dialog task-config-dialog">
+    <h3 id="task-config-title">任务配置项</h3>
+    <p class="muted small">
+      这里定义任务需要哪些配置（key/type/default/label/description/enum/required/group）；
+      终端用户在 Runner 里填运行值，本处只定义 schema。
+    </p>
+    <p class="muted small">
+      JSON 数组；保存前本地 JSON.parse 校验，服务端仍会校验 meta.params。没有配置项时填 <code>[]</code>。
+    </p>
+    <textarea id="task-config-json" class="builder-code task-config-json" spellcheck="false"
+      placeholder='[{"key":"max_rounds","type":"int","default":5,"label":"最大轮数"}]'></textarea>
+    <div id="task-config-status" class="muted small" role="status" aria-live="polite">—</div>
+    <pre id="task-config-error" class="muted small dialog-error"></pre>
+    <div class="row dialog-actions">
+      <button id="task-config-save" type="button">保存配置项</button>
+      <span class="spacer"></span>
+      <button id="task-config-cancel" type="button">取消</button>
+    </div>
+  </dialog>
+
   <!-- M2/N37：重置记忆（多选 + 全选/反选；清调度状态 + 任务 state/） -->
   <dialog id="reset-memory-dialog" class="task-dialog">
     <h3>重置记忆</h3>

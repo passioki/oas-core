@@ -37,8 +37,10 @@ use oas_types::Frame;
 
 mod meta;
 pub use meta::{
-    Capabilities, EntryRequires, ExitDecl, Meta, MetaEntry, ParamDecl, QuotaHint, ScheduleHint,
-    CATEGORY_DEFAULT, DEFAULT_EXIT_NAMES, EXIT_RESULTS, PARAM_TYPES, TEMPLATE_VERSION,
+    validate_param_values, Capabilities, EntryRequires, ExitDecl, Meta, MetaEntry, ParamDecl,
+    QuotaHint, ScheduleHint, CATEGORY_DEFAULT, DEFAULT_EXIT_NAMES, EXIT_RESULTS,
+    PARAM_DESCRIPTION_MAX_CHARS, PARAM_GROUP_MAX_CHARS, PARAM_LABEL_MAX_CHARS, PARAM_TYPES,
+    TEMPLATE_VERSION,
 };
 
 /// On-disk schema version for `meta.json` / `flow.json` / `assets.json`.

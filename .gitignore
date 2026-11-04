@@ -18,6 +18,13 @@
 /scheduler.state.json.lock
 /logs
 
+# Runner task runtime values (PR2; machine-local, never committed). The Runner
+# writes this next to its live config (`config/values.json` by default).
+/config/values.json
+# atomic-write temp files / Studio schema-edit backups (runtime artifacts)
+*.tmp
+/tasks/*/meta.json.bak
+
 # editor request logs (runtime)
 **/logs/
 

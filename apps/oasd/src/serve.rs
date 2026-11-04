@@ -38,6 +38,10 @@
 //!   GET  /runs/scheduler/run?run_id=<id>       -> one P4 scheduler run entity
 //!   GET  /runner/health   -> Runner health JSON (Runner only, PR1)
 //!   GET  /runner/tasks    -> Runner task listing JSON (Runner only, PR1)
+//!   GET  /runner/tasks/<id>/config  -> Runner task values + param schema (PR2)
+//!   PUT  /runner/tasks/<id>/config  -> validate + store Runner task values (PR2)
+//!   GET  /task/config?task=<name>   -> Studio param schema (PR2)
+//!   POST /task/config               -> Studio edits `meta.params` (PR2)
 //!
 //! Validation failures answer `400` with a structured `{"ok":false,"errors":[...]}`.
 
@@ -56,6 +60,7 @@ use oas_runtime::RunResult;
 use oas_types::{Frame, InputSink, Outcome, Point, ScreenSource};
 
 use crate::run::{RunOptions, RunReport};
+use crate::runner_config;
 use crate::schedule::{scheduler_runs_dir, ResetOptions, SchedulerOptions, SchedulerRun};
 
 /// Upper bound for a POST body (flow.json is small; never buffer more).
@@ -145,7 +150,7 @@ pub fn route_owner(method: &str, path_only: &str) -> Option<RouteOwner> {
             "/assets/conflicts" | "/relations/frame-assets" | "/task/assets"
             | "/task/asset/image" | "/task/asset/match" | "/task/asset/collection/match"
             | "/task/flow" | "/task/list" | "/task/library" | "/task/run/status"
-            | "/task/package" | "/library" => Some(Studio),
+            | "/task/package" | "/task/config" | "/library" => Some(Studio),
 
             // Runner operational APIs (PR1 read-only subset).
             "/runner/health" | "/runner/tasks" | "/runs/scheduler" | "/runs/scheduler/run" => {
@@ -448,6 +453,10 @@ pub struct Server {
     det_model: Option<PathBuf>,
     /// Open the editor URL in the default browser once the listener is ready.
     open_browser: bool,
+    /// Test seam: pin the Runner values store (`config/values.json`, PR2) so
+    /// the config API tests never read/write the real config directory.
+    #[cfg(test)]
+    values_path_override: Option<PathBuf>,
     /// Test seam: pin the scheduler plan/state paths so the P3 API tests never
     /// read or write the real `scheduler.json` next to the serve process.
     #[cfg(test)]
@@ -761,6 +770,8 @@ impl Server {
             det_model: None,
             open_browser: true,
             #[cfg(test)]
+            values_path_override: None,
+            #[cfg(test)]
             scheduler_options_override: None,
             #[cfg(test)]
             live_capture_override: None,
@@ -839,6 +850,13 @@ impl Server {
     #[cfg(test)]
     fn with_scheduler_options(mut self, opts: SchedulerOptions) -> Self {
         self.scheduler_options_override = Some(opts);
+        self
+    }
+
+    /// Test seam: pin the Runner values store (PR2 Runner config API tests).
+    #[cfg(test)]
+    fn with_values_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.values_path_override = Some(path.into());
         self
     }
 
@@ -1573,6 +1591,9 @@ impl Server {
             ("GET", "/task/flow") => self.handle_task_flow(&mut out, &path),
             ("POST", "/task/save_flow") => self.handle_save_flow(&mut out, &body),
             ("GET", "/task/list") => self.handle_task_list(&mut out),
+            // --- PR2: Studio task param-schema editor (design §C.1) ---
+            ("GET", "/task/config") => self.handle_task_config_get(&mut out, &path),
+            ("POST", "/task/config") => self.handle_task_config_post(&mut out, &body),
             // --- N38/M1: task creation + editor-triggered run ---
             ("POST", "/task/create") => self.handle_task_create(&mut out, &body),
             ("POST", "/task/run") => self.handle_task_run(&mut out, &body),
@@ -1611,6 +1632,19 @@ impl Server {
             ("GET", "/runs/clicks") => self.handle_run_clicks(&mut out, &path),
             ("GET", "/runs/aggregate") => self.handle_runs_aggregate(&mut out, &path),
             ("POST", "/runs/delete") => self.handle_runs_delete(&mut out, &body),
+            // --- PR2: Runner task values (`GET|PUT /runner/tasks/<id>/config`) ---
+            // A catch-all because the task id is part of the path. The exact
+            // shape is checked by `runner_task_config_id`; anything else is the
+            // same plain 404 as before. The surface gate already answered 404
+            // for a Studio request to these paths.
+            ("GET", p) => match runner_task_config_id(p) {
+                Some(id) => self.handle_runner_task_config_get(&mut out, id),
+                None => self.send_json(&mut out, 404, r#"{"error":"not found"}"#),
+            },
+            ("PUT", p) => match runner_task_config_id(p) {
+                Some(id) => self.handle_runner_task_config_put(&mut out, id, &body),
+                None => self.send_json(&mut out, 404, r#"{"error":"not found"}"#),
+            },
             ("POST", other) => self.send_errors(
                 &mut out,
                 404,
@@ -7065,6 +7099,311 @@ impl Server {
         }
     }
 
+    /// `GET /runner/tasks/<id>/config` — Runner task values + `meta.params`
+    /// schema (design §A.3/§C.1-§C.2).
+    ///
+    /// Response: `{ok, task, params:[ParamDecl...], values:{...}, updated_ms}`.
+    /// A task that was never configured returns empty `values` and
+    /// `updated_ms: null` (the runtime then uses `meta.params[].default`).
+    fn handle_runner_task_config_get(
+        &self,
+        out: &mut TcpStream,
+        raw_id: &str,
+    ) -> std::io::Result<()> {
+        let task = percent_decode(raw_id);
+        if let Err(e) = oas_task::validate_task_name(&task) {
+            return self.send_errors(out, 400, vec![e]);
+        }
+        let (_meta, params) = match self.load_config_meta(&task) {
+            Ok(loaded) => loaded,
+            Err((code, errors)) => return self.send_errors(out, code, errors),
+        };
+        let values_path = self.runner_values_path();
+        let (values, updated_ms) = match runner_config::task_values(&values_path, &task) {
+            Ok(Some(stored)) => (stored.values, Some(stored.updated_ms)),
+            Ok(None) => (serde_json::Map::new(), None),
+            Err(e) => return self.send_errors(out, 500, vec![e]),
+        };
+        let body = serde_json::json!({
+            "ok": true,
+            "task": task,
+            "params": params,
+            "values": values,
+            "updated_ms": updated_ms,
+        });
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `PUT /runner/tasks/<id>/config` body `{values:{...}}` — validate the
+    /// values against the task schema, then read-modify-write `values.json`.
+    ///
+    /// Validation failures answer `400 {"ok":false,"errors":[...]}` and write
+    /// nothing; a corrupt/unsupported values store stays a `500` (never
+    /// silently replaced).
+    fn handle_runner_task_config_put(
+        &self,
+        out: &mut TcpStream,
+        raw_id: &str,
+        body: &[u8],
+    ) -> std::io::Result<()> {
+        let task = percent_decode(raw_id);
+        if let Err(e) = oas_task::validate_task_name(&task) {
+            return self.send_errors(out, 400, vec![e]);
+        }
+        let (meta, _params) = match self.load_config_meta(&task) {
+            Ok(loaded) => loaded,
+            Err((code, errors)) => return self.send_errors(out, code, errors),
+        };
+        let request: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let values = match request.get("values") {
+            Some(v) if v.is_object() => v.as_object().cloned().unwrap_or_default(),
+            Some(_) => {
+                return self.send_errors(out, 400, vec!["`values` must be an object".into()])
+            }
+            None => {
+                return self.send_errors(out, 400, vec!["`values` object is required".into()])
+            }
+        };
+        if let Err(errors) = oas_task::validate_param_values(&meta.params, &values) {
+            return self.send_errors(out, 400, errors);
+        }
+        let values_path = self.runner_values_path();
+        match runner_config::set_task_values(&values_path, &task, values, now_ms()) {
+            Ok(stored) => {
+                let body = serde_json::json!({
+                    "ok": true,
+                    "task": task,
+                    "values": stored.values,
+                    "updated_ms": stored.updated_ms,
+                });
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(e) => self.send_errors(out, 500, vec![e]),
+        }
+    }
+
+    /// `GET /task/config?task=<name>` — Studio reads one task's `params` schema
+    /// (the editor renders it; the Runner fetches the same field together with
+    /// its stored values).
+    fn handle_task_config_get(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
+        let q = parse_query(raw_path);
+        let task = q
+            .iter()
+            .find(|(k, _)| k == "task")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        if task.trim().is_empty() {
+            return self.send_errors(out, 400, vec!["`task` query parameter is required".into()]);
+        }
+        if let Err(e) = oas_task::validate_task_name(&task) {
+            return self.send_errors(out, 400, vec![e]);
+        }
+        let (_meta, params) = match self.load_config_meta(&task) {
+            Ok(loaded) => loaded,
+            Err((code, errors)) => return self.send_errors(out, code, errors),
+        };
+        let body = serde_json::json!({ "ok": true, "task": task, "params": params });
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `POST /task/config` body `{task, params:[...]}` — Studio edits the task's
+    /// param schema. The raw `meta.json` object is read first and **only**
+    /// `params` is replaced, so `goal`/`exits`/future fields are preserved; the
+    /// new declaration is re-validated through [`oas_task::Meta`] before the
+    /// atomic write.
+    fn handle_task_config_post(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let request: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let task = request
+            .get("task")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if task.is_empty() {
+            return self.send_errors(out, 400, vec!["`task` is required".into()]);
+        }
+        if let Err(e) = oas_task::validate_task_name(task) {
+            return self.send_errors(out, 400, vec![e]);
+        }
+        let params_value = match request.get("params") {
+            Some(v) if v.is_array() => v,
+            Some(_) => {
+                return self.send_errors(out, 400, vec!["`params` must be an array".into()])
+            }
+            None => return self.send_errors(out, 400, vec!["`params` array is required".into()]),
+        };
+        let params: Vec<oas_task::ParamDecl> = match serde_json::from_value(params_value.clone()) {
+            Ok(params) => params,
+            Err(e) => {
+                return self.send_errors(out, 400, vec![format!("params: {e}")]);
+            }
+        };
+        // Merge the typed declarations back into the raw parameter objects so a
+        // field this engine does not know yet survives a Studio round-trip (the
+        // schema editor keeps unknown fields for the same reason). Known keys
+        // are canonicalized from the typed value, absent optional ones dropped.
+        let raw_params = params_value.as_array().expect("checked above");
+        let mut merged_params = Vec::with_capacity(params.len());
+        for (i, decl) in params.iter().enumerate() {
+            let typed = match serde_json::to_value(decl) {
+                Ok(v) => v,
+                Err(e) => {
+                    return self.send_errors(out, 500, vec![format!("serialize params[{i}]: {e}")]);
+                }
+            };
+            let mut merged = raw_params[i]
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+            for known in [
+                "key",
+                "type",
+                "default",
+                "min",
+                "max",
+                "label",
+                "description",
+                "enum",
+                "required",
+                "group",
+            ] {
+                merged.remove(known);
+            }
+            if let Some(obj) = typed.as_object() {
+                for (key, value) in obj {
+                    merged.insert(key.clone(), value.clone());
+                }
+            }
+            merged_params.push(serde_json::Value::Object(merged));
+        }
+        let merged_params_json = serde_json::Value::Array(merged_params);
+        let dir = self.tasks_dir.join(task);
+        if !dir.is_dir() {
+            return self.send_errors(
+                out,
+                404,
+                vec![format!(
+                    "task `{task}` not found under `{}`",
+                    self.tasks_dir.display()
+                )],
+            );
+        }
+        let path = dir.join("meta.json");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return self.send_errors(out, 404, vec![format!("task `{task}` has no meta.json")]);
+            }
+            Err(e) => return self.send_errors(out, 500, vec![format!("read `{}`: {e}", path.display())]),
+        };
+        let mut meta_json: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec![format!("`{}` invalid JSON: {e}", path.display())],
+                );
+            }
+        };
+        let Some(obj) = meta_json.as_object_mut() else {
+            return self.send_errors(out, 400, vec!["meta.json root must be an object".into()]);
+        };
+        obj.insert("params".to_string(), merged_params_json.clone());
+        let pretty = match serde_json::to_string_pretty(&meta_json) {
+            Ok(text) => text,
+            Err(e) => return self.send_errors(out, 500, vec![format!("serialize meta: {e}")]),
+        };
+        // Reparse through the typed contract, then keep only param issues: an
+        // older task may already carry an unrelated lint warning that must not
+        // block a schema edit (the new fields are the only thing being changed).
+        let meta = match oas_task::Meta::from_json(&pretty) {
+            Ok(meta) => meta,
+            Err(e) => return self.send_errors(out, 400, vec![format!("meta validation: {e}")]),
+        };
+        let issues = config_param_issues(&meta);
+        if !issues.is_empty() {
+            return self.send_errors(out, 400, issues);
+        }
+        // PR2 P2: keep the previous meta.json next to the live one so a broken
+        // schema edit can be recovered without a version-control checkout.
+        let backup = dir.join("meta.json.bak");
+        if let Err(e) = std::fs::copy(&path, &backup) {
+            return self.send_errors(
+                out,
+                500,
+                vec![format!("backup `{}`: {e}", backup.display())],
+            );
+        }
+        if let Err(e) = write_text_atomic(&path, &format!("{pretty}\n")) {
+            return self.send_errors(out, 500, vec![e]);
+        }
+        let body = serde_json::json!({ "ok": true, "task": task, "params": merged_params_json });
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// Load `tasks/<task>/meta.json` for the PR2 config routes.
+    ///
+    /// Returns the typed [`oas_task::Meta`] (used for value validation) plus
+    /// the **raw** `params` array: known fields are typed, while a field added
+    /// by a newer Studio survives a read-modify-write round-trip. Errors are
+    /// ready to send: `404` missing bundle/meta, `400` invalid meta or an
+    /// invalid `params` schema, `500` unreadable file. Only the `params` slice
+    /// of the lint is enforced here; unrelated legacy warnings stay editable.
+    fn load_config_meta(
+        &self,
+        task: &str,
+    ) -> Result<(oas_task::Meta, Vec<serde_json::Value>), (u16, Vec<String>)> {
+        let dir = self.tasks_dir.join(task);
+        if !dir.is_dir() {
+            return Err((
+                404,
+                vec![format!(
+                    "task `{task}` not found under `{}`",
+                    self.tasks_dir.display()
+                )],
+            ));
+        }
+        let path = dir.join("meta.json");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err((404, vec![format!("task `{task}` has no meta.json")]))
+            }
+            Err(e) => return Err((500, vec![format!("read `{}`: {e}", path.display())])),
+        };
+        let meta = oas_task::Meta::from_json(&text)
+            .map_err(|e| (400, vec![format!("`{}` invalid: {e}", path.display())]))?;
+        let issues = config_param_issues(&meta);
+        if !issues.is_empty() {
+            return Err((400, issues));
+        }
+        let raw: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| (400, vec![format!("`{}` invalid: {e}", path.display())]))?;
+        let raw_params = raw
+            .get("params")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        Ok((meta, raw_params))
+    }
+
+    /// Runner values store path (`config/values.json` next to the live config).
+    fn runner_values_path(&self) -> PathBuf {
+        #[cfg(test)]
+        {
+            if let Some(path) = &self.values_path_override {
+                return path.clone();
+            }
+        }
+        runner_config::runner_values_path()
+    }
+
     /// Scheduler options for the status panel and the config read/write routes:
     /// paths come from the global live config (`scheduler.plan/state`), never
     /// shell out to another process.
@@ -7644,6 +7983,30 @@ fn json_pretty(v: &serde_json::Value) -> Result<String, String> {
         serde_json::to_string_pretty(v).map_err(|e| format!("序列化 JSON 失败：{e}"))?;
     text.push('\n');
     Ok(text)
+}
+
+/// `<id>` of the PR2 path `GET|PUT /runner/tasks/<id>/config`.
+///
+/// Returns `None` for anything else (empty id, a nested id, a trailing extra
+/// segment), so those keep the normal 404 fallback instead of matching a
+/// handler. The id is **not** decoded here; the handler does that with
+/// [`percent_decode`] so Chinese task names survive a URL-encoded path.
+fn runner_task_config_id(path_only: &str) -> Option<&str> {
+    let rest = path_only.strip_prefix("/runner/tasks/")?;
+    let id = rest.strip_suffix("/config")?;
+    (!id.is_empty() && !id.contains('/')).then_some(id)
+}
+
+/// Every `params`-scoped `Meta` lint issue, formatted for the config APIs.
+///
+/// Only `meta.json:params…` paths are returned: a schema edit must fail on the
+/// new params, not on an unrelated pre-existing warning elsewhere in meta.
+fn config_param_issues(meta: &oas_task::Meta) -> Vec<String> {
+    meta.lint_issues()
+        .into_iter()
+        .filter(|issue| issue.path.starts_with("meta.json:params"))
+        .map(|issue| format!("{}: {}", issue.path, issue.msg))
+        .collect()
 }
 
 /// M0 contract (`task_id` syntax == task-directory-name syntax): derive a stable
@@ -8541,12 +8904,27 @@ mod tests {
         content_type: &str,
         body: &[u8],
     ) -> (String, String) {
+        http_route(server, "POST", target, content_type, body)
+    }
+
+    /// Drive one PUT (PR2 Runner config write) the same way as [`post_route`].
+    fn put_route(server: &Server, target: &str, body: &[u8]) -> (String, String) {
+        http_route(server, "PUT", target, "application/json", body)
+    }
+
+    fn http_route(
+        server: &Server,
+        method: &str,
+        target: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> (String, String) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("local addr");
         let mut client = TcpStream::connect(addr).expect("connect");
         let (srv, _) = listener.accept().expect("accept");
         let head = format!(
-            "POST {target} HTTP/1.1\r\nHost: test\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
+            "{method} {target} HTTP/1.1\r\nHost: test\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
             body.len()
         );
         client.write_all(head.as_bytes()).expect("write head");
@@ -11365,6 +11743,22 @@ mod tests {
         );
         assert_eq!(required_surface("POST", "/runs/delete"), Some(Surface::Runner));
         assert_eq!(required_surface("GET", "/runner/health"), Some(Surface::Runner));
+        // PR2 Runner task config (read + write).
+        assert_eq!(
+            required_surface("GET", "/runner/tasks/任务1/config"),
+            Some(Surface::Runner)
+        );
+        assert_eq!(
+            required_surface("PUT", "/runner/tasks/任务1/config"),
+            Some(Surface::Runner)
+        );
+        assert_eq!(
+            required_surface("PUT", "/runner/tasks/任务1/other"),
+            Some(Surface::Runner)
+        );
+        // PR2 Studio param-schema editor.
+        assert_eq!(required_surface("GET", "/task/config"), Some(Surface::Studio));
+        assert_eq!(required_surface("POST", "/task/config"), Some(Surface::Studio));
 
         // Shared routes: >= 2, and they are NOT intercepted by the gate.
         assert_eq!(route_owner("GET", "/instance"), Some(Both));
@@ -11672,5 +12066,438 @@ mod tests {
         // Studio assets are not exposed on the Runner surface.
         let (status, _) = get_route_in(&runner, "/app.js", &ui_str);
         assert!(status.contains("404"), "Runner must not expose app.js: {status}");
+    }
+
+    // -----------------------------------------------------------------------
+    // PR2: task configuration (schema in Studio, runtime values in Runner)
+    // -----------------------------------------------------------------------
+
+    /// Runner server whose values store is pinned under the test tempdir.
+    fn runner_config_server(td: &Path) -> Server {
+        server_for_surface(td, Surface::Runner)
+            .with_values_path(td.join("config").join("values.json"))
+    }
+
+    /// Studio server with the same pinned values store (must never use it).
+    fn studio_config_server(td: &Path) -> Server {
+        server_for_surface(td, Surface::Studio)
+            .with_values_path(td.join("config").join("values.json"))
+    }
+
+    /// Write a bundle-shaped task directory with the given `meta.json` object.
+    fn write_config_task(tasks_dir: &Path, name: &str, meta: serde_json::Value) {
+        let dir = tasks_dir.join(name);
+        std::fs::create_dir_all(&dir).expect("create task dir");
+        std::fs::write(
+            dir.join("meta.json"),
+            serde_json::to_string_pretty(&meta).expect("serialize meta"),
+        )
+        .expect("write meta.json");
+    }
+
+    /// Schema with every PR2 ParamDecl feature: required, enum, label/group,
+    /// plus unrelated meta fields the Studio POST must preserve.
+    fn config_meta(name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 1,
+            "name": name,
+            "version": 2,
+            "description": "保留这个描述",
+            "goal": {"mode": "battles", "count": 5},
+            "future_field": {"keep": true},
+            "params": [
+                {"key": "rounds", "type": "int", "default": 3, "min": 1, "max": 9,
+                 "label": "轮数", "description": "每次跑几轮", "group": "基础", "required": true,
+                 "future_param_field": {"keep": true}},
+                {"key": "mode", "type": "string", "default": "fast", "enum": ["fast", "safe"],
+                 "label": "模式", "required": true},
+                {"key": "flag", "type": "bool", "default": false},
+                {"key": "keyword", "type": "string", "required": true, "label": "关键词"}
+            ]
+        })
+    }
+
+    /// `%XX` encode a task name for a URL path segment (the real Runner UI
+    /// sends Chinese names encoded; only the query side is decoded globally).
+    fn pct_encode_path(s: &str) -> String {
+        s.bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                    (b as char).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn runner_get_task_config_returns_schema_and_empty_values() {
+        let td = TempDir::new("pr2-runner-config-get");
+        let tasks_dir = td.path().join("tasks");
+        write_config_task(&tasks_dir, "任务A", config_meta("任务A"));
+        let server = runner_config_server(td.path());
+
+        let target = format!("/runner/tasks/{}/config", pct_encode_path("任务A"));
+        let (status, body) = get_route(&server, &target);
+        assert!(status.contains("200"), "{target}: {status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("config JSON");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["task"], "任务A");
+        let params = v["params"].as_array().expect("params array");
+        assert_eq!(params.len(), 4, "{v}");
+        assert_eq!(params[0]["key"], "rounds");
+        assert_eq!(params[0]["label"], "轮数");
+        assert_eq!(params[0]["group"], "基础");
+        assert_eq!(params[0]["required"], true);
+        assert_eq!(params[1]["enum"][1], "safe");
+        assert!(v["values"].as_object().expect("values object").is_empty());
+        assert!(v["updated_ms"].is_null(), "never configured => null: {v}");
+        assert!(
+            !td.path().join("config").join("values.json").exists(),
+            "a read must not create the store"
+        );
+    }
+
+    #[test]
+    fn runner_put_task_config_validates_then_roundtrips_values() {
+        let td = TempDir::new("pr2-runner-config-put");
+        let tasks_dir = td.path().join("tasks");
+        write_config_task(&tasks_dir, "cfg_task", config_meta("cfg_task"));
+        let server = runner_config_server(td.path());
+        let target = "/runner/tasks/cfg_task/config";
+        let store = td.path().join("config").join("values.json");
+
+        // Type error: the message names the parameter (UI can show it directly).
+        let (status, body) = put_route(&server, target, br#"{"values":{"rounds":1.5}}"#);
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("rounds") && body.contains("not a valid"), "{body}");
+        assert!(!store.exists(), "a rejected write must not create the store");
+
+        // min/max + enum.
+        let (status, body) =
+            put_route(&server, target, br#"{"values":{"rounds":99,"mode":"turbo"}}"#);
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("above max"), "{body}");
+        assert!(body.contains("mode") && body.contains("enum"), "{body}");
+
+        // required without default must be supplied.
+        let (status, body) =
+            put_route(&server, target, br#"{"values":{"rounds":2,"mode":"fast"}}"#);
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(
+            body.contains("keyword") && body.contains("缺少必填参数"),
+            "{body}"
+        );
+
+        // Unknown key lists the allowed keys.
+        let (status, body) = put_route(
+            &server,
+            target,
+            br#"{"values":{"rounds":2,"mode":"fast","keyword":"x","ghost":1}}"#,
+        );
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("ghost") && body.contains("rounds, mode"), "{body}");
+
+        // Bad body shapes.
+        let (status, _) = put_route(&server, target, b"{not json");
+        assert!(status.contains("400"), "{status}");
+        let (status, _) = put_route(&server, target, b"{}");
+        assert!(status.contains("400"), "{status}");
+
+        // Valid write.
+        let valid = serde_json::json!({
+            "values": {"rounds": 2, "mode": "fast", "flag": true, "keyword": "突破"}
+        })
+        .to_string();
+        let (status, body) = put_route(&server, target, valid.as_bytes());
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("put JSON");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["task"], "cfg_task");
+        assert_eq!(v["values"]["rounds"], 2);
+        assert_eq!(v["values"]["keyword"], "突破");
+        let saved_ms = v["updated_ms"].as_u64().expect("updated_ms number");
+        assert!(saved_ms > 0, "{v}");
+        assert!(store.is_file(), "values.json must be written at the pinned path");
+
+        // Read back through the API: same values + updated_ms.
+        let (status, body) = get_route(&server, target);
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("get JSON");
+        assert_eq!(v["values"]["rounds"], 2);
+        assert_eq!(v["values"]["mode"], "fast");
+        assert_eq!(v["values"]["flag"], true);
+        assert_eq!(v["updated_ms"], saved_ms);
+    }
+
+    #[test]
+    fn runner_config_routes_reject_bad_names_missing_bundles_and_bad_meta() {
+        let td = TempDir::new("pr2-runner-config-errors");
+        let server = runner_config_server(td.path());
+
+        // `..` is not a usable task directory name.
+        let (status, body) = get_route(&server, "/runner/tasks/../config");
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("task name"), "{body}");
+
+        for target in [
+            "/runner/tasks/missing/config",
+            "/runner/tasks//config",
+            "/runner/tasks/x/config/extra",
+            "/runner/tasks/x",
+        ] {
+            let (status, body) = get_route(&server, target);
+            assert!(status.contains("404"), "{target}: {status} {body}");
+        }
+        let (status, body) = put_route(&server, "/runner/tasks/missing/config", b"{\"values\":{}}");
+        assert!(status.contains("404"), "{status} {body}");
+
+        // An existing directory with a corrupt meta.json is an explicit 400.
+        let broken = td.path().join("tasks").join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("meta.json"), "{ not json").unwrap();
+        let (status, body) = get_route(&server, "/runner/tasks/broken/config");
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("invalid"), "{body}");
+    }
+
+    #[test]
+    fn studio_get_task_config_returns_the_param_schema() {
+        let td = TempDir::new("pr2-studio-config-get");
+        let tasks_dir = td.path().join("tasks");
+        write_config_task(&tasks_dir, "cfg_task", config_meta("cfg_task"));
+        write_config_task(&tasks_dir, "任务A", config_meta("任务A"));
+        let server = studio_config_server(td.path());
+
+        let (status, body) = get_route(&server, "/task/config?task=cfg_task");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("config JSON");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["task"], "cfg_task");
+        assert_eq!(v["params"].as_array().expect("params").len(), 4);
+        assert_eq!(v["params"][0]["label"], "轮数");
+        assert_eq!(
+            v["params"][0]["future_param_field"],
+            serde_json::json!({"keep": true}),
+            "GET must expose the raw params object so unknown fields survive: {v}"
+        );
+        assert!(v.get("values").is_none(), "Studio reads the schema only: {v}");
+
+        // Percent-encoded Chinese task name.
+        let target = format!("/task/config?task={}", pct_encode_path("任务A"));
+        let (status, body) = get_route(&server, &target);
+        assert!(status.contains("200"), "{target}: {status} {body}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["task"],
+            "任务A"
+        );
+
+        let (status, _) = get_route(&server, "/task/config");
+        assert!(status.contains("400"), "{status}");
+        let (status, _) = get_route(&server, "/task/config?task=missing");
+        assert!(status.contains("404"), "{status}");
+        let (status, _) = get_route(&server, "/task/config?task=..");
+        assert!(status.contains("400"), "{status}");
+    }
+
+    #[test]
+    fn studio_post_task_config_preserves_other_meta_fields() {
+        let td = TempDir::new("pr2-studio-config-post");
+        let tasks_dir = td.path().join("tasks");
+        write_config_task(&tasks_dir, "cfg_task", config_meta("cfg_task"));
+        let meta_path = tasks_dir.join("cfg_task").join("meta.json");
+        let before = read_json(&meta_path);
+        let server = studio_config_server(td.path());
+
+        let params = serde_json::json!([
+            {"key": "speed", "type": "int", "default": 2, "min": 1.0, "max": 5.0,
+             "label": "速度", "description": "执行速度", "group": "基础", "required": true,
+             "future_param_field": {"keep": true}},
+            {"key": "note", "type": "string", "enum": ["a", "b"], "default": "a"}
+        ]);
+        let body = serde_json::json!({"task": "cfg_task", "params": params}).to_string();
+        let (status, out) = post_route(&server, "/task/config", "application/json", body.as_bytes());
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("post JSON");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["params"], params);
+
+        // Raw meta: params replaced, every other field untouched.
+        let saved = read_json(&meta_path);
+        assert_eq!(saved["params"], params);
+        assert_eq!(
+            saved["params"][0]["future_param_field"],
+            serde_json::json!({"keep": true}),
+            "an unknown params field must survive the round-trip: {saved}"
+        );
+        for (key, value) in before.as_object().expect("meta object") {
+            if key == "params" {
+                continue;
+            }
+            assert_eq!(
+                saved.get(key),
+                Some(value),
+                "field `{key}` must survive a params edit: {saved}"
+            );
+        }
+        assert!(
+            std::fs::read_to_string(&meta_path).unwrap().ends_with('\n'),
+            "meta.json keeps its trailing newline"
+        );
+
+        // Read back through the Studio GET.
+        let (status, out) = get_route(&server, "/task/config?task=cfg_task");
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("get JSON");
+        assert_eq!(v["params"][0]["key"], "speed");
+        assert_eq!(v["params"][0]["label"], "速度");
+
+        // Empty params is a legal schema (clears the form declarations).
+        let body = serde_json::json!({"task": "cfg_task", "params": []}).to_string();
+        let (status, _) = post_route(&server, "/task/config", "application/json", body.as_bytes());
+        assert!(status.contains("200"), "{status}");
+        assert_eq!(read_json(&meta_path)["params"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn studio_post_task_config_rejects_invalid_params_without_writing() {
+        let td = TempDir::new("pr2-studio-config-errors");
+        let tasks_dir = td.path().join("tasks");
+        write_config_task(&tasks_dir, "cfg_task", config_meta("cfg_task"));
+        let meta_path = tasks_dir.join("cfg_task").join("meta.json");
+        let before = std::fs::read_to_string(&meta_path).expect("read meta");
+        let server = studio_config_server(td.path());
+
+        // Duplicate keys are caught by Meta::lint_issues with a params path.
+        let body = serde_json::json!({
+            "task": "cfg_task",
+            "params": [{"key": "x", "type": "int"}, {"key": "x", "type": "int"}]
+        })
+        .to_string();
+        let (status, out) = post_route(&server, "/task/config", "application/json", body.as_bytes());
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("duplicate parameter key"), "{out}");
+        assert!(out.contains("meta.json:params[1].key"), "{out}");
+
+        // enum on a bool is rejected with the field path.
+        let body = serde_json::json!({
+            "task": "cfg_task",
+            "params": [{"key": "flag", "type": "bool", "enum": [true]}]
+        })
+        .to_string();
+        let (status, out) = post_route(&server, "/task/config", "application/json", body.as_bytes());
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("meta.json:params[0].enum"), "{out}");
+
+        // Body shape errors.
+        for body in [
+            "{}",
+            r#"{"task":"cfg_task"}"#,
+            r#"{"task":"cfg_task","params":{}}"#,
+            r#"{"params":[]}"#,
+            "{not json",
+        ] {
+            let (status, out) =
+                post_route(&server, "/task/config", "application/json", body.as_bytes());
+            assert!(status.contains("400"), "{body}: {status} {out}");
+        }
+        // Unknown task is a 404, invalid name a 400.
+        let (status, _) = post_route(
+            &server,
+            "/task/config",
+            "application/json",
+            br#"{"task":"missing","params":[]}"#,
+        );
+        assert!(status.contains("404"), "{status}");
+        let (status, _) = post_route(
+            &server,
+            "/task/config",
+            "application/json",
+            br#"{"task":"..","params":[]}"#,
+        );
+        assert!(status.contains("400"), "{status}");
+
+        assert_eq!(
+            std::fs::read_to_string(&meta_path).expect("read meta"),
+            before,
+            "every rejected request must leave meta.json untouched"
+        );
+    }
+
+    #[test]
+    fn task_config_routes_are_isolated_by_surface() {
+        let td = TempDir::new("pr2-surface-isolation");
+        let tasks_dir = td.path().join("tasks");
+        write_config_task(&tasks_dir, "cfg_task", config_meta("cfg_task"));
+        let studio = studio_config_server(td.path());
+        let runner = runner_config_server(td.path());
+        let runner_target = "/runner/tasks/cfg_task/config";
+
+        // Studio gets the plain 404 from the surface gate, for GET and PUT.
+        let (status, _) = get_route(&studio, runner_target);
+        assert!(status.contains("404"), "studio GET {runner_target}: {status}");
+        let (status, _) = put_route(&studio, runner_target, b"{\"values\":{}}");
+        assert!(status.contains("404"), "studio PUT {runner_target}: {status}");
+
+        // Runner gets the plain 404 for the Studio schema routes, GET and POST.
+        let (status, _) = get_route(&runner, "/task/config?task=cfg_task");
+        assert!(status.contains("404"), "runner GET /task/config: {status}");
+        let (status, _) = post_route(
+            &runner,
+            "/task/config",
+            "application/json",
+            br#"{"task":"cfg_task","params":[]}"#,
+        );
+        assert!(status.contains("404"), "runner POST /task/config: {status}");
+
+        // The owning side keeps working, and the PR1 Runner listing is intact.
+        let (status, _) = get_route(&runner, runner_target);
+        assert!(status.contains("200"), "runner GET config: {status}");
+        let (status, _) = get_route(&studio, "/task/config?task=cfg_task");
+        assert!(status.contains("200"), "studio GET config: {status}");
+        let (status, body) = get_route(&runner, "/runner/tasks");
+        assert!(status.contains("200"), "{status} {body}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["tasks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn runner_config_store_corruption_is_reported_and_never_overwritten() {
+        let td = TempDir::new("pr2-runner-config-corrupt");
+        let tasks_dir = td.path().join("tasks");
+        write_config_task(&tasks_dir, "cfg_task", config_meta("cfg_task"));
+        let store = td.path().join("config").join("values.json");
+        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+        std::fs::write(&store, "{ corrupted").unwrap();
+        let before = std::fs::read_to_string(&store).unwrap();
+        let server = runner_config_server(td.path());
+
+        let (status, body) = get_route(&server, "/runner/tasks/cfg_task/config");
+        assert!(status.contains("500"), "{status} {body}");
+        assert!(body.contains("values.json") && body.contains("invalid JSON"), "{body}");
+
+        let (status, body) = put_route(
+            &server,
+            "/runner/tasks/cfg_task/config",
+            br#"{"values":{"rounds":2,"mode":"fast","keyword":"x"}}"#,
+        );
+        assert!(status.contains("500"), "{status} {body}");
+        assert_eq!(std::fs::read_to_string(&store).unwrap(), before);
+
+        // An unsupported schema_version is refused the same way.
+        std::fs::write(
+            &store,
+            r#"{"schema_version": 99, "updated_ms": 0, "tasks": {}}"#,
+        )
+        .unwrap();
+        let (status, body) = get_route(&server, "/runner/tasks/cfg_task/config");
+        assert!(status.contains("500"), "{status} {body}");
+        assert!(body.contains("schema_version 99"), "{body}");
     }
 }

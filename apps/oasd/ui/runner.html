@@ -32,7 +32,7 @@
     <button class="app-nav-btn" data-page="runs" type="button">运行记录</button>
     <button class="app-nav-btn" data-page="settings" type="button">设置</button>
     <span class="spacer"></span>
-    <span class="muted small">只读 · 使用端</span>
+    <span class="muted small">使用端 · 本机配置</span>
   </nav>
 
   <main class="runner-main">
@@ -54,7 +54,7 @@
           <div id="overview-recent-status" class="muted small">—</div>
         </section>
         <p class="runner-note muted small">
-          本页只读；任务安装、运行参数配置与调度执行由后续 PR 提供。
+          任务安装与调度执行由后续 PR 提供；运行值在「已安装任务 → 配置」里填写。
           路径按运行面返回原样显示，不做平台转换。
         </p>
       </div>
@@ -71,8 +71,9 @@
         <div id="runner-tasks-status" class="muted small">—</div>
         <div id="runner-tasks-list" class="muted">（未加载）</div>
         <p class="runner-note muted small">
-          当前为只读列表：任务来自 Runner 任务目录，本 PR 全部为「未托管/本机目录」。
-          安装/卸载与运行参数编辑将在后续 PR 提供。
+          任务来自 Runner 任务目录，本 PR 全部为「未托管/本机目录」。
+          每行「配置」编辑本机运行值（<code>config/values.json</code>）；发布包里的 meta.params 只定义 schema。
+          安装/卸载将在后续 PR 提供。
         </p>
       </div>
     </div>
@@ -101,7 +102,7 @@
         </div>
         <div id="queue-queues" class="muted">（未加载）</div>
         <p class="runner-note muted small">
-          配置编辑、队列管理、调度执行由 Runner 后续 PR 提供；当前为只读。
+          队列管理、调度启停与临时运行由后续 PR 提供；本页只读。
         </p>
       </div>
     </div>
@@ -165,6 +166,25 @@
       </div>
     </div>
   </main>
+
+  <!-- PR2：已安装任务的运行值（Runner 本机 config/values.json） -->
+  <dialog id="runner-config-dialog" class="task-dialog runner-config-dialog">
+    <h3 id="runner-config-title">任务配置</h3>
+    <p class="muted small">
+      运行值保存在 Runner 本机（config/values.json）；单任务运行时使用这里的值；
+      被其他任务作为子任务调用时使用调用方的配置（PR4 生效）。
+    </p>
+    <div id="runner-config-status" class="muted small" role="status" aria-live="polite">—</div>
+    <form id="runner-config-form" autocomplete="off" novalidate>
+      <div id="runner-config-fields" class="muted">（未加载）</div>
+      <pre id="runner-config-error" class="muted small dialog-error"></pre>
+      <div class="row dialog-actions">
+        <button id="runner-config-save" type="button">保存</button>
+        <span class="spacer"></span>
+        <button id="runner-config-close" type="button">关闭</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="/runner.js"></script>
 </body>

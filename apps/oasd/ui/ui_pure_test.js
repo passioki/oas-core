@@ -13,7 +13,9 @@
 //   - the mutually-exclusive selection mode dispatch,
 //   - ResizeObserver-driven canvas fitting staying rAF-coalesced + idempotent,
 //   - PR1 Studio/Runner split: Studio nav has no schedule page, Runner nav has
-//     exactly five read-only pages and the Runner bundle stays read-only.
+//     exactly five pages and its own static bundle.
+//   - PR2 task config: Studio edits meta.params (schema) while the Runner edits
+//     local values (config/values.json); the two API surfaces stay isolated.
 'use strict';
 
 const fs = require('fs');
@@ -249,6 +251,11 @@ const PURE_FUNCTIONS = [
   'schedRunsFilterLocal',
   'schedRunsFilterActive',
   'schedRunsListStatusText',
+  // PR2: Studio-side meta.params schema editor (runner values stay on Runner).
+  'taskConfigNormalizeParam',
+  'taskConfigParamsToJson',
+  'parseTaskConfigParamsText',
+  'taskConfigSummary',
 ];
 
 const sandbox = {};
@@ -368,6 +375,10 @@ const {
   schedRunsFilterLocal,
   schedRunsFilterActive,
   schedRunsListStatusText,
+  taskConfigNormalizeParam,
+  taskConfigParamsToJson,
+  parseTaskConfigParamsText,
+  taskConfigSummary,
 } = sandbox;
 
 let checks = 0;
@@ -4287,6 +4298,101 @@ ok(/populateScheduleRunsTaskOptions\(\)/.test(refreshPageFn), 'schedule page ref
 ok(/schedStatusErrorText\(statusError\)/.test(extractFunction('renderScheduleStatusCard')), 'status card renders the read error');
 ok(/pageSchedRunsSummary\.textContent = schedRunsStatusCardText\(/.test(extractFunction('renderScheduleStatusCard')), 'status card renders the latest-run/failure summary');
 
+// --- PR2: Studio meta.params schema editor ----------------------------------
+// Studio is the only schema editor: GET/POST /task/config write meta.params.
+// Runner values are a separate surface and must never be called from here.
+eq(
+  taskConfigParamsToJson([
+    { key: 'b', type: 'string', label: '乙', enum: ['x', 'y'], required: true },
+    { type: 'int', key: 'a', default: 3, min: 1, max: 9, description: '轮数' },
+  ]),
+  '[\n' +
+    '  {\n' +
+    '    "key": "b",\n' +
+    '    "type": "string",\n' +
+    '    "label": "乙",\n' +
+    '    "enum": [\n' +
+    '      "x",\n' +
+    '      "y"\n' +
+    '    ],\n' +
+    '    "required": true\n' +
+    '  },\n' +
+    '  {\n' +
+    '    "key": "a",\n' +
+    '    "type": "int",\n' +
+    '    "default": 3,\n' +
+    '    "min": 1,\n' +
+    '    "max": 9,\n' +
+    '    "description": "轮数"\n' +
+    '  }\n' +
+    ']',
+  'taskConfigParamsToJson uses pretty 2-space JSON with a stable field order'
+);
+eq(taskConfigParamsToJson(null), '[]', 'missing params serialize to an empty JSON array');
+eq(
+  taskConfigNormalizeParam({ zz: 1, group: '高级', key: 'k', type: 'int' }),
+  { key: 'k', type: 'int', group: '高级', zz: 1 },
+  'unknown meta.params fields are preserved after the known fields'
+);
+const schemaText = taskConfigParamsToJson([
+  { key: '识别关键词', type: 'string', default: '突破', label: '识别关键词' },
+  { key: 'max_rounds', type: 'int', default: 5 },
+]);
+const parsedSchema = parseTaskConfigParamsText(schemaText);
+eq(parsedSchema.ok, true, 'pretty JSON round-trips through parseTaskConfigParamsText');
+eq(parsedSchema.params.length, 2, 'round-trip keeps both params');
+eq(parsedSchema.params[0].key, '识别关键词', 'round-trip keeps non-ASCII keys');
+eq(parsedSchema.error, '', 'successful parse has no error text');
+eq(parseTaskConfigParamsText('').ok, false, 'empty textarea is a local validation error');
+eq(parseTaskConfigParamsText('{broken').ok, false, 'broken JSON is a local validation error');
+ok(/JSON 解析失败/.test(parseTaskConfigParamsText('{broken').error), 'broken JSON error is explicit');
+eq(parseTaskConfigParamsText('{"params":[]}').ok, false, 'top-level object is rejected (params must be an array)');
+eq(parseTaskConfigParamsText('[{"key":"a"}]').ok, false, 'param without type is rejected locally');
+eq(parseTaskConfigParamsText('[{"key":"a","type":"int"},{"key":"a","type":"int"}]').ok, false, 'duplicate keys are rejected locally');
+eq(parseTaskConfigParamsText('[]'), { ok: true, params: [], error: '' }, 'empty array is a valid schema (no config items)');
+eq(
+  taskConfigSummary([{ key: 'a', type: 'int' }, { key: 'b', type: 'string' }]),
+  '2 项配置：a(int)、b(string)',
+  'taskConfigSummary lists count + key(type)'
+);
+eq(taskConfigSummary([]), '0 项配置', 'empty schema summary');
+eq(taskConfigSummary([{ type: 'int' }]), '1 项配置：（未命名）(int)', 'summary marks a missing key');
+
+// Static wiring: dialog markup + API call sites + the card button placement.
+for (const id of ['task-config-dialog', 'task-config-title', 'task-config-json',
+  'task-config-status', 'task-config-error', 'task-config-save', 'task-config-cancel']) {
+  ok(new RegExp(`id="${id}"`).test(html), `index.html provides #${id}`);
+}
+ok(/id="task-config-dialog"[\s\S]{0,900}id="task-config-json" class="builder-code/.test(html), 'schema editor uses the builder-code textarea');
+ok(/这里定义任务需要哪些配置（key\/type\/default\/label\/description\/enum\/required\/group）/.test(html), 'dialog explains the schema fields');
+ok(/终端用户在 Runner 里填运行值，本处只定义 schema/.test(html), 'dialog draws the Studio/Runner boundary');
+ok(/id="task-config-save"[^>]*>保存配置项</.test(html), 'save button is labelled 保存配置项');
+ok(
+  /taskConfigTitle\.textContent = '任务配置项 · ' \+ name/.test(source),
+  'dialog title becomes 任务配置项 · <task>'
+);
+ok(
+  /fetch\('\/task\/config\?task=' \+ encodeURIComponent\(task\)\)/.test(source),
+  'dialog loads the schema from GET /task/config?task=<encoded>'
+);
+ok(
+  /postJson\('\/task\/config', \{ task: name, params: parsed\.params \}\)/.test(source),
+  'dialog saves with POST /task/config {task, params}'
+);
+ok(
+  /const configBtn = document\.createElement\('button'\);[\s\S]{0,260}configBtn\.textContent = '配置项…'/.test(source),
+  'task library card creates the 配置项… button'
+);
+ok(
+  /configBtn\.title = '编辑该任务的 meta\.params 配置项（发布后随任务包下发）'/.test(source),
+  'config button title explains the published-schema semantics'
+);
+ok(
+  /card\.append\(meta, open, configBtn, runsBtn, del\)/.test(source),
+  '配置项… sits between 打开 and 运行记录'
+);
+ok(!/\/runner\/tasks\//.test(source), 'Studio never calls the Runner-only task config routes');
+
 // DOM id audit: the whole point of this round is ZERO static dead ids. Every
 // getElementById target must exist in index.html; if an id is genuinely needed,
 // add a real element to the HTML instead of keeping a fake reference.
@@ -4313,10 +4419,11 @@ ok(
   `dead DOM ids must be 0 (still dead: ${missingIds.join(', ') || 'none'})`
 );
 
-// --- PR1: Studio / Runner surface split (static UI contract) -----------------
+// --- PR1/PR2: Studio / Runner surface split (static UI contract) -------------
 // Studio keeps #page-schedule only as a legacy DOM block; its nav must not
-// expose a schedule entry any more. The Runner is a separate, read-only surface
-// with exactly five pages and its own static bundle.
+// expose a schedule entry any more. The Runner is a separate usage surface with
+// exactly five pages, its own static bundle, and one local write path (task
+// config values in config/values.json).
 const studioNavBlock = /<nav[^>]*id="app-nav"[^>]*>([\s\S]*?)<\/nav>/.exec(html);
 ok(studioNavBlock, 'index.html still has the Studio app nav');
 if (studioNavBlock) {
@@ -4334,7 +4441,7 @@ ok(runnerNavBlock, 'runner.html has the Runner app nav');
 if (runnerNavBlock) {
   const runnerNav = runnerNavBlock[1];
   const runnerPages = [...runnerNav.matchAll(/data-page="([^"]+)"/g)].map((m) => m[1]);
-  eq(runnerPages, ['overview', 'tasks', 'queue', 'runs', 'settings'], 'Runner nav has exactly the five read-only pages');
+  eq(runnerPages, ['overview', 'tasks', 'queue', 'runs', 'settings'], 'Runner nav has exactly the five usage pages');
   eq((runnerNav.match(/class="app-nav-btn/g) || []).length, 5, 'Runner nav renders exactly 5 buttons');
   for (const label of ['概览', '已安装任务', '队列与调度', '运行记录', '设置']) {
     ok(new RegExp(`>${label}<`).test(runnerNav), `Runner nav contains 「${label}」`);
@@ -4358,9 +4465,14 @@ ok(!/(?:src|href)=["'](?:https?:)?\/\//i.test(runnerHtml), 'runner.html has no e
 ok(!/@import|url\(\s*['"]?https?:/i.test(runnerCss), 'runner.css has no external font/CDN import');
 ok(/name="viewport"/.test(runnerHtml), 'Runner is mobile/WebView friendly (viewport meta)');
 ok(/@media\s*\(max-width/.test(runnerCss), 'runner.css has a narrow-screen single-column layout');
-ok(/只读/.test(runnerHtml), 'Runner UI is explicitly read-only');
+ok(/只读/.test(runnerHtml), 'Runner still labels the pages that remain read-only');
 ok(/还没有安装任务包（安装功能将在后续 PR 提供）/.test(runnerSource), 'Runner task empty state is explicit');
-ok(/配置编辑、队列管理、调度执行由 Runner 后续 PR 提供；当前为只读/.test(runnerHtml), 'Runner queue page states the read-only scope');
+ok(/队列管理、调度启停与临时运行由后续 PR 提供；本页只读。/.test(runnerHtml), 'Runner queue page states the read-only scope');
+ok(
+  /运行值保存在 Runner 本机（config\/values\.json）；单任务运行时使用这里的值；\s*被其他任务作为子任务调用时使用调用方的配置（PR4 生效）。/.test(runnerHtml),
+  'Runner config dialog explains local values + call_task inheritance (PR4)'
+);
+ok(/安装\/卸载将在后续 PR 提供/.test(runnerHtml), 'Runner tasks page keeps the install/uninstall PR note');
 ok(/修改配置请编辑 <code>config\/live\.json<\/code> 后重启 Runner；编辑端不随使用端分发/.test(runnerHtml), 'Runner settings keeps the manual-config + no-Studio-distribution note');
 ok(/runner.js/.test(runnerHtml) && !/dashboard\.js/.test(runnerHtml), 'Runner does not load Studio-only scripts');
 
@@ -4369,8 +4481,13 @@ ok(!/\beval\s*\(|new Function\s*\(/.test(runnerSource), 'runner.js never evaluat
 ok(!/document\.write\s*\(/.test(runnerSource), 'runner.js never uses document.write');
 eq((runnerSource.match(/fetch\s*\(/g) || []).length, 1, 'all Runner requests go through the single fetch helper');
 ok(/RUNNER_FETCH_TIMEOUT_MS/.test(runnerSource) && /AbortController/.test(runnerSource), 'Runner requests have an abort/timeout guard');
-ok(/method:\s*'GET'/.test(runnerSource), 'Runner requests are read-only GETs');
-ok(!/method:\s*'POST'/.test(runnerSource), 'Runner never sends POST');
+ok(
+  /const method = options\.method \? String\(options\.method\)\.toUpperCase\(\) : 'GET'/.test(runnerSource),
+  'Runner requests default to GET and only the config PUT opts into a write'
+);
+ok(/method: method,/.test(runnerSource), 'the fetch helper sends the resolved method');
+ok(!/'POST'/.test(runnerSource), 'Runner never sends POST');
+ok(/'PUT'/.test(runnerSource), 'Runner sends PUT for task config values');
 ok(!/localhost|127\.0\.0\.1|8789/.test(runnerSource), 'runner.js does not hardcode host/port');
 ok(!/localhost|127\.0\.0\.1|8789/.test(runnerHtml), 'runner.html does not hardcode host/port');
 ok(!/[A-Za-z]:\\/.test(runnerSource) && !/[A-Za-z]:\\/.test(runnerHtml), 'no hardcoded Windows drive path');
@@ -4427,6 +4544,160 @@ eq(runnerSb.runnerMemberText(0), '成员 1', 'member_index is rendered one-based
 eq(runnerSb.runnerMemberText(null), '—', 'missing member index is a dash');
 eq(runnerSb.runnerValueText(0), '0', 'zero is preserved');
 eq(runnerSb.runnerValueText(null), '—', 'null renders a dash');
+
+// --- PR2: Runner task config form (local values, config/values.json) --------
+for (const id of ['runner-config-dialog', 'runner-config-title', 'runner-config-form',
+  'runner-config-fields', 'runner-config-status', 'runner-config-error',
+  'runner-config-save', 'runner-config-close']) {
+  ok(new RegExp(`id="${id}"`).test(runnerHtml), `runner.html provides #${id}`);
+}
+ok(
+  /id="runner-config-dialog"[\s\S]{0,1800}<form id="runner-config-form"/.test(runnerHtml),
+  'the config dialog owns the real form element'
+);
+ok(
+  /id="runner-config-form"[\s\S]{0,420}id="runner-config-fields"/.test(runnerHtml),
+  'the form hosts the generated field container'
+);
+ok(/id="runner-config-save"[^>]*>保存</.test(runnerHtml), 'the config form has a 保存 button');
+ok(
+  /el\.configTitle\.textContent = '任务配置 · ' \+ name/.test(runnerSource),
+  'dialog title becomes 任务配置 · <task>'
+);
+ok(/该任务没有配置项/.test(runnerSource), 'empty schema shows 该任务没有配置项 instead of a blank form');
+eq(
+  (runnerHtml.match(/<dialog\b/g) || []).length,
+  (runnerHtml.match(/<\/dialog>/g) || []).length,
+  'runner.html dialog tags are balanced'
+);
+ok(/runner-config-dialog/.test(runnerCss), 'runner.css styles the config dialog');
+ok(/\.runner-config-field/.test(runnerCss), 'runner.css styles the generated field rows');
+ok(/#runner-config-fields[\s\S]{0,80}max-height/.test(runnerCss), 'long config forms scroll instead of overflowing');
+
+ok(
+  /const body = await runnerFetchJson\(runnerConfigUrl\(task\)\);/.test(runnerSource),
+  'dialog loads values with GET runnerConfigUrl(task)'
+);
+ok(
+  /runnerFetchJson\(runnerConfigUrl\(task\), \{\s*method: 'PUT',\s*body: \{ values: collected\.values \},\s*\}\)/.test(runnerSource),
+  'dialog saves with PUT /runner/tasks/<id>/config {values}'
+);
+ok(
+  /const controlId = 'runner-cfg-' \+ i;/.test(runnerSource) &&
+    /control\.setAttribute\('data-key', key\)/.test(runnerSource),
+  'config controls use index-based DOM ids + data-key (non-ASCII/space-safe)'
+);
+ok(/runnerConfigCollectValues\(configParams, fieldValues\)/.test(runnerSource), 'save collects typed values from the form');
+ok(/configBtn\.textContent = '配置'/.test(runnerSource), 'installed task rows render a 配置 button');
+ok(
+  /t\.has_meta === true \? configBtn : \{ text: '—' \}/.test(runnerSource),
+  'only tasks with a readable meta.json offer 配置'
+);
+ok(/const emptyOption = document\.createElement\('option'\)/.test(runnerSource), 'enum params render a select with an empty option');
+ok(/e\.details\.map\(function \(line\)/.test(runnerSource), '400 errors are displayed line by line (backend messages keep the key)');
+ok(/任务已不存在：/.test(runnerSource), '404 from the config PUT reports a vanished task');
+ok(/配置读取失败：/.test(runnerSource), 'config GET failures keep the 配置读取失败 prefix');
+ok(!runnerSource.includes('/task/config'), 'Runner never calls the Studio-only /task/config schema route');
+ok(/config\/values\.json/.test(runnerHtml), 'Runner UI tells the user where local values live');
+
+// Behavioural checks for the extractable Runner config helpers.
+const runnerConfigNames = [
+  'runnerConfigFieldKind', 'runnerConfigIsIntegerType', 'runnerConfigInitialValue',
+  'runnerConfigCollectValues', 'runnerConfigUrl',
+];
+const runnerConfigCode = runnerConfigNames
+  .map((name) => extractFunctionFrom(runnerSource, name, 'runner.js'))
+  .join('\n');
+const cfgSb = {};
+vm.createContext(cfgSb);
+vm.runInContext(runnerConfigCode, cfgSb, { filename: 'runner.js#config' });
+eq(cfgSb.runnerConfigFieldKind({ key: 'n', type: 'int' }), 'number', 'int -> number input');
+eq(cfgSb.runnerConfigFieldKind({ key: 'n', type: 'float' }), 'number', 'float -> number input');
+eq(cfgSb.runnerConfigFieldKind({ key: 'n', type: 'number' }), 'number', 'number -> number input');
+eq(cfgSb.runnerConfigFieldKind({ key: 'b', type: 'bool' }), 'bool', 'bool -> checkbox');
+eq(cfgSb.runnerConfigFieldKind({ key: 's', type: 'string', enum: ['突破', '结界'] }), 'select', 'string + enum -> select');
+eq(cfgSb.runnerConfigFieldKind({ key: 's', type: 'string' }), 'text', 'plain string -> text input');
+eq(cfgSb.runnerConfigIsIntegerType({ type: 'int' }), true, 'int is integer-typed');
+eq(cfgSb.runnerConfigIsIntegerType({ type: 'float' }), false, 'float allows decimals');
+eq(cfgSb.runnerConfigInitialValue({ key: 'k', default: 5 }, { k: 7 }), 7, 'saved value wins over default');
+eq(cfgSb.runnerConfigInitialValue({ key: 'k', default: 5 }, {}), 5, 'default fills a missing saved value');
+eq(cfgSb.runnerConfigInitialValue({ key: 'b', type: 'bool' }, {}), false, 'bool without value starts unchecked');
+eq(cfgSb.runnerConfigInitialValue({ key: 's', type: 'string' }, {}), '', 'string without value starts empty');
+eq(cfgSb.runnerConfigInitialValue({ key: 'k', default: 0 }, { k: 0 }), 0, 'zero saved value is preserved');
+eq(
+  cfgSb.runnerConfigCollectValues([{ key: 'flag', type: 'bool' }], { flag: true }).values,
+  { flag: true },
+  'bool checkbox collects a boolean true'
+);
+eq(
+  cfgSb.runnerConfigCollectValues([{ key: 'flag', type: 'bool' }], { flag: false }).values,
+  { flag: false },
+  'bool checkbox collects a boolean false'
+);
+eq(
+  cfgSb.runnerConfigCollectValues([{ key: 'n', type: 'int' }], { n: '7' }).values,
+  { n: 7 },
+  'number input is converted to a JSON number'
+);
+eq(
+  cfgSb.runnerConfigCollectValues([{ key: 'n', type: 'int' }], { n: '' }).values,
+  {},
+  'blank optional number is omitted (server default applies)'
+);
+const requiredRes = cfgSb.runnerConfigCollectValues(
+  [{ key: 'k', type: 'string', required: true, label: '关键词' }], { k: '' }
+);
+eq(requiredRes.ok, false, 'blank required string is a validation error');
+ok(/「关键词」是必填项/.test(requiredRes.errors[0]), 'required error names the label/key');
+eq(
+  cfgSb.runnerConfigCollectValues(
+    [{ key: 'k', type: 'string', required: true, default: '突破' }], { k: '' }
+  ).ok,
+  true,
+  'required with a default may stay blank'
+);
+const rangeRes = cfgSb.runnerConfigCollectValues(
+  [{ key: 'n', type: 'int', min: 1, max: 5, label: '轮数' }], { n: '9' }
+);
+eq(rangeRes.ok, true, 'out-of-range value is submitted so the server 400 can name key + range');
+eq(rangeRes.values, { n: 9 }, 'out-of-range value keeps its JSON number type');
+const nanRes = cfgSb.runnerConfigCollectValues([{ key: 'n', type: 'int', label: '轮数' }], { n: 'x' });
+eq(nanRes.ok, false, 'non-numeric number input is rejected locally');
+ok(/必须是数字/.test(nanRes.errors[0]), 'non-numeric error explains the expected type');
+const enumRes = cfgSb.runnerConfigCollectValues(
+  [{ key: 's', type: 'string', enum: ['突破', '结界'], label: '模式' }], { s: '其它' }
+);
+eq(enumRes.ok, false, 'value outside enum is rejected locally');
+ok(/必须是以下之一/.test(enumRes.errors[0]), 'enum error lists the options');
+eq(
+  cfgSb.runnerConfigCollectValues([{ key: 'n', type: 'int', enum: [1, 3, 5] }], { n: '3' }).values,
+  { n: 3 },
+  'numeric enum accepts a declared member'
+);
+eq(
+  cfgSb.runnerConfigCollectValues(
+    [{ key: 'n', type: 'int', enum: [1, 3, 5], label: '轮数' }], { n: '4' }
+  ).values,
+  { n: 4 },
+  'numeric enum membership stays server-authoritative (400 lists the allowed values)'
+);
+eq(
+  cfgSb.runnerConfigCollectValues(
+    [{ key: 'n', type: 'int' }], { n: 1, stray: 2 }
+  ).values,
+  { n: 1 },
+  'field values outside the schema are never submitted'
+);
+eq(
+  cfgSb.runnerConfigUrl('任务 1'),
+  '/runner/tasks/%E4%BB%BB%E5%8A%A1%201/config',
+  'config URL encodes non-ASCII + spaces'
+);
+eq(
+  cfgSb.runnerConfigUrl('a/b'),
+  '/runner/tasks/a%2Fb/config',
+  'config URL encodes slashes so a task name cannot escape the path'
+);
 
 
 // --- ResizeObserver / canvas fit contract (no synchronous layout writes) ---

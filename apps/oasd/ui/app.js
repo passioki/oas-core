@@ -240,6 +240,17 @@ const createDesc = document.getElementById('create-desc');
 const createError = document.getElementById('create-error');
 const btnCreateSubmit = document.getElementById('btn-create-submit');
 const btnCreateCancel = document.getElementById('btn-create-cancel');
+// PR2: 任务配置项 schema 编辑（Studio 是 meta.params 的唯一编辑者；
+// 终端用户在 Runner 里填运行值）。
+const taskConfigDialog = document.getElementById('task-config-dialog');
+const taskConfigTitle = document.getElementById('task-config-title');
+const taskConfigJson = document.getElementById('task-config-json');
+const taskConfigStatus = document.getElementById('task-config-status');
+const taskConfigError = document.getElementById('task-config-error');
+const taskConfigSave = document.getElementById('task-config-save');
+const taskConfigCancel = document.getElementById('task-config-cancel');
+let taskConfigTask = '';
+let taskConfigBusy = false;
 // M2/N37：调度面板（PR1 起 Studio 只保留占位 DOM）+ 重置记忆对话框
 const schedSummary = document.getElementById('sched-summary');
 const schedEntries = document.getElementById('sched-entries');
@@ -836,6 +847,12 @@ async function refreshLibrary() {
       open.type = 'button';
       open.textContent = '打开';
       open.addEventListener('click', () => openTaskInWorkbench(t.name));
+      // PR2: meta.params schema editor (Studio-only). Runner fills the values.
+      const configBtn = document.createElement('button');
+      configBtn.type = 'button';
+      configBtn.textContent = '配置项…';
+      configBtn.title = '编辑该任务的 meta.params 配置项（发布后随任务包下发）';
+      configBtn.addEventListener('click', () => openTaskConfigDialog(t.name));
       // PR1: scheduling configuration and run history belong to the Runner
       // surface. Studio only links over; it must not call /scheduler/config or
       // /runs/scheduler (Runner-only routes answer 404 on Studio).
@@ -848,7 +865,7 @@ async function refreshLibrary() {
       del.type = 'button';
       del.textContent = '删除';
       del.addEventListener('click', () => deleteTaskFromLibrary(t.name));
-      card.append(meta, open, runsBtn, del);
+      card.append(meta, open, configBtn, runsBtn, del);
       libList.appendChild(card);
     }
   } catch (e) {
@@ -874,6 +891,174 @@ async function deleteTaskFromLibrary(name) {
   }
   log(`已删除任务：${name}`);
   await refreshLibrary();
+}
+
+// --- PR2: 任务配置项 schema（meta.params）-----------------------------------
+// Studio 只定义 schema；终端用户在 Runner 里填运行值（config/values.json）。
+// 下面 4 个纯函数被 ui_pure_test.js 直接抽取执行，不能依赖 DOM / 全局状态。
+
+// Stable field order for a params entry; unknown fields are kept after these
+// (sorted) so a round-trip never drops a future meta.params field.
+function taskConfigNormalizeParam(param) {
+  if (!param || typeof param !== 'object' || Array.isArray(param)) return param;
+  const order = ['key', 'type', 'default', 'min', 'max', 'label', 'description',
+    'enum', 'required', 'group'];
+  const out = {};
+  for (const field of order) {
+    if (Object.prototype.hasOwnProperty.call(param, field) && param[field] !== undefined) {
+      out[field] = param[field];
+    }
+  }
+  for (const field of Object.keys(param).sort()) {
+    if (Object.prototype.hasOwnProperty.call(out, field)) continue;
+    if (param[field] === undefined) continue;
+    out[field] = param[field];
+  }
+  return out;
+}
+
+// Pretty, deterministic JSON for the schema editor (2-space indent).
+function taskConfigParamsToJson(params) {
+  const list = Array.isArray(params) ? params.map(taskConfigNormalizeParam) : [];
+  return JSON.stringify(list, null, 2);
+}
+
+// Local pre-flight for the textarea: only a JSON array of objects with
+// non-empty key/type is sent to POST /task/config; everything else is reported
+// without a request.
+function parseTaskConfigParamsText(text) {
+  const raw = String(text === undefined || text === null ? '' : text).trim();
+  if (!raw) {
+    return { ok: false, params: [], error: '配置项 JSON 不能为空；没有配置项时请填 []' };
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    return { ok: false, params: [], error: 'JSON 解析失败：' + (e && e.message ? e.message : e) };
+  }
+  if (!Array.isArray(parsed)) {
+    const kind = parsed === null ? 'null' : typeof parsed;
+    return { ok: false, params: [], error: `顶层必须是 JSON 数组（params），当前是 ${kind}` };
+  }
+  const seen = new Set();
+  for (let i = 0; i < parsed.length; i++) {
+    const item = parsed[i];
+    const where = `第 ${i + 1} 项`;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return { ok: false, params: [], error: `${where}必须是对象（{key,type,...}）` };
+    }
+    const key = item.key === undefined || item.key === null ? '' : String(item.key).trim();
+    if (!key) return { ok: false, params: [], error: `${where}缺少 key` };
+    if (seen.has(key)) return { ok: false, params: [], error: `${where}的 key「${key}」重复` };
+    seen.add(key);
+    const type = item.type === undefined || item.type === null ? '' : String(item.type).trim();
+    if (!type) return { ok: false, params: [], error: `${where}（${key}）缺少 type` };
+  }
+  return { ok: true, params: parsed, error: '' };
+}
+
+// One-line status text, e.g. 「2 项配置：max_rounds(int)、关键词(string)」.
+function taskConfigSummary(params) {
+  const list = Array.isArray(params)
+    ? params.filter((p) => p && typeof p === 'object' && !Array.isArray(p))
+    : [];
+  if (!list.length) return '0 项配置';
+  const parts = list.map((p) => {
+    const key = p.key === undefined || p.key === null ? '' : String(p.key).trim();
+    const rawType = p.type === undefined || p.type === null ? '' : String(p.type).trim();
+    return (key || '（未命名）') + '(' + (rawType || '?') + ')';
+  });
+  const text = list.length + ' 项配置：' + parts.join('、');
+  return text.length > 120 ? text.slice(0, 119) + '…' : text;
+}
+
+function closeTaskConfigDialog() {
+  if (!taskConfigDialog) return;
+  if (typeof taskConfigDialog.close === 'function') {
+    if (taskConfigDialog.open) taskConfigDialog.close();
+  } else {
+    taskConfigDialog.removeAttribute('open');
+  }
+}
+
+async function loadTaskConfig(task) {
+  try {
+    const r = await fetch('/task/config?task=' + encodeURIComponent(task));
+    const s = await r.json();
+    if (taskConfigTask !== task) return; // 用户已关闭/切换，丢弃过期响应
+    if (!s.ok) {
+      const errs = (s.errors || []).map((e) => '· ' + e).join('\n');
+      if (taskConfigError) taskConfigError.textContent = `配置项读取失败：\n${errs || '（未知错误）'}`;
+      if (taskConfigStatus) taskConfigStatus.textContent = '读取失败';
+      return;
+    }
+    const params = Array.isArray(s.params) ? s.params : [];
+    if (taskConfigJson) taskConfigJson.value = taskConfigParamsToJson(params);
+    if (taskConfigStatus) taskConfigStatus.textContent = '已加载：' + taskConfigSummary(params);
+    if (taskConfigError) taskConfigError.textContent = '';
+    if (taskConfigSave) taskConfigSave.disabled = false;
+  } catch (e) {
+    if (taskConfigTask !== task) return;
+    if (taskConfigError) taskConfigError.textContent = '配置项读取异常：' + e;
+    if (taskConfigStatus) taskConfigStatus.textContent = '读取失败';
+  }
+}
+
+function openTaskConfigDialog(task) {
+  const name = String(task === undefined || task === null ? '' : task).trim();
+  if (!taskConfigDialog || !name) return;
+  taskConfigTask = name;
+  taskConfigBusy = false;
+  if (taskConfigTitle) taskConfigTitle.textContent = '任务配置项 · ' + name;
+  if (taskConfigJson) taskConfigJson.value = '';
+  if (taskConfigError) taskConfigError.textContent = '';
+  if (taskConfigStatus) taskConfigStatus.textContent = '读取配置项…';
+  if (taskConfigSave) taskConfigSave.disabled = true;
+  if (typeof taskConfigDialog.showModal === 'function') {
+    if (!taskConfigDialog.open) taskConfigDialog.showModal();
+  } else {
+    taskConfigDialog.setAttribute('open', '');
+  }
+  loadTaskConfig(name);
+}
+
+async function submitTaskConfig() {
+  if (taskConfigBusy || !taskConfigTask) return;
+  const text = (taskConfigJson && taskConfigJson.value) || '';
+  const parsed = parseTaskConfigParamsText(text);
+  if (!parsed.ok) {
+    if (taskConfigError) taskConfigError.textContent = parsed.error;
+    if (taskConfigStatus) taskConfigStatus.textContent = '未保存：本地校验失败';
+    return;
+  }
+  taskConfigBusy = true;
+  if (taskConfigSave) taskConfigSave.disabled = true;
+  if (taskConfigStatus) taskConfigStatus.textContent = '正在保存…';
+  if (taskConfigError) taskConfigError.textContent = '';
+  const name = taskConfigTask;
+  try {
+    const s = await postJson('/task/config', { task: name, params: parsed.params });
+    if (!s.ok) {
+      const errs = (s.errors || []).map((e) => '· ' + e).join('\n');
+      if (taskConfigError) taskConfigError.textContent = `保存失败：\n${errs || '（未知错误）'}`;
+      if (taskConfigStatus) taskConfigStatus.textContent = '保存失败';
+      return;
+    }
+    const saved = Array.isArray(s.params) ? s.params : parsed.params;
+    log(`已保存任务「${name}」的配置项：${taskConfigSummary(saved)}`);
+    closeTaskConfigDialog();
+    await refreshLibrary();
+    // 打开的是当前任务时同步任务下拉（meta 变化可能需要重新读取）。
+    if ((taskName.value || '').trim() === name) await refreshTaskList(name);
+  } catch (e) {
+    if (taskConfigError) taskConfigError.textContent = '保存异常：' + e;
+    if (taskConfigStatus) taskConfigStatus.textContent = '保存失败';
+  } finally {
+    taskConfigBusy = false;
+    // 只在同一个任务仍打开时恢复按钮；成功关闭/切换到别的任务时不抢状态。
+    if (taskConfigSave && taskConfigTask === name) taskConfigSave.disabled = false;
+  }
 }
 
 async function refreshInstanceDevices() {
@@ -9339,6 +9524,23 @@ async function submitResetMemory() {
   if (btnTaskCreate) btnTaskCreate.addEventListener('click', openCreateTaskDialog);
   if (btnCreateSubmit) btnCreateSubmit.addEventListener('click', submitCreateTask);
   if (btnCreateCancel) btnCreateCancel.addEventListener('click', closeCreateTaskDialog);
+  // PR2: 任务配置项对话框（保存 / 取消 / Esc；Ctrl+Enter 快捷保存）。
+  if (taskConfigSave) taskConfigSave.addEventListener('click', submitTaskConfig);
+  if (taskConfigCancel) taskConfigCancel.addEventListener('click', closeTaskConfigDialog);
+  if (taskConfigDialog) {
+    taskConfigDialog.addEventListener('close', () => {
+      taskConfigTask = '';
+      taskConfigBusy = false;
+    });
+  }
+  if (taskConfigJson) {
+    taskConfigJson.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+        ev.preventDefault();
+        submitTaskConfig();
+      }
+    });
+  }
   if (createName) {
     createName.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter') {

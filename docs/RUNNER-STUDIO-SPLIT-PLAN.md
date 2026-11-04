@@ -1,9 +1,9 @@
-# OAS Studio / Runner 分离 + TaskPackage + 任务配置（运行期参数）/ 子任务配置 · 设计稿 v1（已批准；PR1 已实现）
+# OAS Studio / Runner 分离 + TaskPackage + 任务配置（运行期参数）/ 子任务配置 · 设计稿 v1（已批准；PR1 ✅ / PR2 ✅ 已实现）
 
-> **状态：Q1~Q7 已获用户批准（2026-11-04，全部按推荐）；PR1 已实现并验证（代码未提交）；PR2~PR6 待做。**
-> 批准范围 = **§D.2 的 7 项决策（Q1~Q7，每项已标「✅ 用户批准（按推荐）」）**；后续按 **§D.3 的 PR2→PR6** 继续，用 **§D.4 的 19 步验收清单**收口（PR1 已验收 V1 子集，见 §A.9.8）。
+> **状态：Q1~Q7 已获用户批准（2026-11-04，全部按推荐）；PR1 ✅（2026-11-04，已提交 `da9da9d`）；PR2 ✅（2026-11-04，代码未提交）；PR3~PR6 待做。**
+> 批准范围 = **§D.2 的 7 项决策（Q1~Q7，每项已标「✅ 用户批准（按推荐）」）**；后续按 **§D.3 的 PR3→PR6** 继续，用 **§D.4 的 19 步验收清单**收口（PR1 已验收 V1 子集，见 §A.9.8；PR2 已验收 V4 的 11~12，见 §A.10.7）。
 > **2026-11-04 用户补充两条约束**（详见 **§A.8**）：① **分发纠正**——终端使用者只需要下载「使用端（Runner）」+ 任务包，**不需要下载编辑端（Studio）**；Studio 是创作/构建工具，不发给终端用户。② **跨平台**——后续可能有 **Android 使用端**；v1 仍只 Windows 打包，但 **Runner 核心 / HTTP API / 任务包 / 配置 schema 必须平台无关**。
-> **PR1 实现记录见 §A.9**（Surface/路由、CLI、Config、Runner 只读 API、UI、测试、E2E、Runner-only 打包、遗留）。
+> **PR1 实现记录见 §A.9**（Surface/路由、CLI、Config、Runner 只读 API、UI、测试、E2E、Runner-only 打包、遗留）；**PR2 实现记录见 §A.10**（ParamDecl 扩展 / `config/values.json` / Studio+Runner 配置 API 与 UI / 测试 / E2E / 评审修复 / 已知限制）。
 >
 > 稿源（权威原稿）：`D:\OAS-dev\_verify\arch-runner-studio-20261104\RUNNER-STUDIO-CONFIG-DESIGN.md`（659 行 · 235+ 处 `file:line` 证据）。
 > 本文是它的**整理稿**：保留全部架构/包格式/配置语义/风险/决策/分阶段/验收；只精简了审计过程与部分附录（附录 A 复用清单、附录 B 速查保留）。**决策点与验收项一项未删**，细节以原稿为准。
@@ -102,7 +102,7 @@ pub fn required_surface(method: &str, path: &str) -> Option<Surface> { ... }
 | `POST /task/run`、`/task/run/stop`、`GET /task/run/status` | S | **编辑器试运行**（见 §A.6.4 设备租约） |
 | `GET /task/library`、`POST /task/delete` | S | 任务库 = 创作态增删；删除守卫已含「队列成员拒绝」（`serve.rs:4526-4529`）与调度条目剪枝（`4550-4566`） |
 | `GET /library`、`POST /library/save_asset` | S | 全局模板库 |
-| `POST /task/config`（新） | S | 编辑 `meta.params` schema（§C.1） |
+| `GET /task/config`、`POST /task/config`（新；**PR2 已实现**） | S | 读/编辑 `meta.params` schema（§C.1） |
 | `POST /task/publish`、`GET /task/package`（新） | S | 发布 TaskPackage（§B.3） |
 | `GET /runs`、`/runs/clicks`、`/runs/aggregate` | **B（只读）** | 点击分布属编辑分析，但运行记录 Runner 也要看；写接口分离 |
 | `POST /runs/delete` | R | 运维删档 |
@@ -118,7 +118,7 @@ pub fn required_surface(method: &str, path: &str) -> Option<Surface> { ... }
 
 > **一句话**：**Studio 无调度写/运维（无调度页）**，**Runner 无创作/构建 API**（拿不到 `/task/save_flow` 等）；`get_route()` 单测把这条钉死。
 >
-> **PR1 落地范围（2026-11-04）**：本表已作为 `route_owner`/`required_surface` 的唯一依据落地（S/R/B 三类 + 静态文件按 surface 取）。Runner-only **handler** 在 PR1 只新增 `GET /runner/health`、`GET /runner/tasks`；其余 Runner 写路由（`/runner/install`、`/runner/tasks/<id>/config`、`/runner/run`、`/runner/scheduler/*`）**只登记归属**，handler 留 PR2~PR6。Studio 访问这些未实现路径仍是 404（gate 先拦或业务 match 未命中）。共享只读路由 `/runs*`、`/scheduler/config|status`、`/instance*`、`/config`、`/stats` 两端一致。
+> **PR1/PR2 落地范围（2026-11-04）**：本表已作为 `route_owner`/`required_surface` 的唯一依据落地（S/R/B 三类 + 静态文件按 surface 取）。PR1 handler = `GET /runner/health`、`GET /runner/tasks`；**PR2 handler = `GET/POST /task/config` 与 `GET/PUT /runner/tasks/<id>/config`**；其余 Runner 写路由（`/runner/install`、`/runner/uninstall`、`/runner/packages/activate`、`/runner/run`、`/runner/scheduler/start|stop`）**只登记归属**，handler 留 PR5/PR6。共享只读路由 `/runs*`、`/scheduler/config|status`、`/instance*`、`/config`、`/stats` 两端一致。
 
 ## A.4 职责矩阵
 
@@ -129,7 +129,7 @@ pub fn required_surface(method: &str, path: &str) -> Option<Surface> { ... }
 | **发布（只产出 TaskPackage）** | ✅ 主 | ❌ | **需新增**（§B.3） |
 | 安装 / 更新 / 卸载 / 回滚 | ❌ | ✅ 主 | **需新增**（§B.4） |
 | 任务配置 **schema**（声明/默认值/范围） | ✅ 主（写 `meta.params`） | ❌ | 已有 `meta.params` + lint（`meta.rs:433-470`） |
-| 任务配置 **运行值**（填值） | ❌ | ✅ 主 | **需新增**存值文件（§C.2）；现状只有调度 entry 的 params JSON 输入框（`ui/index.html:618-621`） |
+| 任务配置 **运行值**（填值） | ❌ | ✅ 主 | **PR2 已新增**存值文件 `config/values.json` + Runner 配置表单（§C.2/§A.10）；PR2 前只有调度 entry 的 params JSON 输入框（`ui/index.html:618-621`） |
 | 排队（queue） | ❌ | ✅ | 已有 `scheduler.json.queues[]`（`scheduler.rs:685-702`）；`oasd queue` 是另一条**临时串跑** CLI（`queue.rs:1-21`），两者不要混 |
 | 调度（windows/quota/lock/pass） | ❌ | ✅ | `scheduler.rs:664-764`、`schedule.rs:1-60` |
 | 执行（`run::execute`） | 仅「试运行」 | ✅ 主 | `run.rs:461-481`；Studio 试运行 `serve.rs:6521-6623` |
@@ -211,8 +211,9 @@ config/device.lease = {"pid":1234,"surface":"studio","mode":"editor-run","starte
 
 - **职责链**：Studio 创作/构建/校验 → 发布 `.oaspkg` → 终端用户拿到 **Runner 包 + `.oaspkg`** → Runner 安装/配置/排队/调度/执行/看运行记录。**Studio 不随使用端分发**；Runner 包里没有编辑入口。
 - **打包脚本**：新增 `scripts/package-runner.ps1`（Runner-only 清单 + 禁用文件名审计 + `/` 分隔 zip entry）+ `scripts/package-common.ps1`（共享版本/BUILD-INFO 读取）；`scripts/package.ps1`（Studio 包）复用同一 helper，BUILD-INFO 字段顺序不变。`packaging/README-DEPLOY.md`「两种发行包（必读）」与 `packaging/README-RUNNER.txt` 已按此口径改写。
-- **PR1 产物事实**：`dist/oasd-runner-v0.1.0-win64.zip` = **37,141,295 B**（用重建后的 PR1 release 二进制打包；zip 内 **23 entries、0 反斜杠 entry**；`README-RUNNER.txt` 已注明首个 Runner 版本页面为只读，安装/配置/调度编辑随后续版本开放）。产物在 `dist/`，**不入 git**（Q7）。
-- **安装能力分期**：PR1 Runner 只有只读页面（概览/已安装任务/队列与调度/运行记录/设置）；`.oaspkg` 真正安装 = **PR5**，运行参数保存 = **PR2/PR3**，调度编辑/启停 = **PR6**。`README-RUNNER.txt` 对终端用户明确写「按钮以当前版本实际显示为准」，避免承诺未实现能力。
+- **PR1 产物事实**：`dist/oasd-runner-v0.1.0-win64.zip` = **37,141,295 B**（用重建后的 PR1 release 二进制打包；zip 内 **23 entries、0 反斜杠 entry**）。产物在 `dist/`，**不入 git**（Q7）。
+- **PR2 产物事实**：Runner 包已用 PR2 release 重建 → `dist/oasd-runner-v0.1.0-win64.zip` = **37,192,710 B**，SHA256 **A10DEDC1A5D0FAB15289ACBB9F904C5909AFA148B3317D2408350B12B4533F5D**（含新 `runner.html/js/css`；zip 内仍只有 Runner，无 Studio UI）。
+- **安装能力分期**：PR1 Runner 只有只读页面（概览/已安装任务/队列与调度/运行记录/设置）；`.oaspkg` 真正安装 = **PR5**；**运行参数保存 = PR2 ✅（§A.10）**，值注入/优先级 = **PR3**；调度编辑/启停 = **PR6**。`README-RUNNER.txt` 仍写「安装/配置/调度编辑随后续版本」，其中**配置保存已在 PR2 可用**，下一轮打包时订正（本轮 docs 子进程不改 `packaging/`）。
 
 ### A.8.2 跨平台约束（为 Android 使用端预留）
 
@@ -236,7 +237,7 @@ config/device.lease = {"pid":1234,"surface":"studio","mode":"editor-run","starte
 
 ## A.9 PR1 实现记录（2026-11-04，已验证；代码未提交）
 
-> 基线：分支 `dev`，HEAD = **`f84b56e`**（seq 100 docs 提交，含设计稿 v1）；**PR1 代码父 = `f84b56e`**，全部改动未提交（Lead 提交）。范围 = **PR1**：Surface 拆分 + Runner UI 骨架 + Runner-only 发行包 + 跨平台约束；**不含** PR2~PR6 功能。
+> 基线：分支 `dev`，HEAD = **`f84b56e`**（seq 100 docs 提交，含设计稿 v1）；**PR1 代码父 = `f84b56e`**，全部改动未提交（Lead 提交）。范围 = **PR1**：Surface 拆分 + Runner UI 骨架 + Runner-only 发行包 + 跨平台约束；**不含** PR2~PR6 功能（PR2 见 §A.10）。
 > 证据：`D:\OAS-dev\_verify\runner-studio-pr1-20261104\`（`PR1-BACKEND-REPORT.md` / `PR1-UI-REPORT.md` / `PR1-PACKAGING-REPORT.md` / `oasd-test.log` / `workspace-test.log` / `runner-*.png` / `studio-nav.png`）。
 
 ### A.9.1 后端：Surface 与路由归属（`apps/oasd/src/serve.rs`）
@@ -301,7 +302,7 @@ pub struct RunnerConfig { pub port: u16, pub bind: String }  // 默认 8789 / "1
 |---|---|---|
 | `runner.html` | 新增 | 标题「OAS Runner（使用端）」；**严格 5 项 nav**：概览 / 已安装任务 / 队列与调度 / 运行记录 / 设置；徽标 = API / 版本 / 端口 / 调度锁；刷新按钮；33 个 DOM id |
 | `runner.css` | 新增 | 复用 `style.css` 风格与按钮；≤720px 单列；**无外部 CDN/字体** |
-| `runner.js` | 新增 | 唯一 `runnerFetchJson`（**只 GET** + 8s 超时 + 错误归一化）；读 `/runner/health`、`/runner/tasks`、`/scheduler/status`、`/runs/scheduler`、`/config`、`/instance`；全部 `textContent`/`createElement`，**无 `innerHTML`/`eval`/POST**；支持 `#overview/#tasks/#queue/#runs/#settings` 深链；**不含创作/构建 API 与 Studio 脚本**（不加载 `app.js`/`builder.js`/`flow_model.js`/`asset_ui.js`） |
+| `runner.js` | 新增 | 唯一 `runnerFetchJson`（**只 GET** + 8s 超时 + 错误归一化）；读 `/runner/health`、`/runner/tasks`、`/scheduler/status`、`/runs/scheduler`、`/config`、`/instance`；全部 `textContent`/`createElement`，**无 `innerHTML`/`eval`/POST**；支持 `#overview/#tasks/#queue/#runs/#settings` 深链；**不含创作/构建 API 与 Studio 脚本**（不加载 `app.js`/`builder.js`/`flow_model.js`/`asset_ui.js`）（PR2 起新增 PUT 配置值 + 配置对话框，见 §A.10.5） |
 | `index.html` | 修改 | 删除 nav「调度」按钮与左侧 rail `panel-schedule` 入口；旧调度页 DOM 保留为**兼容占位**（无操作按钮，仅提示「调度/运行请用 Runner（8789）」）；header 加 Runner 入口提示 |
 | `app.js` | 修改 | 新增 `RUNNER_BASE_URL='http://127.0.0.1:8789/'` + `openRunnerPage(hash)`；`activatePage('schedule')` 改为**提示并打开 Runner `#runs`**（不再调 `refreshSchedulePage`，避免 Runner-only 404）；任务库卡片删除「调度设置…」、运行记录按钮改为在 Runner 打开；深链 `?reset=1` 改为提示去 Runner；旧调度面板按钮/绑定移除 |
 | `ui_pure_test.js` | 修改 | 新增 Studio/Runner 静态契约 + Runner id 审计 + Runner 纯函数行为测试 |
@@ -336,12 +337,12 @@ pub struct RunnerConfig { pub port: u16, pub bind: String }  // 默认 8789 / "1
 
 ### A.9.9 已知遗留（PR1 不做，已分期）
 
-1. **Studio 旧 `#page-schedule` DOM 与 sched-entry 对话框仍保留**（已不可达，仅兼容占位）⇒ **PR2 删除**。
-2. Runner 的**安装/卸载**（PR5）、**运行参数配置**（PR2/PR3）、**队列编辑/调度启停/临时运行**（PR6）均未实现；PR1 页面只读并提示后续版本。
+1. **Studio 旧 `#page-schedule` DOM 与 sched-entry 对话框仍保留**（已不可达，仅兼容占位）⇒ 原计划 **PR2 删除**，**PR2 未覆盖、仍未删**（`ui/index.html:408`、`:595`），顺延到 PR6 收拾。
+2. Runner 的**安装/卸载**（PR5）、**队列编辑/调度启停/临时运行**（PR6）均未实现；**运行参数配置已在 PR2 实现**（§A.10；Runner「已安装任务 → 配置」表单 + `GET/PUT /runner/tasks/<id>/config`），PR1 的「只读页」约束已被 PR2 取代。
 3. **设备租约**（Studio 试运行 vs Runner 调度抢设备）⇒ **PR6**（`config/device.lease`）。
 4. `docs/` 旧截图/脚本说明里的 `start-editor.bat` 需逐步改名为 `start-studio.bat`（本轮只保证兼容转调）。
-5. `.gitignore` 新增 `config/values.json`、`packages/` 等留给 **PR2/PR5**（PR1 未改 `.gitignore`，`/dist` 已覆盖产物）。
-6. PR1 的 Runner 页面是**只读骨架**；`README-RUNNER.txt` 已注明「安装/配置/调度编辑后续版本开放」，不要对终端用户承诺未实现按钮。
+5. `.gitignore` 的 `/config/values.json`、`*.tmp`、`/tasks/*/meta.json.bak` 已由 **PR2** 加入；`packages/` 留给 **PR5**（`/dist` 已覆盖产物）。
+6. PR1 的 Runner 页面是**只读骨架**；`README-RUNNER.txt` 已注明「安装/配置/调度编辑后续版本开放」，不要对终端用户承诺未实现按钮。**PR2 起「配置」已可用**（§A.10.5），安装（PR5）/调度编辑（PR6）仍未实现。
 
 ### A.9.10 验收清单映射（§D.4）
 
@@ -350,10 +351,125 @@ pub struct RunnerConfig { pub port: u16, pub bind: String }  // 默认 8789 / "1
 | **V1 两端不同入口（1~4）** | ✅（1~3 已验收；4 的共享路由契约已测：Runner `/instance` 200、两端 `/scheduler/status` 200，同一 `device` 可在复跑时核对）：8788/8789 双进程、Studio 无调度 nav、Runner 5 nav、互拿对方路由 404 |
 | V2 Studio 发布（5~7） | ⬜ PR5 |
 | V3 Runner 安装（8~10） | ⬜ PR5 |
-| V4 配置（11~12） | ⬜ PR2/PR3 |
+| V4 配置（11~12） | ✅ PR2（临时任务 `pr2demo` 验收；Studio 8790 / Runner 8791；见 §A.10.7） |
 | V5 调度与执行（13~15） | ⬜ PR6 |
 | V6 子任务取父配置（16~18） | ⬜ PR4 |
-| V7 不动用户数据（19） | ✅ PR1 期间未提交用户数据（`assets/`/`frames/`/`scheduler.json`/`tasks/` 均未动） |
+| V7 不动用户数据（19） | ✅ PR1/PR2 期间未提交用户数据（`assets/`/`frames/`/`scheduler.json`/`tasks/` 均未动） |
+
+## A.10 PR2 实现记录（2026-11-04，已验证；代码未提交）
+
+> 基线：分支 `dev`，HEAD = **`da9da9d`**（PR1 + seq 101 docs 已提交）；**PR2 全部改动未提交**（Lead 提交）。范围 = **任务配置模型（schema）+ Runner 运行值存储/API/UI**；**不含** PR3 的优先级注入/类型保真，也不含子任务配置（PR4）。
+> 证据：`D:\OAS-dev\_verify\runner-studio-pr2-20261104\`（实现/评审/测试报告 + Lead E2E 截图 `studio-config.png` / `runner-config.png`）；docs 收尾见同目录 `DOCS-REPORT.md`。
+> 提交边界：`crates/oas-task/src/{meta.rs,lib.rs}`、`apps/oasd/src/{runner_config.rs(新),serve.rs,main.rs}`、`.gitignore`、`apps/oasd/ui/{index.html,app.js,runner.html,runner.js,runner.css,ui_pure_test.js}`；**不含用户数据**（`assets/`/`frames/`/`tasks/`/`scheduler.json`）。
+
+### A.10.1 ParamDecl 扩展（`crates/oas-task/src/meta.rs`）
+
+- `ParamDecl` 新增 **5 个全可选字段**（全部 `Option<…>` + `#[serde(skip_serializing_if = "Option::is_none")]` ⇒ 老 `meta.json` 零破坏、不写入空字段）：
+
+| 字段 | 类型 | JSON 名 | 约束 |
+|---|---|---|---|
+| `label` | string | `label` | 非空 ≤ **80** 字 |
+| `description` | string | `description` | ≤ **500** 字 |
+| `enum` | Value[] | **`enum`**（Rust 字段 `enum_values` + `#[serde(rename="enum")]`） | 仅 `string/int/float/number`；非空、元素去重、元素类型匹配 `type`、`default` 必须 ∈ enum |
+| `required` | bool | `required` | `required:true` 且 **无 `default`** ⇒ Runner 必须填（有 default 不强制） |
+| `group` | string | `group` | 非空 ≤ **80** 字（UI 分组**未渲染**，见 §A.10.8） |
+
+- lint 扩展：上述长度、枚举非空/去重/元素类型、`default ∈ enum`、`required` 语义均进 `lint_issues`；老 meta 不受影响。
+- 新增并导出 **`pub fn validate_param_values(params, values) -> Vec<String>`**（`oas-task` lib 导出）：
+  - **未知 key 拒绝**，错误信息列出允许的 key；
+  - 逐 key 校验 `type`（`int` 必须是整数；`float`/`number` 接受 number；`bool`/`string` 严格）、`min`/`max`、`enum`；
+  - **`required == true && default == None` 且缺失**才报「缺少必填参数」；有 default 的 required 可省略；
+  - 错误文案带 `params[<i>].<field>` 与 key，供 API 400 逐行回显。
+- 注意：`min/max` 仅对 `int/float/number` 有意义；**`enum` 不支持 `bool`**（bool 用默认值/`required` 表达）。
+
+### A.10.2 Runner 运行值存储（`apps/oasd/src/runner_config.rs`，新）
+
+- 从 crate root 挂载：`main.rs:30 mod runner_config;`；`serve.rs:63 use crate::runner_config;`（评审 P1-1 的模块迁移已解决）。
+- 位置：**live config 同目录** `config/values.json`（`--config config/live.json` ⇒ `config/values.json`）；**无 `--config` 回落 `CWD/config/values.json`**。
+- 结构（`schema_version` 1）：
+
+```json
+{ "schema_version": 1, "updated_ms": 1750000000000,
+  "tasks": { "pr2demo": { "values": { "target_text": "结界", "retry": 2 },
+                          "updated_ms": 1750000000000 } } }
+```
+
+- 读：缺失 = 空（`tasks:{}`）；坏 JSON / `schema_version` 不符 = **带路径的 Err**（不静默覆盖）。
+- 写：**read-modify-write** + 进程内 `Mutex` + 兄弟 tmp 文件 + `rename` **原子写**；只改目标任务，**保留其它任务 values**；成功后刷新顶层与任务 `updated_ms`。
+- 全 `std::path::{Path,PathBuf}` + `join`，无盘符/`cmd`/反斜杠硬编码 ⇒ 跨平台（未来 Android/嵌入壳共用同一文件契约）。
+- **无 `.bak` / 无 rev**、**假设单进程单写者**（Studio 不写该文件）——已知限制，见 §A.10.8。
+
+### A.10.3 API（`apps/oasd/src/serve.rs`）
+
+**Studio-only**
+
+- `GET /task/config?task=<name>` → `{ok,task,params:[…]}`；**坏任务名 400 / 任务或 meta 缺失 404 / 坏 meta 400**（带 `meta.json` 路径与原因）。
+- `POST /task/config`，body `{task, params:[…]}`：`Meta::from_json` + lint 校验后，用**原始 meta JSON 对象只替换 `params`** 再原子写（保留 `name`/`category`/`template_version`/`version`/`entry`/`exits` 及未知字段）；写前生成 `meta.json.bak`；失败 400 带 `meta.json:params[i].<field>`。
+- 路由归属：`/task/config` ∈ **Studio-only**（`route_owner` 的 GET/POST 都已覆盖）；Runner 请求 404。
+
+**Runner-only**
+
+- `GET /runner/tasks/<id>/config` → `{ok,task,params,values,updated_ms:null|<ms>}`；任务或 meta 缺失 404、坏 meta 400、坏 `values.json` 500（带路径）。
+- `PUT /runner/tasks/<id>/config`，body `{values:{…}}`：先 `validate_param_values`（**错误 400 + `errors[]` 含 key，不写盘**）→ RMW 写 `config/values.json` → 返回 `{ok,task,params,values,updated_ms}`；404/400/500 语义明确。
+- 路由归属：`/runner/tasks/<id>/config` ∈ **Runner-only**（`route_owner` 已覆盖 GET/POST/PUT）；Studio 请求 404。两端互拿对方 config 路由均 404（E2E 已验）。
+
+### A.10.4 Studio UI（`apps/oasd/ui/{index.html,app.js}`）
+
+- 任务库卡片新增「**配置项…**」按钮（位于「打开」与运行记录之间）→ `#task-config-dialog`：标题「任务配置项 · <task>」、`#task-config-json` JSON 数组编辑器（2 空格缩进）、`#task-config-status` / `#task-config-error`、保存/取消/**Esc** 关闭。
+- 流程：GET `/task/config` 填充 → 用户改 JSON → 保存时**本地 `JSON.parse` 失败不发请求** → POST `/task/config` → 服务端 `errors[]` 逐行显示 → 成功关闭并刷新任务库。
+- 纯函数（新增并注册进 `ui_pure_test.js`）：`taskConfigParamsToJson` / `parseTaskConfigParamsText` / `taskConfigSummary`（「N 项配置：key(type)…」）。
+- **Studio 只写 schema（`meta.json`），不写 `config/values.json`**。
+
+### A.10.5 Runner UI（`apps/oasd/ui/{runner.html,runner.js,runner.css}`）
+
+- 「已安装任务」每行新增「**配置**」按钮 → `#runner-config-dialog` + `#runner-config-form` 动态表单：
+
+| `type` | 控件 |
+|---|---|
+| `int` / `float` / `number` | `input[type=number]`（`int` 步进 1） |
+| `bool` | `checkbox` |
+| `string` + `enum` | `select`（选项来自 enum） |
+| `string` | `text` |
+
+- 注：**数字类型的 `enum` 仍渲染 number input**（仅 hint 提示可选值），只有字符串 enum 变 `select`（P2，见 §A.10.8）。
+- 提示：`label` 作字段名、`description` 作说明、`required` 标「必填」、`min`/`max`/`enum` 进提示与约束；初始值 = **`values[key] ?? default`**。
+- 保存 PUT `{values}`：400 按 `errors[]` 逐行（含 key）、404/读取失败/保存失败分别提示；成功关闭并刷新列表。纯函数：`runnerConfigFieldKind` / `runnerConfigInitialValue` / `runnerConfigCollectValues` / `runnerConfigUrl`。
+- 全 `textContent`/`createElement`，无 `innerHTML`/`eval`/外部 CDN；**`group` 未做分组渲染**（已知 P2）。
+
+### A.10.6 测试（Lead 实测）
+
+| 命令 / 套件 | 结果 |
+|---|---|
+| `cargo test -p oasd` | **255 passed / 0 failed**（PR1 240，**+15**：runner_config 7 + serve 8） |
+| `cargo test -p oas-task` | **72 passed / 0 failed**（PR1 63，**+9**：`meta` 字段解析/校验/`validate_param_values`） |
+| `cargo test --workspace` | **562 passed / 0 failed**（PR1 538，**+24** = meta 9 + runner_config 7 + serve 8；runtime 142 不变） |
+| `cargo build -p oasd --features ocr` | exit 0（**6 warnings**，与基线一致） |
+| UI pure test | **1338 checks / 231 referenced ids / 0 dead ids**（PR1 1239/224/0，**+99**；`runner_ui_audit` **41 ids / 0 dead / 5 nav**） |
+| `node --check` | 3/3 通过；`git diff --check` clean |
+
+新增覆盖：ParamDecl 新字段解析/lint/序列化、`values.json` 缺失/坏文件/保留其它任务/原子写、`validate_param_values`（未知 key/类型/min-max/enum/required）、Studio GET/POST、Runner GET/PUT、两端 404、坏 meta/坏 values 错误路径。
+
+### A.10.7 Lead E2E（临时 tasks/config，不碰用户数据）
+
+- 环境：临时任务 `pr2demo`（`params`：`target_text` string required + `retry` int 0..5）；临时 live config；**Studio 8790 / Runner 8791** 同时启动。
+- **Studio**：`GET/POST /task/config` 200；POST 后 `meta.json` 的 `name`/`category`/`template_version`/`version`/`entry`/`exits` 等字段保留、仅 `params` 更新；中文 `label`/值往返正常；坏 params 400 带 `meta.json:params[0].type`；写前生成 `meta.json.bak`。
+- **Runner**：GET 配置 200（params + `values:{}`）；PUT 合法 200 且写入 `values.json`（中文 `结界` 往返）；GET 读回一致；**未知 key / 缺 required / 超 max / 类型错均 400 且 `errors` 含 key**；Studio 请求 Runner config 404、Runner 请求 `/task/config` 404。
+- **UI（CDP）**：Studio 任务库「配置项…」→ 对话框打开、JSON 含中文 label、status「已加载：2 项配置…」；Runner 已安装任务「配置」→ 表单渲染 text/number 两字段（值 结界/2）→ 填入 庭院/4 保存成功 → status「已保存任务配置：pr2demo（2 项）」→ `values.json` 变为 庭院/4。
+- 截图：`_verify/runner-studio-pr2-20261104/studio-config.png`、`runner-config.png`。
+- 验收映射：§D.4 **V4（11~12）✅**（临时任务口径；正式任务待用户自己的配置验收）。
+
+### A.10.8 评审与修复（无 P0）
+
+- **P1-1 = 提交范围/模块迁移后的验证**（已解决）：`runner_config` 移到 `apps/oasd/src/runner_config.rs` 并由 `main.rs:30` 挂载；Lead 按当前树重跑 workspace **562/0**，提交时 `main.rs` 与新文件一起入。
+- **P2 已修**：`meta` 未用变量警告（`serve.rs`）；Studio 写 meta 前生成 `meta.json.bak`；`.gitignore` 增 `/config/values.json`、`*.tmp`、`/tasks/*/meta.json.bak`。
+- **仍保留的已知限制（P2/P3，不阻塞）**：
+  1. `GET /task/config` 对坏 meta 返回 **400** ⇒ Studio 不能在坏 schema 上直接修，需先修 `meta.json`。
+  2. `POST /task/config` 回写会把 params 对象的 key **按字典序重排**；`min`/`max` 的整数值序列化为 `1.0`（语义等价；测试按 `1.0` 断言）。
+  3. `config/values.json` **无 `.bak`/无 rev**；**多进程同时写不保证安全**（Runner 内 Mutex 只覆盖本进程）；values **以任务名为 key**，卸载/改名会留孤儿条目（PR5 清理；同名重装会继承旧值）。
+  4. Runner 任务行有 `meta_error` 时「配置」按钮未特判（点开必 400）；UI **迟到响应未守卫**（保存后快速切任务，旧响应可能关闭/污染新对话框）。
+  5. `group` 未渲染分组（只存不用）；**数字 `enum` 不是下拉**（number input + hint），只有字符串 enum 是 select；表单不展示未知/保留 key。
+  6. **优先级/类型保真未做**：`run.rs` 不读 `values.json`（PR3）；`entry_run_params` 仍字符串化后猜类型。`runner_config` 复制了一份 `write_text_atomic`（与 `serve.rs` 重复，未来抽公共 helper）。
+- **文档漂移**：`packaging/README-RUNNER.txt` 仍写「任务包安装/运行参数保存/调度编辑随后续版本」——PR2 后**运行参数保存已可用**；下一轮打包时订正（docs 子进程不改 `packaging/`）。
 
 ---
 
@@ -514,43 +630,48 @@ Runner 首次上线时用户手上只有 `tasks/`（无包）⇒ **Runner 必须
 
 # C. 任务配置（运行期参数）+ 子任务配置
 
-## C.1 配置模型：`meta.params` 够用，扩展 5 个可选字段
+## C.1 配置模型：`meta.params` 够用，扩展 5 个可选字段（✅ PR2 已实现）
 
 现状（`meta.rs:45-58`）：`{key, type, default?, min?, max?}`，`type ∈ {int,float,number,bool,string}`（`meta.rs:38-39`），lint 校验重复/类型/default 类型/min≤max（`meta.rs:433-470`），T3 要求 flow 里 `param('k')` 都已声明（`lib.rs:2146-2170`）。
 
-扩展（全部 `#[serde(default)]`，老 `meta.json` 零破坏）：
+扩展（全部 `Option + skip_serializing_if`，老 `meta.json` 零破坏）——**PR2 已实现，长度上限以实现为准（下表已按实现订正）**：
 
-| 字段 | 类型 | 用途 | 校验 |
+| 字段 | 类型 | 用途 | 实现约束（PR2） |
 |---|---|---|---|
-| `label` | string | Runner 表单显示名（中文） | 非空 ≤ 40 字 |
-| `description` | string | 一行说明/示例（「识别到该文字时触发」） | ≤ 200 字 |
-| `enum` | string[] | 下拉选项（`type` 仍为 `string`） | 非空、去重、元素须符合 `type` |
-| `required` | bool | Runner 必须填（无默认值时强制） | 与 `default` 不冲突（有默认即可不填） |
-| `group` | string | 表单分组（基础/高级） | ≤ 20 字 |
+| `label` | string | Runner 表单显示名（中文） | 非空 ≤ **80** 字（设计稿早期写 40，实现放宽到 80） |
+| `description` | string | 一行说明/示例（「识别到该文字时触发」） | ≤ **500** 字（设计稿早期写 200） |
+| `enum` | Value[] | 下拉选项（`type` 为 `string`/`int`/`float`/`number`；**`bool` 不支持**） | 非空、去重、元素类型须匹配 `type`、`default` ∈ enum |
+| `required` | bool | Runner 必须填（无默认值时强制） | `required:true && default==None` 才强制；有 default 可省略 |
+| `group` | string | 表单分组（基础/高级） | 非空 ≤ **80** 字（设计稿早期写 20；UI 分组**尚未渲染**） |
 
-`enum`/`required`/`label` 属**纯展示与表单约束**，不影响 runtime；`min/max` 目前**只校验 default，不校验运行值**（`meta.rs:462-470` 是唯一使用点）→ 现存缺口，运行值校验放到 §C.2 的写入 API。
+**运行值校验已落地（PR2）**：`meta.rs` 新增并导出 `pub fn validate_param_values(params, values)`——未知 key 拒绝并给允许列表、按 `type`/`min`/`max`/`enum` 校验、`required==true && default==None` 缺失才报「缺少必填参数」；`min/max` 只对数值类型生效。写入 API（§C.2）调用它，非法值 400 且文案含 key。
+
+**Studio 是 schema 的唯一编辑者**：`GET/POST /task/config`（**PR2 已实现**）——`POST` 用原始 `meta.json` 对象只替换 `params`（保留其它/未知字段），`Meta::from_json` + lint 通过后原子写并生成 `meta.json.bak`。已有先例：`POST /task/goal` 会自动补 `params.max_battles`（`serve.rs`），说明「程序化维护 params 数组」是被接受的模式。
 
 **Studio 是 schema 的唯一编辑者**：`POST /task/config {task, params:[...]}`（新）→ 写 `meta.json` 的 `params` 数组，走 `Meta::from_json` + `lint_issues` 校验后原子写。已有先例：`POST /task/goal` 会自动补 `params.max_battles`（`serve.rs:4396-4420`），说明「程序化维护 params 数组」是被接受的模式。
 
-## C.2 Runner 侧配置值存储
+## C.2 Runner 侧配置值存储（✅ PR2 已实现）
 
-- 文件：**`config/values.json`**（Runner 独占写，Studio 只读或不读）
+- 文件：**`config/values.json`**（Runner 独占写，Studio 不写）
+- 位置 = **live config 同目录**（`--config config/live.json` ⇒ `config/values.json`）；无 `--config` 回落 `CWD/config/values.json`。
+- 实际结构（PR2，`schema_version` 1，**尚无 `slots`**）：
 
 ```json
 { "schema_version": 1,
   "updated_ms": 0,
   "tasks": {
     "每日任务": { "values": { "max_rounds": 5, "识别关键词": "突破" },
-                  "updated_ms": 0, "slots": { "scheduler:e1": { "max_rounds": 3 } } }
+                  "updated_ms": 0 }
   } }
 ```
 
-- `values` = 任务级运行值（对应「任务1 单独运行时用任务1 的配置」）。
-- `slots` = **按调度 entry 覆盖**（可选，Phase 3；等价于今天把值写在 `Entry.params`，`scheduler.rs:719`）。保留 `Entry.params` 不动，`slots` 只是「同一任务多条 entry 不同配置」的可视化编辑面；写 entry 仍是写 `scheduler.json`（单一权威，`scheduler.rs:826-840`）。
-- 并发写：单写者（Runner 进程内 `Mutex` + 原子 tmp/rename，复用 `write_json_atomic`，`schedule.rs:569`）。**Studio 不写此文件**。
+- `values` = 任务级运行值（对应「任务1 单独运行时用任务1 的配置」）；`updated_ms` 顶层 + 每任务各一份。
+- `slots` = **按调度 entry 覆盖**（可选，Phase 3；等价于今天把值写在 `Entry.params`）——**PR2 未实现**，留待 PR3/后续；`Entry.params` 本身不动。
+- 读：缺失 = 空配置；坏 JSON / `schema_version` 不符 = **带路径的 Err**（不静默重置）。
+- 并发写：单写者（Runner 进程内 `Mutex` + 兄弟 tmp/rename **原子写** + read-modify-write 保留其它任务）。**Studio 不写此文件**；多进程同时写不保证安全（已知限制）。
 - 与 `Entry.params` 的关系：**不是替代**，是「任务默认值 / entry 覆盖值」两层；两者都不在 `scheduler.json` 之外产生第三份真值。
 
-## C.3 运行期解析优先级（四入口统一）
+## C.3 运行期解析优先级（四入口统一；**PR2 只落存储，注入在 PR3**）
 
 **根任务（standalone / queue / scheduler / 临时运行）解析顺序（高 → 低）**：
 
@@ -558,7 +679,7 @@ Runner 首次上线时用户手上只有 `tasks/`（无包）⇒ **Runner 必须
 |---|---|---|---|
 | 1 | CLI `--param k=v` 显式覆盖 | ✅ 已有（`run.rs:224-239`，注释明确「Last one wins」） | 无 |
 | 2 | 调度 entry `params`（含队列 entry，成员共享） | ✅ 已有（`schedule.rs:3733-3750`，注入点 `schedule.rs:1692`） | 无 |
-| 3 | **Runner 任务配置**（`config/values.json`） | ❌ 不存在 | 新增：`run.rs` 的合并点加一层 |
+| 3 | **Runner 任务配置**（`config/values.json`） | 🟡 **值存储/API/UI 已实现（PR2，§A.10）；`run.rs` 尚未读取** | **PR3**：`run.rs` 的合并点加一层 |
 | 4 | `meta.params[].default` | ✅ 已有（`run.rs:461-481`） | 无 |
 
 四种入口映射（全部落到同一个 `RunOptions.params` 合并点 `run.rs:461-481`）：
@@ -573,7 +694,7 @@ Runner 首次上线时用户手上只有 `tasks/`（无包）⇒ **Runner 必须
 **必须一起修的两个现存问题（否则优先级做出来也不对）**：
 
 1. **类型丢失**：`entry_run_params` 先把 JSON 标量转成字符串（`schedule.rs:3738-3749`），`run.rs` 再 `parse_param_value` 猜回（`run.rs:257-265`：`"true"→bool`、能 `parse::<f64>()` 就当数字）。于是 entry `{"code":"007"}` 变成 `Num(7.0)`，而 `meta.params[].type="string"` 声明的是字符串 ⇒ 运行时 `param('code')` 类型错。**修法**：`RunOptions.params` 改 `BTreeMap<String, Value>`（内部已是 `Value`，`run.rs:125-127` 只是被 CLI 字符串堵住了），entry/values 直接传 `Value`，只有 `--param` 保留字符串解析。
-2. **运行值不校验 schema**：`min/max/enum/required/type` 对运行值不生效（§C.1）。**修法**：在 `config/values.json` 写入 API 里把 `meta.rs:239-260` 的 `check_param_default` 泛化成 `check_param_value(kind, value, min, max, enum)`，并在 `run.rs` 合并后做一次「防御性复检」（错误信息带任务名与 key）。
+2. **运行值不校验 schema**：`min/max/enum/required/type` 对运行值不生效（§C.1）。**PR2 已落地一半**：`config/values.json` 写入 API 调用 `validate_param_values`（未知 key/类型/min/max/enum/required，400 含 key）；**仍待 PR3**：`run.rs` 合并后做一次「防御性复检」（错误信息带任务名与 key），防绕过 API 的旧 values。
 
 ## C.4 子任务配置语义（核心）
 
@@ -695,7 +816,7 @@ Step::WithParams { params, defaults, body } => {
 
 | 变更 | 兼容性 | 处理 |
 |---|---|---|
-| `meta.params` 新增 `label/description/enum/required/group` | 向前兼容（`#[serde(default)]`，与 `meta.rs:145-186` 全可选风格一致） | 老 Studio 读到会忽略（`Meta` 用 serde，**未开 `deny_unknown_fields`**，`meta.rs:149-150`；对比 `OasConfig` 是开着的，`config.rs:23`） |
+| `meta.params` 新增 `label/description/enum/required/group` | 向前兼容（全部 `Option` + `skip_serializing_if`，与 `meta.rs` 全可选风格一致；缺省 = None） | 老 Studio 读到会忽略（`Meta` 用 serde，**未开 `deny_unknown_fields`**，`meta.rs:149-150`；对比 `OasConfig` 是开着的，`config.rs:23`） |
 | `call_task.args.params` | ⚠ 老 loader **静默忽略**（`oas-flow` `lib.rs:2004-2006` 只取 `task`） | 老 Studio/老 Runner 遇到新任务会「少传参数」且**不报错** ⇒ `manifest.engine.flow_ops` 必须做安装闸门；Studio 保存带 `params` 的 `call_task` 时，本机不支持则提示 |
 | 新增 `with_params` op | 老 Runner 解析失败（`oas-flow` `lib.rs:2014-2019`） | 同上，`flow_ops` 闸门 |
 | `RunOptions.params` 改 `BTreeMap<String,Value>` | 内部类型，非磁盘契约 | `--param` 仍解析字符串（`run.rs:257`），行为不变 |
@@ -737,12 +858,12 @@ Step::WithParams { params, defaults, body } => {
 > **备注（不单列决策，但需知道）**：同任务多 entry 不同参数目前已支持（`Entry.params` 每 entry 独立）；但**队列成员的 per-member 参数不支持**（成员共享队列 entry 的 params，`schedule.rs:1692`）。若需要「队列里每个任务不同配置」，需把 `queues[].members` 从 `Vec<String>` 扩成对象数组（`scheduler.rs:696`）——**建议先不做**，用「每个成员各建一条 task entry」绕开。
 > **配套备注（R3/B.4.3）**：安装覆盖本机同名任务时的 `force` / 409 `dirty_task` 策略已写在 §B.4.3，属实现细节，不单列决策。
 
-## D.3 分阶段实施计划（6 个 PR；**PR1 ✅ 已实现，PR2~PR6 待做**；PR6 可延后）
+## D.3 分阶段实施计划（6 个 PR；**PR1 ✅ / PR2 ✅ 已实现（2026-11-04），PR3~PR6 待做**；PR6 可延后）
 
 | PR | 范围 | 关键文件 | 交付 / 验证 |
 |---|---|---|---|
-| **PR1 Surface 拆分 ✅ 已实现（§A.9）** | `Surface` 枚举 + `route_owner`/`required_surface` 表 + `oasd studio`/`runner` 命令（`serve` 兼容别名）+ `ui/runner.*` 只读骨架 + `config.runner.port/bind` + 8787→8788 + Runner-only 发行包 | `serve.rs`、`main.rs`、`config.rs`、`ui/runner.{html,js,css}`、`ui/index.html`、`ui/app.js`、`ui/ui_pure_test.js`、`scripts/package-runner.ps1`、`packaging/*` | ✅ 单测 **240/0（oasd）/ 538/0（workspace）**；`get_route` 两端隔离 404；Lead 真实双进程 8788/8789 E2E；UI **1239/224/0**，`runner.html` nav 5 项 |
-| **PR2 配置模型** | `meta.params` 5 个可选字段 + `config/values.json` + Runner config API/表单 + 值校验（type/min/max/enum/required） | `crates/oas-task/src/meta.rs`、`apps/oasd/src/{serve,runner}.rs`、`ui/runner.js` | 单测：字段解析 / 校验错误路径；`PUT` 后文件原子写；非法值 400 文案含 key |
+| **PR1 Surface 拆分 ✅ 已提交（§A.9）** | `Surface` 枚举 + `route_owner`/`required_surface` 表 + `oasd studio`/`runner` 命令（`serve` 兼容别名）+ `ui/runner.*` 只读骨架 + `config.runner.port/bind` + 8787→8788 + Runner-only 发行包 | `serve.rs`、`main.rs`、`config.rs`、`ui/runner.{html,js,css}`、`ui/index.html`、`ui/app.js`、`ui/ui_pure_test.js`、`scripts/package-runner.ps1`、`packaging/*` | ✅ 单测 **240/0（oasd）/ 538/0（workspace）**；`get_route` 两端隔离 404；Lead 真实双进程 8788/8789 E2E；UI **1239/224/0**，`runner.html` nav 5 项 |
+| **PR2 配置模型 ✅ 已实现（§A.10）** | `meta.params` 5 个可选字段（label/description/enum/required/group）+ `config/values.json` + Studio `GET/POST /task/config` + Runner `GET/PUT /runner/tasks/<id>/config` + Runner 配置表单 + 运行值校验（type/min/max/enum/required） | `crates/oas-task/src/{meta.rs,lib.rs}`、`apps/oasd/src/{runner_config.rs,serve.rs,main.rs}`、`ui/{index.html,app.js,runner.html,runner.js,runner.css,ui_pure_test.js}`、`.gitignore` | ✅ **oasd 255/0、task 72/0、workspace 562/0（+24）；UI 1338/231/0**；`PUT` 原子写 + 保留其它任务；非法值 400 含 key；Lead E2E 临时任务 `pr2demo`（Studio 8790 / Runner 8791，Studio+Runner UI CDP 通过；V4 11~12 收口） |
 | **PR3 优先级 + 类型** | `RunOptions.params` 改 `Value` + 四入口合并 + values 注入 | `run.rs`（125-127、461-481、257-265）、`schedule.rs`（3733-3750）、`serve.rs`（6495-6597 加 `params`） | 单测：4 层优先级矩阵（含 CLI 覆盖 entry）；`{"code":"007"}` 保持字符串；e2e：entry 传值 → `log` 打出原值 |
 | **PR4 子任务配置** | `call_task.params`/`inherit` + `with_params` op + loader 生成 + runtime 栈 + `Flow::call_task_uses` + lint T7 | `oas-flow`（Step 828-976、2004-2006、2176、2313）、`oas-task`（720-772、2110-2170）、`oas-runtime`（2242、3376-3379）、`ui/flow_model.js`（渲染 call_task 的 params 表单） | 单测：单调用 / 多调用不同值 / 嵌套三层 / 未映射走同名 / default 兜底 / `inherit:"none"` / **错误后 params 恢复**；lint T7 三类错误；E2E：任务2→任务1 取父配置 |
 | **PR5 打包 / 安装** | `package.rs`（zip+manifest+checksums）+ `oasd studio publish` + `POST /runner/install` + `POST /runner/uninstall` + 素材合并 + `installed.json` + 裸目录纳管 | 新 `crates/oas-task/src/package.rs`、`apps/oasd/src/runner.rs`、`serve.rs` 路由、`ui/runner.js` | 单测：zip-slip（`../`、绝对路径、盘符）、sha 不匹配、缺文件、`template_version` 过高；集成：publish→install→lint 全绿；卸载守卫（调度引用 409） |
@@ -752,7 +873,7 @@ Step::WithParams { params, defaults, body } => {
 
 ## D.4 验收清单（用户可操作，19 步）
 
-> **PR1 状态**：**V1（1~3 已验收；4 的共享路由契约已测）**（真实双进程 8788/8789，见 §A.9.7/§A.9.10）；**V2~V7 待 PR2~PR6** 对应能力落地后再逐项收口。
+> **PR1 状态**：**V1（1~3 已验收；4 的共享路由契约已测）**（真实双进程 8788/8789，见 §A.9.7/§A.9.10）。**PR2 状态**：**V4（11~12）✅**（临时任务 `pr2demo`，Studio 8790 / Runner 8791；见 §A.10.7）。**V2/V3/V5/V6/V7 待 PR5/PR5/PR6/PR4/PR3** 对应能力落地后再逐项收口。
 
 前置：`cargo build -p oasd --features ocr`；准备两个任务 `任务1`（有参数 `触发文字`）与 `任务2`（调用 `任务1` 并映射 `触发文字←识别关键词`）。
 
@@ -775,6 +896,8 @@ Step::WithParams { params, defaults, body } => {
 **V4 配置**
 11. Runner「任务2 → 配置」显示字段 `识别关键词`（label/说明/当前值 `突破`），改成 `结界` → 保存 → 刷新后仍在。
 12. 填 `int` 字段越界值（如 `max_rounds=999` 超 `max`）→ **400**，文案指名 key 与范围。
+
+> ✅ **PR2 已验收（临时任务 `pr2demo`，2026-11-04）**：Runner 表单渲染 `target_text`（text，required）+ `retry`（number 0..5）；中文值往返、越界/类型错/未知 key/缺 required 均 400 且 `errors` 含 key；Studio 侧 `POST /task/config` 保留 meta 其它字段并生成 `meta.json.bak`；E2E 细节见 §A.10.7。正式任务的用户验收可照 11~12 执行。
 
 **V5 调度与执行**
 13. Runner「队列与调度」加 entry（`任务2`，periodic）→ 保存成功；`GET :8789/scheduler/status` 显示 `lock` 与下次唤醒。
@@ -837,9 +960,10 @@ Step::WithParams { params, defaults, body } => {
 
 # E. 与现状文档的关系 / 执行状态
 
-- **Q1~Q7 已于 2026-11-04 获用户全部批准（按推荐）**；**PR1 ✅ 已实现并验证**（代码/脚本/UI 未提交，父 `f84b56e`），逐项事实见 **§A.9**。本文已从「设计待定稿」进入「已批准 + 分阶段执行」状态。
-- **已实现（PR1）**：`Surface` + `route_owner`/`required_surface`、`oasd studio`（8788）/`oasd runner`（8789）/`oasd serve` 兼容别名、`config.runner`、`GET /runner/health`、`GET /runner/tasks`、`ui/runner.*`、Studio 去调度入口、Runner-only 发行包、`packaging/CROSS-PLATFORM.md`。
-- **未实现（PR2~PR6）**：TaskPackage `.oaspkg` 发布/安装（PR5）、`meta.params` 扩字段与 `config/values.json` 值存储（PR2/PR3）、四层配置优先级与类型保真（PR3）、`call_task.params`+`with_params`+lint T7（PR4）、Runner 内嵌调度线程/调度编辑/设备租约（PR6）。**PR1 的 Runner 页面是只读骨架**，不要在验收里按 19 步全量要求。
-- 台账登记：`PENDING-LEDGER.md §E-79`（状态 = **✅ Q1~Q7 已批准；PR1 ✅ 已实现；PR2~PR6 待做**）。
-- **下一步**：按 §D.3 从 **PR2 配置模型** 继续（`meta.params` 5 字段 + `config/values.json` + Runner 配置 API/表单 + 值校验）；每个 PR 用 §D.4 对应验收项收口，测试基线以最新 `cargo test --workspace` 为准（PR1 后 = **538/0**，oasd **240**）。
+- **Q1~Q7 已于 2026-11-04 获用户全部批准（按推荐）**；**PR1 ✅ 已实现并提交**（`da9da9d`），逐项事实见 **§A.9**；**PR2 ✅ 已实现并验证（代码未提交）**，见 **§A.10**。本文已从「设计待定稿」进入「已批准 + 分阶段执行」状态。
+- **已实现（PR1）**：`Surface` + `route_owner`/`required_surface`、`oasd studio`（8788）/`oasd runner`（8789）/`oasd serve` 兼容别名、`config.runner`、`GET /runner/health`、`GET /runner/tasks`、`ui/runner.*` 骨架、Studio 去调度入口、Runner-only 发行包、`packaging/CROSS-PLATFORM.md`。
+- **已实现（PR2，§A.10）**：`ParamDecl` 五字段（label/description/enum/required/group）+ lint + `validate_param_values`；`config/values.json`（原子 RMW，Runner 独占）；Studio `GET/POST /task/config`（保留 meta 其它字段 + `.bak`）；Runner `GET/PUT /runner/tasks/<id>/config`（值校验 400 含 key）；Studio「配置项…」JSON 编辑器 + Runner 配置表单；`.gitignore` 三项；Runner 包按 PR2 重建（**37,192,710 B**，SHA256 `A10DEDC1…B4533F5D`）。
+- **未实现（PR3~PR6）**：四层配置优先级与类型保真（**PR3**：`run.rs` 读 values、`RunOptions.params` 改 `Value`、`entry_run_params` 不再猜类型）、`call_task.params`+`with_params`+lint T7（PR4）、TaskPackage `.oaspkg` 发布/安装（PR5）、Runner 内嵌调度线程/调度编辑/设备租约（PR6）。**Runner 的安装/调度编辑仍未实现**；配置保存已可用（PR2）。
+- 台账登记：`PENDING-LEDGER.md §E-79`（状态 = **✅ Q1~Q7 已批准；PR1 ✅ 已提交；PR2 ✅ 已实现；PR3~PR6 待做**）。
+- **下一步**：按 §D.3 做 **PR3 优先级与类型保真**（`RunOptions.params: BTreeMap<String,Value>`、四层合并 CLI > entry > Runner values > `meta.default`、`entry_run_params` 不再字符串猜类型、合并后防御性复检）；每个 PR 用 §D.4 对应验收项收口，测试基线以最新 `cargo test --workspace` 为准（**PR2 后 = 562/0**，oasd **255**、task **72**；UI **1338/231/0**）。
 - 若用户改其中某项（例如 Q1 改端口 / Q6 改子进程调度），先回写本文 §D.2 与稿源，再动代码。
