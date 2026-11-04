@@ -1,9 +1,9 @@
-# OAS Studio / Runner 分离 + TaskPackage + 任务配置（运行期参数）/ 子任务配置 · 设计稿 v1（已批准；PR1 ✅ / PR2 ✅ / PR3 ✅ / PR4 ✅ 已实现）
+# OAS Studio / Runner 分离 + TaskPackage + 任务配置（运行期参数）/ 子任务配置 · 设计稿 v1（已批准；PR1 ✅ / PR2 ✅ / PR3 ✅ / PR4 ✅ / PR5 ✅ 已实现）
 
-> **状态：Q1~Q7 已获用户批准（2026-11-04，全部按推荐）；PR1 ✅ 已提交 `da9da9d`；PR2 ✅ 已提交 `dfe8776`；PR3 ✅ 已提交（代码 `c09df25` + seq 103 docs `048dff5`）；PR4 ✅ 已实现并验证（2026-11-04，**代码未提交，见 §A.12**）；PR5~PR6 待做。**
-> 批准范围 = **§D.2 的 7 项决策（Q1~Q7，每项已标「✅ 用户批准（按推荐）」）**；后续按 **§D.3 的 PR5→PR6** 继续，用 **§D.4 的 19 步验收清单**收口（PR1 已验收 V1 子集，见 §A.9.8；PR2 已验收 V4 的 11~12，见 §A.10.7；PR3 无独立 V 步骤，注入链路见 §A.11.6~§A.11.7；PR4 覆盖 V6 的 16 核心路径，17~18 见 §A.12.7）。
+> **状态：Q1~Q7 已获用户批准（2026-11-04，全部按推荐）；PR1 ✅ 已提交 `da9da9d`；PR2 ✅ 已提交 `dfe8776`；PR3 ✅ 已提交（代码 `c09df25` + seq 103 docs `048dff5`）；PR4 ✅ 已提交（HEAD `442f5cb`，含 seq 104 docs）；PR5 ✅ 已实现并验证（2026-11-04，**代码未提交，见 §A.13**）；PR6 待做。**
+> 批准范围 = **§D.2 的 7 项决策（Q1~Q7，每项已标「✅ 用户批准（按推荐）」）**；后续按 **§D.3 的 PR6** 继续，用 **§D.4 的 19 步验收清单**收口（PR1 已验收 V1 子集，见 §A.9.8；PR2 已验收 V4 的 11~12，见 §A.10.7；PR3 无独立 V 步骤，注入链路见 §A.11.6~§A.11.7；PR4 覆盖 V6 的 16 核心路径，17~18 见 §A.12.7；PR5 覆盖 V2/V3，见 §A.13.8）。
 > **2026-11-04 用户补充两条约束**（详见 **§A.8**）：① **分发纠正**——终端使用者只需要下载「使用端（Runner）」+ 任务包，**不需要下载编辑端（Studio）**；Studio 是创作/构建工具，不发给终端用户。② **跨平台**——后续可能有 **Android 使用端**；v1 仍只 Windows 打包，但 **Runner 核心 / HTTP API / 任务包 / 配置 schema 必须平台无关**。
-> **PR1 实现记录见 §A.9**（Surface/路由、CLI、Config、Runner 只读 API、UI、测试、E2E、Runner-only 打包、遗留）；**PR2 实现记录见 §A.10**（ParamDecl 扩展 / `config/values.json` / Studio+Runner 配置 API 与 UI / 测试 / E2E / 评审修复 / 已知限制）；**PR3 实现记录见 §A.11**（`RunOptions.params` 类型保真 / 四层优先级 / 合并后 schema 复检 / CLI 引号逃生口 / 测试 seam / E2E / P2 限制）；**PR4 实现记录见 §A.12**（`call_task.params`/`inherit` / `with_params` 契约 / loader 严格展开 / runtime 作用域恢复 / T7 / T6 修复 / checkpoint 指纹 / E2E / 已知限制）。
+> **PR1 实现记录见 §A.9**（Surface/路由、CLI、Config、Runner 只读 API、UI、测试、E2E、Runner-only 打包、遗留）；**PR2 实现记录见 §A.10**（ParamDecl 扩展 / `config/values.json` / Studio+Runner 配置 API 与 UI / 测试 / E2E / 评审修复 / 已知限制）；**PR3 实现记录见 §A.11**（`RunOptions.params` 类型保真 / 四层优先级 / 合并后 schema 复检 / CLI 引号逃生口 / 测试 seam / E2E / P2 限制）；**PR4 实现记录见 §A.12**（`call_task.params`/`inherit` / `with_params` 契约 / loader 严格展开 / runtime 作用域恢复 / T7 / T6 修复 / checkpoint 指纹 / E2E / 已知限制）；**PR5 实现记录见 §A.13**（`.oaspkg` 包格式/manifest/checksums 加固 / `flow_ops` 闸门 / Studio publish / Runner install·uninstall·activate / 素材合并与初始化 / UI / 评审修复 / 测试/E2E/包 / 已知限制）。
 >
 > 稿源（权威原稿）：`D:\OAS-dev\_verify\arch-runner-studio-20261104\RUNNER-STUDIO-CONFIG-DESIGN.md`（659 行 · 235+ 处 `file:line` 证据）。
 > 本文是它的**整理稿**：保留全部架构/包格式/配置语义/风险/决策/分阶段/验收；只精简了审计过程与部分附录（附录 A 复用清单、附录 B 速查保留）。**决策点与验收项一项未删**，细节以原稿为准。
@@ -30,7 +30,7 @@
 
 ## A.1 现状事实（审计基线 = PR1 前，先钉死）
 
-> ℹ 本表是 **2026-11-04 18:20 审计时的现状**，用于解释「为什么要做」；**PR1 已改变其中 A1-1/A1-3/A1-4/A1-8 的部分事实**（现在有 8788/8789 双入口、`oasd studio|runner`、Runner UI 骨架与只读 API）。**现行实现状态以 §A.9 为准**，本表保留为决策依据。
+> ℹ 本表是 **2026-11-04 18:20 审计时的现状**，用于解释「为什么要做」；**PR1 已改变其中 A1-1/A1-3/A1-4/A1-8 的部分事实**（现在有 8788/8789 双入口、`oasd studio|runner`、Runner UI 骨架与只读 API）。**现行实现状态以 §A.9~§A.13 为准**，本表保留为决策依据。
 
 | # | 事实 | 证据 |
 |---|---|---|
@@ -58,7 +58,7 @@
 | 命令 | `oasd studio [...]`（新增；`oasd serve` 保留为 deprecated 别名 + 一行迁移提示） | `oasd runner [...]`（新增） |
 | 默认端口 | **8788**（与 `packaging/live.example.json:5`、`start-editor.bat:11` 一致；顺手把 `main.rs:388` 的 8787 修成 8788，消除现状不一致） | **8789**（新，`config.runner.port`） |
 | 绑定 | `127.0.0.1` 固定 | `127.0.0.1` 固定（**不建议**暴露 LAN：`README-DEPLOY.md:82` 明确不要公网；真要 LAN 再加 `runner.bind` + token，见 §D.2 Q1） |
-| 根 UI | `GET /` → `ui/index.html`（现有 6 页 nav，**去掉「调度」页**） | `GET /` → `ui/runner.html`（新；nav 只有 **5 项**：概览 / 已安装任务 / 队列与调度 / 运行记录 / 设置） |
+| 根 UI | `GET /` → `ui/index.html`（现有 6 页 nav，**去掉「调度」页**） | `GET /` → `ui/runner.html`（新；nav **6 项**：概览 / 已安装任务 / **安装包（PR5 新增）** / 队列与调度 / 运行记录 / 设置；PR1 时 5 项） |
 | UI 资源 | `index.html`/`app.js`/`builder.js`/`flow_model.js`/`asset_ui.js`/`style.css` | `runner.html`/`runner.js`/`runner.css`（新）+ 复用 `style.css` |
 | 启动脚本 | `packaging/start-studio.bat`（新，替 `start-editor.bat` 内容） | `packaging/start-runner.bat`（新，替 `start-scheduler.bat` 内容） |
 | 进程数 | 1 | 1（内嵌调度线程，见 §A.6） |
@@ -112,13 +112,14 @@ pub fn required_surface(method: &str, path: &str) -> Option<Surface> { ... }
 | `GET /config` | B | 部署配置只读 |
 | `GET /instance`、`/instance/devices`、`POST /instance` | B | 设备是 Studio 采集与 Runner 执行**共用**的唯一物理资源；写 `config/live.json` 两端都允许（写入即 `restart_required`，`serve.rs:4847`） |
 | `GET /stats` | B | 统计只读 |
-| `GET /runner/health`、`POST /runner/scheduler/start`、`/stop`（新） | R | 守护线程与健康 |
-| `GET /runner/tasks`、`GET/PUT /runner/tasks/<id>/config`（新） | R | 已安装任务 + 运行值 |
-| `POST /runner/install`、`/runner/uninstall`、`/runner/packages/activate`、`POST /runner/run`（新） | R | 包安装 / 卸载 / 回滚 / 临时运行 |
+| `GET /runner/health`、`POST /runner/scheduler/start`、`/stop`（新） | R | 健康（PR1 ✅）；调度启停 = PR6 |
+| `GET /runner/tasks`、`GET/PUT /runner/tasks/<id>/config`（新） | R | 已安装任务 + 运行值（PR1 ✅ / PR2 ✅；PR5 给 `/runner/tasks` 增 `installed/package_id/installed_at_ms/backup/unmanaged/meta_version`） |
+| `GET /runner/packages`；`POST /runner/install`、`/runner/uninstall`、`/runner/packages/activate`（新，**PR5 ✅**） | R | 已安装清单 / 安装（Phase 1 仅本机绝对路径）/ 卸载（先备份）/ 回滚 |
+| `POST /runner/run`（新） | R | Runner 临时运行 = **PR6**（必须自行合并 values 层） |
 
 > **一句话**：**Studio 无调度写/运维（无调度页）**，**Runner 无创作/构建 API**（拿不到 `/task/save_flow` 等）；`get_route()` 单测把这条钉死。
 >
-> **PR1/PR2 落地范围（2026-11-04）**：本表已作为 `route_owner`/`required_surface` 的唯一依据落地（S/R/B 三类 + 静态文件按 surface 取）。PR1 handler = `GET /runner/health`、`GET /runner/tasks`；**PR2 handler = `GET/POST /task/config` 与 `GET/PUT /runner/tasks/<id>/config`**；其余 Runner 写路由（`/runner/install`、`/runner/uninstall`、`/runner/packages/activate`、`/runner/run`、`/runner/scheduler/start|stop`）**只登记归属**，handler 留 PR5/PR6。共享只读路由 `/runs*`、`/scheduler/config|status`、`/instance*`、`/config`、`/stats` 两端一致。
+> **PR1/PR2/PR5 落地范围（2026-11-04）**：本表已作为 `route_owner`/`required_surface` 的唯一依据落地（S/R/B 三类 + 静态文件按 surface 取）。PR1 handler = `GET /runner/health`、`GET /runner/tasks`；**PR2 handler = `GET/POST /task/config` 与 `GET/PUT /runner/tasks/<id>/config`**；**PR5 handler = Studio `POST /task/publish`、`GET /task/package` + Runner `GET /runner/packages`、`POST /runner/install`、`POST /runner/uninstall`、`POST /runner/packages/activate`（共 6 条新路由：2 Studio + 4 Runner；`/runner/tasks` 为既有路由增字段）**；只剩 `/runner/run`、`/runner/scheduler/start|stop` 无 handler（PR6）。共享只读路由 `/runs*`、`/scheduler/config|status`、`/instance*`、`/config`、`/stats` 两端一致。路由归属与两端互斥 404 由 `required_surface` 单测钉死（PR5 新增 8 条路由的归属断言，见 §A.13.8）。
 
 ## A.4 职责矩阵
 
@@ -196,7 +197,7 @@ config/device.lease = {"pid":1234,"surface":"studio","mode":"editor-run","starte
 | 包来源 | 无 | `manifest.source = {repo, commit, dirty}` + `files[].sha256` + 顶层 `package_sha256`；**v1 不做签名**（单机本地、无 PKI、用户既是作者也是使用者；密钥保管成本 > 收益）→ UI 明确标注「来源：本机 Studio / 未签名」，`installed.json` 留 `source` |
 | 上传目录写权限 | — | `packages/` 需在部署包预建，`.gitignore` 加 `/packages/`（参照 `.gitignore:13` 的 `/dist`） |
 
-> **PR1 已落地（安全相关）**：`runner.port` / `runner.bind` 配置校验（`port != 0`、`port != serve.port`、`bind` 仅 loopback：`127.0.0.0/8`、`::1`、`localhost`）；**无 token 前不开放 LAN**。zip-slip / 上传配额 / 安装备份属 **PR5**，PR1 不做。
+> **PR1 已落地（安全相关）**：`runner.port` / `runner.bind` 配置校验（`port != 0`、`port != serve.port`、`bind` 仅 loopback：`127.0.0.0/8`、`::1`、`localhost`）；**无 token 前不开放 LAN**。zip-slip / 大小与压缩比配额 / 安装备份**已由 PR5 落地**（§A.13.1/§A.13.4）：zip-slip 双向拒绝、条目 ≤2000、总解压 ≤512 MiB、单条 ≤256 MiB、压缩比 >100:1 拒绝、encrypted 拒绝、`take(declared+1)` 防声明大小欺骗。
 
 ## A.8 分发与跨平台（用户 2026-11-04 补充）
 
@@ -213,7 +214,7 @@ config/device.lease = {"pid":1234,"surface":"studio","mode":"editor-run","starte
 - **打包脚本**：新增 `scripts/package-runner.ps1`（Runner-only 清单 + 禁用文件名审计 + `/` 分隔 zip entry）+ `scripts/package-common.ps1`（共享版本/BUILD-INFO 读取）；`scripts/package.ps1`（Studio 包）复用同一 helper，BUILD-INFO 字段顺序不变。`packaging/README-DEPLOY.md`「两种发行包（必读）」与 `packaging/README-RUNNER.txt` 已按此口径改写。
 - **PR1 产物事实**：`dist/oasd-runner-v0.1.0-win64.zip` = **37,141,295 B**（用重建后的 PR1 release 二进制打包；zip 内 **23 entries、0 反斜杠 entry**）。产物在 `dist/`，**不入 git**（Q7）。
 - **PR2 产物事实**：Runner 包已用 PR2 release 重建 → `dist/oasd-runner-v0.1.0-win64.zip` = **37,192,710 B**，SHA256 **A10DEDC1A5D0FAB15289ACBB9F904C5909AFA148B3317D2408350B12B4533F5D**（含新 `runner.html/js/css`；zip 内仍只有 Runner，无 Studio UI）。
-- **安装能力分期**：PR1 Runner 只有只读页面（概览/已安装任务/队列与调度/运行记录/设置）；`.oaspkg` 真正安装 = **PR5**；**运行参数保存 = PR2 ✅（§A.10），值注入/四层优先级 = PR3 ✅（§A.11）**；调度编辑/启停 = **PR6**。`README-RUNNER.txt` 的「运行值保存」措辞已在 PR2 提交（`dfe8776`）订正为已可用；「安装、队列与调度编辑后续开放」仍成立；其中「后续版本会把它接入调度/队列运行」已过时（PR3 已接入），下一轮打包订正。
+- **安装能力分期**：PR1 Runner 只有只读页面（概览/已安装任务/队列与调度/运行记录/设置，5 项）；`.oaspkg` 真正安装 = **PR5 ✅（§A.13）**，Runner nav 增「安装包」页（**6 项**）；**运行参数保存 = PR2 ✅（§A.10），值注入/四层优先级 = PR3 ✅（§A.11）**；调度编辑/启停 = **PR6**。`README-RUNNER.txt` 已在 PR5 更新（安装可用、force/素材/回滚说明）；PR2 已订正「运行值保存」措辞，PR3 已把「后续版本接入调度/队列运行」变为现实，PR5 打包同步订正。
 
 ### A.8.2 跨平台约束（为 Android 使用端预留）
 
@@ -293,14 +294,14 @@ pub struct RunnerConfig { pub port: u16, pub bind: String }  // 默认 8789 / "1
   "params": ["…"], "version": 1, "unmanaged": true } ] }
 ```
 
-- `has_assets` = `assets.json` 或 `images/` 任一存在；`version` 仅 meta 有时出现；`unmanaged:true` 是 PR1 占位（裸目录兼容，PR5 接 `installed.json`）。
+- `has_assets` = `assets.json` 或 `images/` 任一存在；`version` 仅 meta 有时出现；`unmanaged:true` 是 PR1 占位（裸目录兼容；**PR5 已接 `installed.json`**，§A.13.4）。
 - **坏 `meta.json` 不 500**：该 task `params=[]` + `meta_error` 文本，整体仍 200；任务目录不存在 = 空列表 200。
 
 ### A.9.5 UI（`apps/oasd/ui/`）
 
 | 文件 | 状态 | 事实 |
 |---|---|---|
-| `runner.html` | 新增 | 标题「OAS Runner（使用端）」；**严格 5 项 nav**：概览 / 已安装任务 / 队列与调度 / 运行记录 / 设置；徽标 = API / 版本 / 端口 / 调度锁；刷新按钮；33 个 DOM id |
+| `runner.html` | 新增 | 标题「OAS Runner（使用端）」；**PR1 时严格 5 项 nav**：概览 / 已安装任务 / 队列与调度 / 运行记录 / 设置（**PR5 起 6 项，新增「安装包」**，见 §A.13.6）；徽标 = API / 版本 / 端口 / 调度锁；刷新按钮；33 个 DOM id（PR5 后 55 个） |
 | `runner.css` | 新增 | 复用 `style.css` 风格与按钮；≤720px 单列；**无外部 CDN/字体** |
 | `runner.js` | 新增 | 唯一 `runnerFetchJson`（**只 GET** + 8s 超时 + 错误归一化）；读 `/runner/health`、`/runner/tasks`、`/scheduler/status`、`/runs/scheduler`、`/config`、`/instance`；全部 `textContent`/`createElement`，**无 `innerHTML`/`eval`/POST**；支持 `#overview/#tasks/#queue/#runs/#settings` 深链；**不含创作/构建 API 与 Studio 脚本**（不加载 `app.js`/`builder.js`/`flow_model.js`/`asset_ui.js`）（PR2 起新增 PUT 配置值 + 配置对话框，见 §A.10.5） |
 | `index.html` | 修改 | 删除 nav「调度」按钮与左侧 rail `panel-schedule` 入口；旧调度页 DOM 保留为**兼容占位**（无操作按钮，仅提示「调度/运行请用 Runner（8789）」）；header 加 Runner 入口提示 |
@@ -323,7 +324,7 @@ pub struct RunnerConfig { pub port: u16, pub bind: String }  // 默认 8789 / "1
 
 - `oasd studio --port 8788 ...` 与 `oasd runner --port 8789 ...` **同时启动成功**（各自 banner 打印 surface/端口/双入口提示）。
 - **Studio 8788**：`GET /` 200（index；无 nav/rail 调度入口）、`/app.js` 200、`/frames` 200、`/task/library` 200、`/task/flow?task=返回庭院` 200、`/scheduler/status` 200（共享读）、`/runs/scheduler` **404**、`/runner/health|tasks` **404**、`POST /task/save_flow` 400（路由存在）。
-- **Runner 8789**：`GET /` 200（runner.html；5 nav）、`/runner.js|css` 200、`/style.css` 200、`/app.js` **404**、`/frames` **404**、`/task/library` **404**、`/scheduler/status` 200、`/runs/scheduler` 200、`/instance` 200、`/stats` 200。
+- **Runner 8789**：`GET /` 200（runner.html；PR1 时 5 nav，**PR5 起 6 nav**）、`/runner.js|css` 200、`/style.css` 200、`/app.js` **404**、`/frames` **404**、`/task/library` **404**、`/scheduler/status` 200、`/runs/scheduler` 200、`/instance` 200、`/stats` 200。
 - `/runner/health` 返回 `{ok:true,surface:"runner",port:8789,tasks_dir,runs_dir,state_path,scheduler_mode:"loop",lock:{held:false},version:"0.1.0"}`；`/runner/tasks` 返回本机 3 个任务（`unmanaged:true`）。
 - 截图：`_verify/runner-studio-pr1-20261104/`（`runner-overview/tasks/queue/runs/settings.png`、`studio-nav.png`、`runner-8789.png` 等）。
 
@@ -338,23 +339,23 @@ pub struct RunnerConfig { pub port: u16, pub bind: String }  // 默认 8789 / "1
 ### A.9.9 已知遗留（PR1 不做，已分期）
 
 1. **Studio 旧 `#page-schedule` DOM 与 sched-entry 对话框仍保留**（已不可达，仅兼容占位）⇒ 原计划 **PR2 删除**，**PR2 未覆盖、仍未删**（`ui/index.html:408`、`:595`），顺延到 PR6 收拾。
-2. Runner 的**安装/卸载**（PR5）、**队列编辑/调度启停/临时运行**（PR6）均未实现；**运行参数配置已在 PR2 实现**（§A.10；Runner「已安装任务 → 配置」表单 + `GET/PUT /runner/tasks/<id>/config`），PR1 的「只读页」约束已被 PR2 取代。
+2. Runner 的**安装/卸载**已由 **PR5 ✅（§A.13）** 实现；**队列编辑/调度启停/临时运行**（PR6）仍未实现；**运行参数配置已在 PR2 实现**（§A.10；Runner「已安装任务 → 配置」表单 + `GET/PUT /runner/tasks/<id>/config`），PR1 的「只读页」约束已被 PR2 取代。
 3. **设备租约**（Studio 试运行 vs Runner 调度抢设备）⇒ **PR6**（`config/device.lease`）。
 4. `docs/` 旧截图/脚本说明里的 `start-editor.bat` 需逐步改名为 `start-studio.bat`（本轮只保证兼容转调）。
-5. `.gitignore` 的 `/config/values.json`、`*.tmp`、`/tasks/*/meta.json.bak` 已由 **PR2** 加入；`packages/` 留给 **PR5**（`/dist` 已覆盖产物）。
-6. PR1 的 Runner 页面是**只读骨架**；`README-RUNNER.txt` 已注明「安装/配置/调度编辑后续版本开放」，不要对终端用户承诺未实现按钮。**PR2 起「配置」已可用**（§A.10.5），**PR3 起值注入已接入 scheduler/queue**（§A.11），安装（PR5）/调度编辑（PR6）仍未实现。
+5. `.gitignore` 的 `/config/values.json`、`*.tmp`、`/tasks/*/meta.json.bak` 已由 **PR2** 加入；`/packages/`、`/dist/packages/` 已由 **PR5** 加入（`/dist` 已覆盖产物）。
+6. PR1 的 Runner 页面是**只读骨架**；`README-RUNNER.txt` 已在 PR5 更新。**PR2 起「配置」已可用**（§A.10.5），**PR3 起值注入已接入 scheduler/queue**（§A.11），**PR5 起安装/卸载/回滚已可用**（§A.13），只剩调度编辑（PR6）未实现。
 
 ### A.9.10 验收清单映射（§D.4）
 
 | 验收组 | PR1 状态 |
 |---|---|
-| **V1 两端不同入口（1~4）** | ✅（1~3 已验收；4 的共享路由契约已测：Runner `/instance` 200、两端 `/scheduler/status` 200，同一 `device` 可在复跑时核对）：8788/8789 双进程、Studio 无调度 nav、Runner 5 nav、互拿对方路由 404 |
-| V2 Studio 发布（5~7） | ⬜ PR5 |
-| V3 Runner 安装（8~10） | ⬜ PR5 |
+| **V1 两端不同入口（1~4）** | ✅（1~3 已验收；4 的共享路由契约已测：Runner `/instance` 200、两端 `/scheduler/status` 200，同一 `device` 可在复跑时核对）：8788/8789 双进程、Studio 无调度 nav、**Runner 6 nav（PR5 起）**、互拿对方路由 404 |
+| V2 Studio 发布（5~7） | ✅ PR5（§A.13.8；`POST /task/publish` + 历史 + 409/400） |
+| V3 Runner 安装（8~10） | ✅ PR5（§A.13.8；path 模式安装 + 校验失败拒绝 + 卸载守卫 409；依赖自动装与 `installed.json` 由集成/E2E 覆盖） |
 | V4 配置（11~12） | ✅ PR2（临时任务 `pr2demo` 验收；Studio 8790 / Runner 8791；见 §A.10.7） |
 | V5 调度与执行（13~15） | ⬜ PR6 |
-| V6 子任务取父配置（16~18） | ⬜ PR4 |
-| V7 不动用户数据（19） | ✅ PR1/PR2/PR3 期间均未提交用户数据（`assets/`/`frames/`/`scheduler.json`/`tasks/` 均未动） |
+| V6 子任务取父配置（16~18） | ✅ PR4 的 16（§A.12.7）；17 待 PR6、18 由 runtime 单测覆盖 |
+| V7 不动用户数据（19） | ✅ PR1~PR5 期间均未提交用户数据（`assets/`/`frames/`/`scheduler.json`/`tasks/` 均未动） |
 
 ## A.10 PR2 实现记录（2026-11-04，已验证；已提交 `dfe8776`）
 
@@ -628,7 +629,7 @@ pub struct RunnerConfig { pub port: u16, pub bind: String }  // 默认 8789 / "1
   - **允许常量映射**（无 `param()` 引用）；**计算表达式**如 `param('a'+'b')` 拒绝（无法静态校验父 key）；
   - `inherit` 值合法。
 - **T3 语义不变**：lint 仍看未展开 flow，父任务不会被要求声明子任务的 key；T7 与 T3 不重复报错。
-- **T7 不查环**（环/深度由 loader 负责）；**serve 的创建/校验 API 尚未接 T7**（当前只有 CLI `task lint`，发布流程应在 PR5 接上）。
+- **T7 不查环**（环/深度由 loader 负责）；**serve 的创建/校验 API 尚未接 T7**（当前只有 CLI `task lint`；**PR5 的发布/安装流程已接 T7**，§A.13.3）。
 
 ### A.12.5 T6 修复（评审 P1-1）
 
@@ -665,7 +666,7 @@ pub struct RunnerConfig { pub port: u16, pub bind: String }  // 默认 8789 / "1
 
 ### A.12.8 已知限制（写文档，不阻塞）
 
-1. **PR5 必须做包 manifest `engine.flow_ops` 闸门**：老 Runner 的 loader 只读 `args.task`，会**静默忽略** `call_task.params`/`inherit`（少传参数、`inherit:"none"` 不隔离），**不会** unknown-instruction 报错；`with_params` 不落盘所以也不能靠它兜底。PR5 发布/安装必须从**原始 flow** 的 `call_task.args.{params,inherit}` 推导 `flow_ops` 并拒绝老 Runner（旧稿 §C.4.6 的“老 Runner 解析失败”描述已更正）。
+1. **PR5 必须做包 manifest `engine.flow_ops` 闸门**（**✅ 已在 PR5 实现，§A.13.2**）：老 Runner 的 loader 只读 `args.task`，会**静默忽略** `call_task.params`/`inherit`（少传参数、`inherit:"none"` 不隔离），**不会** unknown-instruction 报错；`with_params` 不落盘所以也不能靠它兜底。PR5 发布/安装从**原始 flow** 的 `call_task.args.{params,inherit}` 推导 `flow_ops` 并拒绝老 Runner（旧稿 §C.4.6 的“老 Runner 解析失败”描述已更正）。
 2. **checkpoint 粒度**：子任务中途崩溃仍会重跑整个 `with_params` 块（安全但变粗）；body 变量回滚保持；旧 checkpoint 需删除。
 3. **T7 不查环**（loader 环/深度检测负责）；T7 尚未接 serve 的创建/校验 API；`with_params` 是内部实现，手写会被 T3 检查 body 参数 key（作者应只写 `call_task`）。
 4. **meta 参数 key 仍须 ASCII 标识符**（PR2 既有规则；任务名可中文）；lint 会对中文 param key 报 META。
@@ -674,6 +675,133 @@ pub struct RunnerConfig { pub port: u16, pub bind: String }  // 默认 8789 / "1
 7. **warnings API 严格化后恒为空**：`load_flow_with_warnings` 保留仅为兼容/未来非致命 warning。
 
 ★ **提交边界（§A.12 / PR4）**：代码 = 上述 **7 个 Rust 文件**；docs 本批 8 份左右；**不含**用户数据（`assets/`/`frames/`/`tasks/`/`scheduler.json`）与 `dist/`；父 `048dff5`，docs 随后（不写死 hash）。
+
+---
+
+## A.13 PR5 实现记录（2026-11-04，已验证；代码未提交）
+
+> 基线：分支 `dev`，HEAD = **`442f5cb`**（PR4 代码 + seq 104 docs 已提交）。**PR5 改动 = 新增 2 文件 + 修改 14 文件**：新增 `crates/oas-task/src/package.rs`、`apps/oasd/src/package_cmd.rs`；修改 `crates/oas-task/{Cargo.toml,src/lib.rs}`、`apps/oasd/src/{serve.rs,main.rs,config.rs}`、`Cargo.lock`、`.gitignore`、UI 6 文件（`index.html`/`app.js`/`runner.html`/`runner.js`/`runner.css`/`ui_pure_test.js`）、`packaging/README-RUNNER.txt`（Lead 待提交）。
+> 范围 = **TaskPackage `.oaspkg` 发布/安装 + `manifest.engine.flow_ops` 闸门**（Phase 1 垂直切片：Studio 发布 → Runner 安装 → 配置 → 跑）；**不含** PR6 的内嵌调度/队列执行/设备租约/`/runner/run`/上传模式/显式纳管/素材 GC。
+> 证据：`D:\OAS-dev\_verify\runner-studio-pr5-20261104\`（`PR5-BACKEND-REPORT.md` / `PR5-UI-REPORT.md` / `REVIEW.md`（331 行） / `FIX-REPORT.md` / `e2e/*.out.txt` / 截图 `studio-publish.png`、`studio-publish-result.png`、`runner-packages.png`）。
+
+### A.13.1 包格式 / 核心（`crates/oas-task/src/package.rs`，新）
+
+- 依赖：`zip 0.6.6`（`default-features=false`，仅 `deflate`）+ `sha2 0.10.9`；纯 Rust，无 `time`/`bzip2`/`zstd`；`Cargo.lock` 已更新。
+- `.oaspkg` = **zip**，包根固定契约：
+
+```
+manifest.json           必需
+checksums.sha256        必需（每行 `<sha256>  <relative/path>`，两空格）
+task/meta.json          必需
+task/flow.json          必需
+task/assets.json        可选（legacy 任务素材；统一素材模式下为空）
+task/images/aNNN.png    可选
+deps/<task_id>/         可选（call_task 目标的递归闭包）
+assets/assets.json      可选（被引用全局素材快照）
+assets/images/aNNN.png  可选
+README.md               可选（人读发布说明）
+```
+
+- **只含相对路径、统一 `/`**；写入端拒绝反斜杠/盘符/绝对路径/`.`/`..`/空路径段；**zip-slip 在 `read_package` 与 `extract_to` 两处都校验**。
+- **manifest**（`Manifest`，§B.2）：`package_schema=1` / `package_id` / `task_id` / `task_version` / `name` / `created_at_ms` / `tool{version,git?,dirty,surface}` / `source{repo,commit}` / `engine{template_version,min_engine,flow_ops}` / `files[{path,sha256,bytes}]` / `params_schema{own,call_deps[{child,mapping,inherit,child_params}]}` / `dependencies[{task_id,version,included}]` / `asset_refs[{id,kind,sha256}]` / `platform{os,needs_adb,design_resolution?}` / `signature:null`。
+- `package_id = pkg-<task_id>-<task_version>-<sha256(checksums.sha256)[:12]>`（**内容摘要**，不是最终 zip hash，避免自指）；发布同时写同名 **`.oaspkg.sha256` sidecar**（`sha256sum -c` 兼容；sidecar 写失败只 warning，不影响包）。
+- 公开 API：`build_package` / `read_package`（不落盘全量校验）/ `extract_to` / `verify_checksums` / `validate_for_publish` / `derive_flow_ops(_for_files)` / `unsupported_flow_ops` / `version_at_least`。
+- **checksums 集合严格相等**：缺文件、多文件、重复行、`manifest.files` 与 `checksums.sha256` 数量/哈希不一致都拒绝；`manifest.json`/`checksums.sha256` 不得列进 checksums。
+- **解压炸弹 / 声明大小欺骗加固（评审 P1-2）**：条目 ≤ **2000**；单条声明 ≤ **256 MiB**；总声明 ≤ **512 MiB**；单条声明/压缩比 > **100:1** 拒绝（<1 MiB 小文件豁免，避免 deflate 头开销误伤）；每个条目经 `Read::take(declared+1)`，声明撒谎读到第 declared+1 字节即拒；**encrypted 条目拒绝**（zip 0.6.6 `PASSWORD_REQUIRED` 映射为明确错误）；`read_package` 与 `extract_to` 两处生效。
+- **运行态文件排除**：打包时跳过 `state/`、`.backup`/`*.backup`、`*.clicks.jsonl`、`*.tmp`、`*.bak`；`validate_for_publish` 对**非空 `state/`**、点击日志报错；**空 `state/` 目录仅 warning**（现有 `tasks/返回庭院/state/` 空目录不再阻塞发布，评审偏差修复）。
+- **reproducible**（`--reproducible`）：固定 zip 时间戳 + `created_at_ms=0` + 无 wall-clock ⇒ 同输入同 hash；普通模式记录当前时间。
+- 素材快照只含 **实际被引用 id**（`flow.validate_assets` 闭包，含 `deps` 递归），不含整个 store；不打包 `library/`、`frames/`、`runs/`。
+
+### A.13.2 `flow_ops` 闸门（设计 §C.4.6，PR5 必做项）
+
+- 实现常量 `SUPPORTED_FLOW_OPS = ["call_task", "call_task.params", "call_task.inherit.none", "with_params"]`（**按语义粒度**拆，不是设计示例里的 2 项；老 Runner 四个都不支持）。
+- 发布时**从原始 flow** 推导（`derive_flow_ops`）：扫描 `steps`（递归 `then`/`else`/`body`/`args.body`），对 `call_task` 看 `args.params` 是否非空、`args.inherit=="none"`；手写 `with_params` 也计入（防绕过）；**不扫描**内存展开的 `with_params`（它不落盘）。根 flow + 所有内嵌 `deps/` flow **并集**写入 `manifest.engine.flow_ops`。
+- 安装时**从实际打包 flow 重算**并与 manifest **严格相等**（不是“包含即可”）：篡改 manifest 把 `flow_ops` 改空 → **400 `manifest.engine.flow_ops does not match the packaged flows`**。
+- 重算结果必须 ⊆ Runner 的 `SUPPORTED_FLOW_OPS`，否则 **400 `unsupported_flow_ops`**，提示升级 Runner。
+- `min_engine` 安装时校验：逐段数字比较（`version_at_least`，忽略前导 `v`/后缀，pre-release 不排序）；过高 → **400 `engine_too_old`**。`template_version` 沿用 meta 检查（过高拒绝）。
+- `manifest.task_id`/`task_version` 必须与 `task/meta.json` 一致；内嵌依赖版本必须与 `dependencies[].version` 一致；`deps/` 目录集合必须与 `included:true` 集合相等。
+
+### A.13.3 Studio 发布（CLI + HTTP）
+
+- CLI：`oasd studio publish --task <id> [--tasks-dir <dir>] [--assets-dir <dir>] [--out <dir|file>] [--force] [--include-deps] [--reproducible]`。
+  - 默认 `out=dist/packages`、`assets-dir=tasks_dir.parent/assets`；`--out` **只允许相对 `dist/` 下**（拒绝绝对路径、盘符、`..`、`dist` 之外），默认文件名 `<task_id>-v<version>.oaspkg`。
+  - 成功打印 `published:` / `sha256:` / `package_id:` / `engine_flow_ops:` / `dependencies: N (included: M)` / 逐条 `warning:`；失败 exit 1、参数错误 exit 2。
+- HTTP（Studio-only）：`POST /task/publish {task, out?, force?, include_deps?, reproducible?}` → 200 `{ok,task_id,task_version,package_id,path,sha256,warnings[]}`；lint 失败 **400**（逐条 errors）、同名已存在且无 force **409**、其他 400。
+- `GET /task/package?task=<id>`（Studio-only）：扫 `dist_dir` 的 `<task>-v*.oaspkg`，返回 `{ok,task,dir,packages[]}`（每行 `file/path/sha256/package_id/task_id/task_version/created_at_ms/flow_ops`；坏包给 `error` 字段仍 200；**版本降序**、同版本按 `created_at_ms`、再按文件名；上限 100）。
+- 校验 = 发布前 **lint T1/T3/T4/T5/T6/T7**（发布流程已接 T7；`call_task` 目标必须存在且可解析）+ 运行态排除 + 模板版本 + 素材引用存在；**lint 失败不产半成品**（写 tmp 后 rename；`--force` 才覆盖）。
+- `include_deps` 默认 **false**（CLI；UI 默认勾选 true）；`manifest.dependencies` 总是写全，`included` 由是否实际打进 `deps/` 决定。
+- 发布成功包含 `package_id`/`engine_flow_ops`/`dependencies`/`warnings`（HTTP 以上字段由 manifest + path/sha 组合，CLI 逐行打印）。
+
+### A.13.4 Runner 安装 / 卸载 / 回滚
+
+- API（全部 Runner-only）：
+  - `POST /runner/install {path, force?}`：**Phase 1 仅本机绝对 `.oaspkg` 路径**；相对路径/不存在/非 `.oaspkg` → 400；`upload:true` → 400（上传/流式 defer Phase 5）。成功 200 `{ok,package_id,task_id,version,replaced,backup,warnings,installed_tasks,phase:"path",note}`。
+  - `POST /runner/uninstall {task_id, purge_config?, force?}`：成功 200 `{ok,task_id,backup,removed_package,config_purged}`。
+  - `POST /runner/packages/activate {task_id? | package_id?, backup?}`：恢复 `installed.json` 记录的最近 backup，或显式 `backup`；成功 200 `{ok,task_id,version,package_id,restored_from,backup}`。
+  - `GET /runner/packages`：`{ok,dir,installed_file,packages[],unmanaged[],phase:"path",note}`。
+- **安装严格顺序**：① 读包 + 全量校验（zip-slip/大小/checksums）→ ② `flow_ops` 声明闸门（见 §A.13.2）→ ③ staging 解压 + `verify_checksums` → ④ 根 meta/template/task_id/version → ⑤ `deps/` 集合与内嵌版本、非内嵌依赖已安装且版本足够 → ⑥ 组 `tree/`（依赖先、根最后）→ ⑦ **flow_ops 从 tree 重算并严格相等** → ⑧ **lint**（临时 `lint_tasks/`，含已安装非内嵌依赖的 meta/flow 副本）→ ⑨ `dirty_task` 检查（meta mtime 比 installed_at 新 / 裸目录无记录）→ ⑩ 同 id 同 version 重装必须 force → ⑪ 素材合并**计划** → ⑫ 逐个备份旧任务到 `packages/backup/<id>-<oldver>-<ts>/` → ⑬ 原子 rename 提交（失败回滚）→ ⑭ 应用素材合并（失败回滚任务+素材）→ ⑮ `installed.json` 原子写（失败回滚任务/素材）→ ⑯ 清理 staging。**任一步失败回滚任务/素材/installed**。
+- **同版本重装必须 `force`**：无 force → **409 `already_installed`**；版本变化（升/降级）正常安装并备份；目标目录缺失视为修复，不需要 force。裸目录（unmanaged）覆盖也需 `force`（否则 409 `dirty_task`）。
+- `installed.json`：`{schema_version:1, packages:[{package_id,task_id,version,sha256,installed_at_ms,source{repo,commit,signed},backup,dependencies}]}`；**原子 RMW**；时间 `now_ms().max(now)` 保证不把刚提交的文件误判成 dirty。
+- **卸载**：先备份 `tasks/<id>/` 到 `packages/backup/uninstall-<id>-<ts>/`（**不直接删**），再移除 `installed.json` 条目；`purge_config:true` 才删 `config/values.json` 中该任务值。守卫（无 force）：scheduler entry/queue 引用、正在运行、被其他已安装包 `dependencies` 引用 → **409 `uninstall_refused`**，错误逐项列引用方；`force:true` 可绕过。缺失任务/目录 → 404。
+- **activate**：有 installed 记录时恢复其最近 backup（或显式 `backup`）；当前任务目录先移到新 backup。**无 installed 记录时**（典型 = 卸载后）自动扫 `backup/` 找**最新且归属校验通过**的备份恢复，重建 registry 条目（`restored_from`）；`task_id` 目录已存在 → 409 `unmanaged_dir`。显式 `backup` 必须 `backup/` 前缀 + 归属 task_id 一致（防跨任务回滚）。
+- `GET /runner/tasks` 增字段：`installed` / `package_id` / `installed_at_ms` / `backup` / `unmanaged` / `meta_version`；只枚举 `tasks/*`（installed 有记录但目录丢失不显示，见 §A.13.9）。
+
+### A.13.5 包内素材 vs 全局素材库（P1-1 修复）
+
+- **全新 Runner（`assets/` 只有 `.keep`、无 `assets.json`）**：安装含素材快照的包时，用包内 `assets/assets.json` **初始化 store**（写 `assets.json` + 拷贝图片），再走正常合并；warning `initialized the global asset store at ... from the package snapshot (N asset(s), M collection(s))`。
+- 无快照但 `manifest.asset_refs` 非空 → **400 `missing_asset_snapshot`**（包不完整，提示重新发布带快照）；无引用 → 跳过。
+- **同 id + 同定义 + 同字节** → 复用；**同 id 定义或字节不同 → 400 `asset_conflicts`**，错误逐项列 `local sha256` / `package sha256`，建议「在 Studio 重命名该素材后重发，或清空 Runner 全局素材库」，并明确「自动改名 `<id>_2` + flow 重写本版不可用，计划后续版本」。
+- 包内新 id → 追加（`rev` 从 1 起；图片名分配避开已用 `images/aNNN.png`）；合并后不回写包；初始化/合并失败回滚新增素材与 store。
+- 设计稿 §B.4.3 的「自动改名 + 重写安装态 flow」**Phase 1 不实现**（用户接受，Phase 5 再议，见 §A.13.9-②）。
+
+### A.13.6 UI（`apps/oasd/ui/`）
+
+- **Studio**：任务库「发布…」→ `#task-publish-dialog`（标题含任务名；`include_deps` 默认勾选、`force`、可折叠 `out` 输入；GET `/task/package` 历史列表；POST `/task/publish`；成功显示 `path`/`package_id`/`sha256`/warnings；409/400 逐行显示；发布中禁用）。
+- **Runner**：nav 由 5 → **6 项**（概览 / 已安装任务 / **安装包** / 队列与调度 / 运行记录 / 设置）；「安装包」页 = 本机绝对路径 + force 安装、已安装包列表（卸载/回滚按钮、安装时间/版本/package_id/backup）、unmanaged 未纳管列表、操作状态行；任务行显示包徽标（`installed vN` / `未纳管`）。
+- 全 `textContent`/`createElement`，无 `innerHTML`/`eval`/外部 CDN；**无跨 surface 调用**（Runner 不请求 Studio API，Studio 不请求 Runner API）；平台中立（无盘符/端口硬编码）。
+- 示例路径文案为绝对路径（Lead 已修，避免用户误填相对路径）。
+
+### A.13.7 评审与修复（无 P0；3 个 P1）
+
+| # | 问题 | 处理 |
+|---|---|---|
+| **P1-1** | 全新 Runner（assets 只有 `.keep`）安装含素材包时丢素材快照 | **已修**：初始化 store；Lead E2E 验证空 assets 目录安装后 `assets.json` + 图片落盘、warning 提示（§A.13.5） |
+| **P1-2** | zip 解压炸弹 / 声明大小欺骗 | **已修**：≤2000 条目、压缩比 >100:1 拒绝、`take(declared+1)`、512 MiB 总上限、encrypted 拒绝；`read_package`/`extract_to` 两处生效（§A.13.1） |
+| **P1-3** | 素材同 id 变化导致 v2 装不上 | **不实现自动改名/flow 重写**（设计 Phase 5）；错误文案可操作化并记入限制；需用户接受（§A.13.5/§A.13.9-②） |
+
+- 其他设计偏差修复：同版本重装强制 force（409）、空 `state/` 仅 warning、CLI `--assets-dir` 派生、`min_engine` 校验、activate 卸载后恢复、publish `out` 限制、activate 备份归属校验（§A.13.4）。
+- 已知 P2（不阻塞）：`PackageError::Other` IO 错误 → HTTP 400（应 500）；`manifest.dependencies` 未与 flow `call_task` 闭包交叉校验（tamper-resistance）；安装不查环/深度（runtime `MAX_CALL_DEPTH` 兜底）且不检查任务正在运行；`installed.json` 损坏时生命周期 API 与 `/runner/tasks` 500（fail-closed）。
+
+### A.13.8 测试 / E2E / 包
+
+| 项 | 结果 |
+|---|---|
+| `cargo test --workspace` | **677 passed / 0 failed**（21 targets；PR4 624 → PR5 **+53** = 原 36 + 修复 17） |
+| 分 crate | oas-task **111**（89→111）、oasd **311**（280→311）、oas-flow **62**、oas-runtime **157 lib + 2 integration** |
+| 构建 | `cargo build -p oasd --features ocr` exit 0、release build exit 0（**6 warnings**）；`git diff --check` clean |
+| UI | pure test **1442 checks / 237 referenced ids / 0 dead ids**（1338/231/0 → +104）；`runner_ui_audit` **55 ids / 0 dead / 6 nav**（原 41/0/5）；`node --check` 3/3（Lead 另修发布历史读 `task_version`、安装页示例绝对路径文案） |
+| Runner 包 | 用 PR5 release 重建：`dist/oasd-runner-v0.1.0-win64.zip` = **37,591,694 B**，SHA256 **`823F93CDB634DA56C91421AAEF39255FBB0522ED9F275116DC2891E59D14031E`**（Runner-only；不入 git） |
+
+- **Lead E2E（临时数据，不碰用户数据）**：
+  - 发布 `asset_task`（flow `click sel="返回箭头"`，全局 store 快照）→ `.oaspkg` 含 `assets/assets.json`+`assets/images/a001.png`、`manifest.asset_refs=[返回箭头]`、`package_id=pkg-asset_task-1-…`。
+  - 全新 Runner（assets 目录只有 `.keep` 等价）安装 → **200**，warning `initialized the global asset store ... (1 asset(s))`；`assets/assets.json` 含返回箭头 item、`a001.png` 落盘；`tasks/asset_task` 存在。
+  - 同版本重复安装无 force → **409 `already_installed`**；force → 200 replaced + backup；卸载 → `backup/uninstall-asset_task-…`；activate（无 installed 记录）→ **200 `restored_from=…`**，任务回到 `tasks/`。
+  - 负向：篡改 `manifest.engine.flow_ops=[]` → **400 `flow_ops does not match`**；zip-slip `../evil-slip.txt` → **400** 且包外无文件；Studio 上 `/runner/install` **404**、Runner 上 `/task/publish` **404**。
+  - UI CDP：Studio 发布对话框（历史列表/成功显示 path/package_id/sha）、Runner「安装包」页安装成功 + 列表 + 卸载/回滚按钮；截图 `_verify/runner-studio-pr5-20261104/{studio-publish,studio-publish-result,runner-packages}.png`。
+- **§D.4 验收映射**：V2（5~7）✅、V3（8~10）✅（依赖自动装与 `installed.json` 两条由安装集成测试 + E2E 覆盖；篡改图片 sha 拒绝、卸载被依赖 409 由单测覆盖）；V7 延续（用户数据未提交）。
+
+### A.13.9 已知限制（写文档，不阻塞）
+
+1. **Phase 1 安装仅 path 模式**：无 `upload`/`incoming`/流式（4 MiB JSON body 限制仍适用于请求）；上传、`/runner/run`、调度启停、设备租约 = Phase 5 / PR6。
+2. **素材同 id 变化不能升级**：无自动改名 + flow 重写；冲突时 400 并给建议（重命名素材重发 / 清空 Runner 全局素材库）；需用户接受。
+3. **卸载不级联删除内嵌依赖**；activate 只回滚任务目录/registry，**不回收/回滚全局素材**；无素材 GC。
+4. **`installed.json` 损坏时**包生命周期 API 与 `/runner/tasks` 会 **500**（fail-closed，无自动隔离）；**无跨进程 packages 锁**（单 Runner 串行假设）。
+5. **T4 external 集合实现是替换而非并集**（跨旧任务本地素材 + 全局 store 混合模式可能误报；当前仓库无命中）；`/runner/tasks` 只枚举 `tasks/*`（installed 有记录但目录丢失不显示）；**§B.4.5「纳管」未实现**（unmanaged 可被 force 安装覆盖，但没有显式纳管 API）。
+6. **publish `out` 限制为相对 `dist/`**；`GET /task/package` 只扫默认 `dist_dir`，自定义 `out` 的历史不可见；`PackageError::Other` 的 IO 错误 → HTTP 400（应 500，已知 P2）；`manifest.dependencies` 未与 flow `call_task` 闭包交叉校验（tamper-resistance P2）；安装不查环/深度（runtime `MAX_CALL_DEPTH` 兜底）且不检查任务正在运行。
+7. **`min_engine` 逐段数字比较**（非严格 semver，pre-release 不排序）；Windows 保留名/大小写重名/前导空格 checksums 属 P3 健壮性（fail-closed）。
+8. 文档同步：§A.3/§D.4 的 Runner nav 5 页 → **6 页**；`README-RUNNER.txt` 已在打包文件更新（安装可用、force/素材/回滚说明）。
+
+★ **提交边界（§A.13 / PR5）**：代码/UI/打包配置 = `crates/oas-task/{Cargo.toml,src/package.rs(新),src/lib.rs}`、`apps/oasd/src/{package_cmd.rs(新),serve.rs,main.rs,config.rs}`、`Cargo.lock`、`.gitignore`、UI 6 文件、`packaging/README-RUNNER.txt` + docs；**不含**用户数据（`assets/`/`frames/`/`tasks/`/`scheduler.json`/`scheduler.json.bak`）与 `dist/`；父 `442f5cb`，docs 随后（不写死 hash）。
 
 ---
 
@@ -702,6 +830,8 @@ assets/                       # 可选：被引用的全局素材快照
 README.md                     # 可选（人读的发布说明）
 ```
 
+> **PR5 实现状态（§A.13.1）**：以上结构已按实现落地（`crates/oas-task/src/package.rs`）；条目名一律 `/` 相对路径；打包时排除 `state/`、`*.clicks.jsonl`、`*.tmp`、`*.bak`、`.backup`；空 `state/` 仅 warning。`.oaspkg` 仍是 zip，后缀只影响双击/文件选择器。
+
 ## B.2 manifest 字段
 
 ```json
@@ -714,7 +844,8 @@ README.md                     # 可选（人读的发布说明）
   "created_at_ms": 1793000000000,
   "tool": { "version": "0.1.0", "git": "f16fea1", "dirty": false, "surface": "studio" },
   "source": { "repo": "D:/OAS-dev/oas-core", "commit": "f16fea1" },
-  "engine": { "template_version": 1, "min_engine": "0.1.0", "flow_ops": ["call_task","with_params"] },
+  "engine": { "template_version": 1, "min_engine": "0.1.0",
+              "flow_ops": ["call_task","call_task.params","call_task.inherit.none"] },
   "files": [ { "path": "task/meta.json", "sha256": "…", "bytes": 512 } ],
   "params_schema": {
     "own": [ { "key":"max_rounds","type":"int","default":3,"min":1,"max":99,
@@ -731,76 +862,87 @@ README.md                     # 可选（人读的发布说明）
 
 字段必要性：
 - `task_id` / `task_version` 复用 `meta.task_id`（缺失回退 `name`，`meta.rs:278-281`）与 `meta.version`（`meta.rs:158-159`）——**现有字段，不需要新造**。
-- `engine.template_version` 对应 `meta.template_version` + `TEMPLATE_VERSION`（`meta.rs:27,356-372`）；**`flow_ops` 是 `with_params` 的兼容闸门**（包里用了新 op，老 Runner 拒绝安装）。
+- `engine.template_version` 对应 `meta.template_version` + `TEMPLATE_VERSION`（`meta.rs:27,356-372`）；**`flow_ops` 是调用语义的兼容闸门**（列表按实现粒度：`call_task` / `call_task.params` / `call_task.inherit.none` / `with_params`；包里声明了老 Runner 不支持的 op 就拒绝安装，§A.13.2）。
+- **实现订正（PR5）**：`engine.min_engine` 是安装闸门（逐段数字比较，过高 → `engine_too_old`）；`source` 只有 `repo`/`commit`（无 `dirty`/`signed`，签名状态在 `installed.json.source.signed=false`）；`params_schema.own` 是原始 JSON 数组；`call_deps` 一行对应**原始根 flow** 的一个 `call_task` 调用点。
 - `params_schema.own` 是 `meta.params` 的**快照**，不是第二权威（安装后仍以 `tasks/<id>/meta.json` 为准，避免双份 schema 漂移）。
 - `dependencies` 是 `call_task` 的静态闭包（深度上限沿用 `MAX_CALL_DEPTH=8`，`lib.rs:707`）。
 - `signature: null`：v1 不做签名（§A.7）。
 
-## B.3 发布流程（Studio）
+## B.3 发布流程（Studio）— ✅ PR5 已实现（§A.13.3）
 
-1. **入口**：CLI `oasd studio publish --task <id> [--out dist/packages] [--force] [--include-deps]` + UI「任务库 → 发布…」按钮（`POST /task/publish`，返回 `{path, sha256, warnings[]}`）。
+1. **入口**：CLI `oasd studio publish --task <id> [--tasks-dir] [--assets-dir] [--out] [--force] [--include-deps] [--reproducible]` + UI「任务库 → 发布…」按钮（`POST /task/publish`）。HTTP 返回 `{path, sha256, package_id, task_id, task_version, warnings[]}`；CLI 额外打印 `engine_flow_ops` 与 `dependencies (included)`。
 2. **校验（发布前必须全绿，复用现有能力）**：
 
-   | 检查 | 复用 |
+   | 检查 | 实现 |
    |---|---|
-   | 任务名/ID 合法 | `validate_task_name`（`lib.rs:535`）、`meta.task_id` 校验（`meta.rs:378-380`） |
-   | lint T1/T3/T4/T5/T6 | `TaskBundle::lint()`（`lib.rs:2035`）/ `lint_task`（`lib.rs:2563`） |
-   | `param('k')` 都声明 | T3（`lib.rs:2146-2170`） |
-   | `template_version` ≤ 引擎 | `meta.rs:356-372` |
-   | 素材引用存在 | T4 + `flow.validate_assets`（`lib.rs:2181`） |
-   | `call_task` 目标存在（**现状没有**） | **新增 lint T7**（§C.4.5） |
-   | 无 `state/`、无 `.clicks.jsonl` | 新增（`tasks/*/state` 已在 `.gitignore:9`） |
+   | 任务名/ID 合法 | `validate_task_name` + `meta.task_id` |
+   | lint T1/T3/T4/T5/T6 **/T7** | `TaskBundle::lint_with_calls`（**发布流程已接 T7**；目标存在+可解析） |
+   | `param('k')` 都声明 | T3 |
+   | `template_version` ≤ 引擎 | `check_template_version` |
+   | 素材引用存在 | T4 + `flow.validate_assets` |
+   | `call_task` 目标存在 | **T7**（PR5 发布已接） |
+   | 无 `state/`、无 `.clicks.jsonl` | 新增（**非空 state/ 拒绝；空 state/ 仅 warning**） |
 
-3. **产出命名**：`dist/packages/<task_id>-v<task_version>.oaspkg` + 同名 `.sha256`；已存在同名文件 → 默认拒绝（提示 `--force` 或 `meta.version += 1`）。
-4. **产物是否入 git**：**不入**。`dist/` 已被忽略（`.gitignore:13`）；`packages/`（Runner 侧）也应忽略。将来若要「发布历史」，只提交 `manifest.json` 到 `dist/packages/manifests/`（可选，Phase 4 再议，§D.2 Q7）。
-5. **发布幂等**：同输入 → 同 `checksums.sha256`；`created_at_ms` / `package_id` 会变（含时间），要可复现则加 `--reproducible`（固定 mtime、去掉时间字段）。
+3. **产出命名**：`dist/packages/<task_id>-v<task_version>.oaspkg` + 同名 `.oaspkg.sha256` sidecar；已存在同名文件 → **409 / exit 1**（提示 `--force` 或 `meta.version += 1`）。`--out` **只允许相对 `dist/` 下**（默认 `dist/packages`；传目录则拼默认文件名，传 `.oaspkg` 文件则用之；拒绝绝对路径/盘符/`..`）。
+4. **产物是否入 git**：**不入**。`/dist`、`/dist/packages/`、`/packages/` 均已 gitignore（`.gitignore:13,15,16`）。发布历史 = `GET /task/package` 扫 `dist_dir`（默认 `dist/packages`，版本降序，最多 100）；自定义 `out` 的历史不在默认目录中（限制）。
+5. **发布幂等**：同输入 → 同 `checksums.sha256`；`created_at_ms`/`package_id` 默认含时间，要可复现加 `--reproducible`（固定 zip 时间戳 + `created_at_ms=0`）。**lint 失败不产半成品**（先写 tmp，成功后 rename；失败清理 tmp）。
 
-## B.4 安装 / 更新 / 卸载（Runner）
+## B.4 安装 / 更新 / 卸载（Runner）— ✅ PR5 Phase 1 已实现（§A.13.4）
 
-**新增模块**：`crates/oas-task/src/package.rs`（打包/解包/manifest，纯逻辑可单测）+ `apps/oasd/src/runner.rs`（HTTP 编排与落盘）。`oasd` 侧不直接依赖 `zip` 的话可把 zip 读写放 `oas-task`（它已依赖 serde/oas-flow）。
+**模块**：`crates/oas-task/src/package.rs`（打包/解包/manifest，纯逻辑）+ `apps/oasd/src/package_cmd.rs`（HTTP 编排、`installed.json`、卸载/回滚、素材合并）。`oasd` 不直接依赖 `zip`。
 
 ### B.4.1 安装 API
 ```
-POST /runner/install            # {path:"D:/x.oaspkg"} 或 {upload:true} + application/octet-stream 流式
-  -> {ok:true, package_id, task_id, version, replaced:bool, warnings:[...], backup:"packages/backup/..."}
-POST /runner/uninstall          # {task_id, purge_config?:bool}
-POST /runner/packages/activate  # {package_id}  回滚到某个历史版本（Phase 3）
-GET  /runner/packages           # 已安装清单（installed.json + 校验状态）
+POST /runner/install            # {path:"D:/x.oaspkg", force?:bool}（Phase 1 仅本机绝对路径；upload:true → 400）
+  -> {ok:true, package_id, task_id, version, replaced:bool, warnings:[...], backup:"packages/backup/...", installed_tasks:[...]}
+POST /runner/uninstall          # {task_id, purge_config?:bool, force?:bool}
+POST /runner/packages/activate  # {task_id? | package_id?, backup?}  回滚到记录的最近 backup / 显式 backup
+GET  /runner/packages           # installed.json + unmanaged（Phase 1 path 模式）
 ```
 
 ### B.4.2 落盘流程（严格顺序，任一步失败即回滚）
-1. 收包 → `packages/incoming/<sha256>.part` → 校验顶层 sha256（与请求头 `X-Package-Sha256` 或文件名比对；不匹配则删）。
-2. 解压到 `packages/staging/<package_id>/`：逐 entry 做 zip-slip 校验（§A.7），**不覆盖任何已有目录**。
-3. 读 `manifest.json` + `checksums.sha256`，逐文件比对 sha256（缺文件/多文件都报错）。
-4. 校验 `task/meta.json` + `task/flow.json`：`template_version` ≤ 引擎（`meta.rs:356-372`）；**对 staging 目录跑一次 `lint`**（做法：把 staging 挂成临时 tasks-dir，跑 `TaskBundle::open` + `lint()`，`lib.rs:845-860`）。
-5. 依赖解析：`dependencies` 里 `included:true` → 从 `deps/<task_id>/` 装（深度/环沿用 `expand_call_steps` 的判定，`lib.rs:739-744`）；`included:false` → 要求目标已安装且 `version >= 声明`，否则**拒绝安装**并列出缺失。
-6. 素材合并（§B.4.3）。
-7. 提交：`tasks/<task_id>` 已存在 → 移到 `packages/backup/<task_id>-<old_ver>-<ts>/`；再把 staging 的 `task/` 原子 rename 到 `tasks/<task_id>`。
-8. 写 `packages/installed.json`（原子 tmp+rename，参考 `schedule.rs:569` 的 `write_json_atomic`）。
+1. 读包（`read_package` 全量校验，**不落盘**）+ 顶层 sha256。
+2. `flow_ops` 声明闸门：`unsupported_flow_ops` + `min_engine`（§A.13.2）。
+3. 解压到 `packages/staging/<package_id>/`：逐 entry zip-slip/大小/压缩比/encrypted 校验（§A.13.1），**不覆盖任何已有目录**；`verify_checksums` 再校验一次。
+4. 校验 `task/meta.json` + `task/flow.json`：`template_version` ≤ 引擎；`manifest.task_id`/`task_version` 与 meta 一致。
+5. 依赖：`included:true` → 从 `deps/<task_id>/` 装（目录集合必须与声明相等、内嵌 meta 版本一致）；`included:false` → 目标已安装且 `version >= 声明`，否则 **400 `missing_dependency`** 并列出缺失。
+6. 组 `tree/`（依赖先、根最后），**从实际打包 flow 重算 `flow_ops` 并严格等于 manifest**，再 ⊆ `SUPPORTED_FLOW_OPS`。
+7. **对临时 tasks-dir 跑 lint**（T1/T3/T4/T5/T6/T7；非内嵌依赖用已安装任务的 meta/flow 副本），失败 400。
+8. **dirty 检查**：目标已存在且无 installed 记录（unmanaged）或 `meta.json` mtime 比 `installed_at_ms` 新 → **409 `dirty_task`**（force 可绕过）。
+9. **同 id 同 version 重装必须 force** → 否则 **409 `already_installed`**（版本变化可正常升/降级）。
+10. 素材合并**计划**（§B.4.3；无快照 + 有引用 → 400，冲突 → 400）。
+11. 提交：逐个把旧 `tasks/<id>` 移到 `packages/backup/<id>-<old_ver>-<ts>/`（含 `entry.json` 快照）→ staging `tree/<id>` 原子 rename 到 `tasks/<id>`；失败回滚已提交任务。
+12. 应用素材合并（失败回滚任务 + 素材）。
+13. 写 `packages/installed.json`（**原子 tmp+rename**；时间 `now_ms().max(now)` 防止新文件被误判 dirty）；失败回滚任务/素材/registry。
+14. 清理 staging；返回 warnings（如 initialized store / 空 state / 排除运行态文件）。
 
 `installed.json`：
 ```json
 { "schema_version": 1,
   "packages": [ { "package_id":"…", "task_id":"每日任务", "version":3, "sha256":"…",
-                  "installed_at_ms":0, "source":{"commit":"f16fea1","signed":false},
-                  "backup":"packages/backup/每日任务-2-1793…" } ] }
+                  "installed_at_ms":0, "source":{"repo":"D:/OAS-dev/oas-core","commit":"…","signed":false},
+                  "backup":"backup/每日任务-2-1793…", "dependencies":[] } ] }
 ```
 
-### B.4.3 包内素材 vs 全局素材库的合并（冲突策略）
-现状：全局 store = `assets/assets.json` + `assets/images/aNNN.png`，id 全局唯一、文件名与 id 无关（`lib.rs:15-19`），`rev` 表示版本（`library.rs:151-164` 已有 `replace → rev+1` 先例）。
-- **同 id + 同 sha256** → 复用，不改文件；
-- **同 id + 不同 sha256** → 按现有迁移策略自动改名 `<id>_2`（`packaging/README-DEPLOY.md:18` 的 `assets migrate` 行为），**并重写安装态 `tasks/<id>/flow.json` 的引用**（改的是安装态 flow，不是用户编辑态创作源——但两者同目录，见下方 ⚠）；
-- **新 id** → 追加，`rev` 从 1 起；
-- 合并后**不回写**包内 `assets/assets.json`（包是只读输入）。
+### B.4.3 包内素材 vs 全局素材库的合并（冲突策略）— Phase 1 实现
 
-> ⚠ 这是「安装态与编辑态共用 `tasks/`」的直接后果：**安装会改写本机 `tasks/<id>/flow.json` 的素材引用**；若用户仍在 Studio 编辑同名任务，会出现「我改的 flow 被安装改了」。缓解：安装前若 `tasks/<id>/meta.json` 存在且 `mtime` 比 `installed.json` 记录的新 → 返回 **409 `dirty_task`**，要求 `force:true`（§D.2 Q6 备注 / §D.1 R3）。
+现状：全局 store = `assets/assets.json` + `assets/images/aNNN.png`，id 全局唯一、文件名与 id 无关，`rev` 表示版本。
+- **全新 Runner（只有 `.keep`、无 `assets.json`）** → 用包内 `assets/assets.json` **初始化 store**，warning 提示 initialized（P1-1 修复）。
+- **同 id + 同定义 + 同字节 sha256** → 复用，不改文件；
+- **同 id + 不同定义/字节** → **400 `asset_conflicts`**，逐项列 local/package sha256，建议重命名素材重发或清空 Runner 全局素材库；**不自动改名、不改写 flow**（设计稿的 `<id>_2` + flow 重写 = **Phase 5，未实现**，用户接受）。
+- **新 id** → 追加（`rev` 从 1 起；分配未占用的 `images/aNNN.png`）；
+- 合并后**不回写**包内 `assets/assets.json`（包是只读输入）；失败回滚新增素材与 store。
+- 包声明 `asset_refs` 但无 `assets/assets.json` → **400 `missing_asset_snapshot`**（包不完整，重新发布）。
 
-### B.4.4 卸载
-- **拒绝条件（复用现有语义，别新造）**：① 被 `scheduler.json` 的 entry 或队列成员引用（`serve.rs:4526-4529` 的 `scheduler_queues_with_member` 同类判断）；② 正在运行（`run_state.running`，`serve.rs:6580`；或调度 `state.running`）；③ 被其他已安装包的 `dependencies` 引用（查 `installed.json`）。
-- 执行：`tasks/<id>/` 先移到 `packages/backup/uninstall-<id>-<ts>/`（**不直接删**，与 `backup_task_assets` 的「永不丢素材」原则一致，`serve.rs:4530-4542`），再更新 `installed.json`；`purge_config:true` 才删该任务在 `config/values.json` 里的值。
+> ⚠ 安装态与编辑态共用 `tasks/`：安装会覆盖本机同名任务。缓解 = 安装前 **`dirty_task` 409 + force**（§B.4.2-8），旧任务先备份到 `packages/backup/`，不直接删。
+
+### B.4.4 卸载 / 回滚
+- **拒绝条件（无 force）**：① 被 `scheduler.json` entry 或队列成员引用；② 正在运行；③ 被其他已安装包 `dependencies` 引用 → **409 `uninstall_refused`**，逐项列出引用方；`force:true` 绕过。
+- 执行：`tasks/<id>/` 先移到 `packages/backup/uninstall-<id>-<ts>/`（**不直接删**），再更新 `installed.json`；`purge_config:true` 才删 `config/values.json` 中该任务值（在移动前执行，坏 values 先失败）。
+- **activate**：有 installed 记录 → 恢复其最近 backup（或显式 `backup`，必须 `backup/` 前缀 + 归属 task_id 一致）；当前任务先备份。**无 installed 记录时**（如卸载后）→ 自动扫 `backup/` 恢复最新且归属校验通过的备份，重建 registry 条目并返回 `restored_from`；`tasks/<id>` 已存在 → 409 `unmanaged_dir`。
 
 ### B.4.5 裸目录兼容（重要）
-Runner 首次上线时用户手上只有 `tasks/`（无包）⇒ **Runner 必须能直接识别未安装的 `tasks/<id>/`**（状态 `unmanaged`），并在 UI 里允许「纳管」（生成 `installed.json` 条目，`package_id` 空、`source=local`）。否则用户升级后「任务全没了」。同理 `GET /runner/tasks` = `installed.json` ∪ `tasks/*`（`list_tasks`，`lib.rs:2484`）。
+Runner 首次上线时用户手上只有 `tasks/`（无包）⇒ **Runner 能直接识别未安装的 `tasks/<id>/`**（`unmanaged:true`，`GET /runner/tasks` 标注 `installed/unmanaged`）。裸目录可被安装包 **force 覆盖**（先备份），但**§B.4.5 的显式「纳管」API 尚未实现**（Phase 1 只读展示；用户需用发布/安装流程接入管理）。`GET /runner/tasks` = `tasks/*` + `installed.json` 标注；installed 有记录但目录丢失不显示（限制）。
 
 ## B.5 包内依赖（call_task 目标怎么打）
 
@@ -812,23 +954,25 @@ Runner 首次上线时用户手上只有 `tasks/`（无包）⇒ **Runner 必须
 | B 只写引用 | 包只含自己 + 依赖列表 | 安装常失败（对方没装），体验差 |
 | **C 声明 + 可选内嵌（推荐）** | `dependencies` 总是写全；`--include-deps` 决定是否把目标放进 `deps/`；装包时「内嵌优先，否则要求已安装足够版本」 | 需写清「内嵌版本会覆盖本机版本」的提示 |
 
-全局素材引用：**快照进包**（`assets/`）而不是「只写 id」。理由：T4 只校验本机存在（`lib.rs:2181`），换机安装时 id 可能不存在 ⇒ 包必须自带被引用素材。快照只含**实际被引用**的 id（`flow.validate_assets` 的闭包），不含整个 store。
+全局素材引用：**快照进包**（`assets/`）而不是「只写 id」。理由：T4 只校验本机存在，换机安装时 id 可能不存在 ⇒ 包必须自带被引用素材。快照只含**实际被引用**的 id（`flow.validate_assets` 的闭包，含 `deps` 递归），不含整个 store。
 
-## B.6 最小实现切分（Phase 1 垂直切片）
+> **PR5 实现**：`--include-deps` 默认 false（CLI）/ UI 默认勾选；`dependencies` 总是写全。内嵌依赖安装前校验目录集合与 meta 版本；非内嵌依赖要求已安装且 `version >= 声明`。**安装不查环/深度**（依赖打包时按 `MAX_CALL_DEPTH` 递归，运行期由 `MAX_CALL_DEPTH` 兜底）。
 
-**Phase 1（能跑通「Studio 发布 → Runner 安装 → 配置 → 跑」）**：
-- 新增 `crates/oas-task/src/package.rs`：`Manifest` / `build_package(dir, out)` / `read_package(zip)` / `verify_checksums`。
-- 新增 `apps/oasd/src/package_cmd.rs`（或并入 `task.rs`）：`oasd studio publish`。
-- `serve.rs`：`Surface` 字段 + `required_surface` + 6 条 Runner 路由（`/runner/tasks`、`/runner/tasks/<id>/config`、`/runner/install`（**仅 path 模式**）、`/runner/health`、`/runner`）。
-- `ui/runner.html` + `ui/runner.js`（只做：任务列表、参数表单、安装、健康）。
-- `config.rs`：加 `runner: {port: 8789}`（`#[serde(default)]`，老 `live.json` 不炸）。
+## B.6 最小实现切分（Phase 1 垂直切片）— ✅ 已实现，后续项见 defer 清单
 
-**Phase 2**：`with_params` 作用域 + `call_task.params` + lint T7（§C.4）。
-**Phase 3**：配置优先级 + `config/values.json` + 四入口统一（§C.3）。
-**Phase 4**：内嵌调度线程 + 健康/启停 + 设备租约。
-**Phase 5**：上传模式、回滚、卸载守卫、`deps/` 内嵌与冲突改名。
+**Phase 1（能跑通「Studio 发布 → Runner 安装 → 配置 → 跑」）— ✅ PR5 完成**：
+- 新增 `crates/oas-task/src/package.rs`：`Manifest` / `build_package(dir, out)` / `read_package(zip)` / `extract_to` / `verify_checksums` / `validate_for_publish` / `derive_flow_ops`。
+- 新增 `apps/oasd/src/package_cmd.rs`：`oasd studio publish` + Studio HTTP publish + Runner install/uninstall/activate。
+- `serve.rs`：`Surface` 字段 + `required_surface` + PR5 **6 条新路由**（Studio `POST /task/publish`、`GET /task/package`；Runner `GET /runner/packages`、`POST /runner/install`（**仅 path 模式**）、`POST /runner/uninstall`、`POST /runner/packages/activate`）+ `/runner/tasks` 新字段。
+- `ui/runner.html` + `ui/runner.js`（任务列表、参数表单、**安装包页**、健康）。
+- `config.rs`：`runner: {port: 8789}`（`#[serde(default)]`，老 `live.json` 不炸）。
 
-> Phase 1 允许「安装 = 从 path 解压 + 校验 + 覆盖 tasks/」，**不做上传**（4 MiB 限制与流式改造推迟）——切片代码量最小且能立刻验收。
+**Phase 2**：`with_params` 作用域 + `call_task.params` + lint T7（§C.4）— ✅ PR4。
+**Phase 3**：配置优先级 + `config/values.json` + 四入口统一（§C.3）— ✅ PR2/PR3。
+**Phase 4**：内嵌调度线程 + 健康/启停 + 设备租约 — PR6。
+**Phase 5（PR5 defer 清单）**：上传模式（`upload`/incoming/streaming）、`/runner/run` 临时运行、调度启停、设备租约、**素材同 id 自动改名 `<id>_2` + flow 重写**、**显式「纳管」API**、素材 GC、`installed.json` 损坏自动隔离、跨进程 packages 锁、`dependencies` 与 flow 闭包交叉校验（tamper）。
+
+> Phase 1 的实现就是「从 path 解压 + 全量校验 + 覆盖 tasks/ + 备份 + 合并素材」，**不做上传**（4 MiB 限制与流式改造推迟到 Phase 5）——切片已按计划收口。
 
 ---
 
@@ -908,7 +1052,7 @@ Runner 首次上线时用户手上只有 `tasks/`（无包）⇒ **Runner 必须
 
 ## C.4 子任务配置语义（核心）✅ PR4 已实现
 
-> **✅ PR4 已实现（2026-11-04，代码未提交；§A.12 为现行实现记录）**：本节方案 A 已落地。与设计稿的差异：① 子任务 `meta.json` 缺失/坏 JSON/坏 default、目标 flow 无法解析 = **loader 硬错误**（不再 warning 降级）；② T7 **允许常量映射**（无 `param()` 引用），计算表达式 `param('a'+'b')` 拒绝；③ `with_params` 是内部 op（不落盘），手写受 T3 限制；④ checkpoint 增加展开后指纹（子任务改动使旧断点失效）。**§C.4.1 是 PR4 前基线**，现行语义以 §A.12 为准；本节保留设计论证。
+> **✅ PR4 已实现并提交（2026-11-04，HEAD `442f5cb`；§A.12 为现行实现记录）**：本节方案 A 已落地。与设计稿的差异：① 子任务 `meta.json` 缺失/坏 JSON/坏 default、目标 flow 无法解析 = **loader 硬错误**（不再 warning 降级）；② T7 **允许常量映射**（无 `param()` 引用），计算表达式 `param('a'+'b')` 拒绝；③ `with_params` 是内部 op（不落盘），手写受 T3 限制；④ checkpoint 增加展开后指纹（子任务改动使旧断点失效）。**§C.4.1 是 PR4 前基线**，现行语义以 §A.12 为准；本节保留设计论证。
 
 ### C.4.1 现状（PR4 前基线，必须先看清；PR4 已改变以下事实）
 - `call_task` 只是 `{"op":"call_task","args":{"task":"任务1"}}`，解析时**只读 `task`**，其他 args 被静默忽略（`oas-flow` `lib.rs:2004-2006`；「unknown args are ignored」有测试注释 `lib.rs:2532-2533`）。
@@ -1001,17 +1145,19 @@ Step::WithParams { params, defaults, body } => {
 - **T3 保持不变**：lint 用未展开 flow（`lib.rs:2110`），父任务里看不见子任务的 `param()` ⇒ **不会**要求父任务声明子任务的 key（否则每加一个子任务就要往父任务抄一遍参数）。
 - **需要新增收集器**：`Flow::call_task_uses()`（返回 `{task, inherit, params:{child:Option<parent>}, computed_params, path}`），与 `param_uses_at`（`oas-flow` `lib.rs:2176`）同款实现，放 `oas-flow` 里以便 lint 与 UI 共用。
 - ⚠ **代价**：lint 从「单任务自洽」变成「要读兄弟任务」。必须处理「lint 单个任务时兄弟目录不可读」（例如发布包只带自己）：T7 在目标缺失时报 `error`，消息里区分「目标任务不存在」与「无法读取目标（权限/路径）」。
-- **PR4 实现订正**：① 目标 flow **必须可解析**（T7 报“无法解析目标 flow.json: …”，不只检查可读）；② **允许常量映射**（值不含 `param()` 引用，如 `"固定文字"`），只有计算 `param('a'+'b')` 被拒；③ T7 **不查环**（loader 负责），不替代 T3；④ 当前接线 = `TaskBundle::lint_with_calls` + CLI `task lint --tasks-dir`，**serve 创建/校验 API 尚未接 T7**。
+- **PR4 实现订正**：① 目标 flow **必须可解析**（T7 报“无法解析目标 flow.json: …”，不只检查可读）；② **允许常量映射**（值不含 `param()` 引用，如 `"固定文字"`），只有计算 `param('a'+'b')` 被拒；③ T7 **不查环**（loader 负责），不替代 T3；④ 当前接线 = `TaskBundle::lint_with_calls` + CLI `task lint --tasks-dir` + **PR5 的发布/安装流程**；`POST /task/create`、`POST /task/save_flow` 等创建/保存 API 仍未接 T7（限制）。
 
-### C.4.6 运行时 flow op 兼容闸门（PR4 只记录，PR5 必须实现）
+### C.4.6 运行时 flow op 兼容闸门（✅ PR5 已实现，§A.13.2）
 
 > ⚠ **2026-11-04 订正（PR4 评审 P1-4）**：`with_params` 是 loader 的**内存展开**，**从不落盘**，所以“老 Runner 解析命中 `unknown instruction`”**不是**保护机制。真正的风险是：老 Runner 的旧 loader 只读 `call_task.args.task`，会**静默忽略** `params`/`inherit`，按旧语义继续跑（少传参数、`inherit:"none"` 不隔离）——比解析失败更危险。
 
-因此 **PR5 发布/安装必须做闸门**：
-- `manifest.engine.flow_ops` 必须包含 PR4 新增的调用语义；
-- **`flow_ops` 必须从原始 flow 的 `call_task.args.{params,inherit}` 推导**（不能扫描 `with_params`，它不在磁盘上）；带 `params` 或 `inherit:"none"` 的任务包打上对应 op 标记；
-- **Runner 安装时**检查自己是否支持（常量 `SUPPORTED_FLOW_OPS`），不支持则拒绝安装并提示升级；
+**PR5 实现（发布 + 安装双层闸门）**：
+- `manifest.engine.flow_ops` 按**语义粒度**记录：`call_task` / `call_task.params` / `call_task.inherit.none` / `with_params`；
+- **从原始 flow 的 `call_task.args.{params,inherit}` 推导**（递归 `then`/`else`/`body`/`args.body`；不能扫描 `with_params`，它不在磁盘上），根 flow + 内嵌 `deps` flow 取并集；
+- Runner 安装时**从实际打包 flow 重算**并与 manifest **严格相等**（防篡改），且必须 ⊆ `SUPPORTED_FLOW_OPS`，否则 **400 `unsupported_flow_ops`** 提示升级 Runner；`min_engine` 过高 → **400 `engine_too_old`**；
 - `meta.json`/`flow.json` 的 `schema_version` **不动**（仍是 1）——op 是加法，不是 schema 变更。
+
+> PR5 的 Lead E2E 已实测：把 manifest 的 `flow_ops` 篡改成 `[]` → 安装 **400 `flow_ops does not match`**（§A.13.8）。
 
 ## C.5 Studio / Runner 隔离下的交互流
 
@@ -1039,8 +1185,8 @@ Step::WithParams { params, defaults, body } => {
 | 变更 | 兼容性 | 处理 |
 |---|---|---|
 | `meta.params` 新增 `label/description/enum/required/group` | 向前兼容（全部 `Option` + `skip_serializing_if`，与 `meta.rs` 全可选风格一致；缺省 = None） | 老 Studio 读到会忽略（`Meta` 用 serde，**未开 `deny_unknown_fields`**，`meta.rs:149-150`；对比 `OasConfig` 是开着的，`config.rs:23`） |
-| `call_task.args.params` | ⚠ 老 loader **静默忽略**（`oas-flow` `lib.rs:2004-2006` 只取 `task`） | 老 Studio/老 Runner 遇到新任务会「少传参数」且**不报错** ⇒ `manifest.engine.flow_ops` 必须做安装闸门；Studio 保存带 `params` 的 `call_task` 时，本机不支持则提示 |
-| 新增 `with_params` op（仅内存） | **不落盘**；老 Runner 根本看不到它，真正风险是**静默忽略** `call_task.params`/`inherit`（§C.4.6） | `flow_ops` 必须从**原始 flow** 推导并在安装时拒绝老 Runner（PR5） |
+| `call_task.args.params` | ⚠ 老 loader **静默忽略**（`oas-flow` `lib.rs:2004-2006` 只取 `task`） | **PR5 已做安装闸门**（§A.13.2）：老 Runner `SUPPORTED_FLOW_OPS` 不含 `call_task.params`，安装 400 提示升级；Studio 保存带 `params` 的 `call_task` 时本机不支持仍不提示（限制） |
+| 新增 `with_params` op（仅内存） | **不落盘**；老 Runner 根本看不到它，真正风险是**静默忽略** `call_task.params`/`inherit`（§C.4.6） | **✅ PR5 已实现**：`flow_ops` 从**原始 flow** 推导、安装时重算严格相等 + 拒绝老 Runner |
 | `RunOptions.params` 改 `BTreeMap<String,Value>` | 内部类型，非磁盘契约 | **✅ PR3 已实现**：`--param` 仍按文本解析（行为不变，另加引号字符串逃生口）；entry/values 直接传 JSON 原类型，不再字符串化 |
 | `config/values.json` 新增 | 纯新增文件 | 缺失 = 空配置；带 `schema_version` 便于演进 |
 | 旧任务（无 `meta.params`、无 `call_task`） | **完全不变** | `Meta.params` 默认空（`meta.rs:171-172`），`param_defaults` 返回空表（`run.rs:467-472`） |
@@ -1056,13 +1202,13 @@ Step::WithParams { params, defaults, body } => {
 |---|---|---|---|
 | **R1** | **`call_task` 是 load-time 展开，runtime 无调用点身份**：子任务无法有独立超时/重试/预算/运行记录；日志里子任务步骤与父任务不可区分；改子任务会让父任务 checkpoint 失效（`flow_name + steps 数量` 校验，`run.rs:493-507`） | `oas-task` `lib.rs:1058-1091`、`run.rs:493-507` | **本期接受**（`with_params` 是作用域不是调用栈）；文档写清；若将来要「子任务一等运行单元」→ 独立立项改 runtime 调用栈（大改） |
 | **R2** | Studio 试运行与 Runner 调度抢同一台设备 | `README-DEPLOY.md:81`、`SCHEDULER-RUNNER-PLAN.md:37` | 设备租约 §A.6.4（Phase 4）；在此之前至少 Studio 检测到调度锁被占时拒绝 `/task/run` |
-| **R3** | 安装改写 `tasks/` 与 Studio 编辑态冲突（同一目录） | §B.4.3、`.gitignore` 未忽略 `tasks/` | `mtime` dirty 检测 + **409** + `force`；安装前备份；UI 明确「安装将覆盖本机同名任务」 |
-| **R4** | 包解压路径穿越 / 压缩炸弹 / 磁盘写满 | `serve.rs:50`（4 MiB） | §A.7 全套校验 + staging 配额 + 失败清理 |
-| **R5** | 无签名 → 用户装到被篡改的包 | `README-DEPLOY.md:83`（未签名 exe 已被接受） | v1 sha256 + `source` 标记 + UI 提示；Phase 5 再评估签名 |
+| **R3** | 安装改写 `tasks/` 与 Studio 编辑态冲突（同一目录） | §B.4.3、`.gitignore` 未忽略 `tasks/` | **✅ PR5 已实现**：`mtime` dirty 检测 + **409 `dirty_task`** + `force`；安装前备份到 `packages/backup/`；UI 明确「安装将覆盖本机同名任务」 |
+| **R4** | 包解压路径穿越 / 压缩炸弹 / 磁盘写满 | `serve.rs:50`（4 MiB） | **✅ PR5 已实现**：zip-slip 双向、≤2000 条目、≤512 MiB 总/≤256 MiB 单条、压缩比 >100:1 拒绝、encrypted 拒绝、`take(declared+1)`、staging 配额、失败清理 |
+| **R5** | 无签名 → 用户装到被篡改的包 | `README-DEPLOY.md:83`（未签名 exe 已被接受） | v1 sha256 + `source` 标记 + UI 提示；**PR5 增加 flow_ops 重算闸门**；签名仍 Phase 5 再评估 |
 | **R6** | 配置值并发写 / 与 entry params 双份真值 | `schedule.rs:569`（原子写已有） | 单写者 + `values` vs `Entry.params` 语义分层（§C.2） |
 | **R7** | `entry_run_params` 字符串化导致类型丢失（`"007"` → `7.0`） | `schedule.rs:3738-3749` + `run.rs:257-265` | **✅ PR3 已修（§C.3 / §A.11.1）**：端到端传 `Value`；旧字符串化配置需迁移（§A.11.7-①） |
-| **R8** | lint 变成跨任务读取（T7），单任务 lint 可能因兄弟目录缺失误报 | `lib.rs:2110`、`lib.rs:745-749` | T7 消息区分「不存在 / 不可读」；发布流程要求 `--include-deps` 或已装依赖 |
-| **R9** | 4 MiB 上限 + 整包读内存 → 大包上传失败 / OOM | `serve.rs:50,1169-1183` | Phase 1 只支持 path 安装；上传前先做流式落盘改造 |
+| **R8** | lint 变成跨任务读取（T7），单任务 lint 可能因兄弟目录缺失误报 | `lib.rs:2110`、`lib.rs:745-749` | T7 消息区分「不存在 / 不可读」；发布 `--include-deps` 或已装依赖（PR5 已接 T7） |
+| **R9** | 4 MiB 上限 + 整包读内存 → 大包上传失败 / OOM | `serve.rs:50,1169-1183` | **PR5 Phase 1 只支持 path 安装**（请求仅传路径，不读包体）；上传流式 = Phase 5 |
 | **R10** | 端口/路径配置不一致的现存坑（serve 默认 8787 vs 8788；CLI 与 serve 的 `--runs-dir` 必须一致） | `main.rs:388`、`config.rs:44` | Phase 1 顺手修 8787→8788；`/runner/health` 回显 `tasks_dir`/`runs_dir` 便于比对 |
 
 ## D.2 决策点（7 项）★ **2026-11-04 用户已全部批准（按推荐）**
@@ -1071,49 +1217,51 @@ Step::WithParams { params, defaults, body } => {
 |---|---|---|---|---|
 | **Q1** | Runner 的命令名与端口 | **`oasd runner` + 8789**，仍只绑 `127.0.0.1` | **✅ 用户批准（按推荐）**；PR1 已实现 | 与 Studio 8788 相邻好记；不开放 LAN 与 `README-DEPLOY.md:82` 一致；将来要 LAN 再加 `runner.bind` + token |
 | **Q2** | `oasd serve` 的去向 | **保留为 deprecated 别名**（内部等价 `studio`），stderr 一行提示；v2 再删 | **✅ 用户批准（按推荐）**；PR1 已实现 | 现有 `start-editor.bat`/文档/用户习惯全指向 `serve`（`README-DEPLOY.md:48`），直接删会造成「升级后启动失败」 |
-| **Q3** | 包容器与后缀 | **zip + `.oaspkg`** | **✅ 用户批准（按推荐）**；PR1 未实现（PR5） | 单文件、hash 友好、`flate2` 已在锁文件、Windows 双击可用；后缀区分「这是任务包」而不是「发行包」（发行包是 `oasd-v*-win64.zip`，`scripts/package.ps1:15`） |
+| **Q3** | 包容器与后缀 | **zip + `.oaspkg`** | **✅ 用户批准（按推荐）；PR5 ✅ 已实现（§A.13）** | 单文件、hash 友好、`flate2` 已在锁文件、Windows 双击可用；后缀区分「这是任务包」而不是「发行包」（发行包是 `oasd-v*-win64.zip`，`scripts/package.ps1:15`） |
 | **Q4** | 配置优先级 | **CLI `--param` > entry params > Runner values > `meta.params.default`** | **✅ 用户批准（按推荐）；PR3 ✅ 已实现（§A.11）** | 显式 > 场景 > 常备 > 声明；与现有「CLI wins」注释一致（`run.rs:548-559`） |
 | **Q5** | 子任务未映射 key 的默认 | **同名继承 + 子任务 default 兜底**，`inherit:"none"` 可关闭 | **✅ 用户批准（按推荐）；PR4 ✅ 已实现（§A.12）** | 与今天「共享命名空间」完全兼容（`oas-runtime` `lib.rs:978`），并顺手修掉此前「子任务 default 不生效」的缺口（PR4 已修） |
 | **Q6** | Runner 是否内嵌调度 | **内嵌线程**（保留 `oasd scheduler` CLI） | **✅ 用户批准（按推荐）**；PR6 实现（`/runner/health` 已随 PR1 提前落地） | 锁天然互斥（`schedule.rs:775-833`）、少一个用户步骤、无需管理员权限；坏处「UI 崩 = 调度停」可用 `oasd scheduler` 兜底 |
-| **Q7** | 发布产物是否入版本控制 | **不入**（`dist/`、`packages/` 都忽略） | **✅ 用户批准（按推荐）**；PR1 落实（Runner 包在 `dist/`，未入 git） | 二进制包会让仓库膨胀；`dist/` 已被忽略（`.gitignore:13`）；溯源靠 `manifest.source.commit` + `checksums.sha256` |
+| **Q7** | 发布产物是否入版本控制 | **不入**（`dist/`、`packages/` 都忽略） | **✅ 用户批准（按推荐）**；PR1/PR5 落实（Runner 包与 `.oaspkg` 都在 `dist/`/`packages/`，未入 git） | 二进制包会让仓库膨胀；`dist/`/`packages/` 已被忽略（`.gitignore:13,15,16`）；溯源靠 `manifest.source.commit` + `checksums.sha256` |
 
 > **备注（不单列决策，但需知道）**：同任务多 entry 不同参数目前已支持（`Entry.params` 每 entry 独立）；但**队列成员的 per-member 参数不支持**（成员共享队列 entry 的 params，`schedule.rs:1692`）。若需要「队列里每个任务不同配置」，需把 `queues[].members` 从 `Vec<String>` 扩成对象数组（`scheduler.rs:696`）——**建议先不做**，用「每个成员各建一条 task entry」绕开。
 > **配套备注（R3/B.4.3）**：安装覆盖本机同名任务时的 `force` / 409 `dirty_task` 策略已写在 §B.4.3，属实现细节，不单列决策。
 
-## D.3 分阶段实施计划（6 个 PR；**PR1 ✅ / PR2 ✅ / PR3 ✅ / PR4 ✅ 已实现（2026-11-04），PR5~PR6 待做**；PR6 可延后）
+## D.3 分阶段实施计划（6 个 PR；**PR1 ✅ / PR2 ✅ / PR3 ✅ / PR4 ✅ / PR5 ✅ 已实现（2026-11-04），PR6 待做**；PR6 可延后）
 
 | PR | 范围 | 关键文件 | 交付 / 验证 |
 |---|---|---|---|
-| **PR1 Surface 拆分 ✅ 已提交（§A.9）** | `Surface` 枚举 + `route_owner`/`required_surface` 表 + `oasd studio`/`runner` 命令（`serve` 兼容别名）+ `ui/runner.*` 只读骨架 + `config.runner.port/bind` + 8787→8788 + Runner-only 发行包 | `serve.rs`、`main.rs`、`config.rs`、`ui/runner.{html,js,css}`、`ui/index.html`、`ui/app.js`、`ui/ui_pure_test.js`、`scripts/package-runner.ps1`、`packaging/*` | ✅ 单测 **240/0（oasd）/ 538/0（workspace）**；`get_route` 两端隔离 404；Lead 真实双进程 8788/8789 E2E；UI **1239/224/0**，`runner.html` nav 5 项 |
+| **PR1 Surface 拆分 ✅ 已提交（§A.9）** | `Surface` 枚举 + `route_owner`/`required_surface` 表 + `oasd studio`/`runner` 命令（`serve` 兼容别名）+ `ui/runner.*` 只读骨架 + `config.runner.port/bind` + 8787→8788 + Runner-only 发行包 | `serve.rs`、`main.rs`、`config.rs`、`ui/runner.{html,js,css}`、`ui/index.html`、`ui/app.js`、`ui/ui_pure_test.js`、`scripts/package-runner.ps1`、`packaging/*` | ✅ 单测 **240/0（oasd）/ 538/0（workspace）**；`get_route` 两端隔离 404；Lead 真实双进程 8788/8789 E2E；UI **1239/224/0**，`runner.html` nav **5 项（PR1 时；PR5 起 6 项）** |
 | **PR2 配置模型 ✅ 已实现（§A.10）** | `meta.params` 5 个可选字段（label/description/enum/required/group）+ `config/values.json` + Studio `GET/POST /task/config` + Runner `GET/PUT /runner/tasks/<id>/config` + Runner 配置表单 + 运行值校验（type/min/max/enum/required） | `crates/oas-task/src/{meta.rs,lib.rs}`、`apps/oasd/src/{runner_config.rs,serve.rs,main.rs}`、`ui/{index.html,app.js,runner.html,runner.js,runner.css,ui_pure_test.js}`、`.gitignore` | ✅ **oasd 255/0、task 72/0、workspace 562/0（+24）；UI 1338/231/0**；`PUT` 原子写 + 保留其它任务；非法值 400 含 key；Lead E2E 临时任务 `pr2demo`（Studio 8790 / Runner 8791，Studio+Runner UI CDP 通过；V4 11~12 收口） |
 | **PR3 优先级 + 类型 ✅ 已提交（§A.11）** | `RunOptions.params` 改 `BTreeMap<String,Value>` + 四入口合并 + Runner values 注入（scheduler/queue）+ 合并后 schema 复检 + CLI 引号字符串逃生口 + `values_path` 测试 seam | `apps/oasd/src/{run.rs,schedule.rs,queue.rs,serve.rs}` | ✅ **oasd 276/0、workspace 583/0（+21）**；`{"code":"007"}` 端到端保持 `Str("007")`；entry > values > default 三层矩阵测试；schema 复检在 step 前失败；scheduler 单 entry 失败不崩；Lead E2E（`pr3param` + replay：`Str("007")/Num(3.0)/Bool(true)/Str("runner")`） |
 | **PR4 子任务配置 ✅ 已实现（§A.12）** | `call_task.params`/`inherit` + 内部 `with_params` op + loader 严格展开（目标 meta/flow 解析 + 子默认）+ runtime 作用域（快照/求值/block/defaults/恢复）+ `Flow::call_task_uses` + lint T7 + 评审 P1 处理（T6 参数名豁免 / 严格 meta / checkpoint 展开后指纹 / T7 强化；P1-4 `flow_ops` 闸门→PR5） | `crates/oas-flow/src/lib.rs`、`crates/oas-task/src/lib.rs`、`crates/oas-runtime/src/lib.rs`、`apps/oasd/src/{task.rs,run.rs,checkpoint.rs,schedule.rs}` | ✅ **workspace 624/0（21 targets；583→618→624）、flow 62、task 89、runtime 157+2、oasd 280**；单调用 / 多调用不同值 / 嵌套三层 / 未映射走同名 / default 兜底 / `inherit:"none"` / **错误后 params 恢复**；T7 三类错误 + 常量映射；checkpoint 指纹失效；Lead E2E `parent→child`（映射/继承/子默认/inherit none/多调用点/ASCII） |
-| **PR5 打包 / 安装** | `package.rs`（zip+manifest+checksums）+ `oasd studio publish` + `POST /runner/install` + `POST /runner/uninstall` + 素材合并 + `installed.json` + 裸目录纳管 | 新 `crates/oas-task/src/package.rs`、`apps/oasd/src/runner.rs`、`serve.rs` 路由、`ui/runner.js` | 单测：zip-slip（`../`、绝对路径、盘符）、sha 不匹配、缺文件、`template_version` 过高；集成：publish→install→lint 全绿；卸载守卫（调度引用 409） |
-| **PR6（可延后）** | 内嵌调度线程 + 调度启停 + 设备租约 + 上传模式 + 回滚（`/runner/health` 已随 PR1 提前落地，PR6 只补健康里的调度线程字段） | `schedule.rs`（加 `stop: Arc<AtomicBool>`）、`runner.rs`、`serve.rs` | E2E：`runner` 启动即跑 pass；`POST /stop` 后 ≤5s 退出且状态干净；`oasd scheduler` 同时启动 → 锁冲突明确报错 |
+| **PR5 打包 / 安装 ✅ 已实现（§A.13）** | `.oaspkg` 包核心（zip+manifest+checksums+加固）+ `flow_ops` 闸门 + `oasd studio publish`（CLI/HTTP/历史）+ Runner `install/uninstall/packages/activate` + 素材合并/初始化 + `installed.json` + 备份/回滚 + UI（Studio 发布对话框、Runner 安装包页） | 新 `crates/oas-task/src/package.rs`、`apps/oasd/src/package_cmd.rs`、`serve.rs`/`main.rs`/`config.rs`、`Cargo.lock`、`.gitignore`、UI 6 文件、`packaging/README-RUNNER.txt` | ✅ **workspace 677/0（+53）、oas-task 111、oasd 311、flow 62、runtime 157+2**；UI **1442/237/0**（runner audit **55/0/6**）；E2E：发布→全新 Runner 安装（初始化素材）→同版本 409→force→卸载→activate 恢复；zip-slip/flow_ops 篡改 400；两端路由 404；Runner 包 **37,591,694 B** / SHA `823F93CD…14031E` |
+| **PR6（可延后）** | 内嵌调度线程 + 调度启停 + 设备租约 + `POST /runner/run` 临时运行（**自行合并 values**）+ 上传模式/素材自动改名/显式纳管/素材 GC | `schedule.rs`（加 `stop: Arc<AtomicBool>`）、`serve.rs`、`runner.js` | E2E：`runner` 启动即跑 pass；`POST /stop` 后 ≤5s 退出且状态干净；`oasd scheduler` 同时启动 → 锁冲突明确报错；`/runner/run` 的 body params 覆盖 values 层 |
 
-> **顺序建议**：PR1 ✅ → PR2 ✅ → PR3 ✅ → PR4 ✅ → PR5 → PR6。PR5 发布校验需接 T7（当前 T7 仅在 CLI `task lint --tasks-dir`，serve 创建/校验 API 尚未接），并补 **`manifest.engine.flow_ops` 安装闸门**（从原始 flow 推导、拒绝老 Runner）。
+> **顺序建议**：PR1 ✅ → PR2 ✅ → PR3 ✅ → PR4 ✅ → PR5 ✅ → PR6。PR5 已接 T7（发布/安装）并完成 **`manifest.engine.flow_ops` 安装闸门**（从原始 flow 推导、重算严格相等、拒绝老 Runner）。
 
 ## D.4 验收清单（用户可操作，19 步）
 
-> **PR1 状态**：**V1（1~3 已验收；4 的共享路由契约已测）**（真实双进程 8788/8789，见 §A.9.7/§A.9.10）。**PR2 状态**：**V4（11~12）✅**（临时任务 `pr2demo`，Studio 8790 / Runner 8791；见 §A.10.7）。**PR3 状态**：无独立 V 步骤；四层优先级/类型保真/合并后复检由 §A.11.5 测试 + §A.11.6 E2E（CLI/scheduler/replay）覆盖。**PR4 状态**：**V6 的 16 核心路径 ✅**（replay E2E：映射/同名继承/子默认/inherit none/多调用点；见 §A.12.7）；17 依赖 PR6 的 Runner 临时运行、18 的隔离/缺参由 PR4 单测覆盖。**V2/V3 待 PR5，V5 待 PR6；V7 持续检查（PR1~PR4 均未提交用户数据）**。
+> **PR1 状态**：**V1（1~3 已验收；4 的共享路由契约已测）**（真实双进程 8788/8789，见 §A.9.7/§A.9.10）。**PR2 状态**：**V4（11~12）✅**（临时任务 `pr2demo`，Studio 8790 / Runner 8791；见 §A.10.7）。**PR3 状态**：无独立 V 步骤；四层优先级/类型保真/合并后复检由 §A.11.5 测试 + §A.11.6 E2E（CLI/scheduler/replay）覆盖。**PR4 状态**：**V6 的 16 核心路径 ✅**（replay E2E：映射/同名继承/子默认/inherit none/多调用点；见 §A.12.7）；17 依赖 PR6 的 Runner 临时运行、18 的隔离/缺参由 PR4 单测覆盖。**PR5 状态**：**V2（5~7）✅、V3（8~10）✅**（`asset_task` 发布/全新 Runner 安装/409/force/卸载/activate；见 §A.13.8）。**V5 待 PR6；V7 持续检查（PR1~PR5 均未提交用户数据）**。
 
 前置：`cargo build -p oasd --features ocr`；准备两个任务 `任务1`（有参数 `触发文字`）与 `任务2`（调用 `任务1` 并映射 `触发文字←识别关键词`）。
 
 **V1 两端不同入口**
 1. `oasd studio --port 8788 --config config/live.json` → `http://127.0.0.1:8788/`，nav 有「工作台/任务构建/任务库/实例/设置」，**没有**「调度」项。
-2. `oasd runner --port 8789 --config config/live.json` → `http://127.0.0.1:8789/`，nav 只有「概览/已安装任务/队列与调度/运行记录/设置」。
+2. `oasd runner --port 8789 --config config/live.json` → `http://127.0.0.1:8789/`，nav **6 项**：「概览/已安装任务/安装包/队列与调度/运行记录/设置」。
 3. 在 8789 打开 `http://127.0.0.1:8789/task/save_flow`（或 devtools 发 POST）→ **404**；在 8788 请求 `GET /runner/tasks` → **404**。
 4. `GET :8788/instance` 与 `GET :8789/instance` 都能看到同一 `device_serial`（共享配置）。
 
 **V2 Studio 发布**
-5. Studio 任务库 →「发布…」→ 返回 `path=dist/packages/任务2-v1.oaspkg`、`sha256`、`warnings=[]`。
+5. Studio 任务库 →「发布…」（`include_deps` 默认勾选）→ 返回 `path=dist/packages/任务2-v1.oaspkg`、`package_id`、`sha256`、`warnings=[]`。
 6. 手工改包里 `task/flow.json` 后再发布 → 校验失败并给出 `T3`/`T7` 路径（不是裸异常）。
-7. 重复发布同版本 → 拒绝，提示 `--force` 或升 `meta.version`。
+7. 重复发布同版本 → **409**，提示 `--force` 或升 `meta.version`。
 
 **V3 Runner 安装**
-8. Runner「安装包」→ 选 `任务2-v1.oaspkg` → 列表出现 `任务2` + `任务1`（依赖自动装）+ `installed.json` 两条。
-9. 篡改包里任一图片后再装 → 拒绝（sha256 不匹配），`tasks/` 未被改动。
+8. Runner「安装包」→ 填本机绝对路径（或 UI 选择文件）→ 列表出现 `任务2` + `任务1`（依赖自动装）+ `installed.json` 两条。
+9. 篡改包里任一图片/checksums 后再装 → 拒绝（sha256 不匹配），`tasks/` 未被改动；篡改 `manifest.engine.flow_ops` → 400 `flow_ops does not match`。
 10. 卸载 `任务1`（被 `任务2` 依赖）→ **409** 且给出引用方。
+
+> ✅ **PR5 已验收（临时任务 `asset_task`，2026-11-04，§A.13.8）**：发布 → 全新 Runner（assets 目录为空）安装 200 + 初始化素材 store 的 warning；同版本重复安装无 force **409 `already_installed`**、force 200 replaced + backup；卸载 → `backup/uninstall-…`；activate（无 installed 记录）200 `restored_from=…` 任务回 `tasks/`；zip-slip 400 且包外无文件；Studio 上 `/runner/install` 404、Runner 上 `/task/publish` 404。V3 的依赖自动装/被依赖 409 由安装集成测试覆盖（真实 E2E 未单独打双任务包）。
 
 **V4 配置**
 11. Runner「任务2 → 配置」显示字段 `识别关键词`（label/说明/当前值 `突破`），改成 `结界` → 保存 → 刷新后仍在。
@@ -1184,13 +1332,13 @@ Step::WithParams { params, defaults, body } => {
 
 # E. 与现状文档的关系 / 执行状态
 
-- **Q1~Q7 已于 2026-11-04 获用户全部批准（按推荐）**；**PR1 ✅ 已提交**（`da9da9d`），见 **§A.9**；**PR2 ✅ 已提交**（`dfe8776`），见 **§A.10**；**PR3 ✅ 已提交**（代码 `c09df25` + seq 103 docs `048dff5`），见 **§A.11**；**PR4 ✅ 已实现并验证（代码未提交）**，见 **§A.12**。本文已从「设计待定稿」进入「已批准 + 分阶段执行」状态。
+- **Q1~Q7 已于 2026-11-04 获用户全部批准（按推荐）**；**PR1 ✅ 已提交**（`da9da9d`），见 **§A.9**；**PR2 ✅ 已提交**（`dfe8776`），见 **§A.10**；**PR3 ✅ 已提交**（代码 `c09df25` + seq 103 docs `048dff5`），见 **§A.11**；**PR4 ✅ 已提交**（HEAD `442f5cb`，含 seq 104 docs），见 **§A.12**；**PR5 ✅ 已实现并验证（代码未提交，见 §A.13）**。本文已从「设计待定稿」进入「已批准 + 分阶段执行」状态。
 - **已实现（PR1）**：`Surface` + `route_owner`/`required_surface`、`oasd studio`（8788）/`oasd runner`（8789）/`oasd serve` 兼容别名、`config.runner`、`GET /runner/health`、`GET /runner/tasks`、`ui/runner.*` 骨架、Studio 去调度入口、Runner-only 发行包、`packaging/CROSS-PLATFORM.md`。
-- **已实现（PR2，§A.10）**：`ParamDecl` 五字段（label/description/enum/required/group）+ lint + `validate_param_values`；`config/values.json`（原子 RMW，Runner 独占）；Studio `GET/POST /task/config`（保留 meta 其它字段 + `.bak`）；Runner `GET/PUT /runner/tasks/<id>/config`（值校验 400 含 key）；Studio「配置项…」JSON 编辑器 + Runner 配置表单；`.gitignore` 三项；PR2 时 Runner 包为 **37,192,710 B**（PR3/PR4 已重建，见下）。
+- **已实现（PR2，§A.10）**：`ParamDecl` 五字段（label/description/enum/required/group）+ lint + `validate_param_values`；`config/values.json`（原子 RMW，Runner 独占）；Studio `GET/POST /task/config`（保留 meta 其它字段 + `.bak`）；Runner `GET/PUT /runner/tasks/<id>/config`（值校验 400 含 key）；Studio「配置项…」JSON 编辑器 + Runner 配置表单；`.gitignore` 三项；PR2 时 Runner 包为 **37,192,710 B**（PR3/PR4/PR5 已重建，见下）。
 - **已实现（PR3，§A.11）**：`RunOptions.params` 改 `BTreeMap<String, serde_json::Value>`；CLI `--param` 为唯一文本猜类型点 + 引号字符串逃生口；scheduler/queue 注入 `config/values.json`（entry > values > default；Studio 刻意不注入）；合并后 `validate_param_values` 复检（`meta.params` 为空则跳过）；`SchedulerOptions/QueueOptions.values_path` 测试 seam；测试 **workspace 583/0**（oasd **276**）。
 - **已实现（PR4，§A.12）**：`Step::CallTask{params,inherit}` + 内部 `with_params`；loader 严格展开（目标 flow 预解析 + 子任务 `meta.params[].default` 生效）；runtime 作用域（快照→调用方求值→`inherit:none` 隐藏同名→defaults 补缺→overrides→**全路径恢复**）；`Flow::call_task_uses`；lint **T7**（目标存在/可解析、child/parent key、常量映射、计算 key 拒绝）+ CLI `task lint --tasks-dir`；评审 P1 处理（T6 参数名豁免、严格 meta、checkpoint 展开后指纹、T7 强化；**P1-4 `flow_ops` 闸门→PR5**）；Runner 包按 PR4 release 重建 = **37,246,079 B**，SHA256 `07B6D930…852E506B`；测试 **workspace 624/0**（flow 62 / task 89 / runtime 157+2 / oasd 280）。
-- **未实现（PR5~PR6）**：TaskPackage `.oaspkg` 发布/安装 + **`manifest.engine.flow_ops` 安装闸门**（PR5，必须从原始 flow 的 `call_task.args.{params,inherit}` 推导）；Runner 内嵌调度线程/调度编辑/设备租约/临时运行（PR6）。**Runner 的安装/调度编辑仍未实现**；配置保存 + 值注入已可用（PR2/PR3），子任务配置语义已可用（PR4）。
-- 台账登记：`PENDING-LEDGER.md §E-79`（状态 = **✅ Q1~Q7 已批准；PR1 ✅ 已提交；PR2 ✅ 已提交；PR3 ✅ 已提交；PR4 ✅ 已实现（未提交）；PR5~PR6 待做**；PR3 明细见 §H、PR4 明细见 §I）。
-- **下一步**：按 §D.3 做 **PR5 TaskPackage 发布/安装 + `engine.flow_ops` 闸门**（`.oaspkg` zip + manifest + checksums、Studio publish、Runner install/uninstall/rollback、素材合并、`installed.json`、裸目录纳管；flow_ops 从原始 flow 推导并拒绝老 Runner）；每个 PR 用 §D.4 对应验收项收口，测试基线以最新 `cargo test --workspace` 为准（**PR4 后 = 624/0**，flow **62**、task **89**、runtime **157 lib + 2 integration**、oasd **280**；UI **1338/231/0**）。
-- 若用户改其中某项（例如 Q1 改端口 / Q6 改子进程调度），先回写本文 §D.2 与稿源，再动代码。
+- **已实现（PR5，§A.13）**：`package.rs`（`.oaspkg` zip + manifest + checksums + zip-bomb 加固 + reproducible）+ `package_cmd.rs`（publish/install/uninstall/activate）；Studio CLI/HTTP publish + 历史；Runner path 模式安装（严格顺序 + 回滚）、卸载守卫 + 备份、activate（含卸载后恢复）；**`flow_ops` 从原始 flow 推导 + 安装重算严格相等 + `min_engine`**；素材快照/初始化/冲突 400；Studio 发布对话框 + Runner「安装包」页（nav 6）；评审 P1-1/P1-2 已修、P1-3 明确不实现（自动改名+flow 重写 defer Phase 5）；Runner 包 **37,591,694 B**，SHA256 `823F93CD…14031E`；测试 **workspace 677/0**（oas-task **111** / oasd **311** / flow 62 / runtime 157+2），UI **1442/237/0**（runner audit **55/0/6**）。
+- **未实现（PR6）**：Runner 内嵌调度线程/调度启停/设备租约/`POST /runner/run` 临时运行（**必须自行合并 values 层**）；上传模式、素材自动改名 + flow 重写（Phase 5）、显式纳管 API、素材 GC。**Runner 的调度编辑仍未实现**；安装/卸载/回滚与配置/值注入/子任务语义均已可用（PR2~PR5）。
+- 台账登记：`PENDING-LEDGER.md §E-79`（状态 = **✅ Q1~Q7 已批准；PR1~PR4 ✅ 已提交；PR5 ✅ 已实现（未提交）；PR6 待做**；PR3 明细见 §H、PR4 见 §I、PR5 见 §J）。
+- **下一步**：按 §D.3 做 **PR6 内嵌调度/队列执行 + `/runner/run` 临时运行（自行合并 values）+ 设备租约 + 调度健康/启停**；每个 PR 用 §D.4 对应验收项收口，测试基线以最新 `cargo test --workspace` 为准（**PR5 后 = 677/0**，flow **62**、task **111**、runtime **157 lib + 2 integration**、oasd **311**；UI **1442/237/0**）。
 - 若用户改其中某项（例如 Q1 改端口 / Q6 改子进程调度），先回写本文 §D.2 与稿源，再动代码。
