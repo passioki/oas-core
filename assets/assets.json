@@ -434,6 +434,467 @@
       "positions": [
         20
       ]
+    },
+    {
+      "id": "返回上一级_宠物小屋",
+      "kind": "template",
+      "file": "images/a002.png",
+      "roi": [
+        34,
+        23,
+        42,
+        44
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          26,
+          14,
+          61,
+          61
+        ],
+        "invert": false
+      },
+      "action_source": "fixed",
+      "threshold": 0.85,
+      "rev": 4,
+      "positions": [
+        1
+      ]
+    },
+    {
+      "id": "取消追踪1",
+      "kind": "ocr_line",
+      "roi": [
+        1142,
+        590,
+        88,
+        105
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          1125,
+          584,
+          115,
+          116
+        ],
+        "invert": false
+      },
+      "action_source": "fixed",
+      "ocr_mode": "lines",
+      "ocr_text": "取消",
+      "polygon": [
+        [
+          1187,
+          591
+        ],
+        [
+          1145,
+          593
+        ],
+        [
+          1142,
+          626
+        ],
+        [
+          1144,
+          682
+        ],
+        [
+          1184,
+          694
+        ],
+        [
+          1227,
+          684
+        ],
+        [
+          1229,
+          590
+        ],
+        [
+          1203,
+          590
+        ]
+      ],
+      "rev": 1,
+      "positions": [
+        41
+      ]
+    },
+    {
+      "id": "取消追踪2",
+      "kind": "ocr_line",
+      "roi": [
+        1142,
+        590,
+        88,
+        105
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          1125,
+          585,
+          117,
+          115
+        ],
+        "invert": false
+      },
+      "action_source": "fixed",
+      "ocr_mode": "lines",
+      "ocr_text": "追踪",
+      "polygon": [
+        [
+          1187,
+          591
+        ],
+        [
+          1145,
+          593
+        ],
+        [
+          1142,
+          626
+        ],
+        [
+          1144,
+          682
+        ],
+        [
+          1184,
+          694
+        ],
+        [
+          1227,
+          684
+        ],
+        [
+          1229,
+          590
+        ],
+        [
+          1203,
+          590
+        ]
+      ],
+      "rev": 1,
+      "positions": [
+        41
+      ]
+    },
+    {
+      "id": "一键追踪1",
+      "kind": "ocr_line",
+      "roi": [
+        1137,
+        594,
+        94,
+        94
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          1121,
+          586,
+          122,
+          112
+        ],
+        "invert": false
+      },
+      "action_source": "fixed",
+      "ocr_mode": "lines",
+      "ocr_text": "一键",
+      "polygon": [
+        [
+          1178,
+          595
+        ],
+        [
+          1138,
+          607
+        ],
+        [
+          1137,
+          645
+        ],
+        [
+          1143,
+          684
+        ],
+        [
+          1226,
+          687
+        ],
+        [
+          1230,
+          642
+        ],
+        [
+          1228,
+          597
+        ],
+        [
+          1186,
+          594
+        ]
+      ],
+      "rev": 1,
+      "positions": [
+        23
+      ]
+    },
+    {
+      "id": "一键追踪2",
+      "kind": "ocr_line",
+      "roi": [
+        1137,
+        594,
+        94,
+        94
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          1122,
+          583,
+          119,
+          117
+        ],
+        "invert": false
+      },
+      "action_source": "fixed",
+      "ocr_mode": "lines",
+      "ocr_text": "追踪",
+      "polygon": [
+        [
+          1178,
+          595
+        ],
+        [
+          1138,
+          607
+        ],
+        [
+          1137,
+          645
+        ],
+        [
+          1143,
+          684
+        ],
+        [
+          1226,
+          687
+        ],
+        [
+          1230,
+          642
+        ],
+        [
+          1228,
+          597
+        ],
+        [
+          1186,
+          594
+        ]
+      ],
+      "rev": 1,
+      "positions": [
+        23
+      ]
+    },
+    {
+      "id": "悬赏封印_关闭弹窗",
+      "kind": "template",
+      "file": "images/a003.png",
+      "roi": [
+        1208,
+        68,
+        50,
+        50
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          1202,
+          66,
+          64,
+          57
+        ],
+        "invert": false
+      },
+      "action_source": "fixed",
+      "threshold": 0.85,
+      "rev": 1,
+      "positions": [
+        23
+      ]
+    },
+    {
+      "id": "关闭弹窗_设置",
+      "kind": "template",
+      "file": "images/a004.png",
+      "roi": [
+        1084,
+        78,
+        48,
+        42
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          1075,
+          75,
+          63,
+          52
+        ],
+        "invert": false
+      },
+      "action_source": "fixed",
+      "threshold": 0.85,
+      "rev": 1,
+      "positions": [
+        26
+      ]
+    },
+    {
+      "id": "取消_下载插画",
+      "kind": "ocr_line",
+      "roi": [
+        422,
+        488,
+        121,
+        42
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          413,
+          479,
+          144,
+          62
+        ],
+        "invert": false
+      },
+      "action_source": "fixed",
+      "rev": 1,
+      "positions": [
+        42
+      ]
+    },
+    {
+      "id": "不再提示",
+      "kind": "ocr_line",
+      "roi": [
+        571,
+        375,
+        183,
+        42
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          533,
+          385,
+          28,
+          27
+        ],
+        "invert": false
+      },
+      "action_source": "fixed",
+      "rev": 1,
+      "positions": [
+        42
+      ]
+    },
+    {
+      "id": "确定",
+      "kind": "ocr_line",
+      "roi": [
+        712,
+        419,
+        78,
+        41
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          666,
+          407,
+          176,
+          62
+        ],
+        "invert": false
+      },
+      "action_source": "fixed",
+      "rev": 1,
+      "positions": [
+        7
+      ]
+    },
+    {
+      "id": "切换活动入口_庭院",
+      "kind": "template",
+      "file": "images/a005.png",
+      "roi": [
+        1188,
+        522,
+        36,
+        35
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          1185,
+          525,
+          44,
+          32
+        ],
+        "invert": false
+      },
+      "action_source": "fixed",
+      "threshold": 0.85,
+      "polygon": [
+        [
+          1206,
+          522
+        ],
+        [
+          1191,
+          528
+        ],
+        [
+          1188,
+          538
+        ],
+        [
+          1192,
+          549
+        ],
+        [
+          1203,
+          556
+        ],
+        [
+          1218,
+          555
+        ],
+        [
+          1223,
+          546
+        ],
+        [
+          1219,
+          537
+        ]
+      ],
+      "rev": 1,
+      "positions": [
+        3
+      ]
     }
   ],
   "collections": []

@@ -1,11 +1,11 @@
 {
-  "next_id": 41,
-  "current_id": 20,
+  "next_id": 43,
+  "current_id": 4,
   "frames": [
     {
       "id": 1,
       "name": "宠物小屋",
-      "category": "",
+      "category": "宠物小屋",
       "file": "frame-1.png",
       "width": 1280,
       "height": 720,
@@ -88,7 +88,7 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793511465878,
-      "seen": false
+      "seen": true
     },
     {
       "id": 11,
@@ -203,7 +203,7 @@
     {
       "id": 26,
       "name": "设置界面",
-      "category": "设置",
+      "category": "弹窗",
       "file": "frame-26.png",
       "width": 1280,
       "height": 720,
@@ -308,6 +308,28 @@
       "height": 720,
       "source": "capture",
       "ts_ms": 1793526361222,
+      "seen": true
+    },
+    {
+      "id": 41,
+      "name": "悬赏封印_已追踪",
+      "category": "悬赏封印",
+      "file": "frame-41.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793717871339,
+      "seen": true
+    },
+    {
+      "id": 42,
+      "name": "弹窗_下载插画",
+      "category": "弹窗",
+      "file": "frame-42.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793719440481,
       "seen": true
     }
   ]

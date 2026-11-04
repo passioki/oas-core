@@ -17,8 +17,10 @@
     },
     "loop_interval_s": 30,
     "loop_rounds": 0,
-    "mode": "loop"
+    "mode": "loop",
+    "utc_offset_min": 480
   },
   "entries": [],
-  "schema_version": 3
+  "queues": [],
+  "schema_version": 4
 }
