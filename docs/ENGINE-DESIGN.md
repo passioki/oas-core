@@ -2264,7 +2264,7 @@ Asset.positions = [frame_id, ...]
 
 > 触发：用户 **2026-11-04 批准** `docs/RUNNER-STUDIO-SPLIT-PLAN.md §D.2` 的 **Q1~Q7（全部按推荐）**，并要求落地 PR1（Surface 拆分 + Runner UI 骨架 + Runner-only 分发 + 跨平台约束）。
 > 权威计划：**`RUNNER-STUDIO-SPLIT-PLAN.md`**（§A.2/§A.3 设计、**§A.8 分发与跨平台**、**§A.9 PR1 实现记录**、§D.2 决策、§D.3 PR 分解）。台账：**`PENDING-LEDGER.md §E-79`**。
-> 状态：**PR1 ✅ 已实现并提交（`da9da9d`）；PR2 ✅ 已实现并提交（`dfe8776`），见 §22.45；PR3 ✅ 已提交（`c09df25` + `048dff5`），见 §22.46；PR4 ✅ 已提交（`442f5cb`），见 §22.47；PR5 ✅ 已实现（2026-11-04，代码未提交），见 §22.48；PR6 待做。** §22.44 是 PR1 当轮快照；Runner「配置」已由 PR2 落地、值注入/四层优先级由 PR3 落地、子任务配置语义由 PR4 落地，安装/发布由 PR5 落地，调度编辑（PR6）仍后置。
+> 状态：**PR1 ✅ 已实现并提交（`da9da9d`）；PR2 ✅ 已实现并提交（`dfe8776`），见 §22.45；PR3 ✅ 已提交（`c09df25` + `048dff5`），见 §22.46；PR4 ✅ 已提交（`442f5cb`），见 §22.47；PR5 ✅ 已实现并提交（代码 `617435d` + seq105 docs `830058d`），见 §22.48；PR6 待做。** §22.44 是 PR1 当轮快照；Runner「配置」已由 PR2 落地、值注入/四层优先级由 PR3 落地、子任务配置语义由 PR4 落地，安装/发布由 PR5 落地，调度编辑（PR6）仍后置。
 
 #### 22.44.1 双 Surface = 同一二进制两个入口（不是拆二进制）
 
@@ -2606,7 +2606,7 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 ### 22.48 ★★★ [11-04] **TaskPackage 发布/安装 + flow_ops 闸门实现（PR5，现行）**
 
 > 触发：`RUNNER-STUDIO-SPLIT-PLAN.md` **§B/§D.3 的 PR5**；实现记录 **§A.13**；台账 **`PENDING-LEDGER §E-79 §J`**；证据 `D:\OAS-dev\_verify\runner-studio-pr5-20261104\`（`PR5-BACKEND-REPORT.md` / `PR5-UI-REPORT.md` / `REVIEW.md` / `FIX-REPORT.md` / `e2e/`）。
-> 状态：**PR5 ✅ 已实现并验证（2026-11-04，代码未提交，父 `442f5cb`）**；新增 `crates/oas-task/src/package.rs`、`apps/oasd/src/package_cmd.rs`；范围 = **Phase 1 垂直切片：Studio 发布 → Runner 安装 → 配置 → 跑**；不含 PR6 的调度线程/`/runner/run`/设备租约/上传/素材自动改名/显式纳管/素材 GC。
+> 状态：**PR5 ✅ 已实现并提交（代码 `617435d` + seq105 docs `830058d`，父 `442f5cb`）**；新增 `crates/oas-task/src/package.rs`、`apps/oasd/src/package_cmd.rs`；范围 = **Phase 1 垂直切片：Studio 发布 → Runner 安装 → 配置 → 跑**；不含 PR6 的调度线程/`/runner/run`/设备租约/上传/素材自动改名/显式纳管/素材 GC。
 
 #### 22.48.1 包格式与加固（`crates/oas-task/src/package.rs`）
 
@@ -2640,6 +2640,7 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 | `POST /runner/uninstall` | Runner-only | `{task_id,purge_config?,force?}`；先备份、再移 registry；守卫 409 `uninstall_refused` |
 | `POST /runner/packages/activate` | Runner-only | `{task_id?|package_id?,backup?}`；恢复最近/显式 backup；无记录时自动扫 backup 恢复最新归属匹配备份 |
 
+- **packages root**：默认 = `tasks_dir` 同级 `packages/`；live config `paths.packages_dir` 非空时覆盖（空 = 默认，旧 live.json 兼容）；`installed.json`/`staging/`/`backup/` 都在此 root 下。
 - 安装严格顺序：读包校验 → flow_ops/min_engine → staging 解压 + checksums → meta/template/task_id/version → deps 集合与版本 → 组 tree → flow_ops 重算 → lint（临时 tasks-dir）→ dirty 检查 → 同版本 force 检查（409 `already_installed`）→ 素材计划 → 备份旧任务 → 原子 rename 提交 → 素材合并 → `installed.json` 原子写 → 清理；**任一步失败回滚任务/素材/installed**。
 - `installed.json`：`{schema_version:1,packages:[{package_id,task_id,version,sha256,installed_at_ms,source{repo,commit,signed},backup,dependencies}]}`；原子 RMW；`installed_at = max(now_ms, now)` 防新文件被判 dirty。
 - `GET /runner/tasks` 增 `installed/package_id/installed_at_ms/backup/unmanaged/meta_version`。
@@ -2678,4 +2679,4 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 6. publish `out` 限相对 `dist/`；`GET /task/package` 只扫默认 `dist_dir`；`PackageError::Other` IO 错误 → HTTP 400（应 500，P2）；`manifest.dependencies` 未与 flow 闭包交叉校验（P2）；安装不查环/深度（runtime `MAX_CALL_DEPTH` 兜底）且不检查任务正在运行。
 7. `min_engine` 逐段数字比较（非严格 semver，pre-release 不排序）；Windows 保留名/大小写重名/前导空格 checksums 为 P3 健壮性（fail-closed）。
 
-★ **提交边界（§22.48 / PR5）**：代码/UI/打包 = `crates/oas-task/{Cargo.toml,src/package.rs(新),src/lib.rs}`、`apps/oasd/src/{package_cmd.rs(新),serve.rs,main.rs,config.rs}`、`Cargo.lock`、`.gitignore`、UI 6 文件、`packaging/README-RUNNER.txt` + docs；**不含**用户数据（`assets/`/`frames/`/`tasks/`/`scheduler.json`/`scheduler.json.bak`）与 `dist/`；父 `442f5cb`，docs 随后（不写死 hash）。
+★ **提交边界（§22.48 / PR5）**：代码/UI/打包 = `crates/oas-task/{Cargo.toml,src/package.rs(新),src/lib.rs}`、`apps/oasd/src/{package_cmd.rs(新),serve.rs,main.rs,config.rs}`、`Cargo.lock`、`.gitignore`、UI 6 文件、`packaging/README-RUNNER.txt` + docs；**不含**用户数据（`assets/`/`frames/`/`tasks/`/`scheduler.json`/`scheduler.json.bak`）与 `dist/`；代码提交 `617435d`（父 `442f5cb`），seq105 docs `830058d`。
