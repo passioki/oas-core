@@ -641,7 +641,7 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 - 选中具体帧（或刷新当前帧）后，`#frame-detail` 增加「该帧素材：N 条」+ `#frame-assets-list`；
 - 数据 = **全局素材库 + 任务素材**中 `positions` 含该帧 id 的全部素材；按 id 去重、来源合并「全局/任务」；空态「该帧没有素材记录」；
 - 行样式与全局/任务素材库**同一套** `asset-row`：抽出共享 `assetRowElement` / `renderAssetRows`，三处（`renderGlobalAssets` / `renderAssetList` / 新 `renderFrameAssets`）真实复用；行 DOM 仍由 `OASAssetUI.createRow` 生成；
-- 帧详情行与两个素材库共用同一套 `asset-row`，并同样显示「识别」+「设置」两按钮；但该视图传 `manage:false`，设置菜单里的 6 个管理项（识别区/操作区/重命名/阈值/位置帧/删除）全部 disabled，只有识别/点测/拖测/步骤可用（详见 §17）；帧详情行测试传该行帧 id（`f.id`）。
+- 帧详情行与两个素材库共用同一套 `asset-row`，并同样显示「识别」+「设置」两按钮；帧详情行测试传该行帧 id（`f.id`）。~~该视图传 `manage:false`，6 个管理项 disabled~~ **2026-11-04 下午 §18.5 取代：帧详情改为 `manage:true`、删除来源 badge，9 项全部可用；写/测试按行来源选 scope**。
 
 ### 16.3 素材测试帧错位（需求③，已修复）
 
@@ -662,7 +662,7 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 | 场景 | 用的帧 | 入口 |
 |---|---|---|
 | 单素材测试（匹配/点测/拖测/OCR/集合） | **当前选中帧**（帧详情行 = 该行帧） | 素材行按钮 / 帧详情行 |
-| 批量帧测试 | **所有位置帧** | `POST /task/assets/batch_test`，覆盖全部可见素材 |
+| 批量帧测试 | **当前可见素材集合**（每素材仍按自己的 `positions`；§18.6 起按钮在素材页） | `POST /task/assets/batch_test`，显式 `assets` ids |
 | 实时 = 开 | 实时帧，**恒优先** | 所有测试（真实点击强制 live） |
 
 - **没有「单素材多帧」入口**：旧「单素材多位置逐个测」已推翻；
@@ -693,6 +693,8 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 ## 17. 2026-11-04 素材行「识别 + 设置」两按钮（同轮，现行口径）
 
 > 台账：`PENDING-LEDGER.md §E-77`；证据：`D:\OAS-dev\_verify\asset-row-20261104\`（`ASSET-ROW-REPORT.md` · `REVIEW.md` · `FIX-REPORT.md` · 截图 · 隔离脚本测试）。本节取代「素材行一排旧按钮（测试/点测/拖测/识别/区域/改/帧/删/操作区/步骤）」的旧描述（U-30b/U-44/R19 时代的布局仅作历史）。
+>
+> **2026-11-04 下午更新（§18）**：两按钮 + 9 项菜单结构继续有效；但本节里「识别区 = prompt 输入坐标」「template 识别区 disabled」「帧详情 `manage:false` 只读」「阈值仅模板」等实现细节已被 **§18** 取代（现为画布拖拽 + 共享保存按钮、模板 replace 重截、帧详情全可用、OCR 也可设阈值）。
 
 ### 17.1 行结构
 
@@ -710,10 +712,10 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 |---|---|---|---|
 | 1 | 点测 | `onClickTest` | 点击测试（dry-run，显示目标点）；帧详情行传该行帧 id |
 | 2 | 拖测 | `onDragTest` | 拖动测试（dry-run，方向/起终点） |
-| 3 | 识别区 | `onEditRoi` → 新 `editAssetRoi` | `prompt` 输入 `x,y,w,h`；不再与重命名/阈值三合一 |
+| 3 | 识别区 | `onEditRoi` → 新 `editAssetRecognitionRoi` | **§18.2 起 = 画布拖拽**（旧 `prompt` 输入已删除）；保存按钮在共享 `#canvas-footer` |
 | 4 | 操作区 | `onAction` | 进入画布操作区编辑（沿用旧 `editAssetActionRoi`） |
 | 5 | 重命名 | `onRename` → 新 `renameAsset` | `prompt` 新 id；只改名，不动阈值/ROI |
-| 6 | 阈值 | `onThreshold` → 新 `editAssetThreshold` | 模板专用 0~1 |
+| 6 | 阈值 | `onThreshold` → 新 `editAssetThreshold` | 模板 NCC 0~1；**§18.4 起 OCR 也用此菜单**设最低置信度（不设/0 = 不限制） |
 | 7 | 位置帧 | `onPosition` | 沿用 `editAssetPositions`（搜索 + 候选弹窗） |
 | 8 | 删除 | `onDelete`（集合走 `onCollectionDelete`） | 沿用删除流程 |
 | 9 | 步骤 | `onStep` | 生成 `click_target` 步骤 |
@@ -725,17 +727,17 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 
 | 场景 | 禁用项 | 说明 |
 |---|---|---|
-| 非 `template` | 阈值 | 只有模板图有阈值 |
-| `template` | **识别区** | 服务端拒绝修改模板 ROI（模板 ROI 已烘焙进裁剪图）；title 说明「如需变更请重新截图保存并替换素材」 |
+| 非 `template` | 阈值 | ~~只有模板图有阈值~~ **§18.4 取代：`ocr_line`/`ocr_lines` 也可设 OCR 最低置信度；只有 region / 集合禁用** |
+| `template` | ~~**识别区**~~ | **§18.3 起启用**：同一画布手势，保存走 `/task/save_asset` + `replace:true` 用当前帧重新截图覆盖（rev+1）；旧「服务端拒绝、菜单 disabled」已删除 |
 | `region` | 操作区 | region 素材本身就是操作区域 |
-| `manage:false`（帧详情） | 识别区 / 操作区 / 重命名 / 阈值 / 位置帧 / 删除 | 只读视图；识别、点测、拖测、步骤仍可用 |
+| `manage:false`（帧详情） | ~~识别区 / 操作区 / 重命名 / 阈值 / 位置帧 / 删除~~ | **§18.5 起帧详情 `manage:true`：9 项全部可用**；每行按来源选 API scope（含 global → 全局库；仅 task → 当前任务） |
 | `template_set`（集合行） | 其余 8 项 | 仅「删除」可用（`manage:true` 时） |
 | `compact` | 点测 / 拖测 / 步骤 | 不渲染（不是 disabled） |
 
-- 规则优先级：`template_set` → `manage:false` → `template 识别区` → `region 操作区` → 非 template 阈值。
+- 规则优先级（§18 现行）：`template_set` → `manage:false`（目前无 surface 传）→ `region 操作区` → 阈值 kind（template / OCR 可设，region/集合禁用）。
 - disabled 项**点击不触发回调**（测试断言 `onEditRoi` 零调用）。
-- 防绕过：`editAssetRoi` 开头硬 guard `template` / `template_set`，在 `assetScopeTask` / `window.prompt` / `postJson` **之前** return；即使控制台直接调用也不弹 prompt、不发请求（纵深防御，不只靠菜单 disabled）。
-- ROI 校验（`parseAssetRoiText`）：只接受 4 个**十进制**数字（中英文逗号/空白分隔），`x,y>=0`、`w,h>0`、每项 `<=100000`；显式拒绝 `1e2`/`0x10`/`+1`/`1.0`。非法时不发请求。
+- 旧 `editAssetRoi` 的 prompt 版与 template/template_set 硬 guard **已随 §18.2 删除**；现在保存入口是画布 + `saveAssetRecognitionRoi`，模板走 `/task/save_asset` + `replace:true`（不是 ROI PATCH）。
+- ROI 校验（§18.2）：画布框 `w,h>0`、`x,y>=0`、`x+w`/`y+h` 不超过当前画布帧尺寸；旧 `parseAssetRoiText`（4 个十进制整数、100000 cap）已随 prompt 一起删除。
 
 ### 17.4 窄侧栏（320px）
 
@@ -747,9 +749,97 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 
 - UI pure test：**835 → 907 checks（+72，旧断言不弱化）/ 225 referenced ids / 0 dead ids**；新增两按钮、9 项顺序、5 类禁用规则、菜单开合/Esc/执行后收起、disabled 零回调、三处 surface 回调、新函数端点与刷新、ROI/阈值解析边界、`editAsset`/`onEdit` 已删等断言。
 - `node --check asset_ui.js/app.js/ui_pure_test.js` **3/3 exit 0**；`git diff --check` clean；task lint **1/0**；无 Rust 改动 ⇒ `cargo test --workspace` 仍 **501/0**（oasd 228）。
-- CDP 实测：全局素材行 `topButtons=[识别,设置]`；模板行 9 项中仅「识别区」disabled；OCR 行「阈值」disabled；帧详情行（`manage:false`）6 个管理项 disabled、点测/拖测/步骤 enabled；截图 `_verify/asset-row-20261104/asset-row-menu2.png` 等。
+- CDP 实测（seq 98）：全局素材行 `topButtons=[识别,设置]`；模板行 9 项中仅「识别区」disabled；OCR 行「阈值」disabled；帧详情行（`manage:false`）6 个管理项 disabled。**以上禁用口径已被 §18 取代**（模板识别区启用、OCR 阈值启用、帧详情全可用）；seq 99 新实测见 §18.8。
 
 ### 17.6 遗留（P2/P3）
 
-- ROI 编辑用 `prompt` 输入 `x,y,w,h`，**未做“画布框选后保存”入口**（P2）；边界只做 `100000` sanity cap，**未按 `design_resolution` 精确校验 `x+w`/`y+h`**（P2；服务端对 region ROI 已有 design 校验）。
-- 设置菜单的全局互斥/Esc 焦点细节/aria 完善（P3）；本轮仍用 CDP headless 验证，**无真实浏览器自动化 E2E**。
+- ~~ROI 编辑用 `prompt` … 未做画布框选入口~~ **已由 §18.2 完成**（画布拖拽 + 共享保存按钮 + 帧边界校验）；旧 `100000` sanity cap 与 `parseAssetRoiText` 已删除。
+- 设置菜单的全局互斥/Esc 焦点细节/aria 完善（P3，仍未做）；本轮仍用 CDP headless 验证，**无真实浏览器自动化 E2E**。
+
+## 18. 2026-11-04 下午 素材库 UX 六项 + OCR 阈值（现行口径）
+
+> 台账：`PENDING-LEDGER.md §E-78`；证据：`D:\OAS-dev\_verify\asset-ux-20261104\`（`UX-REPORT.md` · `OCR-THRESHOLD-REPORT.md` · `REVIEW.md` · `FIX-REPORT.md` · `THRESH-FIX-REPORT.md` · `ux-selected.png` / `ux-roi-shared.png` / `ux-frame.png` · `probe-*.js` · `*.log`）。
+> 本节是素材库 UX 的最新版本；§17 的「两按钮 + 9 项菜单」结构仍是现行，但 §17 里的识别区 prompt / 模板识别区 disabled / 帧详情 `manage:false` / 阈值仅模板 / 批量测试在任务页均已被本节取代。冲突时以本节 + 代码为准。
+
+### 18.1 行选中态与设置菜单保持（需求①）
+
+- **选中按 asset id 记在模块状态**（`asset_ui.js` `selectedAssetKey`，不是 DOM）：同一 asset id 在任务库 / 全局库 / 帧详情三个 surface 同时高亮；列表重渲染（保存/刷新/删除）后 `createRow` 按状态补回 `.selected`。
+- 样式 `.asset-row.selected`：背景 `#1b2a3a`（CDP 实测 **`rgb(27, 42, 58)`**）+ 左亮条 + 主文本/设置按钮提亮；无布局位移（inset shadow）。
+- 点击行主体（main）/「识别」/「设置」都选中该行；**disabled 菜单项不改变选中、不触发回调**。
+- **菜单最多一个**；点菜单项**不收起**（同一素材的设置面板保持展开），仅当选中**另一个素材**时关闭旧菜单并把高亮迁过去；再次点「设置」或 `Esc` 收起。
+- 列表重渲染后恢复已选行菜单（`openMenuKey` + 延迟一 tick）；先在当前可见 surface 上恢复，极端多列表同时可见时可能开在最后一个可见 surface——**只影响菜单位置，不丢选中**（遗留⑥）。
+
+### 18.2 识别区 = 画布拖拽 + 共享保存按钮（需求②）
+
+- 菜单「识别区」→ `editAssetRecognitionRoi(it, scopeTask?)`：把原 ROI 载入画布、`dragTarget='roi'`、清掉 action/polygon 模式；进入编辑时若实时预览开着会**自动暂停并提示**（否则画布拖拽会被当成设备 tap/swipe）。
+- **不再弹窗输入坐标**：旧 `editAssetRoi`（prompt `x,y,w,h`）与 `parseAssetRoiText` 已删除，无死代码。
+- 保存按钮从 `panel-assets` 移到**共享 `#canvas-footer`**（`index.html:64-69` / `style.css:571-589`）：任意面板（任务素材库 / 全局素材库 / 帧详情）都能看到并点击；按钮文案「保存识别区（覆盖素材）」，默认 hidden+disabled，进入编辑才显示。
+- 旁边新增 `#asset-roi-edit-label`：`识别区编辑中：<素材id>`；切到别的素材或取消后按钮隐藏、标签清空。
+- `cancelRecognitionRoiEdit(reason)` 是**唯一退出入口**（P0-2）：`pickAssetRoi` / 切换识别区或操作区编辑 / 重命名 / 阈值 / 位置帧 / 删除 / 集合动作 / 点测拖测 / 生成步骤 / 测试 / 切帧 / 删帧 / 清空帧 / 实时开关 / Esc / 清除区域 / 切任务 / 画布模式切换都会调用；清编辑目标 + 画布 ROI + 按钮状态，并写结果/日志说明原因。
+- 保存校验：`w,h>0`、`x,y>=0`、`x+w`/`y+h` **不超过当前画布帧尺寸**（P2-9），失败 `alert` 且不发请求；保存前按 `{id, scope}` 从缓存重查**最新**素材（P1-2），找不到则取消并提示。
+
+### 18.3 模板识别区统一：replace = 用当前帧重新截图覆盖（需求③）
+
+- **概念**：模板 ROI 本质是「裁剪 / 搜索几何」——模板图 = 保存时按该 ROI 裁出来的图；单独改 ROI 会让模板图过期，所以服务端 `update_asset_meta` **拒绝**模板 ROI 更新（旧提示「模板没有识别区」）。
+- **统一交互**：模板与 OCR/region 都用同一画布拖拽手势；保存分两条：
+  - `template` → `POST /task/save_asset` + **`replace:true`**：用**当前帧**按新 ROI 重新截图并覆盖模板图，`rev+1`；confirm 文案含素材 id、`rev+1`、位置帧数量、不可撤销；前端先拦截 `positions` 为空（P2-8），服务端仍要求 ≥1；
+  - `ocr_line` / `ocr_lines` / `region` → `POST /task/asset/update {task,id,roi}` 直接更新 ROI。
+- **payload** `assetRoiReplacePayload(task, latest, roi)`（P1-1/P1-2）：以**最新素材对象**为底（不是打开编辑时的快照），带 `id/kind/threshold/positions/action_source/action_shape/polygon/ocr_mode/ocr_source_roi/ocr_text`（存在才带），只替换 `roi` 并加 `replace:true`；`action_source=recognition` 不带 `action_shape`、`fixed` 必带（服务端契约）。
+- **polygon 规则**：旧 polygon 的 bbox 与新 ROI 一致则原样保留；不一致则回传**新 ROI 矩形**（避免服务端用旧 bbox 反推、把识别/点击掩膜覆盖掉）。
+- 菜单 title 已说明「模板：保存会用当前帧重新截图覆盖，rev+1」；模板识别区**不再 disabled**。
+- 遗留：`region` 识别区保存仍会把 polygon/invert 降级为矩形（P2-5）；模板 ROI 移动后 polygon **有意**重同步为矩形（不是 bug），见 §18.9。
+
+### 18.4 OCR 阈值（需求④）
+
+- 素材（`ocr_line` / `ocr_lines` / derived）复用 `assets.json` 的 **`threshold`** 字段，语义 = **最低识别置信度**；模板的 `threshold` 仍是 NCC 匹配线。二者在 UI 同一个「阈值」菜单里按 kind 分支。
+- **未设置或 0 = 不按置信度过滤**（与旧行为完全一致）；显式 `t>0` 时 `score<t` 视为未命中/失败。**0 与未设置在 Rust 侧等价**（`ocr_threshold` 读取时过滤 `>0`，P1-4）。
+- UI：模板未设时预填/显示默认 **0.85**；OCR 未设或 0 显示「未设或 0（不限制）」、输入框默认空；prompt 明确「留空 = 取消；0 = 不限制」。阈值菜单对 `template` / `ocr_line` / `ocr_lines` 启用，`region` / 集合禁用。
+- 生效路径、取值路径不加阈值、`ocr_lines` 最高行分等完整语义见 `ENGINE-DESIGN.md §16.5` / `§22.42`。
+
+### 18.5 帧详情素材库与全局库一致（需求⑤）
+
+- 删除「来源（全局 / 任务）」**列 / badge** 与 `assetSourceLabel()`；帧详情行传 **`manage:true`**，行 DOM / 样式 / 9 项设置菜单与设置页的全局库完全一致（不再灰、不再只读）。
+- **行作用域按来源**（`frameAssetScope(row, currentTaskName)`）：含 `global` → `GLOBAL_SCOPE_TASK`（**global 优先**，即使同时被 task 引用）；仅 `task` → 当前任务名。所有管理 / 测试回调支持可选 `scopeTask`；不传时两库原行为不变。
+- 计数行保留「该帧素材 N 条（全局 X · 任务 Y）」；空态「该帧没有素材记录」。来源 badge 删除后，该计数行是唯一来源统计。
+- 遗留：帧详情里 task-only 行在**没有选中任务**时仍会报「请先填任务名」（P2-10）。
+
+### 18.6 批量帧测试移页 + 可见素材集合（需求⑥）
+
+- `#btn-assets-batch-test` 从**任务页**移到**素材页**，紧邻「刷新全局库」（`index.html:143`，上一兄弟 = 刷新按钮；任务页已无此 id）。
+- 测试对象改为**当前可见素材集合**（P1-3）：
+  - 全局模式 = 过滤后的 `globalAssetsCache`（应用搜索/分类，排除 `template_set`）；
+  - 任务模式 = 任务可见素材（`show-all` 已由列表应用）；
+  - 显式把素材 id 列表放进 `POST /task/assets/batch_test` 的 `assets`（后端 `handle_assets_batch_test` 接受该过滤），不再固定为「当前任务 flow 引用子集」。
+- 空集合文案按 surface 区分；全局模式 `task = GLOBAL_SCOPE_TASK`；结果首行写「对象：<surface>可见 N 个」。
+- 遗留：legacy 非全局模式仍需任务名（没有任务上下文时报错，与旧行为一致）。
+
+### 18.7 评审 P0/P1/P2 修复（REVIEW.md）
+
+| 级别 | 问题 | 修复 |
+|---|---|---|
+| P0-1 | 保存按钮只在 `panel-assets` 内，任务库 / 帧详情进入编辑后不可见 | 移到共享 `#canvas-footer` + `#asset-roi-edit-label`；三 surface 可用（`index.html:64-69` / `style.css:571-589`） |
+| P0-2 | 切素材 / 切帧后仍写旧素材（模板 replace 会数据损坏） | 新增 `cancelRecognitionRoiEdit(reason)` 覆盖所有离开路径；保存前按 `{id,scope}` 从缓存重查最新素材，找不到即取消 |
+| P1-1 | 模板 replace payload 丢 `polygon` / OCR 字段 | `assetRoiReplacePayload` 以最新素材为底带全字段；polygon bbox 一致保留、否则回传新 ROI 矩形 |
+| P1-2 | 模板保存用编辑起点快照，可回退阈值 / 位置帧 | 同 P0-2：保存前重查最新对象，只换 ROI |
+| P1-3 | 批量测试移到素材页但仍测 task flow 子集 | 改为当前可见集合 + 显式 `assets` ids |
+| P1-4 | OCR `0` 与未设在 `expect appear/vanish` 不等价 | Rust 归一化：`ocr_threshold` 过滤 `>0`；`selector_threshold` 统一 appear/vanish；`click_target` 模板兜底同策略；其余路径走归一化访问器 |
+| P2 | Esc / 切帧 / 实时开关不取消编辑；实时开时进入编辑未暂停；重渲染丢菜单；模板空 positions；ROI 越界；confirm 信息不足；title 未说明重截 | 全部已修（Esc/切帧/实时取消、实时自动暂停并提示、菜单按 id 恢复、positions 前端拦截、帧尺寸校验、confirm 含 id/rev/位置帧数/不可撤销、菜单 title 说明重截） |
+
+### 18.8 测试与验证
+
+- UI pure test：**907 → 1003（实现）→ 1112 checks / 227 referenced ids / 0 dead ids**（修复后；旧断言不弱化）；`node --check` 3/3 exit 0。
+- Rust：workspace **501 → 512（OCR 阈值）→ 516 passed / 0 failed**；runtime **133→136** unit、task **58→59**、oasd **228**；新增 **15** 条（阈值 11 + 0 语义/expect 三态 4，原 11 条保留）。
+- `cargo build -p oasd --features ocr` exit 0（6 个既有 warnings）；task lint **1/0**；`git diff --check` clean。
+- **Lead CDP 实测**（真实 serve 8787 + device）：行选中背景 `rgb(27,42,58)`；设置→识别区后菜单保持展开、画布底部保存按钮可见可用、标签「识别区编辑中：预设」；切到另一素材后保存按钮隐藏/禁用、标签清空；模板识别区 title 含「模板：保存会用当前帧重新截图覆盖，rev+1」；OCR 阈值 prompt 显示「未设或 0（不限制）」且默认空；帧详情行无来源文案、9 项设置全 enabled；批量按钮在 `panel-assets`、上一兄弟「刷新全局库」、不在 `panel-task`。截图 `_verify/asset-ux-20261104/ux-roi-shared.png` / `ux-selected.png` / `ux-frame.png` 等。
+- 边界：**无真实浏览器自动化回归**（本轮 = Lead CDP 实测 + UI pure tests）。
+
+### 18.9 遗留（P2/P3，不阻塞）
+
+1. `region` 识别区保存仍会把 polygon/invert 降级为矩形（P2-5，服务端 region ROI 保存路径既有）；
+2. 模板 ROI 移动后 polygon **有意**重同步为矩形（避免旧 bbox 反推覆盖；不是回归）；
+3. `ocr()` / `ocr_digit()` / `ocr_to_var` 等**取值路径不加阈值**（设计：避免把「读到的值」变成「没读到」）；`ocr_lines` 判定用**最高行分**，适配层已丢弃 `<0.5` 的行 ⇒ `<0.5` 阈值对 `ocr_lines`/derived 无额外效果；
+4. legacy 非全局模式的批量测试仍需任务名；
+5. 帧详情 task-only 且无任务时仍报错（P2-10）；
+6. 菜单恢复在极端多列表同时可见时可能开在最后可见 surface（不丢选中）；
+7. 无真实浏览器自动化回归（本轮 Lead 用 CDP 实测 + UI pure tests）；
+8. docs 已同步本轮（本任务）。

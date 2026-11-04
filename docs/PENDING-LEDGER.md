@@ -3278,6 +3278,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 > 改动仅 UI：`apps/oasd/ui/{index.html,app.js,style.css,ui_pure_test.js}`（本轮布局修复 4 文件，均未提交；前一轮帧搜索 3 文件已随 seq 96 提交，本轮新增 `style.css` 并改动其余 3 文件；Lead 本轮先提交代码（父 = 修复前 HEAD，即 seq 96 docs 提交），再提交 docs（新 HEAD）；hash 以 `git log` 为准）。
 > 现行口径：`docs/EDITOR-UX-PLAN.md §16`；旧 §E-66/U-32b/`AUDIT-SUBPROCESS` P1-7 已标注取代。
 > **同轮后续（2026-11-04 12:5x）：素材行统一为「识别 + 设置」两按钮，见 §E-77**；本节 ② 与 §H 里「帧详情行只保留测试类动作」的旧描述已由 §E-77 取代（现在帧详情行同两按钮，管理项由 `manage:false` 禁用）。
+> **再后续（2026-11-04 下午）：§E-78 再次取代**——帧详情行改为 `manage:true`（9 项全可用，按来源分 scope）、删除来源 badge；「批量帧测试」移到素材页并覆盖当前可见集合；识别区改为画布拖拽 + 共享保存按钮。本节只保留帧页历史。
 > 证据：`D:\OAS-dev\_verify\ui-frames-20261103\`（`MATCH-BUG-DIAGNOSIS.md` · `FRAMES-UI-REPORT.md` · `MATCH-FIX-REPORT.md` · `REVIEW-UI.md` · `FIX-P1-REPORT.md` · `api-*.json` · `match-23/26.json` · `frames-fixed.png` / `frames-fixed-detail.png`（布局修复） · `editor-page.png` · 日志）。
 
 ## A. 需求 → 实现
@@ -3285,7 +3286,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 | 需求 | 实现 |
 |---|---|
 | ① 图片帧页搜索 | `#frame-search`（名称 / `#id` / 分类；大小写不敏感 + trim；`12`/`#12` 精确 ID）+ `#frame-search-clear` + `#frame-search-status`；**纯前端过滤**（不改 `/frames` 请求）；先搜索后按分类分组，组空不渲染，全空「没有匹配的帧」；切分类/刷新保留搜索词；纯函数 `frameMatchesQuery`/`filterFramesByQuery`/`frameSearchStatusText` |
-| ② 当前帧素材库 | 点击具体帧（或当前帧刷新）后 `#frame-detail` 增加「该帧素材：N 条」+ `#frame-assets-list`；显示**全局素材库 + 任务素材**中 `positions` 含该帧 id 的全部素材，按 id 去重、来源合并「全局/任务」；行与全局/任务素材库同一套 `asset-row`：抽出共享 `assetRowElement`/`renderAssetRows`，三处真实复用（`renderGlobalAssets`/`renderAssetList`/新 `renderFrameAssets`），行 DOM 仍由 `OASAssetUI.createRow` 生成；~~帧详情行只保留测试类动作（改/删等危险操作仍只在素材库页）~~ **§E-77 起：帧详情行同样「识别 + 设置」两按钮，但 `manage:false` 禁用 6 个管理项，仅识别/点测/拖测/步骤可用**；空态「该帧没有素材记录」 |
+| ② 当前帧素材库 | 点击具体帧（或当前帧刷新）后 `#frame-detail` 增加「该帧素材：N 条」+ `#frame-assets-list`；显示**全局素材库 + 任务素材**中 `positions` 含该帧 id 的全部素材，按 id 去重、来源合并「全局/任务」；行与全局/任务素材库同一套 `asset-row`：抽出共享 `assetRowElement`/`renderAssetRows`，三处真实复用（`renderGlobalAssets`/`renderAssetList`/新 `renderFrameAssets`），行 DOM 仍由 `OASAssetUI.createRow` 生成；~~帧详情行只保留测试类动作（改/删等危险操作仍只在素材库页）~~ **§E-77 起：帧详情行同样「识别 + 设置」两按钮，但 `manage:false` 禁用 6 个管理项**（**§E-78 起：`manage:true` 全可用、去来源 badge、按来源分 scope**）；空态「该帧没有素材记录」 |
 | ③ 素材测试帧错位 | `testFramePlan` 优先级 **live > 显式 frameId > 当前帧 currentFrameId > positions 兜底**；五个测试函数透传 frameId；帧详情行测试传 `f.id`；切帧清旧框；miss 不画框；单行 OCR 不再把存储 ROI 冒充真实检测框 |
 
 ## B. 根因（需求③）
@@ -3333,7 +3334,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 
 - 帧搜索无 Enter/防抖（P3）；分类 + 搜索状态计数跨分类（P2）；纯数字查询既精确又子串（P2）；全局模式下来源可能重复计数（P2）；
 - `frame_source` 文案（`position:#N` vs 「当前帧 #N」）待统一（P2）；切帧只清测试框不清 ROI 覆盖层（P2）；单行 OCR 点测画布无框（P2 沟通项）；`renderAssetRows` 与 `OASAssetUI.renderRows` 仍有 DRY 复制（P2）；
-- 帧详情操作按钮：§E-76 当时只放测试类；**§E-77 起统一「识别 + 设置」两按钮，管理项由 `manage:false` 禁用**（不是删按钮）；产品 backlog 不变（`SelectionTool` / collection real=1 真机 E2E / drag Plan B / P2-10 / 版本决策）。
+- 帧详情操作按钮：§E-76 当时只放测试类；**§E-77 起统一「识别 + 设置」两按钮，管理项由 `manage:false` 禁用**（不是删按钮）；**§E-78 起帧详情 `manage:true`，9 项全可用、按来源分 scope**；产品 backlog 不变（`SelectionTool` / collection real=1 真机 E2E / drag Plan B / P2-10 / 版本决策）。
 
 ## I. 布局回归修复（2026-11-04，已修）
 
@@ -3363,6 +3364,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 > 触发：① 用户要求一键提交/推送脚本（避免手工逐目录 `git add` 漏掉 `assets/`/`frames/`/`tasks/`/`scheduler.json`）；② 素材行旧按钮过多，统一为「识别 + 设置」两个操作按钮，设置菜单 9 项 → 实现 → 只读评审（P0=0，P1×2：模板识别区死动作、任意分支自动同步 main）→ 修复 P1/P2 → 测试 **907 / 225 / 0**。
 > 改动：UI 4 文件 `apps/oasd/ui/{asset_ui.js,app.js,style.css,ui_pure_test.js}`；新增 `scripts/push-all.ps1`（PS 5.1，UTF-8 BOM）/ `scripts/push-all.bat`（透传参数与退出码）/ `docs/PUSH-ALL.md`。均未提交；本轮代码父 = `a4b6960`（seq 97 docs 提交），hash 以 `git log` 为准。
 > 现行口径：`docs/EDITOR-UX-PLAN.md §17`（素材行）、`docs/PUSH-ALL.md`（脚本）；证据：`D:\OAS-dev\_verify\asset-row-20261104\`。
+> **后续取代（2026-11-04 下午，§E-78）**：识别区 prompt → **画布拖拽 + 共享 `#canvas-footer` 保存按钮**；template 识别区 → **启用，保存走 `/task/save_asset` + `replace:true` 用当前帧重截（rev+1）**；帧详情 `manage:false` → **`manage:true`（9 项全可用、按来源分 scope）**；阈值 → **OCR 也可设最低置信度**；批量帧测试 → **移到素材页、覆盖当前可见集合**。本节保留「识别 + 设置」两按钮 / 9 项菜单结构，其余实现细节以 §E-78 为准。
 
 ## A. 需求 → 实现
 
@@ -3386,7 +3388,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 |---|---|---|---|
 | 1 | 点测 | `onClickTest` | dry-run 点击测试 |
 | 2 | 拖测 | `onDragTest` | dry-run 拖动测试 |
-| 3 | 识别区 | `onEditRoi` → 新 `editAssetRoi` | prompt `x,y,w,h` |
+| 3 | 识别区 | `onEditRoi` → 新 `editAssetRoi` | ~~prompt `x,y,w,h`~~（**§E-78 已改画布拖拽 + 共享保存**） |
 | 4 | 操作区 | `onAction` | 画布操作区编辑（沿用） |
 | 5 | 重命名 | `onRename` → 新 `renameAsset` | prompt 新 id |
 | 6 | 阈值 | `onThreshold` → 新 `editAssetThreshold` | 模板专用 0~1 |
@@ -3397,8 +3399,8 @@ GET /task/assets?task= → 34 个素材（全局模式）
 **禁用规则（优先级从上到下）**
 
 - `template_set`：其余 8 项 disabled，仅删除可用；
-- `manage:false`（帧详情）：识别区/操作区/重命名/阈值/位置帧/删除 6 项 disabled；
-- `template`：**识别区 disabled**（服务端拒绝修改模板 ROI，title 说明须重新截图保存）；
+- ~~`manage:false`（帧详情）：识别区/操作区/重命名/阈值/位置帧/删除 6 项 disabled~~（**§E-78 起帧详情 `manage:true`，9 项全可用、按来源分 scope**）；
+- ~~`template`：**识别区 disabled**（服务端拒绝修改模板 ROI，title 说明须重新截图保存）~~（**§E-78 起启用，保存走 replace 重截**）；
 - `region`：操作区 disabled；非 template：阈值 disabled；`compact`：点测/拖测/步骤不渲染。
 - disabled 项点击**不触发回调**；`editAssetRoi` 对 template/template_set 有硬 guard（在 prompt/post 之前 return，不发请求）。
 
@@ -3406,7 +3408,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 
 - 删除旧 `editAsset` 三合一（重命名+阈值+ROI）与 `renderAssetList`/`renderGlobalAssets` 两处 `onEdit` 死代码；全仓库无 `onEdit` / `function editAsset(`（静态断言）。
 - `parseAssetRoiText`：4 个十进制整数，`x,y>=0`、`w,h>0`、每项 `<=100000`，拒绝 `1e2`/`0x10`/`+1`/`1.0`；`renameAsset`/`editAssetThreshold`/`editAssetRoi` 成功后刷新两个素材库。
-- 帧详情补 `onDelete`（仍由 `manage:false` 禁用）。
+- 帧详情补 `onDelete`（~~仍由 `manage:false` 禁用~~；**§E-78 起可用**）。
 
 ## C. 需求①：脚本参数 / 流程 / 排除
 
@@ -3430,7 +3432,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 
 | 项 | 问题 | 修复 | 验证 |
 |---|---|---|---|
-| P1-1 | 模板行「识别区」是死动作（服务端拒绝模板 ROI 更新） | 菜单 `template` 识别区 disabled + 专用 title；`editAssetRoi` 硬 guard template/template_set（prompt/post 之前）；region 经服务端确认允许，保持可用 | 静态/渲染/guard 执行断言；CDP 模板行 9 项中仅识别区 disabled |
+| P1-1 | 模板行「识别区」是死动作（服务端拒绝模板 ROI 更新） | 菜单 `template` 识别区 disabled + 专用 title；`editAssetRoi` 硬 guard template/template_set（prompt/post 之前）；region 经服务端确认允许，保持可用（**§E-78 进一步改为模板识别区启用 + replace 重截，本节仅历史**） | 静态/渲染/guard 执行断言；CDP 模板行 9 项中仅识别区 disabled |
 | P1-2 | 任意分支推送后都自动同步 main（feature 分支会误发布） | 默认仅 `dev`；其它分支 WARN + exit 0；新增 `-SyncMain`；远程无 main 用 `ls-remote` 预检后 WARN + exit 0（不再 exit 5）；显式 `-SyncMain` 无法确认才 exit 5 | 隔离仓库 feature/x（DryRun + 真推）、`-SyncMain`、无 main 场景 59 checks |
 | P2-a | 排除规则会把已跟踪的 `*.log` 从暂存区 unstage | 用 HEAD 跟踪集合判定，只 reset 未跟踪项；已跟踪项打印并保留提交 | 隔离仓库 `tracked.log` 保留 + `untracked.log` 排除 |
 | P2-b | push/联动失败后重跑 no-op，不补推 | 无 staged 且本地领先 →「只推送」路径；`-NoPush` 不补推；DryRun 打印计划 | 隔离仓库 push 失败 → 恢复重跑补推成功 |
@@ -3441,7 +3443,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - UI pure test：**835 → 907 checks（+72）/ 225 referenced ids / 0 dead ids**（旧断言无删除/弱化；ASSET-ROW 888 + FIX 19）；`node --check` 3/3 exit 0；task lint **1/0**；`git diff --check` clean。
 - 脚本：PowerShell 5.1 AST **5714 tokens / 0 errors**；UTF-8 with BOM 复核；真实仓库 `push-all.ps1 -DryRun` 与 `push-all.bat -DryRun` 均 **exit 0**，前后 HEAD / index / `git status` 一致；隔离 git 副本集成测试 **59 checks / 0 failures**（dev / 非 dev / `-SyncMain` / 无 main / 已跟踪 log / push 失败重跑 / `-NoPush` / 本地无 main）。
 - 无 Rust 改动 ⇒ `cargo test --workspace` 仍 **501/0**（oasd 228；UI 无 Rust 测试）。
-- CDP/headless 实测（Lead）：全局行 `topButtons=[识别,设置]`；模板行仅「识别区」disabled；OCR 行「阈值」disabled；帧详情行（`manage:false`）管理项 disabled、点测/拖测/步骤 enabled；320px 侧栏 `row=320/main=208/按钮 52x26/sameRow=true`。截图 `_verify/asset-row-20261104/asset-row-menu2.png`、`asset-row-320.png` 等。
+- CDP/headless 实测（Lead，seq 98）：全局行 `topButtons=[识别,设置]`；模板行仅「识别区」disabled；OCR 行「阈值」disabled；帧详情行（`manage:false`）管理项 disabled、点测/拖测/步骤 enabled；320px 侧栏 `row=320/main=208/按钮 52x26/sameRow=true`。截图 `_verify/asset-row-20261104/asset-row-menu2.png`、`asset-row-320.png` 等。**以上禁用口径已被 §E-78 取代（模板识别区/OCR 阈值启用、帧详情全可用）**。
 - 边界：**无真机/真实浏览器自动化回归**；本轮用 CDP headless + 纯测试 + 隔离 git 副本验证。
 
 ## F. 提交 / 数据边界
@@ -3468,7 +3470,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 |---|---|---|
 | ① 一键提交/推送脚本 | ✅ | `scripts/push-all.ps1`（1004 行，UTF-8 BOM）+ `.bat` + `docs/PUSH-ALL.md`；AST 5714/0；真实仓 DryRun ps1/bat exit 0；隔离集成 59/0 |
 | ② 素材行两按钮 | ✅ | `asset_ui.js` `ASSET_MENU_ITEMS`/`assetMenuState` + 三处 opts；UI 907/225/0；CDP `topButtons=[识别,设置]` |
-| 九项顺序/禁用 | ✅ | 顺序断言 + 5 类禁用规则；模板识别区、非模板阈值、region 操作区、manage:false、集合仅删除；disabled 零回调 |
+| 九项顺序/禁用 | ✅ | 顺序断言 + 5 类禁用规则；模板识别区、非模板阈值、region 操作区、manage:false、集合仅删除；disabled 零回调（**§E-78 起模板识别区/OCR 阈值启用、帧详情 `manage:true`**） |
 | 新函数/清理 | ✅ | `editAssetRoi` / `renameAsset` / `editAssetThreshold`；旧 `editAsset` + 两处 `onEdit` 已删；硬 guard；ROI 解析边界 |
 | 窄侧栏 | ✅ | `.asset-main{min-width:0}` + `align-self:flex-start`；headless 320px `sameRow=true`；`asset-row-320.png` |
 | 评审修复 | ✅ | P1-1 模板识别区；P1-2 仅 dev 同步 main + `-SyncMain` + 无 main exit 0；P2-a/b + P2 其余 |
@@ -3476,3 +3478,106 @@ GET /task/assets?task= → 34 个素材（全局模式）
 | 文档 | ✅ | `PUSH-ALL.md`（新） · `EDITOR-UX-PLAN §16.2/§17` · 本 §E-77 · `RESUME` seq 98 · `RESUME-INDEX` 98 · `START-HERE` · `SESSION-HANDOFF` · `README` |
 
 | 状态 | ✅ 素材行两按钮 + 一键提交/推送脚本完成（UI 907/225/0；workspace 501/0；脚本 AST 5714/0、集成 59/0）；代码/脚本/docs 待 Lead 提交（代码父 `a4b6960`）；⚠ 遗留见 §H · 无阻塞 |
+
+---
+
+# ★ §E-78 ★★★ [11-04 14:0x~14:5x] **素材库 UX 六项 + OCR 阈值（评审 P0/P1 全修）**
+
+> 触发：用户素材库 UX 六项需求（行选中态/菜单保持、识别区画布拖拽 + 共享保存、模板识别区统一、OCR 阈值、帧详情与全局库一致、批量帧测试移页）→ UI/Rust 实现 → 只读评审（`REVIEW.md`：**P0×2 + P1×4**）→ P0/P1 全修 + P2 顺手 → 测试 **1112 / 227 / 0**、workspace **516/0**。
+> 改动：UI **5 文件** `apps/oasd/ui/{asset_ui.js,app.js,index.html,style.css,ui_pure_test.js}`；Rust **2 文件** `crates/{oas-runtime,oas-task}/src/lib.rs`。均未提交；本轮代码父 = `b4c2b0c`（seq 98 docs 提交），docs 随后（新 HEAD）；hash 以 `git log` 为准。
+> 现行口径：`docs/EDITOR-UX-PLAN.md §18`（素材库 UX）、`docs/ENGINE-DESIGN.md §16.5 / §22.42`（OCR 阈值）；证据：`D:\OAS-dev\_verify\asset-ux-20261104\`。
+
+## A. 需求 → 实现
+
+| 需求 | 实现 |
+|---|---|
+| ① 素材行选中态 + 菜单保持 | 选中按 **asset id** 存模块状态（`asset_ui.js` `selectedAssetKey`），跨 surface 同 id 高亮；`.asset-row.selected` 背景 `#1b2a3a`（CDP `rgb(27,42,58)`）+ 左亮条；点行 main/识别/设置都选中；**点菜单项不收起**；仅选另一个素材时关旧菜单并迁高亮；再次「设置」/Esc 收起；disabled 项不改变选中、不触发回调；列表重渲染恢复选中并延迟恢复已选行菜单 |
+| ② 识别区 = 画布拖拽 | 菜单「识别区」→ `editAssetRecognitionRoi`：载入原 ROI 到画布、进入 ROI 拖拽模式（不再 prompt）；实时开启时自动暂停并提示；保存按钮移到共享 `#canvas-footer`（任意面板可见），旁有 `#asset-roi-edit-label`「识别区编辑中：<素材id>」；进入编辑显示「保存识别区（覆盖素材）」；`cancelRecognitionRoiEdit(reason)` 覆盖所有离开路径；保存前重查最新素材 + 帧尺寸越界校验 |
+| ③ 模板识别区统一 | 模板 ROI = 保存时裁剪/搜索几何（模板图 = ROI 截图）；只改 ROI 会让模板图过期，服务端 `update_asset_meta` 拒绝模板 ROI（旧提示「模板没有识别区」）。现统一画布手势：**模板保存走 `/task/save_asset` + `replace:true`**（当前帧重截、rev+1），OCR/region 走 `/task/asset/update {roi}`；confirm 带 id/rev/位置帧数/不可撤销；title 说明重截 |
+| ④ OCR 阈值（新增能力） | OCR 素材复用 `assets.json` 的 `threshold` = **最低识别置信度**；**未设/0 = 不过滤**（旧行为），`t>0` 时 `score<t` = 未命中/失败；生效于 click、条件 appear、`expect appear/vanish`、`click_target` 的 ocr_text、expect ocr_text、drag ocr_text；取值路径（`ocr()`/`ocr_digit()`/`ocr_to_var`）不加阈值；模板/collection 默认 0.9 不变 |
+| ⑤ 帧详情与全局库一致 | 删除「来源（全局/任务）」列/badge 与 `assetSourceLabel`；`manage:true`，行样式/9 项设置与全局库一致（不再灰）；行 scope 按来源：含 global → `GLOBAL_SCOPE_TASK`（global 优先），仅 task → 当前任务；所有管理/测试回调支持可选 `scopeTask`，两库原行为不变；计数行保留「全局 X · 任务 Y」 |
+| ⑥ 批量帧测试移页 | `#btn-assets-batch-test` 从任务页移到素材页、紧邻「刷新全局库」；测试对象 = **当前可见素材集合**（全局模式 = 过滤后的 `globalAssetsCache`；任务模式 = 任务可见素材含 show-all），显式传 assets ids（后端 `handle_assets_batch_test` 接受过滤）；空集合文案按 surface 区分；全局模式 task=`GLOBAL_SCOPE_TASK` |
+
+## B. 识别区：共享保存 / 模板 replace / 数据安全
+
+- **P0-1 共享保存**：`#btn-save-asset-roi` + `#asset-roi-edit-label` 落在 `#canvas-footer`（`index.html:64-69` / `style.css:571-589`），不再位于 `panel-assets`；任务素材库、全局素材库、帧详情三处进入编辑都能保存。
+- **P0-2 取消编辑**：`cancelRecognitionRoiEdit(reason)`（`app.js`）在 `pickAssetRoi`、切换编辑目标、rename/threshold/positions/delete/collection/action/test/step/saveAssetUnified、`selectFrame`/`deleteFrame`/`clearFrames`、实时开关、Esc、清除区域、切任务、画布模式切换处调用；清编辑目标 + 画布 ROI + 按钮/标签。保存前按 `{id,scope}` 从缓存重查**最新**素材，找不到则取消（不再用打开编辑时的快照）。
+- **P1-1/P1-2 模板 payload**：`assetRoiReplacePayload(task, latest, roi)` 以最新素材为底，带 `id/kind/threshold/positions/action_source/action_shape/polygon/ocr_mode/ocr_source_roi/ocr_text`（存在才带），只换 `roi` + `replace:true`；`recognition` 不带 shape、`fixed` 必带；polygon bbox 与新 ROI 一致则保留，不一致回传新 ROI 矩形（避免旧 bbox 反推覆盖）。
+- **P2 顺手**：模板 `positions` 空前端拦截（服务端仍要求 ≥1）；ROI `x/y>=0`、`w/h>0`、`x+w`/`y+h` ≤ 当前画布帧；覆盖 confirm 带 id/rev/位置帧数/不可撤销；识别区菜单 title 说明模板重截。
+
+## C. OCR 阈值语义（Rust 权威）
+
+| 项 | 语义 |
+|---|---|
+| 字段 | `AssetDecl.threshold` 复用（模板 = NCC 匹配线；OCR = 最低识别置信度） |
+| 未设 / 0 | **等价 = 不按置信度过滤**（旧「识别成功即命中」行为）；`ocr_threshold` 读取时 `filter(>0)`，显式 0 与缺失都 `None`（P1-4） |
+| `t>0` | `score >= t` 才是命中；`score<t` 视为未命中/失败 |
+| 生效路径 | `click`（OCR selector）、条件 `appear`、`expect appear/vanish`、`click_target` 的 `ocr_text`、`expect ocr_text`、`drag` 的 `ocr_text` |
+| `expect appear/vanish` | 统一走 `selector_threshold`：OCR 未设/0 → **0.0**（不过滤），显式 `t>0` → `t`；模板/collection 仍 0.9/显式阈值（修复 P1-4 的 0→0.9 不一致） |
+| `click_target` 模板兜底 | 未命中 OCR 阈值时模板兜底同策略（不把 0 当 0.9） |
+| 取值路径 | `ocr()` / `ocr_digit()` / `ocr_to_var` **不加**阈值（设计：避免把「读到的值」变成「没读到」） |
+| `ocr_lines` / derived | 判定用**最高行分**；适配层已丢弃 `<0.5` 的行 ⇒ `<0.5` 阈值对其无额外效果 |
+| 模板 / collection | 默认阈值 **0.9** 不变 |
+| UI | 模板未设预填/显示 **0.85**（runtime 默认）；OCR 未设/0 显示「未设或 0（不限制）」、默认空；prompt「留空 = 取消；0 = 不限制」 |
+
+## D. 评审 P0/P1 修复
+
+| 级别 | 问题 | 修复 | 验证 |
+|---|---|---|---|
+| P0-1 | 保存按钮只在 `panel-assets` 内，任务库/帧详情不可见 | 移到共享 `#canvas-footer` + 标签 | CDP 三 surface 实测；UI 静态/fake DOM 断言 |
+| P0-2 | 切素材/切帧后仍写旧素材（模板 replace 会数据损坏） | `cancelRecognitionRoiEdit` 全路径 + 保存前重查最新对象 | 行为测试；UI 1112 |
+| P1-1 | 模板 replace payload 缺 polygon/OCR 字段 | `assetRoiReplacePayload` 带全字段 + polygon bbox 规则 | payload 单测 + 静态断言 |
+| P1-2 | 用编辑起点快照，可回退阈值/位置帧 | 同 P0-2：以最新对象为底 | 行为测试 |
+| P1-3 | 批量测试仍按 task flow 子集 | 可见集合 + 显式 assets ids | 后端过滤契约 + UI 断言 |
+| P1-4 | OCR 0 与未设在 expect appear/vanish 不等价 | `ocr_threshold`/`selector_threshold` 归一化；expect/click_target 统一 | 新增 4 条三态测试 |
+| P2 | Esc/切帧/实时开关不取消、实时未暂停、重渲染丢菜单、空 positions、ROI 越界、confirm 信息不足、title 未说明重截 | 全部已修 | UI 断言 + CDP |
+
+## E. 测试 / E2E
+
+- UI pure test：**907 → 1003（实现）→ 1112 checks / 227 referenced ids / 0 dead ids**（修复后；旧断言不弱化）；`node --check` 3/3 exit 0。
+- Rust：workspace **501 → 512（OCR 阈值）→ 516 passed / 0 failed**；runtime **133→136** unit、task **58→59**、oasd **228**；新增 **15** 条（阈值 11 + 0 语义/expect 三态 4，原 11 条保留）。
+- `cargo build -p oasd --features ocr` exit 0（6 个既有 warnings）；task lint **1/0**；`git diff --check` clean。
+- **Lead CDP 实测**（真实 serve 8787 + device）：行选中背景 `rgb(27,42,58)`；设置→识别区后菜单保持展开、画布底部保存按钮可见可用、标签「识别区编辑中：预设」；切到另一素材后保存按钮隐藏/禁用、标签清空；模板识别区 title 含「模板：保存会用当前帧重新截图覆盖，rev+1」；OCR 阈值 prompt 显示「未设或 0（不限制）」且默认空；帧详情行无来源文案、9 项设置全 enabled；批量按钮在 `panel-assets`、上一兄弟「刷新全局库」、不在 `panel-task`。截图 `ux-roi-shared.png` / `ux-selected.png` / `ux-frame.png`。
+- 边界：**无真实浏览器自动化回归**（本轮 = Lead CDP 实测 + UI pure tests）。
+
+## F. 提交 / 数据边界
+
+- 待提交 = UI **5 文件**（`asset_ui.js`/`app.js`/`index.html`/`style.css`/`ui_pure_test.js`）+ Rust **2 文件**（`crates/oas-runtime/src/lib.rs`、`crates/oas-task/src/lib.rs`）+ 本批 docs。
+- **用户数据不提交**：`assets/assets.json`、`assets/images/a00{2..5}.png`、`frames/frames.json`、`frames/frame-4{1,2}.png`、`scheduler.json`、`scheduler.json.bak`、`tasks/关闭弹窗/`。
+- 代码提交父 = `b4c2b0c`（seq 98 docs 提交）；docs 提交在其后（新 HEAD）；不写死 docs hash。
+
+## G. 文档
+
+- `EDITOR-UX-PLAN`：新增 **§18**（六项 + 阈值 + 评审 + 测试 + 遗留）；§16.2 / §17 加「已被 §18 取代」订正。
+- `PENDING-LEDGER`：本 §E-78；§E-76 / §E-77 顶部加 §E-78 取代说明。
+- `ENGINE-DESIGN`：新增 **§16.5**（OCR 每素材最低置信度语义）+ **§22.42**（实现记录）。
+- `RESUME` seq 99（覆盖重写）/ `RESUME-INDEX` 追加 99 / `START-HERE` / `SESSION-HANDOFF` / `README` 同步本轮状态与数字。
+- 逐处 before→after：`D:\OAS-dev\_verify\asset-ux-20261104\DOCS-REPORT.md`。
+
+## H. 遗留（P2/P3，不阻塞）
+
+1. `region` 识别区保存仍会把 polygon/invert 降级为矩形（P2-5，服务端 region ROI 保存路径既有）；
+2. 模板 ROI 移动后 polygon **有意**重同步为矩形（避免旧 bbox 反推覆盖，不是回归）；
+3. `ocr()`/`ocr_digit()`/`ocr_to_var` 等取值路径不加阈值（设计）；`ocr_lines` 用最高行分、适配层丢 `<0.5` 行；
+4. legacy 非全局模式批量测试仍需任务名；
+5. 帧详情 task-only 且无任务时仍报错（P2-10）；
+6. 菜单恢复在极端多列表同时可见时可能开在最后可见 surface（不丢选中，P3）；
+7. 无真实浏览器自动化回归（本轮 CDP 实测 + UI pure tests，P3）；
+8. docs 已同步本轮（本任务）。
+
+## 台账
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| ① 行选中态/菜单保持 | ✅ | `selectedAssetKey` 按 id 跨 surface；`.asset-row.selected` `#1b2a3a`；菜单项不收起；CDP `rgb(27,42,58)` |
+| ② 识别区画布 + 共享保存 | ✅ | `editAssetRecognitionRoi` / `#btn-save-asset-roi` 在 `#canvas-footer` / `#asset-roi-edit-label`；旧 prompt 删除 |
+| ③ 模板 replace 统一 | ✅ | `/task/save_asset` + `replace:true`（rev+1）；`assetRoiReplacePayload` 全字段；confirm/title；polygon 规则 |
+| ④ OCR 阈值 | ✅ | UI 菜单 + prompt；Rust `ocr_threshold`/`selector_threshold`；15 条新增测试；workspace 516/0 |
+| ⑤ 帧详情一致 | ✅ | 去来源列/badge、`manage:true`、`frameAssetScope`（global 优先/task-only 用当前任务）、`scopeTask` 透传 |
+| ⑥ 批量测试移页 | ✅ | `panel-assets` 且紧邻「刷新全局库」；`batchTestAssetSelection` 可见集合 + assets ids；空态文案 |
+| 评审 P0/P1 | ✅ | P0-1/P0-2/P1-1/P1-2/P1-3/P1-4 全修；P2 7 项已修；见 §D |
+| 测试 | ✅ | UI **1112/227/0**；workspace **516/0**（runtime 136 / task 59 / oasd 228）；build exit 0（6 既有 warnings）；lint 1/0；diff check clean |
+| E2E | ✅（有限） | 真实 serve 8787 + device；CDP 选中/共享保存/模板 title/OCR prompt/帧详情/批量按钮；截图 `ux-roi-shared.png` 等 |
+| 文档 | ✅ | `EDITOR-UX-PLAN §18` · `ENGINE-DESIGN §16.5/§22.42` · 本 §E-78 · `RESUME` seq 99 · `RESUME-INDEX` 99 · `START-HERE` · `SESSION-HANDOFF` · `README` |
+
+| 状态 | ✅ 素材库 UX 六项 + OCR 阈值完成，评审 P0/P1 全修（UI 1112/227/0；workspace 516/0）；代码/docs 待 Lead 提交（代码父 `b4c2b0c`）；⚠ 遗留见 §H · 无阻塞 |

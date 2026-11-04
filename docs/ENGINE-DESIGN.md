@@ -556,6 +556,26 @@ fn find_text_in_list(&mut self, text: &str, scroll: ScrollPolicy) -> Result<Poin
 ★ 验收判据（P1-c）：★ 在**已录的 3 帧真机**（式神录 → 队伍预设）上，★ 识别出
 ★ **「默认分组」/「分组2」/「通用阵容」** ★ 且与 Python `rapidocr` **输出一致**（★ 同 OCR 等价性原则）。
 
+### 16.5 ★★ 每素材 OCR 最低置信度（2026-11-04 追加 · 现行）
+
+> ★ 触发：用户要求 OCR 素材也能像模板一样设「阈值」。★ 台账：`PENDING-LEDGER.md §E-78`；★ UI/交互：`EDITOR-UX-PLAN.md §18.4`；★ 实现记录：本文件 §22.42。
+> ★ **字段复用**：OCR 素材（`ocr_line` / `ocr_lines` / derived）用 `assets.json` 的 **`AssetDecl.threshold`** 保存**最低识别置信度**；模板的同一字段仍是 NCC 匹配线。
+> ★ **归一化（唯一真源）**：`AssetSet::ocr_threshold` 读取时 `filter(|t| *t > 0.0)`——**未设置与显式 `0` 完全等价 = 不按置信度过滤**（恢复旧「识别成功即命中」行为）；`t > 0` 时才 `score >= t` 为命中。
+
+| 项 | ★ 语义 |
+|---|---|
+| ★ 未设置 / `0` | ★ **不按置信度过滤**（与旧行为一致）；显式 `0` 不得继承模板的 `0.9` 兜底（P1-4） |
+| ★ `t > 0` | ★ `score >= t` = 命中；`score < t` = 未命中/失败（与模板的 `score >= threshold` 同规则） |
+| ★ 生效路径 | ★ `click`（OCR selector）、条件 `appear`、`expect appear/vanish`、`click_target` 的 `ocr_text`、`expect ocr_text`、`drag` 的 `ocr_text` |
+| ★ `expect appear/vanish` | ★ 统一走 `selector_threshold`：OCR 未设/0 → **`0.0`**（不过滤），显式 `t>0` → `t`；模板/collection 仍 `0.9`/显式阈值 |
+| ★ `click_target` 模板兜底 | ★ 与 `selector_threshold` 同策略（OCR 未设/0 不把模板 0.9 套到 OCR 上） |
+| ★ 取值路径（**不**加阈值） | ★ `ocr()` / `ocr_digit()` / `ocr_to_var` —— 设计上**不**把「读到的值」变成「没读到」；阈值只决定「命中/未命中」，不改变取值结果 |
+| ★ `ocr_lines` / derived | ★ 判定用**最高行分**；★ 适配层已丢弃 `<0.5` 的行 ⇒ 对 `ocr_lines`/derived 设 `<0.5` 阈值无额外效果 |
+| ★ 模板 / collection | ★ 默认阈值 **`0.9` 不变**；模板显式阈值仍按 NCC |
+| ★ UI | ★ 模板未设时预填/显示 **`0.85`**（runtime 默认）；OCR 未设/0 显示「未设或 0（不限制）」、输入框默认空；prompt 写明「留空 = 取消；0 = 不限制」 |
+
+★ **实现位置**：`AssetSet::set_ocr_threshold` / `ocr_threshold` / `threshold_for`（`crates/oas-runtime/src/lib.rs:457-491`）；`selector_threshold` / `ocr_score_ok`（`:2016-2043`）；`verify_expect`（`:1267-1310`）；`oas-task` 加载时写入（`crates/oas-task/src/lib.rs:1163-1170`）。★ **测试**：新增 15 条（阈值 11 + `0`/expect 三态 4；原 11 条保留），workspace **516/0**。
+
 ---
 
 ## 17. ★★ 编辑器 OCR 入口收敛（[10-22] 用户裁定）
@@ -1484,6 +1504,8 @@ tasks/<任务名>/
 }}
 ```
 
+> ★ **OCR selector 的置信度**：`ocr_text` / `expect` 里的 OCR 素材使用其 `threshold` 作为**最低识别置信度**（未设/0 = 不过滤；`t>0` 时 `score<t` = 未命中）；模板 `threshold` 仍是 NCC 匹配线。完整语义见 **§16.5** / `PENDING-LEDGER §E-78`。
+
 ---
 
 ### 22.20 ★★ [10-22 23:0x] **整帧模板搜索**（搜索窗 = 整页截图 · 引擎提交 `d919e13`）
@@ -2202,4 +2224,21 @@ Asset.positions = [frame_id, ...]
   - 已录制的 transition；
   - 人工标注；
 - `relations/README.md` 记录 observations/annotations schema 与 API。
+
+### 22.42 ★★★ [11-04] **素材库 UX 六项 + OCR 每素材最低置信度（现行）**
+
+> 台账：`PENDING-LEDGER.md §E-78`；素材库交互：`EDITOR-UX-PLAN.md §18`；OCR 阈值语义：本文件 **§16.5**；证据：`D:\OAS-dev\_verify\asset-ux-20261104\`。
+
+| 项 | 结果 |
+|---|---|
+| ★ OCR 阈值 | ★ 复用 `AssetDecl.threshold`；`ocr_threshold` 归一化 **未设 = 0 = 不限制**，`t>0` 才过滤；生效 click / 条件 appear / `expect appear/vanish` / `click_target` ocr_text / expect ocr_text / drag ocr_text；取值路径不加；`ocr_lines` 用最高行分、适配层丢 `<0.5`；模板/collection 仍 0.9（`§16.5`） |
+| ★ 帧详情 | ★ 删除「来源」列/badge 与 `assetSourceLabel`；`manage:true`，9 项设置全部可用；行 scope：含 global → `GLOBAL_SCOPE_TASK`（global 优先），仅 task → 当前任务；管理/测试回调可选 `scopeTask` |
+| ★ 识别区 | ★ 菜单 → 画布拖拽（旧 prompt 删除）；保存按钮在共享 `#canvas-footer`（三 surface 可见）+「识别区编辑中：<id>」；模板保存走 `/task/save_asset` + `replace:true`（当前帧重截、rev+1），OCR/region 走 `/task/asset/update {roi}`；`cancelRecognitionRoiEdit` 覆盖所有离开路径，保存前重查最新素材 |
+| ★ 选中态/菜单 | ★ 按 asset id 跨 surface 高亮 `.asset-row.selected`；设置项点击不收起；仅切另一个素材时关旧菜单；重渲染恢复选中/菜单 |
+| ★ 批量测试 | ★ 按钮移到素材页（紧邻「刷新全局库」）；对象 = 当前可见素材集合（全局 = 过滤后缓存；任务 = 可见任务素材）；显式 `assets` ids |
+| ★ 测试 | ★ UI **1112 checks / 227 ids / 0 dead**（907→1003→1112）；workspace **516/0**（runtime 136 / task 59 / oasd 228；新增 15：阈值 11 + 0/expect 三态 4）；`cargo build -p oasd --features ocr` exit 0（6 既有 warnings）；task lint 1/0；`git diff --check` clean |
+| ★ 评审 | ★ `REVIEW.md`：P0×2 + P1×4 全修（共享保存、切素材写旧素材、模板 polygon/快照、批量作用域、OCR 0 语义）+ P2 顺手；无真实浏览器自动化回归（Lead CDP 实测） |
+| ★ 遗留 | ★ region ROI 保存仍把 polygon/invert 降级为矩形（P2-5）；模板 ROI 移动后 polygon 有意重同步为矩形；取值路径不加阈值（设计）；legacy 非全局批量仍需任务名；帧详情 task-only 且无任务仍报错（P2-10）；多 surface 同时可见时菜单可能开在最后可见 surface（不丢选中） |
+
+★ **提交边界**：UI 5 文件 + Rust 2 文件 + docs；用户数据（`assets/`/`frames/`/`tasks/`/`scheduler.json`）不提交；代码父 = `b4c2b0c`（seq 98 docs 提交），docs 随后（新 HEAD，不写死 hash）。
 

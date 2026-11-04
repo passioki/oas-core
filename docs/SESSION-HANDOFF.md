@@ -1,25 +1,25 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★★★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（seq 98，素材行两按钮 + 一键提交/推送脚本 in_progress）。
-> **本轮（2026-11-04，seq 98）**：① 素材行统一「识别 + 设置」两按钮（9 项行内菜单；禁用规则；新增 `editAssetRoi`/`renameAsset`/`editAssetThreshold`；删旧 `editAsset`/`onEdit`；修 template 识别区死动作 + 320px 换行）；② 新增 `scripts/push-all.ps1`/`.bat` + `docs/PUSH-ALL.md`（`add -A` → 剔除未跟踪瞬态、已跟踪不剔除 → 无 staged 且领先时补推 → 仅 dev 自动同步 main / `-SyncMain` / 无 main 跳过）。UI **907/225/0**、workspace 仍 **501/0**、脚本 AST **5714/0**、隔离集成 **59/0**；代码/脚本/docs 待 Lead 提交（代码父 `a4b6960`）。上一节点 seq 97：帧页布局回归修复（已提交 `a4b6960`，UI 835/225/0）。
+> ★★★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（seq 99，素材库 UX 六项 + OCR 阈值 in_progress）。
+> **本轮（2026-11-04 下午，seq 99）**：素材库 UX 六项 + OCR 阈值——① 行选中态按 asset id 跨 surface 高亮、菜单项点击不收起/重渲染恢复；② 识别区改画布拖拽 + 共享 `#canvas-footer` 保存按钮；③ 模板识别区统一 `/task/save_asset` + `replace:true`（当前帧重截、rev+1）；④ OCR 每素材最低置信度（未设/0=不过滤）；⑤ 帧详情去来源列、`manage:true`、按来源分 scope；⑥ 批量帧测试移到素材页、对象=当前可见集合；评审 P0×2/P1×4 全修 + P2。UI **1112/227/0**、workspace **516/0**（runtime 136/task 59/oasd 228）；代码（UI 5 + Rust 2）父 `b4c2b0c`，docs 待 Lead 提交。上一轮 seq 98：素材行两按钮 + push-all（已提交 `b4c2b0c`）。
 > **上一阶段**：调度器产品化（单活动实例）P0–P5 全部 ✅ 完成（seq 95，done）——P0 文档 / P1 450/0 / P2 474/0 / P3 488/0，UI 453 / P4 501/0，oasd 228，UI 662 / **P5 实机验收 A–F 全部真机通过 + `GET /instance/devices` adb 自动连接修复**。更早节点：0.1.0 Release 已上传、tag `v0.1.0` 未移动、O-1/O-2 收口（`d1a7fcd`），`dev`/`main` 已同步 origin。不要再灌 34/18 旧素材。
 
-## 0. 当前状态（2026-11-04 12:5x）
+## 0. 当前状态（2026-11-04 14:5x）
 
 | 项 | 值 |
 |---|---|
-| 当前阶段 | **素材行两按钮 + 一键提交/推送脚本（seq 98，in_progress）**：素材行统一「识别 + 设置」（9 项菜单）+ `scripts/push-all.ps1`/`.bat`；台账 `PENDING-LEDGER §E-77`，现行口径 `EDITOR-UX-PLAN §17` + `PUSH-ALL.md`。上一节点 seq 97 = 帧页布局回归修复（已提交 `a4b6960`，`§E-76 §I`）；上一阶段调度器产品化 P0–P5 全部 ✅ 完成（seq 95，done；台账 `§E-75`） |
-| 工作区（本轮） | UI **4 文件** `apps/oasd/ui/{asset_ui.js,app.js,style.css,ui_pure_test.js}` + 新增 `scripts/push-all.ps1`、`scripts/push-all.bat`、`docs/PUSH-ALL.md` + 本批 docs 待提交；`assets/assets.json` / `assets/images/a00{2..5}.png` / `frames/frames.json` / `frames/frame-4{1,2}.png` / `scheduler.json` / `scheduler.json.bak` / `tasks/关闭弹窗/` 是**用户数据，不属于本轮提交**，勿动 |
-| 分支/HEAD | `dev`；当前 HEAD = **`a4b6960`**（seq 97 docs 提交）；**本轮改动未提交，代码/脚本父 = `a4b6960`**，docs 随后；推送状态以 `git status -sb` 实测为准；包构建 commit `42567c1` |
+| 当前阶段 | **素材库 UX 六项 + OCR 阈值（seq 99，in_progress）**：选中态/菜单保持、识别区画布+共享保存、模板 replace 统一、OCR 最低置信度、帧详情一致、批量测试移页；评审 P0×2/P1×4 全修 + P2。台账 `PENDING-LEDGER §E-78`，现行口径 `EDITOR-UX-PLAN §18` + `ENGINE-DESIGN §16.5/§22.42`。上一轮 seq 98 = 素材行两按钮 + push-all（已提交 `b4c2b0c`）；上一阶段调度器产品化 P0–P5 全部 ✅（seq 95，done；台账 `§E-75`） |
+| 工作区（本轮） | UI **5 文件** `apps/oasd/ui/{asset_ui.js,app.js,index.html,style.css,ui_pure_test.js}` + Rust **2 文件** `crates/{oas-runtime,oas-task}/src/lib.rs` + 本批 docs 待提交；`assets/assets.json` / `assets/images/a00{2..5}.png` / `frames/frames.json` / `frames/frame-4{1,2}.png` / `scheduler.json` / `scheduler.json.bak` / `tasks/关闭弹窗/` 是**用户数据，不属于本轮提交**，勿动 |
+| 分支/HEAD | `dev`；当前 HEAD = **`b4c2b0c`**（seq 98 docs 提交）；**本轮改动未提交，代码父 = `b4c2b0c`**，docs 随后；推送状态以 `git status -sb` 实测为准；包构建 commit `42567c1` |
 | 恢复节点 | tag `v0.1.0`（annotated `cf123b8` → commit `e8edbef`，**未移动**）；**GitHub Release 已上传** |
 | 发布 | `https://github.com/passioki/oas-core/releases/tag/v0.1.0`（id `431080249`，draft=false / prerelease=false，即 latest）；附件 zip（asset `700544587`，37,089,992 B，digest `sha256:e6112a33…5f5687`）+ `.sha256`（asset `700545142`，89 B）；本地同物 SHA256 `E6112A33…5F5687` |
 | 版本 | `0.1.0`；**包不含 O-1/O-2**（包构建 `42567c1`，O-1/O-2 自 `54c715b` 起，评审修复 `d1a7fcd`） |
-| 测试 | 本轮（seq 98，无 Rust 改动）：`cargo test --workspace` = **501 passed / 0 failed**（21 binary；oasd **228**；serve 68）；UI pure test **907 checks / 225 referenced ids / 0 dead ids**（835→888→907，+72）；脚本 AST **5714 tokens / 0 errors**；隔离 git 副本集成 **59 checks / 0 failures**；task lint 1/0；`node --check` 3/3；`git diff --check` clean。上一节点 seq 97：501/0，UI 835/225/0；上一节点 P5：501/0，UI 662/219/0；上一发布基线 426/0（oasd 153 / flow 57 / runtime 125 + 2 integration） |
+| 测试 | 本轮（seq 99）：`cargo test --workspace` = **516 passed / 0 failed**（runtime **136** / task **59** / oasd **228**；serve 68；501→512→516，新增 15 条 = 阈值 11 + 0/expect 三态 4）；UI pure test **1112 checks / 227 referenced ids / 0 dead ids**（907→1003→1112）；OCR build exit 0（6 既有 warnings）；task lint 1/0；`node --check` 3/3；`git diff --check` clean。上一轮 seq 98：501/0，UI 907/225/0；上一节点 P5：501/0，UI 662/219/0；上一发布基线 426/0（oasd 153 / flow 57 / runtime 125 + 2 integration） |
 | 数据 | **已提交基线**：全局素材 16 条 / 1 图；帧 28 个 / current_id=20 / next_id=41。**工作区未提交用户数据（2026-11-04 12:5x 实测）**：全局素材 **27 条**（5 模板 + 22 `ocr_line`）、图 **5 张**（a001~a005，a002~a005 未跟踪）；帧 **30 个** / current_id=1 / next_id=43；seq 96 时帧素材映射为 #23=3、#26=1、#41=2、#42=2（后续数据可能再变） |
 | 任务 | 只有 `返回庭院`（flow 11 steps / meta 400 B）；`tasks/测试` 已删除（随 `cd0ac34` 提交） |
 | 上一轮工作区 | `d1a7fcd` 时 clean；seq 89 docs 订正（8 份，终态，`906bbed`）与同步回填（`11d53a5`）均已提交 |
-| 服务 | seq 96 用 serve **8787**（真机 `emulator-5554`，实时预览可用）：`GET /` 200 含 5 个新 DOM id；`/frames`=30、`/task/assets?task=`=26；`match` API 见 `PENDING-LEDGER §E-76 §B`；headless 截图 `_verify/ui-frames-20261103/editor-page.png`；**布局回归另用 CDP 1440×900 实测**（修复前帧列表 0px → 修复后 257px；`frames-fixed.png` / `frames-fixed-detail.png`）。上一节点 P5 用 8787 测 `/runs/scheduler`；P5 的 adb 自动连接需重建 serve 才生效。仓库根 `scheduler.json`/`frames/frames.json` 是用户数据，未提交；**本轮 seq 98 未启动 serve/cargo** |
-| 文档 | 7 份历史文档已归档 `docs/archive/`；顶层 12 份（含 `PUSH-ALL.md`、`RELEASE-NODE-2026-11-02.md`） |
+| 服务 | seq 96 用 serve **8787**（真机 `emulator-5554`，实时预览可用）：`GET /` 200 含 5 个新 DOM id；`/frames`=30、`/task/assets?task=`=26；`match` API 见 `PENDING-LEDGER §E-76 §B`；headless 截图 `_verify/ui-frames-20261103/editor-page.png`；**布局回归另用 CDP 1440×900 实测**（修复前帧列表 0px → 修复后 257px；`frames-fixed.png` / `frames-fixed-detail.png`）。上一节点 P5 用 8787 测 `/runs/scheduler`；P5 的 adb 自动连接需重建 serve 才生效。仓库根 `scheduler.json`/`frames/frames.json` 是用户数据，未提交；**seq 98 未启动 serve/cargo**；**seq 99 用真实 serve 8787 + device 做 CDP 实测**（选中态/共享保存/模板 title/OCR prompt/帧详情/批量按钮；截图 `D:\OAS-dev\_verify\asset-ux-20261104\ux-roi-shared.png` 等） |
+| 文档 | 7 份历史文档已归档 `docs/archive/`；顶层 13 份（含 `PUSH-ALL.md`、`RELEASE-NODE-2026-11-02.md`） |
 
 ## 1. 最近发生了什么
 
@@ -60,23 +60,28 @@
 - 本轮 **E2E（Lead）**：serve 8787 真机 `emulator-5554`；`GET /` 200 含 5 个新 DOM id；30 帧 / 26 全局素材（4 模板 + 22 `ocr_line`）；帧素材映射 #23=3、#26=1、#41=2、#42=2；headless Edge 截图 `editor-page.png`。**无真实浏览器自动化 E2E**。
 - 2026-11-04 00:5x **帧页布局回归修复**（Lead，CDP 1440×900）：用户报告「图片页丢失按分类展示帧的区域」；根因 = 上一轮新增搜索框/状态行/帧详情/该帧素材（约 +296px 固定内容）+ `#panel-images` 固定高 flex（`calc(100vh - 150px)`）+ `frames-list { flex:1; min-height:0 }` ⇒ 1440×900 下列表计算高度 **0px**（12 组 / 30 行仍在，`scrollHeight=1832` 不可见）。修复 4 文件：`min-height:200px` + `overflow-y:auto`；`#frame-detail`/`#frame-assets-status`/`#frame-assets-list` 包进默认折叠 `<details id="frame-details">`（summary「帧详情 / 该帧素材（点击一帧展开）」）；`selectFrame()` 成功即 `details.open=true`；空搜索隐藏 `#frame-search-status`；UI +7 checks。修复后列表 **257px**、12 组可见；点帧 #1 → details 打开、「该帧素材 1 条（全局 1 · 任务 0）」、列表仍 200px；截图 `frames-fixed.png` / `frames-fixed-detail.png`。
 
-- 2026-11-04 12:0x~12:5x **本轮（seq 98）需求②素材行两按钮**（`ASSET-ROW-REPORT.md` → `REVIEW.md` → `FIX-REPORT.md`）：三处素材行统一「识别 + 设置」；设置 = 行内 9 项（点测/拖测/识别区/操作区/重命名/阈值/位置帧/删除/步骤）；新增 `editAssetRoi`（prompt `x,y,w,h`）/`renameAsset`/`editAssetThreshold`，删旧 `editAsset` + 两处 `onEdit`；禁用：非 template 阈值、template 识别区、region 操作区、`manage:false` 6 管理项、集合仅删除；320px 两按钮同排；UI 835→888→**907** checks。
-- 2026-11-04 12:0x~12:5x **本轮（seq 98）需求①一键提交/推送脚本**：新增 `scripts/push-all.ps1`（PS 5.1、UTF-8 BOM、1004 行）+ `scripts/push-all.bat`（透传参数/退出码）+ `docs/PUSH-ALL.md`；评审 P1-1（模板识别区死动作）、P1-2（任意分支自动同步 main）与 P2 修复；AST **5714/0**；真实仓 `-DryRun` ps1/bat exit 0 且前后 HEAD/index/status 一致；隔离副本 **59/0**。
-- 2026-11-04 12:5x **本轮 docs 收尾 8 份**（`PUSH-ALL` 核对补充 / `EDITOR-UX-PLAN §16.2`+新增 §17 / `PENDING §E-77` / `RESUME` seq 98 / `RESUME-INDEX` / `START-HERE` / `README` / 本文件）；逐处 before→after 见 `D:\OAS-dev\_verify\asset-row-20261104\DOCS-REPORT.md`。**代码/脚本/docs 均未提交**。
+- 2026-11-04 12:0x~12:5x **上一轮（seq 98）需求②素材行两按钮**（`ASSET-ROW-REPORT.md` → `REVIEW.md` → `FIX-REPORT.md`）：三处素材行统一「识别 + 设置」；设置 = 行内 9 项（点测/拖测/识别区/操作区/重命名/阈值/位置帧/删除/步骤）；新增 `editAssetRoi`（prompt `x,y,w,h`）/`renameAsset`/`editAssetThreshold`，删旧 `editAsset` + 两处 `onEdit`；禁用：非 template 阈值、template 识别区、region 操作区、`manage:false` 6 管理项、集合仅删除；320px 两按钮同排；UI 835→888→**907** checks。**识别区 prompt / template 识别区 disabled / 帧详情只读等口径已被 seq 99 的 §E-78 取代。**
+- 2026-11-04 12:0x~12:5x **上一轮（seq 98）需求①一键提交/推送脚本**：新增 `scripts/push-all.ps1`（PS 5.1、UTF-8 BOM、1004 行）+ `scripts/push-all.bat`（透传参数/退出码）+ `docs/PUSH-ALL.md`；评审 P1-1（模板识别区死动作）、P1-2（任意分支自动同步 main）与 P2 修复；AST **5714/0**；真实仓 `-DryRun` ps1/bat exit 0 且前后 HEAD/index/status 一致；隔离副本 **59/0**。
+- 2026-11-04 12:5x **上一轮 docs 收尾 8 份**（`PUSH-ALL` 核对补充 / `EDITOR-UX-PLAN §16.2`+新增 §17 / `PENDING §E-77` / `RESUME` seq 98 / `RESUME-INDEX` / `START-HERE` / `README` / 本文件）；逐处 before→after 见 `D:\OAS-dev\_verify\asset-row-20261104\DOCS-REPORT.md`。**代码/脚本/docs 均未提交**。
+
+- 2026-11-04 14:0x~14:5x **本轮（seq 99）素材库 UX 六项 + OCR 阈值**（`UX-REPORT.md` → `OCR-THRESHOLD-REPORT.md` → `REVIEW.md` → `FIX-REPORT.md` → `THRESH-FIX-REPORT.md`）：行选中态/菜单保持；识别区画布 + 共享 `#canvas-footer`；模板 replace 重截；OCR 每素材最低置信度；帧详情去来源列 + `manage:true` + 按来源 scope；批量测试移素材页 + 可见集合；评审 P0×2/P1×4 + P2 全修；UI 1003→**1112/227/0**（评审时 1003/226/0）、workspace 512→**516/0**；Lead CDP 真实 serve 8787 实测；代码未提交（父 `b4c2b0c`）。
+- 2026-11-04 14:5x **本轮 docs 收尾 7 份**（`EDITOR-UX-PLAN §16.2/§17` 订正 + 新增 §18 / `PENDING §E-78` + §E-76/§E-77 取代说明 / `ENGINE §16.5/§22.42` / `RESUME` seq 99 / `RESUME-INDEX` / `START-HERE` / `README` / 本文件）；逐处 before→after 见 `_verify/asset-ux-20261104/DOCS-REPORT.md`。**代码/docs 均未提交**。
 
 ## 2. 下一步
 
 ```text
-1. 本轮（seq 98，in_progress）：代码/脚本已落（UI 4 文件 + push-all.ps1/.bat + PUSH-ALL.md），docs 已收尾，
-   待 Lead 提交（代码+脚本父 = `a4b6960`；docs = 新 HEAD）。提交前复核：cargo test --workspace 501/0
-   （无 Rust 改动）、UI 907/225/0、AST 5714/0、node --check 3/3、git diff --check clean；
+1. 本轮（seq 99，in_progress）：代码已落（UI 5 文件 + Rust 2 文件），docs 已收尾，
+   待 Lead 提交（代码父 = `b4c2b0c`；docs = 新 HEAD）。提交前复核：cargo test --workspace 516/0
+   （runtime 136 / task 59 / oasd 228）、UI 1112/227/0、OCR build exit 0（6 既有 warnings）、
+   task lint 1/0、node --check 3/3、git diff --check clean；
    **不含** assets/、frames/、tasks/、scheduler.json 等用户数据；**不要提交 library/**（被 .gitignore 忽略）。
-2. 本轮 P2/P3（不阻塞）：素材行 ROI 只有 100000 sanity cap（未按 design_resolution 精确边界）、
-   ROI 用 prompt（无画布保存入口）、脚本控制台中文编码依赖本机（PS 5.1）、library/ 未纳入版本控制、
-   脚本未在真实仓库实测 push 失败后的分支恢复（隔离 59/0 覆盖逻辑）；
-   旧帧页 P2/P3 仍在（帧搜索 Enter/防抖、frame_source 文案、切帧不清 ROI、单行 OCR 画布无框、无真实浏览器 E2E）。
-3. ✅ 上一阶段已完成并提交：调度器产品化 P0–P5（P5 = 实机验收 A–F + `/instance/devices` adb 自动连接）。
-   全量回归 501/0（oasd 228、serve 68、UI 662/219/0）；不 tag/release。
+2. 本轮 P2/P3（不阻塞）：region ROI 保存仍把 polygon/invert 降级为矩形（P2-5）；模板 ROI 移动后
+   polygon 有意重同步为矩形；legacy 非全局批量测试仍需任务名；帧详情 task-only 且无任务报错（P2-10）；
+   菜单恢复极端多 surface 可能开在最后可见 surface；无真实浏览器自动化回归（CDP + UI pure tests）。
+   另有 seq 98 遗留：脚本控制台中文编码依赖本机（PS 5.1）、library/ 未纳入版本控制、
+   脚本未在真实仓库实测 push 失败后的分支恢复（隔离 59/0 覆盖逻辑）。
+3. ✅ 上一阶段已完成并提交：调度器产品化 P0–P5（P5 = 实机验收 A–F + `/instance/devices` adb 自动连接）；
+   上一轮 seq 98 = 素材行两按钮 + push-all（已提交 `b4c2b0c`）。不 tag/release。
 4. 新主线 = 产品 backlog（按需排序）：
    a) `SelectionTool` 抽取（结构债）；b) collection `real=1` 真机 E2E（MuMu 127.0.0.1:16384 已可用）；
    c) drag Plan B（asset 引用/运行时跟随）；d) P2-10（保存 flow 校验）；
@@ -93,7 +98,8 @@
 
 - **测试帧现行口径（2026-11-04，§E-76）**：**单素材测试 = 当前选中帧**（帧详情行 = 该行帧）；**批量帧测试 = 所有位置帧**（`POST /task/assets/batch_test`）；**没有「单素材多帧」入口**；**live 恒优先、真实点击强制 live**。旧「实时关=位置帧 / 单素材多位置逐个测」已被推翻。
 - **单行 OCR 没有真实检测框**：`/ocr` 协议无 bbox；单行 OCR 结果 `recognizedBox:null` + `roiBox`，文案「识别区域（存储 ROI，无独立检测框）」；多行/derived 才有 det 框。`frame_source` 线上仍回 `position:#<id>`，UI 标签写「当前帧 #N」（P2 文案待统一）。
-- **素材行（2026-11-04 seq 98）**：三处素材行**只有「识别 + 设置」两个按钮**；「设置」是行内展开的 **9 项**（点测/拖测/识别区/操作区/重命名/阈值/位置帧/删除/步骤），不是弹层；禁用规则：非 template 阈值、**template 识别区**（服务端拒绝模板 ROI，须重截图）、region 操作区、帧详情 `manage:false` 6 个管理项、集合仅删除。`editAsset` 三合一与 `onEdit` 已删；ROI 编辑是 prompt（`x,y,w,h`，100000 cap），不是画布保存。
+- **素材行（2026-11-04 seq 98 + seq 99 现行）**：三处素材行**只有「识别 + 设置」两个按钮**；「设置」是行内展开的 **9 项**（点测/拖测/识别区/操作区/重命名/阈值/位置帧/删除/步骤），不是弹层。选中态按 **asset id** 跨 surface 高亮（`.asset-row.selected`，背景 `rgb(27,42,58)`）；菜单项点击**不收起**，仅切另一个素材关旧菜单，重渲染恢复选中/菜单。**识别区 = 画布拖拽**（旧 prompt 已删），保存按钮在共享 `#canvas-footer` +「识别区编辑中：<id>」；**模板识别区启用**，保存走 `/task/save_asset` + `replace:true`（当前帧重截、rev+1）；OCR/region 走 ROI PATCH。帧详情 `manage:true`、去来源 badge，9 项全可用，按行来源分 scope。
+- **OCR 阈值（2026-11-04 seq 99）**：OCR 素材（`ocr_line`/`ocr_lines`/derived）`threshold` = **最低识别置信度**；**未设或 0 = 不过滤**（与旧行为一致），`t>0` 时 `score<t` = 未命中。生效 click / 条件 appear / `expect appear/vanish` / `click_target` ocr_text / expect ocr_text / drag ocr_text；`ocr()`/`ocr_digit()`/`ocr_to_var` **不加**（取值路径）；`ocr_lines` 用最高行分、适配层丢 `<0.5`；模板/collection 默认 0.9 不变。详见 `ENGINE §16.5` / `EDITOR-UX-PLAN §18.4` / `§E-78`。
 - **push-all（2026-11-04 seq 98）**：`scripts/push-all.ps1` / `.bat`；`git add -A` 覆盖 assets/frames/tasks/scheduler.json，但**只剔除未跟踪瞬态**（已跟踪 `*.log` 等保留）；**`library/` 被 .gitignore 忽略、不会提交**；默认**仅 dev 自动同步 main**，其它分支 WARN + exit 0（`-SyncMain` 才同步）；远程无 main WARN + exit 0；push 失败 exit 5 但保留本地 commit，重跑无 staged 时走「只推送」补推。用法见 `docs/PUSH-ALL.md`。
 - 当前素材是 **16/1**（已提交基线），不是 34/18；**工作区未提交用户数据（12:5x）为 27 素材（5 模板 + 22 `ocr_line`）/ 5 图（a001~a005，其中 a002~a005 未跟踪）**。34 是 `§E-70` 已推翻的错误恢复，archive 2827/2099 未导入（用户裁定素材可重建）。
 - 当前帧：已提交基线 **28 / current_id=20 / next_id=41**；**工作区未提交数据（12:5x）为 30 帧（含 #41/#42）/ current_id=1 / next_id=43**，不是 40。
@@ -103,7 +109,7 @@
 - 拖测 `margin`：默认 **0.15**，合法 **0~0.45**，作用于起点（配置了 `to` 时也作用于终点）候选矩形内缩；**仅 rect 非反选生效**；有 polygon/invert `shape` 时忽略并记 `margin=ignored`。
 - **collection 真实点击已终态收口**（dev `d1a7fcd`）：`real` 严格 `0/1/true/false`；`real=1` 强制 live 帧；匹配通过后在**精确 action shape 内采样**（polygon 内/invert 排除区外）；未过阈值 **409**（不点击）。**默认仍是 dry-run**，响应/日志不变；与“素材行真实点击”共用 `perform_live_tap`；**无真机 E2E**。
 - **v0.1.0 发布包不含 O-1/O-2**；混版本 runtime 会忽略 drag `shape`（invert 会点到排除区）⇒ invert 拖动需本版 runtime；**P2-10**（保存 flow 不校验解析错误）本轮不做。
-- 当前测试基线 **501/228/1-0**（2026-11-04 seq 98 复核；**无 Rust 改动**；21 binary；serve 68；调度专项 107 = scheduler 49 + schedule 58；stats 6；**UI 907/225/0**，seq 97 为 835/225/0、seq 96 为 828/224/0；脚本 AST 5714/0、隔离集成 59/0）；上一发布基线 **426/259/1-0**。
+- 当前测试基线 **516/228/1-0**（2026-11-04 seq 99 复核；runtime **136** / task **59** / oasd **228**；serve 68；调度专项 107 = scheduler 49 + schedule 58；stats 6；**UI 1112/227/0**，seq 98 为 907/225/0、seq 97 为 835/225/0；OCR build exit 0（6 既有 warnings））；上一发布基线 **426/259/1-0**。
 - **P5 实机环境**：MuMu serial **`127.0.0.1:16384`**（Android 12 / V2284A / 720x1280；Onmyoji 前台庭院），不是 `emulator-5554`；`adb devices` = device。A–F 全部真机通过（quota 2/2、temp 每轮、队列 2 轮、强杀续跑、reset-memory、9 条 run 记录）；证据 `D:\OAS-dev\_verify\p5-realdevice-20261103\`。
 - **P5 adb 自动连接**：`GET /instance/devices` 列表为空时自动 `adb connect`（配置 serial → live config `device.reconnect_endpoints` → 默认 `127.0.0.1:16384`）后重列，响应新增 `auto_connect`；`emulator-5554` 这类非 TCP serial 跳过。实测 `adb disconnect` 后检测自动连回 16384。P5 代码未重建 serve 前该行为不生效。
 - **P2 起 queue entry 真正执行**：`execute_pass` 按 `entry.kind` 分派；`plan.runnable` 会包含 queue entry，勿再假设 runnable 只有 task；queue entry 的 `task` 是 **queue_id**（不是任务 bundle）。
@@ -140,5 +146,5 @@
 - **run 详情契约**：`GET /runs/scheduler/run` 只校验"合法 JSON"，非实体 JSON 也能读出（列表会跳过）；`limit=0` 被 clamp 成 1；list 500 与 detail 500 错误体形状不同（未做，转 backlog）。
 - **P4 写失败**：run 文件写失败只影响"可查性"（alert + `report.run_file_errors` + 事件 `run_file_error`），不影响执行/重试/退出码；排查先看 `alert(kind=run_file_write)` 与 `scheduler_run_file_error` 日志。
 - **实机检测不到 adb**：MuMu 重启后 adb TCP 设备常掉（`adb devices` 为空）；P5 起 `GET /instance/devices` 会**自动 connect `127.0.0.1:16384`**（配置 serial → `device.reconnect_endpoints` → 默认；响应 `auto_connect` 可核对），仍失败再查 adb server / MuMu 网络设置，不要先怀疑 UI 或代码。
-- **帧页测试帧 / 素材行（2026-11-04）**：不要再写/实现「实时关=位置帧」；单素材测试走 `testFramePlan` 的当前帧分支，批量才按 `positions`。单行 OCR 的存储 ROI 不是真实检测框，不要再画成检测框；**§E-77 起三处素材行统一「识别 + 设置」两按钮**（9 项行内菜单），帧详情行同两按钮但 `manage:false` 禁用 6 个管理项——不要再写「帧详情只放测试类动作」。
+- **帧页测试帧 / 素材行（2026-11-04）**：不要再写/实现「实时关=位置帧」；单素材测试走 `testFramePlan` 的当前帧分支，批量才按 `positions`。单行 OCR 的存储 ROI 不是真实检测框，不要再画成检测框；**§E-78 起**三处素材行统一「识别 + 设置」两按钮（9 项行内菜单），**帧详情也 `manage:true` 全可用**——不要再写「帧详情只放测试类动作」或「帧详情 6 项 disabled」；**批量帧测试按钮在素材页**，对象 = 当前可见素材集合（不是任务 flow 子集）。
 - **帧页布局（2026-11-04）**：`#panel-images` 是 `height: calc(100vh - 150px)` 固定高 flex 列；往帧列表上方加固定内容时必须同时保 `#panel-images .frames-list` 的 `min-height`（现 **200px**）或把内容放进默认折叠的 `#frame-details`——否则 1440×900 下列表会被挤成 **0 高**，表现为「分类帧区域消失」。点帧会展开详情；空搜索隐藏状态行。
