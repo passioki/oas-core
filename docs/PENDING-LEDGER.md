@@ -3277,6 +3277,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 > 触发：用户三项需求（图片帧页搜索、当前帧显示该帧素材、素材测试「框选不更新」）→ 根因诊断 → 修复 → 只读评审（P0=0，P1×2）→ 修复 P1/P2 → **帧页布局回归修复（用户报告「丢失了原先按分类展示图片帧的区域页面」；帧列表被固定内容挤成 0 高）** → 测试 **835 / 225 / 0**。
 > 改动仅 UI：`apps/oasd/ui/{index.html,app.js,style.css,ui_pure_test.js}`（本轮布局修复 4 文件，均未提交；前一轮帧搜索 3 文件已随 seq 96 提交，本轮新增 `style.css` 并改动其余 3 文件；Lead 本轮先提交代码（父 = 修复前 HEAD，即 seq 96 docs 提交），再提交 docs（新 HEAD）；hash 以 `git log` 为准）。
 > 现行口径：`docs/EDITOR-UX-PLAN.md §16`；旧 §E-66/U-32b/`AUDIT-SUBPROCESS` P1-7 已标注取代。
+> **同轮后续（2026-11-04 12:5x）：素材行统一为「识别 + 设置」两按钮，见 §E-77**；本节 ② 与 §H 里「帧详情行只保留测试类动作」的旧描述已由 §E-77 取代（现在帧详情行同两按钮，管理项由 `manage:false` 禁用）。
 > 证据：`D:\OAS-dev\_verify\ui-frames-20261103\`（`MATCH-BUG-DIAGNOSIS.md` · `FRAMES-UI-REPORT.md` · `MATCH-FIX-REPORT.md` · `REVIEW-UI.md` · `FIX-P1-REPORT.md` · `api-*.json` · `match-23/26.json` · `frames-fixed.png` / `frames-fixed-detail.png`（布局修复） · `editor-page.png` · 日志）。
 
 ## A. 需求 → 实现
@@ -3284,7 +3285,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 | 需求 | 实现 |
 |---|---|
 | ① 图片帧页搜索 | `#frame-search`（名称 / `#id` / 分类；大小写不敏感 + trim；`12`/`#12` 精确 ID）+ `#frame-search-clear` + `#frame-search-status`；**纯前端过滤**（不改 `/frames` 请求）；先搜索后按分类分组，组空不渲染，全空「没有匹配的帧」；切分类/刷新保留搜索词；纯函数 `frameMatchesQuery`/`filterFramesByQuery`/`frameSearchStatusText` |
-| ② 当前帧素材库 | 点击具体帧（或当前帧刷新）后 `#frame-detail` 增加「该帧素材：N 条」+ `#frame-assets-list`；显示**全局素材库 + 任务素材**中 `positions` 含该帧 id 的全部素材，按 id 去重、来源合并「全局/任务」；行与全局/任务素材库同一套 `asset-row`：抽出共享 `assetRowElement`/`renderAssetRows`，三处真实复用（`renderGlobalAssets`/`renderAssetList`/新 `renderFrameAssets`），行 DOM 仍由 `OASAssetUI.createRow` 生成；帧详情行只保留测试类动作（改/删等危险操作仍只在素材库页）；空态「该帧没有素材记录」 |
+| ② 当前帧素材库 | 点击具体帧（或当前帧刷新）后 `#frame-detail` 增加「该帧素材：N 条」+ `#frame-assets-list`；显示**全局素材库 + 任务素材**中 `positions` 含该帧 id 的全部素材，按 id 去重、来源合并「全局/任务」；行与全局/任务素材库同一套 `asset-row`：抽出共享 `assetRowElement`/`renderAssetRows`，三处真实复用（`renderGlobalAssets`/`renderAssetList`/新 `renderFrameAssets`），行 DOM 仍由 `OASAssetUI.createRow` 生成；~~帧详情行只保留测试类动作（改/删等危险操作仍只在素材库页）~~ **§E-77 起：帧详情行同样「识别 + 设置」两按钮，但 `manage:false` 禁用 6 个管理项，仅识别/点测/拖测/步骤可用**；空态「该帧没有素材记录」 |
 | ③ 素材测试帧错位 | `testFramePlan` 优先级 **live > 显式 frameId > 当前帧 currentFrameId > positions 兜底**；五个测试函数透传 frameId；帧详情行测试传 `f.id`；切帧清旧框；miss 不画框；单行 OCR 不再把存储 ROI 冒充真实检测框 |
 
 ## B. 根因（需求③）
@@ -3332,7 +3333,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 
 - 帧搜索无 Enter/防抖（P3）；分类 + 搜索状态计数跨分类（P2）；纯数字查询既精确又子串（P2）；全局模式下来源可能重复计数（P2）；
 - `frame_source` 文案（`position:#N` vs 「当前帧 #N」）待统一（P2）；切帧只清测试框不清 ROI 覆盖层（P2）；单行 OCR 点测画布无框（P2 沟通项）；`renderAssetRows` 与 `OASAssetUI.renderRows` 仍有 DRY 复制（P2）；
-- 帧详情操作按钮只放测试类（故意）；产品 backlog 不变（`SelectionTool` / collection real=1 真机 E2E / drag Plan B / P2-10 / 版本决策）。
+- 帧详情操作按钮：§E-76 当时只放测试类；**§E-77 起统一「识别 + 设置」两按钮，管理项由 `manage:false` 禁用**（不是删按钮）；产品 backlog 不变（`SelectionTool` / collection real=1 真机 E2E / drag Plan B / P2-10 / 版本决策）。
 
 ## I. 布局回归修复（2026-11-04，已修）
 
@@ -3354,3 +3355,124 @@ GET /task/assets?task= → 34 个素材（全局模式）
 | 文档 | ✅ | `EDITOR-UX-PLAN §16`（含 §16.6 布局回归） + 本节 + `AUDIT` P1-7 注 + `RESUME` seq 97 + `RESUME-INDEX` + `START-HERE` + `README` + `SESSION-HANDOFF` |
 
 | 状态 | ✅ 帧搜索 / 帧详情素材 / 测试帧修复 / 布局回归修复完成（UI 835/225/0；workspace 501/0）；代码待 Lead 提交（父 = 修复前 HEAD），docs 随后提交；⚠ P2/P3 见 §H · 无阻塞 |
+
+---
+
+# ★ §E-77 ★★★ [11-04 12:0x~12:5x] **素材行两按钮「识别 / 设置」+ 一键提交/推送脚本（push-all）**
+
+> 触发：① 用户要求一键提交/推送脚本（避免手工逐目录 `git add` 漏掉 `assets/`/`frames/`/`tasks/`/`scheduler.json`）；② 素材行旧按钮过多，统一为「识别 + 设置」两个操作按钮，设置菜单 9 项 → 实现 → 只读评审（P0=0，P1×2：模板识别区死动作、任意分支自动同步 main）→ 修复 P1/P2 → 测试 **907 / 225 / 0**。
+> 改动：UI 4 文件 `apps/oasd/ui/{asset_ui.js,app.js,style.css,ui_pure_test.js}`；新增 `scripts/push-all.ps1`（PS 5.1，UTF-8 BOM）/ `scripts/push-all.bat`（透传参数与退出码）/ `docs/PUSH-ALL.md`。均未提交；本轮代码父 = `a4b6960`（seq 97 docs 提交），hash 以 `git log` 为准。
+> 现行口径：`docs/EDITOR-UX-PLAN.md §17`（素材行）、`docs/PUSH-ALL.md`（脚本）；证据：`D:\OAS-dev\_verify\asset-row-20261104\`。
+
+## A. 需求 → 实现
+
+| 需求 | 实现 |
+|---|---|
+| ① 一键提交/推送 | 新增 `scripts/push-all.ps1`：预检 → `git add -A` → 剔除未跟踪瞬态（**已跟踪文件不剔除**）→ 清单/确认 → commit → push 当前分支 → 仅 `dev`（或显式 `-SyncMain`）ff 同步 `main`；无 staged 但本地领先时走「只推送」补推路径；`-DryRun` 全程只读。`.bat` 包装透传参数与退出码；`docs/PUSH-ALL.md` = 参数/流程/退出码/失败恢复说明 |
+| ② 素材行两按钮 | 全局/任务/帧详情三处所有素材行统一为 **「识别」+「设置」**；设置以行内展开的 9 项菜单呈现（顺序：点测/拖测/识别区/操作区/重命名/阈值/位置帧/删除/步骤）；集合行同为两按钮、仅删除可用；再次点击/执行项/Esc 收起 |
+| 评审修复 | P1-1 模板「识别区」死动作 → 菜单 disabled + title + `editAssetRoi` 硬 guard；P1-2 任意分支自动同步 main → 默认仅 `dev`，其它分支 WARN + exit 0，新增 `-SyncMain` 显式开关；此外 P2：已跟踪瞬态不再 unstage、push 失败重跑补推、320px 换行、ROI 越界、删死代码、帧详情补 `onDelete` |
+
+## B. 需求②：素材行（现行）
+
+**行结构与 CSS**
+
+- `asset_ui.js` `createRow()`：`asset-main`（缩略图+文本）+ **「识别」+「设置」** 两个 `asset-row-action` 按钮 + 隐藏的 `.asset-row-menu`；菜单是 `.asset-row` 内的行内换行区（`flex-basis:100%`），不是绝对定位弹层（避免被 `.asset-list { overflow:auto }` 裁掉）。
+- `actions:false`（builder 列表）同时隐藏识别/设置；`compact` 不渲染点测/拖测/步骤（行仍是两按钮）。`index.html` 未改（DOM id 审计仍 225）。
+- `style.css`：`.asset-row { flex-wrap: wrap }`；`.asset-row-menu { display:none; flex:1 1 100% }` / `.open { display:flex }`；`.asset-menu-item` 覆盖侧栏 `aside button { width:100% }`；`.asset-main { min-width:0 }` + `.asset-test { align-self:flex-start }` 修复 320px 换行。
+
+**九项顺序与映射（测试断言，追加只能加在末尾）**
+
+| # | 菜单 | opts | 行为 |
+|---|---|---|---|
+| 1 | 点测 | `onClickTest` | dry-run 点击测试 |
+| 2 | 拖测 | `onDragTest` | dry-run 拖动测试 |
+| 3 | 识别区 | `onEditRoi` → 新 `editAssetRoi` | prompt `x,y,w,h` |
+| 4 | 操作区 | `onAction` | 画布操作区编辑（沿用） |
+| 5 | 重命名 | `onRename` → 新 `renameAsset` | prompt 新 id |
+| 6 | 阈值 | `onThreshold` → 新 `editAssetThreshold` | 模板专用 0~1 |
+| 7 | 位置帧 | `onPosition` | 沿用 `editAssetPositions` |
+| 8 | 删除 | `onDelete`（集合走 `onCollectionDelete`） | 沿用删除 |
+| 9 | 步骤 | `onStep` | 生成 click_target |
+
+**禁用规则（优先级从上到下）**
+
+- `template_set`：其余 8 项 disabled，仅删除可用；
+- `manage:false`（帧详情）：识别区/操作区/重命名/阈值/位置帧/删除 6 项 disabled；
+- `template`：**识别区 disabled**（服务端拒绝修改模板 ROI，title 说明须重新截图保存）；
+- `region`：操作区 disabled；非 template：阈值 disabled；`compact`：点测/拖测/步骤不渲染。
+- disabled 项点击**不触发回调**；`editAssetRoi` 对 template/template_set 有硬 guard（在 prompt/post 之前 return，不发请求）。
+
+**清理与修复**
+
+- 删除旧 `editAsset` 三合一（重命名+阈值+ROI）与 `renderAssetList`/`renderGlobalAssets` 两处 `onEdit` 死代码；全仓库无 `onEdit` / `function editAsset(`（静态断言）。
+- `parseAssetRoiText`：4 个十进制整数，`x,y>=0`、`w,h>0`、每项 `<=100000`，拒绝 `1e2`/`0x10`/`+1`/`1.0`；`renameAsset`/`editAssetThreshold`/`editAssetRoi` 成功后刷新两个素材库。
+- 帧详情补 `onDelete`（仍由 `manage:false` 禁用）。
+
+## C. 需求①：脚本参数 / 流程 / 排除
+
+**参数**
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `-Message` | `chore(data): sync all resources/tasks/scheduler/code/docs <yyyy-MM-dd HH:mm>` | 提交信息 |
+| `-Yes` | 关 | 跳过 y/N；非交互终端必须 |
+| `-DryRun` | 关 | 只读预览（不写索引/commit/push，不访问网络） |
+| `-NoPush` | 关 | 只提交，不推送/不同步 main；无 staged 直接 0（不补推） |
+| `-SyncMain` | 关 | 显式允许**非 dev** 分支同步 main |
+| `-Remote` | `origin` | 远程名（必须存在） |
+| `-Branch` | 当前分支 | 与当前分支不一致 → exit 2；detached HEAD → exit 3 |
+
+**流程**：仓库根 = `scripts/` 上级 → 预检（git / 冲突 / 分支 / remote）→ `git add -A` → 从暂存区剔除未跟踪瞬态（`*.bak`/`*.tmp`/`*.log`、`scheduler.json.bak`、scheduler state/events/lock、任意层级 `logs/`、`_verify/**/target/`）→ 空则「无改动」→ 无 staged 但本地领先上游且未 `-NoPush` ⇒「只推送」补推 → 计数 + 前 20 文件 + `--stat` → 确认（`-Yes` 跳过；无交互且无 `-Yes` 时 exit 1，**不暂存**）→ commit（失败 4）→ push（失败 5，保留本地 commit）→ 仅 `dev` 默认自动 `fetch/checkout main/ff-only/push main/切回`（同步前用 `ls-remote` 判 main；main 同步失败时恢复原分支）；其它分支 WARN「仅 dev」+ exit 0（除非 `-SyncMain`）；远程无 main → WARN 跳过 + exit 0；绝不 force/clean/reset --hard。
+
+**排除边界**：上述瞬态规则**只对未跟踪文件生效**（以 `git ls-tree -r HEAD` 判定）；已跟踪的 `*.log` 等即使匹配也保留在暂存区并提交。`git add -A` 覆盖 code/docs/`assets/`/`frames/`/`tasks/`/`scheduler.json` 等；**`library/` 被 `.gitignore` 的 `/library/` 忽略，不会提交**（如需纳入须先改 `.gitignore`，已写入 `PUSH-ALL.md`）。
+
+## D. 评审修复（P1/P2）
+
+| 项 | 问题 | 修复 | 验证 |
+|---|---|---|---|
+| P1-1 | 模板行「识别区」是死动作（服务端拒绝模板 ROI 更新） | 菜单 `template` 识别区 disabled + 专用 title；`editAssetRoi` 硬 guard template/template_set（prompt/post 之前）；region 经服务端确认允许，保持可用 | 静态/渲染/guard 执行断言；CDP 模板行 9 项中仅识别区 disabled |
+| P1-2 | 任意分支推送后都自动同步 main（feature 分支会误发布） | 默认仅 `dev`；其它分支 WARN + exit 0；新增 `-SyncMain`；远程无 main 用 `ls-remote` 预检后 WARN + exit 0（不再 exit 5）；显式 `-SyncMain` 无法确认才 exit 5 | 隔离仓库 feature/x（DryRun + 真推）、`-SyncMain`、无 main 场景 59 checks |
+| P2-a | 排除规则会把已跟踪的 `*.log` 从暂存区 unstage | 用 HEAD 跟踪集合判定，只 reset 未跟踪项；已跟踪项打印并保留提交 | 隔离仓库 `tracked.log` 保留 + `untracked.log` 排除 |
+| P2-b | push/联动失败后重跑 no-op，不补推 | 无 staged 且本地领先 →「只推送」路径；`-NoPush` 不补推；DryRun 打印计划 | 隔离仓库 push 失败 → 恢复重跑补推成功 |
+| P2 其余 | 320px 两按钮换行；ROI 越界；`editAsset`/`onEdit` 死代码；帧详情缺 `onDelete` | 见 §B；ROI 加 100000 sanity cap；删死代码；补 `onDelete` | headless 实测同排；+7 解析断言；静态断言 |
+
+## E. 测试 / E2E
+
+- UI pure test：**835 → 907 checks（+72）/ 225 referenced ids / 0 dead ids**（旧断言无删除/弱化；ASSET-ROW 888 + FIX 19）；`node --check` 3/3 exit 0；task lint **1/0**；`git diff --check` clean。
+- 脚本：PowerShell 5.1 AST **5714 tokens / 0 errors**；UTF-8 with BOM 复核；真实仓库 `push-all.ps1 -DryRun` 与 `push-all.bat -DryRun` 均 **exit 0**，前后 HEAD / index / `git status` 一致；隔离 git 副本集成测试 **59 checks / 0 failures**（dev / 非 dev / `-SyncMain` / 无 main / 已跟踪 log / push 失败重跑 / `-NoPush` / 本地无 main）。
+- 无 Rust 改动 ⇒ `cargo test --workspace` 仍 **501/0**（oasd 228；UI 无 Rust 测试）。
+- CDP/headless 实测（Lead）：全局行 `topButtons=[识别,设置]`；模板行仅「识别区」disabled；OCR 行「阈值」disabled；帧详情行（`manage:false`）管理项 disabled、点测/拖测/步骤 enabled；320px 侧栏 `row=320/main=208/按钮 52x26/sameRow=true`。截图 `_verify/asset-row-20261104/asset-row-menu2.png`、`asset-row-320.png` 等。
+- 边界：**无真机/真实浏览器自动化回归**；本轮用 CDP headless + 纯测试 + 隔离 git 副本验证。
+
+## F. 提交 / 数据边界
+
+- 待提交 = UI **4 文件**（`asset_ui.js`/`app.js`/`style.css`/`ui_pure_test.js`）+ `scripts/push-all.ps1`、`scripts/push-all.bat`、`docs/PUSH-ALL.md`（新）+ 本批 docs 变更。
+- **用户数据不提交**：`assets/assets.json`、`assets/images/a00{2..5}.png`、`frames/frames.json`、`frames/frame-4{1,2}.png`、`scheduler.json`、`scheduler.json.bak`、`tasks/关闭弹窗/`。
+- `library/` 未纳入版本控制；脚本不会提交它（见 §C）。
+
+## G. 文档
+
+- 新增 `docs/PUSH-ALL.md`；更新 `EDITOR-UX-PLAN §16.2` + 新增 **§17**；本 §E-77；`RESUME` seq 98；`RESUME-INDEX` 追加 98；`START-HERE` / `SESSION-HANDOFF` / `README` 同步本轮状态与数字；`§E-76` 顶部/§A/§H 加 §E-77 取代说明。
+- 逐处 before→after：`D:\OAS-dev\_verify\asset-row-20261104\DOCS-REPORT.md`。
+
+## H. 遗留（P2/P3，不阻塞）
+
+- **ROI 编辑用 prompt**（`x,y,w,h`），未做“画布框选后保存”入口（P2）；边界只做 `100000` sanity cap，**未按 design_resolution 精确校验 `x+w`/`y+h`**（P2；服务端对 region ROI 已按 design 校验）。
+- **脚本控制台中文编码依赖本机**（PS 5.1；本机 `[Console]::OutputEncoding` 已是 UTF-8，未在脚本内强制）；**`library/` 未纳入版本控制**；**脚本未在真实仓库实测 push 失败后的分支恢复**（隔离测试已覆盖逻辑；真实仓库只用 `-DryRun`）。
+- 设置菜单全局互斥 / Esc 焦点 / aria 完善（P3）；**无真机/真实浏览器自动化回归**（本轮 CDP headless）。
+- 产品 backlog 不变：`SelectionTool` 抽取、collection `real=1` 真机 E2E、drag Plan B、P2-10、运行记录/口径收口、版本决策（0.2.0 未升）。
+
+## 台账
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| ① 一键提交/推送脚本 | ✅ | `scripts/push-all.ps1`（1004 行，UTF-8 BOM）+ `.bat` + `docs/PUSH-ALL.md`；AST 5714/0；真实仓 DryRun ps1/bat exit 0；隔离集成 59/0 |
+| ② 素材行两按钮 | ✅ | `asset_ui.js` `ASSET_MENU_ITEMS`/`assetMenuState` + 三处 opts；UI 907/225/0；CDP `topButtons=[识别,设置]` |
+| 九项顺序/禁用 | ✅ | 顺序断言 + 5 类禁用规则；模板识别区、非模板阈值、region 操作区、manage:false、集合仅删除；disabled 零回调 |
+| 新函数/清理 | ✅ | `editAssetRoi` / `renameAsset` / `editAssetThreshold`；旧 `editAsset` + 两处 `onEdit` 已删；硬 guard；ROI 解析边界 |
+| 窄侧栏 | ✅ | `.asset-main{min-width:0}` + `align-self:flex-start`；headless 320px `sameRow=true`；`asset-row-320.png` |
+| 评审修复 | ✅ | P1-1 模板识别区；P1-2 仅 dev 同步 main + `-SyncMain` + 无 main exit 0；P2-a/b + P2 其余 |
+| 测试 | ✅ | UI **907/225/0**；workspace **501/0**（oasd 228）；AST **5714/0**；集成 **59/0**；lint 1/0；`git diff --check` clean |
+| 文档 | ✅ | `PUSH-ALL.md`（新） · `EDITOR-UX-PLAN §16.2/§17` · 本 §E-77 · `RESUME` seq 98 · `RESUME-INDEX` 98 · `START-HERE` · `SESSION-HANDOFF` · `README` |
+
+| 状态 | ✅ 素材行两按钮 + 一键提交/推送脚本完成（UI 907/225/0；workspace 501/0；脚本 AST 5714/0、集成 59/0）；代码/脚本/docs 待 Lead 提交（代码父 `a4b6960`）；⚠ 遗留见 §H · 无阻塞 |

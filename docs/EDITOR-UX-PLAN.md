@@ -641,7 +641,7 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 - 选中具体帧（或刷新当前帧）后，`#frame-detail` 增加「该帧素材：N 条」+ `#frame-assets-list`；
 - 数据 = **全局素材库 + 任务素材**中 `positions` 含该帧 id 的全部素材；按 id 去重、来源合并「全局/任务」；空态「该帧没有素材记录」；
 - 行样式与全局/任务素材库**同一套** `asset-row`：抽出共享 `assetRowElement` / `renderAssetRows`，三处（`renderGlobalAssets` / `renderAssetList` / 新 `renderFrameAssets`）真实复用；行 DOM 仍由 `OASAssetUI.createRow` 生成；
-- 帧详情行只保留测试类动作（改/删/操作区等危险操作仍只在素材库页）；帧详情行测试传该行帧 id（`f.id`）。
+- 帧详情行与两个素材库共用同一套 `asset-row`，并同样显示「识别」+「设置」两按钮；但该视图传 `manage:false`，设置菜单里的 6 个管理项（识别区/操作区/重命名/阈值/位置帧/删除）全部 disabled，只有识别/点测/拖测/步骤可用（详见 §17）；帧详情行测试传该行帧 id（`f.id`）。
 
 ### 16.3 素材测试帧错位（需求③，已修复）
 
@@ -689,3 +689,67 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 - `ui_pure_test.js`：**+7 checks**（`<details>` 结构 / summary 文案、`selectFrame` 展开、空查询隐藏状态行、fake DOM `style`/`display` 断言）。
 
 **验证（Lead，CDP 1440×900）**：修复前帧列表 `height=0`（12 组已渲染但不可见）→ 修复后 `height=257px`、12 组可见、details 折叠；点击一帧 #1 → details 打开、详情文本 /「该帧素材 1 条（全局 1 · 任务 0）」/ 1 行素材，帧列表仍 200px 可见。截图 `D:\OAS-dev\_verify\ui-frames-20261103\frames-fixed.png`（分组列表恢复）、`frames-fixed-detail.png`（点帧展开素材）。`node --check` 两文件 exit 0；`git diff --check` clean；无 Rust 改动 ⇒ workspace 仍 **501/0**；UI **835 checks / 225 ids / 0 dead**。
+
+## 17. 2026-11-04 素材行「识别 + 设置」两按钮（同轮，现行口径）
+
+> 台账：`PENDING-LEDGER.md §E-77`；证据：`D:\OAS-dev\_verify\asset-row-20261104\`（`ASSET-ROW-REPORT.md` · `REVIEW.md` · `FIX-REPORT.md` · 截图 · 隔离脚本测试）。本节取代「素材行一排旧按钮（测试/点测/拖测/识别/区域/改/帧/删/操作区/步骤）」的旧描述（U-30b/U-44/R19 时代的布局仅作历史）。
+
+### 17.1 行结构
+
+- 任务素材库、全局素材库、帧详情素材列表三处**所有普通素材行统一 2 个操作按钮**：**「识别」+「设置」**；集合行（`template_set`）同样两按钮。
+- 「识别」= 旧 `onTest`（集合行走 `onCollectionTest || onTest`）；title 按 kind 说明（模板匹配 / OCR 试识别 / region 选中操作区域）。
+- 「设置」在**行内展开** 9 项菜单（`.asset-row-menu`，`flex:1 1 100%`），不是绝对定位弹层——`.asset-list` 是 `overflow:auto`，弹层会在列表底部被裁掉。展开时行变高、列表自身滚动。
+- 再次点「设置」收起；点任一可用项先收起再执行；菜单/按钮聚焦时 `Esc` 收起。`actions:false`（builder 列表）同时隐藏「识别 + 设置」；`compact` 仍隐藏点测/拖测/步骤三项。
+- 菜单是 `asset_ui.js` 的 `ASSET_MENU_ITEMS` 常量 + `assetMenuState()` 纯函数；disabled 项**保留可见**并用 title 解释原因（视觉统一，9 项永远同序）。
+
+### 17.2 九项顺序与映射（强约束，测试断言）
+
+顺序严格为：**点测 / 拖测 / 识别区 / 操作区 / 重命名 / 阈值 / 位置帧 / 删除 / 步骤**。
+
+| # | 菜单 | opts 回调 | 行为 |
+|---|---|---|---|
+| 1 | 点测 | `onClickTest` | 点击测试（dry-run，显示目标点）；帧详情行传该行帧 id |
+| 2 | 拖测 | `onDragTest` | 拖动测试（dry-run，方向/起终点） |
+| 3 | 识别区 | `onEditRoi` → 新 `editAssetRoi` | `prompt` 输入 `x,y,w,h`；不再与重命名/阈值三合一 |
+| 4 | 操作区 | `onAction` | 进入画布操作区编辑（沿用旧 `editAssetActionRoi`） |
+| 5 | 重命名 | `onRename` → 新 `renameAsset` | `prompt` 新 id；只改名，不动阈值/ROI |
+| 6 | 阈值 | `onThreshold` → 新 `editAssetThreshold` | 模板专用 0~1 |
+| 7 | 位置帧 | `onPosition` | 沿用 `editAssetPositions`（搜索 + 候选弹窗） |
+| 8 | 删除 | `onDelete`（集合走 `onCollectionDelete`） | 沿用删除流程 |
+| 9 | 步骤 | `onStep` | 生成 `click_target` 步骤 |
+
+- 旧 `editAsset` 三合一（重命名 + 阈值 + ROI）与 `renderAssetList`/`renderGlobalAssets` 的两处 `onEdit` 死代码**已删除**；全仓库无 `onEdit` / `function editAsset(`（测试静态断言）。
+- 三个新函数成功后统一 `await refreshTaskAssetsForScope(task); await refreshGlobalAssets();`，帧详情/帧列表经既有 `renderFrameAssetViews()` 跟随刷新。
+
+### 17.3 禁用规则
+
+| 场景 | 禁用项 | 说明 |
+|---|---|---|
+| 非 `template` | 阈值 | 只有模板图有阈值 |
+| `template` | **识别区** | 服务端拒绝修改模板 ROI（模板 ROI 已烘焙进裁剪图）；title 说明「如需变更请重新截图保存并替换素材」 |
+| `region` | 操作区 | region 素材本身就是操作区域 |
+| `manage:false`（帧详情） | 识别区 / 操作区 / 重命名 / 阈值 / 位置帧 / 删除 | 只读视图；识别、点测、拖测、步骤仍可用 |
+| `template_set`（集合行） | 其余 8 项 | 仅「删除」可用（`manage:true` 时） |
+| `compact` | 点测 / 拖测 / 步骤 | 不渲染（不是 disabled） |
+
+- 规则优先级：`template_set` → `manage:false` → `template 识别区` → `region 操作区` → 非 template 阈值。
+- disabled 项**点击不触发回调**（测试断言 `onEditRoi` 零调用）。
+- 防绕过：`editAssetRoi` 开头硬 guard `template` / `template_set`，在 `assetScopeTask` / `window.prompt` / `postJson` **之前** return；即使控制台直接调用也不弹 prompt、不发请求（纵深防御，不只靠菜单 disabled）。
+- ROI 校验（`parseAssetRoiText`）：只接受 4 个**十进制**数字（中英文逗号/空白分隔），`x,y>=0`、`w,h>0`、每项 `<=100000`；显式拒绝 `1e2`/`0x10`/`+1`/`1.0`。非法时不发请求。
+
+### 17.4 窄侧栏（320px）
+
+- 根因：`.asset-main` 作为 flex item 默认 `min-width:auto`，在 320px 侧栏不肯收缩 ⇒「设置」被挤到第二行、两个按钮被拉成高块。
+- 修复：`.asset-row .asset-main { min-width: 0 }` + `.asset-row .asset-test { align-self: flex-start }`（行仍 stretch，保证菜单独占第二行）；`.asset-main-text { min-width: 0 }`。
+- headless Edge 实测（真实 `style.css` + `asset_ui.js`，360×900 画布 / stage 320px）：`row=320 / main=208 / 识别=52x26 / 设置=52x26 / sameRow=true / wrap=false`（菜单开合同样成立）；截图 `_verify/asset-row-20261104/asset-row-320.png`。
+
+### 17.5 验证
+
+- UI pure test：**835 → 907 checks（+72，旧断言不弱化）/ 225 referenced ids / 0 dead ids**；新增两按钮、9 项顺序、5 类禁用规则、菜单开合/Esc/执行后收起、disabled 零回调、三处 surface 回调、新函数端点与刷新、ROI/阈值解析边界、`editAsset`/`onEdit` 已删等断言。
+- `node --check asset_ui.js/app.js/ui_pure_test.js` **3/3 exit 0**；`git diff --check` clean；task lint **1/0**；无 Rust 改动 ⇒ `cargo test --workspace` 仍 **501/0**（oasd 228）。
+- CDP 实测：全局素材行 `topButtons=[识别,设置]`；模板行 9 项中仅「识别区」disabled；OCR 行「阈值」disabled；帧详情行（`manage:false`）6 个管理项 disabled、点测/拖测/步骤 enabled；截图 `_verify/asset-row-20261104/asset-row-menu2.png` 等。
+
+### 17.6 遗留（P2/P3）
+
+- ROI 编辑用 `prompt` 输入 `x,y,w,h`，**未做“画布框选后保存”入口**（P2）；边界只做 `100000` sanity cap，**未按 `design_resolution` 精确校验 `x+w`/`y+h`**（P2；服务端对 region ROI 已有 design 校验）。
+- 设置菜单的全局互斥/Esc 焦点细节/aria 完善（P3）；本轮仍用 CDP headless 验证，**无真实浏览器自动化 E2E**。
