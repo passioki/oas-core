@@ -558,7 +558,7 @@ fn find_text_in_list(&mut self, text: &str, scroll: ScrollPolicy) -> Result<Poin
 
 ### 16.5 ★★ 每素材 OCR 最低置信度（2026-11-04 追加 · 现行）
 
-> ★ 触发：用户要求 OCR 素材也能像模板一样设「阈值」。★ 台账：`PENDING-LEDGER.md §E-78`；★ UI/交互：`EDITOR-UX-PLAN.md §18.4`；★ 实现记录：本文件 §22.42。
+> ★ 触发：用户要求 OCR 素材也能像模板一样设「阈值」。★ 台账：`PENDING-LEDGER.md §E-78`；★ UI/交互：`EDITOR-UX-PLAN.md §18.4` + **§18.10**（2026-11-04 晚：取值路径已接入阈值）；★ 实现记录：本文件 §22.42 + **§22.43**。
 > ★ **字段复用**：OCR 素材（`ocr_line` / `ocr_lines` / derived）用 `assets.json` 的 **`AssetDecl.threshold`** 保存**最低识别置信度**；模板的同一字段仍是 NCC 匹配线。
 > ★ **归一化（唯一真源）**：`AssetSet::ocr_threshold` 读取时 `filter(|t| *t > 0.0)`——**未设置与显式 `0` 完全等价 = 不按置信度过滤**（恢复旧「识别成功即命中」行为）；`t > 0` 时才 `score >= t` 为命中。
 
@@ -569,12 +569,12 @@ fn find_text_in_list(&mut self, text: &str, scroll: ScrollPolicy) -> Result<Poin
 | ★ 生效路径 | ★ `click`（OCR selector）、条件 `appear`、`expect appear/vanish`、`click_target` 的 `ocr_text`、`expect ocr_text`、`drag` 的 `ocr_text` |
 | ★ `expect appear/vanish` | ★ 统一走 `selector_threshold`：OCR 未设/0 → **`0.0`**（不过滤），显式 `t>0` → `t`；模板/collection 仍 `0.9`/显式阈值 |
 | ★ `click_target` 模板兜底 | ★ 与 `selector_threshold` 同策略（OCR 未设/0 不把模板 0.9 套到 OCR 上） |
-| ★ 取值路径（**不**加阈值） | ★ `ocr()` / `ocr_digit()` / `ocr_to_var` —— 设计上**不**把「读到的值」变成「没读到」；阈值只决定「命中/未命中」，不改变取值结果 |
-| ★ `ocr_lines` / derived | ★ 判定用**最高行分**；★ 适配层已丢弃 `<0.5` 的行 ⇒ 对 `ocr_lines`/derived 设 `<0.5` 阈值无额外效果 |
+| ★ 取值路径（**也**加阈值，2026-11-04 晚起） | ★ `ocr()` / `ocr_digit()` / `ocr_to_var` 走 **`ocr_value_read`**：显式 `t>0` 且低分 ⇒ **视为未识别**（`ocr()`/`ocr_digit()` → `Null`，`ocr_to_var` → **空串**），**低分文本不进入值**；未设/`0` 行为**完全不变**；⚠ 低分是**空结果而非运行硬错误**（保 `wait_until(ocr(...) == …)` 轮询；硬错误可切换，改动集中在 `ocr_value_read`） |
+| ★ `ocr_lines` / derived | ★ **判定**（命中/未命中）用**最高行分**；★ **取值**（`ocr()` 拼成多行字符串）用**最低行分**——一条坏行必须把置信度拉低，绝不取乐观平均；★ 适配层已丢弃 `<0.5` 的行 ⇒ 对 `ocr_lines`/derived 设 `<0.5` 阈值无额外效果 |
 | ★ 模板 / collection | ★ 默认阈值 **`0.9` 不变**；模板显式阈值仍按 NCC |
 | ★ UI | ★ 模板未设时预填/显示 **`0.85`**（runtime 默认）；OCR 未设/0 显示「未设或 0（不限制）」、输入框默认空；prompt 写明「留空 = 取消；0 = 不限制」 |
 
-★ **实现位置**：`AssetSet::set_ocr_threshold` / `ocr_threshold` / `threshold_for`（`crates/oas-runtime/src/lib.rs:457-491`）；`selector_threshold` / `ocr_score_ok`（`:2016-2043`）；`verify_expect`（`:1267-1310`）；`oas-task` 加载时写入（`crates/oas-task/src/lib.rs:1163-1170`）。★ **测试**：新增 15 条（阈值 11 + `0`/expect 三态 4；原 11 条保留），workspace **516/0**。
+★ **实现位置**：`AssetSet::set_ocr_threshold` / `ocr_threshold` / `threshold_for`（`crates/oas-runtime/src/lib.rs:457-491`）；`selector_threshold` / `ocr_score_ok`（`:2016-2043`）；`verify_expect`（`:1267-1310`）；**`ocr_value_read`（`:2006-2020`）→ `ocr_run`（`:2028-2045`）/ `ocr_digit_value`（`:2076`）/ `Step::OcrToVar`（`:3318-3331`）**；`oas-task` 加载时写入（`crates/oas-task/src/lib.rs:1163-1170`）。★ **测试**：seq 99 新增 15 条（阈值 11 + `0`/expect 三态 4；原 11 条保留）⇒ **516/0**；**2026-11-04 晚取值路径再 +11 条 ⇒ workspace 527/0**（详见 §22.43）。
 
 ---
 
@@ -2231,14 +2231,31 @@ Asset.positions = [frame_id, ...]
 
 | 项 | 结果 |
 |---|---|
-| ★ OCR 阈值 | ★ 复用 `AssetDecl.threshold`；`ocr_threshold` 归一化 **未设 = 0 = 不限制**，`t>0` 才过滤；生效 click / 条件 appear / `expect appear/vanish` / `click_target` ocr_text / expect ocr_text / drag ocr_text；取值路径不加；`ocr_lines` 用最高行分、适配层丢 `<0.5`；模板/collection 仍 0.9（`§16.5`） |
+| ★ OCR 阈值 | ★ 复用 `AssetDecl.threshold`；`ocr_threshold` 归一化 **未设 = 0 = 不限制**，`t>0` 才过滤；生效 click / 条件 appear / `expect appear/vanish` / `click_target` ocr_text / expect ocr_text / drag ocr_text；~~取值路径不加~~（**§22.43 起取值路径也加**：低分 → `Null`/空串）；`ocr_lines` **判定**用最高行分、**取值**用最低行分（§22.43）；适配层丢 `<0.5`；模板/collection 仍 0.9（`§16.5`） |
 | ★ 帧详情 | ★ 删除「来源」列/badge 与 `assetSourceLabel`；`manage:true`，9 项设置全部可用；行 scope：含 global → `GLOBAL_SCOPE_TASK`（global 优先），仅 task → 当前任务；管理/测试回调可选 `scopeTask` |
 | ★ 识别区 | ★ 菜单 → 画布拖拽（旧 prompt 删除）；保存按钮在共享 `#canvas-footer`（三 surface 可见）+「识别区编辑中：<id>」；模板保存走 `/task/save_asset` + `replace:true`（当前帧重截、rev+1），OCR/region 走 `/task/asset/update {roi}`；`cancelRecognitionRoiEdit` 覆盖所有离开路径，保存前重查最新素材 |
 | ★ 选中态/菜单 | ★ 按 asset id 跨 surface 高亮 `.asset-row.selected`；设置项点击不收起；仅切另一个素材时关旧菜单；重渲染恢复选中/菜单 |
 | ★ 批量测试 | ★ 按钮移到素材页（紧邻「刷新全局库」）；对象 = 当前可见素材集合（全局 = 过滤后缓存；任务 = 可见任务素材）；显式 `assets` ids |
 | ★ 测试 | ★ UI **1112 checks / 227 ids / 0 dead**（907→1003→1112）；workspace **516/0**（runtime 136 / task 59 / oasd 228；新增 15：阈值 11 + 0/expect 三态 4）；`cargo build -p oasd --features ocr` exit 0（6 既有 warnings）；task lint 1/0；`git diff --check` clean |
 | ★ 评审 | ★ `REVIEW.md`：P0×2 + P1×4 全修（共享保存、切素材写旧素材、模板 polygon/快照、批量作用域、OCR 0 语义）+ P2 顺手；无真实浏览器自动化回归（Lead CDP 实测） |
-| ★ 遗留 | ★ region ROI 保存仍把 polygon/invert 降级为矩形（P2-5）；模板 ROI 移动后 polygon 有意重同步为矩形；取值路径不加阈值（设计）；legacy 非全局批量仍需任务名；帧详情 task-only 且无任务仍报错（P2-10）；多 surface 同时可见时菜单可能开在最后可见 surface（不丢选中） |
+| ★ 遗留 | ★ ~~region ROI 保存仍把 polygon/invert 降级为矩形；模板 ROI 移动后 polygon 有意重同步为矩形；取值路径不加阈值~~ ⇒ **三项已由 §22.43 修复**；保留：模板 `fixed` 操作区不随 ROI 平移、ROI **缩放**时 polygon 回退矩形、OCR 低分为空结果（非硬错误）、legacy 非全局批量仍需任务名、帧详情 task-only 且无任务仍报错（P2-10）、多 surface 同时可见时菜单可能开在最后可见 surface（不丢选中） |
 
 ★ **提交边界**：UI 5 文件 + Rust 2 文件 + docs；用户数据（`assets/`/`frames/`/`tasks/`/`scheduler.json`）不提交；代码父 = `b4c2b0c`（seq 98 docs 提交），docs 随后（新 HEAD，不写死 hash）。
 
+### 22.43 ★★★ [11-04 晚] **三项遗留修复：region 操作多边形 / 模板 polygon 平移 / OCR 取值路径阈值（现行）**
+
+> 台账：`PENDING-LEDGER.md §E-78`（§H 已订正）；UI/交互：`EDITOR-UX-PLAN.md §18.10`；阈值语义：本文件 **§16.5**；证据：`D:\OAS-dev\_verify\leftovers-20261104\`。
+> 代码（**未提交**）：`apps/oasd/src/serve.rs`、`apps/oasd/ui/app.js`、`apps/oasd/ui/ui_pure_test.js`、`crates/oas-runtime/src/lib.rs`、`crates/oas-task/src/lib.rs`；代码父 `f16fea1`。
+
+| 项 | ★ 现行语义 |
+|---|---|
+| ★ **region `keep_action_shape`（B-08b）** | ★ `oas_task::update_asset_meta(..., keep_action_shape: bool)` 新增**最后一个可选布尔**：`true` 且 `kind=region` 时 `roi` 更新**只写 `roi`**，不动 `action_shape`/`action_source`（region 的操作多边形在识别框移动后**不再被降级成 `rect(roi)`**）；缺省/`false` 仍走旧 B-08 rect 同步（老调用方/老测试零影响）；传了显式 `action_shape` 时该开关无效（形状由调用方给） |
+| ★ region ROI 帧内校验 | ★ 即使保留形状，**ROI-only 路径也必须帧内合法**：`x,y >= 0`、`x+w`/`y+h` ≤ `design_resolution`（旧 B-08 借 `rect(roi)` 隐含校验，现显式补上），否则报错、不落盘 |
+| ★ serve 契约 | ★ `POST /task/asset/update {task,id,roi?,threshold?,action_shape?,action_source?,keep_action_shape?}`：`keep_action_shape` **可选**；**非布尔 → 400**（错误列表含该字段名）；缺省 = `false` |
+| ★ 模板 polygon **平移** | ★ 模板 `replace` 覆盖仍走 `POST /task/save_asset` + `replace:true`（服务端按 **polygon bbox 反推 roi**，见 `oas-task::save_asset`）；UI 纯函数 **`assetRoiPolygonPlan(polygon, roi, oldRoi)`**：`dx/dy = new_roi - old_roi`，把所有顶点平移同一位移 ⇒ **同顶点数、同形状**；校验「平移后 bbox 顶点取整后 == 新 ROI」且 `min x/y >= 0`；通过则 payload 带**平移后 polygon** |
+| ★ 模板 polygon **回退条件** | ★ 只有三种情况回退矩形并**明确提示**（结果行 + `alert`）：① ROI 被**缩放**（宽高与旧 bbox 不一致）⇒「识别区尺寸变了…已改用矩形识别区」；② 原素材**没有保存的 ROI** 或旧 bbox 与旧 ROI 不一致 ⇒「原素材没有保存的识别区…」；③ 平移后**越界/非整数**顶点。回退时服务端仍按矩形截图，模板图与新 ROI 一致（不会静默错位） |
+| ★ OCR **取值路径**阈值 | ★ 见 §16.5：`ocr_value_read` 统一接入 `ocr()`/`ocr_digit()`/`ocr_to_var`；显式 `t>0` 且低分 ⇒ 未识别（`Null` / 空串）；未设/`0` 不变；`wait_until` 轮询保留；多行取值取**最低行分**；模板/collection 不受影响 |
+| ★ 测试 | ★ `cargo test --workspace` **516 → 527 passed / 0 failed**（runtime **136→142** = +6、task **59→63** = +4、oasd **228→229** = +1）；UI pure test **1112 → 1138 checks / 227 ids / 0 dead**；`node --check` 3/3 = 0；`git diff --check` = 0 |
+| ★ 明确未做 | ★ ① 模板 `fixed` `action_shape`（操作区）**不随 ROI 平移**（同类问题，属「操作区=绝对区域」语义）；② ROI **缩放**时 polygon 仍回退矩形（本轮需求只要求移动）；③ OCR 低分为**空结果而非运行硬错误**（为保轮询；如需硬错误改动集中在 `ocr_value_read`）；④ UI 阈值文案未加「同时作用于取值」 |
+
+★ **提交边界（§22.43 本轮）**：**5 个改动文件** = UI 2（`apps/oasd/ui/app.js`、`apps/oasd/ui/ui_pure_test.js`）+ Rust 3（`apps/oasd/src/serve.rs`、`crates/oas-runtime/src/lib.rs`、`crates/oas-task/src/lib.rs`）+ docs；`asset_ui.js`/`index.html`/`style.css` 未改；用户数据（`assets/`/`frames/`/`tasks/`/`scheduler.json`）不提交；代码父 `f16fea1`，docs 随后（新 HEAD，不写死 hash）。

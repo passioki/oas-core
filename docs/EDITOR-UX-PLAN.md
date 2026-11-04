@@ -760,6 +760,7 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 
 > 台账：`PENDING-LEDGER.md §E-78`；证据：`D:\OAS-dev\_verify\asset-ux-20261104\`（`UX-REPORT.md` · `OCR-THRESHOLD-REPORT.md` · `REVIEW.md` · `FIX-REPORT.md` · `THRESH-FIX-REPORT.md` · `ux-selected.png` / `ux-roi-shared.png` / `ux-frame.png` · `probe-*.js` · `*.log`）。
 > 本节是素材库 UX 的最新版本；§17 的「两按钮 + 9 项菜单」结构仍是现行，但 §17 里的识别区 prompt / 模板识别区 disabled / 帧详情 `manage:false` / 阈值仅模板 / 批量测试在任务页均已被本节取代。冲突时以本节 + 代码为准。
+> **§18.10 是本节之后的同轮收尾（2026-11-04 晚）**：修掉 §18.9 的 ①②③ 三项遗留（region 操作多边形、模板 polygon 平移、OCR 取值路径阈值）；§18.3/§18.4/§18.9 里旧说法已就地订正。
 
 ### 18.1 行选中态与设置菜单保持（需求①）
 
@@ -767,7 +768,7 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 - 样式 `.asset-row.selected`：背景 `#1b2a3a`（CDP 实测 **`rgb(27, 42, 58)`**）+ 左亮条 + 主文本/设置按钮提亮；无布局位移（inset shadow）。
 - 点击行主体（main）/「识别」/「设置」都选中该行；**disabled 菜单项不改变选中、不触发回调**。
 - **菜单最多一个**；点菜单项**不收起**（同一素材的设置面板保持展开），仅当选中**另一个素材**时关闭旧菜单并把高亮迁过去；再次点「设置」或 `Esc` 收起。
-- 列表重渲染后恢复已选行菜单（`openMenuKey` + 延迟一 tick）；先在当前可见 surface 上恢复，极端多列表同时可见时可能开在最后一个可见 surface——**只影响菜单位置，不丢选中**（遗留⑥）。
+- 列表重渲染后恢复已选行菜单（`openMenuKey` + 延迟一 tick）；先在当前可见 surface 上恢复，极端多列表同时可见时可能开在最后一个可见 surface——**只影响菜单位置，不丢选中**（遗留⑨）。
 
 ### 18.2 识别区 = 画布拖拽 + 共享保存按钮（需求②）
 
@@ -785,16 +786,16 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
   - `template` → `POST /task/save_asset` + **`replace:true`**：用**当前帧**按新 ROI 重新截图并覆盖模板图，`rev+1`；confirm 文案含素材 id、`rev+1`、位置帧数量、不可撤销；前端先拦截 `positions` 为空（P2-8），服务端仍要求 ≥1；
   - `ocr_line` / `ocr_lines` / `region` → `POST /task/asset/update {task,id,roi}` 直接更新 ROI。
 - **payload** `assetRoiReplacePayload(task, latest, roi)`（P1-1/P1-2）：以**最新素材对象**为底（不是打开编辑时的快照），带 `id/kind/threshold/positions/action_source/action_shape/polygon/ocr_mode/ocr_source_roi/ocr_text`（存在才带），只替换 `roi` 并加 `replace:true`；`action_source=recognition` 不带 `action_shape`、`fixed` 必带（服务端契约）。
-- **polygon 规则**：旧 polygon 的 bbox 与新 ROI 一致则原样保留；不一致则回传**新 ROI 矩形**（避免服务端用旧 bbox 反推、把识别/点击掩膜覆盖掉）。
+- **polygon 规则（P1-1；2026-11-04 晚由 §18.10 ② 取代后半句）**：旧 polygon 的 bbox 与新 ROI 一致则原样保留；ROI **移动**时按 `dx/dy` 平移 polygon 并回传平移后顶点（服务端按 polygon bbox 反推 roi）；只有**缩放 / 旧 bbox 不一致 / 平移越界**才回传新 ROI 矩形并提示。
 - 菜单 title 已说明「模板：保存会用当前帧重新截图覆盖，rev+1」；模板识别区**不再 disabled**。
-- 遗留：`region` 识别区保存仍会把 polygon/invert 降级为矩形（P2-5）；模板 ROI 移动后 polygon **有意**重同步为矩形（不是 bug），见 §18.9。
+- ~~遗留：`region` 识别区保存仍会把 polygon/invert 降级为矩形；模板 ROI 移动后 polygon 有意重同步为矩形~~ ⇒ **已由 §18.10 修复**：region 保存走 `keep_action_shape:true`（不动操作多边形）；模板 ROI **移动**时 polygon 按 `dx/dy` 平移保留形状（仅缩放/旧 bbox 不一致/越界才回退矩形并提示）。
 
 ### 18.4 OCR 阈值（需求④）
 
 - 素材（`ocr_line` / `ocr_lines` / derived）复用 `assets.json` 的 **`threshold`** 字段，语义 = **最低识别置信度**；模板的 `threshold` 仍是 NCC 匹配线。二者在 UI 同一个「阈值」菜单里按 kind 分支。
 - **未设置或 0 = 不按置信度过滤**（与旧行为完全一致）；显式 `t>0` 时 `score<t` 视为未命中/失败。**0 与未设置在 Rust 侧等价**（`ocr_threshold` 读取时过滤 `>0`，P1-4）。
 - UI：模板未设时预填/显示默认 **0.85**；OCR 未设或 0 显示「未设或 0（不限制）」、输入框默认空；prompt 明确「留空 = 取消；0 = 不限制」。阈值菜单对 `template` / `ocr_line` / `ocr_lines` 启用，`region` / 集合禁用。
-- 生效路径、取值路径不加阈值、`ocr_lines` 最高行分等完整语义见 `ENGINE-DESIGN.md §16.5` / `§22.42`。
+- 生效范围：命中判定路径（click / 条件 appear / `expect appear/vanish` / `click_target` / expect `ocr_text` / drag `ocr_text`）**与取值路径（`ocr()` / `ocr_digit()` / `ocr_to_var`）**——取值路径的低分处理见 §18.10；`ocr_lines` 用最低行分、适配层丢 `<0.5` 等完整语义见 `ENGINE-DESIGN.md §16.5` / `§22.42`。
 
 ### 18.5 帧详情素材库与全局库一致（需求⑤）
 
@@ -819,7 +820,7 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 |---|---|---|
 | P0-1 | 保存按钮只在 `panel-assets` 内，任务库 / 帧详情进入编辑后不可见 | 移到共享 `#canvas-footer` + `#asset-roi-edit-label`；三 surface 可用（`index.html:64-69` / `style.css:571-589`） |
 | P0-2 | 切素材 / 切帧后仍写旧素材（模板 replace 会数据损坏） | 新增 `cancelRecognitionRoiEdit(reason)` 覆盖所有离开路径；保存前按 `{id,scope}` 从缓存重查最新素材，找不到即取消 |
-| P1-1 | 模板 replace payload 丢 `polygon` / OCR 字段 | `assetRoiReplacePayload` 以最新素材为底带全字段；polygon bbox 一致保留、否则回传新 ROI 矩形 |
+| P1-1 | 模板 replace payload 丢 `polygon` / OCR 字段 | `assetRoiReplacePayload` 以最新素材为底带全字段；polygon 规则当时 = bbox 一致保留、否则回传新 ROI 矩形（**2026-11-04 晚由 §18.10 ② 升级为「按 `dx/dy` 平移」**） |
 | P1-2 | 模板保存用编辑起点快照，可回退阈值 / 位置帧 | 同 P0-2：保存前重查最新对象，只换 ROI |
 | P1-3 | 批量测试移到素材页但仍测 task flow 子集 | 改为当前可见集合 + 显式 `assets` ids |
 | P1-4 | OCR `0` 与未设在 `expect appear/vanish` 不等价 | Rust 归一化：`ocr_threshold` 过滤 `>0`；`selector_threshold` 统一 appear/vanish；`click_target` 模板兜底同策略；其余路径走归一化访问器 |
@@ -832,14 +833,32 @@ tags: v1.0.0 / v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3
 - `cargo build -p oasd --features ocr` exit 0（6 个既有 warnings）；task lint **1/0**；`git diff --check` clean。
 - **Lead CDP 实测**（真实 serve 8787 + device）：行选中背景 `rgb(27,42,58)`；设置→识别区后菜单保持展开、画布底部保存按钮可见可用、标签「识别区编辑中：预设」；切到另一素材后保存按钮隐藏/禁用、标签清空；模板识别区 title 含「模板：保存会用当前帧重新截图覆盖，rev+1」；OCR 阈值 prompt 显示「未设或 0（不限制）」且默认空；帧详情行无来源文案、9 项设置全 enabled；批量按钮在 `panel-assets`、上一兄弟「刷新全局库」、不在 `panel-task`。截图 `_verify/asset-ux-20261104/ux-roi-shared.png` / `ux-selected.png` / `ux-frame.png` 等。
 - 边界：**无真实浏览器自动化回归**（本轮 = Lead CDP 实测 + UI pure tests）。
+- **2026-11-04 晚三项遗留修复后（§18.10）**：UI pure test **1138 checks / 227 ids / 0 dead**；workspace **527 passed / 0 failed**（runtime 142 / task 63 / oasd 229）。
 
-### 18.9 遗留（P2/P3，不阻塞）
+### 18.9 遗留（P2/P3，不阻塞；2026-11-04 晚订正）
 
-1. `region` 识别区保存仍会把 polygon/invert 降级为矩形（P2-5，服务端 region ROI 保存路径既有）；
-2. 模板 ROI 移动后 polygon **有意**重同步为矩形（避免旧 bbox 反推覆盖；不是回归）；
-3. `ocr()` / `ocr_digit()` / `ocr_to_var` 等**取值路径不加阈值**（设计：避免把「读到的值」变成「没读到」）；`ocr_lines` 判定用**最高行分**，适配层已丢弃 `<0.5` 的行 ⇒ `<0.5` 阈值对 `ocr_lines`/derived 无额外效果；
-4. legacy 非全局模式的批量测试仍需任务名；
-5. 帧详情 task-only 且无任务时仍报错（P2-10）；
-6. 菜单恢复在极端多列表同时可见时可能开在最后可见 surface（不丢选中）；
-7. 无真实浏览器自动化回归（本轮 Lead 用 CDP 实测 + UI pure tests）；
-8. docs 已同步本轮（本任务）。
+1. ~~`region` 识别区保存把 polygon/invert 降级为矩形~~ ⇒ **已修**（§18.10：`keep_action_shape`）；
+2. ~~模板 ROI 移动后 polygon 有意重同步为矩形~~ ⇒ **已修**（§18.10：按 `dx/dy` 平移保留形状）；**ROI 缩放时 polygon 仍回退矩形**（本轮需求只要求「移动」）；
+3. ~~`ocr()` / `ocr_digit()` / `ocr_to_var` 取值路径不加阈值~~ ⇒ **已改为应用阈值**（§18.10）；`ocr_lines` 取值用**最低行分**，适配层仍丢弃 `<0.5` 的行 ⇒ `<0.5` 阈值无额外效果；
+4. **模板 `fixed` `action_shape`（操作区）不随 ROI 平移**（与 ① 同类，属「操作区=绝对区域」语义，本轮**未改**；region 已由 `keep_action_shape` 覆盖，模板没有对应开关）；
+5. OCR 低分为**空结果而非运行硬错误**（为保 `wait_until(ocr(...))` 轮询；如需硬错误，改动集中在 `ocr_value_read`，可切换）；
+6. UI 阈值文案未加「同时作用于取值」（本轮只落代码，文案未改）；
+7. legacy 非全局模式的批量测试仍需任务名；
+8. 帧详情 task-only 且无任务时仍报错（P2-10）；
+9. 菜单恢复在极端多列表同时可见时可能开在最后可见 surface（不丢选中）；
+10. 无真实浏览器自动化回归（本轮 Lead CDP 实测 + UI pure tests）；
+11. docs 已同步本轮（本任务）。
+
+### 18.10 三项遗留修复（2026-11-04 晚）
+
+> 台账：`PENDING-LEDGER.md §E-78`（§H 已订正）；Rust 语义：`ENGINE-DESIGN.md §16.5` + `§22.43`；证据：`D:\OAS-dev\_verify\leftovers-20261104\`。
+> 代码（**未提交**）：`apps/oasd/src/serve.rs`、`apps/oasd/ui/app.js`、`apps/oasd/ui/ui_pure_test.js`、`crates/oas-runtime/src/lib.rs`、`crates/oas-task/src/lib.rs`（代码父 `f16fea1`）。
+
+| # | 遗留 | 现行行为 |
+|---|---|---|
+| ① | region 识别区保存把**操作多边形降级为矩形** | `oas-task::update_asset_meta` 新增**可选布尔 `keep_action_shape`**：为真且 `kind=region` 时**只更新 `roi`**，不动 `action_shape`/`action_source`；缺省/`false` 仍走旧 B-08 rect 同步（老调用方与测试零影响）。serve `/task/asset/update` 解析该字段（**非布尔 → 400**）。UI region 识别区保存传 `keep_action_shape:true`，结果行提示「操作区 action_shape 保持不变」。另在 ROI-only 路径补 **region ROI 帧内校验**（`x,y>=0`、`x+w`/`y+h` ≤ `design_resolution`），避免「保留形状」时写入不可用 ROI |
+| ② | 模板 ROI **移动**后 polygon 被重同步为矩形 | UI 新增纯函数 **`assetRoiPolygonPlan(polygon, roi, oldRoi)`**：按 `dx/dy = new_roi - old_roi` **平移** polygon 顶点（同顶点数、同形状），并校验「平移后 bbox == 新 ROI」且不越界；模板 `replace` 覆盖 payload 传**平移后 polygon**（服务端按 polygon bbox 反推 roi）。仅三种情况回退矩形并**明确提示**：ROI 被**缩放**（宽高不一致）、旧 bbox 与旧 ROI 不一致、平移后越界/非整数 |
+| ③ | OCR **取值路径**不应用阈值 | 新增 `ocr_value_read`（`ocr_read` 的取值视图），`ocr()` / `ocr_digit()` / `ocr_to_var` 全部接入：**显式阈值 `t>0` 且低分** → 视为**未识别**（`ocr()`/`ocr_digit()` → `Null`，`ocr_to_var` → **空串**），低分文本**不进入值**；**未设/`0` 行为完全不变**；`wait_until(ocr(...))` 的**轮询语义保留**（低分=本次未命中而不是运行崩溃）；多行取值取**最低行分**；模板/collection 不受影响（仍 NCC/0.9） |
+
+- **测试**：`cargo test --workspace` **516 → 527 passed / 0 failed**（runtime **136→142**、task **59→63**、oasd **228→229**）；UI pure test **1112 → 1138 checks / 227 referenced ids / 0 dead ids**；`node --check` 3/3 = 0；`git diff --check` = 0。
+- **明确未做（见 §18.9）**：模板 `fixed` 操作区不随 ROI 平移；ROI **缩放**仍回退矩形；OCR 低分为空结果而非硬错误；UI 文案未加「同时作用于取值」。

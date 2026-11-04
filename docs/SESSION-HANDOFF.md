@@ -1,25 +1,25 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★★★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（seq 99，素材库 UX 六项 + OCR 阈值 in_progress）。
-> **本轮（2026-11-04 下午，seq 99）**：素材库 UX 六项 + OCR 阈值——① 行选中态按 asset id 跨 surface 高亮、菜单项点击不收起/重渲染恢复；② 识别区改画布拖拽 + 共享 `#canvas-footer` 保存按钮；③ 模板识别区统一 `/task/save_asset` + `replace:true`（当前帧重截、rev+1）；④ OCR 每素材最低置信度（未设/0=不过滤）；⑤ 帧详情去来源列、`manage:true`、按来源分 scope；⑥ 批量帧测试移到素材页、对象=当前可见集合；评审 P0×2/P1×4 全修 + P2。UI **1112/227/0**、workspace **516/0**（runtime 136/task 59/oasd 228）；代码（UI 5 + Rust 2）父 `b4c2b0c`，docs 待 Lead 提交。上一轮 seq 98：素材行两按钮 + push-all（已提交 `b4c2b0c`）。
+> ★★★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（seq 100，`oas-core-runner-studio-split`：三项遗留已修 + Studio/Runner 分离设计稿 v1 **待拍板**，in_progress）。
+> **本轮（2026-11-04 18:2x，seq 100）**：① **三项遗留已修**（代码未提交、父 `f16fea1`）——region 识别区保存**不再**把操作多边形降级为矩形（`keep_action_shape`）、模板 ROI **移动**保留 polygon（`assetRoiPolygonPlan` 平移）、OCR **取值路径**应用阈值（`ocr_value_read`：低分 → `Null`/空串，`wait_until` 轮询保留，多行最低行分）；② **事项 2/3 设计稿 v1** 落 `docs/RUNNER-STUDIO-SPLIT-PLAN.md`（Studio/Runner 分离 + TaskPackage + 任务配置/子任务配置；**7 项决策 Q1~Q7 待用户拍板，未实现**），台账 §E-79。workspace **516→527/0**（runtime 142 / task 63 / oasd 229）、UI **1112→1138/227/0**。上一轮 seq 99：素材库 UX 六项 + OCR 阈值（代码父 `b4c2b0c`，516/0、UI 1112/227/0）。
 > **上一阶段**：调度器产品化（单活动实例）P0–P5 全部 ✅ 完成（seq 95，done）——P0 文档 / P1 450/0 / P2 474/0 / P3 488/0，UI 453 / P4 501/0，oasd 228，UI 662 / **P5 实机验收 A–F 全部真机通过 + `GET /instance/devices` adb 自动连接修复**。更早节点：0.1.0 Release 已上传、tag `v0.1.0` 未移动、O-1/O-2 收口（`d1a7fcd`），`dev`/`main` 已同步 origin。不要再灌 34/18 旧素材。
 
-## 0. 当前状态（2026-11-04 14:5x）
+## 0. 当前状态（2026-11-04 18:2x）
 
 | 项 | 值 |
 |---|---|
-| 当前阶段 | **素材库 UX 六项 + OCR 阈值（seq 99，in_progress）**：选中态/菜单保持、识别区画布+共享保存、模板 replace 统一、OCR 最低置信度、帧详情一致、批量测试移页；评审 P0×2/P1×4 全修 + P2。台账 `PENDING-LEDGER §E-78`，现行口径 `EDITOR-UX-PLAN §18` + `ENGINE-DESIGN §16.5/§22.42`。上一轮 seq 98 = 素材行两按钮 + push-all（已提交 `b4c2b0c`）；上一阶段调度器产品化 P0–P5 全部 ✅（seq 95，done；台账 `§E-75`） |
-| 工作区（本轮） | UI **5 文件** `apps/oasd/ui/{asset_ui.js,app.js,index.html,style.css,ui_pure_test.js}` + Rust **2 文件** `crates/{oas-runtime,oas-task}/src/lib.rs` + 本批 docs 待提交；`assets/assets.json` / `assets/images/a00{2..5}.png` / `frames/frames.json` / `frames/frame-4{1,2}.png` / `scheduler.json` / `scheduler.json.bak` / `tasks/关闭弹窗/` 是**用户数据，不属于本轮提交**，勿动 |
-| 分支/HEAD | `dev`；当前 HEAD = **`b4c2b0c`**（seq 98 docs 提交）；**本轮改动未提交，代码父 = `b4c2b0c`**，docs 随后；推送状态以 `git status -sb` 实测为准；包构建 commit `42567c1` |
+| 当前阶段 | **三项遗留收尾 + 事项 2/3 设计稿（seq 100，in_progress，`oas-core-runner-studio-split`）**：① region `keep_action_shape` / 模板 polygon 平移 / OCR 取值路径阈值 **已修**；② `docs/RUNNER-STUDIO-SPLIT-PLAN.md` 设计稿 v1 **待用户拍板 7 项决策、未实现**。台账 `§E-78`（遗留修复）+ **`§E-79`**（设计稿）；现行口径 `EDITOR-UX-PLAN §18.10` + `ENGINE-DESIGN §16.5/§22.43` + `RUNNER-STUDIO-SPLIT-PLAN.md`。上一轮 seq 99 = 素材库 UX 六项 + OCR 阈值（已落码，516/0、UI 1112/227/0）；上一阶段调度器产品化 P0–P5 全部 ✅（seq 95，done；台账 `§E-75`） |
+| 工作区（本轮） | 代码 **5 文件** `apps/oasd/src/serve.rs`、`apps/oasd/ui/app.js`、`apps/oasd/ui/ui_pure_test.js`、`crates/oas-runtime/src/lib.rs`、`crates/oas-task/src/lib.rs`（另一子进程写入，**不是我改的**）+ 本批 docs **9 份** 待提交；`assets/assets.json` / `frames/frames.json` / `scheduler.json` / `scheduler.json.bak` / `tasks/切换预设御魂/` 是**用户数据，不属于本轮提交**，勿动 |
+| 分支/HEAD | `dev`；当前 HEAD = **`f16fea1`**（`chore(data): sync …` 2026-11-04 15:08）；**本轮改动未提交，代码父 = `f16fea1`**，docs 随后；推送状态以 `git status -sb` 实测为准；包构建 commit `42567c1` |
 | 恢复节点 | tag `v0.1.0`（annotated `cf123b8` → commit `e8edbef`，**未移动**）；**GitHub Release 已上传** |
 | 发布 | `https://github.com/passioki/oas-core/releases/tag/v0.1.0`（id `431080249`，draft=false / prerelease=false，即 latest）；附件 zip（asset `700544587`，37,089,992 B，digest `sha256:e6112a33…5f5687`）+ `.sha256`（asset `700545142`，89 B）；本地同物 SHA256 `E6112A33…5F5687` |
 | 版本 | `0.1.0`；**包不含 O-1/O-2**（包构建 `42567c1`，O-1/O-2 自 `54c715b` 起，评审修复 `d1a7fcd`） |
-| 测试 | 本轮（seq 99）：`cargo test --workspace` = **516 passed / 0 failed**（runtime **136** / task **59** / oasd **228**；serve 68；501→512→516，新增 15 条 = 阈值 11 + 0/expect 三态 4）；UI pure test **1112 checks / 227 referenced ids / 0 dead ids**（907→1003→1112）；OCR build exit 0（6 既有 warnings）；task lint 1/0；`node --check` 3/3；`git diff --check` clean。上一轮 seq 98：501/0，UI 907/225/0；上一节点 P5：501/0，UI 662/219/0；上一发布基线 426/0（oasd 153 / flow 57 / runtime 125 + 2 integration） |
+| 测试 | 本轮（seq 100）：`cargo test --workspace` = **527 passed / 0 failed**（runtime **142** / task **63** / oasd **229**；serve 68；516→527，+11 = OCR 取值路径 6（runtime）+ region keep_action_shape 2 与模板 polygon 平移 2（task）+ serve 布尔解析 1（oasd））；UI pure test **1138 checks / 227 referenced ids / 0 dead ids**（1112→1138，+26）；`node --check` 3/3 = 0；`git diff --check` = 0（本轮 docs 子进程**不跑 cargo/serve**，UI pure test 已独立复跑一致；Lead 实测为准）。上一轮 seq 99：516/0（runtime 136 / task 59 / oasd 228），UI 1112/227/0，OCR build exit 0（6 既有 warnings）；上一轮 seq 98：501/0，UI 907/225/0；上一节点 P5：501/0，UI 662/219/0；上一发布基线 426/0 |
 | 数据 | **已提交基线**：全局素材 16 条 / 1 图；帧 28 个 / current_id=20 / next_id=41。**工作区未提交用户数据（2026-11-04 12:5x 实测）**：全局素材 **27 条**（5 模板 + 22 `ocr_line`）、图 **5 张**（a001~a005，a002~a005 未跟踪）；帧 **30 个** / current_id=1 / next_id=43；seq 96 时帧素材映射为 #23=3、#26=1、#41=2、#42=2（后续数据可能再变） |
 | 任务 | 只有 `返回庭院`（flow 11 steps / meta 400 B）；`tasks/测试` 已删除（随 `cd0ac34` 提交） |
 | 上一轮工作区 | `d1a7fcd` 时 clean；seq 89 docs 订正（8 份，终态，`906bbed`）与同步回填（`11d53a5`）均已提交 |
 | 服务 | seq 96 用 serve **8787**（真机 `emulator-5554`，实时预览可用）：`GET /` 200 含 5 个新 DOM id；`/frames`=30、`/task/assets?task=`=26；`match` API 见 `PENDING-LEDGER §E-76 §B`；headless 截图 `_verify/ui-frames-20261103/editor-page.png`；**布局回归另用 CDP 1440×900 实测**（修复前帧列表 0px → 修复后 257px；`frames-fixed.png` / `frames-fixed-detail.png`）。上一节点 P5 用 8787 测 `/runs/scheduler`；P5 的 adb 自动连接需重建 serve 才生效。仓库根 `scheduler.json`/`frames/frames.json` 是用户数据，未提交；**seq 98 未启动 serve/cargo**；**seq 99 用真实 serve 8787 + device 做 CDP 实测**（选中态/共享保存/模板 title/OCR prompt/帧详情/批量按钮；截图 `D:\OAS-dev\_verify\asset-ux-20261104\ux-roi-shared.png` 等） |
-| 文档 | 7 份历史文档已归档 `docs/archive/`；顶层 13 份（含 `PUSH-ALL.md`、`RELEASE-NODE-2026-11-02.md`） |
+| 文档 | 7 份历史文档已归档 `docs/archive/`；顶层 **14 份**（含 `PUSH-ALL.md`、`RELEASE-NODE-2026-11-02.md`、**`RUNNER-STUDIO-SPLIT-PLAN.md`（新）**） |
 
 ## 1. 最近发生了什么
 
@@ -67,39 +67,45 @@
 - 2026-11-04 14:0x~14:5x **本轮（seq 99）素材库 UX 六项 + OCR 阈值**（`UX-REPORT.md` → `OCR-THRESHOLD-REPORT.md` → `REVIEW.md` → `FIX-REPORT.md` → `THRESH-FIX-REPORT.md`）：行选中态/菜单保持；识别区画布 + 共享 `#canvas-footer`；模板 replace 重截；OCR 每素材最低置信度；帧详情去来源列 + `manage:true` + 按来源 scope；批量测试移素材页 + 可见集合；评审 P0×2/P1×4 + P2 全修；UI 1003→**1112/227/0**（评审时 1003/226/0）、workspace 512→**516/0**；Lead CDP 真实 serve 8787 实测；代码未提交（父 `b4c2b0c`）。
 - 2026-11-04 14:5x **本轮 docs 收尾 7 份**（`EDITOR-UX-PLAN §16.2/§17` 订正 + 新增 §18 / `PENDING §E-78` + §E-76/§E-77 取代说明 / `ENGINE §16.5/§22.42` / `RESUME` seq 99 / `RESUME-INDEX` / `START-HERE` / `README` / 本文件）；逐处 before→after 见 `_verify/asset-ux-20261104/DOCS-REPORT.md`。**代码/docs 均未提交**。
 
+- 2026-11-04 17:0x~18:1x **三项遗留修复（seq 100，代码未提交，父 `f16fea1`）**：① `oas-task::update_asset_meta` 新增可选布尔 **`keep_action_shape`**（`true` + `kind=region` 时只更新 `roi`，不动 `action_shape`/`action_source`；缺省仍走旧 B-08 rect 同步），serve `/task/asset/update` 解析该字段（**非布尔 400**），UI region 保存传 `true` 并提示「操作区未改」，补 region ROI 帧内校验；② UI 新增 **`assetRoiPolygonPlan`**：模板 ROI **移动**时按 `dx/dy` 平移 polygon 并校验「平移后 bbox == 新 ROI 且不越界」，模板 `replace` payload 带平移后 polygon（服务端按 polygon bbox 反推 roi）；**仅缩放 / 旧 bbox 不一致 / 越界**回退矩形并明确提示；③ 新增 **`ocr_value_read`**：`ocr()` / `ocr_digit()` / `ocr_to_var` 接入阈值（显式 `t>0` 且低分 → `Null` / 空串，低分文本不进值；未设/0 不变；`wait_until` 轮询保留；多行取**最低行分**；模板/collection 不受影响）。测试 workspace **516→527/0**（runtime 136→142、task 59→63、oasd 228→229）、UI **1112→1138/227/0**。
+- 2026-11-04 18:1x **事项 2/3 设计稿 v1**（只读审计产出，659 行 / 235+ `file:line`）：`_verify/arch-runner-studio-20261104/RUNNER-STUDIO-CONFIG-DESIGN.md`；已整理为 **`docs/RUNNER-STUDIO-SPLIT-PLAN.md`**（Studio/Runner 分离 = 同一 `serve::Server` 加 `Surface` + 路由归属表；`oasd studio` 8788 / `oasd runner` 8789；`.oaspkg` = zip+manifest+checksums；`meta.params` 扩 5 字段 + `config/values.json` + 四层优先级；`call_task.params` + `with_params` 作用域 + lint T7；风险 **R1 = call_task 是 load-time 展开**；**7 项决策 Q1~Q7**；**6 PR**；**19 步验收**）。**状态 = 设计完成、未实现、待用户拍板**；台账 **§E-79**。
+- 2026-11-04 18:2x **本轮 docs 收尾 9 份**（新建 `RUNNER-STUDIO-SPLIT-PLAN.md`；`EDITOR-UX-PLAN §18.3/§18.4/§18.8/§18.9` 订正 + 新增 **§18.10**；`ENGINE §16.5` 取值路径改写 + 新增 **§22.43**；`PENDING §E-78` 订正 + 新增 **§E-79**；`RESUME` seq 100 / `RESUME-INDEX` 100 / `START-HERE` / `README` / 本文件）；逐处 before→after + 残留检查见 `_verify/leftovers-20261104/DOCS-REPORT.md`。**代码/docs 均未提交**。
+
 ## 2. 下一步
 
 ```text
-1. 本轮（seq 99，in_progress）：代码已落（UI 5 文件 + Rust 2 文件），docs 已收尾，
-   待 Lead 提交（代码父 = `b4c2b0c`；docs = 新 HEAD）。提交前复核：cargo test --workspace 516/0
-   （runtime 136 / task 59 / oasd 228）、UI 1112/227/0、OCR build exit 0（6 既有 warnings）、
-   task lint 1/0、node --check 3/3、git diff --check clean；
-   **不含** assets/、frames/、tasks/、scheduler.json 等用户数据；**不要提交 library/**（被 .gitignore 忽略）。
-2. 本轮 P2/P3（不阻塞）：region ROI 保存仍把 polygon/invert 降级为矩形（P2-5）；模板 ROI 移动后
-   polygon 有意重同步为矩形；legacy 非全局批量测试仍需任务名；帧详情 task-only 且无任务报错（P2-10）；
-   菜单恢复极端多 surface 可能开在最后可见 surface；无真实浏览器自动化回归（CDP + UI pure tests）。
-   另有 seq 98 遗留：脚本控制台中文编码依赖本机（PS 5.1）、library/ 未纳入版本控制、
-   脚本未在真实仓库实测 push 失败后的分支恢复（隔离 59/0 覆盖逻辑）。
-3. ✅ 上一阶段已完成并提交：调度器产品化 P0–P5（P5 = 实机验收 A–F + `/instance/devices` adb 自动连接）；
-   上一轮 seq 98 = 素材行两按钮 + push-all（已提交 `b4c2b0c`）。不 tag/release。
-4. 新主线 = 产品 backlog（按需排序）：
-   a) `SelectionTool` 抽取（结构债）；b) collection `real=1` 真机 E2E（MuMu 127.0.0.1:16384 已可用）；
-   c) drag Plan B（asset 引用/运行时跟随）；d) P2-10（保存 flow 校验）；
-   e) 运行记录收口：点击聚合关联、分页/保留、run_id 跨进程唯一、detail 实体校验、list/detail 500 统一、
-      --status 的 run_file_errors 取舍；f) 口径统一（事件 attempt/entry、stats vs report、UI 失败口径）；
-   g) 版本决策（是否升 0.2.0，由用户定；本轮未升）。
-5. 台账遗留：P3（schema_version 恒 4/UI 强制 4、高级 JSON 无 GET-first、坏 config 删除守卫、.bak 单份、
-   同任务多 task entry、utc_offset_min 缺失按 480）；P2（补记恢复时 cycle、不计 session report.runs、
-   member_results 200 环、成员级 exactly-once 副作用）。
-6. 对外口径：墙钟 24h soak 未跑完（只有 96 轮加速 soak 成立），宣称前需补跑。
+1. 本轮（seq 100，in_progress）：三项遗留代码已落（5 文件）+ docs 已收尾（9 份），
+   待 Lead 提交（代码父 `f16fea1`；docs = 新 HEAD）。提交前复核：cargo test --workspace
+   **527/0**（runtime 142 / task 63 / oasd 229）、UI **1138/227/0**、node --check 3/3、
+   git diff --check clean；**不含** assets/、frames/、tasks/、scheduler.json 等用户数据；
+   **不要提交 library/**（被 .gitignore 忽略）。
+2. ★ 当前唯一等待项 = **用户拍板设计稿 §D.2 的 7 项决策**（`docs/RUNNER-STUDIO-SPLIT-PLAN.md`）：
+   Q1 Runner=`oasd runner`+8789 仅 127.0.0.1 / Q2 `oasd serve` 留 deprecated 别名 /
+   Q3 zip+`.oaspkg` / Q4 优先级 CLI>entry>values>meta default / Q5 子任务同名继承+子 default 兜底
+   （`inherit:"none"` 可关）/ Q6 Runner 内嵌调度线程（留 `oasd scheduler`）/ Q7 发布产物不入 git。
+   用户改哪一项 → 先回写计划文档 §D.2 与原稿，再动代码。
+3. 拍板后按 **PR1→PR6** 实施（`RUNNER-STUDIO-SPLIT-PLAN §D.3`）：PR1 Surface 拆分 →
+   PR2 配置模型 → PR3 优先级/类型 → PR4 子任务配置 → PR5 打包/安装 → PR6 内嵌调度/设备租约。
+   每 PR 用 §D.4 对应验收项收口（19 步，含「任务1 单独运行用自己配置 vs 被任务2 调用用任务2 配置」）。
+4. 本轮 P2/P3（不阻塞，见 §E-78 §H 4~11）：模板 `fixed` 操作区不随 ROI 平移；ROI **缩放**时
+   polygon 仍回退矩形；OCR 低分为空结果（非硬错误，可切换）；UI 阈值文案未加「同时作用于取值」；
+   legacy 非全局批量测试仍需任务名；帧详情 task-only 且无任务报错（P2-10）；
+   菜单恢复极端多 surface；无真实浏览器自动化回归。
+5. ✅ 上一阶段已完成：seq 99 素材库 UX 六项 + OCR 阈值（已落码，516/0、UI 1112/227/0）；
+   调度器产品化 P0–P5（P5 = 实机验收 A–F + `/instance/devices` adb 自动连接）；seq 98 = 素材行两按钮 + push-all
+   （已提交 `b4c2b0c`）。不 tag/release。
+6. 产品 backlog（未被设计稿覆盖的部分）：`SelectionTool` 抽取；collection `real=1` 真机 E2E；
+   drag Plan B；P2-10；运行记录收口（点击聚合/分页/run_id 唯一/detail 契约/`--status`）;
+   口径统一（事件 attempt/entry、stats vs report）；版本决策（是否升 0.2.0，用户定）。
+7. 对外口径：墙钟 24h soak 未跑完（只有 96 轮加速 soak 成立），宣称前需补跑。
 ```
 
 ## 3. 关键事实（防止再记错）
 
 - **测试帧现行口径（2026-11-04，§E-76）**：**单素材测试 = 当前选中帧**（帧详情行 = 该行帧）；**批量帧测试 = 所有位置帧**（`POST /task/assets/batch_test`）；**没有「单素材多帧」入口**；**live 恒优先、真实点击强制 live**。旧「实时关=位置帧 / 单素材多位置逐个测」已被推翻。
 - **单行 OCR 没有真实检测框**：`/ocr` 协议无 bbox；单行 OCR 结果 `recognizedBox:null` + `roiBox`，文案「识别区域（存储 ROI，无独立检测框）」；多行/derived 才有 det 框。`frame_source` 线上仍回 `position:#<id>`，UI 标签写「当前帧 #N」（P2 文案待统一）。
-- **素材行（2026-11-04 seq 98 + seq 99 现行）**：三处素材行**只有「识别 + 设置」两个按钮**；「设置」是行内展开的 **9 项**（点测/拖测/识别区/操作区/重命名/阈值/位置帧/删除/步骤），不是弹层。选中态按 **asset id** 跨 surface 高亮（`.asset-row.selected`，背景 `rgb(27,42,58)`）；菜单项点击**不收起**，仅切另一个素材关旧菜单，重渲染恢复选中/菜单。**识别区 = 画布拖拽**（旧 prompt 已删），保存按钮在共享 `#canvas-footer` +「识别区编辑中：<id>」；**模板识别区启用**，保存走 `/task/save_asset` + `replace:true`（当前帧重截、rev+1）；OCR/region 走 ROI PATCH。帧详情 `manage:true`、去来源 badge，9 项全可用，按行来源分 scope。
-- **OCR 阈值（2026-11-04 seq 99）**：OCR 素材（`ocr_line`/`ocr_lines`/derived）`threshold` = **最低识别置信度**；**未设或 0 = 不过滤**（与旧行为一致），`t>0` 时 `score<t` = 未命中。生效 click / 条件 appear / `expect appear/vanish` / `click_target` ocr_text / expect ocr_text / drag ocr_text；`ocr()`/`ocr_digit()`/`ocr_to_var` **不加**（取值路径）；`ocr_lines` 用最高行分、适配层丢 `<0.5`；模板/collection 默认 0.9 不变。详见 `ENGINE §16.5` / `EDITOR-UX-PLAN §18.4` / `§E-78`。
+- **素材行（2026-11-04 seq 98 + seq 99 + seq 100 现行）**：三处素材行**只有「识别 + 设置」两个按钮**；「设置」是行内展开的 **9 项**（点测/拖测/识别区/操作区/重命名/阈值/位置帧/删除/步骤），不是弹层。选中态按 **asset id** 跨 surface 高亮（`.asset-row.selected`，背景 `rgb(27,42,58)`）；菜单项点击**不收起**，仅切另一个素材关旧菜单，重渲染恢复选中/菜单。**识别区 = 画布拖拽**（旧 prompt 已删），保存按钮在共享 `#canvas-footer` +「识别区编辑中：<id>」；**模板识别区启用**，保存走 `/task/save_asset` + `replace:true`（当前帧重截、rev+1）；OCR/region 走 `/task/asset/update`。**seq 100 起**：region 保存带 `keep_action_shape:true`（**操作多边形不再被降级为矩形**，结果行文案「操作区 action_shape 保持不变」）；模板 ROI **移动**时 polygon 按 `dx/dy` **平移**（`assetRoiPolygonPlan`；仅缩放/旧 bbox 不一致/越界才回退矩形并提示）。**模板 `fixed` 操作区仍不随 ROI 平移**（未改）。帧详情 `manage:true`、去来源 badge，9 项全可用，按行来源分 scope。
+- **OCR 阈值（2026-11-04 seq 99 + seq 100 现行）**：OCR 素材（`ocr_line`/`ocr_lines`/derived）`threshold` = **最低识别置信度**；**未设或 0 = 不过滤**（与旧行为一致），`t>0` 时 `score<t` = 未命中。生效 click / 条件 appear / `expect appear/vanish` / `click_target` ocr_text / expect ocr_text / drag ocr_text，**以及取值路径 `ocr()`/`ocr_digit()`/`ocr_to_var`（seq 100 起）**——低分 → `Null`/空串、**低分文本不进值**、**空结果而非硬错误**（保 `wait_until` 轮询）；`ocr_lines` **判定用最高行分、取值用最低行分**，适配层丢 `<0.5`；模板/collection 默认 0.9 不变。详见 `ENGINE §16.5` / `ENGINE §22.43` / `EDITOR-UX-PLAN §18.4/§18.10` / `§E-78`。
 - **push-all（2026-11-04 seq 98）**：`scripts/push-all.ps1` / `.bat`；`git add -A` 覆盖 assets/frames/tasks/scheduler.json，但**只剔除未跟踪瞬态**（已跟踪 `*.log` 等保留）；**`library/` 被 .gitignore 忽略、不会提交**；默认**仅 dev 自动同步 main**，其它分支 WARN + exit 0（`-SyncMain` 才同步）；远程无 main WARN + exit 0；push 失败 exit 5 但保留本地 commit，重跑无 staged 时走「只推送」补推。用法见 `docs/PUSH-ALL.md`。
 - 当前素材是 **16/1**（已提交基线），不是 34/18；**工作区未提交用户数据（12:5x）为 27 素材（5 模板 + 22 `ocr_line`）/ 5 图（a001~a005，其中 a002~a005 未跟踪）**。34 是 `§E-70` 已推翻的错误恢复，archive 2827/2099 未导入（用户裁定素材可重建）。
 - 当前帧：已提交基线 **28 / current_id=20 / next_id=41**；**工作区未提交数据（12:5x）为 30 帧（含 #41/#42）/ current_id=1 / next_id=43**，不是 40。
@@ -109,7 +115,7 @@
 - 拖测 `margin`：默认 **0.15**，合法 **0~0.45**，作用于起点（配置了 `to` 时也作用于终点）候选矩形内缩；**仅 rect 非反选生效**；有 polygon/invert `shape` 时忽略并记 `margin=ignored`。
 - **collection 真实点击已终态收口**（dev `d1a7fcd`）：`real` 严格 `0/1/true/false`；`real=1` 强制 live 帧；匹配通过后在**精确 action shape 内采样**（polygon 内/invert 排除区外）；未过阈值 **409**（不点击）。**默认仍是 dry-run**，响应/日志不变；与“素材行真实点击”共用 `perform_live_tap`；**无真机 E2E**。
 - **v0.1.0 发布包不含 O-1/O-2**；混版本 runtime 会忽略 drag `shape`（invert 会点到排除区）⇒ invert 拖动需本版 runtime；**P2-10**（保存 flow 不校验解析错误）本轮不做。
-- 当前测试基线 **516/228/1-0**（2026-11-04 seq 99 复核；runtime **136** / task **59** / oasd **228**；serve 68；调度专项 107 = scheduler 49 + schedule 58；stats 6；**UI 1112/227/0**，seq 98 为 907/225/0、seq 97 为 835/225/0；OCR build exit 0（6 既有 warnings））；上一发布基线 **426/259/1-0**。
+- 当前测试基线 **527/229/1-0**（2026-11-04 seq 100 复核；runtime **142** / task **63** / oasd **229**；serve 68；调度专项 107 = scheduler 49 + schedule 58；stats 6；**UI 1138/227/0**，seq 99 为 516/0 + UI 1112/227/0、seq 98 为 907/225/0、seq 97 为 835/225/0）；上一发布基线 **426/259/1-0**。
 - **P5 实机环境**：MuMu serial **`127.0.0.1:16384`**（Android 12 / V2284A / 720x1280；Onmyoji 前台庭院），不是 `emulator-5554`；`adb devices` = device。A–F 全部真机通过（quota 2/2、temp 每轮、队列 2 轮、强杀续跑、reset-memory、9 条 run 记录）；证据 `D:\OAS-dev\_verify\p5-realdevice-20261103\`。
 - **P5 adb 自动连接**：`GET /instance/devices` 列表为空时自动 `adb connect`（配置 serial → live config `device.reconnect_endpoints` → 默认 `127.0.0.1:16384`）后重列，响应新增 `auto_connect`；`emulator-5554` 这类非 TCP serial 跳过。实测 `adb disconnect` 后检测自动连回 16384。P5 代码未重建 serve 前该行为不生效。
 - **P2 起 queue entry 真正执行**：`execute_pass` 按 `entry.kind` 分派；`plan.runnable` 会包含 queue entry，勿再假设 runnable 只有 task；queue entry 的 `task` 是 **queue_id**（不是任务 bundle）。

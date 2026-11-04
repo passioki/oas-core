@@ -3486,6 +3486,8 @@ GET /task/assets?task= → 34 个素材（全局模式）
 > 触发：用户素材库 UX 六项需求（行选中态/菜单保持、识别区画布拖拽 + 共享保存、模板识别区统一、OCR 阈值、帧详情与全局库一致、批量帧测试移页）→ UI/Rust 实现 → 只读评审（`REVIEW.md`：**P0×2 + P1×4**）→ P0/P1 全修 + P2 顺手 → 测试 **1112 / 227 / 0**、workspace **516/0**。
 > 改动：UI **5 文件** `apps/oasd/ui/{asset_ui.js,app.js,index.html,style.css,ui_pure_test.js}`；Rust **2 文件** `crates/{oas-runtime,oas-task}/src/lib.rs`。均未提交；本轮代码父 = `b4c2b0c`（seq 98 docs 提交），docs 随后（新 HEAD）；hash 以 `git log` 为准。
 > 现行口径：`docs/EDITOR-UX-PLAN.md §18`（素材库 UX）、`docs/ENGINE-DESIGN.md §16.5 / §22.42`（OCR 阈值）；证据：`D:\OAS-dev\_verify\asset-ux-20261104\`。
+> **2026-11-04 晚（同轮收尾）**：§H 的 ①②③ 三项遗留**已修**（region `keep_action_shape` / 模板 polygon 平移 / OCR 取值路径阈值），代码未提交，代码父 `f16fea1`；现行口径补 `EDITOR-UX-PLAN §18.10` + `ENGINE-DESIGN §22.43`，证据 `D:\OAS-dev\_verify\leftovers-20261104\`。测试 **workspace 527/0（runtime 142 / task 63 / oasd 229）、UI 1138/227/0**，见 §H 与下方「台账」。
+> 同轮另产出**设计稿**（事项 2/3，未实现）：`docs/RUNNER-STUDIO-SPLIT-PLAN.md`，见 **§E-79**。
 
 ## A. 需求 → 实现
 
@@ -3494,7 +3496,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 | ① 素材行选中态 + 菜单保持 | 选中按 **asset id** 存模块状态（`asset_ui.js` `selectedAssetKey`），跨 surface 同 id 高亮；`.asset-row.selected` 背景 `#1b2a3a`（CDP `rgb(27,42,58)`）+ 左亮条；点行 main/识别/设置都选中；**点菜单项不收起**；仅选另一个素材时关旧菜单并迁高亮；再次「设置」/Esc 收起；disabled 项不改变选中、不触发回调；列表重渲染恢复选中并延迟恢复已选行菜单 |
 | ② 识别区 = 画布拖拽 | 菜单「识别区」→ `editAssetRecognitionRoi`：载入原 ROI 到画布、进入 ROI 拖拽模式（不再 prompt）；实时开启时自动暂停并提示；保存按钮移到共享 `#canvas-footer`（任意面板可见），旁有 `#asset-roi-edit-label`「识别区编辑中：<素材id>」；进入编辑显示「保存识别区（覆盖素材）」；`cancelRecognitionRoiEdit(reason)` 覆盖所有离开路径；保存前重查最新素材 + 帧尺寸越界校验 |
 | ③ 模板识别区统一 | 模板 ROI = 保存时裁剪/搜索几何（模板图 = ROI 截图）；只改 ROI 会让模板图过期，服务端 `update_asset_meta` 拒绝模板 ROI（旧提示「模板没有识别区」）。现统一画布手势：**模板保存走 `/task/save_asset` + `replace:true`**（当前帧重截、rev+1），OCR/region 走 `/task/asset/update {roi}`；confirm 带 id/rev/位置帧数/不可撤销；title 说明重截 |
-| ④ OCR 阈值（新增能力） | OCR 素材复用 `assets.json` 的 `threshold` = **最低识别置信度**；**未设/0 = 不过滤**（旧行为），`t>0` 时 `score<t` = 未命中/失败；生效于 click、条件 appear、`expect appear/vanish`、`click_target` 的 ocr_text、expect ocr_text、drag ocr_text；取值路径（`ocr()`/`ocr_digit()`/`ocr_to_var`）不加阈值；模板/collection 默认 0.9 不变 |
+| ④ OCR 阈值（新增能力） | OCR 素材复用 `assets.json` 的 `threshold` = **最低识别置信度**；**未设/0 = 不过滤**（旧行为），`t>0` 时 `score<t` = 未命中/失败；生效于 click、条件 appear、`expect appear/vanish`、`click_target` 的 ocr_text、expect ocr_text、drag ocr_text；~~取值路径（`ocr()`/`ocr_digit()`/`ocr_to_var`）不加阈值~~ ⇒ **2026-11-04 晚起改为应用阈值**（`ocr_value_read`；见 §H-3 与 `ENGINE-DESIGN §22.43`）；`ocr_lines` **判定**最高行分、**取值**最低行分；模板/collection 默认 0.9 不变 |
 | ⑤ 帧详情与全局库一致 | 删除「来源（全局/任务）」列/badge 与 `assetSourceLabel`；`manage:true`，行样式/9 项设置与全局库一致（不再灰）；行 scope 按来源：含 global → `GLOBAL_SCOPE_TASK`（global 优先），仅 task → 当前任务；所有管理/测试回调支持可选 `scopeTask`，两库原行为不变；计数行保留「全局 X · 任务 Y」 |
 | ⑥ 批量帧测试移页 | `#btn-assets-batch-test` 从任务页移到素材页、紧邻「刷新全局库」；测试对象 = **当前可见素材集合**（全局模式 = 过滤后的 `globalAssetsCache`；任务模式 = 任务可见素材含 show-all），显式传 assets ids（后端 `handle_assets_batch_test` 接受过滤）；空集合文案按 surface 区分；全局模式 task=`GLOBAL_SCOPE_TASK` |
 
@@ -3502,7 +3504,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 
 - **P0-1 共享保存**：`#btn-save-asset-roi` + `#asset-roi-edit-label` 落在 `#canvas-footer`（`index.html:64-69` / `style.css:571-589`），不再位于 `panel-assets`；任务素材库、全局素材库、帧详情三处进入编辑都能保存。
 - **P0-2 取消编辑**：`cancelRecognitionRoiEdit(reason)`（`app.js`）在 `pickAssetRoi`、切换编辑目标、rename/threshold/positions/delete/collection/action/test/step/saveAssetUnified、`selectFrame`/`deleteFrame`/`clearFrames`、实时开关、Esc、清除区域、切任务、画布模式切换处调用；清编辑目标 + 画布 ROI + 按钮/标签。保存前按 `{id,scope}` 从缓存重查**最新**素材，找不到则取消（不再用打开编辑时的快照）。
-- **P1-1/P1-2 模板 payload**：`assetRoiReplacePayload(task, latest, roi)` 以最新素材为底，带 `id/kind/threshold/positions/action_source/action_shape/polygon/ocr_mode/ocr_source_roi/ocr_text`（存在才带），只换 `roi` + `replace:true`；`recognition` 不带 shape、`fixed` 必带；polygon bbox 与新 ROI 一致则保留，不一致回传新 ROI 矩形（避免旧 bbox 反推覆盖）。
+- **P1-1/P1-2 模板 payload**：`assetRoiReplacePayload(task, latest, roi)` 以最新素材为底，带 `id/kind/threshold/positions/action_source/action_shape/polygon/ocr_mode/ocr_source_roi/ocr_text`（存在才带），只换 `roi` + `replace:true`；`recognition` 不带 shape、`fixed` 必带；polygon 规则当时 = bbox 与新 ROI 一致则保留、不一致回传新 ROI 矩形（**2026-11-04 晚升级为「按 `dx/dy` 平移」`assetRoiPolygonPlan`，见 §H-2**）。
 - **P2 顺手**：模板 `positions` 空前端拦截（服务端仍要求 ≥1）；ROI `x/y>=0`、`w/h>0`、`x+w`/`y+h` ≤ 当前画布帧；覆盖 confirm 带 id/rev/位置帧数/不可撤销；识别区菜单 title 说明模板重截。
 
 ## C. OCR 阈值语义（Rust 权威）
@@ -3515,8 +3517,8 @@ GET /task/assets?task= → 34 个素材（全局模式）
 | 生效路径 | `click`（OCR selector）、条件 `appear`、`expect appear/vanish`、`click_target` 的 `ocr_text`、`expect ocr_text`、`drag` 的 `ocr_text` |
 | `expect appear/vanish` | 统一走 `selector_threshold`：OCR 未设/0 → **0.0**（不过滤），显式 `t>0` → `t`；模板/collection 仍 0.9/显式阈值（修复 P1-4 的 0→0.9 不一致） |
 | `click_target` 模板兜底 | 未命中 OCR 阈值时模板兜底同策略（不把 0 当 0.9） |
-| 取值路径 | `ocr()` / `ocr_digit()` / `ocr_to_var` **不加**阈值（设计：避免把「读到的值」变成「没读到」） |
-| `ocr_lines` / derived | 判定用**最高行分**；适配层已丢弃 `<0.5` 的行 ⇒ `<0.5` 阈值对其无额外效果 |
+| 取值路径（**2026-11-04 晚起也加阈值**） | `ocr()` / `ocr_digit()` / `ocr_to_var` 走 `ocr_value_read`：显式 `t>0` 且低分 ⇒ 视为未识别（`Null` / 空串），低分文本不进值；未设/0 不变；`wait_until` 轮询保留；**低分是空结果不是硬错误**。见 `ENGINE-DESIGN §16.5` / `§22.43` |
+| `ocr_lines` / derived | **判定**用最高行分、**取值**用最低行分；适配层已丢弃 `<0.5` 的行 ⇒ `<0.5` 阈值对其无额外效果 |
 | 模板 / collection | 默认阈值 **0.9** 不变 |
 | UI | 模板未设预填/显示 **0.85**（runtime 默认）；OCR 未设/0 显示「未设或 0（不限制）」、默认空；prompt「留空 = 取消；0 = 不限制」 |
 
@@ -3534,8 +3536,8 @@ GET /task/assets?task= → 34 个素材（全局模式）
 
 ## E. 测试 / E2E
 
-- UI pure test：**907 → 1003（实现）→ 1112 checks / 227 referenced ids / 0 dead ids**（修复后；旧断言不弱化）；`node --check` 3/3 exit 0。
-- Rust：workspace **501 → 512（OCR 阈值）→ 516 passed / 0 failed**；runtime **133→136** unit、task **58→59**、oasd **228**；新增 **15** 条（阈值 11 + 0 语义/expect 三态 4，原 11 条保留）。
+- UI pure test：**907 → 1003（实现）→ 1112 checks / 227 referenced ids / 0 dead ids**（修复后；旧断言不弱化）；`node --check` 3/3 exit 0。**2026-11-04 晚三项遗留修复后：1138 checks / 227 ids / 0 dead**（+26）。
+- Rust：workspace **501 → 512（OCR 阈值）→ 516 passed / 0 failed**；runtime **133→136** unit、task **58→59**、oasd **228**；新增 **15** 条（阈值 11 + 0 语义/expect 三态 4，原 11 条保留）。**2026-11-04 晚：516 → 527/0**（runtime **136→142**、task **59→63**、oasd **228→229**；+11 = 取值路径阈值 6（runtime）+ region keep_action_shape 2 与模板 polygon 平移 2（task）+ serve 布尔解析 1（oasd））。
 - `cargo build -p oasd --features ocr` exit 0（6 个既有 warnings）；task lint **1/0**；`git diff --check` clean。
 - **Lead CDP 实测**（真实 serve 8787 + device）：行选中背景 `rgb(27,42,58)`；设置→识别区后菜单保持展开、画布底部保存按钮可见可用、标签「识别区编辑中：预设」；切到另一素材后保存按钮隐藏/禁用、标签清空；模板识别区 title 含「模板：保存会用当前帧重新截图覆盖，rev+1」；OCR 阈值 prompt 显示「未设或 0（不限制）」且默认空；帧详情行无来源文案、9 项设置全 enabled；批量按钮在 `panel-assets`、上一兄弟「刷新全局库」、不在 `panel-task`。截图 `ux-roi-shared.png` / `ux-selected.png` / `ux-frame.png`。
 - 边界：**无真实浏览器自动化回归**（本轮 = Lead CDP 实测 + UI pure tests）。
@@ -3554,16 +3556,20 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - `RESUME` seq 99（覆盖重写）/ `RESUME-INDEX` 追加 99 / `START-HERE` / `SESSION-HANDOFF` / `README` 同步本轮状态与数字。
 - 逐处 before→after：`D:\OAS-dev\_verify\asset-ux-20261104\DOCS-REPORT.md`。
 
-## H. 遗留（P2/P3，不阻塞）
+## H. 遗留（P2/P3，不阻塞；2026-11-04 晚订正）
 
-1. `region` 识别区保存仍会把 polygon/invert 降级为矩形（P2-5，服务端 region ROI 保存路径既有）；
-2. 模板 ROI 移动后 polygon **有意**重同步为矩形（避免旧 bbox 反推覆盖，不是回归）；
-3. `ocr()`/`ocr_digit()`/`ocr_to_var` 等取值路径不加阈值（设计）；`ocr_lines` 用最高行分、适配层丢 `<0.5` 行；
-4. legacy 非全局模式批量测试仍需任务名；
-5. 帧详情 task-only 且无任务时仍报错（P2-10）；
-6. 菜单恢复在极端多列表同时可见时可能开在最后可见 surface（不丢选中，P3）；
-7. 无真实浏览器自动化回归（本轮 CDP 实测 + UI pure tests，P3）；
-8. docs 已同步本轮（本任务）。
+1. ~~`region` 识别区保存仍会把 polygon/invert 降级为矩形（P2-5）~~ ⇒ **已修（2026-11-04 晚）**：`oas-task::update_asset_meta` 新增 `keep_action_shape`，region ROI-only 只写 roi、不动 `action_shape`/`action_source`；serve 解析可选布尔（非布尔 400）；UI region 保存传 `true`；补 region ROI 帧内校验；
+2. ~~模板 ROI 移动后 polygon **有意**重同步为矩形~~ ⇒ **已修**：`assetRoiPolygonPlan` 按 `dx/dy` 平移 polygon（校验平移后 bbox == 新 ROI 且不越界），模板 replace payload 带平移后顶点；**仅缩放 / 旧 bbox 不一致 / 越界**回退矩形并提示；
+3. ~~`ocr()`/`ocr_digit()`/`ocr_to_var` 取值路径不加阈值~~ ⇒ **已修**：`ocr_value_read` 统一接入（显式 `t>0` 且低分 ⇒ `Null`/空串；未设/0 不变；`wait_until` 轮询保留；多行取**最低行分**）；
+4. 模板 `fixed` `action_shape`（操作区）**不随 ROI 平移**（与 1 同类，属「操作区=绝对区域」语义，本轮未改；region 已覆盖，模板无对应开关）；
+5. ROI **缩放**时 polygon 仍回退矩形（本轮需求只要求移动）；
+6. OCR 低分为**空结果而非运行硬错误**（为保 `wait_until` 轮询；如需硬错误改动集中在 `ocr_value_read`，可切换）；
+7. UI 阈值文案未加「同时作用于取值」（本轮只落代码）；
+8. legacy 非全局模式批量测试仍需任务名；
+9. 帧详情 task-only 且无任务时仍报错（P2-10）；
+10. 菜单恢复在极端多列表同时可见时可能开在最后可见 surface（不丢选中，P3）；
+11. 无真实浏览器自动化回归（本轮 CDP 实测 + UI pure tests，P3）；
+12. docs 已同步本轮（本任务）。
 
 ## 台账
 
@@ -3572,12 +3578,77 @@ GET /task/assets?task= → 34 个素材（全局模式）
 | ① 行选中态/菜单保持 | ✅ | `selectedAssetKey` 按 id 跨 surface；`.asset-row.selected` `#1b2a3a`；菜单项不收起；CDP `rgb(27,42,58)` |
 | ② 识别区画布 + 共享保存 | ✅ | `editAssetRecognitionRoi` / `#btn-save-asset-roi` 在 `#canvas-footer` / `#asset-roi-edit-label`；旧 prompt 删除 |
 | ③ 模板 replace 统一 | ✅ | `/task/save_asset` + `replace:true`（rev+1）；`assetRoiReplacePayload` 全字段；confirm/title；polygon 规则 |
-| ④ OCR 阈值 | ✅ | UI 菜单 + prompt；Rust `ocr_threshold`/`selector_threshold`；15 条新增测试；workspace 516/0 |
+| ④ OCR 阈值 | ✅ | UI 菜单 + prompt；Rust `ocr_threshold`/`selector_threshold`；15 条新增测试；workspace 516/0（**取值路径 2026-11-04 晚补齐，见下行**） |
 | ⑤ 帧详情一致 | ✅ | 去来源列/badge、`manage:true`、`frameAssetScope`（global 优先/task-only 用当前任务）、`scopeTask` 透传 |
 | ⑥ 批量测试移页 | ✅ | `panel-assets` 且紧邻「刷新全局库」；`batchTestAssetSelection` 可见集合 + assets ids；空态文案 |
 | 评审 P0/P1 | ✅ | P0-1/P0-2/P1-1/P1-2/P1-3/P1-4 全修；P2 7 项已修；见 §D |
-| 测试 | ✅ | UI **1112/227/0**；workspace **516/0**（runtime 136 / task 59 / oasd 228）；build exit 0（6 既有 warnings）；lint 1/0；diff check clean |
+| 🆕 遗留① region 操作多边形 | ✅（11-04 晚） | `update_asset_meta(keep_action_shape)`；serve 可选布尔（非布尔 400）；UI region 传 `true`；region ROI 帧内校验；task +4 / oasd +1 |
+| 🆕 遗留② 模板 polygon 平移 | ✅（11-04 晚） | `assetRoiPolygonPlan`（dx/dy 平移 + bbox==新 ROI + 不越界）；回退矩形有提示；UI +26 checks |
+| 🆕 遗留③ OCR 取值路径阈值 | ✅（11-04 晚） | `ocr_value_read` → `ocr()`/`ocr_digit()`/`ocr_to_var`；低分 `Null`/空串；`wait_until` 轮询保留；多行最低行分；runtime +6 |
+| 测试 | ✅ | **2026-11-04 晚终态**：workspace **527/0**（runtime **142** / task **63** / oasd **229**）；UI **1138/227/0**；build exit 0（6 既有 warnings）；lint 1/0；`node --check` 3/3；diff check clean（seq 99 当时为 516/0、UI 1112/227/0） |
 | E2E | ✅（有限） | 真实 serve 8787 + device；CDP 选中/共享保存/模板 title/OCR prompt/帧详情/批量按钮；截图 `ux-roi-shared.png` 等 |
-| 文档 | ✅ | `EDITOR-UX-PLAN §18` · `ENGINE-DESIGN §16.5/§22.42` · 本 §E-78 · `RESUME` seq 99 · `RESUME-INDEX` 99 · `START-HERE` · `SESSION-HANDOFF` · `README` |
+| 文档 | ✅ | `EDITOR-UX-PLAN §18`（+**§18.10**）· `ENGINE-DESIGN §16.5/§22.42`（+**§22.43**）· 本 §E-78 · `RESUME` seq 99 → **100** · `RESUME-INDEX` 99 → **100** · `START-HERE` · `SESSION-HANDOFF` · `README` |
 
-| 状态 | ✅ 素材库 UX 六项 + OCR 阈值完成，评审 P0/P1 全修（UI 1112/227/0；workspace 516/0）；代码/docs 待 Lead 提交（代码父 `b4c2b0c`）；⚠ 遗留见 §H · 无阻塞 |
+| 状态 | ✅ 素材库 UX 六项 + OCR 阈值完成，评审 P0/P1 全修；**2026-11-04 晚三项遗留（region 操作多边形 / 模板 polygon 平移 / OCR 取值路径阈值）也已修**（UI **1138/227/0**；workspace **527/0**）；代码/docs 待 Lead 提交（代码父 `b4c2b0c` → 本轮代码父 `f16fea1`）；⚠ 保留遗留见 §H 4~11（模板 fixed 操作区、ROI 缩放回退矩形、低分为空结果、UI 文案）· 无阻塞 |
+| 同轮设计稿 | 🔄 | 见 §E-79：`docs/RUNNER-STUDIO-SPLIT-PLAN.md`（Studio/Runner 分离 + TaskPackage + 配置/子任务配置，**待用户拍板 7 项决策，未实现**） |
+
+---
+
+# ★ §E-79 ★★★ [11-04 18:1x] **OAS Studio / Runner 分离 + TaskPackage + 任务配置 / 子任务配置（设计稿 v1，待拍板）**
+
+> **状态：设计完成、未实现。** 等用户逐项确认 §D.2 的 **7 项决策（Q1~Q7）** 后，按 **PR1→PR6** 开工。
+> 权威计划：**`docs/RUNNER-STUDIO-SPLIT-PLAN.md`**（设计稿 v1 整理稿，含 7 决策 + 6 PR + 19 步验收 + 风险）。
+> 稿源（全量 659 行 / 235+ `file:line`）：`D:\OAS-dev\_verify\arch-runner-studio-20261104\RUNNER-STUDIO-CONFIG-DESIGN.md`。
+> 证据基线：2026-11-04 18:20 前后快照（`HEAD` 仍 `f16fea1`，工作树被并发进程修改）；行号会漂移，复核优先用符号名 grep。
+
+## A. 需求（事项 2 / 事项 3 的口径）
+
+| # | 需求 | 落点 |
+|---|---|---|
+| 事项 2 | **使用端与编辑端分离**：同机两套入口/界面——Studio 只做创作、构建、校验、发布；Runner 只做安装、配置、排队、调度、执行、运行记录。两者同一时间各自跑（不同端口/不同入口），不再「一个 8788 干所有事」。附带交付物契约 = **TaskPackage（可发布/可安装）** | §B/§C（分离）、§B（包）、§A.3（路由白名单） |
+| 事项 3 | **任务配置入口**：任务的运行期参数要能在 Runner 里填（现在只有调度 entry 的 JSON 输入框），且值有 schema（类型/范围/说明/必填）；**子任务配置语义**：父任务调用子任务时，子任务的参数从哪来（映射/继承/默认） | §C |
+
+> 约束（用户既有裁定）：**单机、单活动实例、无跨机分发**（`ENGINE-DESIGN.md` 单活动实例段、`SCHEDULER-RUNNER-PLAN.md:37`）。
+
+## B. 设计摘要（详版见计划文档）
+
+- **两端分离 = 同一份代码两个 surface，不拆二进制**：`serve::Server` 加 `Surface{Studio,Runner}` + 纯函数路由归属表；`oasd studio`（默认 **8788**，`serve` 保留为 deprecated 别名）/ `oasd runner`（默认 **8789**，独立 `runner.html/js`，nav **5 项**：概览/已安装任务/队列与调度/运行记录/设置）；Studio **无调度页**，Runner **无创作/构建 API**（`required_surface` + `get_route()` 单测：Studio 拿 `/runner/*` → 404，Runner 拿 `/task/save_flow` → 404）。
+- **职责矩阵**：Studio = 创作/构建/校验/发布（**只产出 TaskPackage，不参与运行时调度运维**）；Runner = 安装/配置/排队/调度/执行/运行记录/设备实例；**数据目录共享**（`tasks/`/`assets/`/`frames/`/`runs/`/`scheduler*.json` 仍一份，单机单实例）。
+- **TaskPackage**：`.oaspkg`（zip）+ `manifest.json`（`package_schema`/`task_id`/`task_version`/`engine.flow_ops`/`source` sha256/`params_schema`/`call_deps`）+ `checksums.sha256` + `task/` + `deps/<child>/` + `assets/` 快照；**v1 只 sha256 + 来源标记，不签名**；Studio `publish`（CLI + UI 按钮），产物落 `dist/packages/`（已 ignore，不入 git）；Runner install/uninstall（**v1 只路径安装**，上传后置）、zip-slip/配额/hash 校验、素材合并 + 冲突改名、**裸 `tasks/` 目录纳管（unmanaged）**。
+- **Runner 调度执行**：进程内线程复用 `schedule::run_scheduler`，与 `oasd scheduler` 共用 `<state>.lock` ⇒ 天然互斥；需新增 `stop: Arc<AtomicBool>`；**设备租约 `config/device.lease`**（Studio 试运行 vs Runner 调度，409 拒绝）后置。
+- **配置模型**：复用 `meta.params`，扩 `label/description/enum/required/group` 五个**可选**字段；Runner 侧值存 `config/values.json`（`schema_version` + 原子写，Studio 不写）；优先级 **CLI `--param` > queue/scheduler entry params > Runner values > `meta.params.default`**；顺手修现有「entry params → run 字符串猜类型」问题（`{"code":"007"}` 变 `7.0`）→ 端到端传 `Value`。
+- **子任务配置（核心）**：`call_task` 加 `params:{child_key: parent_expr}` + `inherit`；loader 展开时生成 `with_params` 作用域 step，runtime 用 params 栈（快照→求值→补默认→执行→恢复）；解析序 **映射 > 同名继承 > 子任务 default > 响亮失败**；未映射**默认同名继承**（保持今天平铺共享行为），`inherit:"none"` 可关；lint 新增 **T7**（跨任务引用/映射校验），**T3 保持原文 flow 语义**；顺手修掉现存「子任务 `meta.params` 默认值不生效」缺口。
+- **风险 R1（最大）**：`call_task` 是 **load-time 展开**，runtime 无调用点身份 ⇒ 子任务**无独立超时/重试/运行记录**、日志不可区分、改子任务会让父 checkpoint 失效；`with_params` 是**作用域不是调用栈**。要做「子任务一等运行单元」需另立项重构 runtime 调用栈（本期不做）。其余 R2~R10 见计划文档 §D.1（设备抢占、安装改 tasks/ 冲突、zip-slip、无签名、双份真值、类型丢失、T7 跨目录读、4 MiB 上传、端口配置不一致）。
+
+## C. 7 项待拍板决策（推荐）
+
+| # | 决策 | 推荐 |
+|---|---|---|
+| Q1 | Runner 命令名 / 端口 | `oasd runner` + **8789**，仅绑 `127.0.0.1` |
+| Q2 | `oasd serve` 去向 | **保留为 deprecated 别名**（内部等价 `studio`），stderr 一行提示，v2 再删 |
+| Q3 | 包容器 / 后缀 | **zip + `.oaspkg`** |
+| Q4 | 配置优先级 | **CLI `--param` > entry params > Runner values > `meta.params.default`** |
+| Q5 | 子任务未映射 key 默认 | **同名继承 + 子任务 default 兜底**，`inherit:"none"` 可关 |
+| Q6 | Runner 是否内嵌调度 | **内嵌线程**（保留 `oasd scheduler` CLI 兜底） |
+| Q7 | 发布产物是否入 git | **不入**（`dist/`、`packages/` 都忽略；溯源靠 `manifest.source.commit` + checksums） |
+
+## D. 分阶段（6 个 PR）
+
+PR1 Surface 拆分（`Surface` + `required_surface` + `oasd studio/runner` + `ui/runner.*` + 8787→8788）→ PR2 配置模型（`meta.params` 5 字段 + `config/values.json` + API/表单 + 值校验）→ PR3 优先级 + 类型（`RunOptions.params` 改 `Value` + 四入口合并）→ **PR4 子任务配置**（`call_task.params`/`inherit` + `with_params` + `Flow::call_task_uses` + lint T7）→ PR5 打包/安装（`package.rs` + `publish` + `/runner/install|uninstall` + 素材合并 + `installed.json` + 裸目录纳管）→ PR6 内嵌调度/设备租约/上传/回滚（**可延后**）。每 PR 的单测/集成/E2E 验证点见计划文档 §D.3；用户可操作验收 = **19 步**（§D.4，含「任务1 单独运行用自己配置 vs 被任务2 调用用任务2 配置」对照）。
+
+## E. 当前状态
+
+- **设计完成、未实现**；本轮**零代码改动**。
+- 文档：`docs/RUNNER-STUDIO-SPLIT-PLAN.md`（新）；本 §E-79。
+- 下一步 = 用户确认 Q1~Q7（可按推荐，也可逐项改）→ 按 PR1→PR6 实施 → 每 PR 用完对应验收项 → 全量回归 + 提交。
+
+## 台账
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| 设计稿 v1（架构/包/配置/风险/决策/PR/验收） | ✅ | `docs/RUNNER-STUDIO-SPLIT-PLAN.md`（整理稿）+ 稿源 `_verify/arch-runner-studio-20261104/RUNNER-STUDIO-CONFIG-DESIGN.md`（659 行 / 235+ `file:line`） |
+| 7 项决策（Q1~Q7） | 🔄 **设计待拍板** | 计划文档 §D.2（每项含推荐 + 理由）；未拍板前不动代码 |
+| 6 PR 计划 | ⬜ 未开始 | 计划文档 §D.3；PR1 之前无任何实现 |
+| 验收清单 19 步 | ⬜ 未开始 | 计划文档 §D.4 |
+| 代码 | ⬜ 未开始（**零改动**） | 本轮只改 `docs/*.md` |
+| 风险 R1（load-time 展开） | ⚠ 已记录/接受 | 计划文档 §D.1 R1；要做「子任务一等运行单元」须另立项 |
