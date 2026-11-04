@@ -3590,19 +3590,20 @@ GET /task/assets?task= → 34 个素材（全局模式）
 | 文档 | ✅ | `EDITOR-UX-PLAN §18`（+**§18.10**）· `ENGINE-DESIGN §16.5/§22.42`（+**§22.43**）· 本 §E-78 · `RESUME` seq 99 → **100** · `RESUME-INDEX` 99 → **100** · `START-HERE` · `SESSION-HANDOFF` · `README` |
 
 | 状态 | ✅ 素材库 UX 六项 + OCR 阈值完成，评审 P0/P1 全修；**2026-11-04 晚三项遗留（region 操作多边形 / 模板 polygon 平移 / OCR 取值路径阈值）也已修**（UI **1138/227/0**；workspace **527/0**）；代码/docs 待 Lead 提交（代码父 `b4c2b0c` → 本轮代码父 `f16fea1`）；⚠ 保留遗留见 §H 4~11（模板 fixed 操作区、ROI 缩放回退矩形、低分为空结果、UI 文案）· 无阻塞 |
-| 同轮设计稿 | ✅（PR1、PR2 续、PR3 续） | 见 §E-79：`docs/RUNNER-STUDIO-SPLIT-PLAN.md`（Studio/Runner 分离 + TaskPackage + 配置/子任务配置）。**Q1~Q7 已于 2026-11-04 获用户批准（按推荐）**；**PR1 ✅ 已提交（`da9da9d`）、PR2 ✅ 已提交（`dfe8776`）、PR3 ✅ 已实现（§H）**（oasd **276/0**、workspace **583/0**、UI 1338/231/0、runner 包 37,189,387 B）；PR4~PR6 待做 |
+| 同轮设计稿 | ✅（PR1、PR2、PR3、PR4 续） | 见 §E-79：`docs/RUNNER-STUDIO-SPLIT-PLAN.md`（Studio/Runner 分离 + TaskPackage + 配置/子任务配置）。**Q1~Q7 已于 2026-11-04 获用户批准（按推荐）**；**PR1 ✅ 已提交（`da9da9d`）、PR2 ✅ 已提交（`dfe8776`）、PR3 ✅ 已提交（`c09df25`+`048dff5`）、PR4 ✅ 已实现（§I，未提交）**（workspace **624/0**、flow 62 / task 89 / runtime 157+2 / oasd 280、UI 1338/231/0、runner 包 37,246,079 B）；PR5~PR6 待做 |
 
 ---
 
-# ★ §E-79 ★★★ [11-04 18:1x → 11-04 20:5x] **OAS Studio / Runner 分离 + TaskPackage + 任务配置 / 子任务配置（Q1~Q7 已批准；PR1 ✅ 已提交；PR2 ✅ 已提交；PR3 ✅ 已实现（未提交）；PR4~PR6 待做）**
+# ★ §E-79 ★★★ [11-04 18:1x → 11-04 21:5x] **OAS Studio / Runner 分离 + TaskPackage + 任务配置 / 子任务配置（Q1~Q7 已批准；PR1 ✅ 已提交；PR2 ✅ 已提交；PR3 ✅ 已提交；PR4 ✅ 已实现（未提交）；PR5~PR6 待做）**
 
-> **状态：Q1~Q7 已获用户批准（2026-11-04，全部按推荐）；PR1 ✅ 已实现并提交（`da9da9d`）；PR2 ✅ 已实现并提交（`dfe8776`）；PR3 ✅ 已实现并验证（2026-11-04，代码未提交，见 §H）；PR4~PR6 待做。**
+> **状态：Q1~Q7 已获用户批准（2026-11-04，全部按推荐）；PR1 ✅ 已实现并提交（`da9da9d`）；PR2 ✅ 已实现并提交（`dfe8776`）；PR3 ✅ 已实现并提交（代码 `c09df25` + seq 103 docs `048dff5`，见 §H）；PR4 ✅ 已实现并验证（2026-11-04，代码未提交，见 §I）；PR5~PR6 待做。**
 > **用户 2026-11-04 补充两条约束**：① **分发纠正**——终端用户只下载 Runner + 任务包，**Studio 不发给终端用户**；② **跨平台**——后续可能有 Android 使用端，v1 只 Windows 打包，但 Runner 核心 / HTTP API / 任务包 / 配置 schema 必须平台无关。详见计划文档 **§A.8**。
-> 权威计划：**`docs/RUNNER-STUDIO-SPLIT-PLAN.md`**（设计稿 v1 整理稿 + **§A.9 PR1 实现记录** + **§A.10 PR2 实现记录** + **§A.11 PR3 实现记录**；含 7 决策 + 6 PR + 19 步验收 + 风险）。
+> 权威计划：**`docs/RUNNER-STUDIO-SPLIT-PLAN.md`**（设计稿 v1 整理稿 + **§A.9 PR1 实现记录** + **§A.10 PR2 实现记录** + **§A.11 PR3 实现记录** + **§A.12 PR4 实现记录**；含 7 决策 + 6 PR + 19 步验收 + 风险）。
 > 稿源（全量 659 行 / 235+ `file:line`）：`D:\OAS-dev\_verify\arch-runner-studio-20261104\RUNNER-STUDIO-CONFIG-DESIGN.md`。
 > PR1 证据：`D:\OAS-dev\_verify\runner-studio-pr1-20261104\`（`PR1-BACKEND-REPORT.md` / `PR1-UI-REPORT.md` / `PR1-PACKAGING-REPORT.md` / 测试日志 / 截图）。
 > PR2 证据：`D:\OAS-dev\_verify\runner-studio-pr2-20261104\`（实现/评审/测试报告 + `studio-config.png` / `runner-config.png` + 本轮 `DOCS-REPORT.md`）。
 > PR3 证据：`D:\OAS-dev\_verify\runner-studio-pr3-20261104\`（`PR3-BACKEND-REPORT.md` / `REVIEW.md` / `FIX-REPORT.md` / `workspace-final.log` / `e2e/` + 本轮 `DOCS-REPORT.md`）。
+> PR4 证据：`D:\OAS-dev\_verify\runner-studio-pr4-20261104\`（`PR4-BACKEND-REPORT.md` / `REVIEW.md` / `FIX-REPORT.md` / `workspace-fix.log` / `e2e/` + 本轮 `DOCS-REPORT.md`）。
 > 证据基线：设计审计快照为 2026-11-04 18:20 前后（`HEAD` 当时 `f16fea1`）；PR1 实现后代码行号会漂移，复核优先用符号名 grep。
 
 ## A. 需求（事项 2 / 事项 3 的口径）
@@ -3621,7 +3622,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - **TaskPackage**：`.oaspkg`（zip）+ `manifest.json`（`package_schema`/`task_id`/`task_version`/`engine.flow_ops`/`source` sha256/`params_schema`/`call_deps`）+ `checksums.sha256` + `task/` + `deps/<child>/` + `assets/` 快照；**v1 只 sha256 + 来源标记，不签名**；Studio `publish`（CLI + UI 按钮），产物落 `dist/packages/`（已 ignore，不入 git）；Runner install/uninstall（**v1 只路径安装**，上传后置）、zip-slip/配额/hash 校验、素材合并 + 冲突改名、**裸 `tasks/` 目录纳管（unmanaged）**。
 - **Runner 调度执行**：进程内线程复用 `schedule::run_scheduler`，与 `oasd scheduler` 共用 `<state>.lock` ⇒ 天然互斥；需新增 `stop: Arc<AtomicBool>`；**设备租约 `config/device.lease`**（Studio 试运行 vs Runner 调度，409 拒绝）后置。
 - **配置模型**：复用 `meta.params`，扩 `label/description/enum/required/group` 五个**可选**字段；Runner 侧值存 `config/values.json`（`schema_version` + 原子写，Studio 不写）；优先级 **CLI `--param` > queue/scheduler entry params > Runner values > `meta.params.default`**；顺手修现有「entry params → run 字符串猜类型」问题（`{"code":"007"}` 变 `7.0`）→ 端到端传 `Value`。**PR2 已实现 schema + values + Studio/Runner 配置 API/UI（§G）；PR3 已实现四层注入/类型保真/合并后复检（§H）。**
-- **子任务配置（核心）**：`call_task` 加 `params:{child_key: parent_expr}` + `inherit`；loader 展开时生成 `with_params` 作用域 step，runtime 用 params 栈（快照→求值→补默认→执行→恢复）；解析序 **映射 > 同名继承 > 子任务 default > 响亮失败**；未映射**默认同名继承**（保持今天平铺共享行为），`inherit:"none"` 可关；lint 新增 **T7**（跨任务引用/映射校验），**T3 保持原文 flow 语义**；顺手修掉现存「子任务 `meta.params` 默认值不生效」缺口。
+- **子任务配置（核心）**：`call_task` 加 `params:{child_key: parent_expr}` + `inherit`；loader 展开时生成 `with_params` 作用域 step，runtime 用 params 栈（快照→求值→补默认→执行→恢复）；解析序 **映射 > 同名继承 > 子任务 default > 响亮失败**；未映射**默认同名继承**（保持今天平铺共享行为），`inherit:"none"` 可关；lint 新增 **T7**（跨任务引用/映射校验），**T3 保持原文 flow 语义**；**PR4 已实现（§I）**并修掉此前「子任务 `meta.params` 默认值不生效」的缺口。
 - **风险 R1（最大）**：`call_task` 是 **load-time 展开**，runtime 无调用点身份 ⇒ 子任务**无独立超时/重试/运行记录**、日志不可区分、改子任务会让父 checkpoint 失效；`with_params` 是**作用域不是调用栈**。要做「子任务一等运行单元」需另立项重构 runtime 调用栈（本期不做）。其余 R2~R10 见计划文档 §D.1（设备抢占、安装改 tasks/ 冲突、zip-slip、无签名、双份真值、类型丢失、T7 跨目录读、4 MiB 上传、端口配置不一致）。
 
 ## C. 7 项决策（Q1~Q7）——**2026-11-04 用户已全部批准（按推荐）**
@@ -3636,21 +3637,22 @@ GET /task/assets?task= → 34 个素材（全局模式）
 | Q6 | Runner 是否内嵌调度 | **内嵌线程**（保留 `oasd scheduler` CLI 兜底） | ✅ 用户批准（按推荐）；PR6 实现（`/runner/health` 已随 PR1 提前落地） |
 | Q7 | 发布产物是否入 git | **不入**（`dist/`、`packages/` 都忽略；溯源靠 `manifest.source.commit` + checksums） | ✅ 用户批准（按推荐）；PR1 落实 |
 
-## D. 分阶段（6 个 PR；**PR1 ✅ 已提交、PR2 ✅ 已提交、PR3 ✅ 已实现，PR4~PR6 待做**）
+## D. 分阶段（6 个 PR；**PR1 ✅ 已提交、PR2 ✅ 已提交、PR3 ✅ 已提交、PR4 ✅ 已实现（未提交），PR5~PR6 待做**）
 
-**PR1 Surface 拆分 ✅**（`Surface` + `route_owner`/`required_surface` + `oasd studio`/`runner` + `serve` 兼容别名 + `ui/runner.*` 只读骨架 + `config.runner` + 8787→8788 + Runner-only 发行包）→ **PR2 配置模型 ✅**（`meta.params` 5 字段 + `config/values.json` + Studio/Runner 配置 API/表单 + 值校验，提交 `dfe8776`）→ **PR3 优先级 + 类型 ✅**（`RunOptions.params` 改 `Value` + 四入口合并 + values 注入 + 合并后 schema 复检 + CLI 引号逃生口；§H）→ **PR4 子任务配置**（`call_task.params`/`inherit` + `with_params` + `Flow::call_task_uses` + lint T7）→ PR5 打包/安装（`package.rs` + `publish` + `/runner/install|uninstall` + 素材合并 + `installed.json` + 裸目录纳管）→ PR6 内嵌调度/设备租约/上传/回滚（**可延后**）。每 PR 的单测/集成/E2E 验证点见计划文档 §D.3；用户可操作验收 = **19 步**（§D.4；PR1 已验收 V1，PR2 已验收 V4 的 11~12，PR3 无独立 V 步骤；见 §F.5/§G.7/§H.6）。
+**PR1 Surface 拆分 ✅**（`Surface` + `route_owner`/`required_surface` + `oasd studio`/`runner` + `serve` 兼容别名 + `ui/runner.*` 只读骨架 + `config.runner` + 8787→8788 + Runner-only 发行包）→ **PR2 配置模型 ✅**（`meta.params` 5 字段 + `config/values.json` + Studio/Runner 配置 API/表单 + 值校验，提交 `dfe8776`）→ **PR3 优先级 + 类型 ✅**（`RunOptions.params` 改 `Value` + 四入口合并 + values 注入 + 合并后 schema 复检 + CLI 引号逃生口；§H）→ **PR4 子任务配置 ✅**（`call_task.params`/`inherit` + `with_params` + loader/runtime + `Flow::call_task_uses` + lint T7 + T6/严格 meta/checkpoint 指纹 3 个评审 P1；§I）→ **PR5 打包/安装**（`package.rs` + `publish` + `/runner/install|uninstall` + 素材合并 + `installed.json` + 裸目录纳管 + **`manifest.engine.flow_ops` 安装闸门**）→ PR6 内嵌调度/设备租约/上传/回滚（**可延后**）。每 PR 的单测/集成/E2E 验证点见计划文档 §D.3；用户可操作验收 = **19 步**（§D.4；PR1 已验收 V1，PR2 已验收 V4 的 11~12，PR3 无独立 V 步骤，PR4 覆盖 V6 的 16；见 §F.5/§G.7/§H.6/§I.6）。
 
-## E. 当前状态（2026-11-04 20:5x）
+## E. 当前状态（2026-11-04 21:5x）
 
-- **Q1~Q7 已获用户批准**（2026-11-04，全部按推荐）；**PR1 ✅ 已实现并提交**（`da9da9d`）；**PR2 ✅ 已实现并提交**（`dfe8776`）；**PR3 ✅ 已实现并验证**（2026-11-04，代码未提交，等 Lead 提交）。
+- **Q1~Q7 已获用户批准**（2026-11-04，全部按推荐）；**PR1 ✅ 已提交**（`da9da9d`）；**PR2 ✅ 已提交**（`dfe8776`）；**PR3 ✅ 已提交**（代码 `c09df25` + seq 103 docs `048dff5`）；**PR4 ✅ 已实现并验证**（2026-11-04，代码未提交，等 Lead 提交）。
 - **PR1 事实摘要**：`oasd studio`（8788）/ `oasd runner`（8789）/ `oasd serve`（deprecated 别名）；`Surface` + 严格路由归属（不匹配纯 404）；Runner 只读 `GET /runner/health`、`GET /runner/tasks`；`config.runner{port:8789,bind:"127.0.0.1"}`（loopback 校验）；Runner UI 5 nav；Studio 去调度入口；PR1 时 Runner-only 发行包 **37,141,295 B**。明细见 **§F**。
 - **PR2 事实摘要**：`ParamDecl` 五字段（label ≤80 / description ≤500 / enum / required / group ≤80）+ lint + `validate_param_values`；`config/values.json`（Runner 独占、原子 RMW、保留其它任务、坏文件带路径报错）；Studio `GET/POST /task/config`（**只替换 params、保留其它字段、写前 `meta.json.bak`**）；Runner `GET/PUT /runner/tasks/<id>/config`（校验失败 400 + `errors` 含 key、不写盘）；Studio「配置项…」JSON 编辑器 + Runner 配置表单（int/float/number→number、bool→checkbox、string+enum→select、string→text）；两端 config 路由互斥 404。明细见 **§G**。
 - **PR3 事实摘要**：`RunOptions.params` 改 `BTreeMap<String, serde_json::Value>`（CLI `--param` 是唯一文本猜类型点 + 成对引号字符串逃生口）；scheduler/queue 注入 Runner values（**entry > values > default**；`oasd run` 不读 values；Studio `POST /task/run` body params 为最高层且**刻意不注入** values）；合并后按 `meta.params` 做 **schema 复检**（空 schema 跳过；CLI exit 2 / scheduler 单 entry 失败 / queue exit 1）；`SchedulerOptions/QueueOptions.values_path` 测试 seam。明细见 **§H**。
-- **测试（PR3）**：`cargo test --workspace` **583 passed / 0 failed**（21 targets；PR2 562 → PR3 原始 +14 → 评审修复 +7）；oasd **276/0**（255→269→276）、task **72/0**、runtime **142** 不变；`cargo build -p oasd --features ocr` exit 0、release build exit 0（**6 warnings**，与基线一致）；UI pure test **1338 checks / 231 ids / 0 dead**（PR3 无 UI 改动；`runner_ui_audit` **41/0/5**）；`node --check` 3/3；`git diff --check` clean。
-- **Runner 包（PR3 重建）**：`dist/oasd-runner-v0.1.0-win64.zip` = **37,189,387 B**，SHA256 **BC2FFF90F72125885220198253178A051245341A4A16F136FAE34AB3534CCE0D**（用 PR3 release 重建；仍是 Runner-only，无 Studio UI）。
+- **PR4 事实摘要**：`call_task` 新增 `params`（child key ← 父作用域表达式）+ `inherit`（默认 `all`，`none` 关闭同名继承）；loader 展开时生成**不落盘**的 `with_params{task,params,defaults,block,body}`，并在展开前**解析校验**目标 flow、读取目标 `meta.params[].default`（子任务默认值**开始生效**）；目标 meta 缺失/坏 JSON/坏 default/目标 flow 无法解析 = **loader 硬错误**（`call_task \`目标\` (called from \`调用者\`)`，不再 warning 降级）；runtime 快照→调用方求值→`inherit:none` 按 `block` 临时隐藏父同名→defaults 只补缺→overrides 覆盖→执行→**成功/失败/break/continue/finish 全路径恢复**，label 栈让缺参错误带 `subtask '<label>'`；lint **T7**（目标存在+可解析 / child key ⊆ 目标声明 / 父 key ⊆ 父声明 / **允许常量映射** / 计算 `param('a'+'b')` 拒绝）+ CLI `task lint --tasks-dir`；评审 P1 处理：**T6 参数名豁免但值仍查外部代码**、**严格 meta**、**checkpoint 展开后指纹**（3 项已修）+ **T7 强化**；**P1-4 `flow_ops` 闸门按计划转 PR5**（风险已记录）。明细见 **§I**。
+- **测试（PR4）**：`cargo test --workspace` **624 passed / 0 failed**（21 targets；PR3 583 → PR4 618 → 评审修复 624）；oas-flow **62**、oas-task **89**、oas-runtime **157 lib + 2 integration**、oasd **280**；`cargo build -p oasd --features ocr` exit 0、release build exit 0（**6 warnings**，与基线一致）；UI pure test **1338 checks / 231 ids / 0 dead**（PR4 无 UI 改动；`runner_ui_audit` **41/0/5**）；`git diff --check` clean。
+- **Runner 包（PR4 重建）**：`dist/oasd-runner-v0.1.0-win64.zip` = **37,246,079 B**，SHA256 **07B6D930FA8EBEE29DBAA0F2C594347097916A36EABED073E4FD12D7852E506B**（用 PR4 release 重建；仍是 Runner-only，无 Studio UI）。
 - **用户新增两条约束**：① 终端用户只下载 Runner + 任务包（Studio 不随分发包下发）；② 跨平台（Android 使用端预留；v1 只 Windows 打包）。见计划文档 §A.8。
-- **下一步 = PR4 子任务配置**（`call_task.params` + `inherit` + `with_params` 作用域 + loader/runtime + `Flow::call_task_uses` + lint T7）→ PR5 → PR6。
-- 文档：`docs/RUNNER-STUDIO-SPLIT-PLAN.md`（§A.11 新增）、本 §E-79（§H 新增）、`ENGINE-DESIGN §22.46`、`RESUME` seq 103。
+- **下一步 = PR5 TaskPackage 发布/安装 + `engine.flow_ops` 闸门**（`.oaspkg` zip + manifest + checksums、Studio publish、Runner install/uninstall/回滚、素材合并、`installed.json`、裸目录纳管；**`flow_ops` 从原始 flow 的 `call_task.args.{params,inherit}` 推导并拒绝老 Runner**）→ PR6 内嵌调度/设备租约/临时运行（`/runner/run` 必须自行合并 values 层）。
+- 文档：`docs/RUNNER-STUDIO-SPLIT-PLAN.md`（§A.12 新增）、本 §E-79（§I 新增）、`ENGINE-DESIGN §22.47`、`RESUME` seq 104。
 
 ## F. PR1 实现记录（2026-11-04，已验证）
 
@@ -3755,9 +3757,9 @@ GET /task/assets?task= → 34 个素材（全局模式）
 
 代码 `crates/oas-task/src/{meta.rs,lib.rs}`、`apps/oasd/src/{runner_config.rs(新),serve.rs,main.rs}`、`.gitignore`；UI `apps/oasd/ui/{index.html,app.js,runner.html,runner.js,runner.css,ui_pure_test.js}`；docs 本批 8 份左右。**不含**用户数据（`assets/`/`frames/`/`tasks/`/`scheduler.json`）与 `dist/`；父 `da9da9d`。
 
-## H. PR3 实现记录（2026-11-04，已验证；代码未提交）
+## H. PR3 实现记录（2026-11-04，已验证；已提交）
 
-> 基线：`dev`，HEAD **`dfe8776`**（PR2 代码/UI + seq 102 docs 已提交）。**PR3 改动 = 4 个 Rust 文件**（`apps/oasd/src/{run.rs,schedule.rs,queue.rs,serve.rs}`，Lead 待提交）；不含 PR4。
+> 基线：`dev`，HEAD **`dfe8776`**（PR2 代码/UI + seq 102 docs 已提交）。**PR3 改动 = 4 个 Rust 文件**（`apps/oasd/src/{run.rs,schedule.rs,queue.rs,serve.rs}`，已提交 `c09df25`；seq 103 docs `048dff5`）；不含 PR4。
 > 证据：`D:\OAS-dev\_verify\runner-studio-pr3-20261104\`（`PR3-BACKEND-REPORT.md` / `REVIEW.md` / `FIX-REPORT.md` / `workspace-final.log` / `e2e/` + 本轮 `DOCS-REPORT.md`）。
 
 ### H.1 类型保真（`RunOptions.params` 改 JSON 值）
@@ -3824,27 +3826,87 @@ GET /task/assets?task= → 34 个素材（全局模式）
 
 ★ **提交边界（PR3）**：代码 `apps/oasd/src/{run.rs,schedule.rs,queue.rs,serve.rs}`（4 文件）+ docs 本批 8 份左右；**不含**用户数据（`assets/`/`frames/`/`tasks/`/`scheduler.json`）与 `dist/`；父 `dfe8776`。
 
+## I. PR4 实现记录（2026-11-04，已验证；代码未提交）
+
+> 基线：`dev`，HEAD **`048dff5`**（PR3 代码 `c09df25` + seq 103 docs）。**PR4 改动 = 7 个 Rust 文件**：`crates/oas-flow/src/lib.rs`、`crates/oas-task/src/lib.rs`、`crates/oas-runtime/src/lib.rs`、`apps/oasd/src/{task.rs,run.rs,checkpoint.rs,schedule.rs}`（Lead 待提交）；**无 UI 改动**；**不含** PR5 的 TaskPackage/manifest 闸门。
+> 证据：`D:\OAS-dev\_verify\runner-studio-pr4-20261104\`（`PR4-BACKEND-REPORT.md` / `REVIEW.md` / `FIX-REPORT.md` / `workspace-fix.log` / `e2e/` + 本轮 `DOCS-REPORT.md`）。
+
+### I.1 flow DSL（`oas-flow`）
+
+- `Step::CallTask { task, params: BTreeMap<String, Expr>, inherit: CallInherit }`；`inherit` 缺省 **`All`**，JSON 只接受 `"all"`/`"none"`（其它值/类型 → 解析错误，带 `args.inherit`）；`args.params` 必须对象、值为**表达式字符串**；旧无参 `call_task` 完全兼容。
+- 新增内部 `Step::WithParams { label, params, defaults, block, body }`；JSON args = `task`(label) / `params` / `defaults` / `block` / `body`。**它是 loader 实现细节、不落盘**；手写会被 T3 检查 body 参数 key（作者应只写 `call_task`）。
+- `Flow::call_task_uses()` → `CallTaskUse { task, inherit, params: child→Option<parentKey>, computed_params, path }`；`computed_params` 标记计算 `param(...)`（如 `param('a'+'b')`）。
+- 所有遍历器递归 `body`（`param_uses`/`assets`/`finish`/`ends_with_finish`/serialize）；未知 op 支持列表补 `key`、`restart_app`。
+
+### I.2 loader 展开（`oas-task`）
+
+- `expand_call_steps`：读目标 `flow.json`（**先 `Flow::from_json` 解析校验**）+ 目标 `meta.json` 的 `params[].default` → 递归展开目标 steps → `strip_finish` → 包成**内存 JSON**（不落盘）：
+  `{"op":"with_params","args":{"task":"<目标>","params":{child:expr},"defaults":{有 default 的 key:字面值},"block":[inherit:none 时目标声明 key，否则 []],"body":[...]}}`。
+- **严格失败（评审 P1-2）**：目标 meta 缺失/不可读/坏 JSON/坏 schema、坏 default、目标 flow 无法解析 → **loader 硬错误**（`call_task \`<目标>\` (called from \`<调用者>\`)`）；**不再 warning 降级**。`load_flow_with_warnings` API 保留但**恒空**，`oasd run` 仍打印 `warning=`。
+- **修复缺口**：子任务 `meta.params[].default` 现在生效（旧无参 `call_task` 也获得子默认）；**根 defaults 仍归 `run.rs`**。深度上限 8/环检测不变；子任务 `finish` 仍 strip。
+
+### I.3 runtime 作用域（`oas-runtime`）
+
+- `exec_one` 的 `WithParams`：snapshot → 在**调用方作用域**求值映射（entries 之间不互相引用）→ `inherit:"none"` 按 `block` **临时移除**父同名值 → `defaults` **只补缺** → `overrides` 覆盖（**映射 > 同名继承 > 子默认**）→ `exec(body, depth+1)` → **成功/失败/break/continue/finish 全路径恢复** snapshot。
+- `label` 栈：缺参错误带 `subtask '<label>'`（`param('<key>') has no value in subtask '<label>': …`），无 label 旧文案不变；日志 `subtask '<label>' (N step(s))`。
+- 嵌套 A→B→C 正确；同一父任务多调用点互不影响；子任务 `finish` 不能改变父出口。
+
+### I.4 lint T7（`oas-task` + CLI）
+
+- API：`TaskBundle::lint_with_calls(tasks_dir)` / `lint_into_with_calls(_and_assets)`；CLI `task lint --tasks-dir` 已接线。
+- 检查：目标存在、`meta.json`+`flow.json` 可读**且解析**、child key ⊆ 目标声明、映射中 `param('key')` 的父 key ⊆ 父声明、`inherit` 合法。
+- **允许常量映射**（无 `param()` 引用）；计算 `param('a'+'b')` 拒绝；T3 不变、不重复报错；**T7 不查环**；**serve 创建/校验 API 尚未接 T7**。
+
+### I.5 T6 修复（评审 P1-1）
+
+- `scan_forbidden_keys` 对 `args.params`/`args.defaults` 的 **key 豁免**（参数名 `code`/`script`/`cmd` 不再误报外部代码）；`args.params` 的**值**仍按 `CODE_ESCAPE_PREFIXES` 检测（`"shell: rm -rf"` 仍报 T6）。测试覆盖两条路径；`defaults` 是字面值、只豁免 key。
+
+### I.6 checkpoint 指纹（评审 P1-3）
+
+- `TaskBundle::load_flow_with_fingerprint()` = **展开后** flow JSON 文本的 **64-bit FNV-1a**（稳定、无随机种子）；`Checkpoint` 加 `flow_fingerprint: Option<u64>`，`validate_against` 同时校验 name/steps/指纹。
+- **旧格式 checkpoint 安全拒绝**（`pre-PR4 checkpoint format`，不 panic，需删除）；`run.rs` resume 校验指纹；**子任务内容改动（step 数不变）也会让旧 checkpoint 失效**。
+- 粒度不变：子任务中途崩溃重跑整个 `with_params` 块。
+
+### I.7 测试 / E2E / 包
+
+- `cargo test --workspace` **624/0**（21 targets；583→618→624）；oas-flow **62**（57→62）、oas-task **89**（72→89）、oas-runtime **157 lib + 2 integration**（142→157）、oasd **280**（276→280）；UI 不变 **1338/231/0**（runner audit 41/0/5）；OCR build + release build exit 0（6 warnings）；`git diff --check` clean。
+- **Lead E2E（临时任务 + replay，不碰用户数据）**：`parent→child`（映射 `触发文字←识别关键词`）→ child `Str("结界")` 映射 / `Num(5.0)` 父同名继承覆盖子默认 / `Str("child-note")` 子默认，with_params 步骤 `subtask 'child' (3 step(s))`，父作用域仍 `结界/5`；`parent_none`（`inherit:"none"`）→ child `Num(1.0)` 子默认、父 `Num(9.0)`；`parent_multi` 两调用点 `甲`/`乙` 互不影响；ASCII `parent_ascii→child_ascii` lint T7 `errors=0`、运行映射 `hello` + 继承 `5`；T7 三类错误（缺任务/子未声明/父未声明）带路径；中文 param key 报 META（既有规则）。证据 `_verify/runner-studio-pr4-20261104/e2e/*.out.txt`。
+- **Runner 包（PR4 重建）**：`dist/oasd-runner-v0.1.0-win64.zip` = **37,246,079 B**，SHA256 **`07B6D930FA8EBEE29DBAA0F2C594347097916A36EABED073E4FD12D7852E506B`**。
+- **§D.4 验收映射**：V6 的 16（任务2→任务1 取父配置）✅ replay E2E；17 待 PR6 的 `/runner/run`；18 的隔离/缺参由 runtime/lint 单测覆盖；V7 延续（用户数据未提交）。
+
+### I.8 已知限制 / 提交边界
+
+1. **PR5 必须做包 manifest `engine.flow_ops` 闸门**：老 Runner 旧 loader 只读 `args.task`，会**静默忽略** `params`/`inherit`（不报 unknown-instruction，因为 `with_params` 不落盘）；必须从**原始 flow** 的 `call_task.args.{params,inherit}` 推导 `flow_ops` 并拒绝老 Runner。
+2. **checkpoint 粒度**：子任务中途崩溃仍重跑整个 `with_params` 块（安全但变粗）；body 变量回滚保持；旧 checkpoint 需删除。
+3. **T7 不查环**（loader 负责）；T7 尚未接 serve；`with_params` 手写受 T3 限制（作者只写 `call_task`）。
+4. **meta 参数 key 仍须 ASCII 标识符**（PR2 现有规则；任务名可中文）；lint 对中文 param key 报 META。
+5. **子任务 finish 被 strip**（既有语义，不能用它改父出口）；**T6 值检测是前缀启发式**；严格化后 warnings API 恒为空。
+
+★ **提交边界（PR4）**：代码 = 7 个 Rust 文件（flow/task/runtime + oasd `{task,run,checkpoint,schedule}.rs`）；docs 本批 8 份左右；**不含**用户数据（`assets/`/`frames/`/`tasks/`/`scheduler.json`）与 `dist/`；父 `048dff5`。
+
 ## 台账
 
 | 项 | 状态 | 证据 |
 |---|---|---|
-| 设计稿 v1（架构/包/配置/风险/决策/PR/验收） | ✅ | `docs/RUNNER-STUDIO-SPLIT-PLAN.md`（整理稿 + §A.8 分发/跨平台 + §A.9 PR1 记录 + §A.10 PR2 记录 + **§A.11 PR3 记录**）+ 稿源 `_verify/arch-runner-studio-20261104/RUNNER-STUDIO-CONFIG-DESIGN.md`（659 行 / 235+ `file:line`） |
-| 7 项决策（Q1~Q7） | ✅ **用户批准（按推荐）** | 计划文档 §D.2；2026-11-04 用户指令「按推荐执行」 |
-| 6 PR 计划 | **PR1 ✅ 已提交 / PR2 ✅ 已提交 / PR3 ✅ 已实现（未提交）/ PR4~PR6 ⬜** | 计划文档 §D.3；PR1 事实见 §F、PR2 见 §G、**PR3 见 §H** |
-| 验收清单 19 步 | V1 ✅（1~3 验收；4 契约已测）/ **V4（11~12）✅ PR2** / V7 ✅（无用户数据提交）/ V2·V3·V5·V6 ⬜（PR3 无独立 V 步骤） | 计划文档 §D.4；§F.5 E2E、§G.6 E2E、§H.6 E2E |
+| 设计稿 v1（架构/包/配置/风险/决策/PR/验收） | ✅ | `docs/RUNNER-STUDIO-SPLIT-PLAN.md`（整理稿 + §A.8 分发/跨平台 + §A.9 PR1 + §A.10 PR2 + §A.11 PR3 + **§A.12 PR4**）+ 稿源 `_verify/arch-runner-studio-20261104/RUNNER-STUDIO-CONFIG-DESIGN.md`（659 行 / 235+ `file:line`） |
+| 7 项决策（Q1~Q7） | ✅ **用户批准（按推荐）** | 计划文档 §D.2；2026-11-04 用户指令「按推荐执行」；Q5 已由 PR4 落地（§I） |
+| 6 PR 计划 | **PR1 ✅ 已提交 / PR2 ✅ 已提交 / PR3 ✅ 已提交 / PR4 ✅ 已实现（未提交）/ PR5~PR6 ⬜** | 计划文档 §D.3；PR1 见 §F、PR2 见 §G、PR3 见 §H、**PR4 见 §I** |
+| 验收清单 19 步 | V1 ✅（1~3 验收；4 契约已测）/ **V4（11~12）✅ PR2** / **V6 的 16 ✅ PR4** / V7 ✅（无用户数据提交）/ V2·V3·V5 ⬜、V6 的 17~18 待 PR6/单测 | 计划文档 §D.4；§F.5 / §G.6 / §H.6 / **§I.7** E2E |
 | 代码（PR1 后端 3 文件） | ✅ **已提交**（`da9da9d`） | `serve.rs`/`main.rs`/`config.rs`；oasd **240/0**、workspace **538/0**；父 `f84b56e` |
 | 代码（PR2 5 文件 + `.gitignore`） | ✅ **已提交**（`dfe8776`） | `crates/oas-task/src/{meta,lib}.rs`、`apps/oasd/src/{runner_config.rs(新),serve.rs,main.rs}`、`.gitignore`；oasd **255/0**、task **72/0**、workspace **562/0**（+24） |
-| 代码（PR3 4 文件） | ✅ 已实现（未提交） | `apps/oasd/src/{run.rs,schedule.rs,queue.rs,serve.rs}`；oasd **276/0**、workspace **583/0**（PR3 共 +21）；父 `dfe8776` |
+| 代码（PR3 4 文件） | ✅ **已提交** | `apps/oasd/src/{run.rs,schedule.rs,queue.rs,serve.rs}`；oasd **276/0**、workspace **583/0**（PR3 共 +21）；代码 `c09df25` + docs `048dff5` |
+| 代码（PR4 7 文件） | ✅ 已实现（未提交） | `crates/oas-flow/src/lib.rs`、`crates/oas-task/src/lib.rs`、`crates/oas-runtime/src/lib.rs`、`apps/oasd/src/{task.rs,run.rs,checkpoint.rs,schedule.rs}`；workspace **624/0**、flow **62** / task **89** / runtime **157+2** / oasd **280**；父 `048dff5` |
 | UI（PR1 runner.* 骨架 + Studio 去调度入口） | ✅ **已提交** | `runner.html/js/css`、`index.html`、`app.js`、`ui_pure_test.js`；UI **1239/224/0**，runner audit 33/0/5 |
 | UI（PR2 配置对话框/表单） | ✅ **已提交**（`dfe8776`） | Studio `#task-config-dialog` + JSON 编辑器；Runner `#runner-config-dialog` 动态表单；UI **1338/231/0**（+99，audit 41/0/5） |
-| UI（PR3） | — 无改动 | PR3 不改 UI；Studio 参数输入仍未加（后端契约先落） |
+| UI（PR3 / PR4） | — 无改动 | PR3 不改 UI；PR4 不改 UI；Studio 参数输入/`call_task` 表单仍后置（后端契约先落） |
 | Runner 只读 API（PR1） | ✅ | `GET /runner/health`、`GET /runner/tasks`；坏 meta 200；Studio 404；Lead 真实进程验证 |
 | Runner 配置 API（PR2） | ✅ | `GET/PUT /runner/tasks/<id>/config` + Studio `GET/POST /task/config`；400 含 key；原子写；两端 404 |
 | 配置注入链路（PR3） | ✅ | 四层优先级 + 类型保真 + 合并后 schema 复检；CLI/scheduler/queue/Studio body 四入口；E2E `pr3param` |
-| Runner-only 发行包 | ✅ | PR1 **37,141,295 B**；PR2 **37,192,710 B**（SHA `A10DEDC1…B4533F5D`）；**PR3 重建 37,189,387 B**（SHA `BC2FFF90…534CCE0D`）；`scripts/package-runner.ps1` |
-| 跨平台约束 | ✅ 文档 + 代码约束 | `packaging/CROSS-PLATFORM.md`；PR1~PR3 新代码无 Windows-only 业务分支；`--port 0`；values.json 纯 `std::path` |
-| E2E | ✅（V1 + V4 + PR3 链路） | 真实 8788/8789（PR1）；`pr2demo` Studio 8790 / Runner 8791（PR2）；`pr3param` + replay 的 CLI/scheduler 注入与 schema 复检（PR3，`_verify/runner-studio-pr3-20261104/e2e/`） |
-| 风险 R1（load-time 展开） | ⚠ 已记录/接受 | 计划文档 §D.1 R1；要做「子任务一等运行单元」须另立项 |
-| PR1/PR2/PR3 遗留 | ⚠ 已分期 | 见 §F.8 / §G.5 / §H.7；不阻塞 |
+| 子任务配置语义（PR4） | ✅ | `call_task.params`/`inherit` + 不落盘 `with_params` + loader 严格展开 + runtime 全路径恢复 + T7 + T6/checkpoint 修复；E2E `parent/parent_none/parent_multi/ascii` |
+| Runner-only 发行包 | ✅ | PR1 **37,141,295 B**；PR2 **37,192,710 B**（`A10DEDC1…B4533F5D`）；PR3 **37,189,387 B**（`BC2FFF90…534CCE0D`）；**PR4 重建 37,246,079 B**（`07B6D930…852E506B`）；`scripts/package-runner.ps1` |
+| 跨平台约束 | ✅ 文档 + 代码约束 | `packaging/CROSS-PLATFORM.md`；PR1~PR4 新代码无 Windows-only 业务分支；`--port 0`；values.json / 扩展 flow 纯 `std::path` |
+| E2E | ✅（V1 + V4 + PR3 + PR4） | 真实 8788/8789（PR1）；`pr2demo` 8790/8791（PR2）；`pr3param` + replay（PR3）；`parent→child` / `inherit:none` / 多调用点 / ASCII + T7（PR4，`_verify/runner-studio-pr4-20261104/e2e/`） |
+| 风险 R1（load-time 展开） | ⚠ 已记录/接受 | 计划文档 §D.1 R1；PR4 用作用域缓解但不提供调用栈/独立超时；要做「子任务一等运行单元」须另立项 |
+| PR1/PR2/PR3/PR4 遗留 | ⚠ 已分期 | 见 §F.8 / §G.5 / §H.7 / §I.8；不阻塞 |
 
-| 状态 | ✅ Q1~Q7 已批准；**PR1 ✅ 已提交**（oasd **240/0**、workspace **538/0**、UI **1239/224/0**、runner 包 37,141,295 B、E2E V1 通过）；**PR2 ✅ 已提交**（`dfe8776`；oasd **255/0**、task **72/0**、workspace **562/0**、UI **1338/231/0**、runner 包 **37,192,710 B**、E2E V4 通过）；**PR3 ✅ 已实现（未提交）**（oasd **276/0**、workspace **583/0**、UI 不变 1338/231/0、runner 包 **37,189,387 B**、E2E 四层/类型/复检通过）；**PR4~PR6 待做**（下一步 = PR4 子任务配置）；代码未提交，父 `dfe8776`；用户数据不提交 · 无阻塞 |
+| 状态 | ✅ Q1~Q7 已批准；**PR1 ✅ 已提交**（oasd **240/0**、workspace **538/0**、UI **1239/224/0**、runner 包 37,141,295 B、E2E V1 通过）；**PR2 ✅ 已提交**（`dfe8776`；oasd **255/0**、task **72/0**、workspace **562/0**、UI **1338/231/0**、runner 包 **37,192,710 B**、E2E V4 通过）；**PR3 ✅ 已提交**（`c09df25`+`048dff5`；oasd **276/0**、workspace **583/0**、UI 1338/231/0、runner 包 **37,189,387 B**、E2E 四层/类型/复检通过）；**PR4 ✅ 已实现（未提交）**（workspace **624/0**、flow **62** / task **89** / runtime **157+2** / oasd **280**、UI 不变 1338/231/0、runner 包 **37,246,079 B**、E2E 映射/继承/子默认/inherit none/T7 通过；评审 P1 已处理（T6/严格 meta/checkpoint 指纹 3 修 + flow_ops 转 PR5））；**下一步 = PR5 TaskPackage 发布/安装 + `engine.flow_ops` 闸门**；代码未提交，父 `048dff5`；用户数据不提交 · 无阻塞 |
