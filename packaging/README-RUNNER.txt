@@ -29,8 +29,9 @@ engine.flow_ops（老引擎会拒绝需要新语法的新包），并自动初�
 3) 先确认设备在线（可选）：
    oasd.exe probe --serial 127.0.0.1:16384
 4) 双击 start-runner.bat，浏览器打开 http://127.0.0.1:8789/
-5) 在 Runner 页面「已安装任务 / 安装包」选择 .oaspkg 任务包安装，然后填写任务配置、
-   加入队列或调度。安装/配置写入本目录的 tasks\、config\、packages\。
+5) 在 Runner 页面「安装包」填写 `.oaspkg` 的**本机绝对路径**安装；在「已安装任务 → 配置」
+   填写运行值；在「队列与调度」编辑 entry/queue、启动/停止调度或临时运行。
+   安装/配置写入本目录的 tasks\、config\、packages\。
 6) 停止：双击 stop-runner.bat，或直接关闭 start-runner 打开的窗口。
 
 

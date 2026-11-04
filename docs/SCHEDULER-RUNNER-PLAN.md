@@ -2,6 +2,7 @@
 
 > 状态：**设计裁决已由用户批准（2026-11-02 22:5x）**；P0 文档已入库（`ENGINE-DESIGN §22.34.7` + `PENDING-LEDGER §E-75`）；P1 ✅ 已提交（450/0，oasd 177）；P2 ✅ 已提交（474/0，oasd 201；调度专项 101）；P3 ✅ 已提交（488/0，oasd 215；UI 453 checks / 205 ids / 0 dead）；P4 ✅ 已提交（全量回归 501/0，oasd 228；UI 662 checks / 219 ids / 0 dead；serve 68、schedule 58）；**P5 ✅ 本轮提交（实机验收 A–F 全部真机通过；全量回归 501/0，oasd 228；UI 662/219/0；含 `GET /instance/devices` adb 自动连接修复）**。**P0–P5 全部完成**，本阶段约束 = **单活动实例、单机、无跨机任务分发**。本轮代码（`apps/oasd/src/serve.rs` adb 自动连接）提交的父 = P4 docs 提交 `9134a70`，docs 提交 = 其后 HEAD；hash 以 `git log` 为准。
 > 事实依据：`_verify/scheduler-plan-20261102/FACTS.md`（逐项 file:line）· `_verify/scheduler-audit-20261102/SCHEDULER-AUDIT.md`（能力矩阵 42 项 ✅28/🟡7/⬜7）· `_verify/scheduler-audit-20261102/ORCH8-RESEARCH.md`（外接对比参考）。
+> ⚠ **历史说明（2026-11-05）**：本文件 P3 UI 的「Studio 调度页 / 任务库调度设置」已被 **PR6 删除 Studio 调度页 + PR7 把完整调度 UI 迁移到 Runner** 取代（见 `RUNNER-STUDIO-SPLIT-PLAN §A.15` / `ENGINE-DESIGN §22.50`；台账 `PENDING-LEDGER §E-75` 顶部注）；调度器后端/队列 Round 语义裁决仍有效。当前状态以 `RESUME.md`（seq 108，handoff-ready）为准。
 > 相关文档：`ENGINE-DESIGN.md §22.34/§22.35` · `PENDING-LEDGER.md §E-73/§E-74` · `RESUME.md`。
 
 ---

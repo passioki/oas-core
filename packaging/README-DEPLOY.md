@@ -58,13 +58,13 @@
 2. 编辑 `config/live.json`，按实际修改：
    - `device.serial`：adb 设备 serial（如 `127.0.0.1:16384`）；
    - `device.adb_path`：默认相对路径 `adb/adb.exe`，可改绝对路径；
-   - `runner.port`：默认 **8789**（不要与 Studio 的 8788 冲突）。
+   - `runner.port`：默认 **8789**（不要与 Studio 的 8788 冲突）。注意 `start-runner.bat` 固定以 8789 启动；要换端口请直接运行 `oasd.exe runner --port <N> ...`（stop-runner.bat 也按 8789 停止）。
 3. 先验证设备（可选）：
    ```bat
    oasd.exe probe --serial 127.0.0.1:16384
    ```
 4. 双击 `start-runner.bat` → 浏览器打开 `http://127.0.0.1:8789/`；
-5. 在 Runner 页面「安装包」选择 `.oaspkg` 任务包 → 安装 → 填写任务配置 → 加入队列/调度（具体按钮以当前 Runner 版本实际提供的能力为准）；
+5. 在 Runner「安装包」页填写 `.oaspkg` 的**本机绝对路径** → 安装 → 「已安装任务 → 配置」填运行值 → 「队列与调度」编辑 entry/queue、启动/停止调度或临时运行；
 6. 日志在 `logs/runner.log`；停止用 `stop-runner.bat`（或关闭启动窗口）。
 
 > Runner 包不包含任务构建、素材、帧库、流程编辑页面；这些属于 Studio。Runner 只消费 Studio 发布的 `.oaspkg`。
