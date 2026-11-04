@@ -447,6 +447,24 @@ aside.side {
 .asset-row[draggable="true"] { cursor: grab; }
 .asset-row-dragging { opacity: .45; }
 .asset-drag-over { outline: 2px solid #31d0aa; outline-offset: -1px; }
+/* A: the selected asset row. Loud on purpose (left rail + background + text):
+   设置 stays open while the row is edited, so it must always be obvious WHICH
+   asset those settings belong to. Dark-theme safe, no layout shift (inset
+   shadow instead of a real border). */
+.asset-row.selected {
+  background: #1b2a3a;
+  box-shadow: inset 3px 0 0 #4d9fff;
+  border-radius: 3px;
+}
+.asset-row.selected .asset-main {
+  background: #223348;
+  color: #dbeaff;
+}
+.asset-row.selected .asset-main-text { color: #dbeaff; }
+.asset-row.selected .asset-row-action-settings {
+  border-color: #4d9fff;
+  color: #dbeaff;
+}
 .asset-row .asset-main {
   flex: 1;
   /* A flex item's default min-width:auto refuses to shrink below its content's
@@ -549,6 +567,25 @@ aside.side {
   opacity: .38;
   cursor: not-allowed;
 }
+
+/* B/P0-1: the canvas 识别区 save button lives in the always-visible
+   #canvas-footer (NOT inside a rail panel), so the task library and frame
+   detail surfaces can save too. It is hidden until a row enters edit mode.
+   `[hidden]` must be explicit: older author rules (aside button display:block)
+   can beat the UA `[hidden] { display:none }`. */
+#btn-save-asset-roi {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+#btn-save-asset-roi[hidden] { display: none; }
+#asset-roi-edit-label {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+#asset-roi-edit-label[hidden] { display: none; }
 
 /* 22.29 标题行常驻结果/日志窗口 */
 .app-header {

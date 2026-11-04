@@ -349,6 +349,12 @@ pub struct AssetSet {
     /// v1.2.3 template collections: collection id -> member template ids.
     collections: HashMap<String, Vec<String>>,
     collection_thresholds: HashMap<String, f32>,
+    /// Optional **minimum recognition confidence** (0~1) per OCR asset. Absent
+    /// means "any successful read counts" — the historical rule, preserved so
+    /// existing assets keep their behaviour. When present, an OCR result whose
+    /// score is below this value is treated as a miss, exactly like a template
+    /// below its NCC threshold.
+    ocr_thresholds: HashMap<String, f32>,
 }
 
 impl AssetSet {
@@ -448,12 +454,40 @@ impl AssetSet {
         self.collections.get(id).map(|v| v.as_slice())
     }
 
-    /// Threshold for a plain template or a collection (collection override wins).
+    /// Declare a **minimum recognition confidence** for an OCR asset.
+    ///
+    /// `assets.json` stores this in the same `threshold` field used for template
+    /// NCC. Absent and `0` both mean "recognized = hit" (no confidence filter):
+    /// the editor can only clear a threshold by writing `0` (`update_asset_meta`
+    /// reads `None` as "leave unchanged"), so both spellings must be equivalent
+    /// (P1-4). The value is stored verbatim; [`Self::ocr_threshold`] normalizes
+    /// it on every read.
+    pub fn set_ocr_threshold(&mut self, id: impl Into<String>, threshold: f32) {
+        self.ocr_thresholds.insert(id.into(), threshold);
+    }
+
+    /// Minimum recognition confidence of an OCR asset, if one is **active**.
+    ///
+    /// `None` covers both "never declared" and an explicit `0`: `0 = unset =
+    /// no confidence filter`. This is the single normalization point every
+    /// caller (click / appear / expect / drag / ocr_text) relies on.
+    pub fn ocr_threshold(&self, id: &str) -> Option<f32> {
+        self.ocr_thresholds.get(id).copied().filter(|t| *t > 0.0)
+    }
+
+    /// Threshold for a plain template, a collection (collection override wins)
+    /// or an OCR asset (explicit minimum recognition confidence).
+    ///
+    /// OCR assets return `Some` only when the stored value is **> 0**; `0` and
+    /// "never declared" both yield `None`. Callers then apply their kind-specific
+    /// fallback: `0.0` for OCR presence/click (never reject) and the historical
+    /// `0.9` for templates/collections.
     pub fn threshold_for(&self, id: &str) -> Option<f32> {
         self.collection_thresholds
             .get(id)
             .copied()
             .or_else(|| self.map.get(id).map(|t| t.threshold))
+            .or_else(|| self.ocr_threshold(id))
     }
 }
 
@@ -1236,30 +1270,43 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         let mut last;
         loop {
             self.reobserve_screen()?;
+            // `selector_threshold` is the **single presence policy** here:
+            // * OCR: explicit minimum confidence, else 0 — an explicit `0` is
+            //   byte-for-byte equivalent to "unset" and must never inherit the
+            //   0.9 template fallback (P1-4);
+            // * template/collection: declared threshold, else the historical 0.9.
             last = match expect {
                 Expect::Appear { sel, .. } => {
                     let (score, at) = self.locate(sel)?;
-                    let th = self.assets.threshold_for(sel).unwrap_or(0.9);
+                    let th = self.selector_threshold(sel);
                     if at.is_some() && score >= th {
                         return Ok(());
                     }
-                    format!("template `{sel}` best score {score:.3} < {th}")
+                    format!("selector `{sel}` best score {score:.3} < {th}")
                 }
                 Expect::Vanish { sel, .. } => {
                     let (score, at) = self.locate(sel)?;
-                    let th = self.assets.threshold_for(sel).unwrap_or(0.9);
+                    let th = self.selector_threshold(sel);
                     if !(at.is_some() && score >= th) {
                         return Ok(());
                     }
-                    format!("template `{sel}` still present (score {score:.3})")
+                    format!("selector `{sel}` still present (score {score:.3})")
                 }
                 Expect::OcrText { sel, text, .. } => {
                     let read = self.ocr_read(sel)?;
+                    // An explicitly declared OCR threshold also gates text
+                    // verification: a recognized-but-low-confidence line is not
+                    // evidence that the expected text is really on screen.
+                    let min = self.assets.ocr_threshold(sel);
                     let ok = match &read {
-                        OcrRead::Lines(lines) => {
-                            lines.iter().any(|l| ocr_text_matches(text, l.text.as_str()))
+                        OcrRead::Lines(lines) => lines.iter().any(|l| {
+                            ocr_text_matches(text, l.text.as_str())
+                                && min.map(|m| l.score >= m).unwrap_or(true)
+                        }),
+                        OcrRead::Single(Some(t), score) => {
+                            ocr_text_matches(text, t)
+                                && min.map(|m| *score >= m).unwrap_or(true)
                         }
-                        OcrRead::Single(Some(t), _) => ocr_text_matches(text, &t),
                         OcrRead::Single(None, _) => false,
                     };
                     if ok {
@@ -1751,6 +1798,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 shape: None,
             }),
             DragTarget::OcrText { sel, roi, text } => {
+                // A named OCR asset may declare a minimum recognition
+                // confidence; the geometry must not come from a line that is
+                // below it. Inline ROIs carry no asset and therefore no
+                // threshold (0.0 = any successful read).
+                let mut min_score = 0.0f32;
                 let read = if let Some(roi) = roi {
                     self.ocr_read_rect(
                         Rect {
@@ -1765,12 +1817,15 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     let sel = sel
                         .clone()
                         .ok_or_else(|| "ocr_text drag target needs sel or roi".to_string())?;
+                    min_score = self.assets.ocr_threshold(&sel).unwrap_or(0.0);
                     self.ocr_read(&sel)?
                 };
                 let rect = match read {
                     OcrRead::Lines(lines) => lines
                         .iter()
-                        .find(|l| ocr_text_matches(text, l.text.as_str()))
+                        .find(|l| {
+                            ocr_text_matches(text, l.text.as_str()) && l.score >= min_score
+                        })
                         .map(|l| l.rect)
                         .ok_or_else(|| {
                             format!("drag ocr_text: no line equals {text:?} in the region")
@@ -1958,14 +2013,32 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         }
     }
 
-    /// Threshold for a selector. OCR assets have no template score; a
-    /// recognized line is a hit, so their threshold is 0 (never reject a
-    /// successful OCR read because it is below the template default 0.9).
+    /// Threshold for a selector.
+    ///
+    /// * template / collection: the declared NCC threshold, else 0.9;
+    /// * OCR (`ocr_line` / `ocr_lines`, incl. derived lines): the asset's
+    ///   explicit minimum confidence when **> 0**, else **0** — an explicit `0`
+    ///   means "unset = no confidence filter", exactly like a missing value, and
+    ///   a successful read is a hit (P1-4). Setting `t > 0` makes a read below
+    ///   it a miss, with the same `score >= threshold` rule templates use.
     fn selector_threshold(&self, sel: &str) -> f32 {
         if self.assets.ocr_roi(sel).is_some() || self.assets.derived_ocr(sel).is_some() {
-            0.0
+            match self.assets.ocr_threshold(sel) {
+                Some(t) if t > 0.0 => t,
+                _ => 0.0,
+            }
         } else {
             self.assets.threshold_for(sel).unwrap_or(0.9)
+        }
+    }
+
+    /// `true` when an OCR read at `score` passes the asset's **optional**
+    /// minimum confidence. No declared/active threshold (absent or `0`) = always
+    /// pass (historical "recognized = hit" semantics).
+    fn ocr_score_ok(&self, sel: &str, score: f32) -> bool {
+        match self.assets.ocr_threshold(sel) {
+            Some(min) => score >= min,
+            None => true,
         }
     }
 
@@ -2383,11 +2456,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     } else {
                         self.locate(cand)?
                     };
-                    let th = if is_ocr {
-                        0.0
-                    } else {
-                        self.assets.threshold_for(*cand).unwrap_or(0.9)
-                    };
+                    let th = self.selector_threshold(cand);
                     if let Some(p) = at.filter(|_| score >= th) {
                         hit = Some((cand, score, p));
                         break;
@@ -2534,9 +2603,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     match loc {
                         Locator::Template { sel, threshold } => match self.locate(sel) {
                             Ok((score, at)) => {
-                                let th = threshold.unwrap_or_else(|| {
-                                    self.assets.threshold_for(sel).unwrap_or(0.9)
-                                });
+                                // An inline locator threshold wins; otherwise use
+                                // the same selector policy as click/appear, so an
+                                // OCR id named here gets 0 (0 = unset, P1-4) and
+                                // a template/collection gets its 0.9 fallback.
+                                let th = threshold
+                                    .unwrap_or_else(|| self.selector_threshold(sel));
                                 let Some(p) = at.filter(|_| score >= th) else {
                                     evidence.push(format!(
                                         "template `{sel}`: best score {score:.3} < {th}"
@@ -2576,9 +2648,17 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             require_template,
                         } => match self.ocr_read(sel) {
                             Ok(OcrRead::Lines(lines)) => {
+                                // An explicitly declared OCR minimum confidence
+                                // filters candidate lines: a matched-text line
+                                // below it is not evidence, exactly like a
+                                // template below its NCC threshold.
+                                let min = self.assets.ocr_threshold(sel);
                                 let hit = lines
                                     .iter()
-                                    .filter(|l| ocr_text_matches(text, l.text.as_str()))
+                                    .filter(|l| {
+                                        ocr_text_matches(text, l.text.as_str())
+                                            && min.map(|m| l.score >= m).unwrap_or(true)
+                                    })
                                     .max_by(|a, b| {
                                         a.score
                                             .partial_cmp(&b.score)
@@ -2641,14 +2721,40 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                             line.text, line.score, actual.x, actual.y
                                         ));
                                     }
-                                    None => evidence.push(format!(
-                                        "ocr_text `{sel}`: no line equals {:?} ({} lines found)",
-                                        text,
-                                        lines.len()
-                                    )),
+                                    None => {
+                                        // Distinguish "wrong text" from
+                                        // "right text, too low confidence" so a
+                                        // declared OCR threshold is debuggable.
+                                        let matched_best = lines
+                                            .iter()
+                                            .filter(|l| ocr_text_matches(text, l.text.as_str()))
+                                            .map(|l| l.score)
+                                            .fold(None::<f32>, |acc, s| {
+                                                Some(acc.map_or(s, |a| a.max(s)))
+                                            });
+                                        match (min, matched_best) {
+                                            (Some(m), Some(s)) => evidence.push(format!(
+                                                "ocr_text `{sel}`: line matched but best score \
+                                                 {s:.3} < {m}"
+                                            )),
+                                            _ => evidence.push(format!(
+                                                "ocr_text `{sel}`: no line equals {:?} ({} lines found)",
+                                                text,
+                                                lines.len()
+                                            )),
+                                        }
+                                    }
                                 }
                             }
                             Ok(OcrRead::Single(Some(t), score)) => {
+                                if ocr_text_matches(text, &t) && !self.ocr_score_ok(sel, score) {
+                                    let min = self.assets.ocr_threshold(sel).unwrap_or(0.0);
+                                    evidence.push(format!(
+                                        "ocr_text `{sel}`: text {t:?} matched but score \
+                                         {score:.3} < {min}"
+                                    ));
+                                    continue;
+                                }
                                 if ocr_text_matches(text, &t) {
                                     let recognition = self
                                         .assets
@@ -3294,10 +3400,20 @@ impl<S: ScreenSource, I: InputSink> EvalContext for Interpreter<S, I> {
                 ))
             } else {
                 match self.ocr_read(sel) {
-                    Ok(OcrRead::Single(text, _)) => {
-                        Ok(text.map(|t| !t.trim().is_empty()).unwrap_or(false))
+                    Ok(OcrRead::Single(text, score)) => Ok(text
+                        .map(|t| !t.trim().is_empty())
+                        .unwrap_or(false)
+                        && self.ocr_score_ok(sel, score)),
+                    Ok(OcrRead::Lines(lines)) => {
+                        // Presence uses the best line (the same score
+                        // `locate_ocr` reports); an explicit OCR threshold must
+                        // be met by that best line.
+                        let best = lines
+                            .iter()
+                            .map(|l| l.score)
+                            .fold(f32::MIN, f32::max);
+                        Ok(!lines.is_empty() && self.ocr_score_ok(sel, best))
                     }
-                    Ok(OcrRead::Lines(lines)) => Ok(!lines.is_empty()),
                     // A multi-line-derived line that is not found means "not visible".
                     Err(e) if e.starts_with("derived ocr_line") => Ok(false),
                     Err(e) => Err(e),
@@ -3736,6 +3852,33 @@ mod tests {
             Interpreter::new(src, input, assets(), Budget::default()).with_humanize(no_miss()),
             shared,
         )
+    }
+
+    /// Interpreter over **caller-provided** assets + a scripted [`FakeOcr`],
+    /// returning the recorded clicks too. Used by the OCR-threshold tests, which
+    /// must attach `threshold` to an OCR asset before the run starts.
+    fn mk_ocr_with(
+        assets: AssetSet,
+        replies: &[(&str, f32)],
+    ) -> (OcrInterp, OcrRois, SharedInput) {
+        let (input, shared) = FakeInput::new();
+        let (fake, rois) = FakeOcr::new(replies);
+        let interp = Interpreter::new(FakeScreen::new(), input, assets, Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(fake))
+            .with_seed(5);
+        (interp, rois, shared)
+    }
+
+    /// Same as [`mk_ocr_with`] but with a det+rec provider (`ocr_lines`).
+    fn mk_det_ocr_with(assets: AssetSet, lines: Vec<OcrLine>) -> (OcrInterp, SharedInput) {
+        let (input, shared) = FakeInput::new();
+        let (fake, _rois) = FakeDetOcr::new(lines);
+        let interp = Interpreter::new(FakeScreen::new(), input, assets, Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(fake))
+            .with_seed(5);
+        (interp, shared)
     }
 
     fn flow(json: &str) -> Flow {
@@ -7464,6 +7607,389 @@ mod tests {
             1,
             "dismiss_popup must click the OCR action region"
         );
+    }
+
+    // ---- OCR minimum-confidence threshold (same `threshold` field as NCC) ----
+
+    /// `assets_with_ocr()` with an explicit minimum confidence on `O_TEXT`.
+    fn assets_with_ocr_threshold(threshold: f32) -> AssetSet {
+        let mut set = assets_with_ocr();
+        set.set_ocr_threshold("O_TEXT", threshold);
+        set
+    }
+
+    #[test]
+    fn ocr_asset_without_threshold_accepts_a_low_confidence_read() {
+        // Historical default: any successful read is a hit. A 0.02-confidence
+        // read must still satisfy `appear` and `click`.
+        let (mut interp, _, _) = mk_ocr_with(assets_with_ocr(), &[("完成", 0.02)]);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"appear","args":{"sel":"O_TEXT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f).outcome(), Outcome::Done);
+
+        let (mut interp, _, shared) = mk_ocr_with(assets_with_ocr(), &[("完成", 0.02)]);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"O_TEXT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert_eq!(shared.clicks.borrow().len(), 1, "a read counts as a hit");
+    }
+
+    #[test]
+    fn ocr_asset_threshold_rejects_a_low_confidence_read() {
+        // 0.4 < 0.9: the read is a miss, with score + threshold in the evidence.
+        let (mut interp, _, _) = mk_ocr_with(assets_with_ocr_threshold(0.9), &[("完成", 0.4)]);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"appear","args":{"sel":"O_TEXT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("0.400"), "score must be in the evidence: {msg}");
+                assert!(msg.contains("0.9"), "threshold must be in the evidence: {msg}");
+            }
+            other => panic!("appear must reject 0.4 below threshold 0.9, got {other:?}"),
+        }
+
+        // The click path used to hardcode 0.0 for OCR; it must use the asset
+        // threshold now and never emit a click for a below-threshold read.
+        let (mut interp, _, shared) =
+            mk_ocr_with(assets_with_ocr_threshold(0.9), &[("完成", 0.4)]);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"O_TEXT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("0.400 < 0.9"), "{msg}");
+                assert!(msg.contains("no variant matched"), "{msg}");
+            }
+            other => panic!("click must reject 0.4 below threshold 0.9, got {other:?}"),
+        }
+        assert!(
+            shared.clicks.borrow().is_empty(),
+            "a below-threshold OCR read must never click"
+        );
+    }
+
+    #[test]
+    fn ocr_asset_threshold_passes_a_confident_read() {
+        // 0.4 >= 0.3 proves the OCR threshold is used instead of the template
+        // 0.9 default (which would have rejected this read).
+        let (mut interp, _, shared) =
+            mk_ocr_with(assets_with_ocr_threshold(0.3), &[("完成", 0.4)]);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"O_TEXT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert_eq!(shared.clicks.borrow().len(), 1);
+        let detail = interp
+            .events()
+            .iter()
+            .find(|e| e.op == "click")
+            .map(|e| e.detail.clone())
+            .expect("click event");
+        assert!(detail.contains("score=0.400"), "{detail}");
+    }
+
+    #[test]
+    fn ocr_threshold_gates_condition_appear_and_ocr_text_locator() {
+        let if_flow = || {
+            flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"if","args":{"cond":"appear('O_TEXT')"},
+                      "then":[{"op":"finish","args":{"exit":"done"}}],
+                      "else":[{"op":"finish","args":{"exit":"failed"}}]}]}"#,
+            )
+        };
+        let (mut interp, _, _) = mk_ocr_with(assets_with_ocr_threshold(0.9), &[("完成", 0.4)]);
+        assert_eq!(
+            interp.run(&if_flow()).outcome(),
+            Outcome::Failed,
+            "appear('O_TEXT') must be false below the OCR threshold"
+        );
+        let (mut interp, _, _) = mk_ocr_with(assets_with_ocr_threshold(0.3), &[("完成", 0.4)]);
+        assert_eq!(interp.run(&if_flow()).outcome(), Outcome::Done);
+
+        let target_flow = || {
+            flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"click_target","args":{"find":[
+                        {"kind":"ocr_text","sel":"O_TEXT","text":"完成"}]}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            )
+        };
+        let (mut interp, _, shared) =
+            mk_ocr_with(assets_with_ocr_threshold(0.9), &[("完成", 0.4)]);
+        match interp.run(&target_flow()) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("matched but score 0.400 < 0.9"), "{msg}");
+            }
+            other => panic!("ocr_text must not click below threshold, got {other:?}"),
+        }
+        assert!(shared.clicks.borrow().is_empty());
+
+        let (mut interp, _, shared) =
+            mk_ocr_with(assets_with_ocr_threshold(0.3), &[("完成", 0.4)]);
+        assert_eq!(interp.run(&target_flow()), RunResult::Finished(Exit::Done));
+        assert_eq!(shared.clicks.borrow().len(), 1);
+    }
+
+    #[test]
+    fn ocr_threshold_applies_to_expect_appear() {
+        // `expect appear` uses the same selector threshold as click/appear:
+        // the explicit OCR minimum confidence, else 0 (never 0.9).
+        let expect_flow = || {
+            flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"click_point","args":{"x":5,"y":5,
+                       "expect":{"kind":"appear","sel":"O_TEXT","timeout_ms":1}}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            )
+        };
+        let (mut interp, _, _) = mk_ocr_with(assets_with_ocr_threshold(0.9), &[("完成", 0.4)]);
+        match interp.run(&expect_flow()) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("expect appear not met"), "{msg}");
+                assert!(msg.contains("0.400 < 0.9"), "{msg}");
+            }
+            other => panic!("expect appear must honour the OCR threshold, got {other:?}"),
+        }
+        let (mut interp, _, _) = mk_ocr_with(assets_with_ocr_threshold(0.3), &[("完成", 0.4)]);
+        assert_eq!(interp.run(&expect_flow()), RunResult::Finished(Exit::Done));
+    }
+
+    #[test]
+    fn ocr_lines_threshold_uses_the_best_line_score() {
+        // `locate_ocr` reports the best line of an `ocr_lines` asset; the
+        // threshold compares against that same best score.
+        let lines = vec![
+            line("确认", 0.95, Rect { x: 2, y: 2, w: 10, h: 8 }),
+            line("取消", 0.40, Rect { x: 2, y: 20, w: 10, h: 8 }),
+        ];
+        let mut pass = assets_with_ocr();
+        pass.set_ocr_threshold("O_LIST", 0.9);
+        let (mut interp, _) = mk_det_ocr_with(pass, lines.clone());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"appear","args":{"sel":"O_LIST"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(
+            interp.run(&f).outcome(),
+            Outcome::Done,
+            "best line 0.95 >= 0.9"
+        );
+
+        let mut fail = assets_with_ocr();
+        fail.set_ocr_threshold("O_LIST", 0.99);
+        let (mut interp, _) = mk_det_ocr_with(fail, lines);
+        assert_eq!(
+            interp.run(&f).outcome(),
+            Outcome::Failed,
+            "best line 0.95 < 0.99"
+        );
+    }
+
+    #[test]
+    fn derived_ocr_line_threshold_uses_the_matched_line_score() {
+        let roi = Rect { x: 0, y: 0, w: 64, h: 48 };
+        let lines = vec![line("确认", 0.6, Rect { x: 4, y: 4, w: 20, h: 10 })];
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"appear","args":{"sel":"O_DERIVED"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+
+        let mut strict = assets();
+        strict.insert_ocr_lines("O_DERIVED", roi);
+        strict.set_derived_ocr("O_DERIVED", roi, "确认".to_string());
+        strict.set_ocr_threshold("O_DERIVED", 0.9);
+        let (mut interp, _) = mk_det_ocr_with(strict, lines.clone());
+        assert_eq!(
+            interp.run(&f).outcome(),
+            Outcome::Failed,
+            "derived line 0.6 < 0.9"
+        );
+
+        let mut loose = assets();
+        loose.insert_ocr_lines("O_DERIVED", roi);
+        loose.set_derived_ocr("O_DERIVED", roi, "确认".to_string());
+        loose.set_ocr_threshold("O_DERIVED", 0.5);
+        let (mut interp, _) = mk_det_ocr_with(loose, lines);
+        assert_eq!(
+            interp.run(&f).outcome(),
+            Outcome::Done,
+            "derived line 0.6 >= 0.5"
+        );
+    }
+
+    #[test]
+    fn ocr_zero_threshold_equals_unset_for_click_appear_expect_and_click_target() {
+        // P1-4: the editor can only clear a threshold by *writing* 0
+        // (`update_asset_meta` treats `None` as "no change"), so 0 must behave
+        // exactly like "unset" on every recognition path. The read is 0.02 —
+        // far below the 0.9 template default — so any fallback to 0.9 fails.
+        const CLICK: &str = r#"{"schema_version":1,"name":"t","steps":[
+             {"op":"click","args":{"sel":"O_TEXT"}},
+             {"op":"finish","args":{"exit":"done"}}]}"#;
+        const APPEAR: &str = r#"{"schema_version":1,"name":"t","steps":[
+             {"op":"appear","args":{"sel":"O_TEXT"}},
+             {"op":"finish","args":{"exit":"done"}}]}"#;
+        const COND_APPEAR: &str = r#"{"schema_version":1,"name":"t","steps":[
+             {"op":"if","args":{"cond":"appear('O_TEXT')"},
+              "then":[{"op":"finish","args":{"exit":"done"}}],
+              "else":[{"op":"finish","args":{"exit":"failed"}}]}]}"#;
+        const EXPECT_APPEAR: &str = r#"{"schema_version":1,"name":"t","steps":[
+             {"op":"click_point","args":{"x":5,"y":5,
+               "expect":{"kind":"appear","sel":"O_TEXT","timeout_ms":1}}},
+             {"op":"finish","args":{"exit":"done"}}]}"#;
+        const EXPECT_OCR_TEXT: &str = r#"{"schema_version":1,"name":"t","steps":[
+             {"op":"click_point","args":{"x":5,"y":5,
+               "expect":{"kind":"ocr_text","sel":"O_TEXT","text":"完成","timeout_ms":1}}},
+             {"op":"finish","args":{"exit":"done"}}]}"#;
+        const CLICK_TARGET: &str = r#"{"schema_version":1,"name":"t","steps":[
+             {"op":"click_target","args":{"find":[
+                {"kind":"ocr_text","sel":"O_TEXT","text":"完成"}]}},
+             {"op":"finish","args":{"exit":"done"}}]}"#;
+
+        for (label, steps, expected_clicks) in [
+            ("click", CLICK, 1usize),
+            ("appear", APPEAR, 0),
+            ("if appear(...)", COND_APPEAR, 0),
+            ("expect appear", EXPECT_APPEAR, 1),
+            ("expect ocr_text", EXPECT_OCR_TEXT, 1),
+            ("click_target ocr_text", CLICK_TARGET, 1),
+        ] {
+            for threshold in [None, Some(0.0f32)] {
+                let mut set = assets_with_ocr();
+                if let Some(t) = threshold {
+                    set.set_ocr_threshold("O_TEXT", t);
+                }
+                let (mut interp, _, shared) = mk_ocr_with(set, &[("完成", 0.02)]);
+                assert_eq!(
+                    interp.run(&flow(steps)),
+                    RunResult::Finished(Exit::Done),
+                    "{label} must pass with threshold {threshold:?} (0.02 read)"
+                );
+                assert_eq!(
+                    shared.clicks.borrow().len(),
+                    expected_clicks,
+                    "{label} click count with threshold {threshold:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ocr_expect_appear_and_vanish_distinguish_unset_zero_and_0_9() {
+        // The same 0.02 read, three threshold spellings:
+        // * unset / 0 -> no confidence filter -> counts as PRESENT;
+        // * 0.9       -> below the minimum  -> counts as ABSENT.
+        // `expect appear` must therefore accept unset/0 and reject 0.9, while
+        // `expect vanish` must do the exact opposite.
+        fn expect_run(kind: &str, threshold: Option<f32>) -> RunResult {
+            let mut set = assets_with_ocr();
+            if let Some(t) = threshold {
+                set.set_ocr_threshold("O_TEXT", t);
+            }
+            let (mut interp, _, _) = mk_ocr_with(set, &[("完成", 0.02)]);
+            let f = flow(&format!(
+                r#"{{"schema_version":1,"name":"t","steps":[
+                     {{"op":"click_point","args":{{"x":5,"y":5,
+                       "expect":{{"kind":"{kind}","sel":"O_TEXT","timeout_ms":1}}}}}},
+                     {{"op":"finish","args":{{"exit":"done"}}}}]}}"#
+            ));
+            interp.run(&f)
+        }
+        let done = |r: RunResult| r == RunResult::Finished(Exit::Done);
+
+        for threshold in [None, Some(0.0f32)] {
+            assert!(
+                done(expect_run("appear", threshold)),
+                "expect appear must accept the 0.02 read at {threshold:?}"
+            );
+            assert!(
+                !done(expect_run("vanish", threshold)),
+                "expect vanish must fail while the 0.02 read is present at {threshold:?}"
+            );
+        }
+
+        match expect_run("appear", Some(0.9)) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("expect appear not met"), "{msg}");
+                assert!(msg.contains("0.020 < 0.9"), "{msg}");
+            }
+            other => panic!("expect appear must reject 0.02 below 0.9, got {other:?}"),
+        }
+        assert!(
+            done(expect_run("vanish", Some(0.9))),
+            "expect vanish must treat a below-threshold read as absent"
+        );
+    }
+
+    #[test]
+    fn ocr_zero_threshold_is_normalized_to_unset_in_public_queries() {
+        // One normalization point: `ocr_threshold` hides 0, `threshold_for`
+        // forwards that, and `selector_threshold` turns it into OCR's 0.0.
+        let mut set = assets_with_ocr();
+        set.set_ocr_threshold("O_TEXT", 0.0);
+        set.set_ocr_threshold("O_DIGITS", 0.4);
+        set.insert_collection("C_MIX", vec!["I_NEVER".to_string()], Some(0.7));
+        let interp = Interpreter::new(
+            FakeScreen::new(),
+            FakeInput::new().0,
+            set,
+            Budget::default(),
+        );
+        assert_eq!(interp.assets.ocr_threshold("O_TEXT"), None, "0 = unset");
+        assert_eq!(
+            interp.assets.threshold_for("O_TEXT"),
+            None,
+            "0 must never surface as an explicit gate"
+        );
+        assert_eq!(interp.selector_threshold("O_TEXT"), 0.0);
+        assert_eq!(interp.assets.ocr_threshold("O_DIGITS"), Some(0.4));
+        assert_eq!(interp.selector_threshold("O_DIGITS"), 0.4);
+        // Templates and collections keep their historical semantics.
+        assert_eq!(interp.selector_threshold("I_BRIGHT"), 0.8);
+        assert_eq!(interp.selector_threshold("I_NEVER"), 0.9);
+        assert_eq!(interp.selector_threshold("C_MIX"), 0.7);
+    }
+
+    #[test]
+    fn template_and_collection_thresholds_are_unchanged() {
+        let mut set = assets_with_ocr();
+        set.set_ocr_threshold("O_TEXT", 0.85);
+        set.insert_collection("C_MIX", vec!["I_NEVER".to_string()], Some(0.7));
+        let interp = Interpreter::new(
+            FakeScreen::new(),
+            FakeInput::new().0,
+            set,
+            Budget::default(),
+        );
+        // Templates still use their own NCC threshold (0.8 / 0.9 in `assets()`).
+        assert_eq!(interp.selector_threshold("I_BRIGHT"), 0.8);
+        assert_eq!(interp.selector_threshold("I_NEVER"), 0.9);
+        // A collection override still wins.
+        assert_eq!(interp.selector_threshold("C_MIX"), 0.7);
+        // OCR: explicit threshold when set, 0.0 (never reject) otherwise.
+        assert_eq!(interp.selector_threshold("O_TEXT"), 0.85);
+        assert_eq!(interp.selector_threshold("O_DIGITS"), 0.0);
+        // `threshold_for` reports a value only when one is active (> 0).
+        assert_eq!(interp.assets.threshold_for("I_BRIGHT"), Some(0.8));
+        assert_eq!(interp.assets.threshold_for("C_MIX"), Some(0.7));
+        assert_eq!(interp.assets.threshold_for("O_TEXT"), Some(0.85));
+        assert_eq!(interp.assets.threshold_for("O_DIGITS"), None);
     }
 }
 

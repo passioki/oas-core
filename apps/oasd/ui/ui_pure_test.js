@@ -23,10 +23,12 @@ const appPath = path.join(__dirname, 'app.js');
 const htmlPath = path.join(__dirname, 'index.html');
 const builderPath = path.join(__dirname, 'builder.js');
 const assetUiPath = path.join(__dirname, 'asset_ui.js');
+const stylePath = path.join(__dirname, 'style.css');
 const source = fs.readFileSync(appPath, 'utf8');
 const html = fs.readFileSync(htmlPath, 'utf8');
 const builderSource = fs.readFileSync(builderPath, 'utf8');
 const assetUiSource = fs.readFileSync(assetUiPath, 'utf8');
+const styleCss = fs.readFileSync(stylePath, 'utf8');
 
 function extractFunctionFrom(text, name, label) {
   const re = new RegExp(`(?:^|\\n)[ \\t]*(?:async\\s+)?function\\s+${name}\\s*\\(`);
@@ -123,8 +125,21 @@ const PURE_FUNCTIONS = [
   'recognitionPolygonPayload',
   'ocrAssetPayload',
   'singleAssetPayload',
-  'parseAssetRoiText',
   'parseAssetThresholdText',
+  // B: the canvas ROI editor owns the single set of ROI bounds (the old prompt
+  // text parser was removed with the prompt editor).
+  'assetRoiBoxValid',
+  // P1-1/P1-2: the template replace payload + latest-asset lookup.
+  'assetRoiWithinFrame',
+  'assetRoiRectanglePolygon',
+  'assetRoiPolygonForSave',
+  'assetRoiReplacePayload',
+  'findAssetById',
+  // P1-3: batch test target = the visible library rows next to the button.
+  'batchTestAssetSelection',
+  'batchTestEmptyText',
+  // E: threshold meaning differs per asset kind.
+  'assetThresholdKind',
   'assetCategory',
   'assetCategoryNames',
   'assetMatchesFilter',
@@ -138,7 +153,8 @@ const PURE_FUNCTIONS = [
   'frameSearchStatusText',
   'assetHasFramePosition',
   'assetsForFrame',
-  'assetSourceLabel',
+  // C: per-row API scope for the merged frame-detail surface.
+  'frameAssetScope',
   'frameAssetsSummary',
   'frameAssetIdsByFrame',
   // P1-1: cache-only repaint of the frame rows + current-frame detail after a
@@ -228,9 +244,16 @@ const PURE_FUNCTIONS = [
 
 const sandbox = {};
 vm.createContext(sandbox);
-vm.runInContext(PURE_FUNCTIONS.map(extractFunction).join('\n\n'), sandbox, {
-  filename: 'app.js#pure',
-});
+// app.js stores the unified-global scope label in a top-level const; the pure
+// helpers compare against it (frameAssetScope -> GLOBAL_SCOPE_TASK), so the
+// harness extracts the REAL literal instead of duplicating the string.
+const GLOBAL_SCOPE_LITERAL = (/^const GLOBAL_SCOPE_TASK = '([^']*)';/m.exec(source) || [])[1];
+vm.runInContext(
+  `const GLOBAL_SCOPE_TASK = ${JSON.stringify(GLOBAL_SCOPE_LITERAL || '')};\n` +
+    PURE_FUNCTIONS.map(extractFunction).join('\n\n'),
+  sandbox,
+  { filename: 'app.js#pure' }
+);
 
 const {
   actionShapeFromGeometry,
@@ -349,6 +372,9 @@ function eq(actual, expected, message) {
   // round-trip through JSON so deepStrictEqual compares plain data only.
   assert.deepStrictEqual(JSON.parse(JSON.stringify(actual)), expected, message);
 }
+
+// --- C: the unified-global scope label is one protocol literal ---
+eq(GLOBAL_SCOPE_LITERAL, '（全局素材库）', 'GLOBAL_SCOPE_TASK stays the unified-global protocol label');
 
 // --- boxCenter: selectedBox rows are objects ({box:[x,y,w,h],...}) ---
 eq(boxCenter({ box: [10, 20, 31, 41] }), { x: 26, y: 41 }, 'boxCenter object row');
@@ -866,24 +892,29 @@ const gdomEmpty = installGlobalRenderDom([]);
 sandbox.renderGlobalAssets();
 eq(gdomEmpty.list.textContent, '（暂无全局素材）', 'unfiltered empty state stays 暂无全局素材');
 
-// assetRowElement adds the frame-detail source badge without changing the row
-// returned by the shared OASAssetUI.createRow (and adds nothing without it).
+// Requirement 5: the frame-detail source badge is GONE. assetRowElement must
+// return the shared row untouched (no extra child even for a legacy
+// `sourceLabel` option) and app.js must not contain the badge class anymore.
 const savedWindow = sandbox.window;
 const savedDocument = sandbox.document;
+const sharedRow = { children: [], appendChild(child) { this.children.push(child); } };
 sandbox.window = {
-  OASAssetUI: {
-    createRow: () => ({ children: [], appendChild(child) { this.children.push(child); } }),
-  },
+  OASAssetUI: { createRow: () => sharedRow },
 };
 sandbox.document = {
   createElement: () => ({ className: '', textContent: '', title: '', appendChild() {} }),
 };
-const rowWithBadge = sandbox.assetRowElement({ id: 'a' }, { sourceLabel: '全局/任务' });
-eq(rowWithBadge.children.length, 1, 'source badge is appended to the shared row');
-eq(rowWithBadge.children[0].textContent, '全局/任务', 'source badge text merges both libraries');
-eq(rowWithBadge.children[0].className, 'run-badge kind frame-asset-source', 'source badge reuses the run-badge style');
-const rowWithoutBadge = sandbox.assetRowElement({ id: 'b' }, {});
-eq(rowWithoutBadge.children.length, 0, 'library rows stay badge-free');
+const rowWithLegacyLabel = sandbox.assetRowElement({ id: 'a' }, { sourceLabel: '全局/任务' });
+eq(rowWithLegacyLabel.children.length, 0, 'no source badge is appended (requirement 5)');
+ok(rowWithLegacyLabel === sharedRow, 'assetRowElement returns the shared OASAssetUI row unchanged');
+ok(
+  !/frame-asset-source/.test(source) && !/frame-asset-source/.test(styleCss),
+  'the frame-asset source badge class is removed from app.js and style.css'
+);
+ok(
+  !/function assetSourceLabel\s*\(/.test(source),
+  'assetSourceLabel is deleted instead of left as dead code'
+);
 sandbox.window = savedWindow;
 sandbox.document = savedDocument;
 
@@ -993,9 +1024,15 @@ eq(sandbox.assetsForFrame(null, undefined, 2), [], 'missing libraries are safe')
 ok(sandbox.assetHasFramePosition({ positions: ['2'] }, 2), 'string positions compare numerically');
 ok(!sandbox.assetHasFramePosition({ positions: [2] }, 99), 'asset without the frame is rejected');
 ok(!sandbox.assetHasFramePosition({}, 2), 'missing positions are rejected');
-eq(sandbox.assetSourceLabel(['global', 'task']), '全局/任务', 'source label merges global and task');
-eq(sandbox.assetSourceLabel(['task']), '任务', 'source label handles task only');
-eq(sandbox.assetSourceLabel([]), '', 'source label is empty without sources');
+// C: one API scope per frame-detail row. global (either alone or together with
+// task) writes to the unified store; task-only rows write to the current task.
+eq(sandbox.frameAssetScope({ sources: ['global', 'task'] }, '任务甲'), '（全局素材库）', 'both-source row is global-scoped');
+eq(sandbox.frameAssetScope({ sources: ['global'] }, '任务甲'), '（全局素材库）', 'global-only row is global-scoped');
+eq(sandbox.frameAssetScope({ sources: ['task'] }, '任务甲'), '任务甲', 'task-only row uses the current task');
+eq(sandbox.frameAssetScope({ sources: ['task'] }, '  任务乙  '), '任务乙', 'task scope is trimmed');
+eq(sandbox.frameAssetScope({}, '任务甲'), '任务甲', 'a row without sources falls back to the current task');
+eq(sandbox.frameAssetScope({ sources: ['task'] }, ''), '', 'no task + task-only row yields an empty scope');
+eq(sandbox.frameAssetScope(null, '任务甲'), '任务甲', 'a missing row falls back to the current task');
 const frame2Summary = sandbox.frameAssetsSummary(frame2Rows, 2);
 eq(frame2Summary.total, 3, 'frame summary counts every row');
 eq(frame2Summary.global, 2, 'frame summary counts global rows');
@@ -1004,12 +1041,14 @@ eq(frame2Summary.text, '该帧素材 3 条（全局 2 · 任务 2）', 'frame su
 eq(sandbox.frameAssetsSummary([], 2).text, '该帧没有素材记录', 'frame summary empty state');
 
 // Runtime smoke test for the frame detail list: it must go through the same
-// assetRowElement row builder and pass the per-source scope + source label.
+// assetRowElement row builder, expose the SAME management menu as the global
+// library (manage:true) and pass the per-row API scope (C).
 function installFrameAssetsRenderHarness() {
   const status = fakeElement();
   const list = fakeElement();
   const calls = [];
   const actions = [];
+  const manage = [];
   sandbox.frameAssetsStatus = status;
   sandbox.frameAssetsList = list;
   sandbox.taskName = { value: '任务甲' };
@@ -1017,18 +1056,26 @@ function installFrameAssetsRenderHarness() {
     calls.push({ id: it.id, opts });
     return fakeElement();
   };
-  // MATCH-BUG: record which frame id each frame-detail row action targets.
-  sandbox.runAssetTest = (it, frameId) => actions.push({ action: 'test', id: it.id, frameId });
-  sandbox.testAssetClick = (it, frameId) => actions.push({ action: 'click', id: it.id, frameId });
-  sandbox.testAssetDrag = (it, frameId) => actions.push({ action: 'drag', id: it.id, frameId });
-  sandbox.testAssetCollection = (it, frameId) => actions.push({ action: 'collection', id: it.id, frameId });
-  for (const fn of ['pickAssetRoi', 'generateAssetStep', 'deleteCollection']) {
-    sandbox[fn] = () => {};
+  // MATCH-BUG: record which frame id each frame-detail row action targets, and
+  // C: which API scope each management action hands over.
+  sandbox.runAssetTest = (it, frameId, scope) => actions.push({ action: 'test', id: it.id, frameId, scope });
+  sandbox.testAssetClick = (it, frameId, scope) => actions.push({ action: 'click', id: it.id, frameId, scope });
+  sandbox.testAssetDrag = (it, frameId, scope) => actions.push({ action: 'drag', id: it.id, frameId, scope });
+  sandbox.testAssetCollection = (it, frameId, scope) =>
+    actions.push({ action: 'collection', id: it.id, frameId, scope });
+  sandbox.pickAssetRoi = () => {};
+  sandbox.generateAssetStep = () => {};
+  sandbox.deleteCollection = () => {};
+  for (const fn of [
+    'editAssetRecognitionRoi', 'renameAsset', 'editAssetThreshold',
+    'editAssetPositions', 'deleteAsset', 'editAssetActionRoi',
+  ]) {
+    sandbox[fn] = (it, scope) => actions.push({ action: fn, id: it.id, scope });
   }
   vm.runInContext(extractFunction('renderFrameAssets'), sandbox, {
     filename: 'app.js#frame-assets-render',
   });
-  return { status, list, calls, actions };
+  return { status, list, calls, actions, manage };
 }
 const frameDom = installFrameAssetsRenderHarness();
 const frameDomRows = sandbox.assetsForFrame(frameGlobalAssets, frameTaskAssets, 2);
@@ -1036,11 +1083,16 @@ sandbox.renderFrameAssets({ id: 2 }, frameDomRows);
 eq(frameDom.status.textContent, '该帧素材 3 条（全局 2 · 任务 2）', 'frame detail count line');
 eq(frameDom.calls.map((c) => c.id), ['a', 'b', 'c'], 'frame detail builds one shared row per asset');
 eq(frameDom.calls[0].opts.task, '', 'global rows use the global thumbnail scope');
-eq(frameDom.calls[0].opts.sourceLabel, '全局/任务', 'both-source row is badged 全局/任务');
-eq(frameDom.calls[1].opts.sourceLabel, '全局', 'global-only row is badged 全局');
+eq(frameDom.calls[1].opts.task, '', 'global-only rows use the global thumbnail scope');
 eq(frameDom.calls[2].opts.task, '任务甲', 'task-only rows use the task thumbnail scope');
-eq(frameDom.calls[2].opts.sourceLabel, '任务', 'task-only row is badged 任务');
-ok(frameDom.calls.every((c) => c.opts.manage === false), 'frame rows keep management actions in the libraries');
+ok(
+  frameDom.calls.every((c) => c.opts.sourceLabel === undefined),
+  'frame rows no longer carry a source label/badge'
+);
+ok(
+  frameDom.calls.every((c) => c.opts.manage === true),
+  'frame rows are fully manageable, exactly like the global library'
+);
 eq(frameDom.list.children.length, 3, 'frame detail appends every shared row');
 // MATCH-BUG: every frame-detail row action must pin the frame it was rendered
 // for; otherwise this new surface would silently re-run the saved-position bug.
@@ -1052,12 +1104,32 @@ frame2RowOpts.onCollectionTest({ id: 'a' });
 eq(
   frameDom.actions,
   [
-    { action: 'test', id: 'a', frameId: 2 },
-    { action: 'click', id: 'a', frameId: 2 },
-    { action: 'drag', id: 'a', frameId: 2 },
-    { action: 'collection', id: 'a', frameId: 2 },
+    { action: 'test', id: 'a', frameId: 2, scope: '（全局素材库）' },
+    { action: 'click', id: 'a', frameId: 2, scope: '（全局素材库）' },
+    { action: 'drag', id: 'a', frameId: 2, scope: '（全局素材库）' },
+    { action: 'collection', id: 'a', frameId: 2, scope: '（全局素材库）' },
   ],
-  'frame detail row actions all pass the rendered frame id'
+  'frame detail row actions all pass the rendered frame id + the global scope'
+);
+// C: management callbacks must carry the row scope too (task-only row = 任务甲).
+frameDom.actions.length = 0;
+const taskRowOpts = frameDom.calls[2].opts;
+for (const name of [
+  'onEditRoi', 'onRename', 'onThreshold', 'onPosition', 'onDelete', 'onAction',
+]) {
+  taskRowOpts[name]({ id: 'c' });
+}
+eq(
+  frameDom.actions.map((a) => `${a.action}:${a.scope}`),
+  [
+    'editAssetRecognitionRoi:任务甲',
+    'renameAsset:任务甲',
+    'editAssetThreshold:任务甲',
+    'editAssetPositions:任务甲',
+    'deleteAsset:任务甲',
+    'editAssetActionRoi:任务甲',
+  ],
+  'task-only frame rows pass the current task to every management callback'
 );
 sandbox.renderFrameAssets({ id: 2 }, []);
 eq(frameDom.list.textContent, '该帧没有素材记录', 'frame detail empty state');
@@ -1353,40 +1425,50 @@ eq(
 );
 eq(
   assetUi.assetMenuState(rowTemplate, { manage: true }).filter((m) => m.disabled).map((m) => m.label),
-  ['识别区'],
-  'a manageable template disables 识别区 (the server rejects template ROI updates)'
+  [],
+  'a manageable template enables all nine items (识别区 now re-crops through replace)'
 );
 eq(
   assetUi.assetMenuState(rowTemplate, { manage: true }).filter((m) => !m.disabled).map((m) => m.label),
-  ['点测', '拖测', '操作区', '重命名', '阈值', '位置帧', '删除', '步骤'],
-  'a manageable template keeps the other eight settings enabled'
+  ['点测', '拖测', '识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '步骤'],
+  'every template settings item is actionable on a manageable surface'
 );
 const templateRoiMenu = assetUi.assetMenuState(rowTemplate, { manage: true }).find((m) => m.key === 'roi');
 ok(
-  /模板无识别区（服务端拒绝修改模板 ROI）/.test(templateRoiMenu.title),
-  'the disabled template 识别区 title names the server-side re-crop rule'
+  /画布/.test(templateRoiMenu.title) && !/服务端拒绝修改模板 ROI/.test(templateRoiMenu.title),
+  'template 识别区 is now a canvas editor, not the old rejected-ROI warning'
+);
+ok(
+  !/m\.key === 'roi' && kind === 'template'/.test(assetUiSource),
+  'asset_ui.js no longer carries the template 识别区 disable rule'
 );
 const readOnlyMenu = assetUi.assetMenuState(rowTemplate, { manage: false });
 eq(
   readOnlyMenu.filter((m) => m.disabled).map((m) => m.label),
   ['识别区', '操作区', '重命名', '阈值', '位置帧', '删除'],
-  'manage:false (frame detail) disables every management item'
+  'manage:false disables every management item'
 );
 eq(
   readOnlyMenu.filter((m) => !m.disabled).map((m) => m.label),
   ['点测', '拖测', '步骤'],
   'manage:false keeps the dry-run tests usable'
 );
-eq(
-  assetUi.assetMenuState(rowOcr, { manage: true }).find((m) => m.key === 'threshold').disabled,
-  true,
-  'non-template assets cannot edit a threshold'
+// E: threshold is enabled for template + OCR lines, disabled for region/set.
+const ocrThresholdMenu = assetUi.assetMenuState(rowOcr, { manage: true }).find((m) => m.key === 'threshold');
+eq(ocrThresholdMenu.disabled, false, 'OCR text assets can edit a threshold');
+ok(
+  /OCR 最低置信度（0~1；不设或 0 = 不限制）/.test(ocrThresholdMenu.title),
+  'the OCR threshold title names the minimum-confidence meaning'
 );
-eq(
-  assetUi.assetMenuState(rowTemplate, { manage: true }).find((m) => m.key === 'threshold').disabled,
-  false,
-  'template assets can edit a threshold'
-);
+const ocrLinesThresholdMenu = assetUi
+  .assetMenuState({ id: '多行丁', kind: 'ocr_lines', roi: [1, 2, 3, 4] }, { manage: true })
+  .find((m) => m.key === 'threshold');
+eq(ocrLinesThresholdMenu.disabled, false, 'ocr_lines also exposes the threshold');
+const templateThresholdMenu = assetUi.assetMenuState(rowTemplate, { manage: true }).find((m) => m.key === 'threshold');
+eq(templateThresholdMenu.disabled, false, 'template assets can edit a threshold');
+ok(/模板阈值/.test(templateThresholdMenu.title), 'the template threshold title names the match threshold');
+const regionThresholdMenu = assetUi.assetMenuState(rowRegion, { manage: true }).find((m) => m.key === 'threshold');
+eq(regionThresholdMenu.disabled, true, 'region assets cannot edit a threshold');
 const regionActionMenu = assetUi.assetMenuState(rowRegion, { manage: true }).find((m) => m.key === 'action');
 eq(regionActionMenu.disabled, true, 'region assets disable 操作区');
 ok(/region/.test(regionActionMenu.title), 'the disabled 操作区 title explains the region rule');
@@ -1433,8 +1515,8 @@ ok(
 );
 eq(
   assetMenuButton(tplRow, 'roi').disabled,
-  true,
-  'the rendered template row disables 识别区'
+  false,
+  'the rendered template row keeps 识别区 enabled'
 );
 eq(
   assetMenuButton(assetUi.createRow(rowOcr, assetRowOpts().opts), 'roi').disabled,
@@ -1445,7 +1527,11 @@ const tplRoiHarness = assetRowOpts();
 const tplRoiRow = assetUi.createRow(rowTemplate, tplRoiHarness.opts);
 assetChildren(tplRoiRow, 'asset-row-action')[1].dispatch('click');
 assetMenuButton(tplRoiRow, 'roi').dispatch('click');
-eq(tplRoiHarness.calls, [], 'clicking the disabled template 识别区 never calls onEditRoi');
+eq(
+  tplRoiHarness.calls,
+  [{ action: 'editRoi', id: '模板甲' }],
+  'clicking template 识别区 opens the canvas ROI editor'
+);
 const tplSettings = assetChildren(tplRow, 'asset-row-action')[1];
 tplSettings.dispatch('click');
 ok(tplMenu.classList.contains('open'), 'clicking 设置 opens the inline menu');
@@ -1454,7 +1540,10 @@ ok(!tplMenu.classList.contains('open'), 'clicking 设置 again collapses the men
 tplSettings.dispatch('click');
 assetMenuButton(tplRow, 'rename').dispatch('click');
 eq(tplRowHarness.calls, [{ action: 'rename', id: '模板甲' }], 'a menu item runs the split callback for its row');
-ok(!tplMenu.classList.contains('open'), 'the menu closes after running an item');
+ok(
+  tplMenu.classList.contains('open'),
+  'the settings panel stays open after running an item (requirement 1)'
+);
 
 const readOnlyHarness = assetRowOpts({ manage: false });
 const readOnlyRow = assetUi.createRow(rowTemplate, readOnlyHarness.opts);
@@ -1489,6 +1578,127 @@ eq(
   'compact keeps the old hiding of 点测/拖测/步骤'
 );
 
+// --- A: selected asset row + "settings must not collapse" (requirement 1) ---
+// A fresh asset_ui instance so the module-level selection starts clean.
+const selHarness = installAssetUiHarness();
+const selUi = selHarness.ui;
+eq(selUi.SELECTED_CLASS, 'selected', 'the selected-row modifier class is "selected"');
+ok(
+  /\.asset-row\.selected\b/.test(styleCss),
+  'style.css defines .asset-row.selected (visible highlight in the dark theme)'
+);
+eq(typeof selUi.selectAsset, 'function', 'OASAssetUI.selectAsset is exported');
+eq(typeof selUi.getSelectedAsset, 'function', 'OASAssetUI.getSelectedAsset is exported');
+eq(typeof selUi.closeMenus, 'function', 'OASAssetUI.closeMenus is exported');
+eq(selUi.getSelectedAsset(), '', 'nothing is selected before the first click');
+const selRowA = selUi.createRow({ id: '甲', kind: 'ocr_line', roi: [1, 2, 3, 4] }, assetRowOpts().opts);
+const selRowB = selUi.createRow({ id: '乙', kind: 'ocr_line', roi: [1, 2, 3, 4] }, assetRowOpts().opts);
+ok(!selRowA.classList.contains('selected'), 'a fresh row is not selected');
+
+// 识别 selects the row.
+assetChildren(selRowA, 'asset-row-action')[0].dispatch('click');
+eq(selUi.getSelectedAsset(), '甲', '识别 selects the row');
+ok(selRowA.classList.contains('selected'), 'the clicked row carries the selected class');
+ok(!selRowB.classList.contains('selected'), 'other rows stay unselected');
+
+// 设置 selects + opens; an item click keeps it open (requirement 1).
+assetChildren(selRowA, 'asset-row-action')[1].dispatch('click');
+const selMenuA = assetRowMenu(selRowA);
+ok(selMenuA.classList.contains('open'), '设置 opens the panel for the selected asset');
+assetMenuButton(selRowA, 'rename').dispatch('click');
+ok(selMenuA.classList.contains('open'), 'a settings item never collapses the panel');
+eq(selUi.getSelectedAsset(), '甲', 'using a settings item keeps the row selected');
+
+// Choosing ANOTHER asset closes the old panel and moves the highlight.
+assetChildren(selRowB, 'asset-row-action')[0].dispatch('click');
+ok(!selMenuA.classList.contains('open'), 'selecting another asset closes the previous panel');
+eq(selUi.getSelectedAsset(), '乙', 'the newly clicked asset is selected');
+ok(selRowB.classList.contains('selected') && !selRowA.classList.contains('selected'), 'the highlight moved');
+
+// Re-render (save/refresh) restores the highlight from module state.
+const selRowB2 = selUi.createRow({ id: '乙', kind: 'ocr_line', roi: [1, 2, 3, 4] }, assetRowOpts().opts);
+ok(selRowB2.classList.contains('selected'), 'a re-rendered row restores the selection by asset id');
+const selRowA2 = selUi.createRow({ id: '甲', kind: 'ocr_line', roi: [1, 2, 3, 4] }, assetRowOpts().opts);
+ok(!selRowA2.classList.contains('selected'), 'unselected assets stay unselected after a re-render');
+
+// 设置 again / Esc collapse it; closeMenus() is the public escape hatch.
+assetChildren(selRowB, 'asset-row-action')[1].dispatch('click');
+const selMenuB = assetRowMenu(selRowB);
+ok(selMenuB.classList.contains('open'), '设置 opens the panel again');
+assetChildren(selRowB, 'asset-row-action')[1].dispatch('click');
+ok(!selMenuB.classList.contains('open'), 'clicking 设置 again collapses the panel');
+assetChildren(selRowB, 'asset-row-action')[1].dispatch('click');
+assetChildren(selRowB, 'asset-row-action')[1].dispatch('keydown', { key: 'Escape' });
+ok(!selMenuB.classList.contains('open'), 'Esc collapses the settings panel');
+assetChildren(selRowB, 'asset-row-action')[1].dispatch('click');
+selUi.closeMenus();
+ok(!selMenuB.classList.contains('open'), 'closeMenus() collapses the open panel');
+
+// A disabled item must neither act nor change the selection.
+const roHarness = assetRowOpts({ manage: false });
+const selRoRow = selUi.createRow({ id: '丙', kind: 'template', roi: [1, 2, 3, 4] }, roHarness.opts);
+selUi.selectAsset('乙');
+const roDisabledRename = assetMenuButton(selRoRow, 'rename');
+eq(roDisabledRename.disabled, true, 'read-only rows render disabled management items');
+roDisabledRename.dispatch('click');
+eq(roHarness.calls, [], 'a disabled settings item runs no callback');
+eq(selUi.getSelectedAsset(), '乙', 'a disabled settings item never changes the selection');
+eq(selUi.selectAsset(null), '', 'selectAsset(null) clears the selection');
+eq(selUi.selectAsset(123), '123', 'numeric asset ids are stored as strings');
+
+// P2-3: a list re-render (save/rename/threshold/positions) replaces the DOM row
+// that owned the open settings menu; the fresh row must reopen the panel for
+// the still-selected asset instead of silently collapsing it.
+const restoreHarness = installAssetUiHarness();
+const restoreUi = restoreHarness.ui;
+const restoreRowA = restoreUi.createRow({ id: '甲', kind: 'ocr_line', roi: [1, 2, 3, 4] }, assetRowOpts().opts);
+restoreUi.selectAsset('甲');
+assetChildren(restoreRowA, 'asset-row-action')[1].dispatch('click');
+ok(assetRowMenu(restoreRowA).classList.contains('open'), 'P2-3 setup: settings menu is open');
+const restoreRowA2 = restoreUi.createRow({ id: '甲', kind: 'ocr_line', roi: [1, 2, 3, 4] }, assetRowOpts().opts);
+ok(
+  assetRowMenu(restoreRowA2).classList.contains('open'),
+  'a re-rendered row restores the open settings menu for the selected asset (P2-3)'
+);
+restoreUi.closeMenus();
+const restoreRowA3 = restoreUi.createRow({ id: '甲', kind: 'ocr_line', roi: [1, 2, 3, 4] }, assetRowOpts().opts);
+ok(
+  !assetRowMenu(restoreRowA3).classList.contains('open'),
+  'after closeMenus a re-render does not reopen the menu'
+);
+
+// The browser path defers the restore by one tick so rows are connected and a
+// hidden rail-panel copy cannot steal the menu from the visible surface.
+function installDeferredAssetUiHarness() {
+  const timers = [];
+  const uiSandbox = {
+    window: {},
+    document: { createElement: (tag) => assetDomElement(tag) },
+    Image: function AssetRowTestImage() {},
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
+  };
+  vm.createContext(uiSandbox);
+  vm.runInContext(assetUiSource, uiSandbox, { filename: 'asset_ui.js#deferred-menu' });
+  return { ui: uiSandbox.window.OASAssetUI, timers };
+}
+const deferredHarness = installDeferredAssetUiHarness();
+const deferredUi = deferredHarness.ui;
+const deferredRow = deferredUi.createRow({ id: '甲', kind: 'ocr_line', roi: [1, 2, 3, 4] }, assetRowOpts().opts);
+deferredUi.selectAsset('甲');
+assetChildren(deferredRow, 'asset-row-action')[1].dispatch('click');
+ok(assetRowMenu(deferredRow).classList.contains('open'), 'deferred restore setup: menu is open');
+const deferredRow2 = deferredUi.createRow({ id: '甲', kind: 'ocr_line', roi: [1, 2, 3, 4] }, assetRowOpts().opts);
+ok(
+  !assetRowMenu(deferredRow2).classList.contains('open'),
+  'the menu restore is deferred until the re-rendered row is connected'
+);
+eq(deferredHarness.timers.length, 1, 'one coalesced restore timer is scheduled per re-render');
+deferredHarness.timers.shift()();
+ok(
+  assetRowMenu(deferredRow2).classList.contains('open'),
+  'the deferred restore reopens the menu on the new row'
+);
+
 // Static contracts for the split editors: every surface wires the split
 // callbacks, the row never calls a combined onEdit, and the legacy combined
 // editor is gone (it was dead code: nothing outside the IIFE could reach it).
@@ -1501,8 +1711,9 @@ for (const name of ['renderAssetList', 'renderGlobalAssets', 'renderFrameAssets'
   );
 }
 ok(
-  /m\.key === 'roi' && kind === 'template'/.test(assetUiSource),
-  'asset_ui.js has an explicit template 识别区 disable rule'
+  !/m\.key === 'roi' && kind === 'template'/.test(assetUiSource) &&
+    !/模板无识别区/.test(assetUiSource),
+  'asset_ui.js has no template 识别区 disable rule left'
 );
 const createRowFn = extractFunctionFrom(assetUiSource, 'createRow', 'asset_ui.js');
 ok(!/o\.onEdit\b/.test(createRowFn) && !/onEdit:/.test(createRowFn), 'createRow never invokes a combined onEdit');
@@ -1529,68 +1740,749 @@ ok(
     /await refreshGlobalAssets\(\);/.test(thresholdAssetFn),
   'editAssetThreshold refreshes both asset libraries'
 );
-const roiAssetFn = extractFunction('editAssetRoi');
+// E: template + OCR share the POST, but the prompt/title must say which value it
+// is; region/template_set are rejected before prompting.
 ok(
-  /postJson\('\/task\/asset\/update', \{ task, id: it\.id, roi \}\)/.test(roiAssetFn),
-  'editAssetRoi sends [x,y,w,h] to /task/asset/update'
+  /assetThresholdKind\(it\)/.test(thresholdAssetFn) &&
+    /OCR 最低置信度 0~1（当前/.test(thresholdAssetFn) &&
+    /模板阈值 0~1（当前/.test(thresholdAssetFn),
+  'editAssetThreshold distinguishes the template threshold from the OCR confidence'
 );
 ok(
-  /await refreshTaskAssetsForScope\(task\);/.test(roiAssetFn) &&
-    /await refreshGlobalAssets\(\);/.test(roiAssetFn),
-  'editAssetRoi refreshes both asset libraries'
+  /assetRowScopeTask\(scopeTask, true\)/.test(thresholdAssetFn),
+  'editAssetThreshold accepts the row-scope override'
 );
-const roiGuardIndex = roiAssetFn.indexOf("it.kind === 'template'");
-const roiPromptIndex = roiAssetFn.indexOf('window.prompt');
-const roiPostIndex = roiAssetFn.indexOf("postJson('/task/asset/update'");
+const thresholdKindFn = extractFunction('assetThresholdKind');
 ok(
-  roiGuardIndex >= 0 && roiPromptIndex > roiGuardIndex && roiPostIndex > roiGuardIndex,
-  'editAssetRoi rejects templates before prompting or POSTing (defense in depth)'
+  /return 'template'/.test(thresholdKindFn) && /kind === 'ocr_line' \|\| kind === 'ocr_lines'/.test(thresholdKindFn),
+  'assetThresholdKind enables exactly template / ocr_line / ocr_lines'
 );
-// Execute the guard itself: it must not prompt/POST and must explain why.
-const roiGuardSandbox = {
-  resultEl: { textContent: '' },
-  assetScopeTask: () => '任务甲',
-  postJson: () => { throw new Error('template ROI must never be POSTed'); },
-  window: { prompt: () => { throw new Error('template ROI must never prompt'); } },
-  refreshTaskAssetsForScope: async () => {},
-  refreshGlobalAssets: async () => {},
-  log: () => {},
-  setStatus: () => {},
-  showErrors: () => {},
+eq(sandbox.assetThresholdKind({ kind: 'template' }), 'template', 'template assets use the template threshold');
+eq(sandbox.assetThresholdKind({ kind: 'ocr_line' }), 'ocr', 'ocr_line assets use the OCR confidence');
+eq(sandbox.assetThresholdKind({ kind: 'ocr_lines' }), 'ocr', 'ocr_lines assets use the OCR confidence');
+eq(sandbox.assetThresholdKind({ kind: 'region' }), '', 'region assets have no threshold');
+eq(sandbox.assetThresholdKind({ kind: 'template_set' }), '', 'template_set assets have no threshold');
+eq(sandbox.assetThresholdKind(null), '', 'a missing asset has no threshold');
+// --- B: 识别区 is a CANVAS editor now (no prompt, no typed coordinates) ---
+const roiEditorFn = extractFunction('editAssetRecognitionRoi');
+ok(
+  /resetSelection\(/.test(roiEditorFn) && /pickAssetRoi\(it\)/.test(roiEditorFn),
+  'editAssetRecognitionRoi leaves action modes and loads the asset ROI on the canvas'
+);
+ok(
+  /editingRecognitionAsset = \{ it, scopeTask: task \}/.test(roiEditorFn),
+  'editAssetRecognitionRoi records the asset + row scope being edited'
+);
+ok(/updateAssetRoiSaveButton\(\)/.test(roiEditorFn), 'entering ROI edit enables the save button');
+ok(
+  !/activatePanel\('panel-assets'\)/.test(roiEditorFn),
+  'entering ROI edit never forces the 素材 panel (the button is shared, P0-1)'
+);
+ok(
+  /btnSaveAssetRoi\.addEventListener\('click'/.test(source),
+  'the footer save button keeps its click listener'
+);
+ok(!/window\.prompt/.test(roiEditorFn), 'the old prompt-based ROI editor is gone');
+ok(!/function editAssetRoi\s*\(/.test(source), 'editAssetRoi (prompt version) is deleted');
+const roiSaveFn = extractFunction('saveAssetRecognitionRoi');
+ok(
+  /postJson\('\/task\/save_asset', payload\)/.test(roiSaveFn) &&
+    /assetRoiReplacePayload\(task, it, valid\)/.test(roiSaveFn),
+  'saving a template ROI overwrites through /task/save_asset + the replace payload builder'
+);
+ok(
+  /覆盖模板「\$\{it\.id\}」（rev\+1/.test(roiSaveFn),
+  'the template overwrite confirmation names the asset id and rev+1 (P2-7)'
+);
+ok(
+  /postJson\('\/task\/asset\/update', \{ task, id: it\.id, roi: valid \}\)/.test(roiSaveFn),
+  'OCR/region ROI saves patch /task/asset/update'
+);
+ok(
+  /assetRoiBoxValid\(box\)/.test(roiSaveFn) &&
+    /assetRoiWithinFrame\(valid, canvas\.width, canvas\.height\)/.test(roiSaveFn),
+  'the canvas box is validated (w/h > 0 and inside the frame) before any request'
+);
+ok(
+  /findAssetById\(editing\.scopeTask, editingId/.test(roiSaveFn),
+  'the save re-reads the latest asset by scope+id instead of replaying the entry snapshot (P1-2)'
+);
+ok(
+  /editingRecognitionAsset = null;/.test(roiSaveFn),
+  'a successful save still clears the edit state'
+);
+// P0-2: every way out of the ROI editor goes through the shared cancel helper.
+for (const name of [
+  'pickAssetRoi', 'editAssetRecognitionRoi', 'editAssetActionRoi', 'renameAsset',
+  'editAssetThreshold', 'editAssetPositions', 'deleteAsset', 'runAssetTest',
+  'testAssetClick', 'testAssetDrag', 'generateAssetStep', 'testAssetCollection',
+  'deleteCollection', 'selectFrame', 'deleteFrame', 'clearFrames',
+  'pauseLivePreview', 'startLivePreview', 'saveAssetUnified',
+]) {
+  ok(
+    new RegExp(`cancelRecognitionRoiEdit\\(`).test(extractFunction(name)),
+    `${name} leaves the recognition-ROI editor through cancelRecognitionRoiEdit (P0-2)`
+  );
+}
+const cancelRoiFn = extractFunction('cancelRecognitionRoiEdit');
+ok(
+  /editingRecognitionAsset = null/.test(cancelRoiFn) &&
+    /resetSelection\(\{ clearInvert: true, clearRoi: true, clearBoxes: false/.test(cancelRoiFn) &&
+    /updateAssetRoiSaveButton\(\)/.test(cancelRoiFn),
+  'cancelRecognitionRoiEdit clears the edit target, the canvas ROI and the save button'
+);
+for (const name of ['renderAssetList', 'renderGlobalAssets']) {
+  ok(
+    /onEditRoi: \(it\) => editAssetRecognitionRoi\(it\)/.test(extractFunction(name)),
+    `${name} opens the canvas ROI editor`
+  );
+}
+ok(
+  /onEditRoi: \(it\) => editAssetRecognitionRoi\(it, scopeTask\)/.test(extractFunction('renderFrameAssets')),
+  'frame detail opens the canvas ROI editor with the row scope'
+);
+
+// Behaviour harness for the save path (template overwrite vs OCR patch).
+async function installRoiSaveHarness() {
+  const posts = [];
+  const sb = {
+    confirmText: '',
+    alertText: '',
+    refreshTask: false,
+    refreshGlobal: false,
+    errors: null,
+    buttonUpdates: 0,
+    canceled: null,
+  };
+  vm.createContext(sb);
+  vm.runInContext(
+    'const GLOBAL_SCOPE_TASK = ' + JSON.stringify(GLOBAL_SCOPE_LITERAL) + ';\n' +
+      'let assetsGlobalMode = false;\n' +
+      'let taskName = { value: "任务甲", focus() {} };\n' +
+      'let editingRecognitionAsset = null;\n' +
+      'let roi = null;\n' +
+      'let globalAssetsCache = [];\n' +
+      'let taskAssets = [];\n' +
+      'const canvas = { width: 1280, height: 720 };\n' +
+      'globalThis.resultEl = { textContent: "" };\n' +
+      'const window = {\n' +
+      '  confirm(m) { globalThis.confirmText = m; return globalThis.confirmAnswer !== false; },\n' +
+      '  alert(m) { globalThis.alertText = m; },\n' +
+      '};\n' +
+      'globalThis.postJson = async (url, payload) => {\n' +
+      '  globalThis.posts.push({ url, payload });\n' +
+      '  return { ok: true };\n' +
+      '};\n' +
+      'globalThis.refreshTaskAssetsForScope = async () => { globalThis.refreshTask = true; };\n' +
+      'globalThis.refreshGlobalAssets = async () => { globalThis.refreshGlobal = true; };\n' +
+      'globalThis.log = () => {};\n' +
+      'globalThis.setStatus = () => {};\n' +
+      'globalThis.showErrors = (p, e) => { globalThis.errors = { p, e }; };\n' +
+      'globalThis.updateAssetRoiSaveButton = () => { globalThis.buttonUpdates += 1; };\n' +
+      'globalThis.cancelRecognitionRoiEdit = (reason) => {\n' +
+      '  globalThis.canceled = reason;\n' +
+      '  editingRecognitionAsset = null;\n' +
+      '  globalThis.buttonUpdates += 1;\n' +
+      '};\n' +
+      [assetRowScopeTaskFn(), assetScopeTaskFn(), assetRoiBoxValidFn(),
+        extractFunction('assetRoiWithinFrame'),
+        extractFunction('assetRoiRectanglePolygon'),
+        extractFunction('assetRoiPolygonForSave'),
+        extractFunction('assetRoiReplacePayload'),
+        extractFunction('findAssetById'),
+        roiSaveFn].join('\n\n'),
+    sb,
+    { filename: 'app.js#asset-roi-save' }
+  );
+  sb.posts = posts;
+  sb.run = async (asset, box, opts) => {
+    const o = opts || {};
+    const latest = o.latest !== undefined ? o.latest : asset;
+    const globalItems = o.globalItems !== undefined ? o.globalItems : [latest];
+    const taskItems = o.taskItems !== undefined ? o.taskItems : [latest];
+    if (o.frameWidth != null) vm.runInContext(`canvas.width = ${Number(o.frameWidth)};`, sb);
+    if (o.frameHeight != null) vm.runInContext(`canvas.height = ${Number(o.frameHeight)};`, sb);
+    vm.runInContext(
+      `editingRecognitionAsset = { it: ${JSON.stringify(asset)}, scopeTask: ${JSON.stringify(o.scope || '')} };` +
+        `roi = ${JSON.stringify(box)};` +
+        `globalAssetsCache = ${JSON.stringify(globalItems)};` +
+        `taskAssets = ${JSON.stringify(taskItems)};` +
+        'globalThis.canceled = null;',
+      sb
+    );
+    const edited = await sb.saveAssetRecognitionRoi();
+    const stillEditing = vm.runInContext('editingRecognitionAsset', sb);
+    return { edited, stillEditing };
+  };
+  return sb;
+}
+
+function assetScopeTaskFn() {
+  return extractFunction('assetScopeTask');
+}
+function assetRowScopeTaskFn() {
+  return extractFunction('assetRowScopeTask');
+}
+function assetRoiBoxValidFn() {
+  return extractFunction('assetRoiBoxValid');
+}
+
+// The save path is async, so it runs in the promise chain at the bottom.
+async function checkAssetRoiSavePath() {
+  const roiSave = await installRoiSaveHarness();
+  const tplAsset = {
+    id: '模板甲',
+    kind: 'template',
+    roi: [1, 2, 3, 4],
+    threshold: 0.9,
+    positions: [7, 8],
+    action_source: 'fixed',
+    action_shape: { kind: 'rect', roi: [5, 6, 7, 8] },
+  };
+  const saved = await roiSave.run(tplAsset, { x: 10, y: 20, w: 30, h: 40 }, { scope: '任务乙' });
+  eq(
+    roiSave.confirmText,
+    '用当前帧重新截图并覆盖模板「模板甲」（rev+1，不可撤销；位置帧 2 个）？',
+    'template overwrite asks the exact confirmation with the asset id (P2-7)'
+  );
+  eq(roiSave.posts.length, 1, 'template ROI save posts exactly once');
+  eq(roiSave.posts[0].url, '/task/save_asset', 'template ROI save uses the overwrite endpoint');
+  eq(
+    roiSave.posts[0].payload,
+    {
+      task: '任务乙',
+      replace: true,
+      id: '模板甲',
+      kind: 'template',
+      roi: [10, 20, 30, 40],
+      positions: [7, 8],
+      action_source: 'fixed',
+      threshold: 0.9,
+      action_shape: { kind: 'rect', roi: [5, 6, 7, 8] },
+    },
+    'template overwrite payload preserves id/positions/threshold/action_shape and replaces roi'
+  );
+  ok(roiSave.refreshTask && roiSave.refreshGlobal, 'template ROI save refreshes both libraries');
+  eq(saved.stillEditing, null, 'saving clears the recognition-edit state');
+  ok(roiSave.buttonUpdates >= 1, 'saving re-disables the save button');
+
+  // Cancelling the confirm must not POST (and must stay in edit mode).
+  roiSave.posts.length = 0;
+  roiSave.confirmAnswer = false;
+  const cancelled = await roiSave.run(tplAsset, { x: 10, y: 20, w: 30, h: 40 }, { scope: '任务乙' });
+  roiSave.confirmAnswer = true;
+  eq(roiSave.posts.length, 0, 'cancelling the template overwrite posts nothing');
+  ok(cancelled.stillEditing && cancelled.stillEditing.it.id === '模板甲', 'cancelling keeps the ROI editor open');
+
+  // P1-2: threshold/positions were changed in the still-open settings menu after
+  // the ROI editor captured its snapshot. The save must use the latest object.
+  roiSave.posts.length = 0;
+  const drifted = Object.assign({}, tplAsset, { threshold: 0.6, positions: [9] });
+  await roiSave.run(tplAsset, { x: 10, y: 20, w: 30, h: 40 }, { scope: '任务乙', latest: drifted });
+  eq(
+    roiSave.posts[0].payload,
+    {
+      task: '任务乙',
+      replace: true,
+      id: '模板甲',
+      kind: 'template',
+      roi: [10, 20, 30, 40],
+      positions: [9],
+      action_source: 'fixed',
+      threshold: 0.6,
+      action_shape: { kind: 'rect', roi: [5, 6, 7, 8] },
+    },
+    'template ROI save uses the latest threshold/positions, never the entry snapshot (P1-2)'
+  );
+
+  // P1-1: a template polygon whose bbox equals the new ROI is preserved as-is.
+  roiSave.posts.length = 0;
+  const matchingPolygon = [[10, 20], [39, 20], [39, 59], [10, 59]];
+  const polygonTpl = Object.assign({}, tplAsset, { roi: [10, 20, 30, 40], polygon: matchingPolygon });
+  await roiSave.run(polygonTpl, { x: 10, y: 20, w: 30, h: 40 }, { scope: '任务乙', latest: polygonTpl });
+  eq(
+    roiSave.posts[0].payload.polygon,
+    matchingPolygon,
+    'template overwrite keeps an existing recognition polygon (P1-1)'
+  );
+
+  // P1-1: a stale polygon must NOT be dropped (that loses the mask) and must not
+  // make the server derive the old ROI either. It is re-synced to the new box.
+  roiSave.posts.length = 0;
+  const stalePolygon = [[1, 2], [3, 2], [3, 5], [1, 5]];
+  const staleTpl = Object.assign({}, tplAsset, { polygon: stalePolygon });
+  await roiSave.run(staleTpl, { x: 10, y: 20, w: 30, h: 40 }, { scope: '任务乙', latest: staleTpl });
+  eq(
+    roiSave.posts[0].payload.polygon,
+    [[10, 20], [39, 20], [39, 59], [10, 59]],
+    'a stale template polygon is re-synced to the new ROI rectangle (not dropped, not the old bbox)'
+  );
+  eq(roiSave.posts[0].payload.roi, [10, 20, 30, 40], 'the new ROI still wins over the stale polygon bbox');
+
+  // P2-6: a template without positions must never reach the server.
+  roiSave.posts.length = 0;
+  roiSave.alertText = '';
+  const noPos = Object.assign({}, tplAsset, { positions: [] });
+  const noPosRun = await roiSave.run(noPos, { x: 10, y: 20, w: 30, h: 40 }, { scope: '任务乙', latest: noPos });
+  eq(roiSave.posts.length, 0, 'a template with no positions never POSTs');
+  ok(/位置帧/.test(roiSave.alertText), 'a template with no positions explains the missing 位置帧');
+  ok(noPosRun.stillEditing, 'the ROI editor stays open so the user can add positions');
+
+  // P2-9: the box must fit the current frame.
+  roiSave.posts.length = 0;
+  roiSave.alertText = '';
+  await roiSave.run(
+    tplAsset,
+    { x: 90, y: 90, w: 30, h: 30 },
+    { scope: '任务乙', frameWidth: 100, frameHeight: 100 }
+  );
+  eq(roiSave.posts.length, 0, 'an out-of-frame box never reaches the server');
+  ok(/超出当前帧 100x100/.test(roiSave.alertText), 'an out-of-frame box explains the frame bounds');
+
+  // P0-2/P1-2: a deleted/renamed asset cancels instead of writing the old id.
+  roiSave.posts.length = 0;
+  await roiSave.run(tplAsset, { x: 10, y: 20, w: 30, h: 40 }, { scope: '任务乙', latest: null });
+  eq(roiSave.posts.length, 0, 'a missing asset never POSTs');
+  eq(roiSave.canceled, '素材已不存在', 'a missing asset cancels the ROI editor');
+  ok(/已不存在/.test(roiSave.resultEl.textContent), 'a missing asset explains why the save was cancelled');
+
+  // OCR path: patch the ROI directly, no confirm (latest lookup still applies).
+  roiSave.posts.length = 0;
+  roiSave.confirmText = '';
+  await roiSave.run(
+    { id: '文字乙', kind: 'ocr_line', roi: [1, 2, 3, 4], positions: [7] },
+    { x: 5, y: 6, w: 7, h: 8 }
+  );
+  eq(roiSave.posts.length, 1, 'OCR ROI save posts exactly once');
+  eq(roiSave.posts[0].url, '/task/asset/update', 'OCR ROI save patches the asset');
+  eq(
+    roiSave.posts[0].payload,
+    { task: '任务甲', id: '文字乙', roi: [5, 6, 7, 8] },
+    'OCR ROI save sends only {task,id,roi}'
+  );
+  eq(roiSave.confirmText, '', 'OCR ROI save never asks the template overwrite question');
+
+  // Invalid canvas box (w/h <= 0) must be rejected before any request.
+  roiSave.posts.length = 0;
+  await roiSave.run({ id: '文字乙', kind: 'ocr_line', roi: [1, 2, 3, 4] }, { x: 5, y: 6, w: 0, h: 8 });
+  eq(roiSave.posts.length, 0, 'an empty canvas box never reaches the server');
+  ok(/识别区无效/.test(roiSave.alertText), 'an empty canvas box explains what to do');
+}
+
+// P1-3 behaviour: the batch handler must POST the visible library rows and the
+// matching API scope (global store vs task bundle), and render a surface-specific
+// message when the visible set is empty.
+async function checkBatchTestScope() {
+  const calls = [];
+  const sb = {
+    assetsGlobalMode: true,
+    globalAssetsCache: [
+      { id: '甲', kind: 'template' },
+      { id: '乙', kind: 'ocr_line' },
+      { id: '集合', kind: 'template_set', members: ['甲'] },
+    ],
+    taskAssets: [{ id: '任务子集', kind: 'template' }],
+    globalAssetSearch: { value: '' },
+    globalAssetCategoryFilter: { value: '' },
+    assetSearch: { value: '' },
+    assetCategoryFilter: { value: '' },
+    taskName: { value: '任务甲', focus() {} },
+    livePreview: false,
+    resultEl: { textContent: '' },
+    postJson: async (url, payload) => {
+      calls.push({ url, payload });
+      return { ok: true, results: [], passed: 0, total: 0 };
+    },
+    log: () => {},
+  };
+  vm.createContext(sb);
+  vm.runInContext(
+    'const GLOBAL_SCOPE_TASK = ' + JSON.stringify(GLOBAL_SCOPE_LITERAL) + ';\n' +
+    [assetScopeTaskFn(), extractFunction('assetCategory'), extractFunction('assetMatchesFilter'),
+      extractFunction('filterAssets'), extractFunction('batchTestAssetSelection'),
+      extractFunction('batchTestEmptyText'), extractFunction('batchTestAssets')].join('\n\n'),
+    sb,
+    { filename: 'app.js#batch-test' }
+  );
+
+  await sb.batchTestAssets();
+  eq(calls.length, 1, 'global batch test posts once');
+  eq(calls[0].url, '/task/assets/batch_test', 'global batch test uses /task/assets/batch_test');
+  eq(calls[0].payload.task, GLOBAL_SCOPE_LITERAL, 'global batch test uses the unified-global API scope');
+  eq(calls[0].payload.assets, ['甲', '乙'], 'global batch test posts the visible global ids (not the task subset)');
+  eq(calls[0].payload.live, false, 'batch test forwards the live flag');
+
+  sb.globalAssetSearch.value = '乙';
+  await sb.batchTestAssets();
+  eq(calls[1].payload.assets, ['乙'], 'global batch test respects the visible id-search filter');
+
+  sb.globalAssetSearch.value = '';
+  sb.globalAssetCategoryFilter.value = '不存在的分类';
+  await sb.batchTestAssets();
+  eq(calls.length, 2, 'an empty visible global set never posts');
+  ok(/全局素材库/.test(sb.resultEl.textContent), 'the empty global set message names the global library');
+
+  sb.globalAssetCategoryFilter.value = '';
+  sb.taskName.value = '';
+  calls.length = 0;
+  await sb.batchTestAssets();
+  eq(calls.length, 1, 'global batch test does not require a task name');
+  eq(calls[0].payload.task, GLOBAL_SCOPE_LITERAL, 'global batch test keeps the global scope without a task');
+  eq(calls[0].payload.assets, ['甲', '乙'], 'global batch test still posts the visible global ids');
+
+  sb.taskName.value = '任务甲';
+  sb.assetsGlobalMode = false;
+  await sb.batchTestAssets();
+  eq(calls[1].payload.task, '任务甲', 'task-mode batch test uses the selected task name');
+  eq(calls[1].payload.assets, ['任务子集'], 'task-mode batch test posts the visible task ids');
+
+  sb.taskName.value = '';
+  await sb.batchTestAssets();
+  eq(calls.length, 2, 'task mode without a task posts nothing');
+  ok(/请先填任务名/.test(sb.resultEl.textContent), 'task mode without a task still asks for one');
+}
+
+// --- E: threshold prompts for template AND OCR, never for region ---
+async function checkAssetThresholdPrompts() {
+  const posts = [];
+  const sb = {
+    promptAnswer: null,
+    promptText: '',
+    promptDefault: '',
+    alertText: '',
+  };
+  vm.createContext(sb);
+  vm.runInContext(
+    'const GLOBAL_SCOPE_TASK = ' + JSON.stringify(GLOBAL_SCOPE_LITERAL) + ';\n' +
+      'let assetsGlobalMode = false;\n' +
+      'let taskName = { value: "任务甲", focus() {} };\n' +
+      'globalThis.resultEl = { textContent: "" };\n' +
+      'const window = {\n' +
+      '  prompt(m, def) { globalThis.promptText = m; globalThis.promptDefault = def; return globalThis.promptAnswer; },\n' +
+      '  alert(m) { globalThis.alertText = m; },\n' +
+      '};\n' +
+      'globalThis.postJson = async (url, payload) => {\n' +
+      '  globalThis.posts.push({ url, payload });\n' +
+      '  return { ok: true };\n' +
+      '};\n' +
+      'globalThis.refreshTaskAssetsForScope = async () => {};\n' +
+      'globalThis.refreshGlobalAssets = async () => {};\n' +
+      'globalThis.log = () => {};\n' +
+      'globalThis.setStatus = () => {};\n' +
+      'globalThis.showErrors = () => {};\n' +
+      'globalThis.cancelRecognitionRoiEdit = () => {};\n' +
+      [assetScopeTaskFn(), assetRowScopeTaskFn(), extractFunction('parseAssetThresholdText'),
+        extractFunction('assetThresholdKind'), extractFunction('editAssetThreshold')].join('\n\n'),
+    sb,
+    { filename: 'app.js#asset-threshold' }
+  );
+  sb.posts = posts;
+
+  sb.promptAnswer = '0.75';
+  await sb.editAssetThreshold({ id: '模板甲', kind: 'template', threshold: 0.9 });
+  ok(/模板阈值 0~1/.test(sb.promptText), 'the template threshold prompt says 模板阈值');
+  eq(sb.promptDefault, '0.9', 'the template prompt starts from the stored threshold');
+  eq(sb.posts[0], { url: '/task/asset/update', payload: { task: '任务甲', id: '模板甲', threshold: 0.75 } },
+    'the template threshold POSTs {task,id,threshold}');
+
+  // P2-4: an unset template has no "unlimited" mode; the effective default is
+  // 0.85 (oas-task DEFAULT_THRESHOLD), and the prompt must say so.
+  sb.posts.length = 0;
+  sb.promptAnswer = '0.85';
+  await sb.editAssetThreshold({ id: '模板丁', kind: 'template' });
+  ok(/0\.85/.test(sb.promptText), 'an unset template prompt shows the effective default 0.85');
+  ok(/未保存，按默认 0\.85/.test(sb.promptText), 'an unset template prompt explains the default is not "unlimited"');
+  eq(sb.promptDefault, '0.85', 'an unset template prompt pre-fills 0.85');
+
+  sb.posts.length = 0;
+  sb.promptAnswer = '0.6';
+  await sb.editAssetThreshold({ id: '文字乙', kind: 'ocr_line', roi: [1, 2, 3, 4] });
+  ok(/OCR 最低置信度 0~1/.test(sb.promptText), 'the OCR prompt says OCR 最低置信度');
+  ok(/0 = 不限制/.test(sb.promptText), 'the OCR prompt documents the 0/unset unlimited semantics (P1-4)');
+  eq(sb.promptDefault, '', 'an unset OCR threshold starts empty');
+  eq(sb.posts[0], { url: '/task/asset/update', payload: { task: '任务甲', id: '文字乙', threshold: 0.6 } },
+    'the OCR confidence POSTs {task,id,threshold}');
+
+  // P1-4: the runtime normalizes an explicit 0 to "no filter"; the UI must say
+  // so and let the user clear the OCR threshold by writing 0.
+  sb.posts.length = 0;
+  sb.promptAnswer = '0';
+  await sb.editAssetThreshold({ id: '文字乙', kind: 'ocr_line', roi: [1, 2, 3, 4], threshold: 0 });
+  ok(/0（不限制）/.test(sb.promptText), 'a stored OCR 0 reads back as unlimited');
+  eq(sb.promptDefault, '0', 'a stored OCR 0 keeps its literal value in the prompt');
+  eq(sb.posts[0].payload.threshold, 0, 'writing 0 is the documented way to clear the OCR threshold');
+
+  sb.posts.length = 0;
+  sb.promptText = '';
+  await sb.editAssetThreshold({ id: '区域丙', kind: 'region', roi: [1, 2, 3, 4] });
+  eq(sb.promptText, '', 'region assets never open a threshold prompt');
+  ok(/不支持阈值/.test(sb.resultEl.textContent), 'region assets explain that they have no threshold');
+  eq(sb.posts.length, 0, 'region assets never POST a threshold');
+
+  sb.posts.length = 0;
+  sb.promptAnswer = '1.5';
+  await sb.editAssetThreshold({ id: '文字乙', kind: 'ocr_line', roi: [1, 2, 3, 4] });
+  eq(sb.posts.length, 0, 'an out-of-range OCR threshold is never sent');
+  ok(/阈值必须是 0~1/.test(sb.alertText), 'an out-of-range threshold is reported to the user');
+}
+
+
+// The DOM button helper: hidden+disabled until an edit starts.
+const roiBtn = { hidden: true, disabled: true, title: '' };
+const roiBtnLabel = { hidden: true, textContent: '' };
+const roiBtnSb = {
+  btnSaveAssetRoi: roiBtn,
+  assetRoiEditLabel: roiBtnLabel,
+  editingRecognitionAsset: null,
 };
-vm.createContext(roiGuardSandbox);
-vm.runInContext(roiAssetFn, roiGuardSandbox, { filename: 'app.js#editAssetRoi-guard' });
-roiGuardSandbox.editAssetRoi({ id: '模板甲', kind: 'template', roi: [10, 20, 30, 40] });
-ok(
-  /模板「模板甲」/.test(roiGuardSandbox.resultEl.textContent) &&
-    /服务端拒绝修改模板 ROI/.test(roiGuardSandbox.resultEl.textContent),
-  'editAssetRoi explains the template ROI guard without prompting'
-);
-roiGuardSandbox.resultEl.textContent = '';
-roiGuardSandbox.editAssetRoi({ id: '集合丁', kind: 'template_set', members: ['a'] });
+vm.createContext(roiBtnSb);
+vm.runInContext(extractFunction('updateAssetRoiSaveButton'), roiBtnSb);
+roiBtnSb.editingRecognitionAsset = { it: { id: '模板甲', kind: 'template' }, scopeTask: '任务甲' };
+roiBtnSb.updateAssetRoiSaveButton();
+eq([roiBtn.hidden, roiBtn.disabled], [false, false], 'an active ROI edit shows and enables the save button');
+ok(/模板/.test(roiBtn.title) && /rev\+1/.test(roiBtn.title), 'the button title explains the template overwrite');
+eq([roiBtnLabel.hidden, roiBtnLabel.textContent], [false, '识别区编辑中：模板甲'],
+  'the footer label names the asset being edited (P0-1)');
+roiBtnSb.editingRecognitionAsset = null;
+roiBtnSb.updateAssetRoiSaveButton();
+eq([roiBtn.hidden, roiBtn.disabled], [true, true], 'leaving ROI edit hides and disables the save button');
+eq([roiBtnLabel.hidden, roiBtnLabel.textContent], [true, ''], 'leaving ROI edit hides the asset label');
+
+// Guard: no ROI editor for template_set / assets without roi.
+const roiEditSb = {
+  resultEl: { textContent: '' },
+  window: {},
+  livePreview: false,
+  resetSelection: () => { throw new Error('template_set must not start a canvas edit'); },
+  pickAssetRoi: () => {},
+  cancelRecognitionRoiEdit: () => {},
+  updateAssetRoiSaveButton: () => {},
+  updateRoiLabel: () => {},
+  draw: () => {},
+  log: () => {},
+  assetScopeTask: () => '任务甲',
+};
+vm.createContext(roiEditSb);
+vm.runInContext(assetRowScopeTaskFn() + '\n' + roiEditorFn, roiEditSb);
+roiEditSb.editAssetRecognitionRoi({ id: '集合丁', kind: 'template_set', members: ['a'] });
+eq(roiEditSb.resultEl.textContent, '素材集合「集合丁」没有识别区域', 'template_set cannot enter ROI edit');
+roiEditSb.editAssetRecognitionRoi({ id: '无区域', kind: 'ocr_line' });
 eq(
-  roiGuardSandbox.resultEl.textContent,
-  '素材集合「集合丁」没有识别区域',
-  'editAssetRoi rejects template_set rows too'
+  roiEditSb.resultEl.textContent,
+  '素材「无区域」没有识别区域，无法在画布上编辑',
+  'an asset without roi cannot enter the canvas editor'
 );
-eq(sandbox.parseAssetRoiText('10,20,30,40'), [10, 20, 30, 40], 'ROI text parses four commas');
-eq(sandbox.parseAssetRoiText('10，20 30\t40'), [10, 20, 30, 40], 'ROI text accepts the Chinese comma and whitespace');
-eq(sandbox.parseAssetRoiText('0,0,1,1'), [0, 0, 1, 1], 'ROI text accepts zero origin and positive size');
-eq(sandbox.parseAssetRoiText('10,20,30'), null, 'ROI text rejects fewer than four numbers');
-eq(sandbox.parseAssetRoiText('-1,2,3,4'), null, 'ROI text rejects negative coordinates');
-eq(sandbox.parseAssetRoiText('1.5,2,3,4'), null, 'ROI text rejects non-integers');
-eq(sandbox.parseAssetRoiText('0,0,0,0'), null, 'ROI text rejects a zero-sized recognition box');
-eq(sandbox.parseAssetRoiText('10,20,0,40'), null, 'ROI text rejects zero width');
-eq(sandbox.parseAssetRoiText('10,20,30,0'), null, 'ROI text rejects zero height');
-eq(sandbox.parseAssetRoiText('0,0,100001,40'), null, 'ROI text rejects values above the 100000 sanity cap');
-eq(sandbox.parseAssetRoiText('1e2,20,30,40'), null, 'ROI text rejects exponent notation');
-eq(sandbox.parseAssetRoiText('0x10,20,30,40'), null, 'ROI text rejects hex notation');
+
+// --- P0-2 behaviour: selecting another asset cancels the ROI editor ---
+function installRoiCancelHarness() {
+  const sb = {
+    editingRecognitionAsset: null,
+    roi: null,
+    dragStart: null,
+    dragTarget: 'roi',
+    lastLinesRoi: null,
+    polygon: null,
+    polyClosed: false,
+    resetSelectionCalls: 0,
+    roiLabels: 0,
+    draws: 0,
+    statusText: '',
+    btnSaveAssetRoi: { hidden: true, disabled: true, title: '' },
+    assetRoiEditLabel: { hidden: true, textContent: '' },
+    resultEl: { textContent: '' },
+    loadActionShapeForEdit: () => {},
+    actionShapeBBox: () => null,
+  };
+  sb.resetSelection = (opts) => {
+    sb.resetSelectionCalls += 1;
+    if (opts && opts.clearRoi) sb.roi = null;
+  };
+  sb.updateRoiLabel = () => { sb.roiLabels += 1; };
+  sb.draw = () => { sb.draws += 1; };
+  sb.setStatus = (text) => { sb.statusText = text; };
+  sb.log = () => {};
+  vm.createContext(sb);
+  vm.runInContext(
+    [extractFunction('updateAssetRoiSaveButton'), cancelRoiFn,
+      extractFunction('pickAssetRoi')].join('\n\n'),
+    sb,
+    { filename: 'app.js#asset-roi-cancel' }
+  );
+  return sb;
+}
+
+const roiCancel = installRoiCancelHarness();
+roiCancel.editingRecognitionAsset = { it: { id: '甲', kind: 'ocr_line' }, scopeTask: '任务甲' };
+roiCancel.roi = { x: 1, y: 2, w: 3, h: 4 };
+roiCancel.updateAssetRoiSaveButton();
+eq(
+  [roiCancel.btnSaveAssetRoi.hidden, roiCancel.btnSaveAssetRoi.disabled],
+  [false, false],
+  'P0-2 setup: the save button is armed for asset 甲'
+);
+roiCancel.pickAssetRoi({ id: '乙', kind: 'ocr_line', roi: [5, 6, 7, 8] });
+eq(roiCancel.editingRecognitionAsset, null, 'selecting another asset clears the recognition-edit target');
+eq(
+  [roiCancel.btnSaveAssetRoi.hidden, roiCancel.btnSaveAssetRoi.disabled],
+  [true, true],
+  'selecting another asset disables/hides the save button (P0-2)'
+);
+eq(roiCancel.assetRoiEditLabel.hidden, true, 'selecting another asset hides the editing label');
+eq(roiCancel.roi, { x: 5, y: 6, w: 7, h: 8 }, 'the canvas ROI then belongs to the newly selected asset');
+eq(roiCancel.resetSelectionCalls, 1, 'cancelling resets the canvas selection exactly once');
+eq(roiCancel.dragTarget, 'roi', 'cancelling restores the default drag target');
+eq(roiCancel.lastLinesRoi, null, 'cancelling drops the stale line-ROI cache');
+eq(
+  roiCancel.statusText,
+  '已取消素材「甲」的识别区编辑（选中其它素材）',
+  'cancelling explains which asset was left and why'
+);
+
+roiCancel.editingRecognitionAsset = { it: { id: '丙', kind: 'template' }, scopeTask: '任务甲' };
+roiCancel.updateAssetRoiSaveButton();
+const escCancelled = roiCancel.cancelRecognitionRoiEdit('Esc');
+eq(escCancelled, true, 'cancelRecognitionRoiEdit reports that it cancelled an active edit');
+ok(/Esc/.test(roiCancel.statusText), 'the cancel reason is surfaced to the user');
+eq(
+  [roiCancel.btnSaveAssetRoi.hidden, roiCancel.btnSaveAssetRoi.disabled],
+  [true, true],
+  'the Esc path also disables/hides the save button'
+);
+eq(roiCancel.cancelRecognitionRoiEdit('再次取消'), false, 'cancelling without an active edit is a no-op');
+
+eq(sandbox.assetRoiBoxValid([10, 20, 30, 40]), [10, 20, 30, 40], 'a valid canvas box is normalized');
+eq(sandbox.assetRoiBoxValid([10, 20, 0, 40]), null, 'a zero-width canvas box is rejected');
+eq(sandbox.assetRoiBoxValid([10, 20, 30]), null, 'a canvas box needs four values');
+eq(sandbox.assetRoiBoxValid([-1, 20, 30, 40]), null, 'a negative canvas origin is rejected');
+eq(sandbox.assetRoiBoxValid([0, 0, 100001, 40]), null, 'a canvas box above the 100000 cap is rejected');
+eq(sandbox.assetRoiBoxValid([1.5, 2, 3, 4]), null, 'a fractional canvas box is rejected');
+ok(!/function parseAssetRoiText\s*\(/.test(source), 'the dead prompt ROI text parser is removed');
 eq(sandbox.parseAssetThresholdText('0.8'), 0.8, 'threshold text parses 0.8');
 eq(sandbox.parseAssetThresholdText('0'), 0, 'threshold text accepts 0');
 eq(sandbox.parseAssetThresholdText('1'), 1, 'threshold text accepts 1');
 eq(sandbox.parseAssetThresholdText('1.2'), null, 'threshold text rejects values above 1');
 eq(sandbox.parseAssetThresholdText('-0.1'), null, 'threshold text rejects negative values');
 eq(sandbox.parseAssetThresholdText('  '), null, 'empty threshold text is cancelled, not 0');
+
+// --- P1-1/P1-2/P2-9: template replace payload, polygon sync, latest lookup ---
+eq(sandbox.assetRoiWithinFrame([10, 20, 30, 40], 1280, 720).ok, true, 'an in-frame ROI passes the frame check');
+eq(sandbox.assetRoiWithinFrame([1270, 700, 30, 40], 1280, 720).ok, false, 'a ROI crossing the frame edge is rejected');
+ok(
+  /超出当前帧 1280x720/.test(sandbox.assetRoiWithinFrame([1270, 700, 30, 40], 1280, 720).text),
+  'an out-of-frame ROI explains the frame bounds'
+);
+eq(sandbox.assetRoiWithinFrame([10, 20, 30, 40], 0, 0).ok, true, 'unknown frame size skips the frame-bounds check');
+eq(sandbox.assetRoiWithinFrame([10, 20, 0, 40], 1280, 720).ok, false, 'an invalid box also fails the frame check');
+eq(
+  sandbox.assetRoiRectanglePolygon([10, 20, 30, 40]),
+  [[10, 20], [39, 20], [39, 59], [10, 59]],
+  'rectangle polygon uses inclusive max = origin + size - 1'
+);
+eq(sandbox.assetRoiPolygonForSave(null, [10, 20, 30, 40]), null, 'no stored polygon stays polygon-free');
+eq(
+  sandbox.assetRoiPolygonForSave([[10, 20], [39, 20], [39, 59], [10, 59]], [10, 20, 30, 40]),
+  [[10, 20], [39, 20], [39, 59], [10, 59]],
+  'a polygon that still bounds the new ROI is preserved'
+);
+eq(
+  sandbox.assetRoiPolygonForSave([[1, 2], [3, 2], [3, 5], [1, 5]], [10, 20, 30, 40]),
+  [[10, 20], [39, 20], [39, 59], [10, 59]],
+  'a stale polygon is re-synced to the new ROI rectangle instead of being dropped'
+);
+const payloadAsset = {
+  id: '模板甲',
+  kind: 'template',
+  roi: [1, 2, 3, 4],
+  positions: [7, 8],
+  action_source: 'fixed',
+  action_shape: { kind: 'rect', roi: [5, 6, 7, 8] },
+  threshold: 0.9,
+  polygon: [[1, 2], [3, 2], [3, 5], [1, 5]],
+  ocr_mode: null,
+  ocr_text: null,
+};
+eq(
+  sandbox.assetRoiReplacePayload('任务甲', payloadAsset, [10, 20, 30, 40]),
+  {
+    task: '任务甲',
+    replace: true,
+    id: '模板甲',
+    kind: 'template',
+    roi: [10, 20, 30, 40],
+    positions: [7, 8],
+    action_source: 'fixed',
+    threshold: 0.9,
+    action_shape: { kind: 'rect', roi: [5, 6, 7, 8] },
+    polygon: [[10, 20], [39, 20], [39, 59], [10, 59]],
+  },
+  'the replace payload carries every persisted field and only replaces roi (P1-1)'
+);
+
+const globalRow = { id: '甲', kind: 'ocr_line', threshold: 0.9 };
+const taskRow = { id: '甲', kind: 'ocr_line', threshold: 0.4 };
+eq(
+  sandbox.findAssetById(GLOBAL_SCOPE_LITERAL, '甲', { global: [globalRow], task: [taskRow] }),
+  globalRow,
+  'global scope resolves the asset from the global cache first'
+);
+eq(
+  sandbox.findAssetById('任务乙', '甲', { global: [globalRow], task: [taskRow] }),
+  taskRow,
+  'task scope resolves the asset from the task cache first'
+);
+eq(
+  sandbox.findAssetById('任务乙', '不存在', { global: [globalRow], task: [taskRow] }),
+  null,
+  'a missing asset id resolves to null (save must cancel)'
+);
+eq(
+  sandbox.findAssetById('任务乙', '甲', { global: [globalRow], task: [] }),
+  globalRow,
+  'an unloaded scoped cache may fall back to the other cache'
+);
+eq(
+  sandbox.findAssetById('任务乙', '甲', { global: [globalRow], task: [{ id: '乙' }] }),
+  null,
+  'a loaded scoped cache never cross-matches an unrelated store'
+);
+
+// --- P1-3: batch test target = the visible rows next to the button ---
+const batchGlobalItems = [
+  { id: '甲', kind: 'template', category: '主界面' },
+  { id: '乙', kind: 'ocr_line', category: '主界面' },
+  { id: '集合', kind: 'template_set', members: ['甲'], category: '素材集合' },
+];
+const batchGlobal = sandbox.batchTestAssetSelection({
+  globalMode: true,
+  globalItems: batchGlobalItems,
+  taskItems: [{ id: '任务子集' }],
+});
+eq(batchGlobal.ids, ['甲', '乙'], 'global batch test covers the visible global rows, not the task flow subset');
+eq(batchGlobal.scope, GLOBAL_SCOPE_LITERAL, 'global batch test uses the global API scope');
+eq(
+  sandbox.batchTestAssetSelection({ globalMode: true, globalItems: batchGlobalItems, query: '乙' }).ids,
+  ['乙'],
+  'global batch test respects the id search filter'
+);
+eq(
+  sandbox.batchTestAssetSelection({ globalMode: true, globalItems: batchGlobalItems, category: '主界面' }).ids,
+  ['甲', '乙'],
+  'global batch test respects the category filter'
+);
+eq(
+  sandbox.batchTestAssetSelection({ globalMode: false, taskItems: batchGlobalItems, query: '' }).ids,
+  ['甲', '乙'],
+  'task mode batch test covers the visible task rows (show-all already applied)'
+);
+ok(
+  /全局素材库/.test(sandbox.batchTestEmptyText(true)),
+  'the empty global batch-test message names the global library'
+);
+ok(
+  /任务素材库/.test(sandbox.batchTestEmptyText(false)) &&
+    /显示全部全局素材/.test(sandbox.batchTestEmptyText(false)),
+  'the empty task batch-test message points at show-all + filters'
+);
 
 // --- MATCH-BUG: a single asset test targets the frame the user is viewing ---
 // Regression: every saved asset has positions>=1, so the old "positions first"
@@ -1755,6 +2647,75 @@ ok(
 
 // --- static UI contract checks (P0-1 / P0-3 / dead bindings) ---
 ok(/id="btn-library-refresh"/.test(html), 'index.html provides a real #btn-library-refresh');
+const assetsPanelHtml = html.slice(html.indexOf('id="panel-assets"'), html.indexOf('id="panel-images"'));
+const taskPanelHtml = html.slice(html.indexOf('id="panel-task"'), html.indexOf('id="panel-schedule"'));
+// P0-1: the canvas 识别区 save button + editing label live in the shared
+// #canvas-footer (outside every .rail-panels .panel), so the task library and
+// frame-detail surfaces can reach them without switching to the 素材 panel.
+ok(
+  /id="btn-save-asset-roi"[^>]*type="button"[^>]*disabled hidden/.test(html),
+  'index.html provides a disabled+hidden #btn-save-asset-roi'
+);
+const footerStart = html.indexOf('<div id="canvas-footer">');
+const saveBtnPos = html.indexOf('id="btn-save-asset-roi"');
+const footerEnd = saveBtnPos > footerStart ? html.indexOf('</div>', saveBtnPos) : -1;
+const footerHtml = footerStart >= 0 && footerEnd > footerStart
+  ? html.slice(footerStart, footerEnd)
+  : '';
+ok(/id="btn-save-asset-roi"/.test(footerHtml), '#btn-save-asset-roi lives inside #canvas-footer (P0-1)');
+ok(
+  /id="asset-roi-edit-label"/.test(footerHtml),
+  'the "editing <asset>" label sits next to the save button in #canvas-footer'
+);
+ok(
+  footerStart > 0 && footerStart < html.indexOf('<aside'),
+  '#canvas-footer is outside the sidebar panels (visible from every asset surface)'
+);
+ok(
+  !/id="btn-save-asset-roi"/.test(assetsPanelHtml) && !/id="btn-save-asset-roi"/.test(taskPanelHtml),
+  'the ROI save button is no longer confined to the 素材 / 任务 panels (P0-1)'
+);
+ok(/保存识别区（覆盖素材）/.test(html), 'the ROI save button carries the agreed label');
+ok(
+  /#btn-save-asset-roi\[hidden\] \{ display: none; \}/.test(styleCss),
+  'the hidden ROI save button is really hidden despite button display rules'
+);
+// D: 批量帧测试 moved from the task panel to the assets panel, next to 刷新全局库.
+ok(
+  /id="btn-assets-batch-test"/.test(assetsPanelHtml),
+  '批量帧测试 lives in the 素材 panel'
+);
+ok(
+  !/id="btn-assets-batch-test"/.test(taskPanelHtml),
+  '批量帧测试 is gone from the 任务 panel'
+);
+ok(
+  /id="btn-library-refresh"[^>]*>[^<]*<\/button>\s*<button id="btn-assets-batch-test"/.test(assetsPanelHtml),
+  '批量帧测试 sits on the same toolbar row, right after 刷新全局库'
+);
+// P1-3: the handler tests the visible rows it sits next to, not the task subset.
+const batchTestAssetsFn = extractFunction('batchTestAssets');
+ok(
+  /assetsGlobalMode/.test(batchTestAssetsFn) &&
+    /batchTestAssetSelection\(\{/.test(batchTestAssetsFn),
+  'batchTestAssets picks the visible library rows through batchTestAssetSelection (P1-3)'
+);
+ok(
+  /GLOBAL_SCOPE_TASK/.test(batchTestAssetsFn),
+  'global-mode batch test uses the unified-global API scope, not the flow subset'
+);
+ok(
+  /const body = \{ task, assets: selection\.ids, live: !!livePreview \};/.test(batchTestAssetsFn),
+  'batch test always sends the explicit visible id list to /task/assets/batch_test'
+);
+ok(
+  /batchTestEmptyText\(globalMode\)/.test(batchTestAssetsFn),
+  'an empty batch test uses the surface-specific empty message'
+);
+ok(
+  !/当前任务 flow 未引用素材/.test(batchTestAssetsFn),
+  'the stale "flow 未引用素材" message for the global-library button is gone'
+);
 ok(/id="task-show-all-assets"/.test(html), 'index.html provides the show-all-global switch');
 ok(/id="task-assets-hint"/.test(html), 'index.html provides the unreferenced hint');
 ok(/id="global-asset-search"/.test(html), 'index.html provides the global asset id search');
@@ -1842,12 +2803,22 @@ ok(
   'testFrames is a thin wrapper over the pure testFramePlan (globals passed explicitly)'
 );
 const runAssetTestFn = extractFunction('runAssetTest');
-ok(/testAssetMatch\(it, frameId\)/.test(runAssetTestFn), 'runAssetTest passes the optional frame id to the template test');
-ok(/testAssetOcr\(it, frameId\)/.test(runAssetTestFn), 'runAssetTest passes the optional frame id to the OCR test');
+ok(
+  /testAssetMatch\(it, frameId, scopeTask\)/.test(runAssetTestFn),
+  'runAssetTest passes the optional frame id + row scope to the template test'
+);
+ok(
+  /testAssetOcr\(it, frameId, scopeTask\)/.test(runAssetTestFn),
+  'runAssetTest passes the optional frame id + row scope to the OCR test'
+);
 for (const fn of ['testAssetMatch', 'testAssetClick', 'testAssetDrag', 'testAssetOcr', 'testAssetCollection']) {
   const body = extractFunction(fn);
-  ok(new RegExp(`function ${fn}\\(it, frameId\\)`).test(body), `${fn} accepts an optional frame id`);
+  ok(
+    new RegExp(`function ${fn}\\(it, frameId, scopeTask\\)`).test(body),
+    `${fn} accepts an optional frame id + scope override`
+  );
   ok(/testFrames\(it, frameId\)/.test(body), `${fn} resolves frames through testFrames(it, frameId)`);
+  ok(/assetRowScopeTask\(scopeTask/.test(body), `${fn} resolves the API scope through assetRowScopeTask`);
 }
 ok(
   /function testFrameLabel\(it, frameId\)/.test(extractFunction('testFrameLabel')),
@@ -1860,14 +2831,26 @@ for (const fn of ['testAssetClick', 'testAssetDrag', 'testAssetOcr']) {
   );
 }
 ok(
-  /onTest: \(it\) => runAssetTest\(it, f\.id\)/.test(renderFrameAssetsFn),
-  'frame detail 测试 forces the rendered frame id'
+  /onTest: \(it\) => runAssetTest\(it, f\.id, scopeTask\)/.test(renderFrameAssetsFn),
+  'frame detail 测试 forces the rendered frame id + row scope'
 );
 ok(
-  /onClickTest: \(it\) => testAssetClick\(it, f\.id\)/.test(renderFrameAssetsFn) &&
-    /onDragTest: \(it\) => testAssetDrag\(it, f\.id\)/.test(renderFrameAssetsFn) &&
-    /onCollectionTest: \(it\) => testAssetCollection\(it, f\.id\)/.test(renderFrameAssetsFn),
-  'frame detail click/drag/collection tests force the rendered frame id too'
+  /onClickTest: \(it\) => testAssetClick\(it, f\.id, scopeTask\)/.test(renderFrameAssetsFn) &&
+    /onDragTest: \(it\) => testAssetDrag\(it, f\.id, scopeTask\)/.test(renderFrameAssetsFn) &&
+    /onCollectionTest: \(it\) => testAssetCollection\(it, f\.id, scopeTask\)/.test(renderFrameAssetsFn),
+  'frame detail click/drag/collection tests force the rendered frame id + row scope too'
+);
+// C static contract: frame rows are manageable and carry no source label.
+ok(/manage: true/.test(renderFrameAssetsFn), 'renderFrameAssets passes manage:true (same as the global library)');
+ok(!/sourceLabel/.test(renderFrameAssetsFn), 'renderFrameAssets passes no sourceLabel (来源列 deleted)');
+ok(
+  /frameAssetScope\(row, taskName/.test(renderFrameAssetsFn),
+  'renderFrameAssets derives each row API scope through frameAssetScope'
+);
+ok(
+  ['onRename', 'onThreshold', 'onPosition', 'onDelete', 'onAction'].every((k) =>
+    new RegExp(`${k}: \\(it\\) => \\w+\\(it, scopeTask\\)`).test(renderFrameAssetsFn)),
+  'every frame-detail management callback forwards the row scope'
 );
 const selectFrameFn = extractFunction('selectFrame');
 ok(
@@ -1965,6 +2948,7 @@ async function checkSavePathWiring(saveSource) {
   sandbox.replaceResults = () => {};
   sandbox.log = () => {};
   sandbox.setStatus = () => {};
+  sandbox.cancelRecognitionRoiEdit = () => {};
 
   sandbox.saveCandidates = [{
     selected: true,
@@ -3316,6 +4300,9 @@ eq(schedSb.__fitCalls, 2, 'the later fit still runs');
 
 checkAssetTestWiring()
   .then(() => checkSavePathWiring(saveUnified))
+  .then(() => checkAssetRoiSavePath())
+  .then(() => checkBatchTestScope())
+  .then(() => checkAssetThresholdPrompts())
   .then(() => {
     console.log(
       `dom_id_audit: ${referencedIds.length} referenced ids, ${missingIds.length} dead ids` +

@@ -87,6 +87,82 @@
     return b;
   }
 
+  // --- A: selected asset row + the single open settings menu ---------------
+  // Selection is keyed by ASSET ID, never by DOM node: the same asset must light
+  // up on every surface (task library, global library, frame detail), and a list
+  // re-render (save/refresh/delete) must restore the highlight from this state.
+  let selectedAssetKey = '';
+  // At most ONE settings menu is open at a time, across all surfaces. Selecting
+  // a DIFFERENT asset closes it; clicking an item inside the current asset's
+  // menu must NOT close it (the settings panel stays open until 设置/Esc).
+  let openMenu = null;
+  // P2-3: remembers which asset's menu was open so a list re-render (save,
+  // rename, threshold, positions, delete) can reopen it on the fresh row
+  // instead of silently collapsing the panel.
+  let openMenuKey = '';
+  let menuRestoreTimer = 0;
+  // Every rendered row, so a programmatic selection can restyle rows that are
+  // already on screen. Detached rows are pruned lazily via `isConnected`.
+  const liveRows = [];
+  const SELECTED_CLASS = 'selected';
+
+  function assetKey(id) {
+    return id == null ? '' : String(id);
+  }
+
+  function syncSelectedRows() {
+    for (let i = liveRows.length - 1; i >= 0; i--) {
+      const entry = liveRows[i];
+      const row = entry.row;
+      if (!row) {
+        liveRows.splice(i, 1);
+        continue;
+      }
+      // `isConnected` is undefined in the Node DOM stubs, so only a real browser
+      // detach prunes the registry.
+      if (row.isConnected === false) {
+        liveRows.splice(i, 1);
+        continue;
+      }
+      if (row.classList) row.classList.toggle(SELECTED_CLASS, entry.key === selectedAssetKey);
+    }
+  }
+
+  /** Mark `id` as the selected asset. Returns the stored key ('' = none). */
+  function selectAsset(id) {
+    const key = assetKey(id);
+    if (key !== selectedAssetKey) {
+      // Only choosing ANOTHER asset collapses the previous settings panel.
+      selectedAssetKey = key;
+      closeMenus();
+    }
+    syncSelectedRows();
+    return selectedAssetKey;
+  }
+
+  function getSelectedAsset() {
+    return selectedAssetKey;
+  }
+
+  /** Collapse the (single) open settings menu. Safe to call at any time. */
+  function closeMenus() {
+    const open = openMenu;
+    openMenu = null;
+    openMenuKey = '';
+    if (!open) return;
+    if (open.menu && open.menu.classList) open.menu.classList.remove('open');
+    if (open.settings && open.settings.classList) {
+      open.settings.classList.remove('open');
+      if (open.settings.setAttribute) open.settings.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeMenus();
+    });
+  }
+
   // Every asset row has exactly TWO action buttons: 识别 (the existing onTest
   // behaviour) and 设置 (this menu). The nine entries and their order are a UX
   // contract asserted by ui_pure_test.js; append new entries at the end only.
@@ -100,13 +176,16 @@
       key: 'dragTest', label: '拖测', action: 'onDragTest', compactHide: true,
       title: '拖动测试（dry-run：生成方向/起终点）',
     },
-    { key: 'roi', label: '识别区', action: 'onEditRoi', manage: true, title: '编辑识别区域 x,y,w,h' },
+    {
+      key: 'roi', label: '识别区', action: 'onEditRoi', manage: true,
+      title: '在画布上拖拽编辑识别区域 x,y,w,h（模板：保存会用当前帧重新截图覆盖，rev+1）',
+    },
     {
       key: 'action', label: '操作区', action: 'onAction', manage: true,
       title: '在画布上拖拽设置该素材的操作区域',
     },
     { key: 'rename', label: '重命名', action: 'onRename', manage: true, title: '只重命名素材 id（不改阈值/识别区）' },
-    { key: 'threshold', label: '阈值', action: 'onThreshold', manage: true, title: '模板阈值 0~1（仅 template）' },
+    { key: 'threshold', label: '阈值', action: 'onThreshold', manage: true, title: '模板阈值 0~1（template）' },
     { key: 'position', label: '位置帧', action: 'onPosition', manage: true, title: '设置素材位置帧' },
     { key: 'delete', label: '删除', action: 'onDelete', manage: true, title: '删除素材（flow 仍引用时会被拒绝）' },
     {
@@ -119,12 +198,15 @@
    * Resolve the settings menu for one row.
    * Disabled rules:
    *   - template_set: only 删除 is actionable (the other eight do not apply);
-   *   - o.manage === false (frame detail is read-only): every management item;
-   *   - template: 识别区 does not exist as an editable field — the server rejects
-   *     template ROI updates with "needs re-crop" (a template's ROI is baked into
-   *     its cropped image), so the menu item must not look actionable;
+   *   - o.manage === false (read-only surface): every management item;
    *   - region: 操作区 is meaningless because the asset itself IS the region;
-   *   - non-template: 阈值 does not exist.
+   *   - region: 阈值 does not exist (only template / OCR text confidence);
+   *   - template_set handled above.
+   * Templates DO expose 识别区 now: the canvas box becomes a re-crop overwrite
+   * (`/task/save_asset` + replace:true, rev+1) instead of a rejected ROI patch,
+   * so the field is editable on every surface and only `manage` gates it.
+   * `threshold` is enabled for template, ocr_line and ocr_lines; its title names
+   * the two meanings (match threshold vs OCR minimum confidence).
    * o.compact hides 点测/拖测/步骤 exactly as the old compact row did.
    */
   function assetMenuState(it, opts) {
@@ -140,15 +222,18 @@
       } else if (m.manage && !o.manage) {
         disabled = true;
         title = `当前列表只读，不能${m.label}；请到任务素材库或全局素材库操作`;
-      } else if (m.key === 'roi' && kind === 'template') {
-        disabled = true;
-        title = '模板无识别区（服务端拒绝修改模板 ROI）；如需变更请重新截图保存并替换素材';
       } else if (m.key === 'action' && kind === 'region') {
         disabled = true;
         title = 'region 素材本身就是操作区域，无需再设置操作区';
-      } else if (m.key === 'threshold' && kind !== 'template') {
-        disabled = true;
-        title = '仅模板图（template）支持阈值';
+      } else if (m.key === 'threshold') {
+        if (kind === 'template') {
+          title = '模板阈值 0~1（NCC 匹配通过线；未设按默认 0.85）';
+        } else if (kind === 'ocr_line' || kind === 'ocr_lines') {
+          title = 'OCR 最低置信度（0~1；不设或 0 = 不限制）';
+        } else {
+          disabled = true;
+          title = '仅模板图（template）与 OCR 文字素材支持阈值';
+        }
       }
       return {
         key: m.key,
@@ -177,6 +262,9 @@
       'asset-test asset-row-action asset-row-action-test'
     );
     test.addEventListener('click', () => {
+      // A-1: acting on a row also selects it, so the highlight follows the
+      // user's latest focus without a separate click.
+      selectAsset(it.id);
       if (isSet) (o.onCollectionTest || o.onTest || (() => {}))(it);
       else (o.onTest || (() => {}))(it);
     });
@@ -194,9 +282,21 @@
     settings.setAttribute('aria-expanded', 'false');
 
     function closeMenu() {
+      if (openMenu && openMenu.menu === menu) openMenu = null;
+      if (openMenuKey === assetKey(it.id)) openMenuKey = '';
       menu.classList.remove('open');
       settings.classList.remove('open');
       settings.setAttribute('aria-expanded', 'false');
+    }
+
+    function openThisMenu() {
+      // Only one settings panel is ever visible.
+      if (openMenu && openMenu.menu !== menu) closeMenus();
+      menu.classList.add('open');
+      settings.classList.add('open');
+      settings.setAttribute('aria-expanded', 'true');
+      openMenu = { menu, settings };
+      openMenuKey = assetKey(it.id);
     }
 
     for (const item of assetMenuState(it, o)) {
@@ -205,8 +305,11 @@
       b.disabled = item.disabled;
       b.dataset.menuKey = item.key;
       b.addEventListener('click', () => {
+        // A disabled entry must not change the selection or run anything.
         if (item.disabled) return;
-        closeMenu();
+        // Selecting the row the menu already belongs to keeps the panel open:
+        // only 设置-again/Esc collapse it (user request 2026-11).
+        selectAsset(it.id);
         if (isSet && item.action === 'onDelete') {
           (o.onCollectionDelete || o.onDelete || (() => {}))(it);
         } else if (item.action === 'onDelete') {
@@ -220,9 +323,9 @@
 
     settings.addEventListener('click', (e) => {
       e.stopPropagation();
-      const open = menu.classList.toggle('open');
-      settings.classList.toggle('open', open);
-      settings.setAttribute('aria-expanded', String(open));
+      selectAsset(it.id);
+      if (menu.classList.contains('open')) closeMenu();
+      else openThisMenu();
     });
     menu.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
@@ -237,6 +340,47 @@
     row.appendChild(test);
     row.appendChild(settings);
     row.appendChild(menu);
+    return openThisMenu;
+  }
+
+  // P2-3: a re-render (save/rename/threshold/positions) replaces the DOM that
+  // owned the open menu. Remember the asset id and reopen the panel on the new
+  // row; the restore is deferred one tick so the row is already in the document
+  // and only the VISIBLE surface (not the hidden rail panel) wins.
+  function rowVisibleInBrowser(row) {
+    // The Node DOM stubs used by ui_pure_test.js have no offsetParent property.
+    if (!row || !('offsetParent' in row)) return true;
+    return row.offsetParent !== null;
+  }
+
+  function restoreOpenMenu() {
+    menuRestoreTimer = 0;
+    if (!openMenuKey) return;
+    // The old menu is still connected (no re-render happened): nothing to do.
+    if (openMenu && openMenu.menu && openMenu.menu.isConnected === true) return;
+    const candidates = liveRows.filter(
+      (entry) => entry && entry.key === openMenuKey && typeof entry.openMenu === 'function'
+    );
+    if (!candidates.length) return;
+    // Open on the surface the user is looking at. If the matching assets were
+    // rendered into a hidden rail panel only, wait for the next render (the
+    // other library repaints a moment later) instead of opening an invisible
+    // menu that would then block the visible restore.
+    const visible = candidates.filter((entry) => rowVisibleInBrowser(entry.row));
+    if (!visible.length) return;
+    visible[visible.length - 1].openMenu();
+  }
+
+  function scheduleMenuRestore() {
+    if (!openMenuKey) return;
+    // No timers in the pure Node harness: restore synchronously from the
+    // freshly created row (the renderer appends synchronously right after).
+    if (typeof setTimeout !== 'function') {
+      restoreOpenMenu();
+      return;
+    }
+    if (menuRestoreTimer) return;
+    menuRestoreTimer = setTimeout(restoreOpenMenu, 0);
   }
 
   /**
@@ -412,6 +556,12 @@
     const row = document.createElement('div');
     row.className = 'asset-row' + (o.compact ? ' asset-row-compact' : '');
     row.dataset.assetId = it.id;
+    // A-3: every freshly rendered row restores the selection from module state,
+    // so a save/refresh re-render never loses the user's highlighted asset.
+    const key = assetKey(it.id);
+    if (key === selectedAssetKey) row.classList.add(SELECTED_CLASS);
+    liveRows.push({ key, row });
+    if (liveRows.length > 400) syncSelectedRows();
     // Only lists that actually persist /task/assets/reorder may advertise a
     // drag handle. Referenced/global lists pass draggable:false.
     row.draggable = o.draggable !== false && it.kind !== 'template_set';
@@ -419,12 +569,19 @@
     if (it.kind === 'template_set') {
       const main = makeButton('', `${it.id}：flow 引用该集合；运行时按成员顺序尝试匹配`, 'asset-main');
       main.textContent = `${it.id}\n集合成员 ${(it.members || []).length} 张：${(it.members || []).join(' / ')}`;
-      if (o.onPick) main.addEventListener('click', () => o.onPick(it));
+      main.addEventListener('click', () => {
+        selectAsset(it.id);
+        if (o.onPick) o.onPick(it);
+      });
       row.appendChild(main);
       // Same 识别 + 设置 pair as every other asset row. In the menu only 删除 is
       // enabled (and only on a manageable surface); the other eight are disabled
       // with a "集合不支持" title so the row stays visually uniform.
-      if (o.actions !== false) appendRowActions(row, it, o, true);
+      const entry = liveRows[liveRows.length - 1];
+      if (o.actions !== false) {
+        entry.openMenu = appendRowActions(row, it, o, true);
+        scheduleMenuRestore();
+      }
       return row;
     }
 
@@ -443,12 +600,20 @@
     text.className = 'asset-main-text';
     text.textContent = assetText(it);
     main.appendChild(text);
-    if (o.onPick) main.addEventListener('click', () => o.onPick(it));
+    main.addEventListener('click', () => {
+      // A-1: clicking the row body selects the asset (and still loads its ROI).
+      selectAsset(it.id);
+      if (o.onPick) o.onPick(it);
+    });
     row.appendChild(main);
 
     // The old 改/帧/删/操作区/点测/拖测/步骤 buttons all live in the settings
     // menu now; the row itself exposes exactly 识别 + 设置.
-    if (o.actions !== false) appendRowActions(row, it, o, false);
+    if (o.actions !== false) {
+      const entry = liveRows[liveRows.length - 1];
+      entry.openMenu = appendRowActions(row, it, o, false);
+      scheduleMenuRestore();
+    }
     return row;
   }
 
@@ -494,6 +659,11 @@
     createRow,
     renderRows,
     createSearchPicker,
+    // A: selected-row state + the single-open settings menu.
+    selectAsset,
+    getSelectedAsset,
+    closeMenus,
+    SELECTED_CLASS,
     // Exposed for ui_pure_test.js: the menu order/rules are part of the contract.
     ASSET_MENU_ITEMS,
     assetMenuState,

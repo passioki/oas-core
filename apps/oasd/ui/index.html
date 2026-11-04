@@ -63,6 +63,8 @@
       </div>
       <div id="canvas-footer">
         <div id="hint" class="muted small">在画面上拖拽选择识别 ROI；可再画一个「点击框」</div>
+        <span id="asset-roi-edit-label" class="muted small" hidden></span>
+        <button id="btn-save-asset-roi" type="button" disabled hidden title="把画布上拖拽出的识别框保存到正在编辑的素材（模板 = 用当前帧重新截图覆盖，rev+1）">保存识别区（覆盖素材）</button>
         <button id="btn-canvas-panels" type="button">显示结果/日志</button>
       </div>
       <div id="canvas-windows" class="canvas-windows collapsed">
@@ -90,6 +92,9 @@
         <section class="panel active" id="panel-assets">
           <h3>识别区域（ROI）</h3>
           <div id="roi" class="kv">未选择</div>
+          <p class="muted small">
+            「识别区」在画布上编辑；保存按钮固定在画布底部工具栏，任务库/帧详情里也能看到。
+          </p>
 
           <h3>操作</h3>
           <button id="btn-ocr" disabled>试识别（单行文字）</button>
@@ -135,6 +140,7 @@
               <option value="">全部分类</option>
             </select>
             <button id="btn-library-refresh" type="button">刷新全局库</button>
+            <button id="btn-assets-batch-test" type="button">批量帧测试（dry）</button>
           </div>
           <div id="global-assets-status" class="muted small">—</div>
           <div id="global-assets-list" class="asset-list muted">（未加载全局素材）</div>
@@ -255,7 +261,6 @@
               <option value="">全部分类</option>
             </select>
             <button id="assets-refresh">刷新</button>
-            <button id="btn-assets-batch-test" type="button">批量帧测试（dry）</button>
           </div>
           <div id="task-assets-hint" class="muted small">—</div>
           <label class="opt"><input id="task-show-all-assets" type="checkbox" /> 显示全部全局素材（含未被当前任务 flow 引用）</label>

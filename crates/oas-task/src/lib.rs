@@ -317,7 +317,10 @@ pub struct AssetDecl {
     /// Expected line text captured when this derived `ocr_line` was saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ocr_text: Option<String>,
-    /// NCC threshold; defaults to [`DEFAULT_THRESHOLD`] for templates.
+    /// NCC threshold for `template` assets; **minimum recognition confidence**
+    /// (0~1) for `ocr_line`/`ocr_lines` assets. Templates default to
+    /// [`DEFAULT_THRESHOLD`] on save; OCR defaults to `None` (any successful
+    /// recognition is a hit, preserving pre-threshold behaviour).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -1088,8 +1091,9 @@ impl TaskBundle {
     }
 
     /// Build the runtime [`oas_runtime::AssetSet`]: template PNGs are decoded to
-    /// `GrayImage`, `roi`/`threshold` are mapped. OCR assets have no pixels and
-    /// are skipped (their ROI is consumed by the OCR primitives directly).
+    /// `GrayImage` and mapped with their `roi`/NCC `threshold`; OCR assets are
+    /// registered by `roi` (+ their optional minimum recognition confidence);
+    /// `region` objects become pure operation regions.
     pub fn load_runtime_assets(&self) -> Result<oas_runtime::AssetSet, String> {
         let af = self.load_assets_file()?;
         let mut set = oas_runtime::AssetSet::new();
@@ -1155,6 +1159,14 @@ impl TaskBundle {
                     set.insert_ocr_lines(item.id.clone(), rect);
                 } else {
                     set.insert_ocr(item.id.clone(), rect);
+                }
+                // OCR never runs NCC; its `threshold` is the **minimum
+                // recognition confidence**. Absent = any successful read is a
+                // hit (historical behaviour); `0` is stored as-is and means the
+                // same at query time (`AssetSet::ocr_threshold` filters it out),
+                // so the editor can clear a threshold by writing 0 (P1-4).
+                if let Some(t) = item.threshold {
+                    set.set_ocr_threshold(item.id.clone(), t);
                 }
                 // Operation region: fixed shapes are wired as a bbox for now;
                 // recognition sources follow the OCR result at runtime.
@@ -1458,7 +1470,18 @@ impl TaskBundle {
         Ok(item)
     }
 
-    /// v1.1 asset CRUD: update OCR ROI / template threshold without re-cropping.
+    /// v1.1 asset CRUD: update OCR ROI / template-or-OCR threshold without
+    /// re-cropping.
+    ///
+    /// `threshold` is the NCC threshold for `template` assets and the **minimum
+    /// recognition confidence** for `ocr_line`/`ocr_lines` assets (`None` leaves
+    /// the stored value untouched; `region` assets reject it).
+    ///
+    /// For an OCR asset `Some(0.0)` is accepted and means the same as "unset":
+    /// no confidence filter. The editor can only clear a field by writing `0`
+    /// (`None` = "no change"), so the runtime normalizes `0` to "unset" on every
+    /// query (`AssetSet::ocr_threshold`). Templates keep `0` as a real NCC
+    /// threshold (anything matches), which is their historical behaviour.
     ///
     /// Template ROI changes are rejected (the crop image would go stale); use
     /// `update_asset`/「保存素材覆盖」to re-crop a template.
@@ -1532,8 +1555,11 @@ impl TaskBundle {
             if !(0.0..=1.0).contains(&t) {
                 return Err("threshold must be 0..=1".into());
             }
-            if kind != "template" {
-                return Err("threshold only applies to template assets".into());
+            // `template` = NCC threshold; OCR = minimum recognition confidence.
+            // A pure `region` has no recognition at all, so a threshold on it
+            // would be silently meaningless.
+            if kind == "region" {
+                return Err("threshold does not apply to region assets".into());
             }
             af.items[pos].threshold = Some(t);
         }
@@ -2912,6 +2938,139 @@ mod tests {
             flow_before,
             "updating an asset must not touch flow.json"
         );
+    }
+
+    #[test]
+    fn ocr_asset_threshold_round_trips_into_the_runtime_assets() {
+        let td = TempDir::new("ocrthr");
+        let b = open(&td);
+        let f = frame(40, 30);
+        b.save_asset(
+            AssetDecl {
+                kind: "ocr_line".into(),
+                ..AssetDecl::template("文字素材", [0, 0, 20, 8])
+            },
+            Some(&f),
+        )
+        .expect("create ocr");
+
+        // A threshold on an OCR asset is its minimum recognition confidence.
+        // The old guard rejected every non-template kind here.
+        let updated = b
+            .update_asset_meta("文字素材", None, None, None, Some(0.7))
+            .expect("ocr threshold update");
+        assert_eq!(updated.threshold, Some(0.7));
+        let text = std::fs::read_to_string(b.assets_path()).expect("assets");
+        assert!(text.contains("\"threshold\": 0.7"), "{text}");
+
+        let set = b.load_runtime_assets().expect("runtime assets");
+        assert_eq!(
+            set.ocr_threshold("文字素材"),
+            Some(0.7),
+            "load must wire the OCR threshold into the runtime"
+        );
+        assert_eq!(
+            set.threshold_for("文字素材"),
+            Some(0.7),
+            "the shared threshold lookup must see the OCR value"
+        );
+    }
+
+    #[test]
+    fn ocr_zero_threshold_update_is_accepted_and_loads_as_unset() {
+        // P1-4: `None` means "leave unchanged", so the editor clears an OCR
+        // threshold by writing 0. The write must be accepted and the runtime
+        // must treat the loaded 0 exactly like a missing threshold.
+        let td = TempDir::new("ocrzero");
+        let b = open(&td);
+        let f = frame(40, 30);
+        b.save_asset(
+            AssetDecl {
+                kind: "ocr_line".into(),
+                ..AssetDecl::template("文字素材", [0, 0, 20, 8])
+            },
+            Some(&f),
+        )
+        .expect("create ocr");
+        b.update_asset_meta("文字素材", None, None, None, Some(0.7))
+            .expect("set a real threshold first");
+
+        let cleared = b
+            .update_asset_meta("文字素材", None, None, None, Some(0.0))
+            .expect("0 must be a valid threshold");
+        assert_eq!(cleared.threshold, Some(0.0));
+        let text = std::fs::read_to_string(b.assets_path()).expect("assets");
+        assert!(text.contains("\"threshold\": 0.0"), "{text}");
+
+        let set = b.load_runtime_assets().expect("runtime assets");
+        assert_eq!(
+            set.ocr_threshold("文字素材"),
+            None,
+            "0 must mean no confidence filter, exactly like a missing threshold"
+        );
+        assert_eq!(
+            set.threshold_for("文字素材"),
+            None,
+            "0 must not surface as an explicit gate through threshold_for"
+        );
+    }
+
+    #[test]
+    fn update_asset_meta_threshold_is_range_checked_and_rejects_regions() {
+        let td = TempDir::new("thrrange");
+        let b = open(&td);
+        let f = frame(40, 30);
+        b.save_asset(
+            AssetDecl {
+                kind: "ocr_line".into(),
+                ..AssetDecl::template("文字素材", [0, 0, 20, 8])
+            },
+            Some(&f),
+        )
+        .expect("create ocr");
+        b.save_asset(
+            AssetDecl {
+                kind: "region".into(),
+                ..AssetDecl::template("操作区域", [2, 2, 10, 10])
+            },
+            Some(&f),
+        )
+        .expect("create region");
+
+        // Non-finite / out-of-range values stay rejected for every kind.
+        for bad in [1.5f32, -0.1, f32::NAN] {
+            let err = b
+                .update_asset_meta("文字素材", None, None, None, Some(bad))
+                .expect_err("bad threshold must be rejected");
+            assert!(err.contains("0..=1"), "unexpected: {err}");
+        }
+        // A pure region has no recognition, so a threshold is meaningless.
+        let before = std::fs::read(b.assets_path()).expect("assets bytes");
+        let err = b
+            .update_asset_meta("操作区域", None, None, None, Some(0.5))
+            .expect_err("region threshold must be rejected");
+        assert!(err.contains("does not apply to region"), "unexpected: {err}");
+        assert_eq!(
+            std::fs::read(b.assets_path()).expect("assets bytes"),
+            before,
+            "a rejected update must write nothing"
+        );
+    }
+
+    #[test]
+    fn template_threshold_update_still_works_alongside_ocr_thresholds() {
+        let td = TempDir::new("thrtpl");
+        let b = open(&td);
+        let f = frame(40, 30);
+        b.save_asset(AssetDecl::template("按钮", [0, 0, 10, 10]), Some(&f))
+            .expect("create template");
+        let updated = b
+            .update_asset_meta("按钮", None, None, None, Some(0.75))
+            .expect("template threshold update");
+        assert_eq!(updated.threshold, Some(0.75));
+        let set = b.load_runtime_assets().expect("runtime assets");
+        assert_eq!(set.get("按钮").expect("template").threshold, 0.75);
+        assert_eq!(set.threshold_for("按钮"), Some(0.75));
     }
 
     #[test]
