@@ -11,6 +11,9 @@
 
 # release artifacts (zip/stage; regenerate with scripts/package.ps1)
 /dist
+# TaskPackage build products (PR5): Studio publish output + Runner package store
+/packages/
+/dist/packages/
 
 # scheduler runtime state (machine-local)
 /scheduler.state.json

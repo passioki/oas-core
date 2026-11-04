@@ -36,6 +36,26 @@
   .studio-migrate-note { border-color: #2f4a6b; background: #171d26; margin-bottom: 12px; }
   .studio-migrate-note h3 { margin: 0 0 4px; color: #8fb8e8; font-size: 13px; }
   @media (max-width: 980px) { #studio-runner-hint { display: none; } }
+  /* PR5：发布任务包对话框（产物 .oaspkg 由终端用户在 Runner 安装） */
+  .task-publish-dialog { max-width: min(640px, calc(100vw - 40px)); }
+  .task-publish-dialog .task-publish-head { margin: 10px 0 4px; color: #9aa0aa; font-size: 12px; }
+  .task-publish-dialog .task-publish-list {
+    max-height: 150px; overflow-y: auto; border: 1px solid #2b2f38; border-radius: 6px;
+    padding: 6px 8px; background: #171a20;
+  }
+  .task-publish-dialog .task-publish-row {
+    padding: 3px 0; font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+    font-size: 12px; overflow-wrap: anywhere;
+  }
+  .task-publish-dialog .task-publish-row + .task-publish-row { border-top: 1px solid #262b33; }
+  .task-publish-dialog details { margin: 6px 0; }
+  .task-publish-dialog details summary { cursor: pointer; }
+  .task-publish-dialog .task-publish-result {
+    white-space: pre-wrap; word-break: break-all; background: #1d2027;
+    max-height: 150px; overflow: auto; margin: 4px 0 8px;
+  }
+  .task-publish-dialog .task-publish-result.ok { color: #7bd88f; }
+  .task-publish-dialog .task-publish-result.err { color: #ff8a80; }
 </style>
 </head>
 <body>
@@ -566,6 +586,35 @@
       <button id="task-config-save" type="button">保存配置项</button>
       <span class="spacer"></span>
       <button id="task-config-cancel" type="button">取消</button>
+    </div>
+  </dialog>
+
+  <!-- PR5：发布任务包（Studio 只产出 .oaspkg；终端用户在 Runner 安装） -->
+  <dialog id="task-publish-dialog" class="task-dialog task-publish-dialog">
+    <h3>发布任务包</h3>
+    <p class="muted small">
+      发布为 <code>.oaspkg</code>：仅包含任务、子任务依赖与引用素材快照；终端用户在 Runner 安装。
+    </p>
+    <label class="opt"><input id="task-publish-include-deps" name="include_deps" type="checkbox" checked />
+      包含子任务依赖（include_deps）</label>
+    <label class="opt"><input id="task-publish-force" name="force" type="checkbox" />
+      覆盖已存在的同名版本（force）</label>
+    <details>
+      <summary class="muted small">输出目录（可选，默认 dist/packages）</summary>
+      <label class="opt">out
+        <input id="task-publish-out" type="text" autocomplete="off" spellcheck="false"
+          placeholder="dist/packages" />
+      </label>
+    </details>
+    <div class="task-publish-head">已发布（GET /task/package）</div>
+    <div id="task-publish-list" class="muted small task-publish-list">（未加载）</div>
+    <pre id="task-publish-status" class="muted small task-publish-result"
+      role="status" aria-live="polite">—</pre>
+    <pre id="task-publish-error" class="muted small dialog-error"></pre>
+    <div class="row dialog-actions">
+      <button id="task-publish-submit" type="button">发布</button>
+      <span class="spacer"></span>
+      <button type="button" data-publish-close="1">关闭</button>
     </div>
   </dialog>
 

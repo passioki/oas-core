@@ -300,6 +300,73 @@ main.runner-main {
   width: auto;
 }
 
+/* PR5: 安装包页（安装卡 / 已安装列表 / 未纳管裸目录） */
+#page-packages .card.runner-section {
+  margin-bottom: 12px;
+}
+
+#page-packages .opt {
+  display: block;
+  margin: 6px 0;
+}
+
+#page-packages #runner-install-path {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+#runner-install-status.ok { color: var(--runner-ok); }
+#runner-install-status.err { color: var(--runner-err); }
+
+#runner-install-result .runner-kv {
+  margin-top: 6px;
+}
+
+#runner-install-warnings {
+  margin: 4px 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--runner-warn);
+}
+
+#runner-install-warnings:empty,
+#runner-install-error:empty {
+  display: none;
+}
+
+#runner-install-error {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+#runner-packages-status.ok { color: var(--runner-ok); }
+#runner-packages-status.err { color: var(--runner-err); }
+
+#runner-packages-list {
+  margin-bottom: 12px;
+}
+
+.runner-package-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.runner-package-actions button {
+  width: auto;
+  white-space: nowrap;
+}
+
+.runner-unmanaged-row {
+  padding: 4px 2px;
+  border-bottom: 1px solid #262b33;
+  overflow-wrap: anywhere;
+}
+
+.runner-unmanaged-row:last-child {
+  border-bottom: 0;
+}
+
 @media (max-width: 720px) {
   .runner-header {
     padding: 8px 10px;

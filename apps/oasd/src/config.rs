@@ -77,6 +77,10 @@ pub struct PathsConfig {
     pub tasks_dir: String,
     pub runs_dir: String,
     pub library_dir: String,
+    /// Runner package root (`installed.json` + staging/backup). Empty = derive
+    /// `<tasks_dir>/../packages` (design §B; the field is optional so an old
+    /// `live.json` keeps parsing and no existing deployment changes layout).
+    pub packages_dir: String,
 }
 
 impl Default for PathsConfig {
@@ -85,6 +89,7 @@ impl Default for PathsConfig {
             tasks_dir: "tasks".into(),
             runs_dir: "runs".into(),
             library_dir: "library".into(),
+            packages_dir: String::new(),
         }
     }
 }
@@ -263,6 +268,12 @@ impl OasConfig {
     pub fn library_dir(&self) -> PathBuf {
         PathBuf::from(&self.paths.library_dir)
     }
+    /// Configured Runner package root, or `None` to derive it next to the tasks
+    /// dir (see [`Self::packages_dir`] call sites in `serve.rs`).
+    pub fn packages_dir(&self) -> Option<PathBuf> {
+        let raw = self.paths.packages_dir.trim();
+        (!raw.is_empty()).then(|| PathBuf::from(raw))
+    }
 
     /// 把设备相关配置写进现有适配器使用的环境变量。
     pub fn apply_env(&self) {
@@ -332,6 +343,13 @@ mod tests {
         assert_ne!(c.runner.port, c.serve.port);
         assert!(c.require_serial().is_err(), "no implicit device");
         assert_eq!(c.tasks_dir(), PathBuf::from("tasks"));
+        assert_eq!(c.packages_dir(), None, "packages dir is optional");
+        assert_eq!(
+            OasConfig::from_json(r#"{"paths":{"packages_dir":"D:/pkg/packages"}}"#)
+                .unwrap()
+                .packages_dir(),
+            Some(PathBuf::from("D:/pkg/packages"))
+        );
     }
 
     #[test]

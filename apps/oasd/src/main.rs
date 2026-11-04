@@ -26,6 +26,7 @@ mod scheduler;
 mod config;
 mod task;
 mod global_assets;
+mod package_cmd;
 mod relations;
 mod runner_config;
 #[cfg(feature = "ocr")]
@@ -104,7 +105,16 @@ fn main() -> ExitCode {
         "assets" => assets_cmd(&args[1..]),
         // PR1: one binary, two surfaces. `serve` stays as a deprecated alias so
         // existing `start-editor.bat`/docs/scripts keep working (design Q2).
-        "studio" => serve_cmd(&args[1..], serve::Surface::Studio),
+        "studio" => {
+            // PR5: `oasd studio publish` is a CLI action on the Studio surface,
+            // not a long-running server (`oasd studio` with no subcommand still
+            // starts the server on 8788).
+            if args.get(1).map(String::as_str) == Some("publish") {
+                package_cmd::publish_cmd(&args[2..])
+            } else {
+                serve_cmd(&args[1..], serve::Surface::Studio)
+            }
+        }
         "runner" => serve_cmd(&args[1..], serve::Surface::Runner),
         "serve" => {
             eprintln!(
@@ -126,6 +136,7 @@ fn main() -> ExitCode {
                  oasd assets migrate [--tasks-dir <dir>] [--library-dir <dir>] [--assets-dir <dir>]\n  \
                  oasd assets cleanup-legacy [--tasks-dir <dir>] [--assets-dir <dir>] [--apply]\n  \
                  oasd studio [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--assets-dir <dir>] [--frames-dir <dir>] [--model <path>] [--det-model <path>] [--no-open]   (default port 8788)\n  \
+                 oasd studio publish --task <id> [--out <dir|file.oaspkg>] [--tasks-dir <dir>] [--assets-dir <dir>] [--force] [--include-deps] [--reproducible]\n  \
                  oasd runner [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--assets-dir <dir>] [--frames-dir <dir>] [--model <path>] [--det-model <path>] [--no-open]   (default port 8789)\n  \
                  oasd serve  ... (deprecated alias of `oasd studio`, default port 8788)"
             );

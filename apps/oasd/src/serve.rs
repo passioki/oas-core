@@ -37,9 +37,14 @@
 //!   GET  /runs/scheduler?limit=&task=&outcome= -> P4 scheduler run entities (list)
 //!   GET  /runs/scheduler/run?run_id=<id>       -> one P4 scheduler run entity
 //!   GET  /runner/health   -> Runner health JSON (Runner only, PR1)
-//!   GET  /runner/tasks    -> Runner task listing JSON (Runner only, PR1)
+//!   GET  /runner/tasks    -> Runner task listing JSON (Runner only, PR1; PR5 adds installed info)
+//!   GET  /runner/packages -> installed.json registry + unmanaged tasks (PR5)
+//!   POST /runner/install  -> install a local .oaspkg path (PR5, path mode)
+//!   POST /runner/uninstall / /runner/packages/activate (PR5)
 //!   GET  /runner/tasks/<id>/config  -> Runner task values + param schema (PR2)
 //!   PUT  /runner/tasks/<id>/config  -> validate + store Runner task values (PR2)
+//!   POST /task/publish    -> build one .oaspkg (Studio only, PR5)
+//!   GET  /task/package    -> Studio package history (PR5)
 //!   GET  /task/config?task=<name>   -> Studio param schema (PR2)
 //!   POST /task/config               -> Studio edits `meta.params` (PR2)
 //!
@@ -62,6 +67,7 @@ use oas_types::{Frame, InputSink, Outcome, Point, ScreenSource};
 use crate::run::{RunOptions, RunReport};
 use crate::runner_config;
 use crate::schedule::{scheduler_runs_dir, ResetOptions, SchedulerOptions, SchedulerRun};
+use crate::package_cmd;
 
 /// Upper bound for a POST body (flow.json is small; never buffer more).
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -153,9 +159,8 @@ pub fn route_owner(method: &str, path_only: &str) -> Option<RouteOwner> {
             | "/task/package" | "/task/config" | "/library" => Some(Studio),
 
             // Runner operational APIs (PR1 read-only subset).
-            "/runner/health" | "/runner/tasks" | "/runs/scheduler" | "/runs/scheduler/run" => {
-                Some(Runner)
-            }
+            "/runner/health" | "/runner/tasks" | "/runner/packages" | "/runs/scheduler"
+            | "/runs/scheduler/run" => Some(Runner),
 
             // Shared read-only views (and the device view both surfaces need).
             "/runs" | "/runs/clicks" | "/runs/aggregate" | "/scheduler/config"
@@ -429,6 +434,9 @@ pub struct Server {
     runs_dir: PathBuf,
     /// Root for the global template asset library (`--library-dir`, §22.22).
     library_dir: PathBuf,
+    /// Studio publish output root (`dist/packages`). Only Studio writes it; the
+    /// Runner reads `packages/installed.json` instead.
+    dist_dir: PathBuf,
     /// v1.2.1 unified global asset store (`--assets-dir`). When initialized it
     /// replaces per-task assets for the editor, builder and runs.
     assets_dir: PathBuf,
@@ -759,6 +767,7 @@ impl Server {
             tasks_dir: PathBuf::from("tasks"),
             runs_dir: PathBuf::from("runs"),
             library_dir: PathBuf::from(crate::library::DEFAULT_DIR),
+            dist_dir: PathBuf::from(package_cmd::DEFAULT_OUT_DIR),
             assets_dir: PathBuf::from(crate::global_assets::DEFAULT_DIR),
             frames_dir: PathBuf::from("frames"),
             relation_obs_path: PathBuf::from("relations/observations.jsonl"),
@@ -870,6 +879,12 @@ impl Server {
     /// Set the global template asset library root (default `library`; §22.22).
     pub fn with_library_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.library_dir = dir.into();
+        self
+    }
+
+    /// Set the Studio publish output root (default `dist/packages`, design §B.3).
+    pub fn with_dist_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.dist_dir = dir.into();
         self
     }
 
@@ -1594,6 +1609,9 @@ impl Server {
             // --- PR2: Studio task param-schema editor (design §C.1) ---
             ("GET", "/task/config") => self.handle_task_config_get(&mut out, &path),
             ("POST", "/task/config") => self.handle_task_config_post(&mut out, &body),
+            // --- PR5: Studio publish + package history (design §B.3) ---
+            ("POST", "/task/publish") => self.handle_task_publish(&mut out, &body),
+            ("GET", "/task/package") => self.handle_task_package(&mut out, &path),
             // --- N38/M1: task creation + editor-triggered run ---
             ("POST", "/task/create") => self.handle_task_create(&mut out, &body),
             ("POST", "/task/run") => self.handle_task_run(&mut out, &body),
@@ -1619,6 +1637,12 @@ impl Server {
             // the plain 404 from the surface gate above) ---
             ("GET", "/runner/health") => self.handle_runner_health(&mut out),
             ("GET", "/runner/tasks") => self.handle_runner_tasks(&mut out),
+            ("GET", "/runner/packages") => self.handle_runner_packages(&mut out),
+            ("POST", "/runner/install") => self.handle_runner_install(&mut out, &body),
+            ("POST", "/runner/uninstall") => self.handle_runner_uninstall(&mut out, &body),
+            ("POST", "/runner/packages/activate") => {
+                self.handle_runner_packages_activate(&mut out, &body)
+            }
             ("GET", "/match") => self.handle_match(&mut out, &path),
             // --- §22.22 global template asset library ---
             ("GET", "/library") => self.handle_library_list(&mut out),
@@ -2308,6 +2332,20 @@ impl Server {
     ) -> std::io::Result<()> {
         let body = serde_json::json!({ "ok": false, "errors": errors });
         self.send_json(out, code, &body.to_string())
+    }
+
+    /// PR5 lifecycle failure: keeps the stable `code` field (e.g. `dirty_task`)
+    /// in addition to the human-readable `errors` list.
+    fn send_api_failure(
+        &self,
+        out: &mut TcpStream,
+        failure: package_cmd::ApiFailure,
+    ) -> std::io::Result<()> {
+        let mut body = serde_json::json!({"ok": false, "errors": failure.errors});
+        if let Some(code) = failure.code {
+            body["code"] = serde_json::json!(code);
+        }
+        self.send_json(out, failure.status, &body.to_string())
     }
 
     /// Phase 1 of the manual capture dialog: grab the emulator screen into
@@ -7105,24 +7143,398 @@ impl Server {
         self.send_json(out, 200, &body.to_string())
     }
 
-    /// `GET /runner/tasks` — bare task bundles under `--tasks-dir`.
+    /// Packages root (`installed.json` + staging/backup). `config.paths.
+    /// packages_dir` wins; otherwise it is a sibling of the tasks dir.
+    fn packages_root(&self) -> PathBuf {
+        if let Some(cfg) = crate::config::global() {
+            if let Some(dir) = cfg.packages_dir() {
+                return dir;
+            }
+        }
+        package_cmd::default_packages_root(&self.tasks_dir)
+    }
+
+    fn packages_layout(&self) -> package_cmd::PackagesLayout {
+        package_cmd::PackagesLayout::new(self.packages_root())
+    }
+
+    /// `POST /task/publish` — Studio-only build of one `.oaspkg` (§B.3).
+    fn handle_task_publish(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        match package_cmd::publish_http(&self.tasks_dir, &self.assets_dir, &self.dist_dir, body) {
+            Ok(outcome) => {
+                self.editor_log(&format!(
+                    "task_publish task={} path={} sha256={}",
+                    outcome.manifest.task_id,
+                    outcome.path.display(),
+                    outcome.sha256
+                ));
+                let body = serde_json::json!({
+                    "ok": true,
+                    "task_id": outcome.manifest.task_id,
+                    "task_version": outcome.manifest.task_version,
+                    "package_id": outcome.manifest.package_id,
+                    "path": outcome.path.display().to_string(),
+                    "sha256": outcome.sha256,
+                    "warnings": outcome.warnings,
+                });
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(failure) => {
+                self.editor_log(&format!(
+                    "task_publish error status={} errors={:?}",
+                    failure.status, failure.errors
+                ));
+                self.send_api_failure(out, failure)
+            }
+        }
+    }
+
+    /// `GET /task/package?task=<id>` — Studio package history (§B.3).
     ///
-    /// PR1 has no package registry yet, so every bundle is `unmanaged: true`
-    /// (PR5 will consult `packages/installed.json`). A broken `meta.json` is
-    /// reported per task (`meta_error`, empty params) instead of failing the
-    /// whole listing — the Runner must still be able to show and diagnose it.
+    /// Scans `<dist-dir>/<task>-v*.oaspkg`; a corrupt archive is reported per row
+    /// instead of hiding the whole history. No directory means an empty list.
+    fn handle_task_package(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
+        let q = parse_query(raw_path);
+        let task = q
+            .iter()
+            .find(|(k, _)| k == "task")
+            .map(|(_, v)| v.trim().to_string())
+            .unwrap_or_default();
+        if task.is_empty() {
+            return self.send_errors(out, 400, vec!["`task` query parameter is required".into()]);
+        }
+        if let Err(e) = oas_task::validate_task_name(&task) {
+            return self.send_errors(out, 400, vec![e]);
+        }
+        let prefix = format!("{task}-v");
+        let entries = match std::fs::read_dir(&self.dist_dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let body = serde_json::json!({
+                    "ok": true,
+                    "task": task,
+                    "dir": self.dist_dir.display().to_string(),
+                    "packages": [],
+                });
+                return self.send_json(out, 200, &body.to_string());
+            }
+            Err(e) => {
+                return self.send_errors(
+                    out,
+                    500,
+                    vec![format!("read {}: {e}", self.dist_dir.display())],
+                )
+            }
+        };
+        let mut rows: Vec<(u32, u64, String, serde_json::Value)> = Vec::new();
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    return self.send_errors(
+                        out,
+                        500,
+                        vec![format!("read {}: {e}", self.dist_dir.display())],
+                    )
+                }
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !package_cmd::is_package_file_name(&name) || !name.starts_with(&prefix) {
+                continue;
+            }
+            let path = entry.path();
+            let sha256 = oas_task::package::sha256_file(&path).unwrap_or_default();
+            match oas_task::package::read_package(&path) {
+                Ok(archive) => {
+                    let row = serde_json::json!({
+                        "file": name,
+                        "path": path.display().to_string(),
+                        "sha256": sha256,
+                        "package_id": archive.manifest.package_id,
+                        "task_id": archive.manifest.task_id,
+                        "task_version": archive.manifest.task_version,
+                        "created_at_ms": archive.manifest.created_at_ms,
+                        "flow_ops": archive.manifest.engine.flow_ops,
+                    });
+                    rows.push((
+                        archive.manifest.task_version,
+                        archive.manifest.created_at_ms,
+                        name,
+                        row,
+                    ));
+                }
+                Err(e) => {
+                    let row = serde_json::json!({
+                        "file": name,
+                        "path": path.display().to_string(),
+                        "sha256": sha256,
+                        "error": e,
+                    });
+                    rows.push((0, 0, name, row));
+                }
+            }
+        }
+        rows.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| b.2.cmp(&a.2))
+        });
+        rows.truncate(100);
+        let body = serde_json::json!({
+            "ok": true,
+            "task": task,
+            "dir": self.dist_dir.display().to_string(),
+            "packages": rows.into_iter().map(|(_, _, _, row)| row).collect::<Vec<_>>(),
+        });
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `GET /runner/tasks` — task bundles under `--tasks-dir`, annotated with
+    /// `installed.json` state (managed package id/version vs `unmanaged`).
+    ///
+    /// A broken `meta.json` is reported per task (`meta_error`, empty params)
+    /// instead of failing the whole listing — the Runner must still be able to
+    /// show and diagnose it.
     fn handle_runner_tasks(&self, out: &mut TcpStream) -> std::io::Result<()> {
-        match scan_runner_tasks(&self.tasks_dir) {
+        let layout = self.packages_layout();
+        let installed = match package_cmd::read_installed(&layout.root) {
+            Ok(file) => file,
+            Err(e) => {
+                return self.send_errors(out, 500, vec![format!("installed.json: {e}")]);
+            }
+        };
+        match scan_runner_tasks(&self.tasks_dir, &installed) {
             Ok(tasks) => {
                 let body = serde_json::json!({
                     "ok": true,
                     "dir": self.tasks_dir.display().to_string(),
+                    "packages_dir": layout.root.display().to_string(),
                     "tasks": tasks,
                 });
                 self.send_json(out, 200, &body.to_string())
             }
             Err(e) => self.send_errors(out, 500, vec![format!("scan tasks dir: {e}")]),
         }
+    }
+
+    /// `GET /runner/packages` — `installed.json` registry + bare task dirs.
+    fn handle_runner_packages(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let layout = self.packages_layout();
+        match package_cmd::list_packages(&layout, &self.tasks_dir) {
+            Ok((packages, unmanaged)) => {
+                let body = serde_json::json!({
+                    "ok": true,
+                    "dir": layout.root.display().to_string(),
+                    "installed_file": layout.installed_path().display().to_string(),
+                    "packages": packages,
+                    "unmanaged": unmanaged,
+                    "phase": "path",
+                    "note": package_cmd::phase_note(),
+                });
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(e) => self.send_errors(out, 500, vec![format!("list packages: {e}")]),
+        }
+    }
+
+    /// `POST /runner/install` — Phase 1 **path mode only** (§B.4.2).
+    fn handle_runner_install(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let (path, opts) = match package_cmd::parse_install_request(body) {
+            Ok(parsed) => parsed,
+            Err(failure) => return self.send_api_failure(out, failure),
+        };
+        let layout = self.packages_layout();
+        match package_cmd::install_from_path(
+            &layout,
+            &self.tasks_dir,
+            &self.assets_dir,
+            &path,
+            &opts,
+            now_ms(),
+        ) {
+            Ok(outcome) => {
+                self.editor_log(&format!(
+                    "runner_install package_id={} task={} version={} replaced={}",
+                    outcome.package_id, outcome.task_id, outcome.version, outcome.replaced
+                ));
+                let body = serde_json::json!({
+                    "ok": true,
+                    "package_id": outcome.package_id,
+                    "task_id": outcome.task_id,
+                    "version": outcome.version,
+                    "replaced": outcome.replaced,
+                    "backup": outcome.backup,
+                    "warnings": outcome.warnings,
+                    "installed_tasks": outcome.installed_tasks,
+                    "phase": "path",
+                    "note": package_cmd::phase_note(),
+                });
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(failure) => {
+                self.editor_log(&format!(
+                    "runner_install error status={} errors={:?}",
+                    failure.status, failure.errors
+                ));
+                self.send_api_failure(out, failure)
+            }
+        }
+    }
+
+    /// `POST /runner/uninstall` — guarded backup-and-remove (§B.4.4).
+    fn handle_runner_uninstall(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let value: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let task = value
+            .get("task_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if task.is_empty() {
+            return self.send_errors(out, 400, vec!["`task_id` is required".into()]);
+        }
+        if let Err(e) = oas_task::validate_task_name(&task) {
+            return self.send_errors(out, 400, vec![e]);
+        }
+        let dependents = match self.installed_dependents(&task) {
+            Ok(dependents) => dependents,
+            Err(e) => {
+                return self.send_errors(out, 500, vec![format!("installed.json: {e}")]);
+            }
+        };
+        let guards = package_cmd::UninstallGuards {
+            scheduler: self.scheduler_references(&task),
+            running: self.runner_task_is_running(&task),
+            dependents,
+        };
+        let layout = self.packages_layout();
+        let values_path = self.runner_values_path();
+        match package_cmd::uninstall(
+            &layout,
+            &self.tasks_dir,
+            &task,
+            value
+                .get("purge_config")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            value.get("force").and_then(|v| v.as_bool()).unwrap_or(false),
+            &guards,
+            &values_path,
+            now_ms(),
+        ) {
+            Ok(outcome) => {
+                self.editor_log(&format!(
+                    "runner_uninstall task={} backup={:?} removed_package={}",
+                    outcome.task_id, outcome.backup, outcome.removed_package
+                ));
+                let body = serde_json::json!({
+                    "ok": true,
+                    "task_id": outcome.task_id,
+                    "backup": outcome.backup,
+                    "removed_package": outcome.removed_package,
+                    "config_purged": outcome.config_purged,
+                });
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(failure) => self.send_api_failure(out, failure),
+        }
+    }
+
+    /// `POST /runner/packages/activate` — Phase 1 rollback to a recorded backup.
+    fn handle_runner_packages_activate(
+        &self,
+        out: &mut TcpStream,
+        body: &[u8],
+    ) -> std::io::Result<()> {
+        let request: package_cmd::ActivateRequest = match serde_json::from_slice(body) {
+            Ok(request) => request,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let layout = self.packages_layout();
+        match package_cmd::activate(&layout, &self.tasks_dir, &request, now_ms()) {
+            Ok(outcome) => {
+                self.editor_log(&format!(
+                    "runner_activate task={} version={} package_id={} restored_from={:?}",
+                    outcome.task_id, outcome.version, outcome.package_id, outcome.restored_from
+                ));
+                let body = serde_json::json!({
+                    "ok": true,
+                    "task_id": outcome.task_id,
+                    "version": outcome.version,
+                    "package_id": outcome.package_id,
+                    "restored_from": outcome.restored_from,
+                    "backup": outcome.backup,
+                });
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(failure) => self.send_api_failure(out, failure),
+        }
+    }
+
+    /// Scheduler entry/queue references to `task` (uninstall guard).
+    fn scheduler_references(&self, task: &str) -> Vec<String> {
+        let path = self.scheduler_options().config;
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Vec::new();
+        };
+        let Ok(config) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        if let Some(entries) = config.get("entries").and_then(|v| v.as_array()) {
+            for (i, entry) in entries.iter().enumerate() {
+                let kind = entry.get("kind").and_then(|v| v.as_str()).unwrap_or("task");
+                if kind == "task" && entry.get("task").and_then(|v| v.as_str()) == Some(task) {
+                    let id = entry
+                        .get("entry_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("#{i}"));
+                    out.push(format!("entry:{id}"));
+                }
+            }
+        }
+        for queue in queue_member_owners(&config, task) {
+            out.push(format!("queue:{queue}"));
+        }
+        out
+    }
+
+    /// Is a scheduler run currently executing `task` (state file, read-only)?
+    fn scheduler_running_task(&self) -> Option<String> {
+        let path = self.scheduler_options().state_path();
+        let text = std::fs::read_to_string(path).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+        value
+            .get("running")
+            .and_then(|r| r.get("task"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
+    fn runner_task_is_running(&self, task: &str) -> bool {
+        {
+            let st = self.run_state.lock().unwrap();
+            if st.running && st.task.as_deref() == Some(task) {
+                return true;
+            }
+        }
+        self.scheduler_running_task().as_deref() == Some(task)
+    }
+
+    fn installed_dependents(&self, task: &str) -> Result<Vec<String>, String> {
+        let installed = package_cmd::read_installed(&self.packages_root())?;
+        Ok(installed
+            .packages
+            .iter()
+            .filter(|p| {
+                p.task_id != task && p.dependencies.iter().any(|dependency| dependency == task)
+            })
+            .map(|p| p.task_id.clone())
+            .collect())
     }
 
     /// `GET /runner/tasks/<id>/config` — Runner task values + `meta.params`
@@ -7945,7 +8357,10 @@ fn scheduler_mode_from_plan(path: &Path) -> String {
 /// `/runner/tasks` rows. All path handling uses `Path::join`, so this is
 /// cross-platform (Windows, Linux, and any future Android packaging layer that
 /// consumes the same JSON contract).
-fn scan_runner_tasks(tasks_dir: &Path) -> Result<Vec<serde_json::Value>, String> {
+fn scan_runner_tasks(
+    tasks_dir: &Path,
+    installed: &package_cmd::InstalledFile,
+) -> Result<Vec<serde_json::Value>, String> {
     let entries = match std::fs::read_dir(tasks_dir) {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -7980,15 +8395,52 @@ fn scan_runner_tasks(tasks_dir: &Path) -> Result<Vec<serde_json::Value>, String>
         } else {
             (Vec::new(), None, None)
         };
+        let managed = installed.find(&task);
         let mut row = serde_json::Map::new();
         row.insert("task".to_string(), serde_json::json!(task));
         row.insert("has_meta".to_string(), serde_json::json!(has_meta));
         row.insert("has_flow".to_string(), serde_json::json!(has_flow));
         row.insert("has_assets".to_string(), serde_json::json!(has_assets));
         row.insert("params".to_string(), serde_json::json!(params));
-        row.insert("unmanaged".to_string(), serde_json::json!(true));
-        if let Some(version) = version {
-            row.insert("version".to_string(), serde_json::json!(version));
+        row.insert(
+            "unmanaged".to_string(),
+            serde_json::json!(managed.is_none()),
+        );
+        row.insert(
+            "installed".to_string(),
+            serde_json::json!(managed.is_some()),
+        );
+        match managed {
+            Some(entry) => {
+                // The registry version is authoritative for an installed task;
+                // keep `meta_version` for diagnostics when they disagree.
+                row.insert(
+                    "version".to_string(),
+                    serde_json::json!(entry.version),
+                );
+                if version != Some(entry.version) {
+                    row.insert(
+                        "meta_version".to_string(),
+                        serde_json::json!(version),
+                    );
+                }
+                row.insert(
+                    "package_id".to_string(),
+                    serde_json::json!(entry.package_id),
+                );
+                row.insert(
+                    "installed_at_ms".to_string(),
+                    serde_json::json!(entry.installed_at_ms),
+                );
+                if let Some(backup) = &entry.backup {
+                    row.insert("backup".to_string(), serde_json::json!(backup));
+                }
+            }
+            None => {
+                if let Some(version) = version {
+                    row.insert("version".to_string(), serde_json::json!(version));
+                }
+            }
         }
         if let Some(e) = meta_error {
             row.insert("meta_error".to_string(), serde_json::json!(e));
@@ -8311,6 +8763,11 @@ fn json_opt_str(v: &serde_json::Value, key: &str) -> Result<Option<String>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oas_task::package::{
+        read_package, write_archive, AssetRef, BuildOptions, BuildOutcome, PackageArchive,
+        CHECKSUMS_FILE, MANIFEST_FILE,
+    };
+    use std::collections::BTreeMap;
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -12648,5 +13105,1195 @@ mod tests {
         let (status, body) = get_route(&server, "/runner/tasks/cfg_task/config");
         assert!(status.contains("500"), "{status} {body}");
         assert!(body.contains("schema_version 99"), "{body}");
+    }
+
+    // ---- PR5: Studio publish / Runner package lifecycle --------------------
+
+    fn pkg_write_task(tasks: &Path, id: &str, version: u32, params: &str, steps: &str) {
+        let dir = tasks.join(id);
+        std::fs::create_dir_all(&dir).expect("create task dir");
+        std::fs::write(
+            dir.join("meta.json"),
+            format!(
+                r#"{{"schema_version":1,"template_version":1,"task_id":"{id}","name":"{id}","version":{version},"params":{params},"exits":{{"done":{{"result":"success"}},"failed":{{"result":"retryable"}}}}}}"#
+            ),
+        )
+        .expect("write meta");
+        std::fs::write(
+            dir.join("flow.json"),
+            format!(r#"{{"schema_version":1,"name":"{id}","steps":{steps}}}"#),
+        )
+        .expect("write flow");
+    }
+
+    const PKG_FINISH: &str = r#"[{"op":"finish","args":{"exit":"done"}}]"#;
+
+    fn pkg_build(
+        tasks: &Path,
+        assets: &Path,
+        id: &str,
+        include_deps: bool,
+        out: &Path,
+    ) -> BuildOutcome {
+        let mut opts = BuildOptions::new(&tasks.join(id));
+        opts.tasks_dir = tasks.to_path_buf();
+        opts.assets_dir = assets.to_path_buf();
+        opts.include_deps = include_deps;
+        opts.reproducible = true;
+        opts.tool_version = "0.1.0".into();
+        opts.git = Some("abc1234".into());
+        opts.dirty = false;
+        opts.surface = "studio".into();
+        opts.repo = "D:/repo".into();
+        opts.commit = "abc1234".into();
+        oas_task::package::build_package(&tasks.join(id), out, &opts).expect("build package")
+    }
+
+    fn studio_pkg_server(td: &Path) -> Server {
+        Server::new(Adb::from_env())
+            .with_surface(Surface::Studio)
+            .with_tasks_dir(td.join("src/tasks"))
+            .with_assets_dir(td.join("src/assets"))
+            .with_dist_dir(td.join("dist"))
+            .with_runs_dir(td.join("runs"))
+    }
+
+    fn runner_pkg_server(td: &Path) -> Server {
+        Server::new(Adb::from_env())
+            .with_surface(Surface::Runner)
+            .with_tasks_dir(td.join("runner/tasks"))
+            .with_assets_dir(td.join("runner/assets"))
+            .with_dist_dir(td.join("dist"))
+            .with_runs_dir(td.join("runner/runs"))
+    }
+
+    fn install_pkg(server: &Server, path: &Path, force: bool) -> (String, String) {
+        let body = serde_json::json!({
+            "path": path.display().to_string(),
+            "force": force,
+        })
+        .to_string();
+        post_route(server, "/runner/install", "application/json", body.as_bytes())
+    }
+
+    fn rewrite_package(src: &Path, dst: &Path, mutate: impl FnOnce(&mut PackageArchive)) {
+        let mut archive = read_package(src).expect("read package");
+        mutate(&mut archive);
+        let mut entries = archive.files.clone();
+        entries.insert(
+            MANIFEST_FILE.to_string(),
+            serde_json::to_vec_pretty(&archive.manifest).unwrap(),
+        );
+        entries.insert(
+            CHECKSUMS_FILE.to_string(),
+            archive.checksums_text().into_bytes(),
+        );
+        write_archive(dst, &entries, true).expect("write rewritten archive");
+    }
+
+    #[test]
+    fn studio_publish_returns_path_sha_and_refuses_duplicate() {
+        let td = TempDir::new("publish");
+        std::fs::create_dir_all(td.path().join("src/tasks")).unwrap();
+        pkg_write_task(&td.path().join("src/tasks"), "发布任务", 1, "[]", PKG_FINISH);
+        let studio = studio_pkg_server(td.path());
+
+        let body = r#"{"task":"发布任务","reproducible":true}"#.as_bytes();
+        let (status, out) = post_route(&studio, "/task/publish", "application/json", body);
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("publish JSON");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["task_id"], "发布任务");
+        assert_eq!(v["task_version"], 1);
+        assert_eq!(v["sha256"].as_str().unwrap().len(), 64);
+        let path = std::path::PathBuf::from(v["path"].as_str().unwrap());
+        assert!(path.is_file(), "{}", path.display());
+        assert_eq!(
+            oas_task::package::sha256_file(&path).unwrap(),
+            v["sha256"].as_str().unwrap()
+        );
+        assert!(v["package_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("pkg-发布任务-1-"));
+
+        // Same version again -> 409 without force.
+        let (status, out) = post_route(&studio, "/task/publish", "application/json", body);
+        assert!(status.contains("409"), "{status} {out}");
+        assert!(out.contains("already exists"), "{out}");
+
+        // `out` outside the repository-local dist/ tree is refused.
+        let bad_out = r#"{"task":"发布任务","out":"evil/x.oaspkg","force":true}"#;
+        let (status, out) = post_route(
+            &studio,
+            "/task/publish",
+            "application/json",
+            bad_out.as_bytes(),
+        );
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("dist/"), "{out}");
+        assert!(!td.path().join("evil/x.oaspkg").exists());
+
+        // Studio history sees exactly the published archive.
+        let (status, out) = get_route(&studio, "/task/package?task=发布任务");
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["packages"].as_array().unwrap().len(), 1);
+        assert_eq!(v["packages"][0]["task_version"], 1);
+    }
+
+    #[test]
+    fn studio_publish_rejects_lint_and_missing_flow() {
+        let td = TempDir::new("publish-bad");
+        let tasks = td.path().join("src/tasks");
+        std::fs::create_dir_all(&tasks).unwrap();
+        pkg_write_task(&tasks, "BadExit", 1, "[]", PKG_FINISH);
+        // Declare an empty exit table: `finish(done)` is then an undeclared exit.
+        std::fs::write(
+            tasks.join("BadExit/meta.json"),
+            r#"{"schema_version":1,"name":"BadExit","version":1,"params":[],"exits":{}}"#,
+        )
+        .unwrap();
+        let no_flow = tasks.join("NoFlow");
+        std::fs::create_dir_all(&no_flow).unwrap();
+        std::fs::write(
+            no_flow.join("meta.json"),
+            r#"{"schema_version":1,"name":"NoFlow"}"#,
+        )
+        .unwrap();
+        let studio = studio_pkg_server(td.path());
+
+        let (status, out) = post_route(
+            &studio,
+            "/task/publish",
+            "application/json",
+            br#"{"task":"BadExit"}"#,
+        );
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("T1"), "{out}");
+
+        let (status, out) = post_route(
+            &studio,
+            "/task/publish",
+            "application/json",
+            br#"{"task":"NoFlow"}"#,
+        );
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("flow.json"), "{out}");
+    }
+
+    #[test]
+    fn runner_lifecycle_routes_are_404_on_studio_and_publish_is_404_on_runner() {
+        let td = TempDir::new("surface-pr5");
+        let studio = studio_pkg_server(td.path());
+        let runner = runner_pkg_server(td.path());
+
+        for (method, target, body) in [
+            ("GET", "/runner/packages", ""),
+            ("POST", "/runner/install", r#"{"path":"x.oaspkg"}"#),
+            ("POST", "/runner/uninstall", r#"{"task_id":"x"}"#),
+            ("POST", "/runner/packages/activate", r#"{"task_id":"x"}"#),
+        ] {
+            let (status, out) = http_route(&studio, method, target, "application/json", body.as_bytes());
+            assert!(status.contains("404"), "{target}: {status} {out}");
+        }
+        let (status, out) = post_route(
+            &runner,
+            "/task/publish",
+            "application/json",
+            br#"{"task":"x"}"#,
+        );
+        assert!(status.contains("404"), "{status} {out}");
+        let (status, out) = get_route(&runner, "/task/package?task=x");
+        assert!(status.contains("404"), "{status} {out}");
+    }
+
+    #[test]
+    fn install_success_records_registry_and_annotates_task_listing() {
+        let td = TempDir::new("install");
+        std::fs::create_dir_all(td.path().join("src/tasks")).unwrap();
+        pkg_write_task(&td.path().join("src/tasks"), "A", 1, "[]", PKG_FINISH);
+        let pkg = pkg_build(
+            &td.path().join("src/tasks"),
+            &td.path().join("src/assets"),
+            "A",
+            false,
+            &td.path().join("dist"),
+        );
+        let runner = runner_pkg_server(td.path());
+
+        let (status, out) = install_pkg(&runner, &pkg.path, false);
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["task_id"], "A");
+        assert_eq!(v["replaced"], false);
+        assert_eq!(v["installed_tasks"], serde_json::json!(["A"]));
+
+        let installed =
+            package_cmd::read_installed(&td.path().join("runner/packages")).expect("registry");
+        assert_eq!(installed.packages.len(), 1);
+        assert_eq!(installed.packages[0].task_id, "A");
+        assert_eq!(installed.packages[0].version, 1);
+        assert_eq!(installed.packages[0].sha256, pkg.sha256);
+        assert!(td.path().join("runner/tasks/A/meta.json").is_file());
+
+        let (status, out) = get_route(&runner, "/runner/tasks");
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let row = &v["tasks"][0];
+        assert_eq!(row["task"], "A");
+        assert_eq!(row["installed"], true);
+        assert_eq!(row["unmanaged"], false);
+        assert!(row["package_id"].as_str().unwrap().starts_with("pkg-A-1-"));
+    }
+
+    #[test]
+    fn install_replaces_old_version_and_keeps_a_restorable_backup() {
+        let td = TempDir::new("install-replace");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        let runner = runner_pkg_server(td.path());
+        let out = td.path().join("dist");
+        for version in [1u32, 2] {
+            pkg_write_task(&src, "A", version, "[]", PKG_FINISH);
+            let pkg = pkg_build(&src, &td.path().join("src/assets"), "A", false, &out);
+            let (status, body) = install_pkg(&runner, &pkg.path, false);
+            assert!(status.contains("200"), "v{version}: {status} {body}");
+            if version == 2 {
+                let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+                assert_eq!(v["replaced"], true);
+                let backup = v["backup"].as_str().expect("backup path");
+                let backup_abs = td.path().join("runner/packages").join(backup);
+                assert!(backup_abs.join("task/meta.json").is_file());
+                assert!(backup_abs.join("entry.json").is_file());
+                let old_meta = std::fs::read_to_string(backup_abs.join("task/meta.json")).unwrap();
+                assert!(old_meta.contains("\"version\":1"), "{old_meta}");
+            }
+        }
+        let installed =
+            package_cmd::read_installed(&td.path().join("runner/packages")).unwrap();
+        assert_eq!(installed.find("A").unwrap().version, 2);
+    }
+
+    #[test]
+    fn dirty_task_requires_force_but_force_installs() {
+        let td = TempDir::new("dirty");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        let runner = runner_pkg_server(td.path());
+        let out = td.path().join("dist");
+        pkg_write_task(&src, "A", 1, "[]", PKG_FINISH);
+        let v1 = pkg_build(&src, &td.path().join("src/assets"), "A", false, &out);
+        assert!(install_pkg(&runner, &v1.path, false).0.contains("200"));
+
+        // Simulate a user editing the installed task after installation.
+        set_mtime(
+            &td.path().join("runner/tasks/A/meta.json"),
+            4_000_000_000_000,
+        );
+        pkg_write_task(&src, "A", 2, "[]", PKG_FINISH);
+        let v2 = pkg_build(&src, &td.path().join("src/assets"), "A", false, &out);
+        let (status, body) = install_pkg(&runner, &v2.path, false);
+        assert!(status.contains("409"), "{status} {body}");
+        assert!(body.contains("dirty_task"), "{body}");
+        assert!(body.contains("newer than installed_at"), "{body}");
+
+        let (status, body) = install_pkg(&runner, &v2.path, true);
+        assert!(status.contains("200"), "{status} {body}");
+        assert_eq!(
+            package_cmd::read_installed(&td.path().join("runner/packages"))
+                .unwrap()
+                .find("A")
+                .unwrap()
+                .version,
+            2
+        );
+    }
+
+    #[test]
+    fn install_rejects_unsupported_or_lying_flow_ops() {
+        let td = TempDir::new("flow-ops-gate");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        pkg_write_task(&src, "A", 1, "[]", PKG_FINISH);
+        let pkg = pkg_build(&src, &td.path().join("src/assets"), "A", false, &td.path().join("dist"));
+        let runner = runner_pkg_server(td.path());
+
+        let future = td.path().join("future.oaspkg");
+        rewrite_package(&pkg.path, &future, |archive| {
+            archive.manifest.engine.flow_ops = vec!["future_op".into()];
+        });
+        let (status, body) = install_pkg(&runner, &future, false);
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("unsupported flow_ops"), "{body}");
+        assert!(body.contains("upgrade the Runner"), "{body}");
+
+        // Claiming an op the packaged flow does not use is also rejected (a
+        // package must not be able to hide a newer op behind a stale manifest).
+        let lying = td.path().join("lying.oaspkg");
+        rewrite_package(&pkg.path, &lying, |archive| {
+            archive.manifest.engine.flow_ops = vec!["call_task".into()];
+        });
+        let (status, body) = install_pkg(&runner, &lying, false);
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("does not match the packaged flows"), "{body}");
+    }
+
+    #[test]
+    fn install_rejects_bad_checksums_and_zip_slip_names() {
+        let td = TempDir::new("install-bad-package");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        pkg_write_task(&src, "A", 1, "[]", PKG_FINISH);
+        let pkg = pkg_build(&src, &td.path().join("src/assets"), "A", false, &td.path().join("dist"));
+        let runner = runner_pkg_server(td.path());
+
+        let bad = td.path().join("bad-checksum.oaspkg");
+        rewrite_package(&pkg.path, &bad, |archive| {
+            archive
+                .checksums
+                .insert("task/flow.json".into(), "0".repeat(64));
+        });
+        let (status, body) = install_pkg(&runner, &bad, false);
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("checksum mismatch"), "{body}");
+
+        let slip = td.path().join("slip.oaspkg");
+        let mut entries = BTreeMap::new();
+        entries.insert("../evil.txt".to_string(), b"x".to_vec());
+        write_archive(&slip, &entries, true).unwrap();
+        let (status, body) = install_pkg(&runner, &slip, false);
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("traversal"), "{body}");
+    }
+
+    #[test]
+    fn install_embeds_dependencies_or_requires_them_installed() {
+        let td = TempDir::new("install-deps");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        pkg_write_task(
+            &src,
+            "A",
+            1,
+            "[]",
+            r#"[{"op":"call_task","args":{"task":"B"}},{"op":"finish","args":{"exit":"done"}}]"#,
+        );
+        pkg_write_task(&src, "B", 1, "[]", PKG_FINISH);
+        let runner = runner_pkg_server(td.path());
+
+        let embedded = pkg_build(
+            &src,
+            &td.path().join("src/assets"),
+            "A",
+            true,
+            &td.path().join("dist-embedded"),
+        );
+        let (status, body) = install_pkg(&runner, &embedded.path, false);
+        assert!(status.contains("200"), "{status} {body}");
+        assert!(td.path().join("runner/tasks/B/meta.json").is_file());
+        let installed =
+            package_cmd::read_installed(&td.path().join("runner/packages")).unwrap();
+        assert_eq!(installed.packages.len(), 2);
+        assert_eq!(installed.find("A").unwrap().dependencies, vec!["B".to_string()]);
+
+        // Non-embedded dependency on a fresh Runner -> refused with a clear list.
+        let td2 = TempDir::new("install-deps-missing");
+        let src2 = td2.path().join("src/tasks");
+        std::fs::create_dir_all(&src2).unwrap();
+        pkg_write_task(
+            &src2,
+            "A",
+            1,
+            "[]",
+            r#"[{"op":"call_task","args":{"task":"B"}},{"op":"finish","args":{"exit":"done"}}]"#,
+        );
+        pkg_write_task(&src2, "B", 1, "[]", PKG_FINISH);
+        let runner2 = runner_pkg_server(td2.path());
+        let separate = pkg_build(
+            &src2,
+            &td2.path().join("src/assets"),
+            "A",
+            false,
+            &td2.path().join("dist"),
+        );
+        let (status, body) = install_pkg(&runner2, &separate.path, false);
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("not installed"), "{body}");
+
+        let b_pkg = pkg_build(
+            &src2,
+            &td2.path().join("src/assets"),
+            "B",
+            false,
+            &td2.path().join("dist"),
+        );
+        assert!(install_pkg(&runner2, &b_pkg.path, false).0.contains("200"));
+        let (status, body) = install_pkg(&runner2, &separate.path, false);
+        assert!(status.contains("200"), "{status} {body}");
+        assert_eq!(
+            package_cmd::read_installed(&td2.path().join("runner/packages"))
+                .unwrap()
+                .find("A")
+                .unwrap()
+                .dependencies,
+            vec!["B".to_string()]
+        );
+    }
+
+    #[test]
+    fn uninstall_moves_to_backup_and_honours_scheduler_guards() {
+        let td = TempDir::new("uninstall");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        pkg_write_task(&src, "A", 1, "[]", PKG_FINISH);
+        let pkg = pkg_build(&src, &td.path().join("src/assets"), "A", false, &td.path().join("dist"));
+        let runner = runner_pkg_server(td.path());
+        assert!(install_pkg(&runner, &pkg.path, false).0.contains("200"));
+
+        let (status, body) = post_route(
+            &runner,
+            "/runner/uninstall",
+            "application/json",
+            br#"{"task_id":"A"}"#,
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["removed_package"], true);
+        let backup = v["backup"].as_str().expect("backup path");
+        assert!(td
+            .path()
+            .join("runner/packages")
+            .join(backup)
+            .join("task/meta.json")
+            .is_file());
+        assert!(!td.path().join("runner/tasks/A").exists());
+        assert!(package_cmd::read_installed(&td.path().join("runner/packages"))
+            .unwrap()
+            .packages
+            .is_empty());
+
+        // Reinstall, then a scheduler entry references it -> 409 unless force.
+        assert!(install_pkg(&runner, &pkg.path, false).0.contains("200"));
+        let plan = td.path().join("scheduler.json");
+        std::fs::write(
+            &plan,
+            r#"{"entries":[{"entry_id":"e1","task":"A","enabled":true}]}"#,
+        )
+        .unwrap();
+        let guarded = Server::new(Adb::from_env())
+            .with_surface(Surface::Runner)
+            .with_tasks_dir(td.path().join("runner/tasks"))
+            .with_assets_dir(td.path().join("runner/assets"))
+            .with_runs_dir(td.path().join("runner/runs"))
+            .with_scheduler_options(SchedulerOptions {
+                config: plan,
+                state: Some(td.path().join("scheduler.state.json")),
+                ..Default::default()
+            });
+        let (status, body) = post_route(
+            &guarded,
+            "/runner/uninstall",
+            "application/json",
+            br#"{"task_id":"A"}"#,
+        );
+        assert!(status.contains("409"), "{status} {body}");
+        assert!(body.contains("scheduler"), "{body}");
+        let (status, body) = post_route(
+            &guarded,
+            "/runner/uninstall",
+            "application/json",
+            br#"{"task_id":"A","force":true}"#,
+        );
+        assert!(status.contains("200"), "{status} {body}");
+    }
+
+    #[test]
+    fn uninstall_refuses_a_task_that_another_package_depends_on() {
+        let td = TempDir::new("uninstall-dep");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        pkg_write_task(&src, "B", 1, "[]", PKG_FINISH);
+        pkg_write_task(
+            &src,
+            "A",
+            1,
+            "[]",
+            r#"[{"op":"call_task","args":{"task":"B"}},{"op":"finish","args":{"exit":"done"}}]"#,
+        );
+        let runner = runner_pkg_server(td.path());
+        let b_pkg = pkg_build(&src, &td.path().join("src/assets"), "B", false, &td.path().join("dist"));
+        assert!(install_pkg(&runner, &b_pkg.path, false).0.contains("200"));
+        let a_pkg = pkg_build(&src, &td.path().join("src/assets"), "A", false, &td.path().join("dist"));
+        assert!(install_pkg(&runner, &a_pkg.path, false).0.contains("200"));
+
+        let (status, body) = post_route(
+            &runner,
+            "/runner/uninstall",
+            "application/json",
+            br#"{"task_id":"B"}"#,
+        );
+        assert!(status.contains("409"), "{status} {body}");
+        assert!(body.contains("dependency"), "{body}");
+        assert!(body.contains("A"), "{body}");
+        assert!(td.path().join("runner/tasks/B/meta.json").is_file());
+    }
+
+    #[test]
+    fn uninstall_purge_config_removes_only_that_task() {
+        let td = TempDir::new("uninstall-purge");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        pkg_write_task(&src, "A", 1, "[]", PKG_FINISH);
+        let pkg = pkg_build(&src, &td.path().join("src/assets"), "A", false, &td.path().join("dist"));
+        let values_path = td.path().join("config/values.json");
+        runner_config::set_task_values(
+            &values_path,
+            "A",
+            serde_json::json!({"rounds": 3}).as_object().unwrap().clone(),
+            1,
+        )
+        .unwrap();
+        runner_config::set_task_values(
+            &values_path,
+            "Other",
+            serde_json::json!({"x": 1}).as_object().unwrap().clone(),
+            2,
+        )
+        .unwrap();
+        let runner = runner_pkg_server(td.path()).with_values_path(values_path.clone());
+        assert!(install_pkg(&runner, &pkg.path, false).0.contains("200"));
+
+        let (status, body) = post_route(
+            &runner,
+            "/runner/uninstall",
+            "application/json",
+            br#"{"task_id":"A","purge_config":true}"#,
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["config_purged"], true);
+        let store = runner_config::read(&values_path).unwrap();
+        assert!(store.tasks.get("A").is_none());
+        assert!(store.tasks.get("Other").is_some(), "other task must survive");
+    }
+
+    #[test]
+    fn runner_packages_lists_managed_and_unmanaged_tasks() {
+        let td = TempDir::new("packages-list");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        pkg_write_task(&src, "A", 1, "[]", PKG_FINISH);
+        let pkg = pkg_build(&src, &td.path().join("src/assets"), "A", false, &td.path().join("dist"));
+        let runner = runner_pkg_server(td.path());
+        assert!(install_pkg(&runner, &pkg.path, false).0.contains("200"));
+
+        let bare = td.path().join("runner/tasks/Bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        std::fs::write(
+            bare.join("meta.json"),
+            r#"{"schema_version":1,"name":"Bare","version":4}"#,
+        )
+        .unwrap();
+
+        let (status, out) = get_route(&runner, "/runner/packages");
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["packages"].as_array().unwrap().len(), 1);
+        assert_eq!(v["packages"][0]["task_id"], "A");
+        let unmanaged = v["unmanaged"].as_array().unwrap();
+        assert_eq!(unmanaged.len(), 1);
+        assert_eq!(unmanaged[0]["task"], "Bare");
+        assert_eq!(unmanaged[0]["version"], 4);
+    }
+
+    #[test]
+    fn activate_rolls_back_to_the_recorded_backup() {
+        let td = TempDir::new("activate");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        let runner = runner_pkg_server(td.path());
+        for version in [1u32, 2] {
+            pkg_write_task(&src, "A", version, "[]", PKG_FINISH);
+            let pkg = pkg_build(
+                &src,
+                &td.path().join("src/assets"),
+                "A",
+                false,
+                &td.path().join("dist"),
+            );
+            assert!(
+                install_pkg(&runner, &pkg.path, false).0.contains("200"),
+                "install v{version}"
+            );
+        }
+        let (status, out) = post_route(
+            &runner,
+            "/runner/packages/activate",
+            "application/json",
+            br#"{"task_id":"A"}"#,
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["version"], 1);
+        assert!(v["restored_from"].as_str().unwrap().contains("A-1-"));
+        let meta = std::fs::read_to_string(td.path().join("runner/tasks/A/meta.json")).unwrap();
+        assert!(meta.contains("\"version\":1"), "{meta}");
+        let installed = package_cmd::read_installed(&td.path().join("runner/packages")).unwrap();
+        assert_eq!(installed.find("A").unwrap().version, 1);
+        assert!(installed.find("A").unwrap().backup.is_some());
+    }
+
+    #[test]
+    fn pr5_route_table_marks_publish_studio_and_lifecycle_runner() {
+        assert_eq!(
+            required_surface("POST", "/task/publish"),
+            Some(Surface::Studio)
+        );
+        assert_eq!(
+            required_surface("GET", "/task/package"),
+            Some(Surface::Studio)
+        );
+        for (method, path) in [
+            ("GET", "/runner/packages"),
+            ("POST", "/runner/install"),
+            ("POST", "/runner/uninstall"),
+            ("POST", "/runner/packages/activate"),
+        ] {
+            assert_eq!(
+                required_surface(method, path),
+                Some(Surface::Runner),
+                "{method} {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn install_merges_new_assets_and_refuses_same_id_different_bytes() {
+        let td = TempDir::new("asset-merge");
+        // Local global store: id 按钮 / images/a001.png.
+        let runner_assets = td.path().join("runner/assets");
+        std::fs::create_dir_all(runner_assets.join("images")).unwrap();
+        std::fs::write(runner_assets.join("images/a001.png"), b"local-bytes").unwrap();
+        std::fs::write(
+            runner_assets.join("assets.json"),
+            r#"{"schema_version":1,"items":[{"id":"按钮","kind":"template","file":"images/a001.png","rev":1}]}"#,
+        )
+        .unwrap();
+
+        // Package A adds a new id 新图 with its own a001.png.
+        let src1 = td.path().join("src1");
+        std::fs::create_dir_all(src1.join("assets/images")).unwrap();
+        std::fs::write(src1.join("assets/images/a001.png"), b"new-bytes").unwrap();
+        std::fs::write(
+            src1.join("assets/assets.json"),
+            r#"{"schema_version":1,"items":[{"id":"新图","kind":"template","file":"images/a001.png","rev":1}]}"#,
+        )
+        .unwrap();
+        pkg_write_task(
+            &src1.join("tasks"),
+            "A",
+            1,
+            "[]",
+            r#"[{"op":"click","args":{"sel":"新图"}},{"op":"finish","args":{"exit":"done"}}]"#,
+        );
+        let pkg_a = pkg_build(
+            &src1.join("tasks"),
+            &src1.join("assets"),
+            "A",
+            false,
+            &td.path().join("dist"),
+        );
+        let runner = runner_pkg_server(td.path());
+        let (status, body) = install_pkg(&runner, &pkg_a.path, false);
+        assert!(status.contains("200"), "{status} {body}");
+
+        let merged: oas_task::AssetsFile =
+            serde_json::from_slice(&std::fs::read(runner_assets.join("assets.json")).unwrap())
+                .unwrap();
+        let ids: Vec<&str> = merged.items.iter().map(|a| a.id.as_str()).collect();
+        assert!(ids.contains(&"按钮"), "{ids:?}");
+        assert!(ids.contains(&"新图"), "{ids:?}");
+        let new_item = merged.items.iter().find(|a| a.id == "新图").unwrap();
+        let allocated = new_item.file.as_deref().unwrap();
+        assert_ne!(
+            allocated, "images/a001.png",
+            "the local a001.png belongs to 按钮, the new asset must get a fresh name"
+        );
+        assert_eq!(std::fs::read(runner_assets.join(allocated)).unwrap(), b"new-bytes");
+
+        // Package B re-uses id 按钮 with different bytes -> install refuses.
+        let src2 = td.path().join("src2");
+        std::fs::create_dir_all(src2.join("assets/images")).unwrap();
+        std::fs::write(src2.join("assets/images/a001.png"), b"different-bytes").unwrap();
+        std::fs::write(
+            src2.join("assets/assets.json"),
+            r#"{"schema_version":1,"items":[{"id":"按钮","kind":"template","file":"images/a001.png","rev":1}]}"#,
+        )
+        .unwrap();
+        pkg_write_task(
+            &src2.join("tasks"),
+            "B",
+            1,
+            "[]",
+            r#"[{"op":"click","args":{"sel":"按钮"}},{"op":"finish","args":{"exit":"done"}}]"#,
+        );
+        let pkg_b = pkg_build(
+            &src2.join("tasks"),
+            &src2.join("assets"),
+            "B",
+            false,
+            &td.path().join("dist"),
+        );
+        let (status, body) = install_pkg(&runner, &pkg_b.path, false);
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("asset_conflicts"), "{body}");
+        assert!(body.contains("按钮"), "{body}");
+        // P1-3: the error must list both digests and be actionable.
+        assert!(body.contains("local sha256"), "{body}");
+        assert!(body.contains("package sha256"), "{body}");
+        assert!(body.contains("rename the conflicting asset"), "{body}");
+        assert!(body.contains("clear this Runner's global asset store"), "{body}");
+        assert!(body.contains("planned for a later release"), "{body}");
+        assert!(!td.path().join("runner/tasks/B").exists(), "no partial install");
+        assert_eq!(
+            std::fs::read(runner_assets.join("images/a001.png")).unwrap(),
+            b"local-bytes",
+            "the conflicting local asset is untouched"
+        );
+    }
+
+    #[test]
+    fn install_request_validation_is_loud_and_phase1_only() {
+        let td = TempDir::new("install-args");
+        let runner = runner_pkg_server(td.path());
+        let missing = td.path().join("no-such.oaspkg");
+        let txt = td.path().join("not-a-package.txt");
+        std::fs::write(&txt, b"x").unwrap();
+        let cases = vec![
+            (
+                r#"{"path":"relative.oaspkg"}"#.to_string(),
+                "must be an absolute path",
+            ),
+            (
+                serde_json::json!({"path": missing.display().to_string()}).to_string(),
+                "package not found",
+            ),
+            (
+                r#"{"upload":true}"#.to_string(),
+                "not implemented",
+            ),
+            (
+                serde_json::json!({"path": txt.display().to_string()}).to_string(),
+                ".oaspkg",
+            ),
+        ];
+        for (body, needle) in cases {
+            let (status, out) =
+                post_route(&runner, "/runner/install", "application/json", body.as_bytes());
+            assert!(status.contains("400"), "{body}: {status} {out}");
+            assert!(out.contains(needle), "{body}: {out}");
+        }
+    }
+
+    #[test]
+    fn install_initializes_an_empty_global_asset_store_from_the_package_snapshot() {
+        let td = TempDir::new("asset-init");
+        let src = td.path().join("src");
+        std::fs::create_dir_all(src.join("assets/images")).unwrap();
+        std::fs::write(src.join("assets/images/a001.png"), b"png-bytes").unwrap();
+        std::fs::write(
+            src.join("assets/assets.json"),
+            r#"{"schema_version":1,"design_resolution":[1280,720],
+                "items":[{"id":"按钮","kind":"template","file":"images/a001.png","rev":1}],
+                "collections":[]}"#,
+        )
+        .unwrap();
+        pkg_write_task(
+            &src.join("tasks"),
+            "A",
+            1,
+            "[]",
+            r#"[{"op":"click","args":{"sel":"按钮"}},{"op":"finish","args":{"exit":"done"}}]"#,
+        );
+        let pkg = pkg_build(
+            &src.join("tasks"),
+            &src.join("assets"),
+            "A",
+            false,
+            &td.path().join("dist"),
+        );
+        let snapshot = read_package(&pkg.path).unwrap();
+        let packaged_assets: oas_task::AssetsFile = serde_json::from_slice(
+            snapshot
+                .files
+                .get("assets/assets.json")
+                .expect("package carries the global asset snapshot"),
+        )
+        .unwrap();
+
+        // Fresh Runner-only layout: `<runner>/assets/` exists (the distribution
+        // ships `assets/.keep`) but there is no `assets.json` yet.
+        std::fs::create_dir_all(td.path().join("runner/assets")).unwrap();
+        let runner = runner_pkg_server(td.path());
+        let (status, body) = install_pkg(&runner, &pkg.path, false);
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(
+            v["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w.as_str().unwrap().contains("initialized")),
+            "the response must say the store was initialized: {body}"
+        );
+
+        let store_path = td.path().join("runner/assets/assets.json");
+        assert!(store_path.is_file(), "the package snapshot must initialize the store");
+        let store: oas_task::AssetsFile =
+            serde_json::from_slice(&std::fs::read(&store_path).unwrap()).unwrap();
+        assert_eq!(store.design_resolution, Some([1280, 720]));
+        assert_eq!(
+            store.items, packaged_assets.items,
+            "the initialized store must equal the package snapshot"
+        );
+        assert_eq!(store.collections, packaged_assets.collections);
+        let file = store.items[0].file.as_deref().expect("image file");
+        assert_eq!(
+            std::fs::read(td.path().join("runner/assets").join(file)).unwrap(),
+            b"png-bytes",
+            "the packaged image bytes must land in the global store"
+        );
+
+        // Re-installing the same snapshot with force must stay conflict-free.
+        let (status, body) = install_pkg(&runner, &pkg.path, true);
+        assert!(status.contains("200"), "{status} {body}");
+        let store: oas_task::AssetsFile =
+            serde_json::from_slice(&std::fs::read(&store_path).unwrap()).unwrap();
+        assert_eq!(store.items, packaged_assets.items);
+    }
+
+    #[test]
+    fn asset_store_initialization_failure_rolls_back_the_install() {
+        let td = TempDir::new("asset-init-rollback");
+        let src = td.path().join("src");
+        std::fs::create_dir_all(src.join("assets/images")).unwrap();
+        std::fs::write(src.join("assets/images/a001.png"), b"png-bytes").unwrap();
+        std::fs::write(
+            src.join("assets/assets.json"),
+            r#"{"schema_version":1,"items":[{"id":"按钮","kind":"template","file":"images/a001.png","rev":1}]}"#,
+        )
+        .unwrap();
+        pkg_write_task(
+            &src.join("tasks"),
+            "A",
+            1,
+            "[]",
+            r#"[{"op":"click","args":{"sel":"按钮"}},{"op":"finish","args":{"exit":"done"}}]"#,
+        );
+        let pkg = pkg_build(
+            &src.join("tasks"),
+            &src.join("assets"),
+            "A",
+            false,
+            &td.path().join("dist"),
+        );
+
+        // `assets/images` is a file, so copying the snapshot image must fail
+        // after the task directories were already committed.
+        std::fs::create_dir_all(td.path().join("runner/assets")).unwrap();
+        std::fs::write(td.path().join("runner/assets/images"), b"blocked").unwrap();
+        let runner = runner_pkg_server(td.path());
+        let (status, body) = install_pkg(&runner, &pkg.path, false);
+        assert!(status.contains("500"), "{status} {body}");
+        assert!(body.contains("merge assets"), "{body}");
+        assert!(
+            !td.path().join("runner/tasks/A").exists(),
+            "the committed task must be rolled back when the store cannot be initialized"
+        );
+        assert!(
+            !td.path().join("runner/assets/assets.json").exists(),
+            "no half-initialized store may remain"
+        );
+        assert_eq!(
+            std::fs::read(td.path().join("runner/assets/images")).unwrap(),
+            b"blocked",
+            "the pre-existing file is untouched"
+        );
+        let installed = package_cmd::read_installed(&td.path().join("runner/packages")).unwrap();
+        assert!(installed.packages.is_empty(), "no registry entry may be written");
+    }
+
+    #[test]
+    fn install_refuses_manifest_asset_refs_without_a_snapshot() {
+        let td = TempDir::new("asset-refs-no-snapshot");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        pkg_write_task(&src, "A", 1, "[]", PKG_FINISH);
+        let pkg = pkg_build(
+            &src,
+            &td.path().join("src/assets"),
+            "A",
+            false,
+            &td.path().join("dist"),
+        );
+        // A claimed asset ref with no `assets/` payload must be rejected: silently
+        // dropping it is exactly the P1-1 failure mode.
+        let broken = td.path().join("refs-only.oaspkg");
+        rewrite_package(&pkg.path, &broken, |archive| {
+            archive.manifest.asset_refs = vec![AssetRef {
+                id: "ghost".into(),
+                kind: "template".into(),
+                sha256: "0".repeat(64),
+            }];
+        });
+        let runner = runner_pkg_server(td.path());
+        let (status, body) = install_pkg(&runner, &broken, false);
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("missing_asset_snapshot"), "{body}");
+        assert!(body.contains("assets/assets.json"), "{body}");
+        assert!(body.contains("ghost"), "{body}");
+        assert!(!td.path().join("runner/tasks/A").exists(), "no partial install");
+    }
+
+    #[test]
+    fn same_version_reinstall_requires_force_and_repairs_a_missing_dir() {
+        let td = TempDir::new("same-version");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        pkg_write_task(&src, "A", 1, "[]", PKG_FINISH);
+        let pkg = pkg_build(
+            &src,
+            &td.path().join("src/assets"),
+            "A",
+            false,
+            &td.path().join("dist"),
+        );
+        let runner = runner_pkg_server(td.path());
+        assert!(install_pkg(&runner, &pkg.path, false).0.contains("200"));
+
+        let (status, body) = install_pkg(&runner, &pkg.path, false);
+        assert!(status.contains("409"), "{status} {body}");
+        assert!(body.contains("already_installed"), "{body}");
+        assert!(body.contains("v1 already installed"), "{body}");
+        assert!(body.contains("force:true to replace"), "{body}");
+        assert!(
+            td.path().join("runner/tasks/A/meta.json").is_file(),
+            "a refused reinstall must not touch the installed task"
+        );
+
+        let (status, body) = install_pkg(&runner, &pkg.path, true);
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["replaced"], true);
+        let backup = v["backup"].as_str().expect("force replace creates a backup");
+        assert!(td
+            .path()
+            .join("runner/packages")
+            .join(backup)
+            .join("task/meta.json")
+            .is_file());
+
+        // A missing target directory is a repair, not a replacement: no force.
+        std::fs::remove_dir_all(td.path().join("runner/tasks/A")).unwrap();
+        let (status, body) = install_pkg(&runner, &pkg.path, false);
+        assert!(status.contains("200"), "{status} {body}");
+        assert!(td.path().join("runner/tasks/A/meta.json").is_file());
+    }
+
+    #[test]
+    fn version_changes_do_not_require_force() {
+        let td = TempDir::new("version-change");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        let runner = runner_pkg_server(td.path());
+        for (idx, version) in [1u32, 2, 1].into_iter().enumerate() {
+            pkg_write_task(&src, "A", version, "[]", PKG_FINISH);
+            let pkg = pkg_build(
+                &src,
+                &td.path().join("src/assets"),
+                "A",
+                false,
+                &td.path().join(format!("dist-{idx}-v{version}")),
+            );
+            let (status, body) = install_pkg(&runner, &pkg.path, false);
+            assert!(status.contains("200"), "v{version}: {status} {body}");
+            assert_eq!(
+                package_cmd::read_installed(&td.path().join("runner/packages"))
+                    .unwrap()
+                    .find("A")
+                    .unwrap()
+                    .version,
+                version
+            );
+        }
+        // Both the upgrade and the downgrade left a restorable backup.
+        let backups = std::fs::read_dir(td.path().join("runner/packages/backup"))
+            .unwrap()
+            .count();
+        assert!(backups >= 2, "each version change is backed up: {backups}");
+    }
+
+    #[test]
+    fn install_refuses_a_package_that_requires_a_newer_engine() {
+        let td = TempDir::new("min-engine");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        pkg_write_task(&src, "A", 1, "[]", PKG_FINISH);
+        let pkg = pkg_build(
+            &src,
+            &td.path().join("src/assets"),
+            "A",
+            false,
+            &td.path().join("dist"),
+        );
+        let future = td.path().join("future-engine.oaspkg");
+        rewrite_package(&pkg.path, &future, |archive| {
+            archive.manifest.engine.min_engine = "999.0.0".into();
+        });
+        let runner = runner_pkg_server(td.path());
+        let (status, body) = install_pkg(&runner, &future, false);
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("engine >= 999.0.0"), "{body}");
+        assert!(body.contains("upgrade the Runner"), "{body}");
+        assert!(body.contains("engine_too_old"), "{body}");
+        assert!(!td.path().join("runner/tasks/A").exists());
+
+        // A package built by this engine (same min_engine) still installs.
+        let (status, body) = install_pkg(&runner, &pkg.path, false);
+        assert!(status.contains("200"), "{status} {body}");
+    }
+
+    #[test]
+    fn activate_restores_an_uninstalled_task_from_the_latest_backup() {
+        let td = TempDir::new("activate-uninstalled");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        let runner = runner_pkg_server(td.path());
+        for version in [1u32, 2] {
+            pkg_write_task(&src, "A", version, "[]", PKG_FINISH);
+            let pkg = pkg_build(
+                &src,
+                &td.path().join("src/assets"),
+                "A",
+                false,
+                &td.path().join(format!("dist-v{version}")),
+            );
+            assert!(install_pkg(&runner, &pkg.path, false).0.contains("200"));
+        }
+        // The uninstall backup must sort strictly after the install backups.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let (status, body) = post_route(
+            &runner,
+            "/runner/uninstall",
+            "application/json",
+            br#"{"task_id":"A"}"#,
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let uninstall_backup =
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["backup"]
+                .as_str()
+                .unwrap()
+                .to_string();
+        assert!(
+            uninstall_backup.starts_with("backup/uninstall-A-"),
+            "{uninstall_backup}"
+        );
+        assert!(!td.path().join("runner/tasks/A").exists());
+
+        // No installed.json entry: activate restores the newest backup.
+        let (status, body) = post_route(
+            &runner,
+            "/runner/packages/activate",
+            "application/json",
+            br#"{"task_id":"A"}"#,
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["version"], 2);
+        assert_eq!(v["restored_from"], uninstall_backup.as_str());
+        assert!(v["package_id"].as_str().unwrap().starts_with("pkg-A-2-"));
+        let meta = std::fs::read_to_string(td.path().join("runner/tasks/A/meta.json")).unwrap();
+        assert!(meta.contains("\"version\":2"), "{meta}");
+        let installed = package_cmd::read_installed(&td.path().join("runner/packages")).unwrap();
+        let entry = installed.find("A").expect("registry entry restored");
+        assert_eq!(entry.version, 2);
+        assert!(entry.package_id.starts_with("pkg-A-2-"));
+        assert!(entry.backup.is_none());
+
+        // Unknown task -> 404 (nothing to restore).
+        let (status, body) = post_route(
+            &runner,
+            "/runner/packages/activate",
+            "application/json",
+            br#"{"task_id":"Nope"}"#,
+        );
+        assert!(status.contains("404"), "{status} {body}");
+    }
+
+    #[test]
+    fn activate_rejects_backups_outside_backup_or_owned_by_another_task() {
+        let td = TempDir::new("activate-owner");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        let runner = runner_pkg_server(td.path());
+        for id in ["A", "B"] {
+            pkg_write_task(&src, id, 1, "[]", PKG_FINISH);
+            let pkg = pkg_build(
+                &src,
+                &td.path().join("src/assets"),
+                id,
+                false,
+                &td.path().join("dist"),
+            );
+            assert!(install_pkg(&runner, &pkg.path, false).0.contains("200"));
+        }
+        let (status, body) = post_route(
+            &runner,
+            "/runner/uninstall",
+            "application/json",
+            br#"{"task_id":"B"}"#,
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let b_backup = serde_json::from_str::<serde_json::Value>(&body).unwrap()["backup"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // B's backup must not be able to replace A.
+        let request = serde_json::json!({"task_id":"A","backup": b_backup}).to_string();
+        let (status, body) = post_route(
+            &runner,
+            "/runner/packages/activate",
+            "application/json",
+            request.as_bytes(),
+        );
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("belongs to task"), "{body}");
+        assert!(td.path().join("runner/tasks/A/meta.json").is_file());
+        assert!(!td.path().join("runner/tasks/B").exists());
+
+        // A path outside `backup/` is refused before touching anything.
+        let request = serde_json::json!({"task_id":"A","backup":"staging/not-a-backup"}).to_string();
+        let (status, body) = post_route(
+            &runner,
+            "/runner/packages/activate",
+            "application/json",
+            request.as_bytes(),
+        );
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("backup/"), "{body}");
+
+        // B's own backup restores B (the ownership check is not a blanket ban).
+        let request = serde_json::json!({"task_id":"B","backup": b_backup}).to_string();
+        let (status, body) = post_route(
+            &runner,
+            "/runner/packages/activate",
+            "application/json",
+            request.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        assert!(td.path().join("runner/tasks/B/meta.json").is_file());
     }
 }

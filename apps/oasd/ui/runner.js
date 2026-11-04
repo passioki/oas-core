@@ -8,10 +8,11 @@
   const RUNNER_FETCH_TIMEOUT_MS = 8000;
   const RUNNER_RUNS_LIMIT = 100;
   const RUNNER_RECENT_LIMIT = 5;
-  const RUNNER_PAGES = ['overview', 'tasks', 'queue', 'runs', 'settings'];
+  const RUNNER_PAGES = ['overview', 'tasks', 'packages', 'queue', 'runs', 'settings'];
   const RUNNER_PAGE_LABELS = {
     overview: '概览',
     tasks: '已安装任务',
+    packages: '安装包',
     queue: '队列与调度',
     runs: '运行记录',
     settings: '设置',
@@ -19,6 +20,10 @@
   const RUNNER_API = {
     health: '/runner/health',
     tasks: '/runner/tasks',
+    packages: '/runner/packages',
+    install: '/runner/install',
+    uninstall: '/runner/uninstall',
+    packagesActivate: '/runner/packages/activate',
     schedulerStatus: '/scheduler/status',
     schedulerRuns: '/runs/scheduler',
     config: '/config',
@@ -31,6 +36,7 @@
     queued: false,
     health: null,
     tasks: null,
+    packages: null,
     recentRuns: null,
     recentRunsError: '',
     scheduler: null,
@@ -46,6 +52,9 @@
   let configParams = [];
   let configLoaded = false;
   let configBusy = false;
+
+  // PR5: 安装/卸载/回滚是串行操作；期间禁用安装按钮并拒绝重复提交。
+  let packagesBusy = false;
 
   // --- 纯格式化辅助（无 DOM 依赖；ui_pure_test 会单独抽取验证） ---------------
 
@@ -352,6 +361,111 @@
     return '/runner/tasks/' + encodeURIComponent(name) + '/config';
   }
 
+  // --- PR5: 安装包（纯函数，ui_pure_test 单独抽取执行） -----------------------
+  // 安装、卸载与回滚都走 Runner-only 路由；这里只拼请求体、格式化和把服务端
+  // 错误码翻成可执行的一句话。不依赖 DOM。
+
+  // POST /runner/install body. The path is shown/trimmed as typed: the Runner
+  // is a local surface, so no drive-letter rewriting or platform guessing.
+  function runnerInstallBody(path, force) {
+    const text = String(path === undefined || path === null ? '' : path).trim();
+    return { path: text, force: force === true };
+  }
+
+  // Normalized display row for one installed package. Missing fields render
+  // '—' instead of "undefined"; sha is shortened only for display (title keeps
+  // the full value).
+  function formatPackageRow(pkg) {
+    const p = pkg && typeof pkg === 'object' ? pkg : {};
+    const text = (v) => (v === undefined || v === null || v === '' ? '' : String(v));
+    const packageId = text(p.package_id);
+    const sha = text(p.sha256);
+    return {
+      task_id: text(p.task_id) || '—',
+      version: text(p.version) || '—',
+      package_id: packageId || '—',
+      package_id_short: packageId && packageId.length > 28
+        ? packageId.slice(0, 28) + '…'
+        : (packageId || '—'),
+      sha256: sha || '—',
+      sha_short: sha ? (sha.length > 12 ? sha.slice(0, 12) + '…' : sha) : '—',
+      installed_at_ms: p.installed_at_ms === undefined || p.installed_at_ms === null
+        ? null
+        : p.installed_at_ms,
+      backup: text(p.backup) || '—',
+    };
+  }
+
+  // 「已安装任务」行里的包信息徽标：已安装 vN / 未纳管。When the backend does
+  // not return installed/version/package_id/unmanaged at all, stay neutral.
+  function runnerTaskPackageBadge(task) {
+    const t = task && typeof task === 'object' ? task : {};
+    const version = t.version === undefined || t.version === null || t.version === ''
+      ? ''
+      : String(t.version);
+    const packageId = t.package_id === undefined || t.package_id === null
+      ? ''
+      : String(t.package_id).trim();
+    if (t.unmanaged === true) {
+      return {
+        text: '未纳管',
+        cls: 'warn',
+        title: 'tasks/ 裸目录：未经安装包管理；可在「安装包」页查看',
+      };
+    }
+    if (t.unmanaged === false || t.installed === true || packageId) {
+      return {
+        text: version ? '已安装 v' + version : '已安装',
+        cls: 'ok',
+        title: packageId ? 'package_id：' + packageId : '已由安装包管理',
+      };
+    }
+    return { text: '—', cls: 'kind', title: '任务列表未返回包信息' };
+  }
+
+  // Map the Runner install/uninstall errors to one actionable Chinese line
+  // (details stay server-authoritative; this only explains the common codes).
+  function runnerPackagesErrorText(err) {
+    let raw;
+    if (err === undefined || err === null) raw = '';
+    else if (typeof err === 'string') raw = err;
+    else if (typeof err === 'number' || typeof err === 'boolean') raw = String(err);
+    else if (err.message !== undefined && err.message !== null) raw = String(err.message);
+    else {
+      try {
+        raw = JSON.stringify(err);
+      } catch (e) {
+        raw = String(err);
+      }
+    }
+    const text = String(raw === undefined || raw === null ? '' : raw).replace(/\s+/g, ' ').trim();
+    if (!text) return '未知错误';
+    const lower = text.toLowerCase();
+    if (lower.indexOf('dirty_task') >= 0 || text.indexOf('被修改') >= 0) {
+      return '任务目录在本机被修改过（dirty_task）：确认要覆盖时勾选 force 后重试。';
+    }
+    if (lower.indexOf('flow_ops') >= 0) {
+      return '安装包需要更新的 Runner：manifest.engine.flow_ops 超出当前 Runner 支持范围。';
+    }
+    if (lower.indexOf('checksum') >= 0 || lower.indexOf('sha256') >= 0 || text.indexOf('校验') >= 0) {
+      return '安装包校验失败（checksum）：文件不完整或被修改，请重新发布后再安装。';
+    }
+    if (lower.indexOf('not found') >= 0 || lower.indexOf('enoent') >= 0 ||
+        text.indexOf('找不到') >= 0) {
+      return '找不到安装包文件：' + text;
+    }
+    if (lower.indexOf('exists') >= 0 || text.indexOf('已存在') >= 0) {
+      return '任务已存在：' + text;
+    }
+    if (lower.indexOf('version') >= 0 || text.indexOf('版本') >= 0) {
+      return '版本不满足：' + text;
+    }
+    if (lower.indexOf('depend') >= 0 || text.indexOf('依赖') >= 0) {
+      return '依赖缺失：' + text;
+    }
+    return text;
+  }
+
   // --- HTTP：所有请求的唯一入口 ------------------------------------------------
 
   function runnerBodyErrors(body) {
@@ -405,7 +519,13 @@
         throw err;
       }
       if (!body || typeof body !== 'object') throw new Error('响应不是 JSON 对象');
-      if (body.ok === false) throw new Error(detail || '服务端返回 ok=false');
+      if (body.ok === false) {
+        const err = new Error(detail || '服务端返回 ok=false');
+        if (Array.isArray(body.errors) && body.errors.length) {
+          err.details = body.errors.map(String);
+        }
+        throw err;
+      }
       return body;
     } catch (e) {
       if (e && e.name === 'AbortError') {
@@ -519,8 +639,8 @@
   function setFetching(busy) {
     state.busy = !!busy;
     const buttons = [
-      el.refresh, el.healthRefresh, el.tasksRefresh, el.queueRefresh,
-      el.runsRefresh, el.settingsRefresh,
+      el.refresh, el.healthRefresh, el.tasksRefresh, el.packagesRefresh,
+      el.queueRefresh, el.runsRefresh, el.settingsRefresh,
     ];
     for (const button of buttons) {
       if (button) button.disabled = !!busy;
@@ -550,6 +670,21 @@
     el.tasksCount = document.getElementById('runner-tasks-count');
     el.tasksStatus = document.getElementById('runner-tasks-status');
     el.tasksList = document.getElementById('runner-tasks-list');
+
+    el.packagesRefresh = document.getElementById('runner-packages-refresh');
+    el.packagesSummary = document.getElementById('runner-packages-summary');
+    el.packagesStatus = document.getElementById('runner-packages-status');
+    el.packagesCount = document.getElementById('runner-packages-count');
+    el.packagesList = document.getElementById('runner-packages-list');
+    el.packagesUnmanagedStatus = document.getElementById('runner-packages-unmanaged-status');
+    el.packagesUnmanaged = document.getElementById('runner-packages-unmanaged');
+    el.installPath = document.getElementById('runner-install-path');
+    el.installForce = document.getElementById('runner-install-force');
+    el.installSubmit = document.getElementById('runner-install-submit');
+    el.installStatus = document.getElementById('runner-install-status');
+    el.installResult = document.getElementById('runner-install-result');
+    el.installWarnings = document.getElementById('runner-install-warnings');
+    el.installError = document.getElementById('runner-install-error');
 
     el.configDialog = document.getElementById('runner-config-dialog');
     el.configTitle = document.getElementById('runner-config-title');
@@ -707,7 +842,8 @@
         (metaErrors ? ' · 元数据异常 ' + metaErrors + ' 个' : '');
     }
     if (!tasks.length) {
-      el.tasksList.textContent = '还没有安装任务包（安装功能将在后续 PR 提供）';
+      el.tasksList.textContent =
+        '还没有任务：请到「安装包」页安装 .oaspkg，或把任务目录放到 tasks/ 下（未纳管）。';
       return;
     }
     const rows = tasks.map(function (task) {
@@ -721,6 +857,10 @@
       configBtn.textContent = '配置';
       configBtn.title = '编辑该任务的运行值（保存在本机 config/values.json）';
       configBtn.addEventListener('click', function () { openRunnerConfigDialog(t.task); });
+      // PR5: package provenance badge (installed vN / unmanaged bare dir).
+      const packageBadge = runnerTaskPackageBadge(t);
+      const badgeEl = makeBadge(packageBadge.text, packageBadge.cls);
+      badgeEl.title = packageBadge.title;
       return [
         { text: runnerValueText(t.task), title: title },
         runnerFlagText(t.has_flow),
@@ -728,12 +868,13 @@
         runnerFlagText(t.has_assets),
         runnerParamKeys(t.params).join(', ') || '—',
         runnerTaskStatusText(t),
+        badgeEl,
         t.has_meta === true ? configBtn : { text: '—' },
       ];
     });
     renderTable(
       el.tasksList,
-      ['任务', 'flow', 'meta', 'assets', '参数 key', '状态', '操作'],
+      ['任务', 'flow', 'meta', 'assets', '参数 key', '状态', '包', '操作'],
       rows,
       '（没有任务）'
     );
@@ -751,6 +892,259 @@
       if (el.tasksStatus) el.tasksStatus.textContent = message;
       if (el.tasksList) el.tasksList.textContent = message;
       return [message];
+    }
+  }
+
+  // --- 安装包（安装 / 列表 / 卸载 / 回滚） -------------------------------------
+
+  function setPackagesBusy(busy) {
+    if (el.installSubmit) el.installSubmit.disabled = !!busy;
+    if (el.packagesRefresh) el.packagesRefresh.disabled = !!busy;
+  }
+
+  function installErrorLines(error) {
+    if (error && Array.isArray(error.details) && error.details.length) {
+      return error.details.map(function (line) {
+        return '· ' + runnerPackagesErrorText(line);
+      });
+    }
+    return ['· ' + runnerPackagesErrorText(error)];
+  }
+
+  function renderInstallResult(body) {
+    const b = body && typeof body === 'object' ? body : {};
+    renderKv(el.installResult, [
+      ['package_id', runnerValueText(b.package_id)],
+      ['task', runnerValueText(b.task_id !== undefined ? b.task_id : b.task)],
+      ['version', runnerValueText(b.version)],
+      ['replaced', b.replaced === true ? '是（旧版本已备份）' : (b.replaced === false ? '否' : '—')],
+      ['backup', runnerValueText(b.backup)],
+    ]);
+    const warnings = Array.isArray(b.warnings) ? b.warnings : [];
+    if (el.installWarnings) {
+      el.installWarnings.textContent = warnings.length
+        ? 'warnings：\n' + warnings.map(function (w) { return '· ' + String(w); }).join('\n')
+        : '';
+    }
+  }
+
+  function packageRowActions(row) {
+    const wrap = document.createElement('span');
+    wrap.className = 'runner-package-actions';
+    const task = row && row.task_id && row.task_id !== '—' ? row.task_id : '';
+    const uninstall = document.createElement('button');
+    uninstall.type = 'button';
+    uninstall.textContent = '卸载';
+    uninstall.title = '卸载该任务包（任务目录先备份到 packages/backup/）';
+    uninstall.className = 'runner-package-uninstall';
+    uninstall.disabled = !task;
+    uninstall.addEventListener('click', function () { uninstallRunnerPackage(task); });
+    const activate = document.createElement('button');
+    activate.type = 'button';
+    activate.textContent = '回滚';
+    activate.title = '回滚到该任务最近一次备份（Phase 1）';
+    activate.className = 'runner-package-activate';
+    activate.disabled = !task;
+    activate.addEventListener('click', function () { activateRunnerPackage(task); });
+    wrap.appendChild(uninstall);
+    wrap.appendChild(activate);
+    return wrap;
+  }
+
+  function renderPackages(body) {
+    const b = body && typeof body === 'object' ? body : {};
+    const packages = Array.isArray(b.packages) ? b.packages
+      : (Array.isArray(b.installed) ? b.installed : []);
+    if (el.packagesCount) el.packagesCount.textContent = packages.length + ' 个包';
+    if (el.packagesSummary) {
+      el.packagesSummary.textContent = 'packages/installed.json · 共 ' + packages.length + ' 个包';
+    }
+    const rows = packages.map(function (pkg) {
+      const row = formatPackageRow(pkg);
+      return [
+        row.task_id,
+        row.version,
+        { text: row.package_id_short, title: row.package_id === '—' ? '' : row.package_id },
+        { text: row.sha_short, title: row.sha256 === '—' ? '' : row.sha256 },
+        runnerTimeText(row.installed_at_ms),
+        { text: row.backup, title: row.backup === '—' ? '' : row.backup },
+        packageRowActions(row),
+      ];
+    });
+    renderTable(
+      el.packagesList,
+      ['任务', '版本', 'package_id', 'sha256', '安装时间', '备份', '操作'],
+      rows,
+      '尚未安装任务包（可用上方「安装」导入 .oaspkg）'
+    );
+  }
+
+  function renderUnmanaged(items) {
+    const list = Array.isArray(items) ? items : [];
+    if (el.packagesUnmanagedStatus) {
+      el.packagesUnmanagedStatus.textContent = list.length
+        ? list.length + ' 个未纳管任务'
+        : '没有未纳管任务';
+    }
+    if (!el.packagesUnmanaged) return;
+    clearNode(el.packagesUnmanaged);
+    if (!list.length) {
+      el.packagesUnmanaged.textContent = '没有未纳管任务';
+      return;
+    }
+    for (const item of list) {
+      const t = item && typeof item === 'object' ? item : { task: String(item) };
+      const name = runnerValueText(t.task !== undefined ? t.task : (t.task_id || t.name));
+      const row = document.createElement('div');
+      row.className = 'runner-unmanaged-row';
+      const strong = document.createElement('strong');
+      strong.textContent = name;
+      const note = document.createElement('span');
+      note.className = 'muted small';
+      note.textContent = ' 未纳管（裸目录）· tasks/' + name;
+      row.appendChild(strong);
+      row.appendChild(note);
+      el.packagesUnmanaged.appendChild(row);
+    }
+  }
+
+  async function loadPackagesPage() {
+    const errors = [];
+    try {
+      const body = await runnerFetchJson(RUNNER_API.packages);
+      state.packages = body;
+      renderPackages(body);
+      if (el.packagesStatus) {
+        el.packagesStatus.textContent = '已安装清单读取自 /runner/packages';
+        el.packagesStatus.className = 'muted small';
+      }
+    } catch (e) {
+      state.packages = null;
+      const message = '安装包列表读取失败：' + runnerErrorText(e);
+      if (el.packagesSummary) el.packagesSummary.textContent = '—';
+      if (el.packagesCount) el.packagesCount.textContent = '—';
+      if (el.packagesList) el.packagesList.textContent = message;
+      if (el.packagesStatus) {
+        el.packagesStatus.textContent = message;
+        el.packagesStatus.className = 'muted small err';
+      }
+      return [message];
+    }
+    let unmanaged = null;
+    const pkgBody = state.packages || {};
+    if (Array.isArray(pkgBody.unmanaged)) unmanaged = pkgBody.unmanaged;
+    if (!unmanaged) {
+      try {
+        const tasksBody = await runnerFetchJson(RUNNER_API.tasks);
+        state.tasks = tasksBody;
+        const tasks = Array.isArray(tasksBody.tasks) ? tasksBody.tasks : [];
+        unmanaged = tasks.filter(function (t) { return t && t.unmanaged === true; });
+      } catch (e) {
+        const message = '未纳管任务读取失败：' + runnerErrorText(e);
+        unmanaged = [];
+        errors.push(message);
+      }
+    }
+    renderUnmanaged(unmanaged);
+    return errors;
+  }
+
+  async function installRunnerPackage() {
+    if (packagesBusy) return;
+    const body = runnerInstallBody(
+      el.installPath ? el.installPath.value : '',
+      el.installForce ? el.installForce.checked : false
+    );
+    if (!body.path) {
+      if (el.installError) el.installError.textContent = '· 请填写本机 .oaspkg 路径';
+      if (el.installStatus) {
+        el.installStatus.textContent = '未安装';
+        el.installStatus.className = 'muted small err';
+      }
+      return;
+    }
+    packagesBusy = true;
+    setPackagesBusy(true);
+    if (el.installError) el.installError.textContent = '';
+    if (el.installWarnings) el.installWarnings.textContent = '';
+    if (el.installResult) el.installResult.textContent = '安装中…';
+    if (el.installStatus) {
+      el.installStatus.textContent = '安装中…（sha256 / 解包 / 复检）';
+      el.installStatus.className = 'muted small';
+    }
+    try {
+      const result = await runnerFetchJson(RUNNER_API.install, { method: 'POST', body: body });
+      renderInstallResult(result);
+      if (el.installStatus) {
+        el.installStatus.textContent = '安装成功';
+        el.installStatus.className = 'muted small ok';
+      }
+      setPageStatus('已安装任务包：' + runnerValueText(result.task_id || result.task), 'ok');
+      await loadPackagesPage();
+    } catch (e) {
+      if (el.installError) el.installError.textContent = installErrorLines(e).join('\n');
+      if (el.installResult) el.installResult.textContent = '—';
+      if (el.installStatus) {
+        el.installStatus.textContent = '安装失败';
+        el.installStatus.className = 'muted small err';
+      }
+    } finally {
+      packagesBusy = false;
+      setPackagesBusy(false);
+    }
+  }
+
+  async function uninstallRunnerPackage(task) {
+    if (packagesBusy || !task) return;
+    if (typeof window.confirm === 'function' &&
+        !window.confirm('卸载任务包「' + task + '」？\n\n任务目录会先备份到 packages/backup/，再从已安装清单移除。')) {
+      return;
+    }
+    packagesBusy = true;
+    setPackagesBusy(true);
+    if (el.packagesStatus) {
+      el.packagesStatus.textContent = '卸载中…';
+      el.packagesStatus.className = 'muted small';
+    }
+    try {
+      await runnerFetchJson(RUNNER_API.uninstall, { method: 'POST', body: { task_id: task } });
+      setPageStatus('已卸载任务包：' + task, 'ok');
+      await loadPackagesPage();
+    } catch (e) {
+      if (el.packagesStatus) {
+        el.packagesStatus.textContent = '卸载失败：' + installErrorLines(e).join('；');
+        el.packagesStatus.className = 'muted small err';
+      }
+    } finally {
+      packagesBusy = false;
+      setPackagesBusy(false);
+    }
+  }
+
+  async function activateRunnerPackage(task) {
+    if (packagesBusy || !task) return;
+    if (typeof window.confirm === 'function' &&
+        !window.confirm('回滚任务「' + task + '」到最近备份？\n\n当前任务目录会先备份。')) {
+      return;
+    }
+    packagesBusy = true;
+    setPackagesBusy(true);
+    if (el.packagesStatus) {
+      el.packagesStatus.textContent = '回滚中…';
+      el.packagesStatus.className = 'muted small';
+    }
+    try {
+      await runnerFetchJson(RUNNER_API.packagesActivate, { method: 'POST', body: { task_id: task } });
+      setPageStatus('已回滚任务包：' + task, 'ok');
+      await loadPackagesPage();
+    } catch (e) {
+      if (el.packagesStatus) {
+        el.packagesStatus.textContent = '回滚失败：' + installErrorLines(e).join('；');
+        el.packagesStatus.className = 'muted small err';
+      }
+    } finally {
+      packagesBusy = false;
+      setPackagesBusy(false);
     }
   }
 
@@ -1300,6 +1694,7 @@
       let pageErrors = [];
       if (state.page === 'overview') pageErrors = await loadOverview();
       else if (state.page === 'tasks') pageErrors = await loadTasksPage();
+      else if (state.page === 'packages') pageErrors = await loadPackagesPage();
       else if (state.page === 'queue') pageErrors = await loadQueuePage();
       else if (state.page === 'runs') pageErrors = await loadRunsPage();
       else if (state.page === 'settings') pageErrors = await loadSettingsPage();
@@ -1322,6 +1717,8 @@
     if (el.refresh) el.refresh.addEventListener('click', function () { refreshCurrentPage(); });
     if (el.healthRefresh) el.healthRefresh.addEventListener('click', function () { refreshCurrentPage(); });
     if (el.tasksRefresh) el.tasksRefresh.addEventListener('click', function () { refreshCurrentPage(); });
+    if (el.packagesRefresh) el.packagesRefresh.addEventListener('click', function () { refreshCurrentPage(); });
+    if (el.installSubmit) el.installSubmit.addEventListener('click', function () { installRunnerPackage(); });
     if (el.queueRefresh) el.queueRefresh.addEventListener('click', function () { refreshCurrentPage(); });
     if (el.runsRefresh) el.runsRefresh.addEventListener('click', function () { refreshCurrentPage(); });
     if (el.settingsRefresh) el.settingsRefresh.addEventListener('click', function () { refreshCurrentPage(); });

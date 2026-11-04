@@ -251,6 +251,15 @@ const taskConfigSave = document.getElementById('task-config-save');
 const taskConfigCancel = document.getElementById('task-config-cancel');
 let taskConfigTask = '';
 let taskConfigBusy = false;
+// PR5: 发布任务包（Studio-only）。只产出 .oaspkg；安装/卸载/回滚在 Runner。
+const taskPublishDialog = document.getElementById('task-publish-dialog');
+const taskPublishOut = document.getElementById('task-publish-out');
+const taskPublishList = document.getElementById('task-publish-list');
+const taskPublishStatus = document.getElementById('task-publish-status');
+const taskPublishError = document.getElementById('task-publish-error');
+const taskPublishSubmit = document.getElementById('task-publish-submit');
+let taskPublishTask = '';
+let taskPublishBusy = false;
 // M2/N37：调度面板（PR1 起 Studio 只保留占位 DOM）+ 重置记忆对话框
 const schedSummary = document.getElementById('sched-summary');
 const schedEntries = document.getElementById('sched-entries');
@@ -853,6 +862,13 @@ async function refreshLibrary() {
       configBtn.textContent = '配置项…';
       configBtn.title = '编辑该任务的 meta.params 配置项（发布后随任务包下发）';
       configBtn.addEventListener('click', () => openTaskConfigDialog(t.name));
+      // PR5: publish only produces a .oaspkg (Studio-side); installation is
+      // Runner-only, so this button never calls /runner/*.
+      const publishBtn = document.createElement('button');
+      publishBtn.type = 'button';
+      publishBtn.textContent = '发布…';
+      publishBtn.title = '发布为 .oaspkg（含任务、子任务依赖与引用素材快照；终端用户在 Runner 安装）';
+      publishBtn.addEventListener('click', () => openTaskPublishDialog(t.name));
       // PR1: scheduling configuration and run history belong to the Runner
       // surface. Studio only links over; it must not call /scheduler/config or
       // /runs/scheduler (Runner-only routes answer 404 on Studio).
@@ -865,7 +881,7 @@ async function refreshLibrary() {
       del.type = 'button';
       del.textContent = '删除';
       del.addEventListener('click', () => deleteTaskFromLibrary(t.name));
-      card.append(meta, open, configBtn, runsBtn, del);
+      card.append(meta, open, configBtn, publishBtn, runsBtn, del);
       libList.appendChild(card);
     }
   } catch (e) {
@@ -1058,6 +1074,185 @@ async function submitTaskConfig() {
     taskConfigBusy = false;
     // 只在同一个任务仍打开时恢复按钮；成功关闭/切换到别的任务时不抢状态。
     if (taskConfigSave && taskConfigTask === name) taskConfigSave.disabled = false;
+  }
+}
+
+// --- PR5: 发布任务包（Studio-only；.oaspkg 由 Runner 安装） ------------------
+// 下面 3 个纯函数被 ui_pure_test.js 直接抽取执行，不能依赖 DOM / 全局状态。
+
+// POST /task/publish body. `out` is omitted when blank (server default
+// dist/packages applies); include_deps defaults to true, force only travels
+// when explicitly checked. reproducible is accepted for CLI parity.
+function publishRequestBody(task, opts) {
+  const name = String(task === undefined || task === null ? '' : task).trim();
+  const o = opts && typeof opts === 'object' ? opts : {};
+  const body = { task: name };
+  const out = String(o.out === undefined || o.out === null ? '' : o.out).trim();
+  if (out) body.out = out;
+  if (o.force === true) body.force = true;
+  body.include_deps = o.include_deps !== false;
+  if (o.reproducible === true) body.reproducible = true;
+  return body;
+}
+
+// One copyable line for a published package. The server may omit every field
+// except path, so each part is optional and never renders "undefined".
+function formatPackageSummary(pkg) {
+  const p = pkg && typeof pkg === 'object' ? pkg : {};
+  const text = (v) => (v === undefined || v === null || v === '' ? '' : String(v));
+  const parts = [];
+  parts.push(text(p.path) || '（服务端未返回 path）');
+  const version = text(p.task_version !== undefined ? p.task_version : p.version);
+  if (version) parts.push(/^v/i.test(version) ? version : 'v' + version);
+  const packageId = text(p.package_id);
+  if (packageId) {
+    parts.push(packageId.length > 32 ? packageId.slice(0, 32) + '…' : packageId);
+  }
+  const sha = text(p.sha256);
+  if (sha) parts.push('sha256 ' + (sha.length > 12 ? sha.slice(0, 12) + '…' : sha));
+  return parts.join(' · ');
+}
+
+// 400/409 errors are rendered line by line; an empty body still says something
+// actionable instead of a bare blank panel.
+function publishErrorsText(errors) {
+  let list;
+  if (Array.isArray(errors)) {
+    list = errors
+      .filter((e) => e !== undefined && e !== null && String(e).trim() !== '')
+      .map((e) => String(e).trim());
+  } else if (errors === undefined || errors === null || String(errors).trim() === '') {
+    list = [];
+  } else {
+    list = [String(errors).trim()];
+  }
+  if (!list.length) return '（服务端未返回错误详情）';
+  return list.map((line) => '· ' + line).join('\n');
+}
+
+function closeTaskPublishDialog() {
+  if (!taskPublishDialog) return;
+  if (typeof taskPublishDialog.close === 'function') {
+    if (taskPublishDialog.open) taskPublishDialog.close();
+  } else {
+    taskPublishDialog.removeAttribute('open');
+  }
+}
+
+async function loadPublishedPackages(task) {
+  if (!taskPublishList) return;
+  taskPublishList.textContent = '读取中…';
+  try {
+    const r = await fetch('/task/package?task=' + encodeURIComponent(task));
+    const s = await r.json();
+    if (taskPublishTask !== task) return; // 已关闭/切换任务，丢弃过期响应
+    if (!s.ok) {
+      taskPublishList.textContent =
+        '已发布列表读取失败：' + ((s.errors || []).join('；') || '未知错误');
+      return;
+    }
+    const packages = Array.isArray(s.packages) ? s.packages : [];
+    taskPublishList.textContent = '';
+    if (!packages.length) {
+      taskPublishList.textContent = '尚未发布';
+      return;
+    }
+    for (const pkg of packages) {
+      const row = document.createElement('div');
+      row.className = 'task-publish-row';
+      row.textContent = formatPackageSummary(pkg);
+      taskPublishList.appendChild(row);
+    }
+  } catch (e) {
+    if (taskPublishTask !== task) return;
+    taskPublishList.textContent = '已发布列表读取异常：' + e;
+  }
+}
+
+function openTaskPublishDialog(task) {
+  const name = String(task === undefined || task === null ? '' : task).trim();
+  if (!taskPublishDialog || !name) return;
+  taskPublishTask = name;
+  const title = taskPublishDialog.querySelector('h3');
+  if (title) title.textContent = '发布任务包 · ' + name;
+  if (taskPublishOut) taskPublishOut.value = '';
+  if (taskPublishList) taskPublishList.textContent = '读取中…';
+  if (taskPublishStatus) {
+    taskPublishStatus.textContent = '—';
+    taskPublishStatus.className = 'muted small task-publish-result';
+  }
+  if (taskPublishError) taskPublishError.textContent = '';
+  if (taskPublishSubmit) taskPublishSubmit.disabled = taskPublishBusy;
+  const includeDeps = taskPublishDialog.querySelector('input[name="include_deps"]');
+  if (includeDeps) includeDeps.checked = true;
+  const force = taskPublishDialog.querySelector('input[name="force"]');
+  if (force) force.checked = false;
+  if (typeof taskPublishDialog.showModal === 'function') {
+    if (!taskPublishDialog.open) taskPublishDialog.showModal();
+  } else {
+    taskPublishDialog.setAttribute('open', '');
+  }
+  loadPublishedPackages(name);
+}
+
+async function submitTaskPublish() {
+  if (taskPublishBusy || !taskPublishTask) return;
+  const name = taskPublishTask;
+  const includeDeps = taskPublishDialog
+    ? taskPublishDialog.querySelector('input[name="include_deps"]')
+    : null;
+  const force = taskPublishDialog
+    ? taskPublishDialog.querySelector('input[name="force"]')
+    : null;
+  const body = publishRequestBody(name, {
+    out: taskPublishOut ? taskPublishOut.value : '',
+    include_deps: includeDeps ? includeDeps.checked : true,
+    force: force ? force.checked : false,
+  });
+  taskPublishBusy = true;
+  if (taskPublishSubmit) taskPublishSubmit.disabled = true;
+  if (taskPublishError) taskPublishError.textContent = '';
+  if (taskPublishStatus) {
+    taskPublishStatus.textContent = '发布中…（校验 / 打包 / 计算 sha256）';
+    taskPublishStatus.className = 'muted small task-publish-result';
+  }
+  try {
+    const s = await postJson('/task/publish', body);
+    if (!s.ok) {
+      const errors = Array.isArray(s.errors) ? s.errors : [];
+      let message = publishErrorsText(errors);
+      if (errors.some((e) => /exists/i.test(String(e)))) {
+        message = '包已存在，勾选 force 或提升版本。\n' + message;
+      }
+      if (taskPublishError) taskPublishError.textContent = message;
+      if (taskPublishStatus) {
+        taskPublishStatus.textContent = '发布失败';
+        taskPublishStatus.className = 'muted small task-publish-result err';
+      }
+      return;
+    }
+    const lines = ['已发布：' + (s.path || '（服务端未返回路径）')];
+    if (s.package_id) lines.push('package_id：' + s.package_id);
+    lines.push('sha256：' + (s.sha256 || '—'));
+    const warnings = Array.isArray(s.warnings) ? s.warnings : [];
+    lines.push(warnings.length
+      ? 'warnings：\n' + warnings.map((w) => '· ' + String(w)).join('\n')
+      : 'warnings：无');
+    if (taskPublishStatus) {
+      taskPublishStatus.textContent = lines.join('\n');
+      taskPublishStatus.className = 'muted small task-publish-result ok';
+    }
+    log(`已发布任务包：${s.path || name}`);
+    await loadPublishedPackages(name);
+  } catch (e) {
+    if (taskPublishError) taskPublishError.textContent = '发布异常：' + e;
+    if (taskPublishStatus) {
+      taskPublishStatus.textContent = '发布失败';
+      taskPublishStatus.className = 'muted small task-publish-result err';
+    }
+  } finally {
+    taskPublishBusy = false;
+    if (taskPublishSubmit) taskPublishSubmit.disabled = false;
   }
 }
 
@@ -9539,6 +9734,21 @@ async function submitResetMemory() {
         ev.preventDefault();
         submitTaskConfig();
       }
+    });
+  }
+  // PR5: 发布任务包对话框（发布 / 关闭 / Esc；发布中禁用发布按钮）。
+  if (taskPublishSubmit) taskPublishSubmit.addEventListener('click', submitTaskPublish);
+  if (taskPublishDialog) {
+    taskPublishDialog.addEventListener('click', (ev) => {
+      const target = ev.target;
+      if (target && target.getAttribute && target.getAttribute('data-publish-close') === '1') {
+        closeTaskPublishDialog();
+      }
+    });
+    taskPublishDialog.addEventListener('close', () => {
+      taskPublishTask = '';
+      // Never clear taskPublishBusy here: an in-flight publish still owns the
+      // busy flag until its finally block runs.
     });
   }
   if (createName) {

@@ -13,9 +13,12 @@
 //   - the mutually-exclusive selection mode dispatch,
 //   - ResizeObserver-driven canvas fitting staying rAF-coalesced + idempotent,
 //   - PR1 Studio/Runner split: Studio nav has no schedule page, Runner nav has
-//     exactly five pages and its own static bundle.
+//     exactly six pages and its own static bundle.
 //   - PR2 task config: Studio edits meta.params (schema) while the Runner edits
 //     local values (config/values.json); the two API surfaces stay isolated.
+//   - PR5 packages: Studio publishes .oaspkg (POST /task/publish) while the
+//     Runner installs/uninstalls/rolls back (POST /runner/install|uninstall|
+//     packages/activate) and never touches the authoring surface.
 'use strict';
 
 const fs = require('fs');
@@ -256,6 +259,10 @@ const PURE_FUNCTIONS = [
   'taskConfigParamsToJson',
   'parseTaskConfigParamsText',
   'taskConfigSummary',
+  // PR5: Studio-side TaskPackage publish body / summary / error rendering.
+  'publishRequestBody',
+  'formatPackageSummary',
+  'publishErrorsText',
 ];
 
 const sandbox = {};
@@ -379,6 +386,9 @@ const {
   taskConfigParamsToJson,
   parseTaskConfigParamsText,
   taskConfigSummary,
+  publishRequestBody,
+  formatPackageSummary,
+  publishErrorsText,
 } = sandbox;
 
 let checks = 0;
@@ -4388,10 +4398,107 @@ ok(
   'config button title explains the published-schema semantics'
 );
 ok(
-  /card\.append\(meta, open, configBtn, runsBtn, del\)/.test(source),
-  '配置项… sits between 打开 and 运行记录'
+  /card\.append\(meta, open, configBtn, publishBtn, runsBtn, del\)/.test(source),
+  '配置项… / 发布… sit between 打开 and 运行记录'
 );
 ok(!/\/runner\/tasks\//.test(source), 'Studio never calls the Runner-only task config routes');
+
+// --- PR5: Studio publishes .oaspkg (install stays Runner-only) --------------
+eq(
+  publishRequestBody('任务 2', {}),
+  { task: '任务 2', include_deps: true },
+  'publish body defaults to include_deps=true and omits out/force'
+);
+eq(
+  publishRequestBody(' 任务 2 ', { out: '  ', force: false, include_deps: true }),
+  { task: '任务 2', include_deps: true },
+  'blank out is omitted and force=false does not travel'
+);
+eq(
+  publishRequestBody('任务2', { out: ' dist/custom ', force: true, include_deps: false }),
+  { task: '任务2', out: 'dist/custom', force: true, include_deps: false },
+  'publish body carries custom out + explicit false/true flags'
+);
+eq(publishRequestBody(null, null), { task: '', include_deps: true }, 'missing task -> empty name, no crash');
+eq(
+  publishRequestBody('t', { reproducible: true }),
+  { task: 't', include_deps: true, reproducible: true },
+  'reproducible travels for CLI parity'
+);
+
+eq(
+  formatPackageSummary({
+    path: 'dist/packages/任务-v1.oaspkg',
+    version: 1,
+    package_id: 'pkg-1',
+    sha256: 'a'.repeat(64),
+  }),
+  'dist/packages/任务-v1.oaspkg · v1 · pkg-1 · sha256 aaaaaaaaaaaa…',
+  'package summary shows path + version + package_id + short sha'
+);
+eq(formatPackageSummary({ path: 'x.oaspkg' }), 'x.oaspkg', 'missing optional package fields are omitted');
+eq(
+  formatPackageSummary({ version: 'v2', package_id: 'p'.repeat(40) }),
+  '（服务端未返回 path） · v2 · ' + 'p'.repeat(32) + '…',
+  'summary never doubles the v prefix and truncates long ids'
+);
+eq(formatPackageSummary(null), '（服务端未返回 path）', 'null package summary is still renderable');
+
+eq(
+  publishErrorsText(['T3: 未声明的参数 k', 'T7: 子任务缺失']),
+  '· T3: 未声明的参数 k\n· T7: 子任务缺失',
+  'publish errors render one bullet per server line'
+);
+eq(publishErrorsText([]), '（服务端未返回错误详情）', 'empty publish error list still says something');
+eq(publishErrorsText('单一错误'), '· 单一错误', 'a single error string is bulleted too');
+eq(publishErrorsText([null, '  ', 'x']), '· x', 'blank publish errors are filtered');
+
+for (const id of ['task-publish-dialog', 'task-publish-out', 'task-publish-list',
+  'task-publish-status', 'task-publish-error', 'task-publish-submit']) {
+  ok(new RegExp(`id="${id}"`).test(html), `index.html provides #${id}`);
+}
+ok(/id="task-publish-include-deps"[^>]*type="checkbox" checked/.test(html), 'include_deps is checked by default');
+ok(/id="task-publish-force"[^>]*type="checkbox" \/>/.test(html), 'force is unchecked by default');
+ok(
+  /发布为 <code>\.oaspkg<\/code>：仅包含任务、子任务依赖与引用素材快照；终端用户在 Runner 安装。/.test(html),
+  'publish dialog states the .oaspkg boundary'
+);
+ok(/<summary class="muted small">输出目录（可选，默认 dist\/packages）<\/summary>/.test(html), 'out input is collapsed behind a summary');
+ok(/id="task-publish-submit"[^>]*>发布</.test(html), 'publish dialog has the 发布 button');
+ok(
+  /taskPublishDialog\.querySelector\('h3'\)[\s\S]{0,80}'发布任务包 · ' \+ name/.test(source),
+  'dialog title becomes 发布任务包 · <task>'
+);
+ok(
+  /fetch\('\/task\/package\?task=' \+ encodeURIComponent\(task\)\)/.test(source),
+  'published list loads from GET /task/package?task=<encoded>'
+);
+ok(
+  /postJson\('\/task\/publish', body\)/.test(source),
+  'publish button POSTs /task/publish with the pure request body'
+);
+ok(/包已存在，勾选 force 或提升版本。/.test(source), '409/package-exists shows the force/version hint');
+ok(
+  /lines\.push\('sha256：' \+ \(s\.sha256 \|\| '—'\)\)/.test(source),
+  'success panel shows the sha256 (copyable textContent)'
+);
+ok(
+  /warnings\.map\(\(w\) => '· ' \+ String\(w\)\)\.join\('\\n'\)/.test(source),
+  'warnings are rendered one per line'
+);
+ok(
+  /taskPublishSubmit\.disabled = true/.test(source) && /taskPublishSubmit\.disabled = false/.test(source),
+  'publish button is disabled while publishing and re-enabled afterwards'
+);
+ok(
+  !/innerHTML|outerHTML|insertAdjacentHTML/.test(extractFunction('submitTaskPublish')) &&
+    !/innerHTML|outerHTML|insertAdjacentHTML/.test(extractFunction('loadPublishedPackages')),
+  'publish dialog renders through textContent only'
+);
+ok(
+  !/\/runner\/(?:install|uninstall|packages)/.test(source),
+  'Studio never calls the Runner-only install/uninstall/packages routes'
+);
 
 // DOM id audit: the whole point of this round is ZERO static dead ids. Every
 // getElementById target must exist in index.html; if an id is genuinely needed,
@@ -4418,6 +4525,10 @@ ok(
   missingIds.length === 0,
   `dead DOM ids must be 0 (still dead: ${missingIds.join(', ') || 'none'})`
 );
+ok(
+  referencedIds.length >= 237,
+  `Studio DOM id audit covers the PR5 publish dialog (got ${referencedIds.length}, need >= 237)`
+);
 
 // --- PR1/PR2: Studio / Runner surface split (static UI contract) -------------
 // Studio keeps #page-schedule only as a legacy DOM block; its nav must not
@@ -4441,17 +4552,19 @@ ok(runnerNavBlock, 'runner.html has the Runner app nav');
 if (runnerNavBlock) {
   const runnerNav = runnerNavBlock[1];
   const runnerPages = [...runnerNav.matchAll(/data-page="([^"]+)"/g)].map((m) => m[1]);
-  eq(runnerPages, ['overview', 'tasks', 'queue', 'runs', 'settings'], 'Runner nav has exactly the five usage pages');
-  eq((runnerNav.match(/class="app-nav-btn/g) || []).length, 5, 'Runner nav renders exactly 5 buttons');
-  for (const label of ['概览', '已安装任务', '队列与调度', '运行记录', '设置']) {
+  eq(runnerPages, ['overview', 'tasks', 'packages', 'queue', 'runs', 'settings'], 'Runner nav has exactly the six usage pages');
+  eq((runnerNav.match(/class="app-nav-btn/g) || []).length, 6, 'Runner nav renders exactly 6 buttons');
+  for (const label of ['概览', '已安装任务', '安装包', '队列与调度', '运行记录', '设置']) {
     ok(new RegExp(`>${label}<`).test(runnerNav), `Runner nav contains 「${label}」`);
   }
-  ok(!/任务构建|新建任务|素材|编辑|创作|安装包/.test(runnerNav), 'Runner nav has no authoring entry');
+  ok(!/任务构建|新建任务|素材|编辑|创作/.test(runnerNav), 'Runner nav has no authoring entry');
 }
-for (const id of ['page-overview', 'page-tasks', 'page-queue', 'page-runs', 'page-settings']) {
+for (const id of ['page-overview', 'page-tasks', 'page-packages', 'page-queue', 'page-runs', 'page-settings']) {
   ok(new RegExp(`id="${id}"`).test(runnerHtml), `runner.html provides #${id}`);
 }
-for (const token of ['/runner/health', '/runner/tasks', '/scheduler/status', '/runs/scheduler', '/config', '/instance']) {
+for (const token of ['/runner/health', '/runner/tasks', '/runner/packages', '/runner/install',
+  '/runner/uninstall', '/runner/packages/activate', '/scheduler/status', '/runs/scheduler',
+  '/config', '/instance']) {
   ok(runnerSource.includes(token), `runner.js reads ${token}`);
 }
 for (const bad of ['/task/save_flow', '/task/save_asset', '/frames', '/task/', '/library/', '/relations/',
@@ -4466,13 +4579,13 @@ ok(!/@import|url\(\s*['"]?https?:/i.test(runnerCss), 'runner.css has no external
 ok(/name="viewport"/.test(runnerHtml), 'Runner is mobile/WebView friendly (viewport meta)');
 ok(/@media\s*\(max-width/.test(runnerCss), 'runner.css has a narrow-screen single-column layout');
 ok(/只读/.test(runnerHtml), 'Runner still labels the pages that remain read-only');
-ok(/还没有安装任务包（安装功能将在后续 PR 提供）/.test(runnerSource), 'Runner task empty state is explicit');
+ok(/还没有任务：请到「安装包」页安装 \.oaspkg/.test(runnerSource), 'Runner task empty state points at the install page');
 ok(/队列管理、调度启停与临时运行由后续 PR 提供；本页只读。/.test(runnerHtml), 'Runner queue page states the read-only scope');
 ok(
   /运行值保存在 Runner 本机（config\/values\.json）；单任务运行时使用这里的值；\s*被其他任务作为子任务调用时使用调用方的配置（PR4 生效）。/.test(runnerHtml),
   'Runner config dialog explains local values + call_task inheritance (PR4)'
 );
-ok(/安装\/卸载将在后续 PR 提供/.test(runnerHtml), 'Runner tasks page keeps the install/uninstall PR note');
+ok(/安装\/卸载\/回滚请到「安装包」页/.test(runnerHtml), 'Runner tasks page points at the package page');
 ok(/修改配置请编辑 <code>config\/live\.json<\/code> 后重启 Runner；编辑端不随使用端分发/.test(runnerHtml), 'Runner settings keeps the manual-config + no-Studio-distribution note');
 ok(/runner.js/.test(runnerHtml) && !/dashboard\.js/.test(runnerHtml), 'Runner does not load Studio-only scripts');
 
@@ -4483,10 +4596,15 @@ eq((runnerSource.match(/fetch\s*\(/g) || []).length, 1, 'all Runner requests go 
 ok(/RUNNER_FETCH_TIMEOUT_MS/.test(runnerSource) && /AbortController/.test(runnerSource), 'Runner requests have an abort/timeout guard');
 ok(
   /const method = options\.method \? String\(options\.method\)\.toUpperCase\(\) : 'GET'/.test(runnerSource),
-  'Runner requests default to GET and only the config PUT opts into a write'
+  'Runner requests default to GET and only explicit writes opt into POST/PUT'
 );
 ok(/method: method,/.test(runnerSource), 'the fetch helper sends the resolved method');
-ok(!/'POST'/.test(runnerSource), 'Runner never sends POST');
+ok(
+  /runnerFetchJson\(RUNNER_API\.install, \{ method: 'POST', body: body \}\)/.test(runnerSource) &&
+    /runnerFetchJson\(RUNNER_API\.uninstall, \{ method: 'POST', body: \{ task_id: task \} \}\)/.test(runnerSource) &&
+    /runnerFetchJson\(RUNNER_API\.packagesActivate, \{ method: 'POST', body: \{ task_id: task \} \}\)/.test(runnerSource),
+  'the only POST writes are /runner/install, /runner/uninstall and /runner/packages/activate'
+);
 ok(/'PUT'/.test(runnerSource), 'Runner sends PUT for task config values');
 ok(!/localhost|127\.0\.0\.1|8789/.test(runnerSource), 'runner.js does not hardcode host/port');
 ok(!/localhost|127\.0\.0\.1|8789/.test(runnerHtml), 'runner.html does not hardcode host/port');
@@ -4505,12 +4623,18 @@ ok(
   runnerMissingIds.length === 0,
   `Runner dead DOM ids must be 0 (still dead: ${runnerMissingIds.join(', ') || 'none'})`
 );
+ok(
+  runnerReferencedIds.length >= 55,
+  `Runner DOM id audit covers the PR5 package page (got ${runnerReferencedIds.length}, need >= 55)`
+);
 
 // Behavioural checks for the extractable Runner formatting helpers.
 const runnerHelperNames = [
   'runnerValueText', 'runnerDurationText', 'runnerParamKeys', 'runnerFlagText',
   'runnerTaskStatusText', 'runnerOutcomeClass', 'runnerLockText', 'runnerLockClass',
   'runnerRunsErrorText', 'runnerQueueRoundsText', 'runnerEntryStateText', 'runnerMemberText',
+  // PR5: package install body / list row / task badge / error mapping.
+  'runnerInstallBody', 'formatPackageRow', 'runnerTaskPackageBadge', 'runnerPackagesErrorText',
 ];
 const runnerHelperCode = runnerHelperNames
   .map((name) => extractFunctionFrom(runnerSource, name, 'runner.js'))
@@ -4544,6 +4668,110 @@ eq(runnerSb.runnerMemberText(0), '成员 1', 'member_index is rendered one-based
 eq(runnerSb.runnerMemberText(null), '—', 'missing member index is a dash');
 eq(runnerSb.runnerValueText(0), '0', 'zero is preserved');
 eq(runnerSb.runnerValueText(null), '—', 'null renders a dash');
+
+// --- PR5: Runner package helpers (install body / list row / badge / errors) --
+eq(
+  runnerSb.runnerInstallBody('  packages\\任务-v1.oaspkg  ', true),
+  { path: 'packages\\任务-v1.oaspkg', force: true },
+  'install body trims the local path and keeps force'
+);
+eq(runnerSb.runnerInstallBody(null, null), { path: '', force: false }, 'missing install path is an empty body');
+eq(runnerSb.runnerInstallBody('x.oaspkg', 'yes'), { path: 'x.oaspkg', force: false }, 'force is a strict boolean');
+
+const longPid = 'p'.repeat(40);
+const pkgRow = runnerSb.formatPackageRow({
+  package_id: longPid,
+  task_id: '任务2',
+  version: 3,
+  sha256: 'a'.repeat(64),
+  installed_at_ms: 1700000000000,
+  backup: 'packages/backup/任务2-2-1700000000000',
+});
+eq(pkgRow.task_id, '任务2', 'package row keeps the task id');
+eq(pkgRow.version, '3', 'package row keeps the version as text');
+eq(pkgRow.package_id, longPid, 'package row keeps the full package id for the tooltip');
+eq(pkgRow.package_id_short, 'p'.repeat(28) + '…', 'package row shortens the package id for display');
+eq(pkgRow.sha256, 'a'.repeat(64), 'package row keeps the full sha for the tooltip');
+eq(pkgRow.sha_short, 'aaaaaaaaaaaa…', 'package row shows a 12-char sha prefix');
+eq(pkgRow.installed_at_ms, 1700000000000, 'package row keeps installed_at_ms for local time formatting');
+eq(pkgRow.backup, 'packages/backup/任务2-2-1700000000000', 'package row shows the backup path');
+const emptyPkgRow = runnerSb.formatPackageRow(null);
+eq(emptyPkgRow.task_id, '—', 'missing package fields render a dash');
+eq(emptyPkgRow.sha_short, '—', 'missing sha renders a dash');
+eq(emptyPkgRow.installed_at_ms, null, 'missing installed_at_ms stays null');
+eq(emptyPkgRow.backup, '—', 'missing backup renders a dash');
+
+eq(
+  runnerSb.runnerTaskPackageBadge({ unmanaged: true, version: 3 }).text,
+  '未纳管',
+  'bare tasks show 未纳管 even when meta.version exists'
+);
+eq(runnerSb.runnerTaskPackageBadge({ unmanaged: true }).cls, 'warn', '未纳管 badge is a warning');
+eq(
+  runnerSb.runnerTaskPackageBadge({ unmanaged: false, version: 3, package_id: 'pkg-1' }),
+  { text: '已安装 v3', cls: 'ok', title: 'package_id：pkg-1' },
+  'installed tasks show 已安装 vN + package id'
+);
+eq(runnerSb.runnerTaskPackageBadge({ package_id: 'pkg-1' }).text, '已安装', 'package_id alone marks a managed task');
+eq(
+  runnerSb.runnerTaskPackageBadge({ installed: true, version: 2 }).text,
+  '已安装 v2',
+  'installed:true is honored even without unmanaged/package_id'
+);
+eq(runnerSb.runnerTaskPackageBadge({}).text, '—', 'package info missing -> neutral badge');
+eq(runnerSb.runnerTaskPackageBadge({}).cls, 'kind', 'neutral badge uses the kind class');
+
+ok(
+  /dirty_task/.test(runnerSb.runnerPackagesErrorText('HTTP 409：dirty_task 任务被修改')) &&
+    /force/.test(runnerSb.runnerPackagesErrorText('HTTP 409：dirty_task 任务被修改')),
+  'dirty_task error explains force'
+);
+ok(
+  /flow_ops/.test(runnerSb.runnerPackagesErrorText('manifest.engine.flow_ops unsupported')),
+  'flow_ops error names the manifest gate'
+);
+ok(
+  /checksum/.test(runnerSb.runnerPackagesErrorText({ message: 'checksum mismatch' })),
+  'checksum error is explained'
+);
+ok(
+  /找不到安装包文件/.test(runnerSb.runnerPackagesErrorText('ENOENT: no such file')),
+  'missing file error is explained'
+);
+ok(
+  /版本不满足/.test(runnerSb.runnerPackagesErrorText('version 3 required')),
+  'version mismatch is explained'
+);
+eq(runnerSb.runnerPackagesErrorText('HTTP 500：boom'), 'HTTP 500：boom', 'unknown errors keep the server text');
+eq(runnerSb.runnerPackagesErrorText(null), '未知错误', 'null package error is never blank');
+
+// Static package-page wiring.
+for (const id of ['page-packages', 'runner-packages-summary', 'runner-packages-refresh',
+  'runner-packages-status', 'runner-packages-count', 'runner-packages-list',
+  'runner-packages-unmanaged-status', 'runner-packages-unmanaged', 'runner-install-path',
+  'runner-install-force', 'runner-install-submit', 'runner-install-status',
+  'runner-install-result', 'runner-install-warnings', 'runner-install-error']) {
+  ok(new RegExp(`id="${id}"`).test(runnerHtml), `runner.html provides #${id}`);
+}
+ok(/id="runner-install-submit"[^>]*>安装</.test(runnerHtml), 'install card has the 安装 button');
+ok(/id="runner-install-path"[^>]*type="text"/.test(runnerHtml), 'install path is a plain local path input');
+ok(/id="runner-install-force"[^>]*type="checkbox"/.test(runnerHtml), 'install card has the force checkbox');
+ok(/<h3>已安装包<\/h3>/.test(runnerHtml) && /<h3>未纳管（裸目录）<\/h3>/.test(runnerHtml), 'package page separates installed + unmanaged');
+ok(/runnerFetchJson\(RUNNER_API\.packages\)/.test(runnerSource), 'package list is loaded from GET /runner/packages');
+ok(/runnerInstallBody\(\s*el\.installPath \? el\.installPath\.value : '',\s*el\.installForce \? el\.installForce\.checked : false\s*\)/.test(runnerSource), 'install reads path + force through the pure body builder');
+ok(/renderKv\(el\.installResult, \[/.test(runnerSource), 'install success renders package_id/task/version/replaced/backup');
+ok(/b\.replaced === true \? '是（旧版本已备份）'/.test(runnerSource), 'replaced is rendered as yes/no, not raw JSON');
+ok(/warnings\.map\(function \(w\) \{ return '· ' \+ String\(w\); \}\)/.test(runnerSource), 'install warnings are listed line by line');
+ok(/window\.confirm\('卸载任务包「' \+ task \+ '」/.test(runnerSource), 'uninstall asks for a second confirmation');
+ok(/runnerFetchJson\(RUNNER_API\.uninstall, \{ method: 'POST', body: \{ task_id: task \} \}\)/.test(runnerSource), 'uninstall POSTs {task_id}');
+ok(/runnerFetchJson\(RUNNER_API\.packagesActivate, \{ method: 'POST', body: \{ task_id: task \} \}\)/.test(runnerSource), 'rollback POSTs /runner/packages/activate {task_id}');
+ok(/uninstall\.textContent = '卸载'/.test(runnerSource) && /activate\.textContent = '回滚'/.test(runnerSource), 'each installed row offers 卸载 + 回滚');
+ok(/runnerTaskPackageBadge\(t\)/.test(runnerSource), 'installed-task rows render the package badge');
+ok(/el\.installSubmit\.disabled = !!busy/.test(runnerSource), 'install button is disabled while a package operation is in flight');
+ok(/packages\/installed\.json/.test(runnerSource), 'package list names packages/installed.json');
+ok(/state\.page === 'packages'/.test(runnerSource), 'page switch loads the package page');
+ok(/RUNNER_PAGES = \['overview', 'tasks', 'packages', 'queue', 'runs', 'settings'\]/.test(runnerSource), 'packages is the 3rd nav page in the JS page list');
+ok(/#runner-packages-list/.test(runnerCss) && /#runner-install-path/.test(runnerCss), 'runner.css styles the install/package surfaces');
 
 // --- PR2: Runner task config form (local values, config/values.json) --------
 for (const id of ['runner-config-dialog', 'runner-config-title', 'runner-config-form',

@@ -28,6 +28,7 @@
   <nav class="app-nav" id="runner-nav" aria-label="Runner 导航">
     <button class="app-nav-btn active" data-page="overview" type="button">概览</button>
     <button class="app-nav-btn" data-page="tasks" type="button">已安装任务</button>
+    <button class="app-nav-btn" data-page="packages" type="button">安装包</button>
     <button class="app-nav-btn" data-page="queue" type="button">队列与调度</button>
     <button class="app-nav-btn" data-page="runs" type="button">运行记录</button>
     <button class="app-nav-btn" data-page="settings" type="button">设置</button>
@@ -71,9 +72,59 @@
         <div id="runner-tasks-status" class="muted small">—</div>
         <div id="runner-tasks-list" class="muted">（未加载）</div>
         <p class="runner-note muted small">
-          任务来自 Runner 任务目录，本 PR 全部为「未托管/本机目录」。
+          任务来自 Runner 任务目录；已安装包显示版本徽标，裸目录显示「未纳管」。
           每行「配置」编辑本机运行值（<code>config/values.json</code>）；发布包里的 meta.params 只定义 schema。
-          安装/卸载将在后续 PR 提供。
+          安装/卸载/回滚请到「安装包」页。
+        </p>
+      </div>
+    </div>
+
+    <div id="page-packages" class="app-page">
+      <div class="page-wrap">
+        <div class="row page-head">
+          <h2>安装包</h2>
+          <span id="runner-packages-summary" class="muted small">—</span>
+          <span class="spacer"></span>
+          <button id="runner-packages-refresh" type="button">刷新</button>
+        </div>
+        <div id="runner-packages-status" class="muted small" role="status" aria-live="polite">—</div>
+
+        <section class="card runner-section">
+          <h3>安装任务包</h3>
+          <p class="muted small">
+            安装 Studio 发布的 <code>.oaspkg</code>（本机路径）。安装会校验 sha256、
+            复检任务，并在覆盖前备份到 <code>packages/backup/</code>。
+          </p>
+          <label class="opt">本机 .oaspkg 路径
+            <input id="runner-install-path" type="text" autocomplete="off" spellcheck="false"
+              placeholder="如 &lt;Runner目录&gt;\packages\task-v1.oaspkg（必须是本机绝对路径）" />
+          </label>
+          <label class="opt"><input id="runner-install-force" type="checkbox" />
+            覆盖本机已修改的任务（force；dirty_task 时使用）</label>
+          <div class="row">
+            <button id="runner-install-submit" type="button">安装</button>
+            <span id="runner-install-status" class="muted small" role="status" aria-live="polite">—</span>
+          </div>
+          <div id="runner-install-result" class="muted small">—</div>
+          <pre id="runner-install-warnings" class="muted small"></pre>
+          <pre id="runner-install-error" class="muted small dialog-error"></pre>
+        </section>
+
+        <div class="row page-head">
+          <h3>已安装包</h3>
+          <span id="runner-packages-count" class="muted small">—</span>
+        </div>
+        <div id="runner-packages-list" class="muted">（未加载）</div>
+
+        <div class="row page-head">
+          <h3>未纳管（裸目录）</h3>
+          <span id="runner-packages-unmanaged-status" class="muted small">—</span>
+        </div>
+        <div id="runner-packages-unmanaged" class="muted">（未加载）</div>
+
+        <p class="runner-note muted small">
+          「回滚」恢复该任务最近一次安装/卸载前的备份（Phase 1）；「卸载」会先备份任务目录。
+          裸目录指直接放在 <code>tasks/</code> 下、未经安装包管理的任务，只读展示。
         </p>
       </div>
     </div>

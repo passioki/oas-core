@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use oas_types::Frame;
 
 mod meta;
+pub mod package;
 pub use meta::{
     validate_param_values, Capabilities, EntryRequires, ExitDecl, Meta, MetaEntry, ParamDecl,
     QuotaHint, ScheduleHint, CATEGORY_DEFAULT, DEFAULT_EXIT_NAMES, EXIT_RESULTS,
@@ -713,7 +714,7 @@ pub struct TaskBundle {
 ///   runtime in the **caller** scope),
 /// - `defaults`: the target's `meta.params[].default` values,
 /// - `block`: the target's declared keys when `inherit:"none"` (strict scope).
-const MAX_CALL_DEPTH: usize = 8;
+pub(crate) const MAX_CALL_DEPTH: usize = 8;
 
 /// Apply `f` to every nested step array of one raw JSON step:
 /// `then`/`else` (if), top-level `body` (loop/while) and `args.body`
