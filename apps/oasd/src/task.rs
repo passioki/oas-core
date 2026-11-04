@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use oas_task::{lint_task, lint_tasks, LintIssue, TaskBundle};
+use oas_task::{lint_task, LintIssue, TaskBundle};
 
 pub const USAGE: &str = "usage:\n  oasd task lint --tasks-dir <dir> [--all | --task <name>]\n  \
                          oasd task new --template daily|loop|utility --id <id> --tasks-dir <dir>";

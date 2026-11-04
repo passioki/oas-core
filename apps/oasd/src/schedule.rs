@@ -96,8 +96,10 @@
 //! `attempts = 0`), `queue_round_finished`, `empty_round` (a round where no
 //! member executed — lazy counting, rule 5), `queue_finished` (rule 6) and
 //! `queue_missing` (defence in depth). `queue_entry_record_recovered` records
-//! the startup replay of a staged entry result (P1-2). `--report` additionally
-//! writes the full machine-readable summary of the session.
+//! the startup replay of a staged entry result (P1-2). `scheduler_lease_busy`
+//! records each contiguous device-lease conflict (PR6 P1-5: the pass is skipped
+//! and retried, never failed). `--report` additionally writes the full
+//! machine-readable summary of the session.
 //!
 //! # Run entities (P4)
 //! Every execution attempt writes one immutable, first-class run entity to
@@ -157,6 +159,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -164,6 +168,7 @@ use serde_json::{json, Value};
 
 use oas_runtime::RunResult;
 
+use crate::device_lease::DeviceLease;
 use crate::run::{self, RunOptions, RunReport};
 use crate::scheduler::{
     self, classify_signal, clear_running, cycle_ids, entry_next_due_ms, format_local_datetime,
@@ -375,6 +380,24 @@ pub struct SchedulerOptions {
     /// [`crate::runner_config::runner_values_path`]. Tests pin a temp path here
     /// so they never read the operator's real values store.
     pub values_path: Option<PathBuf>,
+    /// Cooperative stop token (design §A.6.2, PR6). `None` = no external stop:
+    /// the CLI runs until a stopping rule fires. The Runner's embedded scheduler
+    /// sets it and `POST /runner/scheduler/stop` stores `true`, so the loop
+    /// exits between passes with `stopped_reason = "api_stop"` **without**
+    /// interrupting an attempt that is already executing (single active
+    /// instance). The check is also done in ≤200 ms slices of the inter-pass
+    /// sleep, so a stop request is honoured in ≤5 s even during a long wait.
+    pub stop: Option<Arc<AtomicBool>>,
+    /// Device lease path (PR6, design §A.6.4). `None` = no lease (tests / pure
+    /// CLI without a live `--config`).
+    ///
+    /// When set, the lease is acquired **immediately before each pass** and
+    /// released when the pass ends ([`DeviceLease`] Drop), so an idle/sleeping
+    /// scheduler does not block a Runner temp run or a Studio trial. A live
+    /// holder makes the pass wait (`scheduler_lease_busy` log + audit) and be
+    /// retried after [`LEASE_BUSY_RETRY_MS`]: it never aborts the session and
+    /// never writes a dirty `running` marker.
+    pub lease_path: Option<PathBuf>,
 }
 
 impl Default for SchedulerOptions {
@@ -404,6 +427,8 @@ impl Default for SchedulerOptions {
             #[cfg(test)]
             test_exec: None,
             values_path: None,
+            stop: None,
+            lease_path: None,
         }
     }
 }
@@ -847,8 +872,8 @@ fn read_lock_pid(path: &Path) -> Option<u32> {
         .and_then(|v| u32::try_from(v).ok())
 }
 
-/// Is a process with `pid` alive? Used only for stale-lock detection.
-fn process_alive(pid: u32) -> bool {
+/// Is a process with `pid` alive? Used for stale-lock / stale-lease detection.
+pub(crate) fn process_alive(pid: u32) -> bool {
     #[cfg(windows)]
     {
         let filter = format!("PID eq {pid}");
@@ -1704,6 +1729,10 @@ impl<'a> Session<'a> {
             model: self.opts.model.clone(),
             det_model: self.opts.det_model.clone(),
             params,
+            // The pass already holds the device lease (PR6 P1-5): the attempt
+            // must not acquire it again (a second acquire is a same-pid
+            // conflict by design).
+            skip_lease: true,
             ..RunOptions::default()
         };
         let result = match run::execute(&run_opts, out) {
@@ -3008,6 +3037,25 @@ fn plan_dry_run(
     plan
 }
 
+/// Minimum wait before retrying a pass whose device lease is held elsewhere
+/// (PR6, design §A.6.4). `sleep_for` may return 1 ms when a runnable entry is
+/// due right now; without this floor a held lease would spin and spam both the
+/// log ring and the audit file.
+const LEASE_BUSY_RETRY_MS: u64 = 500;
+
+/// Acquire the per-pass device lease (PR6 P1-5/P1-6).
+///
+/// `None` when [`SchedulerOptions::lease_path`] is unset (tests / pure CLI).
+/// The returned [`DeviceLease`] is dropped when the pass ends, so the device is
+/// free while the scheduler sleeps; an in-flight attempt is protected because
+/// `execute_pass` runs entirely inside the guard's lifetime.
+fn acquire_pass_lease(opts: &SchedulerOptions) -> Result<Option<DeviceLease>, String> {
+    match opts.lease_path.as_ref() {
+        Some(path) => DeviceLease::acquire(path, "runner-scheduler", "scheduler").map(Some),
+        None => Ok(None),
+    }
+}
+
 /// Run the scheduler. Returns the session report; `Err` = setup/config error
 /// (exit code 2), run failures are recorded in the report instead.
 pub fn run_scheduler(
@@ -3189,11 +3237,62 @@ pub fn run_scheduler(
     let cli_max_passes = opts.max_passes;
     let config_max_passes = session.sched().loop_rounds;
     let mut session_passes: u64 = 0;
-    let stopped_reason: String;
-    loop {
+    // Log/audit a lease conflict once per contiguous busy streak, not on every
+    // 500 ms retry (a Studio trial can hold the device for minutes).
+    let mut lease_busy_logged = false;
+    let stopped_reason: String = 'passes: loop {
+        // Cooperative stop (PR6, design §A.6.2): check **before** starting new
+        // work, so a stop request that arrives between passes never begins
+        // another attempt. An attempt that is already running is never
+        // interrupted — this is a single-active-instance scheduler.
+        if stop_requested(opts) {
+            out("scheduler_stop_requested source=api");
+            break "api_stop".to_string();
+        }
+        let now = now_ms() as i64;
+        // PR6 P1-5/P1-6: hold the device lease for exactly one pass. Acquire
+        // before planning/executing (the in-flight attempt is protected by the
+        // guard's lifetime); Drop at the end of the pass frees the device while
+        // the scheduler sleeps. A conflict is a transient condition: skip this
+        // pass, keep `state` clean, and retry after the normal sleep floor.
+        let pass_lease = match acquire_pass_lease(opts) {
+            Ok(lease) => {
+                lease_busy_logged = false;
+                lease
+            }
+            Err(e) => {
+                if !lease_busy_logged {
+                    lease_busy_logged = true;
+                    out(&format!(
+                        "scheduler_lease_busy owner=runner-scheduler mode=scheduler error={e}"
+                    ));
+                    session.audit(json!({
+                        "event": "scheduler_lease_busy",
+                        "owner": "runner-scheduler",
+                        "mode": "scheduler",
+                        "error": e,
+                    }));
+                }
+                let wake = next_wake(&session.sched(), &session.state, now);
+                let sleep_ms = sleep_for(
+                    session.sched(),
+                    opts,
+                    now,
+                    wake.at_ms,
+                    session.report.passes,
+                    0,
+                )
+                .max(LEASE_BUSY_RETRY_MS);
+                out(&format!("scheduler_lease_retry sleep_ms={sleep_ms}"));
+                if !interruptible_sleep(opts, sleep_ms) {
+                    out("scheduler_stop_requested source=api");
+                    break 'passes "api_stop".to_string();
+                }
+                continue;
+            }
+        };
         session_passes += 1;
         let pass_no = session.state.passes + 1;
-        let now = now_ms() as i64;
         let calendar = session.sched().calendar;
         let roll = roll_cycles(&mut session.state, &calendar, now);
         if roll.changed {
@@ -3201,6 +3300,9 @@ pub fn run_scheduler(
         }
         let plan = session.plan_now(now);
         let stats = session.execute_pass(pass_no, now, &plan, out)?;
+        // The attempt(s) are done: release the device before the state save and
+        // the inter-pass sleep, so the Runner/Studio can use it immediately.
+        drop(pass_lease);
 
         session.state.last_pass_ms = now as u64;
         session.state.passes = session.state.passes.saturating_add(1);
@@ -3238,8 +3340,13 @@ pub fn run_scheduler(
         // P2 executes queue rounds, so a queue-only stop-mode config stops with
         // `reason=stop` after the round instead of pretending nothing can run.)
         if let Some(r) = reason {
-            stopped_reason = r.to_string();
-            break;
+            break r.to_string();
+        }
+        // A stop request that arrived while the pass was executing is honoured
+        // here: the pass (including the running attempt) already finished.
+        if stop_requested(opts) {
+            out("scheduler_stop_requested source=api");
+            break "api_stop".to_string();
         }
 
         // -- wait for the next opportunity -----------------------------------
@@ -3266,10 +3373,11 @@ pub fn run_scheduler(
             "reasons": wake.reasons,
             "sleep_ms": sleep_ms,
         }));
-        if sleep_ms > 0 {
-            std::thread::sleep(Duration::from_millis(sleep_ms));
+        if sleep_ms > 0 && !interruptible_sleep(opts, sleep_ms) {
+            out("scheduler_stop_requested source=api");
+            break 'passes "api_stop".to_string();
         }
-    }
+    };
 
     session.state.last_stop = stopped_reason.clone();
     session.save_state(out)?;
@@ -3306,6 +3414,42 @@ pub fn run_scheduler(
         write_report(path, &session.report)?;
     }
     Ok(session.report)
+}
+
+/// Granularity of the inter-pass sleep while a stop token is configured
+/// (design §A.6.2: `POST /runner/scheduler/stop` must exit in ≤ 5 s, so the
+/// blocking wait is split into slices that re-check the token).
+const STOP_POLL_INTERVAL_MS: u64 = 200;
+
+/// Has a cooperative stop been requested (Runner `POST /runner/scheduler/stop`)?
+fn stop_requested(opts: &SchedulerOptions) -> bool {
+    opts.stop
+        .as_ref()
+        .map(|token| token.load(Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
+/// Sleep `total_ms` in ≤ [`STOP_POLL_INTERVAL_MS`] slices.
+///
+/// Returns `false` when the stop token was set (the caller then stops with
+/// `stopped_reason = "api_stop"`). An in-flight attempt is never interrupted:
+/// this only ever runs *between* passes.
+fn interruptible_sleep(opts: &SchedulerOptions, total_ms: u64) -> bool {
+    // No stop token => keep the historical single sleep (no extra wakeups).
+    if opts.stop.is_none() {
+        std::thread::sleep(Duration::from_millis(total_ms));
+        return true;
+    }
+    let mut remaining = total_ms;
+    while remaining > 0 {
+        if stop_requested(opts) {
+            return false;
+        }
+        let chunk = remaining.min(STOP_POLL_INTERVAL_MS);
+        std::thread::sleep(Duration::from_millis(chunk));
+        remaining -= chunk;
+    }
+    !stop_requested(opts)
 }
 
 /// How long to sleep between passes.
@@ -3712,13 +3856,18 @@ pub fn schedule_cmd(rest: &[String]) -> ExitCode {
         println!("{USAGE}");
         return ExitCode::from(2);
     }
-    let opts = match SchedulerOptions::parse(rest) {
+    let mut opts = match SchedulerOptions::parse(rest) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("scheduler: {e}");
             return ExitCode::from(2);
         }
     };
+    // PR6 P1-6: the legacy CLI scheduler protects the device too. The same
+    // `config/device.lease` path Studio/Runner use is derived from the live
+    // `--config` (already loaded globally by `main.rs`); without one the lease
+    // is disabled, exactly like `oasd run`.
+    opts.lease_path = crate::device_lease::lease_path_from_config();
     let mut out = |line: &str| println!("{line}");
     match run_scheduler(&opts, &mut out) {
         Ok(report) => {
@@ -4736,6 +4885,289 @@ mod tests {
         let report = run_scheduler(&opts, &mut |_| {}).expect("lock reclaimed");
         assert_eq!(report.runs, 1);
         assert!(!lock_path.exists(), "clean exit releases the lock");
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    // -- PR6: cooperative stop (Runner `POST /runner/scheduler/stop`) -------
+
+    #[test]
+    fn scheduler_options_default_has_no_stop_token() {
+        assert!(SchedulerOptions::default().stop.is_none());
+    }
+
+    /// One looping plan + scripted executor: the first pass runs immediately,
+    /// then the loop waits `loop_interval_s=1` — plenty of time to request a
+    /// stop (the sleep is sliced at 200 ms for exactly this test).
+    fn stop_test_opts(td: &Path) -> SchedulerOptions {
+        write_task(td, "任务1", OK_FLOW, None);
+        let config = write_config(
+            td,
+            r#"{"schema_version":4,
+                "config":{"mode":"loop","loop_interval_s":1},
+                "entries":[{"entry_id":"e1","task":"任务1","lifecycle":"temp"}]}"#,
+        );
+        let mut opts = base_opts(td, config, None);
+        opts.once = false;
+        opts.test_exec = Some(TestExec::new().with("任务1", vec![step(ResultClass::Success)]));
+        opts
+    }
+
+    #[test]
+    fn preset_stop_token_stops_before_the_first_pass_with_api_stop() {
+        let td = tmpdir("stop-preset");
+        let mut opts = stop_test_opts(&td);
+        opts.stop = Some(Arc::new(AtomicBool::new(true)));
+        let mut lines = Vec::new();
+        let report = run_scheduler(&opts, &mut |l| lines.push(l.to_string())).expect("run");
+        assert_eq!(report.stopped_reason, "api_stop", "{report:?}");
+        assert_eq!(report.passes, 0, "no pass may start after a preset stop");
+        assert_eq!(report.runs, 0);
+        let state = state_of(&opts);
+        assert_eq!(state.passes, 0);
+        assert_eq!(state.last_stop, "api_stop");
+        assert!(state.running.is_none(), "no dirty running marker");
+        assert!(
+            lines.iter().any(|l| l == "scheduler_stop_requested source=api"),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("scheduler_stop reason=api_stop")),
+            "{lines:?}"
+        );
+        assert!(
+            !SchedulerLock::lock_path(&opts.state_path()).exists(),
+            "the lock must be released on an api_stop exit"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn stop_token_set_while_running_exits_between_passes_without_dirty_state() {
+        let td = tmpdir("stop-running");
+        let mut opts = stop_test_opts(&td);
+        let stop = Arc::new(AtomicBool::new(false));
+        opts.stop = Some(stop.clone());
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let report = std::thread::scope(|scope| {
+            let handle = scope.spawn(|| {
+                let mut emit = |line: &str| {
+                    let _ = tx.send(line.to_string());
+                };
+                run_scheduler(&opts, &mut emit)
+            });
+            // Wait until the first attempt actually ran: this proves the stop
+            // is honoured *after* the attempt, never in the middle of one.
+            let t0 = std::time::Instant::now();
+            let mut ran = false;
+            while !ran && t0.elapsed() < Duration::from_secs(5) {
+                if let Ok(line) = rx.recv_timeout(Duration::from_millis(100)) {
+                    if line.starts_with("scheduler_run ") {
+                        ran = true;
+                    }
+                }
+            }
+            assert!(ran, "the scripted attempt never ran");
+            stop.store(true, Ordering::SeqCst);
+            handle.join().expect("scheduler thread").expect("run")
+        });
+        assert_eq!(report.stopped_reason, "api_stop", "{report:?}");
+        assert!(report.passes >= 1, "{report:?}");
+        assert!(report.runs >= 1, "{report:?}");
+        let state = state_of(&opts);
+        assert_eq!(state.last_stop, "api_stop");
+        assert!(
+            state.running.is_none(),
+            "stop must not leave a dirty running marker"
+        );
+        assert!(
+            !SchedulerLock::lock_path(&opts.state_path()).exists(),
+            "the lock must be released on an api_stop exit"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    // -- PR6: per-pass device lease (P1-5/P1-6) -----------------------------
+
+    #[test]
+    fn options_default_has_no_lease_path() {
+        assert!(SchedulerOptions::default().lease_path.is_none());
+    }
+
+    #[test]
+    fn acquire_pass_lease_is_a_loud_conflict_while_held() {
+        let td = tmpdir("lease-helper");
+        let path = td.join("config").join("device.lease");
+        let opts = SchedulerOptions {
+            lease_path: Some(path.clone()),
+            ..SchedulerOptions::default()
+        };
+        let first = acquire_pass_lease(&opts)
+            .expect("first acquire")
+            .expect("lease path configured");
+        assert_eq!(
+            crate::device_lease::read_lease(&path).map(|i| i.mode),
+            Some("scheduler".to_string())
+        );
+        let err = acquire_pass_lease(&opts).expect_err("a live holder must block the next pass");
+        assert!(err.contains("Runner 正在调度"), "{err}");
+        drop(first);
+        assert!(!path.exists(), "dropping the pass lease releases the file");
+        assert!(
+            acquire_pass_lease(&opts).expect("released").is_some(),
+            "the device is usable again"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn scheduler_pass_holds_the_lease_and_idles_without_it() {
+        let td = tmpdir("lease-per-pass");
+        write_task(&td, "任务1", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            r#"{"schema_version":4,
+                "config":{"mode":"loop","loop_interval_s":1},
+                "entries":[{"entry_id":"e1","task":"任务1","lifecycle":"temp"}]}"#,
+        );
+        let mut opts = base_opts(&td, config, None);
+        opts.once = false;
+        let lease_path = td.join("config").join("device.lease");
+        opts.lease_path = Some(lease_path.clone());
+        let stop = Arc::new(AtomicBool::new(false));
+        opts.stop = Some(stop.clone());
+        opts.test_exec = Some(TestExec::new().with("任务1", vec![step(ResultClass::Success)]));
+        let held_during_attempt = Arc::new(AtomicBool::new(false));
+        let idle_acquire = Arc::new(AtomicBool::new(false));
+        let held_flag = held_during_attempt.clone();
+        let idle_flag = idle_acquire.clone();
+        let lp = lease_path.clone();
+        let report = std::thread::scope(|scope| {
+            let handle = scope.spawn(|| {
+                let mut emit = |line: &str| {
+                    if line.starts_with("scheduler_run ") {
+                        if let Some(info) = crate::device_lease::read_lease(&lp) {
+                            if info.owner == "runner-scheduler" && info.mode == "scheduler" {
+                                held_flag.store(true, Ordering::SeqCst);
+                            }
+                        }
+                    }
+                    if line.starts_with("scheduler_wake ") {
+                        // The pass is over: the device must be free, so a temp
+                        // run (same pid) can acquire it now.
+                        if let Ok(lease) = DeviceLease::acquire(&lp, "runner", "temp-run") {
+                            idle_flag.store(true, Ordering::SeqCst);
+                            drop(lease);
+                        }
+                        stop.store(true, Ordering::SeqCst);
+                    }
+                };
+                run_scheduler(&opts, &mut emit)
+            });
+            handle.join().expect("scheduler thread").expect("run")
+        });
+        assert!(
+            held_during_attempt.load(Ordering::SeqCst),
+            "the running attempt must hold owner=runner-scheduler/mode=scheduler: {report:?}"
+        );
+        assert!(
+            idle_acquire.load(Ordering::SeqCst),
+            "the inter-pass sleep must not hold the device lease"
+        );
+        assert!(report.passes >= 1, "{report:?}");
+        assert!(report.runs >= 1, "{report:?}");
+        assert_eq!(report.stopped_reason, "api_stop", "{report:?}");
+        assert!(
+            !lease_path.exists(),
+            "the pass lease is released after the stop"
+        );
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn scheduler_attempt_does_not_double_acquire_the_pass_lease() {
+        let td = tmpdir("lease-attempt");
+        write_task(&td, "任务1", OK_FLOW, None);
+        let replay = td.join("replay");
+        write_replay(&replay);
+        let config = write_config(
+            &td,
+            r#"{"schema_version":4,
+                "config":{"mode":"stop"},
+                "entries":[{"entry_id":"e1","task":"任务1","lifecycle":"temp"}]}"#,
+        );
+        let mut opts = base_opts(&td, config, Some(replay));
+        let lease_path = td.join("config").join("device.lease");
+        opts.lease_path = Some(lease_path.clone());
+        let report = run_scheduler(&opts, &mut |_| {}).expect("real replay run");
+        assert_eq!(report.runs, 1, "{report:?}");
+        assert_eq!(
+            report.successes, 1,
+            "the attempt must run under the pass lease with skip_lease=true: {report:?}"
+        );
+        assert!(!lease_path.exists(), "the pass lease is released after the run");
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn scheduler_lease_conflict_skips_the_pass_without_dirty_state() {
+        let td = tmpdir("lease-conflict");
+        write_task(&td, "任务1", OK_FLOW, None);
+        let config = write_config(
+            &td,
+            r#"{"schema_version":4,
+                "config":{"mode":"loop","loop_interval_s":1},
+                "entries":[{"entry_id":"e1","task":"任务1","lifecycle":"temp"}]}"#,
+        );
+        let mut opts = base_opts(&td, config, None);
+        opts.once = false;
+        let lease_path = td.join("config").join("device.lease");
+        opts.lease_path = Some(lease_path.clone());
+        let stop = Arc::new(AtomicBool::new(false));
+        opts.stop = Some(stop.clone());
+        let exec = TestExec::new().with("任务1", vec![step(ResultClass::Success)]);
+        opts.test_exec = Some(exec.clone());
+        // A live Studio trial: same pid + scheduler-style JSON, but never
+        // dropped by the scheduler (it models another surface's lease).
+        let external =
+            DeviceLease::acquire(&lease_path, "studio", "editor-run").expect("external lease");
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let report = std::thread::scope(|scope| {
+            let handle = scope.spawn(|| {
+                let mut emit = |line: &str| {
+                    let _ = tx.send(line.to_string());
+                };
+                run_scheduler(&opts, &mut emit)
+            });
+            let mut saw = false;
+            let t0 = std::time::Instant::now();
+            while !saw && t0.elapsed() < Duration::from_secs(5) {
+                if let Ok(line) = rx.recv_timeout(Duration::from_millis(100)) {
+                    if line.starts_with("scheduler_lease_busy ") {
+                        saw = true;
+                    }
+                }
+            }
+            assert!(saw, "the scheduler never reported scheduler_lease_busy");
+            stop.store(true, Ordering::SeqCst);
+            handle.join().expect("scheduler thread").expect("run")
+        });
+        assert_eq!(report.stopped_reason, "api_stop", "{report:?}");
+        assert_eq!(report.passes, 0, "a busy lease must skip the pass: {report:?}");
+        assert_eq!(report.runs, 0);
+        assert!(exec.calls().is_empty(), "the scripted attempt must not run");
+        let state = state_of(&opts);
+        assert_eq!(state.passes, 0, "a skipped pass is not counted");
+        assert!(state.running.is_none(), "no dirty running marker");
+        assert_eq!(state.last_stop, "api_stop");
+        assert!(lease_path.exists(), "the external holder keeps the lease");
+        let events = std::fs::read_to_string(opts.events_path()).expect("events");
+        assert!(events.contains("scheduler_lease_busy"), "{events}");
+        assert!(
+            !SchedulerLock::lock_path(&opts.state_path()).exists(),
+            "the scheduler lock is released on an api_stop exit"
+        );
+        drop(external);
+        assert!(!lease_path.exists(), "dropping the external lease frees it");
         std::fs::remove_dir_all(&td).ok();
     }
 

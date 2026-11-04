@@ -60,6 +60,8 @@ use oas_task::TaskBundle;
 use oas_types::{Exit, Frame, InputSink, Outcome, Point, ScreenSource};
 use serde_json::Value as JsonValue;
 
+use crate::device_lease::DeviceLease;
+
 pub const USAGE: &str = "usage: oasd run --task <bundle-dir> [--replay <bundle-dir>] \
                          [--seed <u64>] [--dry-run] [--record <bundle-dir>] \
                          [--events-out <file.jsonl>] [--clicks-out <file.jsonl>] \
@@ -132,6 +134,18 @@ pub struct RunOptions {
     /// once at the single merge point. Non-scalar values fall back to compact
     /// JSON text (the pre-PR3 entry-params behaviour).
     pub params: ParamMap,
+    /// PR6 P1-6: the caller already holds the device lease and [`execute`] must
+    /// not acquire it again. Set by the scheduler attempt (`runner-scheduler` /
+    /// `scheduler` pass lease) and by Studio `/task/run` + Runner `/runner/run`
+    /// (both pre-acquire before spawning the worker). CLI `oasd run` and the
+    /// `oasd queue` path leave it `false` and are protected by `execute`.
+    pub skip_lease: bool,
+    /// Test seam: pin the device lease path instead of resolving it from the
+    /// process-wide `--config` (`global()`/`global_path()` can only be set once
+    /// per test process). Production always uses
+    /// [`crate::device_lease::lease_path_from_config`].
+    #[cfg(test)]
+    pub(crate) lease_path_override: Option<PathBuf>,
 }
 
 /// One explicit parameter layer (`RunOptions.params`): JSON values as written by
@@ -161,6 +175,9 @@ impl Default for RunOptions {
             budget_steps: DEFAULT_MAX_STEPS,
             budget_wall_s: DEFAULT_MAX_WALL_S,
             params: BTreeMap::new(),
+            skip_lease: false,
+            #[cfg(test)]
+            lease_path_override: None,
         }
     }
 }
@@ -456,6 +473,34 @@ impl StepObserver for SharedStepLog {
     }
 }
 
+/// Acquire the CLI run's device lease (PR6 P1-6).
+///
+/// Returns `None` when [`RunOptions::skip_lease`] is set (the scheduler pass or
+/// a pre-acquired Studio/Runner worker already holds it) or when no live
+/// `--config` defines a lease path (pure CLI / tests). The guard is dropped
+/// when [`execute`] returns, so a setup error never leaves a stale lease.
+fn acquire_run_lease(opts: &RunOptions) -> Result<Option<DeviceLease>, String> {
+    if opts.skip_lease {
+        return Ok(None);
+    }
+    let path = {
+        #[cfg(test)]
+        {
+            opts.lease_path_override
+                .clone()
+                .or_else(crate::device_lease::lease_path_from_config)
+        }
+        #[cfg(not(test))]
+        {
+            crate::device_lease::lease_path_from_config()
+        }
+    };
+    match path {
+        Some(path) => DeviceLease::acquire(&path, "cli", "run").map(Some),
+        None => Ok(None),
+    }
+}
+
 pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport, String> {
     let task_dir = opts
         .task
@@ -466,6 +511,10 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
                     bundle already contains frames; drop --record or --replay"
             .into());
     }
+    // PR6 P1-6: `oasd run` protects the physical device exactly like the Studio
+    // and Runner entry points. The lease is acquired before any execution and
+    // released by Drop when this function returns (success or setup error).
+    let _lease = acquire_run_lease(opts).map_err(|e| format!("device lease: {e}"))?;
 
     // HB5: resolve + print the seed BEFORE anything that can fail, so even a
     // failed run tells you which seed to replay with.
@@ -1342,6 +1391,70 @@ mod tests {
             .find(|l| l.starts_with(prefix))
             .map(|s| s.as_str())
             .unwrap_or_else(|| panic!("no line starting with `{prefix}` in {lines:?}"))
+    }
+
+    // ---- PR6: CLI device lease (P1-6) -------------------------------------
+
+    #[test]
+    fn cli_run_acquires_and_releases_the_device_lease() {
+        let (td, task, replay) = fixture("cli-run-lease");
+        let lease_path = td.path().join("config").join("device.lease");
+        let mut opts = replay_options(&task, &replay, 7);
+        opts.lease_path_override = Some(lease_path.clone());
+        let mut held_during_run = false;
+        let report = execute(&opts, &mut |line: &str| {
+            if line.starts_with("seed=") {
+                held_during_run = crate::device_lease::read_lease(&lease_path)
+                    .map(|info| info.owner == "cli" && info.mode == "run")
+                    .unwrap_or(false);
+            }
+        })
+        .expect("replay run");
+        assert_eq!(report.outcome(), Outcome::Done);
+        assert!(
+            held_during_run,
+            "the CLI run must hold owner=cli/mode=run while executing"
+        );
+        assert!(
+            !lease_path.exists(),
+            "Drop releases the CLI lease when execute() returns"
+        );
+    }
+
+    #[test]
+    fn cli_run_skip_lease_never_touches_the_device_lease() {
+        let (td, task, replay) = fixture("cli-run-skip-lease");
+        let lease_path = td.path().join("config").join("device.lease");
+        let mut opts = replay_options(&task, &replay, 8);
+        opts.lease_path_override = Some(lease_path.clone());
+        opts.skip_lease = true;
+        execute(&opts, &mut |_| {}).expect("replay run");
+        assert!(
+            !lease_path.exists(),
+            "skip_lease is for callers that already hold the lease"
+        );
+    }
+
+    #[test]
+    fn cli_run_lease_conflict_is_a_loud_error_and_does_not_run() {
+        let (td, task, replay) = fixture("cli-run-lease-conflict");
+        let lease_path = td.path().join("config").join("device.lease");
+        let holder = DeviceLease::acquire(&lease_path, "studio", "editor-run")
+            .expect("external lease");
+        let mut opts = replay_options(&task, &replay, 9);
+        opts.lease_path_override = Some(lease_path.clone());
+        let mut lines = Vec::new();
+        let err = execute(&opts, &mut |line: &str| lines.push(line.to_string()))
+            .expect_err("a live Studio lease must block the CLI run");
+        assert!(err.contains("device lease:"), "{err}");
+        assert!(err.contains("Studio 正在试运行"), "{err}");
+        assert!(
+            !lines.iter().any(|l| l.starts_with("seed=")),
+            "a refused run must not print run output: {lines:?}"
+        );
+        assert!(lease_path.exists(), "a failed acquire must not steal the lease");
+        drop(holder);
+        assert!(!lease_path.exists());
     }
 
     // ---- tests --------------------------------------------------------------

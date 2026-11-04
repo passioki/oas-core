@@ -99,7 +99,7 @@
 
 ## 3. 调度 / 队列
 
-1. **Runner 使用端负责调度**：目标形态是进程内嵌调度线程（单进程，无需再双击 `start-scheduler.bat`）。当前版本若页面尚未提供调度启动/编辑入口，可继续用兼容的 `start-scheduler.bat`（headless CLI）；两者共用 `<state>.lock`，**天然互斥**，不要同时跑。日志 `logs/runner.log` + `logs/scheduler.events.jsonl`（现有审计事件）。
+1. **Runner 使用端负责调度**：Runner 内嵌调度线程（单进程，无需再双击 `start-scheduler.bat`）——`start-runner.bat` 启动后自动开始跑 `scheduler.json`；「队列与调度」页可启动/停止、临时运行、用高级 JSON 编辑调度计划。旧的 `start-scheduler.bat`（headless CLI）保留给无 UI 场景；两者共用 `<state>.lock`，**天然互斥**，不要同时跑。日志 `logs/runner.log` + `logs/scheduler.events.jsonl`（Runner 包根目录下）。
 2. 调度计划仍是 `scheduler.json`（schema v4；v3 读取时自动升级）：
    - `periodic`：窗口 + 每日/每周 quota；
    - `temp`：临时任务，每轮按 entries 顺序跑一次，执行前后重置，无完成记忆；
@@ -109,10 +109,8 @@
    start-scheduler.bat
    ```
    它和 Runner 内嵌调度共用 `<state>.lock`，**天然互斥**：Runner 在跑时不要再启动 `start-scheduler.bat`。
-4. 重置记忆：Runner 页面「重置记忆」多选/全选/反选，或
-   ```bat
-   oasd.exe scheduler reset-memory --tasks 探索,个人突破 --include-checkpoint
-   ```
+4. 重置记忆：用 CLI（`oasd.exe scheduler reset-memory --tasks 探索,个人突破 --include-checkpoint`）；
+   Runner 页面不提供重置入口（避免误清使用端运行记忆）。
 
 ## 4. 停止 / 升级 / 回滚
 

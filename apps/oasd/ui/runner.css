@@ -367,6 +367,110 @@ main.runner-main {
   border-bottom: 0;
 }
 
+/* PR6: 调度控制 / 临时运行 / scheduler.json 编辑（队列与调度页） */
+#runner-sched-control .runner-sched-actions,
+#runner-run-card .row,
+#runner-sched-json-card .row {
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+#runner-sched-control h3 .runner-badge {
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+#runner-sched-meta,
+#runner-run-status,
+#runner-sched-status,
+#runner-sched-json-status {
+  overflow-wrap: anywhere;
+}
+
+#runner-sched-meta .runner-kv {
+  margin-top: 6px;
+}
+
+#runner-sched-status.ok,
+#runner-sched-json-status.ok,
+#runner-run-status.ok {
+  color: var(--runner-ok);
+}
+
+#runner-sched-status.err,
+#runner-sched-json-status.err,
+#runner-run-status.err {
+  color: var(--runner-err);
+}
+
+#runner-sched-error,
+#runner-run-error,
+#runner-sched-json-error {
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 6px 0 0;
+  color: var(--runner-err);
+  background: #1d2027;
+}
+
+#runner-sched-error:empty,
+#runner-run-error:empty,
+#runner-sched-json-error:empty {
+  display: none;
+}
+
+#page-queue .opt {
+  display: block;
+  margin: 6px 0;
+}
+
+#runner-run-task {
+  max-width: 100%;
+}
+
+#runner-run-params {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 64px;
+  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  font-size: 12px;
+}
+
+#runner-run-log {
+  min-height: 48px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #171a20;
+  border: 1px solid var(--runner-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+#runner-run-log:empty {
+  display: none;
+}
+
+.runner-sched-json-card summary {
+  cursor: pointer;
+  color: var(--runner-accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+#runner-sched-json {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 220px;
+  max-height: 52vh;
+  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  font-size: 12px;
+}
+
 @media (max-width: 720px) {
   .runner-header {
     padding: 8px 10px;

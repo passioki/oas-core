@@ -19,11 +19,17 @@
 /scheduler.state.json
 /scheduler.events.jsonl
 /scheduler.state.json.lock
+# actual lock name (`state_path.with_extension("lock")`) + config save backups
+/scheduler.state.lock
+/scheduler.json.bak
 /logs
 
 # Runner task runtime values (PR2; machine-local, never committed). The Runner
 # writes this next to its live config (`config/values.json` by default).
 /config/values.json
+# PR6 device lease (runtime mutex next to the live config; a force-kill can
+# leave it behind — the next acquire reclaims a dead pid).
+/config/device.lease
 # atomic-write temp files / Studio schema-edit backups (runtime artifacts)
 *.tmp
 /tasks/*/meta.json.bak

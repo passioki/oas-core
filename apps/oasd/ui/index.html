@@ -5,36 +5,8 @@
 <title>OAS 引擎编辑器 · MVP</title>
 <link rel="stylesheet" href="/style.css" />
 <style>
-  /* P4：调度运行记录（本次只改 index.html/app.js；style.css 未动） */
-  .sched-runs-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  #page-sched-runs-list { overflow-x: auto; }
-  .sched-runs-table th, .sched-runs-table td {
-    text-align: left; padding: 4px 6px; border-bottom: 1px solid #2b2f38; vertical-align: top;
-  }
-  .sched-runs-table td { color: #dfe3e8; }
-  .sched-runs-table th { color: #9aa0aa; font-weight: 600; white-space: nowrap; }
-  .sched-runs-table td:first-child { white-space: nowrap; }
-  .sched-runs-table tbody tr { cursor: pointer; }
-  .sched-runs-table tbody tr:hover, .sched-runs-table tbody tr:focus { background: #24384f; outline: none; }
-  .sched-runs-table .run-error-cell {
-    color: #ff8a80; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .run-badge {
-    display: inline-block; padding: 0 5px; border-radius: 4px; font-size: 11px; line-height: 16px;
-    border: 1px solid #3a3f48; white-space: nowrap;
-  }
-  .run-badge.ok { color: #7bd88f; border-color: #2f6b3f; background: #16281b; }
-  .run-badge.warn { color: #e8c46a; border-color: #6b5a2f; background: #2a2416; }
-  .run-badge.err { color: #ff8a80; border-color: #6b2f2f; background: #2a1618; }
-  .run-badge.kind { color: #9ec1ea; border-color: #2f4a6b; background: #161f2a; }
-  .run-badge + .run-badge { margin-left: 4px; }
-  .sched-run-dialog { max-width: min(820px, calc(100vw - 40px)); }
-  .sched-run-dialog pre { max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
-  .sched-run-dialog .run-detail-table td:first-child { white-space: nowrap; color: #9aa0aa; }
   /* PR1: Studio/Runner 分离的轻提示（不新增外链资源） */
   #studio-runner-hint { color: #8fb8e8; white-space: nowrap; }
-  .studio-migrate-note { border-color: #2f4a6b; background: #171d26; margin-bottom: 12px; }
-  .studio-migrate-note h3 { margin: 0 0 4px; color: #8fb8e8; font-size: 13px; }
   @media (max-width: 980px) { #studio-runner-hint { display: none; } }
   /* PR5：发布任务包对话框（产物 .oaspkg 由终端用户在 Runner 安装） */
   .task-publish-dialog { max-width: min(640px, calc(100vw - 40px)); }
@@ -259,7 +231,7 @@
           <h3>任务</h3>
           <div class="task-wizard">
             <div class="muted small">
-              任务工作台：① 基础 → ② 画面/素材 → ③ 素材操作 → ④ 流程 → ⑤ 完成条件 → ⑥ 测试 → ⑦ 保存/调度
+              任务工作台：① 基础 → ② 画面/素材 → ③ 素材操作 → ④ 流程 → ⑤ 完成条件 → ⑥ 测试 → ⑦ 保存/发布
             </div>
             <div class="row lib-toolbar">
               <button id="btn-wb-assets" type="button">② 画面/素材</button>
@@ -314,15 +286,6 @@
           </p>
         </section>
 
-        <section class="panel" id="panel-schedule">
-          <h3>调度（已迁移到 Runner）</h3>
-          <div id="sched-summary" class="muted small">—</div>
-          <div id="sched-entries" class="asset-list muted">（未加载调度状态）</div>
-          <p class="muted small">
-            Studio 不再提供调度/运行运维入口：安装、配置、排队、调度、执行、运行记录都在 Runner（默认 8789）。
-            本面板仅为旧深链保留占位，不提供任何调度操作。
-          </p>
-        </section>
       </div>
     </aside>
   </main>
@@ -424,109 +387,6 @@
     </div>
   </div>
 
-  <!-- v1.1 P3 / P3: 调度（entries + 队列可编辑、状态卡、高级 JSON） -->
-  <div id="page-schedule" class="app-page">
-    <div class="page-wrap">
-      <div class="row page-head">
-        <h2>调度</h2>
-        <span class="muted small">scheduler.json v4 · periodic/temp · 队列轮次 · 条目顺序=执行顺序</span>
-        <span class="spacer"></span>
-        <button id="page-sched-refresh" type="button">刷新</button>
-        <button id="page-sched-save" type="button">保存配置</button>
-        <button id="page-sched-reload" type="button">重新加载</button>
-        <button id="page-sched-reset" type="button">重置记忆…</button>
-      </div>
-      <div class="card studio-migrate-note">
-        <h3>调度/运行运维请用 Runner（8789）</h3>
-        <div class="muted small">
-          Studio 导航已不再提供「调度」入口；本页作为旧深链兼容页暂时保留，后续 PR 将迁移到 Runner。
-          配置编辑、队列管理、调度执行请使用 Runner，不要在本地址修改调度。
-        </div>
-      </div>
-      <div class="card sched-status-card">
-        <div class="row">
-          <strong id="page-sched-mode">模式：—</strong>
-          <span id="page-sched-passes" class="muted small">passes=—</span>
-          <span id="page-sched-next-wake" class="muted small">下次唤醒=—</span>
-          <span id="page-sched-running" class="badge">锁=—</span>
-          <span id="page-sched-quota" class="muted small">quota=—</span>
-        </div>
-        <div id="page-sched-summary" class="muted small">—</div>
-        <div id="page-sched-config-status" class="muted small">配置：—</div>
-        <div id="page-sched-runs-summary" class="muted small">运行记录：—</div>
-      </div>
-      <div class="row page-head">
-        <h3>调度条目</h3>
-        <span class="muted small">顺序即执行顺序；调度器运行中保存会被 409 拒绝</span>
-        <span class="spacer"></span>
-        <button id="page-sched-add-entry" type="button">+ 添加条目…</button>
-      </div>
-      <div id="page-sched-entries" class="task-library muted">（未加载）</div>
-      <div class="row page-head">
-        <h3>队列（一轮 = 按顺序走完成员）</h3>
-        <span class="muted small">total_rounds=0 表示无限轮；一个队列最多一个触发条目</span>
-        <span class="spacer"></span>
-        <button id="page-sched-add-queue" type="button">+ 新建队列…</button>
-      </div>
-      <div id="page-sched-queues" class="task-library muted">（未加载）</div>
-      <div class="row page-head">
-        <h3>运行记录</h3>
-        <span class="muted small">调度器每次运行一条（新→旧）；点行查看完整字段与错误全文</span>
-        <span class="spacer"></span>
-        <button id="page-sched-runs-refresh" type="button">刷新运行记录</button>
-      </div>
-      <div class="row lib-toolbar">
-        <label class="opt">任务
-          <select id="page-sched-runs-task">
-            <option value="">全部任务</option>
-          </select>
-        </label>
-        <label class="opt">结果
-          <select id="page-sched-runs-outcome">
-            <option value="">全部结果</option>
-            <optgroup label="class 词（成功/失败分类）">
-              <option value="success">success（成功）</option>
-              <option value="resource">resource（资源不足）</option>
-              <option value="blocked">blocked（被阻断）</option>
-              <option value="retryable">retryable（可重试）</option>
-              <option value="fatal">fatal（致命）</option>
-            </optgroup>
-            <optgroup label="落盘 outcome（P4A: Done/Failed/Exhausted/error）">
-              <option value="Done">Done（完成）</option>
-              <option value="Failed">Failed（失败）</option>
-              <option value="Exhausted">Exhausted（耗尽）</option>
-              <option value="error">error（错误）</option>
-            </optgroup>
-          </select>
-        </label>
-        <label class="opt">条数
-          <select id="page-sched-runs-limit">
-            <option value="100">100</option>
-            <option value="200" selected>200</option>
-            <option value="500">500</option>
-            <option value="1000">1000</option>
-          </select>
-        </label>
-        <button id="page-sched-runs-clear" type="button">清除筛选</button>
-        <span id="page-sched-runs-status" class="muted small">—</span>
-      </div>
-      <div id="page-sched-runs-list" class="task-library muted">（未加载）</div>
-      <details id="page-sched-advanced" class="sched-advanced">
-        <summary>高级 JSON（完整 scheduler.json）</summary>
-        <p class="muted small">
-          直接编辑完整配置；保存前先本地 JSON.parse 校验，服务端仍会做 schema 校验。
-          调度器运行中保存会返回 409。
-        </p>
-        <textarea id="page-sched-json" class="builder-code" spellcheck="false"></textarea>
-        <div class="row lib-toolbar">
-          <button id="page-sched-json-save" type="button">保存 JSON</button>
-          <button id="page-sched-json-reload" type="button">从磁盘重新载入</button>
-          <span id="page-sched-json-status" class="muted small">—</span>
-        </div>
-      </details>
-    </div>
-  </div>
-
   <!-- v1.1 P3: 设置 -->
   <div id="page-settings" class="app-page">
     <div class="page-wrap">
@@ -618,143 +478,6 @@
     </div>
   </dialog>
 
-  <!-- M2/N37：重置记忆（多选 + 全选/反选；清调度状态 + 任务 state/） -->
-  <dialog id="reset-memory-dialog" class="task-dialog">
-    <h3>重置记忆</h3>
-    <p class="muted small">
-      清空所选任务的调度器条目状态 + 任务 <code>state/</code>（checkpoint/坐标计数）。
-      正在运行的调度器需要先停止。
-    </p>
-    <div class="row lib-toolbar">
-      <button id="btn-reset-all" type="button">全选</button>
-      <button id="btn-reset-invert" type="button">反选</button>
-      <button id="btn-reset-none" type="button">全不选</button>
-    </div>
-    <div id="reset-task-list" class="asset-list"></div>
-    <label class="opt"><input id="reset-include-checkpoint" type="checkbox" checked />
-      同时清除 checkpoint/计数（任务 state/）</label>
-    <pre id="reset-error" class="muted small dialog-error"></pre>
-    <div class="row dialog-actions">
-      <button id="btn-reset-cancel" type="button">取消</button>
-      <button id="btn-reset-submit" type="button">确认重置</button>
-    </div>
-  </dialog>
-
-  <!-- P3：调度条目编辑/新建（任务库「调度设置…」与调度页「+ 添加条目…」共用） -->
-  <dialog id="sched-entry-dialog" class="task-dialog sched-entry-dialog">
-    <h3 id="sched-entry-title">调度条目</h3>
-    <div id="sched-entry-mode-hint" class="muted small">—</div>
-    <label class="opt">类型
-      <select id="sched-entry-kind">
-        <option value="task">task（单任务）</option>
-        <option value="queue">queue（队列触发，一轮 = 走完成员一遍）</option>
-      </select>
-    </label>
-    <label class="opt">目标（task=任务名 / queue=queue_id）
-      <select id="sched-entry-target"></select>
-    </label>
-    <div id="sched-entry-id" class="muted small">entry_id：—</div>
-    <label class="opt"><input id="sched-entry-enabled" type="checkbox" checked /> 启用（enabled）</label>
-    <label class="opt">生命周期
-      <select id="sched-entry-lifecycle">
-        <option value="periodic">periodic（按窗口/quota/冷却触发）</option>
-        <option value="temp">temp（每 pass 一次；无窗口、无 quota）</option>
-      </select>
-    </label>
-    <div id="sched-entry-temp-hint" class="muted small">—</div>
-    <label class="opt">时间窗口（简化文本；留空=全天）
-      <input id="sched-entry-windows" autocomplete="off"
-        placeholder="如 08:00-12:00, 18:00-23:00；可选周几前缀 [1,3]08:00-12:00" />
-    </label>
-    <details class="opt">
-      <summary>高级：windows JSON（非空时优先于上面的简化文本）</summary>
-      <textarea id="sched-entry-windows-json" class="builder-code" spellcheck="false"
-        placeholder='[{"days":[],"start":"08:00","end":"12:00"}]'></textarea>
-    </details>
-    <div class="row lib-toolbar">
-      <label class="opt">quota
-        <select id="sched-entry-quota-per">
-          <option value="">无配额（每 pass 可跑）</option>
-          <option value="day">按天 day</option>
-          <option value="week">按周 week</option>
-        </select>
-      </label>
-      <label class="opt">次数
-        <input id="sched-entry-quota-times" type="number" min="1" max="1000" value="1" />
-      </label>
-    </div>
-    <div class="row lib-toolbar">
-      <label class="opt">retry（额外尝试次数）
-        <input id="sched-entry-retry" type="number" min="0" max="10" value="1" />
-      </label>
-      <label class="opt">cooldown_s
-        <input id="sched-entry-cooldown" type="number" min="0" max="604800" value="300" />
-      </label>
-    </div>
-    <label class="opt">params（JSON 对象，可空）
-      <textarea id="sched-entry-params" rows="3" class="builder-code" spellcheck="false"
-        placeholder='{"max_battles":3}'></textarea>
-    </label>
-    <pre id="sched-entry-error" class="muted small dialog-error"></pre>
-    <div class="row dialog-actions">
-      <button id="sched-entry-cancel" type="button">取消</button>
-      <button id="sched-entry-save" type="button">保存</button>
-    </div>
-  </dialog>
-
-  <!-- P3：队列编辑/新建（成员从任务库多选并排序） -->
-  <dialog id="sched-queue-dialog" class="task-dialog sched-queue-dialog">
-    <h3 id="sched-queue-title">队列</h3>
-    <label class="opt">queue_id（唯一；不能含路径字符）
-      <input id="sched-queue-id" autocomplete="off" placeholder="如：daily" />
-    </label>
-    <label class="opt">名称（可空，默认=queue_id）
-      <input id="sched-queue-name" autocomplete="off" placeholder="如：日常队列" />
-    </label>
-    <div class="row lib-toolbar">
-      <strong class="small">成员（按顺序串行执行）</strong>
-      <span class="spacer"></span>
-      <button id="sched-queue-member-add" type="button">添加勾选任务</button>
-    </div>
-    <div id="sched-queue-members" class="asset-list muted">（还没有成员）</div>
-    <details class="opt">
-      <summary>从任务库勾选成员</summary>
-      <div id="sched-queue-task-pool" class="asset-list"></div>
-    </details>
-    <div class="row lib-toolbar">
-      <label class="opt">total_rounds（0=无限）
-        <input id="sched-queue-total-rounds" type="number" min="0" max="1000000" value="0" />
-      </label>
-      <label class="opt">on_failure
-        <select id="sched-queue-on-failure">
-          <option value="continue">continue（记录失败继续）</option>
-          <option value="fail_fast">fail_fast（本轮中止，仍计 1 轮）</option>
-        </select>
-      </label>
-      <label class="opt">between_ms（成员之间暂停）
-        <input id="sched-queue-between-ms" type="number" min="0" max="600000" value="500" />
-      </label>
-    </div>
-    <div id="sched-queue-rounds-hint" class="muted small">total_rounds=0：无限轮，直到手动停止/重置。</div>
-    <div id="sched-queue-lock-hint" class="muted small">—</div>
-    <pre id="sched-queue-error" class="muted small dialog-error"></pre>
-    <div class="row dialog-actions">
-      <button id="sched-queue-cancel" type="button">取消</button>
-      <button id="sched-queue-save" type="button">保存队列</button>
-    </div>
-  </dialog>
-
-  <!-- P4：调度运行详情（再次 GET 单条；全字段 + 错误全文） -->
-  <dialog id="page-sched-runs-dialog" class="task-dialog sched-run-dialog">
-    <h3 id="page-sched-runs-detail-title">运行详情</h3>
-    <div id="page-sched-runs-detail-body" class="run-detail muted small">（未加载）</div>
-    <pre id="page-sched-runs-detail-error" class="muted small dialog-error"></pre>
-    <div class="row dialog-actions">
-      <button id="page-sched-runs-detail-refresh" type="button">重新读取</button>
-      <span class="spacer"></span>
-      <button id="page-sched-runs-detail-close" type="button">关闭</button>
-    </div>
-  </dialog>
 
   <!-- 统一截图入口：名称/分类 -> POST /capture(select:false)，不跳帧、不暂停实时 -->
   <dialog id="capture-frame-dialog" class="task-dialog capture-dialog">

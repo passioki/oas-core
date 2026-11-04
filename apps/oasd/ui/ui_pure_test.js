@@ -19,6 +19,9 @@
 //   - PR5 packages: Studio publishes .oaspkg (POST /task/publish) while the
 //     Runner installs/uninstalls/rolls back (POST /runner/install|uninstall|
 //     packages/activate) and never touches the authoring surface.
+//   - PR6 scheduler operations: the Runner starts/stops its scheduler thread,
+//     runs one task on demand and edits scheduler.json; the Studio has no
+//     scheduling page/DOM left and never calls Runner-only scheduler routes.
 'use strict';
 
 const fs = require('fs');
@@ -175,85 +178,6 @@ const PURE_FUNCTIONS = [
   // global-library change (save/delete/positions).
   'renderFrameAssetViews',
   'selectionModeFromFlags',
-  // P3: scheduler config editing (pure JSON transforms / builders / validation)
-  'schedEntryKindLabel',
-  'schedSanitizeIdSegment',
-  'schedHasUnsafeNameChar',
-  'schedUniqueId',
-  'schedEntryIdForTarget',
-  'schedEmptyConfig',
-  'schedNormalizeConfig',
-  'schedDefaultTaskEntry',
-  'schedWindowsToText',
-  'schedParseWindowsText',
-  'schedParseWindowsJson',
-  'schedParseParamsText',
-  'schedEntryToForm',
-  'schedBuildEntryFromForm',
-  'schedValidateEntryForm',
-  'schedFindTaskEntries',
-  'schedFindTaskQueueMember',
-  'schedQueueEntryConflict',
-  'schedUpsertEntry',
-  'schedRemoveEntryById',
-  'schedMoveEntry',
-  'schedQueueToForm',
-  'schedQueueMemberAdd',
-  'schedQueueMemberRemove',
-  'schedQueueMemberMove',
-  'schedBuildQueueFromForm',
-  'schedValidateQueueForm',
-  'schedUpsertQueue',
-  'schedRemoveQueue',
-  'schedQueueProgressText',
-  'schedQueueSummary',
-  'schedEntrySummary',
-  'schedQuotaSummary',
-  'schedStatusErrorText',
-  'schedCanonicalJson',
-  'schedConfigSnapshotText',
-  'schedConfigSnapshotChanged',
-  'schedExternalConfigChangeText',
-  'schedResponseErrorText',
-  'schedSaveBlockedReason',
-  'schedParseConfigJson',
-  // P4: scheduler run history (list URL / row formatting / detail / errors)
-  'schedRunValueText',
-  'schedRunLimitValue',
-  'schedRunsBuildQuery',
-  'schedRunsBuildUrl',
-  'schedRunDetailUrl',
-  'schedRunTimeText',
-  'schedRunDurationMs',
-  'schedRunDurationText',
-  'schedRunOutcomeLabel',
-  'schedRunOutcomeBadgeClass',
-  'schedRunStatusBadgeClass',
-  'schedRunKindText',
-  'schedRunIsQueueRun',
-  'schedQueueDisplayName',
-  'schedRunTaskLabel',
-  'schedRunRoundMemberText',
-  'schedRunAttemptText',
-  'schedRunExitText',
-  'schedRunClicksText',
-  'schedRunErrorText',
-  'schedRunErrorSummary',
-  'schedRunResumeText',
-  'schedRunDetailRows',
-  'schedRunDetailTitle',
-  'schedRunRowCells',
-  'schedRunIsFailure',
-  'schedRunsFailureCount',
-  'schedRunsStatusCardText',
-  'schedRunBodyErrors',
-  'schedRunsErrorText',
-  'schedRunsResponseErrorText',
-  'schedRunDetailErrorText',
-  'schedRunsTaskChoices',
-  'schedRunsFilterLocal',
-  'schedRunsFilterActive',
-  'schedRunsListStatusText',
   // PR2: Studio-side meta.params schema editor (runner values stay on Runner).
   'taskConfigNormalizeParam',
   'taskConfigParamsToJson',
@@ -305,83 +229,6 @@ const {
   filterAssets,
   globalAssetStatusText,
   selectionModeFromFlags,
-  schedEntryKindLabel,
-  schedSanitizeIdSegment,
-  schedHasUnsafeNameChar,
-  schedUniqueId,
-  schedEntryIdForTarget,
-  schedEmptyConfig,
-  schedNormalizeConfig,
-  schedDefaultTaskEntry,
-  schedWindowsToText,
-  schedParseWindowsText,
-  schedParseWindowsJson,
-  schedParseParamsText,
-  schedEntryToForm,
-  schedBuildEntryFromForm,
-  schedValidateEntryForm,
-  schedFindTaskEntries,
-  schedFindTaskQueueMember,
-  schedQueueEntryConflict,
-  schedUpsertEntry,
-  schedRemoveEntryById,
-  schedMoveEntry,
-  schedQueueToForm,
-  schedQueueMemberAdd,
-  schedQueueMemberRemove,
-  schedQueueMemberMove,
-  schedBuildQueueFromForm,
-  schedValidateQueueForm,
-  schedUpsertQueue,
-  schedRemoveQueue,
-  schedQueueProgressText,
-  schedQueueSummary,
-  schedEntrySummary,
-  schedQuotaSummary,
-  schedStatusErrorText,
-  schedCanonicalJson,
-  schedConfigSnapshotText,
-  schedConfigSnapshotChanged,
-  schedExternalConfigChangeText,
-  schedResponseErrorText,
-  schedSaveBlockedReason,
-  schedParseConfigJson,
-  schedRunValueText,
-  schedRunLimitValue,
-  schedRunsBuildQuery,
-  schedRunsBuildUrl,
-  schedRunDetailUrl,
-  schedRunTimeText,
-  schedRunDurationMs,
-  schedRunDurationText,
-  schedRunOutcomeLabel,
-  schedRunOutcomeBadgeClass,
-  schedRunStatusBadgeClass,
-  schedRunKindText,
-  schedRunIsQueueRun,
-  schedQueueDisplayName,
-  schedRunTaskLabel,
-  schedRunRoundMemberText,
-  schedRunAttemptText,
-  schedRunExitText,
-  schedRunClicksText,
-  schedRunErrorText,
-  schedRunErrorSummary,
-  schedRunResumeText,
-  schedRunDetailRows,
-  schedRunDetailTitle,
-  schedRunRowCells,
-  schedRunIsFailure,
-  schedRunsFailureCount,
-  schedRunsStatusCardText,
-  schedRunBodyErrors,
-  schedRunsErrorText,
-  schedRunsResponseErrorText,
-  schedRunDetailErrorText,
-  schedRunsTaskChoices,
-  schedRunsFilterLocal,
-  schedRunsFilterActive,
-  schedRunsListStatusText,
   taskConfigNormalizeParam,
   taskConfigParamsToJson,
   parseTaskConfigParamsText,
@@ -2804,7 +2651,10 @@ ok(
 // --- static UI contract checks (P0-1 / P0-3 / dead bindings) ---
 ok(/id="btn-library-refresh"/.test(html), 'index.html provides a real #btn-library-refresh');
 const assetsPanelHtml = html.slice(html.indexOf('id="panel-assets"'), html.indexOf('id="panel-images"'));
-const taskPanelHtml = html.slice(html.indexOf('id="panel-task"'), html.indexOf('id="panel-schedule"'));
+const taskPanelHtml = html.slice(
+  html.indexOf('id="panel-task"'),
+  html.indexOf('</aside>', html.indexOf('id="panel-task"'))
+);
 // P0-1: the canvas 识别区 save button + editing label live in the shared
 // #canvas-footer (outside every .rail-panels .panel), so the task library and
 // frame-detail surfaces can reach them without switching to the 素材 panel.
@@ -3378,936 +3228,6 @@ ok(
 const guardFn = extractFunction('realAssetTestGuard');
 ok(/livePreview/.test(guardFn) && /实时预览已暂停/.test(guardFn), 'real mode refuses when live preview is off');
 
-// --- P3: scheduler config editing (entry/queue payload + validation) ---
-// Entry ids are generated from the task/queue target, sanitized and kept unique.
-eq(schedEntryKindLabel('queue'), 'queue', 'entry kind queue');
-eq(schedEntryKindLabel(undefined), 'task', 'entry kind defaults to task');
-eq(schedSanitizeIdSegment(''), 'entry', 'empty id segment falls back to entry');
-eq(schedSanitizeIdSegment('../A:B'), 'A-B', 'path/control characters are replaced and dots trimmed');
-eq(schedEntryIdForTarget('task', '每日探索', schedEmptyConfig()), 'task-每日探索', 'task entry id is task-<任务名>');
-eq(schedEntryIdForTarget('queue', 'q1', schedEmptyConfig()), 'queue-q1', 'queue entry id is queue-<queue_id>');
-const idCfg = schedEmptyConfig();
-idCfg.entries = [{ entry_id: 'task-T' }];
-eq(schedEntryIdForTarget('task', 'T', idCfg), 'task-T-2', 'generated entry id avoids collisions');
-eq(schedUniqueId('x', ['x', 'x-2']), 'x-3', 'unique id keeps incrementing');
-
-const emptyCfg = schedEmptyConfig();
-eq(emptyCfg.schema_version, 4, 'empty config is schema 4');
-eq(emptyCfg.config.mode, 'loop', 'empty config defaults to loop mode (P2-2)');
-eq(emptyCfg.config.loop_interval_s, 60, 'empty config keeps a 60s loop interval');
-eq(emptyCfg.entries, [], 'empty config has no entries');
-eq(emptyCfg.queues, [], 'empty config has no queues');
-eq(schedNormalizeConfig(null), JSON.parse(JSON.stringify(emptyCfg)), 'normalizing a missing config yields the empty document');
-
-const v3Raw = {
-  schema_version: 3,
-  config: { mode: 'loop', loop_interval_s: 5 },
-  unknown_top_key: { keep: true },
-  entries: [{ entry_id: 'e1', task: '任务1', lifecycle: 'periodic' }],
-};
-const v3Norm = schedNormalizeConfig(v3Raw);
-eq(v3Norm.schema_version, 4, 'v3 document is normalized to schema 4');
-eq(v3Norm.entries[0].kind, 'task', 'v3 entry gains kind=task');
-eq(v3Norm.entries[0].windows, [], 'v3 entry gains an empty windows array');
-eq(v3Norm.unknown_top_key, { keep: true }, 'normalization preserves unknown top-level keys');
-eq(schedNormalizeConfig(v3Norm), JSON.parse(JSON.stringify(v3Norm)), 'config normalization is idempotent');
-
-const defaultEntry = schedDefaultTaskEntry('T', emptyCfg);
-eq(defaultEntry, {
-  entry_id: 'task-T',
-  task: 'T',
-  kind: 'task',
-  enabled: true,
-  lifecycle: 'periodic',
-  windows: [],
-  quota: { per: 'day', times: 1 },
-  params: {},
-  retry: 1,
-  cooldown: 300,
-}, 'new task entry uses the documented defaults (full-day window, quota day/1)');
-const customDefaultsCfg = schedEmptyConfig();
-customDefaultsCfg.config.defaults = { retry: 2, cooldown: 60 };
-eq(schedDefaultTaskEntry('T', customDefaultsCfg).retry, 2, 'new entry inherits config.defaults.retry');
-eq(schedDefaultTaskEntry('T', customDefaultsCfg).cooldown, 60, 'new entry inherits config.defaults.cooldown');
-eq(schedDefaultTaskEntry('q1', emptyCfg, 'queue').kind, 'queue', 'queue entry builder sets kind=queue');
-eq(schedDefaultTaskEntry('q1', emptyCfg, 'queue').entry_id, 'queue-q1', 'queue entry id is queue-<queue_id>');
-
-eq(schedParseWindowsText(''), { ok: true, windows: [], error: '' }, 'empty window text means full day');
-eq(schedParseWindowsText('全天').windows, [], '全天 is accepted for an unrestricted window');
-eq(schedParseWindowsText('08:00-12:00, 18:00-23:00').windows, [
-  { days: [], start: '08:00', end: '12:00' },
-  { days: [], start: '18:00', end: '23:00' },
-], 'comma separated windows parse');
-eq(schedParseWindowsText('[1,3]08:00-12:00; [5]23:00-02:00').windows, [
-  { days: [1, 3], start: '08:00', end: '12:00' },
-  { days: [5], start: '23:00', end: '02:00' },
-], 'weekday prefix and cross-midnight windows parse');
-eq(schedParseWindowsText('8:00-9:00').windows, [{ days: [], start: '08:00', end: '09:00' }], 'single digit hours are padded');
-eq(schedParseWindowsText('8-9').ok, false, 'malformed window text is rejected');
-eq(schedParseWindowsText('[7]08:00-09:00').ok, false, 'weekday 7 is rejected');
-eq(schedParseWindowsText('[1]25:00-26:00').ok, false, 'hour 25 is rejected');
-const winList = [
-  { days: [1, 3], start: '08:00', end: '12:00' },
-  { days: [], start: '18:00', end: '23:00' },
-];
-eq(schedWindowsToText(winList), '[1,3]08:00-12:00, 18:00-23:00', 'windows render back to the simple text');
-eq(schedWindowsToText([]), '全天', 'no windows renders as 全天');
-eq(schedParseWindowsText(schedWindowsToText(winList)).windows, winList, 'windows text round-trips');
-eq(
-  schedParseWindowsJson('[{"days":[1],"start":"8:00","end":"9:00"}]').windows,
-  [{ days: [1], start: '08:00', end: '09:00' }],
-  'windows JSON parses and normalizes HH:MM'
-);
-eq(schedParseWindowsJson('{}').ok, false, 'windows JSON must be an array');
-eq(schedParseWindowsJson('[{"days":[9],"start":"08:00","end":"09:00"}]').ok, false, 'windows JSON validates days');
-eq(schedParseWindowsJson('[{"days":[],"start":"bad","end":"09:00"}]').ok, false, 'windows JSON validates HH:MM');
-
-eq(schedParseParamsText(''), { ok: true, params: {}, error: '' }, 'empty params is an empty object');
-eq(schedParseParamsText('{"a":1}').params, { a: 1 }, 'params JSON parses');
-eq(schedParseParamsText('[1]').ok, false, 'params JSON must be an object');
-eq(schedParseParamsText('{bad}').ok, false, 'broken params JSON is rejected');
-
-eq(schedEntryToForm(defaultEntry), {
-  entry_id: 'task-T', kind: 'task', task: 'T', enabled: true, lifecycle: 'periodic',
-  windows_text: '全天', windows_json: '', quota_per: 'day', quota_times: '1',
-  retry: '1', cooldown: '300', params_text: '',
-}, 'entry -> form maps every editable field');
-eq(schedEntryToForm({ lifecycle: 'temp', entry_id: 'x', task: 'T', enabled: false }).quota_per, '', 'temp form has no quota');
-
-const tempBuilt = schedBuildEntryFromForm({
-  kind: 'task', task: 'T', enabled: false, lifecycle: 'temp',
-  windows: [{ days: [], start: '08:00', end: '09:00' }], quota_per: 'day', quota_times: '3',
-  retry: '2', cooldown: '60', params: { a: 1 },
-}, { entry_id: 'e-temp' }, emptyCfg);
-eq(tempBuilt.windows, [], 'temp entries clear windows');
-eq(tempBuilt.quota, null, 'temp entries clear quota');
-eq(tempBuilt.enabled, false, 'entry enabled flag is preserved');
-eq(tempBuilt.entry_id, 'e-temp', 'editing keeps the entry_id');
-eq(tempBuilt.retry, 2, 'entry form retry is numeric');
-eq(tempBuilt.cooldown, 60, 'entry form cooldown is numeric');
-eq(tempBuilt.params, { a: 1 }, 'entry form params are preserved');
-
-const periodicBuilt = schedBuildEntryFromForm({
-  kind: 'task', task: 'T', enabled: true, lifecycle: 'periodic',
-  windows: [{ days: [2], start: '10:00', end: '11:00' }], quota_per: 'week', quota_times: '2',
-  retry: '1', cooldown: '300', params: {},
-}, {}, emptyCfg);
-eq(periodicBuilt.windows, [{ days: [2], start: '10:00', end: '11:00' }], 'periodic keeps windows');
-eq(periodicBuilt.quota, { per: 'week', times: 2 }, 'periodic keeps quota');
-
-function schedEntryForm(over) {
-  return Object.assign({
-    kind: 'task', task: 'T', enabled: true, lifecycle: 'periodic',
-    windows_text: '', windows_json: '', quota_per: 'day', quota_times: '1',
-    retry: '1', cooldown: '300', params_text: '',
-  }, over || {});
-}
-const validNewEntry = schedValidateEntryForm(schedEntryForm(), emptyCfg, '', null);
-eq(validNewEntry.ok, true, 'default form validates');
-eq(validNewEntry.entry.entry_id, 'task-T', 'new entry id is generated on save');
-eq(validNewEntry.entry.windows, [], 'new entry defaults to a full-day window');
-const changedTarget = schedValidateEntryForm(
-  schedEntryForm({ task: 'U' }), emptyCfg, '', schedDefaultTaskEntry('T', emptyCfg)
-);
-eq(changedTarget.entry.entry_id, 'task-U', 'create re-generates the entry_id when the target changes');
-const tempValid = schedValidateEntryForm(
-  schedEntryForm({ lifecycle: 'temp', windows_text: '08:00-09:00', quota_per: 'day', quota_times: '2' }),
-  emptyCfg, '', null
-);
-eq(tempValid.ok, true, 'temp entry validates even with stale window/quota form values');
-eq(tempValid.entry.windows, [], 'validated temp entry drops windows');
-eq(tempValid.entry.quota, null, 'validated temp entry drops quota');
-eq(schedValidateEntryForm(schedEntryForm({ windows_text: '8-9' }), emptyCfg, '', null).ok, false, 'bad window text fails validation');
-eq(schedValidateEntryForm(schedEntryForm({ quota_per: 'day', quota_times: '0' }), emptyCfg, '', null).ok, false, 'quota times 0 fails validation');
-eq(schedValidateEntryForm(schedEntryForm({ retry: '11' }), emptyCfg, '', null).ok, false, 'retry > 10 fails validation');
-eq(schedValidateEntryForm(schedEntryForm({ cooldown: '604801' }), emptyCfg, '', null).ok, false, 'cooldown above the max fails validation');
-eq(schedValidateEntryForm(schedEntryForm({ params_text: '[1]' }), emptyCfg, '', null).ok, false, 'non-object params fail validation');
-eq(schedValidateEntryForm(schedEntryForm({ windows_json: '{bad}' }), emptyCfg, '', null).ok, false, 'broken windows JSON fails validation');
-
-const queueCfgForEntry = schedEmptyConfig();
-queueCfgForEntry.queues = [{ queue_id: 'q1', name: '日常', members: ['T1'], total_rounds: 0, on_failure: 'continue', between_ms: 500 }];
-const unknownQueue = schedValidateEntryForm(schedEntryForm({ kind: 'queue', task: 'nope' }), queueCfgForEntry, '', null);
-eq(unknownQueue.ok, false, 'queue entry requires an existing queue');
-ok(unknownQueue.errors.some((e) => /不存在/.test(e)), 'unknown queue error names the missing queue');
-const firstQueueEntry = { entry_id: 'qe', task: 'q1', kind: 'queue', enabled: true, lifecycle: 'periodic', windows: [], quota: null, params: {}, retry: 0, cooldown: 0 };
-queueCfgForEntry.entries = [firstQueueEntry];
-const secondQueueEntry = schedValidateEntryForm(schedEntryForm({ kind: 'queue', task: 'q1' }), queueCfgForEntry, '', null);
-eq(secondQueueEntry.ok, false, 'a queue cannot get a second trigger entry');
-ok(secondQueueEntry.errors.some((e) => e.includes('qe')), 'queue conflict names the existing entry');
-eq(schedQueueEntryConflict(queueCfgForEntry, 'q1', 'qe'), '', 'the edited entry does not conflict with itself');
-eq(schedQueueEntryConflict(queueCfgForEntry, 'q1', ''), 'qe', 'queue conflict finds the other entry');
-const overlappingCfg = schedEmptyConfig();
-overlappingCfg.entries = [{ entry_id: 'te', task: 'T', kind: 'task' }];
-const overlap = schedValidateEntryForm(schedEntryForm(), overlappingCfg, '', null);
-eq(overlap.ok, true, 'a second task entry for the same task is allowed (only queue overlap is forbidden)');
-const queueMemberOverlap = schedEmptyConfig();
-queueMemberOverlap.queues = [{ queue_id: 'q1', members: ['T'], total_rounds: 0, on_failure: 'continue', between_ms: 0 }];
-const memberOverlap = schedValidateEntryForm(schedEntryForm(), queueMemberOverlap, '', null);
-ok(memberOverlap.ok === false && memberOverlap.errors.some((e) => e.includes('q1')), 'task entry cannot duplicate a queue member');
-
-eq(schedFindTaskEntries(queueCfgForEntry, 'T1'), [], 'queue entry is not a task entry');
-eq(schedFindTaskEntries(overlappingCfg, 'T').map((e) => e.entry_id), ['te'], 'find task entries by task');
-eq(schedFindTaskQueueMember(queueMemberOverlap, 'T'), 'q1', 'find the queue containing a task');
-eq(schedFindTaskQueueMember(queueMemberOverlap, 'other'), '', 'task not in any queue');
-
-let upsertCfg = schedEmptyConfig();
-upsertCfg = schedUpsertEntry(upsertCfg, firstQueueEntry);
-upsertCfg = schedUpsertEntry(upsertCfg, Object.assign({}, firstQueueEntry, { enabled: false }));
-eq(upsertCfg.entries.length, 1, 'upsert replaces by entry_id instead of appending');
-eq(upsertCfg.entries[0].enabled, false, 'upsert applies the new entry body');
-const untouchedCfg = schedEmptyConfig();
-schedUpsertEntry(untouchedCfg, firstQueueEntry);
-eq(untouchedCfg.entries.length, 0, 'upsert does not mutate the input config');
-eq(schedRemoveEntryById(upsertCfg, 'qe').entries, [], 'remove entry by id');
-
-function schedTestEntry(id) {
-  return { entry_id: id, task: id, kind: 'task', enabled: true, lifecycle: 'periodic', windows: [], quota: null, params: {}, retry: 1, cooldown: 300 };
-}
-const moveCfg = schedEmptyConfig();
-moveCfg.entries = [schedTestEntry('a'), schedTestEntry('b'), schedTestEntry('c')];
-eq(schedMoveEntry(moveCfg, 0, 1).entries.map((e) => e.entry_id), ['b', 'a', 'c'], 'move entry down swaps order');
-eq(schedMoveEntry(moveCfg, 2, -1).entries.map((e) => e.entry_id), ['a', 'c', 'b'], 'move entry up swaps order');
-eq(schedMoveEntry(moveCfg, 0, -1).entries.map((e) => e.entry_id), ['a', 'b', 'c'], 'move at the edge is a no-op');
-eq(moveCfg.entries.map((e) => e.entry_id), ['a', 'b', 'c'], 'move entry does not mutate the input');
-
-eq(schedQueueToForm({ queue_id: 'q1', name: '日常', members: ['A'], total_rounds: 2, on_failure: 'fail_fast', between_ms: 500 }), {
-  queue_id: 'q1', name: '日常', members: ['A'], total_rounds: '2', on_failure: 'fail_fast', between_ms: '500',
-}, 'queue -> form maps every editable field');
-eq(schedQueueMemberAdd(['A'], 'B'), ['A', 'B'], 'queue member add appends');
-eq(schedQueueMemberAdd(['A'], 'A'), ['A'], 'queue member add ignores duplicates');
-eq(schedQueueMemberRemove(['A', 'B'], 'A'), ['B'], 'queue member remove');
-eq(schedQueueMemberMove(['A', 'B', 'C'], 2, -1), ['A', 'C', 'B'], 'queue member move up');
-eq(schedQueueMemberMove(['A', 'B', 'C'], 0, 1), ['B', 'A', 'C'], 'queue member move down');
-eq(schedQueueMemberMove(['A'], 0, -1), ['A'], 'queue member move at the edge is a no-op');
-eq(schedBuildQueueFromForm({
-  queue_id: ' q1 ', name: '', members: [' A ', 'A', ''], total_rounds: '3', on_failure: 'bogus', between_ms: '700',
-}, {}), {
-  queue_id: 'q1', name: '', members: ['A', 'A'], total_rounds: 3, on_failure: 'continue', between_ms: 700,
-}, 'queue form trims ids/members and defaults on_failure to continue');
-
-const queueForm = { queue_id: 'q1', name: '日常', members: ['T1', 'T2'], total_rounds: '2', on_failure: 'continue', between_ms: '500' };
-const validQueue = schedValidateQueueForm(queueForm, schedEmptyConfig(), '', null);
-eq(validQueue.ok, true, 'queue form validates');
-eq(validQueue.queue.total_rounds, 2, 'queue total_rounds is numeric');
-const noMembers = schedValidateQueueForm(Object.assign({}, queueForm, { members: [] }), schedEmptyConfig(), '', null);
-eq(noMembers.ok, false, 'queue needs at least one member');
-const dupQueueCfg = schedEmptyConfig();
-dupQueueCfg.queues = [{ queue_id: 'q1', members: ['T1'] }];
-eq(schedValidateQueueForm(queueForm, dupQueueCfg, '', null).ok, false, 'duplicate queue_id fails validation');
-const queueOverlapCfg = schedEmptyConfig();
-queueOverlapCfg.entries = [{ entry_id: 'te', task: 'T1', kind: 'task' }];
-const queueOverlap = schedValidateQueueForm(queueForm, queueOverlapCfg, '', null);
-ok(queueOverlap.ok === false && queueOverlap.errors.some((e) => e.includes('te')), 'queue member already scheduled as a task entry is rejected');
-eq(schedValidateQueueForm(Object.assign({}, queueForm, { total_rounds: '-1' }), schedEmptyConfig(), '', null).ok, false, 'negative total_rounds fails validation');
-eq(schedValidateQueueForm(Object.assign({}, queueForm, { between_ms: '700000' }), schedEmptyConfig(), '', null).ok, false, 'between_ms above the max fails validation');
-eq(schedValidateQueueForm(Object.assign({}, queueForm, { queue_id: 'q2' }), schedEmptyConfig(), 'q1', null).ok, false, 'queue_id cannot change while editing');
-eq(schedValidateQueueForm(Object.assign({}, queueForm, { members: ['T1', 'T1'] }), schedEmptyConfig(), '', null).ok, false, 'duplicate members fail validation');
-
-const queueUpsert = schedUpsertQueue(schedEmptyConfig(), { queue_id: 'q1', name: 'A', members: ['T1'], total_rounds: 0, on_failure: 'continue', between_ms: 0 });
-eq(schedUpsertQueue(queueUpsert, { queue_id: 'q1', name: 'B', members: ['T2'], total_rounds: 1, on_failure: 'fail_fast', between_ms: 100 }).queues.length, 1, 'queue upsert replaces by queue_id');
-const removeQueueCfg = schedEmptyConfig();
-removeQueueCfg.queues = [{ queue_id: 'q1', members: ['T1'], total_rounds: 0, on_failure: 'continue', between_ms: 0 }];
-removeQueueCfg.entries = [
-  { entry_id: 'qe', task: 'q1', kind: 'queue' },
-  { entry_id: 'te', task: 'T2', kind: 'task' },
-];
-const removedQueue = schedRemoveQueue(removeQueueCfg, 'q1');
-eq(removedQueue.removed_entry_ids, ['qe'], 'removing a queue reports the removed trigger entry');
-eq(removedQueue.config.queues, [], 'removing a queue drops it');
-eq(removedQueue.config.entries.map((e) => e.entry_id), ['te'], 'removing a queue keeps unrelated entries');
-eq(schedRemoveQueue(removeQueueCfg, 'q1').config.entries.length, 1, 'removing a queue leaves one unrelated entry');
-eq(removeQueueCfg.entries.length, 2, 'remove queue does not mutate the input config');
-
-eq(schedQueueProgressText({ total_rounds: 0 }, { rounds_completed: 3, empty_rounds: 1, current_round: { index: 4, member_index: 1 } }),
-  '轮次 3/无限 · 空轮 1 · 进行中：第 4 轮 · 成员 2', 'queue progress shows unlimited rounds + current member');
-eq(schedQueueProgressText({ total_rounds: 2 }, { rounds_completed: 2, empty_rounds: 0, finished: true }),
-  '轮次 2/2 · 已完成', 'queue progress shows finished');
-const queueSummaryText = schedQueueSummary(
-  { queue_id: 'q1', members: ['A', 'B'], total_rounds: 2, on_failure: 'fail_fast', between_ms: 500 },
-  { rounds_completed: 1, empty_rounds: 0 }
-);
-ok(/成员 2：A → B/.test(queueSummaryText), 'queue summary lists ordered members');
-ok(/失败策略 fail_fast/.test(queueSummaryText), 'queue summary names the failure policy');
-ok(/轮次 1\/2/.test(queueSummaryText), 'queue summary includes round progress');
-
-eq(schedEntrySummary({ enabled: true, lifecycle: 'temp', retry: 0, cooldown: 0 }, {}),
-  '已启用 · temp（每 pass 一次） · retry 0 · 冷却 0s', 'temp entry summary omits windows/quota');
-eq(
-  schedEntrySummary(
-    { enabled: false, lifecycle: 'periodic', windows: [], quota: { per: 'day', times: 2 }, retry: 1, cooldown: 300, params: { a: 1 } },
-    { last_result: 'success', last_outcome: 'Done', blocked_reason: 'quota_exhausted' }
-  ),
-  '已禁用 · periodic · 窗口 全天 · quota 日 2 · retry 1 · 冷却 300s · params {"a":1} · 上次 success(Done) · 等待 quota_exhausted',
-  'periodic entry summary includes window/quota/last result'
-);
-
-eq(schedQuotaSummary({ entries: [] }), 'quota：无限制', 'quota summary with no quota');
-eq(schedQuotaSummary({ entries: [
-  { quota: { per: 'day', times: 2, used: 1 } },
-  { quota: { per: 'week', times: 3, used: 2 } },
-  { quota: null },
-] }), 'quota：2 条限制 · 本周期已用 3/5', 'quota summary aggregates used/times');
-
-// P1-3: status read failures have a fixed message and must never look healthy.
-eq(schedStatusErrorText('HTTP 500'), '调度器状态读取失败：HTTP 500', 'status error text keeps the detail');
-eq(schedStatusErrorText(''), '调度器状态读取失败：未知错误', 'empty status error falls back to 未知错误');
-eq(schedStatusErrorText(null), '调度器状态读取失败：未知错误', 'missing status error falls back to 未知错误');
-
-// P1-4: canonical snapshots ignore object key order but see any value change.
-eq(
-  schedConfigSnapshotText({ b: 1, a: { d: 2, c: [3, { y: 1, x: 2 }] } }),
-  schedConfigSnapshotText({ a: { c: [3, { x: 2, y: 1 }], d: 2 }, b: 1 }),
-  'config snapshot is canonical over object key order'
-);
-eq(schedConfigSnapshotText(null), '', 'a missing config file snapshots as an empty string');
-ok(
-  !schedConfigSnapshotChanged(
-    schedConfigSnapshotText({ schema_version: 4, entries: [] }),
-    schedConfigSnapshotText({ entries: [], schema_version: 4 })
-  ),
-  'same content in a different key order is not an external change'
-);
-ok(
-  schedConfigSnapshotChanged(
-    schedConfigSnapshotText({ entries: [] }),
-    schedConfigSnapshotText({ entries: [{ entry_id: 'e1' }] })
-  ),
-  'a value change is detected as an external change'
-);
-ok(!schedConfigSnapshotChanged('', ''), 'two missing files do not count as an external change');
-ok(
-  schedConfigSnapshotChanged('', schedConfigSnapshotText({ entries: [] })),
-  'a file created outside the page counts as an external change'
-);
-ok(/配置已被外部修改/.test(schedExternalConfigChangeText()), 'external change text says the config was modified');
-ok(/重新加载/.test(schedExternalConfigChangeText()), 'external change text asks the user to reload');
-
-ok(/调度器运行中/.test(schedResponseErrorText(409, { errors: ['lock held'] })), '409 text says the scheduler is running');
-ok(/stop-scheduler\.bat/.test(schedResponseErrorText(409, null)), '409 text tells the user to stop the daemon');
-ok(/lock held/.test(schedResponseErrorText(409, { errors: ['lock held'] })), '409 text includes server errors');
-ok(/配置校验失败/.test(schedResponseErrorText(400, { errors: ['entries[0].task must not be empty'] })), '400 text includes validation errors');
-ok(/写入失败/.test(schedResponseErrorText(500, null)), '500 text says the write failed');
-ok(/\/scheduler\/config/.test(schedResponseErrorText(404, null)), '404 text names the missing route');
-ok(/网络错误/.test(schedResponseErrorText(0, null)), 'network error text');
-eq(schedSaveBlockedReason(false), '', 'no blocked-save reason when the scheduler is idle');
-ok(/409/.test(schedSaveBlockedReason(true)) && /stop-scheduler/.test(schedSaveBlockedReason(true)), 'running scheduler warns that save will 409');
-
-eq(schedParseConfigJson('').ok, false, 'empty JSON text is rejected');
-eq(schedParseConfigJson('{bad}').ok, false, 'broken JSON text is rejected');
-eq(schedParseConfigJson('[1]').ok, false, 'JSON array config is rejected');
-eq(schedParseConfigJson('{"entries":{}}').ok, false, 'entries must be an array');
-const roundTripCfg = schedNormalizeConfig(v3Raw);
-eq(
-  schedParseConfigJson(JSON.stringify(roundTripCfg)).config,
-  JSON.parse(JSON.stringify(roundTripCfg)),
-  'config JSON round-trips through parse/normalize'
-);
-
-// --- P4: scheduler run history (list URL / row formatting / detail / errors) ---
-const runCfg = schedEmptyConfig();
-runCfg.queues = [{
-  queue_id: 'q1', name: '日常', members: ['任务2', '任务3'], total_rounds: 2,
-  on_failure: 'continue', between_ms: 500,
-}];
-runCfg.entries = [
-  schedDefaultTaskEntry('任务1', runCfg),
-  schedDefaultTaskEntry('q1', runCfg, 'queue'),
-];
-const taskRun = {
-  run_id: 'run-1', file: 'run-1.json', task: '任务1', kind: 'task', entry_id: 'task-任务1',
-  queue_id: '', round: null, member_index: null, attempt: 1,
-  started_ms: 1762100000000, finished_ms: 1762100001234, duration_ms: 1234,
-  class: 'success', outcome: 'Done', exit: 'done', exit_code: 0, clicks: 12,
-  error: '', resume: true, clicks_file: 'runs/clicks/run-1.clicks.jsonl',
-};
-const queueRun = {
-  run_id: 'run-2', file: 'run-2.json', task: '任务2', kind: 'queue_member', entry_id: 'queue-q1',
-  queue_id: 'q1', round: 2, member_index: 0, attempt: 2,
-  started_ms: 1762100100000, finished_ms: 1762100102500, duration_ms: 2500,
-  class: 'success', outcome: 'Done', exit: 'done', exit_code: 0, clicks: 3,
-  error: '', resume: false, clicks_file: 'runs/clicks/run-2.clicks.jsonl',
-};
-
-// limit 校验 / URL 构造（task/outcome 编码，空筛选省略）。
-eq(schedRunLimitValue(undefined), 200, 'run list limit defaults to 200');
-eq(schedRunLimitValue('500'), 500, 'a string limit value is accepted');
-eq(schedRunLimitValue(300), 200, 'an unsupported limit falls back to 200');
-eq(schedRunLimitValue(0), 200, 'limit 0 falls back to 200');
-eq(schedRunsBuildQuery({}), 'limit=200', 'empty run filter only sends the default limit');
-eq(
-  schedRunsBuildQuery({ limit: 1000, task: ' 任务 A&1 ', outcome: 'Failed' }),
-  'limit=1000&task=' + encodeURIComponent('任务 A&1') + '&outcome=Failed',
-  'task is trimmed and URL-encoded; limit/outcome appended'
-);
-eq(schedRunsBuildQuery({ task: '', outcome: '' }), 'limit=200', 'empty task/outcome are omitted');
-eq(schedRunsBuildQuery({ outcome: 'weird' }), 'limit=200', 'an unknown outcome is not sent');
-eq(
-  schedRunsBuildQuery({ outcome: 'FATAL' }),
-  'limit=200',
-  'class words are filtered locally (the list endpoint only filters persisted outcome)'
-);
-eq(schedRunsBuildQuery({ outcome: 'failed' }), 'limit=200&outcome=Failed', 'persisted outcome keeps its server casing');
-eq(schedRunsBuildQuery({ outcome: 'Done' }), 'limit=200&outcome=Done', 'Done outcome is sent verbatim');
-eq(schedRunsBuildQuery({ queueId: 'q1' }), 'limit=200', 'the local queue filter is never sent to the server');
-eq(schedRunsBuildUrl({ limit: 500, task: 'x' }), '/runs/scheduler?limit=500&task=x', 'run list URL points at /runs/scheduler');
-eq(
-  schedRunDetailUrl('run 1/2'),
-  '/runs/scheduler/run?run_id=' + encodeURIComponent('run 1/2'),
-  'detail URL encodes run_id'
-);
-eq(schedRunDetailUrl(null), '/runs/scheduler/run?run_id=', 'empty detail run_id stays empty');
-
-// 时间 / duration 格式化。
-eq(schedRunTimeText(0), '—', 'missing run time renders as a dash');
-eq(schedRunTimeText(null), '—', 'null run time renders as a dash');
-eq(schedRunTimeText(''), '—', 'empty run time renders as a dash');
-eq(
-  schedRunTimeText(1762100000000),
-  new Date(1762100000000).toLocaleString('zh-CN', { hour12: false }),
-  'run time is localized'
-);
-eq(schedRunDurationText(850), '850ms', 'sub-second duration stays in ms');
-eq(schedRunDurationText(1234), '1.2s', 'seconds duration keeps one decimal');
-eq(schedRunDurationText(65000), '1m5s', 'minute duration is human readable');
-eq(schedRunDurationText(3725000), '1h2m', 'hour duration is human readable');
-eq(schedRunDurationText(null), '—', 'missing duration renders as a dash');
-eq(schedRunDurationText(-5), '—', 'negative duration renders as a dash');
-eq(schedRunDurationMs({ duration_ms: 0 }), 0, 'duration_ms=0 is kept (not treated as missing)');
-eq(schedRunDurationMs({ started_ms: 1000, finished_ms: 3500 }), 2500, 'duration falls back to finished-started');
-eq(schedRunDurationMs({}), null, 'missing duration and timestamps yield null');
-
-// outcome 徽章标签/颜色 + kind。
-eq(schedRunOutcomeLabel('success'), '成功', 'success label');
-eq(schedRunOutcomeLabel('resource'), '资源不足', 'resource label');
-eq(schedRunOutcomeLabel('blocked'), '被阻断', 'blocked label');
-eq(schedRunOutcomeLabel('retryable'), '可重试', 'retryable label');
-eq(schedRunOutcomeLabel('fatal'), '致命', 'fatal label');
-eq(schedRunOutcomeLabel('Done'), '完成', 'persisted Done outcome label');
-eq(schedRunOutcomeLabel('Failed'), '失败', 'persisted Failed outcome label');
-eq(schedRunOutcomeLabel('Exhausted'), '耗尽', 'persisted Exhausted outcome label');
-eq(schedRunOutcomeLabel('error'), '错误', 'persisted error outcome label');
-eq(schedRunOutcomeLabel(''), '未知', 'missing outcome label');
-eq(schedRunOutcomeLabel('weird'), 'weird', 'unknown outcome keeps its raw value');
-eq(schedRunOutcomeBadgeClass('success'), 'ok', 'success badge is green');
-eq(schedRunOutcomeBadgeClass('fatal'), 'err', 'fatal badge is red');
-eq(schedRunOutcomeBadgeClass('retryable'), 'warn', 'retryable badge is yellow');
-eq(schedRunOutcomeBadgeClass('Failed'), 'err', 'persisted Failed outcome badge is red');
-eq(schedRunOutcomeBadgeClass('Done'), 'ok', 'persisted Done outcome badge is green');
-eq(schedRunOutcomeBadgeClass('Exhausted'), 'warn', 'persisted Exhausted outcome badge is yellow');
-eq(schedRunOutcomeBadgeClass(''), 'kind', 'unknown badge uses the neutral class');
-eq(schedRunStatusBadgeClass({ class: 'fatal', outcome: 'Failed' }), 'err', 'class wins over outcome for colour');
-eq(schedRunStatusBadgeClass({ class: '', outcome: 'Failed' }), 'err', 'outcome colours older runs without class');
-eq(schedRunKindText('queue'), 'queue', 'queue run kind');
-eq(schedRunKindText('queue_member'), 'queue_member', 'P4A queue_member kind is preserved');
-eq(schedRunKindText(''), 'task', 'missing kind defaults to task');
-eq(schedRunIsQueueRun({ kind: 'queue' }), true, 'kind=queue is a queue run');
-eq(schedRunIsQueueRun({ kind: 'queue_member' }), true, 'kind=queue_member is a queue run');
-eq(schedRunIsQueueRun({ kind: 'task' }), false, 'kind=task is not a queue run');
-
-// queue member naming: 队列名/成员名, queue_id fallback.
-eq(schedQueueDisplayName(runCfg, 'q1'), '日常', 'queue display name comes from config');
-eq(schedQueueDisplayName(runCfg, 'nope'), 'nope', 'unknown queue falls back to its id');
-eq(schedRunTaskLabel({ task: '任务1', kind: 'task' }, runCfg), '任务1', 'task run label is the task name');
-eq(schedRunTaskLabel(queueRun, runCfg), '日常/任务2', 'queue member label is 队列名/成员名');
-eq(
-  schedRunTaskLabel({ task: '任务2', kind: 'queue', queue_id: 'qX' }, runCfg),
-  'qX/任务2',
-  'queue member label falls back to queue_id'
-);
-eq(schedRunRoundMemberText(queueRun), '第2轮 · 成员1', 'queue round/member is 1-based for display');
-eq(schedRunRoundMemberText({ kind: 'queue', round: 1, member_index: 2 }), '第1轮 · 成员3', 'member_index is 0-based');
-eq(schedRunRoundMemberText(taskRun), '—', 'task runs have no round/member');
-eq(schedRunAttemptText({ attempt: 2 }), '2', 'attempt is rendered');
-eq(schedRunAttemptText({}), '—', 'missing attempt is a dash');
-eq(schedRunExitText({ exit_code: 0, exit: 'done' }), '0', 'exit_code wins over exit string');
-eq(schedRunExitText({ exit: 'timeout' }), 'timeout', 'exit string is used when exit_code is absent');
-eq(schedRunExitText({}), '—', 'missing exit is a dash');
-eq(schedRunClicksText({ clicks: 12 }), '12', 'clicks count is rendered');
-eq(schedRunClicksText({}), '—', 'missing clicks is a dash');
-
-// 错误文本 / 列表与详情读取错误。
-eq(schedRunErrorText('  boom \n'), 'boom', 'error text is trimmed');
-eq(schedRunErrorText({ code: 1 }), '{"code":1}', 'object error is JSON encoded');
-eq(schedRunErrorSummary(null), '', 'missing error summary is empty');
-eq(schedRunErrorSummary('a\nb\tc'), 'a b c', 'error summary collapses whitespace');
-eq(schedRunErrorSummary('x'.repeat(20), 10), 'xxxxxxxxx…', 'error summary truncates with an ellipsis');
-eq(schedRunsErrorText('HTTP 500'), '运行记录读取失败：HTTP 500', 'list read error has the required prefix');
-eq(
-  schedRunsResponseErrorText(500, { errors: ['disk full'] }),
-  '运行记录读取失败：HTTP 500：disk full',
-  'list HTTP error includes server errors'
-);
-ok(/P4A/.test(schedRunsResponseErrorText(404, null)), '404 list error names the missing P4A route');
-eq(
-  schedRunDetailErrorText(404, null),
-  '详情读取失败：运行记录不存在或已被删除（HTTP 404）',
-  'detail 404 explains the missing run'
-);
-eq(schedRunDetailErrorText(400, null), '详情读取失败：run_id 无效（HTTP 400）', 'detail 400 explains bad run_id');
-ok(/网络错误/.test(schedRunDetailErrorText(0, { errors: ['x'] })), 'detail network error is explicit');
-
-// 行格式化：时间/任务/kind/轮次/attempt/outcome/exit/duration/clicks/error。
-const taskCells = schedRunRowCells(taskRun, runCfg);
-eq(taskCells.task, '任务1', 'row task label');
-eq(taskCells.kind, 'task', 'row kind badge');
-eq(taskCells.round_member, '—', 'task row has no round/member');
-eq(taskCells.attempt, '1', 'row attempt');
-eq(taskCells.class, 'success', 'row class');
-eq(taskCells.outcome, '完成', 'row outcome label uses the persisted Done value');
-eq(taskCells.outcome_class, 'ok', 'row outcome color');
-eq(taskCells.exit, '0', 'row exit');
-eq(taskCells.duration, '1.2s', 'row duration');
-eq(taskCells.clicks, '12', 'row clicks');
-eq(taskCells.error, '', 'success row has no error summary');
-const queueCells = schedRunRowCells(queueRun, runCfg);
-eq(queueCells.task, '日常/任务2', 'queue row task label');
-eq(queueCells.kind, 'queue_member', 'P4A queue_member row kind');
-eq(queueCells.round_member, '第2轮 · 成员1', 'queue row round/member');
-eq(queueCells.outcome, '完成', 'queue row outcome uses the persisted Done value');
-const fatalRun = {
-  run_id: 'run-3', task: '任务1', kind: 'task', attempt: 3, duration_ms: 900,
-  class: 'fatal', outcome: 'fatal', exit: 'error', exit_code: 1, clicks: 0,
-  error: '第一行\n第二行',
-};
-const fatalCells = schedRunRowCells(fatalRun, runCfg);
-eq(fatalCells.outcome, '致命', 'fatal row outcome');
-eq(fatalCells.outcome_class, 'err', 'fatal row is red');
-eq(fatalCells.exit, '1', 'fatal row exit_code');
-eq(fatalCells.error, '第一行 第二行', 'fatal row error summary is one line');
-eq(fatalCells.error_full, '第一行\n第二行', 'fatal row keeps the full error text');
-
-// 详情字段（含 resume / clicks_file / started / finished / extras）。
-const detailRows = schedRunDetailRows(taskRun);
-const detailMap = {};
-for (const [key, value] of detailRows) detailMap[key] = value;
-eq(detailMap.run_id, 'run-1', 'detail run_id');
-eq(detailMap.kind, 'task', 'detail kind');
-eq(detailMap.attempt, '1', 'detail attempt');
-eq(detailMap.outcome, '完成（Done）', 'detail outcome label + raw persisted value');
-eq(detailMap.duration_ms, '1234（1.2s）', 'detail duration shows raw + readable');
-ok(detailMap.started_ms.includes('（') && detailMap.started_ms.startsWith('1762100000000'), 'detail started_ms shows raw + local');
-ok(detailMap.finished_ms.includes('（') && detailMap.finished_ms.startsWith('1762100001234'), 'detail finished_ms shows raw + local');
-eq(detailMap.resume, '是', 'detail resume=true is 是');
-eq(schedRunResumeText({ resume: false }), '否', 'resume=false is 否');
-eq(schedRunResumeText({}), '—', 'missing resume is a dash');
-eq(detailMap.clicks_file, 'runs/clicks/run-1.clicks.jsonl', 'detail clicks_file');
-eq(detailMap.error, '—', 'detail empty error is a dash');
-const extraRows = schedRunDetailRows(Object.assign({}, taskRun, { future_field: 'kept' }));
-ok(extraRows.some(([k, v]) => k === 'future_field' && v === 'kept'), 'unknown run fields are appended to the detail');
-ok(
-  /日常\/任务2/.test(schedRunDetailTitle(queueRun, runCfg)) &&
-    /完成/.test(schedRunDetailTitle(queueRun, runCfg)),
-  'detail title summarizes task + persisted outcome'
-);
-
-// 任务下拉来源：status entries/task_choices + config entries/queue members。
-eq(
-  schedRunsTaskChoices({
-    task_choices: ['b', 'a'],
-    entries: [{ entry_id: 'task-a', kind: 'task', task: 'a' }, { entry_id: 'queue-q1', kind: 'queue', task: 'q1' }],
-  }, runCfg),
-  ['b', 'a', '任务1', '任务2', '任务3'],
-  'task filter choices are merged from status/config without duplicates'
-);
-
-// 本地筛选（排序保持） + 状态文本。
-const orderedRuns = [queueRun, fatalRun, taskRun];
-eq(
-  schedRunsFilterLocal(orderedRuns, {}).map((r) => r.run_id),
-  ['run-2', 'run-3', 'run-1'],
-  'local filtering preserves newest→oldest order'
-);
-eq(
-  schedRunsFilterLocal(orderedRuns, { task: ' 任务1 ' }).map((r) => r.run_id),
-  ['run-3', 'run-1'],
-  'local task filter trims and preserves order'
-);
-eq(
-  schedRunsFilterLocal(orderedRuns, { outcome: 'fatal' }).map((r) => r.run_id),
-  ['run-3'],
-  'local outcome filter'
-);
-eq(
-  schedRunsFilterLocal([taskRun, fatalRun, Object.assign({}, queueRun, { class: 'success' })], { outcome: 'success' })
-    .map((r) => r.run_id),
-  ['run-1', 'run-2'],
-  'local class word matches class=success even when the persisted outcome is Done'
-);
-eq(
-  schedRunsFilterLocal([taskRun, Object.assign({}, fatalRun, { outcome: 'Failed' })], { outcome: 'Failed' })
-    .map((r) => r.run_id),
-  ['run-3'],
-  'local filter matches the persisted outcome too'
-);
-eq(
-  schedRunsFilterLocal(orderedRuns, { queueId: 'q1' }).map((r) => r.run_id),
-  ['run-2'],
-  'local queue filter selects queue members'
-);
-eq(schedRunsFilterActive({}), false, 'empty filter is inactive');
-eq(schedRunsFilterActive({ task: 'x' }), true, 'task filter is active');
-eq(schedRunsFilterActive({ queueId: 'q1' }), true, 'queue filter is active');
-eq(schedRunIsFailure({ outcome: 'success' }), false, 'success is not a failure');
-eq(schedRunIsFailure({ outcome: 'fatal' }), true, 'fatal is a failure');
-eq(schedRunIsFailure({ class: 'success', outcome: 'Failed' }), false, 'class=success wins over an odd outcome');
-eq(schedRunIsFailure({ class: 'resource' }), true, 'a non-success class is a failure');
-eq(schedRunIsFailure({ outcome: 'Done' }), false, 'persisted Done is not a failure');
-eq(schedRunIsFailure({ outcome: 'Failed' }), true, 'persisted Failed is a failure');
-eq(schedRunIsFailure({}), false, 'missing outcome is not counted as a failure');
-eq(schedRunsFailureCount([taskRun, fatalRun, { outcome: 'retryable' }, {}]), 2, 'failure count excludes success/missing');
-eq(schedRunsStatusCardText(null, ''), '运行记录：—', 'status card shows the unloaded state');
-eq(schedRunsStatusCardText({ runs: [] }, ''), '运行记录：暂无', 'status card shows the empty state');
-eq(
-  schedRunsStatusCardText(null, '运行记录读取失败：HTTP 500'),
-  '运行记录：读取失败（见下方运行记录区）',
-  'status card shows the read failure state'
-);
-ok(
-  /最近 完成/.test(schedRunsStatusCardText({ runs: [taskRun, fatalRun] }, '')) &&
-    /失败 1\/2/.test(schedRunsStatusCardText({ runs: [taskRun, fatalRun] }, '')),
-  'status card summarizes the latest persisted outcome and failure count'
-);
-eq(schedRunsListStatusText({ data: null }), '运行记录：—', 'list status shows the unloaded state');
-eq(schedRunsListStatusText({ data: { count: 0, runs: [] }, rows: [] }), '运行记录：共 0 条', 'list status shows the empty count');
-ok(
-  /共 2 条/.test(schedRunsListStatusText({ data: { count: 2, runs: orderedRuns }, rows: orderedRuns, filter: {} })),
-  'list status shows the total count'
-);
-ok(
-  /任务=任务1/.test(schedRunsListStatusText({ data: { count: 2, runs: orderedRuns }, rows: orderedRuns, filter: { task: '任务1' } })),
-  'list status echoes the task filter'
-);
-ok(
-  /结果=致命（本地筛选）/.test(schedRunsListStatusText({ data: { count: 2, runs: orderedRuns }, rows: orderedRuns, filter: { outcome: 'fatal' } })),
-  'list status labels a class filter as local'
-);
-ok(
-  /结果=失败/.test(schedRunsListStatusText({ data: { count: 2, runs: orderedRuns }, rows: orderedRuns, filter: { outcome: 'Failed' } })),
-  'list status shows the persisted outcome label'
-);
-ok(
-  /队列=q1（本地筛选）/.test(schedRunsListStatusText({ data: { count: 2, runs: orderedRuns }, rows: [queueRun], filter: { queueId: 'q1' } })) &&
-    /显示 1 条/.test(schedRunsListStatusText({ data: { count: 2, runs: orderedRuns }, rows: [queueRun], filter: { queueId: 'q1' } })),
-  'list status explains the local queue filter and visible rows'
-);
-eq(
-  schedRunsListStatusText({ error: '运行记录读取失败：HTTP 500', data: null }),
-  '运行记录读取失败：HTTP 500',
-  'list status surfaces the read error verbatim'
-);
-
-// Behavioural render smoke test: the new schedule page renderers must produce
-// one card per entry/queue without touching a real browser. A tiny DOM stub
-// mirrors the fakeElement pattern used for the global asset renderer.
-function fakeSchedElement() {
-  return {
-    textContent: '',
-    className: '',
-    children: [],
-    disabled: false,
-    checked: false,
-    value: '',
-    appendChild(child) { this.children.push(child); return child; },
-    append(...children) { this.children.push(...children); },
-    addEventListener() {},
-  };
-}
-
-function installScheduleRenderHarness() {
-  sandbox.document = {
-    createElement: () => fakeSchedElement(),
-    createTextNode: (text) => ({ textContent: String(text) }),
-  };
-  sandbox.schedBadge = (text, cls) => {
-    const node = fakeSchedElement();
-    node.className = 'badge ' + (cls || '');
-    node.textContent = text;
-    return node;
-  };
-  sandbox.pageSchedEntries = fakeSchedElement();
-  sandbox.pageSchedQueues = fakeSchedElement();
-  sandbox.pageSchedRunsList = fakeSchedElement();
-  sandbox.pageSchedRunsStatus = fakeSchedElement();
-  sandbox.pageSchedRunsSummary = fakeSchedElement();
-  sandbox.schedRunDialogBody = fakeSchedElement();
-  sandbox.schedRunDialogTitle = fakeSchedElement();
-  sandbox.scheduleRunsData = null;
-  sandbox.scheduleRunsError = '';
-  sandbox.scheduleRunsLoading = false;
-  sandbox.scheduleRunsFilter = { limit: 200, task: '', outcome: '', queueId: '' };
-  sandbox.openScheduleRunDetail = () => {};
-  for (const name of ['pageSchedMode', 'pageSchedPasses', 'pageSchedNextWake',
-    'pageSchedRunning', 'pageSchedQuota', 'pageSchedSummary', 'pageSchedConfigStatus']) {
-    sandbox[name] = fakeSchedElement();
-  }
-  sandbox.scheduleConfigMeta = { running: true, path: 'scheduler.json', exists: true, state_path: 'scheduler.state.json', schema_version: 4 };
-  sandbox.scheduleConfigError = '';
-  sandbox.scheduleStatusError = '';
-  sandbox.scheduleLocked = () => true;
-  sandbox.schedEntryKindLabel = schedEntryKindLabel;
-  sandbox.schedStatusErrorText = schedStatusErrorText;
-  const sourceFns = [
-    extractFunction('scheduleStatusEntryMap'),
-    extractFunction('renderScheduleStatusCard'),
-    extractFunction('renderScheduleEntries'),
-    extractFunction('renderScheduleQueues'),
-    extractFunction('makeSchedRunBadge'),
-    extractFunction('renderScheduleRuns'),
-    extractFunction('renderScheduleRunDetail'),
-  ].join('\n\n');
-  vm.runInContext(sourceFns, sandbox, { filename: 'app.js#schedule-render' });
-}
-
-installScheduleRenderHarness();
-const renderCfg = schedEmptyConfig();
-renderCfg.queues = [{
-  queue_id: 'q1', name: '日常', members: ['B'], total_rounds: 2,
-  on_failure: 'continue', between_ms: 500,
-}];
-renderCfg.entries = [
-  schedDefaultTaskEntry('A', renderCfg),
-  schedDefaultTaskEntry('q1', renderCfg, 'queue'),
-];
-const renderStatus = {
-  mode: 'loop',
-  passes: 7,
-  next_wake_local: '2026-11-03 09:00:00',
-  guards: { blocked: false },
-  entries: [
-    { entry_id: 'task-A', runnable_now: true, last_result: 'success', last_outcome: 'Done' },
-    { entry_id: 'queue-q1', queue: { total_rounds: 2, rounds_completed: 1, empty_rounds: 0, finished: false, current_round: { index: 2, member_index: 0 } } },
-  ],
-  queues: [{
-    queue_id: 'q1', name: '日常', members: ['B'], total_rounds: 2, rounds_completed: 1,
-    empty_rounds: 0, finished: false, on_failure: 'continue', between_ms: 500,
-    current_round: { index: 2, member_index: 0 },
-  }],
-};
-// P1-3: a failed /scheduler/status read renders an unknown state, not "正常".
-sandbox.scheduleStatusError = 'HTTP 500';
-sandbox.renderScheduleStatusCard(null);
-eq(sandbox.pageSchedMode.textContent, '模式：—', 'status read failure shows an unknown mode');
-eq(sandbox.pageSchedPasses.textContent, 'passes=—', 'status read failure does not fake passes=0');
-eq(sandbox.pageSchedNextWake.textContent, '下次唤醒=—', 'status read failure shows an unknown next wake');
-eq(sandbox.pageSchedQuota.textContent, 'quota：—', 'status read failure shows an unknown quota');
-eq(sandbox.pageSchedRunning.textContent, '锁=—', 'status read failure does not claim an idle lock');
-ok(
-  /调度器状态读取失败：HTTP 500/.test(sandbox.pageSchedSummary.textContent),
-  'status summary carries the read error'
-);
-ok(
-  !/调度器状态正常/.test(sandbox.pageSchedSummary.textContent),
-  'status summary never claims everything is normal after a read failure'
-);
-sandbox.scheduleStatusError = '';
-
-sandbox.renderScheduleStatusCard(renderStatus);
-eq(sandbox.pageSchedMode.textContent, '模式：loop', 'status card shows mode');
-eq(sandbox.pageSchedPasses.textContent, 'passes=7', 'status card shows passes');
-eq(sandbox.pageSchedNextWake.textContent, '下次唤醒=2026-11-03 09:00:00', 'status card shows next wake');
-ok(/调度器运行中/.test(sandbox.pageSchedRunning.textContent), 'status card shows the running lock');
-eq(sandbox.pageSchedQuota.textContent, 'quota：无限制', 'status card shows the quota summary');
-ok(/stop-scheduler\.bat/.test(sandbox.pageSchedConfigStatus.textContent), 'config status warns how to save while locked');
-
-sandbox.renderScheduleEntries(renderStatus, renderCfg);
-eq(sandbox.pageSchedEntries.children.length, 2, 'entry renderer emits one card per entry');
-const firstEntryCard = sandbox.pageSchedEntries.children[0];
-eq(firstEntryCard.children[0].children[0].textContent, 'task-A · 任务 A', 'task entry card title');
-ok(/quota 日 1/.test(firstEntryCard.children[0].children[1].textContent), 'task entry card summary includes quota');
-eq(firstEntryCard.children[2].disabled, true, 'first entry cannot move up');
-eq(firstEntryCard.children[3].disabled, false, 'first entry can move down');
-const secondEntryCard = sandbox.pageSchedEntries.children[1];
-eq(secondEntryCard.children[0].children[0].textContent, 'queue-q1 · 队列 q1', 'queue entry card title');
-ok(
-  secondEntryCard.children[0].children[2].children.some((b) => /轮次 1\/2/.test(b.textContent)),
-  'queue entry card shows round progress'
-);
-
-sandbox.renderScheduleQueues(renderStatus, renderCfg);
-eq(sandbox.pageSchedQueues.children.length, 1, 'queue renderer emits one card per queue');
-const queueCard = sandbox.pageSchedQueues.children[0];
-eq(queueCard.children[0].children[0].textContent, 'q1 · 日常', 'queue card title');
-ok(/成员 1：B/.test(queueCard.children[0].children[1].textContent), 'queue card lists members in order');
-ok(/进行中：第 2 轮/.test(queueCard.children[0].children[1].textContent), 'queue card shows the current round');
-ok(
-  queueCard.children[0].children[2].children.some((b) => /触发条目：queue-q1/.test(b.textContent)),
-  'queue card shows the trigger entry id'
-);
-
-sandbox.renderScheduleEntries(renderStatus, null);
-ok(/调度配置不可用/.test(sandbox.pageSchedEntries.textContent), 'entry renderer explains a missing config');
-sandbox.renderScheduleQueues(renderStatus, null);
-ok(/调度配置不可用/.test(sandbox.pageSchedQueues.textContent), 'queue renderer explains a missing config');
-
-// P4: run list renderer smoke test (DOM stub, no browser).
-sandbox.scheduleConfig = renderCfg;
-function resetFake(el) {
-  el.textContent = '';
-  el.children.length = 0;
-  return el;
-}
-sandbox.scheduleRunsData = { ok: true, dir: 'runs/scheduler', count: 2, runs: [queueRun, fatalRun] };
-sandbox.scheduleRunsError = '';
-sandbox.scheduleRunsLoading = false;
-sandbox.scheduleRunsFilter = { limit: 200, task: '', outcome: '', queueId: '' };
-resetFake(sandbox.pageSchedRunsList);
-resetFake(sandbox.pageSchedRunsStatus);
-sandbox.renderScheduleRuns();
-eq(sandbox.pageSchedRunsList.children.length, 1, 'run renderer emits one table for a non-empty list');
-const runTable = sandbox.pageSchedRunsList.children[0];
-eq(runTable.children.length, 2, 'run table has thead + tbody');
-eq(runTable.children[1].children.length, 2, 'run table emits one row per run');
-const firstRunRow = runTable.children[1].children[0];
-eq(firstRunRow.children.length, 10, 'run row has all ten columns');
-eq(firstRunRow.children[1].textContent, '日常/任务2', 'run row task uses 队列名/成员名');
-eq(firstRunRow.children[2].children[0].textContent, 'queue_member', 'run row kind badge');
-eq(firstRunRow.children[3].textContent, '第2轮 · 成员1', 'run row shows round/member');
-eq(firstRunRow.children[4].textContent, '2', 'run row shows attempt');
-eq(firstRunRow.children[5].children[1].textContent, '完成', 'run row outcome badge uses the persisted Done label');
-ok(/ok/.test(firstRunRow.children[5].children[1].className), 'run row outcome badge color class');
-eq(firstRunRow.children[7].textContent, '2.5s', 'run row duration is human readable');
-eq(firstRunRow.children[8].textContent, '3', 'run row clicks');
-eq(firstRunRow.children[9].textContent, '—', 'successful run row has no error');
-const fatalRunRow = runTable.children[1].children[1];
-ok(/第一行 第二行/.test(fatalRunRow.children[9].textContent), 'fatal run row shows the error summary');
-eq(fatalRunRow.children[9].className, 'run-error-cell', 'fatal run row error cell styling');
-ok(/共 2 条/.test(sandbox.pageSchedRunsStatus.textContent), 'run status shows the total count');
-// Status card: latest run + failure count from the loaded list.
-resetFake(sandbox.pageSchedRunsSummary);
-sandbox.renderScheduleStatusCard(renderStatus);
-ok(/最近 完成/.test(sandbox.pageSchedRunsSummary.textContent), 'status card shows the latest persisted outcome');
-ok(/失败 1\/2/.test(sandbox.pageSchedRunsSummary.textContent), 'status card shows the failure count');
-// Empty + failed read states stay explicit.
-sandbox.scheduleRunsData = { ok: true, count: 0, runs: [] };
-sandbox.scheduleRunsError = '';
-resetFake(sandbox.pageSchedRunsList);
-sandbox.renderScheduleRuns();
-ok(/暂无调度运行记录/.test(sandbox.pageSchedRunsList.textContent), 'run renderer shows the empty state');
-sandbox.scheduleRunsData = null;
-sandbox.scheduleRunsError = '运行记录读取失败：HTTP 500';
-resetFake(sandbox.pageSchedRunsList);
-sandbox.renderScheduleRuns();
-eq(sandbox.pageSchedRunsList.textContent, '运行记录读取失败：HTTP 500', 'run renderer shows the read error verbatim');
-ok(/运行记录读取失败/.test(sandbox.pageSchedRunsStatus.textContent), 'run status shows the read error');
-sandbox.scheduleRunsError = '';
-
-// P4: run detail renderer smoke test (field rows + full error + raw JSON).
-sandbox.scheduleConfig = renderCfg;
-resetFake(sandbox.schedRunDialogBody);
-resetFake(sandbox.schedRunDialogTitle);
-sandbox.renderScheduleRunDetail(queueRun);
-eq(sandbox.schedRunDialogBody.children.length, 2, 'detail body has the field table + full JSON');
-const detailTable = sandbox.schedRunDialogBody.children[0];
-const detailSmokeMap = {};
-for (const row of detailTable.children[0].children) detailSmokeMap[row.children[0].textContent] = row.children[1].textContent;
-eq(detailSmokeMap.resume, '否', 'detail dialog shows resume');
-eq(detailSmokeMap.clicks_file, 'runs/clicks/run-2.clicks.jsonl', 'detail dialog shows clicks_file');
-ok(/^1762100100000（/.test(detailSmokeMap.started_ms), 'detail dialog shows raw + local started_ms');
-ok(/^1762100102500（/.test(detailSmokeMap.finished_ms), 'detail dialog shows raw + local finished_ms');
-ok(/日常\/任务2/.test(sandbox.schedRunDialogTitle.textContent), 'detail dialog title includes 队列名/成员名');
-resetFake(sandbox.schedRunDialogBody);
-sandbox.renderScheduleRunDetail(fatalRun);
-eq(sandbox.schedRunDialogBody.children.length, 4, 'fatal detail adds the full-error block');
-ok(/第一行\n第二行/.test(sandbox.schedRunDialogBody.children[2].textContent), 'detail dialog shows the error verbatim');
-resetFake(sandbox.schedRunDialogBody);
-sandbox.renderScheduleRunDetail(Object.assign({}, queueRun, { future_field: 'kept' }));
-ok(
-  /future_field/.test(sandbox.schedRunDialogBody.children[1].children[1].textContent),
-  'detail full JSON includes unknown fields'
-);
-
-// Static wiring for the new editable scheduler UI.
-ok(/id="page-sched-add-entry"/.test(html), 'index.html provides the add-entry button');
-ok(/id="page-sched-add-queue"/.test(html), 'index.html provides the add-queue button');
-ok(/id="page-sched-json"/.test(html) && /id="page-sched-json-save"/.test(html), 'index.html provides the advanced JSON editor');
-ok(/id="page-sched-queues"/.test(html), 'index.html provides the queue panel container');
-ok(/id="page-sched-running"/.test(html), 'index.html provides the running/lock badge');
-ok(/id="sched-entry-dialog"/.test(html) && /id="sched-entry-windows"/.test(html) && /id="sched-entry-params"/.test(html), 'entry dialog fields exist');
-ok(/id="sched-queue-dialog"/.test(html) && /id="sched-queue-members"/.test(html) && /id="sched-queue-task-pool"/.test(html), 'queue dialog fields exist');
-ok(!/id="btn-sched-open-page"/.test(html), 'Studio no longer provides the workbench scheduling-page button');
-ok(!/data-panel="panel-schedule"/.test(html), 'Studio rail has no schedule panel entry');
-const htmlIds = [...html.matchAll(/id=["']([^"']+)["']/g)].map((m) => m[1]);
-const dupHtmlIds = [...new Set(htmlIds.filter((id, i) => htmlIds.indexOf(id) !== i))];
-ok(dupHtmlIds.length === 0, `index.html has no duplicate DOM ids (duplicates: ${dupHtmlIds.join(', ') || 'none'})`);
-ok(
-  (html.match(/<dialog\b/g) || []).length === (html.match(/<\/dialog>/g) || []).length,
-  'index.html dialog tags are balanced'
-);
-ok(!/调度设置…/.test(source) && !/openTaskScheduleDialog\(t\.name\)/.test(source), 'task library card no longer opens a Studio scheduler dialog');
-ok(/fetch\('\/scheduler\/config'\)/.test(source), 'GET /scheduler/config is wired');
-ok(/body: JSON\.stringify\(\{ config: cfg \}\)/.test(source), 'POST /scheduler/config sends {config}');
-// PR1: Studio hands scheduling / run history over to the Runner instead of
-// opening the legacy page or calling Runner-only routes.
-ok(/const RUNNER_BASE_URL = 'http:\/\/127\.0\.0\.1:8789\/'/.test(source), 'Studio knows the Runner default URL (8789)');
-ok(/function openRunnerPage\(hash\)/.test(source), 'Studio has a single hand-off helper to the Runner');
-ok(
-  /openRunnerPage\('#runs'\)/.test(source) && !/btnSchedOpenPage/.test(source),
-  'Studio runs/scheduling shortcuts open the Runner instead of the legacy page'
-);
-ok(/if \(pageSchedJson\)[\s\S]{0,200}scheduleJsonDirty = true/.test(source), 'advanced JSON tracks unsaved edits');
-ok(/id="page-sched-entries"[^>]*>（未加载）<\/div>/.test(html), 'entry list container starts in the unloaded state');
-ok(/id="page-sched-queues"[^>]*>（未加载）<\/div>/.test(html), 'queue list container starts in the unloaded state');
-
-// P4 static contracts: real DOM ids for the run history + API call sites.
-for (const id of [
-  'page-sched-runs-summary', 'page-sched-runs-refresh', 'page-sched-runs-task',
-  'page-sched-runs-outcome', 'page-sched-runs-limit', 'page-sched-runs-clear',
-  'page-sched-runs-status', 'page-sched-runs-list', 'page-sched-runs-dialog',
-  'page-sched-runs-detail-title', 'page-sched-runs-detail-body',
-  'page-sched-runs-detail-error', 'page-sched-runs-detail-refresh',
-  'page-sched-runs-detail-close',
-]) {
-  ok(new RegExp(`id="${id}"`).test(html), `index.html provides #${id}`);
-}
-ok(/id="page-sched-runs-list"[^>]*>（未加载）<\/div>/.test(html), 'run list starts in the unloaded state');
-ok(/id="page-sched-runs-outcome"[\s\S]{0,900}<option value="fatal">/.test(html), 'outcome filter offers fatal');
-ok(/id="page-sched-runs-outcome"[\s\S]{0,1400}<option value="Failed">/.test(html), 'outcome filter also offers the persisted Failed value');
-ok(/id="page-sched-runs-limit"[\s\S]{0,200}<option value="200" selected>/.test(html), 'limit defaults to 200');
-ok(/const url = schedRunsBuildUrl\(scheduleRunsFilter\);/.test(source), 'run list builds the /runs/scheduler URL from the filter');
-ok(/fetch\(schedRunDetailUrl\(runId\)\)/.test(source), 'detail fetch uses schedRunDetailUrl(runId)');
-ok(/\/runs\/scheduler\/run\?run_id=/.test(source), 'detail route is /runs/scheduler/run?run_id=');
-ok(/log\(scheduleRunsError, 'WARN'\)/.test(source), 'run list read failures are logged as WARN');
-ok(/log\(res\.error, 'WARN'\)/.test(source), 'run detail read failures are logged as WARN');
-ok(/schedRunsErrorText\(/.test(source), 'run list error uses the 运行记录读取失败 prefix');
-ok(/fetch\('\/runs'\)/.test(source) && /loadClicks\(/.test(source), 'legacy /runs click-distribution path is untouched');
-ok(/runsBtn\.addEventListener\('click', \(\) => openRunnerPage\('#runs'\)\)/.test(source), 'task library row links to the Runner run history');
-ok(/showScheduleRunsForEntry\(e\)/.test(source), 'schedule entry row links to the run history');
-ok(/showScheduleRunsForQueue\(q\.queue_id\)/.test(source), 'queue row links to the run history');
-ok(/scheduleRunsFilter\.queueId/.test(source), 'queue shortcut uses the local queue filter');
-
-// P2: the whole P4 run-history block (pure helpers + list/detail renderers +
-// the detail dialog) must stay DOM-safe: task/error/run_id text is only ever
-// assigned through textContent, never HTML strings or dynamic code. The block
-// is delimited by two grep-able function names: the first P4 pure helper and
-// the next schedule helper after the dialog code.
-const p4UiStart = source.indexOf('function schedRunValueText');
-const p4UiEnd = source.indexOf('async function toggleScheduleEntry');
-ok(p4UiStart > 0 && p4UiEnd > p4UiStart, 'the P4 run-history UI block is discoverable in app.js');
-const p4UiSegment = p4UiStart > 0 && p4UiEnd > p4UiStart ? source.slice(p4UiStart, p4UiEnd) : '';
-ok(
-  !/innerHTML|insertAdjacentHTML|outerHTML/.test(p4UiSegment),
-  'the P4 run-history UI block never writes raw HTML'
-);
-ok(
-  !/\beval\s*\(|new Function\s*\(/.test(p4UiSegment),
-  'the P4 run-history UI block never evaluates dynamic code'
-);
-
-// P1-3/P1-4 wiring: the save button is GET-first + snapshot-guarded, and a
-// status read failure is recorded, logged and rendered on the card.
-const saveConfigFn = extractFunction('saveSchedulePageConfig');
-ok(/fetchScheduleConfigOnce\(\)/.test(saveConfigFn), '保存配置 GETs the latest config before POSTing');
-ok(/schedConfigSnapshotChanged\(scheduleConfigBase, freshRaw\)/.test(saveConfigFn), '保存配置 compares the fresh config with the page snapshot');
-ok(/schedExternalConfigChangeText\(\)/.test(saveConfigFn), '保存配置 aborts with the reload hint on an external change');
-const loadConfigFn = extractFunction('loadScheduleConfig');
-ok(/scheduleConfigBase = schedConfigSnapshotText\(/.test(loadConfigFn), 'loadScheduleConfig records the base config snapshot');
-const refreshPageFn = extractFunction('refreshSchedulePage');
-ok(/scheduleStatusError = /.test(refreshPageFn) && /schedStatusErrorText\(/.test(refreshPageFn), 'status read failures are recorded and logged');
-ok(/await refreshScheduleRuns\(\)/.test(refreshPageFn), 'schedule page refresh loads the run history');
-ok(/populateScheduleRunsTaskOptions\(\)/.test(refreshPageFn), 'schedule page refresh repopulates the run task filter');
-ok(/schedStatusErrorText\(statusError\)/.test(extractFunction('renderScheduleStatusCard')), 'status card renders the read error');
-ok(/pageSchedRunsSummary\.textContent = schedRunsStatusCardText\(/.test(extractFunction('renderScheduleStatusCard')), 'status card renders the latest-run/failure summary');
-
 // --- PR2: Studio meta.params schema editor ----------------------------------
 // Studio is the only schema editor: GET/POST /task/config write meta.params.
 // Runner values are a separate surface and must never be called from here.
@@ -4526,15 +3446,17 @@ ok(
   `dead DOM ids must be 0 (still dead: ${missingIds.join(', ') || 'none'})`
 );
 ok(
-  referencedIds.length >= 237,
-  `Studio DOM id audit covers the PR5 publish dialog (got ${referencedIds.length}, need >= 237)`
+  referencedIds.length >= 159,
+  `Studio DOM id audit covers the PR6 cleanup (got ${referencedIds.length}, need >= 159)`
 );
 
-// --- PR1/PR2: Studio / Runner surface split (static UI contract) -------------
-// Studio keeps #page-schedule only as a legacy DOM block; its nav must not
-// expose a schedule entry any more. The Runner is a separate usage surface with
-// exactly five pages, its own static bundle, and one local write path (task
-// config values in config/values.json).
+// --- PR1/PR2/PR6: Studio / Runner surface split (static UI contract) --------
+// Studio owns no scheduling page at all any more: PR6 removed the deferred
+// #page-schedule DOM, the sched-entry/queue/run dialogs and the reset-memory
+// dialog, and Studio only hands the user over to the Runner. The Runner is a
+// separate usage surface with exactly six pages, its own static bundle and its
+// own local write paths (task values, scheduler start/stop, temp run,
+// scheduler.json).
 const studioNavBlock = /<nav[^>]*id="app-nav"[^>]*>([\s\S]*?)<\/nav>/.exec(html);
 ok(studioNavBlock, 'index.html still has the Studio app nav');
 if (studioNavBlock) {
@@ -4543,9 +3465,50 @@ if (studioNavBlock) {
   ok(!/>调度</.test(studioNav), 'Studio nav has no 调度 label');
   eq((studioNav.match(/class="app-nav-btn/g) || []).length, 5, 'Studio nav exposes exactly 5 page buttons');
 }
-ok(/id="page-schedule"/.test(html), 'legacy #page-schedule DOM is kept while it is unreachable from the nav');
+ok(!/id="page-schedule"/.test(html), 'PR6 removed the legacy #page-schedule DOM');
+ok(!/id="panel-schedule"/.test(html) && !/page-sched-/.test(html), 'PR6 removed the legacy schedule panel + page ids');
+ok(!/id="sched-entry-dialog"/.test(html) && !/id="sched-queue-dialog"/.test(html), 'PR6 removed the legacy entry/queue dialogs');
+ok(
+  !/id="reset-memory-dialog"/.test(html) && !/id="sched-summary"/.test(html) &&
+    !/id="sched-entries"/.test(html),
+  'PR6 removed the reset-memory dialog + rail placeholders'
+);
+ok(!/sched-runs-table|sched-run-dialog/.test(html), 'PR6 removed the schedule-page-only CSS');
+ok(!/panel-schedule|page-sched-|sched-entry-|sched-queue-|sched-summary|sched-entries/.test(source),
+  'app.js no longer references any legacy schedule DOM id/panel');
 ok(/id="studio-runner-hint"/.test(html) && /Runner（8789）/.test(html), 'Studio shows the Runner migration hint');
-ok(/Studio 导航已不再提供「调度」入口/.test(html), 'legacy schedule page explains the Runner migration');
+ok(/Studio 不参与调度|调度\/运行运维请用 Runner/.test(html), 'Studio still tells the user to use the Runner');
+ok(/const RUNNER_BASE_URL = 'http:\/\/127\.0\.0\.1:8789\/'/.test(source), 'Studio knows the Runner default URL (8789)');
+ok(/function openRunnerPage\(hash\)/.test(source), 'Studio has a single hand-off helper to the Runner');
+ok(
+  /openRunnerPage\('#runs'\)/.test(source) && /openRunnerPage\('#queue'\)/.test(source),
+  'Studio run-history + legacy schedule deep links open the Runner'
+);
+ok(/wantPage === 'schedule'/.test(source), '?page=schedule is redirected to the Runner queue page');
+ok(/if \(new URLSearchParams\(location\.search\)\.get\('reset'\) === '1'\)/.test(source) &&
+  /重置记忆属于运行运维，请在 Runner（8789）中操作。/.test(source),
+  '?reset=1 keeps its Runner-only hint');
+ok(!/openTaskScheduleDialog\(t\.name\)/.test(source) && !/调度设置…/.test(source),
+  'task library card no longer opens a Studio scheduler dialog');
+ok(!/id="btn-sched-open-page"/.test(html), 'Studio no longer provides the workbench scheduling-page button');
+// Studio must never call the Runner-only scheduling/run routes (they answer 404
+// on the Studio surface). Read-only scheduling view is not used by Studio UI.
+ok(!/\/runner\/scheduler\/(?:start|stop|status)/.test(source) && !/\/runner\/run['"]/.test(source),
+  'Studio never calls /runner/scheduler/* or /runner/run');
+ok(!/fetch\('\/scheduler\/config'\)/.test(source) && !/'\/scheduler\/reset'/.test(source),
+  'Studio never writes scheduler config/reset');
+ok(!/fetch\('\/runs\/scheduler/.test(source), 'Studio never reads /runs/scheduler (Runner-only)');
+ok(!/fetch\('\/scheduler\/status'\)/.test(source) && !/fetch\('\/scheduler\/config'\)/.test(source),
+  'Studio no longer polls /scheduler/status or config (the page is gone)');
+const htmlIds = [...html.matchAll(/id=["']([^"']+)["']/g)].map((m) => m[1]);
+const dupHtmlIds = [...new Set(htmlIds.filter((id, i) => htmlIds.indexOf(id) !== i))];
+ok(dupHtmlIds.length === 0, `index.html has no duplicate DOM ids (duplicates: ${dupHtmlIds.join(', ') || 'none'})`);
+ok(
+  (html.match(/<dialog\b/g) || []).length === (html.match(/<\/dialog>/g) || []).length,
+  'index.html dialog tags are balanced'
+);
+ok(/fetch\('\/runs'\)/.test(source) && /loadClicks\(/.test(source), 'legacy /runs click-distribution path is untouched');
+ok(/runsBtn\.addEventListener\('click', \(\) => openRunnerPage\('#runs'\)\)/.test(source), 'task library row links to the Runner run history');
 
 const runnerNavBlock = /<nav[^>]*id="runner-nav"[^>]*>([\s\S]*?)<\/nav>/.exec(runnerHtml);
 ok(runnerNavBlock, 'runner.html has the Runner app nav');
@@ -4580,7 +3543,10 @@ ok(/name="viewport"/.test(runnerHtml), 'Runner is mobile/WebView friendly (viewp
 ok(/@media\s*\(max-width/.test(runnerCss), 'runner.css has a narrow-screen single-column layout');
 ok(/只读/.test(runnerHtml), 'Runner still labels the pages that remain read-only');
 ok(/还没有任务：请到「安装包」页安装 \.oaspkg/.test(runnerSource), 'Runner task empty state points at the install page');
-ok(/队列管理、调度启停与临时运行由后续 PR 提供；本页只读。/.test(runnerHtml), 'Runner queue page states the read-only scope');
+ok(
+  /id="runner-sched-control"/.test(runnerHtml) && /id="runner-run-card"/.test(runnerHtml),
+  'Runner queue page hosts the scheduler control + temp-run cards'
+);
 ok(
   /运行值保存在 Runner 本机（config\/values\.json）；单任务运行时使用这里的值；\s*被其他任务作为子任务调用时使用调用方的配置（PR4 生效）。/.test(runnerHtml),
   'Runner config dialog explains local values + call_task inheritance (PR4)'
@@ -4603,7 +3569,7 @@ ok(
   /runnerFetchJson\(RUNNER_API\.install, \{ method: 'POST', body: body \}\)/.test(runnerSource) &&
     /runnerFetchJson\(RUNNER_API\.uninstall, \{ method: 'POST', body: \{ task_id: task \} \}\)/.test(runnerSource) &&
     /runnerFetchJson\(RUNNER_API\.packagesActivate, \{ method: 'POST', body: \{ task_id: task \} \}\)/.test(runnerSource),
-  'the only POST writes are /runner/install, /runner/uninstall and /runner/packages/activate'
+  'the package POST writes are /runner/install, /runner/uninstall and /runner/packages/activate'
 );
 ok(/'PUT'/.test(runnerSource), 'Runner sends PUT for task config values');
 ok(!/localhost|127\.0\.0\.1|8789/.test(runnerSource), 'runner.js does not hardcode host/port');
@@ -4624,8 +3590,8 @@ ok(
   `Runner dead DOM ids must be 0 (still dead: ${runnerMissingIds.join(', ') || 'none'})`
 );
 ok(
-  runnerReferencedIds.length >= 55,
-  `Runner DOM id audit covers the PR5 package page (got ${runnerReferencedIds.length}, need >= 55)`
+  runnerReferencedIds.length >= 75,
+  `Runner DOM id audit covers the PR6 scheduler control (got ${runnerReferencedIds.length}, need >= 75)`
 );
 
 // Behavioural checks for the extractable Runner formatting helpers.
@@ -4633,8 +3599,15 @@ const runnerHelperNames = [
   'runnerValueText', 'runnerDurationText', 'runnerParamKeys', 'runnerFlagText',
   'runnerTaskStatusText', 'runnerOutcomeClass', 'runnerLockText', 'runnerLockClass',
   'runnerRunsErrorText', 'runnerQueueRoundsText', 'runnerEntryStateText', 'runnerMemberText',
+  'runnerErrorText', 'runnerErrorSummary',
   // PR5: package install body / list row / task badge / error mapping.
   'runnerInstallBody', 'formatPackageRow', 'runnerTaskPackageBadge', 'runnerPackagesErrorText',
+  // PR6: scheduler start/stop text, temp-run body/status, scheduler.json body.
+  'runnerRunBody', 'runnerRunStatusText', 'runnerSchedStatusText', 'runnerSchedLockPidText',
+  'runnerSchedThreadText', 'runnerSchedJsonBody', 'runnerErrorLines',
+  // PR6 fix: 409 code mapping, stop timeout text, scheduler history rows.
+  'runnerErrorCodeLabel', 'runnerBodyErrors', 'runnerStopText', 'runnerStopPending',
+  'runnerSchedHistoryRows',
 ];
 const runnerHelperCode = runnerHelperNames
   .map((name) => extractFunctionFrom(runnerSource, name, 'runner.js'))
@@ -4927,6 +3900,342 @@ eq(
   'config URL encodes slashes so a task name cannot escape the path'
 );
 
+
+// --- PR6: Runner scheduler control / temp run / scheduler.json ---------------
+// The Runner owns scheduling operations now: start/stop its in-process thread,
+// run one task on demand (body params override the saved values) and edit the
+// raw scheduler.json as the advanced escape hatch (V5 step 13).
+for (const id of ['runner-sched-control', 'runner-sched-badge', 'runner-sched-meta',
+  'runner-sched-start', 'runner-sched-stop', 'runner-sched-refresh', 'runner-sched-status',
+  'runner-sched-error', 'runner-run-card', 'runner-run-task', 'runner-run-params',
+  'runner-run-submit', 'runner-run-status', 'runner-run-error', 'runner-run-log',
+  'runner-sched-json', 'runner-sched-json-save', 'runner-sched-json-status',
+  'runner-sched-json-error', 'overview-scheduler', 'overview-goto-queue']) {
+  ok(new RegExp(`id="${id}"`).test(runnerHtml), `runner.html provides #${id}`);
+}
+ok(/id="runner-sched-start"[^>]*>启动调度</.test(runnerHtml), 'scheduler control has the 启动调度 button');
+ok(/id="runner-sched-stop"[^>]*>停止调度</.test(runnerHtml), 'scheduler control has the 停止调度 button');
+ok(/id="runner-run-submit"[^>]*>立即运行</.test(runnerHtml), 'temp-run card has the 立即运行 button');
+ok(/id="runner-sched-json-save"[^>]*>保存 JSON</.test(runnerHtml), 'advanced card has the 保存 JSON button');
+ok(
+  /留空或 <code>\{\}<\/code> 时使用 Runner\s*已保存的运行值/.test(runnerHtml),
+  'temp run explains saved values + params override'
+);
+ok(/JSON 结构见文档；保存后需启动\/重启调度生效/.test(runnerHtml), 'scheduler.json card explains the restart requirement');
+ok(/去「队列与调度」页/.test(runnerHtml), 'overview links to the queue page');
+ok(/id="runner-sched-json"[^>]*spellcheck="false"/.test(runnerHtml), 'advanced JSON is a plain textarea');
+
+ok(
+  /schedulerStart: '\/runner\/scheduler\/start'/.test(runnerSource) &&
+    /schedulerStop: '\/runner\/scheduler\/stop'/.test(runnerSource),
+  'Runner API map names the scheduler start/stop routes'
+);
+ok(
+  /schedulerThreadStatus: '\/runner\/scheduler\/status'/.test(runnerSource) &&
+    /runStatus: '\/runner\/run\/status'/.test(runnerSource),
+  'Runner API map names the scheduler-thread + run-status routes'
+);
+ok(/schedulerConfig: '\/scheduler\/config'/.test(runnerSource), 'Runner reads/writes the shared scheduler config route');
+ok(
+  /runnerFetchJson\(RUNNER_API\.schedulerStart, \{ method: 'POST' \}\)/.test(runnerSource),
+  '启动调度 POSTs /runner/scheduler/start'
+);
+ok(
+  /runnerFetchJson\(RUNNER_API\.schedulerStop, \{ method: 'POST' \}\)/.test(runnerSource),
+  '停止调度 POSTs /runner/scheduler/stop'
+);
+ok(
+  /runnerFetchJson\(RUNNER_API\.run, \{ method: 'POST', body: parsed\.body \}\)/.test(runnerSource),
+  '立即运行 POSTs /runner/run with the pure body'
+);
+ok(/runnerFetchJson\(RUNNER_API\.runStatus\)/.test(runnerSource), 'temp run polls GET /runner/run/status');
+ok(/runnerFetchJson\(RUNNER_API\.schedulerThreadStatus\)/.test(runnerSource), 'queue page reads GET /runner/scheduler/status');
+ok(/runnerFetchJson\(RUNNER_API\.schedulerStatus\)/.test(runnerSource), 'queue page still reads the shared GET /scheduler/status');
+ok(
+  /runnerFetchJson\(RUNNER_API\.schedulerConfig, \{ method: 'POST', body: parsed\.body \}\)/.test(runnerSource),
+  '保存 JSON POSTs {config} to /scheduler/config'
+);
+ok(
+  /runnerSchedJsonBody\(el\.schedJson \? el\.schedJson\.value : ''\)/.test(runnerSource),
+  '保存 JSON parses the textarea through the pure body builder'
+);
+ok(
+  /el\.schedJson\.addEventListener\('input'/.test(runnerSource) &&
+    /schedJsonDirty = true/.test(runnerSource) &&
+    /if \(!schedJsonDirty\)/.test(runnerSource),
+  'advanced JSON tracks unsaved edits and a refresh never clobbers them'
+);
+ok(
+  /RUNNER_RUN_POLL_MS = 500;/.test(runnerSource) && /RUNNER_RUN_POLL_MAX_MS = 60000;/.test(runnerSource),
+  'temp run polls every 500ms for at most 60s'
+);
+ok(/RUNNER_SCHED_POLL_MS = 5000;/.test(runnerSource), 'queue page polls the scheduler status every 5s');
+ok(
+  /queuePollTimer = setInterval\(function \(\) \{/.test(runnerSource),
+  'queue polling is a real interval'
+);
+ok(
+  /if \(page === 'queue'\) startQueuePolling\(\);/.test(runnerSource) &&
+    /else stopQueuePolling\(\);/.test(runnerSource),
+  'entering the queue page starts polling and leaving it stops'
+);
+ok(
+  /if \(status && status\.running === true\) \{\s*scheduleRunnerRunPoll\(\)/.test(runnerSource),
+  'the run poll continues only while the run is still running'
+);
+ok(
+  /status && Array\.isArray\(status\.log_tail\)/.test(runnerSource) &&
+    /el\.runLog\.textContent = lines\.join/.test(runnerSource),
+  'the run log tail is rendered via textContent'
+);
+ok(
+  /const err = status \? status\.error : null;/.test(runnerSource) &&
+    /el\.runError\.textContent/.test(runnerSource),
+  'run errors are rendered verbatim'
+);
+ok(
+  /el\.schedError\.textContent = runnerErrorLines\(e\)\.join\('\\n'\)/.test(runnerSource),
+  'scheduler errors are listed line by line'
+);
+ok(
+  /body\.already_running === true/.test(runnerSource) &&
+    /b\.already_stopped === true/.test(runnerSource),
+  'already-running/stopped responses are handled'
+);
+ok(/b\.timeout === true|body\.timeout === true/.test(runnerSource), 'a stop timeout is surfaced as a warning');
+ok(
+  /state\.health && state\.health\.scheduler/.test(runnerSource),
+  'Runner overview reuses health.scheduler'
+);
+ok(
+  /renderOverviewScheduler\(\)/.test(runnerSource) && /el\.overviewGotoQueue/.test(runnerSource),
+  'overview renders the scheduler card and the go-to-queue button'
+);
+ok(/e && e\.status === 409/.test(runnerSource), '409 busy/lease conflicts are named in the temp-run status');
+ok(
+  /#runner-sched-control/.test(runnerCss) && /#runner-sched-json/.test(runnerCss) &&
+    /#runner-run-log/.test(runnerCss),
+  'runner.css styles the scheduler control / JSON editor / run log'
+);
+ok(!/\/scheduler\/reset/.test(runnerSource), 'Runner UI never calls the ops-only /scheduler/reset');
+
+// PR6 fixes: 409 code mapping, stop timeout polling, scheduler history rows,
+// fresh task dropdown.
+ok(
+  /err\.code = String\(body\.error\)/.test(runnerSource),
+  'runnerFetchJson keeps the backend error code on the Error object'
+);
+ok(
+  /code === 'device_busy'/.test(runnerSource) && /code === 'run_busy'/.test(runnerSource),
+  'the 409 branches use the machine code, not a regex over the human summary'
+);
+ok(
+  /runnerStopText\(body\)/.test(runnerSource) && /runnerStopPending\(body\)/.test(runnerSource),
+  'the stop handler maps the response through the pure stop helpers'
+);
+ok(
+  /RUNNER_STOP_POLL_MS = 1000;/.test(runnerSource) &&
+    /RUNNER_STOP_POLL_MAX_MS = 30000;/.test(runnerSource) &&
+    /function pollStopOnce\(\)/.test(runnerSource) &&
+    /startStopPolling\(\)/.test(runnerSource) &&
+    /setSchedStopping\(pending\)/.test(runnerSource) &&
+    /el\.schedStart\.disabled = schedBusy \|\| schedStopping/.test(runnerSource),
+  'a stop timeout polls the scheduler status until running=false (<=30s) and locks the start button'
+);
+ok(
+  /if \(s\.last_stop !== undefined/.test(runnerSource) &&
+    /if \(s\.last_error !== undefined/.test(runnerSource) &&
+    /runnerSchedHistoryRows\(sched\)/.test(runnerSource),
+  'the scheduler cards render last_stop / last_error when present'
+);
+ok(
+  /state\.tasks = await runnerFetchJson\(RUNNER_API\.tasks\)/.test(runnerSource) &&
+    !/if \(!state\.tasks\) \{/.test(runnerSource),
+  'the queue page refreshes the task dropdown on every load'
+);
+
+// Behavioural checks for the PR6 pure helpers.
+eq(
+  runnerSb.runnerRunBody(' 任务1 ', ''),
+  { ok: true, body: { task: '任务1' }, error: '' },
+  'blank params -> use the Runner saved values'
+);
+eq(
+  runnerSb.runnerRunBody('任务1', '  {}  '),
+  { ok: true, body: { task: '任务1' }, error: '' },
+  '{} params -> use the Runner saved values'
+);
+eq(
+  runnerSb.runnerRunBody('任务1', '{"触发文字":"突破"}'),
+  { ok: true, body: { task: '任务1', params: { 触发文字: '突破' } }, error: '' },
+  'params JSON overrides the saved values'
+);
+eq(runnerSb.runnerRunBody('', '{}').ok, false, 'missing task is rejected locally');
+ok(/选择/.test(runnerSb.runnerRunBody('', '{}').error), 'missing task error says to choose a task');
+eq(runnerSb.runnerRunBody('T', '[1]').ok, false, 'array params are rejected');
+ok(/JSON 对象/.test(runnerSb.runnerRunBody('T', '[1]').error), 'non-object params error names the expected shape');
+eq(runnerSb.runnerRunBody('T', 'null').ok, false, 'null params are rejected');
+eq(runnerSb.runnerRunBody('T', '{bad}').ok, false, 'broken JSON is rejected locally');
+ok(/合法 JSON/.test(runnerSb.runnerRunBody('T', '{bad}').error), 'broken JSON error explains the parse failure');
+
+eq(runnerSb.runnerRunStatusText({ running: true, task: '任务1' }), '运行中：任务1', 'running status names the task');
+eq(
+  runnerSb.runnerRunStatusText({ running: false, task: '任务1', outcome: 'Done' }),
+  '已结束：任务1 · outcome=Done',
+  'finished status shows the outcome'
+);
+ok(
+  /^失败：任务1/.test(runnerSb.runnerRunStatusText({ running: false, task: '任务1', error: 'boom' })),
+  'failed status names the task'
+);
+eq(runnerSb.runnerRunStatusText({}), '—', 'missing run status is a dash');
+
+eq(runnerSb.runnerSchedStatusText({ running: true }), '运行中', 'running scheduler badge');
+eq(runnerSb.runnerSchedStatusText({ running: true, stop_requested: true }), '停止中', 'stop-requested scheduler badge');
+eq(
+  runnerSb.runnerSchedStatusText({ running: false, stop_requested: true, thread_alive: true }),
+  '停止中',
+  'stopping thread badge'
+);
+eq(runnerSb.runnerSchedStatusText({ running: false, thread_alive: false }), '已停止', 'stopped scheduler badge');
+eq(runnerSb.runnerSchedStatusText(null), '—', 'unknown scheduler status is a dash');
+eq(runnerSb.runnerSchedLockPidText({ lock_pid: 1234 }), '1234', 'scheduling lock pid is shown');
+eq(runnerSb.runnerSchedLockPidText({}), '—', 'missing lock pid is a dash');
+eq(runnerSb.runnerSchedThreadText({ thread_alive: true }), '存活', 'alive scheduler thread');
+eq(runnerSb.runnerSchedThreadText({ thread_alive: false }), '已退出', 'dead scheduler thread');
+eq(runnerSb.runnerSchedThreadText({}), '—', 'unknown scheduler thread is a dash');
+
+eq(
+  runnerSb.runnerSchedJsonBody('{"entries":[]}'),
+  { ok: true, body: { config: { entries: [] } }, error: '' },
+  'scheduler.json body wraps the raw config document'
+);
+eq(runnerSb.runnerSchedJsonBody('').ok, false, 'empty scheduler JSON is rejected locally');
+ok(/JSON 为空/.test(runnerSb.runnerSchedJsonBody('').error), 'empty JSON error explains the requirement');
+eq(runnerSb.runnerSchedJsonBody('[1]').ok, false, 'array scheduler JSON is rejected');
+eq(runnerSb.runnerSchedJsonBody('{bad}').ok, false, 'broken scheduler JSON is rejected locally');
+eq(runnerSb.runnerErrorLines({ details: ['a', 'b'] }), ['· a', '· b'], 'server errors become one line each');
+eq(runnerSb.runnerErrorLines('boom'), ['· boom'], 'plain errors become one line');
+
+// P1-1: the 409 machine code must survive in the summary even when the backend
+// also sends a human `errors` array (the pre-fix code preferred `errors`).
+const deviceBusyBody = {
+  ok: false,
+  error: 'device_busy',
+  errors: ['Runner 正在调度（pid 1234，surface=runner）'],
+  message: 'Runner 正在调度（pid 1234，surface=runner）',
+};
+eq(
+  runnerSb.runnerErrorCodeLabel('device_busy'),
+  '设备被占用',
+  'device_busy has a fixed Chinese label'
+);
+eq(
+  runnerSb.runnerErrorCodeLabel('scheduler_locked'),
+  '调度锁被占用',
+  'scheduler_locked has a fixed Chinese label'
+);
+eq(
+  runnerSb.runnerErrorCodeLabel('run_busy'),
+  '已有运行在进行',
+  'run_busy has a fixed Chinese label'
+);
+eq(
+  runnerSb.runnerBodyErrors(deviceBusyBody),
+  '设备被占用：Runner 正在调度（pid 1234，surface=runner）',
+  'device_busy summary keeps the code label + message, not the errors array'
+);
+eq(
+  runnerSb.runnerBodyErrors({
+    ok: false,
+    error: 'scheduler_locked',
+    errors: ['another scheduler is already running (lock held by pid 9)'],
+    message: 'another scheduler is already running (lock held by pid 9)',
+  }),
+  '调度锁被占用：another scheduler is already running (lock held by pid 9)',
+  'scheduler_locked summary names the lock'
+);
+eq(
+  runnerSb.runnerBodyErrors({
+    ok: false,
+    error: 'run_busy',
+    errors: ['已有任务正在运行：任务1'],
+    message: '已有任务正在运行：任务1',
+  }),
+  '已有运行在进行：已有任务正在运行：任务1',
+  'run_busy summary is actionable'
+);
+eq(
+  runnerSb.runnerBodyErrors({ ok: false, error: 'weird', message: 'boom' }),
+  'boom',
+  'unknown codes fall back to the human message'
+);
+eq(
+  runnerSb.runnerBodyErrors({ ok: false, errors: ['a', 'b'] }),
+  'a；b',
+  'a body without a code still joins errors'
+);
+eq(
+  runnerSb.runnerBodyErrors({
+    ok: false,
+    error: 'device_busy',
+    message: 'x',
+    errors: ['y'],
+  }).indexOf('device_busy'),
+  -1,
+  'the raw machine code is not shown to the user'
+);
+
+// P1-2: stop timeout bodies are a "still stopping" state, never a failure.
+eq(
+  runnerSb.runnerStopText({
+    ok: true,
+    running: true,
+    stopping: true,
+    timeout: true,
+    message: '调度正在停止（当前 attempt 跑完后退出）',
+  }),
+  '停止中（当前任务跑完后退出）',
+  'stop timeout renders as 停止中'
+);
+eq(
+  runnerSb.runnerStopPending({ ok: true, running: true, stopping: true, timeout: true }),
+  true,
+  'a stop timeout keeps the status poll running'
+);
+eq(
+  runnerSb.runnerStopText({ ok: true, running: false, stopped: true }),
+  '调度已停止',
+  'a completed stop renders 调度已停止'
+);
+eq(
+  runnerSb.runnerStopPending({ ok: true, running: false, stopped: true }),
+  false,
+  'a completed stop ends the status poll'
+);
+eq(
+  runnerSb.runnerStopText({ ok: true, running: false, stopped: true, already_stopped: true }),
+  '调度本来就没在运行',
+  'a repeated stop on a stopped scheduler is a no-op'
+);
+
+// P2: last_error / last_stop are shown only when the backend has them.
+eq(runnerSb.runnerSchedHistoryRows({}), [], 'a clean scheduler has no history rows');
+eq(
+  runnerSb.runnerSchedHistoryRows({ last_stop: 'api_stop', last_error: null }),
+  [['最后停止', 'api_stop']],
+  'last_stop is rendered when present'
+);
+eq(
+  runnerSb.runnerSchedHistoryRows({ last_error: 'plan missing', last_stop: '' }),
+  [['最后错误', 'plan missing']],
+  'last_error is rendered when present'
+);
+eq(
+  runnerSb.runnerSchedHistoryRows({ last_stop: 'api_stop', last_error: 'boom' }),
+  [['最后停止', 'api_stop'], ['最后错误', 'boom']],
+  'both history rows render in order'
+);
 
 // --- ResizeObserver / canvas fit contract (no synchronous layout writes) ---
 // #canvas-stage is observed, while fitCanvasToStage() writes inline CSS on its

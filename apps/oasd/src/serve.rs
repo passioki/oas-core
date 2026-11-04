@@ -41,6 +41,10 @@
 //!   GET  /runner/packages -> installed.json registry + unmanaged tasks (PR5)
 //!   POST /runner/install  -> install a local .oaspkg path (PR5, path mode)
 //!   POST /runner/uninstall / /runner/packages/activate (PR5)
+//!   GET  /runner/scheduler/status  -> embedded scheduler state (Runner only, PR6)
+//!   POST /runner/scheduler/start|stop -> start/stop the embedded thread (PR6)
+//!   POST /runner/run      -> temporary Runner run (values.json + body params, PR6)
+//!   GET  /runner/run/status -> status of the current/last temporary run (PR6)
 //!   GET  /runner/tasks/<id>/config  -> Runner task values + param schema (PR2)
 //!   PUT  /runner/tasks/<id>/config  -> validate + store Runner task values (PR2)
 //!   POST /task/publish    -> build one .oaspkg (Studio only, PR5)
@@ -64,9 +68,12 @@ use oas_codec::encode_png;
 use oas_runtime::RunResult;
 use oas_types::{Frame, InputSink, Outcome, Point, ScreenSource};
 
+use crate::device_lease::DeviceLease;
 use crate::run::{RunOptions, RunReport};
 use crate::runner_config;
-use crate::schedule::{scheduler_runs_dir, ResetOptions, SchedulerOptions, SchedulerRun};
+use crate::schedule::{
+    scheduler_runs_dir, ResetOptions, SchedulerOptions, SchedulerReport, SchedulerRun,
+};
 use crate::package_cmd;
 
 /// Upper bound for a POST body (flow.json is small; never buffer more).
@@ -158,9 +165,12 @@ pub fn route_owner(method: &str, path_only: &str) -> Option<RouteOwner> {
             | "/task/flow" | "/task/list" | "/task/library" | "/task/run/status"
             | "/task/package" | "/task/config" | "/library" => Some(Studio),
 
-            // Runner operational APIs (PR1 read-only subset).
+            // Runner operational APIs (PR1 read-only subset, PR5 packages, PR6
+            // embedded scheduler + temporary run status).
             "/runner/health" | "/runner/tasks" | "/runner/packages" | "/runs/scheduler"
-            | "/runs/scheduler/run" => Some(Runner),
+            | "/runs/scheduler/run" | "/runner/scheduler/status" | "/runner/run/status" => {
+                Some(Runner)
+            }
 
             // Shared read-only views (and the device view both surfaces need).
             "/runs" | "/runs/clicks" | "/runs/aggregate" | "/scheduler/config"
@@ -231,6 +241,30 @@ const RUN_LOG_MAX: usize = 2000;
 /// How many of those log lines `GET /task/run/status` returns (the UI polls).
 const RUN_LOG_TAIL: usize = 200;
 
+// ---------------------------------------------------------------------------
+// PR6: Runner embedded scheduler (design §A.6)
+// ---------------------------------------------------------------------------
+
+/// Cap of the embedded scheduler's in-memory log ring (`/runner/health` and
+/// `/runner/scheduler/status` read it; the same lines are appended to
+/// `logs/runner.log`).
+const SCHEDULER_LOG_MAX: usize = 500;
+/// Log lines returned by `GET /runner/scheduler/status`.
+const SCHEDULER_STATUS_LOG_TAIL: usize = 50;
+/// Log lines returned by `GET /runner/health` (small: it is polled often).
+const SCHEDULER_HEALTH_LOG_TAIL: usize = 20;
+/// `POST /runner/scheduler/stop` waits this long for the thread to finish
+/// (design §A.6.2: the current attempt is never interrupted, so a long attempt
+/// can legitimately time out). Kept well under the UI's 8 s fetch timeout so the
+/// `{timeout:true}` JSON is always reachable; the UI then polls status.
+const SCHEDULER_STOP_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The executor behind the embedded scheduler thread. Production is
+/// [`crate::schedule::run_scheduler`]; tests inject a scripted one so the HTTP
+/// state machine (start/stop/status/health) is testable without a real plan.
+type SchedulerRunner =
+    dyn Fn(&SchedulerOptions, &mut dyn FnMut(&str)) -> Result<SchedulerReport, String> + Send + Sync;
+
 /// Status of the current/last editor run (`POST /task/run` / `GET /task/run/status`).
 #[derive(Debug, Default)]
 struct RunState {
@@ -277,6 +311,72 @@ impl RunState {
         if self.log.len() > RUN_LOG_MAX {
             let excess = self.log.len() - RUN_LOG_MAX;
             self.log.drain(0..excess);
+        }
+    }
+}
+
+/// Live state of the Runner's embedded scheduler thread (design §A.6.1/§A.6.3).
+///
+/// One process has at most one embedded scheduler. The thread updates this
+/// state itself when it exits (**before** signalling `done_rx`), so a stop
+/// request can never observe "running" after the thread is gone.
+#[derive(Debug, Default)]
+struct SchedulerRuntime {
+    running: bool,
+    /// A stop was requested and the thread has not finished yet.
+    stop_requested: bool,
+    /// Cooperative stop token handed to `run_scheduler` (PR6).
+    stop: Option<Arc<AtomicBool>>,
+    started_ms: Option<u64>,
+    finished_ms: Option<u64>,
+    /// Last `SchedulerReport::stopped_reason` (`api_stop`, `max_rounds`, ...).
+    last_stop: Option<String>,
+    /// Thread/setup error; surfaced by `/runner/health` so the Runner UI can
+    /// explain why the scheduler is not running (design §A.6.2).
+    last_error: Option<String>,
+    /// Completion signal, consumed by `POST /runner/scheduler/stop` with
+    /// `recv_timeout` (never touched by status polls).
+    done_rx: Option<std::sync::mpsc::Receiver<()>>,
+}
+
+/// Runner-only embedded scheduler controller (shared, cheap to clone).
+#[derive(Debug, Default)]
+struct SchedulerController {
+    runtime: Mutex<SchedulerRuntime>,
+    /// Recent scheduler `<out>` lines (ring, newest last) for the status/health
+    /// payloads; the same lines are appended to `logs/runner.log`.
+    log: Mutex<Vec<String>>,
+}
+
+/// Result of `POST /runner/scheduler/start`.
+enum SchedulerStart {
+    Started { started_ms: u64 },
+    AlreadyRunning { started_ms: Option<u64> },
+}
+
+/// Why `POST /runner/scheduler/start` could not start a thread.
+enum SchedulerStartError {
+    /// Another scheduler (here: `oasd scheduler` CLI) already holds
+    /// `<state>.lock`; the message carries the holder pid for the 409 body.
+    LockHeld { pid: u32, message: String },
+    /// The watchdog device lease is held by Studio / a temp run.
+    Lease(String),
+    /// OS thread creation failed.
+    Spawn(String),
+}
+
+impl SchedulerStartError {
+    fn status(&self) -> u16 {
+        match self {
+            Self::Spawn(_) => 500,
+            Self::LockHeld { .. } | Self::Lease(_) => 409,
+        }
+    }
+
+    fn message(&self) -> &str {
+        match self {
+            Self::LockHeld { message, .. } => message,
+            Self::Lease(m) | Self::Spawn(m) => m,
         }
     }
 }
@@ -455,6 +555,22 @@ pub struct Server {
     run_state: Arc<Mutex<RunState>>,
     /// Executor used by `POST /task/run`; replaceable in tests.
     run_executor: Arc<RunExecutor>,
+    /// PR6: executor behind the Runner's embedded scheduler thread
+    /// (production: [`crate::schedule::run_scheduler`]; tests inject a scripted
+    /// one so start/stop/status never need a real plan/device).
+    scheduler_runner: Arc<SchedulerRunner>,
+    /// PR6: live state + log ring of the embedded scheduler thread.
+    scheduler_controller: Arc<SchedulerController>,
+    /// PR6: `config/device.lease` path. `None` = no live `--config` loaded, so
+    /// the lease is disabled (tests / pure CLI; see `device_lease`).
+    device_lease_path: Option<PathBuf>,
+    /// PR6: `<process CWD>/logs` — the Runner package log directory
+    /// (`start-runner.bat` `cd`s to the package root, design §A.6.3). `None`
+    /// means "derive from the current working directory"; tests pin it.
+    scheduler_log_dir: Option<PathBuf>,
+    /// `oasd runner` starts the embedded scheduler unless `--no-scheduler`.
+    /// Only the Runner surface consults it (`oasd studio` never starts one).
+    auto_scheduler: bool,
     /// Paths of the OCR models loaded by serve; passed to editor-triggered
     /// runs so `appear(ocr_asset)` / `text_visible()` work there too.
     ocr_model: Option<PathBuf>,
@@ -774,6 +890,13 @@ impl Server {
             relation_annotations_path: PathBuf::from("relations/annotations.json"),
             run_state: Arc::new(Mutex::new(RunState::default())),
             run_executor: default_executor,
+            scheduler_runner: Arc::new(crate::schedule::run_scheduler),
+            scheduler_controller: Arc::new(SchedulerController::default()),
+            // Production path: derived from the live `--config` (design §A.6.4);
+            // without one there is no well-defined `config/` directory.
+            device_lease_path: crate::device_lease::lease_path_from_config(),
+            scheduler_log_dir: None,
+            auto_scheduler: true,
             editor_log: PathBuf::from("logs/editor.log"),
             ocr_model: None,
             det_model: None,
@@ -817,6 +940,37 @@ impl Server {
     /// the run state machine can be checked without a device).
     pub fn with_run_executor(mut self, executor: Arc<RunExecutor>) -> Self {
         self.run_executor = executor;
+        self
+    }
+
+    /// PR6: `oasd runner` starts the embedded scheduler thread by default;
+    /// `--no-scheduler` disables it. `oasd studio` never starts one regardless.
+    pub fn with_auto_scheduler(mut self, enabled: bool) -> Self {
+        self.auto_scheduler = enabled;
+        self
+    }
+
+    /// Test seam: replace the embedded scheduler's executor (default: the real
+    /// [`crate::schedule::run_scheduler`]) so start/stop/health can be tested
+    /// deterministically without a plan, task or device.
+    #[cfg(test)]
+    fn with_scheduler_runner(mut self, runner: Arc<SchedulerRunner>) -> Self {
+        self.scheduler_runner = runner;
+        self
+    }
+
+    /// Test seam: pin the device lease path (PR6). `None` disables the lease;
+    /// `Some(tmp)` keeps every test away from the real `config/device.lease`.
+    #[cfg(test)]
+    fn with_device_lease_path(mut self, path: Option<PathBuf>) -> Self {
+        self.device_lease_path = path;
+        self
+    }
+
+    /// Test seam: pin `<CWD>/logs` so tests never write the package log dir.
+    #[cfg(test)]
+    fn with_scheduler_log_dir(mut self, dir: PathBuf) -> Self {
+        self.scheduler_log_dir = Some(dir);
         self
     }
 
@@ -1231,6 +1385,26 @@ impl Server {
             );
         }
 
+        // PR6: `oasd runner` starts the embedded scheduler thread by default
+        // (design §A.6.2). A start failure — typically `oasd scheduler` already
+        // holding `<state>.lock` — is reported and visible through
+        // `/runner/health`, but never prevents the HTTP surface from starting.
+        if self.surface == Surface::Runner && self.auto_scheduler {
+            match self.start_scheduler_thread() {
+                Ok(SchedulerStart::Started { .. }) => println!(
+                    "runner scheduler: embedded thread started \
+                     (POST /runner/scheduler/stop to stop it)"
+                ),
+                Ok(SchedulerStart::AlreadyRunning { .. }) => {
+                    println!("runner scheduler: an embedded thread is already running")
+                }
+                Err(e) => eprintln!(
+                    "runner scheduler: not started: {} (GET /runner/health shows the state)",
+                    e.message()
+                ),
+            }
+        }
+
         // No eager capture at startup: the editor shows a live frame instead
         // (GET /frame.png?live=1) so starting the app never spams the gallery.
         if self.open_browser {
@@ -1638,6 +1812,12 @@ impl Server {
             ("GET", "/runner/health") => self.handle_runner_health(&mut out),
             ("GET", "/runner/tasks") => self.handle_runner_tasks(&mut out),
             ("GET", "/runner/packages") => self.handle_runner_packages(&mut out),
+            // --- PR6: embedded scheduler + temporary Runner run (Runner only) ---
+            ("POST", "/runner/scheduler/start") => self.handle_runner_scheduler_start(&mut out),
+            ("POST", "/runner/scheduler/stop") => self.handle_runner_scheduler_stop(&mut out),
+            ("GET", "/runner/scheduler/status") => self.handle_runner_scheduler_status(&mut out),
+            ("POST", "/runner/run") => self.handle_runner_run(&mut out, &body),
+            ("GET", "/runner/run/status") => self.handle_runner_run_status(&mut out),
             ("POST", "/runner/install") => self.handle_runner_install(&mut out, &body),
             ("POST", "/runner/uninstall") => self.handle_runner_uninstall(&mut out, &body),
             ("POST", "/runner/packages/activate") => {
@@ -6945,6 +7125,41 @@ impl Server {
                 )],
             );
         }
+        // PR6: single-run mutex first, so a busy Studio never even touches the
+        // device lease.
+        if self.run_state.lock().unwrap().running {
+            let running = self
+                .run_state
+                .lock()
+                .unwrap()
+                .task
+                .clone()
+                .unwrap_or_else(|| "（未知任务）".to_string());
+            return self.send_errors(
+                out,
+                409,
+                vec![format!(
+                    "已有任务正在运行：{running}；等它结束再试（GET /task/run/status 查看进度）"
+                )],
+            );
+        }
+        // PR6 device lease (design §A.6.4): claim the physical device before
+        // starting. A live holder (Runner scheduler / temp run) is a 409 with
+        // the holder's pid/mode.
+        let lease = match self.acquire_device_lease("studio", "editor-run") {
+            Ok(lease) => lease,
+            Err(e) => {
+                // `errors` keeps the shape the Studio run UI already renders
+                // for 4xx responses; `error` is the machine-readable code.
+                let body = serde_json::json!({
+                    "ok": false,
+                    "error": "device_busy",
+                    "errors": [e.clone()],
+                    "message": e,
+                });
+                return self.send_json(out, 409, &body.to_string());
+            }
+        };
         let mode = if replay.is_some() {
             "replay"
         } else if dry_run {
@@ -6957,17 +7172,6 @@ impl Server {
         let step_log = Arc::new(Mutex::new(Vec::<String>::new()));
         {
             let mut st = self.run_state.lock().unwrap();
-            if st.running {
-                let running = st.task.clone().unwrap_or_else(|| "（未知任务）".to_string());
-                drop(st);
-                return self.send_errors(
-                    out,
-                    409,
-                    vec![format!(
-                        "已有任务正在运行：{running}；等它结束再试（GET /task/run/status 查看进度）"
-                    )],
-                );
-            }
             *st = RunState {
                 running: true,
                 task: Some(task.clone()),
@@ -6996,6 +7200,9 @@ impl Server {
         opts.cancel = Some(cancel.clone());
         opts.step_log = Some(step_log.clone());
         opts.trace_appear = true;
+        // The route pre-acquired the device lease above (409 `device_busy`
+        // semantics); execute() must not acquire it a second time.
+        opts.skip_lease = true;
         // Click audit (CD2) is written even for dry/replay runs, so the editor's
         // 点击分布 panel sees editor-triggered runs exactly like CLI runs.
         opts.clicks_out = Some(
@@ -7003,11 +7210,40 @@ impl Server {
                 .join(format!("editor-{task}-{started_ms}.clicks.jsonl")),
         );
 
+        if let Err(e) = self.spawn_run_worker(opts, lease) {
+            return self.send_errors(out, 500, vec![format!("启动后台运行线程失败：{e}")]);
+        }
+        let body = serde_json::json!({
+            "ok": true,
+            "running": true,
+            "task": task,
+            "started_ms": started_ms,
+            "mode": mode,
+            "dry_run": dry_run,
+            "seed": seed,
+            "replay": replay,
+        });
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// Spawn the background worker for one run (Studio `/task/run` and Runner
+    /// `/runner/run` share it): the executor runs in `oasd-run-worker`, the
+    /// outcome is recorded in [`Server::run_state`], and the device lease is
+    /// released when the worker ends (Drop), even on a setup error.
+    fn spawn_run_worker(
+        &self,
+        opts: RunOptions,
+        lease: Option<DeviceLease>,
+    ) -> std::io::Result<()> {
         let state = self.run_state.clone();
         let executor = self.run_executor.clone();
         let spawned = std::thread::Builder::new()
-            .name("oasd-editor-run".to_string())
+            .name("oasd-run-worker".to_string())
             .spawn(move || {
+                // The lease is held for exactly as long as the run executes;
+                // release it before publishing `running = false` so a status
+                // poll that sees "not running" can rely on the lease being gone.
+                let lease_guard = lease;
                 let log_state = state.clone();
                 let mut emit = move |line: &str| {
                     // Step lines are streamed via RunState.step_log; skip the
@@ -7021,6 +7257,7 @@ impl Server {
                 };
                 let emit_ref: &mut dyn FnMut(&str) = &mut emit;
                 let result = executor(&opts, emit_ref);
+                drop(lease_guard);
                 let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
                 st.drain_step_log();
                 st.running = false;
@@ -7048,20 +7285,9 @@ impl Server {
             let mut st = self.run_state.lock().unwrap();
             st.running = false;
             st.error = Some(format!("启动后台运行线程失败：{e}"));
-            drop(st);
-            return self.send_errors(out, 500, vec![format!("启动后台运行线程失败：{e}")]);
+            return Err(e);
         }
-        let body = serde_json::json!({
-            "ok": true,
-            "running": true,
-            "task": task,
-            "started_ms": started_ms,
-            "mode": mode,
-            "dry_run": dry_run,
-            "seed": seed,
-            "replay": replay,
-        });
-        self.send_json(out, 200, &body.to_string())
+        Ok(())
     }
 
     /// `POST /task/run/stop` — request cooperative cancellation of the current
@@ -7114,12 +7340,13 @@ impl Server {
         self.send_json(out, 200, &body.to_string())
     }
 
-    /// `GET /runner/health` — PR1 Runner read-only health contract.
+    /// `GET /runner/health` — Runner health contract (PR1 + PR6).
     ///
     /// Deliberately small and filesystem-based: `scheduler_mode` comes from
     /// `scheduler.json`, `lock` from the existing cross-process scheduler lock
-    /// probe. It never starts the scheduler and never writes anything, so it is
-    /// safe to poll from the Runner UI (and from a future Android client).
+    /// probe, and `scheduler` from the in-process controller of the embedded
+    /// thread (PR6). It never starts the scheduler and never writes anything, so
+    /// it is safe to poll from the Runner UI (and from a future Android client).
     fn handle_runner_health(&self, out: &mut TcpStream) -> std::io::Result<()> {
         let opts = self.scheduler_options();
         let state_path = opts.state_path();
@@ -7139,7 +7366,560 @@ impl Server {
             "runs_dir": self.runs_dir.display().to_string(),
             "state_path": state_path.display().to_string(),
             "lock": serde_json::Value::Object(lock),
+            // PR6: the embedded thread's live state (running/stop_requested/
+            // lock_pid/thread_alive/log_tail + last error) for the Runner UI.
+            "scheduler": self.scheduler_snapshot(SCHEDULER_HEALTH_LOG_TAIL),
         });
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    // -----------------------------------------------------------------------
+    // PR6: embedded scheduler thread (Runner only; design §A.6)
+    // -----------------------------------------------------------------------
+
+    /// Runner package log directory (design §A.6.3): `<CWD>/logs`.
+    ///
+    /// `start-runner.bat` starts the daemon with `cd /d "%~dp0"`, so the process
+    /// CWD is the Runner package root and the files land exactly where the
+    /// README/bat expect (`logs/runner.log`, `logs/scheduler.events.jsonl`).
+    /// The live `--config` directory is **not** used any more: with the shipped
+    /// `--config config\live.json` layout that would write `config\logs\...`.
+    fn scheduler_log_dir(&self) -> PathBuf {
+        if let Some(dir) = &self.scheduler_log_dir {
+            return dir.clone();
+        }
+        std::env::current_dir()
+            .map(|cwd| cwd.join("logs"))
+            .unwrap_or_else(|_| PathBuf::from("logs"))
+    }
+
+    /// `logs/runner.log` (embedded scheduler `<out>` lines).
+    fn scheduler_log_path(&self) -> PathBuf {
+        self.scheduler_log_dir().join("runner.log")
+    }
+
+    /// `logs/scheduler.events.jsonl` (audit events of the embedded scheduler;
+    /// `schedule::append_jsonl` creates the directory on the first event).
+    fn scheduler_events_path(&self) -> PathBuf {
+        self.scheduler_log_dir().join("scheduler.events.jsonl")
+    }
+
+    /// Scheduler options for the embedded thread (design §A.6.1): plan/state
+    /// from the live config (test seam: `with_scheduler_options`), tasks/runs/
+    /// library/model/det/clicks from the serve arguments, Runner values from
+    /// `runner_config`, the PR6 stop token + per-pass device lease, and the
+    /// package `logs/` files for the scheduler log/audit.
+    fn embedded_scheduler_options(&self, stop: Arc<AtomicBool>) -> SchedulerOptions {
+        let mut opts = self.scheduler_options();
+        opts.tasks_dir = self.tasks_dir.clone();
+        opts.runs_dir = self.runs_dir.clone();
+        opts.library = self.library_dir.clone();
+        opts.model = self.ocr_model.clone();
+        opts.det_model = self.det_model.clone();
+        // Click audit lands with the other serve writes (`runs/`), exactly like
+        // the editor-triggered runs' click JSONL.
+        opts.clicks_dir = Some(self.runs_dir.clone());
+        opts.values_path = Some(self.runner_values_path());
+        opts.stop = Some(stop);
+        // PR6 P1-4: the scheduler audit belongs next to the scheduler log.
+        opts.events = Some(self.scheduler_events_path());
+        // PR6 P1-5: `run_scheduler` acquires this per pass (never for the whole
+        // thread lifetime), so the Runner can be used between passes.
+        opts.lease_path = self.device_lease_path.clone();
+        if let Some(cfg) = crate::config::global() {
+            if !cfg.scheduler.report.trim().is_empty() {
+                opts.report = Some(PathBuf::from(cfg.scheduler.report.trim()));
+            }
+        }
+        opts
+    }
+
+    /// Read-only device lease probe for `/runner/scheduler/status` + health.
+    ///
+    /// Uses the on-disk lease ([`crate::device_lease::read_lease`]) instead of a
+    /// process-lifetime guard: `held=false` is the normal state while the
+    /// scheduler sleeps between passes (PR6 P1-5).
+    fn device_lease_snapshot(&self) -> serde_json::Value {
+        let Some(path) = self.device_lease_path.as_ref() else {
+            return serde_json::json!({"enabled": false, "held": false, "path": null});
+        };
+        match crate::device_lease::read_lease(path) {
+            Some(info) => serde_json::json!({
+                "enabled": true,
+                "held": true,
+                "path": path.display().to_string(),
+                "pid": info.pid,
+                "surface": info.surface,
+                "owner": info.owner,
+                "mode": info.mode,
+                "started_ms": info.started_ms,
+            }),
+            None => serde_json::json!({
+                "enabled": true,
+                "held": false,
+                "path": path.display().to_string(),
+            }),
+        }
+    }
+
+    /// Advisory start pre-check: a live lease would make the first pass skip, so
+    /// `POST /runner/scheduler/start` answers 409 `device_busy` synchronously.
+    /// The per-pass `DeviceLease::acquire` inside `run_scheduler` is the real
+    /// authority (a lease can appear/disappear between this check and the pass).
+    fn ensure_device_lease_free(&self) -> Result<(), String> {
+        let Some(path) = self.device_lease_path.as_ref() else {
+            return Ok(());
+        };
+        let Some(holder) = crate::device_lease::read_lease(path) else {
+            return Ok(());
+        };
+        if holder.pid == std::process::id() || crate::schedule::process_alive(holder.pid) {
+            return Err(crate::device_lease::conflict_message(path, &holder));
+        }
+        Ok(())
+    }
+
+    /// Acquire the optional device lease (design §A.6.4). `None` = no live
+    /// config => the lease is disabled (tests / pure CLI).
+    fn acquire_device_lease(&self, owner: &str, mode: &str) -> Result<Option<DeviceLease>, String> {
+        match &self.device_lease_path {
+            Some(path) => DeviceLease::acquire(path, owner, mode).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    fn scheduler_is_running(&self) -> bool {
+        self.scheduler_controller
+            .runtime
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .running
+    }
+
+    /// Record a start failure in the runtime state so `/runner/health` can
+    /// explain why the embedded scheduler is not running (design §A.6.2).
+    fn record_scheduler_error(&self, message: String) {
+        let mut rt = self
+            .scheduler_controller
+            .runtime
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !rt.running {
+            rt.last_error = Some(message);
+        }
+    }
+
+    /// Start the embedded scheduler thread (Runner only, PR6).
+    ///
+    /// Failures are explicit instead of a thread that dies later:
+    /// * [`SchedulerStartError::LockHeld`] — another scheduler (e.g. the
+    ///   `oasd scheduler` CLI) holds `<state>.lock` (409);
+    /// * [`SchedulerStartError::Lease`] — Studio / a temp run owns the device
+    ///   lease (409);
+    /// * [`SchedulerStartError::Spawn`] — the OS refused the thread (500).
+    fn start_scheduler_thread(&self) -> Result<SchedulerStart, SchedulerStartError> {
+        {
+            let rt = self
+                .scheduler_controller
+                .runtime
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if rt.running {
+                return Ok(SchedulerStart::AlreadyRunning {
+                    started_ms: rt.started_ms,
+                });
+            }
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let opts = self.embedded_scheduler_options(stop.clone());
+        // Advisory pre-check: answer `409 lock held by pid …` synchronously
+        // instead of letting the thread fail after the response. The thread's
+        // own `SchedulerLock::acquire` remains the race-free authority.
+        let state_path = opts.state_path();
+        if let Some(pid) = crate::schedule::lock_held_by_live_process(&state_path) {
+            let message = format!(
+                "another scheduler is already running (lock held by pid {pid}, `{}`) — stop it \
+                 before starting the Runner scheduler",
+                state_path.with_extension("lock").display()
+            );
+            self.record_scheduler_error(message.clone());
+            return Err(SchedulerStartError::LockHeld { pid, message });
+        }
+        // Advisory pre-check: a live device lease (Studio trial / temp run)
+        // would make every pass skip, so report it synchronously as 409. The
+        // per-pass acquire inside `run_scheduler` is the race-free authority.
+        if let Err(message) = self.ensure_device_lease_free() {
+            self.record_scheduler_error(message.clone());
+            return Err(SchedulerStartError::Lease(message));
+        }
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let started_ms = now_ms();
+        {
+            let mut rt = self
+                .scheduler_controller
+                .runtime
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            *rt = SchedulerRuntime {
+                running: true,
+                stop_requested: false,
+                stop: Some(stop.clone()),
+                started_ms: Some(started_ms),
+                finished_ms: None,
+                last_stop: None,
+                last_error: None,
+                done_rx: Some(done_rx),
+            };
+        }
+        let controller = self.scheduler_controller.clone();
+        let runner = self.scheduler_runner.clone();
+        let log_path = self.scheduler_log_path();
+        let thread_opts = opts.clone();
+        let spawned = std::thread::Builder::new()
+            .name("oasd-runner-scheduler".to_string())
+            .spawn(move || {
+                run_embedded_scheduler(
+                    runner,
+                    &thread_opts,
+                    &controller,
+                    &log_path,
+                    done_tx,
+                )
+            });
+        if let Err(e) = spawned {
+            let mut rt = self
+                .scheduler_controller
+                .runtime
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            rt.running = false;
+            rt.finished_ms = Some(now_ms());
+            rt.stop = None;
+            rt.done_rx = None;
+            rt.last_error = Some(format!("spawn scheduler thread: {e}"));
+            return Err(SchedulerStartError::Spawn(format!(
+                "spawn scheduler thread: {e}"
+            )));
+        }
+        Ok(SchedulerStart::Started { started_ms })
+    }
+
+    /// Snapshot shared by `/runner/scheduler/status` and `/runner/health`.
+    fn scheduler_snapshot(&self, log_tail: usize) -> serde_json::Value {
+        let opts = self.scheduler_options();
+        let state_path = opts.state_path();
+        let lock_pid = crate::schedule::lock_held_by_live_process(&state_path);
+        let progress = scheduler_state_progress(&state_path);
+        let (running, stop_requested, started_ms, finished_ms, last_stop, last_error) = {
+            let rt = self
+                .scheduler_controller
+                .runtime
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            (
+                rt.running,
+                rt.stop_requested,
+                rt.started_ms,
+                rt.finished_ms,
+                rt.last_stop.clone(),
+                rt.last_error.clone(),
+            )
+        };
+        let tail: Vec<String> = {
+            let ring = self
+                .scheduler_controller
+                .log
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let start = ring.len().saturating_sub(log_tail);
+            ring[start..].to_vec()
+        };
+        serde_json::json!({
+            "running": running,
+            "stop_requested": stop_requested,
+            "thread_alive": running,
+            "started_ms": started_ms,
+            "finished_ms": finished_ms,
+            "passes": progress.passes,
+            "last_pass_ms": progress.last_pass_ms,
+            "last_stop": last_stop,
+            "last_error": last_error,
+            "lock_pid": lock_pid,
+            "log_path": self.scheduler_log_path().display().to_string(),
+            "events_path": self.scheduler_events_path().display().to_string(),
+            // Per-pass lease (PR6 P1-5): held only while a pass executes.
+            "device_lease": self.device_lease_snapshot(),
+            "log_tail": tail,
+        })
+    }
+
+    /// `POST /runner/scheduler/start` — start the embedded thread (PR6).
+    fn handle_runner_scheduler_start(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        match self.start_scheduler_thread() {
+            Ok(SchedulerStart::Started { started_ms }) => {
+                self.editor_log("runner scheduler start requested");
+                let body = serde_json::json!({
+                    "ok": true,
+                    "running": true,
+                    "started_ms": started_ms,
+                });
+                self.send_json(out, 200, &body.to_string())
+            }
+            Ok(SchedulerStart::AlreadyRunning { started_ms }) => {
+                let body = serde_json::json!({
+                    "ok": true,
+                    "running": true,
+                    "already_running": true,
+                    "started_ms": started_ms,
+                });
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(e) => {
+                let code = match &e {
+                    SchedulerStartError::LockHeld { .. } => "scheduler_locked",
+                    SchedulerStartError::Lease(_) => "device_busy",
+                    SchedulerStartError::Spawn(_) => "scheduler_spawn_failed",
+                };
+                self.editor_log(&format!(
+                    "runner scheduler start failed code={code} message={}",
+                    e.message()
+                ));
+                let mut body = serde_json::json!({
+                    "ok": false,
+                    "error": code,
+                    "errors": [e.message()],
+                    "message": e.message(),
+                });
+                if let SchedulerStartError::LockHeld { pid, .. } = &e {
+                    body["pid"] = serde_json::json!(pid);
+                }
+                self.send_json(out, e.status(), &body.to_string())
+            }
+        }
+    }
+
+    /// `POST /runner/scheduler/stop` — set the stop token and wait ≤3 s.
+    ///
+    /// The thread finishes the attempt it is executing (never interrupted) and
+    /// only then exits, so a long attempt answers `200 {running:true,
+    /// stopping:true, timeout:true}` well inside the UI's fetch timeout; the UI
+    /// then polls `GET /runner/scheduler/status` until `running=false` and shows
+    /// "停止中（当前 task 跑完后退出）" instead of a request failure. `running`
+    /// is always the real state.
+    fn handle_runner_scheduler_stop(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let rx = {
+            let mut rt = self
+                .scheduler_controller
+                .runtime
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if !rt.running {
+                return self.send_json(
+                    out,
+                    200,
+                    r#"{"ok":true,"running":false,"stopped":true,"already_stopped":true}"#,
+                );
+            }
+            rt.stop_requested = true;
+            if let Some(token) = rt.stop.as_ref() {
+                token.store(true, Ordering::SeqCst);
+            }
+            rt.done_rx.take()
+        };
+        self.editor_log("runner scheduler stop requested");
+        // One bounded wait: a previous stop may already have consumed the
+        // completion receiver (`None`), in which case the authoritative
+        // `running` flag below decides. No second polling budget.
+        let stopped = match rx {
+            Some(rx) => rx.recv_timeout(SCHEDULER_STOP_TIMEOUT).is_ok(),
+            None => false,
+        };
+        // The thread clears `running` before it signals completion, so this is
+        // the real state right after the bounded wait.
+        let running = self.scheduler_is_running();
+        let body = if stopped || !running {
+            serde_json::json!({
+                "ok": true,
+                "running": false,
+                "stopped": true,
+            })
+        } else {
+            serde_json::json!({
+                "ok": true,
+                "running": true,
+                "stopping": true,
+                "timeout": true,
+                "message": "调度正在停止（当前 attempt 跑完后退出）",
+            })
+        };
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `GET /runner/scheduler/status` — Runner-only live scheduler state (PR6).
+    fn handle_runner_scheduler_status(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let mut body = self.scheduler_snapshot(SCHEDULER_STATUS_LOG_TAIL);
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("ok".to_string(), serde_json::Value::Bool(true));
+        }
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    // -----------------------------------------------------------------------
+    // PR6: `POST /runner/run` — temporary Runner run (values layer merged)
+    // -----------------------------------------------------------------------
+
+    /// `POST /runner/run` — body `{task, params?}` (Runner only, PR6).
+    ///
+    /// * `config/values.json` (Runner values layer) is the **base**;
+    /// * the request's `params` object overrides it key by key, keeping JSON
+    ///   types (`"007"` stays a string) — both are merged before
+    ///   `RunOptions::params`, exactly where `run::execute` then layers
+    ///   `meta.params[].default` underneath;
+    /// * values of **other tasks are never read** (`runner_values_layer` looks
+    ///   up this task only — no inheritance, design V6 step 17);
+    /// * shared single-run mutex with `/task/run`: a busy state is `409
+    ///   run_busy`, a held device lease is `409 device_busy`;
+    /// * execution is asynchronous; `GET /runner/run/status` polls it.
+    fn handle_runner_run(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => {
+                return self.send_errors(out, 400, vec![format!("请求体不是合法 JSON：{e}")])
+            }
+        };
+        let task = match json_str_field(&v, "task") {
+            Ok(t) => t,
+            Err(e) => return self.send_errors(out, 400, vec![format!("缺少任务名：{e}")]),
+        };
+        if let Err(e) = oas_task::validate_task_name(&task) {
+            return self.send_errors(out, 400, vec![format!("任务名称不合法：{e}")]);
+        }
+        let body_params: std::collections::BTreeMap<String, serde_json::Value> = match v.get("params")
+        {
+            None | Some(serde_json::Value::Null) => std::collections::BTreeMap::new(),
+            Some(serde_json::Value::Object(map)) => map
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            Some(other) => {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec![format!("`params` 必须是 JSON 对象（key → 值），收到 {other}")],
+                )
+            }
+        };
+        let task_dir = self.tasks_dir.join(&task);
+        if !task_dir.is_dir() {
+            return self.send_errors(
+                out,
+                404,
+                vec![format!(
+                    "任务「{task}」不存在（Runner 上先安装任务包，或刷新已安装任务列表）"
+                )],
+            );
+        }
+        // Single-run mutex first (cheap, deterministic): a busy Runner answers
+        // 409 `run_busy` before reading values or touching the device lease.
+        if self.run_state.lock().unwrap().running {
+            let running = self
+                .run_state
+                .lock()
+                .unwrap()
+                .task
+                .clone()
+                .unwrap_or_else(|| "（未知任务）".to_string());
+            let body = serde_json::json!({
+                "ok": false,
+                "error": "run_busy",
+                "errors": [format!("已有任务正在运行：{running}；等它结束再试")],
+                "message": format!("已有任务正在运行：{running}；等它结束再试（GET /runner/run/status 查看进度）"),
+            });
+            return self.send_json(out, 409, &body.to_string());
+        }
+        // Runner values layer (this task only — never another task's values).
+        let mut params = match crate::run::runner_values_layer(&self.runner_values_path(), &task) {
+            Ok(values) => values,
+            Err(e) => {
+                return self.send_errors(out, 500, vec![format!("Runner 运行值读取失败：{e}")])
+            }
+        };
+        // Request params win over the stored values, type-preserving.
+        for (key, value) in body_params {
+            params.insert(key, value);
+        }
+        let lease = match self.acquire_device_lease("runner", "temp-run") {
+            Ok(lease) => lease,
+            Err(e) => {
+                let body = serde_json::json!({
+                    "ok": false,
+                    "error": "device_busy",
+                    "errors": [e.clone()],
+                    "message": e,
+                });
+                return self.send_json(out, 409, &body.to_string());
+            }
+        };
+        let started_ms = now_ms();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let step_log = Arc::new(Mutex::new(Vec::<String>::new()));
+        {
+            let mut st = self.run_state.lock().unwrap();
+            *st = RunState {
+                running: true,
+                task: Some(task.clone()),
+                started_ms: Some(started_ms),
+                mode: Some("temp-run".to_string()),
+                cancel: Some(cancel.clone()),
+                step_log: Some(step_log.clone()),
+                ..RunState::default()
+            };
+        }
+        // Same `RunOptions` contract as `oasd run`; the explicit layer is the
+        // merged values + request params, defaults are merged inside execute().
+        let mut opts = RunOptions::default();
+        opts.task = Some(task_dir);
+        opts.library = self.library_dir.clone();
+        opts.assets = self.assets_dir.clone();
+        opts.model = self.ocr_model.clone();
+        opts.det_model = self.det_model.clone();
+        opts.params = params;
+        opts.cancel = Some(cancel);
+        opts.step_log = Some(step_log);
+        opts.trace_appear = true;
+        // `/runner/run` already holds owner=runner/mode=temp-run (409 above).
+        opts.skip_lease = true;
+        opts.clicks_out = Some(
+            self.runs_dir
+                .join(format!("runner-{task}-{started_ms}.clicks.jsonl")),
+        );
+        if let Err(e) = self.spawn_run_worker(opts, lease) {
+            return self.send_errors(out, 500, vec![format!("启动后台运行线程失败：{e}")]);
+        }
+        let body = serde_json::json!({
+            "ok": true,
+            "task": task,
+            "started_ms": started_ms,
+        });
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `GET /runner/run/status` — status of the current/last Runner temp run.
+    fn handle_runner_run_status(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let mut st = self.run_state.lock().unwrap();
+        st.drain_step_log();
+        let start = st.log.len().saturating_sub(RUN_LOG_TAIL);
+        let body = serde_json::json!({
+            "ok": true,
+            "running": st.running,
+            "task": st.task,
+            "started_ms": st.started_ms,
+            "finished_ms": st.finished_ms,
+            "outcome": st.outcome,
+            "error": st.error,
+            "log_tail": &st.log[start..],
+        });
+        drop(st);
         self.send_json(out, 200, &body.to_string())
     }
 
@@ -7858,6 +8638,9 @@ impl Server {
             // P4: run entities live next to the click JSONL files, so the API
             // reads exactly the directory the CLI scheduler writes.
             runs_dir: self.runs_dir.clone(),
+            // PR6 P1-4: audit events live in the Runner package `logs/`, next
+            // to `runner.log` (not next to the plan/state files).
+            events: Some(self.scheduler_events_path()),
             ..SchedulerOptions::default()
         };
         if let Some(cfg) = crate::config::global() {
@@ -8332,6 +9115,142 @@ fn queue_member_error(task: &str, owners: &[String]) -> String {
         "task `{task}` is a queue member of `{}`; edit the queue first",
         owners.join("`, `")
     )
+}
+
+/// `passes` / `last_pass_ms` from the persisted scheduler state (PR6 status).
+/// Read-only and tolerant: a missing/corrupt state file is `None`, never an
+/// error (`/runner/health` must answer before the first pass).
+#[derive(Debug, Default)]
+struct SchedulerStateProgress {
+    passes: Option<u64>,
+    last_pass_ms: Option<u64>,
+}
+
+fn scheduler_state_progress(state_path: &Path) -> SchedulerStateProgress {
+    let Ok(text) = std::fs::read_to_string(state_path) else {
+        return SchedulerStateProgress::default();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return SchedulerStateProgress::default();
+    };
+    SchedulerStateProgress {
+        passes: value.get("passes").and_then(|v| v.as_u64()),
+        last_pass_ms: value.get("last_pass_ms").and_then(|v| v.as_u64()),
+    }
+}
+
+/// Body of the Runner's embedded scheduler thread (PR6, design §A.6.1).
+///
+/// * every `<out>` line goes to the in-memory ring **and** `logs/runner.log`;
+/// * the device lease is **not** held here: `run_scheduler` acquires it per
+///   pass and drops it before the inter-pass sleep (PR6 P1-5);
+/// * a `run_scheduler` error or a panic is recorded as `last_error` and the
+///   server keeps running (a thread panic must never take the HTTP surface down);
+/// * `running` is cleared **before** `done_tx` signals, so `POST …/stop` never
+///   races the final state update.
+fn run_embedded_scheduler(
+    runner: Arc<SchedulerRunner>,
+    opts: &SchedulerOptions,
+    controller: &SchedulerController,
+    log_path: &Path,
+    done_tx: std::sync::mpsc::Sender<()>,
+) {
+    if let Some(parent) = log_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!(
+                    "runner scheduler: create log dir `{}`: {e}",
+                    parent.display()
+                );
+            }
+        }
+    }
+    let mut log_file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        Ok(file) => Some(file),
+        Err(e) => {
+            eprintln!(
+                "runner scheduler: open log `{}`: {e}",
+                log_path.display()
+            );
+            None
+        }
+    };
+    let result = {
+        let mut emit = |line: &str| scheduler_log_line(controller, &mut log_file, line);
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner(opts, &mut emit)))
+    };
+    let (last_stop, last_error) = match result {
+        Ok(Ok(report)) => (Some(report.stopped_reason), None),
+        Ok(Err(e)) => {
+            scheduler_log_line(controller, &mut log_file, &format!("scheduler_error={e}"));
+            (None, Some(e))
+        }
+        Err(payload) => {
+            let message = format!(
+                "scheduler thread panicked: {}",
+                panic_payload_message(payload)
+            );
+            scheduler_log_line(controller, &mut log_file, &format!("scheduler_panic: {message}"));
+            (None, Some(message))
+        }
+    };
+    scheduler_log_line(
+        controller,
+        &mut log_file,
+        &format!(
+            "scheduler_thread_exit stop={} error={}",
+            last_stop.as_deref().unwrap_or("-"),
+            last_error.as_deref().unwrap_or("-")
+        ),
+    );
+    // `run_scheduler` dropped the per-pass lease before returning; clear
+    // `running` last so a status poll that observes "not running" can rely on
+    // the device being free (PR6 P1-5).
+    {
+        let mut rt = controller
+            .runtime
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        rt.running = false;
+        rt.stop_requested = false;
+        rt.stop = None;
+        rt.finished_ms = Some(now_ms());
+        rt.last_stop = last_stop;
+        rt.last_error = last_error;
+    }
+    let _ = done_tx.send(());
+}
+
+/// Append one scheduler line to the bounded ring and to `logs/runner.log`.
+fn scheduler_log_line(
+    controller: &SchedulerController,
+    file: &mut Option<std::fs::File>,
+    line: &str,
+) {
+    if let Ok(mut ring) = controller.log.lock() {
+        ring.push(line.to_string());
+        if ring.len() > SCHEDULER_LOG_MAX {
+            let excess = ring.len() - SCHEDULER_LOG_MAX;
+            ring.drain(0..excess);
+        }
+    }
+    if let Some(file) = file.as_mut() {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
 }
 
 /// Read `config.mode` from the scheduler plan **without** locking or writing.
@@ -9741,6 +10660,110 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    /// Read a GET route and parse its JSON body (fails the test on non-200).
+    fn get_json_route(server: &Server, target: &str) -> serde_json::Value {
+        let (status, body) = get_route(server, target);
+        assert!(status.contains("200"), "{target}: {status} {body}");
+        serde_json::from_str(&body).expect("valid JSON body")
+    }
+
+    /// PR6: `/runner/run/status` until the worker is done.
+    fn wait_runner_run_finished(server: &Server, timeout_ms: u64) -> serde_json::Value {
+        let t0 = std::time::Instant::now();
+        loop {
+            let v = get_json_route(server, "/runner/run/status");
+            if v["running"] == serde_json::Value::Bool(false) {
+                return v;
+            }
+            assert!(
+                t0.elapsed() < std::time::Duration::from_millis(timeout_ms),
+                "runner run did not finish in {timeout_ms}ms: {v}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// PR6: wait until the embedded scheduler emitted a line containing
+    /// `needle` (the thread starts asynchronously after the start response).
+    fn wait_scheduler_log(server: &Server, needle: &str, timeout_ms: u64) -> serde_json::Value {
+        let t0 = std::time::Instant::now();
+        loop {
+            let v = get_json_route(server, "/runner/scheduler/status");
+            let found = v["log_tail"]
+                .as_array()
+                .map(|lines| {
+                    lines.iter().any(|l| {
+                        l.as_str()
+                            .map(|s| s.contains(needle))
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+            if found {
+                return v;
+            }
+            assert!(
+                t0.elapsed() < std::time::Duration::from_millis(timeout_ms),
+                "scheduler never logged `{needle}` in {timeout_ms}ms: {v}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// PR6: wait until the embedded scheduler thread is gone (self-exit or
+    /// stop). Returns the final `GET /runner/scheduler/status` JSON.
+    fn wait_scheduler_stopped(server: &Server, timeout_ms: u64) -> serde_json::Value {
+        let t0 = std::time::Instant::now();
+        loop {
+            let v = get_json_route(server, "/runner/scheduler/status");
+            if v["running"] == serde_json::Value::Bool(false) {
+                return v;
+            }
+            assert!(
+                t0.elapsed() < std::time::Duration::from_millis(timeout_ms),
+                "scheduler thread did not stop in {timeout_ms}ms: {v}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Write a lease as if a *live* other activity held it (same pid so the
+    /// same-process conflict rule is exercised; the file is never dropped by a
+    /// `DeviceLease`, exactly like a foreign process's lease).
+    fn write_live_lease(path: &Path, owner: &str, mode: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create lease dir");
+        }
+        let surface = owner.split('-').next().unwrap_or("runner");
+        let info = serde_json::json!({
+            "pid": std::process::id(),
+            "surface": surface,
+            "owner": owner,
+            "mode": mode,
+            "started_ms": 1,
+        });
+        std::fs::write(path, info.to_string()).expect("write live lease");
+    }
+
+    /// Scripted embedded scheduler: emits two lines, blocks on the PR6 stop
+    /// token, then reports `api_stop` (no plan/task/device needed).
+    fn stop_aware_scheduler_runner() -> Arc<SchedulerRunner> {
+        Arc::new(|opts: &SchedulerOptions, out: &mut dyn FnMut(&str)| {
+            out("scheduler_start fake plan");
+            let stop = opts.stop.clone().expect("embedded scheduler stop token");
+            out("scheduler_wake pass=1 sleep_ms=1000");
+            while !stop.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            out("scheduler_stop reason=api_stop passes=1");
+            Ok(SchedulerReport {
+                stopped_reason: "api_stop".to_string(),
+                passes: 1,
+                ..SchedulerReport::default()
+            })
+        })
     }
 
     fn done_report() -> RunReport {
@@ -11643,6 +12666,9 @@ mod tests {
             .with_surface(Surface::Runner)
             .with_assets_dir(td.join("assets"))
             .with_editor_log(td.join("logs/editor.log"))
+            // PR6 P1-4: production derives `logs/` from the package CWD; pin it
+            // under the tempdir so no test writes the real package logs.
+            .with_scheduler_log_dir(td.join("logs"))
             .with_scheduler_options(SchedulerOptions {
                 config: config_path,
                 tasks_dir,
@@ -12362,6 +13388,24 @@ mod tests {
             required_surface("PUT", "/runner/tasks/任务1/other"),
             Some(Surface::Runner)
         );
+        // PR6 Runner embedded scheduler + temporary run (Runner only).
+        assert_eq!(
+            required_surface("GET", "/runner/scheduler/status"),
+            Some(Surface::Runner)
+        );
+        assert_eq!(
+            required_surface("POST", "/runner/scheduler/start"),
+            Some(Surface::Runner)
+        );
+        assert_eq!(
+            required_surface("POST", "/runner/scheduler/stop"),
+            Some(Surface::Runner)
+        );
+        assert_eq!(required_surface("POST", "/runner/run"), Some(Surface::Runner));
+        assert_eq!(
+            required_surface("GET", "/runner/run/status"),
+            Some(Surface::Runner)
+        );
         // PR2 Studio param-schema editor.
         assert_eq!(required_surface("GET", "/task/config"), Some(Surface::Studio));
         assert_eq!(required_surface("POST", "/task/config"), Some(Surface::Studio));
@@ -12389,7 +13433,15 @@ mod tests {
         let td = TempDir::new("surface-studio-404");
         let server = server_for_surface(td.path(), Surface::Studio);
 
-        for target in ["/runner/tasks", "/runner/health", "/runs/scheduler"] {
+        for target in [
+            "/runner/tasks",
+            "/runner/health",
+            "/runs/scheduler",
+            // PR6: the embedded scheduler and the temporary Runner run are
+            // invisible from Studio (plain 404, not a 403).
+            "/runner/scheduler/status",
+            "/runner/run/status",
+        ] {
             let (status, body) = get_route(&server, target);
             assert!(status.contains("404"), "{target}: {status} {body}");
         }
@@ -12397,6 +13449,9 @@ mod tests {
             ("/scheduler/config", "{}"),
             ("/scheduler/reset", "{}"),
             ("/runs/delete", "{}"),
+            ("/runner/scheduler/start", "{}"),
+            ("/runner/scheduler/stop", "{}"),
+            ("/runner/run", "{}"),
         ] {
             let (status, out) = post_route(&server, target, "application/json", body.as_bytes());
             assert!(status.contains("404"), "{target}: {status} {out}");
@@ -12593,6 +13648,781 @@ mod tests {
         assert!(status.contains("200"), "{status} {body}");
         let v: serde_json::Value = serde_json::from_str(&body).expect("tasks JSON");
         assert!(v["tasks"].as_array().expect("tasks").is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // PR6: embedded scheduler thread + `/runner/run` + device lease
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn auto_scheduler_flag_defaults_to_true_and_can_be_disabled() {
+        // `oasd runner` starts the embedded thread by default; `--no-scheduler`
+        // (main.rs) turns this flag off. `oasd studio` never consults it.
+        let server = Server::new(Adb::from_env());
+        assert!(server.auto_scheduler, "Runner starts the thread by default");
+        let server = server.with_auto_scheduler(false);
+        assert!(!server.auto_scheduler);
+    }
+
+    #[test]
+    fn runner_scheduler_start_status_stop_roundtrip() {
+        let td = TempDir::new("pr6-sched-roundtrip");
+        let server = scheduler_server(td.path(), None)
+            .with_scheduler_runner(stop_aware_scheduler_runner());
+
+        // start -> running immediately (state is set before the response)
+        let (status, body) = post_route(
+            &server,
+            "/runner/scheduler/start",
+            "application/json",
+            b"{}",
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let started: serde_json::Value = serde_json::from_str(&body).expect("start JSON");
+        assert_eq!(started["ok"], true);
+        assert_eq!(started["running"], true);
+        let started_ms = started["started_ms"].as_u64().expect("started_ms");
+
+        // second start is a no-op, not a second thread
+        let (status, body) = post_route(
+            &server,
+            "/runner/scheduler/start",
+            "application/json",
+            b"{}",
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let again: serde_json::Value = serde_json::from_str(&body).expect("start JSON");
+        assert_eq!(again["already_running"], true, "{again}");
+        assert_eq!(again["running"], true);
+        assert_eq!(again["started_ms"], started_ms);
+
+        // status: live state + ring buffer + log path
+        let st = wait_scheduler_log(&server, "scheduler_start fake plan", 2000);
+        assert_eq!(st["running"], true);
+        assert_eq!(st["stop_requested"], false);
+        assert_eq!(st["thread_alive"], true);
+        assert_eq!(st["lock_pid"], serde_json::Value::Null);
+        assert!(
+            st["passes"].is_null(),
+            "no state file yet: passes is null, not a fake 0: {st}"
+        );
+        assert_eq!(
+            st["log_path"],
+            td.path().join("logs").join("runner.log").display().to_string()
+        );
+
+        // health carries the same scheduler block
+        let health = get_json_route(&server, "/runner/health");
+        assert_eq!(health["scheduler"]["running"], true, "{health}");
+        assert_eq!(health["scheduler"]["thread_alive"], true, "{health}");
+
+        // stop joins the thread (<= 5 s) and cleans the state
+        let (status, body) = post_route(
+            &server,
+            "/runner/scheduler/stop",
+            "application/json",
+            b"{}",
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let stopped: serde_json::Value = serde_json::from_str(&body).expect("stop JSON");
+        assert_eq!(stopped["ok"], true);
+        assert_eq!(stopped["running"], false, "stop must wait for the join: {stopped}");
+        assert_eq!(stopped["stopped"], true);
+        let st = get_json_route(&server, "/runner/scheduler/status");
+        assert_eq!(st["running"], false);
+        assert_eq!(st["stop_requested"], false);
+        assert_eq!(st["last_stop"], "api_stop");
+        assert_eq!(st["last_error"], serde_json::Value::Null);
+        let tail: Vec<&str> = st["log_tail"]
+            .as_array()
+            .expect("log_tail")
+            .iter()
+            .filter_map(|l| l.as_str())
+            .collect();
+        assert!(tail.iter().any(|l| l.contains("scheduler_stop reason=api_stop")), "{tail:?}");
+
+        // logs/runner.log is appended (design §A.6.3)
+        let log = std::fs::read_to_string(td.path().join("logs").join("runner.log"))
+            .expect("runner.log must exist");
+        assert!(log.contains("scheduler_start fake plan"), "{log}");
+        assert!(log.contains("scheduler_stop reason=api_stop"), "{log}");
+
+        // repeated stop is harmless
+        let (status, body) = post_route(
+            &server,
+            "/runner/scheduler/stop",
+            "application/json",
+            b"{}",
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("stop JSON");
+        assert_eq!(v["already_stopped"], true, "{v}");
+        assert_eq!(v["running"], false);
+
+        // and it can be started again afterwards
+        let (status, body) = post_route(
+            &server,
+            "/runner/scheduler/start",
+            "application/json",
+            b"{}",
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let _ = post_route(&server, "/runner/scheduler/stop", "application/json", b"{}");
+    }
+
+    #[test]
+    fn runner_scheduler_start_is_409_when_the_scheduler_lock_is_held() {
+        let td = TempDir::new("pr6-sched-locked");
+        // `<state>.lock` held by this live pid = `oasd scheduler` is running.
+        std::fs::write(
+            scheduler_lock_path(td.path()),
+            format!(r#"{{"pid":{},"started_ms":0}}"#, std::process::id()),
+        )
+        .expect("write lock");
+        let server = scheduler_server(td.path(), None)
+            .with_scheduler_runner(stop_aware_scheduler_runner());
+
+        let (status, body) = post_route(
+            &server,
+            "/runner/scheduler/start",
+            "application/json",
+            b"{}",
+        );
+        assert!(status.contains("409"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("error JSON");
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["error"], "scheduler_locked", "{v}");
+        let msg = v["message"].as_str().expect("message");
+        assert!(msg.contains("lock held by pid"), "{msg}");
+        assert!(msg.contains(&std::process::id().to_string()), "{msg}");
+
+        // no thread was started, and health explains why
+        let st = get_json_route(&server, "/runner/scheduler/status");
+        assert_eq!(st["running"], false);
+        assert_eq!(st["thread_alive"], false);
+        assert!(st["last_error"].as_str().unwrap_or_default().contains("lock held by pid"));
+        let health = get_json_route(&server, "/runner/health");
+        assert_eq!(health["lock"]["held"], true, "{health}");
+        assert_eq!(health["scheduler"]["running"], false);
+        assert!(health["scheduler"]["last_error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("lock held by pid"));
+    }
+
+    #[test]
+    fn runner_scheduler_thread_error_is_recorded_and_the_server_stays_up() {
+        let td = TempDir::new("pr6-sched-error");
+        let failing: Arc<SchedulerRunner> =
+            Arc::new(|_opts: &SchedulerOptions, out: &mut dyn FnMut(&str)| {
+                out("scheduler_start fake failing plan");
+                Err("scheduler: scripted setup error".to_string())
+            });
+        let server = scheduler_server(td.path(), None).with_scheduler_runner(failing);
+
+        let (status, body) = post_route(
+            &server,
+            "/runner/scheduler/start",
+            "application/json",
+            b"{}",
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let st = wait_scheduler_stopped(&server, 2000);
+        assert_eq!(st["thread_alive"], false);
+        assert_eq!(
+            st["last_error"], "scheduler: scripted setup error",
+            "the thread error must be visible: {st}"
+        );
+        let tail: Vec<&str> = st["log_tail"]
+            .as_array()
+            .expect("log_tail")
+            .iter()
+            .filter_map(|l| l.as_str())
+            .collect();
+        assert!(
+            tail.iter().any(|l| l.contains("scheduler_error=scheduler: scripted setup error")),
+            "{tail:?}"
+        );
+        // The HTTP surface is unaffected and health reports the failure.
+        let health = get_json_route(&server, "/runner/health");
+        assert_eq!(health["ok"], true);
+        assert_eq!(health["scheduler"]["running"], false);
+        assert_eq!(health["scheduler"]["last_error"], "scheduler: scripted setup error");
+        // A failed thread does not poison the controller: start again works.
+        let (status, body) = post_route(
+            &server,
+            "/runner/scheduler/start",
+            "application/json",
+            b"{}",
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        assert_eq!(wait_scheduler_stopped(&server, 2000)["last_error"],
+                   "scheduler: scripted setup error");
+    }
+
+    #[test]
+    fn runner_scheduler_thread_panic_is_contained() {
+        let td = TempDir::new("pr6-sched-panic");
+        let panicking: Arc<SchedulerRunner> =
+            Arc::new(|_opts: &SchedulerOptions, _out: &mut dyn FnMut(&str)| {
+                panic!("scripted scheduler panic")
+            });
+        let server = scheduler_server(td.path(), None).with_scheduler_runner(panicking);
+        let (status, body) = post_route(
+            &server,
+            "/runner/scheduler/start",
+            "application/json",
+            b"{}",
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let st = wait_scheduler_stopped(&server, 2000);
+        let err = st["last_error"].as_str().expect("panic recorded");
+        assert!(err.contains("panicked"), "{err}");
+        assert!(err.contains("scripted scheduler panic"), "{err}");
+        // The server still answers; the lease (if any) would be released by the
+        // thread's Drop, and a new start is allowed.
+        assert_eq!(get_json_route(&server, "/runner/health")["ok"], true);
+        let (status, _) = post_route(
+            &server,
+            "/runner/scheduler/start",
+            "application/json",
+            b"{}",
+        );
+        assert!(status.contains("200"), "{status}");
+        let _ = wait_scheduler_stopped(&server, 2000);
+    }
+
+    #[test]
+    fn runner_scheduler_start_does_not_take_the_device_lease() {
+        let td = TempDir::new("pr6-sched-no-lease");
+        let lease_path = td.path().join("config").join("device.lease");
+        let server = scheduler_server(td.path(), None)
+            .with_scheduler_runner(stop_aware_scheduler_runner())
+            .with_device_lease_path(Some(lease_path.clone()));
+
+        let (status, body) = post_route(
+            &server,
+            "/runner/scheduler/start",
+            "application/json",
+            b"{}",
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        assert!(
+            !lease_path.exists(),
+            "the scheduler thread must not hold the lease for its whole lifetime"
+        );
+        let st = get_json_route(&server, "/runner/scheduler/status");
+        assert_eq!(st["device_lease"]["enabled"], true, "{st}");
+        assert_eq!(st["device_lease"]["held"], false, "{st}");
+        assert_eq!(
+            st["device_lease"]["path"],
+            lease_path.display().to_string(),
+            "{st}"
+        );
+
+        let _ = post_route(&server, "/runner/scheduler/stop", "application/json", b"{}");
+        assert!(!lease_path.exists());
+    }
+
+    #[test]
+    fn runner_scheduler_start_is_409_when_the_device_lease_is_held() {
+        let td = TempDir::new("pr6-sched-lease-held");
+        let lease_path = td.path().join("config").join("device.lease");
+        write_live_lease(&lease_path, "studio", "editor-run");
+        let server = scheduler_server(td.path(), None)
+            .with_scheduler_runner(stop_aware_scheduler_runner())
+            .with_device_lease_path(Some(lease_path.clone()));
+
+        let (status, body) = post_route(
+            &server,
+            "/runner/scheduler/start",
+            "application/json",
+            b"{}",
+        );
+        assert!(status.contains("409"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("error JSON");
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["error"], "device_busy", "{v}");
+        let msg = v["message"].as_str().expect("message");
+        assert!(msg.contains("Studio 正在试运行"), "{msg}");
+        // No thread was started; the pre-check is only advisory and must not
+        // steal the foreign lease.
+        let st = get_json_route(&server, "/runner/scheduler/status");
+        assert_eq!(st["running"], false);
+        assert_eq!(st["device_lease"]["held"], true, "{st}");
+        assert!(st["last_error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Studio 正在试运行"));
+        assert!(lease_path.exists(), "a failed start must not remove the lease");
+    }
+
+    #[test]
+    fn runner_scheduler_stop_times_out_after_three_seconds_and_stays_pollable() {
+        let td = TempDir::new("pr6-sched-stop-timeout");
+        let gate = Arc::new(Gate::new());
+        let gate_in_thread = gate.clone();
+        // A long attempt: ignores the stop token until the gate opens.
+        let stubborn: Arc<SchedulerRunner> = Arc::new(
+            move |_opts: &SchedulerOptions, out: &mut dyn FnMut(&str)| {
+                out("scheduler_start stubborn plan");
+                gate_in_thread.wait();
+                out("scheduler_stop reason=max_rounds");
+                Ok(SchedulerReport {
+                    stopped_reason: "max_rounds".to_string(),
+                    ..SchedulerReport::default()
+                })
+            },
+        );
+        let server = scheduler_server(td.path(), None).with_scheduler_runner(stubborn);
+        let (status, body) = post_route(
+            &server,
+            "/runner/scheduler/start",
+            "application/json",
+            b"{}",
+        );
+        assert!(status.contains("200"), "{status} {body}");
+
+        let t0 = std::time::Instant::now();
+        let (status, body) = post_route(
+            &server,
+            "/runner/scheduler/stop",
+            "application/json",
+            b"{}",
+        );
+        let elapsed = t0.elapsed();
+        assert!(status.contains("200"), "{status} {body}");
+        assert!(
+            elapsed >= Duration::from_millis(2_500),
+            "stop must wait for the bounded 3s budget (waited {elapsed:?})"
+        );
+        assert!(
+            elapsed < Duration::from_secs(6),
+            "stop must not keep the old 10s budget (waited {elapsed:?})"
+        );
+        let v: serde_json::Value = serde_json::from_str(&body).expect("stop JSON");
+        assert_eq!(v["ok"], true, "{v}");
+        assert_eq!(v["running"], true, "{v}");
+        assert_eq!(v["stopping"], true, "{v}");
+        assert_eq!(v["timeout"], true, "{v}");
+        assert_eq!(v["message"], "调度正在停止（当前 attempt 跑完后退出）", "{v}");
+
+        // The UI polls status meanwhile: the thread is alive + stop requested.
+        let st = get_json_route(&server, "/runner/scheduler/status");
+        assert_eq!(st["running"], true, "{st}");
+        assert_eq!(st["stop_requested"], true, "{st}");
+
+        // A repeated stop no longer owns the completion receiver: it answers
+        // immediately with the same timeout contract (never a failure).
+        let t1 = std::time::Instant::now();
+        let (status, body) = post_route(
+            &server,
+            "/runner/scheduler/stop",
+            "application/json",
+            b"{}",
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        assert!(
+            t1.elapsed() < Duration::from_secs(2),
+            "a repeated stop must not wait the whole budget again"
+        );
+        let again: serde_json::Value = serde_json::from_str(&body).expect("stop JSON");
+        assert_eq!(again["timeout"], true, "{again}");
+        assert_eq!(again["running"], true, "{again}");
+
+        gate.open();
+        let st = wait_scheduler_stopped(&server, 3000);
+        assert_eq!(st["running"], false);
+        assert_eq!(st["stop_requested"], false);
+        assert_eq!(st["last_stop"], "max_rounds");
+    }
+
+    #[test]
+    fn runner_scheduler_status_reports_package_log_and_events_paths() {
+        let td = TempDir::new("pr6-sched-paths");
+        let lease_path = td.path().join("config").join("device.lease");
+        let server = scheduler_server(td.path(), None)
+            .with_device_lease_path(Some(lease_path));
+        let log_path = td.path().join("logs").join("runner.log");
+        let events_path = td.path().join("logs").join("scheduler.events.jsonl");
+        assert_eq!(server.scheduler_log_path(), log_path);
+        assert_eq!(server.scheduler_events_path(), events_path);
+        let st = server.scheduler_snapshot(SCHEDULER_STATUS_LOG_TAIL);
+        assert_eq!(st["log_path"], log_path.display().to_string(), "{st}");
+        assert_eq!(st["events_path"], events_path.display().to_string(), "{st}");
+        // PR6 P1-4: the embedded scheduler writes `<pkg>/logs/...`, never
+        // `<config dir>/logs/...` (the shipped `--config config\live.json`
+        // layout must not create `config\logs`).
+        let opts = server.embedded_scheduler_options(Arc::new(AtomicBool::new(false)));
+        assert_eq!(opts.events, Some(events_path));
+        assert_eq!(opts.lease_path, Some(td.path().join("config/device.lease")));
+        assert!(
+            !td.path().join("config").join("logs").exists(),
+            "config/<...>/logs must not reappear"
+        );
+    }
+
+    #[test]
+    fn preheld_runs_skip_the_execute_level_lease() {
+        for surface in [Surface::Studio, Surface::Runner] {
+            let td = TempDir::new(&format!("pr6-skip-lease-{}", surface.as_str()));
+            let tasks_dir = td.path().join("tasks");
+            make_task(&tasks_dir, "跳过租约任务");
+            let lease_path = td.path().join("config").join("device.lease");
+            let captured: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
+            let captured_in_exec = captured.clone();
+            let exec: Arc<RunExecutor> =
+                Arc::new(move |opts: &RunOptions, _out: &mut dyn FnMut(&str)| {
+                    *captured_in_exec.lock().unwrap() = Some(opts.skip_lease);
+                    Ok(done_report())
+                });
+            let server = server_with_tasks(td.path())
+                .with_surface(surface)
+                .with_device_lease_path(Some(lease_path.clone()))
+                .with_run_executor(exec);
+            let (route, status_poll) = match surface {
+                Surface::Studio => ("/task/run", "/task/run/status"),
+                Surface::Runner => ("/runner/run", "/runner/run/status"),
+            };
+            let (status, body) = post_route(
+                &server,
+                route,
+                "application/json",
+                r#"{"task":"跳过租约任务"}"#.as_bytes(),
+            );
+            assert!(status.contains("200"), "{surface:?}: {status} {body}");
+            // The route pre-acquired the lease (same owner/mode as before).
+            let info = crate::device_lease::read_lease(&lease_path).expect("pre-held lease");
+            let mode = if surface == Surface::Studio { "editor-run" } else { "temp-run" };
+            assert_eq!(info.mode, mode, "{surface:?}");
+            let t0 = std::time::Instant::now();
+            let finished = loop {
+                let st = get_json_route(&server, status_poll);
+                if st["running"] == serde_json::Value::Bool(false) {
+                    break st;
+                }
+                assert!(
+                    t0.elapsed() < Duration::from_secs(5),
+                    "{surface:?} run did not finish: {st}"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            assert_eq!(
+                finished["outcome"], "Done",
+                "{surface:?}: a double acquire would have failed the run: {finished}"
+            );
+            assert_eq!(
+                *captured.lock().unwrap(),
+                Some(true),
+                "{surface:?}: a pre-held run must set RunOptions::skip_lease"
+            );
+            assert!(
+                !lease_path.exists(),
+                "{surface:?}: the pre-held lease is released when the worker ends"
+            );
+        }
+    }
+
+    #[test]
+    fn runner_run_merges_values_below_body_params_with_json_types() {
+        let td = TempDir::new("pr6-run-values");
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "临时运行任务");
+        let values_path = td.path().join("config").join("values.json");
+        crate::runner_config::set_task_values(
+            &values_path,
+            "临时运行任务",
+            serde_json::json!({"code":"from-values","keep":1,"flag":true})
+                .as_object()
+                .expect("object")
+                .clone(),
+            1,
+        )
+        .expect("write values");
+        // Values belonging to another task must never leak into this run.
+        crate::runner_config::set_task_values(
+            &values_path,
+            "另一个任务",
+            serde_json::json!({"other":"must-not-appear"})
+                .as_object()
+                .expect("object")
+                .clone(),
+            2,
+        )
+        .expect("write other task values");
+        let captured: CapturedParams = Arc::new(Mutex::new(None));
+        let server = server_with_tasks(td.path())
+            .with_surface(Surface::Runner)
+            .with_values_path(values_path)
+            .with_run_executor(capturing_executor(captured.clone()));
+
+        let (status, body) = post_route(
+            &server,
+            "/runner/run",
+            "application/json",
+            r#"{"task":"临时运行任务","params":{"code":"from-body","n":3}}"#.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let started: serde_json::Value = serde_json::from_str(&body).expect("start JSON");
+        assert_eq!(started["ok"], true);
+        assert_eq!(started["task"], "临时运行任务");
+        assert!(started["started_ms"].as_u64().is_some());
+
+        let st = wait_runner_run_finished(&server, 5000);
+        assert_eq!(st["outcome"], "Done");
+        assert_eq!(st["error"], serde_json::Value::Null);
+        let got = captured_params(&captured);
+        assert_eq!(got["code"], serde_json::json!("from-body"), "body wins: {got:?}");
+        assert_eq!(got["keep"], serde_json::json!(1), "values layer kept: {got:?}");
+        assert_eq!(got["flag"], serde_json::json!(true), "types preserved: {got:?}");
+        assert_eq!(got["n"], serde_json::json!(3), "{got:?}");
+        assert_eq!(got.len(), 4, "no values of other tasks / extra keys: {got:?}");
+        assert!(
+            !got.contains_key("other"),
+            "another task's values must never be inherited: {got:?}"
+        );
+    }
+
+    #[test]
+    fn runner_run_validates_the_request_and_rejects_unknown_tasks() {
+        let td = TempDir::new("pr6-run-bad");
+        let server = server_with_tasks(td.path()).with_surface(Surface::Runner);
+        for (body, why) in [
+            ("{}", "missing task"),
+            (r#"{"task":""}"#, "empty task"),
+            (r#"{"task":"../evil"}"#, "traversal"),
+            (r#"{"task":"ok","params":[]}"#, "array params"),
+            (r#"{"task":"ok","params":"x"}"#, "string params"),
+        ] {
+            let (status, out) =
+                post_route(&server, "/runner/run", "application/json", body.as_bytes());
+            assert!(status.contains("400"), "{why}: {status} {out}");
+        }
+        let (status, body) = post_route(
+            &server,
+            "/runner/run",
+            "application/json",
+            r#"{"task":"不存在的任务"}"#.as_bytes(),
+        );
+        assert!(status.contains("404"), "{status} {body}");
+        assert_eq!(
+            get_json_route(&server, "/runner/run/status")["running"],
+            false,
+            "rejected requests must not start a run"
+        );
+    }
+
+    #[test]
+    fn runner_run_is_409_while_another_run_is_active() {
+        let td = TempDir::new("pr6-run-busy");
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "忙碌任务");
+        let gate = Arc::new(Gate::new());
+        let gate_in_thread = gate.clone();
+        let exec: Arc<RunExecutor> =
+            Arc::new(move |_opts: &RunOptions, out: &mut dyn FnMut(&str)| {
+                out("seed=7");
+                gate_in_thread.wait();
+                out("outcome=Done reason=Done");
+                Ok(done_report())
+            });
+        let server = server_with_tasks(td.path())
+            .with_surface(Surface::Runner)
+            .with_run_executor(exec);
+        let payload = r#"{"task":"忙碌任务"}"#.as_bytes();
+        let (status, body) = post_route(&server, "/runner/run", "application/json", payload);
+        assert!(status.contains("200"), "{status} {body}");
+        assert_eq!(
+            get_json_route(&server, "/runner/run/status")["running"],
+            true
+        );
+        let (status, body) = post_route(&server, "/runner/run", "application/json", payload);
+        assert!(status.contains("409"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("busy JSON");
+        assert_eq!(v["error"], "run_busy", "{v}");
+        gate.open();
+        let st = wait_runner_run_finished(&server, 5000);
+        assert_eq!(st["outcome"], "Done");
+        // ... and the mutex is released after the worker finished.
+        let (status, _) = post_route(&server, "/runner/run", "application/json", payload);
+        assert!(status.contains("200"), "{status}");
+        let _ = wait_runner_run_finished(&server, 5000);
+    }
+
+    #[test]
+    fn runner_run_status_has_the_pr6_contract_shape() {
+        let td = TempDir::new("pr6-run-status");
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "状态任务");
+        let exec: Arc<RunExecutor> =
+            Arc::new(|_opts: &RunOptions, out: &mut dyn FnMut(&str)| {
+                out("seed=42");
+                out("outcome=Done reason=Done");
+                Ok(done_report())
+            });
+        let server = server_with_tasks(td.path())
+            .with_surface(Surface::Runner)
+            .with_run_executor(exec);
+        let (status, _) = post_route(
+            &server,
+            "/runner/run",
+            "application/json",
+            r#"{"task":"状态任务"}"#.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status}");
+        let st = wait_runner_run_finished(&server, 5000);
+        for key in [
+            "ok",
+            "running",
+            "task",
+            "started_ms",
+            "finished_ms",
+            "outcome",
+            "error",
+            "log_tail",
+        ] {
+            assert!(st.get(key).is_some(), "missing `{key}`: {st}");
+        }
+        assert_eq!(st["ok"], true);
+        assert_eq!(st["task"], "状态任务");
+        assert_eq!(st["outcome"], "Done");
+        assert_eq!(st["error"], serde_json::Value::Null);
+        assert!(st["finished_ms"].as_u64().expect("finished_ms")
+            >= st["started_ms"].as_u64().expect("started_ms"));
+        let tail: Vec<&str> = st["log_tail"]
+            .as_array()
+            .expect("log_tail")
+            .iter()
+            .filter_map(|l| l.as_str())
+            .collect();
+        assert!(tail.contains(&"outcome=Done reason=Done"), "{tail:?}");
+    }
+
+    #[test]
+    fn runner_run_holds_the_device_lease_until_the_worker_finishes() {
+        let td = TempDir::new("pr6-run-lease");
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "租约任务");
+        let lease_path = td.path().join("config").join("device.lease");
+        let gate = Arc::new(Gate::new());
+        let gate_in_thread = gate.clone();
+        let exec: Arc<RunExecutor> =
+            Arc::new(move |_opts: &RunOptions, out: &mut dyn FnMut(&str)| {
+                out("seed=1");
+                gate_in_thread.wait();
+                Ok(done_report())
+            });
+        let server = server_with_tasks(td.path())
+            .with_surface(Surface::Runner)
+            .with_device_lease_path(Some(lease_path.clone()))
+            .with_run_executor(exec);
+        let (status, _) = post_route(
+            &server,
+            "/runner/run",
+            "application/json",
+            r#"{"task":"租约任务"}"#.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status}");
+        let info = crate::device_lease::read_lease(&lease_path).expect("temp-run lease");
+        assert_eq!(info.owner, "runner");
+        assert_eq!(info.mode, "temp-run");
+        let (status, body) = post_route(
+            &server,
+            "/runner/run",
+            "application/json",
+            r#"{"task":"租约任务"}"#.as_bytes(),
+        );
+        assert!(status.contains("409"), "second temp run must be refused: {status} {body}");
+        gate.open();
+        let _ = wait_runner_run_finished(&server, 5000);
+        assert!(!lease_path.exists(), "the lease is released when the worker ends");
+    }
+
+    #[test]
+    fn runner_run_is_409_when_studio_holds_the_device_lease() {
+        let td = TempDir::new("pr6-run-studio-lease");
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "被占用任务");
+        let lease_path = td.path().join("config").join("device.lease");
+        write_live_lease(&lease_path, "studio", "editor-run");
+        let server = server_with_tasks(td.path())
+            .with_surface(Surface::Runner)
+            .with_device_lease_path(Some(lease_path.clone()));
+        let (status, body) = post_route(
+            &server,
+            "/runner/run",
+            "application/json",
+            r#"{"task":"被占用任务"}"#.as_bytes(),
+        );
+        assert!(status.contains("409"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("error JSON");
+        assert_eq!(v["error"], "device_busy", "{v}");
+        let msg = v["message"].as_str().expect("message");
+        assert!(msg.contains("Studio 正在试运行"), "{msg}");
+        assert!(msg.contains(&format!("pid {}", std::process::id())), "{msg}");
+        assert_eq!(
+            get_json_route(&server, "/runner/run/status")["running"],
+            false
+        );
+        assert!(lease_path.exists(), "a failed acquire must not steal the lease");
+    }
+
+    #[test]
+    fn studio_task_run_is_409_when_the_runner_scheduler_holds_the_lease() {
+        let td = TempDir::new("pr6-studio-lease");
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "试运行任务");
+        let lease_path = td.path().join("config").join("device.lease");
+        write_live_lease(&lease_path, "runner-scheduler", "scheduler");
+        let server = server_with_tasks(td.path())
+            .with_device_lease_path(Some(lease_path.clone()));
+        let (status, body) = post_route(
+            &server,
+            "/task/run",
+            "application/json",
+            r#"{"task":"试运行任务"}"#.as_bytes(),
+        );
+        assert!(status.contains("409"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("error JSON");
+        assert_eq!(v["error"], "device_busy", "{v}");
+        let msg = v["message"].as_str().expect("message");
+        assert!(msg.contains("Runner 正在调度"), "{msg}");
+        assert!(msg.contains(&format!("pid {}", std::process::id())), "{msg}");
+        assert_eq!(poll_run_status(&server)["running"], false);
+        assert!(lease_path.exists());
+    }
+
+    #[test]
+    fn studio_task_run_releases_the_device_lease_after_finishing() {
+        let td = TempDir::new("pr6-studio-release");
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "释放任务");
+        let lease_path = td.path().join("config").join("device.lease");
+        // Blocking executor: `running` (and the lease) are set synchronously
+        // before the start response, so the intermediate assert is deterministic.
+        let gate = Arc::new(Gate::new());
+        let gate_in_thread = gate.clone();
+        let exec: Arc<RunExecutor> =
+            Arc::new(move |_opts: &RunOptions, out: &mut dyn FnMut(&str)| {
+                out("seed=1");
+                gate_in_thread.wait();
+                Ok(done_report())
+            });
+        let server = server_with_tasks(td.path())
+            .with_device_lease_path(Some(lease_path.clone()))
+            .with_run_executor(exec);
+        let (status, body) = post_route(
+            &server,
+            "/task/run",
+            "application/json",
+            r#"{"task":"释放任务"}"#.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        assert!(lease_path.exists(), "the lease is held while the run executes");
+        gate.open();
+        let st = wait_run_finished(&server, 5000);
+        assert_eq!(st["outcome"], "Done");
+        assert!(!lease_path.exists(), "the lease is released after the run");
     }
 
     #[test]

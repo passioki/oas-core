@@ -50,12 +50,20 @@
           <div id="overview-health" class="muted">（未加载）</div>
         </section>
         <section class="card runner-section">
+          <h3>调度</h3>
+          <div id="overview-scheduler" class="muted">（未加载）</div>
+          <div class="row">
+            <button id="overview-goto-queue" type="button">去「队列与调度」页</button>
+            <span class="muted small">启动/停止调度、临时运行与 scheduler.json 编辑都在那里。</span>
+          </div>
+        </section>
+        <section class="card runner-section">
           <h3>最近运行</h3>
           <div id="overview-recent-runs" class="muted">（未加载）</div>
           <div id="overview-recent-status" class="muted small">—</div>
         </section>
         <p class="runner-note muted small">
-          任务安装与调度执行由后续 PR 提供；运行值在「已安装任务 → 配置」里填写。
+          调度启停、临时运行与 scheduler.json 编辑在「队列与调度」页；运行值在「已安装任务 → 配置」里填写。
           路径按运行面返回原样显示，不做平台转换。
         </p>
       </div>
@@ -133,11 +141,50 @@
       <div class="page-wrap">
         <div class="row page-head">
           <h2>队列与调度</h2>
-          <span class="muted small">只读状态</span>
+          <span class="muted small">状态只读 · 启停、临时运行与 JSON 编辑在本页</span>
           <span class="spacer"></span>
           <button id="runner-queue-refresh" type="button">刷新</button>
         </div>
         <div id="runner-queue-status" class="muted small">—</div>
+
+        <section class="card runner-section" id="runner-sched-control">
+          <h3>调度控制 <span id="runner-sched-badge" class="runner-badge kind">—</span></h3>
+          <div id="runner-sched-meta" class="muted small">—</div>
+          <div class="row runner-sched-actions">
+            <button id="runner-sched-start" type="button" title="在本 Runner 进程内启动调度线程">启动调度</button>
+            <button id="runner-sched-stop" type="button" title="请求停止调度；当前任务跑完后才退出">停止调度</button>
+            <button id="runner-sched-refresh" type="button">刷新</button>
+            <span id="runner-sched-status" class="muted small" role="status" aria-live="polite">—</span>
+          </div>
+          <pre id="runner-sched-error" class="muted small dialog-error"></pre>
+          <p class="runner-note muted small">
+            调度在本 Runner 进程内以线程运行，与 <code>oasd scheduler</code> 共用同一把
+            <code>&lt;state&gt;.lock</code>，同一时间只能有一个在跑。停止只会在当前任务跑完后生效，
+            不会中断正在执行的任务；锁被其他进程占用时启动会返回 409。
+          </p>
+        </section>
+
+        <section class="card runner-section" id="runner-run-card">
+          <h3>临时运行</h3>
+          <p class="muted small">
+            立即运行一次任务，不写入调度条目。参数留空或 <code>{}</code> 时使用 Runner
+            已保存的运行值（「已安装任务 → 配置」）；这里填的值覆盖保存值。
+          </p>
+          <label class="opt">任务
+            <select id="runner-run-task"></select>
+          </label>
+          <label class="opt">参数 JSON（可选）
+            <textarea id="runner-run-params" class="runner-pre runner-run-params" rows="3"
+              spellcheck="false" placeholder='{"触发文字":"突破"}'>{}</textarea>
+          </label>
+          <div class="row">
+            <button id="runner-run-submit" type="button">立即运行</button>
+            <span id="runner-run-status" class="muted small" role="status" aria-live="polite">—</span>
+          </div>
+          <pre id="runner-run-error" class="muted small dialog-error"></pre>
+          <pre id="runner-run-log" class="runner-pre runner-run-log"></pre>
+        </section>
+
         <section class="card runner-section">
           <h3>状态</h3>
           <div id="queue-summary" class="muted">（未加载）</div>
@@ -152,8 +199,24 @@
           <span class="muted small">一轮 = 按顺序走完成员</span>
         </div>
         <div id="queue-queues" class="muted">（未加载）</div>
+
+        <details class="card runner-section runner-sched-json-card">
+          <summary>高级：scheduler.json</summary>
+          <p class="muted small">
+            直接编辑完整 <code>scheduler.json</code>：保存前在本地做 JSON.parse 校验，
+            服务端仍会做 schema 校验（条目 id/窗口/quota、队列成员、触发条目互斥）。
+            JSON 结构见文档；保存后需启动/重启调度生效。
+          </p>
+          <textarea id="runner-sched-json" class="runner-pre runner-json" spellcheck="false"></textarea>
+          <div class="row">
+            <button id="runner-sched-json-save" type="button">保存 JSON</button>
+            <span id="runner-sched-json-status" class="muted small" role="status" aria-live="polite">—</span>
+          </div>
+          <pre id="runner-sched-json-error" class="muted small dialog-error"></pre>
+        </details>
+
         <p class="runner-note muted small">
-          队列管理、调度启停与临时运行由后续 PR 提供；本页只读。
+          条目顺序与队列成员以 scheduler.json 为准；运行值请在「已安装任务 → 配置」里保存。
         </p>
       </div>
     </div>

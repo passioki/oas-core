@@ -24,6 +24,7 @@ mod library;
 mod schedule;
 mod scheduler;
 mod config;
+mod device_lease;
 mod task;
 mod global_assets;
 mod package_cmd;
@@ -137,7 +138,7 @@ fn main() -> ExitCode {
                  oasd assets cleanup-legacy [--tasks-dir <dir>] [--assets-dir <dir>] [--apply]\n  \
                  oasd studio [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--assets-dir <dir>] [--frames-dir <dir>] [--model <path>] [--det-model <path>] [--no-open]   (default port 8788)\n  \
                  oasd studio publish --task <id> [--out <dir|file.oaspkg>] [--tasks-dir <dir>] [--assets-dir <dir>] [--force] [--include-deps] [--reproducible]\n  \
-                 oasd runner [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--assets-dir <dir>] [--frames-dir <dir>] [--model <path>] [--det-model <path>] [--no-open]   (default port 8789)\n  \
+                 oasd runner [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--assets-dir <dir>] [--frames-dir <dir>] [--model <path>] [--det-model <path>] [--no-scheduler] [--no-open]   (default port 8789; --no-scheduler disables the embedded scheduler thread)\n  \
                  oasd serve  ... (deprecated alias of `oasd studio`, default port 8788)"
             );
             ExitCode::from(2)
@@ -425,6 +426,10 @@ fn serve_cmd(rest: &[String], surface: serve::Surface) -> ExitCode {
     let mut assets_dir = global_assets::DEFAULT_DIR.to_string();
     let mut frames_dir = "frames".to_string();
     let mut open_browser = true;
+    // PR6 (design §A.6.2): `oasd runner` starts the embedded scheduler thread by
+    // default; `--no-scheduler` keeps the old CLI-only behaviour. Accepted on
+    // both surfaces for symmetry, only the Runner acts on it.
+    let mut auto_scheduler = true;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -474,6 +479,10 @@ fn serve_cmd(rest: &[String], surface: serve::Surface) -> ExitCode {
                 open_browser = false;
                 i += 1;
             }
+            "--no-scheduler" => {
+                auto_scheduler = false;
+                i += 1;
+            }
             "--open" => {
                 open_browser = true;
                 i += 1;
@@ -495,7 +504,8 @@ fn serve_cmd(rest: &[String], surface: serve::Surface) -> ExitCode {
         .with_library_dir(&library_dir)
         .with_assets_dir(&assets_dir)
         .with_frames_dir(&frames_dir)
-        .with_open_browser(open_browser);
+        .with_open_browser(open_browser)
+        .with_auto_scheduler(auto_scheduler);
     enable_models(&mut server, model.as_deref(), det_model.as_deref());
     match server.run(port, &ui) {
         Ok(()) => ExitCode::SUCCESS,

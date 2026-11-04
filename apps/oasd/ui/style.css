@@ -682,26 +682,6 @@ aside.side {
 .dialog-actions { margin-top: 4px; }
 .dialog-actions button { flex: 1; }
 
-/* M2/N37: scheduler panel + reset-memory dialog */
-.reset-task-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 0;
-}
-.reset-task-row input[type="checkbox"] {
-  width: auto;
-  flex: none;
-  margin: 0;
-}
-.sched-entry {
-  border: 1px solid #2a3a4a;
-  border-radius: 6px;
-  padding: 6px 8px;
-  margin-bottom: 6px;
-}
-.sched-entry .row { gap: 8px; align-items: center; }
-
 /* v1.1: inline multi-line OCR actions */
 .ocr-line-row {
   display: flex;

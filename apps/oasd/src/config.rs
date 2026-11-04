@@ -119,6 +119,12 @@ pub struct DeviceConfig {
     pub serial: String,
     /// 冷启动时 adb server 丢设备后尝试 connect 的端点。
     pub reconnect_endpoints: Vec<String>,
+    /// Device lease file (design §A.6.4, PR6). Empty = default
+    /// `<live config dir>/device.lease`; a relative path is resolved against
+    /// the live config file's directory. Only written by the app when a
+    /// `--config` was loaded (see `device_lease::lease_path_from_config`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease: Option<String>,
 }
 
 impl Default for DeviceConfig {
@@ -127,6 +133,7 @@ impl Default for DeviceConfig {
             adb_path: String::new(),
             serial: String::new(),
             reconnect_endpoints: Vec::new(),
+            lease: None,
         }
     }
 }
@@ -349,6 +356,21 @@ mod tests {
                 .unwrap()
                 .packages_dir(),
             Some(PathBuf::from("D:/pkg/packages"))
+        );
+    }
+
+    #[test]
+    fn parses_the_optional_device_lease() {
+        // PR6: the field is additive and optional — an old live.json without it
+        // keeps parsing and serialising exactly as before (skip_serializing_if).
+        assert_eq!(OasConfig::default().device.lease, None);
+        let c = OasConfig::from_json(r#"{"device":{"lease":"state/device.lease"}}"#)
+            .expect("lease setting parses");
+        assert_eq!(c.device.lease.as_deref(), Some("state/device.lease"));
+        let json = serde_json::to_value(&OasConfig::default()).expect("serialize default");
+        assert!(
+            json["device"].get("lease").is_none(),
+            "an unset lease must not change the live.json shape: {json}"
         );
     }
 

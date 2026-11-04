@@ -8,6 +8,16 @@
   const RUNNER_FETCH_TIMEOUT_MS = 8000;
   const RUNNER_RUNS_LIMIT = 100;
   const RUNNER_RECENT_LIMIT = 5;
+  // PR6: queue-page scheduler status poll + temp-run result poll.
+  const RUNNER_SCHED_POLL_MS = 5000;
+  const RUNNER_RUN_POLL_MS = 500;
+  const RUNNER_RUN_POLL_MAX_MS = 60000;
+  const RUNNER_RUN_LOG_TAIL = 20;
+  // POST /runner/scheduler/stop answers within 3 s (`timeout:true` while a long
+  // attempt finishes). The UI then polls the scheduler status itself: 1 s tick,
+  // 30 s budget, so a long attempt is shown as "停止中" instead of "停止失败".
+  const RUNNER_STOP_POLL_MS = 1000;
+  const RUNNER_STOP_POLL_MAX_MS = 30000;
   const RUNNER_PAGES = ['overview', 'tasks', 'packages', 'queue', 'runs', 'settings'];
   const RUNNER_PAGE_LABELS = {
     overview: '概览',
@@ -25,6 +35,12 @@
     uninstall: '/runner/uninstall',
     packagesActivate: '/runner/packages/activate',
     schedulerStatus: '/scheduler/status',
+    schedulerConfig: '/scheduler/config',
+    schedulerStart: '/runner/scheduler/start',
+    schedulerStop: '/runner/scheduler/stop',
+    schedulerThreadStatus: '/runner/scheduler/status',
+    run: '/runner/run',
+    runStatus: '/runner/run/status',
     schedulerRuns: '/runs/scheduler',
     config: '/config',
     instance: '/instance',
@@ -40,6 +56,8 @@
     recentRuns: null,
     recentRunsError: '',
     scheduler: null,
+    runnerScheduler: null,
+    schedConfig: null,
     runs: null,
     config: null,
     instance: null,
@@ -55,6 +73,19 @@
 
   // PR5: 安装/卸载/回滚是串行操作；期间禁用安装按钮并拒绝重复提交。
   let packagesBusy = false;
+
+  // PR6: scheduler start/stop, temp run and scheduler.json saves are serial
+  // operations; the timers are the only long-lived state.
+  let schedBusy = false;
+  let schedStopping = false;
+  let schedJsonBusy = false;
+  let schedJsonDirty = false;
+  let runBusy = false;
+  let runPollTimer = null;
+  let runPollStartedMs = 0;
+  let queuePollTimer = null;
+  let stopPollTimer = null;
+  let stopPollStartedMs = 0;
 
   // --- 纯格式化辅助（无 DOM 依赖；ui_pure_test 会单独抽取验证） ---------------
 
@@ -466,21 +497,178 @@
     return text;
   }
 
+  // --- PR6: 调度启停 / 临时运行 / scheduler.json（纯函数，ui_pure_test 单独抽取）
+  // 只做「请求体 + 文案」的纯转换：不碰 DOM，也不直接发请求。
+
+  // POST /runner/run body. The task is required; the params textarea is
+  // optional. Empty text and `{}` mean "use the Runner's saved values"
+  // (config/values.json); any key overrides a saved value. Anything that is not
+  // a JSON object is rejected locally, before a request is sent.
+  function runnerRunBody(task, paramsText) {
+    const name = String(task === undefined || task === null ? '' : task).trim();
+    if (!name) return { ok: false, body: null, error: '请选择要运行的任务' };
+    const raw = String(paramsText === undefined || paramsText === null ? '' : paramsText).trim();
+    if (!raw) return { ok: true, body: { task: name }, error: '' };
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      return {
+        ok: false,
+        body: null,
+        error: '参数不是合法 JSON：' + (e && e.message ? e.message : String(e)),
+      };
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {
+        ok: false,
+        body: null,
+        error: '参数必须是 JSON 对象（如 {"关键词":"突破"}）',
+      };
+    }
+    const body = { task: name };
+    if (Object.keys(parsed).length) body.params = parsed;
+    return { ok: true, body: body, error: '' };
+  }
+
+  // One sentence for GET /runner/run/status (running / finished / failed).
+  function runnerRunStatusText(status) {
+    const s = status && typeof status === 'object' ? status : {};
+    const task = s.task === undefined || s.task === null || s.task === '' ? '' : String(s.task);
+    if (s.running === true) return '运行中：' + (task || '—');
+    if (s.outcome !== undefined && s.outcome !== null && s.outcome !== '') {
+      return '已结束：' + (task || '—') + ' · outcome=' + String(s.outcome);
+    }
+    if (s.error !== undefined && s.error !== null && s.error !== '') {
+      return '失败：' + (task || '—') + ' · ' + runnerErrorSummary(s.error, 160);
+    }
+    if (s.finished_ms !== undefined && s.finished_ms !== null && s.finished_ms !== '') {
+      return '已结束：' + (task || '—');
+    }
+    return '—';
+  }
+
+  // GET /runner/scheduler/status -> badge text (运行中 / 停止中 / 已停止).
+  function runnerSchedStatusText(status) {
+    const s = status && typeof status === 'object' ? status : null;
+    if (!s) return '—';
+    if (s.running === true) return s.stop_requested === true ? '停止中' : '运行中';
+    if (s.stop_requested === true && s.thread_alive === true) return '停止中';
+    return '已停止';
+  }
+
+  // The scheduling lock is a cross-process file lock; its pid is the one piece
+  // of info that explains "who is running" (Runner thread vs `oasd scheduler`).
+  function runnerSchedLockPidText(status) {
+    const s = status && typeof status === 'object' ? status : null;
+    if (!s) return '—';
+    const pid = s.lock_pid;
+    if (pid === undefined || pid === null || pid === '') return '—';
+    return String(pid);
+  }
+
+  function runnerSchedThreadText(status) {
+    const s = status && typeof status === 'object' ? status : null;
+    if (!s || s.thread_alive === undefined || s.thread_alive === null) return '—';
+    return s.thread_alive === true ? '存活' : '已退出';
+  }
+
+  // POST /scheduler/config body. The textarea holds the raw scheduler.json
+  // document; the server shape is {config: <object>} (same as the old Studio
+  // page contract). The Runner never rewrites the document locally.
+  function runnerSchedJsonBody(text) {
+    const raw = String(text === undefined || text === null ? '' : text).trim();
+    if (!raw) return { ok: false, body: null, error: 'JSON 为空：请先载入或粘贴 scheduler.json' };
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      return {
+        ok: false,
+        body: null,
+        error: 'JSON 解析失败：' + (e && e.message ? e.message : String(e)),
+      };
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, body: null, error: '必须是 JSON 对象（scheduler.json 的顶层对象）' };
+    }
+    return { ok: true, body: { config: parsed }, error: '' };
+  }
+
+  // One actionable line per server error (the 409 busy/lease errors arrive in
+  // body.errors; they are shown verbatim, one per line).
+  function runnerErrorLines(error) {
+    if (error && Array.isArray(error.details) && error.details.length) {
+      return error.details.map(function (line) { return '· ' + String(line); });
+    }
+    return ['· ' + (runnerErrorText(error) || '未知错误')];
+  }
+
   // --- HTTP：所有请求的唯一入口 ------------------------------------------------
+
+  // Human label for the machine-readable 409 codes. The backend sends
+  // `{ok:false,error:"device_busy"|"scheduler_locked"|"run_busy",errors:[...],
+  // message:"..."}`; the summary must keep the code meaning instead of
+  // replacing it with the human `errors` line (P1-1).
+  function runnerErrorCodeLabel(code) {
+    switch (String(code === undefined || code === null ? '' : code)) {
+      case 'device_busy': return '设备被占用';
+      case 'scheduler_locked': return '调度锁被占用';
+      case 'run_busy': return '已有运行在进行';
+      default: return '';
+    }
+  }
 
   function runnerBodyErrors(body) {
     if (!body || typeof body !== 'object') return '';
+    const code = body.error === undefined || body.error === null ? '' : String(body.error);
+    const message = body.message !== undefined && body.message !== null
+      ? String(body.message).trim()
+      : '';
+    const label = runnerErrorCodeLabel(code);
+    if (label) return message ? label + '：' + message : label;
+    if (message) return message;
+    if (code) return code;
     if (Array.isArray(body.errors) && body.errors.length) {
       return body.errors
         .filter(function (e) { return e !== undefined && e !== null && e !== ''; })
         .map(String)
         .join('；');
     }
-    if (body.error !== undefined && body.error !== null && body.error !== '') return String(body.error);
-    if (body.message !== undefined && body.message !== null && body.message !== '') {
-      return String(body.message);
-    }
     return '';
+  }
+
+  // POST /runner/scheduler/stop body -> user-facing text (P1-2). A timeout is a
+  // "still stopping" state, never a failure: the UI polls until running=false.
+  function runnerStopText(body) {
+    const b = body && typeof body === 'object' ? body : null;
+    if (!b) return '已请求停止（等待调度线程退出）';
+    if (b.already_stopped === true) return '调度本来就没在运行';
+    if (b.timeout === true || b.stopping === true) return '停止中（当前任务跑完后退出）';
+    if (b.stopped === true || b.running === false) return '调度已停止';
+    return '已请求停止（等待调度线程退出）';
+  }
+
+  function runnerStopPending(body) {
+    const b = body && typeof body === 'object' ? body : null;
+    return !!b && (b.timeout === true || b.stopping === true);
+  }
+
+  // Scheduler history rows shown only when present (`last_error` / `last_stop`
+  // explain an auto-start failure or the previous stop reason; P2 UI).
+  function runnerSchedHistoryRows(status) {
+    const s = status && typeof status === 'object' ? status : null;
+    const rows = [];
+    if (!s) return rows;
+    if (s.last_stop !== undefined && s.last_stop !== null &&
+        String(s.last_stop).trim() !== '') {
+      rows.push(['最后停止', String(s.last_stop)]);
+    }
+    if (s.last_error !== undefined && s.last_error !== null &&
+        String(s.last_error).trim() !== '') {
+      rows.push(['最后错误', String(s.last_error)]);
+    }
+    return rows;
   }
 
   async function runnerFetchJson(url, opts) {
@@ -513,6 +701,12 @@
       if (!res.ok) {
         const err = new Error('HTTP ' + res.status + (detail ? '：' + detail : ''));
         err.status = res.status;
+        // Keep the machine code (`device_busy` / `scheduler_locked` /
+        // `run_busy`) so callers can branch on it instead of regexing the text.
+        if (body && typeof body === 'object' &&
+            body.error !== undefined && body.error !== null && body.error !== '') {
+          err.code = String(body.error);
+        }
         if (body && Array.isArray(body.errors) && body.errors.length) {
           err.details = body.errors.map(String);
         }
@@ -521,6 +715,9 @@
       if (!body || typeof body !== 'object') throw new Error('响应不是 JSON 对象');
       if (body.ok === false) {
         const err = new Error(detail || '服务端返回 ok=false');
+        if (body.error !== undefined && body.error !== null && body.error !== '') {
+          err.code = String(body.error);
+        }
         if (Array.isArray(body.errors) && body.errors.length) {
           err.details = body.errors.map(String);
         }
@@ -640,7 +837,7 @@
     state.busy = !!busy;
     const buttons = [
       el.refresh, el.healthRefresh, el.tasksRefresh, el.packagesRefresh,
-      el.queueRefresh, el.runsRefresh, el.settingsRefresh,
+      el.queueRefresh, el.runsRefresh, el.settingsRefresh, el.schedRefresh,
     ];
     for (const button of buttons) {
       if (button) button.disabled = !!busy;
@@ -700,6 +897,27 @@
     el.queueSummary = document.getElementById('queue-summary');
     el.queueEntries = document.getElementById('queue-entries');
     el.queueQueues = document.getElementById('queue-queues');
+    // PR6: scheduler control / temp run / advanced scheduler.json editor.
+    el.schedControl = document.getElementById('runner-sched-control');
+    el.schedBadge = document.getElementById('runner-sched-badge');
+    el.schedMeta = document.getElementById('runner-sched-meta');
+    el.schedStart = document.getElementById('runner-sched-start');
+    el.schedStop = document.getElementById('runner-sched-stop');
+    el.schedRefresh = document.getElementById('runner-sched-refresh');
+    el.schedStatus = document.getElementById('runner-sched-status');
+    el.schedError = document.getElementById('runner-sched-error');
+    el.runTask = document.getElementById('runner-run-task');
+    el.runParams = document.getElementById('runner-run-params');
+    el.runSubmit = document.getElementById('runner-run-submit');
+    el.runStatus = document.getElementById('runner-run-status');
+    el.runError = document.getElementById('runner-run-error');
+    el.runLog = document.getElementById('runner-run-log');
+    el.schedJson = document.getElementById('runner-sched-json');
+    el.schedJsonSave = document.getElementById('runner-sched-json-save');
+    el.schedJsonStatus = document.getElementById('runner-sched-json-status');
+    el.schedJsonError = document.getElementById('runner-sched-json-error');
+    el.overviewScheduler = document.getElementById('overview-scheduler');
+    el.overviewGotoQueue = document.getElementById('overview-goto-queue');
 
     el.runsRefresh = document.getElementById('runner-runs-refresh');
     el.runsStatus = document.getElementById('runner-runs-status');
@@ -755,17 +973,42 @@
     }
     const h = state.health;
     const tasks = state.tasks && Array.isArray(state.tasks.tasks) ? state.tasks.tasks : null;
+    const sched = h.scheduler && typeof h.scheduler === 'object' ? h.scheduler : null;
     renderKv(el.overviewHealth, [
       ['运行面', runnerValueText(h.surface)],
       ['版本', runnerValueText(h.version)],
       ['端口', runnerValueText(h.port)],
       ['调度模式', runnerValueText(h.scheduler_mode)],
       ['调度锁', runnerLockText(h.lock)],
+      ['调度状态', sched ? runnerSchedStatusText(sched) : '—'],
+      ['锁 pid', runnerSchedLockPidText(sched)],
+      ['调度线程', runnerSchedThreadText(sched)],
       ['任务目录', runnerValueText(h.tasks_dir)],
       ['运行目录', runnerValueText(h.runs_dir)],
       ['状态文件', runnerValueText(h.state_path)],
       ['已安装任务数', tasks ? String(tasks.length) : '—'],
     ]);
+  }
+
+  function renderOverviewScheduler() {
+    if (!el.overviewScheduler) return;
+    const sched = state.runnerScheduler ||
+      (state.health && state.health.scheduler && typeof state.health.scheduler === 'object'
+        ? state.health.scheduler
+        : null);
+    if (!sched) {
+      el.overviewScheduler.textContent = '—';
+      return;
+    }
+    const passes = sched.passes === undefined || sched.passes === null ? '—' : String(sched.passes);
+    renderKv(el.overviewScheduler, [
+      ['调度状态', runnerSchedStatusText(sched)],
+      ['调度线程', runnerSchedThreadText(sched)],
+      ['锁 pid', runnerSchedLockPidText(sched)],
+      ['停止请求', sched.stop_requested === true ? '已请求（当前任务跑完后停止）' : '无'],
+      ['passes', passes],
+      ['上次 pass', runnerTimeText(sched.last_pass_ms)],
+    ].concat(runnerSchedHistoryRows(sched)));
   }
 
   function renderRecentRuns() {
@@ -802,6 +1045,7 @@
 
   function renderOverview() {
     renderOverviewHealth();
+    renderOverviewScheduler();
     renderRecentRuns();
   }
 
@@ -1474,11 +1718,131 @@
     );
   }
 
+  function renderQueueSchedulerControl() {
+    const s = state.runnerScheduler;
+    const text = s ? runnerSchedStatusText(s) : '—';
+    const cls = text === '运行中' ? 'ok' : (text === '停止中' ? 'warn' : 'kind');
+    setBadge(el.schedBadge, text, cls);
+    if (!s) {
+      if (el.schedMeta) el.schedMeta.textContent = '（调度线程状态未加载）';
+      return;
+    }
+    const tail = Array.isArray(s.log_tail) ? s.log_tail : [];
+    const lastLine = tail.length ? String(tail[tail.length - 1]) : '—';
+    renderKv(el.schedMeta, [
+      ['调度线程', runnerSchedThreadText(s)],
+      ['锁 pid', runnerSchedLockPidText(s)],
+      ['停止请求', s.stop_requested === true ? '已请求（跑完当前任务后停止）' : '无'],
+      ['passes', s.passes === undefined || s.passes === null ? '—' : String(s.passes)],
+      ['上次 pass', runnerTimeText(s.last_pass_ms)],
+      ['日志尾部', lastLine],
+    ].concat(runnerSchedHistoryRows(s)));
+  }
+
+  function setSchedBusy(busy) {
+    schedBusy = !!busy;
+    if (el.schedStart) el.schedStart.disabled = schedBusy || schedStopping;
+    if (el.schedStop) el.schedStop.disabled = schedBusy;
+    if (el.schedRefresh) el.schedRefresh.disabled = schedBusy;
+  }
+
+  // While a stop is pending (backend `timeout:true`, long attempt finishing),
+  // keep "启动调度" disabled until the status poll observes running=false; the
+  // stop button stays clickable (a repeated stop is a harmless no-op).
+  function setSchedStopping(stopping) {
+    schedStopping = !!stopping;
+    if (el.schedStart) el.schedStart.disabled = schedBusy || schedStopping;
+  }
+
+  function setSchedJsonBusy(busy) {
+    schedJsonBusy = !!busy;
+    if (el.schedJsonSave) el.schedJsonSave.disabled = !!busy;
+  }
+
+  function setRunBusy(busy) {
+    runBusy = !!busy;
+    if (el.runSubmit) el.runSubmit.disabled = !!busy;
+  }
+
+  function renderRunTaskOptions() {
+    if (!el.runTask) return;
+    const body = state.tasks || {};
+    const tasks = Array.isArray(body.tasks) ? body.tasks : [];
+    const current = String(el.runTask.value || '');
+    const names = [];
+    clearNode(el.runTask);
+    for (const task of tasks) {
+      const t = task || {};
+      const name = t.task === undefined || t.task === null ? '' : String(t.task).trim();
+      if (!name) continue;
+      names.push(name);
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      el.runTask.appendChild(option);
+    }
+    if (!names.length) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = '（没有可运行的任务）';
+      el.runTask.appendChild(option);
+      el.runTask.disabled = true;
+      return;
+    }
+    el.runTask.disabled = false;
+    el.runTask.value = names.indexOf(current) >= 0 ? current : names[0];
+  }
+
+  async function loadRunnerSchedulerStatus() {
+    try {
+      state.runnerScheduler = await runnerFetchJson(RUNNER_API.schedulerThreadStatus);
+      renderQueueSchedulerControl();
+      renderOverviewScheduler();
+      return '';
+    } catch (e) {
+      state.runnerScheduler = null;
+      renderQueueSchedulerControl();
+      renderOverviewScheduler();
+      const message = '调度线程状态读取失败：' + runnerErrorText(e);
+      if (el.queueStatus) el.queueStatus.textContent = message;
+      return message;
+    }
+  }
+
+  async function loadRunnerSchedJson() {
+    if (!el.schedJson) return '';
+    try {
+      const body = await runnerFetchJson(RUNNER_API.schedulerConfig);
+      const cfg = body.config && typeof body.config === 'object' ? body.config : null;
+      state.schedConfig = cfg;
+      el.schedJson.value = cfg ? JSON.stringify(cfg, null, 2) : '';
+      schedJsonDirty = false;
+      if (el.schedJsonError) el.schedJsonError.textContent = '';
+      if (el.schedJsonStatus) {
+        el.schedJsonStatus.textContent = cfg
+          ? '已从磁盘载入（' + runnerValueText(body.path) + '）'
+          : '配置文件不存在：保存后会创建';
+        el.schedJsonStatus.className = 'muted small';
+      }
+      return '';
+    } catch (e) {
+      state.schedConfig = null;
+      el.schedJson.value = '';
+      const message = 'scheduler.json 读取失败：' + runnerErrorText(e);
+      if (el.schedJsonError) el.schedJsonError.textContent = message;
+      if (el.schedJsonStatus) {
+        el.schedJsonStatus.textContent = '读取失败';
+        el.schedJsonStatus.className = 'muted small err';
+      }
+      return message;
+    }
+  }
+
   async function loadQueuePage() {
+    const errors = [];
     try {
       state.scheduler = await runnerFetchJson(RUNNER_API.schedulerStatus);
       renderQueue();
-      return [];
     } catch (e) {
       state.scheduler = null;
       const message = '调度器状态读取失败：' + runnerErrorText(e);
@@ -1486,8 +1850,346 @@
       if (el.queueSummary) el.queueSummary.textContent = '—';
       if (el.queueEntries) el.queueEntries.textContent = '—';
       if (el.queueQueues) el.queueQueues.textContent = '—';
-      return [message];
+      errors.push(message);
     }
+    const schedError = await loadRunnerSchedulerStatus();
+    if (schedError) errors.push(schedError);
+    // Always reload on queue refresh: install/uninstall/activate on the package
+    // page can add/remove tasks, and a stale dropdown would 404 at run time.
+    try {
+      state.tasks = await runnerFetchJson(RUNNER_API.tasks);
+    } catch (e) {
+      errors.push('任务列表读取失败：' + runnerErrorText(e));
+    }
+    renderRunTaskOptions();
+    if (!schedJsonDirty) {
+      const jsonError = await loadRunnerSchedJson();
+      if (jsonError) errors.push(jsonError);
+    }
+    return errors;
+  }
+
+  // Refresh every scheduling surface after start/stop/save: the header badge,
+  // the overview card, GET /runner/scheduler/status and GET /scheduler/status.
+  async function refreshSchedulerSurfaces() {
+    await refreshHealth();
+    await loadRunnerSchedulerStatus();
+    await loadQueuePage();
+  }
+
+  async function startRunnerScheduler() {
+    if (schedBusy) return;
+    setSchedBusy(true);
+    if (el.schedError) el.schedError.textContent = '';
+    if (el.schedStatus) {
+      el.schedStatus.textContent = '启动中…';
+      el.schedStatus.className = 'muted small';
+    }
+    try {
+      const body = await runnerFetchJson(RUNNER_API.schedulerStart, { method: 'POST' });
+      const already = body.already_running === true;
+      if (el.schedStatus) {
+        el.schedStatus.textContent = already ? '调度本来就在运行' : '调度已启动';
+        el.schedStatus.className = 'muted small ok';
+      }
+      setPageStatus(already ? '调度已在运行' : '调度已启动', 'ok');
+      await refreshSchedulerSurfaces();
+    } catch (e) {
+      if (el.schedError) el.schedError.textContent = runnerErrorLines(e).join('\n');
+      if (el.schedStatus) {
+        let text = '启动失败';
+        if (e && e.status === 409) {
+          text = (e.code === 'device_busy' || /device_busy/.test(runnerErrorText(e)))
+            ? '启动失败：设备被占用（Studio 试运行 / 临时运行中）'
+            : '启动失败：调度锁被其他进程占用';
+        }
+        el.schedStatus.textContent = text;
+        el.schedStatus.className = 'muted small err';
+      }
+      await loadRunnerSchedulerStatus();
+    } finally {
+      setSchedBusy(false);
+    }
+  }
+
+  async function stopRunnerScheduler() {
+    if (schedBusy) return;
+    setSchedBusy(true);
+    if (el.schedError) el.schedError.textContent = '';
+    if (el.schedStatus) {
+      el.schedStatus.textContent = '停止中…（当前任务跑完才退出）';
+      el.schedStatus.className = 'muted small';
+    }
+    try {
+      const body = await runnerFetchJson(RUNNER_API.schedulerStop, { method: 'POST' });
+      const text = runnerStopText(body);
+      const pending = runnerStopPending(body);
+      if (el.schedStatus) {
+        el.schedStatus.textContent = text;
+        el.schedStatus.className = 'muted small ' + (pending ? 'warn' : 'ok');
+      }
+      setPageStatus(text, pending ? 'warn' : 'ok');
+      setSchedStopping(pending);
+      if (pending) startStopPolling();
+      else stopStopPolling();
+      await refreshSchedulerSurfaces();
+    } catch (e) {
+      stopStopPolling();
+      setSchedStopping(false);
+      if (el.schedError) el.schedError.textContent = runnerErrorLines(e).join('\n');
+      if (el.schedStatus) {
+        el.schedStatus.textContent = '停止失败';
+        el.schedStatus.className = 'muted small err';
+      }
+      await loadRunnerSchedulerStatus();
+    } finally {
+      setSchedBusy(false);
+    }
+  }
+
+  // While the backend answered `timeout:true` (a long attempt is finishing), the
+  // UI polls `GET /runner/scheduler/status` until running=false (≤30 s) and only
+  // then reports "调度已停止"; a timeout is never rendered as a failure.
+  function stopStopPolling() {
+    if (stopPollTimer !== null) {
+      clearTimeout(stopPollTimer);
+      stopPollTimer = null;
+    }
+  }
+
+  function scheduleStopPoll() {
+    stopStopPolling();
+    stopPollTimer = setTimeout(pollStopOnce, RUNNER_STOP_POLL_MS);
+  }
+
+  async function pollStopOnce() {
+    stopPollTimer = null;
+    if (Date.now() - stopPollStartedMs > RUNNER_STOP_POLL_MAX_MS) {
+      // Give the user the controls back after the budget: the scheduler may
+      // still be finishing, but the UI must not stay locked forever.
+      setSchedStopping(false);
+      if (el.schedStatus) {
+        el.schedStatus.textContent = '仍在停止：当前任务可能还在执行（可稍后刷新）';
+        el.schedStatus.className = 'muted small warn';
+      }
+      return;
+    }
+    let status = null;
+    try {
+      status = await runnerFetchJson(RUNNER_API.schedulerThreadStatus);
+    } catch (e) {
+      scheduleStopPoll();
+      return;
+    }
+    state.runnerScheduler = status;
+    renderQueueSchedulerControl();
+    renderOverviewScheduler();
+    if (status && status.running === true) {
+      scheduleStopPoll();
+      return;
+    }
+    stopStopPolling();
+    setSchedStopping(false);
+    if (el.schedStatus) {
+      el.schedStatus.textContent = '调度已停止';
+      el.schedStatus.className = 'muted small ok';
+    }
+    setPageStatus('调度已停止', 'ok');
+    await refreshSchedulerSurfaces();
+  }
+
+  function startStopPolling() {
+    stopPollStartedMs = Date.now();
+    scheduleStopPoll();
+  }
+
+  async function saveRunnerSchedJson() {
+    if (schedJsonBusy) return;
+    const parsed = runnerSchedJsonBody(el.schedJson ? el.schedJson.value : '');
+    if (!parsed.ok) {
+      if (el.schedJsonError) el.schedJsonError.textContent = '· ' + parsed.error;
+      if (el.schedJsonStatus) {
+        el.schedJsonStatus.textContent = '未保存：本地校验失败';
+        el.schedJsonStatus.className = 'muted small err';
+      }
+      return;
+    }
+    setSchedJsonBusy(true);
+    if (el.schedJsonError) el.schedJsonError.textContent = '';
+    if (el.schedJsonStatus) {
+      el.schedJsonStatus.textContent = '保存中…';
+      el.schedJsonStatus.className = 'muted small';
+    }
+    try {
+      await runnerFetchJson(RUNNER_API.schedulerConfig, { method: 'POST', body: parsed.body });
+      schedJsonDirty = false;
+      setPageStatus('已保存 scheduler.json', 'ok');
+      await loadRunnerSchedJson();
+      await loadQueuePage();
+      // loadRunnerSchedJson() rewrites the status line, so the save result is
+      // written last (it is the more important message for the user).
+      if (el.schedJsonStatus) {
+        el.schedJsonStatus.textContent = '已保存；启动/重启调度后生效';
+        el.schedJsonStatus.className = 'muted small ok';
+      }
+    } catch (e) {
+      if (el.schedJsonError) el.schedJsonError.textContent = runnerErrorLines(e).join('\n');
+      if (el.schedJsonStatus) {
+        el.schedJsonStatus.textContent = e && e.status === 409
+          ? '保存失败：调度运行中（先停止调度）'
+          : '保存失败';
+        el.schedJsonStatus.className = 'muted small err';
+      }
+    } finally {
+      setSchedJsonBusy(false);
+    }
+  }
+
+  function renderRunnerRunStatus(status) {
+    if (el.runStatus) {
+      let cls = 'muted small';
+      if (status && status.running === true) cls = 'muted small';
+      else if (status && status.outcome !== undefined && status.outcome !== null &&
+          status.outcome !== '') {
+        cls = 'muted small ' + (runnerOutcomeClass(status.outcome) === 'ok' ? 'ok' : 'err');
+      } else if (status && status.error) cls = 'muted small err';
+      el.runStatus.textContent = runnerRunStatusText(status);
+      el.runStatus.className = cls;
+    }
+    if (el.runLog) {
+      const tail = status && Array.isArray(status.log_tail) ? status.log_tail : [];
+      const lines = tail.slice(-RUNNER_RUN_LOG_TAIL).map(function (line) {
+        return String(line === undefined || line === null ? '' : line);
+      });
+      el.runLog.textContent = lines.join('\n');
+    }
+    if (el.runError) {
+      const err = status ? status.error : null;
+      el.runError.textContent = err === undefined || err === null || err === ''
+        ? ''
+        : runnerErrorText(err);
+    }
+  }
+
+  function stopRunnerRunPolling() {
+    if (runPollTimer !== null) {
+      clearTimeout(runPollTimer);
+      runPollTimer = null;
+    }
+  }
+
+  function scheduleRunnerRunPoll() {
+    stopRunnerRunPolling();
+    runPollTimer = setTimeout(pollRunnerRunOnce, RUNNER_RUN_POLL_MS);
+  }
+
+  async function pollRunnerRunOnce() {
+    runPollTimer = null;
+    if (Date.now() - runPollStartedMs > RUNNER_RUN_POLL_MAX_MS) {
+      if (el.runStatus) {
+        el.runStatus.textContent = '超时：' + Math.round(RUNNER_RUN_POLL_MAX_MS / 1000) +
+          ' 秒内未收到结果（运行可能仍在继续，可稍后刷新本页）';
+        el.runStatus.className = 'muted small warn';
+      }
+      setRunBusy(false);
+      return;
+    }
+    let status = null;
+    try {
+      status = await runnerFetchJson(RUNNER_API.runStatus);
+    } catch (e) {
+      if (el.runError) el.runError.textContent = runnerErrorLines(e).join('\n');
+      scheduleRunnerRunPoll();
+      return;
+    }
+    renderRunnerRunStatus(status);
+    if (status && status.running === true) {
+      scheduleRunnerRunPoll();
+      return;
+    }
+    stopRunnerRunPolling();
+    setRunBusy(false);
+    const text = runnerRunStatusText(status);
+    setPageStatus('临时运行：' + text, text.indexOf('失败') >= 0 ? 'err' : 'ok');
+    loadQueuePage();
+  }
+
+  async function submitRunnerRun() {
+    if (runBusy) return;
+    const parsed = runnerRunBody(
+      el.runTask ? el.runTask.value : '',
+      el.runParams ? el.runParams.value : ''
+    );
+    if (!parsed.ok) {
+      if (el.runError) el.runError.textContent = '· ' + parsed.error;
+      if (el.runStatus) {
+        el.runStatus.textContent = '未运行：参数校验失败';
+        el.runStatus.className = 'muted small err';
+      }
+      return;
+    }
+    setRunBusy(true);
+    if (el.runError) el.runError.textContent = '';
+    if (el.runLog) el.runLog.textContent = '';
+    if (el.runStatus) {
+      el.runStatus.textContent = '已提交，等待 Runner…';
+      el.runStatus.className = 'muted small';
+    }
+    try {
+      await runnerFetchJson(RUNNER_API.run, { method: 'POST', body: parsed.body });
+      if (el.runStatus) {
+        el.runStatus.textContent = '运行中：' + parsed.body.task;
+        el.runStatus.className = 'muted small';
+      }
+      setPageStatus('已提交临时运行：' + parsed.body.task, 'ok');
+      runPollStartedMs = Date.now();
+      scheduleRunnerRunPoll();
+    } catch (e) {
+      if (el.runError) el.runError.textContent = runnerErrorLines(e).join('\n');
+      if (el.runStatus) {
+        const detail = runnerErrorText(e);
+        const code = e && e.code ? String(e.code) : '';
+        let text = '提交失败';
+        if (e && e.status === 409) {
+          if (code === 'device_busy' || /device_busy/.test(detail)) {
+            text = '未运行：设备被占用（租约冲突）';
+          } else if (code === 'run_busy' || /run_busy/.test(detail)) {
+            text = '未运行：已有运行在进行';
+          } else {
+            text = '未运行：设备或调度锁被占用';
+          }
+        } else if (e && e.status === 404) {
+          text = '未运行：任务不存在';
+        }
+        el.runStatus.textContent = text;
+        el.runStatus.className = 'muted small err';
+      }
+      setRunBusy(false);
+    }
+  }
+
+  // Queue page polling: refresh the scheduling status every 5s while the page is
+  // visible; leaving the page stops the timer.
+  function stopQueuePolling() {
+    if (queuePollTimer !== null) {
+      clearInterval(queuePollTimer);
+      queuePollTimer = null;
+    }
+  }
+
+  function startQueuePolling() {
+    stopQueuePolling();
+    if (!el.schedControl) return;
+    queuePollTimer = setInterval(function () {
+      if (state.busy) return; // a manual refresh is already in flight
+      loadRunnerSchedulerStatus();
+      runnerFetchJson(RUNNER_API.schedulerStatus).then(function (body) {
+        state.scheduler = body;
+        renderQueue();
+      }).catch(function () {
+        /* keep the last good render; the next tick retries */
+      });
+    }, RUNNER_SCHED_POLL_MS);
   }
 
   // --- 运行记录 ----------------------------------------------------------------
@@ -1653,6 +2355,8 @@
   function showPage(name) {
     const page = RUNNER_PAGES.indexOf(name) >= 0 ? name : 'overview';
     state.page = page;
+    if (page === 'queue') startQueuePolling();
+    else stopQueuePolling();
     for (const pane of el.pages) {
       pane.classList.toggle('active', pane.id === 'page-' + page);
     }
@@ -1720,6 +2424,26 @@
     if (el.packagesRefresh) el.packagesRefresh.addEventListener('click', function () { refreshCurrentPage(); });
     if (el.installSubmit) el.installSubmit.addEventListener('click', function () { installRunnerPackage(); });
     if (el.queueRefresh) el.queueRefresh.addEventListener('click', function () { refreshCurrentPage(); });
+    if (el.schedStart) el.schedStart.addEventListener('click', function () { startRunnerScheduler(); });
+    if (el.schedStop) el.schedStop.addEventListener('click', function () { stopRunnerScheduler(); });
+    if (el.schedRefresh) el.schedRefresh.addEventListener('click', function () { refreshCurrentPage(); });
+    if (el.runSubmit) el.runSubmit.addEventListener('click', function () { submitRunnerRun(); });
+    if (el.schedJsonSave) el.schedJsonSave.addEventListener('click', function () { saveRunnerSchedJson(); });
+    if (el.schedJson) {
+      el.schedJson.addEventListener('input', function () {
+        schedJsonDirty = true;
+        if (el.schedJsonStatus) {
+          el.schedJsonStatus.textContent = '有未保存修改（用「保存 JSON」写入）';
+          el.schedJsonStatus.className = 'muted small';
+        }
+      });
+    }
+    if (el.overviewGotoQueue) {
+      el.overviewGotoQueue.addEventListener('click', function () {
+        showPage('queue');
+        refreshCurrentPage();
+      });
+    }
     if (el.runsRefresh) el.runsRefresh.addEventListener('click', function () { refreshCurrentPage(); });
     if (el.settingsRefresh) el.settingsRefresh.addEventListener('click', function () { refreshCurrentPage(); });
     if (el.configSave) el.configSave.addEventListener('click', function () { saveRunnerConfig(); });
