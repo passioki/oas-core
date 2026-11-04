@@ -484,16 +484,22 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     // ---- task bundle (§19.3) ------------------------------------------------
     let bundle = TaskBundle::open(task_dir)
         .map_err(|e| format!("task bundle `{}`: {e}", task_dir.display()))?;
-    let flow = bundle
-        .load_flow()
-        .map_err(|e| format!("task bundle `{}`: {e}", task_dir.display()))?
-        .ok_or_else(|| {
-            format!(
-                "task bundle `{}` has no flow.json — build the flow in the editor \
-                 (POST /task/save_flow) or pass the bundle directory that contains it",
-                task_dir.display()
-            )
-        })?;
+    let (flow, flow_fingerprint, warnings) = bundle
+        .load_flow_with_fingerprint()
+        .map_err(|e| format!("task bundle `{}`: {e}", task_dir.display()))?;
+    // Loader diagnostics are part of the run output (they were previously only
+    // reachable from tests). Since P1-2 the loader is strict, so this is
+    // normally empty; print it anyway so a future non-fatal warning cannot rot.
+    for warning in &warnings {
+        out(&format!("warning={warning}"));
+    }
+    let flow = flow.ok_or_else(|| {
+        format!(
+            "task bundle `{}` has no flow.json — build the flow in the editor \
+             (POST /task/save_flow) or pass the bundle directory that contains it",
+            task_dir.display()
+        )
+    })?;
     let global_assets = crate::global_assets::is_initialized(&opts.assets);
     let mut assets = if global_assets {
         let store = crate::global_assets::open_store(&opts.assets)?;
@@ -601,15 +607,16 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     if opts.resume {
         match crate::checkpoint::FileCheckpoint::load(&checkpoint_path)? {
             Some(c) => {
-                if c.flow_name != flow.name || c.steps as usize != flow.steps.len() {
+                // P1-3: resume must also match the **expanded** flow fingerprint,
+                // otherwise editing a called subtask (same top-level step count)
+                // would silently skip the (changed) call.
+                if let Err(reason) =
+                    c.validate_against(&flow.name, flow.steps.len(), flow_fingerprint)
+                {
                     return Err(format!(
-                        "--resume: checkpoint `{}` belongs to flow `{}` ({} steps), current is \
-                         `{}` ({} steps); delete it or run without --resume",
-                        checkpoint_path.display(),
-                        c.flow_name,
-                        c.steps,
-                        flow.name,
-                        flow.steps.len()
+                        "--resume: checkpoint `{}` {reason}; delete it or run without \
+                         --resume",
+                        checkpoint_path.display()
                     ));
                 }
                 start_step = (c.next_step as usize).min(flow.steps.len());
@@ -635,6 +642,7 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
         &checkpoint_path,
         &flow.name,
         flow.steps.len(),
+        flow_fingerprint,
         checkpoint_writable,
         start_step,
     )));
@@ -1676,6 +1684,67 @@ mod tests {
     }
 
     #[test]
+    fn resume_rejects_a_checkpoint_after_the_called_subtask_changes() {
+        let td = TempDir::new("ckpt-subtask");
+        let sub = td.path().join("sub");
+        let sub_bundle = TaskBundle::open(&sub).expect("open sub");
+        sub_bundle
+            .save_flow(
+                r#"{"schema_version":1,"name":"sub","steps":[
+                     {"op":"log","args":{"text":"'v1'"}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            )
+            .expect("save sub flow");
+        let caller = td.path().join("caller");
+        let caller_bundle = TaskBundle::open(&caller).expect("open caller");
+        caller_bundle
+            .save_flow(
+                r#"{"schema_version":1,"name":"caller","steps":[
+                     {"op":"call_task","args":{"task":"sub"}},
+                     {"op":"click_point","args":{"x":10000,"y":60}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            )
+            .expect("save caller flow");
+        let replay = td.path().join("replay");
+        write_replay_bundle(&replay);
+        let ckpt = td.path().join("ckpt/checkpoint.json");
+
+        // First run: the expanded call (top-level step 0) succeeds, step 1
+        // fails => checkpoint keeps next_step=1.
+        let mut first = replay_options(&caller, &replay, 7);
+        first.checkpoint = Some(ckpt.clone());
+        let (r1, _) = run_capture(&first);
+        assert_eq!(r1.outcome(), Outcome::Failed);
+        let saved = crate::checkpoint::FileCheckpoint::load(&ckpt)
+            .expect("load checkpoint")
+            .expect("checkpoint kept");
+        assert_eq!(saved.next_step, 1);
+        assert!(
+            saved.flow_fingerprint.is_some(),
+            "new checkpoints must carry the expanded-flow fingerprint"
+        );
+
+        // Edit the called subtask only (same step count!) => --resume must
+        // refuse instead of silently skipping the changed call (P1-3).
+        std::fs::write(
+            sub_bundle.flow_path(),
+            r#"{"schema_version":1,"name":"sub","steps":[
+                 {"op":"log","args":{"text":"'v2'"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("edit sub flow");
+        let mut second = replay_options(&caller, &replay, 7);
+        second.checkpoint = Some(ckpt);
+        second.resume = true;
+        let err = execute(&second, &mut |_| {}).expect_err("stale checkpoint must fail");
+        assert!(
+            err.contains("different flow revision"),
+            "must explain the fingerprint mismatch: {err}"
+        );
+        assert!(err.contains("--resume"), "{err}");
+    }
+
+    #[test]
     fn resume_restores_variables_from_checkpoint() {
         let (td, task, replay) = fixture("ckpt-vars");
         let bundle = TaskBundle::open(&task).expect("open task bundle");
@@ -1689,10 +1758,16 @@ mod tests {
             .expect("save flow");
         write_replay_bundle(&replay);
         let ckpt = td.path().join("ckpt/checkpoint.json");
+        let flow_fingerprint = bundle
+            .load_flow_with_fingerprint()
+            .expect("load flow for fingerprint")
+            .1;
         std::fs::create_dir_all(ckpt.parent().unwrap()).expect("ckpt dir");
         std::fs::write(
             &ckpt,
-            r#"{"schema_version":1,"flow_name":"ckpt-vars","steps":3,"next_step":1,"updated_ms":0,"vars":{"n":5}}"#,
+            format!(
+                r#"{{"schema_version":1,"flow_name":"ckpt-vars","steps":3,"next_step":1,"updated_ms":0,"flow_fingerprint":{flow_fingerprint},"vars":{{"n":5}}}}"#
+            ),
         )
         .expect("write checkpoint");
 

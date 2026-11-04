@@ -8,8 +8,9 @@
 //! ```
 //!
 //! * `lint` enforces the M0 invariants (T1/T3/T4/T5/T6 + the `meta.json`
-//!   contract); every error carries a path. Exit 0 = green, 1 = lint errors,
-//!   2 = usage/setup error.
+//!   contract) and the cross-task `call_task` rule T7 (Runner Studio §C.4.5,
+//!   resolved against `--tasks-dir`); every error carries a path. Exit 0 =
+//!   green, 1 = lint errors, 2 = usage/setup error.
 //! * `new` renders one of the built-in skeletons (`<repo>/templates/*.json`,
 //!   compiled into this binary so the shipped exe is self-contained), builds the
 //!   bundle in a hidden staging directory, **lints it**, and only then renames it
@@ -209,7 +210,7 @@ fn lint_one_with_global(tasks_dir: &Path, name: &str) -> Result<Vec<LintIssue>, 
             .collect();
         let bundle = TaskBundle::open_named(tasks_dir, name)?;
         let mut issues = Vec::new();
-        bundle.lint_into_with_assets(&mut issues, Some(&ids));
+        bundle.lint_into_with_calls_and_assets(&mut issues, tasks_dir, Some(&ids));
         Ok(issues)
     } else {
         lint_task(tasks_dir, name)
@@ -584,6 +585,41 @@ mod tests {
         assert_eq!(one.errors, 0, "{:?}", one.lines);
         assert!(lint(&tasks, Some("不存在")).is_err(), "missing task is a setup error");
         assert!(lint_task(&tasks, "../evil").is_err(), "traversal rejected");
+    }
+
+    /// T7 wiring: `task lint` resolves `call_task` against `--tasks-dir`.
+    #[test]
+    fn lint_reports_t7_for_a_missing_call_target() {
+        let td = TempDir::new("t7cli");
+        let tasks = td.path().join("tasks");
+        let parent = tasks.join("父任务");
+        std::fs::create_dir_all(&parent).expect("task dir");
+        std::fs::write(
+            parent.join("meta.json"),
+            r#"{"schema_version":1,"name":"父任务"}"#,
+        )
+        .expect("meta");
+        std::fs::write(
+            parent.join("flow.json"),
+            r#"{"schema_version":1,"name":"父任务","steps":[
+                 {"op":"call_task","args":{"task":"不存在"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("flow");
+
+        let summary = lint(&tasks, Some("父任务")).expect("lint");
+        assert_eq!(summary.errors, 1, "{:?}", summary.lines);
+        assert!(
+            summary
+                .lines
+                .iter()
+                .any(|l| l.contains("code=T7") && l.contains("不存在")),
+            "{:?}",
+            summary.lines
+        );
+
+        let all = lint(&tasks, None).expect("lint all");
+        assert_eq!(all.errors, 1, "{:?}", all.lines);
     }
 
     /// M0 acceptance: legacy `{schema_version,name,expire}` meta must pass lint

@@ -1,9 +1,16 @@
 //! Checkpoint / resume (ENGINE §22.16 纵向② "检查点恢复").
 //!
 //! After every successful **top-level** step the runtime calls the progress sink;
-//! this module persists `{flow_name, steps, next_step}` atomically. `--resume`
-//! validates the checkpoint against the current flow and skips the completed
-//! prefix. A `Done` run clears the file; a failed run keeps it.
+//! this module persists `{flow_name, steps, flow_fingerprint, next_step}`
+//! atomically. `--resume` validates the checkpoint against the current
+//! **expanded** flow and skips the completed prefix. A `Done` run clears the
+//! file; a failed run keeps it.
+//!
+//! The fingerprint (P1-3) is the stable hash of the expanded flow JSON from
+//! `TaskBundle::load_flow_with_fingerprint`. It covers expanded `call_task`
+//! bodies, so editing a subtask invalidates the checkpoint even though the
+//! parent's top-level step count is unchanged. Checkpoints written before PR4
+//! carry no fingerprint and are treated as stale (never silently resumed).
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -21,15 +28,55 @@ pub struct Checkpoint {
     pub next_step: u32,
     #[serde(default)]
     pub updated_ms: u128,
+    /// P1-3: FNV-1a of the expanded flow JSON. `None` = pre-PR4 checkpoint
+    /// (serde default), which is always stale for resume purposes.
+    #[serde(default)]
+    pub flow_fingerprint: Option<u64>,
     /// v1.2.2: `set_var`/`inc_var`/`ocr_to_var` values at the checkpoint.
     #[serde(default)]
     pub vars: BTreeMap<String, serde_json::Value>,
+}
+
+impl Checkpoint {
+    /// P1-3: does this checkpoint belong to the current **expanded** flow?
+    ///
+    /// Checks `flow_name` + top-level step count (the old identity) *and* the
+    /// expanded-flow fingerprint. A missing fingerprint means a pre-PR4
+    /// checkpoint: it is safely rejected instead of resumed with stale scope
+    /// contents (no panic, no silent skip).
+    pub fn validate_against(
+        &self,
+        flow_name: &str,
+        steps: usize,
+        flow_fingerprint: u64,
+    ) -> Result<(), String> {
+        if self.flow_name != flow_name || self.steps as usize != steps {
+            return Err(format!(
+                "belongs to flow `{}` ({} steps), current is `{}` ({} steps)",
+                self.flow_name, self.steps, flow_name, steps
+            ));
+        }
+        match self.flow_fingerprint {
+            Some(saved) if saved == flow_fingerprint => Ok(()),
+            Some(saved) => Err(format!(
+                "was written for a different flow revision (expanded-flow fingerprint \
+                 {saved:016x} -> {flow_fingerprint:016x}); the task or a called subtask \
+                 was edited since then"
+            )),
+            None => Err(
+                "has no expanded-flow fingerprint (pre-PR4 checkpoint format); the task \
+                 or a called subtask may have changed since then"
+                    .to_string(),
+            ),
+        }
+    }
 }
 
 pub struct FileCheckpoint {
     path: PathBuf,
     flow_name: String,
     steps: u32,
+    flow_fingerprint: u64,
     next_step: u32,
     writable: bool,
     dirty: bool,
@@ -42,6 +89,7 @@ impl FileCheckpoint {
         path: &Path,
         flow_name: &str,
         steps: usize,
+        flow_fingerprint: u64,
         writable: bool,
         next_step: usize,
     ) -> Self {
@@ -49,6 +97,7 @@ impl FileCheckpoint {
             path: path.to_path_buf(),
             flow_name: flow_name.to_string(),
             steps: steps as u32,
+            flow_fingerprint,
             next_step: next_step as u32,
             writable,
             dirty: false,
@@ -129,6 +178,7 @@ impl FileCheckpoint {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis())
                 .unwrap_or(0),
+            flow_fingerprint: Some(self.flow_fingerprint),
             vars: self.vars.clone(),
         };
         let text = serde_json::to_string_pretty(&c)
@@ -225,15 +275,56 @@ mod tests {
     fn checkpoint_roundtrip_and_clear() {
         let dir = tmpdir("roundtrip");
         let path = dir.join("state/checkpoint.json");
-        let mut c = FileCheckpoint::open(&path, "S1", 5, true, 0);
+        let fp = 0x1234_5678_9abc_def0;
+        let mut c = FileCheckpoint::open(&path, "S1", 5, fp, true, 0);
         c.step_done(0, "click");
         c.step_done(1, "wait");
         let loaded = FileCheckpoint::load(&path).expect("load").expect("file");
         assert_eq!(loaded.flow_name, "S1");
         assert_eq!(loaded.steps, 5);
         assert_eq!(loaded.next_step, 2);
+        assert_eq!(loaded.flow_fingerprint, Some(fp), "fingerprint persisted");
+        loaded
+            .validate_against("S1", 5, fp)
+            .expect("same expanded flow must resume");
+        let err = loaded
+            .validate_against("S1", 5, fp ^ 1)
+            .expect_err("changed subtask must invalidate the checkpoint");
+        assert!(err.contains("fingerprint"), "{err}");
         c.clear().expect("clear");
         assert!(FileCheckpoint::load(&path).expect("load2").is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legacy_checkpoint_without_fingerprint_is_stale_but_loads() {
+        let dir = tmpdir("legacy");
+        let path = dir.join("checkpoint.json");
+        std::fs::write(
+            &path,
+            r#"{"schema_version":1,"flow_name":"S1","steps":5,"next_step":2}"#,
+        )
+        .expect("write legacy checkpoint");
+        let c = FileCheckpoint::load(&path)
+            .expect("old format must deserialize")
+            .expect("file");
+        assert_eq!(c.flow_fingerprint, None);
+        let err = c
+            .validate_against("S1", 5, 0xdead_beef)
+            .expect_err("pre-PR4 checkpoint must not be resumed");
+        assert!(err.contains("pre-PR4"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn checkpoint_for_a_different_flow_or_step_count_is_rejected() {
+        let dir = tmpdir("mismatch");
+        let path = dir.join("checkpoint.json");
+        let mut c = FileCheckpoint::open(&path, "S1", 5, 11, true, 0);
+        c.step_done(0, "click");
+        let loaded = FileCheckpoint::load(&path).expect("load").expect("file");
+        assert!(loaded.validate_against("S2", 5, 11).is_err());
+        assert!(loaded.validate_against("S1", 4, 11).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -241,7 +332,7 @@ mod tests {
     fn read_only_checkpoint_never_writes() {
         let dir = tmpdir("ro");
         let path = dir.join("checkpoint.json");
-        let mut c = FileCheckpoint::open(&path, "S1", 3, false, 0);
+        let mut c = FileCheckpoint::open(&path, "S1", 3, 9, false, 0);
         c.step_done(0, "click");
         c.flush().expect("flush no-op");
         assert!(!path.exists());
@@ -253,12 +344,13 @@ mod tests {
     fn checkpoint_persists_and_restores_variables() {
         let dir = tmpdir("vars");
         let path = dir.join("checkpoint.json");
-        let mut c = FileCheckpoint::open(&path, "vars", 4, true, 0);
+        let mut c = FileCheckpoint::open(&path, "vars", 4, 17, true, 0);
         let mut vars = BTreeMap::new();
         vars.insert("n".to_string(), oas_flow::Value::Num(3.0));
         vars.insert("name".to_string(), oas_flow::Value::Str("abc".to_string()));
         c.vars_changed(&vars);
         let loaded = FileCheckpoint::load(&path).expect("load").expect("file");
+        assert_eq!(loaded.flow_fingerprint, Some(17));
         assert_eq!(loaded.vars["n"], serde_json::json!(3.0));
         assert_eq!(loaded.vars["name"], serde_json::json!("abc"));
         assert_eq!(json_to_value(&loaded.vars["n"]), oas_flow::Value::Num(3.0));

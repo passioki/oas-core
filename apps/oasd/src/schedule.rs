@@ -4169,9 +4169,17 @@ mod tests {
         write_json_atomic(&state_path, &state).unwrap();
         let ckpt = task_checkpoint_path(&td, "恢复");
         std::fs::create_dir_all(ckpt.parent().unwrap()).unwrap();
+        // P1-3: a checkpoint now carries the expanded-flow fingerprint.
+        let fingerprint = TaskBundle::open(td.join("恢复"))
+            .expect("open task")
+            .load_flow_with_fingerprint()
+            .expect("load flow")
+            .1;
         std::fs::write(
             &ckpt,
-            r#"{"schema_version":1,"flow_name":"resume-flow","steps":2,"next_step":1}"#,
+            format!(
+                r#"{{"schema_version":1,"flow_name":"resume-flow","steps":2,"next_step":1,"flow_fingerprint":{fingerprint}}}"#
+            ),
         )
         .unwrap();
 

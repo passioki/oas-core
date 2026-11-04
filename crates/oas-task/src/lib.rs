@@ -25,7 +25,7 @@
 //! * **`design_resolution` is set once** by the first template save; a later
 //!   frame with different dimensions is an error, not a silently distorted crop.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -62,7 +62,7 @@ pub const KINDS: [&str; 4] = ["template", "ocr_line", "ocr_lines", "region"];
 /// criterion; the CLI prints it and M1's create/save endpoints return it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LintIssue {
-    /// `T1`/`T3`/`T4`/`T5`/`T6` for the flow invariants, `META` for the
+    /// `T1`/`T3`/`T4`/`T5`/`T6`/`T7` for the flow invariants, `META` for the
     /// `meta.json` contract, `FLOW` for flow parse/read errors.
     pub code: &'static str,
     pub path: String,
@@ -706,17 +706,135 @@ pub struct TaskBundle {
 /// v1.2.3 U-01(B): a `call_task` step is a live reference. Before parsing, the
 /// caller's raw JSON is expanded with the target task's current steps. This keeps
 /// `flow.json` readable/reusable and makes target edits visible on the next run.
+///
+/// Runner Studio split §C.4: the target steps are wrapped in an in-memory
+/// `with_params` scope (never written to disk) together with
+/// - `params`: the call-site mapping (expression strings, evaluated by the
+///   runtime in the **caller** scope),
+/// - `defaults`: the target's `meta.params[].default` values,
+/// - `block`: the target's declared keys when `inherit:"none"` (strict scope).
 const MAX_CALL_DEPTH: usize = 8;
+
+/// Apply `f` to every nested step array of one raw JSON step:
+/// `then`/`else` (if), top-level `body` (loop/while) and `args.body`
+/// (`with_params`). Used by finish stripping and call/collection expansion so
+/// an authored `with_params` is traversed exactly like the generated one.
+fn for_each_nested_steps_mut(
+    step: &mut serde_json::Value,
+    f: &mut dyn FnMut(&mut Vec<serde_json::Value>) -> Result<(), String>,
+) -> Result<(), String> {
+    for key in ["then", "else", "body"] {
+        if let Some(arr) = step.get_mut(key).and_then(|x| x.as_array_mut()) {
+            f(arr)?;
+        }
+    }
+    if let Some(arr) = step
+        .get_mut("args")
+        .and_then(|a| a.get_mut("body"))
+        .and_then(|x| x.as_array_mut())
+    {
+        f(arr)?;
+    }
+    Ok(())
+}
 
 fn strip_finish_steps(steps: &mut Vec<serde_json::Value>) {
     steps.retain(|s| s.get("op").and_then(|x| x.as_str()) != Some("finish"));
     for s in steps.iter_mut() {
-        for key in ["then", "else", "body"] {
-            if let Some(arr) = s.get_mut(key).and_then(|x| x.as_array_mut()) {
-                strip_finish_steps(arr);
-            }
-        }
+        let _ = for_each_nested_steps_mut(s, &mut |arr| {
+            strip_finish_steps(arr);
+            Ok(())
+        });
     }
+}
+
+/// `call_task.args.params`: child key -> expression string (§C.4.3).
+///
+/// Expressions are validated here so a typo fails at load with the call site in
+/// the message instead of surfacing as a confusing path inside the target body.
+fn parse_call_params_json(
+    args: &serde_json::Value,
+    task: &str,
+) -> Result<BTreeMap<String, String>, String> {
+    let Some(v) = args.get("params") else {
+        return Ok(BTreeMap::new());
+    };
+    let obj = v.as_object().ok_or_else(|| {
+        format!(
+            "call_task `{task}`: args.params must be an object mapping \
+             parameter key -> expression string"
+        )
+    })?;
+    let mut out = BTreeMap::new();
+    for (key, value) in obj {
+        let src = value.as_str().ok_or_else(|| {
+            format!("call_task `{task}`: args.params.{key} must be an expression string")
+        })?;
+        oas_flow::parse_expr(src)
+            .map_err(|e| format!("call_task `{task}`: args.params.{key}: {e}"))?;
+        out.insert(key.clone(), src.to_string());
+    }
+    Ok(out)
+}
+
+/// `call_task.args.inherit`: `"all"` (default) or `"none"` (§C.4.4).
+fn parse_call_inherit_json(
+    args: &serde_json::Value,
+    task: &str,
+) -> Result<oas_flow::CallInherit, String> {
+    match args.get("inherit") {
+        None => Ok(oas_flow::CallInherit::All),
+        Some(serde_json::Value::String(s)) => match s.as_str() {
+            "all" => Ok(oas_flow::CallInherit::All),
+            "none" => Ok(oas_flow::CallInherit::None),
+            other => Err(format!(
+                "call_task `{task}`: args.inherit must be \"all\" or \"none\" (got `{other}`)"
+            )),
+        },
+        Some(other) => Err(format!(
+            "call_task `{task}`: args.inherit must be the string \"all\" or \"none\", got {other}"
+        )),
+    }
+}
+
+/// Read a call target's `meta.json` for `defaults`/`block` injection.
+///
+/// Strict by design (P1-2): a missing/unreadable/malformed target `meta.json`
+/// is a **hard load error**, never a silent fallback to "no defaults". A
+/// fallback would also leave `block` empty for `inherit:"none"`, i.e. it would
+/// silently turn strict isolation into `inherit:"all"`, so the caller must be
+/// told instead. The message names the call target and the specific problem.
+fn load_call_target_meta(tasks_dir: &Path, task: &str) -> Result<Meta, String> {
+    let path = tasks_dir.join(task).join("meta.json");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            Meta::from_json(&text).map_err(|e| format!("meta.json is invalid: {e}"))
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Err(format!(
+            "meta.json not found ({}); a call target must be a \
+             complete task bundle (meta.json + flow.json)",
+            path.display()
+        )),
+        Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+    }
+}
+
+/// Stable 64-bit FNV-1a hash of the **expanded** flow JSON (P1-3).
+///
+/// FNV has no random seed, so the fingerprint is identical across processes;
+/// it must not depend on `HashMap` iteration order. The JSON text is produced
+/// by `serde_json::to_string` over a `serde_json::Value`, whose object maps are
+/// sorted (`BTreeMap`), so equal flows always hash identically and any target
+/// edit that changes the expanded flow changes the hash.
+fn expanded_flow_fingerprint(text: &str) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
 }
 
 fn expand_call_steps(
@@ -724,6 +842,7 @@ fn expand_call_steps(
     tasks_dir: &Path,
     stack: &mut Vec<String>,
     depth: usize,
+    warnings: &mut Vec<String>,
 ) -> Result<(), String> {
     if depth > MAX_CALL_DEPTH {
         return Err(format!("call_task nesting exceeds {MAX_CALL_DEPTH}"));
@@ -731,42 +850,90 @@ fn expand_call_steps(
     let mut out = Vec::with_capacity(steps.len());
     for mut step in steps.drain(..) {
         if step.get("op").and_then(|x| x.as_str()) == Some("call_task") {
-            let task = step
+            let args = step
                 .get("args")
-                .and_then(|a| a.get("task"))
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let task = args
+                .get("task")
                 .and_then(|x| x.as_str())
                 .ok_or_else(|| "call_task requires args.task".to_string())?
                 .to_string();
             validate_task_name(&task)?;
+            let params = parse_call_params_json(&args, &task)?;
+            let inherit = parse_call_inherit_json(&args, &task)?;
             if stack.iter().any(|s| s == &task) {
                 return Err(format!(
                     "call_task cycle: {} -> {task}",
                     stack.join(" -> ")
                 ));
             }
+            let caller = stack.last().cloned().unwrap_or_default();
+            let at = format!("call_task `{task}` (called from `{caller}`)");
             let target_flow = tasks_dir.join(&task).join("flow.json");
             let text = std::fs::read_to_string(&target_flow)
-                .map_err(|e| format!("call_task `{task}`: read {}: {e}", target_flow.display()))?;
+                .map_err(|e| format!("{at}: read {}: {e}", target_flow.display()))?;
             let mut target: serde_json::Value = serde_json::from_str(&text)
-                .map_err(|e| format!("call_task `{task}`: flow.json: {e}"))?;
+                .map_err(|e| format!("{at}: target flow.json: {e}"))?;
+            // Parse the target's own DSL now: a broken target then fails here,
+            // naming the target/call site, instead of surfacing later as a bare
+            // `steps[i].args.body[k]` path inside the expanded caller flow.
+            oas_flow::Flow::from_json(&text)
+                .map_err(|e| format!("{at}: target flow.json is invalid: {e}"))?;
             let mut target_steps = target
                 .get_mut("steps")
                 .and_then(|x| x.as_array_mut())
                 .map(|a| std::mem::take(a))
-                .ok_or_else(|| format!("call_task `{task}`: flow.json has no steps array"))?;
+                .ok_or_else(|| format!("{at}: target flow.json has no steps array"))?;
             // A task's terminal finishes are "return", not caller termination.
             strip_finish_steps(&mut target_steps);
+            // P1-2: the target meta is mandatory, not a warning path. Without it
+            // `defaults` and (for inherit:"none") `block` would silently be empty.
+            let target_meta = load_call_target_meta(tasks_dir, &task)
+                .map_err(|e| format!("{at}: {e}"))?;
             stack.push(task.clone());
-            expand_call_steps(&mut target_steps, tasks_dir, stack, depth + 1)?;
+            expand_call_steps(&mut target_steps, tasks_dir, stack, depth + 1, warnings)?;
             stack.pop();
-            out.extend(target_steps);
+            // §C.4.3: subtask defaults are literal JSON values (only declared
+            // keys that actually have a default). A default that is not a scalar
+            // is a broken target meta: fail the caller's load (P1-2), never
+            // silently drop the default while the subtask still runs.
+            let mut defaults = serde_json::Map::new();
+            let mut declared_keys = Vec::new();
+            for p in &target_meta.params {
+                declared_keys.push(p.key.clone());
+                if let Some(default) = &p.default {
+                    oas_flow::json_to_value(default).map_err(|e| {
+                        format!(
+                            "{at}: meta.params `{}`.default is not a scalar value: {e}",
+                            p.key
+                        )
+                    })?;
+                    defaults.insert(p.key.clone(), default.clone());
+                }
+            }
+            // `inherit:"all"` needs no block list: same-name values simply stay
+            // visible in the shared parameter table (today's behaviour).
+            let block = if inherit == oas_flow::CallInherit::None {
+                declared_keys
+            } else {
+                Vec::new()
+            };
+            out.push(serde_json::json!({
+                "op": "with_params",
+                "args": {
+                    "task": task,
+                    "params": params,
+                    "defaults": serde_json::Value::Object(defaults),
+                    "block": block,
+                    "body": target_steps,
+                }
+            }));
             continue;
         }
-        for key in ["then", "else", "body"] {
-            if let Some(arr) = step.get_mut(key).and_then(|x| x.as_array_mut()) {
-                expand_call_steps(arr, tasks_dir, stack, depth + 1)?;
-            }
-        }
+        for_each_nested_steps_mut(&mut step, &mut |arr| {
+            expand_call_steps(arr, tasks_dir, stack, depth + 1, warnings)
+        })?;
         out.push(step);
     }
     *steps = out;
@@ -833,11 +1000,9 @@ fn expand_collection_steps(
                 }
             }
         }
-        for key in ["then", "else", "body"] {
-            if let Some(arr) = step.get_mut(key).and_then(|x| x.as_array_mut()) {
-                expand_collection_steps(arr, collections)?;
-            }
-        }
+        for_each_nested_steps_mut(step, &mut |arr| {
+            expand_collection_steps(arr, collections)
+        })?;
     }
     Ok(())
 }
@@ -1057,15 +1222,50 @@ impl TaskBundle {
     ///
     /// v1.2.3 U-01(B): expand `call_task` references against the sibling task
     /// directories before parsing, so the runtime only sees ordinary steps.
+    ///
+    /// Runner Studio split §C.4.3: each expanded call becomes an in-memory
+    /// `with_params` scope carrying the target's `meta.params[].default` values
+    /// (and a block list for `inherit:"none"`). A broken call target `meta.json`
+    /// is a hard error (P1-2), never a silent "no defaults" fallback.
     pub fn load_flow(&self) -> Result<Option<oas_flow::Flow>, String> {
+        self.load_flow_with_fingerprint()
+            .map(|(flow, _fingerprint, _warnings)| flow)
+    }
+
+    /// Like [`Self::load_flow`] but also returns non-fatal expansion warnings.
+    ///
+    /// Since P1-2 the loader is strict about call target `meta.json`/defaults,
+    /// so the vector is currently always empty; the API is kept for future
+    /// non-fatal diagnostics and for callers that already print it.
+    pub fn load_flow_with_warnings(
+        &self,
+    ) -> Result<(Option<oas_flow::Flow>, Vec<String>), String> {
+        self.load_flow_with_fingerprint()
+            .map(|(flow, _fingerprint, warnings)| (flow, warnings))
+    }
+
+    /// Like [`Self::load_flow`] but also returns a stable fingerprint of the
+    /// **expanded** flow JSON (P1-3).
+    ///
+    /// The fingerprint covers the caller flow plus every expanded subtask body,
+    /// mapping and default. `apps/oasd` stores it in the checkpoint so editing a
+    /// called subtask (even when the parent's top-level step count is unchanged)
+    /// invalidates an old checkpoint instead of silently skipping the call.
+    /// `0` is reserved for "no flow.json".
+    pub fn load_flow_with_fingerprint(
+        &self,
+    ) -> Result<(Option<oas_flow::Flow>, u64, Vec<String>), String> {
         let path = self.flow_path();
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Ok((None, 0, Vec::new()))
+            }
             Err(e) => return Err(format!("read {}: {e}", path.display())),
         };
         let mut value: serde_json::Value = serde_json::from_str(&text)
             .map_err(|e| format!("flow.json: invalid JSON: {e}"))?;
+        let mut warnings = Vec::new();
         if let Some(steps) = value.get_mut("steps").and_then(|x| x.as_array_mut()) {
             let tasks_dir = self
                 .root
@@ -1078,7 +1278,7 @@ impl TaskBundle {
                 .unwrap_or("")
                 .to_string();
             let mut stack = vec![current_task];
-            expand_call_steps(steps, tasks_dir, &mut stack, 0)?;
+            expand_call_steps(steps, tasks_dir, &mut stack, 0, &mut warnings)?;
             let collections = self
                 .load_assets_file()
                 .map(|af| af.collections)
@@ -1087,8 +1287,9 @@ impl TaskBundle {
         }
         let expanded = serde_json::to_string(&value)
             .map_err(|e| format!("flow.json: serialize expanded flow: {e}"))?;
+        let fingerprint = expanded_flow_fingerprint(&expanded);
         oas_flow::Flow::from_json(&expanded)
-            .map(Some)
+            .map(|flow| (Some(flow), fingerprint, warnings))
             .map_err(|e| format!("flow.json: {e}"))
     }
 
@@ -2049,6 +2250,9 @@ impl TaskBundle {
     /// * `T4`   — every asset selector resolves to a declared asset (or `lib:`).
     /// * `T5`   — every declared asset is well-formed and its image exists.
     /// * `T6`   — the flow is DSL-only (no external-code keys).
+    /// * `T7`   — only in [`Self::lint_with_calls`] (requires the tasks dir):
+    ///            every `call_task` targets a readable sibling task and maps
+    ///            only parameters both sides declare (Runner Studio §C.4.5).
     ///
     /// T2 (bounded loops) is enforced by the runtime step budget; `while` has
     /// only a condition (like a normal language), `loop` owns the numeric count.
@@ -2066,7 +2270,7 @@ impl TaskBundle {
     /// Accumulate lint issues into `issues` (used by [`Self::lint`] and by
     /// `--all`, so one broken task cannot abort the whole report).
     pub fn lint_into(&self, issues: &mut Vec<LintIssue>) {
-        self.lint_into_with_assets(issues, None);
+        self.lint_into_full(issues, None, None);
     }
 
     /// v1.2.1: lint a task whose flow may reference a **global** asset id set.
@@ -2074,6 +2278,44 @@ impl TaskBundle {
         &self,
         issues: &mut Vec<LintIssue>,
         external_assets: Option<&BTreeSet<String>>,
+    ) {
+        self.lint_into_full(issues, external_assets, None);
+    }
+
+    /// Lint one bundle **with** the cross-task `call_task` rule (T7).
+    ///
+    /// `tasks_dir` is required to resolve sibling task bundles; without it the
+    /// self-contained rules still run ([`Self::lint`]), but T7 is skipped.
+    pub fn lint_with_calls(&self, tasks_dir: &Path) -> Result<(), Vec<LintIssue>> {
+        let mut issues = Vec::new();
+        self.lint_into_with_calls(&mut issues, tasks_dir);
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(issues)
+        }
+    }
+
+    /// [`Self::lint_into`] + T7 cross-task `call_task` checks.
+    pub fn lint_into_with_calls(&self, issues: &mut Vec<LintIssue>, tasks_dir: &Path) {
+        self.lint_into_full(issues, None, Some(tasks_dir));
+    }
+
+    /// T7 + the v1.2.1 global-asset override (used by the `oasd task lint` CLI).
+    pub fn lint_into_with_calls_and_assets(
+        &self,
+        issues: &mut Vec<LintIssue>,
+        tasks_dir: &Path,
+        external_assets: Option<&BTreeSet<String>>,
+    ) {
+        self.lint_into_full(issues, external_assets, Some(tasks_dir));
+    }
+
+    fn lint_into_full(
+        &self,
+        issues: &mut Vec<LintIssue>,
+        external_assets: Option<&BTreeSet<String>>,
+        tasks_dir: Option<&Path>,
     ) {
         // ---- meta.json ------------------------------------------------------
         let meta = match std::fs::read_to_string(self.meta_path()) {
@@ -2208,6 +2450,13 @@ impl TaskBundle {
                     ));
                 }
             }
+        }
+
+        // T7: `call_task` must reference a readable sibling task and only map
+        // parameters both sides declare (§C.4.5). Requires the tasks directory,
+        // so it is skipped by the self-contained `TaskBundle::lint()`.
+        if let Some(tasks_dir) = tasks_dir {
+            lint_call_tasks(&flow, meta.as_ref(), tasks_dir, issues);
         }
     }
 
@@ -2538,6 +2787,28 @@ const FORBIDDEN_FLOW_KEYS: [&str; 9] = [
     "unsafe",
 ];
 
+/// P1-1: parameter **names** are user data (`call_task.params.code` is a normal
+/// mapping for a subtask parameter named `code`), so T6 must not treat keys
+/// inside `args.params`/`args.defaults` as DSL keys. Values of `args.params` are
+/// still evaluated expressions, so a blatant external-code escape such as
+/// `"shell: rm -rf"` remains a T6 violation.
+const CODE_ESCAPE_PREFIXES: [&str; 9] = [
+    "code:",
+    "script:",
+    "eval:",
+    "exec:",
+    "python:",
+    "shell:",
+    "cmd:",
+    "powershell:",
+    "unsafe:",
+];
+
+fn looks_like_external_code_expression(text: &str) -> bool {
+    let lowered = text.trim().to_ascii_lowercase();
+    CODE_ESCAPE_PREFIXES.iter().any(|p| lowered.starts_with(p))
+}
+
 fn scan_forbidden_keys(
     value: &serde_json::Value,
     path: &str,
@@ -2545,9 +2816,14 @@ fn scan_forbidden_keys(
 ) {
     match value {
         serde_json::Value::Object(map) => {
+            // The maps under `args.params` / `args.defaults` are user-data maps:
+            // their keys are parameter names, not DSL structure (P1-1).
+            let is_param_map = path.ends_with(".args.params");
+            let is_user_data_map =
+                is_param_map || path.ends_with(".args.defaults");
             for (k, v) in map {
                 let child = format!("{path}.{k}");
-                if FORBIDDEN_FLOW_KEYS.contains(&k.as_str()) {
+                if !is_user_data_map && FORBIDDEN_FLOW_KEYS.contains(&k.as_str()) {
                     issues.push(LintIssue::new(
                         "T6",
                         format!("flow.json:{child}"),
@@ -2556,6 +2832,21 @@ fn scan_forbidden_keys(
                              not allowed (T6)"
                         ),
                     ));
+                }
+                if is_param_map {
+                    if let Some(text) = v.as_str() {
+                        if looks_like_external_code_expression(text) {
+                            issues.push(LintIssue::new(
+                                "T6",
+                                format!("flow.json:{child}"),
+                                format!(
+                                    "parameter expression `{text}` looks like an \
+                                     external-code escape; the flow DSL cannot execute \
+                                     code (T6)"
+                                ),
+                            ));
+                        }
+                    }
                 }
                 scan_forbidden_keys(v, &child, issues);
             }
@@ -2577,6 +2868,177 @@ fn join_or_none(set: &BTreeSet<String>) -> String {
     }
 }
 
+/// T7 (Runner Studio split §C.4.5): validate every `call_task` in the
+/// **unexpanded** flow.
+///
+/// * the target task must exist and its `meta.json` must be readable and
+///   parseable; its `flow.json` must be readable **and parse as a flow**
+///   (missing vs. read-failure vs. parse-failure are distinguished);
+/// * every mapping key must be declared by the target (`meta.params[].key`);
+/// * mapping values may be constants (no `param(...)` call: no parent key to
+///   check) or exactly `param('parentKey')`, whose parent key must be declared
+///   by THIS task; computed `param(...)` keys are rejected because T7 cannot
+///   verify their parent key statically (T3 stays untouched: `call_task` is a
+///   leaf there, which is why mapping errors get the precise T7 message);
+/// * `inherit` is already validated by the flow parser (`all`/`none` only).
+///
+/// Nested calls are not walked here: `oasd task lint --all` lints the target's
+/// own flow, so a chain is covered by one issue per offending edge (and cycles
+/// stay the loader's job, §C.4.3).
+fn lint_call_tasks(
+    flow: &oas_flow::Flow,
+    parent_meta: Option<&Meta>,
+    tasks_dir: &Path,
+    issues: &mut Vec<LintIssue>,
+) {
+    for use_site in flow.call_task_uses() {
+        let base = format!("flow.json:{}", use_site.path);
+        if let Err(e) = validate_task_name(&use_site.task) {
+            issues.push(LintIssue::new(
+                "T7",
+                base,
+                format!("call_task `{}` 名称非法: {e}", use_site.task),
+            ));
+            continue;
+        }
+        let dir = tasks_dir.join(&use_site.task);
+        if !dir.is_dir() {
+            issues.push(LintIssue::new(
+                "T7",
+                base,
+                format!(
+                    "call_task `{}` 不存在: {} 不是任务目录",
+                    use_site.task,
+                    dir.display()
+                ),
+            ));
+            continue;
+        }
+
+        // Target meta.json: the parameter schema.
+        let target_meta_path = dir.join("meta.json");
+        let target_meta = match std::fs::read_to_string(&target_meta_path) {
+            Ok(text) => match Meta::from_json(&text) {
+                Ok(meta) => Some(meta),
+                Err(e) => {
+                    issues.push(LintIssue::new(
+                        "T7",
+                        base.clone(),
+                        format!("call_task `{}`: 无法解析目标 meta.json: {e}", use_site.task),
+                    ));
+                    None
+                }
+            },
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                issues.push(LintIssue::new(
+                    "T7",
+                    base.clone(),
+                    format!(
+                        "call_task `{}` 不存在或不是完整任务: 缺少 meta.json",
+                        use_site.task
+                    ),
+                ));
+                None
+            }
+            Err(e) => {
+                issues.push(LintIssue::new(
+                    "T7",
+                    base.clone(),
+                    format!(
+                        "call_task `{}`: 无法读取目标 {}: {e}",
+                        use_site.task,
+                        target_meta_path.display()
+                    ),
+                ));
+                None
+            }
+        };
+
+        // Target flow.json: a task without one is not runnable, and since P2 a
+        // target that exists but does not parse is reported here instead of
+        // surfacing only at run/load time (with a target-less path).
+        let target_flow_path = dir.join("flow.json");
+        match std::fs::read_to_string(&target_flow_path) {
+            Ok(text) => {
+                if let Err(e) = oas_flow::Flow::from_json(&text) {
+                    issues.push(LintIssue::new(
+                        "T7",
+                        base.clone(),
+                        format!(
+                            "call_task `{}`: 无法解析目标 flow.json: {e}",
+                            use_site.task
+                        ),
+                    ));
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => issues.push(LintIssue::new(
+                "T7",
+                base.clone(),
+                format!(
+                    "call_task `{}` 不存在或不是完整任务: 缺少 flow.json",
+                    use_site.task
+                ),
+            )),
+            Err(e) => issues.push(LintIssue::new(
+                "T7",
+                base.clone(),
+                format!(
+                    "call_task `{}`: 无法读取目标 {}: {e}",
+                    use_site.task,
+                    target_flow_path.display()
+                ),
+            )),
+        }
+
+        let target_keys = target_meta.as_ref().map(Meta::declared_param_keys);
+        let parent_keys = parent_meta.map(Meta::declared_param_keys);
+        for (child, parent_ref) in &use_site.params {
+            let param_path = format!("{base}.params.{child}");
+            if let Some(target_keys) = &target_keys {
+                if !target_keys.contains(child) {
+                    issues.push(LintIssue::new(
+                        "T7",
+                        param_path.clone(),
+                        format!(
+                            "子任务 `{}` 未声明参数 `{child}` (declared: {})",
+                            use_site.task,
+                            join_or_none(target_keys)
+                        ),
+                    ));
+                }
+            }
+            // A constant mapping (no `param(...)` call at all) is legal: it needs
+            // no parent declaration. A computed `param(...)` key cannot be
+            // checked statically, so it is rejected (P2).
+            if use_site.computed_params.contains(child) {
+                issues.push(LintIssue::new(
+                    "T7",
+                    param_path,
+                    "call_task.params 只支持 param('key') 字面量引用或常量表达式 \
+                     (计算表达式无法静态校验父 key)"
+                        .to_string(),
+                ));
+                continue;
+            }
+            let Some(parent_key) = parent_ref else {
+                continue;
+            };
+            if let Some(parent_keys) = &parent_keys {
+                if !parent_keys.contains(parent_key) {
+                    issues.push(LintIssue::new(
+                        "T7",
+                        param_path,
+                        format!(
+                            "父任务未声明参数 `{parent_key}` (declared: {})",
+                            join_or_none(parent_keys)
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
 /// Lint one task bundle `<tasks_dir>/<name>`.
 ///
 /// Setup errors (invalid name / missing directory) are `Err`; contract
@@ -2589,7 +3051,7 @@ pub fn lint_task(tasks_dir: &Path, name: &str) -> Result<Vec<LintIssue>, String>
             tasks_dir.display()
         ));
     }
-    match bundle.lint() {
+    match bundle.lint_with_calls(tasks_dir) {
         Ok(()) => Ok(Vec::new()),
         Err(issues) => Ok(issues),
     }
@@ -2624,7 +3086,7 @@ pub fn lint_tasks(tasks_dir: &Path) -> Result<Vec<(String, Vec<LintIssue>)>, Str
         // Opened by path: the directory already exists, so a name that is not a
         // valid bundle name is reported by the lint (missing meta), not aborted.
         let bundle = TaskBundle::open(tasks_dir.join(&name))?;
-        let issues = match bundle.lint() {
+        let issues = match bundle.lint_with_calls(tasks_dir) {
             Ok(()) => Vec::new(),
             Err(issues) => issues,
         };
@@ -2791,35 +3253,482 @@ mod tests {
         b.delete_asset("返回按钮").expect("unreferenced asset deletes");
     }
 
+    /// Write a raw bundle (no save validation): loader tests exercise exactly
+    /// the hand-authored `call_task` JSON and the target `meta.params`.
+    fn raw_task(td: &TempDir, name: &str, flow: &str, meta: Option<&str>) -> TaskBundle {
+        let bundle = TaskBundle::open(td.path().join(name)).expect("open raw task");
+        std::fs::create_dir_all(bundle.root()).expect("task dir");
+        std::fs::write(bundle.flow_path(), flow).expect("write flow");
+        if let Some(meta) = meta {
+            std::fs::write(bundle.meta_path(), meta).expect("write meta");
+        }
+        bundle
+    }
+
+    fn with_params_of(step: &oas_flow::Step) -> &oas_flow::Step {
+        let oas_flow::Step::WithParams { .. } = step else {
+            panic!("expected with_params, got {step:?}");
+        };
+        step
+    }
+
+    fn finish_flow(name: &str) -> String {
+        format!(
+            r#"{{"schema_version":1,"name":"{name}","steps":[
+                 {{"op":"log","args":{{"text":"'inside'"}}}},
+                 {{"op":"finish","args":{{"exit":"done"}}}}]}}"#
+        )
+    }
+
     #[test]
-    fn load_flow_expands_call_task_and_strips_target_finish() {
-        let td = TempDir::new("calltask");
-        let target = TaskBundle::open(td.path().join("子任务")).expect("open target");
-        target
-            .save_flow(
-                r#"{"schema_version":1,"name":"子任务","steps":[
-                    {"op":"log","args":{"level":"info","text":"'inside'"}},
-                    {"op":"finish","args":{"exit":"done"}}
-                ]}"#,
-            )
-            .expect("save target");
-
-        let caller = TaskBundle::open(td.path().join("调用者")).expect("open caller");
-        caller
-            .save_flow(
-                r#"{"schema_version":1,"name":"调用者","steps":[
-                    {"op":"call_task","args":{"task":"子任务","mode":"run"}},
-                    {"op":"finish","args":{"exit":"done"}}
-                ]}"#,
-            )
-            .expect("save caller");
-
+    fn load_flow_inherit_none_blocks_every_declared_target_key() {
+        let td = TempDir::new("calltask-none");
+        raw_task(
+            &td,
+            "子任务",
+            &finish_flow("子任务"),
+            Some(
+                r#"{"schema_version":1,"name":"子任务","params":[
+                     {"key":"触发文字","type":"string","default":"默认"},
+                     {"key":"max_rounds","type":"int","default":3}]}"#,
+            ),
+        );
+        let caller = raw_task(
+            &td,
+            "调用者",
+            r#"{"schema_version":1,"name":"调用者","steps":[
+                 {"op":"call_task","args":{"task":"子任务","inherit":"none"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+            None,
+        );
         let flow = caller.load_flow().expect("load").expect("flow");
-        assert_eq!(flow.steps.len(), 2, "target finish must be stripped");
+        let oas_flow::Step::WithParams { block, defaults, .. } =
+            with_params_of(&flow.steps[0])
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            block,
+            &vec!["触发文字".to_string(), "max_rounds".to_string()],
+            "all declared target keys are blocked; declaration order is kept"
+        );
+        assert_eq!(defaults.len(), 2, "defaults still apply after blocking");
+    }
+
+    #[test]
+    fn load_flow_nests_with_params_scopes_for_a_b_c() {
+        let td = TempDir::new("calltask-nested");
+        raw_task(
+            &td,
+            "C",
+            &finish_flow("C"),
+            Some(
+                r#"{"schema_version":1,"name":"C","params":[
+                     {"key":"c_level","type":"int","default":7}]}"#,
+            ),
+        );
+        raw_task(
+            &td,
+            "B",
+            r#"{"schema_version":1,"name":"B","steps":[
+                 {"op":"call_task","args":{"task":"C","params":{"c_level":"param('b_in')"}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+            Some(
+                r#"{"schema_version":1,"name":"B","params":[
+                     {"key":"b_in","type":"int","default":1}]}"#,
+            ),
+        );
+        let a = raw_task(
+            &td,
+            "A",
+            r#"{"schema_version":1,"name":"A","steps":[
+                 {"op":"call_task","args":{"task":"B","params":{"b_in":"param('a_in')"}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+            Some(
+                r#"{"schema_version":1,"name":"A","params":[
+                     {"key":"a_in","type":"int","default":2}]}"#,
+            ),
+        );
+
+        let (flow, warnings) = a.load_flow_with_warnings().expect("load");
+        let flow = flow.expect("flow");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let oas_flow::Step::WithParams { label: b_label, body: b_body, .. } =
+            with_params_of(&flow.steps[0])
+        else {
+            unreachable!()
+        };
+        assert_eq!(b_label.as_deref(), Some("B"));
+        assert_eq!(b_body.len(), 1, "B has one call step after expansion");
+        let oas_flow::Step::WithParams {
+            label: c_label,
+            params: c_params,
+            defaults: c_defaults,
+            body: c_body,
+            ..
+        } = with_params_of(&b_body[0])
+        else {
+            unreachable!()
+        };
+        assert_eq!(c_label.as_deref(), Some("C"));
+        assert_eq!(c_params.len(), 1);
+        assert_eq!(c_params[0].0, "c_level");
+        assert_eq!(c_defaults["c_level"], oas_flow::Value::Num(7.0));
+        assert_eq!(c_body.len(), 1, "C's finish is stripped at every level");
+        assert!(matches!(c_body[0], oas_flow::Step::Log { .. }));
+    }
+
+    #[test]
+    fn load_flow_keeps_each_call_sites_mapping_independent() {
+        let td = TempDir::new("calltask-sites");
+        raw_task(
+            &td,
+            "子任务",
+            &finish_flow("子任务"),
+            Some(r#"{"schema_version":1,"name":"子任务","params":[
+                 {"key":"p","type":"string","default":"d"}]}"#),
+        );
+        let caller = raw_task(
+            &td,
+            "调用者",
+            r#"{"schema_version":1,"name":"调用者","steps":[
+                 {"op":"call_task","args":{"task":"子任务","params":{"p":"param('one')"}}},
+                 {"op":"call_task","args":{"task":"子任务","params":{"p":"param('two')"}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+            None,
+        );
+        let flow = caller.load_flow().expect("load").expect("flow");
+        let oas_flow::Step::WithParams { params: first, .. } =
+            with_params_of(&flow.steps[0])
+        else {
+            unreachable!()
+        };
+        let oas_flow::Step::WithParams { params: second, .. } =
+            with_params_of(&flow.steps[1])
+        else {
+            unreachable!()
+        };
+        assert_eq!(first[0].1, oas_flow::parse_expr("param('one')").unwrap());
+        assert_eq!(second[0].1, oas_flow::parse_expr("param('two')").unwrap());
+    }
+
+    #[test]
+    fn load_flow_fails_loudly_when_the_target_meta_is_missing_or_bad() {
+        let td = TempDir::new("calltask-meta");
+        raw_task(&td, "无meta", &finish_flow("无meta"), None);
+        let caller = raw_task(
+            &td,
+            "调用者",
+            r#"{"schema_version":1,"name":"调用者","steps":[
+                 {"op":"call_task","args":{"task":"无meta"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+            None,
+        );
+        // P1-2: no more "no defaults + ignored warning": the call target must be
+        // a complete bundle, otherwise inherit:none would silently degrade too.
+        let err = caller.load_flow().expect_err("missing target meta must fail");
+        assert!(err.contains("无meta"), "must name the target: {err}");
+        assert!(err.contains("meta.json"), "must name the file: {err}");
+        assert!(err.contains("call_task"), "must name the call: {err}");
+        assert!(err.contains("调用者"), "must name the caller: {err}");
+
+        raw_task(
+            &td,
+            "坏meta",
+            &finish_flow("坏meta"),
+            Some("{ this is not json"),
+        );
+        std::fs::write(
+            caller.flow_path(),
+            r#"{"schema_version":1,"name":"调用者","steps":[
+                 {"op":"call_task","args":{"task":"坏meta"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("rewrite caller flow");
+        let err = caller.load_flow().expect_err("malformed target meta must fail");
+        assert!(err.contains("坏meta"), "{err}");
+        assert!(err.contains("meta.json is invalid"), "{err}");
+
+        // A default that is not a flow value (array) is a hard error too: the
+        // loader must not silently drop it and run the subtask with no default.
+        raw_task(
+            &td,
+            "坏默认",
+            &finish_flow("坏默认"),
+            Some(
+                r#"{"schema_version":1,"name":"坏默认","params":[
+                     {"key":"k","type":"string","default":[1,2]}]}"#,
+            ),
+        );
+        std::fs::write(
+            caller.flow_path(),
+            r#"{"schema_version":1,"name":"调用者","steps":[
+                 {"op":"call_task","args":{"task":"坏默认"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("rewrite caller flow");
+        let err = caller.load_flow().expect_err("non-scalar default must fail");
+        assert!(err.contains("坏默认"), "{err}");
+        assert!(err.contains("default"), "{err}");
+        assert!(err.contains("scalar"), "{err}");
+    }
+
+    #[test]
+    fn load_flow_fingerprint_tracks_the_expanded_subtask_content() {
+        let td = TempDir::new("calltask-fp");
+        raw_task(
+            &td,
+            "子任务",
+            &finish_flow("子任务"),
+            Some(
+                r#"{"schema_version":1,"name":"子任务","params":[
+                     {"key":"k","type":"string","default":"d"}]}"#,
+            ),
+        );
+        let caller = raw_task(
+            &td,
+            "调用者",
+            r#"{"schema_version":1,"name":"调用者","steps":[
+                 {"op":"call_task","args":{"task":"子任务","params":{"k":"param('p')"}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+            Some(
+                r#"{"schema_version":1,"name":"调用者","params":[
+                     {"key":"p","type":"string","default":"v"}]}"#,
+            ),
+        );
+
+        let (flow, first, warnings) = caller
+            .load_flow_with_fingerprint()
+            .expect("load with fingerprint");
+        assert!(flow.is_some());
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_ne!(first, 0, "a present flow has a real fingerprint");
+        let (_, second, _) = caller
+            .load_flow_with_fingerprint()
+            .expect("load again");
+        assert_eq!(first, second, "fingerprint is stable across loads");
+
+        // Edit the called subtask without changing its step count: the parent's
+        // expanded flow changes, so the fingerprint must change (P1-3).
+        let target = TaskBundle::open(td.path().join("子任务")).expect("target");
+        std::fs::write(
+            target.flow_path(),
+            r#"{"schema_version":1,"name":"子任务","steps":[
+                 {"op":"log","args":{"text":"'changed'"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("rewrite target flow");
+        let (_, changed, _) = caller
+            .load_flow_with_fingerprint()
+            .expect("load after subtask edit");
+        assert_ne!(
+            first, changed,
+            "a subtask edit with the same step count must change the fingerprint"
+        );
+
+        // No flow.json at all is a distinct "no flow" identity, never a hash.
+        let empty = TaskBundle::open(td.path().join("空任务")).expect("open");
+        std::fs::create_dir_all(empty.root()).expect("dir");
+        let (flow, fingerprint, _) = empty
+            .load_flow_with_fingerprint()
+            .expect("load empty task");
+        assert!(flow.is_none());
+        assert_eq!(fingerprint, 0);
+    }
+
+    #[test]
+    fn load_flow_legacy_paramless_call_task_now_gets_subtask_defaults() {
+        let td = TempDir::new("calltask-legacy");
+        raw_task(
+            &td,
+            "子任务",
+            &finish_flow("子任务"),
+            Some(r#"{"schema_version":1,"name":"子任务","params":[
+                 {"key":"触发文字","type":"string","default":"默认"}]}"#),
+        );
+        let caller = raw_task(
+            &td,
+            "调用者",
+            r#"{"schema_version":1,"name":"调用者","steps":[
+                 {"op":"call_task","args":{"task":"子任务"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+            None,
+        );
+        let flow = caller.load_flow().expect("load").expect("flow");
+        let oas_flow::Step::WithParams {
+            params,
+            defaults,
+            body,
+            ..
+        } = with_params_of(&flow.steps[0])
+        else {
+            unreachable!()
+        };
+        assert!(params.is_empty(), "the legacy call has no mapping");
+        assert_eq!(
+            defaults["触发文字"],
+            oas_flow::Value::Str("默认".to_string()),
+            "the old broken subtask default now runs"
+        );
+        assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn load_flow_rejects_bad_call_task_args_with_the_call_in_the_message() {
+        let td = TempDir::new("calltask-bad");
+        raw_task(&td, "子任务", &finish_flow("子任务"), None);
+        let caller = raw_task(
+            &td,
+            "调用者",
+            r#"{"schema_version":1,"name":"调用者","steps":[
+                 {"op":"call_task","args":{"task":"子任务"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+            None,
+        );
+        let bad_flows = [
+            (
+                r#"{"op":"call_task","args":{"task":"子任务","params":["x"]}}"#,
+                "args.params must be an object",
+            ),
+            (
+                r#"{"op":"call_task","args":{"task":"子任务","params":{"k":1}}}"#,
+                "args.params.k must be an expression string",
+            ),
+            (
+                r#"{"op":"call_task","args":{"task":"子任务","params":{"k":"param("}}}"#,
+                "args.params.k",
+            ),
+            (
+                r#"{"op":"call_task","args":{"task":"子任务","inherit":"sometimes"}}"#,
+                "args.inherit",
+            ),
+            (
+                r#"{"op":"call_task","args":{"task":"子任务","inherit":1}}"#,
+                "args.inherit",
+            ),
+        ];
+        for (step, expected) in bad_flows {
+            let flow = format!(
+                r#"{{"schema_version":1,"name":"调用者","steps":[{step},
+                     {{"op":"finish","args":{{"exit":"done"}}}}]}}"#
+            );
+            std::fs::write(caller.flow_path(), flow).expect("write flow");
+            let err = caller.load_flow().expect_err("must fail loudly");
+            assert!(err.contains(expected), "expected {expected:?} in {err:?}");
+            assert!(err.contains("子任务"), "must name the call: {err:?}");
+        }
+    }
+
+    #[test]
+    fn load_flow_keeps_hard_errors_for_missing_target_flow_and_cycles() {
+        let td = TempDir::new("calltask-hard");
+        // Target directory exists but has no flow.json: still a hard error.
+        let target = TaskBundle::open(td.path().join("空目标")).expect("open");
+        std::fs::create_dir_all(target.root()).expect("dir");
+        std::fs::write(
+            target.meta_path(),
+            r#"{"schema_version":1,"name":"空目标","params":[]}"#,
+        )
+        .expect("meta");
+        let caller = raw_task(
+            &td,
+            "调用者",
+            r#"{"schema_version":1,"name":"调用者","steps":[
+                 {"op":"call_task","args":{"task":"空目标"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+            None,
+        );
+        let err = caller.load_flow().expect_err("missing target flow");
+        assert!(err.contains("空目标"), "{err}");
+        assert!(err.contains("flow.json"), "{err}");
+
+        // Cycles stay the loader's job (T7 never walks them). Both bundles are
+        // complete (meta + flow) so the cycle check is what actually fires.
+        raw_task(
+            &td,
+            "A",
+            r#"{"schema_version":1,"name":"A","steps":[
+                 {"op":"call_task","args":{"task":"B"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+            Some(r#"{"schema_version":1,"name":"A","params":[]}"#),
+        );
+        raw_task(
+            &td,
+            "B",
+            r#"{"schema_version":1,"name":"B","steps":[
+                 {"op":"call_task","args":{"task":"A"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+            Some(r#"{"schema_version":1,"name":"B","params":[]}"#),
+        );
+        let a = TaskBundle::open(td.path().join("A")).expect("open A");
+        let err = a.load_flow().expect_err("cycle");
+        assert!(err.contains("cycle"), "{err}");
+    }
+
+    #[test]
+    fn load_flow_expands_call_task_into_a_with_params_scope() {
+        let td = TempDir::new("calltask");
+        raw_task(
+            &td,
+            "子任务",
+            r#"{"schema_version":1,"name":"子任务","steps":[
+                 {"op":"log","args":{"level":"info","text":"'inside'"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+            Some(
+                r#"{"schema_version":1,"name":"子任务","params":[
+                     {"key":"触发文字","type":"string","default":"默认"},
+                     {"key":"max_rounds","type":"int","default":3},
+                     {"key":"no_default","type":"string"}]}"#,
+            ),
+        );
+        let caller = raw_task(
+            &td,
+            "调用者",
+            r#"{"schema_version":1,"name":"调用者","steps":[
+                 {"op":"call_task","args":{"task":"子任务","mode":"run",
+                   "params":{"触发文字":"param('识别关键词')"}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+            Some(
+                r#"{"schema_version":1,"name":"调用者","params":[
+                     {"key":"识别关键词","type":"string","default":"突破"}]}"#,
+            ),
+        );
+
+        let (flow, warnings) = caller
+            .load_flow_with_warnings()
+            .expect("load with warnings");
+        let flow = flow.expect("flow present");
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        assert_eq!(flow.steps.len(), 2, "scope + caller finish");
+        let oas_flow::Step::WithParams {
+            label,
+            params,
+            defaults,
+            block,
+            body,
+        } = with_params_of(&flow.steps[0])
+        else {
+            unreachable!()
+        };
+        assert_eq!(label.as_deref(), Some("子任务"));
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].0, "触发文字");
+        assert_eq!(
+            params[0].1,
+            oas_flow::parse_expr("param('识别关键词')").expect("expr")
+        );
+        // Only declared keys WITH a default are injected.
+        assert_eq!(defaults.len(), 2, "{defaults:?}");
+        assert_eq!(defaults["触发文字"], oas_flow::Value::Str("默认".into()));
+        assert_eq!(defaults["max_rounds"], oas_flow::Value::Num(3.0));
+        assert!(!defaults.contains_key("no_default"));
+        // inherit defaults to "all" => no block list (same-name inheritance).
+        assert!(block.is_empty(), "{block:?}");
+        assert_eq!(body.len(), 1, "target finish must be stripped");
         assert!(
-            matches!(flow.steps[0], oas_flow::Step::Log { .. }),
-            "target steps must be expanded: {:?}",
-            flow.steps
+            matches!(body[0], oas_flow::Step::Log { .. }),
+            "target step must be inside the scope: {body:?}"
         );
         assert!(
             matches!(flow.steps[1], oas_flow::Step::Finish { .. }),
@@ -2832,6 +3741,8 @@ mod tests {
                 .any(|s| matches!(s, oas_flow::Step::CallTask { .. })),
             "no unexpanded call_task may reach the runtime"
         );
+        // T1 is unaffected: the caller's own finish terminates the flow.
+        assert!(flow.ends_with_finish());
     }
 
     #[test]
@@ -3888,6 +4799,318 @@ mod tests {
                 .any(|i| i.code == "T6" && i.path.contains("args.code")),
             "{issues:?}"
         );
+    }
+
+    #[test]
+    fn lint_t6_ignores_parameter_names_but_flags_code_expressions() {
+        let td = TempDir::new("lintcode-params");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).expect("tasks dir");
+        write_flow_only_bundle(
+            &TaskBundle::open(tasks.join("子任务")).expect("target"),
+            r#"{"schema_version":1,"name":"子任务","params":[
+                 {"key":"code","type":"string","default":"x"}]}"#,
+            r#"{"schema_version":1,"name":"子任务","steps":[
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let parent = TaskBundle::open(tasks.join("父任务")).expect("parent");
+        write_flow_only_bundle(
+            &parent,
+            r#"{"schema_version":1,"name":"父任务","params":[
+                 {"key":"parent_code","type":"string","default":"x"}]}"#,
+            r#"{"schema_version":1,"name":"父任务","steps":[
+                 {"op":"call_task","args":{"task":"子任务",
+                   "params":{"code":"param('parent_code')"}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        // P1-1: `code` is a legal subtask parameter name, not external code.
+        let issues = lint_task(&tasks, "父任务").expect("lint");
+        assert!(
+            issues.iter().all(|i| i.code != "T6"),
+            "parameter names must not participate in T6: {issues:?}"
+        );
+        assert!(issues.is_empty(), "{issues:?}");
+
+        // A real external-code escape in the *value* is still T6.
+        std::fs::write(
+            parent.flow_path(),
+            r#"{"schema_version":1,"name":"父任务","steps":[
+                 {"op":"call_task","args":{"task":"子任务",
+                   "params":{"code":"shell: rm -rf"}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("rewrite parent flow");
+        let issues = lint_task(&tasks, "父任务").expect("lint");
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == "T6"
+                    && i.path.ends_with(".params.code")
+                    && i.msg.contains("external-code")),
+            "a shell expression value must stay a T6 violation: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn lint_t7_accepts_a_valid_cross_task_mapping() {
+        let td = TempDir::new("t7ok");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).expect("tasks dir");
+        write_flow_only_bundle(
+            &TaskBundle::open(tasks.join("子任务")).expect("target"),
+            r#"{"schema_version":1,"name":"子任务","params":[
+                 {"key":"trigger_text","type":"string","default":"默认"}]}"#,
+            r#"{"schema_version":1,"name":"子任务","steps":[
+                 {"op":"log","args":{"text":"param('trigger_text')"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        write_flow_only_bundle(
+            &TaskBundle::open(tasks.join("父任务")).expect("parent"),
+            r#"{"schema_version":1,"name":"父任务","params":[
+                 {"key":"keyword","type":"string","default":"突破"}]}"#,
+            r#"{"schema_version":1,"name":"父任务","steps":[
+                 {"op":"call_task","args":{"task":"子任务",
+                   "params":{"trigger_text":"param('keyword')"}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let issues = lint_task(&tasks, "父任务").expect("lint");
+        assert!(issues.is_empty(), "{issues:?}");
+        // --all path uses the same rule.
+        let all = lint_tasks(&tasks).expect("lint all");
+        assert!(
+            all.iter().all(|(_, issues)| issues.is_empty()),
+            "{all:?}"
+        );
+    }
+
+    #[test]
+    fn lint_t7_flags_a_missing_target_task() {
+        let td = TempDir::new("t7missing");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).expect("tasks dir");
+        write_flow_only_bundle(
+            &TaskBundle::open(tasks.join("父任务")).expect("parent"),
+            r#"{"schema_version":1,"name":"父任务"}"#,
+            r#"{"schema_version":1,"name":"父任务","steps":[
+                 {"op":"call_task","args":{"task":"不存在"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let issues = lint_task(&tasks, "父任务").expect("lint");
+        let t7: Vec<&LintIssue> = issues.iter().filter(|i| i.code == "T7").collect();
+        assert_eq!(t7.len(), 1, "{issues:?}");
+        assert!(t7[0].msg.contains("不存在"), "{:?}", t7[0]);
+        assert!(t7[0].path.starts_with("flow.json:steps[0].args"), "{}", t7[0]);
+    }
+
+    #[test]
+    fn lint_t7_flags_keys_each_side_has_not_declared() {
+        let td = TempDir::new("t7keys");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).expect("tasks dir");
+        write_flow_only_bundle(
+            &TaskBundle::open(tasks.join("子任务")).expect("target"),
+            r#"{"schema_version":1,"name":"子任务","params":[
+                 {"key":"触发文字","type":"string","default":"默认"}]}"#,
+            r#"{"schema_version":1,"name":"子任务","steps":[
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        write_flow_only_bundle(
+            &TaskBundle::open(tasks.join("父任务")).expect("parent"),
+            r#"{"schema_version":1,"name":"父任务","params":[]}"#,
+            r#"{"schema_version":1,"name":"父任务","steps":[
+                 {"op":"call_task","args":{"task":"子任务","params":{
+                   "子任务没声明的":"param('父任务没声明的')"}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let issues = lint_task(&tasks, "父任务").expect("lint");
+        let t7: Vec<&LintIssue> = issues.iter().filter(|i| i.code == "T7").collect();
+        assert_eq!(t7.len(), 2, "{issues:?}");
+        assert!(
+            t7.iter()
+                .any(|i| i.msg.contains("子任务 `子任务` 未声明参数")
+                    && i.path.ends_with(".params.子任务没声明的")),
+            "{t7:?}"
+        );
+        assert!(
+            t7.iter()
+                .any(|i| i.msg.contains("父任务未声明参数") && i.msg.contains("父任务没声明的")),
+            "{t7:?}"
+        );
+    }
+
+    #[test]
+    fn lint_t7_accepts_constant_mapping_but_rejects_computed_param_keys() {
+        let td = TempDir::new("t7expr");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).expect("tasks dir");
+        write_flow_only_bundle(
+            &TaskBundle::open(tasks.join("子任务")).expect("target"),
+            r#"{"schema_version":1,"name":"子任务","params":[
+                 {"key":"触发文字","type":"string"}]}"#,
+            r#"{"schema_version":1,"name":"子任务","steps":[
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let parent = TaskBundle::open(tasks.join("父任务")).expect("parent");
+        write_flow_only_bundle(
+            &parent,
+            r#"{"schema_version":1,"name":"父任务"}"#,
+            r#"{"schema_version":1,"name":"父任务","steps":[
+                 {"op":"call_task","args":{"task":"子任务",
+                   "params":{"触发文字":"'常量'"}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        // P2: constants need no parent declaration and are legal.
+        let issues = lint_task(&tasks, "父任务").expect("lint");
+        assert!(issues.is_empty(), "constant mapping must pass: {issues:?}");
+
+        // A computed param() key cannot be checked statically -> T7.
+        std::fs::write(
+            parent.flow_path(),
+            r#"{"schema_version":1,"name":"父任务","steps":[
+                 {"op":"call_task","args":{"task":"子任务",
+                   "params":{"触发文字":"param('a' + 'b')"}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("rewrite parent flow");
+        let issues = lint_task(&tasks, "父任务").expect("lint");
+        let t7: Vec<&LintIssue> = issues.iter().filter(|i| i.code == "T7").collect();
+        assert_eq!(t7.len(), 1, "{issues:?}");
+        assert!(t7[0].msg.contains("只支持"), "{}", t7[0]);
+        assert!(
+            t7[0].path.ends_with(".params.触发文字"),
+            "{}",
+            t7[0]
+        );
+    }
+
+    #[test]
+    fn lint_t7_reports_an_unparseable_target_flow() {
+        let td = TempDir::new("t7badflow");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(tasks.join("坏目标")).expect("dir");
+        std::fs::write(
+            tasks.join("坏目标").join("meta.json"),
+            r#"{"schema_version":1,"name":"坏目标","params":[]}"#,
+        )
+        .expect("meta");
+        std::fs::write(
+            tasks.join("坏目标").join("flow.json"),
+            r#"{"schema_version":1,"name":"坏目标","steps":[{"op":"nope","args":{}}]}"#,
+        )
+        .expect("flow");
+        write_flow_only_bundle(
+            &TaskBundle::open(tasks.join("父任务")).expect("parent"),
+            r#"{"schema_version":1,"name":"父任务"}"#,
+            r#"{"schema_version":1,"name":"父任务","steps":[
+                 {"op":"call_task","args":{"task":"坏目标"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        // P2: T7 parses the target flow, not just "is it readable".
+        let issues = lint_task(&tasks, "父任务").expect("lint");
+        let t7: Vec<&LintIssue> = issues.iter().filter(|i| i.code == "T7").collect();
+        assert_eq!(t7.len(), 1, "{issues:?}");
+        assert!(
+            t7[0].msg.contains("无法解析目标 flow.json"),
+            "{:?}",
+            t7[0]
+        );
+        assert!(t7[0].msg.contains("nope"), "{:?}", t7[0]);
+    }
+
+    #[test]
+    fn lint_t7_distinguishes_missing_meta_from_missing_flow() {
+        let td = TempDir::new("t7broken");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).expect("tasks dir");
+        std::fs::create_dir_all(tasks.join("只有flow")).expect("dir");
+        std::fs::write(
+            tasks.join("只有flow").join("flow.json"),
+            r#"{"schema_version":1,"name":"只有flow","steps":[{"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("flow");
+        std::fs::create_dir_all(tasks.join("只有meta")).expect("dir");
+        std::fs::write(
+            tasks.join("只有meta").join("meta.json"),
+            r#"{"schema_version":1,"name":"只有meta"}"#,
+        )
+        .expect("meta");
+        write_flow_only_bundle(
+            &TaskBundle::open(tasks.join("父任务")).expect("parent"),
+            r#"{"schema_version":1,"name":"父任务"}"#,
+            r#"{"schema_version":1,"name":"父任务","steps":[
+                 {"op":"call_task","args":{"task":"只有flow"}},
+                 {"op":"call_task","args":{"task":"只有meta"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let issues = lint_task(&tasks, "父任务").expect("lint");
+        let t7: Vec<&LintIssue> = issues.iter().filter(|i| i.code == "T7").collect();
+        assert_eq!(t7.len(), 2, "{issues:?}");
+        assert!(
+            t7.iter()
+                .any(|i| i.msg.contains("缺少 meta.json") && i.path.contains("steps[0]")),
+            "{t7:?}"
+        );
+        assert!(
+            t7.iter()
+                .any(|i| i.msg.contains("缺少 flow.json") && i.path.contains("steps[1]")),
+            "{t7:?}"
+        );
+    }
+
+    #[test]
+    fn lint_t7_stays_out_of_t3_and_out_of_the_self_contained_lint() {
+        let td = TempDir::new("t7t3");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).expect("tasks dir");
+        write_flow_only_bundle(
+            &TaskBundle::open(tasks.join("子任务")).expect("target"),
+            r#"{"schema_version":1,"name":"子任务","params":[
+                 {"key":"k","type":"string"}]}"#,
+            r#"{"schema_version":1,"name":"子任务","steps":[
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let parent = TaskBundle::open(tasks.join("父任务")).expect("parent");
+        write_flow_only_bundle(
+            &parent,
+            r#"{"schema_version":1,"name":"父任务","params":[]}"#,
+            r#"{"schema_version":1,"name":"父任务","steps":[
+                 {"op":"call_task","args":{"task":"子任务","params":{"k":"param('parent_key')"}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        // T3 must not flag the mapping's parent key: call_task is T7's leaf.
+        let issues = lint_task(&tasks, "父任务").expect("lint");
+        assert!(
+            !issues.iter().any(|i| i.code == "T3"),
+            "T3 must stay unchanged for call_task mappings: {issues:?}"
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == "T7" && i.msg.contains("父任务未声明参数")),
+            "{issues:?}"
+        );
+        // Without a tasks dir the self-contained lint does not fire T7.
+        parent.lint().unwrap_or_else(|issues| {
+            panic!("T7 requires tasks_dir and must be skipped here: {issues:?}")
+        });
+    }
+
+    #[test]
+    fn lint_t7_rejects_an_invalid_target_name() {
+        let td = TempDir::new("t7name");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).expect("tasks dir");
+        write_flow_only_bundle(
+            &TaskBundle::open(tasks.join("父任务")).expect("parent"),
+            r#"{"schema_version":1,"name":"父任务"}"#,
+            r#"{"schema_version":1,"name":"父任务","steps":[
+                 {"op":"call_task","args":{"task":"../evil"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let issues = lint_task(&tasks, "父任务").expect("lint");
+        let t7: Vec<&LintIssue> = issues.iter().filter(|i| i.code == "T7").collect();
+        assert_eq!(t7.len(), 1, "{issues:?}");
+        assert!(t7[0].msg.contains("名称非法"), "{:?}", t7[0]);
     }
 
     #[test]

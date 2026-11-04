@@ -12,7 +12,7 @@
 //! * Unknown instruction names, missing args and references to assets that are
 //!   not declared are rejected at **load time** (fail early, not mid-run).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use oas_types::Exit;
@@ -390,6 +390,26 @@ impl Value {
             Value::Num(n) => Ok(*n),
             other => Err(format!("expected number, got {other:?}")),
         }
+    }
+}
+
+/// Convert a JSON scalar (`null`/bool/number/string) into an expression [`Value`].
+///
+/// `with_params.defaults` uses this: a default is a literal, never an expression
+/// (expressions belong in `params`, which are evaluated in the caller scope).
+/// Anything structured (array/object) is a loud error — defaults must be scalars.
+pub fn json_to_value(v: &serde_json::Value) -> Result<Value, String> {
+    match v {
+        serde_json::Value::Null => Ok(Value::Null),
+        serde_json::Value::Bool(b) => Ok(Value::Bool(*b)),
+        serde_json::Value::Number(n) => n
+            .as_f64()
+            .map(Value::Num)
+            .ok_or_else(|| format!("number `{n}` cannot be represented as f64")),
+        serde_json::Value::String(s) => Ok(Value::Str(s.clone())),
+        other => Err(format!(
+            "must be a null/bool/number/string literal, got `{other}`"
+        )),
     }
 }
 
@@ -824,6 +844,28 @@ impl RetryPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CallInherit {
+    /// Same-name parameters from the caller stay visible inside the subtask.
+    ///
+    /// This is the default because it preserves today's flat shared namespace
+    /// (Runner Studio split design §C.4.4): every existing task keeps working.
+    #[default]
+    All,
+    /// Strict isolation: the subtask sees only explicit `params` mappings plus
+    /// its own `meta.params[].default` values.
+    None,
+}
+
+impl CallInherit {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CallInherit::All => "all",
+            CallInherit::None => "none",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
     /// Structured branch (nested blocks; there is no goto).
@@ -964,11 +1006,54 @@ pub enum Step {
         text: Expr,
     },
     /// v1.2.3 U-01(B): call another task's flow as a subflow. The oas-task
-    /// loader expands this step into the target steps before execution, so the
-    /// runtime never sees it; it is kept in flow.json so the reference stays
-    /// live (edit the target once, all callers pick it up on next load).
+    /// loader expands this step into a [`Step::WithParams`] scope before
+    /// execution, so the runtime never sees it; it is kept in flow.json so the
+    /// reference stays live (edit the target once, all callers pick it up on
+    /// next load).
+    ///
+    /// Runner Studio split (§C.4): `params` maps a **child** parameter key to an
+    /// expression evaluated in the **caller** scope; `inherit` controls whether
+    /// same-name caller parameters stay visible (design §C.4.4:
+    /// mapping > same-name inheritance > subtask default > loud failure).
+    ///
+    /// Compatibility (P1-4): only `call_task` + `args.params`/`args.inherit` is
+    /// written to `flow.json`. A pre-PR4 loader reads just `task` and **silently
+    /// ignores** the new args, so an old Runner runs the call with the old
+    /// semantics and no error. Task packages must therefore be gated on
+    /// `manifest.engine.flow_ops` (design §C.4.6, PR5) before an old Runner is
+    /// allowed to install them; `with_params` never appears on disk, so an
+    /// `unknown instruction` failure is *not* the protection mechanism.
     CallTask {
         task: String,
+        /// child key -> expression evaluated in the caller scope.
+        params: BTreeMap<String, Expr>,
+        inherit: CallInherit,
+    },
+    /// A parameter scope around an inline step block (Runner Studio split §C.4.3).
+    ///
+    /// **Internal implementation detail of the task loader.** It is normally
+    /// generated when `oas-task` expands a `call_task` and is never written to
+    /// `flow.json`; the parser accepts a hand-authored one for tests/tooling,
+    /// but authoring it directly is not supported: T3 still requires the parent
+    /// `meta.params` to declare every `param()` key in the body, and it does not
+    /// subtract keys supplied by this scope's `params`/`defaults` (P2-2).
+    ///
+    /// Semantics:
+    /// 1. evaluate every `params` expression in the **caller** scope,
+    /// 2. `block` keys are temporarily hidden (used by `inherit:"none"`; it is a
+    ///    targeted hide list, not a full isolate),
+    /// 3. `defaults` fill keys that still have no value,
+    /// 4. explicit mappings win over all of the above,
+    /// 5. the body runs with that temporary parameter table, restored afterwards.
+    ///
+    /// `label` is the subtask name used in loud `param()` errors; when absent the
+    /// historical (unscoped) error text is kept.
+    WithParams {
+        label: Option<String>,
+        params: Vec<(String, Expr)>,
+        defaults: BTreeMap<String, Value>,
+        block: Vec<String>,
+        body: Vec<Step>,
     },
     Finish {
         exit: Exit,
@@ -1001,6 +1086,106 @@ fn parse_expr_field(
 ) -> Result<Expr, FlowError> {
     let src = req_str(v, key, path)?;
     parse_expr(&src).map_err(|e| FlowError::new(format!("{path}.{key}"), e))
+}
+
+/// `call_task.params` / `with_params.params`: a JSON object mapping a parameter
+/// key to an expression **string**. Order is preserved (evaluation order).
+fn parse_params_object(
+    args: &serde_json::Value,
+    path: &str,
+) -> Result<Vec<(String, Expr)>, FlowError> {
+    let Some(v) = args.get("params") else {
+        return Ok(Vec::new());
+    };
+    let obj = v.as_object().ok_or_else(|| {
+        FlowError::new(
+            format!("{path}.params"),
+            "`params` must be an object mapping parameter key -> expression string",
+        )
+    })?;
+    let mut out = Vec::with_capacity(obj.len());
+    for (key, value) in obj {
+        let src = value.as_str().ok_or_else(|| {
+            FlowError::new(
+                format!("{path}.params.{key}"),
+                format!("parameter mapping `{key}` must be an expression string, got {value}"),
+            )
+        })?;
+        let expr =
+            parse_expr(src).map_err(|e| FlowError::new(format!("{path}.params.{key}"), e))?;
+        out.push((key.clone(), expr));
+    }
+    Ok(out)
+}
+
+/// `with_params.defaults`: a JSON object of **literal** scalars.
+fn parse_params_defaults(
+    args: &serde_json::Value,
+    path: &str,
+) -> Result<BTreeMap<String, Value>, FlowError> {
+    let Some(v) = args.get("defaults") else {
+        return Ok(BTreeMap::new());
+    };
+    let obj = v.as_object().ok_or_else(|| {
+        FlowError::new(
+            format!("{path}.defaults"),
+            "`defaults` must be an object mapping parameter key -> literal value",
+        )
+    })?;
+    let mut out = BTreeMap::new();
+    for (key, value) in obj {
+        let value = json_to_value(value)
+            .map_err(|e| FlowError::new(format!("{path}.defaults.{key}"), e))?;
+        out.insert(key.clone(), value);
+    }
+    Ok(out)
+}
+
+/// A required-or-optional JSON array of strings (e.g. `with_params.block`).
+fn parse_string_array(
+    args: &serde_json::Value,
+    key: &str,
+    path: &str,
+) -> Result<Vec<String>, FlowError> {
+    let Some(v) = args.get(key) else {
+        return Ok(Vec::new());
+    };
+    let arr = v.as_array().ok_or_else(|| {
+        FlowError::new(
+            format!("{path}.{key}"),
+            format!("`{key}` must be an array of parameter keys"),
+        )
+    })?;
+    arr.iter()
+        .enumerate()
+        .map(|(i, item)| {
+            item.as_str().map(str::to_string).ok_or_else(|| {
+                FlowError::new(
+                    format!("{path}.{key}[{i}]"),
+                    "every entry must be a string parameter key",
+                )
+            })
+        })
+        .collect()
+}
+
+/// `call_task.args.inherit`: `"all"` (default) or `"none"` (§C.4.4).
+fn parse_call_inherit(args: &serde_json::Value, path: &str) -> Result<CallInherit, FlowError> {
+    match args.get("inherit") {
+        None => Ok(CallInherit::All),
+        Some(serde_json::Value::String(s)) => match s.as_str() {
+            "all" => Ok(CallInherit::All),
+            "none" => Ok(CallInherit::None),
+            other => Err(FlowError::new(
+                format!("{path}.inherit"),
+                format!("`inherit` must be \"all\" or \"none\" (got `{other}`)"),
+            )),
+        },
+        Some(other) => Err(FlowError::new(
+            format!("{path}.inherit"),
+            format!("`inherit` must be the string \"all\" or \"none\", got {other}"),
+        )),
+    }
 }
 
 /// CP1/CP2: a `click_point` coordinate accepts a JSON number (a literal) or a
@@ -2003,7 +2188,39 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
         }),
         "call_task" => Ok(Step::CallTask {
             task: req_str(&args, "task", &a_path)?,
+            params: parse_params_object(&args, &a_path)?.into_iter().collect(),
+            inherit: parse_call_inherit(&args, &a_path)?,
         }),
+        // Runner Studio split §C.4.3: this is the in-memory wrapper the loader
+        // generates when it expands `call_task`; it is an internal implementation
+        // detail (never part of flow.json), not an authoring surface.
+        "with_params" => {
+            let label = match args.get("task") {
+                None => None,
+                Some(serde_json::Value::String(s)) => Some(s.clone()),
+                Some(other) => {
+                    return Err(FlowError::new(
+                        format!("{a_path}.task"),
+                        format!(
+                            "`task` (the subtask label for error messages) must be a string, \
+                             got {other}"
+                        ),
+                    ))
+                }
+            };
+            let body = parse_steps(
+                args.get("body")
+                    .ok_or_else(|| FlowError::new(format!("{path}.args.body"), "`with_params` needs `body`"))?,
+                &format!("{path}.args.body"),
+            )?;
+            Ok(Step::WithParams {
+                label,
+                params: parse_params_object(&args, &a_path)?,
+                defaults: parse_params_defaults(&args, &a_path)?,
+                block: parse_string_array(&args, "block", &a_path)?,
+                body,
+            })
+        }
         "finish" => {
             let name = req_str(&args, "exit", &a_path)?;
             Ok(Step::Finish {
@@ -2015,7 +2232,9 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
             path,
             format!(
                 "unknown instruction `{other}` (supported: if/loop/while/break/continue/\
-                 wait/wait_until/appear/click/click_point/click_target/dismiss_popup/swipe/ocr/log/finish)"
+                 wait/wait_until/appear/click/click_point/click_target/dismiss_popup/swipe/\
+                 drag/key/restart_app/ocr/set_var/inc_var/ocr_to_var/log/call_task/\
+                 with_params/finish)"
             ),
         )),
     }
@@ -2179,6 +2398,18 @@ impl Flow {
         out
     }
 
+    /// Every `call_task` step with its parameter mapping (Runner Studio split
+    /// §C.4.5 T7; also shared with the Studio UI).
+    ///
+    /// `call_task` is deliberately a leaf of [`Self::param_uses_at`]: mappings
+    /// belong to the *caller* scope, but the T7 lint reports them with a precise
+    /// per-call message instead of the generic T3 one.
+    pub fn call_task_uses(&self) -> Vec<CallTaskUse> {
+        let mut out = Vec::new();
+        collect_call_task_steps(&self.steps, "steps", &mut out);
+        out
+    }
+
     /// T1: does every path through the flow end with `finish(<exit>)`?
     ///
     /// Conservative: the last step must be a `finish`, or an `if` whose BOTH
@@ -2216,6 +2447,88 @@ pub struct ParamUse {
     pub path: String,
 }
 
+/// One `call_task` step and its parameter mapping (T7 / Studio shared view).
+///
+/// `params` maps the **child** parameter key to the parent key when the mapping
+/// value is exactly `param('parentKey')`; a constant expression or a computed
+/// `param(...)` call is `None` (see `computed_params`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallTaskUse {
+    pub task: String,
+    pub inherit: CallInherit,
+    pub params: BTreeMap<String, Option<String>>,
+    /// Child keys whose mapping calls `param(...)` but is not exactly
+    /// `param('literalKey')` (e.g. `param('a' + 'b')`). T7 allows constant
+    /// mappings but cannot statically verify a computed parent key, so it
+    /// rejects these.
+    pub computed_params: BTreeSet<String>,
+    /// JSON-ish path of the step's `args` object (`steps[2].args`).
+    pub path: String,
+}
+
+/// The parent key of a mapping value, but only for exactly `param('key')`.
+fn call_param_parent(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Call(name, args) if name == "param" => match args.as_slice() {
+            [Expr::Lit(Lit::Str(s))] => Some(s.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Does the expression call `param(...)` anywhere? Used to keep computed
+/// mappings out of the constant-mapping allowance (T7).
+fn expr_uses_param(e: &Expr) -> bool {
+    match e {
+        Expr::Call(name, args) => name == "param" || args.iter().any(expr_uses_param),
+        Expr::Not(inner) | Expr::Neg(inner) => expr_uses_param(inner),
+        Expr::Binary(_, lhs, rhs) => expr_uses_param(lhs) || expr_uses_param(rhs),
+        Expr::Lit(_) => false,
+    }
+}
+
+fn collect_call_task_steps(steps: &[Step], prefix: &str, out: &mut Vec<CallTaskUse>) {
+    for (i, s) in steps.iter().enumerate() {
+        let p = format!("{prefix}[{i}]");
+        match s {
+            Step::CallTask {
+                task,
+                params,
+                inherit,
+            } => out.push(CallTaskUse {
+                task: task.clone(),
+                inherit: *inherit,
+                params: params
+                    .iter()
+                    .map(|(child, expr)| (child.clone(), call_param_parent(expr)))
+                    .collect(),
+                computed_params: params
+                    .iter()
+                    .filter(|(_, expr)| {
+                        call_param_parent(expr).is_none() && expr_uses_param(expr)
+                    })
+                    .map(|(child, _)| child.clone())
+                    .collect(),
+                path: format!("{p}.args"),
+            }),
+            Step::If {
+                then, otherwise, ..
+            } => {
+                collect_call_task_steps(then, &format!("{p}.then"), out);
+                collect_call_task_steps(otherwise, &format!("{p}.else"), out);
+            }
+            Step::Loop { body, .. } | Step::While { body, .. } => {
+                collect_call_task_steps(body, &format!("{p}.body"), out)
+            }
+            Step::WithParams { body, .. } => {
+                collect_call_task_steps(body, &format!("{p}.args.body"), out)
+            }
+            _ => {}
+        }
+    }
+}
+
 fn collect_finish_steps(steps: &[Step], prefix: &str, out: &mut Vec<ExitUse>) {
     for (i, s) in steps.iter().enumerate() {
         let p = format!("{prefix}[{i}]");
@@ -2233,6 +2546,9 @@ fn collect_finish_steps(steps: &[Step], prefix: &str, out: &mut Vec<ExitUse>) {
             Step::Loop { body, .. } | Step::While { body, .. } => {
                 collect_finish_steps(body, &format!("{p}.body"), out)
             }
+            Step::WithParams { body, .. } => {
+                collect_finish_steps(body, &format!("{p}.args.body"), out)
+            }
             _ => {}
         }
     }
@@ -2249,6 +2565,11 @@ fn steps_end_with_finish(steps: &[Step]) -> bool {
                 && steps_end_with_finish(then)
                 && steps_end_with_finish(otherwise)
         }
+        // `with_params` is an inline scope: if its body ends in a finish, the
+        // caller's path terminates there too. Loader-generated scopes never
+        // contain a finish (the target's finishes are stripped), so old flows
+        // keep their T1 behaviour.
+        Some(Step::WithParams { body, .. }) => steps_end_with_finish(body),
         _ => false,
     }
 }
@@ -2273,6 +2594,14 @@ fn collect_param_steps(steps: &[Step], prefix: &str, out: &mut Vec<ParamUse>) {
             Step::While { cond, body, .. } => {
                 collect_param_expr(cond, &format!("{p}.args.cond"), out);
                 collect_param_steps(body, &format!("{p}.body"), out);
+            }
+            Step::WithParams { params, body, .. } => {
+                // These expressions are evaluated in the CALLER scope, so lint
+                // (T3) must require the caller to declare these keys.
+                for (key, expr) in params {
+                    collect_param_expr(expr, &format!("{p}.args.params.{key}"), out);
+                }
+                collect_param_steps(body, &format!("{p}.args.body"), out);
             }
             Step::WaitUntil { cond, .. } => {
                 collect_param_expr(cond, &format!("{p}.args.cond"), out)
@@ -2391,6 +2720,12 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {    for s i
                 cond, body, ..
             } => {
                 collect_assets_expr(cond, out);
+                collect_assets_steps(body, out);
+            }
+            Step::WithParams { params, body, .. } => {
+                for (_, expr) in params {
+                    collect_assets_expr(expr, out);
+                }
                 collect_assets_steps(body, out);
             }
             Step::Wait { .. }
@@ -3714,5 +4049,271 @@ mod tests {
         let e = parse_expr("param(1)").expect("parse");
         let err = eval(&e, &mut ctx).expect_err("type");
         assert!(err.contains("string"), "{err}");
+    }
+
+    // ---- call_task params/inherit + with_params scope (Runner Studio §C.4) ----
+
+    #[test]
+    fn call_task_parses_params_inherit_and_keeps_the_legacy_shape() {
+        let step = parse_step(
+            &serde_json::json!({
+                "op":"call_task","args":{
+                    "task":"任务1",
+                    "params":{"触发文字":"param('识别关键词')"},
+                    "inherit":"none"
+                }
+            }),
+            "steps[0]",
+        )
+        .expect("parse");
+        match step {
+            Step::CallTask {
+                task,
+                params,
+                inherit,
+            } => {
+                assert_eq!(task, "任务1");
+                assert_eq!(params.len(), 1);
+                assert_eq!(
+                    params["触发文字"],
+                    parse_expr("param('识别关键词')").expect("expr")
+                );
+                assert_eq!(inherit, CallInherit::None);
+            }
+            other => panic!("expected CallTask, got {other:?}"),
+        }
+
+        // Old shape `{"op":"call_task","args":{"task":"X"}}` is unchanged:
+        // no mapping, inherit defaults to "all", unknown args stay ignored.
+        let legacy = parse_step(
+            &serde_json::json!({"op":"call_task","args":{"task":"任务1","mode":"run"}}),
+            "steps[0]",
+        )
+        .expect("legacy parse");
+        match legacy {
+            Step::CallTask {
+                params, inherit, ..
+            } => {
+                assert!(params.is_empty(), "no params in the legacy shape");
+                assert_eq!(inherit, CallInherit::All);
+            }
+            other => panic!("expected CallTask, got {other:?}"),
+        }
+
+        // Explicit "all" is the documented default and parses the same.
+        let explicit = parse_step(
+            &serde_json::json!({
+                "op":"call_task","args":{"task":"X","params":{},"inherit":"all"}
+            }),
+            "steps[0]",
+        )
+        .expect("explicit all");
+        assert!(matches!(
+            explicit,
+            Step::CallTask {
+                inherit: CallInherit::All,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn call_task_rejects_bad_params_and_inherit_with_exact_paths() {
+        let bad_params = parse_step(
+            &serde_json::json!({"op":"call_task","args":{"task":"X","params":["a"]}}),
+            "steps[0]",
+        )
+        .expect_err("params must be an object");
+        assert_eq!(bad_params.path, "steps[0].args.params");
+        assert!(bad_params.msg.contains("object"), "{bad_params}");
+
+        let bad_value = parse_step(
+            &serde_json::json!({
+                "op":"call_task","args":{"task":"X","params":{"child":3}}
+            }),
+            "steps[0]",
+        )
+        .expect_err("values must be expression strings");
+        assert_eq!(bad_value.path, "steps[0].args.params.child");
+        assert!(bad_value.msg.contains("expression string"), "{bad_value}");
+
+        let bad_expr = parse_step(
+            &serde_json::json!({
+                "op":"call_task","args":{"task":"X","params":{"child":"param("}}
+            }),
+            "steps[0]",
+        )
+        .expect_err("expression must parse");
+        assert_eq!(bad_expr.path, "steps[0].args.params.child");
+
+        for bad in ["sometimes", ""] {
+            let err = parse_step(
+                &serde_json::json!({
+                    "op":"call_task","args":{"task":"X","inherit":bad}
+                }),
+                "steps[0]",
+            )
+            .expect_err("invalid inherit");
+            assert_eq!(err.path, "steps[0].args.inherit");
+            assert!(err.msg.contains("\"all\" or \"none\""), "{err}");
+        }
+
+        let err = parse_step(
+            &serde_json::json!({"op":"call_task","args":{"task":"X","inherit":1}}),
+            "steps[0]",
+        )
+        .expect_err("inherit must be a string");
+        assert_eq!(err.path, "steps[0].args.inherit");
+    }
+
+    #[test]
+    fn with_params_parses_the_scope_and_traverses_its_body() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"with_params","args":{
+                   "task":"子任务",
+                   "params":{"child":"param('parent') + appear('弹窗按钮')"},
+                   "defaults":{"rounds":3,"flag":true,"label":"x","empty":null},
+                   "block":["parent_only","child"],
+                   "body":[
+                     {"op":"log","args":{"text":"param('child')"}},
+                     {"op":"if","args":{"cond":"true"},
+                      "then":[{"op":"finish","args":{"exit":"done"}}]}
+                   ]
+                 }},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("flow");
+
+        let Step::WithParams {
+            label,
+            params,
+            defaults,
+            block,
+            body,
+        } = &flow.steps[0]
+        else {
+            panic!("expected with_params, got {:?}", flow.steps[0]);
+        };
+        assert_eq!(label.as_deref(), Some("子任务"));
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].0, "child");
+        assert_eq!(defaults["rounds"], Value::Num(3.0));
+        assert_eq!(defaults["flag"], Value::Bool(true));
+        assert_eq!(defaults["label"], Value::Str("x".to_string()));
+        assert_eq!(defaults["empty"], Value::Null);
+        assert_eq!(block, &vec!["parent_only".to_string(), "child".to_string()]);
+        assert_eq!(body.len(), 2);
+
+        // `param()` uses: the mapping expression + the body, in caller-scope order.
+        let uses = flow.param_uses_at();
+        let paths: Vec<&str> = uses.iter().map(|u| u.path.as_str()).collect();
+        assert!(
+            paths.contains(&"steps[0].args.params.child"),
+            "{paths:?}"
+        );
+        assert!(
+            paths.contains(&"steps[0].args.body[0].args.text"),
+            "{paths:?}"
+        );
+        let keys: Vec<Option<&str>> = uses.iter().map(|u| u.key.as_deref()).collect();
+        assert!(keys.contains(&Some("parent")), "{keys:?}");
+        assert!(keys.contains(&Some("child")), "{keys:?}");
+
+        // Asset + finish traversals must descend into args.body.
+        assert!(flow.referenced_assets().contains("弹窗按钮"));
+        let finishes = flow.finish_uses();
+        assert_eq!(finishes.len(), 2, "{finishes:?}");
+        assert!(
+            finishes.iter().any(|f| f.path
+                == "steps[0].args.body[1].then[0].args.exit"),
+            "{finishes:?}"
+        );
+        assert!(
+            flow.ends_with_finish(),
+            "the trailing top-level finish still terminates the flow"
+        );
+
+        // A scope whose body itself ends in finish is terminal.
+        let terminal = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"with_params","args":{"body":[
+                   {"op":"finish","args":{"exit":"done"}}]}}]}"#,
+        )
+        .expect("flow");
+        assert!(terminal.ends_with_finish());
+        let Step::WithParams {
+            label, params, block, ..
+        } = &terminal.steps[0]
+        else {
+            panic!("expected with_params");
+        };
+        assert!(label.is_none(), "label is optional");
+        assert!(params.is_empty(), "params are optional");
+        assert!(block.is_empty(), "block is optional");
+    }
+
+    #[test]
+    fn with_params_is_in_the_unknown_instruction_hint() {
+        let e = errs(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"nope","args":{}}]}"#,
+        );
+        assert!(e[0].msg.contains("with_params"), "{}", e[0]);
+    }
+
+    #[test]
+    fn call_task_uses_reports_nested_calls_with_parent_keys() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"if","args":{"cond":"true"},
+                  "then":[{"op":"call_task","args":{
+                    "task":"任务1",
+                    "params":{"a":"param('pa')"},
+                    "inherit":"none"}}]},
+                 {"op":"with_params","args":{"body":[
+                   {"op":"call_task","args":{
+                     "task":"任务2",
+                     "params":{"b":"'constant'","c":"param('pc')","d":"param('p' + 'c')"}}}
+                 ]}},
+                 {"op":"loop","args":{"n":"1"},"body":[
+                   {"op":"call_task","args":{"task":"任务3"}}]},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("flow");
+
+        let uses = flow.call_task_uses();
+        assert_eq!(uses.len(), 3, "{uses:?}");
+
+        let by_task = |task: &str| {
+            uses.iter()
+                .find(|u| u.task == task)
+                .unwrap_or_else(|| panic!("no use for {task}"))
+        };
+        let a = by_task("任务1");
+        assert_eq!(a.inherit, CallInherit::None);
+        assert_eq!(a.params["a"].as_deref(), Some("pa"));
+        assert_eq!(a.path, "steps[0].then[0].args");
+        let b = by_task("任务2");
+        assert_eq!(b.inherit, CallInherit::All);
+        assert_eq!(b.params["b"], None, "constant mapping has no parent key");
+        assert_eq!(b.params["c"].as_deref(), Some("pc"));
+        assert_eq!(b.params["d"], None, "computed param key is not literal");
+        assert!(
+            b.computed_params.contains("d"),
+            "computed param() mapping must be flagged for T7: {b:?}"
+        );
+        assert!(!b.computed_params.contains("b"), "constant is allowed");
+        assert!(!b.computed_params.contains("c"));
+        assert_eq!(b.path, "steps[1].args.body[0].args");
+        let c = by_task("任务3");
+        assert!(c.params.is_empty());
+        assert_eq!(c.path, "steps[2].body[0].args");
+
+        // T3 is unchanged: call_task mappings are T7's job, not param_uses'.
+        assert!(
+            flow.param_uses().is_empty(),
+            "call_task must stay a leaf for T3"
+        );
     }
 }
