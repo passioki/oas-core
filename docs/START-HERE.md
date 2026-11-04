@@ -27,9 +27,9 @@
 
 | 项 | 状态 |
 |---|---|
-| 分支/HEAD | **发布节点时**：`dev` = `main` = `origin/dev` = `origin/main`（已同步 origin，2026-11-02 13:55 实测；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`，其后为 docs 同步回填提交 `11d53a5`）；tag `v0.1.0` → `e8edbef`（**未移动**）；包构建 commit `42567c1`。**当前状态见 §0.2 与 `RESUME.md`（seq 100，`oas-core-runner-studio-split`：三项遗留已修 + Studio/Runner 分离设计稿 v1 **待拍板**；代码父 `f16fea1`）** |
+| 分支/HEAD | **发布节点时**：`dev` = `main` = `origin/dev` = `origin/main`（已同步 origin，2026-11-02 13:55 实测；实质代码提交 `54c715b` + `d1a7fcd`，docs 终态订正提交 `906bbed`，其后为 docs 同步回填提交 `11d53a5`）；tag `v0.1.0` → `e8edbef`（**未移动**）；包构建 commit `42567c1`。**当前状态见 §0.2 与 `RESUME.md`（seq 101，`oas-core-runner-studio-split`：Q1~Q7 已批准 + PR1 ✅ 已实现；代码父 `f84b56e`）** |
 | 引擎 | `oasd`（serve/run/queue/stats/scheduler）+ 编辑器 UI + 素材库；`oasd --version` = **0.1.0**（dev；旧 v1.x 为历史内部 tag） |
-| 测试 | 上一发布基线：`cargo test --workspace` = **426 passed / 0 failed**（oasd 153 / flow 57 / runtime 125 + 2 integration）；UI = **259 checks / 0 dead ids**；task lint = **1 task / 0 errors**（2026-11-02 13:35 实测；DSL E2E `linted=8 errors=5`；**v0.1.0 发布包仍是 393/203 时构建**）。当前（调度器 P0–P5 全部完成；P5 实机验收后 Lead 2026-11-03 复跑）：`cargo test --workspace` = **501 passed / 0 failed**（21 个 test binary 全 ok；oasd **228**；serve **68**；调度专项 **107** = `scheduler.rs` 49 + `schedule.rs` 58；stats 6）；UI **662 checks / 219 referenced ids / 0 dead ids**；task lint **1/0**；`cargo build -p oasd --features ocr` exit 0（alt target；warning 与基线一致）。**2026-11-04 编辑器帧页后（无 Rust 改动）**：workspace 仍 **501/0**，UI **835 checks / 225 referenced ids / 0 dead ids**（seq 97 = 帧页布局回归修复；帧列表 `min-height:200px` + 详情折叠，详见 §0.2）。**2026-11-04 seq 98（素材行两按钮 + push-all，无 Rust 改动）**：workspace 501/0；UI pure test **907/225/0**（835→907）；脚本 AST 5714/0、隔离集成 59/0。**2026-11-04 下午 seq 99（素材库 UX 六项 + OCR 阈值）**：`cargo test --workspace` **516 passed / 0 failed**（runtime **136** / task **59** / oasd **228**；501→512→516，新增 15 条）；UI pure test **1112 checks / 227 referenced ids / 0 dead ids**（907→1003→1112）；OCR build exit 0（6 个既有 warnings）；task lint **1/0**；`node --check` 3/3；`git diff --check` clean。**2026-11-04 18:2x seq 100（三项遗留修复 + 设计稿）**：`cargo test --workspace` **527 passed / 0 failed**（runtime **142** / task **63** / oasd **229**；+11 = OCR 取值路径 6（runtime）+ region keep_action_shape 2 与模板 polygon 平移 2（task）+ serve 布尔解析 1（oasd））；UI pure test **1138 checks / 227 referenced ids / 0 dead ids**（1112→1138，+26）；`node --check` 3/3 = 0；`git diff --check` = 0（**本轮不跑 cargo/serve 的子进程以 Lead 实测为准**，UI pure test 已独立复跑一致） |
+| 测试 | 上一发布基线：`cargo test --workspace` = **426 passed / 0 failed**（oasd 153 / flow 57 / runtime 125 + 2 integration）；UI = **259 checks / 0 dead ids**；task lint = **1 task / 0 errors**（2026-11-02 13:35 实测；DSL E2E `linted=8 errors=5`；**v0.1.0 发布包仍是 393/203 时构建**）。当前（调度器 P0–P5 全部完成；P5 实机验收后 Lead 2026-11-03 复跑）：`cargo test --workspace` = **501 passed / 0 failed**（21 个 test binary 全 ok；oasd **228**；serve **68**；调度专项 **107** = `scheduler.rs` 49 + `schedule.rs` 58；stats 6）；UI **662 checks / 219 referenced ids / 0 dead ids**；task lint **1/0**；`cargo build -p oasd --features ocr` exit 0（alt target；warning 与基线一致）。**2026-11-04 编辑器帧页后（无 Rust 改动）**：workspace 仍 **501/0**，UI **835 checks / 225 referenced ids / 0 dead ids**（seq 97 = 帧页布局回归修复；帧列表 `min-height:200px` + 详情折叠，详见 §0.2）。**2026-11-04 seq 98（素材行两按钮 + push-all，无 Rust 改动）**：workspace 501/0；UI pure test **907/225/0**（835→907）；脚本 AST 5714/0、隔离集成 59/0。**2026-11-04 下午 seq 99（素材库 UX 六项 + OCR 阈值）**：`cargo test --workspace` **516 passed / 0 failed**（runtime **136** / task **59** / oasd **228**；501→512→516，新增 15 条）；UI pure test **1112 checks / 227 referenced ids / 0 dead ids**（907→1003→1112）；OCR build exit 0（6 个既有 warnings）；task lint **1/0**；`node --check` 3/3；`git diff --check` clean。**2026-11-04 18:2x seq 100（三项遗留修复 + 设计稿）**：`cargo test --workspace` **527 passed / 0 failed**（runtime **142** / task **63** / oasd **229**；+11 = OCR 取值路径 6（runtime）+ region keep_action_shape 2 与模板 polygon 平移 2（task）+ serve 布尔解析 1（oasd））；UI pure test **1138 checks / 227 referenced ids / 0 dead ids**（1112→1138，+26）；`node --check` 3/3 = 0；`git diff --check` = 0（**本轮不跑 cargo/serve 的子进程以 Lead 实测为准**，UI pure test 已独立复跑一致）。**2026-11-04 19:2x seq 101（PR1 Surface 拆分）**：`cargo test -p oasd` **240/0**（基线 229，+11）、`cargo test --workspace` **538/0**（基线 527，+11）；UI pure test **1239/224/0**（基线 1138/227/0，+101；runner audit 33 ids / 0 dead / 5 nav）；Runner-only 包 **37,141,295 B**（23 entries / 0 反斜杠）；`node --check` 3/3、`git diff --check` 0（Lead 实测） |
 | 发布 | ✅ **GitHub Release `v0.1.0` 已上传** `https://github.com/passioki/oas-core/releases/tag/v0.1.0`（id `431080249`，draft=false / prerelease=false，即 latest）；本地包 `dist/oasd-v0.1.0-win64.zip`，SHA256 `E6112A33…5F5687`（37,089,992 B）+ 旁文件 `.sha256` |
 | 当前任务 | 只有 `返回庭院`（flow 11 steps / meta 400 B）；`tasks/测试` 已删除并随 `cd0ac34` 提交 |
 | 数据 | 全局素材 **16 条 / 1 图**（15 `ocr_line` + 1 `template`）；帧 **28 个 / `current_id=20` / `next_id=41`**；唯一关系 = `Asset.positions` |
@@ -49,14 +49,14 @@
 > ★ [11-01] 用户已明确要求发布 v1.2.3；main/tag/Release 已推送，作为恢复节点。
 > ★ **历史说明**：以上 V1.0~V1.2.3 是 reset 前的内部交付记录；当前 dev 版本 = `0.1.0`，0.1.0 恢复节点见 `RELEASE-NODE-2026-11-02.md`。
 
-## 0.2 当前开发工作区（2026-11-04 18:2x）
+## 0.2 当前开发工作区（2026-11-04 19:2x）
 
 | 项 | 值 |
 |---|---|
 | 恢复节点 | tag `v0.1.0`（2026-11-02，→ `e8edbef`，**未移动**）；**GitHub Release 已上传**（id `431080249`，latest）；**发布节点时** `dev` = `main` = `origin/dev` = `origin/main`（已同步 origin）；包构建 commit `42567c1`；本地包 SHA256 `E6112A33…5F5687` |
-| 当前分支 | `dev`；HEAD = **`f16fea1`**（`chore(data): sync …` 2026-11-04 15:08）；**本轮（seq 100）代码尚未提交，代码父 = `f16fea1`**，docs 随后；hash 以 `git log` 为准；推送状态以 `git status -sb` 实测为准 |
+| 当前分支 | `dev`；HEAD = **`f84b56e`**（`docs: leftover fixes + Studio/Runner split design draft v1 (seq 100)`）；**PR1 代码/脚本/UI 尚未提交，代码父 = `f84b56e`**，docs 随后（新 HEAD）；hash 以 `git log` 为准；推送状态以 `git status -sb` 实测为准 |
 | 文档 | 已独立到 `oas-core/docs`；现行 = ENGINE-DESIGN + PENDING-LEDGER + RESUME + ASSET-DATA-MODEL + RELEASE-NODE；历史 7 份在 `docs/archive/` |
-| 当前计划 | **先读 `RESUME.md`（seq 100，`oas-core-runner-studio-split`：三项遗留已修 + Studio/Runner 分离设计稿 v1 **待拍板**）+ `RUNNER-STUDIO-SPLIT-PLAN.md` / `PENDING-LEDGER §E-79`（设计稿）与 `§E-78`（本轮遗留修复）/ `EDITOR-UX-PLAN §18.10` / `ENGINE-DESIGN §16.5·§22.43` / `PUSH-ALL.md`**；上一阶段调度器产品化 + 队列 Round 语义（单活动实例）——**P0–P5 全部 ✅ 完成**（P0 文档 / P1 450/0 / P2 474/0 / P3 488/0 + UI 453 / P4 501/0 + serve 68 + UI 662 / **P5 实机验收 A–F 全部真机通过 + `/instance/devices` adb 自动连接修复**）；上一节点 0.1.0 Release 与 O-1/O-2 收口见 §E-74（426 tests / UI 259 / lint 1-0，**不在 v0.1.0 包内**）；下一步 = 产品 backlog（`SelectionTool`、collection real=1 真机 E2E、drag Plan B、P2-10、运行记录/口径收口、版本决策）。**2026-11-04 上一轮（seq 98，已提交 `b4c2b0c`）**：① 新增一键提交/推送脚本 `scripts/push-all.ps1` + `scripts/push-all.bat`（参数 `-Message/-Yes/-DryRun/-NoPush/-Remote/-Branch/-SyncMain`；`add -A` → 剔除未跟踪瞬态、已跟踪不剔除 → 无 staged 且本地领先时「只推送」补推 → commit/push → 仅 dev 自动 ff 同步 main，其它分支 WARN 退出 0；远程无 main 跳过；用法见 `docs/PUSH-ALL.md`）；② 三处素材行统一 **「识别 + 设置」** 两按钮，设置 = 行内 9 项（点测/拖测/识别区/操作区/重命名/阈值/位置帧/删除/步骤），禁用规则（非 template 阈值、template 识别区、region 操作区、帧详情 `manage:false` 6 管理项、集合仅删除）；评审 P1-1/P1-2 + P2 已修；UI **907/225/0**（835→907）、workspace **501/0**、AST **5714/0**、隔离集成 **59/0**；代码/脚本父 `a4b6960`，docs 随后（新 HEAD）；**2026-11-04 下午本轮（seq 99）**：① 行选中态按 asset id 跨 surface 高亮、菜单项点击不收起、重渲染恢复选中/菜单；② 识别区改画布拖拽（旧 prompt 删除），保存按钮移到共享 `#canvas-footer` +「识别区编辑中：<id>」标签；③ 模板识别区统一为 `/task/save_asset` + `replace:true`（当前帧重截、rev+1），OCR/region 走 `/task/asset/update {roi}`；④ OCR 每素材最低置信度（`threshold` 复用；未设/0 = 不过滤；生效 click/条件 appear/expect appear·vanish/click_target/expect ocr_text/drag ocr_text；~~取值路径不加~~ ⇒ **seq 100 起取值路径也加阈值**）；⑤ 帧详情删来源列/badge、`manage:true`、按来源分 scope（含 global→`GLOBAL_SCOPE_TASK`，仅 task→当前任务）；⑥ 批量帧测试移到素材页、对象=当前可见集合；评审 P0×2/P1×4 全修 + P2；UI **1112/227/0**、workspace **516/0**（runtime 136/task 59/oasd 228）；代码（UI 5 + Rust 2）父 `b4c2b0c`，docs 随后（新 HEAD）；本轮 P2/P3 见 `PENDING-LEDGER §E-78 §H`。**2026-11-04 18:2x 本轮（seq 100，`oas-core-runner-studio-split`）**：① **三项遗留已修**（代码未提交、父 `f16fea1`）——region 识别区保存**不再**把操作多边形降级为矩形（`keep_action_shape`）、模板 ROI **移动**保留 polygon（`assetRoiPolygonPlan` 平移）、OCR **取值路径**应用阈值（`ocr_value_read`；低分 → `Null`/空串，`wait_until` 轮询保留）；workspace **516→527/0**（runtime 142 / task 63 / oasd 229）、UI **1112→1138/227/0**；② **Studio/Runner 分离 + TaskPackage + 任务配置/子任务配置 设计稿 v1** 已落 **`docs/RUNNER-STUDIO-SPLIT-PLAN.md`**（**待用户拍板 §D.2 的 7 项决策，未实现**；摘要见 `PENDING-LEDGER §E-79`）。**下一步 = 用户确认 Q1~Q7 → 按 PR1→PR6 实施**（Surface 拆分 → 配置模型 → 优先级/类型 → 子任务配置 → 打包/安装 → 内嵌调度）；三项遗留的保留项见 §E-78 §H 4~11（模板 fixed 操作区、ROI 缩放回退矩形、低分为空结果、UI 文案） |
+| 当前计划 | **先读 `RESUME.md`（seq 101，`oas-core-runner-studio-split`：Q1~Q7 已批准 + PR1 ✅ 已实现，下一步 PR2）+ `RUNNER-STUDIO-SPLIT-PLAN.md`（§A.8 分发/跨平台、§A.9 PR1 记录）/ `PENDING-LEDGER §E-79`（PR1 ✅）与 `§E-78` / `ENGINE-DESIGN §22.44`（PR1 记录）/ `PUSH-ALL.md`**；上一阶段调度器产品化 + 队列 Round 语义（单活动实例）——**P0–P5 全部 ✅ 完成**（P0 文档 / P1 450/0 / P2 474/0 / P3 488/0 + UI 453 / P4 501/0 + serve 68 + UI 662 / **P5 实机验收 A–F 全部真机通过 + `/instance/devices` adb 自动连接修复**）；上一节点 0.1.0 Release 与 O-1/O-2 收口见 §E-74（426 tests / UI 259 / lint 1-0，**不在 v0.1.0 包内**）；产品 backlog 仍在（`SelectionTool`、collection real=1 真机 E2E、drag Plan B、P2-10、运行记录/口径收口、版本决策）。**2026-11-04 上一轮（seq 98，已提交 `b4c2b0c`）**：① 新增一键提交/推送脚本 `scripts/push-all.ps1` + `scripts/push-all.bat`（参数 `-Message/-Yes/-DryRun/-NoPush/-Remote/-Branch/-SyncMain`；`add -A` → 剔除未跟踪瞬态、已跟踪不剔除 → 无 staged 且本地领先时「只推送」补推 → commit/push → 仅 dev 自动 ff 同步 main，其它分支 WARN 退出 0；远程无 main 跳过；用法见 `docs/PUSH-ALL.md`）；② 三处素材行统一 **「识别 + 设置」** 两按钮，设置 = 行内 9 项（点测/拖测/识别区/操作区/重命名/阈值/位置帧/删除/步骤），禁用规则（非 template 阈值、template 识别区、region 操作区、帧详情 `manage:false` 6 管理项、集合仅删除）；评审 P1-1/P1-2 + P2 已修；UI **907/225/0**（835→907）、workspace **501/0**、AST **5714/0**、隔离集成 **59/0**；代码/脚本父 `a4b6960`，docs 随后（新 HEAD）；**2026-11-04 下午本轮（seq 99）**：① 行选中态按 asset id 跨 surface 高亮、菜单项点击不收起、重渲染恢复选中/菜单；② 识别区改画布拖拽（旧 prompt 删除），保存按钮移到共享 `#canvas-footer` +「识别区编辑中：<id>」标签；③ 模板识别区统一为 `/task/save_asset` + `replace:true`（当前帧重截、rev+1），OCR/region 走 `/task/asset/update {roi}`；④ OCR 每素材最低置信度（`threshold` 复用；未设/0 = 不过滤；生效 click/条件 appear/expect appear·vanish/click_target/expect ocr_text/drag ocr_text；~~取值路径不加~~ ⇒ **seq 100 起取值路径也加阈值**）；⑤ 帧详情删来源列/badge、`manage:true`、按来源分 scope（含 global→`GLOBAL_SCOPE_TASK`，仅 task→当前任务）；⑥ 批量帧测试移到素材页、对象=当前可见集合；评审 P0×2/P1×4 全修 + P2；UI **1112/227/0**、workspace **516/0**（runtime 136/task 59/oasd 228）；代码（UI 5 + Rust 2）父 `b4c2b0c`，docs 随后（新 HEAD）；本轮 P2/P3 见 `PENDING-LEDGER §E-78 §H`。**2026-11-04 19:2x 本轮（seq 101，`oas-core-runner-studio-split`）**：① **用户批准 Q1~Q7（全部按推荐）**；② **PR1 ✅ 已实现并验证（未提交，父 `f84b56e`）**——`Surface`+`route_owner`/`required_surface` 严格归属（不匹配纯 404；Runner `/app.js` 404、Studio `/runner.js` 404）、`oasd studio` 8788 / `oasd runner` 8789 / `oasd serve` deprecated、`config.runner{8789,127.0.0.1}`（仅 loopback）、Runner 只读 `/runner/health`+`/runner/tasks`、`runner.html/js/css` 5 nav、Studio 去调度入口；oasd **240/0**、workspace **538/0**、UI **1239/224/0**；③ **分发纠正**：终端用户只下载 Runner-only 包 + 任务包（Studio 不发给终端用户；`dist/oasd-runner-v0.1.0-win64.zip` **37,141,295 B**）；④ **跨平台**：`packaging/CROSS-PLATFORM.md`（v1 只 Windows；Android 使用端预留，v1 不实现）。**下一步 = Lead 提交 PR1 → PR2 配置模型**（`meta.params` 5 字段 + `config/values.json` + Runner 配置 API/表单 + 值校验）→ PR3 → PR4 → PR5 → PR6；PR1 遗留见 `RUNNER-STUDIO-SPLIT-PLAN §A.9.9`。 |
 | 截图 | 两阶段：点击立即抓取 → 弹窗预览 → 名称/分类 → 保存；无当前帧跳转 |
 | Enter | 输入框 Enter = 确认输入；弹窗 Enter = 保存截图 |
 | 实时操作 | 实时开启时画布单击/拖拽 = tap/swipe；实时暂停 = ROI 编辑 |
@@ -69,7 +69,7 @@
 | 信息架构 | **设计：素材页 = 唯一全局素材库 `assets/`；任务页 = 任务 flow 引用子集**。当前 `assets/` = 16 条 / 1 图；34 是 `§E-70` 已推翻的错误恢复；archive 2827 未导入（用户裁定素材可重建） |
 | 全局素材 | **当前 16 条 / 1 图**（15 `ocr_line` + 1 `template`；全部 `action_source=fixed`，有 `action_shape`/`positions`）；权威迁移归档 `archive/migration-20261101` = 2827 素材 / 2099 图 / 57 个任务目录，未导入当前 dev |
 | 帧安全 | 清空列表必须确认；清空前自动备份到 `frames/.backup/clear-<时间>/`（含 frames.json + PNG） |
-| 待办 | ✅ **2026-11-04 编辑器帧页三项需求 + 素材测试帧修复**（帧搜索 / 帧详情素材库 / 单素材测试=当前帧、批量=位置帧、单行 OCR 无真实框；UI 828/224/0，已提交）+ ✅ **帧页布局回归修复**（用户报告分类帧区域消失 → 帧列表被挤成 0 高；修复 `min-height:200px` + `#frame-details` 默认折叠 + 点帧展开；UI **835/225/0**；代码 + docs 待 Lead 提交，seq 97）+ ✅ **2026-11-04 上一轮（seq 98，已提交 `b4c2b0c`）素材行两按钮「识别 + 设置」+ 一键提交/推送脚本**（9 项设置菜单/禁用规则/新函数；`scripts/push-all.ps1`+`.bat`+`PUSH-ALL.md`；UI **907/225/0**、AST **5714/0**、集成 **59/0**）+ ✅ **2026-11-04 下午（seq 99）素材库 UX 六项 + OCR 阈值**（选中态/菜单保持、识别区画布拖拽+共享保存、模板 replace 统一、OCR 最低置信度、帧详情去来源列+全可用、批量测试移页；评审 P0×2/P1×4 全修 + P2；UI **1112/227/0**、workspace **516/0**；代码+docs 待 Lead 提交，代码父 `b4c2b0c`）。✅ **调度器产品化已完成（P0–P5，任务 done）**：实机 A–F（periodic quota 2/2、temp 每轮、队列 2 轮、崩溃续跑、reset-memory、UI/API 可见性）+ `GET /instance/devices` adb 自动连接修复；测试 516/0（runtime 136 / task 59 / oasd 228，serve 68，UI 1112/227/0）。**新主线 = 产品 backlog**：① `SelectionTool` 抽取；② collection `real=1` 真机 E2E（设备现已可用）；③ drag Plan B；④ P2-10（保存 flow 校验）；⑤ 运行记录收口（点击聚合关联、分页/保留、run_id 跨进程唯一、detail 契约、`--status` 的 run_file_errors）；⑥ 口径统一（事件 attempt/entry、stats attempt 级 vs report entry 级、UI 失败口径）；⑦ P3 遗留（schema_version 恒 4、高级 JSON 无 GET-first、坏 config 删除守卫、`.bak` 单份、同任务多 entry、`utc_offset_min` 按 480）；⑧ P2 遗留（补记 cycle、session report、200 环、成员级 exactly-once）；⑨ 版本决策（是否升 0.2.0）。⚠ 墙钟 24h soak 未跑完（只有 96 轮加速 soak 成立）。其余：混版本 invert 提醒、活动页参考帧；帧-素材关系继续扩展；不引入 interface/ui-map。**本轮新遗留（P2/P3）**：帧搜索 Enter/防抖、分类+搜索计数跨分类、纯数字查询既精确又子串、全局模式来源重复计数、`frame_source` 文案、切帧不清 ROI、单行 OCR 画布无框、无真实浏览器自动化 E2E；**seq 99 新增**：~~`region` ROI 保存仍降级 polygon/invert 为矩形（P2-5）、模板 ROI 移动后 polygon 有意重同步为矩形、取值路径不加阈值~~ ⇒ **seq 100 已修**（见本行末段）、legacy 非全局批量测试仍需任务名、帧详情 task-only 无任务报错（P2-10）、菜单恢复极端多 surface 可能开在最后可见 surface、无真实浏览器自动化 E2E；**seq 98 遗留**：脚本控制台中文编码依赖本机（PS 5.1）、`library/` 未纳入版本控制、脚本未在真实仓库实测 push 失败后的分支恢复（隔离 59/0 覆盖逻辑）。**2026-11-04 18:2x seq 100**：✅ **三项遗留已修**（region 操作多边形 `keep_action_shape`、模板 polygon 平移、OCR 取值路径阈值；workspace **527/0**、UI **1138/227/0**）+ 🔄 **Studio/Runner 分离 + TaskPackage + 任务配置/子任务配置 设计稿 v1 待用户拍板**（`docs/RUNNER-STUDIO-SPLIT-PLAN.md`，7 决策 Q1~Q7、6 PR、19 步验收；**未实现**）。**seq 100 保留遗留**：模板 `fixed` 操作区不随 ROI 平移、ROI **缩放**时 polygon 回退矩形、OCR 低分为空结果（非硬错误）、UI 阈值文案未加「同时作用于取值」 |
+| 待办 | ✅ **2026-11-04 编辑器帧页三项需求 + 素材测试帧修复**（帧搜索 / 帧详情素材库 / 单素材测试=当前帧、批量=位置帧、单行 OCR 无真实框；UI 828/224/0，已提交）+ ✅ **帧页布局回归修复**（用户报告分类帧区域消失 → 帧列表被挤成 0 高；修复 `min-height:200px` + `#frame-details` 默认折叠 + 点帧展开；UI **835/225/0**；代码 + docs 待 Lead 提交，seq 97）+ ✅ **2026-11-04 上一轮（seq 98，已提交 `b4c2b0c`）素材行两按钮「识别 + 设置」+ 一键提交/推送脚本**（9 项设置菜单/禁用规则/新函数；`scripts/push-all.ps1`+`.bat`+`PUSH-ALL.md`；UI **907/225/0**、AST **5714/0**、集成 **59/0**）+ ✅ **2026-11-04 下午（seq 99）素材库 UX 六项 + OCR 阈值**（选中态/菜单保持、识别区画布拖拽+共享保存、模板 replace 统一、OCR 最低置信度、帧详情去来源列+全可用、批量测试移页；评审 P0×2/P1×4 全修 + P2；UI **1112/227/0**、workspace **516/0**；代码+docs 待 Lead 提交，代码父 `b4c2b0c`）。✅ **调度器产品化已完成（P0–P5，任务 done）**：实机 A–F（periodic quota 2/2、temp 每轮、队列 2 轮、崩溃续跑、reset-memory、UI/API 可见性）+ `GET /instance/devices` adb 自动连接修复；测试 516/0（runtime 136 / task 59 / oasd 228，serve 68，UI 1112/227/0）。**新主线 = 产品 backlog**：① `SelectionTool` 抽取；② collection `real=1` 真机 E2E（设备现已可用）；③ drag Plan B；④ P2-10（保存 flow 校验）；⑤ 运行记录收口（点击聚合关联、分页/保留、run_id 跨进程唯一、detail 契约、`--status` 的 run_file_errors）；⑥ 口径统一（事件 attempt/entry、stats attempt 级 vs report entry 级、UI 失败口径）；⑦ P3 遗留（schema_version 恒 4、高级 JSON 无 GET-first、坏 config 删除守卫、`.bak` 单份、同任务多 entry、`utc_offset_min` 按 480）；⑧ P2 遗留（补记 cycle、session report、200 环、成员级 exactly-once）；⑨ 版本决策（是否升 0.2.0）。⚠ 墙钟 24h soak 未跑完（只有 96 轮加速 soak 成立）。其余：混版本 invert 提醒、活动页参考帧；帧-素材关系继续扩展；不引入 interface/ui-map。**本轮新遗留（P2/P3）**：帧搜索 Enter/防抖、分类+搜索计数跨分类、纯数字查询既精确又子串、全局模式来源重复计数、`frame_source` 文案、切帧不清 ROI、单行 OCR 画布无框、无真实浏览器自动化 E2E；**seq 99 新增**：~~`region` ROI 保存仍降级 polygon/invert 为矩形（P2-5）、模板 ROI 移动后 polygon 有意重同步为矩形、取值路径不加阈值~~ ⇒ **seq 100 已修**（见本行末段）、legacy 非全局批量测试仍需任务名、帧详情 task-only 无任务报错（P2-10）、菜单恢复极端多 surface 可能开在最后可见 surface、无真实浏览器自动化 E2E；**seq 98 遗留**：脚本控制台中文编码依赖本机（PS 5.1）、`library/` 未纳入版本控制、脚本未在真实仓库实测 push 失败后的分支恢复（隔离 59/0 覆盖逻辑）。**2026-11-04 19:2x seq 101**：✅ **Q1~Q7 已批准 + PR1 ✅ 已实现**（Surface/路由/8788-8789 双入口/Runner 只读 API/UI 5 nav/Studio 去调度入口/Runner-only 包 **37,141,295 B**；oasd **240/0**、workspace **538/0**、UI **1239/224/0**；E2E 真实双进程 V1 通过）。**PR1 遗留**：Studio 旧 `#page-schedule` DOM/对话框（PR2 删）、Runner 安装=PR5/配置=PR2-3/队列与调度启停=PR6/设备租约=PR6、`start-editor.bat` 文档逐步改名、`.gitignore` 新增交给 PR2/PR5；Runner 页面当前只读 |
 | 关系证据 | `relations/observations.jsonl` append-only；`relations/annotations.json` 人工标注；图片页「录制关系」「标注关系」写入 |
 
 ---
@@ -93,7 +93,7 @@
 | ⓪ | `docs/RESUME.md` + `docs/RESUME-INDEX.md` | ★ **长任务/压缩后恢复的第一入口**（skill 强制 6）：当前断点、验收清单、下一步精确命令、证据索引 |
 | ① | `docs/SESSION-HANDOFF.md` | 当前在哪、下一步、最近提交、活跃坑 |
 | ② | `docs/ENGINE-DESIGN.md` **§22** | 引擎规格/进度/判据；§22.34 调度 v3 **已交付**（见 §22.35）；当前素材/关系模型看 §22.38/§22.39 |
-| ③ | `docs/PENDING-LEDGER.md` 的 **§E-66~§E-79** | 编辑器 UX/版本重置/任务素材架构/34 事故/静态审计/文档归档/Release+O-1/O-2/**调度器产品化 + Round 语义**/**编辑器帧页（§E-76）**/**素材行两按钮 + 一键提交/推送脚本（§E-77）**/**素材库 UX 六项 + OCR 阈值（§E-78，含 11-04 晚三项遗留修复）**/**Studio·Runner 分离 + TaskPackage + 配置/子任务配置设计稿（§E-79，待拍板）**；§E-24~§E-26 为历史交付台账 |
+| ③ | `docs/PENDING-LEDGER.md` 的 **§E-66~§E-79** | 编辑器 UX/版本重置/任务素材架构/34 事故/静态审计/文档归档/Release+O-1/O-2/**调度器产品化 + Round 语义**/**编辑器帧页（§E-76）**/**素材行两按钮 + 一键提交/推送脚本（§E-77）**/**素材库 UX 六项 + OCR 阈值（§E-78，含 11-04 晚三项遗留修复）**/**Studio·Runner 分离 + TaskPackage + 配置/子任务配置（§E-79）：Q1~Q7 已批准、PR1 ✅ 已实现（§F）、PR2~PR6 待做**；§E-24~§E-26 为历史交付台账 |
 | ④ | `docs/EDITOR-UX-PLAN.md` + `docs/ASSET-DATA-MODEL.md` + 旧仓路径/流程（仅在碰旧仓时） | 画布/选择/实时帧/区域有效性/排序/分类改版及**实现后状态（§15）**；全局素材/任务素材边界；旧仓 `D:\OAS-dev\backend\docs\LAYOUT.md` · `DEV-WORKFLOW.md`（冻结） |
 
 ## 1.3 用代码核实（不许信文档自述）
@@ -104,25 +104,30 @@ cd D:\OAS-dev\oas-core
 git log -1 --format="%h %ci %s"
 git status --porcelain
 
-REM ② 引擎测试（上一发布基线 426 passed / 0 failed；当前 **527/0**、runtime **142** / task **63** / oasd **229**；P1 445 + 评审修复 5；P2 464 + 评审修复 10；P3 485 + 评审修复 3；P4 499 + 评审修复 2；P5 无新增测试，501 不变；seq 99 OCR 阈值 +15 = 516；seq 100 三项遗留 +11 = 527）
+REM ② 引擎测试（上一发布基线 426 passed / 0 failed；当前 **538/0**、oasd **240**；P1 445 + 评审修复 5；P2 464 + 10；P3 485 + 3；P4 499 + 2；P5 无新增 501；seq 99 OCR 阈值 +15 = 516；seq 100 三项遗留 +11 = 527；seq 101 PR1 +11 = 538）
 cargo test --workspace
 
-REM ③ OCR 构建（serve/run 需要；不带 feature 会报 "this build has no OCR"）
+REM ③ OCR 构建（Studio/Runner/run 需要；不带 feature 会报 "this build has no OCR"）
 cargo build -p oasd --features ocr
 
-REM ④ 启动编辑器（根目录 = oas-core；先确保 8787 没被占用）
+REM ④ 启动 Studio（编辑端；默认/显式 8788；根目录 = oas-core）
 set ADB_PATH=D:\OAS-dev\backend\toolkit\Lib\site-packages\adbutils\binaries\adb.exe
-target\debug\oasd.exe serve --port 8787 --tasks-dir tasks --runs-dir runs --library-dir library ^
+target\debug\oasd.exe studio --port 8788 --tasks-dir tasks --assets-dir assets --frames-dir frames --runs-dir runs --library-dir library ^
   --model D:\OAS-dev\backend\toolkit\Lib\site-packages\rapidocr\models\PP-OCRv6_rec_small.onnx ^
   --det-model D:\OAS-dev\backend\toolkit\Lib\site-packages\rapidocr\models\PP-OCRv6_det_small.onnx
 
-REM ⑤ 旧仓守卫（仅作参考；旧仓已冻结，171 passed 是旧仓基线，不是引擎验收）
+REM ⑤ 启动 Runner（使用端；默认/显式 8789；可与 Studio 同时跑，但不要同时对同一台设备执行）
+target\debug\oasd.exe runner --port 8789 --tasks-dir tasks --assets-dir assets --runs-dir runs ^
+  --model D:\OAS-dev\backend\toolkit\Lib\site-packages\rapidocr\models\PP-OCRv6_rec_small.onnx ^
+  --det-model D:\OAS-dev\backend\toolkit\Lib\site-packages\rapidocr\models\PP-OCRv6_det_small.onnx
+
+REM ⑥ 旧仓守卫（仅作参考；旧仓已冻结，171 passed 是旧仓基线，不是引擎验收）
 cd D:\OAS-dev\backend
 run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/module/config/test_standby_placeholder.py ... -q
 ```
 
-> ★ **端口不要混**：上面 `8787` 是**开发手动 serve**；`dist\stage\start-editor.bat` 固定启动 **8788**（带 OCR 模型/config）。  
-> 用户版编辑器地址是 **http://127.0.0.1:8788/**；`8787` 没有进程时 Firefox 报 `can't connect` 是端口/书签不对，不是程序崩溃。  
+> ★ **双入口不要混**：`oasd studio` 默认 **8788**（编辑端，`http://127.0.0.1:8788/`），`oasd runner` 默认 **8789**（使用端，`http://127.0.0.1:8789/`）；**`oasd serve` 仍可用但已 deprecated**（等价 `studio`，stderr 一行提示）。`scripts\dev-serve.bat` 是旧开发手动入口（8787，未改）；8787 没进程时 Firefox 报 `can't connect` 是端口/书签不对，不是程序崩溃。
+> ★ 用户版 Studio 地址是 **http://127.0.0.1:8788/**（`start-studio.bat`，`start-editor.bat` 兼容转调）；Runner 包地址是 **http://127.0.0.1:8789/**（`start-runner.bat`）。**终端用户只下载 Runner-only 包 + 任务包，不需要 Studio**。
 > ★ [10-31] `oasd serve` 默认在监听成功后**自动打开默认浏览器**；headless/服务用 `--no-open`。Windows 服务在 Session 0 不会自动弹到用户桌面，服务化时应由用户登录任务/launcher 打开。
 > ★ `D:\OAS-dev\backend\toolkit` 只是本机外部开发工具包（ADB/OCR 模型）；oas-core 源码、构建、测试、发布不依赖 backend。若要完全脱离旧仓，可把 toolkit/模型复制到 oas-core 自带 `tools/` 或用环境变量覆盖。
 
@@ -192,8 +197,8 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 
 【2. 代码与我核实的台账】
    oas-core commit = <hash> · 分支 = dev · worktree 干净 = 是/否
-   cargo test --workspace = __ passed / __ failed（当前基线 = 527；runtime 142 / task 63 / oasd 229）
-   serve 状态：/state = <captured/device/ocr/det>
+   cargo test --workspace = __ passed / __ failed（当前基线 = 538；runtime 142 / task 63 / oasd 240）
+   serve 状态：/state = <captured/device/ocr/det>（Studio 8788 / Runner 8789 双入口；`oasd serve` 为 Studio 兼容别名）
    oas-core docs commit = <hash> · dev 是否已推 = 是/否
 
 【3. 差异（文档说 A、代码是 B）】
@@ -203,7 +208,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
    1. …  2. …  3. …
    ★ 建议先做：… 因为 …
 
-【5. 未完成台账】（见 PENDING-LEDGER §E-79 / §E-78 / §E-77 / §E-76；§E-24~§E-26 为历史；§E-79 = Studio/Runner 分离设计稿待拍板）
+【5. 未完成台账】（见 PENDING-LEDGER §E-79 / §E-78 / §E-77 / §E-76；§E-24~§E-26 为历史；§E-79 = Studio/Runner 分离：Q1~Q7 已批准、PR1 ✅ 已实现、PR2~PR6 待做）
 
 【6. 需要用户裁定的事】
 
@@ -231,7 +236,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 | **E7** | 旧仓已冻结 | 旧仓 `backend/frontend` 只读；不要在旧仓上开发/提交 |
 | **E8** | 新引擎的验收看 ENGINE §22 判据 | 不要拿旧仓 pytest 基线当引擎验收 |
 | **E9** | headless Edge 截图做 UI 验收 | `msedge --headless=new --screenshot=...`；需要时加 `--user-data-dir` |
-| **E10** | 测试数会随提交增长 | 当前 **527**（runtime 142 / task 63 / oasd 229；serve 68；UI **1138/227/0**；2026-11-04 seq 100 = 三项遗留修复，+11 条 Rust；seq 99 = 素材库 UX 六项 + OCR 阈值，516/0、UI 1112/227/0；seq 98 为 501/0，UI 907/225/0；seq 97 为 835/225/0）；OCR build exit 0（6 既有 warnings）、task lint 1/0；上一发布基线 426；以 `cargo test --workspace` 实测为准 |
+| **E10** | 测试数会随提交增长 | 当前 **538**（runtime 142 / task 63 / oasd **240**；UI **1239/224/0**，runner audit 33/0/5）；2026-11-04 seq 101 = PR1 Surface 拆分，+11 条 Rust（oasd 229→240）/ UI +101；seq 100 = 三项遗留修复，527/0、UI 1138/227/0；seq 99 = 素材库 UX 六项 + OCR 阈值，516/0、UI 1112/227/0；seq 98 为 501/0，UI 907/225/0；seq 97 为 835/225/0；OCR build exit 0（6 既有 warnings）、task lint 1/0；上一发布基线 426；以 `cargo test --workspace` 实测为准 |
 | **E11** | 本会话 PowerShell 实为 **5.1**，执行策略 Undefined | 直接 `.\scripts\dev-serve.ps1` 报 UnauthorizedAccess ⇒ 用 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-serve.ps1 -NoOpen` |
 | **E12** | `node` 不在 PATH | UI 测试用 bundled node：`C:\Users\passioki\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe`（v24.21.0）|
 | **E13** | PS 5.1 重定向日志是 **UTF-16LE** | 读日志用 `-Encoding Unicode` 或先转 UTF-8，否则中文/换行乱码 |
@@ -275,19 +280,19 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 ```bat
 REM ---------- 构建/测试 ----------
 cd D:\OAS-dev\oas-core
-cargo test --workspace   REM 上一发布基线 426；当前 527/0（runtime 142 / task 63 / oasd 229；P1 445 + 5；P2 464 + 10；P3 485 + 3；P4 499 + 2；P5 无新增；seq 99 OCR 阈值 +15 = 516；seq 100 三项遗留 +11 = 527）
+cargo test --workspace   REM 上一发布基线 426；当前 538/0（runtime 142 / task 63 / oasd 240；P1 445 + 5；P2 464 + 10；P3 485 + 3；P4 499 + 2；P5 无新增；seq 99 OCR 阈值 +15 = 516；seq 100 三项遗留 +11 = 527；seq 101 PR1 +11 = 538）
 cargo build -p oasd --features ocr              REM serve/run 的 OCR 构建
 
-REM ---------- 编辑器 ----------
-REM 开发启动（根数据 assets/ + frames/，debug + OCR；端口 8787）
-scripts\dev-serve.bat
-REM   根数据：assets/（全局素材）、frames/（持久帧）；tasks/ 只放 flow/meta
-REM   浏览器：http://127.0.0.1:8787/           （编辑器）
-REM           http://127.0.0.1:8787/dashboard.html （点击分布/长跑统计）
-
-REM 手动 serve（调试时；参数按实际路径补全）
-target\debug\oasd.exe serve --port 8787 --ui apps\oasd\ui --tasks-dir tasks --assets-dir assets --frames-dir frames --runs-dir runs --library-dir library --no-open ^
+REM ---------- Studio / Runner 双入口 ----------
+REM Studio 编辑端（8788；oasd serve = deprecated 别名，等价 studio）
+target\debug\oasd.exe studio --port 8788 --ui apps\oasd\ui --tasks-dir tasks --assets-dir assets --frames-dir frames --runs-dir runs --library-dir library --no-open ^
   --model …\PP-OCRv6_rec_small.onnx --det-model …\PP-OCRv6_det_small.onnx
+REM Runner 使用端（8789；只读页面，安装/配置在 PR2/PR5）
+target\debug\oasd.exe runner --port 8789 --ui apps\oasd\ui --tasks-dir tasks --assets-dir assets --runs-dir runs --no-open ^
+  --model …\PP-OCRv6_rec_small.onnx --det-model …\PP-OCRv6_det_small.onnx
+REM   浏览器：Studio http://127.0.0.1:8788/（编辑器）· Runner http://127.0.0.1:8789/（使用端）
+REM   Studio 仍可开 http://127.0.0.1:8788/dashboard.html（点击分布/长跑统计）
+REM   旧开发手动入口 scripts\dev-serve.bat 仍为 8787（未改）；发行包脚本 start-studio.bat=8788 / start-runner.bat=8789
 
 REM ---------- 运行/调度 ----------
 target\debug\oasd.exe run --task tasks\返回庭院 --replay <recording-dir>
@@ -315,12 +320,12 @@ run-tests.bat …                                  REM 旧仓守卫基线 171 pa
 | **帧-素材关系** | `../frames/frames.json` + 全局 `assets.json` 的 `positions`；无 interface 文件 |
 | **素材数据模型** | `ASSET-DATA-MODEL.md`（全局 `assets/`、任务素材=flow 引用子集、旧 library 仅后端兼容） |
 | **编辑器 UX / 选择模型计划** | `EDITOR-UX-PLAN.md`（画布、位置详情、多边形/反选、实时帧、点测/拖测、区域有效性、素材排序、分类重命名；**2026-11-04 素材库 UX 现行为 §18：选中态/菜单保持、识别区画布+共享保存、模板 replace、OCR 阈值、帧详情一致、批量测试移页**；**§18.10 = 三项遗留修复（region 操作多边形 / 模板 polygon 平移 / OCR 取值路径阈值）**） |
-| **★ Studio / Runner 分离 + TaskPackage + 任务配置（设计稿 v1，待拍板）** | `RUNNER-STUDIO-SPLIT-PLAN.md`（同一 serve 加 `Surface` + 路由白名单、`oasd studio` 8788 / `oasd runner` 8789、`.oaspkg` 包与安装、`meta.params` + `config/values.json` + 四层优先级、`call_task.params` + `with_params` 子任务作用域、风险 R1、**7 项决策 Q1~Q7**、6 PR、19 步验收；**未实现**） |
+| **★ Studio / Runner 分离 + TaskPackage + 任务配置（Q1~Q7 已批准；PR1 ✅ 已实现，PR2~PR6 待做）** | `RUNNER-STUDIO-SPLIT-PLAN.md`（同一 serve 加 `Surface` + 路由归属、`oasd studio` 8788 / `oasd runner` 8789 / `serve` 兼容别名、Runner 只读 API/UI 骨架、`.oaspkg` 包与安装（PR5）、`meta.params` + `config/values.json` + 四层优先级、`call_task.params` + `with_params` 子任务作用域、风险 R1、6 PR、19 步验收；**§A.8 分发/跨平台、§A.9 PR1 实现记录**）；分发/跨平台：`packaging/CROSS-PLATFORM.md`、`packaging/README-RUNNER.txt`、`packaging/README-DEPLOY.md` |
 | **当前任务（返回庭院）** | `../tasks/返回庭院/flow.json` · 全局素材 `../assets/` · 帧 `../frames/` |
 | 引擎规格/进度 | `ENGINE-DESIGN.md` §22 |
 | **调度 v3 + 统一任务模板（已交付 V1.0）** | `ENGINE-DESIGN.md` **§22.34 / §22.35**；Round 语义裁决见 **§22.34.7** + `SCHEDULER-RUNNER-PLAN.md` |
 | **发布/恢复节点（当前）** | `RELEASE-NODE-2026-11-02.md` · Release `https://github.com/passioki/oas-core/releases/tag/v0.1.0` |
 | 到实机可用的交付路线（历史，V1.0~V1.2.1 已交付） | `archive/DELIVERY-PLAN.md` |
 | 当前状态/下一步/坑 | `SESSION-HANDOFF.md` |
-| 台账/证据（当前） | `PENDING-LEDGER.md` §E-66~§E-79（§E-76 = 编辑器帧页，§E-77 = 素材行两按钮 + push-all，§E-78 = 素材库 UX 六项 + OCR 阈值 + 三项遗留修复，**§E-79 = Studio/Runner 分离 + TaskPackage + 配置/子任务配置 设计稿 v1（待拍板）**） |
+| 台账/证据（当前） | `PENDING-LEDGER.md` §E-66~§E-79（§E-76 = 编辑器帧页，§E-77 = 素材行两按钮 + push-all，§E-78 = 素材库 UX 六项 + OCR 阈值 + 三项遗留修复，**§E-79 = Studio/Runner 分离：Q1~Q7 已批准、PR1 ✅ 已实现（§F）、PR2~PR6 待做**） |
 | 旧仓历史（冻结，仍在旧仓）| `D:\OAS-dev\backend\docs\SESSION-HANDOFF.md` 历史段 · `D:\OAS-dev\frontend\docs\scheduler-architecture.md`（旧调度设计，参考）|

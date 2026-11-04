@@ -2259,3 +2259,87 @@ Asset.positions = [frame_id, ...]
 | ★ 明确未做 | ★ ① 模板 `fixed` `action_shape`（操作区）**不随 ROI 平移**（同类问题，属「操作区=绝对区域」语义）；② ROI **缩放**时 polygon 仍回退矩形（本轮需求只要求移动）；③ OCR 低分为**空结果而非运行硬错误**（为保轮询；如需硬错误改动集中在 `ocr_value_read`）；④ UI 阈值文案未加「同时作用于取值」 |
 
 ★ **提交边界（§22.43 本轮）**：**5 个改动文件** = UI 2（`apps/oasd/ui/app.js`、`apps/oasd/ui/ui_pure_test.js`）+ Rust 3（`apps/oasd/src/serve.rs`、`crates/oas-runtime/src/lib.rs`、`crates/oas-task/src/lib.rs`）+ docs；`asset_ui.js`/`index.html`/`style.css` 未改；用户数据（`assets/`/`frames/`/`tasks/`/`scheduler.json`）不提交；代码父 `f16fea1`，docs 随后（新 HEAD，不写死 hash）。
+
+### 22.44 ★★★ [11-04] **Studio / Runner Surface 拆分实现记录（PR1，现行）**
+
+> 触发：用户 **2026-11-04 批准** `docs/RUNNER-STUDIO-SPLIT-PLAN.md §D.2` 的 **Q1~Q7（全部按推荐）**，并要求落地 PR1（Surface 拆分 + Runner UI 骨架 + Runner-only 分发 + 跨平台约束）。
+> 权威计划：**`RUNNER-STUDIO-SPLIT-PLAN.md`**（§A.2/§A.3 设计、**§A.8 分发与跨平台**、**§A.9 PR1 实现记录**、§D.2 决策、§D.3 PR 分解）。台账：**`PENDING-LEDGER.md §E-79`**。
+> 状态：**PR1 ✅ 已实现并验证（代码/脚本/UI 未提交，父 `f84b56e`）；PR2~PR6 待做。** PR1 的 Runner 页面是**只读骨架**（安装/配置/调度编辑在后续 PR）。
+
+#### 22.44.1 双 Surface = 同一二进制两个入口（不是拆二进制）
+
+| 维度 | Studio（编辑端） | Runner（使用端） |
+|---|---|---|
+| 命令 / 默认端口 | `oasd studio` / **8788** | `oasd runner` / **8789** |
+| 兼容 | `oasd serve` = **deprecated 别名**（stderr 一行迁移提示，等价 `studio`；v2 再删） | — |
+| 根 UI | `ui/index.html` + `app.js`/`builder.js`/`flow_model.js`/`asset_ui.js`/`style.css`/`dashboard.*` | `ui/runner.html` + `runner.js`/`runner.css`（`style.css` 共享） |
+| nav | 工作台 / 任务构建 / 任务库 / 实例 / 设置（**无调度**） | 概览 / 已安装任务 / 队列与调度 / 运行记录 / 设置（**严格 5 项**） |
+| 路由归属 | §A.3 的 Studio-only（创作/构建/帧/素材/试运行） | §A.3 的 Runner-only（`/runner/*`、`/runs/scheduler*`、`/scheduler/*` 写、`/runs/delete`） |
+| 共享只读 | `/runs`、`/runs/clicks`、`/runs/aggregate`、`/scheduler/config|status`、`/config`、`/instance*`、`/stats` | 同左 |
+| 绑定 | `127.0.0.1`（固定） | `127.0.0.1`（`runner.bind` 只接受 loopback；无 token 前不开放 LAN） |
+
+- 实现位置：`apps/oasd/src/serve.rs` 顶部 `Surface` + `RouteOwner` + 纯函数 `route_owner()` / `required_surface()`；`Server` 新增 `surface`/`port`（`new(adb)` 签名不变，默认 Studio/0）。
+- `handle()` 在 **`/ws/live` 特判、静态文件、业务 `match` 之前**做归属 gate：不匹配 ⇒ **纯 404**（`{"error":"not found"}`），handler 不执行；`Both` 与未知路由不拦截。
+- 静态面按 surface 取文件：Runner 的 `/app.js` **404**，Studio 的 `/runner.js` **404**；`style.css` 两端共享。`send_ui_file` 一律 `Path::new(ui_dir).join(file)`（跨平台）。
+- 端口解析：**CLI `--port` > 对应 surface config（`serve.port` / `runner.port`）> 8788/8789**；banner 打印 surface/实际端口/双入口提示；`--port 0` 由 `local_addr()` 回填（为 Android/嵌入壳预留）。
+- `GET /instance` 的 `serve_port` 改为回显**实际绑定端口**；`POST /instance` 重写 `live.json` 时新增 `runner` 段随之下发。
+
+#### 22.44.2 Config（`apps/oasd/src/config.rs`）
+
+```rust
+pub struct OasConfig { pub serve: ServeConfig, pub runner: RunnerConfig, ... }
+pub struct RunnerConfig { pub port: u16, pub bind: String }  // #[serde(default)] 8789 / "127.0.0.1"
+```
+
+校验：`runner.port != 0`、`runner.port != serve.port`、`runner.bind` 非空且仅 loopback（`127.0.0.0/8`/`::1`/`localhost`）。旧 `live.json`（无 `runner` 段）完全兼容。
+
+#### 22.44.3 Runner 只读 API（PR1 最小面）
+
+- `GET /runner/health` → `{ok,surface:"runner",version,port(实际),scheduler_mode,tasks_dir,runs_dir,state_path,lock:{held,pid?}}`；`scheduler_mode` 只读 `scheduler.json.config.mode`（`not_configured|invalid_config|unreadable|unknown|<mode>`），**不取锁/不写盘**；`lock` 复用 `schedule::lock_held_by_live_process`（与守护进程同一把 `<state>.lock`）。
+- `GET /runner/tasks` → 扫 tasks-dir 直接子目录：`{task,has_meta,has_flow,has_assets,params[],version?,unmanaged,meta_error?}`；**坏 meta.json 不 500**（`meta_error` + 空 params，整体 200）；目录缺失 = 空列表 200；非 UTF-8 目录名跳过。
+- 两者仅 `Surface::Runner` 可达；Studio 请求被 gate 直接 **404**。`unmanaged:true` 是 PR1 占位（裸 `tasks/` 兼容；PR5 接 `packages/installed.json`）。
+
+#### 22.44.4 UI（`apps/oasd/ui/`）
+
+- 新增 `runner.html`（标题「OAS Runner（使用端）」；5 nav；徽标 API/版本/端口/调度锁；刷新）、`runner.css`（复用 style、≤720px 单列、无外部 CDN/字体）、`runner.js`（唯一 `runnerFetchJson`：**只 GET** + 8s 超时 + 错误归一化；读 `/runner/health`、`/runner/tasks`、`/scheduler/status`、`/runs/scheduler`、`/config`、`/instance`；全 `textContent`/`createElement`，**无 `innerHTML`/`eval`/POST**；5 个 hash 深链；**不含创作/构建 API 与 Studio 脚本**）。
+- Studio：`index.html` 删 nav「调度」按钮与左侧 rail `panel-schedule` 入口；旧调度页 DOM 保留为**兼容占位**（无操作按钮，仅提示「调度/运行请用 Runner（8789）」）；`app.js` 新增 `RUNNER_BASE_URL='http://127.0.0.1:8789/'` + `openRunnerPage(hash)`；`activatePage('schedule')` 改为提示并打开 Runner `#runs`（不再调 `refreshSchedulePage`）；任务库删「调度设置…」、运行记录按钮改在 Runner 打开；深链 `?reset=1` 改提示去 Runner；旧调度面板按钮/绑定移除。
+- 遗留：旧 `#page-schedule` DOM 与 sched-entry 对话框未删（不可达）⇒ **PR2 删除**。
+
+#### 22.44.5 测试与 E2E
+
+| 项 | 结果 |
+|---|---|
+| `cargo test -p oasd` | **240 passed / 0 failed**（基线 229，+11） |
+| `cargo test --workspace` | **538 passed / 0 failed**（基线 527，+11；oasd 240） |
+| UI pure test | **1239 checks / 224 referenced ids / 0 dead ids**（基线 1138/227/0，+101）；`runner_ui_audit` 33 ids / 0 dead / 5 nav |
+| `node --check` | runner.js / app.js / ui_pure_test.js 全过 |
+| Lead E2E | **真实双进程**：Studio 8788 + Runner 8789 同时起；Studio 拿 `/runner/*`、`/runs/scheduler` → 404，创作路由正常；Runner 拿 `/app.js`、`/frames`、`/task/library` → 404，`/runner/health|tasks`、`/runs/scheduler`、`/instance`、`/stats` 正常；`/runner/health` = `scheduler_mode:"loop"`、`lock:{held:false}`、`port:8789`；截图 `_verify/runner-studio-pr1-20261104/` |
+
+新增 11 条 Rust 测试覆盖：归属表、两端隔离 404、Studio 创作路由非 404、health/tasks 形状、坏 meta、活锁 pid、共享实例与 `/stats`、静态根、端口优先级。（UI 子进程报告的中间快照 1236/227 与终态有差异，以 Lead 实测 **1239/224/0** 为准。）
+
+#### 22.44.6 分发纠正：终端用户只下载 Runner + 任务包
+
+- **用户 2026-11-04 口径**：终端使用者只需要下载「使用端（Runner）」+ 任务包，**不需要下载编辑端（Studio）**；Studio 是创作/构建工具，**不发给终端用户**。
+- 两种发行包：`oasd-v<version>-win64.zip` = Studio（开发/编辑/发布；端口 8788；不发给终端用户）；`oasd-runner-v<version>-win64.zip` = **Runner-only 使用端包**（终端用户只装这个 + `.oaspkg`；端口 8789）。
+- Runner-only 包内容：`oasd.exe`、`ui/runner.{html,js,css}` + `ui/style.css`、OCR models、adb、`config/live.{json,example.json}`、`start-runner.bat`/`stop-runner.bat`、`README-RUNNER.txt`、空 `tasks/packages/runs/logs/assets`、空 v4 `scheduler.json`、`VERSION`/`BUILD-INFO.txt`；**无** Studio UI（`index/app/builder/flow_model/asset_ui/dashboard`）、**无** `frames/`/`library/`、**无** `start-studio/start-editor/stop-studio`。
+- 脚本：`scripts/package-runner.ps1`（显式清单 + 禁用文件名审计 + `System.IO.Compression.ZipArchive` 写 `/` entry）+ `scripts/package-common.ps1`（共享版本/BUILD-INFO；`package.ps1` 复用、字段顺序不变）。
+- 产物：`dist/oasd-runner-v0.1.0-win64.zip` = **37,141,295 B** + `.sha256` + `dist/BUILD-INFO.txt`；zip **23 entries / 0 反斜杠 entry**；`dist/` 已 gitignore ⇒ **发布产物不入 git（Q7）**。
+- `packaging/README-DEPLOY.md`「两种发行包（必读）」+ `packaging/README-RUNNER.txt` 已按此口径改写；`start-editor.bat` 兼容转调 `start-studio.bat`；`live.example.json` 增 `runner:{port:8789,bind:"127.0.0.1"}`。
+
+#### 22.44.7 跨平台（为 Android 使用端预留；v1 只 Windows 打包）
+
+> 权威细则：**`packaging/CROSS-PLATFORM.md`**（平台无关契约 / Windows v1 事实 / macOS·Linux / Android 两种候选 / 适配边界 / v1 决策摘要）。
+
+- **必须平台无关的四层**：Runner 核心（只用 `std` + 现有 crate；不引入注册表/COM/Win32 服务/盘符拼接作为核心逻辑；设备控制走 adapter trait）、路径（相对包根或 URI 风格；序列化统一 `/`；UTF-8；不假设大小写不敏感）、HTTP API（HTTP/1.1 + JSON + 静态文件；无平台分支字段；能力差异用错误码）、任务包/配置 schema（zip + 相对路径；`manifest.platform` 只能可选只读、不参与安装/执行判定）。
+- **PR1 已满足**：新逻辑纯 `std`/`Path::join`/HTTP+JSON，无盘符/`cmd` 硬编码；`--port 0` 实际端口回填；zip entry 统一 `/`；`runner.html/js/css` 纯标准 Web（可被 Android WebView 加载同一 URL）；窄屏单列。
+- **Android 路线（v1 不实现）**：优先候选 ① **on-device Runner**（交叉编译 `aarch64-linux-android` + JNI/Kotlin 壳 + `bind 127.0.0.1:0` + 手机内 WebView；复用同一套 `/runner/*` API、`.oaspkg`、调度语义；设备控制换 MediaProjection 截图 + AccessibilityService 点击）；候选 ② 手机当控制器依赖 LAN + token，暂不设计。**明确不做**：v1 Android 打包、iOS、LAN 多机调度、Android 内置/调用 adb 控制本机、复制第二份 Runner 业务逻辑。
+
+#### 22.44.8 PR1 遗留（不阻塞，已分期）
+
+1. Studio 旧 `#page-schedule` DOM + sched-entry 对话框（不可达）⇒ PR2 删。
+2. Runner 安装/卸载 = PR5；运行参数配置 = PR2/PR3；队列编辑/调度启停/临时运行 = PR6；设备租约 = PR6。
+3. `docs/` 旧截图/脚本说明的 `start-editor.bat` 逐步改名 `start-studio.bat`（本轮只保证兼容转调）。
+4. `.gitignore` 新增 `config/values.json`、`packages/` 等留给 PR2/PR5（PR1 未改）。
+5. PR1 Runner 页面只读；`README-RUNNER.txt` 已注明后续版本开放，不承诺未实现按钮。
+
+★ **提交边界（§22.44 / PR1）**：后端 `apps/oasd/src/{serve,main,config}.rs`；UI `apps/oasd/ui/{runner.html,runner.css,runner.js,index.html,app.js,ui_pure_test.js}`；脚本 `scripts/{package-runner,package-common,package}.ps1`；打包 `packaging/{start-*,stop-*,README-RUNNER.txt,CROSS-PLATFORM.md,live.example.json,README-DEPLOY.md}` + `start-editor.bat`；**不含**用户数据（`assets/`/`frames/`/`tasks/`/`scheduler.json`）与 `dist/`；父 `f84b56e`，docs 随后（新 HEAD，不写死 hash）。
