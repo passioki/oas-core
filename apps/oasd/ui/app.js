@@ -3012,7 +3012,12 @@ function assetRowElement(it, opts) {
     badge.className = 'run-badge kind frame-asset-source';
     badge.textContent = o.sourceLabel;
     badge.title = `素材来源：${o.sourceLabel}`;
-    row.appendChild(badge);
+    // Keep the badge on the first line: the shared row ends with the (hidden)
+    // full-width settings menu, so appending after it would put the badge on a
+    // line of its own whenever that menu is open.
+    const menu = typeof row.querySelector === 'function' ? row.querySelector('.asset-row-menu') : null;
+    if (menu && typeof row.insertBefore === 'function') row.insertBefore(badge, menu);
+    else row.appendChild(badge);
   }
   return row;
 }
@@ -3103,7 +3108,9 @@ function renderAssetList() {
     emptyText: (q || cat) ? '（没有匹配的素材）' : '（任务还没有素材）',
     onPick: (it) => pickAssetRoi(it),
     onTest: runAssetTest,
-    onEdit: (it) => editAsset(it),
+    onEditRoi: (it) => editAssetRoi(it),
+    onRename: (it) => renameAsset(it),
+    onThreshold: (it) => editAssetThreshold(it),
     onPosition: (it) => editAssetPositions(it),
     onDelete: (it) => deleteAsset(it),
     onAction: (it) => editAssetActionRoi(it),
@@ -3517,39 +3524,122 @@ async function editAssetPositions(it) {
   picker.input.focus();
 }
 
-async function editAsset(it) {
+// The 设置 menu edits one field at a time. These parsers stay pure so the
+// prompt validation is testable in Node (ui_pure_test.js); null means
+// cancel/invalid and the caller decides whether to warn.
+function parseAssetRoiText(text) {
+  const parts = String(text == null ? '' : text).trim().split(/[,，\s]+/).filter(Boolean);
+  if (parts.length !== 4) return null;
+  // Digits only: rejects Number()'s accepted exotica (1e2, 0x10, +1, 1.0) so the
+  // prompt result is exactly the four decimal integers the server expects.
+  if (!parts.every((p) => /^\d+$/.test(p))) return null;
+  const nums = parts.map((p) => Number(p));
+  const [x, y, w, h] = nums;
+  if (w <= 0 || h <= 0) return null;
+  // A ROI beyond this is certainly a typo (the server accepts i32, but no frame
+  // or design resolution comes close); reject early instead of failing at OCR.
+  if (nums.some((n) => n > 100000)) return null;
+  return nums;
+}
+
+function parseAssetThresholdText(text) {
+  const raw = String(text == null ? '' : text).trim();
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 1) return null;
+  return n;
+}
+
+async function renameAsset(it) {
   const task = assetScopeTask(true);
   if (!task) return;
-  const newId = (window.prompt('素材 id（留空 = 不重命名）', it.id) || '').trim();
-  if (newId && newId !== it.id) {
-    const r = await postJson('/task/asset/rename', { task, from: it.id, to: newId });
-    if (!r.ok) {
-      showErrors('重命名失败：', r.errors);
-      return;
-    }
-    log(`素材重命名：${it.id} → ${newId}`);
+  const input = window.prompt(`重命名素材「${it.id}」：输入新 id（留空 = 取消）`, it.id);
+  const newId = (input || '').trim();
+  if (!newId || newId === it.id) return;
+  const r = await postJson('/task/asset/rename', { task, from: it.id, to: newId });
+  if (!r.ok) {
+    showErrors('重命名失败：', r.errors);
+    return;
   }
+  const text = `素材重命名：${it.id} → ${newId}`;
+  resultEl.textContent = text;
+  log(text);
+  setStatus(`素材「${newId}」已重命名；两个素材库已刷新`);
+  await refreshTaskAssetsForScope(task);
+  await refreshGlobalAssets();
+}
+
+async function editAssetThreshold(it) {
+  if (it.kind !== 'template') {
+    resultEl.textContent = `素材「${it.id}」不是模板图，没有阈值`;
+    return;
+  }
+  const task = assetScopeTask(true);
+  if (!task) return;
+  const raw = it.threshold == null ? 0.85 : Number(it.threshold);
+  const current = Number.isFinite(raw) ? raw : 0.85;
+  const input = window.prompt(`模板阈值 0~1（当前 ${current}；留空 = 取消）`, String(current));
+  if (input == null || String(input).trim() === '') return;
+  const threshold = parseAssetThresholdText(input);
+  if (threshold == null) {
+    resultEl.textContent = `素材「${it.id}」阈值无效：必须是 0~1 之间的数字`;
+    window.alert('阈值必须是 0~1 之间的数字');
+    return;
+  }
+  const r = await postJson('/task/asset/update', { task, id: it.id, threshold });
+  if (!r.ok) {
+    showErrors('修改阈值失败：', r.errors);
+    return;
+  }
+  const text = `素材「${it.id}」阈值：${threshold}`;
+  resultEl.textContent = text;
+  log(text);
+  setStatus(`素材「${it.id}」阈值已保存；两个素材库已刷新`);
+  await refreshTaskAssetsForScope(task);
+  await refreshGlobalAssets();
+}
+
+async function editAssetRoi(it) {
+  // P1-1 hard guard: the 设置 menu already disables 识别区 for templates, but
+  // the server ALWAYS rejects a template ROI update ("template ROI update needs
+  // re-crop"), so a console/other caller must not even prompt or POST. A
+  // template's ROI is baked into its cropped image; changing it means saving a
+  // new crop (replace), not editing this field.
   if (it.kind === 'template') {
-    const t = window.prompt('模板阈值 0~1（留空 = 不改）', String(it.threshold ?? 0.85));
-    if (t != null && t.trim() !== '') {
-      const tv = Number(t);
-      const r = await postJson('/task/asset/update', { task, id: newId || it.id, threshold: tv });
-      if (!r.ok) {
-        showErrors('修改阈值失败：', r.errors);
-        return;
-      }
-    }
-  } else if (roi && window.confirm('用当前画布识别框更新该 OCR 素材的 ROI？')) {
-    const r = await postJson('/task/asset/update', {
-      task,
-      id: newId || it.id,
-      roi: [roi.x, roi.y, roi.w, roi.h],
-    });
-    if (!r.ok) {
-      showErrors('更新 ROI 失败：', r.errors);
-      return;
-    }
+    resultEl.textContent = `模板「${it.id}」没有可编辑的识别区：服务端拒绝修改模板 ROI；如需变更请重新截图保存并替换素材`;
+    return;
   }
+  if (it.kind === 'template_set') {
+    resultEl.textContent = `素材集合「${it.id}」没有识别区域`;
+    return;
+  }
+  if (it.kind === 'region' && !Array.isArray(it.roi)) {
+    resultEl.textContent = `region 素材「${it.id}」没有识别区域，无法编辑`;
+    return;
+  }
+  const task = assetScopeTask(true);
+  if (!task) return;
+  const current = Array.isArray(it.roi) && it.roi.length === 4 ? it.roi.join(',') : '';
+  const input = window.prompt(
+    `编辑素材「${it.id}」识别区域（x,y,w,h，整数；x,y>=0、w,h>0 且 <=100000；留空 = 取消）`,
+    current || '0,0,100,100'
+  );
+  if (input == null || String(input).trim() === '') return;
+  const roi = parseAssetRoiText(input);
+  if (!roi) {
+    resultEl.textContent = `素材「${it.id}」识别区域无效：需要 4 个整数，x,y>=0、w,h>0 且每项 <=100000`;
+    window.alert('识别区域必须是 4 个整数：x,y 非负，w,h 大于 0，且不超过 100000');
+    return;
+  }
+  const r = await postJson('/task/asset/update', { task, id: it.id, roi });
+  if (!r.ok) {
+    showErrors('更新识别区域失败：', r.errors);
+    return;
+  }
+  const text = `素材「${it.id}」识别区域：[${roi.join(',')}]`;
+  resultEl.textContent = text;
+  log(text);
+  setStatus(`素材「${it.id}」识别区域已保存；两个素材库已刷新`);
   await refreshTaskAssetsForScope(task);
   await refreshGlobalAssets();
 }
@@ -4052,7 +4142,9 @@ function renderGlobalAssets() {
     emptyText: (q.trim() || cat) ? '（没有匹配的全局素材）' : '（暂无全局素材）',
     onPick: (it) => pickAssetRoi(it),
     onTest: runAssetTest,
-    onEdit: (it) => editAsset(it),
+    onEditRoi: (it) => editAssetRoi(it),
+    onRename: (it) => renameAsset(it),
+    onThreshold: (it) => editAssetThreshold(it),
     onPosition: (it) => editAssetPositions(it),
     onDelete: (it) => deleteAsset(it),
     onAction: (it) => editAssetActionRoi(it),
@@ -4291,6 +4383,15 @@ function renderFrameAssets(f, rows) {
       onClickTest: (it) => testAssetClick(it, f.id),
       onDragTest: (it) => testAssetDrag(it, f.id),
       onStep: (it) => generateAssetStep(it),
+      // manage:false disables all six management items (识别区/操作区/重命名/阈值/
+      // 位置帧/删除) in the shared 设置 panel; the callbacks are wired for parity
+      // with the two libraries, not for this read-only view.
+      onEditRoi: (it) => editAssetRoi(it),
+      onRename: (it) => renameAsset(it),
+      onThreshold: (it) => editAssetThreshold(it),
+      onPosition: (it) => editAssetPositions(it),
+      onDelete: (it) => deleteAsset(it),
+      onAction: (it) => editAssetActionRoi(it),
       onCollectionTest: (it) => testAssetCollection(it, f.id),
       onCollectionDelete: (it) => deleteCollection(it),
     }));

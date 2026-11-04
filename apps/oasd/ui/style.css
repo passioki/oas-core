@@ -437,6 +437,10 @@ aside.side {
 }
 .asset-row {
   display: flex;
+  /* The settings menu is an inline second line (flex-basis:100%), never an
+     absolutely positioned popover: .asset-list is overflow:auto and would clip
+     a popover at the bottom of the list. */
+  flex-wrap: wrap;
   gap: 4px;
   align-items: stretch;
 }
@@ -445,6 +449,11 @@ aside.side {
 .asset-drag-over { outline: 2px solid #31d0aa; outline-offset: -1px; }
 .asset-row .asset-main {
   flex: 1;
+  /* A flex item's default min-width:auto refuses to shrink below its content's
+     min-content width; at the 320px sidebar that pushed 设置 onto a second line
+     and stretched 识别 into a tall block. Let the text column shrink so both
+     52px actions always stay on the first row. */
+  min-width: 0;
   margin: 0;
   padding: 4px 8px;
   text-align: left;
@@ -504,9 +513,41 @@ aside.side {
 .asset-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 .asset-row .asset-test {
   flex: 0 0 52px;
+  /* Keep the two actions as compact chips rather than stretching them to the
+     full height of a multi-line asset label (the row itself still stretches so
+     the inline menu keeps its own line). */
+  align-self: flex-start;
   margin: 0;
   padding: 4px 0;
   font-size: 12px;
+}
+
+/* Asset rows expose exactly two action buttons (识别 / 设置). The 设置 panel is
+   a hidden flex row inside .asset-row; .open shows it. Disabled menu items stay
+   visible (with a title explaining why) so every row has the same nine entries. */
+.asset-row-menu {
+  display: none;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 2px 0 2px 6px;
+  border-left: 2px solid #2b3540;
+}
+.asset-row-menu.open { display: flex; }
+.asset-menu-item {
+  /* Neutralize the sidebar-wide `aside button { display:block; width:100%;
+     margin-bottom:8px }`: menu items must stay content-sized inline buttons. */
+  display: block;
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 52px;
+  margin: 0;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.asset-menu-item:disabled {
+  opacity: .38;
+  cursor: not-allowed;
 }
 
 /* 22.29 标题行常驻结果/日志窗口 */

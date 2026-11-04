@@ -87,6 +87,158 @@
     return b;
   }
 
+  // Every asset row has exactly TWO action buttons: 识别 (the existing onTest
+  // behaviour) and 设置 (this menu). The nine entries and their order are a UX
+  // contract asserted by ui_pure_test.js; append new entries at the end only.
+  // `manage` marks an item as unavailable on read-only surfaces (frame detail).
+  const ASSET_MENU_ITEMS = [
+    {
+      key: 'clickTest', label: '点测', action: 'onClickTest', compactHide: true,
+      title: '点击测试（dry-run：验证定位并显示目标点）',
+    },
+    {
+      key: 'dragTest', label: '拖测', action: 'onDragTest', compactHide: true,
+      title: '拖动测试（dry-run：生成方向/起终点）',
+    },
+    { key: 'roi', label: '识别区', action: 'onEditRoi', manage: true, title: '编辑识别区域 x,y,w,h' },
+    {
+      key: 'action', label: '操作区', action: 'onAction', manage: true,
+      title: '在画布上拖拽设置该素材的操作区域',
+    },
+    { key: 'rename', label: '重命名', action: 'onRename', manage: true, title: '只重命名素材 id（不改阈值/识别区）' },
+    { key: 'threshold', label: '阈值', action: 'onThreshold', manage: true, title: '模板阈值 0~1（仅 template）' },
+    { key: 'position', label: '位置帧', action: 'onPosition', manage: true, title: '设置素材位置帧' },
+    { key: 'delete', label: '删除', action: 'onDelete', manage: true, title: '删除素材（flow 仍引用时会被拒绝）' },
+    {
+      key: 'step', label: '步骤', action: 'onStep', compactHide: true,
+      title: '生成 click_target 步骤并复制到剪贴板',
+    },
+  ];
+
+  /**
+   * Resolve the settings menu for one row.
+   * Disabled rules:
+   *   - template_set: only 删除 is actionable (the other eight do not apply);
+   *   - o.manage === false (frame detail is read-only): every management item;
+   *   - template: 识别区 does not exist as an editable field — the server rejects
+   *     template ROI updates with "needs re-crop" (a template's ROI is baked into
+   *     its cropped image), so the menu item must not look actionable;
+   *   - region: 操作区 is meaningless because the asset itself IS the region;
+   *   - non-template: 阈值 does not exist.
+   * o.compact hides 点测/拖测/步骤 exactly as the old compact row did.
+   */
+  function assetMenuState(it, opts) {
+    const o = opts || {};
+    const kind = (it && it.kind) || '';
+    const isSet = kind === 'template_set';
+    return ASSET_MENU_ITEMS.map((m) => {
+      let disabled = false;
+      let title = m.title;
+      if (isSet && m.key !== 'delete') {
+        disabled = true;
+        title = `素材集合不支持「${m.label}」：集合只有成员列表`;
+      } else if (m.manage && !o.manage) {
+        disabled = true;
+        title = `当前列表只读，不能${m.label}；请到任务素材库或全局素材库操作`;
+      } else if (m.key === 'roi' && kind === 'template') {
+        disabled = true;
+        title = '模板无识别区（服务端拒绝修改模板 ROI）；如需变更请重新截图保存并替换素材';
+      } else if (m.key === 'action' && kind === 'region') {
+        disabled = true;
+        title = 'region 素材本身就是操作区域，无需再设置操作区';
+      } else if (m.key === 'threshold' && kind !== 'template') {
+        disabled = true;
+        title = '仅模板图（template）支持阈值';
+      }
+      return {
+        key: m.key,
+        label: m.label,
+        action: m.action,
+        title,
+        disabled,
+        hidden: !!(o.compact && m.compactHide),
+      };
+    });
+  }
+
+  function assetTestTitle(it) {
+    if (it.kind === 'template') return '识别：在当前帧用该素材测试模板匹配';
+    if (it.kind === 'region') return '识别：选中该操作区域（区域点击/拖动可直接引用）';
+    return '识别：在当前帧用该 ROI 试识别文字';
+  }
+
+  // main + 识别 + 设置 + hidden inline menu. The menu is a flex row inside the
+  // asset row (flex-basis:100%) instead of an absolutely positioned popover so
+  // .asset-list's overflow:auto cannot clip it.
+  function appendRowActions(row, it, o, isSet) {
+    const test = makeButton(
+      '识别',
+      isSet ? '识别：与 runtime 同源，测试最佳成员 + 集合阈值' : assetTestTitle(it),
+      'asset-test asset-row-action asset-row-action-test'
+    );
+    test.addEventListener('click', () => {
+      if (isSet) (o.onCollectionTest || o.onTest || (() => {}))(it);
+      else (o.onTest || (() => {}))(it);
+    });
+
+    const menu = document.createElement('div');
+    menu.className = 'asset-row-menu';
+    menu.title = '素材设置：点测 / 拖测 / 识别区 / 操作区 / 重命名 / 阈值 / 位置帧 / 删除 / 步骤';
+    menu.setAttribute('aria-label', `${it.id} 的设置菜单`);
+    const settings = makeButton(
+      '设置',
+      '展开设置：点测 / 拖测 / 识别区 / 操作区 / 重命名 / 阈值 / 位置帧 / 删除 / 步骤',
+      'asset-test asset-row-action asset-row-action-settings'
+    );
+    settings.dataset.menuToggle = '1';
+    settings.setAttribute('aria-expanded', 'false');
+
+    function closeMenu() {
+      menu.classList.remove('open');
+      settings.classList.remove('open');
+      settings.setAttribute('aria-expanded', 'false');
+    }
+
+    for (const item of assetMenuState(it, o)) {
+      if (item.hidden) continue;
+      const b = makeButton(item.label, item.title, 'asset-menu-item');
+      b.disabled = item.disabled;
+      b.dataset.menuKey = item.key;
+      b.addEventListener('click', () => {
+        if (item.disabled) return;
+        closeMenu();
+        if (isSet && item.action === 'onDelete') {
+          (o.onCollectionDelete || o.onDelete || (() => {}))(it);
+        } else if (item.action === 'onDelete') {
+          (o.onDelete || (() => {}))(it);
+        } else {
+          (o[item.action] || (() => {}))(it);
+        }
+      });
+      menu.appendChild(b);
+    }
+
+    settings.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const open = menu.classList.toggle('open');
+      settings.classList.toggle('open', open);
+      settings.setAttribute('aria-expanded', String(open));
+    });
+    menu.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeMenu();
+        settings.focus();
+      }
+    });
+    settings.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeMenu();
+    });
+
+    row.appendChild(test);
+    row.appendChild(settings);
+    row.appendChild(menu);
+  }
+
   /**
    * Search + candidate picker shared by the builder asset field, asset position
    * picker, capture metadata dialog, and category filter.
@@ -246,9 +398,13 @@
    * One asset row.
    * opts:
    *   task, pick, manage, compact, actions
-   *   onPick(it), onTest(it), onEdit(it), onPosition(it), onDelete(it),
+   *   onPick(it), onTest(it), onPosition(it), onDelete(it),
    *   onAction(it), onClickTest(it), onDragTest(it), onStep(it),
+   *   onEditRoi(it), onRename(it), onThreshold(it),
    *   onCollectionTest(it), onCollectionDelete(it)
+   * The 设置 menu calls the split rename/threshold/ROI callbacks. There is no
+   * combined onEdit: the legacy editor was dead code and was removed.
+   * actions:false hides BOTH 识别 and 设置 (including the management menu).
    */
   function createRow(it, opts) {
     const o = opts || {};
@@ -265,16 +421,10 @@
       main.textContent = `${it.id}\n集合成员 ${(it.members || []).length} 张：${(it.members || []).join(' / ')}`;
       if (o.onPick) main.addEventListener('click', () => o.onPick(it));
       row.appendChild(main);
-      if (o.actions !== false) {
-        const test = makeButton('测集合', '与 runtime 同源：最佳成员 + 集合阈值', 'asset-test');
-        test.addEventListener('click', () => (o.onCollectionTest || o.onTest || (() => {}))(it));
-        row.appendChild(test);
-      }
-      if (o.manage) {
-        const del = makeButton('删', '删除集合（flow 引用时阻止）', 'asset-test');
-        del.addEventListener('click', () => (o.onCollectionDelete || (() => {}))(it));
-        row.appendChild(del);
-      }
+      // Same 识别 + 设置 pair as every other asset row. In the menu only 删除 is
+      // enabled (and only on a manageable surface); the other eight are disabled
+      // with a "集合不支持" title so the row stays visually uniform.
+      if (o.actions !== false) appendRowActions(row, it, o, true);
       return row;
     }
 
@@ -296,43 +446,9 @@
     if (o.onPick) main.addEventListener('click', () => o.onPick(it));
     row.appendChild(main);
 
-    if (o.actions !== false) {
-      const test = makeButton('测试', '在当前帧用该素材测试', 'asset-test');
-      if (it.kind === 'region') {
-        test.textContent = '区域';
-        test.title = '选中该操作区域（区域点击/拖动可直接引用）';
-      } else if (it.kind.startsWith('ocr')) {
-        test.textContent = '识别';
-        test.title = '在当前帧用该 ROI 试识别文字';
-      }
-      test.addEventListener('click', () => (o.onTest || (() => {}))(it));
-      row.appendChild(test);
-    }
-
-    if (o.manage) {
-      const edit = makeButton('改', '重命名 / 修改 OCR ROI / 模板阈值', 'asset-test');
-      edit.addEventListener('click', () => (o.onEdit || (() => {}))(it));
-      const pos = makeButton('帧', '设置素材位置帧', 'asset-test');
-      pos.addEventListener('click', () => (o.onPosition || (() => {}))(it));
-      const del = makeButton('删', '删除素材（flow 仍引用时会被拒绝）', 'asset-test');
-      del.addEventListener('click', () => (o.onDelete || (() => {}))(it));
-      row.append(edit, pos, del);
-      if (it.kind !== 'region') {
-        const action = makeButton('操作区', '在画布上拖拽设置该素材的操作区域', 'asset-test');
-        action.addEventListener('click', () => (o.onAction || (() => {}))(it));
-        row.appendChild(action);
-      }
-    }
-
-    if (o.actions !== false && !o.compact) {
-      const clickTest = makeButton('点测', '点击测试（dry-run：验证定位并显示目标点）', 'asset-test');
-      clickTest.addEventListener('click', () => (o.onClickTest || (() => {}))(it));
-      const dragTest = makeButton('拖测', '拖动测试（dry-run：生成方向/起终点）', 'asset-test');
-      dragTest.addEventListener('click', () => (o.onDragTest || (() => {}))(it));
-      const step = makeButton('步骤', '生成 click_target 步骤并复制到剪贴板', 'asset-test');
-      step.addEventListener('click', () => (o.onStep || (() => {}))(it));
-      row.append(clickTest, dragTest, step);
-    }
+    // The old 改/帧/删/操作区/点测/拖测/步骤 buttons all live in the settings
+    // menu now; the row itself exposes exactly 识别 + 设置.
+    if (o.actions !== false) appendRowActions(row, it, o, false);
     return row;
   }
 
@@ -371,5 +487,15 @@
     }
   }
 
-  window.OASAssetUI = { KIND_LABELS, kindLabel, makeThumb, createRow, renderRows, createSearchPicker };
+  window.OASAssetUI = {
+    KIND_LABELS,
+    kindLabel,
+    makeThumb,
+    createRow,
+    renderRows,
+    createSearchPicker,
+    // Exposed for ui_pure_test.js: the menu order/rules are part of the contract.
+    ASSET_MENU_ITEMS,
+    assetMenuState,
+  };
 })();

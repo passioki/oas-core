@@ -22,9 +22,11 @@ const assert = require('assert');
 const appPath = path.join(__dirname, 'app.js');
 const htmlPath = path.join(__dirname, 'index.html');
 const builderPath = path.join(__dirname, 'builder.js');
+const assetUiPath = path.join(__dirname, 'asset_ui.js');
 const source = fs.readFileSync(appPath, 'utf8');
 const html = fs.readFileSync(htmlPath, 'utf8');
 const builderSource = fs.readFileSync(builderPath, 'utf8');
+const assetUiSource = fs.readFileSync(assetUiPath, 'utf8');
 
 function extractFunctionFrom(text, name, label) {
   const re = new RegExp(`(?:^|\\n)[ \\t]*(?:async\\s+)?function\\s+${name}\\s*\\(`);
@@ -121,6 +123,8 @@ const PURE_FUNCTIONS = [
   'recognitionPolygonPayload',
   'ocrAssetPayload',
   'singleAssetPayload',
+  'parseAssetRoiText',
+  'parseAssetThresholdText',
   'assetCategory',
   'assetCategoryNames',
   'assetMatchesFilter',
@@ -807,7 +811,7 @@ function installGlobalRenderDom(items) {
   sandbox.document = { createElement: () => fakeElement() };
   // renderGlobalAssets wires row actions from app.js; they are irrelevant here.
   for (const fn of [
-    'pickAssetRoi', 'runAssetTest', 'editAsset', 'editAssetPositions', 'deleteAsset',
+    'pickAssetRoi', 'runAssetTest', 'editAssetPositions', 'deleteAsset',
     'editAssetActionRoi', 'testAssetClick', 'testAssetDrag', 'generateAssetStep',
     'testAssetCollection', 'deleteCollection',
   ]) {
@@ -909,7 +913,7 @@ function installTaskRenderDom(items) {
     row.dataset = { assetId: it.id };
     return row;
   };
-  for (const fn of ['pickAssetRoi', 'runAssetTest', 'editAsset', 'editAssetPositions',
+  for (const fn of ['pickAssetRoi', 'runAssetTest', 'editAssetPositions',
     'deleteAsset', 'editAssetActionRoi', 'testAssetClick', 'testAssetDrag',
     'generateAssetStep', 'testAssetCollection', 'deleteCollection']) {
     sandbox[fn] = () => {};
@@ -1238,6 +1242,355 @@ eq(
   'no current frame keeps the asset list placeholder'
 );
 eq(sandbox.refreshFramesCalls, 0, 'the frame repaint never issues a second /frames request');
+
+// --- asset row: exactly 识别 + 设置, with a nine-item inline settings menu ---
+// asset_ui.js is a browser IIFE, so run the REAL file against a tiny DOM stub.
+// This covers createRow()/assetMenuState() instead of a copied expectation.
+function assetDomElement(tagName) {
+  const el = {
+    tagName: String(tagName || 'div').toUpperCase(),
+    className: '',
+    title: '',
+    type: '',
+    disabled: false,
+    draggable: false,
+    dataset: {},
+    style: {},
+    attrs: {},
+    children: [],
+    listeners: {},
+    textContent: '',
+    appendChild(child) { el.children.push(child); return child; },
+    append(...children) { el.children.push(...children); },
+    addEventListener(type, fn) {
+      el.listeners[type] = el.listeners[type] || [];
+      el.listeners[type].push(fn);
+    },
+    dispatch(type, event) {
+      const ev = event || { stopPropagation() {}, preventDefault() {} };
+      for (const fn of el.listeners[type] || []) fn(ev);
+    },
+    setAttribute(name, value) { el.attrs[name] = String(value); },
+    getAttribute(name) { return el.attrs[name]; },
+    focus() { el.focused = true; },
+  };
+  el.classList = {
+    _set: new Set(),
+    add(...names) { names.forEach((n) => el.classList._set.add(n)); },
+    remove(...names) { names.forEach((n) => el.classList._set.delete(n)); },
+    contains(name) { return el.classList._set.has(name); },
+    toggle(name, force) {
+      const next = force == null ? !el.classList._set.has(name) : !!force;
+      if (next) el.classList._set.add(name);
+      else el.classList._set.delete(name);
+      return next;
+    },
+  };
+  return el;
+}
+
+function installAssetUiHarness() {
+  const uiSandbox = {
+    window: {},
+    document: { createElement: (tag) => assetDomElement(tag) },
+    Image: function AssetRowTestImage() {},
+  };
+  vm.createContext(uiSandbox);
+  vm.runInContext(assetUiSource, uiSandbox, { filename: 'asset_ui.js#row' });
+  return { ui: uiSandbox.window.OASAssetUI, sandbox: uiSandbox };
+}
+
+const assetUiHarness = installAssetUiHarness();
+const assetUi = assetUiHarness.ui;
+const ASSET_MENU_LABELS = ['点测', '拖测', '识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '步骤'];
+
+function assetChildren(el, className) {
+  return (el.children || []).filter((child) =>
+    String(child.className || '').split(/\s+/).includes(className));
+}
+function assetRowActionText(row) {
+  return assetChildren(row, 'asset-row-action').map((b) => b.textContent);
+}
+function assetRowMenu(row) {
+  return assetChildren(row, 'asset-row-menu')[0] || null;
+}
+function assetMenuButton(row, key) {
+  const menu = assetRowMenu(row);
+  return menu ? menu.children.find((b) => b.dataset.menuKey === key) : null;
+}
+function assetRowOpts(overrides) {
+  const calls = [];
+  const record = (name) => (it) => calls.push({ action: name, id: it.id });
+  const opts = {
+    task: '任务甲',
+    manage: true,
+    actions: true,
+    onTest: record('test'),
+    onPosition: record('position'),
+    onDelete: record('delete'),
+    onAction: record('action'),
+    onClickTest: record('clickTest'),
+    onDragTest: record('dragTest'),
+    onStep: record('step'),
+    onEditRoi: record('editRoi'),
+    onRename: record('rename'),
+    onThreshold: record('threshold'),
+    onCollectionTest: record('collectionTest'),
+    onCollectionDelete: record('collectionDelete'),
+  };
+  return { opts: Object.assign(opts, overrides || {}), calls };
+}
+
+const rowTemplate = { id: '模板甲', kind: 'template', threshold: 0.9, roi: [10, 20, 30, 40], positions: [7] };
+const rowOcr = { id: '文字乙', kind: 'ocr_line', roi: [1, 2, 3, 4], positions: [7] };
+const rowRegion = { id: '区域丙', kind: 'region', roi: [5, 6, 7, 8] };
+const rowSet = { id: '集合丁', kind: 'template_set', members: ['a', 'b'] };
+
+eq(
+  assetUi.ASSET_MENU_ITEMS.map((m) => m.label),
+  ASSET_MENU_LABELS,
+  'the settings menu is the agreed nine-item order'
+);
+eq(
+  assetUi.assetMenuState(rowTemplate, { manage: true }).filter((m) => m.disabled).map((m) => m.label),
+  ['识别区'],
+  'a manageable template disables 识别区 (the server rejects template ROI updates)'
+);
+eq(
+  assetUi.assetMenuState(rowTemplate, { manage: true }).filter((m) => !m.disabled).map((m) => m.label),
+  ['点测', '拖测', '操作区', '重命名', '阈值', '位置帧', '删除', '步骤'],
+  'a manageable template keeps the other eight settings enabled'
+);
+const templateRoiMenu = assetUi.assetMenuState(rowTemplate, { manage: true }).find((m) => m.key === 'roi');
+ok(
+  /模板无识别区（服务端拒绝修改模板 ROI）/.test(templateRoiMenu.title),
+  'the disabled template 识别区 title names the server-side re-crop rule'
+);
+const readOnlyMenu = assetUi.assetMenuState(rowTemplate, { manage: false });
+eq(
+  readOnlyMenu.filter((m) => m.disabled).map((m) => m.label),
+  ['识别区', '操作区', '重命名', '阈值', '位置帧', '删除'],
+  'manage:false (frame detail) disables every management item'
+);
+eq(
+  readOnlyMenu.filter((m) => !m.disabled).map((m) => m.label),
+  ['点测', '拖测', '步骤'],
+  'manage:false keeps the dry-run tests usable'
+);
+eq(
+  assetUi.assetMenuState(rowOcr, { manage: true }).find((m) => m.key === 'threshold').disabled,
+  true,
+  'non-template assets cannot edit a threshold'
+);
+eq(
+  assetUi.assetMenuState(rowTemplate, { manage: true }).find((m) => m.key === 'threshold').disabled,
+  false,
+  'template assets can edit a threshold'
+);
+const regionActionMenu = assetUi.assetMenuState(rowRegion, { manage: true }).find((m) => m.key === 'action');
+eq(regionActionMenu.disabled, true, 'region assets disable 操作区');
+ok(/region/.test(regionActionMenu.title), 'the disabled 操作区 title explains the region rule');
+eq(
+  assetUi.assetMenuState(rowRegion, { manage: true }).find((m) => m.key === 'roi').disabled,
+  false,
+  'region assets keep 识别区 enabled (the server accepts region ROI updates)'
+);
+const setMenuState = assetUi.assetMenuState(rowSet, { manage: true });
+eq(
+  setMenuState.filter((m) => !m.disabled).map((m) => m.label),
+  ['删除'],
+  'a template_set settings menu only enables 删除'
+);
+eq(setMenuState.filter((m) => m.disabled).length, 8, 'the other eight collection entries stay visible but disabled');
+ok(
+  setMenuState.filter((m) => m.disabled).every((m) => /集合不支持/.test(m.title)),
+  'disabled collection entries explain that sets do not support them'
+);
+
+const tplRowHarness = assetRowOpts();
+const tplRow = assetUi.createRow(rowTemplate, tplRowHarness.opts);
+eq(assetRowActionText(tplRow), ['识别', '设置'], 'a normal asset row exposes exactly 识别 + 设置');
+const tplMenu = assetRowMenu(tplRow);
+ok(tplMenu && !tplMenu.classList.contains('open'), 'the settings menu starts collapsed');
+eq(tplMenu.children.map((b) => b.textContent), ASSET_MENU_LABELS, 'the settings menu renders all nine items in order');
+eq(
+  assetChildren(tplRow, 'asset-row-action')[0].title,
+  '识别：在当前帧用该素材测试模板匹配',
+  'template 识别 keeps the template-match meaning'
+);
+eq(
+  assetRowActionText(assetUi.createRow(rowOcr, assetRowOpts().opts))[0],
+  '识别',
+  'OCR rows use the same 识别 label'
+);
+ok(
+  /试识别/.test(assetChildren(assetUi.createRow(rowOcr, assetRowOpts().opts), 'asset-row-action')[0].title),
+  'OCR 识别 title names the text trial'
+);
+ok(
+  /操作区域/.test(assetChildren(assetUi.createRow(rowRegion, assetRowOpts().opts), 'asset-row-action')[0].title),
+  'region 识别 title names the operation region'
+);
+eq(
+  assetMenuButton(tplRow, 'roi').disabled,
+  true,
+  'the rendered template row disables 识别区'
+);
+eq(
+  assetMenuButton(assetUi.createRow(rowOcr, assetRowOpts().opts), 'roi').disabled,
+  false,
+  'OCR rows keep 识别区 enabled'
+);
+const tplRoiHarness = assetRowOpts();
+const tplRoiRow = assetUi.createRow(rowTemplate, tplRoiHarness.opts);
+assetChildren(tplRoiRow, 'asset-row-action')[1].dispatch('click');
+assetMenuButton(tplRoiRow, 'roi').dispatch('click');
+eq(tplRoiHarness.calls, [], 'clicking the disabled template 识别区 never calls onEditRoi');
+const tplSettings = assetChildren(tplRow, 'asset-row-action')[1];
+tplSettings.dispatch('click');
+ok(tplMenu.classList.contains('open'), 'clicking 设置 opens the inline menu');
+tplSettings.dispatch('click');
+ok(!tplMenu.classList.contains('open'), 'clicking 设置 again collapses the menu');
+tplSettings.dispatch('click');
+assetMenuButton(tplRow, 'rename').dispatch('click');
+eq(tplRowHarness.calls, [{ action: 'rename', id: '模板甲' }], 'a menu item runs the split callback for its row');
+ok(!tplMenu.classList.contains('open'), 'the menu closes after running an item');
+
+const readOnlyHarness = assetRowOpts({ manage: false });
+const readOnlyRow = assetUi.createRow(rowTemplate, readOnlyHarness.opts);
+const readOnlyRename = assetMenuButton(readOnlyRow, 'rename');
+eq(readOnlyRename.disabled, true, 'the rendered menu disables management items on read-only rows');
+assetChildren(readOnlyRow, 'asset-row-action')[1].dispatch('click');
+readOnlyRename.dispatch('click');
+eq(readOnlyHarness.calls, [], 'clicking a disabled menu item never calls its callback');
+
+const setHarness = assetRowOpts();
+const setRow = assetUi.createRow(rowSet, setHarness.opts);
+eq(assetRowActionText(setRow), ['识别', '设置'], 'collection rows use the same two action buttons');
+eq(
+  assetRowMenu(setRow).children.filter((b) => !b.disabled).map((b) => b.textContent),
+  ['删除'],
+  'the rendered collection menu enables only 删除'
+);
+assetChildren(setRow, 'asset-row-action')[0].dispatch('click');
+eq(setHarness.calls.map((c) => c.action), ['collectionTest'], 'collection 识别 tests the collection');
+assetChildren(setRow, 'asset-row-action')[1].dispatch('click');
+assetMenuButton(setRow, 'delete').dispatch('click');
+eq(setHarness.calls.map((c) => c.action), ['collectionTest', 'collectionDelete'], 'collection 删除 uses onCollectionDelete');
+
+const noActionRow = assetUi.createRow(rowOcr, assetRowOpts({ actions: false }).opts);
+eq(assetRowActionText(noActionRow), [], 'actions:false hides 识别 and 设置');
+eq(assetRowMenu(noActionRow), null, 'actions:false renders no settings menu');
+
+const compactRow = assetUi.createRow(rowOcr, assetRowOpts({ compact: true }).opts);
+eq(
+  assetRowMenu(compactRow).children.map((b) => b.textContent),
+  ['识别区', '操作区', '重命名', '阈值', '位置帧', '删除'],
+  'compact keeps the old hiding of 点测/拖测/步骤'
+);
+
+// Static contracts for the split editors: every surface wires the split
+// callbacks, the row never calls a combined onEdit, and the legacy combined
+// editor is gone (it was dead code: nothing outside the IIFE could reach it).
+for (const name of ['renderAssetList', 'renderGlobalAssets', 'renderFrameAssets']) {
+  const fn = extractFunction(name);
+  ok(
+    /onEditRoi:/.test(fn) && /onRename:/.test(fn) && /onThreshold:/.test(fn) &&
+      /onPosition:/.test(fn) && /onAction:/.test(fn) && /onStep:/.test(fn),
+    `${name} wires the nine-item settings callbacks`
+  );
+}
+ok(
+  /m\.key === 'roi' && kind === 'template'/.test(assetUiSource),
+  'asset_ui.js has an explicit template 识别区 disable rule'
+);
+const createRowFn = extractFunctionFrom(assetUiSource, 'createRow', 'asset_ui.js');
+ok(!/o\.onEdit\b/.test(createRowFn) && !/onEdit:/.test(createRowFn), 'createRow never invokes a combined onEdit');
+ok(!/\bonEdit\b/.test(source), 'app.js no longer wires the legacy combined onEdit');
+ok(!/function editAsset\s*\(/.test(source), 'the dead editAsset editor is removed from app.js');
+ok(
+  !/makeButton\('(?:改|帧|删|操作区|点测|拖测|步骤|测试|测集合)'/.test(assetUiSource),
+  'the old per-action asset buttons are gone from asset_ui.js'
+);
+const renameAssetFn = extractFunction('renameAsset');
+ok(/\/task\/asset\/rename/.test(renameAssetFn), 'renameAsset posts /task/asset/rename');
+ok(
+  /await refreshTaskAssetsForScope\(task\);/.test(renameAssetFn) &&
+    /await refreshGlobalAssets\(\);/.test(renameAssetFn),
+  'renameAsset refreshes both asset libraries'
+);
+const thresholdAssetFn = extractFunction('editAssetThreshold');
+ok(
+  /postJson\('\/task\/asset\/update', \{ task, id: it\.id, threshold \}\)/.test(thresholdAssetFn),
+  'editAssetThreshold sends only the threshold to /task/asset/update'
+);
+ok(
+  /await refreshTaskAssetsForScope\(task\);/.test(thresholdAssetFn) &&
+    /await refreshGlobalAssets\(\);/.test(thresholdAssetFn),
+  'editAssetThreshold refreshes both asset libraries'
+);
+const roiAssetFn = extractFunction('editAssetRoi');
+ok(
+  /postJson\('\/task\/asset\/update', \{ task, id: it\.id, roi \}\)/.test(roiAssetFn),
+  'editAssetRoi sends [x,y,w,h] to /task/asset/update'
+);
+ok(
+  /await refreshTaskAssetsForScope\(task\);/.test(roiAssetFn) &&
+    /await refreshGlobalAssets\(\);/.test(roiAssetFn),
+  'editAssetRoi refreshes both asset libraries'
+);
+const roiGuardIndex = roiAssetFn.indexOf("it.kind === 'template'");
+const roiPromptIndex = roiAssetFn.indexOf('window.prompt');
+const roiPostIndex = roiAssetFn.indexOf("postJson('/task/asset/update'");
+ok(
+  roiGuardIndex >= 0 && roiPromptIndex > roiGuardIndex && roiPostIndex > roiGuardIndex,
+  'editAssetRoi rejects templates before prompting or POSTing (defense in depth)'
+);
+// Execute the guard itself: it must not prompt/POST and must explain why.
+const roiGuardSandbox = {
+  resultEl: { textContent: '' },
+  assetScopeTask: () => '任务甲',
+  postJson: () => { throw new Error('template ROI must never be POSTed'); },
+  window: { prompt: () => { throw new Error('template ROI must never prompt'); } },
+  refreshTaskAssetsForScope: async () => {},
+  refreshGlobalAssets: async () => {},
+  log: () => {},
+  setStatus: () => {},
+  showErrors: () => {},
+};
+vm.createContext(roiGuardSandbox);
+vm.runInContext(roiAssetFn, roiGuardSandbox, { filename: 'app.js#editAssetRoi-guard' });
+roiGuardSandbox.editAssetRoi({ id: '模板甲', kind: 'template', roi: [10, 20, 30, 40] });
+ok(
+  /模板「模板甲」/.test(roiGuardSandbox.resultEl.textContent) &&
+    /服务端拒绝修改模板 ROI/.test(roiGuardSandbox.resultEl.textContent),
+  'editAssetRoi explains the template ROI guard without prompting'
+);
+roiGuardSandbox.resultEl.textContent = '';
+roiGuardSandbox.editAssetRoi({ id: '集合丁', kind: 'template_set', members: ['a'] });
+eq(
+  roiGuardSandbox.resultEl.textContent,
+  '素材集合「集合丁」没有识别区域',
+  'editAssetRoi rejects template_set rows too'
+);
+eq(sandbox.parseAssetRoiText('10,20,30,40'), [10, 20, 30, 40], 'ROI text parses four commas');
+eq(sandbox.parseAssetRoiText('10，20 30\t40'), [10, 20, 30, 40], 'ROI text accepts the Chinese comma and whitespace');
+eq(sandbox.parseAssetRoiText('0,0,1,1'), [0, 0, 1, 1], 'ROI text accepts zero origin and positive size');
+eq(sandbox.parseAssetRoiText('10,20,30'), null, 'ROI text rejects fewer than four numbers');
+eq(sandbox.parseAssetRoiText('-1,2,3,4'), null, 'ROI text rejects negative coordinates');
+eq(sandbox.parseAssetRoiText('1.5,2,3,4'), null, 'ROI text rejects non-integers');
+eq(sandbox.parseAssetRoiText('0,0,0,0'), null, 'ROI text rejects a zero-sized recognition box');
+eq(sandbox.parseAssetRoiText('10,20,0,40'), null, 'ROI text rejects zero width');
+eq(sandbox.parseAssetRoiText('10,20,30,0'), null, 'ROI text rejects zero height');
+eq(sandbox.parseAssetRoiText('0,0,100001,40'), null, 'ROI text rejects values above the 100000 sanity cap');
+eq(sandbox.parseAssetRoiText('1e2,20,30,40'), null, 'ROI text rejects exponent notation');
+eq(sandbox.parseAssetRoiText('0x10,20,30,40'), null, 'ROI text rejects hex notation');
+eq(sandbox.parseAssetThresholdText('0.8'), 0.8, 'threshold text parses 0.8');
+eq(sandbox.parseAssetThresholdText('0'), 0, 'threshold text accepts 0');
+eq(sandbox.parseAssetThresholdText('1'), 1, 'threshold text accepts 1');
+eq(sandbox.parseAssetThresholdText('1.2'), null, 'threshold text rejects values above 1');
+eq(sandbox.parseAssetThresholdText('-0.1'), null, 'threshold text rejects negative values');
+eq(sandbox.parseAssetThresholdText('  '), null, 'empty threshold text is cancelled, not 0');
 
 // --- MATCH-BUG: a single asset test targets the frame the user is viewing ---
 // Regression: every saved asset has positions>=1, so the old "positions first"
