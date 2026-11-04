@@ -507,6 +507,22 @@ pub fn read_installed(root: &Path) -> Result<InstalledFile, String> {
     file.validated(&path)
 }
 
+/// Actionable fail-closed message for an unreadable/corrupt `installed.json`
+/// (PR7 final audit P1-4).
+///
+/// Install / uninstall / activate stay fail-closed (500: the registry is their
+/// only source of truth and a guess could overwrite the wrong task), but the
+/// error must tell the operator how to recover **without** deleting the task
+/// bundles. `/runner/tasks` uses the shorter warning variant instead of failing
+/// the whole page.
+pub fn installed_registry_error(root: &Path, err: &str) -> String {
+    format!(
+        "installed.json 损坏或不可读（{err}）。请删除或重命名 `{}` 后重启 Runner\
+         （`tasks/` 中的任务仍会作为未托管任务显示），或重新安装任务包。",
+        root.join(INSTALLED_FILE).display()
+    )
+}
+
 pub fn write_installed(root: &Path, file: &InstalledFile) -> Result<(), String> {
     let text = serde_json::to_string_pretty(file)
         .map_err(|e| format!("serialize installed registry: {e}"))?;
@@ -1322,8 +1338,10 @@ fn install_staged(
     let mut install_order: Vec<String> = included.iter().cloned().collect();
     install_order.push(manifest.task_id.clone());
 
-    let installed = read_installed(&layout.root)
-        .map_err(|e| ApiFailure::new(500, format!("installed.json: {e}")))?;
+    let installed = read_installed(&layout.root).map_err(|e| {
+        ApiFailure::new(500, installed_registry_error(&layout.root, &e))
+            .with_code("installed_registry_corrupt")
+    })?;
     dependency_resolution(manifest, &installed)?;
 
     // Verify embedded dependency versions against the manifest.
@@ -1652,8 +1670,10 @@ pub fn uninstall(
     now: u64,
 ) -> Result<UninstallOutcome, ApiFailure> {
     validate_task_name(task_id).map_err(|e| ApiFailure::new(400, e))?;
-    let mut installed = read_installed(&layout.root)
-        .map_err(|e| ApiFailure::new(500, format!("installed.json: {e}")))?;
+    let mut installed = read_installed(&layout.root).map_err(|e| {
+        ApiFailure::new(500, installed_registry_error(&layout.root, &e))
+            .with_code("installed_registry_corrupt")
+    })?;
     let task_dir = tasks_dir.join(task_id);
     let entry = installed.find(task_id).cloned();
     if entry.is_none() && !task_dir.is_dir() {
@@ -1969,8 +1989,10 @@ pub fn activate(
     req: &ActivateRequest,
     now: u64,
 ) -> Result<ActivateOutcome, ApiFailure> {
-    let mut installed = read_installed(&layout.root)
-        .map_err(|e| ApiFailure::new(500, format!("installed.json: {e}")))?;
+    let mut installed = read_installed(&layout.root).map_err(|e| {
+        ApiFailure::new(500, installed_registry_error(&layout.root, &e))
+            .with_code("installed_registry_corrupt")
+    })?;
     let task_id = match req.task_id.as_deref() {
         Some(id) => {
             validate_task_name(id).map_err(|e| ApiFailure::new(400, e))?;

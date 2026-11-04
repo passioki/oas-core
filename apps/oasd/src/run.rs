@@ -16,10 +16,11 @@
 //! clicks=[(x,y),...]          the ACTUAL points handed to InputSink, in order
 //! ```
 //!
-//! Extra informational lines: `task=`, `assets=`, `device=`, `replay_frames=`,
-//! `input=`, `budget_steps=`/`budget_wall_s=`, `record=`, `record_dir=`,
-//! `events_out=`, `clicks_out=<path> count=<N>`, `swipes=`, and `hint=` after a
-//! failure (actionable next step).
+//! Extra informational lines: `task=`, `assets=`, `lease=held|disabled|
+//! skipped(replay)|skipped(dry-run)|skipped(caller-held)`, `device=`,
+//! `replay_frames=`, `input=`, `budget_steps=`/`budget_wall_s=`, `record=`,
+//! `record_dir=`, `events_out=`, `clicks_out=<path> count=<N>`, `swipes=`, and
+//! `hint=` after a failure (actionable next step).
 //!
 //! Exit code: `0` iff `outcome=Done`; `1` for `Failed`/`Exhausted`; `2` for
 //! usage / setup errors (bad flags, missing bundle, no adb device, ...).
@@ -139,6 +140,10 @@ pub struct RunOptions {
     /// `scheduler` pass lease) and by Studio `/task/run` + Runner `/runner/run`
     /// (both pre-acquire before spawning the worker). CLI `oasd run` and the
     /// `oasd queue` path leave it `false` and are protected by `execute`.
+    ///
+    /// Replay / dry-run runs never acquire it at all (PR7 audit P1-1): they do
+    /// not tap the device, so they must not be blocked by (or waste) the
+    /// single-device lock. See [`acquire_run_lease`].
     pub skip_lease: bool,
     /// Test seam: pin the device lease path instead of resolving it from the
     /// process-wide `--config` (`global()`/`global_path()` can only be set once
@@ -475,13 +480,30 @@ impl StepObserver for SharedStepLog {
 
 /// Acquire the CLI run's device lease (PR6 P1-6).
 ///
-/// Returns `None` when [`RunOptions::skip_lease`] is set (the scheduler pass or
-/// a pre-acquired Studio/Runner worker already holds it) or when no live
-/// `--config` defines a lease path (pure CLI / tests). The guard is dropped
-/// when [`execute`] returns, so a setup error never leaves a stale lease.
-fn acquire_run_lease(opts: &RunOptions) -> Result<Option<DeviceLease>, String> {
+/// Returns `(guard, label)` where `label` is the value of the always-printed
+/// `lease=` line. `None` is returned (with a reason label) when the run does
+/// **not** touch the device:
+///
+/// * `replay` — an offline [`ReplaySource`], never adb (PR7 audit P1-1);
+/// * `dry_run` — taps are suppressed (the screen may still be read);
+/// * [`RunOptions::skip_lease`] — the scheduler pass / a pre-acquired
+///   Studio/Runner worker already holds it;
+/// * a pure CLI / test run without a live `--config` (no lease path is defined).
+///
+/// The guard is dropped when [`execute`] returns, so a setup error never leaves
+/// a stale lease.
+fn acquire_run_lease(opts: &RunOptions) -> Result<(Option<DeviceLease>, &'static str), String> {
+    // PR7 audit P1-1: decide the mode BEFORE touching the lease. Replay never
+    // opens adb; a dry run never taps. Both must be usable while the Runner's
+    // scheduler holds the single-device lease.
+    if opts.replay.is_some() {
+        return Ok((None, "skipped(replay)"));
+    }
+    if opts.dry_run {
+        return Ok((None, "skipped(dry-run)"));
+    }
     if opts.skip_lease {
-        return Ok(None);
+        return Ok((None, "skipped(caller-held)"));
     }
     let path = {
         #[cfg(test)]
@@ -496,8 +518,8 @@ fn acquire_run_lease(opts: &RunOptions) -> Result<Option<DeviceLease>, String> {
         }
     };
     match path {
-        Some(path) => DeviceLease::acquire(&path, "cli", "run").map(Some),
-        None => Ok(None),
+        Some(path) => DeviceLease::acquire(&path, "cli", "run").map(|lease| (Some(lease), "held")),
+        None => Ok((None, "disabled")),
     }
 }
 
@@ -514,7 +536,10 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     // PR6 P1-6: `oasd run` protects the physical device exactly like the Studio
     // and Runner entry points. The lease is acquired before any execution and
     // released by Drop when this function returns (success or setup error).
-    let _lease = acquire_run_lease(opts).map_err(|e| format!("device lease: {e}"))?;
+    // PR7 audit P1-1: replay / dry-run runs skip the acquire entirely — they are
+    // not allowed to be blocked by (or to occupy) the device lease.
+    let (_lease, lease_status) =
+        acquire_run_lease(opts).map_err(|e| format!("device lease: {e}"))?;
 
     // HB5: resolve + print the seed BEFORE anything that can fail, so even a
     // failed run tells you which seed to replay with.
@@ -529,6 +554,7 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     };
     out(&format!("seed={seed}"));
     out(&format!("frame_source={}", frame_source.as_str()));
+    out(&format!("lease={lease_status}"));
 
     // ---- task bundle (§19.3) ------------------------------------------------
     let bundle = TaskBundle::open(task_dir)
@@ -1395,40 +1421,90 @@ mod tests {
 
     // ---- PR6: CLI device lease (P1-6) -------------------------------------
 
+    fn live_options(task: &Path, seed: u64) -> RunOptions {
+        RunOptions {
+            task: Some(task.to_path_buf()),
+            seed: Some(seed),
+            ..RunOptions::default()
+        }
+    }
+
     #[test]
-    fn cli_run_acquires_and_releases_the_device_lease() {
-        let (td, task, replay) = fixture("cli-run-lease");
+    fn run_with_replay_does_not_acquire_lease() {
+        // PR7 audit P1-1: a replay never touches the device, so it must run
+        // while the Runner scheduler owns the single-device lease — and it must
+        // not replace/steal that lease.
+        let (td, task, replay) = fixture("cli-run-replay-no-lease");
         let lease_path = td.path().join("config").join("device.lease");
+        let holder = DeviceLease::acquire(&lease_path, "runner-scheduler", "scheduler")
+            .expect("external scheduler lease");
         let mut opts = replay_options(&task, &replay, 7);
         opts.lease_path_override = Some(lease_path.clone());
-        let mut held_during_run = false;
-        let report = execute(&opts, &mut |line: &str| {
-            if line.starts_with("seed=") {
-                held_during_run = crate::device_lease::read_lease(&lease_path)
-                    .map(|info| info.owner == "cli" && info.mode == "run")
-                    .unwrap_or(false);
-            }
-        })
-        .expect("replay run");
+        let mut lines = Vec::new();
+        let report = execute(&opts, &mut |line: &str| lines.push(line.to_string()))
+            .expect("replay must not be blocked by the device lease");
         assert_eq!(report.outcome(), Outcome::Done);
-        assert!(
-            held_during_run,
-            "the CLI run must hold owner=cli/mode=run while executing"
+        assert_eq!(
+            line_with(&lines, "lease="),
+            "lease=skipped(replay)",
+            "the report must explain why no lease was taken: {lines:?}"
         );
+        let held = crate::device_lease::read_lease(&lease_path)
+            .expect("the external lease must survive the replay");
+        assert_eq!(held.owner, "runner-scheduler");
+        assert_eq!(held.mode, "scheduler");
+        drop(holder);
+        assert!(!lease_path.exists());
+    }
+
+    #[test]
+    fn dry_run_no_lease() {
+        // PR7 audit P1-1: a dry run suppresses every tap, so it is lease-free.
+        // (A dry run with no replay would still read frames from adb, so only
+        // the acquisition decision is exercised here — the full execute path
+        // would need a device.)
+        let td = TempDir::new("cli-run-dry-no-lease");
+        let lease_path = td.path().join("config").join("device.lease");
+        let opts = RunOptions {
+            dry_run: true,
+            lease_path_override: Some(lease_path.clone()),
+            ..RunOptions::default()
+        };
+        let (lease, label) = acquire_run_lease(&opts).expect("dry-run must not acquire");
+        assert!(lease.is_none(), "a dry run must not hold the device lease");
+        assert_eq!(label, "skipped(dry-run)");
+        assert!(!lease_path.exists(), "no lease file may be created");
+    }
+
+    #[test]
+    fn live_run_acquire_helper_holds_and_releases_the_device_lease() {
+        let (td, task, _replay) = fixture("cli-run-live-lease");
+        let lease_path = td.path().join("config").join("device.lease");
+        let mut opts = live_options(&task, 7);
+        opts.lease_path_override = Some(lease_path.clone());
+        let (lease, label) = acquire_run_lease(&opts).expect("live acquire");
+        assert_eq!(label, "held");
+        let info = crate::device_lease::read_lease(&lease_path).expect("lease file");
+        assert_eq!(info.owner, "cli");
+        assert_eq!(info.mode, "run");
+        assert_eq!(info.surface, "cli");
+        drop(lease);
         assert!(
             !lease_path.exists(),
-            "Drop releases the CLI lease when execute() returns"
+            "Drop releases the CLI lease when the run ends"
         );
     }
 
     #[test]
-    fn cli_run_skip_lease_never_touches_the_device_lease() {
-        let (td, task, replay) = fixture("cli-run-skip-lease");
+    fn skip_lease_never_touches_the_device_lease() {
+        let (td, task, _replay) = fixture("cli-run-skip-lease");
         let lease_path = td.path().join("config").join("device.lease");
-        let mut opts = replay_options(&task, &replay, 8);
+        let mut opts = live_options(&task, 8);
         opts.lease_path_override = Some(lease_path.clone());
         opts.skip_lease = true;
-        execute(&opts, &mut |_| {}).expect("replay run");
+        let (lease, label) = acquire_run_lease(&opts).expect("skip_lease acquire");
+        assert!(lease.is_none());
+        assert_eq!(label, "skipped(caller-held)");
         assert!(
             !lease_path.exists(),
             "skip_lease is for callers that already hold the lease"
@@ -1437,15 +1513,15 @@ mod tests {
 
     #[test]
     fn cli_run_lease_conflict_is_a_loud_error_and_does_not_run() {
-        let (td, task, replay) = fixture("cli-run-lease-conflict");
+        let (td, task, _replay) = fixture("cli-run-lease-conflict");
         let lease_path = td.path().join("config").join("device.lease");
         let holder = DeviceLease::acquire(&lease_path, "studio", "editor-run")
             .expect("external lease");
-        let mut opts = replay_options(&task, &replay, 9);
+        let mut opts = live_options(&task, 9);
         opts.lease_path_override = Some(lease_path.clone());
         let mut lines = Vec::new();
         let err = execute(&opts, &mut |line: &str| lines.push(line.to_string()))
-            .expect_err("a live Studio lease must block the CLI run");
+            .expect_err("a live Studio lease must block the CLI live run");
         assert!(err.contains("device lease:"), "{err}");
         assert!(err.contains("Studio 正在试运行"), "{err}");
         assert!(

@@ -274,7 +274,8 @@ struct RunState {
     finished_ms: Option<u64>,
     /// `run::RunReport::exit_code()`: 0 = Done, 1 = Failed/Exhausted, 2 = setup error.
     exit: Option<u8>,
-    /// `Done` / `Failed` / `Exhausted` / `Error` (setup failure).
+    /// `Done` / `Failed` / `Exhausted` / `Error` (setup failure) / `Panic`
+    /// (the run worker caught an executor panic — PR7 audit P1-2).
     outcome: Option<String>,
     error: Option<String>,
     /// `live` / `dry-run` / `replay`.
@@ -7143,29 +7144,34 @@ impl Server {
                 )],
             );
         }
-        // PR6 device lease (design §A.6.4): claim the physical device before
-        // starting. A live holder (Runner scheduler / temp run) is a 409 with
-        // the holder's pid/mode.
-        let lease = match self.acquire_device_lease("studio", "editor-run") {
-            Ok(lease) => lease,
-            Err(e) => {
-                // `errors` keeps the shape the Studio run UI already renders
-                // for 4xx responses; `error` is the machine-readable code.
-                let body = serde_json::json!({
-                    "ok": false,
-                    "error": "device_busy",
-                    "errors": [e.clone()],
-                    "message": e,
-                });
-                return self.send_json(out, 409, &body.to_string());
-            }
-        };
+        // PR7 audit P1-1: decide the mode BEFORE touching the device lease.
+        // Replay and dry-run runs never tap the device, so they must not be
+        // blocked by (or occupy) the single-device lock. Only a live run claims
+        // it; the response/status still reports the mode below.
         let mode = if replay.is_some() {
             "replay"
         } else if dry_run {
             "dry-run"
         } else {
             "live"
+        };
+        let lease = if mode == "live" {
+            match self.acquire_device_lease("studio", "editor-run") {
+                Ok(lease) => lease,
+                Err(e) => {
+                    // `errors` keeps the shape the Studio run UI already renders
+                    // for 4xx responses; `error` is the machine-readable code.
+                    let body = serde_json::json!({
+                        "ok": false,
+                        "error": "device_busy",
+                        "errors": [e.clone()],
+                        "message": e,
+                    });
+                    return self.send_json(out, 409, &body.to_string());
+                }
+            }
+        } else {
+            None
         };
         let started_ms = now_ms();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -7200,8 +7206,9 @@ impl Server {
         opts.cancel = Some(cancel.clone());
         opts.step_log = Some(step_log.clone());
         opts.trace_appear = true;
-        // The route pre-acquired the device lease above (409 `device_busy`
-        // semantics); execute() must not acquire it a second time.
+        // The route owns the lease decision (PR7 audit P1-1): a live run holds
+        // the pre-acquired `owner=studio/mode=editor-run`; replay/dry-run runs
+        // deliberately acquire nothing, so `execute` must not acquire either.
         opts.skip_lease = true;
         // Click audit (CD2) is written even for dry/replay runs, so the editor's
         // 点击分布 panel sees editor-triggered runs exactly like CLI runs.
@@ -7230,6 +7237,13 @@ impl Server {
     /// `/runner/run` share it): the executor runs in `oasd-run-worker`, the
     /// outcome is recorded in [`Server::run_state`], and the device lease is
     /// released when the worker ends (Drop), even on a setup error.
+    ///
+    /// PR7 audit P1-2: the executor is third-party code (loader/runtime). A
+    /// panic used to skip the `running = false` cleanup and leave every later
+    /// `/runner/run` / `/task/run` a permanent `409 run_busy` until restart.
+    /// The panicking call is therefore wrapped in `catch_unwind`; the cleanup
+    /// below runs unconditionally, records `outcome=Panic` + the panic message,
+    /// and the lease is dropped by this thread (never inside the caught call).
     fn spawn_run_worker(
         &self,
         opts: RunOptions,
@@ -7241,8 +7255,8 @@ impl Server {
             .name("oasd-run-worker".to_string())
             .spawn(move || {
                 // The lease is held for exactly as long as the run executes;
-                // release it before publishing `running = false` so a status
-                // poll that sees "not running" can rely on the lease being gone.
+                // it is a plain local of THIS thread (not part of the caught
+                // closure), so a panic in `executor` cannot skip its Drop.
                 let lease_guard = lease;
                 let log_state = state.clone();
                 let mut emit = move |line: &str| {
@@ -7256,14 +7270,16 @@ impl Server {
                     }
                 };
                 let emit_ref: &mut dyn FnMut(&str) = &mut emit;
-                let result = executor(&opts, emit_ref);
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    executor(&opts, emit_ref)
+                }));
                 drop(lease_guard);
                 let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
                 st.drain_step_log();
                 st.running = false;
                 st.finished_ms = Some(now_ms());
                 match result {
-                    Ok(report) => {
+                    Ok(Ok(report)) => {
                         st.exit = Some(report.exit_code());
                         st.outcome = Some(outcome_label(report.outcome()).to_string());
                         st.frame_source = Some(report.frame_source.as_str().to_string());
@@ -7272,12 +7288,19 @@ impl Server {
                             st.error = Some(m.clone());
                         }
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         // Setup errors are `oasd run` exit code 2, never "Failed".
                         st.exit = Some(2);
                         st.outcome = Some("Error".to_string());
                         st.error = Some(e.clone());
                         st.push_log(&format!("error={e}"));
+                    }
+                    Err(payload) => {
+                        let msg = format!("run worker panicked: {}", panic_payload_text(&*payload));
+                        st.exit = Some(2);
+                        st.outcome = Some("Panic".to_string());
+                        st.error = Some(msg.clone());
+                        st.push_log(&format!("panic={msg}"));
                     }
                 }
             });
@@ -7494,6 +7517,43 @@ impl Server {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .running
+    }
+
+    /// PR7 audit P1-3: install/activate swap `tasks/<id>` in place, so they must
+    /// be refused while a scheduler is running (the default Runner starts the
+    /// embedded thread automatically). Two independent signals, matching the
+    /// uninstall guards: this process's embedded thread and a live
+    /// `<state>.lock` held by the `oasd scheduler` CLI. `None` = safe to modify
+    /// task directories.
+    fn scheduler_busy_reason(&self) -> Option<String> {
+        if self.scheduler_is_running() {
+            return Some(
+                "调度正在运行，请先在 Runner「队列与调度」页停止调度后再安装/回滚".to_string(),
+            );
+        }
+        let state_path = self.scheduler_options().state_path();
+        if let Some(pid) = crate::schedule::lock_held_by_live_process(&state_path) {
+            return Some(format!(
+                "调度正在运行（调度锁由 pid {pid} 持有，可能是 `oasd scheduler` 进程）；\
+                 请先停止调度后再安装/回滚"
+            ));
+        }
+        None
+    }
+
+    /// `409 {"ok":false,"code":"scheduler_running",...}` shared by install and
+    /// activate (PR7 audit P1-3). `force` deliberately does **not** bypass this:
+    /// replacing a task bundle under a running attempt can corrupt its
+    /// checkpoint/state, so the operator must stop the scheduler first.
+    fn send_scheduler_running(&self, out: &mut TcpStream, reason: String) -> std::io::Result<()> {
+        let body = serde_json::json!({
+            "ok": false,
+            "error": "scheduler_running",
+            "code": "scheduler_running",
+            "errors": [reason.clone()],
+            "message": reason,
+        });
+        self.send_json(out, 409, &body.to_string())
     }
 
     /// Record a start failure in the runtime state so `/runner/health` can
@@ -8075,22 +8135,32 @@ impl Server {
     /// A broken `meta.json` is reported per task (`meta_error`, empty params)
     /// instead of failing the whole listing — the Runner must still be able to
     /// show and diagnose it.
+    ///
+    /// PR7 audit P1-4: a corrupt/unreadable `installed.json` degrades the same
+    /// way — the route answers `200` with every bundle as `unmanaged` plus a
+    /// `warning` explaining how to recover, instead of a 500 that makes the
+    /// usage-side task page unusable. Install/uninstall/activate stay
+    /// fail-closed (their registry is authoritative).
     fn handle_runner_tasks(&self, out: &mut TcpStream) -> std::io::Result<()> {
         let layout = self.packages_layout();
-        let installed = match package_cmd::read_installed(&layout.root) {
-            Ok(file) => file,
-            Err(e) => {
-                return self.send_errors(out, 500, vec![format!("installed.json: {e}")]);
-            }
+        let (installed, warning) = match package_cmd::read_installed(&layout.root) {
+            Ok(file) => (file, None),
+            Err(e) => (
+                package_cmd::InstalledFile::default(),
+                Some(package_cmd::installed_registry_error(&layout.root, &e)),
+            ),
         };
         match scan_runner_tasks(&self.tasks_dir, &installed) {
             Ok(tasks) => {
-                let body = serde_json::json!({
+                let mut body = serde_json::json!({
                     "ok": true,
                     "dir": self.tasks_dir.display().to_string(),
                     "packages_dir": layout.root.display().to_string(),
                     "tasks": tasks,
                 });
+                if let Some(warning) = warning {
+                    body["warning"] = serde_json::Value::String(warning);
+                }
                 self.send_json(out, 200, &body.to_string())
             }
             Err(e) => self.send_errors(out, 500, vec![format!("scan tasks dir: {e}")]),
@@ -8098,6 +8168,10 @@ impl Server {
     }
 
     /// `GET /runner/packages` — `installed.json` registry + bare task dirs.
+    ///
+    /// PR7 audit P1-4: a corrupt registry stays fail-closed (500) because the
+    /// list would otherwise mislabel managed packages as unmanaged, but the
+    /// message names the file and the recovery step.
     fn handle_runner_packages(&self, out: &mut TcpStream) -> std::io::Result<()> {
         let layout = self.packages_layout();
         match package_cmd::list_packages(&layout, &self.tasks_dir) {
@@ -8113,12 +8187,23 @@ impl Server {
                 });
                 self.send_json(out, 200, &body.to_string())
             }
-            Err(e) => self.send_errors(out, 500, vec![format!("list packages: {e}")]),
+            Err(e) => self.send_errors(
+                out,
+                500,
+                vec![package_cmd::installed_registry_error(&layout.root, &e)],
+            ),
         }
     }
 
     /// `POST /runner/install` — Phase 1 **path mode only** (§B.4.2).
+    ///
+    /// PR7 audit P1-3: refused with `409 scheduler_running` while the embedded
+    /// scheduler thread (or a live `oasd scheduler` lock) is active — replacing
+    /// `tasks/<id>` under a running attempt is unsafe. `force` does not bypass it.
     fn handle_runner_install(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        if let Some(reason) = self.scheduler_busy_reason() {
+            return self.send_scheduler_running(out, reason);
+        }
         let (path, opts) = match package_cmd::parse_install_request(body) {
             Ok(parsed) => parsed,
             Err(failure) => return self.send_api_failure(out, failure),
@@ -8182,7 +8267,12 @@ impl Server {
         let dependents = match self.installed_dependents(&task) {
             Ok(dependents) => dependents,
             Err(e) => {
-                return self.send_errors(out, 500, vec![format!("installed.json: {e}")]);
+                let root = self.packages_root();
+                return self.send_errors(
+                    out,
+                    500,
+                    vec![package_cmd::installed_registry_error(&root, &e)],
+                );
             }
         };
         let guards = package_cmd::UninstallGuards {
@@ -8224,11 +8314,17 @@ impl Server {
     }
 
     /// `POST /runner/packages/activate` — Phase 1 rollback to a recorded backup.
+    ///
+    /// PR7 audit P1-3: same `409 scheduler_running` guard as install — a
+    /// rollback swaps `tasks/<id>` and must not race a running attempt.
     fn handle_runner_packages_activate(
         &self,
         out: &mut TcpStream,
         body: &[u8],
     ) -> std::io::Result<()> {
+        if let Some(reason) = self.scheduler_busy_reason() {
+            return self.send_scheduler_running(out, reason);
+        }
         let request: package_cmd::ActivateRequest = match serde_json::from_slice(body) {
             Ok(request) => request,
             Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
@@ -9011,6 +9107,19 @@ fn outcome_label(outcome: Outcome) -> &'static str {
         Outcome::Done => "Done",
         Outcome::Failed => "Failed",
         Outcome::Exhausted => "Exhausted",
+    }
+}
+
+/// Text of a caught run-worker panic payload (PR7 audit P1-2). Rust panics
+/// carry `&str` (most `panic!` calls) or `String`; anything else is still
+/// reported instead of swallowing the failure.
+fn panic_payload_text(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
     }
 }
 
@@ -14071,9 +14180,14 @@ mod tests {
             let lease_path = td.path().join("config").join("device.lease");
             let captured: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
             let captured_in_exec = captured.clone();
+            // Gate the fake executor: the worker would otherwise be allowed to
+            // finish (and release the lease) before the start response is read.
+            let gate = Arc::new(Gate::new());
+            let gate_in_thread = gate.clone();
             let exec: Arc<RunExecutor> =
                 Arc::new(move |opts: &RunOptions, _out: &mut dyn FnMut(&str)| {
                     *captured_in_exec.lock().unwrap() = Some(opts.skip_lease);
+                    gate_in_thread.wait();
                     Ok(done_report())
                 });
             let server = server_with_tasks(td.path())
@@ -14095,6 +14209,7 @@ mod tests {
             let info = crate::device_lease::read_lease(&lease_path).expect("pre-held lease");
             let mode = if surface == Surface::Studio { "editor-run" } else { "temp-run" };
             assert_eq!(info.mode, mode, "{surface:?}");
+            gate.open();
             let t0 = std::time::Instant::now();
             let finished = loop {
                 let st = get_json_route(&server, status_poll);
@@ -14423,6 +14538,114 @@ mod tests {
         let st = wait_run_finished(&server, 5000);
         assert_eq!(st["outcome"], "Done");
         assert!(!lease_path.exists(), "the lease is released after the run");
+    }
+
+    #[test]
+    fn studio_run_replay_and_dry_run_are_not_blocked_by_the_scheduler_lease() {
+        // PR7 audit P1-1: the Studio route must decide replay/dry-run BEFORE
+        // acquiring the device lease. A live scheduler lease therefore neither
+        // blocks these runs nor is stolen/replaced by them.
+        let td = TempDir::new("pr7-studio-replay-lease");
+        let tasks_dir = td.path().join("tasks");
+        make_task(&tasks_dir, "回放任务");
+        let replay_dir = td.path().join("replay");
+        std::fs::create_dir_all(&replay_dir).unwrap();
+        let lease_path = td.path().join("config").join("device.lease");
+        write_live_lease(&lease_path, "runner-scheduler", "scheduler");
+        let exec: Arc<RunExecutor> =
+            Arc::new(|_opts: &RunOptions, _out: &mut dyn FnMut(&str)| Ok(done_report()));
+        let server = server_with_tasks(td.path())
+            .with_device_lease_path(Some(lease_path.clone()))
+            .with_run_executor(exec);
+
+        let bodies = [
+            serde_json::json!({"task": "回放任务", "replay": replay_dir}).to_string(),
+            serde_json::json!({"task": "回放任务", "dry_run": true}).to_string(),
+        ];
+        for body in bodies {
+            let (status, out) =
+                post_route(&server, "/task/run", "application/json", body.as_bytes());
+            assert!(status.contains("200"), "{body}: {status} {out}");
+            let st = wait_run_finished(&server, 5000);
+            assert_eq!(st["running"], false, "{body}: {st}");
+            assert_eq!(st["outcome"], "Done", "{body}: {st}");
+            assert_eq!(st["error"], serde_json::Value::Null, "{body}: {st}");
+            let held = crate::device_lease::read_lease(&lease_path)
+                .expect("the scheduler lease must survive a replay/dry-run");
+            assert_eq!(held.owner, "runner-scheduler", "{body}");
+            assert_eq!(held.mode, "scheduler", "{body}");
+        }
+        assert!(lease_path.exists());
+    }
+
+    #[test]
+    fn run_worker_panic_clears_running_and_releases_the_lease() {
+        // PR7 audit P1-2: a panicking executor must still publish
+        // `running=false` + `outcome=Panic`, release the lease, and free the
+        // single-run mutex (a second start must not answer 409 run_busy).
+        for surface in [Surface::Studio, Surface::Runner] {
+            let td = TempDir::new(&format!("pr7-run-panic-{}", surface.as_str()));
+            let tasks_dir = td.path().join("tasks");
+            make_task(&tasks_dir, "崩溃任务");
+            let lease_path = td.path().join("config").join("device.lease");
+            let exec: Arc<RunExecutor> =
+                Arc::new(|_opts: &RunOptions, _out: &mut dyn FnMut(&str)| {
+                    panic!("scripted run executor panic")
+                });
+            let server = server_with_tasks(td.path())
+                .with_surface(surface)
+                .with_device_lease_path(Some(lease_path.clone()))
+                .with_run_executor(exec);
+            let (route, body) = match surface {
+                Surface::Studio => ("/task/run", r#"{"task":"崩溃任务"}"#),
+                Surface::Runner => ("/runner/run", r#"{"task":"崩溃任务"}"#),
+            };
+            let wait = |server: &Server| match surface {
+                Surface::Studio => wait_run_finished(server, 5000),
+                Surface::Runner => wait_runner_run_finished(server, 5000),
+            };
+
+            let (status, out) = post_route(&server, route, "application/json", body.as_bytes());
+            assert!(status.contains("200"), "{surface:?}: {status} {out}");
+            let st = wait(&server);
+            assert_eq!(st["running"], false, "{surface:?}: {st}");
+            assert_eq!(st["outcome"], "Panic", "{surface:?}: {st}");
+            // `/runner/run/status` has no `exit` field (PR6 contract); Studio does.
+            if surface == Surface::Studio {
+                assert_eq!(st["exit"], 2, "{surface:?}: {st}");
+            }
+            let err = st["error"].as_str().expect("panic error");
+            assert!(err.contains("run worker panicked"), "{surface:?}: {err}");
+            assert!(
+                err.contains("scripted run executor panic"),
+                "{surface:?}: {err}"
+            );
+            let tail: Vec<&str> = st["log_tail"]
+                .as_array()
+                .expect("log_tail")
+                .iter()
+                .filter_map(|l| l.as_str())
+                .collect();
+            assert!(
+                tail.iter().any(|l| l.starts_with("panic=run worker panicked")),
+                "{surface:?}: {tail:?}"
+            );
+            assert!(
+                !lease_path.exists(),
+                "{surface:?}: a worker panic must still release the device lease"
+            );
+
+            // The mutex is not stuck: the next run starts instead of 409.
+            let (status, out) = post_route(&server, route, "application/json", body.as_bytes());
+            assert!(
+                !status.contains("409"),
+                "{surface:?}: a panic must not leave run_busy: {status} {out}"
+            );
+            assert!(status.contains("200"), "{surface:?}: {status} {out}");
+            let st = wait(&server);
+            assert_eq!(st["running"], false, "{surface:?}: {st}");
+            assert_eq!(st["outcome"], "Panic", "{surface:?}: {st}");
+        }
     }
 
     #[test]
@@ -15573,6 +15796,197 @@ mod tests {
         let installed = package_cmd::read_installed(&td.path().join("runner/packages")).unwrap();
         assert_eq!(installed.find("A").unwrap().version, 1);
         assert!(installed.find("A").unwrap().backup.is_some());
+    }
+
+    /// PR7 audit P1-3: shared assertion for the install/activate scheduler guard.
+    fn assert_scheduler_running_409(status: &str, body: &str) {
+        assert!(status.contains("409"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(body).expect("409 JSON");
+        assert_eq!(v["ok"], false, "{v}");
+        assert_eq!(v["error"], "scheduler_running", "{v}");
+        assert_eq!(v["code"], "scheduler_running", "{v}");
+        let msg = v["errors"][0].as_str().expect("errors[0]");
+        assert!(msg.contains("调度正在运行"), "{msg}");
+        assert!(msg.contains("停止调度"), "{msg}");
+        assert_eq!(v["message"], msg, "{v}");
+    }
+
+    #[test]
+    fn install_and_activate_are_409_while_the_embedded_scheduler_runs() {
+        let td = TempDir::new("pkg-sched-running");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        pkg_write_task(&src, "A", 1, "[]", PKG_FINISH);
+        let pkg = pkg_build(
+            &src,
+            &td.path().join("src/assets"),
+            "A",
+            false,
+            &td.path().join("dist"),
+        );
+        let server = runner_pkg_server(td.path())
+            .with_scheduler_options(SchedulerOptions {
+                config: td.path().join("scheduler.json"),
+                state: Some(td.path().join("scheduler.state.json")),
+                ..SchedulerOptions::default()
+            })
+            .with_scheduler_runner(stop_aware_scheduler_runner());
+
+        let (status, body) =
+            post_route(&server, "/runner/scheduler/start", "application/json", b"{}");
+        assert!(status.contains("200"), "{status} {body}");
+        assert_eq!(
+            get_json_route(&server, "/runner/scheduler/status")["running"],
+            true
+        );
+
+        let (status, body) = install_pkg(&server, &pkg.path, false);
+        assert_scheduler_running_409(&status, &body);
+        let (status, body) = post_route(
+            &server,
+            "/runner/packages/activate",
+            "application/json",
+            br#"{"task_id":"A"}"#,
+        );
+        assert_scheduler_running_409(&status, &body);
+        assert!(
+            !td.path().join("runner/tasks/A").exists(),
+            "the 409 must not install or roll back anything"
+        );
+
+        // Stop the scheduler -> the same install and a real rollback succeed.
+        let (status, body) =
+            post_route(&server, "/runner/scheduler/stop", "application/json", b"{}");
+        assert!(status.contains("200"), "{status} {body}");
+        assert_eq!(
+            get_json_route(&server, "/runner/scheduler/status")["running"],
+            false
+        );
+        let (status, body) = install_pkg(&server, &pkg.path, false);
+        assert!(status.contains("200"), "{status} {body}");
+        pkg_write_task(&src, "A", 2, "[]", PKG_FINISH);
+        let pkg2 = pkg_build(
+            &src,
+            &td.path().join("src/assets"),
+            "A",
+            false,
+            &td.path().join("dist"),
+        );
+        let (status, body) = install_pkg(&server, &pkg2.path, false);
+        assert!(status.contains("200"), "{status} {body}");
+        let (status, body) = post_route(
+            &server,
+            "/runner/packages/activate",
+            "application/json",
+            br#"{"task_id":"A"}"#,
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("activate JSON");
+        assert_eq!(v["version"], 1, "{v}");
+    }
+
+    #[test]
+    fn install_is_409_while_a_cli_scheduler_holds_the_lock() {
+        let td = TempDir::new("pkg-sched-lock");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        pkg_write_task(&src, "A", 1, "[]", PKG_FINISH);
+        let pkg = pkg_build(
+            &src,
+            &td.path().join("src/assets"),
+            "A",
+            false,
+            &td.path().join("dist"),
+        );
+        let state_path = td.path().join("scheduler.state.json");
+        let server = runner_pkg_server(td.path()).with_scheduler_options(SchedulerOptions {
+            config: td.path().join("scheduler.json"),
+            state: Some(state_path.clone()),
+            ..SchedulerOptions::default()
+        });
+        let lock = state_path.with_extension("lock");
+        std::fs::write(
+            &lock,
+            format!(r#"{{"pid":{},"started_ms":0}}"#, std::process::id()),
+        )
+        .expect("write live lock");
+
+        let (status, body) = install_pkg(&server, &pkg.path, false);
+        assert_scheduler_running_409(&status, &body);
+        assert!(lock.exists(), "a refused install must not touch the lock");
+
+        std::fs::remove_file(&lock).expect("remove test lock");
+        let (status, body) = install_pkg(&server, &pkg.path, false);
+        assert!(status.contains("200"), "{status} {body}");
+    }
+
+    #[test]
+    fn corrupt_installed_json_degrades_the_task_list_and_fails_lifecycle_actionably() {
+        // PR7 audit P1-4: `/runner/tasks` must stay usable (200 + warning,
+        // every bundle unmanaged) while packages/install/uninstall/activate
+        // remain fail-closed with a recovery instruction.
+        let td = TempDir::new("installed-corrupt");
+        let tasks = td.path().join("runner/tasks");
+        std::fs::create_dir_all(&tasks).unwrap();
+        make_task(&tasks, "损坏注册表任务");
+        let packages = td.path().join("runner/packages");
+        std::fs::create_dir_all(&packages).unwrap();
+        std::fs::write(packages.join("installed.json"), "{ not json").unwrap();
+        let runner = runner_pkg_server(td.path());
+
+        let (status, body) = get_route(&runner, "/runner/tasks");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("tasks JSON");
+        assert_eq!(v["ok"], true, "{v}");
+        let rows = v["tasks"].as_array().expect("tasks array");
+        assert_eq!(rows.len(), 1, "{v}");
+        assert_eq!(rows[0]["task"], "损坏注册表任务", "{v}");
+        assert_eq!(rows[0]["unmanaged"], true, "degraded rows are unmanaged: {v}");
+        let warning = v["warning"].as_str().expect("warning");
+        assert!(warning.contains("installed.json"), "{warning}");
+        assert!(warning.contains("重命名"), "{warning}");
+
+        let (status, body) = get_route(&runner, "/runner/packages");
+        assert!(status.contains("500"), "{status} {body}");
+        assert!(body.contains("installed.json"), "{body}");
+        assert!(body.contains("重命名"), "{body}");
+
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        pkg_write_task(&src, "A", 1, "[]", PKG_FINISH);
+        let pkg = pkg_build(
+            &src,
+            &td.path().join("src/assets"),
+            "A",
+            false,
+            &td.path().join("dist"),
+        );
+        let (status, body) = install_pkg(&runner, &pkg.path, false);
+        assert!(status.contains("500"), "{status} {body}");
+        assert!(body.contains("installed.json"), "{body}");
+        assert!(body.contains("installed_registry_corrupt"), "{body}");
+        assert!(
+            !td.path().join("runner/tasks/A").exists(),
+            "a corrupt registry must fail closed, never install blind"
+        );
+
+        let (status, body) = post_route(
+            &runner,
+            "/runner/packages/activate",
+            "application/json",
+            br#"{"task_id":"A"}"#,
+        );
+        assert!(status.contains("500"), "{status} {body}");
+        assert!(body.contains("installed.json"), "{body}");
+
+        let (status, body) = post_route(
+            &runner,
+            "/runner/uninstall",
+            "application/json",
+            br#"{"task_id":"A"}"#,
+        );
+        assert!(status.contains("500"), "{status} {body}");
+        assert!(body.contains("installed.json"), "{body}");
     }
 
     #[test]

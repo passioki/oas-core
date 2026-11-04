@@ -3045,11 +3045,16 @@ const LEASE_BUSY_RETRY_MS: u64 = 500;
 
 /// Acquire the per-pass device lease (PR6 P1-5/P1-6).
 ///
-/// `None` when [`SchedulerOptions::lease_path`] is unset (tests / pure CLI).
-/// The returned [`DeviceLease`] is dropped when the pass ends, so the device is
-/// free while the scheduler sleeps; an in-flight attempt is protected because
-/// `execute_pass` runs entirely inside the guard's lifetime.
+/// `None` when [`SchedulerOptions::lease_path`] is unset (tests / pure CLI) **or
+/// when the scheduler is in replay mode**: a replay pass is offline and never
+/// taps the device, so it neither needs nor may occupy the single-device lease
+/// (PR7 audit P1-1). The returned [`DeviceLease`] is dropped when the pass ends,
+/// so the device is free while the scheduler sleeps; an in-flight live attempt
+/// is protected because `execute_pass` runs entirely inside the guard's lifetime.
 fn acquire_pass_lease(opts: &SchedulerOptions) -> Result<Option<DeviceLease>, String> {
+    if opts.replay.is_some() {
+        return Ok(None);
+    }
     match opts.lease_path.as_ref() {
         Some(path) => DeviceLease::acquire(path, "runner-scheduler", "scheduler").map(Some),
         None => Ok(None),
@@ -3232,6 +3237,12 @@ pub fn run_scheduler(
         // touching the v3 file.
         backup_state_v3(&state_path, out)?;
     }
+    if opts.replay.is_some() && opts.lease_path.is_some() {
+        // PR7 audit P1-1: make the skip observable instead of silently running
+        // the same line on every pass (there is a lease path configured, but a
+        // replay pass is offline by definition).
+        out("scheduler_lease_skipped reason=replay (replay never touches the device)");
+    }
     session.save_state(out)?;
 
     let cli_max_passes = opts.max_passes;
@@ -3255,6 +3266,8 @@ pub fn run_scheduler(
         // guard's lifetime); Drop at the end of the pass frees the device while
         // the scheduler sleeps. A conflict is a transient condition: skip this
         // pass, keep `state` clean, and retry after the normal sleep floor.
+        // PR7 audit P1-1: a replay pass is offline and returns `None` above, so
+        // it neither conflicts nor occupies the device.
         let pass_lease = match acquire_pass_lease(opts) {
             Ok(lease) => {
                 lease_busy_logged = false;
@@ -5098,13 +5111,56 @@ mod tests {
         let mut opts = base_opts(&td, config, Some(replay));
         let lease_path = td.join("config").join("device.lease");
         opts.lease_path = Some(lease_path.clone());
-        let report = run_scheduler(&opts, &mut |_| {}).expect("real replay run");
+        let mut lines = Vec::new();
+        let report = run_scheduler(&opts, &mut |line| lines.push(line.to_string()))
+            .expect("real replay run");
         assert_eq!(report.runs, 1, "{report:?}");
         assert_eq!(
             report.successes, 1,
-            "the attempt must run under the pass lease with skip_lease=true: {report:?}"
+            "the replay attempt must run without a device lease: {report:?}"
         );
-        assert!(!lease_path.exists(), "the pass lease is released after the run");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("scheduler_lease_skipped reason=replay")),
+            "the replay pass must report the lease skip: {lines:?}"
+        );
+        assert!(!lease_path.exists(), "the replay pass must not create a lease");
+        std::fs::remove_dir_all(&td).ok();
+    }
+
+    #[test]
+    fn scheduler_replay_pass_is_not_blocked_by_a_held_device_lease() {
+        // PR7 audit P1-1: a replay pass never touches the device, so an
+        // unrelated live lease (Studio trial / temp run) must not skip it.
+        let td = tmpdir("lease-replay-skip");
+        write_task(&td, "任务1", OK_FLOW, None);
+        let replay = td.join("replay");
+        write_replay(&replay);
+        let config = write_config(
+            &td,
+            r#"{"schema_version":4,
+                "config":{"mode":"stop"},
+                "entries":[{"entry_id":"e1","task":"任务1","lifecycle":"temp"}]}"#,
+        );
+        let mut opts = base_opts(&td, config, Some(replay));
+        let lease_path = td.join("config").join("device.lease");
+        opts.lease_path = Some(lease_path.clone());
+        let external =
+            DeviceLease::acquire(&lease_path, "studio", "editor-run").expect("external lease");
+        let mut lines = Vec::new();
+        let report = run_scheduler(&opts, &mut |line| lines.push(line.to_string()))
+            .expect("replay scheduler with a held device lease");
+        assert_eq!(report.runs, 1, "{report:?}");
+        assert_eq!(report.successes, 1, "{report:?}");
+        assert!(
+            !lines.iter().any(|l| l.starts_with("scheduler_lease_busy")),
+            "a replay pass must never probe the device lease: {lines:?}"
+        );
+        let held = crate::device_lease::read_lease(&lease_path).expect("external lease kept");
+        assert_eq!(held.owner, "studio");
+        assert_eq!(held.mode, "editor-run");
+        drop(external);
         std::fs::remove_dir_all(&td).ok();
     }
 
