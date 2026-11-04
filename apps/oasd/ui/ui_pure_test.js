@@ -133,6 +133,7 @@ const PURE_FUNCTIONS = [
   'assetRoiWithinFrame',
   'assetRoiRectanglePolygon',
   'assetRoiPolygonForSave',
+  'assetRoiPolygonPlan',
   'assetRoiReplacePayload',
   'findAssetById',
   // P1-3: batch test target = the visible library rows next to the button.
@@ -1795,8 +1796,14 @@ ok(
   'the template overwrite confirmation names the asset id and rev+1 (P2-7)'
 );
 ok(
-  /postJson\('\/task\/asset\/update', \{ task, id: it\.id, roi: valid \}\)/.test(roiSaveFn),
-  'OCR/region ROI saves patch /task/asset/update'
+  /postJson\('\/task\/asset\/update', payload\)/.test(roiSaveFn) &&
+    /if \(it\.kind === 'region'\) payload\.keep_action_shape = true;/.test(roiSaveFn),
+  'OCR/region ROI saves patch /task/asset/update (a region keeps its action_shape)'
+);
+ok(
+  /assetRoiPolygonPlan\(it\.polygon, valid, it\.roi\)/.test(roiSaveFn) &&
+    /polygonPlan\.fallback/.test(roiSaveFn),
+  'the template overwrite plans a translated polygon and reports a rectangle fallback (leftover 2)'
 );
 ok(
   /assetRoiBoxValid\(box\)/.test(roiSaveFn) &&
@@ -1887,6 +1894,7 @@ async function installRoiSaveHarness() {
       [assetRowScopeTaskFn(), assetScopeTaskFn(), assetRoiBoxValidFn(),
         extractFunction('assetRoiWithinFrame'),
         extractFunction('assetRoiRectanglePolygon'),
+        extractFunction('assetRoiPolygonPlan'),
         extractFunction('assetRoiPolygonForSave'),
         extractFunction('assetRoiReplacePayload'),
         extractFunction('findAssetById'),
@@ -2019,6 +2027,40 @@ async function checkAssetRoiSavePath() {
   );
   eq(roiSave.posts[0].payload.roi, [10, 20, 30, 40], 'the new ROI still wins over the stale polygon bbox');
 
+  // Leftover 2: MOVING the ROI must translate the stored polygon (same vertex
+  // count, same shape, bbox = new ROI), not replace it with the new rectangle.
+  roiSave.posts.length = 0;
+  roiSave.alertText = '';
+  const shapeTpl = Object.assign({}, tplAsset, {
+    roi: [10, 20, 30, 40],
+    polygon: [[10, 20], [39, 26], [39, 59], [10, 53]],
+  });
+  await roiSave.run(shapeTpl, { x: 20, y: 30, w: 30, h: 40 }, { scope: '任务乙', latest: shapeTpl });
+  eq(
+    roiSave.posts[0].payload.polygon,
+    [[20, 30], [49, 36], [49, 69], [20, 63]],
+    'moving a template ROI translates every polygon vertex (leftover 2)'
+  );
+  eq(roiSave.posts[0].payload.roi, [20, 30, 30, 40], 'the translated polygon bbox equals the new ROI');
+  eq(roiSave.posts[0].payload.polygon.length, 4, 'the translated polygon keeps its point count');
+  eq(roiSave.alertText, '', 'a successful polygon translation shows no warning');
+  ok(!/形状丢失/.test(roiSave.resultEl.textContent), 'a successful translation reports no shape loss');
+
+  // Leftover 2 fallback: a resized ROI cannot be represented by a translation,
+  // so the rectangle is sent and the shape loss is explained to the user.
+  roiSave.posts.length = 0;
+  roiSave.alertText = '';
+  await roiSave.run(shapeTpl, { x: 20, y: 30, w: 20, h: 20 }, { scope: '任务乙', latest: shapeTpl });
+  eq(
+    roiSave.posts[0].payload.polygon,
+    [[20, 30], [39, 30], [39, 49], [20, 49]],
+    'a resized template ROI falls back to the new rectangle'
+  );
+  ok(/多边形/.test(roiSave.alertText) && /矩形/.test(roiSave.alertText),
+    'a rectangle fallback is explained before the user continues');
+  ok(/形状丢失/.test(roiSave.resultEl.textContent),
+    'the save result notes that the polygon shape was lost');
+
   // P2-6: a template without positions must never reach the server.
   roiSave.posts.length = 0;
   roiSave.alertText = '';
@@ -2061,6 +2103,29 @@ async function checkAssetRoiSavePath() {
     'OCR ROI save sends only {task,id,roi}'
   );
   eq(roiSave.confirmText, '', 'OCR ROI save never asks the template overwrite question');
+
+  // Leftover 1: a region's 识别区 save must keep the operation polygon. The
+  // payload carries keep_action_shape and the message says the action area is
+  // untouched; the OCR payload above stays flag-free.
+  roiSave.posts.length = 0;
+  roiSave.resultEl.textContent = '';
+  const regionAsset = {
+    id: '区域丙',
+    kind: 'region',
+    roi: [1, 2, 3, 4],
+    action_source: 'fixed',
+    action_shape: { kind: 'polygon', points: [[1, 2], [3, 2], [3, 5], [1, 5]], invert: false },
+  };
+  await roiSave.run(regionAsset, { x: 5, y: 6, w: 7, h: 8 });
+  eq(roiSave.posts.length, 1, 'region ROI save posts exactly once');
+  eq(roiSave.posts[0].url, '/task/asset/update', 'region ROI save patches the asset');
+  eq(
+    roiSave.posts[0].payload,
+    { task: '任务甲', id: '区域丙', roi: [5, 6, 7, 8], keep_action_shape: true },
+    'region ROI save sends keep_action_shape so the operation polygon survives (leftover 1)'
+  );
+  ok(/操作区 action_shape 保持不变/.test(roiSave.resultEl.textContent),
+    'region ROI save tells the user the operation area was not changed');
 
   // Invalid canvas box (w/h <= 0) must be rejected before any request.
   roiSave.posts.length = 0;
@@ -2389,6 +2454,57 @@ eq(
   [[10, 20], [39, 20], [39, 59], [10, 59]],
   'a stale polygon is re-synced to the new ROI rectangle instead of being dropped'
 );
+// Leftover 2: the polygon plan is a pure translation when the ROI merely moves.
+const movedPlan = sandbox.assetRoiPolygonPlan(
+  [[10, 20], [39, 26], [39, 59], [10, 53]],
+  [20, 30, 30, 40],
+  [10, 20, 30, 40]
+);
+eq(
+  movedPlan.polygon,
+  [[20, 30], [49, 36], [49, 69], [20, 63]],
+  'a moved ROI translates the polygon instead of replacing it'
+);
+eq(movedPlan.fallback, false, 'a pure ROI move keeps the polygon shape');
+eq(movedPlan.reason, '', 'a pure ROI move has no fallback reason');
+eq(
+  sandbox.assetRoiPolygonForSave(
+    [[10, 20], [39, 26], [39, 59], [10, 53]],
+    [20, 30, 30, 40],
+    [10, 20, 30, 40]
+  ),
+  [[20, 30], [49, 36], [49, 69], [20, 63]],
+  'the polygon wrapper forwards the translated shape'
+);
+const resizePlan = sandbox.assetRoiPolygonPlan(
+  [[10, 20], [39, 26], [39, 59], [10, 53]],
+  [20, 30, 20, 40],
+  [10, 20, 30, 40]
+);
+eq(
+  resizePlan.polygon,
+  [[20, 30], [39, 30], [39, 69], [20, 69]],
+  'a resized ROI falls back to the new rectangle'
+);
+eq(resizePlan.fallback, true, 'a resized ROI is a fallback, not a translation');
+ok(/尺寸|越界/.test(resizePlan.reason), 'the resize fallback explains why the shape was lost');
+// Out-of-frame / inconsistent stored data: the translated bbox cannot be the new
+// ROI, so the rectangle is the only safe payload (server derives roi from bbox).
+const strayPlan = sandbox.assetRoiPolygonPlan(
+  [[45, 45], [74, 45], [74, 74], [45, 74]],
+  [0, 0, 30, 30],
+  [50, 50, 30, 30]
+);
+eq(
+  strayPlan.polygon,
+  [[0, 0], [29, 0], [29, 29], [0, 29]],
+  'a translation that would leave the frame falls back to the rectangle'
+);
+eq(strayPlan.fallback, true, 'an out-of-frame translation is a fallback');
+ok(/越界|尺寸/.test(strayPlan.reason), 'the out-of-frame fallback explains why');
+const noPolyPlan = sandbox.assetRoiPolygonPlan(null, [10, 20, 30, 40], [1, 2, 3, 4]);
+eq(noPolyPlan.polygon, null, 'an asset without a polygon stays polygon-free');
+eq(noPolyPlan.fallback, false, 'no polygon is not a rectangle fallback');
 const payloadAsset = {
   id: '模板甲',
   kind: 'template',
@@ -2416,6 +2532,17 @@ eq(
     polygon: [[10, 20], [39, 20], [39, 59], [10, 59]],
   },
   'the replace payload carries every persisted field and only replaces roi (P1-1)'
+);
+// Leftover 2: the payload for a pure ROI move carries the TRANSLATED polygon
+// (bbox = new ROI), not the new ROI rectangle.
+const movedPayloadAsset = Object.assign({}, payloadAsset, {
+  roi: [10, 20, 30, 40],
+  polygon: [[10, 20], [39, 26], [39, 59], [10, 53]],
+});
+eq(
+  sandbox.assetRoiReplacePayload('任务甲', movedPayloadAsset, [20, 30, 30, 40]).polygon,
+  [[20, 30], [49, 36], [49, 69], [20, 63]],
+  'the replace payload sends the translated polygon for a moved ROI (leftover 2)'
 );
 
 const globalRow = { id: '甲', kind: 'ocr_line', threshold: 0.9 };

@@ -4146,7 +4146,8 @@ impl Server {
         }
     }
 
-    /// v1.1 asset CRUD: `POST /task/asset/update` body `{task,id,roi?,threshold?}`.
+    /// v1.1 asset CRUD: `POST /task/asset/update` body
+    /// `{task,id,roi?,threshold?,action_shape?,action_source?,keep_action_shape?}`.
     fn handle_asset_update(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
         let v: serde_json::Value = match serde_json::from_slice(body) {
             Ok(v) => v,
@@ -4204,7 +4205,32 @@ impl Server {
             .get("action_source")
             .and_then(|x| x.as_str())
             .map(|s| s.trim().to_string());
-        match b.update_asset_meta(id, roi, action_shape, action_source, threshold) {
+        // B-08b: the editor's 识别区 save sets `keep_action_shape: true`, so a
+        // region's operation polygon survives an ROI move instead of being
+        // downgraded to `rect(roi)` (the old implicit B-08 sync). Absent = the
+        // historical behaviour; a non-boolean value is a loud 400, never a
+        // silent `false`.
+        let keep_action_shape = match v.get("keep_action_shape") {
+            None => false,
+            Some(x) => match x.as_bool() {
+                Some(b) => b,
+                None => {
+                    return self.send_errors(
+                        out,
+                        400,
+                        vec!["`keep_action_shape` must be a boolean".to_string()],
+                    )
+                }
+            },
+        };
+        match b.update_asset_meta(
+            id,
+            roi,
+            action_shape,
+            action_source,
+            threshold,
+            keep_action_shape,
+        ) {
             Ok(item) => {
                 self.editor_log(&format!("asset_update task={task} id={id}"));
                 self.send_json(out, 200, &serde_json::json!({"ok": true, "item": item}).to_string())
@@ -9101,6 +9127,103 @@ mod tests {
             serde_json::json!([[12, 12], [40, 12], [40, 30], [12, 30]])
         );
         assert_eq!(item["roi"], serde_json::json!([12, 12, 29, 19]));
+    }
+
+    #[test]
+    fn asset_update_keep_action_shape_preserves_a_region_polygon() {
+        // B-08b (leftover 1): saving the editor's 识别区 must not downgrade a
+        // region's operation polygon to `rect(roi)`. The flag is parsed from the
+        // real HTTP body, defaults to the historical B-08 sync, and a
+        // non-boolean is a loud 400.
+        let td = TempDir::new("asset-update-keep-shape");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path())
+            .with_frames_dir(td.path().join("frames"))
+            .with_assets_dir(td.path().join("assets"));
+        make_task(&tasks_dir, "t1");
+        let frame_id = upload_test_frame(&server, &Frame::new(200, 200, vec![9u8; 200 * 200 * 4]));
+        let points = serde_json::json!([[5, 5], [25, 5], [25, 25], [5, 25]]);
+        let create = serde_json::json!({
+            "task": "t1",
+            "id": "区域甲",
+            "kind": "region",
+            "roi": [5, 5, 21, 21],
+            "positions": [frame_id],
+            "action_source": "fixed",
+            "action_shape": {"kind": "polygon", "points": points, "invert": false},
+        });
+        let (status, out) = post_route(
+            &server,
+            "/task/save_asset",
+            "application/json",
+            create.to_string().as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+
+        // ROI-only save with the editor flag: the polygon (and fixed source)
+        // must be byte-identical while roi moves.
+        let update = serde_json::json!({
+            "task": "t1",
+            "id": "区域甲",
+            "roi": [40, 50, 30, 20],
+            "keep_action_shape": true,
+        });
+        let (status, out) = post_route(
+            &server,
+            "/task/asset/update",
+            "application/json",
+            update.to_string().as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("update json");
+        let item = &v["item"];
+        assert_eq!(item["roi"], serde_json::json!([40, 50, 30, 20]), "{out}");
+        assert_eq!(item["action_shape"]["kind"], "polygon", "{out}");
+        assert_eq!(item["action_shape"]["points"], points, "{out}");
+        assert_eq!(item["action_source"], "fixed", "{out}");
+        let saved = read_json(&tasks_dir.join("t1").join("assets.json"));
+        let saved_item = saved["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|a| a["id"] == "区域甲")
+            .expect("saved region");
+        assert_eq!(saved_item["roi"], serde_json::json!([40, 50, 30, 20]));
+        assert_eq!(saved_item["action_shape"]["kind"], "polygon");
+        assert_eq!(saved_item["action_shape"]["points"], points);
+
+        // Absent flag = historical B-08 behaviour: roi drives a rect shape.
+        let legacy = serde_json::json!({"task": "t1", "id": "区域甲", "roi": [10, 10, 20, 10]});
+        let (status, out) = post_route(
+            &server,
+            "/task/asset/update",
+            "application/json",
+            legacy.to_string().as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("legacy update json");
+        assert_eq!(v["item"]["action_shape"]["kind"], "rect", "{out}");
+        assert_eq!(
+            v["item"]["action_shape"]["roi"],
+            serde_json::json!([10, 10, 20, 10]),
+            "{out}"
+        );
+
+        // A non-boolean flag must fail loudly instead of silently becoming false.
+        let bad = serde_json::json!({
+            "task": "t1",
+            "id": "区域甲",
+            "roi": [10, 10, 20, 10],
+            "keep_action_shape": "yes",
+        });
+        let (status, out) = post_route(
+            &server,
+            "/task/asset/update",
+            "application/json",
+            bad.to_string().as_bytes(),
+        );
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("keep_action_shape"), "{out}");
     }
 
     #[test]

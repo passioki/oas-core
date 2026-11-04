@@ -1485,6 +1485,13 @@ impl TaskBundle {
     ///
     /// Template ROI changes are rejected (the crop image would go stale); use
     /// `update_asset`/「保存素材覆盖」to re-crop a template.
+    ///
+    /// `keep_action_shape` (B-08b) is the editor's **识别区-only** switch. When
+    /// `true` and the asset is a pure `region`, a `roi` update changes only the
+    /// persisted ROI and leaves `action_shape`/`action_source` untouched: a
+    /// region's operation polygon must survive a recognition-box move instead
+    /// of being downgraded to `rect(roi)`. `false` keeps the historical B-08
+    /// synchronisation, so old callers/tests are unaffected.
     pub fn update_asset_meta(
         &self,
         id: &str,
@@ -1492,6 +1499,7 @@ impl TaskBundle {
         action_shape: Option<ActionShape>,
         action_source: Option<String>,
         threshold: Option<f32>,
+        keep_action_shape: bool,
     ) -> Result<AssetDecl, String> {
         let mut af = self.load_assets_file()?;
         let pos = af
@@ -1512,11 +1520,32 @@ impl TaskBundle {
                         .into(),
                 );
             }
+            // B-08b: even when the operation shape is kept, the persisted
+            // region ROI must stay a frame-legal rect. The old B-08 sync
+            // validated it implicitly through `rect(roi)`; keep that guarantee
+            // on the ROI-only path instead of writing an unusable fallback.
+            if kind == "region" {
+                let [x, y, w, h] = r;
+                if x < 0 || y < 0 {
+                    return Err(format!(
+                        "region roi [{x},{y},{w},{h}] must have x,y >= 0"
+                    ));
+                }
+                if let Some((fw, fh)) = shape_bounds {
+                    if x as i64 + w as i64 > fw as i64 || y as i64 + h as i64 > fh as i64 {
+                        return Err(format!(
+                            "region roi [{x},{y},{w},{h}] is outside the {fw}x{fh} frame"
+                        ));
+                    }
+                }
+            }
             af.items[pos].roi = Some(r);
             // B-08: a pure region's `roi` is a fallback alias of its operation
             // shape; keep them in sync instead of leaving a stale shape that
-            // runtime would silently prefer.
-            if kind == "region" && action_shape.is_none() {
+            // runtime would silently prefer. B-08b: an explicit
+            // `keep_action_shape` (editor 识别区 edit) opts out, so a polygon
+            // operation shape is never overwritten by the recognition box.
+            if kind == "region" && action_shape.is_none() && !keep_action_shape {
                 let shape = ActionShape::rect(r);
                 validate_action_shape(&shape, "region roi", shape_bounds)?;
                 af.items[pos].action_shape = Some(shape);
@@ -2957,7 +2986,7 @@ mod tests {
         // A threshold on an OCR asset is its minimum recognition confidence.
         // The old guard rejected every non-template kind here.
         let updated = b
-            .update_asset_meta("文字素材", None, None, None, Some(0.7))
+            .update_asset_meta("文字素材", None, None, None, Some(0.7), false)
             .expect("ocr threshold update");
         assert_eq!(updated.threshold, Some(0.7));
         let text = std::fs::read_to_string(b.assets_path()).expect("assets");
@@ -2992,11 +3021,11 @@ mod tests {
             Some(&f),
         )
         .expect("create ocr");
-        b.update_asset_meta("文字素材", None, None, None, Some(0.7))
+        b.update_asset_meta("文字素材", None, None, None, Some(0.7), false)
             .expect("set a real threshold first");
 
         let cleared = b
-            .update_asset_meta("文字素材", None, None, None, Some(0.0))
+            .update_asset_meta("文字素材", None, None, None, Some(0.0), false)
             .expect("0 must be a valid threshold");
         assert_eq!(cleared.threshold, Some(0.0));
         let text = std::fs::read_to_string(b.assets_path()).expect("assets");
@@ -3040,14 +3069,14 @@ mod tests {
         // Non-finite / out-of-range values stay rejected for every kind.
         for bad in [1.5f32, -0.1, f32::NAN] {
             let err = b
-                .update_asset_meta("文字素材", None, None, None, Some(bad))
+                .update_asset_meta("文字素材", None, None, None, Some(bad), false)
                 .expect_err("bad threshold must be rejected");
             assert!(err.contains("0..=1"), "unexpected: {err}");
         }
         // A pure region has no recognition, so a threshold is meaningless.
         let before = std::fs::read(b.assets_path()).expect("assets bytes");
         let err = b
-            .update_asset_meta("操作区域", None, None, None, Some(0.5))
+            .update_asset_meta("操作区域", None, None, None, Some(0.5), false)
             .expect_err("region threshold must be rejected");
         assert!(err.contains("does not apply to region"), "unexpected: {err}");
         assert_eq!(
@@ -3065,7 +3094,7 @@ mod tests {
         b.save_asset(AssetDecl::template("按钮", [0, 0, 10, 10]), Some(&f))
             .expect("create template");
         let updated = b
-            .update_asset_meta("按钮", None, None, None, Some(0.75))
+            .update_asset_meta("按钮", None, None, None, Some(0.75), false)
             .expect("template threshold update");
         assert_eq!(updated.threshold, Some(0.75));
         let set = b.load_runtime_assets().expect("runtime assets");
@@ -4029,7 +4058,7 @@ mod tests {
             invert: false,
         };
         let updated = b
-            .update_asset_meta("列表", None, Some(poly), None, None)
+            .update_asset_meta("列表", None, Some(poly), None, None, false)
             .expect("region action_shape update must be accepted");
         assert_eq!(updated.action_source, "fixed");
         assert_eq!(updated.roi, Some([5, 5, 21, 21]));
@@ -4045,6 +4074,7 @@ mod tests {
                 Some(ActionShape::rect([100, 100, 10, 10])),
                 None,
                 None,
+                false,
             )
             .expect_err("out-of-frame region update must fail");
         assert!(err.contains("outside"), "{err}");
@@ -4053,7 +4083,7 @@ mod tests {
 
         // Updating only the region roi must re-derive the operation shape too.
         let updated = b
-            .update_asset_meta("列表", Some([10, 10, 20, 10]), None, None, None)
+            .update_asset_meta("列表", Some([10, 10, 20, 10]), None, None, None, false)
             .expect("region roi update");
         assert_eq!(updated.roi, Some([10, 10, 20, 10]));
         assert_eq!(
@@ -4062,9 +4092,185 @@ mod tests {
         );
 
         let err = b
-            .update_asset_meta("列表", None, None, Some("recognition".into()), None)
+            .update_asset_meta("列表", None, None, Some("recognition".into()), None, false)
             .expect_err("region cannot switch to recognition");
         assert!(err.contains("region"), "{err}");
+    }
+
+    #[test]
+    fn region_roi_save_with_keep_action_shape_preserves_the_polygon() {
+        // B-08b (leftover 1): the editor's 识别区 save must not downgrade a
+        // region's operation polygon to `rect(roi)`. `keep_action_shape: true`
+        // means "only update the persisted ROI"; the operation shape (and its
+        // fixed source) is untouched.
+        let td = TempDir::new("region-keep-shape");
+        let b = open(&td);
+        let f = frame(200, 200);
+        b.save_asset(AssetDecl::template("底图", [0, 0, 8, 8]), Some(&f))
+            .expect("baseline");
+        let poly = ActionShape {
+            kind: "polygon".into(),
+            roi: None,
+            points: Some(vec![[5, 5], [25, 5], [25, 25], [5, 25]]),
+            invert: false,
+        };
+        let mut region = AssetDecl::template("列表", [5, 5, 21, 21]);
+        region.kind = "region".to_string();
+        region.file = None;
+        region.threshold = None;
+        region.action_shape = Some(poly.clone());
+        region.action_source = "fixed".to_string();
+        b.save_asset(region, Some(&f)).expect("region save");
+
+        // Move the recognition ROI only.
+        let updated = b
+            .update_asset_meta("列表", Some([40, 50, 30, 20]), None, None, None, true)
+            .expect("region roi update with keep_action_shape");
+        assert_eq!(updated.roi, Some([40, 50, 30, 20]));
+        assert_eq!(
+            updated.action_shape.as_ref().and_then(|s| s.points.clone()),
+            poly.points,
+            "the polygon operation shape must survive a ROI-only edit"
+        );
+        assert_eq!(updated.action_shape.as_ref().map(|s| s.kind.as_str()), Some("polygon"));
+        assert_eq!(updated.action_source, "fixed");
+        assert_eq!(updated.rev, Some(2));
+
+        // Persisted AND wired: the runtime keeps the polygon (and its bbox) as
+        // the operation region instead of following the new ROI rectangle.
+        let set = b.load_runtime_assets().expect("runtime assets");
+        let shape = set.click_shape("列表").expect("region click shape");
+        let pts = shape.points.as_ref().expect("polygon points wired");
+        assert_eq!(pts.len(), 4);
+        assert_eq!((pts[2].x, pts[2].y), (25, 25));
+        assert_eq!(shape.rect, None, "no rectangle may replace the polygon");
+        assert_eq!(
+            set.region("列表").map(|r| (r.x, r.y, r.w, r.h)),
+            Some((5, 5, 21, 21)),
+            "the region bbox still comes from action_shape, not the moved ROI"
+        );
+
+        // The ROI-only path must not be able to persist an unusable fallback.
+        let err = b
+            .update_asset_meta("列表", Some([200, 200, 10, 10]), None, None, None, true)
+            .expect_err("out-of-frame region roi must be rejected even with keep_action_shape");
+        assert!(err.contains("outside the 200x200 frame"), "{err}");
+        let af = b.load_assets_file().expect("assets");
+        assert_eq!(
+            af.items[1].roi,
+            Some([40, 50, 30, 20]),
+            "a rejected ROI-only update writes nothing"
+        );
+    }
+
+    #[test]
+    fn region_roi_save_without_keep_action_shape_keeps_b08_rect_sync() {
+        // Backward compatibility (B-08): absent/false `keep_action_shape` must
+        // keep the old behaviour — a region ROI edit rewrites the operation
+        // shape to `rect(roi)`.
+        let td = TempDir::new("region-b08-compat");
+        let b = open(&td);
+        let f = frame(200, 200);
+        b.save_asset(AssetDecl::template("底图", [0, 0, 8, 8]), Some(&f))
+            .expect("baseline");
+        let mut region = AssetDecl::template("列表", [5, 5, 21, 21]);
+        region.kind = "region".to_string();
+        region.file = None;
+        region.threshold = None;
+        region.action_shape = Some(ActionShape {
+            kind: "polygon".into(),
+            roi: None,
+            points: Some(vec![[5, 5], [25, 5], [25, 25], [5, 25]]),
+            invert: false,
+        });
+        region.action_source = "fixed".to_string();
+        b.save_asset(region, Some(&f)).expect("region save");
+
+        let updated = b
+            .update_asset_meta("列表", Some([10, 10, 20, 10]), None, None, None, false)
+            .expect("legacy B-08 region roi update");
+        assert_eq!(
+            updated.action_shape,
+            Some(ActionShape::rect([10, 10, 20, 10])),
+            "without the flag the historical rect(roi) sync stays in effect"
+        );
+        assert_eq!(updated.action_source, "fixed");
+    }
+
+    #[test]
+    fn template_overwrite_with_translated_polygon_keeps_the_shape() {
+        // Leftover 2: moving a template's ROI must move its recognition polygon
+        // (pure translation), not replace it with `rect(new roi)`. The server
+        // derives `roi` from the polygon bbox, so a same-size translation
+        // round-trips the new ROI while every vertex keeps its relative shape.
+        let td = TempDir::new("poly-shift");
+        let b = open(&td);
+        let f = frame(200, 200);
+        // Non-rectangular 4-point shape whose bbox is exactly the ROI (30x30).
+        let poly = vec![[10, 20], [39, 26], [39, 49], [10, 43]];
+        let mut decl = AssetDecl::template("移动按钮", [10, 20, 30, 30]);
+        decl.polygon = Some(poly.clone());
+        let saved = b.save_asset(decl, Some(&f)).expect("save polygon template");
+        assert_eq!(saved.roi, Some([10, 20, 30, 30]), "roi = polygon bbox");
+
+        // UI payload: roi moved by (+40, +50), polygon translated by the same
+        // delta (same point count, same shape, bbox = the new ROI).
+        let moved: Vec<[i32; 2]> = poly.iter().map(|p| [p[0] + 40, p[1] + 50]).collect();
+        let mut upd = AssetDecl::template("移动按钮", [50, 70, 30, 30]);
+        upd.polygon = Some(moved.clone());
+        let saved = b.update_asset(upd, Some(&f)).expect("overwrite moved polygon");
+        assert_eq!(saved.roi, Some([50, 70, 30, 30]));
+        assert_eq!(saved.rev, Some(2));
+        assert_eq!(
+            saved.polygon.as_ref(),
+            Some(&moved),
+            "every vertex must be translated, not replaced by a rectangle"
+        );
+        assert_eq!(saved.polygon.as_ref().map(|p| p.len()), Some(4));
+        let set = b.load_runtime_assets().expect("runtime assets");
+        let tpl = set.get("移动按钮").expect("template");
+        let wired = tpl.click_polygon.as_ref().expect("polygon wired");
+        assert_eq!(wired.len(), 4);
+        assert_eq!((wired[1].x, wired[1].y), (79, 76));
+
+        // Contract the UI translation check relies on: the polygon bbox wins
+        // over the `roi` field, so a mismatched pair would silently move the
+        // ROI. Guard it with an explicit assertion (documented behaviour).
+        let mut mismatch = AssetDecl::template("移动按钮", [0, 0, 5, 5]);
+        mismatch.polygon = Some(moved.clone());
+        let saved = b.update_asset(mismatch, Some(&f)).expect("overwrite");
+        assert_eq!(
+            saved.roi,
+            Some([50, 70, 30, 30]),
+            "save derives roi from the polygon bbox (UI must keep them in sync)"
+        );
+    }
+
+    #[test]
+    fn out_of_frame_translated_template_polygon_is_rejected() {
+        // The UI's translation fallback exists for exactly this case: a moved
+        // polygon that leaves the frame must never be sent (oas-task rejects it
+        // with a clear error instead of writing anything), so the rectangle is
+        // the only safe payload after a shape-losing move.
+        let td = TempDir::new("poly-oob");
+        let b = open(&td);
+        let f = frame(200, 200);
+        let mut decl = AssetDecl::template("边缘按钮", [150, 150, 40, 40]);
+        decl.polygon = Some(vec![[150, 150], [189, 150], [189, 189], [150, 189]]);
+        b.save_asset(decl, Some(&f)).expect("save edge template");
+        let before = std::fs::read(b.assets_path()).expect("assets bytes");
+
+        let mut bad = AssetDecl::template("边缘按钮", [210, 210, 40, 40]);
+        bad.polygon = Some(vec![[210, 210], [249, 210], [249, 249], [210, 249]]);
+        let err = b
+            .update_asset(bad, Some(&f))
+            .expect_err("out-of-frame translated polygon must be rejected");
+        assert!(err.contains("outside the 200x200 frame"), "{err}");
+        assert_eq!(
+            std::fs::read(b.assets_path()).expect("assets bytes"),
+            before,
+            "a rejected save writes nothing"
+        );
     }
 
     #[test]

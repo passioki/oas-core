@@ -3627,30 +3627,87 @@ function assetRoiRectanglePolygon(roi) {
   return [[x, y], [x + w - 1, y], [x + w - 1, y + h - 1], [x, y + h - 1]];
 }
 
-// P1-1: keep the saved polygon (click/matching mask) ONLY while it still bounds
-// the new ROI. If the canvas box moved, re-send the new rectangle as the
-// polygon: otherwise `/task/save_asset` derives roi from the stale mask bbox
-// (oas-task:1721) and silently discards the edit. No polygon => stay polygon-free.
-function assetRoiPolygonForSave(polygon, roi) {
-  if (!Array.isArray(polygon) || polygon.length < 3) return null;
-  const [x, y, w, h] = roi;
+// P1-1 (leftover 2): a stored recognition polygon is a SHAPE, not a rectangle.
+// `/task/save_asset` derives roi from the polygon bbox (oas-task save_asset), so
+// when the canvas ROI is MOVED the polygon must be moved with it (same vertex
+// count, same shape) instead of being replaced by the new ROI rectangle. A pure
+// translation keeps the bbox size, so the moved bbox is exactly the new ROI.
+// If the ROI was resized (or the stored polygon/roi is inconsistent) the
+// translated bbox cannot be the new ROI, and sending it would silently move the
+// ROI back to the old size; only then fall back to the rectangle, with an
+// explicit reason the save path shows to the user.
+function assetRoiPolygonPlan(polygon, roi, oldRoi) {
+  if (!Array.isArray(roi) || roi.length !== 4) {
+    return { polygon: null, fallback: false, reason: '' };
+  }
+  const rect = assetRoiRectanglePolygon(roi);
+  if (!Array.isArray(polygon) || polygon.length < 3) {
+    return { polygon: null, fallback: false, reason: '' };
+  }
+  const bad = '识别区多边形数据无效，已改用矩形识别区';
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
   for (const p of polygon) {
-    if (!Array.isArray(p) || p.length !== 2) return assetRoiRectanglePolygon(roi);
+    if (!Array.isArray(p) || p.length !== 2) return { polygon: rect, fallback: true, reason: bad };
     const px = Number(p[0]);
     const py = Number(p[1]);
-    if (!Number.isInteger(px) || !Number.isInteger(py)) return assetRoiRectanglePolygon(roi);
+    if (!Number.isInteger(px) || !Number.isInteger(py)) {
+      return { polygon: rect, fallback: true, reason: bad };
+    }
     minX = Math.min(minX, px);
     minY = Math.min(minY, py);
     maxX = Math.max(maxX, px);
     maxY = Math.max(maxY, py);
   }
-  const sameBox = minX === x && minY === y && maxX - minX + 1 === w && maxY - minY + 1 === h;
-  if (sameBox) return polygon.map((p) => [Number(p[0]), Number(p[1])]);
-  return assetRoiRectanglePolygon(roi);
+  const old = Array.isArray(oldRoi) && oldRoi.length === 4 &&
+    oldRoi.every((n) => Number.isInteger(Number(n)))
+    ? oldRoi.map(Number)
+    : null;
+  if (!old) {
+    // No stored ROI to translate from: keep the historical reuse rule (only a
+    // polygon that already bounds the new ROI may be sent unchanged).
+    const sameBox = minX === roi[0] && minY === roi[1] &&
+      maxX - minX + 1 === roi[2] && maxY - minY + 1 === roi[3];
+    return sameBox
+      ? { polygon: polygon.map((p) => [Number(p[0]), Number(p[1])]), fallback: false, reason: '' }
+      : { polygon: rect, fallback: true, reason: '原素材没有保存的识别区，无法平移多边形，已改用矩形识别区' };
+  }
+  const dx = Number(roi[0]) - old[0];
+  const dy = Number(roi[1]) - old[1];
+  const moved = polygon.map((p) => [Number(p[0]) + dx, Number(p[1]) + dy]);
+  let mMinX = Infinity;
+  let mMinY = Infinity;
+  let mMaxX = -Infinity;
+  let mMaxY = -Infinity;
+  for (const p of moved) {
+    mMinX = Math.min(mMinX, p[0]);
+    mMinY = Math.min(mMinY, p[1]);
+    mMaxX = Math.max(mMaxX, p[0]);
+    mMaxY = Math.max(mMaxY, p[1]);
+  }
+  // The server derives roi from this bbox: it must be exactly the new ROI and
+  // stay inside the frame (negative points are rejected by oas-task), otherwise
+  // the translation cannot represent the edit faithfully.
+  const fits = mMinX === roi[0] && mMinY === roi[1] &&
+    mMaxX - mMinX + 1 === roi[2] && mMaxY - mMinY + 1 === roi[3] &&
+    mMinX >= 0 && mMinY >= 0;
+  if (!fits) {
+    return {
+      polygon: rect,
+      fallback: true,
+      reason: '识别区尺寸变了，多边形无法只平移匹配新识别区（越界或宽高不一致），已改用矩形识别区',
+    };
+  }
+  return { polygon: moved, fallback: false, reason: '' };
+}
+
+// Backwards-compatible thin wrapper: the polygon to send (or null when the
+// asset has no polygon). Kept because the payload builder and the pure tests
+// only need the geometry; the save path uses the full plan for the user notice.
+function assetRoiPolygonForSave(polygon, roi, oldRoi) {
+  return assetRoiPolygonPlan(polygon, roi, oldRoi).polygon;
 }
 
 // P1-1/P1-2: `/task/save_asset` replaces the WHOLE AssetDecl, so the payload
@@ -3675,7 +3732,9 @@ function assetRoiReplacePayload(task, asset, roi) {
   }
   // Server contract: recognition must NOT carry a shape; fixed REQUIRES one.
   if (payload.action_source === 'fixed' && it.action_shape) payload.action_shape = it.action_shape;
-  const polygon = assetRoiPolygonForSave(it.polygon, roi);
+  // Leftover 2: translate the stored polygon with the ROI (the plan falls back
+  // to the rectangle only when a translation cannot represent the new ROI).
+  const polygon = assetRoiPolygonForSave(it.polygon, roi, it.roi);
   if (polygon) payload.polygon = polygon;
   if (it.ocr_mode != null) payload.ocr_mode = it.ocr_mode;
   if (Array.isArray(it.ocr_source_roi) && it.ocr_source_roi.length === 4) {
@@ -3955,23 +4014,39 @@ async function saveAssetRecognitionRoi() {
     )) return;
     // P1-1/P1-2: build the replace payload from the latest object so no field
     // (polygon/ocr_*/threshold/positions/action_shape) is dropped or rolled back.
+    // Leftover 2: the plan moves an existing recognition polygon with the ROI;
+    // only a resize/invalid data falls back to the rectangle, which is reported.
+    const polygonPlan = assetRoiPolygonPlan(it.polygon, valid, it.roi);
     const payload = assetRoiReplacePayload(task, it, valid);
     const r = await postJson('/task/save_asset', payload);
     if (!r.ok) {
       showErrors('覆盖模板失败：', r.errors);
       return;
     }
-    const text = `模板「${it.id}」已用当前帧重新截图覆盖：识别区 [${valid.join(',')}]（rev+1）`;
+    let text = `模板「${it.id}」已用当前帧重新截图覆盖：识别区 [${valid.join(',')}]（rev+1）`;
+    if (polygonPlan.fallback) {
+      text += `；${polygonPlan.reason}（原识别多边形形状丢失）`;
+      window.alert(
+        `${polygonPlan.reason}：模板「${it.id}」已覆盖，但原识别多边形已退化为矩形识别区`
+      );
+    }
     resultEl.textContent = text;
     log(text);
     setStatus(`模板「${it.id}」已覆盖；两个素材库已刷新`);
   } else {
-    const r = await postJson('/task/asset/update', { task, id: it.id, roi: valid });
+    // Leftover 1: a region's 识别区 is only its load fallback — saving it must
+    // not rewrite the operation polygon into a rectangle. OCR assets carry no
+    // action shape here, so the flag is region-only (absent = legacy B-08).
+    const payload = { task, id: it.id, roi: valid };
+    if (it.kind === 'region') payload.keep_action_shape = true;
+    const r = await postJson('/task/asset/update', payload);
     if (!r.ok) {
       showErrors('更新识别区域失败：', r.errors);
       return;
     }
-    const text = `素材「${it.id}」识别区域：[${valid.join(',')}]`;
+    const text = it.kind === 'region'
+      ? `素材「${it.id}」识别区域：[${valid.join(',')}]（操作区 action_shape 保持不变）`
+      : `素材「${it.id}」识别区域：[${valid.join(',')}]`;
     resultEl.textContent = text;
     log(text);
     setStatus(`素材「${it.id}」识别区域已保存；两个素材库已刷新`);

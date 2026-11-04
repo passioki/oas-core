@@ -1989,13 +1989,44 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         }
     }
 
+    /// Value-path view of [`Self::ocr_read`]: applies the asset's **explicit**
+    /// minimum recognition confidence.
+    ///
+    /// `ocr()`, `ocr_digit()` and `ocr_to_var` return recognized text, so a
+    /// low-confidence read must not silently become a value (leftover 3). When
+    /// the asset declares a non-zero `threshold` and the reported score is
+    /// below it, the read is a **miss**, exactly like a template below its NCC
+    /// threshold: `ocr()`/`ocr_digit()` yield `None` and `ocr_to_var` stores an
+    /// empty string. This is deliberately *not* a hard error — `wait_until(ocr(
+    /// ...) == ...)` is the documented way to wait for a value, and aborting the
+    /// run on the first low-confidence poll would break it. The `ocr`
+    /// diagnostic step still logs the raw text + score, so a filtered read stays
+    /// visible. Unset/`0` keeps the historical "recognized = value" behaviour;
+    /// a read with no text at all is already `None` and passes unchanged.
+    fn ocr_value_read(&mut self, sel: &str) -> Result<OcrRead, String> {
+        let read = self.ocr_read(sel)?;
+        let Some(min) = self.assets.ocr_threshold(sel) else {
+            return Ok(read);
+        };
+        match read {
+            OcrRead::Single(Some(_), score) if score < min => Ok(OcrRead::Single(None, score)),
+            // The value joins every line, so the value's confidence is the
+            // LOWEST line score (the same score `ocr()` reports/logs).
+            OcrRead::Lines(lines) if !lines.is_empty() && lines.iter().any(|l| l.score < min) => {
+                Ok(OcrRead::Lines(Vec::new()))
+            }
+            other => Ok(other),
+        }
+    }
+
     /// Value view of [`Self::ocr_read`]: `ocr()` returns **one string**.
     ///
     /// For `ocr_lines` the lines are joined with `\n` and the score is the
     /// **minimum** line score — never an optimistic average (a bad line must
-    /// lower the reported confidence).
+    /// lower the reported confidence). An explicit OCR threshold is enforced by
+    /// [`Self::ocr_value_read`] before the text reaches the flow.
     fn ocr_run(&mut self, sel: &str) -> Result<(Option<String>, f32), String> {
-        match self.ocr_read(sel)? {
+        match self.ocr_value_read(sel)? {
             OcrRead::Single(text, score) => Ok((text, score)),
             OcrRead::Lines(lines) if lines.is_empty() => Ok((None, 0.0)),
             OcrRead::Lines(lines) => {
@@ -3285,7 +3316,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 Ok(format!("inc_var {name} += {delta} -> {next}"))
             }
             Step::OcrToVar { sel, var } => {
-                let text = match self.ocr_read(sel)? {
+                // Leftover 3: a value assignment must honour the asset's
+                // explicit minimum confidence too (below it = loud failure,
+                // never a variable filled with low-confidence text).
+                let text = match self.ocr_value_read(sel)? {
                     OcrRead::Single(Some(t), _) => t,
                     OcrRead::Single(None, _) => String::new(),
                     OcrRead::Lines(lines) => {
@@ -7766,6 +7800,216 @@ mod tests {
         }
         let (mut interp, _, _) = mk_ocr_with(assets_with_ocr_threshold(0.3), &[("完成", 0.4)]);
         assert_eq!(interp.run(&expect_flow()), RunResult::Finished(Exit::Done));
+    }
+
+    // ---- OCR threshold on VALUE paths (ocr()/ocr_digit()/ocr_to_var) ----
+    // Leftover 3: an OCR asset can declare `threshold` (minimum confidence) but
+    // the value paths used to ignore it, so a thresholded asset still handed
+    // low-confidence text to the flow. These tests pin all three behaviours:
+    // explicit threshold hides the value, unset/0 keeps the old result, and an
+    // explicit threshold accepts a confident read.
+
+    #[test]
+    fn ocr_value_paths_skip_a_read_below_the_explicit_threshold() {
+        // A below-threshold read is a miss, not a value: ocr()/ocr_digit() are
+        // `Null`, ocr_to_var stores "", and the low-confidence text never leaks.
+        let (mut interp, _, _) = mk_ocr_with(assets_with_ocr_threshold(0.9), &[("完成", 0.4)]);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"ocr('O_TEXT')"}},
+                 {"op":"log","args":{"text":"ocr_digit('O_TEXT')"}},
+                 {"op":"ocr_to_var","args":{"sel":"O_TEXT","var":"answer"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let details: Vec<&str> = interp.events().iter().map(|e| e.detail.as_str()).collect();
+        assert!(
+            details.first().is_some_and(|d| d.contains("Null")),
+            "ocr() must yield no value below the threshold: {details:?}"
+        );
+        assert!(
+            details.get(1).is_some_and(|d| d.contains("Null")),
+            "ocr_digit() must yield no value below the threshold: {details:?}"
+        );
+        assert!(
+            !details.iter().any(|d| d.contains("完成")),
+            "the below-threshold text must never reach a value: {details:?}"
+        );
+        assert!(
+            details.iter().any(|d| d.contains("ocr_to_var") && d.contains("\"\"")),
+            "ocr_to_var must store the empty (unrecognized) result: {details:?}"
+        );
+        assert_eq!(
+            interp.vars.get("answer"),
+            Some(&Value::Str(String::new())),
+            "a below-threshold read must not become a variable value"
+        );
+    }
+
+    #[test]
+    fn wait_until_ocr_value_polls_past_a_below_threshold_read() {
+        // Why the value path treats a low read as a miss instead of a hard
+        // error: `wait_until(ocr(...) == ...)` is the documented way to wait for
+        // a value, so it must keep polling until the read is confident enough.
+        let (mut interp, _, _) = mk_ocr_with(
+            assets_with_ocr_threshold(0.8),
+            &[("完成", 0.3), ("完成", 0.9)],
+        );
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"wait_until","args":{"cond":"ocr('O_TEXT') == '完成'","timeout_s":0.3}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "the 0.3 read must be skipped and the 0.9 read accepted: {:?}",
+            interp.events()
+        );
+    }
+
+    #[test]
+    fn ocr_value_paths_without_a_threshold_keep_low_confidence_text() {
+        // Backward compatibility: absent and explicit 0 both mean "no filter",
+        // so the historical 0.02-confidence read is still returned.
+        for threshold in [None, Some(0.0f32)] {
+            let mut set = assets_with_ocr();
+            if let Some(t) = threshold {
+                set.set_ocr_threshold("O_TEXT", t);
+            }
+            let (mut interp, _, _) = mk_ocr_with(set, &[("12/30", 0.02)]);
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"log","args":{"text":"ocr('O_TEXT')"}},
+                     {"op":"log","args":{"text":"ocr_digit('O_TEXT')"}},
+                     {"op":"ocr_to_var","args":{"sel":"O_TEXT","var":"answer"}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(
+                interp.run(&f),
+                RunResult::Finished(Exit::Done),
+                "threshold {threshold:?} must not filter a successful read"
+            );
+            let details: Vec<&str> = interp.events().iter().map(|e| e.detail.as_str()).collect();
+            assert!(
+                details.iter().any(|d| d.contains("12/30")),
+                "ocr() must return the low-confidence text: {details:?}"
+            );
+            assert!(
+                details.iter().any(|d| d.contains("12.0")),
+                "ocr_digit() must parse the low-confidence text: {details:?}"
+            );
+            assert_eq!(
+                interp.vars.get("answer"),
+                Some(&Value::Str("12/30".to_string())),
+                "ocr_to_var must store the low-confidence text at {threshold:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ocr_value_paths_accept_a_confident_read_at_the_explicit_threshold() {
+        // 0.4 >= 0.3 (and below the 0.9 template default): proves the value
+        // paths compare against the OCR minimum confidence, not 0.9.
+        let (mut interp, _, _) = mk_ocr_with(assets_with_ocr_threshold(0.3), &[("12/30", 0.4)]);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"ocr('O_TEXT')"}},
+                 {"op":"log","args":{"text":"ocr_digit('O_TEXT')"}},
+                 {"op":"ocr_to_var","args":{"sel":"O_TEXT","var":"answer"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let details: Vec<&str> = interp.events().iter().map(|e| e.detail.as_str()).collect();
+        assert!(details.iter().any(|d| d.contains("12/30")), "{details:?}");
+        assert!(details.iter().any(|d| d.contains("12.0")), "{details:?}");
+        assert_eq!(
+            interp.vars.get("answer"),
+            Some(&Value::Str("12/30".to_string()))
+        );
+    }
+
+    #[test]
+    fn ocr_lines_value_read_uses_the_lowest_line_score_for_the_threshold() {
+        // The value joins every line, so the LOWEST line score is its
+        // confidence (unlike presence/click, which use the best line).
+        let lines = vec![
+            line("确认", 0.95, Rect { x: 2, y: 2, w: 10, h: 8 }),
+            line("取消", 0.40, Rect { x: 2, y: 20, w: 10, h: 8 }),
+        ];
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"ocr('O_LIST')"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+
+        let mut strict = assets_with_ocr();
+        strict.set_ocr_threshold("O_LIST", 0.9);
+        let (mut interp, _) = mk_det_ocr_with(strict, lines.clone());
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let detail = &interp.events()[0].detail;
+        assert!(
+            detail.contains("Null"),
+            "a joined value with a below-threshold line is unrecognized: {detail}"
+        );
+        assert!(
+            !detail.contains("确认") && !detail.contains("取消"),
+            "the below-threshold lines must not leak into the value: {detail}"
+        );
+
+        let mut loose = assets_with_ocr();
+        loose.set_ocr_threshold("O_LIST", 0.3);
+        let (mut interp, _) = mk_det_ocr_with(loose, lines);
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let detail = &interp.events()[0].detail;
+        assert!(
+            detail.contains("确认") && detail.contains("取消"),
+            "the confident joined value must be returned: {detail}"
+        );
+
+        // No text at all is an empty result (`Null`), never a threshold failure.
+        let mut empty = assets_with_ocr();
+        empty.set_ocr_threshold("O_LIST", 0.9);
+        let (mut interp, _) = mk_det_ocr_with(empty, Vec::new());
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        assert!(
+            interp.events()[0].detail.contains("Null"),
+            "zero detected lines stay an empty value: {:?}",
+            interp.events()[0]
+        );
+    }
+
+    #[test]
+    fn ocr_value_threshold_gate_leaves_templates_and_collections_alone() {
+        // The new gate reads `ocr_threshold` only: template/collection
+        // thresholds and `ocr()`'s loud "not an OCR asset" errors are unchanged.
+        let mut set = assets_with_ocr_threshold(0.9);
+        set.insert_collection("C_MIX", vec!["I_BRIGHT".to_string()], Some(0.7));
+        let (mut interp, _, _) = mk_ocr_with(set, &[("完成", 0.95)]);
+        assert_eq!(interp.assets.threshold_for("C_MIX"), Some(0.7));
+        assert_eq!(interp.assets.ocr_threshold("C_MIX"), None);
+        assert_eq!(interp.assets.ocr_threshold("I_BRIGHT"), None);
+
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"ocr('I_BRIGHT')"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("template asset, not an OCR asset"), "{msg}")
+            }
+            other => panic!("ocr() on a template must stay a loud error, got {other:?}"),
+        }
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"ocr('C_MIX')"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => assert!(msg.contains("not declared"), "{msg}"),
+            other => panic!("ocr() on a collection must stay a loud error, got {other:?}"),
+        }
     }
 
     #[test]
