@@ -11,7 +11,9 @@
 //   - zero static dead DOM ids (every getElementById target exists in HTML),
 //   - the OCR/single save payloads carrying polygon + recognition metadata,
 //   - the mutually-exclusive selection mode dispatch,
-//   - ResizeObserver-driven canvas fitting staying rAF-coalesced + idempotent.
+//   - ResizeObserver-driven canvas fitting staying rAF-coalesced + idempotent,
+//   - PR1 Studio/Runner split: Studio nav has no schedule page, Runner nav has
+//     exactly five read-only pages and the Runner bundle stays read-only.
 'use strict';
 
 const fs = require('fs');
@@ -24,11 +26,17 @@ const htmlPath = path.join(__dirname, 'index.html');
 const builderPath = path.join(__dirname, 'builder.js');
 const assetUiPath = path.join(__dirname, 'asset_ui.js');
 const stylePath = path.join(__dirname, 'style.css');
+const runnerHtmlPath = path.join(__dirname, 'runner.html');
+const runnerJsPath = path.join(__dirname, 'runner.js');
+const runnerCssPath = path.join(__dirname, 'runner.css');
 const source = fs.readFileSync(appPath, 'utf8');
 const html = fs.readFileSync(htmlPath, 'utf8');
 const builderSource = fs.readFileSync(builderPath, 'utf8');
 const assetUiSource = fs.readFileSync(assetUiPath, 'utf8');
 const styleCss = fs.readFileSync(stylePath, 'utf8');
+const runnerHtml = fs.readFileSync(runnerHtmlPath, 'utf8');
+const runnerSource = fs.readFileSync(runnerJsPath, 'utf8');
+const runnerCss = fs.readFileSync(runnerCssPath, 'utf8');
 
 function extractFunctionFrom(text, name, label) {
   const re = new RegExp(`(?:^|\\n)[ \\t]*(?:async\\s+)?function\\s+${name}\\s*\\(`);
@@ -4195,7 +4203,8 @@ ok(/id="page-sched-queues"/.test(html), 'index.html provides the queue panel con
 ok(/id="page-sched-running"/.test(html), 'index.html provides the running/lock badge');
 ok(/id="sched-entry-dialog"/.test(html) && /id="sched-entry-windows"/.test(html) && /id="sched-entry-params"/.test(html), 'entry dialog fields exist');
 ok(/id="sched-queue-dialog"/.test(html) && /id="sched-queue-members"/.test(html) && /id="sched-queue-task-pool"/.test(html), 'queue dialog fields exist');
-ok(/id="btn-sched-open-page"/.test(html), 'index.html provides the workbench open-page button');
+ok(!/id="btn-sched-open-page"/.test(html), 'Studio no longer provides the workbench scheduling-page button');
+ok(!/data-panel="panel-schedule"/.test(html), 'Studio rail has no schedule panel entry');
 const htmlIds = [...html.matchAll(/id=["']([^"']+)["']/g)].map((m) => m[1]);
 const dupHtmlIds = [...new Set(htmlIds.filter((id, i) => htmlIds.indexOf(id) !== i))];
 ok(dupHtmlIds.length === 0, `index.html has no duplicate DOM ids (duplicates: ${dupHtmlIds.join(', ') || 'none'})`);
@@ -4203,10 +4212,17 @@ ok(
   (html.match(/<dialog\b/g) || []).length === (html.match(/<\/dialog>/g) || []).length,
   'index.html dialog tags are balanced'
 );
-ok(/调度设置…/.test(source) && /openTaskScheduleDialog\(t\.name\)/.test(source), 'task library card opens the scheduler dialog');
+ok(!/调度设置…/.test(source) && !/openTaskScheduleDialog\(t\.name\)/.test(source), 'task library card no longer opens a Studio scheduler dialog');
 ok(/fetch\('\/scheduler\/config'\)/.test(source), 'GET /scheduler/config is wired');
 ok(/body: JSON\.stringify\(\{ config: cfg \}\)/.test(source), 'POST /scheduler/config sends {config}');
-ok(/btnSchedOpenPage\.addEventListener\('click', \(\) => activatePage\('schedule'\)\)/.test(source), 'workbench button opens the schedule page');
+// PR1: Studio hands scheduling / run history over to the Runner instead of
+// opening the legacy page or calling Runner-only routes.
+ok(/const RUNNER_BASE_URL = 'http:\/\/127\.0\.0\.1:8789\/'/.test(source), 'Studio knows the Runner default URL (8789)');
+ok(/function openRunnerPage\(hash\)/.test(source), 'Studio has a single hand-off helper to the Runner');
+ok(
+  /openRunnerPage\('#runs'\)/.test(source) && !/btnSchedOpenPage/.test(source),
+  'Studio runs/scheduling shortcuts open the Runner instead of the legacy page'
+);
 ok(/if \(pageSchedJson\)[\s\S]{0,200}scheduleJsonDirty = true/.test(source), 'advanced JSON tracks unsaved edits');
 ok(/id="page-sched-entries"[^>]*>（未加载）<\/div>/.test(html), 'entry list container starts in the unloaded state');
 ok(/id="page-sched-queues"[^>]*>（未加载）<\/div>/.test(html), 'queue list container starts in the unloaded state');
@@ -4233,7 +4249,7 @@ ok(/log\(scheduleRunsError, 'WARN'\)/.test(source), 'run list read failures are 
 ok(/log\(res\.error, 'WARN'\)/.test(source), 'run detail read failures are logged as WARN');
 ok(/schedRunsErrorText\(/.test(source), 'run list error uses the 运行记录读取失败 prefix');
 ok(/fetch\('\/runs'\)/.test(source) && /loadClicks\(/.test(source), 'legacy /runs click-distribution path is untouched');
-ok(/showScheduleRunsForTask\(t\.name\)/.test(source), 'task library row links to the run history');
+ok(/runsBtn\.addEventListener\('click', \(\) => openRunnerPage\('#runs'\)\)/.test(source), 'task library row links to the Runner run history');
 ok(/showScheduleRunsForEntry\(e\)/.test(source), 'schedule entry row links to the run history');
 ok(/showScheduleRunsForQueue\(q\.queue_id\)/.test(source), 'queue row links to the run history');
 ok(/scheduleRunsFilter\.queueId/.test(source), 'queue shortcut uses the local queue filter');
@@ -4296,6 +4312,122 @@ ok(
   missingIds.length === 0,
   `dead DOM ids must be 0 (still dead: ${missingIds.join(', ') || 'none'})`
 );
+
+// --- PR1: Studio / Runner surface split (static UI contract) -----------------
+// Studio keeps #page-schedule only as a legacy DOM block; its nav must not
+// expose a schedule entry any more. The Runner is a separate, read-only surface
+// with exactly five pages and its own static bundle.
+const studioNavBlock = /<nav[^>]*id="app-nav"[^>]*>([\s\S]*?)<\/nav>/.exec(html);
+ok(studioNavBlock, 'index.html still has the Studio app nav');
+if (studioNavBlock) {
+  const studioNav = studioNavBlock[1];
+  ok(!/data-page="schedule"/.test(studioNav), 'Studio nav has no schedule page button');
+  ok(!/>调度</.test(studioNav), 'Studio nav has no 调度 label');
+  eq((studioNav.match(/class="app-nav-btn/g) || []).length, 5, 'Studio nav exposes exactly 5 page buttons');
+}
+ok(/id="page-schedule"/.test(html), 'legacy #page-schedule DOM is kept while it is unreachable from the nav');
+ok(/id="studio-runner-hint"/.test(html) && /Runner（8789）/.test(html), 'Studio shows the Runner migration hint');
+ok(/Studio 导航已不再提供「调度」入口/.test(html), 'legacy schedule page explains the Runner migration');
+
+const runnerNavBlock = /<nav[^>]*id="runner-nav"[^>]*>([\s\S]*?)<\/nav>/.exec(runnerHtml);
+ok(runnerNavBlock, 'runner.html has the Runner app nav');
+if (runnerNavBlock) {
+  const runnerNav = runnerNavBlock[1];
+  const runnerPages = [...runnerNav.matchAll(/data-page="([^"]+)"/g)].map((m) => m[1]);
+  eq(runnerPages, ['overview', 'tasks', 'queue', 'runs', 'settings'], 'Runner nav has exactly the five read-only pages');
+  eq((runnerNav.match(/class="app-nav-btn/g) || []).length, 5, 'Runner nav renders exactly 5 buttons');
+  for (const label of ['概览', '已安装任务', '队列与调度', '运行记录', '设置']) {
+    ok(new RegExp(`>${label}<`).test(runnerNav), `Runner nav contains 「${label}」`);
+  }
+  ok(!/任务构建|新建任务|素材|编辑|创作|安装包/.test(runnerNav), 'Runner nav has no authoring entry');
+}
+for (const id of ['page-overview', 'page-tasks', 'page-queue', 'page-runs', 'page-settings']) {
+  ok(new RegExp(`id="${id}"`).test(runnerHtml), `runner.html provides #${id}`);
+}
+for (const token of ['/runner/health', '/runner/tasks', '/scheduler/status', '/runs/scheduler', '/config', '/instance']) {
+  ok(runnerSource.includes(token), `runner.js reads ${token}`);
+}
+for (const bad of ['/task/save_flow', '/task/save_asset', '/frames', '/task/', '/library/', '/relations/',
+  'builder.js', 'flow_model.js', 'asset_ui.js', 'app.js']) {
+  ok(!runnerSource.includes(bad), `runner.js does not reference authoring surface «${bad}»`);
+  ok(!runnerHtml.includes(bad), `runner.html does not reference authoring surface «${bad}»`);
+}
+ok(/href="\/style.css"/.test(runnerHtml) && /href="\/runner.css"/.test(runnerHtml), 'Runner loads the shared + Runner stylesheets');
+ok(/src="\/runner.js"/.test(runnerHtml), 'Runner loads its own script only');
+ok(!/(?:src|href)=["'](?:https?:)?\/\//i.test(runnerHtml), 'runner.html has no external/CDN asset');
+ok(!/@import|url\(\s*['"]?https?:/i.test(runnerCss), 'runner.css has no external font/CDN import');
+ok(/name="viewport"/.test(runnerHtml), 'Runner is mobile/WebView friendly (viewport meta)');
+ok(/@media\s*\(max-width/.test(runnerCss), 'runner.css has a narrow-screen single-column layout');
+ok(/只读/.test(runnerHtml), 'Runner UI is explicitly read-only');
+ok(/还没有安装任务包（安装功能将在后续 PR 提供）/.test(runnerSource), 'Runner task empty state is explicit');
+ok(/配置编辑、队列管理、调度执行由 Runner 后续 PR 提供；当前为只读/.test(runnerHtml), 'Runner queue page states the read-only scope');
+ok(/修改配置请编辑 <code>config\/live\.json<\/code> 后重启 Runner；编辑端不随使用端分发/.test(runnerHtml), 'Runner settings keeps the manual-config + no-Studio-distribution note');
+ok(/runner.js/.test(runnerHtml) && !/dashboard\.js/.test(runnerHtml), 'Runner does not load Studio-only scripts');
+
+ok(!/innerHTML|outerHTML|insertAdjacentHTML/.test(runnerSource), 'runner.js never writes raw HTML');
+ok(!/\beval\s*\(|new Function\s*\(/.test(runnerSource), 'runner.js never evaluates dynamic code');
+ok(!/document\.write\s*\(/.test(runnerSource), 'runner.js never uses document.write');
+eq((runnerSource.match(/fetch\s*\(/g) || []).length, 1, 'all Runner requests go through the single fetch helper');
+ok(/RUNNER_FETCH_TIMEOUT_MS/.test(runnerSource) && /AbortController/.test(runnerSource), 'Runner requests have an abort/timeout guard');
+ok(/method:\s*'GET'/.test(runnerSource), 'Runner requests are read-only GETs');
+ok(!/method:\s*'POST'/.test(runnerSource), 'Runner never sends POST');
+ok(!/localhost|127\.0\.0\.1|8789/.test(runnerSource), 'runner.js does not hardcode host/port');
+ok(!/localhost|127\.0\.0\.1|8789/.test(runnerHtml), 'runner.html does not hardcode host/port');
+ok(!/[A-Za-z]:\\/.test(runnerSource) && !/[A-Za-z]:\\/.test(runnerHtml), 'no hardcoded Windows drive path');
+ok(/runnerRunsErrorText/.test(runnerSource) && /运行记录读取失败：/.test(runnerSource), 'Runner run-read errors keep the 运行记录读取失败 prefix');
+
+const runnerHtmlIds = [...runnerHtml.matchAll(/id=["']([^"']+)["']/g)].map((m) => m[1]);
+const runnerDupIds = [...new Set(runnerHtmlIds.filter((id, i) => runnerHtmlIds.indexOf(id) !== i))];
+ok(runnerDupIds.length === 0, `runner.html has no duplicate DOM ids (duplicates: ${runnerDupIds.join(', ') || 'none'})`);
+const runnerReferencedIds = [...new Set(
+  [...runnerSource.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map((m) => m[1])
+)];
+const runnerMissingIds = runnerReferencedIds.filter((id) => !new RegExp(`id=["']${id}["']`).test(runnerHtml));
+ok(runnerReferencedIds.length >= 20, 'runner.js references the real Runner DOM ids');
+ok(
+  runnerMissingIds.length === 0,
+  `Runner dead DOM ids must be 0 (still dead: ${runnerMissingIds.join(', ') || 'none'})`
+);
+
+// Behavioural checks for the extractable Runner formatting helpers.
+const runnerHelperNames = [
+  'runnerValueText', 'runnerDurationText', 'runnerParamKeys', 'runnerFlagText',
+  'runnerTaskStatusText', 'runnerOutcomeClass', 'runnerLockText', 'runnerLockClass',
+  'runnerRunsErrorText', 'runnerQueueRoundsText', 'runnerEntryStateText', 'runnerMemberText',
+];
+const runnerHelperCode = runnerHelperNames
+  .map((name) => extractFunctionFrom(runnerSource, name, 'runner.js'))
+  .join('\n');
+const runnerSb = {};
+vm.createContext(runnerSb);
+vm.runInContext(runnerHelperCode, runnerSb, { filename: 'runner.js#pure' });
+eq(runnerSb.runnerParamKeys(['a', 'b']), ['a', 'b'], 'Runner task params keep the string-list contract');
+eq(runnerSb.runnerParamKeys([{ key: 'max_rounds' }, { key: '关键词' }]), ['max_rounds', '关键词'], 'Runner params also accept key objects');
+eq(runnerSb.runnerParamKeys({ a: 1 }), ['a'], 'Runner params accept a map');
+eq(runnerSb.runnerParamKeys(null), [], 'Runner params missing -> empty list');
+eq(runnerSb.runnerFlagText(true), '有', 'Runner flag true -> 有');
+eq(runnerSb.runnerFlagText(false), '无', 'Runner flag false -> 无');
+eq(runnerSb.runnerTaskStatusText({ unmanaged: true }), '未托管/本机目录', 'PR1 tasks are unmanaged/local');
+eq(runnerSb.runnerTaskStatusText({ unmanaged: false }), '已安装', 'managed tasks render 已安装');
+eq(runnerSb.runnerLockText(null), '调度锁 空闲', 'missing lock -> idle');
+eq(runnerSb.runnerLockText({ held: true, pid: 42 }), '调度锁 占用（pid 42）', 'held lock shows its pid');
+eq(runnerSb.runnerLockClass({ held: true, pid: 42 }), 'warn', 'held lock uses the warning badge');
+eq(runnerSb.runnerLockClass({ held: false }), 'ok', 'free lock uses the ok badge');
+eq(runnerSb.runnerDurationText(500), '500ms', 'sub-second duration');
+eq(runnerSb.runnerDurationText(1500), '1.5s', 'second duration');
+eq(runnerSb.runnerDurationText(null), '—', 'missing duration is a dash');
+eq(runnerSb.runnerRunsErrorText('HTTP 500'), '运行记录读取失败：HTTP 500', 'Runner run-read error text');
+eq(runnerSb.runnerOutcomeClass('Failed'), 'err', 'Failed outcome is an error badge');
+eq(runnerSb.runnerOutcomeClass('success'), 'ok', 'success outcome is an ok badge');
+eq(runnerSb.runnerQueueRoundsText({ total_rounds: 0, rounds_completed: 3 }), '3/∞', 'unlimited queue rounds');
+eq(runnerSb.runnerQueueRoundsText({ total_rounds: 2, rounds_completed: 1 }), '1/2', 'finite queue rounds');
+eq(runnerSb.runnerEntryStateText({ enabled: false }), '停用', 'disabled entry state');
+ok(/等待 冷却/.test(runnerSb.runnerEntryStateText({ enabled: true, blocked_reason: '冷却' })), 'blocked entry explains the wait');
+eq(runnerSb.runnerMemberText(0), '成员 1', 'member_index is rendered one-based for humans');
+eq(runnerSb.runnerMemberText(null), '—', 'missing member index is a dash');
+eq(runnerSb.runnerValueText(0), '0', 'zero is preserved');
+eq(runnerSb.runnerValueText(null), '—', 'null renders a dash');
+
 
 // --- ResizeObserver / canvas fit contract (no synchronous layout writes) ---
 // #canvas-stage is observed, while fitCanvasToStage() writes inline CSS on its
@@ -4434,6 +4566,10 @@ checkAssetTestWiring()
     console.log(
       `dom_id_audit: ${referencedIds.length} referenced ids, ${missingIds.length} dead ids` +
       (missingIds.length ? ` (${missingIds.join(', ')})` : '')
+    );
+    console.log(
+      `runner_ui_audit: ${runnerReferencedIds.length} referenced ids, ${runnerMissingIds.length} dead ids, ` +
+      `${(runnerNavBlock ? (runnerNavBlock[1].match(/data-page="/g) || []).length : 0)} nav pages`
     );
     console.log(`ui_pure_test: ${checks} checks passed`);
   })

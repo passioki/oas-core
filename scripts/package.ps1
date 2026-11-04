@@ -9,6 +9,7 @@ $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $Root
+. (Join-Path $Root "scripts\package-common.ps1")
 
 $OutDir = Join-Path $Root "dist"
 $Stage = Join-Path $OutDir "stage"
@@ -152,21 +153,15 @@ if (-not (Get-ChildItem (Join-Path $Stage "tasks") -ErrorAction SilentlyContinue
 "" | Set-Content -Encoding ASCII (Join-Path $Stage "runs\.keep")
 "" | Set-Content -Encoding ASCII (Join-Path $Stage "logs\.keep")
 
-# version / build info
+# version / build info (shared field order with scripts/package-runner.ps1)
 "$Version" | Set-Content -Encoding UTF8 (Join-Path $Stage "VERSION")
-$git = "unknown"
-try { $git = (git -C $Root log -1 --format="%h %s") } catch {}
 $android = "Android 12 x86_64 (MuMu vmindex=0, adb 127.0.0.1:16384); Onmyoji 2.8.84"
 $taskNames = (Get-ChildItem (Join-Path $Stage "tasks") -Directory -ErrorAction SilentlyContinue |
   Select-Object -ExpandProperty Name) -join ", "
-@(
-  "OAS v$Version",
-  "git: $git",
-  "built_at: $(Get-Date -Format o)",
-  "build: cargo build --release -p oasd --features ocr",
-  "android_test_env: $android",
-  "tasks: $taskNames"
-) | Set-Content -Encoding UTF8 (Join-Path $Stage "BUILD-INFO.txt")
+$buildLines = Get-OasBuildInfoLines -Version $Version -Root $Root `
+  -BuildCommand "cargo build --release -p oasd --features ocr" `
+  -ExtraLines @("android_test_env: $android", "tasks: $taskNames")
+$buildLines | Set-Content -Encoding UTF8 (Join-Path $Stage "BUILD-INFO.txt")
 
 # zip
 if (Test-Path $Zip) { Remove-Item $Zip -Force }

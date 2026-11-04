@@ -194,7 +194,6 @@ const schedRunDialogBody = document.getElementById('page-sched-runs-detail-body'
 const schedRunDialogError = document.getElementById('page-sched-runs-detail-error');
 const schedRunDialogRefresh = document.getElementById('page-sched-runs-detail-refresh');
 const schedRunDialogClose = document.getElementById('page-sched-runs-detail-close');
-const btnSchedOpenPage = document.getElementById('btn-sched-open-page');
 const schedEntryDialog = document.getElementById('sched-entry-dialog');
 const schedEntryTitle = document.getElementById('sched-entry-title');
 const schedEntryModeHint = document.getElementById('sched-entry-mode-hint');
@@ -241,9 +240,7 @@ const createDesc = document.getElementById('create-desc');
 const createError = document.getElementById('create-error');
 const btnCreateSubmit = document.getElementById('btn-create-submit');
 const btnCreateCancel = document.getElementById('btn-create-cancel');
-// M2/N37：调度面板 + 重置记忆对话框
-const btnSchedRefresh = document.getElementById('btn-sched-refresh');
-const btnSchedReset = document.getElementById('btn-sched-reset');
+// M2/N37：调度面板（PR1 起 Studio 只保留占位 DOM）+ 重置记忆对话框
 const schedSummary = document.getElementById('sched-summary');
 const schedEntries = document.getElementById('sched-entries');
 const resetMemoryDialog = document.getElementById('reset-memory-dialog');const resetTaskList = document.getElementById('reset-task-list');
@@ -277,6 +274,27 @@ let scheduleQueueDialogState = null;
 let scheduleRunsData = null;
 let scheduleRunsError = '';
 let scheduleRunsLoading = false;
+// PR1: Studio 导航已移除「调度」入口；旧侧栏/深链仍可打开 #page-schedule，
+// 但只提示一次「请用 Runner」，避免把过时页面当成新的运维入口。
+let scheduleLegacyHintShown = false;
+// PR1: Studio and Runner are separate entry points. Studio never performs
+// scheduling / runtime operations; deep links and legacy shortcuts hand the
+// user over to the Runner instead of hitting Runner-only routes (which return
+// 404 on the Studio surface). PR2 will read the configured runner.port from
+// GET /config instead of the default below.
+const RUNNER_BASE_URL = 'http://127.0.0.1:8789/';
+function runnerBaseUrl() {
+  return RUNNER_BASE_URL;
+}
+function openRunnerPage(hash) {
+  const target = runnerBaseUrl() + (hash || '');
+  try {
+    window.open(target, '_blank', 'noopener');
+  } catch (e) {
+    log('打开 Runner 失败：' + e, 'WARN');
+  }
+  log('调度/运行运维已迁移到 Runner：' + target, 'INFO');
+}
 let scheduleRunsFilter = { limit: 200, task: '', outcome: '', queueId: '' };
 let scheduleRunDetailRunId = '';
 // M1 运行状态轮询：已消费的日志行数 / 是否已有轮询在跑（避免重复轮询）
@@ -758,7 +776,16 @@ function activatePage(name) {
     window.OAS_BUILDER.activate((taskName && taskName.value || '').trim());
   }
   else if (name === 'instances') refreshInstance();
-  else if (name === 'schedule') refreshSchedulePage();
+  else if (name === 'schedule') {
+    // PR1: Studio no longer owns the scheduling page. Do not call
+    // refreshSchedulePage() here: /runs/scheduler and the write routes belong to
+    // the Runner surface and answer 404 on Studio. Hand the user over instead.
+    if (!scheduleLegacyHintShown) {
+      scheduleLegacyHintShown = true;
+      log('提示：Studio 不参与调度/运行运维；已打开 Runner（8789）。', 'WARN');
+    }
+    openRunnerPage('#runs');
+  }
   else if (name === 'settings') refreshSettings();
 }
 
@@ -809,23 +836,19 @@ async function refreshLibrary() {
       open.type = 'button';
       open.textContent = '打开';
       open.addEventListener('click', () => openTaskInWorkbench(t.name));
-      // P3: edit this task's scheduler entry (create / update via /scheduler/config).
-      const sched = document.createElement('button');
-      sched.type = 'button';
-      sched.textContent = '调度设置…';
-      sched.title = '为该任务加入调度，或编辑它已有的调度条目';
-      sched.addEventListener('click', () => openTaskScheduleDialog(t.name));
-      // P4: jump to the schedule page's run history filtered to this task.
+      // PR1: scheduling configuration and run history belong to the Runner
+      // surface. Studio only links over; it must not call /scheduler/config or
+      // /runs/scheduler (Runner-only routes answer 404 on Studio).
       const runsBtn = document.createElement('button');
       runsBtn.type = 'button';
       runsBtn.textContent = '运行记录';
-      runsBtn.title = '打开调度页并筛选该任务的运行记录';
-      runsBtn.addEventListener('click', () => showScheduleRunsForTask(t.name));
+      runsBtn.title = '在 Runner 打开该任务的运行记录';
+      runsBtn.addEventListener('click', () => openRunnerPage('#runs'));
       const del = document.createElement('button');
       del.type = 'button';
       del.textContent = '删除';
       del.addEventListener('click', () => deleteTaskFromLibrary(t.name));
-      card.append(meta, open, sched, runsBtn, del);
+      card.append(meta, open, runsBtn, del);
       libList.appendChild(card);
     }
   } catch (e) {
@@ -8016,7 +8039,7 @@ function renderScheduleEntries(status, cfg) {
   }
   const entries = cfg.entries || [];
   if (!entries.length) {
-    pageSchedEntries.textContent = '（还没有调度条目；到任务库点「调度设置…」或点「+ 添加条目…」）';
+    pageSchedEntries.textContent = '（还没有调度条目；Studio 不提供调度配置，请到 Runner（8789）中添加）';
     return;
   }
   const stMap = scheduleStatusEntryMap(status);
@@ -9073,7 +9096,7 @@ function renderScheduler(s) {
   schedEntries.textContent = '';
   const entries = Array.isArray(s.entries) ? s.entries : [];
   if (!entries.length) {
-    schedEntries.textContent = '（无调度条目：到「调度」页添加，或点上方「打开调度页 →」）';
+    schedEntries.textContent = '（无调度条目；本面板只读，调度/运行运维请用 Runner（8789））';
     return;
   }
   for (const e of entries) {
@@ -9266,9 +9289,11 @@ async function submitResetMemory() {
   } catch (e) {
     /* ignore */
   }
-  // 深链 ?reset=1：打开「重置记忆」多选框（headless 截图验收用）
+  // 深链 ?reset=1：Runner-only 操作，Studio 不再提供
   try {
-    if (new URLSearchParams(location.search).get('reset') === '1') openResetMemoryDialog();
+    if (new URLSearchParams(location.search).get('reset') === '1') {
+      log('重置记忆属于运行运维，请在 Runner（8789）中操作。', 'WARN');
+    }
   } catch (e) {
     /* ignore */
   }
@@ -9349,9 +9374,7 @@ async function submitResetMemory() {
     ], '独立操作区域');
     resultEl.textContent = `已把独立操作区域「${name}」加入识别结果；勾选后点「保存素材」。`;
   });
-  // --- M2/N37: 调度面板 + 重置记忆 ---
-  if (btnSchedRefresh) btnSchedRefresh.addEventListener('click', refreshScheduler);
-  if (btnSchedReset) btnSchedReset.addEventListener('click', openResetMemoryDialog);
+  // --- M2/N37: 重置记忆（Runner-only 操作；Studio 仅在旧深链里提示） ---
   if (btnResetAll) btnResetAll.addEventListener('click', () => resetTaskChecks('all'));
   if (btnResetInvert) btnResetInvert.addEventListener('click', () => resetTaskChecks('invert'));
   if (btnResetNone) btnResetNone.addEventListener('click', () => resetTaskChecks('none'));
@@ -9631,7 +9654,6 @@ async function submitResetMemory() {
       if (scheduleRunDetailRunId) openScheduleRunDetail(scheduleRunDetailRunId);
     });
   }
-  if (btnSchedOpenPage) btnSchedOpenPage.addEventListener('click', () => activatePage('schedule'));
   if (schedEntryKind) {
     schedEntryKind.addEventListener('change', () => {
       populateScheduleEntryTargets(schedEntryKind.value, '');

@@ -1,0 +1,270 @@
+/* OAS Runner（使用端） - 复用 style.css 的基础外观；仅补 Runner 页面所需布局。
+   约束：Web-first、无外部字体/CDN、窄屏单列、路径原样显示（不假设盘符）。 */
+:root {
+  --runner-panel: #1d2027;
+  --runner-border: #2b2f38;
+  --runner-text: #e6e6e6;
+  --runner-muted: #9aa0aa;
+  --runner-accent: #8fb8e8;
+  --runner-ok: #7bd88f;
+  --runner-warn: #e8c46a;
+  --runner-err: #ff8a80;
+}
+
+.runner-body {
+  background: #14161a;
+  color: var(--runner-text);
+}
+
+.runner-header {
+  gap: 5px;
+}
+
+.runner-header .hdr-row {
+  flex-wrap: wrap;
+}
+
+.runner-badges-row {
+  gap: 6px;
+}
+
+.runner-badge {
+  display: inline-block;
+  padding: 0 8px;
+  border: 1px solid var(--runner-border);
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+  color: #c9d1db;
+  background: #171a20;
+}
+
+.runner-badge.ok {
+  color: var(--runner-ok);
+  border-color: #2f6b3f;
+  background: #16281b;
+}
+
+.runner-badge.warn {
+  color: var(--runner-warn);
+  border-color: #6b5a2f;
+  background: #2a2416;
+}
+
+.runner-badge.err {
+  color: var(--runner-err);
+  border-color: #6b2f2f;
+  background: #2a1618;
+}
+
+.runner-badge.kind {
+  color: #9ec1ea;
+  border-color: #2f4a6b;
+  background: #161f2a;
+}
+
+#runner-page-status.ok { color: var(--runner-ok); }
+#runner-page-status.err { color: var(--runner-err); }
+
+#runner-nav {
+  flex-wrap: wrap;
+}
+
+main.runner-main {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0;
+}
+
+.runner-main .page-wrap {
+  max-width: 1180px;
+}
+
+.runner-main h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.runner-main h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--runner-accent);
+}
+
+.runner-section {
+  margin-bottom: 12px;
+}
+
+.runner-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.runner-grid .card {
+  margin: 0;
+  min-width: 0;
+}
+
+.runner-kv {
+  display: grid;
+  grid-template-columns: minmax(96px, 150px) minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0;
+}
+
+.runner-kv dt {
+  color: var(--runner-muted);
+  font-size: 12px;
+}
+
+.runner-kv dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  font-size: 12px;
+  color: #dfe3e8;
+}
+
+.runner-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--runner-border);
+  border-radius: 8px;
+  background: #171a20;
+}
+
+.runner-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.runner-table th,
+.runner-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 6px 8px;
+  border-bottom: 1px solid #262b33;
+}
+
+.runner-table th {
+  color: var(--runner-muted);
+  font-weight: 600;
+  white-space: nowrap;
+  background: #1b1f26;
+}
+
+.runner-table td {
+  color: #dfe3e8;
+}
+
+.runner-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.runner-table tbody tr:hover {
+  background: #202833;
+}
+
+.runner-table .runner-error-cell {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runner-note {
+  border-left: 3px solid #2f4a6b;
+  background: #171d26;
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 12px 0 0;
+}
+
+.runner-note code {
+  color: var(--runner-accent);
+}
+
+.runner-raw {
+  margin-bottom: 12px;
+}
+
+.runner-raw summary {
+  cursor: pointer;
+  color: var(--runner-accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.runner-pre {
+  margin: 8px 0 0;
+  max-height: 360px;
+}
+
+#runner-tasks-count {
+  white-space: nowrap;
+}
+
+.runner-empty {
+  color: var(--runner-muted);
+  padding: 8px 2px;
+}
+
+@media (max-width: 720px) {
+  .runner-header {
+    padding: 8px 10px;
+  }
+
+  .runner-header .hdr-row {
+    gap: 6px;
+  }
+
+  #runner-nav {
+    gap: 4px;
+    padding: 6px 10px;
+  }
+
+  #runner-nav .app-nav-btn {
+    padding: 4px 8px;
+  }
+
+  /* Decorative (not data) on very narrow screens; the top refresh stays. */
+  #runner-last-refresh,
+  #runner-nav > .spacer,
+  #runner-nav > .muted {
+    display: none;
+  }
+
+  .runner-main .page-wrap {
+    padding: 10px;
+  }
+
+  .runner-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .runner-kv {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .runner-kv dt {
+    margin-top: 8px;
+  }
+
+  .runner-kv dt:first-child {
+    margin-top: 0;
+  }
+
+  .runner-table th,
+  .runner-table td {
+    padding: 5px 6px;
+  }
+}

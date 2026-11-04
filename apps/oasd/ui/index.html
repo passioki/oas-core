@@ -31,6 +31,11 @@
   .sched-run-dialog { max-width: min(820px, calc(100vw - 40px)); }
   .sched-run-dialog pre { max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
   .sched-run-dialog .run-detail-table td:first-child { white-space: nowrap; color: #9aa0aa; }
+  /* PR1: Studio/Runner 分离的轻提示（不新增外链资源） */
+  #studio-runner-hint { color: #8fb8e8; white-space: nowrap; }
+  .studio-migrate-note { border-color: #2f4a6b; background: #171d26; margin-bottom: 12px; }
+  .studio-migrate-note h3 { margin: 0 0 4px; color: #8fb8e8; font-size: 13px; }
+  @media (max-width: 980px) { #studio-runner-hint { display: none; } }
 </style>
 </head>
 <body>
@@ -38,6 +43,7 @@
     <div class="hdr-row">
       <strong>OAS 引擎编辑器</strong>
       <span id="status" class="muted">连接中…</span>
+      <span id="studio-runner-hint" class="muted small" title="调度/运行运维请用 Runner；Studio 只负责编辑与构建">调度/运行请用 Runner（8789）</span>
       <span class="spacer"></span>
       <button id="btn-live-preview" title="实时画面：自动刷新当前设备画面；点暂停后看已选帧">实时：开</button>
       <button id="btn-test-mode" class="test-dry" aria-pressed="false" title="演练模式（默认）：素材行「点击测试/拖动测试」只计算定位，不操作设备">素材测试：演练</button>
@@ -49,7 +55,6 @@
     <button class="app-nav-btn" data-page="builder" type="button">任务构建</button>
     <button class="app-nav-btn" data-page="tasks" type="button">任务库</button>
     <button class="app-nav-btn" data-page="instances" type="button">实例</button>
-    <button class="app-nav-btn" data-page="schedule" type="button">调度</button>
     <button class="app-nav-btn" data-page="settings" type="button">设置</button>
     <span class="spacer"></span>
     <span id="nav-device" class="muted small">实例：—</span>
@@ -85,7 +90,6 @@
         <button class="rail-btn" data-panel="panel-images" type="button">图片</button>
         <button class="rail-btn" data-panel="panel-task" type="button">任务</button>
         <button class="rail-btn" data-panel="panel-click" type="button">点击分布</button>
-        <button class="rail-btn" data-panel="panel-schedule" type="button">调度</button>
       </nav>
 
       <div class="rail-panels">
@@ -291,18 +295,12 @@
         </section>
 
         <section class="panel" id="panel-schedule">
-          <h3>调度（v4）</h3>
-          <div class="row lib-toolbar">
-            <button id="btn-sched-refresh" type="button">刷新状态</button>
-            <button id="btn-sched-reset" type="button">重置记忆…</button>
-            <button id="btn-sched-open-page" type="button">打开调度页 →</button>
-          </div>
+          <h3>调度（已迁移到 Runner）</h3>
           <div id="sched-summary" class="muted small">—</div>
           <div id="sched-entries" class="asset-list muted">（未加载调度状态）</div>
           <p class="muted small">
-            本面板只读；条目/队列的启用、排序与编辑在「调度」页。
-            状态来自 <code>scheduler.json</code>（v4）；启动/停止守护进程用
-            <code>start-scheduler.bat</code> / <code>stop-scheduler.bat</code>。
+            Studio 不再提供调度/运行运维入口：安装、配置、排队、调度、执行、运行记录都在 Runner（默认 8789）。
+            本面板仅为旧深链保留占位，不提供任何调度操作。
           </p>
         </section>
       </div>
@@ -418,6 +416,13 @@
         <button id="page-sched-reload" type="button">重新加载</button>
         <button id="page-sched-reset" type="button">重置记忆…</button>
       </div>
+      <div class="card studio-migrate-note">
+        <h3>调度/运行运维请用 Runner（8789）</h3>
+        <div class="muted small">
+          Studio 导航已不再提供「调度」入口；本页作为旧深链兼容页暂时保留，后续 PR 将迁移到 Runner。
+          配置编辑、队列管理、调度执行请使用 Runner，不要在本地址修改调度。
+        </div>
+      </div>
       <div class="card sched-status-card">
         <div class="row">
           <strong id="page-sched-mode">模式：—</strong>
@@ -507,14 +512,15 @@
     <div class="page-wrap">
       <div class="row page-head">
         <h2>设置</h2>
-        <span class="muted small">读取 config/live.json；修改后重启 serve 生效</span>
+        <span class="muted small">读取 config/live.json；修改后重启 Studio 生效</span>
         <span class="spacer"></span>
         <button id="settings-refresh" type="button">刷新</button>
       </div>
       <pre id="settings-config" class="card muted">（未加载）</pre>
       <p class="muted small">
-        配置文件：<code>config/live.json</code>（device.serial / adb_path / serve.port / paths / ocr 模型）。<br/>
-        保存方式：停止编辑器 → 编辑 config/live.json → start-editor.bat。
+        配置文件：<code>config/live.json</code>（device.serial / adb_path / serve.port / runner.port / paths / ocr 模型）。<br/>
+        保存方式：停止 Studio → 编辑 config/live.json → 启动 Studio；Runner 使用自己的配置入口。<br/>
+        调度/运行运维请用 Runner（8789）；编辑端不随使用端分发。
       </p>
     </div>
   </div>

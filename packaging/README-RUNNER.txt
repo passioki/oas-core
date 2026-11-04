@@ -1,0 +1,71 @@
+OAS Runner 使用端（终端用户发行包）
+=====================================
+
+这个包只包含「使用端（Runner）」：安装任务包、填写任务配置、排队/调度、执行、
+查看运行记录。它不包含 Studio 编辑端（没有编辑器 UI、没有任务构建/素材/帧库），
+需要制作或修改任务时请使用单独的 Studio 发行包（oasd-v<版本>-win64.zip）。
+
+版本能力说明：首个 Runner 版本先提供运行入口和只读状态页（概览 / 已安装任务 /
+队列与调度 / 运行记录 / 设置）；任务包安装、运行参数保存、调度编辑会在后续版本
+开放，界面以实际显示的按钮为准。
+
+
+1. 首次使用
+------------
+1) 解压整个 zip 到一个新目录，例如 D:\OAS-runner\（不要覆盖旧版本目录）。
+2) 用记事本编辑 config\live.json：
+   - device.serial ：adb 设备 serial（模拟器如 127.0.0.1:16384，真机用 adb devices 查看）
+   - device.adb_path：默认 adb/adb.exe；其他平台可留空改用系统 adb / ADB_PATH
+   - runner.port   ：默认 8789（一般不用改）
+3) 先确认设备在线（可选）：
+   oasd.exe probe --serial 127.0.0.1:16384
+4) 双击 start-runner.bat，浏览器打开 http://127.0.0.1:8789/
+5) 在 Runner 页面「已安装任务 / 安装包」选择 .oaspkg 任务包安装，然后填写任务配置、
+   加入队列或调度。安装/配置写入本目录的 tasks\、config\、packages\。
+6) 停止：双击 stop-runner.bat，或直接关闭 start-runner 打开的窗口。
+
+
+2. 目录说明
+------------
+oasd.exe          同一个二进制；本包用 `oasd.exe runner` 启动使用端
+ui\runner.*       Runner 使用端页面（不含 Studio 编辑页面）
+models\           OCR 模型（执行需要，请勿删除）
+adb\              Windows adb（v1 随包；macOS/Linux 用系统 adb）
+config\           live.json / live.example.json
+packages\         已安装任务包、备份（Runner 独占写）
+tasks\            已安装任务（任务包解压落点）
+runs\             运行记录
+logs\             runner.log 等日志
+scheduler.json    调度/队列计划（初始为空，页面里添加）
+assets\           全局素材（安装任务包时合并）
+VERSION / BUILD-INFO.txt  版本与构建信息
+
+
+3. 常见问题
+------------
+- 页面打不开：看 logs\runner.log；确认 8789 没有被别的程序占用。
+- 设备连不上：先 `oasd.exe probe --serial <serial>`；MuMu 端口常见 16384。
+- 升级：停止 Runner，备份 config\ tasks\ packages\ scheduler.json runs\ logs\，
+  解压新包覆盖程序文件（oasd.exe、ui\、models\、adb\），保留数据目录。
+- 未签名 exe 可能触发 SmartScreen：更多信息 -> 仍要运行（正式分发建议签名）。
+- 本引擎默认只绑 127.0.0.1，不要暴露到公网。
+- 同一台模拟器/真机同一时间只能被一个自动化进程控制：跑 Runner 时不要再开
+  Studio 的试运行或旧的 oasd scheduler。
+
+
+4. 非 Windows 平台（macOS / Linux）
+-----------------------------------
+没有 .bat 启动脚本；在包根目录直接运行：
+
+   ./oasd runner --port 8789 --config config/live.json --ui ui
+
+UI 是普通 Web 页面，用浏览器打开 http://127.0.0.1:8789/ 即可。adb 使用系统
+安装的 adb（PATH 中），或在 config\live.json 的 device.adb_path 指定绝对路径。
+详见 packaging\CROSS-PLATFORM.md（源码仓库内）。
+
+
+5. 与 Studio 的关系
+-------------------
+Studio：制作/编辑任务、素材、流程、发布 .oaspkg（开发与编辑人员使用，端口 8788）。
+Runner：只消费 .oaspkg 并执行（终端用户使用，端口 8789）。
+两者共用同一份数据目录布局；单机部署时可以并存，但不要同时对同一台设备执行。

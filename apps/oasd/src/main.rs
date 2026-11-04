@@ -7,7 +7,9 @@
 //!   oasd record <dir> <n>           record n live frames into a replay bundle
 //!   oasd replay <dir>               re-drive a bundle offline, print frame hashes
 //!   oasd run --task <dir> [--replay <dir>] [--seed <n>] [--model <rec.onnx>] ...
-//!   oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>]
+//!   oasd studio [--port N] [--ui <dir>] ...   editor surface (default 8788)
+//!   oasd runner [--port N] [--ui <dir>] ...   usage surface (default 8789)
+//!   oasd serve ...                            deprecated alias for `studio`
 
 use std::process::ExitCode;
 
@@ -99,7 +101,16 @@ fn main() -> ExitCode {
         "stats" => stats::stats_cmd(&args[1..]),
         "task" => task::task_cmd(&args[1..]),
         "assets" => assets_cmd(&args[1..]),
-        "serve" => serve_cmd(&args[1..]),
+        // PR1: one binary, two surfaces. `serve` stays as a deprecated alias so
+        // existing `start-editor.bat`/docs/scripts keep working (design Q2).
+        "studio" => serve_cmd(&args[1..], serve::Surface::Studio),
+        "runner" => serve_cmd(&args[1..], serve::Surface::Runner),
+        "serve" => {
+            eprintln!(
+                "note: 'oasd serve' is deprecated, use 'oasd studio' (same Studio surface)"
+            );
+            serve_cmd(&args[1..], serve::Surface::Studio)
+        }
         "" | "-h" | "--help" => {
             eprintln!(
                 "usage:\n  oasd [--config <live.json>] [--version] <command> ...\n  \
@@ -113,7 +124,9 @@ fn main() -> ExitCode {
                  oasd task new --template daily|loop|utility --id <id> --tasks-dir <dir>\n  \
                  oasd assets migrate [--tasks-dir <dir>] [--library-dir <dir>] [--assets-dir <dir>]\n  \
                  oasd assets cleanup-legacy [--tasks-dir <dir>] [--assets-dir <dir>] [--apply]\n  \
-                 oasd serve [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--assets-dir <dir>] [--frames-dir <dir>] [--model <path>] [--det-model <path>] [--no-open]"
+                 oasd studio [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--assets-dir <dir>] [--frames-dir <dir>] [--model <path>] [--det-model <path>] [--no-open]   (default port 8788)\n  \
+                 oasd runner [--port N] [--ui <dir>] [--tasks-dir <dir>] [--runs-dir <dir>] [--assets-dir <dir>] [--frames-dir <dir>] [--model <path>] [--det-model <path>] [--no-open]   (default port 8789)\n  \
+                 oasd serve  ... (deprecated alias of `oasd studio`, default port 8788)"
             );
             ExitCode::from(2)
         }
@@ -384,8 +397,13 @@ fn assets_cmd(rest: &[String]) -> ExitCode {
     }
 }
 
-fn serve_cmd(rest: &[String]) -> ExitCode {
-    let mut port: u16 = 8787;
+fn serve_cmd(rest: &[String], surface: serve::Surface) -> ExitCode {
+    // `None` = not on the command line; resolve from the global live config
+    // (when loaded), then from the surface default. CLI still wins.
+    let mut port: Option<u16> = None;
+    // Both surfaces ship from the same `ui/` directory: Studio uses
+    // index/app/builder..., Runner uses runner.html/runner.js/runner.css plus
+    // the shared style.css. Packaging can still override it with `--ui`.
     let mut ui = "apps/oasd/ui".to_string();
     let mut tasks_dir = "tasks".to_string();
     let mut runs_dir = "runs".to_string();
@@ -400,7 +418,7 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
         match rest[i].as_str() {
             "--port" if i + 1 < rest.len() => {
                 port = match rest[i + 1].parse() {
-                    Ok(p) => p,
+                    Ok(p) => Some(p),
                     Err(_) => {
                         eprintln!("bad --port value");
                         return ExitCode::from(2);
@@ -454,8 +472,12 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
             }
         }
     }
+    // Port precedence: CLI `--port` > global live config for THIS surface >
+    // built-in default. Studio and Runner never share a default (8788 / 8789).
+    let port = resolve_surface_port(port, surface, crate::config::global());
     let adb = Adb::from_env();
     let mut server = serve::Server::new(adb)
+        .with_surface(surface)
         .with_tasks_dir(&tasks_dir)
         .with_runs_dir(&runs_dir)
         .with_library_dir(&library_dir)
@@ -465,7 +487,7 @@ fn serve_cmd(rest: &[String]) -> ExitCode {
     enable_models(&mut server, model.as_deref(), det_model.as_deref());
     match server.run(port, &ui) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => fail("serve", e),
+        Err(e) => fail(surface.as_str(), e),
     }
 }
 
@@ -504,4 +526,59 @@ fn enable_models(_server: &mut serve::Server, model: Option<&str>, det_model: Op
 fn fail(what: &str, e: String) -> ExitCode {
     eprintln!("{what} failed: {e}");
     ExitCode::FAILURE
+}
+
+/// Resolve the HTTP port for one surface without touching the network.
+///
+/// Precedence (PR1): explicit `--port` > the global live config's port for
+/// **this** surface (`serve.port` / `runner.port`) > the surface default.
+/// Kept pure so the "studio 8788 / runner 8789, never mixed" rule is testable.
+fn resolve_surface_port(
+    cli_port: Option<u16>,
+    surface: serve::Surface,
+    cfg: Option<&config::OasConfig>,
+) -> u16 {
+    cli_port.unwrap_or_else(|| match (cfg, surface) {
+        (Some(cfg), serve::Surface::Studio) => cfg.serve.port,
+        (Some(cfg), serve::Surface::Runner) => cfg.runner.port,
+        (None, s) => s.default_port(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::OasConfig;
+
+    #[test]
+    fn surface_ports_default_to_8788_and_8789_and_cli_wins() {
+        assert_eq!(
+            resolve_surface_port(None, serve::Surface::Studio, None),
+            8788
+        );
+        assert_eq!(
+            resolve_surface_port(None, serve::Surface::Runner, None),
+            8789
+        );
+
+        let cfg = OasConfig::from_json(
+            r#"{"serve":{"port":9008},"runner":{"port":9009}}"#,
+        )
+        .expect("valid config");
+        assert_eq!(
+            resolve_surface_port(None, serve::Surface::Studio, Some(&cfg)),
+            cfg.serve.port,
+            "Studio must read serve.port, not runner.port"
+        );
+        assert_eq!(
+            resolve_surface_port(None, serve::Surface::Runner, Some(&cfg)),
+            cfg.runner.port,
+            "Runner must read runner.port, not serve.port"
+        );
+        assert_eq!(
+            resolve_surface_port(Some(7777), serve::Surface::Runner, Some(&cfg)),
+            7777,
+            "CLI --port wins over config"
+        );
+    }
 }

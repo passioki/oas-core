@@ -24,6 +24,9 @@ use serde::{Deserialize, Serialize};
 pub struct OasConfig {
     pub schema_version: u32,
     pub serve: ServeConfig,
+    /// Runner (usage surface) settings. Separate from `serve` on purpose: the
+    /// two surfaces must never share a port (PR1 of the Studio/Runner split).
+    pub runner: RunnerConfig,
     pub paths: PathsConfig,
     pub ocr: OcrConfig,
     pub device: DeviceConfig,
@@ -44,6 +47,26 @@ impl Default for ServeConfig {
             port: 8788,
             bind: "127.0.0.1".into(),
             ui: "ui".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct RunnerConfig {
+    /// `oasd runner` HTTP port. Defaults to 8789, one above the Studio 8788.
+    pub port: u16,
+    /// Reserved for the LAN/token era (design Q1). PR1 still binds loopback
+    /// only; values other than a loopback address are rejected by `validate`
+    /// so this never becomes a "looks configurable but is ignored" trap.
+    pub bind: String,
+}
+
+impl Default for RunnerConfig {
+    fn default() -> Self {
+        Self {
+            port: 8789,
+            bind: "127.0.0.1".into(),
         }
     }
 }
@@ -178,6 +201,33 @@ impl OasConfig {
         if self.serve.bind.trim().is_empty() {
             return Err("serve.bind must not be empty".into());
         }
+        if self.runner.port == 0 {
+            return Err("runner.port must be 1..=65535".into());
+        }
+        if self.runner.port == self.serve.port {
+            return Err(format!(
+                "runner.port ({}) must differ from serve.port ({}): Studio and Runner are \
+                 separate surfaces",
+                self.runner.port, self.serve.port
+            ));
+        }
+        let runner_bind = self.runner.bind.trim();
+        if runner_bind.is_empty() {
+            return Err("runner.bind must not be empty".into());
+        }
+        // PR1 has no token auth yet, so only loopback is accepted (design Q1).
+        // This keeps the field honest instead of silently binding 127.0.0.1.
+        let loopback = runner_bind.eq_ignore_ascii_case("localhost")
+            || runner_bind
+                .parse::<std::net::IpAddr>()
+                .map(|ip| ip.is_loopback())
+                .unwrap_or(false);
+        if !loopback {
+            return Err(format!(
+                "runner.bind `{runner_bind}` must be a loopback address (PR1; LAN needs the \
+                 token auth planned in design Q1)"
+            ));
+        }
         if self.paths.tasks_dir.trim().is_empty() {
             return Err("paths.tasks_dir must not be empty".into());
         }
@@ -276,8 +326,28 @@ mod tests {
         let c = OasConfig::default();
         assert_eq!(c.serve.port, 8788);
         assert_eq!(c.serve.bind, "127.0.0.1");
+        // PR1: Runner is a separate surface with its own default port.
+        assert_eq!(c.runner.port, 8789);
+        assert_eq!(c.runner.bind, "127.0.0.1");
+        assert_ne!(c.runner.port, c.serve.port);
         assert!(c.require_serial().is_err(), "no implicit device");
         assert_eq!(c.tasks_dir(), PathBuf::from("tasks"));
+    }
+
+    #[test]
+    fn parses_and_validates_the_runner_section() {
+        let c = OasConfig::from_json(r#"{"runner":{"port":9001,"bind":"127.0.0.1"}}"#).unwrap();
+        assert_eq!(c.runner.port, 9001);
+        // Unknown keys stay rejected, and a colliding port or a non-loopback
+        // bind is refused instead of being silently ignored (design Q1/A.7).
+        assert!(OasConfig::from_json(r#"{"runner":{"port":0}}"#).is_err());
+        assert!(OasConfig::from_json(r#"{"runner":{"unknown":1}}"#).is_err());
+        assert!(OasConfig::from_json(
+            r#"{"serve":{"port":9001},"runner":{"port":9001}}"#
+        )
+        .is_err());
+        assert!(OasConfig::from_json(r#"{"runner":{"bind":"0.0.0.0"}}"#).is_err());
+        assert!(OasConfig::from_json(r#"{"runner":{"bind":"localhost"}}"#).is_ok());
     }
 
     #[test]

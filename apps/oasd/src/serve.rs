@@ -1,13 +1,23 @@
 //! Minimal HTTP surface for the editor MVP (P1-d step 1) + task-bundle save
-//! routes (N3).
+//! routes (N3). Since PR1 this module hosts BOTH product surfaces (design
+//! `docs/RUNNER-STUDIO-SPLIT-PLAN.md` §A.2/§A.3):
+//!
+//! * `Surface::Studio` (`oasd studio`, default port 8788): editor/builder APIs,
+//!   `ui/index.html`;
+//! * `Surface::Runner` (`oasd runner`, default port 8789): usage/runtime APIs,
+//!   `ui/runner.html`;
+//! * shared read-only routes (`GET /instance`, `GET /stats`, `GET /runs`, ...)
+//!   work on both. [`required_surface`] is the authoritative pure-function gate
+//!   applied in [`Server::handle`] before any handler runs.
 //!
 //! Deliberately std::net only: the UI is plain static HTML/JS, so the exact same
 //! files can later be wrapped by Tauri (desktop) or a WebView shell (Android)
 //! without changes. JSON is handled with `serde_json` (the only new dependency).
 //!
 //! Routes:
-//!   GET  /                -> ui/index.html
-//!   GET  /app.js          -> ui/app.js
+//!   GET  /                -> ui/index.html (Studio) | ui/runner.html (Runner)
+//!   GET  /app.js          -> ui/app.js (Studio only)
+//!   GET  /runner.js       -> ui/runner.js (Runner only)
 //!   GET  /frame.png       -> last captured frame (404 before the first capture)
 //!   POST /capture         -> capture a fresh frame, returns JSON {width,height}
 //!   GET  /state           -> JSON {captured, width, height, device, ocr, det}
@@ -26,6 +36,8 @@
 //!   GET  /runs/clicks?file=<name> -> one run's CD2 click rows (§21 CD2/CD3)
 //!   GET  /runs/scheduler?limit=&task=&outcome= -> P4 scheduler run entities (list)
 //!   GET  /runs/scheduler/run?run_id=<id>       -> one P4 scheduler run entity
+//!   GET  /runner/health   -> Runner health JSON (Runner only, PR1)
+//!   GET  /runner/tasks    -> Runner task listing JSON (Runner only, PR1)
 //!
 //! Validation failures answer `400` with a structured `{"ok":false,"errors":[...]}`.
 
@@ -48,6 +60,152 @@ use crate::schedule::{scheduler_runs_dir, ResetOptions, SchedulerOptions, Schedu
 
 /// Upper bound for a POST body (flow.json is small; never buffer more).
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// Default HTTP port of the editor surface (`oasd studio`). This is also the
+/// `config.serve.port` default; the old CLI hardcoded 8787 and disagreed with
+/// `packaging/live.example.json` (8788).
+pub const STUDIO_DEFAULT_PORT: u16 = 8788;
+
+/// Default HTTP port of the usage surface (`oasd runner`). Always distinct from
+/// [`STUDIO_DEFAULT_PORT`]: the two surfaces are separate entry points.
+pub const RUNNER_DEFAULT_PORT: u16 = 8789;
+
+/// Which product surface this HTTP server exposes.
+///
+/// The split is **one binary, one `Server`, two surface values** (design
+/// §A.2): the handler set is the same code, the route table decides who may
+/// call what. No OS-specific behavior lives here, so the same surface model
+/// also describes a future Android usage client talking to the Runner HTTP API.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Surface {
+    Studio,
+    Runner,
+}
+
+impl Surface {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Surface::Studio => "studio",
+            Surface::Runner => "runner",
+        }
+    }
+
+    /// Port used when neither `--port` nor `config` supplies one.
+    pub fn default_port(self) -> u16 {
+        match self {
+            Surface::Studio => STUDIO_DEFAULT_PORT,
+            Surface::Runner => RUNNER_DEFAULT_PORT,
+        }
+    }
+
+    /// The *other* surface's default port. Only used for the startup hint that
+    /// tells the user the two entry points live at different addresses.
+    pub fn other_default_port(self) -> u16 {
+        match self {
+            Surface::Studio => RUNNER_DEFAULT_PORT,
+            Surface::Runner => STUDIO_DEFAULT_PORT,
+        }
+    }
+}
+
+/// Route ownership from design §A.3.
+///
+/// `Both` = shared routes (read-only data plus `GET/POST /instance`); `None` =
+/// not in the table, so `handle()` does not intercept it (the normal 404
+/// fallback still applies).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RouteOwner {
+    Studio,
+    Runner,
+    Both,
+}
+
+/// Pure route-ownership table (design §A.3). No I/O, no OS calls.
+///
+/// This is deliberately exhaustive over the routes that exist in
+/// [`Server::handle`] plus the PR1 design rows for Runner operational APIs;
+/// anything not listed returns `None` and is *not* blocked by the surface gate.
+pub fn route_owner(method: &str, path_only: &str) -> Option<RouteOwner> {
+    use RouteOwner::{Both, Runner, Studio};
+
+    match method {
+        "GET" => match path_only {
+            // Static UI: `/` and `style.css` are per-surface files; the editor
+            // bundle is Studio-only and the Runner bundle is Runner-only.
+            "/" | "/style.css" => Some(Both),
+            "/app.js" | "/asset_ui.js" | "/builder.js" | "/flow_model.js" | "/dashboard.html"
+            | "/dashboard.js" => Some(Studio),
+            "/runner.js" | "/runner.css" => Some(Runner),
+
+            // Workbench: live frame, capture, frame library, recognition debug.
+            "/ws/live" | "/frame.png" | "/state" | "/capture/preview.png" | "/frames"
+            | "/frames/image" | "/ocr" | "/lines" | "/match" => Some(Studio),
+
+            // Creative asset/task APIs (Runner must never get these).
+            "/assets/conflicts" | "/relations/frame-assets" | "/task/assets"
+            | "/task/asset/image" | "/task/asset/match" | "/task/asset/collection/match"
+            | "/task/flow" | "/task/list" | "/task/library" | "/task/run/status"
+            | "/task/package" | "/library" => Some(Studio),
+
+            // Runner operational APIs (PR1 read-only subset).
+            "/runner/health" | "/runner/tasks" | "/runs/scheduler" | "/runs/scheduler/run" => {
+                Some(Runner)
+            }
+
+            // Shared read-only views (and the device view both surfaces need).
+            "/runs" | "/runs/clicks" | "/runs/aggregate" | "/scheduler/config"
+            | "/scheduler/status" | "/config" | "/instance" | "/instance/devices" | "/stats" => {
+                Some(Both)
+            }
+
+            // PR2+ Runner task configuration read path (design §A.3).
+            p if p.starts_with("/runner/tasks/") => Some(Runner),
+            _ => None,
+        },
+
+        "POST" => match path_only {
+            // Scheduler/ops writes belong to the usage surface only.
+            "/scheduler/config" | "/scheduler/reset" | "/runs/delete" | "/runner/install"
+            | "/runner/uninstall" | "/runner/packages/activate" | "/runner/run"
+            | "/runner/scheduler/start" | "/runner/scheduler/stop" => Some(Runner),
+
+            // The device config is the one physical resource both surfaces use.
+            "/instance" => Some(Both),
+
+            // Editor trial run + all creation/build writes.
+            "/capture" | "/capture/preview" | "/capture/commit" | "/input/tap"
+            | "/input/swipe" | "/frames" | "/task/save_asset" | "/task/save_assets"
+            | "/task/goal" | "/task/save_flow" | "/task/create" | "/task/run"
+            | "/task/run/stop" | "/task/delete" | "/task/config" | "/task/publish"
+            | "/assets/migrate" | "/library/save_asset" => Some(Studio),
+            p if p.starts_with("/frames/") => Some(Studio),
+            p if p.starts_with("/task/asset/") || p.starts_with("/task/assets/") => Some(Studio),
+            p if p.starts_with("/relations/") || p.starts_with("/assets/") => Some(Studio),
+            p if p.starts_with("/library/") => Some(Studio),
+            _ => None,
+        },
+
+        // PR2+ Runner task configuration write path (design §A.3).
+        "PUT" => match path_only {
+            p if p.starts_with("/runner/tasks/") => Some(Runner),
+            _ => None,
+        },
+
+        _ => None,
+    }
+}
+
+/// The surface a route is exclusive to, or `None` when both surfaces may use
+/// it (shared **and** unknown routes both return `None` by design: unknown
+/// routes are left to the normal 404 fallback). Use [`route_owner`] when the
+/// shared-vs-unknown distinction matters.
+pub fn required_surface(method: &str, path_only: &str) -> Option<Surface> {
+    match route_owner(method, path_only) {
+        Some(RouteOwner::Studio) => Some(Surface::Studio),
+        Some(RouteOwner::Runner) => Some(Surface::Runner),
+        Some(RouteOwner::Both) | None => None,
+    }
+}
 
 /// The **executor** behind `POST /task/run` (N38/M1): the default is the real
 /// `run::execute`, the editor never gets a second copy of the interpreter.
@@ -252,6 +410,13 @@ impl State {
 pub struct Server {
     adb: Adb,
     state: Arc<Mutex<State>>,
+    /// Which product surface this process exposes. Defaults to
+    /// [`Surface::Studio`] so every pre-split caller/test keeps working.
+    surface: Surface,
+    /// Actual bound HTTP port (set by [`Server::run`], or by
+    /// [`Server::with_port`] for tests). `0` means "not bound yet"; it is
+    /// echoed by `GET /instance` as `serve_port`.
+    port: u16,
     /// Root for task bundles (`--tasks-dir`); one subdirectory per task.
     tasks_dir: PathBuf,
     /// Root for click-run JSONL files (`--runs-dir`, §21): the data plane of the
@@ -580,6 +745,8 @@ impl Server {
                 current_frame_id: None,
                 pending_capture: None,
             })),
+            surface: Surface::Studio,
+            port: 0,
             tasks_dir: PathBuf::from("tasks"),
             runs_dir: PathBuf::from("runs"),
             library_dir: PathBuf::from(crate::library::DEFAULT_DIR),
@@ -604,6 +771,26 @@ impl Server {
             #[cfg(feature = "ocr")]
             det: None,
         }
+    }
+
+    /// Select the product surface (default: [`Surface::Studio`]). Kept as a
+    /// builder instead of changing [`Server::new`] so existing callers/tests
+    /// remain source-compatible.
+    pub fn with_surface(mut self, surface: Surface) -> Self {
+        self.surface = surface;
+        self
+    }
+
+    /// Pin the port reported by `GET /instance` / `/runner/health` in tests
+    /// (production sets the real bound port inside [`Server::run`]).
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
+    }
+
+    /// Which surface this server exposes.
+    pub fn surface(&self) -> Surface {
+        self.surface
     }
 
     /// Replace the executor behind `POST /task/run` (tests inject a fake one so
@@ -981,14 +1168,35 @@ impl Server {
     }
 
     /// Serve forever on 127.0.0.1:`port`. Returns only on bind failure.
-    pub fn run(self, port: u16, ui_dir: &str) -> Result<(), String> {
-        let addr = format!("127.0.0.1:{port}");
-        let listener = TcpListener::bind(&addr).map_err(|e| format!("bind {addr}: {e}"))?;
+    pub fn run(mut self, port: u16, ui_dir: &str) -> Result<(), String> {
+        let requested = format!("127.0.0.1:{port}");
+        let listener = TcpListener::bind(&requested).map_err(|e| format!("bind {requested}: {e}"))?;
+        // `--port 0` (used by embedded/Android shells) must report the real
+        // ephemeral port, not 0, in the banner and in `/instance`/`/runner/health`.
+        self.port = listener
+            .local_addr()
+            .map(|a| a.port())
+            .unwrap_or(port);
+        let addr = format!("127.0.0.1:{}", self.port);
         println!(
-            "oasd serve: http://{addr}/  (ui dir: {ui_dir}, tasks dir: {}, runs dir: {})",
+            "oasd {}: http://{addr}/  (ui dir: {ui_dir}, tasks dir: {}, runs dir: {})",
+            self.surface.as_str(),
             self.tasks_dir.display(),
             self.runs_dir.display()
         );
+        println!(
+            "surface={} port={} | separate entry points: studio default {}, runner default {}",
+            self.surface.as_str(),
+            self.port,
+            Surface::Studio.default_port(),
+            Surface::Runner.default_port()
+        );
+        if self.port == self.surface.other_default_port() {
+            println!(
+                "note: port {} is the *other* surface's default; use the matching command/UI",
+                self.port
+            );
+        }
 
         // No eager capture at startup: the editor shows a live frame instead
         // (GET /frame.png?live=1) so starting the app never spams the gallery.
@@ -1186,6 +1394,16 @@ impl Server {
         let method = parts.next().unwrap_or("");
         let path = parts.next().unwrap_or("/").to_string();
         let path_only = path.split('?').next().unwrap_or("/").to_string();
+        // Surface gate (design §A.3): classify BEFORE any handler/static file
+        // is reached, and answer a plain 404 so the other surface's routes do
+        // not leak (not even their existence). Unknown routes are not
+        // intercepted here; they keep the normal 404 fallback below.
+        if let Some(need) = required_surface(method, &path_only) {
+            if need != self.surface {
+                let mut out = stream;
+                return self.send_json(&mut out, 404, r#"{"error":"not found"}"#);
+            }
+        }
         if path_only == "/ws/live" {
             let Some(key) = ws_key else {
                 let mut out = stream;
@@ -1204,14 +1422,60 @@ impl Server {
 
         let mut out = stream;
         match (method, path_only.as_str()) {
-            ("GET", "/") => self.send_file(&mut out, &format!("{ui_dir}/index.html"), "text/html; charset=utf-8"),
-            ("GET", "/app.js") => self.send_file(&mut out, &format!("{ui_dir}/app.js"), "application/javascript; charset=utf-8"),
-            ("GET", "/asset_ui.js") => self.send_file(&mut out, &format!("{ui_dir}/asset_ui.js"), "application/javascript; charset=utf-8"),
-            ("GET", "/builder.js") => self.send_file(&mut out, &format!("{ui_dir}/builder.js"), "application/javascript; charset=utf-8"),
-            ("GET", "/style.css") => self.send_file(&mut out, &format!("{ui_dir}/style.css"), "text/css; charset=utf-8"),
-            ("GET", "/flow_model.js") => self.send_file(&mut out, &format!("{ui_dir}/flow_model.js"), "application/javascript; charset=utf-8"),
-            ("GET", "/dashboard.html") => self.send_file(&mut out, &format!("{ui_dir}/dashboard.html"), "text/html; charset=utf-8"),
-            ("GET", "/dashboard.js") => self.send_file(&mut out, &format!("{ui_dir}/dashboard.js"), "application/javascript; charset=utf-8"),
+            // Same path, surface-specific file: the editor gets index.html, the
+            // usage surface gets runner.html (design §A.2/§A.3).
+            ("GET", "/") => {
+                let file = match self.surface {
+                    Surface::Studio => "index.html",
+                    Surface::Runner => "runner.html",
+                };
+                self.send_ui_file(&mut out, ui_dir, file, "text/html; charset=utf-8")
+            }
+            ("GET", "/style.css") => {
+                self.send_ui_file(&mut out, ui_dir, "style.css", "text/css; charset=utf-8")
+            }
+            ("GET", "/app.js") => {
+                self.send_ui_file(&mut out, ui_dir, "app.js", "application/javascript; charset=utf-8")
+            }
+            ("GET", "/asset_ui.js") => self.send_ui_file(
+                &mut out,
+                ui_dir,
+                "asset_ui.js",
+                "application/javascript; charset=utf-8",
+            ),
+            ("GET", "/builder.js") => self.send_ui_file(
+                &mut out,
+                ui_dir,
+                "builder.js",
+                "application/javascript; charset=utf-8",
+            ),
+            ("GET", "/flow_model.js") => self.send_ui_file(
+                &mut out,
+                ui_dir,
+                "flow_model.js",
+                "application/javascript; charset=utf-8",
+            ),
+            ("GET", "/dashboard.html") => self.send_ui_file(
+                &mut out,
+                ui_dir,
+                "dashboard.html",
+                "text/html; charset=utf-8",
+            ),
+            ("GET", "/dashboard.js") => self.send_ui_file(
+                &mut out,
+                ui_dir,
+                "dashboard.js",
+                "application/javascript; charset=utf-8",
+            ),
+            ("GET", "/runner.js") => self.send_ui_file(
+                &mut out,
+                ui_dir,
+                "runner.js",
+                "application/javascript; charset=utf-8",
+            ),
+            ("GET", "/runner.css") => {
+                self.send_ui_file(&mut out, ui_dir, "runner.css", "text/css; charset=utf-8")
+            }
             ("GET", "/frame.png") => {
                 let q = parse_query(&path);
                 let live = q.iter().any(|(k, v)| k == "live" && v == "1");
@@ -1330,6 +1594,10 @@ impl Server {
             ("GET", "/instance/devices") => self.handle_instance_devices(&mut out),
             ("POST", "/instance") => self.handle_instance_update(&mut out, &body),
             ("GET", "/stats") => self.handle_stats(&mut out),
+            // --- PR1: Runner read-only APIs (Runner surface only; Studio gets
+            // the plain 404 from the surface gate above) ---
+            ("GET", "/runner/health") => self.handle_runner_health(&mut out),
+            ("GET", "/runner/tasks") => self.handle_runner_tasks(&mut out),
             ("GET", "/match") => self.handle_match(&mut out, &path),
             // --- §22.22 global template asset library ---
             ("GET", "/library") => self.handle_library_list(&mut out),
@@ -2275,6 +2543,19 @@ impl Server {
                 self.send_errors(out, 500, vec![format!("adb input swipe failed: {e}")])
             }
         }
+    }
+
+    /// Serve one static UI file. Uses `Path::join` (never string concatenation
+    /// with a hardcoded separator) so the same code runs on Windows/Linux/...
+    fn send_ui_file(
+        &self,
+        out: &mut TcpStream,
+        ui_dir: &str,
+        file: &str,
+        ctype: &str,
+    ) -> std::io::Result<()> {
+        let path = Path::new(ui_dir).join(file);
+        self.send_file(out, &path.to_string_lossy(), ctype)
     }
 
     fn send_file(&self, out: &mut TcpStream, path: &str, ctype: &str) -> std::io::Result<()> {
@@ -4731,7 +5012,9 @@ impl Server {
             "name": "本机实例",
             "device_serial": cfg.map(|c| c.device.serial.clone()).unwrap_or_default(),
             "adb_path": cfg.map(|c| c.device.adb_path.clone()).unwrap_or_default(),
-            "serve_port": cfg.map(|c| c.serve.port).unwrap_or(0),
+            // Echo the port this process actually bound (not the config value):
+            // studio and runner are different addresses (design §A.2).
+            "serve_port": self.port,
             "bind": cfg.map(|c| c.serve.bind.clone()).unwrap_or_default(),
             "state": {
                 "captured": st.png.is_some(),
@@ -6733,6 +7016,55 @@ impl Server {
         self.send_json(out, 200, &body.to_string())
     }
 
+    /// `GET /runner/health` — PR1 Runner read-only health contract.
+    ///
+    /// Deliberately small and filesystem-based: `scheduler_mode` comes from
+    /// `scheduler.json`, `lock` from the existing cross-process scheduler lock
+    /// probe. It never starts the scheduler and never writes anything, so it is
+    /// safe to poll from the Runner UI (and from a future Android client).
+    fn handle_runner_health(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let opts = self.scheduler_options();
+        let state_path = opts.state_path();
+        let lock_pid = crate::schedule::lock_held_by_live_process(&state_path);
+        let mut lock = serde_json::Map::new();
+        lock.insert("held".to_string(), serde_json::json!(lock_pid.is_some()));
+        if let Some(pid) = lock_pid {
+            lock.insert("pid".to_string(), serde_json::json!(pid));
+        }
+        let body = serde_json::json!({
+            "ok": true,
+            "surface": self.surface.as_str(),
+            "version": env!("CARGO_PKG_VERSION"),
+            "port": self.port,
+            "scheduler_mode": scheduler_mode_from_plan(&opts.config),
+            "tasks_dir": self.tasks_dir.display().to_string(),
+            "runs_dir": self.runs_dir.display().to_string(),
+            "state_path": state_path.display().to_string(),
+            "lock": serde_json::Value::Object(lock),
+        });
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `GET /runner/tasks` — bare task bundles under `--tasks-dir`.
+    ///
+    /// PR1 has no package registry yet, so every bundle is `unmanaged: true`
+    /// (PR5 will consult `packages/installed.json`). A broken `meta.json` is
+    /// reported per task (`meta_error`, empty params) instead of failing the
+    /// whole listing — the Runner must still be able to show and diagnose it.
+    fn handle_runner_tasks(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        match scan_runner_tasks(&self.tasks_dir) {
+            Ok(tasks) => {
+                let body = serde_json::json!({
+                    "ok": true,
+                    "dir": self.tasks_dir.display().to_string(),
+                    "tasks": tasks,
+                });
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(e) => self.send_errors(out, 500, vec![format!("scan tasks dir: {e}")]),
+        }
+    }
+
     /// Scheduler options for the status panel and the config read/write routes:
     /// paths come from the global live config (`scheduler.plan/state`), never
     /// shell out to another process.
@@ -7225,6 +7557,88 @@ fn queue_member_error(task: &str, owners: &[String]) -> String {
     )
 }
 
+/// Read `config.mode` from the scheduler plan **without** locking or writing.
+/// `not_configured` / `invalid_config` / `unknown` are diagnostics, never
+/// errors: `/runner/health` must answer even before the first plan is created.
+fn scheduler_mode_from_plan(path: &Path) -> String {
+    match std::fs::read_to_string(path) {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(v) => v
+                .get("config")
+                .and_then(|c| c.get("mode"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            Err(_) => "invalid_config".to_string(),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "not_configured".to_string(),
+        Err(_) => "unreadable".to_string(),
+    }
+}
+
+/// Scan `<tasks-dir>` for task bundles (directories only) and build the
+/// `/runner/tasks` rows. All path handling uses `Path::join`, so this is
+/// cross-platform (Windows, Linux, and any future Android packaging layer that
+/// consumes the same JSON contract).
+fn scan_runner_tasks(tasks_dir: &Path) -> Result<Vec<serde_json::Value>, String> {
+    let entries = match std::fs::read_dir(tasks_dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("read {}: {e}", tasks_dir.display())),
+    };
+    let mut rows = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read {}: {e}", tasks_dir.display()))?;
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let Some(task) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let has_meta = dir.join("meta.json").is_file();
+        let has_flow = dir.join("flow.json").is_file();
+        // Legacy per-task assets or the unified `images/` directory.
+        let has_assets = dir.join("assets.json").is_file() || dir.join("images").is_dir();
+        let (params, version, meta_error) = if has_meta {
+            match std::fs::read_to_string(dir.join("meta.json")) {
+                Ok(text) => match oas_task::Meta::from_json(&text) {
+                    Ok(meta) => (
+                        meta.params.iter().map(|p| p.key.clone()).collect::<Vec<_>>(),
+                        meta.version,
+                        None,
+                    ),
+                    Err(e) => (Vec::new(), None, Some(format!("meta.json: {e}"))),
+                },
+                Err(e) => (Vec::new(), None, Some(format!("read meta.json: {e}"))),
+            }
+        } else {
+            (Vec::new(), None, None)
+        };
+        let mut row = serde_json::Map::new();
+        row.insert("task".to_string(), serde_json::json!(task));
+        row.insert("has_meta".to_string(), serde_json::json!(has_meta));
+        row.insert("has_flow".to_string(), serde_json::json!(has_flow));
+        row.insert("has_assets".to_string(), serde_json::json!(has_assets));
+        row.insert("params".to_string(), serde_json::json!(params));
+        row.insert("unmanaged".to_string(), serde_json::json!(true));
+        if let Some(version) = version {
+            row.insert("version".to_string(), serde_json::json!(version));
+        }
+        if let Some(e) = meta_error {
+            row.insert("meta_error".to_string(), serde_json::json!(e));
+        }
+        rows.push(serde_json::Value::Object(row));
+    }
+    rows.sort_by(|a, b| {
+        a["task"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["task"].as_str().unwrap_or(""))
+    });
+    Ok(rows)
+}
+
 fn json_pretty(v: &serde_json::Value) -> Result<String, String> {
     let mut text =
         serde_json::to_string_pretty(v).map_err(|e| format!("序列化 JSON 失败：{e}"))?;
@@ -7630,6 +8044,12 @@ mod tests {
     /// Drive one GET through the REAL [`Server::handle`] over a loopback socket
     /// pair and return `(status line, body)`.
     fn get_route(server: &Server, target: &str) -> (String, String) {
+        get_route_in(server, target, "ui")
+    }
+
+    /// Same as [`get_route`] but with an explicit static-UI directory (surface
+    /// tests build a tiny temp `ui/` with fake index/runner files).
+    fn get_route_in(server: &Server, target: &str, ui_dir: &str) -> (String, String) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("local addr");
         let mut client = TcpStream::connect(addr).expect("connect");
@@ -7637,7 +8057,7 @@ mod tests {
         client
             .write_all(format!("GET {target} HTTP/1.1\r\nHost: test\r\n\r\n").as_bytes())
             .expect("write request");
-        server.handle(srv, "ui").expect("handle request");
+        server.handle(srv, ui_dir).expect("handle request");
         read_http_response(&mut client)
     }
 
@@ -7919,7 +8339,7 @@ mod tests {
         .expect("write non-run json");
         std::fs::write(runs_dir.join("scheduler").join("notes.txt"), "ignored")
             .expect("write ignored file");
-        let server = server_with_runs(runs_dir);
+        let server = server_with_runs(runs_dir).with_surface(Surface::Runner);
 
         let (status, body) = get_route(&server, "/runs/scheduler");
         assert!(status.contains("200"), "{status} {body}");
@@ -8020,7 +8440,7 @@ mod tests {
     fn scheduler_runs_list_missing_dir_is_an_empty_200() {
         let td = TempDir::new("sched-runs-none");
         let runs_dir = td.path().join("does-not-exist");
-        let server = server_with_runs(&runs_dir);
+        let server = server_with_runs(&runs_dir).with_surface(Surface::Runner);
         let (status, body) = get_route(&server, "/runs/scheduler");
         assert!(status.contains("200"), "{status} {body}");
         let v: serde_json::Value = serde_json::from_str(&body).expect("JSON body");
@@ -8043,7 +8463,7 @@ mod tests {
         fixture["member_index"] = serde_json::json!(1);
         fixture["kind"] = serde_json::json!("queue_member");
         write_scheduler_run_fixture(runs_dir, &fixture);
-        let server = server_with_runs(runs_dir);
+        let server = server_with_runs(runs_dir).with_surface(Surface::Runner);
 
         let (status, body) =
             get_route(&server, "/runs/scheduler/run?run_id=1700000000000-0000");
@@ -10236,6 +10656,7 @@ mod tests {
             .expect("write scheduler config");
         }
         server_with_tasks(td)
+            .with_surface(Surface::Runner)
             .with_assets_dir(td.join("assets"))
             .with_editor_log(td.join("logs/editor.log"))
             .with_scheduler_options(SchedulerOptions {
@@ -10244,6 +10665,13 @@ mod tests {
                 library: td.join("library"),
                 ..SchedulerOptions::default()
             })
+    }
+
+    /// Same pinned scheduler paths as [`scheduler_server`], but on the Studio
+    /// surface: `POST /task/delete` is a Studio route whose scheduler prune is
+    /// part of the same operation (runner-owned scheduler writes stay separate).
+    fn studio_scheduler_server(td: &Path, config: Option<&serde_json::Value>) -> Server {
+        scheduler_server(td, config).with_surface(Surface::Studio)
     }
 
     fn entry_ids(v: &serde_json::Value, array_key: &str) -> Vec<String> {
@@ -10724,7 +11152,7 @@ mod tests {
     fn task_delete_rejects_a_queue_member() {
         let td = TempDir::new("sched-delete-member");
         let tasks_dir = td.path().join("tasks");
-        let server = scheduler_server(
+        let server = studio_scheduler_server(
             td.path(),
             Some(&scheduler_config(
                 serde_json::json!([]),
@@ -10767,7 +11195,7 @@ mod tests {
     fn task_delete_prunes_entries_of_a_non_member_task() {
         let td = TempDir::new("sched-delete-solo");
         let tasks_dir = td.path().join("tasks");
-        let server = scheduler_server(
+        let server = studio_scheduler_server(
             td.path(),
             Some(&scheduler_config(
                 serde_json::json!([task_entry("e1", "solo")]),
@@ -10818,7 +11246,7 @@ mod tests {
         config["future"] = serde_json::json!({"keep": true});
         config["entries"][2]["ui_label"] = serde_json::json!("队列触发");
         config["queues"][0]["ui_color"] = serde_json::json!("blue");
-        let server = scheduler_server(td.path(), Some(&config));
+        let server = studio_scheduler_server(td.path(), Some(&config));
 
         let (status, body) = post_route(
             &server,
@@ -10867,7 +11295,7 @@ mod tests {
         let td = TempDir::new("sched-delete-prune-err");
         let tasks_dir = td.path().join("tasks");
         make_task(&tasks_dir, "solo");
-        let server = scheduler_server(td.path(), None);
+        let server = studio_scheduler_server(td.path(), None);
         let config_path = td.path().join("scheduler.json");
         let broken = "{ not json";
         std::fs::write(&config_path, broken).expect("write broken config");
@@ -10907,5 +11335,342 @@ mod tests {
             broken,
             "the broken config is left untouched for the user to repair"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // PR1: Studio/Runner surface split (design §A.2/§A.3)
+    // -----------------------------------------------------------------------
+
+    fn server_for_surface(td: &Path, surface: Surface) -> Server {
+        server_with_tasks(td).with_surface(surface)
+    }
+
+    #[test]
+    fn surface_route_table_matches_design_a3() {
+        use RouteOwner::{Both, Runner, Studio};
+
+        // Studio-only: >= 2 representative routes.
+        assert_eq!(route_owner("POST", "/task/save_flow"), Some(Studio));
+        assert_eq!(route_owner("GET", "/frames"), Some(Studio));
+        assert_eq!(required_surface("GET", "/ws/live"), Some(Surface::Studio));
+        assert_eq!(required_surface("POST", "/task/run"), Some(Surface::Studio));
+        assert_eq!(required_surface("GET", "/app.js"), Some(Surface::Studio));
+
+        // Runner-only: >= 2 representative routes.
+        assert_eq!(route_owner("GET", "/runner/tasks"), Some(Runner));
+        assert_eq!(route_owner("GET", "/runs/scheduler"), Some(Runner));
+        assert_eq!(
+            required_surface("POST", "/scheduler/config"),
+            Some(Surface::Runner)
+        );
+        assert_eq!(required_surface("POST", "/runs/delete"), Some(Surface::Runner));
+        assert_eq!(required_surface("GET", "/runner/health"), Some(Surface::Runner));
+
+        // Shared routes: >= 2, and they are NOT intercepted by the gate.
+        assert_eq!(route_owner("GET", "/instance"), Some(Both));
+        assert_eq!(route_owner("GET", "/stats"), Some(Both));
+        assert_eq!(route_owner("POST", "/instance"), Some(Both));
+        assert_eq!(required_surface("GET", "/instance"), None);
+        assert_eq!(required_surface("GET", "/stats"), None);
+
+        // Static files: same path -> per-surface file, or exclusive asset.
+        assert_eq!(route_owner("GET", "/"), Some(Both));
+        assert_eq!(route_owner("GET", "/style.css"), Some(Both));
+        assert_eq!(route_owner("GET", "/runner.js"), Some(Runner));
+        assert_eq!(route_owner("GET", "/dashboard.js"), Some(Studio));
+
+        // Unknown routes are not intercepted (normal 404 fallback handles them).
+        assert_eq!(route_owner("GET", "/definitely-not-a-route"), None);
+        assert_eq!(required_surface("POST", "/definitely-not-a-route"), None);
+    }
+
+    #[test]
+    fn studio_surface_hides_runner_only_routes() {
+        let td = TempDir::new("surface-studio-404");
+        let server = server_for_surface(td.path(), Surface::Studio);
+
+        for target in ["/runner/tasks", "/runner/health", "/runs/scheduler"] {
+            let (status, body) = get_route(&server, target);
+            assert!(status.contains("404"), "{target}: {status} {body}");
+        }
+        for (target, body) in [
+            ("/scheduler/config", "{}"),
+            ("/scheduler/reset", "{}"),
+            ("/runs/delete", "{}"),
+        ] {
+            let (status, out) = post_route(&server, target, "application/json", body.as_bytes());
+            assert!(status.contains("404"), "{target}: {status} {out}");
+        }
+        // The WebSocket upgrade is Studio-only too: the gate must run before
+        // the special `/ws/live` handling (a Studio request without a key is
+        // a 400, a Runner request must be a 404).
+        let (status, _) = get_route(&server, "/ws/live");
+        assert!(status.contains("400"), "studio /ws/live: {status}");
+    }
+
+    #[test]
+    fn studio_surface_still_serves_creative_routes() {
+        let td = TempDir::new("surface-studio-ok");
+        let server = server_for_surface(td.path(), Surface::Studio);
+
+        // Non-404 is the point: the Studio handler validates the body (400)
+        // instead of the surface gate answering 404.
+        let (status, body) = post_route(&server, "/task/save_flow", "application/json", b"{}");
+        assert!(!status.contains("404"), "{status} {body}");
+        assert!(status.contains("400"), "{status} {body}");
+
+        let (status, body) = get_route(&server, "/frames");
+        assert!(status.contains("200"), "/frames: {status} {body}");
+    }
+
+    #[test]
+    fn runner_surface_hides_studio_only_routes() {
+        let td = TempDir::new("surface-runner-404");
+        let server = server_for_surface(td.path(), Surface::Runner);
+
+        for target in ["/frames", "/task/flow?task=x", "/task/list", "/task/assets"] {
+            let (status, body) = get_route(&server, target);
+            assert!(status.contains("404"), "{target}: {status} {body}");
+        }
+        for (target, body) in [
+            ("/task/save_flow", "{}"),
+            ("/task/run", "{}"),
+            ("/capture", "{}"),
+            ("/input/tap", "{}"),
+        ] {
+            let (status, out) = post_route(&server, target, "application/json", body.as_bytes());
+            assert!(status.contains("404"), "{target}: {status} {out}");
+        }
+    }
+
+    #[test]
+    fn runner_surface_serves_health_and_tasks() {
+        let td = TempDir::new("surface-runner-ok");
+        let server = server_for_surface(td.path(), Surface::Runner).with_scheduler_options(
+            SchedulerOptions {
+                config: td.path().join("no-scheduler.json"),
+                state: Some(td.path().join("scheduler.state.json")),
+                tasks_dir: td.path().join("tasks"),
+                runs_dir: td.path().join("runs"),
+                ..SchedulerOptions::default()
+            },
+        );
+
+        let (status, body) = get_route(&server, "/runner/health");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("health JSON");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["surface"], "runner");
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["scheduler_mode"], "not_configured", "{v}");
+        assert_eq!(v["lock"]["held"], false, "{v}");
+        assert!(v["lock"].get("pid").is_none(), "no pid while unlocked: {v}");
+
+        let (status, body) = get_route(&server, "/runner/tasks");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("tasks JSON");
+        assert_eq!(v["ok"], true);
+        assert!(v["tasks"].as_array().expect("tasks array").is_empty());
+    }
+
+    #[test]
+    fn runner_health_reports_actual_port_mode_and_lock() {
+        let td = TempDir::new("runner-health");
+        let tasks_dir = td.path().join("tasks");
+        let runs_dir = td.path().join("runs");
+        std::fs::create_dir_all(&tasks_dir).unwrap();
+        std::fs::create_dir_all(&runs_dir).unwrap();
+
+        let plan = td.path().join("scheduler.json");
+        std::fs::write(
+            &plan,
+            r#"{"schema_version":4,"config":{"mode":"stop"}}"#,
+        )
+        .expect("write scheduler plan");
+        let state = td.path().join("scheduler.state.json");
+        // A lock held by THIS live process must be reported as held.
+        std::fs::write(
+            state.with_extension("lock"),
+            format!(r#"{{"pid":{},"started_ms":0}}"#, std::process::id()),
+        )
+        .expect("write lock");
+
+        let opts = SchedulerOptions {
+            config: plan,
+            state: Some(state.clone()),
+            tasks_dir: tasks_dir.clone(),
+            runs_dir: runs_dir.clone(),
+            ..SchedulerOptions::default()
+        };
+        let server = Server::new(Adb::from_env())
+            .with_surface(Surface::Runner)
+            .with_port(18789)
+            .with_tasks_dir(&tasks_dir)
+            .with_runs_dir(&runs_dir)
+            .with_scheduler_options(opts);
+
+        let (status, body) = get_route(&server, "/runner/health");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("health JSON");
+        assert_eq!(v["port"], 18789, "health must echo the actual bound port: {v}");
+        assert_eq!(v["scheduler_mode"], "stop", "{v}");
+        assert_eq!(v["state_path"], state.display().to_string(), "{v}");
+        assert_eq!(v["lock"]["held"], true, "{v}");
+        assert_eq!(v["lock"]["pid"], std::process::id(), "{v}");
+    }
+
+    #[test]
+    fn runner_tasks_lists_bare_bundles_and_survives_broken_meta() {
+        let td = TempDir::new("runner-tasks");
+        let tasks_dir = td.path().join("tasks");
+        let good = tasks_dir.join("每日");
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::write(
+            good.join("meta.json"),
+            r#"{"schema_version":1,"name":"每日","version":3,
+                "params":[{"key":"max_rounds","type":"int"},{"key":"触发文字","type":"string"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(good.join("flow.json"), r#"{"steps":[]}"#).unwrap();
+        std::fs::write(good.join("assets.json"), r#"{"items":[]}"#).unwrap();
+        std::fs::write(tasks_dir.join("not-a-task.txt"), b"x").unwrap();
+
+        let broken = tasks_dir.join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("meta.json"), "{ not json").unwrap();
+
+        let bare = tasks_dir.join("bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        std::fs::write(bare.join("flow.json"), r#"{"steps":[]}"#).unwrap();
+
+        let server = Server::new(Adb::from_env())
+            .with_surface(Surface::Runner)
+            .with_tasks_dir(&tasks_dir);
+        let (status, body) = get_route(&server, "/runner/tasks");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("tasks JSON");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["dir"], tasks_dir.display().to_string());
+        let rows = v["tasks"].as_array().expect("tasks array");
+        assert_eq!(rows.len(), 3, "only directories are listed: {v}");
+        let row = |name: &str| {
+            rows.iter()
+                .find(|r| r["task"] == name)
+                .unwrap_or_else(|| panic!("missing task {name}: {v}"))
+        };
+
+        let daily = row("每日");
+        assert_eq!(daily["has_meta"], true);
+        assert_eq!(daily["has_flow"], true);
+        assert_eq!(daily["has_assets"], true);
+        assert_eq!(daily["version"], 3);
+        assert_eq!(daily["unmanaged"], true);
+        assert_eq!(
+            daily["params"],
+            serde_json::json!(["max_rounds", "触发文字"])
+        );
+
+        let broken = row("broken");
+        assert_eq!(broken["has_meta"], true);
+        assert_eq!(broken["has_flow"], false);
+        assert_eq!(broken["params"], serde_json::json!([]));
+        assert!(
+            broken["meta_error"].as_str().is_some_and(|e| !e.is_empty()),
+            "a broken meta.json must be reported, not 500: {broken}"
+        );
+
+        let bare = row("bare");
+        assert_eq!(bare["has_meta"], false);
+        assert_eq!(bare["has_flow"], true);
+        assert_eq!(bare["has_assets"], false);
+        assert!(bare["version"].is_null(), "version is optional: {bare}");
+
+        // A missing tasks dir is an empty list, not an error.
+        let missing = Server::new(Adb::from_env())
+            .with_surface(Surface::Runner)
+            .with_tasks_dir(td.path().join("no-such-tasks"));
+        let (status, body) = get_route(&missing, "/runner/tasks");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("tasks JSON");
+        assert!(v["tasks"].as_array().expect("tasks").is_empty());
+    }
+
+    #[test]
+    fn shared_routes_answer_on_both_surfaces_and_echo_the_bound_port() {
+        let td = TempDir::new("surface-shared");
+        let runs_dir = td.path().join("runs");
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        for surface in [Surface::Studio, Surface::Runner] {
+            let server = Server::new(Adb::from_env())
+                .with_surface(surface)
+                .with_port(19000)
+                .with_tasks_dir(td.path().join("tasks"))
+                .with_runs_dir(&runs_dir);
+            for target in ["/instance", "/stats", "/runs"] {
+                let (status, body) = get_route(&server, target);
+                assert!(
+                    status.contains("200"),
+                    "{surface:?} {target}: {status} {body}"
+                );
+            }
+            let (_, body) = get_route(&server, "/instance");
+            let v: serde_json::Value = serde_json::from_str(&body).expect("instance JSON");
+            assert_eq!(
+                v["serve_port"], 19000,
+                "{surface:?} must echo its own bound port: {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn surface_root_serves_its_own_shell_and_hides_the_other_assets() {
+        let td = TempDir::new("surface-static");
+        let ui = td.path().join("ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(
+            ui.join("index.html"),
+            r#"<html><body>STUDIO-SHELL<script src="app.js"></script></body></html>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            ui.join("runner.html"),
+            r#"<html><body>RUNNER-SHELL<script src="runner.js"></script></body></html>"#,
+        )
+        .unwrap();
+        std::fs::write(ui.join("app.js"), "studio-js").unwrap();
+        std::fs::write(ui.join("runner.js"), "runner-js").unwrap();
+        std::fs::write(ui.join("runner.css"), "runner-css").unwrap();
+        std::fs::write(ui.join("style.css"), "shared-css").unwrap();
+        let ui_str = ui.to_string_lossy().into_owned();
+
+        let studio = Server::new(Adb::from_env());
+        let (status, body) = get_route_in(&studio, "/", &ui_str);
+        assert!(status.contains("200"), "{status} {body}");
+        assert!(body.contains("STUDIO-SHELL") && body.contains("app.js"), "{body}");
+        let (status, body) = get_route_in(&studio, "/style.css", &ui_str);
+        assert!(status.contains("200"), "{status} {body}");
+        assert_eq!(body, "shared-css");
+        let (status, _) = get_route_in(&studio, "/runner.js", &ui_str);
+        assert!(status.contains("404"), "Studio must not expose runner.js: {status}");
+
+        let runner = Server::new(Adb::from_env()).with_surface(Surface::Runner);
+        let (status, body) = get_route_in(&runner, "/", &ui_str);
+        assert!(status.contains("200"), "{status} {body}");
+        assert!(
+            body.contains("RUNNER-SHELL") && body.contains("runner.js"),
+            "{body}"
+        );
+        for (target, expected) in [
+            ("/runner.js", "runner-js"),
+            ("/runner.css", "runner-css"),
+            ("/style.css", "shared-css"),
+        ] {
+            let (status, body) = get_route_in(&runner, target, &ui_str);
+            assert!(status.contains("200"), "{target}: {status} {body}");
+            assert_eq!(body, expected, "{target}");
+        }
+        // Studio assets are not exposed on the Runner surface.
+        let (status, _) = get_route_in(&runner, "/app.js", &ui_str);
+        assert!(status.contains("404"), "Runner must not expose app.js: {status}");
     }
 }

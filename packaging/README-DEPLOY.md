@@ -1,7 +1,27 @@
-# OAS V0.1.0 部署说明（实机 / 模拟器）
+# OAS 部署说明（Studio 编辑端 / Runner 使用端）
 
-> 本包 = `oasd.exe` + 编辑器 UI + OCR 模型 + adb + 配置 + 启停脚本；数据在 `tasks/`、`assets/`、`library/`、`frames/`、`runs/`、`logs/`。
+> 仓库产出**两种发行包**，面向两类人：
+> - **Studio（编辑端）**：开发/编辑人员使用，含编辑器 UI（工作台、任务构建、素材、帧库），端口 **8788**，启动脚本 `start-studio.bat`（`start-editor.bat` 保留为兼容别名）。
+> - **Runner（使用端）**：终端用户使用，只含运行 UI + OCR 模型 + adb，端口 **8789**，启动脚本 `start-runner.bat`；用于安装 `.oaspkg` 任务包、填写任务配置、排队/调度/执行。**Runner 包不包含 Studio 编辑 UI；终端用户只需要下载 Runner 包 + 任务包。**
+>
 > 目标环境：Windows 10/11 x64；Android 模拟器（MuMu 12）或 Android 真机（adb）；阴阳师 Android 客户端。
+
+## 两种发行包（必读）
+
+| 维度 | Studio 编辑端 | Runner 使用端 |
+|---|---|---|
+| 发行包 | `oasd-v<version>-win64.zip` | `oasd-runner-v<version>-win64.zip` |
+| 发放对象 | 开发 / 编辑 / 发布任务的人 | **终端用户**（只下载这个 + `.oaspkg`） |
+| HTTP 入口 | `http://127.0.0.1:8788/`（`ui/index.html`） | `http://127.0.0.1:8789/`（`ui/runner.html`） |
+| 命令 | `oasd studio --port 8788 ...`（`oasd serve` = 兼容别名） | `oasd runner --port 8789 ...` |
+| 启动脚本 | `start-studio.bat` / 兼容 `start-editor.bat` | `start-runner.bat` |
+| 停止脚本 | `stop-studio.bat` / 兼容 `stop-editor.bat` | `stop-runner.bat` |
+| UI 资源 | `index.html` / `app.js` / `builder.js` / `flow_model.js` / `asset_ui.js` / `dashboard.*` | 仅 `runner.html` / `runner.js` / `runner.css` + 共享 `style.css` |
+| 能做什么 | 创作帧/素材/流程、lint、发布 `.oaspkg`、试运行 | 安装/卸载任务包、填运行参数、排队/调度、执行、看运行记录 |
+| 不能做什么 | 不是给终端用户的操作入口（不需要安装任务包） | **没有编辑 UI**：不能改流程/素材/帧库；这些在 Studio 完成并发布 |
+| 数据目录 | tasks/ assets/ frames/ library/ runs/ logs/ + scheduler.json | tasks/ assets/ packages/ runs/ logs/ + scheduler.json（不含 frames/ library/） |
+
+两种包共用同一个 `oasd.exe` 二进制，只是启动的子命令、端口和随包 UI 不同。单机部署时可以并存，但**不要同时对同一台设备执行**（Runner 调度与 Studio 试运行会抢设备）。
 
 ## 0. V0.1.0 新增
 
@@ -32,11 +52,31 @@
 
 ## 1. 首次安装
 
-1. 解压整个 zip 到例如 `D:\OAS-live\oas-core\`（**不要覆盖旧 OAS 目录**）；
+### 1.1 Runner（终端用户；只装这个）
+
+1. 解压 `oasd-runner-v<version>-win64.zip` 到例如 `D:\OAS-runner\`（**不要覆盖旧 OAS 目录**）；
+2. 编辑 `config/live.json`，按实际修改：
+   - `device.serial`：adb 设备 serial（如 `127.0.0.1:16384`）；
+   - `device.adb_path`：默认相对路径 `adb/adb.exe`，可改绝对路径；
+   - `runner.port`：默认 **8789**（不要与 Studio 的 8788 冲突）。
+3. 先验证设备（可选）：
+   ```bat
+   oasd.exe probe --serial 127.0.0.1:16384
+   ```
+4. 双击 `start-runner.bat` → 浏览器打开 `http://127.0.0.1:8789/`；
+5. 在 Runner 页面「安装包」选择 `.oaspkg` 任务包 → 安装 → 填写任务配置 → 加入队列/调度（具体按钮以当前 Runner 版本实际提供的能力为准）；
+6. 日志在 `logs/runner.log`；停止用 `stop-runner.bat`（或关闭启动窗口）。
+
+> Runner 包不包含任务构建、素材、帧库、流程编辑页面；这些属于 Studio。Runner 只消费 Studio 发布的 `.oaspkg`。
+> 版本信息见包根 `VERSION` / `BUILD-INFO.txt`。
+
+### 1.2 Studio（开发/编辑/发布；不发给终端用户）
+
+1. 解压 `oasd-v<version>-win64.zip` 到例如 `D:\OAS-dev-live\`（**不要覆盖旧 OAS 目录**）；
 2. 复制 `config/live.example.json` → `config/live.json`，按实际修改：
    - `device.serial`：adb 设备 serial（如 `127.0.0.1:16384`）；
    - `device.adb_path`：相对 `adb/adb.exe` 或绝对路径；
-   - `serve.port`：默认 8788（**避免与旧 OAS 22287 冲突**）。
+   - `serve.port`：默认 **8788**（**避免与旧 OAS 22287 / Runner 8789 冲突**）。
 3. 先验证设备：
    ```bat
    oasd.exe probe --serial 127.0.0.1:16384
@@ -45,9 +85,11 @@
    ```bat
    oasd.exe task lint --tasks-dir tasks --all
    ```
-5. 启动编辑器：双击 `start-editor.bat` → 浏览器打开 `http://127.0.0.1:8788/`。
+5. 启动编辑器：双击 `start-studio.bat`（旧的 `start-editor.bat` 仍可用，会转调它）→ 浏览器打开 `http://127.0.0.1:8788/`。
 
-## 2. 创建并运行任务（任务工作台）
+> `oasd serve` 仍保留为 deprecated 兼容别名（等价 `oasd studio`），老脚本/快捷方式不会立刻失效。
+
+## 2. 创建并运行任务（任务工作台，Studio）
 
 1. 顶部「任务库」→「新建任务…」→ 填名称/模板/描述 → 创建；
 2. 按工作台步骤：① 基础 → ② 画面/素材（框选/多行 OCR）→ ③ 素材操作（生成点击/区域点击/拖动）→
@@ -55,30 +97,40 @@
 3. 多行 OCR：框选整屏/区域 →「多行识别」→ 在结果行点「生成点击步骤/追加到流程」；
 4. 点「运行任务」→ 结果/日志窗口查看；点击审计在 `runs/`（点击分布页默认聚合）。
 
-## 3. 调度
+## 3. 调度 / 队列
 
-1. 编辑器调度面板或直接编辑 `scheduler.json`（见 ENGINE §22.34.4）：
+1. **Runner 使用端负责调度**：目标形态是进程内嵌调度线程（单进程，无需再双击 `start-scheduler.bat`）。当前版本若页面尚未提供调度启动/编辑入口，可继续用兼容的 `start-scheduler.bat`（headless CLI）；两者共用 `<state>.lock`，**天然互斥**，不要同时跑。日志 `logs/runner.log` + `logs/scheduler.events.jsonl`（现有审计事件）。
+2. 调度计划仍是 `scheduler.json`（schema v4；v3 读取时自动升级）：
    - `periodic`：窗口 + 每日/每周 quota；
    - `temp`：临时任务，每轮按 entries 顺序跑一次，执行前后重置，无完成记忆；
-2. 双击 `start-scheduler.bat`；日志 `logs/scheduler.log`，报告 `runs/scheduler-report.json`；
-3. 重置记忆：编辑器「重置记忆」多选/全选/反选，或
+   - `queues`：队列成员串行、整轮计次（规则见 ENGINE §22.34）。
+3. headless / CI 仍保留独立 CLI（兼容）：
+   ```bat
+   start-scheduler.bat
+   ```
+   它和 Runner 内嵌调度共用 `<state>.lock`，**天然互斥**：Runner 在跑时不要再启动 `start-scheduler.bat`。
+4. 重置记忆：Runner 页面「重置记忆」多选/全选/反选，或
    ```bat
    oasd.exe scheduler reset-memory --tasks 探索,个人突破 --include-checkpoint
    ```
 
 ## 4. 停止 / 升级 / 回滚
 
-- 停止：`stop-editor.bat`、`stop-scheduler.bat`；
+- 停止：Studio 用 `stop-studio.bat`（兼容 `stop-editor.bat`）；Runner 用 `stop-runner.bat`；旧 headless 调度用 `stop-scheduler.bat`；
 - 升级：
-  1. 停止 editor/scheduler；
-  2. 备份 `config/ tasks/ library/ scheduler.json` 到 `_backup/`；
-  3. 解压新 zip 覆盖**程序文件**（exe/ui/models/adb），保留数据目录；
-  4. 启动后执行 `task lint --all` + `probe`；
+  1. 停止对应进程；
+  2. 备份数据：
+     - Runner：`config/ tasks/ packages/ scheduler.json runs/ logs/` → `_backup/`；
+     - Studio：`config/ tasks/ library/ assets/ frames/ scheduler.json` → `_backup/`；
+  3. 解压新 zip 覆盖**程序文件**（exe/ui/models/adb + 启停脚本），保留数据目录；
+  4. 启动后执行 `task lint --all` + `probe`（Studio），或打开 Runner 健康/任务列表确认；
 - 回滚：恢复上一版程序文件 + `_backup/` 数据。
 
 ## 5. 注意事项
 
-- 同一台模拟器只能被一个自动化进程控制：跑本引擎时先停旧 OAS 的调度；
-- 本引擎默认只绑 `127.0.0.1`，不要暴露公网；
+- **Runner 包没有编辑 UI**：终端用户不要用 Runner 改流程/素材；制作任务请用 Studio 发布 `.oaspkg`；
+- Studio 默认 8788，Runner 默认 8789，二者都只绑 `127.0.0.1`，不要暴露公网；
+- 同一台模拟器/真机同一时间只能被一个自动化进程控制：跑 Runner 调度时先停 Studio 试运行、旧 OAS 调度和 headless scheduler；
 - 未签名 exe 可能触发 SmartScreen：更多信息 → 仍要运行（正式分发建议签名）；
-- 任务/素材是纯数据，可整目录复制；`images/` 与 assets.json 不要手工改名。
+- 任务/素材/任务包是纯数据，可整目录复制；`assets/images/` 与 `assets.json` 不要手工改名；
+- macOS/Linux 没有 `.bat`：直接 `./oasd runner --port 8789 --config config/live.json --ui ui`（UI 是 Web）；Android 使用端尚未实现，设计约束见源码仓库 `packaging/CROSS-PLATFORM.md`。
