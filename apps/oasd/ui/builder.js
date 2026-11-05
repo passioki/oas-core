@@ -63,12 +63,9 @@
     return paramPanelRows(B.params).length > 0;
   }
 
-  // Build a step for a catalogue entry: parameter presets expand to a normal
-  // click_target/wait_until whose OCR text is param('<key>'); everything else is
-  // the plain makeStep(). Returns null (with a user-facing status) when the
-  // preset cannot be built (no declared param / bad key).
-  function buildActionStep(key) {
-    if (!PARAM_ACTIONS[key]) return OP_META[key] ? makeStep(key) : null;
+  // Every parameter action needs a declared key; this reports the same hints
+  // from one place so adding from the palette or a branch behaves identically.
+  function paramActionContext() {
     if (!paramPanelRows(B.params).length) {
       status('先在任务参数面板声明参数（点「配置项…」）再使用参数动作', '#ff8a80');
       flashParamsPanel();
@@ -80,9 +77,124 @@
       status('参数缺少 key，无法生成参数动作；请先在「配置项…」修正', '#ff8a80');
       return null;
     }
-    return key === 'param_click_text'
-      ? paramClickStep(paramKey, pickOcrAssetForAction())
-      : paramWaitStep(paramKey, 10);
+    return { paramKey: paramKey, param: param };
+  }
+
+  // Build a step for a catalogue entry *without* prompting (used by tests and by
+  // prepareActionStep). Parameter presets expand to a normal click_target /
+  // wait_until whose OCR text is param('<key>'); everything else is makeStep().
+  function buildActionStep(key, opts) {
+    if (!PARAM_ACTIONS[key]) return OP_META[key] ? makeStep(key) : null;
+    const ctx = paramActionContext();
+    if (!ctx) return null;
+    const o = opts && typeof opts === 'object' ? opts : {};
+    if (key === 'param_click_text') {
+      return paramClickStep(ctx.paramKey, o.ocrSel !== undefined ? o.ocrSel : pickOcrAssetForAction());
+    }
+    return paramWaitStep(ctx.paramKey, 10);
+  }
+
+  // The OCR asset for a *new* parameter click step:
+  //  1. reuse the OCR asset of the currently selected step (editing context),
+  //  2. else the only OCR asset,
+  //  3. else ask the user (never silently pick an arbitrary first asset).
+  // Returns '' for the O_OCR placeholder, or null when the user cancels.
+  function selectedOcrAssetId() {
+    const step = getStep(B.selected);
+    if (!step || !step.args || typeof step.args !== 'object') return '';
+    const candidates = [];
+    if (Array.isArray(step.args.find) && step.args.find[0]) candidates.push(step.args.find[0]);
+    for (const k of ['requires', 'expect', 'from', 'to']) {
+      if (step.args[k] && typeof step.args[k] === 'object') candidates.push(step.args[k]);
+    }
+    if (step.args.sel) candidates.push({ sel: step.args.sel });
+    for (const loc of candidates) {
+      const kind = loc && loc.kind;
+      if ((kind === undefined || kind === 'ocr_text') && loc.sel &&
+          B.assets.some((a) => a.id === loc.sel &&
+            (a.kind === 'ocr_line' || a.kind === 'ocr_lines'))) {
+        return loc.sel;
+      }
+    }
+    return '';
+  }
+
+  function chooseOcrAssetDialog(initial) {
+    return new Promise(function (resolve) {
+      if (typeof document === 'undefined' || !document.body) {
+        resolve(initial || '');
+        return;
+      }
+      const assets = B.assets.filter((a) => a.kind === 'ocr_line' || a.kind === 'ocr_lines');
+      const dlg = document.createElement('dialog');
+      dlg.className = 'task-dialog builder-choose-dialog';
+      const head = document.createElement('h3');
+      head.textContent = '选择 OCR 素材（参数文字点击需要定位区域）';
+      const hint = document.createElement('div');
+      hint.className = 'muted small';
+      hint.textContent = '参数只替换识别文字；点击仍需要一个 OCR 素材/ROI 作为定位区域。之后可在右侧「定位对象」里修改。';
+      const sel = document.createElement('select');
+      for (const a of assets) {
+        const o = document.createElement('option');
+        o.value = a.id;
+        o.textContent = a.id + (a.ocr_text ? ' · 文字：' + a.ocr_text : '');
+        sel.appendChild(o);
+      }
+      if (initial) sel.value = initial;
+      const actions = document.createElement('div');
+      actions.className = 'builder-form-actions';
+      const ok = document.createElement('button');
+      ok.type = 'button';
+      ok.textContent = '使用该素材';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.textContent = '取消';
+      let settled = false;
+      function done(value) {
+        if (settled) return;
+        settled = true;
+        try { if (typeof dlg.close === 'function' && dlg.open) dlg.close(); } catch (e) { /* cosmetic */ }
+        if (dlg.parentNode) dlg.parentNode.removeChild(dlg);
+        resolve(value);
+      }
+      ok.addEventListener('click', () => done(sel.value));
+      cancel.addEventListener('click', () => done(null));
+      actions.appendChild(ok);
+      actions.appendChild(cancel);
+      dlg.appendChild(head);
+      dlg.appendChild(hint);
+      dlg.appendChild(sel);
+      dlg.appendChild(actions);
+      document.body.appendChild(dlg);
+      if (typeof dlg.showModal === 'function') {
+        try { dlg.showModal(); } catch (e) { dlg.setAttribute('open', ''); }
+      } else {
+        dlg.setAttribute('open', '');
+      }
+    });
+  }
+
+  async function resolveParamClickAsset() {
+    const assets = B.assets.filter((a) => a.kind === 'ocr_line' || a.kind === 'ocr_lines');
+    if (!assets.length) return '';
+    const contextual = selectedOcrAssetId();
+    if (contextual) return contextual;
+    if (assets.length === 1) return assets[0].id;
+    return chooseOcrAssetDialog(assets[0].id);
+  }
+
+  // Async path used by the palette/branch insertion: parameter click asks for
+  // the OCR asset when the context does not determine it.
+  async function prepareActionStep(key) {
+    if (!PARAM_ACTIONS[key]) return OP_META[key] ? makeStep(key) : null;
+    const ctx = paramActionContext();
+    if (!ctx) return null;
+    if (key === 'param_click_text') {
+      const ocrSel = await resolveParamClickAsset();
+      if (ocrSel === null) return null;
+      return paramClickStep(ctx.paramKey, ocrSel);
+    }
+    return paramWaitStep(ctx.paramKey, 10);
   }
   // Generic FIELDS text inputs that hold expressions; they get the「插入参数 ▾」
   // button. `cond` fields insert a whole text_visible(param('k')) predicate.
@@ -304,6 +416,48 @@
   function paramInsertSnippet(key, mode) {
     const expr = paramTextExpr(key);
     return mode === 'cond' ? 'text_visible(' + expr + ')' : expr;
+  }
+
+  // P7: insert a snippet at [start,end) without gluing tokens together.
+  // The old implementation concatenated blindly, so inserting a parameter
+  // condition into a field whose value was `true` produced
+  // `truetext_visible(param('x'))` (invalid flow expression — user-reported bug).
+  // - mode 'cond': when appending after a non-empty expression that does not end
+  //   with an operator / open paren / comma, join with ` and `.
+  // - otherwise add single spaces when either side would merge identifier tokens.
+  function exprInsertText(value, start, end, snippet, mode) {
+    const v = String(value === undefined || value === null ? '' : value);
+    const rawSnippet = String(snippet === undefined || snippet === null ? '' : snippet);
+    const s = Math.max(0, Math.min(typeof start === 'number' ? start : v.length, v.length));
+    const e = Math.max(s, Math.min(typeof end === 'number' ? end : s, v.length));
+    const before = v.slice(0, s);
+    const after = v.slice(e);
+    const trimmedBefore = before.replace(/\s+$/, '');
+    const endsOpen = !trimmedBefore || /[(\[,:!&|+\-*/%=<>]$/.test(trimmedBefore) ||
+      /\b(?:and|or|not)$/.test(trimmedBefore);
+    let ins = rawSnippet;
+    if (mode === 'cond' && s === v.length && trimmedBefore && !endsOpen &&
+        !/^\s*(?:and|or)\b/.test(rawSnippet)) {
+      ins = ' and ' + ins;
+    } else {
+      const needBefore = before !== '' && /[A-Za-z0-9_)\x27\x22]$/.test(before) &&
+        /^[A-Za-z0-9_(\x27\x22]/.test(ins);
+      const needAfter = after !== '' && /[A-Za-z0-9_(\x27\x22]$/.test(ins) &&
+        /^[A-Za-z0-9_(\x27\x22]/.test(after);
+      ins = (needBefore ? ' ' : '') + ins + (needAfter ? ' ' : '');
+    }
+    return { text: before + ins + after, caret: (before + ins).length };
+  }
+
+  // P7: repair the exact damage the old insertion path caused so flows already
+  // saved by the buggy UI load as valid ones (`truetext_visible(...)` →
+  // `true and text_visible(...)`). Only touches the unambiguous prefix form.
+  function repairConditionExpr(cond) {
+    const c = String(cond === undefined || cond === null ? '' : cond);
+    return c.replace(
+      /^(true|false)(?=(?:not\b|appear\s*\(|text_visible\s*\(|ocr\s*\(|param\s*\(|var\s*\())/,
+      '$1 and '
+    );
   }
 
   function paramDefaultText(param) {
@@ -1029,6 +1183,8 @@
   }
 
   function pickOcrAssetForAction() {
+    const contextual = selectedOcrAssetId();
+    if (contextual) return contextual;
     for (const a of B.assets) {
       if (a && (a.kind === 'ocr_line' || a.kind === 'ocr_lines')) return a.id;
     }
@@ -1047,14 +1203,18 @@
     }
   }
 
-  function addParamAction(kind) {
+  async function addParamAction(kind) {
     const meta = PARAM_ACTIONS[kind];
     if (!meta) return;
-    const step = buildActionStep(kind);
+    const step = await prepareActionStep(kind);
     if (!step) return;
     insertStep(step, meta.label + '（' + meta.op + '）');
-    const paramKey = paramSafeKey((pickParamForAction() || {}).key);
-    status(`已生成 ${meta.op}：文字来源 param('${paramKey}')（不新增 op，可在属性面板改）`);
+    if (kind === 'param_click_text') {
+      const sel = step.args.find && step.args.find[0] ? step.args.find[0].sel : '';
+      status(`已生成 click_target：OCR 素材「${sel}」+ 文字 param('${paramSafeKey((pickParamForAction() || {}).key)}')；素材可在右侧「定位对象」修改`);
+    } else {
+      status(`已生成 ${meta.op}：文字来源 param('${paramSafeKey((pickParamForAction() || {}).key)}')（不新增 op，可在属性面板改）`);
+    }
   }
 
   function removeCheckedIn(steps, basePath) {
@@ -1780,15 +1940,15 @@
     });
   }
 
-  function insertTextAtField(field, text) {
+  function insertTextAtField(field, text, mode) {
     if (!field) return false;
     const value = String(field.value === undefined || field.value === null ? '' : field.value);
     const start = typeof field.selectionStart === 'number' ? field.selectionStart : value.length;
     const end = typeof field.selectionEnd === 'number' ? field.selectionEnd : start;
-    field.value = value.slice(0, start) + text + value.slice(end);
-    const caret = start + text.length;
+    const ins = exprInsertText(value, start, end, text, mode || 'expr');
+    field.value = ins.text;
     if (typeof field.setSelectionRange === 'function') {
-      try { field.setSelectionRange(caret, caret); } catch (e) { /* cosmetic */ }
+      try { field.setSelectionRange(ins.caret, ins.caret); } catch (e) { /* cosmetic */ }
     }
     if (typeof field.focus === 'function') field.focus();
     field.dispatchEvent(new Event('change', { bubbles: true }));
@@ -1838,7 +1998,7 @@
       const snippet = paramInsertSnippet(key, mode);
       const field = typeof getField === 'function' ? getField() : null;
       if (field) {
-        insertTextAtField(field, snippet);
+        insertTextAtField(field, snippet, mode);
         status('已插入 ' + snippet);
       } else if (copyTextBestEffort(snippet)) {
         status('已复制到剪贴板：' + snippet);
@@ -1900,7 +2060,7 @@
     const snippet = paramInsertSnippet(key, B.lastExprMode || 'expr');
     const field = B.lastExprField;
     if (field && field.isConnected && typeof field.value === 'string') {
-      insertTextAtField(field, snippet);
+      insertTextAtField(field, snippet, B.lastExprMode || 'expr');
       status('已插入 ' + snippet + '（参数来自面板）');
       return;
     }
@@ -2410,11 +2570,13 @@
       delete step.args.n;
       delete step.args.max_iters;
       if (step.args.cond == null || step.args.cond === '') step.args.cond = 'true';
+      step.args.cond = repairConditionExpr(step.args.cond);
     } else if (step.op === 'while') {
       delete step.args.sel;
       delete step.args.n;
       delete step.args.max_iters;
       if (step.args.cond == null || step.args.cond === '') step.args.cond = 'true';
+      step.args.cond = repairConditionExpr(step.args.cond);
     } else if (step.op === 'loop') {
       delete step.args.sel;
       delete step.args.cond;
@@ -2864,8 +3026,8 @@
       b.type = 'button';
       b.textContent = branchLabel;
       b.title = '添加子动作到「' + branchLabel + '」分支（与左侧动作库同一来源）';
-      b.addEventListener('click', () => {
-        const child = buildActionStep(sel.value);
+      b.addEventListener('click', async () => {
+        const child = await prepareActionStep(sel.value);
         if (!child) return;
         const arr = step[key];
         arr.push(child);
@@ -3134,6 +3296,10 @@
       if (!silent) status('请先选择任务', '#ff8a80');
       return;
     }
+    // P7: strip stale non-flow args (e.g. an old `args.sel` left on if/while by
+    // the legacy generic asset picker) and repair the old malformed condition
+    // concatenation before validating/writing.
+    normalizeFlow(B.flow);
     // P3: 保存前本地校验「文字来源」互斥（结构化编辑器不会双写；高级 JSON 手改
     // 可写出 text + text_expr 同时存在，这里拦住，避免把坏 flow 写盘）。
     const specIssues = flowTextSpecIssues(B.flow);

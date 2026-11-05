@@ -3539,7 +3539,7 @@ ok(
 const BUILDER_PARAM_PURE = [
   'paramSafeKey', 'paramTextExpr', 'paramWaitCond', 'paramClickStep', 'paramWaitStep',
   'paramSourceApply', 'paramSourceFromLocator', 'locatorParamKey', 'locatorTextSpecError',
-  'flowTextSpecIssues', 'paramInsertSnippet', 'paramDefaultText', 'paramPanelRows',
+  'flowTextSpecIssues', 'paramInsertSnippet', 'exprInsertText', 'repairConditionExpr', 'paramDefaultText', 'paramPanelRows',
   'paramPanelSummary', 'collectParamUses', 'undeclaredParamUses',
   'parseConditionPreset', 'conditionRowExpr',
 ];
@@ -3635,6 +3635,54 @@ eq(builderSb.flowTextSpecIssues(null), [], 'a missing flow has no spec issue');
 eq(builderSb.paramInsertSnippet('分组', 'expr'), "param('分组')", 'expr snippet is param(key)');
 eq(builderSb.paramInsertSnippet('分组', 'cond'), "text_visible(param('分组'))", 'cond snippet wraps text_visible');
 eq(builderSb.paramInsertSnippet('k'), "param('k')", 'an unknown insert mode defaults to param(key)');
+
+// P7: insertion must not glue tokens together. The user-reported bug was a
+// condition field containing `true` + text_visible(param('group')) becoming
+// `truetext_visible(param('group'))` (invalid flow expression).
+eq(
+  builderSb.exprInsertText('true', 4, 4, "text_visible(param('group'))", 'cond'),
+  { text: "true and text_visible(param('group'))", caret: "true and text_visible(param('group'))".length },
+  'inserting a condition predicate after an expression joins with ` and `'
+);
+eq(
+  builderSb.exprInsertText('', 0, 0, "text_visible(param('k'))", 'cond'),
+  { text: "text_visible(param('k'))", caret: "text_visible(param('k'))".length },
+  'inserting into an empty condition adds no operator'
+);
+eq(
+  builderSb.exprInsertText('true and ', 10, 10, "text_visible(param('k'))", 'cond').text,
+  "true and text_visible(param('k'))",
+  'an existing trailing operator needs no extra ` and `'
+);
+ok(
+  builderSb.exprInsertText('true and ', 10, 10, "text_visible(param('k'))", 'cond').caret ===
+    "true and text_visible(param('k'))".length,
+  'the caret lands after the inserted snippet'
+);
+eq(
+  builderSb.exprInsertText('abc', 3, 3, "param('k')", 'expr').text,
+  "abc param('k')",
+  'expr insertion keeps an identifier boundary (single space, no glued tokens)'
+);
+ok(
+  /abc param\('k'\)/.test(builderSb.exprInsertText('abc def', 3, 3, "param('k')", 'expr').text),
+  'mid-token expr insertion keeps identifier boundaries (space when needed)'
+);
+eq(
+  builderSb.repairConditionExpr("truetext_visible(param('group'))"),
+  "true and text_visible(param('group'))",
+  'the old concatenation bug is repaired on load/save'
+);
+eq(
+  builderSb.repairConditionExpr("text_visible(param('group'))"),
+  "text_visible(param('group'))",
+  'a valid condition is left byte-identical'
+);
+eq(
+  builderSb.repairConditionExpr('false'),
+  'false',
+  'a bare boolean is not rewritten'
+);
 
 eq(
   builderSb.paramPanelRows([
@@ -3769,15 +3817,30 @@ ok(
   'actionCatalog() is the single source of truth (OP_META + PARAM_ACTIONS)'
 );
 ok(
-  /function buildActionStep\(key\)[\s\S]{0,900}paramClickStep[\s\S]{0,200}paramWaitStep/.test(builderSource),
-  'buildActionStep() expands the parameter presets to the real ops'
+  /function buildActionStep\(key, opts\)[\s\S]{0,1200}paramClickStep[\s\S]{0,400}paramWaitStep/.test(builderSource) &&
+    /async function prepareActionStep\(key\)/.test(builderSource),
+  'buildActionStep()/prepareActionStep() expand the parameter presets to the real ops'
 );
 ok(
   /const catalog = actionCatalog\(\)/.test(builderSource) &&
     /for \(const item of catalog\)/.test(builderSource) &&
     /actionAvailable\(item\.key\)/.test(builderSource) &&
-    /const child = buildActionStep\(sel\.value\)/.test(builderSource),
+    /const child = await prepareActionStep\(sel\.value\)/.test(builderSource),
   'the if/loop 是/否/循环体 branch dropdown uses the same catalogue and step builder'
+);
+ok(
+  /async function prepareActionStep\(key\)/.test(builderSource) &&
+    /chooseOcrAssetDialog\(/.test(builderSource) &&
+    /resolveParamClickAsset\(/.test(builderSource) &&
+    /selectedOcrAssetId\(\)/.test(builderSource),
+  'parameter click asks for/derives the OCR asset instead of silently using the first one'
+);
+ok(
+  /ins = ' and ' \+ ins/.test(builderSource) &&
+    /function exprInsertText\(/.test(builderSource) &&
+    /function repairConditionExpr\(/.test(builderSource) &&
+    /normalizeFlow\(B\.flow\);\s*\/\/ P3: 保存前本地校验/.test(builderSource.replace(/\r\n/g, '\n')),
+  'parameter insertion avoids token gluing and malformed conditions are repaired before save'
 );
 ok(
   /需先声明任务参数/.test(builderSource),
@@ -3861,8 +3924,9 @@ ok(
 );
 ok(
   /function trackExprField\(field, mode\)/.test(builderSource) &&
-    /function insertTextAtField\(field, text\)/.test(builderSource),
-  'insertion helpers exist'
+    /function insertTextAtField\(field, text, mode\)/.test(builderSource) &&
+    /exprInsertText\(value, start, end, text, mode \|\| 'expr'\)/.test(builderSource),
+  'insertion helpers exist and route through exprInsertText'
 );
 ok(
   !/innerHTML/.test(extractFunctionFrom(builderSource, 'renderParamsPanel', 'builder.js')),

@@ -1,20 +1,19 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 118**，`oas-core-dual-app-upgrade`），以及 **`docs/AUDIT-2026-11-05.md`**（本轮最终审计/交接/关机说明）。
-> **状态：in_progress**——seq 117 更新检测/参数补齐已验收；**seq 118 = 用户反馈修复（动作目录单一事实源 → 调色板与 if/loop「是/否/循环体」下拉统一；配置项对话框升级为结构化表单 + 帮助/示例 + 校验 + 高级 JSON）+ 最终代码/文档审计 + 交接**。验证：workspace 801/0、UI 2028、三路 E2E ALL PASS。**按用户要求本轮完成后关机。**
+> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 119**，`oas-core-dual-app-upgrade`），以及 **`docs/AUDIT-2026-11-05.md`**（含 §5 seq 119 追加修复）。
+> **状态：in_progress**——seq 118 动作目录统一/配置项表单/审计已验收；**seq 119 = 用户反馈修复：参数插入防粘连 + 旧坏条件自愈 + 参数点击不再静默选第一个 OCR 素材（多个弹选择对话框）+ 保存前 normalizeFlow；用户任务畸形条件已修复**。验证：UI **2039/164/158/0 dead/6 nav**；Rust 未动（workspace 801/0 基线）。按用户要求只推送、不发布。**本轮不关机，继续待命。**
 
-## 0. 当前状态（2026-11-05 21:1x）
+## 0. 当前状态（2026-11-06 07:3x）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | oas-core `dev`（本批 docs 提交后以 `git log -1` 为准；代码 `5b0b107`）；oas-runner `main` = `a6b8670`；未 tag / 未 release |
-| 任务 | **动作目录统一 ✅ / 配置项结构化 UI ✅ / 审计+文档+交接 ✅（seq 118）**；剩余：tag 策略、更新检测鉴权/GC、配置项表单边界、产品验收 |
-| 测试 | `cargo test --workspace` **801/0**（23 suites；oasd lib **412** + bin 0）；UI **2028 / Studio 164 / Runner 158 / 0 dead / 6 nav**；debug+release build exit 0（**1 warning**）；`git diff --check` clean |
-| 发行包 | **Studio** **76,670,889 B** / `F2184381…1B2F`；**oas-core Runner** **37,860,300 B** / `163679D6…9065`；**oas-runner 独立包** **37,870,658 B** / `F6A6C301…D46C`（均不入 git） |
-| 独立仓 | `https://github.com/passioki/oas-runner`（`a6b8670`）：薄 app + UI + 独立 `scripts/package-runner.ps1` + packaging + BUILD 文档；pin oas-core `5b0b107` |
-| 服务 | **8787/8788/8789/8792~8796 全部未监听、无 oasd/oasd-runner 进程**（E2E 后清理） |
-| 工作区 | 数据已入库（seq 112）；`scheduler.json` 未提交（本机运行配置）；`tasks/切换预设御魂/flow.json` 曾误改已 revert；其余已提交/推送 |
-| 关机 | 本轮完成后按用户要求执行 `shutdown /s`；恢复请重新开机并读上述文档 |
+| 分支 / HEAD | oas-core `dev`（本批 docs 提交后以 `git log -1` 为准；父 `05db80a`）；oas-runner `main` = `a6b8670`（pin 仍 `5b0b107`，Runner 未受本次 UI 修复影响）；未 tag / 未 release |
+| 任务 | **seq 119 UI bugfix ✅**；剩余：更新检测鉴权/GC、tag 策略、配置项表单边界、产品验收 |
+| 测试 | `cargo test --workspace` **801/0**（Rust 未改）；UI **2039 / Studio 164 / Runner 158 / 0 dead / 6 nav**；`node --check` 3/3；`git diff --check` clean |
+| 发行包 | 按用户「推送即可，不用发布」**本轮未重打**；沿用 seq 118 本地产物：Studio `F2184381…1B2F`、oas-core Runner `163679D6…9065`、oas-runner `F6A6C301…D46C` |
+| 独立仓 | `https://github.com/passioki/oas-runner`（`a6b8670`）；pin `5b0b107`（本次仅 Studio UI 修复，不进 Runner 产物） |
+| 服务 | 无 `oasd`/`oasd-runner` 进程；8787/8788/8789/8792~8796 无监听 |
+| 工作区 | `scheduler.json` 未提交；用户任务 `tasks/切换预设御魂/{flow,meta}.json` 为用户本轮编辑 + Lead 修复 cond，**工作区未提交**；其余已提交/推送 |
 
 ## 1. 最近 3 轮关键变更（历史细节见 PLAN/ENGINE/PENDING）
 

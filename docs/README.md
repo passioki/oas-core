@@ -3,7 +3,7 @@
 > 本目录是 **oas-core 的独立项目文档**，从旧 backend 文档仓迁移而来。
 > 旧仓库 `D:\OAS-dev\backend` 已冻结，仅作为资产/历史资源；oas-core 的构建、运行、测试、发布不依赖它。
 
-## 当前有效文档（顶层 14 份，含发布节点）
+## 当前有效文档（顶层 15 份，含发布节点）
 
 | 文件 | 用途 |
 |---|---|
@@ -34,6 +34,7 @@
 
 ## 当前基线（2026-11-05 03:3x；**PR1~PR7 + 最终审计修复已收口，状态 handoff-ready；两个服务已停止，交接后电脑关机**；发布节点 v0.1.0 见下行）
 
+- ★ **2026-11-06 07:3x（seq 119）**：**参数插入/条件表达式修复 + 参数点击素材选择**——用户反馈「加两个参数后与 if 衔接，JSON 多处自动出现 `sel: 觉醒材料`」。① 「插入参数 ▾」防粘连（条件末尾自动 ` and `、标识符边界补空格；`exprInsertText`/`insertTextAtField`）；② `repairConditionExpr` 自愈历史 `truetext_visible(...)`，载入/应用/保存前执行并清 if/while 遗留 `args.sel`；③ 参数点击素材：上下文复用→唯一素材直用→多个弹选择对话框（可取消），调色板/分支下拉共用 `prepareActionStep()`；④ 用户任务 `tasks/切换预设御魂/flow.json` 条件修为 `text_visible(param('group'))`（保留其两参数/if 分支，工作区未提交）；⑤ UI **2039/164/158/0 dead/6 nav**（+11）；按用户要求只推送、不发布。
 - ★ **2026-11-05 21:1x（seq 118）**：**动作目录统一 + 配置项成熟 UI + 最终审计**——① `actionCatalog()` 单一事实源：调色板与 if/loop「是/否/循环体」分支下拉统一，参数预设未声明时禁用+原因（修复用户反馈）；② 任务配置项对话框升级结构化表单（帮助块/每参卡片/逐字段示例/语义校验/高级 JSON/T3 预填行）；③ 新增 `docs/AUDIT-2026-11-05.md`（代码审计/文档漂移对照/残余风险/交接）；④ workspace **801/0**、UI **2028/164/158/0/6**、三路 E2E ALL PASS；提交 oas-core `5b0b107` / oas-runner `a6b8670`；按用户要求完成后关机。
 - ★ **2026-11-05 20:4x（seq 117）**：**更新检测收尾 + 参数编辑补齐**——① feed TTL 缓存（`updates.cache_secs` 默认 60、命中不 curl、`?refresh=1`、失败不刷新）、远程包缓存复用（`reused_cache`）、`POST /runner/updates/cache/clear`；② 参数「文字来源」三态覆盖 click_target.find/requires/expect/drag.from/to，T3「去声明…」预填 key；③ 测试 workspace **801/0**、UI **1919/159/158/0/6**、三路 E2E ALL PASS；oas-runner rev bump `78be71d`，独立包 **37,871,134 B / `B127C0FC…66DB`**。
 - ★ **2026-11-05 20:1x（seq 116）**：**Phase 1b 完成——oas-runner 可独立打包 Runner release**——① oas-core `oasd::cli::run_as_with_args`（默认参数注入、用户可覆盖）；② oas-runner 默认 `--ui ui` + pin `rev=802f58b`；③ 新仓 `scripts/package-runner.ps1`（数据/工具链探测、cargo release build、stage exe/ui/models/adb/**bundled-data 生成**/live/README/BUILD-INFO/start-stop bat、BOM/白名单/rev 审计、`/` zip）；④ **独立包 37,854,377 B / SHA `09E8E2B5…AF45` / 41 entries**，解压 smoke **50/50 PASS**；⑤ oas-runner `91785b8`；oas-core 重打包 Studio `338C0B47…D530` / Runner `6E9458F8…52E5`；未 tag / 未 release。

@@ -4434,3 +4434,21 @@ GET /task/assets?task= → 34 个素材（全局模式）
 ## D. 交接
 
 `docs/AUDIT-2026-11-05.md` §4：恢复入口/服务端口状态/工作区边界；本轮完成后按用户要求关机。
+
+# ★ §E-89 ★★★ [11-06 07:3x] **参数插入/条件表达式修复 + 参数点击素材选择（seq 119）**
+
+> 用户反馈：任务「切换预设御魂」添加两个参数后与 if 衔接，JSON 多处自动出现 `"sel": "觉醒材料"`。排查为两个相关 bug（表达式插入粘连 + 参数点击静默选第一个 OCR 素材）。实现记录 `ENGINE §22.60`；断点 `RESUME` seq 119。
+
+## A. 交付
+
+| # | 项 | 结果 | 状态 |
+|---|---|---|---|
+| 插入 | **表达式插入防粘连** | `exprInsertText`：cond 末尾追加谓词自动 ` and `；其余按标识符边界补空格；`insertTextAtField(field,text,mode)` 统一使用 | ✅ |
+| 修复 | **旧坏条件自愈** | `repairConditionExpr`（`truetext_visible(...)` → `true and text_visible(...)`）；`normalizeStepArgs` 载入/应用/保存前执行，并清 if/while 遗留 `args.sel` | ✅ |
+| 素材 | **参数点击不再静默选取** | `selectedOcrAssetId()` 复用上下文素材；唯一素材直接用；多个时弹选择对话框（确认/取消）；调色板与分支下拉共用 `prepareActionStep()`；状态栏明确写出素材+param | ✅ |
+| 数据 | **用户任务修复** | `tasks/切换预设御魂/flow.json` 畸形条件修为 `text_visible(param('group'))`（保留用户两参数/if 分支；工作区未提交） | ✅ |
+| 测试 | UI pure test | **2039 checks**（+11）/ 164 ids / 158 runner ids / 0 dead / 6 nav；`node --check` 3/3；`git diff --check` clean | ✅ |
+
+## B. 剩余
+
+Rust 后端未动（workspace 801/0 基线不变）；按用户「推送即可，不用发布」未重打 release、未 tag。后续可补：真实浏览器交互 E2E、素材选择对话框键盘/焦点细节、历史坏条件批量修复脚本（当前仅载入/保存时修复）。

@@ -3124,3 +3124,19 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 - `cargo test --workspace` **801/0**；debug+release build exit 0（**1 warning**）；三路 E2E（P0/更新 feed/参数）**ALL PASS**。
 - 重打包：Studio **76,670,889 B / SHA `F2184381…1B2F`**；oas-core Runner **37,860,300 B / SHA `163679D6…9065`**；oas-runner 独立包（pin `5b0b107`）**37,870,658 B / SHA `F6A6C301…D46C`**。
 - 提交：oas-core `5b0b107`（dev=main=origin）+ docs；oas-runner `a6b8670`（main）；未 tag / 未 release。
+
+### 22.60 ★★★ [11-06 07:3x] **参数插入/条件表达式修复 + 参数点击素材选择（seq 119）**
+
+> 用户反馈：任务「切换预设御魂」添加两个参数后与 if 衔接，JSON 多处自动出现 `"sel": "觉醒材料"`。排查确认两个相关 bug：① 表达式字段「插入参数 ▾」把片段直接拼在已有文本末尾，`true` + `text_visible(param('group'))` 被拼成 `truetext_visible(param('group'))`（非法 flow 表达式）；② 「参数文字点击」生成 `click_target` 时静默选取第一个 OCR 素材作为 `sel`（用户任务里是「觉醒材料」），无法感知/选择，重复添加就出现多处同样 `sel`。
+
+#### 22.60.1 修复
+
+- **表达式插入防粘连**：新纯函数 `exprInsertText(value,start,end,snippet,mode)`：条件字段末尾插入谓词时自动 ` and ` 连接；其余按标识符边界补空格；`insertTextAtField(field,text,mode)` 统一使用，「插入参数 ▾」与参数面板行插入都传 mode。
+- **旧坏条件自动修复**：`repairConditionExpr` 修复历史 `true`/`false` 后直接接谓词（`truetext_visible(...)` → `true and text_visible(...)`）；`normalizeStepArgs` 在 if/while 载入、代码应用**与保存前**统一执行（`saveFlow` 先 `normalizeFlow`），并清掉 if/while 遗留的 `args.sel`。
+- **参数点击素材不再静默首选取**：`selectedOcrAssetId()` 优先复用当前选中步骤的 OCR 素材；仅一个 OCR 素材时直接用；**多个时弹出选择对话框**（显示素材 id+识别文字，可确认/取消），取消则不加步骤；`prepareActionStep()` 异步路径供调色板与 if/loop 分支下拉共用；状态栏明确写出「OCR 素材 X + 文字 param('key')，可在右侧定位对象修改」。`pickOcrAssetForAction()` 兜底顺序改为「上下文素材 → 唯一素材 → 第一个素材 → O_OCR 占位」。
+- 用户当前任务：`tasks/切换预设御魂/flow.json` 畸形条件已修为 `text_visible(param('group'))`（保留用户两参数与 if 分支；工作区未提交）。
+
+#### 22.60.2 验证
+
+- UI pure test **2039 checks**（2028+11：`exprInsertText` 的 ` and ` 连接/空值/尾部运算符/中段边界、`repairConditionExpr` 修复与幂等；静态断言分支共用 `prepareActionStep`、素材选择对话框、保存前 `normalizeFlow`）；`dom_id_audit` 164/0；`runner_ui_audit` 158/0/6 nav；`node --check` 3/3；`git diff --check` clean。
+- 仅改 UI（`apps/oasd/ui/builder.js`、`ui_pure_test.js`）；Rust 后端未动（workspace 801/0 基线不变）；按用户「推送即可，不用发布」未重打 release、未 tag。
