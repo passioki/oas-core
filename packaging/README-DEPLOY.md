@@ -19,7 +19,7 @@
 | UI 资源 | `index.html` / `app.js` / `builder.js` / `flow_model.js` / `asset_ui.js` / `dashboard.*` | 仅 `runner.html` / `runner.js` / `runner.css` + 共享 `style.css` |
 | 能做什么 | 创作帧/素材/流程、lint、发布 `.oaspkg`、试运行 | 安装/卸载任务包、填运行参数、排队/调度、执行、看运行记录 |
 | 不能做什么 | 不是给终端用户的操作入口（不需要安装任务包） | **没有编辑 UI**：不能改流程/素材/帧库；这些在 Studio 完成并发布 |
-| 数据目录 | tasks/ assets/ frames/ library/ runs/ logs/ + scheduler.json | tasks/ assets/ packages/ runs/ logs/ + scheduler.json（不含 frames/ library/） |
+| 数据目录 | tasks/ assets/ frames/ library/ runs/ logs/（不含 `scheduler.json`/调度脚本；调度归 Runner） | tasks/ assets/ packages/ runs/ logs/ + `scheduler.json`（不含 frames/ library/） |
 
 两种包共用同一个 `oasd.exe` 二进制，只是启动的子命令、端口和随包 UI 不同。单机部署时可以并存，但**不要同时对同一台设备执行**（Runner 调度与 Studio 试运行会抢设备）。
 

@@ -4141,3 +4141,43 @@ GET /task/assets?task= → 34 个素材（全局模式）
 | PR1/PR2/PR3/PR4/PR5/PR6/PR7 遗留 | ⚠ 已分期 | 见 §F.8 / §G.5 / §H.7 / §I.8 / §J.9 / **§K.7** / **§L.7** / **§M.5**；不阻塞 |
 
 | 状态 | ✅ Q1~Q7 已批准；**PR1~PR6 + PR7 全部 ✅ 已提交**（PR1 `da9da9d` / PR2 `dfe8776` / PR3 `c09df25`+`048dff5` / PR4 `442f5cb` / PR5 `617435d`+`830058d` / **PR6 `edc037b`** / **PR7 `5e45c81` + seq 107 docs `8344d97`**）；**最终审计 P0=0、4 个代码 P1 ✅ 修复 `68e5768`**（replay 租约 / worker panic / install·activate 调度互斥 / installed.json 降级；§M）；workspace **721/0**（oasd **355** / oas-task 111 / flow 62 / runtime 157+2）、UI **1559/151/0**（Studio 159/0、6 nav）、runner 包 **37,690,904 B** / SHA `A3BCB4B4…FE15F960`（BUILD-INFO `git: 68e5768`）；**状态 handoff-ready**；**下一步 = 产品验收 / PR7+审计 P2 清理 / Phase 5 选择**；**交接 docs = seq 108（父 `68e5768`，最终 HEAD 以 `git log -1` 为准）**；用户数据不提交 · 无阻塞 · 交接后电脑关机（Lead 执行） |
+
+# ★ §E-80 ★★★ [11-05 13:1x → 13:3x] **双端发行包 + 分离度验收 + dev-serve 双入口 + 参数 UI 审计（2026-11-05；seq 110）**
+
+> **状态：Studio-only `package.ps1` 重写完成；两 zip 产出（Studio 37,789,671 B / Runner 37,690,867 B）；分离度 E2E 75/75；F1（PS 5.1 BOM）已修复；`scripts/dev-serve.*` 双入口化；参数 UI 审计完成、待用户裁定方案；本批 scripts+docs 待提交/推送；不 tag / 不 release。**
+> 依据（用户 2026-11-05 三项要求）：① 「检查启动方式，编辑端/使用端是否单独启动…我验收通过不同端的 release 来判断吧。请试发布两端软件」；② 「D:\OAS-dev\oas-core\scripts 里的 dev-serve.bat 似乎已经过时，请更新，或者有新启动方式请告知」；③ 「当前编辑端暴露给使用端的参数设置并没有被前端很好表达，编辑端的任务构建里没有该语言模块或提示。是设置变量那个模块还是什么？」
+> 权威口径：`RUNNER-STUDIO-SPLIT-PLAN.md §A.8.1（两种发行包）+ §A.17（本批实现记录）`；`ENGINE-DESIGN.md §22.44.6 + §22.52`；`START-HERE.md §0.1 / §3 E17`；`RESUME.md` seq 110。
+> 证据：`D:\OAS-dev\_verify\release-both-20261105\`（打包/分离度/F1）、`D:\OAS-dev\_verify\lead-recheck-20261105\`（Lead 独立复核）、`D:\OAS-dev\_verify\ui-params-audit-20261105\`（参数 UI 审计）。
+
+## A. 三项要求 → 交付结论
+
+| # | 用户要求（摘要） | 结论 / 交付 | 证据 |
+|---|---|---|---|
+| 1 | 检查 Studio/Runner 是否单独启动；用不同端 release 验收；试发布两端 | **是单独启动**（同一 `oasd.exe`，`studio`/`runner` 子命令 + `Surface` 路由白名单；Studio 8788、Runner 8789，启动后只有本端 UI/路由，另一端 API/静态资源纯 404；Runner 内嵌调度为**同进程线程**，不是独立后台服务）。**两端 release 已产出并逐项验证 75/75**；Lead 独立复核 ALL PASS | `REPORT.md` / `e2e-summary.json` / `lead-recheck-20261105\recheck-log.txt` |
+| 2 | `scripts/dev-serve.bat` 过时，请更新或告知新方式 | 已更新：`dev-serve.ps1` 默认 `studio` **8788**、`-Surface runner` → **8789**（保留 `-Release/-SkipBuild/-NoOpen/-DryRun`、`-NoScheduler`；OCR 模型/数据目录同旧）；`dev-serve.bat` 为透传包装并更新说明；**8787 退役**；START-HERE 旧 8787 描述已同步 | `scripts/dev-serve.ps1` / `.bat`；`START-HERE.md` §1.3 注/§6 |
+| 3 | 参数设置未被前端表达；是「设置变量」模块吗？ | **不是**。`set_var`/`inc_var`/`ocr_to_var` 是 flow 运行时变量（`Interpreter.vars`，`var()` 读，不声明/不发布/Runner 不可见）；任务参数是 `meta.params`（`ParamDecl`）→ `param('x')` → `.oaspkg` → Runner 表单 → `config/values.json`。当前 Studio **唯一入口 = 任务库「配置项…」→ JSON 对话框**；任务构建页 **0 入口/0 提示**；`save_flow` 不 lint，未声明 `param()` 静默保存，首次反馈在发布 400 T3 或运行期。**审计报告已出，方案 A~E + 推荐 A+C 待用户裁定（未实现）** | `ui-params-audit-20261105\PARAMS-UI-AUDIT.md`（398 行） |
+
+## B. 实现与修复
+
+| # | 改动 | 内容 |
+|---|---|---|
+| B1 | **Studio-only 包（`scripts/package.ps1` 重写，173→453 行）** | 旧「全量包」9 项不符（D1-D4/D9-D11/D14 + D7/D8 部分）全部消除：Studio UI 白名单 8 文件 + 真实 `tasks/`（剔 `state/`）/`assets/`（数量校验）+ 空 `frames/runs/logs` + `library/.keep` + `start-studio/stop-studio/start-editor/stop-editor` + `README-DEPLOY.md` + `surface: studio` BUILD-INFO + `/` 分隔 zip（`System.IO.Compression`）+ stage 审计（缺文件/越界/Runner-only 文件/非白名单 UI = fail）；新增 `-Build/-DryRun`。 |
+| B2 | **F1 修复（`package-runner.ps1`，+34 行；`package.ps1` 同类）** | 根因：Windows PowerShell 5.1 `Set-Content -Encoding UTF8` 写 UTF-8 BOM → `serde_json` 拒绝 → Runner 包 `scheduler.json` 首启 `scheduler_mode=invalid_config`、内嵌调度线程退出（"invalid JSON: expected value at line 1 column 1"）。修复：`Write-Utf8NoBom`（`[System.IO.File]::WriteAllText` + `UTF8Encoding($false)`）覆盖 `scheduler.json`/`VERSION`/`BUILD-INFO.txt`/`tasks\README.txt`；stage 审计加 `scheduler.json` 首字节 = `{` 守卫（两脚本都加 VERSION/BUILD-INFO 无 BOM 守卫）。 |
+| B3 | **dev-serve 双入口** | 见 §A-2；另 `-DryRun` 打印可直接执行命令供排查。 |
+| B4 | **文档** | START-HERE §0.1/§0.2/§3 E17/§6/§7；本台账 §E-80；ENGINE §22.52；PLAN §A.17；RESUME seq 110；SESSION-HANDOFF；`packaging/README-DEPLOY.md` 数据目录行（Studio 无 scheduler.json/调度脚本）。 |
+
+## C. 验证（可核查）
+
+- **打包产物**：Studio **37,789,671 B** / SHA256 `920AF6686314E2C28881C59C442C0AABFC45FB0646B284BA53DEFD0D080F07C3`（41 entries）；Runner **37,690,867 B** / SHA256 `ECB37A783FB92FD64F78BC788DA6DA3A61CDB7FE6897B76E3C0777E78D339ADE`（23 entries）；两包 **0 反斜杠 entry**、共享 13 / Studio 独有 28 / Runner 独有 10、禁止项命中 0。
+- **分离度 E2E（仓外解压、CWD=解压目录、`--no-open`）75/75**：Studio 8788 单进程、8789/8787 未监听、`/app.js` `/task/library` 200、`/runner.js` `/runner/tasks` `/runner/health` 404；Runner 8789 单进程、`/runner.js` `/runner/tasks` `/runner/health` 200、`/task/library` `/app.js` 404；停止后端口/进程 0 残留；两包文本 0 处引用 `D:\OAS-dev\oas-core`；截图 2 张。
+- **F1 回归 13 条**：两包 VERSION/BUILD-INFO/`scheduler.json` 无 BOM；解压后 `oasd.exe scheduler --plan scheduler.json --status` exit 0；`/runner/health` `scheduler_mode=stop`（非 invalid_config）、`last_stop=no_enabled_entries`、`last_error=""`、`logs/runner.log` 无 `invalid JSON`。
+- **Lead 独立复核**：`lead-recheck-20261105\recheck-log.txt` ALL PASS（zip/BOM/entry 互斥/路由矩阵/端口/单进程/进程路径/`scheduler --status`）。
+- **回归**：`cargo test --workspace` **721/0**（21 targets；本轮 Rust 零改动，仍复跑 `EXITCODE=0`）；`git diff --check` clean。
+
+## D. 待用户裁定 / 遗留
+
+1. **参数 UI 方案**（阻塞该项实现）：推荐 **A + C**——A 任务构建页加「配置项…」入口 + 已声明参数面板；C 服务端加 Studio-only `GET /task/lint` + 构建页「检查」按钮（复用 `oas_task` 唯一 lint 权威，避免 T1~T7 复制进 JS）。P1 = B 结构化表单 + D inline 提示；P2 = E Runner `group`/数字 enum。未实现、未改任何 UI 代码。
+2. **提交/推送**：本批 scripts（`package.ps1` / `package-runner.ps1` / `dev-serve.ps1` / `dev-serve.bat`）+ docs + `packaging/README-DEPLOY.md`；显式路径 add，**不提交用户数据**；push `dev` 并 ff 同步 `main`；不 tag / 不 release（等用户确认或按项目惯例执行）。
+3. **Studio 包数据边界**：按 §A.8.1 内嵌工作区真实数据快照（3 任务 / assets 31 条 + 5 图）；对外分发前需确认；未来可加 `-NoData` 选项（本批未做）。
+4. **F3（info，仅文档）**：`README-DEPLOY.md` L75 示例目录 `D:\OAS-dev-live` 含 `D:\OAS-dev` 前缀（X9 自包含检查已用白名单排除，不影响包）。
+5. **既有 P2 不变**：见 `§E-79 §M.5` / `RESUME §5` / `ENGINE §22.51.4`。

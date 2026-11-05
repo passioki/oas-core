@@ -1658,3 +1658,33 @@ Step::WithParams { params, defaults, body } => {
 - 台账登记：`PENDING-LEDGER.md §E-79`（状态 = **✅ Q1~Q7 已批准；PR1~PR7 全部 ✅ 已提交（PR6 = `edc037b` + seq 106 docs `eca884d`；PR7 = `5e45c81` + seq 107 docs `8344d97`）；最终审计 4 个后端 P1 ✅ 修复 `68e5768`（§M）；handoff-ready**；PR3 明细见 §H、PR4 见 §I、PR5 见 §J、**PR6 见 §K**、**PR7 见 §L**、**最终审计见 §M**）。
 - **下一步（最终审计之后）**：① 用 §D.4 的 19 步清单做**产品验收**（V1~V7；V5/V6-16/17 已由 PR7 E2E 覆盖，详见 §A.15.6/§A.15.10；建议补真实产品任务 + 真机）；② 收尾清理（`packaging/` 旧 `start-scheduler.bat` 文案、`README-RUNNER.txt` 绝对路径措辞、docs 旧截图）；③ 决定 Phase 5 范围（上传 / 素材改名 / 纳管 / GC / installed 自动隔离）或产品 backlog（SelectionTool / collection real=1 / drag Plan B / P2-10 / 版本决策）；基线 = **workspace 721/0**（oasd **355**）、UI **1559/151/0**（Studio 159/0）、Runner 包 **37,690,904 B**（SHA `A3BCB4B4…FE15F960`）。**不 tag / 不 release**（除非用户明确说发布）。
 - 若用户改其中某项（例如 Q1 改端口 / Q6 改子进程调度），先回写本文 §D.2 与稿源，再动代码。
+
+## A.17 双端发行包 + 分离度验收 + dev-serve + 参数 UI 审计（2026-11-05，seq 110）
+
+> 用户要求（2026-11-05）：① 检查 Studio/Runner 是否单独启动、用不同端 release 验收、试发布两端；② `scripts/dev-serve.bat` 过时，更新或告知新方式；③ 参数设置未被前端表达（是「设置变量」吗）。
+> 证据：`D:\OAS-dev\_verify\release-both-20261105\`（`REPORT.md`/`DESIGN-VS-NOW.md`/`F1-FIX.md`/`e2e-summary.json` 75/75/`run-e2e.ps1`/2 截图）、`lead-recheck-20261105\`（独立复核 ALL PASS）、`ui-params-audit-20261105\PARAMS-UI-AUDIT.md`；台账 `PENDING-LEDGER §E-80`；引擎记录 `ENGINE-DESIGN §22.52`；断点 `RESUME` seq 110。
+
+### A.17.1 Studio-only 发行包（`scripts/package.ps1`）
+
+- 旧脚本 = 全量包（`ui/*` 全复制、含 runner UI/测试页、`start-scheduler.bat`/`scheduler.json`、缺 `start-studio.bat`、`Compress-Archive` 写 `\`、BUILD-INFO 无 surface）⇒ **9 项不符 §A.8.1**（对照 `DESIGN-VS-NOW.md`）。
+- 重写为 Studio-only（453 行，参数 `-Version/-SkipBuild/-Build/-DryRun`）：UI 白名单 8 文件 + 真实 `tasks/`（剔 `state/`）/`assets/`（数量校验）+ 空 `frames/runs/logs` + `library/.keep` + `start/stop-studio` + `start/stop-editor` + `README-DEPLOY.md` + config/models/adb + `surface: studio` BUILD-INFO + stage 审计 + `/` 分隔 zip；禁止 Runner UI/脚本/README-RUNNER、`start-scheduler`/`stop-scheduler`/`scheduler.json`、测试页。
+- 产物：`dist/oasd-v0.1.0-win64.zip` = **37,789,671 B**，SHA256 `920AF6686314E2C28881C59C442C0AABFC45FB0646B284BA53DEFD0D080F07C3`（41 entries）。
+- `scripts/package-runner.ps1` 仅做 F1 修复后重建：**37,690,867 B**，SHA256 `ECB37A783FB92FD64F78BC788DA6DA3A61CDB7FE6897B76E3C0777E78D339ADE`（23 entries）。
+
+### A.17.2 F1（P1，已修）：PS 5.1 BOM 使 Runner 包首启调度不可用
+
+- `package-runner.ps1` 用 `Set-Content -Encoding UTF8`（PS 5.1 写 BOM）生成 `scheduler.json` ⇒ 引擎 `serde_json` 拒绝 ⇒ 首启 `scheduler_mode=invalid_config`、内嵌调度线程退出。修复 = `Write-Utf8NoBom`（`WriteAllText` + `UTF8Encoding($false)`）+ 两脚本 stage 首字节守卫；13 条 F1 回归全绿（`scheduler --status` exit 0、health `scheduler_mode=stop`、无 `invalid JSON`）。约束落入 `ENGINE §22.52.3` / `START-HERE §3 E17`。
+
+### A.17.3 分离度验收（release 级，75/75）
+
+- 两端 zip 解压到仓外、CWD=解压目录、`--no-open` 独立运行：**Studio** 只监听 8788（8789/8787 未监听）、单进程、Studio 路由 200 / Runner 路由 404；**Runner** 只监听 8789、单进程、Runner 路由 200 / Studio 路由 404；停止后端口/进程 0 残留；两包 entry 互斥、0 反斜杠、自包含（包内 0 处引用仓库路径）。**结论：启动是单独的（同一 exe 两个 surface，Runner 内嵌调度为同进程线程）**；后续 V1 验收直接用 release 包即可。
+
+### A.17.4 dev-serve 双入口 + 参数 UI 审计
+
+- `scripts/dev-serve.ps1`：默认 `studio` 8788；`-Surface runner` → 8789；保留 `-Release/-SkipBuild/-NoOpen/-DryRun`，新增 `-NoScheduler`；8787 退役；`dev-serve.bat` 透传说明更新。
+- 参数 UI：**「设置变量」≠ meta.params**（`builder.js:23-25` 是 flow 运行时变量；`meta.params` 唯一入口 = 任务库「配置项…」JSON 对话框 `app.js:741-746`/`index.html:431-450`；构建页 0 入口/0 提示；`save_flow` 不 lint、Studio 无 lint 路由 ⇒ 发布 400 T3 才首次反馈）。**方案 A~E + 推荐 A+C（构建页入口/面板 + Studio-only `GET /task/lint`），待用户裁定后实现**；审计细节见 `PARAMS-UI-AUDIT.md`。
+
+### A.17.5 状态与下一步
+
+- 本批 scripts+docs 待提交/推送（提交后 HEAD 以 `git log -1` 为准）；**不 tag / 不 release**。
+- 下一步：① 用户裁定参数 UI 方案 → 实施（P0 A+C）② 产品验收 §D.4 19 步（V1 已由 release E2E 补强）③ P2 清理 / Phase 5 / backlog。

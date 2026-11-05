@@ -37,6 +37,23 @@ $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $Root
 . (Join-Path $Root "scripts\package-common.ps1")
 
+# Windows PowerShell 5.1 `Set-Content -Encoding UTF8` prepends a UTF-8 BOM
+# (EF BB BF) and the engine's serde_json rejects a BOM in scheduler.json
+# ("expected value at line 1 column 1"). Every text file this script generates
+# is therefore written as BOM-free UTF-8 via [System.IO.File]::WriteAllText.
+function Write-Utf8NoBom {
+  param(
+    [Parameter(Mandatory = $true, ValueFromPipeline = $true)][AllowEmptyString()][string]$Text,
+    [Parameter(Mandatory = $true)][string]$Path
+  )
+  begin { $sb = New-Object System.Text.StringBuilder }
+  process { [void]$sb.AppendLine([string]$Text) }
+  end {
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $sb.ToString(), $utf8)
+  }
+}
+
 if ($Build -and $SkipBuild) {
   throw "-Build and -SkipBuild are mutually exclusive"
 }
@@ -253,18 +270,18 @@ Copy-Item (Join-Path $Stage "config\live.example.json") (Join-Path $Stage "confi
   "queues": [],
   "entries": []
 }
-'@ | Set-Content -Encoding UTF8 (Join-Path $Stage "scheduler.json")
+'@ | Write-Utf8NoBom -Path (Join-Path $Stage "scheduler.json")
 
 # data placeholders (zip keeps empty dirs only if they contain a file)
 "# OAS Runner tasks`r`n`r`nInstall task packages (.oaspkg) from the Runner UI; each package`r`ncreates one task directory here." |
-  Set-Content -Encoding UTF8 (Join-Path $Stage "tasks\README.txt")
+  Write-Utf8NoBom -Path (Join-Path $Stage "tasks\README.txt")
 "" | Set-Content -Encoding ASCII (Join-Path $Stage "packages\.keep")
 "" | Set-Content -Encoding ASCII (Join-Path $Stage "runs\.keep")
 "" | Set-Content -Encoding ASCII (Join-Path $Stage "logs\.keep")
 "" | Set-Content -Encoding ASCII (Join-Path $Stage "assets\.keep")
 
 # version / build info (same first four fields as scripts/package.ps1)
-"$Version" | Set-Content -Encoding UTF8 (Join-Path $Stage "VERSION")
+"$Version" | Write-Utf8NoBom -Path (Join-Path $Stage "VERSION")
 $buildLines = Get-OasBuildInfoLines -Version $Version -Root $Root `
   -BuildCommand "cargo build --release -p oasd --features ocr" `
   -ExtraLines @(
@@ -275,7 +292,7 @@ $buildLines = Get-OasBuildInfoLines -Version $Version -Root $Root `
     "models: PP-OCRv6_rec_small.onnx, PP-OCRv6_det_small.onnx",
     "adb: bundled Windows adb (adb/adb.exe)"
   )
-$buildLines | Set-Content -Encoding UTF8 (Join-Path $Stage "BUILD-INFO.txt")
+$buildLines | Write-Utf8NoBom -Path (Join-Path $Stage "BUILD-INFO.txt")
 
 # ------------------------------------------------------- stage audit
 $forbidden = Get-ChildItem $Stage -Recurse -File -Force | Where-Object {
@@ -298,7 +315,14 @@ foreach ($rel in $requiredStage) {
   if (-not (Test-Path (Join-Path $Stage $rel))) { throw "stage is missing $rel" }
 }
 
-Write-Host "-- stage audit OK (no Studio UI file names present)"
+# F1 regression guard: scheduler.json must parse as JSON; serde_json rejects a
+# UTF-8 BOM, so assert the generated plan starts with '{' (no EF BB BF).
+$schedBytes = [System.IO.File]::ReadAllBytes((Join-Path $Stage "scheduler.json"))
+if ($schedBytes.Length -lt 1 -or $schedBytes[0] -ne 0x7B) {
+  throw "scheduler.json must be BOM-free UTF-8 JSON (first byte must be '{')"
+}
+
+Write-Host "-- stage audit OK (no Studio UI file names present; scheduler.json is BOM-free JSON)"
 
 # --------------------------------------------------------------------- zip
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }

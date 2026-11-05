@@ -23,18 +23,18 @@
 ★ 唯一真相 = git + 磁盘证据；**不信"我记得"** ⇒ 必须贴 `文件:行号` / commit / 测试输出
 ```
 
-## 0.1 当前状态快照（2026-11-05 03:3x · **seq 108 · handoff-ready**）
+## 0.1 当前状态快照（2026-11-05 13:3x · **seq 110 · 双端发行包已产出 / 分离度验收 75 项全绿**）
 
 | 项 | 状态 |
 |---|---|
-| 分支/HEAD | `dev`；**代码 HEAD = `68e5768`**（最终审计 P1 修复提交）；**交接 docs 提交紧随其后（seq 108），最终 HEAD 以 `git log -1` 为准**；PR1~PR7 全部 ✅（PR1 `da9da9d` / PR2 `dfe8776` / PR3 `c09df25`+`048dff5` / PR4 `442f5cb` / PR5 `617435d`+`830058d` / PR6 `edc037b` / PR7 `5e45c81`）；**未 tag / 未 release**；推送状态以 `git status -sb` 实测为准 |
+| 分支/HEAD | `dev`；代码 HEAD = **`68e5768`**（最终审计 P1 修复提交），seq 108 docs = `e9404a4`；**本批（seq 110：双端发行包 + dev-serve + 参数 UI 审计）提交后 HEAD 以 `git log -1` 为准**；PR1~PR7 全部 ✅（哈希见 `PENDING-LEDGER §E-79`）；**未 tag / 未 release** |
 | 引擎 | `oasd`（studio/runner/run/queue/stats/scheduler）+ 编辑器 UI + 素材库；`oasd --version` = **0.1.0**（dev；旧 v1.x 为历史内部 tag） |
 | 测试 | `cargo test --workspace` **721 passed / 0 failed**（基线 713，最终审计修复 **+8**；oasd **355** / oas-task **111** / oas-flow **62** / oas-runtime **157 lib + 2 integration**）；OCR build 与 release build exit 0（**5 warnings**，无新增）；UI pure test **1559 checks / Studio 159 ids / Runner 151 ids / 0 dead / 6 nav**（无 UI 改动，数字延续）；`node --check` 3/3；`git diff --check` clean |
-| 分包 | `dist/oasd-runner-v0.1.0-win64.zip` = **37,690,904 B**，SHA256 **`A3BCB4B43EFBF8373A74ADDB44DC4EE5A2AD3847C81D1F61CC039229FE15F960`**（Runner-only；BUILD-INFO `git: 68e5768`）；**不入 git** |
+| 分包 | **Studio（编辑端）**：`dist/oasd-v0.1.0-win64.zip` = **37,789,671 B**，SHA256 `920AF6686314E2C28881C59C442C0AABFC45FB0646B284BA53DEFD0D080F07C3`（41 entries；surface=studio；内嵌工作区真实 tasks/assets 数据；无 Runner UI/调度/scheduler.json）· **Runner（使用端）**：`dist/oasd-runner-v0.1.0-win64.zip` = **37,690,867 B**，SHA256 `ECB37A783FB92FD64F78BC788DA6DA3A61CDB7FE6897B76E3C0777E78D339ADE`（23 entries；surface=runner；空 v4 `scheduler.json` **无 BOM**）；两包 0 反斜杠 entry、互斥审计通过；**不入 git** |
 | 双入口 | **Studio `http://127.0.0.1:8788/`**（`oasd studio`，编辑/构建/发布，**无调度页/无重置记忆**）· **Runner `http://127.0.0.1:8789/`**（`oasd runner`，nav 6 项：概览/已安装任务/安装包/队列与调度/运行记录/设置；**完整调度 UI + 重置记忆**；启动即内嵌调度，`--no-scheduler` 关闭）；`oasd serve` = Studio 的 deprecated 别名 |
-| 当前状态 | **两个服务均已停止（8788/8789 无监听）；交接后电脑关机（Lead 执行）**。启动命令见 §1.3/§6 |
-| 发布 | ✅ GitHub Release `v0.1.0` 已上传（release id `431080249`，latest）；tag `v0.1.0` → `e8edbef`（**未移动**）；本地包 `dist/oasd-v0.1.0-win64.zip`，SHA256 `E6112A33…5F5687`（37,089,992 B，**不含 O-1/O-2**） |
-| 当前任务 | 只有 `返回庭院`（flow 11 steps / meta 400 B）；`tasks/测试` 已删除 |
+| 当前状态 | **所有服务已停止**（8787/8788/8789 实测无监听、无 `oasd` 进程；本批 release 解压评测后已清理）。启动命令见 §1.3/§6；**开发启动器 = `scripts\dev-serve.bat`（默认 Studio 8788；`-Surface runner` → Runner 8789）** |
+| 发布 | GitHub Release `v0.1.0` 仍是**历史节点**（tag `v0.1.0` → `e8edbef`，**未移动**）；**本批未 tag / 未 release**；本批只产出上述两个本地 release zip（Studio 为新产出，Runner 按修复后脚本重建） |
+| 当前任务 | 工作区 `tasks/` 3 个：`返回庭院`（已提交）、`关闭弹窗`、未跟踪 `切换预设御魂/`；Studio 包按 §A.8.1 内嵌工作区真实数据快照（3 任务 / assets 31 条 + 5 图）；**用户数据不入库** |
 | 数据 | 已提交基线：全局素材 **16 条 / 1 图**（15 `ocr_line` + 1 `template`）；帧 **28 个 / `current_id=20` / `next_id=41`**。工作区未提交用户数据：`assets/assets.json`、`frames/frames.json`、`scheduler.json`(+`.bak`)、未跟踪 `frames/frame-43.png`/`frame-44.png`、`tasks/切换预设御魂/`——**用户数据不入库，勿提交** |
 | 引擎特性 | flow DSL、素材/掩膜/多边形、点击定位链、HB1/HB7、整帧搜索、单识别 ROI + 操作区域、库、queue、stats、checkpoint/resume、reconnect、多帧投票、OCR+模板互证、统一任务模板/task lint、任务创建/编辑器运行、调度 v3、交付包 `.oaspkg`、Studio/Runner 双入口、内嵌调度/设备租约、子任务参数配置 |
 | 已知限制 | 见 `RESUME.md §5` / `SESSION-HANDOFF.md §4`；核心：`installed.json` 损坏无自动隔离、租约 pass 级、install/activate 调度检查有 check-then-act 小窗口、panic 安全依赖 unwind、PR7 8 条 UI P2、`start-runner.bat` 固定 8789、跨平台仅设计预留 |
@@ -45,7 +45,8 @@
 - **Studio/Runner 分离 + TaskPackage + 任务配置/子任务配置**（`oas-core-runner-studio-split`，seq 108，**handoff-ready**）。
 - **Q1~Q7 已批准**（2026-11-04，全部按推荐）；**PR1~PR7 全部 ✅ 已提交**；**最终审计 4 个代码 P1 已修复（`68e5768`）**；交接 docs 紧随其后（seq 108）。
 - 台账：`PENDING-LEDGER.md §E-79`（§F PR1 / §G PR2 / §H PR3 / §I PR4 / §J PR5 / §K PR6 / §L PR7 / **§M 最终审计与修复**）；现行口径：`RUNNER-STUDIO-SPLIT-PLAN.md`（§A.9~§A.16）、`ENGINE-DESIGN.md` §22.44~§22.51。
-- 下一步 = **产品验收（§D.4 19 步，V1~V7）/ P2 清理 / Phase 5 选择**；不 tag / 不 release。
+- **2026-11-05 13:3x（seq 110）双端发行包 + 分离度验收**：`scripts/package.ps1` 重写为 **Studio-only**（旧全量包 9 项不符全消）；Studio/Runner 两 zip 产出 + **E2E 75/75**（62 分离度 + 13 F1 回归）；**F1 修复**（PS5.1 BOM → Runner 包 `scheduler.json` 首启 `invalid_config`）；`scripts/dev-serve.*` 双入口化（8787 退役）；**参数 UI 审计完成、待裁定**（`_verify/ui-params-audit-20261105/PARAMS-UI-AUDIT.md`，推荐 A+C）。台账 `§E-80`；实现记录 `ENGINE §22.52` / `PLAN §A.17`。
+- 下一步 = **① 用户裁定参数 UI 方案（A+C 推荐）→ 实施；② 提交/推送本批 scripts+docs（显式路径、不含用户数据）；③ 产品验收（§D.4 19 步，V1~V7）/ P2 清理 / Phase 5 选择**；不 tag / 不 release。
 
 ---
 
@@ -96,7 +97,7 @@ cd D:\OAS-dev\backend
 run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/module/config/test_standby_placeholder.py ... -q
 ```
 
-> ★ **双入口不要混**：`oasd studio` 默认 **8788**（编辑端，`http://127.0.0.1:8788/`），`oasd runner` 默认 **8789**（使用端，`http://127.0.0.1:8789/`）；**`oasd serve` 仍可用但已 deprecated**（等价 `studio`，stderr 一行提示）。`scripts\dev-serve.bat` 是旧开发手动入口（8787，未改）；8787 没进程时 Firefox 报 `can't connect` 是端口/书签不对，不是程序崩溃。
+> ★ **双入口不要混**：`oasd studio` 默认 **8788**（编辑端，`http://127.0.0.1:8788/`），`oasd runner` 默认 **8789**（使用端，`http://127.0.0.1:8789/`）；**`oasd serve` 仍可用但已 deprecated**（等价 `studio`，stderr 一行提示）。`scripts\dev-serve.bat` = 开发启动器：默认 **Studio 8788**；`scripts\dev-serve.bat -Surface runner` = **Runner 8789**（支持 `-NoOpen`/`-DryRun`/`-Release`/`-SkipBuild`/Runner 的 `-NoScheduler`）；**8787 已退役**，旧书签报 `can't connect` 请改 8788/8789。
 > ★ 用户版 Studio 地址是 **http://127.0.0.1:8788/**（`start-studio.bat`，`start-editor.bat` 兼容转调）；Runner 包地址是 **http://127.0.0.1:8789/**（`start-runner.bat`，**固定 `--port 8789`，改 `runner.port` 不生效**）。**终端用户只下载 Runner-only 包 + 任务包，不需要 Studio**。
 > ★ [10-31] `oasd serve` 默认在监听成功后**自动打开默认浏览器**；headless/服务用 `--no-open`。Windows 服务在 Session 0 不会自动弹到用户桌面，服务化时应由用户登录任务/launcher 打开。
 > ★ `D:\OAS-dev\backend\toolkit` 只是本机外部开发工具包（ADB/OCR 模型）；oas-core 源码、构建、测试、发布不依赖 backend。若要完全脱离旧仓，可把 toolkit/模型复制到 oas-core 自带 `tools/` 或用环境变量覆盖。
@@ -209,6 +210,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 | **E14** | 实机 adb 为空 → 先确认 MuMu 运行中（serial **`127.0.0.1:16384`**，不是 `emulator-5554`） | 真机任务（`/input/tap`、collection `real=1` E2E）需先启动模拟器；**P5 起 `GET /instance/devices` 在列表为空时会自动 `adb connect`**；仍为空再查 adb server / MuMu 网络设置 |
 | **E15** | PR3 配置注入语义（2026-11-04） | 四层优先级 **CLI `--param` > entry params > Runner values > `meta.params.default`**；`oasd run` **不读** values；Studio `POST /task/run` body params 最高且**不注入** values；`meta.params` **非空**才在合并后做 schema 复检；旧配置字符串化数字/布尔不再猜回类型；`--param 'code=\"007\"'` 保持字符串；坏 `values.json` 全局 exit 2；PR6 `/runner/run` 自行合并 values。详见 `RUNNER-STUDIO-SPLIT-PLAN §A.11.7` / `ENGINE §22.46` |
 | **E16** | 最终审计修复（2026-11-05 `68e5768`） | replay/dry-run **不取设备租约**（scheduler replay pass 输出 `scheduler_lease_skipped`）；run worker panic 被 catch_unwind 兜住（`outcome=Panic`、running/租约清理）；install/activate 在调度运行或 live lock 下 **409 `scheduler_running`**；`installed.json` 损坏时 `/runner/tasks` 降级 200 + warning、生命周期 API 500 `installed_registry_corrupt`。详见 `ENGINE §22.51` |
+| **E17** | **PS 5.1 的 `Set-Content -Encoding UTF8` 会写 UTF-8 BOM** | `serde_json` 拒绝 BOM ⇒ Runner 包 `scheduler.json` 首启 `scheduler_mode=invalid_config`（F1，2026-11-05 已修）；打包脚本改 `[System.IO.File]::WriteAllText(..., UTF8Encoding($false))` + stage 首字节守卫；**新脚本勿再用 `Set-Content -Encoding UTF8` 写 JSON**（`ENGINE §22.52.3`） |
 
 ---
 
@@ -250,6 +252,9 @@ REM ---------- 构建/测试 ----------
 cd D:\OAS-dev\oas-core
 cargo test --workspace          REM 当前 721/0（oasd 355 / oas-task 111 / flow 62 / runtime 157+2；seq 108 = 最终审计修复 +8）
 cargo build -p oasd --features ocr     REM serve/run 的 OCR 构建
+REM ---------- 打包（两包已产出；-DryRun 可预览）----------
+scripts\package.ps1 -SkipBuild          REM Studio-only -> dist\oasd-v0.1.0-win64.zip
+scripts\package-runner.ps1              REM Runner-only -> dist\oasd-runner-v0.1.0-win64.zip
 
 REM ---------- Studio / Runner 双入口（当前服务已停止）----------
 REM Studio 编辑端（8788；oasd serve = deprecated 别名，等价 studio）
@@ -258,7 +263,7 @@ REM Runner 使用端（8789；启动即内嵌调度，--no-scheduler 关闭；�
 target\debug\oasd.exe runner --config config\live.json
 REM   浏览器：Studio http://127.0.0.1:8788/（编辑器）· Runner http://127.0.0.1:8789/（使用端）
 REM   Studio 仍可开 http://127.0.0.1:8788/dashboard.html（点击分布/长跑统计）
-REM   旧开发手动入口 scripts\dev-serve.bat 仍为 8787（未改）；发行包脚本 start-studio.bat=8788 / start-runner.bat=8789（固定 --port 8789）
+REM   开发启动器 scripts\dev-serve.bat = Studio 8788（默认）/ -Surface runner = Runner 8789；发行包脚本 start-studio.bat=8788 / start-runner.bat=8789（固定 --port 8789）
 
 REM ---------- 运行/调度 ----------
 target\debug\oasd.exe run --task tasks\返回庭院 --replay <recording-dir>
@@ -282,16 +287,17 @@ run-tests.bat …                                  REM 旧仓守卫基线 171 pa
 
 | 主题 | 位置 |
 |---|---|
-| **长任务断点/续接（先读）** | `RESUME.md` · `RESUME-INDEX.md`（skill 强制 6；最新 seq 108） |
+| **长任务断点/续接（先读）** | `RESUME.md` · `RESUME-INDEX.md`（skill 强制 6；最新 seq 110） |
 | **帧-素材关系** | `../frames/frames.json` + 全局 `assets.json` 的 `positions`；无 interface 文件 |
 | **素材数据模型** | `ASSET-DATA-MODEL.md`（全局 `assets/`、任务素材=flow 引用子集、旧 library 仅后端兼容） |
 | **编辑器 UX / 选择模型计划** | `EDITOR-UX-PLAN.md`（画布、位置详情、多边形/反选、实时帧、点测/拖测、区域有效性、素材排序、分类重命名；**素材库 UX 现行为 §18**；**§18.10 = 三项遗留修复**） |
-| **★ Studio / Runner 分离 + TaskPackage + 任务配置** | `RUNNER-STUDIO-SPLIT-PLAN.md`：**Q1~Q7 已批准；PR1~PR7 全部 ✅ 已提交（PR7 代码 `5e45c81`）+ 最终审计修复 `68e5768`**；§A.9~§A.15 = PR1~PR7 实现记录，**§A.16 = 最终审计与修复记录**；§D.3 PR 计划、§D.4 19 步验收；分发/跨平台见 `packaging/CROSS-PLATFORM.md`、`packaging/README-RUNNER.txt`、`packaging/README-DEPLOY.md` |
+| **★ Studio / Runner 分离 + TaskPackage + 任务配置** | `RUNNER-STUDIO-SPLIT-PLAN.md`：**Q1~Q7 已批准；PR1~PR7 全部 ✅ 已提交（PR7 代码 `5e45c81`）+ 最终审计修复 `68e5768`**；§A.9~§A.15 = PR1~PR7 实现记录，**§A.16 = 最终审计与修复记录**，**§A.17 = 双端发行包/分离度/dev-serve/参数 UI 审计（2026-11-05，seq 110）**；§A.8.1 = 两种发行包；§D.3 PR 计划、§D.4 19 步验收；分发/跨平台见 `packaging/CROSS-PLATFORM.md`、`packaging/README-RUNNER.txt`、`packaging/README-DEPLOY.md` |
 | **当前任务（返回庭院）** | `../tasks/返回庭院/flow.json` · 全局素材 `../assets/` · 帧 `../frames/` |
-| **引擎规格/进度** | `ENGINE-DESIGN.md` §22（**§22.51 = 最终审计与交接**） |
+| **引擎规格/进度** | `ENGINE-DESIGN.md` §22（**§22.51 = 最终审计与交接；§22.52 = 双端发行包 + 分离度验收 + F1 + 参数 UI 审计**） |
 | **调度 v3 + 统一任务模板（已交付 V1.0）** | `ENGINE-DESIGN.md` **§22.34 / §22.35**；Round 语义裁决见 **§22.34.7** + `SCHEDULER-RUNNER-PLAN.md` |
 | **发布/恢复节点（当前）** | `RELEASE-NODE-2026-11-02.md` · Release `https://github.com/passioki/oas-core/releases/tag/v0.1.0` |
 | 到实机可用的交付路线（历史） | `archive/DELIVERY-PLAN.md` |
 | 当前状态/下一步/坑 | `SESSION-HANDOFF.md` |
-| 台账/证据（当前） | `PENDING-LEDGER.md` §E-66~§E-79（**§E-79 = Studio/Runner 分离：Q1~Q7 已批准、PR1~PR7 全部 ✅、§M 最终审计与修复**；§E-76 帧页、§E-77 两按钮+push-all、§E-78 素材库 UX + OCR 阈值） |
+| 台账/证据（当前） | `PENDING-LEDGER.md` §E-66~**§E-80**（**§E-80 = 双端发行包 + 分离度验收 + dev-serve + 参数 UI 审计（seq 110）**；**§E-79 = Studio/Runner 分离：Q1~Q7 已批准、PR1~PR7 全部 ✅、§M 最终审计与修复**；§E-76 帧页、§E-77 两按钮+push-all、§E-78 素材库 UX + OCR 阈值） |
+| **参数配置 UI 审计（待裁定，2026-11-05）** | `_verify\ui-params-audit-20261105\PARAMS-UI-AUDIT.md`（仓外，398 行）：结论/缺口清单/方案 A~E/推荐 A+C；见 §0.2 / `§E-80` |
 | 旧仓历史（冻结，仍在旧仓）| `D:\OAS-dev\backend\docs\SESSION-HANDOFF.md` 历史段 · `D:\OAS-dev\frontend\docs\scheduler-architecture.md`（旧调度设计，参考） |

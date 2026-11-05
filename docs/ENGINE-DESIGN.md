@@ -2849,3 +2849,38 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 - **handoff-ready**：PR1~PR7 + 最终审计 P1 全部完成；**两个服务已停止（8788/8789 无监听），交接后电脑关机（Lead 执行）**。
 - 下一个提交 = 本批 docs（seq 108，父 `68e5768`）；不 tag / 不 release；最终 HEAD 以 `git log -1` 为准。
 - 用户数据（`assets/`/`frames/`/`tasks/`/`scheduler.json(.bak)`/未跟踪 `frames/frame-43.png`、`frame-44.png`、`tasks/切换预设御魂/`）**不入库**；`dist/`、`packages/`、`config/device.lease`、`scheduler.state.lock` 不入 git。
+
+### 22.52 ★★★ [11-05] **双端发行包落实 + 分离度验收 + 参数 UI 审计（2026-11-05；seq 110）**
+
+> 输入：用户 2026-11-05 三项要求（分离度/release、dev-serve 更新、参数设置表达）；实现/验证证据 `D:\OAS-dev\_verify\release-both-20261105\`、`lead-recheck-20261105\`、`ui-params-audit-20261105\`。
+> 权威计划：`RUNNER-STUDIO-SPLIT-PLAN.md` **§A.8.1**（两种发行包）+ **§A.17**（本批实现记录）；台账 `PENDING-LEDGER §E-80`；本卡 `RESUME` seq 110。
+
+#### 22.52.1 双入口启动与分离度（现行语义，复核结论）
+
+- **同一 `oasd.exe`，两个 surface**：`oasd studio`（8788，编辑/构建/发布）与 `oasd runner`（8789，安装/配置/队列/调度/执行/运行记录）；`oasd serve` = Studio 的 deprecated 别名（`main.rs:107-124`）。端口优先级 CLI `--port` > 本 surface config > 内置默认（`main.rs:496-498`、`:553-566`）。
+- **路由白名单在 handler 之前 gate**（`serve.rs:146-216` `route_owner` / `:222-228` `required_surface`）：不匹配的 surface 请求在 `serve.rs:1605-1614` 得到 **纯 404**；`GET /` 按 surface 取 `index.html` vs `runner.html`（`:1631-1641`）。静态资源同样按表归属（Studio `/app.js` `/builder.js` `/dashboard.*`；Runner `/runner.js` `/runner.css`）。
+- **Runner 内嵌调度 = 同进程线程**，不是独立后台服务（`main.rs:429-432` 默认开、`--no-scheduler` 关闭；`serve.rs:1393` 起线程）；所以「启动后后台只有使用端」在进程层面就是 **1 个 `oasd.exe`**（Release 评测实测：Studio 阶段进程数 1、Runner 阶段进程数 1）。
+- **Release 级验收（75/75）**：两端 zip 解压到仓外、CWD=解压目录独立启动：Studio 只监听 8788（8789/8787 未监听），`/app.js` `/task/library` 200、`/runner.js` `/runner/tasks` `/runner/health` 404；Runner 只监听 8789，`/runner.js` `/runner/tasks` `/runner/health` 200、`/task/library` `/app.js` 404；两端均 1 进程且进程路径在解压目录；停止后端口/进程 0 残留。
+
+#### 22.52.2 Studio-only 发行包（`scripts/package.ps1` 重写）
+
+- 旧 `package.ps1` 实为「全量包」（复制 `ui/*` 全部、含 Runner UI/测试页、含 `start-scheduler.bat`/`scheduler.json`、缺 `start-studio.bat`、`Compress-Archive` 写 `\` entry、BUILD-INFO 无 surface 字段）⇒ 与 §A.8.1 的 9 项不符（对照见证据 `DESIGN-VS-NOW.md`）。
+- 重写后（453 行，对齐 `package-runner.ps1`）：**Studio UI 白名单 8 文件**（`index.html`/`app.js`/`builder.js`/`flow_model.js`/`asset_ui.js`/`dashboard.html`/`dashboard.js`/`style.css`）+ 真实 `tasks/`（剔 `state/`）与 `assets/`（数量校验）+ 空 `frames/runs/logs` + `library/.keep` + `start-studio/stop-studio/start-editor/stop-editor` + `README-DEPLOY.md` + config/models/adb + `surface: studio` BUILD-INFO（entry `oasd.exe studio --port 8788 --config config/live.json --ui ui`）；**禁止** Runner UI/脚本/README-RUNNER、`start-scheduler`/`stop-scheduler`/`scheduler.json`、测试页；stage 审计（越界/缺文件/非白名单 UI/`tasks/*/state`）失败即 throw；zip 用 `System.IO.Compression.ZipArchive` 写 `/` 分隔 entry；新增 `-Build/-DryRun`。
+- 产物：`dist/oasd-v0.1.0-win64.zip` = **37,789,671 B**，SHA256 `920AF668…F07C3`（41 entries，0 反斜杠）；Runner 重建 = **37,690,867 B**，SHA256 `ECB37A78…39ADE`（23 entries）。`dist/` 不入 git（Q7）。
+
+#### 22.52.3 F1：PS 5.1 UTF-8 BOM 导致 Runner 包首启调度不可用（P1，已修）
+
+- **现象**：Runner 包首次启动 `/runner/health` `scheduler_mode=invalid_config`、内嵌调度线程立即退出（日志 `invalid JSON: expected value at line 1 column 1`）；`oasd.exe scheduler --plan scheduler.json --status` exit 2。UI/HTTP/端口分离不受影响。
+- **根因**：`scripts/package-runner.ps1` 用 Windows PowerShell 5.1 `Set-Content -Encoding UTF8` 生成包内 `scheduler.json` ⇒ 文件头 `EF BB BF`；引擎 `serde_json` 拒绝 BOM。
+- **修复**：新增 `Write-Utf8NoBom`（`[System.IO.File]::WriteAllText($path,$text,(New-Object System.Text.UTF8Encoding($false)))`），`scheduler.json`/`VERSION`/`BUILD-INFO.txt`/`tasks\README.txt` 全部无 BOM；`package.ps1` 同类文本一并统一；两脚本 stage 审计新增**首字节守卫**（`scheduler.json` 必须以 `{` 开头；VERSION/BUILD-INFO 不得带 BOM）。回归 13 条（两包 BOM 检测、`scheduler --status` exit 0、health `scheduler_mode=stop`、`last_stop=no_enabled_entries`、无 `invalid JSON`）全绿。
+- **现行约束**：**任何打包/生成 JSON 的脚本不得使用 `Set-Content -Encoding UTF8`（PS 5.1 写 BOM）**；见 `START-HERE §3 E17`。
+
+#### 22.52.4 参数 UI 审计（只读，待用户裁定）
+
+- **结论**：「设置变量（`set_var`/`inc_var`/`ocr_to_var`）」≠ 任务参数。前者是 flow 运行时变量（`oas-runtime` `Interpreter.vars`，`var()` 读，不声明/不发布/Runner 不可见）；后者是 `meta.params`（`ParamDecl`）→ `param('x')` → `.oaspkg` → Runner 表单 → `config/values.json` 四层优先级。
+- **现状**：Studio 唯一编辑入口 = 任务库卡片「配置项…」→ `#task-config-dialog` JSON textarea（`app.js:741-746/794-960`、`index.html:431-450`、§22.45.4）；**任务构建页 0 入口/0 提示**（`index.html:294-344`、`builder.js` 0 引用）；`POST /task/save_flow` 不跑 lint（`serve.rs:5921-5991`）、Studio 无 `/task/lint` 路由 ⇒ 未声明 `param()` 静默保存，首次反馈在发布 400 T3 或运行期 `param() has no value`。Studio 试运行 UI 无 params 输入。
+- **方案（未实现）**：P0 = **A**（构建页加「配置项…」入口 + 已声明参数面板）+ **C**（Studio-only `GET /task/lint` + 构建页「检查」按钮，复用 `oas_task` lint）；P1 = B 结构化表单 + D inline 提示；P2 = E Runner `group`/数字 enum。详见 `PARAMS-UI-AUDIT.md §5`（改动面/风险/验收/测试影响）。
+
+#### 22.52.5 提交边界
+
+- 本批代码/脚本：`scripts/package.ps1`、`scripts/package-runner.ps1`、`scripts/dev-serve.ps1`、`scripts/dev-serve.bat`；文档：`docs/*` 相关 + `packaging/README-DEPLOY.md`；**不含**用户数据、`dist/`、`packages/`；不 tag / 不 release（等用户确认或按项目惯例提交推送）。
