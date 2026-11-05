@@ -30,6 +30,12 @@
 # PR6 device lease (runtime mutex next to the live config; a force-kill can
 # leave it behind — the next acquire reclaims a dead pid).
 /config/device.lease
+# P0-1a publish exchange (runtime; Studio writes index, Runner reads it). The
+# shared exchange directory lives outside the package, but a relative "exchange"
+# dir resolves next to the live config, so keep both out of git.
+/config/exchange/
+/config/notifications.json
+/exchange/
 # atomic-write temp files / Studio schema-edit backups (runtime artifacts)
 *.tmp
 /tasks/*/meta.json.bak

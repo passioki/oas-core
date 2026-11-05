@@ -4232,3 +4232,33 @@ GET /task/assets?task= → 34 个素材（全局模式）
 | P2 | Runner 参数页（分组/预设/使用开关/留空） | ~2~3 人日 |
 | P3 | Studio 参数面板/声明 dialog/lint 检查按钮/动作库 A1~A4 | ~3~4 人日 |
 | P4 | `serve.rs` move-only 模块化 + 新仓 `oas-runner` 建立 + 打包/发布治理 | ~5~7 人日 |
+
+# ★ §E-82 ★★★ [11-05 18:1x → 18:4x] **P0 首批落地：数据随包 + Runner 首启导入 + Studio→Runner 发布通知（seq 112）**
+
+> **状态：P0-2（两包带数据）、P0-3（Runner 首启导入）、P0-1a（exchange 发布通知最小闭环）已实现并验证 ✅**；P0-1b（HTTP notify 客户端/写锁/compatible 预检）、参数 v2、新仓拆分仍未做。依据 `_verify\dual-app-design-20261105\RUNNER-SPLIT-DESIGN.md` §5/§6（D8=C、D9=A 推荐）；实现记录 `ENGINE §22.53`；断点 `RESUME` seq 112；证据 `D:\OAS-dev\_verify\p0-1a-e2e-20261105\`。
+> 用户原话（背景）：①「资产/任务等也属于代码仓库的一部分，发布的时候是需要带上的。」④「开发端发布了新任务，使用端那边会收到有新任务的发布。」
+
+## A. 交付明细
+
+| # | 项 | 结果 / 证据 | 状态 |
+|---|---|---|---|
+| P0-2a | **Studio 包携带全数据** | `package.ps1`：frames（frames.json+PNG，剔 `.backup/`）/relations/templates 真实数据 + `data:` BUILD-INFO + stage 审计（禁 `.backup`/`state`、frames.json 存在、relations/templates 完整）；产物 Studio **76,582,684 B** / SHA `A12C1EBA…87A3`（78 entries） | ✅ |
+| P0-2b | **Runner 包携带 `bundled-data/`** | `package-runner.ps1`：默认生成 `bundled-data/{manifest.json,tasks,assets}`（BOM-free manifest：source/tasks/assets sha/files/total_bytes）；stage 逐文件 sha 校验；`-NoData` 精简；产物 Runner **37,793,723 B** / SHA `123FFD30…E6BF` | ✅ |
+| P0-3 | **Runner 首启导入** | 新 `apps/oasd/src/bundled_data.rs`：manifest 校验（sha/size/路径安全）→ 复制 tasks/assets → 写 `packages/bundled-import.json`；**空数据根才导入、永不覆盖**；幂等（同 source.commit skip）；失败回滚；`main.rs` Runner surface 启动前调用 | ✅ |
+| P0-1a | **exchange 发布通知（后端）** | 新 `apps/oasd/src/exchange.rs`（publish-index schema 1、event_id=package_id、incoming 副本+sidecar、原子写/upsert/200 上限、notifications.json）；`config.rs` `ExchangeConfig`（默认关闭、旧 live.json 兼容、loopback/超时校验）；`serve.rs` 3 条 Runner-only 路由 + `/task/publish` exchange 钩子（失败只 warning）；19 条新测试 | ✅ |
+| P0-1a-UI | **Runner/Studio 前端** | Runner nav 徽标 + 「新发布（来自 Studio）」列表（5s 轮询/可见性暂停/安装后 ack/忽略/禁用态）；Studio 发布状态显示 exchange 结果；6 DOM id + 13 纯函数 + 74 新 checks | ✅ |
+
+## B. 验证（可核查）
+
+- **测试**：`cargo test --workspace` **746/0**（21 suites；oasd **380** = 355+19+6）；UI **1633 checks / 159/157 ids / 0 dead / 6 nav**；release OCR build exit 0（5 warnings 无新增）；`git diff --check` clean。
+- **E2E（仓外，最终两包）**：Studio 单独 publish → exchange index/incoming；停 Studio；Runner 单独启动自动导入 bundled-data（3 任务/assets/marker）→ `/runner/updates` `status=new` → `/runner/install` 200 → ack installed → `notifications.json`/`installed.json`/`/runner/tasks` 全过；日志 `_verify\p0-1a-e2e-20261105\e2e-log.txt`（`RESULT: ALL PASS`）。
+- **两包**（`dist/`，不入 git）：Studio 76,582,684 B / `A12C1EBA7AA340DF56F3132F039A7B942D474B80A7110C3308D4CDBB90BB87A3`；Runner 37,793,723 B / `123FFD30A1116DC06EC8FA145C53F00A779CB3C8F452E0C2B61E4A6E7ABBE6BF`。
+
+## C. 已知限制 / 未做（不阻塞本轮）
+
+1. **exchange 默认关闭**：需两端 `config/live.json` 配同一目录（推荐绝对路径）；未配时行为与旧版一致。
+2. **最小集未做**：Studio→Runner HTTP `notify` 客户端（文件索引已独立闭环）、`.studio-writer.lock`（并发 publish 有 RMW 丢更新窗口）、`compatible` 预检（恒 true，安装仍严格校验）、事件 `engine/dependencies/asset_refs` 字段、失败重试队列。
+3. **bundled 导入简化**：仅“空数据根首启”；已有数据时 merge/显式 import API、素材冲突合并、registry 注册未做（一律 skip）。
+4. **`scheduler.json` 仍为本地配置**（未按设计 §6.6 改运行态 + `.example`）；`frames/relations/templates` 只进 Studio 包。
+5. **数据入库**：本轮把 `assets/tasks/frames` 的当前工作区数据提交入库（用户要求“数据属于仓库”）；`scheduler.json` 仍保留为本地运行配置未提交。
+6. 参数 v2 / 新仓 `oas-runner` / 双端同时运行的完整交互矩阵（P0-4 serve 模块化、P0-5 tag）仍待 D1~D12 裁定后推进（见 `§E-81`）。

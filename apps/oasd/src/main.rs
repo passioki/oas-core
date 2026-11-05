@@ -25,11 +25,13 @@ mod schedule;
 mod scheduler;
 mod config;
 mod device_lease;
+mod exchange;
 mod task;
 mod global_assets;
 mod package_cmd;
 mod relations;
 mod runner_config;
+mod bundled_data;
 #[cfg(feature = "ocr")]
 mod ocr;
 
@@ -496,6 +498,39 @@ fn serve_cmd(rest: &[String], surface: serve::Surface) -> ExitCode {
     // Port precedence: CLI `--port` > global live config for THIS surface >
     // built-in default. Studio and Runner never share a default (8788 / 8789).
     let port = resolve_surface_port(port, surface, crate::config::global());
+
+    // P0-3 (`RUNNER-SPLIT-DESIGN.md` §6.5): the Runner release zip carries a
+    // read-only `bundled-data/` snapshot. Import it exactly once into a fresh
+    // data root (never overwrites an existing tasks/assets store). The Studio
+    // surface never imports. Must run before the server touches the dirs.
+    if surface == serve::Surface::Runner {
+        let packages_dir = crate::config::global()
+            .and_then(|cfg| cfg.packages_dir())
+            .unwrap_or_else(|| {
+                std::path::Path::new(&tasks_dir)
+                    .parent()
+                    .map(|p| p.join("packages"))
+                    .unwrap_or_else(|| std::path::PathBuf::from("packages"))
+            });
+        match crate::bundled_data::import_first_run(
+            std::path::Path::new("."),
+            std::path::Path::new(&tasks_dir),
+            std::path::Path::new(&assets_dir),
+            &packages_dir,
+        ) {
+            Ok(report) if report.imported => eprintln!(
+                "bundled data: imported {} task(s), {} file(s) into tasks/ + assets/",
+                report.tasks, report.files
+            ),
+            Ok(report) => {
+                if report.reason != "no_bundled_data" {
+                    eprintln!("bundled data: skipped ({})", report.reason);
+                }
+            }
+            Err(e) => eprintln!("warning: bundled data import failed: {e}"),
+        }
+    }
+
     let adb = Adb::from_env();
     let mut server = serve::Server::new(adb)
         .with_surface(surface)

@@ -367,6 +367,70 @@ main.runner-main {
   border-bottom: 0;
 }
 
+/* P0-1a: Studio 发布通知（导航「安装包」徽标 + 安装包页「新发布」列表） */
+.runner-badge[hidden] {
+  display: none;
+}
+
+.runner-nav-label {
+  display: inline;
+}
+
+#runner-nav .runner-badge.runner-nav-badge,
+#runner-updates-badge {
+  margin-left: 5px;
+  padding: 0 5px;
+  min-width: 16px;
+  box-sizing: border-box;
+  text-align: center;
+  line-height: 16px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #14161a;
+  background: var(--runner-accent);
+  border-color: var(--runner-accent);
+}
+
+#runner-updates-summary {
+  overflow-wrap: anywhere;
+}
+
+#runner-updates-status {
+  margin: 4px 0 6px;
+  overflow-wrap: anywhere;
+}
+
+#runner-updates-status.ok { color: var(--runner-ok); }
+#runner-updates-status.warn { color: var(--runner-warn); }
+#runner-updates-status.err { color: var(--runner-err); }
+
+#runner-updates-list {
+  margin-bottom: 8px;
+}
+
+.runner-update-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.runner-update-actions button {
+  width: auto;
+  white-space: nowrap;
+}
+
+.runner-update-version {
+  white-space: nowrap;
+}
+
+.runner-update-hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--runner-warn);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
 /* PR6: 调度控制 / 临时运行 / scheduler.json 编辑（队列与调度页） */
 #runner-sched-control .runner-sched-actions,
 #runner-run-card .row,
@@ -794,5 +858,24 @@ main.runner-main {
 
   #runner-config-fields {
     max-height: 46vh;
+  }
+
+  /* P0-1a: 新发布区块在窄屏上换行排布，徽标不撑破 nav。 */
+  #runner-updates-section .page-head {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  #runner-updates-section .page-head .spacer {
+    display: none;
+  }
+
+  #runner-nav .runner-badge.runner-nav-badge {
+    margin-left: 3px;
+    padding: 0 4px;
+  }
+
+  .runner-update-actions button {
+    padding: 3px 8px;
   }
 }

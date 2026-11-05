@@ -370,17 +370,17 @@
       "action_shape": {
         "kind": "rect",
         "roi": [
-          537,
-          605,
-          99,
-          92
+          666,
+          407,
+          176,
+          62
         ],
         "invert": false
       },
       "action_source": "fixed",
       "ocr_mode": "lines",
       "ocr_text": "育成",
-      "rev": 1,
+      "rev": 2,
       "positions": [
         4
       ]
@@ -894,6 +894,98 @@
       "rev": 1,
       "positions": [
         3
+      ]
+    },
+    {
+      "id": "我的式神_打开式神详情",
+      "kind": "ocr_line",
+      "roi": [
+        38,
+        80,
+        115,
+        33
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          1203,
+          325,
+          70,
+          71
+        ],
+        "invert": false
+      },
+      "action_source": "fixed",
+      "rev": 1,
+      "positions": [
+        4
+      ]
+    },
+    {
+      "id": "协助悬赏封印_式神录",
+      "kind": "ocr_line",
+      "roi": [
+        511,
+        33,
+        272,
+        64
+      ],
+      "action_source": "recognition",
+      "ocr_mode": "lines",
+      "ocr_text": "协助悬赏封印",
+      "rev": 1,
+      "positions": [
+        43
+      ]
+    },
+    {
+      "id": "接受_悬赏封印",
+      "kind": "ocr_line",
+      "roi": [
+        926,
+        478,
+        66,
+        35
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          843,
+          472,
+          56,
+          48
+        ],
+        "invert": false
+      },
+      "action_source": "fixed",
+      "rev": 1,
+      "positions": [
+        43
+      ]
+    },
+    {
+      "id": "拒绝_悬赏封印",
+      "kind": "ocr_line",
+      "roi": [
+        930,
+        572,
+        58,
+        30
+      ],
+      "action_shape": {
+        "kind": "rect",
+        "roi": [
+          844,
+          560,
+          55,
+          50
+        ],
+        "invert": false
+      },
+      "action_source": "fixed",
+      "rev": 1,
+      "positions": [
+        43
       ]
     }
   ],

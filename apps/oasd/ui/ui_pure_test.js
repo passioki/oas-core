@@ -25,6 +25,10 @@
 //   - PR7 scheduler migration: the old Studio entry/queue editor, run history,
 //     reset-memory dialog and workbench panel now live on the Runner queue page
 //     (84 legacy ids, 77 pure helpers); Studio stays schedule-free.
+//   - P0-1a publish notifications: Studio appends the exchange result to the
+//     publish panel; the Runner polls /runner/updates, shows a nav badge + the
+//     「新发布」 card, installs through /runner/install and acks
+//     /runner/updates/ack (installed/dismissed).
 'use strict';
 
 const fs = require('fs');
@@ -190,6 +194,8 @@ const PURE_FUNCTIONS = [
   'publishRequestBody',
   'formatPackageSummary',
   'publishErrorsText',
+  // P0-1a: Studio-side exchange (publish notification) result line.
+  'publishExchangeText',
 ];
 
 const sandbox = {};
@@ -239,6 +245,7 @@ const {
   publishRequestBody,
   formatPackageSummary,
   publishErrorsText,
+  publishExchangeText,
 } = sandbox;
 
 let checks = 0;
@@ -3376,6 +3383,49 @@ eq(publishErrorsText([]), '（服务端未返回错误详情）', 'empty publish
 eq(publishErrorsText('单一错误'), '· 单一错误', 'a single error string is bulleted too');
 eq(publishErrorsText([null, '  ', 'x']), '· x', 'blank publish errors are filtered');
 
+// --- P0-1a: publish response exchange line (Studio writes the notification) --
+eq(publishExchangeText(undefined), '', 'missing exchange field adds no line (older server)');
+eq(publishExchangeText(null), '', 'null exchange adds no line');
+eq(
+  publishExchangeText({ enabled: false }),
+  '未启用 exchange，Runner 不会自动收到（可把 .oaspkg 拷到 Runner 后手动安装）',
+  'disabled exchange says the Runner will not see the publish'
+);
+eq(
+  publishExchangeText({
+    enabled: true,
+    event_id: 'pkg-任务-1-abc',
+    index_path: 'D:/oas/exchange/publish-index.json',
+  }),
+  '已写入发布通知：D:/oas/exchange/publish-index.json（Runner 将看到）',
+  'written notification names the publish index path'
+);
+eq(
+  publishExchangeText({ enabled: true, event_id: 'pkg-1' }),
+  '已写入发布通知：pkg-1（Runner 将看到）',
+  'event_id is the fallback target when index_path is missing'
+);
+ok(
+  /未重复复制/.test(publishExchangeText({ enabled: true, event_id: 'pkg-1', copied: false })),
+  'an already-copied package is not reported as copied again'
+);
+ok(
+  /发布成功，但写通知失败：disk full/.test(publishExchangeText({ enabled: true, error: 'disk full' })),
+  'exchange write errors keep the publish itself successful'
+);
+ok(
+  /未启用 exchange/.test(publishExchangeText({})),
+  'exchange object without enabled degrades to not-configured'
+);
+ok(
+  /const exchangeLine = publishExchangeText\(s\.exchange\);/.test(source),
+  'the publish success panel appends the exchange result line'
+);
+ok(
+  /exchange 通知：若 <code>config\/live\.json<\/code> 启用了 <code>exchange<\/code>/.test(html),
+  'the publish dialog explains exchange (Runner notification) in one line'
+);
+
 for (const id of ['task-publish-dialog', 'task-publish-out', 'task-publish-list',
   'task-publish-status', 'task-publish-error', 'task-publish-submit']) {
   ok(new RegExp(`id="${id}"`).test(html), `index.html provides #${id}`);
@@ -3529,8 +3579,8 @@ for (const id of ['page-overview', 'page-tasks', 'page-packages', 'page-queue', 
   ok(new RegExp(`id="${id}"`).test(runnerHtml), `runner.html provides #${id}`);
 }
 for (const token of ['/runner/health', '/runner/tasks', '/runner/packages', '/runner/install',
-  '/runner/uninstall', '/runner/packages/activate', '/scheduler/status', '/runs/scheduler',
-  '/config', '/instance']) {
+  '/runner/uninstall', '/runner/packages/activate', '/runner/updates', '/runner/updates/ack',
+  '/scheduler/status', '/runs/scheduler', '/config', '/instance']) {
   ok(runnerSource.includes(token), `runner.js reads ${token}`);
 }
 for (const bad of ['/task/save_flow', '/task/save_asset', '/frames', '/task/', '/library/', '/relations/',
@@ -3611,6 +3661,11 @@ const runnerHelperNames = [
   // PR6 fix: 409 code mapping, stop timeout text, scheduler history rows.
   'runnerErrorCodeLabel', 'runnerBodyErrors', 'runnerStopText', 'runnerStopPending',
   'runnerSchedHistoryRows',
+  // P0-1a: Studio publish notifications (updates list / badge / action / ack).
+  'runnerTimeText', 'updatesEnabled', 'updatesList', 'updatesVisibleRows',
+  'updatesBadgeCount', 'updatesActionLabel', 'updatesCompatText', 'updatesPackageText',
+  'updatesCanInstall', 'updatesInstallPath', 'updateRowText', 'updatesAckBody',
+  'updatesListStatusText',
 ];
 const runnerHelperCode = runnerHelperNames
   .map((name) => extractFunctionFrom(runnerSource, name, 'runner.js'))
@@ -3748,6 +3803,199 @@ ok(/packages\/installed\.json/.test(runnerSource), 'package list names packages/
 ok(/state\.page === 'packages'/.test(runnerSource), 'page switch loads the package page');
 ok(/RUNNER_PAGES = \['overview', 'tasks', 'packages', 'queue', 'runs', 'settings'\]/.test(runnerSource), 'packages is the 3rd nav page in the JS page list');
 ok(/#runner-packages-list/.test(runnerCss) && /#runner-install-path/.test(runnerCss), 'runner.css styles the install/package surfaces');
+
+// --- P0-1a: Runner new-publish (Studio exchange) helpers --------------------
+// The /runner/updates payload may be partial (older backend / disabled
+// exchange); every helper degrades instead of throwing.
+eq(runnerSb.updatesEnabled({ enabled: true }), true, 'enabled:true is recognized');
+eq(runnerSb.updatesEnabled({}), false, 'missing enabled degrades to not-configured');
+eq(runnerSb.updatesEnabled(null), false, 'null updates body is not enabled');
+eq(runnerSb.updatesList({ updates: [{ event_id: 'e1' }] }).length, 1, 'updates array is read');
+eq(runnerSb.updatesList({}), [], 'missing updates array is empty');
+eq(runnerSb.updatesList(null), [], 'null body has no rows');
+
+const updateSamples = [
+  { event_id: 'e1', status: 'new' },
+  { event_id: 'e2', status: 'dismissed' },
+  { event_id: 'e3', status: 'installed' },
+  { event_id: 'e4' },
+  { status: 'new' },
+  null,
+];
+eq(
+  runnerSb.updatesVisibleRows(updateSamples).map((r) => r.event_id),
+  ['e1', 'e4'],
+  'visible rows skip dismissed/installed events and events without an id'
+);
+eq(runnerSb.updatesBadgeCount(updateSamples), 2, 'the badge counts only actionable events');
+eq(runnerSb.updatesBadgeCount(null), 0, 'missing updates list -> 0 badge');
+eq(runnerSb.updatesActionLabel('install'), '新任务', 'install action is a new task');
+eq(runnerSb.updatesActionLabel('upgrade'), '升级', 'upgrade action');
+eq(runnerSb.updatesActionLabel('downgrade'), '降级', 'downgrade action');
+eq(runnerSb.updatesActionLabel('reinstall'), '重装', 'reinstall action');
+eq(runnerSb.updatesActionLabel(undefined), '新发布', 'unknown/missing action degrades to 新发布');
+eq(runnerSb.updatesCompatText({ compatible: true }), '兼容', 'compatible flag');
+eq(
+  runnerSb.updatesCompatText({ compatible: false }),
+  '不兼容（安装会被拒绝）',
+  'incompatible flag is explained'
+);
+eq(runnerSb.updatesCompatText({}), '兼容性未知', 'missing compatibility is unknown, not a block');
+eq(
+  runnerSb.updatesPackageText({ package_available: false }),
+  '包文件不存在（请让 Studio 重新发布，或手动选路径）',
+  'missing package is explained'
+);
+eq(runnerSb.updatesPackageText({ package_available: true }), '包可用', 'available package');
+ok(
+  runnerSb.updatesCanInstall({ event_id: 'e1', package_path: 'D:/ex/incoming/a.oaspkg' }),
+  'a minimal event (id + path) is installable'
+);
+ok(
+  !runnerSb.updatesCanInstall({ event_id: 'e1', package_path: 'D:/x/a.oaspkg', package_available: false }),
+  'a missing package file blocks install'
+);
+ok(
+  !runnerSb.updatesCanInstall({ event_id: 'e1', package_path: 'D:/x/a.oaspkg', compatible: false }),
+  'an incompatible package blocks install before the server 400'
+);
+ok(!runnerSb.updatesCanInstall({ event_id: 'e1' }), 'missing package_path blocks install');
+ok(
+  !runnerSb.updatesCanInstall({ package_path: 'D:/x/a.oaspkg' }),
+  'missing event_id blocks install (it could not be acked)'
+);
+eq(
+  runnerSb.updatesInstallPath({ event_id: 'e1', package_path: '  D:/x/a.oaspkg  ' }),
+  'D:/x/a.oaspkg',
+  'the install path is trimmed for POST /runner/install'
+);
+eq(
+  runnerSb.updatesInstallPath({ event_id: 'e1', package_available: false, package_path: 'D:/x/a.oaspkg' }),
+  '',
+  'a blocked install contributes no path'
+);
+eq(
+  runnerSb.updatesAckBody([' e1 ', '', null, 'e2'], 'installed'),
+  { event_ids: ['e1', 'e2'], status: 'installed' },
+  'ack body trims event ids and sends the installed status'
+);
+eq(
+  runnerSb.updatesAckBody([], 'dismissed'),
+  { event_ids: [], status: 'dismissed' },
+  'ack body for the dismissed status'
+);
+eq(
+  runnerSb.updatesAckBody(null, 'bogus'),
+  { event_ids: [], status: 'dismissed' },
+  'unknown ack status degrades to dismissed'
+);
+eq(runnerSb.runnerTimeText(0), '—', 'zero publish time is a dash (not 1970)');
+eq(
+  runnerSb.updateRowText({
+    task_id: '任务2',
+    task_version: 3,
+    action: 'upgrade',
+    published_at_ms: 0,
+    compatible: true,
+  }),
+  '任务2 v3 · 升级 · 兼容',
+  'row text joins task/version/action/compat and skips a missing publish time'
+);
+ok(
+  /包文件不存在/.test(runnerSb.updateRowText({ task_id: 't', package_available: false })),
+  'row text carries the missing-package hint'
+);
+eq(
+  runnerSb.updateRowText(null),
+  '（未知任务） · 新发布 · 兼容性未知',
+  'an empty event is still renderable'
+);
+eq(
+  runnerSb.updatesListStatusText({ enabled: false }, ''),
+  '未配置 exchange 目录（config/live.json → exchange.dir）',
+  'disabled exchange explains the config key'
+);
+eq(
+  runnerSb.updatesListStatusText({ enabled: true, updates: [] }, ''),
+  '暂无新发布',
+  'an enabled but empty exchange says 暂无新发布'
+);
+eq(
+  runnerSb.updatesListStatusText({ enabled: true, error: 'bad json' }, ''),
+  '发布索引读取异常：bad json',
+  'a broken publish index is shown fail-soft (no throw/500)'
+);
+eq(
+  runnerSb.updatesListStatusText(null, 'HTTP 500'),
+  '新发布读取失败：HTTP 500（保留上次结果）',
+  'a read failure keeps the last rendered list'
+);
+eq(runnerSb.updatesListStatusText(null, ''), '（未加载）', 'missing body before the first read');
+ok(
+  /新发布 2 条/.test(runnerSb.updatesListStatusText({ enabled: true, updates: updateSamples }, '')),
+  'the status line counts the actionable rows'
+);
+
+// Static wiring: nav badge + 新发布 card + poll + install/ack flow.
+for (const id of ['runner-updates-badge', 'runner-updates-section', 'runner-updates-summary',
+  'runner-updates-status', 'runner-updates-list', 'runner-updates-refresh']) {
+  ok(new RegExp(`id="${id}"`).test(runnerHtml), `runner.html provides #${id}`);
+}
+ok(
+  /<nav[^>]*id="runner-nav"[\s\S]*?id="runner-updates-badge"/.test(runnerHtml),
+  'the nav 安装包 button carries the updates badge'
+);
+ok(/<h3>新发布（来自 Studio）<\/h3>/.test(runnerHtml), 'the package page has the 新发布 card');
+ok(/暂无新发布/.test(runnerSource), 'the empty state says 暂无新发布');
+ok(
+  /未配置 exchange 目录（config\/live\.json → exchange\.dir）/.test(runnerSource),
+  'the disabled exchange hint names config/live.json → exchange.dir'
+);
+ok(
+  /id="runner-updates-status"[^>]*role="status"/.test(runnerHtml),
+  'the updates status line is a live region'
+);
+ok(
+  /runnerFetchJson\(RUNNER_API\.updates\)/.test(runnerSource),
+  'the new-publish list is loaded from GET /runner/updates'
+);
+ok(
+  /runnerFetchJson\(RUNNER_API\.updatesAck, \{ method: 'POST', body: body \}\)/.test(runnerSource),
+  'ack POSTs /runner/updates/ack with the pure body'
+);
+ok(
+  /runnerFetchJson\(RUNNER_API\.install, \{[\s\S]{0,120}body: runnerInstallBody\(path, false\)/.test(runnerSource),
+  'the 安装 button reuses POST /runner/install with the exchange package path'
+);
+ok(
+  /ackUpdateEvents\(\[it\.event_id\], 'installed'\)/.test(runnerSource),
+  'a successful install is followed by the installed ack'
+);
+ok(
+  /ackUpdateEvents\(\[it\.event_id\], 'dismissed'\)/.test(runnerSource),
+  '忽略 acks the dismissed status'
+);
+ok(/RUNNER_UPDATES_POLL_MS = 5000/.test(runnerSource), 'new publishes are polled every 5s');
+ok(
+  /document\.visibilityState === 'hidden'/.test(runnerSource) &&
+    /startUpdatesPolling\(\)/.test(runnerSource) &&
+    /stopUpdatesPolling\(\)/.test(runnerSource),
+  'polling pauses on a hidden tab and resumes when visible'
+);
+ok(
+  /state\.page === 'packages' && updatesError/.test(runnerSource),
+  'the notification read error only surfaces on the package page'
+);
+ok(
+  /typeof health\.pending_updates === 'number'/.test(runnerSource),
+  'pending_updates from /runner/health seeds the nav badge until the list loads'
+);
+ok(
+  /#runner-updates-badge/.test(runnerCss) && /#runner-updates-list/.test(runnerCss),
+  'runner.css styles the updates badge + list'
+);
+ok(/\.runner-update-actions/.test(runnerCss), 'runner.css styles the per-event actions');
+ok(/\.runner-badge\[hidden\]/.test(runnerCss), 'the zero-count badge stays hidden');
 
 // --- PR2: Runner task config form (local values, config/values.json) --------
 for (const id of ['runner-config-dialog', 'runner-config-title', 'runner-config-form',

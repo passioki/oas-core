@@ -42,12 +42,14 @@ ui\runner.*       Runner 使用端页面（不含 Studio 编辑页面）
 models\           OCR 模型（执行需要，请勿删除）
 adb\              Windows adb（v1 随包；macOS/Linux 用系统 adb）
 config\           live.json / live.example.json
-packages\         已安装任务包、备份（Runner 独占写）
-tasks\            已安装任务（任务包解压落点）
+packages\         已安装任务包、备份（Runner 独占写；bundled-import.json 记录随包数据导入）
+tasks\            任务目录（首次启动会从 bundled-data\ 导入仓库随包任务；之后由安装包/页面维护）
+bundled-data\     【新增】随包数据只读快照（tasks + assets + manifest.json）；
+                  首次启动且 tasks\ 为空时自动导入一次，之后永不覆盖用户数据
 runs\             运行记录
 logs\             runner.log 等日志
 scheduler.json    调度/队列计划（初始为空，页面里添加）
-assets\           全局素材（安装任务包时合并）
+assets\           全局素材（首次启动从 bundled-data 导入；安装任务包时合并）
 VERSION / BUILD-INFO.txt  版本与构建信息
 
 
@@ -79,3 +81,20 @@ UI 是普通 Web 页面，用浏览器打开 http://127.0.0.1:8789/ 即可。adb
 Studio：制作/编辑任务、素材、流程、发布 .oaspkg（开发与编辑人员使用，端口 8788）。
 Runner：只消费 .oaspkg 并执行（终端用户使用，端口 8789）。
 两者共用同一份数据目录布局；单机部署时可以并存，但不要同时对同一台设备执行。
+
+6. 随包数据 / Studio 发布通知（P0）
+-----------------------------------
+- 本包默认带 `bundled-data\`（tasks + assets 快照 + manifest.json，带 sha256）。
+  首次启动且 `tasks\` 为空时自动导入到 `tasks\`/`assets\` 并写
+  `packages\bundled-import.json`；**之后升级/重启永不覆盖**已有的 tasks/assets。
+  想用精简包（不带数据）时，用 `scripts\package-runner.ps1 -NoData` 重新打包。
+- 想让「Studio 发布新任务 → Runner 显示新发布」：两端 `config\live.json` 增加同一
+  exchange 目录（推荐绝对路径），例如：
+    "exchange": { "enabled": true, "dir": "D:/OAS-shared/exchange", "poll_secs": 3 }
+  Studio 发布 `.oaspkg` 后会把包副本与 `publish-index.json` 写入该目录；Runner
+  「安装包」页顶部出现「新发布（来自 Studio）」列表与导航徽标，点「安装」即装上
+  （仍走 sha256/flow_ops/min_engine 严格校验）。Runner 未启动/Studio 未启动都不
+  影响：文件是唯一真相，先启动谁后启动谁都能看到。
+- 升级注意：只覆盖程序文件（oasd.exe、ui\、models\、adb\、bundled-data\、*.bat、
+  README、VERSION、BUILD-INFO）；**不要覆盖/删除** config\、tasks\、assets\、
+  packages\、scheduler.json、runs\、logs\。

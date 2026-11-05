@@ -19,9 +19,19 @@
 | UI 资源 | `index.html` / `app.js` / `builder.js` / `flow_model.js` / `asset_ui.js` / `dashboard.*` | 仅 `runner.html` / `runner.js` / `runner.css` + 共享 `style.css` |
 | 能做什么 | 创作帧/素材/流程、lint、发布 `.oaspkg`、试运行 | 安装/卸载任务包、填运行参数、排队/调度、执行、看运行记录 |
 | 不能做什么 | 不是给终端用户的操作入口（不需要安装任务包） | **没有编辑 UI**：不能改流程/素材/帧库；这些在 Studio 完成并发布 |
-| 数据目录 | tasks/ assets/ frames/ library/ runs/ logs/（不含 `scheduler.json`/调度脚本；调度归 Runner） | tasks/ assets/ packages/ runs/ logs/ + `scheduler.json`（不含 frames/ library/） |
+| 数据目录 | tasks/ assets/ frames/ relations/ templates/ runs/ logs/（不含 scheduler.json/调度脚本；调度归 Runner） | tasks/ assets/ packages/ runs/ logs/ + `bundled-data/`（随包数据快照）+ `scheduler.json`（不含 frames/ library/） |
 
 两种包共用同一个 `oasd.exe` 二进制，只是启动的子命令、端口和随包 UI 不同。单机部署时可以并存，但**不要同时对同一台设备执行**（Runner 调度与 Studio 试运行会抢设备）。
+
+### P0：数据随包 + Studio 发布→Runner 通知
+
+- **数据随包**：Studio 包携带真实 `tasks/ assets/ frames/ relations/ templates/`；Runner 包携带 `bundled-data/`（tasks + assets 快照 + `manifest.json` 含 sha256，可用 `scripts\package-runner.ps1 -NoData` 打精简包）。Runner **首次启动且 `tasks/` 为空**时自动导入 `bundled-data/` 并写 `packages/bundled-import.json`，**之后永不覆盖**用户数据。
+- **发布通知（exchange）**：两端 `config/live.json` 指向**同一个 exchange 目录**即可：
+  ```json
+  "exchange": { "enabled": true, "dir": "D:/OAS-shared/exchange", "poll_secs": 3 }
+  ```
+  Studio 发布 `.oaspkg` 后写 `publish-index.json` + `incoming/` 副本；Runner「安装包」页出现「新发布（来自 Studio）」列表与导航徽标，一键安装（仍走 sha256/flow_ops/min_engine 校验）。**文件是唯一真相**：Runner/Studio 谁先启动、只启动一个都能工作；未配置 exchange 时保持现状（手动填包路径安装）。
+- 升级：只覆盖程序文件（`oasd.exe`/`ui`/`models`/`adb`/`bundled-data`/`*.bat`/README/VERSION/BUILD-INFO），**不要覆盖数据目录**（`tasks/ assets/ frames/ relations/ templates/ config/ packages/ scheduler.json runs/ logs/`）。
 
 ## 0. V0.1.0 新增
 

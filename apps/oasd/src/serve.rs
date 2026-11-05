@@ -47,6 +47,9 @@
 //!   GET  /runner/run/status -> status of the current/last temporary run (PR6)
 //!   GET  /runner/tasks/<id>/config  -> Runner task values + param schema (PR2)
 //!   PUT  /runner/tasks/<id>/config  -> validate + store Runner task values (PR2)
+//!   GET  /runner/updates  -> publish events from the shared exchange dir (P0-1a)
+//!   POST /runner/updates/ack -> Runner-local seen state (`dismissed`/`installed`, P0-1a)
+//!   POST /runner/notify   -> best-effort publish hint (never installs; P0-1a)
 //!   POST /task/publish    -> build one .oaspkg (Studio only, PR5)
 //!   GET  /task/package    -> Studio package history (PR5)
 //!   GET  /task/config?task=<name>   -> Studio param schema (PR2)
@@ -69,6 +72,7 @@ use oas_runtime::RunResult;
 use oas_types::{Frame, InputSink, Outcome, Point, ScreenSource};
 
 use crate::device_lease::DeviceLease;
+use crate::exchange;
 use crate::run::{RunOptions, RunReport};
 use crate::runner_config;
 use crate::schedule::{
@@ -166,11 +170,10 @@ pub fn route_owner(method: &str, path_only: &str) -> Option<RouteOwner> {
             | "/task/package" | "/task/config" | "/library" => Some(Studio),
 
             // Runner operational APIs (PR1 read-only subset, PR5 packages, PR6
-            // embedded scheduler + temporary run status).
-            "/runner/health" | "/runner/tasks" | "/runner/packages" | "/runs/scheduler"
-            | "/runs/scheduler/run" | "/runner/scheduler/status" | "/runner/run/status" => {
-                Some(Runner)
-            }
+            // embedded scheduler + temporary run status, P0-1a publish updates).
+            "/runner/health" | "/runner/tasks" | "/runner/packages" | "/runner/updates"
+            | "/runs/scheduler" | "/runs/scheduler/run" | "/runner/scheduler/status"
+            | "/runner/run/status" => Some(Runner),
 
             // Shared read-only views (and the device view both surfaces need).
             "/runs" | "/runs/clicks" | "/runs/aggregate" | "/scheduler/config"
@@ -184,10 +187,12 @@ pub fn route_owner(method: &str, path_only: &str) -> Option<RouteOwner> {
         },
 
         "POST" => match path_only {
-            // Scheduler/ops writes belong to the usage surface only.
+            // Scheduler/ops writes belong to the usage surface only. P0-1a adds
+            // the publish-update ACK + the best-effort publish hint.
             "/scheduler/config" | "/scheduler/reset" | "/runs/delete" | "/runner/install"
             | "/runner/uninstall" | "/runner/packages/activate" | "/runner/run"
-            | "/runner/scheduler/start" | "/runner/scheduler/stop" => Some(Runner),
+            | "/runner/scheduler/start" | "/runner/scheduler/stop" | "/runner/updates/ack"
+            | "/runner/notify" => Some(Runner),
 
             // The device config is the one physical resource both surfaces use.
             "/instance" => Some(Both),
@@ -595,6 +600,14 @@ pub struct Server {
     /// through [`Adb`].
     #[cfg(test)]
     tap_override: Option<Arc<TapFn>>,
+    /// P0-1a test seam: pinned exchange `(enabled, dir)`. Production derives
+    /// both from `config.exchange` (`Server::exchange_dir`), so tests never read
+    /// or write a real exchange directory.
+    #[cfg(test)]
+    exchange_override: Option<(bool, PathBuf)>,
+    /// P0-1a test seam: pinned Runner seen store (`config/notifications.json`).
+    #[cfg(test)]
+    notifications_path_override: Option<PathBuf>,
     #[cfg(feature = "ocr")]
     ocr: Option<Arc<Mutex<oas_ocr::onnx::RecEngine>>>,
     #[cfg(feature = "ocr")]
@@ -910,6 +923,10 @@ impl Server {
             live_capture_override: None,
             #[cfg(test)]
             tap_override: None,
+            #[cfg(test)]
+            exchange_override: None,
+            #[cfg(test)]
+            notifications_path_override: None,
             #[cfg(feature = "ocr")]
             ocr: None,
             #[cfg(feature = "ocr")]
@@ -1021,6 +1038,21 @@ impl Server {
     #[cfg(test)]
     fn with_values_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.values_path_override = Some(path.into());
+        self
+    }
+
+    /// Test seam: pin the P0-1a exchange `(enabled, dir)` so tests never touch a
+    /// real exchange directory (`config.exchange` drives production).
+    #[cfg(test)]
+    fn with_exchange(mut self, enabled: bool, dir: impl Into<PathBuf>) -> Self {
+        self.exchange_override = Some((enabled, dir.into()));
+        self
+    }
+
+    /// Test seam: pin the P0-1a Runner seen store (`config/notifications.json`).
+    #[cfg(test)]
+    fn with_notifications_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.notifications_path_override = Some(path.into());
         self
     }
 
@@ -1813,6 +1845,10 @@ impl Server {
             ("GET", "/runner/health") => self.handle_runner_health(&mut out),
             ("GET", "/runner/tasks") => self.handle_runner_tasks(&mut out),
             ("GET", "/runner/packages") => self.handle_runner_packages(&mut out),
+            // --- P0-1a: Studio → Runner publish exchange (Runner only) ---
+            ("GET", "/runner/updates") => self.handle_runner_updates(&mut out),
+            ("POST", "/runner/updates/ack") => self.handle_runner_updates_ack(&mut out, &body),
+            ("POST", "/runner/notify") => self.handle_runner_notify(&mut out, &body),
             // --- PR6: embedded scheduler + temporary Runner run (Runner only) ---
             ("POST", "/runner/scheduler/start") => self.handle_runner_scheduler_start(&mut out),
             ("POST", "/runner/scheduler/stop") => self.handle_runner_scheduler_stop(&mut out),
@@ -8002,6 +8038,9 @@ impl Server {
     fn handle_task_publish(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
         match package_cmd::publish_http(&self.tasks_dir, &self.assets_dir, &self.dist_dir, body) {
             Ok(outcome) => {
+                // P0-1a: mirror the build into the shared exchange dir. This is
+                // additive and never fails the publish (see `publish_to_exchange`).
+                let exchange = self.publish_to_exchange(&outcome);
                 self.editor_log(&format!(
                     "task_publish task={} path={} sha256={}",
                     outcome.manifest.task_id,
@@ -8016,6 +8055,7 @@ impl Server {
                     "path": outcome.path.display().to_string(),
                     "sha256": outcome.sha256,
                     "warnings": outcome.warnings,
+                    "exchange": exchange,
                 });
                 self.send_json(out, 200, &body.to_string())
             }
@@ -8192,6 +8232,314 @@ impl Server {
                 500,
                 vec![package_cmd::installed_registry_error(&layout.root, &e)],
             ),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // P0-1a: Studio → Runner publish exchange (Runner read side)
+    // -----------------------------------------------------------------------
+
+    /// Resolved exchange directory, or `None` when the exchange is disabled or
+    /// unconfigured. Production source: `config.exchange` — `enabled` plus `dir`
+    /// resolved against the live config file's directory (`OasConfig`).
+    fn exchange_dir(&self) -> Option<PathBuf> {
+        #[cfg(test)]
+        if let Some((enabled, dir)) = &self.exchange_override {
+            return (*enabled).then(|| dir.clone());
+        }
+        let cfg = crate::config::global()?;
+        if !cfg.exchange.enabled {
+            return None;
+        }
+        cfg.exchange_dir()
+    }
+
+    /// Runner seen store: `config/notifications.json` next to the live
+    /// `--config` file (without one: `config/notifications.json` under the CWD,
+    /// mirroring `runner_config`'s values fallback).
+    fn notifications_path(&self) -> PathBuf {
+        #[cfg(test)]
+        if let Some(path) = &self.notifications_path_override {
+            return path.clone();
+        }
+        match crate::config::global_path() {
+            Some(config) => config
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(exchange::NOTIFICATIONS_FILE_NAME),
+            None => PathBuf::from("config").join(exchange::NOTIFICATIONS_FILE_NAME),
+        }
+    }
+
+    /// `GET /runner/updates` — published task packages from the exchange dir.
+    ///
+    /// The response is **always 200** (fail-soft): a broken index / notifications
+    /// file or a corrupt `installed.json` becomes an `error` string instead of a
+    /// 500 so the Runner page stays usable (same rule as `/runner/tasks`). The
+    /// exchange file is the only truth; `status` is the local ACK state and
+    /// `action` is derived from `installed.json` + the event version.
+    fn handle_runner_updates(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let now = now_ms();
+        let Some(dir) = self.exchange_dir() else {
+            let body = serde_json::json!({
+                "ok": true,
+                "enabled": false,
+                "exchange_dir": "",
+                "updates": [],
+                "last_scan_ms": now,
+            });
+            return self.send_json(out, 200, &body.to_string());
+        };
+        let mut errors: Vec<String> = Vec::new();
+        let index = match exchange::read_index(&dir) {
+            Ok(index) => index,
+            Err(e) => {
+                errors.push(e);
+                exchange::PublishIndex::default()
+            }
+        };
+        let layout = self.packages_layout();
+        let installed = match package_cmd::read_installed(&layout.root) {
+            Ok(file) => file,
+            Err(e) => {
+                // Degrade like `/runner/tasks`: every event shows as "install"
+                // (no installed version known) plus an actionable warning.
+                errors.push(package_cmd::installed_registry_error(&layout.root, &e));
+                package_cmd::InstalledFile::default()
+            }
+        };
+        let seen = match exchange::read_notifications(&self.notifications_path()) {
+            Ok(file) => file.seen,
+            Err(e) => {
+                errors.push(e);
+                std::collections::BTreeMap::new()
+            }
+        };
+        let mut rows: Vec<(u64, String, serde_json::Value)> = Vec::new();
+        for event in &index.events {
+            let resolved = exchange::resolve_inside(&dir, &event.package_file);
+            let (package_available, package_path) = match resolved {
+                Ok(path) => {
+                    let available = path.is_file();
+                    (available, absolute_display_path(&path))
+                }
+                Err(e) => {
+                    errors.push(format!(
+                        "event `{}`: {e}",
+                        if event.event_id.is_empty() {
+                            &event.package_id
+                        } else {
+                            &event.event_id
+                        }
+                    ));
+                    continue;
+                }
+            };
+            let installed_version = installed.find(&event.task_id).map(|p| p.version);
+            let action = exchange::action_for(installed_version, event.task_version);
+            // Only the ACK statuses the schema defines are surfaced; an unknown
+            // stored status is treated as "never seen" so the badge comes back.
+            let status = seen
+                .get(&event.event_id)
+                .map(|s| s.status.as_str())
+                .filter(|s| *s == "dismissed" || *s == "installed")
+                .unwrap_or("new");
+            let row = serde_json::json!({
+                "event_id": event.event_id,
+                "task_id": event.task_id,
+                "task_version": event.task_version,
+                "package_id": event.package_id,
+                "sha256": event.sha256,
+                "package_file": event.package_file,
+                "package_path": package_path,
+                "size_bytes": event.size_bytes,
+                "published_at_ms": event.published_at_ms,
+                "action": action,
+                "installed_version": installed_version,
+                "status": status,
+                // P0-1a minimal index has no engine (`min_engine`/`flow_ops`)
+                // pre-check; `POST /runner/install` still validates the package
+                // strictly, so this is "not known to be incompatible".
+                "compatible": true,
+                "package_available": package_available,
+            });
+            rows.push((event.published_at_ms, event.event_id.clone(), row));
+        }
+        // Newest first: the UI banner wants the latest publish on top.
+        rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        let updates: Vec<serde_json::Value> = rows.into_iter().map(|(_, _, row)| row).collect();
+        let mut body = serde_json::json!({
+            "ok": true,
+            "enabled": true,
+            "exchange_dir": dir.display().to_string(),
+            "updates": updates,
+            "last_scan_ms": now,
+        });
+        if !errors.is_empty() {
+            body["error"] = serde_json::Value::String(errors.join("; "));
+        }
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `POST /runner/updates/ack` body `{event_ids:[…], status:"dismissed"|
+    /// "installed"}` — persist the Runner-local seen state (by design the
+    /// exchange file itself is read-only to the Runner: multiple Runner
+    /// instances each keep their own `notifications.json`).
+    fn handle_runner_updates_ack(
+        &self,
+        out: &mut TcpStream,
+        body: &[u8],
+    ) -> std::io::Result<()> {
+        let value: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(value) => value,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let raw_ids = match value.get("event_ids") {
+            Some(serde_json::Value::Array(ids)) => ids,
+            Some(_) => {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec!["`event_ids` must be an array of non-empty strings".into()],
+                )
+            }
+            None => return self.send_errors(out, 400, vec!["`event_ids` array is required".into()]),
+        };
+        if raw_ids.is_empty() {
+            return self.send_errors(out, 400, vec!["`event_ids` must not be empty".into()]);
+        }
+        if raw_ids.len() > 500 {
+            return self.send_errors(
+                out,
+                400,
+                vec![format!("too many event ids: {} (max 500)", raw_ids.len())],
+            );
+        }
+        let mut event_ids = Vec::with_capacity(raw_ids.len());
+        for id in raw_ids {
+            let id = id.as_str().map(str::trim).unwrap_or("");
+            if id.is_empty() {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec!["`event_ids` must contain non-empty strings".into()],
+                );
+            }
+            event_ids.push(id.to_string());
+        }
+        let status = value.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "dismissed" && status != "installed" {
+            return self.send_errors(
+                out,
+                400,
+                vec!["`status` must be \"dismissed\" or \"installed\"".into()],
+            );
+        }
+        match exchange::ack_events(&self.notifications_path(), &event_ids, status, now_ms()) {
+            Ok(updated_ms) => {
+                self.editor_log(&format!(
+                    "runner_updates_ack status={status} events={}",
+                    event_ids.len()
+                ));
+                let body = serde_json::json!({"ok": true, "updated_ms": updated_ms});
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(e) => self.send_errors(out, 500, vec![format!("write notifications: {e}")]),
+        }
+    }
+
+    /// `POST /runner/notify` — best-effort Studio→Runner hint.
+    ///
+    /// Deliberately a **no-op beyond payload validation**: it never installs and
+    /// never writes a registry (design §5.6: a forged hint can only be ignored).
+    /// The exchange index is the only truth, so an empty body is accepted.
+    fn handle_runner_notify(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        if !body.is_empty() {
+            match serde_json::from_slice::<serde_json::Value>(body) {
+                Ok(serde_json::Value::Object(_)) => {}
+                Ok(_) => {
+                    return self.send_errors(
+                        out,
+                        400,
+                        vec!["notify payload must be a JSON object".into()],
+                    )
+                }
+                Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+            }
+        }
+        self.editor_log(&format!("runner_notify accepted bytes={}", body.len()));
+        let body = serde_json::json!({"ok": true, "accepted": true});
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// P0-1a Studio side: mirror one successful build into the exchange dir.
+    ///
+    /// Never fails the publish: the local `.oaspkg` is already built and the
+    /// exchange is an additive channel, so any copy/index error is reported in
+    /// the response (`exchange.error`) and one `editor_log` warning.
+    fn publish_to_exchange(&self, outcome: &oas_task::package::BuildOutcome) -> serde_json::Value {
+        let Some(dir) = self.exchange_dir() else {
+            return serde_json::json!({
+                "enabled": false,
+                "dir": "",
+                "event_id": null,
+                "index_path": null,
+                "copied": false,
+            });
+        };
+        let tool = package_cmd::tool_context();
+        let input = exchange::AnnounceInput {
+            package_path: outcome.path.clone(),
+            package_id: outcome.manifest.package_id.clone(),
+            task_id: outcome.manifest.task_id.clone(),
+            task_version: outcome.manifest.task_version,
+            sha256: outcome.sha256.clone(),
+            published_at_ms: now_ms(),
+            source: Some(exchange::PublishSource {
+                repo: outcome.manifest.source.repo.clone(),
+                commit: outcome.manifest.source.commit.clone(),
+            }),
+            publisher: Some(exchange::Publisher {
+                surface: "studio".to_string(),
+                repo: tool.repo,
+                commit: tool.commit,
+                version: tool.version,
+                dirty: tool.dirty,
+            }),
+        };
+        match exchange::announce_publish(&dir, &input) {
+            Ok(result) => {
+                self.editor_log(&format!(
+                    "task_publish exchange event_id={} index={} file={} size_bytes={} seq={} copy={} copied={}",
+                    result.event_id,
+                    result.index_path.display(),
+                    result.package_file,
+                    result.size_bytes,
+                    result.seq,
+                    result.package_path.display(),
+                    result.copied
+                ));
+                serde_json::json!({
+                    "enabled": true,
+                    "dir": dir.display().to_string(),
+                    "event_id": result.event_id,
+                    "index_path": result.index_path.display().to_string(),
+                    "copied": result.copied,
+                })
+            }
+            Err(e) => {
+                self.editor_log(&format!("task_publish exchange warning: {e}"));
+                serde_json::json!({
+                    "enabled": true,
+                    "dir": dir.display().to_string(),
+                    "event_id": null,
+                    "index_path": null,
+                    "copied": false,
+                    "error": e,
+                })
+            }
         }
     }
 
@@ -9129,6 +9477,24 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Absolute path for JSON responses (`GET /runner/updates.package_path`, P0-1a).
+///
+/// A relative exchange dir (`config.exchange.dir`) is resolved against the live
+/// config dir, which may itself be relative, so the Runner UI must receive an
+/// unambiguous path it can hand to `POST /runner/install`. No canonicalization:
+/// `canonicalize` yields `\\?\C:\...` on Windows, which is ugly in the UI (and
+/// install accepts `..` components anyway).
+fn absolute_display_path(path: &Path) -> String {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    absolute.display().to_string()
 }
 
 static CREATE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -16539,5 +16905,440 @@ mod tests {
         );
         assert!(status.contains("200"), "{status} {body}");
         assert!(td.path().join("runner/tasks/B/meta.json").is_file());
+    }
+
+    // -----------------------------------------------------------------------
+    // P0-1a: Studio → Runner publish exchange (GET /runner/updates & ack/notify)
+    // -----------------------------------------------------------------------
+
+    /// Exchange-enabled server for either surface: the exchange dir and the
+    /// seen store are both pinned under the test tempdir.
+    fn exchange_server(td: &Path, surface: Surface) -> Server {
+        let server = match surface {
+            Surface::Studio => studio_pkg_server(td),
+            Surface::Runner => runner_pkg_server(td),
+        };
+        server
+            .with_exchange(true, td.join("exchange"))
+            .with_notifications_path(td.join("config/notifications.json"))
+            .with_editor_log(td.join("logs/editor.log"))
+    }
+
+    fn test_publish_event(
+        id: &str,
+        task: &str,
+        version: u32,
+        package_file: &str,
+        published_at_ms: u64,
+    ) -> exchange::PublishEvent {
+        exchange::PublishEvent {
+            event_id: id.to_string(),
+            task_id: task.to_string(),
+            task_version: version,
+            package_id: id.to_string(),
+            package_file: package_file.to_string(),
+            sha256: "a".repeat(64),
+            size_bytes: 3,
+            published_at_ms,
+            source: None,
+        }
+    }
+
+    fn write_test_index(exchange_dir: &Path, events: Vec<exchange::PublishEvent>) {
+        std::fs::create_dir_all(exchange_dir).expect("create exchange dir");
+        let mut index = exchange::PublishIndex::default();
+        index.events = events;
+        index.seq = 1;
+        exchange::write_index(exchange_dir, &index).expect("write test index");
+    }
+
+    #[test]
+    fn exchange_routes_are_runner_only_and_the_ack_store_persists() {
+        assert_eq!(
+            route_owner("GET", "/runner/updates"),
+            Some(RouteOwner::Runner)
+        );
+        assert_eq!(
+            route_owner("POST", "/runner/updates/ack"),
+            Some(RouteOwner::Runner)
+        );
+        assert_eq!(
+            route_owner("POST", "/runner/notify"),
+            Some(RouteOwner::Runner)
+        );
+        assert_eq!(
+            required_surface("GET", "/runner/updates"),
+            Some(Surface::Runner)
+        );
+
+        let td = TempDir::new("exchange-surface");
+        let studio = exchange_server(td.path(), Surface::Studio);
+        // Studio gets a plain 404 (the routes must not even leak their shape).
+        let (status, body) = get_route(&studio, "/runner/updates");
+        assert!(status.contains("404"), "studio /runner/updates: {status} {body}");
+        for (target, payload) in [
+            (
+                "/runner/updates/ack",
+                &br#"{"event_ids":["pkg-x"],"status":"dismissed"}"#[..],
+            ),
+            ("/runner/notify", &br#"{"event_id":"x"}"#[..]),
+        ] {
+            let (status, body) = post_route(&studio, target, "application/json", payload);
+            assert!(status.contains("404"), "studio {target}: {status} {body}");
+        }
+
+        let runner = exchange_server(td.path(), Surface::Runner);
+        // Empty exchange (no index yet) = enabled + empty list, never an error.
+        let (status, body) = get_route(&runner, "/runner/updates");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("updates JSON");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["enabled"], true);
+        assert_eq!(
+            v["exchange_dir"],
+            td.path().join("exchange").display().to_string()
+        );
+        assert_eq!(v["updates"], serde_json::json!([]));
+        assert!(v["last_scan_ms"].as_u64().unwrap() > 0);
+        assert!(v.get("error").is_none(), "no error for a missing index: {v}");
+
+        let (status, body) = post_route(
+            &runner,
+            "/runner/updates/ack",
+            "application/json",
+            br#"{"event_ids":["pkg-x"],"status":"dismissed"}"#,
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("ack JSON");
+        assert_eq!(v["ok"], true);
+        assert!(v["updated_ms"].as_u64().unwrap() > 0);
+        // The Runner-local seen store is schema v1 and honors the ACK.
+        let stored = read_json(&td.path().join("config/notifications.json"));
+        assert_eq!(stored["schema_version"], 1);
+        assert_eq!(stored["seen"]["pkg-x"]["status"], "dismissed");
+        assert!(stored["seen"]["pkg-x"]["updated_ms"].as_u64().unwrap() > 0);
+
+        let (status, body) = post_route(
+            &runner,
+            "/runner/notify",
+            "application/json",
+            br#"{"event_id":"pkg-x"}"#,
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("notify JSON");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["accepted"], true);
+    }
+
+    #[test]
+    fn runner_notify_accepts_empty_or_object_and_rejects_other_json() {
+        let td = TempDir::new("exchange-notify");
+        let runner = exchange_server(td.path(), Surface::Runner);
+        // An empty body is a valid "just wake up" hint.
+        let (status, body) = post_route(&runner, "/runner/notify", "application/json", b"");
+        assert!(status.contains("200"), "{status} {body}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["accepted"],
+            true
+        );
+        for bad in [&br#"[1,2]"#[..], &br#""text""#[..], &br#"{ broken"#[..]] {
+            let (status, body) = post_route(&runner, "/runner/notify", "application/json", bad);
+            assert!(status.contains("400"), "{status} {body}");
+        }
+    }
+
+    #[test]
+    fn runner_updates_is_an_empty_list_when_the_exchange_is_disabled() {
+        // No `--config` in tests => no exchange section => disabled, no write.
+        let td = TempDir::new("exchange-disabled");
+        let runner = runner_pkg_server(td.path());
+        let (status, body) = get_route(&runner, "/runner/updates");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("updates JSON");
+        assert_eq!(v["enabled"], false, "{v}");
+        assert_eq!(v["updates"], serde_json::json!([]));
+        assert_eq!(v["exchange_dir"], "");
+        assert!(v.get("error").is_none(), "{v}");
+    }
+
+    #[test]
+    fn runner_updates_fails_soft_on_a_broken_index() {
+        let td = TempDir::new("exchange-bad-index");
+        let exchange_dir = td.path().join("exchange");
+        std::fs::create_dir_all(&exchange_dir).unwrap();
+        std::fs::write(exchange_dir.join("publish-index.json"), "{ not json").unwrap();
+        let runner = exchange_server(td.path(), Surface::Runner);
+        let (status, body) = get_route(&runner, "/runner/updates");
+        // Fail-soft: still 200, the error is reported in-band (Runner UI usable).
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("updates JSON");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["enabled"], true);
+        assert_eq!(v["updates"], serde_json::json!([]));
+        let error = v["error"].as_str().expect("error string");
+        assert!(error.contains("publish-index.json"), "{error}");
+    }
+
+    #[test]
+    fn runner_updates_reports_action_status_and_package_availability() {
+        let td = TempDir::new("exchange-updates");
+        let exchange_dir = td.path().join("exchange");
+        let incoming = exchange_dir.join("incoming");
+        std::fs::create_dir_all(&incoming).unwrap();
+        // A: upgrade (installed 1, published 2) + package present + dismissed.
+        std::fs::write(incoming.join("A-v2.oaspkg"), b"a").unwrap();
+        // C: reinstall (installed == published) + package present.
+        std::fs::write(incoming.join("C-v5.oaspkg"), b"c").unwrap();
+        write_test_index(
+            &exchange_dir,
+            vec![
+                test_publish_event("pkg-A-2-aaa", "A", 2, "incoming/A-v2.oaspkg", 300),
+                test_publish_event("pkg-B-1-bbb", "B", 1, "incoming/B-v1.oaspkg", 200),
+                test_publish_event("pkg-C-5-ccc", "C", 5, "incoming/C-v5.oaspkg", 100),
+                // Path escapes the exchange dir: skipped, reported in `error`.
+                test_publish_event("pkg-D-1-ddd", "D", 1, "../secret.oaspkg", 50),
+            ],
+        );
+        // installed.json: A@1 (-> upgrade), B@5 (-> downgrade), C@5 (-> reinstall).
+        let packages_root = td.path().join("runner/packages");
+        std::fs::create_dir_all(&packages_root).unwrap();
+        let mut installed = package_cmd::InstalledFile::default();
+        for (task, version) in [("A", 1u32), ("B", 5), ("C", 5)] {
+            installed.upsert(package_cmd::InstalledPackage {
+                package_id: format!("pkg-{task}-{version}-old"),
+                task_id: task.to_string(),
+                version,
+                sha256: "old".into(),
+                installed_at_ms: 1,
+                source: package_cmd::InstalledSource::default(),
+                backup: None,
+                dependencies: Vec::new(),
+            });
+        }
+        package_cmd::write_installed(&packages_root, &installed).unwrap();
+        // Seen store: A dismissed, B installed, C unknown (-> new).
+        let mut notifications = exchange::NotificationsFile::default();
+        for (id, status) in [
+            ("pkg-A-2-aaa", "dismissed"),
+            ("pkg-B-1-bbb", "installed"),
+        ] {
+            notifications.seen.insert(
+                id.to_string(),
+                exchange::SeenEvent {
+                    status: status.to_string(),
+                    updated_ms: 1,
+                },
+            );
+        }
+        notifications.updated_ms = 1;
+        exchange::write_notifications(&td.path().join("config/notifications.json"), &notifications)
+            .unwrap();
+
+        let runner = exchange_server(td.path(), Surface::Runner);
+        let (status, body) = get_route(&runner, "/runner/updates");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("updates JSON");
+        assert_eq!(v["enabled"], true);
+        let error = v["error"].as_str().expect("bad event path is reported");
+        assert!(error.contains("pkg-D-1-ddd"), "{error}");
+        let rows = v["updates"].as_array().expect("updates array");
+        assert_eq!(rows.len(), 3, "the escaping event is dropped: {v}");
+        // Newest first.
+        assert_eq!(rows[0]["event_id"], "pkg-A-2-aaa");
+        assert_eq!(rows[1]["event_id"], "pkg-B-1-bbb");
+        assert_eq!(rows[2]["event_id"], "pkg-C-5-ccc");
+
+        let a = &rows[0];
+        assert_eq!(a["task_id"], "A");
+        assert_eq!(a["task_version"], 2);
+        assert_eq!(a["action"], "upgrade");
+        assert_eq!(a["installed_version"], 1);
+        assert_eq!(a["status"], "dismissed");
+        assert_eq!(a["compatible"], true);
+        assert_eq!(a["package_available"], true);
+        assert!(
+            std::path::Path::new(a["package_path"].as_str().unwrap()).is_absolute(),
+            "package_path must be absolute: {a}"
+        );
+        assert!(a["package_path"].as_str().unwrap().ends_with("A-v2.oaspkg"));
+
+        let b = &rows[1];
+        assert_eq!(b["action"], "downgrade");
+        assert_eq!(b["installed_version"], 5);
+        assert_eq!(b["status"], "installed");
+        assert_eq!(b["package_available"], false, "file is missing");
+
+        let c = &rows[2];
+        assert_eq!(c["action"], "reinstall");
+        assert_eq!(c["status"], "new", "unknown stored statuses are ignored");
+    }
+
+    #[test]
+    fn runner_updates_ack_roundtrip_and_validation() {
+        let td = TempDir::new("exchange-ack");
+        let exchange_dir = td.path().join("exchange");
+        let incoming = exchange_dir.join("incoming");
+        std::fs::create_dir_all(&incoming).unwrap();
+        std::fs::write(incoming.join("A-v1.oaspkg"), b"a").unwrap();
+        write_test_index(
+            &exchange_dir,
+            vec![test_publish_event(
+                "pkg-A-1-aaa",
+                "A",
+                1,
+                "incoming/A-v1.oaspkg",
+                10,
+            )],
+        );
+        let runner = exchange_server(td.path(), Surface::Runner);
+
+        let row_status = |runner: &Server| -> String {
+            let (status, body) = get_route(runner, "/runner/updates");
+            assert!(status.contains("200"), "{status} {body}");
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["updates"][0]["status"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(row_status(&runner), "new");
+
+        let (status, body) = post_route(
+            &runner,
+            "/runner/updates/ack",
+            "application/json",
+            br#"{"event_ids":["pkg-A-1-aaa"],"status":"installed"}"#,
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        assert_eq!(row_status(&runner), "installed", "ACK state is re-read");
+
+        // Bad bodies are 400 and never touch the store.
+        for bad in [
+            &br#"not-json"#[..],
+            &br#"{}"#[..],
+            &br#"{"event_ids":[]}"#[..],
+            &br#"{"event_ids":[1],"status":"dismissed"}"#[..],
+            &br#"{"event_ids":["pkg-A-1-aaa"],"status":"weird"}"#[..],
+        ] {
+            let (status, body) = post_route(&runner, "/runner/updates/ack", "application/json", bad);
+            assert!(
+                status.contains("400"),
+                "bad ack body must be 400: {status} {body}"
+            );
+        }
+        assert_eq!(row_status(&runner), "installed", "rejected ACKs wrote nothing");
+    }
+
+    #[test]
+    fn studio_publish_copies_the_package_and_upserts_the_exchange_index() {
+        let td = TempDir::new("exchange-publish");
+        std::fs::create_dir_all(td.path().join("src/tasks")).unwrap();
+        pkg_write_task(
+            &td.path().join("src/tasks"),
+            "交换任务",
+            1,
+            "[]",
+            PKG_FINISH,
+        );
+        let studio = exchange_server(td.path(), Surface::Studio);
+        let exchange_dir = td.path().join("exchange");
+        let body = r#"{"task":"交换任务","reproducible":true}"#;
+
+        let (status, out) = post_route(
+            &studio,
+            "/task/publish",
+            "application/json",
+            body.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("publish JSON");
+        assert_eq!(v["ok"], true);
+        let package_id = v["package_id"].as_str().unwrap().to_string();
+        let built_path = std::path::PathBuf::from(v["path"].as_str().unwrap());
+        let ex = &v["exchange"];
+        assert_eq!(ex["enabled"], true, "{v}");
+        assert_eq!(ex["dir"], exchange_dir.display().to_string());
+        assert_eq!(ex["event_id"], package_id);
+        assert_eq!(ex["copied"], true);
+        let index_path = std::path::PathBuf::from(ex["index_path"].as_str().unwrap());
+        assert!(index_path.is_file(), "{}", index_path.display());
+
+        let index = read_json(&index_path);
+        assert_eq!(index["schema_version"], 1);
+        assert_eq!(index["seq"], 1);
+        assert_eq!(index["publisher"]["surface"], "studio");
+        let events = index["events"].as_array().expect("events");
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event["event_id"], package_id);
+        assert_eq!(event["task_id"], "交换任务");
+        assert_eq!(event["task_version"], 1);
+        assert_eq!(event["package_id"], package_id);
+        assert_eq!(event["sha256"], v["sha256"]);
+        assert_eq!(
+            event["size_bytes"].as_u64().unwrap(),
+            std::fs::metadata(&built_path).unwrap().len()
+        );
+        assert!(event["source"].is_object(), "source recorded: {event}");
+        assert!(event["source"]["repo"].is_string(), "{event}");
+        assert!(event["source"]["commit"].is_string(), "{event}");
+        let package_file = event["package_file"].as_str().unwrap();
+        assert!(package_file.starts_with("incoming/"), "{package_file}");
+        assert!(package_file.ends_with(".oaspkg"), "{package_file}");
+        assert!(
+            !package_file.contains('\\'),
+            "package_file must use forward slashes: {package_file}"
+        );
+        let copied = exchange_dir.join(package_file);
+        assert!(copied.is_file(), "package copy: {}", copied.display());
+        assert_eq!(
+            oas_task::package::sha256_file(&copied).unwrap(),
+            v["sha256"].as_str().unwrap()
+        );
+        assert!(
+            copied.with_extension("oaspkg.sha256").is_file(),
+            "sha256 sidecar next to the copy"
+        );
+
+        // Force-republishing identical bytes: same event, no second copy, seq+1.
+        let force = r#"{"task":"交换任务","reproducible":true,"force":true}"#;
+        let (status, out) =
+            post_route(&studio, "/task/publish", "application/json", force.as_bytes());
+        assert!(status.contains("200"), "{status} {out}");
+        let v2: serde_json::Value = serde_json::from_str(&out).expect("republish JSON");
+        assert_eq!(v2["exchange"]["event_id"], package_id);
+        assert_eq!(
+            v2["exchange"]["copied"], false,
+            "same sha256 must not copy twice: {v2}"
+        );
+        let index = read_json(&index_path);
+        assert_eq!(index["seq"], 2, "every announce bumps the write counter");
+        assert_eq!(index["events"].as_array().unwrap().len(), 1, "idempotent upsert");
+    }
+
+    #[test]
+    fn studio_publish_reports_exchange_errors_without_failing_the_publish() {
+        let td = TempDir::new("exchange-publish-fail");
+        std::fs::create_dir_all(td.path().join("src/tasks")).unwrap();
+        pkg_write_task(&td.path().join("src/tasks"), "坏交换", 1, "[]", PKG_FINISH);
+        // A file where the exchange parent dir should be makes every write fail.
+        std::fs::write(td.path().join("blocked"), b"file").unwrap();
+        let studio = studio_pkg_server(td.path())
+            .with_exchange(true, td.path().join("blocked").join("exchange"))
+            .with_editor_log(td.path().join("logs/editor.log"));
+        let (status, out) = post_route(
+            &studio,
+            "/task/publish",
+            "application/json",
+            r#"{"task":"坏交换","reproducible":true}"#.as_bytes(),
+        );
+        // The local package is still a success; the exchange error is a warning.
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("publish JSON");
+        assert_eq!(v["ok"], true);
+        assert!(std::path::Path::new(v["path"].as_str().unwrap()).is_file());
+        assert_eq!(v["exchange"]["enabled"], true);
+        assert!(v["exchange"]["event_id"].is_null());
+        let error = v["exchange"]["error"].as_str().expect("exchange error");
+        assert!(error.contains("incoming") || error.contains("create"), "{error}");
     }
 }

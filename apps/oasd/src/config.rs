@@ -31,6 +31,84 @@ pub struct OasConfig {
     pub ocr: OcrConfig,
     pub device: DeviceConfig,
     pub scheduler: SchedulerConfig,
+    /// Studio ⇄ Runner publish exchange (P0-1a, design
+    /// `RUNNER-SPLIT-DESIGN.md §5.3`). Additive: an old `live.json` without the
+    /// section keeps parsing, and an unset section does not change the file's
+    /// serialised shape (`skip_serializing_if`), so `POST /instance` rewrites
+    /// stay byte-compatible for existing deployments.
+    #[serde(default, skip_serializing_if = "ExchangeConfig::is_default")]
+    pub exchange: ExchangeConfig,
+}
+
+/// Studio → Runner publish exchange settings.
+///
+/// Both surfaces share this schema (one `OasConfig`): the Studio writes the
+/// shared directory (`announce_publish` + `POST /task/publish`), the Runner
+/// reads it (`GET /runner/updates`). `notify` is only meaningful on the Studio
+/// side and `poll_secs` only on the Runner side — keeping one schema means the
+/// same `live.json` section is valid on both ends.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ExchangeConfig {
+    /// Exchange directory (`publish-index.json` + `incoming/`). A relative path
+    /// is resolved against the **live config file's directory** (same rule as
+    /// `device.lease`, see [`exchange_dir_from`]); absolute paths are used
+    /// verbatim. Ignored when `enabled` is false.
+    pub dir: String,
+    /// Master switch. Default **off** so an old `live.json` never starts writing
+    /// (or polling) an exchange directory it never opted into.
+    pub enabled: bool,
+    /// Runner-side polling hint in seconds (`0..=3600`; `0` = no hint/disable).
+    /// The current Runner UI polls `GET /runner/updates` on its own timer; this
+    /// value is the contract for a future poller.
+    pub poll_secs: u32,
+    /// Best-effort loopback HTTP hint (Studio side; reserved for the follow-up
+    /// `POST /runner/notify` client — the exchange file is the only truth).
+    pub notify: NotifyConfig,
+}
+
+impl Default for ExchangeConfig {
+    fn default() -> Self {
+        Self {
+            dir: "exchange".into(),
+            enabled: false,
+            poll_secs: 3,
+            notify: NotifyConfig::default(),
+        }
+    }
+}
+
+impl ExchangeConfig {
+    /// `true` when the whole section equals its default (used for
+    /// `skip_serializing_if` so old `live.json` files keep their shape).
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// Loopback accelerator settings (`POST /runner/notify`).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct NotifyConfig {
+    /// Opt-in switch; disabled by default because the exchange file alone is
+    /// sufficient (and the P0-1a slice only ships the Runner-side receiver).
+    pub enabled: bool,
+    /// Base URL of the local Runner (`http://127.0.0.1:8789`). Only loopback
+    /// http URLs are accepted: both surfaces bind loopback (PR1) and the hint
+    /// must never be sent to a remote host.
+    pub runner_url: String,
+    /// Connect/read timeout in ms (`100..=5000`).
+    pub timeout_ms: u32,
+}
+
+impl Default for NotifyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            runner_url: "http://127.0.0.1:8789".into(),
+            timeout_ms: 800,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -243,6 +321,37 @@ impl OasConfig {
         if self.paths.tasks_dir.trim().is_empty() {
             return Err("paths.tasks_dir must not be empty".into());
         }
+        // P0-1a exchange (design §5.3). Checked before the optional-serial early
+        // return below so a valid-but-deviceless config still cannot hide a
+        // broken exchange/notify setting.
+        if self.exchange.enabled && self.exchange.dir.trim().is_empty() {
+            return Err("exchange.dir must not be empty when exchange.enabled".into());
+        }
+        if self.exchange.poll_secs > 3600 {
+            return Err(format!(
+                "exchange.poll_secs must be 0..=3600, got {}",
+                self.exchange.poll_secs
+            ));
+        }
+        if !(100..=5000).contains(&self.exchange.notify.timeout_ms) {
+            return Err(format!(
+                "exchange.notify.timeout_ms must be 100..=5000, got {}",
+                self.exchange.notify.timeout_ms
+            ));
+        }
+        let notify_url = self.exchange.notify.runner_url.trim();
+        if notify_url.is_empty() {
+            if self.exchange.notify.enabled {
+                return Err(
+                    "exchange.notify.runner_url must not be empty when notify.enabled".into(),
+                );
+            }
+        } else if !is_loopback_http_url(notify_url) {
+            return Err(format!(
+                "exchange.notify.runner_url `{notify_url}` must be an http loopback URL \
+                 (http://127.0.0.1:<port> / http://localhost:<port> / http://[::1]:<port>)"
+            ));
+        }
         if self.device.serial.trim().is_empty() {
             // Not fatal at load time (dev can omit), but callers that need a
             // device must call `require_serial()`.
@@ -282,6 +391,13 @@ impl OasConfig {
         (!raw.is_empty()).then(|| PathBuf::from(raw))
     }
 
+    /// Resolved exchange directory for this process (P0-1a). `None` when the
+    /// setting is blank, or when it is relative and no `--config` was loaded
+    /// (there is no well-defined anchor directory then).
+    pub fn exchange_dir(&self) -> Option<PathBuf> {
+        exchange_dir_from(global_path(), &self.exchange.dir)
+    }
+
     /// 把设备相关配置写进现有适配器使用的环境变量。
     pub fn apply_env(&self) {
         if !self.device.adb_path.trim().is_empty() {
@@ -297,6 +413,62 @@ impl OasConfig {
             std::env::set_var("OAS_DEVICE_SERIAL", self.device.serial.trim());
         }
     }
+}
+
+/// Resolve an exchange `dir` against an explicit live-config path (pure, so the
+/// two branches are unit-testable without the process-wide `global_path()`
+/// once-lock — same pattern as `device_lease::lease_path_from`).
+///
+/// * absolute `configured` -> used verbatim (works even without `--config`);
+/// * relative `configured` -> joined to the live config file's directory;
+/// * blank `configured` / no config path for a relative setting -> `None`.
+pub fn exchange_dir_from(config_path: Option<&Path>, configured: &str) -> Option<PathBuf> {
+    let raw = configured.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let raw = PathBuf::from(raw);
+    if raw.is_absolute() {
+        return Some(raw);
+    }
+    let config_path = config_path?;
+    let dir = config_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    Some(dir.join(raw))
+}
+
+/// Is `url` an `http://` URL whose host is a loopback address? Only
+/// `127.0.0.0/8`, `localhost` and `::1` qualify: both surfaces bind loopback
+/// and the publish hint must never leave the machine (design §5.6).
+fn is_loopback_http_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    // Authority ends at the first path/query/fragment separator.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') {
+        // `@` = userinfo; a local service base URL has no credentials.
+        return false;
+    }
+    let host = if let Some(v6) = authority.strip_prefix('[') {
+        match v6.split_once(']') {
+            Some((addr, rest)) if rest.is_empty() || rest.starts_with(':') => addr,
+            _ => return false,
+        }
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    if host.is_empty() {
+        return false;
+    }
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
 }
 
 static GLOBAL: OnceLock<OasConfig> = OnceLock::new();
@@ -388,6 +560,111 @@ mod tests {
         .is_err());
         assert!(OasConfig::from_json(r#"{"runner":{"bind":"0.0.0.0"}}"#).is_err());
         assert!(OasConfig::from_json(r#"{"runner":{"bind":"localhost"}}"#).is_ok());
+    }
+
+    #[test]
+    fn parses_old_live_json_without_the_exchange_section() {
+        // Backwards compatibility (P0-1a): a deployed live.json predates the
+        // exchange/notify sections and must parse unchanged and *stay* off.
+        let old = r#"{
+          "schema_version": 1,
+          "serve": {"port": 8788, "bind": "127.0.0.1", "ui": "ui"},
+          "runner": {"port": 8789, "bind": "127.0.0.1"},
+          "paths": {"tasks_dir": "tasks", "runs_dir": "runs", "library_dir": "library"},
+          "ocr": {"model": "models/rec.onnx", "det_model": "models/det.onnx"},
+          "device": {"adb_path": "adb/adb.exe", "serial": "127.0.0.1:16384"},
+          "scheduler": {"plan": "scheduler.json", "state": "s.state.json", "report": "r.json"}
+        }"#;
+        let c = OasConfig::from_json(old).expect("old live.json parses");
+        assert_eq!(c.exchange, ExchangeConfig::default());
+        assert!(!c.exchange.enabled, "exchange must stay opt-in");
+        assert_eq!(c.exchange.dir, "exchange");
+        assert_eq!(c.exchange.poll_secs, 3);
+        assert_eq!(c.exchange.notify.runner_url, "http://127.0.0.1:8789");
+        assert_eq!(c.exchange.notify.timeout_ms, 800);
+        assert_eq!(c.exchange.notify.enabled, false);
+        // ...and re-serialising it must not grow an `exchange` section.
+        let json = serde_json::to_value(&c).expect("serialize");
+        assert!(
+            json.get("exchange").is_none(),
+            "an unset exchange must not change the live.json shape: {json}"
+        );
+    }
+
+    #[test]
+    fn parses_and_validates_the_exchange_section() {
+        let c = OasConfig::from_json(
+            r#"{"exchange":{"dir":"../shared/exchange","enabled":true,"poll_secs":5,
+                "notify":{"enabled":true,"runner_url":"http://127.0.0.1:8789","timeout_ms":1200}}}"#,
+        )
+        .expect("exchange section parses");
+        assert_eq!(c.exchange.dir, "../shared/exchange");
+        assert!(c.exchange.enabled);
+        assert_eq!(c.exchange.poll_secs, 5);
+        assert_eq!(c.exchange.notify.timeout_ms, 1200);
+        assert_eq!(
+            serde_json::to_value(&c.exchange).unwrap()["notify"]["runner_url"],
+            "http://127.0.0.1:8789"
+        );
+
+        // Defaults are valid, so `enabled:true` alone is enough to opt in.
+        assert!(OasConfig::from_json(r#"{"exchange":{"enabled":true}}"#).is_ok());
+        // Unknown keys are rejected (deny_unknown_fields) at both levels.
+        assert!(OasConfig::from_json(r#"{"exchange":{"unknown":1}}"#).is_err());
+        assert!(OasConfig::from_json(r#"{"exchange":{"notify":{"unknown":1}}}"#).is_err());
+        // Enabled but blank dir is refused.
+        assert!(OasConfig::from_json(r#"{"exchange":{"enabled":true,"dir":"  "}}"#).is_err());
+        // Notify URL must be loopback + http (mirror of the runner.bind rule).
+        for bad in [
+            r#"{"exchange":{"notify":{"runner_url":"http://0.0.0.0:8789"}}}"#,
+            r#"{"exchange":{"notify":{"runner_url":"http://example.com:8789"}}}"#,
+            r#"{"exchange":{"notify":{"runner_url":"https://127.0.0.1:8789"}}}"#,
+            r#"{"exchange":{"notify":{"runner_url":"127.0.0.1:8789"}}}"#,
+            r#"{"exchange":{"notify":{"runner_url":"http://user@127.0.0.1:8789"}}}"#,
+        ] {
+            assert!(OasConfig::from_json(bad).is_err(), "{bad} must be refused");
+        }
+        for ok in [
+            "http://127.0.0.1:8789",
+            "http://localhost:8789",
+            "http://[::1]:8789",
+        ] {
+            let json = format!(r#"{{"exchange":{{"notify":{{"runner_url":"{ok}"}}}}}}"#);
+            assert!(OasConfig::from_json(&json).is_ok(), "{ok} must be accepted");
+        }
+        // Range checks.
+        assert!(OasConfig::from_json(r#"{"exchange":{"notify":{"timeout_ms":99}}}"#).is_err());
+        assert!(OasConfig::from_json(r#"{"exchange":{"notify":{"timeout_ms":5001}}}"#).is_err());
+        assert!(OasConfig::from_json(r#"{"exchange":{"poll_secs":3601}}"#).is_err());
+        // Empty URL is tolerated only while notify is off (not configured).
+        assert!(OasConfig::from_json(r#"{"exchange":{"notify":{"runner_url":""}}}"#).is_ok());
+        assert!(OasConfig::from_json(
+            r#"{"exchange":{"notify":{"enabled":true,"runner_url":""}}}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn exchange_dir_follows_the_live_config_dir_or_an_absolute_setting() {
+        let config = Path::new("pkg").join("config").join("live.json");
+        // Relative: against the live config file's directory, never the CWD.
+        assert_eq!(
+            exchange_dir_from(Some(&config), "exchange"),
+            Some(Path::new("pkg").join("config").join("exchange"))
+        );
+        assert_eq!(
+            exchange_dir_from(Some(&config), "../shared/exchange"),
+            Some(Path::new("pkg").join("config").join("../shared/exchange"))
+        );
+        // Absolute: used verbatim, even without a loaded config.
+        let abs = std::env::temp_dir().join("oas-shared-exchange");
+        assert_eq!(
+            exchange_dir_from(None, &abs.display().to_string()),
+            Some(abs)
+        );
+        // Blank / relative-without-config -> unusable (not a guess).
+        assert_eq!(exchange_dir_from(Some(&config), "  "), None);
+        assert_eq!(exchange_dir_from(None, "exchange"), None);
     }
 
     #[test]

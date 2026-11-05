@@ -455,6 +455,10 @@
     <p class="muted small">
       发布为 <code>.oaspkg</code>：仅包含任务、子任务依赖与引用素材快照；终端用户在 Runner 安装。
     </p>
+    <p class="muted small">
+      exchange 通知：若 <code>config/live.json</code> 启用了 <code>exchange</code>，发布时还会把包与发布索引写入共享交换区；
+      Runner 打开时会在「安装包 → 新发布」里看到并可一键安装（未启用 exchange 时 Runner 不会自动收到）。
+    </p>
     <label class="opt"><input id="task-publish-include-deps" name="include_deps" type="checkbox" checked />
       包含子任务依赖（include_deps）</label>
     <label class="opt"><input id="task-publish-force" name="force" type="checkbox" />

@@ -102,7 +102,7 @@ $ForbiddenPackageNames = @(
   "start-scheduler.bat", "stop-scheduler.bat", "scheduler.json"
 )
 
-$StageDirs = @("ui", "models", "adb", "config", "tasks", "library", "assets", "frames", "runs", "logs")
+$StageDirs = @("ui", "models", "adb", "config", "tasks", "library", "assets", "frames", "relations", "templates", "runs", "logs")
 
 Write-Host "== OAS Studio package v$Version =="
 
@@ -227,7 +227,9 @@ if ($DryRun) {
   Write-Host "  [GENERATE] config\live.json          <- copy of live.example.json"
   Write-Host "  [COPY]     tasks\*                   <- real task bundle data, state\ stripped"
   Write-Host "  [COPY]     assets\assets.json + assets\images\* <- real global asset store"
-  Write-Host "  [GENERATE] library\, frames\, runs\, logs\ .keep placeholders"
+  Write-Host "  [COPY]     frames\** (frames.json + PNGs, .backup\ excluded)"
+  Write-Host "  [COPY]     relations\** + templates\** <- real authoring data"
+  Write-Host "  [GENERATE] library\, runs\, logs\ .keep placeholders (data dirs copied when present)"
   Write-Host "  [GENERATE] VERSION, BUILD-INFO.txt"
   Write-Host ""
   Write-Host "Excluded from the Studio package (Runner / headless-scheduler surface):"
@@ -331,8 +333,37 @@ if (-not (Get-ChildItem (Join-Path $Stage "library") -Force -ErrorAction Silentl
   "" | Set-Content -Encoding ASCII (Join-Path $Stage "library\.keep")
 }
 
+# frames/, relations/, templates/ are real authoring data: ship them verbatim
+# (P0-2 user requirement: assets/tasks/data belong to the repo and the release
+# must carry them). Runtime backups (`frames/.backup/`) are never shipped.
+function Copy-DataTree {
+  param([string]$SrcDir, [string]$DestDir, [string]$ExcludePattern = '')
+  if (-not (Test-Path $SrcDir)) { return 0 }
+  $files = @(Get-ChildItem $SrcDir -Recurse -File -Force -ErrorAction SilentlyContinue |
+    Where-Object { $ExcludePattern -eq '' -or $_.FullName -notmatch $ExcludePattern })
+  foreach ($f in $files) {
+    $rel = $f.FullName.Substring($SrcDir.Length + 1)
+    $dest = Join-Path $DestDir $rel
+    $parent = Split-Path -Parent $dest
+    if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+    Copy-Item $f.FullName $dest -Force
+  }
+  return $files.Count
+}
+
+$RootFrames = Join-Path $Root "frames"
+$RootRelations = Join-Path $Root "relations"
+$RootTemplates = Join-Path $Root "templates"
+$FrameCount = Copy-DataTree -SrcDir $RootFrames -DestDir (Join-Path $Stage "frames") -ExcludePattern '\\\.backup\\'
+$RelationCount = Copy-DataTree -SrcDir $RootRelations -DestDir (Join-Path $Stage "relations")
+$TemplateCount = Copy-DataTree -SrcDir $RootTemplates -DestDir (Join-Path $Stage "templates")
+foreach ($pair in @(@("frames", $FrameCount), @("relations", $RelationCount), @("templates", $TemplateCount))) {
+  if ($pair[1] -eq 0) {
+    "" | Set-Content -Encoding ASCII (Join-Path (Join-Path $Stage $pair[0]) ".keep")
+  }
+}
+
 # empty runtime directories (zip keeps empty dirs only if they contain a file)
-"" | Set-Content -Encoding ASCII (Join-Path $Stage "frames\.keep")
 "" | Set-Content -Encoding ASCII (Join-Path $Stage "runs\.keep")
 "" | Set-Content -Encoding ASCII (Join-Path $Stage "logs\.keep")
 
@@ -374,6 +405,7 @@ $buildLines = Get-OasBuildInfoLines -Version $Version -Root $Root `
     "ui: index.html app.js builder.js flow_model.js asset_ui.js dashboard.html dashboard.js style.css",
     "models: PP-OCRv6_rec_small.onnx, PP-OCRv6_det_small.onnx",
     "adb: bundled Windows adb (adb/adb.exe)",
+    "data: tasks=$($StageTaskDirs.Count) assets=$StageAssetCount frames=$FrameCount relations=$RelationCount templates=$TemplateCount",
     "android_test_env: $android",
     "tasks: $taskNames"
   )
@@ -397,10 +429,25 @@ if ($uiUnexpected) {
   throw "Studio stage ui/ contains non-whitelisted file(s): $names"
 }
 
-# 3) no runtime state dirs leaked from tasks/.
+# 3) no runtime state dirs leaked from tasks/, and no frames backup data.
 $stateDirs = @(Get-ChildItem (Join-Path $Stage "tasks") -Directory -Recurse -Force -Filter "state" -ErrorAction SilentlyContinue)
 if ($stateDirs.Count -gt 0) {
   throw "Studio stage tasks/ still contains state/ directories"
+}
+$backupDirs = @(Get-ChildItem $Stage -Recurse -Force -Directory -Filter ".backup" -ErrorAction SilentlyContinue)
+if ($backupDirs.Count -gt 0) {
+  throw "Studio stage must not contain .backup/ directories"
+}
+
+# 3.5) repo data that exists must have been copied (user requirement ①).
+if ($FrameCount -gt 0 -and -not (Test-Path (Join-Path $Stage "frames\frames.json"))) {
+  throw "Studio stage copied $FrameCount frame file(s) but frames\frames.json is missing"
+}
+if ($RelationCount -gt 0 -and $RelationCount -ne @(Get-ChildItem $RootRelations -Recurse -File -Force).Count) {
+  throw "Studio stage relations copy is incomplete"
+}
+if ($TemplateCount -gt 0 -and $TemplateCount -ne @(Get-ChildItem $RootTemplates -Recurse -File -Force).Count) {
+  throw "Studio stage templates copy is incomplete"
 }
 
 # 4) required files present.
@@ -412,8 +459,11 @@ $requiredStage = @(
   "adb\adb.exe", "config\live.example.json", "config\live.json",
   "start-studio.bat", "stop-studio.bat", "start-editor.bat", "stop-editor.bat",
   "README-DEPLOY.md", "assets\assets.json", "library\.keep",
-  "frames\.keep", "runs\.keep", "logs\.keep", "VERSION", "BUILD-INFO.txt"
+  "runs\.keep", "logs\.keep", "VERSION", "BUILD-INFO.txt"
 )
+if ($FrameCount -eq 0) { $requiredStage += "frames\.keep" }
+if ($RelationCount -eq 0) { $requiredStage += "relations\.keep" }
+if ($TemplateCount -eq 0) { $requiredStage += "templates\.keep" }
 if ($StageTaskDirs.Count -eq 0) { $requiredStage += "tasks\README.txt" }
 foreach ($rel in $requiredStage) {
   if (-not (Test-Path (Join-Path $Stage $rel))) { throw "stage is missing $rel" }

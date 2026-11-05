@@ -1012,6 +1012,28 @@ function publishErrorsText(errors) {
   return list.map((line) => '· ' + line).join('\n');
 }
 
+// P0-1a: POST /task/publish 成功响应的 exchange 结果（Studio 写发布通知）。
+// 三种情况都不改变发布本身的结果：已写入（Runner 将看到）/ 未启用（Runner
+// 不会自动收到）/ 写通知失败（仍然发布成功，只是 Runner 需手动安装）。
+// 后端未实现 exchange 时字段缺失 -> 返回空串，调用方不追加任何行。
+function publishExchangeText(exchange) {
+  const ex = exchange && typeof exchange === 'object' && !Array.isArray(exchange) ? exchange : null;
+  if (!ex) return '';
+  const text = (v) => (v === undefined || v === null || v === '' ? '' : String(v).trim());
+  const error = text(ex.error);
+  if (ex.enabled !== true) {
+    return '未启用 exchange，Runner 不会自动收到（可把 .oaspkg 拷到 Runner 后手动安装）';
+  }
+  if (error) {
+    return '发布成功，但写通知失败：' + error + '（Runner 需手动安装）';
+  }
+  const eventId = text(ex.event_id);
+  const indexPath = text(ex.index_path);
+  const target = indexPath || eventId || '—';
+  const copied = ex.copied === false ? ' · 包已存在，未重复复制' : '';
+  return '已写入发布通知：' + target + '（Runner 将看到）' + copied;
+}
+
 function closeTaskPublishDialog() {
   if (!taskPublishDialog) return;
   if (typeof taskPublishDialog.close === 'function') {
@@ -1120,6 +1142,9 @@ async function submitTaskPublish() {
     lines.push(warnings.length
       ? 'warnings：\n' + warnings.map((w) => '· ' + String(w)).join('\n')
       : 'warnings：无');
+    // P0-1a: exchange（发布通知）结果追加一行；字段缺失/未启用/写失败都不影响发布成功。
+    const exchangeLine = publishExchangeText(s.exchange);
+    if (exchangeLine) lines.push(exchangeLine);
     if (taskPublishStatus) {
       taskPublishStatus.textContent = lines.join('\n');
       taskPublishStatus.className = 'muted small task-publish-result ok';

@@ -27,5 +27,15 @@
     "plan": "scheduler.json",
     "state": "scheduler.state.json",
     "report": "runs/scheduler-report.json"
+  },
+  "exchange": {
+    "enabled": false,
+    "dir": "exchange",
+    "poll_secs": 3,
+    "notify": {
+      "enabled": false,
+      "runner_url": "http://127.0.0.1:8789",
+      "timeout_ms": 800
+    }
   }
 }

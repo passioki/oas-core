@@ -2884,3 +2884,39 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 #### 22.52.5 提交边界
 
 - 本批代码/脚本：`scripts/package.ps1`、`scripts/package-runner.ps1`、`scripts/dev-serve.ps1`、`scripts/dev-serve.bat`；文档：`docs/*` 相关 + `packaging/README-DEPLOY.md`；**不含**用户数据、`dist/`、`packages/`；不 tag / 不 release（等用户确认或按项目惯例提交推送）。
+
+### 22.53 ★★★ [11-05 18:4x] **P0 实施：数据随包 + Runner 首启导入 + Studio 发布→Runner 通知（seq 112）**
+
+> 用户 2026-11-05 四项要求中 **①（资产/任务随仓、发布带上）** 与 **④（Studio 发布新任务→Runner 收到通知）** 的首批落地；设计依据 `_verify\dual-app-design-20261105\RUNNER-SPLIT-DESIGN.md` §5/§6（决策单 D8=C、D9=A 的推荐路径）；证据 `D:\OAS-dev\_verify\p0-1a-e2e-20261105\`（`e2e.ps1` + `e2e-log.txt` ALL PASS）；台账 `PENDING-LEDGER §E-82`；断点 `RESUME` seq 112。
+
+#### 22.53.1 发行包携带数据（P0-2）
+
+- **Studio 包**（`scripts/package.ps1`）：在原有真实 `tasks/`（剔 `state/`）+ `assets/`（数量校验）基础上，新增 **`frames/`（`frames.json` + PNG，剔 `.backup/`）、`relations/`、`templates/`** 真实数据；`BUILD-INFO` 增 `data: tasks=N assets=N frames=N relations=N templates=N`；stage 审计禁止 `.backup/`、`state/`，并校验 frames.json 存在、relations/templates 复制完整；required 项按“有数据/无数据”条件化（无数据时保留 `.keep`）。
+- **Runner 包**（`scripts/package-runner.ps1`）：新增 **`bundled-data/{manifest.json,tasks/**,assets/**}`**（默认携带；`-NoData` 关闭）：复制 `tasks/`（剔 `state/`、`*.bak`、`*.tmp`、`*.clicks.jsonl`）与 `assets/`（`assets.json` + `images/`），生成 BOM-free `manifest.json`（schema 1：`source{repo,commit,version}`、`tasks[]`、`assets{assets_json_sha256,image_count}`、`files[{path,sha256,bytes}]`、`total_bytes`）；stage 审计逐文件 sha256 校验 + 文件数一致 + 无 `state/`；`-NoData` 时禁止出现 `bundled-data/`；`BUILD-INFO` 增 `data: bundled=yes/no …`。
+- 产物（本机实测）：Studio `dist/oasd-v0.1.0-win64.zip` = **76,582,684 B** / SHA256 `A12C1EBA7AA340DF56F3132F039A7B942D474B80A7110C3308D4CDBB90BB87A3`（78 entries）；Runner `dist/oasd-runner-v0.1.0-win64.zip` = **37,793,723 B** / SHA256 `123FFD30A1116DC06EC8FA145C53F00A779CB3C8F452E0C2B61E4A6E7ABBE6BF`。`dist/` 不入 git。
+
+#### 22.53.2 Runner 首启导入 `bundled-data`（P0-3）
+
+- 新模块 **`apps/oasd/src/bundled_data.rs`**（纯 std + serde + `oas_task::package::sha256_file`）：
+  1. 无 `bundled-data/manifest.json` → skip（旧包/`-NoData`）；
+  2. `packages/bundled-import.json` 记录同一 `source.commit` → skip（幂等）；
+  3. `tasks/` 已有任务目录或 `assets/assets.json`/`assets/images/*` 已存在 → **skip（永不覆盖用户数据）**；
+  4. 逐文件 sha256/size 校验通过后才复制（`tasks/** → tasks_dir`、`assets/** → assets_dir`），失败回滚已创建的任务目录；
+  5. 成功写 `packages/bundled-import.json`（schema 1：source/imported_at_ms/tasks/files/total_bytes）；
+  6. 路径安全：绝对路径、盘符、`..` 一律拒绝。
+- 调用点：`main.rs::serve_cmd` 在 `oasd runner` 启动、HTTP server 之前调用（`oasd studio` 不导入）；stderr 打印 `bundled data: imported …` / `skipped (…)`。
+- 简化点（相对设计 §6.5）：**只处理“空数据根首启”**；已有数据时的 merge/显式 import API、素材冲突合并、`installed.json` registry 注册留待后续（当前一律 skip，不打断首启）。
+
+#### 22.53.3 Studio 发布 → Runner 通知（P0-1a，exchange 最小闭环）
+
+- **配置**（`config.rs`）：`ExchangeConfig{enabled,dir,poll_secs,notify{enabled,runner_url,timeout_ms}}` 挂 `OasConfig.exchange`（`#[serde(default)]`，旧 `live.json` 解析/序列化形状不变）；`exchange_dir()` 相对 live config 目录解析（同 `device.lease`）；`validate`：enabled⇒dir 非空、poll 0..=3600、timeout 100..=5000、`notify.runner_url` 仅 `http` loopback。**默认关闭**，未配置时行为与旧版完全一致。
+- **exchange 模块**（新 `apps/oasd/src/exchange.rs`）：`publish-index.json` schema 1（`event_id = package_id` 内容寻址；`incoming/<file>.oaspkg` + `.sha256` sidecar；同 sha 跳过；原子写；按 event_id upsert + `seq+1`；保留最新 200 条；`package_file` 仅正斜杠相对路径 + 越界校验）；Runner 本地 `config/notifications.json` seen 存储（RMW + 原子写）。
+- **API**（`serve.rs`）：新增 Runner-only 路由 `GET /runner/updates`（`{ok,enabled,exchange_dir,updates[{event_id,task_id,task_version,package_id,sha256,package_file,package_path,size_bytes,published_at_ms,action,installed_version,status,compatible,package_available}],last_scan_ms,error?}`；坏 index/坏 registry **恒 200 + error** fail-soft）、`POST /runner/updates/ack`（`{event_ids,status:dismissed|installed}` → `{ok,updated_ms}`）、`POST /runner/notify`（`{ok,accepted:true}`，只提示不安装）；`POST /task/publish` 成功响应新增 `exchange:{enabled,dir,event_id,index_path,copied,error?}`（写 exchange 失败仅 warning，发布仍 200）。
+- **UI**：Runner「安装包」导航徽标 + 页面「新发布（来自 Studio）」列表（5s 轮询、`visibilityState` 暂停、安装复用 `POST /runner/install` 成功后 ack installed、忽略 ack dismissed、`package_available/compatible=false` 禁用安装）；Studio 发布成功状态行显示 exchange 结果（未启用/已写入/写失败）。新增 6 个 DOM id、13 个纯函数（`ui_pure_test.js` 覆盖）。
+- **最小集未做**（已知，非阻塞）：Studio→Runner 的 HTTP notify 客户端（`notify.enabled` 仅配置契约；文件索引已可独立闭环）、`.studio-writer.lock`、`compatible` 预检（当前恒 `true`，安装仍由既有 `sha256/flow_ops/min_engine` 严格校验）、事件 `engine/dependencies/asset_refs` 字段、失败重试队列。
+
+#### 22.53.4 验证与限制
+
+- **测试**：`cargo test --workspace` **746 passed / 0 failed**（21 suites；oasd **380** = 基线 355 + exchange 19 + bundled_data 6；其他 crate 不变）；UI pure test **1633 checks / Studio 159 ids / Runner 157 ids / 0 dead / 6 nav**；`cargo build --release -p oasd --features ocr` exit 0（5 warnings，无新增）；`git diff --check` clean。
+- **E2E（仓外，最终两包）**：解压两 release → **Studio 单独启动** publish `返回庭院` 200（exchange `copied=true`，index 1 event，incoming 1 包）→ **停 Studio** → **Runner 单独启动**：`bundled-data` 自动导入 3 任务 + assets + marker（stderr `bundled data: imported`）→ `GET /runner/updates` 返回该事件 `status=new, action=install, package_available=true` → `POST /runner/install` 200（replaced）→ ack installed → `notifications.json`/`installed.json` 落盘、事件 status=installed、`/runner/tasks` 200；**ALL PASS**（`e2e-log.txt`）。
+- **限制**：exchange 默认关闭（需两端 live.json 配置同一目录，推荐绝对路径）；`scheduler.json` 仍是本地配置（未按设计 §6.6 改为运行态）；Runner 随包导入只覆盖“空数据根首启”；`frames/relations/templates` 只进 Studio 包。

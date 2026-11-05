@@ -12,6 +12,9 @@
   const RUNNER_SCHED_POLL_MS = 5000;
   const RUNNER_RUN_POLL_MS = 500;
   const RUNNER_RUN_POLL_MAX_MS = 60000;
+  // P0-1a: Studio publish notifications (exchange) are polled while the page is
+  // visible; hidden tabs pause the timer (see visibilitychange in init()).
+  const RUNNER_UPDATES_POLL_MS = 5000;
   const RUNNER_RUN_LOG_TAIL = 20;
   // POST /runner/scheduler/stop answers within 3 s (`timeout:true` while a long
   // attempt finishes). The UI then polls the scheduler status itself: 1 s tick,
@@ -34,6 +37,8 @@
     install: '/runner/install',
     uninstall: '/runner/uninstall',
     packagesActivate: '/runner/packages/activate',
+    updates: '/runner/updates',
+    updatesAck: '/runner/updates/ack',
     schedulerStatus: '/scheduler/status',
     schedulerConfig: '/scheduler/config',
     schedulerStart: '/runner/scheduler/start',
@@ -54,6 +59,7 @@
     health: null,
     tasks: null,
     packages: null,
+    updates: null,
     recentRuns: null,
     recentRunsError: '',
     scheduler: null,
@@ -74,6 +80,10 @@
 
   // PR5: 安装/卸载/回滚是串行操作；期间禁用安装按钮并拒绝重复提交。
   let packagesBusy = false;
+
+  // P0-1a: 新发布（exchange）的安装/忽略/轮询也是串行的，且轮询只在页面可见时跑。
+  let updatesBusy = false;
+  let updatesPollTimer = null;
 
   // PR6: scheduler start/stop, temp run and scheduler.json saves are serial
   // operations; the timers are the only long-lived state.
@@ -496,6 +506,143 @@
     return text;
   }
 
+  // --- P0-1a: 新发布（Studio exchange → Runner 通知；纯函数，ui_pure_test 抽取）
+  // GET /runner/updates 的字段全部按「后端可能缺失」处理：缺失时用安全默认
+  // （未启用 / 未知兼容性 / 允许安装），不让安装包页因此报错。这里只做
+  // 「数据 → 文案/布尔」的纯转换：不碰 DOM，也不发请求。
+
+  // `enabled` missing means an older backend did not implement exchange -> treat
+  // it as "not configured" (the task contract).
+  function updatesEnabled(body) {
+    const b = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+    return b.enabled === true;
+  }
+
+  function updatesList(body) {
+    const b = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+    return Array.isArray(b.updates) ? b.updates : [];
+  }
+
+  // Only events that still need a decision are actionable: dismissed/installed
+  // rows are hidden ("不再打扰") and an event without event_id cannot be acked.
+  function updatesVisibleRows(list) {
+    const rows = Array.isArray(list) ? list : [];
+    return rows.filter(function (item) {
+      const it = item && typeof item === 'object' && !Array.isArray(item) ? item : null;
+      if (!it) return false;
+      if (it.status === 'dismissed' || it.status === 'installed') return false;
+      const eventId = it.event_id === undefined || it.event_id === null
+        ? ''
+        : String(it.event_id).trim();
+      return eventId !== '';
+    });
+  }
+
+  function updatesBadgeCount(list) {
+    return updatesVisibleRows(list).length;
+  }
+
+  function updatesActionLabel(action) {
+    switch (String(action === undefined || action === null ? '' : action)) {
+      case 'install': return '新任务';
+      case 'upgrade': return '升级';
+      case 'downgrade': return '降级';
+      case 'reinstall': return '重装';
+      default: return '新发布';
+    }
+  }
+
+  function updatesCompatText(item) {
+    const it = item && typeof item === 'object' && !Array.isArray(item) ? item : {};
+    if (it.compatible === false) return '不兼容（安装会被拒绝）';
+    if (it.compatible === true) return '兼容';
+    return '兼容性未知';
+  }
+
+  function updatesPackageText(item) {
+    const it = item && typeof item === 'object' && !Array.isArray(item) ? item : {};
+    if (it.package_available === false) {
+      return '包文件不存在（请让 Studio 重新发布，或手动选路径）';
+    }
+    if (it.package_available === true) return '包可用';
+    return '包状态未知';
+  }
+
+  // An install needs both the local package path (POST /runner/install body) and
+  // the event id (the follow-up ack); unknown availability/compatibility stays
+  // permissive so an older backend still lets the user install.
+  function updatesCanInstall(item) {
+    const it = item && typeof item === 'object' && !Array.isArray(item) ? item : {};
+    const eventId = it.event_id === undefined || it.event_id === null
+      ? ''
+      : String(it.event_id).trim();
+    if (!eventId) return false;
+    if (it.package_available === false) return false;
+    if (it.compatible === false) return false;
+    const path = it.package_path === undefined || it.package_path === null
+      ? ''
+      : String(it.package_path).trim();
+    return path !== '';
+  }
+
+  function updatesInstallPath(item) {
+    const it = item && typeof item === 'object' && !Array.isArray(item) ? item : {};
+    if (!updatesCanInstall(it)) return '';
+    return String(it.package_path).trim();
+  }
+
+  // One human sentence per event (also used as the row title): 任务 v版本 · 动作 ·
+  // 发布时间 · 兼容性（· 包缺失提示）.
+  function updateRowText(item) {
+    const it = item && typeof item === 'object' && !Array.isArray(item) ? item : {};
+    const text = function (value) {
+      return value === undefined || value === null || value === '' ? '' : String(value);
+    };
+    const task = text(it.task_id) || '（未知任务）';
+    const version = text(it.task_version !== undefined ? it.task_version : it.version);
+    const parts = [version ? task + ' v' + version : task];
+    parts.push(updatesActionLabel(it.action));
+    const published = runnerTimeText(it.published_at_ms);
+    if (published && published !== '—') parts.push('发布 ' + published);
+    parts.push(updatesCompatText(it));
+    if (it.package_available === false) parts.push(updatesPackageText(it));
+    return parts.join(' · ');
+  }
+
+  // POST /runner/updates/ack body. Only the two documented statuses travel; a
+  // blank/unknown status degrades to "dismissed" so the badge can always clear.
+  function updatesAckBody(ids, status) {
+    const list = Array.isArray(ids) ? ids : [];
+    const eventIds = list
+      .map(function (id) {
+        return String(id === undefined || id === null ? '' : id).trim();
+      })
+      .filter(function (id) { return id !== ''; });
+    return {
+      event_ids: eventIds,
+      status: status === 'installed' ? 'installed' : 'dismissed',
+    };
+  }
+
+  // One status line for the 新发布 card: read error (fail-soft) > server index
+  // error > exchange disabled > empty > count.
+  function updatesListStatusText(body, errorText) {
+    const b = body && typeof body === 'object' && !Array.isArray(body) ? body : null;
+    const err = String(errorText === undefined || errorText === null ? '' : errorText).trim();
+    if (err) return '新发布读取失败：' + err + '（保留上次结果）';
+    if (!b) return '（未加载）';
+    const serverError = b.error === undefined || b.error === null
+      ? ''
+      : String(b.error).trim();
+    if (serverError) return '发布索引读取异常：' + serverError;
+    if (!updatesEnabled(b)) {
+      return '未配置 exchange 目录（config/live.json → exchange.dir）';
+    }
+    const rows = updatesVisibleRows(updatesList(b));
+    if (!rows.length) return '暂无新发布';
+    return '新发布 ' + rows.length + ' 条（安装或忽略后不再显示）';
+  }
+
   // --- PR6: 调度启停 / 临时运行 / scheduler.json（纯函数，ui_pure_test 单独抽取）
   // 只做「请求体 + 文案」的纯转换：不碰 DOM，也不直接发请求。
 
@@ -836,6 +983,7 @@
     state.busy = !!busy;
     const buttons = [
       el.refresh, el.healthRefresh, el.tasksRefresh, el.packagesRefresh,
+      el.updatesRefresh,
       el.queueRefresh, el.runsRefresh, el.settingsRefresh, el.schedRefresh,
     ];
     for (const button of buttons) {
@@ -881,6 +1029,13 @@
     el.installResult = document.getElementById('runner-install-result');
     el.installWarnings = document.getElementById('runner-install-warnings');
     el.installError = document.getElementById('runner-install-error');
+    // P0-1a: Studio publish notifications (nav badge + 新发布 card).
+    el.updatesBadge = document.getElementById('runner-updates-badge');
+    el.updatesSection = document.getElementById('runner-updates-section');
+    el.updatesSummary = document.getElementById('runner-updates-summary');
+    el.updatesStatus = document.getElementById('runner-updates-status');
+    el.updatesList = document.getElementById('runner-updates-list');
+    el.updatesRefresh = document.getElementById('runner-updates-refresh');
 
     el.configDialog = document.getElementById('runner-config-dialog');
     el.configTitle = document.getElementById('runner-config-title');
@@ -950,6 +1105,12 @@
       const health = await runnerFetchJson(RUNNER_API.health);
       state.health = health;
       applyHealth(health);
+      // P0-1a: /runner/health may expose pending_updates; use it only as the
+      // badge seed until the authoritative /runner/updates list has loaded.
+      if (!state.updates &&
+          health && typeof health.pending_updates === 'number' && isFinite(health.pending_updates)) {
+        updateNavBadge(health.pending_updates);
+      }
       return '';
     } catch (e) {
       state.health = null;
@@ -1299,6 +1460,242 @@
     }
     renderUnmanaged(unmanaged);
     return errors;
+  }
+
+  // --- P0-1a: 新发布（Studio → Runner）页面渲染 / 轮询 / 安装+ack ------------
+
+  // Nav badge shows the actionable count; 0 hides it again (installed/dismissed
+  // events never keep the badge on).
+  function updateNavBadge(count) {
+    if (!el.updatesBadge) return;
+    const n = Number(count);
+    const total = isFinite(n) && n > 0 ? Math.floor(n) : 0;
+    el.updatesBadge.textContent = String(total);
+    el.updatesBadge.title = total
+      ? '有 ' + total + ' 条来自 Studio 的新发布（到「安装包」页查看）'
+      : '';
+    if (total > 0) el.updatesBadge.removeAttribute('hidden');
+    else el.updatesBadge.setAttribute('hidden', '');
+  }
+
+  function setUpdatesStatus(text, kind) {
+    if (!el.updatesStatus) return;
+    el.updatesStatus.textContent = text;
+    el.updatesStatus.className = 'muted small' + (kind ? ' ' + kind : '');
+  }
+
+  function updateActionBadgeClass(action) {
+    switch (String(action === undefined || action === null ? '' : action)) {
+      case 'install': return 'kind';
+      case 'upgrade': return 'ok';
+      case 'downgrade': return 'warn';
+      case 'reinstall': return 'kind';
+      default: return 'kind';
+    }
+  }
+
+  function updateInstallHint(item) {
+    const it = item && typeof item === 'object' ? item : {};
+    if (!updatesCanInstall(it)) {
+      if (it.package_available === false) return updatesPackageText(it);
+      if (it.compatible === false) return '不兼容：当前 Runner 引擎/包能力不足，安装会被拒绝';
+      return '缺少可安装的 package_path，无法安装（后端未返回包路径）';
+    }
+    return '';
+  }
+
+  function updateCompatCell(item) {
+    const it = item && typeof item === 'object' ? item : {};
+    const cell = document.createElement('span');
+    cell.textContent = updatesCompatText(it);
+    if (it.package_available === false) {
+      const hint = document.createElement('span');
+      hint.className = 'runner-update-hint';
+      hint.textContent = updatesPackageText(it);
+      cell.appendChild(hint);
+    }
+    return cell;
+  }
+
+  function updateRowActions(item) {
+    const it = item && typeof item === 'object' ? item : {};
+    const wrap = document.createElement('div');
+    wrap.className = 'runner-update-actions';
+    const install = document.createElement('button');
+    install.type = 'button';
+    install.textContent = '安装';
+    install.disabled = !updatesCanInstall(it);
+    const hint = updateInstallHint(it);
+    install.title = hint
+      ? hint
+      : '从 exchange 包路径安装该任务包（POST /runner/install），成功后标记为已安装';
+    install.addEventListener('click', function () { installUpdatePackage(it); });
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.textContent = '忽略';
+    dismiss.title = '把该发布标记为已忽略（POST /runner/updates/ack status=dismissed）';
+    dismiss.addEventListener('click', function () { dismissUpdateEvent(it); });
+    wrap.appendChild(install);
+    wrap.appendChild(dismiss);
+    return wrap;
+  }
+
+  function renderRunnerUpdates(body, errorText) {
+    const b = body && typeof body === 'object' && !Array.isArray(body) ? body : null;
+    const enabled = b ? updatesEnabled(b) : false;
+    const rows = b ? updatesVisibleRows(updatesList(b)) : [];
+    const serverError = b && b.error !== undefined && b.error !== null
+      ? String(b.error).trim()
+      : '';
+    const err = String(errorText === undefined || errorText === null ? '' : errorText).trim();
+    updateNavBadge(b ? updatesBadgeCount(updatesList(b)) : 0);
+    if (el.updatesSummary) {
+      el.updatesSummary.textContent = !b
+        ? '—'
+        : (enabled
+          ? 'exchange · ' + rows.length + ' 条新发布'
+          : 'exchange 未启用');
+    }
+    const statusKind = err || serverError
+      ? 'err'
+      : (enabled && rows.length ? 'ok' : '');
+    setUpdatesStatus(updatesListStatusText(b, err), statusKind);
+    if (!el.updatesList) return;
+    if (!b) {
+      el.updatesList.textContent = '（未加载）';
+      return;
+    }
+    if (!enabled) {
+      el.updatesList.textContent = '未配置 exchange 目录（config/live.json → exchange.dir）';
+      return;
+    }
+    const tableRows = rows.map(function (item) {
+      const it = item && typeof item === 'object' ? item : {};
+      const version = it.task_version === undefined || it.task_version === null || it.task_version === ''
+        ? '—'
+        : 'v' + String(it.task_version);
+      return [
+        { text: runnerValueText(it.task_id), title: updateRowText(it) },
+        { text: version, cls: 'runner-update-version' },
+        makeBadge(updatesActionLabel(it.action), updateActionBadgeClass(it.action)),
+        runnerTimeText(it.published_at_ms),
+        updateCompatCell(it),
+        updateRowActions(it),
+      ];
+    });
+    renderTable(
+      el.updatesList,
+      ['任务', '版本', '动作', '发布时间', '兼容性', '操作'],
+      tableRows,
+      '暂无新发布'
+    );
+  }
+
+  async function loadRunnerUpdates() {
+    try {
+      const body = await runnerFetchJson(RUNNER_API.updates);
+      state.updates = body;
+      renderRunnerUpdates(body, '');
+      return '';
+    } catch (e) {
+      const message = runnerErrorText(e);
+      // Fail-soft: keep the last good payload/list on screen; only the status
+      // line explains the read failure.
+      renderRunnerUpdates(state.updates, message);
+      return '新发布读取失败：' + message;
+    }
+  }
+
+  function setUpdatesBusy(busy) {
+    updatesBusy = !!busy;
+    if (el.updatesRefresh) el.updatesRefresh.disabled = updatesBusy;
+  }
+
+  async function ackUpdateEvents(ids, status) {
+    const body = updatesAckBody(ids, status);
+    if (!body.event_ids.length) return '缺少 event_id，无法标记发布事件';
+    try {
+      await runnerFetchJson(RUNNER_API.updatesAck, { method: 'POST', body: body });
+      return '';
+    } catch (e) {
+      return runnerErrorText(e);
+    }
+  }
+
+  async function installUpdatePackage(item) {
+    if (updatesBusy || packagesBusy) return;
+    const it = item && typeof item === 'object' ? item : {};
+    const path = updatesInstallPath(it);
+    if (!path) {
+      setUpdatesStatus('无法安装：' + updateInstallHint(it), 'err');
+      return;
+    }
+    setUpdatesBusy(true);
+    setUpdatesStatus('安装中…（sha256 / 解包 / 复检）', '');
+    try {
+      const result = await runnerFetchJson(RUNNER_API.install, {
+        method: 'POST',
+        body: runnerInstallBody(path, false),
+      });
+      const taskName = runnerValueText(
+        result.task_id !== undefined && result.task_id !== null ? result.task_id : it.task_id
+      );
+      const ackError = await ackUpdateEvents([it.event_id], 'installed');
+      await loadPackagesPage();
+      await loadRunnerUpdates();
+      setUpdatesStatus(
+        ackError
+          ? '已安装 ' + taskName + '，但标记发布事件失败：' + ackError
+          : '已安装 ' + taskName + '（发布事件已标记为已安装）',
+        ackError ? 'warn' : 'ok'
+      );
+      setPageStatus('已从新发布安装：' + taskName, 'ok');
+      updateLastRefresh();
+    } catch (e) {
+      setUpdatesStatus('安装失败：' + runnerPackagesErrorText(e), 'err');
+    } finally {
+      setUpdatesBusy(false);
+    }
+  }
+
+  async function dismissUpdateEvent(item) {
+    if (updatesBusy) return;
+    const it = item && typeof item === 'object' ? item : {};
+    setUpdatesBusy(true);
+    try {
+      const ackError = await ackUpdateEvents([it.event_id], 'dismissed');
+      if (ackError) {
+        setUpdatesStatus('忽略失败：' + ackError, 'err');
+        return;
+      }
+      await loadRunnerUpdates();
+      setUpdatesStatus('已忽略：' + updateRowText(it), 'ok');
+    } finally {
+      setUpdatesBusy(false);
+    }
+  }
+
+  // The 5s poll runs while the Runner UI is open; a hidden tab pauses it and a
+  // visible tab resumes with one immediate read. Timers never outlive the page.
+  function stopUpdatesPolling() {
+    if (updatesPollTimer !== null) {
+      clearInterval(updatesPollTimer);
+      updatesPollTimer = null;
+    }
+  }
+
+  function startUpdatesPolling() {
+    stopUpdatesPolling();
+    if (!el.updatesSection) return;
+    updatesPollTimer = setInterval(function () {
+      pollRunnerUpdatesOnce();
+    }, RUNNER_UPDATES_POLL_MS);
+  }
+
+  async function pollRunnerUpdatesOnce() {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    if (state.busy || packagesBusy || updatesBusy) return;
+    await loadRunnerUpdates();
   }
 
   async function installRunnerPackage() {
@@ -5041,6 +5438,10 @@ function resetTaskChecks(mode) {
     try {
       const healthError = await refreshHealth();
       if (healthError) errors.push(healthError);
+      // P0-1a: the notification badge must stay fresh on every page; the card
+      // itself lives on 安装包, so its read error only pollutes that page.
+      const updatesError = await loadRunnerUpdates();
+      if (state.page === 'packages' && updatesError) errors.push(updatesError);
       let pageErrors = [];
       if (state.page === 'overview') pageErrors = await loadOverview();
       else if (state.page === 'tasks') pageErrors = await loadTasksPage();
@@ -5171,6 +5572,7 @@ function resetTaskChecks(mode) {
     if (el.healthRefresh) el.healthRefresh.addEventListener('click', function () { refreshCurrentPage(); });
     if (el.tasksRefresh) el.tasksRefresh.addEventListener('click', function () { refreshCurrentPage(); });
     if (el.packagesRefresh) el.packagesRefresh.addEventListener('click', function () { refreshCurrentPage(); });
+    if (el.updatesRefresh) el.updatesRefresh.addEventListener('click', function () { loadRunnerUpdates(); });
     if (el.installSubmit) el.installSubmit.addEventListener('click', function () { installRunnerPackage(); });
     if (el.queueRefresh) el.queueRefresh.addEventListener('click', function () { refreshCurrentPage(); });
     if (el.schedStart) el.schedStart.addEventListener('click', function () { startRunnerScheduler(); });
@@ -5225,6 +5627,17 @@ function resetTaskChecks(mode) {
     showPage(pageFromHash() || 'overview');
     setPageStatus('连接中…');
     refreshCurrentPage();
+    // P0-1a: poll Studio publish notifications only while the Runner UI is
+    // visible; a hidden tab stops the timer (no background polling thread).
+    startUpdatesPolling();
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') {
+        stopUpdatesPolling();
+        return;
+      }
+      startUpdatesPolling();
+      pollRunnerUpdatesOnce();
+    });
   }
 
   if (document.readyState === 'loading') {

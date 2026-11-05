@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 111
-updated_at: 2026-11-05T18:2x+08:00
-trigger: 用户 2026-11-05 四项新要求（资产/任务随仓发布；参数与 flow 互动 + 动作库 + 使用端 UI；使用端完全独立新仓；Studio 发布→Runner 通知）→ 设计轮（3 路只读设计 + 可点原型 + 决策单）→ **待用户裁定 D1~D12**
-status: awaiting-user-decisions   # 设计已交付，未改代码；裁定后进入 P0 实施
-code_head: 68e5768            # 本轮/本批 Rust 零改动（代码 HEAD 仍 = 最终审计修复提交）
-docs_head: `b47c94e`（工作区起点；本设计轮 docs 提交后以 `git log -1` 为准）
-next_action: ① 用户回复 `_verify\dual-app-design-20261105\DECISION-SHEET.md` 的 D1~D12（未回复按推荐）② 实施 P0：数据入仓+两包带数据 / exchange+publish-index+Runner 通知 ③ 再进参数 v2 后端 → Runner UI → Studio → 新仓拆分
+checkpoint_seq: 112
+updated_at: 2026-11-05T18:4x+08:00
+trigger: seq 111 设计轮交付 → 用户未回复 D1~D12（按决策单“未回复按推荐”推进）→ **P0 首批落地**：两包带数据（Studio 全数据 / Runner bundled-data）+ Runner 首启导入 + exchange 发布通知（Studio publish → Runner updates/install/ack）+ UI；测试/E2E 全绿
+status: in_progress               # P0-2/P0-3/P0-1a 已实现并验证；P0-1b/参数 v2/新仓拆分待继续
+code_head: 本批提交后以 `git log -1` 为准（父 `bfddaf6`）
+docs_head: 本批 docs 随代码提交（以 `git log -1` 为准；dev = main = origin）
+next_action: ① P0 收尾：Studio→Runner HTTP notify 客户端/写锁/compatible 预检（或先按 D 裁定）；② P1 参数 v2（`text_expr` + T3/flow_ops + values 预设 API）；③ P2 Runner 参数页 → P3 Studio → P4 新仓；④ 等用户 D1~D12 回复后校正方向
 ```
 
 ## 0. 目标（本阶段）
@@ -21,18 +21,18 @@ next_action: ① 用户回复 `_verify\dual-app-design-20261105\DECISION-SHEET.m
 3. **seq 110（上一轮）= 用户三项要求**：① 分离度检查 + 试发布两端 release；② 更新过时的 `scripts/dev-serve.*`；③ 参数配置在编辑端未被表达 ⇒ 只读审计 + 方案。
 4. **seq 111（本轮）= 用户四项新要求**：① 资产/任务属于代码仓库、发布随包；② 参数与 flow 互动/像动作库动作（参数作为 OCR 识别文字、分组+预设、使用端暴露可选用、留空=不用）；③ 使用端完全独立新仓库、两 release 可单独/同时运行并交互；④ Studio 发布新任务→Runner 收到通知。**本轮只设计（3 份设计文档 + 可点原型 + 决策单），未改代码。**
 
-## 1. 状态（2026-11-05 18:2x，seq 111）
+## 1. 状态（2026-11-05 18:4x，seq 112）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `dev`；工作区起点 HEAD = `b47c94e`（seq 110 收尾）；**本设计轮 docs 提交后以 `git log -1` 为准**；未 tag / 未 release |
-| 任务状态 | **awaiting-user-decisions**：设计已交付（参数 v2 / 动作库 / 使用端 UI / 双仓拆分 / 发布通知 / 数据随包），**待用户裁定 D1~D12** 后进入 P0 实施 |
+| 分支 / HEAD | `dev`；本批提交后以 `git log -1` 为准（父 `bfddaf6`）；未 tag / 未 release |
+| 任务状态 | **in_progress**：**P0-2/P0-3/P0-1a 已实现并验证**（两包带数据、Runner 首启导入、exchange 发布通知 + UI）；P0-1b（HTTP notify/写锁/compatible 预检）、参数 v2、新仓拆分待继续 |
 | 双入口 | **Studio `http://127.0.0.1:8788/`**（`oasd studio`）· **Runner `http://127.0.0.1:8789/`**（`oasd runner`，nav 6，内嵌调度）；`oasd serve` = Studio deprecated 别名 |
-| 测试 | `cargo test --workspace` **721 / 0**（21 targets；本轮 Rust 零改动，Lead 复跑 `EXITCODE=0`）；UI pure test **1559 / Studio 159 / Runner 151 / 0 dead / 6 nav**（UI 零改动）；`git diff --check` clean |
-| 发行包 | **Studio** `dist/oasd-v0.1.0-win64.zip` = **37,789,721 B**，SHA256 **`737B52B9D80CB4018A88EB7AA30CC939F1706A1A231C1BC4F1032F11317291E6`**（41 entries；surface=studio；真实 tasks/assets 数据）；**Runner** `dist/oasd-runner-v0.1.0-win64.zip` = **37,690,867 B**，SHA256 **`ECB37A783FB92FD64F78BC788DA6DA3A61CDB7FE6897B76E3C0777E78D339ADE`**（23 entries；surface=runner；空 v4 `scheduler.json` 无 BOM）；**不入 git** |
-| 服务 | **全部停止**（8787/8788/8789 实测无监听、无 `oasd` 进程；release 评测后已清理） |
-| 数据边界 | 工作区用户数据：`assets/assets.json`、`frames/frames.json`、`scheduler.json(.bak)`、未跟踪 `frames/frame-43.png`/`frame-44.png`、`tasks/切换预设御魂/`；**用户数据不入库** |
-| 提交边界 | **待提交 = 本批 scripts（`package.ps1` / `package-runner.ps1` / `dev-serve.ps1` / `dev-serve.bat`）+ docs（START-HERE/RESUME/RESUME-INDEX/SESSION-HANDOFF/PENDING/ENGINE/PLAN/README + `packaging/README-DEPLOY.md`）**；用户数据不提交；`dist/` / `packages/` 不入 git |
+| 测试 | `cargo test --workspace` **746 / 0**（21 suites；oasd **380** = 基线 355 + exchange 19 + bundled_data 6）；UI pure test **1633 checks / Studio 159 ids / Runner 157 ids / 0 dead / 6 nav**；release OCR build exit 0（5 warnings 无新增）；`git diff --check` clean |
+| 发行包 | **Studio** `dist/oasd-v0.1.0-win64.zip` = **76,582,684 B**，SHA256 **`A12C1EBA7AA340DF56F3132F039A7B942D474B80A7110C3308D4CDBB90BB87A3`**（78 entries；含 tasks/assets/frames/relations/templates）；**Runner** `dist/oasd-runner-v0.1.0-win64.zip` = **37,793,723 B**，SHA256 **`123FFD30A1116DC06EC8FA145C53F00A779CB3C8F452E0C2B61E4A6E7ABBE6BF`**（含 `bundled-data/`，BOM-free scheduler.json）；**不入 git** |
+| 服务 | **全部停止**（8787/8788/8789 实测无监听、无 `oasd` 进程；E2E 后已清理） |
+| 数据边界 | **本批起数据入库**（用户要求 ①）：提交 `assets/`、`tasks/`（含 `切换预设御魂`）、`frames/`（frame-43/44 + frames.json）当前快照；`scheduler.json` 仍为本机运行配置**未提交**；`library/`/`dist/`/`packages/` 不入库 |
+| 提交边界 | 本批 = Rust（`bundled_data.rs` 新 / `exchange.rs` 新 / config/serve/main / UI 6 文件）+ scripts（package*.ps1）+ packaging docs + data + docs；`dist/`/`packages/` 不入 git；不 tag / 不 release |
 
 ## 1.5 2026-11-05 18:2x（seq 111）设计轮产出（只读，未改代码）
 
@@ -46,6 +46,20 @@ next_action: ① 用户回复 `_verify\dual-app-design-20261105\DECISION-SHEET.m
 | 决策单 | D1~D12 逐条：选项 / 推荐 / 影响（不施行则按推荐） | `DECISION-SHEET.md`（仓外） |
 
 **本轮结论**：① 数据随仓/随包=设计已定（两包带数据 + Runner `bundled-data` 首启不覆盖）；② 参数不是 flow 步骤而是任务级契约 → 动作库加**消费类动作**（参数文字点击/等待/判断/拖动）+ 表达式插入参数 + `text_expr` 支持「参数作为 OCR 识别文字」；③ 预设 = Runner 侧命名值集合（values.json additive，四层优先级不变）；④ 拆仓=方案 A Phase 0 先行；⑤ 发布通知=exchange 文件为真相 + loopback POST 加速。**未改任何代码/UI；裁定后从 P0 开始实施。**
+
+## 1.6 2026-11-05 18:1x→18:4x（seq 112）P0 首批落地（已实现）
+
+> 用户尚未回复 D1~D12；按决策单「未回复按推荐」先落地 P0 中**不依赖参数设计裁定**的两项（数据随包/发布通知）+ 首启导入。设计依据 `RUNNER-SPLIT-DESIGN §5/§6`；实现记录 `ENGINE §22.53`；台账 `PENDING §E-82`。
+
+| # | 交付 | 结果 |
+|---|---|---|
+| P0-2a | Studio 包带全数据 | `package.ps1` 新增 frames（frames.json+PNG，剔 `.backup/`）/relations/templates + `data:` BUILD-INFO + stage 审计；Studio 包 76,582,684 B（78 entries） |
+| P0-2b | Runner 包带 `bundled-data/` | `package-runner.ps1` 生成 `{manifest.json,tasks,assets}`（BOM-free；逐文件 sha；`-NoData` 可精简）；Runner 包 37,793,723 B |
+| P0-3 | Runner 首启导入 | 新 `bundled_data.rs`：manifest sha 校验 → 空数据根复制 → 写 `packages/bundled-import.json`；**永不覆盖**；幂等；失败回滚；`main.rs` Runner 启动前调用 |
+| P0-1a | exchange 发布通知（后端+UI） | 新 `exchange.rs` + `config.rs ExchangeConfig`（默认关闭）+ `serve.rs` 3 路由 + `/task/publish` exchange 响应；Runner nav 徽标/「新发布（来自 Studio）」列表（安装→ack/忽略）；Studio 发布状态提示 |
+| 验证 | 测试 + E2E | `cargo test --workspace` **746/0**、UI **1633/159/157/0/6**；两 release 仓外 E2E：Studio publish → exchange → Studio 停 → Runner 启动导入 → updates new → install → ack installed **ALL PASS** |
+
+**本批未做**：HTTP notify 客户端/`.studio-writer.lock`/`compatible` 预检（最小集外）；参数 v2；新仓 `oas-runner`；`scheduler.json` 运行态化。
 
 ## 2. 本批交付（seq 110）
 
@@ -81,9 +95,9 @@ REM 3) release 分离度 E2E 复跑（仓外脚本，自动解压+起停+断言�
 powershell -NoProfile -ExecutionPolicy Bypass -File D:\OAS-dev\_verify\release-both-20261105\run-e2e.ps1
 ```
 
-1. **用户裁定** `DECISION-SHEET.md` D1~D12（未回复按推荐）。
-2. **P0 实施（裁定后先做）**：① 数据入仓 + 两包带数据（`package.ps1`/`package-runner.ps1`，Runner `bundled-data` 首启不覆盖）；② exchange 目录 + `publish-index.json` + Studio 发布写入 + Runner 轮询/徽标/一键安装（= 用户第 4 条，可独立演示）。
-3. **P1+**：参数 v2 后端（`text_expr` + T3/flow_ops + values 预设 API）→ Runner 参数页 → Studio 面板/动作库 → `serve.rs` move-only + 新仓 `oas-runner`。
+1. **继续 P0（已实现部分已验收）**：① P0-1b：Studio→Runner HTTP notify 客户端 / `.studio-writer.lock` / 事件 engine 字段 + `compatible` 预检；② 设计 §6.5 完整导入（已有数据时 merge/显式 import API/素材冲突）；③ `scheduler.json` 运行态化（`git rm --cached` + example，设计 §6.6）。
+2. **用户裁定** `DECISION-SHEET.md` D1~D12（未回复按推荐）；P1 参数 v2 后端（`text_expr` + T3/flow_ops 门禁 + values 预设 API）→ P2 Runner 参数页 → P3 Studio 面板/动作库 → P4 `serve.rs` move-only + 新仓 `oas-runner`。
+3. **双端交互复跑**：`powershell -NoProfile -ExecutionPolicy Bypass -File D:\OAS-dev\_verify\p0-1a-e2e-20261105\e2e.ps1`（需先 `cargo build --release -p oasd --features ocr` + 两 `package*.ps1` 打包）。
 4. 旧待办不变：产品验收 `§D.4` 19 步 / P2 清理 / Phase 5；**不 tag / 不 release**（除非用户明确说发布）。
 
 ## 4. 验收进度（§D.4 V1~V7）
@@ -102,7 +116,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\OAS-dev\_verify\release-b
 
 - **F1 已修（2026-11-05）**：PS 5.1 `Set-Content -Encoding UTF8` 写 BOM ⇒ `serde_json` 拒绝 ⇒ Runner 包 `scheduler.json` 首启 `invalid_config`；打包脚本已改 `WriteAllText` 无 BOM + stage 首字节审计（START-HERE §3 E17）；历史包须用新脚本重建。
 - **参数 UI 缺口（待裁定）**：任务构建页无参数入口/提示；唯一入口 = 任务库「配置项…」JSON 对话框；`POST /task/save_flow` 不跑 lint、Studio 无 `/task/lint`；`param()` 未声明只在发布 400 T3 或运行期报错；Studio 试运行 UI 无 params 输入；Runner `group` 未渲染、数字 enum 非下拉（P2）。
-- **Studio 包数据边界**：按 `§A.8.1` 内嵌工作区真实数据快照（3 任务 / assets 31 条 + 5 图）；对外分发前需确认数据边界（未来可加 `-NoData`）。
+- **exchange 默认关闭**：需两端 `config/live.json` 配同一目录（推荐绝对路径）；未配时行为同旧版；最小集未做 HTTP notify 客户端/写锁/`compatible` 预检（恒 true）/事件 engine 字段/重试队列。
+- **bundled 导入为简化版**：仅空数据根首启；已有数据时一律 skip（不 merge）；不注册 `installed.json`；素材冲突不处理。
+- **数据入库**：本批把 `assets/tasks/frames` 当前数据提交（用户要求 ①）；`scheduler.json` 仍是本机运行配置未提交（设计 §6.6 拟运行态化）。
+- **参数 UI 缺口（待实现）**：任务构建页无参数入口/提示；唯一入口 = 任务库「配置项…」JSON 对话框；`save_flow` 不跑 lint；Runner `group` 未渲染、数字 enum 非下拉（方案见 `PARAM-V2-DESIGN`）。
 - **installed.json**：损坏不自动隔离/repair；`/runner/tasks` 不并集 installed-but-missing。
 - **租约/调度**：pass 级不是 attempt 级；stale 回收 TOCTOU；install/activate 调度检查是 check-then-act 小窗口；panic 安全依赖 unwind；`scheduler.json` 缺失/坏时内嵌线程退出。
 - **包**：`manifest.asset_refs`/`dependencies` 未与 flow 闭包交叉校验；`move_dir` copy fallback 合并风险；`PackageError::Other`→400；无跨进程 packages 锁。
@@ -115,14 +132,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\OAS-dev\_verify\release-b
 cd D:\OAS-dev\oas-core
 git log -1 --format="%h %ci %s"     # 本批提交后以实际为准
 git status --porcelain              # 只有用户数据；scripts/docs 应已 clean
-cargo test --workspace              # 721/0（oasd 355 / task 111 / flow 62 / runtime 157+2）
-node apps\oasd\ui\ui_pure_test.js   # 1559 / 159 / 151 / 0 / 6 nav
-# 双端 release（已产出，可复跑仓外 E2E）：
-#   powershell -NoProfile -ExecutionPolicy Bypass -File D:\OAS-dev\_verify\release-both-20261105\run-e2e.ps1
+cargo test --workspace              # 746/0（oasd 380 / task 111 / flow 62 / runtime 157+2）
+node apps\oasd\ui\ui_pure_test.js   # 1633 / 159 / 157 / 0 / 6 nav
+# P0 双端交互（数据随包 + 发布通知）复跑：
+#   powershell -NoProfile -ExecutionPolicy Bypass -File D:\OAS-dev\_verify\p0-1a-e2e-20261105\e2e.ps1
 ```
 
 ## 7. 证据
 
+- **P0 首批落地（seq 112）**：`D:\OAS-dev\_verify\p0-1a-e2e-20261105\`（`e2e.ps1` + `e2e-log.txt` ALL PASS；`logs\cargo-test-workspace.log` 746/0；两包 SHA 记录）· 设计 `_verify\dual-app-design-20261105\RUNNER-SPLIT-DESIGN.md §5/§6`。
 - **本设计轮（seq 111）**：`D:\OAS-dev\_verify\dual-app-design-20261105\`（`PARAM-V2-DESIGN.md` / `RUNNER-SPLIT-DESIGN.md` / `DECISION-SHEET.md` / `prototype\`（2 HTML + 4 PNG + `DESIGN-NOTES.md`））。
 - **双端发行包 / 分离度 E2E**：`D:\OAS-dev\_verify\release-both-20261105\`（`REPORT.md` / `DESIGN-VS-NOW.md` / `F1-FIX.md` / `run-e2e.ps1` / `e2e-summary.json`（75/75）/ `e2e-studio.json` / `e2e-runner.json` / `zip-checks.json` / `package-files.json` / `*-entries.txt` / `studio-8788.png` / `runner-8789.png` / `logs\`）。
 - **Lead 独立复核**：`D:\OAS-dev\_verify\lead-recheck-20261105\`（`recheck.ps1` + `recheck-log.txt`：zip/BOM/路由/端口/进程/`scheduler --status` 全 PASS；`D:\OAS-dev\_verify\release-both-20261105\logs\lead-cargo-test-workspace.log` 721/0）。

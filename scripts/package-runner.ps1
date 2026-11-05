@@ -29,7 +29,10 @@ param(
   [string]$Version = "0.1.0",
   [switch]$SkipBuild,
   [switch]$Build,
-  [switch]$DryRun
+  [switch]$DryRun,
+  # P0-2: ship the read-only bundled tasks/assets snapshot (default yes);
+  # -NoData produces a program-only package (old behaviour).
+  [switch]$NoData
 )
 $ErrorActionPreference = "Stop"
 
@@ -216,6 +219,12 @@ if ($DryRun) {
   Write-Host "  [GENERATE] scheduler.json            <- empty schema v4 plan"
   Write-Host "  [GENERATE] tasks\README.txt, packages\.keep, runs\.keep, logs\.keep, assets\.keep"
   Write-Host "  [GENERATE] VERSION, BUILD-INFO.txt"
+  if ($NoData) {
+    Write-Host "  [DATA]     bundled-data\              <- SKIPPED (-NoData)"
+  } else {
+    Write-Host "  [DATA]     bundled-data\tasks\** + assets\** + manifest.json <- repo data snapshot"
+    Write-Host "  [GENERATE] first-run import into a fresh data root (never overwrites user data)"
+  }
   Write-Host ""
   Write-Host "Excluded from the Runner package (Studio authoring surface):"
   Write-Host ("  UI files: {0}" -f ($ForbiddenUiNames -join ", "))
@@ -280,6 +289,85 @@ Copy-Item (Join-Path $Stage "config\live.example.json") (Join-Path $Stage "confi
 "" | Set-Content -Encoding ASCII (Join-Path $Stage "logs\.keep")
 "" | Set-Content -Encoding ASCII (Join-Path $Stage "assets\.keep")
 
+# ---------------------------------------------------- bundled-data (P0-2/P0-3)
+# A read-only snapshot of the repo's tasks/ + assets/ that the Runner imports
+# on first start into a fresh data root (see apps/oasd/src/bundled_data.rs and
+# design RUNNER-SPLIT-DESIGN.md §6.3/§6.5). Runtime state is never shipped.
+$DataSummary = "bundled=no"
+if (-not $NoData) {
+  $RootTasks = Join-Path $Root "tasks"
+  $RootAssets = Join-Path $Root "assets"
+  if (-not (Test-Path $RootTasks)) { throw "missing tasks dir for bundled-data: $RootTasks" }
+  if (-not (Test-Path (Join-Path $RootAssets "assets.json"))) {
+    throw "missing assets/assets.json for bundled-data: $RootAssets"
+  }
+  $BundleStage = Join-Path $Stage "bundled-data"
+  New-Item -ItemType Directory -Force -Path (Join-Path $BundleStage "tasks") | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $BundleStage "assets\images") | Out-Null
+
+  Get-ChildItem $RootTasks -Directory -Force | ForEach-Object {
+    Copy-Item $_.FullName (Join-Path $BundleStage "tasks") -Recurse -Force
+  }
+  # Strip runtime artefacts before hashing: state/, *.bak, *.tmp, click logs.
+  Get-ChildItem $BundleStage -Recurse -Force -Directory -Filter "state" -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force
+  Get-ChildItem $BundleStage -Recurse -File -Force | Where-Object {
+    $_.Name -like "*.bak" -or $_.Name -like "*.tmp" -or $_.Name -like "*.clicks.jsonl"
+  } | Remove-Item -Force
+
+  Copy-Item (Join-Path $RootAssets "assets.json") (Join-Path $BundleStage "assets\assets.json") -Force
+  if (Test-Path (Join-Path $RootAssets "images")) {
+    Copy-Item (Join-Path $RootAssets "images\*") (Join-Path $BundleStage "assets\images") -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  $BundleFiles = @(Get-ChildItem $BundleStage -Recurse -File -Force | Where-Object { $_.Name -ne "manifest.json" })
+  $BundleEntries = @()
+  $BundleBytes = 0
+  foreach ($f in $BundleFiles) {
+    $rel = $f.FullName.Substring($BundleStage.Length + 1).Replace('\', '/')
+    $BundleEntries += [pscustomobject]@{
+      path = $rel
+      sha256 = (Get-FileHash $f.FullName -Algorithm SHA256).Hash
+      bytes = [int64]$f.Length
+    }
+    $BundleBytes += $f.Length
+  }
+  $BundleTasks = @(Get-ChildItem (Join-Path $BundleStage "tasks") -Directory -Force |
+    Select-Object -ExpandProperty Name)
+  $BundleImageCount = @(Get-ChildItem (Join-Path $BundleStage "assets\images") -File -Force -ErrorAction SilentlyContinue).Count
+  $AssetsSha = (Get-FileHash (Join-Path $BundleStage "assets\assets.json") -Algorithm SHA256).Hash
+  $CommitShort = "unknown"
+  try {
+    $line = & git -C $Root rev-parse --short HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and $line) { $CommitShort = ($line | Select-Object -First 1).ToString().Trim() }
+  } catch { $CommitShort = "unknown" }
+  $RepoUrl = "unknown"
+  try {
+    $url = & git -C $Root remote get-url origin 2>$null
+    if ($LASTEXITCODE -eq 0 -and $url) { $RepoUrl = ($url | Select-Object -First 1).ToString().Trim() }
+  } catch { $RepoUrl = "unknown" }
+
+  $Manifest = [ordered]@{
+    schema_version = 1
+    generated_at_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    source = [ordered]@{
+      repo = $RepoUrl
+      commit = $CommitShort
+      version = $Version
+    }
+    tasks = $BundleTasks
+    assets = [ordered]@{
+      assets_json_sha256 = $AssetsSha
+      image_count = $BundleImageCount
+    }
+    files = $BundleEntries
+    total_bytes = [int64]$BundleBytes
+  }
+  ($Manifest | ConvertTo-Json -Depth 6) | Write-Utf8NoBom -Path (Join-Path $BundleStage "manifest.json")
+  $DataSummary = "bundled=yes tasks=$($BundleTasks.Count) assets=$BundleImageCount files=$($BundleEntries.Count) bytes=$BundleBytes source=$CommitShort"
+  Write-Host "-- bundled-data: $DataSummary"
+}
+
 # version / build info (same first four fields as scripts/package.ps1)
 "$Version" | Write-Utf8NoBom -Path (Join-Path $Stage "VERSION")
 $buildLines = Get-OasBuildInfoLines -Version $Version -Root $Root `
@@ -290,7 +378,8 @@ $buildLines = Get-OasBuildInfoLines -Version $Version -Root $Root `
     "entry: oasd.exe runner --port 8789 --config config/live.json --ui ui",
     "requires: PR1 oasd runner subcommand + ui/runner.html/js/css",
     "models: PP-OCRv6_rec_small.onnx, PP-OCRv6_det_small.onnx",
-    "adb: bundled Windows adb (adb/adb.exe)"
+    "adb: bundled Windows adb (adb/adb.exe)",
+    "data: $DataSummary"
   )
 $buildLines | Write-Utf8NoBom -Path (Join-Path $Stage "BUILD-INFO.txt")
 
@@ -311,6 +400,9 @@ $requiredStage = @(
   "scheduler.json", "tasks\README.txt", "packages\.keep", "runs\.keep",
   "logs\.keep", "assets\.keep", "VERSION", "BUILD-INFO.txt"
 )
+if (-not $NoData) {
+  $requiredStage += @("bundled-data\manifest.json", "bundled-data\tasks", "bundled-data\assets\assets.json")
+}
 foreach ($rel in $requiredStage) {
   if (-not (Test-Path (Join-Path $Stage $rel))) { throw "stage is missing $rel" }
 }
@@ -322,7 +414,35 @@ if ($schedBytes.Length -lt 1 -or $schedBytes[0] -ne 0x7B) {
   throw "scheduler.json must be BOM-free UTF-8 JSON (first byte must be '{')"
 }
 
-Write-Host "-- stage audit OK (no Studio UI file names present; scheduler.json is BOM-free JSON)"
+# P0-2/P0-3 audit: bundled-data must be exactly the snapshot its manifest lists
+# (no runtime state, no unlisted file), or must be absent with -NoData.
+$BundleStage = Join-Path $Stage "bundled-data"
+if ($NoData) {
+  if (Test-Path $BundleStage) { throw "-NoData stage must not contain bundled-data\" }
+} else {
+  $ManifestPath = Join-Path $BundleStage "manifest.json"
+  if (-not (Test-Path $ManifestPath)) { throw "bundled-data\manifest.json is missing" }
+  $manifest = Get-Content -Raw -Encoding UTF8 $ManifestPath | ConvertFrom-Json
+  if ([int]$manifest.schema_version -ne 1) { throw "bundled-data manifest schema_version must be 1" }
+  $listed = @($manifest.files)
+  if ($listed.Count -lt 1) { throw "bundled-data manifest has no files" }
+  foreach ($entry in $listed) {
+    $rel = ([string]$entry.path).Replace('/', '\')
+    $p = Join-Path $BundleStage $rel
+    if (-not (Test-Path $p)) { throw "bundled-data manifest lists a missing file: $($entry.path)" }
+    $h = (Get-FileHash $p -Algorithm SHA256).Hash
+    if ($h -ne [string]$entry.sha256) { throw "bundled-data sha256 mismatch: $($entry.path)" }
+  }
+  $actual = @(Get-ChildItem $BundleStage -Recurse -File -Force | Where-Object { $_.Name -ne "manifest.json" })
+  if ($actual.Count -ne $listed.Count) {
+    throw "bundled-data has $($actual.Count) file(s) but manifest lists $($listed.Count)"
+  }
+  $stateDirs = @(Get-ChildItem $BundleStage -Recurse -Force -Directory -Filter "state" -ErrorAction SilentlyContinue)
+  if ($stateDirs.Count -gt 0) { throw "bundled-data must not contain runtime state/ dirs" }
+  if (@($manifest.tasks).Count -lt 1) { throw "bundled-data manifest has no tasks" }
+}
+
+Write-Host "-- stage audit OK (no Studio UI file names present; scheduler.json is BOM-free JSON; bundled-data verified)"
 
 # --------------------------------------------------------------------- zip
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }

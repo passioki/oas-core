@@ -1,6 +1,6 @@
 {
-  "next_id": 43,
-  "current_id": 4,
+  "next_id": 45,
+  "current_id": 43,
   "frames": [
     {
       "id": 1,
@@ -331,6 +331,28 @@
       "source": "capture",
       "ts_ms": 1793719440481,
       "seen": true
+    },
+    {
+      "id": 43,
+      "name": "协助悬赏封印_接受",
+      "category": "悬赏封印",
+      "file": "frame-43.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793812461392,
+      "seen": true
+    },
+    {
+      "id": 44,
+      "name": "协助悬赏封印_接受2",
+      "category": "悬赏封印",
+      "file": "frame-44.png",
+      "width": 1280,
+      "height": 720,
+      "source": "capture",
+      "ts_ms": 1793812514490,
+      "seen": false
     }
   ]
 }

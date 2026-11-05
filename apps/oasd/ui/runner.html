@@ -28,7 +28,7 @@
   <nav class="app-nav" id="runner-nav" aria-label="Runner 导航">
     <button class="app-nav-btn active" data-page="overview" type="button">概览</button>
     <button class="app-nav-btn" data-page="tasks" type="button">已安装任务</button>
-    <button class="app-nav-btn" data-page="packages" type="button">安装包</button>
+    <button class="app-nav-btn" data-page="packages" type="button"><span class="runner-nav-label">安装包</span><span id="runner-updates-badge" class="runner-badge runner-nav-badge" hidden>0</span></button>
     <button class="app-nav-btn" data-page="queue" type="button">队列与调度</button>
     <button class="app-nav-btn" data-page="runs" type="button">运行记录</button>
     <button class="app-nav-btn" data-page="settings" type="button">设置</button>
@@ -97,6 +97,24 @@
           <button id="runner-packages-refresh" type="button">刷新</button>
         </div>
         <div id="runner-packages-status" class="muted small" role="status" aria-live="polite">—</div>
+
+        <!-- P0-1a：Studio 发布通知（exchange 交换区 → Runner 新发布列表） -->
+        <section class="card runner-section" id="runner-updates-section">
+          <div class="row page-head">
+            <h3>新发布（来自 Studio）</h3>
+            <span id="runner-updates-summary" class="muted small">—</span>
+            <span class="spacer"></span>
+            <button id="runner-updates-refresh" type="button">刷新</button>
+          </div>
+          <div id="runner-updates-status" class="muted small" role="status" aria-live="polite">—</div>
+          <div id="runner-updates-list" class="muted">（未加载）</div>
+          <p class="runner-note muted small">
+            发布通知来自 Studio 的 exchange 交换区（<code>config/live.json</code> → <code>exchange.dir</code>）：
+            Studio 发布任务包时把包与发布索引写进交换区，Runner 轮询后在此列出。安装会走与手动安装相同的
+            <code>POST /runner/install</code>（sha256 / 解包 / 复检），成功后把该条标记为已安装。
+            未启用 exchange 时这里不会出现新发布，仍可用下方「本机 .oaspkg 路径」手动安装。
+          </p>
+        </section>
 
         <section class="card runner-section">
           <h3>安装任务包</h3>

@@ -1,0 +1,25 @@
+{
+  "capabilities": {
+    "checkpoint": true,
+    "duration_hint_s": 60,
+    "interruptible": false
+  },
+  "category": "utility",
+  "description": "切换预设御魂",
+  "exits": {
+    "done": {
+      "result": "success"
+    },
+    "failed": {
+      "result": "retryable"
+    }
+  },
+  "expire": "daily",
+  "name": "切换预设御魂",
+  "params": [],
+  "resources": [],
+  "schema_version": 1,
+  "task_id": "切换预设御魂",
+  "template_version": 1,
+  "version": 1
+}

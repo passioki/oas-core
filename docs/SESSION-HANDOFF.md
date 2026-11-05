@@ -1,18 +1,18 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 111**，`oas-core-dual-app-upgrade`）。
-> **状态：awaiting-user-decisions**——seq 110 双端 release 已验收（E2E 75/75）；**seq 111 = 用户四项新要求的设计轮**（参数 v2 / 动作库 / 使用端 UI / 使用端独立新仓 / 发布通知 / 数据随包）已交付 3 份设计文档 + 可点原型 + 决策单，**等用户裁定 D1~D12 后进入 P0 实施**；本轮未改代码/未 tag/未 release。
+> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 112**，`oas-core-dual-app-upgrade`）。
+> **状态：in_progress**——seq 111 设计轮已交付（参数 v2 / 双仓拆分 / 发布通知 / 数据随包，待用户裁定 D1~D12）；**seq 112 = P0 首批落地并验证**：两包带数据（Studio 全数据 / Runner `bundled-data` 首启导入）+ exchange 发布通知（Studio publish → Runner「新发布」列表/安装/ack）+ UI；测试 746/0、UI 1633、仓外 E2E ALL PASS。**未 tag / 未 release**。
 
-## 0. 当前状态（2026-11-05 13:3x）
+## 0. 当前状态（2026-11-05 18:4x）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `dev`；本批提交前 HEAD = `e9404a4`（seq 108 docs，父 `68e5768`）；代码 HEAD 仍 `68e5768`（本轮 Rust 零改动）；**提交后以 `git log -1` 为准**；未 tag / 未 release |
-| 任务 | **Studio/Runner 分离**：Q1~Q7 已批准、PR1~PR7 ✅、最终审计 P1 ✅ `68e5768`；**本批 seq 110 = 双端 release + dev-serve + 参数 UI 审计** |
-| 测试 | `cargo test --workspace` **721/0**（Lead 本批复跑 `EXITCODE=0`）；oasd **355**、oas-task 111、oas-flow 62、oas-runtime 157+2；UI **1559 / Studio 159 / Runner 151 / 0 dead / 6 nav**（UI 零改动）；`git diff --check` clean |
-| 发行包 | **Studio** `dist/oasd-v0.1.0-win64.zip` **37,789,721 B** / SHA `737B52B9…91E6`（41 entries，surface=studio）；**Runner** `dist/oasd-runner-v0.1.0-win64.zip` **37,690,867 B** / SHA `ECB37A78…39ADE`（23 entries，surface=runner，`scheduler.json` 无 BOM）；均不入 git |
-| 服务 | **8787/8788/8789 全部未监听、无 `oasd` 进程**（release 评测后已清理） |
-| 工作区 | 用户数据未提交：`assets/assets.json`、`frames/frames.json`、`scheduler.json(.bak)`、未跟踪 `frames/frame-43.png`/`frame-44.png`、`tasks/切换预设御魂/`；本批 scripts+docs 待提交；**用户数据不入库** |
+| 分支 / HEAD | `dev`；本批提交后以 `git log -1` 为准（父 `bfddaf6`）；未 tag / 未 release |
+| 任务 | **P0 首批落地（seq 112）**：P0-2 数据随包 / P0-3 Runner 首启导入 / P0-1a exchange 发布通知（后端+UI）✅；P0-1b（HTTP notify/写锁/compatible 预检）、参数 v2、新仓拆分待继续；用户 D1~D12 未回复（按推荐推进） |
+| 测试 | `cargo test --workspace` **746/0**（21 suites；oasd **380**）；oas-task 111、oas-flow 62、oas-runtime 157+2；UI **1633 / Studio 159 / Runner 157 / 0 dead / 6 nav**；release OCR build exit 0（5 warnings 无新增）；`git diff --check` clean |
+| 发行包 | **Studio** `dist/oasd-v0.1.0-win64.zip` **76,582,684 B** / SHA `A12C1EBA…87A3`（78 entries，含 tasks/assets/frames/relations/templates）；**Runner** `dist/oasd-runner-v0.1.0-win64.zip` **37,793,723 B** / SHA `123FFD30…E6BF`（含 `bundled-data/`）；均不入 git |
+| 服务 | **8787/8788/8789 全部未监听、无 `oasd` 进程**（E2E 后已清理） |
+| 工作区 | 数据入库（assets/tasks/frames 随本批提交）；`scheduler.json` 仍为本机运行配置未提交；`dist/`/`packages/`/exchange 运行目录不入 git |
 
 ## 1. 最近 3 轮关键变更（历史细节见 PLAN/ENGINE/PENDING）
 
