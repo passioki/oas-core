@@ -480,6 +480,7 @@
     </p>
     <p class="muted small">
       JSON 数组；保存前本地 JSON.parse 校验，服务端仍会校验 meta.params。没有配置项时填 <code>[]</code>。
+      从构建页检查面板的 T3「去声明…」打开时，会把缺失参数预填进数组（同 key 不重复；可再修改后保存）。
     </p>
     <textarea id="task-config-json" class="builder-code task-config-json" spellcheck="false"
       placeholder='[{"key":"max_rounds","type":"int","default":5,"label":"最大轮数"}]'></textarea>

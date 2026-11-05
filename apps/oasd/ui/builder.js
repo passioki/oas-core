@@ -457,6 +457,35 @@
     return errors.map(String).join('\n');
   }
 
+  // P6（task-19）：requires/expect 守卫与 drag from/to 端点的只读 locator 提取，
+  // 供属性面板的结构化 OCR 文字编辑器使用（纯函数，ui_pure_test 抽取执行）。
+  function stepGuardLocator(step, field) {
+    const s = step && typeof step === 'object' ? step : {};
+    const args = s.args && typeof s.args === 'object' && !Array.isArray(s.args) ? s.args : {};
+    const guard = args[field];
+    return guard && typeof guard === 'object' && !Array.isArray(guard) ? guard : null;
+  }
+
+  function stepDragEndpoint(step, side) {
+    const s = step && typeof step === 'object' ? step : {};
+    const args = s.args && typeof s.args === 'object' && !Array.isArray(s.args) ? s.args : {};
+    const endpoint = args[side];
+    return endpoint && typeof endpoint === 'object' && !Array.isArray(endpoint) ? endpoint : null;
+  }
+
+  function locatorIsOcrText(locator) {
+    const loc = locator && typeof locator === 'object' && !Array.isArray(locator) ? locator : {};
+    return String(loc.kind === undefined || loc.kind === null ? '' : loc.kind).trim() === 'ocr_text';
+  }
+
+  // T3「去声明…」预填：从 issue 提取 key 生成 ParamDecl 形状（type 默认 text，
+  // label=key）；提取不到 key 时返回 null（不预填、仍打开对话框）。
+  function lintT3DeclarePrefill(issue) {
+    const key = paramSafeKey(lintT3ParamKey(issue));
+    if (!key) return null;
+    return { key: key, type: 'text', label: key };
+  }
+
   function getRoot() {
     if (!B.flow) B.flow = { schema_version: 1, name: B.task, steps: [] };
     if (!Array.isArray(B.flow.steps)) B.flow.steps = [];
@@ -859,7 +888,8 @@
   function lintOpenDeclare(issue) {
     const key = lintT3ParamKey(issue);
     status('去声明参数：' + (key || '（见检查结果）') + '…');
-    openTaskParamsDialog();
+    // P6: prefill the missing ParamDecl into the config dialog (append + dedupe).
+    openTaskParamsDialog({ prefillParam: lintT3DeclarePrefill(issue) });
   }
 
   function closeLintPanel() {
@@ -1846,11 +1876,233 @@
     }
   }
 
-  // 定位器文字来源三态（P3）：固定文字 / 任务参数 / 表达式。固定写 text，后两者
-  // 写 text_expr；切换时删除另一字段。未知 locator 字段（roi / require_template /
-  // shape …）必须原样保留（只 merge 已知键，禁止重建对象——旧 Studio 会丢字段）。
+  // P6：通用「文字来源」三态编辑器（OCR locator）。click_target find[0]、
+  // requires/expect 守卫、drag from/to 端点共用：固定文字写 text；任务参数 /
+  // 表达式写 text_expr（互斥）。控件变化时回调 onChange，由调用方用
+  // paramSourceApply 写回（保留未知字段）。返回 {host, read()}。
+  function locatorTextSourceFields(base, onChange) {
+    const loc = base && typeof base === 'object' && !Array.isArray(base) ? base : {};
+    const host = document.createElement('div');
+    host.className = 'builder-text-source';
+    const src = paramSourceFromLocator(loc);
+    const params = paramPanelRows(B.params);
+    const keepParamSource = src.mode === 'param';
+    const paramOptionsAvailable = params.length > 0 || keepParamSource;
+    const currentMode = src.mode === 'param' && !paramOptionsAvailable ? 'text' : src.mode;
+
+    const modeLab = document.createElement('label');
+    modeLab.textContent = '文字来源（text / text_expr 互斥）';
+    const modeSel = document.createElement('select');
+    for (const [value, label] of [
+      ['text', '固定文字（写 text）'],
+      ['param', '任务参数（写 text_expr = param(...)）'],
+      ['expr', '表达式（写 text_expr）'],
+    ]) {
+      if (value === 'param' && !paramOptionsAvailable) continue;
+      const o = document.createElement('option');
+      o.value = value;
+      o.textContent = label;
+      modeSel.appendChild(o);
+    }
+    modeSel.value = currentMode;
+    modeLab.appendChild(modeSel);
+    host.appendChild(modeLab);
+    if (!params.length && !keepParamSource) {
+      const hint = document.createElement('div');
+      hint.className = 'builder-source-hint';
+      hint.textContent = '任务参数：先在「任务参数」面板「配置项…」声明参数，之后可选「任务参数」来源。';
+      host.appendChild(hint);
+    }
+
+    let fixedInput = null;
+    let paramSel = null;
+    let exprInput = null;
+    if (currentMode === 'param') {
+      const lab = document.createElement('label');
+      lab.textContent = '任务参数 key';
+      paramSel = document.createElement('select');
+      const known = new Set(params.map(function (row) { return row.key; }));
+      paramSel.appendChild(new Option('（选择已声明参数）', ''));
+      for (const row of params) {
+        paramSel.appendChild(new Option(
+          (row.group || '未分组') + ' · ' + row.label + ' (' + row.key + ')',
+          row.key
+        ));
+      }
+      // A locator that already uses param(...) keeps that key selectable even
+      // when the schema failed to load / the key is no longer declared, so
+      // editing another field can never silently drop text_expr.
+      if (src.value && !known.has(src.value)) {
+        paramSel.appendChild(new Option('未声明：' + src.value, src.value));
+      }
+      paramSel.value = src.value || (params[0] ? params[0].key : '');
+      lab.appendChild(paramSel);
+      host.appendChild(lab);
+    } else if (currentMode === 'expr') {
+      const lab = document.createElement('label');
+      lab.textContent = '文字表达式（text_expr）';
+      const exprRow = document.createElement('span');
+      exprRow.className = 'builder-expr-row';
+      exprInput = document.createElement('input');
+      exprInput.type = 'text';
+      exprInput.spellcheck = false;
+      exprInput.value = src.value;
+      exprRow.appendChild(exprInput);
+      exprRow.appendChild(paramInsertWidget('expr', function () { return exprInput; }));
+      lab.appendChild(exprRow);
+      host.appendChild(lab);
+      trackExprField(exprInput, 'expr');
+    } else {
+      const lab = document.createElement('label');
+      lab.textContent = 'OCR 文字（固定字面量）';
+      fixedInput = document.createElement('input');
+      fixedInput.type = 'text';
+      fixedInput.value = src.value;
+      lab.appendChild(fixedInput);
+      host.appendChild(lab);
+    }
+
+    const hint = document.createElement('div');
+    hint.className = 'builder-source-hint';
+    const specError = locatorTextSpecError(loc);
+    if (specError) {
+      hint.textContent = '现有值无效：' + specError + '；改动后会按互斥规则覆盖。';
+      hint.className += ' warn';
+    } else if (currentMode === 'param') {
+      hint.textContent = 'text_expr = ' + paramTextExpr(src.value || '') +
+        ' → 运行时替换为 Runner 参数值（参数未声明时发布 T3 会报错）。';
+    }
+    host.appendChild(hint);
+
+    function read() {
+      const mode = modeSel.value;
+      let value = '';
+      if (mode === 'param') {
+        // On a mode *switch* the param select is not rendered yet: default to the
+        // first declared key so switching never leaves text_expr:'' behind.
+        value = paramSel ? paramSel.value : (params[0] ? params[0].key : '');
+      } else if (mode === 'expr') {
+        value = exprInput ? exprInput.value : '';
+      } else {
+        value = fixedInput ? fixedInput.value : '';
+      }
+      return { mode: mode, value: value };
+    }
+    function emit() {
+      if (typeof onChange === 'function') onChange(read());
+    }
+    modeSel.addEventListener('change', emit);
+    if (paramSel) paramSel.addEventListener('change', emit);
+    if (exprInput) exprInput.addEventListener('change', emit);
+    if (fixedInput) fixedInput.addEventListener('change', emit);
+    return { host: host, read: read };
+  }
+
+  // P6：requires / expect 的 OCR 守卫结构化编辑器（click_target 步骤）。
+  function renderGuardLocatorEditor(root, step, field) {
+    const title = field === 'requires'
+      ? '前置守卫 requires（可选；click 前校验）'
+      : '结束守卫 expect（可选；click 后校验）';
+    const box = formBox(title);
+    const guard = stepGuardLocator(step, field);
+    if (!guard) {
+      const hint = document.createElement('div');
+      hint.className = 'builder-guard-hint';
+      hint.textContent = '（未设置）：在下方「高级：args JSON」里添加 ' + field +
+        '（OCR 守卫形如 {"kind":"ocr_text","sel":"O_x","text":"固定"} 或 text_expr）。';
+      box.appendChild(hint);
+      root.appendChild(box);
+      return;
+    }
+    if (!locatorIsOcrText(guard)) {
+      const hint = document.createElement('div');
+      hint.className = 'builder-guard-hint';
+      hint.textContent = 'kind=' + String(guard.kind === undefined || guard.kind === null ? '?' : guard.kind) +
+        '：非 OCR 守卫请用高级 JSON 编辑（这里保留原字段不改）。';
+      box.appendChild(hint);
+      root.appendChild(box);
+      return;
+    }
+    const kindHint = document.createElement('div');
+    kindHint.className = 'builder-guard-hint';
+    kindHint.textContent = 'kind: ocr_text（text / text_expr 互斥必填其一；未知字段保留）';
+    box.appendChild(kindHint);
+
+    const assetLab = document.createElement('label');
+    assetLab.textContent = 'OCR 素材';
+    const searchWrap = assetSearch(guard.sel || '');
+    const asset = searchWrap.input;
+    assetLab.appendChild(searchWrap);
+    box.appendChild(assetLab);
+
+    // timeout_ms is part of the expect shape (and may exist on requires too).
+    const hasTimeout = guard.timeout_ms !== undefined && guard.timeout_ms !== null;
+    let timeoutControl = null;
+    if (field === 'expect' || hasTimeout) {
+      const timeoutLab = document.createElement('label');
+      timeoutLab.textContent = '超时 ms';
+      timeoutControl = document.createElement('input');
+      timeoutControl.type = 'number';
+      timeoutControl.min = '0';
+      timeoutControl.step = '100';
+      timeoutControl.value = hasTimeout ? String(guard.timeout_ms) : '3000';
+      timeoutLab.appendChild(timeoutControl);
+      box.appendChild(timeoutLab);
+    }
+
+    const textSource = locatorTextSourceFields(guard, function () { sync(); });
+    box.appendChild(textSource.host);
+
+    function sync() {
+      const next = Object.assign({}, guard, { kind: 'ocr_text' });
+      if (asset.value) next.sel = asset.value;
+      else delete next.sel;
+      if (timeoutControl) {
+        const n = Number(timeoutControl.value);
+        if (isFinite(n) && n >= 0) next.timeout_ms = Math.round(n);
+        else delete next.timeout_ms;
+      }
+      const text = textSource.read();
+      step.args[field] = paramSourceApply(next, text.mode, text.value);
+      renderAll();
+    }
+    asset.addEventListener('change', sync);
+    if (timeoutControl) timeoutControl.addEventListener('change', sync);
+    root.appendChild(box);
+  }
+
+  // P6：drag from/to 的 OCR 端点结构化编辑器。
+  function renderDragEndpointEditor(host, step, side) {
+    const endpoint = stepDragEndpoint(step, side);
+    if (!endpoint) return;
+    const box = formBox('拖动端点 ' + side + '（OCR 文字）');
+    box.classList.add('builder-drag-endpoint');
+    const assetLab = document.createElement('label');
+    assetLab.textContent = 'OCR 素材';
+    const searchWrap = assetSearch(endpoint.sel || '');
+    const asset = searchWrap.input;
+    assetLab.appendChild(searchWrap);
+    box.appendChild(assetLab);
+    const textSource = locatorTextSourceFields(endpoint, function () { sync(); });
+    box.appendChild(textSource.host);
+    function sync() {
+      const next = Object.assign({}, endpoint, { kind: 'ocr_text' });
+      if (asset.value) next.sel = asset.value;
+      else delete next.sel;
+      const text = textSource.read();
+      step.args[side] = paramSourceApply(next, text.mode, text.value);
+      renderAll();
+    }
+    asset.addEventListener('change', sync);
+    host.appendChild(box);
+  }
+
+  // 定位器文字来源三态（P3，P6 起复用 locatorTextSourceFields）：固定文字 /
+  // 任务参数 / 表达式。固定写 text，后两者写 text_expr；切换时删除另一字段。
+  // 未知 locator 字段（roi / require_template / shape …）必须原样保留（只 merge
+  // 已知键，禁止重建对象——旧 Studio 会丢字段）。
   function structuredClickTarget(root, step) {
-    const box = formBox('定位对象（find[0]；多定位器/内联 ROI 用下方高级 JSON；expect/requires 的 OCR 文字 text_expr 也在高级 JSON 里写）');
+    const box = formBox('定位对象（find[0]；多定位器/内联 ROI 用下方高级 JSON）');
     const find = Array.isArray(step.args.find) ? step.args.find : [];
     const base = find[0] && typeof find[0] === 'object' && !Array.isArray(find[0])
       ? find[0]
@@ -1876,98 +2128,12 @@
     assetLab.appendChild(assetSearchWrap2);
     box.appendChild(assetLab);
 
-    const params = paramPanelRows(B.params);
-    let modeSel = null;
-    let fixedInput = null;
-    let paramSel = null;
-    let exprInput = null;
-
+    let textSource = null;
     if (kind.value === 'ocr_text') {
-      const src = paramSourceFromLocator(loc);
-      // A locator that already uses param(...) keeps the param source selectable
-      // even when the schema failed to load / the key is no longer declared, so
-      // editing another field can never silently drop text_expr.
-      const keepParamSource = src.mode === 'param';
-      const paramOptionsAvailable = params.length > 0 || keepParamSource;
-      const currentMode = src.mode === 'param' && !paramOptionsAvailable ? 'text' : src.mode;
-
-      const modeLab = document.createElement('label');
-      modeLab.textContent = '文字来源（text / text_expr 互斥）';
-      modeSel = document.createElement('select');
-      for (const [value, label] of [
-        ['text', '固定文字（写 text）'],
-        ['param', '任务参数（写 text_expr = param(...)）'],
-        ['expr', '表达式（写 text_expr）'],
-      ]) {
-        if (value === 'param' && !paramOptionsAvailable) continue;
-        const o = document.createElement('option');
-        o.value = value;
-        o.textContent = label;
-        modeSel.appendChild(o);
-      }
-      modeSel.value = currentMode;
-      modeLab.appendChild(modeSel);
-      box.appendChild(modeLab);
-      if (!params.length && !keepParamSource) {
-        const hint = document.createElement('div');
-        hint.className = 'builder-source-hint';
-        hint.textContent = '任务参数：先在「任务参数」面板「配置项…」声明参数，之后可选「任务参数」来源。';
-        box.appendChild(hint);
-      }
-
-      if (currentMode === 'param') {
-        const lab = document.createElement('label');
-        lab.textContent = '任务参数 key';
-        paramSel = document.createElement('select');
-        const known = new Set(params.map(function (row) { return row.key; }));
-        paramSel.appendChild(new Option('（选择已声明参数）', ''));
-        for (const row of params) {
-          paramSel.appendChild(new Option(
-            (row.group || '未分组') + ' · ' + row.label + ' (' + row.key + ')',
-            row.key
-          ));
-        }
-        if (src.value && !known.has(src.value)) {
-          paramSel.appendChild(new Option('未声明：' + src.value, src.value));
-        }
-        paramSel.value = src.value || (params[0] ? params[0].key : '');
-        lab.appendChild(paramSel);
-        box.appendChild(lab);
-      } else if (currentMode === 'expr') {
-        const lab = document.createElement('label');
-        lab.textContent = '文字表达式（text_expr）';
-        const exprRow = document.createElement('span');
-        exprRow.className = 'builder-expr-row';
-        exprInput = document.createElement('input');
-        exprInput.type = 'text';
-        exprInput.spellcheck = false;
-        exprInput.value = src.value;
-        exprRow.appendChild(exprInput);
-        exprRow.appendChild(paramInsertWidget('expr', function () { return exprInput; }));
-        lab.appendChild(exprRow);
-        box.appendChild(lab);
-        trackExprField(exprInput, 'expr');
-      } else {
-        const lab = document.createElement('label');
-        lab.textContent = 'OCR 文字（固定字面量）';
-        fixedInput = document.createElement('input');
-        fixedInput.type = 'text';
-        fixedInput.value = src.value;
-        lab.appendChild(fixedInput);
-        box.appendChild(lab);
-      }
-
-      const hint = document.createElement('div');
-      hint.className = 'builder-source-hint';
-      const specError = locatorTextSpecError(base);
-      if (specError) {
-        hint.textContent = '现有值无效：' + specError + '；改动后会按互斥规则覆盖。';
-        hint.className += ' warn';
-      } else if (currentMode === 'param') {
-        hint.textContent = 'text_expr = ' + paramTextExpr(src.value || '') +
-          ' → 运行时替换为 Runner 参数值（参数未声明时发布 T3 会报错）。';
-      }
-      box.appendChild(hint);
+      textSource = locatorTextSourceFields(Object.assign({}, base, { kind: 'ocr_text' }), function () {
+        sync();
+      });
+      box.appendChild(textSource.host);
     }
 
     function sync() {
@@ -1976,12 +2142,8 @@
       else delete next.sel;
       let written = next;
       if (kind.value === 'ocr_text') {
-        const mode = modeSel ? modeSel.value : 'text';
-        let value = '';
-        if (mode === 'param') value = paramSel ? paramSel.value : '';
-        else if (mode === 'expr') value = exprInput ? exprInput.value : '';
-        else value = fixedInput ? fixedInput.value : '';
-        written = paramSourceApply(next, mode, value);
+        const text = textSource ? textSource.read() : { mode: 'text', value: '' };
+        written = paramSourceApply(next, text.mode, text.value);
       } else {
         // template/region locators never carry text fields; text_expr is an
         // ocr_text-only field.
@@ -1993,28 +2155,11 @@
     }
     kind.addEventListener('change', sync);
     asset.addEventListener('change', sync);
-    if (modeSel) {
-      modeSel.addEventListener('change', function () {
-        const mode = modeSel.value;
-        const value = mode === 'param'
-          ? (params[0] ? params[0].key : (paramSel ? paramSel.value : ''))
-          : (mode === 'expr'
-            ? (exprInput ? exprInput.value : '')
-            : (fixedInput ? fixedInput.value : ''));
-        const next = Object.assign({}, base, { kind: 'ocr_text' });
-        if (asset.value) next.sel = asset.value;
-        step.args.find = [paramSourceApply(next, mode, value)].concat(find.slice(1));
-        renderAll();
-      });
-    }
-    if (paramSel) paramSel.addEventListener('change', sync);
-    if (exprInput) exprInput.addEventListener('change', sync);
-    if (fixedInput) fixedInput.addEventListener('change', sync);
     root.appendChild(box);
   }
 
   function structuredDrag(root, step) {
-    const box = formBox('拖动（from 区域 + 可选 shape + 方向/距离/时长；OCR 端点的 text_expr、其它 from/to 形态用下方高级 JSON）');
+    const box = formBox('拖动（from/to 端点 + 可选 shape + 方向/距离/时长；区域与 OCR 端点可结构化编辑，其它形态用下方高级 JSON）');
     const dirLab = document.createElement('label');
     dirLab.textContent = '方向（必填）';
     const dir = document.createElement('select');
@@ -2060,11 +2205,28 @@
           : '含 rect shape（非反选）：runtime 实际只使用上面的 roi（shape 不参与采样）；改 roi 即改拖动区域';
         box.appendChild(hint);
       }
+    } else if (locatorIsOcrText(from)) {
+      // P6: OCR from 端点 —— 素材 + 文字来源三态（固定 / 参数 / 表达式）。
+      renderDragEndpointEditor(box, step, 'from');
     } else {
       const n = document.createElement('div');
       n.className = 'muted small';
-      n.textContent = 'from 不是 region（OCR 行/坐标）：请用高级 JSON 编辑';
+      n.textContent = 'from 不是 region/ocr_text（坐标等）：请用高级 JSON 编辑';
       box.appendChild(n);
+    }
+
+    // P6: to 端点（可选）。direction+distance 模式下没有 to；存在 OCR to 时结构化编辑。
+    const to = stepDragEndpoint(step, 'to');
+    if (to) {
+      if (locatorIsOcrText(to)) {
+        renderDragEndpointEditor(box, step, 'to');
+      } else {
+        const n = document.createElement('div');
+        n.className = 'muted small';
+        n.textContent = 'to kind=' + String(to.kind === undefined || to.kind === null ? '?' : to.kind) +
+          '：非 OCR 端点请用高级 JSON 编辑';
+        box.appendChild(n);
+      }
     }
 
     const d = Array.isArray(step.args.distance) && step.args.distance.length === 2
@@ -2616,7 +2778,12 @@
       lab.appendChild(input);
       root.appendChild(lab);
     }
-    if (step.op === 'click_target') structuredClickTarget(root, step);
+    if (step.op === 'click_target') {
+      structuredClickTarget(root, step);
+      // P6: requires/expect OCR 守卫也支持结构化「文字来源」三态。
+      renderGuardLocatorEditor(root, step, 'requires');
+      renderGuardLocatorEditor(root, step, 'expect');
+    }
     if (step.op === 'click') renderClickAlts(root, step);
     if (step.op === 'drag') structuredDrag(root, step);
     renderBuilderRelationHint(root, step);
@@ -2799,7 +2966,10 @@
     return Array.isArray(s.params) ? s.params : [];
   }
 
-  function openTaskParamsDialog(onSaved) {
+  function openTaskParamsDialog(opts) {
+    const options = typeof opts === 'function'
+      ? { onSaved: opts }
+      : (opts && typeof opts === 'object' ? opts : {});
     if (!B.task) {
       status('先选择任务，再编辑任务参数', '#ff8a80');
       return;
@@ -2809,7 +2979,10 @@
       status('任务配置项对话框未就绪（app.js 未加载）', '#ff8a80');
       return;
     }
-    const savedCallback = typeof onSaved === 'function' ? onSaved : null;
+    const savedCallback = typeof options.onSaved === 'function' ? options.onSaved : null;
+    const prefillParam = options.prefillParam && typeof options.prefillParam === 'object'
+      ? options.prefillParam
+      : null;
     hook.open(B.task, {
       // Reuse the existing #task-config-dialog; after a successful save refresh
       // the panel (meta.params changed) without reloading flow.json.
@@ -2825,6 +2998,7 @@
           try { savedCallback(savedTask, params); } catch (e) { /* never break the save path */ }
         }
       },
+      prefillParam: prefillParam,
     });
   }
 

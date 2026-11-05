@@ -50,6 +50,7 @@
 //!   GET  /runner/updates  -> publish events from the exchange dir + update feeds (P0-1a/P2)
 //!   POST /runner/updates/ack -> Runner-local seen state (`dismissed`/`installed`, P0-1a)
 //!   POST /runner/updates/install -> install one update event (downloads URL packages; P2)
+//!   POST /runner/updates/cache/clear -> drop cached feed indexes + remote packages (P2)
 //!   POST /runner/notify   -> best-effort publish hint (never installs; P0-1a)
 //!   POST /task/publish    -> build one .oaspkg (Studio only, PR5)
 //!   GET  /task/package    -> Studio package history (PR5)
@@ -64,7 +65,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -194,7 +195,9 @@ pub fn route_owner(method: &str, path_only: &str) -> Option<RouteOwner> {
             "/scheduler/config" | "/scheduler/reset" | "/runs/delete" | "/runner/install"
             | "/runner/uninstall" | "/runner/packages/activate" | "/runner/run"
             | "/runner/scheduler/start" | "/runner/scheduler/stop" | "/runner/updates/ack"
-            | "/runner/updates/install" | "/runner/notify" => Some(Runner),
+            | "/runner/updates/install" | "/runner/updates/cache/clear" | "/runner/notify" => {
+                Some(Runner)
+            }
 
             // The device config is the one physical resource both surfaces use.
             "/instance" => Some(Both),
@@ -614,6 +617,11 @@ pub struct Server {
     /// fetch a configured real feed (they point at temp dirs / a local fixture).
     #[cfg(test)]
     updates_override: Option<crate::config::UpdatesConfig>,
+    /// P2: in-process TTL cache for feed indexes (`updates.cache_secs`), keyed by
+    /// [`FeedCacheKey`]. A `Mutex` (not `RefCell`) keeps `Server` usable from a
+    /// future threaded accept loop; the current one handles one request at a time
+    /// but the cost is negligible. `GET /runner/updates?refresh=1` bypasses it.
+    updates_cache: Mutex<std::collections::HashMap<FeedCacheKey, CachedFeedIndex>>,
     #[cfg(feature = "ocr")]
     ocr: Option<Arc<Mutex<oas_ocr::onnx::RecEngine>>>,
     #[cfg(feature = "ocr")]
@@ -650,6 +658,42 @@ impl LoadedUpdate {
             self.feed.as_ref(),
             self.exchange_dir.as_deref(),
         )
+    }
+}
+
+/// Identity of one cached feed index (`updates.cache_secs` TTL cache).
+///
+/// The configured `index_url` is part of the key so editing a feed's URL
+/// invalidates its entry even when the display name stays; the name keeps two
+/// feeds independent even if they point at the same index.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FeedCacheKey {
+    name: String,
+    index_url: String,
+}
+
+/// One cached feed `publish-index.json` + when it was fetched (for the TTL).
+#[derive(Debug, Clone)]
+struct CachedFeedIndex {
+    fetched_at: Instant,
+    index: exchange::PublishIndex,
+}
+
+/// Parse the optional `refresh` query flag of `GET /runner/updates`.
+///
+/// Contract (documented so a typo cannot silently mean "no refresh"):
+/// absent/empty/`0`/`false`/`no` = use the TTL cache; `1`/`true`/`yes` = bypass
+/// it and fetch every enabled feed again; anything else is a `400`.
+fn parse_refresh_flag(query: &[(String, String)]) -> Result<bool, String> {
+    let Some((_, raw)) = query.iter().find(|(key, _)| key == "refresh") else {
+        return Ok(false);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "0" | "false" | "no" => Ok(false),
+        "1" | "true" | "yes" => Ok(true),
+        other => Err(format!(
+            "`refresh` must be 1/0 (true/false), got `{other}`"
+        )),
     }
 }
 
@@ -960,6 +1004,7 @@ impl Server {
             notifications_path_override: None,
             #[cfg(test)]
             updates_override: None,
+            updates_cache: Mutex::new(std::collections::HashMap::new()),
             #[cfg(feature = "ocr")]
             ocr: None,
             #[cfg(feature = "ocr")]
@@ -1888,10 +1933,13 @@ impl Server {
             ("GET", "/runner/tasks") => self.handle_runner_tasks(&mut out),
             ("GET", "/runner/packages") => self.handle_runner_packages(&mut out),
             // --- P0-1a: Studio → Runner publish exchange (Runner only) ---
-            ("GET", "/runner/updates") => self.handle_runner_updates(&mut out),
+            ("GET", "/runner/updates") => self.handle_runner_updates(&mut out, &path),
             ("POST", "/runner/updates/ack") => self.handle_runner_updates_ack(&mut out, &body),
             ("POST", "/runner/updates/install") => {
                 self.handle_runner_updates_install(&mut out, &body)
+            }
+            ("POST", "/runner/updates/cache/clear") => {
+                self.handle_runner_updates_cache_clear(&mut out)
             }
             ("POST", "/runner/notify") => self.handle_runner_notify(&mut out, &body),
             // --- PR6: embedded scheduler + temporary Runner run (Runner only) ---
@@ -8487,7 +8535,14 @@ impl Server {
     /// event that also appears in a feed keeps the local copy for install), then
     /// each enabled feed in config order. Feed failures are collected, never
     /// fatal (fail-soft contract, same as the exchange index).
-    fn loaded_updates(&self) -> (Vec<LoadedUpdate>, Vec<String>) {
+    ///
+    /// With `refresh == false`, a feed index fetched less than
+    /// `updates.cache_secs` seconds ago is served from the in-process cache (no
+    /// `curl`/file read); `refresh == true` (from `?refresh=1`) forces every
+    /// feed to be fetched again. A failed fetch is reported and does **not**
+    /// refresh the cached timestamp, so the next request retries instead of
+    /// serving an expired index as fresh.
+    fn loaded_updates(&self, refresh: bool) -> (Vec<LoadedUpdate>, Vec<String>) {
         let mut errors: Vec<String> = Vec::new();
         let mut updates: Vec<LoadedUpdate> = Vec::new();
         if let Some(dir) = self.exchange_dir() {
@@ -8520,28 +8575,68 @@ impl Server {
                             continue;
                         }
                     };
-                match exchange::load_feed(&resolved, &cache_dir) {
-                    Ok(index) => {
-                        for event in index.events {
-                            updates.push(LoadedUpdate {
-                                event,
-                                source: resolved.name.clone(),
-                                source_kind: resolved.source_kind(),
-                                exchange_dir: None,
-                                feed: Some(resolved.clone()),
-                            });
+                // TTL cache (P2): the Runner UI polls this endpoint every few
+                // seconds, so a remote feed must not be re-curl'ed on every poll.
+                let key = FeedCacheKey {
+                    name: resolved.name.clone(),
+                    index_url: feed.index_url.trim().to_string(),
+                };
+                let now = Instant::now();
+                let cached = self
+                    .updates_cache
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .get(&key)
+                    .cloned();
+                let cache_hit = !refresh
+                    && cfg.cache_secs > 0
+                    && cached.as_ref().is_some_and(|entry| {
+                        now.saturating_duration_since(entry.fetched_at).as_secs()
+                            < u64::from(cfg.cache_secs)
+                    });
+                let index = if cache_hit {
+                    // `cache_hit` implies a cached entry was found above.
+                    cached.expect("cache_hit implies a cached entry").index
+                } else {
+                    match exchange::load_feed(&resolved, &cache_dir) {
+                        Ok(index) => {
+                            self.updates_cache
+                                .lock()
+                                .unwrap_or_else(|poison| poison.into_inner())
+                                .insert(
+                                    key,
+                                    CachedFeedIndex {
+                                        fetched_at: Instant::now(),
+                                        index: index.clone(),
+                                    },
+                                );
+                            index
+                        }
+                        Err(e) => {
+                            // Fail-soft: keep any old (expired) entry untouched so
+                            // the next request retries the fetch instead of
+                            // serving stale data as fresh.
+                            errors.push(e);
+                            continue;
                         }
                     }
-                    // `load_feed` errors already name the feed.
-                    Err(e) => errors.push(e),
+                };
+                for event in index.events {
+                    updates.push(LoadedUpdate {
+                        event,
+                        source: resolved.name.clone(),
+                        source_kind: resolved.source_kind(),
+                        exchange_dir: None,
+                        feed: Some(resolved.clone()),
+                    });
                 }
             }
         }
         (updates, errors)
     }
 
-    /// `GET /runner/updates` — update events from the local exchange dir plus
-    /// every configured update feed (P0-1a + P2/D8).
+    /// `GET /runner/updates[?refresh=1]` — update events from the local exchange
+    /// dir plus every configured update feed (P0-1a + P2/D8).
     ///
     /// The response is **always 200** (fail-soft): a broken index / notifications
     /// file, a corrupt `installed.json` or a failed feed becomes an `errors[]`
@@ -8549,7 +8644,22 @@ impl Server {
     /// Runner page stays usable. `status` is the local ACK state, `action` is
     /// derived from `installed.json` + the event version, and `download_required`
     /// marks events whose package must be fetched by `POST /runner/updates/install`.
-    fn handle_runner_updates(&self, out: &mut TcpStream) -> std::io::Result<()> {
+    ///
+    /// Feed indexes are served from the in-process TTL cache (`updates.cache_secs`,
+    /// default 60 s) so the UI's polling does not re-`curl` every remote feed;
+    /// `?refresh=1` (or `true`/`yes`) bypasses the cache. An unknown `refresh`
+    /// value is a `400` so a typo cannot silently look like "no refresh".
+    fn handle_runner_updates(
+        &self,
+        out: &mut TcpStream,
+        raw_path: &str,
+    ) -> std::io::Result<()> {
+        let query = parse_query(raw_path);
+        let refresh = match parse_refresh_flag(&query) {
+            Ok(refresh) => refresh,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let cache_secs = self.updates_config().cache_secs;
         let now = now_ms();
         if !self.update_sources_enabled() {
             let body = serde_json::json!({
@@ -8559,10 +8669,11 @@ impl Server {
                 "updates": [],
                 "last_scan_ms": now,
                 "errors": [],
+                "cache_secs": cache_secs,
             });
             return self.send_json(out, 200, &body.to_string());
         }
-        let (loaded, mut errors) = self.loaded_updates();
+        let (loaded, mut errors) = self.loaded_updates(refresh);
         let layout = self.packages_layout();
         let installed = match package_cmd::read_installed(&layout.root) {
             Ok(file) => file,
@@ -8667,6 +8778,7 @@ impl Server {
             "updates": updates,
             "last_scan_ms": now,
             "errors": errors,
+            "cache_secs": cache_secs,
         });
         if let Some(text) = error_text {
             body["error"] = serde_json::Value::String(text);
@@ -8681,9 +8793,12 @@ impl Server {
     /// `packages/remote/<event_id>.oaspkg` with the system `curl`, verified
     /// against the feed's `size_bytes`/`sha256` (a mismatch is 400 + the cache
     /// file is deleted), then installed with `force` (an explicit "install this
-    /// update" may replace a same-version reinstall). On success the event is
-    /// ACKed `installed`; an ACK write failure cannot undo the install, so it is
-    /// reported as a `warning` on the 200 response.
+    /// update" may replace a same-version reinstall). A cache entry whose
+    /// size+sha256 still match the event is reused instead of re-downloading
+    /// (`downloaded:false, reused_cache:true`); a tampered/stale entry is deleted
+    /// and downloaded again. On success the event is ACKed `installed`; an ACK
+    /// write failure cannot undo the install, so it is reported as a `warning`
+    /// on the 200 response.
     fn handle_runner_updates_install(
         &self,
         out: &mut TcpStream,
@@ -8718,7 +8833,7 @@ impl Server {
                 .with_code("bad_request"),
             );
         }
-        let (loaded, errors) = self.loaded_updates();
+        let (loaded, errors) = self.loaded_updates(false);
         let found = loaded.into_iter().find(|update| {
             let id = if update.event.event_id.trim().is_empty() {
                 &update.event.package_id
@@ -8757,7 +8872,7 @@ impl Server {
             .as_ref()
             .map(|feed| feed.timeout_ms)
             .unwrap_or_else(|| self.updates_config().fetch_timeout_ms);
-        let (package_path, downloaded) = match package_ref {
+        let (package_path, downloaded, reused_cache) = match package_ref {
             exchange::PackageRef::Local(path) => {
                 if !path.is_file() {
                     return self.send_api_failure(
@@ -8773,24 +8888,34 @@ impl Server {
                         .with_code("package_unavailable"),
                     );
                 }
-                (absolute_path(&path), false)
+                (absolute_path(&path), false, false)
             }
             exchange::PackageRef::Remote(url) => {
                 let cache_dir = absolute_path(&self.remote_cache_dir());
-                match exchange::download_package(&found.event, &url, &cache_dir, timeout_ms) {
-                    Ok(path) => (path, true),
-                    Err(e) => {
-                        self.editor_log(&format!(
-                            "runner_updates_install download failed event_id={event_id} url={url}: {e}"
-                        ));
-                        return self.send_api_failure(
-                            out,
-                            package_cmd::ApiFailure::new(
-                                e.status(),
-                                format!("download `{url}`: {e}"),
-                            )
-                            .with_code(e.code()),
-                        );
+                // P2: content-addressed events make a verified cache entry as
+                // trustworthy as a fresh download — reuse it instead of curl.
+                if let Some(cached) = exchange::reusable_cached_package(&found.event, &cache_dir) {
+                    self.editor_log(&format!(
+                        "runner_updates_install reuse cached package event_id={event_id} path={}",
+                        cached.display()
+                    ));
+                    (cached, false, true)
+                } else {
+                    match exchange::download_package(&found.event, &url, &cache_dir, timeout_ms) {
+                        Ok(path) => (path, true, false),
+                        Err(e) => {
+                            self.editor_log(&format!(
+                                "runner_updates_install download failed event_id={event_id} url={url}: {e}"
+                            ));
+                            return self.send_api_failure(
+                                out,
+                                package_cmd::ApiFailure::new(
+                                    e.status(),
+                                    format!("download `{url}`: {e}"),
+                                )
+                                .with_code(e.code()),
+                            );
+                        }
                     }
                 }
             }
@@ -8807,7 +8932,7 @@ impl Server {
             Ok(outcome) => {
                 self.editor_log(&format!(
                     "runner_updates_install event_id={event_id} source={} package_id={} task={} \
-                     version={} downloaded={downloaded}",
+                     version={} downloaded={downloaded} reused_cache={reused_cache}",
                     found.source, outcome.package_id, outcome.task_id, outcome.version
                 ));
                 let mut ack_warning = None;
@@ -8828,6 +8953,7 @@ impl Server {
                     "source": found.source,
                     "source_kind": found.source_kind,
                     "downloaded": downloaded,
+                    "reused_cache": reused_cache,
                     "package_path": package_path.display().to_string(),
                     "installed": {
                         "package_id": outcome.package_id,
@@ -8852,6 +8978,75 @@ impl Server {
                 self.send_api_failure(out, failure)
             }
         }
+    }
+
+    /// `POST /runner/updates/cache/clear` — drop every cached remote package and
+    /// every cached feed index (Runner only; empty body).
+    ///
+    /// Remote packages are content-addressed and re-verified before reuse, so
+    /// clearing is always safe: the next install simply downloads again. Useful
+    /// for the UI's "clear download cache" action and for disk housekeeping
+    /// (nothing else ever deletes `packages/remote/`).
+    fn handle_runner_updates_cache_clear(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let cache_dir = self.remote_cache_dir();
+        let mut removed_packages = 0usize;
+        match std::fs::read_dir(&cache_dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry = match entry {
+                        Ok(entry) => entry,
+                        Err(e) => {
+                            return self.send_errors(
+                                out,
+                                500,
+                                vec![format!("read {}: {e}", cache_dir.display())],
+                            )
+                        }
+                    };
+                    let path = entry.path();
+                    if !path.is_file() {
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let is_package = name.ends_with(".oaspkg");
+                    // Leftover partial downloads from a killed curl run.
+                    let is_tmp = name.starts_with('.') && name.ends_with(".tmp");
+                    if is_package || is_tmp {
+                        let removed = std::fs::remove_file(&path).is_ok();
+                        if removed && is_package {
+                            removed_packages += 1;
+                        }
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return self.send_errors(
+                    out,
+                    500,
+                    vec![format!("read {}: {e}", cache_dir.display())],
+                )
+            }
+        }
+        let feeds_cleared = {
+            let mut cache = self
+                .updates_cache
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let count = cache.len();
+            cache.clear();
+            count
+        };
+        self.editor_log(&format!(
+            "runner_updates_cache_clear removed_packages={removed_packages} \
+             feeds_cleared={feeds_cleared}"
+        ));
+        let body = serde_json::json!({
+            "ok": true,
+            "removed_packages": removed_packages,
+            "feeds_cleared": feeds_cleared,
+        });
+        self.send_json(out, 200, &body.to_string())
     }
 
     /// `POST /runner/updates/ack` body `{event_ids:[…], status:"dismissed"|
@@ -17917,16 +18112,34 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn updates_cfg(feeds: Vec<crate::config::UpdateFeed>) -> crate::config::UpdatesConfig {
+        updates_cfg_with_cache(feeds, 60)
+    }
+
+    fn updates_cfg_with_cache(
+        feeds: Vec<crate::config::UpdateFeed>,
+        cache_secs: u32,
+    ) -> crate::config::UpdatesConfig {
         crate::config::UpdatesConfig {
             enabled: true,
             fetch_timeout_ms: 3000,
+            cache_secs,
             feeds,
         }
     }
 
     /// Runner server with the local exchange explicitly OFF and only the given
-    /// update feeds configured (tests use temp dirs / a loopback fixture).
+    /// update feeds configured (tests use temp dirs / a loopback fixture). The
+    /// feed TTL cache uses the production default (60 s); use
+    /// [`updates_feed_server_with_cache`] to override it.
     fn updates_feed_server(td: &Path, feeds: Vec<crate::config::UpdateFeed>) -> Server {
+        updates_feed_server_with_cache(td, feeds, 60)
+    }
+
+    fn updates_feed_server_with_cache(
+        td: &Path,
+        feeds: Vec<crate::config::UpdateFeed>,
+        cache_secs: u32,
+    ) -> Server {
         Server::new(Adb::from_env())
             .with_surface(Surface::Runner)
             .with_tasks_dir(td.join("runner/tasks"))
@@ -17936,7 +18149,7 @@ mod tests {
             .with_notifications_path(td.join("config/notifications.json"))
             .with_editor_log(td.join("logs/editor.log"))
             .with_exchange(false, td.join("exchange"))
-            .with_updates_config(updates_cfg(feeds))
+            .with_updates_config(updates_cfg_with_cache(feeds, cache_secs))
     }
 
     fn feed_config(name: &str, index_url: &str, package_base: &str) -> crate::config::UpdateFeed {
@@ -18005,45 +18218,102 @@ mod tests {
     ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
             for _ in 0..expected {
-                let Ok((mut stream, _)) = listener.accept() else {
+                let Ok((stream, _)) = listener.accept() else {
                     return;
                 };
-                let mut reader = BufReader::new(stream.try_clone().expect("clone"));
-                let mut request_line = String::new();
-                if reader.read_line(&mut request_line).is_err() {
-                    continue;
-                }
-                // Drain the request headers before answering.
-                loop {
-                    let mut line = String::new();
-                    match reader.read_line(&mut line) {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) if line == "\r\n" || line == "\n" => break,
-                        Ok(_) => {}
-                    }
-                }
-                let path = request_line
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("/")
-                    .to_string();
-                match files.iter().find(|(file, _)| file == &path) {
-                    Some((_, bytes)) => {
-                        let head = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                            bytes.len()
-                        );
-                        let _ = stream.write_all(head.as_bytes());
-                        let _ = stream.write_all(bytes);
-                    }
-                    None => {
-                        let _ = stream.write_all(
-                            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                        );
-                    }
-                }
+                respond_fixture_request(stream, &files);
             }
         })
+    }
+
+    /// Answer one fixture request: `200` + bytes for a known path, `404` otherwise.
+    fn respond_fixture_request(mut stream: TcpStream, files: &[(String, Vec<u8>)]) {
+        let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+        let mut request_line = String::new();
+        if reader.read_line(&mut request_line).is_err() {
+            return;
+        }
+        // Drain the request headers before answering.
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) if line == "\r\n" || line == "\n" => break,
+                Ok(_) => {}
+            }
+        }
+        let path = request_line
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("/")
+            .to_string();
+        match files.iter().find(|(file, _)| file == &path) {
+            Some((_, bytes)) => {
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(bytes);
+            }
+            None => {
+                let _ = stream.write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        }
+    }
+
+    /// Loopback HTTP fixture that keeps serving until `shutdown` is set and
+    /// counts every accepted connection. Used by the TTL-cache and download-reuse
+    /// tests to assert the exact number of `curl` calls without racing a fixed
+    /// accept budget (which would deadlock a failing test). The listener is bound
+    /// by the caller so the fixture URL can be embedded in the feed index first.
+    fn counting_http_fixture(
+        listener: TcpListener,
+        files: Vec<(String, Vec<u8>)>,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+        let addr = listener.local_addr().expect("fixture addr");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking fixture");
+        let count = std::sync::Arc::new(AtomicUsize::new(0));
+        let shutdown = std::sync::Arc::new(AtomicBool::new(false));
+        let count_thread = count.clone();
+        let shutdown_thread = shutdown.clone();
+        let handle = std::thread::spawn(move || loop {
+            if shutdown_thread.load(AtomicOrdering::Relaxed) {
+                return;
+            }
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    count_thread.fetch_add(1, AtomicOrdering::Relaxed);
+                    respond_fixture_request(stream, &files);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(_) => return,
+            }
+        });
+        (format!("http://{addr}"), count, shutdown, handle)
+    }
+
+    /// Stop a [`counting_http_fixture`] and return the request count.
+    fn fixture_requests(
+        shutdown: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+        handle: std::thread::JoinHandle<()>,
+        count: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> usize {
+        shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+        handle.join().expect("fixture thread");
+        count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Convenience wrapper: bind an ephemeral port and serve `files` there —
@@ -18213,6 +18483,10 @@ mod tests {
         assert_eq!(v["source"], "local-feed");
         assert_eq!(v["source_kind"], "local");
         assert_eq!(v["downloaded"], false);
+        assert_eq!(
+            v["reused_cache"], false,
+            "a local package never touches the download cache: {v}"
+        );
         assert_eq!(v["installed"]["task_id"], "本地安装");
         assert_eq!(v["installed"]["version"], 1);
         assert!(
@@ -18273,8 +18547,9 @@ mod tests {
                 ),
                 ("/remote-pkg.oaspkg".to_string(), pkg_bytes),
             ],
-            // GET /runner/updates (feed) + install (feed + package download).
-            3,
+            // GET /runner/updates (feed fetch) + install (package download; the
+            // feed index is already TTL-cached by the GET above).
+            2,
         );
         let runner = updates_feed_server(
             td.path(),
@@ -18653,5 +18928,463 @@ mod tests {
         let (status, body) = get_route(&server, "/task/lint?task=全局素材任务");
         assert!(status.contains("400"), "{status} {body}");
         assert!(body.contains("assets.json"), "{body}");
+    }
+
+    // -----------------------------------------------------------------------
+    // P2: update-feed TTL cache + remote package cache reuse / clear
+    // -----------------------------------------------------------------------
+
+    /// One GET /runner/updates whose body is parsed (asserts 200).
+    fn updates_body(server: &Server, target: &str) -> serde_json::Value {
+        let (status, body) = get_route(server, target);
+        assert!(status.contains("200"), "{target}: {status} {body}");
+        serde_json::from_str(&body).expect("updates JSON")
+    }
+
+    fn updates_event_ids(body: &serde_json::Value) -> Vec<String> {
+        let mut ids: Vec<String> = body["updates"]
+            .as_array()
+            .expect("updates array")
+            .iter()
+            .map(|row| row["event_id"].as_str().unwrap_or_default().to_string())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    fn cache_clear_request(runner: &Server) -> (String, String) {
+        post_route(
+            runner,
+            "/runner/updates/cache/clear",
+            "application/json",
+            b"",
+        )
+    }
+
+    #[test]
+    fn updates_feed_ttl_cache_hits_and_refresh_bypasses_it() {
+        if !exchange::curl_available() {
+            eprintln!(
+                "skip updates_feed_ttl_cache_hits_and_refresh_bypasses_it: curl not available"
+            );
+            return;
+        }
+        let td = TempDir::new("updates-ttl-hit");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        let mut index = exchange::PublishIndex::default();
+        index.events = vec![feed_event(
+            "pkg-TTL-1-aaa",
+            "TTL任务",
+            1,
+            0,
+            &"a".repeat(64),
+            "ttl.oaspkg",
+            Some(&format!("{base}/ttl.oaspkg")),
+        )];
+        index.seq = 1;
+        let (_base, count, shutdown, handle) = counting_http_fixture(
+            listener,
+            vec![(
+                "/feed.json".to_string(),
+                serde_json::to_vec(&index).expect("serialize feed"),
+            )],
+        );
+        let runner = updates_feed_server_with_cache(
+            td.path(),
+            vec![feed_config("ttl-feed", &format!("{base}/feed.json"), "")],
+            60,
+        );
+
+        // First request fetches the URL feed once and caches the index.
+        let v = updates_body(&runner, "/runner/updates");
+        assert_eq!(updates_event_ids(&v), vec!["pkg-TTL-1-aaa"]);
+        assert_eq!(v["cache_secs"], 60, "{v}");
+        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        // Within the TTL: cache hit, no second curl.
+        let v = updates_body(&runner, "/runner/updates");
+        assert_eq!(updates_event_ids(&v), vec!["pkg-TTL-1-aaa"]);
+        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        // `refresh=0` is an explicit cache hit too, and a typo is a 400 (it must
+        // never silently look like "no refresh").
+        let _ = updates_body(&runner, "/runner/updates?refresh=0");
+        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let (status, body) = get_route(&runner, "/runner/updates?refresh=maybe");
+        assert!(status.contains("400"), "{status} {body}");
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "a bad refresh value must not trigger a fetch"
+        );
+
+        // `refresh=1` bypasses the TTL cache.
+        let v = updates_body(&runner, "/runner/updates?refresh=1");
+        assert_eq!(updates_event_ids(&v), vec!["pkg-TTL-1-aaa"]);
+        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 2);
+
+        assert_eq!(fixture_requests(&shutdown, handle, &count), 2);
+    }
+
+    #[test]
+    fn updates_feed_cache_zero_never_caches() {
+        if !exchange::curl_available() {
+            eprintln!("skip updates_feed_cache_zero_never_caches: curl not available");
+            return;
+        }
+        let td = TempDir::new("updates-ttl-zero");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        let mut index = exchange::PublishIndex::default();
+        index.events = vec![feed_event(
+            "pkg-ZERO-1-aaa",
+            "ZERO任务",
+            1,
+            0,
+            &"a".repeat(64),
+            "zero.oaspkg",
+            None,
+        )];
+        index.seq = 1;
+        let (_base, count, shutdown, handle) = counting_http_fixture(
+            listener,
+            vec![(
+                "/feed.json".to_string(),
+                serde_json::to_vec(&index).expect("serialize feed"),
+            )],
+        );
+        let runner = updates_feed_server_with_cache(
+            td.path(),
+            vec![feed_config("zero-feed", &format!("{base}/feed.json"), "")],
+            0,
+        );
+        let _ = updates_body(&runner, "/runner/updates");
+        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let v = updates_body(&runner, "/runner/updates");
+        assert_eq!(v["cache_secs"], 0);
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "cache_secs=0 must fetch on every request"
+        );
+        assert_eq!(fixture_requests(&shutdown, handle, &count), 2);
+    }
+
+    #[test]
+    fn updates_feed_cache_serves_stale_local_index_until_refresh_or_expiry() {
+        let td = TempDir::new("updates-ttl-local");
+        let feed_dir = td.path().join("feed");
+        let index_path = feed_dir.join("publish-index.json");
+        write_feed_index(
+            &index_path,
+            vec![test_publish_event(
+                "pkg-OLD-1-aaa",
+                "T",
+                1,
+                "T-v1.oaspkg",
+                100,
+            )],
+        );
+        let index_url = index_path
+            .to_str()
+            .expect("utf8 temp path")
+            .to_string();
+        let runner = updates_feed_server_with_cache(
+            td.path(),
+            vec![feed_config("local-ttl", &index_url, "")],
+            60,
+        );
+        assert_eq!(
+            updates_event_ids(&updates_body(&runner, "/runner/updates")),
+            vec!["pkg-OLD-1-aaa"]
+        );
+
+        // Rewrite the local index: a TTL hit must NOT re-read the file.
+        write_feed_index(
+            &index_path,
+            vec![
+                test_publish_event("pkg-NEW-1-bbb", "T", 1, "T-v1.oaspkg", 200),
+                test_publish_event("pkg-NEW2-1-ccc", "T", 1, "T-v1.oaspkg", 201),
+            ],
+        );
+        assert_eq!(
+            updates_event_ids(&updates_body(&runner, "/runner/updates")),
+            vec!["pkg-OLD-1-aaa"],
+            "TTL hit must serve the cached index"
+        );
+
+        // refresh=1 re-reads the file.
+        assert_eq!(
+            updates_event_ids(&updates_body(&runner, "/runner/updates?refresh=1")),
+            vec!["pkg-NEW-1-bbb", "pkg-NEW2-1-ccc"]
+        );
+
+        // Simulate the TTL elapsing (without sleeping): age the cached entry and
+        // rewrite the file; a plain request must refetch.
+        write_feed_index(
+            &index_path,
+            vec![test_publish_event(
+                "pkg-EXPIRED-1-ddd",
+                "T",
+                1,
+                "T-v1.oaspkg",
+                300,
+            )],
+        );
+        {
+            let key = FeedCacheKey {
+                name: "local-ttl".to_string(),
+                index_url: index_url.clone(),
+            };
+            let mut cache = runner
+                .updates_cache
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let entry = cache.get_mut(&key).expect("cached feed entry");
+            entry.fetched_at = Instant::now() - std::time::Duration::from_secs(120);
+        }
+        assert_eq!(
+            updates_event_ids(&updates_body(&runner, "/runner/updates")),
+            vec!["pkg-EXPIRED-1-ddd"],
+            "an expired cache entry must be refetched"
+        );
+        // ...and the refreshed entry is cached again (an immediate repeat hits it).
+        write_feed_index(
+            &index_path,
+            vec![test_publish_event(
+                "pkg-AFTER-1-eee",
+                "T",
+                1,
+                "T-v1.oaspkg",
+                400,
+            )],
+        );
+        assert_eq!(
+            updates_event_ids(&updates_body(&runner, "/runner/updates")),
+            vec!["pkg-EXPIRED-1-ddd"],
+            "refetching refreshes the TTL"
+        );
+    }
+
+    #[test]
+    fn updates_feed_failure_is_retried_on_the_next_request() {
+        let td = TempDir::new("updates-retry");
+        let feed_dir = td.path().join("feed");
+        let index_path = feed_dir.join("publish-index.json");
+        let index_url = index_path
+            .to_str()
+            .expect("utf8 temp path")
+            .to_string();
+        let runner = updates_feed_server(
+            td.path(),
+            vec![feed_config(
+                "retry-feed",
+                &index_url,
+                &td.path().join("pkgs").display().to_string(),
+            )],
+        );
+
+        // Missing index: fail-soft error, no rows, and no cache entry.
+        let v = updates_body(&runner, "/runner/updates");
+        assert_eq!(v["updates"], serde_json::json!([]));
+        let errors = v["errors"].as_array().expect("errors");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.as_str().unwrap_or_default().contains("retry-feed")),
+            "{errors:?}"
+        );
+
+        // Creating the index makes the very next request succeed: a failed fetch
+        // is reported but never cached as "fresh".
+        write_feed_index(
+            &index_path,
+            vec![test_publish_event(
+                "pkg-RETRY-1-aaa",
+                "T",
+                1,
+                "T-v1.oaspkg",
+                100,
+            )],
+        );
+        let v = updates_body(&runner, "/runner/updates");
+        assert_eq!(updates_event_ids(&v), vec!["pkg-RETRY-1-aaa"], "{v}");
+        assert_eq!(v["errors"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn updates_install_reuses_the_verified_remote_package_cache() {
+        if !exchange::curl_available() {
+            eprintln!(
+                "skip updates_install_reuses_the_verified_remote_package_cache: curl not available"
+            );
+            return;
+        }
+        let td = TempDir::new("updates-install-reuse");
+        let pkg = build_feed_package(td.path(), "复用安装");
+        let pkg_bytes = std::fs::read(&pkg.path).expect("package bytes");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        let event_id = "pkg-REUSE-1-abc123abc123";
+        let mut index = exchange::PublishIndex::default();
+        index.events = vec![feed_event(
+            event_id,
+            "复用安装",
+            1,
+            pkg_bytes.len() as u64,
+            &pkg.sha256,
+            "reuse.oaspkg",
+            Some(&format!("{base}/reuse.oaspkg")),
+        )];
+        index.seq = 1;
+        let (_base, count, shutdown, handle) = counting_http_fixture(
+            listener,
+            vec![
+                (
+                    "/feed.json".to_string(),
+                    serde_json::to_vec(&index).expect("serialize feed"),
+                ),
+                ("/reuse.oaspkg".to_string(), pkg_bytes.clone()),
+            ],
+        );
+        let runner = updates_feed_server_with_cache(
+            td.path(),
+            vec![feed_config("reuse-feed", &format!("{base}/feed.json"), "")],
+            60,
+        );
+        let install = |runner: &Server| -> serde_json::Value {
+            let request = serde_json::json!({"event_id": event_id}).to_string();
+            let (status, body) = post_route(
+                runner,
+                "/runner/updates/install",
+                "application/json",
+                request.as_bytes(),
+            );
+            assert!(status.contains("200"), "{status} {body}");
+            serde_json::from_str(&body).expect("install JSON")
+        };
+
+        // First install: feed fetch + one package download.
+        let first = install(&runner);
+        assert_eq!(first["downloaded"], true, "{first}");
+        assert_eq!(first["reused_cache"], false, "{first}");
+        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 2);
+
+        // Second install of the same event: feed index from the TTL cache and the
+        // verified package from `packages/remote/` — zero network requests.
+        let second = install(&runner);
+        assert_eq!(second["downloaded"], false, "{second}");
+        assert_eq!(second["reused_cache"], true, "{second}");
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "a verified cache must be reused without curl"
+        );
+
+        // Tampering with the cached package must be detected on the next install:
+        // the stale file is deleted and the package is downloaded again.
+        let cached = td
+            .path()
+            .join("runner/packages/remote")
+            .join(exchange::cache_file_name(event_id));
+        assert!(cached.is_file(), "{}", cached.display());
+        std::fs::write(&cached, b"tampered-cache").expect("tamper cache");
+        let third = install(&runner);
+        assert_eq!(third["downloaded"], true, "{third}");
+        assert_eq!(third["reused_cache"], false, "{third}");
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::Relaxed),
+            3,
+            "a tampered cache must be re-downloaded exactly once"
+        );
+        assert_eq!(
+            oas_task::package::sha256_file(&cached).expect("cache sha"),
+            pkg.sha256,
+            "the re-downloaded cache is verified again"
+        );
+        assert_eq!(fixture_requests(&shutdown, handle, &count), 3);
+    }
+
+    #[test]
+    fn updates_cache_clear_drops_packages_and_feed_cache() {
+        let td = TempDir::new("updates-cache-clear");
+        let feed_dir = td.path().join("feed");
+        let index_path = feed_dir.join("publish-index.json");
+        write_feed_index(
+            &index_path,
+            vec![test_publish_event(
+                "pkg-A-1-aaa",
+                "T",
+                1,
+                "T-v1.oaspkg",
+                100,
+            )],
+        );
+        let index_url = index_path
+            .to_str()
+            .expect("utf8 temp path")
+            .to_string();
+        let runner = updates_feed_server(
+            td.path(),
+            vec![feed_config("clear-feed", &index_url, "")],
+        );
+        // Prime the feed index cache.
+        assert_eq!(
+            updates_event_ids(&updates_body(&runner, "/runner/updates")),
+            vec!["pkg-A-1-aaa"]
+        );
+        // One cached remote package + a leftover partial download.
+        let remote = td.path().join("runner/packages/remote");
+        std::fs::create_dir_all(&remote).unwrap();
+        std::fs::write(remote.join("pkg-X-1-aaa.oaspkg"), b"x").unwrap();
+        std::fs::write(remote.join(".pkg-dead.tmp"), b"x").unwrap();
+
+        let (status, body) = cache_clear_request(&runner);
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("clear JSON");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["removed_packages"], 1, "{v}");
+        assert_eq!(v["feeds_cleared"], 1, "{v}");
+        assert!(!remote.join("pkg-X-1-aaa.oaspkg").exists());
+        assert!(!remote.join(".pkg-dead.tmp").exists());
+
+        // Clearing an empty cache is an idempotent no-op.
+        let (status, body) = cache_clear_request(&runner);
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("clear JSON");
+        assert_eq!(v["removed_packages"], 0, "{v}");
+        assert_eq!(v["feeds_cleared"], 0, "{v}");
+
+        // The feed cache was really cleared: the index was rewritten meanwhile, so
+        // a plain GET (well inside the TTL) must see the new event.
+        write_feed_index(
+            &index_path,
+            vec![test_publish_event(
+                "pkg-B-1-bbb",
+                "T",
+                1,
+                "T-v1.oaspkg",
+                200,
+            )],
+        );
+        assert_eq!(
+            updates_event_ids(&updates_body(&runner, "/runner/updates")),
+            vec!["pkg-B-1-bbb"]
+        );
+
+        // Runner-only + surface gate.
+        assert_eq!(
+            route_owner("POST", "/runner/updates/cache/clear"),
+            Some(RouteOwner::Runner)
+        );
+        assert_eq!(
+            required_surface("POST", "/runner/updates/cache/clear"),
+            Some(Surface::Runner)
+        );
+        let studio = studio_pkg_server(td.path());
+        let (status, body) =
+            post_route(&studio, "/runner/updates/cache/clear", "application/json", b"");
+        assert!(status.contains("404"), "studio cache clear: {status} {body}");
     }
 }

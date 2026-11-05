@@ -1261,3 +1261,25 @@ aside.side {
 
 /* 近似提示：权威面板存在时降权显示（仅在后端不可用时出现） */
 .builder-param-issues.approx { opacity: 0.8; }
+
+/* ===== P6：requires/expect 守卫 + drag from/to 端点的 OCR 文字来源 ===== */
+.builder-guard-hint {
+  color: #9aa0aa;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.builder-drag-endpoint {
+  border-style: dashed;
+  background: #14181e;
+}
+
+.builder-drag-endpoint .builder-text-source,
+.builder-subform .builder-text-source {
+  margin-top: 4px;
+}
+
+.builder-drag-endpoint > .muted.small {
+  color: #8fb8e8;
+}

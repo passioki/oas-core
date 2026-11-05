@@ -134,6 +134,12 @@ pub struct UpdatesConfig {
     pub enabled: bool,
     /// Per-feed `curl` timeout in ms (`100..=30000`).
     pub fetch_timeout_ms: u32,
+    /// How long a successfully fetched feed index may be served from the
+    /// in-process cache before it is fetched again (`0..=3600`; `0` = no cache).
+    /// Default 60 s: the Runner UI polls `/runner/updates` every few seconds, so
+    /// without a TTL every remote feed would be re-`curl`ed on every poll. A
+    /// manual `GET /runner/updates?refresh=1` always bypasses it.
+    pub cache_secs: u32,
     /// Ordered feed list (the Runner lists feeds in this order; the exchange,
     /// when enabled, always comes first).
     pub feeds: Vec<UpdateFeed>,
@@ -144,6 +150,7 @@ impl Default for UpdatesConfig {
         Self {
             enabled: false,
             fetch_timeout_ms: 8000,
+            cache_secs: 60,
             feeds: Vec::new(),
         }
     }
@@ -435,6 +442,12 @@ impl OasConfig {
             return Err(format!(
                 "updates.fetch_timeout_ms must be 100..=30000, got {}",
                 self.updates.fetch_timeout_ms
+            ));
+        }
+        if self.updates.cache_secs > 3600 {
+            return Err(format!(
+                "updates.cache_secs must be 0..=3600, got {}",
+                self.updates.cache_secs
             ));
         }
         if self.updates.enabled {
@@ -824,6 +837,7 @@ mod tests {
         assert_eq!(c.updates, UpdatesConfig::default());
         assert!(!c.updates.enabled, "update feeds must stay opt-in");
         assert_eq!(c.updates.fetch_timeout_ms, 8000);
+        assert_eq!(c.updates.cache_secs, 60, "feed index TTL defaults to 60 s");
         assert!(c.updates.feeds.is_empty());
         let json = serde_json::to_value(&c).expect("serialize");
         assert!(
@@ -835,7 +849,7 @@ mod tests {
     #[test]
     fn parses_and_validates_update_feeds() {
         let c = OasConfig::from_json(
-            r#"{"updates":{"enabled":true,"fetch_timeout_ms":3000,"feeds":[
+            r#"{"updates":{"enabled":true,"fetch_timeout_ms":3000,"cache_secs":240,"feeds":[
                 {"name":"github","index_url":"https://example.com/feed/publish-index.json","package_base":"https://example.com/feed/"},
                 {"name":"local","index_url":"D:/shared/exchange/publish-index.json","package_base":"D:/shared/exchange"}
             ]}}"#,
@@ -843,10 +857,15 @@ mod tests {
         .expect("updates section parses");
         assert!(c.updates.enabled);
         assert_eq!(c.updates.fetch_timeout_ms, 3000);
+        assert_eq!(c.updates.cache_secs, 240);
         assert_eq!(c.updates.feeds.len(), 2);
         assert_eq!(c.updates.feeds[1].name, "local");
         assert!(c.updates.feeds[1].enabled, "feed.enabled defaults to true");
         assert_eq!(c.updates.feeds[1].package_base, "D:/shared/exchange");
+        // cache_secs 0 = "no caching" is a valid explicit choice.
+        assert!(OasConfig::from_json(r#"{"updates":{"cache_secs":0}}"#).is_ok());
+        assert!(OasConfig::from_json(r#"{"updates":{"cache_secs":3600}}"#).is_ok());
+        assert!(OasConfig::from_json(r#"{"updates":{"cache_secs":3601}}"#).is_err());
 
         // Global enabled => feeds required; names non-empty and unique.
         assert!(OasConfig::from_json(r#"{"updates":{"enabled":true}}"#).is_err());

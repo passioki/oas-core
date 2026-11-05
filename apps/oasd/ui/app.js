@@ -185,6 +185,9 @@ let taskConfigBusy = false;
 // P3: builder.js (loaded BEFORE app.js) opens this dialog at runtime through
 // window.OAS_TASK_CONFIG and is told when a save succeeded so its panel refreshes.
 let taskConfigOnSaved = null;
+// P6: T3「去声明…」prefill ({key,type,label,group}) applied right after the
+// schema GET resolves; cleared by every open/close path.
+let taskConfigPrefillParam = null;
 // PR5: 发布任务包（Studio-only）。只产出 .oaspkg；安装/卸载/回滚在 Runner。
 const taskPublishDialog = document.getElementById('task-publish-dialog');
 const taskPublishOut = document.getElementById('task-publish-out');
@@ -874,8 +877,105 @@ function taskConfigSummary(params) {
   return text.length > 120 ? text.slice(0, 119) + '…' : text;
 }
 
+// P6: append one T3「去声明…」prefill entry to the current meta.params JSON text.
+// Append-only: an entry with the same key is never duplicated. Bad JSON / a
+// non-array document degrades to「保留原文本 + error」so the user's edit is intact.
+function taskConfigMergePrefill(text, prefillParam) {
+  const original = String(text === undefined || text === null ? '' : text);
+  const p = prefillParam && typeof prefillParam === 'object' && !Array.isArray(prefillParam)
+    ? prefillParam
+    : null;
+  const key = p && p.key !== undefined && p.key !== null ? String(p.key).trim() : '';
+  if (!key) {
+    return { ok: false, text: original, appended: false, duplicate: false, error: '缺少参数 key' };
+  }
+  const entry = {
+    key: key,
+    type: p.type !== undefined && p.type !== null && String(p.type).trim() !== ''
+      ? String(p.type).trim()
+      : 'text',
+    label: p.label !== undefined && p.label !== null && String(p.label).trim() !== ''
+      ? String(p.label).trim()
+      : key,
+  };
+  if (p.group !== undefined && p.group !== null && String(p.group).trim() !== '') {
+    entry.group = String(p.group).trim();
+  }
+  if (p.role !== undefined && p.role !== null && String(p.role).trim() !== '') {
+    entry.role = String(p.role).trim();
+  }
+  if (Object.prototype.hasOwnProperty.call(p, 'default') &&
+      p.default !== undefined && p.default !== null) {
+    entry.default = p.default;
+  }
+  let parsed;
+  if (original.trim() === '') {
+    parsed = [];
+  } else {
+    try {
+      parsed = JSON.parse(original);
+    } catch (e) {
+      return {
+        ok: false,
+        text: original,
+        appended: false,
+        duplicate: false,
+        error: 'JSON 解析失败：' + (e && e.message ? e.message : e),
+      };
+    }
+  }
+  if (!Array.isArray(parsed)) {
+    return { ok: false, text: original, appended: false, duplicate: false, error: 'meta.params 必须是 JSON 数组' };
+  }
+  for (const item of parsed) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const itemKey = item.key === undefined || item.key === null ? '' : String(item.key).trim();
+    if (itemKey === key) {
+      return {
+        ok: true,
+        text: original,
+        appended: false,
+        duplicate: true,
+        key: key,
+        error: '',
+      };
+    }
+  }
+  const next = parsed.concat([taskConfigNormalizeParam(entry)]);
+  return {
+    ok: true,
+    text: taskConfigParamsToJson(next),
+    appended: true,
+    duplicate: false,
+    key: key,
+    error: '',
+  };
+}
+
+// Consume one pending prefill once the schema textarea has been populated.
+function applyTaskConfigPrefill() {
+  const prefill = taskConfigPrefillParam;
+  if (!prefill) return;
+  taskConfigPrefillParam = null;
+  const current = taskConfigJson ? taskConfigJson.value : '';
+  const merged = taskConfigMergePrefill(current, prefill);
+  if (merged.error) {
+    if (taskConfigError) taskConfigError.textContent = '预填参数失败（保留原 JSON）：' + merged.error;
+    return;
+  }
+  if (taskConfigJson) taskConfigJson.value = merged.text;
+  if (merged.duplicate) {
+    if (taskConfigStatus) taskConfigStatus.textContent += ' · 参数「' + merged.key + '」已存在，未重复添加';
+    return;
+  }
+  if (taskConfigStatus) {
+    taskConfigStatus.textContent += ' · 已预填参数「' + merged.key + '」（type/label 可再改后保存）';
+  }
+}
+
 function closeTaskConfigDialog() {
   if (!taskConfigDialog) return;
+  taskConfigPrefillParam = null;
   if (typeof taskConfigDialog.close === 'function') {
     if (taskConfigDialog.open) taskConfigDialog.close();
   } else {
@@ -898,9 +998,13 @@ async function loadTaskConfig(task) {
     if (taskConfigJson) taskConfigJson.value = taskConfigParamsToJson(params);
     if (taskConfigStatus) taskConfigStatus.textContent = '已加载：' + taskConfigSummary(params);
     if (taskConfigError) taskConfigError.textContent = '';
+    // P6: append the pending T3 prefill entry (append + same-key dedupe; bad
+    // JSON keeps the loaded text and shows the error instead of throwing).
+    applyTaskConfigPrefill();
     if (taskConfigSave) taskConfigSave.disabled = false;
   } catch (e) {
     if (taskConfigTask !== task) return;
+    taskConfigPrefillParam = null;
     if (taskConfigError) taskConfigError.textContent = '配置项读取异常：' + e;
     if (taskConfigStatus) taskConfigStatus.textContent = '读取失败';
   }
@@ -911,6 +1015,8 @@ function openTaskConfigDialog(task) {
   if (!taskConfigDialog || !name) return;
   taskConfigTask = name;
   taskConfigBusy = false;
+  // P6: a non-builder open never reuses a stale prefill from a previous bridge call.
+  taskConfigPrefillParam = null;
   if (taskConfigTitle) taskConfigTitle.textContent = '任务配置项 · ' + name;
   if (taskConfigJson) taskConfigJson.value = '';
   if (taskConfigError) taskConfigError.textContent = '';
@@ -925,10 +1031,17 @@ function openTaskConfigDialog(task) {
 }
 
 async function openTaskConfigDialogForBuilder(task, opts) {
+  const o = opts && typeof opts === 'object' ? opts : {};
+  // openTaskConfigDialog() clears pending prefills; install the builder hooks
+  // right after it, but before loadTaskConfig()'s async GET resolves.
+  taskConfigPrefillParam = null;
   openTaskConfigDialog(task);
-  // Install the builder callback after opening; it lives until the user actually
-  // saves (cancel/reopen keeps it harmless: the callback guards the task name).
-  taskConfigOnSaved = opts && typeof opts.onSaved === 'function' ? opts.onSaved : null;
+  taskConfigPrefillParam = o.prefillParam && typeof o.prefillParam === 'object'
+    ? o.prefillParam
+    : null;
+  // The saved callback lives until the user actually saves (cancel/reopen keeps
+  // it harmless: the callback guards the task name).
+  taskConfigOnSaved = typeof o.onSaved === 'function' ? o.onSaved : null;
 }
 
 // Plain read for the builder params panel: returns the raw meta.params schema.
@@ -944,6 +1057,9 @@ async function fetchTaskConfigParams(task) {
 // P3: runtime bridge used by builder.js (which loads earlier than app.js, so it
 // must read window.OAS_TASK_CONFIG lazily). Studio is still the only schema
 // editor: the dialog writes meta.params through POST /task/config.
+// P6: open(task, {onSaved, prefillParam}) — prefillParam ({key,type,label,group})
+// is appended to the loaded meta.params JSON (same key never duplicated; bad
+// JSON keeps the text and shows an error).
 window.OAS_TASK_CONFIG = {
   open: openTaskConfigDialogForBuilder,
   refresh: fetchTaskConfigParams,

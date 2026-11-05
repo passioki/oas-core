@@ -790,7 +790,7 @@ pub fn download_package(
             cache_dir.display()
         ))
     })?;
-    let dest = cache_dir.join(cache_file_name(&event.event_id));
+    let dest = cached_package_path(cache_dir, &event.event_id);
     let tmp = unique_tmp_path(cache_dir, "pkg");
     if let Err(e) = fetch_to_file(url, &tmp, timeout_ms, MAX_PACKAGE_BYTES) {
         let _ = std::fs::remove_file(&tmp);
@@ -832,6 +832,45 @@ pub fn download_package(
         ))
     })?;
     Ok(dest)
+}
+
+/// Path of the cached remote package for one event
+/// (`<packages>/remote/<safe-event-id>.oaspkg`).
+pub fn cached_package_path(cache_dir: &Path, event_id: &str) -> PathBuf {
+    cache_dir.join(cache_file_name(event_id))
+}
+
+/// Reuse an already downloaded remote package when it still matches the event.
+///
+/// Remote feeds are content-addressed (`sha256` travels in the event), so a
+/// verified cache entry is exactly as trustworthy as a fresh download — this is
+/// what makes a second `POST /runner/updates/install` of the same event work
+/// offline / without re-`curl`ing. A mismatching or tampered file is **deleted**
+/// (never installed) so the caller re-downloads cleanly; `None` = "download it".
+///
+/// An event without a valid 64-hex sha256 is never reused: `download_package`
+/// reports `sha256_missing` loudly instead of trusting an unverifiable cache.
+pub fn reusable_cached_package(event: &PublishEvent, cache_dir: &Path) -> Option<PathBuf> {
+    let expected_sha = event.sha256.trim();
+    if !is_sha256_hex(expected_sha) {
+        return None;
+    }
+    let path = cached_package_path(cache_dir, &event.event_id);
+    if !path.is_file() {
+        return None;
+    }
+    let size_ok = std::fs::metadata(&path)
+        .map(|meta| event.size_bytes == 0 || meta.len() == event.size_bytes)
+        .unwrap_or(false);
+    let sha_ok = oas_task::package::sha256_file(&path)
+        .map(|sha| sha.eq_ignore_ascii_case(expected_sha))
+        .unwrap_or(false);
+    if size_ok && sha_ok {
+        return Some(path);
+    }
+    // Stale/tampered cache: remove it so the next download starts from zero.
+    let _ = std::fs::remove_file(&path);
+    None
 }
 
 /// Filesystem-safe cache name for one event id (the content-addressed suffix is
@@ -1658,5 +1697,60 @@ mod tests {
         );
         assert_eq!(cache_file_name(""), "event.oaspkg");
         assert_eq!(cache_file_name("../x"), ".._x.oaspkg");
+    }
+
+    #[test]
+    fn reusable_cached_package_requires_matching_size_and_sha256() {
+        let td = TempDir::new("reuse-cache");
+        let cache_dir = td.path().join("remote");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let bytes = b"verified-package-bytes";
+        let mut ev = event("pkg-任务-1-abc123abc123", 1);
+        ev.size_bytes = bytes.len() as u64;
+        ev.sha256 = sha256(bytes);
+        let path = cached_package_path(&cache_dir, &ev.event_id);
+        assert_eq!(
+            path,
+            cache_dir.join(cache_file_name(&ev.event_id)),
+            "cache path helper is the documented one"
+        );
+
+        // Missing file -> download.
+        assert_eq!(reusable_cached_package(&ev, &cache_dir), None);
+
+        // Matching size+sha -> reuse, file stays.
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(
+            reusable_cached_package(&ev, &cache_dir),
+            Some(path.clone())
+        );
+        assert!(path.is_file());
+
+        // Tampered content (same size) -> deleted, download again.
+        std::fs::write(&path, b"verified-package-byteZ").unwrap();
+        assert_eq!(reusable_cached_package(&ev, &cache_dir), None);
+        assert!(!path.exists(), "a sha-mismatched cache must be deleted");
+
+        // Wrong size -> deleted.
+        std::fs::write(&path, b"short").unwrap();
+        assert_eq!(reusable_cached_package(&ev, &cache_dir), None);
+        assert!(!path.exists(), "a size-mismatched cache must be deleted");
+
+        // An event without a verifiable sha256 is never reused (the download
+        // path reports sha256_missing instead); a stray file is left alone so
+        // the user can inspect/repair it.
+        std::fs::write(&path, bytes).unwrap();
+        let mut no_sha = ev.clone();
+        no_sha.sha256 = String::new();
+        assert_eq!(reusable_cached_package(&no_sha, &cache_dir), None);
+        assert!(path.is_file(), "unverifiable events must not delete files");
+
+        // size_bytes == 0 means "feed did not declare it": sha is authoritative.
+        let mut no_size = ev.clone();
+        no_size.size_bytes = 0;
+        assert_eq!(
+            reusable_cached_package(&no_size, &cache_dir),
+            Some(path.clone())
+        );
     }
 }

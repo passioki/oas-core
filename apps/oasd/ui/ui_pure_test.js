@@ -45,6 +45,11 @@
 //     offer 去声明… through the task-config dialog bridge (auto re-check on save),
 //     and the approximate param hint collapses once the authoritative result
 //     exists (missing backend route degrades to 权威检查不可用).
+//   - P6 params editing gaps: requires/expect guards and drag from/to endpoints
+//     share the locator「文字来源」tri-state (text / text_expr param / expression,
+//     mutually exclusive, unknown fields preserved), and T3 去声明 prefills the
+//     missing ParamDecl into the config dialog JSON (append-only, same key
+//     deduped, bad JSON degrades to the untouched text).
 'use strict';
 
 const fs = require('fs');
@@ -206,6 +211,8 @@ const PURE_FUNCTIONS = [
   'taskConfigParamsToJson',
   'parseTaskConfigParamsText',
   'taskConfigSummary',
+  // P6: T3「去声明…」prefill merge (append-only, same-key dedupe, bad-JSON degrade).
+  'taskConfigMergePrefill',
   // PR5: Studio-side TaskPackage publish body / summary / error rendering.
   'publishRequestBody',
   'formatPackageSummary',
@@ -258,6 +265,7 @@ const {
   taskConfigParamsToJson,
   parseTaskConfigParamsText,
   taskConfigSummary,
+  taskConfigMergePrefill,
   publishRequestBody,
   formatPackageSummary,
   publishErrorsText,
@@ -3772,13 +3780,15 @@ ok(
   'generic expression fields are detected from EXPR_FIELDS'
 );
 ok(
-  /文字来源（text \/ text_expr 互斥）/.test(builderSource),
-  'the locator editor labels the three-way text source'
+  /文字来源（text \/ text_expr 互斥）/.test(builderSource) &&
+    /function locatorTextSourceFields\(base, onChange\)/.test(builderSource),
+  'the locator editor labels the three-way text source and is shared'
 );
 ok(
-  /written = paramSourceApply\(next, mode, value\);/.test(builderSource) &&
-    /paramSourceApply\(next, mode, value\)\]\.concat\(find\.slice\(1\)\)/.test(builderSource),
-  'structuredClickTarget writes the tri-state through paramSourceApply (mutual exclusion)'
+  /written = paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource) &&
+    /step\.args\[field\] = paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource) &&
+    /step\.args\[side\] = paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource),
+  'find / guards / drag endpoints all write the OCR text tri-state through paramSourceApply'
 );
 ok(
   /const base = find\[0\] && typeof find\[0\] === 'object'/.test(builderSource) &&
@@ -3812,9 +3822,10 @@ ok(
   'the locator editor renders through textContent only'
 );
 ok(
-  /expect\/requires 的 OCR 文字 text_expr 也在高级 JSON 里写/.test(builderSource) &&
-    /OCR 端点的 text_expr、其它 from\/to 形态用下方高级 JSON/.test(builderSource),
-  'the structured editors name the OCR text_expr fields that stay advanced-JSON only'
+  /多定位器\/内联 ROI 用下方高级 JSON/.test(builderSource) &&
+    /非 OCR 守卫请用高级 JSON 编辑/.test(builderSource) &&
+    /非 OCR 端点请用高级 JSON 编辑/.test(builderSource),
+  'the structured editors name what still stays advanced-JSON only (multi-locator / non-OCR)'
 );
 
 // app.js bridge: loaded after builder.js, so it must be a runtime window hook.
@@ -4003,8 +4014,8 @@ ok(
   'T3 rows offer a 去声明 button'
 );
 ok(
-  /function lintOpenDeclare\(issue\)[\s\S]{0,320}openTaskParamsDialog\(\)/.test(builderSource),
-  '去声明 reuses the task-config dialog bridge'
+  /function lintOpenDeclare\(issue\)[\s\S]{0,360}openTaskParamsDialog\(\{ prefillParam: lintT3DeclarePrefill\(issue\) \}\)/.test(builderSource),
+  '去声明 opens the task-config dialog bridge with the T3 key prefilled'
 );
 ok(
   /onSaved: function \(savedTask, params\)[\s\S]{0,620}lintTask\(\{ silent: true \}\)/.test(builderSource),
@@ -4042,6 +4053,229 @@ ok(
 );
 ok(/\.builder-lint-hint/.test(styleCss), 'style.css styles the T4 material hint');
 ok(/\.builder-lint-count\[hidden\]/.test(styleCss), 'the hidden count badge stays hidden');
+
+// --- P6: guards/drag endpoints text_expr + T3 prefill -----------------------
+const BUILDER_P6_PURE = [
+  'paramSafeKey', 'paramTextExpr', 'paramSourceApply', 'paramSourceFromLocator',
+  'locatorParamKey', 'locatorTextSpecError', 'flowTextSpecIssues',
+  'lintIssuePath', 'lintIssueMessage', 'lintT3ParamKey', 'lintT3DeclarePrefill',
+  'stepGuardLocator', 'stepDragEndpoint', 'locatorIsOcrText',
+];
+const p6Sb = {};
+vm.createContext(p6Sb);
+vm.runInContext(
+  BUILDER_P6_PURE.map((name) => extractFunctionFrom(builderSource, name, 'builder.js')).join('\n'),
+  p6Sb,
+  { filename: 'builder.js#p6' }
+);
+
+eq(p6Sb.locatorIsOcrText({ kind: 'ocr_text' }), true, 'ocr_text locators are recognized');
+eq(p6Sb.locatorIsOcrText({ kind: 'template' }), false, 'template locators are not OCR text');
+eq(p6Sb.locatorIsOcrText(null), false, 'missing locators are not OCR text');
+eq(
+  p6Sb.stepGuardLocator({ args: { requires: { kind: 'ocr_text', sel: 'O_x', text: '固定' } } }, 'requires'),
+  { kind: 'ocr_text', sel: 'O_x', text: '固定' },
+  'requires guard is read from step.args.requires'
+);
+eq(
+  p6Sb.stepGuardLocator({ args: { expect: { kind: 'ocr_text', sel: 'O_y' } } }, 'expect').sel,
+  'O_y',
+  'expect guard is read from step.args.expect'
+);
+eq(p6Sb.stepGuardLocator({ args: {} }, 'requires'), null, 'a missing guard returns null');
+eq(p6Sb.stepGuardLocator({ args: { requires: 'bad' } }, 'requires'), null, 'a non-object guard returns null');
+eq(
+  p6Sb.stepDragEndpoint({ args: { from: { kind: 'ocr_text', sel: 'O_row' } } }, 'from').sel,
+  'O_row',
+  'drag from endpoint is read'
+);
+eq(
+  p6Sb.stepDragEndpoint({ args: { to: { kind: 'ocr_text', sel: 'O_to' } } }, 'to').sel,
+  'O_to',
+  'drag to endpoint is read'
+);
+eq(p6Sb.stepDragEndpoint({ args: {} }, 'to'), null, 'a missing drag endpoint returns null');
+
+// The tri-state write keeps guards/endpoints byte-compatible (unknown fields kept).
+eq(
+  p6Sb.paramSourceApply(
+    { kind: 'ocr_text', sel: 'O_x', text: '固定', timeout_ms: 3000, extra: 'keep' },
+    'param',
+    '关键词'
+  ),
+  { kind: 'ocr_text', sel: 'O_x', timeout_ms: 3000, extra: 'keep', text_expr: "param('关键词')" },
+  'a guard keeps sel/timeout/unknown fields when switching to a param text source'
+);
+eq(
+  p6Sb.paramSourceApply(
+    { kind: 'ocr_text', sel: 'O_row', text_expr: "param('old')", roi: [1, 2, 3, 4] },
+    'expr',
+    "ocr('O_x')"
+  ),
+  { kind: 'ocr_text', sel: 'O_row', roi: [1, 2, 3, 4], text_expr: "ocr('O_x')" },
+  'a drag endpoint keeps unknown endpoint fields when switching to an expression'
+);
+eq(
+  p6Sb.paramSourceFromLocator({ kind: 'ocr_text', sel: 'O_x', text: '固定' }),
+  { mode: 'text', value: '固定' },
+  'guards read back as fixed text'
+);
+eq(
+  p6Sb.paramSourceFromLocator({ kind: 'ocr_text', sel: 'O_x', text_expr: "param('关键词')" }),
+  { mode: 'param', value: '关键词' },
+  'guards read back as a param source'
+);
+
+// Save-time validation already covers the new editors recursively.
+const guardSpecFlow = {
+  steps: [{
+    op: 'click_target',
+    args: {
+      find: [{ kind: 'ocr_text', sel: 'O_x', text: '固定' }],
+      requires: { kind: 'ocr_text', sel: 'O_r', text: 'a', text_expr: "param('k')" },
+      expect: { kind: 'ocr_text', sel: 'O_e' },
+    },
+  }],
+};
+const guardIssues = p6Sb.flowTextSpecIssues(guardSpecFlow);
+eq(guardIssues.length, 2, 'requires (both fields) + expect (none) are flagged for save');
+ok(
+  guardIssues.some((line) => /\.args\.requires/.test(line)) &&
+    guardIssues.some((line) => /\.args\.expect/.test(line)),
+  'the save-time issues name the guard paths'
+);
+const dragSpecFlow = {
+  steps: [{
+    op: 'drag',
+    args: {
+      direction: 'up',
+      from: { kind: 'ocr_text', sel: 'O_a', text_expr: "param('目标行')" },
+      to: { kind: 'ocr_text', sel: 'O_b', text: '固定' },
+    },
+  }],
+};
+eq(p6Sb.flowTextSpecIssues(dragSpecFlow), [], 'valid OCR drag endpoints pass the save-time check');
+
+// T3「去声明…」prefill object (appended to the config dialog JSON by app.js).
+eq(
+  p6Sb.lintT3DeclarePrefill({ code: 'T3', message: "param('关键词') is used but not declared" }),
+  { key: '关键词', type: 'text', label: '关键词' },
+  'a T3 issue prefills a missing text ParamDecl'
+);
+eq(
+  p6Sb.lintT3DeclarePrefill({ code: 'T3', message: 'no literal here' }),
+  null,
+  'a T3 issue without a key has no prefill'
+);
+eq(
+  p6Sb.lintT3DeclarePrefill({ code: 'T3', path: "flow.json:steps[0].args.n: param('最大轮数')" }),
+  { key: '最大轮数', type: 'text', label: '最大轮数' },
+  'the prefill key is also extracted from the issue path'
+);
+
+// app.js: taskConfigMergePrefill (append-only + dedupe + bad-JSON degrade).
+eq(
+  JSON.parse(taskConfigMergePrefill('', { key: '关键词', type: 'text', label: '关键词' }).text),
+  [{ key: '关键词', type: 'text', label: '关键词' }],
+  'an empty meta.params JSON gets the prefilled ParamDecl'
+);
+const prefillBase = taskConfigParamsToJson([{ key: 'a', type: 'int', label: '甲', zz: 1 }]);
+const prefillMerged = taskConfigMergePrefill(prefillBase, {
+  key: '关键词', type: 'text', group: 'OCR', label: '关键词', default: '挑战', role: 'ocr_text',
+});
+eq(prefillMerged.appended, true, 'a new key is appended');
+eq(prefillMerged.duplicate, false, 'a new key is not a duplicate');
+const prefillList = JSON.parse(prefillMerged.text);
+eq(prefillList.length, 2, 'the existing entry is kept');
+eq(prefillList[0].zz, 1, 'unknown existing fields are preserved');
+eq(prefillList[1].key, '关键词', 'the prefilled key is appended last');
+eq(
+  {
+    type: prefillList[1].type,
+    group: prefillList[1].group,
+    label: prefillList[1].label,
+    def: prefillList[1].default,
+    role: prefillList[1].role,
+  },
+  { type: 'text', group: 'OCR', label: '关键词', def: '挑战', role: 'ocr_text' },
+  'type/group/label/default/role travel with the prefill'
+);
+const dupPrefill = taskConfigMergePrefill(prefillBase, { key: 'a' });
+eq(dupPrefill.appended, false, 'a same-key prefill is not appended twice');
+eq(dupPrefill.duplicate, true, 'a same-key prefill is reported as duplicate');
+eq(dupPrefill.text, prefillBase, 'a duplicate keeps the current text byte-identical');
+const badJsonPrefill = taskConfigMergePrefill('{broken', { key: 'k' });
+eq(badJsonPrefill.ok, false, 'bad JSON degrades to an error');
+ok(/JSON 解析失败/.test(badJsonPrefill.error), 'the bad-JSON error is explicit');
+eq(badJsonPrefill.text, '{broken', 'bad JSON keeps the user text untouched');
+const nonArrayPrefill = taskConfigMergePrefill('{"a":1}', { key: 'k' });
+eq(nonArrayPrefill.ok, false, 'a non-array meta.params document is rejected');
+eq(nonArrayPrefill.text, '{"a":1}', 'a non-array document keeps the text untouched');
+eq(taskConfigMergePrefill('[]', {}).ok, false, 'a prefill without a key is rejected');
+ok(/缺少参数 key/.test(taskConfigMergePrefill('', {}).error), 'the missing-key error is explicit');
+eq(
+  JSON.parse(taskConfigMergePrefill('', { key: 'k' }).text)[0],
+  { key: 'k', type: 'text', label: 'k' },
+  'type/label default from the key when the prefill omits them'
+);
+eq(taskConfigMergePrefill('', { key: '  ' }).ok, false, 'a whitespace-only key is rejected');
+
+// Static wiring: shared tri-state component + guards/drag editors + bridge.
+ok(
+  /function locatorTextSourceFields\(base, onChange\)/.test(builderSource),
+  'the tri-state editor is a shared component'
+);
+ok(
+  (builderSource.match(/locatorTextSourceFields\(/g) || []).length >= 3,
+  'find / requires+expect / drag endpoints all reuse the shared tri-state editor'
+);
+ok(
+  /renderGuardLocatorEditor\(root, step, 'requires'\)/.test(builderSource) &&
+    /renderGuardLocatorEditor\(root, step, 'expect'\)/.test(builderSource),
+  'click_target renders requires + expect structured OCR guards'
+);
+ok(
+  /renderDragEndpointEditor\(box, step, 'from'\)/.test(builderSource) &&
+    /renderDragEndpointEditor\(box, step, 'to'\)/.test(builderSource),
+  'drag renders structured OCR from + to endpoints'
+);
+ok(
+  !/from 不是 region（OCR 行\/坐标）：请用高级 JSON 编辑/.test(builderSource),
+  'the old "OCR drag endpoint must use advanced JSON" hint is gone'
+);
+ok(
+  /step\.args\[field\] = paramSourceApply\(next, text\.mode, text\.value\)/.test(builderSource) &&
+    /step\.args\[side\] = paramSourceApply\(next, text\.mode, text\.value\)/.test(builderSource),
+  'guards + drag endpoints write through paramSourceApply (mutual exclusion + unknown fields kept)'
+);
+ok(
+  /prefillParam: prefillParam/.test(builderSource) &&
+    /taskConfigPrefillParam = o\.prefillParam/.test(source),
+  'the builder passes prefillParam through the runtime bridge (app.js consumes it)'
+);
+ok(
+  /function taskConfigMergePrefill\(text, prefillParam\)/.test(source) &&
+    /applyTaskConfigPrefill\(\);/.test(source) &&
+    /taskConfigMergePrefill\(current, prefill\)/.test(source),
+  'app.js merges the prefill into the loaded meta.params JSON'
+);
+ok(
+  /applyTaskConfigPrefill\(\);[\s\S]{0,80}taskConfigSave\.disabled = false/.test(source),
+  'the prefill is applied right after the schema loads'
+);
+ok(
+  /taskConfigPrefillParam = null;/.test(source) &&
+    /taskConfigPrefillParam = o\.prefillParam/.test(source),
+  'the pending prefill is cleared on open and installed by the builder bridge'
+);
+ok(
+  /从构建页检查面板的 T3「去声明…」打开时，会把缺失参数预填进数组/.test(html),
+  'the config dialog copy explains the T3 prefill'
+);
+ok(
+  /\.builder-drag-endpoint/.test(styleCss) && /\.builder-guard-hint/.test(styleCss),
+  'style.css styles the guard/endpoint editors'
+);
 
 // DOM id audit: the whole point of this round is ZERO static dead ids. Every
 // getElementById target must exist in index.html; if an id is genuinely needed,

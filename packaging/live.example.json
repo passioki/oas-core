@@ -41,6 +41,7 @@
   "updates": {
     "enabled": false,
     "fetch_timeout_ms": 8000,
+    "cache_secs": 60,
     "feeds": []
   }
 }
