@@ -4353,3 +4353,30 @@ GET /task/assets?task= → 34 个素材（全局模式）
 2. **更新检测收尾**：URL feed TTL/缓存、鉴权/私有仓、`packages/remote` GC。
 3. **参数编辑补齐**：`requires/expect/drag` 的 `text_expr` 结构化编辑；T3「去声明…」不预填 key（app.js 桥扩展）；保存 flow 后自动 lint 可选节流。
 4. 旧待办：产品验收 §D.4 / P2 清理 / Phase 5；不 tag / 不 release（git rev 依赖用 commit hash，不需要 tag）。
+
+# ★ §E-86 ★★★ [11-05 20:1x] **Phase 1b 完成：oas-runner 独立打包 Runner release（seq 116）**
+
+> 用户「好的，下一步」→ 目标③收尾：新仓能自己产出 Runner-only 发布包。实现记录 `ENGINE §22.57`；断点 `RESUME` seq 116；证据 `_verify\phase1b-oas-runner-20261105\`。
+
+## A. 交付
+
+| # | 项 | 结果 | 状态 |
+|---|---|---|---|
+| core | **`oasd::cli::run_as_with_args`** | `run_as` 委托；`extra` 默认参数插在进程参数前（用户显式可覆盖）→ 供独立 app 注入 `--ui ui`；commit `802f58b` | ✅ |
+| app | **默认 UI + 新 rev** | oas-runner `main.rs` 无 `--ui`/`--ui=` 时注入 `--ui ui`；Cargo.toml/Cargo.lock pin `rev=802f58b` | ✅ |
+| pkg | **新仓独立 `scripts/package-runner.ps1`** | 662 行：数据/toolkit 探测、`bundled-data` 生成（schema1/BOM-free/逐文件 sha）、stage 审计（必需文件/UI 白名单/无 Studio UI/JSON 无 BOM/Cargo.lock rev）、`/` zip、`-DryRun`；`packaging/README-RUNNER.txt`+`live.example.json`+start/stop bat；`docs/BUILD.md` 更新 | ✅ |
+| 产物 | **oas-runner 独立 zip** | `dist\oasd-runner-v0.1.0-win64.zip` = **37,854,377 B / SHA `09E8E2B5…AF45` / 41 entries**（BUILD-INFO：`surface: runner`、`oasd_rev=802f58b`、bundled-data 3 任务/14 文件/47,208 B） | ✅ |
+| smoke | **新仓包解压验证** | 8795 无 `--ui`：health 200 / `GET /` Runner UI 200 / tasks 200 / app.js 404 / task lint 404；bundled-data 首启导入 3 任务+assets、重启幂等；`--ui ui_alt` 覆盖；start/stop bat 起停 8789；**50/50 PASS**、无残留 | ✅ |
+
+## B. 验证 / 提交
+
+- oas-core：workspace **794/0**、UI **1868/159/158/0/6**、debug+release build exit 0（1 warning）；commit `802f58b`（cli API）。
+- oas-runner：commit `91785b8`（独立打包 + 默认 UI + rev pin）；win 独立包上表。
+- oas-core 重打包：Studio **76,647,712 B / `338C0B47…D530`**；oas-core Runner **37,850,771 B / `6E9458F8…52E5`**。
+
+## C. 剩余（Phase 1c / 收尾）
+
+1. **tag/Release 与两仓版本联动**（本轮仍不 tag / 不 release；用户未要求）；`--version` 打印 app 名；`-NoData`/`-SkipToolkit` 实包验证；macOS/Linux 打包。
+2. **更新检测收尾**：URL feed TTL/缓存、鉴权/私有仓 token、`packages/remote` GC。
+3. **参数编辑补齐**：`requires/expect/drag` 的 `text_expr` 结构化编辑；T3「去声明…」预填 key。
+4. 旧待办：产品验收 §D.4 / P2 清理 / Phase 5；不 tag / 不 release。

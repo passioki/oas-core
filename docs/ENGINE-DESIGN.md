@@ -3045,3 +3045,30 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 - **oas-runner 薄应用实机 smoke**：Runner-only 二进制起 :8792 → `/runner/updates` 200、`/runner/tasks` 200、`:8792` 释放；切 **git 依赖（rev `39d97b8…`）** 后 `cargo build` exit 0（21.48s），:8794 smoke `/runner/health` 200、`/runner/tasks` 200、Studio 路由 404。
 - 回归 E2E 全绿：P0 双端、参数链路、更新 feed（新 release 包）。
 - 新包：Studio **76,647,721 B** / SHA `D2437915…249A`；Runner **37,850,775 B** / SHA `E810792E…9681`。
+
+### 22.57 ★★★ [11-05 20:1x] **Phase 1b 完成：oas-runner 独立产出 Runner 发布包（seq 116）**
+
+> 用户「好的，下一步」→ 目标③收尾：让新仓 `oas-runner` **自己构建/打包 Runner-only release**（不依赖 oas-core 的 `package-runner.ps1`）。oas-core 侧新增 `run_as_with_args` 供独立 app 注入默认参数；新仓侧新增独立打包脚本 + 默认 UI + 数据镜像生成。实现记录；台账 `PENDING §E-86`；断点 `RESUME` seq 116；证据 `_verify\phase1b-oas-runner-20261105\`。
+
+#### 22.57.1 oas-core 支持（commit `802f58b`）
+
+- `oasd::cli` 新增 **`pub fn run_as_with_args(surface, extra)`**：等价 `run_as` 但把 `extra` 默认参数插在进程参数**之前**（用户显式参数仍可覆盖）。`run_as` 委托它（行为不变）。
+- 用途：`oasd-runner` app 无 `--ui`/`--ui=` 时自动注入 `--ui ui`（Runner 发布布局），无需 oas-core 里硬编码新仓路径。
+
+#### 22.57.2 oas-runner 独立 app（commit `91785b8`，pin `oasd rev=802f58b`）
+
+- `apps/runner/src/main.rs`：检测用户是否已给 `--ui`/`--ui=`，未给则 `extra = ["--ui","ui"]`，调 `oasd::cli::run_as_with_args("runner", extra)`；Cargo.lock 钉新 rev。
+- **`scripts/package-runner.ps1`（662 行，新仓独立）**：
+  - 参数：`-DataFrom`（默认探测 sibling `..\oas-core`；缺失须 `-NoData`）· `-ToolkitFrom`（自动探测扁平 `models+adb` 或 Python `Lib\site-packages\rapidocr\models`+`adbutils\binaries`；缺失须 `-SkipToolkit`）· `-OutFile`/`-SkipBuild`/`-Offline`/`-DryRun`；
+  - 默认 `cargo build --release --target-dir <repo>\target`（CWD=`apps/runner`）；
+  - 组装 stage：`oasd-runner.exe`、`ui/`（白名单 4 文件，验证非空）、`models/`+`adb/`（来自 toolkit）、**`bundled-data/{manifest.json(schema 1, BOM-free),tasks,assets}`**（从 `-DataFrom` 生成，逐文件 sha256+bytes，排除 `.backup`）、`config/live.example.json`、`README-RUNNER.txt`、`VERSION`、`BUILD-INFO`（`surface: runner`/`runner_app: oasd-runner`/`oasd_rev`/data/toolkit 来源/时间/git HEAD）、`start-runner.bat`/`stop-runner.bat`、空数据占位；
+  - stage 审计：必需文件/非 0 字节/ui 白名单/无 Studio UI/**所有 JSON 无 BOM**/bundled-data sha 校验/Cargo.lock 钉 rev；zip 用 `/` 分隔；输出 size/SHA/entries。
+- `packaging/{README-RUNNER.txt,live.example.json(disabled exchange/updates),start/stop-runner.bat}` + `docs/BUILD.md`/README 更新。
+
+#### 22.57.3 验证（新仓独立产物）
+
+- oas-runner `scripts/package-runner.ps1 -SkipBuild -DataFrom D:\OAS-dev\oas-core` → **`dist\oasd-runner-v0.1.0-win64.zip` = 37,854,377 B / SHA `09E8E2B5…AF45` / 41 entries**（0 反斜杠、0 Studio-only UI；BUILD-INFO `oasd_rev=802f58b`、bundled-data 3 任务/14 文件/47,208 B）。
+- 解压 smoke **50/50 PASS**：8795 不带 `--ui` → `/runner/health` 200（`surface=runner`）、`GET /` 为 Runner UI 200、`/runner/tasks` 200、`/app.js` 404、`/task/lint` 404；**bundled-data 首启导入** 3 任务+assets+marker，重启幂等 `already_imported`；显式 `--ui ui_alt` 覆盖默认；`start-runner.bat`/`stop-runner.bat` 起停 8789 正常；结束无残留进程/端口。
+- oas-core 侧回归：workspace **794/0**（含 cli 改动）、UI **1868/159/158/0/6**；debug/release build exit 0（1 warning）；P0/参数/更新 feed E2E 之前全绿（本轮代码仅 cli 新增 API）。
+- 重打包：Studio **76,647,712 B** / SHA `338C0B47…D530`；oas-core Runner **37,850,771 B** / SHA `6E9458F8…52E5`；oas-runner 独立包 **37,854,377 B** / SHA `09E8E2B5…AF45`。
+- **剩余（Phase 1c/收尾）**：tag/Release 与两仓版本联动策略（未 tag）；`--version` 仍打印 `oasd 0.1.0`；`-NoData`/`-SkipToolkit` 仅 dry-run 验证；macOS/Linux 未打包；更新检测 TTL/鉴权/GC；requires/expect/drag 结构化编辑。

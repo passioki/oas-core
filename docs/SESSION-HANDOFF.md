@@ -1,19 +1,19 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 115**，`oas-core-dual-app-upgrade`）。
-> **状态：in_progress**——seq 114 使用端参数 UI/更新检测/oas-runner 仓已验收；**seq 115 = Phase 1a（`oasd` lib+bin + oas-runner 独立薄应用 `oasd::cli::run_as("runner")`）+ Studio 权威 lint（`GET /task/lint` + 构建页「检查」面板）** 已实现并验证（workspace 794/0、UI 1868、双端/参数/更新 feed E2E ALL PASS）。未 tag / 未 release。
+> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 116**，`oas-core-dual-app-upgrade`）。
+> **状态：in_progress**——seq 115 Phase 1a/Studio lint 已验收；**seq 116 = Phase 1b 收尾：oas-runner 独立打包 Runner-only release（`scripts/package-runner.ps1` + 默认 `--ui ui` + bundled-data 生成 + 独立包 smoke 50/50）**；oas-core 新增 `run_as_with_args`（`802f58b`），oas-runner pin 该 rev（`91785b8`）。未 tag / 未 release。
 
-## 0. 当前状态（2026-11-05 20:0x）
+## 0. 当前状态（2026-11-05 20:1x）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `dev`；本批提交后以 `git log -1` 为准（父 `48064b7`）；未 tag / 未 release |
-| 任务 | **Phase 1a ✅ / Studio lint ✅（seq 115）**；oas-runner Phase 1b 部分完成（git rev `39d97b8` + Cargo.lock + UI/BUILD + start/stop bat）；下一步：Runner 默认 UI 目录/打包与 bundled-data 迁入、更新检测收尾、requires/expect/drag text_expr 结构化 |
+| 分支 / HEAD | oas-core `dev`（本批 docs 提交后以 `git log -1` 为准；代码 `802f58b`）；oas-runner `main` = `91785b8`；未 tag / 未 release |
+| 任务 | **Phase 1a ✅ / Studio lint ✅ / Phase 1b ✅（seq 116）**；下一步：更新检测收尾、requires/expect/drag 结构化、tag 策略 |
 | 测试 | `cargo test --workspace` **794/0**（23 suites；oasd lib **405** + bin 0）；UI **1868 / Studio 159 / Runner 158 / 0 dead / 6 nav**；debug+release build exit 0（**1 warning**，基线 5→1）；`git diff --check` clean |
-| 发行包 | **Studio** `dist/oasd-v0.1.0-win64.zip` **76,647,721 B** / SHA `D2437915…249A`；**Runner** `dist/oasd-runner-v0.1.0-win64.zip` **37,850,775 B** / SHA `E810792E…9681`（不入 git） |
-| 独立仓 | `https://github.com/passioki/oas-runner`：`apps/runner` 薄应用（`oasd::cli::run_as("runner")`）+ `ui/` + Cargo.lock（**git 依赖 + rev `39d97b8`**）+ `docs/BUILD.md` + `packaging/start-runner.bat`/`stop-runner.bat` |
-| 服务 | **8787/8788/8789/8792/8793 全部未监听、无 oasd 进程**（smoke/E2E 后清理） |
-| 工作区 | 数据已入库（seq 112）；`scheduler.json` 未提交；本批 Rust/UI/oas-runner 文件/docs 待提交 |
+| 发行包 | **Studio** **76,647,712 B** / `338C0B47…D530`；**oas-core Runner** **37,850,771 B** / `6E9458F8…52E5`；**oas-runner 独立包** **37,854,377 B** / `09E8E2B5…AF45`（41 entries；均不入 git） |
+| 独立仓 | `https://github.com/passioki/oas-runner`（`91785b8`）：薄 app + UI + 独立 `scripts/package-runner.ps1` + packaging + BUILD 文档；pin oas-core `802f58b` |
+| 服务 | **8787/8788/8789/8792/8793/8795 全部未监听、无 oasd/oasd-runner 进程**（smoke 后清理） |
+| 工作区 | 数据已入库（seq 112）；`scheduler.json` 未提交；oas-core docs 待提交；oas-runner 已提交 |
 
 ## 1. 最近 3 轮关键变更（历史细节见 PLAN/ENGINE/PENDING）
 
