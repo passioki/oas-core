@@ -10,7 +10,7 @@ updated_at: 2026-11-05T13:3x+08:00
 trigger: 双端发行包（package.ps1 重写为 Studio-only + 两 zip 产出）→ 分离度 E2E 75/75 → F1（PS5.1 BOM 使 Runner 包 scheduler.json 首启 invalid_config）修复 → dev-serve 双入口化 → 参数 UI 审计（待用户裁定）→ 本批脚本+docs 收尾
 status: handoff-ready          # 双端 release 已产出并被 Lead 独立复核；待用户裁定参数 UI 方案 + 提交/推送
 code_head: 68e5768            # 本轮 Rust 零改动（代码 HEAD 仍 = 最终审计修复提交）
-docs_head: 本批 docs 提交后见 `git log -1`（父 `e9404a4`；dev = main = origin）
+docs_head: `4858e51`（本批两提交：`7fedf1c` feat+docs seq 110 → `4858e51` docs 数字刷新；dev = main = origin；以 `git log -1` 复核）
 next_action: ① 用户裁定参数 UI 方案（推荐 A+C：构建页入口 + Studio-only GET /task/lint）② 提交/推送本批 scripts+docs ③ 产品验收（§D.4 19 步）；不 tag / 不 release
 ```
 
