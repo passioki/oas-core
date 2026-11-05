@@ -23,7 +23,7 @@
 ★ 唯一真相 = git + 磁盘证据；**不信"我记得"** ⇒ 必须贴 `文件:行号` / commit / 测试输出
 ```
 
-## 0.1 当前状态快照（2026-11-05 13:3x · **seq 110 · 双端发行包已产出 / 分离度验收 75 项全绿**）
+## 0.1 当前状态快照（2026-11-05 18:2x · **seq 111 · 双端架构升级设计待裁定**；seq 110 双端 release 已验收）
 
 | 项 | 状态 |
 |---|---|
@@ -46,7 +46,8 @@
 - **Q1~Q7 已批准**（2026-11-04，全部按推荐）；**PR1~PR7 全部 ✅ 已提交**；**最终审计 4 个代码 P1 已修复（`68e5768`）**；交接 docs 紧随其后（seq 108）。
 - 台账：`PENDING-LEDGER.md §E-79`（§F PR1 / §G PR2 / §H PR3 / §I PR4 / §J PR5 / §K PR6 / §L PR7 / **§M 最终审计与修复**）；现行口径：`RUNNER-STUDIO-SPLIT-PLAN.md`（§A.9~§A.16）、`ENGINE-DESIGN.md` §22.44~§22.51。
 - **2026-11-05 13:3x（seq 110）双端发行包 + 分离度验收**：`scripts/package.ps1` 重写为 **Studio-only**（旧全量包 9 项不符全消）；Studio/Runner 两 zip 产出 + **E2E 75/75**（62 分离度 + 13 F1 回归）；**F1 修复**（PS5.1 BOM → Runner 包 `scheduler.json` 首启 `invalid_config`）；`scripts/dev-serve.*` 双入口化（8787 退役）；**参数 UI 审计完成、待裁定**（`_verify/ui-params-audit-20261105/PARAMS-UI-AUDIT.md`，推荐 A+C）。台账 `§E-80`；实现记录 `ENGINE §22.52` / `PLAN §A.17`。
-- 下一步 = **① 用户裁定参数 UI 方案（A+C 推荐）→ 实施；② 提交/推送本批 scripts+docs（显式路径、不含用户数据）；③ 产品验收（§D.4 19 步，V1~V7）/ P2 清理 / Phase 5 选择**；不 tag / 不 release。
+- **2026-11-05 18:2x（seq 111）双端架构升级设计轮（只读，未改代码）**：用户四项新要求 → 3 路只读设计 + 可点原型 + 决策单（仓外 `_verify\dual-app-design-20261105\`）：① **参数 v2**（动作库消费类动作 + `text_expr` 让参数可作为 OCR 文字；group/预设；Runner 每参使用开关、留空=不注入）② **使用端独立新仓**（推荐两仓：oas-core / 新仓 `oas-runner`，git 依赖 tag；Phase 0 现仓先做）③ **发布通知**（exchange 目录真相 + loopback POST 加速）④ **发行包带数据**（Studio 全数据 + Runner bundled-data 首启不覆盖）。**待用户回复 `DECISION-SHEET.md` D1~D12**（未回复按推荐）。
+- 下一步 = **① 用户裁定 D1~D12 → 实施 P0（数据入仓+两包带数据 / exchange+publish-index+Runner 通知）→ P1 参数 v2 后端 → P2 Runner UI → P3 Studio → P4 新仓拆分；② 旧待办：产品验收（§D.4 19 步）/ P2 清理 / Phase 5 选择**；不 tag / 不 release。
 
 ---
 
@@ -287,7 +288,7 @@ run-tests.bat …                                  REM 旧仓守卫基线 171 pa
 
 | 主题 | 位置 |
 |---|---|
-| **长任务断点/续接（先读）** | `RESUME.md` · `RESUME-INDEX.md`（skill 强制 6；最新 seq 110） |
+| **长任务断点/续接（先读）** | `RESUME.md` · `RESUME-INDEX.md`（skill 强制 6；最新 seq 111） |
 | **帧-素材关系** | `../frames/frames.json` + 全局 `assets.json` 的 `positions`；无 interface 文件 |
 | **素材数据模型** | `ASSET-DATA-MODEL.md`（全局 `assets/`、任务素材=flow 引用子集、旧 library 仅后端兼容） |
 | **编辑器 UX / 选择模型计划** | `EDITOR-UX-PLAN.md`（画布、位置详情、多边形/反选、实时帧、点测/拖测、区域有效性、素材排序、分类重命名；**素材库 UX 现行为 §18**；**§18.10 = 三项遗留修复**） |
@@ -298,6 +299,7 @@ run-tests.bat …                                  REM 旧仓守卫基线 171 pa
 | **发布/恢复节点（当前）** | `RELEASE-NODE-2026-11-02.md` · Release `https://github.com/passioki/oas-core/releases/tag/v0.1.0` |
 | 到实机可用的交付路线（历史） | `archive/DELIVERY-PLAN.md` |
 | 当前状态/下一步/坑 | `SESSION-HANDOFF.md` |
-| 台账/证据（当前） | `PENDING-LEDGER.md` §E-66~**§E-80**（**§E-80 = 双端发行包 + 分离度验收 + dev-serve + 参数 UI 审计（seq 110）**；**§E-79 = Studio/Runner 分离：Q1~Q7 已批准、PR1~PR7 全部 ✅、§M 最终审计与修复**；§E-76 帧页、§E-77 两按钮+push-all、§E-78 素材库 UX + OCR 阈值） |
+| 台账/证据（当前） | `PENDING-LEDGER.md` §E-66~**§E-81**（**§E-81 = 双端架构升级设计轮（seq 111，待裁定 D1~D12）**；**§E-80 = 双端发行包 + 分离度验收 + dev-serve + 参数 UI 审计（seq 110）**；**§E-79 = Studio/Runner 分离：Q1~Q7 已批准、PR1~PR7 全部 ✅、§M 最终审计与修复**；§E-76 帧页、§E-77 两按钮+push-all、§E-78 素材库 UX + OCR 阈值） |
+| **★ 双端架构升级设计（待裁定，2026-11-05 seq 111）** | `_verify\dual-app-design-20261105\`（仓外）：**`PARAM-V2-DESIGN.md`**（1096 行：参数 v2/动作库/`text_expr`/Runner UI/Studio/lint/7 PR/14 待裁定）· **`RUNNER-SPLIT-DESIGN.md`**（926 行：两仓拆分/Phase 0~2/发布通知 exchange/数据随包/14~19 人日）· **`DECISION-SHEET.md`**（D1~D12 推荐）· `prototype\`（`runner-params.html` / `studio-params.html` + 4 截图 + `DESIGN-NOTES.md`）；见 §0.2 / `§E-81` |
 | **参数配置 UI 审计（待裁定，2026-11-05）** | `_verify\ui-params-audit-20261105\PARAMS-UI-AUDIT.md`（仓外，398 行）：结论/缺口清单/方案 A~E/推荐 A+C；见 §0.2 / `§E-80` |
 | 旧仓历史（冻结，仍在旧仓）| `D:\OAS-dev\backend\docs\SESSION-HANDOFF.md` 历史段 · `D:\OAS-dev\frontend\docs\scheduler-architecture.md`（旧调度设计，参考） |

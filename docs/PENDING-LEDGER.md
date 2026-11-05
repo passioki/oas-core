@@ -4181,3 +4181,54 @@ GET /task/assets?task= → 34 个素材（全局模式）
 3. **Studio 包数据边界**：按 §A.8.1 内嵌工作区真实数据快照（3 任务 / assets 31 条 + 5 图）；对外分发前需确认；未来可加 `-NoData` 选项（本批未做）。
 4. **F3（info，仅文档）**：`README-DEPLOY.md` L75 示例目录 `D:\OAS-dev-live` 含 `D:\OAS-dev` 前缀（X9 自包含检查已用白名单排除，不影响包）。
 5. **既有 P2 不变**：见 `§E-79 §M.5` / `RESUME §5` / `ENGINE §22.51.4`。
+
+# ★ §E-81 ★★★ [11-05 18:0x → 18:2x] **双端架构升级设计轮（用户四项新要求；seq 111；待用户裁定 D1~D12）**
+
+> **状态：设计已交付、未改任何代码/UI**；等用户裁定后从 P0 实施；不 tag / 不 release。
+> 依据（用户 2026-11-05 原话，逐字）：
+> ①「资产/任务等也属于代码仓库的一部分，发布的时候是需要带上的。」
+> ②「参数设置里的参数是要和flow互动的，相当于一个动作库里的动作，请做好设计，想一下与当前动作库可能有哪些互动，添加到动作库即可。我初步所需的是参数作为ocr识别文字。暴露在使用端中，举个例子，分组：分组12；预设：通用战斗预设。我可以更改分组和预设内容，这样执行不同任务时，可以更换不同的预设。当前把传参做好，动作库补全，使用端UI设计好。构建任务时如果flow里有多个参数，那么使用端就该暴露对应参数和值。使用端可以选择用不用，值留空就是不用。」
+> ③「我想要的是使用端和开发端完全分离，使用端的仓库新开一个，因为负责的功能是独立的。我同时或单独启动使用端和开发端的release，两者需要能够正常运行/交互。」
+> ④「开发端发布了新任务，使用端那边会收到有新任务的发布。」
+> 设计产物（仓外）：`D:\OAS-dev\_verify\dual-app-design-20261105\`（`PARAM-V2-DESIGN.md` 1096 行 · `RUNNER-SPLIT-DESIGN.md` 926 行 · `DECISION-SHEET.md` · `prototype\` 2 可点 HTML + 4 PNG + `DESIGN-NOTES.md`）。
+> 现状基线：HEAD `b47c94e`；`cargo test --workspace` **721/0**、UI **1559/159/151/0/6**；双端 release 已验证（seq 110）。
+
+## A. 设计结论（摘要）
+
+| # | 用户要求 | 设计结论 |
+|---|---|---|
+| A1 | 资产/任务随仓 + 发布带上 | `assets/tasks/frames/relations/templates` 入库并进 Studio 包；Runner 包带 `bundled-data/`（tasks+assets 镜像 + manifest sha）**首启按规则导入、永不覆盖用户数据**；`-NoData` 可精简；（拆分设计 §4，待 D9/D10 裁定） |
+| A2 | 参数与 flow 互动 / 当动作库动作 | 参数是任务级契约，**不能做成 flow 步骤**；动作库新增「任务参数」组 = **消费类**动作（参数文字点击 / 等待参数文字 / 参数文字判断 / 参数文字拖动）+ 表达式「插入参数▾」；声明放构建页「任务参数」面板/声明 dialog；`meta.params` 唯一权威 |
+| A3 | 参数作为 OCR 识别文字（硬缺口） | 现 `Locator::OcrText/OcrTextInline`、`Expect::OcrText`、`DragTarget::OcrText` 的 `text` 全是 `String` 字面量（`oas-flow:652-656/712-726/787-791`）⇒ 新增互斥 **`text_expr`**（表达式字符串，`param('分组')`），runtime 四处求值 + **T3 扩扫** + `.oaspkg` `flow_ops` 门禁；`text` 字面量零变化 |
+| A4 | 分组 + 预设（可改、可切换） | 分组 = `meta.params[].group`（字段已有、Runner 未渲染，`meta.rs:78-80`、`runner.js:1430-1527`）；预设 = Runner 侧命名值集合，`values.json` **schema 1 additive**（`presets[]` + `active_preset` + `values` 镜像），按任务隔离、不进 `.oaspkg`；四层优先级（CLI > entry > values > default）不变 |
+| A5 | 使用端暴露 flow 全部参数、可选用、留空=不用 | Runner 已全量渲染 `meta.params`；v2 补：按 group 分节、预设管理、每参「使用」勾选、bool 三态、**留空/关闭 = 不注入（回退 default）**、必填无 default 阻止保存、运行期兜底不变 |
+| A6 | 使用端完全独立新仓 | 推荐**两仓**：`oas-core`（引擎 crates + Studio + 创作数据 + 发布工具）/ 新仓 `oas-runner`（Runner 代码 + UI + 打包 + 数据镜像）；共享 crates 用 **git 依赖 oas-core tag 精确锁定 + Cargo.lock**（备选 submodule）；Phase 0 现仓先做（exchange+notify / 两包数据 / 首启导入 / `serve.rs` move-only / 版本 tag）→ Phase 1 开仓搬迁。估 14~19 人日 |
+| A7 | Studio 发布 → Runner 收到通知 | **C = 共享 exchange 目录为唯一真相（`publish-index.json`）+ loopback `POST /runner/notify` 即时加速**；`event_id=package_id`（内容寻址）幂等；覆盖「同时/单独启动、先后启动、Runner 未启动」矩阵（拆分设计 §3） |
+| A8 | UI 设计 | 原型：Runner 独立「运行参数」页（预设下拉/管理、按 group 分节、每参使用勾选+控件+留空提示、5 态：已保存/未保存/值非法/预设未应用/空 schema）；Studio 构建页（动作库「任务参数」组 + 已声明参数面板 + 属性面板「文字来源三态」+「插入参数」+ T3 检查/一键声明）；见 `prototype\` |
+
+## B. 待用户裁定（D1~D12，完整见 `DECISION-SHEET.md`）
+
+| # | 问题 | 推荐 |
+|---|---|---|
+| D1 | 「不用/留空」语义 | A：留空/关闭=不注入→回退 default；required 无 default 保存拦截 |
+| D2 | 「预设」定义 | C：参数名与值集合两者都要 |
+| D3 | 预设作用域 | A：每任务独立 |
+| D4 | OCR 参数文字 DSL 形态 | A：新字段 `text_expr` |
+| D5 | 参数声明入口 | A：构建页面板；动作库只放消费类动作 |
+| D6 | Runner 参数 UI | A：独立页（保留快速 dialog） |
+| D7 | 仓库拆分 | A：两仓 + Phase 0 先行 |
+| D8 | 发布通知 | C：exchange 文件真相 + loopback POST |
+| D9 | 发行包数据 | A：全数据入库 + Studio 包全量 + Runner bundled-data |
+| D10 | 仓库可见性 | A：维持 public（介意帧/素材公开则 B 转 private） |
+| D11 | 版本/tag | A：引擎/Studio `v0.2.0` + Runner `runner-v0.2.0`，git 依赖锁定 |
+| D12 | 实施顺序 | 见 §C（P0 先做，可独立演示：数据随包 + 发布通知） |
+
+## C. 裁定后实施顺序（预估）
+
+| 阶段 | 内容 | 预估 |
+|---|---|---|
+| **P0（先做）** | ① 数据入仓 + 两包带数据（`package.ps1` / `package-runner.ps1`，Runner 首启不覆盖导入）；② exchange + `publish-index.json` + Studio 发布写入 + Runner 轮询/徽标/一键安装（用户第 4 条可独立演示） | ~3~5 人日 |
+| P1 | 参数 v2 后端：`ParamDecl.role`（可选）、`text_expr` DSL + runtime + T3/flow_ops 门禁、values 预设存储/API | ~4~6 人日 |
+| P2 | Runner 参数页（分组/预设/使用开关/留空） | ~2~3 人日 |
+| P3 | Studio 参数面板/声明 dialog/lint 检查按钮/动作库 A1~A4 | ~3~4 人日 |
+| P4 | `serve.rs` move-only 模块化 + 新仓 `oas-runner` 建立 + 打包/发布治理 | ~5~7 人日 |

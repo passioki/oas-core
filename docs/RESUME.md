@@ -1,37 +1,51 @@
 # RESUME — 断点续接卡（session-memory 强制 6）
 
 > 规则：本文件每次断点覆盖重写；≤150 行；另一个会话只读本文件 + `RESUME-INDEX.md` 最新行就能继续。
-> 细节：`docs/RUNNER-STUDIO-SPLIT-PLAN.md`（§A.9~§A.17）· `PENDING-LEDGER.md §E-79/§E-80` · `ENGINE-DESIGN.md §22.44~§22.52`。
+> 细节：`docs/RUNNER-STUDIO-SPLIT-PLAN.md`（§A.9~§A.17）· `PENDING-LEDGER.md §E-79/§E-80/§E-81` · `ENGINE-DESIGN.md §22.44~§22.52`。
 
 ```yaml
-task_id: oas-core-runner-studio-split
-checkpoint_seq: 110
-updated_at: 2026-11-05T13:3x+08:00
-trigger: 双端发行包（package.ps1 重写为 Studio-only + 两 zip 产出）→ 分离度 E2E 75/75 → F1（PS5.1 BOM 使 Runner 包 scheduler.json 首启 invalid_config）修复 → dev-serve 双入口化 → 参数 UI 审计（待用户裁定）→ 本批脚本+docs 收尾
-status: handoff-ready          # 双端 release 已产出并被 Lead 独立复核；待用户裁定参数 UI 方案 + 提交/推送
-code_head: 68e5768            # 本轮 Rust 零改动（代码 HEAD 仍 = 最终审计修复提交）
-docs_head: `4858e51`（本批两提交：`7fedf1c` feat+docs seq 110 → `4858e51` docs 数字刷新；dev = main = origin；以 `git log -1` 复核）
-next_action: ① 用户裁定参数 UI 方案（推荐 A+C：构建页入口 + Studio-only GET /task/lint）② 提交/推送本批 scripts+docs ③ 产品验收（§D.4 19 步）；不 tag / 不 release
+task_id: oas-core-dual-app-upgrade
+checkpoint_seq: 111
+updated_at: 2026-11-05T18:2x+08:00
+trigger: 用户 2026-11-05 四项新要求（资产/任务随仓发布；参数与 flow 互动 + 动作库 + 使用端 UI；使用端完全独立新仓；Studio 发布→Runner 通知）→ 设计轮（3 路只读设计 + 可点原型 + 决策单）→ **待用户裁定 D1~D12**
+status: awaiting-user-decisions   # 设计已交付，未改代码；裁定后进入 P0 实施
+code_head: 68e5768            # 本轮/本批 Rust 零改动（代码 HEAD 仍 = 最终审计修复提交）
+docs_head: `b47c94e`（工作区起点；本设计轮 docs 提交后以 `git log -1` 为准）
+next_action: ① 用户回复 `_verify\dual-app-design-20261105\DECISION-SHEET.md` 的 D1~D12（未回复按推荐）② 实施 P0：数据入仓+两包带数据 / exchange+publish-index+Runner 通知 ③ 再进参数 v2 后端 → Runner UI → Studio → 新仓拆分
 ```
 
 ## 0. 目标（本阶段）
 
 1. Studio（编辑端，8788）/ Runner（使用端，8789）分离：同一份代码两个 surface。
 2. Q1~Q7 已批准；**PR1~PR7 全部 ✅ 已提交**（PR1 `da9da9d` / PR2 `dfe8776` / PR3 `c09df25`+`048dff5` / PR4 `442f5cb` / PR5 `617435d`+`830058d` / PR6 `edc037b` / PR7 `5e45c81`）；最终审计 P1 ✅ `68e5768`。
-3. **本批（seq 110）= 用户三项要求**：① 分离度检查 + 试发布两端 release；② 更新过时的 `scripts/dev-serve.*`；③ 参数配置在编辑端未被表达（是「设置变量」吗）⇒ 只读审计 + 方案待裁定。
+3. **seq 110（上一轮）= 用户三项要求**：① 分离度检查 + 试发布两端 release；② 更新过时的 `scripts/dev-serve.*`；③ 参数配置在编辑端未被表达 ⇒ 只读审计 + 方案。
+4. **seq 111（本轮）= 用户四项新要求**：① 资产/任务属于代码仓库、发布随包；② 参数与 flow 互动/像动作库动作（参数作为 OCR 识别文字、分组+预设、使用端暴露可选用、留空=不用）；③ 使用端完全独立新仓库、两 release 可单独/同时运行并交互；④ Studio 发布新任务→Runner 收到通知。**本轮只设计（3 份设计文档 + 可点原型 + 决策单），未改代码。**
 
-## 1. 状态（2026-11-05 13:3x，seq 110）
+## 1. 状态（2026-11-05 18:2x，seq 111）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `dev`；本批提交前 HEAD = `e9404a4`（seq 108 docs，父 `68e5768`）；**本批提交后以 `git log -1` 为准**；未 tag / 未 release |
-| 任务状态 | **handoff-ready**：双端 release 已产出并独立复核；参数 UI 审计完成，**待用户裁定方案** |
+| 分支 / HEAD | `dev`；工作区起点 HEAD = `b47c94e`（seq 110 收尾）；**本设计轮 docs 提交后以 `git log -1` 为准**；未 tag / 未 release |
+| 任务状态 | **awaiting-user-decisions**：设计已交付（参数 v2 / 动作库 / 使用端 UI / 双仓拆分 / 发布通知 / 数据随包），**待用户裁定 D1~D12** 后进入 P0 实施 |
 | 双入口 | **Studio `http://127.0.0.1:8788/`**（`oasd studio`）· **Runner `http://127.0.0.1:8789/`**（`oasd runner`，nav 6，内嵌调度）；`oasd serve` = Studio deprecated 别名 |
 | 测试 | `cargo test --workspace` **721 / 0**（21 targets；本轮 Rust 零改动，Lead 复跑 `EXITCODE=0`）；UI pure test **1559 / Studio 159 / Runner 151 / 0 dead / 6 nav**（UI 零改动）；`git diff --check` clean |
 | 发行包 | **Studio** `dist/oasd-v0.1.0-win64.zip` = **37,789,721 B**，SHA256 **`737B52B9D80CB4018A88EB7AA30CC939F1706A1A231C1BC4F1032F11317291E6`**（41 entries；surface=studio；真实 tasks/assets 数据）；**Runner** `dist/oasd-runner-v0.1.0-win64.zip` = **37,690,867 B**，SHA256 **`ECB37A783FB92FD64F78BC788DA6DA3A61CDB7FE6897B76E3C0777E78D339ADE`**（23 entries；surface=runner；空 v4 `scheduler.json` 无 BOM）；**不入 git** |
 | 服务 | **全部停止**（8787/8788/8789 实测无监听、无 `oasd` 进程；release 评测后已清理） |
 | 数据边界 | 工作区用户数据：`assets/assets.json`、`frames/frames.json`、`scheduler.json(.bak)`、未跟踪 `frames/frame-43.png`/`frame-44.png`、`tasks/切换预设御魂/`；**用户数据不入库** |
 | 提交边界 | **待提交 = 本批 scripts（`package.ps1` / `package-runner.ps1` / `dev-serve.ps1` / `dev-serve.bat`）+ docs（START-HERE/RESUME/RESUME-INDEX/SESSION-HANDOFF/PENDING/ENGINE/PLAN/README + `packaging/README-DEPLOY.md`）**；用户数据不提交；`dist/` / `packages/` 不入 git |
+
+## 1.5 2026-11-05 18:2x（seq 111）设计轮产出（只读，未改代码）
+
+> 3 路只读设计（Team：param-architect / split-architect / ui-prototyper）+ Lead 决策单；均写在仓外 `D:\OAS-dev\_verify\dual-app-design-20261105\`。
+
+| 交付 | 内容 | 路径 |
+|---|---|---|
+| 参数 v2 设计 | 1096 行：设计 vs 现状（参数链路 / 动作库 23 op / **OCR 文字硬缺口：`Locator::OcrText.text` 等都是 String 字面量**（`oas-flow:652-656/712-726/787-791`）/ 分组预设 / 4 层优先级不变）；ParamDecl v2（`role` 可选、`group` 首次消费）；动作库 A1~A7 + `text_expr` DSL + T3 扩扫 + flow_ops 门禁；Runner UI 线框/状态机/API v2；Studio 面板/lint；7 个 PR（~13 人日）；14 项待裁定 | `PARAM-V2-DESIGN.md`（仓外） |
+| 双端拆分设计 | 926 行：**推荐方案 A 两仓**（oas-core / 新仓 `oas-runner`，共享 crates 用 git 依赖 tag 锁定）；Phase 0 现仓可做（exchange+notify / 两包数据 / 首启不覆盖导入 / serve.rs move-only / 版本 tag）→ Phase 1 开仓搬 Runner；通知推荐 **C：共享 exchange 目录为唯一真相 + loopback POST 即时加速**（`event_id=package_id` 幂等 + 离线矩阵）；发行包数据边界；共 14~19 人日；4 项待裁定 | `RUNNER-SPLIT-DESIGN.md`（仓外） |
+| UI 原型 | 可点静态页：`runner-params.html`（独立参数页：预设下拉/管理、按 group 分节、每参使用勾选/留空=不用、5 态）、`studio-params.html`（构建页动作库「任务参数」组 + 参数面板 + 插入参数 + T3 检查/一键声明）；4 张 1440×900 截图 | `prototype\`（仓外） |
+| 决策单 | D1~D12 逐条：选项 / 推荐 / 影响（不施行则按推荐） | `DECISION-SHEET.md`（仓外） |
+
+**本轮结论**：① 数据随仓/随包=设计已定（两包带数据 + Runner `bundled-data` 首启不覆盖）；② 参数不是 flow 步骤而是任务级契约 → 动作库加**消费类动作**（参数文字点击/等待/判断/拖动）+ 表达式插入参数 + `text_expr` 支持「参数作为 OCR 识别文字」；③ 预设 = Runner 侧命名值集合（values.json additive，四层优先级不变）；④ 拆仓=方案 A Phase 0 先行；⑤ 发布通知=exchange 文件为真相 + loopback POST 加速。**未改任何代码/UI；裁定后从 P0 开始实施。**
 
 ## 2. 本批交付（seq 110）
 
@@ -67,10 +81,10 @@ REM 3) release 分离度 E2E 复跑（仓外脚本，自动解压+起停+断言�
 powershell -NoProfile -ExecutionPolicy Bypass -File D:\OAS-dev\_verify\release-both-20261105\run-e2e.ps1
 ```
 
-1. **用户裁定参数 UI 方案**（A+C 推荐；报告 §5 有 B/D/E 与工作量）→ 再实施；不要先动 builder/app.js。
-2. **提交/推送本批**：`git add scripts/package.ps1 scripts/package-runner.ps1 scripts/dev-serve.ps1 scripts/dev-serve.bat docs packaging/README-DEPLOY.md`（**显式路径，勿 `git add -A`**）；push `dev`，ff 同步 `main`；不 tag / 不 release。
-3. **产品验收**：`RUNNER-STUDIO-SPLIT-PLAN §D.4` 19 步（V1~V7）；本批 release E2E 已强化 V1（两端独立 release），建议补真实产品任务 + 真机。
-4. **P2 清理 / Phase 5 / 产品 backlog**：见 §5 与 `PENDING-LEDGER §E-79 §M`；不阻塞。
+1. **用户裁定** `DECISION-SHEET.md` D1~D12（未回复按推荐）。
+2. **P0 实施（裁定后先做）**：① 数据入仓 + 两包带数据（`package.ps1`/`package-runner.ps1`，Runner `bundled-data` 首启不覆盖）；② exchange 目录 + `publish-index.json` + Studio 发布写入 + Runner 轮询/徽标/一键安装（= 用户第 4 条，可独立演示）。
+3. **P1+**：参数 v2 后端（`text_expr` + T3/flow_ops + values 预设 API）→ Runner 参数页 → Studio 面板/动作库 → `serve.rs` move-only + 新仓 `oas-runner`。
+4. 旧待办不变：产品验收 `§D.4` 19 步 / P2 清理 / Phase 5；**不 tag / 不 release**（除非用户明确说发布）。
 
 ## 4. 验收进度（§D.4 V1~V7）
 
@@ -109,6 +123,7 @@ node apps\oasd\ui\ui_pure_test.js   # 1559 / 159 / 151 / 0 / 6 nav
 
 ## 7. 证据
 
+- **本设计轮（seq 111）**：`D:\OAS-dev\_verify\dual-app-design-20261105\`（`PARAM-V2-DESIGN.md` / `RUNNER-SPLIT-DESIGN.md` / `DECISION-SHEET.md` / `prototype\`（2 HTML + 4 PNG + `DESIGN-NOTES.md`））。
 - **双端发行包 / 分离度 E2E**：`D:\OAS-dev\_verify\release-both-20261105\`（`REPORT.md` / `DESIGN-VS-NOW.md` / `F1-FIX.md` / `run-e2e.ps1` / `e2e-summary.json`（75/75）/ `e2e-studio.json` / `e2e-runner.json` / `zip-checks.json` / `package-files.json` / `*-entries.txt` / `studio-8788.png` / `runner-8789.png` / `logs\`）。
 - **Lead 独立复核**：`D:\OAS-dev\_verify\lead-recheck-20261105\`（`recheck.ps1` + `recheck-log.txt`：zip/BOM/路由/端口/进程/`scheduler --status` 全 PASS；`D:\OAS-dev\_verify\release-both-20261105\logs\lead-cargo-test-workspace.log` 721/0）。
 - **参数 UI 审计**：`D:\OAS-dev\_verify\ui-params-audit-20261105\PARAMS-UI-AUDIT.md`（398 行；结论/缺口/方案 A~E/测试清单）。
