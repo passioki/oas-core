@@ -4380,3 +4380,31 @@ GET /task/assets?task= → 34 个素材（全局模式）
 2. **更新检测收尾**：URL feed TTL/缓存、鉴权/私有仓 token、`packages/remote` GC。
 3. **参数编辑补齐**：`requires/expect/drag` 的 `text_expr` 结构化编辑；T3「去声明…」预填 key。
 4. 旧待办：产品验收 §D.4 / P2 清理 / Phase 5；不 tag / 不 release。
+
+# ★ §E-87 ★★★ [11-05 20:2x→20:4x] **更新检测收尾（TTL/包复用/清理）+ 参数编辑补齐（seq 117）**
+
+> 用户「好的，下一步」→ P2 更新检测性能尾巴 + 参数 v2 最后结构化编辑缺口。实现记录 `ENGINE §22.58`；断点 `RESUME` seq 117；证据 `_verify\p6-params-gaps-20261105\`。
+
+## A. 交付
+
+| # | 项 | 结果 | 状态 |
+|---|---|---|---|
+| TTL | **feed 索引 TTL 缓存** | `updates.cache_secs` 默认 60（0..=3600，0=不缓存）；Server `Mutex<HashMap<(name,index_url),{fetched_at,index}>>`；命中不 curl/不读文件；失败不刷新缓存（下次重试）；`?refresh=1` 绕过、坏值 400；响应带 `cache_secs` | ✅ |
+| reuse | **远程包缓存复用** | `packages/remote/<event_id>.oaspkg` size+sha256 匹配 → `downloaded:false,reused_cache:true`；篡改/不匹配删重下；缺 sha → `sha256_missing` | ✅ |
+| clear | **缓存清理 API** | `POST /runner/updates/cache/clear`（Runner-only）：删 remote 包+tmp、清 feed 缓存、幂等、`{ok,removed_packages,feeds_cleared}`；Studio 404 | ✅ |
+| UI | **参数编辑补齐** | 文字来源三态组件覆盖 click_target.find / **requires / expect / drag.from / drag.to** 五处（互斥/保留未知字段/param 未声明不误改）；**T3 去声明预填 key**（`OAS_TASK_CONFIG.open(...,{prefillParam})` + 同 key 去重/坏 JSON 降级） | ✅ |
+| docs | 配置示例 | `packaging/live.example.json` 增加 `cache_secs`；`README-RUNNER` 更新 TTL/refresh/复用/clear 说明 | ✅ |
+
+## B. 验证 / 产物
+
+- `cargo test --workspace` **801/0**（23 suites；oasd lib **412** = 405+7；flow 70 / runtime 167+2 / task 116）；UI **1919/159/158/0 dead/6 nav**（+51）；debug+release build exit 0（**1 warning**）；`git diff --check` clean。
+- E2E（最终包）：P0 双端 / 更新 feed / 参数链路 **ALL PASS**。
+- oas-core 重打包：Studio **76,659,481 B / `239FA854…F51E`**；Runner **37,859,610 B / `023CD7F0…EF79`**。
+- oas-runner 独立包（rev bump `78be71d`）：**37,871,134 B / `B127C0FC…66DB` / 41 entries**；8796 smoke：health 200 `surface=runner`、UI 200、Studio 路由 404、bundled-data 导入 3 任务。
+- 提交：oas-core `78be71d`（code）+ docs；oas-runner `2cf838a`；未 tag / 未 release。
+
+## C. 剩余 / 下一步
+
+1. **tag/Release 策略**与两仓版本联动（用户未要求，暂不 tag）；`--version` 打印 app 名；`-NoData`/`-SkipToolkit` 实包验证；macOS/Linux 打包。
+2. **UI 可选**：更新列表手动「刷新」按钮接 `?refresh=1`/`cache/clear`；Runner 更新列表显示缓存复用/下载区分文案；feed 的 `cache_secs` 展示（后端字段已就绪）。
+3. **旧待办**：产品验收 §D.4 / P2 清理 / Phase 5；不 tag / 不 release。

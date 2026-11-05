@@ -3072,3 +3072,31 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 - oas-core 侧回归：workspace **794/0**（含 cli 改动）、UI **1868/159/158/0/6**；debug/release build exit 0（1 warning）；P0/参数/更新 feed E2E 之前全绿（本轮代码仅 cli 新增 API）。
 - 重打包：Studio **76,647,712 B** / SHA `338C0B47…D530`；oas-core Runner **37,850,771 B** / SHA `6E9458F8…52E5`；oas-runner 独立包 **37,854,377 B** / SHA `09E8E2B5…AF45`。
 - **剩余（Phase 1c/收尾）**：tag/Release 与两仓版本联动策略（未 tag）；`--version` 仍打印 `oasd 0.1.0`；`-NoData`/`-SkipToolkit` 仅 dry-run 验证；macOS/Linux 未打包；更新检测 TTL/鉴权/GC；requires/expect/drag 结构化编辑。
+
+### 22.58 ★★★ [11-05 20:2x→20:4x] **更新检测收尾（TTL/包复用/清理）+ 参数编辑补齐（守卫/拖动 text_expr + T3 预填）（seq 117）**
+
+> 用户「好的，下一步」→ 收掉 P2 更新检测性能/缓存尾巴 + 参数 v2 最后的结构化编辑缺口。实现记录；台账 `PENDING §E-87`；断点 `RESUME` seq 117；证据 `_verify\p2-updates-20261105\`（TTL 后端测试日志在 `param-v2-backend` 之外，见 §22.58.3/提交）、`_verify\p6-params-gaps-20261105\`。
+
+#### 22.58.1 更新检测（D8）收尾
+
+- 配置 `updates.cache_secs`（默认 **60**，范围 **0..=3600**，0=不缓存；旧 live.json 兼容）；`packaging/live.example.json` 补该字段。
+- **feed 索引 TTL 缓存**：`Server.updates_cache: Mutex<HashMap<(name,index_url),{fetched_at,index}>>`；`GET /runner/updates` 命中且未过期 → 直接用缓存（**不 curl、不读文件**）；过期/无缓存 → 重新 `load_feed` 刷新；失败恒 200 + `errors[]` 且**不刷新缓存时间**（下次重试，不会把过期当新）；响应新增 `cache_secs`。
+- **手动刷新**：`GET /runner/updates?refresh=1|true|yes` 绕过缓存；`0|false|no|空` 用缓存；其它值 **400** 且不触发 fetch。
+- **远程包缓存复用**：`POST /runner/updates/install` 下载前检查 `packages/remote/<event_id>.oaspkg`，size+sha256 与事件一致 → **直接复用**（`downloaded:false,reused_cache:true`）；篡改/不匹配 → 删除重下；缺 sha 仍 `sha256_missing`；实际下载 `downloaded:true,reused_cache:false`。
+- **缓存清理**：新 `POST /runner/updates/cache/clear`（Runner-only，body 空）→ 删 `packages/remote/*.oaspkg` + 残留 `.tmp`、清 feed 索引缓存，返回 `{ok,removed_packages,feeds_cleared}`；幂等；Studio 404 surface 隔离。
+- **限制**：TTL 对本地 feed 同样生效（本地索引改写后最多滞后 cache_secs；要即时用 `refresh=1` 或 `cache_secs=0`）；已删除 feed 的缓存条目留到进程退出/clear；`packages/remote` 仍无自动 GC（手动 `cache/clear`）。
+
+#### 22.58.2 构建端参数编辑补齐
+
+- 「文字来源」三态组件从 `click_target.find[0]` 抽成通用 DOM 组件，**requires / expect / drag.from / drag.to 五处复用**：选中步骤后属性面板可结构化编辑 OCR kind/sel/文字来源/固定文本或 `text_expr`（与 `text` 互斥、切换删除另一字段、未知字段如 timeout_ms/roi/shape 原样保留；param 键未声明时仍可选中并提示，不误改）。
+- 仅对「已存在且 `kind=ocr_text`」的守卫/端点提供编辑；新增/删除守卫、kind 切换仍走高级 JSON（最小面板口径）。
+- **T3「去声明…」预填 key**：`window.OAS_TASK_CONFIG.open(task,{onSaved,prefillParam})` 扩展；`taskConfigMergePrefill` 在 GET config 成功后把 `{key,type:'text',label:key}` append 到 meta.params（同 key trim 去重；坏 JSON/非数组 → 保留原文 + 提示）；保存后回刷参数面板并自动重跑 lint。
+
+#### 22.58.3 验证
+
+- `cargo test --workspace` **801 / 0**（23 suites；oasd lib **412** = 405 + TTL/复用/清理 7；flow 70 / runtime 167+2 / task 116）；UI **1919 checks / Studio 159 / Runner 158 / 0 dead / 6 nav**（+51）；debug+release build exit 0（**1 warning** 无新增）；`git diff --check` clean。
+- 后端新增测试：计数 TcpListener 验证 TTL 命中不 curl/refresh 强制/`cache_secs=0` 每请求 fetch/本地 feed 老化；坏 feed fail-soft 重试；远程包首个 install 下载、二次 `reused_cache:true`（0 网络）、篡改缓存重下；`cache/clear` 删包/tmp/清缓存/幂等/Studio 404。
+- **E2E**（最终包）：P0 双端 / 更新 feed（本地+HTTP curl 下载安装）/ 参数链路 **ALL PASS**。
+- **oas-runner 独立包重建**（rev bump 到本批 `78be71d`）：`dist\oasd-runner-v0.1.0-win64.zip` = **37,871,134 B / SHA `B127C0FC…66DB` / 41 entries**；解压 smoke：8796 `/runner/health` 200 `surface=runner`、`GET /` UI 200、Studio 路由 404、bundled-data 首启导入 3 任务。
+- 重打包：Studio **76,659,481 B** / SHA `239FA854…F51E`；oas-core Runner **37,859,610 B** / SHA `023CD7F0…EF79`。
+- 提交：oas-core `78be71d`（code；dev=main=origin）+ 本 docs；oas-runner `2cf838a`（main；pin rev `78be71d`）；未 tag / 未 release。
