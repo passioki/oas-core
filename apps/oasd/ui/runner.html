@@ -109,10 +109,11 @@
           <div id="runner-updates-status" class="muted small" role="status" aria-live="polite">—</div>
           <div id="runner-updates-list" class="muted">（未加载）</div>
           <p class="runner-note muted small">
-            发布通知来自 Studio 的 exchange 交换区（<code>config/live.json</code> → <code>exchange.dir</code>）：
-            Studio 发布任务包时把包与发布索引写进交换区，Runner 轮询后在此列出。安装会走与手动安装相同的
-            <code>POST /runner/install</code>（sha256 / 解包 / 复检），成功后把该条标记为已安装。
-            未启用 exchange 时这里不会出现新发布，仍可用下方「本机 .oaspkg 路径」手动安装。
+            发布通知来自 Studio 的 exchange 交换区（<code>config/live.json</code> → <code>exchange.dir</code>）
+            或配置的发布源（feed）：Studio 发布任务包时把包与发布索引写进交换区，Runner 轮询后在此列出。
+            点「安装」会请求后端按来源下载/安装（<code>POST /runner/updates/install</code>，自动标记已安装）；
+            来源不可下载或需要手动接管时，仍可用下方「本机 .oaspkg 路径」手动安装。
+            未启用 exchange 时这里不会出现本机 Studio 的新发布。
           </p>
         </section>
 
@@ -518,13 +519,16 @@
     </div>
   </dialog>
 
-  <!-- PR2：已安装任务的运行值（Runner 本机 config/values.json） -->
+  <!-- PR2：已安装任务的运行值（Runner 本机 config/values.json）；P2 起按 group 分节 -->
   <dialog id="runner-config-dialog" class="task-dialog runner-config-dialog">
     <h3 id="runner-config-title">任务配置</h3>
     <p class="muted small">
       运行值保存在 Runner 本机（config/values.json）；单任务运行时使用这里的值；
-      被其他任务作为子任务调用时使用调用方的配置（PR4 生效）。
+      被其他任务作为子任务调用时使用调用方的配置（PR4 生效）。<br />
+      参数按 <code>meta.params[].group</code> 分节；取消「使用」或值留空 = 不注入（回退默认值）。
+      保存只影响下一次运行，正在跑的任务使用启动时的值。
     </p>
+    <div id="runner-config-summary" class="runner-config-summary muted small">—</div>
     <div id="runner-config-status" class="muted small" role="status" aria-live="polite">—</div>
     <form id="runner-config-form" autocomplete="off" novalidate>
       <div id="runner-config-fields" class="muted">（未加载）</div>

@@ -51,6 +51,10 @@ pub const MAX_INDEX_BYTES: u64 = 2 * 1024 * 1024;
 pub const NOTIFICATIONS_FILE_NAME: &str = "notifications.json";
 /// On-disk schema version of `notifications.json`.
 pub const NOTIFICATIONS_SCHEMA_VERSION: u32 = 1;
+/// Upper bound of a downloaded `.oaspkg` (512 MiB; mirrors `curl --max-filesize`).
+pub const MAX_PACKAGE_BYTES: u64 = 512 * 1024 * 1024;
+/// Cache subdirectory (under the packages root) for remote package downloads.
+pub const REMOTE_CACHE_DIR_NAME: &str = "remote";
 
 // ---------------------------------------------------------------------------
 // publish-index.json (schema 1)
@@ -111,6 +115,11 @@ pub struct PublishEvent {
     /// older. Additive: old indexes/Runners simply ignore it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub flow_ops: Vec<String>,
+    /// Optional absolute `http(s)://` package URL (P2 remote feeds). The local
+    /// exchange index never sets it; a remote feed may use it when it has no
+    /// `package_base`. Additive: old readers ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_url: Option<String>,
 }
 
 /// Whole `publish-index.json` document.
@@ -144,11 +153,19 @@ pub fn index_path(exchange_dir: &Path) -> PathBuf {
     exchange_dir.join(INDEX_FILE_NAME)
 }
 
-/// Read the index. Missing = empty; unreadable/invalid/unsupported = `Err`
-/// with the path in the message (the HTTP layer decides how loud to be).
+/// Read the exchange index. Missing = empty; unreadable/invalid/unsupported =
+/// `Err` with the path in the message (the HTTP layer decides how loud to be).
 pub fn read_index(exchange_dir: &Path) -> Result<PublishIndex, String> {
-    let path = index_path(exchange_dir);
-    let meta = match std::fs::metadata(&path) {
+    read_index_file(&index_path(exchange_dir))
+}
+
+/// Read/parse one `publish-index.json` at an explicit path.
+///
+/// Shared by the local exchange dir and by update feeds (P2: the same schema is
+/// served from a static web host/GitHub). Missing = empty, a present but
+/// unreadable/invalid/unsupported file is a loud `Err`.
+pub fn read_index_file(path: &Path) -> Result<PublishIndex, String> {
+    let meta = match std::fs::metadata(path) {
         Ok(meta) => meta,
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(PublishIndex::default()),
         Err(e) => return Err(format!("read `{}`: {e}", path.display())),
@@ -160,8 +177,7 @@ pub fn read_index(exchange_dir: &Path) -> Result<PublishIndex, String> {
             meta.len()
         ));
     }
-    let text =
-        std::fs::read_to_string(&path).map_err(|e| format!("read `{}`: {e}", path.display()))?;
+    let text = std::fs::read_to_string(path).map_err(|e| format!("read `{}`: {e}", path.display()))?;
     let index: PublishIndex = serde_json::from_str(&text)
         .map_err(|e| format!("publish index `{}` is invalid JSON: {e}", path.display()))?;
     if index.schema_version != INDEX_SCHEMA_VERSION {
@@ -314,6 +330,7 @@ pub fn announce_publish(
         source: input.source.clone(),
         min_engine: input.min_engine.clone(),
         flow_ops: input.flow_ops.clone(),
+        package_url: None,
     };
     let seq = upsert_event(&mut index, event, input.published_at_ms);
     write_index(exchange_dir, &index)?;
@@ -464,6 +481,448 @@ fn parse_http_base(url: &str) -> Result<(String, u16), String> {
     Ok((host, port))
 }
 
+// ---------------------------------------------------------------------------
+// Runner update feeds (P2/D8)
+// ---------------------------------------------------------------------------
+//
+// A feed is the **same `publish-index.json` schema** as the Studio exchange, but
+// it may live on a remote web host / GitHub instead of a shared directory. HTTPS
+// is fetched by spawning the **system `curl`** (Windows 10+, macOS and Linux ship
+// it) instead of adding a TLS dependency to the engine: `-f` fails on HTTP >=
+// 400, `-L` follows redirects (GitHub raw/release URLs), `-sS` keeps stderr
+// actionable, `--max-time` comes from `updates.fetch_timeout_ms` and
+// `--max-filesize` caps the transfer. The URL is one argv entry (no shell), so a
+// feed cannot inject a command.
+
+/// Where one feed's index comes from (resolved against the live config dir).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FeedSource {
+    /// Local `publish-index.json` path.
+    Local(PathBuf),
+    /// `http(s)://` URL fetched with curl.
+    Url(String),
+}
+
+/// One configured update feed resolved to concrete sources.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedFeed {
+    /// Feed name (display identity: `source` / `feed` response fields).
+    pub name: String,
+    /// Where the `publish-index.json` is read from.
+    pub source: FeedSource,
+    /// Optional package base (local dir or URL base); `None` = each event must
+    /// carry its own `package_url`.
+    pub package_base: Option<FeedSource>,
+    /// `curl` timeout from `updates.fetch_timeout_ms`.
+    pub timeout_ms: u32,
+}
+
+impl ResolvedFeed {
+    /// `"local"` / `"url"` for `GET /runner/updates.source_kind`.
+    pub fn source_kind(&self) -> &'static str {
+        match self.source {
+            FeedSource::Local(_) => "local",
+            FeedSource::Url(_) => "url",
+        }
+    }
+}
+
+/// A concrete package location for one event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PackageRef {
+    /// Local `.oaspkg` path (exchange `incoming/` or a local feed `package_base`).
+    Local(PathBuf),
+    /// `http(s)://` URL that must be downloaded before installing.
+    Remote(String),
+}
+
+impl PackageRef {
+    /// `true` when the Runner must download the package before installing.
+    pub fn download_required(&self) -> bool {
+        matches!(self, PackageRef::Remote(_))
+    }
+}
+
+/// Resolve one configured feed (P2).
+///
+/// `config_path` anchors relative local paths (same rule as `exchange.dir`); a
+/// relative path without a loaded `--config` is an error because there is no
+/// well-defined anchor directory. `timeout_ms` comes from
+/// `updates.fetch_timeout_ms`.
+pub fn resolve_feed(
+    feed: &crate::config::UpdateFeed,
+    config_path: Option<&Path>,
+    timeout_ms: u32,
+) -> Result<ResolvedFeed, String> {
+    let name = feed.name.trim();
+    if name.is_empty() {
+        return Err("feed name is empty".to_string());
+    }
+    let source = resolve_feed_source(
+        &feed.index_url,
+        config_path,
+        &format!("feed `{name}` index_url"),
+    )?;
+    let package_base = if feed.package_base.trim().is_empty() {
+        None
+    } else {
+        Some(resolve_feed_source(
+            &feed.package_base,
+            config_path,
+            &format!("feed `{name}` package_base"),
+        )?)
+    };
+    Ok(ResolvedFeed {
+        name: name.to_string(),
+        source,
+        package_base,
+        timeout_ms,
+    })
+}
+
+fn resolve_feed_source(
+    raw: &str,
+    config_path: Option<&Path>,
+    label: &str,
+) -> Result<FeedSource, String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err(format!("{label} must not be empty"));
+    }
+    if crate::config::is_http_url(value) {
+        return Ok(FeedSource::Url(value.to_string()));
+    }
+    if value.contains("://") {
+        return Err(format!(
+            "{label} `{value}` must be a local path or an http(s) URL (the Runner fetches \
+             with curl)"
+        ));
+    }
+    match crate::config::resolve_against_config_dir(config_path, value) {
+        Some(path) => Ok(FeedSource::Local(path)),
+        None => Err(format!(
+            "{label} `{value}` is relative but no `--config` file was loaded to anchor it"
+        )),
+    }
+}
+
+/// Read/parse one feed index: local file, or `curl`-fetched URL cached as a tmp
+/// file in `cache_dir` (removed either way). Size is capped for both kinds.
+pub fn load_feed(feed: &ResolvedFeed, cache_dir: &Path) -> Result<PublishIndex, String> {
+    match &feed.source {
+        FeedSource::Local(path) => {
+            if !path.is_file() {
+                return Err(format!(
+                    "feed `{}`: index not found: `{}` (relative paths resolve against the \
+                     live config directory)",
+                    feed.name,
+                    path.display()
+                ));
+            }
+            read_index_file(path).map_err(|e| format!("feed `{}`: {e}", feed.name))
+        }
+        FeedSource::Url(url) => {
+            std::fs::create_dir_all(cache_dir)
+                .map_err(|e| format!("create feed cache `{}`: {e}", cache_dir.display()))?;
+            let tmp = unique_tmp_path(cache_dir, "feed");
+            let result = fetch_to_file(url, &tmp, feed.timeout_ms, MAX_INDEX_BYTES)
+                .and_then(|_| read_index_file(&tmp))
+                .map_err(|e| format!("feed `{}` from `{url}`: {e}", feed.name));
+            let _ = std::fs::remove_file(&tmp);
+            result
+        }
+    }
+}
+
+/// Is the system `curl` executable available?
+///
+/// The engine deliberately has no TLS dependency: HTTPS update feeds use the
+/// `curl` shipped with Windows 10+/macOS/Linux. Only curl-dependent tests need
+/// this probe (they skip when it is missing); production reports the spawn
+/// failure verbatim through the API instead.
+#[cfg(test)]
+pub fn curl_available() -> bool {
+    std::process::Command::new("curl")
+        .arg("--version")
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+/// Download one URL to `dest` with the system `curl` (see section docs).
+pub fn fetch_to_file(
+    url: &str,
+    dest: &Path,
+    timeout_ms: u32,
+    max_bytes: u64,
+) -> Result<(), String> {
+    let url = url.trim();
+    if !crate::config::is_http_url(url) {
+        return Err(format!("`{url}` is not an http(s) URL"));
+    }
+    if let Some(parent) = dest.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create download dir `{}`: {e}", parent.display()))?;
+        }
+    }
+    let secs = f64::from(timeout_ms.clamp(100, 30_000)) / 1000.0;
+    let output = std::process::Command::new("curl")
+        .arg("-fsSL")
+        .arg("--max-time")
+        .arg(format!("{secs:.3}"))
+        .arg("--max-filesize")
+        .arg(max_bytes.to_string())
+        .arg("-o")
+        .arg(dest)
+        .arg(url)
+        .output()
+        .map_err(|e| {
+            format!("failed to run `curl` (required for http(s) feeds; check PATH): {e}")
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let msg: String = stderr.trim().chars().take(400).collect();
+        let msg = if msg.is_empty() {
+            "no stderr output".to_string()
+        } else {
+            msg
+        };
+        return Err(format!(
+            "curl failed for `{url}` ({}): {msg}",
+            output.status
+        ));
+    }
+    let len = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+    if len == 0 {
+        return Err(format!("curl downloaded an empty file from `{url}`"));
+    }
+    if len > max_bytes {
+        return Err(format!(
+            "downloaded {len} bytes from `{url}` (max {max_bytes})"
+        ));
+    }
+    Ok(())
+}
+
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn unique_tmp_path(dir: &Path, stem: &str) -> PathBuf {
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!(".{stem}-{}-{seq}.tmp", std::process::id()))
+}
+
+/// Why a remote package download failed (mapped to HTTP status/code by the API).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PackageDownloadError {
+    /// curl/spawn/filesystem failure (network, timeout, HTTP 404, ...).
+    Download(String),
+    /// The feed's `size_bytes` does not match the downloaded file.
+    SizeMismatch { expected: u64, actual: u64 },
+    /// The feed's `sha256` does not match the downloaded file.
+    Sha256Mismatch { expected: String, actual: String },
+    /// A remote event must declare `sha256`; unverified packages are refused.
+    MissingSha256,
+}
+
+impl PackageDownloadError {
+    /// Stable error `code` for the HTTP body.
+    pub fn code(&self) -> &'static str {
+        match self {
+            PackageDownloadError::Download(_) => "download_failed",
+            PackageDownloadError::MissingSha256 => "sha256_missing",
+            PackageDownloadError::SizeMismatch { .. }
+            | PackageDownloadError::Sha256Mismatch { .. } => "sha256_mismatch",
+        }
+    }
+
+    /// Failed transfer = 500 (feed/server side); bad content = 400.
+    pub fn status(&self) -> u16 {
+        match self {
+            PackageDownloadError::Download(_) => 500,
+            _ => 400,
+        }
+    }
+}
+
+impl std::fmt::Display for PackageDownloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PackageDownloadError::Download(msg) => write!(f, "{msg}"),
+            PackageDownloadError::SizeMismatch { expected, actual } => write!(
+                f,
+                "size mismatch: feed declares {expected} bytes, download has {actual}"
+            ),
+            PackageDownloadError::Sha256Mismatch { expected, actual } => write!(
+                f,
+                "sha256 mismatch: feed declares {expected}, download has {actual}"
+            ),
+            PackageDownloadError::MissingSha256 => write!(
+                f,
+                "remote event has no sha256; refusing to install an unverified package"
+            ),
+        }
+    }
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Download one remote `.oaspkg` into `<cache_dir>/<event_id>.oaspkg`.
+///
+/// The download goes to a sibling tmp file first and only becomes the cache file
+/// after `size_bytes`/`sha256` verification; any mismatch removes the tmp file
+/// so a corrupt/truncated download can never be installed later.
+pub fn download_package(
+    event: &PublishEvent,
+    url: &str,
+    cache_dir: &Path,
+    timeout_ms: u32,
+) -> Result<PathBuf, PackageDownloadError> {
+    let expected_sha = event.sha256.trim().to_ascii_lowercase();
+    if !is_sha256_hex(&expected_sha) {
+        return Err(PackageDownloadError::MissingSha256);
+    }
+    std::fs::create_dir_all(cache_dir).map_err(|e| {
+        PackageDownloadError::Download(format!(
+            "create package cache `{}`: {e}",
+            cache_dir.display()
+        ))
+    })?;
+    let dest = cache_dir.join(cache_file_name(&event.event_id));
+    let tmp = unique_tmp_path(cache_dir, "pkg");
+    if let Err(e) = fetch_to_file(url, &tmp, timeout_ms, MAX_PACKAGE_BYTES) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(PackageDownloadError::Download(e));
+    }
+    let actual_size = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+    if event.size_bytes > 0 && actual_size != event.size_bytes {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(PackageDownloadError::SizeMismatch {
+            expected: event.size_bytes,
+            actual: actual_size,
+        });
+    }
+    let actual_sha = match oas_task::package::sha256_file(&tmp) {
+        Ok(sha) => sha,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(PackageDownloadError::Download(format!(
+                "hash download: {e}"
+            )));
+        }
+    };
+    if !actual_sha.eq_ignore_ascii_case(&expected_sha) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(PackageDownloadError::Sha256Mismatch {
+            expected: expected_sha,
+            actual: actual_sha,
+        });
+    }
+    if dest.exists() {
+        let _ = std::fs::remove_file(&dest);
+    }
+    std::fs::rename(&tmp, &dest).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        PackageDownloadError::Download(format!(
+            "move download `{}` -> `{}`: {e}",
+            tmp.display(),
+            dest.display()
+        ))
+    })?;
+    Ok(dest)
+}
+
+/// Filesystem-safe cache name for one event id (the content-addressed suffix is
+/// kept; everything else becomes `_`). `.oaspkg` keeps the install API's
+/// extension check happy.
+pub fn cache_file_name(event_id: &str) -> String {
+    let mut safe: String = event_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe.trim_matches('_').is_empty() {
+        safe.push_str("event");
+    }
+    if safe.len() > 120 {
+        safe.truncate(120);
+    }
+    format!("{safe}.oaspkg")
+}
+
+/// Resolve where one event's `.oaspkg` lives: local exchange file, local feed
+/// `package_base`, or a remote URL (event `package_url` / feed URL base).
+///
+/// `exchange_dir` wins when set (the event came from the local exchange);
+/// otherwise `feed` must be the feed the event came from.
+pub fn resolve_package_ref(
+    event: &PublishEvent,
+    feed: Option<&ResolvedFeed>,
+    exchange_dir: Option<&Path>,
+) -> Result<PackageRef, String> {
+    if let Some(dir) = exchange_dir {
+        return Ok(PackageRef::Local(resolve_inside(dir, &event.package_file)?));
+    }
+    let Some(feed) = feed else {
+        return Err("event has no source to resolve its package from".to_string());
+    };
+    if let Some(raw) = event
+        .package_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if !crate::config::is_http_url(raw) {
+            return Err(format!(
+                "event `{}` package_url `{raw}` is not an http(s) URL",
+                event.event_id
+            ));
+        }
+        return Ok(PackageRef::Remote(raw.to_string()));
+    }
+    match &feed.package_base {
+        Some(FeedSource::Url(base)) => {
+            let file = event.package_file.trim();
+            if file.is_empty() {
+                return Err(format!("event `{}` has no package_file", event.event_id));
+            }
+            if crate::config::is_http_url(file) {
+                return Ok(PackageRef::Remote(file.to_string()));
+            }
+            Ok(PackageRef::Remote(join_url(base, file)))
+        }
+        Some(FeedSource::Local(base)) => Ok(PackageRef::Local(resolve_inside(
+            base,
+            &event.package_file,
+        )?)),
+        None => {
+            let file = event.package_file.trim();
+            if crate::config::is_http_url(file) {
+                Ok(PackageRef::Remote(file.to_string()))
+            } else {
+                Err(format!(
+                    "feed `{}` has no package_base and event `{}` has no package_url",
+                    feed.name, event.event_id
+                ))
+            }
+        }
+    }
+}
+
+fn join_url(base: &str, rel: &str) -> String {
+    format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        rel.trim_start_matches('/')
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Runner-local notifications.json (schema 1)
@@ -679,6 +1138,7 @@ mod tests {
             source: None,
             min_engine: None,
             flow_ops: Vec::new(),
+            package_url: None,
         }
     }
 
@@ -956,5 +1416,247 @@ mod tests {
         assert!(notify_runner("http://127.0.0.1:notaport", &serde_json::json!({}), 100).is_err());
         assert_eq!(parse_http_base("http://127.0.0.1:8789").unwrap(), ("127.0.0.1".to_string(), 8789));
         assert_eq!(parse_http_base("http://localhost").unwrap(), ("localhost".to_string(), 80));
+    }
+
+    // ---- P2: update feeds -------------------------------------------------
+
+    fn test_feed(name: &str, index_url: &str, package_base: &str) -> crate::config::UpdateFeed {
+        crate::config::UpdateFeed {
+            name: name.to_string(),
+            enabled: true,
+            index_url: index_url.to_string(),
+            package_base: package_base.to_string(),
+        }
+    }
+
+    #[test]
+    fn resolve_feed_accepts_local_paths_and_http_urls() {
+        let config = Path::new("pkg").join("config").join("live.json");
+        // Remote feed: no loopback rule, https is expected.
+        let remote = resolve_feed(
+            &test_feed(
+                "github",
+                "https://example.com/feed/publish-index.json",
+                "https://example.com/feed/",
+            ),
+            None,
+            8000,
+        )
+        .expect("remote feed");
+        assert_eq!(
+            remote.source,
+            FeedSource::Url("https://example.com/feed/publish-index.json".into())
+        );
+        assert_eq!(remote.source_kind(), "url");
+        assert_eq!(
+            remote.package_base,
+            Some(FeedSource::Url("https://example.com/feed/".into()))
+        );
+
+        // Local feed: a relative path is anchored at the live config dir (same
+        // rule as exchange.dir); an absolute package_base passes through.
+        let local_feed = test_feed("local", "feed/publish-index.json", "D:/shared/exchange");
+        let resolved_local = resolve_feed(&local_feed, Some(&config), 500).expect("local feed");
+        assert_eq!(
+            resolved_local.source,
+            FeedSource::Local(
+                Path::new("pkg")
+                    .join("config")
+                    .join("feed")
+                    .join("publish-index.json")
+            )
+        );
+        assert_eq!(resolved_local.source_kind(), "local");
+        assert_eq!(
+            resolved_local.package_base,
+            Some(FeedSource::Local(PathBuf::from("D:/shared/exchange")))
+        );
+        assert_eq!(resolved_local.timeout_ms, 500);
+
+        // A relative local path without --config has no anchor; other schemes are
+        // refused up front instead of becoming a confusing curl failure.
+        assert!(resolve_feed(&local_feed, None, 8000).is_err());
+        assert!(resolve_feed(&test_feed("ftp", "ftp://x/p.json", ""), None, 8000).is_err());
+        assert!(resolve_feed(&test_feed("", "x.json", ""), Some(&config), 8000).is_err());
+    }
+
+    #[test]
+    fn load_feed_reads_a_local_index_and_reports_breaks() {
+        let td = TempDir::new("load-feed");
+        let feed_dir = td.path().join("feed");
+        let mut index = PublishIndex::default();
+        index.events = vec![event("pkg-feed-1", 1)];
+        write_index(&feed_dir, &index).unwrap();
+        let resolved = ResolvedFeed {
+            name: "本地".into(),
+            source: FeedSource::Local(index_path(&feed_dir)),
+            package_base: None,
+            timeout_ms: 1000,
+        };
+        let loaded = load_feed(&resolved, &td.path().join("cache")).expect("local feed");
+        assert_eq!(loaded.events.len(), 1);
+        assert_eq!(loaded.events[0].event_id, "pkg-feed-1");
+
+        // A configured feed file that does not exist is a feed error (unlike the
+        // exchange dir, where a missing index means "nothing published yet").
+        let missing = ResolvedFeed {
+            name: "missing".into(),
+            source: FeedSource::Local(td.path().join("nope.json")),
+            package_base: None,
+            timeout_ms: 1000,
+        };
+        let err = load_feed(&missing, &td.path().join("cache")).expect_err("missing feed");
+        assert!(err.contains("not found"), "{err}");
+
+        // Invalid JSON and an oversized index are loud errors too.
+        std::fs::write(td.path().join("bad.json"), "{ not json").unwrap();
+        let bad = ResolvedFeed {
+            name: "bad".into(),
+            source: FeedSource::Local(td.path().join("bad.json")),
+            package_base: None,
+            timeout_ms: 1000,
+        };
+        assert!(load_feed(&bad, &td.path().join("cache")).is_err());
+        let big = td.path().join("big.json");
+        std::fs::write(&big, vec![b' '; (MAX_INDEX_BYTES + 1) as usize]).unwrap();
+        let big_feed = ResolvedFeed {
+            name: "big".into(),
+            source: FeedSource::Local(big),
+            package_base: None,
+            timeout_ms: 1000,
+        };
+        let err = load_feed(&big_feed, &td.path().join("cache")).expect_err("too large");
+        assert!(err.contains("max"), "{err}");
+    }
+
+    #[test]
+    fn fetch_to_file_fails_fast_for_a_silent_endpoint() {
+        // Accept the TCP connection but send nothing: curl must fail (reset /
+        // empty reply) instead of waiting for the whole --max-time. The thread is
+        // detached on purpose so a machine without curl cannot deadlock the test.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            let _ = listener.accept();
+        });
+        let td = TempDir::new("fetch-fail");
+        let err = fetch_to_file(
+            &format!("http://{addr}/feed.json"),
+            &td.path().join("out.json"),
+            1000,
+            MAX_INDEX_BYTES,
+        )
+        .expect_err("silent endpoint must fail");
+        assert!(err.contains("curl"), "{err}");
+        assert!(
+            !crate::config::is_http_url("ftp://example.com/feed.json"),
+            "fetch only accepts http(s)"
+        );
+        assert!(fetch_to_file("ftp://example.com/x", &td.path().join("x"), 1000, 1024).is_err());
+    }
+
+    #[test]
+    fn resolve_package_ref_uses_url_base_and_local_base() {
+        let td = TempDir::new("package-ref");
+        let mut ev = event("pkg-pkg-1", 1);
+        ev.package_file = "x.oaspkg".into();
+
+        // Exchange event: relative to the exchange dir, never a URL.
+        let exchange_dir = td.path().join("exchange");
+        assert_eq!(
+            resolve_package_ref(&ev, None, Some(&exchange_dir)).unwrap(),
+            PackageRef::Local(exchange_dir.join("x.oaspkg"))
+        );
+
+        // Feed URL base: joined with forward slashes.
+        let mut remote = ev.clone();
+        remote.package_url = Some("https://host/pkgs/x.oaspkg".into());
+        let url_feed = ResolvedFeed {
+            name: "web".into(),
+            source: FeedSource::Url("https://host/feed.json".into()),
+            package_base: Some(FeedSource::Url("https://host/pkgs/".into())),
+            timeout_ms: 1000,
+        };
+        assert_eq!(
+            resolve_package_ref(&remote, Some(&url_feed), None).unwrap(),
+            PackageRef::Remote("https://host/pkgs/x.oaspkg".into()),
+            "package_url wins over package_base"
+        );
+        let mut no_url = ev.clone();
+        no_url.package_file = "pkg.oaspkg".into();
+        assert_eq!(
+            resolve_package_ref(&no_url, Some(&url_feed), None).unwrap(),
+            PackageRef::Remote("https://host/pkgs/pkg.oaspkg".into())
+        );
+        assert_eq!(
+            resolve_package_ref(&no_url, Some(&url_feed), None)
+                .unwrap()
+                .download_required(),
+            true
+        );
+
+        // Local feed base: contained inside the base dir.
+        let local_feed = ResolvedFeed {
+            name: "dir".into(),
+            source: FeedSource::Local(td.path().join("feed.json")),
+            package_base: Some(FeedSource::Local(td.path().join("pkgs"))),
+            timeout_ms: 1000,
+        };
+        assert_eq!(
+            resolve_package_ref(&no_url, Some(&local_feed), None).unwrap(),
+            PackageRef::Local(td.path().join("pkgs").join("pkg.oaspkg"))
+        );
+        // No base + no package_url = not installable, loudly.
+        let bare_feed = ResolvedFeed {
+            name: "bare".into(),
+            source: FeedSource::Url("https://host/feed.json".into()),
+            package_base: None,
+            timeout_ms: 1000,
+        };
+        let err = resolve_package_ref(&no_url, Some(&bare_feed), None).expect_err("no base");
+        assert!(err.contains("package_base"), "{err}");
+        // ...unless the event itself carries an absolute package_file URL.
+        let mut abs_file = ev.clone();
+        abs_file.package_file = "https://host/pkg.oaspkg".into();
+        assert_eq!(
+            resolve_package_ref(&abs_file, Some(&bare_feed), None).unwrap(),
+            PackageRef::Remote("https://host/pkg.oaspkg".into())
+        );
+    }
+
+    #[test]
+    fn download_refuses_unverified_events_and_cache_names_are_safe() {
+        let td = TempDir::new("download-cache");
+        let mut ev = event("pkg-任务-1-abc123abc123", 1);
+        ev.sha256 = String::new();
+        let err = download_package(
+            &ev,
+            "https://host/x.oaspkg",
+            &td.path().join("cache"),
+            1000,
+        )
+        .expect_err("no sha -> refuse before downloading");
+        assert_eq!(err.code(), "sha256_missing");
+        assert_eq!(err.status(), 400);
+        assert_eq!(
+            PackageDownloadError::Download("x".into()).code(),
+            "download_failed"
+        );
+        assert_eq!(PackageDownloadError::Download("x".into()).status(), 500);
+        assert_eq!(
+            PackageDownloadError::Sha256Mismatch {
+                expected: "a".into(),
+                actual: "b".into()
+            }
+            .code(),
+            "sha256_mismatch"
+        );
+
+        assert_eq!(
+            cache_file_name("pkg-任务-1-abc123"),
+            "pkg-__-1-abc123.oaspkg"
+        );
+        assert_eq!(cache_file_name(""), "event.oaspkg");
+        assert_eq!(cache_file_name("../x"), ".._x.oaspkg");
     }
 }

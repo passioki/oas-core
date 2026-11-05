@@ -34,6 +34,12 @@
 //     click_target/wait_until with text_expr = param('key') (no new engine op),
 //     locator OCR text has a fixed/param/expression tri-state (text/text_expr
 //     mutually exclusive), and 插入参数 ▾ writes param(...) snippets.
+//   - P2 Runner params page: #runner-config-dialog groups meta.params by `group`
+//     (first-appearance order, missing group -> 通用), every row has a 使用
+//     switch + bool tri-state (未设置/是/否) + 留空=不注入 + required blocking;
+//     the updates feed adds source badges / 需下载 hints and installs through
+//     POST /runner/updates/install {event_id} (legacy path install kept as a
+//     fallback for old backends).
 'use strict';
 
 const fs = require('fs');
@@ -3946,6 +3952,7 @@ for (const id of ['page-overview', 'page-tasks', 'page-packages', 'page-queue', 
 }
 for (const token of ['/runner/health', '/runner/tasks', '/runner/packages', '/runner/install',
   '/runner/uninstall', '/runner/packages/activate', '/runner/updates', '/runner/updates/ack',
+  '/runner/updates/install',
   '/scheduler/status', '/runs/scheduler', '/config', '/instance']) {
   ok(runnerSource.includes(token), `runner.js reads ${token}`);
 }
@@ -4032,6 +4039,12 @@ const runnerHelperNames = [
   'updatesBadgeCount', 'updatesActionLabel', 'updatesCompatText', 'updatesPackageText',
   'updatesCanInstall', 'updatesInstallPath', 'updateRowText', 'updatesAckBody',
   'updatesListStatusText',
+  // P2: Runner params page (group / use switch / bool tri / summary) + feed UI.
+  'runnerParamDefaultText', 'runnerParamGroups', 'runnerParamRoleText',
+  'runnerParamTypeText', 'runnerParamSavedValue', 'runnerParamBoolTri',
+  'runnerParamUseState', 'runnerParamCollectUse', 'runnerParamSummary',
+  'runnerConfigFieldKind', 'runnerConfigIsIntegerType', 'runnerConfigCollectValues',
+  'updatesInstallBody', 'updatesSourceLabel', 'updatesDownloadHint', 'updatesIsDownloadable',
 ];
 const runnerHelperCode = runnerHelperNames
   .map((name) => extractFunctionFrom(runnerSource, name, 'runner.js'))
@@ -4213,19 +4226,44 @@ eq(
   'missing package is explained'
 );
 eq(runnerSb.updatesPackageText({ package_available: true }), '包可用', 'available package');
+
+// P2: source badges + 需下载 hint + event-id install body (feed events).
+eq(runnerSb.updatesSourceLabel({ source: 'exchange' }), '本地 Studio', 'exchange source -> 本地 Studio');
+eq(runnerSb.updatesSourceLabel({ source_kind: 'exchange' }), '本地 Studio', 'source_kind exchange -> 本地 Studio');
+eq(runnerSb.updatesSourceLabel({ source: '官方源' }), '官方源', 'a feed name is shown verbatim');
+eq(runnerSb.updatesSourceLabel({ source_kind: 'local' }), '本地目录', 'local source kind is named');
+eq(runnerSb.updatesSourceLabel({ source_kind: 'url' }), '远程源', 'url source kind is named');
+eq(runnerSb.updatesSourceLabel({}), '未知来源', 'missing source degrades to 未知来源');
+eq(runnerSb.updatesDownloadHint({ download_required: true }), '需下载', 'download_required says 需下载');
+eq(runnerSb.updatesDownloadHint({ source_kind: 'url' }), '远程下载', 'a url source is a remote download');
+eq(runnerSb.updatesDownloadHint({ source_kind: 'local' }), '', 'local sources need no download');
+eq(runnerSb.updatesInstallBody(' e1 '), { event_id: 'e1' }, 'install body trims the event id');
+eq(runnerSb.updatesInstallBody(null), { event_id: '' }, 'missing event id yields an empty body (validated in the UI)');
+
 ok(
   runnerSb.updatesCanInstall({ event_id: 'e1', package_path: 'D:/ex/incoming/a.oaspkg' }),
   'a minimal event (id + path) is installable'
 );
 ok(
+  runnerSb.updatesCanInstall({ event_id: 'e1' }),
+  'the new install endpoint only needs event_id (backend resolves the source)'
+);
+ok(
+  runnerSb.updatesCanInstall({ event_id: 'e1', download_required: true, package_available: false }),
+  'a remote event stays installable even without a local package file (backend downloads it)'
+);
+ok(
+  runnerSb.updatesCanInstall({ event_id: 'e1', source_kind: 'url', package_available: false }),
+  'url sources are downloadable, so package_available:false does not block them'
+);
+ok(
   !runnerSb.updatesCanInstall({ event_id: 'e1', package_path: 'D:/x/a.oaspkg', package_available: false }),
-  'a missing package file blocks install'
+  'a local event with a missing package file stays blocked'
 );
 ok(
   !runnerSb.updatesCanInstall({ event_id: 'e1', package_path: 'D:/x/a.oaspkg', compatible: false }),
   'an incompatible package blocks install before the server 400'
 );
-ok(!runnerSb.updatesCanInstall({ event_id: 'e1' }), 'missing package_path blocks install');
 ok(
   !runnerSb.updatesCanInstall({ package_path: 'D:/x/a.oaspkg' }),
   'missing event_id blocks install (it could not be acked)'
@@ -4233,12 +4271,12 @@ ok(
 eq(
   runnerSb.updatesInstallPath({ event_id: 'e1', package_path: '  D:/x/a.oaspkg  ' }),
   'D:/x/a.oaspkg',
-  'the install path is trimmed for POST /runner/install'
+  'the legacy fallback install path is trimmed'
 );
 eq(
   runnerSb.updatesInstallPath({ event_id: 'e1', package_available: false, package_path: 'D:/x/a.oaspkg' }),
   '',
-  'a blocked install contributes no path'
+  'a blocked local event contributes no legacy path'
 );
 eq(
   runnerSb.updatesAckBody([' e1 ', '', null, 'e2'], 'installed'),
@@ -4330,8 +4368,25 @@ ok(
   'ack POSTs /runner/updates/ack with the pure body'
 );
 ok(
-  /runnerFetchJson\(RUNNER_API\.install, \{[\s\S]{0,120}body: runnerInstallBody\(path, false\)/.test(runnerSource),
-  'the 安装 button reuses POST /runner/install with the exchange package path'
+  /updatesInstall: '\/runner\/updates\/install'/.test(runnerSource),
+  'the Runner knows the new POST /runner/updates/install route'
+);
+ok(
+  /runnerFetchJson\(RUNNER_API\.updatesInstall, \{[\s\S]{0,140}body: updatesInstallBody\(eventId\)/.test(runnerSource),
+  'the 安装 button installs through POST /runner/updates/install {event_id}'
+);
+ok(
+  /e\.status === 404[\s\S]{0,220}runnerInstallBody\(legacyPath, false\)/.test(runnerSource) &&
+    /ackUpdateEvents\(\[it\.event_id\], 'installed'\)/.test(runnerSource),
+  'old backends without the install route fall back to the legacy local-path install + installed ack'
+);
+ok(
+  /updatesSourceLabel\(it\)/.test(runnerSource) && /updateSourceCell\(/.test(runnerSource),
+  'the feed table renders the publish-source badge cell'
+);
+ok(
+  /const downloadHint = updatesDownloadHint\(it\);/.test(runnerSource),
+  'remote events show the 需下载 hint'
 );
 ok(
   /ackUpdateEvents\(\[it\.event_id\], 'installed'\)/.test(runnerSource),
@@ -4378,6 +4433,42 @@ ok(
   'the form hosts the generated field container'
 );
 ok(/id="runner-config-save"[^>]*>保存</.test(runnerHtml), 'the config form has a 保存 button');
+// P2: params page (group sections / use switch / bool tri / summary).
+ok(/id="runner-config-summary"/.test(runnerHtml), 'runner.html provides #runner-config-summary');
+ok(
+  /el\.configSummary = document\.getElementById\('runner-config-summary'\)/.test(runnerSource),
+  'the dialog binds the top summary element'
+);
+ok(
+  /按 <code>meta\.params\[\]\.group<\/code> 分节/.test(runnerHtml) &&
+    /取消「使用」或值留空 = 不注入（回退默认值）/.test(runnerHtml),
+  'the dialog copy explains group sections + 留空=不注入'
+);
+ok(
+  /runnerParamGroups\(params\)/.test(runnerSource) && /data-use/.test(runnerSource),
+  'the form renders group sections with per-param 使用 switches'
+);
+ok(
+  /runnerParamBoolTri\(saved\)/.test(runnerSource) && /runner-config-bool-/.test(runnerSource),
+  'bool params render the 未设置/是/否 tri-state select'
+);
+ok(
+  /runner-config-reset/.test(runnerSource) && /class=\"runner-config-row-hint\"|className = 'runner-config-row-hint'/.test(runnerSource),
+  'each parameter row carries a reset button + hint line'
+);
+ok(
+  /updateRunnerConfigSummary\(\)/.test(runnerSource) && /runnerParamSummary\(configParams/.test(runnerSource),
+  'the top summary is recomputed from the form'
+);
+ok(
+  /applyRunnerConfigRowErrors\(collected\.errors\)/.test(runnerSource),
+  'local required errors are mapped back to their rows'
+);
+ok(
+  /updateRunnerConfigSummary\(\)/.test(runnerSource) &&
+    /runnerParamUseState\(param, control\.value, enabled\)/.test(runnerSource),
+  'row hints use the P2 state machine (留空/默认值/必填)'
+);
 ok(
   /el\.configTitle\.textContent = '任务配置 · ' \+ name/.test(runnerSource),
   'dialog title becomes 任务配置 · <task>'
@@ -4401,11 +4492,14 @@ ok(
   'dialog saves with PUT /runner/tasks/<id>/config {values}'
 );
 ok(
-  /const controlId = 'runner-cfg-' \+ i;/.test(runnerSource) &&
+  /const controlId = 'runner-cfg-' \+ index;/.test(runnerSource) &&
     /control\.setAttribute\('data-key', key\)/.test(runnerSource),
   'config controls use index-based DOM ids + data-key (non-ASCII/space-safe)'
 );
-ok(/runnerConfigCollectValues\(configParams, fieldValues\)/.test(runnerSource), 'save collects typed values from the form');
+ok(
+  /runnerParamCollectUse\(configParams, form\.useFlags, form\.rawValues\)/.test(runnerSource),
+  'save collects use switches + raw values through the P2 collector'
+);
 ok(/configBtn\.textContent = '配置'/.test(runnerSource), 'installed task rows render a 配置 button');
 ok(
   /if \(t\.has_meta === true\) \{/.test(runnerSource) &&
@@ -4422,7 +4516,7 @@ ok(/config\/values\.json/.test(runnerHtml), 'Runner UI tells the user where loca
 // Behavioural checks for the extractable Runner config helpers.
 const runnerConfigNames = [
   'runnerConfigFieldKind', 'runnerConfigIsIntegerType', 'runnerConfigInitialValue',
-  'runnerConfigCollectValues', 'runnerConfigUrl',
+  'runnerConfigCollectValues', 'runnerConfigUrl', 'runnerParamBoolTri',
 ];
 const runnerConfigCode = runnerConfigNames
   .map((name) => extractFunctionFrom(runnerSource, name, 'runner.js'))
@@ -4516,6 +4610,122 @@ eq(
   cfgSb.runnerConfigUrl('a/b'),
   '/runner/tasks/a%2Fb/config',
   'config URL encodes slashes so a task name cannot escape the path'
+);
+
+// --- P2: Runner params page (group / use switch / bool tri / summary) --------
+eq(
+  runnerSb.runnerParamGroups([
+    { key: 'a', group: '战斗', type: 'text' },
+    { key: 'b', group: '战斗', type: 'int' },
+    { key: 'c', group: 'OCR', type: 'text' },
+    { key: 'd', type: 'bool' },
+    null,
+    'bad',
+  ]).map((g) => [g.group, g.params.map((p) => p.key)]),
+  [['战斗', ['a', 'b']], ['OCR', ['c']], ['通用', ['d']]],
+  'params group by meta.params[].group in first-appearance order (missing group -> 通用)'
+);
+eq(runnerSb.runnerParamGroups(null), [], 'missing schema has no groups');
+eq(runnerSb.runnerParamRoleText({ role: 'ocr_text' }), '识别文字', 'role=ocr_text is marked 识别文字');
+eq(runnerSb.runnerParamRoleText({ role: 'OCR_TEXT' }), '识别文字', 'role matching is case-insensitive');
+eq(runnerSb.runnerParamRoleText({}), '', 'no role -> no role badge');
+eq(runnerSb.runnerParamTypeText({ type: 'int' }), '整数', 'int type badge');
+eq(runnerSb.runnerParamTypeText({ type: 'float' }), '小数', 'float type badge');
+eq(runnerSb.runnerParamTypeText({ type: 'bool' }), '布尔', 'bool type badge');
+eq(runnerSb.runnerParamTypeText({ type: 'string', enum: ['a', 'b'] }), '枚举', 'enum type badge');
+eq(runnerSb.runnerParamTypeText({}), '文本', 'unknown type defaults to 文本');
+eq(runnerSb.runnerParamDefaultText({}), '', 'no default -> empty text');
+eq(runnerSb.runnerParamDefaultText({ default: 0 }), '0', 'zero default survives');
+eq(runnerSb.runnerParamDefaultText({ default: '' }), '（空字符串）', 'empty-string default is named');
+eq(runnerSb.runnerParamSavedValue({ key: 'k' }, { k: 0 }), 0, 'saved zero is a real value');
+eq(
+  runnerSb.runnerParamSavedValue({ key: 'k' }, { k: null }) === undefined,
+  true,
+  'null saved value counts as unset'
+);
+eq(
+  runnerSb.runnerParamSavedValue({ key: 'k' }, undefined) === undefined,
+  true,
+  'missing values object returns undefined'
+);
+eq(runnerSb.runnerParamBoolTri(true), 'true', 'bool true -> tri true');
+eq(runnerSb.runnerParamBoolTri(false), 'false', 'bool false -> tri false');
+eq(runnerSb.runnerParamBoolTri(''), '', 'blank bool -> 未设置');
+eq(runnerSb.runnerParamBoolTri(undefined), '', 'undefined bool -> 未设置');
+
+const triState = runnerSb.runnerParamUseState({ key: 'k', type: 'string', default: '默认' }, '', false);
+eq(triState.enabled, false, 'no saved value starts unused');
+eq(triState.blocked, false, 'an optional unused param is never blocked');
+ok(/不使用（回退默认值：默认）/.test(triState.hint), 'unused row explains the default fallback');
+const blankState = runnerSb.runnerParamUseState({ key: 'k', type: 'string', default: '默认' }, '', true);
+ok(/留空 = 不使用（回退默认值：默认）/.test(blankState.hint), 'enabled but blank = 不注入 (default hint)');
+const requiredBlocked = runnerSb.runnerParamUseState({ key: 'k', type: 'string', required: true }, '', false);
+eq(requiredBlocked.blocked, true, 'required without default blocks when unused');
+ok(/必填/.test(requiredBlocked.hint), 'a blocked required row says 必填');
+eq(
+  runnerSb.runnerParamUseState({ key: 'k', type: 'string', required: true, default: 'x' }, '', false).blocked,
+  false,
+  'required with a default can stay unused'
+);
+eq(runnerSb.runnerParamUseState({ key: 'b', type: 'bool' }, 'true', true).hasValue, true, 'bool tri 是 counts as a value');
+eq(runnerSb.runnerParamUseState({ key: 'b', type: 'bool' }, '', true).hasValue, false, 'bool tri 未设置 is blank');
+
+const useRes = runnerSb.runnerParamCollectUse(
+  [{ key: 'a', type: 'string' }, { key: 'b', type: 'int' }, { key: 'c', type: 'bool' }],
+  { a: true, b: false, c: true },
+  { a: 'x', b: '2', c: 'false' }
+);
+eq(useRes.ok, true, 'use-switch collection succeeds');
+eq(useRes.values, { a: 'x', c: false }, 'disabled keys are not injected; bool tri becomes a JSON bool');
+eq(useRes.setCount, 2, 'setCount counts submitted keys');
+eq(useRes.totalCount, 3, 'totalCount counts declared params');
+eq(useRes.groupCount, 1, 'groupCount counts sections (all 通用)');
+const useRequired = runnerSb.runnerParamCollectUse(
+  [{ key: 'k', type: 'string', required: true, label: '关键词' }],
+  { k: false },
+  { k: 'x' }
+);
+eq(useRequired.ok, false, 'required + 使用 off is a local validation error');
+ok(/「关键词」是必填项/.test(useRequired.errors[0]), 'the required error names the label');
+const triOnly = runnerSb.runnerParamCollectUse([{ key: 'b', type: 'bool' }], { b: true }, { b: '' });
+eq(triOnly.ok, true, 'bool 未设置 is allowed for optional params');
+eq(triOnly.values, {}, 'bool 未设置 is not written to values');
+eq(
+  runnerSb.runnerParamSummary(
+    [{ key: 'a', group: '战斗' }, { key: 'b', group: '战斗' }, { key: 'c' }],
+    { a: 'x', c: '' }
+  ),
+  '1/3 项已设置 · 分组 2 个',
+  'summary counts set/total keys + groups'
+);
+eq(runnerSb.runnerParamSummary(null, null), '0/0 项已设置 · 分组 0 个', 'empty schema summary is renderable');
+
+// bool tri + use flags extend the legacy collector without changing old calls.
+eq(
+  cfgSb.runnerConfigCollectValues([{ key: 'b', type: 'bool' }], { b: '' }).values,
+  {},
+  'bool 未设置 is omitted (3-state)'
+);
+eq(
+  cfgSb.runnerConfigCollectValues([{ key: 'a', type: 'string' }], { a: 'x' }, { a: false }).values,
+  {},
+  'useFlags:false omits the key'
+);
+ok(
+  /必填项/.test(cfgSb.runnerConfigCollectValues(
+    [{ key: 'a', type: 'string', required: true }], { a: 'x' }, { a: false }
+  ).errors[0]),
+  'a disabled required field errors locally'
+);
+eq(
+  cfgSb.runnerConfigCollectValues([{ key: 'n', type: 'int', enum: [1, 3] }], { n: '3' }).values,
+  { n: 3 },
+  'numeric enum still submits a JSON number'
+);
+eq(
+  cfgSb.runnerConfigFieldKind({ key: 'n', type: 'int', enum: [1, 3, 5] }),
+  'select',
+  'numeric enum -> select control (P2 fix)'
 );
 
 

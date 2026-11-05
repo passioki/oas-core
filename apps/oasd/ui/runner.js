@@ -39,6 +39,7 @@
     packagesActivate: '/runner/packages/activate',
     updates: '/runner/updates',
     updatesAck: '/runner/updates/ack',
+    updatesInstall: '/runner/updates/install',
     schedulerStatus: '/scheduler/status',
     schedulerConfig: '/scheduler/config',
     schedulerStart: '/runner/scheduler/start',
@@ -77,6 +78,8 @@
   let configParams = [];
   let configLoaded = false;
   let configBusy = false;
+  // P2: saved values of the open task (drives use-switch defaults + hints).
+  let configValues = {};
 
   // PR5: 安装/卸载/回滚是串行操作；期间禁用安装按钮并拒绝重复提交。
   let packagesBusy = false;
@@ -309,10 +312,12 @@
     const p = param && typeof param === 'object' ? param : {};
     const type = String(p.type === undefined || p.type === null ? '' : p.type).trim().toLowerCase();
     if (type === 'bool' || type === 'boolean') return 'bool';
+    // P2: enum also wins for numeric types (fixes "number input + hint" UI); the
+    // server still validates membership.
+    if (Array.isArray(p.enum) && p.enum.length) return 'select';
     if (type === 'int' || type === 'integer' || type === 'float' || type === 'number') {
       return 'number';
     }
-    if (Array.isArray(p.enum) && p.enum.length) return 'select';
     return 'text';
   }
 
@@ -334,9 +339,13 @@
     return runnerConfigFieldKind(p) === 'bool' ? false : '';
   }
 
-  function runnerConfigCollectValues(params, fieldValues) {
+  // fieldValues holds raw control strings. The optional `useFlags` map is the
+  // P2 per-key「使用」switch: false = 不注入（回退 default）。Missing useFlags keeps
+  // the v1 behavior (every provided field is submitted).
+  function runnerConfigCollectValues(params, fieldValues, useFlags) {
     const list = Array.isArray(params) ? params : [];
     const fields = fieldValues && typeof fieldValues === 'object' ? fieldValues : {};
+    const flags = useFlags && typeof useFlags === 'object' ? useFlags : null;
     const values = {};
     const errors = [];
     for (const param of list) {
@@ -346,11 +355,25 @@
       const rawLabel = param.label === undefined || param.label === null ? '' : String(param.label).trim();
       const label = rawLabel || key;
       const kind = runnerConfigFieldKind(param);
+      const hasDefault = param.default !== undefined && param.default !== null;
+      if (flags && flags[key] === false) {
+        // 取消使用 = 不注入；required 且无默认值时本地就拦下（否则运行期缺参）。
+        if (param.required === true && !hasDefault) {
+          errors.push('「' + label + '」是必填项（不能留空或不使用）');
+        }
+        continue;
+      }
       const raw = Object.prototype.hasOwnProperty.call(fields, key) ? fields[key] : undefined;
       let present = true;
       let value;
       if (kind === 'bool') {
-        value = raw === true || raw === 'true' || raw === 1 || raw === '1';
+        // P2: 三态（未设置 / 是 / 否）；'' = 未设置 ⇒ 不写入 values。
+        const tri = runnerParamBoolTri(raw);
+        if (!tri) {
+          present = false;
+        } else {
+          value = tri === 'true';
+        }
       } else if (kind === 'number') {
         const text = raw === undefined || raw === null ? '' : String(raw).trim();
         if (!text) {
@@ -377,17 +400,37 @@
           present = false;
         } else {
           const options = Array.isArray(param.enum) ? param.enum.map(String) : [];
-          if (options.length && options.indexOf(text) < 0) {
+          // P2: a numeric enum now renders a select; keep the JSON number type so
+          // the server schema (type=int/number) still accepts the value. Numeric
+          // enum membership stays server-authoritative (no local 400 pre-empt).
+          const paramType = String(param.type === undefined || param.type === null ? '' : param.type)
+            .trim()
+            .toLowerCase();
+          const numericType = paramType === 'int' || paramType === 'integer' ||
+            paramType === 'float' || paramType === 'number';
+          if (!numericType && options.length && options.indexOf(text) < 0) {
             errors.push('「' + label + '」必须是以下之一：' + options.join(' / '));
             continue;
           }
-          value = text;
+          if (numericType) {
+            const num = Number(text);
+            if (!isFinite(num)) {
+              errors.push('「' + label + '」必须是数字（当前：' + text + '）');
+              continue;
+            }
+            if (runnerConfigIsIntegerType(param) && !Number.isInteger(num)) {
+              errors.push('「' + label + '」必须是整数');
+              continue;
+            }
+            value = num;
+          } else {
+            value = text;
+          }
         }
       }
       if (!present) {
-        const hasDefault = param.default !== undefined && param.default !== null;
         if (param.required === true && !hasDefault) {
-          errors.push('「' + label + '」是必填项');
+          errors.push('「' + label + '」是必填项（不能留空或不使用）');
         }
         continue;
       }
@@ -399,6 +442,156 @@
   function runnerConfigUrl(task) {
     const name = String(task === undefined || task === null ? '' : task).trim();
     return '/runner/tasks/' + encodeURIComponent(name) + '/config';
+  }
+
+  // --- P2: Runner 参数页（纯函数，ui_pure_test 单独抽取执行） ------------------
+  // 按 meta.params[].group 分节 + 每参「使用」开关 + 留空=不注入 + bool 三态。
+  // 用户 D2 澄清：不做预设值集合管理，分组只用 meta.params 的 group 字段。
+
+  function runnerParamDefaultText(param) {
+    const p = param && typeof param === 'object' ? param : {};
+    if (p.default === undefined || p.default === null) return '';
+    if (p.default === '') return '（空字符串）';
+    if (typeof p.default === 'string') return p.default;
+    if (typeof p.default === 'number' || typeof p.default === 'boolean') return String(p.default);
+    try {
+      return JSON.stringify(p.default);
+    } catch (e) {
+      return String(p.default);
+    }
+  }
+
+  // Declared order preserved; empty/missing group falls into 「通用」. Groups are
+  // ordered by first appearance in meta.params.
+  function runnerParamGroups(params) {
+    const list = Array.isArray(params) ? params : [];
+    const groups = [];
+    const index = {};
+    for (const param of list) {
+      if (!param || typeof param !== 'object' || Array.isArray(param)) continue;
+      const raw = param.group === undefined || param.group === null ? '' : String(param.group).trim();
+      const group = raw || '通用';
+      if (!Object.prototype.hasOwnProperty.call(index, group)) {
+        index[group] = groups.length;
+        groups.push({ group: group, params: [] });
+      }
+      groups[index[group]].params.push(param);
+    }
+    return groups;
+  }
+
+  function runnerParamRoleText(param) {
+    const p = param && typeof param === 'object' ? param : {};
+    const role = String(p.role === undefined || p.role === null ? '' : p.role).trim().toLowerCase();
+    return role === 'ocr_text' ? '识别文字' : '';
+  }
+
+  function runnerParamTypeText(param) {
+    const p = param && typeof param === 'object' ? param : {};
+    const type = String(p.type === undefined || p.type === null ? '' : p.type).trim().toLowerCase();
+    const kind = runnerConfigFieldKind(p);
+    if (kind === 'bool') return '布尔';
+    if (Array.isArray(p.enum) && p.enum.length) return '枚举';
+    if (type === 'int' || type === 'integer') return '整数';
+    if (type === 'float') return '小数';
+    if (type === 'number') return '数字';
+    return type || '文本';
+  }
+
+  // Saved values only (never the declared default): the dialog shows defaults as
+  // hints, not as pre-filled values, so 留空 really means "不注入".
+  function runnerParamSavedValue(param, values) {
+    const p = param && typeof param === 'object' ? param : {};
+    const key = p.key === undefined || p.key === null ? '' : String(p.key).trim();
+    const src = values && typeof values === 'object' ? values : {};
+    if (!key || !Object.prototype.hasOwnProperty.call(src, key)) return undefined;
+    return src[key] === null ? undefined : src[key];
+  }
+
+  // P2 §4.4 bool tri-state: '' = 未设置（不入 values）, 'true'/'false' = JSON bool.
+  function runnerParamBoolTri(value) {
+    if (value === true) return 'true';
+    if (value === false) return 'false';
+    const text = String(value === undefined || value === null ? '' : value).trim().toLowerCase();
+    if (text === 'true' || text === '1') return 'true';
+    if (text === 'false' || text === '0') return 'false';
+    return '';
+  }
+
+  // One row's state machine: used = 使用 switch; value = control raw string.
+  // blocked = required && no default && (not used / left blank) -> save refused.
+  function runnerParamUseState(param, rawValue, useFlag) {
+    const p = param && typeof param === 'object' ? param : {};
+    const kind = runnerConfigFieldKind(p);
+    const raw = rawValue === undefined || rawValue === null
+      ? ''
+      : (kind === 'bool' ? runnerParamBoolTri(rawValue) : String(rawValue).trim());
+    const hasValue = raw !== '';
+    const hasDefault = p.default !== undefined && p.default !== null;
+    const defaultText = hasDefault ? runnerParamDefaultText(p) : '';
+    const enabled = useFlag === undefined ? hasValue : useFlag === true;
+    let hint;
+    if (!enabled) {
+      hint = hasDefault
+        ? '不使用（回退默认值：' + defaultText + '）'
+        : '未提供（运行需要时失败）';
+    } else if (!hasValue) {
+      hint = hasDefault
+        ? '留空 = 不使用（回退默认值：' + defaultText + '）'
+        : '留空 = 不使用（未提供默认值）';
+    } else {
+      hint = '';
+    }
+    const blocked = p.required === true && !hasDefault && (!enabled || !hasValue);
+    return {
+      enabled: enabled,
+      hasValue: hasValue,
+      value: raw,
+      hint: blocked ? '必填参数：不能留空或不使用' : hint,
+      blocked: blocked,
+      hasDefault: hasDefault,
+      defaultText: defaultText,
+    };
+  }
+
+  // Save-time collection: uses the extended collector (useFlags + tri bool) and
+  // adds page counters for the top summary.
+  function runnerParamCollectUse(params, useFlags, rawValues) {
+    const collected = runnerConfigCollectValues(params, rawValues, useFlags);
+    const groups = runnerParamGroups(params);
+    let totalCount = 0;
+    for (const group of groups) totalCount += group.params.length;
+    return {
+      ok: collected.ok,
+      values: collected.values,
+      errors: collected.errors,
+      setCount: Object.keys(collected.values).length,
+      totalCount: totalCount,
+      groupCount: groups.length,
+    };
+  }
+
+  // Top summary: 「N/M 项已设置 · 分组 G 个」.
+  function runnerParamSummary(params, values) {
+    const groups = runnerParamGroups(params);
+    const src = values && typeof values === 'object' ? values : {};
+    let total = 0;
+    let set = 0;
+    for (const group of groups) {
+      for (const param of group.params) {
+        const key = param && param.key !== undefined && param.key !== null
+          ? String(param.key).trim()
+          : '';
+        if (!key) continue;
+        total += 1;
+        if (!Object.prototype.hasOwnProperty.call(src, key)) continue;
+        const value = src[key];
+        if (value === undefined || value === null) continue;
+        if (typeof value === 'string' && value.trim() === '') continue;
+        set += 1;
+      }
+    }
+    return set + '/' + total + ' 项已设置 · 分组 ' + groups.length + ' 个';
   }
 
   // --- PR5: 安装包（纯函数，ui_pure_test 单独抽取执行） -----------------------
@@ -568,21 +761,63 @@
     return '包状态未知';
   }
 
-  // An install needs both the local package path (POST /runner/install body) and
-  // the event id (the follow-up ack); unknown availability/compatibility stays
-  // permissive so an older backend still lets the user install.
+  // P2: 发布源徽标。exchange（本地 Studio）→ 「本地 Studio」；feed 名原样显示；
+  // 字段缺失（旧后端）降级为「未知来源」。
+  function updatesSourceLabel(item) {
+    const it = item && typeof item === 'object' && !Array.isArray(item) ? item : {};
+    const text = function (value) {
+      return value === undefined || value === null ? '' : String(value).trim();
+    };
+    const source = text(it.source);
+    const kind = text(it.source_kind).toLowerCase();
+    if (kind === 'exchange' || source === 'exchange') return '本地 Studio';
+    if (source) return source;
+    if (kind === 'local') return '本地目录';
+    if (kind === 'url') return '远程源';
+    return '未知来源';
+  }
+
+  // P2: 远程/需下载事件仅用于文案（下载由后端 POST /runner/updates/install 做，
+  // 不作安装按钮禁用条件）。
+  function updatesDownloadHint(item) {
+    const it = item && typeof item === 'object' && !Array.isArray(item) ? item : {};
+    if (it.download_required === true) return '需下载';
+    const kind = String(it.source_kind === undefined || it.source_kind === null ? '' : it.source_kind)
+      .trim()
+      .toLowerCase();
+    if (kind === 'url') return '远程下载';
+    return '';
+  }
+
+  // POST /runner/updates/install body: the event id is enough for the backend to
+  // resolve the source, download (when needed), install and ack installed.
+  function updatesInstallBody(eventId) {
+    const id = String(eventId === undefined || eventId === null ? '' : eventId).trim();
+    return { event_id: id };
+  }
+
+  function updatesIsDownloadable(item) {
+    const it = item && typeof item === 'object' && !Array.isArray(item) ? item : {};
+    if (it.download_required === true) return true;
+    const kind = String(it.source_kind === undefined || it.source_kind === null ? '' : it.source_kind)
+      .trim()
+      .toLowerCase();
+    return kind === 'url';
+  }
+
+  // The new install endpoint needs only event_id (and a compatible package); a
+  // local event whose package file vanished is not installable, while a remote
+  // event is (the backend downloads it).
   function updatesCanInstall(item) {
     const it = item && typeof item === 'object' && !Array.isArray(item) ? item : {};
     const eventId = it.event_id === undefined || it.event_id === null
       ? ''
       : String(it.event_id).trim();
     if (!eventId) return false;
-    if (it.package_available === false) return false;
     if (it.compatible === false) return false;
-    const path = it.package_path === undefined || it.package_path === null
-      ? ''
-      : String(it.package_path).trim();
-    return path !== '';
+    if (updatesIsDownloadable(it)) return true;
+    if (it.package_available === false) return false;
+    return true;
   }
 
   function updatesInstallPath(item) {
@@ -606,6 +841,8 @@
     if (published && published !== '—') parts.push('发布 ' + published);
     parts.push(updatesCompatText(it));
     if (it.package_available === false) parts.push(updatesPackageText(it));
+    const downloadHint = updatesDownloadHint(it);
+    if (downloadHint) parts.push(downloadHint);
     return parts.join(' · ');
   }
 
@@ -635,12 +872,14 @@
       ? ''
       : String(b.error).trim();
     if (serverError) return '发布索引读取异常：' + serverError;
+    // P2: feed events can exist even while the local exchange is disabled, so
+    // actionable rows win over the exchange-disabled hint.
+    const rows = updatesVisibleRows(updatesList(b));
+    if (rows.length) return '新发布 ' + rows.length + ' 条（安装或忽略后不再显示）';
     if (!updatesEnabled(b)) {
       return '未配置 exchange 目录（config/live.json → exchange.dir）';
     }
-    const rows = updatesVisibleRows(updatesList(b));
-    if (!rows.length) return '暂无新发布';
-    return '新发布 ' + rows.length + ' 条（安装或忽略后不再显示）';
+    return '暂无新发布';
   }
 
   // --- PR6: 调度启停 / 临时运行 / scheduler.json（纯函数，ui_pure_test 单独抽取）
@@ -1039,6 +1278,7 @@
 
     el.configDialog = document.getElementById('runner-config-dialog');
     el.configTitle = document.getElementById('runner-config-title');
+    el.configSummary = document.getElementById('runner-config-summary');
     el.configForm = document.getElementById('runner-config-form');
     el.configFields = document.getElementById('runner-config-fields');
     el.configError = document.getElementById('runner-config-error');
@@ -1497,18 +1737,40 @@
   function updateInstallHint(item) {
     const it = item && typeof item === 'object' ? item : {};
     if (!updatesCanInstall(it)) {
-      if (it.package_available === false) return updatesPackageText(it);
       if (it.compatible === false) return '不兼容：当前 Runner 引擎/包能力不足，安装会被拒绝';
-      return '缺少可安装的 package_path，无法安装（后端未返回包路径）';
+      if (it.event_id === undefined || it.event_id === null || String(it.event_id).trim() === '') {
+        return '缺少 event_id，无法安装';
+      }
+      if (it.package_available === false) return updatesPackageText(it);
+      return '无法安装该发布事件';
     }
+    const downloadHint = updatesDownloadHint(it);
+    if (downloadHint) return downloadHint + '：由 Runner 后端按来源下载/安装并自动标记已安装';
     return '';
+  }
+
+  function updateSourceCell(item) {
+    const it = item && typeof item === 'object' ? item : {};
+    const cell = document.createElement('div');
+    cell.className = 'runner-update-source';
+    cell.appendChild(makeBadge(updatesSourceLabel(it), 'kind'));
+    const downloadHint = updatesDownloadHint(it);
+    if (downloadHint) {
+      const hint = document.createElement('span');
+      hint.className = 'runner-update-download';
+      hint.textContent = downloadHint;
+      cell.appendChild(hint);
+    }
+    return cell;
   }
 
   function updateCompatCell(item) {
     const it = item && typeof item === 'object' ? item : {};
     const cell = document.createElement('span');
     cell.textContent = updatesCompatText(it);
-    if (it.package_available === false) {
+    // A downloadable (remote) event has no local package file by design; only
+    // local events with a vanished file need the "包文件不存在" hint.
+    if (it.package_available === false && !updatesDownloadHint(it)) {
       const hint = document.createElement('span');
       hint.className = 'runner-update-hint';
       hint.textContent = updatesPackageText(it);
@@ -1528,8 +1790,8 @@
     const hint = updateInstallHint(it);
     install.title = hint
       ? hint
-      : '从 exchange 包路径安装该任务包（POST /runner/install），成功后标记为已安装';
-    install.addEventListener('click', function () { installUpdatePackage(it); });
+      : '安装该发布（POST /runner/updates/install；后端按来源下载/安装并自动标记已安装）';
+    install.addEventListener('click', function () { installUpdateEvent(it); });
     const dismiss = document.createElement('button');
     dismiss.type = 'button';
     dismiss.textContent = '忽略';
@@ -1552,20 +1814,20 @@
     if (el.updatesSummary) {
       el.updatesSummary.textContent = !b
         ? '—'
-        : (enabled
-          ? 'exchange · ' + rows.length + ' 条新发布'
-          : 'exchange 未启用');
+        : (rows.length
+          ? (enabled ? 'exchange' : '发布源') + ' · ' + rows.length + ' 条新发布'
+          : (enabled ? 'exchange · 暂无新发布' : 'exchange 未启用'));
     }
     const statusKind = err || serverError
       ? 'err'
-      : (enabled && rows.length ? 'ok' : '');
+      : (rows.length ? 'ok' : '');
     setUpdatesStatus(updatesListStatusText(b, err), statusKind);
     if (!el.updatesList) return;
     if (!b) {
       el.updatesList.textContent = '（未加载）';
       return;
     }
-    if (!enabled) {
+    if (!enabled && !rows.length) {
       el.updatesList.textContent = '未配置 exchange 目录（config/live.json → exchange.dir）';
       return;
     }
@@ -1578,6 +1840,7 @@
         { text: runnerValueText(it.task_id), title: updateRowText(it) },
         { text: version, cls: 'runner-update-version' },
         makeBadge(updatesActionLabel(it.action), updateActionBadgeClass(it.action)),
+        updateSourceCell(it),
         runnerTimeText(it.published_at_ms),
         updateCompatCell(it),
         updateRowActions(it),
@@ -1585,7 +1848,7 @@
     });
     renderTable(
       el.updatesList,
-      ['任务', '版本', '动作', '发布时间', '兼容性', '操作'],
+      ['任务', '版本', '动作', '来源', '发布时间', '兼容性', '操作'],
       tableRows,
       '暂无新发布'
     );
@@ -1622,32 +1885,79 @@
     }
   }
 
-  async function installUpdatePackage(item) {
+  // P2: install one publish event through the backend (it resolves the source,
+  // downloads when needed, installs and acks installed). Old backends without
+  // POST /runner/updates/install fall back to the legacy local-path install + ack
+  // when the event still carries package_path.
+  async function installUpdateEvent(item) {
     if (updatesBusy || packagesBusy) return;
     const it = item && typeof item === 'object' ? item : {};
-    const path = updatesInstallPath(it);
-    if (!path) {
-      setUpdatesStatus('无法安装：' + updateInstallHint(it), 'err');
+    const eventId = it.event_id === undefined || it.event_id === null
+      ? ''
+      : String(it.event_id).trim();
+    if (!eventId) {
+      setUpdatesStatus('无法安装：缺少 event_id', 'err');
+      return;
+    }
+    if (it.compatible === false) {
+      setUpdatesStatus('无法安装：' + updatesCompatText(it), 'err');
       return;
     }
     setUpdatesBusy(true);
-    setUpdatesStatus('安装中…（sha256 / 解包 / 复检）', '');
+    const downloadHint = updatesDownloadHint(it);
+    setUpdatesStatus(
+      downloadHint
+        ? '下载并安装中…（由 Runner 按来源下载，完成后自动标记已安装）'
+        : '安装中…（后端按来源安装并自动标记已安装）',
+      ''
+    );
     try {
-      const result = await runnerFetchJson(RUNNER_API.install, {
-        method: 'POST',
-        body: runnerInstallBody(path, false),
-      });
+      let result;
+      try {
+        result = await runnerFetchJson(RUNNER_API.updatesInstall, {
+          method: 'POST',
+          body: updatesInstallBody(eventId),
+        });
+      } catch (e) {
+        // Graceful degradation for a backend that has no /runner/updates/install
+        // yet: only a 404 fallback is safe (it means "route not implemented").
+        const legacyPath = updatesInstallPath(it);
+        if (!(e && e.status === 404) || !legacyPath) throw e;
+        result = await runnerFetchJson(RUNNER_API.install, {
+          method: 'POST',
+          body: runnerInstallBody(legacyPath, false),
+        });
+        const ackError = await ackUpdateEvents([it.event_id], 'installed');
+        if (ackError) {
+          result = Object.assign({}, result, { ack_error: ackError });
+        }
+      }
+      // Two response shapes are understood: the P2 install endpoint returns
+      // {installed:{task_id,...}, warning?}, the legacy /runner/install returns
+      // {task_id,...}. Both collapse to one message.
+      const resultObj = result && typeof result === 'object' ? result : {};
+      const installed = resultObj.installed && typeof resultObj.installed === 'object'
+        ? resultObj.installed
+        : resultObj;
+      const rawTask = installed.task_id !== undefined && installed.task_id !== null
+        ? installed.task_id
+        : (installed.task !== undefined && installed.task !== null ? installed.task : '');
       const taskName = runnerValueText(
-        result.task_id !== undefined && result.task_id !== null ? result.task_id : it.task_id
+        rawTask !== undefined && rawTask !== null && rawTask !== '' ? rawTask : it.task_id
       );
-      const ackError = await ackUpdateEvents([it.event_id], 'installed');
+      const warning = resultObj.ack_error
+        ? String(resultObj.ack_error)
+        : (resultObj.warning !== undefined && resultObj.warning !== null
+          ? String(resultObj.warning)
+          : '');
       await loadPackagesPage();
       await loadRunnerUpdates();
+      await loadTasksPage();
       setUpdatesStatus(
-        ackError
-          ? '已安装 ' + taskName + '，但标记发布事件失败：' + ackError
+        warning
+          ? '已安装 ' + taskName + '，但标记发布事件失败：' + warning
           : '已安装 ' + taskName + '（发布事件已标记为已安装）',
-        ackError ? 'warn' : 'ok'
+        warning ? 'warn' : 'ok'
       );
       setPageStatus('已从新发布安装：' + taskName, 'ok');
       updateLastRefresh();
@@ -1824,104 +2134,275 @@
     return bits.join(' · ');
   }
 
+  // P2: read the current form into {useFlags, rawValues} for save/summary.
+  function readRunnerConfigForm() {
+    const useFlags = {};
+    const rawValues = {};
+    if (!el.configFields) return { useFlags: useFlags, rawValues: rawValues };
+    const uses = el.configFields.querySelectorAll('input[data-use]');
+    for (const use of uses) {
+      const key = use.getAttribute('data-use');
+      if (key) useFlags[key] = use.checked;
+    }
+    const controls = el.configFields.querySelectorAll('input[data-key], select[data-key]');
+    for (const control of controls) {
+      const key = control.getAttribute('data-key');
+      if (!key) continue;
+      rawValues[key] = control.value;
+    }
+    return { useFlags: useFlags, rawValues: rawValues };
+  }
+
+  function runnerParamByKey(key) {
+    for (const param of configParams) {
+      if (!param || typeof param !== 'object') continue;
+      const paramKey = param.key === undefined || param.key === null ? '' : String(param.key).trim();
+      if (paramKey === key) return param;
+    }
+    return null;
+  }
+
+  // Refresh one row: 使用 switch disables the control; hint reflects
+  // default/留空/required semantics; blocked rows are red.
+  function refreshRunnerConfigRow(row) {
+    if (!row) return;
+    const use = row.querySelector('input[data-use]');
+    const control = row.querySelector('input[data-key], select[data-key]');
+    const hint = row.querySelector('.runner-config-row-hint');
+    const err = row.querySelector('.runner-config-row-err');
+    if (!use || !control) return;
+    const key = row.getAttribute('data-key') || '';
+    const param = runnerParamByKey(key) || {};
+    const enabled = use.checked === true;
+    row.classList.toggle('disabled', !enabled);
+    control.disabled = !enabled;
+    const state = runnerParamUseState(param, control.value, enabled);
+    const base = runnerConfigHintText(param, runnerConfigFieldKind(param));
+    if (hint) hint.textContent = [base, state.hint].filter(Boolean).join(' · ');
+    row.classList.toggle('blocked', state.blocked || !!(err && err.textContent));
+  }
+
+  function refreshAllRunnerConfigRows() {
+    if (!el.configFields) return;
+    const rows = el.configFields.querySelectorAll('.runner-config-row');
+    for (const row of rows) refreshRunnerConfigRow(row);
+  }
+
+  // Top summary「N/M 项已设置 · 分组 G 个」from the enabled + non-blank controls.
+  function updateRunnerConfigSummary() {
+    if (!el.configSummary) return;
+    const form = readRunnerConfigForm();
+    const visible = {};
+    for (const key of Object.keys(form.rawValues)) {
+      if (form.useFlags[key] === false) continue;
+      visible[key] = form.rawValues[key];
+    }
+    el.configSummary.textContent = runnerParamSummary(configParams, visible);
+  }
+
+  function runnerParamTypeBadges(param) {
+    const wrap = document.createElement('div');
+    wrap.className = 'runner-config-types';
+    wrap.appendChild(makeBadge(runnerParamTypeText(param), 'kind'));
+    const roleText = runnerParamRoleText(param);
+    if (roleText) wrap.appendChild(makeBadge(roleText, 'warn'));
+    if (param && param.required === true) wrap.appendChild(makeBadge('必填', 'warn'));
+    return wrap;
+  }
+
+  function buildRunnerConfigRow(param, index) {
+    const p = param && typeof param === 'object' ? param : {};
+    const key = p.key === undefined || p.key === null ? '' : String(p.key).trim();
+    if (!key) return null;
+    const rawLabel = p.label === undefined || p.label === null ? '' : String(p.label).trim();
+    const labelText = rawLabel || key;
+    const kind = runnerConfigFieldKind(p);
+    const saved = runnerParamSavedValue(p, configValues);
+    const controlId = 'runner-cfg-' + index;
+
+    const row = document.createElement('div');
+    row.className = 'runner-config-row';
+    row.id = 'runner-config-row-' + index;
+    row.setAttribute('data-key', key);
+    row.setAttribute('data-label', labelText);
+
+    const useLabel = document.createElement('label');
+    useLabel.className = 'runner-config-use';
+    const use = document.createElement('input');
+    use.type = 'checkbox';
+    use.id = 'runner-config-use-' + index;
+    use.setAttribute('data-use', key);
+    use.checked = saved !== undefined;
+    useLabel.append(use, document.createTextNode(' 使用'));
+
+    const meta = document.createElement('div');
+    meta.className = 'runner-config-meta';
+    const label = document.createElement('label');
+    label.className = 'runner-config-label';
+    label.setAttribute('for', controlId);
+    label.textContent = labelText;
+    const keyEl = document.createElement('span');
+    keyEl.className = 'runner-config-key';
+    keyEl.textContent = key;
+    label.appendChild(keyEl);
+    meta.appendChild(label);
+    if (p.description !== undefined && p.description !== null && String(p.description).trim() !== '') {
+      const desc = document.createElement('div');
+      desc.className = 'runner-config-desc';
+      desc.textContent = String(p.description);
+      meta.appendChild(desc);
+    }
+    meta.appendChild(runnerParamTypeBadges(p));
+
+    const controlWrap = document.createElement('div');
+    controlWrap.className = 'runner-config-control';
+    let control;
+    if (kind === 'bool') {
+      // P2: bool 三态（未设置 / 是 / 否）；'' = 未设置 ⇒ 不写入 values。
+      control = document.createElement('select');
+      control.id = 'runner-config-bool-' + index;
+      const tri = saved === undefined ? '' : runnerParamBoolTri(saved);
+      for (const [value, text] of [['', '未设置'], ['true', '是'], ['false', '否']]) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = text;
+        control.appendChild(option);
+      }
+      control.value = tri;
+    } else if (kind === 'number') {
+      control = document.createElement('input');
+      control.type = 'number';
+      control.inputMode = 'decimal';
+      control.step = runnerConfigIsIntegerType(p) ? '1' : 'any';
+      if (p.min !== undefined && p.min !== null && p.min !== '' && isFinite(Number(p.min))) {
+        control.min = String(Number(p.min));
+      }
+      if (p.max !== undefined && p.max !== null && p.max !== '' && isFinite(Number(p.max))) {
+        control.max = String(Number(p.max));
+      }
+      control.value = saved === undefined ? '' : String(saved);
+    } else if (kind === 'select') {
+      control = document.createElement('select');
+      const options = (Array.isArray(p.enum) ? p.enum : []).map(String);
+      const emptyOption = document.createElement('option');
+      emptyOption.value = '';
+      emptyOption.textContent = p.default !== undefined && p.default !== null
+        ? '（默认：' + runnerParamDefaultText(p) + '）'
+        : '（未设置）';
+      control.appendChild(emptyOption);
+      for (const optionText of options) {
+        const option = document.createElement('option');
+        option.value = optionText;
+        option.textContent = optionText;
+        control.appendChild(option);
+      }
+      const current = saved === undefined ? '' : String(saved);
+      control.value = options.indexOf(current) >= 0 ? current : '';
+    } else {
+      control = document.createElement('input');
+      control.type = 'text';
+      control.value = saved === undefined ? '' : String(saved);
+    }
+    control.name = controlId;
+    control.setAttribute('data-key', key);
+    if (p.required === true) control.setAttribute('aria-required', 'true');
+    controlWrap.appendChild(control);
+
+    const actions = document.createElement('div');
+    actions.className = 'runner-config-row-actions';
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'runner-config-reset';
+    reset.textContent = '重置';
+    reset.title = '清空该参数的值（留空 = 不注入，回退默认值）';
+    actions.appendChild(reset);
+
+    const hint = document.createElement('div');
+    hint.className = 'runner-config-row-hint';
+    const rowErr = document.createElement('div');
+    rowErr.className = 'runner-config-row-err';
+
+    use.addEventListener('change', function () { refreshRunnerConfigRow(row); updateRunnerConfigSummary(); });
+    control.addEventListener('change', function () {
+      rowErr.textContent = '';
+      refreshRunnerConfigRow(row);
+      updateRunnerConfigSummary();
+    });
+    control.addEventListener('input', function () { refreshRunnerConfigRow(row); updateRunnerConfigSummary(); });
+    reset.addEventListener('click', function () {
+      control.value = '';
+      rowErr.textContent = '';
+      refreshRunnerConfigRow(row);
+      updateRunnerConfigSummary();
+      if (typeof control.focus === 'function') control.focus();
+    });
+
+    row.append(useLabel, meta, controlWrap, actions, hint, rowErr);
+    return row;
+  }
+
   function renderRunnerConfigFields(params, values) {
     if (!el.configFields) return;
     clearNode(el.configFields);
     el.configFields.className = '';
+    configValues = values && typeof values === 'object' ? values : {};
     if (!params.length) {
-      el.configFields.textContent = '该任务没有配置项';
+      el.configFields.textContent = '该任务没有配置项（编辑端未声明 meta.params）';
       el.configFields.className = 'runner-config-empty';
+      updateRunnerConfigSummary();
       return;
     }
-    for (let i = 0; i < params.length; i++) {
-      const param = params[i] && typeof params[i] === 'object' ? params[i] : {};
-      const key = param.key === undefined || param.key === null ? '' : String(param.key).trim();
-      if (!key) continue;
-      const kind = runnerConfigFieldKind(param);
-      const initial = runnerConfigInitialValue(param, values);
-      const rawLabel = param.label === undefined || param.label === null ? '' : String(param.label).trim();
-      const labelText = rawLabel || key;
-      const controlId = 'runner-cfg-' + i;
-
-      const field = document.createElement('div');
-      field.className = 'runner-config-field';
-
-      const label = document.createElement('label');
-      label.setAttribute('for', controlId);
-      label.textContent = labelText;
-      if (param.required === true) {
-        const required = document.createElement('span');
-        required.className = 'runner-config-required';
-        required.textContent = '＊必填';
-        label.appendChild(required);
+    const groups = runnerParamGroups(params);
+    let index = 0;
+    for (const group of groups) {
+      const details = document.createElement('details');
+      details.className = 'runner-config-group';
+      details.open = true;
+      const summary = document.createElement('summary');
+      summary.textContent = group.group;
+      const count = document.createElement('span');
+      count.className = 'runner-config-group-count';
+      count.textContent = group.params.length + ' 项';
+      summary.appendChild(count);
+      details.appendChild(summary);
+      const body = document.createElement('div');
+      body.className = 'runner-config-group-body';
+      for (const param of group.params) {
+        const row = buildRunnerConfigRow(param, index);
+        index += 1;
+        if (row) body.appendChild(row);
       }
-      field.appendChild(label);
-
-      if (param.description) {
-        const desc = document.createElement('div');
-        desc.className = 'runner-config-desc';
-        desc.textContent = String(param.description);
-        field.appendChild(desc);
-      }
-
-      let control;
-      if (kind === 'bool') {
-        control = document.createElement('input');
-        control.type = 'checkbox';
-        control.checked = initial === true;
-      } else if (kind === 'number') {
-        control = document.createElement('input');
-        control.type = 'number';
-        control.inputMode = 'decimal';
-        control.step = runnerConfigIsIntegerType(param) ? '1' : 'any';
-        if (param.min !== undefined && param.min !== null && param.min !== '' &&
-            isFinite(Number(param.min))) {
-          control.min = String(Number(param.min));
-        }
-        if (param.max !== undefined && param.max !== null && param.max !== '' &&
-            isFinite(Number(param.max))) {
-          control.max = String(Number(param.max));
-        }
-        control.value = initial === undefined || initial === null || initial === ''
-          ? '' : String(initial);
-      } else if (kind === 'select') {
-        control = document.createElement('select');
-        const options = param.enum.map(String);
-        const current = initial === undefined || initial === null ? '' : String(initial);
-        const emptyOption = document.createElement('option');
-        emptyOption.value = '';
-        emptyOption.textContent = param.default !== undefined && param.default !== null
-          ? '（默认：' + runnerConfigDefaultText(param.default) + '）'
-          : '（未设置）';
-        control.appendChild(emptyOption);
-        for (const optionText of options) {
-          const option = document.createElement('option');
-          option.value = optionText;
-          option.textContent = optionText;
-          control.appendChild(option);
-        }
-        control.value = options.indexOf(current) >= 0 ? current : '';
-      } else {
-        control = document.createElement('input');
-        control.type = 'text';
-        control.value = initial === undefined || initial === null ? '' : String(initial);
-      }
-      control.id = controlId;
-      control.name = controlId;
-      control.setAttribute('data-key', key);
-      if (param.required === true) control.setAttribute('aria-required', 'true');
-      field.appendChild(control);
-
-      const hintText = runnerConfigHintText(param, kind);
-      if (hintText) {
-        const hint = document.createElement('div');
-        hint.className = 'runner-config-hint';
-        hint.textContent = hintText;
-        field.appendChild(hint);
-      }
-      el.configFields.appendChild(field);
+      details.appendChild(body);
+      el.configFields.appendChild(details);
     }
+    refreshAllRunnerConfigRows();
+    updateRunnerConfigSummary();
   }
+
+  // Map server errors back to their row (400 errors name the key/label). Rows
+  // are highlighted and the message is repeated under the row.
+  function applyRunnerConfigRowErrors(errors) {
+    if (!el.configFields) return;
+    const rows = el.configFields.querySelectorAll('.runner-config-row');
+    for (const row of rows) {
+      const err = row.querySelector('.runner-config-row-err');
+      if (err) err.textContent = '';
+    }
+    const lines = Array.isArray(errors) ? errors : [];
+    for (const line of lines) {
+      const text = String(line === undefined || line === null ? '' : line);
+      if (!text) continue;
+      for (const row of rows) {
+        const key = row.getAttribute('data-key') || '';
+        const label = row.getAttribute('data-label') || '';
+        if (!((key && text.indexOf(key) >= 0) || (label && text.indexOf(label) >= 0))) continue;
+        const err = row.querySelector('.runner-config-row-err');
+        if (err && !err.textContent) err.textContent = text;
+      }
+    }
+    refreshAllRunnerConfigRows();
+  }
+
 
   function closeRunnerConfigDialog() {
     if (!el.configDialog) return;
@@ -1974,9 +2455,11 @@
     if (!el.configDialog || !name) return;
     configTask = name;
     configParams = [];
+    configValues = {};
     configLoaded = false;
     configBusy = false;
     if (el.configTitle) el.configTitle.textContent = '任务配置 · ' + name;
+    if (el.configSummary) el.configSummary.textContent = '—';
     if (el.configStatus) {
       el.configStatus.textContent = '读取中…';
       el.configStatus.className = 'muted small';
@@ -1999,18 +2482,8 @@
   async function saveRunnerConfig() {
     if (configBusy || !configLoaded || !configTask) return;
     const task = configTask;
-    const fieldValues = {};
-    if (el.configFields) {
-      const controls = Array.prototype.slice.call(
-        el.configFields.querySelectorAll('input[data-key], select[data-key]')
-      );
-      for (const control of controls) {
-        const key = control.getAttribute('data-key');
-        if (!key) continue;
-        fieldValues[key] = control.type === 'checkbox' ? control.checked : control.value;
-      }
-    }
-    const collected = runnerConfigCollectValues(configParams, fieldValues);
+    const form = readRunnerConfigForm();
+    const collected = runnerParamCollectUse(configParams, form.useFlags, form.rawValues);
     if (!collected.ok) {
       if (el.configError) {
         el.configError.textContent = collected.errors.map(function (line) {
@@ -2021,8 +2494,10 @@
         el.configStatus.textContent = '未保存：' + collected.errors.length + ' 处校验错误';
         el.configStatus.className = 'muted small err';
       }
+      applyRunnerConfigRowErrors(collected.errors);
       return;
     }
+    applyRunnerConfigRowErrors([]);
     configBusy = true;
     if (el.configSave) el.configSave.disabled = true;
     if (el.configError) el.configError.textContent = '';
@@ -2049,6 +2524,7 @@
         message = '配置保存失败：\n' + e.details.map(function (line) {
           return '· ' + line;
         }).join('\n');
+        applyRunnerConfigRowErrors(e.details);
       } else {
         message = '配置保存失败：' + runnerErrorText(e);
       }

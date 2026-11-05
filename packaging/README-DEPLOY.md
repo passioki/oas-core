@@ -32,6 +32,7 @@
   ```
   Studio 发布 `.oaspkg` 后写 `publish-index.json` + `incoming/` 副本；Runner「安装包」页出现「新发布（来自 Studio）」列表与导航徽标，一键安装（仍走 sha256/flow_ops/min_engine 校验）。**文件是唯一真相**：Runner/Studio 谁先启动、只启动一个都能工作；未配置 exchange 时保持现状（手动填包路径安装）。
 - 升级：只覆盖程序文件（`oasd.exe`/`ui`/`models`/`adb`/`bundled-data`/`*.bat`/README/VERSION/BUILD-INFO），**不要覆盖数据目录**（`tasks/ assets/ frames/ relations/ templates/ config/ packages/ scheduler.json runs/ logs/`）。
+- **更新检测（updates feed）**：任务包发布后可像软件更新一样被检测到——Runner `config/live.json` 的 `updates.feeds` 支持**本地 JSON 路径**或 **http(s) URL**（GitHub raw/Release/静态站点）；远程包由 Runner 用系统 `curl` 下载并校验 sha256 后安装。索引格式同 exchange `publish-index.json`，可用仓库脚本 `scripts/make-update-feed.ps1 -PackagesDir dist/packages -PackageBaseUrl <发布地址> -CopyPackages` 生成后上传到 GitHub Release/静态站点。**不做预设值集合管理**（用户澄清）。
 
 ## 0. V0.1.0 新增
 

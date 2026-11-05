@@ -47,8 +47,9 @@
 //!   GET  /runner/run/status -> status of the current/last temporary run (PR6)
 //!   GET  /runner/tasks/<id>/config  -> Runner task values + param schema (PR2)
 //!   PUT  /runner/tasks/<id>/config  -> validate + store Runner task values (PR2)
-//!   GET  /runner/updates  -> publish events from the shared exchange dir (P0-1a)
+//!   GET  /runner/updates  -> publish events from the exchange dir + update feeds (P0-1a/P2)
 //!   POST /runner/updates/ack -> Runner-local seen state (`dismissed`/`installed`, P0-1a)
+//!   POST /runner/updates/install -> install one update event (downloads URL packages; P2)
 //!   POST /runner/notify   -> best-effort publish hint (never installs; P0-1a)
 //!   POST /task/publish    -> build one .oaspkg (Studio only, PR5)
 //!   GET  /task/package    -> Studio package history (PR5)
@@ -192,7 +193,7 @@ pub fn route_owner(method: &str, path_only: &str) -> Option<RouteOwner> {
             "/scheduler/config" | "/scheduler/reset" | "/runs/delete" | "/runner/install"
             | "/runner/uninstall" | "/runner/packages/activate" | "/runner/run"
             | "/runner/scheduler/start" | "/runner/scheduler/stop" | "/runner/updates/ack"
-            | "/runner/notify" => Some(Runner),
+            | "/runner/updates/install" | "/runner/notify" => Some(Runner),
 
             // The device config is the one physical resource both surfaces use.
             "/instance" => Some(Both),
@@ -608,6 +609,10 @@ pub struct Server {
     /// P0-1a test seam: pinned Runner seen store (`config/notifications.json`).
     #[cfg(test)]
     notifications_path_override: Option<PathBuf>,
+    /// P2 test seam: pinned update feeds (`config.updates`) so tests never
+    /// fetch a configured real feed (they point at temp dirs / a local fixture).
+    #[cfg(test)]
+    updates_override: Option<crate::config::UpdatesConfig>,
     #[cfg(feature = "ocr")]
     ocr: Option<Arc<Mutex<oas_ocr::onnx::RecEngine>>>,
     #[cfg(feature = "ocr")]
@@ -621,6 +626,31 @@ type LiveCaptureFn = dyn Fn() -> Result<(String, Frame), String> + Send + Sync;
 /// Test-only replacement for one live tap `(x, y) -> Result<(), String>`.
 #[cfg(test)]
 type TapFn = dyn Fn(i32, i32) -> Result<(), String> + Send + Sync;
+
+/// One update event with provenance, shared by `GET /runner/updates` and
+/// `POST /runner/updates/install` (P0-1a local exchange + P2 update feeds).
+struct LoadedUpdate {
+    event: exchange::PublishEvent,
+    /// `"exchange"` or the feed name; mirrors the `source` response field.
+    source: String,
+    /// `"local"` / `"url"`: the origin of the feed index (exchange = local).
+    source_kind: &'static str,
+    /// Local exchange dir for exchange events (`package_file` is relative to it).
+    exchange_dir: Option<PathBuf>,
+    /// The resolved feed for feed events (`package_base` / `package_url`).
+    feed: Option<exchange::ResolvedFeed>,
+}
+
+impl LoadedUpdate {
+    /// Concrete package location for this event (local path or remote URL).
+    fn package_ref(&self) -> Result<exchange::PackageRef, String> {
+        exchange::resolve_package_ref(
+            &self.event,
+            self.feed.as_ref(),
+            self.exchange_dir.as_deref(),
+        )
+    }
+}
 
 /// Grab one device frame (used by the live preview and WebSocket stream).
 fn capture_device_frame(adb: &Adb) -> Result<(String, Frame), String> {
@@ -927,6 +957,8 @@ impl Server {
             exchange_override: None,
             #[cfg(test)]
             notifications_path_override: None,
+            #[cfg(test)]
+            updates_override: None,
             #[cfg(feature = "ocr")]
             ocr: None,
             #[cfg(feature = "ocr")]
@@ -1053,6 +1085,13 @@ impl Server {
     #[cfg(test)]
     fn with_notifications_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.notifications_path_override = Some(path.into());
+        self
+    }
+
+    /// Test seam: pin the P2 update feeds (`config.updates`).
+    #[cfg(test)]
+    fn with_updates_config(mut self, cfg: crate::config::UpdatesConfig) -> Self {
+        self.updates_override = Some(cfg);
         self
     }
 
@@ -1848,6 +1887,9 @@ impl Server {
             // --- P0-1a: Studio → Runner publish exchange (Runner only) ---
             ("GET", "/runner/updates") => self.handle_runner_updates(&mut out),
             ("POST", "/runner/updates/ack") => self.handle_runner_updates_ack(&mut out, &body),
+            ("POST", "/runner/updates/install") => {
+                self.handle_runner_updates_install(&mut out, &body)
+            }
             ("POST", "/runner/notify") => self.handle_runner_notify(&mut out, &body),
             // --- PR6: embedded scheduler + temporary Runner run (Runner only) ---
             ("POST", "/runner/scheduler/start") => self.handle_runner_scheduler_start(&mut out),
@@ -8273,33 +8315,114 @@ impl Server {
         }
     }
 
-    /// `GET /runner/updates` — published task packages from the exchange dir.
+    /// Update feeds config (`config.updates`; test override wins, default off).
+    fn updates_config(&self) -> crate::config::UpdatesConfig {
+        #[cfg(test)]
+        if let Some(cfg) = &self.updates_override {
+            return cfg.clone();
+        }
+        crate::config::global()
+            .map(|cfg| cfg.updates.clone())
+            .unwrap_or_default()
+    }
+
+    /// Is at least one update source active (local exchange or an enabled feed)?
+    fn update_sources_enabled(&self) -> bool {
+        if self.exchange_dir().is_some() {
+            return true;
+        }
+        let cfg = self.updates_config();
+        cfg.enabled && cfg.feeds.iter().any(|feed| feed.enabled)
+    }
+
+    /// Cache dir for fetched feed indexes and downloaded `.oaspkg` files
+    /// (`<packages>/remote`; `remote/<event_id>.oaspkg` is the documented path).
+    fn remote_cache_dir(&self) -> PathBuf {
+        self.packages_layout()
+            .root
+            .join(exchange::REMOTE_CACHE_DIR_NAME)
+    }
+
+    /// Load every update source: the local exchange first (a content-addressed
+    /// event that also appears in a feed keeps the local copy for install), then
+    /// each enabled feed in config order. Feed failures are collected, never
+    /// fatal (fail-soft contract, same as the exchange index).
+    fn loaded_updates(&self) -> (Vec<LoadedUpdate>, Vec<String>) {
+        let mut errors: Vec<String> = Vec::new();
+        let mut updates: Vec<LoadedUpdate> = Vec::new();
+        if let Some(dir) = self.exchange_dir() {
+            match exchange::read_index(&dir) {
+                Ok(index) => {
+                    for event in index.events {
+                        updates.push(LoadedUpdate {
+                            event,
+                            source: "exchange".to_string(),
+                            source_kind: "local",
+                            exchange_dir: Some(dir.clone()),
+                            feed: None,
+                        });
+                    }
+                }
+                Err(e) => errors.push(format!("exchange: {e}")),
+            }
+        }
+        let cfg = self.updates_config();
+        if cfg.enabled {
+            let cache_dir = self.remote_cache_dir();
+            let config_path = crate::config::global_path();
+            for feed in cfg.feeds.iter().filter(|feed| feed.enabled) {
+                let resolved =
+                    match exchange::resolve_feed(feed, config_path, cfg.fetch_timeout_ms) {
+                        Ok(resolved) => resolved,
+                        Err(e) => {
+                            // `resolve_feed` errors already name the feed.
+                            errors.push(e);
+                            continue;
+                        }
+                    };
+                match exchange::load_feed(&resolved, &cache_dir) {
+                    Ok(index) => {
+                        for event in index.events {
+                            updates.push(LoadedUpdate {
+                                event,
+                                source: resolved.name.clone(),
+                                source_kind: resolved.source_kind(),
+                                exchange_dir: None,
+                                feed: Some(resolved.clone()),
+                            });
+                        }
+                    }
+                    // `load_feed` errors already name the feed.
+                    Err(e) => errors.push(e),
+                }
+            }
+        }
+        (updates, errors)
+    }
+
+    /// `GET /runner/updates` — update events from the local exchange dir plus
+    /// every configured update feed (P0-1a + P2/D8).
     ///
     /// The response is **always 200** (fail-soft): a broken index / notifications
-    /// file or a corrupt `installed.json` becomes an `error` string instead of a
-    /// 500 so the Runner page stays usable (same rule as `/runner/tasks`). The
-    /// exchange file is the only truth; `status` is the local ACK state and
-    /// `action` is derived from `installed.json` + the event version.
+    /// file, a corrupt `installed.json` or a failed feed becomes an `errors[]`
+    /// entry (plus the legacy joined `error` string) instead of a 500, so the
+    /// Runner page stays usable. `status` is the local ACK state, `action` is
+    /// derived from `installed.json` + the event version, and `download_required`
+    /// marks events whose package must be fetched by `POST /runner/updates/install`.
     fn handle_runner_updates(&self, out: &mut TcpStream) -> std::io::Result<()> {
         let now = now_ms();
-        let Some(dir) = self.exchange_dir() else {
+        if !self.update_sources_enabled() {
             let body = serde_json::json!({
                 "ok": true,
                 "enabled": false,
                 "exchange_dir": "",
                 "updates": [],
                 "last_scan_ms": now,
+                "errors": [],
             });
             return self.send_json(out, 200, &body.to_string());
-        };
-        let mut errors: Vec<String> = Vec::new();
-        let index = match exchange::read_index(&dir) {
-            Ok(index) => index,
-            Err(e) => {
-                errors.push(e);
-                exchange::PublishIndex::default()
-            }
-        };
+        }
+        let (loaded, mut errors) = self.loaded_updates();
         let layout = self.packages_layout();
         let installed = match package_cmd::read_installed(&layout.root) {
             Ok(file) => file,
@@ -8318,23 +8441,35 @@ impl Server {
             }
         };
         let mut rows: Vec<(u64, String, serde_json::Value)> = Vec::new();
-        for event in &index.events {
-            let resolved = exchange::resolve_inside(&dir, &event.package_file);
-            let (package_available, package_path) = match resolved {
-                Ok(path) => {
-                    let available = path.is_file();
-                    (available, absolute_display_path(&path))
+        let mut emitted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for update in &loaded {
+            let event = &update.event;
+            let event_id = if event.event_id.trim().is_empty() {
+                event.package_id.clone()
+            } else {
+                event.event_id.clone()
+            };
+            // A content-addressed event can appear in several sources (local
+            // exchange + mirror feed): show the first (highest-priority) one once.
+            if !emitted.insert(event_id.clone()) {
+                continue;
+            }
+            let package = update.package_ref();
+            let download_required = package
+                .as_ref()
+                .map(exchange::PackageRef::download_required)
+                .unwrap_or(false);
+            let (package_available, package_path, package_url) = match &package {
+                Ok(exchange::PackageRef::Local(path)) => {
+                    (path.is_file(), absolute_display_path(path), None)
                 }
+                Ok(exchange::PackageRef::Remote(url)) => (true, String::new(), Some(url.clone())),
                 Err(e) => {
                     errors.push(format!(
-                        "event `{}`: {e}",
-                        if event.event_id.is_empty() {
-                            &event.package_id
-                        } else {
-                            &event.event_id
-                        }
+                        "source `{}` event `{event_id}`: {e}",
+                        update.source
                     ));
-                    continue;
+                    (false, String::new(), None)
                 }
             };
             let installed_version = installed.find(&event.task_id).map(|p| p.version);
@@ -8346,18 +8481,19 @@ impl Server {
             // Only the ACK statuses the schema defines are surfaced; an unknown
             // stored status is treated as "never seen" so the badge comes back.
             let status = seen
-                .get(&event.event_id)
+                .get(&event_id)
                 .map(|s| s.status.as_str())
                 .filter(|s| *s == "dismissed" || *s == "installed")
                 .unwrap_or("new");
             let row = serde_json::json!({
-                "event_id": event.event_id,
+                "event_id": event_id,
                 "task_id": event.task_id,
                 "task_version": event.task_version,
                 "package_id": event.package_id,
                 "sha256": event.sha256,
                 "package_file": event.package_file,
                 "package_path": package_path,
+                "package_url": package_url,
                 "size_bytes": event.size_bytes,
                 "published_at_ms": event.published_at_ms,
                 "action": action,
@@ -8365,23 +8501,217 @@ impl Server {
                 "status": status,
                 "compatible": compatible,
                 "package_available": package_available,
+                "download_required": download_required,
+                "source": update.source,
+                "source_kind": update.source_kind,
+                "feed": update.feed.as_ref().map(|feed| feed.name.clone()),
             });
-            rows.push((event.published_at_ms, event.event_id.clone(), row));
+            rows.push((event.published_at_ms, event_id, row));
         }
         // Newest first: the UI banner wants the latest publish on top.
         rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
         let updates: Vec<serde_json::Value> = rows.into_iter().map(|(_, _, row)| row).collect();
+        let exchange_dir = self
+            .exchange_dir()
+            .map(|dir| dir.display().to_string())
+            .unwrap_or_default();
+        let error_text = if errors.is_empty() {
+            None
+        } else {
+            Some(errors.join("; "))
+        };
         let mut body = serde_json::json!({
             "ok": true,
             "enabled": true,
-            "exchange_dir": dir.display().to_string(),
+            "exchange_dir": exchange_dir,
             "updates": updates,
             "last_scan_ms": now,
+            "errors": errors,
         });
-        if !errors.is_empty() {
-            body["error"] = serde_json::Value::String(errors.join("; "));
+        if let Some(text) = error_text {
+            body["error"] = serde_json::Value::String(text);
         }
         self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `POST /runner/updates/install` body `{event_id}` — install one update
+    /// event from the local exchange or a configured feed (P2/D8).
+    ///
+    /// Local packages are installed directly. URL packages are downloaded to
+    /// `packages/remote/<event_id>.oaspkg` with the system `curl`, verified
+    /// against the feed's `size_bytes`/`sha256` (a mismatch is 400 + the cache
+    /// file is deleted), then installed with `force` (an explicit "install this
+    /// update" may replace a same-version reinstall). On success the event is
+    /// ACKed `installed`; an ACK write failure cannot undo the install, so it is
+    /// reported as a `warning` on the 200 response.
+    fn handle_runner_updates_install(
+        &self,
+        out: &mut TcpStream,
+        body: &[u8],
+    ) -> std::io::Result<()> {
+        if let Some(reason) = self.scheduler_busy_reason() {
+            return self.send_scheduler_running(out, reason);
+        }
+        let value: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(value) => value,
+            Err(e) => {
+                return self.send_api_failure(
+                    out,
+                    package_cmd::ApiFailure::new(400, format!("invalid JSON: {e}"))
+                        .with_code("bad_request"),
+                )
+            }
+        };
+        let event_id = value
+            .get("event_id")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+        if event_id.is_empty() || event_id.len() > 512 {
+            return self.send_api_failure(
+                out,
+                package_cmd::ApiFailure::new(
+                    400,
+                    "`event_id` is required (non-empty string, max 512 bytes)",
+                )
+                .with_code("bad_request"),
+            );
+        }
+        let (loaded, errors) = self.loaded_updates();
+        let found = loaded.into_iter().find(|update| {
+            let id = if update.event.event_id.trim().is_empty() {
+                &update.event.package_id
+            } else {
+                &update.event.event_id
+            };
+            id == &event_id
+        });
+        let Some(found) = found else {
+            if !errors.is_empty() {
+                // A failed feed could have contained the event: say so instead of
+                // pretending the event does not exist.
+                return self.send_api_failure(
+                    out,
+                    package_cmd::ApiFailure::errors(500, errors).with_code("feed_unavailable"),
+                );
+            }
+            return self.send_api_failure(
+                out,
+                package_cmd::ApiFailure::new(404, format!("unknown update event `{event_id}`"))
+                    .with_code("unknown_event"),
+            );
+        };
+        let package_ref = match found.package_ref() {
+            Ok(package_ref) => package_ref,
+            Err(e) => {
+                return self.send_api_failure(
+                    out,
+                    package_cmd::ApiFailure::new(400, e).with_code("package_unavailable"),
+                )
+            }
+        };
+        let layout = self.packages_layout();
+        let timeout_ms = found
+            .feed
+            .as_ref()
+            .map(|feed| feed.timeout_ms)
+            .unwrap_or_else(|| self.updates_config().fetch_timeout_ms);
+        let (package_path, downloaded) = match package_ref {
+            exchange::PackageRef::Local(path) => {
+                if !path.is_file() {
+                    return self.send_api_failure(
+                        out,
+                        package_cmd::ApiFailure::new(
+                            400,
+                            format!(
+                                "package file not found: {} (re-publish it or fix the feed \
+                                 package_base)",
+                                path.display()
+                            ),
+                        )
+                        .with_code("package_unavailable"),
+                    );
+                }
+                (absolute_path(&path), false)
+            }
+            exchange::PackageRef::Remote(url) => {
+                let cache_dir = absolute_path(&self.remote_cache_dir());
+                match exchange::download_package(&found.event, &url, &cache_dir, timeout_ms) {
+                    Ok(path) => (path, true),
+                    Err(e) => {
+                        self.editor_log(&format!(
+                            "runner_updates_install download failed event_id={event_id} url={url}: {e}"
+                        ));
+                        return self.send_api_failure(
+                            out,
+                            package_cmd::ApiFailure::new(
+                                e.status(),
+                                format!("download `{url}`: {e}"),
+                            )
+                            .with_code(e.code()),
+                        );
+                    }
+                }
+            }
+        };
+        let opts = package_cmd::InstallOptions { force: true };
+        match package_cmd::install_from_path(
+            &layout,
+            &self.tasks_dir,
+            &self.assets_dir,
+            &package_path,
+            &opts,
+            now_ms(),
+        ) {
+            Ok(outcome) => {
+                self.editor_log(&format!(
+                    "runner_updates_install event_id={event_id} source={} package_id={} task={} \
+                     version={} downloaded={downloaded}",
+                    found.source, outcome.package_id, outcome.task_id, outcome.version
+                ));
+                let mut ack_warning = None;
+                if let Err(e) = exchange::ack_events(
+                    &self.notifications_path(),
+                    std::slice::from_ref(&event_id),
+                    "installed",
+                    now_ms(),
+                ) {
+                    self.editor_log(&format!(
+                        "runner_updates_install ack warning: {e} (package installed)"
+                    ));
+                    ack_warning = Some(format!("installed, but recording the ACK failed: {e}"));
+                }
+                let mut body = serde_json::json!({
+                    "ok": true,
+                    "event_id": event_id,
+                    "source": found.source,
+                    "source_kind": found.source_kind,
+                    "downloaded": downloaded,
+                    "package_path": package_path.display().to_string(),
+                    "installed": {
+                        "package_id": outcome.package_id,
+                        "task_id": outcome.task_id,
+                        "version": outcome.version,
+                        "replaced": outcome.replaced,
+                        "backup": outcome.backup,
+                        "warnings": outcome.warnings,
+                        "installed_tasks": outcome.installed_tasks,
+                    },
+                });
+                if let Some(warning) = ack_warning {
+                    body["warning"] = serde_json::Value::String(warning);
+                }
+                self.send_json(out, 200, &body.to_string())
+            }
+            Err(failure) => {
+                self.editor_log(&format!(
+                    "runner_updates_install error status={} errors={:?}",
+                    failure.status, failure.errors
+                ));
+                self.send_api_failure(out, failure)
+            }
+        }
     }
 
     /// `POST /runner/updates/ack` body `{event_ids:[…], status:"dismissed"|
@@ -9528,22 +9858,26 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Absolute path for JSON responses (`GET /runner/updates.package_path`, P0-1a).
+/// Absolute path for JSON responses (`GET /runner/updates.package_path`) and for
+/// `package_cmd::install_from_path` (which rejects relative `.oaspkg` paths).
 ///
-/// A relative exchange dir (`config.exchange.dir`) is resolved against the live
-/// config dir, which may itself be relative, so the Runner UI must receive an
-/// unambiguous path it can hand to `POST /runner/install`. No canonicalization:
-/// `canonicalize` yields `\\?\C:\...` on Windows, which is ugly in the UI (and
-/// install accepts `..` components anyway).
-fn absolute_display_path(path: &Path) -> String {
-    let absolute = if path.is_absolute() {
+/// A relative exchange dir / packages root is resolved against the live config
+/// dir or the CWD, which may itself be relative, so consumers must receive an
+/// unambiguous path. No canonicalization: `canonicalize` yields `\\?\C:\...` on
+/// Windows, which is ugly in the UI (and install accepts `..` components anyway).
+fn absolute_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir()
             .map(|cwd| cwd.join(path))
             .unwrap_or_else(|_| path.to_path_buf())
-    };
-    absolute.display().to_string()
+    }
+}
+
+/// Display form of [`absolute_path`] for JSON responses (P0-1a/P2 update feeds).
+fn absolute_display_path(path: &Path) -> String {
+    absolute_path(path).display().to_string()
 }
 
 static CREATE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -16992,6 +17326,7 @@ mod tests {
             source: None,
             min_engine: None,
             flow_ops: Vec::new(),
+            package_url: None,
         }
     }
 
@@ -17190,14 +17525,22 @@ mod tests {
         assert!(status.contains("200"), "{status} {body}");
         let v: serde_json::Value = serde_json::from_str(&body).expect("updates JSON");
         assert_eq!(v["enabled"], true);
-        let error = v["error"].as_str().expect("bad event path is reported");
-        assert!(error.contains("pkg-D-1-ddd"), "{error}");
+        // P2: failures are a list (a bad event keeps its row but is unavailable).
+        let errors = v["errors"].as_array().expect("errors array");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.as_str().unwrap().contains("pkg-D-1-ddd")),
+            "{errors:?}"
+        );
+        assert!(v["error"].as_str().unwrap().contains("pkg-D-1-ddd"));
         let rows = v["updates"].as_array().expect("updates array");
-        assert_eq!(rows.len(), 3, "the escaping event is dropped: {v}");
+        assert_eq!(rows.len(), 4, "the escaping event is kept but unavailable: {v}");
         // Newest first.
         assert_eq!(rows[0]["event_id"], "pkg-A-2-aaa");
         assert_eq!(rows[1]["event_id"], "pkg-B-1-bbb");
         assert_eq!(rows[2]["event_id"], "pkg-C-5-ccc");
+        assert_eq!(rows[3]["event_id"], "pkg-D-1-ddd");
 
         let a = &rows[0];
         assert_eq!(a["task_id"], "A");
@@ -17207,6 +17550,11 @@ mod tests {
         assert_eq!(a["status"], "dismissed");
         assert_eq!(a["compatible"], true);
         assert_eq!(a["package_available"], true);
+        assert_eq!(a["source"], "exchange");
+        assert_eq!(a["source_kind"], "local");
+        assert!(a["feed"].is_null(), "exchange rows have no feed name: {a}");
+        assert_eq!(a["download_required"], false);
+        assert!(a["package_url"].is_null());
         assert!(
             std::path::Path::new(a["package_path"].as_str().unwrap()).is_absolute(),
             "package_path must be absolute: {a}"
@@ -17222,6 +17570,11 @@ mod tests {
         let c = &rows[2];
         assert_eq!(c["action"], "reinstall");
         assert_eq!(c["status"], "new", "unknown stored statuses are ignored");
+
+        let d = &rows[3];
+        assert_eq!(d["package_available"], false);
+        assert_eq!(d["package_path"], "");
+        assert_eq!(d["download_required"], false);
     }
 
     #[test]
@@ -17417,5 +17770,548 @@ mod tests {
         assert!(v["exchange"]["event_id"].is_null());
         let error = v["exchange"]["error"].as_str().expect("exchange error");
         assert!(error.contains("incoming") || error.contains("create"), "{error}");
+    }
+
+    // -----------------------------------------------------------------------
+    // P2/D8: update feeds (local path / URL via curl) + install API
+    // -----------------------------------------------------------------------
+
+    fn updates_cfg(feeds: Vec<crate::config::UpdateFeed>) -> crate::config::UpdatesConfig {
+        crate::config::UpdatesConfig {
+            enabled: true,
+            fetch_timeout_ms: 3000,
+            feeds,
+        }
+    }
+
+    /// Runner server with the local exchange explicitly OFF and only the given
+    /// update feeds configured (tests use temp dirs / a loopback fixture).
+    fn updates_feed_server(td: &Path, feeds: Vec<crate::config::UpdateFeed>) -> Server {
+        Server::new(Adb::from_env())
+            .with_surface(Surface::Runner)
+            .with_tasks_dir(td.join("runner/tasks"))
+            .with_assets_dir(td.join("runner/assets"))
+            .with_dist_dir(td.join("dist"))
+            .with_runs_dir(td.join("runner/runs"))
+            .with_notifications_path(td.join("config/notifications.json"))
+            .with_editor_log(td.join("logs/editor.log"))
+            .with_exchange(false, td.join("exchange"))
+            .with_updates_config(updates_cfg(feeds))
+    }
+
+    fn feed_config(name: &str, index_url: &str, package_base: &str) -> crate::config::UpdateFeed {
+        crate::config::UpdateFeed {
+            name: name.to_string(),
+            enabled: true,
+            index_url: index_url.to_string(),
+            package_base: package_base.to_string(),
+        }
+    }
+
+    /// A real `.oaspkg` built by the same builder the Studio uses.
+    fn build_feed_package(td: &Path, task: &str) -> BuildOutcome {
+        std::fs::create_dir_all(td.join("src/tasks")).unwrap();
+        pkg_write_task(&td.join("src/tasks"), task, 1, "[]", PKG_FINISH);
+        pkg_build(
+            &td.join("src/tasks"),
+            &td.join("src/assets"),
+            task,
+            false,
+            &td.join("dist"),
+        )
+    }
+
+    fn feed_event(
+        event_id: &str,
+        task: &str,
+        version: u32,
+        size_bytes: u64,
+        sha256: &str,
+        package_file: &str,
+        package_url: Option<&str>,
+    ) -> exchange::PublishEvent {
+        exchange::PublishEvent {
+            event_id: event_id.to_string(),
+            task_id: task.to_string(),
+            task_version: version,
+            package_id: event_id.to_string(),
+            package_file: package_file.to_string(),
+            sha256: sha256.to_string(),
+            size_bytes,
+            published_at_ms: 1_700_000_000_000,
+            source: None,
+            min_engine: Some("0.1.0".to_string()),
+            flow_ops: Vec::new(),
+            package_url: package_url.map(str::to_string),
+        }
+    }
+
+    fn write_feed_index(path: &Path, events: Vec<exchange::PublishEvent>) {
+        let mut index = exchange::PublishIndex::default();
+        index.events = events;
+        index.seq = 1;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, serde_json::to_string_pretty(&index).unwrap()).unwrap();
+    }
+
+    /// Serve fixed HTTP responses on an existing loopback listener for a curl
+    /// based test. Each request is answered `200` + bytes (unknown path = 404);
+    /// exactly `expected` connections are accepted so the thread exits after the
+    /// test's curl calls instead of leaking.
+    fn serve_http_fixture(
+        listener: TcpListener,
+        files: Vec<(String, Vec<u8>)>,
+        expected: usize,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            for _ in 0..expected {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                let mut request_line = String::new();
+                if reader.read_line(&mut request_line).is_err() {
+                    continue;
+                }
+                // Drain the request headers before answering.
+                loop {
+                    let mut line = String::new();
+                    match reader.read_line(&mut line) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) if line == "\r\n" || line == "\n" => break,
+                        Ok(_) => {}
+                    }
+                }
+                let path = request_line
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("/")
+                    .to_string();
+                match files.iter().find(|(file, _)| file == &path) {
+                    Some((_, bytes)) => {
+                        let head = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            bytes.len()
+                        );
+                        let _ = stream.write_all(head.as_bytes());
+                        let _ = stream.write_all(bytes);
+                    }
+                    None => {
+                        let _ = stream.write_all(
+                            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                    }
+                }
+            }
+        })
+    }
+
+    /// Convenience wrapper: bind an ephemeral port and serve `files` there —
+    /// unused by the current tests (they bind early to build the feed URL), kept
+    /// here would trigger dead_code; removed on purpose.
+
+    #[test]
+    fn updates_merge_exchange_and_a_local_feed() {
+        let td = TempDir::new("updates-local-feed");
+        // Local exchange event (package present) ...
+        let exchange_dir = td.path().join("exchange");
+        std::fs::create_dir_all(exchange_dir.join("incoming")).unwrap();
+        std::fs::write(exchange_dir.join("incoming/E-v1.oaspkg"), b"e").unwrap();
+        write_test_index(
+            &exchange_dir,
+            vec![test_publish_event(
+                "pkg-EX-1-aaa",
+                "EX",
+                1,
+                "incoming/E-v1.oaspkg",
+                100,
+            )],
+        );
+        // ... plus a local feed with a real package.
+        let pkg = build_feed_package(td.path(), "本地任务");
+        let feed_dir = td.path().join("feed");
+        std::fs::create_dir_all(&feed_dir).unwrap();
+        std::fs::copy(&pkg.path, feed_dir.join("本地任务-v1.oaspkg")).unwrap();
+        write_feed_index(
+            &feed_dir.join("publish-index.json"),
+            vec![feed_event(
+                "pkg-LOCAL-1-bbb",
+                "本地任务",
+                1,
+                std::fs::metadata(&pkg.path).unwrap().len(),
+                &pkg.sha256,
+                "本地任务-v1.oaspkg",
+                None,
+            )],
+        );
+        let runner = exchange_server(td.path(), Surface::Runner).with_updates_config(updates_cfg(
+            vec![feed_config(
+                "本地feed",
+                &feed_dir.join("publish-index.json").display().to_string(),
+                &feed_dir.display().to_string(),
+            )],
+        ));
+
+        let (status, body) = get_route(&runner, "/runner/updates");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("updates JSON");
+        assert_eq!(v["enabled"], true);
+        assert_eq!(v["errors"], serde_json::json!([]), "{v}");
+        let rows = v["updates"].as_array().expect("updates");
+        assert_eq!(rows.len(), 2, "{v}");
+        let by = |id: &str| {
+            rows.iter()
+                .find(|row| row["event_id"] == id)
+                .unwrap_or_else(|| panic!("missing row {id}: {v}"))
+                .clone()
+        };
+        let exchange_row = by("pkg-EX-1-aaa");
+        assert_eq!(exchange_row["source"], "exchange");
+        assert_eq!(exchange_row["source_kind"], "local");
+        assert!(exchange_row["feed"].is_null());
+        assert_eq!(exchange_row["download_required"], false);
+        assert_eq!(exchange_row["package_available"], true);
+
+        let feed_row = by("pkg-LOCAL-1-bbb");
+        assert_eq!(feed_row["source"], "本地feed");
+        assert_eq!(feed_row["source_kind"], "local");
+        assert_eq!(feed_row["feed"], "本地feed");
+        assert_eq!(feed_row["download_required"], false);
+        assert_eq!(feed_row["package_available"], true);
+        assert!(feed_row["package_url"].is_null());
+        assert!(
+            feed_row["package_path"]
+                .as_str()
+                .unwrap()
+                .ends_with("本地任务-v1.oaspkg"),
+            "{feed_row}"
+        );
+        assert!(
+            std::path::Path::new(feed_row["package_path"].as_str().unwrap()).is_absolute(),
+            "{feed_row}"
+        );
+    }
+
+    #[test]
+    fn updates_feed_failure_is_reported_without_hiding_the_exchange() {
+        let td = TempDir::new("updates-feed-fail");
+        let exchange_dir = td.path().join("exchange");
+        std::fs::create_dir_all(exchange_dir.join("incoming")).unwrap();
+        std::fs::write(exchange_dir.join("incoming/E-v1.oaspkg"), b"e").unwrap();
+        write_test_index(
+            &exchange_dir,
+            vec![test_publish_event(
+                "pkg-EX-1-aaa",
+                "EX",
+                1,
+                "incoming/E-v1.oaspkg",
+                100,
+            )],
+        );
+        let missing = td.path().join("missing/publish-index.json");
+        let runner = exchange_server(td.path(), Surface::Runner).with_updates_config(updates_cfg(
+            vec![feed_config(
+                "坏feed",
+                missing.to_str().expect("utf8 temp path"),
+                "",
+            )],
+        ));
+        let (status, body) = get_route(&runner, "/runner/updates");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("updates JSON");
+        assert_eq!(v["enabled"], true);
+        // The exchange source is still listed; the failed feed is reported only.
+        assert_eq!(v["updates"].as_array().unwrap().len(), 1, "{v}");
+        let errors = v["errors"].as_array().expect("errors");
+        assert!(
+            errors.iter().any(|e| e.as_str().unwrap().contains("坏feed")),
+            "{errors:?}"
+        );
+        assert!(v["error"].as_str().unwrap().contains("坏feed"));
+    }
+
+    #[test]
+    fn updates_install_from_a_local_feed_installs_and_acks() {
+        let td = TempDir::new("updates-install-local");
+        let pkg = build_feed_package(td.path(), "本地安装");
+        let feed_dir = td.path().join("feed");
+        std::fs::create_dir_all(&feed_dir).unwrap();
+        std::fs::copy(&pkg.path, feed_dir.join("本地安装-v1.oaspkg")).unwrap();
+        let event_id = "pkg-LOCAL-INSTALL-1-abc123abc123";
+        write_feed_index(
+            &feed_dir.join("publish-index.json"),
+            vec![feed_event(
+                event_id,
+                "本地安装",
+                1,
+                std::fs::metadata(&pkg.path).unwrap().len(),
+                &pkg.sha256,
+                "本地安装-v1.oaspkg",
+                None,
+            )],
+        );
+        let runner = updates_feed_server(
+            td.path(),
+            vec![feed_config(
+                "local-feed",
+                &feed_dir.join("publish-index.json").display().to_string(),
+                &feed_dir.display().to_string(),
+            )],
+        );
+
+        let request = serde_json::json!({"event_id": event_id}).to_string();
+        let (status, body) = post_route(
+            &runner,
+            "/runner/updates/install",
+            "application/json",
+            request.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("install JSON");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["event_id"], event_id);
+        assert_eq!(v["source"], "local-feed");
+        assert_eq!(v["source_kind"], "local");
+        assert_eq!(v["downloaded"], false);
+        assert_eq!(v["installed"]["task_id"], "本地安装");
+        assert_eq!(v["installed"]["version"], 1);
+        assert!(
+            std::path::Path::new(v["package_path"].as_str().unwrap()).is_absolute(),
+            "{v}"
+        );
+        // Task bundle + registry + ACK all landed.
+        assert!(td
+            .path()
+            .join("runner/tasks/本地安装/meta.json")
+            .is_file());
+        let installed: serde_json::Value =
+            read_json(&td.path().join("runner/packages/installed.json"));
+        assert_eq!(installed["packages"][0]["task_id"], "本地安装");
+        let notifications = exchange::read_notifications(
+            &td.path().join("config/notifications.json"),
+        )
+        .expect("notifications");
+        assert_eq!(notifications.seen[event_id].status, "installed");
+        // The update list reflects the ACK.
+        let (_, body) = get_route(&runner, "/runner/updates");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["updates"][0]["status"], "installed", "{v}");
+    }
+
+    #[test]
+    fn updates_install_downloads_a_url_package_with_curl() {
+        if !exchange::curl_available() {
+            eprintln!("skip updates_install_downloads_a_url_package_with_curl: curl not available");
+            return;
+        }
+        let td = TempDir::new("updates-install-url");
+        let pkg = build_feed_package(td.path(), "远程安装");
+        let pkg_bytes = std::fs::read(&pkg.path).unwrap();
+        // Build the feed index after binding, so the event can point at the
+        // fixture's actual package URL.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        let package_url = format!("{base}/remote-pkg.oaspkg");
+        let event_id = "pkg-REMOTE-1-abc123abc123";
+        let mut index = exchange::PublishIndex::default();
+        index.events = vec![feed_event(
+            event_id,
+            "远程安装",
+            1,
+            pkg_bytes.len() as u64,
+            &pkg.sha256,
+            "remote-pkg.oaspkg",
+            Some(&package_url),
+        )];
+        index.seq = 1;
+        let fixture = serve_http_fixture(
+            listener,
+            vec![
+                (
+                    "/feed.json".to_string(),
+                    serde_json::to_vec(&index).expect("serialize feed"),
+                ),
+                ("/remote-pkg.oaspkg".to_string(), pkg_bytes),
+            ],
+            // GET /runner/updates (feed) + install (feed + package download).
+            3,
+        );
+        let runner = updates_feed_server(
+            td.path(),
+            vec![feed_config("remote-feed", &format!("{base}/feed.json"), "")],
+        );
+
+        let (status, body) = get_route(&runner, "/runner/updates");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("updates JSON");
+        let row = &v["updates"][0];
+        assert_eq!(row["source"], "remote-feed");
+        assert_eq!(row["source_kind"], "url");
+        assert_eq!(row["feed"], "remote-feed");
+        assert_eq!(row["download_required"], true, "{v}");
+        assert_eq!(row["package_available"], true, "downloadable = available");
+        assert_eq!(row["package_url"], package_url);
+        assert_eq!(row["package_path"], "");
+
+        let request = serde_json::json!({"event_id": event_id}).to_string();
+        let (status, body) = post_route(
+            &runner,
+            "/runner/updates/install",
+            "application/json",
+            request.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("install JSON");
+        assert_eq!(v["downloaded"], true, "{v}");
+        assert_eq!(v["source_kind"], "url");
+        assert_eq!(v["installed"]["task_id"], "远程安装");
+        assert!(td
+            .path()
+            .join("runner/tasks/远程安装/meta.json")
+            .is_file());
+        // The verified package is cached for retries.
+        let cached = td
+            .path()
+            .join("runner/packages/remote")
+            .join(exchange::cache_file_name(event_id));
+        assert!(cached.is_file(), "cache: {}", cached.display());
+        assert_eq!(
+            oas_task::package::sha256_file(&cached).unwrap(),
+            pkg.sha256
+        );
+        let notifications =
+            exchange::read_notifications(&td.path().join("config/notifications.json")).unwrap();
+        assert_eq!(notifications.seen[event_id].status, "installed");
+        fixture.join().expect("fixture thread");
+    }
+
+    #[test]
+    fn updates_install_rejects_a_sha256_mismatch_and_deletes_the_cache() {
+        if !exchange::curl_available() {
+            eprintln!(
+                "skip updates_install_rejects_a_sha256_mismatch_and_deletes_the_cache: \
+                 curl not available"
+            );
+            return;
+        }
+        let td = TempDir::new("updates-install-sha");
+        let pkg = build_feed_package(td.path(), "坏包");
+        let pkg_bytes = std::fs::read(&pkg.path).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        let event_id = "pkg-BADSHA-1-abc123abc123";
+        let mut index = exchange::PublishIndex::default();
+        // size_bytes = 0 skips the size check; the sha is deliberately wrong.
+        index.events = vec![feed_event(
+            event_id,
+            "坏包",
+            1,
+            0,
+            &"0".repeat(64),
+            "remote-pkg.oaspkg",
+            Some(&format!("{base}/remote-pkg.oaspkg")),
+        )];
+        index.seq = 1;
+        let fixture = serve_http_fixture(
+            listener,
+            vec![
+                (
+                    "/feed.json".to_string(),
+                    serde_json::to_vec(&index).expect("serialize feed"),
+                ),
+                ("/remote-pkg.oaspkg".to_string(), pkg_bytes),
+            ],
+            // install: feed fetch + package download (no GET first).
+            2,
+        );
+        let runner = updates_feed_server(
+            td.path(),
+            vec![feed_config("remote-feed", &format!("{base}/feed.json"), "")],
+        );
+        let request = serde_json::json!({"event_id": event_id}).to_string();
+        let (status, body) = post_route(
+            &runner,
+            "/runner/updates/install",
+            "application/json",
+            request.as_bytes(),
+        );
+        assert!(status.contains("400"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("error JSON");
+        assert_eq!(v["code"], "sha256_mismatch", "{v}");
+        assert!(
+            !td.path().join("runner/tasks/坏包").exists(),
+            "nothing may be installed from a corrupt download"
+        );
+        let cached = td
+            .path()
+            .join("runner/packages/remote")
+            .join(exchange::cache_file_name(event_id));
+        assert!(!cached.exists(), "mismatched cache must be deleted");
+        // No stray tmp download is left behind either.
+        let remote_dir = td.path().join("runner/packages/remote");
+        let leftovers: Vec<String> = std::fs::read_dir(&remote_dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|entry| entry.ok())
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            leftovers.iter().all(|name| !name.ends_with(".tmp")),
+            "{leftovers:?}"
+        );
+        fixture.join().expect("fixture thread");
+    }
+
+    #[test]
+    fn updates_install_validates_the_body_and_is_runner_only() {
+        assert_eq!(
+            route_owner("POST", "/runner/updates/install"),
+            Some(RouteOwner::Runner)
+        );
+        assert_eq!(
+            required_surface("POST", "/runner/updates/install"),
+            Some(Surface::Runner)
+        );
+        let td = TempDir::new("updates-install-body");
+        // Studio gets a plain 404 from the surface gate.
+        let studio = studio_pkg_server(td.path());
+        let (status, body) = post_route(
+            &studio,
+            "/runner/updates/install",
+            "application/json",
+            br#"{"event_id":"pkg-x"}"#,
+        );
+        assert!(status.contains("404"), "studio: {status} {body}");
+
+        // No sources configured: the event cannot exist -> 404 unknown_event.
+        let runner = updates_feed_server(td.path(), Vec::new());
+        for bad in [
+            &br#"{}"#[..],
+            &br#"{"event_id":""}"#[..],
+            &br#"{"event_id":7}"#[..],
+            &br#"not-json"#[..],
+        ] {
+            let (status, body) =
+                post_route(&runner, "/runner/updates/install", "application/json", bad);
+            assert!(status.contains("400"), "{status} {body}");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&body).unwrap()["code"],
+                "bad_request",
+                "{body}"
+            );
+        }
+        let (status, body) = post_route(
+            &runner,
+            "/runner/updates/install",
+            "application/json",
+            br#"{"event_id":"pkg-unknown"}"#,
+        );
+        assert!(status.contains("404"), "{status} {body}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["code"],
+            "unknown_event"
+        );
     }
 }

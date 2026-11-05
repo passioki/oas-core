@@ -23,14 +23,15 @@
 ★ 唯一真相 = git + 磁盘证据；**不信"我记得"** ⇒ 必须贴 `文件:行号` / commit / 测试输出
 ```
 
-## 0.1 当前状态快照（2026-11-05 19:1x · **seq 113 · 参数 v2 后端 + 构建端参数 UI + P0-1b 已落地**）
+## 0.1 当前状态快照（2026-11-05 19:4x · **seq 114 · 使用端参数 UI + 更新检测 feed + oas-runner 仓已建**）
 
 | 项 | 状态 |
 |---|---|
 | 分支/HEAD | `dev`；代码 HEAD = **`68e5768`**（最终审计 P1 修复提交），seq 108 docs = `e9404a4`；**本批（seq 110：双端发行包 + dev-serve + 参数 UI 审计）提交后 HEAD 以 `git log -1` 为准**；PR1~PR7 全部 ✅（哈希见 `PENDING-LEDGER §E-79`）；**未 tag / 未 release** |
 | 引擎 | `oasd`（studio/runner/run/queue/stats/scheduler）+ 编辑器 UI + 素材库；`oasd --version` = **0.1.0**（dev；旧 v1.x 为历史内部 tag） |
-| 测试 | `cargo test --workspace` **774 passed / 0 failed**（21 suites；oas-flow **70** / oas-runtime **167 lib + 2 integration** / oas-task **116** / oasd **385**）；debug+release OCR build exit 0（**5 warnings**，无新增）；UI pure test **1727 checks / Studio 159 ids / Runner 157 ids / 0 dead / 6 nav**；`git diff --check` clean |
-| 分包 | **Studio**：`dist/oasd-v0.1.0-win64.zip` = **76,611,083 B**，SHA256 `62B0692EC8D2794C1BDD39F1C8C14533F0A90102C634F333EC1ADE2D786FCD33`（78 entries；含 tasks/assets/frames/relations/templates + 参数构建 UI）· **Runner**：`dist/oasd-runner-v0.1.0-win64.zip` = **37,812,123 B**，SHA256 `8321818C47EF2FDE12C95DA8126BE0353413D48CBA7AF1BB0AE3BAB7A1863CF5`（含 `bundled-data/` + 发布通知/参数后端）；**不入 git** |
+| 测试 | `cargo test --workspace` **788 passed / 0 failed**（21 suites；oas-flow **70** / oas-runtime **167 lib + 2 integration** / oas-task **116** / oasd **399**）；debug+release OCR build exit 0（**5 warnings**，无新增）；UI pure test **1799 checks / Studio 159 ids / Runner 158 ids / 0 dead / 6 nav**；`git diff --check` clean |
+| 分包 | **Studio**：`dist/oasd-v0.1.0-win64.zip` = **76,637,342 B**，SHA256 `4B3C3237C2782C55AFE73E3C6B211F489A072FA7E21CECAD18F1935D97FFB0E9` · **Runner**：`dist/oasd-runner-v0.1.0-win64.zip` = **37,844,909 B**，SHA256 `F669DA48865C54FEEC869864A1DA841A4238789885C4926E695B6C435FA294D2`（含使用端参数 UI/更新检测；不入 git） |
+| 独立仓 | **`oas-runner`** = `https://github.com/passioki/oas-runner`（initial `e1d603a`；README 目标结构 + `.gitignore`，Phase 1 搬迁前骨架） |
 | 双入口 | **Studio `http://127.0.0.1:8788/`**（`oasd studio`，编辑/构建/发布，**无调度页/无重置记忆**）· **Runner `http://127.0.0.1:8789/`**（`oasd runner`，nav 6 项：概览/已安装任务/安装包/队列与调度/运行记录/设置；**完整调度 UI + 重置记忆**；启动即内嵌调度，`--no-scheduler` 关闭）；`oasd serve` = Studio 的 deprecated 别名 |
 | 当前状态 | **所有服务已停止**（8787/8788/8789 实测无监听、无 `oasd` 进程；本批 release 解压评测后已清理）。启动命令见 §1.3/§6；**开发启动器 = `scripts\dev-serve.bat`（默认 Studio 8788；`-Surface runner` → Runner 8789）** |
 | 发布 | GitHub Release `v0.1.0` 仍是**历史节点**（tag `v0.1.0` → `e8edbef`，**未移动**）；**本批未 tag / 未 release**；本批只产出上述两个本地 release zip（Studio 为新产出，Runner 按修复后脚本重建） |
@@ -48,8 +49,8 @@
 - **2026-11-05 13:3x（seq 110）双端发行包 + 分离度验收**：`scripts/package.ps1` 重写为 **Studio-only**（旧全量包 9 项不符全消）；Studio/Runner 两 zip 产出 + **E2E 75/75**（62 分离度 + 13 F1 回归）；**F1 修复**（PS5.1 BOM → Runner 包 `scheduler.json` 首启 `invalid_config`）；`scripts/dev-serve.*` 双入口化（8787 退役）；**参数 UI 审计完成、待裁定**（`_verify/ui-params-audit-20261105/PARAMS-UI-AUDIT.md`，推荐 A+C）。台账 `§E-80`；实现记录 `ENGINE §22.52` / `PLAN §A.17`。
 - **2026-11-05 18:2x（seq 111）双端架构升级设计轮（只读，未改代码）**：用户四项新要求 → 3 路只读设计 + 可点原型 + 决策单（仓外 `_verify\dual-app-design-20261105\`）：① **参数 v2**（动作库消费类动作 + `text_expr` 让参数可作为 OCR 文字；group/预设；Runner 每参使用开关、留空=不注入）② **使用端独立新仓**（推荐两仓：oas-core / 新仓 `oas-runner`，git 依赖 tag；Phase 0 现仓先做）③ **发布通知**（exchange 目录真相 + loopback POST 加速）④ **发行包带数据**（Studio 全数据 + Runner bundled-data 首启不覆盖）。**待用户回复 `DECISION-SHEET.md` D1~D12**（未回复按推荐）。
 - **2026-11-05 18:4x（seq 112）P0 首批落地（已实现+验证）**：① **两包带数据**（用户要求①）——Studio 包补 frames/relations/templates，Runner 包新增 `bundled-data/`（manifest+sha；`-NoData` 可精简）；② **Runner 首启导入**（`bundled_data.rs`：空数据根才导入、永不覆盖、幂等、失败回滚）；③ **exchange 发布通知**（用户要求④）——Studio publish 写 `publish-index.json`+incoming，Runner `GET /runner/updates` + 安装包页「新发布（来自 Studio）」徽标/列表/一键安装/忽略，`POST /task/publish` 响应带 exchange 结果；④ 测试 **746/0**、UI **1633/159/157/0/6**、两 release 仓外 E2E **ALL PASS**。台账 `§E-82`；实现记录 `ENGINE §22.53`。
-- **2026-11-05 19:1x（seq 113）参数 v2 后端 + 构建端参数 UI + P0-1b**：① **`text_expr`**——参数可作为 OCR 识别文字（click_target.find / requires / expect / drag 四处，`text`/`text_expr` 互斥；运行时 step 进入一次求值、必须非空字符串）；T3/T4；flow_ops **4→7**（安装门禁）；`ParamDecl.role`；② **构建端**：动作库「参数」组（参数文字点击/等待参数文字）、click_target「文字来源」三态、构建页参数面板（GET /task/config + 配置项…回刷）、表达式「插入参数 ▾」；③ **P0-1b**：exchange event engine 字段 + Runner `compatible` 预检 + Studio→Runner loopback notify；④ 测试 **774/0**、UI **1727/159/157/0/6**、参数 E2E 与 P0 双端 E2E **ALL PASS**。台账 `§E-83`；实现记录 `ENGINE §22.54`。
-- 下一步 = **① P2 Runner 使用端参数 UI（group 分组/使用开关/留空=不注入；按用户澄清不做预设值集合）；② D8 远程更新 feed（本地路径/URL；GitHub/HTTP 下载策略待定）；③ Studio 权威 `GET /task/lint` + expects/drag 结构化编辑；④ 新仓 `oas-runner`（需用户建 GitHub 空仓）；⑤ 旧待办：产品验收 §D.4 / P2 清理 / Phase 5**；不 tag / 不 release。
+- **2026-11-05 19:4x（seq 114）使用端参数 UI + 更新检测 feeds + oas-runner 独立仓**：① 按用户指令创建 **`https://github.com/passioki/oas-runner`**（public，initial `e1d603a`；Phase 1 搬迁前骨架）；② Runner「配置」参数页：按 `meta.params[].group` 分节、每参使用开关、bool 三态、留空/不使用=不注入、required 阻止保存、摘要（**不做预设**，D2）；③ 更新检测（D8）：`config.updates.feeds` 支持**本地路径/HTTP(S) URL**，Runner `GET /runner/updates` 合并交换所+feeds（来源/需下载字段），`POST /runner/updates/install {event_id}` 远程用**系统 curl** 下载+sha256 校验+安装+ack；`scripts/make-update-feed.ps1` 生成 feed（可上传 GitHub Release/静态站点）；④ 验证 workspace **788/0**、UI **1799/159/158/0/6**、本地+HTTP feed E2E 与 P0/参数 E2E **ALL PASS**。台账 `§E-84`；实现记录 `ENGINE §22.55`。
+- 下一步 = **① 更新检测收尾（URL feed TTL/缓存、鉴权/私有仓、`packages/remote` GC）；② Studio 权威 `GET /task/lint` + expects/drag 结构化编辑；③ oas-runner Phase 1（`serve.rs` move-only + oasd-core 依赖 oas-core tag + 搬迁 Runner 代码/UI/打包/数据镜像）；④ 旧待办：产品验收 §D.4 / P2 清理 / Phase 5**；不 tag / 不 release。
 
 ---
 
@@ -217,7 +218,7 @@ run-tests.bat tests/test_comment_drift.py tests/test_task_flow_docs.py tests/mod
 | **E18** | **PS 5.1 无 BOM 的 UTF-8 `.ps1` 会按 GBK 解析中文字面量** | 中文脚本/含中文的测试脚本必须存成 **UTF-8 with BOM**（或用 `WriteAllText(..., UTF8Encoding($true))` 重存）；否则 `powershell -File` 里 `'返回庭院'` 变乱码 → API 400（P0 E2E 踩过）。检查：前 3 字节 `EF BB BF` |
 | **E19** | **exchange 默认关闭** | P0 发布通知需两端 `config/live.json` 配同一 `exchange.dir`（推荐绝对路径）；未配时行为同旧版；运行时 `config/exchange/`、`config/notifications.json` 已 ignore。API：`GET /runner/updates` / `POST /runner/updates/ack`（`ENGINE §22.53`） |
 | **E20** | **参数作为 OCR 文字 = `text_expr`** | `click_target.find[]`/`requires`/`expect`/`drag.from/to` 的 `kind:"ocr_text"` 可写 `text_expr:"param('key')"`（与 `text` 互斥必填其一）；运行时 step 进入一次求值、非空字符串，否则响亮失败且不点击；旧包安装门禁：flow_ops 含 3 个新标记（`click_target.text_expr`/`expect.text_expr`/`drag.text_expr`），老 Runner 会拒绝（`ENGINE §22.54`） |
-| **E21** | **用户 D2/D8 澄清（2026-11-05 19:12）** | D2：「预设」只是举例 ⇒ **不做预设值集合/管理器**；D8：通知目的=任务包发布后可被检测（像软件更新）——本地 exchange 已实现，**远程网页/GitHub 拉取+下载安装未实现（下一步）** |
+| **E21** | **用户 D2/D8 澄清（2026-11-05 19:12）** | D2：「预设」只是举例 ⇒ **不做预设值集合/管理器**；D8：通知目的=任务包发布后可被检测（像软件更新）——本地 exchange + 本地目录 feed + **远程 HTTP(S) feed（系统 curl）已实现**（`ENGINE §22.55`）；`scripts/make-update-feed.ps1` 生成 feed |
 
 ---
 

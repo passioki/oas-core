@@ -98,3 +98,32 @@ Runner：只消费 .oaspkg 并执行（终端用户使用，端口 8789）。
 - 升级注意：只覆盖程序文件（oasd.exe、ui\、models\、adb\、bundled-data\、*.bat、
   README、VERSION、BUILD-INFO）；**不要覆盖/删除** config\、tasks\、assets\、
   packages\、scheduler.json、runs\、logs\。
+
+7. 更新检测（updates feed：本地目录或远程网页/GitHub）
+--------------------------------------------------------
+任务包发布后可像「软件更新」一样被检测到；来源可以是本地目录，也可以是远程网页
+（GitHub raw / GitHub Release / 任意静态 HTTP 站点）。在 config\live.json 增加：
+
+    "updates": {
+      "enabled": true,
+      "fetch_timeout_ms": 8000,
+      "feeds": [
+        { "name": "shared-local", "enabled": true,
+          "index_url": "D:/OAS-shared/feed/publish-index.json",
+          "package_base": "D:/OAS-shared/feed" },
+        { "name": "github", "enabled": true,
+          "index_url": "https://raw.githubusercontent.com/<owner>/<repo>/main/publish-index.json",
+          "package_base": "https://github.com/<owner>/<repo>/releases/download/v0.2.0" }
+      ]
+    }
+
+- `index_url`：本地 JSON 路径（相对 config\live.json 目录锚定）或 http(s) URL；
+  `package_base`：本地目录或 URL 前缀，可空（此时事件必须带 `package_url`）。
+- 索引格式 = Studio exchange 的 `publish-index.json`（schema 1）。可以在 Studio 侧用
+  仓库脚本生成：`scripts\make-update-feed.ps1 -PackagesDir dist\packages -PackageBaseUrl <发布地址> -CopyPackages`，
+  然后把 `publish-index.json` + `.oaspkg` 上传到 GitHub Release / 静态站点。
+- Runner「安装包」页「新发布」列表会显示来源（本地 Studio / feed 名），远程事件点
+  「安装」会**自动下载**（系统 curl，Win10+/macOS/Linux 自带）→ 校验 sha256 → 安装 →
+  标记已安装；下载/索引失败只在页面提示，不影响本地安装与执行。
+- 已知限制：远程 feed 目前每次刷新都会重新拉取（无 TTL 缓存）；只支持公开 http(s)
+  （无私有仓 token/自定义 header）；下载缓存 `packages\remote\` 暂不自动清理。

@@ -38,6 +38,12 @@ pub struct OasConfig {
     /// stay byte-compatible for existing deployments.
     #[serde(default, skip_serializing_if = "ExchangeConfig::is_default")]
     pub exchange: ExchangeConfig,
+    /// Runner update feeds (P2/D8: "任务包发布后可被检测到，像软件检测更新
+    /// 一样；来源可以是远程网页/GitHub，也可以是本地安装"). Additive like
+    /// `exchange`: an old `live.json` parses unchanged and an unset section does
+    /// not change the serialised shape. Only the Runner reads it.
+    #[serde(default, skip_serializing_if = "UpdatesConfig::is_default")]
+    pub updates: UpdatesConfig,
 }
 
 /// Studio → Runner publish exchange settings.
@@ -107,6 +113,77 @@ impl Default for NotifyConfig {
             enabled: false,
             runner_url: "http://127.0.0.1:8789".into(),
             timeout_ms: 800,
+        }
+    }
+}
+
+/// Runner update feeds (P2/D8).
+///
+/// `GET /runner/updates` merges the local exchange directory with **every
+/// enabled feed**; a feed is either a local `publish-index.json` file or an
+/// `http(s)://` URL fetched with the system `curl` (zero new dependencies, see
+/// `exchange::fetch_to_file`). Both feed kinds reuse the exchange index schema,
+/// so a Studio-published `publish-index.json` can be served from a static web
+/// host / GitHub raw without a second format. Only the Runner reads this
+/// section.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpdatesConfig {
+    /// Master switch. Default **off** so an old `live.json` never starts
+    /// fetching anything.
+    pub enabled: bool,
+    /// Per-feed `curl` timeout in ms (`100..=30000`).
+    pub fetch_timeout_ms: u32,
+    /// Ordered feed list (the Runner lists feeds in this order; the exchange,
+    /// when enabled, always comes first).
+    pub feeds: Vec<UpdateFeed>,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            fetch_timeout_ms: 8000,
+            feeds: Vec::new(),
+        }
+    }
+}
+
+impl UpdatesConfig {
+    /// `true` when the whole section equals its default (used for
+    /// `skip_serializing_if` so old `live.json` files keep their shape).
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// One update feed source (`updates.feeds[]`).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpdateFeed {
+    /// Stable display name and source identity in `GET /runner/updates`
+    /// (`source` / `feed` fields); must be non-empty and unique.
+    pub name: String,
+    /// Per-feed switch (`false` = keep the config but skip it, e.g. while a
+    /// mirror is down).
+    pub enabled: bool,
+    /// Index location: a local `publish-index.json` path (absolute, or relative
+    /// to the live config file's directory like `exchange.dir`) or an
+    /// `http(s)://` URL.
+    pub index_url: String,
+    /// Optional package base: a local directory or an `http(s)://` base URL
+    /// that each event's `package_file` is resolved against. Empty = each event
+    /// must carry its own `package_url` (or a URL `package_file`).
+    pub package_base: String,
+}
+
+impl Default for UpdateFeed {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            enabled: true,
+            index_url: String::new(),
+            package_base: String::new(),
         }
     }
 }
@@ -352,6 +429,40 @@ impl OasConfig {
                  (http://127.0.0.1:<port> / http://localhost:<port> / http://[::1]:<port>)"
             ));
         }
+        // P2 update feeds (D8). Like `exchange`, checked before the optional
+        // serial early return so a dev config still cannot hide a broken feed.
+        if !(100..=30000).contains(&self.updates.fetch_timeout_ms) {
+            return Err(format!(
+                "updates.fetch_timeout_ms must be 100..=30000, got {}",
+                self.updates.fetch_timeout_ms
+            ));
+        }
+        if self.updates.enabled {
+            if self.updates.feeds.is_empty() {
+                return Err("updates.feeds must not be empty when updates.enabled".into());
+            }
+            let mut names: Vec<&str> = Vec::new();
+            for (i, feed) in self.updates.feeds.iter().enumerate() {
+                let name = feed.name.trim();
+                if name.is_empty() {
+                    return Err(format!("updates.feeds[{i}].name must not be empty"));
+                }
+                if names.iter().any(|n| *n == name) {
+                    return Err(format!(
+                        "updates.feeds[{i}].name `{name}` is duplicated (feed names identify \
+                         sources and must be unique)"
+                    ));
+                }
+                names.push(name);
+                validate_feed_location(&feed.index_url, &format!("updates.feeds[{i}].index_url"))?;
+                if !feed.package_base.trim().is_empty() {
+                    validate_feed_location(
+                        &feed.package_base,
+                        &format!("updates.feeds[{i}].package_base"),
+                    )?;
+                }
+            }
+        }
         if self.device.serial.trim().is_empty() {
             // Not fatal at load time (dev can omit), but callers that need a
             // device must call `require_serial()`.
@@ -423,6 +534,14 @@ impl OasConfig {
 /// * relative `configured` -> joined to the live config file's directory;
 /// * blank `configured` / no config path for a relative setting -> `None`.
 pub fn exchange_dir_from(config_path: Option<&Path>, configured: &str) -> Option<PathBuf> {
+    resolve_against_config_dir(config_path, configured)
+}
+
+/// Resolve a possibly-relative local path against the live config file's
+/// directory (the anchor rule shared by `device.lease`, `exchange.dir` and the
+/// P2 update-feed local paths). Absolute paths pass through unchanged even when
+/// no config was loaded; a relative path without a loaded config is `None`.
+pub fn resolve_against_config_dir(config_path: Option<&Path>, configured: &str) -> Option<PathBuf> {
     let raw = configured.trim();
     if raw.is_empty() {
         return None;
@@ -438,6 +557,34 @@ pub fn exchange_dir_from(config_path: Option<&Path>, configured: &str) -> Option
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
     Some(dir.join(raw))
+}
+
+/// Is `value` an `http(s)://` URL (case-insensitive scheme)? Update feeds may be
+/// remote (design D8: "可以从远程网页拉取，如 GitHub"), so — unlike
+/// `notify.runner_url` — no loopback restriction applies here.
+pub fn is_http_url(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// Validate one update-feed location: local path (absolute or relative) or an
+/// `http(s)://` URL. Other schemes (`ftp://`, `file://`, …) are refused up
+/// front so a typo cannot become a confusing `curl` failure at fetch time.
+fn validate_feed_location(raw: &str, label: &str) -> Result<(), String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err(format!("{label} must not be empty"));
+    }
+    if is_http_url(value) {
+        return Ok(());
+    }
+    if value.contains("://") {
+        return Err(format!(
+            "{label} `{value}` must be a local path or an http(s) URL \
+             (other schemes are not supported; the Runner fetches with curl)"
+        ));
+    }
+    Ok(())
 }
 
 /// Is `url` an `http://` URL whose host is a loopback address? Only
@@ -665,6 +812,100 @@ mod tests {
         // Blank / relative-without-config -> unusable (not a guess).
         assert_eq!(exchange_dir_from(Some(&config), "  "), None);
         assert_eq!(exchange_dir_from(None, "exchange"), None);
+    }
+
+    #[test]
+    fn parses_old_live_json_without_the_updates_section() {
+        // P2 update feeds are additive: a deployed live.json predates the
+        // section and must parse unchanged, stay off and serialise without it.
+        let old = r#"{"schema_version":1,"serve":{"port":8788},
+                     "device":{"serial":"127.0.0.1:16384"}}"#;
+        let c = OasConfig::from_json(old).expect("old live.json parses");
+        assert_eq!(c.updates, UpdatesConfig::default());
+        assert!(!c.updates.enabled, "update feeds must stay opt-in");
+        assert_eq!(c.updates.fetch_timeout_ms, 8000);
+        assert!(c.updates.feeds.is_empty());
+        let json = serde_json::to_value(&c).expect("serialize");
+        assert!(
+            json.get("updates").is_none(),
+            "an unset updates section must not change the live.json shape: {json}"
+        );
+    }
+
+    #[test]
+    fn parses_and_validates_update_feeds() {
+        let c = OasConfig::from_json(
+            r#"{"updates":{"enabled":true,"fetch_timeout_ms":3000,"feeds":[
+                {"name":"github","index_url":"https://example.com/feed/publish-index.json","package_base":"https://example.com/feed/"},
+                {"name":"local","index_url":"D:/shared/exchange/publish-index.json","package_base":"D:/shared/exchange"}
+            ]}}"#,
+        )
+        .expect("updates section parses");
+        assert!(c.updates.enabled);
+        assert_eq!(c.updates.fetch_timeout_ms, 3000);
+        assert_eq!(c.updates.feeds.len(), 2);
+        assert_eq!(c.updates.feeds[1].name, "local");
+        assert!(c.updates.feeds[1].enabled, "feed.enabled defaults to true");
+        assert_eq!(c.updates.feeds[1].package_base, "D:/shared/exchange");
+
+        // Global enabled => feeds required; names non-empty and unique.
+        assert!(OasConfig::from_json(r#"{"updates":{"enabled":true}}"#).is_err());
+        assert!(OasConfig::from_json(
+            r#"{"updates":{"enabled":true,"feeds":[{"name":"","index_url":"x.json"}]}}"#
+        )
+        .is_err());
+        assert!(OasConfig::from_json(
+            r#"{"updates":{"enabled":true,"feeds":[
+                {"name":"a","index_url":"x.json"},{"name":"a","index_url":"y.json"}]}}"#
+        )
+        .is_err());
+        // Local paths or http(s) URLs only (curl cannot speak other schemes).
+        for bad in [
+            r#"{"updates":{"enabled":true,"feeds":[{"name":"a","index_url":"ftp://example.com/p.json"}]}}"#,
+            r#"{"updates":{"enabled":true,"feeds":[{"name":"a","index_url":"file:///tmp/p.json"}]}}"#,
+            r#"{"updates":{"enabled":true,"feeds":[{"name":"a","index_url":"x.json","package_base":"ftp://h"}]}}"#,
+        ] {
+            assert!(OasConfig::from_json(bad).is_err(), "{bad} must be refused");
+        }
+        // Empty package_base is fine: each event must then carry package_url.
+        assert!(OasConfig::from_json(
+            r#"{"updates":{"enabled":true,"feeds":[{"name":"a","index_url":"x.json","package_base":""}]}}"#
+        )
+        .is_ok());
+        // Timeout range and deny_unknown_fields.
+        assert!(OasConfig::from_json(r#"{"updates":{"fetch_timeout_ms":99}}"#).is_err());
+        assert!(OasConfig::from_json(r#"{"updates":{"fetch_timeout_ms":30001}}"#).is_err());
+        assert!(OasConfig::from_json(r#"{"updates":{"unknown":1}}"#).is_err());
+        // Disabled section without feeds stays valid (opt-in like exchange).
+        assert!(OasConfig::from_json(r#"{"updates":{"enabled":false}}"#).is_ok());
+    }
+
+    #[test]
+    fn update_feed_paths_resolve_against_the_live_config_dir() {
+        let config = Path::new("pkg").join("config").join("live.json");
+        assert_eq!(
+            resolve_against_config_dir(Some(&config), "feed/publish-index.json"),
+            Some(
+                Path::new("pkg")
+                    .join("config")
+                    .join("feed")
+                    .join("publish-index.json")
+            )
+        );
+        let abs = std::env::temp_dir().join("oas-feed.json");
+        assert_eq!(
+            resolve_against_config_dir(None, &abs.display().to_string()),
+            Some(abs)
+        );
+        assert_eq!(resolve_against_config_dir(None, "feed/publish-index.json"), None);
+        assert_eq!(resolve_against_config_dir(Some(&config), "  "), None);
+        // Remote feeds are expected, so only the scheme matters (no loopback).
+        assert!(is_http_url(
+            "https://raw.githubusercontent.com/passioki/oas-core-updates/main/publish-index.json"
+        ));
+        assert!(is_http_url("HTTP://example.com/feed.json"));
+        assert!(!is_http_url("D:/feed/publish-index.json"));
+        assert!(!is_http_url("ftp://example.com/feed.json"));
     }
 
     #[test]

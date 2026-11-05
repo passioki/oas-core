@@ -217,9 +217,10 @@ main.runner-main {
   padding: 8px 2px;
 }
 
-/* PR2: 任务运行值表单（WebView / 窄屏友好，不依赖平台） */
+/* PR2: 任务运行值表单（WebView / 窄屏友好，不依赖平台）
+   P2: 按 meta.params[].group 分节 + 每参「使用」开关 + bool 三态；对话框加宽。 */
 .runner-config-dialog {
-  width: min(520px, calc(100vw - 24px));
+  width: min(720px, calc(100vw - 24px));
 }
 
 .runner-config-dialog > .muted.small {
@@ -298,6 +299,165 @@ main.runner-main {
 
 .runner-config-dialog .dialog-actions button {
   width: auto;
+}
+
+/* P2: 参数页（group 分节 / 使用开关 / bool 三态 / 留空=不注入） */
+.runner-config-summary {
+  margin: 3px 0 4px;
+  color: var(--runner-text);
+  overflow-wrap: anywhere;
+}
+
+.runner-config-group {
+  border: 1px solid var(--runner-border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  margin: 6px 0;
+  background: #171a20;
+}
+
+.runner-config-group > summary {
+  cursor: pointer;
+  color: var(--runner-accent);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 0;
+}
+
+.runner-config-group-count {
+  margin-left: 6px;
+  color: var(--runner-muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.runner-config-row {
+  display: grid;
+  grid-template-columns: 64px minmax(120px, 1.2fr) minmax(130px, 1fr) auto;
+  gap: 4px 10px;
+  align-items: start;
+  padding: 7px 0;
+  border-top: 1px solid var(--runner-border);
+}
+
+.runner-config-row:first-of-type {
+  border-top: 0;
+  padding-top: 2px;
+}
+
+.runner-config-use {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--runner-muted);
+  white-space: nowrap;
+}
+
+.runner-config-use input {
+  width: auto;
+  margin: 0;
+}
+
+.runner-config-meta {
+  min-width: 0;
+}
+
+.runner-config-label {
+  color: var(--runner-text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.runner-config-key {
+  margin-left: 5px;
+  color: var(--runner-muted);
+  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.runner-config-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+}
+
+.runner-config-control {
+  min-width: 0;
+}
+
+.runner-config-control input[type="text"],
+.runner-config-control input[type="number"],
+.runner-config-control select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.runner-config-control input[type="checkbox"] {
+  width: auto;
+}
+
+.runner-config-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.runner-config-reset {
+  width: auto;
+  padding: 2px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.runner-config-row-hint {
+  grid-column: 2 / -1;
+  margin-top: -2px;
+  color: var(--runner-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.runner-config-row.disabled .runner-config-control {
+  opacity: 0.55;
+}
+
+.runner-config-row.disabled .runner-config-label {
+  color: var(--runner-muted);
+}
+
+.runner-config-row.blocked .runner-config-row-hint {
+  color: var(--runner-err);
+}
+
+.runner-config-row-err {
+  grid-column: 2 / -1;
+  margin-top: 2px;
+  color: var(--runner-err);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.runner-config-row-err:empty {
+  display: none;
+}
+
+/* P2: 更新 feed — 来源徽标 + 需下载提示 */
+.runner-update-source {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+}
+
+.runner-update-download {
+  color: var(--runner-warn);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 /* PR5: 安装包页（安装卡 / 已安装列表 / 未纳管裸目录） */
@@ -877,5 +1037,20 @@ main.runner-main {
 
   .runner-update-actions button {
     padding: 3px 8px;
+  }
+
+  /* P2: 参数页在窄屏上单列（使用开关 / 元信息 / 控件 / 提示依次排列）。 */
+  .runner-config-row {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .runner-config-row-hint,
+  .runner-config-row-err {
+    grid-column: 1;
+  }
+
+  .runner-config-row-actions {
+    justify-content: flex-start;
   }
 }

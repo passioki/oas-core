@@ -4298,3 +4298,30 @@ GET /task/assets?task= → 34 个素材（全局模式）
 - **Studio 权威 lint**：`GET /task/lint` + 构建页「检查」按钮（当前 `#builder-param-issues` 是近似提示）；`requires/expect/drag` 的 text_expr 结构化编辑；结构化参数声明表单。
 - **P0-1b 剩余**：`.studio-writer.lock`、重试队列；**新仓 `oas-runner`**（D7 未回复/需用户建 GitHub 空仓）；`scheduler.json` 运行态化。
 - 旧待办：产品验收 §D.4 / P2 清理 / Phase 5；不 tag / 不 release。
+
+# ★ §E-84 ★★★ [11-05 19:2x → 19:4x] **使用端参数 UI + 更新检测 feeds + 独立仓 oas-runner（seq 114）**
+
+> **状态：Runner 使用端参数 UI ✅、更新检测 feeds（本地路径/HTTP(S) URL + curl 下载 + 安装 API）✅、`oas-runner` 独立仓已创建（骨架）✅**；用户指令「建 oas-runner 空仓，curl vs TLS 自行判断，开始下一步」；决定 HTTPS 下载用**系统 `curl`**（零新依赖）。实现记录 `ENGINE §22.55`；断点 `RESUME` seq 114；证据 `_verify\p2-updates-20261105\`、`_verify\p2-runner-params-20261105\`。
+
+## A. 交付明细
+
+| # | 项 | 结果 | 状态 |
+|---|---|---|---|
+| 仓 | **`oas-runner` 独立仓** | `https://github.com/passioki/oas-runner`（public，initial `e1d603a`：README 目标结构 + `.gitignore`）；Phase 1 源码搬迁前骨架 | ✅ |
+| P2-UI | **Runner 使用端参数 UI** | 配置对话框按 `meta.params[].group` 分节；每参使用开关 + 类型/role/required 徽标 + 控件 + 重置；bool 三态；string/数字 enum → select；**留空/不使用=不注入（回退默认）**；required 无 default 阻止保存；顶部摘要；400 行内映射；**不做预设值集合**（D2） | ✅ |
+| D8-feed | **更新检测 feeds** | `config.updates{enabled,fetch_timeout_ms,feeds[{name,enabled,index_url,package_base}]}`；本地路径/`http(s)` URL；`get /runner/updates` 合并 exchange+feeds（source/source_kind/feed/download_required/package_url/errors）；新 `POST /runner/updates/install {event_id}`：本地直装、远程 curl 下载+size/sha 校验+安装+ack；错误 code 齐全；无 TTL/鉴权（已知限制） | ✅ |
+| Tool | **`scripts/make-update-feed.ps1`** | 从 `dist/packages/*.oaspkg` 生成 feed `publish-index.json`（schema 1；`-PackageBaseUrl`/`-CopyPackages` 等）；可上传 GitHub Release/静态站点 | ✅ |
+| UI | **更新列表适配** | 来源徽标（本地 Studio/feed 名）、远程「需下载」、新安装 endpoint（旧后端 404 回退）、手动路径安装保留 | ✅ |
+
+## B. 验证（可核查）
+
+- `cargo test --workspace` **788/0**（21 suites；oasd **399** = 385+14：config 3/exchange 5/serve 6）；UI **1799 checks / 159 / 158 / 0 dead / 6 nav**（+72）；debug+release build exit 0（**5 warnings** 无新增）；`git diff --check` clean。
+- **更新 feed E2E（仓外）**：本地 feed + HTTP feed（python 静态站点）→ `GET /runner/updates` 两行（local/url、download_required false/true、package_url）→ `POST /runner/updates/install`：本地直装 / 远程 curl 下载+sha 校验+装到 `packages/remote/` → `installed.json` 两任务 + status installed；**ALL PASS**（`_verify\p2-updates-20261105\feed-e2e-log.txt`）。
+- P0 双端 E2E / 参数链路 E2E 复跑 **ALL PASS**；新包：Studio **76,637,342 B** / SHA `4B3C3237C2782C55AFE73E3C6B211F489A072FA7E21CECAD18F1935D97FFB0E9`；Runner **37,844,909 B** / SHA `F669DA48865C54FEEC869864A1DA841A4238789885C4926E695B6C435FA294D2`。
+
+## C. 未完成 / 下一步
+
+1. **更新检测收尾**：URL feed TTL/缓存（UI 5s 轮询会重复 curl；建议后端 ≥60s 缓存或 UI 降频）、feed 鉴权/私有仓 token、`packages/remote` GC/缓存命中复用；可选 Studio 侧 feed 发布向导（上传 GitHub Release 仍手工）。
+2. **Studio 权威 lint**：`GET /task/lint` + 构建页「检查」按钮；`requires/expect/drag` 的 text_expr 结构化编辑；结构化参数声明表单。
+3. **oas-runner Phase 1**：`serve.rs` move-only 模块化 → `oasd-core` 库 → 新仓 Runner app 依赖 oas-core tag；把 Runner UI/打包/`bundled-data` 镜像迁入；两 release 独立构建 + tag 治理（`RUNNER-SPLIT-DESIGN §3.5`）。
+4. 旧待办：产品验收 §D.4 / P2 清理 / Phase 5；不 tag / 不 release。

@@ -37,5 +37,10 @@
       "runner_url": "http://127.0.0.1:8789",
       "timeout_ms": 800
     }
+  },
+  "updates": {
+    "enabled": false,
+    "fetch_timeout_ms": 8000,
+    "feeds": []
   }
 }

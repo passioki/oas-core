@@ -2969,3 +2969,48 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 - **P0 双端 E2E 复跑**（新包）：Studio 发布 → exchange → 停 Studio → Runner 启动自动导入 → `/runner/updates` → install → ack installed **ALL PASS**（`_verify\p0-1a-e2e-20261105\`）。
 - 新包产物：Studio **76,611,083 B** / SHA `62B0692E…CD33`；Runner **37,812,123 B** / SHA `8321818C…63CF5`。
 - **已知限制**：`text_expr` 在 find 预解析阶段先于 requires 失败（设计如此）；空串响亮失败（比 task 文字更严格）；旧 Studio 编辑新 flow 可能丢 `text_expr`（新 UI 已保留未知字段）；preset（命名值集合）**不做**（用户澄清）；远程更新 feed 未实现。
+
+### 22.55 ★★★ [11-05 19:4x] **使用端参数 UI + 更新检测 feeds（本地/远程）+ 独立仓 oas-runner（seq 114）**
+
+> 用户指令（2026-11-05 19:24）：「建 oas-runner 空仓，curl vs TLS 你自行判断即可。开始下一步吧」；D8 意图=任务包发布后可被检测（远程网页/GitHub 或本地安装）。**决定：远程 HTTPS 下载用系统 `curl` 外部进程（零新依赖）**。实现记录；台账 `PENDING §E-84`；断点 `RESUME` seq 114；证据 `_verify\p2-updates-20261105\`、`_verify\p2-runner-params-20261105\`。
+
+#### 22.55.1 独立仓 `oas-runner`（Phase 0）
+
+- 已创建 **`https://github.com/passioki/oas-runner`**（public；initial `e1d603a`：README 目标结构 + `.gitignore`）。当前仅骨架；源码搬迁（Phase 1）待做：`serve.rs` move-only → `oasd-core` 库 → Runner app 依赖 oas-core tag（`RUNNER-SPLIT-DESIGN §3.5`）。
+
+#### 22.55.2 Runner 使用端参数 UI（P2，apps/oasd/ui/runner.*）
+
+- 「已安装任务 → 配置」对话框重写（宽 720px）：按 **`meta.params[].group`** 首次出现顺序分节（空/缺省组→「通用」，`<details open>` 可折叠）；每参一行：`[使用]` 开关 + label/key/类型徽标 + `role=="ocr_text"`「识别文字」徽标 + `required` 徽标 + 控件 + 重置 + 提示。
+- 控件：string+enum / 数字 enum → `select`（数字 enum 提交仍为 JSON number）；int/float/number → number（min/max/step）；**bool → 三态 select「未设置/是/否」**（未设置不入 values）；string → text。
+- 语义：**不使用/留空 = 不写入 values（= 不注入，回退 `meta.params[].default`）**；`required==true && default==null` 且未填/未使用 → 保存前本地拦截并逐行报错；顶部摘要「N/M 项已设置 · 分组 G 个」；服务端 400 errors 按 key/label 映射行内。
+- **不做预设值集合/管理器**（用户 D2 澄清：预设只是举例说明参数作用）。
+
+#### 22.55.3 更新检测 feeds（D8：本地 + 远程网页/GitHub）
+
+- **配置**（`config.rs`，旧 live.json 兼容、serde default）：
+  ```json
+  "updates": {
+    "enabled": true,
+    "fetch_timeout_ms": 8000,
+    "feeds": [
+      { "name": "github", "enabled": true,
+        "index_url": "https://raw.githubusercontent.com/<owner>/<repo>/main/publish-index.json",
+        "package_base": "https://github.com/<owner>/<repo>/releases/download/v0.2.0" },
+      { "name": "shared-local", "enabled": true,
+        "index_url": "D:/OAS-shared/feed/publish-index.json",
+        "package_base": "D:/OAS-shared/feed" }
+    ]
+  }
+  ```
+  `index_url` 支持本地路径（相对 live config 目录锚定）或 `http(s)` URL；`package_base` 支持本地目录/URL 前缀/可空（此时事件必须带 `package_url`）；validate 拒绝其它 scheme/非法名/空 feeds。
+- **feed 索引** = Studio exchange 的 `publish-index.json`（schema 1）；新增可选 `PublishEvent.package_url`。生成工具：**`scripts/make-update-feed.ps1`**（`-PackagesDir`/`-OutFile`/`-PackageBaseUrl`/`-CopyPackages`/`-Repo`/`-Version`；输出 BOM-free JSON + 可选拷贝包），可把 feed + `.oaspkg` 传到 GitHub Release/静态站点。
+- **读取**：本地路径直接读（≤2MiB）；URL 用系统 **`curl -fsSL --max-time <fetch_timeout_ms> --max-filesize <limit> -o <tmp> <url>`**（URL 单 argv 无 shell；失败带 exit/stderr；成功读后删 tmp；≤2MiB）。
+- **API**（Runner-only）：`GET /runner/updates` 合并「exchange 事件（source=exchange）+ 每个 enabled feed 事件（source=feed 名, source_kind=local|url）」，新增字段 `source/source_kind/feed/download_required/package_url/errors[]`（失败 feed 200 fail-soft；legacy `error` 保留；同 event_id 跨源去重、exchange 优先；`compatible` 继续用 min_engine/flow_ops 预检）；新 **`POST /runner/updates/install {event_id}`**：本地包直接 `install_from_path(force)`；远程包 curl 下载到 `<packages>/remote/<event_id>.oaspkg`（tmp+rename、size/sha256 校验、不匹配删缓存）→ 安装 → 自动 ack installed；错误 code：`unknown_event`(404)/`feed_unavailable`/`download_failed`/`sha256_missing`/`sha256_mismatch`/`package_unavailable` + 安装阶段既有 `unsupported_flow_ops` 等。
+- **UI**：「新发布」列表来源列（exchange→「本地 Studio」，feed 名原样）、远程事件「需下载」提示、安装按钮走 `/runner/updates/install`（旧后端 404 自动回退 `/runner/install`+ack）；手动本机路径安装保留。
+- **安全/限制**：远程安装必须 64-hex sha256（缺失拒绝），下载后 size+sha 双校验；缓存不 GC；URL feed 无 TTL 缓存（UI 5s 轮询会重复拉取——**待补后端缓存/降频**）；无鉴权/私有仓 token；无 curl 环境 URL feed fail-soft（本地源不受影响）；Android 需换 HTTP 栈。
+
+#### 22.55.4 验证
+
+- `cargo test --workspace` **788 / 0**（21 suites；oasd **399** = 385 + 14（config 3 / exchange 5 / serve 6）；flow 70 / runtime 167+2 / task 116）；UI **1799 checks / Studio 159 / Runner 158 / 0 dead / 6 nav**；debug+release build exit 0（**5 warnings** 无新增）；`git diff --check` clean。
+- **更新 feed E2E（仓外）**：`make-update-feed.ps1` 生成 1 个本地 feed + 1 个 HTTP feed（python 静态站点）→ Runner 配置两 feed → `GET /runner/updates` 两行（source_kind local/url、download_required false/true、package_url 存在）→ `POST /runner/updates/install`：本地不下载即装、远程 curl 下载→sha 校验→装到 `packages/remote/` → `installed.json` 两个任务 + 对应行 `status=installed`；**ALL PASS**（`_verify\p2-updates-20261105\feed-e2e-log.txt`）。
+- P0 双端 E2E + 参数链路 E2E 复跑 ALL PASS；新包：Studio **76,637,342 B** / SHA `4B3C3237…B0E9`；Runner **37,844,909 B** / SHA `F669DA48…94D2`。
