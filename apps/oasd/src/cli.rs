@@ -43,7 +43,22 @@ pub fn run() -> ExitCode {
 /// `oasd-runner` app that lives outside this repository (Phase 1 of the
 /// Runner/Studio split, `RUNNER-SPLIT-DESIGN.md §3.5`).
 pub fn run_as(surface: &str) -> ExitCode {
-    let args = std::iter::once(surface.to_string()).chain(std::env::args().skip(1));
+    run_as_with_args(surface, Vec::new())
+}
+
+/// [`run_as`] with extra **default** arguments inserted before the process args.
+///
+/// Used by the independent `oasd-runner` app to inject defaults that only make
+/// sense in its own repository (e.g. `--ui ui` instead of oasd's
+/// `apps/oasd/ui`). Process arguments come last, so users can always override
+/// the defaults on the command line.
+pub fn run_as_with_args(
+    surface: &str,
+    extra: impl IntoIterator<Item = String>,
+) -> ExitCode {
+    let args = std::iter::once(surface.to_string())
+        .chain(extra)
+        .chain(std::env::args().skip(1));
     run_with_args(args)
 }
 
