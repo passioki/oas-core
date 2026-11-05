@@ -213,6 +213,22 @@ const PURE_FUNCTIONS = [
   'taskConfigSummary',
   // P6: T3「去声明…」prefill merge (append-only, same-key dedupe, bad-JSON degrade).
   'taskConfigMergePrefill',
+  // P7: mature structured params editor (form model / defaults / enum / validation).
+  'taskConfigKnownType',
+  'taskConfigIsNumericType',
+  'taskConfigParamFormDefaults',
+  'taskConfigDefaultInput',
+  'taskConfigEnumText',
+  'taskConfigFormRowFromParam',
+  'taskConfigParamsToForm',
+  'taskConfigParseEnumText',
+  'taskConfigDefaultFromRow',
+  'taskConfigFormRowToParam',
+  'taskConfigFormToParams',
+  'taskConfigFieldHelp',
+  'taskConfigExampleParams',
+  'taskConfigValidateParams',
+  'taskConfigMergePrefillRows',
   // PR5: Studio-side TaskPackage publish body / summary / error rendering.
   'publishRequestBody',
   'formatPackageSummary',
@@ -266,6 +282,21 @@ const {
   parseTaskConfigParamsText,
   taskConfigSummary,
   taskConfigMergePrefill,
+  taskConfigKnownType,
+  taskConfigIsNumericType,
+  taskConfigParamFormDefaults,
+  taskConfigDefaultInput,
+  taskConfigEnumText,
+  taskConfigFormRowFromParam,
+  taskConfigParamsToForm,
+  taskConfigParseEnumText,
+  taskConfigDefaultFromRow,
+  taskConfigFormRowToParam,
+  taskConfigFormToParams,
+  taskConfigFieldHelp,
+  taskConfigExampleParams,
+  taskConfigValidateParams,
+  taskConfigMergePrefillRows,
   publishRequestBody,
   formatPackageSummary,
   publishErrorsText,
@@ -3327,9 +3358,13 @@ for (const id of ['task-config-dialog', 'task-config-title', 'task-config-json',
   'task-config-status', 'task-config-error', 'task-config-save', 'task-config-cancel']) {
   ok(new RegExp(`id="${id}"`).test(html), `index.html provides #${id}`);
 }
-ok(/id="task-config-dialog"[\s\S]{0,900}id="task-config-json" class="builder-code/.test(html), 'schema editor uses the builder-code textarea');
-ok(/这里定义任务需要哪些配置（key\/type\/default\/label\/description\/enum\/required\/group）/.test(html), 'dialog explains the schema fields');
-ok(/终端用户在 Runner 里填运行值，本处只定义 schema/.test(html), 'dialog draws the Studio/Runner boundary');
+ok(/id="task-config-dialog"[\s\S]{0,4200}id="task-config-json" class="builder-code/.test(html), 'schema editor uses the builder-code textarea (advanced mode)');
+ok(/<strong>参数是什么<\/strong>/.test(html), 'dialog help block explains what a param is');
+ok(
+  /Studio 在这里定义任务的参数 schema/.test(html) &&
+    /终端用户在 Runner 的「已安装任务 → 配置」里填运行值/.test(html),
+  'dialog help block draws the Studio/Runner boundary'
+);
 ok(/id="task-config-save"[^>]*>保存配置项</.test(html), 'save button is labelled 保存配置项');
 ok(
   /taskConfigTitle\.textContent = '任务配置项 · ' \+ name/.test(source),
@@ -3725,8 +3760,28 @@ ok(
   'the 参数 group sits between 动作 and 数据/结束'
 );
 ok(
-  /if \(g === PARAM_GROUP\)/.test(builderSource) && /addParamAction\(key\)/.test(builderSource),
-  'the palette renders the param group through addParamAction'
+  /function renderPalette\(\)[\s\S]{0,900}actionCatalog\(\)/.test(builderSource) &&
+    /addParamAction\(item\.key\)/.test(builderSource),
+  'the palette renders every group through the unified action catalogue'
+);
+ok(
+  /function actionCatalog\(\)[\s\S]{0,700}Object\.entries\(OP_META\)[\s\S]{0,700}Object\.entries\(PARAM_ACTIONS\)/.test(builderSource),
+  'actionCatalog() is the single source of truth (OP_META + PARAM_ACTIONS)'
+);
+ok(
+  /function buildActionStep\(key\)[\s\S]{0,900}paramClickStep[\s\S]{0,200}paramWaitStep/.test(builderSource),
+  'buildActionStep() expands the parameter presets to the real ops'
+);
+ok(
+  /const catalog = actionCatalog\(\)/.test(builderSource) &&
+    /for \(const item of catalog\)/.test(builderSource) &&
+    /actionAvailable\(item\.key\)/.test(builderSource) &&
+    /const child = buildActionStep\(sel\.value\)/.test(builderSource),
+  'the if/loop 是/否/循环体 branch dropdown uses the same catalogue and step builder'
+);
+ok(
+  /需先声明任务参数/.test(builderSource),
+  'branch dropdown marks unavailable parameter presets instead of hiding them'
 );
 ok(
   /function addParamAction\(kind\)[\s\S]{0,900}insertStep\(step/.test(builderSource),
@@ -4260,8 +4315,8 @@ ok(
   'app.js merges the prefill into the loaded meta.params JSON'
 );
 ok(
-  /applyTaskConfigPrefill\(\);[\s\S]{0,80}taskConfigSave\.disabled = false/.test(source),
-  'the prefill is applied right after the schema loads'
+  /applyTaskConfigPrefill\(\);[\s\S]{0,2200}taskConfigSave\.disabled = false/.test(source),
+  'the prefill is applied while the schema loads (then the form model is rebuilt)'
 );
 ok(
   /taskConfigPrefillParam = null;/.test(source) &&
@@ -4269,12 +4324,238 @@ ok(
   'the pending prefill is cleared on open and installed by the builder bridge'
 );
 ok(
-  /从构建页检查面板的 T3「去声明…」打开时，会把缺失参数预填进数组/.test(html),
+  /从构建页检查面板的 T3「去声明…」打开时，会把缺失参数预填进表单/.test(html),
   'the config dialog copy explains the T3 prefill'
 );
 ok(
   /\.builder-drag-endpoint/.test(styleCss) && /\.builder-guard-hint/.test(styleCss),
   'style.css styles the guard/endpoint editors'
+);
+
+// --- P7: mature structured params editor (form model + advanced JSON) --------
+eq(taskConfigKnownType('int'), true, 'int is a known ParamDecl type');
+eq(taskConfigKnownType('bool'), true, 'bool is a known ParamDecl type');
+eq(taskConfigKnownType('text'), false, 'historical type "text" is not a ParamDecl type');
+eq(taskConfigKnownType(''), false, 'missing type is not known');
+eq(taskConfigIsNumericType('number'), true, 'number is numeric');
+eq(taskConfigIsNumericType('string'), false, 'string is not numeric');
+eq(taskConfigIsNumericType(null), false, 'missing type is not numeric');
+
+eq(
+  taskConfigParamFormDefaults(),
+  { key: '', type: 'string', label: '', group: '', defaultText: '', enumText: '',
+    minText: '', maxText: '', required: false, role: '', description: '', unknown: {},
+    prefilled: false },
+  'new rows start with a string schema + no default/enum/limits'
+);
+
+eq(taskConfigDefaultInput({ type: 'bool', default: true }).kind, 'select', 'bool default uses a tri-state select');
+eq(taskConfigDefaultInput({ type: 'bool', default: true }).value, 'true', 'bool true maps to tri true');
+eq(taskConfigDefaultInput({ type: 'bool', default: false }).value, 'false', 'bool false maps to tri false');
+eq(taskConfigDefaultInput({ type: 'bool' }).value, '', 'missing bool default is empty');
+eq(taskConfigDefaultInput({ type: 'int', default: 5 }).kind, 'number', 'numeric default uses a number input');
+eq(taskConfigDefaultInput({ type: 'int', default: 5 }).value, '5', 'numeric default keeps its text');
+eq(taskConfigDefaultInput({ type: 'string', enum: ['a', 'b'], default: 'a' }).kind, 'select', 'enum default uses a select');
+eq(taskConfigDefaultInput({ type: 'string', enum: ['a', 'b'], default: 'a' }).options, ['a', 'b'], 'enum options are exposed');
+eq(taskConfigDefaultInput({ type: 'string', default: 'x' }).kind, 'text', 'string default uses a text input');
+eq(taskConfigEnumText({ enum: ['a', 3] }), 'a, 3', 'enum text joins members');
+eq(taskConfigEnumText({}), '', 'missing enum renders empty text');
+
+const fullParam = {
+  key: '分组', type: 'string', default: '分组12', label: '分组', description: 'OCR 识别文字',
+  enum: ['分组12', '分组3'], required: true, group: '战斗', role: 'ocr_text', zz: 1,
+};
+const fullRow = taskConfigFormRowFromParam(fullParam);
+eq(fullRow.key, '分组', 'form row keeps key');
+eq(fullRow.type, 'string', 'form row keeps type');
+eq(fullRow.defaultText, '分组12', 'form row keeps default text');
+eq(fullRow.enumText, '分组12, 分组3', 'form row joins enum');
+eq(fullRow.required, true, 'form row keeps required');
+eq(fullRow.role, 'ocr_text', 'form row keeps role');
+eq(fullRow.unknown, { zz: 1 }, 'unknown ParamDecl fields are captured for the round-trip');
+eq(taskConfigParamsToForm(null), [], 'missing params -> no rows');
+eq(taskConfigParamsToForm([null, 'bad', fullParam]).length, 1, 'non-object params are filtered');
+eq(taskConfigParamsToForm([fullParam])[0].key, '分组', 'paramsToForm maps every object');
+
+eq(
+  taskConfigParseEnumText('突破, 结界，御魂', 'string').values,
+  ['突破', '结界', '御魂'],
+  'enum text splits comma + Chinese comma'
+);
+eq(taskConfigParseEnumText('1, 3, 5', 'int').values, [1, 3, 5], 'numeric enum members become numbers');
+eq(taskConfigParseEnumText('1.5, 2', 'int').ok, false, 'non-integer int enum members are rejected');
+eq(taskConfigParseEnumText('2, 2', 'string').ok, false, 'duplicate enum members are rejected');
+eq(taskConfigParseEnumText('', 'string'), { ok: true, values: [], error: '' }, 'empty enum text means unlimited');
+eq(taskConfigParseEnumText('a, b', 'string').values, ['a', 'b'], 'string enum members stay strings');
+
+eq(
+  taskConfigDefaultFromRow({ defaultText: '' }, 'int'),
+  { ok: true, present: false },
+  'blank default is absent'
+);
+eq(taskConfigDefaultFromRow({ defaultText: '3' }, 'int').value, 3, 'int default text converts to a number');
+eq(taskConfigDefaultFromRow({ defaultText: '3.5' }, 'int').ok, false, 'non-integer int default is rejected');
+eq(taskConfigDefaultFromRow({ defaultText: 'true' }, 'bool').value, true, 'bool default text converts to true');
+eq(taskConfigDefaultFromRow({ defaultText: 'false' }, 'bool').value, false, 'bool default text converts to false');
+eq(taskConfigDefaultFromRow({ defaultText: 'x' }, 'number').ok, false, 'non-numeric number default is rejected');
+eq(taskConfigDefaultFromRow({ defaultText: ' 挑战 ' }, 'string').value, '挑战', 'string default is trimmed');
+
+const numericRow = Object.assign(taskConfigParamFormDefaults(), {
+  key: '轮数', type: 'int', defaultText: '5', minText: '1', maxText: '9',
+  label: '最大轮数', group: '战斗', required: true, description: '打几场',
+});
+eq(
+  taskConfigFormRowToParam(numericRow),
+  {
+    key: '轮数', type: 'int', default: 5, min: 1, max: 9,
+    label: '最大轮数', description: '打几场', required: true, group: '战斗',
+  },
+  'form row converts typed fields back into a normalized ParamDecl'
+);
+eq(
+  taskConfigFormToParams([Object.assign({}, numericRow, { zz: 2, unknown: { zz: 2 } })]),
+  [{
+    key: '轮数', type: 'int', default: 5, min: 1, max: 9, label: '最大轮数',
+    description: '打几场', required: true, group: '战斗', zz: 2,
+  }],
+  'unknown ParamDecl fields survive form -> params'
+);
+eq(
+  taskConfigFormToParams(taskConfigParamsToForm([fullParam])),
+  [{
+    key: '分组', type: 'string', default: '分组12', label: '分组', description: 'OCR 识别文字',
+    enum: ['分组12', '分组3'], required: true, group: '战斗', role: 'ocr_text', zz: 1,
+  }],
+  'params -> form -> params round-trips byte-stable'
+);
+
+eq(taskConfigValidateParams([]), { ok: true, errors: [] }, 'an empty schema is valid');
+eq(taskConfigValidateParams([{ key: 'a', type: 'string' }]).ok, true, 'a minimal param is valid');
+const invalidParams = taskConfigValidateParams([
+  { key: '', type: 'int' },
+  { key: 'a', type: 'string' },
+  { key: 'a', type: 'text' },
+  { key: 'b', type: 'int', default: 'x' },
+  { key: 'c', type: 'int', enum: [1, 1] },
+  { key: 'd', type: 'bool', enum: [true] },
+  { key: 'e', type: 'string', enum: ['x'], default: 'y' },
+  { key: 'f', type: 'int', min: 9, max: 1 },
+  { key: 'g', type: 'string', min: 1 },
+  { key: 'h', type: 'string', label: 'L'.repeat(81) },
+  { key: 'i', type: 'string', group: 'G'.repeat(81), description: 'D'.repeat(501) },
+  { key: 'j', type: 'string', role: 'weird' },
+  { key: 'k', type: 'string', required: 'yes' },
+]);
+eq(invalidParams.ok, false, 'invalid schema is rejected');
+const invalidFields = invalidParams.errors.map((error) => error.field);
+ok(invalidFields.indexOf('key') >= 0, 'missing/duplicate keys are reported');
+ok(invalidFields.indexOf('type') >= 0, 'illegal type (historical text) is reported');
+ok(invalidFields.indexOf('default') >= 0, 'default type mismatch / enum membership are reported');
+ok(invalidFields.indexOf('enum') >= 0, 'enum problems are reported (duplicates/bool/member type)');
+ok(invalidFields.indexOf('min') >= 0, 'min/max problems are reported');
+ok(invalidParams.errors.some((error) => error.index === 8), 'errors carry the row index for inline highlighting');
+ok(invalidParams.errors.some((error) => /label 超过 80 字/.test(error.message)), 'label length is limited');
+ok(invalidParams.errors.some((error) => /description 超过 500 字/.test(error.message)), 'description length is limited');
+ok(invalidParams.errors.some((error) => /role「weird」未知/.test(error.message)), 'unknown role is reported');
+ok(invalidParams.errors.some((error) => /required 必须是布尔值/.test(error.message)), 'required must be boolean');
+eq(
+  taskConfigValidateParams([{ key: 'n', type: 'int', enum: [1, 3], default: 3, min: 1, max: 5 }]).ok,
+  true,
+  'a valid numeric enum param passes'
+);
+
+ok(taskConfigFieldHelp('key').length > 0 && /param/.test(taskConfigFieldHelp('key')), 'key help mentions param()');
+ok(/回退值/.test(taskConfigFieldHelp('default')), 'default help explains the fallback');
+ok(/ocr_text/.test(taskConfigFieldHelp('role')) && /OCR/.test(taskConfigFieldHelp('role')), 'role help explains ocr_text');
+eq(taskConfigFieldHelp('nope'), '', 'unknown field has no help');
+eq(taskConfigExampleParams().length, 2, 'the empty state ships two examples');
+eq(taskConfigExampleParams()[0].key, '分组', 'the example uses the 分组 param');
+ok(taskConfigExampleParams().some((param) => param.role === 'ocr_text'), 'an example covers role=ocr_text');
+
+const prefilledEmpty = taskConfigMergePrefillRows(
+  [],
+  { key: '关键词', type: 'text', label: '关键词', group: 'OCR', default: '挑战' }
+);
+eq(prefilledEmpty.appended, true, 'prefill appends a missing row');
+eq(prefilledEmpty.rows.length, 1, 'one row is appended');
+eq(prefilledEmpty.rows[0].type, 'string', 'historical prefill type text maps to string');
+eq(prefilledEmpty.rows[0].group, 'OCR', 'prefill group travels');
+eq(prefilledEmpty.rows[0].defaultText, '挑战', 'prefill default travels');
+eq(prefilledEmpty.rows[0].prefilled, true, 'prefilled rows are flagged for highlighting');
+const existingRows = taskConfigParamsToForm([{ key: '关键词', type: 'string' }]);
+const prefilledDup = taskConfigMergePrefillRows(existingRows, { key: ' 关键词 ' });
+eq(prefilledDup.appended, false, 'an existing key is not appended twice');
+eq(prefilledDup.duplicate, true, 'duplicate prefill is reported');
+eq(existingRows.length, 1, 'the original rows array is not mutated by a duplicate');
+eq(taskConfigMergePrefillRows([], {}).ok, false, 'a prefill without key is rejected');
+eq(taskConfigMergePrefillRows(null, { key: 'k' }).rows.length, 1, 'missing rows start from an empty model');
+
+// Static wiring: new DOM ids + help copy + form-first save + mode switching.
+for (const id of ['task-config-help', 'task-config-add', 'task-config-advanced',
+  'task-config-form', 'task-config-mode-hint']) {
+  ok(new RegExp(`id="${id}"`).test(html), `index.html provides #${id}`);
+}
+ok(/id="task-config-add"[^>]*>＋ 添加参数</.test(html), 'the toolbar has the add-parameter button');
+ok(/id="task-config-advanced"[^>]*type="checkbox"/.test(html), 'advanced JSON is a toggle');
+ok(/id="task-config-form" class="task-config-form"/.test(html), 'the structured form container exists');
+ok(
+  /<strong>参数是什么<\/strong>/.test(html) && /<strong>在哪里用<\/strong>/.test(html) &&
+    /<strong>运行值优先级<\/strong>/.test(html),
+  'the help block covers what/where/priority'
+);
+ok(
+  /param\('key'\)/.test(html) && /text_expr:"param\('key'\)"/.test(html) &&
+    /text_visible\(param\('key'\)\)/.test(html),
+  'the help block gives the three real usage snippets'
+);
+ok(
+  /CLI <code>--param<\/code> &gt; 调度条目 params &gt; Runner values\.json/.test(html),
+  'the help block states the four-layer priority order'
+);
+ok(/留空」= 回退 default/.test(html), 'the help block explains blank = fallback default');
+ok(/结构化表单模式/.test(html) && /高级 JSON/.test(html), 'both editing modes are described');
+ok(/taskConfigFormToParams\(taskConfigFormRows\)/.test(source), 'save converts the structured form model');
+ok(/taskConfigValidateParams\(parsed\.params\)/.test(source), 'both modes run the semantic validator before POST');
+ok(
+  /function taskConfigSetAdvancedMode\(enabled\)/.test(source) && /taskConfigModeUi\(\)/.test(source),
+  'mode switching keeps form/JSON in sync'
+);
+ok(
+  /parseTaskConfigParamsText\(taskConfigJson \? taskConfigJson\.value : ''\)/.test(source),
+  'switching back from advanced JSON parses the textarea'
+);
+ok(
+  /function renderTaskConfigForm\(\)/.test(source) && /taskConfigRenderCard\(/.test(source),
+  'the form renders ParamDecl cards'
+);
+ok(
+  /taskConfigAddRow/.test(source) && /taskConfigMoveRow\(/.test(source) && /taskConfigDeleteRow\(/.test(source),
+  'rows support add/move/delete'
+);
+ok(/taskConfigShowFormErrors\(validation\.errors\)/.test(source), 'validation errors are shown inline + summarized');
+ok(
+  /taskConfigMergePrefillRows\(taskConfigFormRows, pendingPrefill\)/.test(source),
+  'T3 prefill is appended to the structured model'
+);
+ok(!/innerHTML/.test(extractFunction('renderTaskConfigForm')), 'structured form renders through DOM APIs only');
+ok(!/innerHTML/.test(extractFunction('taskConfigRenderCard')), 'param cards render through DOM APIs only');
+ok(
+  !/innerHTML/.test(extractFunction('taskConfigRenderDefaultControl')),
+  'default-value controls render through DOM APIs only'
+);
+ok(
+  /\.task-config-help/.test(styleCss) && /\.task-config-card/.test(styleCss) &&
+    /\.task-config-fields/.test(styleCss),
+  'style.css styles the structured params form'
+);
+ok(
+  /\.task-config-card\.prefilled/.test(styleCss) && /\.task-config-card\.err/.test(styleCss),
+  'style.css highlights prefilled/error cards'
+);
+ok(/\.task-config-empty/.test(styleCss), 'style.css styles the empty state');
+ok(
+  /\.task-config-json\[hidden\]/.test(styleCss) && /#task-config-form\[hidden\]/.test(styleCss),
+  'both editing modes hide cleanly'
 );
 
 // DOM id audit: the whole point of this round is ZERO static dead ids. Every

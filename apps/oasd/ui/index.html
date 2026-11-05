@@ -471,17 +471,37 @@
     </div>
   </dialog>
 
-  <!-- PR2：任务配置项 schema 编辑（写 meta.params；运行值由 Runner 填写） -->
+  <!-- PR2 / P7：任务配置项 schema 编辑（结构化表单 + 高级 JSON；运行值由 Runner 填写） -->
   <dialog id="task-config-dialog" class="task-dialog task-config-dialog">
     <h3 id="task-config-title">任务配置项</h3>
-    <p class="muted small">
-      这里定义任务需要哪些配置（key/type/default/label/description/enum/required/group）；
-      终端用户在 Runner 里填运行值，本处只定义 schema。
-    </p>
-    <p class="muted small">
-      JSON 数组；保存前本地 JSON.parse 校验，服务端仍会校验 meta.params。没有配置项时填 <code>[]</code>。
-      从构建页检查面板的 T3「去声明…」打开时，会把缺失参数预填进数组（同 key 不重复；可再修改后保存）。
-    </p>
+    <div id="task-config-help" class="task-config-help muted small">
+      <p>
+        <strong>参数是什么</strong>：Studio 在这里定义任务的参数 schema（key/type/default/…），
+        终端用户在 Runner 的「已安装任务 → 配置」里填运行值；保存后随任务、发布后随 <code>.oaspkg</code> 下发。
+      </p>
+      <p>
+        <strong>在哪里用</strong>：在 flow 表达式里写 <code>param('key')</code>；OCR 文字来源写
+        <code>text_expr:"param('key')"</code>；条件里写 <code>text_visible(param('key'))</code>。
+        key 必须与 <code>param(...)</code> 里的字面量一致（发布 T3 会校验未声明参数）。
+      </p>
+      <p>
+        <strong>运行值优先级</strong>：CLI <code>--param</code> &gt; 调度条目 params &gt; Runner values.json
+        &gt; 这里填的 <code>default</code>。Runner 里「不使用 / 留空」= 回退 default。
+      </p>
+      <p>
+        不熟悉时按每项的短帮助与示例填写即可；也可以勾选「高级 JSON」直接编辑数组。
+        从构建页检查面板的 T3「去声明…」打开时，会把缺失参数预填进表单（同 key 不重复）。
+      </p>
+    </div>
+    <div class="task-config-toolbar row">
+      <button id="task-config-add" type="button" title="新增一行参数（key/type/default 等）">＋ 添加参数</button>
+      <label class="opt task-config-advanced-toggle">
+        <input id="task-config-advanced" type="checkbox" /> 高级 JSON（直接编辑 meta.params）
+      </label>
+      <span id="task-config-mode-hint" class="muted small">结构化表单模式：保存时以表单内容为准</span>
+      <span class="spacer"></span>
+    </div>
+    <div id="task-config-form" class="task-config-form"></div>
     <textarea id="task-config-json" class="builder-code task-config-json" spellcheck="false"
       placeholder='[{"key":"max_rounds","type":"int","default":5,"label":"最大轮数"}]'></textarea>
     <div id="task-config-status" class="muted small" role="status" aria-live="polite">—</div>

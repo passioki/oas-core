@@ -175,6 +175,11 @@ const btnCreateCancel = document.getElementById('btn-create-cancel');
 // 终端用户在 Runner 里填运行值）。
 const taskConfigDialog = document.getElementById('task-config-dialog');
 const taskConfigTitle = document.getElementById('task-config-title');
+const taskConfigHelp = document.getElementById('task-config-help');
+const taskConfigAdd = document.getElementById('task-config-add');
+const taskConfigAdvanced = document.getElementById('task-config-advanced');
+const taskConfigModeHint = document.getElementById('task-config-mode-hint');
+const taskConfigForm = document.getElementById('task-config-form');
 const taskConfigJson = document.getElementById('task-config-json');
 const taskConfigStatus = document.getElementById('task-config-status');
 const taskConfigError = document.getElementById('task-config-error');
@@ -182,6 +187,12 @@ const taskConfigSave = document.getElementById('task-config-save');
 const taskConfigCancel = document.getElementById('task-config-cancel');
 let taskConfigTask = '';
 let taskConfigBusy = false;
+// P7（task-20）：结构化表单模型（ParamDecl 行）。默认 structured；高级 JSON 只是
+// 同一模型的另一种编辑视图，保存时以当前模式的数据为准（表单模式用模型）。
+let taskConfigFormRows = [];
+let taskConfigFormErrors = [];
+let taskConfigAdvancedMode = false;
+let taskConfigPrefilledKeys = [];
 // P3: builder.js (loaded BEFORE app.js) opens this dialog at runtime through
 // window.OAS_TASK_CONFIG and is told when a save succeeded so its panel refreshes.
 let taskConfigOnSaved = null;
@@ -806,7 +817,7 @@ async function deleteTaskFromLibrary(name) {
 function taskConfigNormalizeParam(param) {
   if (!param || typeof param !== 'object' || Array.isArray(param)) return param;
   const order = ['key', 'type', 'default', 'min', 'max', 'label', 'description',
-    'enum', 'required', 'group'];
+    'enum', 'required', 'group', 'role'];
   const out = {};
   for (const field of order) {
     if (Object.prototype.hasOwnProperty.call(param, field) && param[field] !== undefined) {
@@ -875,6 +886,408 @@ function taskConfigSummary(params) {
   });
   const text = list.length + ' 项配置：' + parts.join('、');
   return text.length > 120 ? text.slice(0, 119) + '…' : text;
+}
+
+// --- P7（task-20）：结构化参数表单（纯函数，ui_pure_test 直接抽取执行） --------
+// ParamDecl 表单模型 = {key,type,label,group,defaultText,enumText,minText,maxText,
+// required,role,description,unknown,prefilled}。未知 ParamDecl 字段进入 unknown，
+// 保存时合并回去（round-trip 不丢）。类型只接受 int/float/number/bool/string；
+// 历史数据里的 type:"text" 在表单里按 string 展示、保存时给出提示。
+
+function taskConfigKnownType(type) {
+  const t = String(type === undefined || type === null ? '' : type).trim().toLowerCase();
+  return t === 'int' || t === 'float' || t === 'number' || t === 'bool' || t === 'string';
+}
+
+function taskConfigIsNumericType(type) {
+  const t = String(type === undefined || type === null ? '' : type).trim().toLowerCase();
+  return t === 'int' || t === 'float' || t === 'number';
+}
+
+function taskConfigParamFormDefaults() {
+  return {
+    key: '',
+    type: 'string',
+    label: '',
+    group: '',
+    defaultText: '',
+    enumText: '',
+    minText: '',
+    maxText: '',
+    required: false,
+    role: '',
+    description: '',
+    unknown: {},
+    prefilled: false,
+  };
+}
+
+// 默认值控件类型与初值：bool/enum → select；数值 → number；string → text。
+function taskConfigDefaultInput(param) {
+  const p = param && typeof param === 'object' && !Array.isArray(param) ? param : {};
+  const type = String(p.type === undefined || p.type === null ? '' : p.type).trim().toLowerCase();
+  const enumList = Array.isArray(p.enum) ? p.enum.map(String) : [];
+  const raw = p.default !== undefined && p.default !== null ? p.default : undefined;
+  if (type === 'bool') {
+    return {
+      kind: 'select',
+      value: raw === undefined ? '' : (raw === true ? 'true' : (raw === false ? 'false' : String(raw))),
+    };
+  }
+  if (enumList.length) {
+    return { kind: 'select', value: raw === undefined ? '' : String(raw), options: enumList };
+  }
+  if (taskConfigIsNumericType(type)) {
+    return { kind: 'number', value: raw === undefined ? '' : String(raw) };
+  }
+  return { kind: 'text', value: raw === undefined ? '' : String(raw) };
+}
+
+function taskConfigEnumText(param) {
+  const p = param && typeof param === 'object' && !Array.isArray(param) ? param : {};
+  return Array.isArray(p.enum) ? p.enum.map(String).join(', ') : '';
+}
+
+// One ParamDecl → one form row (unknown fields captured for the round-trip).
+function taskConfigFormRowFromParam(param) {
+  const p = param && typeof param === 'object' && !Array.isArray(param) ? param : {};
+  const row = taskConfigParamFormDefaults();
+  const text = function (value) {
+    return value === undefined || value === null ? '' : String(value);
+  };
+  row.key = text(p.key).trim();
+  const rawType = text(p.type).trim();
+  row.type = rawType || 'string';
+  row.label = text(p.label).trim();
+  row.group = text(p.group).trim();
+  row.role = text(p.role).trim();
+  row.description = text(p.description);
+  row.required = p.required === true;
+  const input = taskConfigDefaultInput(p);
+  row.defaultText = input.value;
+  row.enumText = taskConfigEnumText(p);
+  row.minText = p.min !== undefined && p.min !== null ? String(p.min) : '';
+  row.maxText = p.max !== undefined && p.max !== null ? String(p.max) : '';
+  const known = ['key', 'type', 'default', 'min', 'max', 'label', 'description',
+    'enum', 'required', 'group', 'role'];
+  for (const field of Object.keys(p)) {
+    if (known.indexOf(field) >= 0) continue;
+    if (p[field] === undefined) continue;
+    row.unknown[field] = p[field];
+  }
+  return row;
+}
+
+function taskConfigParamsToForm(params) {
+  const list = Array.isArray(params) ? params : [];
+  return list
+    .filter(function (p) { return p && typeof p === 'object' && !Array.isArray(p); })
+    .map(taskConfigFormRowFromParam);
+}
+
+// enum 文本（逗号/中文逗号分隔）→ 类型化数组；数值 enum 成员转为 JSON number。
+function taskConfigParseEnumText(text, type) {
+  const raw = String(text === undefined || text === null ? '' : text).trim();
+  if (!raw) return { ok: true, values: [], error: '' };
+  const tokens = raw.split(/[,，]/).map(function (token) { return token.trim(); })
+    .filter(function (token) { return token !== ''; });
+  if (!tokens.length) return { ok: true, values: [], error: '' };
+  const numeric = taskConfigIsNumericType(type);
+  const intType = String(type === undefined || type === null ? '' : type).trim().toLowerCase() === 'int';
+  const values = [];
+  const seen = {};
+  for (const token of tokens) {
+    let value;
+    if (numeric) {
+      const num = Number(token);
+      if (!isFinite(num)) return { ok: false, values: [], error: '枚举项必须是数字：' + token };
+      if (intType && !Number.isInteger(num)) return { ok: false, values: [], error: 'int 枚举项必须是整数：' + token };
+      value = num;
+    } else {
+      value = token;
+    }
+    const mapKey = String(value);
+    if (Object.prototype.hasOwnProperty.call(seen, mapKey)) {
+      return { ok: false, values: [], error: '枚举项重复：' + token };
+    }
+    seen[mapKey] = true;
+    values.push(value);
+  }
+  return { ok: true, values: values, error: '' };
+}
+
+// 表单默认值输入 → {ok,present,value,error}。空文本 = 无默认值。
+function taskConfigDefaultFromRow(row, type) {
+  const r = row && typeof row === 'object' ? row : {};
+  const raw = String(r.defaultText === undefined || r.defaultText === null ? '' : r.defaultText).trim();
+  const t = String(type === undefined || type === null ? '' : type).trim().toLowerCase();
+  if (!raw) return { ok: true, present: false, value: undefined };
+  if (t === 'bool') {
+    if (raw === 'true') return { ok: true, present: true, value: true };
+    if (raw === 'false') return { ok: true, present: true, value: false };
+    return { ok: false, present: false, value: undefined, error: '布尔默认值只能是 是/否' };
+  }
+  if (t === 'int' || t === 'float' || t === 'number') {
+    const num = Number(raw);
+    if (!isFinite(num)) return { ok: false, present: false, value: undefined, error: '默认值必须是数字' };
+    if (t === 'int' && !Number.isInteger(num)) {
+      return { ok: false, present: false, value: undefined, error: '默认值必须是整数' };
+    }
+    return { ok: true, present: true, value: num };
+  }
+  return { ok: true, present: true, value: raw };
+}
+
+// One form row → one ParamDecl (unknown fields merged back, then normalized).
+function taskConfigFormRowToParam(row) {
+  const r = row && typeof row === 'object' ? row : {};
+  const text = function (value) {
+    return value === undefined || value === null ? '' : String(value).trim();
+  };
+  const key = text(r.key);
+  const rawType = text(r.type);
+  const type = rawType || 'string';
+  const param = { key: key, type: type };
+  const def = taskConfigDefaultFromRow(r, type);
+  if (def.ok && def.present) param.default = def.value;
+  const enumRes = taskConfigParseEnumText(r.enumText, type);
+  if (enumRes.ok && enumRes.values.length) param.enum = enumRes.values;
+  if (taskConfigIsNumericType(type)) {
+    const minText = text(r.minText);
+    const maxText = text(r.maxText);
+    if (minText) {
+      const min = Number(minText);
+      if (isFinite(min)) param.min = min;
+    }
+    if (maxText) {
+      const max = Number(maxText);
+      if (isFinite(max)) param.max = max;
+    }
+  }
+  const label = text(r.label);
+  if (label) param.label = label;
+  const group = text(r.group);
+  if (group) param.group = group;
+  const role = text(r.role);
+  if (role) param.role = role;
+  const description = r.description === undefined || r.description === null
+    ? ''
+    : String(r.description).trim();
+  if (description) param.description = description;
+  if (r.required === true) param.required = true;
+  const unknown = r.unknown && typeof r.unknown === 'object' && !Array.isArray(r.unknown)
+    ? r.unknown
+    : {};
+  return taskConfigNormalizeParam(Object.assign({}, unknown, param));
+}
+
+function taskConfigFormToParams(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  return list
+    .filter(function (row) { return row && typeof row === 'object'; })
+    .map(taskConfigFormRowToParam);
+}
+
+// 每字段短帮助（UI 直接展示；示例值同时放进 placeholder）。
+function taskConfigFieldHelp(field) {
+  switch (String(field === undefined || field === null ? '' : field)) {
+    case 'key':
+      return "param('key') 的引用名；同一任务内唯一，建议用字母/数字/中文且不含空格";
+    case 'label':
+      return 'Runner 表单里的显示名（≤80 字）；留空时用 key 代替';
+    case 'type':
+      return '值类型：int/float/number/bool/string；决定 Runner 控件与校验';
+    case 'group':
+      return 'Runner 参数页的分组标题（≤80 字）；留空归入「通用」';
+    case 'default':
+      return '运行值留空/不使用时的回退值；类型必须与 type（或 enum 成员）匹配';
+    case 'enum':
+      return '可选值（逗号分隔），仅 string/数值类型；留空=不限；默认值必须是成员之一';
+    case 'min':
+      return '数值最小值（含）；仅 int/float/number 类型';
+    case 'max':
+      return '数值最大值（含）；仅 int/float/number 类型，且需 ≥ 最小值';
+    case 'required':
+      return '勾选后：无 default 时 Runner 必须填；有 default 时允许留空/不使用';
+    case 'role':
+      return '仅 UI 提示：ocr_text = 该参数用于 OCR 识别文字（text_expr）';
+    case 'description':
+      return 'Runner 参数行下面的解释（≤500 字），可写这个值从哪来、怎么查';
+    default:
+      return '';
+  }
+}
+
+// 空态示例（“+ 添加参数”没思路时可直接抄）。
+function taskConfigExampleParams() {
+  return [
+    {
+      key: '分组',
+      type: 'string',
+      label: '分组',
+      default: '分组12',
+      role: 'ocr_text',
+      description: 'OCR 识别文字：游戏内分组名',
+    },
+    {
+      key: '关键词',
+      type: 'string',
+      label: '关键词',
+      default: '挑战',
+    },
+  ];
+}
+
+// 保存前校验：key/type/default 类型/min<=max/enum/长度/role。逐条返回 index+field，
+// UI 用 index 定位到对应卡片做行内红字。
+function taskConfigValidateParams(params) {
+  const list = Array.isArray(params) ? params : [];
+  const errors = [];
+  const seen = {};
+  const knownTypes = { int: 1, float: 1, number: 1, bool: 1, string: 1 };
+  for (let i = 0; i < list.length; i++) {
+    const p = list[i];
+    const where = '第 ' + (i + 1) + ' 项';
+    if (!p || typeof p !== 'object' || Array.isArray(p)) {
+      errors.push({ index: i, field: '', key: '', message: where + '必须是对象' });
+      continue;
+    }
+    const key = String(p.key === undefined || p.key === null ? '' : p.key).trim();
+    const type = String(p.type === undefined || p.type === null ? '' : p.type).trim().toLowerCase();
+    const label = String(p.label === undefined || p.label === null ? '' : p.label).trim() || key || where;
+    if (!key) {
+      errors.push({ index: i, field: 'key', key: '', message: where + '缺少 key（param(...) 的引用名）' });
+    } else if (Object.prototype.hasOwnProperty.call(seen, key)) {
+      errors.push({ index: i, field: 'key', key: key, message: 'key「' + key + '」重复' });
+    } else {
+      seen[key] = true;
+    }
+    if (!type) {
+      errors.push({ index: i, field: 'type', key: key, message: '「' + label + '」缺少 type（int/float/number/bool/string）' });
+    } else if (!Object.prototype.hasOwnProperty.call(knownTypes, type)) {
+      errors.push({
+        index: i, field: 'type', key: key,
+        message: '「' + label + '」的 type「' + type + '」不合法：只能是 int / float / number / bool / string（历史 text 请改成 string）',
+      });
+    }
+    if (p.label !== undefined && p.label !== null && typeof p.label !== 'string') {
+      errors.push({ index: i, field: 'label', key: key, message: '「' + label + '」label 必须是字符串' });
+    } else if (String(p.label === undefined || p.label === null ? '' : p.label).length > 80) {
+      errors.push({ index: i, field: 'label', key: key, message: '「' + label + '」label 超过 80 字' });
+    }
+    if (p.group !== undefined && p.group !== null && typeof p.group !== 'string') {
+      errors.push({ index: i, field: 'group', key: key, message: '「' + label + '」group 必须是字符串' });
+    } else if (String(p.group === undefined || p.group === null ? '' : p.group).length > 80) {
+      errors.push({ index: i, field: 'group', key: key, message: '「' + label + '」group 超过 80 字' });
+    }
+    if (p.description !== undefined && p.description !== null && typeof p.description !== 'string') {
+      errors.push({ index: i, field: 'description', key: key, message: '「' + label + '」description 必须是字符串' });
+    } else if (String(p.description === undefined || p.description === null ? '' : p.description).length > 500) {
+      errors.push({ index: i, field: 'description', key: key, message: '「' + label + '」description 超过 500 字' });
+    }
+    const role = String(p.role === undefined || p.role === null ? '' : p.role).trim();
+    if (role && role !== 'ocr_text') {
+      errors.push({ index: i, field: 'role', key: key, message: '「' + label + '」role「' + role + '」未知：只支持留空或 ocr_text' });
+    } else if (role.length > 32) {
+      errors.push({ index: i, field: 'role', key: key, message: '「' + label + '」role 超过 32 字' });
+    }
+    const enumList = Array.isArray(p.enum) ? p.enum : null;
+    const hasEnum = p.enum !== undefined && p.enum !== null;
+    if (hasEnum) {
+      if (type === 'bool') {
+        errors.push({ index: i, field: 'enum', key: key, message: '「' + label + '」bool 类型不支持 enum' });
+      } else if (!enumList || !enumList.length) {
+        errors.push({ index: i, field: 'enum', key: key, message: '「' + label + '」enum 必须是非空数组' });
+      } else {
+        const enumSeen = {};
+        const numeric = taskConfigIsNumericType(type);
+        for (const member of enumList) {
+          let okMember;
+          if (numeric) okMember = typeof member === 'number' && isFinite(member) &&
+            (type !== 'int' || Number.isInteger(member));
+          else okMember = typeof member === 'string';
+          if (!okMember) {
+            errors.push({ index: i, field: 'enum', key: key, message: '「' + label + '」enum 成员类型与 type 不匹配' });
+            break;
+          }
+          if (Object.prototype.hasOwnProperty.call(enumSeen, String(member))) {
+            errors.push({ index: i, field: 'enum', key: key, message: '「' + label + '」enum 成员重复：' + String(member) });
+            break;
+          }
+          enumSeen[String(member)] = true;
+        }
+      }
+    }
+    const hasDefault = Object.prototype.hasOwnProperty.call(p, 'default') &&
+      p.default !== undefined && p.default !== null;
+    if (hasDefault) {
+      let defaultOk;
+      if (type === 'bool') defaultOk = typeof p.default === 'boolean';
+      else if (type === 'int') defaultOk = typeof p.default === 'number' && isFinite(p.default) && Number.isInteger(p.default);
+      else if (type === 'float' || type === 'number') defaultOk = typeof p.default === 'number' && isFinite(p.default);
+      else if (type === 'string') defaultOk = typeof p.default === 'string';
+      else defaultOk = false;
+      if (!defaultOk) {
+        errors.push({ index: i, field: 'default', key: key, message: '「' + label + '」默认值类型不匹配（type=' + (type || '?') + '）' });
+      } else if (enumList && enumList.length) {
+        const inEnum = enumList.some(function (member) { return String(member) === String(p.default); });
+        if (!inEnum) {
+          errors.push({ index: i, field: 'default', key: key, message: '「' + label + '」默认值必须是 enum 成员之一' });
+        }
+      }
+    }
+    const hasMin = p.min !== undefined && p.min !== null;
+    const hasMax = p.max !== undefined && p.max !== null;
+    if (!taskConfigIsNumericType(type) && (hasMin || hasMax)) {
+      errors.push({ index: i, field: 'min', key: key, message: '「' + label + '」min/max 仅 int/float/number 类型支持' });
+    }
+    if (hasMin && (typeof p.min !== 'number' || !isFinite(p.min))) {
+      errors.push({ index: i, field: 'min', key: key, message: '「' + label + '」min 必须是数字' });
+    }
+    if (hasMax && (typeof p.max !== 'number' || !isFinite(p.max))) {
+      errors.push({ index: i, field: 'max', key: key, message: '「' + label + '」max 必须是数字' });
+    }
+    if (hasMin && hasMax && typeof p.min === 'number' && typeof p.max === 'number' &&
+        isFinite(p.min) && isFinite(p.max) && p.min > p.max) {
+      errors.push({ index: i, field: 'min', key: key, message: '「' + label + '」min 不能大于 max' });
+    }
+    if (p.required !== undefined && typeof p.required !== 'boolean') {
+      errors.push({ index: i, field: 'required', key: key, message: '「' + label + '」required 必须是布尔值' });
+    }
+  }
+  return { ok: errors.length === 0, errors: errors };
+}
+
+// T3 prefill → append one form row (same key deduped). Historical prefill type
+// "text" maps to the ParamDecl type "string"; invalid keys degrade with an error.
+function taskConfigMergePrefillRows(rows, prefillParam) {
+  const list = Array.isArray(rows) ? rows.slice() : [];
+  const p = prefillParam && typeof prefillParam === 'object' && !Array.isArray(prefillParam)
+    ? prefillParam
+    : null;
+  const key = p && p.key !== undefined && p.key !== null ? String(p.key).trim() : '';
+  if (!key) {
+    return { ok: false, rows: list, appended: false, duplicate: false, key: '', error: '缺少参数 key' };
+  }
+  for (const row of list) {
+    const rowKey = row && row.key !== undefined && row.key !== null ? String(row.key).trim() : '';
+    if (rowKey === key) {
+      return { ok: true, rows: list, appended: false, duplicate: true, key: key, error: '' };
+    }
+  }
+  const row = taskConfigParamFormDefaults();
+  row.key = key;
+  const rawType = String(p.type === undefined || p.type === null ? '' : p.type).trim().toLowerCase();
+  row.type = taskConfigKnownType(rawType) ? rawType : 'string';
+  row.label = String(p.label === undefined || p.label === null ? '' : p.label).trim() || key;
+  row.group = String(p.group === undefined || p.group === null ? '' : p.group).trim();
+  row.role = String(p.role === undefined || p.role === null ? '' : p.role).trim();
+  if (Object.prototype.hasOwnProperty.call(p, 'default') && p.default !== undefined && p.default !== null) {
+    row.defaultText = String(p.default);
+  }
+  row.prefilled = true;
+  list.push(row);
+  return { ok: true, rows: list, appended: true, duplicate: false, key: key, error: '' };
 }
 
 // P6: append one T3「去声明…」prefill entry to the current meta.params JSON text.
@@ -973,6 +1386,461 @@ function applyTaskConfigPrefill() {
   }
 }
 
+// --- P7：结构化参数表单（DOM；纯逻辑在 taskConfig*Form* 纯函数里） -----------
+
+function taskConfigSyncJsonFromModel() {
+  if (!taskConfigJson) return;
+  taskConfigJson.value = taskConfigParamsToJson(taskConfigFormToParams(taskConfigFormRows));
+}
+
+function taskConfigModeUi() {
+  const advanced = taskConfigAdvancedMode === true;
+  if (taskConfigAdvanced) taskConfigAdvanced.checked = advanced;
+  if (taskConfigForm) taskConfigForm.hidden = advanced;
+  if (taskConfigJson) taskConfigJson.hidden = !advanced;
+  if (taskConfigModeHint) {
+    taskConfigModeHint.textContent = advanced
+      ? '高级 JSON 模式：保存时以 JSON 文本为准（切回结构化会先解析）'
+      : '结构化表单模式：保存时以表单内容为准';
+  }
+}
+
+function taskConfigSetAdvancedMode(enabled) {
+  const want = enabled === true;
+  if (!want && taskConfigAdvancedMode) {
+    // Switching back: parse the JSON first; a bad document keeps advanced mode.
+    const parsed = parseTaskConfigParamsText(taskConfigJson ? taskConfigJson.value : '');
+    if (!parsed.ok) {
+      taskConfigAdvancedMode = true;
+      taskConfigModeUi();
+      if (taskConfigError) taskConfigError.textContent = parsed.error;
+      if (taskConfigStatus) {
+        taskConfigStatus.textContent = 'JSON 解析失败：仍停留在高级 JSON 模式';
+        taskConfigStatus.className = 'muted small err';
+      }
+      return;
+    }
+    taskConfigFormRows = taskConfigParamsToForm(parsed.params);
+    taskConfigFormErrors = [];
+    renderTaskConfigForm();
+    taskConfigSyncJsonFromModel();
+    if (taskConfigStatus) {
+      taskConfigStatus.textContent = '已从 JSON 切回结构化表单：' + taskConfigSummary(parsed.params);
+      taskConfigStatus.className = 'muted small';
+    }
+  }
+  taskConfigAdvancedMode = want;
+  if (want) taskConfigSyncJsonFromModel();
+  taskConfigModeUi();
+  if (taskConfigError) taskConfigError.textContent = '';
+  taskConfigClearFormErrors();
+}
+
+function taskConfigClearFormErrors() {
+  if (taskConfigError) taskConfigError.textContent = '';
+  if (!taskConfigForm) return;
+  const cards = taskConfigForm.querySelectorAll('.task-config-card');
+  for (const card of cards) {
+    card.classList.remove('err');
+    const err = card.querySelector('.task-config-card-err');
+    if (err) err.textContent = '';
+  }
+}
+
+// Bottom summary + per-card inline errors (matched by error.index).
+function taskConfigShowFormErrors(errors) {
+  const list = Array.isArray(errors) ? errors : [];
+  taskConfigClearFormErrors();
+  const lines = [];
+  for (const error of list) {
+    const message = String(error && error.message ? error.message : error);
+    lines.push('· ' + message);
+    const index = error && typeof error.index === 'number' ? error.index : -1;
+    if (!taskConfigForm || index < 0) continue;
+    const card = taskConfigForm.querySelector('.task-config-card[data-index="' + index + '"]');
+    if (!card) continue;
+    card.classList.add('err');
+    const errEl = card.querySelector('.task-config-card-err');
+    if (errEl) errEl.textContent += (errEl.textContent ? '\n' : '') + message;
+  }
+  if (taskConfigError) taskConfigError.textContent = lines.join('\n');
+}
+
+function taskConfigField(host, labelText, control, helpText, extraClass) {
+  const wrap = document.createElement('div');
+  wrap.className = 'task-config-field' + (extraClass ? ' ' + extraClass : '');
+  const lab = document.createElement('label');
+  lab.textContent = labelText;
+  wrap.appendChild(lab);
+  wrap.appendChild(control);
+  if (helpText) {
+    const help = document.createElement('div');
+    help.className = 'task-config-field-help';
+    help.textContent = helpText;
+    wrap.appendChild(help);
+  }
+  host.appendChild(wrap);
+  return wrap;
+}
+
+function taskConfigTextInput(value, placeholder, field, row, onInput) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.value = value === undefined || value === null ? '' : String(value);
+  input.placeholder = placeholder || '';
+  input.setAttribute('data-field', field);
+  input.addEventListener('input', function () {
+    if (onInput) onInput(input.value);
+    taskConfigSyncJsonFromModel();
+  });
+  return input;
+}
+
+function taskConfigCardTitle(row, index) {
+  const key = String(row.key === undefined || row.key === null ? '' : row.key).trim();
+  const label = String(row.label === undefined || row.label === null ? '' : row.label).trim();
+  const name = label || key || '（未命名）';
+  return '参数 ' + (index + 1) + '：' + name;
+}
+
+function taskConfigRenderDefaultControl(row, card) {
+  const numeric = taskConfigIsNumericType(row.type);
+  const enumRes = taskConfigParseEnumText(row.enumText, row.type);
+  const enumValues = enumRes.ok ? enumRes.values : [];
+  let control;
+  if (row.type === 'bool') {
+    control = document.createElement('select');
+    control.setAttribute('data-field', 'default');
+    for (const [value, label] of [['', '（无默认值）'], ['true', '是 true'], ['false', '否 false']]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      control.appendChild(option);
+    }
+    if (control.getAttribute('value') === null) control.value = '';
+    const known = ['', 'true', 'false'];
+    if (known.indexOf(row.defaultText) < 0) {
+      const option = document.createElement('option');
+      option.value = row.defaultText;
+      option.textContent = '（无效：' + row.defaultText + '）';
+      control.appendChild(option);
+    }
+    control.value = row.defaultText || '';
+  } else if (enumValues.length) {
+    control = document.createElement('select');
+    control.setAttribute('data-field', 'default');
+    const emptyOption = document.createElement('option');
+    emptyOption.value = '';
+    emptyOption.textContent = '（无默认值）';
+    control.appendChild(emptyOption);
+    for (const member of enumValues) {
+      const option = document.createElement('option');
+      option.value = String(member);
+      option.textContent = String(member);
+      control.appendChild(option);
+    }
+    if (row.defaultText && enumValues.map(String).indexOf(row.defaultText) < 0) {
+      const option = document.createElement('option');
+      option.value = row.defaultText;
+      option.textContent = '（无效：' + row.defaultText + '）';
+      control.appendChild(option);
+    }
+    control.value = row.defaultText || '';
+  } else if (numeric) {
+    control = document.createElement('input');
+    control.type = 'number';
+    control.setAttribute('data-field', 'default');
+    control.step = row.type === 'int' ? '1' : 'any';
+    control.value = row.defaultText || '';
+    control.placeholder = row.type === 'int' ? '如：5' : '如：0.5';
+  } else {
+    control = document.createElement('input');
+    control.type = 'text';
+    control.setAttribute('data-field', 'default');
+    control.value = row.defaultText || '';
+    control.placeholder = '如：分组12 / 挑战';
+  }
+  control.addEventListener('change', function () {
+    row.defaultText = control.value;
+    taskConfigClearFormErrors();
+    taskConfigSyncJsonFromModel();
+  });
+  return control;
+}
+
+function taskConfigRenderCard(row, index, total) {
+  const card = document.createElement('div');
+  card.className = 'task-config-card' + (row.prefilled ? ' prefilled' : '');
+  card.setAttribute('data-index', String(index));
+  card.setAttribute('data-key', row.key || '');
+
+  const head = document.createElement('div');
+  head.className = 'task-config-card-head';
+  const title = document.createElement('span');
+  title.className = 'task-config-card-title';
+  title.textContent = taskConfigCardTitle(row, index);
+  head.appendChild(title);
+  const typeChip = document.createElement('span');
+  typeChip.className = 'task-config-chip kind';
+  typeChip.textContent = taskConfigKnownType(row.type) ? row.type : (row.type + '（未知）');
+  head.appendChild(typeChip);
+  if (row.role === 'ocr_text') {
+    const roleChip = document.createElement('span');
+    roleChip.className = 'task-config-chip warn';
+    roleChip.textContent = 'OCR 识别文字';
+    head.appendChild(roleChip);
+  }
+  if (row.prefilled) {
+    const prefillChip = document.createElement('span');
+    prefillChip.className = 'task-config-chip warn';
+    prefillChip.textContent = 'T3 预填';
+    head.appendChild(prefillChip);
+  }
+  const spacer = document.createElement('span');
+  spacer.className = 'spacer';
+  head.appendChild(spacer);
+  const actions = document.createElement('span');
+  actions.className = 'task-config-card-actions';
+  const up = document.createElement('button');
+  up.type = 'button';
+  up.textContent = '上移';
+  up.disabled = index <= 0;
+  up.addEventListener('click', function () { taskConfigMoveRow(index, -1); });
+  const down = document.createElement('button');
+  down.type = 'button';
+  down.textContent = '下移';
+  down.disabled = index >= total - 1;
+  down.addEventListener('click', function () { taskConfigMoveRow(index, 1); });
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.textContent = '删除';
+  del.addEventListener('click', function () { taskConfigDeleteRow(index); });
+  actions.append(up, down, del);
+  head.appendChild(actions);
+  card.appendChild(head);
+
+  const fields = document.createElement('div');
+  fields.className = 'task-config-fields';
+  const updateTitle = function () {
+    title.textContent = taskConfigCardTitle(row, index);
+    card.setAttribute('data-key', row.key || '');
+    typeChip.textContent = taskConfigKnownType(row.type) ? row.type : (row.type + '（未知）');
+  };
+  const keyInput = taskConfigTextInput(row.key, '如：分组', 'key', row, function (value) {
+    row.key = value;
+    updateTitle();
+    taskConfigClearFormErrors();
+  });
+  taskConfigField(fields, 'key（param 引用名）', keyInput, taskConfigFieldHelp('key'));
+  const labelInput = taskConfigTextInput(row.label, '如：分组名', 'label', row, function (value) {
+    row.label = value;
+    updateTitle();
+    taskConfigClearFormErrors();
+  });
+  taskConfigField(fields, '显示名 label', labelInput, taskConfigFieldHelp('label'));
+
+  const typeSelect = document.createElement('select');
+  typeSelect.setAttribute('data-field', 'type');
+  const typeValues = ['string', 'int', 'float', 'number', 'bool'];
+  for (const value of typeValues) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = value;
+    typeSelect.appendChild(option);
+  }
+  if (typeValues.indexOf(row.type) < 0) {
+    const option = document.createElement('option');
+    option.value = row.type;
+    option.textContent = row.type + '（未知→保存前请改成 string）';
+    typeSelect.appendChild(option);
+  }
+  typeSelect.value = row.type;
+  typeSelect.addEventListener('change', function () {
+    row.type = typeSelect.value;
+    if (!taskConfigIsNumericType(row.type)) {
+      row.minText = '';
+      row.maxText = '';
+    }
+    renderTaskConfigForm();
+    taskConfigSyncJsonFromModel();
+  });
+  taskConfigField(fields, '类型 type', typeSelect, taskConfigFieldHelp('type'));
+
+  const groupInput = taskConfigTextInput(row.group, '如：战斗', 'group', row, function (value) {
+    row.group = value;
+    taskConfigClearFormErrors();
+  });
+  taskConfigField(fields, '分组 group', groupInput, taskConfigFieldHelp('group'));
+
+  const defaultControl = taskConfigRenderDefaultControl(row, card);
+  taskConfigField(fields, '默认值 default', defaultControl, taskConfigFieldHelp('default'));
+
+  const enumInput = taskConfigTextInput(row.enumText, '如：突破, 结界', 'enum', row, function (value) {
+    row.enumText = value;
+    taskConfigClearFormErrors();
+  });
+  enumInput.disabled = row.type === 'bool';
+  enumInput.addEventListener('change', function () {
+    renderTaskConfigForm();
+    taskConfigSyncJsonFromModel();
+  });
+  taskConfigField(
+    fields,
+    '可选值 enum（逗号分隔）',
+    enumInput,
+    taskConfigFieldHelp('enum'),
+    'task-config-field-wide'
+  );
+
+  if (taskConfigIsNumericType(row.type)) {
+    const minInput = document.createElement('input');
+    minInput.type = 'number';
+    minInput.setAttribute('data-field', 'min');
+    minInput.value = row.minText || '';
+    minInput.placeholder = '如：1';
+    minInput.addEventListener('input', function () { row.minText = minInput.value; taskConfigSyncJsonFromModel(); });
+    taskConfigField(fields, '最小值 min', minInput, taskConfigFieldHelp('min'));
+    const maxInput = document.createElement('input');
+    maxInput.type = 'number';
+    maxInput.setAttribute('data-field', 'max');
+    maxInput.value = row.maxText || '';
+    maxInput.placeholder = '如：99';
+    maxInput.addEventListener('input', function () { row.maxText = maxInput.value; taskConfigSyncJsonFromModel(); });
+    taskConfigField(fields, '最大值 max', maxInput, taskConfigFieldHelp('max'));
+  }
+
+  const requiredWrap = document.createElement('div');
+  requiredWrap.className = 'task-config-field';
+  const requiredLine = document.createElement('label');
+  requiredLine.className = 'task-config-checkline';
+  const requiredInput = document.createElement('input');
+  requiredInput.type = 'checkbox';
+  requiredInput.checked = row.required === true;
+  requiredInput.setAttribute('data-field', 'required');
+  requiredInput.addEventListener('change', function () {
+    row.required = requiredInput.checked;
+    taskConfigSyncJsonFromModel();
+  });
+  requiredLine.append(requiredInput, document.createTextNode(' 必填 required'));
+  requiredWrap.appendChild(requiredLine);
+  const requiredHelp = document.createElement('div');
+  requiredHelp.className = 'task-config-field-help';
+  requiredHelp.textContent = taskConfigFieldHelp('required');
+  requiredWrap.appendChild(requiredHelp);
+  fields.appendChild(requiredWrap);
+
+  const roleSelect = document.createElement('select');
+  roleSelect.setAttribute('data-field', 'role');
+  for (const [value, label] of [['', '（无）'], ['ocr_text', 'ocr_text（OCR 识别文字）']]) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    roleSelect.appendChild(option);
+  }
+  if (row.role && row.role !== 'ocr_text') {
+    const option = document.createElement('option');
+    option.value = row.role;
+    option.textContent = row.role + '（未知）';
+    roleSelect.appendChild(option);
+  }
+  roleSelect.value = row.role || '';
+  roleSelect.addEventListener('change', function () {
+    row.role = roleSelect.value;
+    taskConfigSyncJsonFromModel();
+  });
+  taskConfigField(fields, '用途 role', roleSelect, taskConfigFieldHelp('role'));
+
+  const descInput = document.createElement('textarea');
+  descInput.spellcheck = false;
+  descInput.setAttribute('data-field', 'description');
+  descInput.rows = 2;
+  descInput.value = row.description || '';
+  descInput.placeholder = '如：OCR 识别文字：游戏内分组名';
+  descInput.addEventListener('input', function () {
+    row.description = descInput.value;
+    taskConfigSyncJsonFromModel();
+  });
+  taskConfigField(fields, '说明 description', descInput, taskConfigFieldHelp('description'), 'task-config-field-full');
+
+  card.appendChild(fields);
+  const cardErr = document.createElement('div');
+  cardErr.className = 'task-config-card-err';
+  card.appendChild(cardErr);
+  return card;
+}
+
+function renderTaskConfigForm() {
+  if (!taskConfigForm) return;
+  taskConfigForm.textContent = '';
+  if (!taskConfigFormRows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'task-config-empty';
+    const examples = taskConfigExampleParams();
+    const lines = examples.map(function (param) {
+      const bits = ['key=' + param.key, 'type=' + param.type];
+      if (param.label) bits.push('label=' + param.label);
+      if (param.default !== undefined) bits.push('default=' + String(param.default));
+      if (param.role) bits.push('role=' + param.role);
+      return bits.join(' / ');
+    });
+    empty.textContent = '该任务还没有配置项。点「＋ 添加参数」新增；示例：' + lines.join('；') +
+      '。声明后可在 flow 里用 param(键名) 引用（OCR 文字用 text_expr=param(键名)）。';
+    taskConfigForm.appendChild(empty);
+    return;
+  }
+  for (let i = 0; i < taskConfigFormRows.length; i++) {
+    taskConfigForm.appendChild(taskConfigRenderCard(taskConfigFormRows[i], i, taskConfigFormRows.length));
+  }
+  if (taskConfigFormErrors.length) taskConfigShowFormErrors(taskConfigFormErrors);
+}
+
+function taskConfigAddRow() {
+  taskConfigFormRows.push(taskConfigParamFormDefaults());
+  taskConfigFormErrors = [];
+  renderTaskConfigForm();
+  taskConfigSyncJsonFromModel();
+  taskConfigClearFormErrors();
+  if (taskConfigStatus) {
+    taskConfigStatus.textContent = '已添加一行参数：请填写 key（param 引用名）/type/说明';
+    taskConfigStatus.className = 'muted small';
+  }
+  const cards = taskConfigForm ? taskConfigForm.querySelectorAll('.task-config-card') : [];
+  const last = cards.length ? cards[cards.length - 1] : null;
+  const keyInput = last ? last.querySelector('input[data-field="key"]') : null;
+  if (keyInput && typeof keyInput.focus === 'function') keyInput.focus();
+}
+
+function taskConfigMoveRow(index, delta) {
+  const target = index + delta;
+  if (index < 0 || index >= taskConfigFormRows.length) return;
+  if (target < 0 || target >= taskConfigFormRows.length) return;
+  const rows = taskConfigFormRows;
+  const moved = rows[index];
+  rows[index] = rows[target];
+  rows[target] = moved;
+  taskConfigFormErrors = [];
+  renderTaskConfigForm();
+  taskConfigSyncJsonFromModel();
+  taskConfigClearFormErrors();
+}
+
+function taskConfigDeleteRow(index) {
+  if (index < 0 || index >= taskConfigFormRows.length) return;
+  const removed = taskConfigFormRows[index];
+  taskConfigFormRows.splice(index, 1);
+  taskConfigFormErrors = [];
+  renderTaskConfigForm();
+  taskConfigSyncJsonFromModel();
+  taskConfigClearFormErrors();
+  if (taskConfigStatus) {
+    const label = removed && (removed.label || removed.key) ? (removed.label || removed.key) : '（未命名）';
+    taskConfigStatus.textContent = '已删除参数「' + label + '」（未保存）';
+    taskConfigStatus.className = 'muted small';
+  }
+}
+
 function closeTaskConfigDialog() {
   if (!taskConfigDialog) return;
   taskConfigPrefillParam = null;
@@ -982,6 +1850,7 @@ function closeTaskConfigDialog() {
     taskConfigDialog.removeAttribute('open');
   }
 }
+
 
 async function loadTaskConfig(task) {
   try {
@@ -996,15 +1865,46 @@ async function loadTaskConfig(task) {
     }
     const params = Array.isArray(s.params) ? s.params : [];
     if (taskConfigJson) taskConfigJson.value = taskConfigParamsToJson(params);
-    if (taskConfigStatus) taskConfigStatus.textContent = '已加载：' + taskConfigSummary(params);
     if (taskConfigError) taskConfigError.textContent = '';
-    // P6: append the pending T3 prefill entry (append + same-key dedupe; bad
-    // JSON keeps the loaded text and shows the error instead of throwing).
+    // P6: keep the legacy JSON-text prefill (status + JSON mirror, same contract).
+    const pendingPrefill = taskConfigPrefillParam;
     applyTaskConfigPrefill();
+    // P7: the structured model is built from the loaded params; the T3 prefill is
+    // appended as a form row (same-key deduped, historical type "text" -> string).
+    taskConfigFormRows = taskConfigParamsToForm(params);
+    taskConfigPrefilledKeys = [];
+    if (pendingPrefill) {
+      const merged = taskConfigMergePrefillRows(taskConfigFormRows, pendingPrefill);
+      if (merged.error) {
+        if (taskConfigError) taskConfigError.textContent = '预填参数失败（保留原配置）：' + merged.error;
+      } else {
+        taskConfigFormRows = merged.rows;
+        if (merged.key) taskConfigPrefilledKeys = [merged.key];
+        for (const row of taskConfigFormRows) {
+          row.prefilled = merged.key ? row.key === merged.key : false;
+        }
+      }
+    }
+    taskConfigAdvancedMode = false;
+    taskConfigFormErrors = [];
+    taskConfigModeUi();
+    renderTaskConfigForm();
+    taskConfigSyncJsonFromModel();
+    let statusText = '已加载：' + taskConfigSummary(params) + '（结构化表单；可切「高级 JSON」）';
+    if (taskConfigPrefilledKeys.length) {
+      statusText += ' · 已预填参数「' + taskConfigPrefilledKeys.join('、') + '」（type/label 可再改后保存）';
+    }
+    if (taskConfigStatus) {
+      taskConfigStatus.textContent = statusText;
+      taskConfigStatus.className = 'muted small';
+    }
     if (taskConfigSave) taskConfigSave.disabled = false;
   } catch (e) {
     if (taskConfigTask !== task) return;
     taskConfigPrefillParam = null;
+    taskConfigFormRows = [];
+    taskConfigFormErrors = [];
+    if (taskConfigForm) taskConfigForm.textContent = '（读取失败）';
     if (taskConfigError) taskConfigError.textContent = '配置项读取异常：' + e;
     if (taskConfigStatus) taskConfigStatus.textContent = '读取失败';
   }
@@ -1017,8 +1917,15 @@ function openTaskConfigDialog(task) {
   taskConfigBusy = false;
   // P6: a non-builder open never reuses a stale prefill from a previous bridge call.
   taskConfigPrefillParam = null;
+  // P7: reset the structured model / mode for every open.
+  taskConfigFormRows = [];
+  taskConfigFormErrors = [];
+  taskConfigPrefilledKeys = [];
+  taskConfigAdvancedMode = false;
   if (taskConfigTitle) taskConfigTitle.textContent = '任务配置项 · ' + name;
   if (taskConfigJson) taskConfigJson.value = '';
+  if (taskConfigForm) taskConfigForm.textContent = '（读取中…）';
+  taskConfigModeUi();
   if (taskConfigError) taskConfigError.textContent = '';
   if (taskConfigStatus) taskConfigStatus.textContent = '读取配置项…';
   if (taskConfigSave) taskConfigSave.disabled = true;
@@ -1067,13 +1974,40 @@ window.OAS_TASK_CONFIG = {
 
 async function submitTaskConfig() {
   if (taskConfigBusy || !taskConfigTask) return;
-  const text = (taskConfigJson && taskConfigJson.value) || '';
-  const parsed = parseTaskConfigParamsText(text);
-  if (!parsed.ok) {
-    if (taskConfigError) taskConfigError.textContent = parsed.error;
-    if (taskConfigStatus) taskConfigStatus.textContent = '未保存：本地校验失败';
+  // P7: structured form is the default source of truth; advanced JSON mode keeps
+  // its textarea contract. Both go through the same semantic validation.
+  let parsed;
+  if (taskConfigAdvancedMode) {
+    parsed = parseTaskConfigParamsText((taskConfigJson && taskConfigJson.value) || '');
+    if (!parsed.ok) {
+      if (taskConfigError) taskConfigError.textContent = parsed.error;
+      if (taskConfigStatus) {
+        taskConfigStatus.textContent = '未保存：JSON 校验失败';
+        taskConfigStatus.className = 'muted small err';
+      }
+      return;
+    }
+  } else {
+    parsed = { ok: true, params: taskConfigFormToParams(taskConfigFormRows), error: '' };
+  }
+  const validation = taskConfigValidateParams(parsed.params);
+  if (!validation.ok) {
+    if (taskConfigAdvancedMode) {
+      if (taskConfigError) {
+        taskConfigError.textContent = validation.errors.map(function (error) {
+          return '· ' + error.message;
+        }).join('\n');
+      }
+    } else {
+      taskConfigShowFormErrors(validation.errors);
+    }
+    if (taskConfigStatus) {
+      taskConfigStatus.textContent = '未保存：' + validation.errors.length + ' 处校验错误';
+      taskConfigStatus.className = 'muted small err';
+    }
     return;
   }
+  taskConfigClearFormErrors();
   taskConfigBusy = true;
   if (taskConfigSave) taskConfigSave.disabled = true;
   if (taskConfigStatus) taskConfigStatus.textContent = '正在保存…';
@@ -7280,13 +8214,32 @@ async function doRunTask() {
   if (btnTaskCreate) btnTaskCreate.addEventListener('click', openCreateTaskDialog);
   if (btnCreateSubmit) btnCreateSubmit.addEventListener('click', submitCreateTask);
   if (btnCreateCancel) btnCreateCancel.addEventListener('click', closeCreateTaskDialog);
-  // PR2: 任务配置项对话框（保存 / 取消 / Esc；Ctrl+Enter 快捷保存）。
+  // PR2/P7: 任务配置项对话框（结构化表单 + 高级 JSON；保存 / 取消 / Esc；Ctrl+Enter 快捷保存）。
   if (taskConfigSave) taskConfigSave.addEventListener('click', submitTaskConfig);
   if (taskConfigCancel) taskConfigCancel.addEventListener('click', closeTaskConfigDialog);
+  if (taskConfigAdd) taskConfigAdd.addEventListener('click', taskConfigAddRow);
+  if (taskConfigAdvanced) {
+    taskConfigAdvanced.addEventListener('change', function () {
+      taskConfigSetAdvancedMode(taskConfigAdvanced.checked);
+    });
+  }
+  if (taskConfigForm) {
+    taskConfigForm.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+        ev.preventDefault();
+        submitTaskConfig();
+      }
+    });
+  }
+  taskConfigModeUi();
   if (taskConfigDialog) {
     taskConfigDialog.addEventListener('close', () => {
       taskConfigTask = '';
       taskConfigBusy = false;
+      taskConfigAdvancedMode = false;
+      taskConfigFormRows = [];
+      taskConfigFormErrors = [];
+      taskConfigPrefilledKeys = [];
     });
   }
   if (taskConfigJson) {

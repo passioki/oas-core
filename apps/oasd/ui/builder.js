@@ -35,6 +35,55 @@
     param_click_text: { label: '参数文字点击', op: 'click_target' },
     param_wait_text: { label: '等待参数文字', op: 'wait_until' },
   };
+
+  // Single source of truth for "anything the user can add as a step".
+  // The palette, the if/loop branch dropdowns (是/否/循环体) and any future
+  // action picker must all use this catalogue — keeping OP_META/PARAM_ACTIONS
+  // separate caused the branch dropdown to miss the parameter presets (bug
+  // reported by the user: "动作库里有，但 if 的『是』下拉里没有").
+  function actionCatalog() {
+    const list = [];
+    for (const [key, meta] of Object.entries(OP_META)) {
+      list.push({ key, label: meta.label, group: meta.group, preset: false });
+    }
+    for (const [key, meta] of Object.entries(PARAM_ACTIONS)) {
+      list.push({ key, label: meta.label, group: PARAM_GROUP, preset: true });
+    }
+    return list;
+  }
+
+  function actionMetaOf(key) {
+    return OP_META[key] || PARAM_ACTIONS[key] || null;
+  }
+
+  // Whether one catalogue entry can be added right now (parameter presets need
+  // at least one declared meta.params key). Used by every action picker.
+  function actionAvailable(key) {
+    if (!PARAM_ACTIONS[key]) return true;
+    return paramPanelRows(B.params).length > 0;
+  }
+
+  // Build a step for a catalogue entry: parameter presets expand to a normal
+  // click_target/wait_until whose OCR text is param('<key>'); everything else is
+  // the plain makeStep(). Returns null (with a user-facing status) when the
+  // preset cannot be built (no declared param / bad key).
+  function buildActionStep(key) {
+    if (!PARAM_ACTIONS[key]) return OP_META[key] ? makeStep(key) : null;
+    if (!paramPanelRows(B.params).length) {
+      status('先在任务参数面板声明参数（点「配置项…」）再使用参数动作', '#ff8a80');
+      flashParamsPanel();
+      return null;
+    }
+    const param = pickParamForAction() || {};
+    const paramKey = paramSafeKey(param.key);
+    if (!paramKey) {
+      status('参数缺少 key，无法生成参数动作；请先在「配置项…」修正', '#ff8a80');
+      return null;
+    }
+    return key === 'param_click_text'
+      ? paramClickStep(paramKey, pickOcrAssetForAction())
+      : paramWaitStep(paramKey, 10);
+  }
   // Generic FIELDS text inputs that hold expressions; they get the「插入参数 ▾」
   // button. `cond` fields insert a whole text_visible(param('k')) predicate.
   const EXPR_FIELDS = {
@@ -901,29 +950,26 @@
     const root = $('builder-ops');
     if (!root) return;
     root.textContent = '';
+    const catalog = actionCatalog();
     for (const g of GROUP_ORDER) {
+      const entries = catalog.filter((item) => item.group === g);
+      if (!entries.length) continue;
       const h = document.createElement('div');
       h.className = 'builder-op-group' + (g === PARAM_GROUP ? ' builder-op-param-group' : '');
       h.textContent = g === PARAM_GROUP ? '参数（生成标准 flow，不新增 op）' : g;
       root.appendChild(h);
-      if (g === PARAM_GROUP) {
-        for (const key of Object.keys(PARAM_ACTIONS)) {
-          const b = document.createElement('button');
-          b.type = 'button';
-          b.textContent = PARAM_ACTIONS[key].label + '  (' + key + ')';
-          b.className = 'builder-op-param-btn';
-          b.title = '生成标准 ' + PARAM_ACTIONS[key].op + '：OCR 文字来自 param(\'<key>\')';
-          b.addEventListener('click', () => addParamAction(key));
-          root.appendChild(b);
-        }
-        continue;
-      }
-      for (const op of Object.keys(OP_META)) {
-        if (OP_META[op].group !== g) continue;
+      for (const item of entries) {
         const b = document.createElement('button');
         b.type = 'button';
-        b.textContent = OP_META[op].label + '  (' + op + ')';
-        b.addEventListener('click', () => addAction(op));
+        b.textContent = item.label + '  (' + item.key + ')';
+        b.className = item.preset ? 'builder-op-param-btn' : '';
+        b.title = item.preset
+          ? '生成标准 ' + (PARAM_ACTIONS[item.key] || {}).op + '：OCR 文字来自 param(\'<key>\')'
+          : (item.label + '：插入到当前选中容器/根级');
+        b.addEventListener('click', () => {
+          if (item.preset) addParamAction(item.key);
+          else addAction(item.key);
+        });
         root.appendChild(b);
       }
     }
@@ -1004,22 +1050,11 @@
   function addParamAction(kind) {
     const meta = PARAM_ACTIONS[kind];
     if (!meta) return;
-    if (!paramPanelRows(B.params).length) {
-      status('先在任务参数面板声明参数（点「配置项…」）再使用参数动作', '#ff8a80');
-      flashParamsPanel();
-      return;
-    }
-    const param = pickParamForAction() || {};
-    const key = paramSafeKey(param.key);
-    if (!key) {
-      status('参数缺少 key，无法生成参数动作；请先在「配置项…」修正', '#ff8a80');
-      return;
-    }
-    const step = kind === 'param_click_text'
-      ? paramClickStep(key, pickOcrAssetForAction())
-      : paramWaitStep(key, 10);
+    const step = buildActionStep(kind);
+    if (!step) return;
     insertStep(step, meta.label + '（' + meta.op + '）');
-    status(`已生成 ${meta.op}：文字来源 param('${key}')（不新增 op，可在属性面板改）`);
+    const paramKey = paramSafeKey((pickParamForAction() || {}).key);
+    status(`已生成 ${meta.op}：文字来源 param('${paramKey}')（不新增 op，可在属性面板改）`);
   }
 
   function removeCheckedIn(steps, basePath) {
@@ -2806,24 +2841,38 @@
       row.className = 'builder-child-add';
       const branchLabel = key === 'then' ? '是' : key === 'else' ? '否' : key === 'body' ? '循环体' : key;
       const sel = document.createElement('select');
-      for (const op of Object.keys(OP_META)) {
+      // Unified action catalogue: the branch dropdown must offer exactly the
+      // same actions as the left palette (including the「参数」presets).
+      const catalog = actionCatalog();
+      for (const item of catalog) {
         const o = document.createElement('option');
-        o.value = op;
-        o.textContent = OP_META[op].label + ' (' + op + ')';
+        o.value = item.key;
+        o.textContent = (item.group === PARAM_GROUP ? '参数 · ' : '') + item.label + ' (' + item.key + ')';
+        if (!actionAvailable(item.key)) {
+          o.disabled = true;
+          o.textContent += ' — 需先声明任务参数';
+        }
         sel.appendChild(o);
       }
-      sel.value = 'log';
+      if (!catalog.some((item) => actionAvailable(item.key))) {
+        // Only unreachable when every entry is disabled; keeps `sel.value` sane.
+        sel.selectedIndex = -1;
+      }
+      const defaultKey = catalog.find((item) => item.key === 'log') ? 'log' : (catalog[0] || {}).key;
+      if (defaultKey) sel.value = defaultKey;
       const b = document.createElement('button');
       b.type = 'button';
       b.textContent = branchLabel;
-      b.title = '添加子动作到 ' + key;
+      b.title = '添加子动作到「' + branchLabel + '」分支（与左侧动作库同一来源）';
       b.addEventListener('click', () => {
+        const child = buildActionStep(sel.value);
+        if (!child) return;
         const arr = step[key];
-        const child = makeStep(sel.value);
         arr.push(child);
         B.selected = B.selected.concat([key, arr.length - 1]);
         renderAll();
-        status(`已添加 ${OP_META[sel.value] ? OP_META[sel.value].label : sel.value} → ${key}`);
+        const meta = actionMetaOf(sel.value);
+        status(`已添加 ${meta ? meta.label : sel.value} → ${key}`);
       });
       row.appendChild(b);
       row.appendChild(sel);
