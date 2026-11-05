@@ -1,19 +1,20 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 117**，`oas-core-dual-app-upgrade`）。
-> **状态：in_progress**——seq 116 Phase 1b 已验收；**seq 117 = 更新检测收尾（feed TTL 缓存/远程包复用/cache clear）+ 参数编辑补齐（requires/expect/drag text_expr 结构化 + T3 预填 key）** 已实现并验证（workspace 801/0、UI 1919、P0/更新 feed/参数 E2E ALL PASS；oas-runner rev bump `78be71d` 独立包 37,871,134 B）。未 tag / 未 release。
+> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 118**，`oas-core-dual-app-upgrade`），以及 **`docs/AUDIT-2026-11-05.md`**（本轮最终审计/交接/关机说明）。
+> **状态：in_progress**——seq 117 更新检测/参数补齐已验收；**seq 118 = 用户反馈修复（动作目录单一事实源 → 调色板与 if/loop「是/否/循环体」下拉统一；配置项对话框升级为结构化表单 + 帮助/示例 + 校验 + 高级 JSON）+ 最终代码/文档审计 + 交接**。验证：workspace 801/0、UI 2028、三路 E2E ALL PASS。**按用户要求本轮完成后关机。**
 
-## 0. 当前状态（2026-11-05 20:4x）
+## 0. 当前状态（2026-11-05 21:1x）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | oas-core `dev`（本批 docs 提交后以 `git log -1` 为准；代码 `78be71d`）；oas-runner `main` = `2cf838a`；未 tag / 未 release |
-| 任务 | **更新检测收尾 ✅ / 参数编辑补齐 ✅（seq 117）**；下一步：tag/Release 策略、UI 手动刷新/复用文案、产品验收 |
-| 测试 | `cargo test --workspace` **801/0**（23 suites；oasd lib **412** + bin 0）；UI **1919 / Studio 159 / Runner 158 / 0 dead / 6 nav**；debug+release build exit 0（**1 warning**）；`git diff --check` clean |
-| 发行包 | **Studio** **76,659,481 B** / `239FA854…F51E`；**oas-core Runner** **37,859,610 B** / `023CD7F0…EF79`；**oas-runner 独立包** **37,871,134 B** / `B127C0FC…66DB`（41 entries；均不入 git） |
-| 独立仓 | `https://github.com/passioki/oas-runner`（`2cf838a`）：薄 app + UI + 独立 `scripts/package-runner.ps1` + packaging + BUILD 文档；pin oas-core `78be71d` |
-| 服务 | **8787/8788/8789/8792/8793/8794/8795/8796 全部未监听、无 oasd/oasd-runner 进程**（smoke/E2E 后清理） |
-| 工作区 | 数据已入库（seq 112）；`scheduler.json` 未提交；oas-core docs 待提交；oas-runner 已提交 |
+| 分支 / HEAD | oas-core `dev`（本批 docs 提交后以 `git log -1` 为准；代码 `5b0b107`）；oas-runner `main` = `a6b8670`；未 tag / 未 release |
+| 任务 | **动作目录统一 ✅ / 配置项结构化 UI ✅ / 审计+文档+交接 ✅（seq 118）**；剩余：tag 策略、更新检测鉴权/GC、配置项表单边界、产品验收 |
+| 测试 | `cargo test --workspace` **801/0**（23 suites；oasd lib **412** + bin 0）；UI **2028 / Studio 164 / Runner 158 / 0 dead / 6 nav**；debug+release build exit 0（**1 warning**）；`git diff --check` clean |
+| 发行包 | **Studio** **76,670,889 B** / `F2184381…1B2F`；**oas-core Runner** **37,860,300 B** / `163679D6…9065`；**oas-runner 独立包** **37,870,658 B** / `F6A6C301…D46C`（均不入 git） |
+| 独立仓 | `https://github.com/passioki/oas-runner`（`a6b8670`）：薄 app + UI + 独立 `scripts/package-runner.ps1` + packaging + BUILD 文档；pin oas-core `5b0b107` |
+| 服务 | **8787/8788/8789/8792~8796 全部未监听、无 oasd/oasd-runner 进程**（E2E 后清理） |
+| 工作区 | 数据已入库（seq 112）；`scheduler.json` 未提交（本机运行配置）；`tasks/切换预设御魂/flow.json` 曾误改已 revert；其余已提交/推送 |
+| 关机 | 本轮完成后按用户要求执行 `shutdown /s`；恢复请重新开机并读上述文档 |
 
 ## 1. 最近 3 轮关键变更（历史细节见 PLAN/ENGINE/PENDING）
 

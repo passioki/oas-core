@@ -3100,3 +3100,27 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 - **oas-runner 独立包重建**（rev bump 到本批 `78be71d`）：`dist\oasd-runner-v0.1.0-win64.zip` = **37,871,134 B / SHA `B127C0FC…66DB` / 41 entries**；解压 smoke：8796 `/runner/health` 200 `surface=runner`、`GET /` UI 200、Studio 路由 404、bundled-data 首启导入 3 任务。
 - 重打包：Studio **76,659,481 B** / SHA `239FA854…F51E`；oas-core Runner **37,859,610 B** / SHA `023CD7F0…EF79`。
 - 提交：oas-core `78be71d`（code；dev=main=origin）+ 本 docs；oas-runner `2cf838a`（main；pin rev `78be71d`）；未 tag / 未 release。
+
+### 22.59 ★★★ [11-05 20:5x→21:1x] **动作目录统一（衔接下拉）+ 配置项成熟 UI（seq 118）**
+
+> 用户反馈：①「配置项没有任何解释，不知道怎么填，能干什么」；②「动作库里有参数，但 if 的『是』下拉里没有，其他动作所有能交互衔接的应该都没有更新」。根因：动作库渲染用 `PARAM_ACTIONS`，而 if/loop 分支下拉遍历 `Object.keys(OP_META)`——两套清单未统一；配置项对话框只有裸 JSON。实现记录；台账 `PENDING §E-88`；审计 `docs/AUDIT-2026-11-05.md`；断点 `RESUME` seq 118。
+
+#### 22.59.1 动作目录单一事实源
+
+- 新 `actionCatalog()`：统一返回 `OP_META`（真实 op）+ `PARAM_ACTIONS`（参数预设，展开为标准 `click_target`/`wait_until`）；`actionMetaOf()` / `actionAvailable()` / `buildActionStep()`。
+- **调色板 `renderPalette()`** 与 **if/loop 的「是/否/循环体」分支下拉 `renderForm()`** 全部改用 `actionCatalog()`：参数预设现在出现在所有可衔接下拉中；未声明参数时该选项**禁用并标注「需先声明任务参数」**（不再静默缺失）；添加按钮统一走 `buildActionStep()` → 参数预设展开为 `text_expr:"param('<key>')"` 的标准步骤。
+- 审计：`Object.keys(OP_META)` 直连仅剩步骤标题/流程图标签等只读用途（参数预设从不作为 `step.op` 落盘）。
+
+#### 22.59.2 任务配置项结构化表单（`#task-config-dialog`）
+
+- 默认 **结构化表单**：顶部 `#task-config-help` 解释参数是什么、在哪里用（`param('key')` / `text_expr` / `text_visible(param(...))`）、四层优先级（CLI > 调度 entry > values.json > default）、留空=回退 default、发布随包；工具栏 `+ 添加参数`（`#task-config-add`）/「高级 JSON」（`#task-config-advanced`）/模式提示（`#task-config-mode-hint`）。
+- 每参卡片：`key`、`label`、`type`（int/float/number/bool/string）、`group`、`default`（bool 三态/enum select/数值 number/字符串 text）、`enum`、`min`/`max`、`required`、`role`（无/`ocr_text` 提示）、`description`；逐字段短帮助 + 示例 placeholder；上移/下移/删除；空态含两条示例。
+- 保存前语义校验：key 非空唯一、type 合法、default 类型、enum 非空无重复且类型匹配/default 是成员、min≤max（仅数值）、label≤80/group≤80/description≤500/role 合法；结构化模式逐卡红字 + 底部汇总；通过才 `POST /task/config {task, params}`。
+- 高级 JSON 与表单双向同步（切回表单先 parse；坏 JSON 保留高级模式并报错）；未知 ParamDecl 字段 round-trip 保留；T3「去声明…」prefill 追加为表单行并高亮（同 key 去重）；`window.OAS_TASK_CONFIG.open/refresh/onSaved` 契约不变。
+
+#### 22.59.3 验证
+
+- UI pure test **2028 checks**（1923 + 105；`dom_id_audit` **164 ids / 0 dead**，+5 新 id；`runner_ui_audit` 158/0 dead/6 nav 不变）；`node --check app.js/builder.js/ui_pure_test.js` 3/3；`git diff --check` clean。
+- `cargo test --workspace` **801/0**；debug+release build exit 0（**1 warning**）；三路 E2E（P0/更新 feed/参数）**ALL PASS**。
+- 重打包：Studio **76,670,889 B / SHA `F2184381…1B2F`**；oas-core Runner **37,860,300 B / SHA `163679D6…9065`**；oas-runner 独立包（pin `5b0b107`）**37,870,658 B / SHA `F6A6C301…D46C`**。
+- 提交：oas-core `5b0b107`（dev=main=origin）+ docs；oas-runner `a6b8670`（main）；未 tag / 未 release。

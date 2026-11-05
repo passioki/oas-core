@@ -4408,3 +4408,29 @@ GET /task/assets?task= → 34 个素材（全局模式）
 1. **tag/Release 策略**与两仓版本联动（用户未要求，暂不 tag）；`--version` 打印 app 名；`-NoData`/`-SkipToolkit` 实包验证；macOS/Linux 打包。
 2. **UI 可选**：更新列表手动「刷新」按钮接 `?refresh=1`/`cache/clear`；Runner 更新列表显示缓存复用/下载区分文案；feed 的 `cache_secs` 展示（后端字段已就绪）。
 3. **旧待办**：产品验收 §D.4 / P2 清理 / Phase 5；不 tag / 不 release。
+
+# ★ §E-88 ★★★ [11-05 20:5x→21:1x] **动作目录统一 + 配置项成熟 UI + 最终审计（seq 118）**
+
+> 用户反馈「配置项无解释/不知怎么填」「动作库有参数但 if 的『是』下拉没有，其他衔接下拉也没更新」+ 要求重新审计代码/更新文档防漂移/交接后关机。修复记录 `ENGINE §22.59`；审计 `docs/AUDIT-2026-11-05.md`；断点 `RESUME` seq 118。
+
+## A. 交付
+
+| # | 项 | 结果 | 状态 |
+|---|---|---|---|
+| 动作目录 | **单一事实源** | 新 `actionCatalog()`（OP_META + PARAM_ACTIONS）/`actionAvailable()`/`buildActionStep()`；调色板 + if/loop「是/否/循环体」分支下拉全部改用；参数预设未声明时禁用+原因；`Object.keys(OP_META)` 仅剩只读标签用途 | ✅ |
+| 配置项 UI | **结构化表单** | 帮助块 + `+添加参数`/高级 JSON 切换 + 每参卡片（key/label/type/group/default/enum/min/max/required/role/description，逐字段帮助+示例、上下移/删除、空态示例）+ 保存前语义校验 + T3 prefill 行高亮；高级 JSON 双向同步/坏 JSON 降级；未知字段 round-trip | ✅ |
+| 审计/文档 | **防漂移** | 新增 `docs/AUDIT-2026-11-05.md`（代码审计 + 文档漂移对照表 + 残余风险 + 交接）；ENGINE §22.59 / PENDING §E-88 / RESUME seq118 / START-HERE / SESSION-HANDOFF / README 同步 | ✅ |
+
+## B. 验证 / 产物 / 提交
+
+- `cargo test --workspace` **801/0**；UI pure test **2028 / 164 ids / 158 runner ids / 0 dead / 6 nav**；`node --check` 3/3；debug+release build exit 0（**1 warning**）；三路 E2E **ALL PASS**。
+- 产物：Studio **76,670,889 B / `F21843810EF94859DCA57CF172944FDB618DD19B058F11770DF8D236C3471B2F`**；oas-core Runner **37,860,300 B / `163679D6099AA35ED67A54AD0AAA11AACFCF9275B657C00AEA9C5E2708CC9065`**；oas-runner 独立包 **37,870,658 B / `F6A6C3012AB20BF6CBB4564EC5E9735DF728C0C35DA8950751727415B392D46C`**。
+- 提交：oas-core `5b0b107`（code）+ docs；oas-runner `a6b8670`（pin `5b0b107`）；未 tag / 未 release。
+
+## C. 残余风险（详见 AUDIT 文档）
+
+配置项表单：历史非法数值 default 按“无默认”、`default:""` 与无默认不可区分、未知字段仅高级 JSON、`type:"text"` 保存拦截需改 `string`、高级模式无行内错误定位、空 schema 允许保存 `[]`（刻意）。更新检测：无鉴权/私有仓 token、`packages/remote` 无自动 GC。发布：仍无 tag/Release 策略（用户未要求）。
+
+## D. 交接
+
+`docs/AUDIT-2026-11-05.md` §4：恢复入口/服务端口状态/工作区边界；本轮完成后按用户要求关机。
