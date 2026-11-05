@@ -40,6 +40,11 @@
 //     the updates feed adds source badges / 需下载 hints and installs through
 //     POST /runner/updates/install {event_id} (legacy path install kept as a
 //     fallback for old backends).
+//   - P5 build-page lint: the head 检查 button runs the authoritative
+//     GET /task/lint; the issues panel renders [code] path + message, T3 rows
+//     offer 去声明… through the task-config dialog bridge (auto re-check on save),
+//     and the approximate param hint collapses once the authoritative result
+//     exists (missing backend route degrades to 权威检查不可用).
 'use strict';
 
 const fs = require('fs');
@@ -3844,6 +3849,199 @@ ok(
 );
 ok(/\.builder-text-source/.test(styleCss), 'style.css styles the text-source editor');
 ok(/\.builder-op-param-btn/.test(styleCss), 'style.css styles the 参数 action-library group');
+
+// --- P5: authoritative build-page lint (GET /task/lint) ----------------------
+const BUILDER_LINT_PURE = [
+  'lintIssueCode', 'lintIssuePath', 'lintIssueMessage', 'lintIsT3Issue',
+  'lintIssueLine', 'lintIssuesText', 'lintT3ParamKey', 'lintNormalizeResponse',
+  'lintSummary', 'lintCountText', 'lintT3Rows', 'lintErrorText',
+];
+const lintSb = {};
+vm.createContext(lintSb);
+vm.runInContext(
+  BUILDER_LINT_PURE.map((name) => extractFunctionFrom(builderSource, name, 'builder.js')).join('\n'),
+  lintSb,
+  { filename: 'builder.js#lint' }
+);
+
+eq(lintSb.lintIssueCode({ code: 't3' }), 'T3', 'issue codes are uppercased');
+eq(lintSb.lintIssueCode({ rule: 'T4' }), 'T4', 'rule is accepted as a code fallback');
+eq(lintSb.lintIssueCode({}), '', 'missing issue code degrades to empty');
+eq(lintSb.lintIssuePath({ path: ' flow.json:steps[0] ' }), 'flow.json:steps[0]', 'issue paths are trimmed');
+eq(lintSb.lintIssuePath({}), '—', 'a missing issue path renders a dash');
+eq(lintSb.lintIssueMessage({ message: ' T3: param 缺失 ' }), 'T3: param 缺失', 'message is trimmed');
+eq(lintSb.lintIssueMessage({ msg: 'legacy msg' }), 'legacy msg', 'msg fallback is supported');
+eq(lintSb.lintIssueMessage({}), '', 'missing message degrades to empty');
+eq(lintSb.lintIsT3Issue({ code: 'T3' }), true, 'T3 is recognized as the undeclared-param rule');
+eq(lintSb.lintIsT3Issue({ code: 'T4' }), false, 'T4 is not a T3 row');
+eq(
+  lintSb.lintIssueLine({ code: 'T3', path: 'flow.json:steps[0].args.cond', message: "param('分组') 未声明" }),
+  "[T3] flow.json:steps[0].args.cond：param('分组') 未声明",
+  'issue lines join code + path + message'
+);
+eq(lintSb.lintIssueLine({ code: 'T4' }), '[T4] —：（无说明）', 'a sparse issue is still renderable');
+eq(
+  lintSb.lintIssuesText([
+    { code: 'T3', path: 'a', message: 'x' },
+    { code: 'T4', path: 'b', message: 'y' },
+  ]),
+  '[T3] a：x\n[T4] b：y',
+  'lintIssuesText renders one line per issue'
+);
+eq(lintSb.lintIssuesText([]), '', 'no issues -> empty text');
+eq(
+  lintSb.lintT3ParamKey({ code: 'T3', message: "param('分组') is used but not declared" }),
+  '分组',
+  'T3 param key is extracted for the prefill hint'
+);
+eq(
+  lintSb.lintT3ParamKey({ code: 'T3', path: "flow.json:steps[0].args.find[0].text_expr: param('战斗按钮文字')" }),
+  '战斗按钮文字',
+  'T3 key is also found in the issue path'
+);
+eq(lintSb.lintT3ParamKey({ code: 'T3', message: 'no literal here' }), '', 'T3 without a literal param() has no key');
+eq(lintSb.lintT3ParamKey(null), '', 'a missing issue has no T3 key');
+
+const lintBody = {
+  ok: true,
+  task: '切换预设御魂',
+  issues: [
+    { code: 'T3', path: 'flow.json:steps[2].args.n', message: "param('最大轮数') not declared" },
+    { code: 'T4', path: 'flow.json:steps[0].args.find[0].sel', message: 'missing asset' },
+    'bad issue',
+  ],
+  errors: [],
+  count: 2,
+};
+const lintResult = lintSb.lintNormalizeResponse(lintBody);
+eq(lintResult.ok, true, 'a 200 response normalizes to ok');
+eq(lintResult.count, 2, 'the declared count is kept');
+eq(lintResult.issues.length, 2, 'non-object issues are filtered');
+eq(lintResult.task, '切换预设御魂', 'the task name is kept');
+eq(lintSb.lintNormalizeResponse({}).count, 0, 'missing count + issues -> 0');
+eq(lintSb.lintNormalizeResponse(null).ok, false, 'a non-object body is a failed check');
+ok(
+  /响应不是 JSON 对象/.test(lintSb.lintNormalizeResponse(null).errors[0]),
+  'an invalid body explains the failure'
+);
+eq(lintSb.lintNormalizeResponse({ ok: false, errors: ['boom'] }).ok, false, 'ok:false stays a failure');
+eq(
+  lintSb.lintNormalizeResponse({ issues: [{ code: 'T3' }], count: '2' }).count,
+  2,
+  'a numeric count string is coerced'
+);
+
+eq(lintSb.lintSummary(null), { count: 0, text: '尚未检查', cls: 'kind' }, 'no result -> 尚未检查');
+eq(lintSb.lintSummary(lintResult), { count: 2, text: '2 个问题', cls: 'err' }, 'issues -> N 个问题');
+eq(
+  lintSb.lintSummary(lintSb.lintNormalizeResponse({ ok: true, issues: [], errors: [], count: 0 })),
+  { count: 0, text: '全部通过', cls: 'ok' },
+  'a clean result -> 全部通过'
+);
+eq(
+  lintSb.lintSummary({ count: 0, issues: [], errors: ['T1: bad meta'] }).text,
+  '检查失败',
+  'response-level errors -> 检查失败'
+);
+eq(
+  lintSb.lintSummary({ issues: [{ code: 'T3' }, { code: 'T4' }] }).count,
+  2,
+  'a missing count falls back to issues.length'
+);
+eq(lintSb.lintCountText(lintResult), '2', 'the count badge shows the issue count');
+eq(lintSb.lintCountText({ count: 0, issues: [] }), '', 'zero issues hide the count badge');
+eq(lintSb.lintCountText(null), '', 'unchecked hides the count badge');
+eq(
+  lintSb.lintT3Rows(lintResult).map((issue) => issue.code),
+  ['T3'],
+  'T3 rows are filtered for the 去声明 button'
+);
+eq(lintSb.lintT3Rows(null), [], 'a missing result has no T3 rows');
+eq(
+  lintSb.lintErrorText({ errors: ['T1: bad meta', 'T2: bad flow'] }),
+  'T1: bad meta\nT2: bad flow',
+  'response errors render one per line'
+);
+eq(lintSb.lintErrorText(null), '', 'a missing result has no response errors');
+
+// Static wiring: head button + panel + auto/manual runs + T3 → declare.
+for (const id of ['builder-lint-btn', 'builder-lint-panel', 'builder-lint-count',
+  'builder-lint-summary', 'builder-lint-status', 'builder-lint-list',
+  'builder-lint-error', 'builder-lint-close']) {
+  ok(new RegExp(`id="${id}"`).test(html), `index.html provides #${id}`);
+}
+ok(/id="builder-lint-panel"[^>]*hidden/.test(html), 'the lint panel is hidden by default');
+ok(
+  /id="builder-lint-btn"[\s\S]{0,300}id="builder-status"/.test(html),
+  'the 检查 button lives in the builder head next to the status line'
+);
+ok(/尚未检查/.test(html), 'the lint panel has the 尚未检查 empty state');
+ok(/id="builder-lint-btn"[^>]*>检查</.test(html), 'the head button is labelled 检查');
+ok(
+  /const r = await fetch\('\/task\/lint\?task=' \+ encodeURIComponent\(task\)/.test(builderSource),
+  'lintTask calls GET /task/lint?task=<encoded>'
+);
+ok(/cache: 'no-store'/.test(builderSource), 'the lint request bypasses the HTTP cache');
+ok(
+  /async function loadTask\(name\)[\s\S]{0,6200}lintTask\(\{ silent: true \}\)/.test(builderSource),
+  'loadTask auto-runs the authoritative lint after loading'
+);
+ok(
+  /const lintBtn = \$\('builder-lint-btn'\);[\s\S]{0,120}lintTask\(\);/.test(builderSource),
+  'the 检查 button runs lintTask on demand'
+);
+ok(
+  /const lintClose = \$\('builder-lint-close'\);[\s\S]{0,140}closeLintPanel/.test(builderSource),
+  'the panel close button collapses the result'
+);
+ok(
+  /if \(B\.lint \|\| B\.lintError\) \{[\s\S]{0,80}B\.lintStale = true;/.test(builderSource),
+  'a successful flow save marks the last check stale (manual re-run)'
+);
+ok(
+  /declare\.addEventListener\('click', function \(\) \{ lintOpenDeclare\(issue\); \}\)/.test(builderSource),
+  'T3 rows offer a 去声明 button'
+);
+ok(
+  /function lintOpenDeclare\(issue\)[\s\S]{0,320}openTaskParamsDialog\(\)/.test(builderSource),
+  '去声明 reuses the task-config dialog bridge'
+);
+ok(
+  /onSaved: function \(savedTask, params\)[\s\S]{0,620}lintTask\(\{ silent: true \}\)/.test(builderSource),
+  'saving meta.params re-runs the authoritative lint'
+);
+ok(
+  /if \(seq !== B\.lintSeq \|\| B\.task !== task\) return;/.test(builderSource),
+  'late lint responses are discarded when the task changed'
+);
+ok(
+  /权威检查不可用：/.test(builderSource) && /后端未实现 GET \/task\/lint/.test(builderSource),
+  'a missing backend route degrades to 权威检查不可用'
+);
+ok(
+  /function renderParamIssuesHint\(host, keys, authoritative\)/.test(builderSource) &&
+    /以顶部「检查」结果为准/.test(builderSource),
+  'the approximate param hint collapses behind the authoritative result'
+);
+ok(
+  !/innerHTML/.test(extractFunctionFrom(builderSource, 'renderLintPanel', 'builder.js')),
+  'the lint panel renders through textContent only'
+);
+ok(
+  !/innerHTML/.test(extractFunctionFrom(builderSource, 'lintIssueRow', 'builder.js')),
+  'lint rows render through textContent only'
+);
+ok(
+  /\.builder-lint-panel/.test(styleCss) && /\.builder-lint-count/.test(styleCss),
+  'style.css styles the lint panel + count badge'
+);
+ok(
+  /\.builder-lint-row/.test(styleCss) && /\.builder-lint-code/.test(styleCss) &&
+    /\.builder-lint-path/.test(styleCss),
+  'style.css styles the issue rows'
+);
+ok(/\.builder-lint-hint/.test(styleCss), 'style.css styles the T4 material hint');
+ok(/\.builder-lint-count\[hidden\]/.test(styleCss), 'the hidden count badge stays hidden');
 
 // DOM id audit: the whole point of this round is ZERO static dead ids. Every
 // getElementById target must exist in index.html; if an id is genuinely needed,

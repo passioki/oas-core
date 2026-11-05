@@ -53,6 +53,7 @@
 //!   POST /runner/notify   -> best-effort publish hint (never installs; P0-1a)
 //!   POST /task/publish    -> build one .oaspkg (Studio only, PR5)
 //!   GET  /task/package    -> Studio package history (PR5)
+//!   GET  /task/lint?task=<name> -> authoritative task lint report (Studio only, P2)
 //!   GET  /task/config?task=<name>   -> Studio param schema (PR2)
 //!   POST /task/config               -> Studio edits `meta.params` (PR2)
 //!
@@ -168,7 +169,7 @@ pub fn route_owner(method: &str, path_only: &str) -> Option<RouteOwner> {
             "/assets/conflicts" | "/relations/frame-assets" | "/task/assets"
             | "/task/asset/image" | "/task/asset/match" | "/task/asset/collection/match"
             | "/task/flow" | "/task/list" | "/task/library" | "/task/run/status"
-            | "/task/package" | "/task/config" | "/library" => Some(Studio),
+            | "/task/package" | "/task/config" | "/task/lint" | "/library" => Some(Studio),
 
             // Runner operational APIs (PR1 read-only subset, PR5 packages, PR6
             // embedded scheduler + temporary run status, P0-1a publish updates).
@@ -1858,6 +1859,8 @@ impl Server {
             // --- PR5: Studio publish + package history (design §B.3) ---
             ("POST", "/task/publish") => self.handle_task_publish(&mut out, &body),
             ("GET", "/task/package") => self.handle_task_package(&mut out, &path),
+            // --- P2: authoritative lint report for the builder "check" button ---
+            ("GET", "/task/lint") => self.handle_task_lint(&mut out, &path),
             // --- N38/M1: task creation + editor-triggered run ---
             ("POST", "/task/create") => self.handle_task_create(&mut out, &body),
             ("POST", "/task/run") => self.handle_task_run(&mut out, &body),
@@ -8207,6 +8210,143 @@ impl Server {
             "task": task,
             "dir": self.dist_dir.display().to_string(),
             "packages": rows.into_iter().map(|(_, _, _, row)| row).collect::<Vec<_>>(),
+        });
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `GET /task/lint?task=<name>` — authoritative lint report for one task
+    /// (Studio only).
+    ///
+    /// Runs the **same** collector as `oasd task lint` ([`crate::task::lint_one`]):
+    /// T1/T3/T4/T5/T6/T7 + the `META` contract + the global asset store's T4
+    /// rule, against the serve `--tasks-dir` / `--assets-dir`, so the builder
+    /// page's "check" never disagrees with the publish gate. A finding is not an
+    /// HTTP error: `200` + `issues[]` + `count`.
+    ///
+    /// Status contract: missing task/meta/flow = `404`; malformed meta/flow or
+    /// global asset store = `400` (with the parser path); unreadable files /
+    /// internal setup failures = `500`; missing or invalid `task` query = `400`.
+    fn handle_task_lint(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
+        let q = parse_query(raw_path);
+        let task = q
+            .iter()
+            .find(|(k, _)| k == "task")
+            .map(|(_, v)| v.trim().to_string())
+            .unwrap_or_default();
+        if task.is_empty() {
+            return self.send_errors(out, 400, vec!["`task` query parameter is required".into()]);
+        }
+        if let Err(e) = oas_task::validate_task_name(&task) {
+            return self.send_errors(out, 400, vec![e]);
+        }
+        let task_dir = self.tasks_dir.join(&task);
+        let meta_path = task_dir.join("meta.json");
+        let flow_path = task_dir.join("flow.json");
+        // Missing task/meta/flow is `404` per the API contract (the CLI instead
+        // reports a missing meta as a META finding).
+        if !task_dir.is_dir() {
+            return self.send_errors(
+                out,
+                404,
+                vec![format!(
+                    "task `{task}` not found under {}",
+                    self.tasks_dir.display()
+                )],
+            );
+        }
+        for (file, path) in [("meta.json", &meta_path), ("flow.json", &flow_path)] {
+            if !path.is_file() {
+                return self.send_errors(
+                    out,
+                    404,
+                    vec![format!(
+                        "task `{task}`: {file} not found ({})",
+                        path.display()
+                    )],
+                );
+            }
+        }
+        // Parse before linting so malformed bundle files are a clean `400` with
+        // the parser path (the CLI reports them as META/FLOW issues instead; the
+        // HTTP contract asks for a 400 here).
+        let meta_text = match std::fs::read_to_string(&meta_path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return self.send_errors(
+                    out,
+                    404,
+                    vec![format!("task `{task}`: meta.json not found ({e})")],
+                )
+            }
+            Err(e) => {
+                return self.send_errors(
+                    out,
+                    500,
+                    vec![format!("read {}: {e}", meta_path.display())],
+                )
+            }
+        };
+        if let Err(e) = oas_task::Meta::from_json(&meta_text) {
+            return self.send_errors(out, 400, vec![format!("meta.json: {e}")]);
+        }
+        let flow_text = match std::fs::read_to_string(&flow_path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return self.send_errors(
+                    out,
+                    404,
+                    vec![format!("task `{task}`: flow.json not found ({e})")],
+                )
+            }
+            Err(e) => {
+                return self.send_errors(
+                    out,
+                    500,
+                    vec![format!("read {}: {e}", flow_path.display())],
+                )
+            }
+        };
+        if let Err(e) = oas_flow::Flow::from_json(&flow_text) {
+            return self.send_errors(out, 400, vec![format!("flow.json: {e}")]);
+        }
+        // A malformed global asset store would make the T4 global-asset rule
+        // lie, so surface it instead of silently linting without it.
+        if crate::global_assets::is_initialized(&self.assets_dir) {
+            let assets_json = self.assets_dir.join("assets.json");
+            if let Err(e) = std::fs::read_to_string(&assets_json) {
+                return self.send_errors(
+                    out,
+                    500,
+                    vec![format!("read {}: {e}", assets_json.display())],
+                );
+            }
+            if let Err(e) = crate::global_assets::open_store(&self.assets_dir)
+                .and_then(|store| store.load_assets_file().map(|_| ()))
+            {
+                return self.send_errors(out, 400, vec![format!("assets.json: {e}")]);
+            }
+        }
+        let issues = match crate::task::lint_one(&self.tasks_dir, &task, &self.assets_dir) {
+            Ok(issues) => issues,
+            Err(e) => return self.send_errors(out, 500, vec![format!("lint `{task}`: {e}")]),
+        };
+        let count = issues.len();
+        let rows: Vec<serde_json::Value> = issues
+            .into_iter()
+            .map(|issue| {
+                serde_json::json!({
+                    "code": issue.code,
+                    "path": issue.path,
+                    "message": issue.msg,
+                })
+            })
+            .collect();
+        let body = serde_json::json!({
+            "ok": true,
+            "task": task,
+            "issues": rows,
+            "errors": [],
+            "count": count,
         });
         self.send_json(out, 200, &body.to_string())
     }
@@ -18313,5 +18453,205 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&body).unwrap()["code"],
             "unknown_event"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // P2: Studio authoritative lint API (GET /task/lint)
+    // -----------------------------------------------------------------------
+
+    /// Studio server whose lint routes use a temp tasks dir + temp global asset
+    /// store (never the repo `tasks/`/`assets/` user data).
+    fn lint_server(td: &Path) -> Server {
+        server_with_tasks(td).with_assets_dir(td.join("assets"))
+    }
+
+    #[test]
+    fn task_lint_returns_a_clean_authoritative_report() {
+        let td = TempDir::new("task-lint-ok");
+        let tasks = td.path().join("tasks");
+        make_task(&tasks, "绿任务");
+        let server = lint_server(td.path());
+        // Percent-encoded Chinese proves the query decoder is used (CI/UI send it).
+        let (status, body) = get_route(&server, "/task/lint?task=%E7%BB%BF%E4%BB%BB%E5%8A%A1");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("lint JSON");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["task"], "绿任务");
+        assert_eq!(v["count"], 0, "{v}");
+        assert_eq!(v["issues"], serde_json::json!([]));
+        assert_eq!(v["errors"], serde_json::json!([]));
+        // Raw UTF-8 query is accepted too (browsers may not encode CJK keys).
+        let (status, body) = get_route(&server, "/task/lint?task=绿任务");
+        assert!(status.contains("200"), "{status} {body}");
+    }
+
+    #[test]
+    fn task_lint_reports_t3_for_an_undeclared_param() {
+        let td = TempDir::new("task-lint-t3");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).unwrap();
+        pkg_write_task(
+            &tasks,
+            "参数任务",
+            1,
+            "[]",
+            r#"[{"op":"if","args":{"cond":"param('max_rounds') > 0"},"then":[]},
+                {"op":"finish","args":{"exit":"done"}}]"#,
+        );
+        let server = lint_server(td.path());
+        let (status, body) = get_route(&server, "/task/lint?task=参数任务");
+        // A lint finding is a successful report, NOT an HTTP error.
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("lint JSON");
+        assert_eq!(v["ok"], true);
+        assert!(v["count"].as_u64().unwrap() >= 1, "{v}");
+        let issues = v["issues"].as_array().expect("issues");
+        let t3: Vec<&serde_json::Value> = issues
+            .iter()
+            .filter(|issue| issue["code"] == "T3")
+            .collect();
+        assert!(!t3.is_empty(), "T3 must be reported: {v}");
+        assert!(
+            t3.iter().any(|issue| {
+                issue["path"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("steps[0].args.cond")
+                    && issue["message"]
+                        .as_str()
+                        .unwrap_or("")
+                        .contains("max_rounds")
+            }),
+            "{v}"
+        );
+    }
+
+    #[test]
+    fn task_lint_maps_malformed_meta_and_flow_to_400() {
+        let td = TempDir::new("task-lint-bad");
+        let tasks = td.path().join("tasks");
+        make_task(&tasks, "坏文件任务");
+        let server = lint_server(td.path());
+        let meta_path = tasks.join("坏文件任务/meta.json");
+        let flow_path = tasks.join("坏文件任务/flow.json");
+        let good_flow = std::fs::read_to_string(&flow_path).expect("flow");
+
+        std::fs::write(&flow_path, "{ not json").unwrap();
+        let (status, body) = get_route(&server, "/task/lint?task=坏文件任务");
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("flow.json"), "{body}");
+
+        std::fs::write(&flow_path, good_flow).unwrap();
+        std::fs::write(&meta_path, "{ not json").unwrap();
+        let (status, body) = get_route(&server, "/task/lint?task=坏文件任务");
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("meta.json"), "{body}");
+    }
+
+    #[test]
+    fn task_lint_missing_task_meta_or_flow_is_404() {
+        let td = TempDir::new("task-lint-404");
+        let tasks = td.path().join("tasks");
+        make_task(&tasks, "缺文件任务");
+        let server = lint_server(td.path());
+
+        let (status, body) = get_route(&server, "/task/lint?task=不存在");
+        assert!(status.contains("404"), "{status} {body}");
+
+        // The API contract treats a missing flow.json as 404 (even though the
+        // CLI lint would only report META findings for a bundle like this).
+        std::fs::remove_file(tasks.join("缺文件任务/flow.json")).unwrap();
+        let (status, body) = get_route(&server, "/task/lint?task=缺文件任务");
+        assert!(status.contains("404"), "{status} {body}");
+        assert!(body.contains("flow.json"), "{body}");
+
+        std::fs::remove_file(tasks.join("缺文件任务/meta.json")).unwrap();
+        let (status, body) = get_route(&server, "/task/lint?task=缺文件任务");
+        assert!(status.contains("404"), "{status} {body}");
+        assert!(body.contains("meta.json"), "{body}");
+    }
+
+    #[test]
+    fn task_lint_query_validation_and_studio_surface_isolation() {
+        assert_eq!(route_owner("GET", "/task/lint"), Some(RouteOwner::Studio));
+        assert_eq!(
+            required_surface("GET", "/task/lint"),
+            Some(Surface::Studio)
+        );
+        let td = TempDir::new("task-lint-surface");
+        let studio = lint_server(td.path());
+        for target in [
+            "/task/lint",
+            "/task/lint?task=",
+            "/task/lint?task=%20%20",
+            "/task/lint?task=../evil",
+            "/task/lint?task=a%2Fb",
+        ] {
+            let (status, body) = get_route(&studio, target);
+            assert!(status.contains("400"), "{target}: {status} {body}");
+        }
+        // Runner gets a plain 404 from the surface gate (the handler never runs).
+        let runner = Server::new(Adb::from_env())
+            .with_surface(Surface::Runner)
+            .with_tasks_dir(td.path().join("tasks"))
+            .with_assets_dir(td.path().join("assets"));
+        let (status, body) = get_route(&runner, "/task/lint?task=任务");
+        assert!(status.contains("404"), "{status} {body}");
+    }
+
+    #[test]
+    fn task_lint_uses_the_serve_asset_store_for_t4() {
+        let td = TempDir::new("task-lint-assets");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).unwrap();
+        // `sel: 按钮` is only declared in the GLOBAL asset store, not the task's.
+        pkg_write_task(
+            &tasks,
+            "全局素材任务",
+            1,
+            "[]",
+            r#"[{"op":"click","args":{"sel":"按钮"}},
+                {"op":"finish","args":{"exit":"done"}}]"#,
+        );
+        let assets = td.path().join("assets");
+        std::fs::create_dir_all(assets.join("images")).unwrap();
+        std::fs::write(assets.join("images/a001.png"), b"png-bytes").unwrap();
+        std::fs::write(
+            assets.join("assets.json"),
+            r#"{"schema_version":1,"items":[
+                 {"id":"按钮","kind":"template","file":"images/a001.png","rev":1}]}"#,
+        )
+        .unwrap();
+
+        // With the serve asset store, T4 resolves the global asset -> green.
+        let server = lint_server(td.path());
+        let (status, body) = get_route(&server, "/task/lint?task=全局素材任务");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("lint JSON");
+        assert_eq!(v["count"], 0, "global store must satisfy T4: {v}");
+
+        // Without the store the very same task reports T4: proves `--assets-dir`
+        // is really the lint asset root (not a hardcoded `assets` under the CWD).
+        let bare = Server::new(Adb::from_env())
+            .with_surface(Surface::Studio)
+            .with_tasks_dir(&tasks)
+            .with_assets_dir(td.path().join("no-assets"));
+        let (status, body) = get_route(&bare, "/task/lint?task=全局素材任务");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("lint JSON");
+        assert!(
+            v["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["code"] == "T4"),
+            "{v}"
+        );
+
+        // A malformed global asset store is a 400 data error, not a silent skip.
+        std::fs::write(assets.join("assets.json"), "{ broken").unwrap();
+        let (status, body) = get_route(&server, "/task/lint?task=全局素材任务");
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("assets.json"), "{body}");
     }
 }

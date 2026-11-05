@@ -111,6 +111,12 @@
     params: [],
     paramsLoading: false,
     paramsError: '',
+    // P5：权威 lint（GET /task/lint）。lint=null 表示尚未检查/检查失败。
+    lint: null,
+    lintError: '',
+    lintRunning: false,
+    lintSeq: 0,
+    lintStale: false,
     lastExprField: null,
     lastExprMode: 'expr',
     autoSaveArmed: false,
@@ -330,6 +336,127 @@
     return out;
   }
 
+  // --- P5：权威 lint（纯函数，ui_pure_test 直接抽取；不依赖 DOM/全局状态） ---
+  // 后端 GET /task/lint 返回 {ok,task,issues:[{code,path,message}],errors,count}；
+  // 字段缺失时全部降级（issues 缺失=空、count 缺失=issues.length、message 缺失=''）。
+
+  function lintIssueCode(issue) {
+    const it = issue && typeof issue === 'object' && !Array.isArray(issue) ? issue : {};
+    const raw = it.code !== undefined && it.code !== null ? it.code : it.rule;
+    return String(raw === undefined || raw === null ? '' : raw).trim().toUpperCase();
+  }
+
+  function lintIssuePath(issue) {
+    const it = issue && typeof issue === 'object' && !Array.isArray(issue) ? issue : {};
+    const raw = it.path !== undefined && it.path !== null
+      ? it.path
+      : (it.location !== undefined && it.location !== null ? it.location : '');
+    const text = String(raw === undefined || raw === null ? '' : raw).trim();
+    return text || '—';
+  }
+
+  function lintIssueMessage(issue) {
+    const it = issue && typeof issue === 'object' && !Array.isArray(issue) ? issue : {};
+    for (const field of ['message', 'msg', 'text', 'detail']) {
+      if (it[field] === undefined || it[field] === null) continue;
+      const text = String(it[field]).trim();
+      if (text) return text;
+    }
+    return '';
+  }
+
+  function lintIsT3Issue(issue) {
+    return lintIssueCode(issue) === 'T3';
+  }
+
+  // One display line: 「[T3] flow.json:steps[0]：message」.
+  function lintIssueLine(issue) {
+    const code = lintIssueCode(issue) || '?';
+    const path = lintIssuePath(issue);
+    const message = lintIssueMessage(issue) || '（无说明）';
+    return '[' + code + '] ' + path + '：' + message;
+  }
+
+  function lintIssuesText(issues) {
+    const list = Array.isArray(issues) ? issues : [];
+    return list.map(lintIssueLine).join('\n');
+  }
+
+  // Extract the undeclared param key from a T3 issue (path/message), for the
+  // 「去声明…」 prefill hint. Implements the same «param(<single literal>)» rule as
+  // T3 without a quoted regex (the UI test extracts these functions verbatim).
+  function lintT3ParamKey(issue) {
+    const text = [lintIssuePath(issue), lintIssueMessage(issue)].join(' ');
+    let from = 0;
+    while (from < text.length) {
+      const start = text.indexOf('param(', from);
+      if (start < 0) return '';
+      const rest = text.slice(start + 6);
+      const single = /^[ \t]*\x27([^\x27]+)\x27/.exec(rest);
+      if (single) return single[1];
+      const double = /^[ \t]*\x22([^\x22]+)\x22/.exec(rest);
+      if (double) return double[1];
+      from = start + 6;
+    }
+    return '';
+  }
+
+  function lintNormalizeResponse(body) {
+    const valid = body && typeof body === 'object' && !Array.isArray(body);
+    const b = valid ? body : {};
+    const issues = Array.isArray(b.issues)
+      ? b.issues.filter(function (issue) {
+        return issue && typeof issue === 'object' && !Array.isArray(issue);
+      })
+      : [];
+    const errors = Array.isArray(b.errors)
+      ? b.errors
+        .filter(function (line) { return line !== undefined && line !== null && String(line).trim() !== ''; })
+        .map(String)
+      : [];
+    if (!valid && !errors.length) errors.push('响应不是 JSON 对象');
+    const rawCount = Number(b.count);
+    const count = isFinite(rawCount) && rawCount >= 0 ? Math.floor(rawCount) : issues.length;
+    return {
+      ok: !!valid && b.ok !== false,
+      task: String(b.task === undefined || b.task === null ? '' : b.task),
+      issues: issues,
+      errors: errors,
+      count: count,
+    };
+  }
+
+  // Summary chip: {count,text,cls}. null result = 尚未检查.
+  function lintSummary(result) {
+    const r = result && typeof result === 'object' && !Array.isArray(result) ? result : null;
+    if (!r) return { count: 0, text: '尚未检查', cls: 'kind' };
+    const rawCount = Number(r.count);
+    const issues = Array.isArray(r.issues) ? r.issues : [];
+    const count = isFinite(rawCount) && rawCount >= 0 ? Math.floor(rawCount) : issues.length;
+    const errors = Array.isArray(r.errors) ? r.errors : [];
+    if (count > 0) return { count: count, text: count + ' 个问题', cls: 'err' };
+    if (errors.length) return { count: 0, text: '检查失败', cls: 'warn' };
+    return { count: 0, text: '全部通过', cls: 'ok' };
+  }
+
+  // Count badge text: '' for 0/no result (the badge is hidden then).
+  function lintCountText(result) {
+    const summary = lintSummary(result);
+    return summary.count > 0 ? String(summary.count) : '';
+  }
+
+  function lintT3Rows(result) {
+    const r = result && typeof result === 'object' && !Array.isArray(result) ? result : null;
+    const issues = r && Array.isArray(r.issues) ? r.issues : [];
+    return issues.filter(lintIsT3Issue);
+  }
+
+  function lintErrorText(result) {
+    const r = result && typeof result === 'object' && !Array.isArray(result) ? result : null;
+    const errors = r && Array.isArray(r.errors) ? r.errors : [];
+    return errors.map(String).join('\n');
+  }
+
   function getRoot() {
     if (!B.flow) B.flow = { schema_version: 1, name: B.task, steps: [] };
     if (!Array.isArray(B.flow.steps)) B.flow.steps = [];
@@ -419,6 +546,32 @@
 
   // --- P3：任务参数面板（只读视图；声明入口仍是任务库「配置项…」） ----------
 
+  // Approximate param-usage hint (front-end scan). It is only a convenience:
+  // when the authoritative lint panel has a result it collapses into a low-weight
+  // <details> (or shows «权威检查不可用» when the backend route is missing).
+  function renderParamIssuesHint(host, keys, authoritative) {
+    if (!host) return;
+    host.textContent = '';
+    host.className = 'builder-param-issues';
+    if (!keys.length) return;
+    const text = 'flow 使用了未声明参数：' + keys.join('、') +
+      '；点「配置项…」声明（发布 T3 会拒绝）。';
+    if (!authoritative) {
+      host.className = 'builder-param-issues approx';
+      host.textContent = '⚠ 近似提示（权威检查不可用）：' + text;
+      return;
+    }
+    host.classList.add('approx');
+    const details = document.createElement('details');
+    details.className = 'builder-param-issues-details';
+    const summary = document.createElement('summary');
+    summary.textContent = '参数近似提示：' + keys.length + ' 个 key 未声明（以顶部「检查」结果为准）';
+    const body = document.createElement('div');
+    body.textContent = '⚠ ' + text;
+    details.append(summary, body);
+    host.appendChild(details);
+  }
+
   function renderParamsPanel() {
     const list = $('builder-params-list');
     const summary = $('builder-params-summary');
@@ -435,9 +588,8 @@
       for (const use of undeclared) {
         if (keys.indexOf(use.key) < 0) keys.push(use.key);
       }
-      issuesEl.textContent = keys.length
-        ? '⚠ flow 使用了未声明参数：' + keys.join('、') + '（发布 T3 会拒绝；点「配置项…」声明）'
-        : '';
+      const authoritative = !!B.lint && !B.lintError;
+      renderParamIssuesHint(issuesEl, keys, authoritative);
     }
     if (statusEl) {
       if (B.paramsError) {
@@ -505,6 +657,214 @@
       line.append(group, key, type, label, def, insert);
       list.appendChild(line);
     }
+  }
+
+  // --- P5：权威 lint 面板 / 请求 / T3 去声明 ----------------------------------
+
+  function clearLintState() {
+    B.lint = null;
+    B.lintError = '';
+    B.lintRunning = false;
+    B.lintStale = false;
+  }
+
+  function lintStatusText() {
+    if (B.lintRunning) return '检查中…（GET /task/lint）';
+    if (B.lintError) return B.lintError;
+    const summary = lintSummary(B.lint);
+    if (!B.lint) return '尚未检查';
+    if (summary.count > 0) return '检查完成：' + summary.count + ' 个问题 · ' + B.task;
+    return '检查完成：全部通过 · ' + B.task;
+  }
+
+  function lintIssueRow(issue) {
+    const code = lintIssueCode(issue) || '?';
+    const row = document.createElement('div');
+    row.className = 'builder-lint-row' + (lintIsT3Issue(issue) ? ' t3' : '');
+    const codeEl = document.createElement('span');
+    codeEl.className = 'builder-lint-code';
+    codeEl.textContent = '[' + code + ']';
+    const pathEl = document.createElement('span');
+    pathEl.className = 'builder-lint-path';
+    pathEl.textContent = lintIssuePath(issue);
+    const msgEl = document.createElement('span');
+    msgEl.className = 'builder-lint-message';
+    msgEl.textContent = lintIssueMessage(issue) || '（无说明）';
+    const actions = document.createElement('span');
+    actions.className = 'builder-lint-actions';
+    if (lintIsT3Issue(issue)) {
+      const key = lintT3ParamKey(issue);
+      const declare = document.createElement('button');
+      declare.type = 'button';
+      declare.textContent = '去声明…';
+      declare.title = key
+        ? '打开任务配置项对话框声明参数「' + key + '」；保存后自动重跑检查'
+        : '打开任务配置项对话框声明缺失参数；保存后自动重跑检查';
+      declare.addEventListener('click', function () { lintOpenDeclare(issue); });
+      actions.appendChild(declare);
+    } else if (code === 'T4') {
+      const hint = document.createElement('span');
+      hint.className = 'builder-lint-hint';
+      hint.textContent = '素材缺失：到任务素材/全局素材库补回后重新检查';
+      actions.appendChild(hint);
+    }
+    row.append(codeEl, pathEl, msgEl, actions);
+    return row;
+  }
+
+  // Authoritative panel: hidden until a task is loaded and a check ran; the head
+  // count badge stays visible after the panel is closed.
+  function renderLintPanel() {
+    const panel = $('builder-lint-panel');
+    const countEl = $('builder-lint-count');
+    const summaryEl = $('builder-lint-summary');
+    const statusEl = $('builder-lint-status');
+    const listEl = $('builder-lint-list');
+    const errEl = $('builder-lint-error');
+    const btn = $('builder-lint-btn');
+    if (btn) btn.disabled = B.lintRunning === true;
+    const summary = lintSummary(B.lint);
+    const countText = B.lintRunning ? '' : lintCountText(B.lint);
+    if (countEl) {
+      countEl.textContent = countText || '0';
+      countEl.className = 'builder-lint-count' +
+        (summary.count > 0 ? ' err' : (B.lint && !B.lintError ? ' ok' : ''));
+      if (countText) countEl.removeAttribute('hidden');
+      else countEl.setAttribute('hidden', '');
+    }
+    if (!panel) return;
+    const show = !!B.task && (B.lintRunning || !!B.lint || !!B.lintError);
+    if (!show) {
+      panel.setAttribute('hidden', '');
+      if (summaryEl) {
+        summaryEl.textContent = '尚未检查';
+        summaryEl.className = 'builder-params-chip kind';
+      }
+      if (statusEl) {
+        statusEl.textContent = B.task ? '尚未检查' : '先选择任务';
+        statusEl.className = 'muted small';
+      }
+      if (listEl) listEl.textContent = '';
+      if (errEl) errEl.textContent = '';
+      return;
+    }
+    panel.removeAttribute('hidden');
+    if (summaryEl) {
+      let summaryText = summary.text;
+      let summaryCls = summary.cls;
+      if (B.lintError && !B.lintRunning) {
+        summaryText = '权威检查不可用';
+        summaryCls = 'warn';
+      } else if (B.lintStale && !B.lintRunning) {
+        summaryText += '（可重跑）';
+      }
+      summaryEl.textContent = summaryText;
+      summaryEl.className = 'builder-params-chip ' + summaryCls;
+    }
+    if (statusEl) {
+      statusEl.textContent = lintStatusText();
+      statusEl.className = 'muted small' +
+        (B.lintRunning ? '' : (B.lintError ? ' err' : (summary.count > 0 ? ' warn' : ' ok')));
+    }
+    if (errEl) {
+      // The status line already names an unavailable backend; this <pre> only
+      // carries response-level errors (e.g. T1/META parse failures).
+      errEl.textContent = lintErrorText(B.lint);
+    }
+    if (!listEl) return;
+    listEl.textContent = '';
+    if (B.lintRunning) {
+      listEl.textContent = '检查中…';
+      return;
+    }
+    if (!B.lint) {
+      listEl.textContent = '权威检查不可用（不影响 flow 编辑）；参数面板保留近似提示。';
+      return;
+    }
+    const issues = Array.isArray(B.lint.issues) ? B.lint.issues : [];
+    if (!issues.length) {
+      listEl.textContent = '全部通过：没有发现问题';
+      return;
+    }
+    for (const issue of issues) listEl.appendChild(lintIssueRow(issue));
+  }
+
+  async function lintTask(opts) {
+    const options = opts && typeof opts === 'object' ? opts : {};
+    const task = String(B.task || '').trim();
+    if (!task) {
+      clearLintState();
+      renderLintPanel();
+      return;
+    }
+    B.lintSeq += 1;
+    const seq = B.lintSeq;
+    B.lintRunning = true;
+    B.lintStale = false;
+    renderLintPanel();
+    try {
+      const r = await fetch('/task/lint?task=' + encodeURIComponent(task), { cache: 'no-store' });
+      let body = null;
+      try { body = await r.json(); } catch (e) { body = null; }
+      if (seq !== B.lintSeq || B.task !== task) return; // late response guard
+      if (!r.ok) {
+        const detail = body && Array.isArray(body.errors) && body.errors.length
+          ? body.errors.map(String).join('; ')
+          : ('HTTP ' + r.status);
+        B.lint = null;
+        B.lintRunning = false;
+        B.lintError = r.status === 404
+          ? '权威检查不可用：后端未实现 GET /task/lint（或任务不存在）'
+          : '权威检查不可用：' + detail;
+        renderLintPanel();
+        renderParamsPanel();
+        if (!options.silent) status(B.lintError, '#ff8a80');
+        return;
+      }
+      const result = lintNormalizeResponse(body);
+      if (!result.ok) {
+        // A 200 with ok:false / a non-JSON body is a failed check, not "全部通过".
+        B.lint = null;
+        B.lintRunning = false;
+        B.lintError = '权威检查不可用：' + (result.errors.join('; ') || '后端返回 ok=false');
+        renderLintPanel();
+        renderParamsPanel();
+        if (!options.silent) status(B.lintError, '#ff8a80');
+        return;
+      }
+      B.lint = result;
+      B.lintError = '';
+      B.lintRunning = false;
+      renderLintPanel();
+      renderParamsPanel();
+      if (!options.silent) {
+        const summary = lintSummary(result);
+        status('检查完成：' + summary.text +
+          (summary.count ? '（' + result.issues.length + ' 条，见检查面板）' : ''),
+        summary.count ? '#e8c46a' : '#7bd88f');
+      }
+    } catch (e) {
+      if (seq !== B.lintSeq || B.task !== task) return;
+      B.lint = null;
+      B.lintRunning = false;
+      B.lintError = '权威检查不可用：' + String((e && e.message) || e);
+      renderLintPanel();
+      renderParamsPanel();
+      if (!options.silent) status(B.lintError, '#ff8a80');
+    }
+  }
+
+  // T3 row「去声明…」: reuse the #task-config-dialog bridge; its onSaved handler
+  // re-reads meta.params and re-runs lint, so a fixed T3 disappears here.
+  function lintOpenDeclare(issue) {
+    const key = lintT3ParamKey(issue);
+    status('去声明参数：' + (key || '（见检查结果）') + '…');
+    openTaskParamsDialog();
+  }
+
+  function closeLintPanel() {
+    const panel = $('builder-lint-panel');
+    if (panel) panel.setAttribute('hidden', '');
   }
 
   function renderPalette() {
@@ -2439,7 +2799,7 @@
     return Array.isArray(s.params) ? s.params : [];
   }
 
-  function openTaskParamsDialog() {
+  function openTaskParamsDialog(onSaved) {
     if (!B.task) {
       status('先选择任务，再编辑任务参数', '#ff8a80');
       return;
@@ -2449,6 +2809,7 @@
       status('任务配置项对话框未就绪（app.js 未加载）', '#ff8a80');
       return;
     }
+    const savedCallback = typeof onSaved === 'function' ? onSaved : null;
     hook.open(B.task, {
       // Reuse the existing #task-config-dialog; after a successful save refresh
       // the panel (meta.params changed) without reloading flow.json.
@@ -2458,6 +2819,11 @@
         B.paramsError = '';
         renderAll();
         status('任务参数已更新：' + paramPanelSummary(B.params), '#7bd88f');
+        // meta.params changed -> the authoritative T3 result is stale: re-check.
+        lintTask({ silent: true });
+        if (savedCallback) {
+          try { savedCallback(savedTask, params); } catch (e) { /* never break the save path */ }
+        }
       },
     });
   }
@@ -2466,6 +2832,7 @@
     B.autoSaveArmed = false;
     B.flowHistory = [];
     B.historyIndex = -1;
+    clearLintState();
     if (!name) {
       B.task = '';
       B.flow = null;
@@ -2476,6 +2843,7 @@
       B.paramsError = '';
       B.paramsLoading = false;
       renderAll();
+      renderLintPanel();
       return;
     }
     B.task = name;
@@ -2519,10 +2887,14 @@
       renderAll();
       B.autoSaveArmed = true;
       status(`已载入 ${name}：${B.flow.steps.length} 个根动作 / ${B.assets.length} 个素材 / ${paramPanelRows(B.params).length} 项参数`);
+      // P5: run the authoritative lint once per load; failures stay silent and
+      // never block flow editing (the panel explains 权威检查不可用).
+      lintTask({ silent: true });
     } catch (e) {
       B.paramsLoading = false;
       status('载入失败：' + e, '#ff8a80');
       renderParamsPanel();
+      renderLintPanel();
     }
   }
 
@@ -2561,6 +2933,12 @@
       }
       B.lastSavedFlow = JSON.stringify(B.flow);
       status(silent ? `已自动保存 ${B.task} · ${new Date().toLocaleTimeString()}` : `已保存 ${B.task} · flow.json`);
+      // P5: flow.json changed -> the last authoritative check is stale; the
+      // user can re-run it with the head「检查」button (no auto spam on autosave).
+      if (B.lint || B.lintError) {
+        B.lintStale = true;
+        renderLintPanel();
+      }
     } catch (e) {
       status('保存异常：' + e, '#ff8a80');
     } finally {
@@ -2687,13 +3065,18 @@
     const dry = $('builder-dry-run');
     if (dry) dry.addEventListener('click', dryRun);
     const paramsDeclare = $('builder-params-declare');
-    if (paramsDeclare) paramsDeclare.addEventListener('click', openTaskParamsDialog);
+    if (paramsDeclare) paramsDeclare.addEventListener('click', function () { openTaskParamsDialog(); });
+    const lintBtn = $('builder-lint-btn');
+    if (lintBtn) lintBtn.addEventListener('click', function () { lintTask(); });
+    const lintClose = $('builder-lint-close');
+    if (lintClose) lintClose.addEventListener('click', closeLintPanel);
     const codeApply = $('builder-code-apply');
     if (codeApply) codeApply.addEventListener('click', applyCode);
     const delChecked = $('builder-delete-checked');
     if (delChecked) delChecked.addEventListener('click', deleteCheckedSteps);
     renderPalette();
     renderAll();
+    renderLintPanel();
     window.OAS_BUILDER = {
       activate,
       openTask: async (name) => {

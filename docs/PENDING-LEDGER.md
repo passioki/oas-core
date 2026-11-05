@@ -4325,3 +4325,31 @@ GET /task/assets?task= → 34 个素材（全局模式）
 2. **Studio 权威 lint**：`GET /task/lint` + 构建页「检查」按钮；`requires/expect/drag` 的 text_expr 结构化编辑；结构化参数声明表单。
 3. **oas-runner Phase 1**：`serve.rs` move-only 模块化 → `oasd-core` 库 → 新仓 Runner app 依赖 oas-core tag；把 Runner UI/打包/`bundled-data` 镜像迁入；两 release 独立构建 + tag 治理（`RUNNER-SPLIT-DESIGN §3.5`）。
 4. 旧待办：产品验收 §D.4 / P2 清理 / Phase 5；不 tag / 不 release。
+
+# ★ §E-85 ★★★ [11-05 20:0x] **Phase 1a（oasd lib+bin / oas-runner 薄应用）+ Studio 权威 lint（seq 115）**
+
+> 用户「好的，下一步」→ 目标③源码拆分第一步 + 参数/构建端审计最后的权威 lint 缺口。设计 `RUNNER-SPLIT-DESIGN §3.5`；实现记录 `ENGINE §22.56`；断点 `RESUME` seq 115；证据 `_verify\phase1a-20261105\`、`_verify\runner-split-phase1a-20261105\`、`_verify\p5-studio-lint-20261105\`。
+
+## A. 交付明细
+
+| # | 项 | 结果 | 状态 |
+|---|---|---|---|
+| 1a-lib | **oasd lib+bin 重构** | 新 `apps/oasd/src/{lib.rs,cli.rs}`；`main.rs` 641 行→404 B；`pub fn run()` / **`pub fn run_as(surface)`**（argv 前插 surface，`--config`/`--version` 仍全局解析）；20 个能力模块 `pub mod`；测试从 bin 移到 lib（399→405 含 lint 6）；**warnings 5→1（无新增）** | ✅ |
+| 1a-app | **oas-runner 独立薄应用** | 新仓 `apps/runner/{Cargo.toml,src/main.rs(3行),Cargo.lock}` + `ui/` 4 文件；`oasd = { path=…, features=["ocr"] }`；构建 exit 0（`oasd-runner.exe` 38,347,776 B）；smoke `/runner/health` 200、`/runner/tasks` 200、`/app.js` 404；无需 `[workspace]` 空表 | ✅ |
+| lint-API | **`GET /task/lint`**（Studio-only） | `task.rs` 抽 `lint_one` 供 CLI/HTTP 共用；`{ok,task,issues:[{code,path,message}],errors,count}`；lint 发现 200、缺任务 404、坏文件 400（带路径）、坏 query 400、Runner 404；+6 测试 | ✅ |
+| lint-UI | **构建页权威 lint** | 「检查」按钮 + 计数徽标 + 面板（summary/status/list/error/close）；loadTask 自动 silent lint、手动重跑、保存标 stale；T3 行「去声明…」复用配置桥、保存后重跑；近似提示折叠降噪；404 降级；+69 UI checks | ✅ |
+
+## B. 验证
+
+- `cargo test --workspace` **794/0**（23 suites；oasd lib 405 + bin 0；flow 70 / runtime 167+2 / task 116）；UI **1868/159/158/0 dead/6 nav**；debug+release build exit 0（**1 warning**，基线 5→1）；`git diff --check` clean。
+- Studio lint 实机 smoke（:8793，仓库 tasks/assets）：`GET /task/lint?task=<中文>` **200** `{ok:true,count:0}`；Studio 访问 `/runner/updates` **404**。
+- oas-runner Runner-only 二进制实机 smoke（:8792）：`/runner/updates` 200、`/runner/tasks` 200、端口释放。
+- 回归：P0 双端 / 参数链路 / 更新 feed E2E **ALL PASS**（新 release 包）。
+- 新包：Studio **76,647,721 B** / SHA `D2437915…249A`；Runner **37,850,775 B** / SHA `E810792E…9681`。
+
+## C. 未完成 / 下一步（Phase 1b 及遗留）
+
+1. **oas-runner Phase 1b**：`oasd` path→**git rev/tag** + 提交 oas-runner Cargo.lock；Runner app 注入默认 UI 目录（或打包传 `--ui`）；把 `package-runner.ps1`/`bundled-data` 生成/`start-runner.bat`/`README-RUNNER`/`live.example` 迁入新仓；`apps/runner/target/` gitignore；ort 首次下载说明；`--version` 打印 app 名。
+2. **更新检测收尾**：URL feed TTL/缓存、鉴权/私有仓、`packages/remote` GC。
+3. **参数编辑补齐**：`requires/expect/drag` 的 `text_expr` 结构化编辑；T3「去声明…」不预填 key（app.js 桥扩展）；保存 flow 后自动 lint 可选节流。
+4. 旧待办：产品验收 §D.4 / P2 清理 / Phase 5；不 tag / 不 release（git rev 依赖用 commit hash，不需要 tag）。

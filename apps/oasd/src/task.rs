@@ -195,11 +195,21 @@ fn push_issue_lines(lines: &mut Vec<String>, name: &str, issues: &[LintIssue]) {
     }
 }
 
-/// Lint one task (`--task <name>`) or every task (`--all` / `None`).
+/// Lint one task bundle with an **explicit global asset store directory**.
 ///
-/// Setup errors are `Err`; lint findings are counted in [`LintSummary`].
-fn lint_one_with_global(tasks_dir: &Path, name: &str) -> Result<Vec<LintIssue>, String> {
-    let assets_root = Path::new(crate::global_assets::DEFAULT_DIR);
+/// This is the single collector shared by the CLI (`oasd task lint`, asset root
+/// = [`crate::global_assets::DEFAULT_DIR`] under the CWD) and the Studio
+/// `GET /task/lint` API (asset root = the serve `--assets-dir`), so the HTTP
+/// report can never drift from the publish/lint gate: T1~T7, the `META`
+/// contract and the global asset store's T4 rule all come from `oas_task`.
+///
+/// Setup errors (invalid name, unreadable bundle/store) are `Err`; contract
+/// findings are returned as issues (`Ok(vec![])` = green).
+pub(crate) fn lint_one(
+    tasks_dir: &Path,
+    name: &str,
+    assets_root: &Path,
+) -> Result<Vec<LintIssue>, String> {
     if crate::global_assets::is_initialized(assets_root) {
         let store = crate::global_assets::open_store(assets_root)?;
         let ids: std::collections::BTreeSet<String> = store
@@ -217,9 +227,14 @@ fn lint_one_with_global(tasks_dir: &Path, name: &str) -> Result<Vec<LintIssue>, 
     }
 }
 
+/// CLI asset root: the repo/package `assets/` directory under the CWD.
+fn cli_assets_root() -> &'static Path {
+    Path::new(crate::global_assets::DEFAULT_DIR)
+}
+
 pub fn lint(tasks_dir: &Path, only: Option<&str>) -> Result<LintSummary, String> {
     if let Some(name) = only {
-        let issues = lint_one_with_global(tasks_dir, name)?;
+        let issues = lint_one(tasks_dir, name, cli_assets_root())?;
         let mut lines = vec![format!("lint task={name} errors={}", issues.len())];
         push_issue_lines(&mut lines, name, &issues);
         return Ok(LintSummary {
@@ -232,7 +247,7 @@ pub fn lint(tasks_dir: &Path, only: Option<&str>) -> Result<LintSummary, String>
     let names = oas_task::list_tasks(tasks_dir)?;
     let mut results: Vec<(String, Vec<LintIssue>)> = Vec::new();
     for name in names {
-        match lint_one_with_global(tasks_dir, &name) {
+        match lint_one(tasks_dir, &name, cli_assets_root()) {
             Ok(issues) => results.push((name, issues)),
             Err(e) => results.push((name, vec![LintIssue::new("TASK", "task", e)])),
         }

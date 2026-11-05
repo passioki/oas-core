@@ -1139,3 +1139,125 @@ aside.side {
   0% { outline: 2px solid #ffd54a; outline-offset: 2px; }
   100% { outline: 2px solid transparent; outline-offset: 2px; }
 }
+
+/* ===== P5（参数 v2）：构建页权威 lint（检查按钮 + issues 面板 + T3 去声明） ===== */
+.builder-lint-count {
+  display: inline-block;
+  min-width: 18px;
+  margin: 0;
+  padding: 0 5px;
+  border: 1px solid #2b2f38;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 17px;
+  text-align: center;
+  white-space: nowrap;
+  color: #c9d1db;
+  background: #171a20;
+}
+
+.builder-lint-count[hidden] { display: none; }
+.builder-lint-count.err { color: #ff8a80; border-color: #6b2f2f; background: #2a1618; }
+.builder-lint-count.ok { color: #7bd88f; border-color: #2f6b3f; background: #16281b; }
+
+.builder-lint-panel {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+}
+
+.builder-lint-panel[hidden] { display: none; }
+
+.builder-lint-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.builder-lint-head h3 {
+  margin: 0;
+  color: #8fb8e8;
+  font-size: 13px;
+}
+
+.builder-lint-head > button {
+  width: auto;
+  margin: 0;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+#builder-lint-status {
+  margin: 5px 0;
+  overflow-wrap: anywhere;
+}
+
+#builder-lint-status.ok { color: #7bd88f; }
+#builder-lint-status.warn { color: #e8c46a; }
+#builder-lint-status.err { color: #ff8a80; }
+
+.builder-lint-list {
+  display: grid;
+  gap: 3px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.builder-lint-list:empty { display: none; }
+
+.builder-lint-row {
+  display: grid;
+  grid-template-columns: 52px minmax(120px, 1.2fr) minmax(160px, 2fr) auto;
+  gap: 4px 10px;
+  align-items: start;
+  padding: 5px 6px;
+  border: 1px solid #2b2f38;
+  border-radius: 6px;
+  background: #171a20;
+}
+
+.builder-lint-row.t3 { border-color: #6b5a2f; background: #1f1c14; }
+.builder-lint-row.error-code { border-color: #6b2f2f; }
+
+.builder-lint-code {
+  display: inline-block;
+  padding: 0 5px;
+  border: 1px solid #2f4a6b;
+  border-radius: 4px;
+  color: #9ec1ea;
+  background: #161f2a;
+  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.builder-lint-row.t3 .builder-lint-code { color: #e8c46a; border-color: #6b5a2f; background: #2a2416; }
+.builder-lint-path { color: #8fb8e8; font-family: Consolas, "Cascadia Mono", monospace; font-size: 11px; overflow-wrap: anywhere; }
+.builder-lint-message { color: #dfe3e8; font-size: 12px; overflow-wrap: anywhere; }
+.builder-lint-actions { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.builder-lint-actions button { width: auto; margin: 0; padding: 1px 8px; font-size: 11px; white-space: nowrap; }
+
+.builder-lint-hint {
+  grid-column: 2 / -1;
+  color: #9aa0aa;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.builder-lint-note {
+  margin: 6px 0 0;
+  color: #9aa0aa;
+}
+
+#builder-lint-error {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+#builder-lint-error:empty { display: none; }
+
+/* 近似提示：权威面板存在时降权显示（仅在后端不可用时出现） */
+.builder-param-issues.approx { opacity: 0.8; }

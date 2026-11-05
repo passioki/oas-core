@@ -3014,3 +3014,34 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 - `cargo test --workspace` **788 / 0**（21 suites；oasd **399** = 385 + 14（config 3 / exchange 5 / serve 6）；flow 70 / runtime 167+2 / task 116）；UI **1799 checks / Studio 159 / Runner 158 / 0 dead / 6 nav**；debug+release build exit 0（**5 warnings** 无新增）；`git diff --check` clean。
 - **更新 feed E2E（仓外）**：`make-update-feed.ps1` 生成 1 个本地 feed + 1 个 HTTP feed（python 静态站点）→ Runner 配置两 feed → `GET /runner/updates` 两行（source_kind local/url、download_required false/true、package_url 存在）→ `POST /runner/updates/install`：本地不下载即装、远程 curl 下载→sha 校验→装到 `packages/remote/` → `installed.json` 两个任务 + 对应行 `status=installed`；**ALL PASS**（`_verify\p2-updates-20261105\feed-e2e-log.txt`）。
 - P0 双端 E2E + 参数链路 E2E 复跑 ALL PASS；新包：Studio **76,637,342 B** / SHA `4B3C3237…B0E9`；Runner **37,844,909 B** / SHA `F669DA48…94D2`。
+
+### 22.56 ★★★ [11-05 20:0x] **Phase 1a：oasd lib+bin + oas-runner 独立薄应用；Studio 权威 lint（API+UI）（seq 115）**
+
+> 用户「好的，下一步」→ 继续目标③（使用端完全独立新仓库）的**源码层第一步**，并补掉参数/构建端审计里最后的「权威 lint」缺口。设计 `RUNNER-SPLIT-DESIGN §3.5`；台账 `PENDING §E-85`；断点 `RESUME` seq 115；证据 `_verify\phase1a-20261105\`、`_verify\runner-split-phase1a-20261105\`、`_verify\p5-studio-lint-20261105\`。
+
+#### 22.56.1 oasd：bin → **lib + thin bin**（为独立 Runner app 复用）
+
+- 新 `apps/oasd/src/lib.rs`：`pub mod` 20 个能力模块（run/serve/coords/checkpoint/reconnect/queue/stats/library/schedule/scheduler/config/device_lease/exchange/task/global_assets/package_cmd/relations/runner_config/bundled_data）+ `pub mod cli`（+`#[cfg(feature="ocr")] pub mod ocr`）。
+- 新 `apps/oasd/src/cli.rs`：原 `main.rs` 641 行 CLI 全量搬入（全局 `--config`/`--version` 预解析、子命令 dispatch、probe/tap/record/replay/assets_cmd、`serve_cmd`/`resolve_surface_port`/`enable_models`/`fail`）；`pub fn run()` 读进程 argv；新增 **`pub fn run_as(surface)`**：在 argv 前插入 surface 子命令（`--config`/`--version` 仍在 dispatch 前全局解析）。
+- `apps/oasd/src/main.rs` 404 B：`oasd::cli::run()`；`Cargo.toml` 显式 `[lib] name="oasd"`。CLI 行为 smoke 与重构前一致（`--version` 0 / help 2 / bad port 2 / unknown 2）。
+- 测试：重构前后 `cargo test --workspace` 均 **788/0**（oasd 测试从 bin target 移到 **lib target 399/0**）；**warnings 基线 5 → 1**（4 个 dead_code 因模块 `pub` 后外部可达而消失；剩余 1 个既有 `serve.rs unused_mut`，非新增）。
+
+#### 22.56.2 oas-runner 独立薄应用（Phase 1a，path 依赖先跑通）
+
+- 新仓文件：`apps/runner/Cargo.toml`（包 `oasd-runner` 0.1.0，`oasd = { path = "../../../oas-core/apps/oasd", features=["ocr"] }`）+ `apps/runner/src/main.rs`（**3 行**：`oasd::cli::run_as("runner")`）+ `Cargo.lock` + `ui/{runner.html,runner.js,runner.css,style.css}`（与 oas-core 当前版本 SHA256 相同）。
+- **workspace 结论**：无需 `[workspace]` 空表；cargo 自动把 `apps/runner` 当独立 workspace root，path 依赖的 `oasd` 正确解析其 oas-core workspace 继承（`version.workspace` 等）。
+- 构建：`cargo build --manifest-path ... --offline --target-dir ...` → exit 0，`target\debug\oasd-runner.exe` **38,347,776 B**；smoke：`/runner/health` 200、`/runner/tasks` 200、`/app.js` **404**（Runner surface 正确）、`--version`/坏参/坏 config 退出码与 oasd 一致。
+- **Phase 1b 遗留**：UI 默认路径/归属（`run_as` 仍默认 `apps/oasd/ui`；打包需 `--ui`）、path→git rev/tag + Cargo.lock、打包/bundled-data/start-runner 迁入、`apps/runner/target/` gitignore、ort 首次下载、`--version` 打印 app 名。
+
+#### 22.56.3 Studio 权威 lint（API + 构建页 UI）
+
+- **`GET /task/lint?task=<id>`（Studio-only）**：`task.rs` 抽出 `pub(crate) fn lint_one(tasks_dir,name,assets_root)` 供 CLI 与 HTTP 共用（T1/T3/T4/T5/T6/T7 + META + 全局素材 T4；CLI assets 根=CWD `assets/`，HTTP=serve `--assets-dir`）；响应 `{ok,task,issues:[{code,path,message}],errors,count}`；lint 发现=200+issues、缺任务/meta/flow=404、坏 meta/flow/全局 assets=400（带解析路径）、坏 query=400、Runner=surface gate 404；CLI `oasd task lint` 行为不变。
+- **构建页**：头部「检查」按钮 `#builder-lint-btn` + 计数徽标 `#builder-lint-count` + 面板 `#builder-lint-panel`（summary/status/list/error/close）；loadTask 后自动 silent lint、手动重跑、保存 flow 标 stale；issues 行 textContent（T3 高亮 + 「去声明…」→ 复用 `window.OAS_TASK_CONFIG` 桥，保存 meta 后自动重跑）；与 `#builder-param-issues` 近似提示联动（权威结果存在时折叠降噪）；404/不可达优雅降级保留近似提示。
+
+#### 22.56.4 验证
+
+- `cargo test --workspace` **794 / 0**（23 suites；oasd lib **405** = 399+6 lint 测试 + bin 0；flow 70 / runtime 167+2 / task 116）；UI **1868 checks / Studio 159 / Runner 158 / 0 dead / 6 nav**（+69）；debug+release build exit 0（**1 warning**，基线由 5 降为 1）；`git diff --check` clean。
+- **Studio lint 实机 smoke**：Studio :8793 + 仓库 tasks/assets → `GET /task/lint?task=<中文>` **200** `{count:0,issues:[],ok:true}`；Studio 访问 `/runner/updates` **404**（surface 隔离）。
+- **oas-runner 薄应用实机 smoke**：Runner-only 二进制起 :8792 → `/runner/updates` 200、`/runner/tasks` 200、`:8792` 释放。
+- 回归 E2E 全绿：P0 双端、参数链路、更新 feed（新 release 包）。
+- 新包：Studio **76,647,721 B** / SHA `D2437915…249A`；Runner **37,850,775 B** / SHA `E810792E…9681`。

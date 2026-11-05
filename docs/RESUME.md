@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 114
-updated_at: 2026-11-05T19:4x+08:00
-trigger: seq 113 参数 v2 后端/构建端 UI/P0-1b → 用户「建 oas-runner 空仓，curl vs TLS 自行判断，开始下一步」→ **seq 114：oas-runner 独立仓创建 + Runner 使用端参数 UI（group/使用开关/留空/必填，不做预设）+ P2 更新检测 feeds（本地路径/HTTP URL + 系统 curl 下载 + 更新安装 API）+ make-update-feed 脚本** → 测试/本地+远程 feed E2E 全绿
-status: in_progress               # P2 Runner 参数 UI ✅ / D8 更新检测（本地+远程 feed）✅ / 新仓 oas-runner 已建；P2 收尾（TTL/鉴权/Studio lint）+ 源码搬迁待继续
-code_head: 本批提交后以 `git log -1` 为准（父 `bb2d4ea`）
+checkpoint_seq: 115
+updated_at: 2026-11-05T20:0x+08:00
+trigger: seq 114 使用端参数 UI/更新检测/oas-runner 仓 → 用户「好的，下一步」→ **seq 115：Phase 1a（oasd lib+bin + oas-runner 独立薄应用 path 依赖跑通）+ Studio 权威 lint（GET /task/lint + 构建页检查面板）** → 测试/双端 E2E 全绿
+status: in_progress               # Phase 1a ✅ / Studio lint ✅；Phase 1b（git 依赖+打包迁入）与更新检测收尾待继续
+code_head: 本批提交后以 `git log -1` 为准（父 `48064b7`）
 docs_head: 本批 docs 随代码提交（以 `git log -1` 为准；dev = main = origin）
-next_action: ① P2 收尾：URL feed TTL/缓存（当前每 5s 轮询会重复 curl）、feed 鉴权/私有仓 token、`packages/remote` GC；② Studio 权威 lint `GET /task/lint` + expects/drag 结构化编辑；③ oas-runner Phase 1：`serve.rs` move-only + 依赖 oas-core tag + 搬 Runner 代码/UI/打包/数据镜像；④ 产品验收/P2/Phase 5
+next_action: ① oas-runner Phase 1b：`oasd` path→git rev + Cargo.lock、Runner 默认 UI 目录、打包/bundled-data/start-runner 迁入、`apps/runner/target/` gitignore、`--version` app 名；② 更新检测收尾（URL feed TTL/鉴权/GC）；③ requires/expect/drag text_expr 结构化编辑 + T3 预填 key；④ 产品验收/P2/Phase 5
 ```
 
 ## 0. 目标（本阶段）
@@ -22,21 +22,22 @@ next_action: ① P2 收尾：URL feed TTL/缓存（当前每 5s 轮询会重复 
 4. **seq 111（设计轮）= 用户四项新要求**：① 资产/任务属于代码仓库、发布随包；② 参数与 flow 互动/像动作库动作（参数作为 OCR 识别文字、分组+预设、使用端暴露可选用、留空=不用）；③ 使用端完全独立新仓库、两 release 可单独/同时运行并交互；④ Studio 发布新任务→Runner 收到通知。
 5. **seq 112（已实现）**：数据随包（Studio 全数据 / Runner `bundled-data` + 首启导入）+ exchange 发布通知 + UI。
 6. **seq 113（已实现）**：① 参数 v2 后端（`text_expr` 参数作为 OCR 文字 + T3/T4/flow_ops 门禁 + `ParamDecl.role`）；② 构建端参数 UI/动作库；③ P0-1b（event engine 字段 + `compatible` 预检 + notify 客户端）。
-7. **seq 114（本轮）**：用户「建 oas-runner 空仓，curl vs TLS 自行判断，开始下一步」→ ① 创建独立仓 `https://github.com/passioki/oas-runner`（initial `e1d603a`）；② **Runner 使用端参数 UI**（按 group 分节、每参使用开关、bool 三态、留空=不注入、必填阻止保存；**不做预设值集合**）；③ **P2 更新检测 feeds**（本地路径/HTTP(S) URL、系统 `curl` 下载、`POST /runner/updates/install` 自动下载+sha 校验+安装+ack、`make-update-feed.ps1` 生成 feed）；④ 测试/本地+远程 feed E2E 全绿。
+7. **seq 114（已实现）**：用户「建 oas-runner 空仓，curl vs TLS 自行判断」→ 创建独立仓 `https://github.com/passioki/oas-runner`（`e1d603a`）+ Runner 参数 UI + 更新检测 feeds（本地/HTTP，系统 curl）+ `make-update-feed.ps1`。
+8. **seq 115（本轮）**：用户「好的，下一步」→ ① **Phase 1a**：`apps/oasd` 改 **lib+bin**（新 `lib.rs`/`cli.rs`，`main.rs` 404B，`pub fn run_as(surface)`），测试迁到 lib 且全绿、warnings 5→1；② **oas-runner 独立薄应用**：`apps/runner`（3 行 main 调 `oasd::cli::run_as("runner")`）+ Runner UI + Cargo.lock，path 依赖构建/起服 smoke 通过；③ **Studio 权威 lint**：`GET /task/lint`（CLI/HTTP 共享 `lint_one`）+ 构建页「检查」面板（T3 去声明/降级/近似提示折叠）。
 
-## 1. 状态（2026-11-05 19:4x，seq 114）
+## 1. 状态（2026-11-05 20:0x，seq 115）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | `dev`；本批提交后以 `git log -1` 为准（父 `bb2d4ea`）；未 tag / 未 release |
-| 任务状态 | **in_progress**：P2 Runner 参数 UI ✅、更新检测（本地+远程 feed）✅、`oas-runner` 空仓已建；P2 收尾（TTL/鉴权/GC）、Studio 权威 lint、源码搬迁待继续 |
-| 双入口 | **Studio `http://127.0.0.1:8788/`**（`oasd studio`）· **Runner `http://127.0.0.1:8789/`**（`oasd runner`，nav 6，内嵌调度）；`oasd serve` = Studio deprecated 别名 |
-| 测试 | `cargo test --workspace` **788 / 0**（21 suites；oas-flow **70** / oas-runtime **167 lib**+2 / oas-task **116** / oasd **399**）；UI pure test **1799 checks / Studio 159 / Runner 158 / 0 dead / 6 nav**；debug+release OCR build exit 0（5 warnings 无新增）；`git diff --check` clean |
-| 发行包 | **Studio** `dist/oasd-v0.1.0-win64.zip` = **76,637,342 B**，SHA256 **`4B3C3237C2782C55AFE73E3C6B211F489A072FA7E21CECAD18F1935D97FFB0E9`**；**Runner** `dist/oasd-runner-v0.1.0-win64.zip` = **37,844,909 B**，SHA256 **`F669DA48865C54FEEC869864A1DA841A4238789885C4926E695B6C435FA294D2`**（含使用端参数 UI/更新检测；不入 git） |
-| 独立仓 | **`oas-runner`** = `https://github.com/passioki/oas-runner`（initial `e1d603a`：README + `.gitignore`；Phase 1 搬迁前为骨架） |
-| 服务 | **全部停止**（8787/8788/8789/本地 HTTP feed 端口实测无监听；E2E 后清理） |
+| 分支 / HEAD | `dev`；本批提交后以 `git log -1` 为准（父 `48064b7`）；未 tag / 未 release |
+| 任务状态 | **in_progress**：Phase 1a ✅、Studio 权威 lint ✅；Phase 1b（git 依赖/打包迁入/UI 默认路径）与更新检测收尾待继续 |
+| 双入口 | **Studio `http://127.0.0.1:8788/`**（`oasd studio`）· **Runner `http://127.0.0.1:8789/`**（`oasd runner`，nav 6，内嵌调度）；**oas-runner 薄应用**（`oasd-runner`，Phase 1a）可独立构建/启动 Runner surface |
+| 测试 | `cargo test --workspace` **794 / 0**（23 suites；oasd lib **405** + bin 0；flow 70 / runtime 167+2 / task 116）；UI pure test **1868 checks / Studio 159 / Runner 158 / 0 dead / 6 nav**；debug+release OCR build exit 0（**1 warning**，基线 5→1）；`git diff --check` clean |
+| 发行包 | **Studio** `dist/oasd-v0.1.0-win64.zip` = **76,647,721 B**，SHA256 **`D2437915EC454BA8A0C6065F0DD35526E920B2E7C5AC680616A584C9AF17249A`**；**Runner** `dist/oasd-runner-v0.1.0-win64.zip` = **37,850,775 B**，SHA256 **`E810792ECE567DB3E65FF4FEBA741FB2EA9C1BC9CFDD66B1D7C80CF9AE419681`**（不入 git） |
+| 独立仓 | **`oas-runner`** = `https://github.com/passioki/oas-runner`：Phase 1a 起含 `apps/runner` 薄应用 + `ui/`（Phase 1b 待 git 依赖/打包迁入） |
+| 服务 | **全部停止**（8787/8788/8789/8792/8793/本地 feed 端口实测无监听；smoke/E2E 后清理） |
 | 数据边界 | 数据已入库（seq 112）；`scheduler.json` 仍为本机运行配置**未提交**；`library/`/`dist/`/`packages/`/`packages/remote/` 不入库 |
-| 提交边界 | 本批 = `apps/oasd/src/{config,exchange,serve}.rs` + `apps/oasd/ui/runner.{html,js,css}` + `ui_pure_test.js` + `scripts/make-update-feed.ps1` + `packaging/*` + docs；`dist/`/`packages/` 不入 git；不 tag / 不 release |
+| 提交边界 | 本批 = `apps/oasd/src/{lib.rs,cli.rs,main.rs,Cargo.toml,serve.rs,task.rs}` + `apps/oasd/ui/{builder.js,index.html,style.css,ui_pure_test.js}` + oas-runner 新仓文件（`apps/runner/**`、`ui/**`）+ docs；`dist/`/`packages/` 不入 git；不 tag / 不 release |
 
 ## 1.5 2026-11-05 18:2x（seq 111）设计轮产出（只读，未改代码）
 
@@ -93,6 +94,20 @@ next_action: ① P2 收尾：URL feed TTL/缓存（当前每 5s 轮询会重复 
 
 **本批未做**：URL feed TTL/缓存（UI 5s 轮询会重复 curl；建议后端 ≥60s 缓存或 UI 降频）、feed 鉴权/私有仓 token、`packages/remote` GC、cross-source 事件去重已有（exchange 优先）；`oas-runner` 源码搬迁（Phase 1）。
 
+## 1.9 2026-11-05 19:5x→20:0x（seq 115）Phase 1a + Studio 权威 lint（已实现）
+
+> 用户「好的，下一步」→ 目标③源码拆分第一步 + 构建端最后缺口。实现 `ENGINE §22.56`；台账 `PENDING §E-85`。
+
+| # | 交付 | 结果 / 证据 |
+|---|---|---|
+| Phase 1a-lib | **oasd lib+bin** | 新 `apps/oasd/src/{lib.rs,cli.rs}`；`main.rs` 641 行→**404 B**；`pub fn run()` / **`pub fn run_as(surface)`**（argv 前插 surface，`--config`/`--version` 仍全局解析）；20 模块 `pub mod`；测试迁移后仍全绿；**warnings 5→1**（无新增） |
+| Phase 1a-app | **oas-runner 薄应用** | 新仓 `apps/runner/{Cargo.toml,src/main.rs(3 行),Cargo.lock}` + `ui/` 4 文件；`oasd = { path="../../../oas-core/apps/oasd", features=["ocr"] }`；`cargo build` exit 0（`oasd-runner.exe` 38,347,776 B）；smoke `:8792` `/runner/health` 200、`/runner/tasks` 200、`/app.js` 404；无需 `[workspace]` 空表 |
+| lint-API | **`GET /task/lint`**（Studio-only） | `task.rs` 抽 `pub(crate) fn lint_one` 供 CLI/HTTP 共用（assets 根不同）；`{ok,task,issues:[{code,path,message}],errors,count}`；发现=200、缺任务/meta/flow=404、坏 meta/flow/全局 assets=400、坏 query=400、Runner 404；+6 测试 |
+| lint-UI | **构建页权威检查** | 「检查」按钮 + 计数徽标 + 面板（summary/status/list/error/close）；loadTask 自动 silent lint、手动重跑、保存标 stale；T3「去声明…」复用配置桥、保存后重跑；近似提示折叠降噪；404 降级；+69 checks |
+| 回归 | 全绿 | P0 双端 / 参数链路 / 更新 feed E2E **ALL PASS**（新包）；Studio lint 实机 200、oas-runner 薄应用实机 200 |
+
+**本批未做（Phase 1b）**：`oasd` path→git rev + Cargo.lock、Runner 默认 UI 目录/归属、`package-runner.ps1`/`bundled-data`/`start-runner.bat`/`README-RUNNER` 迁入、`apps/runner/target/` gitignore、ort 首次下载说明、`--version` app 名。
+
 ## 2. 本批交付（seq 110）
 
 | # | 交付 | 结果 / 证据 |
@@ -127,10 +142,10 @@ REM 3) release 分离度 E2E 复跑（仓外脚本，自动解压+起停+断言�
 powershell -NoProfile -ExecutionPolicy Bypass -File D:\OAS-dev\_verify\release-both-20261105\run-e2e.ps1
 ```
 
-1. **P2 收尾（更新检测）**：URL feed **TTL/缓存**（当前每次 GET 都 curl；建议后端 ≥60s 缓存或 UI 轮询降频）、feed 鉴权/私有仓 token、`packages/remote` GC；可选 Studio `updates feed` 发布向导。
-2. **Studio 权威 lint / 补齐**：`GET /task/lint` + 构建页「检查」按钮；`requires/expect/drag` 的 `text_expr` 结构化编辑；结构化参数声明表单。
-3. **oas-runner Phase 1（源码搬迁）**：`serve.rs` move-only 模块化 + `oasd-core` 依赖 oas-core tag + 把 Runner 代码/UI/打包/数据镜像搬进 `oas-runner`；两 release 独立构建。
-4. 旧待办不变：产品验收 `§D.4` 19 步 / P2 清理 / Phase 5；**不 tag / 不 release**（除非用户明确说发布）。
+1. **oas-runner Phase 1b（下一优先）**：把 `apps/runner/Cargo.toml` 的 `oasd` 从 path 改 **git rev（指向 oas-core 已推送提交）** + 提交 Cargo.lock；Runner 默认 UI 目录（app 注入或打包传 `--ui`）；把 `scripts/package-runner.ps1`/`bundled-data` 生成/`start-runner.bat`/`README-RUNNER`/`live.example` 迁入 oas-runner；`.gitignore` 加 `/apps/runner/target/`；ort 首次下载说明。
+2. **更新检测收尾**：URL feed **TTL/缓存**（当前每次 GET 都 curl）、feed 鉴权/私有仓 token、`packages/remote` GC。
+3. **参数编辑补齐**：`requires/expect/drag` 的 `text_expr` 结构化编辑；T3「去声明…」预填 key（app.js 桥扩展）；保存 flow 后自动 lint（可选节流）。
+4. 旧待办不变：产品验收 `§D.4` 19 步 / P2 清理 / Phase 5；**不 tag / 不 release**（git rev 用 commit hash，不需要 tag）。
 
 ## 4. 验收进度（§D.4 V1~V7）
 
@@ -147,9 +162,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\OAS-dev\_verify\release-b
 ## 5. 已知限制（P2/已知缺陷，写文档、不阻塞）
 
 - **F1 已修（2026-11-05）**：PS 5.1 `Set-Content -Encoding UTF8` 写 BOM ⇒ `serde_json` 拒绝 ⇒ Runner 包 `scheduler.json` 首启 `invalid_config`；打包脚本已改 `WriteAllText` 无 BOM + stage 首字节审计（START-HERE §3 E17）；历史包须用新脚本重建。
-- **参数 UI（P2）现状**：Runner 配置对话框已按 `group` 分节、使用开关/bool 三态/留空提示/必填阻止；**不做预设值集合**（D2）。Studio `requires/expect/drag` 的 text_expr 仍走高级 JSON；无权威 `GET /task/lint`（`#builder-param-issues` 为前端近似）。
+- **参数 UI（P2）现状**：Runner 配置对话框已按 `group` 分节、使用开关/bool 三态/留空提示/必填阻止；**不做预设值集合**（D2）。Studio 已有权威 `GET /task/lint` + 构建页「检查」面板（T3 去声明）；`requires/expect/drag` 的 text_expr 仍走高级 JSON。
 - **更新检测（D8）现状**：本地 exchange + 本地目录 feed + 远程 HTTP(S) feed（系统 curl）已可用；**无 TTL 缓存**（5s 轮询会重复拉取）、无鉴权/私有仓 token、`packages/remote` 不自动清理；无 curl 环境时 URL feed fail-soft（本地源不受影响）。
-- **oas-runner 仓**：仅骨架（README/.gitignore）；源码仍在本仓，Phase 1 搬迁未开始。
+- **oas-runner 仓（Phase 1a）**：已有 `apps/runner` 薄应用（`oasd::cli::run_as("runner")`）+ UI 副本 + Cargo.lock；**仍是 path 依赖**（换机需本机布局）/UI 默认路径未注入/打包与数据镜像未迁入（Phase 1b）。
 - **exchange/通知**：默认关闭（需两端 live.json 配同一目录）；`.studio-writer.lock` 未做（并发 publish 有 RMW 窗口）；notify 为 best-effort（文件索引唯一真相）。
 - **bundled 导入为简化版**：仅空数据根首启；已有数据时一律 skip（不 merge）；不注册 `installed.json`；素材冲突不处理。
 - **数据入库**：本批把 `assets/tasks/frames` 当前数据提交（用户要求 ①）；`scheduler.json` 仍是本机运行配置未提交（设计 §6.6 拟运行态化）。
@@ -166,8 +181,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\OAS-dev\_verify\release-b
 cd D:\OAS-dev\oas-core
 git log -1 --format="%h %ci %s"     # 本批提交后以实际为准
 git status --porcelain              # 只有用户数据；scripts/docs 应已 clean
-cargo test --workspace              # 788/0（oasd 399 / task 116 / flow 70 / runtime 167+2）
-node apps\oasd\ui\ui_pure_test.js   # 1799 / 159 / 158 / 0 / 6 nav
+cargo test --workspace              # 794/0（oasd lib 405 + bin 0 / task 116 / flow 70 / runtime 167+2）
+node apps\oasd\ui\ui_pure_test.js   # 1868 / 159 / 158 / 0 / 6 nav
+# oas-runner 薄应用（Phase 1a；path 依赖，本机布局）：
+#   cargo build --manifest-path D:\OAS-dev\oas-runner\apps\runner\Cargo.toml --offline --target-dir D:\OAS-dev\oas-runner\target
 # E2E 复跑（仓外脚本）：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File D:\OAS-dev\_verify\p0-1a-e2e-20261105\e2e.ps1
 #   powershell -NoProfile -ExecutionPolicy Bypass -File D:\OAS-dev\_verify\p1-param-e2e-20261105\e2e.ps1
@@ -176,6 +193,7 @@ node apps\oasd\ui\ui_pure_test.js   # 1799 / 159 / 158 / 0 / 6 nav
 
 ## 7. 证据
 
+- **Phase 1a / Studio 权威 lint（seq 115）**：`D:\OAS-dev\_verify\runner-split-phase1a-20261105\`（baseline 788 / after 788 / final 794、forced-build-ocr、oas-runner-build 日志）· `D:\OAS-dev\_verify\phase1a-20261105\`（`logs\workspace-test.log` 794/0、`logs\release-build.log` exit0/1 warning、smoke）· `D:\OAS-dev\_verify\p5-studio-lint-20261105\`（2 张构建页 lint 截图）。
 - **使用端参数 UI / 更新检测（seq 114）**：`D:\OAS-dev\_verify\p2-updates-20261105\`（`e2e.ps1`/`feed-e2e-log.txt` ALL PASS；`logs\workspace-test.log` 788/0；`logs\release-build.log`）· `D:\OAS-dev\_verify\p2-runner-params-20261105\`（2 张 Runner 参数/更新 UI 截图）· 独立仓 `https://github.com/passioki/oas-runner`（initial `e1d603a`）。
 - **参数 v2 后端 / P3 UI / P0-1b（seq 113）**：`D:\OAS-dev\_verify\param-v2-backend-20261105\`（workspace 774/0、oasd 385/0、build exit 0/5 warnings、release-build、clean-copy 769/0）· `D:\OAS-dev\_verify\p1-param-e2e-20261105\`（`e2e.ps1`/`e2e-log.txt` ALL PASS；manifest flow_ops/role 证据）· `D:\OAS-dev\_verify\p0-3-studio-params-20261105\`（3 张构建端 UI 截图）· `D:\OAS-dev\_verify\p0-1a-e2e-20261105\`（P0 复跑 ALL PASS）。
 - **P0 首批落地（seq 112）**：`D:\OAS-dev\_verify\p0-1a-e2e-20261105\`（`e2e.ps1` + `e2e-log.txt` ALL PASS；两包 SHA 记录）· 设计 `_verify\dual-app-design-20261105\RUNNER-SPLIT-DESIGN.md §5/§6`。

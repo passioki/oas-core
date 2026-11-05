@@ -4,6 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# Phase 1a (Runner/Studio split): the application is a library + a thin binary.
+# The library name stays `oasd` so `oasd::cli::run()` / `run_as("runner")` are
+# available to the separate oas-runner application; the bin target only calls
+# into it (see src/main.rs).
+[lib]
+name = "oasd"
+path = "src/lib.rs"
+
 [[bin]]
 name = "oasd"
 path = "src/main.rs"

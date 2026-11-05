@@ -305,9 +305,29 @@
         <button id="builder-save" type="button">立即保存（自动保存已开启）</button>
         <button id="builder-dry-run" type="button">dry-run</button>
         <button id="builder-delete-checked" type="button">删除勾选步骤</button>
+        <button id="builder-lint-btn" type="button"
+          title="调用后端权威 lint（GET /task/lint，检查 T1~T7 + META；与发布校验同一套规则）">检查</button>
+        <span id="builder-lint-count" class="builder-lint-count" hidden>0</span>
         <span class="spacer"></span>
         <span id="builder-status" class="muted small">—</span>
       </div>
+
+      <!-- P5（参数 v2）：权威 lint 面板（构建页头部「检查」按钮的结果；默认隐藏） -->
+      <section class="card builder-lint-panel" id="builder-lint-panel" hidden>
+        <div class="builder-lint-head">
+          <h3>任务检查 <span class="builder-params-sub">GET /task/lint</span></h3>
+          <span id="builder-lint-summary" class="builder-params-chip kind">尚未检查</span>
+          <span class="muted small">与发布校验同一套规则；T3 未声明参数可点「去声明…」。</span>
+          <span class="spacer"></span>
+          <button id="builder-lint-close" type="button" title="收起检查结果（计数徽标保留）">收起</button>
+        </div>
+        <div id="builder-lint-status" class="muted small" role="status" aria-live="polite">尚未检查</div>
+        <div id="builder-lint-list" class="builder-lint-list"></div>
+        <pre id="builder-lint-error" class="muted small dialog-error"></pre>
+        <p class="muted small builder-lint-note">
+          权威结果来自后端（<code>GET /task/lint</code>）；参数面板底部的近似提示只用于编辑时即时提醒，以此处结果为准。
+        </p>
+      </section>
 
       <!-- P3（参数 v2）：任务参数面板。声明唯一权威仍是 meta.params（任务库「配置项…」），
            这里只做只读展示 + 插入参数入口；未声明时动作库「参数」组会提示先声明。 -->
