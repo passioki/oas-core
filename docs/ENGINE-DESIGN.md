@@ -2866,7 +2866,7 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 
 - 旧 `package.ps1` 实为「全量包」（复制 `ui/*` 全部、含 Runner UI/测试页、含 `start-scheduler.bat`/`scheduler.json`、缺 `start-studio.bat`、`Compress-Archive` 写 `\` entry、BUILD-INFO 无 surface 字段）⇒ 与 §A.8.1 的 9 项不符（对照见证据 `DESIGN-VS-NOW.md`）。
 - 重写后（453 行，对齐 `package-runner.ps1`）：**Studio UI 白名单 8 文件**（`index.html`/`app.js`/`builder.js`/`flow_model.js`/`asset_ui.js`/`dashboard.html`/`dashboard.js`/`style.css`）+ 真实 `tasks/`（剔 `state/`）与 `assets/`（数量校验）+ 空 `frames/runs/logs` + `library/.keep` + `start-studio/stop-studio/start-editor/stop-editor` + `README-DEPLOY.md` + config/models/adb + `surface: studio` BUILD-INFO（entry `oasd.exe studio --port 8788 --config config/live.json --ui ui`）；**禁止** Runner UI/脚本/README-RUNNER、`start-scheduler`/`stop-scheduler`/`scheduler.json`、测试页；stage 审计（越界/缺文件/非白名单 UI/`tasks/*/state`）失败即 throw；zip 用 `System.IO.Compression.ZipArchive` 写 `/` 分隔 entry；新增 `-Build/-DryRun`。
-- 产物：`dist/oasd-v0.1.0-win64.zip` = **37,789,671 B**，SHA256 `920AF668…F07C3`（41 entries，0 反斜杠）；Runner 重建 = **37,690,867 B**，SHA256 `ECB37A78…39ADE`（23 entries）。`dist/` 不入 git（Q7）。
+- 产物：`dist/oasd-v0.1.0-win64.zip` = **37,789,721 B**，SHA256 `737B52B9…91E6`（41 entries，0 反斜杠）；Runner 重建 = **37,690,867 B**，SHA256 `ECB37A78…39ADE`（23 entries）。`dist/` 不入 git（Q7）。
 
 #### 22.52.3 F1：PS 5.1 UTF-8 BOM 导致 Runner 包首启调度不可用（P1，已修）
 

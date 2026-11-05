@@ -1668,7 +1668,7 @@ Step::WithParams { params, defaults, body } => {
 
 - 旧脚本 = 全量包（`ui/*` 全复制、含 runner UI/测试页、`start-scheduler.bat`/`scheduler.json`、缺 `start-studio.bat`、`Compress-Archive` 写 `\`、BUILD-INFO 无 surface）⇒ **9 项不符 §A.8.1**（对照 `DESIGN-VS-NOW.md`）。
 - 重写为 Studio-only（453 行，参数 `-Version/-SkipBuild/-Build/-DryRun`）：UI 白名单 8 文件 + 真实 `tasks/`（剔 `state/`）/`assets/`（数量校验）+ 空 `frames/runs/logs` + `library/.keep` + `start/stop-studio` + `start/stop-editor` + `README-DEPLOY.md` + config/models/adb + `surface: studio` BUILD-INFO + stage 审计 + `/` 分隔 zip；禁止 Runner UI/脚本/README-RUNNER、`start-scheduler`/`stop-scheduler`/`scheduler.json`、测试页。
-- 产物：`dist/oasd-v0.1.0-win64.zip` = **37,789,671 B**，SHA256 `920AF6686314E2C28881C59C442C0AABFC45FB0646B284BA53DEFD0D080F07C3`（41 entries）。
+- 产物：`dist/oasd-v0.1.0-win64.zip` = **37,789,721 B**，SHA256 `737B52B9D80CB4018A88EB7AA30CC939F1706A1A231C1BC4F1032F11317291E6`（41 entries）。
 - `scripts/package-runner.ps1` 仅做 F1 修复后重建：**37,690,867 B**，SHA256 `ECB37A783FB92FD64F78BC788DA6DA3A61CDB7FE6897B76E3C0777E78D339ADE`（23 entries）。
 
 ### A.17.2 F1（P1，已修）：PS 5.1 BOM 使 Runner 包首启调度不可用

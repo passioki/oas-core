@@ -4144,7 +4144,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 
 # ★ §E-80 ★★★ [11-05 13:1x → 13:3x] **双端发行包 + 分离度验收 + dev-serve 双入口 + 参数 UI 审计（2026-11-05；seq 110）**
 
-> **状态：Studio-only `package.ps1` 重写完成；两 zip 产出（Studio 37,789,671 B / Runner 37,690,867 B）；分离度 E2E 75/75；F1（PS 5.1 BOM）已修复；`scripts/dev-serve.*` 双入口化；参数 UI 审计完成、待用户裁定方案；本批 scripts+docs 待提交/推送；不 tag / 不 release。**
+> **状态：Studio-only `package.ps1` 重写完成；两 zip 产出（Studio 37,789,721 B / Runner 37,690,867 B）；分离度 E2E 75/75；F1（PS 5.1 BOM）已修复；`scripts/dev-serve.*` 双入口化；参数 UI 审计完成、待用户裁定方案；本批 scripts+docs 待提交/推送；不 tag / 不 release。**
 > 依据（用户 2026-11-05 三项要求）：① 「检查启动方式，编辑端/使用端是否单独启动…我验收通过不同端的 release 来判断吧。请试发布两端软件」；② 「D:\OAS-dev\oas-core\scripts 里的 dev-serve.bat 似乎已经过时，请更新，或者有新启动方式请告知」；③ 「当前编辑端暴露给使用端的参数设置并没有被前端很好表达，编辑端的任务构建里没有该语言模块或提示。是设置变量那个模块还是什么？」
 > 权威口径：`RUNNER-STUDIO-SPLIT-PLAN.md §A.8.1（两种发行包）+ §A.17（本批实现记录）`；`ENGINE-DESIGN.md §22.44.6 + §22.52`；`START-HERE.md §0.1 / §3 E17`；`RESUME.md` seq 110。
 > 证据：`D:\OAS-dev\_verify\release-both-20261105\`（打包/分离度/F1）、`D:\OAS-dev\_verify\lead-recheck-20261105\`（Lead 独立复核）、`D:\OAS-dev\_verify\ui-params-audit-20261105\`（参数 UI 审计）。
@@ -4168,7 +4168,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 
 ## C. 验证（可核查）
 
-- **打包产物**：Studio **37,789,671 B** / SHA256 `920AF6686314E2C28881C59C442C0AABFC45FB0646B284BA53DEFD0D080F07C3`（41 entries）；Runner **37,690,867 B** / SHA256 `ECB37A783FB92FD64F78BC788DA6DA3A61CDB7FE6897B76E3C0777E78D339ADE`（23 entries）；两包 **0 反斜杠 entry**、共享 13 / Studio 独有 28 / Runner 独有 10、禁止项命中 0。
+- **打包产物**：Studio **37,789,721 B** / SHA256 `737B52B9D80CB4018A88EB7AA30CC939F1706A1A231C1BC4F1032F11317291E6`（41 entries）；Runner **37,690,867 B** / SHA256 `ECB37A783FB92FD64F78BC788DA6DA3A61CDB7FE6897B76E3C0777E78D339ADE`（23 entries）；两包 **0 反斜杠 entry**、共享 13 / Studio 独有 28 / Runner 独有 10、禁止项命中 0。
 - **分离度 E2E（仓外解压、CWD=解压目录、`--no-open`）75/75**：Studio 8788 单进程、8789/8787 未监听、`/app.js` `/task/library` 200、`/runner.js` `/runner/tasks` `/runner/health` 404；Runner 8789 单进程、`/runner.js` `/runner/tasks` `/runner/health` 200、`/task/library` `/app.js` 404；停止后端口/进程 0 残留；两包文本 0 处引用 `D:\OAS-dev\oas-core`；截图 2 张。
 - **F1 回归 13 条**：两包 VERSION/BUILD-INFO/`scheduler.json` 无 BOM；解压后 `oasd.exe scheduler --plan scheduler.json --status` exit 0；`/runner/health` `scheduler_mode=stop`（非 invalid_config）、`last_stop=no_enabled_entries`、`last_error=""`、`logs/runner.log` 无 `invalid JSON`。
 - **Lead 独立复核**：`lead-recheck-20261105\recheck-log.txt` ALL PASS（zip/BOM/entry 互斥/路由矩阵/端口/单进程/进程路径/`scheduler --status`）。

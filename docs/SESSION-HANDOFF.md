@@ -10,7 +10,7 @@
 | 分支 / HEAD | `dev`；本批提交前 HEAD = `e9404a4`（seq 108 docs，父 `68e5768`）；代码 HEAD 仍 `68e5768`（本轮 Rust 零改动）；**提交后以 `git log -1` 为准**；未 tag / 未 release |
 | 任务 | **Studio/Runner 分离**：Q1~Q7 已批准、PR1~PR7 ✅、最终审计 P1 ✅ `68e5768`；**本批 seq 110 = 双端 release + dev-serve + 参数 UI 审计** |
 | 测试 | `cargo test --workspace` **721/0**（Lead 本批复跑 `EXITCODE=0`）；oasd **355**、oas-task 111、oas-flow 62、oas-runtime 157+2；UI **1559 / Studio 159 / Runner 151 / 0 dead / 6 nav**（UI 零改动）；`git diff --check` clean |
-| 发行包 | **Studio** `dist/oasd-v0.1.0-win64.zip` **37,789,671 B** / SHA `920AF668…F07C3`（41 entries，surface=studio）；**Runner** `dist/oasd-runner-v0.1.0-win64.zip` **37,690,867 B** / SHA `ECB37A78…39ADE`（23 entries，surface=runner，`scheduler.json` 无 BOM）；均不入 git |
+| 发行包 | **Studio** `dist/oasd-v0.1.0-win64.zip` **37,789,721 B** / SHA `737B52B9…91E6`（41 entries，surface=studio）；**Runner** `dist/oasd-runner-v0.1.0-win64.zip` **37,690,867 B** / SHA `ECB37A78…39ADE`（23 entries，surface=runner，`scheduler.json` 无 BOM）；均不入 git |
 | 服务 | **8787/8788/8789 全部未监听、无 `oasd` 进程**（release 评测后已清理） |
 | 工作区 | 用户数据未提交：`assets/assets.json`、`frames/frames.json`、`scheduler.json(.bak)`、未跟踪 `frames/frame-43.png`/`frame-44.png`、`tasks/切换预设御魂/`；本批 scripts+docs 待提交；**用户数据不入库** |
 

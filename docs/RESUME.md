@@ -28,7 +28,7 @@ next_action: ① 用户裁定参数 UI 方案（推荐 A+C：构建页入口 + S
 | 任务状态 | **handoff-ready**：双端 release 已产出并独立复核；参数 UI 审计完成，**待用户裁定方案** |
 | 双入口 | **Studio `http://127.0.0.1:8788/`**（`oasd studio`）· **Runner `http://127.0.0.1:8789/`**（`oasd runner`，nav 6，内嵌调度）；`oasd serve` = Studio deprecated 别名 |
 | 测试 | `cargo test --workspace` **721 / 0**（21 targets；本轮 Rust 零改动，Lead 复跑 `EXITCODE=0`）；UI pure test **1559 / Studio 159 / Runner 151 / 0 dead / 6 nav**（UI 零改动）；`git diff --check` clean |
-| 发行包 | **Studio** `dist/oasd-v0.1.0-win64.zip` = **37,789,671 B**，SHA256 **`920AF6686314E2C28881C59C442C0AABFC45FB0646B284BA53DEFD0D080F07C3`**（41 entries；surface=studio；真实 tasks/assets 数据）；**Runner** `dist/oasd-runner-v0.1.0-win64.zip` = **37,690,867 B**，SHA256 **`ECB37A783FB92FD64F78BC788DA6DA3A61CDB7FE6897B76E3C0777E78D339ADE`**（23 entries；surface=runner；空 v4 `scheduler.json` 无 BOM）；**不入 git** |
+| 发行包 | **Studio** `dist/oasd-v0.1.0-win64.zip` = **37,789,721 B**，SHA256 **`737B52B9D80CB4018A88EB7AA30CC939F1706A1A231C1BC4F1032F11317291E6`**（41 entries；surface=studio；真实 tasks/assets 数据）；**Runner** `dist/oasd-runner-v0.1.0-win64.zip` = **37,690,867 B**，SHA256 **`ECB37A783FB92FD64F78BC788DA6DA3A61CDB7FE6897B76E3C0777E78D339ADE`**（23 entries；surface=runner；空 v4 `scheduler.json` 无 BOM）；**不入 git** |
 | 服务 | **全部停止**（8787/8788/8789 实测无监听、无 `oasd` 进程；release 评测后已清理） |
 | 数据边界 | 工作区用户数据：`assets/assets.json`、`frames/frames.json`、`scheduler.json(.bak)`、未跟踪 `frames/frame-43.png`/`frame-44.png`、`tasks/切换预设御魂/`；**用户数据不入库** |
 | 提交边界 | **待提交 = 本批 scripts（`package.ps1` / `package-runner.ps1` / `dev-serve.ps1` / `dev-serve.bat`）+ docs（START-HERE/RESUME/RESUME-INDEX/SESSION-HANDOFF/PENDING/ENGINE/PLAN/README + `packaging/README-DEPLOY.md`）**；用户数据不提交；`dist/` / `packages/` 不入 git |
