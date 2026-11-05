@@ -2920,3 +2920,52 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 - **测试**：`cargo test --workspace` **746 passed / 0 failed**（21 suites；oasd **380** = 基线 355 + exchange 19 + bundled_data 6；其他 crate 不变）；UI pure test **1633 checks / Studio 159 ids / Runner 157 ids / 0 dead / 6 nav**；`cargo build --release -p oasd --features ocr` exit 0（5 warnings，无新增）；`git diff --check` clean。
 - **E2E（仓外，最终两包）**：解压两 release → **Studio 单独启动** publish `返回庭院` 200（exchange `copied=true`，index 1 event，incoming 1 包）→ **停 Studio** → **Runner 单独启动**：`bundled-data` 自动导入 3 任务 + assets + marker（stderr `bundled data: imported`）→ `GET /runner/updates` 返回该事件 `status=new, action=install, package_available=true` → `POST /runner/install` 200（replaced）→ ack installed → `notifications.json`/`installed.json` 落盘、事件 status=installed、`/runner/tasks` 200；**ALL PASS**（`e2e-log.txt`）。
 - **限制**：exchange 默认关闭（需两端 live.json 配置同一目录，推荐绝对路径）；`scheduler.json` 仍是本地配置（未按设计 §6.6 改为运行态）；Runner 随包导入只覆盖“空数据根首启”；`frames/relations/templates` 只进 Studio 包。
+
+### 22.54 ★★★ [11-05 19:0x] **参数 v2 后端 + 构建端参数 UI + P0-1b（发布通知增强）**
+
+> 用户 2026-11-05 要求 ②「参数与 flow 互动/参数作为 OCR 识别文字/构建端声明/使用端暴露」的首批实现（P1 后端 + P3 构建端），以及 ④ 的 P0-1b 增强。用户后续澄清：**「预设」只是举例，不是功能需求**（D2：不做预设值集合）；**D8 通知通道意图 = 任务包发布后可被检测到（像软件更新检测），来源可为远程网页（如 GitHub）或本地安装**（本地 exchange 已实现；远程 feed 列入下一步）。
+> 设计：`PARAM-V2-DESIGN.md` §2.1/§3.2/§3.6/§5；实现：`ENGINE §22.54`；台账 `PENDING §E-83`；断点 `RESUME` seq 113；证据 `_verify\param-v2-backend-20261105\`、`_verify\p1-param-e2e-20261105\`、`_verify\p0-3-studio-params-20261105\`。
+
+#### 22.54.1 DSL：`TextSpec` / `text_expr`（参数作为 OCR 识别文字）
+
+- `crates/oas-flow`：4 处 OCR 文字字段由 `String` 改为 **`TextSpec { Literal(String), Expr(Expr) }`**：
+  `Locator::OcrText` / `Locator::OcrTextInline`（`click_target.find[]` 的 sel/inline-ROI 两种形态）、`Expect::OcrText`（覆盖 `requires` 与 `expect`）、`DragTarget::OcrText`（`drag.from/to`）。
+- JSON 规则：`text`（字面量）与 `text_expr`（表达式）**互斥且必填其一**；同现/双缺 → 解析错误（路径精确到 `…args.find[0].text_expr`）；`text_expr` 经 `parse_expr` 解析；旧 `text` 语义逐字节不变（包括把 `"param('x')"` 当普通字面量）。
+- 示例：
+  ```json
+  {"op":"click_target","args":{"find":[{"kind":"ocr_text","sel":"O_战斗按钮","text_expr":"param('战斗按钮文字')"}]}}
+  {"op":"wait_until","args":{"cond":"text_visible(param('关键词'))","timeout_s":10}}
+  {"kind":"ocr_text","sel":"O_结果","text_expr":"param('胜利文字')","timeout_ms":3000}
+  {"op":"drag","args":{"from":{"kind":"ocr_text","sel":"O_行","text_expr":"param('目标行')"},"direction":"up","distance":[150,450]}}
+  ```
+- T3：`Flow::param_uses_at` 覆盖 4 处 `text_expr`（含 requires/expect）；T4：`referenced_assets` 收集 `text_expr` 中 `ocr()/appear()` 的素材引用（3 处共用 helper，DRY-3）。
+
+#### 22.54.2 运行时：step 进入时求值一次（Q8=A）
+
+- `crates/oas-runtime` 新增 `resolve_text(site, spec)`：`Literal` 原样；`Expr` 在 **step 进入时求值一次**，结果必须是**非空 `Value::Str`**（Null/数字/布尔/空串 → 响亮错误，消息含 op 与 key）。`click_target` 在**定位链之前预解析全部 find**（失败绝不 fallthrough 到 coord_memory）；`verify_expect` 入口解析一次（轮询期间不重算）；`drag` 端点解析一次。旧字面量路径、伪造/回放逻辑不变。
+
+#### 22.54.3 flow_ops 门禁 + `ParamDecl.role`
+
+- `SUPPORTED_FLOW_OPS` 4→**7**：新增 **`click_target.text_expr` / `expect.text_expr`（覆盖 requires+expect）/ `drag.text_expr`**；从**原始 flow** 推导（含嵌套 then/else/body，仅 `kind=ocr_text` 计入）；纯字面量旧 flow 推导仍为空集 ⇒ 旧包/旧任务零变化；安装时既有「重算严格相等」逻辑自动拒绝老 Runner（`unsupported_flow_ops`）。
+- `ParamDecl` 新增可选 `role: Option<String>`（JSON `role`，≤32，**未知值忽略**，不影响运行值注入）；`role:"ocr_text"` 供 Studio/Runner UI 提示。
+
+#### 22.54.4 构建端参数 UI / 动作库补全（P3，apps/oasd/ui）
+
+- 动作库新增「参数」组（不新增引擎 op）：`param_click_text`「参数文字点击」→ `click_target.find[] = {kind:"ocr_text", sel, text_expr:"param('<key>')"}`；`param_wait_text`「等待参数文字」→ `wait_until.cond = "text_visible(param('<key>'))"`；未声明参数时禁用并引导。
+- `click_target` 定位器「文字来源」三态（固定文字 `text` / 任务参数 / 表达式 `text_expr`，互斥，保留 locator 未知字段）；条件编辑器新增「文字（参数）」行；表达式字段「插入参数 ▾」（条件插 `text_visible(param(...))`）。
+- 构建页 `#builder-params` 任务参数面板：`GET /task/config?task=` 拉取声明（与 flow/assets 并行），显示 分组/key/类型/label/默认值 + 「配置项…」（复用任务库 JSON dialog，`window.OAS_TASK_CONFIG` 运行时桥 + 保存回刷）；`#builder-param-issues` 近似列出未声明 `param()` 引用（后端 lint/T3 仍是权威）；保存前 `flowTextSpecIssues` 拦截 `text`/`text_expr` 双写/双缺。
+- 未覆盖（P2）：`requires`/`expect`/`drag` 的 text_expr 结构化编辑（高级 JSON 可写）、结构化声明表单、权威 `GET /task/lint` + 检查按钮。
+
+#### 22.54.5 P0-1b：发布通知增强（Studio→Runner 即时提示 + 兼容预检）
+
+- `exchange::PublishEvent` 新增可选 `min_engine` / `flow_ops`（来自 `manifest.engine`；旧 index 兼容）；Runner `GET /runner/updates` 的 `compatible` 改为真实预检（`min_engine` 版本满足 + `flow_ops ⊆ SUPPORTED_FLOW_OPS`），旧事件无字段视为兼容；安装仍由既有严格校验兜底。
+- Studio 发布后若 `exchange.notify.enabled`，用**纯 std TCP** best-effort `POST <notify.runner_url>/runner/notify`（timeout 100..5000ms；不重试，文件索引仍是唯一真相）；`POST /task/publish` 响应新增 `exchange.notify:{enabled,ok,http_status,error?}`（失败只 warning，不失败发布）。
+- 未做：`.studio-writer.lock`（并发 publish RMW 窗口）；远程 feed（GitHub/HTTP 拉取）——用户 D8 意图已记入下一步。
+
+#### 22.54.6 验证与已知限制
+
+- **测试**：`cargo test --workspace` **774 passed / 0 failed**（21 suites；oas-flow 62→**70** / oas-runtime 157→**167 lib**+2 integration / oas-task 111→**116** / oasd 380→**385**（含 P0-1b +5））；UI pure test **1727 checks / Studio 159 / Runner 157 / 0 dead / 6 nav**；`cargo build -p oasd --features ocr`（debug/release）exit 0，**5 warnings** 无新增；`git diff --check` clean。
+- **参数链路 E2E（仓外）**：临时任务 `paramtest`（复制真实任务 + 声明 `kw:string role:ocr_text` + 插入 `click_target.text_expr:"param('kw')"`）→ `oasd task lint` **0 errors** → `oasd studio publish` 成功 → `.oaspkg` manifest `engine.flow_ops = click_target.text_expr`、`params_schema.own[0].role = ocr_text`；debug 与 **release** 二进制均通过。
+- **P0 双端 E2E 复跑**（新包）：Studio 发布 → exchange → 停 Studio → Runner 启动自动导入 → `/runner/updates` → install → ack installed **ALL PASS**（`_verify\p0-1a-e2e-20261105\`）。
+- 新包产物：Studio **76,611,083 B** / SHA `62B0692E…CD33`；Runner **37,812,123 B** / SHA `8321818C…63CF5`。
+- **已知限制**：`text_expr` 在 find 预解析阶段先于 requires 失败（设计如此）；空串响亮失败（比 task 文字更严格）；旧 Studio 编辑新 flow 可能丢 `text_expr`（新 UI 已保留未知字段）；preset（命名值集合）**不做**（用户澄清）；远程更新 feed 未实现。

@@ -4262,3 +4262,39 @@ GET /task/assets?task= → 34 个素材（全局模式）
 4. **`scheduler.json` 仍为本地配置**（未按设计 §6.6 改运行态 + `.example`）；`frames/relations/templates` 只进 Studio 包。
 5. **数据入库**：本轮把 `assets/tasks/frames` 的当前工作区数据提交入库（用户要求“数据属于仓库”）；`scheduler.json` 仍保留为本地运行配置未提交。
 6. 参数 v2 / 新仓 `oas-runner` / 双端同时运行的完整交互矩阵（P0-4 serve 模块化、P0-5 tag）仍待 D1~D12 裁定后推进（见 `§E-81`）。
+
+# ★ §E-83 ★★★ [11-05 18:5x → 19:1x] **参数 v2 后端 + 构建端参数 UI + P0-1b（seq 113）**
+
+> **状态：P1 参数后端 ✅、P3 构建端参数 UI/动作库 ✅、P0-1b（notify 客户端 + compatible 预检）✅**；用户澄清 **D2「预设」只是举例（不做预设值集合）**、**D8 通知通道意图 = 发布后可被检测（远程网页/GitHub 或本地安装；本地 exchange 已有，远程 feed 置下一步）**。实现记录 `ENGINE §22.54`；断点 `RESUME` seq 113；证据 `_verify\param-v2-backend-20261105\`、`_verify\p1-param-e2e-20261105\`、`_verify\p0-3-studio-params-20261105\`。
+
+## A. 交付明细
+
+| # | 项 | 结果 | 状态 |
+|---|---|---|---|
+| P1-a | **`text_expr` DSL** | `TextSpec{Literal,Expr}` 替换 4 处 OCR 文字字段（click_target.find sel/inline、requires/expect、drag from/to）；`text`/`text_expr` 互斥必填其一；旧字面量零变化 | ✅ |
+| P1-b | **运行时求值** | step 进入一次、必须非空字符串、错误响亮且不点击；click_target 定位链前预解析（不 fallthrough）；expect 轮询不重算；drag 端点一次 | ✅ |
+| P1-c | **T3/T4/flow_ops** | T3 param_uses 覆盖 4 处；T4 收集 text_expr 内素材；`SUPPORTED_FLOW_OPS` 4→7（`click_target.text_expr` / `expect.text_expr` / `drag.text_expr`）；安装重算严格相等门禁沿用 | ✅ |
+| P1-d | **`ParamDecl.role`** | 可选 `role`（≤32、未知忽略、不影响注入）；`role:"ocr_text"` UI 提示 | ✅ |
+| P3 | **构建端参数 UI/动作库** | 动作库「参数」组（参数文字点击/等待参数文字）；定位器文字来源三态；构建页 `#builder-params` 面板（GET /task/config、配置项…复用、保存回刷）；`#builder-param-issues` 近似提示；表达式「插入参数 ▾」；保存前 text/text_expr 校验 | ✅ |
+| P0-1b | **通知增强** | exchange event 增 `min_engine`/`flow_ops`；Runner `compatible` 真实预检；Studio→Runner loopback `POST /runner/notify`（纯 std TCP，best-effort，响应 `exchange.notify`）；`timeout 100..5000ms` | ✅ |
+
+## B. 验证（可核查）
+
+- `cargo test --workspace` **774/0**（21 suites；oas-flow 70 / oas-runtime 167+2 / oas-task 116 / oasd 385；基线 746 + 参数 23 + P0-1b 5）；`cargo build -p oasd --features ocr`（debug/release）exit 0（**5 warnings** 无新增）；UI **1727 checks / 159 / 157 / 0 dead / 6 nav**；`git diff --check` clean。
+- **参数链路 E2E**（`_verify\p1-param-e2e-20261105\e2e-log.txt`）：临时任务 `paramtest`（真实任务 + `kw` 参数 + `click_target.text_expr:"param('kw')"`）→ lint **0 errors** → publish 成功 → manifest `engine.flow_ops=click_target.text_expr`、`params_schema.own[0].role=ocr_text`；debug 与 release 二进制均 PASS。
+- **P0 双端 E2E 复跑**（新包）：`_verify\p0-1a-e2e-20261105\e2e-log.txt` **ALL PASS**。
+- 新包产物：Studio **76,611,083 B** / SHA `62B0692EC8D2794C1BDD39F1C8C14533F0A90102C634F333EC1ADE2D786FCD33`；Runner **37,812,123 B** / SHA `8321818C47EF2FDE12C95DA8126BE0353413D48CBA7AF1BB0AE3BAB7A1863CF5`（不入 git）。
+
+## C. 用户澄清（2026-11-05 19:12）与影响
+
+1. **D2**：「预设」只是举例说明参数作用 ⇒ **不做「命名值集合 / preset 管理」**；Runner 参数 UI 只需：按 `group` 分组 + 每参「使用」开关 + 留空=不注入（D1=A）。
+2. **D8**：通知通道目的 = 任务包发布后**可被检测到（像软件更新）**，来源可为**远程网页（如 GitHub）**或**本地安装**。本地 exchange 索引已实现；**远程 feed（本地路径/HTTP URL 拉取 + 下载安装）列入下一步**（设计：Runner `updates.feed` 源列表；远程 GitHub 需要 HTTPS 客户端策略，待定 curl 外部进程 vs 引入 TLS 依赖）。
+3. 其余决策未回复 ⇒ 继续按决策单推荐推进（D1=A、D3=A 每任务独立、D4=A、D5=A、D7=A 两仓 Phase 0、D9=A、D10=A、D11=A）。
+
+## D. 未实现 / 下一步（不阻塞本轮）
+
+- **Runner 使用端参数 UI（P2）**：`group` 分组标题、每参「使用」开关、bool 三态、留空提示、必填阻止保存（设计 `PARAM-V2-DESIGN §4`；原型 `prototype\runner-params.html`）；**不做预设管理**（D2 澄清）。
+- **更新检测 feed（D8 澄清）**：Runner `updates.feed` = 本地路径/URL 源列表；本地 exchange 已通；远程 GitHub/HTTP 拉取 + 下载 `.oaspkg` 到本地再安装。
+- **Studio 权威 lint**：`GET /task/lint` + 构建页「检查」按钮（当前 `#builder-param-issues` 是近似提示）；`requires/expect/drag` 的 text_expr 结构化编辑；结构化参数声明表单。
+- **P0-1b 剩余**：`.studio-writer.lock`、重试队列；**新仓 `oas-runner`**（D7 未回复/需用户建 GitHub 空仓）；`scheduler.json` 运行态化。
+- 旧待办：产品验收 §D.4 / P2 清理 / Phase 5；不 tag / 不 release。

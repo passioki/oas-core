@@ -26,7 +26,25 @@
     log: { label: '日志', group: '数据/结束' },
     finish: { label: '结束', group: '数据/结束' },
   };
-  const GROUP_ORDER = ['流程控制', '识别/等待', '动作', '数据/结束'];
+  const GROUP_ORDER = ['流程控制', '识别/等待', '动作', '参数', '数据/结束'];
+  // P3（参数 v2）：动作库「参数」组。These are *presets* for real ops, NOT new
+  // engine ops: clicking one generates a standard click_target / wait_until whose
+  // OCR text comes from a declared meta.params key (text_expr / text_visible).
+  const PARAM_GROUP = '参数';
+  const PARAM_ACTIONS = {
+    param_click_text: { label: '参数文字点击', op: 'click_target' },
+    param_wait_text: { label: '等待参数文字', op: 'wait_until' },
+  };
+  // Generic FIELDS text inputs that hold expressions; they get the「插入参数 ▾」
+  // button. `cond` fields insert a whole text_visible(param('k')) predicate.
+  const EXPR_FIELDS = {
+    log: { text: 'expr' },
+    wait_until: { cond: 'cond' },
+    loop: { n: 'expr' },
+    set_var: { value: 'expr' },
+    inc_var: { by: 'expr' },
+    click_point: { x: 'expr', y: 'expr' },
+  };
   const FIELDS = {
     log: [{ key: 'level', label: '级别', type: 'select', options: ['info', 'warn', 'error'] }, { key: 'text', label: '文本（表达式）', type: 'text' }],
     wait: [{ key: 'seconds', label: '秒', type: 'number' }],
@@ -89,6 +107,12 @@
     relations: null,
     selected: null, // path array
     tasks: [],
+    // P3（参数 v2）：meta.params schema (Studio-only read; the Runner owns values).
+    params: [],
+    paramsLoading: false,
+    paramsError: '',
+    lastExprField: null,
+    lastExprMode: 'expr',
     autoSaveArmed: false,
     autoSaveTimer: null,
     lastSavedFlow: '',
@@ -111,6 +135,199 @@
 
   function esc(s) {
     return String(s == null ? '' : s);
+  }
+
+  // --- P3（参数 v2）纯函数：不依赖 DOM / 全局状态，ui_pure_test 直接抽取 ------
+  // 参数声明的唯一权威是 meta.params（Studio 只定义 schema）；动作库「参数」组
+  // 里的条目只是标准 op 的预设，不新增引擎 op。这里只做「数据 → flow/文案」的
+  // 纯转换。
+
+  function paramSafeKey(key) {
+    return String(key === undefined || key === null ? '' : key).trim().replace(/[\x27\x22\\]/g, '');
+  }
+
+  function paramTextExpr(key) {
+    return "param('" + paramSafeKey(key) + "')";
+  }
+
+  function paramWaitCond(key) {
+    return 'text_visible(' + paramTextExpr(key) + ')';
+  }
+
+  // A1: 「参数文字点击」→ 标准 click_target（OCR 文字来自任务参数）。
+  function paramClickStep(paramKey, ocrSel) {
+    const sel = String(ocrSel === undefined || ocrSel === null ? '' : ocrSel).trim() || 'O_OCR';
+    return {
+      op: 'click_target',
+      args: {
+        find: [{ kind: 'ocr_text', sel: sel, text_expr: paramTextExpr(paramKey) }],
+      },
+    };
+  }
+
+  // A2: 「等待参数文字出现」→ 标准 wait_until（cond = text_visible(param(...))）。
+  function paramWaitStep(paramKey, timeoutSeconds) {
+    const n = Number(timeoutSeconds);
+    const timeout = isFinite(n) && n > 0 ? Math.round(n) : 10;
+    return {
+      op: 'wait_until',
+      args: { cond: paramWaitCond(paramKey), timeout_s: timeout },
+    };
+  }
+
+  // Locator 文字来源三态写回：固定文字写 text，任务参数/表达式写 text_expr，
+  // 两者互斥（切换时删除另一个字段）。未知字段（roi/require_template/shape…）
+  // 必须原样保留 —— 只 merge 已知键，禁止重建对象。
+  function paramSourceApply(loc, mode, value) {
+    const out = Object.assign({}, loc && typeof loc === 'object' ? loc : {});
+    const text = String(value === undefined || value === null ? '' : value);
+    if (mode === 'param') {
+      delete out.text;
+      out.text_expr = paramTextExpr(text);
+    } else if (mode === 'expr') {
+      delete out.text;
+      out.text_expr = text;
+    } else {
+      delete out.text_expr;
+      out.text = text;
+    }
+    return out;
+  }
+
+  // 读回三态：text→fixed；text_expr 恰为 param('字面量')→param；其他表达式→expr。
+  function paramSourceFromLocator(loc) {
+    const l = loc && typeof loc === 'object' ? loc : {};
+    const hasText = Object.prototype.hasOwnProperty.call(l, 'text') &&
+      l.text !== undefined && l.text !== null;
+    const expr = l.text_expr === undefined || l.text_expr === null
+      ? ''
+      : String(l.text_expr).trim();
+    if (hasText) return { mode: 'text', value: String(l.text) };
+    const m = expr.match(/^param\(\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]\s*\)$/);
+    if (m) return { mode: 'param', value: m[1] };
+    if (expr) return { mode: 'expr', value: expr };
+    return { mode: 'text', value: '' };
+  }
+
+  function locatorParamKey(loc) {
+    const src = paramSourceFromLocator(loc);
+    return src.mode === 'param' ? src.value : '';
+  }
+
+  // 互斥 + 必填其一（旧 flow 的 text 语义零变化；新 flow 用 text_expr）。
+  function locatorTextSpecError(loc) {
+    const l = loc && typeof loc === 'object' && !Array.isArray(loc) ? loc : {};
+    const hasText = Object.prototype.hasOwnProperty.call(l, 'text');
+    const hasExpr = Object.prototype.hasOwnProperty.call(l, 'text_expr');
+    if (hasText && hasExpr) return 'text 与 text_expr 互斥（只能写一个）';
+    if (!hasText && !hasExpr) return '缺少文字来源（text 或 text_expr 二选一）';
+    return '';
+  }
+
+  // 保存前的本地校验：扫描 flow 里每个 ocr_text 定位器（find/expect/requires/
+  // drag from/to 都带 kind:'ocr_text'），text 与 text_expr 必须恰好一个。
+  function flowTextSpecIssues(flow) {
+    const issues = [];
+    function walk(node, path) {
+      if (node === null || node === undefined) return;
+      if (Array.isArray(node)) {
+        node.forEach(function (child, i) { walk(child, path + '[' + i + ']'); });
+        return;
+      }
+      if (typeof node !== 'object') return;
+      if (node.kind === 'ocr_text') {
+        const err = locatorTextSpecError(node);
+        if (err) issues.push(path + '：' + err);
+      }
+      for (const key of Object.keys(node)) walk(node[key], path ? path + '.' + key : key);
+    }
+    walk({ steps: flow && flow.steps }, 'flow');
+    return issues;
+  }
+
+  // 「插入参数」片段：普通表达式插 param('k')；条件字段插整段谓词。
+  function paramInsertSnippet(key, mode) {
+    const expr = paramTextExpr(key);
+    return mode === 'cond' ? 'text_visible(' + expr + ')' : expr;
+  }
+
+  function paramDefaultText(param) {
+    const p = param && typeof param === 'object' ? param : {};
+    if (!Object.prototype.hasOwnProperty.call(p, 'default') ||
+        p.default === undefined || p.default === null) {
+      return '—';
+    }
+    if (p.default === '') return '（空字符串）';
+    if (typeof p.default === 'string') return p.default;
+    if (typeof p.default === 'number' || typeof p.default === 'boolean') return String(p.default);
+    try {
+      return JSON.stringify(p.default);
+    } catch (e) {
+      return String(p.default);
+    }
+  }
+
+  // 面板行数据（分组/key/类型/label/default），非对象项被过滤。
+  function paramPanelRows(params) {
+    const list = Array.isArray(params) ? params : [];
+    return list
+      .filter(function (p) { return p && typeof p === 'object' && !Array.isArray(p); })
+      .map(function (p) {
+        const key = p.key === undefined || p.key === null ? '' : String(p.key).trim();
+        const label = p.label === undefined || p.label === null ? '' : String(p.label).trim();
+        const group = p.group === undefined || p.group === null ? '' : String(p.group).trim();
+        const type = p.type === undefined || p.type === null ? '' : String(p.type).trim();
+        return {
+          key: key,
+          label: label || key,
+          type: type,
+          group: group,
+          defaultText: paramDefaultText(p),
+        };
+      });
+  }
+
+  function paramPanelSummary(params) {
+    const rows = paramPanelRows(params);
+    if (!rows.length) return '0 项参数';
+    const groups = new Set();
+    for (const row of rows) groups.add(row.group || '未分组');
+    return rows.length + ' 项参数 · ' + groups.size + ' 个分组';
+  }
+
+  // flow 里所有 param('字面量') 引用（T3 同口径：只认恰好一个字符串字面量；
+  // 双引号也算，因为表达式解析器两种都接受）。text_expr / cond / 任意表达式字段
+  // 都会被递归扫描。
+  function collectParamUses(flow) {
+    const uses = [];
+    const re = /param\(\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]\s*\)/g;
+    function walk(node, path) {
+      if (node === null || node === undefined) return;
+      if (typeof node === 'string') {
+        re.lastIndex = 0;
+        let m;
+        while ((m = re.exec(node)) !== null) uses.push({ key: m[1], path: path, expr: m[0] });
+        return;
+      }
+      if (Array.isArray(node)) {
+        node.forEach(function (child, i) { walk(child, path + '[' + i + ']'); });
+        return;
+      }
+      if (typeof node !== 'object') return;
+      for (const key of Object.keys(node)) walk(node[key], path ? path + '.' + key : key);
+    }
+    walk(flow && flow.steps, 'steps');
+    return uses;
+  }
+
+  function undeclaredParamUses(params, uses) {
+    const declared = new Set(paramPanelRows(params).map(function (row) { return row.key; }));
+    const out = [];
+    for (const use of Array.isArray(uses) ? uses : []) {
+      if (!use || !use.key || declared.has(use.key)) continue;
+      out.push(use);
+    }
+    return out;
   }
 
   function getRoot() {
@@ -175,7 +392,12 @@
       case 'ocr': return esc(a.sel);
       case 'click': return esc(a.sel);
       case 'click_point': return `(${esc(a.x)},${esc(a.y)})`;
-      case 'click_target': return JSON.stringify(a.find || []).slice(0, 60);
+      case 'click_target': {
+        const loc = (Array.isArray(a.find) && a.find[0]) || {};
+        const key = locatorParamKey(loc);
+        if (key) return `${esc(loc.sel)} · 文字=param('${key}')`;
+        return JSON.stringify(a.find || []).slice(0, 60);
+      }
       case 'dismiss_popup': return esc(a.sel);
       case 'swipe': return `${JSON.stringify(a.from)}→${JSON.stringify(a.to)}`;
       case 'key': return `keycode ${esc(a.keycode)}`;
@@ -195,15 +417,117 @@
     }
   }
 
+  // --- P3：任务参数面板（只读视图；声明入口仍是任务库「配置项…」） ----------
+
+  function renderParamsPanel() {
+    const list = $('builder-params-list');
+    const summary = $('builder-params-summary');
+    const statusEl = $('builder-params-status');
+    const issuesEl = $('builder-param-issues');
+    const rows = paramPanelRows(B.params);
+    if (summary) {
+      summary.textContent = paramPanelSummary(B.params);
+      summary.className = 'builder-params-chip ' + (rows.length ? 'kind' : 'warn');
+    }
+    if (issuesEl) {
+      const undeclared = undeclaredParamUses(B.params, collectParamUses(B.flow));
+      const keys = [];
+      for (const use of undeclared) {
+        if (keys.indexOf(use.key) < 0) keys.push(use.key);
+      }
+      issuesEl.textContent = keys.length
+        ? '⚠ flow 使用了未声明参数：' + keys.join('、') + '（发布 T3 会拒绝；点「配置项…」声明）'
+        : '';
+    }
+    if (statusEl) {
+      if (B.paramsError) {
+        statusEl.textContent = '参数读取失败：' + B.paramsError + '（不阻塞 flow 编辑）';
+        statusEl.className = 'muted small err';
+      } else if (B.paramsLoading) {
+        statusEl.textContent = '读取参数…';
+        statusEl.className = 'muted small';
+      } else if (!B.task) {
+        statusEl.textContent = '先选择任务：参数来自该任务的 meta.params。';
+        statusEl.className = 'muted small';
+      } else if (!rows.length) {
+        statusEl.textContent = '暂无任务参数：点「配置项…」在 meta.params 声明；声明后动作库「参数」组与「插入参数」可用。';
+        statusEl.className = 'muted small';
+      } else {
+        statusEl.textContent = '参数来自 meta.params（GET /task/config）；运行值由 Runner 填写，Studio 只定义 schema。';
+        statusEl.className = 'muted small ok';
+      }
+    }
+    if (!list) return;
+    list.textContent = '';
+    if (B.paramsLoading) {
+      list.textContent = '读取中…';
+      return;
+    }
+    if (B.paramsError) {
+      list.textContent = '参数读取失败：' + B.paramsError;
+      return;
+    }
+    if (!B.task) {
+      list.textContent = '（先选择任务）';
+      return;
+    }
+    if (!rows.length) {
+      const empty = document.createElement('div');
+      empty.className = 'builder-params-empty muted small';
+      empty.textContent = '暂无任务参数：点「配置项…」声明（例如 key=分组 / type=text / label=分组 / default=分组12）';
+      list.appendChild(empty);
+      return;
+    }
+    for (const row of rows) {
+      const line = document.createElement('div');
+      line.className = 'builder-param-row';
+      const group = document.createElement('span');
+      group.className = 'builder-param-group';
+      group.textContent = row.group || '未分组';
+      const key = document.createElement('span');
+      key.className = 'builder-param-key';
+      key.textContent = row.key || '（未命名）';
+      const type = document.createElement('span');
+      type.className = 'builder-param-type';
+      type.textContent = row.type || '—';
+      const label = document.createElement('span');
+      label.className = 'builder-param-label';
+      label.textContent = row.label || row.key;
+      const def = document.createElement('span');
+      def.className = 'builder-param-default';
+      def.textContent = '默认 ' + row.defaultText;
+      const insert = document.createElement('button');
+      insert.type = 'button';
+      insert.textContent = '插入参数';
+      insert.title = "把 param('" + row.key + "') 插入到最近聚焦的表达式字段（或复制到剪贴板）";
+      insert.disabled = !row.key;
+      insert.addEventListener('click', function () { paramInsertFromPanel(row.key); });
+      line.append(group, key, type, label, def, insert);
+      list.appendChild(line);
+    }
+  }
+
   function renderPalette() {
     const root = $('builder-ops');
     if (!root) return;
     root.textContent = '';
     for (const g of GROUP_ORDER) {
       const h = document.createElement('div');
-      h.className = 'builder-op-group';
-      h.textContent = g;
+      h.className = 'builder-op-group' + (g === PARAM_GROUP ? ' builder-op-param-group' : '');
+      h.textContent = g === PARAM_GROUP ? '参数（生成标准 flow，不新增 op）' : g;
       root.appendChild(h);
+      if (g === PARAM_GROUP) {
+        for (const key of Object.keys(PARAM_ACTIONS)) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = PARAM_ACTIONS[key].label + '  (' + key + ')';
+          b.className = 'builder-op-param-btn';
+          b.title = '生成标准 ' + PARAM_ACTIONS[key].op + '：OCR 文字来自 param(\'<key>\')';
+          b.addEventListener('click', () => addParamAction(key));
+          root.appendChild(b);
+        }
+        continue;
+      }
       for (const op of Object.keys(OP_META)) {
         if (OP_META[op].group !== g) continue;
         const b = document.createElement('button');
@@ -226,13 +550,9 @@
     return step;
   }
 
-  function addAction(op) {
-    const meta = OP_META[op];
-    if (!meta) return;
-    const step = makeStep(op);
-    // Text in the palette promises this: selected control container receives
-    // the new child (if => then, loop/while => body). The inspector still lets
-    // the user choose else.
+  // Shared insertion: into the selected container's first child array, else the
+  // root right before a trailing `finish` (the palette's finish-last promise).
+  function insertStep(step, label) {
     const selected = getStep(B.selected);
     const containers = childArrays(selected);
     if (containers.length) {
@@ -240,7 +560,7 @@
       arr.push(step);
       B.selected = B.selected.concat([key, arr.length - 1]);
       renderAll();
-      status(`已添加子动作 ${meta.label} → ${key}`);
+      status(`已添加子动作 ${label} → ${key}`);
       return;
     }
     const arr = getRoot();
@@ -250,7 +570,66 @@
     arr.splice(at, 0, step);
     B.selected = [at];
     renderAll();
-    status(`已添加 ${meta.label}`);
+    status(`已添加 ${label}`);
+  }
+
+  function addAction(op) {
+    const meta = OP_META[op];
+    if (!meta) return;
+    insertStep(makeStep(op), meta.label);
+  }
+
+  // --- P3：动作库「参数」组 ---------------------------------------------------
+  function pickParamForAction() {
+    const rows = paramPanelRows(B.params);
+    if (!rows.length) return null;
+    for (const p of B.params) {
+      if (!p || typeof p !== 'object') continue;
+      const role = p.role === undefined || p.role === null ? '' : String(p.role);
+      const type = p.type === undefined || p.type === null ? '' : String(p.type);
+      if (role === 'ocr_text' || type === 'text' || type === 'string') return p;
+    }
+    return B.params[0];
+  }
+
+  function pickOcrAssetForAction() {
+    for (const a of B.assets) {
+      if (a && (a.kind === 'ocr_line' || a.kind === 'ocr_lines')) return a.id;
+    }
+    return '';
+  }
+
+  function flashParamsPanel() {
+    const panel = $('builder-params');
+    if (!panel) return;
+    panel.classList.remove('builder-flash');
+    // force a reflow so the animation can replay on repeated clicks
+    void panel.offsetWidth;
+    panel.classList.add('builder-flash');
+    if (typeof panel.scrollIntoView === 'function') {
+      try { panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) { /* cosmetic */ }
+    }
+  }
+
+  function addParamAction(kind) {
+    const meta = PARAM_ACTIONS[kind];
+    if (!meta) return;
+    if (!paramPanelRows(B.params).length) {
+      status('先在任务参数面板声明参数（点「配置项…」）再使用参数动作', '#ff8a80');
+      flashParamsPanel();
+      return;
+    }
+    const param = pickParamForAction() || {};
+    const key = paramSafeKey(param.key);
+    if (!key) {
+      status('参数缺少 key，无法生成参数动作；请先在「配置项…」修正', '#ff8a80');
+      return;
+    }
+    const step = kind === 'param_click_text'
+      ? paramClickStep(key, pickOcrAssetForAction())
+      : paramWaitStep(key, 10);
+    insertStep(step, meta.label + '（' + meta.op + '）');
+    status(`已生成 ${meta.op}：文字来源 param('${key}')（不新增 op，可在属性面板改）`);
   }
 
   function removeCheckedIn(steps, basePath) {
@@ -964,10 +1343,159 @@
     return lab;
   }
 
+  // --- P3：属性面板「插入参数 ▾」/ 任务参数面板 -------------------------------
+
+  // Track the last focused expression field so the params-panel row button can
+  // insert into it (or copy to the clipboard when no field was touched yet).
+  function trackExprField(field, mode) {
+    if (!field || typeof field.addEventListener !== 'function') return;
+    field.addEventListener('focus', function () {
+      B.lastExprField = field;
+      B.lastExprMode = mode || 'expr';
+    });
+  }
+
+  function insertTextAtField(field, text) {
+    if (!field) return false;
+    const value = String(field.value === undefined || field.value === null ? '' : field.value);
+    const start = typeof field.selectionStart === 'number' ? field.selectionStart : value.length;
+    const end = typeof field.selectionEnd === 'number' ? field.selectionEnd : start;
+    field.value = value.slice(0, start) + text + value.slice(end);
+    const caret = start + text.length;
+    if (typeof field.setSelectionRange === 'function') {
+      try { field.setSelectionRange(caret, caret); } catch (e) { /* cosmetic */ }
+    }
+    if (typeof field.focus === 'function') field.focus();
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+
+  function copyTextBestEffort(text) {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard &&
+          typeof navigator.clipboard.writeText === 'function') {
+        navigator.clipboard.writeText(String(text)).catch(function () { /* clipboard blocked */ });
+        return true;
+      }
+    } catch (e) { /* ignore */ }
+    return false;
+  }
+
+  // 「插入参数 ▾」：列出已声明参数（按 group 显示），点击把 param('key')（或条件
+  // 字段的 text_visible(param('key'))）插入到 getField() 返回的输入框光标处。
+  function paramInsertWidget(mode, getField) {
+    const wrap = document.createElement('span');
+    wrap.className = 'builder-insert-param';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = '插入参数 ▾';
+    btn.title = mode === 'cond'
+      ? "插入 text_visible(param('key')) 条件片段（参数需先在「任务参数」面板声明）"
+      : "插入 param('key') 到当前输入框（参数需先在「任务参数」面板声明）";
+    btn.setAttribute('aria-haspopup', 'true');
+    btn.setAttribute('aria-expanded', 'false');
+    const menu = document.createElement('div');
+    menu.className = 'builder-insert-param-menu';
+    menu.hidden = true;
+    let open = false;
+
+    function close() {
+      if (!open) return;
+      open = false;
+      menu.hidden = true;
+      btn.setAttribute('aria-expanded', 'false');
+      document.removeEventListener('click', onDoc, true);
+    }
+    function onDoc(ev) {
+      if (!wrap.contains(ev.target)) close();
+    }
+    function insert(key) {
+      const snippet = paramInsertSnippet(key, mode);
+      const field = typeof getField === 'function' ? getField() : null;
+      if (field) {
+        insertTextAtField(field, snippet);
+        status('已插入 ' + snippet);
+      } else if (copyTextBestEffort(snippet)) {
+        status('已复制到剪贴板：' + snippet);
+      } else {
+        status('参数片段：' + snippet);
+      }
+      close();
+    }
+    function renderMenu() {
+      menu.textContent = '';
+      const head = document.createElement('div');
+      head.className = 'hd';
+      head.textContent = mode === 'cond'
+        ? "插入参数条件（写入 text_visible(param('key'))）"
+        : "插入已声明参数（写入 param('key')）";
+      menu.appendChild(head);
+      const rows = paramPanelRows(B.params);
+      if (!rows.length) {
+        const empty = document.createElement('div');
+        empty.className = 'hd';
+        empty.textContent = '（还没有声明参数：先在「任务参数」面板点「配置项…」声明）';
+        menu.appendChild(empty);
+        return;
+      }
+      for (const row of rows) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'builder-insert-param-item';
+        const code = document.createElement('code');
+        code.textContent = paramInsertSnippet(row.key, mode);
+        item.appendChild(code);
+        const grp = document.createElement('span');
+        grp.className = 'grp';
+        grp.textContent = (row.group || '未分组') + (row.type ? ' · ' + row.type : '');
+        item.appendChild(grp);
+        item.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          insert(row.key);
+        });
+        menu.appendChild(item);
+      }
+    }
+    btn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      if (open) { close(); return; }
+      renderMenu();
+      menu.hidden = false;
+      open = true;
+      btn.setAttribute('aria-expanded', 'true');
+      setTimeout(function () { document.addEventListener('click', onDoc, true); }, 0);
+    });
+    menu.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    wrap.appendChild(btn);
+    wrap.appendChild(menu);
+    return wrap;
+  }
+
+  function paramInsertFromPanel(key) {
+    const snippet = paramInsertSnippet(key, B.lastExprMode || 'expr');
+    const field = B.lastExprField;
+    if (field && field.isConnected && typeof field.value === 'string') {
+      insertTextAtField(field, snippet);
+      status('已插入 ' + snippet + '（参数来自面板）');
+      return;
+    }
+    if (copyTextBestEffort(snippet)) {
+      status('已复制到剪贴板：' + snippet + '（先点属性面板的表达式输入框可直接插入）');
+    } else {
+      status('参数片段：' + snippet + '（先点属性面板的表达式输入框可直接插入）');
+    }
+  }
+
+  // 定位器文字来源三态（P3）：固定文字 / 任务参数 / 表达式。固定写 text，后两者
+  // 写 text_expr；切换时删除另一字段。未知 locator 字段（roi / require_template /
+  // shape …）必须原样保留（只 merge 已知键，禁止重建对象——旧 Studio 会丢字段）。
   function structuredClickTarget(root, step) {
-    const box = formBox('定位对象（find[0]；多定位器/内联 ROI 用下方高级 JSON）');
+    const box = formBox('定位对象（find[0]；多定位器/内联 ROI 用下方高级 JSON；expect/requires 的 OCR 文字 text_expr 也在高级 JSON 里写）');
     const find = Array.isArray(step.args.find) ? step.args.find : [];
-    const loc = Object.assign({ kind: 'template' }, find[0] || {});
+    const base = find[0] && typeof find[0] === 'object' && !Array.isArray(find[0])
+      ? find[0]
+      : { kind: 'template' };
+    const loc = Object.assign({ kind: 'template' }, base);
     const kindLab = document.createElement('label');
     kindLab.textContent = '定位方式';
     const kind = document.createElement('select');
@@ -988,28 +1516,145 @@
     assetLab.appendChild(assetSearchWrap2);
     box.appendChild(assetLab);
 
-    const textLab = document.createElement('label');
-    textLab.textContent = 'OCR 文字（ocr_text 必填）';
-    const text = document.createElement('input');
-    text.value = loc.text || '';
-    textLab.appendChild(text);
-    box.appendChild(textLab);
+    const params = paramPanelRows(B.params);
+    let modeSel = null;
+    let fixedInput = null;
+    let paramSel = null;
+    let exprInput = null;
+
+    if (kind.value === 'ocr_text') {
+      const src = paramSourceFromLocator(loc);
+      // A locator that already uses param(...) keeps the param source selectable
+      // even when the schema failed to load / the key is no longer declared, so
+      // editing another field can never silently drop text_expr.
+      const keepParamSource = src.mode === 'param';
+      const paramOptionsAvailable = params.length > 0 || keepParamSource;
+      const currentMode = src.mode === 'param' && !paramOptionsAvailable ? 'text' : src.mode;
+
+      const modeLab = document.createElement('label');
+      modeLab.textContent = '文字来源（text / text_expr 互斥）';
+      modeSel = document.createElement('select');
+      for (const [value, label] of [
+        ['text', '固定文字（写 text）'],
+        ['param', '任务参数（写 text_expr = param(...)）'],
+        ['expr', '表达式（写 text_expr）'],
+      ]) {
+        if (value === 'param' && !paramOptionsAvailable) continue;
+        const o = document.createElement('option');
+        o.value = value;
+        o.textContent = label;
+        modeSel.appendChild(o);
+      }
+      modeSel.value = currentMode;
+      modeLab.appendChild(modeSel);
+      box.appendChild(modeLab);
+      if (!params.length && !keepParamSource) {
+        const hint = document.createElement('div');
+        hint.className = 'builder-source-hint';
+        hint.textContent = '任务参数：先在「任务参数」面板「配置项…」声明参数，之后可选「任务参数」来源。';
+        box.appendChild(hint);
+      }
+
+      if (currentMode === 'param') {
+        const lab = document.createElement('label');
+        lab.textContent = '任务参数 key';
+        paramSel = document.createElement('select');
+        const known = new Set(params.map(function (row) { return row.key; }));
+        paramSel.appendChild(new Option('（选择已声明参数）', ''));
+        for (const row of params) {
+          paramSel.appendChild(new Option(
+            (row.group || '未分组') + ' · ' + row.label + ' (' + row.key + ')',
+            row.key
+          ));
+        }
+        if (src.value && !known.has(src.value)) {
+          paramSel.appendChild(new Option('未声明：' + src.value, src.value));
+        }
+        paramSel.value = src.value || (params[0] ? params[0].key : '');
+        lab.appendChild(paramSel);
+        box.appendChild(lab);
+      } else if (currentMode === 'expr') {
+        const lab = document.createElement('label');
+        lab.textContent = '文字表达式（text_expr）';
+        const exprRow = document.createElement('span');
+        exprRow.className = 'builder-expr-row';
+        exprInput = document.createElement('input');
+        exprInput.type = 'text';
+        exprInput.spellcheck = false;
+        exprInput.value = src.value;
+        exprRow.appendChild(exprInput);
+        exprRow.appendChild(paramInsertWidget('expr', function () { return exprInput; }));
+        lab.appendChild(exprRow);
+        box.appendChild(lab);
+        trackExprField(exprInput, 'expr');
+      } else {
+        const lab = document.createElement('label');
+        lab.textContent = 'OCR 文字（固定字面量）';
+        fixedInput = document.createElement('input');
+        fixedInput.type = 'text';
+        fixedInput.value = src.value;
+        lab.appendChild(fixedInput);
+        box.appendChild(lab);
+      }
+
+      const hint = document.createElement('div');
+      hint.className = 'builder-source-hint';
+      const specError = locatorTextSpecError(base);
+      if (specError) {
+        hint.textContent = '现有值无效：' + specError + '；改动后会按互斥规则覆盖。';
+        hint.className += ' warn';
+      } else if (currentMode === 'param') {
+        hint.textContent = 'text_expr = ' + paramTextExpr(src.value || '') +
+          ' → 运行时替换为 Runner 参数值（参数未声明时发布 T3 会报错）。';
+      }
+      box.appendChild(hint);
+    }
 
     function sync() {
-      const next = { kind: kind.value };
+      const next = Object.assign({}, base, { kind: kind.value });
       if (asset.value) next.sel = asset.value;
-      if (kind.value === 'ocr_text') next.text = text.value;
-      step.args.find = [next].concat(find.slice(1));
+      else delete next.sel;
+      let written = next;
+      if (kind.value === 'ocr_text') {
+        const mode = modeSel ? modeSel.value : 'text';
+        let value = '';
+        if (mode === 'param') value = paramSel ? paramSel.value : '';
+        else if (mode === 'expr') value = exprInput ? exprInput.value : '';
+        else value = fixedInput ? fixedInput.value : '';
+        written = paramSourceApply(next, mode, value);
+      } else {
+        // template/region locators never carry text fields; text_expr is an
+        // ocr_text-only field.
+        delete next.text;
+        delete next.text_expr;
+      }
+      step.args.find = [written].concat(find.slice(1));
       renderAll();
     }
     kind.addEventListener('change', sync);
     asset.addEventListener('change', sync);
-    text.addEventListener('change', sync);
+    if (modeSel) {
+      modeSel.addEventListener('change', function () {
+        const mode = modeSel.value;
+        const value = mode === 'param'
+          ? (params[0] ? params[0].key : (paramSel ? paramSel.value : ''))
+          : (mode === 'expr'
+            ? (exprInput ? exprInput.value : '')
+            : (fixedInput ? fixedInput.value : ''));
+        const next = Object.assign({}, base, { kind: 'ocr_text' });
+        if (asset.value) next.sel = asset.value;
+        step.args.find = [paramSourceApply(next, mode, value)].concat(find.slice(1));
+        renderAll();
+      });
+    }
+    if (paramSel) paramSel.addEventListener('change', sync);
+    if (exprInput) exprInput.addEventListener('change', sync);
+    if (fixedInput) fixedInput.addEventListener('change', sync);
     root.appendChild(box);
   }
 
   function structuredDrag(root, step) {
-    const box = formBox('拖动（from 区域 + 可选 shape + 方向/距离/时长；其它 from/to 形态用下方高级 JSON）');
+    const box = formBox('拖动（from 区域 + 可选 shape + 方向/距离/时长；OCR 端点的 text_expr、其它 from/to 形态用下方高级 JSON）');
     const dirLab = document.createElement('label');
     dirLab.textContent = '方向（必填）';
     const dir = document.createElement('select');
@@ -1231,14 +1876,19 @@
 
   function parseConditionPreset(cond) {
     const c = String(cond || '').trim();
-    let m = c.match(/^appear\(\s*['"]([^'"]+)['"]\s*\)$/);
+    let m = c.match(/^appear\(\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]\s*\)$/);
     if (m) return { custom: false, rows: [{ kind: 'asset', neg: false, value: m[1] }], join: 'and', groupNot: false };
-    m = c.match(/^(?:not\s+|!)(?:appear\(\s*['"]([^'"]+)['"]\s*\))$/);
+    m = c.match(/^(?:not\s+|!)(?:appear\(\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]\s*\))$/);
     if (m) return { custom: false, rows: [{ kind: 'asset', neg: true, value: m[1] }], join: 'and', groupNot: false };
-    m = c.match(/^text_visible\(\s*['"]([^'"]+)['"]\s*\)$/);
+    m = c.match(/^text_visible\(\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]\s*\)$/);
     if (m) return { custom: false, rows: [{ kind: 'text', neg: false, value: m[1] }], join: 'or', groupNot: false };
-    m = c.match(/^(?:not\s+|!)\s*\(?\s*text_visible\(\s*['"]([^'"]+)['"]\s*\)\s*\)?$/);
+    m = c.match(/^(?:not\s+|!)\s*\(?\s*text_visible\(\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]\s*\)\s*\)?$/);
     if (m) return { custom: false, rows: [{ kind: 'text', neg: true, value: m[1] }], join: 'or', groupNot: false };
+    // P3: 文字（参数）行 — text_visible(param('k')) 与 not (...) 两种。
+    m = c.match(/^text_visible\(\s*param\(\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]\s*\)\s*\)$/);
+    if (m) return { custom: false, rows: [{ kind: 'param', neg: false, value: m[1] }], join: 'or', groupNot: false };
+    m = c.match(/^(?:not\s+|!)\s*\(?\s*text_visible\(\s*param\(\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]\s*\)\s*\)\s*\)?$/);
+    if (m) return { custom: false, rows: [{ kind: 'param', neg: true, value: m[1] }], join: 'or', groupNot: false };
     if (!c) return { custom: false, rows: [], join: 'and', groupNot: false };
     return { custom: true, rows: [], join: 'and', groupNot: false, raw: c };
   }
@@ -1249,6 +1899,9 @@
     let expr;
     if (row.kind === 'asset') {
       expr = `appear('${v.replace(/'/g, '')}')`;
+    } else if (row.kind === 'param') {
+      // P3: 参数文字条件（运行时 text_visible 实参已是表达式）
+      expr = paramWaitCond(v);
     } else {
       // A text row still uses the same underlying logical expression; multiple
       // texts inside one row stay OR-compatible with the previous preset.
@@ -1263,7 +1916,7 @@
     box.className = 'builder-subform';
     const title = document.createElement('div');
     title.className = 'muted small';
-    title.textContent = '循环/分支条件（谓词行 + and/or/not、&&/||/!、括号）';
+    title.textContent = '循环/分支条件（谓词行 + and/or/not、&&/||/!、括号；「文字（参数）」行 = text_visible(param(...))）';
     box.appendChild(title);
 
     const preset = parseConditionPreset(step.args.cond);
@@ -1309,11 +1962,16 @@
 
     const customLabel = document.createElement('label');
     customLabel.textContent = '自定义表达式（0=不循环，非 0=循环；可写 appear(...)/text_visible(...)）';
+    const customRow = document.createElement('span');
+    customRow.className = 'builder-expr-row';
     const custom = document.createElement('input');
     custom.type = 'text';
     custom.value = preset.raw || step.args.cond || 'true';
-    customLabel.appendChild(custom);
+    customRow.appendChild(custom);
+    customRow.appendChild(paramInsertWidget('cond', function () { return custom; }));
+    customLabel.appendChild(customRow);
     box.appendChild(customLabel);
+    trackExprField(custom, 'cond');
 
     const preview = document.createElement('div');
     preview.className = 'muted small';
@@ -1332,7 +1990,7 @@
         const line = document.createElement('div');
         line.className = 'builder-condition-row';
         const kind = document.createElement('select');
-        for (const [v, label] of [['asset', '素材'], ['text', '文字（全屏）']]) {
+        for (const [v, label] of [['asset', '素材'], ['text', '文字（全屏）'], ['param', '文字（参数）']]) {
           const o = document.createElement('option');
           o.value = v;
           o.textContent = label;
@@ -1358,6 +2016,21 @@
           valueEl = search.input;
           valueEl.addEventListener('change', () => { row.value = valueEl.value.trim(); sync(); });
           line.append(kind, negLabel, search);
+        } else if (row.kind === 'param') {
+          // P3: 参数行 → text_visible(param('key')); 列表来自任务参数面板。
+          const declared = paramPanelRows(B.params);
+          valueEl = document.createElement('select');
+          valueEl.appendChild(new Option('（选择已声明参数）', ''));
+          const known = new Set(declared.map((p) => p.key));
+          for (const p of declared) {
+            valueEl.appendChild(new Option((p.group || '未分组') + ' · ' + p.key, p.key));
+          }
+          if (row.value && !known.has(row.value)) {
+            valueEl.appendChild(new Option('未声明：' + row.value, row.value));
+          }
+          valueEl.value = row.value || (declared[0] ? declared[0].key : '');
+          valueEl.addEventListener('change', () => { row.value = valueEl.value; sync(); });
+          line.append(kind, negLabel, valueEl);
         } else {
           valueEl = document.createElement('input');
           valueEl.type = 'text';
@@ -1522,7 +2195,7 @@
     if (exprHintOps.has(step.op)) {
       const hint = document.createElement('div');
       hint.className = 'muted small';
-      hint.textContent = '表达式值支持 and/or/not、&&/||/!、括号、appear/ocr/param/var；数值字段按数字求值。';
+      hint.textContent = '表达式值支持 and/or/not、&&/||/!、括号、appear/ocr/param/var；数值字段按数字求值。「插入参数 ▾」把已声明参数写成 param(...)。';
       root.appendChild(hint);
     }
     if (step.op === 'if' || step.op === 'while') {
@@ -1567,6 +2240,18 @@
           else step.args[f.key] = input.value;
           renderAll();
         });
+        // P3: expression fields get「插入参数 ▾」(param()/text_visible(param())).
+        const exprMode = EXPR_FIELDS[step.op] && EXPR_FIELDS[step.op][f.key];
+        if (exprMode) {
+          const exprRow = document.createElement('span');
+          exprRow.className = 'builder-expr-row';
+          exprRow.appendChild(input);
+          exprRow.appendChild(paramInsertWidget(exprMode, function () { return input; }));
+          trackExprField(input, exprMode);
+          lab.appendChild(exprRow);
+          root.appendChild(lab);
+          continue;
+        }
       }
       lab.appendChild(input);
       root.appendChild(lab);
@@ -1711,6 +2396,7 @@
     renderGraph();
     renderForm();
     renderAssetPanel();
+    renderParamsPanel();
     renderCode();
     updateHistoryButtons();
     scheduleAutoSave();
@@ -1737,6 +2423,45 @@
     }
   }
 
+  // P3: task params schema (Studio-only GET /task/config). app.js is loaded AFTER
+  // builder.js, so the bridge is read at call time (window.OAS_TASK_CONFIG).
+  async function fetchTaskParams(name) {
+    const task = String(name === undefined || name === null ? '' : name).trim();
+    if (!task) return [];
+    const hook = window.OAS_TASK_CONFIG;
+    if (hook && typeof hook.refresh === 'function') {
+      const params = await hook.refresh(task);
+      return Array.isArray(params) ? params : [];
+    }
+    const r = await fetch('/task/config?task=' + encodeURIComponent(task));
+    const s = await r.json();
+    if (!s.ok) throw new Error((s.errors || []).join('; ') || '配置项读取失败');
+    return Array.isArray(s.params) ? s.params : [];
+  }
+
+  function openTaskParamsDialog() {
+    if (!B.task) {
+      status('先选择任务，再编辑任务参数', '#ff8a80');
+      return;
+    }
+    const hook = window.OAS_TASK_CONFIG;
+    if (!hook || typeof hook.open !== 'function') {
+      status('任务配置项对话框未就绪（app.js 未加载）', '#ff8a80');
+      return;
+    }
+    hook.open(B.task, {
+      // Reuse the existing #task-config-dialog; after a successful save refresh
+      // the panel (meta.params changed) without reloading flow.json.
+      onSaved: function (savedTask, params) {
+        if (String(savedTask || '') !== B.task) return;
+        B.params = Array.isArray(params) ? params : [];
+        B.paramsError = '';
+        renderAll();
+        status('任务参数已更新：' + paramPanelSummary(B.params), '#7bd88f');
+      },
+    });
+  }
+
   async function loadTask(name) {
     B.autoSaveArmed = false;
     B.flowHistory = [];
@@ -1747,12 +2472,22 @@
       B.assets = [];
       B.relations = null;
       B.selected = null;
+      B.params = [];
+      B.paramsError = '';
+      B.paramsLoading = false;
       renderAll();
       return;
     }
     B.task = name;
+    B.paramsLoading = true;
+    B.paramsError = '';
     status('载入中…');
     try {
+      // P3: meta.params loads in parallel with flow/assets; a params failure must
+      // never block flow editing (panel shows the error instead).
+      const paramsPromise = fetchTaskParams(name)
+        .then(function (params) { return { ok: true, params: params }; })
+        .catch(function (e) { return { ok: false, error: String((e && e.message) || e) }; });
       const [fr, ar] = await Promise.all([
         fetch('/task/flow?task=' + encodeURIComponent(name)),
         fetch('/task/assets?task=' + encodeURIComponent(name)),
@@ -1768,6 +2503,10 @@
       for (const c of as.collections || []) {
         B.assets.push({ id: c.id, kind: 'template_set', members: c.members || [], action_shape: c.action_shape, action_source: c.action_source });
       }
+      const pr = await paramsPromise;
+      B.params = pr.ok ? pr.params : [];
+      B.paramsError = pr.ok ? '' : pr.error;
+      B.paramsLoading = false;
       B.selected = null;
       B.lastSavedFlow = JSON.stringify(B.flow);
       try {
@@ -1779,9 +2518,11 @@
       }
       renderAll();
       B.autoSaveArmed = true;
-      status(`已载入 ${name}：${B.flow.steps.length} 个根动作 / ${B.assets.length} 个素材`);
+      status(`已载入 ${name}：${B.flow.steps.length} 个根动作 / ${B.assets.length} 个素材 / ${paramPanelRows(B.params).length} 项参数`);
     } catch (e) {
+      B.paramsLoading = false;
       status('载入失败：' + e, '#ff8a80');
+      renderParamsPanel();
     }
   }
 
@@ -1796,6 +2537,13 @@
   async function saveFlow(silent) {
     if (!B.task) {
       if (!silent) status('请先选择任务', '#ff8a80');
+      return;
+    }
+    // P3: 保存前本地校验「文字来源」互斥（结构化编辑器不会双写；高级 JSON 手改
+    // 可写出 text + text_expr 同时存在，这里拦住，避免把坏 flow 写盘）。
+    const specIssues = flowTextSpecIssues(B.flow);
+    if (specIssues.length) {
+      status('保存已阻止：' + specIssues[0] + '（text / text_expr 互斥且须有其一）', '#ff8a80');
       return;
     }
     if (B.saving) return;
@@ -1938,6 +2686,8 @@
     if (save) save.addEventListener('click', () => saveFlow(false));
     const dry = $('builder-dry-run');
     if (dry) dry.addEventListener('click', dryRun);
+    const paramsDeclare = $('builder-params-declare');
+    if (paramsDeclare) paramsDeclare.addEventListener('click', openTaskParamsDialog);
     const codeApply = $('builder-code-apply');
     if (codeApply) codeApply.addEventListener('click', applyCode);
     const delChecked = $('builder-delete-checked');

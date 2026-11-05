@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use oas_flow::{
     eval, DragAxis, DragShape, DragTarget, EvalContext, Expect, Expr, Flow, InterruptRule, Locator,
-    Step, Value,
+    Step, TextSpec, Value,
 };
 use oas_perceive::{GrayImage, Matcher};
 use oas_types::{Exit, Frame, InputSink, Outcome, Point, Rect, ScreenSource};
@@ -992,6 +992,11 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     humanize: crate::humanize::Humanize,
     rng: crate::humanize::Rng,
     steps: u32,
+    /// Op name of the step currently executing (set by [`Self::exec_one`]).
+    /// Used purely as error context when a `text_expr` cannot be resolved
+    /// (参数 v2): the message must name the op and the parameter key. Empty
+    /// before the first step.
+    current_op: &'static str,
 }
 
 impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
@@ -1029,6 +1034,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             humanize,
             rng: crate::humanize::Rng::new(run_seed),
             steps: 0,
+            current_op: "",
         }
     }
 
@@ -1269,7 +1275,17 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// replay therefore consumes one frame per poll — exactly how waiting is
     /// modelled offline). Timeout = loud step failure: "clicked but nothing
     /// changed" must never count as success.
+    ///
+    /// 参数 v2 (Q8=A): a `text_expr` OCR expectation is resolved **once here**,
+    /// before polling starts; every poll reuses that string.
     fn verify_expect(&mut self, expect: &Expect) -> Result<(), String> {
+        let resolved_text: Option<String> = match expect {
+            Expect::OcrText { text: spec, .. } => {
+                let site = format!("{} {}", self.current_op, expect.kind());
+                Some(self.resolve_text(spec, &site)?)
+            }
+            Expect::Appear { .. } | Expect::Vanish { .. } => None,
+        };
         let timeout = std::time::Duration::from_millis(expect.timeout_ms() as u64);
         let start = std::time::Instant::now();
         let mut last;
@@ -1297,7 +1313,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     }
                     format!("selector `{sel}` still present (score {score:.3})")
                 }
-                Expect::OcrText { sel, text, .. } => {
+                Expect::OcrText { sel, .. } => {
+                    let Some(text) = resolved_text.as_deref() else {
+                        // Only the OcrText arm sets `resolved_text`; unreachable.
+                        return Err(format!(
+                            "internal: {} has no resolved text_expr",
+                            expect.kind()
+                        ));
+                    };
                     let read = self.ocr_read(sel)?;
                     // An explicitly declared OCR threshold also gates text
                     // verification: a recognized-but-low-confidence line is not
@@ -1724,6 +1747,40 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         }
     }
 
+    /// Resolve the expected OCR text of one `text` / `text_expr` site (参数 v2,
+    /// PARAM-V2-DESIGN §3.2.4).
+    ///
+    /// * a [`TextSpec::Literal`] is returned byte-for-byte (old flows unchanged);
+    /// * a [`TextSpec::Expr`] is evaluated **once when the step starts** — never
+    ///   per poll (Q8=A) — and must produce a **non-empty string**. `Null`,
+    ///   empty, number and bool are **loud** errors: a missing/blank parameter
+    ///   must never degrade into "match anything" or click the wrong target.
+    ///
+    /// `site` names the op + field (`click_target args.find[0].text_expr`) and a
+    /// `param('key')` expression also names its key, so the failure is
+    /// actionable without a debugger.
+    fn resolve_text(&mut self, spec: &TextSpec, site: &str) -> Result<String, String> {
+        match spec {
+            TextSpec::Literal(s) => Ok(s.clone()),
+            TextSpec::Expr(expr) => {
+                let what = match spec.param_key() {
+                    Some(key) => format!("text_expr param('{key}')"),
+                    None => "text_expr".to_string(),
+                };
+                let value = eval(expr, self).map_err(|e| format!("{site}: {what}: {e}"))?;
+                match value {
+                    Value::Str(s) if !s.trim().is_empty() => Ok(s),
+                    Value::Str(_) => {
+                        Err(format!("{site}: {what} resolved to an empty string"))
+                    }
+                    other => Err(format!(
+                        "{site}: {what} must be a string, got {other:?}"
+                    )),
+                }
+            }
+        }
+    }
+
     /// Resolve an OCR asset and read it from the cached frame.
     ///
     /// Path selection follows the asset `kind` (ENGINE-DESIGN §17.1: the user
@@ -1782,7 +1839,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     ///
     /// v1.2.5 (O-2): only a `region` target can carry a `shape`; `point` and
     /// `ocr_text` keep `shape: None` and thus their historical behaviour.
-    fn drag_target(&mut self, t: &DragTarget) -> Result<DragEndpoint, String> {
+    ///
+    /// 参数 v2: an `ocr_text` endpoint may use `text_expr`; it is resolved
+    /// **once here**, before any frame is read or dragged (failing to resolve
+    /// aborts the step with no swipe). `site` names the endpoint in that error.
+    fn drag_target(&mut self, t: &DragTarget, site: &str) -> Result<DragEndpoint, String> {
         match t {
             DragTarget::Region { roi, shape } => Ok(DragEndpoint {
                 rect: Rect {
@@ -1803,6 +1864,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 shape: None,
             }),
             DragTarget::OcrText { sel, roi, text } => {
+                let text = self.resolve_text(text, site)?;
                 // A named OCR asset may declare a minimum recognition
                 // confidence; the geometry must not come from a line that is
                 // below it. Inline ROIs carry no asset and therefore no
@@ -1829,7 +1891,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     OcrRead::Lines(lines) => lines
                         .iter()
                         .find(|l| {
-                            ocr_text_matches(text, l.text.as_str()) && l.score >= min_score
+                            ocr_text_matches(&text, l.text.as_str()) && l.score >= min_score
                         })
                         .map(|l| l.rect)
                         .ok_or_else(|| {
@@ -2236,6 +2298,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     }
 
     fn exec_one(&mut self, step: &Step, depth: usize, ctl: &mut Ctl) -> Result<String, String> {
+        // 参数 v2: error context for `text_expr` resolution (op + key).
+        self.current_op = step_name(step);
         match step {
             Step::If {
                 cond,
@@ -2622,6 +2686,21 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 ..
             } => {
                 self.reobserve_screen()?;
+                // 参数 v2 (PARAM-V2-DESIGN §3.2.4): resolve every locator
+                // `text_expr` ONCE at step entry, before the redundancy chain
+                // runs. A missing / empty / non-string value aborts the step
+                // here — it must never fall through to a lower-priority locator
+                // (that could click a remembered coordinate instead).
+                let mut resolved_text: Vec<Option<String>> = Vec::with_capacity(find.len());
+                for (j, loc) in find.iter().enumerate() {
+                    resolved_text.push(match loc.text_spec() {
+                        None => None,
+                        Some(spec) => Some(self.resolve_text(
+                            spec,
+                            &format!("click_target args.find[{j}].text_expr"),
+                        )?),
+                    });
+                }
                 let guarded = self.require_guard(requires.as_ref())?;
                 // ENGINE §22.11: fixed priority image > text > memory; every
                 // locator failure is kept as evidence, and ALL failing is a loud
@@ -2632,10 +2711,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 let (w, h) = self
                     .screen.size()
                     .ok_or_else(|| "click_target: no frame available".to_string())?;
-                let mut order: Vec<&Locator> = find.iter().collect();
-                order.sort_by_key(|l| l.priority());
+                let mut order: Vec<(usize, &Locator)> = find.iter().enumerate().collect();
+                order.sort_by_key(|(_, l)| l.priority());
                 let mut evidence: Vec<String> = Vec::new();
-                for loc in order {
+                for (idx, loc) in order {
+                    // The resolved OCR text of THIS locator ("" for the non-OCR
+                    // kinds, which never read it). Parser guarantees a `TextSpec`
+                    // on every `ocr_text` locator, so it is always `Some` there.
+                    let text: &str = resolved_text[idx].as_deref().unwrap_or_default();
                     match loc {
                         Locator::Template { sel, threshold } => match self.locate(sel) {
                             Ok((score, at)) => {
@@ -2680,8 +2763,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         },
                         Locator::OcrText {
                             sel,
-                            text,
                             require_template,
+                            ..
                         } => match self.ocr_read(sel) {
                             Ok(OcrRead::Lines(lines)) => {
                                 // An explicitly declared OCR minimum confidence
@@ -2872,8 +2955,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         },
                         Locator::OcrTextInline {
                             roi,
-                            text,
                             require_template,
+                            ..
                         } => {
                             let rect = oas_types::Rect {
                                 x: roi[0],
@@ -3182,7 +3265,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 margin,
             } => {
                 self.reobserve_screen()?;
-                let src = self.drag_target(from)?;
+                let src = self.drag_target(from, "drag args.from.text_expr")?;
                 self.observe_screen()?;
                 let (w, h) = self
                     .screen.size()
@@ -3207,7 +3290,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 }
                 let mut dst: Option<DragEndpoint> = None;
                 let end = if let Some(target) = to {
-                    let ep = self.drag_target(target)?;
+                    let ep = self.drag_target(target, "drag args.to.text_expr")?;
                     // Random end inside the target region, but only accept it when
                     // it really lies in `direction` (v1.1 方向性要求). With an
                     // exact shape the candidate already lies inside the shape, so
@@ -5392,6 +5475,350 @@ mod tests {
             "inline OCR click must land in the matched line, got {p:?}"
         );
         assert_eq!(rois.borrow().len(), 1, "inline OCR must ask the provider once");
+    }
+
+    // ---- 参数 v2 (PARAM-V2-DESIGN §3.2.4): `text_expr` OCR text at runtime ----
+
+    /// OCR interpreter over `chain_assets()` whose det+rec provider always
+    /// returns one line `text` at `rect`.
+    fn mk_chain_det_for(text: &str, rect: Rect) -> (OcrInterp, SharedInput) {
+        mk_det_ocr_with(chain_assets(), vec![line(text, 0.95, rect)])
+    }
+
+    #[test]
+    fn click_target_text_expr_clicks_the_line_named_by_the_parameter() {
+        let (interp, shared) = mk_chain_det_for(
+            "挑战",
+            Rect {
+                x: 40,
+                y: 24,
+                w: 20,
+                h: 12,
+            },
+        );
+        let mut interp = interp.with_param("关键词", Value::Str("挑战".to_string()));
+        let f = click_target_flow(
+            r#"[{"kind":"ocr_text","sel":"O_LIST","text_expr":"param('关键词')"}]"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let rows = interp.clicks();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].locator, "ocr_text");
+        assert!(
+            rows[0].match_info.starts_with("ocr_text:O_LIST:挑战:"),
+            "match_info must carry the resolved text: {}",
+            rows[0].match_info
+        );
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            p.x >= 40 && p.x < 60 && p.y >= 24 && p.y < 36,
+            "must click inside the matched line: {p:?}"
+        );
+    }
+
+    #[test]
+    fn click_target_text_expr_missing_parameter_fails_loudly_without_clicking() {
+        // A failing resolution must NEVER fall through to `coord_memory` (that
+        // would click a remembered point with the wrong expectation).
+        let (interp, shared) = mk_chain_det_for(
+            "挑战",
+            Rect {
+                x: 40,
+                y: 24,
+                w: 20,
+                h: 12,
+            },
+        );
+        let store = std::rc::Rc::new(std::cell::RefCell::new(FakeStore::new(
+            &[("返回按钮", (50, 40))],
+            false,
+        )));
+        let mut interp = interp.with_coord_store(Box::new(SharedFakeStore(store)));
+        let f = click_target_flow(
+            r#"[{"kind":"ocr_text","sel":"O_LIST","text_expr":"param('关键词')"},
+                {"kind":"coord_memory","key":"返回按钮"}]"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("click_target"), "must name the op: {msg}");
+                assert!(msg.contains("关键词"), "must name the key: {msg}");
+                assert!(msg.contains("has no value"), "{msg}");
+            }
+            other => panic!("expected a loud failure, got {other:?}"),
+        }
+        assert!(
+            shared.clicks.borrow().is_empty(),
+            "no click may happen when the text_expr cannot be resolved"
+        );
+        assert!(interp.clicks().is_empty());
+    }
+
+    #[test]
+    fn click_target_text_expr_rejects_non_string_and_empty_values() {
+        for value in [
+            Value::Null,
+            Value::Num(3.0),
+            Value::Bool(true),
+            Value::Str("   ".to_string()),
+        ] {
+            let (interp, shared) = mk_chain_det_for(
+                "挑战",
+                Rect {
+                    x: 40,
+                    y: 24,
+                    w: 20,
+                    h: 12,
+                },
+            );
+            let mut interp = interp.with_param("关键词", value.clone());
+            let f = click_target_flow(
+                r#"[{"kind":"ocr_text","sel":"O_LIST","text_expr":"param('关键词')"}]"#,
+            );
+            match interp.run(&f) {
+                RunResult::Failed(msg) => {
+                    assert!(msg.contains("click_target"), "{value:?}: {msg}");
+                    assert!(msg.contains("关键词"), "{value:?}: {msg}");
+                    let expected = if matches!(value, Value::Str(_)) {
+                        "empty string"
+                    } else {
+                        "must be a string"
+                    };
+                    assert!(msg.contains(expected), "{value:?}: {msg}");
+                }
+                other => panic!("expected a loud failure for {value:?}, got {other:?}"),
+            }
+            assert!(
+                shared.clicks.borrow().is_empty(),
+                "{value:?}: no click may happen"
+            );
+        }
+    }
+
+    #[test]
+    fn click_target_inline_text_expr_uses_the_parameter() {
+        let (interp, shared) = mk_chain_det_for(
+            "个人突破",
+            Rect {
+                x: 40,
+                y: 24,
+                w: 36,
+                h: 14,
+            },
+        );
+        let mut interp = interp.with_param("关键词", Value::Str("个人突破".to_string()));
+        let f = click_target_flow(
+            r#"[{"kind":"ocr_text","roi":[5,1,60,40],"text_expr":"param('关键词')"}]"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let rows = interp.clicks();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].sel.is_none(), "inline locator has no asset");
+        assert!(
+            rows[0].match_info.starts_with("ocr_text:inline:个人突破:"),
+            "{}",
+            rows[0].match_info
+        );
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            p.x >= 40 && p.x < 76 && p.y >= 24 && p.y < 38,
+            "inline text_expr click must land in the matched line: {p:?}"
+        );
+    }
+
+    #[test]
+    fn requires_guard_text_expr_gates_the_click() {
+        // Satisfied: the guard is read through the parameter and the click runs.
+        let (interp, rois, shared) = mk_ocr_with(assets_with_ocr(), &[("挑战", 0.95)]);
+        let mut interp = interp.with_param("要求", Value::Str("挑战".to_string()));
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":20,
+                   "requires":{"kind":"ocr_text","sel":"O_TEXT",
+                               "text_expr":"param('要求')","timeout_ms":300}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        assert_eq!(shared.clicks.borrow().len(), 1, "guard passed => click runs");
+        assert_eq!(rois.borrow().len(), 1, "guard must read OCR once");
+
+        // Unsatisfied: the guard fails loudly and the click must NOT happen.
+        let (interp, _rois, shared) = mk_ocr_with(assets_with_ocr(), &[("挑战", 0.95)]);
+        let mut interp = interp.with_param("要求", Value::Str("别的".to_string()));
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("page guard failed"), "{msg}");
+                assert!(msg.contains("别的"), "{msg}");
+            }
+            other => panic!("expected a loud guard failure, got {other:?}"),
+        }
+        assert!(
+            shared.clicks.borrow().is_empty(),
+            "an unmet requires guard must suppress the click"
+        );
+    }
+
+    #[test]
+    fn click_point_expect_text_expr_verifies_after_the_click() {
+        let (interp, _rois, shared) = mk_ocr_with(assets_with_ocr(), &[("完成", 0.95)]);
+        let mut interp = interp.with_param("期望", Value::Str("完成".to_string()));
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":20,
+                   "expect":{"kind":"ocr_text","sel":"O_TEXT",
+                             "text_expr":"param('期望')","timeout_ms":300}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        assert_eq!(shared.clicks.borrow().len(), 1);
+        let detail = interp
+            .events()
+            .iter()
+            .find(|e| e.op == "click_point")
+            .map(|e| e.detail.clone())
+            .expect("click_point event");
+        assert!(detail.contains("verified=true"), "{detail}");
+    }
+
+    #[test]
+    fn expect_text_expr_non_string_is_a_loud_error() {
+        let (interp, _rois, shared) = mk_ocr_with(assets_with_ocr(), &[("完成", 0.95)]);
+        let mut interp = interp.with_param("期望", Value::Num(1.0));
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":20,
+                   "expect":{"kind":"ocr_text","sel":"O_TEXT",
+                             "text_expr":"param('期望')","timeout_ms":100}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("click_point"), "must name the op: {msg}");
+                assert!(msg.contains("期望"), "must name the key: {msg}");
+                assert!(msg.contains("must be a string"), "{msg}");
+            }
+            other => panic!("expected a loud failure, got {other:?}"),
+        }
+        // The click itself is the post-click `expect`'s precondition; what must
+        // NOT happen is a successful verification.
+        assert_eq!(shared.clicks.borrow().len(), 1);
+    }
+
+    #[test]
+    fn expect_text_expr_is_resolved_once_not_per_poll() {
+        // First OCR reply feeds the `text_expr` (完成); every poll afterwards
+        // reads 别的. Resolve-once (Q8=A) therefore never matches, while a
+        // per-poll re-evaluation would have switched the expectation to 别的 and
+        // succeeded — the timeout message proves which happened.
+        let (interp, rois, _shared) = mk_ocr_with(assets_with_ocr(), &[("完成", 0.95), ("别的", 0.95)]);
+        let mut interp = interp;
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_point","args":{"x":20,"y":20,
+                   "expect":{"kind":"ocr_text","sel":"O_TEXT",
+                             "text_expr":"ocr('O_TEXT')","timeout_ms":200}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(
+                    msg.contains("完成"),
+                    "the FIRST read must stay the expectation: {msg}"
+                );
+            }
+            other => panic!("expected a timeout (no re-evaluation), got {other:?}"),
+        }
+        assert!(
+            rois.borrow().len() >= 3,
+            "resolution + at least two polls must have read OCR: {}",
+            rois.borrow().len()
+        );
+    }
+
+    #[test]
+    fn drag_ocr_text_text_expr_resolves_the_endpoint() {
+        let rect = Rect {
+            x: 10,
+            y: 10,
+            w: 20,
+            h: 12,
+        };
+        let (interp, shared) = mk_chain_det_for("返回", rect);
+        let mut interp = interp.with_param("起点", Value::Str("返回".to_string()));
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"ocr_text","sel":"O_LIST","text_expr":"param('起点')"},
+                   "direction":"down","distance":[5,10],"duration_ms":[100,120],"margin":0.0}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let swipes = shared.swipes.borrow();
+        assert_eq!(swipes.len(), 1, "one drag must be sent");
+        let (from, to, _ms) = swipes[0];
+        assert!(
+            (10..30).contains(&from.x) && (10..22).contains(&from.y),
+            "drag start must come from the OCR line found via the parameter: {from:?}"
+        );
+        assert_eq!(to.x, from.x, "direction `down` keeps x");
+        assert!(
+            (5..=10).contains(&(to.y - from.y)),
+            "distance [5,10] must be respected: {from:?} -> {to:?}"
+        );
+    }
+
+    #[test]
+    fn drag_ocr_text_text_expr_without_a_match_fails_without_swiping() {
+        let rect = Rect {
+            x: 10,
+            y: 10,
+            w: 20,
+            h: 12,
+        };
+        let (interp, shared) = mk_chain_det_for("返回", rect);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"ocr_text","sel":"O_LIST","text_expr":"param('起点')"},
+                   "direction":"down","distance":[5,10],"duration_ms":[100,120],"margin":0.0}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let mut interp = interp;
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("drag"), "must name the op: {msg}");
+                assert!(msg.contains("起点"), "must name the key: {msg}");
+            }
+            other => panic!("expected a loud failure, got {other:?}"),
+        }
+        assert!(
+            shared.swipes.borrow().is_empty(),
+            "no swipe may happen when the drag endpoint cannot be resolved"
+        );
     }
 
     #[test]

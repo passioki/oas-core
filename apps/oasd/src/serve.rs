@@ -8339,6 +8339,10 @@ impl Server {
             };
             let installed_version = installed.find(&event.task_id).map(|p| p.version);
             let action = exchange::action_for(installed_version, event.task_version);
+            // Compatibility pre-check from the additive engine fields the Studio
+            // writes since P0-1b: unknown/missing fields mean "no constraint";
+            // the install API still validates the package strictly.
+            let compatible = exchange::is_compatible(event.min_engine.as_deref(), &event.flow_ops);
             // Only the ACK statuses the schema defines are surfaced; an unknown
             // stored status is treated as "never seen" so the badge comes back.
             let status = seen
@@ -8359,10 +8363,7 @@ impl Server {
                 "action": action,
                 "installed_version": installed_version,
                 "status": status,
-                // P0-1a minimal index has no engine (`min_engine`/`flow_ops`)
-                // pre-check; `POST /runner/install` still validates the package
-                // strictly, so this is "not known to be incompatible".
-                "compatible": true,
+                "compatible": compatible,
                 "package_available": package_available,
             });
             rows.push((event.published_at_ms, event.event_id.clone(), row));
@@ -8508,18 +8509,65 @@ impl Server {
                 version: tool.version,
                 dirty: tool.dirty,
             }),
+            min_engine: Some(outcome.manifest.engine.min_engine.clone()),
+            flow_ops: outcome.manifest.engine.flow_ops.clone(),
         };
         match exchange::announce_publish(&dir, &input) {
             Ok(result) => {
+                // P0-1b: best-effort loopback hint so a running Runner refreshes
+                // immediately; the file index above is the only truth and this
+                // call never fails the publish (design §5.2 C).
+                let notify = match crate::config::global() {
+                    Some(cfg) if cfg.exchange.notify.enabled => {
+                        let payload = exchange::notify_payload(
+                            &result.event_id,
+                            &outcome.manifest.task_id,
+                            outcome.manifest.task_version,
+                            &outcome.manifest.package_id,
+                            &outcome.sha256,
+                            input.published_at_ms,
+                        );
+                        match exchange::notify_runner(
+                            &cfg.exchange.notify.runner_url,
+                            &payload,
+                            u64::from(cfg.exchange.notify.timeout_ms),
+                        ) {
+                            Ok(code) => {
+                                self.editor_log(&format!(
+                                    "task_publish notify ok http_status={code} url={}",
+                                    cfg.exchange.notify.runner_url
+                                ));
+                                serde_json::json!({
+                                    "enabled": true,
+                                    "ok": (200..300).contains(&code),
+                                    "http_status": code,
+                                })
+                            }
+                            Err(e) => {
+                                self.editor_log(&format!(
+                                    "task_publish notify warning: {e} (exchange file still authoritative)"
+                                ));
+                                serde_json::json!({
+                                    "enabled": true,
+                                    "ok": false,
+                                    "http_status": null,
+                                    "error": e,
+                                })
+                            }
+                        }
+                    }
+                    _ => serde_json::json!({ "enabled": false }),
+                };
                 self.editor_log(&format!(
-                    "task_publish exchange event_id={} index={} file={} size_bytes={} seq={} copy={} copied={}",
+                    "task_publish exchange event_id={} index={} file={} size_bytes={} seq={} copy={} copied={} notify={}",
                     result.event_id,
                     result.index_path.display(),
                     result.package_file,
                     result.size_bytes,
                     result.seq,
                     result.package_path.display(),
-                    result.copied
+                    result.copied,
+                    notify
                 ));
                 serde_json::json!({
                     "enabled": true,
@@ -8527,6 +8575,7 @@ impl Server {
                     "event_id": result.event_id,
                     "index_path": result.index_path.display().to_string(),
                     "copied": result.copied,
+                    "notify": notify,
                 })
             }
             Err(e) => {
@@ -16941,6 +16990,8 @@ mod tests {
             size_bytes: 3,
             published_at_ms,
             source: None,
+            min_engine: None,
+            flow_ops: Vec::new(),
         }
     }
 
@@ -17171,6 +17222,32 @@ mod tests {
         let c = &rows[2];
         assert_eq!(c["action"], "reinstall");
         assert_eq!(c["status"], "new", "unknown stored statuses are ignored");
+    }
+
+    #[test]
+    fn runner_updates_marks_incompatible_engine_or_unknown_flow_ops() {
+        let td = TempDir::new("exchange-compat");
+        let exchange_dir = td.path().join("exchange");
+        let mut future = test_publish_event("pkg-A-1-aaa", "A", 1, "incoming/A.oaspkg", 10);
+        future.min_engine = Some("99.0.0".into());
+        let mut unknown = test_publish_event("pkg-B-1-bbb", "B", 1, "incoming/B.oaspkg", 20);
+        unknown.flow_ops = vec!["not_a_real_op".into()];
+        let ok = test_publish_event("pkg-C-1-ccc", "C", 1, "incoming/C.oaspkg", 30);
+        write_test_index(&exchange_dir, vec![future, unknown, ok]);
+        let runner = exchange_server(td.path(), Surface::Runner);
+        let (status, body) = get_route(&runner, "/runner/updates");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("updates JSON");
+        let rows = v["updates"].as_array().expect("updates");
+        let by = |id: &str| {
+            rows.iter()
+                .find(|row| row["event_id"] == id)
+                .unwrap_or_else(|| panic!("missing row for {id}: {v}"))
+                .clone()
+        };
+        assert_eq!(by("pkg-A-1-aaa")["compatible"], false, "min_engine 99.0.0");
+        assert_eq!(by("pkg-B-1-bbb")["compatible"], false, "unknown flow op");
+        assert_eq!(by("pkg-C-1-ccc")["compatible"], true, "no constraints");
     }
 
     #[test]

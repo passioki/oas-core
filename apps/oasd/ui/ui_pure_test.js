@@ -29,6 +29,11 @@
 //     publish panel; the Runner polls /runner/updates, shows a nav badge + the
 //     「新发布」 card, installs through /runner/install and acks
 //     /runner/updates/ack (installed/dismissed).
+//   - P3 params UI: the builder panel renders meta.params (GET /task/config),
+//     the action library has 参数 presets that generate standard
+//     click_target/wait_until with text_expr = param('key') (no new engine op),
+//     locator OCR text has a fixed/param/expression tri-state (text/text_expr
+//     mutually exclusive), and 插入参数 ▾ writes param(...) snippets.
 'use strict';
 
 const fs = require('fs');
@@ -3472,6 +3477,367 @@ ok(
   !/\/runner\/(?:install|uninstall|packages)/.test(source),
   'Studio never calls the Runner-only install/uninstall/packages routes'
 );
+
+// --- P3: build-side params UI (panel / text_expr / action presets) ------------
+// builder.js loads BEFORE app.js, so the dialog bridge is read at runtime through
+// window.OAS_TASK_CONFIG. The pure helpers below are extracted from builder.js
+// itself (no copy can drift).
+const BUILDER_PARAM_PURE = [
+  'paramSafeKey', 'paramTextExpr', 'paramWaitCond', 'paramClickStep', 'paramWaitStep',
+  'paramSourceApply', 'paramSourceFromLocator', 'locatorParamKey', 'locatorTextSpecError',
+  'flowTextSpecIssues', 'paramInsertSnippet', 'paramDefaultText', 'paramPanelRows',
+  'paramPanelSummary', 'collectParamUses', 'undeclaredParamUses',
+  'parseConditionPreset', 'conditionRowExpr',
+];
+const builderParamCode = BUILDER_PARAM_PURE
+  .map((name) => extractFunctionFrom(builderSource, name, 'builder.js'))
+  .join('\n');
+const builderSb = {};
+vm.createContext(builderSb);
+vm.runInContext(builderParamCode, builderSb, { filename: 'builder.js#params' });
+
+eq(builderSb.paramTextExpr('分组'), "param('分组')", 'paramTextExpr emits param(<key>)');
+eq(builderSb.paramTextExpr(" 分'组 "), "param('分组')", 'paramTextExpr trims and drops quotes from the key');
+eq(builderSb.paramWaitCond('关键词'), "text_visible(param('关键词'))", 'paramWaitCond wraps text_visible');
+eq(
+  builderSb.paramClickStep('分组', '按钮_战斗'),
+  { op: 'click_target', args: { find: [{ kind: 'ocr_text', sel: '按钮_战斗', text_expr: "param('分组')" }] } },
+  '「参数文字点击」generates the standard click_target with text_expr (no new op)'
+);
+eq(
+  builderSb.paramClickStep('分组', '').args.find[0].sel,
+  'O_OCR',
+  'missing OCR asset falls back to the O_OCR placeholder'
+);
+eq(
+  builderSb.paramClickStep('分组', '').args.find[0].kind,
+  'ocr_text',
+  'the generated locator is an ocr_text locator'
+);
+eq(
+  builderSb.paramWaitStep('关键词', 0),
+  { op: 'wait_until', args: { cond: "text_visible(param('关键词'))", timeout_s: 10 } },
+  '「等待参数文字出现」generates the standard wait_until (default timeout 10s)'
+);
+eq(builderSb.paramWaitStep('k', 5).args.timeout_s, 5, 'a custom timeout travels');
+eq(builderSb.paramWaitStep('k', 'bad').args.timeout_s, 10, 'an invalid timeout degrades to 10s');
+
+// Text-source tri-state: exactly one of text/text_expr, unknown keys preserved.
+eq(
+  builderSb.paramSourceApply({ kind: 'ocr_text', sel: 'O_按钮', require_template: 'I_按钮' }, 'text', '挑战'),
+  { kind: 'ocr_text', sel: 'O_按钮', require_template: 'I_按钮', text: '挑战' },
+  'fixed text writes text and keeps unknown locator fields'
+);
+eq(
+  builderSb.paramSourceApply({ kind: 'ocr_text', sel: 'O_按钮', text: '挑战' }, 'param', '战斗按钮文字'),
+  { kind: 'ocr_text', sel: 'O_按钮', text_expr: "param('战斗按钮文字')" },
+  'param source writes text_expr and removes text'
+);
+eq(
+  builderSb.paramSourceApply({ kind: 'ocr_text', sel: 'O_按钮', text_expr: "param('old')" }, 'expr', "ocr('O_提示')"),
+  { kind: 'ocr_text', sel: 'O_按钮', text_expr: "ocr('O_提示')" },
+  'expression source replaces the previous text_expr'
+);
+eq(
+  builderSb.paramSourceApply({ kind: 'ocr_text', text_expr: "param('k')" }, 'text', '挑战'),
+  { kind: 'ocr_text', text: '挑战' },
+  'switching back to fixed text removes text_expr'
+);
+eq(builderSb.paramSourceFromLocator({ text: '挑战' }), { mode: 'text', value: '挑战' }, 'read back fixed text');
+eq(builderSb.paramSourceFromLocator({ text_expr: "param('分组')" }), { mode: 'param', value: '分组' }, 'read back param source');
+eq(builderSb.paramSourceFromLocator({ text_expr: "ocr('O_x')" }), { mode: 'expr', value: "ocr('O_x')" }, 'read back expression source');
+eq(builderSb.paramSourceFromLocator({}), { mode: 'text', value: '' }, 'missing text source reads as empty fixed text');
+eq(builderSb.locatorParamKey({ text_expr: "param('分组')" }), '分组', 'locatorParamKey extracts the declared key');
+eq(builderSb.locatorParamKey({ text: '挑战' }), '', 'literal text has no param key');
+
+eq(builderSb.locatorTextSpecError({ text: '挑战' }), '', 'text-only locator is valid');
+eq(builderSb.locatorTextSpecError({ text_expr: "param('k')" }), '', 'text_expr-only locator is valid');
+ok(
+  /互斥/.test(builderSb.locatorTextSpecError({ text: 'a', text_expr: "param('k')" })),
+  'both fields are rejected (mutual exclusion)'
+);
+ok(
+  /缺少文字来源/.test(builderSb.locatorTextSpecError({ kind: 'ocr_text', sel: 'x' })),
+  'a missing text source is rejected'
+);
+
+const badSpecFlow = {
+  steps: [{
+    op: 'click_target',
+    args: { find: [{ kind: 'ocr_text', sel: 'O_x', text: '挑战', text_expr: "param('k')" }] },
+    then: [{ op: 'wait_until', args: { cond: "text_visible(param('k'))", timeout_s: 5 } }],
+  }],
+};
+const specIssues = builderSb.flowTextSpecIssues(badSpecFlow);
+eq(specIssues.length, 1, 'one invalid locator produces one save-time issue');
+ok(/steps\[0\]\.args\.find\[0\]/.test(specIssues[0]), 'the issue names the locator path');
+eq(
+  builderSb.flowTextSpecIssues({ steps: [{ op: 'click_target', args: { find: [{ kind: 'ocr_text', sel: 'O_x', text_expr: "param('k')" }] } }] }),
+  [],
+  'a valid text_expr locator has no issue'
+);
+eq(builderSb.flowTextSpecIssues(null), [], 'a missing flow has no spec issue');
+
+eq(builderSb.paramInsertSnippet('分组', 'expr'), "param('分组')", 'expr snippet is param(key)');
+eq(builderSb.paramInsertSnippet('分组', 'cond'), "text_visible(param('分组'))", 'cond snippet wraps text_visible');
+eq(builderSb.paramInsertSnippet('k'), "param('k')", 'an unknown insert mode defaults to param(key)');
+
+eq(
+  builderSb.paramPanelRows([
+    { key: 'abc', type: 'int', group: '战斗', label: '战斗按钮文字', default: 3 },
+    { key: 'k2', type: 'text' },
+    null,
+    'bad',
+  ]),
+  [
+    { key: 'abc', label: '战斗按钮文字', type: 'int', group: '战斗', defaultText: '3' },
+    { key: 'k2', label: 'k2', type: 'text', group: '', defaultText: '—' },
+  ],
+  'paramPanelRows filters non-objects, defaults label=key and renders the default'
+);
+eq(builderSb.paramPanelRows(null), [], 'missing params render no rows');
+eq(builderSb.paramPanelSummary([]), '0 项参数', 'empty schema summary');
+eq(
+  builderSb.paramPanelSummary([
+    { key: 'a', type: 'text', group: '战斗' },
+    { key: 'b', type: 'int', group: '战斗' },
+    { key: 'c', type: 'bool' },
+  ]),
+  '3 项参数 · 2 个分组',
+  'summary counts rows + groups (未分组 included)'
+);
+eq(builderSb.paramDefaultText({ default: '' }), '（空字符串）', 'an empty-string default is named');
+eq(builderSb.paramDefaultText({}), '—', 'a missing default is a dash');
+
+const paramFlow = {
+  steps: [{
+    op: 'click_target',
+    args: { find: [{ kind: 'ocr_text', sel: 'O_x', text_expr: "param('分组')" }] },
+    then: [{ op: 'if', args: { cond: "text_visible(param('关键词'))" }, then: [], else: [] }],
+    body: [{ op: 'loop', args: { n: "param('最大轮数')" }, body: [] }],
+  }],
+};
+const paramUses = builderSb.collectParamUses(paramFlow);
+eq(
+  paramUses.map((u) => u.key).sort(),
+  ['关键词', '最大轮数', '分组'].sort(),
+  'collectParamUses finds text_expr/cond/nested-body params'
+);
+ok(
+  /steps\[0\]\.args\.find\[0\]\.text_expr/.test(paramUses.filter((u) => u.key === '分组')[0].path),
+  'use paths point at the flow field'
+);
+eq(
+  builderSb.collectParamUses({ steps: [{ op: 'log', args: { text: "param('a'+'b')" } }] }).length,
+  0,
+  'dynamic param keys (no single literal) are not statically collected'
+);
+eq(
+  builderSb.undeclaredParamUses([{ key: '分组', type: 'text' }], paramUses).map((u) => u.key).sort(),
+  ['关键词', '最大轮数'],
+  'undeclaredParamUses diffs uses against meta.params'
+);
+eq(builderSb.undeclaredParamUses(null, null), [], 'missing params/uses never throws');
+
+// Condition editor: 文字（参数）rows round-trip to text_visible(param(...)).
+eq(
+  builderSb.parseConditionPreset("text_visible(param('分组'))").rows,
+  [{ kind: 'param', neg: false, value: '分组' }],
+  'a param text condition parses back into a 文字（参数）row'
+);
+eq(
+  builderSb.parseConditionPreset("not (text_visible(param('关键词')))").rows,
+  [{ kind: 'param', neg: true, value: '关键词' }],
+  'negated param text conditions keep the negation'
+);
+eq(
+  builderSb.parseConditionPreset("text_visible('挑战')").rows,
+  [{ kind: 'text', neg: false, value: '挑战' }],
+  'literal text conditions keep parsing as before (old flow compat)'
+);
+eq(
+  builderSb.conditionRowExpr({ kind: 'param', neg: false, value: '分组' }),
+  "text_visible(param('分组'))",
+  'a param row generates the text_visible(param(...)) predicate'
+);
+eq(
+  builderSb.conditionRowExpr({ kind: 'param', neg: true, value: 'k' }),
+  "not (text_visible(param('k')))",
+  'a negated param row keeps not (...)'
+);
+eq(
+  builderSb.conditionRowExpr({ kind: 'asset', neg: false, value: 'I_A' }),
+  "appear('I_A')",
+  'asset rows are unchanged'
+);
+
+// Static wiring: new DOM ids, action-library group, text-source editor, panel.
+for (const id of ['builder-params', 'builder-params-summary', 'builder-params-declare',
+  'builder-params-list', 'builder-params-status', 'builder-param-issues']) {
+  ok(new RegExp(`id="${id}"`).test(html), `index.html provides #${id}`);
+}
+ok(
+  /id="builder-params"[\s\S]{0,1400}id="builder-params-list"/.test(html),
+  'the params panel owns its list'
+);
+ok(
+  /参数声明在任务库「配置项…」；构建页在 <code>param\('key'\)<\/code> \/ <code>text_expr<\/code> 里引用。/.test(html),
+  'the panel explains where params are declared'
+);
+ok(/id="builder-params-declare"[^>]*>配置项…</.test(html), 'the panel has the 配置项… button');
+ok(
+  /id="builder-params"[\s\S]{0,1600}id="builder-param-issues"/.test(html),
+  'the panel has the undeclared-issue line'
+);
+ok(
+  /任务参数 <span class="builder-params-sub">meta.params<\/span>/.test(html),
+  'the panel title names meta.params'
+);
+ok(/参数动作不新增 op/.test(html), 'the palette explains the param actions produce standard flow');
+
+ok(
+  /const PARAM_ACTIONS = \{/.test(builderSource) &&
+    /param_click_text: \{ label: '参数文字点击', op: 'click_target' \}/.test(builderSource) &&
+    /param_wait_text: \{ label: '等待参数文字', op: 'wait_until' \}/.test(builderSource),
+  'the action library defines both param presets on the real ops'
+);
+ok(
+  /const GROUP_ORDER = \['流程控制', '识别\/等待', '动作', '参数', '数据\/结束'\];/.test(builderSource),
+  'the 参数 group sits between 动作 and 数据/结束'
+);
+ok(
+  /if \(g === PARAM_GROUP\)/.test(builderSource) && /addParamAction\(key\)/.test(builderSource),
+  'the palette renders the param group through addParamAction'
+);
+ok(
+  /function addParamAction\(kind\)[\s\S]{0,900}insertStep\(step/.test(builderSource),
+  'param presets join the finish-last insertion rule'
+);
+const insertStepFn = extractFunctionFrom(builderSource, 'insertStep', 'builder.js');
+ok(
+  /function insertStep\(step, label\)/.test(builderSource) &&
+    /arr\[at - 1\]\.op === 'finish'/.test(insertStepFn),
+  'insertStep keeps a trailing finish last'
+);
+ok(
+  /if \(!paramPanelRows\(B\.params\)\.length\)/.test(builderSource) &&
+    /先在任务参数面板声明参数/.test(builderSource),
+  'param actions are blocked with a hint when nothing is declared'
+);
+ok(
+  /hook\.open\(B\.task, \{[\s\S]{0,400}onSaved: function/.test(builderSource),
+  '配置项… opens the app.js dialog through the runtime bridge'
+);
+ok(
+  /typeof hook\.refresh === 'function'/.test(builderSource) &&
+    /window\.OAS_TASK_CONFIG/.test(builderSource),
+  'the builder reads window.OAS_TASK_CONFIG at runtime'
+);
+ok(
+  /const paramsPromise = fetchTaskParams\(name\)/.test(builderSource),
+  'loadTask loads meta.params in parallel with flow/assets'
+);
+ok(
+  /B\.paramsError = pr\.ok \? '' : pr\.error/.test(builderSource),
+  'a params read failure is isolated from the flow editor'
+);
+ok(
+  /function renderParamsPanel\(\)/.test(builderSource) &&
+    /paramInsertFromPanel\(row\.key\)/.test(builderSource),
+  'the panel renders rows with the insert action'
+);
+ok(
+  /function paramInsertWidget\(mode, getField\)/.test(builderSource) &&
+    /插入参数 ▾/.test(builderSource),
+  'the inspector has the 插入参数 ▾ dropdown'
+);
+ok(
+  /paramInsertWidget\('cond'/.test(builderSource) &&
+    /wait_until: \{ cond: 'cond' \}/.test(builderSource),
+  'condition fields get the text_visible(param()) insert mode'
+);
+ok(
+  /const exprMode = EXPR_FIELDS\[step\.op\] && EXPR_FIELDS\[step\.op\]\[f\.key\]/.test(builderSource),
+  'generic expression fields are detected from EXPR_FIELDS'
+);
+ok(
+  /文字来源（text \/ text_expr 互斥）/.test(builderSource),
+  'the locator editor labels the three-way text source'
+);
+ok(
+  /written = paramSourceApply\(next, mode, value\);/.test(builderSource) &&
+    /paramSourceApply\(next, mode, value\)\]\.concat\(find\.slice\(1\)\)/.test(builderSource),
+  'structuredClickTarget writes the tri-state through paramSourceApply (mutual exclusion)'
+);
+ok(
+  /const base = find\[0\] && typeof find\[0\] === 'object'/.test(builderSource) &&
+    /Object\.assign\(\{\}, base, \{ kind: kind\.value \}\)/.test(builderSource),
+  'structuredClickTarget merges known keys over the original locator (never rebuilds it)'
+);
+ok(
+  !/const next = \{ kind: kind\.value \};/.test(builderSource),
+  'the old rebuild-object locator write that dropped text_expr/unknown fields is gone'
+);
+ok(/'文字（参数）'/.test(builderSource), 'condition rows include 文字（参数）');
+ok(
+  /flowTextSpecIssues\(B\.flow\)/.test(builderSource) && /保存已阻止/.test(builderSource),
+  'saveFlow blocks text+text_expr double-writes before POSTing'
+);
+ok(
+  /function trackExprField\(field, mode\)/.test(builderSource) &&
+    /function insertTextAtField\(field, text\)/.test(builderSource),
+  'insertion helpers exist'
+);
+ok(
+  !/innerHTML/.test(extractFunctionFrom(builderSource, 'renderParamsPanel', 'builder.js')),
+  'the params panel renders through textContent only'
+);
+ok(
+  !/innerHTML/.test(extractFunctionFrom(builderSource, 'paramInsertWidget', 'builder.js')),
+  'the insert dropdown renders through textContent only'
+);
+ok(
+  !/innerHTML/.test(extractFunctionFrom(builderSource, 'structuredClickTarget', 'builder.js')),
+  'the locator editor renders through textContent only'
+);
+ok(
+  /expect\/requires 的 OCR 文字 text_expr 也在高级 JSON 里写/.test(builderSource) &&
+    /OCR 端点的 text_expr、其它 from\/to 形态用下方高级 JSON/.test(builderSource),
+  'the structured editors name the OCR text_expr fields that stay advanced-JSON only'
+);
+
+// app.js bridge: loaded after builder.js, so it must be a runtime window hook.
+ok(/window\.OAS_TASK_CONFIG = \{/.test(source), 'app.js exposes window.OAS_TASK_CONFIG');
+ok(
+  /open: openTaskConfigDialogForBuilder/.test(source) && /refresh: fetchTaskConfigParams/.test(source),
+  'the bridge exposes open + refresh'
+);
+ok(
+  /function fetchTaskConfigParams\(task\)[\s\S]{0,420}fetch\('\/task\/config\?task='/.test(source),
+  'refresh reads GET /task/config?task='
+);
+ok(
+  /const onSaved = taskConfigOnSaved;[\s\S]{0,240}onSaved\(name, saved\)/.test(source),
+  'a successful save notifies the builder panel'
+);
+ok(/taskConfigOnSaved = null;/.test(source), 'the builder callback is cleared after one save');
+ok(
+  !/^window\.OAS_TASK_CONFIG\s*=/m.test(builderSource),
+  'builder.js never defines/overwrites the shared bridge'
+);
+
+// CSS hooks for the new panel / dropdown / action group.
+ok(
+  /\.builder-params-panel/.test(styleCss) && /\.builder-params-list/.test(styleCss) &&
+    /\.builder-param-row/.test(styleCss),
+  'style.css styles the params panel/list/rows'
+);
+ok(
+  /\.builder-insert-param-menu/.test(styleCss) && /\.builder-expr-row/.test(styleCss),
+  'style.css styles the insert-parameter dropdown'
+);
+ok(/\.builder-text-source/.test(styleCss), 'style.css styles the text-source editor');
+ok(/\.builder-op-param-btn/.test(styleCss), 'style.css styles the 参数 action-library group');
 
 // DOM id audit: the whole point of this round is ZERO static dead ids. Every
 // getElementById target must exist in index.html; if an id is genuinely needed,

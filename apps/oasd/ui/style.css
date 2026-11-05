@@ -985,3 +985,157 @@ aside.side {
 }
 .builder-relation-title { font-weight: 600; color: #dbe7f3; }
 .relation-record-dialog { width: min(680px, 92vw); }
+
+/* ===== P3（参数 v2）：任务参数面板 + 动作库「参数」组 + 插入参数 ===== */
+.builder-params-panel {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+}
+
+.builder-params-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.builder-params-head h3 {
+  margin: 0;
+  color: #8fb8e8;
+  font-size: 13px;
+}
+
+.builder-params-sub {
+  color: #6f7a88;
+  font-size: 11px;
+  font-weight: 400;
+  font-family: Consolas, "Cascadia Mono", monospace;
+}
+
+.builder-params-chip {
+  display: inline-block;
+  padding: 0 7px;
+  border: 1px solid #2b2f38;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  color: #c9d1db;
+  background: #171a20;
+}
+
+.builder-params-chip.kind { color: #9ec1ea; border-color: #2f4a6b; background: #161f2a; }
+.builder-params-chip.warn { color: #e8c46a; border-color: #6b5a2f; background: #2a2416; }
+
+#builder-params-status { margin: 5px 0; overflow-wrap: anywhere; }
+#builder-params-status.err { color: #ff8a80; }
+#builder-params-status.ok { color: #7bd88f; }
+
+.builder-params-list {
+  display: grid;
+  gap: 2px;
+  max-height: 170px;
+  overflow: auto;
+  border: 1px solid #2b2f38;
+  border-radius: 6px;
+  padding: 2px 4px;
+  background: #171a20;
+}
+
+.builder-params-list:empty { display: none; }
+.builder-params-list .builder-params-empty { padding: 4px; }
+
+.builder-param-row {
+  display: grid;
+  grid-template-columns:
+    minmax(64px, 96px) minmax(90px, 1.3fr) minmax(52px, 72px)
+    minmax(80px, 1fr) minmax(64px, 96px) auto;
+  gap: 6px;
+  align-items: center;
+  padding: 3px 4px;
+  border-bottom: 1px solid #262b33;
+  font-size: 12px;
+}
+
+.builder-param-row:last-child { border-bottom: 0; }
+.builder-param-row .builder-param-group { color: #98a0ac; font-size: 11px; overflow-wrap: anywhere; }
+.builder-param-row .builder-param-key { color: #8fb8e8; font-family: Consolas, "Cascadia Mono", monospace; overflow-wrap: anywhere; }
+.builder-param-row .builder-param-type { color: #9aa0aa; font-size: 11px; }
+.builder-param-row .builder-param-label { color: #dfe3e8; overflow-wrap: anywhere; }
+.builder-param-row .builder-param-default { color: #cbd5e1; font-size: 11px; font-family: Consolas, "Cascadia Mono", monospace; overflow-wrap: anywhere; }
+.builder-param-row button { width: auto; margin: 0; padding: 1px 7px; font-size: 11px; }
+
+.builder-param-issues {
+  margin-top: 5px;
+  color: #e8c46a;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.builder-param-issues:empty { display: none; }
+
+/* 动作库「参数」组：绿色标记，提示这是生成标准 op 的预设入口 */
+.builder-op-group.builder-op-param-group { color: #8fd8a4; }
+.builder-ops button.builder-op-param-btn { border-left: 2px solid #3f7f52; padding-left: 6px; }
+
+/* 属性面板：插入参数 ▼ */
+.builder-expr-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.builder-expr-row > input { flex: 1 1 auto; min-width: 0; }
+.builder-insert-param { position: relative; flex: none; }
+.builder-insert-param > button { width: auto; white-space: nowrap; padding: 4px 8px; font-size: 12px; }
+
+.builder-insert-param-menu {
+  position: absolute;
+  z-index: 60;
+  top: 100%;
+  right: 0;
+  margin-top: 2px;
+  width: min(290px, 70vw);
+  max-height: 260px;
+  overflow: auto;
+  background: #171a23;
+  border: 1px solid #3a3d48;
+  border-radius: 6px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .5);
+}
+
+.builder-insert-param-menu[hidden] { display: none; }
+.builder-insert-param-menu .hd { padding: 4px 8px; font-size: 11px; color: #9aa0aa; border-bottom: 1px solid #2b2f38; }
+
+.builder-insert-param-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 0;
+  padding: 5px 8px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: #cbd5e1;
+  font-size: 12px;
+}
+
+.builder-insert-param-item:hover { background: #2b6cb0; }
+.builder-insert-param-item code { color: #8fb8e8; font-family: Consolas, "Cascadia Mono", monospace; }
+.builder-insert-param-item .grp { margin-left: auto; color: #9aa0aa; font-size: 10px; white-space: nowrap; }
+
+/* 文字来源三态 + 参数选择（click_target OCR 定位器） */
+.builder-text-source { margin: 6px 0; }
+.builder-text-source > label { display: block; margin: 4px 0; }
+.builder-text-source .builder-source-hint { color: #9aa0aa; font-size: 11px; overflow-wrap: anywhere; }
+.builder-text-source .builder-source-hint.warn { color: #e8c46a; }
+.builder-text-source .builder-source-hint code { color: #8fb8e8; }
+
+.builder-flash { animation: builder-flash 1s ease-out 1; }
+@keyframes builder-flash {
+  0% { outline: 2px solid #ffd54a; outline-offset: 2px; }
+  100% { outline: 2px solid transparent; outline-offset: 2px; }
+}

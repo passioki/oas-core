@@ -29,7 +29,8 @@
 //! directory layout works for a future Android usage client.
 
 use std::collections::BTreeMap;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -100,6 +101,16 @@ pub struct PublishEvent {
     pub published_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<PublishSource>,
+    /// Minimum engine version declared by the package manifest (`engine.min_engine`).
+    /// Optional and additive: an old index without it keeps parsing and is
+    /// treated as "no constraint" by the Runner's compatibility pre-check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_engine: Option<String>,
+    /// Engine flow ops required by the package (`manifest.engine.flow_ops`), so
+    /// the Runner UI can disable installation before clicking when its engine is
+    /// older. Additive: old indexes/Runners simply ignore it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flow_ops: Vec<String>,
 }
 
 /// Whole `publish-index.json` document.
@@ -207,6 +218,9 @@ pub struct AnnounceInput {
     pub published_at_ms: u64,
     pub source: Option<PublishSource>,
     pub publisher: Option<Publisher>,
+    /// From `manifest.engine`; both optional for older call sites/tests.
+    pub min_engine: Option<String>,
+    pub flow_ops: Vec<String>,
 }
 
 /// Result of one announce (also what `POST /task/publish` reports).
@@ -298,6 +312,8 @@ pub fn announce_publish(
         size_bytes,
         published_at_ms: input.published_at_ms,
         source: input.source.clone(),
+        min_engine: input.min_engine.clone(),
+        flow_ops: input.flow_ops.clone(),
     };
     let seq = upsert_event(&mut index, event, input.published_at_ms);
     write_index(exchange_dir, &index)?;
@@ -322,6 +338,132 @@ pub fn action_for(installed_version: Option<u32>, published_version: u32) -> &'s
         Some(_) => "reinstall",
     }
 }
+
+// ---------------------------------------------------------------------------
+// Studio → Runner best-effort HTTP notify (design §5.2 option B/C)
+// ---------------------------------------------------------------------------
+
+/// Self-contained executable version used for the compatibility pre-check.
+pub fn engine_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+/// Compatibility pre-check for one event, using only the additive engine fields.
+///
+/// `None`/empty fields mean "no constraint" (old Studio events) so old exchanges
+/// keep working unchanged. `POST /runner/install` still validates the package
+/// strictly; this only drives the Runner UI's "incompatible" hint.
+pub fn is_compatible(min_engine: Option<&str>, flow_ops: &[String]) -> bool {
+    let version_ok = match min_engine.map(str::trim).filter(|s| !s.is_empty()) {
+        None => true,
+        Some(minimum) => oas_task::package::version_at_least(engine_version(), minimum),
+    };
+    version_ok
+        && flow_ops
+            .iter()
+            .all(|op| oas_task::package::SUPPORTED_FLOW_OPS.contains(&op.as_str()))
+}
+
+/// Minimal payload sent to `POST /runner/notify` (never trusted for installing).
+pub fn notify_payload(
+    event_id: &str,
+    task_id: &str,
+    task_version: u32,
+    package_id: &str,
+    sha256: &str,
+    published_at_ms: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "event_id": event_id,
+        "task_id": task_id,
+        "task_version": task_version,
+        "package_id": package_id,
+        "sha256": sha256,
+        "published_at_ms": published_at_ms,
+    })
+}
+
+/// Best-effort loopback HTTP POST of one publish hint.
+///
+/// The exchange file is the only truth; this call only refreshes the Runner UI
+/// faster when it is running (design §5.2). Failures are reported to the caller
+/// and must never fail the publish. Uses `std::net` only (no new dependency).
+pub fn notify_runner(
+    runner_url: &str,
+    payload: &serde_json::Value,
+    timeout_ms: u64,
+) -> Result<u16, String> {
+    let (host, port) = parse_http_base(runner_url)?;
+    let body = payload.to_string();
+    let timeout = std::time::Duration::from_millis(timeout_ms.max(100));
+    let addrs = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|e| format!("resolve notify host `{host}:{port}`: {e}"))?;
+    let mut last_err: Option<String> = None;
+    let mut stream = None;
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, timeout) {
+            Ok(s) => {
+                stream = Some(s);
+                break;
+            }
+            Err(e) => last_err = Some(format!("connect `{addr}`: {e}")),
+        }
+    }
+    let mut stream = stream.ok_or_else(|| {
+        last_err.unwrap_or_else(|| format!("cannot connect to `{host}:{port}`"))
+    })?;
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    let request = format!(
+        "POST /runner/notify HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.as_bytes().len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("notify write: {e}"))?;
+    let mut buf = [0u8; 256];
+    let n = stream
+        .read(&mut buf)
+        .map_err(|e| format!("notify read: {e}"))?;
+    let head = String::from_utf8_lossy(&buf[..n]);
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| format!("notify response has no status line: {:?}", head.trim()))?;
+    Ok(status)
+}
+
+/// Parse `http://host[:port]` into `(host, port)`; rejects https/other schemes.
+fn parse_http_base(url: &str) -> Result<(String, u16), String> {
+    let rest = url
+        .trim()
+        .strip_prefix("http://")
+        .ok_or_else(|| format!("notify.runner_url must start with http:// (got `{url}`)"))?;
+    let authority = rest.split('/').next().unwrap_or("").trim();
+    if authority.is_empty() {
+        return Err(format!("notify.runner_url has no host (got `{url}`)"));
+    }
+    if authority.starts_with('[') {
+        return Err("notify.runner_url IPv6 literals are not supported in v1".to_string());
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) if !h.is_empty() => (
+            h.to_string(),
+            p.parse::<u16>()
+                .map_err(|_| format!("notify.runner_url has a bad port (got `{url}`)"))?,
+        ),
+        Some(_) => return Err(format!("notify.runner_url has no host (got `{url}`)")),
+        None => (authority.to_string(), 80),
+    };
+    if host.is_empty() {
+        return Err(format!("notify.runner_url has no host (got `{url}`)"));
+    }
+    Ok((host, port))
+}
+
 
 // ---------------------------------------------------------------------------
 // Runner-local notifications.json (schema 1)
@@ -535,6 +677,8 @@ mod tests {
             size_bytes: 1,
             published_at_ms: 1,
             source: None,
+            min_engine: None,
+            flow_ops: Vec::new(),
         }
     }
 
@@ -560,6 +704,8 @@ mod tests {
                 version: "0.1.0".into(),
                 dirty: false,
             }),
+            min_engine: Some("0.1.0".into()),
+            flow_ops: vec!["call_task".into()],
         }
     }
 
@@ -757,5 +903,58 @@ mod tests {
         assert_eq!(action_for(Some(2), 3), "upgrade");
         assert_eq!(action_for(Some(3), 3), "reinstall");
         assert_eq!(action_for(Some(4), 3), "downgrade");
+    }
+
+    #[test]
+    fn announce_persists_engine_fields_for_the_runner_precheck() {
+        let td = TempDir::new("announce-engine");
+        let exchange = td.path().join("exchange");
+        let input = announce_input(td.path(), b"bytes");
+        announce_publish(&exchange, &input).expect("announce");
+        let index = read_index(&exchange).unwrap();
+        assert_eq!(index.events[0].min_engine.as_deref(), Some("0.1.0"));
+        assert_eq!(index.events[0].flow_ops, vec!["call_task".to_string()]);
+    }
+
+    #[test]
+    fn compatibility_precheck_uses_min_engine_and_flow_ops() {
+        assert!(is_compatible(None, &[]));
+        assert!(is_compatible(Some("0.1.0"), &["call_task".to_string()]));
+        assert!(!is_compatible(Some("99.0.0"), &[]), "newer engine required");
+        assert!(
+            !is_compatible(None, &["unknown.op".to_string()]),
+            "unknown flow op must be reported incompatible"
+        );
+    }
+
+    #[test]
+    fn notify_runner_posts_to_the_loopback_endpoint() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).expect("read");
+            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}")
+                .expect("write");
+            request
+        });
+        let payload = notify_payload("pkg-a", "任务", 1, "pkg-a", &"a".repeat(64), 1);
+        let status = notify_runner(&format!("http://{addr}"), &payload, 2000).expect("notify");
+        assert_eq!(status, 200);
+        let request = handle.join().expect("join");
+        assert!(request.starts_with("POST /runner/notify HTTP/1.1"), "{request}");
+        assert!(request.contains("\"event_id\":\"pkg-a\""), "{request}");
+    }
+
+    #[test]
+    fn notify_runner_rejects_non_http_or_missing_host_without_network() {
+        assert!(notify_runner("https://127.0.0.1:8789", &serde_json::json!({}), 100).is_err());
+        assert!(notify_runner("http://", &serde_json::json!({}), 100).is_err());
+        assert!(notify_runner("http://127.0.0.1:notaport", &serde_json::json!({}), 100).is_err());
+        assert_eq!(parse_http_base("http://127.0.0.1:8789").unwrap(), ("127.0.0.1".to_string(), 8789));
+        assert_eq!(parse_http_base("http://localhost").unwrap(), ("localhost".to_string(), 80));
     }
 }

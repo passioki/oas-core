@@ -308,12 +308,35 @@
         <span class="spacer"></span>
         <span id="builder-status" class="muted small">—</span>
       </div>
+
+      <!-- P3（参数 v2）：任务参数面板。声明唯一权威仍是 meta.params（任务库「配置项…」），
+           这里只做只读展示 + 插入参数入口；未声明时动作库「参数」组会提示先声明。 -->
+      <section class="card builder-params-panel" id="builder-params">
+        <div class="builder-params-head">
+          <h3>任务参数 <span class="builder-params-sub">meta.params</span></h3>
+          <span id="builder-params-summary" class="builder-params-chip kind">0 项参数</span>
+          <span class="muted small">
+            参数声明在任务库「配置项…」；构建页在 <code>param('key')</code> / <code>text_expr</code> 里引用。
+          </span>
+          <span class="spacer"></span>
+          <button id="builder-params-declare" type="button"
+            title="打开任务配置项对话框（编辑 meta.params；发布后随 .oaspkg 下发）">配置项…</button>
+        </div>
+        <div id="builder-params-status" class="muted small" role="status" aria-live="polite">—</div>
+        <div id="builder-params-list" class="builder-params-list muted">（选择任务后加载）</div>
+        <div id="builder-param-issues" class="builder-param-issues"></div>
+      </section>
+
       <div class="builder-main">
         <aside class="builder-palette">
           <h3>动作库</h3>
           <div id="builder-ops" class="builder-ops"></div>
           <p class="muted small">
             先选中中间的 if/loop/while 容器，再添加子动作；否则追加到根流程末尾。
+          </p>
+          <p class="muted small builder-params-help">
+            参数动作不新增 op：生成标准 <code>click_target</code> / <code>wait_until</code>，文字来自
+            <code>param('key')</code>（先在「任务参数」面板声明；未声明时发布 T3 报错）。
           </p>
           <p class="muted small" id="builder-cond-help">
             <strong>条件与取值</strong>：出现 = 现在有没有；等到 = 一直等到有；识别 = 读出文字内容。

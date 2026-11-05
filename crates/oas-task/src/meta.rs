@@ -46,9 +46,10 @@ pub const PARAM_TYPES: [&str; 5] = ["int", "float", "number", "bool", "string"];
 ///
 /// M0 fields (`key` / `type` / `default` / `min` / `max`) are the runtime
 /// contract. The five optional fields added by the Runner Studio split
-/// (design §C.1) are **display/form constraints only** — they never change how
-/// a value is injected at run time — and old `meta.json` files keep parsing
-/// because every one of them is `Option` + `skip_serializing_if`.
+/// (design §C.1) plus `role` (参数 v2, PARAM-V2-DESIGN §2.1) are
+/// **display/form constraints only** — they never change how a value is
+/// injected at run time — and old `meta.json` files keep parsing because every
+/// one of them is `Option` + `skip_serializing_if`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParamDecl {
     pub key: String,
@@ -78,7 +79,18 @@ pub struct ParamDecl {
     /// Runner form group heading (non-blank, <= 80 chars); UI only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// Optional **semantic hint** for the Studio/Runner UI (参数 v2,
+    /// PARAM-V2-DESIGN §2.1). It is deliberately **not** a value type: it never
+    /// changes how a value is injected at run time, and unknown values are
+    /// ignored (forward compatibility). The only known value is `"ocr_text"`
+    /// (= this parameter is meant to be used as the OCR expected text, see
+    /// `text_expr`), which the UI may use for hints / default selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
+
+/// Length limit of `meta.params[].role` (PARAM-V2-DESIGN §2.1).
+pub const PARAM_ROLE_MAX_CHARS: usize = 32;
 
 /// Length limits of the optional display fields (`meta.params[]`).
 pub const PARAM_LABEL_MAX_CHARS: usize = 80;
@@ -667,6 +679,21 @@ impl Meta {
                 }
             }
 
+            // v2 (PARAM-V2-DESIGN §2.1): `role` is a UI hint, not a contract.
+            // Unknown values stay accepted on purpose (forward compatibility);
+            // only the length is enforced.
+            if let Some(role) = &p.role {
+                if role.chars().count() > PARAM_ROLE_MAX_CHARS {
+                    push(
+                        format!("{path}.role"),
+                        format!(
+                            "must be <= {PARAM_ROLE_MAX_CHARS} characters (got {})",
+                            role.chars().count()
+                        ),
+                    );
+                }
+            }
+
             if let Some(values) = &p.enum_values {
                 let enum_path = format!("{path}.enum");
                 if !matches!(p.kind.as_str(), "string" | "int" | "float" | "number") {
@@ -1046,6 +1073,72 @@ mod tests {
                     "description": "d".repeat(500),
                     "group": "g".repeat(80)
                 }]
+            })
+            .to_string(),
+        );
+        assert!(ok.lint_issues().is_empty(), "{:?}", ok.lint_issues());
+    }
+
+    #[test]
+    fn param_role_is_an_optional_ui_hint() {
+        let m = meta(
+            r#"{"schema_version":1,"name":"x","params":[
+                 {"key":"a","type":"string","default":"挑战","role":"ocr_text"},
+                 {"key":"b","type":"int","default":1},
+                 {"key":"c","type":"string","role":"future_role"}
+               ]}"#,
+        );
+        assert!(
+            m.lint_issues().is_empty(),
+            "an unknown role must be ignored, not rejected: {:?}",
+            m.lint_issues()
+        );
+        assert_eq!(m.params[0].role.as_deref(), Some("ocr_text"));
+        assert_eq!(m.params[1].role, None);
+        assert_eq!(m.params[2].role.as_deref(), Some("future_role"));
+
+        // `role` must never change value injection (defaults are unchanged).
+        let defaults = m.param_defaults().expect("defaults convert");
+        assert_eq!(defaults["a"], oas_flow::Value::Str("挑战".to_string()));
+        assert_eq!(defaults["b"], oas_flow::Value::Num(1.0));
+
+        // Roundtrip keeps the hint; absent role is not serialized at all.
+        let text = serde_json::to_string(&m).expect("serialize");
+        assert!(text.contains(r#""role":"ocr_text""#), "{text}");
+        assert!(text.contains(r#""role":"future_role""#), "{text}");
+        let back = Meta::from_json(&text).expect("roundtrip parses");
+        assert_eq!(back, m);
+        let legacy = meta(
+            r#"{"schema_version":1,"name":"x","params":[{"key":"n","type":"int"}]}"#,
+        );
+        let text = serde_json::to_string(&legacy).expect("serialize");
+        assert!(
+            !text.contains(r#""role""#),
+            "absent `role` must not be serialized: {text}"
+        );
+    }
+
+    #[test]
+    fn param_role_length_is_checked() {
+        let bad = meta(
+            &serde_json::json!({
+                "schema_version": 1,
+                "name": "x",
+                "params": [{"key": "a", "type": "string", "role": "r".repeat(33)}]
+            })
+            .to_string(),
+        );
+        assert!(
+            paths(&bad).iter().any(|p| p == "meta.json:params[0].role"),
+            "{:?}",
+            paths(&bad)
+        );
+        // Exactly 32 characters is accepted.
+        let ok = meta(
+            &serde_json::json!({
+                "schema_version": 1,
+                "name": "x",
+                "params": [{"key": "a", "type": "string", "role": "r".repeat(32)}]
             })
             .to_string(),
         );

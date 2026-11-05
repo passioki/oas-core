@@ -62,11 +62,20 @@ pub const CHECKSUMS_FILE: &str = "checksums.sha256";
 /// anything outside this list is refused by the Runner installer (design
 /// §C.4.6). Only the call-semantics gates are listed: the rest of the DSL is
 /// covered by `flow.schema_version`.
-pub const SUPPORTED_FLOW_OPS: [&str; 4] = [
+///
+/// 参数 v2 (PARAM-V2-DESIGN §3.6): `text_expr` on an OCR locator / guard /
+/// drag endpoint gets its own marker because a pre-v2 Runner's parser requires
+/// the literal `text` field — it would fail mid-task instead of at install
+/// time. `expect.text_expr` covers both `requires` and `expect` guards (they
+/// share the engine's `Expect` object).
+pub const SUPPORTED_FLOW_OPS: [&str; 7] = [
     "call_task",
     "call_task.params",
     "call_task.inherit.none",
     "with_params",
+    "click_target.text_expr",
+    "expect.text_expr",
+    "drag.text_expr",
 ];
 
 /// Engine version this crate records in `manifest.engine.min_engine` and checks
@@ -432,6 +441,26 @@ fn platform_os() -> String {
 // Flow-op derivation (design §C.4.6)
 // ---------------------------------------------------------------------------
 
+/// Does an authored `ocr_text` locator / guard / drag endpoint use the v2
+/// `text_expr` text source?
+///
+/// Requires `kind:"ocr_text"` **and** a `text_expr` key: a `text_expr` on any
+/// other kind is ignored by the parser (and therefore not a capability this
+/// flow actually uses), so it must not gate the package.
+fn has_ocr_text_expr(v: &serde_json::Value) -> bool {
+    v.get("kind").and_then(|k| k.as_str()) == Some("ocr_text")
+        && v.get("text_expr").is_some()
+}
+
+/// `requires` / `expect` sub-objects of a click-family step (§3.6).
+fn has_expect_text_expr(args: &serde_json::Value) -> bool {
+    ["requires", "expect"].iter().any(|key| {
+        args.get(*key)
+            .map(has_ocr_text_expr)
+            .unwrap_or(false)
+    })
+}
+
 fn walk_flow_ops(
     steps: &[serde_json::Value],
     out: &mut BTreeSet<String>,
@@ -460,6 +489,41 @@ fn walk_flow_ops(
             }
             "with_params" => {
                 out.insert("with_params".to_string());
+            }
+            // 参数 v2: `text_expr` OCR text source (PARAM-V2-DESIGN §3.6).
+            "click_target" => {
+                if let Some(args) = args {
+                    let find_has_text_expr = args
+                        .get("find")
+                        .and_then(|f| f.as_array())
+                        .map(|finds| finds.iter().any(has_ocr_text_expr))
+                        .unwrap_or(false);
+                    if find_has_text_expr {
+                        out.insert("click_target.text_expr".to_string());
+                    }
+                    if has_expect_text_expr(args) {
+                        out.insert("expect.text_expr".to_string());
+                    }
+                }
+            }
+            "click" | "click_point" => {
+                if let Some(args) = args {
+                    if has_expect_text_expr(args) {
+                        out.insert("expect.text_expr".to_string());
+                    }
+                }
+            }
+            "drag" => {
+                if let Some(args) = args {
+                    let has = ["from", "to"].iter().any(|key| {
+                        args.get(*key)
+                            .map(has_ocr_text_expr)
+                            .unwrap_or(false)
+                    });
+                    if has {
+                        out.insert("drag.text_expr".to_string());
+                    }
+                }
             }
             _ => {}
         }
@@ -2342,6 +2406,118 @@ mod tests {
         assert_eq!(
             unsupported_flow_ops(&["call_task".into(), "future_op".into()]),
             vec!["future_op".to_string()]
+        );
+    }
+
+    #[test]
+    fn text_expr_flow_ops_are_derived_from_the_raw_flow() {
+        // ---- raw-flow derivation (unit) ----
+        let text_expr_flow = r#"{"schema_version":1,"name":"A","steps":[
+            {"op":"click_target","args":{
+              "find":[{"kind":"ocr_text","sel":"O_BTN","text_expr":"param('k')"}],
+              "requires":{"kind":"ocr_text","sel":"O_BTN","text_expr":"param('g')"},
+              "expect":{"kind":"ocr_text","sel":"O_BTN","text":"完成"}}},
+            {"op":"drag","args":{
+              "from":{"kind":"ocr_text","sel":"O_ROW","text_expr":"param('row')"},
+              "direction":"up","distance":[10,20]}},
+            {"op":"finish","args":{"exit":"done"}}]}"#;
+        assert_eq!(
+            derive_flow_ops(text_expr_flow).unwrap(),
+            vec![
+                "click_target.text_expr".to_string(),
+                "drag.text_expr".to_string(),
+                "expect.text_expr".to_string(),
+            ]
+        );
+
+        // A literal-only flow keeps the historical (empty) op set: publishing an
+        // old task must not start gating on the new capability.
+        let literal_flow = r#"{"schema_version":1,"name":"A","steps":[
+            {"op":"click_target","args":{"find":[{"kind":"ocr_text","sel":"O","text":"完成"}]}},
+            {"op":"click","args":{"sel":"S","expect":{"kind":"ocr_text","sel":"O","text":"完成"}}},
+            {"op":"drag","args":{"from":{"kind":"region","roi":[0,0,10,10]},
+              "direction":"up","distance":[1,2]}},
+            {"op":"finish","args":{"exit":"done"}}]}"#;
+        assert!(derive_flow_ops(literal_flow).unwrap().is_empty());
+
+        // Nested blocks are walked too (and only the real op marker is added).
+        let nested = r#"{"schema_version":1,"name":"A","steps":[
+            {"op":"if","args":{"cond":"true"},
+             "then":[{"op":"click_target","args":{"find":[
+                 {"kind":"ocr_text","sel":"O","text_expr":"param('k')"}]}}],
+             "else":[]},
+            {"op":"finish","args":{"exit":"done"}}]}"#;
+        assert_eq!(
+            derive_flow_ops(nested).unwrap(),
+            vec!["click_target.text_expr".to_string()]
+        );
+
+        // This engine understands the new markers (install gate: empty = no
+        // offending ops) ...
+        let derived = derive_flow_ops(text_expr_flow).unwrap();
+        assert!(unsupported_flow_ops(&derived).is_empty());
+        // ... while a pre-v2 Runner (the old 4-op set) must refuse the package
+        // instead of failing mid-task.
+        let pre_v2 = [
+            "call_task",
+            "call_task.params",
+            "call_task.inherit.none",
+            "with_params",
+        ];
+        let rejected: Vec<&str> = derived
+            .iter()
+            .map(String::as_str)
+            .filter(|op| !pre_v2.iter().any(|known| known == op))
+            .collect();
+        assert_eq!(
+            rejected,
+            vec![
+                "click_target.text_expr",
+                "drag.text_expr",
+                "expect.text_expr"
+            ],
+            "a pre-v2 Runner must reject every text_expr marker"
+        );
+    }
+
+    #[test]
+    fn text_expr_authentic_package_manifest_advertises_the_new_ops() {
+        let td = TempDir::new("textexpr");
+        let tasks = td.path().join("tasks");
+        let assets = td.path().join("assets");
+        std::fs::create_dir_all(&tasks).unwrap();
+        std::fs::create_dir_all(assets.join("images")).unwrap();
+        std::fs::write(
+            assets.join("assets.json"),
+            r#"{"schema_version":1,"design_resolution":[1280,720],"items":[
+                {"id":"O_BTN","kind":"ocr_lines","roi":[0,0,10,10]},
+                {"id":"O_ROW","kind":"ocr_lines","roi":[0,0,10,10]}]}"#,
+        )
+        .unwrap();
+        make_task(
+            &tasks,
+            "T",
+            1,
+            r#"[{"key":"k","type":"string","default":"完成"},
+                 {"key":"g","type":"string","default":"准备"},
+                 {"key":"row","type":"string","default":"返回"}]"#,
+            r#"[{"op":"click_target","args":{
+                  "find":[{"kind":"ocr_text","sel":"O_BTN","text_expr":"param('k')"}],
+                  "requires":{"kind":"ocr_text","sel":"O_BTN","text_expr":"param('g')"}}},
+                {"op":"drag","args":{
+                  "from":{"kind":"ocr_text","sel":"O_ROW","text_expr":"param('row')"},
+                  "direction":"up","distance":[10,20]}},
+                {"op":"finish","args":{"exit":"done"}}]"#,
+        );
+        let outcome = build(&tasks, "T", &td.path().join("out"), false);
+        assert_eq!(
+            outcome.manifest.engine.flow_ops,
+            vec![
+                "click_target.text_expr".to_string(),
+                "drag.text_expr".to_string(),
+                "expect.text_expr".to_string(),
+            ],
+            "the published manifest must advertise text_expr"
         );
     }
 

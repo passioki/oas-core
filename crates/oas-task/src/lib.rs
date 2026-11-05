@@ -4745,6 +4745,45 @@ mod tests {
     }
 
     #[test]
+    fn lint_flags_undeclared_params_used_in_text_expr() {
+        let td = TempDir::new("lintexpr");
+        let b = open(&td);
+        write_flow_only_bundle(
+            &b,
+            r#"{"schema_version":1,"name":"任务1","params":[
+                 {"key":"k","type":"string","default":"完成"}]}"#,
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{
+                   "find":[{"kind":"ocr_text","sel":"O","text_expr":"param('k')"}],
+                   "requires":{"kind":"ocr_text","sel":"O",
+                               "text_expr":"param('missing_guard')"}}},
+                 {"op":"drag","args":{
+                   "from":{"kind":"ocr_text","sel":"O","text_expr":"param('a' + 'b')"},
+                   "direction":"up","distance":[1,2]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let issues = b.lint().expect_err("T3 must see text_expr param uses");
+        let t3: Vec<&LintIssue> = issues.iter().filter(|i| i.code == "T3").collect();
+        assert_eq!(t3.len(), 2, "{issues:?}");
+        assert!(
+            t3.iter().any(|i| i.path.contains("steps[0].args.requires.text_expr")
+                && i.msg.contains("missing_guard")),
+            "{t3:?}"
+        );
+        assert!(
+            t3.iter()
+                .any(|i| i.path.contains("steps[1].args.from.text_expr")
+                    && i.msg.contains("string-literal")),
+            "a computed text_expr key must be reported as undecidable: {t3:?}"
+        );
+        // The declared key on the locator is NOT flagged.
+        assert!(
+            !t3.iter().any(|i| i.path.contains("find[0]")),
+            "{t3:?}"
+        );
+    }
+
+    #[test]
     fn lint_flags_asset_refs_and_missing_images() {
         let td = TempDir::new("lintassets");
         let b = open(&td);

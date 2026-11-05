@@ -632,6 +632,45 @@ pub struct Flow {
     pub interrupts: Vec<InterruptRule>,
 }
 
+/// Where the expected OCR text of an `ocr_text` locator / expect / drag target
+/// comes from (参数 v2, PARAM-V2-DESIGN §3.2).
+///
+/// * [`TextSpec::Literal`] is the historical `text` field: a byte-for-byte
+///   literal (no trim, no quotes, no expression syntax). Old flows are
+///   unchanged.
+/// * [`TextSpec::Expr`] is the new `text_expr` field: a full expression (the
+///   same syntax as every other `*_expr` field, [`parse_expr`]) that the runtime
+///   evaluates **once when the step starts** — never per poll — and that
+///   **must produce a string**. This is how a task parameter can drive OCR
+///   recognition, e.g. `text_expr: "param('战斗按钮文字')"`.
+///
+/// The two spellings are mutually exclusive in JSON and exactly one of them is
+/// required; the parser enforces this, so the runtime never has to guess.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TextSpec {
+    /// Old `text`: the expected line is a literal.
+    Literal(String),
+    /// New `text_expr`: an expression evaluated once at step entry; the value
+    /// must be a non-empty string.
+    Expr(Expr),
+}
+
+impl TextSpec {
+    /// `Some(key)` when the expression is exactly `param('literal-key')`.
+    ///
+    /// Only `param()` with a single string-literal argument is statically
+    /// decidable (T3 lint, logging, UI); a computed key returns `None`.
+    pub fn param_key(&self) -> Option<&str> {
+        match self {
+            TextSpec::Expr(Expr::Call(name, args)) if name == "param" => match args.as_slice() {
+                [Expr::Lit(Lit::Str(s))] => Some(s.as_str()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
 /// v1.1: target of a `drag` endpoint (region/OCR text/point).
 ///
 /// `region` is the "独立区域操作" path: the user marks any rectangle (no
@@ -652,9 +691,23 @@ pub enum DragTarget {
     OcrText {
         sel: Option<String>,
         roi: Option<[i32; 4]>,
-        text: String,
+        /// `text` (literal) or `text_expr` (expression, evaluated once at step
+        /// entry and required to be a string).
+        text: TextSpec,
     },
     Point { x: i32, y: i32 },
+}
+
+impl DragTarget {
+    /// Expected OCR text source (`text` / `text_expr`) when this is an
+    /// `ocr_text` endpoint; `None` for `region` / `point` (T3/T4 collectors and
+    /// the runtime share this accessor).
+    pub fn text_spec(&self) -> Option<&TextSpec> {
+        match self {
+            DragTarget::OcrText { text, .. } => Some(text),
+            DragTarget::Region { .. } | DragTarget::Point { .. } => None,
+        }
+    }
 }
 
 /// v1.2.5 (O-2): inline operation shape of a `region` drag endpoint.
@@ -711,7 +764,8 @@ pub enum Locator {
     /// also contains a declared template (same text but different button => skip).
     OcrText {
         sel: String,
-        text: String,
+        /// `text` (literal) or `text_expr` (expression) — see [`TextSpec`].
+        text: TextSpec,
         require_template: Option<String>,
     },
     /// Text recognition with an **inline ROI** (v1.1): no asset needed.
@@ -721,7 +775,8 @@ pub enum Locator {
     /// not have to be maintained. `require_template` keeps the H5 cross-check.
     OcrTextInline {
         roi: [i32; 4],
-        text: String,
+        /// `text` (literal) or `text_expr` (expression) — see [`TextSpec`].
+        text: TextSpec,
         require_template: Option<String>,
     },
     /// v1.1 independent region operation: click a random point inside an
@@ -771,6 +826,19 @@ impl Locator {
             }
         }
     }
+
+    /// Expected OCR text source (`text` / `text_expr`) when this is an OCR
+    /// locator; `None` for every other locator kind (T3/T4 collectors and the
+    /// runtime share this accessor).
+    pub fn text_spec(&self) -> Option<&TextSpec> {
+        match self {
+            Locator::OcrText { text, .. } | Locator::OcrTextInline { text, .. } => Some(text),
+            Locator::Template { .. }
+            | Locator::Region { .. }
+            | Locator::RegionRef { .. }
+            | Locator::CoordMemory { .. } => None,
+        }
+    }
 }
 
 /// Page/verification expectation (ENGINE §22.11 补充层).
@@ -784,9 +852,13 @@ pub enum Expect {
     /// A template must become NOT findable within `timeout_ms` (e.g. popup gone).
     Vanish { sel: String, timeout_ms: u32 },
     /// An OCR line must equal `text` after trim within `timeout_ms`.
+    ///
+    /// `text` may also be a `text_expr` expression ([`TextSpec::Expr`]): it is
+    /// evaluated once when the verification starts (not per poll) and must be a
+    /// string (§3.2.4 Q8=A).
     OcrText {
         sel: String,
-        text: String,
+        text: TextSpec,
         timeout_ms: u32,
     },
 }
@@ -813,6 +885,16 @@ impl Expect {
             Expect::Appear { .. } => "appear",
             Expect::Vanish { .. } => "vanish",
             Expect::OcrText { .. } => "ocr_text",
+        }
+    }
+
+    /// Expected OCR text source (`text` / `text_expr`) for `ocr_text` guards /
+    /// expectations; `None` for the template kinds (T3/T4 collectors and the
+    /// runtime share this accessor).
+    pub fn text_spec(&self) -> Option<&TextSpec> {
+        match self {
+            Expect::OcrText { text, .. } => Some(text),
+            Expect::Appear { .. } | Expect::Vanish { .. } => None,
         }
     }
 }
@@ -1582,6 +1664,50 @@ fn reject_drag_shape_on_non_region(
     }
 }
 
+/// Parse the expected OCR text of an `ocr_text` locator / expect / drag target
+/// (参数 v2, PARAM-V2-DESIGN §3.2.3).
+///
+/// Rules (R1/R2/R3):
+/// * `text` (JSON string, historical literal) and `text_expr` (JSON string, an
+///   expression) are **mutually exclusive** — both present is a parse error on
+///   the `text_expr` path;
+/// * exactly one of them is required — neither present is a parse error on the
+///   owning path;
+/// * `text` keeps its byte-for-byte literal semantics (no trim, no expression
+///   parsing), so every old flow behaves exactly as before;
+/// * `text_expr` is parsed with [`parse_expr`]; the runtime evaluates it **once
+///   when the step starts** and it must produce a string.
+fn parse_text_spec(v: &serde_json::Value, path: &str) -> Result<TextSpec, FlowError> {
+    match (v.get("text"), v.get("text_expr")) {
+        (Some(_), Some(_)) => Err(FlowError::new(
+            format!("{path}.text_expr"),
+            "ocr_text needs exactly one of `text` / `text_expr` \
+             (`text` and `text_expr` are mutually exclusive)",
+        )),
+        (None, None) => Err(FlowError::new(
+            path,
+            "ocr_text needs exactly one of `text` / `text_expr`",
+        )),
+        (Some(literal), None) => {
+            let s = literal.as_str().ok_or_else(|| {
+                FlowError::new(format!("{path}.text"), "`text` must be a string")
+            })?;
+            Ok(TextSpec::Literal(s.to_string()))
+        }
+        (None, Some(expr)) => {
+            let src = expr.as_str().ok_or_else(|| {
+                FlowError::new(
+                    format!("{path}.text_expr"),
+                    "`text_expr` must be an expression string",
+                )
+            })?;
+            let expr = parse_expr(src)
+                .map_err(|e| FlowError::new(format!("{path}.text_expr"), e))?;
+            Ok(TextSpec::Expr(expr))
+        }
+    }
+}
+
 fn parse_drag_target(v: &serde_json::Value, path: &str) -> Result<DragTarget, FlowError> {
     let kind = v
         .get("kind")
@@ -1614,11 +1740,7 @@ fn parse_drag_target(v: &serde_json::Value, path: &str) -> Result<DragTarget, Fl
         }
         "ocr_text" => {
             reject_drag_shape_on_non_region(v, path)?;
-            let text = v
-                .get("text")
-                .and_then(|x| x.as_str())
-                .ok_or_else(|| FlowError::new(path, "ocr_text needs `text`"))?
-                .to_string();
+            let text = parse_text_spec(v, path)?;
             let sel = v.get("sel").and_then(|x| x.as_str()).map(|s| s.to_string());
             let roi = match v.get("roi") {
                 None => None,
@@ -1780,7 +1902,7 @@ fn parse_expect(args: &serde_json::Value, key: &str, a_path: &str) -> Result<Opt
         }
         "ocr_text" => Ok(Some(Expect::OcrText {
             sel: req_str(obj, "sel", &p)?,
-            text: req_str(obj, "text", &p)?,
+            text: parse_text_spec(obj, &p)?,
             timeout_ms,
         })),
         other => Err(FlowError::new(
@@ -1806,7 +1928,7 @@ fn parse_locator(v: &serde_json::Value, path: &str) -> Result<Locator, FlowError
             Ok(Locator::Template { sel, threshold })
         }
         "ocr_text" => {
-            let text = req_str(v, "text", path)?;
+            let text = parse_text_spec(v, path)?;
             let require_template = match v.get("require_template") {
                 None => None,
                 Some(x) => Some(
@@ -2606,9 +2728,44 @@ fn collect_param_steps(steps: &[Step], prefix: &str, out: &mut Vec<ParamUse>) {
             Step::WaitUntil { cond, .. } => {
                 collect_param_expr(cond, &format!("{p}.args.cond"), out)
             }
-            Step::ClickPoint { x, y, .. } => {
+            Step::ClickPoint {
+                x,
+                y,
+                requires,
+                expect,
+                ..
+            } => {
                 collect_param_expr(x, &format!("{p}.args.x"), out);
                 collect_param_expr(y, &format!("{p}.args.y"), out);
+                collect_click_expect_params(requires, expect, &p, out);
+            }
+            // 参数 v2 (PARAM-V2-DESIGN §3.2.6): `text_expr` on an OCR locator /
+            // guard / expectation / drag endpoint is a `param()` call site too.
+            Step::Click {
+                requires, expect, ..
+            } => collect_click_expect_params(requires, expect, &p, out),
+            Step::ClickTarget {
+                find,
+                requires,
+                expect,
+                ..
+            } => {
+                for (j, loc) in find.iter().enumerate() {
+                    if let Some(text) = loc.text_spec() {
+                        collect_text_spec_params(text, &format!("{p}.args.find[{j}]"), out);
+                    }
+                }
+                collect_click_expect_params(requires, expect, &p, out);
+            }
+            Step::Drag { from, to, .. } => {
+                if let Some(text) = from.text_spec() {
+                    collect_text_spec_params(text, &format!("{p}.args.from"), out);
+                }
+                if let Some(t) = to {
+                    if let Some(text) = t.text_spec() {
+                        collect_text_spec_params(text, &format!("{p}.args.to"), out);
+                    }
+                }
             }
             Step::Swipe {
                 from_x,
@@ -2633,14 +2790,36 @@ fn collect_param_steps(steps: &[Step], prefix: &str, out: &mut Vec<ParamUse>) {
             | Step::Key { .. }
             | Step::RestartApp { .. }
             | Step::Appear { .. }
-            | Step::Click { .. }
             | Step::Ocr { .. }
             | Step::OcrToVar { .. }
             | Step::DismissPopup { .. }
-            | Step::ClickTarget { .. }
-            | Step::Drag { .. }
             | Step::CallTask { .. }
             | Step::Finish { .. } => {}
+        }
+    }
+}
+
+/// `text_expr` expression of one OCR text site → `ParamUse` (T3).
+fn collect_text_spec_params(t: &TextSpec, path: &str, out: &mut Vec<ParamUse>) {
+    if let TextSpec::Expr(expr) = t {
+        collect_param_expr(expr, &format!("{path}.text_expr"), out);
+    }
+}
+
+/// `requires` / `expect` guard of a click-family step → `ParamUse` (T3).
+///
+/// Both are `Expect` values; only the `ocr_text` kind can carry a `text_expr`.
+fn collect_click_expect_params(
+    requires: &Option<Expect>,
+    expect: &Option<Expect>,
+    step_path: &str,
+    out: &mut Vec<ParamUse>,
+) {
+    for (key, e) in [("requires", requires.as_ref()), ("expect", expect.as_ref())] {
+        if let Some(e) = e {
+            if let Some(text) = e.text_spec() {
+                collect_text_spec_params(text, &format!("{step_path}.args.{key}"), out);
+            }
         }
     }
 }
@@ -2693,11 +2872,39 @@ fn collect_assets_expr(e: &Expr, out: &mut BTreeSet<String>) {
 }
 
 fn collect_drag_target_assets(t: &DragTarget, out: &mut BTreeSet<String>) {
-    if let DragTarget::OcrText {
-        sel: Some(sel), ..
-    } = t
-    {
-        out.insert(sel.clone());
+    if let DragTarget::OcrText { sel, text, .. } = t {
+        if let Some(sel) = sel {
+            out.insert(sel.clone());
+        }
+        collect_text_spec_assets(text, out);
+    }
+}
+
+/// Assets referenced by a `text_expr` (`ocr('O_x')` etc.); a literal references
+/// none. Shared by locators, `requires`/`expect` guards and drag endpoints so
+/// T4 sees every `text_expr` asset (§3.2.6).
+fn collect_text_spec_assets(t: &TextSpec, out: &mut BTreeSet<String>) {
+    if let TextSpec::Expr(expr) = t {
+        collect_assets_expr(expr, out);
+    }
+}
+
+/// Assets referenced by a `requires` / `expect` guard: its selector plus any
+/// `text_expr` asset. Shared by `click` / `click_point` / `click_target`.
+fn collect_expect_assets(e: &Expect, out: &mut BTreeSet<String>) {
+    out.insert(e.sel().to_string());
+    if let Some(text) = e.text_spec() {
+        collect_text_spec_assets(text, out);
+    }
+}
+
+fn collect_click_expect_assets(
+    requires: &Option<Expect>,
+    expect: &Option<Expect>,
+    out: &mut BTreeSet<String>,
+) {
+    for e in requires.iter().chain(expect.iter()) {
+        collect_expect_assets(e, out);
     }
 }
 
@@ -2760,9 +2967,7 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {    for s i
                 for a in alts {
                     out.insert(a.clone());
                 }
-                for e in requires.iter().chain(expect.iter()) {
-                    out.insert(e.sel().to_string());
-                }
+                collect_click_expect_assets(requires, expect, out);
             }
             Step::ClickTarget {
                 find,
@@ -2773,6 +2978,11 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {    for s i
                 for loc in find {
                     if let Some(a) = loc.asset() {
                         out.insert(a.to_string());
+                    }
+                    // 参数 v2: a `text_expr` may call `ocr('O_x')` — that asset is
+                    // referenced just like one in any other expression (§3.2.6).
+                    if let Some(text) = loc.text_spec() {
+                        collect_text_spec_assets(text, out);
                     }
                     // §22.31 H5: the cross-check template is also a referenced asset.
                     if let Locator::OcrText {
@@ -2787,9 +2997,7 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {    for s i
                         out.insert(rt.clone());
                     }
                 }
-                for e in requires.iter().chain(expect.iter()) {
-                    out.insert(e.sel().to_string());
-                }
+                collect_click_expect_assets(requires, expect, out);
             }
             Step::ClickPoint {
                 x,
@@ -2800,9 +3008,7 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {    for s i
             } => {
                 collect_assets_expr(x, out);
                 collect_assets_expr(y, out);
-                for e in requires.iter().chain(expect.iter()) {
-                    out.insert(e.sel().to_string());
-                }
+                collect_click_expect_assets(requires, expect, out);
             }
             Step::Swipe {
                 from_x,
@@ -2927,7 +3133,7 @@ mod tests {
             Step::ClickTarget { find, .. } => match &find[0] {
                 Locator::OcrTextInline { roi, text, .. } => {
                     assert_eq!(*roi, [5, 1, 1272, 717]);
-                    assert_eq!(text, "个人突破");
+                    assert_eq!(text, &TextSpec::Literal("个人突破".to_string()));
                     assert!(find[0].asset().is_none());
                 }
                 other => panic!("unexpected locator: {other:?}"),
@@ -3296,7 +3502,7 @@ mod tests {
                     find[1],
                     Locator::OcrText {
                         sel: "O_LIST".to_string(),
-                        text: "返回".to_string(),
+                        text: TextSpec::Literal("返回".to_string()),
                         require_template: None,
                     }
                 );
@@ -3368,6 +3574,227 @@ mod tests {
         assert_eq!(
             got,
             vec!["关闭", "分组列表", "式神录", "返回", "顶栏", "预设"]
+        );
+    }
+
+    // ---- 参数 v2 (PARAM-V2-DESIGN §3.2): `text_expr` OCR text source ----
+
+    /// One flow that uses `text_expr` in every supported position.
+    const TEXT_EXPR_FLOW: &str = r#"{"schema_version":1,"name":"t","steps":[
+        {"op":"click_target","args":{
+          "find":[{"kind":"ocr_text","sel":"O_BTN","text_expr":"param('click_text')"},
+                  {"kind":"ocr_text","roi":[5,1,60,40],"text_expr":"param('inline_text')"}],
+          "requires":{"kind":"ocr_text","sel":"O_TOP","text_expr":"param('guard_text')"},
+          "expect":{"kind":"ocr_text","sel":"O_TOP","text_expr":"param('expect_text')","timeout_ms":500}}},
+        {"op":"drag","args":{
+          "from":{"kind":"ocr_text","sel":"O_ROW","text_expr":"param('from_text')"},
+          "to":{"kind":"ocr_text","roi":[0,0,64,48],"text_expr":"param('to_text')"},
+          "direction":"up","distance":[10,20]}},
+        {"op":"finish","args":{"exit":"done"}}]}"#;
+
+    #[test]
+    fn text_expr_is_parsed_in_all_four_ocr_text_positions() {
+        let flow = Flow::from_json(TEXT_EXPR_FLOW).expect("text_expr flow must parse");
+        let Step::ClickTarget {
+            find,
+            requires,
+            expect,
+            ..
+        } = &flow.steps[0]
+        else {
+            panic!("expected click_target, got {:?}", flow.steps[0]);
+        };
+        assert_eq!(
+            find[0].text_spec().and_then(|t| t.param_key()),
+            Some("click_text")
+        );
+        assert_eq!(
+            find[1].text_spec(),
+            Some(&TextSpec::Expr(
+                parse_expr("param('inline_text')").expect("expr")
+            ))
+        );
+        assert_eq!(
+            requires
+                .as_ref()
+                .and_then(|e| e.text_spec())
+                .and_then(|t| t.param_key()),
+            Some("guard_text")
+        );
+        assert_eq!(
+            expect
+                .as_ref()
+                .and_then(|e| e.text_spec())
+                .and_then(|t| t.param_key()),
+            Some("expect_text")
+        );
+
+        let Step::Drag { from, to, .. } = &flow.steps[1] else {
+            panic!("expected drag, got {:?}", flow.steps[1]);
+        };
+        assert_eq!(from.text_spec().and_then(|t| t.param_key()), Some("from_text"));
+        assert_eq!(
+            to.as_ref()
+                .and_then(|t| t.text_spec())
+                .and_then(|t| t.param_key()),
+            Some("to_text")
+        );
+    }
+
+    #[test]
+    fn text_and_text_expr_are_mutually_exclusive_with_exact_paths() {
+        // Locator: the error path must name the offending locator field.
+        let locator = r#"{"schema_version":1,"name":"t","steps":[{"op":"click_target","args":{"find":[
+            {"kind":"ocr_text","sel":"O","text":"x","text_expr":"param('k')"}]}}]}"#;
+        let e = errs(locator);
+        assert_eq!(e.len(), 1);
+        assert!(
+            e[0].path.ends_with("args.find[0].text_expr"),
+            "{}",
+            e[0]
+        );
+        assert!(e[0].msg.contains("mutually exclusive"), "{}", e[0]);
+
+        // requires / expect (shared parser).
+        let expect = r#"{"schema_version":1,"name":"t","steps":[{"op":"click","args":{
+            "sel":"S","requires":{"kind":"ocr_text","sel":"O","text":"x","text_expr":"param('k')"}}}]}"#;
+        let e = errs(expect);
+        assert!(e[0].path.ends_with("args.requires.text_expr"), "{}", e[0]);
+
+        // Drag endpoint.
+        let drag = r#"{"schema_version":1,"name":"t","steps":[{"op":"drag","args":{
+            "from":{"kind":"ocr_text","sel":"O","text":"x","text_expr":"param('k')"},
+            "direction":"up","distance":[1,2]}}]}"#;
+        let e = errs(drag);
+        assert!(e[0].path.ends_with("args.from.text_expr"), "{}", e[0]);
+    }
+
+    #[test]
+    fn ocr_text_needs_exactly_one_text_source() {
+        // Neither `text` nor `text_expr` => a loud parse error that names both.
+        let cases = [
+            r#"{"schema_version":1,"name":"t","steps":[{"op":"click_target","args":{"find":[
+                {"kind":"ocr_text","sel":"O"}]}}]}"#,
+            r#"{"schema_version":1,"name":"t","steps":[{"op":"click","args":{
+                "sel":"S","expect":{"kind":"ocr_text","sel":"O"}}}]}"#,
+            r#"{"schema_version":1,"name":"t","steps":[{"op":"drag","args":{
+                "from":{"kind":"ocr_text","sel":"O"},"direction":"up","distance":[1,2]}}]}"#,
+        ];
+        for json in cases {
+            let e = errs(json);
+            assert_eq!(e.len(), 1, "must reject {json}");
+            assert!(
+                e[0].msg.contains("`text` / `text_expr`"),
+                "message must name both spellings: {}",
+                e[0]
+            );
+        }
+    }
+
+    #[test]
+    fn text_expr_must_be_a_valid_expression_string() {
+        let bad_expr = r#"{"schema_version":1,"name":"t","steps":[{"op":"click_target","args":{"find":[
+            {"kind":"ocr_text","sel":"O","text_expr":"1 +"}]}}]}"#;
+        let e = errs(bad_expr);
+        assert!(e[0].path.ends_with("args.find[0].text_expr"), "{}", e[0]);
+
+        let not_a_string = r#"{"schema_version":1,"name":"t","steps":[{"op":"click","args":{
+            "sel":"S","expect":{"kind":"ocr_text","sel":"O","text_expr":42}}}]}"#;
+        let e = errs(not_a_string);
+        assert!(e[0].path.ends_with("args.expect.text_expr"), "{}", e[0]);
+        assert!(e[0].msg.contains("expression string"), "{}", e[0]);
+    }
+
+    #[test]
+    fn literal_text_is_still_a_literal_and_not_an_expression() {
+        // R3: an old `text` that happens to look like an expression stays a
+        // byte-for-byte literal (no evaluation, no T3 use).
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[{"op":"click_target","args":{"find":[
+                 {"kind":"ocr_text","sel":"O","text":"param('not_evaluated')"}]}}]}"#,
+        )
+        .expect("flow");
+        let Step::ClickTarget { find, .. } = &flow.steps[0] else {
+            panic!("expected click_target");
+        };
+        assert_eq!(
+            find[0].text_spec(),
+            Some(&TextSpec::Literal("param('not_evaluated')".to_string()))
+        );
+        assert!(
+            flow.param_uses().is_empty(),
+            "a literal must never be treated as a param() use"
+        );
+    }
+
+    #[test]
+    fn param_uses_at_collects_every_text_expr_site() {
+        let flow = Flow::from_json(TEXT_EXPR_FLOW).expect("flow");
+        let uses = flow.param_uses_at();
+        let got: Vec<(Option<&str>, &str)> = uses
+            .iter()
+            .map(|u| (u.key.as_deref(), u.path.as_str()))
+            .collect();
+        for (key, path) in [
+            ("click_text", "steps[0].args.find[0].text_expr"),
+            ("inline_text", "steps[0].args.find[1].text_expr"),
+            ("guard_text", "steps[0].args.requires.text_expr"),
+            ("expect_text", "steps[0].args.expect.text_expr"),
+            ("from_text", "steps[1].args.from.text_expr"),
+            ("to_text", "steps[1].args.to.text_expr"),
+        ] {
+            assert!(
+                got.contains(&(Some(key), path)),
+                "missing ({key}, {path}) in {got:?}"
+            );
+        }
+        assert_eq!(uses.len(), 6, "{got:?}");
+        assert!(flow.param_uses().contains("expect_text"));
+    }
+
+    #[test]
+    fn text_expr_with_a_computed_key_is_undecidable_for_t3() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[{"op":"click_target","args":{"find":[
+                 {"kind":"ocr_text","sel":"O","text_expr":"param('a' + 'b')"}]}}]}"#,
+        )
+        .expect("flow");
+        assert!(
+            flow.param_uses().is_empty(),
+            "a computed key is not a literal key"
+        );
+        let uses = flow.param_uses_at();
+        assert_eq!(uses.len(), 1, "{uses:?}");
+        assert_eq!(uses[0].key, None);
+        assert!(
+            uses[0].path.ends_with("steps[0].args.find[0].text_expr"),
+            "{}",
+            uses[0].path
+        );
+    }
+
+    #[test]
+    fn text_expr_assets_are_collected_for_t4() {
+        // A `text_expr` may call ocr()/appear()/ocr_digit(); those asset ids
+        // must be collected exactly like a `cond` expression's are.
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{
+                   "find":[{"kind":"ocr_text","sel":"O_BTN","text_expr":"ocr('O_HINT')"}],
+                   "requires":{"kind":"ocr_text","sel":"O_TOP","text_expr":"ocr('O_GUARD')"},
+                   "expect":{"kind":"ocr_text","sel":"O_TOP","text_expr":"ocr('O_EXPECT')"}}},
+                 {"op":"drag","args":{
+                   "from":{"kind":"ocr_text","sel":"O_ROW","text_expr":"ocr('O_FROM')"},
+                   "to":{"kind":"ocr_text","roi":[0,0,64,48],"text_expr":"ocr('O_TO')"},
+                   "direction":"up","distance":[10,20]}}]}"#,
+        )
+        .expect("flow");
+        let got: Vec<String> = flow.referenced_assets().into_iter().collect();
+        assert_eq!(
+            got,
+            vec![
+                "O_BTN", "O_EXPECT", "O_FROM", "O_GUARD", "O_HINT", "O_ROW", "O_TO", "O_TOP"
+            ]
         );
     }
 

@@ -182,6 +182,9 @@ const taskConfigSave = document.getElementById('task-config-save');
 const taskConfigCancel = document.getElementById('task-config-cancel');
 let taskConfigTask = '';
 let taskConfigBusy = false;
+// P3: builder.js (loaded BEFORE app.js) opens this dialog at runtime through
+// window.OAS_TASK_CONFIG and is told when a save succeeded so its panel refreshes.
+let taskConfigOnSaved = null;
 // PR5: 发布任务包（Studio-only）。只产出 .oaspkg；安装/卸载/回滚在 Runner。
 const taskPublishDialog = document.getElementById('task-publish-dialog');
 const taskPublishOut = document.getElementById('task-publish-out');
@@ -921,6 +924,31 @@ function openTaskConfigDialog(task) {
   loadTaskConfig(name);
 }
 
+async function openTaskConfigDialogForBuilder(task, opts) {
+  openTaskConfigDialog(task);
+  // Install the builder callback after opening; it lives until the user actually
+  // saves (cancel/reopen keeps it harmless: the callback guards the task name).
+  taskConfigOnSaved = opts && typeof opts.onSaved === 'function' ? opts.onSaved : null;
+}
+
+// Plain read for the builder params panel: returns the raw meta.params schema.
+async function fetchTaskConfigParams(task) {
+  const name = String(task === undefined || task === null ? '' : task).trim();
+  if (!name) return [];
+  const r = await fetch('/task/config?task=' + encodeURIComponent(name));
+  const s = await r.json();
+  if (!s.ok) throw new Error((s.errors || []).join('; ') || '配置项读取失败');
+  return Array.isArray(s.params) ? s.params : [];
+}
+
+// P3: runtime bridge used by builder.js (which loads earlier than app.js, so it
+// must read window.OAS_TASK_CONFIG lazily). Studio is still the only schema
+// editor: the dialog writes meta.params through POST /task/config.
+window.OAS_TASK_CONFIG = {
+  open: openTaskConfigDialogForBuilder,
+  refresh: fetchTaskConfigParams,
+};
+
 async function submitTaskConfig() {
   if (taskConfigBusy || !taskConfigTask) return;
   const text = (taskConfigJson && taskConfigJson.value) || '';
@@ -945,6 +973,12 @@ async function submitTaskConfig() {
     }
     const saved = Array.isArray(s.params) ? s.params : parsed.params;
     log(`已保存任务「${name}」的配置项：${taskConfigSummary(saved)}`);
+    // P3: tell the builder params panel that meta.params changed (schema only).
+    const onSaved = taskConfigOnSaved;
+    taskConfigOnSaved = null;
+    if (typeof onSaved === 'function') {
+      try { onSaved(name, saved); } catch (e) { /* never break the save path */ }
+    }
     closeTaskConfigDialog();
     await refreshLibrary();
     // 打开的是当前任务时同步任务下拉（meta 变化可能需要重新读取）。
