@@ -4349,7 +4349,7 @@ GET /task/assets?task= → 34 个素材（全局模式）
 
 ## C. 未完成 / 下一步（Phase 1b 及遗留）
 
-1. **oas-runner Phase 1b**：`oasd` path→**git rev/tag** + 提交 oas-runner Cargo.lock；Runner app 注入默认 UI 目录（或打包传 `--ui`）；把 `package-runner.ps1`/`bundled-data` 生成/`start-runner.bat`/`README-RUNNER`/`live.example` 迁入新仓；`apps/runner/target/` gitignore；ort 首次下载说明；`--version` 打印 app 名。
+1. **oas-runner Phase 1b**：~~`oasd` path→git rev/tag + Cargo.lock~~ ✅（已切 `rev=39d97b8…`、Cargo.lock 入库、`docs/BUILD.md`、`ui/`、start/stop bat）；**仍待**：Runner app 注入默认 UI 目录（或打包传 `--ui`）；把 `package-runner.ps1`/`bundled-data` 生成/`README-RUNNER`/`live.example` 迁入；`apps/runner/target/` gitignore ✅；ort 首次下载说明；`--version` 打印 app 名。
 2. **更新检测收尾**：URL feed TTL/缓存、鉴权/私有仓、`packages/remote` GC。
 3. **参数编辑补齐**：`requires/expect/drag` 的 `text_expr` 结构化编辑；T3「去声明…」不预填 key（app.js 桥扩展）；保存 flow 后自动 lint 可选节流。
 4. 旧待办：产品验收 §D.4 / P2 清理 / Phase 5；不 tag / 不 release（git rev 依赖用 commit hash，不需要 tag）。

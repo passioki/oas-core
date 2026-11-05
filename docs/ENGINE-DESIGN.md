@@ -3031,7 +3031,7 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 - 新仓文件：`apps/runner/Cargo.toml`（包 `oasd-runner` 0.1.0，`oasd = { path = "../../../oas-core/apps/oasd", features=["ocr"] }`）+ `apps/runner/src/main.rs`（**3 行**：`oasd::cli::run_as("runner")`）+ `Cargo.lock` + `ui/{runner.html,runner.js,runner.css,style.css}`（与 oas-core 当前版本 SHA256 相同）。
 - **workspace 结论**：无需 `[workspace]` 空表；cargo 自动把 `apps/runner` 当独立 workspace root，path 依赖的 `oasd` 正确解析其 oas-core workspace 继承（`version.workspace` 等）。
 - 构建：`cargo build --manifest-path ... --offline --target-dir ...` → exit 0，`target\debug\oasd-runner.exe` **38,347,776 B**；smoke：`/runner/health` 200、`/runner/tasks` 200、`/app.js` **404**（Runner surface 正确）、`--version`/坏参/坏 config 退出码与 oasd 一致。
-- **Phase 1b 遗留**：UI 默认路径/归属（`run_as` 仍默认 `apps/oasd/ui`；打包需 `--ui`）、path→git rev/tag + Cargo.lock、打包/bundled-data/start-runner 迁入、`apps/runner/target/` gitignore、ort 首次下载、`--version` 打印 app 名。
+- **Phase 1b 进度**：oas-runner 已切 **git 依赖 + commit rev**（`39d97b8…`；无 tag）+ 提交 `Cargo.lock`，并新增 `ui/` 副本、`docs/BUILD.md`、`packaging/start-runner.bat`/`stop-runner.bat`；**仍待**：打包/`bundled-data`/`README-RUNNER`/`live.example` 迁入、Runner 默认 UI 目录注入、ort 首次下载说明、`--version` 打印 app 名。
 
 #### 22.56.3 Studio 权威 lint（API + 构建页 UI）
 
@@ -3042,6 +3042,6 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 
 - `cargo test --workspace` **794 / 0**（23 suites；oasd lib **405** = 399+6 lint 测试 + bin 0；flow 70 / runtime 167+2 / task 116）；UI **1868 checks / Studio 159 / Runner 158 / 0 dead / 6 nav**（+69）；debug+release build exit 0（**1 warning**，基线由 5 降为 1）；`git diff --check` clean。
 - **Studio lint 实机 smoke**：Studio :8793 + 仓库 tasks/assets → `GET /task/lint?task=<中文>` **200** `{count:0,issues:[],ok:true}`；Studio 访问 `/runner/updates` **404**（surface 隔离）。
-- **oas-runner 薄应用实机 smoke**：Runner-only 二进制起 :8792 → `/runner/updates` 200、`/runner/tasks` 200、`:8792` 释放。
+- **oas-runner 薄应用实机 smoke**：Runner-only 二进制起 :8792 → `/runner/updates` 200、`/runner/tasks` 200、`:8792` 释放；切 **git 依赖（rev `39d97b8…`）** 后 `cargo build` exit 0（21.48s），:8794 smoke `/runner/health` 200、`/runner/tasks` 200、Studio 路由 404。
 - 回归 E2E 全绿：P0 双端、参数链路、更新 feed（新 release 包）。
 - 新包：Studio **76,647,721 B** / SHA `D2437915…249A`；Runner **37,850,775 B** / SHA `E810792E…9681`。

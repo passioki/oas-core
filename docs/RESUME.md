@@ -106,7 +106,7 @@ next_action: ① oas-runner Phase 1b：`oasd` path→git rev + Cargo.lock、Runn
 | lint-UI | **构建页权威检查** | 「检查」按钮 + 计数徽标 + 面板（summary/status/list/error/close）；loadTask 自动 silent lint、手动重跑、保存标 stale；T3「去声明…」复用配置桥、保存后重跑；近似提示折叠降噪；404 降级；+69 checks |
 | 回归 | 全绿 | P0 双端 / 参数链路 / 更新 feed E2E **ALL PASS**（新包）；Studio lint 实机 200、oas-runner 薄应用实机 200 |
 
-**本批未做（Phase 1b）**：`oasd` path→git rev + Cargo.lock、Runner 默认 UI 目录/归属、`package-runner.ps1`/`bundled-data`/`start-runner.bat`/`README-RUNNER` 迁入、`apps/runner/target/` gitignore、ort 首次下载说明、`--version` app 名。
+**本批 Phase 1b 已完成**：oas-runner 切 **git 依赖 + commit rev**（`39d97b8…`）+ Cargo.lock、`ui/`、`docs/BUILD.md`、`packaging/start-runner.bat`/`stop-runner.bat`、`/apps/runner/target/` gitignore。**仍待**：Runner 默认 UI 目录、`package-runner.ps1`/`bundled-data`/`README-RUNNER`/`live.example` 迁入、ort 首次下载说明、`--version` app 名。
 
 ## 2. 本批交付（seq 110）
 
@@ -142,7 +142,7 @@ REM 3) release 分离度 E2E 复跑（仓外脚本，自动解压+起停+断言�
 powershell -NoProfile -ExecutionPolicy Bypass -File D:\OAS-dev\_verify\release-both-20261105\run-e2e.ps1
 ```
 
-1. **oas-runner Phase 1b（下一优先）**：把 `apps/runner/Cargo.toml` 的 `oasd` 从 path 改 **git rev（指向 oas-core 已推送提交）** + 提交 Cargo.lock；Runner 默认 UI 目录（app 注入或打包传 `--ui`）；把 `scripts/package-runner.ps1`/`bundled-data` 生成/`start-runner.bat`/`README-RUNNER`/`live.example` 迁入 oas-runner；`.gitignore` 加 `/apps/runner/target/`；ort 首次下载说明。
+1. **oas-runner Phase 1b（剩余）**：Runner app 注入默认 UI 目录；把 `scripts/package-runner.ps1`/`bundled-data` 生成/`README-RUNNER`/`live.example` 迁入 oas-runner；ort 首次下载说明；`--version` 打印 app 名（git rev+Cargo.lock/UI/BUILD/start-stop bat 已完成）。
 2. **更新检测收尾**：URL feed **TTL/缓存**（当前每次 GET 都 curl）、feed 鉴权/私有仓 token、`packages/remote` GC。
 3. **参数编辑补齐**：`requires/expect/drag` 的 `text_expr` 结构化编辑；T3「去声明…」预填 key（app.js 桥扩展）；保存 flow 后自动 lint（可选节流）。
 4. 旧待办不变：产品验收 `§D.4` 19 步 / P2 清理 / Phase 5；**不 tag / 不 release**（git rev 用 commit hash，不需要 tag）。
