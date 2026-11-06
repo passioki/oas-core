@@ -9,6 +9,7 @@
     template: '模板图（template）',
     ocr_line: '单行文字（ocr_line）',
     ocr_lines: '多行文字（ocr_lines）',
+    ocr_var: '使用端OCR文字配置项（ocr_var）',
     region: '操作区域（region）',
     template_set: '素材集合（template_set）',
   };
@@ -164,7 +165,7 @@
   }
 
   // Every asset row has exactly TWO action buttons: 识别 (the existing onTest
-  // behaviour) and 设置 (this menu). The nine entries and their order are a UX
+  // behaviour) and 设置 (this menu). The ten entries and their order are a UX
   // contract asserted by ui_pure_test.js; append new entries at the end only.
   // `manage` marks an item as unavailable on read-only surfaces (frame detail).
   const ASSET_MENU_ITEMS = [
@@ -181,8 +182,8 @@
       title: '在画布上拖拽编辑识别区域 x,y,w,h（模板：保存会用当前帧重新截图覆盖，rev+1）',
     },
     {
-      key: 'action', label: '操作区', action: 'onAction', manage: true,
-      title: '在画布上拖拽设置该素材的操作区域',
+      key: 'action', label: '操作区', action: 'onOpRegion', manage: true,
+      title: '设置该素材的操作区（当前素材操作区 / 相对偏移 / 引用素材库素材·递归链）',
     },
     { key: 'rename', label: '重命名', action: 'onRename', manage: true, title: '只重命名素材 id（不改阈值/识别区）' },
     { key: 'threshold', label: '阈值', action: 'onThreshold', manage: true, title: '模板阈值 0~1（template）' },
@@ -192,27 +193,37 @@
       key: 'step', label: '步骤', action: 'onStep', compactHide: true,
       title: '生成 click_target 步骤并复制到剪贴板',
     },
+    // U-T4（2026-11-06 事项 2）：使用端OCR文字配置项（ocr_var）的默认识别文字。
+    // 只能追加在末尾（菜单顺序是 ui_pure_test 的精确契约）。
+    {
+      key: 'text', label: '识别文字', action: 'onEditText', manage: true,
+      title: '编辑该「使用端OCR文字配置项」的默认识别文字（runtime_text）',
+    },
   ];
 
   /**
    * Resolve the settings menu for one row.
    * Disabled rules:
-   *   - template_set: only 删除 is actionable (the other eight do not apply);
+   *   - template_set: only 删除 is actionable (the other nine do not apply);
    *   - o.manage === false (read-only surface): every management item;
    *   - region: 操作区 is meaningless because the asset itself IS the region;
    *   - region: 阈值 does not exist (only template / OCR text confidence);
+   *   - 识别文字: only ocr_var rows are editable (virtual rows use it as a
+   *     "please migrate first" hint, so it stays clickable);
+   *   - virtual rows: every other management item is read-only;
    *   - template_set handled above.
    * Templates DO expose 识别区 now: the canvas box becomes a re-crop overwrite
    * (`/task/save_asset` + replace:true, rev+1) instead of a rejected ROI patch,
    * so the field is editable on every surface and only `manage` gates it.
-   * `threshold` is enabled for template, ocr_line and ocr_lines; its title names
-   * the two meanings (match threshold vs OCR minimum confidence).
+   * `threshold` is enabled for template, ocr_line, ocr_lines and ocr_var; its
+   * title names the two meanings (match threshold vs OCR minimum confidence).
    * o.compact hides 点测/拖测/步骤 exactly as the old compact row did.
    */
   function assetMenuState(it, opts) {
     const o = opts || {};
     const kind = (it && it.kind) || '';
     const isSet = kind === 'template_set';
+    const isVirtual = !!(it && it.virtual === true);
     return ASSET_MENU_ITEMS.map((m) => {
       let disabled = false;
       let title = m.title;
@@ -225,10 +236,21 @@
       } else if (m.key === 'action' && kind === 'region') {
         disabled = true;
         title = 'region 素材本身就是操作区域，无需再设置操作区';
+      } else if (m.key === 'text') {
+        if (kind !== 'ocr_var') {
+          disabled = true;
+          title = '仅「使用端OCR文字配置项」（ocr_var）素材可编辑识别文字';
+        } else if (isVirtual) {
+          // 虚拟素材不可编辑：保持可点击，点击后提示先迁移（任务 U-T4）。
+          title = '该素材是旧任务参数合成的虚拟素材（待迁移）：点击会提示先迁移';
+        }
+      } else if (isVirtual && m.manage) {
+        disabled = true;
+        title = '虚拟素材（待迁移）只读：先迁移为真实 ocr_var 素材后才能编辑';
       } else if (m.key === 'threshold') {
         if (kind === 'template') {
           title = '模板阈值 0~1（NCC 匹配通过线；未设按默认 0.85）';
-        } else if (kind === 'ocr_line' || kind === 'ocr_lines') {
+        } else if (kind === 'ocr_line' || kind === 'ocr_lines' || kind === 'ocr_var') {
           title = 'OCR 最低置信度（0~1；不设或 0 = 不限制）';
         } else {
           disabled = true;
@@ -247,9 +269,14 @@
   }
 
   function assetTestTitle(it) {
-    if (it.kind === 'template') return '识别：在当前帧用该素材测试模板匹配';
-    if (it.kind === 'region') return '识别：选中该操作区域（区域点击/拖动可直接引用）';
-    return '识别：在当前帧用该 ROI 试识别文字';
+    if (it.kind === 'template' || it.kind === 'template_set') {
+      return '识别：返回全部符合阈值的匹配候选（带评分；集合按成员声明序）';
+    }
+    if (it.kind === 'region') return '识别：显示该操作区域（region 素材本身即操作区域，单候选）';
+    if (it.kind === 'ocr_var') {
+      return '识别：返回识别区域内的全部候选行（带评分；roi 为空 = 全屏 OCR，较慢）';
+    }
+    return '识别：返回识别区域内的全部候选行（带评分）';
   }
 
   // main + 识别 + 设置 + hidden inline menu. The menu is a flex row inside the
@@ -271,11 +298,11 @@
 
     const menu = document.createElement('div');
     menu.className = 'asset-row-menu';
-    menu.title = '素材设置：点测 / 拖测 / 识别区 / 操作区 / 重命名 / 阈值 / 位置帧 / 删除 / 步骤';
+    menu.title = '素材设置：点测 / 拖测 / 识别区 / 操作区 / 重命名 / 阈值 / 位置帧 / 删除 / 步骤 / 识别文字';
     menu.setAttribute('aria-label', `${it.id} 的设置菜单`);
     const settings = makeButton(
       '设置',
-      '展开设置：点测 / 拖测 / 识别区 / 操作区 / 重命名 / 阈值 / 位置帧 / 删除 / 步骤',
+      '展开设置：点测 / 拖测 / 识别区 / 操作区 / 重命名 / 阈值 / 位置帧 / 删除 / 步骤 / 识别文字',
       'asset-test asset-row-action asset-row-action-settings'
     );
     settings.dataset.menuToggle = '1';
@@ -517,6 +544,34 @@
     return wrap;
   }
 
+  // U-T4（事项 2/5）：操作区（op_region）的展示摘要。素材行详情用它显示当前操作
+  // 区来源；完整链校验/递归对话框在 app.js（阶段 B 接入）。
+  function opRegionNodeOf(opRegion) {
+    const r = opRegion && typeof opRegion === 'object' && !Array.isArray(opRegion) ? opRegion : {};
+    const modeRaw = r.mode === undefined || r.mode === null ? 'self' : String(r.mode);
+    const mode = modeRaw.trim().toLowerCase() || 'self';
+    const asset = String(r.asset === undefined || r.asset === null ? '' : r.asset).trim();
+    const pickRaw = String(r.pick === undefined || r.pick === null ? '' : r.pick).trim().toLowerCase();
+    const pick = pickRaw === 'nearest' ? 'nearest' : 'score';
+    const offset = Array.isArray(r.offset) ? r.offset.map((v) => Number(v)) : [];
+    return { mode, asset, pick, offset };
+  }
+
+  function opRegionSummary(opRegion) {
+    const n = opRegionNodeOf(opRegion);
+    if (n.mode === 'offset') {
+      if (n.offset.length !== 4 || n.offset.some((v) => !Number.isFinite(v))) {
+        return '相对偏移（偏移值无效）';
+      }
+      return `相对偏移 [${n.offset.join(',')}]`;
+    }
+    if (n.mode === 'asset') {
+      if (!n.asset) return '引用素材（缺少素材 id）';
+      return `引用素材「${n.asset}」` + (n.pick === 'nearest' ? '（离上一节点最近）' : '（评分最高）');
+    }
+    return '当前素材操作区';
+  }
+
   function assetText(it) {
     const roi = it.roi ? `[${it.roi.join(',')}]` : '—';
     const actionBox = it.action_shape
@@ -532,10 +587,16 @@
         })())
       : null;
     const action = actionBox ? ` · 操作区域[${actionBox.join(',')}]${it.action_shape.invert ? '(反选)' : ''}` : '';
+    const runtime = it.kind === 'ocr_var'
+      ? ` · 识别文字「${it.runtime_text === undefined || it.runtime_text === null ? '—' : String(it.runtime_text)}」`
+      : '';
+    const opRegion = it.op_region !== undefined && it.op_region !== null
+      ? ` · 操作区[${opRegionSummary(it.op_region)}]`
+      : '';
     const pos = (it.positions && it.positions.length)
       ? ` · 位置帧[${it.positions.join(',')}]`
       : ' · 位置帧未设置';
-    return `${it.id}\n识别 ${roi}${action}${pos}`;
+    return `${it.id}\n识别 ${roi}${action}${runtime}${opRegion}${pos}`;
   }
 
   /**
@@ -544,7 +605,7 @@
    *   task, pick, manage, compact, actions
    *   onPick(it), onTest(it), onPosition(it), onDelete(it),
    *   onAction(it), onClickTest(it), onDragTest(it), onStep(it),
-   *   onEditRoi(it), onRename(it), onThreshold(it),
+   *   onEditRoi(it), onRename(it), onThreshold(it), onEditText(it),
    *   onCollectionTest(it), onCollectionDelete(it)
    * The 设置 menu calls the split rename/threshold/ROI callbacks. There is no
    * combined onEdit: the legacy editor was dead code and was removed.
@@ -565,6 +626,9 @@
     // Only lists that actually persist /task/assets/reorder may advertise a
     // drag handle. Referenced/global lists pass draggable:false.
     row.draggable = o.draggable !== false && it.kind !== 'template_set';
+    // U-T4：旧 meta.params（role=ocr_text 无 asset_id）合成的虚拟 ocr_var 素材
+    // 只读展示，行上挂「待迁移」badge（数据由后端 B-T3 的 virtual_items 提供）。
+    if (it.virtual === true) row.classList.add('asset-row-virtual');
 
     if (it.kind === 'template_set') {
       const main = makeButton('', `${it.id}：flow 引用该集合；运行时按成员顺序尝试匹配`, 'asset-main');
@@ -606,6 +670,13 @@
       if (o.onPick) o.onPick(it);
     });
     row.appendChild(main);
+    if (it.virtual === true) {
+      const badge = document.createElement('span');
+      badge.className = 'asset-virtual-badge';
+      badge.textContent = '待迁移';
+      badge.title = '旧任务参数合成的虚拟素材（只读）；迁移为真实 ocr_var 素材后才能编辑';
+      row.appendChild(badge);
+    }
 
     // The old 改/帧/删/操作区/点测/拖测/步骤 buttons all live in the settings
     // menu now; the row itself exposes exactly 识别 + 设置.
@@ -667,5 +738,10 @@
     // Exposed for ui_pure_test.js: the menu order/rules are part of the contract.
     ASSET_MENU_ITEMS,
     assetMenuState,
+    // U-T4: row detail (识别文字/op_region 摘要) + op_region display helpers.
+    assetText,
+    assetTestTitle,
+    opRegionSummary,
+    opRegionNodeOf,
   };
 })();

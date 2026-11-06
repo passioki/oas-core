@@ -15,6 +15,8 @@ const btnOcr = document.getElementById('btn-ocr');
 const btnClear = document.getElementById('btn-clear');
 const btnLines = document.getElementById('btn-lines');
 const linesList = document.getElementById('lines-list');
+// U-T4/S4：真实点测的候选下拉（#序号 score）；演练时不显示。
+const candidateSelect = document.getElementById('candidate-select');
 const btnMatch = document.getElementById('btn-match');
 const taskName = document.getElementById('task-name');
 const btnSaveAsset = document.getElementById('btn-save-asset');
@@ -33,6 +35,38 @@ const btnPoly = document.getElementById('btn-poly');
 const btnBackMode = document.getElementById('btn-back-mode');
 const btnActionPoly = document.getElementById('btn-action-poly');
 const btnActionInvert = document.getElementById('btn-action-invert');
+// U-T4/S6：操作区「相对偏移」画布绘制模式（底栏提示 + 重画/取消/完成）。
+const offsetDrawLabel = document.getElementById('offset-draw-label');
+const btnOffsetRedraw = document.getElementById('btn-offset-redraw');
+const btnOffsetCancel = document.getElementById('btn-offset-cancel');
+const btnOffsetDone = document.getElementById('btn-offset-done');
+// U-T4/S2：使用端OCR文字配置项（ocr_var）「识别文字」对话框。
+const assetTextDialog = document.getElementById('asset-text-dialog');
+const assetTextTitle = document.getElementById('asset-text-title');
+const assetTextHint = document.getElementById('asset-text-hint');
+const assetTextIdRow = document.getElementById('asset-text-id-row');
+const assetTextId = document.getElementById('asset-text-id');
+const assetTextRuntime = document.getElementById('asset-text-runtime');
+const assetTextParamKey = document.getElementById('asset-text-paramkey');
+const assetTextLabel = document.getElementById('asset-text-label');
+const assetTextFullScreen = document.getElementById('asset-text-fullscreen');
+const assetTextRoi = document.getElementById('asset-text-roi');
+const assetTextRoiX = document.getElementById('asset-text-roi-x');
+const assetTextRoiY = document.getElementById('asset-text-roi-y');
+const assetTextRoiW = document.getElementById('asset-text-roi-w');
+const assetTextRoiH = document.getElementById('asset-text-roi-h');
+const assetTextPositions = document.getElementById('asset-text-positions');
+const assetTextError = document.getElementById('asset-text-error');
+const assetTextSave = document.getElementById('asset-text-save');
+const assetTextCancel = document.getElementById('asset-text-cancel');
+// U-T4/S5：素材「操作区」递归对话框（op_region 链）。
+const opRegionDialog = document.getElementById('op-region-dialog');
+const opRegionTitle = document.getElementById('op-region-title');
+const opRegionBreadcrumb = document.getElementById('op-region-breadcrumb');
+const opRegionLevels = document.getElementById('op-region-levels');
+const opRegionError = document.getElementById('op-region-error');
+const opRegionSave = document.getElementById('op-region-save');
+const opRegionCancel = document.getElementById('op-region-cancel');
 // §22.27 会话图片列表（多帧）
 const frameFile = document.getElementById('frame-file');
 const btnFrameUpload = document.getElementById('btn-frame-upload');
@@ -193,6 +227,8 @@ let taskConfigFormRows = [];
 let taskConfigFormErrors = [];
 let taskConfigAdvancedMode = false;
 let taskConfigPrefilledKeys = [];
+// B-T3a 契约：GET /task/config 的派生行（带 asset_id）只读；保存 POST 必须原样回传。
+let taskConfigLoadedParams = [];
 // P3: builder.js (loaded BEFORE app.js) opens this dialog at runtime through
 // window.OAS_TASK_CONFIG and is told when a save succeeded so its panel refreshes.
 let taskConfigOnSaved = null;
@@ -252,6 +288,11 @@ let actionPolyMode = false;
 let actionInvert = false;
 let dragTarget = 'roi'; // 'roi' | 'back'
 let dragStart = null;
+// U-T4/S6：操作区「相对偏移」绘制模式（null = 未进入）。
+// { assetId, scopeTask, simRoi:{x,y,w,h}|null, actionRect:{x,y,w,h}|null, dragStart:null }
+let offsetDraw = null;
+// 「完成」时算出的 op_region 草稿；写入素材等后端 B-T3 的 op_region 字段。
+let offsetDrawPending = null;
 let boxes = []; // detection boxes from the multi-line route
 let selectedBox = null; // the detection block last clicked (N2, §19.2)
 // v1.1: ROI used by the latest multi-line OCR; each line can be turned into an
@@ -505,6 +546,8 @@ function draw() {
     ctx.fillText(label, x + 4, ly + 12);
     ctx.restore();
   }
+  // U-T4/S6：操作区「相对偏移」绘制覆盖层（模拟识别区 + 操作区 + offset 标注）。
+  drawOffsetDrawOverlay();
   // Draw order (§21): frame -> ROI/boxes -> click heatmap + scatter. Click
   // metrics/legend deliberately stay in the sidebar (#click-stats /
   // #clicks-legend): no on-canvas plate covers the game's top-left corner.
@@ -1086,6 +1129,62 @@ function taskConfigFormToParams(rows) {
   return list
     .filter(function (row) { return row && typeof row === 'object'; })
     .map(taskConfigFormRowToParam);
+}
+
+// B-T3a 契约（2026-11-06 参数→素材）：GET /task/config 的派生行（带 asset_id）由
+// 后端 sync 拥有，POST 必须**原样回传**（group/description/label 可改），否则 400。
+// 这里以「加载时的派生行」为准强制回填 owned 字段、恢复被删的派生行；用户行不变。
+function taskConfigMergeDerivedForSave(submitted, loaded) {
+  const loadedList = Array.isArray(loaded) ? loaded : [];
+  const submittedList = Array.isArray(submitted) ? submitted : [];
+  const derivedByAsset = {};
+  for (const row of loadedList) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+    const assetId = row.asset_id === undefined || row.asset_id === null
+      ? ''
+      : String(row.asset_id).trim();
+    if (!assetId) continue;
+    if (!Object.prototype.hasOwnProperty.call(derivedByAsset, assetId)) {
+      derivedByAsset[assetId] = row;
+    }
+  }
+  const ownedFields = ['key', 'type', 'default', 'min', 'max', 'enum', 'required', 'role', 'asset_id'];
+  const out = [];
+  const seenAsset = {};
+  for (const row of submittedList) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) {
+      out.push(row);
+      continue;
+    }
+    const assetId = row.asset_id === undefined || row.asset_id === null
+      ? ''
+      : String(row.asset_id).trim();
+    if (!assetId || !Object.prototype.hasOwnProperty.call(derivedByAsset, assetId)) {
+      out.push(row);
+      continue;
+    }
+    const base = derivedByAsset[assetId];
+    const merged = Object.assign({}, row);
+    for (const field of ownedFields) {
+      if (Object.prototype.hasOwnProperty.call(base, field)) merged[field] = base[field];
+      else delete merged[field];
+    }
+    // group/description/label 允许用户编辑；空值按「未设置」处理（后端会清空）。
+    for (const field of ['group', 'description', 'label']) {
+      if (!Object.prototype.hasOwnProperty.call(merged, field)) continue;
+      if (merged[field] === undefined || merged[field] === null ||
+          String(merged[field]).trim() === '') {
+        delete merged[field];
+      }
+    }
+    out.push(merged);
+    seenAsset[assetId] = true;
+  }
+  for (const assetId of Object.keys(derivedByAsset)) {
+    if (seenAsset[assetId]) continue;
+    out.push(derivedByAsset[assetId]);
+  }
+  return out;
 }
 
 // 每字段短帮助（UI 直接展示；示例值同时放进 placeholder）。
@@ -1864,6 +1963,10 @@ async function loadTaskConfig(task) {
       return;
     }
     const params = Array.isArray(s.params) ? s.params : [];
+    // B-T3a：保加载时的派生行快照；保存时原样回传（服务端派生行只读）。
+    taskConfigLoadedParams = params.map(function (row) {
+      try { return JSON.parse(JSON.stringify(row)); } catch (e) { return row; }
+    });
     if (taskConfigJson) taskConfigJson.value = taskConfigParamsToJson(params);
     if (taskConfigError) taskConfigError.textContent = '';
     // P6: keep the legacy JSON-text prefill (status + JSON mirror, same contract).
@@ -1921,6 +2024,7 @@ function openTaskConfigDialog(task) {
   taskConfigFormRows = [];
   taskConfigFormErrors = [];
   taskConfigPrefilledKeys = [];
+  taskConfigLoadedParams = [];
   taskConfigAdvancedMode = false;
   if (taskConfigTitle) taskConfigTitle.textContent = '任务配置项 · ' + name;
   if (taskConfigJson) taskConfigJson.value = '';
@@ -1990,6 +2094,10 @@ async function submitTaskConfig() {
   } else {
     parsed = { ok: true, params: taskConfigFormToParams(taskConfigFormRows), error: '' };
   }
+  // B-T3a 契约：派生行（asset_id）只读且必须原样回传；用户行照常编辑。
+  parsed = Object.assign({}, parsed, {
+    params: taskConfigMergeDerivedForSave(parsed.params, taskConfigLoadedParams),
+  });
   const validation = taskConfigValidateParams(parsed.params);
   if (!validation.ok) {
     if (taskConfigAdvancedMode) {
@@ -2432,11 +2540,10 @@ function makeResultRow(kind, text, name, recognize, action, sourceRoi, selected,
     name: name || text || '识别结果',
     recognize: { ...recognize },
     action: action ? { ...action } : { ...recognize },
-    // P0-2: a fresh recognition result follows the real recognized bbox until
-    // the user explicitly draws/drags an operation area. `actionShape` is only
-    // written when that explicit edit happens (see actionSource below).
+    // A fresh recognition result follows the real recognized bbox until the user
+    // explicitly draws/drags an operation area; `actionShape` is only written by
+    // that explicit edit and is what the save payload carries (no two-state).
     actionShape: null,
-    actionSource: 'recognition',
     sourceRoi: sourceRoi ? { ...sourceRoi } : null,
     selected: selected !== false && candidateNameValid(name || text || ''),
     fromLines: !!fromLines,
@@ -2621,22 +2728,21 @@ function renderCandidateList(sourceLabel) {
     const r = c.recognize;
     const a = c.action;
     info.textContent =
-      `识别 [${r.x},${r.y},${r.w},${r.h}] · 操作 [${a.x},${a.y},${a.w},${a.h}] · ` +
-      `${c.actionSource === 'fixed' ? '固定操作区' : '跟随识别框（recognition）'}`;
+      `识别 [${r.x},${r.y},${r.w},${r.h}] · 操作 [${a.x},${a.y},${a.w},${a.h}]`;
 
     const actions = document.createElement('div');
     actions.className = 'candidate-actions';
     const adjust = document.createElement('button');
     adjust.type = 'button';
     adjust.textContent = '调操作区域';
-    adjust.title = '在画布上拖拽/画多边形设置该素材的固定操作区域（默认=跟随识别区域）';
+    adjust.title = '在画布上拖拽/画多边形设置该素材的操作区域';
     adjust.addEventListener('click', () => {
       // P1-8: entering a mode resets stale geometry from the previous target.
       resetActionGeometry({ keepTarget: true, clearInvert: true, redraw: false });
       activeCandidate = idx;
       setSelectionMode('actionRect');
       pendingActionAsset = null;
-      // Show the candidate's existing fixed shape (if any) while editing.
+      // Show the candidate's existing operation shape (if any) while editing.
       if (c.actionShape) {
         loadActionShapeForEdit(c.actionShape);
       } else {
@@ -2649,11 +2755,10 @@ function renderCandidateList(sourceLabel) {
     const reset = document.createElement('button');
     reset.type = 'button';
     reset.textContent = '重置';
-    reset.title = '操作区域恢复为跟随识别框（recognition）';
+    reset.title = '重置操作区域（恢复为识别区域）';
     reset.addEventListener('click', () => {
       c.action = { ...c.recognize };
       c.actionShape = null;
-      c.actionSource = 'recognition';
       if (activeCandidate === idx) {
         roiBack = null;
         // Unified reset: geometry, invert and any active action mode all go.
@@ -2680,7 +2785,21 @@ function renderCandidateList(sourceLabel) {
       const rr = lastLinesRoi || roi;
       appendStepToFlow(inlineOcrClickStep(c.text, rr), 'OCR 点击');
     });
-    actions.append(adjust, reset, gen, append);
+    // U-T4/S2：把该识别结果存为「使用端OCR文字配置项」（ocr_var）——新建入口。
+    const saveOcrVar = document.createElement('button');
+    saveOcrVar.type = 'button';
+    saveOcrVar.textContent = '存为OCR文字配置';
+    saveOcrVar.title = '保存为「使用端OCR文字配置项」（ocr_var）：使用端可改识别文字，值存 values.json';
+    saveOcrVar.addEventListener('click', () => {
+      const positions = selectedAssetPositions();
+      if (!positions.length) {
+        resultEl.textContent = '先在工作台选择素材位置帧（保存素材必须至少一个位置帧），再存为识别文字配置项。';
+        setStatus('缺少位置帧', '#ff8a80');
+        return;
+      }
+      openAssetTextDialog(null, '', { candidate: c, positions: positions });
+    });
+    actions.append(adjust, reset, gen, append, saveOcrVar);
     row.append(headRow, info, actions);
     linesList.appendChild(row);
   });
@@ -2754,16 +2873,14 @@ function translateActionShape(shape, dx, dy) {
   return null;
 }
 
-// P0-2: only an explicit user edit (`actionSource === 'fixed'`) may persist
-// action_shape. Everything else is `recognition` and must not carry a shape.
+// The operation region is the asset's own `action_shape`; absent = the runtime
+// uses the real recognized box. The old recognition/fixed two-state switch is
+// gone (user 2026-11-06 事项 6): `action_shape` alone is the operation region.
 // region assets keep their operation-area semantics: their `roi` *is* the
-// operation region, and the server normalizes them to fixed+rect(roi).
+// operation region, so they never carry an extra shape.
 function candidateActionPayload(c) {
   if (!c || c.kind === 'region') return {};
-  if (c.actionSource === 'fixed' && c.actionShape) {
-    return { action_shape: c.actionShape, action_source: 'fixed' };
-  }
-  return { action_source: 'recognition' };
+  return c.actionShape ? { action_shape: c.actionShape } : {};
 }
 
 // P1-8: the editor has two geometries (recognition polygon mask vs. action
@@ -2809,12 +2926,271 @@ function syncSelectionButtons() {
 // stale rect mode while a polygon mode is active.
 function setSelectionMode(mode) {
   const m = SELECTION_MODES.includes(mode) ? mode : 'none';
+  // U-T4/S6：相对偏移绘制期间，其它画布选择模式一律通过退出绘制来抢占。
+  if (offsetDraw && m !== 'none') {
+    exitOffsetDraw('切换到其它画布模式');
+  }
   polyMode = m === 'recognitionPolygon';
   actionPolyMode = m === 'actionPolygon';
   backMode = m === 'actionRect';
   syncSelectionButtons();
   return m;
 }
+
+// --- U-T4/S6（事项 4）：操作区「相对偏移」画布绘制 ---------------------------
+// 进入方式（阶段 A 供 B-T3 的操作区对话框调用；控制台可用 OAS_CANVAS_TOOLS 启动）：
+//   1) 先确认「模拟识别区域」（默认取素材识别区 roi；可点「重画模拟识别区」）
+//   2) 再画「操作区域」（蓝色虚线=模拟识别区，橙色实线=操作区域，尺寸=本次绘制）
+//   3) 实时显示 offset=[dx,dy,w,h]（dx=操作区.x−模拟识别区.x，dy 同理）
+// 保存：op_region={"mode":"offset","offset":[...]} 等后端 B-T3 的保存接入；
+// 阶段 A 只把结果放进 offsetDrawPending 并提示，不落盘、不改素材。
+function offsetDrawActive() {
+  return !!offsetDraw;
+}
+
+function offsetDrawDefaultRoi(it) {
+  if (!it || !Array.isArray(it.roi) || it.roi.length !== 4) return null;
+  const x = Number(it.roi[0]), y = Number(it.roi[1]), w = Number(it.roi[2]), h = Number(it.roi[3]);
+  if (![x, y, w, h].every((v) => Number.isFinite(v)) || w <= 0 || h <= 0) return null;
+  return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
+}
+
+function startOffsetDrawForAsset(it, scopeTask) {
+  if (!it || !it.id) return null;
+  // 与其它画布选择模式互斥：先全部复位。
+  offsetDraw = null;
+  setSelectionMode('none');
+  // 实时画面上的拖拽会被直通成设备手势；进入绘制前先暂停实时（与识别区编辑一致）。
+  if (livePreview) pauseLivePreview();
+  actionPoly = null;
+  actionPolyClosed = false;
+  dragStart = null;
+  dragTarget = 'roi';
+  activeCandidate = -1;
+  pendingActionAsset = null;
+  roi = null;
+  roiBack = null;
+  polygon = null;
+  polyClosed = false;
+  boxes = [];
+  offsetDraw = {
+    assetId: String(it.id),
+    scopeTask: scopeTask === undefined || scopeTask === null ? '' : String(scopeTask),
+    simRoi: offsetDrawDefaultRoi(it),
+    actionRect: null,
+    dragStart: null,
+    dragRect: null,
+  };
+  updateOffsetDrawUi();
+  updateRoiLabel();
+  draw();
+  log(
+    `进入操作区「相对偏移」绘制：素材「${it.id}」` +
+    (offsetDraw.simRoi ? '（模拟识别区域取素材识别区，可重画）' : '（先画模拟识别区域）')
+  );
+  return offsetDraw;
+}
+
+function exitOffsetDraw(why) {
+  if (!offsetDraw) return;
+  const assetId = offsetDraw.assetId;
+  offsetDraw = null;
+  updateOffsetDrawUi();
+  updateRoiLabel();
+  draw();
+  log(`退出操作区「相对偏移」绘制${why ? '：' + why : ''}（素材「${assetId}」未改动）`);
+  // U-T4/S5：若本次绘制是从操作区对话框发起的，退出后回到对话框（取消=保留原值）。
+  const returnInfo = offsetDrawReturnToOpRegion;
+  offsetDrawReturnToOpRegion = null;
+  if (returnInfo && opRegionDialogCtx) reopenOpRegionDialog();
+}
+
+function offsetDrawResetSimRoi() {
+  if (!offsetDraw) return;
+  offsetDraw.simRoi = null;
+  offsetDraw.actionRect = null;
+  offsetDraw.dragStart = null;
+  offsetDraw.dragRect = null;
+  updateOffsetDrawUi();
+  draw();
+  setStatus('相对偏移：请在画面上拖出「模拟识别区域」');
+}
+
+function offsetDrawResult() {
+  if (!offsetDraw) return { ok: false, offset: [], error: '未进入绘制模式' };
+  return offsetFromDraw(offsetDraw.simRoi, offsetDraw.actionRect);
+}
+
+function offsetDrawLabelText() {
+  if (!offsetDraw) return '';
+  if (!offsetDraw.simRoi) return '操作区相对偏移：① 拖出「模拟识别区域」';
+  if (!offsetDraw.actionRect) return '操作区相对偏移：② 拖出「操作区域」（尺寸=本次绘制）';
+  const result = offsetDrawResult();
+  if (!result.ok) return '操作区相对偏移：' + result.error;
+  return '操作区相对偏移：offset=[' + result.offset.join(',') + ']（dx/dy=操作区−模拟识别区左上角）';
+}
+
+function offsetDrawSetButton(btn, visible, disabled) {
+  if (!btn) return;
+  btn.hidden = !visible;
+  btn.disabled = !!disabled;
+}
+
+function updateOffsetDrawUi() {
+  const active = !!offsetDraw;
+  if (offsetDrawLabel) {
+    offsetDrawLabel.hidden = !active;
+    offsetDrawLabel.textContent = active ? offsetDrawLabelText() : '';
+  }
+  offsetDrawSetButton(btnOffsetRedraw, active);
+  offsetDrawSetButton(btnOffsetCancel, active);
+  const result = active ? offsetDrawResult() : { ok: false };
+  offsetDrawSetButton(btnOffsetDone, active, !result.ok);
+  // 绘制期间禁用其它画布选择模式（互斥）。
+  if (btnPoly) btnPoly.disabled = active;
+  if (btnActionPoly) btnActionPoly.disabled = active;
+  if (btnBackMode) btnBackMode.disabled = active;
+  if (btnActionInvert) btnActionInvert.disabled = active;
+  if (hintEl) {
+    hintEl.textContent = active
+      ? '操作区「相对偏移」绘制：' +
+        (offsetDraw.simRoi ? '拖出操作区域（尺寸=本次绘制）' : '先拖出模拟识别区域') +
+        '；「取消/完成」在画布底部工具栏'
+      : (livePreview
+        ? '实时：开 · 画布直接操作设备（单击=点击，拖拽=滑动）；暂停实时可框选 ROI'
+        : '在画面上拖拽选择识别 ROI；可再画一个「点击框」');
+  }
+}
+
+function drawOffsetDrawOverlay() {
+  if (!offsetDraw) return;
+  const drawBox = (rect, stroke, fill, label) => {
+    if (!rect || rect.w <= 0 || rect.h <= 0) return;
+    ctx.save();
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.w, rect.h);
+    ctx.fillStyle = fill;
+    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+    ctx.fillStyle = stroke;
+    ctx.font = '14px Consolas, monospace';
+    ctx.fillText(label, rect.x + 4, Math.max(14, rect.y - 6));
+    ctx.restore();
+  };
+  drawBox(offsetDraw.simRoi, '#4aa3ff', 'rgba(74,163,255,0.10)', '模拟识别区域');
+  drawBox(offsetDraw.actionRect, '#ff9f40', 'rgba(255,159,64,0.10)', '操作区域（本次绘制尺寸）');
+  const result = offsetDrawResult();
+  if (offsetDraw.simRoi && offsetDraw.actionRect && result.ok) {
+    ctx.save();
+    ctx.strokeStyle = '#ffd54a';
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(offsetDraw.simRoi.x, offsetDraw.simRoi.y);
+    ctx.lineTo(offsetDraw.actionRect.x, offsetDraw.actionRect.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#ffd54a';
+    ctx.font = '15px Consolas, monospace';
+    ctx.fillText(
+      'offset=[' + result.offset.join(',') + ']',
+      offsetDraw.actionRect.x + 4,
+      offsetDraw.actionRect.y + offsetDraw.actionRect.h + 18
+    );
+    ctx.restore();
+  }
+}
+
+function offsetDrawFinish() {
+  if (!offsetDraw) return;
+  const result = offsetDrawResult();
+  if (!result.ok) {
+    setStatus('相对偏移未完成：' + result.error, '#ff8a80');
+    return;
+  }
+  // U-T4/S5：从操作区对话框发起的绘制：把 offset 写回草稿当前级，退出后重开对话框。
+  if (offsetDrawReturnToOpRegion && opRegionDialogCtx) {
+    opRegionDialogCtx.draft = opRegionDraftSetLevel(
+      opRegionDialogCtx.draft,
+      offsetDrawReturnToOpRegion.levelIndex,
+      { mode: 'offset', offset: result.offset.slice() },
+      opRegionDialogAssets()
+    );
+    opRegionDialogCtx.error = '';
+  }
+  const draft = {
+    assetId: offsetDraw.assetId,
+    scopeTask: offsetDraw.scopeTask,
+    op_region: { mode: 'offset', offset: result.offset.slice() },
+    sim_roi: offsetDraw.simRoi ? Object.assign({}, offsetDraw.simRoi) : null,
+  };
+  offsetDrawPending = draft;
+  setStatus(`已计算 op_region=offset[${draft.op_region.offset.join(',')}]`, '#7bd88f');
+  resultEl.textContent =
+    `操作区相对偏移（素材「${draft.assetId}」）\n` +
+    `模拟识别区域：${draft.sim_roi
+      ? '[' + [draft.sim_roi.x, draft.sim_roi.y, draft.sim_roi.w, draft.sim_roi.h].join(',') + ']'
+      : '—'}\n` +
+    `op_region：${JSON.stringify(draft.op_region)}\n\n` +
+    (offsetDrawReturnToOpRegion
+      ? '（已写回操作区对话框，点「保存」后提交到素材。）'
+      : '（在操作区对话框里绘制时保存后写入素材；独立绘制仅计算不落盘。）');
+  log(`相对偏移完成 asset=${draft.assetId} offset=${draft.op_region.offset.join(',')}`, 'INFO');
+  exitOffsetDraw('完成');
+}
+
+// 鼠标交互（在实时直通之前拦截：绘制模式优先于 live passthrough）。
+function offsetDrawMouseDown(ev) {
+  if (!offsetDraw) return false;
+  if (ev.button !== 0) return true;
+  ev.preventDefault();
+  offsetDraw.dragRect = offsetDraw.simRoi ? 'action' : 'sim';
+  offsetDraw.dragStart = toFrame(ev);
+  return true;
+}
+
+function offsetDrawMouseMove(ev) {
+  if (!offsetDraw || !offsetDraw.dragStart) return false;
+  ev.preventDefault();
+  const rect = normalizeRect(offsetDraw.dragStart, toFrame(ev));
+  if (offsetDraw.dragRect === 'sim') offsetDraw.simRoi = rect;
+  else offsetDraw.actionRect = rect;
+  updateOffsetDrawUi();
+  draw();
+  return true;
+}
+
+function offsetDrawMouseUp(ev) {
+  if (!offsetDraw || !offsetDraw.dragStart) return false;
+  ev.preventDefault();
+  const finished = normalizeRect(offsetDraw.dragStart, toFrame(ev));
+  const target = offsetDraw.dragRect;
+  offsetDraw.dragStart = null;
+  offsetDraw.dragRect = null;
+  if (finished.w < 2 || finished.h < 2) {
+    // 误点：保留上一份几何，不创建 0 尺寸区域。
+    updateOffsetDrawUi();
+    draw();
+    return true;
+  }
+  if (target === 'sim') {
+    offsetDraw.simRoi = finished;
+    offsetDraw.actionRect = null;
+  } else {
+    offsetDraw.actionRect = finished;
+  }
+  updateOffsetDrawUi();
+  draw();
+  return true;
+}
+
+// 供 B-T3 的操作区对话框 / 控制台调试启动绘制（阶段 A 还没有对话框入口）。
+window.OAS_CANVAS_TOOLS = {
+  startOffsetDrawForAsset: startOffsetDrawForAsset,
+  exitOffsetDraw: exitOffsetDraw,
+  offsetDrawState: () => (offsetDraw ? JSON.parse(JSON.stringify(offsetDraw)) : null),
+  pendingOffsetOpRegion: () => (offsetDrawPending ? JSON.parse(JSON.stringify(offsetDrawPending)) : null),
+};
 
 function resetActionGeometry(opts) {
   const o = opts || {};
@@ -3038,55 +3414,6 @@ function drawActionShapeOverlay() {
   ctx.restore();
 }
 
-function rectsOverlap(a, b) {
-  return a[0] < b[0] + b[2] && a[0] + a[2] > b[0] && a[1] < b[1] + b[3] && a[1] + a[3] > b[1];
-}
-
-function actionValidity(it, recognizedBox, shapeOverride) {
-  if (!recognizedBox) return { valid: null, text: '无法计算：没有真实识别框' };
-  // P1-1: template callers pass the translated shape (`matched - roi`); the
-  // runtime uses that same translation. Other callers may omit it.
-  const shape = shapeOverride !== undefined ? shapeOverride : it.action_shape;
-  const source = it.action_source || 'recognition';
-  if (!shape) {
-    if (source === 'recognition') return { valid: true, text: '有效（操作区=真实识别框）' };
-    return { valid: false, text: '无效：action_source=fixed 但没有 action_shape' };
-  }
-  const isRect = shape.kind === 'rect' && Array.isArray(shape.roi);
-  const hit = shape.invert
-    ? false
-    : isRect
-      ? rectsOverlap(recognizedBox, shape.roi)
-      : polygonOverlapsRect(shape.points || [], recognizedBox);
-  if (!shape.invert) {
-    if (source === 'fixed') {
-      return {
-        valid: true,
-        text: hit ? '有效（固定操作区与识别框重叠）' : '独立操作区域（fixed，允许不重叠）',
-        independent: !hit,
-      };
-    }
-    return { valid: hit, text: hit ? '有效（识别框在操作区内）' : '无效：真实识别框与操作区不重叠' };
-  }
-  // Inverted shape: effective region is the whole screen minus shape. A
-  // recognized box overlaps it if any corner is outside the excluded shape.
-  const corners = [
-    [recognizedBox[0], recognizedBox[1]],
-    [recognizedBox[0] + recognizedBox[2] - 1, recognizedBox[1]],
-    [recognizedBox[0], recognizedBox[1] + recognizedBox[3] - 1],
-    [recognizedBox[0] + recognizedBox[2] - 1, recognizedBox[1] + recognizedBox[3] - 1],
-  ];
-  const outside = corners.some(([x, y]) => !actionShapeContains(shape, x, y));
-  if (source === 'fixed') {
-    return {
-      valid: true,
-      text: outside ? '有效（反选固定操作区与识别框相交）' : '独立操作区域（反选；识别框完全在排除区内）',
-      independent: !outside,
-    };
-  }
-  return { valid: outside, text: outside ? '有效（反选操作区与识别框相交）' : '无效：真实识别框完全落在反选排除区内' };
-}
-
 function randomPointInAction(it, shapeOverride, fallbackBox) {
   const shape = shapeOverride !== undefined ? shapeOverride : (it && it.action_shape);
   const fw = canvas.width || 1280;
@@ -3228,6 +3555,515 @@ function translatedActionShapeForMatch(it, match) {
   );
 }
 
+// --- U-T4（事项 3/4/5）：候选识别 / 相对偏移 / op_region 链 纯函数 ------------
+// 不依赖 DOM / 全局状态，ui_pure_test.js 直接抽取执行；保存/服务端校验在阶段 B。
+
+// GET /task/asset/candidates 的 URL（frame.query 来自 testFramePlan，以 & 开头）。
+function assetCandidatesUrl(task, id, frameQuery) {
+  return '/task/asset/candidates?task=' + encodeURIComponent(String(task || '')) +
+    '&id=' + encodeURIComponent(String(id || '')) + String(frameQuery || '');
+}
+
+// 一行候选的文字表示：「#0 score=0.9730 [902,601,120,60] 文字="御魂" · 成员 X」。
+function candidateLabelText(candidate) {
+  const c = candidate && typeof candidate === 'object' && !Array.isArray(candidate) ? candidate : {};
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const index = Number.isInteger(Number(c.index)) ? Number(c.index) : 0;
+  const score = Number(c.score);
+  const scoreText = Number.isFinite(score) ? score.toFixed(4) : '—';
+  const box = [Math.round(num(c.x)), Math.round(num(c.y)), Math.round(num(c.w)), Math.round(num(c.h))];
+  let text = '#' + index + ' score=' + scoreText + ' [' + box.join(',') + ']';
+  if (c.text !== undefined && c.text !== null && String(c.text).trim() !== '') {
+    text += ' 文字=' + JSON.stringify(String(c.text));
+  }
+  if (c.member !== undefined && c.member !== null && String(c.member).trim() !== '') {
+    text += ' · 成员 ' + String(c.member);
+  }
+  return text;
+}
+
+// 候选 → draw() 的 boxes 数组（画全部真实识别区域；无效框跳过）。
+function candidateBoxes(candidates) {
+  const out = [];
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const box = [Number(candidate.x), Number(candidate.y), Number(candidate.w), Number(candidate.h)];
+    if (!matchBoxValid(box)) continue;
+    const index = Number.isInteger(Number(candidate.index)) ? Number(candidate.index) : out.length;
+    const score = Number(candidate.score);
+    out.push({
+      text: '#' + index + ' ' + (Number.isFinite(score) ? score.toFixed(2) : '—'),
+      score: Number.isFinite(score) ? score : 0,
+      box,
+    });
+  }
+  return out;
+}
+
+// S6 offset：模拟识别区域 + 操作区域 → op_region.offset=[dx,dy,w,h]。
+// dx/dy = 操作区左上角 − 模拟识别区左上角；w/h = 本次绘制的操作区尺寸
+// （Lead 裁决 1：基准=真实识别区域；S6：尺寸采用绘制）。
+function offsetFromDraw(simRoi, actionRect) {
+  const rectOf = (r) => {
+    if (!r || typeof r !== 'object') return null;
+    const x = Number(r.x), y = Number(r.y), w = Number(r.w), h = Number(r.h);
+    if (![x, y, w, h].every((v) => Number.isFinite(v))) return null;
+    if (w <= 0 || h <= 0) return null;
+    return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
+  };
+  const sim = rectOf(simRoi);
+  if (!sim) return { ok: false, offset: [], error: '模拟识别区域无效：先在画面上拖出识别区域' };
+  const action = rectOf(actionRect);
+  if (!action) return { ok: false, offset: [], error: '操作区域无效：在画面上拖出操作区域' };
+  return {
+    ok: true,
+    offset: [action.x - sim.x, action.y - sim.y, action.w, action.h],
+    error: '',
+  };
+}
+
+// runtime_text（使用端默认识别文字）：必填、trim 非空、≤200 字符、无控制字符。
+function runtimeTextValid(text) {
+  const raw = text === undefined || text === null ? '' : String(text);
+  const value = raw.trim();
+  if (!value) return { ok: false, value: '', error: '识别文字（runtime_text）必填' };
+  if (value.length > 200) {
+    return { ok: false, value, error: '识别文字最长 200 字符（当前 ' + value.length + '）' };
+  }
+  if (/[\u0000-\u001f\u007f]/.test(value)) {
+    return { ok: false, value, error: '识别文字不能包含控制字符（换行/制表等）' };
+  }
+  return { ok: true, value, error: '' };
+}
+
+// op_region 单节点规范化（缺省 mode = self；pick 缺省 score）。
+function opRegionNodeOf(opRegion) {
+  const r = opRegion && typeof opRegion === 'object' && !Array.isArray(opRegion) ? opRegion : {};
+  const modeRaw = r.mode === undefined || r.mode === null ? 'self' : String(r.mode);
+  const mode = modeRaw.trim().toLowerCase() || 'self';
+  const asset = String(r.asset === undefined || r.asset === null ? '' : r.asset).trim();
+  const pickRaw = String(r.pick === undefined || r.pick === null ? '' : r.pick).trim().toLowerCase();
+  const pick = pickRaw === 'nearest' ? 'nearest' : 'score';
+  const offset = Array.isArray(r.offset) ? r.offset.map((v) => Number(v)) : [];
+  return { mode, asset, pick, offset };
+}
+
+// op_region 链客户端预检（服务端 POST /task/asset/validate_op_region 是唯一权威；
+// 这里只做即时提示）：self/offset 收尾、引用素材存在且类型合法、region 素材只作
+// 末端固定区域、防环、深度上限 16。
+// 返回 { ok, chain:[{mode,asset?,pick?,offset?}], depth, error }。
+function opRegionChainSpec(opRegion, assets, rootAssetId) {
+  const list = Array.isArray(assets) ? assets : [];
+  const byId = {};
+  for (const asset of list) {
+    if (!asset || typeof asset !== 'object') continue;
+    const id = String(asset.id === undefined || asset.id === null ? '' : asset.id).trim();
+    if (id && !Object.prototype.hasOwnProperty.call(byId, id)) byId[id] = asset;
+  }
+  const rootId = String(rootAssetId === undefined || rootAssetId === null ? '' : rootAssetId).trim();
+  const visited = {};
+  if (rootId) visited[rootId] = true;
+  const recognizable = ['template', 'template_set', 'ocr_line', 'ocr_lines', 'ocr_var'];
+  const chain = [];
+  let node = opRegion;
+  for (let depth = 0; depth < 17; depth++) {
+    if (depth >= 16) {
+      return { ok: false, chain, depth: chain.length, error: '操作区引用链超过最大深度 16' };
+    }
+    if (node === undefined || node === null) node = { mode: 'self' };
+    const n = opRegionNodeOf(node);
+    if (n.mode === 'self') {
+      chain.push({ mode: 'self', asset: '' });
+      return { ok: true, chain, depth: chain.length, error: '' };
+    }
+    if (n.mode === 'offset') {
+      if (n.offset.length !== 4 || n.offset.some((v) => !Number.isInteger(v))) {
+        return { ok: false, chain, depth: chain.length, error: '相对偏移必须是 [dx,dy,w,h] 四个整数' };
+      }
+      if (n.offset[2] <= 0 || n.offset[3] <= 0) {
+        return { ok: false, chain, depth: chain.length, error: '相对偏移的 w/h 必须大于 0' };
+      }
+      chain.push({ mode: 'offset', asset: '', offset: n.offset.slice() });
+      return { ok: true, chain, depth: chain.length, error: '' };
+    }
+    if (n.mode !== 'asset') {
+      return { ok: false, chain, depth: chain.length, error: '操作区模式不合法：「' + n.mode + '」' };
+    }
+    if (!n.asset) {
+      return { ok: false, chain, depth: chain.length, error: '引用操作区缺少素材 id' };
+    }
+    const ref = byId[n.asset];
+    if (!ref) {
+      return { ok: false, chain, depth: chain.length, error: '操作区引用的素材「' + n.asset + '」不在当前素材库' };
+    }
+    if (visited[n.asset]) {
+      return { ok: false, chain, depth: chain.length, error: '操作区引用链存在循环（重复出现素材「' + n.asset + '」）' };
+    }
+    visited[n.asset] = true;
+    const refKind = String(ref.kind === undefined || ref.kind === null ? '' : ref.kind).trim();
+    if (refKind === 'region') {
+      if (ref.op_region !== undefined && ref.op_region !== null) {
+        return {
+          ok: false, chain, depth: chain.length,
+          error: 'region 素材「' + n.asset + '」是末端固定区域，不能再配置操作区',
+        };
+      }
+      chain.push({ mode: 'asset', asset: n.asset, pick: n.pick });
+      chain.push({ mode: 'region', asset: n.asset });
+      return { ok: true, chain, depth: chain.length, error: '' };
+    }
+    if (recognizable.indexOf(refKind) < 0) {
+      return {
+        ok: false, chain, depth: chain.length,
+        error: '素材「' + n.asset + '」（' + (refKind || '未知类型') + '）不能作为操作区链节点',
+      };
+    }
+    chain.push({ mode: 'asset', asset: n.asset, pick: n.pick });
+    node = ref.op_region;
+  }
+  return { ok: false, chain, depth: chain.length, error: '操作区引用链超过最大深度 16' };
+}
+
+// --- U-T4/S5：操作区递归对话框草稿模型（纯函数，API 无关） -------------------
+// draft = { rootAssetId, levels: [{ assetId, opRegion }] }
+// levels[0] = 当前素材的 op_region 编辑值；选「引用素材」后递归展开被引用素材的
+// op_region 编辑值（levels[1..]）。保存 = 把改动过的 levels 逐个 PATCH
+// /task/asset/update（阶段 B），服务端 validate_op_region 仍是唯一权威。
+function opRegionToJson(opRegion) {
+  const n = opRegionNodeOf(opRegion);
+  if (n.mode === 'offset') return { mode: 'offset', offset: n.offset.slice() };
+  if (n.mode === 'asset') {
+    return { mode: 'asset', asset: n.asset, pick: n.pick === 'nearest' ? 'nearest' : 'score' };
+  }
+  return { mode: 'self' };
+}
+
+function opRegionDraftStart(asset) {
+  const it = asset && typeof asset === 'object' ? asset : {};
+  const id = String(it.id === undefined || it.id === null ? '' : it.id).trim();
+  const initial = it.op_region !== undefined && it.op_region !== null ? it.op_region : { mode: 'self' };
+  return {
+    rootAssetId: id,
+    levels: [{ assetId: id, opRegion: opRegionToJson(initial) }],
+  };
+}
+
+function opRegionDraftBreadcrumb(draft) {
+  const d = draft && Array.isArray(draft.levels) ? draft : { levels: [] };
+  return d.levels.map((level) => String(level && level.assetId ? level.assetId : ''));
+}
+
+function opRegionDraftBreadcrumbText(draft) {
+  return opRegionDraftBreadcrumb(draft).filter(Boolean).join(' ▸ ');
+}
+
+// 设置某一级的 op_region；若改成引用素材，则递归追加被引用素材的当前 op_region
+// （缺省 self）。返回新 draft（不改入参）。
+function opRegionDraftSetLevel(draft, index, opRegion, assets) {
+  const d = draft && Array.isArray(draft.levels) ? draft : { rootAssetId: '', levels: [] };
+  const rawIndex = Number(index);
+  const i = Math.max(0, Math.min(
+    Number.isInteger(rawIndex) ? rawIndex : 0,
+    Math.max(0, d.levels.length - 1)
+  ));
+  const levels = d.levels.slice(0, i + 1);
+  const node = opRegionToJson(opRegion);
+  levels[i] = { assetId: levels[i].assetId, opRegion: node };
+  if (node.mode === 'asset' && node.asset) {
+    const ref = (Array.isArray(assets) ? assets : []).find(
+      (asset) => asset && String(asset.id) === node.asset
+    );
+    const refKind = ref ? String(ref.kind === undefined || ref.kind === null ? '' : ref.kind) : '';
+    // Lead 裁决 11：region 素材只作末端固定区域节点（其 roi 即操作区），不再递归
+    // 展开 op_region，也就没有可编辑的下一级。
+    if (refKind !== 'region') {
+      const refOp = ref && ref.op_region !== undefined && ref.op_region !== null
+        ? ref.op_region
+        : { mode: 'self' };
+      levels.push({ assetId: node.asset, opRegion: opRegionToJson(refOp) });
+    }
+  }
+  return { rootAssetId: d.rootAssetId, levels };
+}
+
+// 回退：删除第 index 级及其后所有级，并把第 index-1 级改回 self。
+function opRegionDraftBack(draft, index) {
+  const d = draft && Array.isArray(draft.levels) ? draft : null;
+  const i = Number(index);
+  if (!d || !Number.isInteger(i) || i <= 0 || i >= d.levels.length) return d;
+  const levels = d.levels.slice(0, i);
+  levels[i - 1] = { assetId: levels[i - 1].assetId, opRegion: { mode: 'self' } };
+  return { rootAssetId: d.rootAssetId, levels };
+}
+
+// 用 draft 的编辑值覆盖素材库里的 op_region，走 opRegionChainSpec 做链校验。
+function opRegionDraftChainSpec(draft, assets) {
+  const d = draft && Array.isArray(draft.levels) ? draft : { rootAssetId: '', levels: [] };
+  const overrides = {};
+  for (const level of d.levels) {
+    if (!level || !level.assetId) continue;
+    overrides[level.assetId] = opRegionToJson(level.opRegion);
+  }
+  const merged = (Array.isArray(assets) ? assets : []).map((asset) => {
+    if (!asset || typeof asset !== 'object') return asset;
+    const id = String(asset.id === undefined || asset.id === null ? '' : asset.id).trim();
+    if (!id || !Object.prototype.hasOwnProperty.call(overrides, id)) return asset;
+    return Object.assign({}, asset, { op_region: overrides[id] });
+  });
+  const rootOp = d.levels.length ? d.levels[0].opRegion : { mode: 'self' };
+  return opRegionChainSpec(rootOp, merged, d.rootAssetId);
+}
+
+// 保存载荷：只返回与素材库当前值不同的级，按 breadcrumb 顺序、去重。
+function opRegionDraftUpdates(draft, assets) {
+  const d = draft && Array.isArray(draft.levels) ? draft : { levels: [] };
+  const list = Array.isArray(assets) ? assets : [];
+  const byId = {};
+  for (const asset of list) {
+    if (!asset || typeof asset !== 'object') continue;
+    const id = String(asset.id === undefined || asset.id === null ? '' : asset.id).trim();
+    if (id) byId[id] = asset;
+  }
+  const out = [];
+  const seen = {};
+  for (const level of d.levels) {
+    if (!level || !level.assetId || seen[level.assetId]) continue;
+    seen[level.assetId] = true;
+    const next = opRegionToJson(level.opRegion);
+    const storedAsset = byId[level.assetId];
+    const stored = storedAsset && storedAsset.op_region !== undefined && storedAsset.op_region !== null
+      ? opRegionToJson(storedAsset.op_region)
+      : { mode: 'self' };
+    if (JSON.stringify(next) === JSON.stringify(stored)) continue;
+    out.push({ assetId: level.assetId, op_region: next });
+  }
+  return out;
+}
+
+// 当前 draft 每一级的摘要（面包屑 + 模式），供对话框逐级渲染。
+function opRegionDraftSummary(draft) {
+  const d = draft && Array.isArray(draft.levels) ? draft : { levels: [] };
+  return d.levels.map((level) => {
+    const n = opRegionNodeOf(level && level.opRegion);
+    let text = '当前素材操作区';
+    if (n.mode === 'offset') text = '相对偏移 [' + n.offset.join(',') + ']';
+    else if (n.mode === 'asset') {
+      text = '引用素材「' + n.asset + '」' + (n.pick === 'nearest' ? '（离上一节点最近）' : '（评分最高）');
+    }
+    return { assetId: level && level.assetId ? String(level.assetId) : '', mode: n.mode, text };
+  });
+}
+
+// pick 选项（仅引用级可设；Lead 裁决 2：评分最高 / 离上一节点真实识别区域最近）。
+function opRegionPickOptions() {
+  return [
+    { value: 'score', label: '评分最高' },
+    { value: 'nearest', label: '离上一节点最近' },
+  ];
+}
+
+// 可引用素材列表（S5：搜索框列出全部素材并标注类型；region 素材可作末端固定区域，
+// 用 terminal 标记；当前素材自身排除，环由 opRegionChainSpec 兜底拒绝）。
+function opRegionRefOptions(assets, rootAssetId) {
+  const root = String(rootAssetId === undefined || rootAssetId === null ? '' : rootAssetId).trim();
+  const recognizable = ['template', 'template_set', 'ocr_line', 'ocr_lines', 'ocr_var'];
+  const out = [];
+  for (const asset of Array.isArray(assets) ? assets : []) {
+    if (!asset || typeof asset !== 'object') continue;
+    const id = String(asset.id === undefined || asset.id === null ? '' : asset.id).trim();
+    if (!id || (root && id === root)) continue;
+    const kind = String(asset.kind === undefined || asset.kind === null ? '' : asset.kind).trim();
+    if (recognizable.indexOf(kind) >= 0) out.push({ id, kind, terminal: false });
+    else if (kind === 'region') out.push({ id, kind, terminal: true });
+  }
+  return out;
+}
+
+// --- U-T4/S2：识别文字（ocr_var）对话框纯模型 -------------------------------
+// 新建 ocr_var：runtime_text 必填≤200、param_key 自动生成（可改，创建后只读）、
+// label、roi 可空（全屏 OCR）。编辑 ocr_var：改 runtime_text/label/roi；改 roi 为
+// 空必须用 replace（update 的 roi=None 表示不变，无法清空）。纯函数，ui_pure_test
+// 直接抽取执行；对话框/DOM 在下方（阶段 B）。
+function isParamKeyValid(key) {
+  const text = String(key === undefined || key === null ? '' : key).trim();
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(text) && text.length <= 64;
+}
+
+// 素材 id → 稳定的自动 param_key（p_ + 8 位十六进制；同 id 永远同 key）。
+function autoParamKey(assetId) {
+  const raw = String(assetId === undefined || assetId === null ? '' : assetId);
+  let hash = 2166136261;
+  for (let i = 0; i < raw.length; i += 1) {
+    hash ^= raw.charCodeAt(i);
+    hash = (hash * 16777619) >>> 0;
+  }
+  return 'p_' + (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function assetTextDraftStart(asset, opts) {
+  const it = asset && typeof asset === 'object' ? asset : {};
+  const o = opts && typeof opts === 'object' ? opts : {};
+  const id = String(it.id === undefined || it.id === null ? '' : it.id).trim();
+  const roi = Array.isArray(it.roi) && it.roi.length === 4
+    ? it.roi.map((v) => Number(v))
+    : null;
+  return {
+    mode: 'edit',
+    id: id,
+    runtimeText: String(it.runtime_text === undefined || it.runtime_text === null ? '' : it.runtime_text),
+    paramKey: String(it.param_key === undefined || it.param_key === null ? '' : it.param_key),
+    label: String(it.label === undefined || it.label === null ? '' : it.label),
+    roi: roi,
+    fullScreen: !roi,
+    positions: Array.isArray(it.positions) ? it.positions.slice() : [],
+    task: String(o.task === undefined || o.task === null ? '' : o.task).trim(),
+  };
+}
+
+// 从「识别结果」候选新建 ocr_var：识别框作为 roi，文字作为 runtime_text，
+// param_key 由素材 id 自动派生；位置帧取当前勾选的位置帧。
+function assetTextDraftFromCandidate(candidate, opts) {
+  const c = candidate && typeof candidate === 'object' ? candidate : {};
+  const o = opts && typeof opts === 'object' ? opts : {};
+  const rec = c.recognize && typeof c.recognize === 'object' ? c.recognize : null;
+  const roi = rec
+    ? [Number(rec.x), Number(rec.y), Number(rec.w), Number(rec.h)]
+    : null;
+  const id = String(o.name !== undefined && o.name !== null ? o.name : (c.name || '')).trim();
+  return {
+    mode: 'create',
+    id: id,
+    runtimeText: String(o.text !== undefined && o.text !== null ? o.text : (c.text || '')),
+    paramKey: id ? autoParamKey(id) : '',
+    label: id,
+    roi: roi,
+    fullScreen: !roi,
+    positions: Array.isArray(o.positions) ? o.positions.slice() : [],
+    task: String(o.task === undefined || o.task === null ? '' : o.task).trim(),
+  };
+}
+
+// 对话框字段 → 保存前校验 errors[]（空=通过）。
+// opts: { existingIds?: string[], existingParamKeys?: string[], task?: string }
+function assetTextValidate(draft, opts) {
+  const d = draft && typeof draft === 'object' ? draft : {};
+  const o = opts && typeof opts === 'object' ? opts : {};
+  const errors = [];
+  const mode = d.mode === 'create' ? 'create' : 'edit';
+  if (mode === 'create') {
+    const id = String(d.id === undefined || d.id === null ? '' : d.id).trim();
+    if (!id) {
+      errors.push('素材 id 必填');
+    } else if (!candidateNameValid(id)) {
+      errors.push('素材 id 非法（字母/中文/数字/下划线，不能以数字开头）');
+    } else {
+      const ids = Array.isArray(o.existingIds) ? o.existingIds.map(String) : null;
+      if (ids && ids.indexOf(id) >= 0) errors.push('素材 id「' + id + '」已存在（需全局唯一）');
+    }
+    if (!Array.isArray(d.positions) || !d.positions.length) {
+      errors.push('新建素材至少需要一个位置帧（先在工作台选择位置帧）');
+    }
+    const keyText = String(d.paramKey === undefined || d.paramKey === null ? '' : d.paramKey).trim();
+    const key = keyText || (id ? autoParamKey(id) : '');
+    if (!key) {
+      errors.push('param_key 必填（留空会按素材 id 自动生成）');
+    } else if (!isParamKeyValid(key)) {
+      errors.push('param_key 必须匹配 [A-Za-z_][A-Za-z0-9_]*（≤64 字符）');
+    } else {
+      const keys = Array.isArray(o.existingParamKeys) ? o.existingParamKeys.map(String) : null;
+      if (keys && keys.indexOf(key) >= 0) errors.push('param_key「' + key + '」已被本任务其它素材使用');
+    }
+  }
+  const rt = runtimeTextValid(d.runtimeText);
+  if (!rt.ok) errors.push(rt.error);
+  const label = String(d.label === undefined || d.label === null ? '' : d.label).trim();
+  if (label.length > 80) errors.push('显示名 label 最长 80 字符');
+  if (!d.fullScreen) {
+    const roi = Array.isArray(d.roi) ? d.roi : null;
+    const ints = roi && roi.length === 4 && roi.every((v) => Number.isInteger(Number(v)));
+    if (!ints) {
+      errors.push('识别区域 roi 必须是 4 个整数（或勾选「全屏 OCR」）');
+    } else if (Number(roi[2]) <= 0 || Number(roi[3]) <= 0) {
+      errors.push('识别区域 roi 的 w/h 必须大于 0');
+    }
+  }
+  if (mode === 'edit' && d.fullScreen &&
+      (!Array.isArray(d.positions) || !d.positions.length)) {
+    errors.push('清空识别区域（全屏 OCR）需要素材已有位置帧（会走替换保存）');
+  }
+  return errors;
+}
+
+// draft → {url, payload, errors}（不改入参；errors 空才可保存）。
+function assetTextSaveRequest(draft, opts) {
+  const d = draft && typeof draft === 'object' ? draft : {};
+  const o = opts && typeof opts === 'object' ? opts : {};
+  const errors = assetTextValidate(d, o);
+  const task = String(o.task !== undefined && o.task !== null ? o.task : (d.task || '')).trim();
+  if (errors.length) return { ok: false, url: '', payload: null, errors: errors };
+  const roi = d.fullScreen
+    ? null
+    : (Array.isArray(d.roi) ? d.roi.map((v) => Math.round(Number(v))) : null);
+  const label = String(d.label === undefined || d.label === null ? '' : d.label).trim();
+  const payload = { task: task };
+  if (d.mode === 'create') {
+    payload.id = String(d.id === undefined || d.id === null ? '' : d.id).trim();
+    payload.kind = 'ocr_var';
+    payload.runtime_text = String(d.runtimeText).trim();
+    const keyText = String(d.paramKey === undefined || d.paramKey === null ? '' : d.paramKey).trim();
+    payload.param_key = keyText || autoParamKey(payload.id);
+    payload.positions = Array.isArray(d.positions) ? d.positions.slice() : [];
+    if (label) payload.label = label;
+    if (roi) payload.roi = roi;
+    return { ok: true, url: '/task/save_asset', payload: payload, errors: [] };
+  }
+  // edit：清空 roi 只能走 replace（/task/asset/update 的 roi 缺省=不变）。
+  if (d.fullScreen) {
+    return {
+      ok: true,
+      url: '/task/save_asset',
+      payload: {
+        task: task,
+        id: String(d.id === undefined || d.id === null ? '' : d.id).trim(),
+        kind: 'ocr_var',
+        runtime_text: String(d.runtimeText).trim(),
+        param_key: String(d.paramKey === undefined || d.paramKey === null ? '' : d.paramKey).trim(),
+        positions: Array.isArray(d.positions) ? d.positions.slice() : [],
+        replace: true,
+        ...(label ? { label: label } : {}),
+      },
+      errors: [],
+    };
+  }
+  if (label) payload.label = label;
+  payload.id = String(d.id === undefined || d.id === null ? '' : d.id).trim();
+  payload.runtime_text = String(d.runtimeText).trim();
+  payload.roi = roi;
+  return { ok: true, url: '/task/asset/update', payload: payload, errors: [] };
+}
+
+// 操作区对话框保存计划：链校验 + 只含改动级的 update 列表（纯函数）。
+function opRegionSavePlan(draft, assets, opts) {
+  const o = opts && typeof opts === 'object' ? opts : {};
+  const spec = opRegionDraftChainSpec(draft, assets);
+  if (!spec.ok) return { ok: false, errors: [spec.error], updates: [], chain: spec.chain };
+  const updates = opRegionDraftUpdates(draft, assets).map((u) => ({
+    assetId: u.assetId,
+    op_region: u.op_region,
+    scope: o.scope === undefined || o.scope === null ? '' : String(o.scope),
+  }));
+  return { ok: true, errors: [], updates: updates, chain: spec.chain };
+}
+
+// 操作区对话框的三种来源（S5 三选一文案）。
+function opRegionLevelChoices() {
+  return [
+    { value: 'self', label: '当前素材操作区' },
+    { value: 'offset', label: '相对偏移（画布绘制）' },
+    { value: 'asset', label: '引用素材库素材' },
+  ];
+}
+
 // v1.2.4: asset-test real/dry-run mode.
 // Default is dry-run. Real gestures are created by a pure request builder (so
 // the payload contract is testable) and only sent when:
@@ -3326,155 +4162,244 @@ function updateAssetTestModeButton() {
     : '演练模式（默认）：素材行「点击测试/拖动测试」只计算定位，不操作设备';
 }
 
-async function testAssetClick(it, frameId, scopeTask) {
-  cancelRecognitionRoiEdit('点击测试');
+// --- U-T4/S4：素材测试动作（test_action）纯函数 -------------------------------
+// POST /task/asset/test_action（Studio-only）请求体：dry=演练，real=true 必须
+// live=1（服务端拒绝不带实时帧的真实点击）。drag 本轮服务端 400，不接。
+function testActionRequestBody(gesture, opts) {
+  const o = opts && typeof opts === 'object' ? opts : {};
+  const kind = gesture === 'long_press' ? 'long_press' : 'click';
+  const body = {
+    id: String(o.id === undefined || o.id === null ? '' : o.id).trim(),
+    gesture: kind,
+    real: o.real === true,
+  };
+  const task = String(o.task === undefined || o.task === null ? '' : o.task).trim();
+  if (task) body.task = task;
+  if (o.candidateIndex !== undefined && o.candidateIndex !== null &&
+      Number.isInteger(Number(o.candidateIndex))) {
+    body.candidate_index = Number(o.candidateIndex);
+  }
+  const frame = o.frame && typeof o.frame === 'object' ? o.frame : {};
+  if (frame.live === true) body.live = true;
+  else if (Number.isInteger(Number(frame.frameId))) body.frame_id = Number(frame.frameId);
+  if (o.holdMs !== undefined && o.holdMs !== null && Number.isFinite(Number(o.holdMs))) {
+    body.hold_ms = Math.round(Number(o.holdMs));
+  }
+  return body;
+}
+
+// 真实点测候选下拉的一行：「#1 score=0.973」。
+function candidateOptionLabel(candidate) {
+  const c = candidate && typeof candidate === 'object' ? candidate : {};
+  const index = Number.isInteger(Number(c.index)) ? Number(c.index) : 0;
+  const score = Number(c.score);
+  return '#' + index + ' score=' + (Number.isFinite(score) ? score.toFixed(3) : '—');
+}
+
+// test_action dry 响应 → 结果区行（含候选序号/真实识别区域/操作区/目标点/链 steps）。
+function testActionResultLines(result, candidateIndex) {
+  const s = result && typeof result === 'object' && !Array.isArray(result) ? result : {};
+  const index = Number.isInteger(Number(candidateIndex)) ? Number(candidateIndex) : 0;
+  if (!s.ok) {
+    const errors = Array.isArray(s.errors) ? s.errors : ['test_action 失败'];
+    return ['#' + index + ' ❌ ' + errors.join('; ')];
+  }
+  const boxText = (box) => (Array.isArray(box) && box.length >= 4
+    ? '[' + box.join(',') + ']' : '—');
+  const point = s.point && Number.isFinite(Number(s.point.x)) && Number.isFinite(Number(s.point.y))
+    ? '(' + Number(s.point.x) + ',' + Number(s.point.y) + ')' : '—';
+  const lines = [
+    '#' + index + ' ✅ real_rect=' + boxText(s.real_rect) +
+    ' action_box=' + boxText(s.action_box) +
+    ' point=' + point +
+    ' chain_depth=' + Number(s.chain_depth || 0) +
+    (s.frame_source ? ' · 帧来源=' + s.frame_source : ''),
+  ];
+  for (const step of Array.isArray(s.steps) ? s.steps : []) {
+    lines.push('  · ' + String(step.asset || '?') + ' [' + String(step.mode || '?') + ']' +
+      ' real=' + boxText(step.real) +
+      (step.score !== undefined && step.score !== null
+        ? ' score=' + Number(step.score).toFixed(3) : '') +
+      (step.text !== undefined && step.text !== null
+        ? ' text=' + JSON.stringify(String(step.text)) : ''));
+  }
+  if (s.real) {
+    lines.push('  · 真实模式：' + (s.clicked ? '已点击' : '未点击') +
+      ' · tap_ok=' + String(s.tap_ok === true));
+  }
+  return lines;
+}
+
+// test_action dry 响应 → 画布 boxes（真实识别区域 + 操作区）。
+function testActionBoxes(result, labelPrefix) {
+  const s = result && typeof result === 'object' ? result : {};
+  if (!s.ok) return [];
+  const out = [];
+  const prefix = String(labelPrefix === undefined || labelPrefix === null ? '' : labelPrefix);
+  if (Array.isArray(s.real_rect) && matchBoxValid(s.real_rect)) {
+    out.push({ text: (prefix ? prefix + ' ' : '') + '真实识别', score: Number(s.score || 1), box: s.real_rect });
+  }
+  if (Array.isArray(s.action_box) && matchBoxValid(s.action_box)) {
+    out.push({ text: (prefix ? prefix + ' ' : '') + '操作区', score: 1, box: s.action_box });
+  }
+  return out;
+}
+
+// validate_op_region 400({errors:[{path,msg}]}) → 可读多行错误。
+function opRegionValidateErrorText(result) {
+  const s = result && typeof result === 'object' && !Array.isArray(result) ? result : {};
+  if (s.ok) return '';
+  const errors = Array.isArray(s.errors) ? s.errors : [];
+  const lines = errors.map((error) => {
+    if (error && typeof error === 'object') {
+      const path = error.path !== undefined && error.path !== null ? String(error.path) : '';
+      const msg = error.msg !== undefined && error.msg !== null
+        ? String(error.msg)
+        : String(error.message !== undefined && error.message !== null ? error.message : '');
+      return (path ? path + '：' : '') + (msg || '操作区不合法');
+    }
+    return String(error);
+  });
+  return lines.length ? lines.join('\n') : String(s.error || '操作区校验失败');
+}
+
+async function fetchActionCandidates(it, task, frame) {
+  try {
+    const r = await fetch(assetCandidatesUrl(task, it.id, frame && frame.query ? frame.query : ''));
+    const s = await r.json();
+    if (!s || s.error) return { ok: false, items: [], error: (s && s.error) || '候选识别失败' };
+    return { ok: true, items: Array.isArray(s.candidates) ? s.candidates : [], error: '' };
+  } catch (e) {
+    return { ok: false, items: [], error: String(e) };
+  }
+}
+
+// 真实点测：用侧栏下拉选择候选（#序号 score），返回候选序号；取消返回 null。
+function pickActionCandidate(candidates, it) {
+  return new Promise((resolve) => {
+    if (!candidateSelect) {
+      resolve(null);
+      return;
+    }
+    candidateSelect.textContent = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = '选择候选后发送真实点击…';
+    candidateSelect.appendChild(placeholder);
+    for (const candidate of Array.isArray(candidates) ? candidates : []) {
+      const option = document.createElement('option');
+      option.value = String(candidate.index);
+      option.textContent = candidateOptionLabel(candidate);
+      candidateSelect.appendChild(option);
+    }
+    candidateSelect.hidden = false;
+    candidateSelect.value = '';
+    setStatus(`真实点测：素材「${it.id}」请选择候选区域（下拉在识别结果上方）`, '#ffd54a');
+    const onChange = () => {
+      const value = candidateSelect.value;
+      candidateSelect.onchange = null;
+      candidateSelect.hidden = true;
+      resolve(value === '' ? null : Number(value));
+    };
+    candidateSelect.onchange = onChange;
+  });
+}
+
+// U-T4/S4：素材行点测/长按 = POST /task/asset/test_action。
+// dry：逐候选演练并画 real_rect/action_box/point + chain steps；
+// real：先选候选（#candidate-select）→ dry 取目标点 → 二次确认 → real:true,live:1。
+// drag 本轮服务端 400（「drag 测试暂未支持」）：拖测保持旧实现（testAssetDrag）。
+async function runTestActionForAsset(it, gesture, frameId, scopeTask) {
+  cancelRecognitionRoiEdit(gesture === 'long_press' ? '长按测试' : '点击测试');
   const mode = realAssetTestGuard();
   if (!mode.ok) return;
   const task = assetRowScopeTask(scopeTask, false);
-  const frames = testFrames(it, frameId);
-  const details = [];
-  const boxesForFrames = [];
-  const realOps = [];
+  const real = assetTestReal;
+  let frames = testFrames(it, frameId);
+  if (real) {
+    const liveFrame = frames.find((frame) => frame.live) ||
+      { query: '&live=1', label: '实时帧', source: 'live', live: true, frameId: null };
+    frames = [liveFrame];
+  }
+  const gestureLabel = gesture === 'long_press' ? '长按' : '点击';
+  const lines = [];
+  const collectedBoxes = [];
+  resultEl.textContent = `素材「${it.id}」${gestureLabel}测试（${real ? '真实模式' : '演练'}）…`;
+  log(`test_action 开始 asset=${it.id} gesture=${gesture} real=${real}`, 'INFO', {
+    frames: frames.map((f) => f.label),
+  });
   try {
     for (const frame of frames) {
-      if (it.kind === 'template') {
-        if (!Array.isArray(it.roi)) {
-          details.push(`${frame.label}: ❌ 素材没有 roi`);
-          continue;
-        }
-        const r = await fetch(
-          `/task/asset/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}${frame.query}`
-        );
-        const s = await r.json();
-        if (s.error) {
-          details.push(`${frame.label}: ❌ ${s.error}`);
-          continue;
-        }
-        const recognizedBox = [Number(s.x), Number(s.y), Number(s.w), Number(s.h)];
-        if (!matchBoxValid(recognizedBox)) {
-          details.push(`${frame.label}: ❌ 匹配坐标无效 (${s.x},${s.y},${s.w},${s.h})`);
-          continue;
-        }
-        // P1-1: translate the saved action_shape exactly like the runtime does.
-        const effShape = translatedActionShapeForMatch(it, s);
-        const action = assetActionBox(it, effShape, recognizedBox) || recognizedBox;
-        const point = randomPointInAction(it, effShape, recognizedBox);
-        const validity = actionValidity(it, recognizedBox, effShape);
-        const pass = s.pass !== false;
-        details.push(
-          `${frame.label}: ${pass ? '✅' : '⚠ 未过阈值'} score=${Number(s.score).toFixed(4)} ` +
-          `匹配 @ (${s.x},${s.y}) · 操作区[${action.join(',')}] · 目标点 (${point.x},${point.y}) · ` +
-          `区域有效性：${validity.text} · 帧来源：${s.frame_source || frame.source}`
-        );
-        boxesForFrames.push({
-          text: `点测 ${it.id} ${frame.label} ${Number(s.score).toFixed(2)}`,
-          score: Number(s.score),
-          box: recognizedBox,
-        });
-        if (assetTestReal) {
-          realOps.push({ label: `${frame.label} 点击 (${point.x},${point.y})`, x: point.x, y: point.y });
-        }
-      } else if (it.kind === 'ocr_line' || it.kind === 'ocr_lines') {
-        const probe = await probeAssetOcrFrame(it, frame, task);
-        if (!probe.ok) {
-          details.push(`${frame.label}: ❌ ${probe.error}`);
-          continue;
-        }
-        const recognizedBox = probe.recognizedBox || null;
-        // Single-line /ocr has no bbox: probeAssetOcrFrame reports the stored
-        // ROI as roiBox only, so a stale-looking saved rectangle is never
-        // labelled (or drawn) as a real detection box.
-        const roiBox = Array.isArray(probe.roiBox) ? probe.roiBox : null;
-        const boxNote = recognizedBox
-          ? `真实识别框 [${recognizedBox.join(',')}]`
-          : `识别区域（存储 ROI，无独立检测框）${roiBox ? ` [${roiBox.join(',')}]` : '（无）'}`;
-        const effShape = it.action_shape || null;
-        const action = assetActionBox(it, effShape, recognizedBox || it.roi) || it.roi;
-        const point = randomPointInAction(it, effShape, recognizedBox || it.roi);
-        const validity = actionValidity(it, recognizedBox, effShape);
-        const what = probe.lines
-          ? `多行 ${probe.lines.length} 行，命中 ${JSON.stringify(probe.text || '')}`
-          : `文字 ${JSON.stringify(probe.text || '')}`;
-        details.push(
-          `${frame.label}: ✅ ${what} score=${Number(probe.score || 0).toFixed(4)} · ` +
-          `${boxNote} · ` +
-          `操作区[${action.join(',')}] · 目标点 (${point.x},${point.y}) · 区域有效性：${validity.text} · ` +
-          `帧来源：${probe.frameSource || frame.source}`
-        );
-        if (recognizedBox) {
-          boxesForFrames.push({ text: `点测 ${it.id} ${frame.label}`, score: Number(probe.score || 0), box: recognizedBox });
-        }
-        if (assetTestReal) {
-          realOps.push({ label: `${frame.label} 点击 (${point.x},${point.y})`, x: point.x, y: point.y });
-        }
-      } else {
-        const action = assetActionBox(it) || it.roi;
-        if (!action) {
-          details.push(`${frame.label}: ❌ 没有识别/操作区域`);
-          continue;
-        }
-        const point = randomPointInAction(it, undefined, it.roi);
-        details.push(`${frame.label}: 操作区[${action.join(',')}] · 目标点 (${point.x},${point.y}) · 帧来源：${frame.source}`);
-        if (assetTestReal) {
-          realOps.push({ label: `${frame.label} 点击 (${point.x},${point.y})`, x: point.x, y: point.y });
-        }
+      const candidates = await fetchActionCandidates(it, task, frame);
+      if (!candidates.ok) {
+        lines.push(`${frame.label}: ❌ ${candidates.error}`);
+        continue;
       }
-    }
-    boxes = boxesForFrames;
-    draw();
-    let modeNote = '';
-    if (assetTestReal) {
-      if (!realOps.length) {
-        modeNote = '真实模式：没有可执行的点击（未发送设备请求）。';
-      } else if (!confirmAssetTestGestures('click', realOps)) {
-        modeNote = '真实模式：已取消，未发送设备请求。';
+      if (!candidates.items.length) {
+        lines.push(`${frame.label}: （没有符合阈值的候选）`);
+        continue;
+      }
+      if (real) {
+        const index = await pickActionCandidate(candidates.items, it);
+        if (index === null) {
+          lines.push(`${frame.label}: 已取消（未选择候选）`);
+          continue;
+        }
+        const dry = await postJson('/task/asset/test_action', testActionRequestBody(gesture, {
+          task, id: it.id, candidateIndex: index, frame, real: false,
+        }));
+        if (!dry || !dry.ok) {
+          lines.push(...testActionResultLines(dry, index));
+          continue;
+        }
+        const point = dry.point || {};
+        const gestureOp = {
+          label: `${frame.label} 候选 #${index} (${point.x},${point.y})`,
+          x: Number(point.x),
+          y: Number(point.y),
+        };
+        if (!confirmAssetTestGestures('click', [gestureOp])) {
+          lines.push(`${frame.label} #${index}: 已取消真实${gestureLabel}，未发送设备请求`);
+          continue;
+        }
+        const sent = await postJson('/task/asset/test_action', testActionRequestBody(gesture, {
+          task, id: it.id, candidateIndex: index, frame, real: true,
+        }));
+        lines.push(...testActionResultLines(sent, index).map((line) => line.replace(/^#/, '#')));
+        lines[lines.length - 1] += ' · 帧=' + frame.label;
+        collectedBoxes.push(...testActionBoxes(sent, `${frame.label} #${index}`));
       } else {
-        let sentOk = 0;
-        let sentFail = 0;
-        const sent = [];
-        for (const op of realOps) {
-          try {
-            const res = await sendAssetTestGesture(true, 'tap', { x: op.x, y: op.y });
-            sentOk += 1;
-            sent.push(`${op.label}: ${res.text}`);
-          } catch (e) {
-            sentFail += 1;
-            sent.push(`${op.label}: ❌ 真实点击失败：${e && e.message ? e.message : e}`);
+        for (const candidate of candidates.items) {
+          const dry = await postJson('/task/asset/test_action', testActionRequestBody(gesture, {
+            task, id: it.id, candidateIndex: candidate.index, frame, real: false,
+          }));
+          const candidateLines = testActionResultLines(dry, candidate.index);
+          lines.push(`${frame.label} ${candidateLines[0]}`);
+          for (let i = 1; i < candidateLines.length; i += 1) lines.push(candidateLines[i]);
+          for (const box of testActionBoxes(dry, `${frame.label} #${candidate.index}`)) {
+            collectedBoxes.push(box);
           }
         }
-        details.push(...sent);
-        modeNote =
-          `真实模式：已发送 ${sentOk}/${realOps.length} 个点击` +
-          (sentFail ? `，失败 ${sentFail}` : '') +
-          '（服务端 device/gesture 见上）。';
       }
     }
-    const header = assetTestReal
-      ? `点击测试（真实点击模式）「${it.id}」`
-      : `点击测试（演练，不实际点击）「${it.id}」`;
-    const tail = assetTestReal
-      ? (modeNote || '真实模式。')
-      : '注意：这里只验证定位/目标点；实际点击请在 flow 中运行。';
-    resultEl.textContent =
-      `${header}\n` +
-      `测试帧：${testFrameLabel(it, frameId)}（${frames.length} 帧）\n` +
-      details.join('\n') +
-      '\n' + tail;
-    log(
-      assetTestReal ? `素材点击测试（真实点击模式）：${it.id}` : `素材点击测试（演练）：${it.id}`,
-      assetTestReal ? 'WARN' : 'INFO',
-      {
-        frames: frames.map((f) => f.label),
-        kind: it.kind,
-        details,
-        gestures: realOps.length,
-      }
-    );
+    boxes = collectedBoxes;
+    draw();
+    const header = `素材「${it.id}」${gestureLabel}测试（${real ? '真实模式' : '演练，不实际点击'}）`;
+    const tail = real
+      ? '（真实模式：已按候选执行；设备/手势结果见上。）'
+      : '注意：演练只验证候选/真实识别区域/操作区/目标点/操作区链；真实点击请切「素材测试：真实点击」。';
+    resultEl.textContent = `${header}\n` + lines.join('\n') + '\n' + tail;
+    log(`test_action 完成 asset=${it.id} gesture=${gesture}`, 'INFO', { real, lines });
   } catch (e) {
-    resultEl.textContent =
-      `${assetTestReal ? '真实点击模式' : '演练'}点击测试异常：` + e;
+    resultEl.textContent = `${gestureLabel}测试异常：` + e;
+    log(`test_action 异常 asset=${it.id}`, 'ERROR', { error: String(e) });
   }
 }
+
+async function testAssetClick(it, frameId, scopeTask) {
+  return runTestActionForAsset(it, 'click', frameId, scopeTask);
+}
+
 
 async function testAssetDrag(it, frameId, scopeTask) {
   cancelRecognitionRoiEdit('拖动测试');
@@ -4183,15 +5108,624 @@ function collectFlowAssetIds(flow) {
   return ids;
 }
 
+// U-T4/S3（事项 3）：素材行「识别」= 返回**全部**真实识别区域 + 评分。
+// 统一模板/集合/OCR/ocr_var/region：GET /task/asset/candidates（P0a 已上线），
+// 每帧的候选全部画到画布（boxes），结果区按 `#i score=… [x,y,w,h]` 逐行列出。
+// 旧单结果接口（/task/asset/match、/ocr、/lines）保留给点测/拖测等测试路径。
+async function testAssetCandidates(it, frameId, scopeTask) {
+  cancelRecognitionRoiEdit('素材候选识别');
+  const task = assetRowScopeTask(scopeTask, false);
+  const frames = testFrames(it, frameId);
+  const kind = it.kind === 'template_set' ? 'collection' : it.kind;
+  const fullScreenOcr = !Array.isArray(it.roi) &&
+    (kind === 'ocr_var' || kind === 'ocr_line' || kind === 'ocr_lines');
+  const lines = [];
+  const collected = [];
+  resultEl.textContent = `素材「${it.id}」候选识别中…（${frames.length} 帧）`;
+  log(`候选识别开始 asset=${it.id}`, 'INFO', {
+    frames: frames.map((f) => f.label),
+    kind,
+    roi: Array.isArray(it.roi) ? it.roi : null,
+    full_screen_ocr: fullScreenOcr,
+    task,
+  });
+  try {
+    for (const frame of frames) {
+      const r = await fetch(assetCandidatesUrl(task, it.id, frame.query));
+      const s = await r.json();
+      if (!s || s.error) {
+        lines.push(`${frame.label}: ❌ ${(s && s.error) || '候选识别失败'}`);
+        continue;
+      }
+      const candidates = Array.isArray(s.candidates) ? s.candidates : [];
+      const domainText = s.domain === 'screen'
+        ? '全屏'
+        : s.domain === 'members' ? '集合成员识别区' : '素材识别区';
+      const thresholdText = s.threshold === null || s.threshold === undefined
+        ? '—'
+        : Number(s.threshold).toFixed(2);
+      const valueHint = s.domain === 'screen' ? '（全屏 OCR，较慢）' : '';
+      lines.push(
+        `${frame.label}: ${Number(s.count != null ? s.count : candidates.length)} 个候选` +
+        ` · 范围=${domainText}${valueHint} · 阈值=${thresholdText}` +
+        ` · 帧来源=${s.frame_source || frame.source}`
+      );
+      if (!candidates.length) lines.push('  （没有符合阈值的候选）');
+      for (const candidate of candidates) {
+        lines.push('  ' + candidateLabelText(candidate));
+      }
+      collected.push(...candidateBoxes(candidates));
+    }
+    boxes = collected;
+    draw();
+    const head = fullScreenOcr ? '识别区域为空 → 按全屏 OCR 识别（较慢）\n' : '';
+    resultEl.textContent =
+      `${head}素材「${it.id}」候选识别（${frames.length} 帧）\n` + lines.join('\n');
+    log(`候选识别完成 asset=${it.id}`, 'INFO', {
+      count: collected.length,
+      frames: frames.length,
+    });
+  } catch (e) {
+    resultEl.textContent = '候选识别异常：' + e;
+    log(`候选识别异常 asset=${it.id}`, 'ERROR', { error: String(e) });
+  }
+}
+
 function runAssetTest(it, frameId, scopeTask) {
   cancelRecognitionRoiEdit('素材测试');
-  if (it.kind === 'template') testAssetMatch(it, frameId, scopeTask);
-  else if (it.kind === 'region') {
-    pickAssetRoi(it);
+  // U-T4/S6：候选识别会重画 boxes，与相对偏移绘制互斥。
+  if (offsetDraw) exitOffsetDraw('素材识别');
+  // region 素材本身即操作区域：选中它（保留旧行为），再显示候选列表（单候选）。
+  if (it.kind === 'region') pickAssetRoi(it);
+  return testAssetCandidates(it, frameId, scopeTask);
+}
+
+// U-T4/S2：识别文字（runtime_text）对话框。新建 ocr_var（从识别结果）与编辑
+// 已有 ocr_var 共用；保存 POST /task/save_asset 或 /task/asset/update，成功后刷新
+// 素材库 + 配置项面板（GET /task/config 现含派生行）。
+function editAssetText(it, scopeTask) {
+  if (!it) return;
+  if (it.virtual === true) {
+    // 用户简化令后后端不再合成虚拟素材；该分支仅作防御（不扩展迁移 UI）。
+    resultEl.textContent = `素材「${it.id}」是只读虚拟素材，不能编辑识别文字。`;
+    setStatus(`虚拟素材「${it.id}」只读`);
+    return;
+  }
+  if (it.kind !== 'ocr_var') {
+    resultEl.textContent = `素材「${it.id}」（${it.kind}）不是「使用端OCR文字配置项」，没有识别文字可编辑。`;
+    setStatus('仅 ocr_var 素材可编辑识别文字');
+    return;
+  }
+  openAssetTextDialog(it, scopeTask);
+}
+
+// ---------- U-T4/S2：识别文字对话框（纯 DOM 层） ----------
+let assetTextDialogCtx = null;
+
+// 两个素材库缓存合并（global 优先；同一 id 只出现一次）。
+function assetDialogLibrary() {
+  const out = [];
+  const seen = {};
+  for (const list of [globalAssetsCache || [], taskAssets || []]) {
+    for (const asset of Array.isArray(list) ? list : []) {
+      if (!asset || asset.id === undefined || asset.id === null) continue;
+      const id = String(asset.id);
+      if (seen[id]) continue;
+      seen[id] = true;
+      out.push(asset);
+    }
+  }
+  return out;
+}
+
+function assetDialogScopeInfo(scopeTask) {
+  const scope = assetRowScopeTask(scopeTask, false);
+  const task = scope === GLOBAL_SCOPE_TASK
+    ? String((taskName && taskName.value) || '').trim()
+    : scope;
+  return { scope: scope, task: task };
+}
+
+function openAssetTextDialog(asset, scopeTask, createCtx) {
+  if (!assetTextDialog) return;
+  const scopeInfo = assetDialogScopeInfo(scopeTask);
+  let draft;
+  if (createCtx && createCtx.candidate) {
+    draft = assetTextDraftFromCandidate(createCtx.candidate, {
+      name: createCtx.name,
+      text: createCtx.text,
+      positions: createCtx.positions,
+      task: scopeInfo.task,
+    });
+  } else {
+    if (!asset) return;
+    draft = assetTextDraftStart(asset, { task: scopeInfo.task });
+  }
+  assetTextDialogCtx = {
+    draft: draft,
+    asset: asset || null,
+    scope: scopeInfo.scope,
+    task: scopeInfo.task,
+  };
+  renderAssetTextDialog();
+  if (typeof assetTextDialog.showModal === 'function') {
+    if (!assetTextDialog.open) assetTextDialog.showModal();
+  } else {
+    assetTextDialog.setAttribute('open', '');
+  }
+}
+
+function renderAssetTextDialog() {
+  const ctx = assetTextDialogCtx;
+  if (!ctx) return;
+  const d = ctx.draft;
+  const create = d.mode === 'create';
+  if (assetTextTitle) {
+    assetTextTitle.textContent = create
+      ? '新建「使用端OCR文字配置项」'
+      : '识别文字 · ' + d.id;
+  }
+  if (assetTextHint) {
+    assetTextHint.textContent = create
+      ? '新建 ocr_var：runtime_text 必填（≤200 字）；param_key 按素材 id 自动生成，创建后只读；roi 留空 = 全屏 OCR。'
+      : 'runtime_text 是默认识别文字；使用端在 Runner 覆盖。param_key 创建后只读。改 roi 为全屏会走替换保存（需要位置帧）。';
+  }
+  if (assetTextId) {
+    assetTextId.value = d.id;
+    assetTextId.readOnly = !create;
+    assetTextId.title = create ? '素材 id（全局唯一）' : '素材 id 创建后不可修改';
+  }
+  if (assetTextRuntime) assetTextRuntime.value = d.runtimeText;
+  if (assetTextParamKey) {
+    assetTextParamKey.value = d.paramKey;
+    assetTextParamKey.readOnly = !create;
+    assetTextParamKey.title = create
+      ? '按素材 id 自动生成（p_ + 8 位十六进制）；可改，创建后只读'
+      : '创建后只读（改键会使 Runner 已保存的值失效）';
+  }
+  if (assetTextLabel) assetTextLabel.value = d.label;
+  if (assetTextFullScreen) assetTextFullScreen.checked = !!d.fullScreen;
+  if (assetTextRoi) assetTextRoi.hidden = !!d.fullScreen;
+  const roi = Array.isArray(d.roi) ? d.roi : [];
+  if (assetTextRoiX) assetTextRoiX.value = roi.length === 4 ? String(roi[0]) : '';
+  if (assetTextRoiY) assetTextRoiY.value = roi.length === 4 ? String(roi[1]) : '';
+  if (assetTextRoiW) assetTextRoiW.value = roi.length === 4 ? String(roi[2]) : '';
+  if (assetTextRoiH) assetTextRoiH.value = roi.length === 4 ? String(roi[3]) : '';
+  if (assetTextPositions) {
+    assetTextPositions.textContent = '位置帧：' + (d.positions.length
+      ? d.positions.map((id) => '#' + id).join('、')
+      : '（未选择；新建必须至少一个位置帧）');
+  }
+  if (assetTextError) assetTextError.textContent = '';
+  if (assetTextSave) assetTextSave.disabled = false;
+}
+
+function readAssetTextDraftFromDialog() {
+  const ctx = assetTextDialogCtx;
+  if (!ctx) return null;
+  const intOrNaN = (el) => {
+    const text = String(el && el.value !== undefined && el.value !== null ? el.value : '').trim();
+    if (!text) return null;
+    const n = Number(text);
+    return Number.isInteger(n) ? n : NaN;
+  };
+  const fullScreen = !!(assetTextFullScreen && assetTextFullScreen.checked);
+  const x = intOrNaN(assetTextRoiX);
+  const y = intOrNaN(assetTextRoiY);
+  const w = intOrNaN(assetTextRoiW);
+  const h = intOrNaN(assetTextRoiH);
+  let roi = null;
+  if (!fullScreen) {
+    if ([x, y, w, h].every((v) => v !== null && !Number.isNaN(v))) roi = [x, y, w, h];
+  }
+  return Object.assign({}, ctx.draft, {
+    id: String(assetTextId && assetTextId.value !== undefined ? assetTextId.value : '').trim(),
+    runtimeText: String(assetTextRuntime && assetTextRuntime.value !== undefined
+      ? assetTextRuntime.value : ''),
+    paramKey: String(assetTextParamKey && assetTextParamKey.value !== undefined
+      ? assetTextParamKey.value : '').trim(),
+    label: String(assetTextLabel && assetTextLabel.value !== undefined
+      ? assetTextLabel.value : '').trim(),
+    fullScreen: fullScreen,
+    roi: roi,
+  });
+}
+
+function closeAssetTextDialog() {
+  const dlg = assetTextDialog;
+  assetTextDialogCtx = null;
+  if (!dlg) return;
+  try {
+    if (typeof dlg.close === 'function' && dlg.open) dlg.close();
+  } catch (e) { /* cosmetic */ }
+  dlg.removeAttribute('open');
+}
+
+async function refreshAssetsAfterOcrVarChange(task, scope) {
+  try { await refreshTaskAssetsForScope(scope); } catch (e) { /* library refresh is best-effort */ }
+  try { await refreshGlobalAssets(); } catch (e) { /* same */ }
+  // 任务配置项对话框（若正开着同一任务）重新加载：GET /task/config 现返回派生行。
+  if (taskConfigTask && taskConfigTask === task && taskConfigDialog && taskConfigDialog.open) {
+    try { await loadTaskConfig(task); } catch (e) { /* same */ }
+  }
+  // 构建页参数面板通过桥接重读 meta.params（builder 下次渲染可见派生行）。
+  if (window.OAS_TASK_CONFIG && typeof window.OAS_TASK_CONFIG.refresh === 'function' && task) {
+    try { await window.OAS_TASK_CONFIG.refresh(task); } catch (e) { /* same */ }
+  }
+}
+
+async function saveAssetTextDialog() {
+  const ctx = assetTextDialogCtx;
+  if (!ctx || !assetTextSave) return;
+  const draft = readAssetTextDraftFromDialog();
+  if (!draft) return;
+  const library = assetDialogLibrary();
+  const request = assetTextSaveRequest(draft, {
+    task: ctx.task,
+    existingIds: library.map((item) => String(item.id)),
+    existingParamKeys: library
+      .filter((item) => item && item.kind === 'ocr_var' && item.param_key !== undefined && item.param_key !== null)
+      .map((item) => String(item.param_key)),
+  });
+  if (!request.ok) {
+    if (assetTextError) assetTextError.textContent = request.errors.join('\n');
+    return;
+  }
+  assetTextSave.disabled = true;
+  if (assetTextError) assetTextError.textContent = '';
+  try {
+    const saved = await postJson(request.url, request.payload);
+    if (!saved || !saved.ok) {
+      const errors = (saved && saved.errors) || ['保存失败'];
+      if (assetTextError) assetTextError.textContent = errors.join('\n');
+      return;
+    }
+    const item = saved.item || request.payload;
+    const itemId = String(item.id === undefined || item.id === null ? '' : item.id);
+    const runtimeText = item.runtime_text !== undefined && item.runtime_text !== null
+      ? String(item.runtime_text) : String(request.payload.runtime_text);
+    const paramKey = item.param_key !== undefined && item.param_key !== null
+      ? String(item.param_key) : String(request.payload.param_key);
+    const roiText = Array.isArray(item.roi) && item.roi.length === 4
+      ? '[' + item.roi.join(',') + ']' : '空（全屏 OCR）';
+    closeAssetTextDialog();
+    setStatus(`识别文字已保存：${itemId}`, '#7bd88f');
     resultEl.textContent =
-      `操作区域「${it.id}」[${(it.roi || []).join(',')}]\n` +
-      `流程引用：click_target/find {kind:"region", sel:"${it.id}"}`;
-  } else testAssetOcr(it, frameId, scopeTask);
+      `素材「${itemId}」识别文字已保存\n` +
+      `runtime_text：${runtimeText}\nparam_key：${paramKey}\n识别区：${roiText}`;
+    log(`识别文字保存 asset=${itemId} kind=ocr_var`);
+    await refreshAssetsAfterOcrVarChange(ctx.task, ctx.scope);
+  } catch (e) {
+    if (assetTextError) assetTextError.textContent = '保存异常：' + e;
+  } finally {
+    if (assetTextSave) assetTextSave.disabled = false;
+  }
+}
+
+// ---------- U-T4/S5：操作区递归对话框（op_region 链，实装） ----------
+let opRegionDialogCtx = null;
+let offsetDrawReturnToOpRegion = null;
+
+function opRegionDialogAssets() {
+  return assetDialogLibrary();
+}
+
+function opRegionDialogScopeForAsset(assetId, fallbackScope) {
+  const id = String(assetId === undefined || assetId === null ? '' : assetId);
+  const inGlobal = (globalAssetsCache || []).some((a) => a && String(a.id) === id);
+  const inTask = (taskAssets || []).some((a) => a && String(a.id) === id);
+  if (inGlobal && !inTask) return GLOBAL_SCOPE_TASK;
+  if (inTask && !inGlobal) return fallbackScope;
+  return fallbackScope || assetScopeTask(false);
+}
+
+function showOpRegionDialog() {
+  if (!opRegionDialog) return;
+  if (typeof opRegionDialog.showModal === 'function') {
+    if (!opRegionDialog.open) opRegionDialog.showModal();
+  } else {
+    opRegionDialog.setAttribute('open', '');
+  }
+}
+
+function hideOpRegionDialog() {
+  if (!opRegionDialog) return;
+  try {
+    if (typeof opRegionDialog.close === 'function' && opRegionDialog.open) opRegionDialog.close();
+  } catch (e) { /* cosmetic */ }
+  opRegionDialog.removeAttribute('open');
+}
+
+function closeOpRegionDialog() {
+  opRegionDialogCtx = null;
+  hideOpRegionDialog();
+}
+
+function reopenOpRegionDialog() {
+  if (!opRegionDialogCtx) return;
+  renderOpRegionDialog();
+  showOpRegionDialog();
+}
+
+function openOpRegionDialog(asset, scopeTask) {
+  if (!asset || !opRegionDialog) return;
+  if (String(asset.kind) === 'region') {
+    setStatus('region 素材本身即操作区域，无需再设置操作区');
+    return;
+  }
+  const scopeInfo = assetDialogScopeInfo(scopeTask);
+  opRegionDialogCtx = {
+    asset: asset,
+    scope: scopeInfo.scope,
+    task: scopeInfo.task,
+    draft: opRegionDraftStart(asset),
+    error: '',
+    offsetLevel: null,
+  };
+  renderOpRegionDialog();
+  showOpRegionDialog();
+}
+
+function opRegionKindLabel(kind) {
+  if (window.OASAssetUI && typeof window.OASAssetUI.kindLabel === 'function') {
+    return window.OASAssetUI.kindLabel(kind);
+  }
+  return String(kind === undefined || kind === null ? '' : kind);
+}
+
+function opRegionLibAsset(lib, id) {
+  const key = String(id === undefined || id === null ? '' : id);
+  return (Array.isArray(lib) ? lib : []).find((a) => a && String(a.id) === key) || null;
+}
+
+function startOpRegionOffsetDraw(levelIndex) {
+  if (!opRegionDialogCtx) return;
+  offsetDrawReturnToOpRegion = {
+    levelIndex: Number.isInteger(Number(levelIndex)) ? Number(levelIndex) : 0,
+  };
+  hideOpRegionDialog();
+  startOffsetDrawForAsset(opRegionDialogCtx.asset, opRegionDialogCtx.scope);
+}
+
+function buildOpRegionLevel(ctx, level, index, lib) {
+  const node = opRegionNodeOf(level.opRegion);
+  const box = document.createElement('div');
+  box.className = 'op-region-level' + (index > 0 ? ' op-region-level-indent' : '');
+  const head = document.createElement('div');
+  head.className = 'op-region-level-head';
+  const title = document.createElement('span');
+  title.className = 'op-region-level-title';
+  title.textContent = (index === 0 ? '当前素材' : '第 ' + (index + 1) + ' 级引用') +
+    '：素材「' + String(level.assetId || '') + '」';
+  head.appendChild(title);
+  if (index > 0) {
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.textContent = '回退一级';
+    back.title = '删除该级引用，并把上一级改回「当前素材操作区」';
+    back.addEventListener('click', () => {
+      ctx.draft = opRegionDraftBack(ctx.draft, index);
+      ctx.error = '';
+      renderOpRegionDialog();
+    });
+    head.appendChild(back);
+  }
+  box.appendChild(head);
+
+  const modeRow = document.createElement('div');
+  modeRow.className = 'op-region-mode-row';
+  for (const choice of opRegionLevelChoices()) {
+    const label = document.createElement('label');
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'op-region-mode-' + index;
+    radio.value = choice.value;
+    radio.checked = node.mode === choice.value;
+    radio.addEventListener('change', () => {
+      let next;
+      if (choice.value === 'self') {
+        next = { mode: 'self' };
+      } else if (choice.value === 'offset') {
+        next = node.mode === 'offset' ? opRegionToJson(node) : { mode: 'offset', offset: [] };
+      } else {
+        next = node.mode === 'asset' ? opRegionToJson(node) : { mode: 'asset', asset: '', pick: 'score' };
+      }
+      ctx.draft = opRegionDraftSetLevel(ctx.draft, index, next, lib);
+      ctx.error = '';
+      renderOpRegionDialog();
+    });
+    label.appendChild(radio);
+    label.appendChild(document.createTextNode(' ' + choice.label));
+    modeRow.appendChild(label);
+  }
+  box.appendChild(modeRow);
+
+  const body = document.createElement('div');
+  body.className = 'op-region-level-body';
+  if (node.mode === 'self') {
+    body.textContent = '使用该素材自身的操作区域（action_shape；否则用真实识别区域）。';
+  } else if (node.mode === 'offset') {
+    const offset = Array.isArray(node.offset) ? node.offset : [];
+    const valid = offset.length === 4 && offset.every((v) => Number.isFinite(Number(v)));
+    const info = document.createElement('div');
+    info.className = 'op-region-offset-text';
+    info.textContent = 'offset ' + (valid ? '[' + offset.join(',') + ']' : '（尚未绘制）') +
+      '（dx/dy = 操作区 − 真实识别区域左上角；w/h = 绘制尺寸）';
+    body.appendChild(info);
+    const drawButton = document.createElement('button');
+    drawButton.type = 'button';
+    drawButton.textContent = '在画布上绘制相对偏移…';
+    drawButton.addEventListener('click', () => startOpRegionOffsetDraw(index));
+    body.appendChild(drawButton);
+    const hint = document.createElement('div');
+    hint.className = 'muted small';
+    hint.textContent = '绘制：先画「模拟识别区域」，再画「操作区域」（尺寸=本次绘制）。';
+    body.appendChild(hint);
+  } else {
+    const refOptions = opRegionRefOptions(lib, ctx.asset.id);
+    const refAsset = opRegionLibAsset(lib, node.asset);
+    if (!node.asset) {
+      if (window.OASAssetUI && typeof window.OASAssetUI.createSearchPicker === 'function') {
+        const picker = window.OASAssetUI.createSearchPicker({
+          items: refOptions,
+          value: '',
+          placeholder: '搜索素材（含使用端OCR文字配置项）…',
+          className: 'op-region-ref-picker',
+          label: (item) => item.id + ' · ' + opRegionKindLabel(item.kind) +
+            (item.terminal ? '（末端固定区域）' : ''),
+          onChoose: (item) => {
+            ctx.draft = opRegionDraftSetLevel(ctx.draft, index,
+              { mode: 'asset', asset: item.id, pick: 'score' }, lib);
+            ctx.error = '';
+            renderOpRegionDialog();
+          },
+        });
+        body.appendChild(picker);
+        const hint = document.createElement('div');
+        hint.className = 'muted small';
+        hint.textContent = 'region 素材只能作为末端固定区域（其 roi 即操作区）；可识别素材会继续递归展开其操作区。';
+        body.appendChild(hint);
+      }
+    } else {
+      const line = document.createElement('div');
+      line.textContent = '引用素材「' + node.asset + '」 · ' +
+        opRegionKindLabel(refAsset ? refAsset.kind : '');
+      body.appendChild(line);
+      if (!refAsset) {
+        const warn = document.createElement('div');
+        warn.className = 'op-region-warn';
+        warn.textContent = '⚠ 引用的素材不在当前素材库（保存会被服务端拒绝）';
+        body.appendChild(warn);
+      }
+      const isRegionTerminal = refAsset && String(refAsset.kind) === 'region';
+      if (isRegionTerminal) {
+        const terminal = document.createElement('div');
+        terminal.className = 'op-region-terminal';
+        terminal.textContent = 'region 素材 = 末端固定区域（其 roi 即操作区，不再递归）。';
+        body.appendChild(terminal);
+      } else {
+        const pickLabel = document.createElement('label');
+        pickLabel.className = 'op-region-ref-pick';
+        pickLabel.textContent = '多候选取点：';
+        const pickSelect = document.createElement('select');
+        for (const option of opRegionPickOptions()) {
+          const opt = document.createElement('option');
+          opt.value = option.value;
+          opt.textContent = option.label;
+          pickSelect.appendChild(opt);
+        }
+        pickSelect.value = node.pick === 'nearest' ? 'nearest' : 'score';
+        pickSelect.addEventListener('change', () => {
+          const next = opRegionToJson(node);
+          next.pick = pickSelect.value === 'nearest' ? 'nearest' : 'score';
+          ctx.draft = opRegionDraftSetLevel(ctx.draft, index, next, lib);
+          ctx.error = '';
+          renderOpRegionDialog();
+        });
+        pickLabel.appendChild(pickSelect);
+        body.appendChild(pickLabel);
+      }
+      const warn = document.createElement('div');
+      warn.className = 'op-region-warn';
+      warn.textContent = '⚠ 被引用素材「' + node.asset +
+        '」的操作区是全局配置：修改会影响其它引用它的素材/动作。';
+      body.appendChild(warn);
+      const reselect = document.createElement('button');
+      reselect.type = 'button';
+      reselect.textContent = '重新选择素材';
+      reselect.addEventListener('click', () => {
+        ctx.draft = opRegionDraftSetLevel(ctx.draft, index,
+          { mode: 'asset', asset: '', pick: 'score' }, lib);
+        ctx.error = '';
+        renderOpRegionDialog();
+      });
+      body.appendChild(reselect);
+    }
+  }
+  box.appendChild(body);
+  return box;
+}
+
+function renderOpRegionDialog() {
+  const ctx = opRegionDialogCtx;
+  if (!ctx || !opRegionLevels) return;
+  const lib = opRegionDialogAssets();
+  if (opRegionTitle) opRegionTitle.textContent = '操作区 · ' + String(ctx.asset.id);
+  if (opRegionBreadcrumb) {
+    opRegionBreadcrumb.textContent = '面包屑：' + opRegionDraftBreadcrumbText(ctx.draft);
+  }
+  if (opRegionError) opRegionError.textContent = ctx.error || '';
+  opRegionLevels.textContent = '';
+  ctx.draft.levels.forEach((level, index) => {
+    opRegionLevels.appendChild(buildOpRegionLevel(ctx, level, index, lib));
+  });
+  if (opRegionSave) opRegionSave.disabled = false;
+}
+
+async function refreshAssetsAfterOpRegionSave(task, scope) {
+  try { await refreshTaskAssetsForScope(scope); } catch (e) { /* best-effort */ }
+  try { await refreshGlobalAssets(); } catch (e) { /* best-effort */ }
+  void task;
+}
+
+async function saveOpRegionDialog() {
+  const ctx = opRegionDialogCtx;
+  if (!ctx || !opRegionSave) return;
+  const lib = opRegionDialogAssets();
+  const plan = opRegionSavePlan(ctx.draft, lib, { scope: ctx.scope });
+  if (!plan.ok) {
+    ctx.error = plan.errors.join('\n');
+    renderOpRegionDialog();
+    return;
+  }
+  if (!plan.updates.length) {
+    closeOpRegionDialog();
+    setStatus('操作区未改动');
+    return;
+  }
+  ctx.error = '';
+  opRegionSave.disabled = true;
+  try {
+    // U-T4/S5 + B-T3b：保存前调服务端权威校验（环/深度/悬空/末端），失败不写。
+    const rootOp = ctx.draft.levels.length ? ctx.draft.levels[0].opRegion : { mode: 'self' };
+    const validated = await postJson('/task/asset/validate_op_region', {
+      task: ctx.task,
+      id: ctx.asset.id,
+      op_region: rootOp,
+    });
+    if (!validated || !validated.ok) {
+      ctx.error = '操作区校验失败（服务端权威，未写入）：\n' + opRegionValidateErrorText(validated);
+      renderOpRegionDialog();
+      return;
+    }
+    for (const update of plan.updates) {
+      const scope = opRegionDialogScopeForAsset(update.assetId, ctx.scope);
+      const saved = await postJson('/task/asset/update', {
+        task: scope,
+        id: update.assetId,
+        op_region: update.op_region,
+      });
+      if (!saved || !saved.ok) {
+        ctx.error = '保存素材「' + update.assetId + '」操作区失败：' +
+          ((saved && saved.errors) || ['未知错误']).join('；');
+        renderOpRegionDialog();
+        await refreshAssetsAfterOpRegionSave(ctx.task, ctx.scope);
+        return;
+      }
+    }
+    const lines = plan.updates.map((update) =>
+      '· ' + update.assetId + '：' + JSON.stringify(update.op_region));
+    closeOpRegionDialog();
+    setStatus(`操作区已保存（${plan.updates.length} 个素材）`, '#7bd88f');
+    resultEl.textContent = '操作区已保存：\n' + lines.join('\n');
+    log(`操作区保存 updates=${plan.updates.length} root=${ctx.asset.id}`);
+    await refreshAssetsAfterOpRegionSave(ctx.task, ctx.scope);
+  } catch (e) {
+    ctx.error = '保存异常：' + e;
+    renderOpRegionDialog();
+  } finally {
+    if (opRegionSave) opRegionSave.disabled = false;
+  }
 }
 
 function collectionAssetRows(collections) {
@@ -4201,7 +5735,6 @@ function collectionAssetRows(collections) {
     members: c.members || [],
     threshold: c.threshold,
     action_shape: c.action_shape,
-    action_source: c.action_source,
     category: c.category || '素材集合',
     _collection: true,
   }));
@@ -4476,11 +6009,12 @@ function renderAssetList() {
     onThreshold: (it) => editAssetThreshold(it),
     onPosition: (it) => editAssetPositions(it),
     onDelete: (it) => deleteAsset(it),
-    onAction: (it) => editAssetActionRoi(it),
+    onOpRegion: (it) => openOpRegionDialog(it, ''),
     onClickTest: (it) => testAssetClick(it),
     onDragTest: (it) => testAssetDrag(it),
     onStep: (it) => generateAssetStep(it),
-    onCollectionTest: (it) => testAssetCollection(it),
+    onEditText: (it) => editAssetText(it),
+    onCollectionTest: (it) => testAssetCandidates(it),
     onCollectionDelete: (it) => deleteCollection(it),
   });
   attachAssetDragReorder();
@@ -5070,13 +6604,13 @@ function assetRoiReplacePayload(task, asset, roi) {
     kind: it.kind || 'template',
     roi: roi.slice(),
     positions: Array.isArray(it.positions) ? it.positions.slice() : [],
-    action_source: it.action_source === 'fixed' ? 'fixed' : 'recognition',
   };
   if (it.threshold != null && Number.isFinite(Number(it.threshold))) {
     payload.threshold = Number(it.threshold);
   }
-  // Server contract: recognition must NOT carry a shape; fixed REQUIRES one.
-  if (payload.action_source === 'fixed' && it.action_shape) payload.action_shape = it.action_shape;
+  // The asset's own operation region (operation shape) travels with the replace;
+  // absent = the runtime uses the real recognized box. No two-state switch.
+  if (it.action_shape) payload.action_shape = it.action_shape;
   // Leftover 2: translate the stored polygon with the ROI (the plan falls back
   // to the rectangle only when a translation cannot represent the new ROI).
   const polygon = assetRoiPolygonForSave(it.polygon, roi, it.roi);
@@ -5271,6 +6805,8 @@ function editAssetRecognitionRoi(it, scopeTask) {
   // P0-2: opening another edit always drops the previous target first, even if
   // this new target turns out to be invalid.
   cancelRecognitionRoiEdit('切换识别区编辑');
+  // U-T4/S6：相对偏移绘制与识别区编辑互斥。
+  if (offsetDraw) exitOffsetDraw('切换到识别区编辑');
   if (it.kind === 'template_set') {
     resultEl.textContent = `素材集合「${it.id}」没有识别区域`;
     return;
@@ -5441,7 +6977,6 @@ async function updateAssetActionRoi(id) {
     task,
     id,
     action_shape: shape,
-    action_source: 'fixed',
   });
   if (!r.ok) {
     showErrors('更新操作区域失败：', r.errors);
@@ -5455,7 +6990,7 @@ async function updateAssetActionRoi(id) {
   resetActionGeometry({ keepTarget: false, clearInvert: true, redraw: false });
   updateRoiLabel();
   draw();
-  log(`素材「${id}」操作区域已更新（action_source=fixed）`);
+  log(`素材「${id}」操作区域已更新`);
   setStatus(`素材「${id}」操作区域已保存；两个素材库已刷新`);
   await refreshTaskAssetsForScope(task);
   await refreshGlobalAssets();
@@ -5469,6 +7004,8 @@ function pickAssetRoi(it) {
   // P0-2: clicking another row (main body / 识别 / region test) replaces the
   // canvas ROI, so the previous asset's ROI editor must not stay armed.
   cancelRecognitionRoiEdit('选中其它素材');
+  // U-T4/S6：选中素材的识别区会重画画布，相对偏移绘制必须先退出。
+  if (offsetDraw) exitOffsetDraw('选中其它素材');
   const shapeBox = actionShapeBBox(it.action_shape);
   roi = { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] };
   loadActionShapeForEdit(it.action_shape);
@@ -5503,11 +7040,10 @@ async function testAssetMatch(it, frameId, scopeTask) {
         continue;
       }
       const effShape = translatedActionShapeForMatch(it, s);
-      const validity = actionValidity(it, recognizedBox, effShape);
       summaries.push(
         `${frame.label}: ${s.pass !== false ? '✅' : '❌'} ${pass} · ` +
         `得分 ${Number(s.score).toFixed(4)}（阈值 ${Number(s.threshold).toFixed(2)}） · ` +
-        `位置 (${s.x},${s.y}) ${s.w}x${s.h} · 区域有效性：${validity.text} · ` +
+        `位置 (${s.x},${s.y}) ${s.w}x${s.h} · ` +
         `耗时 ${Number(s.elapsed_ms).toFixed(0)} ms · ` +
         `帧来源 ${s.frame_source || frame.source}`
       );
@@ -5918,11 +7454,12 @@ function renderGlobalAssets() {
     onThreshold: (it) => editAssetThreshold(it),
     onPosition: (it) => editAssetPositions(it),
     onDelete: (it) => deleteAsset(it),
-    onAction: (it) => editAssetActionRoi(it),
+    onOpRegion: (it) => openOpRegionDialog(it, ''),
     onClickTest: (it) => testAssetClick(it),
     onDragTest: (it) => testAssetDrag(it),
     onStep: (it) => generateAssetStep(it),
-    onCollectionTest: (it) => testAssetCollection(it),
+    onEditText: (it) => editAssetText(it),
+    onCollectionTest: (it) => testAssetCandidates(it),
     onCollectionDelete: (it) => deleteCollection(it),
   });
   return true;
@@ -6164,8 +7701,9 @@ function renderFrameAssets(f, rows) {
       onThreshold: (it) => editAssetThreshold(it, scopeTask),
       onPosition: (it) => editAssetPositions(it, scopeTask),
       onDelete: (it) => deleteAsset(it, scopeTask),
-      onAction: (it) => editAssetActionRoi(it, scopeTask),
-      onCollectionTest: (it) => testAssetCollection(it, f.id, scopeTask),
+      onOpRegion: (it) => openOpRegionDialog(it, scopeTask),
+      onEditText: (it) => editAssetText(it, scopeTask),
+      onCollectionTest: (it) => testAssetCandidates(it, f.id, scopeTask),
       onCollectionDelete: (it) => deleteCollection(it, scopeTask),
     }));
   }
@@ -7264,6 +8802,8 @@ async function submitCaptureFrame() {
 }
 
 canvas.addEventListener('mousedown', (ev) => {
+  // U-T4/S6：相对偏移绘制优先于实时直通（否则拖拽会被当成设备点击发出）。
+  if (offsetDrawMouseDown(ev)) return;
   // Live passthrough: current screen is the device, so a click/drag is sent to
   // the emulator. Pause 实时 to get the ROI/polygon editing behavior back.
   if (liveInputAllowed()) {
@@ -7370,6 +8910,7 @@ canvas.addEventListener('mousedown', (ev) => {
 });
 
 canvas.addEventListener('mousemove', (ev) => {
+  if (offsetDrawMouseMove(ev)) return;
   if (liveInputAllowed()) {
     if (liveInputDrag) ev.preventDefault();
     return;
@@ -7395,6 +8936,7 @@ canvas.addEventListener('mousemove', (ev) => {
 });
 
 canvas.addEventListener('mouseup', (ev) => {
+  if (offsetDrawMouseUp(ev)) return;
   if (liveInputAllowed() && liveInputDrag) {
     finishLiveInput(ev);
     return;
@@ -7416,17 +8958,16 @@ canvas.addEventListener('mouseup', (ev) => {
     if (activeCandidate >= 0 && saveCandidates[activeCandidate]) {
       const row = saveCandidates[activeCandidate];
       row.action = finished || { ...row.recognize };
-      // P0-2/P0-3: only this explicit drag creates a fixed shape. The bbox and
-      // the polygon/invert carried by currentActionShape are persisted together.
+      // Only this explicit drag stores an operation shape; the bbox and the
+      // polygon/invert carried by currentActionShape are persisted together.
       row.actionShape = finished ? currentActionShape() : null;
-      row.actionSource = row.actionShape ? 'fixed' : 'recognition';
       activeCandidate = -1;
       setSelectionMode('none');
       renderCandidateList(lastLinesRoi ? '本次识别' : '识别结果');
       log(
-        `操作区域已更新：${row.actionSource === 'fixed' && row.actionShape
+        `操作区域已更新：${row.actionShape
           ? `${row.actionShape.kind}${row.actionShape.invert ? '（反选）' : ''}`
-          : '跟随识别框（recognition）'}`
+          : '使用识别区域'}`
       );
     } else if (pendingActionAsset) {
       updateAssetActionRoi(pendingActionAsset);
@@ -7467,6 +9008,8 @@ function nearestVertex(p) {
 // §22.10：双击行为 —— 未闭合则闭合；已闭合且双击顶点则删除该顶点（保持 >=3）。
 canvas.addEventListener('dblclick', (ev) => {
   if (liveInputAllowed()) return;
+  // U-T4/S6：相对偏移绘制期间不处理多边形双击。
+  if (offsetDraw) return;
   const mode = selectionActiveMode();
   if (mode === 'actionPolygon') {
     if (!actionPoly || actionPoly.length < 3) return;
@@ -7478,7 +9021,6 @@ canvas.addEventListener('dblclick', (ev) => {
     if (activeCandidate >= 0 && saveCandidates[activeCandidate]) {
       const row = saveCandidates[activeCandidate];
       row.actionShape = shape;
-      row.actionSource = shape ? 'fixed' : 'recognition';
       if (bbox) row.action = { x: bbox[0], y: bbox[1], w: bbox[2], h: bbox[3] };
       activeCandidate = -1;
       renderCandidateList(lastLinesRoi ? '本次识别' : '识别结果');
@@ -7611,6 +9153,7 @@ btnClear.addEventListener('click', () => {
   // silently applied to the next candidate.
   // B/P0-2: a cleared canvas has no box to save; leave the recognition-ROI
   // editor through the shared cancel path (hides/disables the save button).
+  if (offsetDraw) exitOffsetDraw('清除画布');
   cancelRecognitionRoiEdit('清除识别/操作区域');
   resetSelection({ clearInvert: true, clearRoi: true, clearBoxes: true, redraw: false });
   activeCandidate = -1;
@@ -7624,6 +9167,50 @@ btnClear.addEventListener('click', () => {
   resultEl.textContent = '—';
   setStatus('已清除识别/操作区域与选择状态');
 });
+
+// U-T4/S6：相对偏移绘制底栏按钮（从操作区对话框进入时写回 draft；独立进入仅计算）。
+if (btnOffsetRedraw) {
+  btnOffsetRedraw.addEventListener('click', () => offsetDrawResetSimRoi());
+}
+if (btnOffsetCancel) {
+  btnOffsetCancel.addEventListener('click', () => exitOffsetDraw('已取消'));
+}
+if (btnOffsetDone) {
+  btnOffsetDone.addEventListener('click', () => offsetDrawFinish());
+}
+
+// U-T4/S2：识别文字对话框按钮 + 新建时 param_key 随素材 id 自动生成。
+if (assetTextSave) {
+  assetTextSave.addEventListener('click', () => saveAssetTextDialog());
+}
+if (assetTextCancel) {
+  assetTextCancel.addEventListener('click', () => closeAssetTextDialog());
+}
+if (assetTextFullScreen) {
+  assetTextFullScreen.addEventListener('change', () => {
+    if (!assetTextDialogCtx) return;
+    if (assetTextRoi) assetTextRoi.hidden = assetTextFullScreen.checked;
+  });
+}
+if (assetTextId) {
+  assetTextId.addEventListener('input', () => {
+    const ctx = assetTextDialogCtx;
+    if (!ctx || ctx.draft.mode !== 'create' || !assetTextParamKey) return;
+    const id = String(assetTextId.value !== undefined ? assetTextId.value : '').trim();
+    const oldAuto = autoParamKey(ctx.draft.id);
+    if (!assetTextParamKey.value || assetTextParamKey.value === oldAuto) {
+      assetTextParamKey.value = id ? autoParamKey(id) : '';
+    }
+  });
+}
+
+// U-T4/S5：操作区递归对话框按钮。
+if (opRegionSave) {
+  opRegionSave.addEventListener('click', () => saveOpRegionDialog());
+}
+if (opRegionCancel) {
+  opRegionCancel.addEventListener('click', () => closeOpRegionDialog());
+}
 
 // P2-4: keep the full-screen fallback on the SAME frame the failed single-line
 // probe ran on. Without frameId it silently fell back to the editor's current

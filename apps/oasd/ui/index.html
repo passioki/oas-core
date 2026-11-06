@@ -62,6 +62,10 @@
         <div id="hint" class="muted small">在画面上拖拽选择识别 ROI；可再画一个「点击框」</div>
         <span id="asset-roi-edit-label" class="muted small" hidden></span>
         <button id="btn-save-asset-roi" type="button" disabled hidden title="把画布上拖拽出的识别框保存到正在编辑的素材（模板 = 用当前帧重新截图覆盖，rev+1）">保存识别区（覆盖素材）</button>
+        <span id="offset-draw-label" class="muted small offset-draw-label" hidden>操作区相对偏移：—</span>
+        <button id="btn-offset-redraw" type="button" hidden title="重画「模拟识别区域」；操作区域的尺寸采用本次绘制">重画模拟识别区</button>
+        <button id="btn-offset-cancel" type="button" hidden title="取消相对偏移绘制，不改动素材">取消</button>
+        <button id="btn-offset-done" type="button" hidden title="确认本次 offset（保存随后端 B-T3 的 op_region 接入）">完成</button>
         <button id="btn-canvas-panels" type="button">显示结果/日志</button>
       </div>
       <div id="canvas-windows" class="canvas-windows collapsed">
@@ -116,6 +120,9 @@
           <h4>识别结果（勾选后点「保存素材」）</h4>
           <div id="lines-list" class="asset-list muted">（先点「试识别」/「多行识别」/「试匹配」）</div>
           <div id="batch-status" class="muted small">—</div>
+          <!-- U-T4/S4：真实点测选择候选区域（#序号 score）；演练时逐候选 */}
+          <select id="candidate-select" class="candidate-select" hidden
+            title="真实点测：选择候选区域后发送真实点击（二次确认）"></select>
           <button id="btn-save-asset" disabled>保存素材</button>
           <p class="muted small">
             单行识别、多行识别、图片匹配和独立操作区域的结果都会进入这里。
@@ -330,7 +337,7 @@
       </section>
 
       <!-- P3（参数 v2）：任务参数面板。声明唯一权威仍是 meta.params（任务库「配置项…」），
-           这里只做只读展示 + 插入参数入口；未声明时动作库「参数」组会提示先声明。 -->
+           这里只做只读展示 + 插入参数入口。参数不属于动作库（事项 1/2）。 -->
       <section class="card builder-params-panel" id="builder-params">
         <div class="builder-params-head">
           <h3>任务参数 <span class="builder-params-sub">meta.params</span></h3>
@@ -355,12 +362,12 @@
             先选中中间的 if/loop/while 容器，再添加子动作；否则追加到根流程末尾。
           </p>
           <p class="muted small builder-params-help">
-            参数动作不新增 op：生成标准 <code>click_target</code> / <code>long_press</code> / <code>wait_until</code>，文字来自
-            <code>param('key')</code>（先在「任务参数」面板声明；未声明时发布 T3 报错）。
+            参数不属于动作库：动作库只保留通用动作；流程里要引用参数时，用属性面板的「插入参数 ▾」在
+            <code>text_expr</code> / 条件表达式里写 <code>param('key')</code>（先在「任务参数」面板声明；未声明时发布 T3 报错）。
           </p>
           <p class="muted small" id="builder-cond-help">
             <strong>条件与等待</strong>：出现 = 现在有没有；识别 = 读出文字内容。
-            「等到条件 / 等待参数文字」是<strong>阻塞等待</strong>步骤：条件成立后继续执行<strong>下一个 flow 步骤</strong>
+            「等到条件」是<strong>阻塞等待</strong>步骤：条件成立后继续执行<strong>下一个 flow 步骤</strong>
             （不会触发独立动作）；超时则本步失败。
           </p>
           <p class="muted small">
@@ -552,6 +559,65 @@
       <button id="task-publish-submit" type="button">发布</button>
       <span class="spacer"></span>
       <button type="button" data-publish-close="1">关闭</button>
+    </div>
+  </dialog>
+
+
+  <!-- U-T4/S2：使用端OCR文字配置项（ocr_var）的「识别文字」对话框。
+       新建（从识别结果）与编辑（素材行设置→识别文字）共用；param_key 创建后只读。 -->
+  <dialog id="asset-text-dialog" class="task-dialog asset-text-dialog">
+    <h3 id="asset-text-title">识别文字（使用端OCR文字配置项）</h3>
+    <p class="muted small" id="asset-text-hint">
+      识别文字 runtime_text 是默认值；使用端可在 Runner 覆盖。param_key 是使用端值的键，创建后只读。
+      roi 留空 = 全屏 OCR（较慢）。
+    </p>
+    <label class="opt" id="asset-text-id-row">素材 id
+      <input id="asset-text-id" type="text" autocomplete="off" spellcheck="false"
+        placeholder="如 O_预设分组（字母/中文/数字/下划线，全局唯一）" />
+    </label>
+    <label class="opt">识别文字 runtime_text（必填，≤200 字）
+      <input id="asset-text-runtime" type="text" maxlength="200" autocomplete="off" />
+    </label>
+    <label class="opt">参数键 param_key（使用端值的键；创建后只读）
+      <input id="asset-text-paramkey" type="text" autocomplete="off" spellcheck="false" />
+    </label>
+    <label class="opt">显示名 label（可空）
+      <input id="asset-text-label" type="text" maxlength="80" autocomplete="off" />
+    </label>
+    <label class="opt runner-opt">
+      <input id="asset-text-fullscreen" type="checkbox" /> 全屏 OCR（识别区域为空，较慢）
+    </label>
+    <div id="asset-text-roi" class="asset-text-roi">
+      <span class="muted small">识别区域 roi：</span>
+      <input id="asset-text-roi-x" type="number" step="1" placeholder="x" />
+      <input id="asset-text-roi-y" type="number" step="1" placeholder="y" />
+      <input id="asset-text-roi-w" type="number" step="1" min="1" placeholder="w" />
+      <input id="asset-text-roi-h" type="number" step="1" min="1" placeholder="h" />
+    </div>
+    <div id="asset-text-positions" class="muted small">位置帧：—</div>
+    <pre id="asset-text-error" class="muted small dialog-error"></pre>
+    <div class="row dialog-actions">
+      <button id="asset-text-save" type="button">保存</button>
+      <span class="spacer"></span>
+      <button id="asset-text-cancel" type="button">取消</button>
+    </div>
+  </dialog>
+
+  <!-- U-T4/S5：素材「操作区」递归对话框（op_region 链）。
+       三选一：当前素材操作区(self) / 相对偏移(切画布绘制) / 引用素材库素材(递归)。 -->
+  <dialog id="op-region-dialog" class="task-dialog op-region-dialog">
+    <h3 id="op-region-title">操作区</h3>
+    <p class="muted small" id="op-region-hint">
+      操作区来源三选一：当前素材操作区 / 相对偏移（画布绘制）/ 引用素材库素材（递归；
+      修改被引用素材的操作区会影响其它引用它的素材/动作）。保存时服务端校验环/深度/末端。
+    </p>
+    <div id="op-region-breadcrumb" class="muted small op-region-breadcrumb">—</div>
+    <div id="op-region-levels" class="op-region-levels"></div>
+    <pre id="op-region-error" class="muted small dialog-error"></pre>
+    <div class="row dialog-actions">
+      <button id="op-region-save" type="button">保存</button>
+      <span class="spacer"></span>
+      <button id="op-region-cancel" type="button">取消</button>
     </div>
   </dialog>
 

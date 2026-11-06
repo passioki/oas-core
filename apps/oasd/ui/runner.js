@@ -462,28 +462,64 @@
   }
 
   // Declared order preserved; empty/missing group falls into 「通用」. Groups are
-  // ordered by first appearance in meta.params.
-  function runnerParamGroups(params) {
+  // ordered by first appearance in meta.params. 派生参数行（带 asset_id，来自
+  // ocr_var 素材）永远进入最前面的独立分组「使用端OCR文字配置项」（Lead 裁决 8：
+  // UI 全名；行内短标「识别文字配置」）；旧任务 role=ocr_text 但无 asset_id 的行
+  // 仍按自己的 group 分节（兼容，不破坏旧行为）。
+
+  // Full grouping model: one leading ocr_var section + the regular group sections.
+  // `kind` lets the renderer/tests tell the two apart without string matching.
+  function runnerParamGroupsEx(params) {
     const list = Array.isArray(params) ? params : [];
     const groups = [];
     const index = {};
+    const derived = { group: '使用端OCR文字配置项', kind: 'ocr_var', params: [] };
     for (const param of list) {
       if (!param || typeof param !== 'object' || Array.isArray(param)) continue;
+      const assetId = param.asset_id === undefined || param.asset_id === null
+        ? ''
+        : String(param.asset_id).trim();
+      if (assetId) {
+        derived.params.push(param);
+        continue;
+      }
       const raw = param.group === undefined || param.group === null ? '' : String(param.group).trim();
       const group = raw || '通用';
       if (!Object.prototype.hasOwnProperty.call(index, group)) {
         index[group] = groups.length;
-        groups.push({ group: group, params: [] });
+        groups.push({ group: group, kind: 'group', params: [] });
       }
       groups[index[group]].params.push(param);
     }
-    return groups;
+    return derived.params.length ? [derived].concat(groups) : groups;
+  }
+
+  // Backwards-compatible view used by the summary/collector/renderer.
+  function runnerParamGroups(params) {
+    return runnerParamGroupsEx(params).map(function (group) {
+      return { group: group.group, params: group.params };
+    });
   }
 
   function runnerParamRoleText(param) {
     const p = param && typeof param === 'object' ? param : {};
+    const assetId = String(p.asset_id === undefined || p.asset_id === null ? '' : p.asset_id).trim();
+    if (assetId) return '识别文字配置';
     const role = String(p.role === undefined || p.role === null ? '' : p.role).trim().toLowerCase();
     return role === 'ocr_text' ? '识别文字' : '';
+  }
+
+  // 派生行的副标题：「素材 <asset_id> · 当前默认「<default>」」（任务 U-T6）。
+  // 空 = 普通用户参数（不渲染副标题）。
+  function runnerParamAssetSubtitle(param) {
+    const p = param && typeof param === 'object' ? param : {};
+    const assetId = String(p.asset_id === undefined || p.asset_id === null ? '' : p.asset_id).trim();
+    if (!assetId) return '';
+    let text = '素材 ' + assetId;
+    if (p.default !== undefined && p.default !== null) {
+      text += ' · 当前默认「' + runnerParamDefaultText(p) + '」';
+    }
+    return text;
   }
 
   function runnerParamTypeText(param) {
@@ -2246,6 +2282,15 @@
     keyEl.textContent = key;
     label.appendChild(keyEl);
     meta.appendChild(label);
+    // U-T6：派生参数行（来自 ocr_var 素材）显示「素材 <id> · 当前默认「…」」，
+    // 让使用端知道这一项改的是哪个素材的识别文字。
+    const assetSubtitle = runnerParamAssetSubtitle(p);
+    if (assetSubtitle) {
+      const sub = document.createElement('div');
+      sub.className = 'runner-config-asset-sub';
+      sub.textContent = assetSubtitle;
+      meta.appendChild(sub);
+    }
     if (p.description !== undefined && p.description !== null && String(p.description).trim() !== '') {
       const desc = document.createElement('div');
       desc.className = 'runner-config-desc';

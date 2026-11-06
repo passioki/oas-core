@@ -186,12 +186,18 @@ pub fn migrate(
             // Old library templates had no authored ROI; full-frame search.
             roi: None,
             action_shape: None,
-            action_source: "recognition".to_string(),
+            action_source: oas_task::default_action_source(),
             ocr_mode: None,
             ocr_source_roi: None,
             ocr_text: None,
             threshold: old.threshold,
             polygon: None,
+            // Legacy library templates are plain templates: no ocr_var fields
+            // and no op_region (both 2026-11-06 参数→素材 additions).
+            runtime_text: None,
+            label: None,
+            param_key: None,
+            op_region: None,
             rev: old.rev,
             positions: Vec::new(),
         });

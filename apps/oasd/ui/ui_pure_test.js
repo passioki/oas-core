@@ -30,12 +30,23 @@
 //     「新发布」 card, installs through /runner/install and acks
 //     /runner/updates/ack (installed/dismissed).
 //   - P3 params UI: the builder panel renders meta.params (GET /task/config),
-//     the action library has 参数 presets that generate standard
-//     click_target/wait_until with text_expr = param('key') (no new engine op),
 //     locator OCR text has a fixed/param/expression tri-state (text/text_expr
 //     mutually exclusive), and 插入参数 ▾ writes param(...) snippets.
+//   - 事项 1/2（2026-11-06）：参数不属于动作库 —— the action library has NO
+//     parameter presets (PARAM_ACTIONS/PARAM_GROUP removed); the palette and the
+//     if/loop branch dropdowns are sourced from OP_META only.
+//   - 事项 6（2026-11-06）：操作区域两状态废除 —— app.js has no actionValidity /
+//     action_source (recognition vs fixed) UI rule; the operation region is the
+//     asset's own action_shape (absent = real recognized box).
+//   - 事项 2/3/4（U-T4 阶段 A）：ocr_var 素材行（识别文字/op_region 摘要/待迁移
+//     badge）、素材行「识别」= GET /task/asset/candidates 全部候选（全画+逐行列出）、
+//     S6 相对偏移画布绘制（模拟识别区+操作区域→offset，保存待 B-T3 接入），以及
+//     candidateLabelText/offsetFromDraw/opRegionChainSpec/runtimeTextValid 纯函数。
 //   - P2 Runner params page: #runner-config-dialog groups meta.params by `group`
-//     (first-appearance order, missing group -> 通用), every row has a 使用
+//     (first-appearance order, missing group -> 通用); U-T6 puts derived rows
+//     (meta.params with asset_id, from ocr_var assets) into a leading
+//     「使用端OCR文字配置项」 section with a 素材 <id> · 当前默认「…」 subtitle;
+//     every row has a 使用
 //     switch + bool tri-state (未设置/是/否) + 留空=不注入 + required blocking;
 //     the updates feed adds source badges / 需下载 hints and installs through
 //     POST /runner/updates/install {event_id} (legacy path install kept as a
@@ -158,13 +169,48 @@ const PURE_FUNCTIONS = [
   'assetCollectionMatchLine',
   'segmentIntersects',
   'polygonOverlapsRect',
-  'rectsOverlap',
-  'actionValidity',
   'boxCenter',
   // MATCH-BUG: frame selection for single asset tests + match-box validity
   'testFramePlan',
   'matchBoxValid',
   'translateActionShape',
+  // U-T4（事项 3/4/5）：候选识别 / 相对偏移绘制 / op_region 链 / runtime_text。
+  'assetCandidatesUrl',
+  'candidateLabelText',
+  'candidateBoxes',
+  'offsetFromDraw',
+  'runtimeTextValid',
+  'opRegionNodeOf',
+  'opRegionChainSpec',
+  // U-T4/S5：操作区递归对话框草稿模型（API 无关，阶段 B 直接复用）。
+  'opRegionToJson',
+  'opRegionDraftStart',
+  'opRegionDraftBreadcrumb',
+  'opRegionDraftBreadcrumbText',
+  'opRegionDraftSetLevel',
+  'opRegionDraftBack',
+  'opRegionDraftChainSpec',
+  'opRegionDraftUpdates',
+  'opRegionDraftSummary',
+  'opRegionPickOptions',
+  'opRegionRefOptions',
+  // U-T4/S2/S5（阶段 B）：鉴别/保存纯模型 + 配置派生行回传契约。
+  'isParamKeyValid',
+  'autoParamKey',
+  'candidateNameValid',
+  'assetTextDraftStart',
+  'assetTextDraftFromCandidate',
+  'assetTextValidate',
+  'assetTextSaveRequest',
+  'opRegionSavePlan',
+  'opRegionLevelChoices',
+  'taskConfigMergeDerivedForSave',
+  // U-T4/S4（B-T3b）：test_action 请求/结果格式化 + validate_op_region 错误。
+  'testActionRequestBody',
+  'candidateOptionLabel',
+  'testActionResultLines',
+  'testActionBoxes',
+  'opRegionValidateErrorText',
   'candidateActionPayload',
   'recognitionPolygonPayload',
   'ocrAssetPayload',
@@ -265,10 +311,42 @@ const {
   assetCollectionMatchUrl,
   assetCollectionClickPoint,
   assetCollectionMatchLine,
-  actionValidity,
   polygonOverlapsRect,
   boxCenter,
   translateActionShape,
+  assetCandidatesUrl,
+  candidateLabelText,
+  candidateBoxes,
+  offsetFromDraw,
+  runtimeTextValid,
+  opRegionNodeOf,
+  opRegionChainSpec,
+  opRegionToJson,
+  opRegionDraftStart,
+  opRegionDraftBreadcrumb,
+  opRegionDraftBreadcrumbText,
+  opRegionDraftSetLevel,
+  opRegionDraftBack,
+  opRegionDraftChainSpec,
+  opRegionDraftUpdates,
+  opRegionDraftSummary,
+  opRegionPickOptions,
+  opRegionRefOptions,
+  isParamKeyValid,
+  autoParamKey,
+  candidateNameValid,
+  assetTextDraftStart,
+  assetTextDraftFromCandidate,
+  assetTextValidate,
+  assetTextSaveRequest,
+  opRegionSavePlan,
+  opRegionLevelChoices,
+  taskConfigMergeDerivedForSave,
+  testActionRequestBody,
+  candidateOptionLabel,
+  testActionResultLines,
+  testActionBoxes,
+  opRegionValidateErrorText,
   recognitionPolygonPayload,
   ocrAssetPayload,
   singleAssetPayload,
@@ -332,45 +410,31 @@ ok(!polygonOverlapsRect(square, [20, 20, 5, 5]), 'polygon away from rect');
 ok(polygonOverlapsRect(square, [9, 4, 5, 2]), 'rect edge crosses polygon edge');
 ok(polygonOverlapsRect([[5, 0], [15, 0], [15, 20], [5, 20]], [3, 5, 4, 4]), 'rect corner inside polygon');
 
-// --- actionValidity: recognition vs fixed contract (P0-2) ---
-const recNoShape = { action_source: 'recognition' };
-eq(actionValidity(recNoShape, [0, 0, 10, 10]).valid, true, 'recognition without shape is valid');
+// --- 事项 6（2026-11-06）：操作区域两状态（recognition/fixed）已删除 ---
+// The old UI rule asked whether the operation region overlapped the real
+// recognized box and called a non-overlap invalid. The engine never read
+// action_source (see the audit), so both the validators and the user-visible
+// state labels are gone; action_shape alone decides the operation region.
+ok(!/function actionValidity\(/.test(source), 'the recognition-vs-fixed actionValidity validator is gone');
+ok(!/function rectsOverlap\(/.test(source), 'rectsOverlap is gone with the overlap validity rule');
+ok(!/action_source/.test(source), 'app.js never reads or writes action_source any more');
+ok(!/actionSource/.test(source), 'app.js has no in-memory actionSource (two-state) field');
+ok(
+  !/固定操作区|跟随识别框（recognition）|区域有效性/.test(source),
+  'the user-visible two-state labels/validity lines are gone'
+);
+ok(
+  /function candidateActionPayload\(c\)\s*\{[\s\S]{0,160}c\.actionShape \? \{ action_shape: c\.actionShape \} : \{\}/.test(source),
+  'the save payload carries action_shape only (no recognition/fixed flag)'
+);
+ok(
+  !/action_source/.test(builderSource) && !/action_source/.test(assetUiSource),
+  'builder.js/asset_ui.js do not write action_source either'
+);
 
-const fixedNoShape = { action_source: 'fixed' };
-eq(actionValidity(fixedNoShape, [0, 0, 10, 10]).valid, false, 'fixed without shape is invalid');
-
-const fixedRect = {
-  action_source: 'fixed',
-  action_shape: { kind: 'rect', roi: [100, 100, 10, 10], invert: false },
-};
-const fixedValidity = actionValidity(fixedRect, [0, 0, 10, 10]);
-eq(fixedValidity.valid, true, 'fixed independent region is allowed');
-eq(fixedValidity.independent, true, 'fixed independent region flagged');
-
-const recRect = {
-  action_source: 'recognition',
-  action_shape: { kind: 'rect', roi: [100, 100, 10, 10], invert: false },
-};
-eq(actionValidity(recRect, [105, 105, 2, 2]).valid, true, 'recognition shape overlaps');
-eq(actionValidity(recRect, [0, 0, 10, 10]).valid, false, 'recognition shape does not overlap');
-
-const recPoly = {
-  action_source: 'recognition',
-  action_shape: { kind: 'polygon', points: square, invert: false },
-};
-eq(actionValidity(recPoly, [2, 2, 2, 2]).valid, true, 'recognition polygon overlaps');
-
-const recInvert = {
-  action_source: 'recognition',
-  action_shape: { kind: 'rect', roi: [0, 0, 50, 50], invert: true },
-};
-eq(actionValidity(recInvert, [10, 10, 5, 5]).valid, false, 'invert: box fully inside excluded area');
-eq(actionValidity(recInvert, [45, 45, 10, 10]).valid, true, 'invert: box partly outside excluded area');
-
-// --- P1-1: template action_shape is translated by matched - roi before validity ---
+// --- P1-1: template action_shape is translated by matched - roi before use ---
 const savedTemplate = {
   roi: [22, 9, 43, 39],
-  action_source: 'fixed',
   action_shape: { kind: 'rect', roi: [20, 10, 10, 10], invert: false },
 };
 const match = { x: 40, y: 30 };
@@ -380,11 +444,6 @@ const translated = translateActionShape(
   match.y - savedTemplate.roi[1]
 );
 eq(translated.roi, [38, 31, 10, 10], 'translate rect action_shape');
-const translatedValidity = actionValidity(savedTemplate, [40, 30, 10, 10], translated);
-eq(translatedValidity.text, '有效（固定操作区与识别框重叠）', 'translated fixed shape overlaps match');
-ok(!translatedValidity.independent, 'translated shape is not independent');
-const staleValidity = actionValidity(savedTemplate, [40, 30, 10, 10]);
-ok(staleValidity.independent, 'without translation the stale shape is independent (regression guard)');
 
 eq(
   translateActionShape({ kind: 'polygon', points: [[0, 0], [4, 0], [0, 4]], invert: true }, 5, 7),
@@ -392,6 +451,418 @@ eq(
   'translate polygon action_shape'
 );
 eq(translateActionShape(null, 1, 2), null, 'translate null shape');
+
+// --- U-T4（事项 3/4/5）：候选 / 相对偏移 / runtime_text / op_region 链 纯函数 ---
+eq(
+  assetCandidatesUrl('任务 甲', 'O_甲', '&frame_id=7'),
+  '/task/asset/candidates?task=%E4%BB%BB%E5%8A%A1%20%E7%94%B2&id=O_%E7%94%B2&frame_id=7',
+  'U-T4: candidates URL encodes task/id and appends the frame query'
+);
+eq(
+  assetCandidatesUrl('', 'I_A'),
+  '/task/asset/candidates?task=&id=I_A',
+  'U-T4: candidates URL without a frame query (live/current frame)'
+);
+eq(
+  candidateLabelText({ index: 0, x: 11, y: 21, w: 30, h: 40, score: 0.973 }),
+  '#0 score=0.9730 [11,21,30,40]',
+  'U-T4: a candidate renders as #i score=… [x,y,w,h]'
+);
+eq(
+  candidateLabelText({ index: 1, x: 1, y: 2, w: 3, h: 4, score: 0.9, text: '御魂' }),
+  '#1 score=0.9000 [1,2,3,4] 文字="御魂"',
+  'U-T4: OCR candidates keep their recognised text'
+);
+eq(
+  candidateLabelText({ index: 2, x: 1, y: 2, w: 3, h: 4, score: 0.5, member: 'I_A' }),
+  '#2 score=0.5000 [1,2,3,4] · 成员 I_A',
+  'U-T4: collection candidates name the winning member'
+);
+eq(
+  candidateLabelText(null),
+  '#0 score=— [0,0,0,0]',
+  'U-T4: a missing candidate still renders a placeholder line'
+);
+eq(
+  candidateBoxes([
+    { index: 0, x: 11, y: 21, w: 30, h: 40, score: 0.973 },
+    { index: 1, x: -1, y: -1, w: 30, h: 40, score: 0.1 },
+    null,
+    { index: 2, x: 1, y: 2, w: 3, h: 4, score: 0.5 },
+  ]),
+  [
+    { text: '#0 0.97', score: 0.973, box: [11, 21, 30, 40] },
+    { text: '#2 0.50', score: 0.5, box: [1, 2, 3, 4] },
+  ],
+  'U-T4: all valid candidates become draw() boxes (invalid boxes are skipped)'
+);
+// S6 offset：dx/dy = 操作区左上角 − 模拟识别区左上角；w/h = 本次绘制尺寸。
+eq(
+  offsetFromDraw({ x: 100, y: 200, w: 300, h: 100 }, { x: 130, y: 180, w: 150, h: 60 }),
+  { ok: true, offset: [30, -20, 150, 60], error: '' },
+  'U-T4: offset = action top-left − simulated recognition top-left, size from the drawing'
+);
+eq(
+  offsetFromDraw({ x: 0, y: 0, w: 10, h: 10 }, { x: 5, y: 5, w: 10, h: 10 }).offset,
+  [5, 5, 10, 10],
+  'U-T4: drawn rectangles are rounded to integers'
+);
+ok(offsetFromDraw(null, { x: 0, y: 0, w: 10, h: 10 }).ok === false, 'U-T4: no simulated recognition rect -> invalid');
+ok(
+  offsetFromDraw({ x: 0, y: 0, w: 10, h: 10 }, { x: 0, y: 0, w: 0, h: 10 }).ok === false,
+  'U-T4: zero-size action rect -> invalid'
+);
+// runtime_text（S2 对话框字段；阶段 A 先落纯校验）
+eq(runtimeTextValid(' 御魂 '), { ok: true, value: '御魂', error: '' }, 'U-T4: runtime_text trims and accepts a normal value');
+eq(runtimeTextValid('').ok, false, 'U-T4: empty runtime_text is rejected');
+eq(runtimeTextValid('   ').ok, false, 'U-T4: whitespace-only runtime_text is rejected');
+eq(runtimeTextValid('x'.repeat(201)).ok, false, 'U-T4: runtime_text longer than 200 chars is rejected');
+eq(runtimeTextValid('x'.repeat(200)).ok, true, 'U-T4: 200 chars is the inclusive limit');
+eq(runtimeTextValid('a\nb').ok, false, 'U-T4: control characters are rejected');
+// op_region 链（S5；服务端 POST /task/asset/validate_op_region 才是唯一权威）
+const opAssets = [
+  { id: 'I_A', kind: 'template' },
+  { id: 'I_B', kind: 'template', op_region: { mode: 'self' } },
+  { id: 'I_C', kind: 'template', op_region: { mode: 'offset', offset: [1, 2, 30, 40] } },
+  { id: 'R_区', kind: 'region', roi: [5, 5, 10, 10] },
+];
+eq(
+  opRegionNodeOf({ mode: 'ASSET', asset: ' I_X ', pick: 'NEAREST' }),
+  { mode: 'asset', asset: 'I_X', pick: 'nearest', offset: [] },
+  'U-T4: op_region node normalizes mode/asset/pick'
+);
+eq(opRegionChainSpec({ mode: 'self' }, opAssets).chain, [{ mode: 'self', asset: '' }], 'U-T4: self ends the chain');
+eq(
+  opRegionChainSpec({ mode: 'offset', offset: [10, 5, 150, 80] }, opAssets).chain,
+  [{ mode: 'offset', asset: '', offset: [10, 5, 150, 80] }],
+  'U-T4: offset ends the chain'
+);
+eq(
+  opRegionChainSpec({ mode: 'asset', asset: 'I_B' }, opAssets).chain.map((n) => n.mode + ':' + n.asset),
+  ['asset:I_B', 'self:'],
+  'U-T4: asset -> referenced self chain'
+);
+eq(
+  opRegionChainSpec({ mode: 'asset', asset: 'I_C' }, opAssets).chain.map((n) => n.mode),
+  ['asset', 'offset'],
+  'U-T4: asset -> referenced offset chain'
+);
+const regionChain = opRegionChainSpec({ mode: 'asset', asset: 'R_区' }, opAssets);
+eq(regionChain.ok, true, 'U-T4: a region asset can end the chain as a fixed terminal node');
+eq(regionChain.chain.map((n) => n.mode), ['asset', 'region'], 'U-T4: the region terminal hop is explicit');
+const cycleSpec = opRegionChainSpec({ mode: 'asset', asset: 'I_A' }, [
+  { id: 'I_A', kind: 'template', op_region: { mode: 'asset', asset: 'I_B' } },
+  { id: 'I_B', kind: 'template', op_region: { mode: 'asset', asset: 'I_A' } },
+]);
+eq(cycleSpec.ok, false, 'U-T4: a cycle is rejected');
+ok(/循环/.test(cycleSpec.error), 'U-T4: the cycle error names the problem');
+ok(opRegionChainSpec({ mode: 'asset', asset: 'Missing' }, opAssets).ok === false, 'U-T4: a missing referenced asset is rejected');
+const rootCycleSpec = opRegionChainSpec(
+  { mode: 'asset', asset: 'I_A' },
+  [{ id: 'I_A', kind: 'template', op_region: { mode: 'self' } }],
+  'I_A'
+);
+eq(rootCycleSpec.ok, false, 'U-T4: referencing the edited asset itself is a cycle');
+ok(/循环/.test(rootCycleSpec.error), 'U-T4: the self-cycle error explains the loop');
+ok(
+  opRegionChainSpec(
+    { mode: 'asset', asset: 'R_区' },
+    [{ id: 'R_区', kind: 'region', op_region: { mode: 'self' } }]
+  ).ok === false,
+  'U-T4: a region terminal cannot carry op_region'
+);
+const deepAssets = [];
+for (let i = 0; i < 20; i += 1) {
+  deepAssets.push({
+    id: 'D' + i,
+    kind: 'template',
+    op_region: i === 19 ? { mode: 'self' } : { mode: 'asset', asset: 'D' + (i + 1) },
+  });
+}
+const tooDeepSpec = opRegionChainSpec({ mode: 'asset', asset: 'D0' }, deepAssets);
+eq(tooDeepSpec.ok, false, 'U-T4: a chain deeper than 16 hops is rejected');
+ok(/最大深度 16/.test(tooDeepSpec.error), 'U-T4: the depth error names the 16 limit');
+ok(
+  /四个整数/.test(opRegionChainSpec({ mode: 'offset', offset: [1, 2] }, opAssets).error),
+  'U-T4: offset without 4 integers is rejected'
+);
+
+// --- U-T4/S5：操作区递归对话框草稿模型（API 无关；阶段 B 对话框直接复用） ---
+const s5Assets = [
+  { id: 'A', kind: 'template', op_region: { mode: 'offset', offset: [1, 2, 30, 40] } },
+  { id: 'B', kind: 'template', op_region: { mode: 'self' } },
+  { id: 'C', kind: 'ocr_var', op_region: { mode: 'asset', asset: 'B', pick: 'nearest' } },
+  { id: 'R', kind: 'region', roi: [5, 5, 10, 10] },
+];
+eq(
+  opRegionToJson({ mode: 'ASSET', asset: ' B ', pick: 'weird' }),
+  { mode: 'asset', asset: 'B', pick: 'score' },
+  'U-T4/S5: opRegionToJson normalizes mode/asset/pick for the API payload'
+);
+eq(opRegionToJson({ mode: 'offset', offset: [1, 2, 3, 4] }), { mode: 'offset', offset: [1, 2, 3, 4] });
+eq(opRegionToJson({}), { mode: 'self' }, 'U-T4/S5: missing op_region stores as self');
+const s5DraftA = opRegionDraftStart(s5Assets[0]);
+eq(s5DraftA.rootAssetId, 'A', 'U-T4/S5: draft root is the edited asset');
+eq(s5DraftA.levels.length, 1, 'U-T4/S5: draft starts with one (root) level');
+eq(
+  s5DraftA.levels[0].opRegion,
+  { mode: 'offset', offset: [1, 2, 30, 40] },
+  'U-T4/S5: the root level starts from the stored op_region'
+);
+eq(
+  opRegionDraftStart({ id: 'X' }).levels[0].opRegion,
+  { mode: 'self' },
+  'U-T4/S5: an asset without op_region starts at self'
+);
+eq(opRegionDraftBreadcrumb(s5DraftA), ['A'], 'U-T4/S5: breadcrumb starts with the root asset');
+eq(opRegionDraftBreadcrumbText(s5DraftA), 'A');
+const s5DraftAB = opRegionDraftSetLevel(s5DraftA, 0, { mode: 'asset', asset: 'B' }, s5Assets);
+eq(opRegionDraftBreadcrumb(s5DraftAB), ['A', 'B'], 'U-T4/S5: choosing a referenced asset expands one level');
+eq(s5DraftAB.levels[1].opRegion, { mode: 'self' }, 'U-T4/S5: the referenced level starts from its stored op_region');
+eq(opRegionDraftBreadcrumbText(s5DraftAB), 'A ▸ B', 'U-T4/S5: breadcrumb text joins the levels');
+const s5DraftABOff = opRegionDraftSetLevel(s5DraftAB, 1, { mode: 'offset', offset: [5, 6, 70, 80] }, s5Assets);
+eq(s5DraftABOff.levels[1].opRegion, { mode: 'offset', offset: [5, 6, 70, 80] }, 'U-T4/S5: the referenced level can be an offset');
+eq(opRegionDraftChainSpec(s5DraftABOff, s5Assets).ok, true, 'U-T4/S5: a draft chain is valid');
+eq(
+  opRegionDraftChainSpec(s5DraftABOff, s5Assets).chain.map((n) => n.mode),
+  ['asset', 'offset'],
+  'U-T4/S5: the draft chain preview walks asset -> offset'
+);
+eq(
+  opRegionDraftUpdates(s5DraftABOff, s5Assets),
+  [
+    { assetId: 'A', op_region: { mode: 'asset', asset: 'B', pick: 'score' } },
+    { assetId: 'B', op_region: { mode: 'offset', offset: [5, 6, 70, 80] } },
+  ],
+  'U-T4/S5: saving writes exactly the edited levels (current + referenced asset = two updates)'
+);
+eq(
+  opRegionDraftUpdates(opRegionDraftStart(s5Assets[0]), s5Assets),
+  [],
+  'U-T4/S5: an untouched draft produces no update calls'
+);
+const s5DraftBack = opRegionDraftBack(s5DraftABOff, 1);
+eq(opRegionDraftBreadcrumb(s5DraftBack), ['A'], 'U-T4/S5: 回退 removes the referenced level');
+eq(s5DraftBack.levels[0].opRegion, { mode: 'self' }, 'U-T4/S5: 回退 turns the parent back to self');
+eq(opRegionDraftChainSpec(s5DraftBack, s5Assets).ok, true, 'U-T4/S5: the rolled-back chain is valid');
+ok(
+  opRegionDraftBack(s5DraftA, 0) === s5DraftA,
+  'U-T4/S5: the root level cannot be rolled back (draft returned unchanged)'
+);
+const s5DraftAC = opRegionDraftSetLevel(s5DraftA, 0, { mode: 'asset', asset: 'C' }, s5Assets);
+const s5DraftCycle = opRegionDraftSetLevel(s5DraftAC, 1, { mode: 'asset', asset: 'A' }, s5Assets);
+eq(opRegionDraftChainSpec(s5DraftCycle, s5Assets).ok, false, 'U-T4/S5: a draft cycle back to the root is rejected');
+ok(/循环/.test(opRegionDraftChainSpec(s5DraftCycle, s5Assets).error), 'U-T4/S5: the draft cycle error explains the loop');
+eq(
+  opRegionDraftSummary(s5DraftABOff).map((row) => `${row.assetId}:${row.mode}`),
+  ['A:asset', 'B:offset'],
+  'U-T4/S5: per-level summaries drive the dialog rows'
+);
+eq(
+  opRegionDraftSummary(s5DraftABOff).map((row) => row.text)[0],
+  '引用素材「B」（评分最高）',
+  'U-T4/S5: an asset level summary names the pick rule'
+);
+eq(
+  opRegionPickOptions().map((o) => o.value),
+  ['score', 'nearest'],
+  'U-T4/S5: pick options are 评分最高 / 离上一节点最近'
+);
+eq(
+  opRegionRefOptions(s5Assets, 'A'),
+  [
+    { id: 'B', kind: 'template', terminal: false },
+    { id: 'C', kind: 'ocr_var', terminal: false },
+    { id: 'R', kind: 'region', terminal: true },
+  ],
+  'U-T4/S5: reference options list recognizable assets + region as a terminal node (root excluded)'
+);
+ok(
+  opRegionRefOptions(s5Assets, 'A').every((o) => o.id !== 'A'),
+  'U-T4/S5: the edited asset itself is never offered as a reference'
+);
+
+// --- U-T4/S2/S5（阶段 B）：识别文字对话框草稿/校验/保存载荷 + 链保存计划 ------
+// param_key 自动生成 / 合法性
+eq(autoParamKey('O_预设分组'), autoParamKey('O_预设分组'), 'U-T4: autoParamKey is deterministic for one id');
+eq(autoParamKey('A').length, 10, 'U-T4: autoParamKey = p_ + 8 hex chars');
+ok(/^p_[0-9a-f]{8}$/.test(autoParamKey('O_组')), 'U-T4: autoParamKey matches the p_<hash8> format');
+ok(autoParamKey('A') !== autoParamKey('B'), 'U-T4: different ids get different auto keys');
+eq(isParamKeyValid('group'), true, 'U-T4: a plain key is valid');
+eq(isParamKeyValid('_x9'), true, 'U-T4: leading underscore / digits are valid');
+eq(isParamKeyValid('9bad'), false, 'U-T4: a key starting with a digit is invalid');
+eq(isParamKeyValid('a-b'), false, 'U-T4: punctuation is invalid in a key');
+eq(isParamKeyValid(''), false, 'U-T4: an empty key is invalid');
+eq(isParamKeyValid('x'.repeat(65)), false, 'U-T4: a key longer than 64 chars is invalid');
+// 编辑草稿（已有 ocr_var）
+const ocrVarAssetForDialog = {
+  id: 'O_组', kind: 'ocr_var', runtime_text: '御魂', param_key: 'group', label: '预设分组',
+  roi: [10, 20, 30, 40], positions: [7],
+};
+const editDraft = assetTextDraftStart(ocrVarAssetForDialog, { task: '任务甲' });
+eq(editDraft.mode, 'edit', 'U-T4: editing an existing ocr_var uses edit mode');
+eq(
+  [editDraft.id, editDraft.runtimeText, editDraft.paramKey, editDraft.label],
+  ['O_组', '御魂', 'group', '预设分组'],
+  'U-T4: edit draft starts from the stored ocr_var fields'
+);
+eq(editDraft.roi, [10, 20, 30, 40], 'U-T4: edit draft keeps the stored roi');
+eq(assetTextDraftStart({ id: 'O_空', kind: 'ocr_var', runtime_text: 'x', param_key: 'k' }).fullScreen,
+  true, 'U-T4: a missing roi starts as full-screen OCR');
+// 新建草稿（从识别结果候选）
+const createDraft = assetTextDraftFromCandidate(
+  { name: 'O_预设', text: '御魂', recognize: { x: 1, y: 2, w: 30, h: 40 } },
+  { positions: [5, 6], task: '任务甲' }
+);
+eq(createDraft.mode, 'create', 'U-T4: saving a candidate as ocr_var uses create mode');
+eq(createDraft.id, 'O_预设', 'U-T4: the candidate name prefills the asset id');
+eq(createDraft.runtimeText, '御魂', 'U-T4: the candidate text prefills runtime_text');
+eq(createDraft.paramKey, autoParamKey('O_预设'), 'U-T4: create mode auto-generates param_key');
+eq(createDraft.roi, [1, 2, 30, 40], 'U-T4: the candidate recognition box becomes the roi');
+eq(createDraft.positions, [5, 6], 'U-T4: create mode keeps the selected position frames');
+// 校验
+eq(assetTextValidate(createDraft, { existingIds: [], existingParamKeys: [] }), [],
+  'U-T4: a valid create draft has no errors');
+ok(
+  assetTextValidate(Object.assign({}, createDraft, { id: '' }), {}).some((e) => /素材 id 必填/.test(e)),
+  'U-T4: create mode requires an asset id'
+);
+ok(
+  assetTextValidate(Object.assign({}, createDraft, { id: '9bad' }), {}).some((e) => /素材 id 非法/.test(e)),
+  'U-T4: create mode rejects an illegal asset id'
+);
+ok(
+  assetTextValidate(createDraft, { existingIds: ['O_预设'] }).some((e) => /已存在/.test(e)),
+  'U-T4: create mode rejects a duplicate asset id'
+);
+ok(
+  assetTextValidate(Object.assign({}, createDraft, { positions: [] }), {}).some((e) => /位置帧/.test(e)),
+  'U-T4: create mode requires at least one position frame'
+);
+ok(
+  assetTextValidate(Object.assign({}, createDraft, { paramKey: '9bad' }), {}).some((e) => /param_key/.test(e)),
+  'U-T4: create mode validates the param_key syntax'
+);
+ok(
+  assetTextValidate(Object.assign({}, createDraft, { paramKey: 'used' }), { existingParamKeys: ['used'] })
+    .some((e) => /已被本任务其它素材使用/.test(e)),
+  'U-T4: create mode rejects a duplicate param_key'
+);
+ok(
+  assetTextValidate(Object.assign({}, createDraft, { runtimeText: '  ' }), {}).some((e) => /必填/.test(e)),
+  'U-T4: runtime_text is required'
+);
+ok(
+  assetTextValidate(Object.assign({}, createDraft, { runtimeText: 'x'.repeat(201) }), {})
+    .some((e) => /200/.test(e)),
+  'U-T4: runtime_text length is bounded'
+);
+ok(
+  assetTextValidate(Object.assign({}, createDraft, { label: 'x'.repeat(81) }), {})
+    .some((e) => /label/.test(e)),
+  'U-T4: the label length is bounded'
+);
+ok(
+  assetTextValidate(Object.assign({}, createDraft, { fullScreen: false, roi: [1, 2, 0, 4] }), {})
+    .some((e) => /w\/h 必须大于 0/.test(e)),
+  'U-T4: a zero-size roi is rejected'
+);
+eq(assetTextValidate(editDraft, {}), [], 'U-T4: a valid edit draft has no errors');
+// 保存载荷
+const createRequest = assetTextSaveRequest(createDraft, { task: '任务甲' });
+eq(createRequest.url, '/task/save_asset', 'U-T4: a new ocr_var posts to /task/save_asset');
+eq(createRequest.payload.task, '任务甲', 'U-T4: the create payload carries the task scope');
+eq(createRequest.payload.kind, 'ocr_var', 'U-T4: the create payload sets kind=ocr_var');
+eq(createRequest.payload.runtime_text, '御魂', 'U-T4: the create payload carries runtime_text');
+eq(createRequest.payload.param_key, autoParamKey('O_预设'), 'U-T4: the create payload carries param_key');
+eq(createRequest.payload.roi, [1, 2, 30, 40], 'U-T4: the create payload carries roi');
+eq(createRequest.payload.positions, [5, 6], 'U-T4: the create payload carries positions');
+eq('replace' in createRequest.payload, false, 'U-T4: a fresh create never sends replace');
+const editRequest = assetTextSaveRequest(editDraft, { task: '任务甲' });
+eq(editRequest.url, '/task/asset/update', 'U-T4: editing an ocr_var posts to /task/asset/update');
+eq(
+  editRequest.payload,
+  { task: '任务甲', id: 'O_组', runtime_text: '御魂', label: '预设分组', roi: [10, 20, 30, 40] },
+  'U-T4: the edit payload carries runtime_text/label/roi (no param_key rewrite)'
+);
+const clearRoiDraft = Object.assign({}, editDraft, { fullScreen: true, roi: null });
+const clearRoiRequest = assetTextSaveRequest(clearRoiDraft, { task: '任务甲' });
+eq(clearRoiRequest.url, '/task/save_asset', 'U-T4: clearing roi falls back to the replace save (update cannot clear roi)');
+eq(clearRoiRequest.payload.replace, true, 'U-T4: the roi-clearing payload sets replace=true');
+eq('roi' in clearRoiRequest.payload, false, 'U-T4: the roi-clearing payload omits roi (full-screen OCR)');
+eq(clearRoiRequest.payload.param_key, 'group', 'U-T4: the replace payload echoes the read-only param_key');
+eq(assetTextSaveRequest(Object.assign({}, createDraft, { runtimeText: '' }), {}).ok, false,
+  'U-T4: an invalid draft produces no save request');
+// op_region 保存计划（S5）：链校验 + 只含有改动的 update
+const planLibrary = s5Assets.concat([{ id: 'A', kind: 'template', op_region: { mode: 'offset', offset: [1, 2, 30, 40] } }]);
+const planDraft = opRegionDraftSetLevel(
+  opRegionDraftStart(planLibrary.find((a) => a.id === 'A')),
+  0,
+  { mode: 'asset', asset: 'B' },
+  planLibrary
+);
+const plan = opRegionSavePlan(planDraft, planLibrary, { scope: '任务甲' });
+eq(plan.ok, true, 'U-T4/S5: a valid chain produces a save plan');
+eq(plan.updates.length, 1, 'U-T4/S5: only the edited root level is written');
+eq(
+  plan.updates[0],
+  { assetId: 'A', op_region: { mode: 'asset', asset: 'B', pick: 'score' }, scope: '任务甲' },
+  'U-T4/S5: the plan names the current asset + its new op_region'
+);
+const planBoth = opRegionSavePlan(s5DraftABOff, s5Assets, { scope: '任务甲' });
+eq(planBoth.updates.length, 2, 'U-T4/S5: a two-level edit plans two updates (current + referenced asset)');
+eq(planBoth.updates.map((u) => u.assetId), ['A', 'B'], 'U-T4/S5: updates follow the breadcrumb order');
+const planBad = opRegionSavePlan(
+  opRegionDraftSetLevel(opRegionDraftStart(s5Assets[0]), 0, { mode: 'asset', asset: 'Missing' }, s5Assets),
+  s5Assets,
+  {}
+);
+eq(planBad.ok, false, 'U-T4/S5: a dangling reference blocks the save plan');
+eq(planBad.updates, [], 'U-T4/S5: an invalid chain produces no updates');
+eq(
+  opRegionLevelChoices().map((o) => o.value),
+  ['self', 'offset', 'asset'],
+  'U-T4/S5: the dialog offers the three documented operation-region sources'
+);
+// B-T3a 契约：配置项保存时派生行必须原样回传。
+const loadedConfigRows = [
+  { key: 'loop_n', type: 'int', default: 3 },
+  {
+    key: 'group', type: 'string', default: '御魂', role: 'ocr_text', asset_id: 'O_组',
+    label: '预设分组', group: '识别文字', description: '旧说明',
+  },
+];
+const submittedConfigRows = [
+  { key: 'loop_n', type: 'int', default: 5, label: '轮数' },
+  // 用户误改派生行（key/default/type）→ 必须被强制回填加载值。
+  {
+    key: 'group_changed', type: 'int', default: 999, role: 'ocr_text', asset_id: 'O_组',
+    label: '改名后', group: '新分组', description: '新说明',
+  },
+];
+eq(
+  taskConfigMergeDerivedForSave(submittedConfigRows, loadedConfigRows),
+  [
+    { key: 'loop_n', type: 'int', default: 5, label: '轮数' },
+    {
+      key: 'group', type: 'string', default: '御魂', role: 'ocr_text', asset_id: 'O_组',
+      label: '改名后', group: '新分组', description: '新说明',
+    },
+  ],
+  'U-T4: config save forces derived rows back to the loaded owned fields, keeps editable group/description/label'
+);
+eq(
+  taskConfigMergeDerivedForSave([{ key: 'loop_n', type: 'int', default: 1 }], loadedConfigRows)
+    .map((r) => r.asset_id || '').filter(Boolean),
+  ['O_组'],
+  'U-T4: a deleted derived row is restored before POST /task/config'
+);
+eq(taskConfigMergeDerivedForSave(null, null), [], 'U-T4: missing config rows merge to an empty list');
+eq(
+  taskConfigMergeDerivedForSave([{ key: 'user', type: 'string' }], loadedConfigRows)[0],
+  { key: 'user', type: 'string' },
+  'U-T4: user rows are passed through untouched'
+);
 
 // --- v1.2.4: action_shape invert travels with BOTH rect and polygon ---
 const testPolyPoints = [{ x: 1, y: 2 }, { x: 9, y: 2 }, { x: 9, y: 8 }];
@@ -626,15 +1097,15 @@ eq(sandbox.btnTestMode.textContent, '素材测试：真实点击', 'header butto
 eq(sandbox.btnTestMode['aria-pressed'], 'true', 'real button aria-pressed=true');
 sandbox.assetTestReal = false;
 
-// --- P0-2: save payload branch (recognition vs fixed vs region) ---
+// --- 事项 6: save payload carries action_shape only (no two-state flag) ---
 eq(
   ocrAssetPayload(
-    { kind: 'ocr_line', name: '按钮甲', recognize: { x: 1, y: 2, w: 30, h: 40 }, actionSource: 'recognition', actionShape: null },
+    { kind: 'ocr_line', name: '按钮甲', recognize: { x: 1, y: 2, w: 30, h: 40 }, actionShape: null },
     [3],
     null
   ),
-  { id: '按钮甲', kind: 'ocr_line', roi: [1, 2, 30, 40], positions: [3], action_source: 'recognition' },
-  'un-edited OCR candidate saves recognition without shape/polygon'
+  { id: '按钮甲', kind: 'ocr_line', roi: [1, 2, 30, 40], positions: [3] },
+  'un-edited OCR candidate saves without shape/polygon and without action_source'
 );
 eq(
   ocrAssetPayload(
@@ -645,7 +1116,6 @@ eq(
       recognize: { x: 5, y: 6, w: 20, h: 10 },
       fromLines: true,
       sourceRoi: { x: 0, y: 0, w: 100, h: 50 },
-      actionSource: 'fixed',
       actionShape: { kind: 'rect', roi: [1, 2, 3, 4], invert: false },
     },
     [7, 8],
@@ -657,24 +1127,23 @@ eq(
     roi: [0, 0, 100, 50],
     positions: [7, 8],
     action_shape: { kind: 'rect', roi: [1, 2, 3, 4], invert: false },
-    action_source: 'fixed',
     ocr_mode: 'lines',
     ocr_text: '开始',
   },
-  'multi-line OCR keeps ocr_mode/ocr_text and fixed shape; no polygon when absent'
+  'multi-line OCR keeps ocr_mode/ocr_text and the operation shape; no polygon when absent'
 );
 eq(
   singleAssetPayload(
-    { kind: 'template', name: '模板甲', recognize: { x: 1, y: 2, w: 3, h: 4 }, actionSource: 'recognition', actionShape: null },
+    { kind: 'template', name: '模板甲', recognize: { x: 1, y: 2, w: 3, h: 4 }, actionShape: null },
     [7],
     null
   ),
-  { id: '模板甲', kind: 'template', roi: [1, 2, 3, 4], positions: [7], action_source: 'recognition', threshold: 0.85 },
-  'template keeps threshold and recognition semantics'
+  { id: '模板甲', kind: 'template', roi: [1, 2, 3, 4], positions: [7], threshold: 0.85 },
+  'template keeps threshold and saves no operation shape when none was edited'
 );
 eq(
   singleAssetPayload(
-    { kind: 'region', name: '区域甲', recognize: { x: 1, y: 2, w: 3, h: 4 }, actionSource: 'recognition', actionShape: null },
+    { kind: 'region', name: '区域甲', recognize: { x: 1, y: 2, w: 3, h: 4 }, actionShape: null },
     [9],
     null
   ),
@@ -696,7 +1165,6 @@ const ocrWithPoly = ocrAssetPayload(
     recognize: { x: 2, y: 2, w: 4, h: 4 },
     fromLines: true,
     sourceRoi: { x: 1, y: 1, w: 8, h: 8 },
-    actionSource: 'recognition',
     actionShape: null,
   },
   [5],
@@ -707,7 +1175,7 @@ eq(ocrWithPoly.ocr_mode, 'lines', 'OCR batch payload keeps ocr_mode');
 eq(ocrWithPoly.ocr_text, '确定', 'OCR batch payload keeps ocr_text');
 
 const singleWithPoly = singleAssetPayload(
-  { kind: 'ocr_line', name: '按钮丁', recognize: { x: 3, y: 3, w: 2, h: 2 }, actionSource: 'recognition', actionShape: null },
+  { kind: 'ocr_line', name: '按钮丁', recognize: { x: 3, y: 3, w: 2, h: 2 }, actionShape: null },
   [6],
   recognitionPoly
 );
@@ -715,7 +1183,7 @@ eq(singleWithPoly.polygon, recognitionPoly, 'single save payload includes the re
 
 const candidatePoly = [[0, 0], [5, 0], [5, 5]];
 const candidatePolyWins = ocrAssetPayload(
-  { kind: 'ocr_line', name: '按钮戊', recognize: { x: 0, y: 0, w: 1, h: 1 }, actionSource: 'recognition', actionShape: null, polygon: candidatePoly },
+  { kind: 'ocr_line', name: '按钮戊', recognize: { x: 0, y: 0, w: 1, h: 1 }, actionShape: null, polygon: candidatePoly },
   [1],
   recognitionPoly
 );
@@ -1003,8 +1471,12 @@ function installFrameAssetsRenderHarness() {
   sandbox.runAssetTest = (it, frameId, scope) => actions.push({ action: 'test', id: it.id, frameId, scope });
   sandbox.testAssetClick = (it, frameId, scope) => actions.push({ action: 'click', id: it.id, frameId, scope });
   sandbox.testAssetDrag = (it, frameId, scope) => actions.push({ action: 'drag', id: it.id, frameId, scope });
-  sandbox.testAssetCollection = (it, frameId, scope) =>
-    actions.push({ action: 'collection', id: it.id, frameId, scope });
+  // U-T4: collection 识别 now returns all candidates (same route as single assets).
+  sandbox.testAssetCandidates = (it, frameId, scope) =>
+    actions.push({ action: 'candidates', id: it.id, frameId, scope });
+  sandbox.editAssetText = (it, scope) => actions.push({ action: 'editText', id: it.id, scope });
+  // U-T4/S5：素材行「操作区」现在打开操作区递归对话框（不再直接进入画布编辑）。
+  sandbox.openOpRegionDialog = (it, scope) => actions.push({ action: 'opRegion', id: it.id, scope });
   sandbox.pickAssetRoi = () => {};
   sandbox.generateAssetStep = () => {};
   sandbox.deleteCollection = () => {};
@@ -1049,7 +1521,7 @@ eq(
     { action: 'test', id: 'a', frameId: 2, scope: '（全局素材库）' },
     { action: 'click', id: 'a', frameId: 2, scope: '（全局素材库）' },
     { action: 'drag', id: 'a', frameId: 2, scope: '（全局素材库）' },
-    { action: 'collection', id: 'a', frameId: 2, scope: '（全局素材库）' },
+    { action: 'candidates', id: 'a', frameId: 2, scope: '（全局素材库）' },
   ],
   'frame detail row actions all pass the rendered frame id + the global scope'
 );
@@ -1057,7 +1529,7 @@ eq(
 frameDom.actions.length = 0;
 const taskRowOpts = frameDom.calls[2].opts;
 for (const name of [
-  'onEditRoi', 'onRename', 'onThreshold', 'onPosition', 'onDelete', 'onAction',
+  'onEditRoi', 'onRename', 'onThreshold', 'onPosition', 'onDelete', 'onOpRegion', 'onEditText',
 ]) {
   taskRowOpts[name]({ id: 'c' });
 }
@@ -1069,7 +1541,8 @@ eq(
     'editAssetThreshold:任务甲',
     'editAssetPositions:任务甲',
     'deleteAsset:任务甲',
-    'editAssetActionRoi:任务甲',
+    'opRegion:任务甲',
+    'editText:任务甲',
   ],
   'task-only frame rows pass the current task to every management callback'
 );
@@ -1257,7 +1730,7 @@ eq(
 );
 eq(sandbox.refreshFramesCalls, 0, 'the frame repaint never issues a second /frames request');
 
-// --- asset row: exactly 识别 + 设置, with a nine-item inline settings menu ---
+// --- asset row: exactly 识别 + 设置, with a ten-item inline settings menu ---
 // asset_ui.js is a browser IIFE, so run the REAL file against a tiny DOM stub.
 // This covers createRow()/assetMenuState() instead of a copied expectation.
 function assetDomElement(tagName) {
@@ -1316,7 +1789,7 @@ function installAssetUiHarness() {
 
 const assetUiHarness = installAssetUiHarness();
 const assetUi = assetUiHarness.ui;
-const ASSET_MENU_LABELS = ['点测', '拖测', '识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '步骤'];
+const ASSET_MENU_LABELS = ['点测', '拖测', '识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '步骤', '识别文字'];
 
 function assetChildren(el, className) {
   return (el.children || []).filter((child) =>
@@ -1351,6 +1824,7 @@ function assetRowOpts(overrides) {
     onThreshold: record('threshold'),
     onCollectionTest: record('collectionTest'),
     onCollectionDelete: record('collectionDelete'),
+    onEditText: record('editText'),
   };
   return { opts: Object.assign(opts, overrides || {}), calls };
 }
@@ -1363,17 +1837,17 @@ const rowSet = { id: '集合丁', kind: 'template_set', members: ['a', 'b'] };
 eq(
   assetUi.ASSET_MENU_ITEMS.map((m) => m.label),
   ASSET_MENU_LABELS,
-  'the settings menu is the agreed nine-item order'
+  'the settings menu is the agreed ten-item order (识别文字 appended last by U-T4)'
 );
 eq(
   assetUi.assetMenuState(rowTemplate, { manage: true }).filter((m) => m.disabled).map((m) => m.label),
-  [],
-  'a manageable template enables all nine items (识别区 now re-crops through replace)'
+  ['识别文字'],
+  'a manageable template enables every item except 识别文字 (only ocr_var edits text)'
 );
 eq(
   assetUi.assetMenuState(rowTemplate, { manage: true }).filter((m) => !m.disabled).map((m) => m.label),
   ['点测', '拖测', '识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '步骤'],
-  'every template settings item is actionable on a manageable surface'
+  'every other template settings item is actionable on a manageable surface'
 );
 const templateRoiMenu = assetUi.assetMenuState(rowTemplate, { manage: true }).find((m) => m.key === 'roi');
 ok(
@@ -1387,8 +1861,8 @@ ok(
 const readOnlyMenu = assetUi.assetMenuState(rowTemplate, { manage: false });
 eq(
   readOnlyMenu.filter((m) => m.disabled).map((m) => m.label),
-  ['识别区', '操作区', '重命名', '阈值', '位置帧', '删除'],
-  'manage:false disables every management item'
+  ['识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '识别文字'],
+  'manage:false disables every management item (识别文字 included)'
 );
 eq(
   readOnlyMenu.filter((m) => !m.disabled).map((m) => m.label),
@@ -1425,7 +1899,7 @@ eq(
   ['删除'],
   'a template_set settings menu only enables 删除'
 );
-eq(setMenuState.filter((m) => m.disabled).length, 8, 'the other eight collection entries stay visible but disabled');
+eq(setMenuState.filter((m) => m.disabled).length, 9, 'the other nine collection entries stay visible but disabled');
 ok(
   setMenuState.filter((m) => m.disabled).every((m) => /集合不支持/.test(m.title)),
   'disabled collection entries explain that sets do not support them'
@@ -1436,11 +1910,11 @@ const tplRow = assetUi.createRow(rowTemplate, tplRowHarness.opts);
 eq(assetRowActionText(tplRow), ['识别', '设置'], 'a normal asset row exposes exactly 识别 + 设置');
 const tplMenu = assetRowMenu(tplRow);
 ok(tplMenu && !tplMenu.classList.contains('open'), 'the settings menu starts collapsed');
-eq(tplMenu.children.map((b) => b.textContent), ASSET_MENU_LABELS, 'the settings menu renders all nine items in order');
+eq(tplMenu.children.map((b) => b.textContent), ASSET_MENU_LABELS, 'the settings menu renders all ten items in order');
 eq(
   assetChildren(tplRow, 'asset-row-action')[0].title,
-  '识别：在当前帧用该素材测试模板匹配',
-  'template 识别 keeps the template-match meaning'
+  '识别：返回全部符合阈值的匹配候选（带评分；集合按成员声明序）',
+  'template 识别 now means "all matching candidates"'
 );
 eq(
   assetRowActionText(assetUi.createRow(rowOcr, assetRowOpts().opts))[0],
@@ -1448,8 +1922,8 @@ eq(
   'OCR rows use the same 识别 label'
 );
 ok(
-  /试识别/.test(assetChildren(assetUi.createRow(rowOcr, assetRowOpts().opts), 'asset-row-action')[0].title),
-  'OCR 识别 title names the text trial'
+  /全部候选行/.test(assetChildren(assetUi.createRow(rowOcr, assetRowOpts().opts), 'asset-row-action')[0].title),
+  'OCR 识别 title names the all-candidates meaning'
 );
 ok(
   /操作区域/.test(assetChildren(assetUi.createRow(rowRegion, assetRowOpts().opts), 'asset-row-action')[0].title),
@@ -1516,8 +1990,98 @@ eq(assetRowMenu(noActionRow), null, 'actions:false renders no settings menu');
 const compactRow = assetUi.createRow(rowOcr, assetRowOpts({ compact: true }).opts);
 eq(
   assetRowMenu(compactRow).children.map((b) => b.textContent),
-  ['识别区', '操作区', '重命名', '阈值', '位置帧', '删除'],
+  ['识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '识别文字'],
   'compact keeps the old hiding of 点测/拖测/步骤'
+);
+
+// --- U-T4（事项 2）：使用端OCR文字配置项（ocr_var）素材行 --------------------
+// KIND_LABELS + 行详情（识别文字/op_region 摘要）+ 菜单「识别文字」规则 +
+// 虚拟素材（virtual:true，旧参数读时合成）的「待迁移」badge。
+const rowOcrVar = {
+  id: 'O_预设分组',
+  kind: 'ocr_var',
+  runtime_text: '御魂',
+  param_key: 'group',
+  label: '预设分组',
+  roi: [40, 300, 400, 60],
+  positions: [12],
+  op_region: { mode: 'offset', offset: [10, 5, 150, 80] },
+};
+eq(assetUi.kindLabel('ocr_var'), '使用端OCR文字配置项（ocr_var）', 'U-T4: ocr_var kind label');
+const ocrVarMenu = assetUi.assetMenuState(rowOcrVar, { manage: true });
+eq(
+  ocrVarMenu.filter((m) => m.disabled).map((m) => m.label),
+  [],
+  'U-T4: an ocr_var row enables all ten items (识别文字 included)'
+);
+const ocrVarTextMenu = ocrVarMenu.find((m) => m.key === 'text');
+eq(ocrVarTextMenu.disabled, false, 'U-T4: ocr_var can edit 识别文字');
+ok(/runtime_text/.test(ocrVarTextMenu.title), 'U-T4: the 识别文字 title names runtime_text');
+const tplTextMenu = assetUi.assetMenuState(rowTemplate, { manage: true }).find((m) => m.key === 'text');
+eq(tplTextMenu.disabled, true, 'U-T4: non-ocr_var rows disable 识别文字');
+ok(/仅「使用端OCR文字配置项」/.test(tplTextMenu.title), 'U-T4: the disabled 识别文字 title explains the kind rule');
+const ocrVarThresholdMenu = ocrVarMenu.find((m) => m.key === 'threshold');
+eq(ocrVarThresholdMenu.disabled, false, 'U-T4: ocr_var exposes the OCR confidence threshold');
+ok(/OCR 最低置信度/.test(ocrVarThresholdMenu.title), 'U-T4: ocr_var threshold keeps the OCR meaning');
+const virtualRow = {
+  id: 'O_group', kind: 'ocr_var', virtual: true, runtime_text: '御魂', param_key: 'group', roi: null,
+};
+const virtualMenu = assetUi.assetMenuState(virtualRow, { manage: true });
+eq(
+  virtualMenu.filter((m) => !m.disabled).map((m) => m.label),
+  ['点测', '拖测', '步骤', '识别文字'],
+  'U-T4: virtual rows stay testable and keep 识别文字 clickable as a migrate hint'
+);
+ok(
+  virtualMenu.find((m) => m.key === 'text').title.indexOf('待迁移') >= 0,
+  'U-T4: virtual 识别文字 explains that the row must be migrated first'
+);
+eq(
+  assetUi.assetText(rowOcrVar),
+  'O_预设分组\n识别 [40,300,400,60] · 识别文字「御魂」 · 操作区[相对偏移 [10,5,150,80]] · 位置帧[12]',
+  'U-T4: ocr_var row detail shows 识别文字 + op_region chain summary'
+);
+eq(
+  assetUi.assetText({ id: 'I_A', kind: 'template', roi: [1, 2, 3, 4], positions: [7] }),
+  'I_A\n识别 [1,2,3,4] · 位置帧[7]',
+  'U-T4: regular rows keep the existing detail format (no runtime/op_region fields)'
+);
+eq(assetUi.opRegionSummary({ mode: 'self' }), '当前素材操作区', 'U-T4: op_region self summary');
+eq(
+  assetUi.opRegionSummary({ mode: 'asset', asset: 'I_B', pick: 'nearest' }),
+  '引用素材「I_B」（离上一节点最近）',
+  'U-T4: op_region asset summary names the pick rule'
+);
+eq(
+  assetUi.opRegionSummary({ mode: 'asset', asset: 'I_B' }),
+  '引用素材「I_B」（评分最高）',
+  'U-T4: op_region asset summary defaults to score pick'
+);
+ok(
+  /偏移值无效/.test(assetUi.opRegionSummary({ mode: 'offset', offset: [1, 2] })),
+  'U-T4: a malformed offset summary is reported instead of rendering undefined'
+);
+const virtualRowEl = assetUi.createRow(virtualRow, assetRowOpts().opts);
+ok(
+  virtualRowEl.classList.contains('asset-row-virtual'),
+  'U-T4: virtual rows carry the read-only row class'
+);
+const virtualBadge = assetChildren(virtualRowEl, 'asset-virtual-badge')[0];
+ok(virtualBadge && virtualBadge.textContent === '待迁移', 'U-T4: virtual rows render the 待迁移 badge');
+const virtualHarness = assetRowOpts();
+const virtualRowClickable = assetUi.createRow(virtualRow, virtualHarness.opts);
+assetChildren(virtualRowClickable, 'asset-row-action')[1].dispatch('click');
+assetMenuButton(virtualRowClickable, 'text').dispatch('click');
+eq(
+  virtualHarness.calls,
+  [{ action: 'editText', id: 'O_group' }],
+  'U-T4: virtual 识别文字 stays clickable so app.js can show the migrate hint'
+);
+const ocrVarRowEl = assetUi.createRow(rowOcrVar, assetRowOpts().opts);
+ok(
+  /O_预设分组[\s\S]*识别文字「御魂」/.test(assetChildren(ocrVarRowEl, 'asset-main')[0].children
+    .filter((c) => c.className === 'asset-main-text')[0].textContent),
+  'U-T4: the ocr_var row body renders the runtime text'
 );
 
 // --- A: selected asset row + "settings must not collapse" (requirement 1) ---
@@ -1641,6 +2205,160 @@ ok(
   'the deferred restore reopens the menu on the new row'
 );
 
+// --- U-T4（S3/S6/S10）：候选识别、offset 绘制、素材行回调接线 ---------------
+const candidatesFn = extractFunction('testAssetCandidates');
+ok(
+  /\/task\/asset\/candidates\?task=/.test(source) &&
+    /assetCandidatesUrl\(task, it\.id, frame\.query\)/.test(candidatesFn),
+  'U-T4: 素材行「识别」calls GET /task/asset/candidates per frame'
+);
+ok(
+  /candidateBoxes\(candidates\)/.test(candidatesFn) &&
+    /candidateLabelText\(candidate\)/.test(candidatesFn) &&
+    /boxes = collected;/.test(candidatesFn) && /draw\(\)/.test(candidatesFn),
+  'U-T4: every candidate is drawn as a box and listed as #i score=… [x,y,w,h]'
+);
+ok(/全屏 OCR/.test(candidatesFn), 'U-T4: an empty-roi OCR asset is labelled 全屏 OCR');
+const uT4RunAssetTestFn = extractFunction('runAssetTest');
+ok(
+  /testAssetCandidates\(it, frameId, scopeTask\)/.test(uT4RunAssetTestFn),
+  'U-T4: 素材行 识别 routes every asset kind through the candidate API'
+);
+ok(
+  (source.match(/onEditText:/g) || []).length >= 3,
+  'U-T4: all three asset surfaces wire onEditText'
+);
+ok(
+  (source.match(/onCollectionTest: \(it\) => testAssetCandidates\(/g) || []).length >= 2 &&
+    /onCollectionTest: \(it\) => testAssetCandidates\(it, f\.id, scopeTask\)/.test(source),
+  'U-T4: collection rows 识别 returns all candidates too'
+);
+ok(
+  /function editAssetText\(it, scopeTask\)[\s\S]{0,600}虚拟素材/.test(source),
+  'U-T4: 识别文字 preview prompts migration for virtual rows'
+);
+// S6 offset canvas drawing（阶段 A：绘制+计算，保存待 B-T3）
+ok(
+  /function startOffsetDrawForAsset\(it, scopeTask\)/.test(source),
+  'U-T4: offset drawing has an entry point (phase-B dialog wires it via OAS_CANVAS_TOOLS)'
+);
+ok(
+  /function offsetDrawMouseDown\(ev\)/.test(source) && /function offsetDrawFinish\(\)/.test(source),
+  'U-T4: offset drawing handles canvas drag + 完成'
+);
+ok(
+  /drawOffsetDrawOverlay\(\)/.test(extractFunction('draw')),
+  'U-T4: draw() renders the simulated recognition + operation regions'
+);
+ok(
+  /canvas\.addEventListener\('mousedown', \(ev\) => \{[\s\S]{0,260}offsetDrawMouseDown\(ev\)[\s\S]{0,260}liveInputAllowed\(\)/.test(source),
+  'U-T4: offset drawing intercepts the drag before the live-passthrough branch'
+);
+for (const id of ['offset-draw-label', 'btn-offset-redraw', 'btn-offset-cancel', 'btn-offset-done']) {
+  ok(new RegExp(`id="${id}"`).test(html), `U-T4: index.html provides #${id}`);
+}
+ok(
+  /id="btn-save-asset-roi"[\s\S]{0,700}id="offset-draw-label"[\s\S]{0,700}id="btn-offset-done"/.test(html),
+  'U-T4: the offset controls sit in #canvas-footer next to the ROI save button'
+);
+ok(
+  /\.offset-draw-label/.test(styleCss) && /#canvas-footer \.offset-draw-label\[hidden\]/.test(styleCss),
+  'U-T4: style.css styles the offset footer label'
+);
+ok(/window\.OAS_CANVAS_TOOLS = \{/.test(source), 'U-T4: canvas tools entry is exposed for phase-B wiring/console');
+ok(
+  /function opRegionDraftStart\(asset\)/.test(source) &&
+    /function opRegionDraftSetLevel\(draft, index, opRegion, assets\)/.test(source) &&
+    /function opRegionDraftUpdates\(draft, assets\)/.test(source) &&
+    /function opRegionRefOptions\(assets, rootAssetId\)/.test(source),
+  'U-T4/S5: the recursive operation-region dialog draft model is in place (API-independent)'
+);
+ok(
+  /ocr_var: '使用端OCR文字配置项（ocr_var）'/.test(assetUiSource),
+  'U-T4: asset_ui KIND_LABELS adds the ocr_var label'
+);
+ok(
+  /key: 'text', label: '识别文字'/.test(assetUiSource),
+  'U-T4: asset_ui appends the 识别文字 menu item (append-only)'
+);
+const assetTextFn = extractFunctionFrom(assetUiSource, 'assetText', 'asset_ui.js');
+ok(/runtime_text/.test(assetTextFn), 'U-T4: assetText shows runtime_text for ocr_var rows');
+ok(/opRegionSummary\(it\.op_region\)/.test(assetTextFn), 'U-T4: assetText shows the op_region chain summary');
+ok(
+  /asset-virtual-badge/.test(assetUiSource) && /\.asset-virtual-badge/.test(styleCss) &&
+    /\.asset-row-virtual/.test(styleCss),
+  'U-T4: virtual rows render the 待迁移 badge (styled)'
+);
+
+// --- U-T4 阶段 B：识别文字对话框 / 操作区递归对话框 / 保存接线 ---------------
+for (const id of [
+  'asset-text-dialog', 'asset-text-id', 'asset-text-runtime', 'asset-text-paramkey',
+  'asset-text-label', 'asset-text-fullscreen', 'asset-text-roi-x', 'asset-text-roi-y',
+  'asset-text-roi-w', 'asset-text-roi-h', 'asset-text-positions', 'asset-text-error',
+  'asset-text-save', 'asset-text-cancel',
+  'op-region-dialog', 'op-region-breadcrumb', 'op-region-levels', 'op-region-error',
+  'op-region-save', 'op-region-cancel',
+]) {
+  ok(new RegExp(`id="${id}"`).test(html), `U-T4: index.html provides #${id}`);
+}
+ok(
+  /\.asset-text-dialog/.test(styleCss) && /\.op-region-dialog/.test(styleCss) &&
+    /\.op-region-level/.test(styleCss),
+  'U-T4: style.css styles both new dialogs'
+);
+const openAssetTextFn = extractFunction('openAssetTextDialog');
+ok(
+  /assetTextDraftFromCandidate\(/.test(openAssetTextFn) &&
+    /assetTextDraftStart\(/.test(openAssetTextFn),
+  'U-T4: the 识别文字 dialog opens in create (candidate) or edit (asset) mode'
+);
+const saveAssetTextFn = extractFunction('saveAssetTextDialog');
+ok(
+  /assetTextSaveRequest\(/.test(saveAssetTextFn) && /postJson\(request\.url, request\.payload\)/.test(saveAssetTextFn),
+  'U-T4: the 识别文字 dialog saves through assetTextSaveRequest → POST save_asset/update'
+);
+ok(
+  /refreshAssetsAfterOcrVarChange\(ctx\.task, ctx\.scope\)/.test(saveAssetTextFn),
+  'U-T4: saving ocr_var refreshes the asset libraries + config panel'
+);
+const openOpRegionFn = extractFunction('openOpRegionDialog');
+ok(
+  /opRegionDraftStart\(asset\)/.test(openOpRegionFn),
+  'U-T4/S5: the 操作区 dialog starts from the asset draft model'
+);
+const saveOpRegionFn = extractFunction('saveOpRegionDialog');
+ok(
+  /opRegionSavePlan\(ctx\.draft, lib/.test(saveOpRegionFn) &&
+    /postJson\('\/task\/asset\/update', \{[\s\S]{0,120}op_region: update\.op_region/.test(saveOpRegionFn),
+  'U-T4/S5: saving the chain posts /task/asset/update op_region per edited level'
+);
+ok(
+  /offsetDrawReturnToOpRegion/.test(source) &&
+    /opRegionDraftSetLevel\([\s\S]{0,200}mode: 'offset', offset: result\.offset/.test(source),
+  'U-T4/S5: the canvas offset drawing writes back into the dialog draft on 完成'
+);
+ok(
+  /onOpRegion: \(it\) => openOpRegionDialog\(it/.test(source) &&
+    (source.match(/onOpRegion:/g) || []).length >= 3,
+  'U-T4/S5: all three asset surfaces open the operation-region dialog'
+);
+ok(
+  /key: 'action', label: '操作区', action: 'onOpRegion'/.test(assetUiSource),
+  'U-T4/S5: the asset-row 操作区 menu item opens the recursive dialog'
+);
+ok(
+  /存为OCR文字配置/.test(source) && /openAssetTextDialog\(null, '', \{ candidate: c, positions: positions \}\)/.test(source),
+  'U-T4/S2: the 识别结果 rows offer "存为OCR文字配置" (ocr_var creation entry)'
+);
+ok(
+  /taskConfigMergeDerivedForSave\(parsed\.params, taskConfigLoadedParams\)/.test(source),
+  'U-T4: POST /task/config echoes derived rows back unchanged (B-T3a contract)'
+);
+ok(
+  /taskConfigLoadedParams = params\.map/.test(source),
+  'U-T4: the config dialog snapshots the loaded derived rows for the round-trip'
+);
+
 // Static contracts for the split editors: every surface wires the split
 // callbacks, the row never calls a combined onEdit, and the legacy combined
 // editor is gone (it was dead code: nothing outside the IIFE could reach it).
@@ -1648,8 +2366,9 @@ for (const name of ['renderAssetList', 'renderGlobalAssets', 'renderFrameAssets'
   const fn = extractFunction(name);
   ok(
     /onEditRoi:/.test(fn) && /onRename:/.test(fn) && /onThreshold:/.test(fn) &&
-      /onPosition:/.test(fn) && /onAction:/.test(fn) && /onStep:/.test(fn),
-    `${name} wires the nine-item settings callbacks`
+      /onPosition:/.test(fn) && /onOpRegion:/.test(fn) && /onStep:/.test(fn) &&
+      /onEditText:/.test(fn),
+    `${name} wires the settings callbacks (U-T4: onEditText + onOpRegion)`
   );
 }
 ok(
@@ -1763,7 +2482,7 @@ ok(
 for (const name of [
   'pickAssetRoi', 'editAssetRecognitionRoi', 'editAssetActionRoi', 'renameAsset',
   'editAssetThreshold', 'editAssetPositions', 'deleteAsset', 'runAssetTest',
-  'testAssetClick', 'testAssetDrag', 'generateAssetStep', 'testAssetCollection',
+  'runTestActionForAsset', 'testAssetDrag', 'generateAssetStep', 'testAssetCollection',
   'deleteCollection', 'selectFrame', 'deleteFrame', 'clearFrames',
   'pauseLivePreview', 'startLivePreview', 'saveAssetUnified',
 ]) {
@@ -1885,7 +2604,6 @@ async function checkAssetRoiSavePath() {
     roi: [1, 2, 3, 4],
     threshold: 0.9,
     positions: [7, 8],
-    action_source: 'fixed',
     action_shape: { kind: 'rect', roi: [5, 6, 7, 8] },
   };
   const saved = await roiSave.run(tplAsset, { x: 10, y: 20, w: 30, h: 40 }, { scope: '任务乙' });
@@ -1905,7 +2623,6 @@ async function checkAssetRoiSavePath() {
       kind: 'template',
       roi: [10, 20, 30, 40],
       positions: [7, 8],
-      action_source: 'fixed',
       threshold: 0.9,
       action_shape: { kind: 'rect', roi: [5, 6, 7, 8] },
     },
@@ -1937,7 +2654,6 @@ async function checkAssetRoiSavePath() {
       kind: 'template',
       roi: [10, 20, 30, 40],
       positions: [9],
-      action_source: 'fixed',
       threshold: 0.6,
       action_shape: { kind: 'rect', roi: [5, 6, 7, 8] },
     },
@@ -2054,7 +2770,6 @@ async function checkAssetRoiSavePath() {
     id: '区域丙',
     kind: 'region',
     roi: [1, 2, 3, 4],
-    action_source: 'fixed',
     action_shape: { kind: 'polygon', points: [[1, 2], [3, 2], [3, 5], [1, 5]], invert: false },
   };
   await roiSave.run(regionAsset, { x: 5, y: 6, w: 7, h: 8 });
@@ -2259,6 +2974,7 @@ const roiEditSb = {
   resultEl: { textContent: '' },
   window: {},
   livePreview: false,
+  offsetDraw: null,
   resetSelection: () => { throw new Error('template_set must not start a canvas edit'); },
   pickAssetRoi: () => {},
   cancelRecognitionRoiEdit: () => {},
@@ -2296,6 +3012,7 @@ function installRoiCancelHarness() {
     btnSaveAssetRoi: { hidden: true, disabled: true, title: '' },
     assetRoiEditLabel: { hidden: true, textContent: '' },
     resultEl: { textContent: '' },
+    offsetDraw: null,
     loadActionShapeForEdit: () => {},
     actionShapeBBox: () => null,
   };
@@ -2451,7 +3168,6 @@ const payloadAsset = {
   kind: 'template',
   roi: [1, 2, 3, 4],
   positions: [7, 8],
-  action_source: 'fixed',
   action_shape: { kind: 'rect', roi: [5, 6, 7, 8] },
   threshold: 0.9,
   polygon: [[1, 2], [3, 2], [3, 5], [1, 5]],
@@ -2467,7 +3183,6 @@ eq(
     kind: 'template',
     roi: [10, 20, 30, 40],
     positions: [7, 8],
-    action_source: 'fixed',
     threshold: 0.9,
     action_shape: { kind: 'rect', roi: [5, 6, 7, 8] },
     polygon: [[10, 20], [39, 20], [39, 59], [10, 59]],
@@ -2875,14 +3590,17 @@ ok(
 );
 const runAssetTestFn = extractFunction('runAssetTest');
 ok(
-  /testAssetMatch\(it, frameId, scopeTask\)/.test(runAssetTestFn),
-  'runAssetTest passes the optional frame id + row scope to the template test'
+  /return testAssetCandidates\(it, frameId, scopeTask\)/.test(runAssetTestFn),
+  'U-T4: runAssetTest routes 素材行 识别 through the all-candidates path (all kinds)'
 );
 ok(
-  /testAssetOcr\(it, frameId, scopeTask\)/.test(runAssetTestFn),
-  'runAssetTest passes the optional frame id + row scope to the OCR test'
+  /it\.kind === 'region'[\s\S]{0,160}pickAssetRoi\(it\)/.test(runAssetTestFn),
+  'region 识别 still selects the region before listing its single candidate'
 );
-for (const fn of ['testAssetMatch', 'testAssetClick', 'testAssetDrag', 'testAssetOcr', 'testAssetCollection']) {
+for (const fn of [
+  'testAssetMatch', 'testAssetDrag', 'testAssetOcr',
+  'testAssetCollection', 'testAssetCandidates',
+]) {
   const body = extractFunction(fn);
   ok(
     new RegExp(`function ${fn}\\(it, frameId, scopeTask\\)`).test(body),
@@ -2891,11 +3609,22 @@ for (const fn of ['testAssetMatch', 'testAssetClick', 'testAssetDrag', 'testAsse
   ok(/testFrames\(it, frameId\)/.test(body), `${fn} resolves frames through testFrames(it, frameId)`);
   ok(/assetRowScopeTask\(scopeTask/.test(body), `${fn} resolves the API scope through assetRowScopeTask`);
 }
+const runTestActionFn = extractFunction('runTestActionForAsset');
+ok(
+  /function runTestActionForAsset\(it, gesture, frameId, scopeTask\)/.test(runTestActionFn) &&
+    /testFrames\(it, frameId\)/.test(runTestActionFn) &&
+    /assetRowScopeTask\(scopeTask/.test(runTestActionFn),
+  'U-T4/S4: runTestActionForAsset accepts gesture/frame/scope; testAssetClick wraps it'
+);
+ok(
+  /function testAssetClick\(it, frameId, scopeTask\)[\s\S]{0,160}runTestActionForAsset\(it, 'click', frameId, scopeTask\)/.test(extractFunction('testAssetClick')),
+  'U-T4/S4: 点测 delegates to the generic test_action runner'
+);
 ok(
   /function testFrameLabel\(it, frameId\)/.test(extractFunction('testFrameLabel')),
   'testFrameLabel can name an explicitly requested frame'
 );
-for (const fn of ['testAssetClick', 'testAssetDrag', 'testAssetOcr']) {
+for (const fn of ['testAssetDrag', 'testAssetOcr']) {
   ok(
     /testFrameLabel\(it, frameId\)/.test(extractFunction(fn)),
     `${fn} reports the frame it actually tested`
@@ -2908,8 +3637,8 @@ ok(
 ok(
   /onClickTest: \(it\) => testAssetClick\(it, f\.id, scopeTask\)/.test(renderFrameAssetsFn) &&
     /onDragTest: \(it\) => testAssetDrag\(it, f\.id, scopeTask\)/.test(renderFrameAssetsFn) &&
-    /onCollectionTest: \(it\) => testAssetCollection\(it, f\.id, scopeTask\)/.test(renderFrameAssetsFn),
-  'frame detail click/drag/collection tests force the rendered frame id + row scope too'
+    /onCollectionTest: \(it\) => testAssetCandidates\(it, f\.id, scopeTask\)/.test(renderFrameAssetsFn),
+  'frame detail click/drag/collection tests force the rendered frame id + row scope too (U-T4: collection 识别 = candidates)'
 );
 // C static contract: frame rows are manageable and carry no source label.
 ok(/manage: true/.test(renderFrameAssetsFn), 'renderFrameAssets passes manage:true (same as the global library)');
@@ -2919,7 +3648,7 @@ ok(
   'renderFrameAssets derives each row API scope through frameAssetScope'
 );
 ok(
-  ['onRename', 'onThreshold', 'onPosition', 'onDelete', 'onAction'].every((k) =>
+  ['onRename', 'onThreshold', 'onPosition', 'onDelete', 'onOpRegion', 'onEditText'].every((k) =>
     new RegExp(`${k}: \\(it\\) => \\w+\\(it, scopeTask\\)`).test(renderFrameAssetsFn)),
   'every frame-detail management callback forwards the row scope'
 );
@@ -2957,9 +3686,9 @@ ok(
 );
 ok(
   /matchBoxValid\(recognizedBox\)/.test(extractFunction('testAssetMatch')) &&
-    /matchBoxValid\(recognizedBox\)/.test(extractFunction('testAssetClick')) &&
-    /matchBoxValid\(recognizedBox\)/.test(extractFunction('testAssetDrag')),
-  'template tests reject a miss (-1,-1) through matchBoxValid before drawing'
+    /matchBoxValid\(recognizedBox\)/.test(extractFunction('testAssetDrag')) &&
+    /matchBoxValid\(s\.real_rect\)/.test(extractFunction('testActionBoxes')),
+  'template tests + test_action boxes reject a miss (-1,-1) through matchBoxValid before drawing'
 );
 const probeOcrFrameFn = extractFunction('probeAssetOcrFrame');
 ok(/recognizedBox: null/.test(probeOcrFrameFn), 'single-line OCR reports no independent detection box');
@@ -2972,8 +3701,8 @@ ok(
   'the stored ROI is no longer labelled a recognized box'
 );
 ok(
-  /识别区域（存储 ROI，无独立检测框）/.test(extractFunction('testAssetClick')),
-  'the click test names the stored ROI a recognition area, not a detection box'
+  /识别区域 \[\$\{rec\.join/.test(extractFunction('testAssetOcr')),
+  'the OCR test labels the stored ROI as the recognition area, not a detected box'
 );
 
 // Boot regression (E2E O1): #task-select must be populated BEFORE the task
@@ -3029,7 +3758,6 @@ async function checkSavePathWiring(saveSource) {
     recognize: { x: 2, y: 2, w: 4, h: 4 },
     fromLines: true,
     sourceRoi: { x: 1, y: 1, w: 8, h: 8 },
-    actionSource: 'recognition',
     actionShape: null,
   }];
   await sandbox.saveAssetUnified();
@@ -3038,14 +3766,16 @@ async function checkSavePathWiring(saveSource) {
   eq(calls[0].payload.assets[0].polygon, recognitionPoly, 'batch OCR save payload carries polygon');
   eq(calls[0].payload.assets[0].ocr_mode, 'lines', 'batch OCR save payload keeps ocr_mode');
   eq(calls[0].payload.assets[0].ocr_text, '开始', 'batch OCR save payload keeps ocr_text');
-  eq(calls[0].payload.assets[0].action_source, 'recognition', 'batch OCR keeps recognition semantics');
+  ok(
+    !('action_source' in calls[0].payload.assets[0]) && !('action_shape' in calls[0].payload.assets[0]),
+    'batch OCR save sends no action_source/action_shape when no operation area was edited'
+  );
 
   sandbox.saveCandidates = [{
     selected: true,
     kind: 'template',
     name: '模板甲',
     recognize: { x: 1, y: 2, w: 3, h: 4 },
-    actionSource: 'recognition',
     actionShape: null,
   }];
   await sandbox.saveAssetUnified();
@@ -3117,11 +3847,110 @@ ok(
   'save payload uses currentActionShape (invert included)'
 );
 
-const clickTestFn = extractFunction('testAssetClick');
-ok(/realAssetTestGuard\(\)/.test(clickTestFn), 'click test is gated by the real/dry-run mode');
-ok(/confirmAssetTestGestures\('click'/.test(clickTestFn), 'real click confirms before sending');
-ok(/sendAssetTestGesture\(true, 'tap'/.test(clickTestFn), 'real click sends POST /input/tap');
-ok(/真实点击模式/.test(clickTestFn) && /演练/.test(clickTestFn), 'click result text distinguishes 演练/真实');
+// --- U-T4/S4（B-T3b）：test_action 点测/长按 + 候选下拉 + validate 预检 ---------
+const clickTestFn = extractFunction('runTestActionForAsset');
+ok(/realAssetTestGuard\(\)/.test(clickTestFn), 'U-T4: click/long-press test is gated by the real/dry-run mode');
+ok(/confirmAssetTestGestures\('click'/.test(clickTestFn), 'U-T4: real test_action confirms before sending');
+ok(
+  /postJson\('\/task\/asset\/test_action', testActionRequestBody\(gesture/.test(clickTestFn),
+  'U-T4: 点测/长按 POST /task/asset/test_action (dry + real)'
+);
+ok(
+  /pickActionCandidate\(candidates\.items, it\)/.test(clickTestFn) &&
+    /real: true/.test(clickTestFn) && /live: true/.test(clickTestFn),
+  'U-T4: real mode picks a candidate from #candidate-select, then sends real + live'
+);
+ok(
+  /fetchActionCandidates\(it, task, frame\)/.test(clickTestFn) && /for \(const candidate of candidates\.items\)/.test(clickTestFn),
+  'U-T4: dry-run walks every candidate through test_action'
+);
+ok(
+  /testActionBoxes\(dry/.test(clickTestFn) && /真实识别/.test(extractFunction('testActionBoxes')),
+  'U-T4: dry-run draws each candidate real_rect + action_box'
+);
+ok(
+  /真实模式/.test(clickTestFn) && /演练，不实际点击/.test(clickTestFn),
+  'U-T4: result text distinguishes 演练/真实'
+);
+ok(
+  /return runTestActionForAsset\(it, 'click', frameId, scopeTask\)/.test(extractFunction('testAssetClick')),
+  'U-T4: 点测 wraps the generic test_action runner (drag keeps the old implementation)'
+);
+ok(
+  /sendAssetTestGesture\(true, 'swipe'/.test(extractFunction('testAssetDrag')),
+  'U-T4: 拖测 keeps the old path (test_action drag is 400 in this batch)'
+);
+ok(
+  /assetCandidatesUrl\(task, it\.id, frame/.test(extractFunction('fetchActionCandidates')),
+  'U-T4: the test-action candidate list comes from GET /task/asset/candidates'
+);
+ok(
+  /postJson\('\/task\/asset\/validate_op_region'/.test(source) &&
+    /opRegionValidateErrorText\(validated\)/.test(extractFunction('saveOpRegionDialog')),
+  'U-T4/S5: 操作区保存前调用服务端权威 validate_op_region 并展示 400 错误'
+);
+
+// test_action 纯函数：请求体 / 候选标签 / 结果行 / 画布 boxes / validate 错误格式。
+eq(
+  testActionRequestBody('click', { task: '任务甲', id: 'O_组', candidateIndex: 1, frame: { live: true }, real: false }),
+  { task: '任务甲', id: 'O_组', gesture: 'click', real: false, candidate_index: 1, live: true },
+  'U-T4: a dry test_action body carries task/id/gesture/candidate/live'
+);
+eq(
+  testActionRequestBody('long_press', { task: '任务甲', id: 'I_A', frame: { frameId: 7 }, real: true, holdMs: 2500 }),
+  { task: '任务甲', id: 'I_A', gesture: 'long_press', real: true, frame_id: 7, hold_ms: 2500 },
+  'U-T4: a real long_press body can carry frame_id + hold_ms'
+);
+ok(
+  testActionRequestBody('click', { id: 'X' }).live === undefined,
+  'U-T4: no live flag unless the frame plan says live'
+);
+eq(candidateOptionLabel({ index: 1, score: 0.9729 }), '#1 score=0.973', 'U-T4: candidate option = #序号 score');
+eq(
+  testActionResultLines({
+    ok: true, real: false, candidate_index: 0, real_rect: [10, 20, 30, 40],
+    action_box: [12, 22, 30, 40], point: { x: 27, y: 42 }, chain_depth: 2,
+    steps: [
+      { asset: 'O_组', mode: 'asset', real: [10, 20, 30, 40], score: 0.97 },
+      { asset: 'I_模板', mode: 'offset', real: [52, 42, 20, 10] },
+    ],
+  }, 0)[0],
+  '#0 ✅ real_rect=[10,20,30,40] action_box=[12,22,30,40] point=(27,42) chain_depth=2',
+  'U-T4: a dry result line names real_rect/action_box/point/chain_depth'
+);
+const s4StepLines = testActionResultLines({
+  ok: true, steps: [{ asset: 'A', mode: 'self', real: [1, 2, 3, 4], score: 0.5, text: '御魂' }],
+}, 2);
+ok(/  · A \[self\] real=\[1,2,3,4\] score=0\.500 text="御魂"/.test(s4StepLines[1]),
+  'U-T4: chain steps render asset/mode/real/score/text');
+ok(
+  testActionResultLines({ ok: false, errors: ['候选越界'] }, 3)[0].indexOf('#3 ❌ 候选越界') === 0,
+  'U-T4: a failed test_action renders the backend error line'
+);
+ok(
+  /已点击 · tap_ok=true/.test(testActionResultLines({ ok: true, real: true, clicked: true, tap_ok: true }, 0).join('\n')),
+  'U-T4: a real result reports clicked + tap_ok'
+);
+eq(
+  testActionBoxes({ ok: true, real_rect: [10, 20, 30, 40], action_box: [12, 22, 30, 40] }, '帧#1').map((b) => b.text),
+  ['帧#1 真实识别', '帧#1 操作区'],
+  'U-T4: test_action boxes label the real recognition + operation regions'
+);
+eq(testActionBoxes({ ok: false }, '').length, 0, 'U-T4: a failed test_action draws no boxes');
+eq(
+  opRegionValidateErrorText({ ok: false, errors: [{ path: 'items[3].op_region.asset', msg: 'cycle: A -> B -> A' }] }),
+  'items[3].op_region.asset：cycle: A -> B -> A',
+  'U-T4: validate_op_region 400 errors render as 「path：msg」 lines'
+);
+eq(opRegionValidateErrorText({ ok: true }), '', 'U-T4: a valid chain yields no error text');
+ok(
+  /选择候选后发送真实点击/.test(extractFunction('pickActionCandidate')),
+  'U-T4: the real-mode candidate picker asks the user to choose a candidate'
+);
+for (const id of ['candidate-select']) {
+  ok(new RegExp(`id="${id}"`).test(html), `U-T4: index.html provides #${id}`);
+}
+ok(/\.candidate-select/.test(styleCss), 'U-T4: style.css styles the real-candidate select');
 // --- O-2: drag steps carry the operation shape (polygon / invert) ---
 // The 区域拖动 button and the asset drag test share regionDragStep, so this is
 // the single place the DSL shape contract is pinned.
@@ -3537,9 +4366,10 @@ ok(
 // window.OAS_TASK_CONFIG. The pure helpers below are extracted from builder.js
 // itself (no copy can drift).
 const BUILDER_PARAM_PURE = [
-  'paramSafeKey', 'paramTextExpr', 'paramWaitCond', 'paramClickStep', 'paramWaitStep',
+  'paramSafeKey', 'paramTextExpr', 'paramWaitCond',
   'paramSourceApply', 'paramSourceFromLocator', 'locatorParamKey', 'locatorTextSpecError',
-  'flowTextSpecIssues', 'paramInsertSnippet', 'exprInsertText', 'repairConditionExpr', 'paramDefaultText', 'paramPanelRows',
+  'flowTextSpecIssues', 'paramInsertSnippet', 'exprInsertText', 'repairConditionExpr', 'paramDefaultText',
+  'paramAssetId', 'paramPanelRows',
   'paramPanelSummary', 'collectParamUses', 'undeclaredParamUses',
   'parseConditionPreset', 'conditionRowExpr',
 ];
@@ -3553,28 +4383,6 @@ vm.runInContext(builderParamCode, builderSb, { filename: 'builder.js#params' });
 eq(builderSb.paramTextExpr('分组'), "param('分组')", 'paramTextExpr emits param(<key>)');
 eq(builderSb.paramTextExpr(" 分'组 "), "param('分组')", 'paramTextExpr trims and drops quotes from the key');
 eq(builderSb.paramWaitCond('关键词'), "text_visible(param('关键词'))", 'paramWaitCond wraps text_visible');
-eq(
-  builderSb.paramClickStep('分组', '按钮_战斗'),
-  { op: 'click_target', args: { find: [{ kind: 'ocr_text', sel: '按钮_战斗', text_expr: "param('分组')" }] } },
-  '「参数文字点击」generates the standard click_target with text_expr (no new op)'
-);
-eq(
-  builderSb.paramClickStep('分组', '').args.find[0].sel,
-  'O_OCR',
-  'missing OCR asset falls back to the O_OCR placeholder'
-);
-eq(
-  builderSb.paramClickStep('分组', '').args.find[0].kind,
-  'ocr_text',
-  'the generated locator is an ocr_text locator'
-);
-eq(
-  builderSb.paramWaitStep('关键词', 0),
-  { op: 'wait_until', args: { cond: "text_visible(param('关键词'))", timeout_s: 10 } },
-  '「等待参数文字出现」generates the standard wait_until (default timeout 10s)'
-);
-eq(builderSb.paramWaitStep('k', 5).args.timeout_s, 5, 'a custom timeout travels');
-eq(builderSb.paramWaitStep('k', 'bad').args.timeout_s, 10, 'an invalid timeout degrades to 10s');
 
 // Text-source tri-state: exactly one of text/text_expr, unknown keys preserved.
 eq(
@@ -3795,61 +4603,56 @@ ok(
   /任务参数 <span class="builder-params-sub">meta.params<\/span>/.test(html),
   'the panel title names meta.params'
 );
-ok(/参数动作不新增 op/.test(html), 'the palette explains the param actions produce standard flow');
-
 ok(
-  /const PARAM_ACTIONS = \{/.test(builderSource) &&
-    /param_click_text: \{ label: '参数文字点击', op: 'click_target' \}/.test(builderSource) &&
-    /param_wait_text: \{ label: '等待参数文字', op: 'wait_until' \}/.test(builderSource),
-  'the action library defines both param presets on the real ops'
+  /参数不属于动作库/.test(html),
+  'the palette help says 参数不属于动作库 (事项 1)'
+);
+
+// --- 事项 1/2: 动作库去参数预设 ---
+// The palette and every branch dropdown are sourced from OP_META only; the
+// 参数 group, the three param_* presets and their dedicated helpers are gone.
+ok(
+  !/PARAM_ACTIONS/.test(builderSource) && !/PARAM_GROUP/.test(builderSource),
+  'builder.js has no PARAM_ACTIONS/PARAM_GROUP any more'
 );
 ok(
-  /const GROUP_ORDER = \['流程控制', '识别\/等待', '动作', '参数', '数据\/结束'\];/.test(builderSource),
-  'the 参数 group sits between 动作 and 数据/结束'
+  !/param_click_text|param_wait_text|param_long_press_text/.test(builderSource) &&
+    !/param_click_text|param_wait_text|param_long_press_text/.test(html) &&
+    !/param_click_text|param_wait_text|param_long_press_text/.test(source),
+  'no parameter-action preset id survives in builder.js/index.html/app.js'
+);
+eq(
+  (builderSource.match(/const GROUP_ORDER = (\[[^\]]*\]);/) || [])[1],
+  "['流程控制', '识别/等待', '动作', '数据/结束']",
+  'the palette group order no longer has a 参数 group'
+);
+ok(
+  /function actionCatalog\(\)[\s\S]{0,240}Object\.entries\(OP_META\)/.test(builderSource) &&
+    !/preset/.test(extractFunctionFrom(builderSource, 'actionCatalog', 'builder.js')),
+  'actionCatalog() is the single OP_META source (no preset entries)'
 );
 ok(
   /function renderPalette\(\)[\s\S]{0,900}actionCatalog\(\)/.test(builderSource) &&
-    /addParamAction\(item\.key\)/.test(builderSource),
-  'the palette renders every group through the unified action catalogue'
+    /addAction\(item\.key\)/.test(builderSource),
+  'the palette renders the OP_META catalogue and inserts generic actions'
 );
 ok(
-  /function actionCatalog\(\)[\s\S]{0,700}Object\.entries\(OP_META\)[\s\S]{0,700}Object\.entries\(PARAM_ACTIONS\)/.test(builderSource),
-  'actionCatalog() is the single source of truth (OP_META + PARAM_ACTIONS)'
-);
-ok(
-  /function buildActionStep\(key, opts\)[\s\S]{0,1200}paramClickStep[\s\S]{0,400}paramWaitStep/.test(builderSource) &&
-    /async function prepareActionStep\(key\)/.test(builderSource),
-  'buildActionStep()/prepareActionStep() expand the parameter presets to the real ops'
+  !/function actionAvailable\(/.test(builderSource) &&
+    !/function paramActionContext\(/.test(builderSource) &&
+    !/function addParamAction\(/.test(builderSource) &&
+    !/function buildActionStep\(/.test(builderSource),
+  'the parameter-action helpers (actionAvailable/paramActionContext/addParamAction/buildActionStep) are gone'
 );
 ok(
   /const catalog = actionCatalog\(\)/.test(builderSource) &&
     /for \(const item of catalog\)/.test(builderSource) &&
-    /actionAvailable\(item\.key\)/.test(builderSource) &&
-    /const child = await prepareActionStep\(sel\.value\)/.test(builderSource),
-  'the if/loop 是/否/循环体 branch dropdown uses the same catalogue and step builder'
+    /const child = await prepareActionStep\(sel\.value\)/.test(builderSource) &&
+    !/需先声明任务参数/.test(builderSource),
+  'the if/loop 是/否/循环体 branch dropdown uses the same OP_META catalogue and has no 参数 entries'
 );
 ok(
-  /async function prepareActionStep\(key\)/.test(builderSource) &&
-    /chooseOcrAssetDialog\(/.test(builderSource) &&
-    /resolveParamClickTarget\(\)/.test(builderSource) &&
-    /selectedOcrAssetId\(\)/.test(builderSource) &&
-    /chooserRegionSpec\(/.test(builderSource),
-  'parameter click asks for/derives the OCR asset + operation region instead of silently using the first one'
-);
-ok(
-  /ins = ' and ' \+ ins/.test(builderSource) &&
-    /function exprInsertText\(/.test(builderSource) &&
-    /function repairConditionExpr\(/.test(builderSource) &&
-    /normalizeFlow\(B\.flow\);\s*\/\/ P3: 保存前本地校验/.test(builderSource.replace(/\r\n/g, '\n')),
-  'parameter insertion avoids token gluing and malformed conditions are repaired before save'
-);
-ok(
-  /需先声明任务参数/.test(builderSource),
-  'branch dropdown marks unavailable parameter presets instead of hiding them'
-);
-ok(
-  /function addParamAction\(kind\)[\s\S]{0,900}insertStep\(step/.test(builderSource),
-  'param presets join the finish-last insertion rule'
+  /async function prepareActionStep\(key\)[\s\S]{0,200}return OP_META\[key\] \? makeStep\(key\) : null;/.test(builderSource),
+  'prepareActionStep keeps the generic action path (no parameter branch)'
 );
 const insertStepFn = extractFunctionFrom(builderSource, 'insertStep', 'builder.js');
 ok(
@@ -3858,9 +4661,11 @@ ok(
   'insertStep keeps a trailing finish last'
 );
 ok(
-  /if \(!paramPanelRows\(B\.params\)\.length\)/.test(builderSource) &&
-    /先在任务参数面板声明参数/.test(builderSource),
-  'param actions are blocked with a hint when nothing is declared'
+  /ins = ' and ' \+ ins/.test(builderSource) &&
+    /function exprInsertText\(/.test(builderSource) &&
+    /function repairConditionExpr\(/.test(builderSource) &&
+    /normalizeFlow\(B\.flow\);\s*\/\/ P3: 保存前本地校验/.test(builderSource.replace(/\r\n/g, '\n')),
+  'parameter insertion avoids token gluing and malformed conditions are repaired before save'
 );
 ok(
   /hook\.open\(B\.task, \{[\s\S]{0,400}onSaved: function/.test(builderSource),
@@ -3980,7 +4785,368 @@ ok(
   'style.css styles the insert-parameter dropdown'
 );
 ok(/\.builder-text-source/.test(styleCss), 'style.css styles the text-source editor');
-ok(/\.builder-op-param-btn/.test(styleCss), 'style.css styles the 参数 action-library group');
+ok(
+  !/builder-op-param/.test(styleCss) && !/builder-flash/.test(styleCss),
+  'style.css has no 参数 action-library group / param-panel flash styles left'
+);
+
+// --- U-T5（API 无关纯函数）：动作目标选择模型 --------------------------------
+// 动作选目标=素材库素材（含 ocr_var）；region 只作操作区链末端，不能作动作目标。
+// 产品 UI（目标选择对话框/属性面板）等 U-T5 一次性接线，本段只测纯函数。
+const BUILDER_TARGET_PURE = [
+  'paramSafeKey', 'paramTextExpr',
+  'actionTargetKindLabel', 'actionTargetKinds',
+  'assetTargetOptions', 'targetLocatorForAsset',
+  'validateActionTarget', 'targetPickerSummary',
+  // U-T5（S7）：派生参数/目标校验/sync 摘要/旧 region 兼容判定。
+  'paramAssetId', 'paramAssetLabel', 'derivedParamKeys', 'assetById',
+  'locatorParamKey', 'paramSourceFromLocator',
+  'actionTargetIssues', 'saveSyncText', 'locatorHasLegacyRegion',
+];
+const targetSb = {};
+vm.createContext(targetSb);
+vm.runInContext(
+  BUILDER_TARGET_PURE.map((name) => extractFunctionFrom(builderSource, name, 'builder.js')).join('\n'),
+  targetSb,
+  { filename: 'builder.js#targets' }
+);
+const targetAssets = [
+  { id: 'I_模板', kind: 'template' },
+  { id: 'C_集合', kind: 'template_set', members: ['I_模板'] },
+  { id: 'O_行', kind: 'ocr_line', ocr_text: '挑战' },
+  { id: 'O_多行', kind: 'ocr_lines' },
+  { id: 'O_组', kind: 'ocr_var', param_key: 'group', runtime_text: '御魂', label: '预设分组' },
+  { id: 'O_坏', kind: 'ocr_var', runtime_text: '缺键' },
+  { id: 'R_区', kind: 'region', roi: [1, 2, 3, 4] },
+  { id: 'X_未知', kind: 'weird' },
+  null,
+  'bad',
+];
+eq(
+  targetSb.assetTargetOptions(targetAssets).map((o) => o.id),
+  ['I_模板', 'C_集合', 'O_行', 'O_多行', 'O_组', 'O_坏', 'R_区'],
+  'U-T5: target options keep template/collection/OCR/ocr_var and list region as terminal-only'
+);
+eq(
+  targetSb.assetTargetOptions(targetAssets).find((o) => o.id === 'R_区').terminalOnly,
+  true,
+  'U-T5: region is listed but marked terminal-only (only an operation-region terminal)'
+);
+ok(
+  targetSb.assetTargetOptions(targetAssets).find((o) => o.id === 'O_组').terminalOnly === undefined,
+  'U-T5: recognizable assets are not terminal-only'
+);
+eq(
+  targetSb.assetTargetOptions(targetAssets)[0],
+  { id: 'I_模板', label: 'I_模板', kind: 'template', kindLabel: '模板' },
+  'U-T5: a template target option has id/label/kind/kindLabel'
+);
+const groupTargetOption = targetSb.assetTargetOptions(targetAssets).find((o) => o.id === 'O_组');
+eq(groupTargetOption.label, '预设分组', 'U-T5: ocr_var option uses the asset label (fallback id)');
+eq(groupTargetOption.kindLabel, '使用端OCR文字配置项', 'U-T5: ocr_var option carries the full kind label');
+eq(groupTargetOption.paramKey, 'group', 'U-T5: ocr_var option exposes param_key for param() generation');
+eq(groupTargetOption.ocrText, '御魂', 'U-T5: ocr_var option exposes runtime_text as the default text');
+eq(
+  targetSb.assetTargetOptions(targetAssets).find((o) => o.id === 'O_行').ocrText,
+  '挑战',
+  'U-T5: a normal OCR option exposes ocr_text'
+);
+eq(
+  targetSb.assetTargetOptions(targetAssets, { kindFilter: ['template', 'ocr_var'] }).map((o) => o.id),
+  ['I_模板', 'O_组', 'O_坏'],
+  'U-T5: kindFilter narrows the target options (invalid ocr_var is filtered at validation)'
+);
+eq(
+  targetSb.assetTargetOptions(targetAssets, { kindFilter: (kind) => kind.indexOf('ocr') === 0 }).map((o) => o.id),
+  ['O_行', 'O_多行', 'O_组', 'O_坏'],
+  'U-T5: kindFilter also accepts a predicate'
+);
+eq(targetSb.assetTargetOptions(null), [], 'U-T5: missing asset list yields no target options');
+eq(
+  targetSb.targetLocatorForAsset(targetAssets.find((a) => a.id === 'O_组')),
+  {
+    ok: true,
+    locator: { kind: 'ocr_text', sel: 'O_组', text_expr: "param('group')" },
+    error: '',
+  },
+  'U-T5: ocr_var target generates text_expr = param(<param_key>)'
+);
+const badOcrVarTarget = targetSb.targetLocatorForAsset(targetAssets.find((a) => a.id === 'O_坏'));
+eq(badOcrVarTarget.ok, false, 'U-T5: an ocr_var without param_key cannot become a target');
+ok(/param_key/.test(badOcrVarTarget.error), 'U-T5: the missing param_key error is explicit');
+eq(
+  targetSb.targetLocatorForAsset(targetAssets.find((a) => a.id === 'O_行')),
+  { ok: true, locator: { kind: 'ocr_text', sel: 'O_行', text: '挑战' }, error: '' },
+  'U-T5: a normal OCR target uses its declared ocr_text'
+);
+eq(
+  targetSb.targetLocatorForAsset(targetAssets.find((a) => a.id === 'O_行'), { text: '自定义文字' }).locator.text,
+  '自定义文字',
+  'U-T5: user text overrides the OCR asset text'
+);
+eq(
+  targetSb.targetLocatorForAsset(targetAssets.find((a) => a.id === 'O_多行')).ok,
+  false,
+  'U-T5: an OCR target without any text is rejected instead of inventing one'
+);
+eq(
+  targetSb.targetLocatorForAsset(targetAssets.find((a) => a.id === 'I_模板')),
+  { ok: true, locator: { kind: 'template', sel: 'I_模板' }, error: '' },
+  'U-T5: a template target reuses the template locator shape'
+);
+eq(
+  targetSb.targetLocatorForAsset(targetAssets.find((a) => a.id === 'C_集合')).locator,
+  { kind: 'template', sel: 'C_集合' },
+  'U-T5: a collection target is a template locator on the collection id (members expand at runtime)'
+);
+const regionTarget = targetSb.targetLocatorForAsset(targetAssets.find((a) => a.id === 'R_区'));
+eq(regionTarget.ok, false, 'U-T5: region assets cannot become action targets');
+ok(/操作区末端/.test(regionTarget.error), 'U-T5: the region error says it is only an operation-region terminal');
+eq(targetSb.targetLocatorForAsset(null).ok, false, 'U-T5: a missing asset cannot become a target');
+eq(
+  targetSb.validateActionTarget(targetAssets.find((a) => a.id === 'O_组'), ['group', 'loop_n']),
+  [],
+  'U-T5: a derived-param-backed ocr_var target validates cleanly'
+);
+const staleParamErrors = targetSb.validateActionTarget(
+  targetAssets.find((a) => a.id === 'O_组'),
+  ['loop_n']
+);
+eq(staleParamErrors.length, 1, 'U-T5: an ocr_var whose param_key is missing from derived params is rejected');
+ok(/不在任务派生参数中/.test(staleParamErrors[0]), 'U-T5: the derived-param error explains the fix');
+ok(
+  targetSb.validateActionTarget(targetAssets.find((a) => a.id === 'O_坏'), ['group'])
+    .some((e) => /param_key/.test(e)),
+  'U-T5: validation reports a missing param_key'
+);
+ok(
+  targetSb.validateActionTarget(targetAssets.find((a) => a.id === 'R_区'), [])
+    .some((e) => /不能作为动作目标/.test(e)),
+  'U-T5: validation rejects region as an action target'
+);
+eq(
+  targetSb.validateActionTarget(targetAssets.find((a) => a.id === 'I_模板'), []),
+  [],
+  'U-T5: template targets validate with no derived params needed'
+);
+ok(
+  targetSb.validateActionTarget({ id: 'O_行', kind: 'ocr_line' }, [])
+    .some((e) => /缺少 ocr_text/.test(e)),
+  'U-T5: an OCR target without ocr_text gets a save-time warning'
+);
+eq(targetSb.validateActionTarget(null), ['动作目标素材 id 为空'], 'U-T5: a missing target is a validation error');
+const groupSummary = targetSb.targetPickerSummary(targetAssets.find((a) => a.id === 'O_组'));
+ok(/识别文字来源：素材「O_组」/.test(groupSummary), 'U-T5: the ocr_var target summary names the source asset');
+ok(/param\('group'\)/.test(groupSummary) && /默认「御魂」/.test(groupSummary),
+  'U-T5: the ocr_var summary shows param(key) + default text');
+ok(
+  /识别文字来源：素材「O_行」/.test(targetSb.targetPickerSummary(targetAssets.find((a) => a.id === 'O_行'))) &&
+    /挑战/.test(targetSb.targetPickerSummary(targetAssets.find((a) => a.id === 'O_行'))),
+  'U-T5: the OCR target summary names the fixed text'
+);
+ok(
+  /模板匹配/.test(targetSb.targetPickerSummary(targetAssets.find((a) => a.id === 'I_模板'))),
+  'U-T5: the template target summary says template matching'
+);
+ok(
+  /不能作为动作目标/.test(targetSb.targetPickerSummary(targetAssets.find((a) => a.id === 'R_区'))),
+  'U-T5: the region summary marks it as unusable'
+);
+eq(targetSb.targetPickerSummary(null), '未选择动作目标', 'U-T5: no target renders the empty summary');
+eq(
+  targetSb.actionTargetKinds().indexOf('region'),
+  -1,
+  'U-T5: region is not in the action-target kind whitelist'
+);
+eq(targetSb.actionTargetKindLabel('ocr_var'), '使用端OCR文字配置项', 'U-T5: ocr_var kind label');
+eq(targetSb.actionTargetKindLabel('region'), '操作区域（仅操作区末端）', 'U-T5: region kind label explains its role');
+ok(
+  !/targetLocatorForAsset|assetTargetOptions/.test(extractFunctionFrom(builderSource, 'renderPalette', 'builder.js')),
+  'U-T5: the palette stays generic; target selection lives in the property panel'
+);
+
+// --- U-T5/S7（接线）：目标选择编辑器 / 旧 region 收口 / 保存校验 / sync ---------
+const targetEditorFn = extractFunctionFrom(builderSource, 'actionTargetEditor', 'builder.js');
+ok(
+  /assetTargetOptions\(B\.assets\)/.test(targetEditorFn) &&
+    /targetLocatorForAsset\(asset\)/.test(targetEditorFn) &&
+    /targetPickerSummary\(currentAsset\)/.test(targetEditorFn) &&
+    /validateActionTarget\(currentAsset, derivedParamKeys\(B\.params\)\)/.test(targetEditorFn),
+  'U-T5: the property panel target editor uses the asset-library target model (options/locator/summary/validation)'
+);
+ok(
+  /仅操作区末端，不可作动作目标/.test(targetEditorFn),
+  'U-T5: region entries in the target picker are annotated as operation-region terminals'
+);
+const structuredTargetFn = extractFunctionFrom(builderSource, 'structuredClickTarget', 'builder.js');
+ok(
+  /actionTargetEditor\(root, step\)/.test(structuredTargetFn),
+  'U-T5: click_target/long_press inspector starts with the 动作目标 picker'
+);
+ok(
+  /locatorHasLegacyRegion\(base\)/.test(structuredTargetFn) &&
+    /if \(legacyRegion\)[\s\S]{0,320}renderRegionEditor\(/.test(structuredTargetFn) &&
+    /新步骤不配置操作区域：操作区由目标素材的 op_region 决定/.test(structuredTargetFn),
+  'U-T5: the region editor only renders for old flows that already carry region'
+);
+const dragEndpointFn = extractFunctionFrom(builderSource, 'renderDragEndpointEditor', 'builder.js');
+ok(
+  /if \(locatorHasLegacyRegion\(endpoint\)\)[\s\S]{0,260}renderRegionEditor\(/.test(dragEndpointFn),
+  'U-T5: drag endpoints also gate the region editor on old region data'
+);
+ok(
+  /识别文字配置项（写 text_expr = param\(\.\.\.\)）/.test(builderSource) &&
+    /识别文字配置项 key/.test(builderSource),
+  'U-T5: locator text-source wording now talks about 识别文字配置项'
+);
+ok(
+  /builder-param-asset/.test(builderSource) && /识别文字配置项 · 素材 /.test(builderSource),
+  'U-T5: the params panel marks derived rows with their source asset name'
+);
+ok(
+  /识别文字配置项 · 素材 ' \+ paramAssetLabel\(row, B\.assets\)/.test(builderSource) &&
+    /插入 param\('key'\)（任务参数 \/ 识别文字配置项素材）/.test(builderSource),
+  'U-T5: 插入参数 ▾ keeps working and names the deriving asset for derived rows'
+);
+const targetSaveFlowFn = extractFunctionFrom(builderSource, 'saveFlow', 'builder.js');
+ok(
+  /actionTargetIssues\(B\.flow, B\.assets, B\.params\)/.test(targetSaveFlowFn),
+  'U-T5: saveFlow blocks on action-target issues (missing asset / param_key / derived key)'
+);
+ok(
+  /saveSyncText\(s\.sync\)/.test(targetSaveFlowFn) &&
+    /refreshParamsAfterFlowSync\(\)/.test(targetSaveFlowFn),
+  'U-T5: save_flow sync refreshes derived params and reports the synced count'
+);
+ok(
+  /function refreshParamsAfterFlowSync\(\)[\s\S]{0,420}fetchTaskParams\(B\.task\)[\s\S]{0,220}renderParamsPanel\(\)/.test(builderSource),
+  'U-T5: the sync refresh re-reads GET /task/config and repaints the params panel'
+);
+ok(
+  /\.builder-target-errors/.test(styleCss) && /\.builder-param-asset/.test(styleCss) &&
+    /\.builder-legacy-region-hint/.test(styleCss),
+  'U-T5: style.css styles the target errors / derived-param chip / legacy-region hint'
+);
+
+// 纯函数：派生参数 / 目标校验 / sync 摘要 / 旧 region 判定。
+const uT5Params = [
+  { key: 'group', type: 'string', default: '御魂', role: 'ocr_text', asset_id: 'O_组', label: '预设分组', group: '识别文字' },
+  { key: 'loop_n', type: 'int', default: 3 },
+];
+eq(targetSb.paramAssetId(uT5Params[0]), 'O_组', 'U-T5: derived rows expose asset_id');
+eq(targetSb.paramAssetId(uT5Params[1]), '', 'U-T5: user rows have no asset_id');
+eq(targetSb.derivedParamKeys(uT5Params), ['group'], 'U-T5: derivedParamKeys lists the asset_id row keys');
+eq(targetSb.derivedParamKeys(null), [], 'U-T5: missing params have no derived keys');
+eq(
+  targetSb.paramAssetLabel(uT5Params[0], targetAssets),
+  '预设分组',
+  'U-T5: a derived row resolves the asset display label'
+);
+eq(
+  targetSb.paramAssetLabel({ key: 'x', asset_id: 'Gone' }, targetAssets),
+  'Gone',
+  'U-T5: a missing asset degrades to the raw asset id'
+);
+const uT5Assets = [
+  { id: 'O_组', kind: 'ocr_var', runtime_text: '御魂', param_key: 'group' },
+  { id: 'I_模板', kind: 'template' },
+  { id: 'R_区', kind: 'region', roi: [1, 2, 3, 4] },
+  { id: 'O_行', kind: 'ocr_line', ocr_text: '挑战' },
+];
+const uT5OkFlow = {
+  steps: [{
+    op: 'click_target',
+    args: { find: [{ kind: 'ocr_text', sel: 'O_组', text_expr: "param('group')" }] },
+  }],
+};
+eq(targetSb.actionTargetIssues(uT5OkFlow, uT5Assets, uT5Params), [],
+  'U-T5: a valid ocr_var action target produces no save issues');
+const uT5MissingFlow = {
+  steps: [{ op: 'click_target', args: { find: [{ kind: 'ocr_text', sel: 'Gone', text: 'x' }] } }],
+};
+ok(
+  targetSb.actionTargetIssues(uT5MissingFlow, uT5Assets, uT5Params)
+    .some((issue) => /不在当前素材库/.test(issue)),
+  'U-T5: a missing target asset blocks the save'
+);
+const uT5NoParamFlow = {
+  steps: [{ op: 'click_target', args: { find: [{ kind: 'ocr_text', sel: 'O_行', text: '挑战' }] } }],
+};
+eq(targetSb.actionTargetIssues(uT5NoParamFlow, uT5Assets, uT5Params), [],
+  'U-T5: a plain OCR target (text) passes target validation');
+const uT5KeyFlow = {
+  steps: [{ op: 'click_target', args: { find: [{ kind: 'ocr_text', sel: 'O_组', text_expr: "param('other')" }] } }],
+};
+ok(
+  targetSb.actionTargetIssues(uT5KeyFlow, uT5Assets, uT5Params)
+    .some((issue) => /param_key 是「group」/.test(issue)),
+  'U-T5: a mismatched param_key blocks the save'
+);
+ok(
+  targetSb.actionTargetIssues(
+    { steps: [{ op: 'click_target', args: { find: [{ kind: 'ocr_text', sel: 'O_组', text_expr: "param('group')" }] } }] },
+    uT5Assets,
+    [{ key: 'loop_n', type: 'int' }]
+  ).some((issue) => /不在任务派生参数中/.test(issue)),
+  'U-T5: an ocr_var target whose derived row is missing blocks the save'
+);
+const uT5NoKeyAsset = { id: 'O_坏', kind: 'ocr_var', runtime_text: 'x' };
+ok(
+  targetSb.actionTargetIssues(
+    { steps: [{ op: 'click_target', args: { find: [{ kind: 'ocr_text', sel: 'O_坏', text: 'x' }] } }] },
+    uT5Assets.concat([uT5NoKeyAsset]),
+    uT5Params
+  ).some((issue) => /缺少 param_key/.test(issue)),
+  'U-T5: an ocr_var target without param_key blocks the save'
+);
+ok(
+  targetSb.actionTargetIssues(
+    { steps: [{ op: 'click_target', args: { find: [{ kind: 'template', sel: 'R_区' }] } }] },
+    uT5Assets,
+    uT5Params
+  ).some((issue) => /region 素材/.test(issue)),
+  'U-T5: a region asset cannot be a template action target'
+);
+ok(
+  targetSb.actionTargetIssues(
+    { steps: [{ op: 'click', args: { sel: 'Gone' } }] },
+    uT5Assets,
+    uT5Params
+  ).some((issue) => /args\.sel/.test(issue)),
+  'U-T5: a missing args.sel target blocks the save'
+);
+ok(
+  targetSb.actionTargetIssues(
+    {
+      steps: [{
+        op: 'loop', args: { n: 2 }, body: [{
+          op: 'click_target', args: { find: [{ kind: 'ocr_text', sel: 'Gone', text: 'x' }] },
+        }],
+      }],
+    },
+    uT5Assets,
+    uT5Params
+  ).some((issue) => /body\[0\]/.test(issue)),
+  'U-T5: nested branch targets are validated too'
+);
+eq(targetSb.actionTargetIssues(null, uT5Assets, uT5Params), [], 'U-T5: a missing flow has no target issues');
+eq(targetSb.saveSyncText(null), '', 'U-T5: no sync payload -> no status text');
+eq(targetSb.saveSyncText({ added: [], updated: [], removed: [] }), '', 'U-T5: an empty sync -> no status text');
+eq(
+  targetSb.saveSyncText({ added: ['a'], updated: ['b', 'c'], removed: [] }),
+  '已同步 3 个识别文字配置项派生参数（+1 ~2 -0）',
+  'U-T5: sync text counts added/updated/removed rows'
+);
+eq(
+  targetSb.saveSyncText({ added: [], updated: [], removed: ['x'] }),
+  '已同步 1 个识别文字配置项派生参数（+0 ~0 -1）',
+  'U-T5: a removed derived row is reported too'
+);
+eq(targetSb.locatorHasLegacyRegion({ kind: 'ocr_text', region: { mode: 'asset' } }), true,
+  'U-T5: an old locator with region is detected');
+eq(targetSb.locatorHasLegacyRegion({ kind: 'ocr_text', sel: 'O_x' }), false,
+  'U-T5: a new locator without region is not legacy');
+eq(targetSb.locatorHasLegacyRegion(null), false, 'U-T5: missing locator is not legacy');
 
 // --- P5: authoritative build-page lint (GET /task/lint) ----------------------
 const BUILDER_LINT_PURE = [
@@ -4630,12 +5796,11 @@ const BUILDER_REGION_PURE = [
   'paramSafeKey', 'paramTextExpr',
   'regionModeText', 'regionHintText', 'regionSpec', 'regionWrite',
   'regionOffsetFromInput', 'normalizeRegion', 'regionIssues', 'normalizeScreenSize',
-  'chooserRegionSpec',
   // A 方案：region.asset（操作区域素材，整个素材库）
   'regionMatchRiskText', 'regionAssetKindText', 'regionAssetGroupOf',
   'chooserOperationAssetOptions', 'regionAssetFromSelector', 'regionOperationAssetText',
   'regionAssetIds', 'regionWithOperationAsset',
-  'longPressStep', 'longPressHoldText', 'holdRangeFromInput', 'longPressArgsIssues',
+  'longPressHoldText', 'holdRangeFromInput', 'longPressArgsIssues',
   'curveSwipeStep', 'curvePointsFromText', 'curveDurationFromInput',
   'curveSwipeArgsIssues', 'actionArgsIssues', 'waitBlockingHelpText',
 ];
@@ -4659,43 +5824,6 @@ eq(p1Sb.regionModeText('nearest'), '最近匹配（离识别 ROI 中心最近）
 eq(p1Sb.regionModeText('offset'), '相对偏移', 'offset region mode text');
 ok(/未知/.test(p1Sb.regionModeText('weird')), 'unknown region mode is reported');
 
-// The parameter-click chooser now returns asset + region; the pure builder for
-// that dialog must accept the same modes as the structured editor.
-const chooserDefault = p1Sb.chooserRegionSpec('', '', '', '', '');
-eq(chooserDefault.ok, true, 'chooser default mode succeeds');
-ok(chooserDefault.region === undefined, 'chooser default mode leaves region unset');
-eq(p1Sb.chooserRegionSpec('nearest', '', '', '', ''), { ok: true, region: { mode: 'nearest' }, error: '' }, 'chooser nearest mode');
-eq(p1Sb.chooserRegionSpec('asset', '', '', '', ''), { ok: true, region: { mode: 'asset' }, error: '' }, 'chooser asset mode');
-eq(p1Sb.chooserRegionSpec('offset', '10', '-5', '', ''), { ok: true, region: { mode: 'offset', offset: [10, -5] }, error: '' }, 'chooser offset 2-int mode');
-eq(p1Sb.chooserRegionSpec('offset', '10', '-5', '200', '80'), { ok: true, region: { mode: 'offset', offset: [10, -5, 200, 80] }, error: '' }, 'chooser offset 4-int mode');
-ok(p1Sb.chooserRegionSpec('offset', '10', '-5', '200', '').ok === false, 'chooser offset needs both w and h');
-ok(p1Sb.chooserRegionSpec('weird', '', '', '', '').ok === false, 'chooser rejects an unknown region mode');
-// A 方案：chooser 的「操作区域素材」只写进 asset/nearest；ocr/offset 静默丢弃。
-eq(
-  p1Sb.chooserRegionSpec('asset', '', '', '', '', ' I_战斗 '),
-  { ok: true, region: { mode: 'asset', asset: 'I_战斗' }, error: '' },
-  'chooser writes region.asset for mode=asset'
-);
-eq(
-  p1Sb.chooserRegionSpec('nearest', '', '', '', '', 'I_战斗'),
-  { ok: true, region: { mode: 'nearest', asset: 'I_战斗' }, error: '' },
-  'chooser writes region.asset for mode=nearest'
-);
-eq(
-  p1Sb.chooserRegionSpec('nearest', '', '', '', '', ''),
-  { ok: true, region: { mode: 'nearest' }, error: '' },
-  'chooser with no operation asset omits region.asset'
-);
-eq(
-  p1Sb.chooserRegionSpec('ocr', '', '', '', '', 'I_战斗'),
-  { ok: true, region: { mode: 'ocr' }, error: '' },
-  'chooser drops the operation asset for mode=ocr'
-);
-eq(
-  p1Sb.chooserRegionSpec('offset', '10', '-5', '', '', 'I_战斗'),
-  { ok: true, region: { mode: 'offset', offset: [10, -5] }, error: '' },
-  'chooser drops the operation asset for mode=offset'
-);
 eq(p1Sb.regionHintText('asset').indexOf('素材') >= 0, true, 'asset mode hint mentions the asset region');
 eq(p1Sb.regionHintText('offset').indexOf('dx') >= 0, true, 'offset mode hint explains dx/dy');
 eq(p1Sb.regionHintText('').indexOf('不指定') >= 0, true, 'default mode hint explains the current behavior');
@@ -4940,18 +6068,6 @@ eq(p1Sb.normalizeScreenSize([1280, 720]), [1280, 720], 'screen size is kept');
 eq(p1Sb.normalizeScreenSize('bad'), [1280, 720], 'invalid screen size falls back to 1280x720');
 eq(p1Sb.normalizeScreenSize([0, 720]), [1280, 720], 'zero width falls back');
 
-eq(
-  p1Sb.longPressStep('分组', '按钮_战斗'),
-  {
-    op: 'long_press',
-    args: {
-      find: [{ kind: 'ocr_text', sel: '按钮_战斗', text_expr: "param('分组')" }],
-      hold_ms: 3000,
-    },
-  },
-  '「参数文字长按」preset generates a standard long_press with hold_ms=3000'
-);
-eq(p1Sb.longPressStep('k', '').args.find[0].sel, 'O_OCR', 'missing OCR asset falls back to the O_OCR placeholder');
 eq(p1Sb.longPressHoldText({}), 'hold_ms 3000ms', 'hold text defaults to 3000ms');
 eq(p1Sb.longPressHoldText({ hold_ms: 2500 }), 'hold_ms 2500ms', 'hold text shows the configured hold_ms');
 eq(
@@ -5055,8 +6171,8 @@ ok(
   'OP_META registers long_press + curve_swipe in the 动作 group'
 );
 ok(
-  /param_long_press_text: \{ label: '参数文字长按', op: 'long_press' \}/.test(builderSource),
-  'PARAM_ACTIONS registers the 参数文字长按 preset'
+  !/PARAM_ACTIONS/.test(builderSource) && !/param_long_press_text/.test(builderSource),
+  'the 参数文字长按 preset is gone from the action library'
 );
 ok(
   /long_press: \{ find: \[\{ kind: 'template', sel: 'I_A' \}\], hold_ms: 3000 \}/.test(builderSource) &&
@@ -5064,8 +6180,8 @@ ok(
   'DEFAULTS seeds long_press hold_ms=3000 and curve_swipe points/duration'
 );
 ok(
-  /if \(key === 'param_long_press_text'\) \{[\s\S]{0,120}longPressStep\(/.test(builderSource),
-  'buildActionStep expands 参数文字长按 to long_press'
+  !/param_long_press_text|longPressStep/.test(builderSource),
+  'buildActionStep no longer expands 参数文字长按 to long_press'
 );
 ok(
   /const ACTION_TITLES = \{/.test(builderSource) &&
@@ -5143,18 +6259,13 @@ ok(
   'the curve_swipe form renders through DOM APIs only'
 );
 
-// A 方案：操作区域素材（整个素材库）接入 chooser + 结构化 region 编辑器。
+// A 方案：操作区域素材（整个素材库）只保留在结构化 region 编辑器里；参数动作
+// 的一次性 chooser 已随预设一起删除。
 ok(
-  /操作区域素材（整个素材库，可选）/.test(builderSource) &&
-    /chooserOperationAssetOptions\(B\.assets\)/.test(builderSource) &&
+  /chooserOperationAssetOptions\(B\.assets\)/.test(builderSource) &&
     /optgroup/.test(builderSource) &&
     /option\.value = item\.id;/.test(builderSource),
-  'the parameter chooser lists the whole asset library as operation-region assets'
-);
-ok(
-  /chooserRegionSpec\(modeSel\.value,[\s\S]{0,220}opAssetSel\.value\)/.test(builderSource) &&
-    /opAssetLabel\.hidden = mode !== 'asset' && mode !== 'nearest'/.test(builderSource),
-  'the chooser feeds the selected operation asset into chooserRegionSpec'
+  'the structured region editor lists the whole asset library as operation-region assets'
 );
 ok(
   /builder-region-asset/.test(builderSource) &&
@@ -5167,9 +6278,12 @@ ok(
   'click_target find + drag endpoints write region.asset through regionWrite'
 );
 ok(
-  /regionOperationAssetText\(spec\.region\.asset, B\.assets\)/.test(builderSource) &&
-    /regionMatchRiskText\(mode\)/.test(builderSource),
-  'the chooser shows the selected operation asset and the no-match risk note'
+  /regionMatchRiskText\(mode\)/.test(builderSource),
+  'the structured region editor shows the no-match risk note'
+);
+ok(
+  !/chooseOcrAssetDialog|resolveParamClickTarget|selectedOcrAssetId|chooserRegionSpec/.test(builderSource),
+  'the parameter-action asset/region chooser is removed together with the presets'
 );
 ok(
   /regionIssues\(B\.flow, regionAssetIds\(B\.assets\)\)/.test(builderSource),
@@ -5380,7 +6494,8 @@ const runnerHelperNames = [
   'updatesCanInstall', 'updatesInstallPath', 'updateRowText', 'updatesAckBody',
   'updatesListStatusText',
   // P2: Runner params page (group / use switch / bool tri / summary) + feed UI.
-  'runnerParamDefaultText', 'runnerParamGroups', 'runnerParamRoleText',
+  'runnerParamDefaultText', 'runnerParamGroups', 'runnerParamGroupsEx',
+  'runnerParamRoleText', 'runnerParamAssetSubtitle',
   'runnerParamTypeText', 'runnerParamSavedValue', 'runnerParamBoolTri',
   'runnerParamUseState', 'runnerParamCollectUse', 'runnerParamSummary',
   'runnerConfigFieldKind', 'runnerConfigIsIntegerType', 'runnerConfigCollectValues',
@@ -5788,6 +6903,21 @@ ok(
   /runnerParamGroups\(params\)/.test(runnerSource) && /data-use/.test(runnerSource),
   'the form renders group sections with per-param 使用 switches'
 );
+// U-T6: 派生参数行（asset_id）→ 前置「使用端OCR文字配置项」分节 + 素材副标题。
+ok(
+  /function runnerParamGroups\(params\)[\s\S]{0,260}runnerParamGroupsEx\(params\)/.test(runnerSource) &&
+    /使用端OCR文字配置项/.test(runnerSource),
+  'U-T6: the dialog groups derived (asset_id) params into the leading 使用端OCR文字配置项 section'
+);
+ok(
+  /runnerParamAssetSubtitle\(p\)/.test(runnerSource) && /runner-config-asset-sub/.test(runnerSource),
+  'U-T6: derived rows render the 素材 <id> · 当前默认「…」 subtitle'
+);
+ok(
+  /使用端OCR文字配置项/.test(runnerHtml) && /asset_id/.test(runnerHtml),
+  'U-T6: runner.html explains the 使用端OCR文字配置项 section'
+);
+ok(/\.runner-config-asset-sub/.test(runnerCss), 'U-T6: runner.css styles the asset subtitle');
 ok(
   /runnerParamBoolTri\(saved\)/.test(runnerSource) && /runner-config-bool-/.test(runnerSource),
   'bool params render the 未设置/是/否 tri-state select'
@@ -5966,6 +7096,101 @@ eq(
   'params group by meta.params[].group in first-appearance order (missing group -> 通用)'
 );
 eq(runnerSb.runnerParamGroups(null), [], 'missing schema has no groups');
+
+// --- U-T6: 使用端OCR文字配置项 分节（派生参数行 = meta.params 带 asset_id） ---
+// 派生行永远进入最前面的独立分组「使用端OCR文字配置项」；旧任务 role=ocr_text
+// 但没有 asset_id 的手写参数仍按自己的 group 分节（兼容，不破坏）。
+const uT6Params = [
+  { key: 'max_rounds', group: '战斗', type: 'int' },
+  { key: 'group', group: '识别文字', type: 'string', role: 'ocr_text', default: '御魂', asset_id: 'O_预设分组', label: '预设分组' },
+  { key: 'k2', type: 'string', role: 'ocr_text', default: '旧参数' },
+];
+eq(
+  runnerSb.runnerParamGroupsEx(uT6Params).map((g) => [g.group, g.kind, g.params.map((p) => p.key)]),
+  [
+    ['使用端OCR文字配置项', 'ocr_var', ['group']],
+    ['战斗', 'group', ['max_rounds']],
+    ['通用', 'group', ['k2']],
+  ],
+  'U-T6: derived (asset_id) rows form the leading 使用端OCR文字配置项 section; old role=ocr_text rows keep their group'
+);
+eq(
+  runnerSb.runnerParamGroups(uT6Params).map((g) => g.group),
+  ['使用端OCR文字配置项', '战斗', '通用'],
+  'U-T6: the backwards-compatible grouping view puts the new section first'
+);
+eq(
+  runnerSb.runnerParamGroups(uT6Params)[0].params[0].key,
+  'group',
+  'U-T6: the derived row keeps its identity inside the leading section'
+);
+eq(
+  runnerSb.runnerParamGroupsEx([{ key: 'a', group: '识别文字', type: 'string', role: 'ocr_text' }]).map((g) => g.group),
+  ['识别文字'],
+  'U-T6: role=ocr_text without asset_id never enters the ocr_var section'
+);
+eq(
+  runnerSb.runnerParamGroupsEx([
+    { key: 'a', group: '战斗' },
+    { key: 'b', asset_id: ' O_甲 ', label: '甲' },
+  ]).map((g) => g.params.map((p) => p.key)),
+  [['b'], ['a']],
+  'U-T6: asset_id is trimmed and a later derived row still leads the section'
+);
+eq(
+  runnerSb.runnerParamGroupsEx([
+    { key: 'blank', asset_id: '   ' },
+    { key: 'empty', asset_id: '' },
+  ]).map((g) => g.group),
+  ['通用'],
+  'U-T6: blank/empty asset_id is not a derived row'
+);
+eq(
+  runnerSb.runnerParamGroupsEx(null),
+  [],
+  'U-T6: missing schema has no ocr_var section'
+);
+eq(
+  runnerSb.runnerParamAssetSubtitle({ asset_id: 'O_预设分组', default: '御魂' }),
+  '素材 O_预设分组 · 当前默认「御魂」',
+  'U-T6: derived row subtitle names the asset + current default'
+);
+eq(
+  runnerSb.runnerParamAssetSubtitle({ asset_id: ' O_甲 ', default: 0 }),
+  '素材 O_甲 · 当前默认「0」',
+  'U-T6: subtitle trims the asset id and renders a numeric default'
+);
+eq(
+  runnerSb.runnerParamAssetSubtitle({ asset_id: 'O_甲' }),
+  '素材 O_甲',
+  'U-T6: subtitle stays renderable without a declared default'
+);
+eq(runnerSb.runnerParamAssetSubtitle({}), '', 'U-T6: user params have no asset subtitle');
+eq(runnerSb.runnerParamAssetSubtitle(null), '', 'U-T6: missing param has no asset subtitle');
+eq(
+  runnerSb.runnerParamRoleText({ role: 'ocr_text', asset_id: 'O_甲' }),
+  '识别文字配置',
+  'U-T6: derived rows use the short 识别文字配置 badge'
+);
+eq(
+  runnerSb.runnerParamSummary(
+    [
+      { key: 'group', asset_id: 'O_甲', type: 'string', default: '御魂' },
+      { key: 'n', type: 'int', default: 2 },
+    ],
+    { group: '结界' }
+  ),
+  '1/2 项已设置 · 分组 2 个',
+  'U-T6: the top summary counts the ocr_var section as a group'
+);
+ok(
+  runnerSb.runnerParamCollectUse(
+    [{ key: 'group', asset_id: 'O_甲', type: 'string', default: '御魂' }],
+    {},
+    { group: '结界' }
+  ).totalCount === 1,
+  'U-T6: collect-use still covers derived rows (values key = param key)'
+);
 eq(runnerSb.runnerParamRoleText({ role: 'ocr_text' }), '识别文字', 'role=ocr_text is marked 识别文字');
 eq(runnerSb.runnerParamRoleText({ role: 'OCR_TEXT' }), '识别文字', 'role matching is case-insensitive');
 eq(runnerSb.runnerParamRoleText({}), '', 'no role -> no role badge');
@@ -7810,7 +9035,93 @@ ok(
 );
 
 
+// U-T4/S3: run the REAL testAssetCandidates against a stub fetch: every
+// candidate becomes a draw() box and the result pane lists #i score=… [x,y,w,h].
+async function checkAssetCandidatesWiring() {
+  const calls = [];
+  const sb = {
+    resultEl: { textContent: '' },
+    boxes: [],
+    drawn: 0,
+    draw() { sb.drawn += 1; },
+    log() {},
+    cancelRecognitionRoiEdit() {},
+    assetRowScopeTask: (scope) => (scope === undefined || scope === null || scope === '' ? '任务甲' : String(scope)),
+    testFrames: () => [{ query: '', label: '当前帧', source: 'current', live: false, frameId: null }],
+    fetch: async (url) => {
+      calls.push(url);
+      return {
+        json: async () => ({
+          ok: true,
+          task: '任务甲',
+          id: '模板甲',
+          kind: 'template',
+          domain: 'roi',
+          roi: [10, 20, 30, 40],
+          threshold: 0.85,
+          frame_source: 'current',
+          elapsed_ms: 1.5,
+          count: 2,
+          candidates: [
+            { index: 0, x: 11, y: 21, w: 30, h: 40, score: 0.973, pass: true, action_box: [11, 21, 30, 40] },
+            { index: 1, x: 51, y: 61, w: 30, h: 40, score: 0.901, pass: true, action_box: [51, 61, 30, 40] },
+          ],
+        }),
+      };
+    },
+  };
+  vm.createContext(sb);
+  vm.runInContext(
+    ['assetCandidatesUrl', 'matchBoxValid', 'candidateLabelText', 'candidateBoxes', 'testAssetCandidates']
+      .map((name) => extractFunction(name))
+      .join('\n\n'),
+    sb,
+    { filename: 'app.js#candidates' }
+  );
+  await sb.testAssetCandidates({ id: '模板甲', kind: 'template', roi: [10, 20, 30, 40] }, null, '');
+  eq(calls.length, 1, 'U-T4: candidate recognition posts one /task/asset/candidates request per frame');
+  eq(
+    calls[0],
+    '/task/asset/candidates?task=%E4%BB%BB%E5%8A%A1%E7%94%B2&id=%E6%A8%A1%E6%9D%BF%E7%94%B2',
+    'U-T4: the candidate request carries the task scope + asset id (no frame query for the current frame)'
+  );
+  eq(sb.boxes.length, 2, 'U-T4: all candidates become draw() boxes');
+  eq(
+    sb.boxes.map((b) => b.box),
+    [[11, 21, 30, 40], [51, 61, 30, 40]],
+    'U-T4: box geometry is the real recognition rectangle of each candidate'
+  );
+  ok(
+    /#0 score=0\.9730 \[11,21,30,40\]/.test(sb.resultEl.textContent) &&
+      /#1 score=0\.9010 \[51,61,30,40\]/.test(sb.resultEl.textContent),
+    'U-T4: the result pane lists every candidate as #i score=… [x,y,w,h]'
+  );
+  ok(/2 个候选/.test(sb.resultEl.textContent), 'U-T4: the result pane reports the candidate count');
+  ok(/范围=素材识别区/.test(sb.resultEl.textContent), 'U-T4: the result pane names the search domain');
+  eq(sb.drawn, 1, 'U-T4: one canvas repaint per recognition run');
+
+  // A backend error (e.g. OCR build without models) degrades to text, never throws.
+  calls.length = 0;
+  sb.fetch = async () => ({
+    json: async () => ({ error: 'OCR 素材候选需要 det+rec 模型' }),
+  });
+  await sb.testAssetCandidates({ id: '文字乙', kind: 'ocr_line', roi: [1, 2, 3, 4] }, null, '');
+  ok(/❌ OCR 素材候选需要 det\+rec 模型/.test(sb.resultEl.textContent), 'U-T4: backend errors render inline');
+  eq(sb.boxes.length, 0, 'U-T4: a failed run clears the candidate boxes');
+
+  // ocr_var with an empty ROI: the UI labels the slow full-screen OCR domain.
+  sb.fetch = async () => ({
+    json: async () => ({
+      ok: true, task: '任务甲', id: 'O_组', kind: 'ocr_var', domain: 'screen', roi: null,
+      threshold: 0.6, frame_source: 'current', elapsed_ms: 2, count: 0, candidates: [],
+    }),
+  });
+  await sb.testAssetCandidates({ id: 'O_组', kind: 'ocr_var', roi: null }, null, '');
+  ok(/全屏 OCR/.test(sb.resultEl.textContent), 'U-T4: an empty-roi ocr_var shows the full-screen OCR hint');
+}
+
 checkAssetTestWiring()
+  .then(() => checkAssetCandidatesWiring())
   .then(() => checkSavePathWiring(saveUnified))
   .then(() => checkAssetRoiSavePath())
   .then(() => checkBatchTestScope())

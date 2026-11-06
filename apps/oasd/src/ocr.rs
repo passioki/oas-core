@@ -17,9 +17,48 @@
 //! ```
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use oas_runtime::{OcrLine, OcrProvider};
 use oas_types::{Frame, Rect};
+
+/// [`OcrProvider`] over the two mutexed engines the HTTP server loaded.
+///
+/// Used by the editor dry-run resolver (`POST /task/asset/test_action`, B-T3b) so
+/// the operation-region chain recognizes through the **same** provider seam as a
+/// real run (same orientation retry + noise filtering via
+/// [`recognize_lines_impl`]). The server owns the `Arc<Mutex<…>>` handles, so
+/// this adapter simply borrows them.
+pub struct ServeOcr {
+    pub rec: Arc<Mutex<oas_ocr::onnx::RecEngine>>,
+    pub det: Option<Arc<Mutex<oas_ocr::det_engine::DetEngine>>>,
+}
+
+impl OcrProvider for ServeOcr {
+    fn recognize(&mut self, frame: &Frame, roi: Rect) -> Result<(String, f32), String> {
+        let crop = oas_ocr::RgbCrop::from_rgba(frame.width, frame.height, &frame.rgba, roi)?;
+        let mut rec = self
+            .rec
+            .lock()
+            .map_err(|_| "rec engine mutex is poisoned".to_string())?;
+        rec.recognize(&crop)
+    }
+
+    fn recognize_lines(&mut self, frame: &Frame, roi: Rect) -> Result<Vec<OcrLine>, String> {
+        let det = self
+            .det
+            .clone()
+            .ok_or_else(|| "no text detector loaded: ocr_var/ocr_lines need det+rec".to_string())?;
+        let mut rec = self
+            .rec
+            .lock()
+            .map_err(|_| "rec engine mutex is poisoned".to_string())?;
+        let mut det = det
+            .lock()
+            .map_err(|_| "det engine mutex is poisoned".to_string())?;
+        recognize_lines_impl(&mut det, &mut rec, frame, roi, false)
+    }
+}
 
 /// PP-OCRv6 recogniser (+ optional text detector) behind the runtime seam.
 pub struct OnnxOcr {

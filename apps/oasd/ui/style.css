@@ -235,6 +235,16 @@ pre {
   gap: 8px;
   padding-top: 4px;
 }
+/* U-T4/S6：操作区「相对偏移」绘制模式（画布底栏） */
+.offset-draw-label {
+  flex: 0 0 auto;
+  max-width: 46%;
+  color: #ffd54a;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+#canvas-footer .offset-draw-label[hidden] { display: none; }
 #hint {
   flex: 1 1 auto;
   position: static;
@@ -447,6 +457,22 @@ aside.side {
 .asset-row[draggable="true"] { cursor: grab; }
 .asset-row-dragging { opacity: .45; }
 .asset-drag-over { outline: 2px solid #31d0aa; outline-offset: -1px; }
+/* U-T4：旧任务参数合成的虚拟 ocr_var 素材行（只读，待迁移） */
+.asset-row-virtual {
+  opacity: .8;
+}
+.asset-virtual-badge {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 0 6px;
+  border: 1px solid #6b5a2f;
+  border-radius: 999px;
+  color: #e8c46a;
+  background: #2a2416;
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
+}
 /* A: the selected asset row. Loud on purpose (left rail + background + text):
    设置 stays open while the row is edited, so it must always be obvious WHICH
    asset those settings belong to. Dark-theme safe, no layout shift (inset
@@ -986,7 +1012,7 @@ aside.side {
 .builder-relation-title { font-weight: 600; color: #dbe7f3; }
 .relation-record-dialog { width: min(680px, 92vw); }
 
-/* ===== P3（参数 v2）：任务参数面板 + 动作库「参数」组 + 插入参数 ===== */
+/* ===== P3（参数 v2）：任务参数面板 + 插入参数 ===== */
 .builder-params-panel {
   margin-bottom: 10px;
   padding: 8px 10px;
@@ -1074,10 +1100,6 @@ aside.side {
 
 .builder-param-issues:empty { display: none; }
 
-/* 动作库「参数」组：绿色标记，提示这是生成标准 op 的预设入口 */
-.builder-op-group.builder-op-param-group { color: #8fd8a4; }
-.builder-ops button.builder-op-param-btn { border-left: 2px solid #3f7f52; padding-left: 6px; }
-
 /* 属性面板：插入参数 ▼ */
 .builder-expr-row {
   display: flex;
@@ -1133,12 +1155,6 @@ aside.side {
 .builder-text-source .builder-source-hint { color: #9aa0aa; font-size: 11px; overflow-wrap: anywhere; }
 .builder-text-source .builder-source-hint.warn { color: #e8c46a; }
 .builder-text-source .builder-source-hint code { color: #8fb8e8; }
-
-.builder-flash { animation: builder-flash 1s ease-out 1; }
-@keyframes builder-flash {
-  0% { outline: 2px solid #ffd54a; outline-offset: 2px; }
-  100% { outline: 2px solid transparent; outline-offset: 2px; }
-}
 
 /* ===== P5（参数 v2）：构建页权威 lint（检查按钮 + issues 面板 + T3 去声明） ===== */
 .builder-lint-count {
@@ -1641,4 +1657,90 @@ aside.side {
   .builder-region-offset {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+/* ===== U-T4（2026-11-06）：识别文字对话框 + 操作区递归对话框 ===== */
+.asset-text-dialog { width: min(560px, 94vw); }
+.asset-text-dialog label.opt { display: block; margin: 6px 0; }
+.asset-text-dialog input[type="text"] { width: 100%; box-sizing: border-box; }
+.asset-text-dialog input[readonly] { opacity: .7; cursor: not-allowed; }
+.asset-text-roi {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 6px 0;
+}
+.asset-text-roi input { width: 84px; }
+#asset-text-positions { margin: 4px 0; overflow-wrap: anywhere; }
+
+.op-region-dialog { width: min(720px, 96vw); }
+.op-region-breadcrumb {
+  margin: 4px 0 8px;
+  color: #8fb8e8;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  overflow-wrap: anywhere;
+}
+.op-region-levels { display: grid; gap: 8px; max-height: 48vh; overflow: auto; }
+.op-region-level {
+  border: 1px solid #2b2f38;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #14181f;
+}
+.op-region-level-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.op-region-level-title { color: #dbe7f3; font-size: 13px; font-weight: 600; }
+.op-region-level-indent { margin-left: 14px; }
+.op-region-mode-row { display: flex; gap: 12px; flex-wrap: wrap; margin: 6px 0 2px; }
+.op-region-mode-row label { margin: 0; }
+.op-region-level-body { margin-top: 4px; }
+.op-region-level-body[hidden] { display: none; }
+.op-region-offset-text { color: #ffd54a; font-family: Consolas, "Cascadia Mono", monospace; }
+.op-region-terminal { color: #9aa0aa; font-size: 11px; margin-top: 4px; }
+.op-region-ref-pick { margin-top: 6px; }
+.op-region-ref-pick[hidden] { display: none; }
+.op-region-warn {
+  margin-top: 4px;
+  color: #e8c46a;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* U-T4/S4：真实点测的候选下拉（#序号 score） */
+.candidate-select {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 4px 0;
+  padding: 4px 6px;
+  background: #171a20;
+  color: #cbd5e1;
+  border: 1px solid #3a3d48;
+  border-radius: 4px;
+}
+.candidate-select[hidden] { display: none; }
+
+/* ===== U-T5（2026-11-06）：动作目标选择 + 派生参数标注 ===== */
+.builder-target-summary {
+  margin: 2px 0 6px;
+  color: #dbe7f3;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.builder-target-search { width: 100%; }
+.builder-target-errors {
+  margin-top: 4px;
+  color: #ff8a80;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.builder-legacy-region-hint {
+  margin: 3px 0 6px;
+  color: #e8c46a;
+}
+.builder-param-row .builder-param-asset {
+  grid-column: 1 / -1;
+  color: #8fd8a4;
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }

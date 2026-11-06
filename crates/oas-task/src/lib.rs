@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use oas_types::Frame;
 
 mod meta;
+pub mod ocr_var;
 pub mod package;
 pub use meta::{
     validate_param_values, Capabilities, EntryRequires, ExitDecl, Meta, MetaEntry, ParamDecl,
@@ -50,9 +51,127 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// NCC score above which a template counts as "found".
 pub const DEFAULT_THRESHOLD: f32 = 0.85;
 
-/// Asset/object kinds: recognize+act (`template`/`ocr_line`/`ocr_lines`) and
-/// pure operation region (`region`, no recognition).
-pub const KINDS: [&str; 4] = ["template", "ocr_line", "ocr_lines", "region"];
+/// Asset/object kinds: recognize+act (`template`/`ocr_line`/`ocr_lines`/
+/// `ocr_var`) and pure operation region (`region`, no recognition).
+///
+/// `ocr_var` = 「使用端OCR文字配置项」 (2026-11-06 参数→素材 redesign): an OCR
+/// asset whose recognition text is changeable on the usage side
+/// (`runtime_text` + `param_key`), with an optional ROI (empty = whole-screen
+/// OCR).
+pub const KINDS: [&str; 5] = ["template", "ocr_line", "ocr_lines", "ocr_var", "region"];
+
+/// Recognition kinds that may act as a **node in an `op_region` chain**.
+///
+/// A `region` asset is a legal *terminal* node (its `roi` IS the operation
+/// area, Lead ruling 11) but never a recursive node. Collections are accepted by
+/// id at chain resolution time (they have no `op_region` of their own) but are
+/// not `AssetDecl` items, so they are not in this list.
+pub const OP_REGION_NODE_KINDS: [&str; 4] = ["template", "ocr_line", "ocr_lines", "ocr_var"];
+
+/// Maximum `op_region` chain depth (mirrors the flow region parser's bound).
+pub const MAX_OP_REGION_DEPTH: usize = 16;
+
+/// Bound for the `op_region.offset` values (dx,dy in ±1e6; w,h in 1..=1e6),
+/// the same magnitude every other authored coordinate uses.
+pub const MAX_OP_REGION_OFFSET: i64 = 1_000_000;
+
+/// `runtime_text` (ocr_var default recognition text) max length, matching the
+/// `text_expr`/OCR UI limit.
+pub const RUNTIME_TEXT_MAX_CHARS: usize = 200;
+
+/// Length limit of an ocr_var display `label`.
+pub const OCR_VAR_LABEL_MAX_CHARS: usize = 80;
+
+/// **Operation-region source** stored on one asset (`assets.json
+/// items[].op_region`, 2026-11-06 参数→素材 redesign D2).
+///
+/// Three modes only (unlike the flow-level `oas_flow::OpRegion`, which also
+/// carries `ocr`/2-value offsets):
+/// * `self` — the current asset's own operation area = the historical runtime
+///   behaviour (`action_shape`/`click_back`, translated by the match offset,
+///   else the real recognized bbox); this is the default when the field is
+///   absent;
+/// * `offset` — operation box relative to the **real recognized bbox**'s
+///   top-left corner: `[dx, dy, w, h]` (`w`/`h` = authored size);
+/// * `asset` — recognize another asset and use *its* `op_region` (recursive
+///   chain; `pick` chooses among that asset's candidates: `score` = best score
+///   (default), `nearest` = centre nearest to the previous node's real rect).
+///
+/// JSON: `{"mode":"self"}`, `{"mode":"offset","offset":[dx,dy,w,h]}`,
+/// `{"mode":"asset","asset":"<id>","pick":"score|nearest"}`. Validation
+/// (offset bounds, node existence/kind, cycle + depth, terminal mode) lives in
+/// [`crate::validate_op_region_chain`] and the assets shape checks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode")]
+pub enum OpRegion {
+    /// `{"mode":"self"}` — use this asset's own operation area (default).
+    #[serde(rename = "self")]
+    SelfRegion,
+    /// `{"mode":"offset","offset":[dx,dy,w,h]}` — relative to the **real**
+    /// recognized bbox, size = authored `w`x`h`.
+    #[serde(rename = "offset")]
+    Offset {
+        /// `[dx, dy, w, h]`; `w`,`h` must be > 0.
+        offset: [i32; 4],
+    },
+    /// `{"mode":"asset","asset":"<id>","pick":"score|nearest"}` — recursive
+    /// reference to another asset's `op_region`.
+    #[serde(rename = "asset")]
+    Asset {
+        /// Referenced asset/collection id (a `region` item may only be the
+        /// **terminal** node; a collection is always terminal).
+        asset: String,
+        /// Candidate pick rule for a multi-candidate node; absent = `score`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pick: Option<String>,
+    },
+}
+
+/// Allowed `op_region.pick` values.
+pub const OP_REGION_PICKS: [&str; 2] = ["score", "nearest"];
+
+impl OpRegion {
+    /// `self` (the default when the asset has no `op_region` field).
+    pub fn self_region() -> Self {
+        OpRegion::SelfRegion
+    }
+
+    /// `self` / `offset` / `asset`.
+    pub fn mode_str(&self) -> &'static str {
+        match self {
+            OpRegion::SelfRegion => "self",
+            OpRegion::Offset { .. } => "offset",
+            OpRegion::Asset { .. } => "asset",
+        }
+    }
+
+    /// Effective pick rule (`score` when absent).
+    pub fn pick(&self) -> &str {
+        match self {
+            OpRegion::Asset { pick, .. } => pick.as_deref().unwrap_or("score"),
+            _ => "score",
+        }
+    }
+
+    /// Referenced asset id for `mode=asset`.
+    pub fn asset(&self) -> Option<&str> {
+        match self {
+            OpRegion::Asset { asset, .. } => Some(asset.as_str()),
+            _ => None,
+        }
+    }
+
+    /// `true` for the default mode (self).
+    pub fn is_self(&self) -> bool {
+        matches!(self, OpRegion::SelfRegion)
+    }
+}
+
+impl Default for OpRegion {
+    fn default() -> Self {
+        OpRegion::SelfRegion
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Lint (M0 unified task template, ENGINE-DESIGN §22.34.2)
@@ -104,7 +223,18 @@ pub struct ActionShape {
     pub invert: bool,
 }
 
-fn default_action_source() -> String {
+/// Default value of the **deprecated** `action_source` compatibility field.
+///
+/// The two-state operation-region model (`recognition` = follow the real
+/// recognized bbox, `fixed` = independent operation region) is gone
+/// (2026-11-06 事项6): the runtime only ever looked at whether `action_shape`
+/// exists, so the field carried no engine semantics. Old `assets.json` files
+/// still carry it; it is read for compatibility (any value), never written again
+/// and never validated. See [`AssetDecl::action_source`].
+///
+/// Public so the editor's save handlers can construct an [`AssetDecl`] without
+/// inventing a value for a field that is no longer persisted.
+pub fn default_action_source() -> String {
     "recognition".to_string()
 }
 
@@ -281,6 +411,276 @@ fn validate_action_shape(
     Ok(())
 }
 
+/// Validate the `ocr_var`-only fields of one asset declaration.
+///
+/// Rules (2026-11-06 参数→素材 redesign): `runtime_text` = required non-blank
+/// text (<= [`RUNTIME_TEXT_MAX_CHARS`], no control characters) = the default
+/// recognition text; `param_key` = required valid parameter key; `label` =
+/// optional non-blank display name (<= [`OCR_VAR_LABEL_MAX_CHARS`]); OCR pixel
+/// provenance fields (`file`/`polygon`/`ocr_mode`/`ocr_source_roi`/`ocr_text`)
+/// are forbidden. `roi` is optional (absent = whole-screen OCR) and
+/// `threshold`/`action_shape`/`op_region` keep their normal meaning.
+pub(crate) fn validate_ocr_var_fields(item: &AssetDecl, path: &str) -> Result<(), String> {
+    for (field, present) in [
+        ("file", item.file.is_some()),
+        ("polygon", item.polygon.is_some()),
+        ("ocr_mode", item.ocr_mode.is_some()),
+        ("ocr_source_roi", item.ocr_source_roi.is_some()),
+        ("ocr_text", item.ocr_text.is_some()),
+    ] {
+        if present {
+            return Err(format!(
+                "{path}.{field} is not allowed for kind=ocr_var \
+                 (use runtime_text/roi instead)"
+            ));
+        }
+    }
+    let Some(text) = item.runtime_text.as_deref() else {
+        return Err(format!("{path}.runtime_text is required for kind=ocr_var"));
+    };
+    if text.trim().is_empty() {
+        return Err(format!("{path}.runtime_text must not be blank"));
+    }
+    if text.chars().count() > RUNTIME_TEXT_MAX_CHARS {
+        return Err(format!(
+            "{path}.runtime_text must be <= {RUNTIME_TEXT_MAX_CHARS} characters (got {})",
+            text.chars().count()
+        ));
+    }
+    if text.chars().any(|c| c.is_control()) {
+        return Err(format!("{path}.runtime_text must not contain control characters"));
+    }
+    let Some(key) = item.param_key.as_deref() else {
+        return Err(format!("{path}.param_key is required for kind=ocr_var"));
+    };
+    if !meta::is_param_key(key) {
+        return Err(format!(
+            "{path}.param_key `{key}` must match [A-Za-z_][A-Za-z0-9_]* (<= 64 chars)"
+        ));
+    }
+    if let Some(label) = item.label.as_deref() {
+        if label.trim().is_empty() {
+            return Err(format!("{path}.label must not be blank when present"));
+        }
+        if label.chars().count() > OCR_VAR_LABEL_MAX_CHARS {
+            return Err(format!(
+                "{path}.label must be <= {OCR_VAR_LABEL_MAX_CHARS} characters (got {})",
+                label.chars().count()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Structural validation of one `op_region` value (no chain traversal).
+fn validate_op_region_shape(op: &OpRegion, path: &str) -> Result<(), String> {
+    match op {
+        OpRegion::SelfRegion => Ok(()),
+        OpRegion::Offset { offset } => {
+            let [dx, dy, w, h] = *offset;
+            let bound = MAX_OP_REGION_OFFSET;
+            if (dx as i64).abs() > bound || (dy as i64).abs() > bound {
+                return Err(format!(
+                    "{path}.offset dx,dy must be within ±{MAX_OP_REGION_OFFSET} (got [{dx},{dy}])"
+                ));
+            }
+            if w <= 0 || h <= 0 {
+                return Err(format!(
+                    "{path}.offset w,h must be > 0 (got [{dx},{dy},{w},{h}])"
+                ));
+            }
+            if w as i64 > bound || h as i64 > bound {
+                return Err(format!(
+                    "{path}.offset w,h must be <= {MAX_OP_REGION_OFFSET} (got [{dx},{dy},{w},{h}])"
+                ));
+            }
+            Ok(())
+        }
+        OpRegion::Asset { asset, pick } => {
+            validate_id(asset).map_err(|e| format!("{path}.asset: {e}"))?;
+            if let Some(pick) = pick {
+                if !OP_REGION_PICKS.contains(&pick.as_str()) {
+                    return Err(format!(
+                        "{path}.pick `{pick}` must be one of {}",
+                        OP_REGION_PICKS.join(", ")
+                    ));
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Validate the whole `op_region` **chain** reachable from one asset.
+///
+/// `assets` is the would-be `assets.json` (the owner's new value included —
+/// callers validate on the in-memory clone before writing). `owner_id` names the
+/// asset whose new value is `op`; `None` means `op` is a free-standing value
+/// (e.g. a server-side preview) and must terminate without any owner override.
+///
+/// Rules (Lead rulings 1, 2, 11):
+/// * `offset` is relative to the **real recognized bbox** of its own node;
+/// * `mode=asset` follows the referenced asset's own `op_region`;
+/// * `region` items and collections are legal **terminal** nodes (their `roi` is
+///   the operation area), but a `region` item must not carry `op_region`;
+/// * cycles and chains deeper than [`MAX_OP_REGION_DEPTH`] are rejected;
+/// * a chain must be resolvable: every referenced element must exist and every
+///   leaf must be `self`/`offset`/`region`/collection.
+pub fn validate_op_region_chain(
+    assets: &AssetsFile,
+    owner_id: Option<&str>,
+    op: &OpRegion,
+    path: &str,
+) -> Result<(), String> {
+    validate_op_region_shape(op, path)?;
+    let mut visited: BTreeSet<String> = BTreeSet::new();
+    match owner_id {
+        Some(owner) => {
+            let owner_decl = assets
+                .items
+                .iter()
+                .find(|a| a.id == owner)
+                .ok_or_else(|| format!("{path}: owner asset `{owner}` is not declared"))?;
+            if owner_decl.kind == "region" {
+                return Err(format!(
+                    "{path}: region assets are fixed operation areas and must not carry op_region"
+                ));
+            }
+            walk_op_region_chain(assets, Some(owner), op, owner, 0, &mut visited, path)
+        }
+        None => match op {
+            OpRegion::SelfRegion | OpRegion::Offset { .. } => Ok(()),
+            OpRegion::Asset { .. } => Err(format!(
+                "{path}: an op_region chain needs an owner asset (mode=asset without one)"
+            )),
+        },
+    }
+}
+
+/// One DFS hop of [`validate_op_region_chain`]. `current` is the node being
+/// resolved (`owner_id`'s new value is `owner_op`, every other node uses its
+/// stored `op_region`).
+fn walk_op_region_chain(
+    assets: &AssetsFile,
+    owner_id: Option<&str>,
+    owner_op: &OpRegion,
+    current: &str,
+    depth: usize,
+    visited: &mut BTreeSet<String>,
+    path: &str,
+) -> Result<(), String> {
+    if depth > MAX_OP_REGION_DEPTH {
+        return Err(format!(
+            "{path}: op_region chain exceeds the max depth {MAX_OP_REGION_DEPTH} at `{current}`"
+        ));
+    }
+    if !visited.insert(current.to_string()) {
+        return Err(format!(
+            "{path}: op_region chain cycle detected at `{current}` (visited: {})",
+            visited.iter().cloned().collect::<Vec<_>>().join(" -> ")
+        ));
+    }
+    if Some(current) == owner_id {
+        // First hop (or a cycle back to the owner, already rejected above).
+        return follow_op_region(assets, owner_id, owner_op, current, depth, visited, path);
+    }
+    let item = assets.items.iter().find(|a| a.id == current);
+    let Some(item) = item else {
+        if assets.collections.iter().any(|c| c.id == current) {
+            // A collection has no op_region of its own: it is a terminal node
+            // (its winning member's geometry / collection-level shape applies).
+            return Ok(());
+        }
+        return Err(format!(
+            "{path}: op_region references `{current}`, which is not a declared asset or collection"
+        ));
+    };
+    if item.kind == "region" {
+        // Lead ruling 11: a region is a legal terminal fixed-operation-area
+        // node; it never recurses and must not carry op_region itself.
+        if item.op_region.is_some() {
+            return Err(format!(
+                "{path}: region asset `{current}` is a fixed terminal operation area \
+                 and must not carry op_region"
+            ));
+        }
+        return Ok(());
+    }
+    if !OP_REGION_NODE_KINDS.contains(&item.kind.as_str()) {
+        return Err(format!(
+            "{path}: asset `{current}` has kind `{}`, which cannot be an op_region node",
+            item.kind
+        ));
+    }
+    match &item.op_region {
+        None => Ok(()), // default self: this node's real rect is the operation area
+        Some(op) => {
+            let op_path = format!("{path} (node `{current}`)");
+            validate_op_region_shape(op, &op_path)?;
+            follow_op_region(assets, owner_id, op, current, depth, visited, path)
+        }
+    }
+}
+
+/// Shared tail of one chain hop: `self`/`offset` terminate, `asset` recurses.
+fn follow_op_region(
+    assets: &AssetsFile,
+    owner_id: Option<&str>,
+    op: &OpRegion,
+    current: &str,
+    depth: usize,
+    visited: &mut BTreeSet<String>,
+    path: &str,
+) -> Result<(), String> {
+    match op {
+        OpRegion::SelfRegion | OpRegion::Offset { .. } => Ok(()),
+        OpRegion::Asset { asset, .. } => {
+            if asset == current {
+                return Err(format!("{path}: op_region of `{current}` references itself"));
+            }
+            walk_op_region_chain(assets, owner_id, op, asset, depth + 1, visited, path)
+        }
+    }
+}
+
+/// First asset/collection id whose `op_region` chain references `id`
+/// (`mode=asset`), used to block a deletion that would leave a dangling chain.
+fn op_region_referrer(assets: &AssetsFile, id: &str) -> Option<String> {
+    assets
+        .items
+        .iter()
+        .find(|a| a.op_region.as_ref().and_then(|op| op.asset()) == Some(id))
+        .map(|a| a.id.clone())
+}
+
+/// Every `op_region` problem in one `assets.json`, with precise JSON paths.
+///
+/// Used by the load/lint path ([`TaskBundle::assets_shape_issues`]) and by the
+/// save/update paths (which validate the would-be file before writing).
+fn op_region_issues(assets: &AssetsFile) -> Vec<(String, String)> {
+    let mut errs = Vec::new();
+    for (i, item) in assets.items.iter().enumerate() {
+        let p = format!("assets.json: items[{i}].op_region");
+        if item.kind == "region" {
+            if item.op_region.is_some() {
+                errs.push((
+                    p,
+                    "region assets are fixed operation areas and must not carry op_region"
+                        .to_string(),
+                ));
+            }
+            continue;
+        }
+        let Some(op) = item.op_region.as_ref() else {
+            continue;
+        };
+        if let Err(e) = validate_op_region_chain(assets, Some(&item.id), op, &p) {
+            errs.push((p, e));
+        }
+    }
+    errs
+}
+
 /// One declared asset, exactly as stored in `assets.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssetDecl {
@@ -299,13 +699,20 @@ pub struct AssetDecl {
     /// - `region`: this is the operation region itself (no separate recognition).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roi: Option<[i32; 4]>,
-    /// **Operation region** in frame coordinates. `action_source=fixed` requires
-    /// this; `recognition` leaves it absent and uses the real recognized bbox.
+    /// **Operation region** in frame coordinates (optional). When present the
+    /// runtime uses this geometry (template: translated by the match offset;
+    /// OCR/region: absolute); when absent it follows the **real recognized
+    /// bbox**. This is the only operation-region switch now — the old
+    /// `action_source` two-state rule is gone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action_shape: Option<ActionShape>,
-    /// `recognition` (follow real OCR/template bbox) or `fixed` (independent
-    /// operation region). Persisted explicitly; no legacy inference.
-    #[serde(default = "default_action_source")]
+    /// **DEPRECATED compatibility field** (2026-11-06 事项6). Old `assets.json`
+    /// files carry `"action_source": "recognition" | "fixed"`; it used to gate
+    /// whether `action_shape` was allowed/required. The engine never read it and
+    /// the two-state model is removed, so it is deserialized for old data,
+    /// **never serialized again** and never validated. `action_shape` alone
+    /// decides the operation region.
+    #[serde(default = "default_action_source", skip_serializing)]
     pub action_source: String,
     /// v1.2.1 recognition provenance for `ocr_line` assets:
     /// `single` (default, rec only) or `lines` (came from a multi-line det+rec
@@ -336,6 +743,28 @@ pub struct AssetDecl {
     /// still use `roi` (= the polygon bounding box, computed on save).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub polygon: Option<Vec<[i32; 2]>>,
+    /// **Default recognition text** of an `ocr_var` asset (2026-11-06 参数→素材
+    /// redesign). The usage side may override it per run; when absent the
+    /// runtime has nothing to recognize and fails loudly. Required for `kind:
+    /// "ocr_var"`, forbidden for every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_text: Option<String>,
+    /// Optional display name of an `ocr_var` asset (also the derived parameter
+    /// row's `label`; empty ⇒ the asset id is used). Forbidden for other kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// **Parameter key** of an `ocr_var` asset: the key the usage side edits in
+    /// `values.json` (`tasks.<task>.values.<param_key>`) and the key of its
+    /// derived `meta.params` row. Read-only after creation (Lead ruling 6).
+    /// Required for `kind:"ocr_var"`, forbidden for every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub param_key: Option<String>,
+    /// **Operation-region source** (2026-11-06 参数→素材 redesign D2): absent =
+    /// `self` (= historical `action_shape` behaviour). Present = walk this chain
+    /// at run time. Not allowed on `kind:"region"` (its `roi` already is the
+    /// operation area).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op_region: Option<OpRegion>,
     /// Revision counter (1 on first save).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rev: Option<u32>,
@@ -362,9 +791,53 @@ impl AssetDecl {
             ocr_text: None,
             threshold: None,
             polygon: None,
+            runtime_text: None,
+            label: None,
+            param_key: None,
+            op_region: None,
             rev: None,
             positions: Vec::new(),
         }
+    }
+
+    /// Convenience constructor for a `kind:"ocr_var"` asset.
+    ///
+    /// `roi` is optional: absent = whole-screen OCR (2026-11-06 redesign).
+    pub fn ocr_var(
+        id: impl Into<String>,
+        param_key: impl Into<String>,
+        runtime_text: impl Into<String>,
+        roi: Option<[i32; 4]>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            kind: "ocr_var".to_string(),
+            file: None,
+            roi,
+            action_shape: None,
+            action_source: "recognition".to_string(),
+            ocr_mode: None,
+            ocr_source_roi: None,
+            ocr_text: None,
+            threshold: None,
+            polygon: None,
+            runtime_text: Some(runtime_text.into()),
+            label: None,
+            param_key: Some(param_key.into()),
+            op_region: None,
+            rev: None,
+            positions: Vec::new(),
+        }
+    }
+
+    /// `true` for the 使用端OCR文字配置项 kind.
+    pub fn is_ocr_var(&self) -> bool {
+        self.kind == "ocr_var"
+    }
+
+    /// `op_region` with the documented default (`self`) applied.
+    pub fn op_region_or_self(&self) -> OpRegion {
+        self.op_region.clone().unwrap_or_default()
     }
 }
 
@@ -381,7 +854,10 @@ pub struct AssetCollection {
     /// Optional collection-level operation geometry; member shape wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action_shape: Option<ActionShape>,
-    #[serde(default = "default_action_source")]
+    /// **DEPRECATED compatibility field** (2026-11-06 事项6), exactly like
+    /// [`AssetDecl::action_source`]: read from old data, never written again,
+    /// never validated; `action_shape` alone decides the operation region.
+    #[serde(default = "default_action_source", skip_serializing)]
     pub action_source: String,
 }
 
@@ -437,6 +913,30 @@ fn normalize_legacy_ocr_roi(af: &mut AssetsFile) {
                 });
             }
         }
+    }
+}
+
+/// Convert one on-disk `op_region` into the dependency-light runtime type.
+///
+/// The task crate depends on `oas-runtime` (not the other way round), so the
+/// runtime has its own `OpRegion` copy; this is the single conversion point and
+/// runs only after [`validate_op_region_chain`] accepted the graph.
+fn runtime_op_region(op: &OpRegion) -> oas_runtime::AssetOpRegion {
+    match op {
+        OpRegion::SelfRegion => oas_runtime::AssetOpRegion::SelfRegion,
+        OpRegion::Offset { offset } => oas_runtime::AssetOpRegion::Offset {
+            dx: offset[0],
+            dy: offset[1],
+            w: offset[2],
+            h: offset[3],
+        },
+        OpRegion::Asset { asset, pick } => oas_runtime::AssetOpRegion::Asset {
+            asset: asset.clone(),
+            pick: match pick.as_deref() {
+                Some("nearest") => oas_runtime::OpRegionPick::Nearest,
+                _ => oas_runtime::OpRegionPick::Score,
+            },
+        },
     }
 }
 
@@ -1160,36 +1660,22 @@ impl TaskBundle {
         // B-10: a collection-level operation shape is accepted by the API, so
         // it must be validated exactly like an asset shape (bounds from the
         // bundle design resolution) instead of being silently copied.
-        if coll.action_source != "recognition" && coll.action_source != "fixed" {
-            return Err(format!(
-                "集合 `{id}`: action_source must be recognition or fixed (got `{}`)",
-                coll.action_source
-            ));
-        }
-        match (coll.action_source.as_str(), coll.action_shape.as_ref()) {
-            ("recognition", Some(_)) => {
-                return Err(format!(
-                    "集合 `{id}`: action_source=recognition must not carry action_shape"
-                ))
-            }
-            ("fixed", None) => {
-                return Err(format!(
-                    "集合 `{id}`: action_source=fixed requires action_shape"
-                ))
-            }
-            ("fixed", Some(shape)) => validate_action_shape(
+        // 2026-11-06 事项6: no two-state rule any more — a shape is always
+        // allowed (and optional); `action_source` is a deprecated compat field
+        // that is tolerated on input and never persisted.
+        if let Some(shape) = coll.action_shape.as_ref() {
+            validate_action_shape(
                 shape,
                 &format!("collection `{id}` action_shape"),
                 af.design_resolution.map(|[w, h]| (w, h)),
-            )?,
-            _ => {}
+            )?;
         }
         let saved = AssetCollection {
             id: id.clone(),
             members,
             threshold: coll.threshold,
             action_shape: coll.action_shape,
-            action_source: coll.action_source,
+            action_source: default_action_source(),
         };
         if let Some(pos) = af.collections.iter().position(|c| c.id == id) {
             af.collections[pos] = saved.clone();
@@ -1212,6 +1698,11 @@ impl TaskBundle {
         if self.flow_references_id(id) {
             return Err(format!(
                 "素材集合「{id}」仍被 flow 引用；请先在任务构建中删除/替换引用，再删除集合"
+            ));
+        }
+        if let Some(owner) = op_region_referrer(&af, id) {
+            return Err(format!(
+                "素材集合「{id}」仍被素材「{owner}」的操作区链引用；请先修改该操作区，再删除集合"
             ));
         }
         let item = af.collections.remove(pos);
@@ -1341,28 +1832,60 @@ impl TaskBundle {
                 continue;
             }
             if item.kind != "template" {
-                // OCR assets (`ocr_line` / `ocr_lines`) carry **no pixels**: the
-                // runtime only needs their ROI so `ocr(sel)` can crop it.
-                // `ocr_line` → single-line rec (fast); `ocr_lines` → det + rec
-                // (ENGINE-DESIGN §17.1: both paths are kept, the kind picks one).
-                // A missing ROI is a loud load error, never "skip silently".
-                let roi = item.roi.ok_or_else(|| {
-                    format!(
-                        "assets.json: items[{i}].roi: OCR asset `{}` has no roi \
-                         (ocr(sel) needs the text region)",
-                        item.id
-                    )
-                })?;
-                let rect = oas_types::Rect {
-                    x: roi[0],
-                    y: roi[1],
-                    w: roi[2],
-                    h: roi[3],
+                // OCR assets (`ocr_line` / `ocr_lines` / `ocr_var`) carry **no
+                // pixels**: the runtime only needs their ROI so `ocr(sel)` can
+                // crop it. `ocr_line` → single-line rec (fast); `ocr_lines` /
+                // `ocr_var` → det + rec (ENGINE-DESIGN §17.1; `ocr_var` needs the
+                // real line bbox for candidates/real-rect, 2026-11-06 redesign).
+                // A missing ROI is a loud load error, never "skip silently" —
+                // except for `ocr_var`, where an absent ROI means whole-screen
+                // OCR.
+                let is_ocr_var = item.kind == "ocr_var";
+                let rect = match item.roi {
+                    Some(roi) => Some(oas_types::Rect {
+                        x: roi[0],
+                        y: roi[1],
+                        w: roi[2],
+                        h: roi[3],
+                    }),
+                    None if is_ocr_var => None,
+                    None => {
+                        return Err(format!(
+                            "assets.json: items[{i}].roi: OCR asset `{}` has no roi \
+                             (ocr(sel) needs the text region)",
+                            item.id
+                        ))
+                    }
                 };
-                if item.kind == "ocr_lines" {
-                    set.insert_ocr_lines(item.id.clone(), rect);
-                } else {
-                    set.insert_ocr(item.id.clone(), rect);
+                // B-T2 (`crates/oas-runtime`) adds the dedicated `ocr_var` table
+                // (empty ROI = full screen, `param_key` expected text). Until
+                // then an empty-ROI `ocr_var` gets no OCR entry here: running it
+                // fails loudly as "not declared" instead of recognizing a wrong
+                // region. A ROI-scoped `ocr_var` already behaves exactly like
+                // `ocr_lines` (det + rec).
+                // 2026-11-06 参数→素材: `ocr_var` gets its dedicated runtime table
+                // (optional ROI = whole-screen OCR, `runtime_text`/`param_key`
+                // contract), so it is NOT registered as a plain OCR asset.
+                if is_ocr_var {
+                    let runtime_text = item.runtime_text.clone().ok_or_else(|| {
+                        format!(
+                            "assets.json: items[{i}] ocr_var `{}` has no runtime_text",
+                            item.id
+                        )
+                    })?;
+                    let param_key = item.param_key.clone().ok_or_else(|| {
+                        format!(
+                            "assets.json: items[{i}] ocr_var `{}` has no param_key",
+                            item.id
+                        )
+                    })?;
+                    set.insert_ocr_var(item.id.clone(), rect, runtime_text, param_key);
+                } else if let Some(rect) = rect {
+                    if item.kind == "ocr_lines" {
+                        set.insert_ocr_lines(item.id.clone(), rect);
+                    } else {
+                        set.insert_ocr(item.id.clone(), rect);
+                    }
                 }
                 // OCR never runs NCC; its `threshold` is the **minimum
                 // recognition confidence**. Absent = any successful read is a
@@ -1394,7 +1917,13 @@ impl TaskBundle {
                     && item.ocr_mode.as_deref() == Some("lines")
                     && item.ocr_text.is_some()
                 {
-                    set.set_derived_ocr(item.id.clone(), rect, item.ocr_text.clone().unwrap());
+                    let derived_roi = rect.ok_or_else(|| {
+                        format!(
+                            "assets.json: items[{i}].roi: derived ocr_line `{}` has no roi",
+                            item.id
+                        )
+                    })?;
+                    set.set_derived_ocr(item.id.clone(), derived_roi, item.ocr_text.clone().unwrap());
                 }
                 // §22.10 N10b-2: OCR polygon mask (frame coordinates).
                 if let Some(poly) = &item.polygon {
@@ -1403,6 +1932,11 @@ impl TaskBundle {
                         .map(|p| oas_types::Point { x: p[0], y: p[1] })
                         .collect();
                     set.set_ocr_polygon(item.id.clone(), pts);
+                }
+                // 2026-11-06 参数→素材 D2: the operation-region chain is data for
+                // the runtime resolver (validation already happened on load).
+                if let Some(op) = &item.op_region {
+                    set.insert_op_region(item.id.clone(), runtime_op_region(op));
                 }
                 continue;
             }
@@ -1448,6 +1982,10 @@ impl TaskBundle {
                     );
                 }
                 set.set_click_shape(item.id.clone(), shape.to_click_shape());
+            }
+            // 2026-11-06 参数→素材 D2: operation-region chain data for the runtime.
+            if let Some(op) = &item.op_region {
+                set.insert_op_region(item.id.clone(), runtime_op_region(op));
             }
         }
         for coll in &af.collections {
@@ -1610,6 +2148,13 @@ impl TaskBundle {
                 "素材「{id}」仍被当前任务 flow 引用；请先在任务构建中删除/替换引用，再删除素材"
             ));
         }
+        // D2 (2026-11-06 参数→素材): an asset used as an `op_region` chain node
+        // must not be deleted while the chain still references it.
+        if let Some(owner) = op_region_referrer(&af, id) {
+            return Err(format!(
+                "素材「{id}」仍被素材「{owner}」的操作区链引用；请先修改该操作区，再删除素材"
+            ));
+        }
         let mut remove_collections: Vec<usize> = Vec::new();
         for (ci, coll) in af.collections.iter_mut().enumerate() {
             if !coll.members.iter().any(|m| m == id) {
@@ -1667,6 +2212,15 @@ impl TaskBundle {
                 }
             }
         }
+        // D2: rewrite `op_region` chain references so a rename never leaves a
+        // dangling chain behind.
+        for item in af.items.iter_mut() {
+            if let Some(OpRegion::Asset { asset, .. }) = item.op_region.as_mut() {
+                if asset == from {
+                    *asset = to.to_string();
+                }
+            }
+        }
         af.items[pos].id = to.to_string();
         af.items[pos].rev = Some(af.items[pos].rev.unwrap_or(0) + 1);
         let item = af.items[pos].clone();
@@ -1692,18 +2246,38 @@ impl TaskBundle {
     ///
     /// `keep_action_shape` (B-08b) is the editor's **识别区-only** switch. When
     /// `true` and the asset is a pure `region`, a `roi` update changes only the
-    /// persisted ROI and leaves `action_shape`/`action_source` untouched: a
-    /// region's operation polygon must survive a recognition-box move instead
-    /// of being downgraded to `rect(roi)`. `false` keeps the historical B-08
-    /// synchronisation, so old callers/tests are unaffected.
-    pub fn update_asset_meta(
+    /// persisted ROI and leaves `action_shape` untouched: a region's operation
+    /// polygon must survive a recognition-box move instead of being downgraded
+    /// to `rect(roi)`. `false` keeps the historical B-08 synchronisation, so old
+    /// callers/tests are unaffected.
+    ///
+    /// 2026-11-06 事项6: the old `action_source` two-state model is gone. A shape
+    /// update is always accepted (any kind) and is validated geometrically only;
+    /// there is no source to require, reject or use for clearing. Old data's
+    /// `action_source` is read for compatibility and never written back.
+    ///
+    /// v2 (2026-11-06 参数→素材): also updates the ocr_var fields and the
+    /// asset's `op_region` chain:
+    /// * `runtime_text` / `label` apply to `kind:"ocr_var"` only and are
+    ///   validated like the save path;
+    /// * `param_key` is **read-only** after creation (Lead ruling 6) — a
+    ///   different value is a loud error;
+    /// * `op_region`: `None` = unchanged, `Some(None)` = clear (back to the
+    ///   `self` default), `Some(Some(op))` = set. The whole chain is validated
+    ///   against the would-be `assets.json` (node existence/kind, terminal mode,
+    ///   cycle + depth) before anything is written.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_asset_meta_v2(
         &self,
         id: &str,
         roi: Option<[i32; 4]>,
         action_shape: Option<ActionShape>,
-        action_source: Option<String>,
         threshold: Option<f32>,
         keep_action_shape: bool,
+        op_region: Option<Option<OpRegion>>,
+        runtime_text: Option<String>,
+        label: Option<String>,
+        param_key: Option<String>,
     ) -> Result<AssetDecl, String> {
         let mut af = self.load_assets_file()?;
         let pos = af
@@ -1753,9 +2327,9 @@ impl TaskBundle {
                 let shape = ActionShape::rect(r);
                 validate_action_shape(&shape, "region roi", shape_bounds)?;
                 af.items[pos].action_shape = Some(shape);
-                af.items[pos].action_source = "fixed".to_string();
             }
         }
+        let has_shape = action_shape.is_some();
         if let Some(shape) = action_shape {
             validate_action_shape(&shape, "action_shape", shape_bounds)?;
             if kind == "region" {
@@ -1767,22 +2341,6 @@ impl TaskBundle {
                 af.items[pos].roi = Some(bbox);
             }
             af.items[pos].action_shape = Some(shape);
-            af.items[pos].action_source = "fixed".to_string();
-        }
-        let had_source = action_source.is_some();
-        if let Some(source) = action_source {
-            if source != "recognition" && source != "fixed" {
-                return Err("action_source must be recognition or fixed".into());
-            }
-            if kind == "region" && source == "recognition" {
-                return Err(
-                    "region objects always have a fixed action_shape; recognition is invalid".into(),
-                );
-            }
-            if source == "recognition" {
-                af.items[pos].action_shape = None;
-            }
-            af.items[pos].action_source = source;
         }
         if let Some(t) = threshold {
             if !(0.0..=1.0).contains(&t) {
@@ -1796,13 +2354,90 @@ impl TaskBundle {
             }
             af.items[pos].threshold = Some(t);
         }
-        if roi.is_none() && af.items[pos].action_shape.is_none() && threshold.is_none() && !had_source {
-            return Err("nothing to update (pass roi, action_shape/action_source and/or threshold)".into());
+        // --- ocr_var fields (runtime_text / label / param_key) ---------------
+        if runtime_text.is_some() || label.is_some() || param_key.is_some() {
+            if kind != "ocr_var" {
+                return Err(format!(
+                    "asset `{id}`: runtime_text/label/param_key are only valid for kind=ocr_var"
+                ));
+            }
+            if let Some(new_key) = param_key.as_deref() {
+                if af.items[pos].param_key.as_deref() != Some(new_key) {
+                    return Err(format!(
+                        "asset `{id}`: param_key is read-only after creation \
+                         (changing it would drop the usage-side value)"
+                    ));
+                }
+            }
+            let mut probe = af.items[pos].clone();
+            if let Some(text) = runtime_text.clone() {
+                probe.runtime_text = Some(text);
+            }
+            if let Some(lbl) = label.clone() {
+                probe.label = Some(lbl);
+            }
+            validate_ocr_var_fields(&probe, &format!("asset `{id}`"))?;
+            af.items[pos] = probe;
         }
+        // --- op_region chain --------------------------------------------------
+        let has_op_update = op_region.is_some();
+        if let Some(new_op) = op_region {
+            if let Some(op) = new_op.as_ref() {
+                validate_op_region_shape(op, &format!("asset `{id}` op_region"))?;
+            }
+            af.items[pos].op_region = new_op;
+        }
+        if roi.is_none()
+            && !has_shape
+            && threshold.is_none()
+            && !has_op_update
+            && runtime_text.is_none()
+            && label.is_none()
+            && param_key.is_none()
+        {
+            return Err(
+                "nothing to update (pass roi, action_shape, threshold, op_region, \
+                 runtime_text/label or param_key)"
+                    .into(),
+            );
+        }
+        // D2: the whole graph must stay valid after the change (node
+        // existence/kind, terminal mode, cycle + depth); nothing written yet.
+        if let Some((p, msg)) = op_region_issues(&af).into_iter().next() {
+            return Err(format!("{p}: {msg}; nothing written"));
+        }
+        // Deprecated compat field: never persisted, normalized in memory.
+        af.items[pos].action_source = default_action_source();
         af.items[pos].rev = Some(af.items[pos].rev.unwrap_or(0) + 1);
         let item = af.items[pos].clone();
         self.write_assets_file(&af)?;
         Ok(item)
+    }
+
+    /// Backward-compatible wrapper of [`Self::update_asset_meta_v2`] for the
+    /// pre-2026-11-06 callers (P0b signature): it updates ROI / `action_shape` /
+    /// threshold only. The 4th argument is the deprecated `action_source`; it is
+    /// accepted and **ignored** (see P0b).
+    pub fn update_asset_meta(
+        &self,
+        id: &str,
+        roi: Option<[i32; 4]>,
+        action_shape: Option<ActionShape>,
+        _action_source: Option<String>,
+        threshold: Option<f32>,
+        keep_action_shape: bool,
+    ) -> Result<AssetDecl, String> {
+        self.update_asset_meta_v2(
+            id,
+            roi,
+            action_shape,
+            threshold,
+            keep_action_shape,
+            None,
+            None,
+            None,
+            None,
+        )
     }
 
     /// v1.2.3 frame-asset link: replace an asset's frame positions. Empty is
@@ -1842,6 +2477,26 @@ impl TaskBundle {
         }
         validate_threshold(decl.threshold)
             .map_err(|e| format!("asset `{}` rejected: {e}", decl.id))?;
+        // 2026-11-06 参数→素材: `ocr_var` field contract. runtime_text /
+        // param_key / label are ocr_var-only; every other kind must not carry
+        // them (a stale field would silently become dead data).
+        if decl.kind == "ocr_var" {
+            validate_ocr_var_fields(&decl, &format!("asset `{}`", decl.id))?;
+        } else {
+            for (field, present) in [
+                ("runtime_text", decl.runtime_text.is_some()),
+                ("param_key", decl.param_key.is_some()),
+                ("label", decl.label.is_some()),
+            ] {
+                if present {
+                    return Err(format!(
+                        "asset `{}` rejected: {field} is only valid for kind=ocr_var",
+                        decl.id
+                    ));
+                }
+            }
+        }
+
         // v1.2.1: OCR recognition provenance. A derived `ocr_line` saved from a
         // multi-line det+rec result must keep the source region + expected text
         // so runtime can reproduce the original recognition method.
@@ -1892,9 +2547,9 @@ impl TaskBundle {
             }
         }
 
-        let mut af = self.load_assets_file()?;
         // B-05: validate operation geometry against the frame the asset is
         // authored on (frame wins; otherwise the bundle design resolution).
+        let mut af = self.load_assets_file()?;
         let shape_bounds = frame
             .map(|f| (f.width, f.height))
             .or(af.design_resolution.map(|[w, h]| (w, h)));
@@ -1984,32 +2639,22 @@ impl TaskBundle {
             if decl.action_shape.is_none() {
                 decl.action_shape = decl.roi.map(ActionShape::rect);
             }
-            decl.action_source = "fixed".to_string();
         }
-        if decl.action_source != "recognition" && decl.action_source != "fixed" {
-            return Err(format!(
-                "asset `{}` rejected: action_source must be recognition or fixed",
-                decl.id
-            ));
+        // 2026-11-06 事项6: the `action_source` two-state model is removed. A
+        // shape is always allowed and always optional for every kind (the
+        // runtime follows the real recognized bbox when it is absent); only the
+        // geometry itself is validated. `action_source` is a deprecated compat
+        // field, tolerated on input and never persisted (see `AssetDecl`).
+        if let Some(shape) = decl.action_shape.as_ref() {
+            validate_action_shape(shape, "action_shape", shape_bounds)?;
         }
-        match (decl.action_source.as_str(), decl.action_shape.as_ref()) {
-            ("recognition", Some(_)) => {
-                return Err(format!(
-                    "asset `{}` rejected: action_source=recognition must not carry action_shape",
-                    decl.id
-                ))
-            }
-            ("fixed", None) => {
-                return Err(format!(
-                    "asset `{}` rejected: action_source=fixed requires action_shape",
-                    decl.id
-                ))
-            }
-            ("fixed", Some(shape)) => {
-                validate_action_shape(shape, "action_shape", shape_bounds)?
-            }
-            _ => {}
+        // D2: structural `op_region` check; the full chain is validated on the
+        // would-be assets.json below (needs the other assets).
+        if let Some(op) = decl.op_region.as_ref() {
+            validate_op_region_shape(op, &format!("asset `{}` op_region", decl.id))?;
         }
+        // Deprecated compat field: normalized in memory, never persisted.
+        decl.action_source = default_action_source();
         let existing = af.items.iter().position(|it| it.id == decl.id);        let old_file = existing.and_then(|i| af.items[i].file.clone());
         let rev = match (replace, existing) {
             (false, Some(i)) => {
@@ -2062,23 +2707,39 @@ impl TaskBundle {
             decl.threshold = Some(decl.threshold.unwrap_or(DEFAULT_THRESHOLD));
             pending_image = Some((abs, png));
         } else {
-            let roi = decl.roi.ok_or_else(|| {
-                format!(
+            // 2026-11-06 参数→素材: an `ocr_var`'s ROI is optional (absent =
+            // whole-screen OCR); every other non-template kind still needs one.
+            if let Some(roi) = decl.roi {
+                let [x, y, w, h] = roi;
+                if w <= 0 || h <= 0 || x < 0 || y < 0 {
+                    return Err(format!(
+                        "asset `{}` roi [x,y,w,h] = {roi:?} must have x,y >= 0 and w,h > 0",
+                        decl.id
+                    ));
+                }
+            } else if decl.kind != "ocr_var" {
+                return Err(format!(
                     "asset `{}` of kind `{}` requires roi [x,y,w,h]",
                     decl.id, decl.kind
-                )
-            })?;
-            let [x, y, w, h] = roi;
-            if w <= 0 || h <= 0 || x < 0 || y < 0 {
-                return Err(format!(
-                    "asset `{}` roi [x,y,w,h] = {roi:?} must have x,y >= 0 and w,h > 0",
-                    decl.id
                 ));
             }
             // OCR assets carry no template pixels: the id never becomes a path.
             decl.file = None;
         }
         decl.rev = Some(rev);
+
+        // D2: validate the whole `op_region` graph on the would-be file (node
+        // existence/kind, terminal mode, cycle + depth). Nothing is written yet.
+        {
+            let mut would_be = af.clone();
+            match existing {
+                Some(i) => would_be.items[i] = decl.clone(),
+                None => would_be.items.push(decl.clone()),
+            }
+            if let Some((p, msg)) = op_region_issues(&would_be).into_iter().next() {
+                return Err(format!("{p}: {msg}; nothing written"));
+            }
+        }
 
         // Save-time reference validation (the N3 "judge"): the flow must already
         // be satisfiable by the *would-be* asset list.
@@ -2459,6 +3120,14 @@ impl TaskBundle {
         if let Some(tasks_dir) = tasks_dir {
             lint_call_tasks(&flow, meta.as_ref(), tasks_dir, issues);
         }
+
+        // T8 (2026-11-06 参数→素材 redesign, C1′): derived `meta.params` rows
+        // (`asset_id` present) must match the ocr_var assets + the flow's
+        // reference/param-usage set. Lead ruling 4: an **error** (publish
+        // blocking); the save-triggered sync heals it, lint never rewrites.
+        if let (Some(meta), Some(assets)) = (&meta, assets.as_ref()) {
+            issues.extend(crate::ocr_var::derived_param_issues(meta, assets, &flow));
+        }
     }
 
     /// T5: parse + shape-check `assets.json`. Returns the parsed file even when
@@ -2495,10 +3164,33 @@ impl TaskBundle {
 
     // -- internals ---------------------------------------------------------
 
-    fn write_assets_file(&self, af: &AssetsFile) -> Result<(), String> {
+    /// Persist `assets.json` (pretty JSON + atomic write).
+    ///
+    /// Public since the 2026-11-06 参数→素材 migration: the sync/migration
+    /// helpers in [`crate::ocr_var`] are pure (`&mut AssetsFile`), and the HTTP
+    /// layer owns the backup/rollback around this write.
+    pub fn write_assets_file(&self, af: &AssetsFile) -> Result<(), String> {
         let text = serde_json::to_string_pretty(af)
             .map_err(|e| format!("serialize assets.json: {e}"))?;
         write_atomic(&self.assets_path(), format!("{text}\n").as_bytes())
+    }
+
+    /// Persist `meta.json` **with a `meta.json.bak` backup** of the current
+    /// file (atomic write; the backup is best-effort only when a file exists).
+    ///
+    /// This is the only writer used by the derived-parameter sync
+    /// ([`crate::ocr_var::sync_ocr_var_params`]) and the migration API, so a
+    /// failed save can always be rolled back from the backup.
+    pub fn write_meta(&self, meta: &Meta) -> Result<(), String> {
+        let path = self.meta_path();
+        if path.is_file() {
+            let bak = path.with_extension("json.bak");
+            std::fs::copy(&path, &bak)
+                .map_err(|e| format!("backup {}: {e}", bak.display()))?;
+        }
+        let text = serde_json::to_string_pretty(meta)
+            .map_err(|e| format!("serialize meta.json: {e}"))?;
+        write_atomic(&path, format!("{text}\n").as_bytes())
     }
 
     /// Create `meta.json` on the first save (name from the directory name).
@@ -2623,24 +3315,31 @@ impl TaskBundle {
                     )),
                 }
             }
-            if item.action_source != "recognition" && item.action_source != "fixed" {
-                errs.push((
-                    format!("{p}.action_source"),
-                    format!("must be recognition or fixed (got `{}`)", item.action_source),
-                ));
+            // 2026-11-06 参数→素材: `ocr_var` field contract (runtime_text /
+            // param_key / label). Those fields are ocr_var-only; `op_region` is
+            // valid on every recognizable kind (a `region` must not carry one —
+            // checked by `op_region_issues` below).
+            if item.kind == "ocr_var" {
+                if let Err(e) = validate_ocr_var_fields(item, &p) {
+                    errs.push((p.clone(), e));
+                }
+            } else {
+                for (field, present) in [
+                    ("runtime_text", item.runtime_text.is_some()),
+                    ("param_key", item.param_key.is_some()),
+                    ("label", item.label.is_some()),
+                ] {
+                    if present {
+                        errs.push((
+                            format!("{p}.{field}"),
+                            format!("{field} is only valid for kind=ocr_var"),
+                        ));
+                    }
+                }
             }
-            if item.action_source == "recognition" && item.action_shape.is_some() {
-                errs.push((
-                    format!("{p}.action_shape"),
-                    "action_source=recognition must not carry action_shape".to_string(),
-                ));
-            }
-            if item.action_source == "fixed" && item.action_shape.is_none() {
-                errs.push((
-                    format!("{p}.action_shape"),
-                    "action_source=fixed requires action_shape".to_string(),
-                ));
-            }
+            // 2026-11-06 事项6: `action_source` is a deprecated compatibility
+            // field — old values are tolerated and it is never validated or
+            // written again. A shape is optional and always allowed.
             if let Some(shape) = item.action_shape.as_ref() {
                 if let Err(e) =
                     validate_action_shape(shape, &format!("{p}.action_shape"), shape_bounds)
@@ -2705,31 +3404,29 @@ impl TaskBundle {
                 ));
             }
         }
+        // 2026-11-06 参数→素材 D2: `op_region` chains are validated as one graph
+        // (node existence/kind, terminal mode, cycle + depth bound).
+        errs.extend(op_region_issues(af));
+        // `param_key` is unique per task (it is the `values.json` key of the
+        // derived parameter row).
+        let mut ocr_var_keys: BTreeMap<String, String> = BTreeMap::new();
+        for item in af.items.iter().filter(|i| i.kind == "ocr_var") {
+            let Some(key) = item.param_key.as_deref() else {
+                continue;
+            };
+            if let Some(prev) = ocr_var_keys.insert(key.to_string(), item.id.clone()) {
+                errs.push((
+                    format!("assets.json: ocr_var `{}`.param_key", item.id),
+                    format!("`{key}` is already used by ocr_var `{prev}`"),
+                ));
+            }
+        }
         // B-10: collection-level operation geometry must obey the same contract
         // as per-asset geometry (otherwise it is saved but unusable at runtime).
+        // 2026-11-06 事项6: no two-state check — the shape is optional and any
+        // deprecated `action_source` value is tolerated.
         for (ci, coll) in af.collections.iter().enumerate() {
             let p = format!("assets.json: collections[{ci}]");
-            if coll.action_source != "recognition" && coll.action_source != "fixed" {
-                errs.push((
-                    format!("{p}.action_source"),
-                    format!(
-                        "must be recognition or fixed (got `{}`)",
-                        coll.action_source
-                    ),
-                ));
-            }
-            if coll.action_source == "recognition" && coll.action_shape.is_some() {
-                errs.push((
-                    format!("{p}.action_shape"),
-                    "action_source=recognition must not carry action_shape".to_string(),
-                ));
-            }
-            if coll.action_source == "fixed" && coll.action_shape.is_none() {
-                errs.push((
-                    format!("{p}.action_shape"),
-                    "action_source=fixed requires action_shape".to_string(),
-                ));
-            }
             if let Some(shape) = coll.action_shape.as_ref() {
                 if let Err(e) =
                     validate_action_shape(shape, &format!("{p}.action_shape"), shape_bounds)
@@ -4091,6 +4788,7 @@ mod tests {
             polygon: Some(vec![[10, 10], [30, 10], [30, 20], [10, 20]]),
             rev: None,
             positions: Vec::new(),
+            ..AssetDecl::template("_", [0, 0, 1, 1])
         };        let saved = b.save_asset(decl.clone(), Some(&f)).expect("save ocr polygon");
         assert_eq!(saved.roi, Some([10, 10, 21, 11]));
         let set = b.load_runtime_assets().expect("runtime assets");
@@ -4104,20 +4802,27 @@ mod tests {
 
     #[test]
     fn action_shape_is_persisted_and_wired_into_the_runtime_operation_region() {
+        // 2026-11-06 事项6 (P0b): an operation shape needs no `action_source`
+        // state any more; it is optional, always allowed and is the only thing
+        // that decides the operation region.
         let td = TempDir::new("back");
         let b = open(&td);
         let f = frame(64, 48);
         let mut decl = AssetDecl::template("点击区按钮", [10, 10, 21, 11]);
-        decl.action_source = "fixed".into();
         decl.action_shape = Some(ActionShape::rect([8, 8, 30, 30]));
         let saved = b.save_asset(decl, Some(&f)).expect("save with action_shape");
         assert_eq!(
             saved.action_shape.as_ref().and_then(|s| s.bbox()),
             Some([8, 8, 30, 30])
         );
-        assert_eq!(saved.action_source, "fixed");
+        // Deprecated compat field: in-memory value normalized, never persisted.
+        assert_eq!(saved.action_source, "recognition");
         let text = std::fs::read_to_string(b.assets_path()).expect("read assets");
         assert!(text.contains("action_shape"), "{text}");
+        assert!(
+            !text.contains("action_source"),
+            "the two-state field must not be written again: {text}"
+        );
         assert!(!text.contains("action_roi"), "legacy field must be gone: {text}");
         let set = b.load_runtime_assets().expect("runtime assets");
         let back = set.click_back("点击区按钮").expect("click_back wired");
@@ -4125,12 +4830,11 @@ mod tests {
     }
 
     #[test]
-    fn fixed_polygon_action_shape_is_persisted_and_invert_is_kept() {
+    fn polygon_action_shape_is_persisted_and_invert_is_kept() {
         let td = TempDir::new("polyshape");
         let b = open(&td);
         let f = frame(64, 48);
         let mut decl = AssetDecl::template("多边形操作区", [10, 10, 21, 11]);
-        decl.action_source = "fixed".into();
         decl.action_shape = Some(ActionShape {
             kind: "polygon".into(),
             roi: None,
@@ -4138,10 +4842,11 @@ mod tests {
             invert: true,
         });
         let saved = b.save_asset(decl, Some(&f)).expect("save polygon shape");
-        assert_eq!(saved.action_source, "fixed");
+        assert_eq!(saved.action_source, "recognition");
         let text = std::fs::read_to_string(b.assets_path()).expect("read");
         assert!(text.contains("\"polygon\""), "{text}");
         assert!(text.contains("\"invert\": true"), "{text}");
+        assert!(!text.contains("action_source"), "{text}");
         let af = b.load_assets_file().expect("load");
         let shape = af.items[0].action_shape.as_ref().expect("shape");
         assert!(shape.invert);
@@ -4157,7 +4862,6 @@ mod tests {
         let b = open(&td);
         let f = frame(64, 48);
         let mut decl = AssetDecl::template("自交多边形", [10, 10, 21, 11]);
-        decl.action_source = "fixed".into();
         decl.action_shape = Some(ActionShape {
             kind: "polygon".into(),
             roi: None,
@@ -4169,17 +4873,19 @@ mod tests {
     }
 
     #[test]
-    fn fixed_shape_is_valid_for_ocr_and_region_derives_its_own_shape() {
+    fn action_shape_is_valid_for_ocr_and_region_derives_its_own_shape() {
         let td = TempDir::new("backbad");
         let b = open(&td);
         let f = frame(64, 48);
+        // 2026-11-06 事项6: a shape with the (old default) recognition state is
+        // no longer rejected — the shape itself decides the operation region.
         let ocr = AssetDecl {
             id: "文字".to_string(),
             kind: "ocr_lines".to_string(),
             file: None,
             roi: Some([10, 10, 21, 11]),
             action_shape: Some(ActionShape::rect([12, 12, 30, 30])),
-            action_source: "fixed".to_string(),
+            action_source: "recognition".to_string(),
             ocr_mode: None,
             ocr_source_roi: None,
             ocr_text: None,
@@ -4187,9 +4893,10 @@ mod tests {
             polygon: None,
             rev: None,
             positions: Vec::new(),
+            ..AssetDecl::template("_", [0, 0, 1, 1])
         };
         b.save_asset(ocr.clone(), Some(&f))
-            .expect("OCR fixed shape is valid");
+            .expect("OCR shape without a fixed source is valid");
         let set = b.load_runtime_assets().expect("runtime assets");
         let op = set.click_back("文字").expect("OCR operation region");
         assert_eq!((op.x, op.y, op.w, op.h), (12, 12, 30, 30));
@@ -4206,7 +4913,6 @@ mod tests {
             .expect("pure region save");
         let af = b.load_assets_file().expect("assets");
         let saved_region = af.items.iter().find(|a| a.id == "右侧列表").expect("region");
-        assert_eq!(saved_region.action_source, "fixed");
         assert_eq!(
             saved_region.action_shape.as_ref().and_then(|s| s.bbox()),
             Some([40, 10, 20, 20])
@@ -4234,6 +4940,7 @@ mod tests {
             polygon: None,
             rev: None,
             positions: Vec::new(),
+            ..AssetDecl::template("_", [0, 0, 1, 1])
         };
         let bad = AssetDecl {
             id: "批次乙".to_string(),
@@ -4249,6 +4956,7 @@ mod tests {
             polygon: None,
             rev: None,
             positions: Vec::new(),
+            ..AssetDecl::template("_", [0, 0, 1, 1])
         };
         let err = b
             .save_assets_batch(vec![ok, bad], None)
@@ -5308,6 +6016,7 @@ mod tests {
             polygon: None,
             rev: None,
             positions: Vec::new(),
+            ..AssetDecl::template("_", [0, 0, 1, 1])
         };
 
         let err = b
@@ -5365,6 +6074,7 @@ mod tests {
             polygon: None,
             rev: None,
             positions: Vec::new(),
+            ..AssetDecl::template("_", [0, 0, 1, 1])
         });
         std::fs::write(
             b.assets_path(),
@@ -5401,7 +6111,7 @@ mod tests {
         let updated = b
             .update_asset_meta("列表", None, Some(poly), None, None, false)
             .expect("region action_shape update must be accepted");
-        assert_eq!(updated.action_source, "fixed");
+        assert_eq!(updated.action_source, "recognition");
         assert_eq!(updated.roi, Some([5, 5, 21, 21]));
         assert_eq!(
             updated.action_shape.as_ref().and_then(|s| s.points.as_ref()).map(|p| p.len()),
@@ -5432,18 +6142,33 @@ mod tests {
             Some([10, 10, 20, 10])
         );
 
-        let err = b
-            .update_asset_meta("列表", None, None, Some("recognition".into()), None, false)
-            .expect_err("region cannot switch to recognition");
-        assert!(err.contains("region"), "{err}");
+        // P0b: the deprecated `action_source` argument is accepted but ignored —
+        // it can neither reject the update nor clear the operation shape.
+        let kept = b
+            .update_asset_meta(
+                "列表",
+                Some([12, 12, 20, 10]),
+                None,
+                Some("recognition".into()),
+                None,
+                true,
+            )
+            .expect("deprecated action_source argument is ignored");
+        assert_eq!(kept.roi, Some([12, 12, 20, 10]));
+        assert_eq!(
+            kept.action_shape.as_ref().and_then(|s| s.bbox()),
+            Some([10, 10, 20, 10]),
+            "an old payload's action_source must not clear the shape any more"
+        );
+        assert_eq!(kept.action_source, "recognition");
     }
 
     #[test]
     fn region_roi_save_with_keep_action_shape_preserves_the_polygon() {
         // B-08b (leftover 1): the editor's 识别区 save must not downgrade a
         // region's operation polygon to `rect(roi)`. `keep_action_shape: true`
-        // means "only update the persisted ROI"; the operation shape (and its
-        // fixed source) is untouched.
+        // means "only update the persisted ROI"; the operation shape is
+        // untouched.
         let td = TempDir::new("region-keep-shape");
         let b = open(&td);
         let f = frame(200, 200);
@@ -5474,7 +6199,7 @@ mod tests {
             "the polygon operation shape must survive a ROI-only edit"
         );
         assert_eq!(updated.action_shape.as_ref().map(|s| s.kind.as_str()), Some("polygon"));
-        assert_eq!(updated.action_source, "fixed");
+        assert_eq!(updated.action_source, "recognition");
         assert_eq!(updated.rev, Some(2));
 
         // Persisted AND wired: the runtime keeps the polygon (and its bbox) as
@@ -5535,7 +6260,7 @@ mod tests {
             Some(ActionShape::rect([10, 10, 20, 10])),
             "without the flag the historical rect(roi) sync stays in effect"
         );
-        assert_eq!(updated.action_source, "fixed");
+        assert_eq!(updated.action_source, "recognition");
     }
 
     #[test]
@@ -5618,6 +6343,9 @@ mod tests {
     fn collection_action_shape_is_validated_and_loaded() {
         // B-10: collection-level geometry was accepted without validation and
         // ignored by the runtime loader.
+        // 2026-11-06 事项6 (P0b): no `action_source` two-state rule any more — a
+        // shape is optional and always allowed; the deprecated source is
+        // ignored and never persisted.
         let td = TempDir::new("collection-shape");
         let b = open(&td);
         let f = frame(64, 48);
@@ -5633,24 +6361,27 @@ mod tests {
             action_source: source.to_string(),
         };
 
+        // Geometry itself is still validated on save.
         let err = b
-            .save_collection(coll(
-                Some(ActionShape::rect([100, 100, 10, 10])),
-                "fixed",
-            ))
+            .save_collection(coll(Some(ActionShape::rect([100, 100, 10, 10])), "fixed"))
             .expect_err("out-of-frame collection shape must be rejected");
         assert!(err.contains("outside the 64x48 frame"), "{err}");
-        let err = b
-            .save_collection(coll(Some(ActionShape::rect([10, 10, 20, 20])), "recognition"))
-            .expect_err("recognition must not carry a shape");
-        assert!(err.contains("must not carry"), "{err}");
-        let err = b
+        // No shape + the old `fixed` source is now accepted (optional shape).
+        let saved = b
             .save_collection(coll(None, "fixed"))
-            .expect_err("fixed requires a shape");
-        assert!(err.contains("requires action_shape"), "{err}");
-
-        b.save_collection(coll(Some(ActionShape::rect([10, 10, 20, 20])), "fixed"))
-            .expect("valid collection shape");
+            .expect("a collection shape is optional; action_source has no effect");
+        assert_eq!(saved.action_shape, None);
+        assert_eq!(saved.action_source, "recognition", "compat field is normalized");
+        // A shape + the old `recognition` source is accepted too.
+        let saved = b
+            .save_collection(coll(Some(ActionShape::rect([10, 10, 20, 20])), "recognition"))
+            .expect("a collection shape needs no source");
+        assert_eq!(saved.action_source, "recognition");
+        let text = std::fs::read_to_string(b.assets_path()).expect("assets json");
+        assert!(
+            !text.contains("action_source"),
+            "the deprecated field must not be written again: {text}"
+        );
         let set = b.load_runtime_assets().expect("runtime assets");
         let shape = set
             .click_shape("集合目标")
@@ -5670,6 +6401,668 @@ mod tests {
         .expect("write assets");
         let err = b.load_assets_file().expect_err("load must validate collection shape");
         assert!(err.contains("outside the 64x48 frame"), "{err}");
+    }
+
+    #[test]
+    fn old_assets_json_with_the_deprecated_action_source_loads() {
+        // 2026-11-06 事项6 (P0b) compatibility: old files carry `action_source`,
+        // including the two combinations the removed rule used to reject. They
+        // must load, keep the same runtime geometry, and the next save must stop
+        // writing the field.
+        let td = TempDir::new("p0b-old-json");
+        let b = open(&td);
+        std::fs::create_dir_all(b.root()).expect("root");
+        let f = frame(64, 48);
+        // Creates `images/a001.png` + `design_resolution` the old JSON references.
+        b.save_asset(AssetDecl::template("底图", [0, 0, 8, 8]), Some(&f))
+            .expect("seed template image");
+        let old = r#"{"schema_version":1,"design_resolution":[64,48],"items":[
+            {"id":"识别带形状","kind":"ocr_line","roi":[10,10,20,10],"action_shape":{"kind":"rect","roi":[12,12,10,6],"invert":false},"action_source":"recognition"},
+            {"id":"固定无形状","kind":"ocr_line","roi":[40,10,20,10],"action_source":"fixed"},
+            {"id":"模板甲","kind":"template","file":"images/a001.png","roi":[0,0,8,8],"action_source":"fixed"}
+        ],"collections":[
+            {"id":"旧集合","members":["模板甲"],"action_shape":{"kind":"rect","roi":[1,1,4,4],"invert":false},"action_source":"recognition"}
+        ]}"#;
+        std::fs::write(b.assets_path(), old).expect("write old assets");
+        let af = b.load_assets_file().expect("old data with action_source must load");
+        assert_eq!(af.items.len(), 3);
+        assert_eq!(af.items[0].action_source, "recognition");
+        assert_eq!(af.items[1].action_source, "fixed");
+        // Runtime geometry is unchanged: a present shape wins, absent = real bbox.
+        let set = b.load_runtime_assets().expect("runtime assets");
+        assert!(set.click_back("识别带形状").is_some());
+        assert!(set.click_back("固定无形状").is_none());
+        assert!(set.click_shape("旧集合").is_some());
+        // Any later save rewrites the manifest without the deprecated field.
+        b.save_asset(AssetDecl::template("模板乙", [0, 0, 8, 8]), Some(&f))
+            .expect("save on top of old data");
+        let text = std::fs::read_to_string(b.assets_path()).expect("assets");
+        assert!(!text.contains("action_source"), "{text}");
+        assert!(text.contains("action_shape"), "{text}");
+    }
+
+    // -----------------------------------------------------------------------
+    // 2026-11-06 参数→素材 redesign (B-T1): ocr_var model + op_region chains
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ocr_var_round_trips_and_wires_the_runtime_ocr_asset() {
+        let td = TempDir::new("ocr-var-roundtrip");
+        let b = open(&td);
+        let f = frame(64, 48);
+        b.save_asset(AssetDecl::template("底图", [0, 0, 8, 8]), Some(&f))
+            .expect("baseline template sets design resolution");
+        let mut decl = AssetDecl::ocr_var("O_预设分组", "group", "御魂", Some([10, 10, 40, 20]));
+        decl.label = Some("预设分组".to_string());
+        decl.threshold = Some(0.6);
+        decl.action_shape = Some(ActionShape::rect([12, 12, 30, 20]));
+        decl.positions = vec![1];
+        let saved = b.save_asset(decl, None).expect("save ocr_var");
+        assert_eq!(saved.kind, "ocr_var");
+        assert_eq!(saved.runtime_text.as_deref(), Some("御魂"));
+        assert_eq!(saved.param_key.as_deref(), Some("group"));
+        assert_eq!(saved.label.as_deref(), Some("预设分组"));
+        assert_eq!(saved.roi, Some([10, 10, 40, 20]));
+        // Persisted round-trip: the new fields are in assets.json; the OCR
+        // pixel-provenance fields are absent (ocr_var forbids them).
+        let af = b.load_assets_file().expect("load assets");
+        let item = af
+            .items
+            .iter()
+            .find(|a| a.id == "O_预设分组")
+            .expect("saved item");
+        assert_eq!(item.runtime_text.as_deref(), Some("御魂"));
+        assert_eq!(item.param_key.as_deref(), Some("group"));
+        assert_eq!(item.label.as_deref(), Some("预设分组"));
+        assert_eq!(item.op_region, None, "absent op_region = self (default)");
+        assert_eq!(item.ocr_mode, None);
+        assert_eq!(item.ocr_text, None);
+        let text = std::fs::read_to_string(b.assets_path()).expect("assets json");
+        assert!(text.contains("\"runtime_text\""), "{text}");
+        assert!(text.contains("\"param_key\""), "{text}");
+        // Runtime wiring for a ROI-scoped ocr_var: dedicated `ocr_vars` table
+        // (= forced det+rec), the minimum-confidence threshold and the operation
+        // geometry (B-T2 added the `ocr_var` table; it is not a plain OCR asset).
+        let set = b.load_runtime_assets().expect("runtime assets");
+        assert!(set.is_ocr_asset("O_预设分组"));
+        assert_eq!(
+            set.ocr_var("O_预设分组")
+                .and_then(|v| v.roi)
+                .map(|r| (r.x, r.y, r.w, r.h)),
+            Some((10, 10, 40, 20))
+        );
+        assert!(
+            set.ocr_roi("O_预设分组").is_none(),
+            "an ocr_var lives in its own runtime table"
+        );
+        assert_eq!(set.ocr_threshold("O_预设分组"), Some(0.6));
+        assert_eq!(
+            set.click_back("O_预设分组").map(|r| (r.x, r.y, r.w, r.h)),
+            Some((12, 12, 30, 20))
+        );
+    }
+
+    #[test]
+    fn ocr_var_without_roi_saves_and_loads() {
+        // 2026-11-06 redesign: an ocr_var's initial recognition region may be
+        // empty (= whole-screen OCR). The runtime table for it is B-T2's job;
+        // the task model must already accept and persist it.
+        let td = TempDir::new("ocr-var-no-roi");
+        let b = open(&td);
+        let saved = b
+            .save_asset(AssetDecl::ocr_var("O_全屏", "full", "开始", None), None)
+            .expect("save ocr_var without roi");
+        assert_eq!(saved.roi, None);
+        let af = b.load_assets_file().expect("load");
+        assert_eq!(af.items[0].roi, None);
+        // Loading the runtime set is allowed (T1 has no full-screen OCR table).
+        let set = b.load_runtime_assets().expect("runtime assets");
+        assert!(set.ocr_roi("O_全屏").is_none());
+    }
+
+    #[test]
+    fn ocr_var_field_validation_is_loud() {
+        let td = TempDir::new("ocr-var-validate");
+        let b = open(&td);
+        let text_201 = "字".repeat(201);
+        let label_81 = "标".repeat(81);
+        let cases: Vec<(AssetDecl, &str)> = vec![
+            (
+                {
+                    let mut d = AssetDecl::ocr_var("A1", "k1", "文字", None);
+                    d.file = Some("images/a001.png".into());
+                    d
+                },
+                "file is not allowed",
+            ),
+            (
+                {
+                    let mut d = AssetDecl::ocr_var("A2", "k2", "文字", None);
+                    d.polygon = Some(vec![[0, 0], [1, 0], [1, 1]]);
+                    d
+                },
+                "polygon is not allowed",
+            ),
+            (
+                {
+                    let mut d = AssetDecl::ocr_var("A3", "k3", "文字", None);
+                    d.ocr_mode = Some("lines".into());
+                    d
+                },
+                "ocr_mode is not allowed",
+            ),
+            (
+                {
+                    let mut d = AssetDecl::ocr_var("A4", "k4", "文字", None);
+                    d.runtime_text = None;
+                    d
+                },
+                "runtime_text is required",
+            ),
+            (
+                AssetDecl::ocr_var("A5", "k5", "   ", None),
+                "must not be blank",
+            ),
+            (
+                AssetDecl::ocr_var("A6", "k6", text_201, None),
+                "<= 200 characters",
+            ),
+            (
+                AssetDecl::ocr_var("A7", "k7", "文\u{0007}字", None),
+                "control characters",
+            ),
+            (
+                {
+                    let mut d = AssetDecl::ocr_var("A8", "文字键", "文字", None);
+                    d.param_key = Some("文字键".into());
+                    d
+                },
+                "must match [A-Za-z_]",
+            ),
+            (
+                {
+                    let mut d = AssetDecl::ocr_var("A9", "k9", "文字", None);
+                    d.param_key = None;
+                    d
+                },
+                "param_key is required",
+            ),
+            (
+                {
+                    let mut d = AssetDecl::ocr_var("A10", "k10", "文字", None);
+                    d.label = Some(label_81);
+                    d
+                },
+                "<= 80 characters",
+            ),
+            (
+                {
+                    let mut d = AssetDecl::template("A11", [0, 0, 8, 8]);
+                    d.runtime_text = Some("文字".into());
+                    d
+                },
+                "only valid for kind=ocr_var",
+            ),
+        ];
+        for (decl, needle) in cases {
+            let id = decl.id.clone();
+            let err = b
+                .save_asset(decl, None)
+                .expect_err(&format!("{id} must be rejected"));
+            assert!(err.contains(needle), "{id}: {err}");
+        }
+        // Nothing was written by the rejected saves.
+        assert!(!b.assets_path().exists());
+        // A legal ocr_var still saves afterwards.
+        b.save_asset(AssetDecl::ocr_var("合法", "ok_key", "御魂", None), None)
+            .expect("legal ocr_var");
+    }
+
+    #[test]
+    fn duplicate_ocr_var_param_keys_are_rejected_on_load() {
+        // `param_key` is the `values.json` key of the derived parameter row, so
+        // it must be unique per task (two ocr_vars sharing it would corrupt the
+        // Runner value mapping).
+        let td = TempDir::new("ocr-var-key-collision");
+        let b = open(&td);
+        std::fs::create_dir_all(b.root()).expect("bundle root");
+        std::fs::write(
+            b.assets_path(),
+            r#"{"schema_version":1,"design_resolution":[1280,720],"items":[
+                {"id":"O_a","kind":"ocr_var","runtime_text":"甲","param_key":"group"},
+                {"id":"O_b","kind":"ocr_var","runtime_text":"乙","param_key":"group"}
+            ]}"#,
+        )
+        .expect("write assets");
+        let err = b.load_assets_file().expect_err("duplicate param_key must fail");
+        assert!(err.contains("already used by ocr_var"), "{err}");
+    }
+
+    #[test]
+    fn op_region_json_supports_the_three_modes() {
+        let self_op: OpRegion = serde_json::from_str(r#"{"mode":"self"}"#).expect("self");
+        assert!(self_op.is_self());
+        assert_eq!(self_op.mode_str(), "self");
+        let offset: OpRegion =
+            serde_json::from_str(r#"{"mode":"offset","offset":[1,-2,3,4]}"#).expect("offset");
+        assert_eq!(offset.mode_str(), "offset");
+        let by_asset: OpRegion =
+            serde_json::from_str(r#"{"mode":"asset","asset":"I_战斗按钮"}"#).expect("asset");
+        assert_eq!(by_asset.asset(), Some("I_战斗按钮"));
+        assert_eq!(by_asset.pick(), "score", "pick defaults to score");
+        // Serialization stays compact: self is a unit variant, pick=None is
+        // omitted.
+        assert_eq!(
+            serde_json::to_value(OpRegion::self_region()).expect("json"),
+            serde_json::json!({"mode":"self"})
+        );
+        assert_eq!(
+            serde_json::to_value(OpRegion::Asset {
+                asset: "B".into(),
+                pick: None
+            })
+            .expect("json"),
+            serde_json::json!({"mode":"asset","asset":"B"})
+        );
+        // Unknown modes / malformed offsets are load errors.
+        assert!(serde_json::from_str::<OpRegion>(r#"{"mode":"ocr"}"#).is_err());
+        assert!(serde_json::from_str::<OpRegion>(r#"{"mode":"offset","offset":[1,2,3]}"#).is_err());
+    }
+
+    #[test]
+    fn op_region_chain_validation_rejects_cycles_depth_and_dangling_nodes() {
+        let af: AssetsFile = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "design_resolution": [1280, 720],
+            "items": [
+                {"id":"A","kind":"ocr_line","roi":[0,0,100,20],
+                 "op_region":{"mode":"asset","asset":"B","pick":"nearest"}},
+                {"id":"B","kind":"ocr_line","roi":[0,30,100,20],
+                 "op_region":{"mode":"offset","offset":[5,5,40,20]}},
+                {"id":"R","kind":"region","roi":[200,200,50,50]},
+                {"id":"D","kind":"ocr_line","roi":[0,60,100,20],
+                 "op_region":{"mode":"asset","asset":"R"}}
+            ],
+            "collections": []
+        }))
+        .expect("assets json");
+        let op_of = |id: &str| af.items.iter().find(|a| a.id == id).unwrap().op_region.clone();
+        // A -> B -> offset and D -> R (region terminal) are valid.
+        assert!(validate_op_region_chain(&af, Some("A"), &op_of("A").unwrap(), "test").is_ok());
+        assert!(validate_op_region_chain(&af, Some("D"), &op_of("D").unwrap(), "test").is_ok());
+
+        // Cycle: B points back to A.
+        let mut cyc = af.clone();
+        cyc.items[1].op_region = Some(OpRegion::Asset {
+            asset: "A".into(),
+            pick: None,
+        });
+        let err = validate_op_region_chain(&cyc, Some("A"), &op_of("A").unwrap(), "test")
+            .expect_err("cycle");
+        assert!(err.contains("cycle"), "{err}");
+
+        // Dangling reference.
+        let dangling = OpRegion::Asset {
+            asset: "不存在".into(),
+            pick: None,
+        };
+        let err = validate_op_region_chain(&af, Some("A"), &dangling, "test")
+            .expect_err("dangling");
+        assert!(err.contains("not a declared asset"), "{err}");
+
+        // Self reference.
+        let self_ref = OpRegion::Asset {
+            asset: "A".into(),
+            pick: None,
+        };
+        let err =
+            validate_op_region_chain(&af, Some("A"), &self_ref, "test").expect_err("self ref");
+        assert!(err.contains("references itself"), "{err}");
+
+        // A region node may be terminal but must not carry op_region itself.
+        let mut bad_region = af.clone();
+        bad_region.items[2].op_region = Some(OpRegion::self_region());
+        let err = validate_op_region_chain(&bad_region, Some("D"), &op_of("D").unwrap(), "test")
+            .expect_err("region op_region");
+        assert!(err.contains("must not carry op_region"), "{err}");
+
+        // Structural errors: invalid pick, zero-sized offset, too deep.
+        let bad_pick = OpRegion::Asset {
+            asset: "B".into(),
+            pick: Some("best".into()),
+        };
+        assert!(validate_op_region_chain(&af, Some("A"), &bad_pick, "test")
+            .expect_err("pick")
+            .contains("pick"));
+        let zero_offset = OpRegion::Offset {
+            offset: [0, 0, 0, 10],
+        };
+        assert!(validate_op_region_chain(&af, Some("A"), &zero_offset, "test")
+            .expect_err("offset")
+            .contains("w,h must be > 0"));
+
+        // 18-node chain: the 17th hop exceeds MAX_OP_REGION_DEPTH.
+        let mut items = Vec::new();
+        for i in 0..18 {
+            let op = if i == 17 {
+                serde_json::json!({"mode":"self"})
+            } else {
+                serde_json::json!({"mode":"asset","asset":format!("E{}", i + 1)})
+            };
+            items.push(serde_json::json!({
+                "id": format!("E{i}"),
+                "kind": "ocr_line",
+                "roi": [0, 0, 10, 10],
+                "op_region": op
+            }));
+        }
+        let deep: AssetsFile = serde_json::from_value(serde_json::json!({
+            "schema_version": 1, "design_resolution": [1280, 720],
+            "items": items, "collections": []
+        }))
+        .expect("deep assets");
+        let deep_op = deep.items[0].op_region.clone().unwrap();
+        let err = validate_op_region_chain(&deep, Some("E0"), &deep_op, "test")
+            .expect_err("too deep");
+        assert!(err.contains("max depth"), "{err}");
+
+        // The load path applies the same graph rules to hand-written files.
+        let td = TempDir::new("op-region-load");
+        let b = open(&td);
+        std::fs::create_dir_all(b.root()).expect("bundle root");
+        std::fs::write(
+            b.assets_path(),
+            r#"{"schema_version":1,"design_resolution":[1280,720],"items":[
+                {"id":"R","kind":"region","roi":[10,10,20,20],
+                 "op_region":{"mode":"self"}}
+            ]}"#,
+        )
+        .expect("write assets");
+        let err = b.load_assets_file().expect_err("region with op_region must fail");
+        assert!(err.contains("must not carry op_region"), "{err}");
+    }
+
+    #[test]
+    fn op_region_save_delete_and_rename_keep_the_chain_consistent() {
+        let td = TempDir::new("op-region-crud");
+        let b = open(&td);
+        b.save_asset(AssetDecl::ocr_var("B", "kb", "乙", Some([0, 0, 20, 10])), None)
+            .expect("node B");
+        let mut a = AssetDecl::ocr_var("A", "ka", "甲", Some([0, 20, 20, 10]));
+        a.op_region = Some(OpRegion::Asset {
+            asset: "B".into(),
+            pick: None,
+        });
+        b.save_asset(a, None).expect("A with a chain");
+        assert_eq!(
+            b.load_assets_file().expect("load").items[1]
+                .op_region
+                .as_ref()
+                .and_then(|op| op.asset()),
+            Some("B")
+        );
+        // A dangling chain reference is rejected before anything is written.
+        let mut c = AssetDecl::ocr_var("C", "kc", "丙", None);
+        c.op_region = Some(OpRegion::Asset {
+            asset: "NOPE".into(),
+            pick: None,
+        });
+        let err = b.save_asset(c, None).expect_err("dangling chain");
+        assert!(err.contains("not a declared asset"), "{err}");
+        // A node used by a chain cannot be deleted; after clearing the chain it
+        // can. Renaming the node rewrites the reference.
+        let err = b.delete_asset("B").expect_err("referenced node");
+        assert!(err.contains("操作区链引用"), "{err}");
+        b.rename_asset("B", "B2").expect("rename node");
+        assert_eq!(
+            b.load_assets_file().expect("load").items[1]
+                .op_region
+                .as_ref()
+                .and_then(|op| op.asset()),
+            Some("B2")
+        );
+        b.update_asset_meta_v2("A", None, None, None, false, Some(None), None, None, None)
+            .expect("clear A op_region");
+        b.delete_asset("B2").expect("delete now-unreferenced node");
+    }
+
+    #[test]
+    fn update_asset_meta_v2_updates_ocr_var_fields_and_op_region() {
+        let td = TempDir::new("update-v2");
+        let b = open(&td);
+        b.save_asset(
+            AssetDecl::ocr_var("O_x", "key_x", "旧文字", Some([0, 0, 30, 10])),
+            None,
+        )
+        .expect("ocr_var");
+        b.save_asset(AssetDecl::template("底图", [0, 40, 8, 8]), Some(&frame(64, 48)))
+            .expect("baseline");
+        // runtime_text + label update.
+        let updated = b
+            .update_asset_meta_v2(
+                "O_x",
+                None,
+                None,
+                None,
+                false,
+                None,
+                Some("新文字".to_string()),
+                Some("显示名".to_string()),
+                None,
+            )
+            .expect("update ocr_var text");
+        assert_eq!(updated.runtime_text.as_deref(), Some("新文字"));
+        assert_eq!(updated.label.as_deref(), Some("显示名"));
+        // param_key is read-only after creation.
+        let err = b
+            .update_asset_meta_v2(
+                "O_x",
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                None,
+                Some("other_key".to_string()),
+            )
+            .expect_err("param_key is read-only");
+        assert!(err.contains("read-only"), "{err}");
+        // Blank runtime_text is rejected.
+        let err = b
+            .update_asset_meta_v2(
+                "O_x",
+                None,
+                None,
+                None,
+                false,
+                None,
+                Some("   ".to_string()),
+                None,
+                None,
+            )
+            .expect_err("blank runtime_text");
+        assert!(err.contains("must not be blank"), "{err}");
+        // op_region set on a template node and cleared again.
+        let updated = b
+            .update_asset_meta_v2(
+                "底图",
+                None,
+                None,
+                None,
+                false,
+                Some(Some(OpRegion::Asset {
+                    asset: "O_x".into(),
+                    pick: Some("nearest".into()),
+                })),
+                None,
+                None,
+                None,
+            )
+            .expect("set template op_region");
+        assert_eq!(updated.op_region.as_ref().and_then(|op| op.asset()), Some("O_x"));
+        let updated = b
+            .update_asset_meta_v2("底图", None, None, None, false, Some(None), None, None, None)
+            .expect("clear op_region");
+        assert_eq!(updated.op_region, None);
+        // Unknown fields on a non-ocr_var asset are still rejected.
+        let err = b
+            .update_asset_meta_v2(
+                "底图",
+                None,
+                None,
+                None,
+                false,
+                None,
+                Some("文字".to_string()),
+                None,
+                None,
+            )
+            .expect_err("runtime_text on a template");
+        assert!(err.contains("only valid for kind=ocr_var"), "{err}");
+    }
+
+    #[test]
+    fn write_meta_keeps_a_backup_and_round_trips() {
+        let td = TempDir::new("write-meta");
+        let b = open(&td);
+        let mut meta =
+            Meta::from_json(r#"{"schema_version":1,"name":"任务1"}"#).expect("meta");
+        b.write_meta(&meta).expect("first write");
+        let first = std::fs::read_to_string(b.meta_path()).expect("meta");
+        meta.description = Some("新描述".to_string());
+        b.write_meta(&meta).expect("second write");
+        let bak = b.meta_path().with_extension("json.bak");
+        assert!(bak.is_file(), "meta.json.bak must be created");
+        assert_eq!(std::fs::read_to_string(&bak).expect("bak"), first);
+        assert_eq!(
+            b.load_meta()
+                .expect("load")
+                .expect("meta present")
+                .description
+                .as_deref(),
+            Some("新描述")
+        );
+    }
+
+    #[test]
+    fn derived_parameter_rows_are_structurally_linted() {
+        let meta = Meta::from_json(
+            r#"{"schema_version":1,"name":"任务1","params":[
+                {"key":"group","type":"int","default":3,"role":"user",
+                 "asset_id":"O_group"}
+            ]}"#,
+        )
+        .expect("meta");
+        let issues = meta.lint_issues();
+        assert!(issues.iter().any(|i| i.msg.contains("type=string")), "{issues:?}");
+        assert!(issues.iter().any(|i| i.msg.contains("role=ocr_text")), "{issues:?}");
+        assert!(
+            issues.iter().any(|i| i.msg.contains("string default")),
+            "{issues:?}"
+        );
+        // Old meta.json without asset_id keeps parsing (compat).
+        let old = Meta::from_json(
+            r#"{"schema_version":1,"name":"任务1","params":[
+                {"key":"group","type":"string","default":"御魂","role":"ocr_text"}
+            ]}"#,
+        )
+        .expect("old meta");
+        assert_eq!(old.params[0].asset_id, None);
+        assert!(old.lint_issues().is_empty(), "{:?}", old.lint_issues());
+        // The derived marker only appears when it is set, so old files keep
+        // their exact shape on round-trip.
+        let text = serde_json::to_string(&old).expect("serialize old meta");
+        assert!(!text.contains("asset_id"), "{text}");
+        let derived = Meta::from_json(
+            r#"{"schema_version":1,"name":"任务1","params":[
+                {"key":"group","type":"string","default":"御魂","role":"ocr_text",
+                 "asset_id":"O_group"}
+            ]}"#,
+        )
+        .expect("derived meta");
+        let text = serde_json::to_string(&derived).expect("serialize derived meta");
+        assert!(text.contains("\"asset_id\":\"O_group\""), "{text}");
+    }
+
+    #[test]
+    fn t8_lint_flags_derived_row_drift_in_a_bundle() {
+        let td = TempDir::new("t8-lint");
+        let b = open(&td);
+        b.save_asset(
+            AssetDecl::ocr_var("O_group", "group", "御魂", Some([0, 0, 40, 10])),
+            None,
+        )
+        .expect("ocr_var");
+        let flow = r#"{"schema_version":1,"name":"任务1","steps":[{"op":"click_target","args":{"find":[{"kind":"ocr_text","sel":"O_group","text_expr":"param('group')"}]}},{"op":"finish","args":{"exit":"done"}}]}"#;
+        b.save_flow(flow).expect("flow");
+        let meta = |default: &str| {
+            Meta::from_json(&format!(
+                r#"{{"schema_version":1,"name":"任务1","params":[
+                    {{"key":"group","type":"string","default":"{default}",
+                      "role":"ocr_text","label":"O_group","asset_id":"O_group"}}
+                ]}}"#
+            ))
+            .expect("meta")
+        };
+        // Matching derived row: clean lint (no T8).
+        b.write_meta(&meta("御魂")).expect("write meta");
+        b.lint().expect("a synced bundle must lint clean");
+        // Drifted default: T8 (Lead ruling 4: an error, publish blocking).
+        b.write_meta(&meta("过期")).expect("write drifted meta");
+        let issues = b.lint().expect_err("T8 must fail lint");
+        let t8: Vec<_> = issues.iter().filter(|i| i.code == "T8").collect();
+        assert_eq!(t8.len(), 1, "{issues:?}");
+        assert_eq!(t8[0].path, "meta.json:params[0]");
+    }
+
+    #[test]
+    fn load_runtime_assets_wires_ocr_vars_and_op_region_chains() {
+        // B-T2 boundary: the task model must feed the runtime's `ocr_vars` and
+        // `op_regions` tables (the runtime cannot depend on oas-task).
+        let td = TempDir::new("runtime-ocr-var");
+        let b = open(&td);
+        b.save_asset(
+            AssetDecl::ocr_var("O_group", "group", "御魂", Some([0, 0, 40, 10])),
+            None,
+        )
+        .expect("ocr_var");
+        let mut tpl = AssetDecl::template("I_按钮", [0, 0, 8, 8]);
+        tpl.op_region = Some(OpRegion::Asset {
+            asset: "O_group".into(),
+            pick: Some("nearest".into()),
+        });
+        b.save_asset(tpl, Some(&frame(64, 48)))
+            .expect("template with an op_region chain");
+        let set = b.load_runtime_assets().expect("runtime assets");
+        let var = set.ocr_var("O_group").expect("ocr_var wired");
+        assert_eq!(
+            var.roi,
+            Some(oas_types::Rect {
+                x: 0,
+                y: 0,
+                w: 40,
+                h: 10
+            })
+        );
+        assert_eq!(var.runtime_text, "御魂");
+        assert_eq!(var.param_key, "group");
+        assert!(set.is_ocr_asset("O_group"));
+        assert!(set.has_op_region_chain("I_按钮"));
+        assert_eq!(
+            set.op_region("I_按钮"),
+            Some(&oas_runtime::AssetOpRegion::Asset {
+                asset: "O_group".into(),
+                pick: oas_runtime::OpRegionPick::Nearest,
+            })
+        );
+        // An ocr_var with an empty ROI keeps `roi: None` (whole-screen OCR) and
+        // is still recognized as an OCR asset.
+        b.save_asset(AssetDecl::ocr_var("O_full", "full", "开始", None), None)
+            .expect("full-screen ocr_var");
+        let set = b.load_runtime_assets().expect("runtime assets");
+        assert_eq!(set.ocr_var("O_full").and_then(|v| v.roi), None);
+        assert!(set.is_ocr_asset("O_full"));
     }
 }
 

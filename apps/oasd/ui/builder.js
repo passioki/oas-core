@@ -28,302 +28,34 @@
     log: { label: '日志', group: '数据/结束' },
     finish: { label: '结束', group: '数据/结束' },
   };
-  const GROUP_ORDER = ['流程控制', '识别/等待', '动作', '参数', '数据/结束'];
-  // P3（参数 v2）：动作库「参数」组。These are *presets* for real ops, NOT new
-  // engine ops: clicking one generates a standard click_target / wait_until whose
-  // OCR text comes from a declared meta.params key (text_expr / text_visible).
-  const PARAM_GROUP = '参数';
-  const PARAM_ACTIONS = {
-    param_click_text: { label: '参数文字点击', op: 'click_target' },
-    param_long_press_text: { label: '参数文字长按', op: 'long_press' },
-    param_wait_text: { label: '等待参数文字', op: 'wait_until' },
-  };
+  const GROUP_ORDER = ['流程控制', '识别/等待', '动作', '数据/结束'];
   // Explicit palette titles for actions whose semantics are easy to misread
   // (blocking wait / long press / multi-segment curve).
   const ACTION_TITLES = {
     wait_until: '阻塞等待：条件成立后继续执行下一个 flow 步骤；超时本步失败；不会触发独立动作',
-    param_wait_text: '阻塞等待：生成 wait_until（条件成立继续下一个 flow 步骤；超时本步失败；不触发独立动作）',
     long_press: '长按：按住「定位对象」找到的元素 hold_ms 毫秒（默认 3000）；可启用 hold_range 随机拟人',
-    param_long_press_text: '参数文字长按：生成 long_press，OCR 文字来自 param(\'<key>\')；默认 hold_ms=3000',
     curve_swipe: '曲线滑动（多段近似）：points 逐段独立手势，App 可能视为多次滑动',
   };
 
   // Single source of truth for "anything the user can add as a step".
-  // The palette, the if/loop branch dropdowns (是/否/循环体) and any future
-  // action picker must all use this catalogue — keeping OP_META/PARAM_ACTIONS
-  // separate caused the branch dropdown to miss the parameter presets (bug
-  // reported by the user: "动作库里有，但 if 的『是』下拉里没有").
+  // The palette and the if/loop branch dropdowns (是/否/循环体) must all use
+  // this catalogue. 参数不属于动作库（用户 2026-11-06 事项 1/2）：参数的引用
+  // 留在 flow 表达式（text_expr / 条件）里，动作库不再提供参数预设。
   function actionCatalog() {
-    const list = [];
-    for (const [key, meta] of Object.entries(OP_META)) {
-      list.push({ key, label: meta.label, group: meta.group, preset: false });
-    }
-    for (const [key, meta] of Object.entries(PARAM_ACTIONS)) {
-      list.push({ key, label: meta.label, group: PARAM_GROUP, preset: true });
-    }
-    return list;
-  }
-
-  function actionMetaOf(key) {
-    return OP_META[key] || PARAM_ACTIONS[key] || null;
-  }
-
-  // Whether one catalogue entry can be added right now (parameter presets need
-  // at least one declared meta.params key). Used by every action picker.
-  function actionAvailable(key) {
-    if (!PARAM_ACTIONS[key]) return true;
-    return paramPanelRows(B.params).length > 0;
-  }
-
-  // Every parameter action needs a declared key; this reports the same hints
-  // from one place so adding from the palette or a branch behaves identically.
-  function paramActionContext() {
-    if (!paramPanelRows(B.params).length) {
-      status('先在任务参数面板声明参数（点「配置项…」）再使用参数动作', '#ff8a80');
-      flashParamsPanel();
-      return null;
-    }
-    const param = pickParamForAction() || {};
-    const paramKey = paramSafeKey(param.key);
-    if (!paramKey) {
-      status('参数缺少 key，无法生成参数动作；请先在「配置项…」修正', '#ff8a80');
-      return null;
-    }
-    return { paramKey: paramKey, param: param };
-  }
-
-  // Build a step for a catalogue entry *without* prompting (used by tests and by
-  // prepareActionStep). Parameter presets expand to a normal click_target /
-  // wait_until whose OCR text is param('<key>'); everything else is makeStep().
-  function buildActionStep(key, opts) {
-    if (!PARAM_ACTIONS[key]) return OP_META[key] ? makeStep(key) : null;
-    const ctx = paramActionContext();
-    if (!ctx) return null;
-    const o = opts && typeof opts === 'object' ? opts : {};
-    if (key === 'param_click_text') {
-      return paramClickStep(ctx.paramKey, o.ocrSel !== undefined ? o.ocrSel : pickOcrAssetForAction());
-    }
-    if (key === 'param_long_press_text') {
-      return longPressStep(ctx.paramKey, o.ocrSel !== undefined ? o.ocrSel : pickOcrAssetForAction());
-    }
-    return paramWaitStep(ctx.paramKey, 10);
-  }
-
-  // The OCR asset for a *new* parameter click step:
-  //  1. reuse the OCR asset of the currently selected step (editing context),
-  //  2. else the only OCR asset,
-  //  3. else ask the user (never silently pick an arbitrary first asset).
-  // Returns '' for the O_OCR placeholder, or null when the user cancels.
-  function selectedOcrAssetId() {
-    const step = getStep(B.selected);
-    if (!step || !step.args || typeof step.args !== 'object') return '';
-    const candidates = [];
-    if (Array.isArray(step.args.find) && step.args.find[0]) candidates.push(step.args.find[0]);
-    for (const k of ['requires', 'expect', 'from', 'to']) {
-      if (step.args[k] && typeof step.args[k] === 'object') candidates.push(step.args[k]);
-    }
-    if (step.args.sel) candidates.push({ sel: step.args.sel });
-    for (const loc of candidates) {
-      const kind = loc && loc.kind;
-      if ((kind === undefined || kind === 'ocr_text') && loc.sel &&
-          B.assets.some((a) => a.id === loc.sel &&
-            (a.kind === 'ocr_line' || a.kind === 'ocr_lines'))) {
-        return loc.sel;
-      }
-    }
-    return '';
-  }
-
-  // Parameter click/long-press 目标选择：OCR 素材 + 操作区域（region）一次选好。
-  // The old dialog only picked an asset and told the user "region modes are still
-  // being designed"; since seq 121 the engine actually supports
-  // asset/ocr/nearest/offset, so the chooser exposes them directly.
-  function chooseOcrAssetDialog(initial) {
-    return new Promise(function (resolve) {
-      if (typeof document === 'undefined' || !document.body) {
-        resolve({ sel: initial || '', region: undefined });
-        return;
-      }
-      const assets = B.assets.filter((a) => a.kind === 'ocr_line' || a.kind === 'ocr_lines');
-      const dlg = document.createElement('dialog');
-      dlg.className = 'task-dialog builder-choose-dialog';
-      const head = document.createElement('h3');
-      head.textContent = '选择 OCR 素材与操作区域（参数文字点击/长按）';
-      const hint = document.createElement('div');
-      hint.className = 'muted small builder-choose-hint';
-      hint.textContent = '参数只替换识别文字；这里同时决定点击/长按用哪块「操作区域」。之后可在右侧定位对象里修改。';
-      const assetLabel = document.createElement('label');
-      assetLabel.textContent = 'OCR 素材';
-      const sel = document.createElement('select');
-      for (const a of assets) {
-        const o = document.createElement('option');
-        o.value = a.id;
-        o.textContent = a.id + (a.ocr_text ? ' · 文字：' + a.ocr_text : '');
-        sel.appendChild(o);
-      }
-      if (initial) sel.value = initial;
-      assetLabel.appendChild(sel);
-
-      // A 方案：操作区域素材来自整个素材库（可选；无 = 用识别素材自身的操作区域）。
-      const opAssetLabel = document.createElement('label');
-      opAssetLabel.textContent = '操作区域素材（整个素材库，可选）';
-      const opAssetSel = document.createElement('select');
-      opAssetSel.appendChild(new Option('无（用识别素材自身）', ''));
-      for (const group of chooserOperationAssetOptions(B.assets)) {
-        const og = document.createElement('optgroup');
-        og.label = group.label;
-        for (const item of group.items) {
-          const option = document.createElement('option');
-          option.value = item.id;
-          option.textContent = item.id + ' · ' + item.kindText;
-          og.appendChild(option);
-        }
-        opAssetSel.appendChild(og);
-      }
-      opAssetLabel.appendChild(opAssetSel);
-
-      const regionLabel = document.createElement('label');
-      regionLabel.textContent = '操作区域';
-      const modeSel = document.createElement('select');
-      const modeChoices = [['', '默认（跟随素材配置）']].concat(
-        REGION_MODES.map((m) => [m, regionModeText(m)])
-      );
-      for (const [value, label] of modeChoices) {
-        const o = document.createElement('option');
-        o.value = value;
-        o.textContent = label;
-        modeSel.appendChild(o);
-      }
-      regionLabel.appendChild(modeSel);
-
-      const offsetWrap = document.createElement('div');
-      offsetWrap.className = 'builder-region-offset';
-      offsetWrap.hidden = true;
-      const offsetInputs = {};
-      for (const [key, placeholder] of [['dx', 'dx（可为负）'], ['dy', 'dy（可为负）'], ['w', 'w（可空）'], ['h', 'h（可空）']]) {
-        const lab = document.createElement('label');
-        lab.className = 'builder-region-offset-field';
-        lab.textContent = key;
-        const input = document.createElement('input');
-        input.type = 'number';
-        input.step = '1';
-        input.placeholder = placeholder;
-        input.dataset.regionField = key;
-        lab.appendChild(input);
-        offsetWrap.appendChild(lab);
-        offsetInputs[key] = input;
-      }
-
-      const regionHint = document.createElement('div');
-      regionHint.className = 'muted small builder-choose-hint';
-      const riskNote = document.createElement('div');
-      riskNote.className = 'muted small builder-warn-note builder-region-risk';
-      riskNote.hidden = true;
-      function refreshHint() {
-        const mode = modeSel.value;
-        const spec = chooserRegionSpec(mode,
-          offsetInputs.dx.value, offsetInputs.dy.value, offsetInputs.w.value, offsetInputs.h.value,
-          opAssetSel.value);
-        offsetWrap.hidden = mode !== 'offset';
-        opAssetLabel.hidden = mode !== 'asset' && mode !== 'nearest';
-        const risk = regionMatchRiskText(mode);
-        riskNote.hidden = !risk;
-        riskNote.textContent = risk;
-        if (!spec.ok) {
-          regionHint.textContent = '⚠ ' + spec.error;
-          regionHint.classList.add('warn');
-          return;
-        }
-        regionHint.classList.remove('warn');
-        let text = regionHintText(mode || '');
-        if (mode === 'asset' || mode === 'nearest') {
-          text += spec.region && spec.region.asset
-            ? ' 操作区域素材：' + regionOperationAssetText(spec.region.asset, B.assets)
-            : '（未选操作区域素材 → 用识别素材自身）';
-        }
-        regionHint.textContent = text;
-      }
-      modeSel.addEventListener('change', refreshHint);
-      opAssetSel.addEventListener('change', refreshHint);
-      for (const input of Object.values(offsetInputs)) input.addEventListener('input', refreshHint);
-      refreshHint();
-
-      const actions = document.createElement('div');
-      actions.className = 'builder-form-actions';
-      const ok = document.createElement('button');
-      ok.type = 'button';
-      ok.textContent = '使用该素材/区域';
-      const cancel = document.createElement('button');
-      cancel.type = 'button';
-      cancel.textContent = '取消';
-      let settled = false;
-      function done(value) {
-        if (settled) return;
-        settled = true;
-        try { if (typeof dlg.close === 'function' && dlg.open) dlg.close(); } catch (e) { /* cosmetic */ }
-        if (dlg.parentNode) dlg.parentNode.removeChild(dlg);
-        resolve(value);
-      }
-      ok.addEventListener('click', () => {
-        const spec = chooserRegionSpec(modeSel.value,
-          offsetInputs.dx.value, offsetInputs.dy.value, offsetInputs.w.value, offsetInputs.h.value,
-          opAssetSel.value);
-        if (!spec.ok) {
-          regionHint.textContent = '⚠ ' + spec.error;
-          regionHint.classList.add('warn');
-          return;
-        }
-        done({ sel: sel.value, region: spec.region });
-      });
-      cancel.addEventListener('click', () => done(null));
-      actions.appendChild(ok);
-      actions.appendChild(cancel);
-      dlg.appendChild(head);
-      dlg.appendChild(hint);
-      dlg.appendChild(assetLabel);
-      dlg.appendChild(opAssetLabel);
-      dlg.appendChild(regionLabel);
-      dlg.appendChild(offsetWrap);
-      dlg.appendChild(riskNote);
-      dlg.appendChild(regionHint);
-      dlg.appendChild(actions);
-      document.body.appendChild(dlg);
-      if (typeof dlg.showModal === 'function') {
-        try { dlg.showModal(); } catch (e) { dlg.setAttribute('open', ''); }
-      } else {
-        dlg.setAttribute('open', '');
-      }
+    return Object.entries(OP_META).map(function (entry) {
+      return { key: entry[0], label: entry[1].label, group: entry[1].group };
     });
   }
 
-  async function resolveParamClickTarget() {
-    const assets = B.assets.filter((a) => a.kind === 'ocr_line' || a.kind === 'ocr_lines');
-    if (!assets.length) return { sel: '', region: undefined };
-    const contextual = selectedOcrAssetId();
-    if (contextual) return { sel: contextual, region: undefined };
-    if (assets.length === 1) return { sel: assets[0].id, region: undefined };
-    return chooseOcrAssetDialog(assets[0].id);
+  function actionMetaOf(key) {
+    return OP_META[key] || null;
   }
 
-  // Async path used by the palette/branch insertion: parameter click/long-press
-  // asks for the OCR asset AND the operation-region mode when the context does
-  // not determine them.
+  // Async path used by the if/loop branch insertion: every catalogue entry is a
+  // real op, so it expands to makeStep(). Kept async because the upcoming
+  // 动作→目标素材/操作区 batch will ask for the target here.
   async function prepareActionStep(key) {
-    if (!PARAM_ACTIONS[key]) return OP_META[key] ? makeStep(key) : null;
-    const ctx = paramActionContext();
-    if (!ctx) return null;
-    if (key === 'param_click_text' || key === 'param_long_press_text') {
-      const target = await resolveParamClickTarget();
-      if (target === null) return null;
-      const step = key === 'param_long_press_text'
-        ? longPressStep(ctx.paramKey, target.sel)
-        : paramClickStep(ctx.paramKey, target.sel);
-      if (target.region && Array.isArray(step.args.find) && step.args.find[0]) {
-        step.args.find[0] = Object.assign({}, step.args.find[0], { region: target.region });
-      }
-      return step;
-    }
-    return paramWaitStep(ctx.paramKey, 10);
+    return OP_META[key] ? makeStep(key) : null;
   }
   // Generic FIELDS text inputs that hold expressions; they get the「插入参数 ▾」
   // button. `cond` fields insert a whole text_visible(param('k')) predicate.
@@ -457,27 +189,6 @@
 
   function paramWaitCond(key) {
     return 'text_visible(' + paramTextExpr(key) + ')';
-  }
-
-  // A1: 「参数文字点击」→ 标准 click_target（OCR 文字来自任务参数）。
-  function paramClickStep(paramKey, ocrSel) {
-    const sel = String(ocrSel === undefined || ocrSel === null ? '' : ocrSel).trim() || 'O_OCR';
-    return {
-      op: 'click_target',
-      args: {
-        find: [{ kind: 'ocr_text', sel: sel, text_expr: paramTextExpr(paramKey) }],
-      },
-    };
-  }
-
-  // A2: 「等待参数文字出现」→ 标准 wait_until（cond = text_visible(param(...))）。
-  function paramWaitStep(paramKey, timeoutSeconds) {
-    const n = Number(timeoutSeconds);
-    const timeout = isFinite(n) && n > 0 ? Math.round(n) : 10;
-    return {
-      op: 'wait_until',
-      args: { cond: paramWaitCond(paramKey), timeout_s: timeout },
-    };
   }
 
   // Locator 文字来源三态写回：固定文字写 text，任务参数/表达式写 text_expr，
@@ -818,27 +529,6 @@
     return { ok: true, region: { mode: 'offset', offset: r.offset.slice() }, error: '' };
   }
 
-  // Chooser dialog (参数文字点击/长按) → region object. Empty mode = keep the
-  // engine default; offset mode reuses the same 2/4-integer input validation;
-  // operation asset is only written for asset/nearest (dropped for ocr/offset).
-  function chooserRegionSpec(mode, dxText, dyText, wText, hText, asset) {
-    const m = String(mode === undefined || mode === null ? '' : mode).trim().toLowerCase();
-    if (!m) return { ok: true, region: undefined, error: '' };
-    if (m === 'offset') {
-      const off = regionOffsetFromInput(dxText, dyText, wText, hText);
-      if (!off.ok) return { ok: false, region: null, error: off.error };
-      return normalizeRegion({ mode: 'offset', offset: off.offset });
-    }
-    if (REGION_MODES.indexOf(m) < 0) {
-      return { ok: false, region: null, error: '操作区域模式不合法：' + (m || '（空）') };
-    }
-    const a = regionAssetFromSelector(asset);
-    if (a && (m === 'asset' || m === 'nearest')) {
-      return normalizeRegion({ mode: m, asset: a });
-    }
-    return { ok: true, region: { mode: m }, error: '' };
-  }
-
   // 保存前扫描 flow 里所有带 region 的节点（click_target/drag/long_press locator）。
   // assetIds 可选：传入当前素材库 id 列表时，region.asset 不存在也会报错（阻止保存）。
   function regionIssues(flow, assetIds) {
@@ -876,18 +566,6 @@
       }
     }
     return [1280, 720];
-  }
-
-  // 「参数文字长按」预设：标准 long_press + find[0].text_expr=param('key')。
-  function longPressStep(paramKey, ocrSel) {
-    const sel = String(ocrSel === undefined || ocrSel === null ? '' : ocrSel).trim() || 'O_OCR';
-    return {
-      op: 'long_press',
-      args: {
-        find: [{ kind: 'ocr_text', sel: sel, text_expr: paramTextExpr(paramKey) }],
-        hold_ms: 3000,
-      },
-    };
   }
 
   function longPressHoldText(args) {
@@ -1129,7 +807,8 @@
     }
   }
 
-  // 面板行数据（分组/key/类型/label/default），非对象项被过滤。
+  // 面板行数据（分组/key/类型/label/default/assetId），非对象项被过滤。
+  // assetId 存在 = 派生行（来自「使用端OCR文字配置项」素材，U-T5 起展示素材名）。
   function paramPanelRows(params) {
     const list = Array.isArray(params) ? params : [];
     return list
@@ -1139,13 +818,16 @@
         const label = p.label === undefined || p.label === null ? '' : String(p.label).trim();
         const group = p.group === undefined || p.group === null ? '' : String(p.group).trim();
         const type = p.type === undefined || p.type === null ? '' : String(p.type).trim();
-        return {
+        const row = {
           key: key,
           label: label || key,
           type: type,
           group: group,
           defaultText: paramDefaultText(p),
         };
+        const assetId = paramAssetId(p);
+        if (assetId) row.assetId = assetId;
+        return row;
       });
   }
 
@@ -1498,10 +1180,10 @@
         statusEl.textContent = '先选择任务：参数来自该任务的 meta.params。';
         statusEl.className = 'muted small';
       } else if (!rows.length) {
-        statusEl.textContent = '暂无任务参数：点「配置项…」在 meta.params 声明；声明后动作库「参数」组与「插入参数」可用。';
+        statusEl.textContent = '暂无任务参数：点「配置项…」声明，或保存「使用端OCR文字配置项」素材自动派生（保存 flow 时同步）。';
         statusEl.className = 'muted small';
       } else {
-        statusEl.textContent = '参数来自 meta.params（GET /task/config）；运行值由 Runner 填写，Studio 只定义 schema。';
+        statusEl.textContent = '参数来自 meta.params（GET /task/config）；带「识别文字配置项」标记的是由 ocr_var 素材自动派生的行（只读）。';
         statusEl.className = 'muted small ok';
       }
     }
@@ -1522,7 +1204,7 @@
     if (!rows.length) {
       const empty = document.createElement('div');
       empty.className = 'builder-params-empty muted small';
-      empty.textContent = '暂无任务参数：点「配置项…」声明（例如 key=分组 / type=text / label=分组 / default=分组12）';
+      empty.textContent = '暂无任务参数：点「配置项…」声明，或保存「使用端OCR文字配置项」素材后由 flow 同步自动派生。';
       list.appendChild(empty);
       return;
     }
@@ -1547,10 +1229,21 @@
       const insert = document.createElement('button');
       insert.type = 'button';
       insert.textContent = '插入参数';
-      insert.title = "把 param('" + row.key + "') 插入到最近聚焦的表达式字段（或复制到剪贴板）";
+      insert.title = row.assetId
+        ? "把 param('" + row.key + "') 插入到最近聚焦的表达式字段（该参数来自识别文字配置项素材「" +
+          paramAssetLabel(row, B.assets) + '」）'
+        : "把 param('" + row.key + "') 插入到最近聚焦的表达式字段（或复制到剪贴板）";
       insert.disabled = !row.key;
       insert.addEventListener('click', function () { paramInsertFromPanel(row.key); });
-      line.append(group, key, type, label, def, insert);
+      line.append(group, key, type, label, def);
+      if (row.assetId) {
+        const assetChip = document.createElement('span');
+        assetChip.className = 'builder-param-asset';
+        assetChip.textContent = '识别文字配置项 · 素材 ' + paramAssetLabel(row, B.assets);
+        assetChip.title = '该派生行由素材「' + row.assetId + '」的 runtime_text/param_key 自动同步';
+        line.appendChild(assetChip);
+      }
+      line.appendChild(insert);
       list.appendChild(line);
     }
   }
@@ -1773,21 +1466,15 @@
       const entries = catalog.filter((item) => item.group === g);
       if (!entries.length) continue;
       const h = document.createElement('div');
-      h.className = 'builder-op-group' + (g === PARAM_GROUP ? ' builder-op-param-group' : '');
-      h.textContent = g === PARAM_GROUP ? '参数（生成标准 flow，不新增 op）' : g;
+      h.className = 'builder-op-group';
+      h.textContent = g;
       root.appendChild(h);
       for (const item of entries) {
         const b = document.createElement('button');
         b.type = 'button';
         b.textContent = item.label + '  (' + item.key + ')';
-        b.className = item.preset ? 'builder-op-param-btn' : '';
-        b.title = ACTION_TITLES[item.key] || (item.preset
-          ? '生成标准 ' + (PARAM_ACTIONS[item.key] || {}).op + '：OCR 文字来自 param(\'<key>\')'
-          : (item.label + '：插入到当前选中容器/根级'));
-        b.addEventListener('click', () => {
-          if (item.preset) addParamAction(item.key);
-          else addAction(item.key);
-        });
+        b.title = ACTION_TITLES[item.key] || (item.label + '：插入到当前选中容器/根级');
+        b.addEventListener('click', () => addAction(item.key));
         root.appendChild(b);
       }
     }
@@ -1831,57 +1518,6 @@
     const meta = OP_META[op];
     if (!meta) return;
     insertStep(makeStep(op), meta.label);
-  }
-
-  // --- P3：动作库「参数」组 ---------------------------------------------------
-  function pickParamForAction() {
-    const rows = paramPanelRows(B.params);
-    if (!rows.length) return null;
-    for (const p of B.params) {
-      if (!p || typeof p !== 'object') continue;
-      const role = p.role === undefined || p.role === null ? '' : String(p.role);
-      const type = p.type === undefined || p.type === null ? '' : String(p.type);
-      if (role === 'ocr_text' || type === 'text' || type === 'string') return p;
-    }
-    return B.params[0];
-  }
-
-  function pickOcrAssetForAction() {
-    const contextual = selectedOcrAssetId();
-    if (contextual) return contextual;
-    for (const a of B.assets) {
-      if (a && (a.kind === 'ocr_line' || a.kind === 'ocr_lines')) return a.id;
-    }
-    return '';
-  }
-
-  function flashParamsPanel() {
-    const panel = $('builder-params');
-    if (!panel) return;
-    panel.classList.remove('builder-flash');
-    // force a reflow so the animation can replay on repeated clicks
-    void panel.offsetWidth;
-    panel.classList.add('builder-flash');
-    if (typeof panel.scrollIntoView === 'function') {
-      try { panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) { /* cosmetic */ }
-    }
-  }
-
-  async function addParamAction(kind) {
-    const meta = PARAM_ACTIONS[kind];
-    if (!meta) return;
-    const step = await prepareActionStep(kind);
-    if (!step) return;
-    insertStep(step, meta.label + '（' + meta.op + '）');
-    if (kind === 'param_click_text') {
-      const sel = step.args.find && step.args.find[0] ? step.args.find[0].sel : '';
-      status(`已生成 click_target：OCR 素材「${sel}」+ 文字 param('${paramSafeKey((pickParamForAction() || {}).key)}')；素材可在右侧「定位对象」修改`);
-    } else if (kind === 'param_long_press_text') {
-      const sel = step.args.find && step.args.find[0] ? step.args.find[0].sel : '';
-      status(`已生成 long_press：OCR 素材「${sel}」+ 文字 param('${paramSafeKey((pickParamForAction() || {}).key)}')，hold_ms=3000；可在属性面板改时长/操作区域`);
-    } else {
-      status(`已生成 ${meta.op}：文字来源 param('${paramSafeKey((pickParamForAction() || {}).key)}')（不新增 op，可在属性面板改）`);
-    }
   }
 
   function removeCheckedIn(steps, basePath) {
@@ -2564,14 +2200,336 @@
 
   // v1.2.2 (N47): structured editors for the two complex actions. Raw args JSON
   // stays below as the escape hatch for multi-locator chains / advanced fields.
+  // U-T5：旧入口委托到新的纯函数 targetLocatorForAsset（原先无人调用，保留兼容）。
   function locatorFromAsset(a) {
-    if (!a) return null;
-    if (a.kind === 'region') return { kind: 'region', sel: a.id };
-    if (a.kind === 'template') return { kind: 'template', sel: a.id };
-    // A collection is stored as a template locator pointing at the collection
-    // id; oas-task expands it to the member templates before runtime.
-    if (a.kind === 'template_set') return { kind: 'template', sel: a.id };
-    return { kind: 'ocr_text', sel: a.id, text: a.ocr_text || a.id };
+    const result = targetLocatorForAsset(a);
+    return result.ok ? result.locator : null;
+  }
+
+  // --- U-T5（API 无关纯函数）：动作目标选择模型 -------------------------------
+  // 动作选目标=素材库素材（含 ocr_var），不再有「参数/操作区」双选；region 素材
+  // 只作操作区链末端，永远不能作动作目标。纯函数，ui_pure_test 直接抽取执行；
+  // 产品 UI（目标选择对话框/属性面板）等 U-T5 一次性接线，这里不接线。
+
+  // 可作动作目标的 kind → 中文标签（region 仅作操作区末端，不在目标白名单）。
+  function actionTargetKindLabel(kind) {
+    switch (String(kind === undefined || kind === null ? '' : kind).trim().toLowerCase()) {
+      case 'template': return '模板';
+      case 'template_set': return '素材集合';
+      case 'ocr_line': return 'OCR 行';
+      case 'ocr_lines': return 'OCR 多行';
+      case 'ocr_var': return '使用端OCR文字配置项';
+      case 'region': return '操作区域（仅操作区末端）';
+      default: return '其他';
+    }
+  }
+
+  // 动作目标允许的 kind 白名单（模板/集合/OCR 行/OCR 多行/使用端OCR文字配置项）。
+  function actionTargetKinds() {
+    return ['template', 'template_set', 'ocr_line', 'ocr_lines', 'ocr_var'];
+  }
+
+  // 素材库条目 → 目标选择器候选（可搜索；region 素材列出但标注「仅操作区末端」
+  // 并带 terminalOnly=true，选择时 targetLocatorForAsset 会报错拒绝）。
+  // opts.kindFilter：数组或 (kind)=>boolean，用于进一步收窄（如只显示 OCR 类）。
+  // 返回 [{id,label,kind,kindLabel,paramKey?,ocrText?,terminalOnly?}]。
+  function assetTargetOptions(assets, opts) {
+    const o = opts && typeof opts === 'object' ? opts : {};
+    const filterFn = typeof o.kindFilter === 'function' ? o.kindFilter : null;
+    const filterList = Array.isArray(o.kindFilter) ? o.kindFilter : null;
+    const allowed = actionTargetKinds();
+    const out = [];
+    const seen = {};
+    for (const asset of Array.isArray(assets) ? assets : []) {
+      if (!asset || typeof asset !== 'object' || Array.isArray(asset)) continue;
+      const id = String(asset.id === undefined || asset.id === null ? '' : asset.id).trim();
+      if (!id || seen[id]) continue;
+      const kind = String(asset.kind === undefined || asset.kind === null ? '' : asset.kind).trim().toLowerCase();
+      const terminalOnly = kind === 'region';
+      if (!terminalOnly && allowed.indexOf(kind) < 0) continue;
+      if (filterList && filterList.indexOf(kind) < 0) continue;
+      if (filterFn && !filterFn(kind)) continue;
+      seen[id] = true;
+      const rawLabel = asset.label === undefined || asset.label === null ? '' : String(asset.label).trim();
+      const option = {
+        id: id,
+        label: rawLabel || id,
+        kind: kind,
+        kindLabel: actionTargetKindLabel(kind),
+      };
+      if (terminalOnly) {
+        option.terminalOnly = true;
+      } else if (kind === 'ocr_var') {
+        const paramKey = String(asset.param_key === undefined || asset.param_key === null
+          ? '' : asset.param_key).trim();
+        if (paramKey) option.paramKey = paramKey;
+        const runtimeText = String(asset.runtime_text === undefined || asset.runtime_text === null
+          ? '' : asset.runtime_text).trim();
+        if (runtimeText) option.ocrText = runtimeText;
+      } else if (asset.ocr_text !== undefined && asset.ocr_text !== null &&
+          String(asset.ocr_text).trim() !== '') {
+        option.ocrText = String(asset.ocr_text).trim();
+      }
+      out.push(option);
+    }
+    return out;
+  }
+
+  // 素材 → click_target/long_press 的 find[0] locator（纯函数）。
+  //   ocr_var → {kind:"ocr_text", sel, text_expr:"param('<param_key>')"}（缺键报错）
+  //   普通 OCR → {kind:"ocr_text", sel, text}（opts.text 覆盖；缺文字报错，不编造）
+  //   模板/集合 → {kind:"template", sel}（集合按 id 由 oas-task 展开成员）
+  //   其它（region/未知）→ 错误（region 只作操作区末端）。
+  function targetLocatorForAsset(asset, opts) {
+    const it = asset && typeof asset === 'object' && !Array.isArray(asset) ? asset : {};
+    const o = opts && typeof opts === 'object' ? opts : {};
+    const id = String(it.id === undefined || it.id === null ? '' : it.id).trim();
+    if (!id) return { ok: false, locator: null, error: '动作目标素材 id 为空' };
+    const kind = String(it.kind === undefined || it.kind === null ? '' : it.kind).trim().toLowerCase();
+    const userText = o.text === undefined || o.text === null ? '' : String(o.text).trim();
+    if (kind === 'template' || kind === 'template_set') {
+      return { ok: true, locator: { kind: 'template', sel: id }, error: '' };
+    }
+    if (kind === 'ocr_var') {
+      const paramKey = paramSafeKey(it.param_key);
+      if (!paramKey) {
+        return {
+          ok: false, locator: null,
+          error: '识别文字配置项「' + id + '」缺少 param_key，无法生成 param() 文字来源',
+        };
+      }
+      return {
+        ok: true,
+        locator: { kind: 'ocr_text', sel: id, text_expr: paramTextExpr(paramKey) },
+        error: '',
+      };
+    }
+    if (kind === 'ocr_line' || kind === 'ocr_lines') {
+      const text = userText || String(it.ocr_text === undefined || it.ocr_text === null
+        ? '' : it.ocr_text).trim();
+      if (!text) {
+        return {
+          ok: false, locator: null,
+          error: 'OCR 素材「' + id + '」缺少识别文字（text）；请填写文字，或改用「使用端OCR文字配置项」素材',
+        };
+      }
+      return { ok: true, locator: { kind: 'ocr_text', sel: id, text: text }, error: '' };
+    }
+    return {
+      ok: false, locator: null,
+      error: '素材「' + id + '」（' + (kind || '未知类型') + '）不能作为动作目标' +
+        (kind === 'region' ? '：region 只作操作区末端' : ''),
+    };
+  }
+
+  // 保存前校验动作目标（errors[] 为空=通过）。targetParamKeys = 当前任务的派生
+  // 参数 key 集合（meta.params 中带 asset_id 的行）；未传=跳过「是否已派生」检查。
+  function validateActionTarget(asset, targetParamKeys) {
+    const it = asset && typeof asset === 'object' && !Array.isArray(asset) ? asset : {};
+    const id = String(it.id === undefined || it.id === null ? '' : it.id).trim();
+    if (!id) return ['动作目标素材 id 为空'];
+    const errors = [];
+    const kind = String(it.kind === undefined || it.kind === null ? '' : it.kind).trim().toLowerCase();
+    if (actionTargetKinds().indexOf(kind) < 0) {
+      errors.push('素材「' + id + '」（' + (kind || '未知类型') + '）不能作为动作目标' +
+        (kind === 'region' ? '：region 只作操作区末端' : ''));
+      return errors;
+    }
+    if (kind === 'ocr_var') {
+      const paramKey = paramSafeKey(it.param_key);
+      if (!paramKey) {
+        errors.push('识别文字配置项「' + id + '」缺少 param_key');
+      } else if (Array.isArray(targetParamKeys) && targetParamKeys.indexOf(paramKey) < 0) {
+        errors.push("param('" + paramKey + "') 不在任务派生参数中：请先保存素材以派生 meta.params");
+      }
+    } else if (kind === 'ocr_line' || kind === 'ocr_lines') {
+      const text = String(it.ocr_text === undefined || it.ocr_text === null ? '' : it.ocr_text).trim();
+      if (!text) errors.push('OCR 素材「' + id + '」缺少 ocr_text（也可在动作里直接填写 text）');
+    }
+    return errors;
+  }
+
+  // 动作属性面板的目标摘要（含「识别文字来源：素材 xxx」）。
+  function targetPickerSummary(asset) {
+    const it = asset && typeof asset === 'object' && !Array.isArray(asset) ? asset : null;
+    if (!it) return '未选择动作目标';
+    const id = String(it.id === undefined || it.id === null ? '' : it.id).trim();
+    if (!id) return '未选择动作目标';
+    const kind = String(it.kind === undefined || it.kind === null ? '' : it.kind).trim().toLowerCase();
+    const kindLabel = actionTargetKindLabel(kind);
+    if (kind === 'ocr_var') {
+      const paramKey = paramSafeKey(it.param_key);
+      const runtimeText = String(it.runtime_text === undefined || it.runtime_text === null
+        ? '' : it.runtime_text).trim();
+      let text = '目标：素材「' + id + '」（' + kindLabel + '） · 识别文字来源：素材「' + id + '」';
+      text += paramKey ? ' → ' + paramTextExpr(paramKey) : '（⚠ 缺少 param_key）';
+      if (runtimeText) text += ' · 默认「' + runtimeText + '」';
+      return text;
+    }
+    if (kind === 'ocr_line' || kind === 'ocr_lines') {
+      const text = String(it.ocr_text === undefined || it.ocr_text === null ? '' : it.ocr_text).trim();
+      return '目标：素材「' + id + '」（' + kindLabel + '） · 识别文字来源：素材「' + id + '」' +
+        (text ? '固定文字「' + text + '」' : '未固定识别文字（动作里填写 text）');
+    }
+    if (kind === 'template' || kind === 'template_set') {
+      return '目标：素材「' + id + '」（' + kindLabel + '） · 识别来源：模板匹配';
+    }
+    return '素材「' + id + '」（' + kindLabel + '）不能作为动作目标' +
+      (kind === 'region' ? '：region 只作操作区末端' : '');
+  }
+
+  // 派生参数行（meta.params 中带 asset_id 的行）直接给出素材 id / 展示名。
+  function paramAssetId(row) {
+    const r = row && typeof row === 'object' && !Array.isArray(row) ? row : {};
+    const raw = r.asset_id === undefined || r.asset_id === null ? '' : String(r.asset_id).trim();
+    return raw;
+  }
+
+  function paramAssetLabel(row, assets) {
+    const assetId = paramAssetId(row);
+    if (!assetId) return '';
+    const list = Array.isArray(assets) ? assets : [];
+    const asset = list.find(function (a) { return a && String(a.id) === assetId; });
+    if (asset) {
+      const label = String(asset.label === undefined || asset.label === null ? '' : asset.label).trim();
+      return label || assetId;
+    }
+    return assetId;
+  }
+
+  // 当前任务的派生参数 key 集合（ocr_var 的 param_key 必须落在其中）。
+  function derivedParamKeys(params) {
+    const list = Array.isArray(params) ? params : [];
+    const keys = [];
+    for (const row of list) {
+      const assetId = paramAssetId(row);
+      if (!assetId) continue;
+      const key = paramSafeKey(row && row.key);
+      if (key && keys.indexOf(key) < 0) keys.push(key);
+    }
+    return keys;
+  }
+
+  function assetById(assets, id) {
+    const key = String(id === undefined || id === null ? '' : id).trim();
+    if (!key) return null;
+    const list = Array.isArray(assets) ? assets : [];
+    return list.find(function (a) { return a && String(a.id) === key; }) || null;
+  }
+
+  // 保存前校验动作目标（S7/U-T5）：目标素材存在；模板 locator 的 sel 必须存在且
+  // 不是 region 素材；OCR locator 的 sel（ocr_var）必须有 param_key，且 text_expr
+  // 里 param(key) 必须在派生参数集合中；SEL_OPS 的 args.sel 也必须存在。
+  function actionTargetIssues(flow, assets, params) {
+    const issues = [];
+    const list = Array.isArray(assets) ? assets : [];
+    const derived = derivedParamKeys(params);
+    const seen = {};
+    function push(path, message) {
+      const key = path + '\u0000' + message;
+      if (seen[key]) return;
+      seen[key] = true;
+      issues.push(path + '：' + message);
+    }
+    function checkOcrLocator(loc, path) {
+      if (!loc || typeof loc !== 'object' || loc.kind !== 'ocr_text') return;
+      const sel = String(loc.sel === undefined || loc.sel === null ? '' : loc.sel).trim();
+      if (sel) {
+        const asset = assetById(list, sel);
+        if (!asset) {
+          push(path, '目标素材「' + sel + '」不在当前素材库（本步会失败）');
+          return;
+        }
+        const kind = String(asset.kind === undefined || asset.kind === null ? '' : asset.kind);
+        if (kind === 'ocr_var') {
+          const paramKey = paramSafeKey(asset.param_key);
+          if (!paramKey) {
+            push(path, '目标「' + sel + '」是识别文字配置项但缺少 param_key（先保存素材以派生 meta.params）');
+            return;
+          }
+          const locatorKey = locatorParamKey(loc);
+          if (!locatorKey) {
+            push(path, '目标「' + sel + '」是识别文字配置项，文字来源应为 text_expr:"param(\'' +
+              paramKey + '\')"（当前未使用 param()）');
+          } else {
+            if (locatorKey !== paramKey) {
+              push(path, '目标「' + sel + '」的 param_key 是「' + paramKey +
+                '」，但 text_expr 引用的是「' + locatorKey + '」');
+            }
+            if (derived.indexOf(locatorKey) < 0) {
+              push(path, 'param(\'' + locatorKey + '\') 不在任务派生参数中：先保存对应识别文字配置项素材');
+            }
+          }
+        }
+      }
+    }
+    function walk(node, path) {
+      if (node === null || node === undefined) return;
+      if (Array.isArray(node)) {
+        node.forEach(function (child, i) { walk(child, path + '[' + i + ']'); });
+        return;
+      }
+      if (typeof node !== 'object') return;
+      if (node.kind === 'ocr_text') checkOcrLocator(node, path);
+      if (node.kind === 'template') {
+        const sel = String(node.sel === undefined || node.sel === null ? '' : node.sel).trim();
+        if (sel) {
+          const asset = assetById(list, sel);
+          if (!asset) push(path, '目标素材「' + sel + '」不在当前素材库（本步会失败）');
+          else if (String(asset.kind) === 'region') {
+            push(path, 'region 素材「' + sel + '」不能作为模板目标（只作操作区末端）');
+          }
+        }
+      }
+      if (node.kind === 'region') {
+        const sel = String(node.sel === undefined || node.sel === null ? '' : node.sel).trim();
+        if (sel) {
+          const asset = assetById(list, sel);
+          if (!asset) push(path, '操作区域素材「' + sel + '」不在当前素材库（本步会失败）');
+          else if (String(asset.kind) !== 'region') {
+            push(path, 'region 定位器引用的素材「' + sel + '」不是 region 素材');
+          }
+        }
+      }
+      for (const key of Object.keys(node)) walk(node[key], path ? path + '.' + key : key);
+    }
+    walk({ steps: flow && flow.steps }, 'flow');
+    // SEL_OPS 的 args.sel（appear/ocr/click/dismiss_popup/ocr_to_var）。
+    function walkSel(steps, basePath) {
+      if (!Array.isArray(steps)) return;
+      steps.forEach(function (step, i) {
+        if (!step || typeof step !== 'object') return;
+        const at = basePath + '[' + i + ']';
+        const sel = String(step.args && step.args.sel !== undefined && step.args.sel !== null
+          ? step.args.sel : '').trim();
+        if (sel && sel.indexOf('lib:') !== 0 && step.op !== 'click_target' && step.op !== 'long_press') {
+          if (!assetById(list, sel)) {
+            push(at + '.args.sel', '目标素材「' + sel + '」不在当前素材库（本步会失败）');
+          }
+        }
+        for (const key of ['then', 'else', 'body']) walkSel(step[key], at + '.' + key);
+      });
+    }
+    walkSel(flow && flow.steps, 'flow.steps');
+    return issues;
+  }
+
+  // /task/save_flow 成功响应里的 sync 摘要 → 状态栏文案（无变化=空串）。
+  function saveSyncText(sync) {
+    const s = sync && typeof sync === 'object' && !Array.isArray(sync) ? sync : null;
+    if (!s) return '';
+    const added = Array.isArray(s.added) ? s.added.length : 0;
+    const updated = Array.isArray(s.updated) ? s.updated.length : 0;
+    const removed = Array.isArray(s.removed) ? s.removed.length : 0;
+    const total = added + updated + removed;
+    if (!total) return '';
+    return '已同步 ' + total + ' 个识别文字配置项派生参数（+' + added + ' ~' + updated + ' -' + removed + '）';
+  }
+
+  // 旧 flow 的 locator.region（操作区域）只做兼容显示：新步骤不再生成 region。
+  function locatorHasLegacyRegion(locator) {
+    return !!locator && typeof locator === 'object' && !Array.isArray(locator) &&
+      Object.prototype.hasOwnProperty.call(locator, 'region');
   }
 
   function formBox(title) {
@@ -2642,8 +2600,8 @@
     btn.type = 'button';
     btn.textContent = '插入参数 ▾';
     btn.title = mode === 'cond'
-      ? "插入 text_visible(param('key')) 条件片段（参数需先在「任务参数」面板声明）"
-      : "插入 param('key') 到当前输入框（参数需先在「任务参数」面板声明）";
+      ? "插入 text_visible(param('key')) 条件片段（key 来自任务参数 / 识别文字配置项素材）"
+      : "插入 param('key') 到当前输入框（key 来自任务参数 / 识别文字配置项素材）";
     btn.setAttribute('aria-haspopup', 'true');
     btn.setAttribute('aria-expanded', 'false');
     const menu = document.createElement('div');
@@ -2679,14 +2637,14 @@
       const head = document.createElement('div');
       head.className = 'hd';
       head.textContent = mode === 'cond'
-        ? "插入参数条件（写入 text_visible(param('key'))）"
-        : "插入已声明参数（写入 param('key')）";
+        ? "插入条件片段（写入 text_visible(param('key'))）"
+        : "插入 param('key')（任务参数 / 识别文字配置项素材）";
       menu.appendChild(head);
       const rows = paramPanelRows(B.params);
       if (!rows.length) {
         const empty = document.createElement('div');
         empty.className = 'hd';
-        empty.textContent = '（还没有声明参数：先在「任务参数」面板点「配置项…」声明）';
+        empty.textContent = '（还没有可用参数：先在「任务参数」面板点「配置项…」声明，或保存「使用端OCR文字配置项」素材）';
         menu.appendChild(empty);
         return;
       }
@@ -2699,7 +2657,8 @@
         item.appendChild(code);
         const grp = document.createElement('span');
         grp.className = 'grp';
-        grp.textContent = (row.group || '未分组') + (row.type ? ' · ' + row.type : '');
+        grp.textContent = (row.group || '未分组') + (row.type ? ' · ' + row.type : '') +
+          (row.assetId ? ' · 识别文字配置项 · 素材 ' + paramAssetLabel(row, B.assets) : '');
         item.appendChild(grp);
         item.addEventListener('click', function (ev) {
           ev.stopPropagation();
@@ -2757,7 +2716,7 @@
     const modeSel = document.createElement('select');
     for (const [value, label] of [
       ['text', '固定文字（写 text）'],
-      ['param', '任务参数（写 text_expr = param(...)）'],
+      ['param', '识别文字配置项（写 text_expr = param(...)）'],
       ['expr', '表达式（写 text_expr）'],
     ]) {
       if (value === 'param' && !paramOptionsAvailable) continue;
@@ -2772,7 +2731,7 @@
     if (!params.length && !keepParamSource) {
       const hint = document.createElement('div');
       hint.className = 'builder-source-hint';
-      hint.textContent = '任务参数：先在「任务参数」面板「配置项…」声明参数，之后可选「任务参数」来源。';
+      hint.textContent = '识别文字配置项：先在「任务参数」面板「配置项…」声明/或保存 ocr_var 素材派生，之后可选「识别文字配置项」来源。';
       host.appendChild(hint);
     }
 
@@ -2781,13 +2740,16 @@
     let exprInput = null;
     if (currentMode === 'param') {
       const lab = document.createElement('label');
-      lab.textContent = '任务参数 key';
+      lab.textContent = '识别文字配置项 key';
       paramSel = document.createElement('select');
       const known = new Set(params.map(function (row) { return row.key; }));
-      paramSel.appendChild(new Option('（选择已声明参数）', ''));
+      paramSel.appendChild(new Option('（选择已声明的识别文字配置项）', ''));
       for (const row of params) {
+        const assetText = row.assetId
+          ? ' · 素材 ' + paramAssetLabel(row, B.assets)
+          : '';
         paramSel.appendChild(new Option(
-          (row.group || '未分组') + ' · ' + row.label + ' (' + row.key + ')',
+          (row.group || '未分组') + ' · ' + row.label + ' (' + row.key + ')' + assetText,
           row.key
         ));
       }
@@ -3090,9 +3052,15 @@
     box.appendChild(assetLab);
     const textSource = locatorTextSourceFields(endpoint, function () { sync(); });
     box.appendChild(textSource.host);
-    // P1: 操作区域（region）与 click_target 定位器一致。
+    // U-T5：region（操作区域）编辑器只对旧 flow 已带 region 的端点显示；新步骤不生成。
     let regionEditor = null;
-    regionEditor = renderRegionEditor(box, endpoint, function () { sync(); });
+    if (locatorHasLegacyRegion(endpoint)) {
+      regionEditor = renderRegionEditor(box, endpoint, function () { sync(); });
+      const legacyHint = document.createElement('div');
+      legacyHint.className = 'muted small builder-legacy-region-hint';
+      legacyHint.textContent = '该端点带有旧 flow 的 region 配置：仅兼容显示/编辑；新步骤不再生成 region。';
+      box.appendChild(legacyHint);
+    }
     function sync() {
       const next = Object.assign({}, endpoint, { kind: 'ocr_text' });
       if (asset.value) next.sel = asset.value;
@@ -3110,17 +3078,85 @@
     host.appendChild(box);
   }
 
+  // U-T5/S7：动作目标选择（素材库搜索选择器；目标=素材库素材，含 ocr_var）。
+  // 选中后按素材 kind 生成 locator（ocr_var → text_expr=param(param_key)）。region
+  // 素材不在目标列表（只作操作区末端）；旧 locator 仍由下方「定位方式/文字来源」兼容编辑。
+  function actionTargetEditor(root, step) {
+    const find = Array.isArray(step.args.find) ? step.args.find : [];
+    const currentLocator = find[0] && typeof find[0] === 'object' && !Array.isArray(find[0])
+      ? find[0]
+      : null;
+    const currentSel = currentLocator && currentLocator.sel !== undefined && currentLocator.sel !== null
+      ? String(currentLocator.sel).trim()
+      : '';
+    const currentAsset = assetById(B.assets, currentSel);
+    const box = formBox('动作目标（素材库；含「使用端OCR文字配置项」）');
+    const summary = document.createElement('div');
+    summary.className = 'builder-target-summary';
+    summary.textContent = currentAsset
+      ? targetPickerSummary(currentAsset)
+      : (currentSel ? '当前目标「' + currentSel + '」不在当前素材库' : '未选择目标素材');
+    box.appendChild(summary);
+    const picker = window.OASAssetUI.createSearchPicker({
+      items: assetTargetOptions(B.assets),
+      value: '',
+      placeholder: '搜索并选择目标素材（模板/集合/OCR/使用端OCR文字配置项）…',
+      className: 'builder-asset-search builder-target-search',
+      menuClass: 'builder-asset-menu',
+      label: function (option) {
+        return option.id + ' · ' + option.kindLabel +
+          (option.terminalOnly ? '（仅操作区末端，不可作动作目标）' : '') +
+          (option.paramKey ? '（param(\'' + option.paramKey + '\')）' : '') +
+          (option.ocrText ? ' · 文字「' + option.ocrText + '」' : '');
+      },
+      onChoose: function (option, input) {
+        const asset = assetById(B.assets, option.id);
+        if (!asset) return;
+        const result = targetLocatorForAsset(asset);
+        if (!result.ok) {
+          status('目标选择失败：' + result.error, '#ff8a80');
+          return;
+        }
+        const others = (Array.isArray(step.args.find) ? step.args.find : []).slice(1);
+        step.args.find = [result.locator].concat(others);
+        input.value = option.id;
+        status('已设置动作目标：' + option.id + '（' + option.kindLabel + '）');
+        renderAll();
+      },
+    });
+    box.appendChild(picker);
+    const hint = document.createElement('div');
+    hint.className = 'muted small';
+    hint.textContent = '目标=素材库素材：模板/集合 → template locator；普通 OCR 固定文字；' +
+      '使用端OCR文字配置项 → param(param_key)。region 素材只作操作区末端，不能作动作目标。';
+    box.appendChild(hint);
+    if (currentAsset) {
+      const errors = validateActionTarget(currentAsset, derivedParamKeys(B.params));
+      if (errors.length) {
+        const err = document.createElement('div');
+        err.className = 'builder-target-errors';
+        err.textContent = '目标校验：' + errors.join('；');
+        box.appendChild(err);
+      }
+    }
+    root.appendChild(box);
+  }
+
   // 定位器文字来源三态（P3，P6 起复用 locatorTextSourceFields）：固定文字 /
   // 任务参数 / 表达式。固定写 text，后两者写 text_expr；切换时删除另一字段。
   // 未知 locator 字段（roi / require_template / shape …）必须原样保留（只 merge
   // 已知键，禁止重建对象——旧 Studio 会丢字段）。
   function structuredClickTarget(root, step) {
-    const box = formBox('定位对象（find[0]；多定位器/内联 ROI 用下方高级 JSON；OCR 可设操作区域）');
+    // U-T5：先用素材库搜索选择器选目标素材（S7），下面的定位方式/文字来源/旧 region
+    // 编辑器保留给高级与旧 flow 兼容编辑。
+    actionTargetEditor(root, step);
+    const box = formBox('定位对象（find[0]；多定位器/内联 ROI 用下方高级 JSON）');
     const find = Array.isArray(step.args.find) ? step.args.find : [];
     const base = find[0] && typeof find[0] === 'object' && !Array.isArray(find[0])
       ? find[0]
       : { kind: 'template' };
     const loc = Object.assign({ kind: 'template' }, base);
+    const legacyRegion = locatorHasLegacyRegion(base);
     const kindLab = document.createElement('label');
     kindLab.textContent = '定位方式';
     const kind = document.createElement('select');
@@ -3148,10 +3184,22 @@
         sync();
       });
       box.appendChild(textSource.host);
-      // P1: 操作区域（默认/素材/OCR/最近匹配/相对偏移）。
-      regionEditor = renderRegionEditor(box, Object.assign({}, base, { kind: 'ocr_text' }), function () {
-        sync();
-      });
+      if (legacyRegion) {
+        // U-T5：旧 flow 才显示 region 编辑器（高级兼容）；新步骤不再生成 region，
+        // 操作区由目标素材的 op_region 决定（素材行「操作区」递归对话框）。
+        regionEditor = renderRegionEditor(box, Object.assign({}, base, { kind: 'ocr_text' }), function () {
+          sync();
+        });
+        const legacyHint = document.createElement('div');
+        legacyHint.className = 'muted small builder-legacy-region-hint';
+        legacyHint.textContent = '该步骤带有旧 flow 的 region（操作区域）配置：仅兼容显示/编辑；新步骤不再生成 region。';
+        box.appendChild(legacyHint);
+      } else {
+        const note = document.createElement('div');
+        note.className = 'muted small';
+        note.textContent = '新步骤不配置操作区域：操作区由目标素材的 op_region 决定（到素材行「操作区」设置）。';
+        box.appendChild(note);
+      }
     }
 
     function sync() {
@@ -3897,7 +3945,7 @@
       root.appendChild(assetLabel);
     }
     if (step.op === 'call_task') renderCallTaskForm(root, step);
-    // P1: wait/wait_until/param_wait_text are BLOCKING waits, not actions.
+    // P1: wait/wait_until are BLOCKING waits, not actions.
     if (step.op === 'wait' || step.op === 'wait_until') {
       const waitHelp = document.createElement('div');
       waitHelp.className = 'builder-wait-help muted small';
@@ -4002,22 +4050,14 @@
       row.className = 'builder-child-add';
       const branchLabel = key === 'then' ? '是' : key === 'else' ? '否' : key === 'body' ? '循环体' : key;
       const sel = document.createElement('select');
-      // Unified action catalogue: the branch dropdown must offer exactly the
-      // same actions as the left palette (including the「参数」presets).
+      // Unified action catalogue: the branch dropdown offers exactly the same
+      // actions as the left palette (both are sourced from OP_META only).
       const catalog = actionCatalog();
       for (const item of catalog) {
         const o = document.createElement('option');
         o.value = item.key;
-        o.textContent = (item.group === PARAM_GROUP ? '参数 · ' : '') + item.label + ' (' + item.key + ')';
-        if (!actionAvailable(item.key)) {
-          o.disabled = true;
-          o.textContent += ' — 需先声明任务参数';
-        }
+        o.textContent = item.label + ' (' + item.key + ')';
         sel.appendChild(o);
-      }
-      if (!catalog.some((item) => actionAvailable(item.key))) {
-        // Only unreachable when every entry is disabled; keeps `sel.value` sane.
-        sel.selectedIndex = -1;
       }
       const defaultKey = catalog.find((item) => item.key === 'log') ? 'log' : (catalog[0] || {}).key;
       if (defaultKey) sel.value = defaultKey;
@@ -4176,6 +4216,19 @@
     return Array.isArray(s.params) ? s.params : [];
   }
 
+  // U-T5/B-T3a：save_flow 的 sync 改了派生参数行 -> 重新读取 meta.params 并刷新面板。
+  async function refreshParamsAfterFlowSync() {
+    if (!B.task) return;
+    try {
+      const params = await fetchTaskParams(B.task);
+      B.params = Array.isArray(params) ? params : [];
+      B.paramsError = '';
+    } catch (e) {
+      B.paramsError = String((e && e.message) || e);
+    }
+    renderParamsPanel();
+  }
+
   function openTaskParamsDialog(opts) {
     const options = typeof opts === 'function'
       ? { onSaved: opts }
@@ -4256,7 +4309,7 @@
       // curve_swipe points must stay inside it. Older/absent -> 1280x720.
       B.screen = normalizeScreenSize(as.design_resolution);
       for (const c of as.collections || []) {
-        B.assets.push({ id: c.id, kind: 'template_set', members: c.members || [], action_shape: c.action_shape, action_source: c.action_source });
+        B.assets.push({ id: c.id, kind: 'template_set', members: c.members || [], action_shape: c.action_shape });
       }
       const pr = await paramsPromise;
       B.params = pr.ok ? pr.params : [];
@@ -4305,9 +4358,11 @@
     // P3: 保存前本地校验「文字来源」互斥（结构化编辑器不会双写；高级 JSON 手改
     // 可写出 text + text_expr 同时存在，这里拦住，避免把坏 flow 写盘）。
     // P1: 同时校验 region 形状与 long_press/curve_swipe 参数范围。
+    // U-T5：动作目标校验（素材存在 / ocr_var 有 param_key / param key 已派生）。
     const saveIssues = flowTextSpecIssues(B.flow)
       .concat(regionIssues(B.flow, regionAssetIds(B.assets)))
-      .concat(actionArgsIssues(B.flow, B.screen));
+      .concat(actionArgsIssues(B.flow, B.screen))
+      .concat(actionTargetIssues(B.flow, B.assets, B.params));
     if (saveIssues.length) {
       status('保存已阻止：' + saveIssues[0] +
         (saveIssues.length > 1 ? '（另有 ' + (saveIssues.length - 1) + ' 项问题，见高级 JSON/属性面板）' : ''),
@@ -4328,7 +4383,18 @@
         return;
       }
       B.lastSavedFlow = JSON.stringify(B.flow);
-      status(silent ? `已自动保存 ${B.task} · ${new Date().toLocaleTimeString()}` : `已保存 ${B.task} · flow.json`);
+      // U-T5/B-T3a：save_flow 成功后后端会同步派生参数（响应 sync）；提示并刷新面板。
+      const syncText = saveSyncText(s.sync);
+      const syncWarnings = Array.isArray(s.sync_warnings) ? s.sync_warnings : [];
+      if (syncText) {
+        status((silent ? `已自动保存 ${B.task}` : `已保存 ${B.task} · flow.json`) + ' · ' + syncText);
+        log(syncText, 'INFO', s.sync);
+        await refreshParamsAfterFlowSync();
+      } else if (syncWarnings.length) {
+        status('保存已写入，但派生参数同步有警告：' + syncWarnings.join('; '), '#e8c46a');
+      } else {
+        status(silent ? `已自动保存 ${B.task} · ${new Date().toLocaleTimeString()}` : `已保存 ${B.task} · flow.json`);
+      }
       // P5: flow.json changed -> the last authoritative check is stale; the
       // user can re-run it with the head「检查」button (no auto spam on autosave).
       if (B.lint || B.lintError) {

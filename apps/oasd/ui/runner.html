@@ -519,13 +519,16 @@
     </div>
   </dialog>
 
-  <!-- PR2：已安装任务的运行值（Runner 本机 config/values.json）；P2 起按 group 分节 -->
+  <!-- PR2：已安装任务的运行值（Runner 本机 config/values.json）；P2 起按 group 分节，
+       U-T6 起「使用端OCR文字配置项」（派生参数行）单独前置分节 -->
   <dialog id="runner-config-dialog" class="task-dialog runner-config-dialog">
     <h3 id="runner-config-title">任务配置</h3>
     <p class="muted small">
       运行值保存在 Runner 本机（config/values.json）；单任务运行时使用这里的值；
       被其他任务作为子任务调用时使用调用方的配置（PR4 生效）。<br />
-      参数按 <code>meta.params[].group</code> 分节；取消「使用」或值留空 = 不注入（回退默认值）。
+      参数按 <code>meta.params[].group</code> 分节；「使用端OCR文字配置项」（带
+      <code>asset_id</code> 的识别文字参数）在最前面的独立分节，改值 = 改对应素材的识别文字。
+      取消「使用」或值留空 = 不注入（回退默认值）。
       保存只影响下一次运行，正在跑的任务使用启动时的值。
     </p>
     <div id="runner-config-summary" class="runner-config-summary muted small">—</div>

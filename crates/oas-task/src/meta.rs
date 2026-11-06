@@ -87,6 +87,16 @@ pub struct ParamDecl {
     /// `text_expr`), which the UI may use for hints / default selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// **Derived-row marker** (2026-11-06 参数→素材 redesign, C1′).
+    ///
+    /// `Some(asset_id)` means this row is **not** user-authored: it is derived
+    /// and maintained by [`crate::ocr_var::sync_ocr_var_params`] from that
+    /// `kind:"ocr_var"` asset (`type=string`, `role=ocr_text`,
+    /// `default=runtime_text`, `label=asset label/id`). The Studio shows it
+    /// read-only; the sync function is the only writer. Old `meta.json` files
+    /// have no such field and keep parsing unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_id: Option<String>,
 }
 
 /// Length limit of `meta.params[].role` (PARAM-V2-DESIGN §2.1).
@@ -247,6 +257,11 @@ fn is_identifier(s: &str) -> bool {
         _ => return false,
     }
     s.len() <= 64 && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// `meta.params[].key` grammar, shared with the derived-row sync/validation.
+pub(crate) fn is_param_key(s: &str) -> bool {
+    is_identifier(s)
 }
 
 fn is_category_token(s: &str) -> bool {
@@ -690,6 +705,41 @@ impl Meta {
                             "must be <= {PARAM_ROLE_MAX_CHARS} characters (got {})",
                             role.chars().count()
                         ),
+                    );
+                }
+            }
+
+            // Derived row (2026-11-06 参数→素材): `asset_id` marks a row owned by
+            // the sync function (`crates/oas-task/src/ocr_var.rs`); the shape is
+            // fixed so the Studio/Runner can render it read-only. Cross-field
+            // consistency with the referenced asset is the separate **T8** lint
+            // (it needs assets.json + flow.json).
+            if let Some(asset_id) = &p.asset_id {
+                if asset_id.trim().is_empty() {
+                    push(
+                        format!("{path}.asset_id"),
+                        "must not be blank when present".to_string(),
+                    );
+                }
+                if p.kind != "string" {
+                    push(
+                        format!("{path}.type"),
+                        format!(
+                            "a derived row (asset_id present) must be type=string (got `{}`)",
+                            p.kind
+                        ),
+                    );
+                }
+                if p.role.as_deref() != Some("ocr_text") {
+                    push(
+                        format!("{path}.role"),
+                        "a derived row (asset_id present) must be role=ocr_text".to_string(),
+                    );
+                }
+                if !p.default.as_ref().is_some_and(serde_json::Value::is_string) {
+                    push(
+                        format!("{path}.default"),
+                        "a derived row (asset_id present) requires a string default".to_string(),
                     );
                 }
             }
