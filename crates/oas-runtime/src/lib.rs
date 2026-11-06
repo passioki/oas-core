@@ -2762,6 +2762,56 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         Ok(rect)
     }
 
+    /// Click geometry (rect + exact operation shape) from **one source**.
+    ///
+    /// seq130 fix (#5): the sampled target rect and the shape that constrains the
+    /// final click point must never disagree. For an OCR asset whose authored
+    /// `roi` is set, the stored `action_shape` follows the recognized line by
+    /// `real - roi` (Q1), so **both** must come from
+    /// [`Self::ocr_self_operation_geometry`]; the older
+    /// [`Self::translated_click_shape`] returned the authored absolute shape for
+    /// OCR (it only translates templates), which snapped the click back to the
+    /// authored area. Template/collection keep the historical
+    /// `click_box_for` + translated shape; a full-screen ocr_var (no authored
+    /// roi) keeps the absolute shape (Q1 documented limit).
+    fn click_geometry_for(
+        &self,
+        sel: &str,
+        matched: Point,
+    ) -> Result<(Rect, Option<ClickShape>), String> {
+        let effective_sel: &str = if self.assets.collection_members(sel).is_some() {
+            self.last_set_member
+                .get(sel)
+                .map(|s| s.as_str())
+                .ok_or_else(|| format!("collection `{sel}` has no matched member yet"))?
+        } else {
+            sel
+        };
+        if self.assets.is_ocr_asset(effective_sel) {
+            let authored_roi = self
+                .assets
+                .ocr_var(effective_sel)
+                .and_then(|v| v.roi)
+                .or_else(|| self.assets.ocr_roi(effective_sel));
+            // The normal click path sets `last_ocr_rect` from the recognized line;
+            // then rect and shape are translated together (roi=None => absolute).
+            if let Some(real) = self.last_ocr_rect.or(authored_roi) {
+                return self.ocr_self_operation_geometry(
+                    effective_sel,
+                    real,
+                    self.screen.size(),
+                );
+            }
+            // No recognized rect yet: the same fallbacks `click_box_for` uses.
+            let rect = self.click_box_for(sel, matched)?;
+            let shape = self.assets.click_shape(effective_sel).cloned();
+            return Ok((rect, shape));
+        }
+        let rect = self.click_box_for(sel, matched)?;
+        let shape = self.translated_click_shape(sel, matched);
+        Ok((rect, shape))
+    }
+
     /// v1.4 A-plan (`docs/OPERATION-REGION-DESIGN.md §7`): every match candidate
     /// of a template asset / template collection at or above its threshold, each
     /// with its **operation region** (`rect`/`shape`, frame coordinates) and the
@@ -2896,8 +2946,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 "best match score {score:.3} < threshold {threshold:.3}"
             )));
         }
-        let rect = self.click_box_for(asset_id, p)?;
-        let shape = self.translated_click_shape(asset_id, p);
+        // seq130: same-source operation geometry (an OCR `region.asset` mode=asset
+        // must follow the recognized line exactly like the click path).
+        let (rect, shape) = self.click_geometry_for(asset_id, p)?;
         Ok((rect, shape))
     }
 
@@ -3836,10 +3887,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             ));
                             continue;
                         };
-                        let rect = self.click_box_for(sel, p)?;
+                        let (rect, root_shape) = self.click_geometry_for(sel, p)?;
                         // 2026-11-06 参数→素材: an asset-level `op_region` chain
                         // replaces the historical geometry for this locator.
-                        let root_shape = self.translated_click_shape(sel, p);
+                        let plan_shape = root_shape.clone();
                         let chain = match self.root_template_real_rect(sel, p) {
                             Some(real) => self.resolve_asset_op_region(
                                 sel,
@@ -3859,8 +3910,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             self.adjust_plan_for_explicit_shape(plan, Some(shape), w, h)?
                         } else if chain.is_some() {
                             plan
+                        } else if let Some(shape) = plan_shape.as_ref() {
+                            // seq130: same-source rect+shape (OCR Q1).
+                            self.adjust_plan_for_explicit_shape(plan, Some(shape), w, h)?
                         } else {
-                            self.adjust_plan_for_shape(sel, plan, w, h, p)?
+                            plan
                         };
                         let chain_info = chain
                             .as_ref()
@@ -3955,7 +4009,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             } else if let Some((rect, shape)) = asset_target {
                                 (rect, shape, false)
                             } else {
-                                let (t, aware) = match region {
+                                let (t, _aware) = match region {
                                     None | Some(OpRegion::Asset { .. }) => (default_target, true),
                                     Some(OpRegion::Ocr)
                                     | Some(OpRegion::Nearest { .. }) => (line.rect, false),
@@ -3963,7 +4017,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                         (offset_region_rect(line.rect, *dx, *dy, *w, *h), false)
                                     }
                                 };
-                                (t, self_shape.clone(), aware)
+                                (t, self_shape.clone(), false)
                             };
                         let plan = self.humanize.template_click(target, w, &mut self.rng);
                         let plan = if explicit_shape.is_some() {
@@ -4048,7 +4102,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             } else if let Some((rect, shape)) = asset_target {
                                 (rect, shape, false)
                             } else {
-                                let (t, aware) = match region {
+                                let (t, _aware) = match region {
                                     None | Some(OpRegion::Asset { .. }) => (default_target, true),
                                     Some(OpRegion::Ocr)
                                     | Some(OpRegion::Nearest { .. }) => (recognition, false),
@@ -4056,7 +4110,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                         (offset_region_rect(recognition, *dx, *dy, *w, *h), false)
                                     }
                                 };
-                                (t, self_shape.clone(), aware)
+                                (t, self_shape.clone(), false)
                             };
                         if let Some(rt) = require_template {
                             match self.template_in_region(rt, recognition, 16) {
@@ -4710,12 +4764,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     rule.detect
                 ));
             };
-            let target = self.click_box_for(&action_sel, ap)?;
+            let (target, action_shape) = self.click_geometry_for(&action_sel, ap)?;
             let (w, h) = self
                 .screen.size()
                 .ok_or_else(|| "interrupt: no frame available".to_string())?;
             let plan = self.humanize.template_click(target, w, &mut self.rng);
-            let plan = self.adjust_plan_for_shape(&action_sel, plan, w, h, ap)?;
+            let plan = self.adjust_plan_for_explicit_shape(plan, action_shape.as_ref(), w, h)?;
             let centre = Point {
                 x: target.x + target.w / 2,
                 y: target.y + target.h / 2,
@@ -5014,12 +5068,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                  not found (best {ascore:.3} < {ath})"
                             ));
                         };
-                        let target = self.click_box_for(&action_sel, ap)?;
+                        let (target, action_shape) = self.click_geometry_for(&action_sel, ap)?;
                         let (w, h) = self
                             .screen.size()
                             .ok_or_else(|| "dismiss_popup: no frame available".to_string())?;
                         let plan = self.humanize.template_click(target, w, &mut self.rng);
-                        let plan = self.adjust_plan_for_shape(&action_sel, plan, w, h, ap)?;
+                        let plan = self.adjust_plan_for_explicit_shape(plan, action_shape.as_ref(), w, h)?;
                         let centre = Point {
                             x: target.x + target.w / 2,
                             y: target.y + target.h / 2,
@@ -5129,7 +5183,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 // the largest axis-aligned rectangle inscribed in that polygon
                 // (translated by the match offset). Matching still uses the
                 // whole template.
-                let target = self.click_box_for(hit_sel, p)?;
+                //
+                // seq130 fix: rect and shape come from ONE source (OCR assets
+                // translate both with the recognized line, Q1).
+                let (target, same_source_shape) = self.click_geometry_for(hit_sel, p)?;
                 // 2026-11-06 参数→素材: an asset-level `op_region` chain replaces
                 // the historical geometry. Model B (批次B #4 + seq127 #2/#3): the
                 // chain walks to the last referenced node and uses its own area.
@@ -5183,8 +5240,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     self.adjust_plan_for_explicit_shape(plan, Some(shape), w, h)?
                 } else if chain.is_some() {
                     plan
+                } else if let Some(shape) = same_source_shape.as_ref() {
+                    self.adjust_plan_for_explicit_shape(plan, Some(shape), w, h)?
                 } else {
-                    self.adjust_plan_for_shape(hit_sel, plan, w, h, p)?
+                    plan
                 };
                 let centre = Point {
                     x: target.x + target.w / 2,
@@ -5329,8 +5388,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 // `op_region` chain replaces the historical
                                 // geometry; absent/`self` keeps the old path
                                 // byte-identical.
-                                let root_box = self.click_box_for(sel, p)?;
-                                let root_shape = self.translated_click_shape(sel, p);
+                                let (root_box, root_shape) = self.click_geometry_for(sel, p)?;
+                                let plan_shape = root_shape.clone();
                                 let chain = match self.root_template_real_rect(sel, p) {
                                     Some(real) => self.resolve_asset_op_region(
                                         sel,
@@ -5355,8 +5414,16 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                     )?
                                 } else if chain.is_some() {
                                     plan
+                                } else if let Some(shape) = plan_shape.as_ref() {
+                                    // seq130: same-source rect+shape (OCR Q1).
+                                    self.adjust_plan_for_explicit_shape(
+                                        plan,
+                                        Some(shape),
+                                        w,
+                                        h,
+                                    )?
                                 } else {
-                                    self.adjust_plan_for_shape(sel, plan, w, h, p)?
+                                    plan
                                 };
                                 let centre = Point {
                                     x: target.x + target.w / 2,
@@ -5485,7 +5552,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                             } else if let Some((rect, shape)) = asset_target {
                                                 (rect, shape, false)
                                             } else {
-                                                let (t, aware) = match region {
+                                                let (t, _aware) = match region {
                                                     None | Some(OpRegion::Asset { .. }) => {
                                                         (default_target, true)
                                                     }
@@ -5500,7 +5567,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                                         false,
                                                     ),
                                                 };
-                                                (t, self_shape.clone(), aware)
+                                                (t, self_shape.clone(), false)
                                             };
                                         let plan =
                                             self.humanize.template_click(target, w, &mut self.rng);
@@ -5638,7 +5705,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                         } else if let Some((rect, shape)) = asset_target {
                                             (rect, shape, false)
                                         } else {
-                                            let (t, aware) = match region {
+                                            let (t, _aware) = match region {
                                                 None | Some(OpRegion::Asset { .. }) => {
                                                     (default_target, true)
                                                 }
@@ -5653,7 +5720,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                                     false,
                                                 ),
                                             };
-                                            (t, self_shape.clone(), aware)
+                                            (t, self_shape.clone(), false)
                                         };
                                     let region_info = region_log(region.as_ref());
                                     if let Some(rt) = require_template {
@@ -11906,6 +11973,192 @@ mod tests {
             "OCR click should land in the operation region (jitter allowed): {p:?}"
         );
         assert_eq!(interp.clicks()[0].locator, "ocr");
+    }
+
+    // ---- seq130 #5: OCR click geometry must follow the recognized line (Q1) ----
+
+    /// 1280x720 blank frame (the user asset lives in full-screen coordinates).
+    fn blank_frame_1280x720() -> Frame {
+        Frame::new(1280, 720, vec![40u8; 1280 * 720 * 4])
+    }
+
+    /// The user's asset shape (runs/editor-切换预设御魂 clicks.jsonl): `ocr_var`
+    /// with an authored ROI and an authored `action_shape` rect far above the
+    /// lines it recognizes.
+    fn user_preset_assets(roi: Option<Rect>) -> AssetSet {
+        let mut set = AssetSet::new();
+        set.insert_ocr_var("O_预设", roi, "分组7".to_string(), "group".to_string());
+        set.set_click_shape(
+            "O_预设",
+            ClickShape {
+                rect: Some(Rect {
+                    x: 1057,
+                    y: 72,
+                    w: 120,
+                    h: 50,
+                }),
+                points: None,
+                invert: false,
+            },
+        );
+        set
+    }
+
+    /// The recognized line (y=245): authored ROI top is y=84, so the translated
+    /// operation shape is (1057+15, 72+161, 120, 50) = (1072, 233, 120, 50).
+    fn user_preset_line() -> OcrLine {
+        chain_line(1100, 245, 100, 40, "分组7", 0.97)
+    }
+
+    fn mk_big_ocr_interp(
+        set: AssetSet,
+        lines: Vec<OcrLine>,
+        seed: u64,
+    ) -> (Interpreter<TwoFrameScreen, FakeInput>, SharedInput) {
+        let (ocr, _rois) = FakeDetOcr::new(lines);
+        let (input, shared) = FakeInput::new();
+        let interp = Interpreter::new(
+            TwoFrameScreen {
+                frames: vec![blank_frame_1280x720()],
+                idx: 0,
+            },
+            input,
+            set,
+            Budget::default(),
+        )
+        .with_humanize(no_miss())
+        .with_ocr(Box::new(ocr))
+        .with_seed(seed);
+        (interp, shared)
+    }
+
+    const USER_TRANSLATED_SHAPE: Rect = Rect {
+        x: 1072,
+        y: 233,
+        w: 120,
+        h: 50,
+    };
+    const USER_AUTHORED_SHAPE: Rect = Rect {
+        x: 1057,
+        y: 72,
+        w: 120,
+        h: 50,
+    };
+
+    fn assert_on_the_translated_line(seed: u64, p: Point) {
+        assert!(
+            inside(USER_TRANSLATED_SHAPE, p),
+            "seed {seed}: click {p:?} must follow the recognized line into \
+             {USER_TRANSLATED_SHAPE:?} (authored shape {USER_AUTHORED_SHAPE:?} is stale)"
+        );
+        assert!(
+            !inside(USER_AUTHORED_SHAPE, p),
+            "seed {seed}: click {p:?} must not fall back to the authored absolute shape \
+             {USER_AUTHORED_SHAPE:?}"
+        );
+    }
+
+    #[test]
+    fn ocr_var_click_follows_the_recognized_line_not_the_authored_shape() {
+        for seed in 0..16 {
+            let (mut interp, shared) = mk_big_ocr_interp(
+                user_preset_assets(Some(Rect {
+                    x: 1085,
+                    y: 84,
+                    w: 160,
+                    h: 546,
+                })),
+                vec![user_preset_line()],
+                seed,
+            );
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"click","args":{"sel":"O_预设"}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done), "seed {seed}");
+            let clicks = shared.clicks.borrow().clone();
+            assert_eq!(clicks.len(), 1, "seed {seed}");
+            assert_on_the_translated_line(seed, clicks[0]);
+        }
+    }
+
+    #[test]
+    fn ocr_var_click_target_locator_follows_the_recognized_line() {
+        for seed in 0..16 {
+            let (mut interp, shared) = mk_big_ocr_interp(
+                user_preset_assets(Some(Rect {
+                    x: 1085,
+                    y: 84,
+                    w: 160,
+                    h: 546,
+                })),
+                vec![user_preset_line()],
+                seed,
+            );
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"click_target","args":{"find":[
+                       {"kind":"ocr_text","sel":"O_预设","text":"分组7"}]}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done), "seed {seed}");
+            let clicks = shared.clicks.borrow().clone();
+            assert_eq!(clicks.len(), 1, "seed {seed}");
+            assert_on_the_translated_line(seed, clicks[0]);
+        }
+    }
+
+    #[test]
+    fn ocr_var_long_press_follows_the_recognized_line() {
+        for seed in 0..16 {
+            let (mut interp, shared) = mk_big_ocr_interp(
+                user_preset_assets(Some(Rect {
+                    x: 1085,
+                    y: 84,
+                    w: 160,
+                    h: 546,
+                })),
+                vec![user_preset_line()],
+                seed,
+            );
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"long_press","args":{"find":[
+                       {"kind":"ocr_text","sel":"O_预设","text":"分组7"}]}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done), "seed {seed}");
+            let presses = shared.long_presses.borrow().clone();
+            assert_eq!(presses.len(), 1, "seed {seed}");
+            assert_on_the_translated_line(seed, presses[0].0);
+        }
+    }
+
+    #[test]
+    fn ocr_var_without_a_roi_keeps_the_absolute_action_shape() {
+        // Q1 documented limit: a whole-screen ocr_var has no authored origin, so
+        // the stored action_shape stays absolute (no translation).
+        for seed in 0..8 {
+            let (mut interp, shared) = mk_big_ocr_interp(
+                user_preset_assets(None),
+                vec![user_preset_line()],
+                seed,
+            );
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"click","args":{"sel":"O_预设"}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done), "seed {seed}");
+            let clicks = shared.clicks.borrow().clone();
+            assert_eq!(clicks.len(), 1, "seed {seed}");
+            let p = clicks[0];
+            assert!(
+                inside(USER_AUTHORED_SHAPE, p),
+                "seed {seed}: roi=None keeps the absolute shape {USER_AUTHORED_SHAPE:?}, got {p:?}"
+            );
+        }
     }
 
     #[test]

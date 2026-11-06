@@ -241,6 +241,45 @@
     return src.mode === 'param' ? src.value : '';
   }
 
+  // seq130（#3）：param(key) 是否已声明为 V2.0 变量/识别文字变量（meta.variables
+  // 或素材库 ocr_var.param_key）。已声明 = 正常变量来源；未声明才是「旧参数只读」。
+  function declaredParamKeySet(variables, assets) {
+    const set = {};
+    for (const v of Array.isArray(variables) ? variables : []) {
+      const key = paramSafeKey(v && v.key);
+      if (key) set[key] = true;
+    }
+    for (const a of Array.isArray(assets) ? assets : []) {
+      if (!a || String(a.kind) !== 'ocr_var') continue;
+      const key = paramSafeKey(a.param_key);
+      if (key) set[key] = true;
+    }
+    return set;
+  }
+
+  function paramKeyDeclaredIn(key, variables, assets) {
+    const k = paramSafeKey(key);
+    return !!k && !!declaredParamKeySet(variables, assets)[k];
+  }
+
+  // 表达式文本里的 param('key') 引用（声明状态提示用）。
+  function paramRefKeysInText(text) {
+    const out = [];
+    const s = String(text === undefined || text === null ? '' : text);
+    const re = /param\(\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]\s*\)/g;
+    let m;
+    while ((m = re.exec(s))) {
+      const key = paramSafeKey(m[1]);
+      if (key && out.indexOf(key) < 0) out.push(key);
+    }
+    return out;
+  }
+
+  function undeclaredParamKeysInText(text, variables, assets) {
+    const declared = declaredParamKeySet(variables, assets);
+    return paramRefKeysInText(text).filter(function (key) { return !declared[key]; });
+  }
+
   // 互斥 + 必填其一（旧 flow 的 text 语义零变化；新 flow 用 text_expr）。
   function locatorTextSpecError(loc) {
     const l = loc && typeof loc === 'object' && !Array.isArray(loc) ? loc : {};
@@ -3188,8 +3227,11 @@
     const host = document.createElement('div');
     host.className = 'builder-text-source';
     const src = paramSourceFromLocator(loc);
-    const legacyParam = src.mode === 'param';
-    const currentMode = src.mode;
+    // seq130（#3）：param(key) 已声明为变量 → 正常表达式来源；仅未声明才是旧参数只读。
+    const declaredParam = src.mode === 'param' && paramKeyDeclaredIn(src.value, B.variables, B.assets);
+    const legacyParam = src.mode === 'param' && !declaredParam;
+    const currentMode = legacyParam ? 'keep' : (declaredParam ? 'expr' : src.mode);
+    const srcValue = declaredParam ? paramTextExpr(src.value || '') : src.value;
 
     const modeLab = document.createElement('label');
     modeLab.textContent = '文字来源（text / text_expr 互斥）';
@@ -3217,7 +3259,7 @@
       exprInput = document.createElement('input');
       exprInput.type = 'text';
       exprInput.spellcheck = false;
-      exprInput.value = src.value;
+      exprInput.value = srcValue;
       exprRow.appendChild(exprInput);
       exprRow.appendChild(variableInsertWidget('expr', function () { return exprInput; }));
       lab.appendChild(exprRow);
@@ -3228,7 +3270,7 @@
       lab.textContent = 'OCR 文字（固定字面量）';
       fixedInput = document.createElement('input');
       fixedInput.type = 'text';
-      fixedInput.value = src.value;
+      fixedInput.value = srcValue;
       lab.appendChild(fixedInput);
       host.appendChild(lab);
     } else if (legacyParam) {
@@ -3245,7 +3287,10 @@
     const hint = document.createElement('div');
     hint.className = 'builder-source-hint';
     const specError = locatorTextSpecError(loc);
-    if (specError) {
+    if (declaredParam) {
+      hint.textContent = '已声明变量来源：' + paramTextExpr(src.value || '') +
+        '（构建页「变量」面板；正常引用，不再显示旧参数提示）。';
+    } else if (specError) {
       hint.textContent = '现有值无效：' + specError + '；改动后会按互斥规则覆盖。';
       hint.className += ' warn';
     } else if (legacyParam) {
@@ -4147,7 +4192,7 @@
     box.className = 'builder-subform';
     const title = document.createElement('div');
     title.className = 'muted small';
-    title.textContent = '循环/分支条件（谓词行 + and/or/not、&&/||/!、括号；「识别文字配置项」行 = text_visible(param(素材 param_key))；旧参数来源只读回显）';
+    title.textContent = '循环/分支条件（谓词行 + and/or/not、&&/||/!、括号；「识别文字配置项」行 = text_visible(param(素材 param_key))；已声明变量正常显示，仅未声明 param 只读回显）';
     box.appendChild(title);
 
     const preset = parseConditionPreset(step.args.cond);
@@ -4222,8 +4267,24 @@
         line.className = 'builder-condition-row';
         const kind = document.createElement('select');
         const kindChoices = [];
-        // D 批：旧 param 条件行只读回显（可删除/改类型）；新行不再提供参数选项。
-        if (row.kind === 'param') kindChoices.push(['param', '旧参数来源（只读）']);
+        // seq130（#3）：param(key) 已声明为变量 → 正常「识别文字变量」行；仅未声明才
+        // 显示「旧参数来源（只读）」。有对应 ocr_var 素材时直接转成 ocr_var 行。
+        const declaredParamRow = row.kind === 'param' &&
+          paramKeyDeclaredIn(row.value, B.variables, B.assets);
+        if (declaredParamRow) {
+          const declaredKey = paramSafeKey(row.value);
+          const bound = (B.assets || []).find(function (a) {
+            return a && a.kind === 'ocr_var' && paramSafeKey(a.param_key) === declaredKey;
+          });
+          if (bound) {
+            row.kind = 'ocr_var';
+            row.value = String(bound.id);
+            row.paramKey = declaredKey;
+          }
+        }
+        const stillLegacyParam = row.kind === 'param' && !declaredParamRow;
+        if (stillLegacyParam) kindChoices.push(['param', '旧参数来源（只读）']);
+        else if (declaredParamRow) kindChoices.push(['param', '识别文字变量（已声明）']);
         kindChoices.push(['asset', '素材'], ['text', '文字（全屏）'], ['ocr_var', '识别文字配置项']);
         for (const [v, label] of kindChoices) {
           const o = document.createElement('option');
@@ -4284,10 +4345,12 @@
           valueEl.addEventListener('change', () => { applyAsset(); sync(); });
           line.append(kind, negLabel, valueEl);
         } else if (row.kind === 'param') {
-          // 旧 flow 的 text_visible(param('key'))：只读回显，删除/改类型才移除。
+          // seq130（#3）：已声明的 param(key) 是正常变量来源；未声明才旧参数只读。
           const legacy = document.createElement('span');
           legacy.className = 'muted small';
-          legacy.textContent = '旧参数来源（只读）：' + paramTextExpr(String(row.value || ''));
+          legacy.textContent = declaredParamRow
+            ? '变量（已声明）：' + paramTextExpr(String(row.value || ''))
+            : '旧参数来源（只读）：' + paramTextExpr(String(row.value || ''));
           line.append(kind, negLabel, legacy);
         } else {
           valueEl = document.createElement('input');
@@ -4529,6 +4592,17 @@
           trackExprField(input, exprMode);
           lab.appendChild(exprRow);
           root.appendChild(lab);
+          // seq130（#3）：表达式字段里的 param(key) 声明状态提示。
+          const refKeys = paramRefKeysInText(step.args[f.key]);
+          if (refKeys.length) {
+            const undeclared = undeclaredParamKeysInText(step.args[f.key], B.variables, B.assets);
+            const refHint = document.createElement('div');
+            refHint.className = 'muted small builder-param-ref-hint' + (undeclared.length ? ' warn' : '');
+            refHint.textContent = undeclared.length
+              ? '表达式引用了未声明 param：' + undeclared.join('、') + '（发布 T3 报错；先在「变量」面板声明）'
+              : '表达式引用的变量均已声明：' + refKeys.join('、');
+            root.appendChild(refHint);
+          }
           continue;
         }
       }

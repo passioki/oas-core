@@ -207,6 +207,19 @@ const PURE_FUNCTIONS = [
   'opRegionTargetKinds',
   'opRegionRefChoices',
   'opRegionReadonlyChainText',
+  // seq130（#4）：素材自动刷新去重/节流纯函数。
+  'assetsRefreshDue',
+  // seq130（#2）：点击记录归一化（actual/target/miss）。
+  'normalizeClickPoint',
+  'normalizeClickPoints',
+  // seq130（#1）：画布框移动 hit-test/平移/边界/优先级。
+  'pointInFrameRect',
+  'pointInFramePolygon',
+  'translateFrameRect',
+  'translateFramePoints',
+  'clampRectToFrame',
+  'clampPointsToFrame',
+  'hitTestActionShape',
   // U-T4/S4（B-T3b）：test_action 请求/结果格式化 + validate_op_region 错误。
   'testActionRequestBody',
   'candidateOptionLabel',
@@ -333,6 +346,16 @@ const {
   opRegionTargetKinds,
   opRegionRefChoices,
   opRegionReadonlyChainText,
+  assetsRefreshDue,
+  normalizeClickPoint,
+  normalizeClickPoints,
+  pointInFrameRect,
+  pointInFramePolygon,
+  translateFrameRect,
+  translateFramePoints,
+  clampRectToFrame,
+  clampPointsToFrame,
+  hitTestActionShape,
   testActionRequestBody,
   candidateOptionLabel,
   testActionResultLines,
@@ -4727,6 +4750,8 @@ const BUILDER_TARGET_PURE = [
   // U-T5（S7）：派生参数/目标校验/sync 摘要/旧 region 兼容判定。
   'paramAssetId', 'paramAssetLabel', 'derivedParamKeys', 'assetById', 'ocrVarParamRows',
   'locatorParamKey', 'paramSourceFromLocator',
+  // seq130（#3）：param(key) 声明状态判定。
+  'declaredParamKeySet', 'paramKeyDeclaredIn', 'paramRefKeysInText', 'undeclaredParamKeysInText',
   // seq129：拖动素材端点纯函数。
   'dragAssetEndpointBody', 'dragEndpointAssetSel', 'dragEndpointLegacyText',
   'dragArgsSetEndpoint', 'dragEndpointIssues',
@@ -5055,6 +5080,35 @@ eq(targetSb.variableUseCount({ steps: [
 eq(targetSb.variableDefaultText({ default: '御魂' }), '御魂', 'V2.0c: variable default text');
 eq(targetSb.variableDefaultText({ default: 3 }), '3', 'V2.0c: numeric default text');
 eq(targetSb.variableDefaultText({}), '—', 'V2.0c: missing default text');
+
+// seq130（#3）：param(key) 已声明 = 正常变量来源；未声明才旧参数只读。
+const seq130Vars = [{ key: 'p_93445f68', label: '识别文字变量' }, { key: 'max_rounds' }];
+const seq130Assets = [{ id: 'O_组', kind: 'ocr_var', param_key: 'group' }];
+eq(targetSb.paramKeyDeclaredIn('p_93445f68', seq130Vars, []), true,
+  'seq130: a key declared in meta.variables is not a legacy param');
+eq(targetSb.paramKeyDeclaredIn('group', [], seq130Assets), true,
+  'seq130: an ocr_var param_key counts as declared');
+eq(targetSb.paramKeyDeclaredIn('legacy_missing', seq130Vars, seq130Assets), false,
+  'seq130: an undeclared key is still legacy');
+eq(targetSb.paramRefKeysInText("text_visible(param('p_93445f68'))"),
+  ['p_93445f68'], 'seq130: param references are extracted from expression text');
+eq(targetSb.undeclaredParamKeysInText("param('p_93445f68') or param('missing')", seq130Vars, seq130Assets),
+  ['missing'], 'seq130: only undeclared param keys are reported');
+eq(targetSb.undeclaredParamKeysInText("param('group')", seq130Vars, seq130Assets), [],
+  'seq130: declared variable references need no legacy warning');
+ok(
+  /declaredParamKeySet\(B\.variables, B\.assets\)|\(B\.variables, B\.assets\)/.test(builderSource) &&
+    /已声明变量来源/.test(builderSource),
+  'seq130: locator text source uses declared-variable detection'
+);
+ok(
+  /declaredParamRow/.test(builderSource) && /变量（已声明）：/.test(builderSource),
+  'seq130: condition rows render declared variables normally (not legacy param)'
+);
+ok(
+  /表达式引用了未声明 param/.test(builderSource) && /表达式引用的变量均已声明/.test(builderSource),
+  'seq130: expression fields surface declared vs undeclared param hints'
+);
 const v2cForm = {
   key: 'max_rounds', type: 'int', value_source: 'literal', defaultText: '5',
   min: '1', max: '99', enumText: '', label: '刷本轮数', description: '说明', group: '运行参数',
@@ -8295,6 +8349,148 @@ ok(
   'seq129: dismiss_popup action text has the clarified label'
 );
 
+// --- seq130：点击分布叠加（#2）+ 素材自动刷新（#4） --------------------------
+eq(sandbox.normalizeClickPoint({ ts_ms: 1, x: 10, y: 20, target_x: 12, target_y: 22, miss: false }),
+  { ts_ms: 1, x: 10, y: 20, target_x: 12, target_y: 22, has_actual: true, has_target: true, miss: false, sel: '', seed: null },
+  'seq130: a click row normalizes to actual + target point');
+eq(sandbox.normalizeClickPoint({ x: -1, y: -1, target_x: 30, target_y: 40, miss: true }),
+  { ts_ms: 0, x: null, y: null, target_x: 30, target_y: 40, has_actual: false, has_target: true, miss: true, sel: '', seed: null },
+  'seq130: a miss keeps only the target point');
+eq(sandbox.normalizeClickPoint({ x: 1, y: 2 }).has_target, false,
+  'seq130: an old record without target_x/target_y is still drawable');
+eq(sandbox.normalizeClickPoints([{ x: 1, y: 2 }, { target_x: 3, target_y: 4 }, { nope: 1 }, null]),
+  [
+    { ts_ms: 0, x: 1, y: 2, target_x: null, target_y: null, has_actual: true, has_target: false, miss: false, sel: '', seed: null },
+    { ts_ms: 0, x: null, y: null, target_x: 3, target_y: 4, has_actual: false, has_target: true, miss: false, sel: '', seed: null },
+  ],
+  'seq130: non-drawable click rows are filtered out');
+ok(
+  /normalizeClickPoints\(rawPoints\)/.test(source) &&
+    (source.match(/normalizeClickPoints\(/g) || []).length >= 3,
+  'seq130: both single-run and aggregate overlays normalize their points'
+);
+ok(
+  /p\.has_target/.test(extractFunction('buildClickOverlay')) &&
+    /p\.target_x/.test(extractFunction('buildClickOverlay')) &&
+    /miss/.test(extractFunction('buildClickOverlay')),
+  'seq130: target points are rendered separately from actual click points'
+);
+ok(
+  /__oasKey/.test(extractFunction('drawClickOverlay')),
+  'seq130: the overlay cache is invalidated by file/points/canvas size'
+);
+ok(
+  /lastClicksPanelRefreshAt/.test(source) && /refreshRuns\(\)\.catch/.test(source),
+  'seq130: entering the click panel refreshes runs (throttled) and repaints'
+);
+ok(
+  /class="ring"><\/span><span class="muted">目标点/.test(html) &&
+    /\.clicks-legend \.ring/.test(styleCss) &&
+    /\.clicks-legend \.cross/.test(styleCss),
+  'seq130: the legend explains actual/target/miss markers'
+);
+eq(sandbox.assetsRefreshDue(10000, 0, 8000, false), true,
+  'seq130: the first auto refresh is due');
+eq(sandbox.assetsRefreshDue(10000, 9000, 8000, false), false,
+  'seq130: refresh is throttled by the interval');
+eq(sandbox.assetsRefreshDue(10000, 0, 8000, true), false,
+  'seq130: no duplicate request while a refresh is in flight');
+eq(sandbox.assetsRefreshDue(10000, 1000, 0, false), true,
+  'seq130: a zero interval never blocks');
+ok(
+  source.indexOf('autoRefreshTaskAssets') >= 0 &&
+    source.indexOf('clearInterval(assetsRefreshTimer)') >= 0 &&
+    source.indexOf('setInterval(function ()') >= 0,
+  'seq130: the visible workbench page polls task assets'
+);
+ok(
+  /document\.addEventListener\('visibilitychange'/.test(source) &&
+    source.indexOf('stopAssetsAutoRefresh()') >= 0 &&
+    source.indexOf('startAssetsAutoRefresh()') >= 0 &&
+    source.indexOf("autoRefreshTaskAssets('visibility')") >= 0,
+  'seq130: visibilitychange pauses polling when hidden and resumes when visible'
+);
+ok(
+  /window\.addEventListener\('focus'/.test(source) &&
+    /lastAssetsFocusRefreshAt/.test(source),
+  'seq130: window focus triggers a throttled asset refresh'
+);
+ok(
+  /captureAssetsRefreshState\(\)/.test(source) &&
+    /restoreAssetsRefreshState\(state\)/.test(source) &&
+    /scrollTop/.test(source) &&
+    /OASAssetUI\.selectAsset\(s\.selectedAsset\)/.test(source),
+  'seq130: refresh keeps scroll position and the selected asset'
+);
+
+// --- seq130（#1）：框选可点击选中并移动 ---------------------------------------
+eq(sandbox.pointInFrameRect({ x: 10, y: 10 }, { x: 0, y: 0, w: 20, h: 20 }), true,
+  'seq130: a point inside the ROI rect hits it');
+eq(sandbox.pointInFrameRect({ x: 25, y: 10 }, { x: 0, y: 0, w: 20, h: 20 }), false,
+  'seq130: a point outside the ROI rect misses it');
+eq(sandbox.pointInFrameRect({ x: 1, y: 1 }, { x: 0, y: 0, w: 0, h: 0 }), false,
+  'seq130: a zero-size rect is not clickable');
+eq(sandbox.pointInFramePolygon({ x: 2, y: 2 }, [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 0, y: 10 }]), true,
+  'seq130: a point inside a polygon hits it');
+eq(sandbox.pointInFramePolygon({ x: 8, y: 8 }, [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 0, y: 10 }]), false,
+  'seq130: a point outside a polygon misses it');
+eq(sandbox.translateFrameRect({ x: 1, y: 2, w: 3, h: 4 }, 5, 6), { x: 6, y: 8, w: 3, h: 4 },
+  'seq130: moving a rect translates x/y and keeps w/h');
+eq(sandbox.translateFramePoints([{ x: 1, y: 2 }, { x: 3, y: 4 }], 10, 20),
+  [{ x: 11, y: 22 }, { x: 13, y: 24 }],
+  'seq130: moving a polygon translates all vertices');
+eq(sandbox.clampRectToFrame({ x: -5, y: 700, w: 100, h: 100 }, 1280, 720),
+  { rect: { x: 0, y: 620, w: 100, h: 100 }, clamped: true },
+  'seq130: a rect dragged past the frame is clamped back inside');
+eq(sandbox.clampRectToFrame({ x: 10, y: 10, w: 20, h: 20 }, 1280, 720).clamped, false,
+  'seq130: an in-frame rect is not reported as clamped');
+eq(sandbox.clampPointsToFrame([{ x: -3, y: 2 }, { x: 10, y: 300 }], 1280, 320),
+  { points: [{ x: 0, y: 2 }, { x: 13, y: 300 }], clamped: true },
+  'seq130: a polygon is shifted so its bbox stays inside the frame');
+eq(sandbox.hitTestActionShape({ x: 5, y: 5 }, { kind: 'rect', roi: [0, 0, 10, 10] }), true,
+  'seq130: the action rect is clickable');
+eq(sandbox.hitTestActionShape({ x: 15, y: 15 }, { kind: 'rect', roi: [0, 0, 10, 10], invert: true }), true,
+  'seq130: an inverted action rect is clickable outside the shape');
+eq(sandbox.hitTestActionShape({ x: 5, y: 5 }, { kind: 'rect', roi: [0, 0, 10, 10], invert: true }), false,
+  'seq130: the excluded part of an inverted action rect is not clickable');
+eq(sandbox.hitTestActionShape({ x: 2, y: 2 }, { kind: 'polygon', points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 0, y: 10 }] }), true,
+  'seq130: the action polygon is clickable');
+ok(
+  /function beginBoxMove\(type, pt\)/.test(source) &&
+    /function applyBoxMove\(pt\)/.test(source) &&
+    /function finishBoxMove\(\)/.test(source) &&
+    /function cancelBoxMove\(\)/.test(source),
+  'seq130: the canvas has begin/apply/finish/cancel box-move helpers'
+);
+ok(
+  /beginBoxMove\('action', p0\)/.test(source) &&
+    /beginBoxMove\('recognitionPolygon', p0\)/.test(source) &&
+    /beginBoxMove\('recognitionRoi', p0\)/.test(source),
+  'seq130: clicking an existing action/recognition box selects it before starting a new box'
+);
+ok(
+  source.indexOf('applyBoxMove(p);') >= 0 &&
+    source.indexOf('finishBoxMove();') >= 0 &&
+    source.indexOf('canvasGesture = { start: p0 };') >= 0,
+  'seq130: drag moves / mouseup finishes while empty-drag still starts a new box'
+);
+ok(
+  /addEventListener\('keydown'[\s\S]{0,320}cancelBoxMove\(\)/.test(source),
+  'seq130: Esc cancels/undoes a box move'
+);
+ok(
+  source.indexOf("canvas.style.cursor = hover || ''") >= 0,
+  'seq130: a movable box shows a move cursor'
+);
+ok(
+  source.indexOf('框已移动：点对应「保存」写入素材；Esc 撤销本次移动') >= 0,
+  'seq130: moving a box marks it unsaved and tells the user how to save/undo'
+);
+ok(
+  source.indexOf('已撤销框移动') >= 0 && source.indexOf('boxMoveUndo') >= 0,
+  'seq130: Esc restores the previous geometry after a completed move'
+);
+
 // --- DOM id audit（Studio shell；D 批删除了参数面板/配置项对话框相关 id） -------
 const htmlDom = html;
 const referencedIds = [...new Set(
@@ -8378,9 +8574,11 @@ ok(
   'V2.0c: selecting a variable inserts param(key)'
 );
 ok(
-  /const kindChoices = \[\][\s\S]{0,300}\['ocr_var', '识别文字配置项'\]/.test(builderSource) &&
-    !/文字（参数）/.test(builderSource),
-  'D: 条件行使用「识别文字配置项」行类型'
+  /const kindChoices = \[\]/.test(builderSource) &&
+    /\['ocr_var', '识别文字配置项'\]/.test(builderSource) &&
+    !/文字（参数）/.test(builderSource) &&
+    /识别文字变量（已声明）/.test(builderSource),
+  'D/seq130: 条件行使用「识别文字配置项」行类型 + 已声明变量行'
 );
 const condSb = {};
 vm.createContext(condSb);

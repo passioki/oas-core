@@ -287,6 +287,8 @@ const batchStatus = document.getElementById('batch-status');
 let runs = [];
 let clickData = null; // {file, clicks, distinct, points}
 let clickOverlay = null;
+// seq130（#2）：点击分布面板激活时的运行记录刷新节流。
+let lastClicksPanelRefreshAt = 0;
 // §22.28 任务素材列表（分组/搜索/行内测试）
 let taskAssets = [];
 let taskAssetsMeta = {};
@@ -339,6 +341,46 @@ window.OAS_HEATMAP = {
     return Math.max(12, Math.min(48, Math.round(Math.min(w, h) * 0.045)));
   },
 };
+
+// seq130（#2）：点击记录归一化。后端 points 同时含 actual(x,y) 与 target(target_x,
+// target_y)；旧记录可能只有其中一类，miss=true 表示未命中（actual 不可用）。
+function normalizeClickPoint(row) {
+  const p = row && typeof row === 'object' && !Array.isArray(row) ? row : {};
+  const num = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const miss = p.miss === true;
+  const x = miss ? null : num(p.x);
+  const y = miss ? null : num(p.y);
+  const targetX = num(p.target_x);
+  const targetY = num(p.target_y);
+  const sel = p.sel === undefined || p.sel === null ? '' : String(p.sel);
+  const ts = num(p.ts_ms);
+  return {
+    ts_ms: ts === null ? 0 : ts,
+    x: x,
+    y: y,
+    target_x: targetX,
+    target_y: targetY,
+    has_actual: x !== null && y !== null,
+    has_target: targetX !== null && targetY !== null,
+    miss: miss,
+    sel: sel,
+    seed: num(p.seed),
+  };
+}
+
+// 只保留可绘制的记录（至少 actual 或 target 之一），并按 miss 分类。
+function normalizeClickPoints(points) {
+  const out = [];
+  for (const row of Array.isArray(points) ? points : []) {
+    const p = normalizeClickPoint(row);
+    if (!p.has_actual && !p.has_target) continue;
+    out.push(p);
+  }
+  return out;
+}
 
 function log(msg, level, detail) {
   const now = new Date();
@@ -424,6 +466,223 @@ function normalizeRect(a, b) {
   const h = Math.abs(a.y - b.y);
   return { x, y, w, h };
 }
+
+// --- seq130（#1）：画布上「点击已有框 → 拖动整体平移」纯函数/状态 --------------
+let boxMove = null;      // { type, start, origRoi, origPolygon, origActionPoly, origRoiBack, origInvert }
+let boxMoveUndo = null;  // 最近一次已完成的移动（Esc 撤销用；保存/新操作后清空）
+let boxMoveHover = '';
+
+function pointInFrameRect(pt, rect) {
+  if (!pt || !rect) return false;
+  const x = Number(rect.x);
+  const y = Number(rect.y);
+  const w = Number(rect.w);
+  const h = Number(rect.h);
+  if (![x, y, w, h].every((v) => Number.isFinite(v)) || w <= 0 || h <= 0) return false;
+  return pt.x >= x && pt.x <= x + w && pt.y >= y && pt.y <= y + h;
+}
+
+function pointInFramePolygon(pt, points) {
+  if (!pt || !Array.isArray(points) || points.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
+    const xi = Number(points[i].x);
+    const yi = Number(points[i].y);
+    const xj = Number(points[j].x);
+    const yj = Number(points[j].y);
+    if (![xi, yi, xj, yj].every((v) => Number.isFinite(v))) continue;
+    const intersect = ((yi > pt.y) !== (yj > pt.y)) &&
+      (pt.x < ((xj - xi) * (pt.y - yi)) / ((yj - yi) || Number.EPSILON) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function translateFrameRect(rect, dx, dy) {
+  return { x: Number(rect.x) + dx, y: Number(rect.y) + dy, w: Number(rect.w), h: Number(rect.h) };
+}
+
+function translateFramePoints(points, dx, dy) {
+  return (Array.isArray(points) ? points : []).map(function (p) {
+    return { x: Number(p.x) + dx, y: Number(p.y) + dy };
+  });
+}
+
+// 平移后把矩形/polygon 的 bbox 夹回画面内（返回夹紧后的几何与是否发生夹紧）。
+function clampRectToFrame(rect, frameW, frameH) {
+  const w = Math.max(1, Number(rect.w));
+  const h = Math.max(1, Number(rect.h));
+  let x = Number(rect.x);
+  let y = Number(rect.y);
+  const maxX = Math.max(0, frameW - w);
+  const maxY = Math.max(0, frameH - h);
+  x = Math.max(0, Math.min(maxX, x));
+  y = Math.max(0, Math.min(maxY, y));
+  return { rect: { x: x, y: y, w: w, h: h }, clamped: x !== Number(rect.x) || y !== Number(rect.y) };
+}
+
+function clampPointsToFrame(points, frameW, frameH) {
+  const pts = Array.isArray(points) ? points : [];
+  if (!pts.length) return { points: [], clamped: false };
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of pts) {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  let dx = 0;
+  let dy = 0;
+  if (minX < 0) dx = -minX;
+  else if (maxX > frameW) dx = frameW - maxX;
+  if (minY < 0) dy = -minY;
+  else if (maxY > frameH) dy = frameH - maxY;
+  return {
+    points: translateFramePoints(pts, dx, dy),
+    clamped: dx !== 0 || dy !== 0,
+  };
+}
+
+function hitTestActionShape(pt, shape) {
+  if (!shape) return false;
+  if (shape.kind === 'polygon') {
+    const inside = pointInFramePolygon(pt, shape.points || []);
+    return shape.invert ? !inside : inside;
+  }
+  if (shape.kind === 'rect' && Array.isArray(shape.roi) && shape.roi.length === 4) {
+    const inside = pointInFrameRect(pt, { x: shape.roi[0], y: shape.roi[1], w: shape.roi[2], h: shape.roi[3] });
+    return shape.invert ? !inside : inside;
+  }
+  return false;
+}
+
+function beginBoxMove(type, pt) {
+  boxMove = {
+    type: type,
+    start: { x: pt.x, y: pt.y },
+    moved: false,
+    origRoi: roi ? { x: roi.x, y: roi.y, w: roi.w, h: roi.h } : null,
+    origPolygon: polygon ? polygon.map(function (p) { return { x: p.x, y: p.y }; }) : null,
+    origActionPoly: actionPoly ? actionPoly.map(function (p) { return { x: p.x, y: p.y }; }) : null,
+    origRoiBack: roiBack ? { x: roiBack.x, y: roiBack.y, w: roiBack.w, h: roiBack.h } : null,
+    origInvert: actionInvert,
+  };
+  boxMoveUndo = null;
+  setStatus('已选中框：按住拖动=整体移动；Esc=取消', '#e8c46a');
+}
+
+function applyBoxMove(pt) {
+  if (!boxMove) return false;
+  const dx = pt.x - boxMove.start.x;
+  const dy = pt.y - boxMove.start.y;
+  if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return false;
+  boxMove.moved = true;
+  const frameW = canvas.width || 1280;
+  const frameH = canvas.height || 720;
+  if (boxMove.type === 'action') {
+    if (boxMove.origActionPoly) {
+      const moved = clampPointsToFrame(translateFramePoints(boxMove.origActionPoly, dx, dy), frameW, frameH);
+      actionPoly = moved.points;
+      roiBack = null;
+      if (moved.clamped) setStatus('操作区域已到画面边界（已夹紧）', '#e8c46a');
+    } else if (boxMove.origRoiBack) {
+      const moved = clampRectToFrame(translateFrameRect(boxMove.origRoiBack, dx, dy), frameW, frameH);
+      roiBack = moved.rect;
+      actionPoly = null;
+      if (moved.clamped) setStatus('操作区域已到画面边界（已夹紧）', '#e8c46a');
+    }
+  } else if (boxMove.type === 'recognitionPolygon') {
+    const moved = clampPointsToFrame(translateFramePoints(boxMove.origPolygon, dx, dy), frameW, frameH);
+    polygon = moved.points;
+    polyClosed = true;
+    roi = polygonBBox(polygon);
+    storedRecognitionPolygon = null;
+    if (moved.clamped) setStatus('识别多边形已到画面边界（已夹紧）', '#e8c46a');
+  } else if (boxMove.type === 'recognitionRoi' && boxMove.origRoi) {
+    const moved = clampRectToFrame(translateFrameRect(boxMove.origRoi, dx, dy), frameW, frameH);
+    roi = moved.rect;
+    if (moved.clamped) setStatus('识别区已到画面边界（已夹紧）', '#e8c46a');
+  }
+  updateRoiLabel();
+  draw();
+  return true;
+}
+
+function finishBoxMove() {
+  if (!boxMove) return false;
+  const moved = boxMove.moved;
+  if (moved) {
+    boxMoveUndo = {
+      type: boxMove.type,
+      roi: boxMove.origRoi,
+      polygon: boxMove.origPolygon,
+      actionPoly: boxMove.origActionPoly,
+      roiBack: boxMove.origRoiBack,
+      invert: boxMove.origInvert,
+    };
+    setStatus('框已移动：点对应「保存」写入素材；Esc 撤销本次移动', '#e8c46a');
+    log(`画布框移动完成：${boxMove.type}（未保存，Esc 可撤销）`);
+  }
+  boxMove = null;
+  draw();
+  return moved;
+}
+
+function cancelBoxMove() {
+  if (boxMove) {
+    // 拖动中取消：恢复按下时的几何。
+    const orig = boxMove;
+    boxMove = null;
+    if (orig.type === 'action') {
+      actionPoly = orig.origActionPoly;
+      roiBack = orig.origRoiBack;
+      actionInvert = orig.origInvert;
+    } else if (orig.type === 'recognitionPolygon') {
+      polygon = orig.origPolygon;
+      polyClosed = !!orig.origPolygon;
+      roi = orig.origPolygon && orig.origPolygon.length >= 3 ? polygonBBox(orig.origPolygon) : orig.origRoi;
+    } else if (orig.type === 'recognitionRoi') {
+      roi = orig.origRoi;
+    }
+    updateRoiLabel();
+    draw();
+    setStatus('已取消框移动');
+    return true;
+  }
+  if (boxMoveUndo) {
+    const u = boxMoveUndo;
+    boxMoveUndo = null;
+    if (u.type === 'action') {
+      actionPoly = u.actionPoly;
+      roiBack = u.roiBack;
+      actionInvert = u.invert;
+    } else if (u.type === 'recognitionPolygon') {
+      polygon = u.polygon;
+      polyClosed = !!u.polygon;
+      roi = u.polygon && u.polygon.length >= 3 ? polygonBBox(u.polygon) : u.roi;
+    } else if (u.type === 'recognitionRoi') {
+      roi = u.roi;
+    }
+    updateRoiLabel();
+    draw();
+    setStatus('已撤销框移动');
+    log('已撤销上一次画布框移动');
+    return true;
+  }
+  return false;
+}
+
+document.addEventListener('keydown', function (ev) {
+  if (ev.key !== 'Escape') return;
+  const page = document.getElementById('page-workbench');
+  if (!page || !page.classList.contains('active')) return;
+  if (cancelBoxMove()) {
+    ev.preventDefault();
+  }
+});
 
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1839,6 +2098,8 @@ function resetActionGeometry(opts) {
 }
 
 function resetSelection(opts) {
+  // seq130（#1）：任何新的选择/清空都放弃未保存的框移动撤销点。
+  boxMoveUndo = null;
   const o = opts || {};
   resetActionGeometry({
     keepTarget: o.keepTarget === true,
@@ -3556,8 +3817,9 @@ function buildClickOverlay() {
   hctx.save();
   hctx.globalCompositeOperation = 'lighter';
   for (const p of clickData.points) {
-    const x = Number(p && p.x);
-    const y = Number(p && p.y);
+    if (!p.has_actual) continue;
+    const x = Number(p.x);
+    const y = Number(p.y);
     if (!isFinite(x) || !isFinite(y)) continue;
     const q = window.OAS_HEATMAP.mapPoint({ x, y }, w, h);
     if (q.x < -radius || q.y < -radius || q.x > w + radius || q.y > h + radius) continue;
@@ -3581,8 +3843,9 @@ function buildClickOverlay() {
   octx.restore();
   // scatter dots: dark halo + near-white core, readable on any game art
   for (const p of clickData.points) {
-    const x = Number(p && p.x);
-    const y = Number(p && p.y);
+    if (!p.has_actual) continue;
+    const x = Number(p.x);
+    const y = Number(p.y);
     if (!isFinite(x) || !isFinite(y)) continue;
     const q = window.OAS_HEATMAP.mapPoint({ x, y }, w, h);
     octx.beginPath();
@@ -3594,6 +3857,34 @@ function buildClickOverlay() {
     octx.fillStyle = '#f2f7ff';
     octx.fill();
   }
+  // seq130（#2）：目标点（target_x/target_y）单独渲染为橙色圆环+十字，与
+  // 实际点击（白点/热力）区分；miss 记录加红叉提示未命中。
+  for (const p of clickData.points) {
+    if (!p.has_target) continue;
+    const q = window.OAS_HEATMAP.mapPoint({ x: p.target_x, y: p.target_y }, w, h);
+    octx.save();
+    octx.strokeStyle = p.miss ? 'rgba(255,80,80,0.95)' : 'rgba(255,159,64,0.95)';
+    octx.lineWidth = 1.6;
+    octx.beginPath();
+    octx.arc(q.x, q.y, 6, 0, Math.PI * 2);
+    octx.stroke();
+    octx.beginPath();
+    octx.moveTo(q.x - 8, q.y);
+    octx.lineTo(q.x + 8, q.y);
+    octx.moveTo(q.x, q.y - 8);
+    octx.lineTo(q.x, q.y + 8);
+    octx.stroke();
+    if (p.miss) {
+      octx.beginPath();
+      octx.moveTo(q.x - 4, q.y - 4);
+      octx.lineTo(q.x + 4, q.y + 4);
+      octx.moveTo(q.x + 4, q.y - 4);
+      octx.lineTo(q.x - 4, q.y + 4);
+      octx.stroke();
+    }
+    octx.restore();
+  }
+  overlay.dataset = overlay.dataset || {};
   clickOverlay = overlay;
 }
 
@@ -3609,12 +3900,11 @@ function drawClickOverlay() {
   if (!clickPanel || !clickPanel.classList.contains('active')) return;
   if (!clickData) return;
   if (clickData.points && clickData.points.length) {
-    if (
-      !clickOverlay ||
-      clickOverlay.width !== canvas.width ||
-      clickOverlay.height !== canvas.height
-    ) {
+    const cacheKey = String(clickData.file || '') + '|' + clickData.points.length +
+      '|' + canvas.width + 'x' + canvas.height;
+    if (!clickOverlay || clickOverlay.__oasKey !== cacheKey) {
       buildClickOverlay();
+      if (clickOverlay) clickOverlay.__oasKey = cacheKey;
     }
     if (clickOverlay) ctx.drawImage(clickOverlay, 0, 0);
   }
@@ -3634,7 +3924,8 @@ async function loadAggregate() {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const s = await r.json();
     if (!s || !s.ok) throw new Error(((s && s.errors) || []).join('; ') || 'ok=false');
-    const points = Array.isArray(s.points) ? s.points : [];
+    const rawPoints = Array.isArray(s.points) ? s.points : [];
+    const points = normalizeClickPoints(rawPoints);
     clickData = {
       file: `聚合(${s.scope}${task ? ' · ' + task : ''})`,
       clicks: Number(s.clicks) || points.length,
@@ -3699,7 +3990,8 @@ async function loadClicks(file) {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const s = await r.json();
     if (!s || !s.ok) throw new Error(((s && s.errors) || []).join('; ') || 'ok=false');
-    const points = Array.isArray(s.points) ? s.points : [];
+    const rawPoints = Array.isArray(s.points) ? s.points : [];
+    const points = normalizeClickPoints(rawPoints);
     const clicks = Number.isFinite(Number(s.clicks)) ? Number(s.clicks) : points.length;
     const distinct = Number.isFinite(Number(s.distinct))
       ? Number(s.distinct)
@@ -3708,10 +4000,12 @@ async function loadClicks(file) {
     clickOverlay = null;
     draw();
     updateClickStatsText();
+    const targetCount = points.filter((q) => q.has_target).length;
+    const missCount = points.filter((q) => q.miss).length;
     setClicksStatus(
-      `已叠加 ${clickData.file} · clicks=${clicks} distinct=${distinct}（${points.length} 个点）`
+      `已叠加 ${clickData.file} · clicks=${clicks} distinct=${distinct}（${points.length} 个点 · 目标 ${targetCount} · miss ${missCount}）`
     );
-    log(`点击分布已叠加：${clickData.file} clicks=${clicks} distinct=${distinct}`);
+    log(`点击分布已叠加：${clickData.file} clicks=${clicks} distinct=${distinct} 目标=${targetCount} miss=${missCount}`);
   } catch (e) {
     clickData = null;
     clickOverlay = null;
@@ -4528,6 +4822,112 @@ async function refreshTaskAssets(task) {
     }
   }
 }
+
+// --- seq130（#4）：工作台任务页素材自动刷新 -----------------------------------
+// 可见/聚焦/每 8s 自动刷新任务素材；隐藏标签页暂停；保持滚动位置与选中的素材，
+// 失败静默（日志）；in-flight 保护避免请求风暴。未保存的编辑状态（画布 ROI/
+// action_shape/表单）不由 refreshTaskAssets 改写，这里只重绘列表。
+const ASSETS_REFRESH_INTERVAL_MS = 8000;
+let assetsRefreshTimer = null;
+let assetsRefreshInFlight = false;
+let lastAssetsRefreshAt = 0;
+let lastAssetsFocusRefreshAt = 0;
+
+function assetsRefreshDue(now, lastAt, intervalMs, inFlight) {
+  if (inFlight) return false;
+  const n = Number(now) || 0;
+  const l = Number(lastAt) || 0;
+  const i = Number(intervalMs) > 0 ? Number(intervalMs) : 0;
+  return l <= 0 || n - l >= i;
+}
+
+function activeWorkbenchPage() {
+  const page = document.querySelector('.app-page.active');
+  return page ? String(page.id) : '';
+}
+
+function captureAssetsRefreshState() {
+  const scroll = {};
+  const nodes = { assetsList: assetsList, globalAssetsList: globalAssetsList, framesList: framesList, frameAssetsList: frameAssetsList };
+  for (const key of Object.keys(nodes)) {
+    const el = nodes[key];
+    if (el && Number.isFinite(el.scrollTop)) scroll[key] = el.scrollTop;
+  }
+  let selectedAsset = '';
+  if (window.OASAssetUI && typeof window.OASAssetUI.getSelectedAsset === 'function') {
+    selectedAsset = String(window.OASAssetUI.getSelectedAsset() || '');
+  }
+  return { scroll: scroll, selectedAsset: selectedAsset };
+}
+
+function restoreAssetsRefreshState(state) {
+  const s = state && typeof state === 'object' ? state : {};
+  const scroll = s.scroll && typeof s.scroll === 'object' ? s.scroll : {};
+  const nodes = { assetsList: assetsList, globalAssetsList: globalAssetsList, framesList: framesList, frameAssetsList: frameAssetsList };
+  for (const key of Object.keys(nodes)) {
+    const el = nodes[key];
+    const top = Number(scroll[key]);
+    if (el && Number.isFinite(top)) el.scrollTop = top;
+  }
+  if (s.selectedAsset && window.OASAssetUI && typeof window.OASAssetUI.selectAsset === 'function') {
+    try { window.OASAssetUI.selectAsset(s.selectedAsset); } catch (e) { /* cosmetic */ }
+  }
+}
+
+async function autoRefreshTaskAssets(reason) {
+  if (document.hidden) return false;
+  const page = activeWorkbenchPage();
+  if (page !== 'page-workbench' && page !== 'page-builder') return false;
+  if (!taskName || !String(taskName.value || '').trim()) return false;
+  if (!assetsRefreshDue(Date.now(), lastAssetsRefreshAt, ASSETS_REFRESH_INTERVAL_MS, assetsRefreshInFlight)) {
+    return false;
+  }
+  assetsRefreshInFlight = true;
+  const state = captureAssetsRefreshState();
+  try {
+    await refreshTaskAssets();
+    lastAssetsRefreshAt = Date.now();
+    return true;
+  } catch (e) {
+    log('素材自动刷新失败（' + reason + '）：' + (e && e.message ? e.message : e));
+    return false;
+  } finally {
+    restoreAssetsRefreshState(state);
+    assetsRefreshInFlight = false;
+  }
+}
+
+function stopAssetsAutoRefresh() {
+  if (assetsRefreshTimer) {
+    clearInterval(assetsRefreshTimer);
+    assetsRefreshTimer = null;
+  }
+}
+
+function startAssetsAutoRefresh() {
+  stopAssetsAutoRefresh();
+  if (typeof setInterval !== 'function') return;
+  assetsRefreshTimer = setInterval(function () {
+    autoRefreshTaskAssets('interval');
+  }, ASSETS_REFRESH_INTERVAL_MS);
+}
+
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden) {
+    stopAssetsAutoRefresh();
+    log('素材自动刷新：标签页隐藏，暂停');
+  } else {
+    startAssetsAutoRefresh();
+    autoRefreshTaskAssets('visibility');
+  }
+});
+
+window.addEventListener('focus', function () {
+  const now = Date.now();
+  if (now - lastAssetsFocusRefreshAt < 3000) return;
+  lastAssetsFocusRefreshAt = now;
+  autoRefreshTaskAssets('focus');
+});
 
 const ASSET_KIND_LABELS = {
   template: '模板图（template）',
@@ -5651,6 +6051,7 @@ async function saveAssetRecognitionRoi() {
     resultEl.textContent = text;
     log(text);
     setStatus(`素材「${it.id}」识别区域已保存；两个素材库已刷新`);
+  boxMoveUndo = null;
   }
   editingRecognitionAsset = null;
   updateAssetRoiSaveButton();
@@ -5725,6 +6126,7 @@ async function updateAssetActionRoi(id) {
   draw();
   log(`素材「${id}」操作区域已更新`);
   setStatus(`素材「${id}」操作区域已保存；两个素材库已刷新`);
+  boxMoveUndo = null;
   await refreshTaskAssetsForScope(task);
   await refreshGlobalAssets();
 }
@@ -7580,6 +7982,21 @@ canvas.addEventListener('mousedown', (ev) => {
         return;
       }
     }
+    // seq130（#1）：点击已有框（操作区 / 识别多边形 / 识别矩形）优先选中 → 拖动整体平移。
+    const boxActionShape = currentActionShape();
+    if (boxActionShape && hitTestActionShape(p0, boxActionShape)) {
+      beginBoxMove('action', p0);
+      return;
+    }
+    if (canvasTool === 'recognition' && polygon && polyClosed && pointInFramePolygon(p0, polygon)) {
+      beginBoxMove('recognitionPolygon', p0);
+      return;
+    }
+    if (canvasTool === 'recognition' && !polygon && roi && pointInFrameRect(p0, roi)) {
+      beginBoxMove('recognitionRoi', p0);
+      return;
+    }
+    boxMoveUndo = null;
     canvasGesture = { start: p0 };
     dragStart = p0;
     dragTarget = canvasTool === 'recognition' ? 'roi' : 'back';
@@ -7629,6 +8046,12 @@ canvas.addEventListener('mousemove', (ev) => {
     return;
   }
   const p = toFrame(ev);
+  // seq130（#1）：正在整体移动已有框。
+  if (boxMove) {
+    ev.preventDefault();
+    applyBoxMove(p);
+    return;
+  }
   // 识别多边形已收尾：拖动顶点微调。
   if (canvasTool === 'recognition' && polyDrag !== null && polygon) {
     polygon[polyDrag] = p;
@@ -7636,6 +8059,19 @@ canvas.addEventListener('mousemove', (ev) => {
     updateRoiLabel();
     draw();
     return;
+  }
+  if (canvasTool !== 'none' && !dragStart && polyDrag === null) {
+    // seq130（#1）：悬停在已有框上 = 可拖动光标 + 状态提示。
+    let hover = '';
+    const hoverShape = currentActionShape();
+    if (hoverShape && hitTestActionShape(p, hoverShape)) hover = 'move';
+    else if (canvasTool === 'recognition' && polygon && polyClosed && pointInFramePolygon(p, polygon)) hover = 'move';
+    else if (canvasTool === 'recognition' && !polygon && roi && pointInFrameRect(p, roi)) hover = 'move';
+    if (hover !== boxMoveHover) {
+      boxMoveHover = hover;
+      canvas.style.cursor = hover || '';
+      if (hover) setStatus('可拖动：按住鼠标移动已有框；点击空白=新建，单击=加顶点，双击收尾', '#e8c46a');
+    }
   }
   if (!dragStart) return;
   const start = canvasGesture ? canvasGesture.start : dragStart;
@@ -7710,6 +8146,11 @@ canvas.addEventListener('mouseup', (ev) => {
     return;
   }
   const p = toFrame(ev);
+  // seq130（#1）：整体移动收尾（无论是否真的移动过都结束本次手势）。
+  if (boxMove) {
+    finishBoxMove();
+    return;
+  }
   // 识别多边形顶点拖动收尾。
   if (canvasTool === 'recognition' && polyDrag !== null) {
     polyDrag = null;
@@ -8457,6 +8898,18 @@ async function doRunTask() {
     for (const p of document.querySelectorAll('.rail-panels .panel')) {
       p.classList.toggle('active', p.id === panelId);
     }
+    // seq130（#2）：进入点击分布面板时刷新运行记录（2s 节流）并重绘叠加。
+    if (panelId === 'panel-click') {
+      const now = Date.now();
+      if (now - lastClicksPanelRefreshAt > 2000) {
+        lastClicksPanelRefreshAt = now;
+        refreshRuns().catch(function (e) {
+          log('点击分布：进入面板刷新运行记录失败：' + (e && e.message ? e.message : e));
+        });
+      }
+      if (clickData && typeof draw === 'function') draw();
+      return;
+    }
     // Repaint so a cached click-distribution overlay disappears immediately
     // when leaving that panel (and appears when entering it).
     if (typeof draw === 'function') draw();
@@ -8772,6 +9225,9 @@ async function doRunTask() {
   try {
     await refreshTaskAssets(bootTask || undefined);
     await loadTaskFlow(bootTask);
+    // seq130（#4）：任务页可见/聚焦/定时自动刷新素材；隐藏时暂停。
+    lastAssetsRefreshAt = Date.now();
+    startAssetsAutoRefresh();
   } catch (e) {
     log('任务素材读取失败：' + e);
   }

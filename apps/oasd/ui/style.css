@@ -112,6 +112,30 @@ pre {
   background: #f2f7ff;
   box-shadow: 0 0 0 2px #000;
 }
+/* seq130（#2）：目标点/未命中图例 */
+.clicks-legend .ring {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid #ff9f40;
+  box-sizing: border-box;
+}
+.clicks-legend .cross {
+  width: 10px;
+  height: 10px;
+  position: relative;
+}
+.clicks-legend .cross::before,
+.clicks-legend .cross::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 0;
+  width: 2px;
+  height: 10px;
+  background: #e85353;
+}
+.clicks-legend .cross::after { transform: rotate(90deg); }
 
 /* 22.18 visual flow editor */
 .flow-steps {
