@@ -132,7 +132,7 @@
       head.textContent = '选择 OCR 素材（参数文字点击需要定位区域）';
       const hint = document.createElement('div');
       hint.className = 'muted small';
-      hint.textContent = '参数只替换识别文字；点击仍需要一个 OCR 素材/ROI 作为定位区域。之后可在右侧「定位对象」里修改。';
+      hint.textContent = '参数只替换识别文字。点击/拖动的“操作区域”取决于素材配置：素材若声明了操作区域（action_shape / roi_back）就用它；否则用 OCR 识别到的真实文字框。多匹配取最近、相对位移区域、强制识别框等模式已列入设计（docs/OPERATION-REGION-DESIGN.md），确认语义后再接 UI。';
       const sel = document.createElement('select');
       for (const a of assets) {
         const o = document.createElement('option');

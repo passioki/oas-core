@@ -4452,3 +4452,29 @@ GET /task/assets?task= → 34 个素材（全局模式）
 ## B. 剩余
 
 Rust 后端未动（workspace 801/0 基线不变）；按用户「推送即可，不用发布」未重打 release、未 tag。后续可补：真实浏览器交互 E2E、素材选择对话框键盘/焦点细节、历史坏条件批量修复脚本（当前仅载入/保存时修复）。
+
+# ★ §E-90 ★★★ [11-06 08:1x] **操作区域模型 + 长按/曲线能力设计（seq 120，待用户确认后实现）**
+
+> 用户指出参数点击素材选择对话框不完善，给出 3 类操作区域来源（①已有素材：素材本身操作区域 / 多匹配取最近候选的操作区域；②相对位移区域；③参数 OCR 真实识别区域）并询问动作能力（长按？任意曲线拟人？）。设计草案 `docs/OPERATION-REGION-DESIGN.md`；**未改引擎**。
+
+## 现状（已核对代码）
+
+- **1a 素材本身操作区域**：已支持（素材 `action_shape`/click_back；`click_box_for` 平移）。
+- **1b 多匹配取最近**：未支持。模板/集合取最高分；OCR 点击取最高分、OCR 拖动取第一条（还不一致）。
+- **2 相对位移区域**：未支持为 flow 级能力（历史决策删 offset；现有 `roi_back` 是素材级）。
+- **3 参数 OCR 真实识别区域**：部分支持（仅素材无 action_shape/click_back 时用 OCR 行 bbox；无法单动作强制）。
+- **动作**：click_target、drag、swipe；**无长按**；单次连续真曲线做不到（ADB `input swipe` 直线；文档已注明曲线抖动只审计不发送）。
+
+## 设计草案（待确认）
+
+- 统一 `region` 字段（可选、旧 flow 零变化）：`mode=asset|ocr|nearest|offset` + `reference`（nearest 参考）+ `offset:[dx,dy,w,h]`；作用于 `click_target.find[]`、`drag.from/to`、未来 `long_press.find[]`。
+- 新增 `long_press` op（建议独立，`hold_ms` 默认 800、范围 100..=5000；ADB 用同坐标 `input swipe x y x y ms`）。
+- nearest 需模板多候选匹配（NCC 局部极大+NMS）；OCR 已有全部行、需统一候选策略。
+- 曲线：不做单次真曲线；可选多段近似（每次独立手势风险）或模拟器低层注入（不通用）。
+
+## 待用户确认（阻塞）
+
+1. nearest 的“最近”参考点（素材 roi 中心 / 屏幕中心 / 指定坐标 / 上一次点击位置）。
+2. 长按形态（独立 op vs click_target `hold_ms`）与默认时长。
+3. offset 基准（匹配/识别 bbox 左上角 vs 中心 vs 素材 roi）。
+4. 曲线方案（保持直线拟人 / 多段近似 / 模拟器低层注入）。

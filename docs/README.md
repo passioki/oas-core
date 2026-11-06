@@ -3,7 +3,7 @@
 > 本目录是 **oas-core 的独立项目文档**，从旧 backend 文档仓迁移而来。
 > 旧仓库 `D:\OAS-dev\backend` 已冻结，仅作为资产/历史资源；oas-core 的构建、运行、测试、发布不依赖它。
 
-## 当前有效文档（顶层 15 份，含发布节点）
+## 当前有效文档（顶层 16 份，含发布节点）
 
 | 文件 | 用途 |
 |---|---|
@@ -19,6 +19,7 @@
 | `PENDING-LEDGER.md` | 未完成台账（当前看 **§E-66~§E-79**；§E-75 = 调度器产品化 + Round 裁决，§C6 = P5 实机验收最终实测；§E-76 = 编辑器帧页；§E-77 = 素材行两按钮 + 一键提交/推送脚本；§E-78 = 素材库 UX 六项 + OCR 阈值 + 11-04 晚三项遗留修复；**§E-79 = Studio/Runner 分离 + TaskPackage + 配置/子任务配置：Q1~Q7 已批准、PR1~PR7 ✅ 已提交（PR1~PR6 见 §F/§G/§H/§I/§J/§K；PR7 = 代码 `5e45c81` + seq 107 docs `8344d97`，§L：旧 Studio 完整调度 UI 迁移 + 最小任务链多参数）、**最终审计 4 个后端 P1 ✅ 修复 `68e5768`（§M；文档 P1 由 seq 108 docs 修复；状态 handoff-ready）**、6 个 PR + PR7 + 最终审计修复全部完成**） |
 | `EDITOR-UX-PLAN.md` | 编辑器 UX/选择模型/实时帧/区域有效性改版（实现后状态 §15；**2026-11-04 帧页现行口径 §16；§16.6 = 布局回归修复；§17 = 素材行两按钮 + 9 项设置菜单；§18 = 素材库 UX 六项 + OCR 阈值（现行）；§18.10 = 三项遗留修复**） |
 | `ASSET-DATA-MODEL.md` | 全局 `assets/`、任务素材=flow 引用子集、旧 `library/` 兼容边界 |
+| `OPERATION-REGION-DESIGN.md` | ★ **操作区域模型设计草案（seq 120，待用户确认 4 个语义问题后实现）**：现状事实（素材操作区域/多匹配取最高分/OCR 识别框/无 flow 级 offset）、统一 `region.mode=asset\|ocr\|nearest\|offset` 模型、点击/拖动/长按/曲线动作能力与分期计划 |
 | `AUDIT-SUBPROCESS-2026-11-01.md` | 子进程独立复核（范围 21:50 / 361 tests；当前状态见顶部横幅与 §10） |
 
 > **历史文档已归档**到 `docs/archive/`（7 份，`git mv`，未删除）：
@@ -34,6 +35,7 @@
 
 ## 当前基线（2026-11-05 03:3x；**PR1~PR7 + 最终审计修复已收口，状态 handoff-ready；两个服务已停止，交接后电脑关机**；发布节点 v0.1.0 见下行）
 
+- ★ **2026-11-06 08:1x（seq 120，设计草案）**：**操作区域与动作能力设计**——用户指出参数点击素材选择不完善，给出 3 类区域来源（素材操作区域 / 多匹配最近 / 相对位移 / 参数 OCR 真实识别区域）与动作问题（长按、任意曲线）。新增 `docs/OPERATION-REGION-DESIGN.md`：现状对照（`click_box_for`/`locate`/`drag_target`/InputSink）、统一 `region.mode` 模型、长按建议、曲线限制与分期计划；**待确认 nearest 参考点/长按形态/offset 基准/曲线方案后再实现**。
 - ★ **2026-11-06 07:3x（seq 119）**：**参数插入/条件表达式修复 + 参数点击素材选择**——用户反馈「加两个参数后与 if 衔接，JSON 多处自动出现 `sel: 觉醒材料`」。① 「插入参数 ▾」防粘连（条件末尾自动 ` and `、标识符边界补空格；`exprInsertText`/`insertTextAtField`）；② `repairConditionExpr` 自愈历史 `truetext_visible(...)`，载入/应用/保存前执行并清 if/while 遗留 `args.sel`；③ 参数点击素材：上下文复用→唯一素材直用→多个弹选择对话框（可取消），调色板/分支下拉共用 `prepareActionStep()`；④ 用户任务 `tasks/切换预设御魂/flow.json` 条件修为 `text_visible(param('group'))`（保留其两参数/if 分支，工作区未提交）；⑤ UI **2039/164/158/0 dead/6 nav**（+11）；按用户要求只推送、不发布。
 - ★ **2026-11-05 21:1x（seq 118）**：**动作目录统一 + 配置项成熟 UI + 最终审计**——① `actionCatalog()` 单一事实源：调色板与 if/loop「是/否/循环体」分支下拉统一，参数预设未声明时禁用+原因（修复用户反馈）；② 任务配置项对话框升级结构化表单（帮助块/每参卡片/逐字段示例/语义校验/高级 JSON/T3 预填行）；③ 新增 `docs/AUDIT-2026-11-05.md`（代码审计/文档漂移对照/残余风险/交接）；④ workspace **801/0**、UI **2028/164/158/0/6**、三路 E2E ALL PASS；提交 oas-core `5b0b107` / oas-runner `a6b8670`；按用户要求完成后关机。
 - ★ **2026-11-05 20:4x（seq 117）**：**更新检测收尾 + 参数编辑补齐**——① feed TTL 缓存（`updates.cache_secs` 默认 60、命中不 curl、`?refresh=1`、失败不刷新）、远程包缓存复用（`reused_cache`）、`POST /runner/updates/cache/clear`；② 参数「文字来源」三态覆盖 click_target.find/requires/expect/drag.from/to，T3「去声明…」预填 key；③ 测试 workspace **801/0**、UI **1919/159/158/0/6**、三路 E2E ALL PASS；oas-runner rev bump `78be71d`，独立包 **37,871,134 B / `B127C0FC…66DB`**。
