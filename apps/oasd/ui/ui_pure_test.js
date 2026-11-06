@@ -3905,7 +3905,8 @@ ok(
 ok(
   /written = paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource) &&
     /step\.args\[field\] = paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource) &&
-    /step\.args\[side\] = paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource),
+    /let written = paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource) &&
+    /step\.args\[side\] = written;/.test(builderSource),
   'find / guards / drag endpoints all write the OCR text tri-state through paramSourceApply'
 );
 ok(
@@ -4364,7 +4365,8 @@ ok(
 );
 ok(
   /step\.args\[field\] = paramSourceApply\(next, text\.mode, text\.value\)/.test(builderSource) &&
-    /step\.args\[side\] = paramSourceApply\(next, text\.mode, text\.value\)/.test(builderSource),
+    /let written = paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource) &&
+    /step\.args\[side\] = written;/.test(builderSource),
   'guards + drag endpoints write through paramSourceApply (mutual exclusion + unknown fields kept)'
 );
 ok(
@@ -4620,6 +4622,321 @@ ok(/\.task-config-empty/.test(styleCss), 'style.css styles the empty state');
 ok(
   /\.task-config-json\[hidden\]/.test(styleCss) && /#task-config-form\[hidden\]/.test(styleCss),
   'both editing modes hide cleanly'
+);
+
+// --- P1: operation region / long press / curve swipe / blocking wait ---------
+const BUILDER_REGION_PURE = [
+  'paramSafeKey', 'paramTextExpr',
+  'regionModeText', 'regionHintText', 'regionSpec', 'regionWrite',
+  'regionOffsetFromInput', 'normalizeRegion', 'regionIssues', 'normalizeScreenSize',
+  'longPressStep', 'longPressHoldText', 'holdRangeFromInput', 'longPressArgsIssues',
+  'curveSwipeStep', 'curvePointsFromText', 'curveDurationFromInput',
+  'curveSwipeArgsIssues', 'actionArgsIssues', 'waitBlockingHelpText',
+];
+const p1Sb = {};
+vm.createContext(p1Sb);
+// REGION_MODES is a module-level const referenced by normalizeRegion / regionIssues;
+// pull its real literal out of builder.js instead of duplicating it here.
+const REGION_MODES_LITERAL = (/const REGION_MODES = (\[[^\]]*\]);/.exec(builderSource) || [])[1] ||
+  "['asset', 'ocr', 'nearest', 'offset']";
+vm.runInContext(
+  'const REGION_MODES = ' + REGION_MODES_LITERAL + ';\n' +
+    BUILDER_REGION_PURE.map((name) => extractFunctionFrom(builderSource, name, 'builder.js')).join('\n'),
+  p1Sb,
+  { filename: 'builder.js#p1-region' }
+);
+
+eq(p1Sb.regionModeText('').startsWith('默认'), true, 'empty region mode is the default');
+eq(p1Sb.regionModeText('asset'), '素材操作区域', 'asset region mode text');
+eq(p1Sb.regionModeText('ocr'), 'OCR 识别区域', 'ocr region mode text');
+eq(p1Sb.regionModeText('nearest'), '最近匹配（离识别 ROI 中心最近）', 'nearest region mode text');
+eq(p1Sb.regionModeText('offset'), '相对偏移', 'offset region mode text');
+ok(/未知/.test(p1Sb.regionModeText('weird')), 'unknown region mode is reported');
+eq(p1Sb.regionHintText('asset').indexOf('素材') >= 0, true, 'asset mode hint mentions the asset region');
+eq(p1Sb.regionHintText('offset').indexOf('dx') >= 0, true, 'offset mode hint explains dx/dy');
+eq(p1Sb.regionHintText('').indexOf('不指定') >= 0, true, 'default mode hint explains the current behavior');
+
+eq(p1Sb.regionSpec(null), { mode: '', offset: [] }, 'missing region reads as the default mode');
+eq(p1Sb.regionSpec({ region: { mode: 'OCR' } }), { mode: 'ocr', offset: [] }, 'region mode is normalized to lowercase');
+eq(
+  p1Sb.regionSpec({ region: { mode: 'offset', offset: [1, 2, 3, 4] } }),
+  { mode: 'offset', offset: [1, 2, 3, 4] },
+  'region offset is read back'
+);
+eq(p1Sb.regionSpec({ region: 'bad' }), { mode: '', offset: [] }, 'a non-object region degrades to default');
+
+eq(
+  p1Sb.regionWrite({ kind: 'ocr_text', sel: 'O_x', require_template: 'I_x' }, 'asset', [1, 2]),
+  { kind: 'ocr_text', sel: 'O_x', require_template: 'I_x', region: { mode: 'asset' } },
+  'asset mode writes {mode} and drops offset while keeping unknown locator fields'
+);
+eq(
+  p1Sb.regionWrite({ kind: 'ocr_text', region: { mode: 'asset' } }, 'offset', [1, 2, 3, 4]),
+  { kind: 'ocr_text', region: { mode: 'offset', offset: [1, 2, 3, 4] } },
+  'offset mode writes the offset array'
+);
+eq(
+  p1Sb.regionWrite({ kind: 'ocr_text', region: { mode: 'ocr' } }, '', []),
+  { kind: 'ocr_text' },
+  'the default mode removes region entirely'
+);
+
+eq(
+  p1Sb.regionOffsetFromInput('0', '-10', '', ''),
+  { ok: true, offset: [0, -10], error: '' },
+  'dx/dy only (w/h blank) inherits the bbox size'
+);
+eq(
+  p1Sb.regionOffsetFromInput('5', '6', '100', '40'),
+  { ok: true, offset: [5, 6, 100, 40], error: '' },
+  'four offset values are kept'
+);
+eq(p1Sb.regionOffsetFromInput('', '6', '', '').ok, false, 'missing dx is rejected');
+eq(p1Sb.regionOffsetFromInput('1.5', '6', '', '').ok, false, 'non-integer dx is rejected');
+eq(p1Sb.regionOffsetFromInput('1', '2', '30', '').ok, false, 'w/h must be both present or both blank');
+eq(p1Sb.regionOffsetFromInput('1', '2', '0', '20').ok, false, 'w must be > 0');
+eq(p1Sb.regionOffsetFromInput('1', '2', '10', '-1').ok, false, 'h must be > 0');
+
+eq(p1Sb.normalizeRegion(undefined).ok, true, 'missing region is valid');
+eq(p1Sb.normalizeRegion({ mode: 'ocr' }), { ok: true, region: { mode: 'ocr' }, error: '' }, 'ocr region is valid');
+eq(
+  p1Sb.normalizeRegion({ mode: 'offset', offset: [1, 2] }),
+  { ok: true, region: { mode: 'offset', offset: [1, 2] }, error: '' },
+  'offset with 2 integers is valid'
+);
+eq(
+  p1Sb.normalizeRegion({ mode: 'offset', offset: [1, 2, 30, 40] }).ok,
+  true,
+  'offset with 4 integers is valid'
+);
+eq(p1Sb.normalizeRegion({ mode: 'bad' }).ok, false, 'invalid region mode is rejected');
+eq(p1Sb.normalizeRegion({ mode: 'offset' }).ok, false, 'offset mode without offset is rejected');
+eq(p1Sb.normalizeRegion({ mode: 'offset', offset: [1, 2, 3] }).ok, false, 'offset length 3 is rejected');
+eq(p1Sb.normalizeRegion({ mode: 'offset', offset: [1, 2, 3.5, 4] }).ok, false, 'non-integer offset is rejected');
+eq(p1Sb.normalizeRegion({ mode: 'offset', offset: [1, 2, 0, 4] }).ok, false, 'offset w/h must be > 0');
+eq(p1Sb.normalizeRegion({ mode: 'asset', offset: [1, 2] }).ok, false, 'only offset mode may carry offset');
+
+eq(
+  p1Sb.regionIssues({ steps: [{ op: 'click_target', args: { find: [{ kind: 'ocr_text', region: { mode: 'bad' } }] } }] }),
+  ['flow.steps[0].args.find[0].region：region.mode 不合法：「bad」（只能是 asset/ocr/nearest/offset）'],
+  'a bad region inside click_target.find is reported with its path'
+);
+eq(
+  p1Sb.regionIssues({
+    steps: [{
+      op: 'long_press',
+      args: { find: [{ kind: 'ocr_text', sel: 'O_x', text: 'x', region: { mode: 'offset', offset: [1, 2] } }] },
+    }],
+  }),
+  [],
+  'a valid region on a long_press locator passes'
+);
+eq(p1Sb.regionIssues(null), [], 'a missing flow has no region issues');
+eq(p1Sb.normalizeScreenSize([1280, 720]), [1280, 720], 'screen size is kept');
+eq(p1Sb.normalizeScreenSize('bad'), [1280, 720], 'invalid screen size falls back to 1280x720');
+eq(p1Sb.normalizeScreenSize([0, 720]), [1280, 720], 'zero width falls back');
+
+eq(
+  p1Sb.longPressStep('分组', '按钮_战斗'),
+  {
+    op: 'long_press',
+    args: {
+      find: [{ kind: 'ocr_text', sel: '按钮_战斗', text_expr: "param('分组')" }],
+      hold_ms: 3000,
+    },
+  },
+  '「参数文字长按」preset generates a standard long_press with hold_ms=3000'
+);
+eq(p1Sb.longPressStep('k', '').args.find[0].sel, 'O_OCR', 'missing OCR asset falls back to the O_OCR placeholder');
+eq(p1Sb.longPressHoldText({}), 'hold_ms 3000ms', 'hold text defaults to 3000ms');
+eq(p1Sb.longPressHoldText({ hold_ms: 2500 }), 'hold_ms 2500ms', 'hold text shows the configured hold_ms');
+eq(
+  p1Sb.longPressHoldText({ hold_ms: 3000, hold_range: [2500, 3500] }),
+  'hold_range 2500~3500ms（随机拟人）',
+  'hold_range wins over hold_ms in the summary'
+);
+eq(p1Sb.holdRangeFromInput('', ''), { ok: true, range: null, error: '' }, 'empty hold range = disabled');
+eq(p1Sb.holdRangeFromInput('2500', '3500'), { ok: true, range: [2500, 3500], error: '' }, 'valid hold range');
+eq(p1Sb.holdRangeFromInput('2500', '').ok, false, 'half a hold range is rejected');
+eq(p1Sb.holdRangeFromInput('50', '3500').ok, false, 'hold range below 100 is rejected');
+eq(p1Sb.holdRangeFromInput('2500', '12000').ok, false, 'hold range above 10000 is rejected');
+eq(p1Sb.holdRangeFromInput('3500', '2500').ok, false, 'hold range min > max is rejected');
+eq(p1Sb.holdRangeFromInput('2500.5', '3500').ok, false, 'non-integer hold range is rejected');
+eq(
+  p1Sb.longPressArgsIssues({ op: 'long_press', args: { find: [{ kind: 'ocr_text' }], hold_ms: 3000 } }),
+  [],
+  'a valid long_press has no arg issues'
+);
+eq(
+  p1Sb.longPressArgsIssues({ op: 'long_press', args: { find: [], hold_ms: 50 } }).length,
+  2,
+  'missing find + out-of-range hold_ms are both reported'
+);
+eq(
+  p1Sb.longPressArgsIssues({ op: 'long_press', args: { find: [{ kind: 'ocr_text' }], hold_range: [3500, 2500] } })[0].indexOf('不能大于') >= 0,
+  true,
+  'an inverted hold_range is reported'
+);
+eq(
+  p1Sb.longPressArgsIssues({ op: 'long_press', args: { find: [{ kind: 'ocr_text' }], hold_range: [2500] } })[0].indexOf('整数数组') >= 0,
+  true,
+  'a malformed hold_range is reported'
+);
+
+eq(p1Sb.curveSwipeStep().op, 'curve_swipe', 'curve_swipe default step op');
+eq(p1Sb.curveSwipeStep().args.points.length, 4, 'curve_swipe default has 4 points');
+eq(p1Sb.curveSwipeStep().args.duration_ms, [600, 1000], 'curve_swipe default duration range');
+eq(
+  p1Sb.curvePointsFromText('[[0,0],[1280,720]]', 1280, 720),
+  { ok: true, points: [[0, 0], [1280, 720]], error: '' },
+  'screen corner points are allowed'
+);
+eq(p1Sb.curvePointsFromText('[[1,2]]', 1280, 720).ok, false, 'a single point is rejected');
+eq(
+  p1Sb.curvePointsFromText(JSON.stringify(Array.from({ length: 33 }, (_, i) => [i, i])), 1280, 720).ok,
+  false,
+  'more than 32 points is rejected'
+);
+eq(p1Sb.curvePointsFromText('not-json', 1280, 720).ok, false, 'bad points JSON is rejected');
+eq(p1Sb.curvePointsFromText('[[1,2],[3]]', 1280, 720).ok, false, 'a point must be [x,y]');
+eq(p1Sb.curvePointsFromText('[[1.5,2],[3,4]]', 1280, 720).ok, false, 'non-integer coordinates are rejected');
+eq(p1Sb.curvePointsFromText('[[-1,2],[3,4]]', 1280, 720).ok, false, 'negative coordinates are rejected');
+eq(p1Sb.curvePointsFromText('[[2000,2],[3,4]]', 1280, 720).ok, false, 'x outside the screen is rejected');
+eq(p1Sb.curvePointsFromText('[[1,2],[3,900]]', 1280, 720).ok, false, 'y outside the screen is rejected');
+eq(p1Sb.curveDurationFromInput('600', '1000'), { ok: true, duration: [600, 1000], error: '' }, 'valid duration range');
+eq(p1Sb.curveDurationFromInput('', '1000').ok, false, 'missing duration min is rejected');
+eq(p1Sb.curveDurationFromInput('50', '1000').ok, false, 'duration below 100 is rejected');
+eq(p1Sb.curveDurationFromInput('600', '12000').ok, false, 'duration above 10000 is rejected');
+eq(p1Sb.curveDurationFromInput('1000', '600').ok, false, 'duration min > max is rejected');
+eq(
+  p1Sb.curveSwipeArgsIssues(
+    { op: 'curve_swipe', args: { points: [[0, 0], [10, 10]], duration_ms: [600, 1000] } },
+    1280,
+    720
+  ),
+  [],
+  'a valid curve_swipe has no arg issues'
+);
+eq(
+  p1Sb.curveSwipeArgsIssues({ op: 'curve_swipe', args: { points: 'bad' } }, 1280, 720).length,
+  1,
+  'a non-array points value is one issue (the default duration range stays valid)'
+);
+eq(
+  p1Sb.actionArgsIssues(
+    {
+      steps: [
+        { op: 'long_press', args: { find: [], hold_ms: 50 } },
+        {
+          op: 'loop',
+          args: { n: '2' },
+          body: [{ op: 'curve_swipe', args: { points: [[1, 1]], duration_ms: [600, 1000] } }],
+        },
+      ],
+    },
+    [1280, 720]
+  ).length >= 3,
+  true,
+  'actionArgsIssues walks root + nested body and reports long_press + curve_swipe problems'
+);
+eq(p1Sb.actionArgsIssues({ steps: [] }, [1280, 720]), [], 'a clean flow has no action arg issues');
+ok(/阻塞等待/.test(p1Sb.waitBlockingHelpText()), 'wait help says 阻塞等待');
+ok(/下一个 flow 步骤/.test(p1Sb.waitBlockingHelpText()), 'wait help says it continues to the next flow step');
+ok(/超时/.test(p1Sb.waitBlockingHelpText()), 'wait help mentions the timeout failure');
+
+// Static wiring: new catalogue entries + forms + region editor + validation.
+ok(
+  /long_press: \{ label: '长按', group: '动作' \}/.test(builderSource) &&
+    /curve_swipe: \{ label: '曲线滑动（多段近似）', group: '动作' \}/.test(builderSource),
+  'OP_META registers long_press + curve_swipe in the 动作 group'
+);
+ok(
+  /param_long_press_text: \{ label: '参数文字长按', op: 'long_press' \}/.test(builderSource),
+  'PARAM_ACTIONS registers the 参数文字长按 preset'
+);
+ok(
+  /long_press: \{ find: \[\{ kind: 'template', sel: 'I_A' \}\], hold_ms: 3000 \}/.test(builderSource) &&
+    /curve_swipe: \{/.test(builderSource) && /duration_ms: \[600, 1000\]/.test(builderSource),
+  'DEFAULTS seeds long_press hold_ms=3000 and curve_swipe points/duration'
+);
+ok(
+  /if \(key === 'param_long_press_text'\) \{[\s\S]{0,120}longPressStep\(/.test(builderSource),
+  'buildActionStep expands 参数文字长按 to long_press'
+);
+ok(
+  /const ACTION_TITLES = \{/.test(builderSource) &&
+    /wait_until: '阻塞等待：条件成立后继续执行下一个 flow 步骤/.test(builderSource) &&
+    /long_press: '长按：/.test(builderSource) &&
+    /curve_swipe: '曲线滑动（多段近似）：/.test(builderSource) &&
+    /ACTION_TITLES\[item\.key\]/.test(builderSource),
+  'the palette exposes the blocking-wait / long-press / curve-swipe titles'
+);
+ok(
+  /case 'long_press':[\s\S]{0,600}longPressHoldText\(a\)/.test(builderSource) &&
+    /case 'curve_swipe':[\s\S]{0,500}多段近似/.test(builderSource),
+  'step summaries cover long_press + curve_swipe'
+);
+ok(
+  /function renderRegionEditor\(host, locator, onChange\)/.test(builderSource) &&
+    /regionWrite\(written, region\.mode, region\.offset\)/.test(builderSource),
+  'the OCR locator panel owns the shared 操作区域 editor'
+);
+ok(
+  (builderSource.match(/renderRegionEditor\(/g) || []).length >= 3,
+  'click_target find / drag from|to / long_press.find all reuse the region editor'
+);
+ok(
+  /if \(step\.op === 'click_target' \|\| step\.op === 'long_press'\)/.test(builderSource) &&
+    /if \(step\.op === 'curve_swipe'\) renderCurveSwipeForm\(root, step\)/.test(builderSource),
+  'renderForm wires long_press (locator reuse) + curve_swipe forms'
+);
+ok(
+  /function renderLongPressForm\(root, step\)/.test(builderSource) &&
+    /hold_range/.test(builderSource) &&
+    /holdRangeFromInput\(minInput\.value, maxInput\.value\)/.test(builderSource),
+  'the long_press form edits hold_ms + optional hold_range'
+);
+ok(
+  /function renderCurveSwipeForm\(root, step\)/.test(builderSource) &&
+    /curvePointsFromText\(pointsInput\.value, B\.screen\[0\], B\.screen\[1\]\)/.test(builderSource) &&
+    /每段是独立手势/.test(builderSource),
+  'the curve_swipe form validates points against the screen and shows the multi-gesture risk'
+);
+ok(
+  /const saveIssues = flowTextSpecIssues\(B\.flow\)[\s\S]{0,220}regionIssues\(B\.flow\)[\s\S]{0,120}actionArgsIssues\(B\.flow, B\.screen\)/.test(builderSource),
+  'saveFlow blocks on text-spec + region + long_press/curve_swipe issues'
+);
+ok(
+  /B\.screen = normalizeScreenSize\(as\.design_resolution\)/.test(builderSource),
+  'loadTask takes the screen bounds from /task/assets design_resolution'
+);
+ok(
+  /waitBlockingHelpText\(\)/.test(builderSource) &&
+    /if \(step\.op === 'wait' \|\| step\.op === 'wait_until'\)/.test(builderSource) &&
+    /builder-wait-help/.test(builderSource),
+  'the attribute panel explains wait/wait_until as a blocking wait'
+);
+ok(
+  /阻塞等待/.test(html) && /不会触发独立动作/.test(html),
+  'the palette help explains the blocking-wait semantics'
+);
+ok(/长按/.test(html) && /曲线滑动（多段近似）/.test(html), 'the palette help mentions 长按 + 曲线滑动');
+ok(
+  /\.builder-region-editor/.test(styleCss) && /\.builder-region-offset/.test(styleCss) &&
+    /\.builder-wait-help/.test(styleCss) && /\.builder-warn-note/.test(styleCss),
+  'style.css styles the region editor + wait/risk notes'
+);
+ok(
+  !/innerHTML/.test(extractFunctionFrom(builderSource, 'renderRegionEditor', 'builder.js')),
+  'the region editor renders through DOM APIs only'
+);
+ok(
+  !/innerHTML/.test(extractFunctionFrom(builderSource, 'renderLongPressForm', 'builder.js')),
+  'the long_press form renders through DOM APIs only'
+);
+ok(
+  !/innerHTML/.test(extractFunctionFrom(builderSource, 'renderCurveSwipeForm', 'builder.js')),
+  'the curve_swipe form renders through DOM APIs only'
 );
 
 // DOM id audit: the whole point of this round is ZERO static dead ids. Every

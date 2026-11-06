@@ -68,7 +68,13 @@ pub const CHECKSUMS_FILE: &str = "checksums.sha256";
 /// the literal `text` field — it would fail mid-task instead of at install
 /// time. `expect.text_expr` covers both `requires` and `expect` guards (they
 /// share the engine's `Expect` object).
-pub const SUPPORTED_FLOW_OPS: [&str; 7] = [
+///
+/// v1.3 operation region (OPERATION-REGION-DESIGN §6.1): `long_press` and
+/// `curve_swipe` are new instructions, and an authored `region` operation-area
+/// override on an OCR locator / drag endpoint gets its own marker. A pre-v1.3
+/// Runner's locator parser ignores `region` (a silently different action
+/// area), so packages using it must be refused at install time.
+pub const SUPPORTED_FLOW_OPS: [&str; 11] = [
     "call_task",
     "call_task.params",
     "call_task.inherit.none",
@@ -76,6 +82,10 @@ pub const SUPPORTED_FLOW_OPS: [&str; 7] = [
     "click_target.text_expr",
     "expect.text_expr",
     "drag.text_expr",
+    "long_press",
+    "curve_swipe",
+    "click_target.region",
+    "drag.region",
 ];
 
 /// Engine version this crate records in `manifest.engine.min_engine` and checks
@@ -461,6 +471,13 @@ fn has_expect_text_expr(args: &serde_json::Value) -> bool {
     })
 }
 
+/// Does an authored OCR locator / drag endpoint carry the v1.3 `region`
+/// operation-area override? Only `kind:"ocr_text"` accepts it at parse time, so
+/// a `region` on any other kind cannot be a real capability.
+fn has_region_override(v: &serde_json::Value) -> bool {
+    v.get("kind").and_then(|k| k.as_str()) == Some("ocr_text") && v.get("region").is_some()
+}
+
 fn walk_flow_ops(
     steps: &[serde_json::Value],
     out: &mut BTreeSet<String>,
@@ -491,20 +508,31 @@ fn walk_flow_ops(
                 out.insert("with_params".to_string());
             }
             // 参数 v2: `text_expr` OCR text source (PARAM-V2-DESIGN §3.6).
+            // v1.3: an authored `region` override on a find[] OCR locator
+            // (OPERATION-REGION-DESIGN §6.1).
             "click_target" => {
                 if let Some(args) = args {
-                    let find_has_text_expr = args
+                    let finds: Vec<&serde_json::Value> = args
                         .get("find")
                         .and_then(|f| f.as_array())
-                        .map(|finds| finds.iter().any(has_ocr_text_expr))
-                        .unwrap_or(false);
-                    if find_has_text_expr {
+                        .map(|finds| finds.iter().collect())
+                        .unwrap_or_default();
+                    if finds.iter().any(|loc| has_ocr_text_expr(loc)) {
                         out.insert("click_target.text_expr".to_string());
+                    }
+                    if finds.iter().any(|loc| has_region_override(loc)) {
+                        out.insert("click_target.region".to_string());
                     }
                     if has_expect_text_expr(args) {
                         out.insert("expect.text_expr".to_string());
                     }
                 }
+            }
+            // v1.3 long press: the op itself is the capability gate; its
+            // `find[]` chain may carry `text_expr`/`region` but an old Runner
+            // cannot run `long_press` at all (the op marker covers both).
+            "long_press" => {
+                out.insert("long_press".to_string());
             }
             "click" | "click_point" => {
                 if let Some(args) = args {
@@ -515,15 +543,21 @@ fn walk_flow_ops(
             }
             "drag" => {
                 if let Some(args) = args {
-                    let has = ["from", "to"].iter().any(|key| {
-                        args.get(*key)
-                            .map(has_ocr_text_expr)
-                            .unwrap_or(false)
-                    });
-                    if has {
+                    let targets: Vec<&serde_json::Value> = ["from", "to"]
+                        .iter()
+                        .filter_map(|key| args.get(*key))
+                        .collect();
+                    if targets.iter().any(|t| has_ocr_text_expr(t)) {
                         out.insert("drag.text_expr".to_string());
                     }
+                    if targets.iter().any(|t| has_region_override(t)) {
+                        out.insert("drag.region".to_string());
+                    }
                 }
+            }
+            // v1.3 multi-segment curve swipe: new instruction.
+            "curve_swipe" => {
+                out.insert("curve_swipe".to_string());
             }
             _ => {}
         }
@@ -2518,6 +2552,127 @@ mod tests {
                 "expect.text_expr".to_string(),
             ],
             "the published manifest must advertise text_expr"
+        );
+    }
+
+    #[test]
+    fn operation_region_and_action_ops_are_derived_from_the_raw_flow() {
+        // v1.3 (OPERATION-REGION-DESIGN §6.1): the new instructions and the
+        // authored `region` overrides get their own install-gate markers.
+        let flow_json = r#"{"schema_version":1,"name":"A","steps":[
+            {"op":"click_target","args":{"find":[
+                {"kind":"ocr_text","sel":"O_BTN","text":"完成",
+                 "region":{"mode":"nearest"}}]}},
+            {"op":"drag","args":{
+              "from":{"kind":"ocr_text","sel":"O_ROW","text":"返回",
+                      "region":{"mode":"offset","offset":[1,2]}},
+              "direction":"up","distance":[10,20]}},
+            {"op":"long_press","args":{"find":[{"kind":"ocr_text","sel":"O_BTN","text":"完成"}]}},
+            {"op":"curve_swipe","args":{"points":[[1,1],[10,10]]}},
+            {"op":"finish","args":{"exit":"done"}}]}"#;
+        assert_eq!(
+            derive_flow_ops(flow_json).unwrap(),
+            vec![
+                "click_target.region".to_string(),
+                "curve_swipe".to_string(),
+                "drag.region".to_string(),
+                "long_press".to_string(),
+            ]
+        );
+        // This engine understands them: the install gate reports no offender.
+        assert!(unsupported_flow_ops(&derive_flow_ops(flow_json).unwrap()).is_empty());
+
+        // A flow without region/long_press/curve_swipe keeps the old op set —
+        // old packages must not start gating on the new markers.
+        let plain = r#"{"schema_version":1,"name":"A","steps":[
+            {"op":"click_target","args":{"find":[
+                {"kind":"ocr_text","sel":"O","text":"完成"}]}},
+            {"op":"drag","args":{"from":{"kind":"region","roi":[0,0,10,10]},
+              "direction":"up","distance":[1,2]}},
+            {"op":"finish","args":{"exit":"done"}}]}"#;
+        assert!(derive_flow_ops(plain).unwrap().is_empty());
+
+        // A pre-v1.3 Runner (the 7-op v2 set) must refuse every new marker.
+        let pre_v13 = [
+            "call_task",
+            "call_task.params",
+            "call_task.inherit.none",
+            "with_params",
+            "click_target.text_expr",
+            "expect.text_expr",
+            "drag.text_expr",
+        ];
+        let derived = derive_flow_ops(flow_json).unwrap();
+        let rejected: Vec<&str> = derived
+            .iter()
+            .map(String::as_str)
+            .filter(|op| !pre_v13.iter().any(|known| known == op))
+            .collect();
+        assert_eq!(
+            rejected,
+            vec![
+                "click_target.region",
+                "curve_swipe",
+                "drag.region",
+                "long_press"
+            ],
+            "a pre-v1.3 Runner must reject the new markers"
+        );
+
+        // `long_press` with text_expr/region in its find[] needs only the
+        // `long_press` marker (an old Runner cannot run the op at all).
+        let press_only = r#"{"schema_version":1,"name":"A","steps":[
+            {"op":"long_press","args":{"find":[
+                {"kind":"ocr_text","sel":"O","text_expr":"param('k')",
+                 "region":{"mode":"ocr"}}]}},
+            {"op":"finish","args":{"exit":"done"}}]}"#;
+        assert_eq!(
+            derive_flow_ops(press_only).unwrap(),
+            vec!["long_press".to_string()]
+        );
+    }
+
+    #[test]
+    fn operation_region_package_manifest_advertises_the_new_ops() {
+        let td = TempDir::new("opregion");
+        let tasks = td.path().join("tasks");
+        let assets = td.path().join("assets");
+        std::fs::create_dir_all(&tasks).unwrap();
+        std::fs::create_dir_all(assets.join("images")).unwrap();
+        std::fs::write(
+            assets.join("assets.json"),
+            r#"{"schema_version":1,"design_resolution":[1280,720],"items":[
+                {"id":"O_BTN","kind":"ocr_lines","roi":[0,0,10,10]},
+                {"id":"O_ROW","kind":"ocr_lines","roi":[0,0,10,10]}]}"#,
+        )
+        .unwrap();
+        make_task(
+            &tasks,
+            "T",
+            1,
+            "[]",
+            r#"[{"op":"click_target","args":{"find":[
+                  {"kind":"ocr_text","sel":"O_BTN","text":"完成",
+                   "region":{"mode":"nearest"}}]}},
+                {"op":"drag","args":{
+                  "from":{"kind":"ocr_text","sel":"O_ROW","text":"返回",
+                          "region":{"mode":"offset","offset":[1,2,5,5]}},
+                  "direction":"up","distance":[10,20]}},
+                {"op":"long_press","args":{"find":[
+                  {"kind":"ocr_text","sel":"O_BTN","text":"完成"}]}},
+                {"op":"curve_swipe","args":{"points":[[1,1],[10,10]]}},
+                {"op":"finish","args":{"exit":"done"}}]"#,
+        );
+        let outcome = build(&tasks, "T", &td.path().join("out"), false);
+        assert_eq!(
+            outcome.manifest.engine.flow_ops,
+            vec![
+                "click_target.region".to_string(),
+                "curve_swipe".to_string(),
+                "drag.region".to_string(),
+                "long_press".to_string(),
+            ],
+            "the published manifest must advertise region/long_press/curve_swipe"
         );
     }
 

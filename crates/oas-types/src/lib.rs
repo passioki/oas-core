@@ -46,6 +46,15 @@ pub trait ScreenSource { fn grab(&mut self) -> Result<Frame, String>; }
 pub trait InputSink {
     fn click(&mut self, p: Point) -> Result<(), String>;
     fn swipe(&mut self, from: Point, to: Point, ms: u32) -> Result<(), String>;
+    /// Long press one point for `ms` (v1.3 operation-region P1).
+    ///
+    /// Default = a **same-point swipe**, which is exactly how press-and-hold is
+    /// expressed on Android/ADB (`input swipe x y x y ms`). Backends that record
+    /// or replay gestures should override it to keep the distinction visible;
+    /// every other backend keeps working unchanged.
+    fn long_press(&mut self, p: Point, ms: u32) -> Result<(), String> {
+        self.swipe(p, p, ms)
+    }
     /// Android key event (e.g. BACK=4, HOME=3). Platform adapters may override.
     fn key(&mut self, _keycode: u32) -> Result<(), String> {
         Err("key events are not supported by this input sink".to_string())

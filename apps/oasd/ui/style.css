@@ -1527,3 +1527,99 @@ aside.side {
     grid-column: 1;
   }
 }
+
+/* ===== P1（task-22）：操作区域 / 长按 / 曲线滑动 / 等待解释 ===== */
+.builder-region-editor {
+  border-top: 1px dashed #3a4250;
+  margin-top: 6px;
+  padding-top: 6px;
+  font-size: 12px;
+}
+
+.builder-region-editor > .muted.small {
+  color: #9aa0aa;
+  margin-bottom: 3px;
+}
+
+.builder-region-editor label {
+  display: block;
+  margin: 4px 0;
+  font-size: 12px;
+}
+
+.builder-region-editor select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.builder-region-offset {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin: 4px 0;
+}
+
+.builder-region-offset[hidden] {
+  display: none;
+}
+
+.builder-region-offset label {
+  margin: 0;
+}
+
+.builder-region-offset input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.builder-region-hint {
+  color: #9aa0aa;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.builder-region-err {
+  color: #ff8a80;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.builder-region-err:empty {
+  display: none;
+}
+
+.builder-region-editor.err {
+  border-top-color: #6b2f2f;
+}
+
+.builder-wait-help {
+  border-left: 3px solid #2f4a6b;
+  background: #171d26;
+  border-radius: 4px;
+  padding: 6px 9px;
+  margin: 4px 0 8px;
+  line-height: 1.5;
+}
+
+.builder-warn-note {
+  border-left: 3px solid #6b5a2f;
+  background: #241f15;
+  border-radius: 4px;
+  padding: 6px 9px;
+  margin: 4px 0 8px;
+  color: #e8c46a;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.builder-subform textarea.builder-code {
+  min-height: 90px;
+}
+
+@media (max-width: 900px) {
+  .builder-region-offset {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

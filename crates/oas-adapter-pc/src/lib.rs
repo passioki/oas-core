@@ -280,6 +280,26 @@ pub struct AdbInput {
     serial: String,
 }
 
+/// The exact `adb` argv of one swipe gesture: `input swipe x1 y1 x2 y2 ms`.
+///
+/// Shared by [`InputSink::swipe`] and [`InputSink::long_press`] (a long press is
+/// the same command with `from == to`). Kept pure so the command contract is
+/// unit-testable without a device (v1.3 operation-region P1).
+fn swipe_argv(serial: &str, from: Point, to: Point, ms: u32) -> Vec<String> {
+    vec![
+        "-s".to_string(),
+        serial.to_string(),
+        "shell".to_string(),
+        "input".to_string(),
+        "swipe".to_string(),
+        from.x.to_string(),
+        from.y.to_string(),
+        to.x.to_string(),
+        to.y.to_string(),
+        ms.to_string(),
+    ]
+}
+
 impl InputSink for AdbInput {
     fn click(&mut self, p: Point) -> Result<(), String> {
         self.adb
@@ -296,20 +316,18 @@ impl InputSink for AdbInput {
     }
 
     fn swipe(&mut self, from: Point, to: Point, ms: u32) -> Result<(), String> {
-        self.adb
-            .run(&[
-                "-s",
-                &self.serial,
-                "shell",
-                "input",
-                "swipe",
-                &from.x.to_string(),
-                &from.y.to_string(),
-                &to.x.to_string(),
-                &to.y.to_string(),
-                &ms.to_string(),
-            ])
-            .map(|_| ())
+        let args = swipe_argv(&self.serial, from, to, ms);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.adb.run(&refs).map(|_| ())
+    }
+
+    /// Long press = a **same-point swipe** (`input swipe x y x y ms`), which is
+    /// the portable press-and-hold gesture on Android. ADB has no dedicated
+    /// long-press command; this is the recommended approximation.
+    fn long_press(&mut self, p: Point, ms: u32) -> Result<(), String> {
+        let args = swipe_argv(&self.serial, p, p, ms);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.adb.run(&refs).map(|_| ())
     }
 
     fn key(&mut self, keycode: u32) -> Result<(), String> {
@@ -400,5 +418,56 @@ mod tests {
         assert!(out[0].matches("127.0.0.1:16384"));
         assert!(!out[0].matches("127.0.0.1:16416"));
         assert!(out[0].label().contains("127.0.0.1:16384"));
+    }
+
+    #[test]
+    fn swipe_argv_is_the_historical_command() {
+        let argv = swipe_argv(
+            "127.0.0.1:16384",
+            Point { x: 10, y: 20 },
+            Point { x: 30, y: 40 },
+            650,
+        );
+        assert_eq!(
+            argv,
+            vec![
+                "-s",
+                "127.0.0.1:16384",
+                "shell",
+                "input",
+                "swipe",
+                "10",
+                "20",
+                "30",
+                "40",
+                "650"
+            ]
+        );
+    }
+
+    #[test]
+    fn long_press_is_a_same_point_swipe_with_the_hold_duration() {
+        // `InputSink::long_press` (ADB) sends `input swipe x y x y ms`.
+        let argv = swipe_argv(
+            "127.0.0.1:16384",
+            Point { x: 640, y: 360 },
+            Point { x: 640, y: 360 },
+            3000,
+        );
+        assert_eq!(
+            argv,
+            vec![
+                "-s",
+                "127.0.0.1:16384",
+                "shell",
+                "input",
+                "swipe",
+                "640",
+                "360",
+                "640",
+                "360",
+                "3000"
+            ]
+        );
     }
 }

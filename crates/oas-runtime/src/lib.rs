@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use oas_flow::{
     eval, DragAxis, DragShape, DragTarget, EvalContext, Expect, Expr, Flow, InterruptRule, Locator,
-    Step, TextSpec, Value,
+    OpRegion, Step, TextSpec, Value,
 };
 use oas_perceive::{GrayImage, Matcher};
 use oas_types::{Exit, Frame, InputSink, Outcome, Point, Rect, ScreenSource};
@@ -287,6 +287,19 @@ impl DragEndpoint {
     }
 }
 
+/// One resolved `long_press` target (v1.3 operation-region P1).
+///
+/// `find[]` is resolved exactly like `click_target`'s redundancy chain, but the
+/// action is a hold instead of a tap: this struct carries the point to hold plus
+/// the provenance needed for the step log.
+struct PressTarget {
+    point: Point,
+    locator: &'static str,
+    sel: Option<String>,
+    match_info: String,
+    region: Option<OpRegion>,
+}
+
 /// v1.2.5 (O-2): a flow `region` drag shape is the same geometry as an asset
 /// `action_shape`, so drag sampling and click sampling share one algorithm.
 /// `oas_task::ActionShape::to_click_shape` does the identical mapping.
@@ -543,6 +556,78 @@ pub struct OcrLine {
     pub rect: Rect,
     pub text: String,
     pub score: f32,
+}
+
+// ---------------------------------------------------------------------------
+// v1.3 operation region (docs/OPERATION-REGION-DESIGN.md §6.1)
+// ---------------------------------------------------------------------------
+
+/// Centre of a rect (`i64` math, clamped back into `i32`).
+fn rect_centre(r: Rect) -> Point {
+    Point {
+        x: (r.x as i64 + r.w as i64 / 2).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+        y: (r.y as i64 + r.h as i64 / 2).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+    }
+}
+
+/// Matching OCR line candidates for one expected text, declaration order kept.
+///
+/// `min` is the asset's declared OCR confidence (None = no threshold). Shared by
+/// `click_target` (both OCR forms), `drag` endpoints and `long_press`.
+fn ocr_line_candidates<'a>(
+    lines: &'a [OcrLine],
+    text: &str,
+    min: Option<f32>,
+) -> Vec<&'a OcrLine> {
+    lines
+        .iter()
+        .filter(|l| {
+            ocr_text_matches(text, l.text.as_str()) && min.map(|m| l.score >= m).unwrap_or(true)
+        })
+        .collect()
+}
+
+/// `region.mode="nearest"`: the candidate whose bbox centre is nearest to
+/// `reference` (squared distance; ties keep declaration order).
+fn nearest_ocr_line<'a>(
+    candidates: &[&'a OcrLine],
+    reference: Point,
+) -> Option<&'a OcrLine> {
+    let mut best: Option<(&'a OcrLine, i64)> = None;
+    for &line in candidates {
+        let c = rect_centre(line.rect);
+        let dx = c.x as i64 - reference.x as i64;
+        let dy = c.y as i64 - reference.y as i64;
+        let dist2 = dx * dx + dy * dy;
+        match best {
+            Some((_, best_dist)) if dist2 >= best_dist => {}
+            _ => best = Some((line, dist2)),
+        }
+    }
+    best.map(|(line, _)| line)
+}
+
+/// Shift (and optionally resize) a base bbox by an `offset` region.
+///
+/// Arithmetic is `i64` + clamp (same P1-4 posture as `random_point_in`): the
+/// parser bounds every value at 1e6, so this can never overflow an `i32`.
+fn offset_region_rect(base: Rect, dx: i32, dy: i32, w: Option<i32>, h: Option<i32>) -> Rect {
+    let width = w.unwrap_or(base.w).max(1);
+    let height = h.unwrap_or(base.h).max(1);
+    Rect {
+        x: (base.x as i64 + dx as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+        y: (base.y as i64 + dy as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+        w: width,
+        h: height,
+    }
+}
+
+/// Clamp a point into the frame (same policy as `perform_click`).
+fn clamp_to_frame(p: Point, w: u32, h: u32) -> Point {
+    Point {
+        x: p.x.clamp(0, w.saturating_sub(1) as i32),
+        y: p.y.clamp(0, h.saturating_sub(1) as i32),
+    }
 }
 
 /// OCR text comparison. OCR models often emit a traditional/variant CJK glyph
@@ -1269,6 +1354,32 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         Ok((actual, delay))
     }
 
+    /// v1.3: perform one **long press** at `point` for `ms`.
+    ///
+    /// Same clamp posture as [`Self::perform_click`] (a point outside the frame
+    /// is clamped, not silently accepted), the same humanized pre-action delay,
+    /// and the frame is invalidated afterwards because the screen may change.
+    /// No click-audit row is recorded: the CD2 heatmap is about taps, and a hold
+    /// is a different gesture.
+    fn perform_long_press(
+        &mut self,
+        point: Point,
+        ms: u32,
+        w: u32,
+        h: u32,
+    ) -> Result<Point, String> {
+        let actual = clamp_to_frame(point, w, h);
+        let delay = self.humanize.delay_ms(&mut self.rng);
+        if delay > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay as u64));
+        }
+        self.input.long_press(actual, ms)?;
+        // The screen may now be different: never let the next selector match
+        // against this pre-gesture frame.
+        self.invalidate_frame();
+        Ok(actual)
+    }
+
     /// ENGINE §22.11 补充层: poll the screen after a click until `expect` holds.
     ///
     /// Each poll invalidates the cached frame and grabs a fresh one (a frame-gated
@@ -1863,40 +1974,44 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 },
                 shape: None,
             }),
-            DragTarget::OcrText { sel, roi, text } => {
+            DragTarget::OcrText {
+                sel,
+                roi,
+                text,
+                region,
+            } => {
                 let text = self.resolve_text(text, site)?;
                 // A named OCR asset may declare a minimum recognition
                 // confidence; the geometry must not come from a line that is
                 // below it. Inline ROIs carry no asset and therefore no
                 // threshold (0.0 = any successful read).
                 let mut min_score = 0.0f32;
+                // v1.3 `region.mode="nearest"` reference: the OCR **recognition
+                // ROI** centre (`sel`'s ocr_roi, or the inline `roi`).
+                let reference: Point;
                 let read = if let Some(roi) = roi {
-                    self.ocr_read_rect(
-                        Rect {
-                            x: roi[0],
-                            y: roi[1],
-                            w: roi[2],
-                            h: roi[3],
-                        },
-                        true,
-                    )?
+                    let r = Rect {
+                        x: roi[0],
+                        y: roi[1],
+                        w: roi[2],
+                        h: roi[3],
+                    };
+                    reference = rect_centre(r);
+                    self.ocr_read_rect(r, true)?
                 } else {
-                    let sel = sel
+                    let sel_s = sel
                         .clone()
                         .ok_or_else(|| "ocr_text drag target needs sel or roi".to_string())?;
-                    min_score = self.assets.ocr_threshold(&sel).unwrap_or(0.0);
-                    self.ocr_read(&sel)?
+                    min_score = self.assets.ocr_threshold(&sel_s).unwrap_or(0.0);
+                    reference = rect_centre(
+                        self.assets
+                            .ocr_roi(&sel_s)
+                            .ok_or_else(|| format!("ocr_text `{sel_s}`: OCR asset has no roi"))?,
+                    );
+                    self.ocr_read(&sel_s)?
                 };
-                let rect = match read {
-                    OcrRead::Lines(lines) => lines
-                        .iter()
-                        .find(|l| {
-                            ocr_text_matches(&text, l.text.as_str()) && l.score >= min_score
-                        })
-                        .map(|l| l.rect)
-                        .ok_or_else(|| {
-                            format!("drag ocr_text: no line equals {text:?} in the region")
-                        })?,
+                let lines = match read {
+                    OcrRead::Lines(lines) => lines,
                     OcrRead::Single(..) => {
                         return Err(
                             "drag ocr_text target must use ocr_lines/inline det (single-line has no bbox)"
@@ -1904,12 +2019,446 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         )
                     }
                 };
-                Ok(DragEndpoint {
-                    rect,
-                    shape: None,
-                })
+                let candidates = ocr_line_candidates(&lines, &text, Some(min_score));
+                let line = match region {
+                    Some(OpRegion::Nearest) => nearest_ocr_line(&candidates, reference),
+                    _ => candidates.first().copied(),
+                }
+                .ok_or_else(|| {
+                    format!("drag ocr_text: no line equals {text:?} in the region")
+                })?;
+                // v1.3 `region` (OPERATION-REGION-DESIGN §6.1): default = the
+                // matched line bbox (historical drag behaviour); `asset` uses the
+                // asset operation area/shape when declared.
+                let (rect, shape) = match region {
+                    None => (line.rect, None),
+                    Some(OpRegion::Asset) => {
+                        let asset_rect = sel.as_deref().and_then(|s| self.assets.click_back(s));
+                        let asset_shape = sel
+                            .as_deref()
+                            .and_then(|s| self.assets.click_shape(s))
+                            .cloned();
+                        (asset_rect.unwrap_or(line.rect), asset_shape)
+                    }
+                    Some(OpRegion::Ocr) | Some(OpRegion::Nearest) => (line.rect, None),
+                    Some(OpRegion::Offset { dx, dy, w, h }) => {
+                        (offset_region_rect(line.rect, *dx, *dy, *w, *h), None)
+                    }
+                };
+                Ok(DragEndpoint { rect, shape })
             }
         }
+    }
+
+    /// v1.3: resolve a `long_press` `find[]` chain to the point that must be
+    /// held — **no gesture is performed here**.
+    ///
+    /// The redundancy chain mirrors `click_target` (image > OCR > region >
+    /// memory) and reuses the same OCR-candidate / operation-region helpers, so
+    /// the two actions agree on what "the target" means. Keep them in sync when
+    /// a locator kind changes. Errors: locator failures are collected as
+    /// evidence; low-level layout errors (e.g. a broken asset) propagate.
+    fn resolve_press_target(
+        &mut self,
+        find: &[Locator],
+        resolved_text: &[Option<String>],
+        w: u32,
+        h: u32,
+    ) -> Result<PressTarget, String> {
+        let mut order: Vec<(usize, &Locator)> = find.iter().enumerate().collect();
+        order.sort_by_key(|(_, l)| l.priority());
+        let mut evidence: Vec<String> = Vec::new();
+        for (idx, loc) in order {
+            // Resolved OCR text of THIS locator ("" for non-OCR kinds).
+            let text: &str = resolved_text[idx].as_deref().unwrap_or_default();
+            match loc {
+                Locator::Template { sel, threshold } => match self.locate(sel) {
+                    Ok((score, at)) => {
+                        let th = threshold.unwrap_or_else(|| self.selector_threshold(sel));
+                        let Some(p) = at.filter(|_| score >= th) else {
+                            evidence.push(format!(
+                                "template `{sel}`: best score {score:.3} < {th}"
+                            ));
+                            continue;
+                        };
+                        let rect = self.click_box_for(sel, p)?;
+                        let plan = self.humanize.template_click(rect, w, &mut self.rng);
+                        let plan = self.adjust_plan_for_shape(sel, plan, w, h, p)?;
+                        return Ok(PressTarget {
+                            point: clamp_to_frame(plan.point, w, h),
+                            locator: "template",
+                            sel: Some(sel.clone()),
+                            match_info: format!("template:{sel}:{score:.3}"),
+                            region: None,
+                        });
+                    }
+                    Err(e) => evidence.push(format!("template `{sel}`: {e}")),
+                },
+                Locator::OcrText {
+                    sel,
+                    require_template,
+                    region,
+                    ..
+                } => match self.ocr_read(sel) {
+                    Ok(OcrRead::Lines(lines)) => {
+                        let min = self.assets.ocr_threshold(sel);
+                        let candidates = ocr_line_candidates(&lines, text, min);
+                        let hit = match region {
+                            Some(OpRegion::Nearest) => {
+                                let roi = self.assets.ocr_roi(sel).ok_or_else(|| {
+                                    format!("ocr_text `{sel}`: OCR asset has no roi")
+                                })?;
+                                nearest_ocr_line(&candidates, rect_centre(roi))
+                            }
+                            _ => candidates.iter().copied().max_by(|a, b| {
+                                a.score
+                                    .partial_cmp(&b.score)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            }),
+                        };
+                        let Some(line) = hit else {
+                            evidence.push(format!(
+                                "ocr_text `{sel}`: no line equals {text:?} ({} lines found)",
+                                lines.len()
+                            ));
+                            continue;
+                        };
+                        if let Some(rt) = require_template {
+                            match self.template_in_region(rt, line.rect, 16) {
+                                Ok(true) => {}
+                                Ok(false) => {
+                                    evidence.push(format!(
+                                        "ocr_text `{sel}`: line {:?} matched but required \
+                                         template `{rt}` not found near it",
+                                        line.text
+                                    ));
+                                    continue;
+                                }
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        let centre = Point {
+                            x: line.rect.x + line.rect.w / 2,
+                            y: line.rect.y + line.rect.h / 2,
+                        };
+                        let default_target = if self.assets.click_shape(sel).is_some()
+                            || self.assets.click_back(sel).is_some()
+                        {
+                            self.click_box_for(sel, centre)?
+                        } else {
+                            line.rect
+                        };
+                        let (target, shape_aware) = match region {
+                            None | Some(OpRegion::Asset) => (default_target, true),
+                            Some(OpRegion::Ocr) | Some(OpRegion::Nearest) => (line.rect, false),
+                            Some(OpRegion::Offset { dx, dy, w, h }) => {
+                                (offset_region_rect(line.rect, *dx, *dy, *w, *h), false)
+                            }
+                        };
+                        let plan = self.humanize.template_click(target, w, &mut self.rng);
+                        let plan = if shape_aware {
+                            self.adjust_plan_for_shape(sel, plan, w, h, centre)?
+                        } else {
+                            plan
+                        };
+                        return Ok(PressTarget {
+                            point: clamp_to_frame(plan.point, w, h),
+                            locator: "ocr_text",
+                            sel: Some(sel.clone()),
+                            match_info: format!(
+                                "ocr_text:{sel}:{}:{:.3}",
+                                line.text, line.score
+                            ),
+                            region: *region,
+                        });
+                    }
+                    Ok(OcrRead::Single(Some(t), score)) => {
+                        if !(ocr_text_matches(text, &t) && self.ocr_score_ok(sel, score)) {
+                            evidence.push(format!(
+                                "ocr_text `{sel}`: text {t:?} matched but score {score:.3} \
+                                 is below the declared OCR threshold"
+                            ));
+                            continue;
+                        }
+                        let recognition = self
+                            .assets
+                            .ocr_roi(sel)
+                            .ok_or_else(|| format!("ocr_text `{sel}`: OCR asset has no roi"))?;
+                        let mut rect = self.assets.click_back(sel).unwrap_or(recognition);
+                        if self.assets.derived_ocr(sel).is_some() {
+                            if let Some(matched) = self.last_ocr_rect {
+                                rect.x += matched.x - recognition.x;
+                                rect.y += matched.y - recognition.y;
+                            }
+                        }
+                        let explicit_action = self.assets.click_shape(sel).is_some();
+                        let marker = Point {
+                            x: recognition.x,
+                            y: recognition.y,
+                        };
+                        let default_target = if explicit_action {
+                            self.click_box_for(sel, marker)?
+                        } else {
+                            rect
+                        };
+                        let (target, shape_aware) = match region {
+                            None | Some(OpRegion::Asset) => (default_target, true),
+                            Some(OpRegion::Ocr) | Some(OpRegion::Nearest) => (recognition, false),
+                            Some(OpRegion::Offset { dx, dy, w, h }) => {
+                                (offset_region_rect(recognition, *dx, *dy, *w, *h), false)
+                            }
+                        };
+                        if let Some(rt) = require_template {
+                            match self.template_in_region(rt, recognition, 16) {
+                                Ok(true) => {}
+                                Ok(false) => {
+                                    evidence.push(format!(
+                                        "ocr_text `{sel}`: {t:?} matched but required template \
+                                         `{rt}` not found near it"
+                                    ));
+                                    continue;
+                                }
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        let plan = self.humanize.template_click(target, w, &mut self.rng);
+                        let plan = if shape_aware {
+                            self.adjust_plan_for_shape(sel, plan, w, h, marker)?
+                        } else {
+                            plan
+                        };
+                        return Ok(PressTarget {
+                            point: clamp_to_frame(plan.point, w, h),
+                            locator: "ocr_text",
+                            sel: Some(sel.clone()),
+                            match_info: format!("ocr_text:{sel}:{t}:{score:.3}"),
+                            region: *region,
+                        });
+                    }
+                    Ok(OcrRead::Single(None, score)) => evidence.push(format!(
+                        "ocr_text `{sel}`: no text (score {score:.3})"
+                    )),
+                    Err(e) => evidence.push(format!("ocr_text `{sel}`: {e}")),
+                },
+                Locator::OcrTextInline {
+                    roi,
+                    require_template,
+                    region,
+                    ..
+                } => {
+                    let rect = Rect {
+                        x: roi[0],
+                        y: roi[1],
+                        w: roi[2],
+                        h: roi[3],
+                    };
+                    match self.ocr_read_rect(rect, true) {
+                        Ok(OcrRead::Lines(lines)) => {
+                            let candidates = ocr_line_candidates(&lines, text, None);
+                            let hit = match region {
+                                Some(OpRegion::Nearest) => {
+                                    nearest_ocr_line(&candidates, rect_centre(rect))
+                                }
+                                _ => candidates.iter().copied().max_by(|a, b| {
+                                    a.score
+                                        .partial_cmp(&b.score)
+                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                }),
+                            };
+                            let Some(line) = hit else {
+                                evidence.push(format!(
+                                    "ocr_text inline: no line equals {text:?} \
+                                     ({} lines found in roi {roi:?})",
+                                    lines.len()
+                                ));
+                                continue;
+                            };
+                            if let Some(rt) = require_template {
+                                match self.template_in_region(rt, line.rect, 16) {
+                                    Ok(true) => {}
+                                    Ok(false) => {
+                                        evidence.push(format!(
+                                            "ocr_text inline: line {:?} matched but required \
+                                             template `{rt}` not found near it",
+                                            line.text
+                                        ));
+                                        continue;
+                                    }
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                            let target = match region {
+                                None
+                                | Some(OpRegion::Asset)
+                                | Some(OpRegion::Ocr)
+                                | Some(OpRegion::Nearest) => line.rect,
+                                Some(OpRegion::Offset { dx, dy, w, h }) => {
+                                    offset_region_rect(line.rect, *dx, *dy, *w, *h)
+                                }
+                            };
+                            let plan = self.humanize.template_click(target, w, &mut self.rng);
+                            return Ok(PressTarget {
+                                point: clamp_to_frame(plan.point, w, h),
+                                locator: "ocr_text",
+                                sel: None,
+                                match_info: format!(
+                                    "ocr_text:inline:{}:{:.3}",
+                                    line.text, line.score
+                                ),
+                                region: *region,
+                            });
+                        }
+                        Ok(OcrRead::Single(Some(t), score)) => {
+                            if ocr_text_matches(text, &t) {
+                                let target = match region {
+                                    Some(OpRegion::Offset { dx, dy, w, h }) => {
+                                        offset_region_rect(rect, *dx, *dy, *w, *h)
+                                    }
+                                    _ => rect,
+                                };
+                                let plan =
+                                    self.humanize.template_click(target, w, &mut self.rng);
+                                return Ok(PressTarget {
+                                    point: clamp_to_frame(plan.point, w, h),
+                                    locator: "ocr_text",
+                                    sel: None,
+                                    match_info: format!("ocr_text:inline:{t}:{score:.3}"),
+                                    region: *region,
+                                });
+                            }
+                            evidence.push(format!(
+                                "ocr_text inline: text {t:?} != {text:?}"
+                            ));
+                        }
+                        Ok(OcrRead::Single(None, score)) => evidence.push(format!(
+                            "ocr_text inline: no text in roi {roi:?} (score {score:.3})"
+                        )),
+                        Err(e) => evidence.push(format!("ocr_text inline: {e}")),
+                    }
+                }
+                Locator::Region { roi } => {
+                    self.observe_screen()?;
+                    let (fw, fh) = self
+                        .screen
+                        .size()
+                        .ok_or_else(|| "long_press region: no frame available".to_string())?;
+                    let rect = Rect {
+                        x: roi[0],
+                        y: roi[1],
+                        w: roi[2],
+                        h: roi[3],
+                    };
+                    if rect.x < 0
+                        || rect.y < 0
+                        || rect.x + rect.w > fw as i32
+                        || rect.y + rect.h > fh as i32
+                    {
+                        evidence.push(format!(
+                            "region {:?} is outside the frame ({}x{})",
+                            roi, fw, fh
+                        ));
+                        continue;
+                    }
+                    let p = self.random_point_in(rect, 0.15);
+                    let plan = self.humanize.point_click(p, &mut self.rng);
+                    return Ok(PressTarget {
+                        point: clamp_to_frame(plan.point, fw, fh),
+                        locator: "region",
+                        sel: None,
+                        match_info: format!(
+                            "region:({},{},{},{})",
+                            roi[0], roi[1], roi[2], roi[3]
+                        ),
+                        region: None,
+                    });
+                }
+                Locator::RegionRef { sel } => {
+                    let rect = self.assets.region(sel).ok_or_else(|| {
+                        format!(
+                            "region `{sel}` is not declared as a task region asset (kind: region)"
+                        )
+                    })?;
+                    let exact_shape = self.assets.click_shape(sel).cloned();
+                    self.observe_screen()?;
+                    let (fw, fh) = self
+                        .screen
+                        .size()
+                        .ok_or_else(|| "long_press region: no frame available".to_string())?;
+                    if exact_shape.is_none()
+                        && (rect.x < 0
+                            || rect.y < 0
+                            || rect.x + rect.w > fw as i32
+                            || rect.y + rect.h > fh as i32)
+                    {
+                        evidence.push(format!(
+                            "region `{sel}` rect ({},{},{},{}) is outside the frame ({}x{})",
+                            rect.x, rect.y, rect.w, rect.h, fw, fh
+                        ));
+                        continue;
+                    }
+                    let p = match exact_shape.as_ref() {
+                        Some(shape) => shape
+                            .sample(fw, fh, &mut self.rng)
+                            .map_err(|e| format!("region `{sel}` exact shape: {e}"))?,
+                        None => self.random_point_in(rect, 0.15),
+                    };
+                    let mut plan = self.humanize.point_click(p, &mut self.rng);
+                    if let Some(shape) = exact_shape.as_ref() {
+                        // B-04: never let the jitter leave a narrow region.
+                        if !self.click_shape_accepts(shape, plan.point, fw, fh) {
+                            let mut accepted = None;
+                            for _ in 0..8 {
+                                let q = shape.sample(fw, fh, &mut self.rng)?;
+                                let candidate = self.humanize.point_click(q, &mut self.rng);
+                                if self.click_shape_accepts(shape, candidate.point, fw, fh) {
+                                    accepted = Some(candidate);
+                                    break;
+                                }
+                            }
+                            plan = accepted.unwrap_or(crate::humanize::ClickPlan {
+                                point: p,
+                                miss: false,
+                            });
+                        }
+                    }
+                    return Ok(PressTarget {
+                        point: clamp_to_frame(plan.point, fw, fh),
+                        locator: "region",
+                        sel: Some(sel.clone()),
+                        match_info: format!(
+                            "region:{sel}:({},{},{},{})",
+                            rect.x, rect.y, rect.w, rect.h
+                        ),
+                        region: None,
+                    });
+                }
+                Locator::CoordMemory { key } => {
+                    let Some(store) = self.coords.as_mut() else {
+                        evidence.push("coord_memory: no store attached".to_string());
+                        continue;
+                    };
+                    match store.get(key, w, h) {
+                        Some(p) => {
+                            let plan = self.humanize.point_click(p, &mut self.rng);
+                            return Ok(PressTarget {
+                                point: clamp_to_frame(plan.point, w, h),
+                                locator: "coord_memory",
+                                sel: None,
+                                match_info: format!("coord_memory:{key}"),
+                                region: None,
+                            });
+                        }
+                        None => {
+                            evidence.push(format!("coord_memory `{key}`: no remembered point"))
+                        }
+                    }
+                }
+            }
+        }
+        Err(format!(
+            "all locators failed: [{}]",
+            evidence.join("; ")
+        ))
     }
 
     /// Sample one drag endpoint (v1.2.5 O-2).
@@ -2764,6 +3313,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         Locator::OcrText {
                             sel,
                             require_template,
+                            region,
                             ..
                         } => match self.ocr_read(sel) {
                             Ok(OcrRead::Lines(lines)) => {
@@ -2772,17 +3322,26 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 // below it is not evidence, exactly like a
                                 // template below its NCC threshold.
                                 let min = self.assets.ocr_threshold(sel);
-                                let hit = lines
-                                    .iter()
-                                    .filter(|l| {
-                                        ocr_text_matches(text, l.text.as_str())
-                                            && min.map(|m| l.score >= m).unwrap_or(true)
-                                    })
-                                    .max_by(|a, b| {
+                                // v1.3 `region`: candidate filtering is shared
+                                // with drag / long_press. The default pick stays
+                                // "highest score" (historical click behaviour).
+                                let candidates = ocr_line_candidates(&lines, text, min);
+                                let hit = match region {
+                                    Some(OpRegion::Nearest) => {
+                                        let roi = self.assets.ocr_roi(sel).ok_or_else(|| {
+                                            format!("ocr_text `{sel}`: OCR asset has no roi")
+                                        })?;
+                                        nearest_ocr_line(&candidates, rect_centre(roi))
+                                    }
+                                    _ => candidates.iter().copied().max_by(|a, b| {
                                         a.score
                                             .partial_cmp(&b.score)
                                             .unwrap_or(std::cmp::Ordering::Equal)
-                                    });
+                                    }),
+                                };
+                                let region_info = region
+                                    .map(|r| format!(" region={}", r.mode_str()))
+                                    .unwrap_or_default();
                                 match hit {
                                     Some(line) => {
                                         if let Some(rt) = require_template {
@@ -2806,17 +3365,33 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                         // B-02: an explicit operation region
                                         // (action_shape / click_back) must win over
                                         // the recognized line box, including invert.
-                                        let explicit_action = self.assets.click_shape(sel).is_some()
-                                            || self.assets.click_back(sel).is_some();
-                                        let target = if explicit_action {
+                                        let default_target = if self.assets.click_shape(sel).is_some()
+                                            || self.assets.click_back(sel).is_some()
+                                        {
                                             self.click_box_for(sel, centre)?
                                         } else {
                                             line.rect
                                         };
+                                        // v1.3 (OPERATION-REGION-DESIGN §6.1): an
+                                        // explicit `region` overrides the asset
+                                        // operation area; `mode=asset` keeps it.
+                                        let (target, shape_aware) = match region {
+                                            None | Some(OpRegion::Asset) => (default_target, true),
+                                            Some(OpRegion::Ocr) | Some(OpRegion::Nearest) => {
+                                                (line.rect, false)
+                                            }
+                                            Some(OpRegion::Offset { dx, dy, w, h }) => (
+                                                offset_region_rect(line.rect, *dx, *dy, *w, *h),
+                                                false,
+                                            ),
+                                        };
                                         let plan =
                                             self.humanize.template_click(target, w, &mut self.rng);
-                                        let plan =
-                                            self.adjust_plan_for_shape(sel, plan, w, h, centre)?;
+                                        let plan = if shape_aware {
+                                            self.adjust_plan_for_shape(sel, plan, w, h, centre)?
+                                        } else {
+                                            plan
+                                        };
                                         let centre = Point {
                                             x: target.x + target.w / 2,
                                             y: target.y + target.h / 2,
@@ -2836,7 +3411,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                         let verified = self.verify_if_present(expect.as_ref())?;
                                         let miss = if plan.miss { " miss=true" } else { "" };
                                         return Ok(format!(
-                                            "clicked_target locator=ocr_text sel={sel} text={:?} score={:.3} point=({},{}){miss} verified={verified} guard={guarded}",
+                                            "clicked_target locator=ocr_text sel={sel} text={:?} score={:.3} point=({},{}){miss} verified={verified} guard={guarded}{region_info}",
                                             line.text, line.score, actual.x, actual.y
                                         ));
                                     }
@@ -2898,11 +3473,26 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                     // invert) overrides the bbox fallback above.
                                     let explicit_action = self.assets.click_shape(sel).is_some();
                                     let marker = Point { x: recognition.x, y: recognition.y };
-                                    let target = if explicit_action {
+                                    let default_target = if explicit_action {
                                         self.click_box_for(sel, marker)?
                                     } else {
                                         rect
                                     };
+                                    // v1.3 region override (single-line OCR has no
+                                    // per-line bbox: the recognition ROI IS its box).
+                                    let (target, shape_aware) = match region {
+                                        None | Some(OpRegion::Asset) => (default_target, true),
+                                        Some(OpRegion::Ocr) | Some(OpRegion::Nearest) => {
+                                            (recognition, false)
+                                        }
+                                        Some(OpRegion::Offset { dx, dy, w, h }) => (
+                                            offset_region_rect(recognition, *dx, *dy, *w, *h),
+                                            false,
+                                        ),
+                                    };
+                                    let region_info = region
+                                        .map(|r| format!(" region={}", r.mode_str()))
+                                        .unwrap_or_default();
                                     if let Some(rt) = require_template {
                                         match self.template_in_region(rt, recognition, 16) {
                                             Ok(true) => {}
@@ -2918,8 +3508,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                         }
                                     }
                                     let plan = self.humanize.template_click(target, w, &mut self.rng);
-                                    let plan =
-                                        self.adjust_plan_for_shape(sel, plan, w, h, marker)?;
+                                    let plan = if shape_aware {
+                                        self.adjust_plan_for_shape(sel, plan, w, h, marker)?
+                                    } else {
+                                        plan
+                                    };
                                     let centre = Point {
                                         x: target.x + target.w / 2,
                                         y: target.y + target.h / 2,
@@ -2939,7 +3532,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                     let verified = self.verify_if_present(expect.as_ref())?;
                                     let miss = if plan.miss { " miss=true" } else { "" };
                                     return Ok(format!(
-                                        "clicked_target locator=ocr_text sel={sel} text={:?} score={score:.3} point=({},{}){miss} verified={verified} guard={guarded}",
+                                        "clicked_target locator=ocr_text sel={sel} text={:?} score={score:.3} point=({},{}){miss} verified={verified} guard={guarded}{region_info}",
                                         t, actual.x, actual.y
                                     ));
                                 }
@@ -2956,6 +3549,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         Locator::OcrTextInline {
                             roi,
                             require_template,
+                            region,
                             ..
                         } => {
                             let rect = oas_types::Rect {
@@ -2964,16 +3558,24 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 w: roi[2],
                                 h: roi[3],
                             };
+                            let region_info = region
+                                .map(|r| format!(" region={}", r.mode_str()))
+                                .unwrap_or_default();
                             match self.ocr_read_rect(rect, true) {
                                 Ok(OcrRead::Lines(lines)) => {
-                                    let hit = lines
-                                        .iter()
-                                        .filter(|l| ocr_text_matches(text, l.text.as_str()))
-                                        .max_by(|a, b| {
+                                    // v1.3 `region`: shared candidate selection;
+                                    // `nearest` uses the inline ROI centre.
+                                    let candidates = ocr_line_candidates(&lines, text, None);
+                                    let hit = match region {
+                                        Some(OpRegion::Nearest) => {
+                                            nearest_ocr_line(&candidates, rect_centre(rect))
+                                        }
+                                        _ => candidates.iter().copied().max_by(|a, b| {
                                             a.score
                                                 .partial_cmp(&b.score)
                                                 .unwrap_or(std::cmp::Ordering::Equal)
-                                        });
+                                        }),
+                                    };
                                     match hit {
                                         Some(line) => {
                                             if let Some(rt) = require_template {
@@ -2990,12 +3592,21 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                                     Err(e) => return Err(e),
                                                 }
                                             }
+                                            let target = match region {
+                                                None
+                                                | Some(OpRegion::Asset)
+                                                | Some(OpRegion::Ocr)
+                                                | Some(OpRegion::Nearest) => line.rect,
+                                                Some(OpRegion::Offset { dx, dy, w, h }) => {
+                                                    offset_region_rect(line.rect, *dx, *dy, *w, *h)
+                                                }
+                                            };
                                             let plan = self
                                                 .humanize
-                                                .template_click(line.rect, w, &mut self.rng);
+                                                .template_click(target, w, &mut self.rng);
                                             let centre = Point {
-                                                x: line.rect.x + line.rect.w / 2,
-                                                y: line.rect.y + line.rect.h / 2,
+                                                x: target.x + target.w / 2,
+                                                y: target.y + target.h / 2,
                                             };
                                             let match_info = format!(
                                                 "ocr_text:inline:{}:{:.3}",
@@ -3017,7 +3628,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                                 if plan.miss { " miss=true" } else { "" };
                                             return Ok(format!(
                                                 "clicked_target locator=ocr_text inline text={:?} \
-                                                 score={:.3} point=({},{}){miss} verified={verified} guard={guarded}",
+                                                 score={:.3} point=({},{}){miss} verified={verified} guard={guarded}{region_info}",
                                                 line.text, line.score, actual.x, actual.y
                                             ));
                                         }
@@ -3031,10 +3642,17 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 }
                                 Ok(OcrRead::Single(Some(t), score)) => {
                                     if ocr_text_matches(text, &t) {
-                                        let plan = self.humanize.template_click(rect, w, &mut self.rng);
+                                        let target = match region {
+                                            Some(OpRegion::Offset { dx, dy, w, h }) => {
+                                                offset_region_rect(rect, *dx, *dy, *w, *h)
+                                            }
+                                            _ => rect,
+                                        };
+                                        let plan =
+                                            self.humanize.template_click(target, w, &mut self.rng);
                                         let centre = Point {
-                                            x: rect.x + rect.w / 2,
-                                            y: rect.y + rect.h / 2,
+                                            x: target.x + target.w / 2,
+                                            y: target.y + target.h / 2,
                                         };
                                         let (actual, _delay) = self.perform_click(
                                             plan,
@@ -3050,7 +3668,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                         let miss = if plan.miss { " miss=true" } else { "" };
                                         return Ok(format!(
                                             "clicked_target locator=ocr_text inline text={t:?} \
-                                             score={score:.3} point=({},{}){miss} verified={verified} guard={guarded}",
+                                             score={score:.3} point=({},{}){miss} verified={verified} guard={guarded}{region_info}",
                                             actual.x, actual.y
                                         ));
                                     }
@@ -3214,6 +3832,74 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     evidence.join("; ")
                 ))
             }
+            // v1.3 long press (docs/OPERATION-REGION-DESIGN.md §6.1): same
+            // locator chain / guard / verification as `click_target`, but the
+            // action is a hold. `hold_range` (humanized) wins over `hold_ms`.
+            Step::LongPress {
+                find,
+                hold_ms,
+                hold_range,
+                requires,
+                expect,
+            } => {
+                self.reobserve_screen()?;
+                // Same `text_expr` contract as click_target: resolve every
+                // locator text ONCE at step entry; a bad value aborts before any
+                // gesture (it must never fall through to a lower-priority kind).
+                let mut resolved_text: Vec<Option<String>> = Vec::with_capacity(find.len());
+                for (j, loc) in find.iter().enumerate() {
+                    resolved_text.push(match loc.text_spec() {
+                        None => None,
+                        Some(spec) => Some(self.resolve_text(
+                            spec,
+                            &format!("long_press args.find[{j}].text_expr"),
+                        )?),
+                    });
+                }
+                let guarded = self.require_guard(requires.as_ref())?;
+                if self.screen.size().is_none() {
+                    self.observe_screen()?;
+                }
+                let (w, h) = self
+                    .screen
+                    .size()
+                    .ok_or_else(|| "long_press: no frame available".to_string())?;
+                // Hold duration: `hold_range` (random humanized) wins over the
+                // fixed `hold_ms`. Both sides are 100..=10000 (parser-enforced).
+                let ms = match hold_range {
+                    Some([lo, hi]) => {
+                        let span = hi.saturating_sub(*lo) as f64;
+                        let picked = *lo
+                            + (self.rng.unit_f64() * (span + 1.0)).floor() as u32;
+                        picked.min(*hi)
+                    }
+                    None => *hold_ms,
+                };
+                let target = self
+                    .resolve_press_target(find, &resolved_text, w, h)
+                    .map_err(|e| format!("long_press: {e}"))?;
+                let actual = self.perform_long_press(target.point, ms, w, h)?;
+                let verified = self.verify_if_present(expect.as_ref())?;
+                let region_info = target
+                    .region
+                    .map(|r| format!(" region={}", r.mode_str()))
+                    .unwrap_or_default();
+                let sel_info = target
+                    .sel
+                    .as_deref()
+                    .map(|s| format!(" sel={s}"))
+                    .unwrap_or_default();
+                return Ok(format!(
+                    "held locator={}{sel_info} ms={ms} point=({},{}) frame={}x{} \
+                     verified={verified} guard={guarded} match={}{region_info}",
+                    target.locator,
+                    actual.x,
+                    actual.y,
+                    w,
+                    h,
+                    target.match_info
+                ));
+            }
             Step::Swipe {
                 from_x,
                 from_y,
@@ -3254,6 +3940,59 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 Ok(format!(
                     "swiped from=({},{}) to=({},{}) ms={} frame={}x{}",
                     from.x, from.y, to.x, to.y, ms, w, h
+                ))
+            }
+            // v1.3 multi-segment curve (docs/OPERATION-REGION-DESIGN.md §6.1):
+            // N points → N-1 independent `input swipe` calls. Every segment must
+            // stay on-screen; the total duration is randomized and split evenly
+            // (>= 1ms/segment). NOT one continuous gesture by design.
+            Step::CurveSwipe {
+                points,
+                duration_ms,
+            } => {
+                self.observe_screen()?;
+                let (w, h) = self
+                    .screen
+                    .size()
+                    .ok_or_else(|| "curve_swipe: no frame available".to_string())?;
+                if points.len() < 2 {
+                    return Err("curve_swipe needs at least 2 points".to_string());
+                }
+                for (i, p) in points.iter().enumerate() {
+                    if p[0] < 0 || p[1] < 0 || p[0] >= w as i32 || p[1] >= h as i32 {
+                        return Err(format!(
+                            "curve_swipe point[{i}]=({},{}) is outside the frame ({}x{})",
+                            p[0], p[1], w, h
+                        ));
+                    }
+                }
+                let span = duration_ms[1].saturating_sub(duration_ms[0]) as f64;
+                let total = (duration_ms[0] as f64
+                    + (self.rng.unit_f64() * (span + 1.0)).floor())
+                .min(duration_ms[1] as f64) as u32;
+                let segments = points.len() - 1;
+                let seg_ms = (total / segments as u32).max(1);
+                for i in 0..segments {
+                    let from = Point {
+                        x: points[i][0],
+                        y: points[i][1],
+                    };
+                    let to = Point {
+                        x: points[i + 1][0],
+                        y: points[i + 1][1],
+                    };
+                    self.input.swipe(from, to, seg_ms)?;
+                }
+                self.invalidate_frame();
+                Ok(format!(
+                    "curve_swipe points={} segments={} total_ms={} seg_ms={} frame={}x{} \
+                     (each segment is an independent swipe gesture)",
+                    points.len(),
+                    segments,
+                    seg_ms.saturating_mul(segments as u32),
+                    seg_ms,
+                    w,
+                    h
                 ))
             }
             Step::Drag {
@@ -3569,6 +4308,8 @@ fn step_name(s: &Step) -> &'static str {
         Step::ClickPoint { .. } => "click_point",
         Step::Swipe { .. } => "swipe",
         Step::Drag { .. } => "drag",
+        Step::LongPress { .. } => "long_press",
+        Step::CurveSwipe { .. } => "curve_swipe",
         Step::Ocr { .. } => "ocr",
         Step::SetVar { .. } => "set_var",
         Step::IncVar { .. } => "inc_var",
@@ -3776,6 +4517,9 @@ mod tests {
     struct SharedInput {
         clicks: std::rc::Rc<std::cell::RefCell<Vec<Point>>>,
         swipes: std::rc::Rc<std::cell::RefCell<Vec<(Point, Point, u32)>>>,
+        /// v1.3 long-press gestures, kept distinct from swipes so a test can
+        /// prove the interpreter called `long_press` (and not a click/swipe).
+        long_presses: std::rc::Rc<std::cell::RefCell<Vec<(Point, u32)>>>,
     }
 
     struct FakeInput {
@@ -3801,6 +4545,10 @@ mod tests {
         }
         fn swipe(&mut self, from: Point, to: Point, ms: u32) -> Result<(), String> {
             self.shared.swipes.borrow_mut().push((from, to, ms));
+            Ok(())
+        }
+        fn long_press(&mut self, p: Point, ms: u32) -> Result<(), String> {
+            self.shared.long_presses.borrow_mut().push((p, ms));
             Ok(())
         }
     }
@@ -5819,6 +6567,473 @@ mod tests {
             shared.swipes.borrow().is_empty(),
             "no swipe may happen when the drag endpoint cannot be resolved"
         );
+    }
+
+    // ---- v1.3 operation region / long_press / curve_swipe ----
+
+    /// OCR interpreter whose `O_LIST` asset also declares a small `click_back`
+    /// operation area at `(10,30,15,10)`; the det+rec provider returns `lines`.
+    fn mk_chain_det_with_back(lines: Vec<OcrLine>) -> (OcrInterp, SharedInput) {
+        let mut assets = chain_assets();
+        assets.set_click_back(
+            "O_LIST",
+            Rect {
+                x: 10,
+                y: 30,
+                w: 15,
+                h: 10,
+            },
+        );
+        mk_det_ocr_with(assets, lines)
+    }
+
+    #[test]
+    fn region_ocr_forces_the_line_bbox_over_the_asset_action_area() {
+        let line_rect = Rect {
+            x: 40,
+            y: 24,
+            w: 20,
+            h: 12,
+        };
+        let back = Rect {
+            x: 10,
+            y: 30,
+            w: 15,
+            h: 10,
+        };
+        let f_plain = click_target_flow(r#"[{"kind":"ocr_text","sel":"O_LIST","text":"返回"}]"#);
+        let f_ocr = click_target_flow(
+            r#"[{"kind":"ocr_text","sel":"O_LIST","text":"返回","region":{"mode":"ocr"}}]"#,
+        );
+
+        // No region: the asset operation area (click_back) wins (historical).
+        let (mut interp, shared) = mk_chain_det_with_back(vec![line("返回", 0.95, line_rect)]);
+        assert_eq!(interp.run(&f_plain), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            (back.x..back.x + back.w).contains(&p.x) && (back.y..back.y + back.h).contains(&p.y),
+            "no region => asset click_back area, got {p:?}"
+        );
+
+        // mode=ocr: the matched line bbox wins even though click_back exists.
+        let (mut interp, shared) = mk_chain_det_with_back(vec![line("返回", 0.95, line_rect)]);
+        assert_eq!(interp.run(&f_ocr), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            (line_rect.x..line_rect.x + line_rect.w).contains(&p.x)
+                && (line_rect.y..line_rect.y + line_rect.h).contains(&p.y),
+            "region=ocr => matched line bbox, got {p:?}"
+        );
+        let detail = interp
+            .events()
+            .iter()
+            .find(|e| e.op == "click_target")
+            .map(|e| e.detail.clone())
+            .expect("click_target event");
+        assert!(detail.contains("region=ocr"), "{detail}");
+    }
+
+    #[test]
+    fn region_asset_makes_a_drag_endpoint_use_the_asset_operation_area() {
+        let line_rect = Rect {
+            x: 40,
+            y: 24,
+            w: 20,
+            h: 12,
+        };
+        let back = Rect {
+            x: 10,
+            y: 30,
+            w: 20,
+            h: 10,
+        };
+        let plain = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"ocr_text","sel":"O_LIST","text":"返回"},
+                   "direction":"up","distance":[5,10],"duration_ms":[100,120],"margin":0.0}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let with_asset = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"ocr_text","sel":"O_LIST","text":"返回",
+                           "region":{"mode":"asset"}},
+                   "direction":"up","distance":[5,10],"duration_ms":[100,120],"margin":0.0}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let build = || mk_chain_det_with_back(vec![line("返回", 0.95, line_rect)]);
+
+        // No region: drag keeps the historical line-bbox endpoint.
+        let (mut interp, shared) = build();
+        assert_eq!(interp.run(&plain), RunResult::Finished(Exit::Done));
+        let start = shared.swipes.borrow()[0].0;
+        assert!(
+            (line_rect.x..line_rect.x + line_rect.w).contains(&start.x)
+                && (line_rect.y..line_rect.y + line_rect.h).contains(&start.y),
+            "drag without region must use the line bbox, got {start:?}"
+        );
+
+        // region=asset: the declared asset operation area is used (new for drag).
+        let (mut interp, shared) = build();
+        assert_eq!(interp.run(&with_asset), RunResult::Finished(Exit::Done));
+        let start = shared.swipes.borrow()[0].0;
+        assert!(
+            (back.x..back.x + back.w).contains(&start.x)
+                && (back.y..back.y + back.h).contains(&start.y),
+            "drag region=asset must use click_back, got {start:?}"
+        );
+    }
+
+    #[test]
+    fn region_nearest_click_picks_the_line_nearest_to_the_ocr_roi_centre() {
+        // O_LIST ocr_roi is (40,24,40,24) => centre (60,36).
+        let near = Rect {
+            x: 60,
+            y: 40,
+            w: 10,
+            h: 10,
+        }; // centre (65,45), d2=106
+        let far = Rect {
+            x: 40,
+            y: 24,
+            w: 20,
+            h: 12,
+        }; // centre (50,30), d2=136
+        let lines = vec![line("返回", 0.99, far), line("返回", 0.90, near)];
+        let plain = click_target_flow(r#"[{"kind":"ocr_text","sel":"O_LIST","text":"返回"}]"#);
+        let nearest = click_target_flow(
+            r#"[{"kind":"ocr_text","sel":"O_LIST","text":"返回","region":{"mode":"nearest"}}]"#,
+        );
+
+        // Default: highest score wins (far line) — historical behaviour.
+        let (mut interp, shared) = mk_det_ocr_with(chain_assets(), lines.clone());
+        assert_eq!(interp.run(&plain), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            (far.x..far.x + far.w).contains(&p.x) && (far.y..far.y + far.h).contains(&p.y),
+            "default pick must stay max-score, got {p:?}"
+        );
+
+        // nearest: the line whose centre is closest to the ROI centre.
+        let (mut interp, shared) = mk_det_ocr_with(chain_assets(), lines);
+        assert_eq!(interp.run(&nearest), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            (near.x..near.x + near.w).contains(&p.x) && (near.y..near.y + near.h).contains(&p.y),
+            "region=nearest must pick the nearest line, got {p:?}"
+        );
+        let detail = interp
+            .events()
+            .iter()
+            .find(|e| e.op == "click_target")
+            .map(|e| e.detail.clone())
+            .expect("click_target event");
+        assert!(detail.contains("region=nearest"), "{detail}");
+    }
+
+    #[test]
+    fn region_offset_shifts_and_keeps_the_line_size() {
+        let line_rect = Rect {
+            x: 40,
+            y: 24,
+            w: 20,
+            h: 12,
+        };
+        // 2-value offset: shift only, the line size is kept.
+        let (mut interp, shared) =
+            mk_det_ocr_with(chain_assets(), vec![line("返回", 0.95, line_rect)]);
+        let shifted = click_target_flow(
+            r#"[{"kind":"ocr_text","sel":"O_LIST","text":"返回",
+                 "region":{"mode":"offset","offset":[-20,-10]}}]"#,
+        );
+        assert_eq!(interp.run(&shifted), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            (20..40).contains(&p.x) && (14..26).contains(&p.y),
+            "offset [-20,-10] => box (20,14,20,12), got {p:?}"
+        );
+
+        // 4-value offset: shift + resize.
+        let (mut interp, shared) =
+            mk_det_ocr_with(chain_assets(), vec![line("返回", 0.95, line_rect)]);
+        let resized = click_target_flow(
+            r#"[{"kind":"ocr_text","sel":"O_LIST","text":"返回",
+                 "region":{"mode":"offset","offset":[5,5,10,8]}}]"#,
+        );
+        assert_eq!(interp.run(&resized), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            (45..55).contains(&p.x) && (29..37).contains(&p.y),
+            "offset [5,5,10,8] => box (45,29,10,8), got {p:?}"
+        );
+    }
+
+    #[test]
+    fn region_nearest_inline_uses_the_inline_roi_centre() {
+        // Inline roi (0,0,64,48) => centre (32,24).
+        let near = Rect {
+            x: 40,
+            y: 24,
+            w: 20,
+            h: 12,
+        }; // centre (50,30) d2=360
+        let far = Rect {
+            x: 10,
+            y: 10,
+            w: 10,
+            h: 10,
+        }; // centre (15,15) d2=370
+        let lines = vec![line("返回", 0.90, near), line("返回", 0.99, far)];
+        let f = click_target_flow(
+            r#"[{"kind":"ocr_text","roi":[0,0,64,48],"text":"返回",
+                 "region":{"mode":"nearest"}}]"#,
+        );
+        let (mut interp, shared) = mk_det_ocr_with(chain_assets(), lines);
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            (near.x..near.x + near.w).contains(&p.x) && (near.y..near.y + near.h).contains(&p.y),
+            "inline nearest must use the inline roi centre, got {p:?}"
+        );
+    }
+
+    #[test]
+    fn long_press_defaults_to_3000ms_on_the_ocr_line() {
+        let line_rect = Rect {
+            x: 40,
+            y: 24,
+            w: 20,
+            h: 12,
+        };
+        let (mut interp, shared) = mk_chain_det_for("长按", line_rect);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"long_press","args":{
+                   "find":[{"kind":"ocr_text","sel":"O_LIST","text":"长按"}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let presses = shared.long_presses.borrow();
+        assert_eq!(presses.len(), 1, "exactly one hold");
+        let (p, ms) = presses[0];
+        assert_eq!(ms, 3000, "default hold_ms");
+        assert!(
+            (line_rect.x..line_rect.x + line_rect.w).contains(&p.x)
+                && (line_rect.y..line_rect.y + line_rect.h).contains(&p.y),
+            "hold must be inside the matched line: {p:?}"
+        );
+        assert!(shared.clicks.borrow().is_empty(), "no tap may be sent");
+        let detail = interp
+            .events()
+            .iter()
+            .find(|e| e.op == "long_press")
+            .map(|e| e.detail.clone())
+            .expect("long_press event");
+        assert!(detail.contains("held locator=ocr_text"), "{detail}");
+        assert!(detail.contains("ms=3000"), "{detail}");
+    }
+
+    #[test]
+    fn long_press_hold_range_wins_over_hold_ms() {
+        let line_rect = Rect {
+            x: 40,
+            y: 24,
+            w: 20,
+            h: 12,
+        };
+        let ranged = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"long_press","args":{
+                   "find":[{"kind":"ocr_text","sel":"O_LIST","text":"长按"}],
+                   "hold_ms":800,"hold_range":[2500,3500]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let (mut interp, shared) = mk_chain_det_for("长按", line_rect);
+        assert_eq!(interp.run(&ranged), RunResult::Finished(Exit::Done));
+        let (_, ms) = shared.long_presses.borrow()[0];
+        assert!(
+            (2500..=3500).contains(&ms),
+            "hold_range must win and stay in range, got {ms}"
+        );
+
+        let fixed = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"long_press","args":{
+                   "find":[{"kind":"ocr_text","sel":"O_LIST","text":"长按"}],
+                   "hold_ms":800}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let (mut interp, shared) = mk_chain_det_for("长按", line_rect);
+        assert_eq!(interp.run(&fixed), RunResult::Finished(Exit::Done));
+        let (_, ms) = shared.long_presses.borrow()[0];
+        assert_eq!(ms, 800, "fixed hold_ms without a range");
+    }
+
+    #[test]
+    fn long_press_text_expr_and_region_nearest_pick_the_expected_line() {
+        // O_LIST ocr_roi centre (60,36): the near line must be chosen.
+        let near = Rect {
+            x: 60,
+            y: 40,
+            w: 10,
+            h: 10,
+        };
+        let far = Rect {
+            x: 40,
+            y: 24,
+            w: 20,
+            h: 12,
+        };
+        let lines = vec![line("长按", 0.99, far), line("长按", 0.90, near)];
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"long_press","args":{
+                   "find":[{"kind":"ocr_text","sel":"O_LIST","text_expr":"param('k')",
+                            "region":{"mode":"nearest"}}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let (interp, shared) = mk_det_ocr_with(chain_assets(), lines.clone());
+        let mut interp = interp.with_param("k", Value::Str("长按".to_string()));
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let (p, _ms) = shared.long_presses.borrow()[0];
+        assert!(
+            (near.x..near.x + near.w).contains(&p.x) && (near.y..near.y + near.h).contains(&p.y),
+            "nearest + text_expr must hold the nearest line, got {p:?}"
+        );
+
+        // A missing parameter fails loudly BEFORE any gesture.
+        let (interp, shared) = mk_det_ocr_with(chain_assets(), lines);
+        let mut interp = interp;
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("long_press"), "must name the op: {msg}");
+                assert!(msg.contains("'k'"), "must name the key: {msg}");
+            }
+            other => panic!("expected a loud failure, got {other:?}"),
+        }
+        assert!(
+            shared.long_presses.borrow().is_empty(),
+            "no hold may happen when the text_expr cannot be resolved"
+        );
+    }
+
+    #[test]
+    fn long_press_template_target_and_all_locators_failed_are_loud() {
+        // Template chain: hold inside the matched I_BRIGHT box (12,10,10,10).
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(5);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"long_press","args":{"find":[{"kind":"template","sel":"I_BRIGHT"}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let (p, ms) = shared.long_presses.borrow()[0];
+        assert_eq!(ms, 3000);
+        assert!(
+            (12..22).contains(&p.x) && (10..20).contains(&p.y),
+            "hold must be inside the matched template box: {p:?}"
+        );
+
+        // All locators failing is a loud failure and sends no gesture.
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            FakeScreen::new(),
+            input,
+            chain_assets(),
+            Budget::default(),
+        )
+        .with_humanize(no_miss())
+        .with_seed(5);
+        let f_fail = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"long_press","args":{"find":[
+                    {"kind":"template","sel":"I_NEVER"},
+                    {"kind":"coord_memory","key":"空记忆"}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f_fail) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("all locators failed"), "{msg}");
+                assert!(msg.contains("I_NEVER"), "{msg}");
+            }
+            other => panic!("expected a loud failure, got {other:?}"),
+        }
+        assert!(shared.long_presses.borrow().is_empty());
+    }
+
+    #[test]
+    fn curve_swipe_sends_one_independent_swipe_per_segment() {
+        let (mut interp, shared) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"curve_swipe","args":{
+                   "points":[[10,10],[20,20],[30,15]],"duration_ms":[600,600]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let swipes = shared.swipes.borrow();
+        assert_eq!(swipes.len(), 2, "3 points => 2 segments");
+        assert_eq!(swipes[0].0, Point { x: 10, y: 10 });
+        assert_eq!(swipes[0].1, Point { x: 20, y: 20 });
+        assert_eq!(swipes[1].0, Point { x: 20, y: 20 });
+        assert_eq!(swipes[1].1, Point { x: 30, y: 15 });
+        assert_eq!(swipes[0].2, 300, "600ms total split over 2 segments");
+        assert_eq!(swipes[1].2, 300);
+        let detail = interp
+            .events()
+            .iter()
+            .find(|e| e.op == "curve_swipe")
+            .map(|e| e.detail.clone())
+            .expect("curve_swipe event");
+        assert!(detail.contains("segments=2"), "{detail}");
+        assert!(detail.contains("total_ms=600"), "{detail}");
+        assert!(detail.contains("independent"), "{detail}");
+
+        // Random total duration stays inside the declared range.
+        let (mut interp, shared) = mk_inspect(FakeScreen::new());
+        let ranged = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"curve_swipe","args":{
+                   "points":[[10,10],[20,20],[30,15]],"duration_ms":[600,1000]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&ranged), RunResult::Finished(Exit::Done));
+        let swipes = shared.swipes.borrow();
+        let total = swipes[0].2 + swipes[1].2;
+        assert!((600..=1000).contains(&total), "total {total} out of range");
+        assert_eq!(swipes[0].2, swipes[1].2, "evenly split");
+    }
+
+    #[test]
+    fn curve_swipe_out_of_frame_point_is_a_loud_failure() {
+        let (mut interp, shared) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"curve_swipe","args":{"points":[[10,10],[200,20]]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("point[1]"), "{msg}");
+                assert!(msg.contains("outside the frame"), "{msg}");
+            }
+            other => panic!("expected a loud failure, got {other:?}"),
+        }
+        assert!(shared.swipes.borrow().is_empty(), "no segment may be sent");
     }
 
     #[test]

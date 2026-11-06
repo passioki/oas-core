@@ -671,6 +671,58 @@ impl TextSpec {
     }
 }
 
+/// Hard bound for one `region.offset` value (`dx`/`dy`/`w`/`h`).
+///
+/// Frame coordinates are far below this; the cap keeps the runtime offset math
+/// (i64 add + clamp) well inside its safe range, mirroring
+/// [`MAX_DRAG_SHAPE_COORD`].
+const MAX_REGION_COORD: i64 = 1_000_000;
+
+/// Optional **operation region** override on an OCR locator / drag endpoint
+/// (v1.3, `docs/OPERATION-REGION-DESIGN.md §6.1`).
+///
+/// A flow without the `region` field yields `None` and keeps the historical
+/// behaviour byte-for-byte. Only OCR locators / OCR drag endpoints accept it:
+/// template / region / coord_memory / point kinds are a parse error, because
+/// their operation geometry is already defined by their own match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpRegion {
+    /// `{"mode":"asset"}`: the asset's own operation area (`action_shape` /
+    /// `click_back`), falling back to the matched OCR line bbox when the asset
+    /// declares none. (For `click_target` this is the default OCR behaviour,
+    /// made explicit; for `drag` it is new.)
+    Asset,
+    /// `{"mode":"ocr"}`: force the matched OCR line bbox and ignore the asset's
+    /// `action_shape` / `click_back`.
+    Ocr,
+    /// `{"mode":"nearest"}`: with several matching OCR lines, use the one whose
+    /// bbox centre is nearest to the OCR **recognition ROI** centre (`sel`'s
+    /// `ocr_roi` centre, or the inline `roi` centre). A single matching line
+    /// behaves exactly like [`OpRegion::Ocr`].
+    Nearest,
+    /// `{"mode":"offset","offset":[dx,dy]|[dx,dy,w,h]}`: shift the base bbox
+    /// (the matched OCR line bbox) top-left by `(dx,dy)`; a 4-value offset also
+    /// resizes it to `(w,h)`, a 2-value offset keeps the matched size.
+    Offset {
+        dx: i32,
+        dy: i32,
+        w: Option<i32>,
+        h: Option<i32>,
+    },
+}
+
+impl OpRegion {
+    /// `asset` / `ocr` / `nearest` / `offset` (used by logs + tests).
+    pub fn mode_str(self) -> &'static str {
+        match self {
+            OpRegion::Asset => "asset",
+            OpRegion::Ocr => "ocr",
+            OpRegion::Nearest => "nearest",
+            OpRegion::Offset { .. } => "offset",
+        }
+    }
+}
+
 /// v1.1: target of a `drag` endpoint (region/OCR text/point).
 ///
 /// `region` is the "独立区域操作" path: the user marks any rectangle (no
@@ -694,6 +746,8 @@ pub enum DragTarget {
         /// `text` (literal) or `text_expr` (expression, evaluated once at step
         /// entry and required to be a string).
         text: TextSpec,
+        /// v1.3 operation-area override (OCR endpoints only).
+        region: Option<OpRegion>,
     },
     Point { x: i32, y: i32 },
 }
@@ -705,6 +759,14 @@ impl DragTarget {
     pub fn text_spec(&self) -> Option<&TextSpec> {
         match self {
             DragTarget::OcrText { text, .. } => Some(text),
+            DragTarget::Region { .. } | DragTarget::Point { .. } => None,
+        }
+    }
+
+    /// v1.3 operation-region override (`ocr_text` endpoints only).
+    pub fn region(&self) -> Option<OpRegion> {
+        match self {
+            DragTarget::OcrText { region, .. } => *region,
             DragTarget::Region { .. } | DragTarget::Point { .. } => None,
         }
     }
@@ -767,6 +829,8 @@ pub enum Locator {
         /// `text` (literal) or `text_expr` (expression) — see [`TextSpec`].
         text: TextSpec,
         require_template: Option<String>,
+        /// v1.3 operation-area override (OCR locators only).
+        region: Option<OpRegion>,
     },
     /// Text recognition with an **inline ROI** (v1.1): no asset needed.
     ///
@@ -778,6 +842,8 @@ pub enum Locator {
         /// `text` (literal) or `text_expr` (expression) — see [`TextSpec`].
         text: TextSpec,
         require_template: Option<String>,
+        /// v1.3 operation-area override (OCR locators only).
+        region: Option<OpRegion>,
     },
     /// v1.1 independent region operation: click a random point inside an
     /// arbitrary frame rectangle (no recognition / no asset needed).
@@ -833,6 +899,17 @@ impl Locator {
     pub fn text_spec(&self) -> Option<&TextSpec> {
         match self {
             Locator::OcrText { text, .. } | Locator::OcrTextInline { text, .. } => Some(text),
+            Locator::Template { .. }
+            | Locator::Region { .. }
+            | Locator::RegionRef { .. }
+            | Locator::CoordMemory { .. } => None,
+        }
+    }
+
+    /// v1.3 operation-region override (`ocr_text` locators only).
+    pub fn region(&self) -> Option<OpRegion> {
+        match self {
+            Locator::OcrText { region, .. } | Locator::OcrTextInline { region, .. } => *region,
             Locator::Template { .. }
             | Locator::Region { .. }
             | Locator::RegionRef { .. }
@@ -1044,6 +1121,35 @@ pub enum Step {
         duration_ms: [u32; 2],
         /// Fraction of the region inset for random points (0..=0.45).
         margin: f32,
+    },
+    /// v1.3 长按（`docs/OPERATION-REGION-DESIGN.md §6.1`）：locator 链解析目标后
+    /// 在目标上按住 `hold_ms`（或 `hold_range` 内随机）毫秒，用于「长安/按住」类操作。
+    ///
+    /// `find` 与 `click_target` 完全同构（模板 / OCR / 区域 / 坐标记忆，OCR 文字可写
+    /// `text_expr`，OCR locator 可带 `region` 操作区域覆盖）。`requires`/`expect`
+    /// 与 click 家族同义：guard 不满足则**不按下**，expect 在按下后校验。
+    /// 输入层是 `InputSink::long_press`（ADB = 同坐标 `input swipe x y x y ms`）。
+    LongPress {
+        find: Vec<Locator>,
+        /// 固定按住时长（ms），100..=10000；`hold_range` 存在时被其覆盖。
+        hold_ms: u32,
+        /// 可选拟人随机时长区间 `[min,max]`（ms，100..=10000，min<=max），优先于 `hold_ms`。
+        hold_range: Option<[u32; 2]>,
+        /// 可选按下前页面 guard（同 click_target）。
+        requires: Option<Expect>,
+        /// 可选按下后校验（同 click_target）。
+        expect: Option<Expect>,
+    },
+    /// v1.3 多段近似曲线滑动（`docs/OPERATION-REGION-DESIGN.md §6.1`）。
+    ///
+    /// 把给定屏内点序列按 **N-1 段直线** 依次发送 `input swipe`（总时长随机后按段
+    /// 均分，每段 >= 1ms）。**每段都是独立手势**：ADB 没有可移植的连续路径注入，
+    /// 因此 App 可能把一次曲线识别成多次滑动（设计已确认接受该风险）。
+    CurveSwipe {
+        /// 2..=32 个屏内点 `[[x,y], ...]`。
+        points: Vec<[i32; 2]>,
+        /// `[min,max]` 总时长（ms），每段 = total/(n-1)，至少 1ms。
+        duration_ms: [u32; 2],
     },
     Ocr {
         sel: String,
@@ -1387,6 +1493,223 @@ fn parse_u32_pair(v: &serde_json::Value, path: &str) -> Result<[u32; 2], FlowErr
     Ok([a, b])
 }
 
+/// Bounds of one `long_press` hold duration (ms): `hold_ms` and each side of
+/// `hold_range` (docs/OPERATION-REGION-DESIGN.md §6.1).
+const MIN_HOLD_MS: u32 = 100;
+const MAX_HOLD_MS: u32 = 10_000;
+
+/// Bounds of one `curve_swipe` total duration side (ms) and point count.
+const MIN_CURVE_MS: u32 = 100;
+const MAX_CURVE_MS: u32 = 10_000;
+const MIN_CURVE_POINTS: usize = 2;
+const MAX_CURVE_POINTS: usize = 32;
+
+/// Parse the optional `region` object of an OCR locator / drag endpoint
+/// (v1.3, `docs/OPERATION-REGION-DESIGN.md §6.1`).
+///
+/// JSON contract:
+/// ```json
+/// "region": {"mode": "asset" | "ocr" | "nearest" | "offset", "offset": [dx, dy(, w, h)]}
+/// ```
+/// * missing / `null` → `None` (old flows unchanged);
+/// * `offset` is only allowed for `mode:"offset"` (and is required there);
+/// * a 4-value offset needs `w`/`h` > 0; a 2-value one keeps the base size.
+fn parse_region(v: &serde_json::Value, path: &str) -> Result<Option<OpRegion>, FlowError> {
+    let p = format!("{path}.region");
+    let Some(raw) = v.get("region") else {
+        return Ok(None);
+    };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    let obj = raw
+        .as_object()
+        .ok_or_else(|| FlowError::new(&p, "`region` must be an object {mode, offset?}"))?;
+    let mode = obj
+        .get("mode")
+        .and_then(|m| m.as_str())
+        .ok_or_else(|| {
+            FlowError::new(
+                format!("{p}.mode"),
+                "`region.mode` is required (allowed: asset, ocr, nearest, offset)",
+            )
+        })?;
+    let offset = obj.get("offset");
+    match mode {
+        "asset" | "ocr" | "nearest" => {
+            if offset.is_some() {
+                return Err(FlowError::new(
+                    format!("{p}.offset"),
+                    format!(
+                        "`region.offset` is only allowed with mode=\"offset\" \
+                         (mode is `{mode}`)"
+                    ),
+                ));
+            }
+            Ok(Some(match mode {
+                "asset" => OpRegion::Asset,
+                "ocr" => OpRegion::Ocr,
+                _ => OpRegion::Nearest,
+            }))
+        }
+        "offset" => {
+            let off = offset.ok_or_else(|| {
+                FlowError::new(
+                    &p,
+                    "mode=\"offset\" needs `offset:[dx,dy]` or `[dx,dy,w,h]` \
+                     (relative to the OCR line bbox top-left)",
+                )
+            })?;
+            let arr = off.as_array().ok_or_else(|| {
+                FlowError::new(
+                    format!("{p}.offset"),
+                    "`region.offset` must be an array of 2 or 4 integers",
+                )
+            })?;
+            if arr.len() != 2 && arr.len() != 4 {
+                return Err(FlowError::new(
+                    format!("{p}.offset"),
+                    format!(
+                        "`region.offset` must have 2 or 4 integers, got {}",
+                        arr.len()
+                    ),
+                ));
+            }
+            let mut coords = [0i32; 4];
+            for (i, item) in arr.iter().enumerate() {
+                let at = format!("{p}.offset[{i}]");
+                let raw = item
+                    .as_i64()
+                    .ok_or_else(|| FlowError::new(&at, "offset values must be integers"))?;
+                if !(-MAX_REGION_COORD..=MAX_REGION_COORD).contains(&raw) {
+                    return Err(FlowError::new(
+                        &at,
+                        format!("offset value must be within +-{MAX_REGION_COORD}, got {raw}"),
+                    ));
+                }
+                coords[i] = raw as i32;
+            }
+            let (w, h) = if arr.len() == 4 {
+                if coords[2] <= 0 || coords[3] <= 0 {
+                    return Err(FlowError::new(
+                        format!("{p}.offset"),
+                        "a 4-value `region.offset` needs w/h > 0",
+                    ));
+                }
+                (Some(coords[2]), Some(coords[3]))
+            } else {
+                (None, None)
+            };
+            Ok(Some(OpRegion::Offset {
+                dx: coords[0],
+                dy: coords[1],
+                w,
+                h,
+            }))
+        }
+        other => Err(FlowError::new(
+            format!("{p}.mode"),
+            format!("unknown region mode `{other}` (allowed: asset, ocr, nearest, offset)"),
+        )),
+    }
+}
+
+/// Reject a `region` override on a non-OCR locator / drag endpoint kind.
+///
+/// The model deliberately only covers `kind:"ocr_text"`: a template match has
+/// its own `action_shape`/bbox geometry and a `point`/`region` target IS the
+/// geometry, so silently ignoring a `region` there would be surprising.
+fn reject_region_on_non_ocr(v: &serde_json::Value, path: &str) -> Result<(), FlowError> {
+    match v.get("region") {
+        None | Some(serde_json::Value::Null) => Ok(()),
+        Some(_) => Err(FlowError::new(
+            format!("{path}.region"),
+            "`region` is only supported on `kind:\"ocr_text\"` locators / drag endpoints",
+        )),
+    }
+}
+
+/// Parse one `long_press.hold_ms` value: integer in `100..=10000`.
+fn parse_hold_ms(v: &serde_json::Value, path: &str) -> Result<u32, FlowError> {
+    let raw = v
+        .as_u64()
+        .ok_or_else(|| FlowError::new(path, "`hold_ms` must be an integer"))?;
+    let n = u32::try_from(raw)
+        .map_err(|_| FlowError::new(path, format!("`hold_ms` {raw} does not fit u32")))?;
+    if !(MIN_HOLD_MS..=MAX_HOLD_MS).contains(&n) {
+        return Err(FlowError::new(
+            path,
+            format!("`hold_ms` must be within {MIN_HOLD_MS}..={MAX_HOLD_MS}, got {n}"),
+        ));
+    }
+    Ok(n)
+}
+
+/// Parse one `long_press.hold_range` value: `[min,max]` in `100..=10000`.
+fn parse_hold_range(v: &serde_json::Value, path: &str) -> Result<[u32; 2], FlowError> {
+    let pair = parse_u32_pair(v, path)?;
+    for (i, n) in pair.iter().enumerate() {
+        if !(MIN_HOLD_MS..=MAX_HOLD_MS).contains(n) {
+            return Err(FlowError::new(
+                format!("{path}[{i}]"),
+                format!("hold_range side must be within {MIN_HOLD_MS}..={MAX_HOLD_MS}, got {n}"),
+            ));
+        }
+    }
+    Ok(pair)
+}
+
+/// Parse `curve_swipe.points`: 2..=32 integer screen points `[[x,y], ...]`.
+fn parse_curve_points(v: &serde_json::Value, path: &str) -> Result<Vec<[i32; 2]>, FlowError> {
+    let arr = v
+        .as_array()
+        .ok_or_else(|| FlowError::new(path, "`points` must be an array of [x,y] points"))?;
+    if !(MIN_CURVE_POINTS..=MAX_CURVE_POINTS).contains(&arr.len()) {
+        return Err(FlowError::new(
+            path,
+            format!(
+                "`points` must have {MIN_CURVE_POINTS}..={MAX_CURVE_POINTS} points, got {}",
+                arr.len()
+            ),
+        ));
+    }
+    let mut out = Vec::with_capacity(arr.len());
+    for (i, item) in arr.iter().enumerate() {
+        let p = format!("{path}[{i}]");
+        let pair = item
+            .as_array()
+            .ok_or_else(|| FlowError::new(&p, "each point must be [x,y]"))?;
+        if pair.len() != 2 {
+            return Err(FlowError::new(
+                &p,
+                format!("each point must have exactly 2 integers, got {}", pair.len()),
+            ));
+        }
+        out.push([
+            parse_drag_shape_coord(&pair[0], &format!("{p}[0]"))?,
+            parse_drag_shape_coord(&pair[1], &format!("{p}[1]"))?,
+        ]);
+    }
+    Ok(out)
+}
+
+/// Parse `curve_swipe.duration_ms`: `[min,max]` (ms) or one fixed integer.
+fn parse_curve_duration(v: &serde_json::Value, path: &str) -> Result<[u32; 2], FlowError> {
+    let pair = match v.as_u64() {
+        Some(n) => [u32::try_from(n).unwrap_or(u32::MAX), u32::try_from(n).unwrap_or(u32::MAX)],
+        None => parse_u32_pair(v, path)?,
+    };
+    for (i, n) in pair.iter().enumerate() {
+        if !(MIN_CURVE_MS..=MAX_CURVE_MS).contains(n) {
+            return Err(FlowError::new(
+                format!("{path}[{i}]"),
+                format!("duration_ms side must be within {MIN_CURVE_MS}..={MAX_CURVE_MS}, got {n}"),
+            ));
+        }
+    }
+    Ok(pair)
+}
+
 fn parse_drag_axis(s: &str, path: &str) -> Result<DragAxis, FlowError> {
     match s {
         "up" => Ok(DragAxis::Up),
@@ -1714,20 +2037,24 @@ fn parse_drag_target(v: &serde_json::Value, path: &str) -> Result<DragTarget, Fl
         .and_then(|x| x.as_str())
         .ok_or_else(|| FlowError::new(path, "drag target needs `kind`"))?;
     match kind {
-        "region" => Ok(DragTarget::Region {
-            roi: parse_roi4(
-                v.get("roi")
-                    .ok_or_else(|| FlowError::new(path, "region needs `roi`"))?,
-                &format!("{path}.roi"),
-            )?,
-            // O-2: optional inline shape; a JSON `null` means "no shape" too.
-            shape: match v.get("shape") {
-                None | Some(serde_json::Value::Null) => None,
-                Some(s) => Some(parse_drag_shape(s, &format!("{path}.shape"))?),
-            },
-        }),
+        "region" => {
+            reject_region_on_non_ocr(v, path)?;
+            Ok(DragTarget::Region {
+                roi: parse_roi4(
+                    v.get("roi")
+                        .ok_or_else(|| FlowError::new(path, "region needs `roi`"))?,
+                    &format!("{path}.roi"),
+                )?,
+                // O-2: optional inline shape; a JSON `null` means "no shape" too.
+                shape: match v.get("shape") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(s) => Some(parse_drag_shape(s, &format!("{path}.shape"))?),
+                },
+            })
+        }
         "point" => {
             reject_drag_shape_on_non_region(v, path)?;
+            reject_region_on_non_ocr(v, path)?;
             let x = v
                 .get("x")
                 .and_then(|x| x.as_i64())
@@ -1741,6 +2068,7 @@ fn parse_drag_target(v: &serde_json::Value, path: &str) -> Result<DragTarget, Fl
         "ocr_text" => {
             reject_drag_shape_on_non_region(v, path)?;
             let text = parse_text_spec(v, path)?;
+            let region = parse_region(v, path)?;
             let sel = v.get("sel").and_then(|x| x.as_str()).map(|s| s.to_string());
             let roi = match v.get("roi") {
                 None => None,
@@ -1752,7 +2080,12 @@ fn parse_drag_target(v: &serde_json::Value, path: &str) -> Result<DragTarget, Fl
                     "ocr_text drag target needs `sel` or `roi`",
                 ));
             }
-            Ok(DragTarget::OcrText { sel, roi, text })
+            Ok(DragTarget::OcrText {
+                sel,
+                roi,
+                text,
+                region,
+            })
         }
         other => Err(FlowError::new(
             path,
@@ -1916,6 +2249,7 @@ fn parse_locator(v: &serde_json::Value, path: &str) -> Result<Locator, FlowError
     let kind = req_str(v, "kind", path)?;
     match kind.as_str() {
         "template" => {
+            reject_region_on_non_ocr(v, path)?;
             let sel = req_str(v, "sel", path)?;
             let threshold = match v.get("threshold") {
                 None => None,
@@ -1929,6 +2263,7 @@ fn parse_locator(v: &serde_json::Value, path: &str) -> Result<Locator, FlowError
         }
         "ocr_text" => {
             let text = parse_text_spec(v, path)?;
+            let region = parse_region(v, path)?;
             let require_template = match v.get("require_template") {
                 None => None,
                 Some(x) => Some(
@@ -1970,15 +2305,18 @@ fn parse_locator(v: &serde_json::Value, path: &str) -> Result<Locator, FlowError
                     roi,
                     text,
                     require_template,
+                    region,
                 });
             }
             Ok(Locator::OcrText {
                 sel: req_str(v, "sel", path)?,
                 text,
                 require_template,
+                region,
             })
         }
         "region" => {
+            reject_region_on_non_ocr(v, path)?;
             if let Some(sel) = v.get("sel").and_then(|x| x.as_str()) {
                 if sel.trim().is_empty() {
                     return Err(FlowError::new(format!("{path}.sel"), "region `sel` is empty"));
@@ -1994,9 +2332,12 @@ fn parse_locator(v: &serde_json::Value, path: &str) -> Result<Locator, FlowError
                 roi: parse_roi4(roi, &format!("{path}.roi"))?,
             })
         }
-        "coord_memory" => Ok(Locator::CoordMemory {
-            key: req_str(v, "key", path)?,
-        }),
+        "coord_memory" => {
+            reject_region_on_non_ocr(v, path)?;
+            Ok(Locator::CoordMemory {
+                key: req_str(v, "key", path)?,
+            })
+        }
         other => Err(FlowError::new(
             path,
             format!(
@@ -2241,6 +2582,48 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
             expect: parse_expect(&args, "expect", &a_path)?,
             retry: parse_retry(&args, &a_path)?,
         }),
+        // v1.3 long press (docs/OPERATION-REGION-DESIGN.md §6.1): same locator
+        // chain / guard / verification as `click_target`, but the action is a
+        // hold. `hold_range` (humanized random duration) wins over `hold_ms`.
+        "long_press" => {
+            let hold_ms = match args.get("hold_ms") {
+                None => 3000u32,
+                Some(v) => parse_hold_ms(v, &format!("{a_path}.hold_ms"))?,
+            };
+            let hold_range = match args.get("hold_range") {
+                None => None,
+                Some(v) => Some(parse_hold_range(v, &format!("{a_path}.hold_range"))?),
+            };
+            Ok(Step::LongPress {
+                find: parse_locators(&args, &a_path)?,
+                hold_ms,
+                hold_range,
+                requires: parse_expect(&args, "requires", &a_path)?,
+                expect: parse_expect(&args, "expect", &a_path)?,
+            })
+        }
+        // v1.3 multi-segment curve (docs/OPERATION-REGION-DESIGN.md §6.1):
+        // N points → N-1 independent `input swipe` calls; NOT one continuous
+        // gesture (documented limitation).
+        "curve_swipe" => {
+            let points = match args.get("points") {
+                Some(v) => parse_curve_points(v, &format!("{a_path}.points"))?,
+                None => {
+                    return Err(FlowError::new(
+                        format!("{a_path}.points"),
+                        "`curve_swipe` needs `points`: 2..=32 screen points [[x,y], ...]",
+                    ))
+                }
+            };
+            let duration_ms = match args.get("duration_ms") {
+                None => [600, 1000],
+                Some(v) => parse_curve_duration(v, &format!("{a_path}.duration_ms"))?,
+            };
+            Ok(Step::CurveSwipe {
+                points,
+                duration_ms,
+            })
+        }
         "dismiss_popup" => {
             let sel = req_str(&args, "sel", &a_path)?;
             let action = match args.get("action") {
@@ -2354,7 +2737,8 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
             path,
             format!(
                 "unknown instruction `{other}` (supported: if/loop/while/break/continue/\
-                 wait/wait_until/appear/click/click_point/click_target/dismiss_popup/swipe/\
+                 wait/wait_until/appear/click/click_point/click_target/long_press/\
+                 curve_swipe/dismiss_popup/swipe/\
                  drag/key/restart_app/ocr/set_var/inc_var/ocr_to_var/log/call_task/\
                  with_params/finish)"
             ),
@@ -2750,11 +3134,18 @@ fn collect_param_steps(steps: &[Step], prefix: &str, out: &mut Vec<ParamUse>) {
                 expect,
                 ..
             } => {
-                for (j, loc) in find.iter().enumerate() {
-                    if let Some(text) = loc.text_spec() {
-                        collect_text_spec_params(text, &format!("{p}.args.find[{j}]"), out);
-                    }
-                }
+                collect_locator_params(find, &p, out);
+                collect_click_expect_params(requires, expect, &p, out);
+            }
+            // v1.3 long press: same `find[]` chain as click_target, so T3 must
+            // see every `text_expr` param use (and the optional guards).
+            Step::LongPress {
+                find,
+                requires,
+                expect,
+                ..
+            } => {
+                collect_locator_params(find, &p, out);
                 collect_click_expect_params(requires, expect, &p, out);
             }
             Step::Drag { from, to, .. } => {
@@ -2793,8 +3184,19 @@ fn collect_param_steps(steps: &[Step], prefix: &str, out: &mut Vec<ParamUse>) {
             | Step::Ocr { .. }
             | Step::OcrToVar { .. }
             | Step::DismissPopup { .. }
+            | Step::CurveSwipe { .. }
             | Step::CallTask { .. }
             | Step::Finish { .. } => {}
+        }
+    }
+}
+
+/// `find[]` chain of a locator-driven step → `ParamUse` (T3).
+/// Shared by `click_target` / `long_press` (same locator contract).
+fn collect_locator_params(find: &[Locator], step_path: &str, out: &mut Vec<ParamUse>) {
+    for (j, loc) in find.iter().enumerate() {
+        if let Some(text) = loc.text_spec() {
+            collect_text_spec_params(text, &format!("{step_path}.args.find[{j}]"), out);
         }
     }
 }
@@ -2908,6 +3310,32 @@ fn collect_click_expect_assets(
     }
 }
 
+/// Assets referenced by one locator: its selector, any `text_expr` asset and
+/// the H5 `require_template` cross-check. Shared by `click_target` /
+/// `long_press` (same `find[]` contract).
+fn collect_locator_assets(loc: &Locator, out: &mut BTreeSet<String>) {
+    if let Some(a) = loc.asset() {
+        out.insert(a.to_string());
+    }
+    // 参数 v2: a `text_expr` may call `ocr('O_x')` — that asset is referenced
+    // just like one in any other expression (§3.2.6).
+    if let Some(text) = loc.text_spec() {
+        collect_text_spec_assets(text, out);
+    }
+    // §22.31 H5: the cross-check template is also a referenced asset.
+    if let Locator::OcrText {
+        require_template: Some(rt),
+        ..
+    }
+    | Locator::OcrTextInline {
+        require_template: Some(rt),
+        ..
+    } = loc
+    {
+        out.insert(rt.clone());
+    }
+}
+
 fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {    for s in steps {
         match s {
             Step::If {
@@ -2940,6 +3368,7 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {    for s i
             | Step::RestartApp { .. }
             | Step::Break
             | Step::Continue
+            | Step::CurveSwipe { .. }
             | Step::CallTask { .. } => {}
             Step::WaitUntil { cond, .. } => collect_assets_expr(cond, out),
             Step::Appear { sel } | Step::Ocr { sel } => {
@@ -2976,26 +3405,19 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {    for s i
                 ..
             } => {
                 for loc in find {
-                    if let Some(a) = loc.asset() {
-                        out.insert(a.to_string());
-                    }
-                    // 参数 v2: a `text_expr` may call `ocr('O_x')` — that asset is
-                    // referenced just like one in any other expression (§3.2.6).
-                    if let Some(text) = loc.text_spec() {
-                        collect_text_spec_assets(text, out);
-                    }
-                    // §22.31 H5: the cross-check template is also a referenced asset.
-                    if let Locator::OcrText {
-                        require_template: Some(rt),
-                        ..
-                    }
-                    | Locator::OcrTextInline {
-                        require_template: Some(rt),
-                        ..
-                    } = loc
-                    {
-                        out.insert(rt.clone());
-                    }
+                    collect_locator_assets(loc, out);
+                }
+                collect_click_expect_assets(requires, expect, out);
+            }
+            // v1.3 long press: same locator chain as click_target (T4 assets).
+            Step::LongPress {
+                find,
+                requires,
+                expect,
+                ..
+            } => {
+                for loc in find {
+                    collect_locator_assets(loc, out);
                 }
                 collect_click_expect_assets(requires, expect, out);
             }
@@ -3504,6 +3926,7 @@ mod tests {
                         sel: "O_LIST".to_string(),
                         text: TextSpec::Literal("返回".to_string()),
                         require_template: None,
+                        region: None,
                     }
                 );
                 // Priority is fixed by kind, not by the declared array order.
@@ -3796,6 +4219,329 @@ mod tests {
                 "O_BTN", "O_EXPECT", "O_FROM", "O_GUARD", "O_HINT", "O_ROW", "O_TO", "O_TOP"
             ]
         );
+    }
+
+    // ---- v1.3 operation region + long_press + curve_swipe ----
+
+    #[test]
+    fn region_parses_all_modes_on_ocr_locators_and_drag_endpoints() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[
+                    {"kind":"ocr_text","sel":"O_A","text":"甲","region":{"mode":"asset"}},
+                    {"kind":"ocr_text","roi":[0,0,64,48],"text":"乙","region":{"mode":"ocr"}},
+                    {"kind":"ocr_text","sel":"O_B","text":"丙","region":{"mode":"nearest"}},
+                    {"kind":"ocr_text","sel":"O_C","text":"丁",
+                     "region":{"mode":"offset","offset":[10,-5]}},
+                    {"kind":"ocr_text","sel":"O_D","text":"戊",
+                     "region":{"mode":"offset","offset":[1,2,30,40]}}]}},
+                 {"op":"drag","args":{
+                    "from":{"kind":"ocr_text","sel":"O_R1","text":"行1",
+                            "region":{"mode":"nearest"}},
+                    "to":{"kind":"ocr_text","roi":[0,0,64,48],"text":"行2",
+                          "region":{"mode":"offset","offset":[0,0,10,10]}},
+                    "direction":"up","distance":[10,20]}},
+                 {"op":"long_press","args":{
+                    "find":[{"kind":"ocr_text","sel":"O_L","text":"长按",
+                             "region":{"mode":"ocr"}}],
+                    "hold_ms":800}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("v1.3 region flow must parse");
+        let Step::ClickTarget { find, .. } = &flow.steps[0] else {
+            panic!("expected click_target");
+        };
+        assert_eq!(find[0].region(), Some(OpRegion::Asset));
+        assert_eq!(find[1].region(), Some(OpRegion::Ocr));
+        assert_eq!(find[2].region(), Some(OpRegion::Nearest));
+        assert_eq!(
+            find[3].region(),
+            Some(OpRegion::Offset {
+                dx: 10,
+                dy: -5,
+                w: None,
+                h: None
+            })
+        );
+        assert_eq!(
+            find[4].region(),
+            Some(OpRegion::Offset {
+                dx: 1,
+                dy: 2,
+                w: Some(30),
+                h: Some(40)
+            })
+        );
+
+        let Step::Drag { from, to, .. } = &flow.steps[1] else {
+            panic!("expected drag");
+        };
+        assert_eq!(from.region(), Some(OpRegion::Nearest));
+        assert_eq!(
+            to.as_ref().and_then(|t| t.region()),
+            Some(OpRegion::Offset {
+                dx: 0,
+                dy: 0,
+                w: Some(10),
+                h: Some(10)
+            })
+        );
+
+        let Step::LongPress { find, hold_ms, hold_range, .. } = &flow.steps[2] else {
+            panic!("expected long_press");
+        };
+        assert_eq!(*hold_ms, 800);
+        assert_eq!(*hold_range, None);
+        assert_eq!(find[0].region(), Some(OpRegion::Ocr));
+
+        // No `region` field = historical behaviour (None), not an implicit mode.
+        let plain = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[{"op":"click_target","args":{"find":[
+                 {"kind":"ocr_text","sel":"O","text":"x"}]}}]}"#,
+        )
+        .expect("plain flow");
+        let Step::ClickTarget { find, .. } = &plain.steps[0] else {
+            panic!("expected click_target");
+        };
+        assert_eq!(find[0].region(), None);
+    }
+
+    #[test]
+    fn region_offset_validation_is_loud_and_path_precise() {
+        let cases: [(&str, &str); 9] = [
+            // (region JSON, expected path suffix)
+            (r#"{"mode":"asset","offset":[1,2]}"#, ".region.offset"),
+            (r#"{"mode":"offset"}"#, ".region"),
+            (r#"{"mode":"offset","offset":[1]}"#, ".region.offset"),
+            (r#"{"mode":"offset","offset":[1,2,3]}"#, ".region.offset"),
+            (r#"{"mode":"offset","offset":[1,2,0,30]}"#, ".region.offset"),
+            (r#"{"mode":"offset","offset":[1,2,30,-1]}"#, ".region.offset"),
+            (r#"{"mode":"offset","offset":[1,"x"]}"#, ".region.offset[1]"),
+            (r#"{"mode":"magic"}"#, ".region.mode"),
+            (r#"[1,2]"#, ".region"),
+        ];
+        for (region, want_path) in cases {
+            let json = format!(
+                r#"{{"schema_version":1,"name":"t","steps":[{{"op":"click_target","args":{{"find":[
+                     {{"kind":"ocr_text","sel":"O","text":"x","region":{region}}}]}}}}]}}"#
+            );
+            let e = errs(&json);
+            assert_eq!(e.len(), 1, "must reject region {region}");
+            assert!(
+                e[0].path.ends_with(want_path),
+                "region {region}: expected path ending {want_path}, got {}",
+                e[0]
+            );
+        }
+        // Out-of-range offset values are rejected (i32-safe cap).
+        let json = r#"{"schema_version":1,"name":"t","steps":[{"op":"click_target","args":{"find":[
+             {"kind":"ocr_text","sel":"O","text":"x",
+              "region":{"mode":"offset","offset":[1000001,0]}}]}}]}"#;
+        let e = errs(json);
+        assert!(e[0].path.ends_with(".region.offset[0]"), "{}", e[0]);
+    }
+
+    #[test]
+    fn region_is_rejected_on_non_ocr_locator_and_drag_kinds() {
+        let find_cases = [
+            r#"{"kind":"template","sel":"I","region":{"mode":"ocr"}}"#,
+            r#"{"kind":"region","roi":[0,0,10,10],"region":{"mode":"ocr"}}"#,
+            r#"{"kind":"coord_memory","key":"k","region":{"mode":"ocr"}}"#,
+        ];
+        for find in find_cases {
+            let json = format!(
+                r#"{{"schema_version":1,"name":"t","steps":[{{"op":"click_target","args":{{"find":[{find}]}}}}]}}"#
+            );
+            let e = errs(&json);
+            assert_eq!(e.len(), 1, "must reject {find}");
+            assert!(
+                e[0].path.ends_with(".find[0].region"),
+                "{find}: {}",
+                e[0]
+            );
+        }
+        for target in [
+            r#"{"kind":"point","x":1,"y":2,"region":{"mode":"ocr"}}"#,
+            r#"{"kind":"region","roi":[0,0,10,10],"region":{"mode":"ocr"}}"#,
+        ] {
+            let json = format!(
+                r#"{{"schema_version":1,"name":"t","steps":[{{"op":"drag","args":{{
+                     "from":{target},"direction":"up","distance":[1,2]}}}}]}}"#
+            );
+            let e = errs(&json);
+            assert_eq!(e.len(), 1, "must reject drag target {target}");
+            assert!(
+                e[0].path.ends_with(".from.region"),
+                "{target}: {}",
+                e[0]
+            );
+        }
+    }
+
+    #[test]
+    fn long_press_parses_defaults_ranges_and_rejects_bad_values() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"long_press","args":{"find":[{"kind":"template","sel":"I_BTN"}]}}]}"#,
+        )
+        .expect("default long_press");
+        match &flow.steps[0] {
+            Step::LongPress {
+                hold_ms,
+                hold_range,
+                requires,
+                expect,
+                ..
+            } => {
+                assert_eq!(*hold_ms, 3000, "default hold_ms");
+                assert_eq!(*hold_range, None);
+                assert!(requires.is_none() && expect.is_none());
+            }
+            other => panic!("unexpected step {other:?}"),
+        }
+
+        let with_range = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"long_press","args":{
+                   "find":[{"kind":"template","sel":"I_BTN"}],
+                   "hold_ms":800,"hold_range":[2500,3500],
+                   "requires":{"kind":"appear","sel":"I_GUARD"},
+                   "expect":{"kind":"appear","sel":"I_AFTER","timeout_ms":500}}}]}"#,
+        )
+        .expect("long_press with range");
+        match &with_range.steps[0] {
+            Step::LongPress {
+                hold_ms: 800,
+                hold_range: Some([2500, 3500]),
+                requires: Some(Expect::Appear { sel, .. }),
+                expect: Some(Expect::Appear { sel: esel, .. }),
+                ..
+            } => {
+                assert_eq!(sel, "I_GUARD");
+                assert_eq!(esel, "I_AFTER");
+            }
+            other => panic!("unexpected step {other:?}"),
+        }
+
+        let bad = [
+            (r#"{"find":[{"kind":"template","sel":"I"}],"hold_ms":99}"#, ".hold_ms"),
+            (r#"{"find":[{"kind":"template","sel":"I"}],"hold_ms":10001}"#, ".hold_ms"),
+            (r#"{"find":[{"kind":"template","sel":"I"}],"hold_range":[50,500]}"#, ".hold_range[0]"),
+            (r#"{"find":[{"kind":"template","sel":"I"}],"hold_range":[500,200]}"#, ".hold_range"),
+            (r#"{"find":[{"kind":"template","sel":"I"}],"hold_ms":"800"}"#, ".hold_ms"),
+            (r#"{"find":[]}"#, ".find"),
+            (r#"{}"#, ".args.find"),
+        ];
+        for (args, want) in bad {
+            let json = format!(
+                r#"{{"schema_version":1,"name":"t","steps":[{{"op":"long_press","args":{args}}}]}}"#
+            );
+            let e = errs(&json);
+            assert_eq!(e.len(), 1, "must reject long_press {args}");
+            assert!(
+                e[0].path.contains(want),
+                "long_press {args}: expected path containing {want}, got {}",
+                e[0]
+            );
+        }
+    }
+
+    #[test]
+    fn long_press_feeds_t3_params_and_t4_assets() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"long_press","args":{
+                   "find":[{"kind":"ocr_text","sel":"O_BTN","text_expr":"param('hold_text')",
+                            "require_template":"I_ICON"}],
+                   "requires":{"kind":"ocr_text","sel":"O_GUARD","text_expr":"ocr('O_G')"},
+                   "expect":{"kind":"ocr_text","sel":"O_AFTER","text_expr":"param('after')"}}}]}"#,
+        )
+        .expect("long_press flow");
+        let uses = flow.param_uses_at();
+        let got: Vec<(Option<&str>, &str)> = uses
+            .iter()
+            .map(|u| (u.key.as_deref(), u.path.as_str()))
+            .collect();
+        for (key, path) in [
+            ("hold_text", "steps[0].args.find[0].text_expr"),
+            ("after", "steps[0].args.expect.text_expr"),
+        ] {
+            assert!(
+                got.contains(&(Some(key), path)),
+                "missing ({key}, {path}) in {got:?}"
+            );
+        }
+        let assets: Vec<String> = flow.referenced_assets().into_iter().collect();
+        for want in ["O_BTN", "I_ICON", "O_GUARD", "O_G", "O_AFTER"] {
+            assert!(
+                assets.contains(&want.to_string()),
+                "missing asset {want} in {assets:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn curve_swipe_parses_points_and_durations() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"curve_swipe","args":{"points":[[10,20],[30,40],[50,60]]}}]}"#,
+        )
+        .expect("default curve_swipe");
+        match &flow.steps[0] {
+            Step::CurveSwipe {
+                points,
+                duration_ms,
+            } => {
+                assert_eq!(points, &vec![[10, 20], [30, 40], [50, 60]]);
+                assert_eq!(*duration_ms, [600, 1000], "default duration");
+            }
+            other => panic!("unexpected step {other:?}"),
+        }
+
+        // A single integer means one fixed total duration.
+        let fixed = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"curve_swipe","args":{"points":[[1,1],[2,2]],"duration_ms":900}}]}"#,
+        )
+        .expect("fixed duration");
+        match &fixed.steps[0] {
+            Step::CurveSwipe { duration_ms, .. } => assert_eq!(*duration_ms, [900, 900]),
+            other => panic!("unexpected step {other:?}"),
+        }
+
+        let bad = [
+            (r#"{"points":[[1,1]]}"#, ".points"),
+            (
+                r#"{"points":[[1,1],[2,2],[3,3],[4,4],[5,5],[6,6],[7,7],[8,8],[9,9],[10,10],[11,11],[12,12],[13,13],[14,14],[15,15],[16,16],[17,17],[18,18],[19,19],[20,20],[21,21],[22,22],[23,23],[24,24],[25,25],[26,26],[27,27],[28,28],[29,29],[30,30],[31,31],[32,32],[33,33]]}"#,
+                ".points",
+            ),
+            (r#"{"points":[[1,1],[2,2,3]]}"#, ".points[1]"),
+            (r#"{"points":[[1,1],[-2,2]]}"#, ".points[1][0]"),
+            (r#"{"points":[{"x":1,"y":2},[3,4]],"duration_ms":900}"#, ".points[0]"),
+            (r#"{"points":[[1,1],[2,2]],"duration_ms":[50,900]}"#, ".duration_ms[0]"),
+            (r#"{"points":[[1,1],[2,2]],"duration_ms":[900,10050]}"#, ".duration_ms[1]"),
+            (r#"{"points":[[1,1],[2,2]],"duration_ms":[900,600]}"#, ".duration_ms"),
+            (r#"{}"#, ".args.points"),
+        ];
+        for (args, want) in bad {
+            let json = format!(
+                r#"{{"schema_version":1,"name":"t","steps":[{{"op":"curve_swipe","args":{args}}}]}}"#
+            );
+            let e = errs(&json);
+            assert_eq!(e.len(), 1, "must reject curve_swipe {args}");
+            assert!(
+                e[0].path.contains(want),
+                "curve_swipe {args}: expected path containing {want}, got {}",
+                e[0]
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_instruction_hint_lists_the_v13_ops() {
+        let e = errs(r#"{"schema_version":1,"name":"t","steps":[{"op":"teleport"}]}"#);
+        assert!(e[0].msg.contains("long_press"), "{}", e[0]);
+        assert!(e[0].msg.contains("curve_swipe"), "{}", e[0]);
     }
 
     #[test]

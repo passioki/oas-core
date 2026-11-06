@@ -4784,6 +4784,46 @@ mod tests {
     }
 
     #[test]
+    fn lint_covers_long_press_find_for_t3_and_t4() {
+        // v1.3 (OPERATION-REGION-DESIGN §6.1): `long_press.find[]` is the same
+        // locator contract as click_target — T3 must see its text_expr param
+        // uses and T4 must see its asset references.
+        let td = TempDir::new("lintpress");
+        let b = open(&td);
+        write_flow_only_bundle(
+            &b,
+            r#"{"schema_version":1,"name":"任务1","params":[
+                 {"key":"k","type":"string","default":"完成"}]}"#,
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"long_press","args":{"find":[
+                    {"kind":"ocr_text","sel":"O_DECLARED","text_expr":"param('k')"},
+                    {"kind":"ocr_text","sel":"O_MISSING","text_expr":"param('missing_key')"}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let issues = b.lint().expect_err("long_press lint issues expected");
+        let t3: Vec<&LintIssue> = issues.iter().filter(|i| i.code == "T3").collect();
+        assert_eq!(t3.len(), 1, "{issues:?}");
+        assert!(
+            t3[0]
+                .path
+                .contains("steps[0].args.find[1].text_expr")
+                && t3[0].msg.contains("missing_key"),
+            "{t3:?}"
+        );
+        // T4: both OCR selectors (and the missing one in particular) are
+        // referenced assets, exactly like a click_target chain.
+        let t4: Vec<&LintIssue> = issues.iter().filter(|i| i.code == "T4").collect();
+        assert!(
+            t4.iter().any(|i| i.msg.contains("O_DECLARED")),
+            "long_press sel must be collected for T4: {t4:?}"
+        );
+        assert!(
+            !t3.iter().any(|i| i.path.contains("find[0].text_expr")),
+            "the declared key must not be flagged: {t3:?}"
+        );
+    }
+
+    #[test]
     fn lint_flags_asset_refs_and_missing_images() {
         let td = TempDir::new("lintassets");
         let b = open(&td);

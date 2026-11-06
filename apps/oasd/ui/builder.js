@@ -15,6 +15,8 @@
     click: { label: '点击素材', group: '动作' },
     click_point: { label: '点击坐标', group: '动作' },
     click_target: { label: '定位点击', group: '动作' },
+    long_press: { label: '长按', group: '动作' },
+    curve_swipe: { label: '曲线滑动（多段近似）', group: '动作' },
     dismiss_popup: { label: '关闭弹窗', group: '动作' },
     swipe: { label: '滑动', group: '动作' },
     drag: { label: '拖动（拟人）', group: '动作' },
@@ -33,7 +35,17 @@
   const PARAM_GROUP = '参数';
   const PARAM_ACTIONS = {
     param_click_text: { label: '参数文字点击', op: 'click_target' },
+    param_long_press_text: { label: '参数文字长按', op: 'long_press' },
     param_wait_text: { label: '等待参数文字', op: 'wait_until' },
+  };
+  // Explicit palette titles for actions whose semantics are easy to misread
+  // (blocking wait / long press / multi-segment curve).
+  const ACTION_TITLES = {
+    wait_until: '阻塞等待：条件成立后继续执行下一个 flow 步骤；超时本步失败；不会触发独立动作',
+    param_wait_text: '阻塞等待：生成 wait_until（条件成立继续下一个 flow 步骤；超时本步失败；不触发独立动作）',
+    long_press: '长按：按住「定位对象」找到的元素 hold_ms 毫秒（默认 3000）；可启用 hold_range 随机拟人',
+    param_long_press_text: '参数文字长按：生成 long_press，OCR 文字来自 param(\'<key>\')；默认 hold_ms=3000',
+    curve_swipe: '曲线滑动（多段近似）：points 逐段独立手势，App 可能视为多次滑动',
   };
 
   // Single source of truth for "anything the user can add as a step".
@@ -90,6 +102,9 @@
     const o = opts && typeof opts === 'object' ? opts : {};
     if (key === 'param_click_text') {
       return paramClickStep(ctx.paramKey, o.ocrSel !== undefined ? o.ocrSel : pickOcrAssetForAction());
+    }
+    if (key === 'param_long_press_text') {
+      return longPressStep(ctx.paramKey, o.ocrSel !== undefined ? o.ocrSel : pickOcrAssetForAction());
     }
     return paramWaitStep(ctx.paramKey, 10);
   }
@@ -183,15 +198,16 @@
     return chooseOcrAssetDialog(assets[0].id);
   }
 
-  // Async path used by the palette/branch insertion: parameter click asks for
-  // the OCR asset when the context does not determine it.
+  // Async path used by the palette/branch insertion: parameter click/long-press
+  // asks for the OCR asset when the context does not determine it.
   async function prepareActionStep(key) {
     if (!PARAM_ACTIONS[key]) return OP_META[key] ? makeStep(key) : null;
     const ctx = paramActionContext();
     if (!ctx) return null;
-    if (key === 'param_click_text') {
+    if (key === 'param_click_text' || key === 'param_long_press_text') {
       const ocrSel = await resolveParamClickAsset();
       if (ocrSel === null) return null;
+      if (key === 'param_long_press_text') return longPressStep(ctx.paramKey, ocrSel);
       return paramClickStep(ctx.paramKey, ocrSel);
     }
     return paramWaitStep(ctx.paramKey, 10);
@@ -223,6 +239,8 @@
     loop: [{ key: 'n', label: '次数（<=0 不循环；>0 循环次数）', type: 'text' }],
     while: [],
     click_target: [],
+    long_press: [],
+    curve_swipe: [],
     drag: [],
     set_var: [{ key: 'name', label: '变量名', type: 'text' }, { key: 'value', label: '值（表达式）', type: 'text' }],
     inc_var: [{ key: 'name', label: '变量名', type: 'text' }, { key: 'by', label: '增量（数字/表达式）', type: 'text' }],
@@ -246,6 +264,11 @@
     loop: { n: '3' },
     while: { cond: 'true' },
     click_target: { find: [{ kind: 'template', sel: 'I_A' }] },
+    long_press: { find: [{ kind: 'template', sel: 'I_A' }], hold_ms: 3000 },
+    curve_swipe: {
+      points: [[500, 1200], [520, 900], [560, 600], [620, 300]],
+      duration_ms: [600, 1000],
+    },
     drag: {
       from: { kind: 'region', roi: [100, 400, 300, 200] },
       direction: 'up',
@@ -278,6 +301,8 @@
     lintRunning: false,
     lintSeq: 0,
     lintStale: false,
+    // P1: design resolution from /task/assets (curve_swipe bounds / validation).
+    screen: [1280, 720],
     lastExprField: null,
     lastExprMode: 'expr',
     autoSaveArmed: false,
@@ -410,6 +435,352 @@
     }
     walk({ steps: flow && flow.steps }, 'flow');
     return issues;
+  }
+
+  // --- P1（操作区域 / 长按 / 曲线滑动 / 等待解释）纯函数 -----------------------
+  // region 可挂在 OCR locator 上（click_target.find / drag.from|to / long_press.find）：
+  // {mode:"asset|ocr|nearest|offset", offset:[dx,dy,(w,h)]}；无 region = 现状。
+  // 这里只做「数据 → flow/文案/校验」，不碰 DOM。
+
+  const REGION_MODES = ['asset', 'ocr', 'nearest', 'offset'];
+
+  function regionModeText(mode) {
+    switch (String(mode === undefined || mode === null ? '' : mode).trim().toLowerCase()) {
+      case '': return '默认（跟随素材配置）';
+      case 'asset': return '素材操作区域';
+      case 'ocr': return 'OCR 识别区域';
+      case 'nearest': return '最近匹配（离识别 ROI 中心最近）';
+      case 'offset': return '相对偏移';
+      default: return '未知：' + String(mode);
+    }
+  }
+
+  function regionHintText(mode) {
+    switch (String(mode === undefined || mode === null ? '' : mode).trim().toLowerCase()) {
+      case 'asset': return '使用素材操作区域（action_shape / click_back）；素材没配时回退 OCR 行 bbox';
+      case 'ocr': return '强制使用本次 OCR 匹配行的 bbox（忽略素材操作区域）';
+      case 'nearest': return '多行匹配时选离「OCR 识别 ROI」中心最近的一行';
+      case 'offset': return '相对匹配/识别 bbox 左上角偏移：[dx,dy] 或 [dx,dy,w,h]（w/h 留空=继承 bbox 尺寸）';
+      default: return '不指定 = 沿用现状：素材有操作区域用素材，否则用 OCR 行 bbox';
+    }
+  }
+
+  function regionSpec(locator) {
+    const loc = locator && typeof locator === 'object' && !Array.isArray(locator) ? locator : {};
+    const region = loc.region;
+    if (!region || typeof region !== 'object' || Array.isArray(region)) {
+      return { mode: '', offset: [] };
+    }
+    const mode = String(region.mode === undefined || region.mode === null ? '' : region.mode)
+      .trim().toLowerCase();
+    const offset = Array.isArray(region.offset) ? region.offset.slice() : [];
+    return { mode: mode, offset: offset };
+  }
+
+  // 写回 locator 的 region（保留未知字段）：mode 空 = 删除 region；非 offset 模式
+  // 删除 offset；offset 模式写入 offset 数组。
+  function regionWrite(locator, mode, offset) {
+    const out = Object.assign({}, locator && typeof locator === 'object' ? locator : {});
+    const m = String(mode === undefined || mode === null ? '' : mode).trim().toLowerCase();
+    if (!m) {
+      delete out.region;
+      return out;
+    }
+    if (m === 'offset') {
+      out.region = { mode: 'offset', offset: Array.isArray(offset) ? offset.slice() : [] };
+    } else {
+      out.region = { mode: m };
+    }
+    return out;
+  }
+
+  // 相对偏移四个输入 → 2/4 整数数组（w/h 同时留空=继承 bbox 尺寸）。
+  function regionOffsetFromInput(dxText, dyText, wText, hText) {
+    const text = function (v) { return String(v === undefined || v === null ? '' : v).trim(); };
+    const intOf = function (raw) {
+      if (!raw) return null;
+      const n = Number(raw);
+      if (!isFinite(n) || !Number.isInteger(n)) return NaN;
+      return n;
+    };
+    const dx = intOf(text(dxText));
+    const dy = intOf(text(dyText));
+    if (dx === null || dy === null) {
+      return { ok: false, offset: [], error: 'offset 的 dx/dy 必填（整数，可为负）' };
+    }
+    if (isNaN(dx) || isNaN(dy)) {
+      return { ok: false, offset: [], error: 'offset 的 dx/dy 必须是整数' };
+    }
+    const wText2 = text(wText);
+    const hText2 = text(hText);
+    if (!wText2 && !hText2) return { ok: true, offset: [dx, dy], error: '' };
+    if (!wText2 || !hText2) {
+      return { ok: false, offset: [], error: 'offset 的 w/h 必须同时填写（继承 bbox 尺寸时都留空）' };
+    }
+    const w = intOf(wText2);
+    const h = intOf(hText2);
+    if (w === null || h === null || isNaN(w) || isNaN(h)) {
+      return { ok: false, offset: [], error: 'offset 的 w/h 必须是整数' };
+    }
+    if (w <= 0 || h <= 0) {
+      return { ok: false, offset: [], error: 'offset 的 w/h 必须大于 0' };
+    }
+    return { ok: true, offset: [dx, dy, w, h], error: '' };
+  }
+
+  function normalizeRegion(region) {
+    const r = region && typeof region === 'object' && !Array.isArray(region) ? region : null;
+    if (!r) return { ok: true, region: undefined, error: '' };
+    const mode = String(r.mode === undefined || r.mode === null ? '' : r.mode).trim().toLowerCase();
+    if (REGION_MODES.indexOf(mode) < 0) {
+      return {
+        ok: false, region: null,
+        error: 'region.mode 不合法：「' + (mode || '（空）') + '」（只能是 asset/ocr/nearest/offset）',
+      };
+    }
+    const hasOffset = r.offset !== undefined && r.offset !== null;
+    if (!hasOffset) {
+      if (mode === 'offset') {
+        return { ok: false, region: null, error: 'region.mode=offset 需要 offset 数组（2 或 4 个整数）' };
+      }
+      return { ok: true, region: { mode: mode }, error: '' };
+    }
+    if (!Array.isArray(r.offset)) {
+      return { ok: false, region: null, error: 'region.offset 必须是数组' };
+    }
+    if (r.offset.length !== 2 && r.offset.length !== 4) {
+      return { ok: false, region: null, error: 'region.offset 必须是 2 或 4 个整数' };
+    }
+    for (const value of r.offset) {
+      if (typeof value !== 'number' || !isFinite(value) || !Number.isInteger(value)) {
+        return { ok: false, region: null, error: 'region.offset 必须是 2 或 4 个整数' };
+      }
+    }
+    if (r.offset.length === 4 && (r.offset[2] <= 0 || r.offset[3] <= 0)) {
+      return { ok: false, region: null, error: 'region.offset 的 w/h 必须大于 0' };
+    }
+    if (mode !== 'offset') {
+      return { ok: false, region: null, error: '只有 region.mode=offset 支持 offset（当前 ' + mode + '）' };
+    }
+    return { ok: true, region: { mode: 'offset', offset: r.offset.slice() }, error: '' };
+  }
+
+  // 保存前扫描 flow 里所有带 region 的节点（click_target/drag/long_press locator）。
+  function regionIssues(flow) {
+    const issues = [];
+    function walk(node, path) {
+      if (node === null || node === undefined) return;
+      if (Array.isArray(node)) {
+        node.forEach(function (child, i) { walk(child, path + '[' + i + ']'); });
+        return;
+      }
+      if (typeof node !== 'object') return;
+      if (Object.prototype.hasOwnProperty.call(node, 'region')) {
+        const norm = normalizeRegion(node.region);
+        if (!norm.ok) issues.push(path + '.region：' + norm.error);
+      }
+      for (const key of Object.keys(node)) walk(node[key], path ? path + '.' + key : key);
+    }
+    walk({ steps: flow && flow.steps }, 'flow');
+    return issues;
+  }
+
+  function normalizeScreenSize(value) {
+    if (Array.isArray(value) && value.length >= 2) {
+      const w = Number(value[0]);
+      const h = Number(value[1]);
+      if (isFinite(w) && isFinite(h) && w > 0 && h > 0) {
+        return [Math.floor(w), Math.floor(h)];
+      }
+    }
+    return [1280, 720];
+  }
+
+  // 「参数文字长按」预设：标准 long_press + find[0].text_expr=param('key')。
+  function longPressStep(paramKey, ocrSel) {
+    const sel = String(ocrSel === undefined || ocrSel === null ? '' : ocrSel).trim() || 'O_OCR';
+    return {
+      op: 'long_press',
+      args: {
+        find: [{ kind: 'ocr_text', sel: sel, text_expr: paramTextExpr(paramKey) }],
+        hold_ms: 3000,
+      },
+    };
+  }
+
+  function longPressHoldText(args) {
+    const a = args && typeof args === 'object' ? args : {};
+    const range = Array.isArray(a.hold_range) && a.hold_range.length === 2 ? a.hold_range : null;
+    if (range) return 'hold_range ' + range[0] + '~' + range[1] + 'ms（随机拟人）';
+    const hold = a.hold_ms === undefined || a.hold_ms === null ? 3000 : a.hold_ms;
+    return 'hold_ms ' + hold + 'ms';
+  }
+
+  function holdRangeFromInput(minText, maxText) {
+    const text = function (v) { return String(v === undefined || v === null ? '' : v).trim(); };
+    const minS = text(minText);
+    const maxS = text(maxText);
+    if (!minS && !maxS) return { ok: true, range: null, error: '' };
+    if (!minS || !maxS) {
+      return { ok: false, range: null, error: 'hold_range 的最小/最大必须同时填写（不用随机时取消勾选）' };
+    }
+    const min = Number(minS);
+    const max = Number(maxS);
+    if (!isFinite(min) || !isFinite(max) || !Number.isInteger(min) || !Number.isInteger(max)) {
+      return { ok: false, range: null, error: 'hold_range 必须是整数毫秒' };
+    }
+    if (min < 100 || max > 10000) {
+      return { ok: false, range: null, error: 'hold_range 必须在 100~10000ms' };
+    }
+    if (min > max) return { ok: false, range: null, error: 'hold_range 最小值不能大于最大值' };
+    return { ok: true, range: [min, max], error: '' };
+  }
+
+  function longPressArgsIssues(step) {
+    const s = step && typeof step === 'object' ? step : {};
+    const a = s.args && typeof s.args === 'object' ? s.args : {};
+    const errors = [];
+    if (!Array.isArray(a.find) || !a.find.length) errors.push('find 至少需要一个定位器');
+    if (a.hold_ms !== undefined && a.hold_ms !== null) {
+      const hold = a.hold_ms;
+      if (typeof hold !== 'number' || !isFinite(hold) || !Number.isInteger(hold) ||
+          hold < 100 || hold > 10000) {
+        errors.push('hold_ms 必须是 100~10000 的整数（默认 3000）');
+      }
+    }
+    if (a.hold_range !== undefined && a.hold_range !== null) {
+      const range = Array.isArray(a.hold_range) ? a.hold_range : null;
+      if (!range || range.length !== 2 ||
+          range.some(function (v) { return typeof v !== 'number' || !Number.isInteger(v); })) {
+        errors.push('hold_range 必须是 [min,max] 整数数组');
+      } else {
+        if (range[0] < 100 || range[1] > 10000) errors.push('hold_range 必须在 100~10000ms');
+        if (range[0] > range[1]) errors.push('hold_range min 不能大于 max');
+      }
+    }
+    return errors;
+  }
+
+  function curveSwipeStep() {
+    return {
+      op: 'curve_swipe',
+      args: {
+        points: [[500, 1200], [520, 900], [560, 600], [620, 300]],
+        duration_ms: [600, 1000],
+      },
+    };
+  }
+
+  // points JSON 文本 → 2..=32 个屏内整数点。
+  function curvePointsFromText(text, screenW, screenH) {
+    const raw = String(text === undefined || text === null ? '' : text).trim();
+    if (!raw) return { ok: false, points: [], error: 'points 不能为空（需要 2~32 个 [x,y]）' };
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      return { ok: false, points: [], error: 'points JSON 解析失败：' + (e && e.message ? e.message : e) };
+    }
+    if (!Array.isArray(parsed)) {
+      return { ok: false, points: [], error: 'points 必须是数组：[[x,y],[x,y],...]' };
+    }
+    if (parsed.length < 2 || parsed.length > 32) {
+      return { ok: false, points: [], error: 'points 需要 2~32 个点（当前 ' + parsed.length + ' 个）' };
+    }
+    const w = Number(screenW);
+    const h = Number(screenH);
+    const points = [];
+    for (let i = 0; i < parsed.length; i++) {
+      const point = parsed[i];
+      if (!Array.isArray(point) || point.length !== 2) {
+        return { ok: false, points: [], error: '第 ' + (i + 1) + ' 个点必须是 [x,y]' };
+      }
+      const x = point[0];
+      const y = point[1];
+      if (typeof x !== 'number' || typeof y !== 'number' ||
+          !isFinite(x) || !isFinite(y) || !Number.isInteger(x) || !Number.isInteger(y)) {
+        return { ok: false, points: [], error: '第 ' + (i + 1) + ' 个点的坐标必须是整数' };
+      }
+      if (x < 0 || y < 0) {
+        return { ok: false, points: [], error: '第 ' + (i + 1) + ' 个点坐标不能为负数' };
+      }
+      if (isFinite(w) && w > 0 && x > w) {
+        return { ok: false, points: [], error: '第 ' + (i + 1) + ' 个点 x 超出屏幕宽度 ' + w };
+      }
+      if (isFinite(h) && h > 0 && y > h) {
+        return { ok: false, points: [], error: '第 ' + (i + 1) + ' 个点 y 超出屏幕高度 ' + h };
+      }
+      points.push([x, y]);
+    }
+    return { ok: true, points: points, error: '' };
+  }
+
+  function curveDurationFromInput(minText, maxText) {
+    const text = function (v) { return String(v === undefined || v === null ? '' : v).trim(); };
+    const minS = text(minText);
+    const maxS = text(maxText);
+    if (!minS || !maxS) {
+      return { ok: false, duration: null, error: 'duration_ms 的最小/最大都必须填写' };
+    }
+    const min = Number(minS);
+    const max = Number(maxS);
+    if (!isFinite(min) || !isFinite(max) || !Number.isInteger(min) || !Number.isInteger(max)) {
+      return { ok: false, duration: null, error: 'duration_ms 必须是整数毫秒' };
+    }
+    if (min < 100 || max > 10000) {
+      return { ok: false, duration: null, error: 'duration_ms 必须在 100~10000ms' };
+    }
+    if (min > max) {
+      return { ok: false, duration: null, error: 'duration_ms 最小值不能大于最大值' };
+    }
+    return { ok: true, duration: [min, max], error: '' };
+  }
+
+  function curveSwipeArgsIssues(step, screenW, screenH) {
+    const s = step && typeof step === 'object' ? step : {};
+    const a = s.args && typeof s.args === 'object' ? s.args : {};
+    const errors = [];
+    if (!Array.isArray(a.points)) {
+      errors.push('points 需要 2~32 个屏内整数点');
+    } else {
+      const parsed = curvePointsFromText(JSON.stringify(a.points), screenW, screenH);
+      if (!parsed.ok) errors.push(parsed.error);
+    }
+    const duration = Array.isArray(a.duration_ms) && a.duration_ms.length === 2
+      ? a.duration_ms
+      : [600, 1000];
+    const dur = curveDurationFromInput(String(duration[0]), String(duration[1]));
+    if (!dur.ok) errors.push(dur.error);
+    return errors;
+  }
+
+  // 保存前扫描 long_press / curve_swipe 的参数范围（含嵌套 then/else/body）。
+  function actionArgsIssues(flow, screen) {
+    const size = normalizeScreenSize(screen);
+    const issues = [];
+    function walk(steps, path) {
+      if (!Array.isArray(steps)) return;
+      steps.forEach(function (step, i) {
+        if (!step || typeof step !== 'object') return;
+        const at = path + '[' + i + ']';
+        if (step.op === 'long_press') {
+          longPressArgsIssues(step).forEach(function (error) { issues.push(at + '：' + error); });
+        }
+        if (step.op === 'curve_swipe') {
+          curveSwipeArgsIssues(step, size[0], size[1]).forEach(function (error) {
+            issues.push(at + '：' + error);
+          });
+        }
+        for (const key of ['then', 'else', 'body']) walk(step[key], at + '.' + key);
+      });
+    }
+    walk(flow && flow.steps, 'flow.steps');
+    return issues;
+  }
+
+  // 等待类动作的统一解释（动作库 title + 属性面板 help 共用）。
+  function waitBlockingHelpText() {
+    return '阻塞等待：条件成立后继续执行下一个 flow 步骤（本步不会触发独立动作）；超时则本步失败（按 timeout_s 报错）。';
   }
 
   // 「插入参数」片段：普通表达式插 param('k')；条件字段插整段谓词。
@@ -756,6 +1127,17 @@
         const key = locatorParamKey(loc);
         if (key) return `${esc(loc.sel)} · 文字=param('${key}')`;
         return JSON.stringify(a.find || []).slice(0, 60);
+      }
+      case 'long_press': {
+        const loc = (Array.isArray(a.find) && a.find[0]) || {};
+        const key = locatorParamKey(loc);
+        const head = key ? `${esc(loc.sel)} · 文字=param('${key}')` : (esc(loc.sel) || JSON.stringify(a.find || []).slice(0, 40));
+        return head + ' · ' + longPressHoldText(a);
+      }
+      case 'curve_swipe': {
+        const count = Array.isArray(a.points) ? a.points.length : 0;
+        const dur = Array.isArray(a.duration_ms) && a.duration_ms.length === 2 ? a.duration_ms : [600, 1000];
+        return '多段近似 ' + count + ' 点 · ' + dur[0] + '~' + dur[1] + 'ms';
       }
       case 'dismiss_popup': return esc(a.sel);
       case 'swipe': return `${JSON.stringify(a.from)}→${JSON.stringify(a.to)}`;
@@ -1117,9 +1499,9 @@
         b.type = 'button';
         b.textContent = item.label + '  (' + item.key + ')';
         b.className = item.preset ? 'builder-op-param-btn' : '';
-        b.title = item.preset
+        b.title = ACTION_TITLES[item.key] || (item.preset
           ? '生成标准 ' + (PARAM_ACTIONS[item.key] || {}).op + '：OCR 文字来自 param(\'<key>\')'
-          : (item.label + '：插入到当前选中容器/根级');
+          : (item.label + '：插入到当前选中容器/根级'));
         b.addEventListener('click', () => {
           if (item.preset) addParamAction(item.key);
           else addAction(item.key);
@@ -1212,6 +1594,9 @@
     if (kind === 'param_click_text') {
       const sel = step.args.find && step.args.find[0] ? step.args.find[0].sel : '';
       status(`已生成 click_target：OCR 素材「${sel}」+ 文字 param('${paramSafeKey((pickParamForAction() || {}).key)}')；素材可在右侧「定位对象」修改`);
+    } else if (kind === 'param_long_press_text') {
+      const sel = step.args.find && step.args.find[0] ? step.args.find[0].sel : '';
+      status(`已生成 long_press：OCR 素材「${sel}」+ 文字 param('${paramSafeKey((pickParamForAction() || {}).key)}')，hold_ms=3000；可在属性面板改时长/操作区域`);
     } else {
       status(`已生成 ${meta.op}：文字来源 param('${paramSafeKey((pickParamForAction() || {}).key)}')（不新增 op，可在属性面板改）`);
     }
@@ -2266,6 +2651,102 @@
     root.appendChild(box);
   }
 
+  // P1：OCR 定位器的「操作区域」编辑器（click_target.find / drag from|to /
+  // long_press.find 共用）。写回 locator.region；非 offset 模式删除 offset；
+  // 默认模式删除 region。未知字段保留（调用方用 regionWrite merge）。返回
+  // {host, read(): {ok, mode, offset, error}}；非法偏移不回调 onChange（保留原值）。
+  function renderRegionEditor(host, locator, onChange) {
+    const spec = regionSpec(locator);
+    const box = document.createElement('div');
+    box.className = 'builder-region-editor';
+    const title = document.createElement('div');
+    title.className = 'muted small';
+    title.textContent = '操作区域（可选；只对 OCR 定位器生效）';
+    box.appendChild(title);
+
+    const modeLab = document.createElement('label');
+    modeLab.textContent = '区域来源';
+    const modeSel = document.createElement('select');
+    for (const [value, label] of [
+      ['', '默认（跟随素材配置）'],
+      ['asset', '素材操作区域'],
+      ['ocr', 'OCR 识别区域'],
+      ['nearest', '最近匹配'],
+      ['offset', '相对偏移 [dx,dy,w,h]'],
+    ]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      modeSel.appendChild(option);
+    }
+    const knownModes = ['', 'asset', 'ocr', 'nearest', 'offset'];
+    if (knownModes.indexOf(spec.mode) < 0) {
+      const option = document.createElement('option');
+      option.value = spec.mode;
+      option.textContent = regionModeText(spec.mode) + '（未知模式）';
+      modeSel.appendChild(option);
+    }
+    modeSel.value = knownModes.indexOf(spec.mode) < 0 ? spec.mode : spec.mode;
+    modeLab.appendChild(modeSel);
+    box.appendChild(modeLab);
+
+    const offsetRow = document.createElement('div');
+    offsetRow.className = 'builder-region-offset';
+    const offsetLabels = ['dx', 'dy', 'w（可空）', 'h（可空）'];
+    const offsetInputs = [];
+    offsetLabels.forEach(function (labelText, index) {
+      const lab = document.createElement('label');
+      lab.textContent = labelText;
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.setAttribute('data-offset', String(index));
+      const value = spec.offset[index];
+      input.value = value === undefined || value === null ? '' : String(value);
+      input.placeholder = index < 2 ? '如：0 / -10' : '留空=继承';
+      lab.appendChild(input);
+      offsetRow.appendChild(lab);
+      offsetInputs.push(input);
+    });
+    offsetRow.hidden = spec.mode !== 'offset';
+    box.appendChild(offsetRow);
+
+    const hint = document.createElement('div');
+    hint.className = 'builder-region-hint';
+    hint.textContent = regionHintText(spec.mode);
+    box.appendChild(hint);
+    const err = document.createElement('div');
+    err.className = 'builder-region-err';
+    box.appendChild(err);
+
+    function read() {
+      const mode = modeSel.value;
+      if (!mode) return { ok: true, mode: '', offset: [], error: '' };
+      if (mode !== 'offset') return { ok: true, mode: mode, offset: [], error: '' };
+      const parsed = regionOffsetFromInput(
+        offsetInputs[0].value,
+        offsetInputs[1].value,
+        offsetInputs[2].value,
+        offsetInputs[3].value
+      );
+      if (!parsed.ok) {
+        return { ok: false, mode: 'offset', offset: [], error: parsed.error };
+      }
+      return { ok: true, mode: 'offset', offset: parsed.offset, error: '' };
+    }
+    function emit() {
+      offsetRow.hidden = modeSel.value !== 'offset';
+      hint.textContent = regionHintText(modeSel.value);
+      const result = read();
+      err.textContent = result.error || '';
+      box.classList.toggle('err', !!result.error);
+      if (result.ok && typeof onChange === 'function') onChange(result);
+    }
+    modeSel.addEventListener('change', emit);
+    for (const input of offsetInputs) input.addEventListener('change', emit);
+    host.appendChild(box);
+    return { host: box, read: read };
+  }
+
   // P6：drag from/to 的 OCR 端点结构化编辑器。
   function renderDragEndpointEditor(host, step, side) {
     const endpoint = stepDragEndpoint(step, side);
@@ -2280,12 +2761,20 @@
     box.appendChild(assetLab);
     const textSource = locatorTextSourceFields(endpoint, function () { sync(); });
     box.appendChild(textSource.host);
+    // P1: 操作区域（region）与 click_target 定位器一致。
+    let regionEditor = null;
+    regionEditor = renderRegionEditor(box, endpoint, function () { sync(); });
     function sync() {
       const next = Object.assign({}, endpoint, { kind: 'ocr_text' });
       if (asset.value) next.sel = asset.value;
       else delete next.sel;
       const text = textSource.read();
-      step.args[side] = paramSourceApply(next, text.mode, text.value);
+      let written = paramSourceApply(next, text.mode, text.value);
+      if (regionEditor) {
+        const region = regionEditor.read();
+        if (region.ok) written = regionWrite(written, region.mode, region.offset);
+      }
+      step.args[side] = written;
       renderAll();
     }
     asset.addEventListener('change', sync);
@@ -2297,7 +2786,7 @@
   // 未知 locator 字段（roi / require_template / shape …）必须原样保留（只 merge
   // 已知键，禁止重建对象——旧 Studio 会丢字段）。
   function structuredClickTarget(root, step) {
-    const box = formBox('定位对象（find[0]；多定位器/内联 ROI 用下方高级 JSON）');
+    const box = formBox('定位对象（find[0]；多定位器/内联 ROI 用下方高级 JSON；OCR 可设操作区域）');
     const find = Array.isArray(step.args.find) ? step.args.find : [];
     const base = find[0] && typeof find[0] === 'object' && !Array.isArray(find[0])
       ? find[0]
@@ -2324,11 +2813,16 @@
     box.appendChild(assetLab);
 
     let textSource = null;
+    let regionEditor = null;
     if (kind.value === 'ocr_text') {
       textSource = locatorTextSourceFields(Object.assign({}, base, { kind: 'ocr_text' }), function () {
         sync();
       });
       box.appendChild(textSource.host);
+      // P1: 操作区域（默认/素材/OCR/最近匹配/相对偏移）。
+      regionEditor = renderRegionEditor(box, Object.assign({}, base, { kind: 'ocr_text' }), function () {
+        sync();
+      });
     }
 
     function sync() {
@@ -2339,6 +2833,10 @@
       if (kind.value === 'ocr_text') {
         const text = textSource ? textSource.read() : { mode: 'text', value: '' };
         written = paramSourceApply(next, text.mode, text.value);
+        if (regionEditor) {
+          const region = regionEditor.read();
+          if (region.ok) written = regionWrite(written, region.mode, region.offset);
+        }
       } else {
         // template/region locators never carry text fields; text_expr is an
         // ocr_text-only field.
@@ -2460,6 +2958,166 @@
       step.args.direction = dir.value;
       renderAll();
     });
+    root.appendChild(box);
+  }
+
+  // P1：long_press 属性面板（find 由 structuredClickTarget 复用；这里管时长）。
+  function renderLongPressForm(root, step) {
+    const box = formBox('长按参数');
+    const hint = document.createElement('div');
+    hint.className = 'muted small';
+    hint.textContent = '长按：按住「定位对象」找到的元素 hold_ms 毫秒（默认 3000）；勾选随机范围后每次在 hold_range 内随机（优先于 hold_ms，拟人）。';
+    box.appendChild(hint);
+
+    const holdLab = document.createElement('label');
+    holdLab.textContent = '按住时长 hold_ms（100~10000，默认 3000）';
+    const hold = document.createElement('input');
+    hold.type = 'number';
+    hold.min = '100';
+    hold.max = '10000';
+    hold.step = '100';
+    hold.value = String(step.args.hold_ms === undefined || step.args.hold_ms === null ? 3000 : step.args.hold_ms);
+    hold.addEventListener('change', () => {
+      const value = Number(hold.value);
+      if (isFinite(value) && Number.isInteger(value) && value >= 100 && value <= 10000) {
+        step.args.hold_ms = value;
+        renderAll();
+      } else {
+        status('hold_ms 必须是 100~10000 的整数', '#ff8a80');
+      }
+    });
+    holdLab.appendChild(hold);
+    box.appendChild(holdLab);
+
+    const rangeOn = Array.isArray(step.args.hold_range) && step.args.hold_range.length === 2;
+    const rangeLabel = document.createElement('label');
+    rangeLabel.className = 'run-opt';
+    const rangeCheck = document.createElement('input');
+    rangeCheck.type = 'checkbox';
+    rangeCheck.checked = rangeOn;
+    rangeLabel.append(rangeCheck, document.createTextNode(' 随机按住时长 hold_range（拟人）'));
+    box.appendChild(rangeLabel);
+
+    const range = rangeOn ? step.args.hold_range : [2500, 3500];
+    const row = document.createElement('div');
+    row.className = 'builder-inline';
+    const minLab = document.createElement('label');
+    minLab.textContent = '最小 ms';
+    const minInput = document.createElement('input');
+    minInput.type = 'number';
+    minInput.min = '100';
+    minInput.max = '10000';
+    minInput.step = '100';
+    minInput.value = String(range[0]);
+    minInput.disabled = !rangeOn;
+    minLab.appendChild(minInput);
+    const maxLab = document.createElement('label');
+    maxLab.textContent = '最大 ms';
+    const maxInput = document.createElement('input');
+    maxInput.type = 'number';
+    maxInput.min = '100';
+    maxInput.max = '10000';
+    maxInput.step = '100';
+    maxInput.value = String(range[1]);
+    maxInput.disabled = !rangeOn;
+    maxLab.appendChild(maxInput);
+    row.append(minLab, maxLab);
+    box.appendChild(row);
+
+    function commitRange() {
+      const parsed = holdRangeFromInput(minInput.value, maxInput.value);
+      if (!parsed.ok) {
+        status('hold_range 无效：' + parsed.error, '#ff8a80');
+        return;
+      }
+      if (parsed.range) step.args.hold_range = parsed.range;
+      else delete step.args.hold_range;
+      renderAll();
+    }
+    rangeCheck.addEventListener('change', () => {
+      if (rangeCheck.checked) {
+        step.args.hold_range = [2500, 3500];
+      } else {
+        delete step.args.hold_range;
+      }
+      renderAll();
+    });
+    minInput.addEventListener('change', commitRange);
+    maxInput.addEventListener('change', commitRange);
+    root.appendChild(box);
+  }
+
+  // P1：curve_swipe 属性面板（points JSON + duration 范围 + 多段风险说明）。
+  function renderCurveSwipeForm(root, step) {
+    const box = formBox('曲线滑动（多段近似）');
+    const risk = document.createElement('div');
+    risk.className = 'muted small builder-warn-note';
+    risk.textContent = '多段直线近似：每段是独立手势，App 可能视为多次滑动；仅在没有单次连续曲线能力时使用。';
+    box.appendChild(risk);
+
+    const pointsLabel = document.createElement('label');
+    pointsLabel.textContent = '路径点 points（JSON：[[x,y],...]，2~32 个屏内整数点）';
+    const pointsInput = document.createElement('textarea');
+    pointsInput.className = 'builder-code';
+    pointsInput.spellcheck = false;
+    const defaultPoints = [[500, 1200], [520, 900], [560, 600], [620, 300]];
+    const currentPoints = Array.isArray(step.args.points) ? step.args.points : defaultPoints;
+    pointsInput.value = JSON.stringify(currentPoints, null, 0);
+    pointsInput.placeholder = '[[500,1200],[520,900],[560,600],[620,300]]';
+    pointsInput.addEventListener('change', () => {
+      const parsed = curvePointsFromText(pointsInput.value, B.screen[0], B.screen[1]);
+      if (!parsed.ok) {
+        status('points 无效：' + parsed.error, '#ff8a80');
+        return;
+      }
+      step.args.points = parsed.points;
+      renderAll();
+    });
+    pointsLabel.appendChild(pointsInput);
+    box.appendChild(pointsLabel);
+
+    const dur = Array.isArray(step.args.duration_ms) && step.args.duration_ms.length === 2
+      ? step.args.duration_ms
+      : [600, 1000];
+    const row = document.createElement('div');
+    row.className = 'builder-inline';
+    const minLab = document.createElement('label');
+    minLab.textContent = '最小时长 ms';
+    const minInput = document.createElement('input');
+    minInput.type = 'number';
+    minInput.min = '100';
+    minInput.max = '10000';
+    minInput.step = '100';
+    minInput.value = String(dur[0]);
+    minLab.appendChild(minInput);
+    const maxLab = document.createElement('label');
+    maxLab.textContent = '最大时长 ms';
+    const maxInput = document.createElement('input');
+    maxInput.type = 'number';
+    maxInput.min = '100';
+    maxInput.max = '10000';
+    maxInput.step = '100';
+    maxInput.value = String(dur[1]);
+    maxLab.appendChild(maxInput);
+    row.append(minLab, maxLab);
+    box.appendChild(row);
+    function commitDuration() {
+      const parsed = curveDurationFromInput(minInput.value, maxInput.value);
+      if (!parsed.ok) {
+        status('duration_ms 无效：' + parsed.error, '#ff8a80');
+        return;
+      }
+      step.args.duration_ms = parsed.duration;
+      renderAll();
+    }
+    minInput.addEventListener('change', commitDuration);
+    maxInput.addEventListener('change', commitDuration);
+
+    const hint = document.createElement('div');
+    hint.className = 'muted small';
+    hint.textContent = '总时长在 duration_ms 范围内随机后按段均分（100~10000ms，min≤max）；当前设计分辨率 ' +
+      B.screen[0] + 'x' + B.screen[1] + '。';
+    box.appendChild(hint);
     root.appendChild(box);
   }
 
@@ -2910,6 +3568,13 @@
       root.appendChild(assetLabel);
     }
     if (step.op === 'call_task') renderCallTaskForm(root, step);
+    // P1: wait/wait_until/param_wait_text are BLOCKING waits, not actions.
+    if (step.op === 'wait' || step.op === 'wait_until') {
+      const waitHelp = document.createElement('div');
+      waitHelp.className = 'builder-wait-help muted small';
+      waitHelp.textContent = waitBlockingHelpText();
+      root.appendChild(waitHelp);
+    }
     const exprHintOps = new Set(['log', 'wait_until', 'loop', 'set_var', 'inc_var', 'click_point']);
     if (exprHintOps.has(step.op)) {
       const hint = document.createElement('div');
@@ -2975,14 +3640,19 @@
       lab.appendChild(input);
       root.appendChild(lab);
     }
-    if (step.op === 'click_target') {
+    if (step.op === 'click_target' || step.op === 'long_press') {
+      // P1: long_press reuses the click_target locator editor (kind/sel/文字来源/操作区域).
       structuredClickTarget(root, step);
-      // P6: requires/expect OCR 守卫也支持结构化「文字来源」三态。
-      renderGuardLocatorEditor(root, step, 'requires');
-      renderGuardLocatorEditor(root, step, 'expect');
+      if (step.op === 'click_target') {
+        // P6: requires/expect OCR 守卫也支持结构化「文字来源」三态。
+        renderGuardLocatorEditor(root, step, 'requires');
+        renderGuardLocatorEditor(root, step, 'expect');
+      }
+      if (step.op === 'long_press') renderLongPressForm(root, step);
     }
     if (step.op === 'click') renderClickAlts(root, step);
     if (step.op === 'drag') structuredDrag(root, step);
+    if (step.op === 'curve_swipe') renderCurveSwipeForm(root, step);
     renderBuilderRelationHint(root, step);
     // raw args JSON fallback for complex actions (click_target/drag)
     const raw = document.createElement('label');
@@ -3253,6 +3923,9 @@
       if (!Array.isArray(B.flow.steps)) B.flow.steps = [];
       normalizeFlow(B.flow);
       B.assets = as.items || [];
+      // P1: screen bounds come from the assets response (design_resolution);
+      // curve_swipe points must stay inside it. Older/absent -> 1280x720.
+      B.screen = normalizeScreenSize(as.design_resolution);
       for (const c of as.collections || []) {
         B.assets.push({ id: c.id, kind: 'template_set', members: c.members || [], action_shape: c.action_shape, action_source: c.action_source });
       }
@@ -3302,9 +3975,14 @@
     normalizeFlow(B.flow);
     // P3: 保存前本地校验「文字来源」互斥（结构化编辑器不会双写；高级 JSON 手改
     // 可写出 text + text_expr 同时存在，这里拦住，避免把坏 flow 写盘）。
-    const specIssues = flowTextSpecIssues(B.flow);
-    if (specIssues.length) {
-      status('保存已阻止：' + specIssues[0] + '（text / text_expr 互斥且须有其一）', '#ff8a80');
+    // P1: 同时校验 region 形状与 long_press/curve_swipe 参数范围。
+    const saveIssues = flowTextSpecIssues(B.flow)
+      .concat(regionIssues(B.flow))
+      .concat(actionArgsIssues(B.flow, B.screen));
+    if (saveIssues.length) {
+      status('保存已阻止：' + saveIssues[0] +
+        (saveIssues.length > 1 ? '（另有 ' + (saveIssues.length - 1) + ' 项问题，见高级 JSON/属性面板）' : ''),
+      '#ff8a80');
       return;
     }
     if (B.saving) return;

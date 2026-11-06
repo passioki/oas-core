@@ -355,12 +355,17 @@
             先选中中间的 if/loop/while 容器，再添加子动作；否则追加到根流程末尾。
           </p>
           <p class="muted small builder-params-help">
-            参数动作不新增 op：生成标准 <code>click_target</code> / <code>wait_until</code>，文字来自
+            参数动作不新增 op：生成标准 <code>click_target</code> / <code>long_press</code> / <code>wait_until</code>，文字来自
             <code>param('key')</code>（先在「任务参数」面板声明；未声明时发布 T3 报错）。
           </p>
           <p class="muted small" id="builder-cond-help">
-            <strong>条件与取值</strong>：出现 = 现在有没有；等到 = 一直等到有；识别 = 读出文字内容。
-            这三个是条件/取值动作，不会自己点击。
+            <strong>条件与等待</strong>：出现 = 现在有没有；识别 = 读出文字内容。
+            「等到条件 / 等待参数文字」是<strong>阻塞等待</strong>步骤：条件成立后继续执行<strong>下一个 flow 步骤</strong>
+            （不会触发独立动作）；超时则本步失败。
+          </p>
+          <p class="muted small">
+            <strong>长按</strong>：按住定位对象的 <code>hold_ms</code>（默认 3000ms），可选随机范围拟人。
+            <strong>曲线滑动（多段近似）</strong>：按 points 逐段滑动，每段是独立手势，App 可能视为多次滑动。
           </p>
         </aside>
         <div class="builder-splitter" data-side="left" title="拖动调整动作库宽度（记忆）"></div>

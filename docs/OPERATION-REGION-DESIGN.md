@@ -125,3 +125,49 @@
 2. **长按**：用独立 `long_press` op（推荐）还是 `click_target` 增加 `hold_ms`？默认时长/范围？
 3. **相对位移**：`offset:[dx,dy,w,h]` 相对匹配/识别 bbox **左上角**是否可以？还是相对中心/素材 roi？
 4. **曲线**：接受现状（直线拟人）？还是需要「多段近似」（A）或模拟器专用低层注入（B）？
+
+## 6. ✅ 用户已确认（2026-11-06 08:3x，seq 121 实施）
+
+1. **nearest 参考点 = 参数 OCR 识别真实区域的 ROI 中心**（即本次 OCR 所用的素材识别 ROI / inline roi 的中心）；仅用于 OCR 多匹配场景，选择“离该 ROI 中心最近”的匹配行，再使用该匹配行的操作区域。
+2. **长按 = 独立 `long_press` op**；默认时长 **3000ms**；支持**随机范围可调**（拟人）。
+3. **相对偏移**：`offset:[dx,dy,w,h]` 相对匹配/识别 bbox **左上角**（w/h 可省略时沿用 bbox 尺寸）。
+4. **曲线 = 多段近似**：允许多段直线模拟曲线；明确风险（每段是独立手势，App 可能视为多次滑动）。
+
+### 6.1 实施规格（P1，本轮）
+
+**`region` 字段**（可选；旧 flow 零变化；新 package 通过 flow_ops 门禁）：
+```json
+"region": {"mode":"asset|ocr|nearest|offset","offset":[dx,dy,w,h]}
+```
+- 可挂在 `click_target.find[]` 的 `kind:"ocr_text"`、`drag.from/to` 的 `kind:"ocr_text"`、以及 `long_press.find[]`。
+- `asset`：素材操作区域（`action_shape`/`click_back`；无则回退 OCR 行 bbox）。
+- `ocr`：强制使用本次 OCR 匹配行的 bbox（忽略素材 action_shape）。
+- `nearest`：多行匹配时，选**行 bbox 中心距 OCR 识别 ROI 中心最近**的一行；操作用该行 bbox。
+- `offset`：在基础 bbox（ocr/nearest 选中的行；asset 模式为素材操作区域）左上角叠加 `[dx,dy,w,h]`；w/h 缺省继承基础尺寸。
+- 无 `region` = 现状。
+
+**`long_press` op**：
+```json
+{"op":"long_press","args":{
+  "find":[{"kind":"ocr_text","sel":"O_x","text_expr":"param('k')","region":{...}}],
+  "hold_ms":3000,
+  "hold_range":[2500,3500]   // 可选；存在则在此区间随机（拟人），范围 100..=10000
+}}
+```
+- locator 解析同 click_target；长按前同样做屏内校验；`hold_ms` 默认 3000；`hold_range` 优先于 `hold_ms`（min≤max）。
+- 输入层新增 `long_press(point, ms)`：ADB 用同坐标 `input swipe x y x y ms`；replay/fake 记录。
+- 新增 flow_ops：`long_press`、`click_target.region`、`drag.region`（含 region 字段时）。
+
+**`curve_swipe` op（多段近似）**：
+```json
+{"op":"curve_swipe","args":{"points":[[x,y],[x,y],...],"duration_ms":[600,1000]}}
+```
+- `points` 2..=32 个屏内点；按 N-1 段依次 `input swipe`，总时长随机后按段均分（可加少量抖动）；日志记录段数/总时长；**文档明确每段为独立手势**。
+- 无 locator/asset 依赖；flow_ops 新增 `curve_swipe`。
+
+### 6.2 UI（本轮）
+
+- 动作库新增「长按」`long_press`（含「参数文字长按」预设）与「曲线滑动（多段近似）」`curve_swipe`。
+- 定位对象/拖动端点新增「操作区域」选择（默认/素材操作区域/OCR识别区域/最近匹配/相对偏移 + `[dx,dy,w,h]` 输入）。
+- **等待动作解释**：动作库与属性面板明确「等待参数文字/等到条件」是**阻塞等待**步骤：条件成立后继续执行**下一个 flow 步骤**（不触发独立动作）；超时则本步失败。UI 增加 help/title。
+- 测试：UI pure test 新增 long_press/curve_swipe/region 纯函数与静态断言；基线 2039 只能增；0 dead/nav 6 不变。
