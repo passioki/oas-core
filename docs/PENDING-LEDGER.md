@@ -4496,7 +4496,7 @@ Rust 后端未动（workspace 801/0 基线不变）；按用户「推送即可�
 
 ## B. 验证 / 提交
 
-- workspace **824/0**（flow 77 / runtime 178+2 / task 119 / adapter-pc 5 / oasd 412）；UI **2138/164/158/0 dead/6 nav**（+99）；debug+release build exit 0（1 warning）。
+- workspace **824/0**（flow 77 / runtime 178+2 / task 119 / adapter-pc 5 / oasd 412）；UI **2146/164/158/0 dead/6 nav**（+99）；debug+release build exit 0（1 warning）。
 - E2E 证据 `_verify\opregion-e2e-20261106\`（flow.json/meta/发布包 flow_ops 输出）。
 - 提交：oas-core `644249c`（code；dev=main=origin）；oas-runner `7e64156`（pin `644249c`，构建 exit 0）；未重打 release / 未 tag。
 

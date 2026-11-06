@@ -3165,6 +3165,7 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 #### 22.61.4 UI（构建页）与等待语义
 
 - 动作库新增「长按 `long_press`」「曲线滑动（多段近似）`curve_swipe`」「参数文字长按 `param_long_press_text`」预设；`actionCatalog` 单一目录使动作库/if 分支下拉自动同步。
+- **参数点击/长按素材选择对话框**已接入新能力：同时选择 OCR 素材 + 操作区域模式（默认/素材操作区域/OCR识别区域/最近匹配/相对偏移+dx,dy,w,h），确认后写入 `find[0].region`；旧文案「已列入设计，确认语义后再接 UI」已移除。上下文能确定素材/区域时不弹窗，可稍后在右侧定位对象修改。
 - `click_target` OCR 定位器 / `drag.from|to` / `long_press.find` 共用「操作区域」下拉（默认/素材操作区域/OCR识别区域/最近匹配/相对偏移 + dx/dy/w/h），写回 region（保留未知字段、非 offset 删 offset、默认删 region）；保存前 `regionIssues`/`actionArgsIssues` 校验并阻止坏值。
 - long_press 面板：hold_ms 3000（100~10000）+ hold_range 勾选启用；curve_swipe 面板：points JSON + duration 范围 + 风险说明；屏内校验用 `/task/assets` 的 `design_resolution`（缺失 fallback 1280×720）。
 - **等待动作解释**：「等到条件 / 等待参数文字」是**阻塞等待步骤**——条件成立后继续执行**下一个 flow 步骤**（不会触发独立动作）；超时（timeout_s）本步失败。动作库 title、属性面板帮助、index.html 动作库说明已统一；`param_wait_text` 生成 `wait_until {cond:"text_visible(param('key'))", timeout_s:10}`。
@@ -3172,6 +3173,6 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 #### 22.61.5 验证
 
 - `cargo test --workspace` **824 / 0**（23 suites；flow 70→**77**、runtime **178**+2 integration、task 116→**119**、adapter-pc 3→**5**、oasd 412 不变）；debug+release OCR build exit 0（**1 warning** 无新增）。
-- UI pure test **2138 checks / Studio 164 / Runner 158 / 0 dead / 6 nav**（+99）；`node --check` 3/3；`git diff --check` clean。
+- UI pure test **2146 checks / Studio 164 / Runner 158 / 0 dead / 6 nav**（+99）；`node --check` 3/3；`git diff --check` clean。
 - **新建 op/region E2E（debug 二进制）**：临时任务 `regiontest`（click_target region=nearest、drag from region=offset、long_press hold_range、curve_swipe）→ `oasd task lint` **0 errors** → publish 成功 → manifest `flow_ops = click_target.region,click_target.text_expr,curve_swipe,drag.region,long_press`。证据 `_verify\opregion-e2e-20261106\`。
 - 提交：oas-core `644249c`（code；dev=main=origin）；oas-runner `7e64156`（pin `644249c`，`cargo build` exit 0）；按用户要求只推送、未重打 release / 未 tag。

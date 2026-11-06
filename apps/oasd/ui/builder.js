@@ -134,20 +134,26 @@
     return '';
   }
 
+  // Parameter click/long-press 目标选择：OCR 素材 + 操作区域（region）一次选好。
+  // The old dialog only picked an asset and told the user "region modes are still
+  // being designed"; since seq 121 the engine actually supports
+  // asset/ocr/nearest/offset, so the chooser exposes them directly.
   function chooseOcrAssetDialog(initial) {
     return new Promise(function (resolve) {
       if (typeof document === 'undefined' || !document.body) {
-        resolve(initial || '');
+        resolve({ sel: initial || '', region: undefined });
         return;
       }
       const assets = B.assets.filter((a) => a.kind === 'ocr_line' || a.kind === 'ocr_lines');
       const dlg = document.createElement('dialog');
       dlg.className = 'task-dialog builder-choose-dialog';
       const head = document.createElement('h3');
-      head.textContent = '选择 OCR 素材（参数文字点击需要定位区域）';
+      head.textContent = '选择 OCR 素材与操作区域（参数文字点击/长按）';
       const hint = document.createElement('div');
-      hint.className = 'muted small';
-      hint.textContent = '参数只替换识别文字。点击/拖动的“操作区域”取决于素材配置：素材若声明了操作区域（action_shape / roi_back）就用它；否则用 OCR 识别到的真实文字框。多匹配取最近、相对位移区域、强制识别框等模式已列入设计（docs/OPERATION-REGION-DESIGN.md），确认语义后再接 UI。';
+      hint.className = 'muted small builder-choose-hint';
+      hint.textContent = '参数只替换识别文字；这里同时决定点击/长按用哪块「操作区域」。之后可在右侧定位对象里修改。';
+      const assetLabel = document.createElement('label');
+      assetLabel.textContent = 'OCR 素材';
       const sel = document.createElement('select');
       for (const a of assets) {
         const o = document.createElement('option');
@@ -156,11 +162,58 @@
         sel.appendChild(o);
       }
       if (initial) sel.value = initial;
+      assetLabel.appendChild(sel);
+
+      const regionLabel = document.createElement('label');
+      regionLabel.textContent = '操作区域';
+      const modeSel = document.createElement('select');
+      const modeChoices = [['', '默认（跟随素材配置）']].concat(
+        REGION_MODES.map((m) => [m, regionModeText(m)])
+      );
+      for (const [value, label] of modeChoices) {
+        const o = document.createElement('option');
+        o.value = value;
+        o.textContent = label;
+        modeSel.appendChild(o);
+      }
+      regionLabel.appendChild(modeSel);
+
+      const offsetWrap = document.createElement('div');
+      offsetWrap.className = 'builder-region-offset';
+      offsetWrap.hidden = true;
+      const offsetInputs = {};
+      for (const [key, placeholder] of [['dx', 'dx（可为负）'], ['dy', 'dy（可为负）'], ['w', 'w（可空）'], ['h', 'h（可空）']]) {
+        const lab = document.createElement('label');
+        lab.className = 'builder-region-offset-field';
+        lab.textContent = key;
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.step = '1';
+        input.placeholder = placeholder;
+        input.dataset.regionField = key;
+        lab.appendChild(input);
+        offsetWrap.appendChild(lab);
+        offsetInputs[key] = input;
+      }
+
+      const regionHint = document.createElement('div');
+      regionHint.className = 'muted small builder-choose-hint';
+      function refreshHint() {
+        const spec = chooserRegionSpec(modeSel.value,
+          offsetInputs.dx.value, offsetInputs.dy.value, offsetInputs.w.value, offsetInputs.h.value);
+        offsetWrap.hidden = modeSel.value !== 'offset';
+        regionHint.textContent = spec.ok ? regionHintText(modeSel.value || '') : '⚠ ' + spec.error;
+        regionHint.classList.toggle('warn', !spec.ok);
+      }
+      modeSel.addEventListener('change', refreshHint);
+      for (const input of Object.values(offsetInputs)) input.addEventListener('input', refreshHint);
+      refreshHint();
+
       const actions = document.createElement('div');
       actions.className = 'builder-form-actions';
       const ok = document.createElement('button');
       ok.type = 'button';
-      ok.textContent = '使用该素材';
+      ok.textContent = '使用该素材/区域';
       const cancel = document.createElement('button');
       cancel.type = 'button';
       cancel.textContent = '取消';
@@ -172,13 +225,25 @@
         if (dlg.parentNode) dlg.parentNode.removeChild(dlg);
         resolve(value);
       }
-      ok.addEventListener('click', () => done(sel.value));
+      ok.addEventListener('click', () => {
+        const spec = chooserRegionSpec(modeSel.value,
+          offsetInputs.dx.value, offsetInputs.dy.value, offsetInputs.w.value, offsetInputs.h.value);
+        if (!spec.ok) {
+          regionHint.textContent = '⚠ ' + spec.error;
+          regionHint.classList.add('warn');
+          return;
+        }
+        done({ sel: sel.value, region: spec.region });
+      });
       cancel.addEventListener('click', () => done(null));
       actions.appendChild(ok);
       actions.appendChild(cancel);
       dlg.appendChild(head);
       dlg.appendChild(hint);
-      dlg.appendChild(sel);
+      dlg.appendChild(assetLabel);
+      dlg.appendChild(regionLabel);
+      dlg.appendChild(offsetWrap);
+      dlg.appendChild(regionHint);
       dlg.appendChild(actions);
       document.body.appendChild(dlg);
       if (typeof dlg.showModal === 'function') {
@@ -189,26 +254,32 @@
     });
   }
 
-  async function resolveParamClickAsset() {
+  async function resolveParamClickTarget() {
     const assets = B.assets.filter((a) => a.kind === 'ocr_line' || a.kind === 'ocr_lines');
-    if (!assets.length) return '';
+    if (!assets.length) return { sel: '', region: undefined };
     const contextual = selectedOcrAssetId();
-    if (contextual) return contextual;
-    if (assets.length === 1) return assets[0].id;
+    if (contextual) return { sel: contextual, region: undefined };
+    if (assets.length === 1) return { sel: assets[0].id, region: undefined };
     return chooseOcrAssetDialog(assets[0].id);
   }
 
   // Async path used by the palette/branch insertion: parameter click/long-press
-  // asks for the OCR asset when the context does not determine it.
+  // asks for the OCR asset AND the operation-region mode when the context does
+  // not determine them.
   async function prepareActionStep(key) {
     if (!PARAM_ACTIONS[key]) return OP_META[key] ? makeStep(key) : null;
     const ctx = paramActionContext();
     if (!ctx) return null;
     if (key === 'param_click_text' || key === 'param_long_press_text') {
-      const ocrSel = await resolveParamClickAsset();
-      if (ocrSel === null) return null;
-      if (key === 'param_long_press_text') return longPressStep(ctx.paramKey, ocrSel);
-      return paramClickStep(ctx.paramKey, ocrSel);
+      const target = await resolveParamClickTarget();
+      if (target === null) return null;
+      const step = key === 'param_long_press_text'
+        ? longPressStep(ctx.paramKey, target.sel)
+        : paramClickStep(ctx.paramKey, target.sel);
+      if (target.region && Array.isArray(step.args.find) && step.args.find[0]) {
+        step.args.find[0] = Object.assign({}, step.args.find[0], { region: target.region });
+      }
+      return step;
     }
     return paramWaitStep(ctx.paramKey, 10);
   }
@@ -563,6 +634,22 @@
       return { ok: false, region: null, error: '只有 region.mode=offset 支持 offset（当前 ' + mode + '）' };
     }
     return { ok: true, region: { mode: 'offset', offset: r.offset.slice() }, error: '' };
+  }
+
+  // Chooser dialog (参数文字点击/长按) → region object. Empty mode = keep the
+  // engine default; offset mode reuses the same 2/4-integer input validation.
+  function chooserRegionSpec(mode, dxText, dyText, wText, hText) {
+    const m = String(mode === undefined || mode === null ? '' : mode).trim().toLowerCase();
+    if (!m) return { ok: true, region: undefined, error: '' };
+    if (m === 'offset') {
+      const off = regionOffsetFromInput(dxText, dyText, wText, hText);
+      if (!off.ok) return { ok: false, region: null, error: off.error };
+      return normalizeRegion({ mode: 'offset', offset: off.offset });
+    }
+    if (REGION_MODES.indexOf(m) < 0) {
+      return { ok: false, region: null, error: '操作区域模式不合法：' + (m || '（空）') };
+    }
+    return { ok: true, region: { mode: m }, error: '' };
   }
 
   // 保存前扫描 flow 里所有带 region 的节点（click_target/drag/long_press locator）。

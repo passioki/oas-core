@@ -3831,9 +3831,10 @@ ok(
 ok(
   /async function prepareActionStep\(key\)/.test(builderSource) &&
     /chooseOcrAssetDialog\(/.test(builderSource) &&
-    /resolveParamClickAsset\(/.test(builderSource) &&
-    /selectedOcrAssetId\(\)/.test(builderSource),
-  'parameter click asks for/derives the OCR asset instead of silently using the first one'
+    /resolveParamClickTarget\(\)/.test(builderSource) &&
+    /selectedOcrAssetId\(\)/.test(builderSource) &&
+    /chooserRegionSpec\(/.test(builderSource),
+  'parameter click asks for/derives the OCR asset + operation region instead of silently using the first one'
 );
 ok(
   /ins = ' and ' \+ ins/.test(builderSource) &&
@@ -4629,6 +4630,7 @@ const BUILDER_REGION_PURE = [
   'paramSafeKey', 'paramTextExpr',
   'regionModeText', 'regionHintText', 'regionSpec', 'regionWrite',
   'regionOffsetFromInput', 'normalizeRegion', 'regionIssues', 'normalizeScreenSize',
+  'chooserRegionSpec',
   'longPressStep', 'longPressHoldText', 'holdRangeFromInput', 'longPressArgsIssues',
   'curveSwipeStep', 'curvePointsFromText', 'curveDurationFromInput',
   'curveSwipeArgsIssues', 'actionArgsIssues', 'waitBlockingHelpText',
@@ -4652,6 +4654,18 @@ eq(p1Sb.regionModeText('ocr'), 'OCR 识别区域', 'ocr region mode text');
 eq(p1Sb.regionModeText('nearest'), '最近匹配（离识别 ROI 中心最近）', 'nearest region mode text');
 eq(p1Sb.regionModeText('offset'), '相对偏移', 'offset region mode text');
 ok(/未知/.test(p1Sb.regionModeText('weird')), 'unknown region mode is reported');
+
+// The parameter-click chooser now returns asset + region; the pure builder for
+// that dialog must accept the same modes as the structured editor.
+const chooserDefault = p1Sb.chooserRegionSpec('', '', '', '', '');
+eq(chooserDefault.ok, true, 'chooser default mode succeeds');
+ok(chooserDefault.region === undefined, 'chooser default mode leaves region unset');
+eq(p1Sb.chooserRegionSpec('nearest', '', '', '', ''), { ok: true, region: { mode: 'nearest' }, error: '' }, 'chooser nearest mode');
+eq(p1Sb.chooserRegionSpec('asset', '', '', '', ''), { ok: true, region: { mode: 'asset' }, error: '' }, 'chooser asset mode');
+eq(p1Sb.chooserRegionSpec('offset', '10', '-5', '', ''), { ok: true, region: { mode: 'offset', offset: [10, -5] }, error: '' }, 'chooser offset 2-int mode');
+eq(p1Sb.chooserRegionSpec('offset', '10', '-5', '200', '80'), { ok: true, region: { mode: 'offset', offset: [10, -5, 200, 80] }, error: '' }, 'chooser offset 4-int mode');
+ok(p1Sb.chooserRegionSpec('offset', '10', '-5', '200', '').ok === false, 'chooser offset needs both w and h');
+ok(p1Sb.chooserRegionSpec('weird', '', '', '', '').ok === false, 'chooser rejects an unknown region mode');
 eq(p1Sb.regionHintText('asset').indexOf('素材') >= 0, true, 'asset mode hint mentions the asset region');
 eq(p1Sb.regionHintText('offset').indexOf('dx') >= 0, true, 'offset mode hint explains dx/dy');
 eq(p1Sb.regionHintText('').indexOf('不指定') >= 0, true, 'default mode hint explains the current behavior');

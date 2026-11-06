@@ -1,7 +1,7 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
 > ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 121**，`oas-core-dual-app-upgrade`），以及 **`docs/OPERATION-REGION-DESIGN.md`**（§6 已确认规格）与 **`docs/AUDIT-2026-11-05.md`**。
-> **状态：in_progress**——seq 119 UI bugfix、seq 120 设计已交付；**seq 121 = 用户确认 4 项后实现：`region` 操作区域（asset/ocr/nearest/offset）+ `long_press`（默认 3000ms/随机范围）+ `curve_swipe`（多段近似）+ flow_ops 7→11 + 构建页动作库/操作区域/长按/曲线面板 + 等待动作解释（阻塞等待语义）**。验证：workspace **824/0**、UI **2138/164/158/0 dead/6 nav**、region E2E lint 0/publish flow_ops 4 新标记。按用户要求只推送、不发布。**本轮不关机，继续待命。**
+> **状态：in_progress**——seq 119 UI bugfix、seq 120 设计已交付；**seq 121 = 用户确认 4 项后实现：`region` 操作区域（asset/ocr/nearest/offset）+ `long_press`（默认 3000ms/随机范围）+ `curve_swipe`（多段近似）+ flow_ops 7→11 + 构建页动作库/操作区域/长按/曲线面板 + 等待动作解释（阻塞等待语义）**。验证：workspace **824/0**、UI **2146/164/158/0 dead/6 nav**、region E2E lint 0/publish flow_ops 4 新标记。按用户要求只推送、不发布。**本轮不关机，继续待命。**
 
 ## 0. 当前状态（2026-11-06 09:0x）
 
@@ -9,7 +9,7 @@
 |---|---|
 | 分支 / HEAD | oas-core `dev`（本批 docs 提交后以 `git log -1` 为准；代码 `644249c`）；oas-runner `main` = `7e64156`（pin `644249c`，cargo build exit 0）；未 tag / 未 release |
 | 任务 | **seq 121 region/long_press/curve_swipe + UI + 等待语义 ✅**；剩余：真机长按/曲线时序验收、模板多候选 nearest、更新检测鉴权/GC、tag 策略、产品验收 |
-| 测试 | `cargo test --workspace` **824/0**（flow 77 / runtime 178+2 / task 119 / adapter-pc 5 / oasd 412）；UI **2138 / Studio 164 / Runner 158 / 0 dead / 6 nav**；debug+release build exit 0（1 warning）；`git diff --check` clean |
+| 测试 | `cargo test --workspace` **824/0**（flow 77 / runtime 178+2 / task 119 / adapter-pc 5 / oasd 412）；UI **2146 / Studio 164 / Runner 158 / 0 dead / 6 nav**；debug+release build exit 0（1 warning）；`git diff --check` clean |
 | 发行包 | 按用户「推送即可，不用发布」**未重打 release**；本轮新增能力需重打才会进包（本地旧包不含 region/long_press/curve_swipe） |
 | 独立仓 | `https://github.com/passioki/oas-runner`（`7e64156`）；pin `644249c`（已构建验证；未打独立包） |
 | 服务 | 无 `oasd`/`oasd-runner` 进程；8787/8788/8789/8792~8796 无监听 |
