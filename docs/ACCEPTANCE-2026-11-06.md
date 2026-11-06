@@ -190,3 +190,17 @@ E2E seq127 脚本（并清理 seq126 模型 A 断言）、masked 极端 mask 兜
 - `cargo test --workspace` **968/0**（oas-task 160 / oas-flow 82 / oas-runtime 222 / oasd 458；上一轮 949/0）；UI **2323 checks/177 ids/0 dead/158 runner/6 nav**（本机实跑核对）；`cargo check -p oasd --features ocr` exit 0。
 - 冒烟 `_verify/seq129-smoke/`：保存 drag(asset `lib:test`→`lib:预设识别`) flow **200** → lint **0**（`lint.json`；修复前 T8 假红）→ publish **200**（`dist/seq129-smoke.oaspkg`，package_schema=2、variables_schema 含全局 `预设识别`）→ 全新 Runner install **200**（`install-result.json`；包快照初始化全局 store 2 assets）→ 安装后 lint **0**。
 - 遗留：旧 flow 拖动坐标/OCR 端点后端兼容运行但 Studio 只读（建议重建为素材端点）；swipe/curve_swipe/click_point 保留低层坐标手势（UI 已提示）；旧 `.oaspkg`（package_schema=1）需重发布；main 分支待快进、未 tag/未 release。
+
+## seq130 追加验收（23:04 反馈 5 项）
+
+> 用户 2026-11-06 23:04 反馈 5 项已修复并提交 `a3556e3`（HEAD；dev=`origin/dev`，main=`origin/main`=2c81386 待快进；未 tag/未 release）。实现记录 `ENGINE §22.69`。验证：workspace **972/0**（runtime 226 / flow 82 / task 160 / oasd 458）、UI **2370 checks/178 ids/0 dead/158 runner/6 nav**、`cargo check -p oasd --features ocr` exit 0；dry 预览证据 `_verify/seq130-click-repro/test_action-dry.json`。
+
+| # | 用户反馈（23:04） | 根因 | 修复 | 验证 |
+|---|---|---|---|---|
+| 1 | 框选应可移动（已有框可拖动平移） | 画布已有框无命中/平移状态机 | `app.js` hit-test/平移/clamp/Esc 撤销（`:470-660,549,562,577,614,634`）；保留新建手势 | UI 断言 `:8426-8491` |
+| 2 | 点击叠加分布显示不全/图例缺失 | 旧记录只有 actual 或 target，miss 未区分；缓存/面板未刷新 | `normalizeClickPoint`（`:346-368`）兼容 actual/target/miss + 热力/实点/目标环/miss 叉 + 缓存键/面板刷新/图例 | UI 断言 `:8352-8390` |
+| 3 | 条件行把已声明变量误判为「旧参数」 | 只查 `meta.params`，未看 `meta.variables`/`ocr_var.param_key` | `declaredParamKeySet`/`paramKeyDeclaredIn`（`builder.js:246,262,278`）；已声明=变量来源，仅未声明才旧参数只读（`:3231-3240`） | UI 断言 `:5084-5110` |
+| 4 | 工作台素材需自动刷新 | 无轮询/可见性暂停/去重 | 8s 轮询（`app.js:4830,4877,4900-4916`）+ 可见/聚焦/visibilitychange 暂停恢复 + 去重 + 保留滚动/选中 | UI 断言 `:8393-8423` |
+| 5 | 真实点击点测/实际运行点击失效（OCR 落到 authors 旧操作区） | target rect 已 Q1 平移，但采样 shape 被 `translated_click_shape` 拉回作者绝对 `action_shape`（仅 template 平移） | 新 `click_geometry_for(sel,matched)`（`runtime:2777`，rect+shape 同源，OCR 用 `ocr_self_operation_geometry :3533`；roi=None 绝对；template/collection/region 不变）；统一 Click/click_target/long_press/interrupts/dismiss_popup/region.asset 调用点（`:2951,3890,4767,5071,5189,5391`）；serve preview 同源未改 | 单测 `:12062,12087`；dry 预览 `action_box=[1103,245,120,50]`、`real_rect=[1131,257,68,30]` |
+
+- 遗留：① 全屏 `ocr_var`（`roi=None`）操作区仍绝对坐标（文档化限制）；② 旧 `shape_aware`/`translated_click_shape` 分支保留（未删）；③ 浏览器 Firefox 手测清单（框选移动/clamp/Esc、叠加图例、条件行列、8s 刷新暂停恢复、OCR 真实点测落点）；④ main 待快进、未 tag/未 release。

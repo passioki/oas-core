@@ -3567,3 +3567,38 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 - **测试**：oas-task `global_assets_participate_in_t8_and_the_old_api_still_flags_them`（`lib.rs:7687`）；install 侧 merge 用例（`package_cmd.rs:2365,2403`）；无 global 路径回归不变。
 - **端到端冒烟**（`_verify/seq129-smoke/`）：保存 drag(asset `lib:test`→`lib:预设识别`) flow **200** → lint **0**（`lint.json` ok/count=0，修复前 T8 假红）→ publish **200**（`dist/seq129-smoke.oaspkg`，package_schema=2、variables_schema 含全局 `预设识别`）→ 全新 Runner 安装 **200**（`install-result.json` ok；包快照初始化全局 store，2 assets）→ 安装后 lint **0**。
 - **遗留**：旧 flow 的拖动坐标/OCR 端点后端仍兼容运行、Studio 只读（建议重建为素材端点）；`swipe`/`curve_swipe`/`click_point` 保留低层坐标手势（UI 已提示）；旧 `.oaspkg`（package_schema=1）仍需重发布；main 分支待快进、未 tag/release。
+
+### 22.69 ★★★ [11-06 23:1x] **seq130：点击几何同源修复 + 框选可移动/点击叠加/变量误判/自动刷新**
+
+> 用户 2026-11-06 23:04 反馈 5 项，提交 `a3556e3`（HEAD；dev=`origin/dev`；main=`origin/main`=2c81386 待快进），**未 tag/未 release**。测试：workspace **972/0**（oas-runtime 226 / oas-flow 82 / oas-task 160 / oasd 458）、UI **2370 checks/178 ids/0 dead/158 runner/6 nav**、`cargo check -p oasd --features ocr` exit 0。分项：#5=后端点击几何；#1~#4=Studio UI。
+
+#### 22.69.1 #5 点击几何同源：OCR 点击操作区跟随识别文字（Q1 平移丢失）
+
+- **根因**：OCR 点击 path 的 target rect 已按 Q1 平移（真实识别行），但采样前的 `adjust_plan_for_shape`（`runtime:2635`）经 `translated_click_shape`（`:2607`）把 `action_shape` 拉回**作者绝对坐标**（该 helper 只平移 template；OCR 返回原 shape）→ 点测/实际运行落点在旧位置（用户真实形状：识别行 y=257 却点到作者 y72..122）。
+- **修复**：新增 `click_geometry_for(sel, matched)`（`runtime:2777`）——**rect+shape 同源**：OCR/ocr_var 用 `ocr_self_operation_geometry`（`:3533`，`action_shape` 随识别行平移；`roi=None` 全屏保持绝对），template/collection/region 行为不变；`op_region` 链优先语义不变。
+- **统一调用点**：`Step::Click`（`:2951`）、`click_target` 模板/OCR locator（`:3890`）、`long_press`（`:4767`、`:5071`）、`interrupts`/`dismiss_popup`（`:5189`）、`region.asset mode=asset`（`:5391`）；serve 的 dry preview 原本同源（未改）。
+- **测试/证据**：`ocr_var_click_follows_the_recognized_line_not_the_authored_shape`（`:12062`）、`ocr_var_click_target_locator_follows_the_recognized_line`（`:12087`）；dry 预览 `_verify/seq130-click-repro/test_action-dry.json`：`real_rect=[1131,257,68,30]`、**`action_box=[1103,245,120,50]`**、`point=(1183,265)`（不再落到 [1103,72,120,50] 旧区间）。
+
+#### 22.69.2 #1 框选可移动（画布已有框拖动平移）
+
+- `app.js` 新增框移动状态机与纯函数（`:470-660`）：`hitTestActionShape`（`:549`，矩形/多边形/反选命中测试）、`beginBoxMove`（`:562`）、`applyBoxMove`（`:577`，平移 polygon 全顶点）、`finishBoxMove`（`:614`）、`cancelBoxMove`（`:634`）、clamp 回画面内（`:511`）、`boxMoveUndo`（`:472`/`:655`，保存/新操作清空）。
+- 交互：画布点击**已有框优先选中**（识别矩形/多边形、操作区 rect/polygon/invert、候选编辑区），拖动整体平移；Esc 取消进行中/撤销最近一次已完成移动；移动后提示未保存（保存写入/撤销说明）并显示 move 光标；**保留**空白拖动新建矩形/单击加点/双击收尾手势（`:8469-8491` 断言）。
+- 断言：`ui_pure_test.js` seq130 块（hit/clamp/polygon/反选/状态机接线，`:8426-8491`）。
+
+#### 22.69.3 #2 点击叠加分布（actual/target/miss 归一化 + 图例/缓存/刷新）
+
+- `normalizeClickPoint`（`app.js:346-368`）兼容 `actual/target/miss` 三种记录：`miss=true` 只保留 target 点并画红叉；旧记录（仅 `target_x/y` 或仅 actual）仍可绘制；`normalizeClickPoints`（`:375`）过滤不可绘制行。
+- 叠加渲染：热力（actual）+ 实际白点 + 目标环 + miss 叉（`:3861` 注释/绘制段）；修复叠加缓存键（文件/点数/画布尺寸）、点击面板激活时运行记录重绘、聚合失败提示、图例说明（`ui_pure_test :8352-8390`）。
+
+#### 22.69.4 #3 条件行旧参数来源误判
+
+- `builder.js` 新 `declaredParamKeySet(variables, assets)`（`:246`）：`meta.variables` ∪ 素材库 `ocr_var.param_key` 视为**已声明**；`paramKeyDeclaredIn`（`:262`）、`undeclaredParamKeysInText`（`:278`）用于 locator/条件/表达式；`param(key)` 已声明→正常变量来源（`expr`），仅未声明才显示「旧参数来源（只读）」（`:3231-3240`）；覆盖 locator 文字来源、条件行、表达式字段提示（`ui_pure_test :5084-5110`）。
+
+#### 22.69.5 #4 工作台/任务页素材自动刷新
+
+- `app.js`：`ASSETS_REFRESH_INTERVAL_MS = 8000`（`app.js:4830`）、`autoRefreshTaskAssets`（`:4877`）、`startAssetsAutoRefresh`/`stopAssetsAutoRefresh`（`:4900-4916`）：仅工作台可见页轮询；`visibilitychange` 隐藏暂停/可见恢复；窗口聚焦触发一次节流刷新；进行中请求去重；刷新后**保持滚动位置与选中素材**（`ui_pure_test :8393-8423`）。
+
+#### 22.69.6 验证 / 遗留
+
+- 数字见节首；另 dry 预览证据见 §22.69.1。
+- 遗留：① 全屏 `ocr_var`（`roi=None`）操作区仍为绝对坐标（无 authored 基准，文档化限制）；② 旧 `shape_aware` 分支保留（`translated_click_shape` 仍被旧调用/测试引用，未删）；③ 浏览器 Firefox 手测清单：框选移动/clamp/Esc 撤销、点击叠加图例、条件行列类型、素材 8s 自动刷新暂停恢复、OCR 真实点测落点；④ main 待快进、未 tag/未 release。

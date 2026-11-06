@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 129
-updated_at: 2026-11-06T22:0x+08:00
-trigger: 用户 21:26 反馈动作库一致性（拖动（拟人）没有素材选择/坐标输入应删除/其余动作向点击素材对齐）→ 后端 DragTarget::Asset + UI structuredDrag 重写 + 动作库审计；冒烟发现全局素材 T8 lint 假红 → 一并修复保存/发布/安装链路。commits `dce16c7` + `82dbca3`；Lead 验收 workspace 968/0、UI 2323/177/0/6、冒烟 save→lint→publish→install 全绿
+checkpoint_seq: 130
+updated_at: 2026-11-06T23:1x+08:00
+trigger: 用户 23:04 反馈 5 项（框选可移动/点击叠加失效/条件行旧参数来源/任务页素材自动刷新/真实点击点测与运行点击失效）→ Lead 从 runs.clicks 日志定位 OCR 点击几何 Q1 平移丢失（后端修单击几何同源）+ UI 修框选移动/叠加/变量误判/自动刷新。提交 `a3556e3`；Lead 验收 workspace 972/0、UI 2370/178/0/6
 status: done
-code_head: `82dbca3`（dev 领先 main，docs 提交后统一 sync；未 tag/未 release）
-docs_head: seq129 docs 提交见 `git log -1`
-next_action: seq129 已完成并推送（未 tag/未 release）。后续：① **Firefox 手测**（拖动属性页：起点/终点素材选择器与点击素材一致、无坐标输入；拖动/长按/定位点击/点击素材一致性；旧坐标端点只读提示；保存→lint→发布→Runner 安装）；② 旧 flow 拖动坐标端点需重建为素材端点（后端仍兼容运行）；③ V2.1（变量表达式/条件/循环/T9）、V2.2（Profile/多模拟器）；④ oas-runner 独立仓脚本+pin bump；⑤ 真机 E2E、T5 手写 polygon 校验、更新检测鉴权/GC、tag/Release 策略。详见 `PENDING §E-97`、`ENGINE §22.68`、`ACCEPTANCE` seq129 追加。
+code_head: `a3556e3`（dev 领先 main，docs 提交后统一 sync；未 tag/未 release）
+docs_head: seq130 docs 提交见 `git log -1`
+next_action: seq130 已完成并推送（未 tag/未 release；用户要求完成后关机 → 本轮收尾已关机）。后续（下次开机）：① **Firefox 手测**（框选点框拖动/撤销保存、点击叠加热力+目标环+miss 叉、条件行不再误报旧参数、任务页素材 8s 自动刷新、真实点测与运行点击落点应随识别行）；② 全屏 ocr_var（roi=None）操作区仍绝对坐标（Q1 限制）；旧 `shape_aware` 死分支清理；③ V2.1（变量表达式/条件/循环/T9）、V2.2（Profile/多模拟器）；④ oas-runner 独立仓脚本+pin bump；⑤ 真机 E2E、T5 手写 polygon 校验、更新检测鉴权/GC、tag/Release 策略。详见 `PENDING §E-98`、`ENGINE §22.69`、`ACCEPTANCE` seq130 追加。
 ```
 
 ## 0. 目标（本阶段）
@@ -290,6 +290,14 @@ next_action: seq129 已完成并推送（未 tag/未 release）。后续：① *
 > 附带修复 `82dbca3`：全局素材模式下 flow 引用全局 ocr_var（如 `预设识别`）时 T8 lint 假红且 publish/install 阻断 → `lint_into_with_calls_and_global_assets`/`merge_global_assets_for_lint`（global base + 任务本地覆盖；T8 合并视图、T5 本地、T4 local∪global）；`lint_one`/publish/install（install 另合并包内快照、包内优先）统一修复。
 > **验证**：workspace **968/0**（oas-task 160 / oas-flow 82 / oas-runtime 222 / oasd 458）；UI **2323/177/0 dead/158 runner/6 nav**；`cargo check --features ocr` exit 0；冒烟 `_verify\seq129-smoke\`：保存 drag(asset `test`→`预设识别`) flow 200 → lint **0**（修复前 T8 假红）→ publish 200（package_schema=2、variables_schema 含全局 预设识别）→ 全新 Runner 安装 200（包快照初始化全局 store）→ 安装后 lint 0。
 > 遗留：旧 flow 拖动坐标/OCR 端点后端仍兼容运行但 Studio 只读（建议重建为素材端点）；swipe/curve_swipe/click_point 保留低层坐标手势（UI 已提示）；旧 `.oaspkg`（schema=1）需重发布。
+
+## 1.24 2026-11-06 23:04→23:1x（seq 130）点击几何同源修复 + 框选可移动/叠加/旧参数误判/自动刷新（✅ 已完成并推送；按用户要求关机）
+
+> 用户 23:04 反馈 5 条：① 框选区域可否用鼠标点框移动（所有框选）；② 点击叠加分布失效；③ if 加条件行后出现「旧参数来源（只读）：param('p_93445f68')」；④ 任务页素材应自动刷新；⑤ **真实点击点测/实际运行点击失效**（并要求完成后关机）。
+> **#5 根因**（Lead 从 `runs/*.clicks.jsonl` 定位）：OCR 点击 target rect 已按 Q1 跟随识别行平移（如用户素材 `预设分组识别_式神录`：roi=[1085,84,160,546] + action_shape=[1057,72,120,50]），但最终采样 `adjust_plan_for_shape→translated_click_shape` 只平移 template、OCR 返回**作者绝对 shape** → 点击被拉回作者区（y≈72..122），而识别行在 y≈245/538。修复：新增 `click_geometry_for(sel,matched)` **rect+shape 同源**（OCR 用 `ocr_self_operation_geometry`；roi=None 全屏保持绝对；template/collection/region 不变），统一 `Step::Click`/`click_target`/`long_press`/`interrupts`/`dismiss_popup`/`region.asset mode=asset`。dry 预览（用户数据副本）：识别行 y=257 → `action_box=[1103,245,120,50]` ✓。
+> **#1** 画布点击已有框优先选中 → 拖动整体平移（识别矩形/多边形、操作区 rect/polygon/反选、候选编辑区；clamp/未保存提示/Esc 撤销；保留空白拖动新建/单击加点/双击收尾）。**#2** 点击叠加 normalize actual/target/miss；热力+实际点+目标环+miss 叉；修缓存/面板刷新/图例。**#3** `param(key)` 已声明（meta.variables ∪ 素材库 ocr_var.param_key）→ 变量来源，仅未声明才旧参数只读。**#4** 工作台/构建页素材 8s 自动刷新 + 可见/聚焦/visibilitychange（隐藏暂停、去重、保持滚动/选中）。
+> **验证**：workspace **972 passed / 0 failed**（runtime 226 / flow 82 / task 160 / oasd 458）；UI **2370 checks / 178 ids / 0 dead / 158 runner ids / 6 nav**；`cargo check --features ocr` exit 0。**提交** `a3556e3`；**未 tag/未 release**；按用户要求本轮完成后关机。
+> **遗留**：全屏 ocr_var（roi=None）操作区仍绝对坐标（Q1 限制）；旧 `shape_aware` 死分支待清；#1 非编辑态预览框不拖动；#4 仅工作台/构建页可见时轮询；浏览器手测清单见 seq130-ui-progress.md。
 
 ## 2. 本批交付（seq 110）
 
