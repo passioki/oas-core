@@ -203,6 +203,7 @@ const PURE_FUNCTIONS = [
   'assetTextSaveRequest',
   'opRegionSavePlan',
   'opRegionLevelChoices',
+  'opRegionLandingText',
   'opRegionTargetKinds',
   'opRegionRefChoices',
   'opRegionReadonlyChainText',
@@ -328,6 +329,7 @@ const {
   assetTextSaveRequest,
   opRegionSavePlan,
   opRegionLevelChoices,
+  opRegionLandingText,
   opRegionTargetKinds,
   opRegionRefChoices,
   opRegionReadonlyChainText,
@@ -866,6 +868,22 @@ eq(
   opRegionReadonlyChainText({ id: 'O' }, []),
   '自身操作区（self）',
   'B3a: an unconfigured referenced asset shows the self fallback'
+);
+// seq127 用户纠正后的落点语义（模型 B）：self=当前素材；asset=链末端素材自己。
+eq(
+  opRegionLandingText('self'),
+  '当前素材操作区',
+  'seq127: the self option lands on the current asset operation region'
+);
+eq(
+  opRegionLandingText('asset'),
+  '链末端（最后一个被引用素材）自己的操作区',
+  'seq127: the asset option lands on the chain-end referenced asset own operation region'
+);
+eq(
+  opRegionLandingText(undefined),
+  '当前素材操作区',
+  'seq127: a missing mode falls back to the current-asset landing'
 );
 // --- v1.2.4: action_shape invert travels with BOTH rect and polygon ---
 const testPolyPoints = [{ x: 1, y: 2 }, { x: 9, y: 2 }, { x: 9, y: 8 }];
@@ -2383,8 +2401,25 @@ ok(
   'B3a: saving writes ONLY the current asset (one update) after validate; no PATCH of referenced assets'
 );
 ok(
-  /引用素材只作识别门槛；动作落点=当前素材操作区/.test(extractFunction('renderOpRegionDialog')),
-  'B3a: the dialog copy states the model-A rule (reference = recognition gate only)'
+  /ctx\.mode === 'asset'/.test(extractFunction('renderOpRegionDialog')) &&
+    /链末端（最后一个被引用素材）自己的操作区/.test(extractFunction('renderOpRegionDialog')) &&
+    /被引用素材只读/.test(extractFunction('renderOpRegionDialog')),
+  'seq127: the dialog copy states the model-B rule (asset -> chain-end landing; referenced assets read-only)'
+);
+const buildModelAFn = extractFunction('buildOpRegionModelA');
+ok(
+  /动作落点：' \+ opRegionLandingText\('asset'\)/.test(buildModelAFn) &&
+    /链末端（最后一个被引用素材）自己的操作区/.test(buildModelAFn) &&
+    /被引用素材只读/.test(buildModelAFn),
+  'seq127: the asset option previews the chain-end landing and keeps the read-only referenced-asset note'
+);
+ok(
+  /被引用素材现有操作区（只读，不在本对话框修改）/.test(buildModelAFn),
+  'seq127: the referenced asset op_region chain stays read-only in the dialog'
+);
+ok(
+  /opRegionLandingText\(op\.mode\)/.test(extractFunction('saveOpRegionDialog')),
+  'seq127: the save result text names the selected landing (self vs chain-end)'
 );
 ok(
   /onOpRegion: \(it\) => openOpRegionDialog\(it/.test(source) &&

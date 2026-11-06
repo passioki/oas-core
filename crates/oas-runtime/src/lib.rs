@@ -401,16 +401,17 @@ pub enum OpRegionPick {
 }
 
 /// Operation-region chain source stored on one asset (`assets.json
-/// items[].op_region`, 2026-11-06 参数→素材 redesign D2; 批次B #4 model A).
+/// items[].op_region`, 2026-11-06 参数→素材 redesign D2).
 ///
 /// This is the runtime, dependency-light copy of `oas_task::OpRegion` (the
 /// task crate depends on this crate, so the conversion happens in
 /// `TaskBundle::load_runtime_assets`). Named `AssetOpRegion` to avoid clashing
 /// with the flow-level `oas_flow::OpRegion` (the v1.3 `region` step field).
 ///
-/// Model A (2026-11-06 批次B): the chain is a **recognition gate only** — every
-/// referenced node must be recognized, but the action box is always the root
-/// asset's own `self` geometry. The former `offset` mode was removed.
+/// Chain semantics (model B, restored 2026-11-06 seq127 #2/#3): `self` = this
+/// node's own operation area; `asset` = recognize the referenced node and use
+/// **its** `op_region` recursively — the final operation box is the LAST
+/// referenced node's own self geometry. The former `offset` mode was removed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AssetOpRegion {
     /// Use the node's own operation area (historical `click_box_for`/`click_back`
@@ -440,13 +441,13 @@ pub struct OpRegionChainStep {
     pub real: Option<Rect>,
     pub score: Option<f32>,
     pub text: Option<String>,
-    /// Informational self box of this hop (model A: the final action box is the
-    /// ROOT's, never a referenced hop's).
+    /// The operation box this hop produces. For a terminal `self` hop this is
+    /// the final click area (model B: the last referenced node's own geometry).
     pub action_box: Rect,
 }
 
-/// A gate-resolved `op_region` chain: the final operation box (+ exact shape)
-/// from the ROOT asset's self geometry and every recognized gate for the log.
+/// A fully resolved `op_region` chain: the final operation box (+ exact shape)
+/// from the **terminal self node** and every recognized hop for the log.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedOpRegion {
     pub rect: Rect,
@@ -476,8 +477,8 @@ impl ResolvedOpRegion {
 pub struct PreviewAction {
     /// Root target asset/collection id.
     pub target: String,
-    /// The final operation box = the ROOT asset's own self geometry (model A;
-    /// the chain only gates recognition).
+    /// The final operation box = the **last referenced node's own self
+    /// geometry** (model B); with a `self` root this is the root's own area.
     pub action_box: Rect,
     /// Exact operation shape of the final hop (polygon / invert aware).
     pub shape: Option<ClickShape>,
@@ -1283,12 +1284,12 @@ pub fn template_operation_geometry(
     ))
 }
 
-/// **Model A self-operation geometry** of one declared asset at a given **real
+/// **Self-operation geometry** of one declared asset at a given **real
 /// recognized rect** (`real`), shared by the runtime click paths and the editor
 /// candidate API.
 ///
-/// 2026-11-06 批次B (#4/Q1): the `op_region` chain is only a recognition gate;
-/// the action box is always the target asset's own geometry:
+/// 2026-11-06 (#4/Q1 + seq127 #2/#3): this is the single-node `self` geometry
+/// used by every chain hop, the candidate `action_box`, and the plain click path:
 /// * `region` → its fixed `roi` (+ its exact shape), `real` ignored;
 /// * template / collection → [`template_operation_geometry`] with
 ///   `matched = real.topLeft` (translated `action_shape` → translated
@@ -1400,12 +1401,16 @@ pub struct AssetMatchCandidate {
 ///   **member declaration order** (the runtime `nearest` path relies on that
 ///   order for ties).
 ///
-/// Search window is the asset's own `roi`; a template without an `roi` searches
-/// the whole frame with the **non-pyramid** `*_all` matcher (matches the runtime
-/// `operation_candidates` path — no full-frame pyramid fallback here). Members
-/// without usable operation geometry are skipped, exactly like the runtime
-/// candidate path. Use [`sort_asset_match_candidates`] for the editor's stable
-/// display order.
+/// Search window is the **whole frame** (2026-11-06 seq127 #1): the editor
+/// candidate API and the `op_region` chain picker enumerate every occurrence of
+/// the template, so a saved `roi` never hides additional matches (the plain
+/// click best path keeps its ROI + pyramid fallback via
+/// [`locate_template`]). The full-frame search is coarse-to-fine (4x pyramid +
+/// full-resolution refine) so it stays fast on 1280x720.
+///
+/// Members without usable operation geometry are skipped, exactly like the
+/// runtime candidate path. Use [`sort_asset_match_candidates`] for the editor's
+/// stable display order.
 pub fn asset_match_candidates(
     assets: &AssetSet,
     matcher: &Matcher,
@@ -1442,9 +1447,13 @@ pub fn asset_match_candidates(
     ));
     let mut out: Vec<AssetMatchCandidate> = Vec::new();
     for (cid, tpl) in templates {
+        // 2026-11-06 seq127 #1: the editor candidate API / chain picker enumerate
+        // **every occurrence in the whole frame** for templates and collections;
+        // the asset `roi` is only a hint for the historical single-best click
+        // path (`locate_template`), never a limit here.
         let found = match template_polygon_mask(tpl) {
-            Some(mask) => matcher.match_template_masked_all(&tpl.gray, &mask, tpl.roi, threshold),
-            None => matcher.match_template_all(&tpl.gray, tpl.roi, threshold),
+            Some(mask) => matcher.match_template_masked_all_full(&tpl.gray, &mask, threshold),
+            None => matcher.match_template_all_full(&tpl.gray, threshold),
         };
         for cand in found {
             let pos = Point {
@@ -2927,22 +2936,29 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// (2026-11-06 参数→素材 redesign D2/B16).
     ///
     /// Returns `None` when the target declares no chain (absent/`self`): the
-    /// caller keeps its historical geometry path **byte-identical**.
+    /// Resolve the root asset's operation region through its `op_region` chain
+    /// (**model B**, restored 2026-11-06 seq127 #2/#3).
     ///
-    /// Resolve the root asset's **model A** operation region.
+    /// User semantics: *"when 引用素材 is selected, the operation area is the LAST
+    /// referenced asset's own operation area; only when 当前素材操作区(self) is
+    /// selected is it the asset's own area."* So:
+    /// * root `op_region=self` (or no `op_region`) → the chain-less historical
+    ///   path: this function returns `Ok(None)` and the caller keeps its old
+    ///   geometry byte-identical;
+    /// * root `op_region=asset` → recognize the referenced gate (all-frame
+    ///   multi-candidate + `pick`: score / nearest-to-previous-real-centre),
+    ///   follow that gate's own `op_region`, and stop at the first node whose
+    ///   `op_region` is absent/self: **that terminal node's own self geometry**
+    ///   (`ChainNodeHit.box_`/`shape`, i.e. translated `action_shape` /
+    ///   `click_back` / real matched bbox) is the final operation box.
     ///
-    /// 2026-11-06 批次B (#4): an `op_region` chain is a **recognition gate**:
-    /// every referenced node must be recognized (any miss is a loud step failure,
-    /// no click and no fallback), but the returned operation box is **always the
-    /// root asset's own self geometry** (`root_self_box`/`root_self_shape`), never
-    /// a referenced node's box. A chain-less asset returns `Ok(None)` and the
-    /// caller keeps its historical geometry path **byte-identical**.
+    /// Preserved from the model-A round: `offset` is gone, `region` cannot be a
+    /// chain node, any gate miss/undeclared is a loud error (no click, no
+    /// fallback), cycles and depth cap apply.
     ///
     /// The caller has already recognized the target, so its real rect and its
-    /// self-mode box/shape are passed in (this keeps the root's old semantics:
-    /// e.g. a template's translated `action_shape`, a collection's winning member
-    /// geometry, an OCR asset's declared operation area translated by the
-    /// recognized-line delta).
+    /// self-mode box/shape are passed in; they are the fallback/terminal geometry
+    /// when the chain ends at the root itself.
     pub fn resolve_asset_op_region(
         &mut self,
         target: &str,
@@ -2964,18 +2980,13 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             kind,
             real: Some(root_real),
             box_: root_self_box,
-            shape: root_self_shape.clone(),
+            shape: root_self_shape,
             score: None,
             text: None,
         };
-        let walked = self.walk_op_region_chain(root, 0, &mut visited, &mut steps, site)?;
-        // Model A: the gates were all recognized; the click lands on the ROOT's
-        // own operation area regardless of how deep the chain went.
-        Ok(Some(ResolvedOpRegion {
-            rect: root_self_box,
-            shape: root_self_shape,
-            chain: walked.chain,
-        }))
+        // Model B: the walk terminates at the last referenced node's self geometry.
+        self.walk_op_region_chain(root, 0, &mut visited, &mut steps, site)
+            .map(Some)
     }
 
     /// Classification used by the chain log (`template`/`collection`/`ocr`/
@@ -3012,10 +3023,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         })
     }
 
-    /// One-shot editor preview (B-T3b, model A 2026-11-06 批次B): recognize the
-    /// target once (or take the `candidate_index`-th candidate), walk its
-    /// asset-level `op_region` chain as a **recognition gate**, and return the
-    /// ROOT's own operation box + a concrete point inside it.
+    /// One-shot editor preview (B-T3b; model B restored in seq127 #2/#3):
+    /// recognize the target once (or take the `candidate_index`-th candidate),
+    /// walk its asset-level `op_region` chain, and return the **last referenced
+    /// node's own operation box** + a concrete point inside it.
     ///
     /// Read-only: nothing is clicked or persisted. `POST /task/asset/test_action`
     /// uses this for both the dry preview and (through the returned point) the
@@ -3034,8 +3045,6 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         let root = self.preview_root_candidate(target, candidate_index, "test_action")?;
         let root_real = root.real;
         let score = root.score;
-        // Model A: the action box/shape always come from the ROOT's own self
-        // geometry; the chain walk below only proves every gate is recognized.
         let root_box = root.box_;
         let root_shape = root.shape.clone();
         let mut steps: Vec<OpRegionChainStep> = Vec::new();
@@ -3045,9 +3054,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 visited.insert(target.to_string());
                 let resolved =
                     self.walk_op_region_chain(root, 0, &mut visited, &mut steps, "test_action")?;
-                // The walk hands its accumulated gate hops back through `chain`.
+                // Model B: the final box is the terminal node's own self geometry.
                 steps = resolved.chain;
-                (root_box, root_shape)
+                (resolved.rect, resolved.shape)
             } else {
                 steps.push(OpRegionChainStep {
                     asset: root.asset.clone(),
@@ -3258,9 +3267,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         })
     }
 
-    /// One DFS hop of [`Self::resolve_asset_op_region`] (model A: every hop is a
-    /// recognition gate; the returned geometry is informational — the caller
-    /// always overrides the final box with the ROOT's self geometry).
+    /// One DFS hop of [`Self::resolve_asset_op_region`] (model B: the terminal
+    /// `self` node's own geometry is the final operation box; every `asset` hop
+    /// recognizes the next node and recurses).
     fn walk_op_region_chain(
         &mut self,
         node: ChainNodeHit,
@@ -3326,23 +3335,24 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         }
     }
 
-    /// Recognize one chain **gate** (beyond the root) and resolve its self-mode
-    /// geometry (informational for the step log; model A never uses it as the
-    /// action box). `pick_ref` = the previous node's real-rect centre for
-    /// `pick=nearest`.
+    /// Recognize one chain node (beyond the root) and resolve its self-mode
+    /// geometry. Model B: when this node terminates the chain (no `op_region` /
+    /// `self`), its self geometry **is** the final operation box. `pick_ref` =
+    /// the previous node's real-rect centre for `pick=nearest`.
     fn recognize_chain_node(
         &mut self,
         asset: &str,
         pick_ref: Option<Point>,
         site: &str,
     ) -> Result<ChainNodeHit, String> {
-        // 0) Fixed `region` nodes are not recognition gates (2026-11-06 批次B
-        //    #4 model A). Validation rejects them at save time; this is the
-        //    runtime backup so old/hand-edited data fails loudly.
+        // 0) Fixed `region` nodes cannot be chain nodes: the chain must be able
+        //    to recognize every referenced node and a region has no recognition
+        //    (2026-11-06 批次B #4). Validation rejects them at save time; this is
+        //    the runtime backup so old/hand-edited data fails loudly.
         if self.assets.region(asset).is_some() {
             return Err(format!(
                 "{site}: region asset `{asset}` cannot be an op_region chain node \
-                 (model A: chain nodes are recognition gates)"
+                 (chain nodes must be recognizable; a region has no recognition)"
             ));
         }
         // 1) OCR / ocr_var node: expected text comes from the asset itself
@@ -3672,8 +3682,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 )?;
                 // 2026-11-06 参数→素材: an asset-level `op_region` chain replaces
                 // the geometry only when the flow carries no legacy `region`.
-                // 2026-11-06 批次B (#4/Q1): model A -> the action box is the
-                // asset's own self geometry (OCR shape follows the line delta).
+                // 2026-11-06 批次B (#4/Q1) + seq127 #2/#3: the final operation
+                // box is the terminal chain node's own self geometry; this root
+                // box is only the fallback when the chain ends at the root.
                 let chain = if region.is_none() {
                     match sel.as_deref() {
                         Some(s) if self.assets.has_op_region_chain(s) => {
@@ -3843,9 +3854,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             centre,
                             &format!("long_press args.find[{idx}].region.asset"),
                         )?;
-                        // 2026-11-06 批次B (#4/Q1): model A — the operation box
-                        // is the asset's own self geometry (OCR shape follows the
-                        // recognized line by `real - roi`).
+                        // 2026-11-06 批次B (#4/Q1) + seq127 #2/#3: the chain's
+                        // terminal node wins; this root self geometry is only the
+                        // fallback when the chain ends at the root.
                         let (self_box, self_shape) =
                             self.ocr_self_operation_geometry(sel, line.rect, Some((w, h)))?;
                         let default_target = self_box;
@@ -3923,9 +3934,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         } else {
                             return Err(format!("ocr_text `{sel}`: OCR asset has no roi"));
                         };
-                        // 2026-11-06 批次B (#4/Q1): model A — the operation box
-                        // is the asset's own self geometry (OCR shape follows the
-                        // recognized line by `real - roi`).
+                        // 2026-11-06 批次B (#4/Q1) + seq127 #2/#3: the chain's
+                        // terminal node wins; this root self geometry is only the
+                        // fallback when the chain ends at the root.
                         let real = self.last_ocr_rect.unwrap_or(recognition);
                         let (self_box, self_shape) =
                             self.ocr_self_operation_geometry(sel, real, Some((w, h)))?;
@@ -3942,7 +3953,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             &format!("long_press args.find[{idx}].region.asset"),
                         )?;
                         // 2026-11-06 参数→素材: asset-level `op_region` chain
-                        // (only without a legacy flow `region`); model A = gate.
+                        // (only without a legacy flow `region`); model B: the
+                        // terminal node's own geometry is the final operation box.
                         let chain = if region.is_none() && self.assets.has_op_region_chain(sel) {
                             self.resolve_asset_op_region(
                                 sel,
@@ -5043,8 +5055,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 // whole template.
                 let target = self.click_box_for(hit_sel, p)?;
                 // 2026-11-06 参数→素材: an asset-level `op_region` chain replaces
-                // the historical geometry. Model A (批次B #4): the chain only
-                // gates recognition; the final box is this asset's self geometry.
+                // the historical geometry. Model B (批次B #4 + seq127 #2/#3): the
+                // chain walks to the last referenced node and uses its own area.
                 // Root real rect: OCR = its matched line bbox (`last_ocr_rect`),
                 // template/collection = matched bbox.
                 let mut chain = None;
@@ -8111,9 +8123,9 @@ mod tests {
     }
 
     #[test]
-    fn public_self_operation_geometry_matches_the_model_a_rules() {
-        // 2026-11-06 批次B: the public helper serve uses for candidate
-        // `action_box` must apply the exact same model-A/Q1 rules as the engine.
+    fn public_self_operation_geometry_matches_the_click_rules() {
+        // 2026-11-06: the public helper serve uses for candidate `action_box`
+        // must apply the exact same self-geometry/Q1 rules as the engine.
         let mut a = AssetSet::new();
         // (1) OCR with an authored ROI: the shape follows the recognized line.
         a.insert_ocr_var(
@@ -13286,10 +13298,163 @@ mod tests {
     }
 
     #[test]
-    fn model_a_chain_click_lands_on_the_root_self_geometry() {
-        // 2026-11-06 批次B (#4): the chain is a recognition gate only; the click
-        // lands on the ROOT asset's own operation area (a root OCR asset without
-        // `action_shape` uses its real recognized line rect).
+    fn chain_gate_and_candidates_search_the_whole_frame_not_the_asset_roi() {
+        // seq127 #1 + #2/#3 combined: the gate template's saved ROI only covers
+        // the first tile, but the chain `nearest` pick must see the second tile
+        // (full-frame candidates) and the terminal box is that second tile.
+        let pattern: Vec<u8> = (0..100)
+            .map(|i| (((i % 10) * 7 + (i / 10) * 13) % 251 + 3) as u8)
+            .collect();
+        let mut set = AssetSet::new();
+        set.insert(
+            "T_gate",
+            Template {
+                gray: GrayImage::new(10, 10, pattern),
+                roi: Some(Rect {
+                    x: 12,
+                    y: 10,
+                    w: 10,
+                    h: 10,
+                }),
+                threshold: 0.8,
+                click_polygon: None,
+            },
+        );
+        set.insert_ocr_var("O_a", None, "甲".to_string(), "pa".to_string());
+        set.insert_op_region(
+            "O_a",
+            AssetOpRegion::Asset {
+                asset: "T_gate".to_string(),
+                pick: OpRegionPick::Nearest,
+            },
+        );
+        let frame = frame_with_two_tiles(12, 10, 40, 30);
+        let (ocr, _rois) = FakeDetOcr::new(vec![chain_line(35, 32, 10, 6, "甲", 0.99)]);
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            TwoFrameScreen {
+                frames: vec![frame],
+                idx: 0,
+            },
+            input,
+            set,
+            Budget::default(),
+        )
+        .with_humanize(no_miss())
+        .with_ocr(Box::new(ocr))
+        .with_seed(9);
+        let f = click_target_flow(r#"[{"kind":"ocr_text","sel":"O_a","text":"甲"}]"#);
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let p = shared.clicks.borrow()[0];
+        let outside_roi = Rect {
+            x: 40,
+            y: 30,
+            w: 10,
+            h: 10,
+        };
+        let inside_roi = Rect {
+            x: 12,
+            y: 10,
+            w: 10,
+            h: 10,
+        };
+        assert!(
+            inside(outside_roi, p) && !inside(inside_roi, p),
+            "nearest must pick the full-frame match at {outside_roi:?}, got {p:?}"
+        );
+    }
+
+    #[test]
+    fn model_b_terminal_node_action_shape_is_translated_like_a_template() {
+        // Model B: the LAST referenced node's own `action_shape` is translated by
+        // its match offset (historical template semantics), not the root's.
+        let pattern: Vec<u8> = (0..100)
+            .map(|i| (((i % 10) * 7 + (i / 10) * 13) % 251 + 3) as u8)
+            .collect();
+        let mut set = AssetSet::new();
+        set.insert(
+            "T_gate",
+            Template {
+                gray: GrayImage::new(10, 10, pattern),
+                roi: Some(Rect {
+                    x: 0,
+                    y: 0,
+                    w: 64,
+                    h: 48,
+                }),
+                threshold: 0.8,
+                click_polygon: None,
+            },
+        );
+        set.set_click_shape(
+            "T_gate",
+            ClickShape {
+                rect: Some(Rect {
+                    x: 5,
+                    y: 5,
+                    w: 6,
+                    h: 4,
+                }),
+                points: None,
+                invert: false,
+            },
+        );
+        set.insert_ocr_var("O_a", None, "甲".to_string(), "pa".to_string());
+        set.insert_op_region(
+            "O_a",
+            AssetOpRegion::Asset {
+                asset: "T_gate".to_string(),
+                pick: OpRegionPick::Score,
+            },
+        );
+        let (ocr, _rois) = FakeDetOcr::new(vec![chain_line(2, 2, 10, 5, "甲", 0.99)]);
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            TwoFrameScreen {
+                frames: vec![frame_with_tile(12, 10)],
+                idx: 0,
+            },
+            input,
+            set,
+            Budget::default(),
+        )
+        .with_humanize(no_miss())
+        .with_ocr(Box::new(ocr))
+        .with_seed(11);
+        let f = click_target_flow(r#"[{"kind":"ocr_text","sel":"O_a","text":"甲"}]"#);
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        // Gate matched at (12,10) with authored roi (0,0): translated action_shape
+        // = (12+5, 10+5, 6, 4) = (17,15,6,4).
+        assert!(
+            inside(
+                Rect {
+                    x: 17,
+                    y: 15,
+                    w: 6,
+                    h: 4
+                },
+                shared.clicks.borrow()[0]
+            ),
+            "terminal action_shape must be translated: {:?}",
+            shared.clicks.borrow()[0]
+        );
+    }
+
+    #[test]
+    fn model_b_chain_click_lands_on_the_terminal_node_geometry() {
+        // 2026-11-06 seq127 #2/#3 (model B): when 引用素材 is used, the click
+        // lands on the LAST referenced node's own operation area — not on the
+        // root's. Score pick here -> the far high-score 乙 line.
         let (mut interp, _rois, shared) =
             mk_det_interp(asset_chain_setup(OpRegionPick::Score), asset_chain_lines());
         let f = click_target_flow(r#"[{"kind":"ocr_text","sel":"O_a","text":"甲"}]"#);
@@ -13299,15 +13464,15 @@ mod tests {
             "{:?}",
             interp.events()
         );
-        let root_line = Rect {
-            x: 2,
-            y: 2,
+        let terminal = Rect {
+            x: 50,
+            y: 40,
             w: 10,
             h: 5,
         };
         assert!(
-            inside(root_line, shared.clicks.borrow()[0]),
-            "model A must click the root self box {root_line:?}, got {:?}",
+            inside(terminal, shared.clicks.borrow()[0]),
+            "model B must click the terminal node's box {terminal:?}, got {:?}",
             shared.clicks.borrow()[0]
         );
         let detail = interp
@@ -13455,8 +13620,8 @@ mod tests {
         );
         let clicks = shared.clicks.borrow();
         assert!(
-            inside(Rect { x: 2, y: 2, w: 10, h: 5 }, clicks[0]),
-            "model A: root self box even when a gate is picked: {:?}",
+            inside(Rect { x: 6, y: 2, w: 10, h: 5 }, clicks[0]),
+            "model B: nearest terminal candidate box: {:?}",
             clicks[0]
         );
         let detail = interp
@@ -13499,8 +13664,8 @@ mod tests {
         );
         let clicks = shared.clicks.borrow();
         assert!(
-            inside(Rect { x: 2, y: 2, w: 10, h: 5 }, clicks[0]),
-            "model A: root self box: {:?}",
+            inside(Rect { x: 50, y: 40, w: 10, h: 5 }, clicks[0]),
+            "model B: highest-score terminal candidate box: {:?}",
             clicks[0]
         );
         let preview = interp
@@ -13520,9 +13685,9 @@ mod tests {
 
     #[test]
     fn region_asset_cannot_be_a_chain_node_at_run_time() {
-        // 2026-11-06 批次B (#4 model A): a region has no recognition, so it can
-        // never be a chain gate. Save-time validation rejects it; the runtime is
-        // the loud backup for old/hand-edited data.
+        // 2026-11-06 批次B (#4): a region has no recognition, so it can never be
+        // a chain node (its own op_region would also be refused). Save-time
+        // validation rejects it; the runtime is the loud backup for old data.
         let mut set = ocr_var_assets();
         set.insert_region("R_fixed", Rect { x: 40, y: 5, w: 12, h: 9 });
         set.insert_op_region(
@@ -13545,7 +13710,7 @@ mod tests {
     }
 
     #[test]
-    fn op_region_chain_template_node_is_a_gate_but_the_root_keeps_the_box() {
+    fn op_region_chain_template_terminal_uses_the_gate_box() {
         let mut set = assets();
         set.insert_ocr_var("O_group", None, "御魂".to_string(), "group".to_string());
         set.insert_op_region(
@@ -13564,19 +13729,19 @@ mod tests {
             "{:?}",
             interp.events()
         );
-        // The template gate is recognized (would have failed otherwise); model A
-        // keeps the OCR root's own recognized line rect as the click box.
+        // Model B: the terminal template node's own matched bbox is the click
+        // area (`assets()`'s tile template matches at 12,10 in FakeScreen).
         assert!(
             inside(
                 Rect {
-                    x: 4,
-                    y: 30,
-                    w: 20,
+                    x: 12,
+                    y: 10,
+                    w: 10,
                     h: 10
                 },
                 shared.clicks.borrow()[0]
             ),
-            "the template gate must not replace the root box: {:?}",
+            "the terminal template node must provide the operation box: {:?}",
             shared.clicks.borrow()[0]
         );
     }
@@ -13671,7 +13836,7 @@ mod tests {
     }
 
     #[test]
-    fn long_press_uses_the_asset_op_region_chain_as_a_gate() {
+    fn long_press_uses_the_asset_op_region_chain_terminal_box() {
         let mut set = assets();
         set.insert_ocr_var("O_group", None, "御魂".to_string(), "group".to_string());
         set.insert_op_region(
@@ -13681,8 +13846,10 @@ mod tests {
                 pick: OpRegionPick::Score,
             },
         );
+        // The root line is placed away from the template gate's match (12,10) so
+        // this test really proves model B (terminal box), not an overlap.
         let (mut interp, _rois, shared) =
-            mk_det_interp(set, vec![chain_line(10, 10, 30, 12, "御魂", 0.97)]);
+            mk_det_interp(set, vec![chain_line(10, 34, 20, 10, "御魂", 0.97)]);
         let f = flow(
             r#"{"schema_version":1,"name":"t","steps":[
                  {"op":"long_press","args":{
@@ -13700,14 +13867,14 @@ mod tests {
         assert!(
             inside(
                 Rect {
-                    x: 10,
+                    x: 12,
                     y: 10,
-                    w: 30,
-                    h: 12
+                    w: 10,
+                    h: 10
                 },
                 presses[0].0
             ),
-            "model A hold point = root self box: {:?}",
+            "model B hold point = terminal template box: {:?}",
             presses[0].0
         );
     }
@@ -13767,25 +13934,34 @@ mod tests {
     }
 
     #[test]
-    fn preview_asset_action_is_model_a_and_reports_the_gate_steps() {
+    fn preview_asset_action_model_b_uses_the_terminal_box() {
         let (mut interp, _rois, _shared) =
             mk_det_interp(asset_chain_setup(OpRegionPick::Score), asset_chain_lines());
         let preview = interp
             .preview_asset_action("O_a", None)
             .expect("preview");
-        // Model A: the action box is the ROOT's own recognized line rect.
+        // Model B: the action box is the TERMINAL node's own geometry (the far
+        // high-score 乙 line picked by `preset = score`).
         assert_eq!(
             preview.action_box,
             Rect {
-                x: 2,
-                y: 2,
+                x: 50,
+                y: 40,
                 w: 10,
                 h: 5
             }
         );
         assert!(inside(preview.action_box, preview.point));
-        assert_eq!(preview.real, Some(preview.action_box));
-        // The gate steps are still reported (the score pick = far high-score 乙).
+        // The root's real line is still reported as `real` (the recognition).
+        assert_eq!(
+            preview.real,
+            Some(Rect {
+                x: 2,
+                y: 2,
+                w: 10,
+                h: 5
+            })
+        );
         assert_eq!(preview.steps.len(), 2);
         assert_eq!(preview.steps[0].mode, "asset");
         assert_eq!(preview.steps[1].mode, "ocr");
@@ -13840,14 +14016,14 @@ mod tests {
         assert!(
             inside(
                 Rect {
-                    x: 2,
-                    y: 2,
+                    x: 20,
+                    y: 20,
                     w: 10,
                     h: 5
                 },
                 shared.clicks.borrow()[0]
             ),
-            "model A: root self box, got {:?}",
+            "model B: terminal plain-OCR gate box, got {:?}",
             shared.clicks.borrow()[0]
         );
         let preview = interp

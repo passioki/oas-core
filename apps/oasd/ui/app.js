@@ -2671,7 +2671,7 @@ function opRegionSavePlan(draft, assets, opts) {
   return { ok: true, errors: [], updates: updates, chain: spec.chain };
 }
 
-// 操作区对话框的来源（B3a 模型 A：两选一；引用素材只作识别门槛）。
+// 操作区对话框的来源（B3a 模型：两选一；引用素材只作识别门槛）。
 function opRegionLevelChoices() {
   return [
     { value: 'self', label: '当前素材操作区（self）' },
@@ -2679,7 +2679,16 @@ function opRegionLevelChoices() {
   ];
 }
 
-// 模型 A：可作识别门槛的素材类型（region 只作操作区末端，不能作门槛）；
+// seq127 用户纠正后的落点语义（模型 B）：
+//   self  → 落点=当前素材自己的操作区
+//   asset → 落点=链末端（最后一个被引用素材）自己的操作区；被引用素材只读
+function opRegionLandingText(mode) {
+  return mode === 'asset'
+    ? '链末端（最后一个被引用素材）自己的操作区'
+    : '当前素材操作区';
+}
+
+// 可作识别门槛的素材类型（region 只作操作区末端，不能作门槛）；
 // 普通 OCR 未设置 ocr_text 时置灰并给出原因；排除自身。
 function opRegionTargetKinds() {
   return ['template', 'template_set', 'ocr_line', 'ocr_lines', 'ocr_var'];
@@ -2707,7 +2716,7 @@ function opRegionRefChoices(assets, selfId) {
     });
 }
 
-// 被引用素材现有 op_region 链 → 只读展示文本（模型 A：不在本对话框修改）。
+// 被引用素材现有 op_region 链 → 只读展示文本（不在本对话框修改）。
 function opRegionReadonlyChainText(asset, assets) {
   const byId = {};
   for (const item of Array.isArray(assets) ? assets : []) {
@@ -4147,7 +4156,7 @@ function openOpRegionDialog(asset, scopeTask) {
     return;
   }
   const scopeInfo = assetDialogScopeInfo(scopeTask);
-  // B3a 模型 A：只保留 self / asset 两态；旧 offset 数据按 self 打开并提示将被替换。
+  // seq127 模型 B 语义：两态；旧 offset 数据按 self 打开并提示将被替换。
   const legacyOp = opRegionNodeOf(asset.op_region);
   const initialMode = legacyOp.mode === 'asset' ? 'asset' : 'self';
   opRegionDialogCtx = {
@@ -4177,7 +4186,7 @@ function opRegionLibAsset(lib, id) {
   return (Array.isArray(lib) ? lib : []).find((a) => a && String(a.id) === key) || null;
 }
 
-// B3a 模型 A 渲染：两选一；引用素材只读展示其现有链，不编辑被引用素材。
+// B3a 模型渲染：两选一；引用素材只读展示其现有链，不编辑被引用素材。
 function buildOpRegionModelA(ctx, lib) {
   const box = document.createElement('div');
   box.className = 'op-region-level';
@@ -4185,7 +4194,8 @@ function buildOpRegionModelA(ctx, lib) {
   head.className = 'op-region-level-head';
   const title = document.createElement('span');
   title.className = 'op-region-level-title';
-  title.textContent = '当前素材：' + String(ctx.asset.id) + '（动作落点=当前素材操作区）';
+  title.textContent = '当前素材：' + String(ctx.asset.id) + '（动作落点=' +
+    opRegionLandingText(ctx.mode) + '）';
   head.appendChild(title);
   box.appendChild(head);
 
@@ -4257,7 +4267,8 @@ function buildOpRegionModelA(ctx, lib) {
       }
       const hint = document.createElement('div');
       hint.className = 'muted small';
-      hint.textContent = '引用素材只作识别门槛（逐级识别，不修改被引用素材）；落点=当前素材操作区。';
+      hint.textContent = '引用素材只作识别门槛（逐级识别，不修改被引用素材）；' +
+        '落点=链末端（最后一个被引用素材）自己的操作区。';
       body.appendChild(hint);
     } else if (!refAsset || !refChoice) {
       body.textContent = '引用素材「' + ctx.refAsset + '」不在当前素材库（或不可作为门槛）。';
@@ -4290,6 +4301,11 @@ function buildOpRegionModelA(ctx, lib) {
       });
       pickLabel.appendChild(pickSelect);
       body.appendChild(pickLabel);
+      const landing = document.createElement('div');
+      landing.className = 'op-region-terminal';
+      landing.textContent = '动作落点：' + opRegionLandingText('asset') +
+        '（被引用素材只读；保存只写当前素材的操作区）。';
+      body.appendChild(landing);
       const readonly = document.createElement('div');
       readonly.className = 'op-region-terminal';
       readonly.textContent = '被引用素材现有操作区（只读，不在本对话框修改）：' +
@@ -4297,7 +4313,8 @@ function buildOpRegionModelA(ctx, lib) {
       body.appendChild(readonly);
       const warn = document.createElement('div');
       warn.className = 'op-region-warn';
-      warn.textContent = '引用素材只作识别门槛：保存只写当前素材的操作区，不改被引用素材。';
+      warn.textContent = '引用素材只作识别门槛：落点=链末端（最后一个被引用素材）自己的操作区；' +
+        '保存只写当前素材的操作区，不改被引用素材。';
       body.appendChild(warn);
       const reselect = document.createElement('button');
       reselect.type = 'button';
@@ -4320,7 +4337,9 @@ function renderOpRegionDialog() {
   const lib = opRegionDialogAssets();
   if (opRegionTitle) opRegionTitle.textContent = '操作区 · ' + String(ctx.asset.id);
   if (opRegionBreadcrumb) {
-    opRegionBreadcrumb.textContent = '引用素材只作识别门槛；动作落点=当前素材操作区（self）。';
+    opRegionBreadcrumb.textContent = ctx.mode === 'asset'
+      ? '引用素材只作识别门槛；动作落点=链末端（最后一个被引用素材）自己的操作区（被引用素材只读）。'
+      : '动作落点=当前素材操作区（self）。';
   }
   if (opRegionError) opRegionError.textContent = ctx.error || '';
   opRegionLevels.textContent = '';
@@ -4338,7 +4357,7 @@ async function saveOpRegionDialog() {
   const ctx = opRegionDialogCtx;
   if (!ctx || !opRegionSave) return;
   const lib = opRegionDialogAssets();
-  // B3a 模型 A：保存只写当前素材；引用素材只作识别门槛（不 PATCH 被引用素材）。
+  // seq127 模型 B：保存只写当前素材；引用素材只作识别门槛（不 PATCH 被引用素材）。
   const op = ctx.mode === 'asset'
     ? { mode: 'asset', asset: String(ctx.refAsset || ''), pick: ctx.pick === 'nearest' ? 'nearest' : 'score' }
     : { mode: 'self' };
@@ -4388,9 +4407,9 @@ async function saveOpRegionDialog() {
     closeOpRegionDialog();
     setStatus('操作区已保存（只写当前素材）', '#7bd88f');
     resultEl.textContent =
-      '操作区已保存（模型 A：落点=当前素材操作区）：\n' +
+      '操作区已保存（落点=' + opRegionLandingText(op.mode) + '）：\n' +
       '· ' + ctx.asset.id + '：' + JSON.stringify(op);
-    log('操作区保存（模型 A） asset=' + ctx.asset.id + ' op_region=' + JSON.stringify(op));
+    log('操作区保存（模型 B） asset=' + ctx.asset.id + ' op_region=' + JSON.stringify(op));
     await refreshAssetsAfterOpRegionSave(ctx.task, ctx.scope);
   } catch (e) {
     ctx.error = '保存异常：' + e;

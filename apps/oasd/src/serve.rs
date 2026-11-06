@@ -16506,15 +16506,31 @@ mod tests {
     }
 
     #[test]
-    fn asset_candidates_search_window_is_the_asset_roi_or_the_whole_frame() {
+    fn asset_candidates_are_full_frame_even_with_an_authored_roi() {
         let td = TempDir::new("cand-roi");
         let server = asset_candidates_fixture(td.path());
-        // Authored ROI [0,0,32,48]: the (48,8) occurrence is outside it.
+        // 2026-11-06 seq127 #1: an authored ROI no longer limits candidate
+        // enumeration — templates/collections are searched in the WHOLE frame
+        // (the ROI is only a hint for the historical single-best click path).
+        // `domain` still describes the declared domain for the editor UI; the
+        // (48,8) occurrence outside [0,0,32,48] is now a candidate too.
         let v = get_json_route(&server, "/task/asset/candidates?id=TPL_ROI");
-        assert_eq!(v["count"], 1, "{v}");
-        assert_eq!(v["candidates"][0]["x"].as_i64(), Some(20), "{v}");
-        assert_eq!(v["candidates"][0]["y"].as_i64(), Some(20), "{v}");
-        // No ROI: the whole frame is searched (non-pyramid `*_all` path).
+        assert_eq!(v["count"], 2, "{v}");
+        assert_eq!(v["domain"], "roi", "{v}");
+        let mut rows: Vec<(i64, i64)> = v["candidates"]
+            .as_array()
+            .expect("candidates")
+            .iter()
+            .map(|c| {
+                (
+                    c["x"].as_i64().expect("x"),
+                    c["y"].as_i64().expect("y"),
+                )
+            })
+            .collect();
+        rows.sort_unstable();
+        assert_eq!(rows, vec![(20, 20), (48, 8)], "{v}");
+        // No ROI: the whole frame is searched as before (same two occurrences).
         let v = get_json_route(&server, "/task/asset/candidates?id=TPL_NO_ROI");
         assert_eq!(v["count"], 2, "{v}");
         assert_eq!(v["domain"], "screen", "{v}");

@@ -121,6 +121,39 @@ impl GrayImage {
     }
 }
 
+/// Box-downsample a boolean template mask with a **majority** rule: a coarse
+/// cell participates when at least half of its fine pixels do.
+///
+/// Used only by the full-frame masked candidate search's coarse pass (the
+/// refine pass uses the exact fine mask), so minor boundary rounding cannot
+/// change the final result — it only needs a reasonable coarse anchor set.
+fn downsample_mask(mask: &[bool], width: usize, height: usize, factor: usize) -> Vec<bool> {
+    let f = factor.max(1);
+    let w = (width / f).max(1);
+    let h = (height / f).max(1);
+    let mut out = vec![false; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut set = 0usize;
+            let mut total = 0usize;
+            for dy in 0..f {
+                for dx in 0..f {
+                    let sx = x * f + dx;
+                    let sy = y * f + dy;
+                    if sx < width && sy < height {
+                        total += 1;
+                        if mask.get(sy * width + sx).copied().unwrap_or(false) {
+                            set += 1;
+                        }
+                    }
+                }
+            }
+            out[y * w + x] = total > 0 && set * 2 >= total;
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MatchBest {
     pub score: f32,
@@ -812,6 +845,138 @@ pub fn match_template_full(img: &GrayImage, tpl: &GrayImage) -> Option<MatchBest
     Matcher::from_ref(img).match_template_full(tpl)
 }
 
+impl Matcher {
+    /// Full-frame **multi-candidate** NCC search (2026-11-06 seq127 #1).
+    ///
+    /// Unlike [`Self::match_template_all`] this ignores the asset `roi`: it finds
+    /// **every** occurrence of the template in the whole frame (the editor
+    /// candidate API and the `op_region` chain picker need all of them). The
+    /// historical single-best click path ([`Self::match_template_full`] / ROI
+    /// search) is unchanged.
+    ///
+    /// Algorithm (coarse-to-fine, same 4x pyramid idea as
+    /// [`Self::match_template_full`]):
+    /// 1. coarse: 4x downscaled frame + template, relaxed threshold, local
+    ///    maxima + NMS → at most [`MAX_MATCH_CANDIDATES`] anchors;
+    /// 2. refine: one full-resolution window per anchor (`±(4+2)` px covers the
+    ///    integer-downscale offset), real threshold, plain or masked NCC;
+    /// 3. global sort (score desc → y → x), NMS, cap.
+    ///
+    /// Candidates are sorted/limited exactly like the ROI matcher. A tiny
+    /// template (or tiny frame) falls back to an exhaustive full-resolution scan,
+    /// which is cheap because the template is tiny.
+    pub fn match_template_all_full(
+        &self,
+        tpl: &GrayImage,
+        threshold: f32,
+    ) -> Vec<MatchCandidate> {
+        self.scan_full_pyramid(tpl, None, threshold)
+    }
+
+    /// Masked (polygon-mask) companion of [`Self::match_template_all_full`].
+    ///
+    /// The coarse pass uses the unmasked downscaled pixels (a boolean mask cannot
+    /// be box-downsampled meaningfully) and the refine pass uses the exact mask
+    /// contract of [`Self::match_template_masked_all`], so the returned
+    /// scores/suppression match the ROI matcher.
+    pub fn match_template_masked_all_full(
+        &self,
+        tpl: &GrayImage,
+        mask: &[bool],
+        threshold: f32,
+    ) -> Vec<MatchCandidate> {
+        let expected = (tpl.width as usize).saturating_mul(tpl.height as usize);
+        if mask.len() != expected {
+            return Vec::new();
+        }
+        self.scan_full_pyramid(tpl, Some(mask), threshold)
+    }
+
+    fn scan_full_pyramid(
+        &self,
+        tpl: &GrayImage,
+        mask: Option<&[bool]>,
+        threshold: f32,
+    ) -> Vec<MatchCandidate> {
+        const F: u32 = 4;
+        let tw = tpl.width as i32;
+        let th = tpl.height as i32;
+        let iw = self.img.width as i32;
+        let ih = self.img.height as i32;
+        if tw <= 0 || th <= 0 || tw > iw || th > ih {
+            return Vec::new();
+        }
+        // Exhaustive fallback: a tiny template is cheap to scan everywhere, and a
+        // pyramid would shrink it below usefulness.
+        if tpl.width < F * 4 || tpl.height < F * 4 || self.img.width < F * 8 || self.img.height < F * 8
+        {
+            return match mask {
+                None => self.match_template_all(tpl, None, threshold),
+                Some(mask) => self.match_template_masked_all(tpl, mask, None, threshold),
+            };
+        }
+        let img_c = self.img.downsample(F);
+        let tpl_c = tpl.downsample(F);
+        if tpl_c.width == 0 || tpl_c.height == 0 {
+            return match mask {
+                None => self.match_template_all(tpl, None, threshold),
+                Some(mask) => self.match_template_masked_all(tpl, mask, None, threshold),
+            };
+        }
+        // A downscaled glyph template can lose some NCC sharpness, so the coarse
+        // pass is deliberately more permissive; the full-resolution refine pass
+        // applies the real threshold (a false coarse anchor just disappears).
+        let coarse_threshold = (threshold - 0.45).max(0.20).min(threshold.max(0.20));
+        let coarse_matcher = Matcher::from_ref(&img_c);
+        let coarse = match mask {
+            None => coarse_matcher.match_template_all(&tpl_c, None, coarse_threshold),
+            Some(fine_mask) => {
+                // Box-downsample the boolean polygon mask with a majority rule so
+                // the coarse pass scores the same pixels the refine pass will.
+                let mask_c = downsample_mask(
+                    fine_mask,
+                    tpl.width as usize,
+                    tpl.height as usize,
+                    F as usize,
+                );
+                if mask_c.iter().any(|m| *m) {
+                    coarse_matcher.match_template_masked_all(
+                        &tpl_c,
+                        &mask_c,
+                        None,
+                        coarse_threshold,
+                    )
+                } else {
+                    coarse_matcher.match_template_all(&tpl_c, None, coarse_threshold)
+                }
+            }
+        };
+        if coarse.is_empty() {
+            return Vec::new();
+        }
+        let pad = F as i32 + 2;
+        let mut refined: Vec<MatchCandidate> = Vec::new();
+        for anchor in coarse.iter().take(MAX_MATCH_CANDIDATES) {
+            let ax = anchor.x * F as i32;
+            let ay = anchor.y * F as i32;
+            let x0 = (ax - pad).max(0);
+            let y0 = (ay - pad).max(0);
+            let w = (tw + pad * 2).min(iw - x0);
+            let h = (th + pad * 2).min(ih - y0);
+            if w < tw || h < th {
+                continue;
+            }
+            let roi = Rect { x: x0, y: y0, w, h };
+            let found = match mask {
+                None => self.match_template_all(tpl, Some(roi), threshold),
+                Some(mask) => self.match_template_masked_all(tpl, mask, Some(roi), threshold),
+            };
+            refined.extend(found);
+        }
+        finalize_candidates(refined, tpl)
+    }
+}
+
 /// Convenience: does the template appear in `roi` at or above `threshold`?
 pub fn appear(img: &GrayImage, tpl: &GrayImage, roi: Option<Rect>, threshold: f32) -> bool {
     match match_template(img, tpl, roi) {
@@ -907,6 +1072,78 @@ mod tests {
         );
         assert!(b.score > 0.99);
         assert!(ms < 10_000.0, "too slow for live use: {ms:.1} ms");
+    }
+
+    // ---- full-frame MULTI-candidate search (seq127 #1) ----
+
+    #[test]
+    fn full_frame_all_finds_every_stamped_occurrence() {
+        // The real user case: a 35x38 template occurs 3 times in one 1280x720
+        // frame at the same x and different y (144/295/445).
+        let mut frame = noise_img(1280, 720, 7);
+        let tpl = noise_img(35, 38, 99);
+        for y in [144u32, 295, 445] {
+            stamp(&mut frame, &tpl, 973, y);
+        }
+        let m = Matcher::new(frame);
+        let t0 = std::time::Instant::now();
+        let cands = m.match_template_all_full(&tpl, 0.85);
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        println!(
+            "full-frame all 1280x720 tpl 35x38: {ms:.1} ms count={}",
+            cands.len()
+        );
+        let mut ys: Vec<i32> = cands.iter().map(|c| c.y).collect();
+        ys.sort_unstable();
+        assert_eq!(ys, vec![144, 295, 445], "candidates: {cands:?}");
+        assert!(
+            cands.iter().all(|c| c.x == 973 && c.score > 0.99),
+            "exact occurrences must score ~1.0: {cands:?}"
+        );
+        // Stable editor order: score desc (tie) -> y asc.
+        let sorted_ys: Vec<i32> = cands.iter().map(|c| c.y).collect();
+        assert_eq!(sorted_ys, vec![144, 295, 445]);
+        // Debug-build target from the task: well under 1s for 1280x720.
+        assert!(ms < 1_500.0, "full-frame multi-candidate too slow: {ms:.1} ms");
+    }
+
+    #[test]
+    fn full_frame_all_masked_finds_every_occurrence_despite_changed_background() {
+        // The mask (left half of the template) must be honoured at full
+        // resolution: the right half is overwritten around EACH stamped copy, so
+        // an unmasked refine would reject both candidates.
+        let tpl = noise_img(40, 30, 55);
+        let mut mask = vec![false; 40 * 30];
+        for j in 0..30usize {
+            for i in 0..20usize {
+                mask[j * 40 + i] = true;
+            }
+        }
+        let mut frame = noise_img(1280, 720, 56);
+        for (x, y) in [(200u32, 120u32), (900, 500)] {
+            stamp(&mut frame, &tpl, x, y);
+            for j in 0..30u32 {
+                for i in 20..40u32 {
+                    frame.data[((y + j) * 1280 + (x + i)) as usize] =
+                        ((i * 13 + j * 7 + 41) % 251) as u8;
+                }
+            }
+        }
+        let m = Matcher::new(frame);
+        let cands = m.match_template_masked_all_full(&tpl, &mask, 0.8);
+        assert_eq!(cands.len(), 2, "masked full-frame candidates: {cands:?}");
+        let mut positions: Vec<(i32, i32)> = cands.iter().map(|c| (c.x, c.y)).collect();
+        positions.sort_unstable();
+        assert_eq!(positions, vec![(200, 120), (900, 500)]);
+    }
+
+    #[test]
+    fn full_frame_all_does_not_invent_matches() {
+        let frame = noise_img(1280, 720, 61);
+        let tpl = noise_img(35, 38, 62);
+        let m = Matcher::new(frame);
+        let cands = m.match_template_all_full(&tpl, 0.85);
+        assert!(cands.is_empty(), "unexpected candidates: {cands:?}");
     }
 
     #[test]
