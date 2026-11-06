@@ -755,6 +755,7 @@ fn collect_lint_issues(
     lint_dir: &Path,
     task_ids: &[String],
     external_assets: Option<&BTreeSet<String>>,
+    global_assets: Option<&AssetsFile>,
 ) -> Result<Vec<String>, ApiFailure> {
     let mut errors = Vec::new();
     for task_id in task_ids {
@@ -762,7 +763,12 @@ fn collect_lint_issues(
             ApiFailure::new(400, format!("task `{task_id}`: {e}"))
         })?;
         let mut issues = Vec::new();
-        bundle.lint_into_with_calls_and_assets(&mut issues, lint_dir, external_assets);
+        bundle.lint_into_with_calls_and_global_assets(
+            &mut issues,
+            lint_dir,
+            external_assets,
+            global_assets,
+        );
         if !issues.is_empty() {
             errors.extend(issues.into_iter().map(|mut issue| {
                 issue.path = format!("{task_id}/{}", issue.path);
@@ -773,29 +779,51 @@ fn collect_lint_issues(
     Ok(errors)
 }
 
-/// Asset-id universe for the install-time lint.
+/// Asset universe + merged [`AssetsFile`] for the install-time lint.
 ///
 /// Global-asset-mode tasks reference ids that are **not** in `task/assets.json`;
-/// the lint must therefore see the local store ids plus the ids this package is
-/// about to add (the merge happens after the task commit). Without a global
-/// store and without package assets, `None` keeps the legacy task-local mode.
-fn install_asset_ids(
+/// the lint must therefore see (a) the current global store and (b) the ids this
+/// package is about to add (the merge happens after the task commit). The parsed
+/// global store is required too: T8 binds `meta.variables[].asset_id` to the
+/// ocr_var declaration, so an id-only universe would still report a false
+/// "not a declared asset" (seq129-fix).
+///
+/// Priority for the merged view: the **package snapshot wins** on a same-id
+/// clash. This mirrors the eventual store merge; note the installer separately
+/// rejects a same-id definition/byte conflict (`asset_conflicts`), so the lint
+/// view never silently hides a real incompatibility.
+///
+/// Returns `(None, None)` when neither the store nor the package snapshot exists:
+/// that keeps the legacy task-local-only mode unchanged.
+fn install_lint_assets(
     staging: &Path,
     assets_dir: &Path,
-) -> Result<Option<BTreeSet<String>>, ApiFailure> {
-    let mut ids = oas_task::package::global_asset_ids(assets_dir)
+) -> Result<(Option<BTreeSet<String>>, Option<AssetsFile>), ApiFailure> {
+    let global = oas_task::package::global_assets_file(assets_dir)
         .map_err(|e| ApiFailure::new(500, format!("global assets: {e}")))?;
     let package_assets = staging.join("assets").join("assets.json");
-    if package_assets.is_file() {
+    let package: Option<AssetsFile> = if package_assets.is_file() {
         let text = std::fs::read_to_string(&package_assets)
             .map_err(|e| ApiFailure::new(400, format!("read {}: {e}", package_assets.display())))?;
-        let package: AssetsFile = serde_json::from_str(&text)
+        let file: AssetsFile = serde_json::from_str(&text)
             .map_err(|e| ApiFailure::new(400, format!("package assets.json: {e}")))?;
-        let set = ids.get_or_insert_with(BTreeSet::new);
-        set.extend(package.items.into_iter().map(|a| a.id));
-        set.extend(package.collections.into_iter().map(|c| c.id));
-    }
-    Ok(ids)
+        Some(file)
+    } else {
+        None
+    };
+    let merged = match (package.as_ref(), global.as_ref()) {
+        // Package snapshot wins over the current store (same as the install merge).
+        (Some(pkg), Some(global)) => Some(oas_task::merge_global_assets_for_lint(Some(pkg), global)),
+        (Some(pkg), None) => Some(pkg.clone()),
+        (None, Some(global)) => Some(global.clone()),
+        (None, None) => None,
+    };
+    let ids = merged.as_ref().map(|af| {
+        let mut ids: BTreeSet<String> = af.items.iter().map(|a| a.id.clone()).collect();
+        ids.extend(af.collections.iter().map(|c| c.id.clone()));
+        ids
+    });
+    Ok((ids, merged))
 }
 
 fn dependency_resolution(
@@ -1440,11 +1468,13 @@ fn install_staged(
         copy_meta_flow(&source, &lint_dir.join(&dep.task_id))
             .map_err(|e| ApiFailure::new(500, format!("prepare lint dependency: {e}")))?;
     }
+    let (external_assets, global_assets) = install_lint_assets(staging, assets_dir)?;
     let lint_errors = collect_lint_issues(
         &tree,
         &lint_dir,
         &install_order,
-        install_asset_ids(staging, assets_dir)?.as_ref(),
+        external_assets.as_ref(),
+        global_assets.as_ref(),
     )?;
     if !lint_errors.is_empty() {
         return Err(ApiFailure::errors(400, lint_errors));
@@ -2266,6 +2296,156 @@ mod tests {
             default_packages_root(Path::new("D:/pkg/data/tasks")),
             PathBuf::from("D:/pkg/data/packages"),
         );
+    }
+
+    // ---- seq129-fix: install-time lint must see the merged asset universe ----
+
+    const GLOBAL_OCR_TASK: &str = "全局识别任务";
+    const GLOBAL_OCR_ASSET: &str = "预设识别";
+
+    fn test_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "oas-package-cmd-{tag}-{}-{}",
+            std::process::id(),
+            short_seq()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Staged task whose flow drags an **asset endpoint** bound to a global
+    /// `ocr_var` and whose `meta.variables` mirrors that binding.
+    fn write_global_ocr_task(tree: &Path) {
+        let dir = tree.join(GLOBAL_OCR_TASK);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("meta.json"),
+            format!(
+                r#"{{"schema_version":1,"name":"{GLOBAL_OCR_TASK}","variables":[
+                     {{"key":"p","type":"string","value_source":"ocr_text",
+                       "asset_id":"{GLOBAL_OCR_ASSET}","default":"甲",
+                       "runner_editable":true}}],
+                     "exits":{{"done":{{"result":"success"}},"failed":{{"result":"retryable"}}}}}}"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("flow.json"),
+            format!(
+                r#"{{"schema_version":1,"name":"{GLOBAL_OCR_TASK}","steps":[
+                     {{"op":"drag","args":{{
+                       "from":{{"kind":"asset","sel":"{GLOBAL_OCR_ASSET}"}},
+                       "direction":"up","distance":[10,20]}}}},
+                     {{"op":"finish","args":{{"exit":"done"}}}}]}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    /// Write one `assets.json` (package snapshot or global store) with the
+    /// `ocr_var` declaration and its runtime text.
+    fn write_ocr_var_store(dir: &Path, runtime_text: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join("assets.json"),
+            format!(
+                r#"{{"schema_version":1,"items":[
+                     {{"id":"{GLOBAL_OCR_ASSET}","kind":"ocr_var",
+                       "runtime_text":"{runtime_text}","param_key":"p"}}]}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    fn install_lint_errors(
+        staging: &Path,
+        tree: &Path,
+        assets_dir: &Path,
+    ) -> Vec<String> {
+        let (ids, merged) = install_lint_assets(staging, assets_dir).expect("install lint assets");
+        collect_lint_issues(
+            tree,
+            tree,
+            &[GLOBAL_OCR_TASK.to_string()],
+            ids.as_ref(),
+            merged.as_ref(),
+        )
+        .expect("install lint")
+    }
+
+    #[test]
+    fn install_lint_sees_the_package_asset_snapshot_for_t8() {
+        // Global-asset-mode package: the task's own assets.json is empty, the
+        // referenced ocr_var ships in the package snapshot. Install lint must be
+        // green (previously a false T8 "not a declared asset").
+        let root = test_dir("install-lint-pkg-snapshot");
+        let tree = root.join("tasks");
+        let staging = root.join("staging");
+        write_global_ocr_task(&tree);
+        write_ocr_var_store(&staging.join("assets"), "甲");
+        let global = root.join("global-assets"); // not initialized: package only
+        let errors = install_lint_errors(&staging, &tree, &global);
+        assert!(
+            errors.is_empty(),
+            "package asset snapshot must satisfy T8: {errors:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_lint_without_the_snapshot_still_reports_t8() {
+        // No global store and no package snapshot: keep the historical strict
+        // semantics (a binding to an undeclared asset must still fail).
+        let root = test_dir("install-lint-no-assets");
+        let tree = root.join("tasks");
+        let staging = root.join("staging");
+        write_global_ocr_task(&tree);
+        let (ids, merged) = install_lint_assets(&staging, &root.join("global-assets"))
+            .expect("install lint assets");
+        assert!(ids.is_none() && merged.is_none(), "legacy task-local-only mode");
+        let errors = install_lint_errors(&staging, &tree, &root.join("global-assets"));
+        assert!(
+            errors.iter().any(|e| e.contains("T8")),
+            "without any asset declarations T8 must still fail: {errors:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_lint_merged_view_prefers_the_package_snapshot() {
+        // Same id in the current store (old text) and in the package (new text):
+        // the eventual store merge installs the packaged definition, so the lint
+        // view must use it too (package wins), otherwise T8 would flag the task.
+        let root = test_dir("install-lint-pkg-wins");
+        let tree = root.join("tasks");
+        let staging = root.join("staging");
+        write_global_ocr_task(&tree);
+        write_ocr_var_store(&staging.join("assets"), "甲");
+        let global = root.join("global-assets");
+        write_ocr_var_store(&global, "乙");
+        let errors = install_lint_errors(&staging, &tree, &global);
+        assert!(
+            errors.is_empty(),
+            "the package snapshot must win over the current store: {errors:?}"
+        );
+        // Prove the choice matters: the store-only view reports T8 drift.
+        let global_file = oas_task::package::global_assets_file(&global)
+            .expect("read global")
+            .expect("global file");
+        let global_ids: BTreeSet<String> = global_file.items.iter().map(|a| a.id.clone()).collect();
+        let tree_only = collect_lint_issues(
+            &tree,
+            &tree,
+            &[GLOBAL_OCR_TASK.to_string()],
+            Some(&global_ids),
+            Some(&global_file),
+        )
+        .expect("store-only lint");
+        assert!(
+            tree_only.iter().any(|e| e.contains("T8")),
+            "store-only view must flag the drift (the package snapshot is what wins): {tree_only:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

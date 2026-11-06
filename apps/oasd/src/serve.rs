@@ -23071,6 +23071,60 @@ mod tests {
         assert!(body.contains("assets.json"), "{body}");
     }
 
+    #[test]
+    fn task_lint_resolves_a_global_ocr_var_for_t8() {
+        // seq129-fix: global-asset mode — task assets.json empty, flow drags to a
+        // global ocr_var and meta.variables binds it. `/task/lint` must be green
+        // (previously a false T8 "not a declared asset").
+        let td = TempDir::new("task-lint-global-ocr");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).unwrap();
+        pkg_write_task(
+            &tasks,
+            "全局识别任务",
+            1,
+            r#"[{"key":"p","type":"string","value_source":"ocr_text",
+                 "asset_id":"预设识别","default":"甲","runner_editable":true}]"#,
+            r#"[{"op":"drag","args":{
+                 "from":{"kind":"asset","sel":"预设识别"},
+                 "to":{"kind":"asset","sel":"预设识别"},
+                 "direction":"up","duration_ms":[300,650],"margin":0.15}},
+               {"op":"finish","args":{"exit":"done"}}]"#,
+        );
+        let assets = td.path().join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(
+            assets.join("assets.json"),
+            r#"{"schema_version":1,"items":[
+                 {"id":"预设识别","kind":"ocr_var","runtime_text":"甲",
+                  "param_key":"p"}]}"#,
+        )
+        .unwrap();
+
+        let server = lint_server(td.path());
+        let (status, body) = get_route(&server, "/task/lint?task=全局识别任务");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("lint JSON");
+        assert_eq!(v["count"], 0, "global ocr_var must satisfy T8: {v}");
+
+        // Without the serve asset store the same task keeps the T8 error.
+        let bare = Server::new(Adb::from_env())
+            .with_surface(Surface::Studio)
+            .with_tasks_dir(&tasks)
+            .with_assets_dir(td.path().join("no-assets"));
+        let (status, body) = get_route(&bare, "/task/lint?task=全局识别任务");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("lint JSON");
+        assert!(
+            v["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["code"] == "T8"),
+            "{v}"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // P2: update-feed TTL cache + remote package cache reuse / clear
     // -----------------------------------------------------------------------

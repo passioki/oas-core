@@ -3095,7 +3095,7 @@ impl TaskBundle {
     /// Accumulate lint issues into `issues` (used by [`Self::lint`] and by
     /// `--all`, so one broken task cannot abort the whole report).
     pub fn lint_into(&self, issues: &mut Vec<LintIssue>) {
-        self.lint_into_full(issues, None, None);
+        self.lint_into_full(issues, None, None, None);
     }
 
     /// v1.2.1: lint a task whose flow may reference a **global** asset id set.
@@ -3104,7 +3104,7 @@ impl TaskBundle {
         issues: &mut Vec<LintIssue>,
         external_assets: Option<&BTreeSet<String>>,
     ) {
-        self.lint_into_full(issues, external_assets, None);
+        self.lint_into_full(issues, external_assets, None, None);
     }
 
     /// Lint one bundle **with** the cross-task `call_task` rule (T7).
@@ -3123,7 +3123,7 @@ impl TaskBundle {
 
     /// [`Self::lint_into`] + T7 cross-task `call_task` checks.
     pub fn lint_into_with_calls(&self, issues: &mut Vec<LintIssue>, tasks_dir: &Path) {
-        self.lint_into_full(issues, None, Some(tasks_dir));
+        self.lint_into_full(issues, None, Some(tasks_dir), None);
     }
 
     /// T7 + the v1.2.1 global-asset override (used by the `oasd task lint` CLI).
@@ -3133,7 +3133,46 @@ impl TaskBundle {
         tasks_dir: &Path,
         external_assets: Option<&BTreeSet<String>>,
     ) {
-        self.lint_into_full(issues, external_assets, Some(tasks_dir));
+        self.lint_into_full(issues, external_assets, Some(tasks_dir), None);
+    }
+
+    /// seq129-fix: T7 + the global asset store's **full declarations**.
+    ///
+    /// The old `*_and_assets` entry point only receives the global *id set*,
+    /// which is enough for T4 but not for asset-level rules: in global-asset mode
+    /// a task's own `assets.json` may be empty while its flow (and `meta.variables`)
+    /// reference a **global** `ocr_var`, so T8 would report a false
+    /// "not a declared asset". This entry point takes the parsed global
+    /// [`AssetsFile`] and merges it into the asset-level checks.
+    ///
+    /// Merge rule: task-local declarations win on an id clash (a task-local asset
+    /// overrides the global one); otherwise global items/collections are appended.
+    /// T5 keeps validating only the task-local file (global store validity is the
+    /// caller's load error), and T4 accepts the union of local + global ids when
+    /// `external_assets` is `None`.
+    pub fn lint_into_with_calls_and_global_assets(
+        &self,
+        issues: &mut Vec<LintIssue>,
+        tasks_dir: &Path,
+        external_assets: Option<&BTreeSet<String>>,
+        global_assets: Option<&AssetsFile>,
+    ) {
+        self.lint_into_full(issues, external_assets, Some(tasks_dir), global_assets);
+    }
+
+    /// Convenience form of [`Self::lint_into_with_calls_and_global_assets`].
+    pub fn lint_with_calls_and_global_assets(
+        &self,
+        tasks_dir: &Path,
+        global_assets: Option<&AssetsFile>,
+    ) -> Result<(), Vec<LintIssue>> {
+        let mut issues = Vec::new();
+        self.lint_into_with_calls_and_global_assets(&mut issues, tasks_dir, None, global_assets);
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(issues)
+        }
     }
 
     /// **T10 warnings** (V2.0, non-blocking; docs/VARIABLES-V2-DESIGN.md §2.2).
@@ -3157,6 +3196,7 @@ impl TaskBundle {
         issues: &mut Vec<LintIssue>,
         external_assets: Option<&BTreeSet<String>>,
         tasks_dir: Option<&Path>,
+        global_assets: Option<&AssetsFile>,
     ) {
         // ---- meta.json ------------------------------------------------------
         let meta = match std::fs::read_to_string(self.meta_path()) {
@@ -3190,6 +3230,14 @@ impl TaskBundle {
 
         // ---- assets.json (T5) ----------------------------------------------
         let assets = self.lint_assets(issues);
+        // seq129-fix: global-mode tasks may reference assets from the global
+        // store while their own `assets.json` is empty. Asset-level rules (T8)
+        // need the merged view; T5 above stays local-only. Local declarations win
+        // on an id clash (task-local overrides global); see the merge helper.
+        let merged_assets: Option<AssetsFile> = match global_assets {
+            Some(global) => Some(merge_global_assets_for_lint(assets.as_ref(), global)),
+            None => assets.clone(),
+        };
 
         // ---- flow.json (T1/T3/T4/T6) ---------------------------------------
         let flow_text = match std::fs::read_to_string(self.flow_path()) {
@@ -3276,11 +3324,17 @@ impl TaskBundle {
         }
 
         // T4: asset references must resolve (or be `lib:` selectors).
+        // seq129-fix: in global mode the accepted id set is the union of the
+        // task-local and global stores (items + collections); `lib:` stays
+        // exempt inside `Flow::validate_assets`.
         let t4_ids: Option<BTreeSet<String>> = match external_assets {
             Some(ids) => Some(ids.clone()),
-            None => assets
-                .as_ref()
-                .map(|af| af.items.iter().map(|i| i.id.clone()).collect()),
+            None => match (&global_assets, &merged_assets) {
+                (Some(_), Some(merged)) => Some(merged_asset_ids(merged)),
+                _ => assets
+                    .as_ref()
+                    .map(|af| af.items.iter().map(|i| i.id.clone()).collect()),
+            },
         };
         if let Some(ids) = t4_ids {
             if let Err(errs) = flow.validate_assets(&ids) {
@@ -3304,8 +3358,9 @@ impl TaskBundle {
         // T8 (V2.0): every `value_source=ocr_text` variable must match its bound
         // ocr_var asset + the flow's reference/param-usage set. Lead ruling 4: an
         // **error** (publish blocking); the save-triggered sync heals it, lint
-        // never rewrites.
-        if let (Some(meta), Some(assets)) = (&meta, assets.as_ref()) {
+        // never rewrites. seq129-fix: the asset lookup uses the **merged**
+        // local+global view, so a global ocr_var no longer reports a false T8.
+        if let (Some(meta), Some(assets)) = (&meta, merged_assets.as_ref()) {
             issues.extend(crate::ocr_var::derived_variable_issues(meta, assets, &flow));
         }
     }
@@ -3777,6 +3832,47 @@ fn join_or_none(set: &BTreeSet<String>) -> String {
     } else {
         set.iter().cloned().collect::<Vec<_>>().join(", ")
     }
+}
+
+/// Every id a flow may reference from one [`AssetsFile`] (items + collections).
+fn merged_asset_ids(af: &AssetsFile) -> BTreeSet<String> {
+    let mut ids: BTreeSet<String> = af.items.iter().map(|i| i.id.clone()).collect();
+    ids.extend(af.collections.iter().map(|c| c.id.clone()));
+    ids
+}
+
+/// seq129-fix: merge one task's local [`AssetsFile`] over the global store's.
+///
+/// Merge rule: **task-local declarations win on an id clash** (a task-local asset
+/// or collection overrides the global one with the same id); otherwise the global
+/// store is the base and the local declarations are appended. Used only for
+/// asset-level lint (T8/T4 known-id) — a local `assets.json` is never rewritten.
+///
+/// Public so the apps layer (install-time lint, etc.) can build the same merged
+/// view for its own lint call site.
+pub fn merge_global_assets_for_lint(
+    local: Option<&AssetsFile>,
+    global: &AssetsFile,
+) -> AssetsFile {
+    let mut merged = global.clone();
+    let Some(local) = local else {
+        return merged;
+    };
+    let local_item_ids: BTreeSet<&str> = local.items.iter().map(|i| i.id.as_str()).collect();
+    merged
+        .items
+        .retain(|item| !local_item_ids.contains(item.id.as_str()));
+    merged.items.extend(local.items.iter().cloned());
+    let local_collection_ids: BTreeSet<&str> =
+        local.collections.iter().map(|c| c.id.as_str()).collect();
+    merged
+        .collections
+        .retain(|c| !local_collection_ids.contains(c.id.as_str()));
+    merged.collections.extend(local.collections.iter().cloned());
+    if merged.design_resolution.is_none() {
+        merged.design_resolution = local.design_resolution;
+    }
+    merged
 }
 
 /// T7 (Runner Studio split §C.4.5): validate every `call_task` in the
@@ -7585,6 +7681,72 @@ mod tests {
         let t8: Vec<_> = issues.iter().filter(|i| i.code == "T8").collect();
         assert_eq!(t8.len(), 1, "{issues:?}");
         assert_eq!(t8[0].path, "meta.json:params[0]");
+    }
+
+    #[test]
+    fn global_assets_participate_in_t8_and_the_old_api_still_flags_them() {
+        // seq129-fix: global-asset mode — the task's own assets.json is empty and
+        // its flow/variable bind a GLOBAL ocr_var. The merged lint must be green;
+        // the old (global-less) entry point keeps the historical T8/T4 errors.
+        let td = TempDir::new("global-lint");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).expect("tasks dir");
+        let b = TaskBundle::open(tasks.join("全局识别任务")).expect("bundle");
+        write_flow_only_bundle(
+            &b,
+            r#"{"schema_version":1,"name":"全局识别任务","variables":[
+                 {"key":"p","type":"string","value_source":"ocr_text",
+                  "asset_id":"预设识别","default":"甲","runner_editable":true}]}"#,
+            r#"{"schema_version":1,"name":"全局识别任务","steps":[
+                 {"op":"click","args":{"sel":"预设识别"}},
+                 {"op":"drag","args":{
+                   "from":{"kind":"asset","sel":"预设识别"},
+                   "direction":"up","distance":[10,20]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let global: AssetsFile = serde_json::from_str(
+            r#"{"schema_version":1,"items":[
+                 {"id":"预设识别","kind":"ocr_var","runtime_text":"甲",
+                  "param_key":"p"}]}"#,
+        )
+        .expect("global assets");
+        // Merged: T8 sees the global ocr_var and T4 accepts the global id.
+        let mut issues = Vec::new();
+        b.lint_into_with_calls_and_global_assets(&mut issues, &tasks, None, Some(&global));
+        assert!(
+            issues.iter().all(|i| i.code != "T8"),
+            "global ocr_var must satisfy T8: {issues:?}"
+        );
+        assert!(
+            issues.iter().all(|i| i.code != "T4"),
+            "global asset id must satisfy T4: {issues:?}"
+        );
+        assert!(issues.is_empty(), "{issues:?}");
+        // The same bundle without the global view keeps the historical errors.
+        let mut issues = Vec::new();
+        b.lint_into_with_calls(&mut issues, &tasks);
+        assert!(
+            issues.iter().any(|i| i.code == "T8"),
+            "without the global assets T8 must still flag the binding: {issues:?}"
+        );
+        assert!(
+            issues.iter().any(|i| i.code == "T4"),
+            "without the global assets T4 must still flag the reference: {issues:?}"
+        );
+        // Task-local declarations win over the global store on an id clash.
+        let mut local_assets = AssetsFile::default();
+        local_assets.items.push(serde_json::from_value(serde_json::json!({
+            "id": "预设识别", "kind": "ocr_var",
+            "runtime_text": "乙", "param_key": "p"
+        }))
+        .expect("local ocr_var"));
+        b.write_assets_file(&local_assets).expect("write local assets");
+        let mut issues = Vec::new();
+        b.lint_into_with_calls_and_global_assets(&mut issues, &tasks, None, Some(&global));
+        assert!(
+            issues.iter().any(|i| i.code == "T8"),
+            "a task-local override must win over the global declaration: {issues:?}"
+        );
     }
 
     #[test]

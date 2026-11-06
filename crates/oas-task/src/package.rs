@@ -844,9 +844,11 @@ fn collect_tree_files(
     Ok(())
 }
 
-/// IDs that a flow may legitimately reference from the global asset store:
-/// asset ids **and** collection ids (a flow references the collection id).
-pub fn global_asset_ids(assets_dir: &Path) -> Result<Option<BTreeSet<String>>, String> {
+/// Parse the global asset store's `assets.json` (design: `--assets-dir`).
+///
+/// Returns `Ok(None)` when the store is not initialized (no `assets.json`), which
+/// keeps the legacy task-local-only mode.
+pub fn global_assets_file(assets_dir: &Path) -> Result<Option<AssetsFile>, String> {
     let path = assets_dir.join("assets.json");
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -855,9 +857,17 @@ pub fn global_asset_ids(assets_dir: &Path) -> Result<Option<BTreeSet<String>>, S
     };
     let file: AssetsFile = serde_json::from_str(&text)
         .map_err(|e| format!("global assets `{}` is invalid JSON: {e}", path.display()))?;
-    let mut ids: BTreeSet<String> = file.items.into_iter().map(|a| a.id).collect();
-    ids.extend(file.collections.into_iter().map(|c| c.id));
-    Ok(Some(ids))
+    Ok(Some(file))
+}
+
+/// IDs that a flow may legitimately reference from the global asset store:
+/// asset ids **and** collection ids (a flow references the collection id).
+pub fn global_asset_ids(assets_dir: &Path) -> Result<Option<BTreeSet<String>>, String> {
+    Ok(global_assets_file(assets_dir)?.map(|file| {
+        let mut ids: BTreeSet<String> = file.items.into_iter().map(|a| a.id).collect();
+        ids.extend(file.collections.into_iter().map(|c| c.id));
+        ids
+    }))
 }
 
 /// Publish-time validation. Returns every issue (lint + package rules) instead
@@ -903,9 +913,9 @@ pub fn validate_for_publish(
         return Err(issues);
     }
 
-    let external = match assets_dir {
-        Some(dir) => match global_asset_ids(dir) {
-            Ok(ids) => ids,
+    let global_assets = match assets_dir {
+        Some(dir) => match global_assets_file(dir) {
+            Ok(file) => file,
             Err(e) => {
                 issues.push(LintIssue::new("PKG", "assets/assets.json", e));
                 None
@@ -913,6 +923,11 @@ pub fn validate_for_publish(
         },
         None => None,
     };
+    let external = global_assets.as_ref().map(|file| {
+        let mut ids: BTreeSet<String> = file.items.iter().map(|a| a.id.clone()).collect();
+        ids.extend(file.collections.iter().map(|c| c.id.clone()));
+        ids
+    });
     let bundle = match TaskBundle::open(task_dir.to_path_buf()) {
         Ok(bundle) => bundle,
         Err(e) => {
@@ -920,7 +935,12 @@ pub fn validate_for_publish(
             return Err(issues);
         }
     };
-    bundle.lint_into_with_calls_and_assets(&mut issues, tasks_dir, external.as_ref());
+    bundle.lint_into_with_calls_and_global_assets(
+        &mut issues,
+        tasks_dir,
+        external.as_ref(),
+        global_assets.as_ref(),
+    );
     if issues.is_empty() {
         Ok(warnings)
     } else {
@@ -1376,11 +1396,23 @@ pub fn build_package(
 
     // Validate every resolved dependency bundle (T1/META/T3..T7), not just the
     // root: an embedded dep with a broken flow would fail on the Runner.
-    let external = global_asset_ids(&opts.assets_dir)?;
+    // seq129-fix: pass the parsed global store too, so a dep that binds a global
+    // ocr_var does not get a false T8.
+    let global_assets = global_assets_file(&opts.assets_dir)?;
+    let external = global_assets.as_ref().map(|file| {
+        let mut ids: BTreeSet<String> = file.items.iter().map(|a| a.id.clone()).collect();
+        ids.extend(file.collections.iter().map(|c| c.id.clone()));
+        ids
+    });
     for dep in deps.values() {
         let bundle = TaskBundle::open(dep.dir.clone())?;
         let mut issues = Vec::new();
-        bundle.lint_into_with_calls_and_assets(&mut issues, &opts.tasks_dir, external.as_ref());
+        bundle.lint_into_with_calls_and_global_assets(
+            &mut issues,
+            &opts.tasks_dir,
+            external.as_ref(),
+            global_assets.as_ref(),
+        );
         if !issues.is_empty() {
             let prefixed = issues
                 .into_iter()
@@ -3059,6 +3091,50 @@ mod tests {
         assert!(
             errors.iter().any(|e| e.contains("checksum mismatch")),
             "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn publish_validation_merges_the_global_store_for_t8() {
+        // seq129-fix: a global-asset-mode task (empty local assets.json) whose
+        // flow/variable bind a global ocr_var must pass publish validation.
+        let td = TempDir::new("publish-global-ocr");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).unwrap();
+        let dir = tasks.join("全局识别任务");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("meta.json"),
+            r#"{"schema_version":1,"name":"全局识别任务","variables":[
+                 {"key":"p","type":"string","value_source":"ocr_text",
+                  "asset_id":"预设识别","default":"甲","runner_editable":true}],"exits":{"done":{"result":"success"},"failed":{"result":"retryable"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("flow.json"),
+            r#"{"schema_version":1,"name":"全局识别任务","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"asset","sel":"预设识别"},
+                   "direction":"up","distance":[10,20]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .unwrap();
+        let assets = td.path().join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(
+            assets.join("assets.json"),
+            r#"{"schema_version":1,"items":[
+                 {"id":"预设识别","kind":"ocr_var","runtime_text":"甲",
+                  "param_key":"p"}]}"#,
+        )
+        .unwrap();
+        // With the global store: publish validation is clean.
+        validate_for_publish(&dir, &tasks, Some(&assets)).expect("global ocr_var must pass publish lint");
+        // Without it: the historical T8 error still blocks (no silent relaxation).
+        let issues = validate_for_publish(&dir, &tasks, None).expect_err("local-only mode");
+        assert!(
+            issues.iter().any(|i| i.code == "T8"),
+            "without the global store T8 must still block: {issues:?}"
         );
     }
 

@@ -200,8 +200,13 @@ fn push_issue_lines(lines: &mut Vec<String>, name: &str, issues: &[LintIssue]) {
 /// This is the single collector shared by the CLI (`oasd task lint`, asset root
 /// = [`crate::global_assets::DEFAULT_DIR`] under the CWD) and the Studio
 /// `GET /task/lint` API (asset root = the serve `--assets-dir`), so the HTTP
-/// report can never drift from the publish/lint gate: T1~T7, the `META`
+/// report can never drift from the publish/lint gate: T1~T8, the `META`
 /// contract and the global asset store's T4 rule all come from `oas_task`.
+///
+/// seq129-fix: the **parsed global AssetsFile** is passed too, not just its id
+/// set. In global-asset mode a task's own `assets.json` may be empty while its
+/// flow (and `meta.variables`) bind a global `ocr_var`; T8 needs the merged
+/// declarations or it reports a false "not a declared asset".
 ///
 /// Setup errors (invalid name, unreadable bundle/store) are `Err`; contract
 /// findings are returned as issues (`Ok(vec![])` = green).
@@ -212,15 +217,23 @@ pub(crate) fn lint_one(
 ) -> Result<Vec<LintIssue>, String> {
     if crate::global_assets::is_initialized(assets_root) {
         let store = crate::global_assets::open_store(assets_root)?;
-        let ids: std::collections::BTreeSet<String> = store
-            .load_assets_file()?
+        let global_assets = store.load_assets_file()?;
+        // T4 accepts asset + collection ids (same rule as publish's
+        // `global_asset_ids`); T8 uses the parsed declarations below.
+        let ids: std::collections::BTreeSet<String> = global_assets
             .items
-            .into_iter()
-            .map(|a| a.id)
+            .iter()
+            .map(|a| a.id.clone())
+            .chain(global_assets.collections.iter().map(|c| c.id.clone()))
             .collect();
         let bundle = TaskBundle::open_named(tasks_dir, name)?;
         let mut issues = Vec::new();
-        bundle.lint_into_with_calls_and_assets(&mut issues, tasks_dir, Some(&ids));
+        bundle.lint_into_with_calls_and_global_assets(
+            &mut issues,
+            tasks_dir,
+            Some(&ids),
+            Some(&global_assets),
+        );
         Ok(issues)
     } else {
         lint_task(tasks_dir, name)
