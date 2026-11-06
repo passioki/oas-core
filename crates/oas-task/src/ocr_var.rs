@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use oas_flow::Flow;
 
-use crate::meta::{is_param_key, Meta, ParamDecl};
+use crate::meta::{is_param_key, Meta, ParamDecl, Variable};
 use crate::{validate_ocr_var_fields, AssetDecl, AssetsFile, LintIssue};
 
 /// What one [`sync_ocr_var_params`] call changed (in `meta.params` row keys).
@@ -105,11 +105,12 @@ fn used_ocr_var_ids(flow: &Flow, ocr_vars: &BTreeMap<String, &AssetDecl>) -> BTr
     used
 }
 
-/// Build the `ParamDecl` one ocr_var asset must have in `meta.params`.
+/// Build the [`Variable`] one ocr_var asset must have in `meta.variables`
+/// (V2 design §2.2: `value_source=ocr_text`).
 ///
-/// `previous` is the existing derived row for this asset (if any); only its
-/// user-editable `group`/`description` are preserved.
-fn derived_param(asset: &AssetDecl, previous: Option<&ParamDecl>) -> Result<ParamDecl, String> {
+/// `previous` is the existing derived variable for this asset (if any); only its
+/// user-editable `group`/`description` are preserved (Lead ruling 7).
+fn derived_variable(asset: &AssetDecl, previous: Option<&Variable>) -> Result<Variable, String> {
     validate_ocr_var_fields(asset, &format!("ocr_var `{}`", asset.id))?;
     let runtime_text = asset
         .runtime_text
@@ -124,70 +125,59 @@ fn derived_param(asset: &AssetDecl, previous: Option<&ParamDecl>) -> Result<Para
         .clone()
         .filter(|l| !l.trim().is_empty())
         .unwrap_or_else(|| asset.id.clone());
-    // A long asset id must not produce an invalid (over-limit) parameter label.
+    // A long asset id must not produce an invalid (over-limit) variable label.
     let label: String = label
         .chars()
         .take(crate::meta::PARAM_LABEL_MAX_CHARS)
         .collect();
-    Ok(ParamDecl {
-        key: param_key,
-        kind: "string".to_string(),
-        default: Some(serde_json::Value::String(runtime_text)),
-        min: None,
-        max: None,
-        label: Some(label),
-        description: previous.and_then(|p| p.description.clone()),
-        enum_values: None,
-        required: None,
-        group: previous.and_then(|p| p.group.clone()),
-        role: Some("ocr_text".to_string()),
-        asset_id: Some(asset.id.clone()),
-    })
+    let mut out = Variable::ocr_text(param_key, asset.id.clone(), runtime_text);
+    out.label = Some(label);
+    out.description = previous.and_then(|v| v.description.clone());
+    out.group = previous.and_then(|v| v.group.clone());
+    Ok(out)
 }
 
-/// Derive the expected `asset_id` → [`ParamDecl`] map for every **used** ocr_var.
+/// Derive the expected `asset_id` → [`Variable`] map for every **used** ocr_var.
 ///
 /// Also rejects the two hard conflicts: two ocr_vars sharing one `param_key`,
-/// and a derived `param_key` colliding with a user-authored parameter row.
-fn expected_derived_params(
+/// and a derived `param_key` colliding with a user-authored literal variable.
+fn expected_derived_variables(
     meta: &Meta,
     assets: &AssetsFile,
     flow: &Flow,
-) -> Result<BTreeMap<String, ParamDecl>, String> {
+) -> Result<BTreeMap<String, Variable>, String> {
+    let effective = meta.effective_variables();
     let ocr_vars = ocr_var_assets(assets);
     let used = used_ocr_var_ids(flow, &ocr_vars);
-    let mut expected: BTreeMap<String, ParamDecl> = BTreeMap::new(); // asset id -> row
+    let mut expected: BTreeMap<String, Variable> = BTreeMap::new(); // asset id -> row
     let mut keys: BTreeSet<String> = BTreeSet::new();
     for id in &used {
         let asset = ocr_vars
             .get(id)
             .ok_or_else(|| format!("ocr_var `{id}` is missing from assets.json"))?;
-        let previous = meta
-            .params
+        let previous = effective
             .iter()
-            .find(|p| p.asset_id.as_deref() == Some(id.as_str()));
-        let row = derived_param(asset, previous)?;
+            .find(|v| v.asset_id.as_deref() == Some(id.as_str()));
+        let row = derived_variable(asset, previous)?;
         if !is_param_key(&row.key) {
             return Err(format!(
-                "ocr_var `{id}` param_key `{}` is not a valid parameter key",
+                "ocr_var `{id}` param_key `{}` is not a valid variable key",
                 row.key
             ));
         }
         if !keys.insert(row.key.clone()) {
             return Err(format!(
-                "ocr_var parameter key `{}` is used by more than one ocr_var asset",
+                "ocr_var variable key `{}` is used by more than one ocr_var asset",
                 row.key
             ));
         }
-        if let Some(user) = meta
-            .params
+        if effective
             .iter()
-            .find(|p| p.asset_id.is_none() && p.key == row.key)
+            .any(|v| v.asset_id.is_none() && v.key == row.key)
         {
-            let _ = user;
             return Err(format!(
-                "derived parameter key `{}` conflicts with a user-authored meta.params row; \
-                 rename the parameter or the ocr_var",
+                "derived variable key `{}` conflicts with a user-authored variable; \
+                 rename the variable or the ocr_var",
                 row.key
             ));
         }
@@ -196,39 +186,47 @@ fn expected_derived_params(
     Ok(expected)
 }
 
-/// Synchronise the `asset_id`-marked derived rows of `meta.params` with the
-/// ocr_var assets and the flow (2026-11-06 参数→素材 C1′).
+/// Synchronise the `value_source=ocr_text` variables of `meta.variables` with the
+/// ocr_var assets and the flow (V2.0; replaces the ParamDecl-based C1′ sync).
 ///
-/// * only derived rows (`asset_id.is_some()`) are added / updated / removed —
-///   user-authored rows are never touched;
+/// * only `ocr_text` variables bound to an asset (`asset_id.is_some()`) are
+///   added / updated / removed — user-authored literal variables are never
+///   touched;
 /// * an ocr_var is "used" when the flow references it as an asset or uses its
 ///   `param_key` in a `param()` expression;
-/// * `type`/`role`/`default`/`label`/`key` come from the asset; `group` and
-///   `description` are preserved from the previous row (Lead ruling 7);
-/// * key conflicts (two derived rows, or derived vs user row) are loud errors;
+/// * `type`/`key`/`default`/`label` come from the asset; `group` and
+///   `description` are preserved from the previous variable (Lead ruling 7);
+/// * key conflicts (two derived variables, or derived vs user literal) are loud
+///   errors;
+/// * when `meta.variables` is empty but legacy `meta.params` exists, the bridge
+///   ([`Meta::variables_from_params`]) promotes the legacy rows **in memory**
+///   first, so a save-time sync migrates the task and preserves user rows;
 /// * the caller persists the result with [`crate::TaskBundle::write_meta`]
 ///   (which keeps a `.bak` backup).
-pub fn sync_ocr_var_params(
+pub fn sync_ocr_var_variables(
     meta: &mut Meta,
     assets: &AssetsFile,
     flow: &Flow,
 ) -> Result<SyncReport, String> {
-    let expected = expected_derived_params(meta, assets, flow)?;
+    if meta.variables.is_empty() && meta.has_legacy_params() {
+        meta.variables = meta.variables_from_params();
+    }
+    let expected = expected_derived_variables(meta, assets, flow)?;
     let mut report = SyncReport::default();
-    let mut out: Vec<ParamDecl> = Vec::with_capacity(meta.params.len() + expected.len());
+    let mut out: Vec<Variable> = Vec::with_capacity(meta.variables.len() + expected.len());
     let mut present: BTreeSet<String> = BTreeSet::new(); // asset ids kept
-    for row in meta.params.drain(..) {
-        let Some(asset_id) = row.asset_id.clone() else {
-            out.push(row); // user-authored row: never touched
+    for var in meta.variables.drain(..) {
+        let Some(asset_id) = var.asset_id.clone() else {
+            out.push(var); // user-authored literal variable: never touched
             continue;
         };
         let Some(next) = expected.get(&asset_id) else {
             // The ocr_var is no longer used by this flow: drop the derived row.
-            report.removed.push(row.key);
+            report.removed.push(var.key);
             continue;
         };
         present.insert(asset_id);
-        if row != *next {
+        if var != *next {
             report.updated.push(next.key.clone());
         }
         out.push(next.clone());
@@ -240,7 +238,50 @@ pub fn sync_ocr_var_params(
         report.added.push(next.key.clone());
         out.push(next.clone());
     }
-    meta.params = out;
+    meta.variables = out;
+    Ok(report)
+}
+
+/// Mirror the effective variables back to the **legacy** `meta.params` array.
+///
+/// Temporary V2.0a bridge: the old serve endpoints (`/task/config`, derived-row
+/// protection tests) still read `meta.params` until V2.0b switches them over.
+/// V2.0b removes this function together with the rest of the params bridge.
+fn mirror_params_from_variables(meta: &Meta) -> Vec<ParamDecl> {
+    meta.variables
+        .iter()
+        .map(|v| ParamDecl {
+            key: v.key.clone(),
+            kind: v.kind.clone(),
+            default: v.default.clone(),
+            min: v.min,
+            max: v.max,
+            label: v.label.clone(),
+            description: v.description.clone(),
+            enum_values: v.enum_values.clone(),
+            required: v.required,
+            group: v.group.clone(),
+            role: v.is_ocr_text().then(|| "ocr_text".to_string()),
+            asset_id: v.asset_id.clone(),
+        })
+        .collect()
+}
+
+/// **Deprecated** (V2.0a compat; V2.0b deletes it): ParamDecl-based sync wrapper.
+///
+/// Internally it runs [`sync_ocr_var_variables`] and then mirrors the result
+/// back into `meta.params` so the intermediate serve build keeps working.
+#[deprecated(note = "V2.0: use sync_ocr_var_variables (meta.variables is the storage)")]
+pub fn sync_ocr_var_params(
+    meta: &mut Meta,
+    assets: &AssetsFile,
+    flow: &Flow,
+) -> Result<SyncReport, String> {
+    if meta.variables.is_empty() && meta.has_legacy_params() {
+        meta.variables = meta.variables_from_params();
+    }
+    let report = sync_ocr_var_variables(meta, assets, flow)?;
+    meta.params = mirror_params_from_variables(meta);
     Ok(report)
 }
 
@@ -348,47 +389,87 @@ pub fn migrate_params_to_ocr_vars(
         .retain(|p| !(p.asset_id.is_none() && migrated_keys.contains(&p.key)));
     // Recreate the derived rows (same keys) so every old `param('key')` call site
     // keeps resolving; the flow itself is never rewritten (§8.3).
-    report.sync = Some(sync_ocr_var_params(meta, assets, flow)?);
+    #[allow(deprecated)] // temporary V2.0a bridge: migration is a legacy path
+    let synced = sync_ocr_var_params(meta, assets, flow)?;
+    report.sync = Some(synced);
     Ok(report)
 }
 
-/// **T8 lint** (Lead ruling 4: error, blocks publish): `meta.params` derived rows
-/// must match the ocr_var assets and the flow.
+/// Do the **semantic** fields of a derived variable match what the asset says?
 ///
-/// Every issue carries a `meta.json:params[i]` path (or `meta.json:params` for a
-/// missing row). Drift is reported, never fixed: the user must re-save the asset
-/// (which triggers the sync) or run the migration.
-pub fn derived_param_issues(meta: &Meta, assets: &AssetsFile, flow: &Flow) -> Vec<LintIssue> {
+/// Display/UX fields (`label`/`group`/`description`, effective
+/// `runner_editable`) are not drift: they are user-owned or defaulted.
+fn variable_semantically_matches(v: &Variable, want: &Variable) -> bool {
+    v.key == want.key
+        && v.kind == want.kind
+        && v.value_source() == want.value_source()
+        && v.asset_id == want.asset_id
+        && v.default == want.default
+}
+
+/// **T8 lint** (Lead ruling 4: error, blocks publish): every
+/// `value_source=ocr_text` variable must match its bound ocr_var asset and the
+/// flow (V2.0; replaces the old ParamDecl-row check).
+///
+/// Every issue carries a `meta.json:variables[i]` path (or `meta.json:params[i]`
+/// for a legacy-only task / `meta.json:variables` for a missing row). Drift is
+/// reported, never fixed: the user must re-save the asset (which triggers the
+/// sync) or run the migration.
+pub fn derived_variable_issues(meta: &Meta, assets: &AssetsFile, flow: &Flow) -> Vec<LintIssue> {
     let mut issues = Vec::new();
     let ocr_vars = ocr_var_assets(assets);
     let used = used_ocr_var_ids(flow, &ocr_vars);
-    let expected = match expected_derived_params(meta, assets, flow) {
+    let effective = meta.effective_variables();
+    let legacy_only = meta.variables.is_empty() && meta.has_legacy_params();
+    let base = if legacy_only {
+        "meta.json:params"
+    } else {
+        "meta.json:variables"
+    };
+    let expected = match expected_derived_variables(meta, assets, flow) {
         Ok(expected) => expected,
         Err(e) => {
             issues.push(LintIssue::new(
                 "T8",
-                "meta.json:params",
-                format!("derived ocr_var parameter rows are inconsistent: {e}"),
+                "meta.json:variables",
+                format!("derived ocr_var variables are inconsistent: {e}"),
             ));
             BTreeMap::new()
         }
     };
     let mut present: BTreeSet<String> = BTreeSet::new();
-    for (i, p) in meta.params.iter().enumerate() {
-        let path = format!("meta.json:params[{i}]");
-        let Some(asset_id) = p.asset_id.as_deref() else {
-            continue; // user-authored row
+    let mut seen_assets: BTreeSet<&str> = BTreeSet::new();
+    for (i, v) in effective.iter().enumerate() {
+        let path = format!("{base}[{i}]");
+        let Some(asset_id) = v.asset_id.as_deref() else {
+            continue; // literal variable
         };
-        present.insert(asset_id.to_string());
-        let Some(asset) = ocr_vars.get(asset_id) else {
+        if !seen_assets.insert(asset_id) {
             issues.push(LintIssue::new(
                 "T8",
                 path.clone(),
                 format!(
-                    "derived row `{}` references `{asset_id}`, which is not an ocr_var asset \
-                     (re-save the asset or run the ocr-param migration)",
-                    p.key
+                    "ocr_var `{asset_id}` is bound by more than one variable \
+                     (only one ocr_text variable may reference an asset)"
                 ),
+            ));
+        }
+        let Some(asset) = ocr_vars.get(asset_id) else {
+            issues.push(LintIssue::new(
+                "T8",
+                path.clone(),
+                if assets.items.iter().any(|a| a.id == asset_id) {
+                    format!(
+                        "variable `{}` binds `{asset_id}`, which is not a kind=ocr_var asset",
+                        v.key
+                    )
+                } else {
+                    format!(
+                        "variable `{}` binds `{asset_id}`, which is not a declared asset \
+                         (re-create the variable or the ocr_var asset)",
+                        v.key
+                    )
+                },
             ));
             continue;
         };
@@ -397,35 +478,39 @@ pub fn derived_param_issues(meta: &Meta, assets: &AssetsFile, flow: &Flow) -> Ve
                 "T8",
                 path.clone(),
                 format!(
-                    "derived row `{}` is stale: ocr_var `{asset_id}` is not referenced by \
+                    "variable `{}` is stale: ocr_var `{asset_id}` is not referenced by \
                      flow.json (re-save the flow or delete the asset)",
-                    p.key
+                    v.key
                 ),
             ));
             continue;
         }
+        present.insert(asset_id.to_string());
         let Some(want) = expected.get(asset_id) else {
             continue; // already reported above
         };
-        if p != want {
+        // V2.0a bridge: a legacy imported row has `runner_editable: None` while
+        // the sync-generated V2 row spells `Some(true)` (same effective value for
+        // an input variable), so drift is decided on the semantic fields only.
+        if !variable_semantically_matches(v, want) {
             issues.push(LintIssue::new(
                 "T8",
                 path.clone(),
                 format!(
-                    "derived row `{}` does not match ocr_var `{asset_id}` \
-                     (expected key=`{}` type=string role=ocr_text default={:?}); \
+                    "variable `{}` does not match ocr_var `{asset_id}` \
+                     (expected key=`{}` type=string value_source=ocr_text default={:?}); \
                      re-save the asset to sync",
-                    p.key, want.key, want.default
+                    v.key, want.key, want.default
                 ),
             ));
         }
-        if asset.param_key.as_deref() != Some(p.key.as_str()) {
+        if asset.param_key.as_deref() != Some(v.key.as_str()) {
             issues.push(LintIssue::new(
                 "T8",
                 path,
                 format!(
-                    "derived row key `{}` differs from ocr_var `{asset_id}` param_key `{}`",
-                    p.key,
+                    "variable key `{}` differs from ocr_var `{asset_id}` param_key `{}`",
+                    v.key,
                     asset.param_key.as_deref().unwrap_or("")
                 ),
             ));
@@ -435,9 +520,9 @@ pub fn derived_param_issues(meta: &Meta, assets: &AssetsFile, flow: &Flow) -> Ve
         if !present.contains(asset_id) {
             issues.push(LintIssue::new(
                 "T8",
-                "meta.json:params",
+                "meta.json:variables",
                 format!(
-                    "ocr_var `{asset_id}` is used but its derived parameter `{}` is missing \
+                    "ocr_var `{asset_id}` is used but its ocr_text variable `{}` is missing \
                      (re-save the asset to sync)",
                     want.key
                 ),
@@ -445,6 +530,16 @@ pub fn derived_param_issues(meta: &Meta, assets: &AssetsFile, flow: &Flow) -> Ve
         }
     }
     issues
+}
+
+/// **Deprecated** (V2.0a compat; V2.0b deletes it): ParamDecl-row T8 wrapper.
+#[deprecated(note = "V2.0: use derived_variable_issues (meta.variables is the storage)")]
+pub fn derived_param_issues(meta: &Meta, assets: &AssetsFile, flow: &Flow) -> Vec<LintIssue> {
+    let mut tmp = meta.clone();
+    if tmp.variables.is_empty() && tmp.has_legacy_params() {
+        tmp.variables = tmp.variables_from_params();
+    }
+    derived_variable_issues(&tmp, assets, flow)
 }
 
 #[cfg(test)]
@@ -455,6 +550,14 @@ mod tests {
     fn meta(params: serde_json::Value) -> Meta {
         Meta::from_json(
             &json!({"schema_version":1,"name":"任务1","params":params}).to_string(),
+        )
+        .expect("meta json")
+    }
+
+    /// V2-style meta with `variables` (the new storage).
+    fn meta_vars(variables: serde_json::Value) -> Meta {
+        Meta::from_json(
+            &json!({"schema_version":1,"name":"任务1","variables":variables}).to_string(),
         )
         .expect("meta json")
     }
@@ -490,31 +593,43 @@ mod tests {
     }
 
     #[test]
-    fn sync_adds_a_derived_row_for_a_used_ocr_var() {
+    fn sync_adds_a_derived_variable_for_a_used_ocr_var() {
         let mut m = meta(json!([]));
         let a = assets(json!([ocr_var("O_group", "group", "御魂")]));
         let f = flow_using("O_group", "group");
-        let report = sync_ocr_var_params(&mut m, &a, &f).expect("sync");
+        let report = sync_ocr_var_variables(&mut m, &a, &f).expect("sync");
         assert_eq!(report.added, vec!["group".to_string()]);
         assert!(report.updated.is_empty() && report.removed.is_empty());
-        assert_eq!(m.params.len(), 1);
-        let row = &m.params[0];
-        assert_eq!(row.key, "group");
-        assert_eq!(row.kind, "string");
-        assert_eq!(row.role.as_deref(), Some("ocr_text"));
-        assert_eq!(row.default, Some(json!("御魂")));
-        assert_eq!(row.label.as_deref(), Some("O_group"));
-        assert_eq!(row.asset_id.as_deref(), Some("O_group"));
+        assert_eq!(m.variables.len(), 1);
+        let var = &m.variables[0];
+        assert_eq!(var.key, "group");
+        assert_eq!(var.kind, "string");
+        assert_eq!(var.value_source(), "ocr_text");
+        assert_eq!(var.default, Some(json!("御魂")));
+        assert_eq!(var.label.as_deref(), Some("O_group"));
+        assert_eq!(var.asset_id.as_deref(), Some("O_group"));
+        assert!(var.runner_editable(), "ocr_text rows are Runner-editable");
         // A second sync is a no-op.
-        let again = sync_ocr_var_params(&mut m, &a, &f).expect("resync");
+        let again = sync_ocr_var_variables(&mut m, &a, &f).expect("resync");
         assert_eq!(again, SyncReport::default());
+        // The deprecated compat wrapper mirrors the same rows into meta.params.
+        #[allow(deprecated)]
+        {
+            let mut legacy = meta(json!([]));
+            let report = sync_ocr_var_params(&mut legacy, &a, &f).expect("wrapper sync");
+            assert_eq!(report.added, vec!["group".to_string()]);
+            assert_eq!(legacy.params.len(), 1);
+            assert_eq!(legacy.params[0].role.as_deref(), Some("ocr_text"));
+            assert_eq!(legacy.params[0].asset_id.as_deref(), Some("O_group"));
+        }
     }
 
     #[test]
-    fn sync_keeps_the_row_for_an_old_flow_that_only_uses_the_param_key() {
+    fn sync_keeps_the_variable_for_an_old_flow_that_only_uses_the_param_key() {
         // Migration case: the old flow still recognizes an old OCR asset and
         // only uses `param('group')`; the new ocr_var asset is not referenced
-        // yet, but its derived row must exist so the call site keeps resolving.
+        // yet, but its derived variable must exist so the call site keeps
+        // resolving.
         let mut m = meta(json!([]));
         let a = assets(json!([ocr_var("O_group", "group", "御魂")]));
         let f = flow(json!([
@@ -523,9 +638,9 @@ mod tests {
             ]}},
             {"op":"finish","args":{"exit":"done"}}
         ]));
-        let report = sync_ocr_var_params(&mut m, &a, &f).expect("sync");
+        let report = sync_ocr_var_variables(&mut m, &a, &f).expect("sync");
         assert_eq!(report.added, vec!["group".to_string()]);
-        assert_eq!(m.params[0].asset_id.as_deref(), Some("O_group"));
+        assert_eq!(m.variables[0].asset_id.as_deref(), Some("O_group"));
     }
 
     #[test]
@@ -537,18 +652,18 @@ mod tests {
         ]));
         let a = assets(json!([ocr_var("O_group", "group", "结界")]));
         let f = flow_using("O_group", "group");
-        let report = sync_ocr_var_params(&mut m, &a, &f).expect("sync");
+        let report = sync_ocr_var_variables(&mut m, &a, &f).expect("sync");
         assert_eq!(report.updated, vec!["group".to_string()]);
-        let row = &m.params[0];
-        assert_eq!(row.default, Some(json!("结界")), "default follows runtime_text");
-        assert_eq!(row.group.as_deref(), Some("识别文字"), "group is user-owned");
-        assert_eq!(row.description.as_deref(), Some("游戏内分组名"));
-        assert_eq!(row.label.as_deref(), Some("O_group"), "label follows the asset/id");
-        assert_eq!(row.required, None, "derived rows always have a default");
+        let var = &m.variables[0];
+        assert_eq!(var.default, Some(json!("结界")), "default follows runtime_text");
+        assert_eq!(var.group.as_deref(), Some("识别文字"), "group is user-owned");
+        assert_eq!(var.description.as_deref(), Some("游戏内分组名"));
+        assert_eq!(var.label.as_deref(), Some("O_group"), "label follows the asset/id");
+        assert_eq!(var.required, None, "derived rows always have a default");
     }
 
     #[test]
-    fn sync_removes_a_stale_derived_row_and_never_touches_user_rows() {
+    fn sync_removes_a_stale_derived_variable_and_never_touches_user_rows() {
         let mut m = meta(json!([
             {"key":"loop_n","type":"int","default":3},
             {"key":"old_text","type":"string","default":"x","role":"ocr_text",
@@ -557,21 +672,21 @@ mod tests {
         // O_old still exists but the flow no longer uses it (finish only).
         let a = assets(json!([ocr_var("O_old", "old_text", "x")]));
         let f = flow(json!([{"op":"finish","args":{"exit":"done"}}]));
-        let report = sync_ocr_var_params(&mut m, &a, &f).expect("sync");
+        let report = sync_ocr_var_variables(&mut m, &a, &f).expect("sync");
         assert_eq!(report.removed, vec!["old_text".to_string()]);
-        // The user row survives untouched; order is preserved.
-        assert_eq!(m.params.len(), 1);
-        assert_eq!(m.params[0].key, "loop_n");
-        assert!(m.params[0].asset_id.is_none());
+        // The user literal variable survives untouched; order is preserved.
+        assert_eq!(m.variables.len(), 1);
+        assert_eq!(m.variables[0].key, "loop_n");
+        assert!(m.variables[0].asset_id.is_none());
     }
 
     #[test]
-    fn sync_rejects_parameter_key_conflicts() {
-        // (a) A user-authored row already owns the derived key.
+    fn sync_rejects_variable_key_conflicts() {
+        // (a) A user-authored literal variable already owns the derived key.
         let mut m = meta(json!([{"key":"group","type":"string","default":"用户自己的"}]));
         let a = assets(json!([ocr_var("O_group", "group", "御魂")]));
         let f = flow_using("O_group", "group");
-        let err = sync_ocr_var_params(&mut m, &a, &f).expect_err("key conflict");
+        let err = sync_ocr_var_variables(&mut m, &a, &f).expect_err("key conflict");
         assert!(err.contains("conflicts with a user-authored"), "{err}");
 
         // (b) Two used ocr_var assets share one param_key.
@@ -587,7 +702,7 @@ mod tests {
             ]}},
             {"op":"finish","args":{"exit":"done"}}
         ]));
-        let err = sync_ocr_var_params(&mut m, &a, &f).expect_err("duplicate key");
+        let err = sync_ocr_var_variables(&mut m, &a, &f).expect_err("duplicate key");
         assert!(err.contains("more than one ocr_var"), "{err}");
     }
 
@@ -649,9 +764,9 @@ mod tests {
         assert_eq!(derived.default, Some(json!("御魂")));
         // T8 is clean after a successful migration.
         assert!(
-            derived_param_issues(&m, &a, &f).is_empty(),
+            derived_variable_issues(&m, &a, &f).is_empty(),
             "T8: {:?}",
-            derived_param_issues(&m, &a, &f)
+            derived_variable_issues(&m, &a, &f)
         );
     }
 
@@ -672,34 +787,51 @@ mod tests {
     }
 
     #[test]
-    fn t8_flags_derived_row_drift_missing_and_stale_rows() {
+    fn t8_flags_derived_variable_drift_missing_and_stale_rows() {
         let a = assets(json!([ocr_var("O_group", "group", "御魂")]));
         let f = flow_using("O_group", "group");
-        // Matching row: clean.
-        let mut m = meta(json!([
-            {"key":"group","type":"string","default":"御魂","role":"ocr_text",
-             "label":"O_group","asset_id":"O_group"}
+        // Matching V2 variable: clean.
+        let mut m = meta_vars(json!([
+            {"key":"group","type":"string","value_source":"ocr_text","default":"御魂",
+             "label":"O_group","asset_id":"O_group","runner_editable":true}
         ]));
-        assert!(derived_param_issues(&m, &a, &f).is_empty());
-        // Drifted default: flagged with a T8 issue pointing at the row.
-        m.params[0].default = Some(json!("过期文字"));
-        let issues = derived_param_issues(&m, &a, &f);
+        assert!(derived_variable_issues(&m, &a, &f).is_empty(), "{:?}", derived_variable_issues(&m, &a, &f));
+        // Drifted default: flagged with a T8 issue pointing at the variable.
+        m.variables[0].default = Some(json!("过期文字"));
+        let issues = derived_variable_issues(&m, &a, &f);
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert_eq!(issues[0].code, "T8");
-        assert_eq!(issues[0].path, "meta.json:params[0]");
-        // Missing derived row for a used ocr_var.
-        let m = meta(json!([]));
-        let issues = derived_param_issues(&m, &a, &f);
+        assert_eq!(issues[0].path, "meta.json:variables[0]");
+        // Missing derived variable for a used ocr_var.
+        let m = meta_vars(json!([]));
+        let issues = derived_variable_issues(&m, &a, &f);
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert!(issues[0].msg.contains("missing"), "{issues:?}");
-        // Stale row whose asset is no longer used by the flow.
-        let m = meta(json!([
-            {"key":"group","type":"string","default":"御魂","role":"ocr_text",
+        // Stale variable whose asset is no longer used by the flow.
+        let m = meta_vars(json!([
+            {"key":"group","type":"string","value_source":"ocr_text","default":"御魂",
              "asset_id":"O_group"}
         ]));
         let unused = flow(json!([{"op":"finish","args":{"exit":"done"}}]));
-        let issues = derived_param_issues(&m, &a, &unused);
+        let issues = derived_variable_issues(&m, &a, &unused);
         assert!(issues.iter().any(|i| i.msg.contains("stale")), "{issues:?}");
+        // Legacy params-only meta is bridged in memory and is clean (paths are
+        // reported under meta.json:params while the file is still legacy).
+        let legacy = meta(json!([
+            {"key":"group","type":"string","default":"御魂","role":"ocr_text",
+             "label":"O_group","asset_id":"O_group"}
+        ]));
+        assert!(derived_variable_issues(&legacy, &a, &f).is_empty());
+        // A variable binding a missing/non-ocr_var asset is flagged.
+        let bad = meta_vars(json!([
+            {"key":"group","type":"string","value_source":"ocr_text","default":"御魂",
+             "asset_id":"NOT_THERE"}
+        ]));
+        let issues = derived_variable_issues(&bad, &a, &f);
+        assert!(
+            issues.iter().any(|i| i.msg.contains("not a declared asset")),
+            "{issues:?}"
+        );
     }
 }
 

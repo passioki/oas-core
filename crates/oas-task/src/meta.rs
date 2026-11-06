@@ -102,7 +102,139 @@ pub struct ParamDecl {
 /// Length limit of `meta.params[].role` (PARAM-V2-DESIGN §2.1).
 pub const PARAM_ROLE_MAX_CHARS: usize = 32;
 
-/// Length limits of the optional display fields (`meta.params[]`).
+// ---------------------------------------------------------------------------
+// V2.0 variables (`meta.variables[]`, docs/VARIABLES-V2-DESIGN.md §2.2)
+// ---------------------------------------------------------------------------
+
+/// Allowed `meta.variables[].type` values (same set as [`PARAM_TYPES`]).
+pub const VARIABLE_TYPES: [&str; 5] = PARAM_TYPES;
+
+/// Allowed `meta.variables[].value_source` values.
+pub const VARIABLE_VALUE_SOURCES: [&str; 2] = ["literal", "ocr_text"];
+
+/// Allowed `meta.variables[].scope` values.
+pub const VARIABLE_SCOPES: [&str; 2] = ["input", "runtime"];
+
+/// `value_source` default (a plain scalar variable, no asset binding).
+pub const DEFAULT_VALUE_SOURCE: &str = "literal";
+
+/// `scope` default (visible to the Runner / editable by the user).
+pub const DEFAULT_SCOPE: &str = "input";
+
+/// One declared task **variable** (`meta.variables[]`, V2 design §2.2).
+///
+/// A variable is the V2 generalization of the old `meta.params[]` row:
+/// * `value_source=literal` (default) — a standalone scalar value;
+/// * `value_source=ocr_text` — bound 1:1 to a `kind:"ocr_var"` asset: `asset_id`
+///   points at it, `key == asset.param_key`, and the default is the asset's
+///   `runtime_text` (maintained by
+///   [`crate::ocr_var::sync_ocr_var_variables`], checked by the T8 lint).
+///
+/// `scope=input` (default) variables are Runner-visible; `scope=runtime`
+/// variables are flow-local (`value_source` must be `literal`,
+/// `runner_editable` must be false). All display fields are optional UI hints;
+/// only `key`/`type`/`default` are runtime contract. Old `meta.json` files have
+/// no `variables` array and keep parsing (the V2.0a bridge imports their
+/// `params` in memory, see [`Meta::effective_variables`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Variable {
+    pub key: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// `literal` (default) | `ocr_text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_source: Option<String>,
+    /// `ocr_var` asset id; required for `ocr_text`, forbidden for `literal`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Show (and accept values from) the Runner UI. Default: `true` for
+    /// `scope=input`, `false` for `scope=runtime`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner_editable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+    /// `input` (default) | `runtime`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    #[serde(rename = "enum", default, skip_serializing_if = "Option::is_none")]
+    pub enum_values: Option<Vec<serde_json::Value>>,
+}
+
+impl Variable {
+    /// Effective value source (`literal` when absent).
+    pub fn value_source(&self) -> &str {
+        self.value_source.as_deref().unwrap_or(DEFAULT_VALUE_SOURCE)
+    }
+
+    /// Effective scope (`input` when absent).
+    pub fn scope(&self) -> &str {
+        self.scope.as_deref().unwrap_or(DEFAULT_SCOPE)
+    }
+
+    pub fn is_ocr_text(&self) -> bool {
+        self.value_source() == "ocr_text"
+    }
+
+    pub fn is_input(&self) -> bool {
+        self.scope() == "input"
+    }
+
+    /// Effective `runner_editable`: `true` for `input`, `false` for `runtime`
+    /// unless the author explicitly said otherwise (the `runtime`+true combo is
+    /// a lint error).
+    pub fn runner_editable(&self) -> bool {
+        self.runner_editable.unwrap_or_else(|| self.is_input())
+    }
+
+    /// A plain scalar variable (`value_source=literal`).
+    pub fn literal(key: impl Into<String>, kind: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            kind: kind.into(),
+            value_source: None,
+            asset_id: None,
+            default: None,
+            label: None,
+            description: None,
+            group: None,
+            runner_editable: None,
+            required: None,
+            scope: None,
+            min: None,
+            max: None,
+            enum_values: None,
+        }
+    }
+
+    /// The variable shape the ocr-var sync maintains for one asset.
+    pub fn ocr_text(
+        key: impl Into<String>,
+        asset_id: impl Into<String>,
+        runtime_text: impl Into<String>,
+    ) -> Self {
+        Self {
+            default: Some(serde_json::Value::String(runtime_text.into())),
+            value_source: Some("ocr_text".to_string()),
+            asset_id: Some(asset_id.into()),
+            runner_editable: Some(true),
+            ..Self::literal(key, "string")
+        }
+    }
+}
+
+/// Length limits of the optional display fields (`meta.params[]`/`variables[]`).
 pub const PARAM_LABEL_MAX_CHARS: usize = 80;
 pub const PARAM_DESCRIPTION_MAX_CHARS: usize = 500;
 pub const PARAM_GROUP_MAX_CHARS: usize = 80;
@@ -218,8 +350,18 @@ pub struct Meta {
     pub category: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<MetaEntry>,
+    /// **Deprecated legacy `meta.params` rows.**
+    ///
+    /// V2.0 (docs/VARIABLES-V2-DESIGN.md §2.1 B2) makes `meta.variables` the only
+    /// storage. This field is kept **read-only for old meta/old packages**: old
+    /// tasks are imported in memory by [`Meta::effective_variables`] and are
+    /// never rewritten. New code must use `variables` / `effective_variables()`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<ParamDecl>,
+    /// V2.0 task variables (`meta.variables[]`): the single storage of the
+    /// unified variable model (scalar + `ocr_text` asset-bound variables).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variables: Vec<Variable>,
     /// Missing `exits` => [`DEFAULT_EXIT_NAMES`] (old-task compatibility).
     #[serde(default = "default_exits")]
     pub exits: BTreeMap<String, ExitDecl>,
@@ -427,6 +569,70 @@ pub fn validate_param_values(
     }
 }
 
+/// Validate Runner-supplied / entry / CLI runtime values against a task's
+/// **`meta.variables` schema** (V2 design §3.1; replaces
+/// [`validate_param_values`] for V2 tasks).
+///
+/// Rules (same contract as the ParamDecl version, messages name the variable):
+/// * an unknown key is an error and the message lists the allowed keys;
+/// * a provided value must match its `type`, `min`/`max` and `enum`;
+/// * a missing value is only an error when `required == Some(true)` **and**
+///   there is no `default`.
+///
+/// Runtime-scope variables are included: they cannot be edited in the Runner
+/// UI, but `--param`/entry overrides are a debugging feature and must still be
+/// validated when provided.
+pub fn validate_variable_values(
+    variables: &[Variable],
+    values: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    let mut declared: BTreeSet<&str> = BTreeSet::new();
+    for (i, v) in variables.iter().enumerate() {
+        declared.insert(v.key.as_str());
+        let path = format!("variables[{i}].key `{}`", v.key);
+        match values.get(&v.key) {
+            Some(value) => {
+                if let Err(e) = check_param_value(
+                    &v.kind,
+                    value,
+                    v.min,
+                    v.max,
+                    v.enum_values.as_deref(),
+                ) {
+                    errors.push(format!("{path}: {e}"));
+                }
+            }
+            None => {
+                if v.required == Some(true) && v.default.is_none() {
+                    errors.push(format!(
+                        "{path}: 缺少必填变量 (required variable has no default)"
+                    ));
+                }
+            }
+        }
+    }
+    let allowed = if variables.is_empty() {
+        "(none)".to_string()
+    } else {
+        variables
+            .iter()
+            .map(|v| v.key.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    for key in values.keys().filter(|k| !declared.contains(k.as_str())) {
+        errors.push(format!(
+            "values.{key}: unknown variable `{key}` (allowed: {allowed})"
+        ));
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Meta
 // ---------------------------------------------------------------------------
@@ -448,9 +654,152 @@ impl Meta {
         self.task_id.as_deref().unwrap_or(&self.name)
     }
 
-    /// Every `meta.params[].key`.
+    /// **V2.0: the effective variable list.**
+    ///
+    /// * a V2 `meta.variables[]` array is returned as-is (clone);
+    /// * otherwise the legacy `meta.params[]` rows are **imported in memory**
+    ///   (`asset_id` rows → `value_source=ocr_text`, everything else →
+    ///   `literal`), exactly as docs/VARIABLES-V2-DESIGN.md §6.1 maps them.
+    ///
+    /// This is the one bridge that lets old meta/old packages keep working: it
+    /// never writes to disk and never mutates `self`. New code (runtime/lint/
+    /// loader/run/package) must read this instead of `params`.
+    pub fn effective_variables(&self) -> Vec<Variable> {
+        if !self.variables.is_empty() {
+            self.variables.clone()
+        } else {
+            self.variables_from_params()
+        }
+    }
+
+    /// Map the legacy `meta.params[]` rows to [`Variable`]s (§6.1).
+    pub fn variables_from_params(&self) -> Vec<Variable> {
+        self.params
+            .iter()
+            .map(|p| {
+                let ocr_asset = p.asset_id.clone();
+                Variable {
+                    key: p.key.clone(),
+                    kind: p.kind.clone(),
+                    value_source: ocr_asset
+                        .as_ref()
+                        .map(|_| "ocr_text".to_string()),
+                    asset_id: ocr_asset,
+                    default: p.default.clone(),
+                    label: p.label.clone(),
+                    description: p.description.clone(),
+                    group: p.group.clone(),
+                    // Legacy imported rows are legacy-Runner visible; the
+                    // `role` hint is intentionally not carried (it was only a
+                    // UI hint, and V2 replaces it with `value_source`).
+                    runner_editable: None,
+                    required: p.required,
+                    scope: None,
+                    min: p.min,
+                    max: p.max,
+                    enum_values: p.enum_values.clone(),
+                }
+            })
+            .collect()
+    }
+
+    /// True when legacy `meta.params` rows are present (old task/old package).
+    pub fn has_legacy_params(&self) -> bool {
+        !self.params.is_empty()
+    }
+
+    /// **T10 warning** (non-blocking, V2 design §2.2/§6): legacy `meta.params`
+    /// rows are present.
+    ///
+    /// * `variables` empty → the whole `params` array is imported in memory
+    ///   only (M1/M3: rebuild the task or accept the read-only bridge);
+    /// * both present → report rows that the in-memory import would change (i.e.
+    ///   `params` and `variables` disagree), so a half-migrated file is visible.
+    ///
+    /// This is deliberately **not** part of [`Self::lint_issues`] (which is the
+    /// blocking error channel); callers surface it as a warning only.
+    pub fn legacy_params_warnings(&self) -> Vec<LintIssue> {
+        let mut out = Vec::new();
+        if self.params.is_empty() {
+            return out;
+        }
+        if self.variables.is_empty() {
+            out.push(LintIssue::new(
+                "T10",
+                "meta.json:params",
+                format!(
+                    "legacy `meta.params` present ({} row(s)); V2 imports them into \
+                     `variables` in memory only — rebuild the task with variables or keep \
+                     the read-only bridge (no file is rewritten)",
+                    self.params.len()
+                ),
+            ));
+            return out;
+        }
+        let vars = self.effective_variables();
+        for (i, p) in self.params.iter().enumerate() {
+            let ocr_asset = p.asset_id.clone();
+            let imported = Variable {
+                key: p.key.clone(),
+                kind: p.kind.clone(),
+                value_source: ocr_asset.as_ref().map(|_| "ocr_text".to_string()),
+                asset_id: ocr_asset,
+                default: p.default.clone(),
+                label: p.label.clone(),
+                description: p.description.clone(),
+                group: p.group.clone(),
+                runner_editable: None,
+                required: p.required,
+                scope: None,
+                min: p.min,
+                max: p.max,
+                enum_values: p.enum_values.clone(),
+            };
+            let same = vars.iter().any(|v| {
+                v.key == imported.key
+                    && v.kind == imported.kind
+                    && v.value_source() == imported.value_source()
+                    && v.asset_id == imported.asset_id
+                    && v.default == imported.default
+            });
+            if !same {
+                out.push(LintIssue::new(
+                    "T10",
+                    format!("meta.json:params[{i}]"),
+                    format!(
+                        "legacy params row `{}` is not represented in `meta.variables`; \
+                         new code reads `variables` (imported legacy rows are ignored once \
+                         `variables` is non-empty)",
+                        p.key
+                    ),
+                ));
+            }
+        }
+        out
+    }
+
+    /// Every effective variable key (V2: replaces `meta.params[].key`).
+    pub fn declared_variable_keys(&self) -> BTreeSet<String> {
+        self.effective_variables()
+            .into_iter()
+            .map(|v| v.key)
+            .collect()
+    }
+
+    /// Every effective **input-scope** variable key (T3/T7 and `call_task`
+    /// defaults: runtime-scope variables are flow-local and not injected).
+    pub fn declared_input_variable_keys(&self) -> BTreeSet<String> {
+        self.effective_variables()
+            .into_iter()
+            .filter(|v| v.is_input())
+            .map(|v| v.key)
+            .collect()
+    }
+
+    /// **Deprecated** (V2.0a compat): use [`Self::declared_variable_keys`].
+    #[deprecated(note = "V2.0: use Meta::declared_variable_keys / declared_input_variable_keys")]
     pub fn declared_param_keys(&self) -> BTreeSet<String> {
-        self.params.iter().map(|p| p.key.clone()).collect()
+        self.declared_variable_keys()
     }
 
     /// Every `meta.exits` name.
@@ -458,21 +807,29 @@ impl Meta {
         self.exits.keys().cloned().collect()
     }
 
-    /// Runtime values injected for `param('key')`: the declared defaults.
+    /// Runtime values injected for `param('key')`: the declared defaults of the
+    /// **effective variables**.
     ///
     /// The driver merges these with the `--param k=v` overrides (CLI wins).
-    pub fn param_defaults(&self) -> Result<BTreeMap<String, oas_flow::Value>, String> {
+    pub fn variable_defaults(&self) -> Result<BTreeMap<String, oas_flow::Value>, String> {
         let mut out = BTreeMap::new();
-        for (i, p) in self.params.iter().enumerate() {
-            let Some(v) = &p.default else { continue };
-            let value = json_to_param_value(v)
-                .map_err(|e| format!("meta.json: params[{i}].default: {e}"))?;
-            out.insert(p.key.clone(), value);
+        for (i, v) in self.effective_variables().iter().enumerate() {
+            let Some(value) = &v.default else { continue };
+            let value = json_to_param_value(value)
+                .map_err(|e| format!("meta.json: variables[{i}].default: {e}"))?;
+            out.insert(v.key.clone(), value);
         }
         Ok(out)
     }
 
-    /// Contract validation (M0). Every issue carries a `meta.json:…` path.
+    /// **Deprecated** (V2.0a compat): use [`Self::variable_defaults`].
+    #[deprecated(note = "V2.0: use Meta::variable_defaults")]
+    pub fn param_defaults(&self) -> Result<BTreeMap<String, oas_flow::Value>, String> {
+        self.variable_defaults()
+    }
+
+    /// Contract validation (M0 + V2 variables). Every issue carries a
+    /// `meta.json:…` path.
     pub fn lint_issues(&self) -> Vec<LintIssue> {
         let mut issues = Vec::new();
         let mut push = |path: String, msg: String| {
@@ -789,6 +1146,219 @@ impl Meta {
             }
         }
 
+        // ---- V2.0 variables (`meta.variables[]`) -----------------------------
+        let mut seen_vars: BTreeSet<&str> = BTreeSet::new();
+        for (i, v) in self.variables.iter().enumerate() {
+            let path = format!("meta.json:variables[{i}]");
+            if !is_identifier(&v.key) {
+                push(
+                    format!("{path}.key"),
+                    format!(
+                        "`{}` must match [A-Za-z_][A-Za-z0-9_]* (<= 64 chars)",
+                        v.key
+                    ),
+                );
+            }
+            if !seen_vars.insert(v.key.as_str()) {
+                push(
+                    format!("{path}.key"),
+                    format!("duplicate variable key `{}`", v.key),
+                );
+            }
+            if !VARIABLE_TYPES.contains(&v.kind.as_str()) {
+                push(
+                    format!("{path}.type"),
+                    format!(
+                        "unknown type `{}` (allowed: {})",
+                        v.kind,
+                        VARIABLE_TYPES.join(", ")
+                    ),
+                );
+            }
+            let source = v.value_source();
+            if !VARIABLE_VALUE_SOURCES.contains(&source) {
+                push(
+                    format!("{path}.value_source"),
+                    format!(
+                        "`{source}` is not allowed (allowed: {})",
+                        VARIABLE_VALUE_SOURCES.join(", ")
+                    ),
+                );
+            }
+            let scope = v.scope();
+            if !VARIABLE_SCOPES.contains(&scope) {
+                push(
+                    format!("{path}.scope"),
+                    format!(
+                        "`{scope}` is not allowed (allowed: {})",
+                        VARIABLE_SCOPES.join(", ")
+                    ),
+                );
+            }
+            // `value_source=ocr_text` ⇒ asset binding, string type, string default.
+            if source == "ocr_text" {
+                match v.asset_id.as_deref() {
+                    None => push(
+                        format!("{path}.asset_id"),
+                        "value_source=ocr_text requires the bound ocr_var `asset_id`"
+                            .to_string(),
+                    ),
+                    Some(id) if id.trim().is_empty() => push(
+                        format!("{path}.asset_id"),
+                        "must not be blank".to_string(),
+                    ),
+                    _ => {}
+                }
+                if v.kind != "string" {
+                    push(
+                        format!("{path}.type"),
+                        format!(
+                            "an ocr_text variable must be type=string (got `{}`)",
+                            v.kind
+                        ),
+                    );
+                }
+                if let Some(d) = &v.default {
+                    if !d.is_string() {
+                        push(
+                            format!("{path}.default"),
+                            "an ocr_text variable requires a string default \
+                             (the asset runtime_text)"
+                                .to_string(),
+                        );
+                    }
+                }
+            } else if v.asset_id.is_some() {
+                push(
+                    format!("{path}.asset_id"),
+                    "a literal variable must not have an `asset_id` \
+                     (bind an ocr_var with value_source=ocr_text instead)"
+                        .to_string(),
+                );
+            }
+            // `scope=runtime` is flow-local: literal only + not Runner-editable.
+            if scope == "runtime" {
+                if source != "literal" {
+                    push(
+                        format!("{path}.value_source"),
+                        "a runtime-scope variable must be value_source=literal".to_string(),
+                    );
+                }
+                if v.runner_editable == Some(true) {
+                    push(
+                        format!("{path}.runner_editable"),
+                        "a runtime-scope variable is not Runner-editable".to_string(),
+                    );
+                }
+            }
+            if let Some(d) = &v.default {
+                if let Err(e) = check_param_default(&v.kind, d) {
+                    push(format!("{path}.default"), e);
+                }
+            }
+            let numeric = matches!(v.kind.as_str(), "int" | "float" | "number");
+            if (v.min.is_some() || v.max.is_some()) && !numeric {
+                push(
+                    format!("{path}.min"),
+                    "min/max are only valid for numeric variables".to_string(),
+                );
+            }
+            match (v.min, v.max) {
+                (Some(a), Some(b)) if !a.is_finite() || !b.is_finite() => push(
+                    format!("{path}.max"),
+                    "min/max must be finite numbers".to_string(),
+                ),
+                (Some(a), Some(b)) if a > b => push(
+                    format!("{path}.max"),
+                    format!("max {b} must be >= min {a}"),
+                ),
+                _ => {}
+            }
+            if let Some(d) = &v.default {
+                if let Some(n) = d.as_f64() {
+                    if let Some(min) = v.min {
+                        if n < min {
+                            push(
+                                format!("{path}.default"),
+                                format!("default {n} is below min {min}"),
+                            );
+                        }
+                    }
+                    if let Some(max) = v.max {
+                        if n > max {
+                            push(
+                                format!("{path}.default"),
+                                format!("default {n} is above max {max}"),
+                            );
+                        }
+                    }
+                }
+            }
+            for (field, text, limit) in [
+                ("label", v.label.as_deref(), PARAM_LABEL_MAX_CHARS),
+                (
+                    "description",
+                    v.description.as_deref(),
+                    PARAM_DESCRIPTION_MAX_CHARS,
+                ),
+                ("group", v.group.as_deref(), PARAM_GROUP_MAX_CHARS),
+            ] {
+                let Some(text) = text else { continue };
+                if text.trim().is_empty() {
+                    push(format!("{path}.{field}"), "must not be blank".to_string());
+                } else if text.chars().count() > limit {
+                    push(
+                        format!("{path}.{field}"),
+                        format!(
+                            "must be <= {limit} characters (got {})",
+                            text.chars().count()
+                        ),
+                    );
+                }
+            }
+            if let Some(values) = &v.enum_values {
+                let enum_path = format!("{path}.enum");
+                if !matches!(v.kind.as_str(), "string" | "int" | "float" | "number") {
+                    push(
+                        enum_path,
+                        format!(
+                            "enum is only allowed for string/int/float/number variables \
+                             (type is `{}`)",
+                            v.kind
+                        ),
+                    );
+                } else {
+                    if values.is_empty() {
+                        push(enum_path.clone(), "must declare at least one value".to_string());
+                    }
+                    for (j, value) in values.iter().enumerate() {
+                        if let Err(e) = check_param_default(&v.kind, value) {
+                            push(format!("{enum_path}[{j}]"), format!("enum value {e}"));
+                        }
+                        if values[..j]
+                            .iter()
+                            .any(|prev| param_value_eq(&v.kind, prev, value))
+                        {
+                            push(
+                                format!("{enum_path}[{j}]"),
+                                format!("duplicate enum value `{value}`"),
+                            );
+                        }
+                    }
+                    if let Some(d) = &v.default {
+                        if !enum_contains(&v.kind, values, d) {
+                            push(
+                                format!("{path}.default"),
+                                format!(
+                                    "default `{d}` is not one of the declared enum values"
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         if self.exits.is_empty() {
             push(
                 "meta.json:exits".to_string(),
@@ -996,6 +1566,193 @@ mod tests {
             issues.iter().any(|i| i.msg.contains("duplicate parameter key")),
             "{issues:?}"
         );
+    }
+
+    #[test]
+    fn variables_parse_and_lint_green_with_defaults() {
+        let m = meta(
+            r#"{"schema_version":1,"name":"任务1","variables":[
+                 {"key":"max_rounds","type":"int","default":3,"min":1,"max":99,
+                  "label":"刷本轮数","description":"使用端可改","group":"运行参数",
+                  "runner_editable":true},
+                 {"key":"group","type":"string","value_source":"ocr_text",
+                  "asset_id":"O_预设","default":"御魂","label":"预设分组"},
+                 {"key":"account_tag","type":"string","enum":["主号","小号"],
+                  "default":"主号","runner_editable":true},
+                 {"key":"battle_count","type":"int","scope":"runtime","default":0}
+               ]}"#,
+        );
+        assert!(m.lint_issues().is_empty(), "{:?}", m.lint_issues());
+        assert_eq!(
+            m.declared_variable_keys(),
+            ["account_tag", "battle_count", "group", "max_rounds"]
+                .into_iter()
+                .map(String::from)
+                .collect()
+        );
+        assert_eq!(
+            m.declared_input_variable_keys(),
+            ["account_tag", "group", "max_rounds"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            "runtime-scope variables are flow-local and not injected"
+        );
+        let defaults = m.variable_defaults().expect("defaults");
+        assert_eq!(defaults["max_rounds"], oas_flow::Value::Num(3.0));
+        assert_eq!(defaults["group"], oas_flow::Value::Str("御魂".into()));
+        assert_eq!(defaults["battle_count"], oas_flow::Value::Num(0.0));
+        // Effective/ux helpers.
+        let vars = m.effective_variables();
+        assert_eq!(vars.len(), 4);
+        let group = vars.iter().find(|v| v.key == "group").expect("group");
+        assert!(group.is_ocr_text() && group.is_input() && group.runner_editable());
+        let runtime = vars.iter().find(|v| v.key == "battle_count").expect("runtime");
+        assert_eq!(runtime.scope(), "runtime");
+        assert!(!runtime.runner_editable(), "runtime scope is never Runner-editable");
+        // Legacy params bridge is a no-op for V2 meta.
+        assert!(!m.has_legacy_params());
+        assert!(m.legacy_params_warnings().is_empty());
+    }
+
+    #[test]
+    fn variable_validation_reports_exact_paths() {
+        let m = meta(
+            r#"{"schema_version":1,"name":"x","variables":[
+                 {"key":"2bad","type":"weird"},
+                 {"key":"max_rounds","type":"int"},
+                 {"key":"max_rounds","type":"int"},
+                 {"key":"noasset","type":"string","value_source":"ocr_text","default":"x"},
+                 {"key":"asset_literal","type":"string","asset_id":"O_x","default":"x"},
+                 {"key":"bad_runtime","type":"string","scope":"runtime",
+                  "value_source":"ocr_text","asset_id":"O_x","default":"x",
+                  "runner_editable":true},
+                 {"key":"ratio","type":"int","default":1.5},
+                 {"key":"range","type":"int","min":9,"max":1},
+                 {"key":"flag","type":"bool","min":0},
+                 {"key":"mode","type":"string","enum":[],"default":"a"},
+                 {"key":"long_label","type":"string","label":""}
+               ]}"#,
+        );
+        let issues = m.lint_issues();
+        let got: Vec<&str> = issues.iter().map(|i| i.path.as_str()).collect();
+        for want in [
+            "meta.json:variables[0].key",
+            "meta.json:variables[0].type",
+            "meta.json:variables[2].key",
+            "meta.json:variables[3].asset_id",
+            "meta.json:variables[4].asset_id",
+            "meta.json:variables[5].value_source",
+            "meta.json:variables[5].runner_editable",
+            "meta.json:variables[6].default",
+            "meta.json:variables[7].max",
+            "meta.json:variables[8].min",
+            "meta.json:variables[9].enum",
+            "meta.json:variables[10].label",
+        ] {
+            assert!(got.contains(&want), "missing {want} in {got:?}");
+        }
+    }
+
+    #[test]
+    fn validate_variable_values_covers_type_range_enum_required_and_unknown() {
+        let m = meta(
+            r#"{"schema_version":1,"name":"x","variables":[
+                 {"key":"max_rounds","type":"int","default":3,"min":1,"max":99},
+                 {"key":"mode","type":"string","enum":["fast","safe"],"default":"fast"},
+                 {"key":"needed","type":"int","required":true}
+               ]}"#,
+        );
+        let vars = m.effective_variables();
+        let values = |v: serde_json::Value| v.as_object().cloned().expect("object");
+        // Valid overrides.
+        assert!(validate_variable_values(
+            &vars,
+            &values(serde_json::json!({"max_rounds":5,"mode":"safe","needed":7}))
+        )
+        .is_ok());
+        // Out of range / wrong type / bad enum.
+        let errs = validate_variable_values(
+            &vars,
+            &values(serde_json::json!({"max_rounds":0,"mode":"turbo","needed":"x"})),
+        )
+        .expect_err("invalid");
+        assert!(errs.iter().any(|e| e.contains("below min")), "{errs:?}");
+        assert!(errs.iter().any(|e| e.contains("enum values")), "{errs:?}");
+        assert!(errs.iter().any(|e| e.contains("not a valid `int`")), "{errs:?}");
+        // Missing required variable without a default.
+        let errs = validate_variable_values(&vars, &values(serde_json::json!({})))
+            .expect_err("missing required");
+        assert!(errs.iter().any(|e| e.contains("缺少必填变量")), "{errs:?}");
+        // Unknown key lists the allowed set.
+        let errs = validate_variable_values(&vars, &values(serde_json::json!({"nope":1})))
+            .expect_err("unknown");
+        assert!(errs.iter().any(|e| e.contains("unknown variable")), "{errs:?}");
+    }
+
+    #[test]
+    fn effective_variables_imports_legacy_params_in_memory() {
+        let m = meta(
+            r#"{"schema_version":1,"name":"任务1","params":[
+                 {"key":"max_rounds","type":"int","default":3,"min":1,"max":99,
+                  "label":"轮数","group":"运行参数","required":true},
+                 {"key":"group","type":"string","default":"御魂","role":"ocr_text",
+                  "label":"O_group","asset_id":"O_group"},
+                 {"key":"battle_count","type":"int","default":0}
+               ]}"#,
+        );
+        assert!(m.has_legacy_params());
+        assert!(m.variables.is_empty(), "reading must not write variables");
+        let vars = m.effective_variables();
+        assert_eq!(vars.len(), 3);
+        let group = vars.iter().find(|v| v.key == "group").expect("group");
+        assert_eq!(group.value_source(), "ocr_text");
+        assert_eq!(group.asset_id.as_deref(), Some("O_group"));
+        assert_eq!(group.default, Some(serde_json::json!("御魂")));
+        assert_eq!(group.label.as_deref(), Some("O_group"));
+        let plain = vars.iter().find(|v| v.key == "max_rounds").expect("plain");
+        assert_eq!(plain.value_source(), "literal");
+        assert!(plain.asset_id.is_none());
+        assert_eq!(plain.min, Some(1.0));
+        assert_eq!(plain.required, Some(true));
+        // Defaults go through the same bridge.
+        let defaults = m.variable_defaults().expect("defaults");
+        assert_eq!(defaults["group"], oas_flow::Value::Str("御魂".into()));
+        // The deprecated ParamDecl accessors now delegate to variables too.
+        #[allow(deprecated)]
+        {
+            assert_eq!(m.declared_param_keys().len(), 3);
+            assert_eq!(m.param_defaults().expect("legacy defaults").len(), 3);
+        }
+        // Nothing was mutated: the params array is untouched and no variables
+        // appeared on disk/struct.
+        assert_eq!(m.params.len(), 3);
+        assert!(m.variables.is_empty());
+    }
+
+    #[test]
+    fn legacy_params_warnings_t10_are_advisory_only() {
+        // Legacy-only: one T10 warning, and lint_issues stays green.
+        let legacy = meta(r#"{"schema_version":1,"name":"x","params":[
+             {"key":"loop_n","type":"int","default":3}]}"#);
+        assert!(legacy.lint_issues().is_empty(), "{:?}", legacy.lint_issues());
+        let warnings = legacy.legacy_params_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].code, "T10");
+        assert_eq!(warnings[0].path, "meta.json:params");
+        // Half-migrated file: the params row missing from variables is warned.
+        let mixed = meta(r#"{"schema_version":1,"name":"x",
+             "variables":[{"key":"loop_n","type":"int","default":3}],
+             "params":[{"key":"loop_n","type":"int","default":3},
+                       {"key":"old","type":"int","default":1}]}"#);
+        let warnings = mixed.legacy_params_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].path, "meta.json:params[1]");
+        // Fully represented: no warning.
+        let both = meta(r#"{"schema_version":1,"name":"x",
+             "variables":[{"key":"loop_n","type":"int","default":3}],
+             "params":[{"key":"loop_n","type":"int","default":3}]}"#);
+        assert!(both.legacy_params_warnings().is_empty(), "{:?}", both.legacy_params_warnings());
     }
 
     #[test]

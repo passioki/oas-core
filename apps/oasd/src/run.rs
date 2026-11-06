@@ -613,22 +613,30 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     out(&format!("task={}", task_dir.display()));
     out(&format!("assets={}", assets.len()));
 
-    // ---- task parameters (M0 unified template, §22.34.2) --------------------
+    // ---- task variables (V2.0 unified variable model, design §2.2) ---------
     // The single merge point for the four entry points (design §C.3):
     //   `RunOptions.params` (already the winning explicit layers: CLI /
-    //   entry / Runner values / Studio params) > `meta.params[].default`.
-    // After the merge the resulting values are re-checked against
-    // `meta.params` (design §C.3: type/min/max/enum/required/unknown keys) —
-    // before any step can run or click. A task whose `meta.params` is empty
-    // keeps the legacy contract (any `--param` key is injectable, no check),
-    // and a parameter the flow uses but nobody declared/provided is still a
-    // loud runtime failure from `param()`.
+    //   entry / Runner values / Studio params) > variable `default`.
+    // After the merge the resulting values are re-checked against the effective
+    // `meta.variables` (design §3.1: type/min/max/enum/required/unknown keys) —
+    // before any step can run or click. A task with no variables keeps the
+    // legacy contract (any `--param` key is injectable, no check), and a variable
+    // the flow uses but nobody declared/provided is still a loud runtime failure
+    // from `param()`.
+    //
+    // V2.0a bridge: a task whose `meta.json` only has the legacy `params` array
+    // gets its variables imported in memory by
+    // `Meta::effective_variables()` (deprecated two-array compatibility).
     let meta = bundle
         .load_meta()
         .map_err(|e| format!("task bundle `{}`: {e}", task_dir.display()))?;
+    let effective_variables = meta
+        .as_ref()
+        .map(|m| m.effective_variables())
+        .unwrap_or_default();
     let mut params = match &meta {
         Some(meta) => meta
-            .param_defaults()
+            .variable_defaults()
             .map_err(|e| format!("task bundle `{}`: {e}", task_dir.display()))?,
         None => BTreeMap::new(),
     };
@@ -638,29 +646,27 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     for (key, value) in &opts.params {
         params.insert(key.clone(), json_param_value(value));
     }
-    // Design §C.3: re-check the **merged** values (defaults + every explicit
-    // layer) against `meta.params` before the runtime is built, so a bad
-    // `values.json` / entry / Studio body / `--param` value fails here with a
-    // precise `task config:` error instead of later with the generic
-    // "declare it in meta.params" message. The check runs on the runtime values
-    // that are about to be injected (all scalars), which also keeps the legacy
-    // non-scalar -> compact-JSON-string fallback working.
+    // Design §3.1: re-check the **merged** values (defaults + every explicit
+    // layer) against the effective variables before the runtime is built, so a
+    // bad `values.json` / entry / Studio body / `--param` value fails here with
+    // a precise `task config:` error instead of later with the generic
+    // "declare it in ... variables" message. The check runs on the runtime
+    // values that are about to be injected (all scalars), which also keeps the
+    // legacy non-scalar -> compact-JSON-string fallback working.
     //
-    // `meta.params` empty = legacy task: no schema exists, so any key stays
-    // injectable (old tasks / old CLI invocations must not start failing).
-    if let Some(meta) = &meta {
-        if !meta.params.is_empty() {
-            let merged_json: serde_json::Map<String, JsonValue> = params
-                .iter()
-                .map(|(key, value)| (key.clone(), crate::checkpoint::value_to_json(value)))
-                .collect();
-            if let Err(errors) = oas_task::validate_param_values(&meta.params, &merged_json) {
-                return Err(format!(
-                    "task config: parameter values do not match `meta.params` of `{}`:\n  - {}",
-                    task_dir.display(),
-                    errors.join("\n  - ")
-                ));
-            }
+    // No variables = legacy task: no schema exists, so any key stays injectable
+    // (old tasks / old CLI invocations must not start failing).
+    if !effective_variables.is_empty() {
+        let merged_json: serde_json::Map<String, JsonValue> = params
+            .iter()
+            .map(|(key, value)| (key.clone(), crate::checkpoint::value_to_json(value)))
+            .collect();
+        if let Err(errors) = oas_task::validate_variable_values(&effective_variables, &merged_json) {
+            return Err(format!(
+                "task config: parameter values do not match `meta.variables` of `{}`:\n  - {}",
+                task_dir.display(),
+                errors.join("\n  - ")
+            ));
         }
     }
     out(&format!(
@@ -2316,6 +2322,58 @@ mod tests {
         );
     }
 
+    // V2.0: the same flow/metrics as PARAM_META but with `meta.variables` (the
+    // unified variable model; `meta.params` is the legacy bridge only).
+    const VARIABLE_META: &str = r#"{"schema_version":1,"name":"n5-param-test",
+        "variables":[{"key":"max_rounds","type":"int","default":3,"min":1,"max":99,
+                      "runner_editable":true}],
+        "exits":{"done":{"result":"success"},"failed":{"result":"retryable"}}}"#;
+
+    #[test]
+    fn run_injects_meta_variable_defaults_and_validates_overrides() {
+        let td = TempDir::new("var");
+        let task = td.path().join("task");
+        let replay = td.path().join("replay");
+        write_task_bundle_with(&task, PARAM_FLOW, VARIABLE_META);
+        write_replay_bundle(&replay);
+
+        // No --param => variable default (3) => 3 * 2 = 6.
+        let (r, lines) = run_capture(&replay_options(&task, &replay, 1));
+        assert_eq!(r.outcome(), Outcome::Done, "events: {:?}", r.events);
+        assert_eq!(line_with(&lines, "params="), "params=1 cli_params=0");
+        assert!(
+            r.events.iter().any(|e| e.detail.contains("Num(6.0)")),
+            "{:?}",
+            r.events
+        );
+
+        // CLI override wins => 7 * 2 = 14.
+        let mut opts = replay_options(&task, &replay, 1);
+        opts.params
+            .insert("max_rounds".to_string(), parse_param_value("7"));
+        let (r, _) = run_capture(&opts);
+        assert!(
+            r.events.iter().any(|e| e.detail.contains("Num(14.0)")),
+            "{:?}",
+            r.events
+        );
+
+        // A value violating the variable schema fails loudly with the V2 wording.
+        let mut opts = replay_options(&task, &replay, 1);
+        opts.params
+            .insert("max_rounds".to_string(), parse_param_value("0"));
+        let err = execute(&opts, &mut |_| {}).expect_err("min violation");
+        assert!(err.contains("meta.variables"), "{err}");
+        assert!(err.contains("below min"), "{err}");
+
+        // An unknown key is rejected by the variable schema (not injected).
+        let mut opts = replay_options(&task, &replay, 1);
+        opts.params
+            .insert("unknown_key".to_string(), serde_json::json!(1));
+        let err = execute(&opts, &mut |_| {}).expect_err("unknown variable");
+        assert!(err.contains("unknown variable"), "{err}");
+    }
+
     // PR3: the explicit layer (`RunOptions.params`) carries JSON values straight
     // from the scheduler/queue/Studio sources; only `--param` text is guessed.
     const TYPED_PARAM_FLOW: &str = r#"{"schema_version":1,"name":"typed-params","steps":[
@@ -2537,7 +2595,7 @@ mod tests {
         let err = setup_error(&opts);
         assert!(err.starts_with("task config: "), "{err}");
         assert!(err.contains("ghost"), "{err}");
-        assert!(err.contains("unknown parameter"), "{err}");
+        assert!(err.contains("unknown variable"), "{err}");
         // The validation error carries the declared keys.
         assert!(err.contains("code, n, flag"), "allowed list missing: {err}");
     }
@@ -2563,7 +2621,7 @@ mod tests {
         let err = setup_error(&replay_options(&task, &replay, 1));
         assert!(err.starts_with("task config: "), "{err}");
         assert!(err.contains("needed"), "{err}");
-        assert!(err.contains("缺少必填参数"), "{err}");
+        assert!(err.contains("缺少必填变量"), "{err}");
     }
 
     #[test]

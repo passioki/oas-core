@@ -49,7 +49,11 @@ use crate::{
 };
 
 /// On-disk `manifest.package_schema` supported by this engine.
-pub const PACKAGE_SCHEMA: u32 = 1;
+///
+/// V2.0 (`docs/VARIABLES-V2-DESIGN.md` §2.5/§6.3): 1 → 2 because
+/// `params_schema` was replaced by `variables_schema`. Old packages are refused
+/// (no dual-read path); V2.0b implements the install-time message.
+pub const PACKAGE_SCHEMA: u32 = 2;
 
 /// Package suffix. It is still a zip; the suffix only keeps double-click
 /// extractors and file pickers honest.
@@ -129,7 +133,8 @@ pub struct Manifest {
     pub source: SourceInfo,
     pub engine: EngineInfo,
     pub files: Vec<FileEntry>,
-    pub params_schema: ParamsSchema,
+    /// V2.0 variable schema snapshot (`meta.variables` + call-site mapping).
+    pub variables_schema: VariablesSchema,
     pub dependencies: Vec<Dependency>,
     pub asset_refs: Vec<AssetRef>,
     pub platform: Platform,
@@ -167,6 +172,11 @@ pub struct FileEntry {
     pub bytes: u64,
 }
 
+/// **Deprecated** (V2.0a compat): the pre-V2 `params_schema` snapshot shape.
+///
+/// `package_schema=2` packages use [`VariablesSchema`] instead; this type is
+/// kept only so the intermediate serve build keeps compiling (V2.0b deletes it).
+#[deprecated(note = "V2.0: packages use VariablesSchema (package_schema=2)")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParamsSchema {
     /// Snapshot of `meta.params` (raw JSON array, never a second authority).
@@ -176,17 +186,32 @@ pub struct ParamsSchema {
     pub call_deps: Vec<CallDepSchema>,
 }
 
+/// V2.0 manifest variable snapshot (design §2.5).
+///
+/// Like the old `params_schema.own` this is a **snapshot, not a second
+/// authority**: after install the task's `meta.variables` wins.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VariablesSchema {
+    /// Effective variables of the published task (`meta.variables`, or the
+    /// in-memory import of a legacy `meta.params`).
+    #[serde(default)]
+    pub own: Vec<crate::meta::Variable>,
+    /// One row per `call_task` site in the **authored root flow**.
+    #[serde(default)]
+    pub call_deps: Vec<CallDepSchema>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CallDepSchema {
     pub child: String,
-    /// child parameter key -> raw parent expression string.
+    /// child variable key -> raw parent expression string.
     #[serde(default)]
     pub mapping: BTreeMap<String, String>,
     /// `"all"` (default) or `"none"`.
     pub inherit: String,
-    /// Child `meta.params[].key` snapshot, in declaration order.
+    /// Child effective input-variable keys snapshot, in declaration order.
     #[serde(default)]
-    pub child_params: Vec<String>,
+    pub child_variables: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1064,14 +1089,21 @@ fn walk_call_deps(
                 .and_then(|v| v.as_str())
                 .unwrap_or("all")
                 .to_string();
-            let child_params = read_dep_task(tasks_dir, &child, "params_schema")
-                .map(|dep| dep.meta.params.iter().map(|p| p.key.clone()).collect())
+            let child_variables = read_dep_task(tasks_dir, &child, "variables_schema")
+                .map(|dep| {
+                    dep.meta
+                        .effective_variables()
+                        .into_iter()
+                        .filter(|v| v.is_input())
+                        .map(|v| v.key)
+                        .collect()
+                })
                 .unwrap_or_default();
             out.push(CallDepSchema {
                 child,
                 mapping,
                 inherit,
-                child_params,
+                child_variables,
             });
         }
         for key in ["then", "else", "body"] {
@@ -1477,11 +1509,8 @@ pub fn build_package(
             flow_ops: flow_ops_for_manifest,
         },
         files,
-        params_schema: ParamsSchema {
-            own: serde_json::from_str::<serde_json::Value>(&meta_text)
-                .ok()
-                .and_then(|v| v.get("params").cloned())
-                .unwrap_or_else(|| serde_json::json!([])),
+        variables_schema: VariablesSchema {
+            own: meta.effective_variables(),
             call_deps: collect_call_deps(&root_flow_text, &opts.tasks_dir)?,
         },
         dependencies: deps
@@ -1745,7 +1774,8 @@ fn payload_map_from_zip(
         .map_err(|e| format!("{MANIFEST_FILE}: invalid JSON: {e}"))?;
     if manifest.package_schema != PACKAGE_SCHEMA {
         return Err(format!(
-            "unsupported package_schema {} (this engine supports {PACKAGE_SCHEMA})",
+            "unsupported package_schema {} (this engine supports {PACKAGE_SCHEMA}); \
+             re-publish the task with the V2 variable model",
             manifest.package_schema
         ));
     }
@@ -2164,12 +2194,12 @@ mod tests {
         assert_eq!(m.dependencies[0].task_id, "B");
         assert_eq!(m.dependencies[0].version, 2);
         assert!(m.dependencies[0].included);
-        assert_eq!(m.params_schema.own[0]["key"], "y");
-        let dep = &m.params_schema.call_deps[0];
+        assert_eq!(m.variables_schema.own[0].key, "y");
+        let dep = &m.variables_schema.call_deps[0];
         assert_eq!(dep.child, "B");
         assert_eq!(dep.mapping["x"], "param('y')");
         assert_eq!(dep.inherit, "none");
-        assert_eq!(dep.child_params, vec!["x".to_string()]);
+        assert_eq!(dep.child_variables, vec!["x".to_string()]);
         assert!(m.signature.is_none());
         assert_eq!(m.platform.os, platform_os());
         assert!(m.platform.needs_adb);
@@ -2178,6 +2208,82 @@ mod tests {
         assert!(paths.contains(&"task/flow.json"), "{paths:?}");
         assert!(paths.contains(&"deps/B/flow.json"), "{paths:?}");
         assert!(!paths.iter().any(|p| p.starts_with("manifest")), "{paths:?}");
+    }
+
+    #[test]
+    fn manifest_uses_v2_variables_schema_and_package_schema_2() {
+        let td = TempDir::new("variables-schema");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).unwrap();
+        make_task(&tasks, "A", 1, "[]", CALL_B_WITH_PARAMS);
+        // Overwrite A with a V2 variables meta (no legacy params).
+        std::fs::write(
+            tasks.join("A").join("meta.json"),
+            r#"{"schema_version":1,"name":"A","version":1,
+                "variables":[
+                  {"key":"y","type":"string","default":"突破","runner_editable":true},
+                  {"key":"max_rounds","type":"int","default":3,"min":1,"max":99}
+                ],
+                "exits":{"done":{"result":"success"},"failed":{"result":"retryable"}}}"#,
+        )
+        .unwrap();
+        make_task(&tasks, "B", 1, "[]", FINISH_DONE);
+        std::fs::write(
+            tasks.join("B").join("meta.json"),
+            r#"{"schema_version":1,"name":"B","version":1,
+                "variables":[{"key":"x","type":"string","default":"甲"}],
+                "exits":{"done":{"result":"success"},"failed":{"result":"retryable"}}}"#,
+        )
+        .unwrap();
+        let outcome = build(&tasks, "A", &td.path().join("out"), false);
+        let m = &outcome.manifest;
+        assert_eq!(m.package_schema, 2, "V2 package schema");
+        let own: Vec<&str> = m
+            .variables_schema
+            .own
+            .iter()
+            .map(|v| v.key.as_str())
+            .collect();
+        assert_eq!(own, vec!["y", "max_rounds"]);
+        assert_eq!(m.variables_schema.own[1].kind, "int");
+        assert_eq!(m.variables_schema.own[1].min, Some(1.0));
+        let dep = &m.variables_schema.call_deps[0];
+        assert_eq!(dep.child, "B");
+        assert_eq!(dep.child_variables, vec!["x".to_string()]);
+        // Legacy params-only tasks are imported into the snapshot (bridge).
+        let td2 = TempDir::new("variables-schema-legacy");
+        let tasks2 = td2.path().join("tasks");
+        std::fs::create_dir_all(&tasks2).unwrap();
+        make_task(
+            &tasks2,
+            "L",
+            1,
+            r#"[{"key":"max_rounds","type":"int","default":3}]"#,
+            FINISH_DONE,
+        );
+        let outcome2 = build(&tasks2, "L", &td2.path().join("out"), false);
+        assert_eq!(outcome2.manifest.variables_schema.own[0].key, "max_rounds");
+        assert_eq!(
+            outcome2.manifest.variables_schema.own[0].value_source(),
+            "literal"
+        );
+    }
+
+    #[test]
+    fn package_schema_1_is_rejected_with_a_republish_message() {
+        let td = TempDir::new("old-schema");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).unwrap();
+        make_task(&tasks, "A", 1, "[]", FINISH_DONE);
+        let outcome = build(&tasks, "A", &td.path().join("out"), false);
+        let archive = read_package(&outcome.path).expect("read");
+        let mut old = archive.manifest.clone();
+        old.package_schema = 1;
+        let path = td.path().join("old.oaspkg");
+        rewrite_archive(&archive, &path, Some(&old), None, &[]);
+        let err = read_package(&path).expect_err("schema=1 must be refused");
+        assert!(err.contains("unsupported package_schema 1"), "{err}");
+        assert!(err.contains("re-publish"), "{err}");
     }
 
     #[test]

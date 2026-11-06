@@ -39,10 +39,11 @@ mod meta;
 pub mod ocr_var;
 pub mod package;
 pub use meta::{
-    validate_param_values, Capabilities, EntryRequires, ExitDecl, Meta, MetaEntry, ParamDecl,
-    QuotaHint, ScheduleHint, CATEGORY_DEFAULT, DEFAULT_EXIT_NAMES, EXIT_RESULTS,
-    PARAM_DESCRIPTION_MAX_CHARS, PARAM_GROUP_MAX_CHARS, PARAM_LABEL_MAX_CHARS, PARAM_TYPES,
-    TEMPLATE_VERSION,
+    validate_param_values, validate_variable_values, Capabilities, EntryRequires, ExitDecl, Meta,
+    MetaEntry, ParamDecl, QuotaHint, ScheduleHint, Variable, CATEGORY_DEFAULT, DEFAULT_SCOPE,
+    DEFAULT_VALUE_SOURCE, DEFAULT_EXIT_NAMES, EXIT_RESULTS, PARAM_DESCRIPTION_MAX_CHARS,
+    PARAM_GROUP_MAX_CHARS, PARAM_LABEL_MAX_CHARS, PARAM_TYPES, TEMPLATE_VERSION,
+    VARIABLE_SCOPES, VARIABLE_TYPES, VARIABLE_VALUE_SOURCES,
 };
 
 /// On-disk schema version for `meta.json` / `flow.json` / `assets.json`.
@@ -1486,22 +1487,26 @@ fn expand_call_steps(
             stack.push(task.clone());
             expand_call_steps(&mut target_steps, tasks_dir, stack, depth + 1, warnings)?;
             stack.pop();
-            // §C.4.3: subtask defaults are literal JSON values (only declared
-            // keys that actually have a default). A default that is not a scalar
-            // is a broken target meta: fail the caller's load (P1-2), never
-            // silently drop the default while the subtask still runs.
+            // §C.4.3 + V2.0: subtask defaults come from the child's effective
+            // variables (scope=input), literal JSON values. A default that is not
+            // a scalar is a broken target meta: fail the caller's load (P1-2),
+            // never silently drop the default while the subtask still runs.
+            // Runtime-scope variables are flow-local and are not injected.
             let mut defaults = serde_json::Map::new();
             let mut declared_keys = Vec::new();
-            for p in &target_meta.params {
-                declared_keys.push(p.key.clone());
-                if let Some(default) = &p.default {
+            for var in target_meta.effective_variables() {
+                if !var.is_input() {
+                    continue;
+                }
+                declared_keys.push(var.key.clone());
+                if let Some(default) = &var.default {
                     oas_flow::json_to_value(default).map_err(|e| {
                         format!(
-                            "{at}: meta.params `{}`.default is not a scalar value: {e}",
-                            p.key
+                            "{at}: meta.variables `{}`.default is not a scalar value: {e}",
+                            var.key
                         )
                     })?;
-                    defaults.insert(p.key.clone(), default.clone());
+                    defaults.insert(var.key.clone(), default.clone());
                 }
             }
             // `inherit:"all"` needs no block list: same-name values simply stay
@@ -3131,6 +3136,22 @@ impl TaskBundle {
         self.lint_into_full(issues, external_assets, Some(tasks_dir));
     }
 
+    /// **T10 warnings** (V2.0, non-blocking; docs/VARIABLES-V2-DESIGN.md §2.2).
+    ///
+    /// Legacy `meta.params` rows are accepted for reading old tasks/packages, but
+    /// new code reads `meta.variables`. This returns the advisory issues only
+    /// (never part of [`Self::lint`], which is the blocking error channel): the
+    /// caller (serve/CLI, V2.0b) may surface them as warnings.
+    pub fn lint_warnings(&self) -> Vec<LintIssue> {
+        match std::fs::read_to_string(self.meta_path()) {
+            Ok(text) => match Meta::from_json(&text) {
+                Ok(meta) => meta.legacy_params_warnings(),
+                Err(_) => Vec::new(),
+            },
+            Err(_) => Vec::new(),
+        }
+    }
+
     fn lint_into_full(
         &self,
         issues: &mut Vec<LintIssue>,
@@ -3226,8 +3247,9 @@ impl TaskBundle {
                     ));
                 }
             }
-            // T3: every param('key') must be declared in meta.params.
-            let params = meta.declared_param_keys();
+            // T3: every param('key') must be declared in meta.variables (V2.0:
+            // `meta.params` no longer counts; T10 reports legacy rows separately).
+            let params = meta.declared_input_variable_keys();
             let listed_params = join_or_none(&params);
             for site in flow.param_uses_at() {
                 match site.key {
@@ -3243,7 +3265,7 @@ impl TaskBundle {
                             "T3",
                             format!("flow.json:{}", site.path),
                             format!(
-                                "param(`{key}`) is used but not declared in meta.params \
+                                "param(`{key}`) is used but not declared in meta.variables \
                                  (declared: {listed_params})"
                             ),
                         ))
@@ -3279,12 +3301,12 @@ impl TaskBundle {
             lint_call_tasks(&flow, meta.as_ref(), tasks_dir, issues);
         }
 
-        // T8 (2026-11-06 参数→素材 redesign, C1′): derived `meta.params` rows
-        // (`asset_id` present) must match the ocr_var assets + the flow's
-        // reference/param-usage set. Lead ruling 4: an **error** (publish
-        // blocking); the save-triggered sync heals it, lint never rewrites.
+        // T8 (V2.0): every `value_source=ocr_text` variable must match its bound
+        // ocr_var asset + the flow's reference/param-usage set. Lead ruling 4: an
+        // **error** (publish blocking); the save-triggered sync heals it, lint
+        // never rewrites.
         if let (Some(meta), Some(assets)) = (&meta, assets.as_ref()) {
-            issues.extend(crate::ocr_var::derived_param_issues(meta, assets, &flow));
+            issues.extend(crate::ocr_var::derived_variable_issues(meta, assets, &flow));
         }
     }
 
@@ -3879,8 +3901,10 @@ fn lint_call_tasks(
             )),
         }
 
-        let target_keys = target_meta.as_ref().map(Meta::declared_param_keys);
-        let parent_keys = parent_meta.map(Meta::declared_param_keys);
+        let target_keys = target_meta
+            .as_ref()
+            .map(Meta::declared_input_variable_keys);
+        let parent_keys = parent_meta.map(Meta::declared_input_variable_keys);
         for (child, parent_ref) in &use_site.params {
             let param_path = format!("{base}.params.{child}");
             if let Some(target_keys) = &target_keys {
@@ -4632,6 +4656,62 @@ mod tests {
         );
         // T1 is unaffected: the caller's own finish terminates the flow.
         assert!(flow.ends_with_finish());
+    }
+
+    #[test]
+    fn load_flow_uses_child_variables_for_defaults_and_block() {
+        // V2.0: subtask defaults/block come from the child's effective
+        // variables (scope=input). Runtime-scope variables are flow-local and
+        // must not be injected or block same-name inheritance.
+        let td = TempDir::new("calltask-vars");
+        raw_task(
+            &td,
+            "子任务",
+            r#"{"schema_version":1,"name":"子任务","steps":[
+                 {"op":"log","args":{"level":"info","text":"'inside'"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+            Some(
+                r#"{"schema_version":1,"name":"子任务","variables":[
+                     {"key":"触发文字","type":"string","default":"默认"},
+                     {"key":"max_rounds","type":"int","default":3},
+                     {"key":"no_default","type":"string"},
+                     {"key":"battle_count","type":"int","scope":"runtime","default":0}]}"#,
+            ),
+        );
+        let caller = raw_task(
+            &td,
+            "调用者",
+            r#"{"schema_version":1,"name":"调用者","steps":[
+                 {"op":"call_task","args":{"task":"子任务","inherit":"none",
+                   "params":{"触发文字":"param('识别关键词')"}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+            Some(
+                r#"{"schema_version":1,"name":"调用者","variables":[
+                     {"key":"识别关键词","type":"string","default":"突破"}]}"#,
+            ),
+        );
+        let (flow, warnings) = caller
+            .load_flow_with_warnings()
+            .expect("load with warnings");
+        let flow = flow.expect("flow present");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let oas_flow::Step::WithParams {
+            defaults, block, ..
+        } = with_params_of(&flow.steps[0])
+        else {
+            unreachable!()
+        };
+        assert_eq!(defaults.len(), 2, "{defaults:?}");
+        assert_eq!(defaults["触发文字"], oas_flow::Value::Str("默认".into()));
+        assert_eq!(defaults["max_rounds"], oas_flow::Value::Num(3.0));
+        assert!(!defaults.contains_key("no_default"), "no default -> not injected");
+        assert!(
+            !defaults.contains_key("battle_count"),
+            "runtime-scope variable must not be injected"
+        );
+        // inherit:"none" blocks exactly the child's input keys.
+        let names: Vec<&str> = block.iter().map(|k| k.as_str()).collect();
+        assert_eq!(names, vec!["触发文字", "max_rounds", "no_default"], "{block:?}");
     }
 
     #[test]
@@ -5896,6 +5976,93 @@ mod tests {
             all.iter().all(|(_, issues)| issues.is_empty()),
             "{all:?}"
         );
+    }
+
+    #[test]
+    fn t3_uses_variables_and_reports_legacy_params_as_warnings() {
+        let td = TempDir::new("t3vars");
+        let b = open(&td);
+        // Declared V2 variable: green.
+        write_flow_only_bundle(
+            &b,
+            r#"{"schema_version":1,"name":"任务1","variables":[
+                 {"key":"k","type":"string","default":"完成"}]}"#,
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"param('k')"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        b.lint().expect("declared variable is green");
+        assert!(b.lint_warnings().is_empty(), "{:?}", b.lint_warnings());
+        // Undeclared: T3 names meta.variables (not meta.params).
+        write_flow_only_bundle(
+            &b,
+            r#"{"schema_version":1,"name":"任务1","variables":[
+                 {"key":"other","type":"string","default":"x"}]}"#,
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"param('k')"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let issues = b.lint().expect_err("undeclared variable");
+        let t3: Vec<&LintIssue> = issues.iter().filter(|i| i.code == "T3").collect();
+        assert_eq!(t3.len(), 1, "{issues:?}");
+        assert!(t3[0].msg.contains("meta.variables"), "{}", t3[0]);
+        assert!(!t3[0].msg.contains("meta.params"), "{}", t3[0]);
+        // Legacy params-only task: lint stays green (in-memory bridge) but T10
+        // warns non-blockingly.
+        write_flow_only_bundle(
+            &b,
+            r#"{"schema_version":1,"name":"任务1","params":[
+                 {"key":"k","type":"string","default":"完成"}]}"#,
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"log","args":{"text":"param('k')"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        b.lint().expect("legacy params bridge keeps lint green");
+        let warnings = b.lint_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].code, "T10");
+        assert_eq!(warnings[0].path, "meta.json:params");
+    }
+
+    #[test]
+    fn lint_t7_uses_child_and_parent_variables() {
+        let td = TempDir::new("t7vars");
+        let tasks = td.path().join("tasks");
+        std::fs::create_dir_all(&tasks).expect("tasks dir");
+        write_flow_only_bundle(
+            &TaskBundle::open(tasks.join("子任务")).expect("target"),
+            r#"{"schema_version":1,"name":"子任务","variables":[
+                 {"key":"trigger_text","type":"string","default":"默认"},
+                 {"key":"child_count","type":"int","default":2},
+                 {"key":"runtime_only","type":"int","scope":"runtime","default":0}]}"#,
+            r#"{"schema_version":1,"name":"子任务","steps":[
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        write_flow_only_bundle(
+            &TaskBundle::open(tasks.join("父任务")).expect("parent"),
+            r#"{"schema_version":1,"name":"父任务","variables":[
+                 {"key":"keyword","type":"string","default":"突破"}]}"#,
+            r#"{"schema_version":1,"name":"父任务","steps":[
+                 {"op":"call_task","args":{"task":"子任务","params":{
+                   "trigger_text":"param('keyword')","child_count":"2"}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let issues = lint_task(&tasks, "父任务").expect("lint");
+        assert!(issues.is_empty(), "{issues:?}");
+        // A mapping to a runtime-only child variable is not a valid input key.
+        write_flow_only_bundle(
+            &TaskBundle::open(tasks.join("父任务")).expect("parent"),
+            r#"{"schema_version":1,"name":"父任务","variables":[
+                 {"key":"keyword","type":"string","default":"突破"}]}"#,
+            r#"{"schema_version":1,"name":"父任务","steps":[
+                 {"op":"call_task","args":{"task":"子任务","params":{
+                   "runtime_only":"1"}}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let issues = lint_task(&tasks, "父任务").expect("lint");
+        let t7: Vec<&LintIssue> = issues.iter().filter(|i| i.code == "T7").collect();
+        assert_eq!(t7.len(), 1, "{issues:?}");
+        assert!(t7[0].msg.contains("runtime_only"), "{}", t7[0]);
     }
 
     #[test]
