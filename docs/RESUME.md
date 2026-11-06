@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 128
-updated_at: 2026-11-06T20:4x+08:00
-trigger: 用户剩余项「变量系统 V2.0 实现」→ 按 `docs/VARIABLES-V2-DESIGN.md` 分 V2.0a 后端模型（`e1b816f`）/V2.0b serve/V2.0c UI（`d780a4b`）完成；Lead 验收（workspace 949/0、UI 2303/177/0/6、E2E seq128 77/76/0/1、用户数据副本冒烟）→ 提交推送
+checkpoint_seq: 129
+updated_at: 2026-11-06T22:0x+08:00
+trigger: 用户 21:26 反馈动作库一致性（拖动（拟人）没有素材选择/坐标输入应删除/其余动作向点击素材对齐）→ 后端 DragTarget::Asset + UI structuredDrag 重写 + 动作库审计；冒烟发现全局素材 T8 lint 假红 → 一并修复保存/发布/安装链路。commits `dce16c7` + `82dbca3`；Lead 验收 workspace 968/0、UI 2323/177/0/6、冒烟 save→lint→publish→install 全绿
 status: done
-code_head: `d780a4b`（V2.0b/c；dev 领先 main，docs 提交后统一 sync；未 tag/未 release）
-docs_head: V2.0 docs 提交见 `git log -1`
-next_action: V2.0 已完成并推送（未 tag/未 release）。后续：① **Firefox 手测**（构建页「变量」面板新建/编辑/删除/插入变量、动作目标用变量、Runner 配置两分节改值、发布/安装新包、旧包拒绝提示）；② V2.1（`variable('key')` 别名/条件/循环变量/T9/loop 数量变量）；③ V2.2（Profile 多账号/多模拟器、values.json v2）；④ oas-runner 独立仓根启动脚本 + pin bump 重打独立包；⑤ `loop n=param('max_rounds')` 文案、T5 手写 polygon 校验、真机 E2E；⑥ 更新检测鉴权/GC、tag/Release 策略。详见 `PENDING §E-96`、`ENGINE §22.67`、`VARIABLES-V2-DESIGN §10`。
+code_head: `82dbca3`（dev 领先 main，docs 提交后统一 sync；未 tag/未 release）
+docs_head: seq129 docs 提交见 `git log -1`
+next_action: seq129 已完成并推送（未 tag/未 release）。后续：① **Firefox 手测**（拖动属性页：起点/终点素材选择器与点击素材一致、无坐标输入；拖动/长按/定位点击/点击素材一致性；旧坐标端点只读提示；保存→lint→发布→Runner 安装）；② 旧 flow 拖动坐标端点需重建为素材端点（后端仍兼容运行）；③ V2.1（变量表达式/条件/循环/T9）、V2.2（Profile/多模拟器）；④ oas-runner 独立仓脚本+pin bump；⑤ 真机 E2E、T5 手写 polygon 校验、更新检测鉴权/GC、tag/Release 策略。详见 `PENDING §E-97`、`ENGINE §22.68`、`ACCEPTANCE` seq129 追加。
 ```
 
 ## 0. 目标（本阶段）
@@ -282,6 +282,14 @@ next_action: V2.0 已完成并推送（未 tag/未 release）。后续：① **F
 > - **V2.0c** `d780a4b`：Studio 变量面板/变量对话框（识别文字变量绑 ocr_var、param_key 只读；标量全字段）/「插入变量 ▾」/动作目标 key 集 variables 优先；Runner 配置两分节（识别文字变量 / literal 按 group，空组=通用）、隐藏 runtime/不可改、required 橙提示、PUT 只收可改键、高级 JSON 隐藏。
 > **验证（Lead）**：workspace **949/0**（task 157 / runtime 214 / oasd 454）；UI **2303/177/0 dead/158 runner/6 nav**；E2E seq128 **77/76/0/1**（`_verify\seq128-e2e-20261106\`；skip=无 ADB）；`cargo check --features ocr` exit 0；用户数据副本冒烟：GET /task/variables effective+T10、POST 后 meta.json 无 params、`/task/config` alias、Runner config variables。
 > **偏差/后续**：旧 meta.params 只内存桥（M3 用户重建，不自动改写数据）；`/task/config`+`/runner/tasks.params` deprecated 过渡别名；variables 行内未知字段不保留；T8 sync 硬错误不阻断保存（issues）；M1 导入 CLI 未做；`values.json` 零迁移；条件编辑器仍 ocr_var 下拉（V2.1 扩标量）；V2.1/V2.2 后续。
+
+## 1.23 2026-11-06 21:26→22:0x（seq 129）动作库一致性：拖动改素材端点 + 全局素材 lint 修复（✅ 已完成并推送）
+
+> 用户 21:26 反馈 3 条：① 动作库「拖动（拟人）」UI 不成熟，没有选择素材（应与点击素材一致）；② 关闭/删除拖动属性里的坐标输入，坐标应通过建立操作区域素材完成；③ 排查其余动作库动作，尽量与点击素材 UI/代码逻辑一致。
+> 实现 `dce16c7`：**oas-flow** `DragTarget::Asset { sel }`（`{"kind":"asset","sel":"<id>"}`，from/to 可用；旧 region/point/ocr_text 保留兼容）；**oas-runtime** `drag_asset_endpoint` 复用点击素材同源（素材识别 → 根 self 几何 → op_region 链模型 B 末端盒），未命中 Err 不 swipe，采样/方向/24 次 to/duration/margin/audit 不变；**package** `flow_ops` 新 marker `drag.asset`（旧 Runner 安装拒绝）；**UI** `structuredDrag` 重写：起点素材（必填）/终点素材（可选）用与点击素材相同的素材选择器，写 `{kind:"asset",sel}`，清空终点=方向+距离；**删除坐标 ROI x/y/w/h、拖动端点编辑器/样式/断言**；旧坐标端点只读提示不改写；方向/距离/时长/margin 保留；saveFlow 校验；动作库审计：click/click_target/long_press 文案与选择器统一、dismiss_popup action 标签、swipe/curve_swipe/click_point 保留坐标但加「低层坐标手势…元素拖动请用拖动（拟人）」提示。
+> 附带修复 `82dbca3`：全局素材模式下 flow 引用全局 ocr_var（如 `预设识别`）时 T8 lint 假红且 publish/install 阻断 → `lint_into_with_calls_and_global_assets`/`merge_global_assets_for_lint`（global base + 任务本地覆盖；T8 合并视图、T5 本地、T4 local∪global）；`lint_one`/publish/install（install 另合并包内快照、包内优先）统一修复。
+> **验证**：workspace **968/0**（oas-task 160 / oas-flow 82 / oas-runtime 222 / oasd 458）；UI **2323/177/0 dead/158 runner/6 nav**；`cargo check --features ocr` exit 0；冒烟 `_verify\seq129-smoke\`：保存 drag(asset `test`→`预设识别`) flow 200 → lint **0**（修复前 T8 假红）→ publish 200（package_schema=2、variables_schema 含全局 预设识别）→ 全新 Runner 安装 200（包快照初始化全局 store）→ 安装后 lint 0。
+> 遗留：旧 flow 拖动坐标/OCR 端点后端仍兼容运行但 Studio 只读（建议重建为素材端点）；swipe/curve_swipe/click_point 保留低层坐标手势（UI 已提示）；旧 `.oaspkg`（schema=1）需重发布。
 
 ## 2. 本批交付（seq 110）
 

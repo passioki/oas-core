@@ -1,20 +1,20 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 128，✅ done：变量系统 V2.0 已实现**），然后按需看 `docs/ENGINE-DESIGN.md §22.67`（V2.0 实现记录）/ §22.66（seq127）/ §22.65（seq126）、`docs/VARIABLES-V2-DESIGN.md §10`（V2.0 实施结果/偏差）、`docs/OPERATION-REGION-DESIGN.md §8.9`、`docs/ACCEPTANCE-2026-11-06.md`、`PENDING-LEDGER §E-96/§E-95`。
-> **状态：done（seq 128，V2.0 变量系统已实现并推送）**：`meta.variables` 唯一真相（B2 直改）、sync/T3/T7/T8/T10、run/package、Studio 变量面板与插入变量、Runner 可改变量分节；`e1b816f`（V2.0a）+ `d780a4b`（V2.0b/c）；workspace **949/0**、UI **2303/177/0 dead/158 runner/6 nav**、E2E seq128 **77/76/0/1**；**只推送不发布（未 tag/未 release）**。
+> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 129，✅ done：动作库一致性/拖动素材端点**），然后按需看 `docs/ENGINE-DESIGN.md §22.68`（seq129）/ §22.67（V2.0）/ §22.66（seq127）/ §22.65（seq126）、`docs/VARIABLES-V2-DESIGN.md §10`、`docs/OPERATION-REGION-DESIGN.md §8.9`、`docs/ACCEPTANCE-2026-11-06.md`、`PENDING-LEDGER §E-97/§E-96`。
+> **状态：done（seq 129）——拖动（拟人）改素材端点 + 删除坐标输入 + 动作库一致性；附带修复全局素材 T8 lint 假红（保存/发布/安装全链路）**：`dce16c7` + `82dbca3`；workspace **968/0**、UI **2323/177/0 dead/158 runner/6 nav**；冒烟 save→lint→publish→全新 Runner install 全绿；**只推送不发布（未 tag/未 release）**。
 
-## 0. 当前状态（2026-11-06 20:4x，seq 128 done）
+## 0. 当前状态（2026-11-06 22:0x，seq 129 done）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | oas-core `dev`；代码 `d780a4b`（V2.0b/c；dev 领先 main，docs 提交后 sync）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，未随 seq126~128 更新）；未 tag / 未 release |
-| 任务 | **seq128 V2.0 变量系统已完成**：`Variable`/`meta.variables` 唯一真相 + 旧 params 内存桥/T10；`sync_ocr_var_variables`+T8；T3/T7 改 input variables；run/package（`package_schema=2`/`variables_schema`）；Studio `GET/POST /task/variables`、Runner config 变量化/可改过滤；Studio 变量面板/对话框/「插入变量 ▾」；Runner 两分节可改过滤 |
-| 测试 | `cargo test --workspace` **949 passed / 0 failed**（23 suites；oas-task 157 / oas-runtime 214 / oasd 454）；UI **2303 checks / 177 ids / 0 dead / 158 runner ids / 6 nav**；E2E seq128 **77 total / 76 passed / 0 failed / 1 skipped**（`_verify\seq128-e2e-20261106\`，skip=真实点击无 ADB）；`cargo check -p oasd --features ocr` exit 0 |
-| 权威文档 | **`ENGINE §22.67`（V2.0 实现）· `VARIABLES-V2-DESIGN §10`（实施结果/偏差）· `ACCEPTANCE-2026-11-06.md`（V2.0 结果）· `PENDING §E-96` · `OPERATION-REGION-DESIGN §8.9`（模型 B）** |
-| 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；本地产物不含 seq126~128 新能力（package_schema=2 旧包会被拒绝） |
+| 分支 / HEAD | oas-core `dev`；代码 `82dbca3`（dev 领先 main，docs 提交后 sync）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，未随 seq126~129 更新）；未 tag / 未 release |
+| 任务 | **seq129 动作库一致性已完成**：拖动 `DragTarget::Asset`（素材端点 from/to，运行时复用点击素材识别+操作区域链模型 B）；UI 拖动面板改起点/终点素材选择器并**删除坐标输入**；动作库审计对齐（click/click_target/long_press/dismiss_popup/swipe/curve_swipe/click_point）；package `flow_ops` 新 marker `drag.asset`；**全局素材 lint 修复**（lint/publish/install 合并 global+包快照视图，T8 不再假红） |
+| 测试 | `cargo test --workspace` **968 passed / 0 failed**（23 suites；oas-task 160 / oas-flow 82 / oas-runtime 222 / oasd 458）；UI **2323 checks / 177 ids / 0 dead / 158 runner ids / 6 nav**；冒烟 `_verify\seq129-smoke\`（save 200→lint 0→publish 200→全新 Runner install 200→安装后 lint 0）；`cargo check -p oasd --features ocr` exit 0 |
+| 权威文档 | **`ENGINE §22.68`（seq129 实现）· `ACCEPTANCE-2026-11-06.md`（seq129 追加）· `PENDING §E-97` · `VARIABLES-V2-DESIGN §10` · `OPERATION-REGION-DESIGN §8.9`（模型 B）** |
+| 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；本地产物不含 seq126~129 新能力（package_schema=2 旧包被拒绝） |
 | 独立仓 | `https://github.com/passioki/oas-runner`（`768a8b7`）；pin `ba6813e`（未打独立包；如需独立 Runner 需 bump pin + 根启动脚本 + V2 变量模型重打） |
-| 服务 | 无 `oasd`/`oasd-runner` 进程；8787/8788/8789/8792~8797 无监听（E2E/冒烟后确认） |
-| 工作区 | `scheduler.json`、用户任务 `tasks/{切换预设御魂,关闭弹窗}/{flow,meta}.json`、用户编辑的 `assets/assets.json` / `frames/frames.json` / `新增 assets/images/a006.png` 均**未提交**（用户数据，**不要提交/覆盖**）；V2.0 代码已提交；**cargo incremental 已清理，下次构建稍慢（deps 缓存仍在）** |
+| 服务 | 无 `oasd`/`oasd-runner` 进程；8787~8805 无监听（冒烟后确认） |
+| 工作区 | `scheduler.json`、用户任务 `tasks/切換预设御魂|返回庭院` 等、`assets/assets.json` / `frames/frames.json` / `assets/images/a006.png` 均**未提交**（用户数据，**不要提交/覆盖**）；**用户可能在 Studio 中删除/编辑任务**（本轮见到 `tasks/关闭弹窗` 文件删除/任务 flow 改动，属用户操作，不要恢复/提交）；seq129 代码已提交；**cargo incremental 已清理，下次构建稍慢（deps 缓存仍在）** |
 
 ## 0.1 新会话恢复步骤（直接照做）
 

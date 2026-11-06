@@ -3510,3 +3510,60 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 - Lead 用户数据副本冒烟（真实数据未写）：GET `/task/variables` 返回 effective variables + T10；POST 后 `meta.json` **无 params**；`/task/config` 带 `deprecated`。
 - 兼容/风险：① `/task/config` 过渡别名（params 只读镜像不落盘）——**下一步可删**；② `Variable` 行内未知字段 serde 默认丢弃（不保留）；③ T8 在保存端只报 `issues` 不阻断（lint CLI 仍错误）；④ M1 导入 CLI 未实现（M3 用户重建为主）；⑤ values.json 不动、旧任务读时内存桥（T10）；⑥ main 分支未快进（origin/main=6ebffdd）、未 tag/未 release。
 - 待办：V2.1（标量变量条件/loop/表达式下拉、`variable()`/T9、loop max_rounds 数值入口）；V2.2（Profile 多账号/多配置/多模拟器、values v2）；Firefox 手测；oas-runner 独立仓 pin/重打包；`/task/config` 别名最终删除。
+
+### 22.68 ★★★ [11-06 21:5x] **seq129 动作库一致性（拖动素材端点）+ 全局素材 lint 修复**
+
+> 用户 2026-11-06 21:26 反馈 3 条（逐字见 §22.68.1）；实现 `dce16c7`（拖动素材端点 + 动作库一致性）+ `82dbca3`（全局素材 T8 lint 假红修复）。HEAD `82dbca3`（dev=`origin/dev`；main=`origin/main`=1856b68 待快进），**未 tag/未 release**。测试：workspace **968/0**（oas-task 160 / oas-flow 82 / oas-runtime 222 / oasd 458；上一轮 949）、UI **2323/177/0 dead/158 runner/6 nav**、`cargo check -p oasd --features ocr` exit 0。
+
+#### 22.68.1 用户 3 条反馈与动作库审计结论
+
+> 用户原话（21:26）：「动作库里的拖动（拟人）的UI并不成熟，没有选择素材的选项（请与点击素材动作的UI保持一致）。请关闭/删除拖动动作属性里坐标输入的代码，这个应该是通过建立操作区域素材来完成的。请排查其余动作库动作，尽量和点击素材动作的UI和代码逻辑保持一致。」
+
+| 动作 | 审计现状 | 处置 |
+|---|---|---|
+| `click` | 已选素材（识别+操作区域），点击其操作区域内 | 一致；统一文案/选择器 |
+| `click_target` | 已选目标素材（识别门槛，落点=素材自身操作区） | 一致；统一文案/选择器 |
+| `long_press` | 已选目标素材 + hold_ms/hold_range | 一致；统一文案/选择器 |
+| `drag`（拖动·拟人） | from/to 为 region/point/ocr_text **坐标端点**，无素材选择 → 用户反馈的「不成熟」 | **重写**：新增 `asset` 素材端点（from/to），删除坐标输入（§22.68.2~④） |
+| `dismiss_popup` | 有弹窗素材 `sel` + 按钮文字 `action` | 标签澄清为「按钮文字（可选，素材库 popup 动作名）」 |
+| `swipe`/`curve_swipe`/`click_point` | 坐标手势（低层） | 保留能力并加提示「坐标手势（低层）；元素拖动请用拖动（拟人）」 |
+
+#### 22.68.2 拖动 v2：`DragTarget::Asset { sel }`
+
+- flow DSL：`DragTarget` 新增 `Asset { sel: String }`（`oas-flow/lib.rs:751-807`，JSON `{"kind":"asset","sel":"<id>"}`，`from`/`to` 均可用）；旧 `region`/`point`/`ocr_text` 保留解析与运行（`:751-756`，新 UI 不再生成）。
+- 解析/校验：`parse_drag_target` 的 `"asset"` 分支（`oas-flow:2165-2187`）——`sel` 必填非空字符串（缺失/空/非字符串均带路径报错）；`reject_drag_shape_on_non_region`/`reject_region_on_non_ocr` 拒绝 asset 端点混用 `shape`/`region`（`:2169-2170`）；未知 kind 错误列出允许值（`:2188-2191`）。
+- 引用收集：`DragTarget::asset()`（`:798-806`）+ `collect_drag_target_assets`（`:3374-3393`，asset 端点计入素材引用）→ `Flow::referenced_assets`（`:2933`）→ T4 lint / publish `manifest.asset_refs`（`oas-task/package.rs:1571`）。测试：`drag_asset_target_needs_a_non_empty_sel`（flow:3792）、`drag_asset_endpoints_are_collected_as_asset_references`（flow:3834）。
+
+#### 22.68.3 运行时：`drag_asset_endpoint` 复用点击素材同源
+
+- 新 `drag_asset_endpoint(sel,site)`（`runtime:3612-3665`）：
+  - `region` 素材=固定操作区（声明 `roi`+`click_shape`，无需识别，`:3615-3620`）；
+  - 其他素材先 `locate`（`:3622-3623`，模板/集合=ROI+全帧金字塔回退，OCR=识别），`selector_threshold` 未达标=响亮 Err（`:3624-3629`）；
+  - OCR/ocr_var：真实识别行（`last_ocr_rect`/`ocr_var.roi`/`ocr_roi`）→ `ocr_self_operation_geometry`（`:3632-3641`，action_shape 随识别行平移）；
+  - 模板/集合：`root_template_real_rect` + `click_box_for` + `translated_click_shape`（`:3642-3649`，与 `click` 根操作区同一 helper）；
+  - 有素材级 `op_region` 链时用 `resolve_asset_op_region` 的**模型 B 末端盒**覆盖（`:3651-3663`）。
+- `drag_target` 分派（`:3675-3695`）：`Asset`→上一函数；旧 `Region`/`Point`/`OcrText` 行为不变。**未命中/未声明/几何不可用=响亮 Err，不发送 swipe**（`:3610-3611`；测试 `drag_asset_endpoint_miss_fails_loudly_and_never_swipes` `:11348`）。
+- **拖动其余语义不变**：`sample_drag_point` 采样（`:4391-4406`）、方向性 24 次 to 采样（`:6244`）、duration 随机（`:6298-6299`）、swipe+失效帧（`:6303-6304`）、step detail/audit 字段（`:6311-6325`，含 from_shape/to_shape/invert/margin=ignored）；成功用例 `drag_to_template_asset_endpoint_lands_inside_it_in_direction`（`:11242`）；`click` 路径未改。
+
+#### 22.68.4 Studio UI 重写（拖动面板）+ 动作库一致性
+
+- `structuredDrag` 重写（`builder.js:3705-3805`）：起点素材（必填）/终点素材（可选）使用与点击素材**同一素材搜索选择器**（`createSearchPicker` + `assetTargetOptions(B.assets,{kindFilter:DRAG_ASSET_KINDS})`，`DRAG_ASSET_KINDS`=template/template_set/ocr_line/ocr_lines/ocr_var/region，`:3645,3722-3728`）；写 `from/to={kind:"asset",sel}`（`dragAssetEndpointBody :3647`）；「清空终点（改用方向+距离）」删除 `args.to`（`:3747-3754`）；方向/距离区间/时长区间/margin 保留（`:3771-3805`）。
+- **删除坐标输入**：旧拖动 ROI x/y/w/h 输入、拖动 OCR 端点编辑器、相关样式与断言全部删除（`builder.js` 旧 drag 坐标标识 grep 0；`style.css` -10 行；`ui_pure_test.js` 相应断言删除/改写）。
+- **旧坐标端点只读**：`dragEndpointLegacyText`（`:3659-3675`）+ 面板 warning（`:3737-3742`）提示旧 flow 端点值保留在高级 JSON/只读，不改写；`saveFlow` 前 `dragEndpointIssues`（`:3677-3700`，调用 `:4862`）校验 from 必填、asset 端点必须带 `sel`。
+- **动作库一致性**：`ACTION_TITLES` 统一（`builder.js:34-44`）——click/click_target/long_press 均为「素材（识别+操作区域）」措辞；drag 新标题「选择起点素材/可选终点素材，方向+距离或终点素材；坐标端点已停用」；swipe/curve_swipe/click_point 标注「坐标手势，低层」；dismiss_popup 的 `action` 标签澄清（`:40`）；属性面板统一提示「坐标手势（低层）…元素拖动请用拖动（拟人）」`：4442`。
+- 断言：`ui_pure_test.js` seq129 块（`:8267-8296`：drag 标题+保存校验、三动作措辞一致、坐标手势提示、dismiss_popup 标签、选择器 label/placeholder 统一）；UI 总数 **2323/177/0/158/6**。
+
+#### 22.68.5 package：`flow_ops` 新 marker `drag.asset`
+
+- `SUPPORTED_FLOW_OPS: [&str; 14]` 新增 `"drag.asset"`（`oas-task/package.rs:90-105`，:104）；`derive_flow_ops` 对 drag 的 from/to 检测 `has_asset_endpoint`（`:529,617-619`）→ 推导 `drag.asset`。
+- 旧 Runner 安装门禁：manifest 声明的 flow_ops 含旧引擎不支持的 `drag.asset` → 安装期拒绝（旧列表不含该 marker）；测试 `drag_asset_endpoint_flow_op_is_derived_and_supported`（`:2624`，旧引擎拒绝集合 `:2636-2650`）。
+- publish `manifest.asset_refs` 含素材端点引用（flow `referenced_assets` → `package.rs:1571`）；其余 flow_ops 与旧 flow 推导不变。
+
+#### 22.68.6 全局素材 lint 修复（T8 假红；保存/发布/安装全链路）
+
+- **症状**：全局素材模式（`assets/` store）下，任务 `assets.json` 可为空，flow 引用**全局** `ocr_var`（如 `预设识别`）时 T8 报假红「not a declared asset」，publish/install 被阻断。
+- **修复（oas-task）**：新 `lint_into_with_calls_and_global_assets`（`lib.rs:3153-3161`）/`lint_with_calls_and_global_assets`（`:3164-3176`）；`merge_global_assets_for_lint`（`:3853-3876`）= **global base + 任务本地覆盖**（同 id 本地 items/collections 优先，design_resolution 本地兜底）。合并视图只用于 asset-level 规则：**T5 仍只校验任务本地**（`lint_assets :3370`）、**T8 用合并视图**（`:3237-3240` 构造 merged，`:3364` 传 `derived_variable_issues`）、**T4 global 模式接受 local∪global**；无 global 时行为不变。
+- **调用方**：`oasd task::lint_one`（`task.rs:213-240`，global 模式加载 parsed `AssetsFile` 传入）；publish（`serve.rs:9753` 走同一 `lint_one`）；install（`package_cmd.rs`：`install_lint_assets :782-827` 取 global + 包内快照、**包内快照优先**；`collect_lint_issues :753-780` 调新 lint；调用点 `:1471`）；`global_assets_file`（`package.rs:851`）。
+- **测试**：oas-task `global_assets_participate_in_t8_and_the_old_api_still_flags_them`（`lib.rs:7687`）；install 侧 merge 用例（`package_cmd.rs:2365,2403`）；无 global 路径回归不变。
+- **端到端冒烟**（`_verify/seq129-smoke/`）：保存 drag(asset `lib:test`→`lib:预设识别`) flow **200** → lint **0**（`lint.json` ok/count=0，修复前 T8 假红）→ publish **200**（`dist/seq129-smoke.oaspkg`，package_schema=2、variables_schema 含全局 `预设识别`）→ 全新 Runner 安装 **200**（`install-result.json` ok；包快照初始化全局 store，2 assets）→ 安装后 lint **0**。
+- **遗留**：旧 flow 的拖动坐标/OCR 端点后端仍兼容运行、Studio 只读（建议重建为素材端点）；`swipe`/`curve_swipe`/`click_point` 保留低层坐标手势（UI 已提示）；旧 `.oaspkg`（package_schema=1）仍需重发布；main 分支待快进、未 tag/release。

@@ -164,3 +164,29 @@ E2E seq127 脚本（并清理 seq126 模型 A 断言）、masked 极端 mask 兜
 2. **V2.2**：Profile 多账号/多配置/多模拟器（values.json v2、调度 entry.profile、`/runner/run` profile、多实例部署）。
 3. 兼容收尾：`/task/config` deprecated 别名后续删除；`Variable` 行内未知字段不保留（限制）；M1 导入 CLI 未实现（M3 用户重建）。
 4. 工程：Firefox 手测、oas-runner 独立仓 pin/重打包、main 快进、tag/Release 策略（未发布）。
+
+## seq129 追加验收：动作库一致性（拖动素材端点）
+
+> 用户 2026-11-06 21:26 反馈 3 条（逐字）：「动作库里的拖动（拟人）的UI并不成熟，没有选择素材的选项（请与点击素材动作的UI保持一致）。请关闭/删除拖动动作属性里坐标输入的代码，这个应该是通过建立操作区域素材来完成的。请排查其余动作库动作，尽量和点击素材动作的UI和代码逻辑保持一致。」实现 `dce16c7`（拖动 v2 + 动作库一致性）+ `82dbca3`（附带修复全局素材 T8 lint 假红）。记录 `ENGINE §22.68`。
+
+### A. 动作库审计结论（逐动作）
+
+| 动作 | 审计 | 处置 |
+|---|---|---|
+| `click`/`click_target`/`long_press` | 均已「选择素材」+ 操作区域，实现同源 | 文案/选择器统一（「素材（识别+操作区域）」） |
+| `drag`（拖动·拟人） | from/to 是 region/point/ocr_text 坐标端点，无素材选择 → 用户反馈不成熟 | **重写**：新增 `asset` 素材端点（`{"kind":"asset","sel":"<id>"}`，from/to 可用），删除坐标输入 |
+| `dismiss_popup` | 有弹窗素材 + 按钮文字 | `action` 标签澄清为「按钮文字（可选，素材库 popup 动作名）」 |
+| `swipe`/`curve_swipe`/`click_point` | 坐标手势（低层） | 保留并加提示「坐标手势（低层）；元素拖动请用拖动（拟人）」 |
+
+### B. 实施结果
+
+- **后端**：`DragTarget::Asset { sel }`（`oas-flow:751-807`；解析/校验 `:2165-2187`，拒绝 shape/region 混用；asset 端点计入 `referenced_assets`/T4/publish `asset_refs`）。运行时 `drag_asset_endpoint` 复用点击素材同源（`locate`→根 self 几何 `click_box_for`/`ocr_self_operation_geometry`→`op_region` 链模型 B 末端盒），未命中=响亮 Err 不发送 swipe；采样/方向/24 次 to/duration/margin/audit 不变（`runtime:3612-3665,4391-4406,6244,6298-6325`）。
+- **UI**：拖动面板重写为「拖动起点素材（必填）+ 拖动终点素材（可选）」素材搜索选择器（与点击素材一致），写 `from/to={kind:"asset",sel}`；清空终点=方向+距离；**删除坐标 ROI x/y/w/h、拖动端点编辑器/样式/断言**；旧坐标端点只读提示不改写；方向/距离/时长/margin 保留；saveFlow 校验 from 必填/asset 端点必须带 sel（`builder.js:3645-3805,3677-3700,4862`）。
+- **package**：`flow_ops` 新 marker `drag.asset`（`SUPPORTED_FLOW_OPS` 13→14，`package.rs:90-105`；derive `:617-619`；旧 Runner 安装期拒绝 `:2624`）。
+- **附带修复（冒烟发现）**：全局素材模式下 flow 引用全局 ocr_var（如 `预设识别`）时 T8 假红且 publish/install 阻断 → `lint_into_with_calls_and_global_assets`/`merge_global_assets_for_lint`（global base + 任务本地覆盖；T5 仍本地、T8 合并视图、T4 local∪global），`lint_one`/publish/install（install 另合并包内快照、包内优先）统一修复（`oas-task/lib.rs:3153-3176,3237-3240,3364,3370,3853-3876`；`task.rs:213-240`；`package_cmd.rs:753-827,1471`）。
+
+### C. 验证 / 冒烟 / 遗留
+
+- `cargo test --workspace` **968/0**（oas-task 160 / oas-flow 82 / oas-runtime 222 / oasd 458；上一轮 949/0）；UI **2323 checks/177 ids/0 dead/158 runner/6 nav**（本机实跑核对）；`cargo check -p oasd --features ocr` exit 0。
+- 冒烟 `_verify/seq129-smoke/`：保存 drag(asset `lib:test`→`lib:预设识别`) flow **200** → lint **0**（`lint.json`；修复前 T8 假红）→ publish **200**（`dist/seq129-smoke.oaspkg`，package_schema=2、variables_schema 含全局 `预设识别`）→ 全新 Runner install **200**（`install-result.json`；包快照初始化全局 store 2 assets）→ 安装后 lint **0**。
+- 遗留：旧 flow 拖动坐标/OCR 端点后端兼容运行但 Studio 只读（建议重建为素材端点）；swipe/curve_swipe/click_point 保留低层坐标手势（UI 已提示）；旧 `.oaspkg`（package_schema=1）需重发布；main 分支待快进、未 tag/未 release。
