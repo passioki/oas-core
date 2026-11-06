@@ -747,6 +747,13 @@ impl OpRegion {
 /// `action_shape`. `roi` stays mandatory: it is the bbox fallback for runtimes
 /// that predate `shape` and the human-readable bounds. An old flow without
 /// `shape` keeps the pure-bbox behaviour (no behaviour change at all).
+///
+/// seq129 (v1.8): the new **`asset` endpoint** (`{"kind":"asset","sel":"<id>"}`,
+/// [`DragTarget::Asset`]) is the user-facing replacement for coordinate input:
+/// the endpoint is resolved from the asset exactly like a `click` (recognition →
+/// real rect → `op_region` operation-area chain / `self_operation_geometry`).
+/// `region`/`point`/`ocr_text` stay parseable for old flows (deprecated for new
+/// authoring: the Studio now writes no coordinate inputs).
 #[derive(Debug, Clone, PartialEq)]
 pub enum DragTarget {
     Region {
@@ -764,16 +771,19 @@ pub enum DragTarget {
         region: Option<OpRegion>,
     },
     Point { x: i32, y: i32 },
+    /// seq129: a task asset as the drag endpoint (from/to). Resolved by the
+    /// runtime with the same recognition + operation-region path as a click.
+    Asset { sel: String },
 }
 
 impl DragTarget {
     /// Expected OCR text source (`text` / `text_expr`) when this is an
-    /// `ocr_text` endpoint; `None` for `region` / `point` (T3/T4 collectors and
-    /// the runtime share this accessor).
+    /// `ocr_text` endpoint; `None` for `region` / `point` / `asset` (T3/T4
+    /// collectors and the runtime share this accessor).
     pub fn text_spec(&self) -> Option<&TextSpec> {
         match self {
             DragTarget::OcrText { text, .. } => Some(text),
-            DragTarget::Region { .. } | DragTarget::Point { .. } => None,
+            DragTarget::Region { .. } | DragTarget::Point { .. } | DragTarget::Asset { .. } => None,
         }
     }
 
@@ -781,7 +791,17 @@ impl DragTarget {
     pub fn region(&self) -> Option<&OpRegion> {
         match self {
             DragTarget::OcrText { region, .. } => region.as_ref(),
-            DragTarget::Region { .. } | DragTarget::Point { .. } => None,
+            DragTarget::Region { .. } | DragTarget::Point { .. } | DragTarget::Asset { .. } => None,
+        }
+    }
+
+    /// seq129: the referenced asset id for an `asset` endpoint (`None` for the
+    /// historical region/point/ocr_text forms). Shared by the reference
+    /// collector (T4/publish/lint) and the runtime.
+    pub fn asset(&self) -> Option<&str> {
+        match self {
+            DragTarget::Asset { sel } => Some(sel.as_str()),
+            _ => None,
         }
     }
 }
@@ -2142,9 +2162,32 @@ fn parse_drag_target(v: &serde_json::Value, path: &str) -> Result<DragTarget, Fl
                 region,
             })
         }
+        "asset" => {
+            // seq129: asset endpoint — the operation area comes from the asset
+            // (recognition + op_region chain), so an inline shape / OCR region
+            // override is rejected instead of silently ignored.
+            reject_drag_shape_on_non_region(v, path)?;
+            reject_region_on_non_ocr(v, path)?;
+            let sel = v
+                .get("sel")
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| {
+                    FlowError::new(path, "asset drag target needs a string `sel` (asset id)")
+                })?
+                .trim();
+            if sel.is_empty() {
+                return Err(FlowError::new(
+                    path,
+                    "asset drag target `sel` must be a non-empty asset id",
+                ));
+            }
+            Ok(DragTarget::Asset {
+                sel: sel.to_string(),
+            })
+        }
         other => Err(FlowError::new(
             path,
-            format!("unknown drag target `{other}` (allowed: region, point, ocr_text)"),
+            format!("unknown drag target `{other}` (allowed: region, point, ocr_text, asset)"),
         )),
     }
 }
@@ -3329,6 +3372,12 @@ fn collect_assets_expr(e: &Expr, out: &mut BTreeSet<String>) {
 }
 
 fn collect_drag_target_assets(t: &DragTarget, out: &mut BTreeSet<String>) {
+    if let DragTarget::Asset { sel } = t {
+        // seq129: the asset endpoint is a real asset reference (T4/publish/
+        // lint reference count).
+        out.insert(sel.clone());
+        return;
+    }
     if let DragTarget::OcrText {
         sel, text, region, ..
     } = t
@@ -3707,6 +3756,151 @@ mod tests {
                     }
                     other => panic!("unexpected drag target: {other:?}"),
                 }
+            }
+            other => panic!("unexpected step: {other:?}"),
+        }
+    }
+
+    // ---- seq129: asset drag endpoints (from / to) ----
+
+    #[test]
+    fn parses_asset_drag_endpoints_for_from_and_to() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"asset","sel":"I_起点"},
+                   "to":{"kind":"asset","sel":"I_终点"},
+                   "direction":"right","duration_ms":[100,120]}}]}"#,
+        )
+        .expect("asset drag endpoints must parse");
+        match &flow.steps[0] {
+            Step::Drag { from, to, .. } => {
+                assert_eq!(from.asset(), Some("I_起点"));
+                assert!(matches!(from, DragTarget::Asset { sel } if sel == "I_起点"));
+                let to = to.as_ref().expect("to");
+                assert_eq!(to.asset(), Some("I_终点"));
+                assert!(matches!(to, DragTarget::Asset { sel } if sel == "I_终点"));
+                // Asset endpoints carry no OCR text / region override.
+                assert!(from.text_spec().is_none());
+                assert!(from.region().is_none());
+            }
+            other => panic!("unexpected step: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drag_asset_target_needs_a_non_empty_sel() {
+        for (bad, why) in [
+            (r#"{"kind":"asset"}"#, "needs a string `sel`"),
+            (r#"{"kind":"asset","sel":7}"#, "needs a string `sel`"),
+            (r#"{"kind":"asset","sel":"   "}"#, "non-empty asset id"),
+            (r#"{"kind":"asset","sel":""}"#, "non-empty asset id"),
+        ] {
+            let text = format!(
+                r#"{{"schema_version":1,"name":"t","steps":[
+                     {{"op":"drag","args":{{"from":{bad},"direction":"up",
+                       "distance":[10,20]}}}}]}}"#
+            );
+            let err = Flow::from_json(&text).expect_err(bad);
+            assert!(err.msg.contains(why), "`{bad}`: {err:?}");
+            assert!(
+                err.path.contains("steps[0].args.from"),
+                "`{bad}`: path {}",
+                err.path
+            );
+        }
+        // An inline `shape` / OCR `region` on an asset endpoint is rejected.
+        for (bad, why) in [
+            (
+                r#"{"kind":"asset","sel":"I_A","shape":{"kind":"rect","roi":[0,0,5,5]}}"#,
+                "shape",
+            ),
+            (
+                r#"{"kind":"asset","sel":"I_A","region":{"mode":"self"}}"#,
+                "region",
+            ),
+        ] {
+            let text = format!(
+                r#"{{"schema_version":1,"name":"t","steps":[
+                     {{"op":"drag","args":{{"from":{bad},"direction":"up",
+                       "distance":[10,20]}}}}]}}"#
+            );
+            let err = Flow::from_json(&text).expect_err(bad);
+            assert!(err.msg.contains(why), "`{bad}`: {err:?}");
+        }
+    }
+
+    #[test]
+    fn drag_asset_endpoints_are_collected_as_asset_references() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"asset","sel":"I_起点"},
+                   "to":{"kind":"asset","sel":"I_终点"},
+                   "direction":"right","distance":[10,20]}}]}"#,
+        )
+        .expect("flow");
+        let refs = flow.referenced_assets();
+        assert!(refs.contains("I_起点"), "{refs:?}");
+        assert!(refs.contains("I_终点"), "{refs:?}");
+        // T4 save-time validation sees asset endpoints too.
+        let known: BTreeSet<String> = ["I_起点", "I_终点"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        flow.validate_assets(&known).expect("declared assets");
+        let only_start: BTreeSet<String> =
+            ["I_起点"].into_iter().map(String::from).collect();
+        let errs = flow.validate_assets(&only_start).expect_err("typo");
+        assert!(
+            errs.iter().any(|e| e.msg.contains("I_终点")),
+            "{errs:?}"
+        );
+        // A `lib:` asset endpoint is allowed without a task declaration.
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"asset","sel":"lib:global_button"},
+                   "direction":"up","distance":[10,20]}}]}"#,
+        )
+        .expect("lib flow");
+        assert!(flow
+            .referenced_assets()
+            .contains("lib:global_button"));
+        flow.validate_assets(&BTreeSet::new()).expect("lib: is exempt");
+    }
+
+    #[test]
+    fn legacy_drag_target_forms_still_parse_unchanged() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"region","roi":[1,2,3,4]},
+                   "to":{"kind":"point","x":9,"y":10},
+                   "direction":"down","distance":[5,6]}},
+                 {"op":"drag","args":{
+                   "from":{"kind":"ocr_text","sel":"O_a","text":"开始",
+                           "region":{"mode":"ocr"}},
+                   "direction":"up","distance":[5,6]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("legacy drag forms must parse unchanged");
+        match &flow.steps[0] {
+            Step::Drag { from, to, .. } => {
+                assert!(matches!(from, DragTarget::Region { roi, .. } if *roi == [1, 2, 3, 4]));
+                assert!(matches!(
+                    to.as_ref(),
+                    Some(DragTarget::Point { x: 9, y: 10 })
+                ));
+                assert!(from.asset().is_none());
+            }
+            other => panic!("unexpected step: {other:?}"),
+        }
+        match &flow.steps[1] {
+            Step::Drag { from, .. } => {
+                assert!(matches!(from, DragTarget::OcrText { sel: Some(s), .. } if s == "O_a"));
+                assert!(from.region().is_some());
+                assert!(from.asset().is_none());
             }
             other => panic!("unexpected step: {other:?}"),
         }

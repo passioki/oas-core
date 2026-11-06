@@ -3597,8 +3597,84 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// 参数 v2: an `ocr_text` endpoint may use `text_expr`; it is resolved
     /// **once here**, before any frame is read or dragged (failing to resolve
     /// aborts the step with no swipe). `site` names the endpoint in that error.
+    /// seq129: resolve one `{"kind":"asset"}` drag endpoint by reusing the
+    /// **click asset path**: recognize the asset (template / collection /
+    /// OCR / ocr_var) or take a fixed `region` asset's ROI, resolve its real
+    /// recognized rect, then its **operation area** exactly like `Step::Click`:
+    ///
+    /// * an asset-level `op_region` chain wins (model B: the terminal node's own
+    ///   self geometry, via [`Self::resolve_asset_op_region`]);
+    /// * otherwise `self_operation_geometry` (`action_shape`/`click_back`/
+    ///   matched bbox; OCR assets follow the recognized line, Q1 rules).
+    ///
+    /// A recognition miss, an undeclared asset or unusable geometry is a loud
+    /// error carrying the asset id — the drag step then sends **no** swipe.
+    fn drag_asset_endpoint(&mut self, sel: &str, site: &str) -> Result<DragEndpoint, String> {
+        // A pure `region` asset has no recognition: its declared ROI is the
+        // endpoint area (an explicit shape, if authored, is already absolute).
+        if let Some(roi) = self.assets.region(sel) {
+            return Ok(DragEndpoint {
+                rect: roi,
+                shape: self.assets.click_shape(sel).cloned(),
+            });
+        }
+        let (score, at) = self
+            .locate(sel)
+            .map_err(|e| format!("{site}: drag asset `{sel}`: {e}"))?;
+        let threshold = self.selector_threshold(sel);
+        let Some(p) = at.filter(|_| score >= threshold) else {
+            return Err(format!(
+                "{site}: drag asset `{sel}` not found (score {score:.3} < threshold {threshold:.3})"
+            ));
+        };
+        let frame_size = self.screen.size();
+        let is_ocr = self.assets.is_ocr_asset(sel);
+        let (root_box, root_shape, real) = if is_ocr {
+            let real = self
+                .last_ocr_rect
+                .or_else(|| self.assets.ocr_var(sel).and_then(|v| v.roi))
+                .or_else(|| self.assets.ocr_roi(sel))
+                .ok_or_else(|| {
+                    format!("{site}: drag asset `{sel}` has no recognized OCR rect")
+                })?;
+            let (box_, shape) = self.ocr_self_operation_geometry(sel, real, frame_size)?;
+            (box_, shape, real)
+        } else {
+            let real = self.root_template_real_rect(sel, p).ok_or_else(|| {
+                format!("{site}: drag asset `{sel}` has no matched template rect")
+            })?;
+            // Same helper `Step::Click` uses for the root operation area.
+            let box_ = self.click_box_for(sel, p)?;
+            let shape = self.translated_click_shape(sel, p);
+            (box_, shape, real)
+        };
+        let (mut rect, mut shape) = (root_box, root_shape);
+        if self.assets.has_op_region_chain(sel) {
+            if let Some(resolved) = self.resolve_asset_op_region(
+                sel,
+                real,
+                root_box,
+                shape.clone(),
+                site,
+            )? {
+                rect = resolved.rect;
+                shape = resolved.shape;
+            }
+        }
+        Ok(DragEndpoint { rect, shape })
+    }
+
+    /// Resolve one `drag` endpoint (`from` / `to`) to the rectangle + optional
+    /// exact operation shape that [`Self::sample_drag_point`] samples.
+    ///
+    /// 参数 v2: an `ocr_text` endpoint may use `text_expr`; it is resolved
+    /// **once here**, before any frame is read or dragged (failing to resolve
+    /// aborts the step with no swipe). `site` names the endpoint in that error.
+    /// seq129: an `asset` endpoint reuses the click asset path
+    /// ([`Self::drag_asset_endpoint`]).
     fn drag_target(&mut self, t: &DragTarget, site: &str) -> Result<DragEndpoint, String> {
         match t {
+            DragTarget::Asset { sel } => self.drag_asset_endpoint(sel, site),
             DragTarget::Region { roi, shape } => Ok(DragEndpoint {
                 rect: Rect {
                     x: roi[0],
@@ -11086,6 +11162,375 @@ mod tests {
         assert!(
             input.swipes.borrow().is_empty(),
             "a drag with no valid shape point must never swipe (no bbox/centre fallback)"
+        );
+    }
+
+    // ---- seq129: drag endpoints from task assets (same path as a click) ----
+
+    /// Interpreter over one custom frame + AssetSet (no OCR provider).
+    fn drag_interp_with(
+        frame: Frame,
+        set: AssetSet,
+    ) -> (Interpreter<TwoFrameScreen, FakeInput>, SharedInput) {
+        let (input, shared) = FakeInput::new();
+        let interp = Interpreter::new(
+            TwoFrameScreen {
+                frames: vec![frame],
+                idx: 0,
+            },
+            input,
+            set,
+            Budget::default(),
+        )
+        .with_humanize(no_miss());
+        (interp, shared)
+    }
+
+    /// Same 10x10 patterned tile the `assets()` fixture uses.
+    fn tile_template(roi: Option<Rect>) -> Template {
+        let pattern: Vec<u8> = (0..100)
+            .map(|i| (((i % 10) * 7 + (i / 10) * 13) % 251 + 3) as u8)
+            .collect();
+        Template {
+            gray: GrayImage::new(10, 10, pattern),
+            roi,
+            threshold: 0.8,
+            click_polygon: None,
+        }
+    }
+
+    #[test]
+    fn drag_from_template_asset_uses_its_matched_box() {
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"asset","sel":"I_BRIGHT"},
+                   "direction":"right","distance":[5,10],
+                   "duration_ms":[100,120],"margin":0.0}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let swipes = input.swipes.borrow().clone();
+        assert_eq!(swipes.len(), 1, "exactly one swipe");
+        let (from, to, ms) = swipes[0];
+        let matched = Rect {
+            x: 12,
+            y: 10,
+            w: 10,
+            h: 10,
+        };
+        assert!(
+            inside(matched, from),
+            "drag start must be sampled from the asset matched box {matched:?}, got {from:?}"
+        );
+        assert!(to.x > from.x, "direction right: {from:?} -> {to:?}");
+        assert!((100..=120).contains(&ms), "duration {ms}");
+        let ev = interp
+            .events()
+            .iter()
+            .rev()
+            .find(|e| e.op == "drag")
+            .expect("drag event");
+        assert_eq!(ev.result, "ok");
+        assert!(ev.detail.contains("direction=right"), "{}", ev.detail);
+        assert!(ev.detail.contains("randomized=true"), "{}", ev.detail);
+        assert!(ev.detail.contains("from_shape=none"), "{}", ev.detail);
+    }
+
+    #[test]
+    fn drag_to_template_asset_endpoint_lands_inside_it_in_direction() {
+        // Target tile is far to the right so the 24-sample direction window is
+        // comfortably satisfiable.
+        let (mut interp, input) = drag_interp_with(frame_with_tile(40, 10), assets());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"region","roi":[0,0,5,5]},
+                   "to":{"kind":"asset","sel":"I_BRIGHT"},
+                   "direction":"right","duration_ms":[100,120],"margin":0.0}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let swipes = input.swipes.borrow().clone();
+        assert_eq!(swipes.len(), 1, "exactly one swipe");
+        let (from, to, _ms) = swipes[0];
+        let target = Rect {
+            x: 40,
+            y: 10,
+            w: 10,
+            h: 10,
+        };
+        assert!(to.x > from.x, "direction right: {from:?} -> {to:?}");
+        assert!(
+            inside(target, to),
+            "drag end must be sampled from the `to` asset box {target:?}, got {to:?}"
+        );
+        let ev = interp
+            .events()
+            .iter()
+            .rev()
+            .find(|e| e.op == "drag")
+            .expect("drag event");
+        assert!(ev.detail.contains("to_shape=none"), "{}", ev.detail);
+    }
+
+    #[test]
+    fn drag_from_template_asset_honours_its_action_shape() {
+        // Template matched at (12,10) with authored roi (0,0): the action_shape
+        // rect (6,5,4,3) is translated to (18,15,4,3) — the drag start must stay
+        // inside that exact shape, not the whole matched box.
+        let mut set = AssetSet::new();
+        set.insert(
+            "I_BRIGHT",
+            tile_template(Some(Rect {
+                x: 0,
+                y: 0,
+                w: 64,
+                h: 48,
+            })),
+        );
+        set.set_click_shape(
+            "I_BRIGHT",
+            ClickShape {
+                rect: Some(Rect {
+                    x: 6,
+                    y: 5,
+                    w: 4,
+                    h: 3,
+                }),
+                points: None,
+                invert: false,
+            },
+        );
+        let expected = Rect {
+            x: 18,
+            y: 15,
+            w: 4,
+            h: 3,
+        };
+        for seed in 0..12 {
+            let (input, shared) = FakeInput::new();
+            let mut interp = Interpreter::new(
+                FakeScreen::new(),
+                input,
+                set.clone(),
+                Budget::default(),
+            )
+            .with_humanize(no_miss())
+            .with_seed(seed);
+            let f = flow(
+                r#"{"schema_version":1,"name":"t","steps":[
+                     {"op":"drag","args":{
+                       "from":{"kind":"asset","sel":"I_BRIGHT"},
+                       "direction":"right","distance":[5,10],"margin":0.0}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#,
+            );
+            assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done), "seed {seed}");
+            let swipes = shared.swipes.borrow().clone();
+            assert_eq!(swipes.len(), 1, "seed {seed}");
+            assert!(
+                inside(expected, swipes[0].0),
+                "seed {seed}: start {:?} outside the translated action_shape {expected:?}",
+                swipes[0].0
+            );
+            let ev = interp
+                .events()
+                .iter()
+                .rev()
+                .find(|e| e.op == "drag")
+                .expect("drag event");
+            assert!(ev.detail.contains("from_shape=rect"), "{}", ev.detail);
+        }
+    }
+
+    #[test]
+    fn drag_asset_endpoint_miss_fails_loudly_and_never_swipes() {
+        let (mut interp, input) = mk_inspect(FakeScreen::new());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"asset","sel":"I_NEVER"},
+                   "direction":"up","distance":[10,20]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("I_NEVER"), "asset id must be in the error: {msg}");
+                assert!(msg.contains("not found"), "{msg}");
+                assert!(msg.contains("drag args.from"), "{msg}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(
+            input.swipes.borrow().is_empty(),
+            "an unrecognized asset endpoint must never swipe"
+        );
+        let last = interp.events().last().expect("event");
+        assert_eq!(last.op, "drag");
+        assert_eq!(last.result, "failed");
+    }
+
+    #[test]
+    fn drag_from_ocr_var_asset_uses_the_recognized_line_rect() {
+        let (mut interp, _rois, shared) = mk_det_interp(
+            ocr_var_assets(),
+            vec![chain_line(20, 20, 10, 5, "御魂", 0.97)],
+        );
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"asset","sel":"O_group"},
+                   "direction":"right","distance":[5,10],"margin":0.0}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let swipes = shared.swipes.borrow().clone();
+        assert_eq!(swipes.len(), 1);
+        let line = Rect {
+            x: 20,
+            y: 20,
+            w: 10,
+            h: 5,
+        };
+        assert!(
+            inside(line, swipes[0].0),
+            "OCR asset endpoint must use the recognized line rect {line:?}, got {:?}",
+            swipes[0].0
+        );
+    }
+
+    #[test]
+    fn drag_from_region_asset_uses_its_fixed_roi() {
+        let mut set = assets();
+        let region = Rect {
+            x: 10,
+            y: 20,
+            w: 10,
+            h: 10,
+        };
+        set.insert_region("R_fixed", region);
+        let (mut interp, input) = drag_interp_with(frame_with_tile(12, 10), set);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"asset","sel":"R_fixed"},
+                   "direction":"right","distance":[5,10],"margin":0.0}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let swipes = input.swipes.borrow().clone();
+        assert_eq!(swipes.len(), 1);
+        assert!(
+            inside(region, swipes[0].0),
+            "region asset endpoint must be its declared ROI {region:?}, got {:?}",
+            swipes[0].0
+        );
+    }
+
+    #[test]
+    fn drag_from_asset_op_region_chain_lands_on_the_terminal_box() {
+        // Root template declares op_region -> ocr_var gate; model B: the drag
+        // endpoint is the gate's own recognized line box, not the root box.
+        let mut set = AssetSet::new();
+        set.insert("I_ROOT", tile_template(None));
+        set.insert_ocr_var("O_GATE", None, "乙".to_string(), "pb".to_string());
+        set.insert_op_region(
+            "I_ROOT",
+            AssetOpRegion::Asset {
+                asset: "O_GATE".to_string(),
+                pick: OpRegionPick::Score,
+            },
+        );
+        let (ocr, _rois) = FakeDetOcr::new(vec![chain_line(50, 30, 8, 4, "乙", 0.97)]);
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            FakeScreen::new(),
+            input,
+            set,
+            Budget::default(),
+        )
+        .with_humanize(no_miss())
+        .with_ocr(Box::new(ocr));
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"asset","sel":"I_ROOT"},
+                   "direction":"left","distance":[5,10],"margin":0.0}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let swipes = shared.swipes.borrow().clone();
+        assert_eq!(swipes.len(), 1);
+        let terminal = Rect {
+            x: 50,
+            y: 30,
+            w: 8,
+            h: 4,
+        };
+        let root_box = Rect {
+            x: 12,
+            y: 10,
+            w: 10,
+            h: 10,
+        };
+        assert!(
+            inside(terminal, swipes[0].0),
+            "chain drag start must be inside the terminal box {terminal:?}, got {:?}",
+            swipes[0].0
+        );
+        assert!(
+            !inside(root_box, swipes[0].0),
+            "the root box must not provide the drag geometry once a chain is declared"
+        );
+    }
+
+    #[test]
+    fn drag_from_collection_asset_uses_the_winning_member_box() {
+        let mut set = assets();
+        let mut member = set.get("I_BRIGHT").expect("template").clone();
+        member.roi = Some(Rect {
+            x: 12,
+            y: 10,
+            w: 10,
+            h: 10,
+        });
+        set.insert("I_BRIGHT_ROI", member);
+        set.insert_collection(
+            "C_BRIGHT",
+            vec!["I_NEVER".to_string(), "I_BRIGHT_ROI".to_string()],
+            None,
+        );
+        set.set_click_back(
+            "I_BRIGHT_ROI",
+            Rect {
+                x: 14,
+                y: 12,
+                w: 6,
+                h: 6,
+            },
+        );
+        let (mut interp, input) = drag_interp_with(frame_with_tile(12, 10), set);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"asset","sel":"C_BRIGHT"},
+                   "direction":"right","distance":[5,10],"margin":0.0}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let swipes = input.swipes.borrow().clone();
+        assert_eq!(swipes.len(), 1);
+        let box_ = Rect {
+            x: 14,
+            y: 12,
+            w: 6,
+            h: 6,
+        };
+        assert!(
+            inside(box_, swipes[0].0),
+            "collection endpoint must use the winning member's operation area {box_:?}, got {:?}",
+            swipes[0].0
         );
     }
 

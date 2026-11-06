@@ -33,8 +33,14 @@
   // (blocking wait / long press / multi-segment curve).
   const ACTION_TITLES = {
     wait_until: '阻塞等待：条件成立后继续执行下一个 flow 步骤；超时本步失败；不会触发独立动作',
-    long_press: '长按：按住「定位对象」找到的元素 hold_ms 毫秒（默认 3000）；可启用 hold_range 随机拟人',
-    curve_swipe: '曲线滑动（多段近似）：points 逐段独立手势，App 可能视为多次滑动',
+    click: '点击素材：选择素材（识别+操作区域）后点击其操作区域中心；请在画布/素材行维护素材操作区',
+    click_point: '点击坐标（坐标手势，低层）：x/y 直接点击；点击元素请用「点击素材」',
+    click_target: '定位点击：先选目标素材（识别门槛；动作落点=目标素材自己的操作区）',
+    long_press: '长按：选择目标素材后按住其操作区域 hold_ms 毫秒（默认 3000）；可启用 hold_range 随机拟人',
+    dismiss_popup: '关闭弹窗：选择弹窗素材后点击其操作区域；可选按钮文字/超时',
+    swipe: '滑动（坐标手势，低层）：from/to 坐标；元素拖动请用「拖动（拟人）」素材端点',
+    curve_swipe: '曲线滑动（坐标手势，低层）：points 逐段坐标；元素拖动请用「拖动（拟人）」素材端点',
+    drag: '拖动（拟人）：选择起点素材/可选终点素材，方向+距离或终点素材；坐标端点已停用（旧 flow 只读）',
   };
 
   // Single source of truth for "anything the user can add as a step".
@@ -71,12 +77,12 @@
     log: [{ key: 'level', label: '级别', type: 'select', options: ['info', 'warn', 'error'] }, { key: 'text', label: '文本（表达式）', type: 'text' }],
     wait: [{ key: 'seconds', label: '秒', type: 'number' }],
     wait_until: [{ key: 'cond', label: '条件表达式', type: 'text' }, { key: 'timeout_s', label: '超时秒', type: 'number' }],
-    appear: [{ key: 'sel', label: '素材', type: 'asset' }],
+    appear: [{ key: 'sel', label: '素材（识别+操作区域）', type: 'asset' }],
     ocr: [{ key: 'sel', label: 'OCR 素材', type: 'asset' }],
-    click: [{ key: 'sel', label: '素材', type: 'asset' }],
+    click: [{ key: 'sel', label: '素材（识别+操作区域）', type: 'asset' }],
     click_point: [{ key: 'x', label: 'x（表达式）', type: 'text' }, { key: 'y', label: 'y（表达式）', type: 'text' }],
-    dismiss_popup: [{ key: 'sel', label: '弹窗素材', type: 'asset' }, { key: 'action', label: '动作（可选）', type: 'text' }, { key: 'timeout_ms', label: '超时 ms', type: 'number' }],
-    swipe: [{ key: 'from', label: '起点 [x,y]', type: 'json' }, { key: 'to', label: '终点 [x,y]', type: 'json' }, { key: 'ms', label: '时长 ms', type: 'number' }],
+    dismiss_popup: [{ key: 'sel', label: '弹窗素材', type: 'asset' }, { key: 'action', label: '按钮文字（可选，素材库 popup 动作名）', type: 'text' }, { key: 'timeout_ms', label: '超时 ms', type: 'number' }],
+    swipe: [{ key: 'from', label: '起点 [x,y]（低层坐标）', type: 'json' }, { key: 'to', label: '终点 [x,y]（低层坐标）', type: 'json' }, { key: 'ms', label: '时长 ms', type: 'number' }],
     key: [{ key: 'keycode', label: 'Android keycode（BACK=4 / HOME=3）', type: 'number' }],
     restart_app: [{ key: 'package', label: '包名', type: 'text' }],
     finish: [{ key: 'exit', label: '出口', type: 'select', options: ['done', 'failed'] }],
@@ -1007,13 +1013,6 @@
     const args = s.args && typeof s.args === 'object' && !Array.isArray(s.args) ? s.args : {};
     const guard = args[field];
     return guard && typeof guard === 'object' && !Array.isArray(guard) ? guard : null;
-  }
-
-  function stepDragEndpoint(step, side) {
-    const s = step && typeof step === 'object' ? step : {};
-    const args = s.args && typeof s.args === 'object' && !Array.isArray(s.args) ? s.args : {};
-    const endpoint = args[side];
-    return endpoint && typeof endpoint === 'object' && !Array.isArray(endpoint) ? endpoint : null;
   }
 
   function locatorIsOcrText(locator) {
@@ -2010,7 +2009,7 @@
     const wrap = window.OASAssetUI.createSearchPicker({
       items: B.assets,
       value: current || '',
-      placeholder: '输入片段，选择匹配素材…',
+      placeholder: '搜索素材（识别+操作区域）…',
       className: 'builder-asset-search',
       menuClass: 'builder-asset-menu',
       filter: (a) => !kinds || kinds.includes(a.kind),
@@ -3491,46 +3490,6 @@
     return { host: box, read: read };
   }
 
-  // P6：drag from/to 的 OCR 端点结构化编辑器。
-  function renderDragEndpointEditor(host, step, side) {
-    const endpoint = stepDragEndpoint(step, side);
-    if (!endpoint) return;
-    const box = formBox('拖动端点 ' + side + '（OCR 文字）');
-    box.classList.add('builder-drag-endpoint');
-    const assetLab = document.createElement('label');
-    assetLab.textContent = 'OCR 素材';
-    const searchWrap = assetSearch(endpoint.sel || '');
-    const asset = searchWrap.input;
-    assetLab.appendChild(searchWrap);
-    box.appendChild(assetLab);
-    const textSource = locatorTextSourceFields(endpoint, function () { sync(); });
-    box.appendChild(textSource.host);
-    // U-T5：region（操作区域）编辑器只对旧 flow 已带 region 的端点显示；新步骤不生成。
-    let regionEditor = null;
-    if (locatorHasLegacyRegion(endpoint)) {
-      regionEditor = renderRegionEditor(box, endpoint, function () { sync(); });
-      const legacyHint = document.createElement('div');
-      legacyHint.className = 'muted small builder-legacy-region-hint';
-      legacyHint.textContent = '该端点带有旧 flow 的 region 配置：仅兼容显示/编辑；新步骤不再生成 region。';
-      box.appendChild(legacyHint);
-    }
-    function sync() {
-      const next = Object.assign({}, endpoint, { kind: 'ocr_text' });
-      if (asset.value) next.sel = asset.value;
-      else delete next.sel;
-      const text = textSource.read();
-      let written = text.mode === 'keep' ? next : paramSourceApply(next, text.mode, text.value);
-      if (regionEditor) {
-        const region = regionEditor.read();
-        if (region.ok) written = regionWrite(written, region.mode, region.offset, region.asset);
-      }
-      step.args[side] = written;
-      renderAll();
-    }
-    asset.addEventListener('change', sync);
-    host.appendChild(box);
-  }
-
   // U-T5/S7：动作目标选择（素材库搜索选择器；目标=素材库素材，含 ocr_var）。
   // 选中后按素材 kind 生成 locator（ocr_var → text_expr=param(param_key)）。region
   // 素材不在目标列表（只作操作区末端）；旧 locator 仍由下方「定位方式/文字来源」兼容编辑。
@@ -3681,8 +3640,125 @@
     root.appendChild(box);
   }
 
+  // seq129：拖动端点 = 素材（与「点击素材」同一素材选择器/操作区域逻辑）。
+  // 旧坐标/region/OCR 端点只读保留，界面不再生成/改写。
+  const DRAG_ASSET_KINDS = ['template', 'template_set', 'ocr_line', 'ocr_lines', 'ocr_var', 'region'];
+
+  function dragAssetEndpointBody(sel) {
+    const id = String(sel === undefined || sel === null ? '' : sel).trim();
+    if (!id) return { ok: false, endpoint: null, error: '请选择素材' };
+    return { ok: true, endpoint: { kind: 'asset', sel: id }, error: '' };
+  }
+
+  function dragEndpointAssetSel(locator) {
+    if (!locator || typeof locator !== 'object' || Array.isArray(locator)) return '';
+    if (String(locator.kind === undefined || locator.kind === null ? '' : locator.kind) !== 'asset') return '';
+    return String(locator.sel === undefined || locator.sel === null ? '' : locator.sel).trim();
+  }
+
+  function dragEndpointLegacyText(locator) {
+    if (!locator || typeof locator !== 'object' || Array.isArray(locator)) return '';
+    const kind = String(locator.kind === undefined || locator.kind === null ? '?' : locator.kind);
+    if (kind === 'asset') return '';
+    return '旧坐标/OCR 端点（kind=' + kind + '）已不再由界面生成；请改用素材端点（高级 JSON 可查看旧值，界面不会自动改写）。';
+  }
+
+  // 设置/清空拖动端点（返回新 args，不修改入参；sel 为空时删除该端点）。
+  function dragArgsSetEndpoint(args, side, sel) {
+    const next = Object.assign({}, args && typeof args === 'object' && !Array.isArray(args) ? args : {});
+    const body = dragAssetEndpointBody(sel);
+    if (!body.ok) delete next[side];
+    else next[side] = body.endpoint;
+    return next;
+  }
+
+  // 保存前校验拖动端点：from 必填；素材端点必须带 sel（旧 region/point/ocr_text 端点
+  // 保留兼容，不阻断旧 flow；仅 UI 不再生成）。
+  function dragEndpointIssues(flow) {
+    const issues = [];
+    function walk(steps, path) {
+      if (!Array.isArray(steps)) return;
+      steps.forEach(function (step, i) {
+        if (!step || typeof step !== 'object') return;
+        const at = path + '[' + i + ']';
+        if (step.op === 'drag') {
+          const args = step.args && typeof step.args === 'object' ? step.args : {};
+          const from = args.from && typeof args.from === 'object' ? args.from : null;
+          if (!from) issues.push(at + '.args.from：拖动必须选择起点素材');
+          else if (String(from.kind === undefined || from.kind === null ? '' : from.kind) === 'asset' &&
+            !String(from.sel === undefined || from.sel === null ? '' : from.sel).trim()) {
+            issues.push(at + '.args.from：拖动起点未选择素材');
+          }
+          const to = args.to && typeof args.to === 'object' ? args.to : null;
+          if (to && String(to.kind === undefined || to.kind === null ? '' : to.kind) === 'asset' &&
+            !String(to.sel === undefined || to.sel === null ? '' : to.sel).trim()) {
+            issues.push(at + '.args.to：拖动终点已选择素材类型但未选素材');
+          }
+        }
+        for (const key of ['then', 'else', 'body']) walk(step[key], at + '.' + key);
+      });
+    }
+    walk(flow && flow.steps, 'flow.steps');
+    return issues;
+  }
+
   function structuredDrag(root, step) {
-    const box = formBox('拖动（from/to 端点 + 可选 shape + 方向/距离/时长；区域与 OCR 端点可结构化编辑，其它形态用下方高级 JSON）');
+    const box = formBox('拖动（拟人）：选择起点素材（必填）与可选终点素材；方向/距离/时长/margin 保留。坐标/区域端点已停用（旧 flow 只读提示），拖动落点=素材识别结果+素材自身操作区域。');
+    const sides = [
+      { side: 'from', title: '拖动起点素材（必填）', placeholder: '搜索并选择拖动起点素材…' },
+      { side: 'to', title: '拖动终点素材（可选；不选则按方向+距离）', placeholder: '搜索并选择拖动终点素材…' },
+    ];
+    for (const cfg of sides) {
+      const current = step.args[cfg.side] && typeof step.args[cfg.side] === 'object' ? step.args[cfg.side] : null;
+      const currentSel = dragEndpointAssetSel(current);
+      const currentAsset = assetById(B.assets, currentSel);
+      const section = formBox(cfg.title);
+      const summary = document.createElement('div');
+      summary.className = 'builder-target-summary';
+      summary.textContent = currentAsset
+        ? targetPickerSummary(currentAsset)
+        : (currentSel ? '当前素材「' + currentSel + '」不在素材库' : '未设置素材端点（旧端点值保留在高级 JSON 中）');
+      section.appendChild(summary);
+      const picker = window.OASAssetUI.createSearchPicker({
+        items: assetTargetOptions(B.assets, { kindFilter: DRAG_ASSET_KINDS }),
+        value: '',
+        placeholder: cfg.placeholder,
+        className: 'builder-asset-search builder-target-search',
+        menuClass: 'builder-asset-menu',
+        label: (item) => item.id + ' · ' + item.kindLabel + (item.terminalOnly ? '（固定区域）' : ''),
+        onChoose: (item, input) => {
+          step.args = dragArgsSetEndpoint(step.args, cfg.side, item.id);
+          input.value = item.id;
+          status('已设置拖动' + (cfg.side === 'from' ? '起点' : '终点') + '素材：' + item.id);
+          renderAll();
+        },
+      });
+      section.appendChild(picker);
+      const legacy = dragEndpointLegacyText(current);
+      if (legacy) {
+        const warn = document.createElement('div');
+        warn.className = 'muted small builder-drag-legacy-hint';
+        warn.textContent = legacy;
+        section.appendChild(warn);
+      }
+      if (cfg.side === 'to') {
+        const clear = document.createElement('button');
+        clear.type = 'button';
+        clear.textContent = step.args.to ? '清空终点（改用方向+距离）' : '终点未设置（使用方向+距离）';
+        clear.disabled = !step.args.to;
+        clear.title = '删除 args.to，拖动改为按方向+距离执行';
+        clear.addEventListener('click', () => {
+          const next = Object.assign({}, step.args);
+          delete next.to;
+          step.args = next;
+          status('已清空拖动终点，使用方向+距离');
+          renderAll();
+        });
+        section.appendChild(clear);
+      }
+      box.appendChild(section);
+    }
+
     const dirLab = document.createElement('label');
     dirLab.textContent = '方向（必填）';
     const dir = document.createElement('select');
@@ -3695,62 +3771,6 @@
     dir.value = step.args.direction || 'up';
     dirLab.appendChild(dir);
     box.appendChild(dirLab);
-
-    const from = step.args.from || {};
-    if (from.kind === 'region' && Array.isArray(from.roi) && from.roi.length === 4) {
-      const roi = from.roi.slice();
-      // O-2: keep the optional inline operation shape while editing roi. The
-      // shape must never be silently deleted, but the two fields have different
-      // runtime roles: a polygon/invert shape is what gets sampled (roi is the
-      // old-runtime bbox fallback), while a plain non-inverted rect is sampled
-      // from `roi` (the shape key is ignored by the runtime).
-      const shape = from.shape;
-      const row = document.createElement('div');
-      row.className = 'builder-inline';
-      ['x', 'y', 'w', 'h'].forEach((k, i) =>
-        row.appendChild(
-          numberInput(k, roi[i], (v) => {
-            roi[i] = v;
-            step.args.from = shape
-              ? { kind: 'region', roi, shape }
-              : { kind: 'region', roi };
-            renderAll();
-          })
-        )
-      );
-      box.appendChild(row);
-      if (shape) {
-        const hint = document.createElement('div');
-        hint.className = 'muted small';
-        const shapeSampled = shape.kind === 'polygon' || !!shape.invert;
-        hint.textContent = shapeSampled
-          ? '含 polygon/反选 shape：runtime 按 shape 采样（margin 忽略）；改 roi 不会改 shape，需用高级 JSON 同步'
-          : '含 rect shape（非反选）：runtime 实际只使用上面的 roi（shape 不参与采样）；改 roi 即改拖动区域';
-        box.appendChild(hint);
-      }
-    } else if (locatorIsOcrText(from)) {
-      // P6: OCR from 端点 —— 素材 + 文字来源三态（固定 / 参数 / 表达式）。
-      renderDragEndpointEditor(box, step, 'from');
-    } else {
-      const n = document.createElement('div');
-      n.className = 'muted small';
-      n.textContent = 'from 不是 region/ocr_text（坐标等）：请用高级 JSON 编辑';
-      box.appendChild(n);
-    }
-
-    // P6: to 端点（可选）。direction+distance 模式下没有 to；存在 OCR to 时结构化编辑。
-    const to = stepDragEndpoint(step, 'to');
-    if (to) {
-      if (locatorIsOcrText(to)) {
-        renderDragEndpointEditor(box, step, 'to');
-      } else {
-        const n = document.createElement('div');
-        n.className = 'muted small';
-        n.textContent = 'to kind=' + String(to.kind === undefined || to.kind === null ? '?' : to.kind) +
-          '：非 OCR 端点请用高级 JSON 编辑';
-        box.appendChild(n);
-      }
-    }
 
     const d = Array.isArray(step.args.distance) && step.args.distance.length === 2
       ? step.args.distance
@@ -4408,6 +4428,20 @@
     const title = document.createElement('div');
     title.innerHTML = `<strong>${esc((OP_META[step.op] && OP_META[step.op].label) || step.op)}</strong>`;
     root.appendChild(title);
+    // seq129：动作属性面板统一展示动作标题提示（与动作库 title 同一来源）。
+    const opTitle = ACTION_TITLES[step.op];
+    if (opTitle) {
+      const opHint = document.createElement('div');
+      opHint.className = 'muted small builder-op-hint';
+      opHint.textContent = opTitle;
+      root.appendChild(opHint);
+    }
+    if (step.op === 'swipe' || step.op === 'curve_swipe' || step.op === 'click_point') {
+      const coordHint = document.createElement('div');
+      coordHint.className = 'muted small builder-coord-hint';
+      coordHint.textContent = '坐标手势（低层）：直接使用绝对坐标；元素拖动请用「拖动（拟人）」素材端点，点击元素请用「点击素材」。';
+      root.appendChild(coordHint);
+    }
     step.args = step.args || {};
     // Only actions that actually consume `sel` get the generic top asset picker.
     // For if/while this picker used to write a stray `args.sel`; the condition
@@ -4415,7 +4449,7 @@
     const SEL_OPS = new Set(['appear', 'ocr', 'click', 'dismiss_popup', 'ocr_to_var']);
     if (SEL_OPS.has(step.op)) {
       const assetLabel = document.createElement('label');
-      assetLabel.textContent = `任务素材/操作区域（${B.assets.length}）`;
+      assetLabel.textContent = `素材（识别+操作区域；共 ${B.assets.length} 个）`;
       const assetSearchWrap = assetSearch(step.args.sel || '');
       const assetPick = assetSearchWrap.input;
       assetPick.addEventListener('change', () => {
@@ -4825,6 +4859,7 @@
     const saveIssues = flowTextSpecIssues(B.flow)
       .concat(regionIssues(B.flow, regionAssetIds(B.assets)))
       .concat(actionArgsIssues(B.flow, B.screen))
+      .concat(dragEndpointIssues(B.flow))
       .concat(actionTargetIssues(B.flow, B.assets, actionTargetParamRows(B.variables, B.assets)));
     if (saveIssues.length) {
       status('保存已阻止：' + saveIssues[0] +

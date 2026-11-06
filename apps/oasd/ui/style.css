@@ -1303,18 +1303,8 @@ aside.side {
   overflow-wrap: anywhere;
 }
 
-.builder-drag-endpoint {
-  border-style: dashed;
-  background: #14181e;
-}
-
-.builder-drag-endpoint .builder-text-source,
 .builder-subform .builder-text-source {
   margin-top: 4px;
-}
-
-.builder-drag-endpoint > .muted.small {
-  color: #8fb8e8;
 }
 
 /* ===== P7（task-20）：任务配置项成熟 UI（结构化表单 + 高级 JSON） ===== */

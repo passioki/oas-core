@@ -82,7 +82,12 @@ pub const CHECKSUMS_FILE: &str = "checksums.sha256";
 /// v1.4 A-plan (OPERATION-REGION-DESIGN §7): `region.asset` names a
 /// **whole-library operation-area asset**; a pre-v1.4 Runner would silently
 /// ignore that key and act on the wrong geometry, hence dedicated markers.
-pub const SUPPORTED_FLOW_OPS: [&str; 13] = [
+///
+/// seq129: a `drag` endpoint may be a task **asset** (`{"kind":"asset","sel":..}`).
+/// A pre-seq129 Runner's drag parser rejects the unknown kind with a load error,
+/// but the install gate should refuse the package up front, so it gets its own
+/// marker too.
+pub const SUPPORTED_FLOW_OPS: [&str; 14] = [
     "call_task",
     "call_task.params",
     "call_task.inherit.none",
@@ -96,6 +101,7 @@ pub const SUPPORTED_FLOW_OPS: [&str; 13] = [
     "drag.region",
     "click_target.region_asset",
     "drag.region_asset",
+    "drag.asset",
 ];
 
 /// Engine version this crate records in `manifest.engine.min_engine` and checks
@@ -519,6 +525,11 @@ fn has_region_asset(v: &serde_json::Value) -> bool {
             .is_some()
 }
 
+/// seq129: does an authored drag endpoint use the `asset` kind?
+fn has_asset_endpoint(v: &serde_json::Value) -> bool {
+    v.get("kind").and_then(|k| k.as_str()) == Some("asset")
+}
+
 fn walk_flow_ops(
     steps: &[serde_json::Value],
     out: &mut BTreeSet<String>,
@@ -601,6 +612,10 @@ fn walk_flow_ops(
                     // v1.4 A-plan: whole-library operation-area asset.
                     if targets.iter().any(|t| has_region_asset(t)) {
                         out.insert("drag.region_asset".to_string());
+                    }
+                    // seq129: asset endpoints need a seq129+ Runner.
+                    if targets.iter().any(|t| has_asset_endpoint(t)) {
+                        out.insert("drag.asset".to_string());
                     }
                 }
             }
@@ -2571,6 +2586,43 @@ mod tests {
             unsupported_flow_ops(&["call_task".into(), "future_op".into()]),
             vec!["future_op".to_string()]
         );
+    }
+
+    #[test]
+    fn drag_asset_endpoint_flow_op_is_derived_and_supported() {
+        let flow = r#"{"schema_version":1,"name":"A","steps":[
+            {"op":"drag","args":{
+              "from":{"kind":"asset","sel":"I_START"},
+              "to":{"kind":"asset","sel":"I_END"},
+              "direction":"right","distance":[10,20]}},
+            {"op":"finish","args":{"exit":"done"}}]}"#;
+        assert_eq!(derive_flow_ops(flow).unwrap(), vec!["drag.asset".to_string()]);
+        // The current engine supports the marker (install gate passes).
+        let derived = derive_flow_ops(flow).unwrap();
+        assert!(unsupported_flow_ops(&derived).is_empty());
+        assert!(SUPPORTED_FLOW_OPS.contains(&"drag.asset"));
+        // A Runner that predates seq129 does not know `drag.asset`; the install
+        // gate rejects it instead of failing mid-task.
+        let pre_seq129_known = [
+            "call_task",
+            "with_params",
+            "drag.text_expr",
+            "drag.region",
+            "drag.region_asset",
+        ];
+        let rejected: Vec<&str> = derived
+            .iter()
+            .map(String::as_str)
+            .filter(|op| !pre_seq129_known.contains(op))
+            .collect();
+        assert_eq!(rejected, vec!["drag.asset"]);
+        // Old region/point endpoints do not trigger the new marker.
+        let legacy = r#"{"schema_version":1,"name":"A","steps":[
+            {"op":"drag","args":{
+              "from":{"kind":"region","roi":[0,0,10,10]},
+              "direction":"up","distance":[1,2]}},
+            {"op":"finish","args":{"exit":"done"}}]}"#;
+        assert!(derive_flow_ops(legacy).unwrap().is_empty());
     }
 
     #[test]

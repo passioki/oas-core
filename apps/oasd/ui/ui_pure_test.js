@@ -4353,27 +4353,46 @@ ok(
   !/from: \{ kind: 'region', roi: r \}/.test(source),
   'the old shape-less 区域拖动 `from` is gone'
 );
-// builder.js must not eat the new field when the user edits roi.
+// seq129：拖动面板改素材端点（与点击素材一致），坐标输入/旧 OCR 端点编辑器删除。
 const structuredDragFn = extractFunctionFrom(builderSource, 'structuredDrag', 'builder.js');
-ok(/const shape = from\.shape;/.test(structuredDragFn), 'builder keeps the drag from.shape');
 ok(
-  /shape\s*\n?\s*\? \{ kind: 'region', roi, shape \}/.test(structuredDragFn),
-  'editing roi re-emits from.shape instead of eating it'
+  /拖动起点素材（必填）/.test(structuredDragFn) &&
+    /拖动终点素材（可选；不选则按方向\+距离）/.test(structuredDragFn),
+  'seq129: the drag form offers a required start-asset picker + optional end-asset picker'
 );
 ok(
-  /改 roi 不会改 shape/.test(structuredDragFn),
-  'builder tells the user that roi and shape are edited separately'
+  /assetTargetOptions\(B\.assets, \{ kindFilter: DRAG_ASSET_KINDS \}\)/.test(structuredDragFn) &&
+    /dragArgsSetEndpoint\(step\.args, cfg\.side, item\.id\)/.test(structuredDragFn),
+  'seq129: drag endpoints write {kind:"asset", sel} through the shared asset picker'
 );
 ok(
-  /polygon\/反选 shape：runtime 按 shape 采样/.test(structuredDragFn) &&
-    /margin 忽略/.test(structuredDragFn),
-  'builder says polygon/invert is sampled from shape and ignores margin'
+  /清空终点（改用方向\+距离）/.test(structuredDragFn) &&
+    /delete next\.to;/.test(structuredDragFn),
+  'seq129: the end-asset picker has a clear button that removes args.to'
 );
 ok(
-  /runtime 实际只使用上面的 roi/.test(structuredDragFn),
-  'builder says a plain rect is sampled from roi (shape is ignored by runtime)'
+  /dragEndpointLegacyText\(current\)/.test(structuredDragFn) &&
+    /旧坐标\/OCR 端点（kind=/.test(builderSource),
+  'seq129: legacy coordinate/OCR endpoints show a read-only hint (no silent rewrite)'
 );
-ok(/可选 shape/.test(structuredDragFn), 'builder drag form title mentions the optional shape');
+ok(
+  !/\['x', 'y', 'w', 'h'\]/.test(structuredDragFn) &&
+    !/renderDragEndpointEditor/.test(structuredDragFn) &&
+    !/from 不是 region/.test(structuredDragFn),
+  'seq129: the drag form has no coordinate ROI inputs and no endpoint kind block'
+);
+ok(
+  /方向（必填）/.test(structuredDragFn) &&
+    /最小距离/.test(structuredDragFn) && /最大距离/.test(structuredDragFn) &&
+    /最小时长/.test(structuredDragFn) && /最大时长/.test(structuredDragFn) &&
+    /margin/.test(structuredDragFn),
+  'seq129: direction/distance/duration/margin controls are kept'
+);
+ok(
+  !/function renderDragEndpointEditor/.test(builderSource) &&
+    !/builder-drag-endpoint/.test(builderSource + styleCss),
+  'seq129: renderDragEndpointEditor / builder-drag-endpoint are fully removed'
+);
 const collectionTestFn = extractFunction('testAssetCollection');
 ok(/realAssetTestGuard\(\)/.test(collectionTestFn), 'collection test is gated by the real/dry-run mode');
 ok(
@@ -4622,9 +4641,8 @@ ok(
 );
 ok(
   /step\.args\[field\] = text\.mode === 'keep' \? next : paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource) &&
-    /let written = text\.mode === 'keep' \? next : paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource) &&
-    /step\.args\[side\] = written;/.test(builderSource),
-  'find / guards / drag endpoints write through paramSourceApply with the legacy-param keep path'
+    /written = text\.mode === 'keep' \? next : paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource),
+  'find / guards write through paramSourceApply with the legacy-param keep path (seq129: drag OCR endpoints removed)'
 );
 ok(
   /const base = find\[0\] && typeof find\[0\] === 'object'/.test(builderSource) &&
@@ -4662,8 +4680,8 @@ ok(
 ok(
   /多定位器\/内联 ROI 用下方高级 JSON/.test(builderSource) &&
     /非 OCR 守卫请用高级 JSON 编辑/.test(builderSource) &&
-    /非 OCR 端点请用高级 JSON 编辑/.test(builderSource),
-  'the structured editors name what still stays advanced-JSON only (multi-locator / non-OCR)'
+    !/非 OCR 端点请用高级 JSON 编辑/.test(builderSource),
+  'seq129: multi-locator/guard advanced-JSON hints remain; the drag endpoint hint is removed with the editor'
 );
 
 // app.js bridge: loaded after builder.js, so it must be a runtime window hook.
@@ -4709,6 +4727,9 @@ const BUILDER_TARGET_PURE = [
   // U-T5（S7）：派生参数/目标校验/sync 摘要/旧 region 兼容判定。
   'paramAssetId', 'paramAssetLabel', 'derivedParamKeys', 'assetById', 'ocrVarParamRows',
   'locatorParamKey', 'paramSourceFromLocator',
+  // seq129：拖动素材端点纯函数。
+  'dragAssetEndpointBody', 'dragEndpointAssetSel', 'dragEndpointLegacyText',
+  'dragArgsSetEndpoint', 'dragEndpointIssues',
   'actionTargetIssues', 'saveSyncText', 'locatorHasLegacyRegion',
   // V2.0c：变量纯函数（面板/对话框/插入/动作目标 key 集）。
   'variableKeyValid', 'variableSourceOf', 'variableScopeOf', 'variableTypeLabel', 'variableKindText',
@@ -4903,10 +4924,10 @@ ok(
     /新步骤不配置操作区域：操作区由目标素材的 op_region 决定/.test(structuredTargetFn),
   'U-T5: the region editor only renders for old flows that already carry region'
 );
-const dragEndpointFn = extractFunctionFrom(builderSource, 'renderDragEndpointEditor', 'builder.js');
 ok(
-  /if \(locatorHasLegacyRegion\(endpoint\)\)[\s\S]{0,260}renderRegionEditor\(/.test(dragEndpointFn),
-  'U-T5: drag endpoints also gate the region editor on old region data'
+  !/function renderDragEndpointEditor/.test(builderSource) &&
+    !/builder-drag-endpoint/.test(builderSource + styleCss),
+  'seq129: the old drag OCR endpoint editor is deleted (drag now uses asset endpoints)'
 );
 ok(
   !/'param', '识别文字配置项/.test(builderSource) &&
@@ -4993,6 +5014,39 @@ eq(
   [{ key: 'group', asset_id: 'O_组' }],
   'V2.0c: assets fallback still derives keys when the task has no variables'
 );
+
+// seq129：拖动端点纯函数（素材端点；旧坐标/OCR 端点只读保留）。
+eq(targetSb.dragAssetEndpointBody('I_模板'),
+  { ok: true, endpoint: { kind: 'asset', sel: 'I_模板' }, error: '' },
+  'seq129: drag endpoint body is {kind:"asset", sel}');
+eq(targetSb.dragAssetEndpointBody('').ok, false, 'seq129: an empty drag endpoint is invalid');
+eq(targetSb.dragEndpointAssetSel({ kind: 'asset', sel: 'I_A' }), 'I_A',
+  'seq129: asset endpoint sel is read back');
+eq(targetSb.dragEndpointAssetSel({ kind: 'region', roi: [1, 2, 3, 4] }), '',
+  'seq129: legacy region endpoints are not treated as asset endpoints');
+ok(targetSb.dragEndpointLegacyText({ kind: 'region', roi: [1, 2, 3, 4] })
+  .indexOf('旧坐标/OCR 端点（kind=region）') >= 0,
+  'seq129: legacy region endpoints explain the read-only hint');
+eq(targetSb.dragEndpointLegacyText({ kind: 'asset', sel: 'I_A' }), '',
+  'seq129: asset endpoints are not legacy');
+eq(targetSb.dragArgsSetEndpoint({ direction: 'up' }, 'from', 'I_A'),
+  { direction: 'up', from: { kind: 'asset', sel: 'I_A' } },
+  'seq129: setting a drag start asset writes from={kind:"asset",sel}');
+eq(targetSb.dragArgsSetEndpoint({ to: { kind: 'asset', sel: 'I_B' } }, 'to', ''),
+  {},
+  'seq129: clearing the end asset removes args.to');
+eq(targetSb.dragEndpointIssues({ steps: [{ op: 'drag', args: { from: { kind: 'asset', sel: 'I_A' } } }] }), [],
+  'seq129: a drag with a start asset passes validation');
+ok(targetSb.dragEndpointIssues({ steps: [{ op: 'drag', args: { direction: 'up' } }] })
+  .some((i) => /必须选择起点素材/.test(i)), 'seq129: a drag without from is blocked at save');
+ok(targetSb.dragEndpointIssues({ steps: [{ op: 'drag', args: { from: { kind: 'asset', sel: '' } } }] })
+  .some((i) => /起点未选择素材/.test(i)), 'seq129: an empty start asset is blocked at save');
+ok(targetSb.dragEndpointIssues({ steps: [{ op: 'drag', args: {
+  from: { kind: 'asset', sel: 'I_A' }, to: { kind: 'asset', sel: '' },
+} }] }).some((i) => /终点已选择素材类型但未选素材/.test(i)),
+  'seq129: an empty end asset is blocked at save');
+eq(targetSb.dragEndpointIssues({ steps: [{ op: 'drag', args: { from: { kind: 'region', roi: [1, 2, 3, 4] } } }] }), [],
+  'seq129: legacy coordinate endpoints are still accepted (no forced rewrite)');
 eq(targetSb.variableUseCount({ steps: [
   { op: 'click', args: { text_expr: "param('group')" } },
   { op: 'loop', args: { n: "param('group')" } },
@@ -8210,6 +8264,37 @@ ok(
   'V2.0c: advanced param JSON entry stays hidden (code retained)'
 );
 
+// --- seq129 动作库一致性：拖动素材端点 + 坐标手势提示 + 文案统一 -----------------
+ok(
+  /drag: '拖动（拟人）：选择起点素材\/可选终点素材/.test(builderSource) &&
+    /dragEndpointIssues\(B\.flow\)/.test(builderSource),
+  'seq129: drag palette title + save-time endpoint validation are wired'
+);
+ok(
+  /click: '点击素材：选择素材（识别\+操作区域）/.test(builderSource) &&
+    /click_target: '定位点击：先选目标素材/.test(builderSource) &&
+    /long_press: '长按：选择目标素材/.test(builderSource),
+  'seq129: click/click_target/long_press titles use the same asset-select wording'
+);
+ok(
+  /swipe: '滑动（坐标手势，低层）/.test(builderSource) &&
+    /curve_swipe: '曲线滑动（坐标手势，低层）/.test(builderSource) &&
+    /click_point: '点击坐标（坐标手势，低层）/.test(builderSource),
+  'seq129: coordinate gestures keep absolute coords but name the low-level layer'
+);
+ok(
+  /坐标手势（低层）：直接使用绝对坐标；元素拖动请用「拖动（拟人）」素材端点/.test(builderSource),
+  'seq129: the property panel shows one shared coordinate-gesture hint'
+);
+ok(
+  /素材（识别\+操作区域）/.test(builderSource) && /搜索素材（识别\+操作区域）…/.test(builderSource),
+  'seq129: the asset picker label/placeholder is unified across actions'
+);
+ok(
+  /按钮文字（可选，素材库 popup 动作名）/.test(builderSource),
+  'seq129: dismiss_popup action text has the clarified label'
+);
+
 // --- DOM id audit（Studio shell；D 批删除了参数面板/配置项对话框相关 id） -------
 const htmlDom = html;
 const referencedIds = [...new Set(
@@ -8241,11 +8326,12 @@ ok(
 );
 
 // --- D 批（#1/#2 去参数 UI）：专属断言 + 仍存在功能的覆盖恢复 ------------------
-// 仍存在功能：guards / drag OCR 端点 / locator 文字来源 / 保存时 text·text_expr 校验。
+// 仍存在功能：guards / locator 文字来源 / 保存时 text·text_expr 校验。
+// seq129：drag 的 OCR 端点编辑器已删除（拖动改素材端点），不再参与共用统计。
 ok(
   /function locatorTextSourceFields\(base, onChange\)/.test(builderSource) &&
-    (builderSource.match(/locatorTextSourceFields\(/g) || []).length >= 4,
-  'D: 文字来源组件仍在，find / requires / expect / drag 端点共用'
+    (builderSource.match(/locatorTextSourceFields\(/g) || []).length >= 3,
+  'D/seq129: 文字来源组件仍在，find / requires / expect 共用'
 );
 ok(
   /function renderGuardLocatorEditor\(root, step, field\)/.test(builderSource) &&
@@ -8254,10 +8340,10 @@ ok(
   'D: requires/expect 的 OCR 守卫结构化编辑器仍在'
 );
 ok(
-  /function renderDragEndpointEditor\(host, step, side\)/.test(builderSource) &&
-    /renderDragEndpointEditor\(box, step, 'from'\)/.test(builderSource) &&
-    /renderDragEndpointEditor\(box, step, 'to'\)/.test(builderSource),
-  'D: drag from/to 的 OCR 端点结构化编辑器仍在'
+  !/function renderDragEndpointEditor/.test(builderSource) &&
+    /function dragAssetEndpointBody/.test(builderSource) &&
+    /function dragArgsSetEndpoint/.test(builderSource),
+  'seq129: old drag endpoint editor is gone; asset-endpoint helpers replace it'
 );
 ok(
   /function flowTextSpecIssues\(flow\)/.test(builderSource) && /保存已阻止/.test(builderSource),
