@@ -31,9 +31,8 @@ const btnAppendStep = document.getElementById('btn-append-step');
 const btnRegionClick = document.getElementById('btn-region-click');
 const btnRegionDrag = document.getElementById('btn-region-drag');
 const btnRegionSave = document.getElementById('btn-region-save');
-const btnPoly = document.getElementById('btn-poly');
-const btnBackMode = document.getElementById('btn-back-mode');
-const btnActionPoly = document.getElementById('btn-action-poly');
+const btnToolRecognition = document.getElementById('btn-tool-recognition');
+const btnToolAction = document.getElementById('btn-tool-action');
 const btnActionInvert = document.getElementById('btn-action-invert');
 // U-T4/S2：使用端OCR文字配置项（ocr_var）「识别文字」对话框。
 const assetTextDialog = document.getElementById('asset-text-dialog');
@@ -246,10 +245,16 @@ let liveReconnectTimer = null;
 let liveInputDrag = null;
 let roi = null; // {x,y,w,h} 识别框（前端识别/裁剪区域）
 let roiBack = null; // v1.2 操作区域矩形（保存为 action_shape）；null = 默认识别区域
-let backMode = false; // 正在绘制操作区域
+// #10 统一框选工具（2026-11-06 批次B3b）：唯一画布工具状态。
+// 'none' = 未进入工具（保留旧的选择/识别交互）；'recognition' = 识别区域工具；
+// 'action' = 操作区域工具。两种工具内手势一致：拖动=矩形，单击=多边形顶点，
+// 双击=收尾闭合；反选只对操作区域有意义（识别掩膜无补集语义）。
+const CANVAS_TOOLS = ['none', 'recognition', 'action'];
+const CANVAS_DRAG_THRESHOLD = 4; // 帧坐标像素：位移超过它才算“拖动=矩形”
+let canvasTool = 'none';
+let canvasGesture = null; // { start: {x,y} } 按下时记录，move 判定拖动/点击
 let actionPoly = null; // 操作区域多边形顶点
 let actionPolyClosed = false;
-let actionPolyMode = false;
 let actionInvert = false;
 let dragTarget = 'roi'; // 'roi' | 'back'
 let dragStart = null;
@@ -292,7 +297,6 @@ let detReady = true;
 // 运行时：点击区 = 匹配外接矩形；匹配/OCR 使用多边形掩膜（N10b）。
 let polygon = null;
 let polyClosed = false;
-let polyMode = false;
 let polyDrag = null; // 正在拖动的顶点下标（闭合后编辑）
 // #6（验收反馈）：素材已存的识别多边形仅供显示（独立颜色，蓝色虚线），与“正在
 // 画的多边形”（polygon，橙色）和操作区（action_shape）互不混淆。
@@ -565,10 +569,26 @@ function updateRoiLabel() {
     const geom = aShape.kind === 'polygon' ? `多边形 ${aShape.points.length} 顶点` : `矩形 ${b ? `${b[2]}x${b[3]} @ ${b[0]},${b[1]}` : ''}`;
     backInfo = ` · 操作区域 ${geom}${aShape.invert ? '（反选：屏幕−区域）' : ''}`;
   }
+  const toolNote = canvasTool === 'recognition'
+    ? ' · 工具：识别区域（拖动=矩形 / 单击=多边形顶点 / 双击收尾）'
+    : canvasTool === 'action'
+      ? ' · 工具：操作区域（拖动=矩形 / 单击=多边形顶点 / 双击收尾）'
+      : '';
   if (!roi) {
-    roiEl.textContent = polygon
+    if (canvasTool === 'action' && (aShape || polygon || actionPoly)) {
+      // 全屏 ocr_var / 未绑定识别区时的操作区域编辑：没有识别框也要能画/看操作区。
+      roiEl.textContent = '识别框：未选择' + backInfo.replace(' · 操作区域未设置（=真实识别结果）', '') + toolNote;
+      btnOcr.disabled = true;
+      btnLines.disabled = true;
+      if (btnMatch) btnMatch.disabled = true;
+      if (btnRegionClick) btnRegionClick.disabled = true;
+      if (btnRegionDrag) btnRegionDrag.disabled = true;
+      if (btnRegionSave) btnRegionSave.disabled = true;
+      return;
+    }
+    roiEl.textContent = (polygon
       ? `多边形：${polygon.length} 个顶点（未闭合）`
-      : '未选择';
+      : '未选择') + toolNote;
     btnOcr.disabled = true;
     btnLines.disabled = true;
     if (btnMatch) btnMatch.disabled = true;
@@ -583,7 +603,7 @@ function updateRoiLabel() {
   const polyInfo =
     polygon && polyClosed ? ` · 多边形 ${polygon.length} 顶点（识别掩膜）` : '';
   roiEl.textContent =
-    `识别框 x=${roi.x} y=${roi.y} w=${roi.w} h=${roi.h}${polyInfo}${storedPolyInfo}${backInfo}`;
+    `识别框 x=${roi.x} y=${roi.y} w=${roi.w} h=${roi.h}${polyInfo}${storedPolyInfo}${backInfo}${toolNote}`;
   btnOcr.disabled = roi.w < 2 || roi.h < 2;
   btnLines.disabled = roi.w < 2 || roi.h < 2;
   if (btnRegionClick) btnRegionClick.disabled = roi.w < 2 || roi.h < 2;
@@ -1444,7 +1464,7 @@ function renderCandidateList(sourceLabel) {
       // P1-8: entering a mode resets stale geometry from the previous target.
       resetActionGeometry({ keepTarget: true, clearInvert: true, redraw: false });
       activeCandidate = idx;
-      setSelectionMode('actionRect');
+      setCanvasTool('action');
       pendingActionAsset = null;
       // Show the candidate's existing operation shape (if any) while editing.
       if (c.actionShape) {
@@ -1587,64 +1607,218 @@ function candidateActionPayload(c) {
   return c.actionShape ? { action_shape: c.actionShape } : {};
 }
 
-// P1-8: the editor has two geometries (recognition polygon mask vs. action
-// region shape) but they must never be drawable at the same time. These helpers
-// are the single convergence point:
-//   - `selectionModeFromFlags` is pure and mirrors the mousedown dispatch order;
-//   - `setSelectionMode` is the ONLY place that flips the three mode flags;
-//   - `syncSelectionButtons` is the only place that writes the mode button text.
-// Geometry is cleared separately by resetSelection/resetActionGeometry.
-const SELECTION_MODES = ['none', 'recognitionPolygon', 'actionPolygon', 'actionRect'];
-
-function selectionModeFromFlags(polyModeFlag, actionPolyModeFlag, backModeFlag) {
-  if (actionPolyModeFlag) return 'actionPolygon';
-  if (polyModeFlag) return 'recognitionPolygon';
-  if (backModeFlag) return 'actionRect';
-  return 'none';
+// P1-8 / #10（2026-11-06 批次B3b）：统一框选工具。旧的四状态选择模式
+// （recognitionPolygon/actionPolygon/actionRect）已被 canvasTool +
+// 手势判定取代：
+//   - `canvasTool` 只有 none/recognition/action 三种；
+//   - 同一工具内：拖动=矩形，单击=多边形顶点，双击=收尾闭合（`canvasGestureShape` 纯函数）；
+//   - `setCanvasTool` 是唯一入口，`syncCanvasToolButtons` 是唯一写按钮的地方；
+//   - 几何清理由 resetSelection/resetActionGeometry/各保存路径负责。
+function canvasGestureShape(start, end, threshold) {
+  if (!start || !end) return 'polygon';
+  // 4 是 CANVAS_DRAG_THRESHOLD 的默认值；显式传参便于纯测试覆盖。
+  const t = Number.isFinite(Number(threshold)) ? Number(threshold) : 4;
+  const dx = Math.abs(Number(end.x) - Number(start.x));
+  const dy = Math.abs(Number(end.y) - Number(start.y));
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return 'polygon';
+  return dx > t || dy > t ? 'rect' : 'polygon';
 }
 
-function selectionActiveMode() {
-  return selectionModeFromFlags(polyMode, actionPolyMode, backMode);
+// 三个工具按钮的文案/激活/禁用（纯函数，ui_pure_test 直接断言）。
+// 反选只对操作区域有意义：识别区域是识别掩膜，补集没有业务语义。
+function canvasToolButtonState(tool, invert) {
+  const t = tool === 'recognition' || tool === 'action' ? tool : 'none';
+  const active = t === 'recognition';
+  const activeAction = t === 'action';
+  return [
+    {
+      key: 'recognition',
+      label: active ? '识别区域（点击退出）' : '识别区域',
+      active,
+      disabled: false,
+    },
+    {
+      key: 'action',
+      label: activeAction ? '操作区域（点击退出）' : '操作区域',
+      active: activeAction,
+      disabled: false,
+    },
+    {
+      key: 'invert',
+      label: '反选：' + (invert ? '开' : '关'),
+      active: !!invert,
+      disabled: !activeAction,
+    },
+  ];
 }
 
-function syncSelectionButtons() {
-  if (btnPoly) {
-    btnPoly.textContent = polyMode
-      ? '退出多边形模式（点顶点，双击闭合；闭合后可拖/双击删顶点）'
-      : '多边形框选（点顶点，双击闭合）';
-  }
-  if (btnActionPoly) {
-    btnActionPoly.textContent = actionPolyMode
-      ? '退出操作区域多边形（点顶点，双击闭合）'
-      : '操作区域多边形（点顶点，双击闭合）';
-  }
-  if (btnBackMode) {
-    btnBackMode.textContent = backMode
-      ? '退出操作区域编辑（拖拽画操作区域）'
-      : '绘制操作区域（默认=识别区域）';
+function syncCanvasToolButtons() {
+  const states = canvasToolButtonState(canvasTool, actionInvert);
+  const target = {
+    recognition: btnToolRecognition,
+    action: btnToolAction,
+    invert: btnActionInvert,
+  };
+  for (const st of states) {
+    const btn = target[st.key];
+    if (!btn) continue;
+    btn.textContent = st.label;
+    btn.disabled = st.disabled;
+    if (btn.classList) btn.classList.toggle('active', st.active);
   }
 }
 
-// Enter/leave a selection mode. The guards keep the states mutually exclusive:
-// no stale action polygon while the recognition polygon mode is active, and no
-// stale rect mode while a polygon mode is active.
-function setSelectionMode(mode) {
-  const m = SELECTION_MODES.includes(mode) ? mode : 'none';
-  polyMode = m === 'recognitionPolygon';
-  actionPolyMode = m === 'actionPolygon';
-  backMode = m === 'actionRect';
-  syncSelectionButtons();
-  return m;
+function setCanvasTool(tool) {
+  const t = CANVAS_TOOLS.indexOf(tool) >= 0 ? tool : 'none';
+  canvasTool = t;
+  canvasGesture = null;
+  polyDrag = null;
+  dragStart = null;
+  dragTarget = 'roi';
+  syncCanvasToolButtons();
+  return t;
+}
+
+function activeCanvasTool() {
+  return canvasTool;
+}
+
+// —— 识别区草稿/保存计划（#6/#10，纯函数） ----------------------------------
+// 从素材行载入可编辑草稿：roi 矩形 + 已存识别多边形（可继续编辑）。
+function recognitionDraftFromAsset(asset) {
+  const it = asset && typeof asset === 'object' ? asset : {};
+  const roi = Array.isArray(it.roi) && it.roi.length === 4
+    ? it.roi.map(Number)
+    : null;
+  const list = Array.isArray(it.polygon) ? it.polygon : [];
+  const polygon = list.length >= 3
+    ? list
+        .filter((p) => Array.isArray(p) && p.length === 2)
+        .map((p) => [Number(p[0]), Number(p[1])])
+    : null;
+  return {
+    roi,
+    polygon: polygon && polygon.length >= 3 ? polygon : null,
+  };
+}
+
+// 顶点列表的 inclusive 外接矩形 [x,y,w,h]（与 polygonBBox 同口径）。
+function recognitionPolygonBBox(points) {
+  if (!Array.isArray(points) || points.length < 3) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of points) {
+    if (!Array.isArray(p) || p.length !== 2) return null;
+    const x = Number(p[0]);
+    const y = Number(p[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+  return [minX, minY, maxX - minX + 1, maxY - minY + 1];
+}
+
+function rectEq4(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== 4 || b.length !== 4) return false;
+  return a.every((v, i) => Number(v) === Number(b[i]));
+}
+
+function polygonPointsEq(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (Number(a[i][0]) !== Number(b[i][0]) || Number(a[i][1]) !== Number(b[i][1])) return false;
+  }
+  return true;
+}
+
+// 识别区域保存计划：返回 {ok, action:'none'|'update'|'overwrite', request, roi, reason}。
+//   - 多边形：非模板 → update {polygon}（服务端由 bbox 反推 roi）；
+//             模板 → bbox==现有 ROI 走 update {polygon}（不重新截图），
+//                    否则 overwrite {roi,polygon}（模板必须重新截图，rev+1）；
+//   - 矩形：模板 → overwrite {roi,polygon:null}（清空旧掩膜；保留覆盖保存语义）；
+//           非模板 → update {roi,polygon:null}；region → update {roi,keep_action_shape:true}。
+function recognitionSavePlan(asset, draft) {
+  const it = asset && typeof asset === 'object' ? asset : {};
+  const kind = String(it.kind === undefined || it.kind === null ? '' : it.kind).trim();
+  const stored = recognitionDraftFromAsset(it);
+  const d = draft && typeof draft === 'object' ? draft : {};
+  const poly = Array.isArray(d.polygon) && d.polygon.length >= 3
+    ? d.polygon.map((p) => [Number(p[0]), Number(p[1])])
+    : null;
+  const noneReason = '识别区域未变化';
+  if (kind === 'template_set') {
+    return { ok: false, action: 'none', request: null, roi: null, reason: '素材集合没有识别区域' };
+  }
+  if (poly) {
+    const bbox = recognitionPolygonBBox(poly);
+    if (!bbox) {
+      return { ok: false, action: 'none', request: null, roi: null, reason: '多边形顶点无效（需要 >=3 个 [x,y]）' };
+    }
+    if (kind === 'region') {
+      return { ok: false, action: 'none', request: null, roi: bbox, reason: 'region 素材没有识别掩膜：请拖拽画矩形' };
+    }
+    if (polygonPointsEq(poly, stored.polygon) && rectEq4(bbox, stored.roi)) {
+      return { ok: true, action: 'none', request: null, roi: bbox, reason: noneReason };
+    }
+    if (kind === 'template') {
+      if (stored.roi && rectEq4(bbox, stored.roi)) {
+        return { ok: true, action: 'update', request: { polygon: poly }, roi: bbox, reason: '' };
+      }
+      return {
+        ok: true,
+        action: 'overwrite',
+        request: { roi: bbox, polygon: poly },
+        roi: bbox,
+        reason: '模板识别区变化：用当前帧重新截图（rev+1），多边形随新识别区一起保存',
+      };
+    }
+    return { ok: true, action: 'update', request: { polygon: poly }, roi: bbox, reason: '' };
+  }
+  const valid = assetRoiBoxValid(d.roi);
+  if (!valid) {
+    return { ok: false, action: 'none', request: null, roi: null, reason: '识别区无效：请拖拽画矩形，或单击画多边形' };
+  }
+  if (kind === 'region') {
+    if (rectEq4(valid, stored.roi) && !stored.polygon) {
+      return { ok: true, action: 'none', request: null, roi: valid, reason: noneReason };
+    }
+    return {
+      ok: true,
+      action: 'update',
+      request: { roi: valid, keep_action_shape: true },
+      roi: valid,
+      reason: '',
+    };
+  }
+  if (kind === 'template') {
+    return {
+      ok: true,
+      action: 'overwrite',
+      request: { roi: valid, polygon: null },
+      roi: valid,
+      reason: '模板识别区保存 = 用当前帧重新截图覆盖（rev+1），并清空旧识别多边形',
+    };
+  }
+  if (rectEq4(valid, stored.roi) && !stored.polygon) {
+    return { ok: true, action: 'none', request: null, roi: valid, reason: noneReason };
+  }
+  return {
+    ok: true,
+    action: 'update',
+    request: { roi: valid, polygon: null },
+    roi: valid,
+    reason: '',
+  };
 }
 
 function resetActionGeometry(opts) {
   const o = opts || {};
   actionPoly = null;
   actionPolyClosed = false;
-  setSelectionMode(selectionModeFromFlags(polyMode, false, false));
   if (o.clearInvert) {
     actionInvert = false;
-    if (btnActionInvert) btnActionInvert.textContent = '操作区域反选：关';
+    syncCanvasToolButtons();
   }
   if (!o.keepTarget) {
     activeCandidate = -1;
@@ -1653,6 +1827,7 @@ function resetActionGeometry(opts) {
   if (o.clearDrag) {
     dragStart = null;
     dragTarget = 'roi';
+    canvasGesture = null;
   }
   // New recognition results must not keep a rectangle drawn for a previous
   // asset/candidate: the fresh candidate's operation area is its own bbox.
@@ -1676,7 +1851,7 @@ function resetSelection(opts) {
   polyDrag = null;
   // #6：选择状态被清空，已存识别多边形的只读显示也清掉。
   storedRecognitionPolygon = null;
-  setSelectionMode('none');
+  setCanvasTool('none');
   if (o.clearBoxes) {
     boxes = [];
     selectedBox = null;
@@ -1783,7 +1958,10 @@ function loadActionShapeForEdit(shape) {
   } else if (st.kind === 'rect') {
     roiBack = { x: st.roi[0], y: st.roi[1], w: st.roi[2], h: st.roi[3] };
   }
-  if (btnActionInvert) btnActionInvert.textContent = `操作区域反选：${actionInvert ? '开' : '关'}`;
+  // 纯函数测试里没有画布按钮：直接同步反选文案（浏览器里按钮一定存在）。
+  if (btnActionInvert) {
+    btnActionInvert.textContent = '反选：' + (actionInvert ? '开' : '关');
+  }
 }
 
 // v1.2.4: one renderer for BOTH action_shape kinds.
@@ -4035,6 +4213,22 @@ function buildOpRegionModelA(ctx, lib) {
   body.className = 'op-region-level-body';
   if (ctx.mode !== 'asset') {
     body.textContent = '使用当前素材自身的操作区域（action_shape；否则用真实识别区域）。';
+    // #10（批次B3b）：当前素材的操作区域直接用统一框选工具在画布上画（矩形/多边形/反选）。
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.textContent = '在画布上编辑当前素材操作区…';
+    editBtn.title = '统一框选：拖动=矩形，单击=多边形顶点，双击收尾；反选仅操作区域可用';
+    editBtn.addEventListener('click', () => {
+      const asset = ctx.asset;
+      const scope = ctx.scope;
+      closeOpRegionDialog();
+      editAssetActionRoi(asset, scope);
+    });
+    body.appendChild(editBtn);
+    const actionHint = document.createElement('div');
+    actionHint.className = 'muted small';
+    actionHint.textContent = '画完的操作区域会直接保存为该素材的 action_shape（含反选开关）。';
+    body.appendChild(actionHint);
   } else {
     const choices = opRegionRefChoices(lib, ctx.asset.id);
     const refAsset = opRegionLibAsset(lib, ctx.refAsset);
@@ -5074,7 +5268,7 @@ function assetRoiPolygonForSave(polygon, roi, oldRoi) {
 // Template saves only need the template-relevant fields plus the optional OCR
 // provenance fields, which are forwarded when present so a replace never drops
 // stored data silently.
-function assetRoiReplacePayload(task, asset, roi) {
+function assetRoiReplacePayload(task, asset, roi, explicitPolygon) {
   const it = asset || {};
   const payload = {
     task,
@@ -5092,10 +5286,16 @@ function assetRoiReplacePayload(task, asset, roi) {
   if (it.action_shape) payload.action_shape = it.action_shape;
   // #9：op_region 链也是持久字段，replace 必须原样带回（类型节点/链根会用它）。
   if (it.op_region !== undefined && it.op_region !== null) payload.op_region = it.op_region;
-  // Leftover 2: translate the stored polygon with the ROI (the plan falls back
-  // to the rectangle only when a translation cannot represent the new ROI).
-  const polygon = assetRoiPolygonForSave(it.polygon, roi, it.roi);
-  if (polygon) payload.polygon = polygon;
+  // #10（批次B3b）：调用方画出的识别多边形优先（显式 null = 清空掩膜，数组 =
+  // 当前帧坐标）；未传时才回退到旧的“按 ROI 平移已存多边形”逻辑。
+  if (explicitPolygon !== undefined) {
+    payload.polygon = explicitPolygon === null
+      ? null
+      : explicitPolygon.map((p) => [Number(p[0]), Number(p[1])]);
+  } else {
+    const polygon = assetRoiPolygonForSave(it.polygon, roi, it.roi);
+    if (polygon) payload.polygon = polygon;
+  }
   if (it.ocr_mode != null) payload.ocr_mode = it.ocr_mode;
   if (Array.isArray(it.ocr_source_roi) && it.ocr_source_roi.length === 4) {
     payload.ocr_source_roi = it.ocr_source_roi.slice();
@@ -5247,8 +5447,8 @@ function updateAssetRoiSaveButton() {
     if (editing && editing.it) {
       btnSaveAssetRoi.title = `保存识别区到素材「${editing.it.id}」` +
         (editing.it.kind === 'template'
-          ? '（模板：用当前帧重新截图并覆盖，rev+1）'
-          : '（OCR/区域：直接更新 roi）');
+          ? '（模板：矩形=用当前帧重新截图覆盖 rev+1；只改识别多边形=不重截图）'
+          : '（OCR/区域：保存矩形 roi 或识别多边形）');
     }
   }
   if (assetRoiEditLabel) {
@@ -5290,7 +5490,8 @@ function editAssetRecognitionRoi(it, scopeTask) {
     resultEl.textContent = `素材集合「${it.id}」没有识别区域`;
     return;
   }
-  if (!Array.isArray(it.roi) || it.roi.length !== 4) {
+  const emptyRoiAllowed = !Array.isArray(it.roi) && String(it.kind) === 'ocr_var';
+  if (!Array.isArray(it.roi) && !emptyRoiAllowed) {
     resultEl.textContent = `素材「${it.id}」没有识别区域，无法在画布上编辑`;
     return;
   }
@@ -5308,14 +5509,29 @@ function editAssetRecognitionRoi(it, scopeTask) {
   pendingActionAssetScope = null;
   // Load the asset's CURRENT roi (and operation region) onto the canvas.
   pickAssetRoi(it);
+  // #10（批次B3b）：进入识别区域工具时，已存识别多边形载入“可编辑”状态
+  // （橙色可拖顶点/双击删点），而不是只读蓝层；直接画矩形/新多边形即覆盖。
+  const draft = recognitionDraftFromAsset(it);
+  if (draft.polygon) {
+    polygon = draft.polygon.map(([x, y]) => ({ x, y }));
+    polyClosed = true;
+    storedRecognitionPolygon = null;
+    roi = draft.roi
+      ? { x: draft.roi[0], y: draft.roi[1], w: draft.roi[2], h: draft.roi[3] }
+      : polygonBBox(polygon);
+  }
   dragStart = null;
   dragTarget = 'roi';
   editingRecognitionAsset = { it, scopeTask: task };
+  setCanvasTool('recognition');
   updateAssetRoiSaveButton();
   updateRoiLabel();
   draw();
-  const text = `编辑素材「${it.id}」识别区：在画布上拖拽画出新的识别框，然后点画布底部的「保存识别区（覆盖素材）」` +
-    (it.kind === 'template' ? '\n模板保存 = 用当前帧重新截图覆盖（rev+1）' : '') +
+  const text = `编辑素材「${it.id}」识别区（统一框选工具）：拖动=矩形；单击=多边形顶点，双击收尾` +
+    (draft.polygon ? `；已载入现有识别多边形 ${draft.polygon.length} 顶点（可双击删顶点/拖动顶点）` : '') +
+    (emptyRoiAllowed && !draft.polygon ? '；当前为全屏 OCR（无识别区），画一个矩形/多边形即可限定识别区域' : '') +
+    '\n画好后点画布底部「保存识别区（覆盖素材）」' +
+    (it.kind === 'template' ? '\n模板：ROI 变化=用当前帧重新截图覆盖（rev+1）；只改多边形=不重截图' : '') +
     (wasLive ? '\n实时预览已暂停，避免拖拽被当作设备点击；保存后可手动恢复' : '');
   resultEl.textContent = text;
   log(text);
@@ -5325,20 +5541,22 @@ async function saveAssetRecognitionRoi() {
   const editing = editingRecognitionAsset;
   if (!editing || !editing.it) return;
   const editingId = editing.it.id;
-  const box = roi && roi.w > 0 && roi.h > 0 ? [roi.x, roi.y, roi.w, roi.h] : null;
-  const valid = assetRoiBoxValid(box);
-  if (!valid) {
-    resultEl.textContent =
-      `识别区无效：请在画布上拖拽画出 w/h > 0 的框（当前 ${box ? box.join(',') : '未选择'}）`;
-    window.alert('识别区无效：请在画布上拖拽画出有效的识别框');
-    return;
-  }
-  // P2-9: the box must fit the frame that is on screen.
-  const frameCheck = assetRoiWithinFrame(valid, canvas.width, canvas.height);
-  if (!frameCheck.ok) {
-    resultEl.textContent = frameCheck.text;
-    window.alert(frameCheck.text);
-    return;
+  // #10：画布草稿 = 已收尾的多边形（优先）或矩形 roi。
+  const draftPoly = polygon && polyClosed && polygon.length >= 3
+    ? polygon.map((p) => [Math.round(p.x), Math.round(p.y)])
+    : null;
+  let draftRoi = roi && roi.w > 0 && roi.h > 0
+    ? [Math.round(roi.x), Math.round(roi.y), Math.round(roi.w), Math.round(roi.h)]
+    : null;
+  if (!draftRoi && draftPoly) draftRoi = recognitionPolygonBBox(draftPoly);
+  // P2-9: the rectangle must fit the frame that is on screen（多边形由服务端按帧校验）。
+  if (!draftPoly && draftRoi) {
+    const frameCheck = assetRoiWithinFrame(draftRoi, canvas.width, canvas.height);
+    if (!frameCheck.ok) {
+      resultEl.textContent = frameCheck.text;
+      window.alert(frameCheck.text);
+      return;
+    }
   }
   const task = assetRowScopeTask(editing.scopeTask, true);
   if (!task) return;
@@ -5357,9 +5575,20 @@ async function saveAssetRecognitionRoi() {
     return;
   }
   const it = latest;
-  if (it.kind === 'template') {
-    // P2-6: `/task/save_asset` requires positions; tell the user before the
-    // request instead of surfacing the server's "添加素材必须选择至少一个位置帧".
+  const plan = recognitionSavePlan(it, { roi: draftRoi, polygon: draftPoly });
+  if (!plan.ok) {
+    resultEl.textContent = '无法保存识别区：' + plan.reason;
+    window.alert('无法保存识别区：' + plan.reason);
+    return;
+  }
+  if (plan.action === 'none') {
+    resultEl.textContent = `素材「${it.id}」${plan.reason}，无需保存`;
+    setStatus(`识别区未变化：${it.id}`);
+    log(`识别区未变化：${it.id}`);
+    return;
+  }
+  if (plan.action === 'overwrite') {
+    // 模板覆盖保存 = 用当前帧重新截图（rev+1）；多边形/矩形按本次绘制显式提交。
     const positions = Array.isArray(it.positions) ? it.positions : [];
     if (!positions.length) {
       const text = `模板「${it.id}」没有位置帧，无法覆盖保存；请先在「位置帧」里加至少一个帧`;
@@ -5367,61 +5596,57 @@ async function saveAssetRecognitionRoi() {
       window.alert(text);
       return;
     }
-    // Overwrite = re-crop: keep everything else the template owns (id, threshold,
-    // positions, fixed action shape, polygon) and swap only the geometry.
+    const polyText = plan.request.polygon
+      ? `并保存识别多边形 ${plan.request.polygon.length} 顶点`
+      : '识别多边形将被清空';
     if (!window.confirm(
-      `用当前帧重新截图并覆盖模板「${it.id}」（rev+1，不可撤销；位置帧 ${positions.length} 个）？`
+      `用当前帧重新截图并覆盖模板「${it.id}」（rev+1，不可撤销；位置帧 ${positions.length} 个；${polyText}）？`
     )) return;
-    // P1-1/P1-2: build the replace payload from the latest object so no field
-    // (polygon/ocr_*/threshold/positions/action_shape) is dropped or rolled back.
-    // Leftover 2: the plan moves an existing recognition polygon with the ROI;
-    // only a resize/invalid data falls back to the rectangle, which is reported.
-    const polygonPlan = assetRoiPolygonPlan(it.polygon, valid, it.roi);
-    const payload = assetRoiReplacePayload(task, it, valid);
+    const payload = assetRoiReplacePayload(task, it, plan.request.roi, plan.request.polygon);
     const r = await postJson('/task/save_asset', payload);
     if (!r.ok) {
       showErrors('覆盖模板失败：', r.errors);
       return;
     }
-    let text = `模板「${it.id}」已用当前帧重新截图覆盖：识别区 [${valid.join(',')}]（rev+1）`;
-    if (polygonPlan.fallback) {
-      text += `；${polygonPlan.reason}（原识别多边形形状丢失）`;
-      window.alert(
-        `${polygonPlan.reason}：模板「${it.id}」已覆盖，但原识别多边形已退化为矩形识别区`
-      );
-    }
+    const text = `模板「${it.id}」已用当前帧重新截图覆盖：识别区 [${plan.roi.join(',')}]（rev+1）` +
+      (plan.request.polygon ? `，识别多边形 ${plan.request.polygon.length} 顶点` : '，识别多边形已清空');
     resultEl.textContent = text;
     log(text);
     setStatus(`模板「${it.id}」已覆盖；两个素材库已刷新`);
   } else {
-    // Leftover 1: a region's 识别区 is only its load fallback — saving it must
-    // not rewrite the operation polygon into a rectangle. OCR assets carry no
-    // action shape here, so the flag is region-only (absent = legacy B-08).
-    const payload = { task, id: it.id, roi: valid };
-    if (it.kind === 'region') payload.keep_action_shape = true;
+    const payload = Object.assign({ task, id: it.id }, plan.request);
     const r = await postJson('/task/asset/update', payload);
     if (!r.ok) {
       showErrors('更新识别区域失败：', r.errors);
       return;
     }
-    const text = it.kind === 'region'
-      ? `素材「${it.id}」识别区域：[${valid.join(',')}]（操作区 action_shape 保持不变）`
-      : `素材「${it.id}」识别区域：[${valid.join(',')}]`;
+    let text;
+    if (it.kind === 'region') {
+      text = `素材「${it.id}」识别区域：[${plan.roi.join(',')}]（操作区 action_shape 保持不变）`;
+    } else if (plan.request.polygon) {
+      text = `素材「${it.id}」识别区已保存：多边形 ${plan.request.polygon.length} 顶点，roi=[${plan.roi.join(',')}]` +
+        (it.kind === 'template' ? '（未重新截图）' : '');
+    } else {
+      text = `素材「${it.id}」识别区域：[${plan.roi.join(',')}]（识别多边形已清空）`;
+    }
     resultEl.textContent = text;
     log(text);
     setStatus(`素材「${it.id}」识别区域已保存；两个素材库已刷新`);
   }
   editingRecognitionAsset = null;
   updateAssetRoiSaveButton();
+  setCanvasTool('none');
   // #6：保存后旧的“已存识别多边形”显示层已过期，清掉并重绘（刷新后可重新选中查看）。
   storedRecognitionPolygon = null;
+  updateRoiLabel();
   draw();
   await refreshTaskAssetsForScope(task);
   await refreshGlobalAssets();
 }
 
 function editAssetActionRoi(it, scopeTask) {
-  if (!it.roi) {
+  // 全屏 ocr_var 没有识别区（roi 为空）也允许画操作区（action_shape 绝对坐标）。
+  if (!it.roi && String(it.kind) !== 'ocr_var') {
     resultEl.textContent = `素材「${it.id}」没有识别区域`;
     return;
   }
@@ -5433,16 +5658,22 @@ function editAssetActionRoi(it, scopeTask) {
   pendingActionAsset = it.id;
   pendingActionAssetScope = assetRowScopeTask(scopeTask, false);
   activeCandidate = -1;
-  setSelectionMode('actionRect');
-  roi = { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] };
+  roi = it.roi
+    ? { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] }
+    : null;
   const actionBox = actionShapeBBox(it.action_shape);
   // v1.2.4: restore BOTH kinds (rect + polygon) and their invert flag. The
   // loader clears the stale rect first; a polygon must not keep a bbox rect.
   loadActionShapeForEdit(it.action_shape);
-  if (!actionBox) roiBack = { ...roi };
+  if (!actionBox && roi) roiBack = { ...roi };
+  // #10：统一框选工具的操作区域模式（作用对象=该素材）。
+  setCanvasTool('action');
   updateRoiLabel();
   draw();
-  log(`编辑素材「${it.id}」操作区域：在画布上拖拽画框`);
+  log(
+    `编辑素材「${it.id}」操作区域（统一框选）：拖动=矩形，单击=多边形顶点，双击收尾；` +
+      '反选=整个屏幕−区域；保存后刷新两个素材库'
+  );
 }
 
 async function updateAssetActionRoi(id) {
@@ -5470,6 +5701,7 @@ async function updateAssetActionRoi(id) {
   pendingActionAssetScope = null;
   roiBack = null;
   resetActionGeometry({ keepTarget: false, clearInvert: true, redraw: false });
+  setCanvasTool('none');
   updateRoiLabel();
   draw();
   log(`素材「${id}」操作区域已更新`);
@@ -5479,15 +5711,21 @@ async function updateAssetActionRoi(id) {
 }
 
 function pickAssetRoi(it) {
-  if (!it.roi) {
-    resultEl.textContent = `素材「${it.id}」没有 roi`;
-    return;
+  // 全屏 ocr_var（roi 为空）也允许选中：画布只显示操作区/已存多边形，识别区留空。
+  if (!Array.isArray(it.roi)) {
+    if (String(it.kind) !== 'ocr_var') {
+      resultEl.textContent = `素材「${it.id}」没有 roi`;
+      return;
+    }
+    resultEl.textContent = `素材「${it.id}」是全屏 OCR（无识别区）：可在「识别区域」工具里画矩形/多边形限定识别区域`;
   }
   // P0-2: clicking another row (main body / 识别 / region test) replaces the
   // canvas ROI, so the previous asset's ROI editor must not stay armed.
   cancelRecognitionRoiEdit('选中其它素材');
   const shapeBox = actionShapeBBox(it.action_shape);
-  roi = { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] };
+  roi = Array.isArray(it.roi)
+    ? { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] }
+    : null;
   loadActionShapeForEdit(it.action_shape);
   // #6（验收反馈）：恢复已存识别多边形为只读显示（不再只剩矩形 ROI）。
   storedRecognitionPolygon = Array.isArray(it.polygon) && it.polygon.length >= 3
@@ -7306,61 +7544,30 @@ canvas.addEventListener('mousedown', (ev) => {
   // a box selects that block (ROI := box) so 生成素材 JSON applies to it, and
   // shows only that block's text.
   const p0 = toFrame(ev);
-  // One dispatch point: selectionActiveMode() derives from the same flags that
-  // setSelectionMode() writes, so two modes can never both handle this event.
-  const mode = selectionActiveMode();
-  if (mode === 'actionPolygon') {
+  // #10 统一框选工具：工具模式下由本段统一接管手势。
+  //   拖动(位移>阈值)=矩形；单击=多边形顶点；双击=收尾（dblclick 处理）。
+  if (canvasTool !== 'none') {
     if (ev.detail >= 2) {
       ev.preventDefault();
-      return;
+      return; // 双击的第二次按下交给 dblclick 收尾，避免多加一个重复顶点
     }
-    if (!actionPoly || actionPolyClosed) {
-      actionPoly = [];
-      actionPolyClosed = false;
-    }
-    actionPoly.push(p0);
-    updateRoiLabel();
-    draw();
-    return;
-  }
-  // §22.10 多边形模式：未闭合时逐点点击、双击闭合；闭合后可拖动顶点、双击删顶点。
-  if (mode === 'recognitionPolygon') {
-    if (ev.detail >= 2) {
-      ev.preventDefault();
-      return; // 交给 dblclick 处理（闭合/删顶点），避免多加一个重复点
-    }
-    if (polygon && polygon.length) {
+    if (canvasTool === 'recognition' && polygon && polygon.length) {
       const vi = nearestVertex(p0);
-      if (vi >= 0) {
-        polyDrag = vi; // 闭合/未闭合都允许拖动已有顶点
-        log(`拖动顶点 ${vi + 1}/${polygon.length}`);
+      if (vi >= 0 && polyClosed) {
+        polyDrag = vi; // 已收尾的识别多边形：拖动顶点微调
+        log(`拖动识别多边形顶点 ${vi + 1}/${polygon.length}`);
+        updateRoiLabel();
+        draw();
         return;
       }
     }
-    if (!polygon || polyClosed) {
-      polygon = [];
-      polyClosed = false;
-      storedRecognitionPolygon = null;
-      roi = null;
-    }
-    polygon.push(p0);
-    if (polygon.length >= 3) roi = polygonBBox(polygon);
-    updateRoiLabel();
-    draw();
-    return;
-  }
-  // §22.25 操作区域模式：拖出一个 ROI 作为「操作区域」（roi_back），识别框保持不变。
-  if (mode === 'actionRect') {
-    // P0-3: a new rectangle is an explicit replacement. Clear the previously
-    // closed action polygon so currentActionShape() cannot return the old
-    // polygon and save the wrong geometry.
-    actionPoly = null;
-    actionPolyClosed = false;
+    canvasGesture = { start: p0 };
     dragStart = p0;
-    dragTarget = 'back';
+    dragTarget = canvasTool === 'recognition' ? 'roi' : 'back';
     draw();
     return;
   }
+  // 非工具模式：保留旧的选择区块 / 拖拽识别框行为。
   if (boxes.length) {
     for (let i = boxes.length - 1; i >= 0; i--) {
       const b = boxes[i];
@@ -7402,33 +7609,90 @@ canvas.addEventListener('mousemove', (ev) => {
     if (liveInputDrag) ev.preventDefault();
     return;
   }
-  if (selectionActiveMode() === 'recognitionPolygon') {
-    if (polyDrag === null || !polygon) return;
-    polygon[polyDrag] = toFrame(ev);
+  const p = toFrame(ev);
+  // 识别多边形已收尾：拖动顶点微调。
+  if (canvasTool === 'recognition' && polyDrag !== null && polygon) {
+    polygon[polyDrag] = p;
     if (polygon.length >= 3) roi = polygonBBox(polygon);
     updateRoiLabel();
     draw();
     return;
   }
   if (!dragStart) return;
-  if (dragTarget === 'back') {
-    roiBack = normalizeRect(dragStart, toFrame(ev));
+  const start = canvasGesture ? canvasGesture.start : dragStart;
+  // #10 工具模式：只有位移超过阈值才预览矩形；否则保持“点击=加点”的候选状态。
+  if (canvasTool !== 'none') {
+    if (canvasGestureShape(start, p) !== 'rect') return;
+    if (canvasTool === 'recognition') {
+      if (polygon && polygon.length) {
+        polygon = null;
+        polyClosed = false;
+      }
+      storedRecognitionPolygon = null;
+      roi = normalizeRect(start, p);
+    } else {
+      actionPoly = null;
+      actionPolyClosed = false;
+      roiBack = normalizeRect(start, p);
+    }
     updateRoiLabel();
     draw();
     return;
   }
-  roi = normalizeRect(dragStart, toFrame(ev));
+  if (dragTarget === 'back') {
+    roiBack = normalizeRect(dragStart, p);
+    updateRoiLabel();
+    draw();
+    return;
+  }
+  roi = normalizeRect(dragStart, p);
   updateRoiLabel();
   draw();
 });
+
+// 操作区域手势/多边形收尾后的落盘：候选行更新 or 素材 action_shape 保存。
+// `shapeOverride` 供“双击收尾多边形”显式传入当前 polygon 形状（不能用矩形路径的
+// roiBack 判断，否则多边形会被误判成“未设置操作区”）。
+function finishActionGesture(shapeOverride) {
+  const shape = shapeOverride !== undefined ? shapeOverride : currentActionShape();
+  const bbox = shape ? actionShapeBBox(shape) : null;
+  const finished = bbox
+    ? { x: bbox[0], y: bbox[1], w: bbox[2], h: bbox[3] }
+    : (roiBack ? { ...roiBack } : null);
+  if (activeCandidate >= 0 && saveCandidates[activeCandidate]) {
+    const row = saveCandidates[activeCandidate];
+    row.action = finished || { ...row.recognize };
+    // Only this explicit gesture stores an operation shape; the bbox and the
+    // polygon/invert carried by currentActionShape are persisted together.
+    row.actionShape = shape;
+    activeCandidate = -1;
+    setCanvasTool('none');
+    renderCandidateList(lastLinesRoi ? '本次识别' : '识别结果');
+    log(
+      `操作区域已更新：${row.actionShape
+        ? `${row.actionShape.kind}${row.actionShape.invert ? '（反选）' : ''}`
+        : '使用识别区域'}`
+    );
+  } else if (pendingActionAsset) {
+    updateAssetActionRoi(pendingActionAsset);
+  } else {
+    resultEl.textContent =
+      '操作区域已画好，但当前没有绑定候选/素材。\n' +
+      '请先在识别结果点「调操作区域」，或在素材行点「操作区…→ 在画布上编辑」，再画操作区域。';
+    log('操作区域已画好，但未绑定候选/素材', 'WARN');
+  }
+  updateRoiLabel();
+  draw();
+}
 
 canvas.addEventListener('mouseup', (ev) => {
   if (liveInputAllowed() && liveInputDrag) {
     finishLiveInput(ev);
     return;
   }
-  if (selectionActiveMode() === 'recognitionPolygon') {
-    if (polyDrag === null) return;
+  const p = toFrame(ev);
+  // 识别多边形顶点拖动收尾。
+  if (canvasTool === 'recognition' && polyDrag !== null) {
     polyDrag = null;
     if (polygon && polygon.length >= 3) roi = polygonBBox(polygon);
     updateRoiLabel();
@@ -7436,30 +7700,57 @@ canvas.addEventListener('mouseup', (ev) => {
     if (roi) log(`顶点已调整：${polygon.length} 顶点，bbox ${roi.w}x${roi.h} @ ${roi.x},${roi.y}`);
     return;
   }
+  // #10 工具模式：位移判定矩形/多边形。双击的第二次 mouseup 直接忽略。
+  if (canvasTool !== 'none' && canvasGesture) {
+    const gesture = canvasGesture;
+    canvasGesture = null;
+    dragStart = null;
+    if (ev.detail >= 2) return; // dblclick 收尾
+    const shape = canvasGestureShape(gesture.start, p);
+    if (shape === 'rect') {
+      if (canvasTool === 'recognition') {
+        roi = normalizeRect(gesture.start, p);
+        storedRecognitionPolygon = null;
+        updateRoiLabel();
+        draw();
+        log(`识别区矩形 ${roi.w}x${roi.h} @ ${roi.x},${roi.y}（点「保存识别区」写入素材）`);
+      } else {
+        roiBack = normalizeRect(gesture.start, p);
+        log(`操作区域矩形 ${roiBack.w}x${roiBack.h} @ ${roiBack.x},${roiBack.y}`);
+        finishActionGesture();
+      }
+      return;
+    }
+    // 单击 = 加多边形顶点（工具内）。
+    if (canvasTool === 'recognition') {
+      if (!polygon || polyClosed) {
+        polygon = [];
+        polyClosed = false;
+        storedRecognitionPolygon = null;
+        roi = null;
+      }
+      polygon.push({ x: p.x, y: p.y });
+      if (polygon.length >= 3) roi = polygonBBox(polygon);
+      updateRoiLabel();
+      draw();
+      log(`识别多边形：${polygon.length} 顶点（单击继续加点，双击收尾）`);
+    } else {
+      if (!actionPoly || actionPolyClosed) {
+        actionPoly = [];
+        actionPolyClosed = false;
+      }
+      actionPoly.push({ x: p.x, y: p.y });
+      updateRoiLabel();
+      draw();
+      log(`操作区域多边形：${actionPoly.length} 顶点（单击继续加点，双击收尾）`);
+    }
+    return;
+  }
   if (!dragStart) return;
   dragStart = null;
   if (dragTarget === 'back') {
     dragTarget = 'roi';
-    const finished = roiBack ? { ...roiBack } : null;
-    if (activeCandidate >= 0 && saveCandidates[activeCandidate]) {
-      const row = saveCandidates[activeCandidate];
-      row.action = finished || { ...row.recognize };
-      // Only this explicit drag stores an operation shape; the bbox and the
-      // polygon/invert carried by currentActionShape are persisted together.
-      row.actionShape = finished ? currentActionShape() : null;
-      activeCandidate = -1;
-      setSelectionMode('none');
-      renderCandidateList(lastLinesRoi ? '本次识别' : '识别结果');
-      log(
-        `操作区域已更新：${row.actionShape
-          ? `${row.actionShape.kind}${row.actionShape.invert ? '（反选）' : ''}`
-          : '使用识别区域'}`
-      );
-    } else if (pendingActionAsset) {
-      updateAssetActionRoi(pendingActionAsset);
-    }
-    updateRoiLabel();
-    draw();
+    finishActionGesture();
     if (roiBack) log(`操作区域 ${roiBack.w}x${roiBack.h} @ ${roiBack.x},${roiBack.y}`);
     return;
   }
@@ -7491,30 +7782,19 @@ function nearestVertex(p) {
   return best;
 }
 
-// §22.10：双击行为 —— 未闭合则闭合；已闭合且双击顶点则删除该顶点（保持 >=3）。
+// §22.10 / #10：双击收尾 —— 识别工具：闭合多边形（闭合后可双击顶点删除）；
+// 操作区域工具：闭合后立即落盘（候选行 or 素材 action_shape）。
 canvas.addEventListener('dblclick', (ev) => {
   if (liveInputAllowed()) return;
-  const mode = selectionActiveMode();
-  if (mode === 'actionPolygon') {
+  if (canvasTool === 'action') {
     if (!actionPoly || actionPoly.length < 3) return;
     ev.preventDefault();
     actionPolyClosed = true;
-    setSelectionMode('none');
     const shape = currentActionShape();
-    const bbox = shape ? actionShapeBBox(shape) : null;
+    setCanvasTool('none');
     if (activeCandidate >= 0 && saveCandidates[activeCandidate]) {
-      const row = saveCandidates[activeCandidate];
-      row.actionShape = shape;
-      if (bbox) row.action = { x: bbox[0], y: bbox[1], w: bbox[2], h: bbox[3] };
-      activeCandidate = -1;
-      renderCandidateList(lastLinesRoi ? '本次识别' : '识别结果');
-      log(
-        `候选操作区域多边形已保存到候选：「${row.name}」` +
-        `${actionInvert ? '（反选：屏幕−区域）' : ''}`
-      );
+      finishActionGesture(shape);
     } else if (pendingActionAsset) {
-      // Existing asset: closing the polygon must immediately persist it; the
-      // old implementation only logged and lost the shape.
       log(`操作区域多边形已闭合，保存到素材「${pendingActionAsset}」…`);
       updateAssetActionRoi(pendingActionAsset).catch((e) => {
         log(`保存素材操作区域失败：${e}`, 'ERROR');
@@ -7523,14 +7803,14 @@ canvas.addEventListener('dblclick', (ev) => {
     } else {
       resultEl.textContent =
         '操作区域多边形已闭合，但当前没有绑定候选/素材。\n' +
-        '请先在识别结果点「调操作区域」，或在素材行点「操作区」，再画多边形。';
+        '请先在识别结果点「调操作区域」，或在素材行点「操作区…→ 在画布上编辑」，再画多边形。';
       log('操作区域多边形已闭合，但未绑定候选/素材', 'WARN');
     }
     updateRoiLabel();
     draw();
     return;
   }
-  if (mode !== 'recognitionPolygon' || !polygon || polygon.length < 3) return;
+  if (canvasTool !== 'recognition' || !polygon || polygon.length < 3) return;
   ev.preventDefault();
   const p = toFrame(ev);
   if (polyClosed) {
@@ -7555,78 +7835,54 @@ canvas.addEventListener('dblclick', (ev) => {
   updateRoiLabel();
   draw();
   log(
-    `多边形已闭合：${polygon.length} 顶点，bbox ${roi.w}x${roi.h} @ ${roi.x},${roi.y}` +
-      '（点击区=匹配外接矩形；多边形用于匹配/OCR 掩膜）'
+    `识别多边形已收尾：${polygon.length} 顶点，bbox ${roi.w}x${roi.h} @ ${roi.x},${roi.y}` +
+      '（保存识别区时写 roi=bbox + polygon；双击可删顶点）'
   );
 });
 
-btnPoly.addEventListener('click', () => {
-  const want = selectionActiveMode() !== 'recognitionPolygon';
-  // P1-8: entering recognition polygon mode drops any action polygon/invert/
-  // backMode so mouse events can never keep drawing the previous operation
-  // area. Leaving the mode keeps the current ROI/shape untouched.
-  if (want) {
-    // P0-2: a recognition-ROI edit is over once the user starts a new polygon.
-    cancelRecognitionRoiEdit('切换到多边形框选');
-    resetSelection({ clearInvert: true, clearRoi: true, redraw: false });
-    polygon = null;
-    polyClosed = false;
-    polyDrag = null;
-    roi = null;
-    roiBack = null;
-    dragStart = null;
-    setSelectionMode('recognitionPolygon');
-    log('多边形模式：逐点点击，双击闭合；闭合后可拖动顶点、双击删除顶点');
+// #10：统一的三个工具按钮。识别区域/操作区域是互斥工具；反选只在操作区域工具内可用。
+function toggleCanvasTool(tool) {
+  const turningOff = canvasTool === tool;
+  canvasGesture = null;
+  polyDrag = null;
+  dragStart = null;
+  dragTarget = 'roi';
+  canvasTool = 'none';
+  if (!turningOff) {
+    if (tool === 'action') {
+      // 操作区域编辑接管画布：识别区编辑态先退出（其几何保留，可重新进入）。
+      cancelRecognitionRoiEdit('切换到操作区域工具');
+      resetActionGeometry({ keepTarget: true, clearInvert: false, redraw: false });
+      log(
+        `操作区域工具：拖动=矩形，单击=多边形顶点，双击收尾；反选=整个屏幕−区域` +
+          (activeCandidate >= 0 ? '（候选已绑定）' : pendingActionAsset ? `（素材「${pendingActionAsset}」已绑定）` : '（未绑定候选/素材：先选中素材或候选）')
+      );
+    } else {
+      if (pendingActionAsset) {
+        pendingActionAsset = null;
+        pendingActionAssetScope = null;
+      }
+      // 切到识别区域工具：操作区域几何不再可编辑，清掉以免与识别框混淆。
+      resetActionGeometry({ keepTarget: false, clearInvert: true, clearRect: true, clearDrag: true, redraw: false });
+      log('识别区域工具：拖动=矩形，单击=多边形顶点，双击收尾；点画布底部「保存识别区」写入素材');
+    }
+    setCanvasTool(tool);
   } else {
-    setSelectionMode('none');
-    polyDrag = null;
+    syncCanvasToolButtons();
+    log('已退出画布工具');
   }
   updateRoiLabel();
   draw();
-});
+}
 
-btnActionPoly.addEventListener('click', () => {
-  const want = selectionActiveMode() !== 'actionPolygon';
-  if (want) {
-    // P0-2: another canvas edit mode replaces the recognition-ROI editor.
-    cancelRecognitionRoiEdit('切换到操作区域多边形');
-    // Keep the target (candidate/pending asset) and the invert flag, but leave
-    // rect mode / recognition polygon mode and any stale action polygon behind.
-    resetActionGeometry({ keepTarget: true, clearInvert: false, redraw: false });
-    setSelectionMode('actionPolygon');
-    log(`操作区域多边形模式：逐点点击，双击闭合${actionInvert ? '（反选=整个屏幕−区域）' : ''}`);
-  } else {
-    setSelectionMode('none');
-  }
-  updateRoiLabel();
-  draw();
-});
+btnToolRecognition.addEventListener('click', () => toggleCanvasTool('recognition'));
+btnToolAction.addEventListener('click', () => toggleCanvasTool('action'));
 
 btnActionInvert.addEventListener('click', () => {
+  if (canvasTool !== 'action') return; // 识别区域没有反选语义（按钮本应 disabled）
   actionInvert = !actionInvert;
-  btnActionInvert.textContent = `操作区域反选：${actionInvert ? '开' : '关'}`;
-  log(`操作区域反选：${actionInvert ? '开（有效区=整个屏幕−区域）' : '关'}`);
-  updateRoiLabel();
-  draw();
-});
-
-btnBackMode.addEventListener('click', () => {
-  const want = selectionActiveMode() !== 'actionRect';
-  if (want) {
-    // P0-2: drawing an operation region replaces the recognition-ROI editor.
-    cancelRecognitionRoiEdit('切换到操作区域编辑');
-    resetActionGeometry({ keepTarget: true, clearInvert: false, redraw: false });
-    setSelectionMode('actionRect');
-  } else {
-    setSelectionMode('none');
-    activeCandidate = -1;
-    pendingActionAsset = null;
-  }
-  log(
-    want
-      ? '操作区域模式：在画面上拖拽画出「操作区域」（action_shape，可大于识别区域）'
-      : '已退出操作区域模式'
-  );
+  syncCanvasToolButtons();
+  log(`反选：${actionInvert ? '开（有效区=整个屏幕−区域）' : '关'}`);
   updateRoiLabel();
   draw();
 });
@@ -8243,13 +8499,28 @@ async function doRunTask() {
       });
     });
   }
-  // P2-1: Esc leaves the canvas ROI editor (asset_ui.js already closes the
-  // settings menu on Esc). Never steal Esc from an open modal dialog.
+  // P2-1 / #10: Esc 放弃本次绘制并退出画布工具（asset_ui.js 已负责关设置菜单）。
+  // 打开着模态对话框时不抢 Esc。
   document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || !editingRecognitionAsset) return;
+    if (e.key !== 'Escape') return;
     if (document.querySelector && document.querySelector('dialog[open]')) return;
-    cancelRecognitionRoiEdit('Esc');
+    if (editingRecognitionAsset) {
+      cancelRecognitionRoiEdit('Esc');
+      return;
+    }
+    if (canvasTool !== 'none') {
+      canvasGesture = null;
+      polyDrag = null;
+      dragStart = null;
+      dragTarget = 'roi';
+      setCanvasTool('none');
+      updateRoiLabel();
+      draw();
+      log('Esc：已退出画布工具（本次绘制放弃）');
+    }
   });
+  // 初始按钮状态：反选在未进入操作区域工具前禁用。
+  syncCanvasToolButtons();
   taskName.addEventListener('change', async () => {
     // P0-2: the asset caches are about to be replaced with another task's rows.
     cancelRecognitionRoiEdit('切换任务');

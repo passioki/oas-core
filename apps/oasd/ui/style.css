@@ -612,6 +612,24 @@ aside.side {
 }
 #asset-roi-edit-label[hidden] { display: none; }
 
+/* #10（批次B3b）：统一框选工具的三个按钮（识别区域 / 操作区域 / 反选）。
+   active = 当前工具；反选只在操作区域工具内可用，其余时候禁用。 */
+#btn-tool-recognition.active,
+#btn-tool-action.active {
+  border-color: #4a7fb5;
+  background: #24384f;
+  color: #cfe4ff;
+}
+#btn-action-invert.active {
+  border-color: #b57f4a;
+  background: #4f3a24;
+  color: #ffd9b0;
+}
+#btn-action-invert:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
 /* 22.29 标题行常驻结果/日志窗口 */
 .app-header {
   display: flex;

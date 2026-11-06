@@ -59,7 +59,7 @@
         <canvas id="screen" width="1280" height="720"></canvas>
       </div>
       <div id="canvas-footer">
-        <div id="hint" class="muted small">在画面上拖拽选择识别 ROI；可再画一个「点击框」</div>
+        <div id="hint" class="muted small">统一框选：拖动=矩形；单击=多边形顶点（双击收尾）。选「识别区域」或「操作区域」工具后直接在画面上画</div>
         <span id="asset-roi-edit-label" class="muted small" hidden></span>
         <button id="btn-save-asset-roi" type="button" disabled hidden title="把画布上拖拽出的识别框保存到正在编辑的素材（模板 = 用当前帧重新截图覆盖，rev+1）">保存识别区（覆盖素材）</button>
         <button id="btn-canvas-panels" type="button">显示结果/日志</button>
@@ -96,10 +96,9 @@
           <button id="btn-ocr" disabled>试识别（单行文字）</button>
           <button id="btn-lines" disabled>多行识别（逐行文字+框）</button>
           <button id="btn-match" disabled>试匹配（图片识别，全屏搜索）</button>
-          <button id="btn-poly">多边形框选（点顶点，双击闭合）</button>
-          <button id="btn-back-mode">绘制操作区域（默认=识别区域）</button>
-          <button id="btn-action-poly">操作区域多边形（点顶点，双击闭合）</button>
-          <button id="btn-action-invert">操作区域反选：关</button>
+          <button id="btn-tool-recognition" title="识别区域工具：拖动=矩形；单击=加多边形顶点；双击=收尾闭合">识别区域</button>
+          <button id="btn-tool-action" title="操作区域工具：拖动=矩形；单击=加多边形顶点；双击=收尾闭合">操作区域</button>
+          <button id="btn-action-invert" disabled title="反选（仅操作区域工具可用）：有效区域=整个屏幕−所画区域">反选：关</button>
 
           <button id="btn-click-step" disabled>生成点击指令（选中识别区块）</button>
           <button id="btn-append-step" disabled>复制步骤到剪贴板</button>
@@ -540,13 +539,13 @@
     </div>
   </dialog>
 
-  <!-- U-T4/S5：素材「操作区」递归对话框（op_region 链）。
-       三选一：当前素材操作区(self) / 相对偏移(切画布绘制) / 引用素材库素材(递归)。 -->
+  <!-- 素材「操作区」对话框（模型 A，批次B3a/B3b）：当前素材操作区(self) / 引用素材作识别门槛（链，只读）。
+       操作区域本身用统一框选工具在画布上画（self 分支的按钮）。 -->
   <dialog id="op-region-dialog" class="task-dialog op-region-dialog">
     <h3 id="op-region-title">操作区</h3>
     <p class="muted small" id="op-region-hint">
-      操作区来源三选一：当前素材操作区 / 相对偏移（画布绘制）/ 引用素材库素材（递归；
-      修改被引用素材的操作区会影响其它引用它的素材/动作）。保存时服务端校验环/深度/末端。
+      两选一：当前素材操作区域（可在画布上直接画矩形/多边形+反选）/ 引用素材作识别门槛（只读，链上全部识别到才动作；
+      动作落点仍=当前素材操作区）。保存时服务端校验链/深度/末端。
     </p>
     <div id="op-region-breadcrumb" class="muted small op-region-breadcrumb">—</div>
     <div id="op-region-levels" class="op-region-levels"></div>

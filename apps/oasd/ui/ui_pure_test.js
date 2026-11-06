@@ -252,7 +252,14 @@ const PURE_FUNCTIONS = [
   // P1-1: cache-only repaint of the frame rows + current-frame detail after a
   // global-library change (save/delete/positions).
   'renderFrameAssetViews',
-  'selectionModeFromFlags',
+  // #10（批次B3b）：统一框选工具纯函数（手势判定/按钮状态/识别区保存计划）。
+  'canvasGestureShape',
+  'canvasToolButtonState',
+  'recognitionDraftFromAsset',
+  'recognitionPolygonBBox',
+  'rectEq4',
+  'polygonPointsEq',
+  'recognitionSavePlan',
   // PR2: Studio-side meta.params schema editor (runner values stay on Runner).
   // P6: T3「去声明…」prefill merge (append-only, same-key dedupe, bad-JSON degrade).
   // P7: mature structured params editor (form model / defaults / enum / validation).
@@ -336,7 +343,13 @@ const {
   assetMatchesFilter,
   filterAssets,
   globalAssetStatusText,
-  selectionModeFromFlags,
+  canvasGestureShape,
+  canvasToolButtonState,
+  recognitionDraftFromAsset,
+  recognitionPolygonBBox,
+  rectEq4,
+  polygonPointsEq,
+  recognitionSavePlan,
   publishRequestBody,
   formatPackageSummary,
   publishErrorsText,
@@ -898,7 +911,7 @@ sandbox.roiBack = null;
 loadActionShapeForEdit({ kind: 'rect', roi: [3, 4, 5, 6], invert: true });
 eq(sandbox.actionInvert, true, 'load rect restores invert');
 eq(sandbox.roiBack, { x: 3, y: 4, w: 5, h: 6 }, 'load rect restores roiBack');
-eq(sandbox.btnActionInvert.textContent, '操作区域反选：开', 'load rect syncs the invert button label');
+eq(sandbox.btnActionInvert.textContent, '反选：开', 'load rect syncs the unified invert button label');
 loadActionShapeForEdit({ kind: 'polygon', points: [[0, 0], [10, 0], [10, 10]], invert: true });
 eq(sandbox.actionInvert, true, 'load polygon restores invert');
 eq(sandbox.actionPolyClosed, true, 'load polygon closes the shape');
@@ -2484,7 +2497,7 @@ ok(!/function editAssetRoi\s*\(/.test(source), 'editAssetRoi (prompt version) is
 const roiSaveFn = extractFunction('saveAssetRecognitionRoi');
 ok(
   /postJson\('\/task\/save_asset', payload\)/.test(roiSaveFn) &&
-    /assetRoiReplacePayload\(task, it, valid\)/.test(roiSaveFn),
+    /assetRoiReplacePayload\(task, it, plan\.request\.roi, plan\.request\.polygon\)/.test(roiSaveFn),
   'saving a template ROI overwrites through /task/save_asset + the replace payload builder'
 );
 ok(
@@ -2493,18 +2506,21 @@ ok(
 );
 ok(
   /postJson\('\/task\/asset\/update', payload\)/.test(roiSaveFn) &&
-    /if \(it\.kind === 'region'\) payload\.keep_action_shape = true;/.test(roiSaveFn),
-  'OCR/region ROI saves patch /task/asset/update (a region keeps its action_shape)'
+    /recognitionSavePlan\(it, \{ roi: draftRoi, polygon: draftPoly \}\)/.test(roiSaveFn),
+  'OCR/region/mask saves go through the shared recognitionSavePlan + /task/asset/update'
 );
 ok(
-  /assetRoiPolygonPlan\(it\.polygon, valid, it\.roi\)/.test(roiSaveFn) &&
-    /polygonPlan\.fallback/.test(roiSaveFn),
-  'the template overwrite plans a translated polygon and reports a rectangle fallback (leftover 2)'
+  /if \(plan\.action === 'none'\)/.test(roiSaveFn) &&
+    /if \(plan\.action === 'overwrite'\)/.test(roiSaveFn),
+  'the save path branches on the pure plan action (none/overwrite/update)'
 );
 ok(
-  /assetRoiBoxValid\(box\)/.test(roiSaveFn) &&
-    /assetRoiWithinFrame\(valid, canvas\.width, canvas\.height\)/.test(roiSaveFn),
-  'the canvas box is validated (w/h > 0 and inside the frame) before any request'
+  /const draftPoly = polygon && polyClosed && polygon\.length >= 3/.test(roiSaveFn),
+  'a finished canvas polygon is the first-class recognition draft'
+);
+ok(
+  /assetRoiWithinFrame\(draftRoi, canvas\.width, canvas\.height\)/.test(roiSaveFn),
+  'the canvas rectangle is validated against the frame before any request'
 );
 ok(
   /findAssetById\(editing\.scopeTask, editingId/.test(roiSaveFn),
@@ -2564,12 +2580,17 @@ async function installRoiSaveHarness() {
       'let taskName = { value: "任务甲", focus() {} };\n' +
       'let editingRecognitionAsset = null;\n' +
       'let roi = null;\n' +
+      'let polygon = null;\n' +
+      'let polyClosed = false;\n' +
+      'let canvasTool = "none";\n' +
       'let storedRecognitionPolygon = null;\n' +
       'let globalAssetsCache = [];\n' +
       'let taskAssets = [];\n' +
       'const canvas = { width: 1280, height: 720 };\n' +
       'globalThis.resultEl = { textContent: "" };\n' +
       'globalThis.draw = () => {};\n' +
+      'globalThis.updateRoiLabel = () => {};\n' +
+      'globalThis.setCanvasTool = (t) => { canvasTool = t; };\n' +
       'const window = {\n' +
       '  confirm(m) { globalThis.confirmText = m; return globalThis.confirmAnswer !== false; },\n' +
       '  alert(m) { globalThis.alertText = m; },\n' +
@@ -2595,6 +2616,11 @@ async function installRoiSaveHarness() {
         extractFunction('assetRoiPolygonPlan'),
         extractFunction('assetRoiPolygonForSave'),
         extractFunction('assetRoiReplacePayload'),
+        extractFunction('recognitionDraftFromAsset'),
+        extractFunction('recognitionPolygonBBox'),
+        extractFunction('rectEq4'),
+        extractFunction('polygonPointsEq'),
+        extractFunction('recognitionSavePlan'),
         extractFunction('findAssetById'),
         roiSaveFn].join('\n\n'),
     sb,
@@ -2611,6 +2637,8 @@ async function installRoiSaveHarness() {
     vm.runInContext(
       `editingRecognitionAsset = { it: ${JSON.stringify(asset)}, scopeTask: ${JSON.stringify(o.scope || '')} };` +
         `roi = ${JSON.stringify(box)};` +
+        `polygon = ${JSON.stringify((o.polygon || []).map((p) => ({ x: p[0], y: p[1] })))};` +
+        `polyClosed = ${o.polygon ? 'true' : 'false'};` +
         `globalAssetsCache = ${JSON.stringify(globalItems)};` +
         `taskAssets = ${JSON.stringify(taskItems)};` +
         'globalThis.canceled = null;',
@@ -2644,11 +2672,13 @@ async function checkAssetRoiSavePath() {
     positions: [7, 8],
     action_shape: { kind: 'rect', roi: [5, 6, 7, 8] },
   };
+
+  // 1) 模板矩形保存 = 覆盖（重新截图），显式 polygon:null 清空旧识别掩膜。
   const saved = await roiSave.run(tplAsset, { x: 10, y: 20, w: 30, h: 40 }, { scope: '任务乙' });
   eq(
     roiSave.confirmText,
-    '用当前帧重新截图并覆盖模板「模板甲」（rev+1，不可撤销；位置帧 2 个）？',
-    'template overwrite asks the exact confirmation with the asset id (P2-7)'
+    '用当前帧重新截图并覆盖模板「模板甲」（rev+1，不可撤销；位置帧 2 个；识别多边形将被清空）？',
+    'template rectangle save asks the overwrite confirmation (P2-7) with the mask-clear note'
   );
   eq(roiSave.posts.length, 1, 'template ROI save posts exactly once');
   eq(roiSave.posts[0].url, '/task/save_asset', 'template ROI save uses the overwrite endpoint');
@@ -2663,14 +2693,15 @@ async function checkAssetRoiSavePath() {
       positions: [7, 8],
       threshold: 0.9,
       action_shape: { kind: 'rect', roi: [5, 6, 7, 8] },
+      polygon: null,
     },
-    'template overwrite payload preserves id/positions/threshold/action_shape and replaces roi'
+    'template overwrite preserves id/positions/threshold/action_shape and clears polygon'
   );
   ok(roiSave.refreshTask && roiSave.refreshGlobal, 'template ROI save refreshes both libraries');
   eq(saved.stillEditing, null, 'saving clears the recognition-edit state');
   ok(roiSave.buttonUpdates >= 1, 'saving re-disables the save button');
 
-  // Cancelling the confirm must not POST (and must stay in edit mode).
+  // 2) 取消确认 → 不 POST 且留在编辑态。
   roiSave.posts.length = 0;
   roiSave.confirmAnswer = false;
   const cancelled = await roiSave.run(tplAsset, { x: 10, y: 20, w: 30, h: 40 }, { scope: '任务乙' });
@@ -2678,85 +2709,48 @@ async function checkAssetRoiSavePath() {
   eq(roiSave.posts.length, 0, 'cancelling the template overwrite posts nothing');
   ok(cancelled.stillEditing && cancelled.stillEditing.it.id === '模板甲', 'cancelling keeps the ROI editor open');
 
-  // P1-2: threshold/positions were changed in the still-open settings menu after
-  // the ROI editor captured its snapshot. The save must use the latest object.
+  // 3) 设置菜单里改过的 threshold/positions 必须用最新对象（P1-2）。
   roiSave.posts.length = 0;
   const drifted = Object.assign({}, tplAsset, { threshold: 0.6, positions: [9] });
   await roiSave.run(tplAsset, { x: 10, y: 20, w: 30, h: 40 }, { scope: '任务乙', latest: drifted });
+  eq(roiSave.posts[0].payload.threshold, 0.6, 'template ROI save uses the latest threshold (P1-2)');
+  eq(roiSave.posts[0].payload.positions, [9], 'template ROI save uses the latest positions (P1-2)');
+  eq(roiSave.posts[0].payload.polygon, null, 'latest-object replace still clears the mask for a rectangle');
+
+  // 4) 模板 + 同 ROI 的多边形 → update {polygon}，不重新截图。
+  roiSave.posts.length = 0;
+  roiSave.confirmText = '';
+  const sameRoiPoly = [[10, 20], [39, 20], [39, 59], [10, 59]];
+  const sameRoiTpl = Object.assign({}, tplAsset, { roi: [10, 20, 30, 40] });
+  await roiSave.run(
+    sameRoiTpl,
+    { x: 10, y: 20, w: 30, h: 40 },
+    { scope: '任务乙', latest: sameRoiTpl, polygon: sameRoiPoly }
+  );
+  eq(roiSave.confirmText, '', 'template same-ROI polygon save never asks the re-crop question');
+  eq(roiSave.posts.length, 1, 'template same-ROI polygon save posts once');
+  eq(roiSave.posts[0].url, '/task/asset/update', 'template same-ROI polygon save patches the asset');
   eq(
     roiSave.posts[0].payload,
-    {
-      task: '任务乙',
-      replace: true,
-      id: '模板甲',
-      kind: 'template',
-      roi: [10, 20, 30, 40],
-      positions: [9],
-      threshold: 0.6,
-      action_shape: { kind: 'rect', roi: [5, 6, 7, 8] },
-    },
-    'template ROI save uses the latest threshold/positions, never the entry snapshot (P1-2)'
+    { task: '任务乙', id: '模板甲', polygon: sameRoiPoly },
+    'template same-ROI polygon payload carries only the polygon (no re-crop)'
   );
 
-  // P1-1: a template polygon whose bbox equals the new ROI is preserved as-is.
+  // 5) 模板 + 移动 ROI 的多边形 → 覆盖保存（重新截图），roi=多边形 bbox、polygon 随行。
   roiSave.posts.length = 0;
-  const matchingPolygon = [[10, 20], [39, 20], [39, 59], [10, 59]];
-  const polygonTpl = Object.assign({}, tplAsset, { roi: [10, 20, 30, 40], polygon: matchingPolygon });
-  await roiSave.run(polygonTpl, { x: 10, y: 20, w: 30, h: 40 }, { scope: '任务乙', latest: polygonTpl });
-  eq(
-    roiSave.posts[0].payload.polygon,
-    matchingPolygon,
-    'template overwrite keeps an existing recognition polygon (P1-1)'
+  roiSave.confirmText = '';
+  const movedPoly = [[20, 30], [49, 30], [49, 69], [20, 69]];
+  await roiSave.run(
+    tplAsset,
+    { x: 20, y: 30, w: 30, h: 40 },
+    { scope: '任务乙', latest: tplAsset, polygon: movedPoly }
   );
+  ok(/覆盖模板「模板甲」/.test(roiSave.confirmText), 'a moved template polygon still confirms the re-crop');
+  eq(roiSave.posts[0].url, '/task/save_asset', 'moved template polygon uses the overwrite endpoint');
+  eq(roiSave.posts[0].payload.roi, [20, 30, 30, 40], 'overwrite roi derives from the polygon bbox');
+  eq(roiSave.posts[0].payload.polygon, movedPoly, 'overwrite carries the authored polygon');
 
-  // P1-1: a stale polygon must NOT be dropped (that loses the mask) and must not
-  // make the server derive the old ROI either. It is re-synced to the new box.
-  roiSave.posts.length = 0;
-  const stalePolygon = [[1, 2], [3, 2], [3, 5], [1, 5]];
-  const staleTpl = Object.assign({}, tplAsset, { polygon: stalePolygon });
-  await roiSave.run(staleTpl, { x: 10, y: 20, w: 30, h: 40 }, { scope: '任务乙', latest: staleTpl });
-  eq(
-    roiSave.posts[0].payload.polygon,
-    [[10, 20], [39, 20], [39, 59], [10, 59]],
-    'a stale template polygon is re-synced to the new ROI rectangle (not dropped, not the old bbox)'
-  );
-  eq(roiSave.posts[0].payload.roi, [10, 20, 30, 40], 'the new ROI still wins over the stale polygon bbox');
-
-  // Leftover 2: MOVING the ROI must translate the stored polygon (same vertex
-  // count, same shape, bbox = new ROI), not replace it with the new rectangle.
-  roiSave.posts.length = 0;
-  roiSave.alertText = '';
-  const shapeTpl = Object.assign({}, tplAsset, {
-    roi: [10, 20, 30, 40],
-    polygon: [[10, 20], [39, 26], [39, 59], [10, 53]],
-  });
-  await roiSave.run(shapeTpl, { x: 20, y: 30, w: 30, h: 40 }, { scope: '任务乙', latest: shapeTpl });
-  eq(
-    roiSave.posts[0].payload.polygon,
-    [[20, 30], [49, 36], [49, 69], [20, 63]],
-    'moving a template ROI translates every polygon vertex (leftover 2)'
-  );
-  eq(roiSave.posts[0].payload.roi, [20, 30, 30, 40], 'the translated polygon bbox equals the new ROI');
-  eq(roiSave.posts[0].payload.polygon.length, 4, 'the translated polygon keeps its point count');
-  eq(roiSave.alertText, '', 'a successful polygon translation shows no warning');
-  ok(!/形状丢失/.test(roiSave.resultEl.textContent), 'a successful translation reports no shape loss');
-
-  // Leftover 2 fallback: a resized ROI cannot be represented by a translation,
-  // so the rectangle is sent and the shape loss is explained to the user.
-  roiSave.posts.length = 0;
-  roiSave.alertText = '';
-  await roiSave.run(shapeTpl, { x: 20, y: 30, w: 20, h: 20 }, { scope: '任务乙', latest: shapeTpl });
-  eq(
-    roiSave.posts[0].payload.polygon,
-    [[20, 30], [39, 30], [39, 49], [20, 49]],
-    'a resized template ROI falls back to the new rectangle'
-  );
-  ok(/多边形/.test(roiSave.alertText) && /矩形/.test(roiSave.alertText),
-    'a rectangle fallback is explained before the user continues');
-  ok(/形状丢失/.test(roiSave.resultEl.textContent),
-    'the save result notes that the polygon shape was lost');
-
-  // P2-6: a template without positions must never reach the server.
+  // 6) 模板无位置帧 → 不 POST，提示位置帧。
   roiSave.posts.length = 0;
   roiSave.alertText = '';
   const noPos = Object.assign({}, tplAsset, { positions: [] });
@@ -2765,7 +2759,7 @@ async function checkAssetRoiSavePath() {
   ok(/位置帧/.test(roiSave.alertText), 'a template with no positions explains the missing 位置帧');
   ok(noPosRun.stillEditing, 'the ROI editor stays open so the user can add positions');
 
-  // P2-9: the box must fit the current frame.
+  // 7) 矩形超出当前帧 → 不 POST。
   roiSave.posts.length = 0;
   roiSave.alertText = '';
   await roiSave.run(
@@ -2776,14 +2770,14 @@ async function checkAssetRoiSavePath() {
   eq(roiSave.posts.length, 0, 'an out-of-frame box never reaches the server');
   ok(/超出当前帧 100x100/.test(roiSave.alertText), 'an out-of-frame box explains the frame bounds');
 
-  // P0-2/P1-2: a deleted/renamed asset cancels instead of writing the old id.
+  // 8) 素材已删除/改名 → 取消而不是写旧 id（P0-2/P1-2）。
   roiSave.posts.length = 0;
   await roiSave.run(tplAsset, { x: 10, y: 20, w: 30, h: 40 }, { scope: '任务乙', latest: null });
   eq(roiSave.posts.length, 0, 'a missing asset never POSTs');
   eq(roiSave.canceled, '素材已不存在', 'a missing asset cancels the ROI editor');
   ok(/已不存在/.test(roiSave.resultEl.textContent), 'a missing asset explains why the save was cancelled');
 
-  // OCR path: patch the ROI directly, no confirm (latest lookup still applies).
+  // 9) OCR 矩形 → update {roi, polygon:null}，无确认。
   roiSave.posts.length = 0;
   roiSave.confirmText = '';
   await roiSave.run(
@@ -2794,14 +2788,34 @@ async function checkAssetRoiSavePath() {
   eq(roiSave.posts[0].url, '/task/asset/update', 'OCR ROI save patches the asset');
   eq(
     roiSave.posts[0].payload,
-    { task: '任务甲', id: '文字乙', roi: [5, 6, 7, 8] },
-    'OCR ROI save sends only {task,id,roi}'
+    { task: '任务甲', id: '文字乙', roi: [5, 6, 7, 8], polygon: null },
+    'OCR rectangle save sends roi + explicit polygon:null (mask cleared)'
   );
   eq(roiSave.confirmText, '', 'OCR ROI save never asks the template overwrite question');
 
-  // Leftover 1: a region's 识别区 save must keep the operation polygon. The
-  // payload carries keep_action_shape and the message says the action area is
-  // untouched; the OCR payload above stays flag-free.
+  // 10) OCR/ocr_var 多边形 → update {polygon}，roi 由服务端按 bbox 反推。
+  roiSave.posts.length = 0;
+  const ocrPoly = [[5, 6], [20, 6], [20, 15], [5, 15]];
+  await roiSave.run(
+    { id: '文字乙', kind: 'ocr_line', roi: [1, 2, 3, 4], positions: [7] },
+    { x: 5, y: 6, w: 16, h: 10 },
+    { polygon: ocrPoly }
+  );
+  eq(roiSave.posts.length, 1, 'OCR polygon save posts once');
+  eq(roiSave.posts[0].url, '/task/asset/update', 'OCR polygon save uses the update endpoint');
+  eq(roiSave.posts[0].payload, { task: '任务甲', id: '文字乙', polygon: ocrPoly },
+    'OCR polygon update carries only the mask (server re-derives roi from its bbox)');
+
+  // 11) 未变化的识别区/多边形 → 不写盘（no-op）。
+  roiSave.posts.length = 0;
+  await roiSave.run(
+    { id: '文字乙', kind: 'ocr_line', roi: [5, 6, 7, 8] },
+    { x: 5, y: 6, w: 7, h: 8 }
+  );
+  eq(roiSave.posts.length, 0, 'an unchanged recognition region is a no-op');
+  ok(/未变化/.test(roiSave.resultEl.textContent), 'the no-op result explains that nothing changed');
+
+  // 12) region 矩形 → keep_action_shape；region 多边形被拒绝。
   roiSave.posts.length = 0;
   roiSave.resultEl.textContent = '';
   const regionAsset = {
@@ -2820,8 +2834,13 @@ async function checkAssetRoiSavePath() {
   );
   ok(/操作区 action_shape 保持不变/.test(roiSave.resultEl.textContent),
     'region ROI save tells the user the operation area was not changed');
+  roiSave.posts.length = 0;
+  roiSave.alertText = '';
+  await roiSave.run(regionAsset, { x: 5, y: 6, w: 7, h: 8 }, { polygon: [[5, 6], [20, 6], [20, 15], [5, 15]] });
+  eq(roiSave.posts.length, 0, 'region polygon save is rejected before any request');
+  ok(/没有识别掩膜/.test(roiSave.alertText), 'region polygon rejection names the missing recognition mask');
 
-  // Invalid canvas box (w/h <= 0) must be rejected before any request.
+  // 13) 无效画布框（w/h<=0）→ 在任何请求前拒绝。
   roiSave.posts.length = 0;
   await roiSave.run({ id: '文字乙', kind: 'ocr_line', roi: [1, 2, 3, 4] }, { x: 5, y: 6, w: 0, h: 8 });
   eq(roiSave.posts.length, 0, 'an empty canvas box never reaches the server');
@@ -3473,29 +3492,157 @@ ok(!matchBoxValid([10, 20, 43, 0]), 'zero height is invalid');
 ok(!matchBoxValid(null), 'a missing match box is invalid');
 ok(!matchBoxValid(['x', 1, 2, 3]), 'a non-numeric origin is invalid');
 
-// --- P1-8: one selection mode at a time ---
-eq(selectionModeFromFlags(false, false, false), 'none', 'no flags -> no selection mode');
-eq(selectionModeFromFlags(true, false, false), 'recognitionPolygon', 'recognition polygon mode');
-eq(selectionModeFromFlags(false, true, false), 'actionPolygon', 'action polygon mode');
-eq(selectionModeFromFlags(false, false, true), 'actionRect', 'action rect mode');
-eq(selectionModeFromFlags(true, true, true), 'actionPolygon', 'action polygon wins the single dispatch order');
+// --- #10（批次B3b）：统一框选工具（3 按钮 + 拖动=矩形/单击=多边形/双击收尾） ---
+// 手势判定：位移超过阈值才是矩形；否则算“单击=多边形顶点”。
+eq(canvasGestureShape({ x: 0, y: 0 }, { x: 0, y: 0 }), 'polygon', 'no move -> polygon vertex');
+eq(canvasGestureShape({ x: 0, y: 0 }, { x: 3, y: 3 }), 'polygon', 'tiny move stays a click');
+eq(canvasGestureShape({ x: 0, y: 0 }, { x: 10, y: 2 }), 'rect', 'horizontal drag -> rectangle');
+eq(canvasGestureShape({ x: 0, y: 0 }, { x: 2, y: 10 }), 'rect', 'vertical drag -> rectangle');
+eq(canvasGestureShape({ x: 0, y: 0 }, { x: -10, y: 0 }, 4), 'rect', 'negative direction still a drag');
+eq(canvasGestureShape({ x: 0, y: 0 }, { x: 5, y: 5 }, 8), 'polygon', 'threshold is configurable');
+eq(canvasGestureShape(null, { x: 1, y: 1 }), 'polygon', 'missing start -> click path');
+// 三个工具按钮：识别区域 / 操作区域 / 反选（反选仅在操作区域工具内可用）。
+const noneBtns = canvasToolButtonState('none', false);
+eq(noneBtns.map((b) => b.key), ['recognition', 'action', 'invert'], 'exactly three canvas tool buttons');
+eq(noneBtns[0].active, false, 'recognition tool starts inactive');
+eq(noneBtns[2].disabled, true, 'invert is disabled outside the action tool');
+eq(noneBtns[2].label, '反选：关', 'invert label shows the off state');
+const recBtns = canvasToolButtonState('recognition', false);
+eq(recBtns[0].active, true, 'recognition tool active');
+eq(recBtns[1].active, false, 'action tool inactive while recognition is active');
+eq(recBtns[2].disabled, true, 'invert stays disabled in the recognition tool (no mask complement)');
+const actBtns = canvasToolButtonState('action', true);
+eq(actBtns[1].active, true, 'action tool active');
+eq(actBtns[2].disabled, false, 'invert is enabled in the action tool');
+eq(actBtns[2].label, '反选：开', 'invert label shows the on state');
+eq(canvasToolButtonState('bogus', false)[0].active, false, 'unknown tool degrades to none');
 ok(
-  (source.match(/\bfunction setSelectionMode\s*\(/g) || []).length === 1,
-  'setSelectionMode is the single mode-entry helper'
+  (source.match(/\bfunction setCanvasTool\s*\(/g) || []).length === 1,
+  'setCanvasTool is the single canvas-tool entry helper'
 );
-for (const flag of ['polyMode', 'actionPolyMode', 'backMode']) {
-  // declaration + assignment inside setSelectionMode only; any other direct
-  // assignment re-opens the old cross-mode state bug.
-  const assignments = source.match(new RegExp(`\\b${flag}\\s*=`, 'g')) || [];
-  eq(assignments.length, 2, `${flag} is only assigned in its declaration and setSelectionMode`);
+for (const old of ['SELECTION_MODES', 'selectionModeFromFlags', 'setSelectionMode', 'polyMode', 'actionPolyMode', 'backMode', 'btnPoly', 'btnBackMode', 'btnActionPoly']) {
+  ok(!source.includes(old), `old selection-mode system is gone: ${old}`);
 }
+ok(
+  /id="btn-tool-recognition"/.test(html) && /id="btn-tool-action"/.test(html) && /id="btn-action-invert"/.test(html),
+  'index.html provides the three unified canvas tool buttons'
+);
+ok(
+  !/id="btn-poly"/.test(html) && !/id="btn-back-mode"/.test(html) && !/id="btn-action-poly"/.test(html),
+  'index.html dropped the old four-state mode buttons'
+);
+// 识别区草稿/保存计划：多边形优先，矩形按素材类型走 update/overwrite。
+const recAssetTpl = { id: 'T', kind: 'template', roi: [10, 20, 30, 40], polygon: null };
+const recAssetOcr = { id: 'O', kind: 'ocr_var', roi: [10, 20, 30, 40], polygon: null };
+eq(recognitionDraftFromAsset(recAssetTpl), { roi: [10, 20, 30, 40], polygon: null }, 'draft loads roi without a stored polygon');
+eq(
+  recognitionDraftFromAsset({ kind: 'ocr_line', roi: [1, 2, 3, 4], polygon: [[1, 2], [3, 2], [3, 4]] }).polygon,
+  [[1, 2], [3, 2], [3, 4]],
+  'draft loads a stored recognition polygon for editing'
+);
+eq(recognitionPolygonBBox([[10, 20], [39, 20], [39, 59], [10, 59]]), [10, 20, 30, 40], 'polygon bbox is inclusive like roi');
+// 非模板 + 多边形 → update {polygon}（服务端由 bbox 反推 roi，不重截图）。
+const planOcrPoly = recognitionSavePlan(recAssetOcr, {
+  roi: [10, 20, 30, 40],
+  polygon: [[10, 20], [39, 20], [39, 59], [10, 59]],
+});
+eq(planOcrPoly.ok, true, 'ocr_var polygon plan is valid');
+eq(planOcrPoly.action, 'update', 'non-template polygon saves via update');
+eq(planOcrPoly.request, { polygon: [[10, 20], [39, 20], [39, 59], [10, 59]] }, 'update polygon payload only carries the mask');
+// 模板 + 同一 ROI 的多边形 → update（不重新截图）。
+const tplSamePoly = [[10, 20], [39, 20], [39, 59], [10, 59]];
+const planTplSame = recognitionSavePlan(recAssetTpl, { roi: [10, 20, 30, 40], polygon: tplSamePoly });
+eq(planTplSame.action, 'update', 'template polygon with the same ROI needs no re-crop');
+// 模板 + 移动 ROI 的多边形 → overwrite（重新截图）+ 多边形随行。
+const planTplMove = recognitionSavePlan(recAssetTpl, {
+  roi: [15, 25, 20, 10],
+  polygon: [[15, 25], [34, 25], [34, 34], [15, 34]],
+});
+eq(planTplMove.action, 'overwrite', 'template polygon that moves the ROI requires the overwrite save');
+eq(planTplMove.request.roi, [15, 25, 20, 10], 'overwrite plan carries the new ROI');
+eq(planTplMove.request.polygon.length, 4, 'overwrite plan carries the polygon');
+// 矩形：模板 → overwrite 且显式 polygon:null 清空旧掩膜；非模板 → update polygon:null。
+const planTplRect = recognitionSavePlan(recAssetTpl, { roi: [20, 30, 15, 15], polygon: null });
+eq(planTplRect.action, 'overwrite', 'template rectangle save re-crops');
+eq(planTplRect.request.polygon, null, 'template rectangle save clears the stored mask');
+const planOcrRect = recognitionSavePlan(recAssetOcr, { roi: [20, 30, 15, 15], polygon: null });
+eq(planOcrRect.action, 'update', 'non-template rectangle saves via update');
+eq(planOcrRect.request, { roi: [20, 30, 15, 15], polygon: null }, 'rectangle update clears the mask explicitly');
+// region：矩形保留 action_shape；多边形无掩膜语义，必须拒绝。
+const planRegionRect = recognitionSavePlan({ id: 'R', kind: 'region', roi: [5, 5, 10, 10] }, { roi: [6, 6, 8, 8], polygon: null });
+eq(planRegionRect.action, 'update', 'region rectangle uses the update path');
+eq(planRegionRect.request.keep_action_shape, true, 'region rectangle keeps its action_shape');
+ok(!recognitionSavePlan({ id: 'R', kind: 'region' }, { roi: null, polygon: [[1, 1], [5, 1], [5, 5]] }).ok, 'region polygon is rejected');
+// 模板矩形保存始终走覆盖（显式保存语义）；非模板/多边形未变化时才是 no-op。
+eq(recognitionSavePlan(recAssetTpl, { roi: [10, 20, 30, 40], polygon: null }).action, 'overwrite', 'template rectangle save always re-crops');
+eq(
+  recognitionSavePlan({ ...recAssetOcr, polygon: tplSamePoly }, { roi: [10, 20, 30, 40], polygon: tplSamePoly }).action,
+  'none',
+  'unchanged polygon no-op'
+);
+eq(
+  recognitionSavePlan(recAssetOcr, { roi: [10, 20, 30, 40], polygon: null }).action,
+  'none',
+  'unchanged non-template rectangle no-op'
+);
+ok(!recognitionSavePlan({ id: 'X', kind: 'ocr_line' }, { roi: null, polygon: null }).ok, 'empty recognition draft is rejected');
+// 入口接线（静态契约）：素材行 识别区/操作区 都进入统一工具；被引用素材只读。
+const roiEditorFn2 = extractFunction('editAssetRecognitionRoi');
+const actionEditorFn = extractFunction('editAssetActionRoi');
+ok(/setCanvasTool\('recognition'\)/.test(roiEditorFn2), 'editAssetRecognitionRoi enters the recognition tool');
+ok(/recognitionDraftFromAsset\(it\)/.test(roiEditorFn2) && /polygon = draft\.polygon/.test(roiEditorFn2),
+  'editAssetRecognitionRoi loads a stored recognition polygon for editable display/continue-editing');
+ok(/setCanvasTool\('action'\)/.test(actionEditorFn), 'editAssetActionRoi enters the action tool');
+ok(/String\(it\.kind\) !== 'ocr_var'/.test(actionEditorFn),
+  'a full-screen ocr_var (no roi) can still edit its operation area');
+const candidateAdjustBlock = source.slice(
+  source.indexOf("adjust.textContent = '调操作区域'"),
+  source.indexOf("const reset = document.createElement('button')")
+);
+ok(/setCanvasTool\('action'\)/.test(candidateAdjustBlock),
+  'candidate 调操作区域 enters the action tool');
+const opRegionSelfRenderFn = extractFunction('buildOpRegionModelA');
+ok(/在画布上编辑当前素材操作区/.test(opRegionSelfRenderFn),
+  'the op_region dialog self branch offers the canvas action-region editor');
+ok(/editAssetActionRoi\(asset, scope\)/.test(opRegionSelfRenderFn),
+  'that dialog button routes through the unified action tool entry');
+const toggleToolFn = extractFunction('toggleCanvasTool');
+ok(/setCanvasTool\(tool\)/.test(toggleToolFn) && /turningOff/.test(toggleToolFn),
+  'the tool buttons share one toggle entry');
+ok(
+  /canvasTool !== 'action'\) return;/.test(source),
+  'invert is guarded to the action tool'
+);
+ok(
+  /canvas\.addEventListener\('mousemove',[\s\S]{0,1600}canvasGestureShape\(start, p\)/.test(source),
+  'mousemove distinguishes drag vs click with canvasGestureShape'
+);
+ok(
+  /canvasTool === 'recognition' && polyDrag !== null/.test(source),
+  'vertex dragging stays available for a finished recognition polygon'
+);
+ok(
+  /canvas\.addEventListener\('dblclick',[\s\S]{0,900}识别多边形已收尾|识别多边形已收尾/.test(source),
+  'double-click finishes the recognition polygon'
+);
+ok(
+  /Esc：已退出画布工具/.test(source),
+  'Esc cancels the in-progress gesture and leaves the canvas tool'
+);
+ok(
+  /finishActionGesture\(shape\)/.test(source) &&
+    /function finishActionGesture\(shapeOverride\)/.test(source),
+  'closing a candidate action polygon persists the polygon shape (not the rect fallback)'
+);
+ok(
+  /工具：识别区域/.test(extractFunction('updateRoiLabel')) &&
+    /工具：操作区域/.test(extractFunction('updateRoiLabel')),
+  'the ROI label shows the active unified tool'
+);
 const resetSelectionFn = extractFunction('resetSelection');
 const resetActionFn = extractFunction('resetActionGeometry');
-ok(/setSelectionMode\('none'\)/.test(resetSelectionFn), 'resetSelection clears every mode through setSelectionMode');
-ok(
-  /setSelectionMode\(selectionModeFromFlags\(/.test(resetActionFn),
-  'resetActionGeometry drops action modes while preserving the recognition mode flag'
-);
+ok(/setCanvasTool\('none'\)/.test(resetSelectionFn), 'resetSelection exits the canvas tool through setCanvasTool');
+ok(!/setSelectionMode/.test(resetActionFn), 'resetActionGeometry no longer flips old mode flags');
 ok(
   /btnClear\.addEventListener\('click',[\s\S]{0,600}resetSelection\(/.test(source),
   'the clear button uses the unified resetSelection path'

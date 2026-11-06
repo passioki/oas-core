@@ -235,11 +235,11 @@
     },
     {
       key: 'roi', label: '识别区', action: 'onEditRoi', manage: true,
-      title: '在画布上拖拽编辑识别区域 x,y,w,h（模板：保存会用当前帧重新截图覆盖，rev+1）',
+      title: '在画布上统一框选：拖动=矩形，单击=多边形顶点，双击收尾；可载入已存识别多边形继续编辑',
     },
     {
       key: 'action', label: '操作区', action: 'onOpRegion', manage: true,
-      title: '设置该素材的操作区（当前素材操作区 / 相对偏移 / 引用素材库素材·递归链）',
+      title: '设置该素材的操作区（当前素材操作区可直接在画布上画矩形/多边形/反选；或引用素材作识别门槛·链只读）',
     },
     { key: 'rename', label: '重命名', action: 'onRename', manage: true, title: '只重命名素材 id（不改阈值/识别区）' },
     { key: 'threshold', label: '阈值', action: 'onThreshold', manage: true, title: '模板阈值 0~1（template）' },
