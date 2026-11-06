@@ -6302,10 +6302,25 @@ ok(
 // DOM id audit: the whole point of this round is ZERO static dead ids. Every
 // getElementById target must exist in index.html; if an id is genuinely needed,
 // add a real element to the HTML instead of keeping a fake reference.
+//
+// 2026-11-06 hotfix: the audit used to scan the RAW html, so an `id="…"` that
+// was accidentally swallowed by a malformed HTML comment still counted as
+// present while the real DOM had no such element (regression broke #btn-clear
+// at runtime). Two guards now apply: (1) HTML comments must be balanced and
+// must not contain a stray JS comment terminator (`*/}` was the actual bug);
+// (2) the id audit runs on comment-stripped markup so commented-out ids no
+// longer mask runtime-null elements.
+const htmlCommentOpen = (html.match(/<!--/g) || []).length;
+const htmlCommentClose = (html.match(/-->/g) || []).length;
+ok(
+  htmlCommentOpen === htmlCommentClose && !/\*\/\}/.test(html),
+  `index.html comments are balanced (open=${htmlCommentOpen} close=${htmlCommentClose}) and contain no stray */}`
+);
+const htmlDom = html.replace(/<!--[\s\S]*?-->/g, '');
 const referencedIds = [...new Set(
   [...source.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map((m) => m[1])
 )];
-const missingIds = referencedIds.filter((id) => !new RegExp(`id=["']${id}["']`).test(html));
+const missingIds = referencedIds.filter((id) => !new RegExp(`id=["']${id}["']`).test(htmlDom));
 const fixedIds = [
   'btn-library-refresh',
   'task-show-all-assets',
