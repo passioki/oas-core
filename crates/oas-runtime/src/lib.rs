@@ -834,16 +834,40 @@ fn ocr_line_candidates<'a>(
 }
 
 /// Public view of [`ocr_line_candidates`]: every OCR line matching `expected`
-/// (exact/normalized/fuzzy) at/above the optional minimum confidence.
+/// (exact/normalized/fuzzy with #11 digit protection) at/above the optional
+/// minimum confidence. Runtime click/wait/chain keep this fuzzy rule.
 ///
-/// The editor candidate API and the `op_region` chain picker MUST use this
-/// helper instead of re-implementing the rule (Lead ruling 12).
+/// The editor candidate API uses the stricter [`matching_ocr_lines_strict`]
+/// (normalized equality, no 1-edit tolerance), so a digit-variant row can never
+/// be offered as a candidate; both helpers share the same normalization.
 pub fn matching_ocr_lines<'a>(
     lines: &'a [OcrLine],
     expected: &str,
     min: Option<f32>,
 ) -> Vec<&'a OcrLine> {
     ocr_line_candidates(lines, expected, min)
+}
+
+/// Strict-CJK candidate filter (2026-11-06 批次A, #3/#11): every OCR line whose
+/// normalized text **exactly equals** `expected` at/above the optional minimum
+/// confidence. No 1-edit tolerance, so 「队伍1」 never yields 「队伍2」/「队伍3」
+/// and 「召唤」 does not yield 「召喚」.
+///
+/// Editor candidates use this stricter rule; runtime click/wait/chain keep the
+/// fuzzy [`matching_ocr_lines`]. The public API is additive: the old signature
+/// and behavior stay intact (serve keeps compiling).
+pub fn matching_ocr_lines_strict<'a>(
+    lines: &'a [OcrLine],
+    expected: &str,
+    min: Option<f32>,
+) -> Vec<&'a OcrLine> {
+    lines
+        .iter()
+        .filter(|line| {
+            ocr_text_matches_strict(expected, line.text.as_str())
+                && min.map(|m| line.score >= m).unwrap_or(true)
+        })
+        .collect()
 }
 
 /// `region.mode="nearest"`: the candidate whose bbox centre is nearest to
@@ -966,17 +990,24 @@ fn region_log(region: Option<&OpRegion>) -> String {
 /// for the same on-screen word (e.g. 召喚 vs 召唤). Exact equality made a saved
 /// asset fail even though the workbench showed the text. Normalize whitespace
 /// and allow one substitution/insertion/deletion for multi-character strings.
+///
+/// 2026-11-06 批次A (#11): **ASCII digit protection**. After normalization the
+/// ordered ASCII digit runs of both sides must be identical; otherwise the
+/// strings never match (so 「队伍1」 no longer matches 「队伍2」/「队伍3」/
+/// 「队伍12」 through the 1-edit tolerance). Full-width digits (０..９) are folded
+/// to ASCII during normalization, so a font that renders `1` as `１` still
+/// matches; CJK variant glyphs (`召喚`/`召唤`) keep the 1-edit tolerance.
 pub fn ocr_text_matches(expected: &str, actual: &str) -> bool {
-    fn norm(s: &str) -> String {
-        s.chars()
-            .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation())
-            .flat_map(|c| c.to_lowercase())
-            .collect()
-    }
-    let a = norm(expected);
-    let b = norm(actual);
+    let a = ocr_normalize(expected);
+    let b = ocr_normalize(actual);
     if a == b {
         return true;
+    }
+    // Digit protection (batch A / #11): never fuzzy-match across different
+    // ASCII digit groups. This runs before the length/edit-distance gate so
+    // 队伍1 vs 队伍12 is rejected even though it is a 1-edit pair.
+    if ocr_digit_runs(&a) != ocr_digit_runs(&b) {
+        return false;
     }
     let ac: Vec<char> = a.chars().collect();
     let bc: Vec<char> = b.chars().collect();
@@ -996,6 +1027,57 @@ pub fn ocr_text_matches(expected: &str, actual: &str) -> bool {
         prev = cur;
     }
     prev[m] <= 1
+}
+
+/// Shared OCR text normalization (fuzzy matcher + strict candidate filter):
+/// drop whitespace and ASCII punctuation, lowercase, and fold full-width ASCII
+/// digits (U+FF10..U+FF19) to ASCII digits.
+fn ocr_normalize(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_whitespace() || c.is_ascii_punctuation() {
+            continue;
+        }
+        for lower in c.to_lowercase() {
+            let folded = match lower {
+                '\u{FF10}'..='\u{FF19}' => {
+                    char::from_u32('0' as u32 + (lower as u32 - '\u{FF10}' as u32))
+                        .unwrap_or(lower)
+                }
+                other => other,
+            };
+            out.push(folded);
+        }
+    }
+    out
+}
+
+/// Ordered ASCII digit runs of an already-normalized string (「第1队第2层」 →
+/// `["1", "2"]`). Used by the #11 digit protection; pure-text strings produce an
+/// empty list on both sides and keep the historical fuzzy behavior.
+fn ocr_digit_runs(normalized: &str) -> Vec<&str> {
+    let mut runs: Vec<&str> = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, c) in normalized.char_indices() {
+        if c.is_ascii_digit() {
+            if start.is_none() {
+                start = Some(i);
+            }
+        } else if let Some(s) = start.take() {
+            runs.push(&normalized[s..i]);
+        }
+    }
+    if let Some(s) = start {
+        runs.push(&normalized[s..]);
+    }
+    runs
+}
+
+/// Strict OCR text comparison (2026-11-06 批次A, #3/#11): normalized **exact**
+/// equality, no 1-edit tolerance. Used by [`matching_ocr_lines_strict`] (editor
+/// candidates); runtime click/wait keep the fuzzy [`ocr_text_matches`].
+fn ocr_text_matches_strict(expected: &str, actual: &str) -> bool {
+    ocr_normalize(expected) == ocr_normalize(actual)
 }
 
 /// Point-in-polygon (ray casting, even-odd). Boundary points are unspecified.
@@ -6945,6 +7027,82 @@ mod tests {
         assert!(ocr_text_matches(" 召 唤 ", "召喚"));
         assert!(!ocr_text_matches("召唤", "取消"));
         assert!(!ocr_text_matches("确定", "确定按钮"));
+    }
+
+    #[test]
+    fn ocr_text_matches_protects_ascii_digits() {
+        // #11: the old 1-edit tolerance made same-length digit variants match.
+        assert!(!ocr_text_matches("队伍1", "队伍2"));
+        assert!(!ocr_text_matches("队伍1", "队伍3"));
+        assert!(!ocr_text_matches("队伍1", "队伍12"));
+        assert!(!ocr_text_matches("队伍12", "队伍1"));
+        assert!(!ocr_text_matches("队伍2", "队伍1"));
+        // Same digits: equality + the historical CJK/noise tolerance still work.
+        assert!(ocr_text_matches("队伍1", "队伍1"));
+        assert!(ocr_text_matches("队伍 1", "队伍1"));
+        assert!(ocr_text_matches("队伍1", "队伍1 "));
+        assert!(ocr_text_matches("队伍1号", "队伍1 号"));
+        // Full-width digits are folded to ASCII before the digit guard.
+        assert!(ocr_text_matches("队伍１", "队伍1"));
+        assert!(!ocr_text_matches("队伍１", "队伍2"));
+        // Multiple digit groups are compared in order.
+        assert!(ocr_text_matches("第1队第2层", "第1队第2层"));
+        assert!(!ocr_text_matches("第1队第2层", "第1队第3层"));
+        assert!(!ocr_text_matches("第1队第2层", "第2队第1层"));
+        // Pure text (no digits on either side) behavior is unchanged.
+        assert!(ocr_text_matches("召唤", "召喚"));
+        assert!(ocr_text_matches("图鉴", "图鑑"));
+        assert!(!ocr_text_matches("召唤", "取消"));
+        assert!(!ocr_text_matches("确定", "确定按钮"));
+        // An ASCII digit run never fuzzy-matches its absence (CJK numeral).
+        assert!(!ocr_text_matches("队伍1", "队伍一"));
+        // Empty boundaries keep the historical rule: only equal empties match.
+        assert!(ocr_text_matches("", ""));
+        assert!(!ocr_text_matches("", "队伍1"));
+        assert!(!ocr_text_matches("队伍1", ""));
+    }
+
+    #[test]
+    fn matching_ocr_lines_strict_is_normalized_exact_equality() {
+        let lines = vec![
+            chain_line(0, 0, 10, 10, "队伍1", 1.0),
+            chain_line(0, 12, 10, 10, "队伍2", 0.99),
+            chain_line(0, 24, 10, 10, "队伍1 ", 0.98),
+            chain_line(0, 36, 10, 10, "队伍1满", 0.97),
+            chain_line(0, 48, 10, 10, "召唤", 0.96),
+            chain_line(0, 60, 10, 10, "召喚", 0.95),
+            chain_line(0, 72, 10, 10, "队伍１", 0.94),
+        ];
+        let texts = |c: Vec<&OcrLine>| -> Vec<String> {
+            c.into_iter().map(|l| l.text.clone()).collect()
+        };
+        // Strict: normalized equality only (whitespace/full-width folded), so the
+        // 队伍2/队伍1满/半角数字 variants are NOT candidates.
+        assert_eq!(
+            texts(matching_ocr_lines_strict(&lines, "队伍1", None)),
+            vec!["队伍1", "队伍1 ", "队伍１"]
+        );
+        // Fuzzy (runtime rule + digit guard): one extra insertion is tolerated,
+        // but 队伍2 is rejected by the digit protection.
+        assert_eq!(
+            texts(matching_ocr_lines(&lines, "队伍1", None)),
+            vec!["队伍1", "队伍1 ", "队伍1满", "队伍１"]
+        );
+        // CJK variant glyphs: strict rejects 召喚, fuzzy keeps it.
+        assert_eq!(
+            texts(matching_ocr_lines_strict(&lines, "召唤", None)),
+            vec!["召唤"]
+        );
+        assert_eq!(
+            texts(matching_ocr_lines(&lines, "召唤", None)),
+            vec!["召唤", "召喚"]
+        );
+        // The minimum-confidence filter applies to both modes.
+        assert_eq!(matching_ocr_lines_strict(&lines, "队伍1", Some(0.99)).len(), 1);
+        assert_eq!(matching_ocr_lines(&lines, "队伍1", Some(0.99)).len(), 1);
+        // Empty input/empty expected are safe.
+        assert!(matching_ocr_lines_strict(&[], "队伍1", None).is_empty());
+        assert!(matching_ocr_lines_strict(&lines, "", None).is_empty());
     }
 
     #[test]

@@ -18,6 +18,49 @@
     return KIND_LABELS[kind] || kind;
   }
 
+  // #6（验收反馈）：素材已存识别多边形在缩略图上的轮廓绘制。
+  // 素材 roi 是帧坐标裁剪框；缩略图把 roi 等比缩放放进 64x44（与 canvas 分支的
+  // drawImage 布局一致），polygon 顶点按同一映射投影到缩略图坐标。
+  function thumbPolygonPoints(polygon, roi, width, height) {
+    if (!Array.isArray(polygon) || polygon.length < 3) return null;
+    if (!Array.isArray(roi) || roi.length !== 4) return null;
+    const cw = Number(width) > 0 ? Number(width) : 64;
+    const ch = Number(height) > 0 ? Number(height) : 44;
+    const rw = Math.max(1, Number(roi[2]));
+    const rh = Math.max(1, Number(roi[3]));
+    const scale = Math.min(cw / rw, ch / rh);
+    const dw = Math.max(1, rw * scale);
+    const dh = Math.max(1, rh * scale);
+    const ox = (cw - dw) / 2;
+    const oy = (ch - dh) / 2;
+    const points = [];
+    for (const p of polygon) {
+      if (!Array.isArray(p) || p.length < 2) continue;
+      const px = Number(p[0]);
+      const py = Number(p[1]);
+      if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
+      points.push([ox + (px - Number(roi[0])) * scale, oy + (py - Number(roi[1])) * scale]);
+    }
+    return points.length >= 3 ? points : null;
+  }
+
+  // 在缩略图 canvas 上描出已存识别多边形（蓝色虚线细线，不喧宾夺主）。
+  function drawThumbPolygon(ctx, points) {
+    if (!ctx || !Array.isArray(points) || points.length < 3) return;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i][0], points[i][1]);
+    ctx.closePath();
+    ctx.setLineDash([3, 2]);
+    ctx.strokeStyle = '#4d9fff';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(77,159,255,0.10)';
+    ctx.fill();
+    ctx.restore();
+  }
+
   function makeThumb(it, task) {
     const box = document.createElement('span');
     box.className = 'asset-thumb';
@@ -31,6 +74,17 @@
         box.classList.add('asset-thumb-empty');
       });
       box.appendChild(img);
+      // #6：模板缩略图叠加已存识别多边形轮廓（ROI 裁剪图上的等比投影）。
+      const polyPoints = thumbPolygonPoints(it.polygon, it.roi, 64, 44);
+      if (polyPoints) {
+        const overlay = document.createElement('canvas');
+        overlay.className = 'asset-thumb-poly';
+        overlay.width = 64;
+        overlay.height = 44;
+        const octx = overlay.getContext('2d');
+        drawThumbPolygon(octx, polyPoints);
+        box.appendChild(overlay);
+      }
       return box;
     }
     if (it.roi) {
@@ -62,6 +116,8 @@
           it.roi[0], it.roi[1], rw, rh,
           (c.width - dw) / 2, (c.height - dh) / 2, dw, dh
         );
+        // #6：识别多边形轮廓叠加（与矩形 ROI 同图；蓝色虚线区分）。
+        drawThumbPolygon(ctx, thumbPolygonPoints(it.polygon, it.roi, c.width, c.height));
         box.textContent = '';
         box.appendChild(c);
       };
@@ -727,6 +783,9 @@
     KIND_LABELS,
     kindLabel,
     makeThumb,
+    // #6：已存识别多边形 → 缩略图坐标投影（ui_pure_test 直接断言）。
+    thumbPolygonPoints,
+    drawThumbPolygon,
     createRow,
     renderRows,
     createSearchPicker,

@@ -3463,25 +3463,21 @@ impl Server {
             Ok(r) => r,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
+        // 2026-11-06 acceptance #9 (`replace:true` must never silently drop
+        // persistent fields): these fields are parsed in three states — absent /
+        // explicit JSON null (= clear) / value — so an omitted field can inherit
+        // the stored item below. Non-replace creation keeps "absent = None".
+        //
         // Operation region: one canonical `action_shape` decides the click area
         // (P0b: the old `recognition|fixed` two-state rule is gone; a shape is
         // optional and always allowed, no source field is read or written).
-        let action_shape = match json_opt_action_shape(&v) {
+        let action_shape_req = match json_present_action_shape(&v) {
             Ok(r) => r,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
-        let threshold = match v.get("threshold") {
-            None => None,
-            Some(x) => match x.as_f64() {
-                Some(t) => Some(t as f32),
-                None => {
-                    return self.send_errors(
-                        out,
-                        400,
-                        vec!["`threshold` must be a number".to_string()],
-                    )
-                }
-            },
+        let threshold_req = match json_present_threshold_field(&v) {
+            Ok(r) => r,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
         };
         // `replace: true` = overwrite an existing asset id (rev+1) instead of
         // failing with "already exists" (ENGINE-DESIGN §4 rev semantics).
@@ -3500,7 +3496,7 @@ impl Server {
         };
         // §22.10: optional polygon (frame coords, ≥3 points) — validated by
         // oas-task (which also derives roi = its bounding box).
-        let polygon = match json_opt_polygon_field(&v, "polygon") {
+        let polygon_req = match json_present_polygon_field(&v, "polygon") {
             Ok(p) => p,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
@@ -3522,47 +3518,27 @@ impl Server {
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
         // 2026-11-06 参数→素材: `ocr_var` fields + the operation-region chain.
-        let (runtime_text, mut param_key, label) = match json_ocr_var_fields(&v) {
-            Ok(fields) => fields,
+        // Present-style for the same #9 inheritance (explicit null = clear).
+        let runtime_text_req = match json_present_str_field(&v, "runtime_text") {
+            Ok(s) => s,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
-        let op_region = match json_opt_op_region(&v) {
+        let param_key_req = match json_present_str_field(&v, "param_key") {
+            Ok(s) => s,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let label_req = match json_present_str_field(&v, "label") {
+            Ok(s) => s,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let op_region_req = match json_op_region_update(&v) {
             Ok(op) => op,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
-        let positions = match v.get("positions") {
-            None => Vec::new(),
-            Some(x) => match x.as_array() {
-                Some(arr) => {
-                    let mut out_ids = Vec::with_capacity(arr.len());
-                    for (i, item) in arr.iter().enumerate() {
-                        let Some(n) = item.as_u64() else {
-                            return self.send_errors(
-                                out,
-                                400,
-                                vec![format!("`positions[{i}]` must be a frame id (u64)")],
-                            );
-                        };
-                        out_ids.push(n);
-                    }
-                    out_ids
-                }
-                None => {
-                    return self.send_errors(
-                        out,
-                        400,
-                        vec!["`positions` must be an array of frame ids".to_string()],
-                    )
-                }
-            },
+        let positions_req = match json_present_positions_field(&v) {
+            Ok(p) => p,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
         };
-        if positions.is_empty() {
-            return self.send_errors(
-                out,
-                400,
-                vec!["添加素材必须选择至少一个位置帧（positions）".to_string()],
-            );
-        }
         let frame = match self.state.lock().unwrap().frame.clone() {
             Some(f) => f,
             None => {
@@ -3604,30 +3580,110 @@ impl Server {
                 Err(e) => return self.send_errors(out, 500, vec![e]),
             }
         }
+        // 2026-11-06 acceptance #9 — server-side safety net: a `replace:true`
+        // payload that omits a persistent field must NOT wipe it. Load the stored
+        // item once; absent fields inherit from it below, while an explicit
+        // `null` (parsed as `Some(None)` above) still clears. `replace:false`
+        // (creation) keeps the historical "absent = None" behaviour.
+        let stored: Option<oas_task::AssetDecl> = if replace {
+            bundle
+                .load_assets_file()
+                .ok()
+                .and_then(|af| af.items.into_iter().find(|a| a.id == id))
+        } else {
+            None
+        };
         // 2026-11-06 参数→素材: over an existing ocr_var, `param_key` is
         // read-only (Lead ruling 6): changing it would orphan the usage-side
-        // `values.json` entry. An omitted key keeps the stored one.
-        if replace {
-            if let Ok(af) = bundle.load_assets_file() {
-                if let Some(existing) = af.items.iter().find(|a| a.id == id) {
-                    if existing.is_ocr_var() {
-                        if let Some(new_key) = param_key.as_deref() {
-                            if existing.param_key.as_deref() != Some(new_key) {
-                                return self.send_errors(
-                                    out,
-                                    400,
-                                    vec![format!(
-                                        "ocr_var `{id}`: param_key 创建后只读（改键会丢使用端已存值）"
-                                    )],
-                                );
-                            }
-                        } else {
-                            param_key = existing.param_key.clone();
-                        }
+        // `values.json` entry. An omitted key keeps the stored one (below).
+        if let Some(existing) = stored.as_ref() {
+            if existing.is_ocr_var() {
+                if let Some(Some(new_key)) = param_key_req.as_ref() {
+                    if existing.param_key.as_deref() != Some(new_key.as_str()) {
+                        return self.send_errors(
+                            out,
+                            400,
+                            vec![format!(
+                                "ocr_var `{id}`: param_key 创建后只读（改键会丢使用端已存值）"
+                            )],
+                        );
                     }
                 }
             }
         }
+        let action_shape = match action_shape_req {
+            Some(shape) => shape,
+            // A `region`'s `roi` IS its operation area (oas-task re-derives
+            // `action_shape = rect(roi)` when none is sent): inheriting a stale
+            // shape across a moved ROI would make the runtime act on the OLD
+            // location, so a region keeps the historical re-derive behaviour.
+            None if kind == "region" => None,
+            None => stored.as_ref().and_then(|e| e.action_shape.clone()),
+        };
+        let threshold = match threshold_req {
+            Some(t) => t,
+            None => stored.as_ref().and_then(|e| e.threshold),
+        };
+        let op_region = match op_region_req {
+            Some(op) => op,
+            None => stored.as_ref().and_then(|e| e.op_region.clone()),
+        };
+        // `polygon` is the recognition mask **of the stored ROI**, so it may only
+        // be inherited when the replace does not move the ROI (an absent ROI at
+        // the HTTP layer means "whole screen", i.e. a move). Inheriting a stale
+        // mask across a move would also overwrite the new `roi` with the old
+        // polygon bbox inside oas-task.
+        let roi_unchanged = match (stored.as_ref(), roi) {
+            (Some(existing), Some(new_roi)) => existing.roi == Some(new_roi),
+            (Some(existing), None) => existing.roi.is_none(),
+            (None, _) => false,
+        };
+        let polygon = match polygon_req {
+            Some(p) => p,
+            None if roi_unchanged => stored.as_ref().and_then(|e| e.polygon.clone()),
+            None => None,
+        };
+        let positions = match positions_req {
+            Some(p) => p,
+            // The stored frame positions are independent of the edit; an omitted
+            // list therefore inherits them instead of failing the save.
+            None => stored
+                .as_ref()
+                .map(|e| e.positions.clone())
+                .unwrap_or_default(),
+        };
+        if positions.is_empty() {
+            return self.send_errors(
+                out,
+                400,
+                vec!["添加素材必须选择至少一个位置帧（positions）".to_string()],
+            );
+        }
+        // `ocr_var` display/recognition fields inherit too: the 识别文字 dialog's
+        // full-screen replace carries no `roi`/`op_region`, only the text fields.
+        // Explicit null keeps clearing (`Some(None)` -> `None`).
+        let (runtime_text, label, param_key) = if kind == "ocr_var" {
+            (
+                match runtime_text_req {
+                    Some(v) => v,
+                    None => stored.as_ref().and_then(|e| e.runtime_text.clone()),
+                },
+                match label_req {
+                    Some(v) => v,
+                    None => stored.as_ref().and_then(|e| e.label.clone()),
+                },
+                match param_key_req {
+                    Some(v) => v,
+                    None => stored.as_ref().and_then(|e| e.param_key.clone()),
+                },
+            )
+        } else {
+            (
+                runtime_text_req.flatten(),
+                label_req.flatten(),
+                param_key_req.flatten(),
+            )
+        };
         // 2026-11-06 事项6 (P0b): the operation region is decided by
         // `action_shape` alone; the old `action_source` two-state field is a
         // deprecated compatibility field. An old payload may still carry it — it
@@ -7818,12 +7874,34 @@ fn json_opt_polygon_field(
     v: &serde_json::Value,
     key: &str,
 ) -> Result<Option<Vec<[i32; 2]>>, String> {
-    let Some(x) = v.get(key) else {
-        return Ok(None);
-    };
-    if x.is_null() {
-        return Ok(None);
+    match v.get(key) {
+        None => Ok(None),
+        Some(x) if x.is_null() => Ok(None),
+        Some(x) => parse_polygon_field_value(x, key).map(Some),
     }
+}
+
+/// **Present-style** polygon field: absent (`None`), explicit `null`
+/// (`Some(None)` = clear) or a value (`Some(Some(..))`).
+///
+/// `/task/save_asset` needs all three states since 2026-11-06 acceptance #9: a
+/// `replace: true` payload **inherits** a persistent field it does not mention,
+/// while an explicit `null` still clears it.
+fn json_present_polygon_field(
+    v: &serde_json::Value,
+    key: &str,
+) -> Result<Option<Option<Vec<[i32; 2]>>>, String> {
+    match v.get(key) {
+        None => Ok(None),
+        Some(x) if x.is_null() => Ok(Some(None)),
+        Some(x) => parse_polygon_field_value(x, key).map(|p| Some(Some(p))),
+    }
+}
+
+fn parse_polygon_field_value(
+    x: &serde_json::Value,
+    key: &str,
+) -> Result<Vec<[i32; 2]>, String> {
     let arr = x
         .as_array()
         .ok_or_else(|| format!("`{key}` must be an array of [x,y] integer pairs"))?;
@@ -7845,7 +7923,7 @@ fn json_opt_polygon_field(
             }
         }
     }
-    Ok(Some(pts))
+    Ok(pts)
 }
 
 /// Optional operation geometry. `action_shape` is the only accepted field;
@@ -7853,48 +7931,116 @@ fn json_opt_polygon_field(
 fn json_opt_action_shape(
     v: &serde_json::Value,
 ) -> Result<Option<oas_task::ActionShape>, String> {
-    let Some(x) = v.get("action_shape") else {
-        return Ok(None);
-    };
-    if x.is_null() {
-        return Ok(None);
+    match v.get("action_shape") {
+        None => Ok(None),
+        Some(x) if x.is_null() => Ok(None),
+        Some(x) => parse_action_shape_value(x).map(Some),
     }
+}
+
+/// **Present-style** `action_shape`: absent (`None`), explicit `null`
+/// (`Some(None)` = clear) or a value (`Some(Some(..))`); see
+/// [`json_present_polygon_field`] for why `/task/save_asset` needs this.
+fn json_present_action_shape(
+    v: &serde_json::Value,
+) -> Result<Option<Option<oas_task::ActionShape>>, String> {
+    match v.get("action_shape") {
+        None => Ok(None),
+        Some(x) if x.is_null() => Ok(Some(None)),
+        Some(x) => parse_action_shape_value(x).map(|s| Some(Some(s))),
+    }
+}
+
+fn parse_action_shape_value(x: &serde_json::Value) -> Result<oas_task::ActionShape, String> {
     serde_json::from_value::<oas_task::ActionShape>(x.clone())
-        .map(Some)
         .map_err(|e| format!("`action_shape` is invalid: {e}"))
 }
 
 /// Optional **operation-region chain** (`op_region`, 2026-11-06 参数→素材 D2).
 ///
-/// `None` = field absent/null = "leave unchanged" for updates and "no chain"
-/// for saves — the caller decides by passing `Some(None)` when a null should
-/// clear the value.
+/// `None` = field absent/null = "no chain".
 fn json_opt_op_region(
     v: &serde_json::Value,
 ) -> Result<Option<oas_task::OpRegion>, String> {
-    let Some(x) = v.get("op_region") else {
-        return Ok(None);
-    };
-    if x.is_null() {
-        return Ok(None);
+    match v.get("op_region") {
+        None => Ok(None),
+        Some(x) if x.is_null() => Ok(None),
+        Some(x) => parse_op_region_value(x).map(Some),
     }
-    serde_json::from_value::<oas_task::OpRegion>(x.clone())
-        .map(Some)
-        .map_err(|e| format!("`op_region` is invalid: {e}"))
 }
 
-/// Update-route variant: distinguishes "absent" (`None`) from an explicit
-/// `null` (`Some(None)` = clear the chain back to the `self` default).
+/// **Present-style** `op_region`: absent (`None`), explicit `null`
+/// (`Some(None)` = clear the chain back to the `self` default) or a value.
+/// Used by the update route and by the `/task/save_asset` `replace`
+/// inheritance (acceptance #9).
 fn json_op_region_update(
     v: &serde_json::Value,
 ) -> Result<Option<Option<oas_task::OpRegion>>, String> {
     match v.get("op_region") {
         None => Ok(None),
         Some(x) if x.is_null() => Ok(Some(None)),
-        Some(x) => serde_json::from_value::<oas_task::OpRegion>(x.clone())
-            .map(|op| Some(Some(op)))
-            .map_err(|e| format!("`op_region` is invalid: {e}")),
+        Some(x) => parse_op_region_value(x).map(|op| Some(Some(op))),
     }
+}
+
+fn parse_op_region_value(x: &serde_json::Value) -> Result<oas_task::OpRegion, String> {
+    serde_json::from_value::<oas_task::OpRegion>(x.clone())
+        .map_err(|e| format!("`op_region` is invalid: {e}"))
+}
+
+/// **Present-style** string field: absent (`None`), explicit `null`
+/// (`Some(None)` = clear) or a string (`Some(Some(s))`). Used by the
+/// `/task/save_asset` `replace` inheritance for `runtime_text`/`param_key`/
+/// `label` (acceptance #9).
+fn json_present_str_field(
+    v: &serde_json::Value,
+    key: &str,
+) -> Result<Option<Option<String>>, String> {
+    match v.get(key) {
+        None => Ok(None),
+        Some(x) if x.is_null() => Ok(Some(None)),
+        Some(x) => x
+            .as_str()
+            .map(|s| Some(Some(s.to_string())))
+            .ok_or_else(|| format!("`{key}` must be a string")),
+    }
+}
+
+/// **Present-style** numeric `threshold` field: absent (`None`), explicit
+/// `null` (`Some(None)` = clear) or a number. Non-numbers are loud 400s.
+fn json_present_threshold_field(
+    v: &serde_json::Value,
+) -> Result<Option<Option<f32>>, String> {
+    match v.get("threshold") {
+        None => Ok(None),
+        Some(x) if x.is_null() => Ok(Some(None)),
+        Some(x) => x
+            .as_f64()
+            .map(|t| Some(Some(t as f32)))
+            .ok_or_else(|| "`threshold` must be a number".to_string()),
+    }
+}
+
+/// Optional `positions` array (`[frame_id, ...]`). Absent = `None`; `null` or a
+/// non-array is a loud 400 (an empty array is still rejected at the call site:
+/// a saved asset needs at least one position frame).
+fn json_present_positions_field(
+    v: &serde_json::Value,
+) -> Result<Option<Vec<u64>>, String> {
+    let Some(x) = v.get("positions") else {
+        return Ok(None);
+    };
+    let arr = x
+        .as_array()
+        .ok_or_else(|| "`positions` must be an array of frame ids".to_string())?;
+    let mut out = Vec::with_capacity(arr.len());
+    for (i, item) in arr.iter().enumerate() {
+        let n = item
+            .as_u64()
+            .ok_or_else(|| format!("`positions[{i}]` must be a frame id (u64)"))?;
+        out.push(n);
+    }
+    Ok(Some(out))
 }
 
 /// The `ocr_var`-only request fields (`runtime_text` / `param_key` / `label`).
@@ -14287,6 +14433,344 @@ mod tests {
         );
         assert!(status.contains("400"), "{status} {out}");
         assert!(out.contains("创建后只读"), "{out}");
+    }
+
+    // -----------------------------------------------------------------------
+    // 2026-11-06 acceptance #9: `/task/save_asset` with `replace:true` inherits
+    // every persistent field the payload does not mention (an explicit `null`
+    // still clears it), so a caller that only edits one field cannot silently
+    // reset the operation area/shape/threshold.
+    // -----------------------------------------------------------------------
+
+    /// Task `t1` + an uploaded 64x48 current frame (non-template assets do not
+    /// compare the frame against the bundle design resolution).
+    fn acceptance9_server(tag: &str) -> (TempDir, Server, PathBuf, u64) {
+        let td = TempDir::new(tag);
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path())
+            .with_frames_dir(td.path().join("frames"))
+            .with_assets_dir(td.path().join("assets"));
+        make_task(&tasks_dir, "t1");
+        let frame_id = upload_test_frame(&server, &Frame::new(64, 48, vec![5u8; 64 * 48 * 4]));
+        (td, server, tasks_dir, frame_id)
+    }
+
+    /// POST `/task/save_asset` and require a 200, returning the parsed body.
+    fn save_asset_route(server: &Server, payload: serde_json::Value) -> serde_json::Value {
+        let (status, out) = post_route(
+            server,
+            "/task/save_asset",
+            "application/json",
+            payload.to_string().as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        serde_json::from_str(&out).expect("save_asset JSON")
+    }
+
+    /// One persisted item from task `t1`'s `assets.json`.
+    fn saved_asset(tasks_dir: &Path, id: &str) -> serde_json::Value {
+        let saved = read_json(&tasks_dir.join("t1").join("assets.json"));
+        saved["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|a| a["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("asset `{id}` not saved: {saved}"))
+    }
+
+    #[test]
+    fn replace_inherits_absent_ocr_var_operation_fields() {
+        let (_td, server, tasks_dir, frame_id) = acceptance9_server("a9-inherit-ocr-var");
+        // A full-screen ocr_var (`roi` absent = whole-screen OCR, the default
+        // initial state) that owns an operation chain, an operation shape and a
+        // custom OCR confidence threshold.
+        let op_region = serde_json::json!({"mode": "offset", "offset": [10, 5, 20, 10]});
+        let action_shape = serde_json::json!({"kind": "rect", "roi": [0, 0, 30, 20], "invert": false});
+        let v = save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "O_group", "kind": "ocr_var",
+                "runtime_text": "御魂", "param_key": "group",
+                "positions": [frame_id],
+                "op_region": op_region,
+                "action_shape": action_shape,
+                "threshold": 0.7,
+            }),
+        );
+        assert!(v["item"].get("roi").is_none(), "full-screen ocr_var has no roi: {v}");
+        assert_eq!(v["item"]["op_region"], op_region, "{v}");
+        assert_eq!(v["item"]["action_shape"], action_shape, "{v}");
+
+        // The 识别文字 dialog's full-screen replace carries ONLY the edited text
+        // (no roi/op_region/action_shape/threshold, and not even positions).
+        let v = save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "O_group", "kind": "ocr_var",
+                "runtime_text": "结界", "replace": true,
+            }),
+        );
+        assert_eq!(v["item"]["runtime_text"], "结界", "{v}");
+        assert_eq!(v["item"]["param_key"], "group", "omitted param_key is kept: {v}");
+        assert_eq!(
+            v["item"]["op_region"], op_region,
+            "absent op_region must be inherited, not reset: {v}"
+        );
+        assert_eq!(
+            v["item"]["action_shape"], action_shape,
+            "absent action_shape must be inherited: {v}"
+        );
+        assert_eq!(
+            v["item"]["threshold"].as_f64(),
+            Some(0.7),
+            "absent threshold must be inherited: {v}"
+        );
+        assert_eq!(
+            v["item"]["positions"],
+            serde_json::json!([frame_id]),
+            "absent positions must be inherited: {v}"
+        );
+
+        // Persisted, not just echoed in the response.
+        let saved = saved_asset(&tasks_dir, "O_group");
+        assert_eq!(saved["runtime_text"], "结界", "{saved}");
+        assert_eq!(saved["op_region"], op_region, "{saved}");
+        assert_eq!(saved["action_shape"], action_shape, "{saved}");
+        assert_eq!(saved["threshold"].as_f64(), Some(0.7), "{saved}");
+        assert_eq!(saved["positions"], serde_json::json!([frame_id]), "{saved}");
+    }
+
+    #[test]
+    fn replace_with_explicit_null_clears_the_inherited_fields() {
+        let (_td, server, tasks_dir, frame_id) = acceptance9_server("a9-null-clears");
+        let v = save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "O_group", "kind": "ocr_var",
+                "runtime_text": "御魂", "param_key": "group",
+                "label": "预设分组",
+                "positions": [frame_id],
+                "op_region": {"mode": "offset", "offset": [10, 5, 20, 10]},
+                "action_shape": {"kind": "rect", "roi": [0, 0, 30, 20], "invert": false},
+                "threshold": 0.7,
+            }),
+        );
+        assert_eq!(v["item"]["op_region"]["mode"], "offset", "{v}");
+
+        // An explicit JSON null is "clear it", not "inherit".
+        let v = save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "O_group", "kind": "ocr_var",
+                "runtime_text": "结界", "positions": [frame_id], "replace": true,
+                "op_region": serde_json::Value::Null,
+                "action_shape": serde_json::Value::Null,
+                "threshold": serde_json::Value::Null,
+                "label": serde_json::Value::Null,
+            }),
+        );
+        assert_eq!(v["item"]["runtime_text"], "结界", "{v}");
+        assert!(v["item"].get("op_region").is_none(), "explicit null clears: {v}");
+        assert!(v["item"].get("action_shape").is_none(), "{v}");
+        assert!(v["item"].get("threshold").is_none(), "{v}");
+        assert!(v["item"].get("label").is_none(), "{v}");
+
+        let saved = saved_asset(&tasks_dir, "O_group");
+        assert!(saved.get("op_region").is_none(), "{saved}");
+        assert!(saved.get("action_shape").is_none(), "{saved}");
+        assert!(saved.get("threshold").is_none(), "{saved}");
+    }
+
+    #[test]
+    fn replace_template_recognition_roi_keeps_the_operation_region() {
+        // Same bug family as the ocr_var text edit: the Studio template 识别区
+        // overwrite goes through `replace:true` and used to drop the asset's
+        // `op_region` chain. Template saves compare the frame against the bundle
+        // design resolution (the skeleton is 1280x720).
+        let td = TempDir::new("a9-template-roi");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path())
+            .with_frames_dir(td.path().join("frames"))
+            .with_assets_dir(td.path().join("assets"));
+        make_task(&tasks_dir, "t1");
+        let frame_id = upload_test_frame(&server, &Frame::new(1280, 720, vec![200u8; 1280 * 720 * 4]));
+        let op_region = serde_json::json!({"mode": "offset", "offset": [5, 5, 60, 50]});
+        let action_shape = serde_json::json!({"kind": "rect", "roi": [95, 95, 50, 40], "invert": false});
+        let v = save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "I_button", "kind": "template",
+                "roi": [100, 100, 40, 30],
+                "positions": [frame_id],
+                "threshold": 0.9,
+                "action_shape": action_shape,
+                "op_region": op_region,
+            }),
+        );
+        assert_eq!(v["item"]["op_region"], op_region, "{v}");
+
+        // The UI's ROI-overwrite payload: roi/threshold/action_shape/positions
+        // travel, `op_region` does not (pre-batch-A UI) — it must survive.
+        let v = save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "I_button", "kind": "template",
+                "roi": [110, 120, 40, 30],
+                "positions": [frame_id],
+                "threshold": 0.9,
+                "action_shape": action_shape,
+                "replace": true,
+            }),
+        );
+        assert_eq!(v["item"]["roi"], serde_json::json!([110, 120, 40, 30]), "{v}");
+        assert_eq!(
+            v["item"]["op_region"], op_region,
+            "template ROI overwrite must not drop the op_region chain: {v}"
+        );
+        assert_eq!(v["item"]["threshold"].as_f64(), Some(0.9), "{v}");
+        let saved = saved_asset(&tasks_dir, "I_button");
+        assert_eq!(saved["op_region"], op_region, "{saved}");
+        assert_eq!(saved["roi"], serde_json::json!([110, 120, 40, 30]), "{saved}");
+    }
+
+    #[test]
+    fn replace_inherits_polygon_only_when_the_roi_is_unchanged() {
+        let td = TempDir::new("a9-polygon");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path())
+            .with_frames_dir(td.path().join("frames"))
+            .with_assets_dir(td.path().join("assets"));
+        make_task(&tasks_dir, "t1");
+        let frame_id = upload_test_frame(&server, &Frame::new(1280, 720, vec![180u8; 1280 * 720 * 4]));
+        // oas-task derives roi from the polygon bbox: the saved roi is
+        // [100,100,41,31] for this mask.
+        let polygon = serde_json::json!([[100, 100], [140, 100], [140, 130], [100, 130]]);
+        let v = save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "I_mask", "kind": "template",
+                "roi": [100, 100, 41, 31],
+                "positions": [frame_id],
+                "polygon": polygon,
+            }),
+        );
+        assert_eq!(v["item"]["polygon"], polygon, "{v}");
+        assert_eq!(v["item"]["roi"], serde_json::json!([100, 100, 41, 31]), "{v}");
+
+        // Same ROI, polygon omitted: the mask still belongs to that ROI and is
+        // inherited (save_asset_impl re-derives the identical roi from its bbox).
+        let v = save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "I_mask", "kind": "template",
+                "roi": [100, 100, 41, 31],
+                "positions": [frame_id],
+                "replace": true,
+            }),
+        );
+        assert_eq!(v["item"]["polygon"], polygon, "same ROI: polygon inherited: {v}");
+        assert_eq!(v["item"]["roi"], serde_json::json!([100, 100, 41, 31]), "{v}");
+
+        // A MOVED ROI must not resurrect the stale mask (it would overwrite the
+        // new roi with the old polygon bbox); the recognition area falls back to
+        // the rectangle, exactly like the pre-fix UI intended.
+        let v = save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "I_mask", "kind": "template",
+                "roi": [300, 300, 41, 31],
+                "positions": [frame_id],
+                "replace": true,
+            }),
+        );
+        assert!(
+            v["item"].get("polygon").is_none(),
+            "a moved ROI must drop the stale polygon: {v}"
+        );
+        assert_eq!(v["item"]["roi"], serde_json::json!([300, 300, 41, 31]), "{v}");
+    }
+
+    #[test]
+    fn replace_inheritance_does_not_change_creation_or_missing_ids() {
+        let (_td, server, _tasks_dir, frame_id) = acceptance9_server("a9-create");
+        // Creation keeps the old behaviour: absent optional fields stay absent
+        // (there is no stored item to inherit from).
+        let v = save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "O_new", "kind": "ocr_var",
+                "runtime_text": "甲", "param_key": "k1", "positions": [frame_id],
+            }),
+        );
+        assert!(v["item"].get("op_region").is_none(), "{v}");
+        assert!(v["item"].get("action_shape").is_none(), "{v}");
+        assert!(v["item"].get("threshold").is_none(), "{v}");
+
+        // `replace:true` for a non-existent id is still the loud "does not exist"
+        // 400 (inheritance never turns it into an upsert).
+        let (status, out) = post_route(
+            &server,
+            "/task/save_asset",
+            "application/json",
+            serde_json::json!({
+                "task": "t1", "id": "missing", "kind": "ocr_var",
+                "runtime_text": "甲", "param_key": "k2", "positions": [frame_id],
+                "replace": true,
+            })
+            .to_string()
+            .as_bytes(),
+        );
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("does not exist"), "{out}");
+
+        // An explicitly empty positions list is still a client error (the field is
+        // present, so it is not inherited).
+        let (status, out) = post_route(
+            &server,
+            "/task/save_asset",
+            "application/json",
+            serde_json::json!({
+                "task": "t1", "id": "O_new", "kind": "ocr_var",
+                "runtime_text": "乙", "positions": [], "replace": true,
+            })
+            .to_string()
+            .as_bytes(),
+        );
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("positions"), "{out}");
+    }
+
+    #[test]
+    fn replace_region_roi_still_resyncs_the_operation_shape() {
+        // Exception to the #9 inheritance set: for a pure `region` the ROI *is*
+        // the operation area, so a ROI move without a shape must keep the old
+        // "shape = rect(new roi)" behaviour instead of inheriting the stale box.
+        let (_td, server, tasks_dir, frame_id) = acceptance9_server("a9-region-roi");
+        let v = save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "R_area", "kind": "region",
+                "roi": [10, 10, 20, 20], "positions": [frame_id],
+            }),
+        );
+        assert_eq!(v["item"]["action_shape"]["roi"], serde_json::json!([10, 10, 20, 20]), "{v}");
+        let v = save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "R_area", "kind": "region",
+                "roi": [20, 20, 10, 10], "positions": [frame_id],
+                "replace": true,
+            }),
+        );
+        assert_eq!(v["item"]["roi"], serde_json::json!([20, 20, 10, 10]), "{v}");
+        assert_eq!(
+            v["item"]["action_shape"]["roi"],
+            serde_json::json!([20, 20, 10, 10]),
+            "region shape follows the moved ROI: {v}"
+        );
+        let saved = saved_asset(&tasks_dir, "R_area");
+        assert_eq!(saved["action_shape"]["roi"], serde_json::json!([20, 20, 10, 10]), "{saved}");
     }
 
     #[test]

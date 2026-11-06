@@ -334,6 +334,9 @@ let polygon = null;
 let polyClosed = false;
 let polyMode = false;
 let polyDrag = null; // 正在拖动的顶点下标（闭合后编辑）
+// #6（验收反馈）：素材已存的识别多边形仅供显示（独立颜色，蓝色虚线），与“正在
+// 画的多边形”（polygon，橙色）和操作区（action_shape）互不混淆。
+let storedRecognitionPolygon = null; // [{x,y}] | null
 
 // --- N4: pure click-distribution helpers (§21 CD1~CD5) -----------------------
 // Kept as plain top-level code on purpose: no build step, no CDN, no module
@@ -473,6 +476,9 @@ function draw() {
     ctx.fillText(`识别 ${roi.w}x${roi.h} @ ${roi.x},${roi.y}`, roi.x + 4, Math.max(14, roi.y - 6));
     ctx.restore();
   }
+  // #6（验收反馈）：素材已存的识别多边形只读显示（蓝色虚线，独立于橙色正在画的
+  // 多边形与操作区域），矩形 ROI 仍照常显示。
+  drawStoredRecognitionPolygonOverlay();
   // §22.25 / v1.2.4 操作区域（action_shape）：矩形和多边形共用同一个渲染器，
   // 统一橙色虚线；反选时“有效区域”（屏幕−区域）与“原选中区域”用不同底色。
   drawActionShapeOverlay();
@@ -554,6 +560,31 @@ function draw() {
   drawClickOverlay();
 }
 
+// #6（验收反馈）：已存识别多边形只读渲染层。颜色与两套可编辑几何区分：
+//   蓝色虚线 = 已存识别多边形（本层，只读）
+//   橙色     = 正在画的多边形 / 操作区域 action_shape
+function drawStoredRecognitionPolygonOverlay() {
+  const pts = storedRecognitionPolygon;
+  if (!Array.isArray(pts) || pts.length < 3) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i += 1) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.closePath();
+  ctx.setLineDash([4, 3]);
+  ctx.strokeStyle = '#4d9fff';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(77,159,255,0.08)';
+  ctx.fill();
+  ctx.setLineDash([]);
+  const bbox = polygonBBox(pts);
+  ctx.fillStyle = '#8fb8e8';
+  ctx.font = '13px Consolas, monospace';
+  ctx.fillText('已存识别多边形 ' + pts.length + ' 顶点', bbox.x + 4, Math.max(14, bbox.y - 6));
+  ctx.restore();
+}
+
 function polygonBBox(poly) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const p of poly) {
@@ -588,10 +619,13 @@ function updateRoiLabel() {
     if (btnRegionSave) btnRegionSave.disabled = true;
     return;
   }
+  const storedPolyInfo = Array.isArray(storedRecognitionPolygon) && storedRecognitionPolygon.length >= 3
+    ? ` · 已存识别多边形 ${storedRecognitionPolygon.length} 顶点（只读显示）`
+    : '';
   const polyInfo =
     polygon && polyClosed ? ` · 多边形 ${polygon.length} 顶点（识别掩膜）` : '';
   roiEl.textContent =
-    `识别框 x=${roi.x} y=${roi.y} w=${roi.w} h=${roi.h}${polyInfo}${backInfo}`;
+    `识别框 x=${roi.x} y=${roi.y} w=${roi.w} h=${roi.h}${polyInfo}${storedPolyInfo}${backInfo}`;
   btnOcr.disabled = roi.w < 2 || roi.h < 2;
   btnLines.disabled = roi.w < 2 || roi.h < 2;
   if (btnRegionClick) btnRegionClick.disabled = roi.w < 2 || roi.h < 2;
@@ -2558,6 +2592,8 @@ function replaceResults(rows, sourceLabel) {
   // from a previous candidate or asset (P0-3 / P1-8). The rect too: a fresh
   // candidate follows its own recognized bbox.
   resetActionGeometry({ keepTarget: true, clearInvert: true, clearRect: true, redraw: false });
+  // #6：新的识别结果替换旧素材上下文，已存识别多边形显示层一并清掉。
+  storedRecognitionPolygon = null;
   renderCandidateList(sourceLabel);
   updateSaveButtonState();
 }
@@ -3229,6 +3265,8 @@ function resetSelection(opts) {
   polygon = null;
   polyClosed = false;
   polyDrag = null;
+  // #6：选择状态被清空，已存识别多边形的只读显示也清掉。
+  storedRecognitionPolygon = null;
   setSelectionMode('none');
   if (o.clearBoxes) {
     boxes = [];
@@ -3917,6 +3955,11 @@ function assetTextDraftStart(asset, opts) {
     fullScreen: !roi,
     positions: Array.isArray(it.positions) ? it.positions.slice() : [],
     task: String(o.task === undefined || o.task === null ? '' : o.task).trim(),
+    // #9（验收反馈）：replace 保存会整项覆盖，必须原样带回操作区/操作形状/阈值，
+    // 否则改识别文字会把 op_region 链、action_shape、threshold 静默清空。
+    opRegion: it.op_region === undefined ? null : it.op_region,
+    actionShape: it.action_shape === undefined ? null : it.action_shape,
+    threshold: it.threshold === undefined ? null : it.threshold,
   };
 }
 
@@ -4019,19 +4062,27 @@ function assetTextSaveRequest(draft, opts) {
   }
   // edit：清空 roi 只能走 replace（/task/asset/update 的 roi 缺省=不变）。
   if (d.fullScreen) {
+    // #9：replace 整项覆盖 → 原样带回 op_region/action_shape/threshold（有才带，
+    // 不凭空造字段；旧素材缺省时保持缺省，由服务端继承兜底）。
+    const replacePayload = {
+      task: task,
+      id: String(d.id === undefined || d.id === null ? '' : d.id).trim(),
+      kind: 'ocr_var',
+      runtime_text: String(d.runtimeText).trim(),
+      param_key: String(d.paramKey === undefined || d.paramKey === null ? '' : d.paramKey).trim(),
+      positions: Array.isArray(d.positions) ? d.positions.slice() : [],
+      replace: true,
+      ...(label ? { label: label } : {}),
+    };
+    if (d.opRegion !== undefined && d.opRegion !== null) replacePayload.op_region = d.opRegion;
+    if (d.actionShape !== undefined && d.actionShape !== null) replacePayload.action_shape = d.actionShape;
+    if (d.threshold !== undefined && d.threshold !== null && Number.isFinite(Number(d.threshold))) {
+      replacePayload.threshold = Number(d.threshold);
+    }
     return {
       ok: true,
       url: '/task/save_asset',
-      payload: {
-        task: task,
-        id: String(d.id === undefined || d.id === null ? '' : d.id).trim(),
-        kind: 'ocr_var',
-        runtime_text: String(d.runtimeText).trim(),
-        param_key: String(d.paramKey === undefined || d.paramKey === null ? '' : d.paramKey).trim(),
-        positions: Array.isArray(d.positions) ? d.positions.slice() : [],
-        replace: true,
-        ...(label ? { label: label } : {}),
-      },
+      payload: replacePayload,
       errors: [],
     };
   }
@@ -6611,6 +6662,8 @@ function assetRoiReplacePayload(task, asset, roi) {
   // The asset's own operation region (operation shape) travels with the replace;
   // absent = the runtime uses the real recognized box. No two-state switch.
   if (it.action_shape) payload.action_shape = it.action_shape;
+  // #9：op_region 链也是持久字段，replace 必须原样带回（类型节点/链根会用它）。
+  if (it.op_region !== undefined && it.op_region !== null) payload.op_region = it.op_region;
   // Leftover 2: translate the stored polygon with the ROI (the plan falls back
   // to the rectangle only when a translation cannot represent the new ROI).
   const polygon = assetRoiPolygonForSave(it.polygon, roi, it.roi);
@@ -6699,7 +6752,7 @@ async function renameAsset(it, scopeTask) {
 function assetThresholdKind(it) {
   const kind = (it && it.kind) || '';
   if (kind === 'template') return 'template';
-  if (kind === 'ocr_line' || kind === 'ocr_lines') return 'ocr';
+  if (kind === 'ocr_line' || kind === 'ocr_lines' || kind === 'ocr_var') return 'ocr';
   return '';
 }
 
@@ -6707,7 +6760,7 @@ async function editAssetThreshold(it, scopeTask) {
   cancelRecognitionRoiEdit('修改阈值');
   const thresholdKind = assetThresholdKind(it);
   if (!thresholdKind) {
-    resultEl.textContent = `素材「${it.id}」不支持阈值（仅 template / ocr_line / ocr_lines）`;
+    resultEl.textContent = `素材「${it.id}」不支持阈值（仅 template / ocr_line / ocr_lines / ocr_var）`;
     return;
   }
   const task = assetRowScopeTask(scopeTask, true);
@@ -6934,6 +6987,9 @@ async function saveAssetRecognitionRoi() {
   }
   editingRecognitionAsset = null;
   updateAssetRoiSaveButton();
+  // #6：保存后旧的“已存识别多边形”显示层已过期，清掉并重绘（刷新后可重新选中查看）。
+  storedRecognitionPolygon = null;
+  draw();
   await refreshTaskAssetsForScope(task);
   await refreshGlobalAssets();
 }
@@ -7009,11 +7065,16 @@ function pickAssetRoi(it) {
   const shapeBox = actionShapeBBox(it.action_shape);
   roi = { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] };
   loadActionShapeForEdit(it.action_shape);
+  // #6（验收反馈）：恢复已存识别多边形为只读显示（不再只剩矩形 ROI）。
+  storedRecognitionPolygon = Array.isArray(it.polygon) && it.polygon.length >= 3
+    ? it.polygon.map((p) => ({ x: Number(p[0]), y: Number(p[1]) }))
+    : null;
   polygon = null;
   polyClosed = false;
   updateRoiLabel();
   draw();
-  log(`已用素材「${it.id}」设置识别区域${shapeBox ? '（含操作区域）' : ''}`);
+  log(`已用素材「${it.id}」设置识别区域${shapeBox ? '（含操作区域）' : ''}` +
+    (storedRecognitionPolygon ? `（含已存识别多边形 ${storedRecognitionPolygon.length} 顶点）` : ''));
 }
 
 async function testAssetMatch(it, frameId, scopeTask) {
@@ -8855,6 +8916,7 @@ canvas.addEventListener('mousedown', (ev) => {
     if (!polygon || polyClosed) {
       polygon = [];
       polyClosed = false;
+      storedRecognitionPolygon = null;
       roi = null;
     }
     polygon.push(p0);
@@ -8884,6 +8946,7 @@ canvas.addEventListener('mousedown', (ev) => {
         roiBack = null;
         polygon = null;
         polyClosed = false;
+        storedRecognitionPolygon = null;
         selectedBox = b;
         dragStart = null;
         updateRoiLabel();
@@ -8904,6 +8967,7 @@ canvas.addEventListener('mousedown', (ev) => {
   boxes = [];
   polygon = null;
   polyClosed = false;
+  storedRecognitionPolygon = null;
   selectedBox = null;
   updateClickStepButtons();
   draw();

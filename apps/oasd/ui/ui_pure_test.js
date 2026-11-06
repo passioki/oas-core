@@ -698,6 +698,9 @@ eq(isParamKeyValid('x'.repeat(65)), false, 'U-T4: a key longer than 64 chars is 
 const ocrVarAssetForDialog = {
   id: 'O_组', kind: 'ocr_var', runtime_text: '御魂', param_key: 'group', label: '预设分组',
   roi: [10, 20, 30, 40], positions: [7],
+  op_region: { mode: 'asset', asset: 'I_模板', pick: 'nearest' },
+  action_shape: { kind: 'rect', roi: [5, 6, 7, 8], invert: false },
+  threshold: 0.63,
 };
 const editDraft = assetTextDraftStart(ocrVarAssetForDialog, { task: '任务甲' });
 eq(editDraft.mode, 'edit', 'U-T4: editing an existing ocr_var uses edit mode');
@@ -707,6 +710,18 @@ eq(
   'U-T4: edit draft starts from the stored ocr_var fields'
 );
 eq(editDraft.roi, [10, 20, 30, 40], 'U-T4: edit draft keeps the stored roi');
+// #9（验收反馈）：replace 会整项覆盖 → 草稿必须携带操作区/操作形状/阈值。
+eq(
+  editDraft.opRegion,
+  { mode: 'asset', asset: 'I_模板', pick: 'nearest' },
+  '#9: edit draft carries the stored op_region'
+);
+eq(
+  editDraft.actionShape,
+  { kind: 'rect', roi: [5, 6, 7, 8], invert: false },
+  '#9: edit draft carries the stored action_shape'
+);
+eq(editDraft.threshold, 0.63, '#9: edit draft carries the stored threshold');
 eq(assetTextDraftStart({ id: 'O_空', kind: 'ocr_var', runtime_text: 'x', param_key: 'k' }).fullScreen,
   true, 'U-T4: a missing roi starts as full-screen OCR');
 // 新建草稿（从识别结果候选）
@@ -791,6 +806,24 @@ eq(clearRoiRequest.url, '/task/save_asset', 'U-T4: clearing roi falls back to th
 eq(clearRoiRequest.payload.replace, true, 'U-T4: the roi-clearing payload sets replace=true');
 eq('roi' in clearRoiRequest.payload, false, 'U-T4: the roi-clearing payload omits roi (full-screen OCR)');
 eq(clearRoiRequest.payload.param_key, 'group', 'U-T4: the replace payload echoes the read-only param_key');
+// #9：全屏 ocr_var 的 replace 必须原样带回 op_region/action_shape/threshold，
+// 否则改识别文字会把操作区链/操作形状/阈值静默清空。
+eq(
+  clearRoiRequest.payload.op_region,
+  { mode: 'asset', asset: 'I_模板', pick: 'nearest' },
+  '#9: full-screen ocr_var replace keeps the stored op_region'
+);
+eq(
+  clearRoiRequest.payload.action_shape,
+  { kind: 'rect', roi: [5, 6, 7, 8], invert: false },
+  '#9: full-screen ocr_var replace keeps the stored action_shape'
+);
+eq(clearRoiRequest.payload.threshold, 0.63, '#9: full-screen ocr_var replace keeps the stored threshold');
+eq(
+  'op_region' in createRequest.payload,
+  false,
+  '#9: a fresh ocr_var create never invents an op_region'
+);
 eq(assetTextSaveRequest(Object.assign({}, createDraft, { runtimeText: '' }), {}).ok, false,
   'U-T4: an invalid draft produces no save request');
 // op_region 保存计划（S5）：链校验 + 只含有改动的 update
@@ -1760,6 +1793,14 @@ function assetDomElement(tagName) {
     setAttribute(name, value) { el.attrs[name] = String(value); },
     getAttribute(name) { return el.attrs[name]; },
     focus() { el.focused = true; },
+    // #6：缩略图多边形叠加层需要 canvas 2d context（哑实现即可）。
+    getContext() {
+      return {
+        save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {},
+        closePath() {}, setLineDash() {}, stroke() {}, fill() {}, fillRect() {},
+        drawImage() {}, fillText() {}, measureText() { return { width: 0 }; },
+      };
+    },
   };
   el.classList = {
     _set: new Set(),
@@ -1833,6 +1874,56 @@ const rowTemplate = { id: '模板甲', kind: 'template', threshold: 0.9, roi: [1
 const rowOcr = { id: '文字乙', kind: 'ocr_line', roi: [1, 2, 3, 4], positions: [7] };
 const rowRegion = { id: '区域丙', kind: 'region', roi: [5, 6, 7, 8] };
 const rowSet = { id: '集合丁', kind: 'template_set', members: ['a', 'b'] };
+
+// --- #6（验收反馈）：已存识别多边形在缩略图上的轮廓 ---------------------------
+const thumbPts = assetUi.thumbPolygonPoints(
+  [[10, 20], [30, 20], [30, 30]],
+  [10, 20, 20, 10],
+  64,
+  44
+);
+eq(
+  thumbPts,
+  [[0, 6], [64, 6], [64, 38]],
+  '#6: stored polygon points are projected into thumbnail coordinates (ROI crop, centered contain)'
+);
+eq(assetUi.thumbPolygonPoints(null, [1, 2, 3, 4], 64, 44), null, '#6: no polygon -> no overlay');
+eq(
+  assetUi.thumbPolygonPoints([[1, 2], [3, 4]], [1, 2, 3, 4], 64, 44),
+  null,
+  '#6: fewer than three polygon vertices -> no overlay'
+);
+eq(assetUi.thumbPolygonPoints([[1, 2], [3, 4], [5, 6]], null, 64, 44), null,
+  '#6: a missing roi cannot anchor the overlay');
+eq(
+  assetUi.thumbPolygonPoints([[1, 2], ['bad', 2], [5, 6], [1, 6]], [1, 2, 3, 4], 64, 44).length,
+  3,
+  '#6: non-numeric vertices are skipped (three valid points remain)'
+);
+const polyTemplateRow = Object.assign({}, rowTemplate, {
+  file: 'a.png',
+  polygon: [[10, 20], [30, 20], [30, 40], [10, 40]],
+});
+const polyThumb = assetUi.makeThumb(polyTemplateRow, '任务甲');
+eq(
+  assetChildren(polyThumb, 'asset-thumb-poly').length,
+  1,
+  '#6: a template thumbnail overlays the stored recognition polygon'
+);
+const plainThumb = assetUi.makeThumb(Object.assign({}, rowTemplate, { file: 'a.png' }), '任务甲');
+eq(
+  assetChildren(plainThumb, 'asset-thumb-poly').length,
+  0,
+  '#6: a polygon-free asset thumbnail has no overlay'
+);
+ok(
+  (assetUiSource.match(/drawThumbPolygon\(/g) || []).length >= 3,
+  '#6: both the template and the frame-crop thumbnails draw the stored polygon (definition + 2 calls)'
+);
+ok(
+  /\.asset-thumb-poly/.test(styleCss) && /pointer-events: none/.test(styleCss),
+  '#6: style.css styles the thumbnail polygon overlay without stealing pointer events'
+);
 
 eq(
   assetUi.ASSET_MENU_ITEMS.map((m) => m.label),
@@ -2415,12 +2506,14 @@ ok(
 );
 const thresholdKindFn = extractFunction('assetThresholdKind');
 ok(
-  /return 'template'/.test(thresholdKindFn) && /kind === 'ocr_line' \|\| kind === 'ocr_lines'/.test(thresholdKindFn),
-  'assetThresholdKind enables exactly template / ocr_line / ocr_lines'
+  /return 'template'/.test(thresholdKindFn) &&
+    /kind === 'ocr_line' \|\| kind === 'ocr_lines' \|\| kind === 'ocr_var'/.test(thresholdKindFn),
+  'assetThresholdKind enables exactly template / ocr_line / ocr_lines / ocr_var'
 );
 eq(sandbox.assetThresholdKind({ kind: 'template' }), 'template', 'template assets use the template threshold');
 eq(sandbox.assetThresholdKind({ kind: 'ocr_line' }), 'ocr', 'ocr_line assets use the OCR confidence');
 eq(sandbox.assetThresholdKind({ kind: 'ocr_lines' }), 'ocr', 'ocr_lines assets use the OCR confidence');
+eq(sandbox.assetThresholdKind({ kind: 'ocr_var' }), 'ocr', '#5: ocr_var assets use the OCR confidence threshold');
 eq(sandbox.assetThresholdKind({ kind: 'region' }), '', 'region assets have no threshold');
 eq(sandbox.assetThresholdKind({ kind: 'template_set' }), '', 'template_set assets have no threshold');
 eq(sandbox.assetThresholdKind(null), '', 'a missing asset has no threshold');
@@ -2528,10 +2621,12 @@ async function installRoiSaveHarness() {
       'let taskName = { value: "任务甲", focus() {} };\n' +
       'let editingRecognitionAsset = null;\n' +
       'let roi = null;\n' +
+      'let storedRecognitionPolygon = null;\n' +
       'let globalAssetsCache = [];\n' +
       'let taskAssets = [];\n' +
       'const canvas = { width: 1280, height: 720 };\n' +
       'globalThis.resultEl = { textContent: "" };\n' +
+      'globalThis.draw = () => {};\n' +
       'const window = {\n' +
       '  confirm(m) { globalThis.confirmText = m; return globalThis.confirmAnswer !== false; },\n' +
       '  alert(m) { globalThis.alertText = m; },\n' +
@@ -3005,6 +3100,7 @@ function installRoiCancelHarness() {
     lastLinesRoi: null,
     polygon: null,
     polyClosed: false,
+    storedRecognitionPolygon: null,
     resetSelectionCalls: 0,
     roiLabels: 0,
     draws: 0,
@@ -3052,6 +3148,19 @@ eq(
 );
 eq(roiCancel.assetRoiEditLabel.hidden, true, 'selecting another asset hides the editing label');
 eq(roiCancel.roi, { x: 5, y: 6, w: 7, h: 8 }, 'the canvas ROI then belongs to the newly selected asset');
+// #6（验收反馈）：选中素材时恢复已存识别多边形（只读显示层），矩形 ROI 仍显示。
+roiCancel.pickAssetRoi({
+  id: '丁', kind: 'ocr_line', roi: [1, 2, 3, 4],
+  polygon: [[1, 2], [5, 2], [5, 6]],
+});
+eq(
+  roiCancel.storedRecognitionPolygon,
+  [{ x: 1, y: 2 }, { x: 5, y: 2 }, { x: 5, y: 6 }],
+  '#6: selecting an asset restores its stored recognition polygon for display'
+);
+eq(roiCancel.polygon, null, '#6: the read-only stored polygon never becomes the editable polygon state');
+roiCancel.pickAssetRoi({ id: '戊', kind: 'ocr_line', roi: [1, 2, 3, 4] });
+eq(roiCancel.storedRecognitionPolygon, null, '#6: an asset without polygon clears the stored polygon display');
 eq(roiCancel.resetSelectionCalls, 1, 'cancelling resets the canvas selection exactly once');
 eq(roiCancel.dragTarget, 'roi', 'cancelling restores the default drag target');
 eq(roiCancel.lastLinesRoi, null, 'cancelling drops the stale line-ROI cache');
@@ -3072,6 +3181,32 @@ eq(
   'the Esc path also disables/hides the save button'
 );
 eq(roiCancel.cancelRecognitionRoiEdit('再次取消'), false, 'cancelling without an active edit is a no-op');
+
+// #6 静态接线：绘制层/恢复/清空都在位，颜色与可编辑几何区分。
+const drawFnSource = extractFunction('draw');
+const storedPolyFn = extractFunction('drawStoredRecognitionPolygonOverlay');
+ok(
+  /drawStoredRecognitionPolygonOverlay\(\)/.test(drawFnSource) &&
+    /#4d9fff/.test(storedPolyFn),
+  '#6: draw() renders the stored recognition polygon with its own blue color'
+);
+ok(
+  /#ff8c00/.test(drawFnSource) && !/#4d9fff/.test(drawFnSource),
+  '#6: the editable polygon / operation area keeps the orange color (no confusion with the stored layer)'
+);
+ok(
+  /已存识别多边形/.test(storedPolyFn) && /已存识别多边形/.test(extractFunction('updateRoiLabel')),
+  '#6: the stored polygon layer + ROI label both name 已存识别多边形'
+);
+ok(
+  /storedRecognitionPolygon = Array\.isArray\(it\.polygon\)/.test(extractFunction('pickAssetRoi')),
+  '#6: pickAssetRoi restores the stored recognition polygon from the asset'
+);
+ok(
+  /storedRecognitionPolygon = null/.test(extractFunction('resetSelection')) &&
+    /storedRecognitionPolygon = null/.test(extractFunction('replaceResults')),
+  '#6: resetting the selection / replacing results clears the stored polygon display'
+);
 
 eq(sandbox.assetRoiBoxValid([10, 20, 30, 40]), [10, 20, 30, 40], 'a valid canvas box is normalized');
 eq(sandbox.assetRoiBoxValid([10, 20, 0, 40]), null, 'a zero-width canvas box is rejected');
@@ -3171,6 +3306,8 @@ const payloadAsset = {
   action_shape: { kind: 'rect', roi: [5, 6, 7, 8] },
   threshold: 0.9,
   polygon: [[1, 2], [3, 2], [3, 5], [1, 5]],
+  // #9：模板识别区 replace 也必须带回 op_region 链。
+  op_region: { mode: 'offset', offset: [3, 4, 50, 60] },
   ocr_mode: null,
   ocr_text: null,
 };
@@ -3185,9 +3322,10 @@ eq(
     positions: [7, 8],
     threshold: 0.9,
     action_shape: { kind: 'rect', roi: [5, 6, 7, 8] },
+    op_region: { mode: 'offset', offset: [3, 4, 50, 60] },
     polygon: [[10, 20], [39, 20], [39, 59], [10, 59]],
   },
-  'the replace payload carries every persisted field and only replaces roi (P1-1)'
+  'the replace payload carries every persisted field (incl. op_region) and only replaces roi (P1-1/#9)'
 );
 // Leftover 2: the payload for a pure ROI move carries the TRANSLATED polygon
 // (bbox = new ROI), not the new ROI rectangle.
