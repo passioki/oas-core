@@ -462,7 +462,7 @@ pub fn sync_ocr_var_params(meta: &mut Meta, assets: &AssetsFile, flow: &Flow) ->
 ### B. 最终验证（Lead 实测）
 
 - `cargo test --workspace` = **904 passed / 0 failed**（23 suites；起 841）：**oas-task 144**、**oas-runtime 203**、**oasd 436**（分别 122/186/412 → +22/+17/+24）；`cargo build -p oasd --features ocr` exit 0。
-- UI pure test = **2511 checks / 194 ids / 0 dead / 6 nav**（起 2214/164/158/0/6）；`runner_ui_audit` **158 ids / 0 dead**。
+- UI pure test = **2512 checks / 194 ids / 0 dead / 6 nav**（起 2214/164/158/0/6）；`runner_ui_audit` **158 ids / 0 dead**。
 - E2E `_verify/seq124-e2e-20261106/e2e-summary.json` = **27 total / 26 passed / 0 failed / 1 skipped**，exit 0；SKIP=`test_action_real_click`（无 ADB；real 路径由 serve 单测 tap seam 覆盖）。
 - 未 tag / 未 release；代码=HEAD `c33a822` 之后全部未提交改动。
 

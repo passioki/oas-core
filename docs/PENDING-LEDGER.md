@@ -4529,7 +4529,7 @@ Rust 后端未动（workspace 801/0 基线不变）；按用户「推送即可�
 
 # ★ §E-93 ★★★ [11-06 12:0x] **用户新要求：参数→素材 / 动作库去参数化 / 素材多候选 / 操作区递归 / 量尺（seq123 记录 → ✅ seq124 已实现，2026-11-06 13:2x）**
 
-> ✅ **已完成**：seq124 全部实现 + Lead 验收（workspace 904/0、UI 2511/194/0 dead/6 nav、E2E 27/26/0/1）；代码 commit `aab6372`（docs 提交见 `git log -1`）；实现记录 `ENGINE §22.64` / `OPERATION-REGION-DESIGN §8` / `PARAM-ASSET-IMPLEMENTATION.md`「实现结果」。**未 tag / 未 release**。
+> ✅ **已完成**：seq124 全部实现 + Lead 验收（workspace 904/0、UI 2512/194/0 dead/6 nav、E2E 27/26/0/1）；代码 commit `aab6372`（docs 提交见 `git log -1`）；实现记录 `ENGINE §22.64` / `OPERATION-REGION-DESIGN §8` / `PARAM-ASSET-IMPLEMENTATION.md`「实现结果」。**未 tag / 未 release**。
 
 > 用户 2026-11-06 12:0x 一次性给出 6 项重构要求；**当前代码未按这些要求改**（HEAD 仍是 seq 122 的 `cb3d830` / 代码 `ba6813e`）。完整需求与建议见 **`docs/PARAM-ASSET-REDESIGN.md`**；新会话先读本文 + 该设计文档 + `SESSION-HANDOFF.md`。
 
@@ -4608,8 +4608,8 @@ Rust 后端未动（workspace 801/0 基线不变）；按用户「推送即可�
 | B-T2 oas-runtime（ocr_var 读取/链解析/候选 helper） | task-9 | ✅ | `OcrVar`/`AssetOpRegion`/`ResolvedOpRegion`/`AssetCandidate` 类型；`AssetSet` ocr_var/op_region 表；`ocr_read_var`（空 roi 全屏、param>runtime_text、det+rec）；`resolve_asset_op_region` 链解析（self/offset/asset+pick、visited+深度16、region 末端、miss=Err 不点击）；`candidates_for_asset`；click/long_press/drag 接入（无链时旧路径逐字节不变）；runtime **201/0**（+15）、oas-task 144/0、workspace **886/0**；证据 `_verify\backend-p0-20261106\workspace-task9b.log` |
 | B-T3a serve（素材新字段/sync 触发/config 保护） | task-14 | ✅ | `GET /task/assets` 新字段 round-trip；save_asset/save_assets/update 接受 runtime_text/param_key/label/op_region（roi 可空、param_key 只读、action_source 忽略）；素材写/save_flow/config POST 触发 `sync_ocr_var_params`→`write_meta(.bak)`，响应 `synced`/`sync`；`/task/config` 派生行只读保护（改/删/造派生行 400）+ `derived_keys`；**无 virtual_items/migrate**（简化令）；oasd **429/0**（+9）、workspace **895/0**；证据 `_verify\backend-p0-20261106\{workspace-task14b,t3a-tests5}.log` |
 | B-T3b serve（test_action/validate/candidates ocr_var） | task-10 | ✅ | 候选 API ocr_var（空 roi=screen、text/score/action_box、无 OCR feature=501）；`POST /task/asset/validate_op_region`（200 chain/depth；400 结构化 path/msg；404）；`POST /task/asset/test_action`（dry steps/action_box/point/chain_depth；real 需 live=1、链失败 400 不点击；click+long_press；**drag 本轮 400 暂不支持**）；runtime 薄公共入口 `preview_asset_action`（零几何复制、旧行为不变）；oasd **436/0**（+7）、runtime **203/0**（+2）、workspace **904/0**；证据 `_verify\backend-p0-20261106\{workspace-task10,t3b-tests3,t3b-rttests}.log` |
-| U-T4 Studio 阶段A/B（素材行/识别文字/候选/操作区递归/offset 画布/test_action 候选点测） | task-11 | ✅ | UI **2474**→（U-T5 后 **2511**）checks / **194** ids / 158 runner ids / 0 dead / 6 nav；识别文字对话框（新建/编辑/roi 可空）、素材行「识别」= 全部候选、操作区递归对话框（三方式+面包屑+引用素材搜索+pick+回退+影响警告+validate 服务端权威+两次 update 保存）、offset 画布绘制+保存、test_action dry 逐候选+真实候选下拉 `#candidate-select`、配置派生行回传契约、三处素材库 onEditText/onOpRegion；偏差：拖测保留旧实现、长按测试无素材行入口、识别文字 ROI 数字输入、S8 只读渲染未做 |
-| U-T5 Studio 动作库目标选择接线 + 旧 region 收口 | task-12 | ✅ | `builder.js` 属性面板「动作目标（素材库）」搜索选择（含 ocr_var，region terminalOnly 提示）、`targetLocatorForAsset` 生成 locator、`validateActionTarget`/`actionTargetIssues` 保存前校验（含 param key 必须在派生参数）、旧 region 编辑器仅旧 flow 显示、save_flow `sync` 状态提示+参数面板刷新；UI **2511** checks（+37）；偏差：调色板不弹目标选择（属性面板选）、重新选目标会替换 find[0] |
+| U-T4 Studio 阶段A/B（素材行/识别文字/候选/操作区递归/offset 画布/test_action 候选点测） | task-11 | ✅ | UI **2474**→（U-T5 后 **2512**）checks / **194** ids / 158 runner ids / 0 dead / 6 nav；识别文字对话框（新建/编辑/roi 可空）、素材行「识别」= 全部候选、操作区递归对话框（三方式+面包屑+引用素材搜索+pick+回退+影响警告+validate 服务端权威+两次 update 保存）、offset 画布绘制+保存、test_action dry 逐候选+真实候选下拉 `#candidate-select`、配置派生行回传契约、三处素材库 onEditText/onOpRegion；偏差：拖测保留旧实现、长按测试无素材行入口、识别文字 ROI 数字输入、S8 只读渲染未做 |
+| U-T5 Studio 动作库目标选择接线 + 旧 region 收口 | task-12 | ✅ | `builder.js` 属性面板「动作目标（素材库）」搜索选择（含 ocr_var，region terminalOnly 提示）、`targetLocatorForAsset` 生成 locator、`validateActionTarget`/`actionTargetIssues` 保存前校验（含 param key 必须在派生参数）、旧 region 编辑器仅旧 flow 显示、save_flow `sync` 状态提示+参数面板刷新；UI **2512** checks（+37）；偏差：调色板不弹目标选择（属性面板选）、重新选目标会替换 find[0] |
 | U-T6 Runner UI（使用端OCR文字配置项分节） | task-13 | ✅ | UI **2205** checks（该任务完成时）；`runnerParamGroupsEx` 前置分节「使用端OCR文字配置项」+ 素材名/默认值副标题 + 旧参数兼容；`runner.js:472-524`、`runner.html` 配置弹窗、`runner.css:271-283`；+19 checks |
 | U-T7 旧配置迁移/兼容落地 | ~~待建~~ | ❌ 取消（用户 12:5x：全新开发、不兼容旧参数/旧配置/旧包；测试配置可删除/重建） | 用户原话："不需要兼容旧参数，我们是全新开发，不需要兼容旧配置，如有冲突可以删除旧配置，当前配置都是测试配置，并不重要" |
 | D-T8a E2E 脚本（仓外） | task-15 | ✅ | `_verify\seq124-e2e-20261106\{run-e2e.ps1,README.md,fixtures\}`；27 断言（构建/起 8797/新模型任务/候选/validate/test_action/publish/清洁收尾）；**Lead 独立复跑 26 PASS / 0 FAIL / 1 SKIP（无 ADB）exit 0**；证据 `e2e-summary.json`、`lead-final-run.log` |
@@ -4620,9 +4620,10 @@ Rust 后端未动（workspace 801/0 基线不变）；按用户「推送即可�
 | 项 | 结果 | 证据 |
 |---|---|---|
 | `cargo test --workspace` | ✅ **904 passed / 0 failed**（23 suites；oas-task 144 / oas-runtime 203 / oasd 436；起 841） | `_verify\seq124-lead-verify\workspace-final.log` |
-| UI pure test | ✅ **2511 checks / 194 ids / 158 runner ids / 0 dead / 6 nav**（起 2214/164/158） | `node apps\oasd\ui\ui_pure_test.js` |
+| UI pure test | ✅ **2512 checks / 194 ids / 158 runner ids / 0 dead / 6 nav**（起 2214/164/158） | `node apps\oasd\ui\ui_pure_test.js` |
 | E2E（新模型测试任务） | ✅ **27 total / 26 passed / 0 failed / 1 skipped（无 ADB）exit 0** | `_verify\seq124-e2e-20261106\{e2e-summary.json,lead-final-run.log}` |
 | git | 代码 commit `aab6372`（16 files，+11894/−1911）；docs 提交见 `git log -1`；**用户数据未入库**（assets/frames/tasks/scheduler.json 保持交接前状态） | `git show --stat aab6372` |
 | 发布 | **未 tag / 未 release**（按用户"推送即可"策略） | — |
+| hotfix | ✅ | `c1271d8`：index.html 候选下拉注释误写 `*/}` ⇒ 178 行 DOM 被吞（`#btn-clear` null 运行时 TypeError）；已修正 + ui_pure_test 增加「HTML 注释平衡/无 `*/}`」与「注释剥离后 DOM id 审计」断言；UI **2512**/194/0 dead/6 nav |
 
 **后续可选项（不阻塞 seq124）**：① drag 测试动作（test_action 400 → 后续单列）；② 素材行「长按测试」入口；③ 识别文字 ROI 接画布绘制；④ 配置项面板派生行只读卡片渲染；⑤ 候选 API `op_rect` 链预览；⑥ 全屏 OCR 性能实测；⑦ 真机 E2E（操作区落点/多候选最近/长按曲线）；⑧ Phase 2（彻底去 `meta.params`、flow 免 text_expr、values asset_values）；⑨ 更新检测鉴权/GC、tag/Release 策略、产品验收 §D.4。

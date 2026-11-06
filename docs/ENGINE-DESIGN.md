@@ -3290,7 +3290,8 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 #### 22.64.6 测试 / E2E 证据
 
 - `cargo test --workspace` = **904 passed / 0 failed**（23 suites；起 841）：oas-task **144**（122→+22）、oas-runtime **203**（186→+17）、oasd **436**（412→+24）；`cargo build -p oasd --features ocr` exit 0。
-- UI pure test = **2511 checks / 194 ids / 0 dead / 6 nav**（起 2214/164/158/0/6）；Runner ids 158 / 0 dead；`node --check` 通过。
+- UI pure test = **2512 checks / 194 ids / 0 dead / 6 nav**（起 2214/164/158/0/6）；Runner ids 158 / 0 dead；`node --check` 通过。
+- 2026-11-06 hotfix（commit `c1271d8`）：U-T4 的 index.html 候选下拉注释误写成 `*/}`（JS 注释结尾）⇒ HTML 解析把 L123~L301 共 178 行 DOM 吞成注释内容（`#btn-clear` null ⇒ 运行时 TypeError）；已修正为 `-->`，并加固 `ui_pure_test`：① 断言 HTML 注释开闭平衡且不得含 `*/}`；② DOM id 审计改为**注释剥离后**的标记（旧审计被注释内 id 骗过）。修复后 UI **2512 checks / 194 ids / 0 dead / 6 nav**。
 - E2E `_verify/seq124-e2e-20261106/`（临时工作区/端口 8797/现场构造新模型任务，不碰仓库用户数据）：**27 total / 26 passed / 0 failed / 1 skipped**，exit 0；唯一 SKIP=`test_action_real_click`（无 ADB 设备）。覆盖：lint 0 → `save_flow` 触发 sync（`start_text` 派生行）→幂等→lint 0；`/task/assets` ocr_var/op_region round-trip；候选（模板字段 + ocr_var 全屏 `domain=screen`）；validate 链/offset/dangling/环；test_action dry 链（`action_box=[100,50,80,40]`、`chain_depth=2`）/缺失节点 400；config 派生行只读 400；publish `min_engine=0.1.0`、包内 ocr_var 资产。证据 `lead-run3.log`/`e2e-summary.json`。
 
 #### 22.64.7 兼容口径（用户 12:5x 简化令）

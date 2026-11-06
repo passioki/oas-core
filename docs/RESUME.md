@@ -216,7 +216,7 @@ next_action: seq124 已完成并推送（只推送不发布，未 tag/未 releas
 
 ## 1.18 2026-11-06 12:1x→13:3x（seq 124）用户权威澄清 + 审计 + 全量实现 + 验收（✅ 已完成）
 
-> 用户 12:1x 主动给出 6 事项权威逐字澄清（`PARAM-ASSET-REDESIGN §1b`）；Lead 决策 D1~D6；三路只读审计 + 实施方案 `PARAM-ASSET-IMPLEMENTATION.md`（Lead 裁决 13 条）；用户 12:5x 简化令（全新开发、不兼容旧参数/旧配置/旧包）后取消迁移/兼容交付。**最终验证：workspace 904/0、UI 2511/194/0 dead/6 nav、E2E 27/26/0/1（无 ADB skip）**；代码 commit `aab6372`，docs 提交见 `git log -1`；**只推送不发布，未 tag/未 release**。
+> 用户 12:1x 主动给出 6 事项权威逐字澄清（`PARAM-ASSET-REDESIGN §1b`）；Lead 决策 D1~D6；三路只读审计 + 实施方案 `PARAM-ASSET-IMPLEMENTATION.md`（Lead 裁决 13 条）；用户 12:5x 简化令（全新开发、不兼容旧参数/旧配置/旧包）后取消迁移/兼容交付。**最终验证：workspace 904/0、UI 2512/194/0 dead/6 nav、E2E 27/26/0/1（无 ADB skip）**；代码 commit `aab6372`，docs 提交见 `git log -1`；**只推送不发布，未 tag/未 release**。
 
 | # | 交付 | 结果 / 证据 |
 |---|---|---|
@@ -228,7 +228,7 @@ next_action: seq124 已完成并推送（只推送不发布，未 tag/未 releas
 | B-T2 | oas-runtime：ocr_var 读取/操作区链/候选 helper | `OcrVar`/`AssetOpRegion`/`ResolvedOpRegion`、`ocr_read_var`（空 roi 全屏、param>runtime_text）、`resolve_asset_op_region`（self/offset/asset+pick、防环、region 末端、miss=Err 不点击）、`candidates_for_asset`；runtime **201/0**（+15） |
 | B-T3a/b | serve：新字段/sync 触发/config 保护/候选扩展/test_action/validate | 素材 CRUD+save_flow+config 触发派生参数 sync（.bak+原子写、`synced`）；`/task/config` 派生行只读；候选 ocr_var 空 roi=screen；`test_action` dry/real（click+long_press；drag 400）；`validate_op_region`；oasd **436/0** |
 | U-T4 | Studio 素材行/识别文字/全部候选/操作区递归对话框/offset 画布 | 识别文字对话框（新建/编辑）、素材行识别=全部候选、操作区三方式递归对话框（validate+两次 update）、offset 画布绘制+保存、test_action 候选点测+真实候选下拉；UI **2474** checks / **194** ids |
-| U-T5 | Studio 动作库目标选择接线 + 旧 region 收口 | 属性面板「动作目标（素材库）」搜索选择、ocr_var→text_expr param(key) locator、保存前目标校验（含 param key 派生校验）、旧 region 仅旧 flow 显示、save_flow sync 提示；UI **2511**（+37） |
+| U-T5 | Studio 动作库目标选择接线 + 旧 region 收口 | 属性面板「动作目标（素材库）」搜索选择、ocr_var→text_expr param(key) locator、保存前目标校验（含 param key 派生校验）、旧 region 仅旧 flow 显示、save_flow sync 提示；UI **2512**（+37） |
 | U-T6 | Runner「使用端OCR文字配置项」分节 | `runnerParamGroupsEx` 前置分节 + 素材名/默认值副标题 + 旧参数兼容；+19 checks |
 | D-T8 | E2E（仓外新模型任务）+ 文档归档 + 交接 | E2E 27 total/26 PASS/0 FAIL/1 SKIP exit 0（`_verify\seq124-e2e-20261106\`）；`ENGINE §22.64`、`OPERATION-REGION-DESIGN §8`、`PARAM-ASSET-IMPLEMENTATION`「实现结果」、`README` 索引 |
 
