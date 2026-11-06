@@ -4824,6 +4824,42 @@ mod tests {
     }
 
     #[test]
+    fn lint_collects_region_asset_for_t4() {
+        // v1.4 A-plan (OPERATION-REGION-DESIGN §7): `region.asset` names a
+        // whole-library operation-area asset, so T4 must validate it exists.
+        let td = TempDir::new("lintregasset");
+        let b = open(&td);
+        write_flow_only_bundle(
+            &b,
+            r#"{"schema_version":1,"name":"任务1","params":[]}"#,
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[
+                    {"kind":"ocr_text","sel":"O","text":"完成",
+                     "region":{"mode":"nearest","asset":"I_MISSING"}}]}},
+                 {"op":"drag","args":{
+                    "from":{"kind":"ocr_text","sel":"O","text":"返回",
+                            "region":{"mode":"asset","asset":"I_MISSING_2"}},
+                    "direction":"up","distance":[1,2]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let issues = b.lint().expect_err("T4 must see region.asset references");
+        let t4: Vec<&LintIssue> = issues.iter().filter(|i| i.code == "T4").collect();
+        assert!(
+            t4.iter().any(|i| i.msg.contains("I_MISSING")),
+            "click_target region.asset must be referenced for T4: {t4:?}"
+        );
+        assert!(
+            t4.iter().any(|i| i.msg.contains("I_MISSING_2")),
+            "drag region.asset must be referenced for T4: {t4:?}"
+        );
+        // region.asset does not introduce parameters (T3 untouched).
+        assert!(
+            !issues.iter().any(|i| i.code == "T3"),
+            "region.asset must not create T3 issues: {issues:?}"
+        );
+    }
+
+    #[test]
     fn lint_flags_asset_refs_and_missing_images() {
         let td = TempDir::new("lintassets");
         let b = open(&td);

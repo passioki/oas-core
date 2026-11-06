@@ -4631,6 +4631,10 @@ const BUILDER_REGION_PURE = [
   'regionModeText', 'regionHintText', 'regionSpec', 'regionWrite',
   'regionOffsetFromInput', 'normalizeRegion', 'regionIssues', 'normalizeScreenSize',
   'chooserRegionSpec',
+  // A 方案：region.asset（操作区域素材，整个素材库）
+  'regionMatchRiskText', 'regionAssetKindText', 'regionAssetGroupOf',
+  'chooserOperationAssetOptions', 'regionAssetFromSelector', 'regionOperationAssetText',
+  'regionAssetIds', 'regionWithOperationAsset',
   'longPressStep', 'longPressHoldText', 'holdRangeFromInput', 'longPressArgsIssues',
   'curveSwipeStep', 'curvePointsFromText', 'curveDurationFromInput',
   'curveSwipeArgsIssues', 'actionArgsIssues', 'waitBlockingHelpText',
@@ -4666,18 +4670,53 @@ eq(p1Sb.chooserRegionSpec('offset', '10', '-5', '', ''), { ok: true, region: { m
 eq(p1Sb.chooserRegionSpec('offset', '10', '-5', '200', '80'), { ok: true, region: { mode: 'offset', offset: [10, -5, 200, 80] }, error: '' }, 'chooser offset 4-int mode');
 ok(p1Sb.chooserRegionSpec('offset', '10', '-5', '200', '').ok === false, 'chooser offset needs both w and h');
 ok(p1Sb.chooserRegionSpec('weird', '', '', '', '').ok === false, 'chooser rejects an unknown region mode');
+// A 方案：chooser 的「操作区域素材」只写进 asset/nearest；ocr/offset 静默丢弃。
+eq(
+  p1Sb.chooserRegionSpec('asset', '', '', '', '', ' I_战斗 '),
+  { ok: true, region: { mode: 'asset', asset: 'I_战斗' }, error: '' },
+  'chooser writes region.asset for mode=asset'
+);
+eq(
+  p1Sb.chooserRegionSpec('nearest', '', '', '', '', 'I_战斗'),
+  { ok: true, region: { mode: 'nearest', asset: 'I_战斗' }, error: '' },
+  'chooser writes region.asset for mode=nearest'
+);
+eq(
+  p1Sb.chooserRegionSpec('nearest', '', '', '', '', ''),
+  { ok: true, region: { mode: 'nearest' }, error: '' },
+  'chooser with no operation asset omits region.asset'
+);
+eq(
+  p1Sb.chooserRegionSpec('ocr', '', '', '', '', 'I_战斗'),
+  { ok: true, region: { mode: 'ocr' }, error: '' },
+  'chooser drops the operation asset for mode=ocr'
+);
+eq(
+  p1Sb.chooserRegionSpec('offset', '10', '-5', '', '', 'I_战斗'),
+  { ok: true, region: { mode: 'offset', offset: [10, -5] }, error: '' },
+  'chooser drops the operation asset for mode=offset'
+);
 eq(p1Sb.regionHintText('asset').indexOf('素材') >= 0, true, 'asset mode hint mentions the asset region');
 eq(p1Sb.regionHintText('offset').indexOf('dx') >= 0, true, 'offset mode hint explains dx/dy');
 eq(p1Sb.regionHintText('').indexOf('不指定') >= 0, true, 'default mode hint explains the current behavior');
 
-eq(p1Sb.regionSpec(null), { mode: '', offset: [] }, 'missing region reads as the default mode');
-eq(p1Sb.regionSpec({ region: { mode: 'OCR' } }), { mode: 'ocr', offset: [] }, 'region mode is normalized to lowercase');
+eq(p1Sb.regionSpec(null), { mode: '', offset: [], asset: '' }, 'missing region reads as the default mode');
+eq(
+  p1Sb.regionSpec({ region: { mode: 'OCR' } }),
+  { mode: 'ocr', offset: [], asset: '' },
+  'region mode is normalized to lowercase'
+);
 eq(
   p1Sb.regionSpec({ region: { mode: 'offset', offset: [1, 2, 3, 4] } }),
-  { mode: 'offset', offset: [1, 2, 3, 4] },
+  { mode: 'offset', offset: [1, 2, 3, 4], asset: '' },
   'region offset is read back'
 );
-eq(p1Sb.regionSpec({ region: 'bad' }), { mode: '', offset: [] }, 'a non-object region degrades to default');
+eq(
+  p1Sb.regionSpec({ region: { mode: 'nearest', asset: ' I_战斗 ' } }),
+  { mode: 'nearest', offset: [], asset: 'I_战斗' },
+  'region.asset is read back and trimmed'
+);
+eq(p1Sb.regionSpec({ region: 'bad' }), { mode: '', offset: [], asset: '' }, 'a non-object region degrades to default');
 
 eq(
   p1Sb.regionWrite({ kind: 'ocr_text', sel: 'O_x', require_template: 'I_x' }, 'asset', [1, 2]),
@@ -4746,6 +4785,157 @@ eq(
   'a valid region on a long_press locator passes'
 );
 eq(p1Sb.regionIssues(null), [], 'a missing flow has no region issues');
+
+// --- A 方案：操作区域素材（region.asset，整个素材库） -------------------------
+eq(
+  p1Sb.regionWrite({ kind: 'ocr_text', sel: 'O_x', region: { mode: 'asset' } }, 'nearest', [], ' I_战斗 '),
+  { kind: 'ocr_text', sel: 'O_x', region: { mode: 'nearest', asset: 'I_战斗' } },
+  'regionWrite writes a trimmed region.asset for nearest'
+);
+eq(
+  p1Sb.regionWrite({ kind: 'ocr_text', region: { mode: 'offset', offset: [1, 2] } }, 'asset', [], 'I_战斗'),
+  { kind: 'ocr_text', region: { mode: 'asset', asset: 'I_战斗' } },
+  'regionWrite swaps offset -> asset and keeps the asset'
+);
+eq(
+  p1Sb.regionWrite({ kind: 'ocr_text', region: { mode: 'nearest', asset: 'I_战斗' } }, 'ocr', [], 'I_战斗'),
+  { kind: 'ocr_text', region: { mode: 'ocr' } },
+  'regionWrite removes region.asset for mode=ocr'
+);
+eq(
+  p1Sb.regionWrite({ kind: 'ocr_text', region: { mode: 'asset', asset: 'I_战斗' } }, 'offset', [1, 2], 'I_战斗'),
+  { kind: 'ocr_text', region: { mode: 'offset', offset: [1, 2] } },
+  'regionWrite removes region.asset for mode=offset'
+);
+eq(
+  p1Sb.regionWrite({ kind: 'ocr_text', region: { mode: 'nearest', asset: 'I_战斗' } }, 'nearest', [], ''),
+  { kind: 'ocr_text', region: { mode: 'nearest' } },
+  'regionWrite with no operation asset omits region.asset'
+);
+eq(
+  p1Sb.regionWrite({ kind: 'ocr_text', region: { mode: 'asset', asset: 'I_战斗', future: 1 } }, 'asset', [], 'I_战斗'),
+  { kind: 'ocr_text', region: { future: 1, mode: 'asset', asset: 'I_战斗' } },
+  'regionWrite keeps unknown fields inside region'
+);
+eq(
+  p1Sb.regionWrite({ kind: 'ocr_text', region: { mode: 'asset', asset: 'I_战斗' } }, '', [], ''),
+  { kind: 'ocr_text' },
+  'the default region mode removes the whole region (including asset)'
+);
+
+eq(
+  p1Sb.normalizeRegion({ mode: 'asset', asset: 'I_战斗' }),
+  { ok: true, region: { mode: 'asset', asset: 'I_战斗' }, error: '' },
+  'normalizeRegion accepts asset with mode=asset'
+);
+eq(
+  p1Sb.normalizeRegion({ mode: 'nearest', asset: ' I_战斗 ' }),
+  { ok: true, region: { mode: 'nearest', asset: 'I_战斗' }, error: '' },
+  'normalizeRegion trims region.asset'
+);
+eq(p1Sb.normalizeRegion({ mode: 'ocr', asset: 'I_x' }).ok, false, 'asset with mode=ocr is rejected');
+eq(p1Sb.normalizeRegion({ mode: 'offset', offset: [1, 2], asset: 'I_x' }).ok, false, 'asset with mode=offset is rejected');
+eq(p1Sb.normalizeRegion({ mode: 'asset', asset: '' }).ok, false, 'an empty region.asset is rejected');
+eq(p1Sb.normalizeRegion({ mode: 'asset', asset: 42 }).ok, false, 'a non-string region.asset is rejected');
+eq(
+  p1Sb.normalizeRegion({ mode: 'nearest' }).ok,
+  true,
+  'nearest without an explicit operation asset is valid (uses the OCR asset itself)'
+);
+
+eq(p1Sb.regionAssetKindText('ocr_line'), 'OCR 行', 'ocr_line kind text');
+eq(p1Sb.regionAssetKindText('ocr_lines'), 'OCR 多行', 'ocr_lines kind text');
+eq(p1Sb.regionAssetKindText('template'), '模板', 'template kind text');
+eq(p1Sb.regionAssetKindText('region'), '区域', 'region kind text');
+eq(p1Sb.regionAssetKindText('template_set'), '集合', 'template_set (collection) kind text');
+eq(p1Sb.regionAssetKindText('weird'), '其他', 'unknown kind falls back to 其他');
+eq(p1Sb.regionAssetGroupOf('ocr_lines'), 'ocr', 'ocr_lines groups under OCR');
+eq(p1Sb.regionAssetGroupOf('template'), 'template', 'template groups under 模板');
+eq(p1Sb.regionAssetGroupOf('region'), 'region', 'region groups under 区域');
+eq(p1Sb.regionAssetGroupOf('template_set'), 'collection', 'template_set groups under 集合');
+eq(p1Sb.regionAssetGroupOf('weird'), 'other', 'unknown kinds group under 其他');
+
+const operationAssets = [
+  { id: '按钮_战斗', kind: 'ocr_line' },
+  { id: 'I_按钮', kind: 'template' },
+  { id: 'R_区域', kind: 'region' },
+  { id: 'C_集合', kind: 'template_set' },
+  { id: '按钮_战斗', kind: 'ocr_line' },
+  null,
+  { kind: 'template' },
+];
+const opAssetGroups = p1Sb.chooserOperationAssetOptions(operationAssets);
+eq(opAssetGroups.length, 4, 'operation asset options are grouped (OCR/模板/区域/集合)');
+eq(opAssetGroups[0].group, 'ocr', 'the first group is OCR');
+eq(opAssetGroups[0].label, 'OCR 识别素材', 'the OCR group label');
+eq(opAssetGroups[0].items.length, 1, 'duplicate ids are de-duplicated');
+eq(opAssetGroups[0].items[0].id, '按钮_战斗', 'the OCR item keeps its id');
+eq(opAssetGroups[0].items[0].kindText, 'OCR 行', 'the OCR item explains its kind');
+eq(opAssetGroups[2].items[0].id, 'R_区域', 'region assets are available as operation assets');
+eq(opAssetGroups[3].items[0].id, 'C_集合', 'collection assets are available as operation assets');
+eq(p1Sb.chooserOperationAssetOptions([{ id: 'X', kind: 'weird' }])[0].label, '其他素材', 'unknown asset kinds stay selectable');
+eq(p1Sb.chooserOperationAssetOptions(null), [], 'missing asset list -> no options');
+
+eq(p1Sb.regionAssetFromSelector(' I_战斗 '), 'I_战斗', 'selector value is trimmed');
+eq(p1Sb.regionAssetFromSelector(''), '', 'empty selector value = no operation asset');
+eq(p1Sb.regionAssetFromSelector(null), '', 'null selector value = no operation asset');
+eq(p1Sb.regionOperationAssetText('', operationAssets), '无（用识别素材自身）', 'no asset text explains the default');
+eq(p1Sb.regionOperationAssetText('I_按钮', operationAssets), 'I_按钮 · 模板', 'known asset text includes the kind');
+eq(
+  p1Sb.regionOperationAssetText('Gone', operationAssets),
+  '未找到：Gone',
+  'unknown asset text is reported instead of silently showing nothing'
+);
+eq(p1Sb.regionAssetIds(operationAssets), ['按钮_战斗', 'I_按钮', 'R_区域', 'C_集合'], 'regionAssetIds de-duplicates ids');
+
+eq(
+  p1Sb.regionWithOperationAsset({ mode: 'nearest' }, ' I_战斗 '),
+  { mode: 'nearest', asset: 'I_战斗' },
+  'regionWithOperationAsset merges the asset into asset/nearest'
+);
+eq(
+  p1Sb.regionWithOperationAsset({ mode: 'ocr' }, 'I_战斗'),
+  { mode: 'ocr' },
+  'regionWithOperationAsset drops the asset for ocr'
+);
+eq(
+  p1Sb.regionWithOperationAsset({ mode: 'offset', offset: [1, 2] }, 'I_战斗'),
+  { mode: 'offset', offset: [1, 2] },
+  'regionWithOperationAsset keeps offset but drops the asset'
+);
+eq(
+  p1Sb.regionWithOperationAsset({ mode: 'asset' }, ''),
+  { mode: 'asset' },
+  'regionWithOperationAsset with no selection omits asset'
+);
+eq(p1Sb.regionWithOperationAsset(null, 'I_战斗'), {}, 'no mode means no region (asset ignored)');
+
+eq(
+  p1Sb.regionIssues(
+    { steps: [{ op: 'long_press', args: { find: [{ kind: 'ocr_text', region: { mode: 'nearest', asset: 'Gone' } }] } }] },
+    ['I_按钮']
+  ),
+  ['flow.steps[0].args.find[0].region：操作区域素材「Gone」不在当前素材库（本步会失败）'],
+  'regionIssues reports an operation asset that is not in the current asset list'
+);
+eq(
+  p1Sb.regionIssues(
+    { steps: [{ op: 'click_target', args: { find: [{ kind: 'ocr_text', region: { mode: 'asset', asset: 'I_按钮' } }] } }] },
+    ['I_按钮']
+  ),
+  [],
+  'a known operation asset passes the save check'
+);
+ok(
+  p1Sb.regionIssues(
+    { steps: [{ op: 'click_target', args: { find: [{ kind: 'ocr_text', region: { mode: 'asset', asset: 'I_按钮' } }] } }] }
+  ).length === 0,
+  'without an asset list only the region shape is checked (legacy callers)'
+);
+eq(p1Sb.regionMatchRiskText('asset').indexOf('无匹配') >= 0, true, 'asset mode warns that no match fails the step');
+eq(p1Sb.regionMatchRiskText('nearest').indexOf('无匹配') >= 0, true, 'nearest mode warns that no match fails the step');
+eq(p1Sb.regionMatchRiskText('ocr'), '', 'non-asset modes have no match risk note');
+eq(p1Sb.regionMatchRiskText(''), '', 'the default mode has no match risk note');
 eq(p1Sb.normalizeScreenSize([1280, 720]), [1280, 720], 'screen size is kept');
 eq(p1Sb.normalizeScreenSize('bad'), [1280, 720], 'invalid screen size falls back to 1280x720');
 eq(p1Sb.normalizeScreenSize([0, 720]), [1280, 720], 'zero width falls back');
@@ -4892,7 +5082,7 @@ ok(
 );
 ok(
   /function renderRegionEditor\(host, locator, onChange\)/.test(builderSource) &&
-    /regionWrite\(written, region\.mode, region\.offset\)/.test(builderSource),
+    /regionWrite\(written, region\.mode, region\.offset, region\.asset\)/.test(builderSource),
   'the OCR locator panel owns the shared 操作区域 editor'
 );
 ok(
@@ -4917,7 +5107,7 @@ ok(
   'the curve_swipe form validates points against the screen and shows the multi-gesture risk'
 );
 ok(
-  /const saveIssues = flowTextSpecIssues\(B\.flow\)[\s\S]{0,220}regionIssues\(B\.flow\)[\s\S]{0,120}actionArgsIssues\(B\.flow, B\.screen\)/.test(builderSource),
+  /const saveIssues = flowTextSpecIssues\(B\.flow\)[\s\S]{0,220}regionIssues\(B\.flow, regionAssetIds\(B\.assets\)\)[\s\S]{0,120}actionArgsIssues\(B\.flow, B\.screen\)/.test(builderSource),
   'saveFlow blocks on text-spec + region + long_press/curve_swipe issues'
 );
 ok(
@@ -4951,6 +5141,48 @@ ok(
 ok(
   !/innerHTML/.test(extractFunctionFrom(builderSource, 'renderCurveSwipeForm', 'builder.js')),
   'the curve_swipe form renders through DOM APIs only'
+);
+
+// A 方案：操作区域素材（整个素材库）接入 chooser + 结构化 region 编辑器。
+ok(
+  /操作区域素材（整个素材库，可选）/.test(builderSource) &&
+    /chooserOperationAssetOptions\(B\.assets\)/.test(builderSource) &&
+    /optgroup/.test(builderSource) &&
+    /option\.value = item\.id;/.test(builderSource),
+  'the parameter chooser lists the whole asset library as operation-region assets'
+);
+ok(
+  /chooserRegionSpec\(modeSel\.value,[\s\S]{0,220}opAssetSel\.value\)/.test(builderSource) &&
+    /opAssetLabel\.hidden = mode !== 'asset' && mode !== 'nearest'/.test(builderSource),
+  'the chooser feeds the selected operation asset into chooserRegionSpec'
+);
+ok(
+  /builder-region-asset/.test(builderSource) &&
+    /regionAssetFromSelector\(opAssetSel\.value\)/.test(builderSource) &&
+    /opAssetRow\.hidden = mode !== 'asset' && mode !== 'nearest'/.test(builderSource),
+  'the structured region editor adds the operation-asset select (asset/nearest only)'
+);
+ok(
+  (builderSource.match(/regionWrite\(written, region\.mode, region\.offset, region\.asset\)/g) || []).length >= 2,
+  'click_target find + drag endpoints write region.asset through regionWrite'
+);
+ok(
+  /regionOperationAssetText\(spec\.region\.asset, B\.assets\)/.test(builderSource) &&
+    /regionMatchRiskText\(mode\)/.test(builderSource),
+  'the chooser shows the selected operation asset and the no-match risk note'
+);
+ok(
+  /regionIssues\(B\.flow, regionAssetIds\(B\.assets\)\)/.test(builderSource),
+  'saveFlow validates region.asset against the current asset library'
+);
+ok(
+  /builder-region-help/.test(html) && /操作区域素材/.test(html) &&
+    /region\.asset/.test(html) && /无匹配时本步会失败/.test(html),
+  'index.html explains the operation-region asset (region.asset) semantics'
+);
+ok(
+  /\.builder-region-asset/.test(styleCss) && /\.builder-region-risk/.test(styleCss),
+  'style.css styles the operation-asset select + risk note'
 );
 
 // DOM id audit: the whole point of this round is ZERO static dead ids. Every

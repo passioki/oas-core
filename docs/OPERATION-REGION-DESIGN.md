@@ -171,3 +171,24 @@
 - 定位对象/拖动端点新增「操作区域」选择（默认/素材操作区域/OCR识别区域/最近匹配/相对偏移 + `[dx,dy,w,h]` 输入）。
 - **等待动作解释**：动作库与属性面板明确「等待参数文字/等到条件」是**阻塞等待**步骤：条件成立后继续执行**下一个 flow 步骤**（不触发独立动作）；超时则本步失败。UI 增加 help/title。
 - 测试：UI pure test 新增 long_press/curve_swipe/region 纯函数与静态断言；基线 2039 只能增；0 dead/nav 6 不变。
+
+## 7. ✅ A 方案补充确认（2026-11-06 09:1x，seq 122 实施）
+
+用户确认 A：**参数 OCR 识别素材 + 操作区域素材（整个素材库，可选）**，即 `region.asset`：
+
+```json
+"region": {
+  "mode": "asset | nearest",
+  "asset": "I_战斗按钮"        // 任意素材；可空=用识别素材自身
+}
+```
+
+运行流程：
+1. **参数 OCR**：在 `sel`（OCR 识别素材/ROI）内识别参数文字 → 得到匹配文字行 bbox（参数 OCR 真实识别区域）及其中心（nearest 参考点）。参数文字未匹配 = 本步失败。
+2. **操作区域素材匹配**（仅当 `region.asset` 存在）：
+   - `mode=asset`：模板/集合做一次最佳匹配；region 资产用固定区域；OCR 资产用其声明操作区域；取其操作区域。
+   - `mode=nearest`：模板/集合 **多候选匹配**（阈值 + NMS）；每个候选计算匹配 bbox 中心；选“离参数 OCR 匹配行 bbox 中心最近”的候选（并列取高分）；使用该候选的操作区域（action_shape/click_back 平移后；无则匹配 bbox）。
+   - **无候选 = 本步响亮失败**，不点击/不拖动/不 fallback。
+3. **动作落点**：点击/长按/拖动落在选出的操作区域内随机点；**不是**参数 OCR 文字框（要文字框请用 `mode=ocr`）。
+
+约束：`region.asset` 只允许 `mode=asset`/`nearest`；`mode=ocr`/`offset` 带 asset = 解析错误；flow_ops 新增 `click_target.region_asset` / `drag.region_asset` 标记（long_press 由 `long_press` 标记覆盖），老 Runner 拒绝新包；T4 收集 region.asset 作为素材引用。

@@ -300,6 +300,19 @@ struct PressTarget {
     region: Option<OpRegion>,
 }
 
+/// One match candidate of a whole-library **operation-area asset** (v1.4 A-plan,
+/// `region.asset` with `mode=nearest`).
+///
+/// `rect`/`shape` are the candidate's **operation region** (translated to frame
+/// coordinates) and `centre` is the **match bbox centre** used for the
+/// "nearest to the parameter OCR line" distance. `score` only breaks ties.
+struct OperationCandidate {
+    rect: Rect,
+    shape: Option<ClickShape>,
+    centre: Point,
+    score: f32,
+}
+
 /// v1.2.5 (O-2): a flow `region` drag shape is the same geometry as an asset
 /// `action_shape`, so drag sampling and click sampling share one algorithm.
 /// `oas_task::ActionShape::to_click_shape` does the identical mapping.
@@ -628,6 +641,21 @@ fn clamp_to_frame(p: Point, w: u32, h: u32) -> Point {
         x: p.x.clamp(0, w.saturating_sub(1) as i32),
         y: p.y.clamp(0, h.saturating_sub(1) as i32),
     }
+}
+
+/// One-line step-log suffix for an operation-region override.
+///
+/// Empty when the flow has no `region` (old flows keep byte-identical step
+/// details); otherwise ` region=<mode>` plus ` asset=<id>` for the v1.4 A-plan.
+fn region_log(region: Option<&OpRegion>) -> String {
+    let Some(region) = region else {
+        return String::new();
+    };
+    let mut s = format!(" region={}", region.mode_str());
+    if let Some(asset) = region.asset() {
+        s.push_str(&format!(" asset={asset}"));
+    }
+    s
 }
 
 /// OCR text comparison. OCR models often emit a traditional/variant CJK glyph
@@ -1737,6 +1765,34 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         })
     }
 
+    /// v1.4: re-sample a click plan against an **already translated** operation
+    /// shape (the `region.asset` A-plan path, where the shape comes from
+    /// [`Self::operation_region_for_asset`] rather than the OCR asset's own
+    /// `action_shape`).
+    fn adjust_plan_for_explicit_shape(
+        &mut self,
+        plan: crate::humanize::ClickPlan,
+        shape: Option<&ClickShape>,
+        w: u32,
+        h: u32,
+    ) -> Result<crate::humanize::ClickPlan, String> {
+        let Some(shape) = shape else {
+            return Ok(plan);
+        };
+        let in_frame = plan.point.x >= 0
+            && plan.point.y >= 0
+            && plan.point.x < w as i32
+            && plan.point.y < h as i32;
+        if in_frame && shape.effective_contains(plan.point) {
+            return Ok(plan);
+        }
+        let point = shape.sample(w, h, &mut self.rng)?;
+        Ok(crate::humanize::ClickPlan {
+            point,
+            miss: false,
+        })
+    }
+
     /// True when `p` is inside the **effective** operation shape and on screen.
     /// Used by the region path, whose point-`click` jitter must never leave a
     /// narrow region (B-04).
@@ -1846,6 +1902,218 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             w: t.gray.width as i32,
             h: t.gray.height as i32,
         })
+    }
+
+    /// v1.4 A-plan (`docs/OPERATION-REGION-DESIGN.md §7`): every match candidate
+    /// of a template asset / template collection at or above its threshold, each
+    /// with its **operation region** (`rect`/`shape`, frame coordinates) and the
+    /// **match bbox centre** used for the `nearest` distance.
+    ///
+    /// Candidates come from the multi-candidate NCC matcher (NMS inside); a
+    /// polygon `action_shape` restricts the match with the same mask the
+    /// single-best path uses. OCR / fixed-region collection members cannot
+    /// produce position candidates and are skipped here (they are handled by
+    /// [`Self::operation_region_for_asset`] directly, with no candidates).
+    fn operation_candidates(&mut self, id: &str) -> Result<Vec<OperationCandidate>, String> {
+        self.observe_screen()?;
+        let matcher = self
+            .screen
+            .matcher
+            .as_ref()
+            .ok_or_else(|| "no frame available".to_string())?;
+        // (asset id used for the action geometry, template) pairs.
+        let mut templates: Vec<(String, &Template)> = Vec::new();
+        if self.assets.collection_members(id).is_some() {
+            let members = self
+                .assets
+                .collection_members(id)
+                .map(|m| m.to_vec())
+                .unwrap_or_default();
+            if members.is_empty() {
+                return Err(format!("operation asset `{id}` is an empty collection"));
+            }
+            for m in members {
+                if let Some(t) = self.assets.get(&m) {
+                    templates.push((m, t));
+                }
+            }
+        } else if let Some(t) = self.assets.get(id) {
+            templates.push((id.to_string(), t));
+        }
+        if templates.is_empty() {
+            return Err(format!(
+                "operation asset `{id}` is not a template or template collection"
+            ));
+        }
+        let threshold = self.selector_threshold(id);
+        let mut out: Vec<OperationCandidate> = Vec::new();
+        for (cid, tpl) in templates {
+            let found = match template_polygon_mask(tpl) {
+                Some(mask) => {
+                    matcher.match_template_masked_all(&tpl.gray, &mask, tpl.roi, threshold)
+                }
+                None => matcher.match_template_all(&tpl.gray, tpl.roi, threshold),
+            };
+            for cand in found {
+                let pos = Point {
+                    x: cand.x,
+                    y: cand.y,
+                };
+                let Ok(rect) = self.click_box_for(&cid, pos) else {
+                    continue; // a member without usable geometry is not a candidate
+                };
+                let shape = self
+                    .assets
+                    .click_shape(&cid)
+                    .map(|s| self.assets.translate_click_shape(s.clone(), &cid, pos));
+                out.push(OperationCandidate {
+                    rect,
+                    shape,
+                    centre: Point {
+                        x: cand.x + tpl.gray.width as i32 / 2,
+                        y: cand.y + tpl.gray.height as i32 / 2,
+                    },
+                    score: cand.score,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// v1.4 A-plan: the operation region + exact shape of a **whole-library**
+    /// operation-area asset (`region.asset`).
+    ///
+    /// * template / collection: `mode=asset` → one best match; `mode=nearest` →
+    ///   the multi-candidate whose **match bbox centre** is nearest to
+    ///   `reference` (the matched parameter-OCR line centre; ties pick the higher
+    ///   score);
+    /// * fixed region asset → its region (+ declared exact shape), no matching;
+    /// * OCR asset → its declared operation area (`action_shape` / `click_back`
+    ///   / `ocr_roi`), no candidates;
+    /// * undeclared / no match / no reference → **loud error** prefixed with
+    ///   `site` (never a silent fallback).
+    fn operation_region_for_asset(
+        &mut self,
+        asset_id: &str,
+        region: &OpRegion,
+        reference: Option<Point>,
+        site: &str,
+    ) -> Result<(Rect, Option<ClickShape>), String> {
+        let err = |what: &str| format!("{site}: operation asset `{asset_id}` {what}");
+        if asset_id.trim().is_empty() {
+            return Err(format!("{site}: `region.asset` is empty"));
+        }
+        // Fixed region asset: no matching needed.
+        if let Some(rect) = self.assets.region(asset_id) {
+            return Ok((rect, self.assets.click_shape(asset_id).cloned()));
+        }
+        // OCR asset: use its declared operation area (no position candidates).
+        if self.assets.ocr_roi(asset_id).is_some() {
+            if let Some(shape) = self.assets.click_shape(asset_id) {
+                if shape.invert {
+                    let (w, h) = self
+                        .screen
+                        .size()
+                        .ok_or_else(|| err("needs a frame for an inverted action_shape"))?;
+                    return Ok((
+                        Rect {
+                            x: 0,
+                            y: 0,
+                            w: w as i32,
+                            h: h as i32,
+                        },
+                        Some(shape.clone()),
+                    ));
+                }
+                if let Some(b) = shape.bbox() {
+                    return Ok((b, Some(shape.clone())));
+                }
+            }
+            if let Some(back) = self.assets.click_back(asset_id) {
+                return Ok((back, None));
+            }
+            if let Some(roi) = self.assets.ocr_roi(asset_id) {
+                return Ok((roi, None));
+            }
+            return Err(err("is an OCR asset without an operation area"));
+        }
+        // Template / collection: match.
+        let is_template = self.assets.get(asset_id).is_some()
+            || self.assets.collection_members(asset_id).is_some();
+        if !is_template {
+            return Err(err("is not declared in the task's assets"));
+        }
+        if matches!(region, OpRegion::Nearest { .. }) {
+            let reference = reference.ok_or_else(|| {
+                err("needs a reference point for mode=nearest (matched OCR line)")
+            })?;
+            let threshold = self.selector_threshold(asset_id);
+            let candidates = self.operation_candidates(asset_id)?;
+            if candidates.is_empty() {
+                return Err(err(&format!(
+                    "has no match candidate >= its threshold ({threshold:.3})"
+                )));
+            }
+            let mut best_idx = 0usize;
+            let mut best_dist = i64::MAX;
+            let mut best_score = f32::MIN;
+            for (i, c) in candidates.iter().enumerate() {
+                let dx = c.centre.x as i64 - reference.x as i64;
+                let dy = c.centre.y as i64 - reference.y as i64;
+                let d2 = dx * dx + dy * dy;
+                let better = d2 < best_dist || (d2 == best_dist && c.score > best_score);
+                if better {
+                    best_idx = i;
+                    best_dist = d2;
+                    best_score = c.score;
+                }
+            }
+            let best = &candidates[best_idx];
+            return Ok((best.rect, best.shape.clone()));
+        }
+        // mode=asset: one best match (historical locate semantics: ROI best, then
+        // full-frame pyramid fallback).
+        let threshold = self.selector_threshold(asset_id);
+        let (score, at) = self.locate(asset_id)?;
+        let Some(p) = at else {
+            return Err(err("has no match"));
+        };
+        if score < threshold {
+            return Err(err(&format!(
+                "best match score {score:.3} < threshold {threshold:.3}"
+            )));
+        }
+        let rect = self.click_box_for(asset_id, p)?;
+        let shape = self.translated_click_shape(asset_id, p);
+        Ok((rect, shape))
+    }
+
+    /// v1.4 A-plan: when `region` carries a whole-library `asset`, resolve the
+    /// operation region/shape to use **instead of** the OCR-line geometry.
+    ///
+    /// `reference` is the matched parameter-OCR line bbox centre (used by
+    /// `mode=nearest`). Returns `None` when the region has no `asset`, keeping
+    /// the v1.3/historical behaviour untouched.
+    fn region_asset_target(
+        &mut self,
+        region: &Option<OpRegion>,
+        reference: Point,
+        site: &str,
+    ) -> Result<Option<(Rect, Option<ClickShape>)>, String> {
+        let Some(region) = region.as_ref() else {
+            return Ok(None);
+        };
+        let Some(asset_id) = region.asset() else {
+            return Ok(None);
+        };
+        let asset_id = asset_id.to_string();
+        let reference = match region {
+            OpRegion::Nearest { .. } => Some(reference),
+            _ => None,
+        };
+        Ok(Some(
+            self.operation_region_for_asset(&asset_id, region, reference, site)?,
+        ))
     }
 
     /// Evaluate one coordinate expression (`click_point`/`swipe`): it must be a
@@ -1980,7 +2248,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 text,
                 region,
             } => {
-                let text = self.resolve_text(text, site)?;
+                let text = self.resolve_text(text, &format!("{site}.text_expr"))?;
                 // A named OCR asset may declare a minimum recognition
                 // confidence; the geometry must not come from a line that is
                 // below it. Inline ROIs carry no asset and therefore no
@@ -2021,7 +2289,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 };
                 let candidates = ocr_line_candidates(&lines, &text, Some(min_score));
                 let line = match region {
-                    Some(OpRegion::Nearest) => nearest_ocr_line(&candidates, reference),
+                    Some(OpRegion::Nearest { .. }) => nearest_ocr_line(&candidates, reference),
                     _ => candidates.first().copied(),
                 }
                 .ok_or_else(|| {
@@ -2030,19 +2298,30 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 // v1.3 `region` (OPERATION-REGION-DESIGN §6.1): default = the
                 // matched line bbox (historical drag behaviour); `asset` uses the
                 // asset operation area/shape when declared.
-                let (rect, shape) = match region {
-                    None => (line.rect, None),
-                    Some(OpRegion::Asset) => {
-                        let asset_rect = sel.as_deref().and_then(|s| self.assets.click_back(s));
-                        let asset_shape = sel
-                            .as_deref()
-                            .and_then(|s| self.assets.click_shape(s))
-                            .cloned();
-                        (asset_rect.unwrap_or(line.rect), asset_shape)
-                    }
-                    Some(OpRegion::Ocr) | Some(OpRegion::Nearest) => (line.rect, None),
-                    Some(OpRegion::Offset { dx, dy, w, h }) => {
-                        (offset_region_rect(line.rect, *dx, *dy, *w, *h), None)
+                // v1.4 A-plan: a whole-library `region.asset` replaces the geometry
+                // (nearest reference = the matched param-OCR line bbox centre).
+                let asset_target = self.region_asset_target(
+                    region,
+                    rect_centre(line.rect),
+                    &format!("{site}.region.asset"),
+                )?;
+                let (rect, shape) = if let Some((rect, shape)) = asset_target {
+                    (rect, shape)
+                } else {
+                    match region {
+                        None => (line.rect, None),
+                        Some(OpRegion::Asset { .. }) => {
+                            let asset_rect = sel.as_deref().and_then(|s| self.assets.click_back(s));
+                            let asset_shape = sel
+                                .as_deref()
+                                .and_then(|s| self.assets.click_shape(s))
+                                .cloned();
+                            (asset_rect.unwrap_or(line.rect), asset_shape)
+                        }
+                        Some(OpRegion::Ocr) | Some(OpRegion::Nearest { .. }) => (line.rect, None),
+                        Some(OpRegion::Offset { dx, dy, w, h }) => {
+                            (offset_region_rect(line.rect, *dx, *dy, *w, *h), None)
+                        }
                     }
                 };
                 Ok(DragEndpoint { rect, shape })
@@ -2104,7 +2383,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         let min = self.assets.ocr_threshold(sel);
                         let candidates = ocr_line_candidates(&lines, text, min);
                         let hit = match region {
-                            Some(OpRegion::Nearest) => {
+                            Some(OpRegion::Nearest { .. }) => {
                                 let roi = self.assets.ocr_roi(sel).ok_or_else(|| {
                                     format!("ocr_text `{sel}`: OCR asset has no roi")
                                 })?;
@@ -2141,6 +2420,13 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             x: line.rect.x + line.rect.w / 2,
                             y: line.rect.y + line.rect.h / 2,
                         };
+                        // v1.4 A-plan: a whole-library `region.asset` replaces the
+                        // geometry; the parameter OCR line above still had to match.
+                        let asset_target = self.region_asset_target(
+                            region,
+                            centre,
+                            &format!("long_press args.find[{idx}].region.asset"),
+                        )?;
                         let default_target = if self.assets.click_shape(sel).is_some()
                             || self.assets.click_back(sel).is_some()
                         {
@@ -2148,15 +2434,29 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         } else {
                             line.rect
                         };
-                        let (target, shape_aware) = match region {
-                            None | Some(OpRegion::Asset) => (default_target, true),
-                            Some(OpRegion::Ocr) | Some(OpRegion::Nearest) => (line.rect, false),
-                            Some(OpRegion::Offset { dx, dy, w, h }) => {
-                                (offset_region_rect(line.rect, *dx, *dy, *w, *h), false)
-                            }
-                        };
+                        let (target, explicit_shape, shape_aware) =
+                            if let Some((rect, shape)) = asset_target {
+                                (rect, shape, false)
+                            } else {
+                                let (t, aware) = match region {
+                                    None | Some(OpRegion::Asset { .. }) => (default_target, true),
+                                    Some(OpRegion::Ocr)
+                                    | Some(OpRegion::Nearest { .. }) => (line.rect, false),
+                                    Some(OpRegion::Offset { dx, dy, w, h }) => {
+                                        (offset_region_rect(line.rect, *dx, *dy, *w, *h), false)
+                                    }
+                                };
+                                (t, None, aware)
+                            };
                         let plan = self.humanize.template_click(target, w, &mut self.rng);
-                        let plan = if shape_aware {
+                        let plan = if explicit_shape.is_some() {
+                            self.adjust_plan_for_explicit_shape(
+                                plan,
+                                explicit_shape.as_ref(),
+                                w,
+                                h,
+                            )?
+                        } else if shape_aware {
                             self.adjust_plan_for_shape(sel, plan, w, h, centre)?
                         } else {
                             plan
@@ -2169,7 +2469,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 "ocr_text:{sel}:{}:{:.3}",
                                 line.text, line.score
                             ),
-                            region: *region,
+                            region: region.clone(),
                         });
                     }
                     Ok(OcrRead::Single(Some(t), score)) => {
@@ -2201,13 +2501,27 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         } else {
                             rect
                         };
-                        let (target, shape_aware) = match region {
-                            None | Some(OpRegion::Asset) => (default_target, true),
-                            Some(OpRegion::Ocr) | Some(OpRegion::Nearest) => (recognition, false),
-                            Some(OpRegion::Offset { dx, dy, w, h }) => {
-                                (offset_region_rect(recognition, *dx, *dy, *w, *h), false)
-                            }
-                        };
+                        // v1.4 A-plan: whole-library operation asset (single-line
+                        // OCR has no line bbox: the recognition ROI is the reference).
+                        let asset_target = self.region_asset_target(
+                            region,
+                            rect_centre(recognition),
+                            &format!("long_press args.find[{idx}].region.asset"),
+                        )?;
+                        let (target, explicit_shape, shape_aware) =
+                            if let Some((rect, shape)) = asset_target {
+                                (rect, shape, false)
+                            } else {
+                                let (t, aware) = match region {
+                                    None | Some(OpRegion::Asset { .. }) => (default_target, true),
+                                    Some(OpRegion::Ocr)
+                                    | Some(OpRegion::Nearest { .. }) => (recognition, false),
+                                    Some(OpRegion::Offset { dx, dy, w, h }) => {
+                                        (offset_region_rect(recognition, *dx, *dy, *w, *h), false)
+                                    }
+                                };
+                                (t, None, aware)
+                            };
                         if let Some(rt) = require_template {
                             match self.template_in_region(rt, recognition, 16) {
                                 Ok(true) => {}
@@ -2222,7 +2536,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             }
                         }
                         let plan = self.humanize.template_click(target, w, &mut self.rng);
-                        let plan = if shape_aware {
+                        let plan = if explicit_shape.is_some() {
+                            self.adjust_plan_for_explicit_shape(
+                                plan,
+                                explicit_shape.as_ref(),
+                                w,
+                                h,
+                            )?
+                        } else if shape_aware {
                             self.adjust_plan_for_shape(sel, plan, w, h, marker)?
                         } else {
                             plan
@@ -2232,7 +2553,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                             locator: "ocr_text",
                             sel: Some(sel.clone()),
                             match_info: format!("ocr_text:{sel}:{t}:{score:.3}"),
-                            region: *region,
+                            region: region.clone(),
                         });
                     }
                     Ok(OcrRead::Single(None, score)) => evidence.push(format!(
@@ -2256,7 +2577,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         Ok(OcrRead::Lines(lines)) => {
                             let candidates = ocr_line_candidates(&lines, text, None);
                             let hit = match region {
-                                Some(OpRegion::Nearest) => {
+                                Some(OpRegion::Nearest { .. }) => {
                                     nearest_ocr_line(&candidates, rect_centre(rect))
                                 }
                                 _ => candidates.iter().copied().max_by(|a, b| {
@@ -2287,13 +2608,39 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                     Err(e) => return Err(e),
                                 }
                             }
-                            let target = match region {
-                                None
-                                | Some(OpRegion::Asset)
-                                | Some(OpRegion::Ocr)
-                                | Some(OpRegion::Nearest) => line.rect,
-                                Some(OpRegion::Offset { dx, dy, w, h }) => {
-                                    offset_region_rect(line.rect, *dx, *dy, *w, *h)
+                            // v1.4 A-plan: inline form (reference = matched line centre).
+                            let asset_target = self.region_asset_target(
+                                region,
+                                rect_centre(line.rect),
+                                &format!("long_press args.find[{idx}].region.asset"),
+                            )?;
+                            let target = if let Some((rect, shape)) = asset_target {
+                                let plan = self.humanize.template_click(rect, w, &mut self.rng);
+                                let plan = self.adjust_plan_for_explicit_shape(
+                                    plan,
+                                    shape.as_ref(),
+                                    w,
+                                    h,
+                                )?;
+                                return Ok(PressTarget {
+                                    point: clamp_to_frame(plan.point, w, h),
+                                    locator: "ocr_text",
+                                    sel: None,
+                                    match_info: format!(
+                                        "ocr_text:inline:{}:{:.3}",
+                                        line.text, line.score
+                                    ),
+                                    region: region.clone(),
+                                });
+                            } else {
+                                match region {
+                                    None
+                                    | Some(OpRegion::Asset { .. })
+                                    | Some(OpRegion::Ocr)
+                                    | Some(OpRegion::Nearest { .. }) => line.rect,
+                                    Some(OpRegion::Offset { dx, dy, w, h }) => {
+                                        offset_region_rect(line.rect, *dx, *dy, *w, *h)
+                                    }
                                 }
                             };
                             let plan = self.humanize.template_click(target, w, &mut self.rng);
@@ -2305,11 +2652,36 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                     "ocr_text:inline:{}:{:.3}",
                                     line.text, line.score
                                 ),
-                                region: *region,
+                                region: region.clone(),
                             });
                         }
                         Ok(OcrRead::Single(Some(t), score)) => {
                             if ocr_text_matches(text, &t) {
+                                // v1.4 A-plan: inline single-line reference = rect centre.
+                                let asset_target = self.region_asset_target(
+                                    region,
+                                    rect_centre(rect),
+                                    &format!("long_press args.find[{idx}].region.asset"),
+                                )?;
+                                if let Some((rect, shape)) = asset_target {
+                                    let plan =
+                                        self.humanize.template_click(rect, w, &mut self.rng);
+                                    let plan = self.adjust_plan_for_explicit_shape(
+                                        plan,
+                                        shape.as_ref(),
+                                        w,
+                                        h,
+                                    )?;
+                                    return Ok(PressTarget {
+                                        point: clamp_to_frame(plan.point, w, h),
+                                        locator: "ocr_text",
+                                        sel: None,
+                                        match_info: format!(
+                                            "ocr_text:inline:{t}:{score:.3}"
+                                        ),
+                                        region: region.clone(),
+                                    });
+                                }
                                 let target = match region {
                                     Some(OpRegion::Offset { dx, dy, w, h }) => {
                                         offset_region_rect(rect, *dx, *dy, *w, *h)
@@ -2323,7 +2695,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                     locator: "ocr_text",
                                     sel: None,
                                     match_info: format!("ocr_text:inline:{t}:{score:.3}"),
-                                    region: *region,
+                                    region: region.clone(),
                                 });
                             }
                             evidence.push(format!(
@@ -3327,7 +3699,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 // "highest score" (historical click behaviour).
                                 let candidates = ocr_line_candidates(&lines, text, min);
                                 let hit = match region {
-                                    Some(OpRegion::Nearest) => {
+                                    Some(OpRegion::Nearest { .. }) => {
                                         let roi = self.assets.ocr_roi(sel).ok_or_else(|| {
                                             format!("ocr_text `{sel}`: OCR asset has no roi")
                                         })?;
@@ -3339,9 +3711,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                             .unwrap_or(std::cmp::Ordering::Equal)
                                     }),
                                 };
-                                let region_info = region
-                                    .map(|r| format!(" region={}", r.mode_str()))
-                                    .unwrap_or_default();
+                                let region_info = region_log(region.as_ref());
                                 match hit {
                                     Some(line) => {
                                         if let Some(rt) = require_template {
@@ -3362,6 +3732,16 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                             x: line.rect.x + line.rect.w / 2,
                                             y: line.rect.y + line.rect.h / 2,
                                         };
+                                        // v1.4 A-plan: a whole-library `region.asset`
+                                        // replaces the operation geometry; the param OCR
+                                        // line above still had to match.
+                                        let asset_target = self.region_asset_target(
+                                            region,
+                                            centre,
+                                            &format!(
+                                                "click_target args.find[{idx}].region.asset"
+                                            ),
+                                        )?;
                                         // B-02: an explicit operation region
                                         // (action_shape / click_back) must win over
                                         // the recognized line box, including invert.
@@ -3375,19 +3755,37 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                         // v1.3 (OPERATION-REGION-DESIGN §6.1): an
                                         // explicit `region` overrides the asset
                                         // operation area; `mode=asset` keeps it.
-                                        let (target, shape_aware) = match region {
-                                            None | Some(OpRegion::Asset) => (default_target, true),
-                                            Some(OpRegion::Ocr) | Some(OpRegion::Nearest) => {
-                                                (line.rect, false)
-                                            }
-                                            Some(OpRegion::Offset { dx, dy, w, h }) => (
-                                                offset_region_rect(line.rect, *dx, *dy, *w, *h),
-                                                false,
-                                            ),
-                                        };
+                                        let (target, explicit_shape, shape_aware) =
+                                            if let Some((rect, shape)) = asset_target {
+                                                (rect, shape, false)
+                                            } else {
+                                                let (t, aware) = match region {
+                                                    None | Some(OpRegion::Asset { .. }) => {
+                                                        (default_target, true)
+                                                    }
+                                                    Some(OpRegion::Ocr)
+                                                    | Some(OpRegion::Nearest { .. }) => {
+                                                        (line.rect, false)
+                                                    }
+                                                    Some(OpRegion::Offset { dx, dy, w, h }) => (
+                                                        offset_region_rect(
+                                                            line.rect, *dx, *dy, *w, *h,
+                                                        ),
+                                                        false,
+                                                    ),
+                                                };
+                                                (t, None, aware)
+                                            };
                                         let plan =
                                             self.humanize.template_click(target, w, &mut self.rng);
-                                        let plan = if shape_aware {
+                                        let plan = if explicit_shape.is_some() {
+                                            self.adjust_plan_for_explicit_shape(
+                                                plan,
+                                                explicit_shape.as_ref(),
+                                                w,
+                                                h,
+                                            )?
+                                        } else if shape_aware {
                                             self.adjust_plan_for_shape(sel, plan, w, h, centre)?
                                         } else {
                                             plan
@@ -3480,19 +3878,34 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                     };
                                     // v1.3 region override (single-line OCR has no
                                     // per-line bbox: the recognition ROI IS its box).
-                                    let (target, shape_aware) = match region {
-                                        None | Some(OpRegion::Asset) => (default_target, true),
-                                        Some(OpRegion::Ocr) | Some(OpRegion::Nearest) => {
-                                            (recognition, false)
-                                        }
-                                        Some(OpRegion::Offset { dx, dy, w, h }) => (
-                                            offset_region_rect(recognition, *dx, *dy, *w, *h),
-                                            false,
-                                        ),
-                                    };
-                                    let region_info = region
-                                        .map(|r| format!(" region={}", r.mode_str()))
-                                        .unwrap_or_default();
+                                    // v1.4 A-plan: `region.asset` takes priority.
+                                    let asset_target = self.region_asset_target(
+                                        region,
+                                        rect_centre(recognition),
+                                        &format!("click_target args.find[{idx}].region.asset"),
+                                    )?;
+                                    let (target, explicit_shape, shape_aware) =
+                                        if let Some((rect, shape)) = asset_target {
+                                            (rect, shape, false)
+                                        } else {
+                                            let (t, aware) = match region {
+                                                None | Some(OpRegion::Asset { .. }) => {
+                                                    (default_target, true)
+                                                }
+                                                Some(OpRegion::Ocr)
+                                                | Some(OpRegion::Nearest { .. }) => {
+                                                    (recognition, false)
+                                                }
+                                                Some(OpRegion::Offset { dx, dy, w, h }) => (
+                                                    offset_region_rect(
+                                                        recognition, *dx, *dy, *w, *h,
+                                                    ),
+                                                    false,
+                                                ),
+                                            };
+                                            (t, None, aware)
+                                        };
+                                    let region_info = region_log(region.as_ref());
                                     if let Some(rt) = require_template {
                                         match self.template_in_region(rt, recognition, 16) {
                                             Ok(true) => {}
@@ -3508,7 +3921,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                         }
                                     }
                                     let plan = self.humanize.template_click(target, w, &mut self.rng);
-                                    let plan = if shape_aware {
+                                    let plan = if explicit_shape.is_some() {
+                                        self.adjust_plan_for_explicit_shape(
+                                            plan,
+                                            explicit_shape.as_ref(),
+                                            w,
+                                            h,
+                                        )?
+                                    } else if shape_aware {
                                         self.adjust_plan_for_shape(sel, plan, w, h, marker)?
                                     } else {
                                         plan
@@ -3558,16 +3978,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 w: roi[2],
                                 h: roi[3],
                             };
-                            let region_info = region
-                                .map(|r| format!(" region={}", r.mode_str()))
-                                .unwrap_or_default();
+                            let region_info = region_log(region.as_ref());
                             match self.ocr_read_rect(rect, true) {
                                 Ok(OcrRead::Lines(lines)) => {
                                     // v1.3 `region`: shared candidate selection;
                                     // `nearest` uses the inline ROI centre.
                                     let candidates = ocr_line_candidates(&lines, text, None);
                                     let hit = match region {
-                                        Some(OpRegion::Nearest) => {
+                                        Some(OpRegion::Nearest { .. }) => {
                                             nearest_ocr_line(&candidates, rect_centre(rect))
                                         }
                                         _ => candidates.iter().copied().max_by(|a, b| {
@@ -3592,18 +4010,43 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                                     Err(e) => return Err(e),
                                                 }
                                             }
-                                            let target = match region {
-                                                None
-                                                | Some(OpRegion::Asset)
-                                                | Some(OpRegion::Ocr)
-                                                | Some(OpRegion::Nearest) => line.rect,
-                                                Some(OpRegion::Offset { dx, dy, w, h }) => {
-                                                    offset_region_rect(line.rect, *dx, *dy, *w, *h)
-                                                }
-                                            };
+                                            // v1.4 A-plan: a whole-library
+                                            // `region.asset` replaces the geometry.
+                                            let asset_target = self.region_asset_target(
+                                                region,
+                                                rect_centre(line.rect),
+                                                &format!(
+                                                    "click_target args.find[{idx}].region.asset"
+                                                ),
+                                            )?;
+                                            let (target, explicit_shape) =
+                                                if let Some((rect, shape)) = asset_target {
+                                                    (rect, shape)
+                                                } else {
+                                                    let target = match region {
+                                                        None
+                                                        | Some(OpRegion::Asset { .. })
+                                                        | Some(OpRegion::Ocr)
+                                                        | Some(OpRegion::Nearest { .. }) => {
+                                                            line.rect
+                                                        }
+                                                        Some(OpRegion::Offset { dx, dy, w, h }) => {
+                                                            offset_region_rect(
+                                                                line.rect, *dx, *dy, *w, *h,
+                                                            )
+                                                        }
+                                                    };
+                                                    (target, None)
+                                                };
                                             let plan = self
                                                 .humanize
                                                 .template_click(target, w, &mut self.rng);
+                                            let plan = self.adjust_plan_for_explicit_shape(
+                                                plan,
+                                                explicit_shape.as_ref(),
+                                                w,
+                                                h,
+                                            )?;
                                             let centre = Point {
                                                 x: target.x + target.w / 2,
                                                 y: target.y + target.h / 2,
@@ -3642,11 +4085,23 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 }
                                 Ok(OcrRead::Single(Some(t), score)) => {
                                     if ocr_text_matches(text, &t) {
-                                        let target = match region {
-                                            Some(OpRegion::Offset { dx, dy, w, h }) => {
-                                                offset_region_rect(rect, *dx, *dy, *w, *h)
-                                            }
-                                            _ => rect,
+                                        // v1.4 A-plan: inline single-line reference =
+                                        // the inline ROI centre.
+                                        let asset_target = self.region_asset_target(
+                                            region,
+                                            rect_centre(rect),
+                                            &format!(
+                                                "click_target args.find[{idx}].region.asset"
+                                            ),
+                                        )?;
+                                        let target = match asset_target {
+                                            Some((rect, _shape)) => rect,
+                                            None => match region {
+                                                Some(OpRegion::Offset { dx, dy, w, h }) => {
+                                                    offset_region_rect(rect, *dx, *dy, *w, *h)
+                                                }
+                                                _ => rect,
+                                            },
                                         };
                                         let plan =
                                             self.humanize.template_click(target, w, &mut self.rng);
@@ -3880,10 +4335,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     .map_err(|e| format!("long_press: {e}"))?;
                 let actual = self.perform_long_press(target.point, ms, w, h)?;
                 let verified = self.verify_if_present(expect.as_ref())?;
-                let region_info = target
-                    .region
-                    .map(|r| format!(" region={}", r.mode_str()))
-                    .unwrap_or_default();
+                let region_info = region_log(target.region.as_ref());
                 let sel_info = target
                     .sel
                     .as_deref()
@@ -4004,7 +4456,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 margin,
             } => {
                 self.reobserve_screen()?;
-                let src = self.drag_target(from, "drag args.from.text_expr")?;
+                let src = self.drag_target(from, "drag args.from")?;
                 self.observe_screen()?;
                 let (w, h) = self
                     .screen.size()
@@ -4029,7 +4481,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 }
                 let mut dst: Option<DragEndpoint> = None;
                 let end = if let Some(target) = to {
-                    let ep = self.drag_target(target, "drag args.to.text_expr")?;
+                    let ep = self.drag_target(target, "drag args.to")?;
                     // Random end inside the target region, but only accept it when
                     // it really lies in `direction` (v1.1 方向性要求). With an
                     // exact shape the candidate already lies inside the shape, so
@@ -7034,6 +7486,514 @@ mod tests {
             other => panic!("expected a loud failure, got {other:?}"),
         }
         assert!(shared.swipes.borrow().is_empty(), "no segment may be sent");
+    }
+
+    // ---- v1.4 A-plan: `region.asset` (whole-library operation-area asset) ----
+
+    /// 64x48 frame with the patterned 10x10 tile stamped **twice**: an exact copy
+    /// at `(ax,ay)` (NCC 1.0, the "best match") and a slightly perturbed copy at
+    /// `(bx,by)` (lower NCC, still above `I_BRIGHT`'s 0.8 threshold).
+    fn frame_with_two_tiles(ax: u32, ay: u32, bx: u32, by: u32) -> Frame {
+        let mut f = frame_with_tile(ax, ay);
+        for y in 0..10u32 {
+            for x in 0..10u32 {
+                let mut v = (((x * 7 + y * 13) % 251) + 3) as u8;
+                if x == 3 && y == 4 {
+                    v = v.wrapping_add(70);
+                }
+                if x == 6 && y == 7 {
+                    v = v.wrapping_sub(65);
+                }
+                let i = (((by + y) * 64 + (bx + x)) * 4) as usize;
+                f.rgba[i] = v;
+                f.rgba[i + 1] = v;
+                f.rgba[i + 2] = v;
+                f.rgba[i + 3] = 255;
+            }
+        }
+        f
+    }
+
+    fn two_tile_frame() -> Frame {
+        frame_with_two_tiles(12, 10, 40, 6)
+    }
+
+    /// The scripted "parameter OCR line": its bbox centre (42,9) is near the
+    /// perturbed tile at (40,6) and far from the exact tile at (12,10).
+    fn param_ocr_line() -> OcrLine {
+        line(
+            "行",
+            0.95,
+            Rect {
+                x: 36,
+                y: 4,
+                w: 12,
+                h: 10,
+            },
+        )
+    }
+
+    /// Interpreter over `frame` with `O_REF` (ocr_lines, whole frame) + the
+    /// caller's assets; the det+rec provider always returns `lines`.
+    fn mk_aplan(
+        mut assets: AssetSet,
+        lines: Vec<OcrLine>,
+        frame: Frame,
+    ) -> (OcrInterp, SharedInput) {
+        assets.insert_ocr_lines(
+            "O_REF",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 64,
+                h: 48,
+            },
+        );
+        let (input, shared) = FakeInput::new();
+        let (fake, _rois) = FakeDetOcr::new(lines);
+        let interp = Interpreter::new(
+            FakeScreen { frame, grabs: 0 },
+            input,
+            assets,
+            Budget::default(),
+        )
+        .with_humanize(no_miss())
+        .with_ocr(Box::new(fake))
+        .with_seed(5);
+        (interp, shared)
+    }
+
+    #[test]
+    fn region_asset_mode_asset_clicks_the_best_operation_asset_match() {
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[
+                   {"kind":"ocr_text","sel":"O_REF","text":"行",
+                    "region":{"mode":"asset","asset":"I_BRIGHT"}}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let (mut interp, shared) = mk_aplan(assets(), vec![param_ocr_line()], two_tile_frame());
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            (12..22).contains(&p.x) && (10..20).contains(&p.y),
+            "mode=asset must click the BEST match (exact tile at 12,10), got {p:?}"
+        );
+        let detail = interp
+            .events()
+            .iter()
+            .find(|e| e.op == "click_target")
+            .map(|e| e.detail.clone())
+            .expect("click_target event");
+        assert!(detail.contains("region=asset asset=I_BRIGHT"), "{detail}");
+    }
+
+    #[test]
+    fn region_asset_mode_nearest_clicks_the_candidate_nearest_the_param_line() {
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[
+                   {"kind":"ocr_text","sel":"O_REF","text":"行",
+                    "region":{"mode":"nearest","asset":"I_BRIGHT"}}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let (mut interp, shared) = mk_aplan(assets(), vec![param_ocr_line()], two_tile_frame());
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            (40..50).contains(&p.x) && (6..16).contains(&p.y),
+            "mode=nearest must click the candidate nearest the OCR line, got {p:?}"
+        );
+        let detail = interp
+            .events()
+            .iter()
+            .find(|e| e.op == "click_target")
+            .map(|e| e.detail.clone())
+            .expect("click_target event");
+        assert!(
+            detail.contains("region=nearest asset=I_BRIGHT"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn region_asset_accepts_a_fixed_region_or_an_ocr_asset_operation_area() {
+        // Fixed region asset: no matching needed.
+        let mut fixed_assets = assets();
+        fixed_assets.insert_region(
+            "R_OP",
+            Rect {
+                x: 5,
+                y: 30,
+                w: 20,
+                h: 10,
+            },
+        );
+        let f_region = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[
+                   {"kind":"ocr_text","sel":"O_REF","text":"行",
+                    "region":{"mode":"asset","asset":"R_OP"}}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let (mut interp, shared) = mk_aplan(fixed_assets, vec![param_ocr_line()], two_tile_frame());
+        assert_eq!(interp.run(&f_region), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            (5..25).contains(&p.x) && (30..40).contains(&p.y),
+            "fixed region asset must be clicked directly, got {p:?}"
+        );
+
+        // OCR asset: its declared operation area (click_back) is used.
+        let mut ocr_assets = assets();
+        ocr_assets.insert_ocr_lines(
+            "O_OP",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 10,
+            },
+        );
+        ocr_assets.set_click_back(
+            "O_OP",
+            Rect {
+                x: 8,
+                y: 8,
+                w: 12,
+                h: 8,
+            },
+        );
+        let f_ocr = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[
+                   {"kind":"ocr_text","sel":"O_REF","text":"行",
+                    "region":{"mode":"nearest","asset":"O_OP"}}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let (mut interp, shared) = mk_aplan(ocr_assets, vec![param_ocr_line()], two_tile_frame());
+        assert_eq!(interp.run(&f_ocr), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            (8..20).contains(&p.x) && (8..16).contains(&p.y),
+            "OCR operation asset must use its click_back area, got {p:?}"
+        );
+    }
+
+    #[test]
+    fn region_asset_without_candidates_or_undeclared_fails_loudly() {
+        // No match candidate on a flat frame => loud failure, no click.
+        let flat = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[
+                   {"kind":"ocr_text","sel":"O_REF","text":"行",
+                    "region":{"mode":"nearest","asset":"I_BRIGHT"}}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let (mut interp, shared) = mk_aplan(assets(), vec![param_ocr_line()], frame_flat());
+        match interp.run(&flat) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("operation asset `I_BRIGHT`"), "{msg}");
+                assert!(msg.contains("no match candidate"), "{msg}");
+            }
+            other => panic!("expected a loud failure, got {other:?}"),
+        }
+        assert!(shared.clicks.borrow().is_empty(), "no click may happen");
+
+        // Undeclared operation asset => loud failure.
+        let undeclared = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[
+                   {"kind":"ocr_text","sel":"O_REF","text":"行",
+                    "region":{"mode":"asset","asset":"I_MISSING"}}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let (mut interp, shared) = mk_aplan(assets(), vec![param_ocr_line()], two_tile_frame());
+        match interp.run(&undeclared) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("operation asset `I_MISSING`"), "{msg}");
+                assert!(msg.contains("not declared"), "{msg}");
+            }
+            other => panic!("expected a loud failure, got {other:?}"),
+        }
+        assert!(shared.clicks.borrow().is_empty());
+    }
+
+    #[test]
+    fn region_asset_works_on_inline_ocr_locators() {
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[
+                   {"kind":"ocr_text","roi":[0,0,64,48],"text":"行",
+                    "region":{"mode":"nearest","asset":"I_BRIGHT"}}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let (mut interp, shared) = mk_aplan(assets(), vec![param_ocr_line()], two_tile_frame());
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            (40..50).contains(&p.x) && (6..16).contains(&p.y),
+            "inline OCR + region.asset nearest must use the nearest candidate, got {p:?}"
+        );
+    }
+
+    #[test]
+    fn region_asset_works_on_drag_endpoints_and_long_press() {
+        let drag = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{
+                   "from":{"kind":"ocr_text","sel":"O_REF","text":"行",
+                           "region":{"mode":"nearest","asset":"I_BRIGHT"}},
+                   "direction":"up","distance":[5,10],"duration_ms":[100,120],"margin":0.0}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let (mut interp, shared) = mk_aplan(assets(), vec![param_ocr_line()], two_tile_frame());
+        assert_eq!(
+            interp.run(&drag),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let start = shared.swipes.borrow()[0].0;
+        assert!(
+            (40..50).contains(&start.x) && (6..16).contains(&start.y),
+            "drag start must come from the nearest operation candidate, got {start:?}"
+        );
+
+        let press = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"long_press","args":{"find":[
+                   {"kind":"ocr_text","sel":"O_REF","text":"行",
+                    "region":{"mode":"nearest","asset":"I_BRIGHT"}}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let (mut interp, shared) = mk_aplan(assets(), vec![param_ocr_line()], two_tile_frame());
+        assert_eq!(
+            interp.run(&press),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let (p, _ms) = shared.long_presses.borrow()[0];
+        assert!(
+            (40..50).contains(&p.x) && (6..16).contains(&p.y),
+            "long_press must hold the nearest operation candidate, got {p:?}"
+        );
+        let detail = interp
+            .events()
+            .iter()
+            .find(|e| e.op == "long_press")
+            .map(|e| e.detail.clone())
+            .expect("long_press event");
+        assert!(
+            detail.contains("region=nearest asset=I_BRIGHT"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn operation_region_for_asset_helper_covers_template_region_ocr_and_errors() {
+        let mut assets = assets();
+        assets.insert_region(
+            "R_OP",
+            Rect {
+                x: 1,
+                y: 2,
+                w: 3,
+                h: 4,
+            },
+        );
+        assets.insert_ocr_lines(
+            "O_OP",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 10,
+            },
+        );
+        assets.set_click_back(
+            "O_OP",
+            Rect {
+                x: 8,
+                y: 8,
+                w: 12,
+                h: 8,
+            },
+        );
+        let (mut interp, _shared) = mk_aplan(assets, vec![param_ocr_line()], two_tile_frame());
+
+        // Template: mode=asset -> best match (exact tile at 12,10).
+        let (rect, _shape) = interp
+            .operation_region_for_asset(
+                "I_BRIGHT",
+                &OpRegion::Asset { asset: None },
+                None,
+                "site",
+            )
+            .expect("best template match");
+        assert_eq!(
+            rect,
+            Rect {
+                x: 12,
+                y: 10,
+                w: 10,
+                h: 10
+            }
+        );
+
+        // Template: mode=nearest -> candidate nearest the reference point.
+        let (rect, _shape) = interp
+            .operation_region_for_asset(
+                "I_BRIGHT",
+                &OpRegion::Nearest {
+                    asset: Some("I_BRIGHT".to_string()),
+                },
+                Some(Point { x: 42, y: 9 }),
+                "site",
+            )
+            .expect("nearest template match");
+        assert_eq!(
+            rect,
+            Rect {
+                x: 40,
+                y: 6,
+                w: 10,
+                h: 10
+            }
+        );
+
+        // Fixed region asset.
+        let (rect, _shape) = interp
+            .operation_region_for_asset(
+                "R_OP",
+                &OpRegion::Asset {
+                    asset: Some("R_OP".to_string()),
+                },
+                None,
+                "site",
+            )
+            .expect("region asset");
+        assert_eq!(
+            rect,
+            Rect {
+                x: 1,
+                y: 2,
+                w: 3,
+                h: 4
+            }
+        );
+
+        // OCR asset -> click_back operation area.
+        let (rect, _shape) = interp
+            .operation_region_for_asset(
+                "O_OP",
+                &OpRegion::Asset {
+                    asset: Some("O_OP".to_string()),
+                },
+                None,
+                "site",
+            )
+            .expect("ocr asset");
+        assert_eq!(
+            rect,
+            Rect {
+                x: 8,
+                y: 8,
+                w: 12,
+                h: 8
+            }
+        );
+
+        // Undeclared asset.
+        let err = interp
+            .operation_region_for_asset(
+                "I_MISSING",
+                &OpRegion::Asset {
+                    asset: Some("I_MISSING".to_string()),
+                },
+                None,
+                "site",
+            )
+            .expect_err("undeclared must fail");
+        assert!(err.contains("site:"), "{err}");
+        assert!(err.contains("not declared"), "{err}");
+
+        // mode=nearest without a reference point.
+        let err = interp
+            .operation_region_for_asset("I_BRIGHT", &OpRegion::Nearest { asset: None }, None, "site")
+            .expect_err("nearest needs a reference");
+        assert!(err.contains("reference"), "{err}");
+    }
+
+    #[test]
+    fn operation_region_for_asset_collection_candidates_span_members() {
+        let mut assets = assets();
+        let tpl = assets.get("I_BRIGHT").cloned().expect("I_BRIGHT");
+        assets.insert("I_BRIGHT2", tpl);
+        assets.insert_collection(
+            "C_TILES",
+            vec!["I_BRIGHT".to_string(), "I_BRIGHT2".to_string()],
+            Some(0.8),
+        );
+        let (mut interp, _shared) = mk_aplan(assets, vec![param_ocr_line()], two_tile_frame());
+
+        // nearest across the collection's members: reference near (40,6).
+        let (rect, _shape) = interp
+            .operation_region_for_asset(
+                "C_TILES",
+                &OpRegion::Nearest {
+                    asset: Some("C_TILES".to_string()),
+                },
+                Some(Point { x: 42, y: 9 }),
+                "site",
+            )
+            .expect("collection nearest");
+        assert_eq!(
+            rect,
+            Rect {
+                x: 40,
+                y: 6,
+                w: 10,
+                h: 10
+            }
+        );
+
+        // mode=asset uses the collection's single best match (exact tile).
+        let (rect, _shape) = interp
+            .operation_region_for_asset(
+                "C_TILES",
+                &OpRegion::Asset {
+                    asset: Some("C_TILES".to_string()),
+                },
+                None,
+                "site",
+            )
+            .expect("collection best");
+        assert_eq!(
+            rect,
+            Rect {
+                x: 12,
+                y: 10,
+                w: 10,
+                h: 10
+            }
+        );
     }
 
     #[test]

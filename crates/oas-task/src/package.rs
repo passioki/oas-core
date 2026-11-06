@@ -74,7 +74,11 @@ pub const CHECKSUMS_FILE: &str = "checksums.sha256";
 /// override on an OCR locator / drag endpoint gets its own marker. A pre-v1.3
 /// Runner's locator parser ignores `region` (a silently different action
 /// area), so packages using it must be refused at install time.
-pub const SUPPORTED_FLOW_OPS: [&str; 11] = [
+///
+/// v1.4 A-plan (OPERATION-REGION-DESIGN §7): `region.asset` names a
+/// **whole-library operation-area asset**; a pre-v1.4 Runner would silently
+/// ignore that key and act on the wrong geometry, hence dedicated markers.
+pub const SUPPORTED_FLOW_OPS: [&str; 13] = [
     "call_task",
     "call_task.params",
     "call_task.inherit.none",
@@ -86,6 +90,8 @@ pub const SUPPORTED_FLOW_OPS: [&str; 11] = [
     "curve_swipe",
     "click_target.region",
     "drag.region",
+    "click_target.region_asset",
+    "drag.region_asset",
 ];
 
 /// Engine version this crate records in `manifest.engine.min_engine` and checks
@@ -478,6 +484,16 @@ fn has_region_override(v: &serde_json::Value) -> bool {
     v.get("kind").and_then(|k| k.as_str()) == Some("ocr_text") && v.get("region").is_some()
 }
 
+/// Does an authored OCR locator / drag endpoint carry a v1.4 `region.asset`
+/// (whole-library operation-area asset)? Only `asset` / `nearest` modes allow it
+/// at parse time.
+fn has_region_asset(v: &serde_json::Value) -> bool {
+    has_region_override(v)
+        && v.get("region")
+            .and_then(|r| r.get("asset"))
+            .is_some()
+}
+
 fn walk_flow_ops(
     steps: &[serde_json::Value],
     out: &mut BTreeSet<String>,
@@ -523,6 +539,10 @@ fn walk_flow_ops(
                     if finds.iter().any(|loc| has_region_override(loc)) {
                         out.insert("click_target.region".to_string());
                     }
+                    // v1.4 A-plan: whole-library operation-area asset.
+                    if finds.iter().any(|loc| has_region_asset(loc)) {
+                        out.insert("click_target.region_asset".to_string());
+                    }
                     if has_expect_text_expr(args) {
                         out.insert("expect.text_expr".to_string());
                     }
@@ -552,6 +572,10 @@ fn walk_flow_ops(
                     }
                     if targets.iter().any(|t| has_region_override(t)) {
                         out.insert("drag.region".to_string());
+                    }
+                    // v1.4 A-plan: whole-library operation-area asset.
+                    if targets.iter().any(|t| has_region_asset(t)) {
+                        out.insert("drag.region_asset".to_string());
                     }
                 }
             }
@@ -2629,6 +2653,119 @@ mod tests {
         assert_eq!(
             derive_flow_ops(press_only).unwrap(),
             vec!["long_press".to_string()]
+        );
+    }
+
+    #[test]
+    fn region_asset_flow_ops_are_derived_and_gated() {
+        // v1.4 A-plan (OPERATION-REGION-DESIGN §7): `region.asset` is a new
+        // install-gate capability on click_target / drag OCR locators. Both the
+        // v1.3 `region` marker and the new `region_asset` marker are emitted.
+        let flow_json = r#"{"schema_version":1,"name":"A","steps":[
+            {"op":"click_target","args":{"find":[
+                {"kind":"ocr_text","sel":"O_BTN","text":"完成",
+                 "region":{"mode":"nearest","asset":"I_TILE"}}]}},
+            {"op":"drag","args":{
+              "from":{"kind":"ocr_text","sel":"O_ROW","text":"返回",
+                      "region":{"mode":"asset","asset":"I_TILE"}},
+              "direction":"up","distance":[10,20]}},
+            {"op":"long_press","args":{"find":[
+                {"kind":"ocr_text","sel":"O_BTN","text":"完成",
+                 "region":{"mode":"asset","asset":"I_TILE"}}]}},
+            {"op":"finish","args":{"exit":"done"}}]}"#;
+        assert_eq!(
+            derive_flow_ops(flow_json).unwrap(),
+            vec![
+                "click_target.region".to_string(),
+                "click_target.region_asset".to_string(),
+                "drag.region".to_string(),
+                "drag.region_asset".to_string(),
+                "long_press".to_string(),
+            ]
+        );
+        // This engine understands them (install gate reports no offender).
+        assert!(unsupported_flow_ops(&derive_flow_ops(flow_json).unwrap()).is_empty());
+
+        // A v1.3 Runner (the 11-op set without the asset markers) must refuse a
+        // package that uses `region.asset`: it would silently ignore the key.
+        let pre_v14 = [
+            "call_task",
+            "call_task.params",
+            "call_task.inherit.none",
+            "with_params",
+            "click_target.text_expr",
+            "expect.text_expr",
+            "drag.text_expr",
+            "long_press",
+            "curve_swipe",
+            "click_target.region",
+            "drag.region",
+        ];
+        let derived = derive_flow_ops(flow_json).unwrap();
+        let rejected: Vec<&str> = derived
+            .iter()
+            .map(String::as_str)
+            .filter(|op| !pre_v14.iter().any(|known| known == op))
+            .collect();
+        assert_eq!(
+            rejected,
+            vec!["click_target.region_asset", "drag.region_asset"],
+            "a pre-v1.4 Runner must reject the region_asset markers"
+        );
+
+        // A region without `asset` keeps the v1.3 marker only (no new gate).
+        let no_asset = r#"{"schema_version":1,"name":"A","steps":[
+            {"op":"click_target","args":{"find":[
+                {"kind":"ocr_text","sel":"O","text":"完成",
+                 "region":{"mode":"nearest"}}]}},
+            {"op":"finish","args":{"exit":"done"}}]}"#;
+        assert_eq!(
+            derive_flow_ops(no_asset).unwrap(),
+            vec!["click_target.region".to_string()]
+        );
+    }
+
+    #[test]
+    fn region_asset_package_manifest_advertises_the_new_markers() {
+        let td = TempDir::new("regionasset");
+        let tasks = td.path().join("tasks");
+        let assets = td.path().join("assets");
+        std::fs::create_dir_all(&tasks).unwrap();
+        std::fs::create_dir_all(assets.join("images")).unwrap();
+        std::fs::write(assets.join("images").join("a001.png"), b"png-bytes").unwrap();
+        std::fs::write(
+            assets.join("assets.json"),
+            r#"{"schema_version":1,"design_resolution":[1280,720],"items":[
+                {"id":"O_BTN","kind":"ocr_lines","roi":[0,0,10,10]},
+                {"id":"O_ROW","kind":"ocr_lines","roi":[0,0,10,10]},
+                {"id":"I_TILE","kind":"template","file":"images/a001.png",
+                 "roi":[0,0,10,10]}]}"#,
+        )
+        .unwrap();
+        make_task(
+            &tasks,
+            "T",
+            1,
+            "[]",
+            r#"[{"op":"click_target","args":{"find":[
+                  {"kind":"ocr_text","sel":"O_BTN","text":"完成",
+                   "region":{"mode":"nearest","asset":"I_TILE"}}]}},
+                {"op":"drag","args":{
+                  "from":{"kind":"ocr_text","sel":"O_ROW","text":"返回",
+                          "region":{"mode":"asset","asset":"I_TILE"}},
+                  "direction":"up","distance":[10,20]}},
+                {"op":"finish","args":{"exit":"done"}}]"#,
+        );
+        let outcome = build(&tasks, "T", &td.path().join("out"), false);
+        assert_eq!(
+            outcome.manifest.engine.flow_ops,
+            vec![
+                "click_target.region".to_string(),
+                "click_target.region_asset".to_string(),
+                "drag.region".to_string(),
+                "drag.region_asset".to_string(),
+            ],
+            "the published manifest must advertise region.asset"
         );
     }
 

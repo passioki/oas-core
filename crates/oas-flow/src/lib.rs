@@ -679,27 +679,31 @@ impl TextSpec {
 const MAX_REGION_COORD: i64 = 1_000_000;
 
 /// Optional **operation region** override on an OCR locator / drag endpoint
-/// (v1.3, `docs/OPERATION-REGION-DESIGN.md §6.1`).
+/// (v1.3 + v1.4 A-plan, `docs/OPERATION-REGION-DESIGN.md §6.1/§7`).
 ///
 /// A flow without the `region` field yields `None` and keeps the historical
 /// behaviour byte-for-byte. Only OCR locators / OCR drag endpoints accept it:
 /// template / region / coord_memory / point kinds are a parse error, because
 /// their operation geometry is already defined by their own match.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpRegion {
-    /// `{"mode":"asset"}`: the asset's own operation area (`action_shape` /
-    /// `click_back`), falling back to the matched OCR line bbox when the asset
-    /// declares none. (For `click_target` this is the default OCR behaviour,
-    /// made explicit; for `drag` it is new.)
-    Asset,
+    /// `{"mode":"asset","asset":"I_按钮"}`: use the operation area of a
+    /// whole-library asset (template / collection / region / OCR asset).
+    ///
+    /// Without `asset` this means "the recognized asset's own operation area",
+    /// exactly the v1.3 behaviour (made explicit).
+    Asset { asset: Option<String> },
     /// `{"mode":"ocr"}`: force the matched OCR line bbox and ignore the asset's
     /// `action_shape` / `click_back`.
     Ocr,
-    /// `{"mode":"nearest"}`: with several matching OCR lines, use the one whose
-    /// bbox centre is nearest to the OCR **recognition ROI** centre (`sel`'s
-    /// `ocr_roi` centre, or the inline `roi` centre). A single matching line
-    /// behaves exactly like [`OpRegion::Ocr`].
-    Nearest,
+    /// `{"mode":"nearest","asset":"I_按钮"}`: **multi-candidate** match of the
+    /// library asset and pick the candidate whose match bbox centre is nearest
+    /// to the matched OCR line's bbox centre (v1.4 A-plan; the param OCR line
+    /// must have matched first).
+    ///
+    /// Without `asset` it keeps the v1.3 meaning: with several matching OCR
+    /// lines, use the one nearest to the OCR recognition ROI centre.
+    Nearest { asset: Option<String> },
     /// `{"mode":"offset","offset":[dx,dy]|[dx,dy,w,h]}`: shift the base bbox
     /// (the matched OCR line bbox) top-left by `(dx,dy)`; a 4-value offset also
     /// resizes it to `(w,h)`, a 2-value offset keeps the matched size.
@@ -713,12 +717,22 @@ pub enum OpRegion {
 
 impl OpRegion {
     /// `asset` / `ocr` / `nearest` / `offset` (used by logs + tests).
-    pub fn mode_str(self) -> &'static str {
+    pub fn mode_str(&self) -> &'static str {
         match self {
-            OpRegion::Asset => "asset",
+            OpRegion::Asset { .. } => "asset",
             OpRegion::Ocr => "ocr",
-            OpRegion::Nearest => "nearest",
+            OpRegion::Nearest { .. } => "nearest",
             OpRegion::Offset { .. } => "offset",
+        }
+    }
+
+    /// v1.4: the optional whole-library **operation-area asset** (`region.asset`).
+    ///
+    /// Only `asset` / `nearest` carry it; T4 collects it as a referenced asset.
+    pub fn asset(&self) -> Option<&str> {
+        match self {
+            OpRegion::Asset { asset } | OpRegion::Nearest { asset } => asset.as_deref(),
+            OpRegion::Ocr | OpRegion::Offset { .. } => None,
         }
     }
 }
@@ -764,9 +778,9 @@ impl DragTarget {
     }
 
     /// v1.3 operation-region override (`ocr_text` endpoints only).
-    pub fn region(&self) -> Option<OpRegion> {
+    pub fn region(&self) -> Option<&OpRegion> {
         match self {
-            DragTarget::OcrText { region, .. } => *region,
+            DragTarget::OcrText { region, .. } => region.as_ref(),
             DragTarget::Region { .. } | DragTarget::Point { .. } => None,
         }
     }
@@ -907,9 +921,11 @@ impl Locator {
     }
 
     /// v1.3 operation-region override (`ocr_text` locators only).
-    pub fn region(&self) -> Option<OpRegion> {
+    pub fn region(&self) -> Option<&OpRegion> {
         match self {
-            Locator::OcrText { region, .. } | Locator::OcrTextInline { region, .. } => *region,
+            Locator::OcrText { region, .. } | Locator::OcrTextInline { region, .. } => {
+                region.as_ref()
+            }
             Locator::Template { .. }
             | Locator::Region { .. }
             | Locator::RegionRef { .. }
@@ -1534,23 +1550,62 @@ fn parse_region(v: &serde_json::Value, path: &str) -> Result<Option<OpRegion>, F
                 "`region.mode` is required (allowed: asset, ocr, nearest, offset)",
             )
         })?;
+    // v1.4 A-plan: the optional whole-library operation-area asset. Only
+    // `asset` / `nearest` accept it; the value is trimmed and must be non-empty.
+    let asset = match obj.get("asset") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(x) => {
+            let raw = x.as_str().ok_or_else(|| {
+                FlowError::new(
+                    format!("{p}.asset"),
+                    "`region.asset` must be a string asset id",
+                )
+            })?;
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Err(FlowError::new(
+                    format!("{p}.asset"),
+                    "`region.asset` must be a non-empty asset id",
+                ));
+            }
+            Some(trimmed.to_string())
+        }
+    };
     let offset = obj.get("offset");
+    if mode == "asset" || mode == "nearest" {
+        if offset.is_some() {
+            return Err(FlowError::new(
+                format!("{p}.offset"),
+                format!(
+                    "`region.offset` is only allowed with mode=\"offset\" \
+                     (mode is `{mode}`)"
+                ),
+            ));
+        }
+        return Ok(Some(if mode == "asset" {
+            OpRegion::Asset { asset }
+        } else {
+            OpRegion::Nearest { asset }
+        }));
+    }
+    if let Some(a) = &asset {
+        return Err(FlowError::new(
+            format!("{p}.asset"),
+            format!(
+                "`region.asset` is only allowed with mode=\"asset\"/\"nearest\" \
+                 (mode is `{mode}`, asset is `{a}`)"
+            ),
+        ));
+    }
     match mode {
-        "asset" | "ocr" | "nearest" => {
+        "ocr" => {
             if offset.is_some() {
                 return Err(FlowError::new(
                     format!("{p}.offset"),
-                    format!(
-                        "`region.offset` is only allowed with mode=\"offset\" \
-                         (mode is `{mode}`)"
-                    ),
+                    "`region.offset` is only allowed with mode=\"offset\" (mode is `ocr`)",
                 ));
             }
-            Ok(Some(match mode {
-                "asset" => OpRegion::Asset,
-                "ocr" => OpRegion::Ocr,
-                _ => OpRegion::Nearest,
-            }))
+            Ok(Some(OpRegion::Ocr))
         }
         "offset" => {
             let off = offset.ok_or_else(|| {
@@ -3274,11 +3329,18 @@ fn collect_assets_expr(e: &Expr, out: &mut BTreeSet<String>) {
 }
 
 fn collect_drag_target_assets(t: &DragTarget, out: &mut BTreeSet<String>) {
-    if let DragTarget::OcrText { sel, text, .. } = t {
+    if let DragTarget::OcrText {
+        sel, text, region, ..
+    } = t
+    {
         if let Some(sel) = sel {
             out.insert(sel.clone());
         }
         collect_text_spec_assets(text, out);
+        // v1.4 A-plan: `region.asset` is a whole-library asset reference (T4).
+        if let Some(a) = region.as_ref().and_then(|r| r.asset()) {
+            out.insert(a.to_string());
+        }
     }
 }
 
@@ -3333,6 +3395,10 @@ fn collect_locator_assets(loc: &Locator, out: &mut BTreeSet<String>) {
     } = loc
     {
         out.insert(rt.clone());
+    }
+    // v1.4 A-plan: `region.asset` names a whole-library operation-area asset.
+    if let Some(a) = loc.region().and_then(|r| r.asset()) {
+        out.insert(a.to_string());
     }
 }
 
@@ -4251,12 +4317,18 @@ mod tests {
         let Step::ClickTarget { find, .. } = &flow.steps[0] else {
             panic!("expected click_target");
         };
-        assert_eq!(find[0].region(), Some(OpRegion::Asset));
-        assert_eq!(find[1].region(), Some(OpRegion::Ocr));
-        assert_eq!(find[2].region(), Some(OpRegion::Nearest));
+        assert_eq!(
+            find[0].region(),
+            Some(&OpRegion::Asset { asset: None })
+        );
+        assert_eq!(find[1].region(), Some(&OpRegion::Ocr));
+        assert_eq!(
+            find[2].region(),
+            Some(&OpRegion::Nearest { asset: None })
+        );
         assert_eq!(
             find[3].region(),
-            Some(OpRegion::Offset {
+            Some(&OpRegion::Offset {
                 dx: 10,
                 dy: -5,
                 w: None,
@@ -4265,7 +4337,7 @@ mod tests {
         );
         assert_eq!(
             find[4].region(),
-            Some(OpRegion::Offset {
+            Some(&OpRegion::Offset {
                 dx: 1,
                 dy: 2,
                 w: Some(30),
@@ -4276,10 +4348,13 @@ mod tests {
         let Step::Drag { from, to, .. } = &flow.steps[1] else {
             panic!("expected drag");
         };
-        assert_eq!(from.region(), Some(OpRegion::Nearest));
+        assert_eq!(
+            from.region(),
+            Some(&OpRegion::Nearest { asset: None })
+        );
         assert_eq!(
             to.as_ref().and_then(|t| t.region()),
-            Some(OpRegion::Offset {
+            Some(&OpRegion::Offset {
                 dx: 0,
                 dy: 0,
                 w: Some(10),
@@ -4292,7 +4367,7 @@ mod tests {
         };
         assert_eq!(*hold_ms, 800);
         assert_eq!(*hold_range, None);
-        assert_eq!(find[0].region(), Some(OpRegion::Ocr));
+        assert_eq!(find[0].region(), Some(&OpRegion::Ocr));
 
         // No `region` field = historical behaviour (None), not an implicit mode.
         let plain = Flow::from_json(
@@ -4304,6 +4379,94 @@ mod tests {
             panic!("expected click_target");
         };
         assert_eq!(find[0].region(), None);
+    }
+
+    #[test]
+    fn region_asset_is_parsed_only_for_asset_and_nearest_modes() {
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[
+                    {"kind":"ocr_text","sel":"O_A","text":"甲",
+                     "region":{"mode":"asset","asset":"I_BTN"}},
+                    {"kind":"ocr_text","sel":"O_B","text":"乙",
+                     "region":{"mode":"nearest","asset":"  I_ROW  "}}]}},
+                 {"op":"drag","args":{
+                    "from":{"kind":"ocr_text","sel":"O_C","text":"行",
+                            "region":{"mode":"nearest","asset":"I_DRAG"}},
+                    "direction":"up","distance":[10,20]}},
+                 {"op":"long_press","args":{"find":[
+                    {"kind":"ocr_text","sel":"O_D","text":"长按",
+                     "region":{"mode":"asset","asset":"I_BTN"}}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("region.asset flow must parse");
+        let Step::ClickTarget { find, .. } = &flow.steps[0] else {
+            panic!("expected click_target");
+        };
+        assert_eq!(
+            find[0].region(),
+            Some(&OpRegion::Asset {
+                asset: Some("I_BTN".to_string())
+            })
+        );
+        // The id is trimmed at parse time.
+        assert_eq!(
+            find[1].region(),
+            Some(&OpRegion::Nearest {
+                asset: Some("I_ROW".to_string())
+            })
+        );
+        let Step::Drag { from, .. } = &flow.steps[1] else {
+            panic!("expected drag");
+        };
+        assert_eq!(
+            from.region().and_then(|r| r.asset()),
+            Some("I_DRAG")
+        );
+        let Step::LongPress { find, .. } = &flow.steps[2] else {
+            panic!("expected long_press");
+        };
+        assert_eq!(
+            find[0].region().and_then(|r| r.asset()),
+            Some("I_BTN")
+        );
+
+        // T4: the operation-area asset is a referenced asset on every site.
+        let assets: Vec<String> = flow.referenced_assets().into_iter().collect();
+        for want in ["I_BTN", "I_ROW", "I_DRAG"] {
+            assert!(
+                assets.contains(&want.to_string()),
+                "region.asset `{want}` must be collected for T4: {assets:?}"
+            );
+        }
+        // And the recognizer selectors are still collected too.
+        for want in ["O_A", "O_B", "O_C", "O_D"] {
+            assert!(assets.contains(&want.to_string()), "{assets:?}");
+        }
+
+        // `asset` is rejected for mode=ocr/offset; empty / non-string ids too.
+        let bad = [
+            (r#"{"mode":"ocr","asset":"I_X"}"#, ".region.asset"),
+            (
+                r#"{"mode":"offset","offset":[1,2],"asset":"I_X"}"#,
+                ".region.asset",
+            ),
+            (r#"{"mode":"asset","asset":"   "}"#, ".region.asset"),
+            (r#"{"mode":"nearest","asset":42}"#, ".region.asset"),
+        ];
+        for (region, want) in bad {
+            let json = format!(
+                r#"{{"schema_version":1,"name":"t","steps":[{{"op":"click_target","args":{{"find":[
+                     {{"kind":"ocr_text","sel":"O","text":"x","region":{region}}}]}}}}]}}"#
+            );
+            let e = errs(&json);
+            assert_eq!(e.len(), 1, "must reject region {region}");
+            assert!(
+                e[0].path.ends_with(want),
+                "region {region}: expected path ending {want}, got {}",
+                e[0]
+            );
+        }
     }
 
     #[test]

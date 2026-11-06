@@ -408,6 +408,360 @@ impl Matcher {
     }
 }
 
+/// One NCC match candidate: template top-left in **frame** coordinates.
+///
+/// Produced by [`Matcher::match_template_all`] /
+/// [`Matcher::match_template_masked_all`] for the v1.4 "whole-library operation
+/// asset + multi-candidate nearest" feature (`region.asset` with
+/// `mode=nearest`). The existing single-best APIs are untouched and remain the
+/// only path used by ordinary clicks/appear checks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MatchCandidate {
+    pub score: f32,
+    pub x: i32,
+    pub y: i32,
+}
+
+/// Upper bound on the candidate list returned by the `*_all` matchers.
+///
+/// `nearest` only ever needs the few closest candidates; the cap keeps a
+/// pathological frame (hundreds of above-threshold local maxima) bounded.
+pub const MAX_MATCH_CANDIDATES: usize = 64;
+
+/// Upper bound on intermediate local maxima collected before NMS.
+const MAX_SCAN_CANDIDATES: usize = 4096;
+
+/// Score of a position that is absent / undefined (flat patch).
+const NO_SCORE: f32 = f32::NEG_INFINITY;
+
+/// NMS suppression radius in pixels: `max(2, min(tw, th)/2)`.
+///
+/// Candidates whose centres are closer than this are treated as the same
+/// physical match (an NCC plateau or a one-pixel-shifted duplicate).
+fn nms_radius(tpl: &GrayImage) -> f32 {
+    (tpl.width.min(tpl.height) as f32 / 2.0).max(2.0)
+}
+
+/// Push one candidate if it is a 3x3 local maximum of the NCC score map.
+///
+/// Missing neighbours (image border) count as [`NO_SCORE`]. `>=` (not `>`) makes
+/// a flat-topped peak survive once; NMS then removes the duplicate plateau
+/// points.
+fn push_if_local_max(
+    out: &mut Vec<MatchCandidate>,
+    above: &[f32],
+    row: &[f32],
+    below: &[f32],
+    j: usize,
+    py: i32,
+    x0: i32,
+    threshold: f32,
+) {
+    let v = row[j];
+    if !(v >= threshold) {
+        return;
+    }
+    let mut neighbours = [NO_SCORE; 8];
+    let mut k = 0usize;
+    for dy in [-1i32, 0, 1] {
+        let line: &[f32] = match dy {
+            -1 => above,
+            0 => row,
+            _ => below,
+        };
+        for dx in [-1i32, 0, 1] {
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+            let x = j as i32 + dx;
+            neighbours[k] = if x < 0 || x >= line.len() as i32 {
+                NO_SCORE
+            } else {
+                line[x as usize]
+            };
+            k += 1;
+        }
+    }
+    if neighbours.iter().all(|n| v >= *n) {
+        out.push(MatchCandidate {
+            score: v,
+            x: x0 + j as i32,
+            y: py,
+        });
+    }
+}
+
+/// Scan the whole score map for 3x3 local maxima above `threshold`.
+///
+/// `score_at(x, y)` is the NCC at that template top-left position (`None` =
+/// undefined/flat patch). Keeps at most [`MAX_SCAN_CANDIDATES`] intermediate
+/// candidates; the caller sorts + applies NMS + caps at
+/// [`MAX_MATCH_CANDIDATES`].
+fn scan_all_candidates(
+    x0: i32,
+    y0: i32,
+    px_end: i32,
+    py_end: i32,
+    threshold: f32,
+    mut score_at: impl FnMut(i32, i32) -> Option<f32>,
+) -> Vec<MatchCandidate> {
+    let cols = (px_end - x0 + 1).max(0) as usize;
+    let rows = (py_end - y0 + 1).max(0) as usize;
+    if cols == 0 || rows == 0 {
+        return Vec::new();
+    }
+    let empty_row: Vec<f32> = vec![NO_SCORE; cols];
+    let mut out: Vec<MatchCandidate> = Vec::new();
+    let mut prev_rows: Vec<Vec<f32>> = Vec::with_capacity(3);
+    for r in 0..rows {
+        if out.len() >= MAX_SCAN_CANDIDATES {
+            break;
+        }
+        let py = y0 + r as i32;
+        let cur: Vec<f32> = (0..cols)
+            .map(|j| score_at(x0 + j as i32, py).unwrap_or(NO_SCORE))
+            .collect();
+        prev_rows.push(cur);
+        if prev_rows.len() == 3 {
+            let mid_py = py - 1;
+            for j in 0..cols {
+                push_if_local_max(
+                    &mut out,
+                    &prev_rows[0],
+                    &prev_rows[1],
+                    &prev_rows[2],
+                    j,
+                    mid_py,
+                    x0,
+                    threshold,
+                );
+            }
+            prev_rows.remove(0);
+        }
+    }
+    // Flush the trailing rows (the loop above only finalizes rows that have a
+    // row below them).
+    match prev_rows.len() {
+        2 => {
+            let py = y0 + rows as i32 - 1;
+            for j in 0..cols {
+                push_if_local_max(
+                    &mut out,
+                    &prev_rows[0],
+                    &prev_rows[1],
+                    &empty_row,
+                    j,
+                    py,
+                    x0,
+                    threshold,
+                );
+            }
+        }
+        1 => {
+            let py = y0 + rows as i32 - 1;
+            for j in 0..cols {
+                push_if_local_max(
+                    &mut out,
+                    &empty_row,
+                    &prev_rows[0],
+                    &empty_row,
+                    j,
+                    py,
+                    x0,
+                    threshold,
+                );
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// Sort candidates (score desc, then y/x asc for determinism), suppress
+/// overlapping duplicates and cap at [`MAX_MATCH_CANDIDATES`].
+fn finalize_candidates(mut candidates: Vec<MatchCandidate>, tpl: &GrayImage) -> Vec<MatchCandidate> {
+    candidates.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.y.cmp(&b.y))
+            .then(a.x.cmp(&b.x))
+    });
+    let radius = nms_radius(tpl);
+    let radius2 = radius * radius;
+    let mut kept: Vec<MatchCandidate> = Vec::new();
+    for c in candidates {
+        let overlaps = kept.iter().any(|k| {
+            let dx = (c.x - k.x) as f32;
+            let dy = (c.y - k.y) as f32;
+            dx * dx + dy * dy < radius2
+        });
+        if overlaps {
+            continue;
+        }
+        kept.push(c);
+        if kept.len() >= MAX_MATCH_CANDIDATES {
+            break;
+        }
+    }
+    kept
+}
+
+impl Matcher {
+    /// Search window clamp shared by the `*_all` matchers: the inclusive range of
+    /// valid template top-left positions, or `None` when the template cannot fit.
+    fn all_search_window(&self, tpl: &GrayImage, roi: Option<Rect>) -> Option<(i32, i32, i32, i32)> {
+        let img = &self.img;
+        let (ox, oy, sw, sh) = match roi {
+            Some(r) => (r.x, r.y, r.w, r.h),
+            None => (0, 0, img.width as i32, img.height as i32),
+        };
+        let tw = tpl.width as i32;
+        let th = tpl.height as i32;
+        if tw <= 0 || th <= 0 {
+            return None;
+        }
+        let x0 = ox.max(0);
+        let y0 = oy.max(0);
+        let x1 = (ox + sw).min(img.width as i32);
+        let y1 = (oy + sh).min(img.height as i32);
+        if x1 - x0 < tw || y1 - y0 < th {
+            return None;
+        }
+        Some((x0, y0, x1 - tw, y1 - th))
+    }
+
+    /// Plain (unmasked) NCC at one top-left position, using the integral images.
+    fn score_plain_at(
+        &self,
+        tpl: &GrayImage,
+        n: i64,
+        sum_t: i64,
+        den_t_f: f64,
+        px: i32,
+        py: i32,
+    ) -> Option<f32> {
+        let tw = tpl.width as usize;
+        let th = tpl.height as usize;
+        let (sum_i, sum_i2) = self
+            .integral
+            .rect(px as usize, py as usize, tw, th);
+        let den_i = n * sum_i2 - sum_i * sum_i;
+        if den_i <= 0 {
+            return None; // flat patch: undefined correlation
+        }
+        let d = dot(&self.img, tpl, px as usize, py as usize);
+        let num = n * d - sum_t * sum_i;
+        let score = (num as f64) / ((den_t_f * den_i as f64).sqrt());
+        Some(score.clamp(-1.0, 1.0) as f32)
+    }
+
+    /// **All** NCC candidates of `tpl` at or above `threshold`, after NMS.
+    ///
+    /// This is the multi-candidate companion of [`Self::match_template`] used by
+    /// `region.asset` (`mode=nearest`); the single-best path is unchanged.
+    /// Candidates are sorted by score descending, then `y`/`x` ascending, and
+    /// capped at [`MAX_MATCH_CANDIDATES`].
+    pub fn match_template_all(
+        &self,
+        tpl: &GrayImage,
+        roi: Option<Rect>,
+        threshold: f32,
+    ) -> Vec<MatchCandidate> {
+        let Some((x0, y0, px_end, py_end)) = self.all_search_window(tpl, roi) else {
+            return Vec::new();
+        };
+        let tw = tpl.width as i64;
+        let th = tpl.height as i64;
+        let n = tw * th;
+        let mut sum_t: i64 = 0;
+        let mut sum_t2: i64 = 0;
+        for &v in tpl.data.iter() {
+            let v = v as i64;
+            sum_t += v;
+            sum_t2 += v * v;
+        }
+        let den_t = n * sum_t2 - sum_t * sum_t;
+        if den_t <= 0 {
+            return Vec::new(); // flat template
+        }
+        let den_t_f = den_t as f64;
+        let candidates = scan_all_candidates(x0, y0, px_end, py_end, threshold, |px, py| {
+            self.score_plain_at(tpl, n, sum_t, den_t_f, px, py)
+        });
+        finalize_candidates(candidates, tpl)
+    }
+
+    /// Masked (polygon-mask) companion of [`Self::match_template_all`].
+    ///
+    /// Same NMS/ordering/cap contract; the mask contract is identical to
+    /// [`Self::match_template_masked`] (row-major, true = pixel participates).
+    pub fn match_template_masked_all(
+        &self,
+        tpl: &GrayImage,
+        mask: &[bool],
+        roi: Option<Rect>,
+        threshold: f32,
+    ) -> Vec<MatchCandidate> {
+        let tw_i = tpl.width as i32;
+        let th_i = tpl.height as i32;
+        if tw_i <= 0 || th_i <= 0 || mask.len() != (tw_i * th_i) as usize {
+            return Vec::new();
+        }
+        let Some((x0, y0, px_end, py_end)) = self.all_search_window(tpl, roi) else {
+            return Vec::new();
+        };
+        // Precompute the participating offsets + statistics once.
+        let mut offsets: Vec<(usize, i64)> = Vec::new();
+        let mut sum_t: i64 = 0;
+        let mut sum_t2: i64 = 0;
+        for j in 0..th_i as usize {
+            for i in 0..tw_i as usize {
+                let idx = j * tw_i as usize + i;
+                if mask[idx] {
+                    let v = tpl.data[idx] as i64;
+                    offsets.push((idx, v));
+                    sum_t += v;
+                    sum_t2 += v * v;
+                }
+            }
+        }
+        let n = offsets.len() as i64;
+        if n == 0 {
+            return Vec::new();
+        }
+        let den_t = n * sum_t2 - sum_t * sum_t;
+        if den_t <= 0 {
+            return Vec::new();
+        }
+        let den_t_f = den_t as f64;
+        let iw = self.img.width as usize;
+        let tw = tw_i as usize;
+        let candidates = scan_all_candidates(x0, y0, px_end, py_end, threshold, |px, py| {
+            let mut sum_i: i64 = 0;
+            let mut sum_i2: i64 = 0;
+            let mut d: i64 = 0;
+            for &(idx, tv) in &offsets {
+                let dx = (idx % tw) as i32;
+                let dy = (idx / tw) as i32;
+                let v =
+                    self.img.data[(py + dy) as usize * iw + (px + dx) as usize] as i64;
+                sum_i += v;
+                sum_i2 += v * v;
+                d += v * tv;
+            }
+            let den_i = n * sum_i2 - sum_i * sum_i;
+            if den_i <= 0 {
+                return None;
+            }
+            let num = n * d - sum_t * sum_i;
+            let score = (num as f64) / ((den_t_f * den_i as f64).sqrt());
+            Some(score.clamp(-1.0, 1.0) as f32)
+        });
+        finalize_candidates(candidates, tpl)
+    }
+}
+
 impl Matcher {
     /// Full-frame template search with a 4x pyramid: coarse scan on a downscaled
     /// frame, then a full-resolution refine around the coarse best. This is what
@@ -599,5 +953,112 @@ mod tests {
             masked_changed > 0.997,
             "masked score must ignore the changed background: {masked_changed}"
         );
+    }
+
+    // ---- v1.4 multi-candidate NCC (`region.asset` mode=nearest) ----
+
+    #[test]
+    fn match_template_all_finds_every_separate_stamp() {
+        let mut frame = noise_img(128, 96, 7);
+        let tpl = noise_img(16, 12, 99);
+        stamp(&mut frame, &tpl, 10, 20);
+        stamp(&mut frame, &tpl, 70, 50);
+        let m = Matcher::from_ref(&frame);
+        let all = m.match_template_all(&tpl, None, 0.9);
+        assert_eq!(all.len(), 2, "two separate stamps => two candidates: {all:?}");
+        let pos: Vec<(i32, i32)> = all.iter().map(|c| (c.x, c.y)).collect();
+        assert_eq!(pos, vec![(10, 20), (70, 50)], "score-desc / y-x order");
+        assert!(all.iter().all(|c| c.score > 0.99), "{all:?}");
+
+        // Threshold filters: a high threshold that the noise background never
+        // reaches still keeps both stamps; an unrelated template yields none.
+        assert_eq!(m.match_template_all(&tpl, None, 1.01).len(), 0);
+        let unrelated = noise_img(16, 12, 1234);
+        assert!(m.match_template_all(&unrelated, None, 0.9).is_empty());
+    }
+
+    #[test]
+    fn match_template_all_respects_the_search_roi() {
+        let mut frame = noise_img(128, 96, 11);
+        let tpl = noise_img(16, 12, 55);
+        stamp(&mut frame, &tpl, 10, 20);
+        stamp(&mut frame, &tpl, 90, 60);
+        let m = Matcher::from_ref(&frame);
+        let roi = Rect {
+            x: 80,
+            y: 50,
+            w: 48,
+            h: 46,
+        };
+        let all = m.match_template_all(&tpl, Some(roi), 0.9);
+        assert_eq!(all.len(), 1, "{all:?}");
+        assert_eq!((all[0].x, all[0].y), (90, 60));
+    }
+
+    #[test]
+    fn match_template_all_suppresses_near_duplicate_candidates() {
+        // Two stamps only 4px apart (NMS radius is max(2, 12/2)=6) must collapse
+        // to a single physical match instead of flooding `nearest` with aliases.
+        let mut frame = noise_img(128, 96, 13);
+        let tpl = noise_img(12, 12, 77);
+        stamp(&mut frame, &tpl, 20, 20);
+        stamp(&mut frame, &tpl, 24, 20);
+        let m = Matcher::from_ref(&frame);
+        let all = m.match_template_all(&tpl, None, 0.8);
+        assert_eq!(all.len(), 1, "close stamps are one match after NMS: {all:?}");
+    }
+
+    #[test]
+    fn match_template_masked_all_is_the_masked_companion() {
+        let tpl = noise_img(20, 20, 31);
+        let mut frame = noise_img(96, 96, 32);
+        stamp(&mut frame, &tpl, 10, 10);
+        // Change the right (mask=false) half of that template area only.
+        for j in 0..20u32 {
+            for i in 10..20u32 {
+                frame.data[((10 + j) * 96 + (10 + i)) as usize] =
+                    ((i * 7 + j * 11 + 33) % 251) as u8;
+            }
+        }
+        let mut mask = vec![false; 20 * 20];
+        for j in 0..20usize {
+            for i in 0..10usize {
+                mask[j * 20 + i] = true;
+            }
+        }
+        let m = Matcher::from_ref(&frame);
+        assert!(
+            m.match_template_all(&tpl, None, 0.95).is_empty(),
+            "unmasked candidates must not reach the mask-protected threshold"
+        );
+        let all = m.match_template_masked_all(&tpl, &mask, None, 0.95);
+        assert_eq!(all.len(), 1, "{all:?}");
+        assert_eq!((all[0].x, all[0].y), (10, 10));
+        assert!(all[0].score > 0.99, "{all:?}");
+    }
+
+    #[test]
+    fn match_template_all_caps_the_candidate_list() {
+        let mut frame = noise_img(220, 220, 5);
+        let tpl = noise_img(6, 6, 6);
+        // 9 x 9 = 81 stamps, 20px apart (far beyond the NMS radius of 3).
+        let mut stamped = 0;
+        for row in 0..9u32 {
+            for col in 0..9u32 {
+                stamp(&mut frame, &tpl, 5 + col * 20, 5 + row * 20);
+                stamped += 1;
+            }
+        }
+        assert_eq!(stamped, 81);
+        let m = Matcher::from_ref(&frame);
+        let all = m.match_template_all(&tpl, None, 0.95);
+        assert_eq!(
+            all.len(),
+            MAX_MATCH_CANDIDATES,
+            "the candidate list is capped at {MAX_MATCH_CANDIDATES}"
+        );
+        assert!(all.iter().all(|c| c.score > 0.99));
+        // Sorted by score desc then y/x asc: all scores tie at ~1.0 here.
+        assert_eq!((all[0].x, all[0].y), (5, 5));
     }
 }

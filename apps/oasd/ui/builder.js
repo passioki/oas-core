@@ -164,6 +164,24 @@
       if (initial) sel.value = initial;
       assetLabel.appendChild(sel);
 
+      // A 方案：操作区域素材来自整个素材库（可选；无 = 用识别素材自身的操作区域）。
+      const opAssetLabel = document.createElement('label');
+      opAssetLabel.textContent = '操作区域素材（整个素材库，可选）';
+      const opAssetSel = document.createElement('select');
+      opAssetSel.appendChild(new Option('无（用识别素材自身）', ''));
+      for (const group of chooserOperationAssetOptions(B.assets)) {
+        const og = document.createElement('optgroup');
+        og.label = group.label;
+        for (const item of group.items) {
+          const option = document.createElement('option');
+          option.value = item.id;
+          option.textContent = item.id + ' · ' + item.kindText;
+          og.appendChild(option);
+        }
+        opAssetSel.appendChild(og);
+      }
+      opAssetLabel.appendChild(opAssetSel);
+
       const regionLabel = document.createElement('label');
       regionLabel.textContent = '操作区域';
       const modeSel = document.createElement('select');
@@ -198,14 +216,35 @@
 
       const regionHint = document.createElement('div');
       regionHint.className = 'muted small builder-choose-hint';
+      const riskNote = document.createElement('div');
+      riskNote.className = 'muted small builder-warn-note builder-region-risk';
+      riskNote.hidden = true;
       function refreshHint() {
-        const spec = chooserRegionSpec(modeSel.value,
-          offsetInputs.dx.value, offsetInputs.dy.value, offsetInputs.w.value, offsetInputs.h.value);
-        offsetWrap.hidden = modeSel.value !== 'offset';
-        regionHint.textContent = spec.ok ? regionHintText(modeSel.value || '') : '⚠ ' + spec.error;
-        regionHint.classList.toggle('warn', !spec.ok);
+        const mode = modeSel.value;
+        const spec = chooserRegionSpec(mode,
+          offsetInputs.dx.value, offsetInputs.dy.value, offsetInputs.w.value, offsetInputs.h.value,
+          opAssetSel.value);
+        offsetWrap.hidden = mode !== 'offset';
+        opAssetLabel.hidden = mode !== 'asset' && mode !== 'nearest';
+        const risk = regionMatchRiskText(mode);
+        riskNote.hidden = !risk;
+        riskNote.textContent = risk;
+        if (!spec.ok) {
+          regionHint.textContent = '⚠ ' + spec.error;
+          regionHint.classList.add('warn');
+          return;
+        }
+        regionHint.classList.remove('warn');
+        let text = regionHintText(mode || '');
+        if (mode === 'asset' || mode === 'nearest') {
+          text += spec.region && spec.region.asset
+            ? ' 操作区域素材：' + regionOperationAssetText(spec.region.asset, B.assets)
+            : '（未选操作区域素材 → 用识别素材自身）';
+        }
+        regionHint.textContent = text;
       }
       modeSel.addEventListener('change', refreshHint);
+      opAssetSel.addEventListener('change', refreshHint);
       for (const input of Object.values(offsetInputs)) input.addEventListener('input', refreshHint);
       refreshHint();
 
@@ -227,7 +266,8 @@
       }
       ok.addEventListener('click', () => {
         const spec = chooserRegionSpec(modeSel.value,
-          offsetInputs.dx.value, offsetInputs.dy.value, offsetInputs.w.value, offsetInputs.h.value);
+          offsetInputs.dx.value, offsetInputs.dy.value, offsetInputs.w.value, offsetInputs.h.value,
+          opAssetSel.value);
         if (!spec.ok) {
           regionHint.textContent = '⚠ ' + spec.error;
           regionHint.classList.add('warn');
@@ -241,8 +281,10 @@
       dlg.appendChild(head);
       dlg.appendChild(hint);
       dlg.appendChild(assetLabel);
+      dlg.appendChild(opAssetLabel);
       dlg.appendChild(regionLabel);
       dlg.appendChild(offsetWrap);
+      dlg.appendChild(riskNote);
       dlg.appendChild(regionHint);
       dlg.appendChild(actions);
       document.body.appendChild(dlg);
@@ -536,32 +578,154 @@
     }
   }
 
+  // 操作区域素材（A 方案）：全库任意资产可作为操作区域来源；仅 asset/nearest
+  // 模式使用；无匹配候选时引擎本步失败。
+  function regionMatchRiskText(mode) {
+    const m = String(mode === undefined || mode === null ? '' : mode).trim().toLowerCase();
+    if (m === 'asset' || m === 'nearest') {
+      return '操作区域素材无匹配时本步会失败；未选素材 = 用识别素材自身。';
+    }
+    return '';
+  }
+
+  function regionAssetKindText(kind) {
+    switch (String(kind === undefined || kind === null ? '' : kind).trim().toLowerCase()) {
+      case 'ocr_line': return 'OCR 行';
+      case 'ocr_lines': return 'OCR 多行';
+      case 'template': return '模板';
+      case 'region': return '区域';
+      case 'template_set': return '集合';
+      default: return '其他';
+    }
+  }
+
+  function regionAssetGroupOf(kind) {
+    const k = String(kind === undefined || kind === null ? '' : kind).trim().toLowerCase();
+    if (k === 'ocr_line' || k === 'ocr_lines') return 'ocr';
+    if (k === 'template') return 'template';
+    if (k === 'region') return 'region';
+    if (k === 'template_set') return 'collection';
+    return 'other';
+  }
+
+  // 全库「操作区域素材」下拉数据（chooser + 结构化 region 编辑器共用）：
+  // 按 OCR / 模板 / 区域 / 集合 / 其他 分组；同一 id 只出现一次。
+  function chooserOperationAssetOptions(assets) {
+    const order = ['ocr', 'template', 'region', 'collection', 'other'];
+    const labels = {
+      ocr: 'OCR 识别素材',
+      template: '模板素材',
+      region: '区域素材',
+      collection: '集合素材',
+      other: '其他素材',
+    };
+    const buckets = { ocr: [], template: [], region: [], collection: [], other: [] };
+    const seen = {};
+    for (const asset of Array.isArray(assets) ? assets : []) {
+      if (!asset || typeof asset !== 'object') continue;
+      const id = String(asset.id === undefined || asset.id === null ? '' : asset.id).trim();
+      if (!id || Object.prototype.hasOwnProperty.call(seen, id)) continue;
+      seen[id] = true;
+      const kind = String(asset.kind === undefined || asset.kind === null ? '' : asset.kind).trim();
+      buckets[regionAssetGroupOf(kind)].push({
+        id: id,
+        kind: kind,
+        kindText: regionAssetKindText(kind),
+      });
+    }
+    return order
+      .filter(function (group) { return buckets[group].length > 0; })
+      .map(function (group) {
+        return { group: group, label: labels[group], items: buckets[group] };
+      });
+  }
+
+  function regionAssetFromSelector(value) {
+    return String(value === undefined || value === null ? '' : value).trim();
+  }
+
+  function regionOperationAssetText(assetId, assets) {
+    const id = regionAssetFromSelector(assetId);
+    if (!id) return '无（用识别素材自身）';
+    for (const asset of Array.isArray(assets) ? assets : []) {
+      if (!asset || typeof asset !== 'object') continue;
+      const assetId2 = String(asset.id === undefined || asset.id === null ? '' : asset.id).trim();
+      if (assetId2 !== id) continue;
+      return id + ' · ' + regionAssetKindText(asset.kind);
+    }
+    return '未找到：' + id;
+  }
+
+  function regionAssetIds(assets) {
+    const ids = [];
+    for (const asset of Array.isArray(assets) ? assets : []) {
+      if (!asset || typeof asset !== 'object') continue;
+      const id = String(asset.id === undefined || asset.id === null ? '' : asset.id).trim();
+      if (id && ids.indexOf(id) < 0) ids.push(id);
+    }
+    return ids;
+  }
+
+  // 把操作区域素材并进 region（仅 asset/nearest 有 asset；ocr/offset 丢弃 asset）。
+  function regionWithOperationAsset(region, asset) {
+    const r = region && typeof region === 'object' && !Array.isArray(region) ? region : {};
+    const mode = String(r.mode === undefined || r.mode === null ? '' : r.mode).trim().toLowerCase();
+    const a = regionAssetFromSelector(asset);
+    const out = {};
+    if (mode === 'offset') {
+      out.mode = 'offset';
+      if (Array.isArray(r.offset)) out.offset = r.offset.slice();
+    } else if (mode === 'asset' || mode === 'nearest') {
+      out.mode = mode;
+      if (a) out.asset = a;
+    } else if (mode) {
+      out.mode = mode;
+    }
+    return out;
+  }
+
   function regionSpec(locator) {
     const loc = locator && typeof locator === 'object' && !Array.isArray(locator) ? locator : {};
     const region = loc.region;
     if (!region || typeof region !== 'object' || Array.isArray(region)) {
-      return { mode: '', offset: [] };
+      return { mode: '', offset: [], asset: '' };
     }
     const mode = String(region.mode === undefined || region.mode === null ? '' : region.mode)
       .trim().toLowerCase();
     const offset = Array.isArray(region.offset) ? region.offset.slice() : [];
-    return { mode: mode, offset: offset };
+    const asset = typeof region.asset === 'string' ? region.asset.trim() : '';
+    return { mode: mode, offset: offset, asset: asset };
   }
 
   // 写回 locator 的 region（保留未知字段）：mode 空 = 删除 region；非 offset 模式
-  // 删除 offset；offset 模式写入 offset 数组。
-  function regionWrite(locator, mode, offset) {
+  // 删除 offset；offset 模式写入 offset 数组；asset 仅 asset/nearest 模式写入。
+  // region 内未知字段（未来扩展）也在切换模式时保留。
+  function regionWrite(locator, mode, offset, asset) {
     const out = Object.assign({}, locator && typeof locator === 'object' ? locator : {});
     const m = String(mode === undefined || mode === null ? '' : mode).trim().toLowerCase();
+    const prevRegion = out.region && typeof out.region === 'object' && !Array.isArray(out.region)
+      ? out.region
+      : {};
+    const unknownRegion = {};
+    for (const key of Object.keys(prevRegion)) {
+      if (key === 'mode' || key === 'asset' || key === 'offset') continue;
+      unknownRegion[key] = prevRegion[key];
+    }
     if (!m) {
       delete out.region;
       return out;
     }
+    const a = regionAssetFromSelector(asset);
+    let region;
     if (m === 'offset') {
-      out.region = { mode: 'offset', offset: Array.isArray(offset) ? offset.slice() : [] };
+      region = { mode: 'offset', offset: Array.isArray(offset) ? offset.slice() : [] };
+    } else if (m === 'asset' || m === 'nearest') {
+      region = { mode: m };
+      if (a) region.asset = a;
     } else {
-      out.region = { mode: m };
+      region = { mode: m };
     }
+    out.region = Object.assign({}, unknownRegion, region);
     return out;
   }
 
@@ -609,12 +773,30 @@
         error: 'region.mode 不合法：「' + (mode || '（空）') + '」（只能是 asset/ocr/nearest/offset）',
       };
     }
+    let asset = '';
+    if (r.asset !== undefined && r.asset !== null) {
+      if (typeof r.asset !== 'string') {
+        return { ok: false, region: null, error: 'region.asset 必须是字符串（素材 id）' };
+      }
+      asset = r.asset.trim();
+      if (!asset) {
+        return { ok: false, region: null, error: 'region.asset 必须是非空字符串（不需要时省略该字段）' };
+      }
+      if (mode !== 'asset' && mode !== 'nearest') {
+        return {
+          ok: false, region: null,
+          error: 'region.asset 只能与 mode=asset/nearest 组合（当前 ' + mode + '）',
+        };
+      }
+    }
     const hasOffset = r.offset !== undefined && r.offset !== null;
     if (!hasOffset) {
       if (mode === 'offset') {
         return { ok: false, region: null, error: 'region.mode=offset 需要 offset 数组（2 或 4 个整数）' };
       }
-      return { ok: true, region: { mode: mode }, error: '' };
+      const normalized = { mode: mode };
+      if (asset) normalized.asset = asset;
+      return { ok: true, region: normalized, error: '' };
     }
     if (!Array.isArray(r.offset)) {
       return { ok: false, region: null, error: 'region.offset 必须是数组' };
@@ -637,8 +819,9 @@
   }
 
   // Chooser dialog (参数文字点击/长按) → region object. Empty mode = keep the
-  // engine default; offset mode reuses the same 2/4-integer input validation.
-  function chooserRegionSpec(mode, dxText, dyText, wText, hText) {
+  // engine default; offset mode reuses the same 2/4-integer input validation;
+  // operation asset is only written for asset/nearest (dropped for ocr/offset).
+  function chooserRegionSpec(mode, dxText, dyText, wText, hText, asset) {
     const m = String(mode === undefined || mode === null ? '' : mode).trim().toLowerCase();
     if (!m) return { ok: true, region: undefined, error: '' };
     if (m === 'offset') {
@@ -649,11 +832,19 @@
     if (REGION_MODES.indexOf(m) < 0) {
       return { ok: false, region: null, error: '操作区域模式不合法：' + (m || '（空）') };
     }
+    const a = regionAssetFromSelector(asset);
+    if (a && (m === 'asset' || m === 'nearest')) {
+      return normalizeRegion({ mode: m, asset: a });
+    }
     return { ok: true, region: { mode: m }, error: '' };
   }
 
   // 保存前扫描 flow 里所有带 region 的节点（click_target/drag/long_press locator）。
-  function regionIssues(flow) {
+  // assetIds 可选：传入当前素材库 id 列表时，region.asset 不存在也会报错（阻止保存）。
+  function regionIssues(flow, assetIds) {
+    const known = Array.isArray(assetIds)
+      ? assetIds.map(function (id) { return String(id); })
+      : null;
     const issues = [];
     function walk(node, path) {
       if (node === null || node === undefined) return;
@@ -664,7 +855,11 @@
       if (typeof node !== 'object') return;
       if (Object.prototype.hasOwnProperty.call(node, 'region')) {
         const norm = normalizeRegion(node.region);
-        if (!norm.ok) issues.push(path + '.region：' + norm.error);
+        if (!norm.ok) {
+          issues.push(path + '.region：' + norm.error);
+        } else if (norm.region && norm.region.asset && known && known.indexOf(norm.region.asset) < 0) {
+          issues.push(path + '.region：操作区域素材「' + norm.region.asset + '」不在当前素材库（本步会失败）');
+        }
       }
       for (const key of Object.keys(node)) walk(node[key], path ? path + '.' + key : key);
     }
@@ -2777,6 +2972,42 @@
     modeLab.appendChild(modeSel);
     box.appendChild(modeLab);
 
+    // A 方案：操作区域素材（整个素材库；仅 asset/nearest 模式使用）。
+    const opAssetRow = document.createElement('label');
+    opAssetRow.className = 'builder-region-asset';
+    opAssetRow.textContent = '操作区域素材（可选）';
+    const opAssetSel = document.createElement('select');
+    opAssetSel.appendChild(new Option('无（用识别素材自身）', ''));
+    let assetListed = false;
+    for (const group of chooserOperationAssetOptions(B.assets)) {
+      const og = document.createElement('optgroup');
+      og.label = group.label;
+      for (const item of group.items) {
+        const option = document.createElement('option');
+        option.value = item.id;
+        option.textContent = item.id + ' · ' + item.kindText;
+        og.appendChild(option);
+        if (item.id === spec.asset) assetListed = true;
+      }
+      opAssetSel.appendChild(og);
+    }
+    if (spec.asset && !assetListed) {
+      const option = document.createElement('option');
+      option.value = spec.asset;
+      option.textContent = '未找到：' + spec.asset + '（未知素材）';
+      opAssetSel.appendChild(option);
+    }
+    opAssetSel.value = spec.asset || '';
+    opAssetRow.appendChild(opAssetSel);
+    opAssetRow.hidden = spec.mode !== 'asset' && spec.mode !== 'nearest';
+    box.appendChild(opAssetRow);
+
+    const riskNote = document.createElement('div');
+    riskNote.className = 'builder-warn-note builder-region-risk';
+    riskNote.hidden = !regionMatchRiskText(spec.mode);
+    riskNote.textContent = regionMatchRiskText(spec.mode);
+    box.appendChild(riskNote);
+
     const offsetRow = document.createElement('div');
     offsetRow.className = 'builder-region-offset';
     const offsetLabels = ['dx', 'dy', 'w（可空）', 'h（可空）'];
@@ -2807,8 +3038,13 @@
 
     function read() {
       const mode = modeSel.value;
-      if (!mode) return { ok: true, mode: '', offset: [], error: '' };
-      if (mode !== 'offset') return { ok: true, mode: mode, offset: [], error: '' };
+      const opAsset = (mode === 'asset' || mode === 'nearest')
+        ? regionAssetFromSelector(opAssetSel.value)
+        : '';
+      if (!mode) return { ok: true, mode: '', offset: [], asset: '', error: '' };
+      if (mode !== 'offset') {
+        return { ok: true, mode: mode, offset: [], asset: opAsset, error: '' };
+      }
       const parsed = regionOffsetFromInput(
         offsetInputs[0].value,
         offsetInputs[1].value,
@@ -2816,19 +3052,25 @@
         offsetInputs[3].value
       );
       if (!parsed.ok) {
-        return { ok: false, mode: 'offset', offset: [], error: parsed.error };
+        return { ok: false, mode: 'offset', offset: [], asset: '', error: parsed.error };
       }
-      return { ok: true, mode: 'offset', offset: parsed.offset, error: '' };
+      return { ok: true, mode: 'offset', offset: parsed.offset, asset: '', error: '' };
     }
     function emit() {
-      offsetRow.hidden = modeSel.value !== 'offset';
-      hint.textContent = regionHintText(modeSel.value);
+      const mode = modeSel.value;
+      offsetRow.hidden = mode !== 'offset';
+      opAssetRow.hidden = mode !== 'asset' && mode !== 'nearest';
+      hint.textContent = regionHintText(mode);
+      const risk = regionMatchRiskText(mode);
+      riskNote.hidden = !risk;
+      riskNote.textContent = risk;
       const result = read();
       err.textContent = result.error || '';
       box.classList.toggle('err', !!result.error);
       if (result.ok && typeof onChange === 'function') onChange(result);
     }
     modeSel.addEventListener('change', emit);
+    opAssetSel.addEventListener('change', emit);
     for (const input of offsetInputs) input.addEventListener('change', emit);
     host.appendChild(box);
     return { host: box, read: read };
@@ -2859,7 +3101,7 @@
       let written = paramSourceApply(next, text.mode, text.value);
       if (regionEditor) {
         const region = regionEditor.read();
-        if (region.ok) written = regionWrite(written, region.mode, region.offset);
+        if (region.ok) written = regionWrite(written, region.mode, region.offset, region.asset);
       }
       step.args[side] = written;
       renderAll();
@@ -2922,7 +3164,7 @@
         written = paramSourceApply(next, text.mode, text.value);
         if (regionEditor) {
           const region = regionEditor.read();
-          if (region.ok) written = regionWrite(written, region.mode, region.offset);
+          if (region.ok) written = regionWrite(written, region.mode, region.offset, region.asset);
         }
       } else {
         // template/region locators never carry text fields; text_expr is an
@@ -4064,7 +4306,7 @@
     // 可写出 text + text_expr 同时存在，这里拦住，避免把坏 flow 写盘）。
     // P1: 同时校验 region 形状与 long_press/curve_swipe 参数范围。
     const saveIssues = flowTextSpecIssues(B.flow)
-      .concat(regionIssues(B.flow))
+      .concat(regionIssues(B.flow, regionAssetIds(B.assets)))
       .concat(actionArgsIssues(B.flow, B.screen));
     if (saveIssues.length) {
       status('保存已阻止：' + saveIssues[0] +

@@ -1552,6 +1552,25 @@ aside.side {
   box-sizing: border-box;
 }
 
+.builder-region-asset {
+  display: block;
+  margin: 4px 0;
+  font-size: 12px;
+}
+
+.builder-region-asset[hidden] {
+  display: none;
+}
+
+.builder-region-asset select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.builder-region-risk {
+  margin-top: 4px;
+}
+
 .builder-region-offset {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
