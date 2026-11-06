@@ -23,6 +23,8 @@ const btnSaveAsset = document.getElementById('btn-save-asset');
 // B: canvas recognition-ROI editor (material library 识别区). Disabled/hidden
 // until a row enters edit mode; templates save through the overwrite path.
 const btnSaveAssetRoi = document.getElementById('btn-save-asset-roi');
+const btnSaveAssetActionRoi = document.getElementById('btn-save-asset-action-roi');
+const assetActionEditLabel = document.getElementById('asset-action-edit-label');
 // P0-1: visible label next to the save button naming the asset being edited;
 // the button itself lives in #canvas-footer so every surface can see it.
 const assetRoiEditLabel = document.getElementById('asset-roi-edit-label');
@@ -1535,6 +1537,7 @@ function replaceResults(rows, sourceLabel) {
   saveCandidates = rows || [];
   activeCandidate = -1;
   pendingActionAsset = null;
+  updateAssetActionSaveButton();
   // New recognition results must never inherit an old action polygon/invert
   // from a previous candidate or asset (P0-3 / P1-8). The rect too: a fresh
   // candidate follows its own recognized bbox.
@@ -2082,6 +2085,8 @@ function resetActionGeometry(opts) {
   if (!o.keepTarget) {
     activeCandidate = -1;
     pendingActionAsset = null;
+    pendingActionAssetScope = null;
+    updateAssetActionSaveButton();
   }
   if (o.clearDrag) {
     dragStart = null;
@@ -4531,7 +4536,7 @@ function buildOpRegionModelA(ctx, lib) {
     body.appendChild(editBtn);
     const actionHint = document.createElement('div');
     actionHint.className = 'muted small';
-    actionHint.textContent = '画完的操作区域会直接保存为该素材的 action_shape（含反选开关）。';
+    actionHint.textContent = '画完后点画布底部「保存操作区域」写入该素材的 action_shape（含反选开关）。';
     body.appendChild(actionHint);
   } else {
     const choices = opRegionRefChoices(lib, ctx.asset.id);
@@ -5878,6 +5883,22 @@ function updateAssetRoiSaveButton() {
   }
 }
 
+// seq130-fix: 操作区域编辑改为「显式保存」——与识别区域一致：编辑时在 #canvas-footer
+// 显示保存按钮/编辑标签，画完/移动后不自动落盘，点「保存操作区域（写入素材）」才提交。
+function updateAssetActionSaveButton() {
+  const editing = !!pendingActionAsset;
+  if (btnSaveAssetActionRoi) {
+    btnSaveAssetActionRoi.hidden = !editing;
+    btnSaveAssetActionRoi.disabled = !editing;
+    if (editing) {
+      btnSaveAssetActionRoi.title = `保存操作区域到素材「${pendingActionAsset}」（矩形/多边形/反选）`;
+    }
+  }
+  if (assetActionEditLabel) {
+    assetActionEditLabel.hidden = !editing;
+    assetActionEditLabel.textContent = editing ? `操作区编辑中：${pendingActionAsset}` : '';
+  }
+}
 // P0-2: every path that leaves the ROI editor must go through here. Keeping the
 // editing target armed while the canvas shows another asset/frame is what let
 // "edit A, click B, save" overwrite A with B's box. Cancelling drops the canvas
@@ -5926,6 +5947,7 @@ function editAssetRecognitionRoi(it, scopeTask) {
   activeCandidate = -1;
   pendingActionAsset = null;
   pendingActionAssetScope = null;
+  updateAssetActionSaveButton();
   // Load the asset's CURRENT roi (and operation region) onto the canvas.
   pickAssetRoi(it);
   // #10（批次B3b）：进入识别区域工具时，已存识别多边形载入“可编辑”状态
@@ -6089,6 +6111,7 @@ function editAssetActionRoi(it, scopeTask) {
   // #10：统一框选工具的操作区域模式（作用对象=该素材）。
   setCanvasTool('action');
   updateRoiLabel();
+  updateAssetActionSaveButton();
   draw();
   log(
     `编辑素材「${it.id}」操作区域（统一框选）：拖动=矩形，单击=多边形顶点，双击收尾；` +
@@ -6104,6 +6127,7 @@ async function updateAssetActionRoi(id) {
   if (!task || !shape) {
     pendingActionAsset = null;
     pendingActionAssetScope = null;
+    updateAssetActionSaveButton();
     return;
   }
   const r = await postJson('/task/asset/update', {
@@ -6123,6 +6147,7 @@ async function updateAssetActionRoi(id) {
   resetActionGeometry({ keepTarget: false, clearInvert: true, redraw: false });
   setCanvasTool('none');
   updateRoiLabel();
+  updateAssetActionSaveButton();
   draw();
   log(`素材「${id}」操作区域已更新`);
   setStatus(`素材「${id}」操作区域已保存；两个素材库已刷新`);
@@ -6132,6 +6157,18 @@ async function updateAssetActionRoi(id) {
 }
 
 function pickAssetRoi(it) {
+  // seq130-fix: 选中其它素材行=退出操作区域编辑（避免保存按钮把旧素材操作区写错对象）。
+  if (pendingActionAsset) {
+    pendingActionAsset = null;
+    pendingActionAssetScope = null;
+    updateAssetActionSaveButton();
+  }
+  // seq130-fix: 选中其它素材行=退出操作区域编辑（避免保存按钮把旧素材操作区写错对象）。
+  if (pendingActionAsset) {
+    pendingActionAsset = null;
+    pendingActionAssetScope = null;
+    updateAssetActionSaveButton();
+  }
   // 全屏 ocr_var（roi 为空）也允许选中：画布只显示操作区/已存多边形，识别区留空。
   if (!Array.isArray(it.roi)) {
     if (String(it.kind) !== 'ocr_var') {
@@ -8129,7 +8166,10 @@ function finishActionGesture(shapeOverride) {
         : '使用识别区域'}`
     );
   } else if (pendingActionAsset) {
-    updateAssetActionRoi(pendingActionAsset);
+    // seq130-fix: 不自动落盘——与识别区域一致，等用户点「保存操作区域」。
+    log(`操作区域已画好（素材「${pendingActionAsset}」）：点底部「保存操作区域」写入素材`);
+    setStatus('操作区域未保存：点底部「保存操作区域」写入素材', '#e8c46a');
+    updateAssetActionSaveButton();
   } else {
     resultEl.textContent =
       '操作区域已画好，但当前没有绑定候选/素材。\n' +
@@ -8255,11 +8295,10 @@ canvas.addEventListener('dblclick', (ev) => {
     if (activeCandidate >= 0 && saveCandidates[activeCandidate]) {
       finishActionGesture(shape);
     } else if (pendingActionAsset) {
-      log(`操作区域多边形已闭合，保存到素材「${pendingActionAsset}」…`);
-      updateAssetActionRoi(pendingActionAsset).catch((e) => {
-        log(`保存素材操作区域失败：${e}`, 'ERROR');
-        resultEl.textContent = '保存操作区域失败：' + e;
-      });
+      // seq130-fix: 多边形闭合后不自动保存，等用户点「保存操作区域」。
+      log(`操作区域多边形已闭合（素材「${pendingActionAsset}」）：点底部「保存操作区域」写入素材`);
+      setStatus('操作区域未保存：点底部「保存操作区域」写入素材', '#e8c46a');
+      updateAssetActionSaveButton();
     } else {
       resultEl.textContent =
         '操作区域多边形已闭合，但当前没有绑定候选/素材。\n' +
@@ -8321,6 +8360,7 @@ function toggleCanvasTool(tool) {
       if (pendingActionAsset) {
         pendingActionAsset = null;
         pendingActionAssetScope = null;
+        updateAssetActionSaveButton();
       }
       // 切到识别区域工具：操作区域几何不再可编辑，清掉以免与识别框混淆。
       resetActionGeometry({ keepTarget: false, clearInvert: true, clearRect: true, clearDrag: true, redraw: false });
@@ -8358,6 +8398,7 @@ btnClear.addEventListener('click', () => {
   activeCandidate = -1;
   pendingActionAsset = null;
   pendingActionAssetScope = null;
+  updateAssetActionSaveButton();
   lastLinesRoi = null;
   replaceResults([], '');
   updateRoiLabel();
@@ -8971,6 +9012,21 @@ async function doRunTask() {
       });
     });
   }
+  // seq130-fix: 操作区域显式保存（与识别区域同款按钮）。
+  if (btnSaveAssetActionRoi) {
+    btnSaveAssetActionRoi.addEventListener('click', () => {
+      if (!pendingActionAsset) return;
+      const id = pendingActionAsset;
+      if (!currentActionShape()) {
+        resultEl.textContent = '还没有画操作区域：请先在画布上拖动/点击画框';
+        return;
+      }
+      updateAssetActionRoi(id).catch((e) => {
+        resultEl.textContent = '保存操作区域失败：' + e;
+        log('保存操作区域失败：' + e, 'ERROR');
+      });
+    });
+  }
   // P2-1 / #10: Esc 放弃本次绘制并退出画布工具（asset_ui.js 已负责关设置菜单）。
   // 打开着模态对话框时不抢 Esc。
   document.addEventListener('keydown', (e) => {
@@ -8978,6 +9034,18 @@ async function doRunTask() {
     if (document.querySelector && document.querySelector('dialog[open]')) return;
     if (editingRecognitionAsset) {
       cancelRecognitionRoiEdit('Esc');
+      return;
+    }
+    if (pendingActionAsset) {
+      pendingActionAsset = null;
+      pendingActionAssetScope = null;
+      updateAssetActionSaveButton();
+      resetActionGeometry({ keepTarget: false, clearInvert: true, clearRect: true, redraw: false });
+      setCanvasTool('none');
+      updateRoiLabel();
+      draw();
+      setStatus('已取消操作区域编辑（未写入素材）');
+      log('Esc：已取消操作区域编辑（未写入素材）');
       return;
     }
     if (canvasTool !== 'none') {

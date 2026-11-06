@@ -3126,6 +3126,12 @@ function installRoiCancelHarness() {
     statusText: '',
     btnSaveAssetRoi: { hidden: true, disabled: true, title: '' },
     assetRoiEditLabel: { hidden: true, textContent: '' },
+    // seq130-fix: the action-region save button is refreshed from pickAssetRoi.
+    pendingActionAsset: null,
+    pendingActionAssetScope: null,
+    btnSaveAssetActionRoi: { hidden: true, disabled: true, title: '' },
+    assetActionEditLabel: { hidden: true, textContent: '' },
+    updateAssetActionSaveButton: () => {},
     resultEl: { textContent: '' },
     loadActionShapeForEdit: () => {},
     actionShapeBBox: () => null,
@@ -3749,6 +3755,62 @@ ok(/保存识别区（覆盖素材）/.test(html), 'the ROI save button carries 
 ok(
   /#btn-save-asset-roi\[hidden\] \{ display: none; \}/.test(styleCss),
   'the hidden ROI save button is really hidden despite button display rules'
+);
+// seq130-fix: 操作区域保存按钮与识别区域同款（显式保存，不再自动落盘）。
+ok(
+  /id="btn-save-asset-action-roi"[^>]*type="button"[^>]*disabled hidden/.test(html),
+  'index.html provides a disabled+hidden #btn-save-asset-action-roi'
+);
+ok(
+  /id="btn-save-asset-action-roi"/.test(footerHtml),
+  '#btn-save-asset-action-roi lives inside #canvas-footer (same as the ROI button)'
+);
+ok(
+  /id="asset-action-edit-label"/.test(footerHtml),
+  'the action-region editing label sits next to the save button'
+);
+ok(/保存操作区域（写入素材）/.test(html), 'the action-region save button carries the agreed label');
+ok(
+  /#btn-save-asset-action-roi\[hidden\] \{ display: none; \}/.test(styleCss) &&
+    /#asset-action-edit-label\[hidden\] \{ display: none; \}/.test(styleCss),
+  'the hidden action-region button/label are really hidden despite button display rules'
+);
+const updateActionSaveBtnFn = extractFunction('updateAssetActionSaveButton');
+ok(
+  /btnSaveAssetActionRoi\.hidden = !editing/.test(updateActionSaveBtnFn) &&
+    /pendingActionAsset/.test(updateActionSaveBtnFn) &&
+    /assetActionEditLabel\.hidden = !editing/.test(updateActionSaveBtnFn),
+  'updateAssetActionSaveButton drives visibility from pendingActionAsset'
+);
+ok(
+  /updateAssetActionSaveButton\(\);/.test(extractFunction('editAssetActionRoi')),
+  'entering action-region edit shows the explicit save button'
+);
+ok(
+  /updateAssetActionSaveButton\(\);/.test(extractFunction('updateAssetActionRoi')),
+  'saving/cancelling action-region edit refreshes the save button'
+);
+const finishActionStageFn = extractFunction('finishActionGesture');
+ok(
+  /不自动落盘/.test(finishActionStageFn) &&
+    !/updateAssetActionRoi\(pendingActionAsset\)/.test(finishActionStageFn),
+  'finishActionGesture no longer auto-saves the asset action region'
+);
+const actionSaveHandlerSrc = source.slice(source.indexOf("btnSaveAssetActionRoi.addEventListener('click'"));
+ok(
+  /btnSaveAssetActionRoi\.addEventListener\('click'/.test(source) &&
+    /updateAssetActionRoi\(id\)/.test(actionSaveHandlerSrc) &&
+    /currentActionShape\(\)/.test(actionSaveHandlerSrc),
+  'the action-region save button posts the current shape (rect/polygon/invert)'
+);
+ok(
+  /Esc：已取消操作区域编辑/.test(source),
+  'Esc cancels an unsaved asset action-region edit'
+);
+ok(
+  /保存操作区域」写入该素材的 action_shape/.test(source) &&
+    !/操作区域会直接保存/.test(source),
+  'the op-region dialog copy points at the explicit save button (old auto-save copy gone)'
 );
 // D: 批量帧测试 moved from the task panel to the assets panel, next to 刷新全局库.
 ok(

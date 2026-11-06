@@ -636,6 +636,22 @@ aside.side {
 }
 #asset-roi-edit-label[hidden] { display: none; }
 
+/* seq130-fix: 操作区域保存按钮与识别区域同款（同一 #canvas-footer，编辑素材操作区
+   时显式出现；不再在画完手势时自动落盘）。 */
+#btn-save-asset-action-roi {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+#btn-save-asset-action-roi[hidden] { display: none; }
+#asset-action-edit-label {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+#asset-action-edit-label[hidden] { display: none; }
+
 /* #10（批次B3b）：统一框选工具的三个按钮（识别区域 / 操作区域 / 反选）。
    active = 当前工具；反选只在操作区域工具内可用，其余时候禁用。 */
 #btn-tool-recognition.active,
