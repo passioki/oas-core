@@ -14,7 +14,7 @@
 | 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；现有本地产物不含 seq 121/122 新能力 |
 | 独立仓 | `https://github.com/passioki/oas-runner`（`768a8b7`）；pin `ba6813e`（已构建验证；未打独立包） |
 | 服务 | 无 `oasd`/`oasd-runner` 进程；8787/8788/8789/8792~8796 无监听 |
-| 工作区 | `scheduler.json` 未提交；用户任务 `tasks/切换预设御魂/{flow,meta}.json` 为用户编辑 + Lead 修复 cond，**工作区未提交**；其余已提交/推送 |
+| 工作区 | `scheduler.json`、用户任务 `tasks/切换预设御魂/{flow,meta}.json`、**用户本轮编辑的 `assets/assets.json` / `frames/frames.json` / 新增 `assets/images/a006.png`** 均**未提交**（用户数据/局部配置，**不要提交/覆盖**）；其余已提交/推送 |
 
 ## 0.1 新会话恢复步骤（直接照做）
 

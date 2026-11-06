@@ -43,8 +43,7 @@ next_action: ① 新会话先读 `docs/PARAM-ASSET-REDESIGN.md` → `SESSION-HAN
 | 测试 | `cargo test --workspace` **841 / 0**（23 suites；perceive **11**+2 / flow **78** / runtime **186**+2 / task **122** / adapter-pc 5 / oasd 412）；UI pure test **2214 checks / Studio 164 / Runner 158 / 0 dead / 6 nav**；debug+release OCR build exit 0（**1 warning**）；`git diff --check` clean |
 | 新要求 | 参数→素材/动作库去参数化/素材候选 API+行 UI/量尺/操作区三方式+递归防环/废弃两状态 —— 见 `PARAM-ASSET-REDESIGN.md`、`PENDING §E-93`、`ENGINE §22.63` |
 | 服务 | 无 `oasd`/`oasd-runner` 进程；8787/8788/8789/8792~8796 无监听 |
-| 数据边界 | `scheduler.json` 未提交；用户任务 `tasks/切换预设御魂/{flow,meta}.json` 为用户编辑 + Lead 修复 cond，**工作区未提交**；其余已提交/推送 |
-| 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；沿用旧本地产物（不含 seq 121/122 新能力） |
+| 数据边界 | `scheduler.json`、用户任务 `tasks/切换预设御魂/{flow,meta}.json`、**用户本轮编辑的 `assets/assets.json` / `frames/frames.json` / 新增 `assets/images/a006.png`** 均未提交（**不要提交/覆盖**）；其余已提交/推送；发行包按「推送即可，不用发布」未重打/未上传 |
 
 ## 1.5 2026-11-05 18:2x（seq 111）设计轮产出（只读，未改代码）
 
