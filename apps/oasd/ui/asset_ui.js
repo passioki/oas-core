@@ -252,6 +252,10 @@
     // U-T4（2026-11-06 事项 2）：使用端OCR文字配置项（ocr_var）的默认识别文字。
     // 只能追加在末尾（菜单顺序是 ui_pure_test 的精确契约）。
     {
+      key: 'longPress', label: '长按测试', action: 'onLongPress', manage: true,
+      title: '长按测试（test_action gesture=long_press；演练/真实 + 候选 + hold_ms 默认 3000）',
+    },
+    {
       key: 'text', label: '识别文字', action: 'onEditText', manage: true,
       title: '编辑该「使用端OCR文字配置项」的默认识别文字（runtime_text）',
     },

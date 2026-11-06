@@ -235,16 +235,6 @@ pre {
   gap: 8px;
   padding-top: 4px;
 }
-/* U-T4/S6：操作区「相对偏移」绘制模式（画布底栏） */
-.offset-draw-label {
-  flex: 0 0 auto;
-  max-width: 46%;
-  color: #ffd54a;
-  font-family: Consolas, "Cascadia Mono", monospace;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-#canvas-footer .offset-draw-label[hidden] { display: none; }
 #hint {
   flex: 1 1 auto;
   position: static;
@@ -1703,7 +1693,6 @@ aside.side {
 .op-region-mode-row label { margin: 0; }
 .op-region-level-body { margin-top: 4px; }
 .op-region-level-body[hidden] { display: none; }
-.op-region-offset-text { color: #ffd54a; font-family: Consolas, "Cascadia Mono", monospace; }
 .op-region-terminal { color: #9aa0aa; font-size: 11px; margin-top: 4px; }
 .op-region-ref-pick { margin-top: 6px; }
 .op-region-ref-pick[hidden] { display: none; }

@@ -40,8 +40,8 @@
 //     asset's own action_shape (absent = real recognized box).
 //   - 事项 2/3/4（U-T4 阶段 A）：ocr_var 素材行（识别文字/op_region 摘要/待迁移
 //     badge）、素材行「识别」= GET /task/asset/candidates 全部候选（全画+逐行列出）、
-//     S6 相对偏移画布绘制（模拟识别区+操作区域→offset，保存待 B-T3 接入），以及
-//     candidateLabelText/offsetFromDraw/opRegionChainSpec/runtimeTextValid 纯函数。
+//     S6 相对偏移画布绘制已删除（B3a 模型 A：操作区只保留 self/asset 两态），以及
+//     candidateLabelText/opRegionChainSpec/runtimeTextValid 纯函数。
 //   - P2 Runner params page: #runner-config-dialog groups meta.params by `group`
 //     (first-appearance order, missing group -> 通用); U-T6 puts derived rows
 //     (meta.params with asset_id, from ocr_var assets) into a leading
@@ -174,11 +174,10 @@ const PURE_FUNCTIONS = [
   'testFramePlan',
   'matchBoxValid',
   'translateActionShape',
-  // U-T4（事项 3/4/5）：候选识别 / 相对偏移绘制 / op_region 链 / runtime_text。
+  // U-T4（事项 3/4/5）：候选识别 / op_region 链 / runtime_text。
   'assetCandidatesUrl',
   'candidateLabelText',
   'candidateBoxes',
-  'offsetFromDraw',
   'runtimeTextValid',
   'opRegionNodeOf',
   'opRegionChainSpec',
@@ -204,6 +203,9 @@ const PURE_FUNCTIONS = [
   'assetTextSaveRequest',
   'opRegionSavePlan',
   'opRegionLevelChoices',
+  'opRegionTargetKinds',
+  'opRegionRefChoices',
+  'opRegionReadonlyChainText',
   // U-T4/S4（B-T3b）：test_action 请求/结果格式化 + validate_op_region 错误。
   'testActionRequestBody',
   'candidateOptionLabel',
@@ -296,7 +298,6 @@ const {
   assetCandidatesUrl,
   candidateLabelText,
   candidateBoxes,
-  offsetFromDraw,
   runtimeTextValid,
   opRegionNodeOf,
   opRegionChainSpec,
@@ -320,6 +321,9 @@ const {
   assetTextSaveRequest,
   opRegionSavePlan,
   opRegionLevelChoices,
+  opRegionTargetKinds,
+  opRegionRefChoices,
+  opRegionReadonlyChainText,
   testActionRequestBody,
   candidateOptionLabel,
   testActionResultLines,
@@ -454,22 +458,7 @@ eq(
   ],
   'U-T4: all valid candidates become draw() boxes (invalid boxes are skipped)'
 );
-// S6 offset：dx/dy = 操作区左上角 − 模拟识别区左上角；w/h = 本次绘制尺寸。
-eq(
-  offsetFromDraw({ x: 100, y: 200, w: 300, h: 100 }, { x: 130, y: 180, w: 150, h: 60 }),
-  { ok: true, offset: [30, -20, 150, 60], error: '' },
-  'U-T4: offset = action top-left − simulated recognition top-left, size from the drawing'
-);
-eq(
-  offsetFromDraw({ x: 0, y: 0, w: 10, h: 10 }, { x: 5, y: 5, w: 10, h: 10 }).offset,
-  [5, 5, 10, 10],
-  'U-T4: drawn rectangles are rounded to integers'
-);
-ok(offsetFromDraw(null, { x: 0, y: 0, w: 10, h: 10 }).ok === false, 'U-T4: no simulated recognition rect -> invalid');
-ok(
-  offsetFromDraw({ x: 0, y: 0, w: 10, h: 10 }, { x: 0, y: 0, w: 0, h: 10 }).ok === false,
-  'U-T4: zero-size action rect -> invalid'
-);
+// S6 offset 绘制已删除（B3a 模型 A）；旧 offset 数据仅由 openOpRegionDialog 提示迁移为 self。
 // runtime_text（S2 对话框字段；阶段 A 先落纯校验）
 eq(runtimeTextValid(' 御魂 '), { ok: true, value: '御魂', error: '' }, 'U-T4: runtime_text trims and accepts a normal value');
 eq(runtimeTextValid('').ok, false, 'U-T4: empty runtime_text is rejected');
@@ -812,8 +801,58 @@ eq(planBad.ok, false, 'U-T4/S5: a dangling reference blocks the save plan');
 eq(planBad.updates, [], 'U-T4/S5: an invalid chain produces no updates');
 eq(
   opRegionLevelChoices().map((o) => o.value),
-  ['self', 'offset', 'asset'],
-  'U-T4/S5: the dialog offers the three documented operation-region sources'
+  ['self', 'asset'],
+  'B3a: the dialog offers the two model-A operation-region sources (self / reference gate)'
+);
+eq(
+  opRegionLevelChoices().map((o) => o.label),
+  ['当前素材操作区（self）', '引用素材作识别门槛（链）'],
+  'B3a: the two labels explain model A (fall point = current asset)'
+);
+const modelARefs = [
+  { id: 'A', kind: 'ocr_var', runtime_text: 'x', param_key: 'k' },
+  { id: 'T', kind: 'template' },
+  { id: 'R', kind: 'region' },
+  { id: 'L', kind: 'ocr_line', ocr_text: '挑战' },
+  { id: 'E', kind: 'ocr_line' },
+];
+eq(
+  opRegionRefChoices(modelARefs, 'A').map((c) => c.id),
+  ['T', 'L', 'E'],
+  'B3a: reference choices exclude region and the asset itself'
+);
+eq(
+  opRegionRefChoices(modelARefs, 'A').find((c) => c.id === 'E').disabled,
+  true,
+  'B3a: a plain OCR without ocr_text is greyed out (not selectable)'
+);
+eq(
+  opRegionRefChoices(modelARefs, 'A').find((c) => c.id === 'L').disabled,
+  false,
+  'B3a: a plain OCR with ocr_text is selectable'
+);
+eq(
+  opRegionRefChoices(modelARefs, 'A').map((c) => c.id).indexOf('R'),
+  -1,
+  'B3a: region assets are never offered as a recognition gate'
+);
+eq(
+  opRegionTargetKinds().indexOf('region'),
+  -1,
+  'B3a: region is not in the model-A gate kind whitelist'
+);
+eq(
+  opRegionReadonlyChainText(
+    { id: 'O', op_region: { mode: 'asset', asset: 'T', pick: 'nearest' } },
+    [{ id: 'T', kind: 'template', op_region: { mode: 'self' } }]
+  ),
+  '引用「T」（最近） → 自身操作区（self）',
+  'B3a: the referenced asset chain is rendered read-only (no editing)'
+);
+eq(
+  opRegionReadonlyChainText({ id: 'O' }, []),
+  '自身操作区（self）',
+  'B3a: an unconfigured referenced asset shows the self fallback'
 );
 // --- v1.2.4: action_shape invert travels with BOTH rect and polygon ---
 const testPolyPoints = [{ x: 1, y: 2 }, { x: 9, y: 2 }, { x: 9, y: 8 }];
@@ -1748,7 +1787,7 @@ function installAssetUiHarness() {
 
 const assetUiHarness = installAssetUiHarness();
 const assetUi = assetUiHarness.ui;
-const ASSET_MENU_LABELS = ['点测', '拖测', '识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '步骤', '识别文字'];
+const ASSET_MENU_LABELS = ['点测', '拖测', '识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '步骤', '长按测试', '识别文字'];
 
 function assetChildren(el, className) {
   return (el.children || []).filter((child) =>
@@ -1784,6 +1823,7 @@ function assetRowOpts(overrides) {
     onCollectionTest: record('collectionTest'),
     onCollectionDelete: record('collectionDelete'),
     onEditText: record('editText'),
+    onLongPress: record('longPress'),
   };
   return { opts: Object.assign(opts, overrides || {}), calls };
 }
@@ -1846,7 +1886,7 @@ ok(
 eq(
   assetUi.ASSET_MENU_ITEMS.map((m) => m.label),
   ASSET_MENU_LABELS,
-  'the settings menu is the agreed ten-item order (识别文字 appended last by U-T4)'
+  'the settings menu is the agreed order (长按测试 + 识别文字 appended by U-T4/B3a)'
 );
 eq(
   assetUi.assetMenuState(rowTemplate, { manage: true }).filter((m) => m.disabled).map((m) => m.label),
@@ -1855,8 +1895,8 @@ eq(
 );
 eq(
   assetUi.assetMenuState(rowTemplate, { manage: true }).filter((m) => !m.disabled).map((m) => m.label),
-  ['点测', '拖测', '识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '步骤'],
-  'every other template settings item is actionable on a manageable surface'
+  ['点测', '拖测', '识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '步骤', '长按测试'],
+  'every other template settings item (incl. 长按测试) is actionable on a manageable surface'
 );
 const templateRoiMenu = assetUi.assetMenuState(rowTemplate, { manage: true }).find((m) => m.key === 'roi');
 ok(
@@ -1870,8 +1910,8 @@ ok(
 const readOnlyMenu = assetUi.assetMenuState(rowTemplate, { manage: false });
 eq(
   readOnlyMenu.filter((m) => m.disabled).map((m) => m.label),
-  ['识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '识别文字'],
-  'manage:false disables every management item (识别文字 included)'
+  ['识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '长按测试', '识别文字'],
+  'manage:false disables every management item (长按测试/识别文字 included)'
 );
 eq(
   readOnlyMenu.filter((m) => !m.disabled).map((m) => m.label),
@@ -1908,7 +1948,7 @@ eq(
   ['删除'],
   'a template_set settings menu only enables 删除'
 );
-eq(setMenuState.filter((m) => m.disabled).length, 9, 'the other nine collection entries stay visible but disabled');
+eq(setMenuState.filter((m) => m.disabled).length, 10, 'the other ten collection entries stay visible but disabled');
 ok(
   setMenuState.filter((m) => m.disabled).every((m) => /集合不支持/.test(m.title)),
   'disabled collection entries explain that sets do not support them'
@@ -1919,7 +1959,7 @@ const tplRow = assetUi.createRow(rowTemplate, tplRowHarness.opts);
 eq(assetRowActionText(tplRow), ['识别', '设置'], 'a normal asset row exposes exactly 识别 + 设置');
 const tplMenu = assetRowMenu(tplRow);
 ok(tplMenu && !tplMenu.classList.contains('open'), 'the settings menu starts collapsed');
-eq(tplMenu.children.map((b) => b.textContent), ASSET_MENU_LABELS, 'the settings menu renders all ten items in order');
+eq(tplMenu.children.map((b) => b.textContent), ASSET_MENU_LABELS, 'the settings menu renders all items in order');
 eq(
   assetChildren(tplRow, 'asset-row-action')[0].title,
   '识别：返回全部符合阈值的匹配候选（带评分；集合按成员声明序）',
@@ -1999,7 +2039,7 @@ eq(assetRowMenu(noActionRow), null, 'actions:false renders no settings menu');
 const compactRow = assetUi.createRow(rowOcr, assetRowOpts({ compact: true }).opts);
 eq(
   assetRowMenu(compactRow).children.map((b) => b.textContent),
-  ['识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '识别文字'],
+  ['识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '长按测试', '识别文字'],
   'compact keeps the old hiding of 点测/拖测/步骤'
 );
 
@@ -2021,7 +2061,7 @@ const ocrVarMenu = assetUi.assetMenuState(rowOcrVar, { manage: true });
 eq(
   ocrVarMenu.filter((m) => m.disabled).map((m) => m.label),
   [],
-  'U-T4: an ocr_var row enables all ten items (识别文字 included)'
+  'U-T4: an ocr_var row enables all items (long-press + 识别文字 included)'
 );
 const ocrVarTextMenu = ocrVarMenu.find((m) => m.key === 'text');
 eq(ocrVarTextMenu.disabled, false, 'U-T4: ocr_var can edit 识别文字');
@@ -2246,35 +2286,20 @@ ok(
   /function editAssetText\(it, scopeTask\)[\s\S]{0,600}虚拟素材/.test(source),
   'U-T4: 识别文字 preview prompts migration for virtual rows'
 );
-// S6 offset canvas drawing（阶段 A：绘制+计算，保存待 B-T3）
-ok(
-  /function startOffsetDrawForAsset\(it, scopeTask\)/.test(source),
-  'U-T4: offset drawing has an entry point (phase-B dialog wires it via OAS_CANVAS_TOOLS)'
-);
-ok(
-  /function offsetDrawMouseDown\(ev\)/.test(source) && /function offsetDrawFinish\(\)/.test(source),
-  'U-T4: offset drawing handles canvas drag + 完成'
-);
-ok(
-  /drawOffsetDrawOverlay\(\)/.test(extractFunction('draw')),
-  'U-T4: draw() renders the simulated recognition + operation regions'
-);
-ok(
-  /canvas\.addEventListener\('mousedown', \(ev\) => \{[\s\S]{0,260}offsetDrawMouseDown\(ev\)[\s\S]{0,260}liveInputAllowed\(\)/.test(source),
-  'U-T4: offset drawing intercepts the drag before the live-passthrough branch'
-);
-for (const id of ['offset-draw-label', 'btn-offset-redraw', 'btn-offset-cancel', 'btn-offset-done']) {
-  ok(new RegExp(`id="${id}"`).test(html), `U-T4: index.html provides #${id}`);
-}
-ok(
-  /id="btn-save-asset-roi"[\s\S]{0,700}id="offset-draw-label"[\s\S]{0,700}id="btn-offset-done"/.test(html),
-  'U-T4: the offset controls sit in #canvas-footer next to the ROI save button'
-);
-ok(
-  /\.offset-draw-label/.test(styleCss) && /#canvas-footer \.offset-draw-label\[hidden\]/.test(styleCss),
-  'U-T4: style.css styles the offset footer label'
-);
-ok(/window\.OAS_CANVAS_TOOLS = \{/.test(source), 'U-T4: canvas tools entry is exposed for phase-B wiring/console');
+// B3a 模型 A：S6 offset 绘制 UI 删除映射（Lead task-27 b 项）：
+//   旧 app.js：offsetDraw/offsetDrawPending 状态 + startOffsetDrawForAsset/exitOffsetDraw/
+//   offsetDrawResetSimRoi/offsetDrawResult/offsetDrawLabelText/offsetDrawSetButton/
+//   updateOffsetDrawUi/drawOffsetDrawOverlay/offsetDrawFinish/offsetDrawMouse* +
+//   OAS_CANVAS_TOOLS + startOpRegionOffsetDraw/buildOpRegionLevel + offsetFromDraw；
+//   旧 index.html：#offset-draw-label / #btn-offset-{redraw,cancel,done}；
+//   旧 style.css：.offset-draw-label 两条规则；旧 ui_pure_test：offsetFromDraw 纯函数与静态断言。
+// 反向断言：上述符号不得回归（模型 A 只保留 self/asset 两态 + 旧 offset 数据提示迁移）。
+ok(!/offsetDraw|offset-draw|btn-offset|offsetFromDraw|OAS_CANVAS_TOOLS/.test(source),
+  'B3a: the offset-drawing UI/code is fully removed from app.js');
+ok(!/offset-draw-label|btn-offset-redraw|btn-offset-cancel|btn-offset-done/.test(html),
+  'B3a: the offset footer controls are removed from index.html');
+ok(!/offset-draw-label/.test(styleCss),
+  'B3a: the offset footer styles are removed from style.css');
 ok(
   /function opRegionDraftStart\(asset\)/.test(source) &&
     /function opRegionDraftSetLevel\(draft, index, opRegion, assets\)/.test(source) &&
@@ -2332,19 +2357,21 @@ ok(
 );
 const openOpRegionFn = extractFunction('openOpRegionDialog');
 ok(
-  /opRegionDraftStart\(asset\)/.test(openOpRegionFn),
-  'U-T4/S5: the 操作区 dialog starts from the asset draft model'
+  /opRegionNodeOf\(asset\.op_region\)/.test(openOpRegionFn) &&
+    /mode: initialMode/.test(openOpRegionFn),
+  'B3a: the 操作区 dialog opens in the two-state model A (self / reference gate)'
 );
 const saveOpRegionFn = extractFunction('saveOpRegionDialog');
 ok(
-  /opRegionSavePlan\(ctx\.draft, lib/.test(saveOpRegionFn) &&
-    /postJson\('\/task\/asset\/update', \{[\s\S]{0,120}op_region: update\.op_region/.test(saveOpRegionFn),
-  'U-T4/S5: saving the chain posts /task/asset/update op_region per edited level'
+  /validate_op_region/.test(saveOpRegionFn) &&
+    /postJson\('\/task\/asset\/update', \{\s*task: ctx\.scope,\s*id: ctx\.asset\.id,\s*op_region: op/.test(saveOpRegionFn) &&
+    !/opRegionSavePlan/.test(saveOpRegionFn) &&
+    /只写当前素材/.test(saveOpRegionFn),
+  'B3a: saving writes ONLY the current asset (one update) after validate; no PATCH of referenced assets'
 );
 ok(
-  /offsetDrawReturnToOpRegion/.test(source) &&
-    /opRegionDraftSetLevel\([\s\S]{0,200}mode: 'offset', offset: result\.offset/.test(source),
-  'U-T4/S5: the canvas offset drawing writes back into the dialog draft on 完成'
+  /引用素材只作识别门槛；动作落点=当前素材操作区/.test(extractFunction('renderOpRegionDialog')),
+  'B3a: the dialog copy states the model-A rule (reference = recognition gate only)'
 );
 ok(
   /onOpRegion: \(it\) => openOpRegionDialog\(it/.test(source) &&
@@ -2985,7 +3012,6 @@ const roiEditSb = {
   resultEl: { textContent: '' },
   window: {},
   livePreview: false,
-  offsetDraw: null,
   resetSelection: () => { throw new Error('template_set must not start a canvas edit'); },
   pickAssetRoi: () => {},
   cancelRecognitionRoiEdit: () => {},
@@ -3024,7 +3050,6 @@ function installRoiCancelHarness() {
     btnSaveAssetRoi: { hidden: true, disabled: true, title: '' },
     assetRoiEditLabel: { hidden: true, textContent: '' },
     resultEl: { textContent: '' },
-    offsetDraw: null,
     loadActionShapeForEdit: () => {},
     actionShapeBBox: () => null,
   };
@@ -3934,6 +3959,38 @@ ok(
   /sendAssetTestGesture\(true, 'swipe'/.test(extractFunction('testAssetDrag')),
   'U-T4: 拖测 keeps the old path (test_action drag is 400 in this batch)'
 );
+// B3a（task-27 c）：拖测接入候选列表；多候选复用 #candidate-select 选一个，再走旧拖测路径。
+const dragCandidatesFn = extractFunction('testAssetDrag');
+ok(
+  /fetchActionCandidates\(it, task, frame\)/.test(dragCandidatesFn),
+  'B3a: 拖测先取 GET /task/asset/candidates 全部候选'
+);
+ok(
+  /pickActionCandidate\(fetched\.items, it, '拖测'\)/.test(dragCandidatesFn),
+  'B3a: 多候选拖测复用 #candidate-select（purpose=拖测）选一个'
+);
+ok(
+  /candidateBoxes\(fetched\.items\)/.test(dragCandidatesFn) &&
+    /translatedActionShapeForMatch\(it, \{ x: recognizedBox\[0\], y: recognizedBox\[1\] \}\)/.test(dragCandidatesFn),
+  'B3a: 拖测画全部候选框；模板候选按匹配偏移平移操作区'
+);
+ok(
+  !/\/task\/asset\/match\?task=/.test(dragCandidatesFn),
+  'B3a: 拖测不再走单结果 /task/asset/match'
+);
+ok(
+  /候选 #\$\{candidateIndex\}/.test(dragCandidatesFn),
+  'B3a: 拖测结果行带选中候选序号'
+);
+// 长按测试入口（task-27）：菜单项已由 menu 断言覆盖；请求侧 dry/real 都带 hold_ms=3000。
+ok(
+  /holdMs: gesture === 'long_press' \? 3000 : undefined/.test(clickTestFn),
+  'B3a: 长按测试 dry/real 请求带 hold_ms=3000'
+);
+ok(
+  (source.match(/onLongPress:/g) || []).length >= 3,
+  'B3a: three asset surfaces wire 长按测试 (onLongPress)'
+);
 ok(
   /assetCandidatesUrl\(task, it\.id, frame/.test(extractFunction('fetchActionCandidates')),
   'U-T4: the test-action candidate list comes from GET /task/asset/candidates'
@@ -3998,8 +4055,9 @@ eq(
 );
 eq(opRegionValidateErrorText({ ok: true }), '', 'U-T4: a valid chain yields no error text');
 ok(
-  /选择候选后发送真实点击/.test(extractFunction('pickActionCandidate')),
-  'U-T4: the real-mode candidate picker asks the user to choose a candidate'
+  /function pickActionCandidate\(candidates, it, purpose\)/.test(extractFunction('pickActionCandidate')) &&
+    /'选择候选后' \+ what/.test(extractFunction('pickActionCandidate')),
+  'B3a: the candidate picker labels 真实点击/拖测 via the purpose parameter'
 );
 for (const id of ['candidate-select']) {
   ok(new RegExp(`id="${id}"`).test(html), `U-T4: index.html provides #${id}`);
