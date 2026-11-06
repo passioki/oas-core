@@ -6088,9 +6088,13 @@ impl Server {
 
     /// POST /task/goal body `{task, goal:{mode,count?}}`.
     ///
-    /// Stores the task-level completion condition in `meta.json`; for
-    /// `mode=battles` it also ensures `params.max_battles` exists so the flow
-    /// can use `loop n=param('max_battles')`.
+    /// Stores the task-level completion condition in `meta.json` and **nothing
+    /// else**. 批次D (2026-11-06, 参数 UI 移除): the Studio's battles condition now
+    /// generates a **literal** `loop n=<goal.count>`, so this route must not
+    /// inject any `meta.params` row — the old `param('max_battles')` bridge is
+    /// gone (user口径: 全新开发、不兼容旧配置). A legacy `meta.json` that still
+    /// carries a user-authored `max_battles` parameter is preserved untouched
+    /// (old flows stay readable; we never delete user rows implicitly).
     fn handle_task_goal(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
         let v: serde_json::Value = match serde_json::from_slice(body) {
             Ok(v) => v,
@@ -6139,32 +6143,6 @@ impl Server {
             Err(e) => return self.send_errors(out, 400, vec![format!("meta.json invalid: {e}")]),
         };
         meta["goal"] = goal.clone();
-        if mode == "battles" {
-            let count = count.unwrap_or(1);
-            let params = meta
-                .as_object_mut()
-                .unwrap()
-                .entry("params")
-                .or_insert_with(|| serde_json::json!([]));
-            let Some(arr) = params.as_array_mut() else {
-                return self.send_errors(out, 400, vec!["meta.params must be an array".into()]);
-            };
-            let existing = arr
-                .iter()
-                .position(|p| p.get("key").and_then(|k| k.as_str()) == Some("max_battles"));
-            let decl = serde_json::json!({
-                "key": "max_battles",
-                "type": "int",
-                "default": count,
-                "min": 1,
-                "max": 999
-            });
-            if let Some(i) = existing {
-                arr[i] = decl;
-            } else {
-                arr.push(decl);
-            }
-        }
         let pretty = match serde_json::to_string_pretty(&meta) {
             Ok(s) => s,
             Err(e) => return self.send_errors(out, 500, vec![format!("serialize meta: {e}")]),
@@ -13721,6 +13699,119 @@ mod tests {
                 "{stage:?}: rollback must leave no staging dir, found {leftovers:?}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // 批次D2 (参数 UI 移除): `POST /task/goal` must not inject `meta.params` rows
+    // -----------------------------------------------------------------------
+
+    fn post_goal(server: &Server, body: serde_json::Value) -> (String, serde_json::Value) {
+        let (status, out) = post_route(
+            server,
+            "/task/goal",
+            "application/json",
+            body.to_string().as_bytes(),
+        );
+        let v = serde_json::from_str(&out).unwrap_or(serde_json::Value::Null);
+        (status, v)
+    }
+
+    #[test]
+    fn goal_battles_does_not_inject_a_max_battles_parameter() {
+        let td = TempDir::new("goal-no-inject");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path());
+        make_task(&tasks_dir, "t1");
+        let meta_path = tasks_dir.join("t1").join("meta.json");
+        assert!(
+            read_json(&meta_path)["params"]
+                .as_array()
+                .map(|a| a.is_empty())
+                .unwrap_or(true),
+            "the daily skeleton starts without params"
+        );
+        let (status, v) = post_goal(
+            &server,
+            serde_json::json!({"task": "t1", "goal": {"mode": "battles", "count": 7}}),
+        );
+        assert!(status.contains("200"), "{status} {v}");
+        assert_eq!(v["goal"]["mode"], "battles", "{v}");
+        assert_eq!(v["goal"]["count"], 7, "{v}");
+        // 批次D2: the Studio writes a **literal** `loop n=<count>` now, so the
+        // route must not append `max_battles` (old param bridge removed).
+        let meta = read_json(&meta_path);
+        assert_eq!(meta["goal"]["count"], 7, "{meta}");
+        let params = meta["params"].as_array().expect("params array");
+        assert!(
+            params.iter().all(|p| p["key"] != "max_battles"),
+            "goal save must not inject params.max_battles: {meta}"
+        );
+        assert!(params.is_empty(), "no params were authored: {meta}");
+        // Non-battles modes are write-only too.
+        let (status, _) = post_goal(
+            &server,
+            serde_json::json!({"task": "t1", "goal": {"mode": "until_resource"}}),
+        );
+        assert!(status.contains("200"), "{status}");
+        assert!(
+            read_json(&meta_path)["params"]
+                .as_array()
+                .map(|a| a.is_empty())
+                .unwrap_or(true),
+            "until_resource must not inject params either"
+        );
+        // Battles validation is unchanged (count required, 1..=999).
+        let (status, _) = post_goal(
+            &server,
+            serde_json::json!({"task": "t1", "goal": {"mode": "battles"}}),
+        );
+        assert!(status.contains("400"), "{status}");
+        let (status, _) = post_goal(
+            &server,
+            serde_json::json!({"task": "t1", "goal": {"mode": "battles", "count": 0}}),
+        );
+        assert!(status.contains("400"), "{status}");
+    }
+
+    #[test]
+    fn goal_save_preserves_a_legacy_max_battles_parameter() {
+        // 旧任务 meta.json 可能仍有手写 `max_battles`（旧 flow 的
+        // `loop n=param('max_battles')` 仍在跑）；批次D2 只删「自动补」，保存 goal
+        // 不得删除、改写或重排用户已有的行。
+        let td = TempDir::new("goal-legacy-param");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path());
+        make_task(&tasks_dir, "t1");
+        let meta_path = tasks_dir.join("t1").join("meta.json");
+        let mut meta = read_json(&meta_path);
+        let legacy_params = serde_json::json!([
+            {"key": "max_battles", "type": "int", "default": 3, "min": 1, "max": 999},
+            {"key": "loop_note", "type": "string", "default": "旧参数"}
+        ]);
+        meta["params"] = legacy_params.clone();
+        meta["future_field"] = serde_json::json!({"keep": true});
+        std::fs::write(
+            &meta_path,
+            serde_json::to_string_pretty(&meta).expect("serialize meta") + "\n",
+        )
+        .expect("write meta");
+        let (status, v) = post_goal(
+            &server,
+            serde_json::json!({"task": "t1", "goal": {"mode": "battles", "count": 9}}),
+        );
+        assert!(status.contains("200"), "{status} {v}");
+        let saved = read_json(&meta_path);
+        assert_eq!(
+            saved["params"], legacy_params,
+            "existing user params must be preserved verbatim: {saved}"
+        );
+        // Only `goal` is written; every other meta field survives.
+        assert_eq!(saved["goal"]["count"], 9, "{saved}");
+        assert_eq!(
+            saved["future_field"],
+            serde_json::json!({"keep": true}),
+            "{saved}"
+        );
     }
 
     #[test]
