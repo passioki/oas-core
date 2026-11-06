@@ -4627,3 +4627,44 @@ Rust 后端未动（workspace 801/0 基线不变）；按用户「推送即可�
 | hotfix | ✅ | `c1271d8`：index.html 候选下拉注释误写 `*/}` ⇒ 178 行 DOM 被吞（`#btn-clear` null 运行时 TypeError）；已修正 + ui_pure_test 增加「HTML 注释平衡/无 `*/}`」与「注释剥离后 DOM id 审计」断言；UI **2512**/194/0 dead/6 nav |
 
 **后续可选项（不阻塞 seq124）**：① drag 测试动作（test_action 400 → 后续单列）；② 素材行「长按测试」入口；③ 识别文字 ROI 接画布绘制；④ 配置项面板派生行只读卡片渲染；⑤ 候选 API `op_rect` 链预览；⑥ 全屏 OCR 性能实测；⑦ 真机 E2E（操作区落点/多候选最近/长按曲线）；⑧ Phase 2（彻底去 `meta.params`、flow 免 text_expr、values asset_values）；⑨ 更新检测鉴权/GC、tag/Release 策略、产品验收 §D.4。
+
+# ★ §E-94 ★★★ [11-06 18:3x] 验收反馈（seq124 后）13 项 + 整改计划（**待用户确认关键口径，未改代码**）
+
+> 用户 2026-11-06 18:1x 提交 13 条验收反馈 + 剩余可选项答复；Lead 已派 3 路只读排查并出「理解+计划」。完整计划：**docs/ACCEPTANCE-2026-11-06.md**；排查报告（仓外）：_verify\acceptance-20261106\{01-bug-triage,02-refactor-design-inputs,03-infra-ops}.md。
+> 当前基线：HEAD d9c3dcc；workspace 904/0；UI 2512 checks/194 ids/0 dead/6 nav；E2E 27/26/0/1。
+
+## A. 13 项状态（⬜ 待开工 / 等确认）
+
+| # | 反馈 | 排查结论 | 整改批次 |
+|---|---|---|---|
+| 1 | 动作属性页仍有「文字（参数）」+「插入参数」 | 属实（builder.js:2714-2729/2594-2683） | D（删除 param UI；条件编辑器改选 ocr_var；goal battles 字面量） |
+| 2 | 构建页/任务库仍有配置项参数 | 属实（index.html:341-356、app.js:802-806、runner.html:524-543 等） | D（删用户侧参数入口；服务端派生模型保留） |
+| 3 | 多候选只对参数 ocr 生效 | 部分属实：模板/集合/ocr_var 多候选 ✅；普通 ocr_line/ocr_lines 作链节点运行时报错（校验放行）；根目标只取最佳；候选口径三处分裂 | C（统一 candidates_for_asset、普通 OCR 链节点期望文字、pick 生效） |
+| 4 | 操作区去掉「相对偏移」；引用素材只作识别链节点、不得改其设置 | 现状=模型 B（链末端被引用素材操作区决定落点；UI 保存时 PATCH 被引用素材）→ 用户要模型 A | B（模型 A：链只作门槛，落点=当前素材操作区；删 offset；被引用素材只读） |
+| 5 | 参数类素材不支持阈值 | 后端/运行时全支持，仅 Studio UI 阻断（app.js:6699-6704） | A（纯 UI，S） |
+| 6 | 多边形保存/展示回退矩形 | 保存链路基本保留；显示层恒矩形（缩略图/选中不恢复 polygon）；update 无 polygon；模板缩放回退矩形属设计限制 | A（显示层）+ B（update polygon/平移） |
+| 7 | Runner 端加启动脚本 | 发行包有、仓库根没有；packaging 脚本落后 seq118 且双击无提示 | E（新增/增强脚本） |
+| 8 | GitHub About 大量「?」 | 存储值即字面 ?，不可逆；需 UTF-8 无 BOM JSON 重写；需用户授权 gh/PAT | E（待授权） |
+| 9 | 改识别文字后操作区被重置；Runner 改是否同样 | 属实（全屏 ocr_var replace:true payload 漏 op_region/action_shape/threshold）；**Runner 不丢**（只写 values.json） | A（UI 带全字段+服务端 replace 继承+测试） |
+| 10 | 统一框选：拖动=矩形/点击=多边形/双击收尾；识别区/操作区/反选三按钮；素材行接入 | 可行；识别区多边形后端已是真实掩膜；缺口=UI 不显示已存 polygon、update 无 polygon、ocr_var 禁 polygon；反选仅操作区可行 | B（统一工具重构 + 后端小改） |
+| 11 | 全屏识别「队伍1」把队伍2/3 当候选 | 属实：ocr_text_matches 允许 1 编辑距离（runtime:969-999），候选+点击+等待共用 | A（数字保护+候选严格模式） |
+| 12 | oas-core/runner 十几 GB | D:\OAS-dev 24.6GB：_verify 10.4 + core target 9.27 + runner target 2.51 + …；可回收 15-18GB | E（需批准清理；先停 8788 oasd） |
+| 13 | 配置变量应通用化（编辑端创建→任务应用→使用端个性化；多账号/多配置/多模拟器） | 现仅 ocr_var + meta.params 派生；无通用变量/Profile | F（变量系统 v2 设计，与 Phase 2 合并） |
+
+## B. 批次计划
+
+**A（先做，低风险高收益）**：#5、#9、#11、#6 显示层 → 1 轮。
+**B（操作区/框选重构）**：#4 模型 A + 删 offset；#10 统一框选；#6 保存层（update polygon/平移）；ocr_var polygon+掩膜。
+**C（候选口径统一）**：#3（candidates_for_asset 接线、普通 OCR 链节点期望文字、test_action 根候选一致、拖测单候选接入=用户澄清）。
+**D（参数 UI 清理）**：#1+#2 全部用户侧参数入口删除；条件编辑器改「识别文字配置项」；goal battles 字面量；Runner 通用参数区删除/隐藏；长按测试入口（用户答复可做）。
+**E（运维）**：#7 启动脚本；#8 About（需授权）；#12 清理（需批准）。
+**F（变量系统 v2）**：#13 + Phase 2 设计（变量类型/使用端可改/Profile 多账号多模拟器）→ 评审后实现。
+
+## C. 待用户确认（8 项，见 docs/ACCEPTANCE-2026-11-06.md §5）
+
+1 #4 模型 A 与 OCR 操作区是否跟随识别文字；2 #4 链递归/region 门槛；3 #3 候选语义（同文多处才多候选 vs 全部行）；4 #10 反选范围/模板多边形不重截图/ocr_var 多边形；5 #1/#2 条件编辑器改造与 battles 字面量、Runner 通用参数区删除；6 #8 gh/PAT 授权与新文案；7 #12 清理批准（含停 8788）；8 #13 变量系统方向。
+
+## D. 验证口径（每批）
+
+cargo test --workspace ≥904/0 只增；
+ode apps\oasd\ui\ui_pure_test.js ≥2512 checks/0 dead/6 nav；E2E 27 断言扩容；UI 改动用 **Firefox 手测**（用户默认浏览器）；用户数据（assets/frames/tasks/scheduler.json）不提交、未经确认不批量改写。

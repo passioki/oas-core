@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 124
-updated_at: 2026-11-06T13:3x+08:00
-trigger: seq124 完成（用户 12:1x 权威澄清 → 3 路审计 → 设计 → P0/B-T1~T3/U-T4~T6/D-T8 全实现 → Lead 独立验收通过 → 提交推送）
-status: done
-code_head: `aab6372` feat(seq124)（16 files，+11894/−1911；docs 提交见 `git log -1`）
-docs_head: `git log -1`（dev = main = origin；本批 docs 随文档提交推送）
-next_action: seq124 已完成并推送（只推送不发布，未 tag/未 release）。后续可选：① drag 测试动作（test_action 现 400）；② 素材行「长按测试」入口；③ 识别文字 ROI 接画布绘制；④ 配置项面板派生行只读卡片；⑤ 候选 API op_rect 链预览；⑥ 全屏 OCR 性能实测；⑦ 真机 E2E（操作区落点/多候选最近/长按曲线时序）；⑧ Phase 2（去 meta.params/flow 免 text_expr/values asset_values）；⑨ 更新检测鉴权/GC、tag/Release 策略、产品验收 §D.4。详见 `PENDING-LEDGER §E-93 §D.6`、`ENGINE §22.64.8`
+checkpoint_seq: 125
+updated_at: 2026-11-06T18:4x+08:00
+trigger: seq124 交付后，用户 18:1x 提交 13 条验收反馈 + 剩余可选项答复 → Lead 派 3 路只读排查（_verify\acceptance-20261106\01~03）→ 出「理解+整改计划」（docs/ACCEPTANCE-2026-11-06.md、PENDING §E-94）；**本轮只写文档，未改代码**
+status: awaiting-user-confirmation
+code_head: `d9c3dcc`（seq124 代码+文档+UI 热修已推送 dev=main=origin；工作区干净仅用户数据未提交）
+docs_head: 本批验收文档提交见 `git log -1`
+next_action: 等用户确认 `docs/ACCEPTANCE-2026-11-06.md §5` 的 8 项口径后，按批次实施：**A**（#11 OCR 匹配数字保护+候选严格、#5 ocr_var 阈值 UI、#9 replace 丢操作区修复+服务端继承、#6 多边形显示层）→ **B**（#4 操作区模型 A + 删 offset、#10 统一框选工具、#6 update polygon/平移）→ **C**（#3 候选口径统一 + 普通 OCR 链节点期望文字 + 拖测单候选接入）→ **D**（#1/#2 参数 UI 全部删除、条件编辑器改 ocr_var、goal battles 字面量、Runner 通用参数区删、长按测试入口）→ **E**（#7 Runner 启动脚本、#8 GitHub About（需授权 gh/PAT）、#12 仓库清空间（需批准、先停 8788））→ **F**（#13 变量系统 v2 + Phase2 设计）；每批 cargo≥904/0、UI≥2512/0 dead/6 nav、E2E 扩容、Firefox 手测；**不 tag/不 release**
 ```
 
 ## 0. 目标（本阶段）
@@ -233,6 +233,21 @@ next_action: seq124 已完成并推送（只推送不发布，未 tag/未 releas
 | D-T8 | E2E（仓外新模型任务）+ 文档归档 + 交接 | E2E 27 total/26 PASS/0 FAIL/1 SKIP exit 0（`_verify\seq124-e2e-20261106\`）；`ENGINE §22.64`、`OPERATION-REGION-DESIGN §8`、`PARAM-ASSET-IMPLEMENTATION`「实现结果」、`README` 索引 |
 
 **取消**：U-T7 旧配置迁移/兼容（用户 12:5x 简化令：全新开发、旧配置可删）。**未做（后续可选）**：drag 测试动作、素材行长按测试入口、识别文字 ROI 接画布、S8 派生行只读卡片、候选 op_rect 预览、全屏 OCR 性能、真机 E2E、Phase 2（去 meta.params）。详见 `PENDING-LEDGER §E-93 §D.6`。
+
+## 1.19 2026-11-06 18:1x→18:4x（seq 125）验收反馈 13 项：3 路排查 + 理解/整改计划（awaiting-user-confirmation）
+
+> 用户 seq124 交付后提交 13 条验收反馈 + 剩余可选项答复；Lead 派 3 路只读排查（复用现成成员避开团队上限），产出 `_verify\acceptance-20261106\{01-bug-triage,02-refactor-design-inputs,03-infra-ops}.md`；计划文档 `docs/ACCEPTANCE-2026-11-06.md`；台账 `PENDING §E-94`。**本轮未改代码**。
+
+| 组 | 内容 | 结论要点 |
+|---|---|---|
+| A 先做 | #5 ocr_var 阈值 / #9 改识别文字丢操作区 / #11 OCR 误配 / #6 多边形显示层 | #5 后端全支持仅 UI 阻断（app.js:6699-6704）；#9 全屏 ocr_var 走 `replace:true` 且 payload 漏 op_region/action_shape/threshold → 链清空（Runner 端只写 values.json 不丢）；#11 `ocr_text_matches` 允许 1 编辑距离（runtime:969-999）→ 队伍1=队伍2/3，候选+点击+等待共用；#6 保存基本保留、显示层恒矩形+update 无 polygon |
+| B 重构 | #4 操作区模型 A + 删 offset；#10 统一框选工具；#6 保存层 | 现状=模型 B（链末端被引用素材操作区决定落点，UI 还 PATCH 被引用素材）与用户要求冲突 ⇒ 改模型 A（链只作识别门槛、落点=当前素材操作区、被引用素材只读）；统一框选可行（拖动=矩形/点击=多边形/双击收尾；反选仅操作区） |
+| C 候选 | #3 候选口径统一 + 普通 OCR 链节点 | 模板/集合/ocr_var 多候选 ✅；普通 ocr_line/ocr_lines 作链节点运行时失败（校验却放行）；根目标只取最佳；`candidates_for_asset` 未接线 |
+| D 参数 UI | #1/#2 参数入口删除 + 条件编辑器改 ocr_var + goal battles 字面量 + Runner 通用参数区 | 10 个用户侧触点已定位（报告 A 节）；服务端派生模型保留（内部/诊断） |
+| E 运维 | #7 Runner 启动脚本 / #8 GitHub About 乱码 / #12 仓库体积 | 启动脚本"包里有仓库根没有"；About 存储值即字面 ?（不可逆，需 gh/PAT 授权重写）；D:\OAS-dev 24.6GB（_verify 10.4 + core target 9.27 + runner target 2.51…），可回收 15-18GB（需批准、先停 8788） |
+| F 设计 | #13 变量系统 v2（+Phase2） | 通用变量（ocr_text/string/int/bool/enum）+ 使用端可改 + Profile（多账号/模拟器）；先出设计再实现 |
+
+**待用户确认 8 项**（见计划文档 §5）：#4 模型 A/OCR 操作区是否跟随识别文字、链递归/region 门槛、#3 候选语义、#10 反选范围/模板多边形/ocr_var 多边形、#1/#2 条件编辑器与 battles/Runner 通用参数区、#8 gh/PAT 授权、#12 清理批准、#13 变量系统方向。
 
 ## 2. 本批交付（seq 110）
 
