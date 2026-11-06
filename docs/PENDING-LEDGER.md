@@ -624,7 +624,7 @@
 
 | # | 事项 | 依据 | 状态 | ★ 可核查证据 / 方案 |
 |---|---|---|---|---|
-| **E-6-q** | ★★★ **[10-15] 实机**不需要**前端源码（★ 用户裁定："不参与运行的不应该存在"）** | ★ 用户 [10-15] 原话：★ "**不参与运行的不应该存在，有解决方法吗。**" | ✅ **已裁定并写进文档** | ★ **真因**：跨仓契约测试（9 个文件）要读前端源码 ⇒ ★ 我上轮据此说"实机也留一份 frontend" —— ★ **那是错的**（★ 那份源码在实机上确实不参与运行）。★★ **解法**：① 实机只放**运行产物**（backend 拷贝 + `oasx-live.exe`），★ **不在实机跑 pytest**（★ 这本来就是 P14 的既有口径）② ★ **跨仓测试只在【开发机】跑**；★ 开发机上 `frontend\` **必须存在**（★ 用户另一条裁定"前端仓库要存在" ⇒ `require_oasx()` 缺了就抛）③ ★ 已改 `LAYOUT.md §1` + `DEV-WORKFLOW §4` 撤掉错误建议 | 
+| **E-6-q** | ★★★ **[10-15] 实机**不需要**前端源码（★ 用户裁定："不参与运行的不应该存在"）** | ★ 用户 [10-15] 原话：★ "**不参与运行的不应该存在，有解决方法吗。**" | ✅ **已裁定并写进文档** | ★ **真因**：跨仓契约测试（9 个文件）要读前端源码 ⇒ ★ 我上轮据此说"实机也留一份 frontend" —— ★ **那是错的**（★ 那份源码在实机上确实不参与运行）。★★ **解法**：① 实机只放**运行产物**（backend 拷贝 + `oasx-live.exe`），★ **不在实机跑 pytest**（★ 这本来就是 P14 的既有口径）② ★ **跨仓测试只在【开发机】跑**；★ 开发机上 `frontend\` **必须存在**（★ 用户另一条裁定"前端仓库要存在" ⇒ `require_oasx()` 缺了就抛）③ ★ 已改 `LAYOUT.md §1` + `DEV-WORKFLOW §4` 撤掉错误建议 |
 | **E-6-r** | ★ **可选加固（★ 未做 · 等指令）**：给跨仓测试加 `@pytest.mark.frontend_contract` | ★ 供"**非开发机**上也必须跑后端测试"的场景 | ⬜ **未做** | ★ 设计：① `pytest.ini` 注册 marker ② 9 个文件加 `pytestmark`，并把模块级 `require_oasx()` 改成**延迟解析**（★ 否则 `-m "not frontend_contract"` 也会在 import 期抛）③ 实机侧用 `run-tests.bat -m "not frontend_contract"`（★ 全量只剩那 6 条"用户/实机状态"类）★ **验收**：★ 临时把 `D:\OAS-dev\frontend` 改名 ⇒ 带 marker 的命令 **全绿**、不带 marker 的命令 **响亮报错**（注入验证）|
 | **E-6-s** | ★★★ **[10-15] `session-memory` 技能已装上（★ 它不在项目仓库里）** | ★ 用户 [10-15] 给了技能仓库：`https://github.com/passioki/dsh-skills` | ✅ **已完成 · 自检全绿** | ★ 实测原因：`%DSH_HOME%\skills\` **原本不存在**（★ `DSH_HOME = C:\Users\passioki\.dsh`）⇒ ★ `skill` 目录里没有 `session-memory`。★ 处置：① `git clone https://github.com/passioki/dsh-skills.git D:\tools\dsh-skills` ② `.\install.bat` ⇒ 建 **Junction**（★ 不需要管理员）：`C:\Users\passioki\.dsh\skills\session-memory` → `D:\tools\dsh-skills\skills\session-memory` ③ 自检 `python verify.py` = **ALL CHECKS PASSED**（★ 四道检查：无盘符 / PS 纯 ASCII / PS 语法 / 端到端）④ ★ **DSH 热加载生效**：技能目录里已出现 `session-memory` ⇒ `skill` 工具可加载。★ 之后的同步：只需 `cd D:\tools\dsh-skills; git pull`（★ Junction 模式立即生效，**不用重装**）· ★ 换机器要重装（★ 步骤已写进 `START-HERE §1.1` 与 `DEV-WORKFLOW §6`）|
 | **E-6-t** | ★★★ **[10-15] 开发机侧**也撞上"两台机器并发写"**（★ 与实机侧 §E-7-b 同源）| ★ 我 push 时报 `! [rejected] … (fetch first)`（★ 远端已出现实机侧 4 个提交 `fc6d38ae`/`fc81cbb6`/`1f9a61a9`/`b91d426e`）| ✅ **已按规矩解决** | ★ `git pull --rebase origin dev` ⇒ **无冲突**（★ 我的 `§E-6-s` 与他们的 `§E-7` **并存**）⇒ push 成功 **`b91d426e..82a05a0a`**；★★ **没有 force** · ★ 另实测：★ **开发机两仓的 `remote.origin.fetch` 都是通配**（`+refs/heads/*`）⇒ `git fetch origin` **能**更新 `origin/dev`（★ 与实机侧"只配 main"不同）⇒ ★ 规矩已写进 **`DEV-WORKFLOW §0.7`**（推前 fetch ⇒ 看 `dev..origin/dev` ⇒ rebase ⇒ push；绝不 force）|
@@ -2082,12 +2082,12 @@ step seq=... depth=1 op=while_cond result=ok detail=iteration=2 value=Bool(true)
 
 ## 仍要用户处理
 
-若日志显示 `while_cond value=true` 而屏幕已有町中/召唤，说明 OCR 资产本身没识别到；需要用素材行「识别」检查并调大 ROI。  
+若日志显示 `while_cond value=true` 而屏幕已有町中/召唤，说明 OCR 资产本身没识别到；需要用素材行「识别」检查并调大 ROI。
 若条件值无法区分两个 appear，可在 while 前分别 `log(appear('町中'))` / `log(appear('召唤'))` 做临时诊断。
 
 ## 最终确认（U-53 实测）
 
-用户确认：修复“while 条件强制抓实时帧”后，同一任务**循环正常退出并成功运行**。  
+用户确认：修复“while 条件强制抓实时帧”后，同一任务**循环正常退出并成功运行**。
 因此根因不是 `not/and` 逻辑，也不是缺少 finish，而是**条件求值时复用了点击后/过渡中的旧帧**。U-53 已改为每次条件前 invalidate + refresh，并加 `frame_seq`/`appear_trace` 证据。
 
 | 状态 | ✅ 用户已确认修复（缓存帧），不是 OCR 资产/flow 缺退出分支 |
@@ -2790,7 +2790,7 @@ POST /task/delete
   → 同时删除 tasks/<task>/assets.json + images/
 ```
 
-因此删除任务会把它自己的 `assets.json` 一起删除。  
+因此删除任务会把它自己的 `assets.json` 一起删除。
 这不是全局库被清空，而是 **任务素材在任务目录中**，旧实现没有先迁移/备份。
 
 ## 证据
@@ -4668,3 +4668,26 @@ Rust 后端未动（workspace 801/0 基线不变）；按用户「推送即可�
 
 cargo test --workspace ≥904/0 只增；
 ode apps\oasd\ui\ui_pure_test.js ≥2512 checks/0 dead/6 nav；E2E 27 断言扩容；UI 改动用 **Firefox 手测**（用户默认浏览器）；用户数据（assets/frames/tasks/scheduler.json）不提交、未经确认不批量改写。
+## E. §E-94 实施结果（seq126，2026-11-06 19:2x，Lead 验收）
+
+> 用户 2026-11-06 18:4x「全按推荐，尽量用子进程」→ 按批次实施完成。所有代码/服务端改动已提交并推送（dev=main=origin，未 tag/未 release）。
+
+| # | 反馈 | 状态 | 关键提交/证据 |
+|---|---|---|---|
+| 1 | 动作属性页残留参数（文字（参数）/插入参数） | ✅ 已删（旧 flow param 只读回显；替换「插入识别文字配置项」） |  7ed361、9a3c77f |
+| 2 | 构建页/任务库配置项参数 | ✅ 已删用户入口（meta.params 派生模型//task/config 保留内部桥）；goal battles 不再自动补 params |  7ed361、c3739f6 |
+| 3 | 多候选只对参数 ocr 生效 | ✅ 普通 OCR 可作链节点（需 ocr_text 期望文字）、preview_root_candidate 单行 OCR det+rec、候选/链 pick 生效、拖测接入候选 | 4ccd182、9a3c77f、303a7ac |
+| 4 | 操作区去 offset、改模型 A、被引用素材只读 | ✅ OpRegion 仅 self/asset；链只作识别门槛、落点=根素材 self；OCR self 跟随识别文字；region 禁作链节点；UI 对话框两选一/只读链/单次 update | 4ccd182、9a3c77f |
+| 5 | ocr_var 阈值 | ✅ UI 归入 OCR 置信度阈值 | c16a536 |
+| 6 | 多边形回退矩形 | ✅ 缩略图/画布显示已存 polygon；/task/asset/update 支持 polygon 三态；模板同 ROI 改多边形不重截图；OCR 移动 ROI 时 polygon 同步（UI 保存计划） | c16a536、4ccd182、303a7ac |
+| 7 | Runner 启动脚本 | ✅ 新增仓库根 start-runner.bat（委托 dev-serve/固定 8789/失败 pause）+ 增强 packaging/start-runner.bat（自检/健康检查/自动开浏览器/失败日志） | c16a536 |
+| 8 | GitHub About 乱码 | ✅ 已用 UTF-8 API 重写（中文描述 + homepage=releases）；topics 正常 | 外部（GitHub API，非 git） |
+| 9 | 改识别文字丢操作区；Runner 是否同样 | ✅ UI replace payload 带全字段 + 服务端 replace 缺省继承（显式 null 才清空）；Runner 只写 values.json 不会重置 | c16a536 |
+| 10 | 统一框选（拖动矩形/点击多边形/双击收尾；识别区/操作区/反选；素材行接入） | ✅ canvasTool 3 按钮统一工具；反选仅操作区域；识别区 polygon 保存走 update v3；已存 polygon 可编辑 | 303a7ac |
+| 11 | 全屏识别「队伍1」误配队伍2/3 | ✅ ocr_text_matches 数字保护（全局运行期）+ 候选枚举严格匹配（候选不误配） | c16a536、4ccd182 |
+| 12 | oas-core/runner 十几 GB | ✅ 已清理：_verify 9.68GB + target/debug/incremental 4.37GB + oas-runner target 2.51GB + dist/stage 0.16GB；D:\OAS-dev 24.6GB→7.79GB | 本机命令（无提交） |
+| 13 | 变量系统 v2（通用变量/使用端个性化/Profile 多账号多模拟器） | 🔄 设计完成 docs/VARIABLES-V2-DESIGN.md（10 项拍板均按推荐）；V2.0 实现未开始 | 设计文档 |
+
+**最终验收**：workspace **929 passed / 0 failed**（23 suites：oas-task 147 / oas-runtime 212 / oasd 449）；UI **2217 checks / 177 ids / 0 dead / 158 runner ids / 6 nav**；E2E seq126 **54 total / 53 PASS / 0 FAIL / 1 SKIP**（无 ADB；_verify\seq126-e2e-20261106\）；cargo check -p oasd --features ocr exit 0；Firefox 手测待用户执行（无浏览器自动化）。
+**提交**：c16a536(A) 4ccd182(B backend)  7ed361(D) c3739f6(D2) 9a3c77f(B3a) 303a7ac(B3b) + docs 提交；dev=main=origin；未 tag/未 release。
+**剩余（不阻塞本轮验收）**：① Firefox 浏览器手测清单（识别区 drag=矩形/click 多边形/dblclick 收尾、操作区 polygon+反选、模板只改多边形不重截图、Runner 端识别文字值、start-runner.bat）；② oas-runner 独立仓根启动脚本与 pin bump（当前 pin 旧，独立包不含 seq126）；③ loop n=param('max_rounds') 模板参数（参数 UI 移除后不可配，建议后续改字面量）；④ T5 不校验手写 assets.json polygon 几何；⑤ 真机 E2E（ADB）；⑥ 变量系统 V2.0 实现。

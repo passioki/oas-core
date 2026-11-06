@@ -3,7 +3,7 @@
 > 本目录是 **oas-core 的独立项目文档**，从旧 backend 文档仓迁移而来。
 > 旧仓库 `D:\OAS-dev\backend` 已冻结，仅作为资产/历史资源；oas-core 的构建、运行、测试、发布不依赖它。
 
-## 当前有效文档（顶层 18 份，含发布节点）
+## 当前有效文档（顶层 20 份，含发布节点）
 
 | 文件 | 用途 |
 |---|---|
@@ -22,6 +22,8 @@
 | `OPERATION-REGION-DESIGN.md` | ★ **操作区域模型设计（seq 120）**：现状事实、统一 `region.mode=asset\|ocr\|nearest\|offset` 模型、点击/拖动/长按/曲线动作能力；§6/§7 为 seq 121/122 旧 A 方案（历史/底层语义参考）；**§8 = seq124 现行口径（资产级 `op_region` 链已取代 flow region；三方式+递归+防环+region 末端+运行时语义）** |
 | `PARAM-ASSET-REDESIGN.md` | 用户 2026-11-06 新要求（seq 123 记录，**已由 seq124 实现**）：参数=素材的一种 / 动作库去参数化 / 素材候选全量识别 API+UI / 操作区三方式+递归套环 / 废弃操作区两状态；**§1b = 用户权威逐字原文**（量尺被「画模拟识别区」取代） |
 | `PARAM-ASSET-IMPLEMENTATION.md` | ★★ **seq124 实施方案 + 实现结果（2026-11-06 已实现）**：`ocr_var`（C1′ 派生参数）/ 资产级 `op_region` 三方式+递归链（防环、region 末端）/ 候选 API / `test_action`·`validate_op_region` / 动作库去参数 / 废弃两状态；含 Lead 裁决 13 条 + 简化令 + 实现偏差 + 验证数字（workspace 904/0、UI 2512、E2E 27/26/0/1） |
+| `ACCEPTANCE-2026-11-06.md` | ★ **seq126 验收反馈整改（13 条）**：理解/只读排查/整改计划 + **实施结果（已整改完成）**——批次 A/B/C/D/B3a/B3b/D2/E/F 与 commit 映射、最终验证（workspace 929/0、UI 2217/177/0/6、E2E 54/53/0/1）、#12 清理 9.68GB、仍待办清单 |
+| `VARIABLES-V2-DESIGN.md` | ★ **变量系统 V2 设计（#13/F，2026-11-06）**：变量 vs 素材、schema 方案对比、Runner 使用端配置、Profile 多账号/多配置/多模拟器、迁移策略、V2.0~V2.2 分阶段与 10 项拍板推荐；**设计已交付，实现未排期** |
 | `AUDIT-SUBPROCESS-2026-11-01.md` | 子进程独立复核（范围 21:50 / 361 tests；当前状态见顶部横幅与 §10） |
 
 > **历史文档已归档**到 `docs/archive/`（7 份，`git mv`，未删除）：
@@ -37,6 +39,7 @@
 
 ## 当前基线（2026-11-05 03:3x；**PR1~PR7 + 最终审计修复已收口，状态 handoff-ready；两个服务已停止，交接后电脑关机**；发布节点 v0.1.0 见下行）
 
+- ★ **2026-11-06 19:2x（seq 126）验收整改 13 条全部落地（dev=main=origin `303a7ac`；未 tag/未 release）**：用户 13 条验收反馈 → 3 路只读排查（`_verify/acceptance-20261106/`）→ 批次 A/B/C/D/B3a/B3b/D2/E/F。① **#4 操作区模型 A**：链只作识别门槛、落点=根素材自身操作区、被引用素材只读、资产级 `offset` 删除（旧数据响亮 400）、OCR self 跟随识别文字；② **#10 统一画布框选**：3 按钮（识别区域/操作区域/反选）+ 手势（拖动=矩形/单击=多边形顶点/双击收尾），识别区/操作区/反选全接入；③ **#6 polygon**：`/task/asset/update` 三态、模板只改多边形不重截图、ocr_var 掩膜、缩略图/画布回显已存多边形；④ **#11/#3**：OCR 数字保护 + 候选 strict、普通 OCR 素材可存期望文字作链节点、候选枚举统一；⑤ **#1/#2 参数 UI 全删**（构建页面板/任务库配置项对话框/Runner 通用参数组与参数 JSON），`meta.params` 派生模型保留内部桥，条件编辑器改「识别文字配置项」，goal battles 字面量化；⑥ #9 replace 继承缺省字段；#5 ocr_var 阈值放行；#7 根 `start-runner.bat` + packaging 增强；#8 GitHub About 重写中文（API 读回验证）；#13 变量系统 V2 设计 `VARIABLES-V2-DESIGN.md`（实现未排期）；⑦ 测试 **workspace 929/0、UI 2217/177/0 dead/6 nav、E2E 54/53/0/1**（skip 无 ADB）；#12 `_verify` 清理 **9.68GB**（24.6→7.94GB）；⑧ 文档：`ACCEPTANCE-2026-11-06.md` 实施结果、`ENGINE §22.65`、`OPERATION-REGION-DESIGN §8.8`、`PARAM-ASSET-IMPLEMENTATION` seq126 修订、本文索引；风险/后续（Firefox 手测、oas-runner pin/脚本、变量系统 V2.0、loop max_rounds 模板、T5 手写 polygon 校验、真机 E2E、未 tag/未 release）见 `ENGINE §22.65.8`。
 - ★ **2026-11-06 13:2x（seq 124）参数→素材 / 操作区递归 / 候选识别 / 废弃两状态全部实现（未提交、未 tag/未 release）**：① 新素材 kind **`ocr_var`**（使用端OCR文字配置项：`runtime_text`/`param_key`/`label`/`roi` 可空=全屏 OCR）；② **资产级 `op_region`** 三方式 `self`/`offset`/`asset+pick`（递归链、DFS 深度 16+运行时 visited 防环、region/collection 末端固定区；flow 旧 `region` 保留兼容）；③ `meta.params` 由单一 sync 派生带 `asset_id` 行 + T8 lint（C1′，运行/values/param() 链路零改动）；④ 候选 API `GET /task/asset/candidates`（模板/集合/OCR/ocr_var，空 roi=全屏）+ `POST /task/asset/test_action`（dry/real，click+long_press；**drag 400 留后续**）+ `POST /task/asset/validate_op_region`；⑤ Studio：素材行「识别=全部候选」「识别文字」「操作区」递归对话框+offset 画布绘制、构建页动作目标=素材库；Runner：派生行独立分节；⑥ 删 `PARAM_ACTIONS` 参数预设；`action_source` deprecated 不再写；**不兼容旧参数/旧配置/旧包（用户 12:5x 简化令）**；⑦ 测试 **workspace 904/0、UI 2512 checks/194 ids/0 dead/6 nav、E2E 27/26/0/1**（skip 无 ADB）；⑧ 文档：`PARAM-ASSET-IMPLEMENTATION.md` 实现结果、`ENGINE §22.64`、`OPERATION-REGION-DESIGN §8`、本文索引；风险/后续（drag 测试、长按入口、ROI 未接画布、S8 只读卡片、op_rect、真机 E2E、Phase 2）见 ENGINE §22.64.8；hotfix ``c1271d8``：UI 注释坏导致 178 行 DOM 被吞（#btn-clear null）已修复并加固 UI 测试（注释平衡+剥离后 id 审计，2512 checks）。
 - ★ **2026-11-06 12:0x（seq 123，仅文档交接）用户 6 项新要求**：① 动作库删参数预设（参数不属于动作库）；② **参数=素材的一种**（使用端可改识别文字；初始识别区为空）；③ 素材行点识别返回所有候选+评分（后端全 API）；④ **量尺**；⑤ 操作区三方式+**递归套娃**（防环、依次识别、缺一失败）；⑥ 废弃操作区两状态（先审计）。→ 新增 `docs/PARAM-ASSET-REDESIGN.md` + `PENDING §E-93` + `ENGINE §22.63` + RESUME seq 123/交接单；**代码未改**（仍 seq 122 `ba6813e`，workspace 841/0、UI 2214）；新会话先审计+确认设计 §5 的 7 个问题，再实现。
 - ★ **2026-11-06 09:4x（seq 122）**：**A 方案：region.asset（全库操作区域素材）+ 多候选 nearest**——① `region.asset`（仅 asset/nearest；T4 收集；flow_ops 11→13 +`click_target.region_asset`/`drag.region_asset`；旧 Runner 拒绝）；② `oas-perceive` 多候选匹配（NCC→3×3 局部极大→阈值→NMS→≤64；best 不变）；③ runtime `operation_region_for_asset`：模板/集合 best/nearest（最近=候选匹配 bbox 中心 ↔ 参数 OCR 行 bbox 中心）；固定 region/OCR 资产取自身操作区；无候选/未匹配=响亮失败；④ click/drag/long_press 三处接入，无 asset 旧行为逐字节不变；⑤ UI 对话框/结构化编辑器加「操作区域素材（全库，可选）」+ 校验/风险提示；⑥ workspace **841/0**、UI **2214/164/158/0/6**、E2E `regionasset` lint0/publish flow_ops 含 region_asset；oas-runner pin `ba6813e`；只推送不发布。

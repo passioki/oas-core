@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 125
-updated_at: 2026-11-06T18:4x+08:00
-trigger: seq124 交付后，用户 18:1x 提交 13 条验收反馈 + 剩余可选项答复 → Lead 派 3 路只读排查（_verify\acceptance-20261106\01~03）→ 出「理解+整改计划」（docs/ACCEPTANCE-2026-11-06.md、PENDING §E-94）；**本轮只写文档，未改代码**
-status: awaiting-user-confirmation
-code_head: `d9c3dcc`（seq124 代码+文档+UI 热修已推送 dev=main=origin；工作区干净仅用户数据未提交）
-docs_head: 本批验收文档提交见 `git log -1`
-next_action: 等用户确认 `docs/ACCEPTANCE-2026-11-06.md §5` 的 8 项口径后，按批次实施：**A**（#11 OCR 匹配数字保护+候选严格、#5 ocr_var 阈值 UI、#9 replace 丢操作区修复+服务端继承、#6 多边形显示层）→ **B**（#4 操作区模型 A + 删 offset、#10 统一框选工具、#6 update polygon/平移）→ **C**（#3 候选口径统一 + 普通 OCR 链节点期望文字 + 拖测单候选接入）→ **D**（#1/#2 参数 UI 全部删除、条件编辑器改 ocr_var、goal battles 字面量、Runner 通用参数区删、长按测试入口）→ **E**（#7 Runner 启动脚本、#8 GitHub About（需授权 gh/PAT）、#12 仓库清空间（需批准、先停 8788））→ **F**（#13 变量系统 v2 + Phase2 设计）；每批 cargo≥904/0、UI≥2512/0 dead/6 nav、E2E 扩容、Firefox 手测；**不 tag/不 release**
+checkpoint_seq: 126
+updated_at: 2026-11-06T19:4x+08:00
+trigger: 用户 18:4x「全按推荐，尽量用子进程」→ 按批次 A/B/B3a/B3b/D/D2/C/E 完成 13 条验收整改 + 变量系统 v2 设计；Lead 独立验收（workspace 929/0、UI 2217/177/0/6、E2E 54/53/0/1）→ 提交推送
+status: done
+code_head: `303a7ac`（B3b；dev=main=origin；批次提交 c16a536 / 4ccd182 / 07ed361 / c3739f6 / 9a3c77f / 303a7ac + docs 提交见 git log -1）
+docs_head: 本批 docs 提交见 `git log -1`
+next_action: seq126 已完成并推送（未 tag/未 release）。剩余可选：① Firefox 浏览器手测（识别区 drag=矩形/click 多边形/dblclick 收尾、操作区 polygon+反选、模板只改多边形不重截图、Runner 识别文字值、start-runner.bat）；② oas-runner 独立仓根启动脚本 + pin bump（独立包不含 seq126）；③ `loop n=param('max_rounds')` 模板参数（UI 移除后不可配，建议改字面量）；④ T5 手写 polygon 几何校验；⑤ 真机 E2E（ADB）；⑥ 变量系统 V2.0 实现（`docs/VARIABLES-V2-DESIGN.md`，10 项已按推荐拍板）；⑦ 更新检测鉴权/GC、tag/Release 策略。详见 `PENDING §E-94 §E`、`ENGINE §22.65.8`。
 ```
 
 ## 0. 目标（本阶段）
@@ -248,6 +248,23 @@ next_action: 等用户确认 `docs/ACCEPTANCE-2026-11-06.md §5` 的 8 项口径
 | F 设计 | #13 变量系统 v2（+Phase2） | 通用变量（ocr_text/string/int/bool/enum）+ 使用端可改 + Profile（多账号/模拟器）；先出设计再实现 |
 
 **待用户确认 8 项**（见计划文档 §5）：#4 模型 A/OCR 操作区是否跟随识别文字、链递归/region 门槛、#3 候选语义、#10 反选范围/模板多边形/ocr_var 多边形、#1/#2 条件编辑器与 battles/Runner 通用参数区、#8 gh/PAT 授权、#12 清理批准、#13 变量系统方向。
+
+## 1.20 2026-11-06 18:4x→19:4x（seq 126）验收 13 项整改 + 变量系统 v2 设计（✅ done）
+
+> 用户 18:4x：「全按推荐，尽量用子进程」→ Lead 按批次派子进程完成；每批 Lead 独立验收后提交推送（dev=main=origin）。**最终：workspace 929/0、UI 2217/177/0 dead/158 runner/6 nav、E2E seq126 54/53/0/1、`cargo check -p oasd --features ocr` exit 0。**
+
+| 批次 | 内容 | 提交 |
+|---|---|---|
+| A | #11 数字保护+严格候选、#9 replace 继承+payload、#5 ocr_var 阈值、#6 多边形显示层、#7 start-runner 脚本（根+packaging） | `c16a536` |
+| B（后端+serve） | #4 操作区模型 A（链=识别门槛/落点=根 self/offset 删除/OCR self 跟随/region 禁作链节点）、polygon v3（三态/模板同 ROI/ocr_var mask）、#3 普通 OCR 链节点期望文字 + preview_root_candidate det+rec、公共 self_operation_geometry、候选 API 统一 | `4ccd182` |
+| D | #1/#2 参数概念从 Studio/Runner 用户界面全部移除（旧 flow 只读回显、/task/config 内部桥保留、Runner ocr_var-only、battles 字面量） | `07ed361` |
+| D2 | goal battles 不再自动补 params.max_battles | `c3739f6` |
+| B3a | 操作区对话框模型 A（两选一/只读链/单次 update）、删除 offset 绘制 UI、拖测接入候选、素材行「长按测试」 | `9a3c77f` |
+| B3b | #10 统一画布框选（3 按钮/拖动=矩形/单击=多边形/双击收尾/反选仅操作区）、#6 polygon 保存层（update v3/模板不重截图/矩形清空 polygon） | `303a7ac` |
+| E | #8 GitHub About 乱码已用 UTF-8 API 重写（中文描述+homepage）；#12 清理 16.8GB（D:\OAS-dev 24.6→7.79GB：_verify 9.68 + incremental 4.37 + oas-runner target 2.51 + dist/stage 0.16） | 外部/本机 |
+| F | #13 变量系统 v2 设计 `docs/VARIABLES-V2-DESIGN.md`（10 项按推荐：meta.variables 唯一真相、Runner 可改过滤、values.json v2 Profile、多模拟器隔离部署） | docs |
+
+**剩余（不阻塞）**：Firefox 手测、oas-runner 独立仓 root 脚本/pin bump、`loop n=param('max_rounds')` 模板、T5 手写 polygon 校验、真机 E2E、变量系统 V2.0 实现、更新检测鉴权/GC、发布策略。**未 tag/未 release。**
 
 ## 2. 本批交付（seq 110）
 

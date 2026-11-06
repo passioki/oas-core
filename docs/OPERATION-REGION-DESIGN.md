@@ -193,9 +193,10 @@
 
 约束：`region.asset` 只允许 `mode=asset`/`nearest`；`mode=ocr`/`offset` 带 asset = 解析错误；flow_ops 新增 `click_target.region_asset` / `drag.region_asset` 标记（long_press 由 `long_press` 标记覆盖），老 Runner 拒绝新包；T4 收集 region.asset 作为素材引用。
 
-## 8. 现行口径（seq124，2026-11-06 13:1x 已实现）
+## 8. 现行口径（seq124 实现 → seq126 修订为模型 A）
 
 > 操作区域配置从 flow 级 `region` 移到**素材级**（`assets.json items[].op_region`）：动作库只选目标素材、不再面对「OCR 素材 + 操作区域素材 + region 模式」交互；底层几何（`click_box_for` 平移、全帧金字塔回退、多候选枚举）全部保留。本节取代 §2/§6/§7 的交互方向；设计/Lead 裁决 13 条见 `PARAM-ASSET-IMPLEMENTATION.md`，实现记录 `ENGINE §22.64`。
+> **seq126 修订（2026-11-06 19:2x，模型 A）**：链只作**识别门槛**、动作落点=根素材自身操作区、被引用素材只读、资产级 `offset` 删除（旧数据响亮拒绝）、`region` 不可作链节点、普通 OCR 门槛需期望文字；统一画布框选（3 按钮+手势）。**§8.1 的 offset/三方式、§8.5 的递归编辑、§8.6 的偏移绘制、§8.7 的旧锚点均已被 §8.8 取代**，保留作 seq124 历史记录。
 
 ### 8.1 数据模型（`assets.json items[].op_region`）
 
@@ -256,3 +257,45 @@
 
 - E2E（`_verify/seq124-e2e-20261106/`）：`validate_op_region_asset_chain`（depth=2，末端 region）与 `offset` 200；`dangling`/`cycle` 400；`test_action_dry_chain`（`action_box=[100,50,80,40]`、`chain_depth=2`、`point` 在末端区内）；缺失节点 400 不点击。
 - 未做/后续：候选 API 的链几何预览（`op_rect`）；`test_action` 的 drag 手势；素材行长按测试入口；真机落点 E2E。
+
+### 8.8 seq126 修订（模型 A，2026-11-06 19:2x 已实现）
+
+> 用户验收 #4：「操作区去除相对偏移概念；引用素材只作识别链节点、不得改其设置」。实现记录 `ENGINE §22.65.2/§22.65.3`；本节**取代 §8.1/§8.5/§8.6/§8.7**。
+
+#### 8.8.1 数据模型与校验（`assets.json items[].op_region`）
+
+```json
+{"mode":"self"}                                              // 缺省；动作落点=该素材自身操作区
+{"mode":"asset","asset":"<素材/集合 id>","pick":"score"}      // 只作识别门槛；pick 默认 score / nearest
+```
+- **两种模式**（`oas-task/lib.rs:88-133`）：`self`=自身操作区（历史 `action_shape`/`click_back` 语义）；`asset`=额外识别门槛，**永不贡献最终操作框**。
+- **`offset` 已删除**：旧 `{"mode":"offset",...}` 数据在 update/save/validate 全部**响亮 400**（`unknown variant offset`）；删前审计确认用户数据无 offset（`_verify/acceptance-20261106/02-refactor-design-inputs.md §B1`）。
+- **链节点**：只允许可识别素材（template/collection/ocr_line/ocr_lines/ocr_var）；**`region` 不可作节点**（无识别，`oas-task/lib.rs:585-593`）；普通 OCR 节点必须有期望文字 `ocr_text`，否则保存/校验 400（`:600-615`）；末端必须 `self`/无 op_region；环+深度 16 照旧（`:550-624`）。
+- **被引用素材只读**：链只读取被引用素材**已有**的 `op_region` 继续走（不修改任何素材数据）；UI 在对话框内只读展示（`app.js:2711-2738`）。
+- **update v3**：`/task/asset/update` 支持 `polygon` 三态与 `op_region`（`serve.rs:5870,5941-5966`；`oas-task/lib.rs:2384`）。
+
+#### 8.8.2 运行时语义（模型 A）
+
+1. 识别根素材（多候选取最佳）→ 得到根的真实识别区域与自身 self 几何（`self_operation_geometry`，`runtime:1307-1366`）。
+2. 若根有 `op_region.mode=asset`：逐级识别门槛（template/collection=NCC 多候选 pick；OCR/ocr_var=det+rec 行+期望文字+阈值+pick），**任一门槛 miss=本步失败、不点击、不 fallback**（`walk_op_region_chain :3264-3327`；`recognize_chain_node :3333-3452`）。
+3. **最终操作框=根素材自身 self 几何**（`resolve_asset_op_region :2946-2979` 在走完门槛后返回 `root_self_box/shape`，不是链末端框）；动作在根操作区内采样执行点击/长按/拖动。
+4. **OCR self 跟随识别文字**：有 `roi` 时 `action_shape` 按 `real.topLeft−roi.topLeft` 平移（同模板跟随匹配）；`roi` 为空（全屏 ocr_var）保持绝对坐标（无 authored 基准，文档化限制）。
+5. 日志仍附 `region_chain=[A:asset -> G:...]`；无链路径逐字节不变。
+
+#### 8.8.3 统一画布框选工具（#10，B3b）
+
+- 画布只留 **3 个按钮**：识别区域 / 操作区域 / 反选（`index.html:99-101`；反选仅操作区域可用，识别区掩膜无补集语义）。
+- `canvasTool{none,recognition,action}` + 手势判定：拖动>4px=矩形；单击=多边形顶点；双击=收尾闭合（`app.js:252-254,1617-1625,1671`）。
+- 识别区保存：矩形→`roi`（模板=覆盖保存重截图；非模板=update）；多边形→`polygon`+`roi=bbox`（模板 bbox 未变可 update 不重截图，变化则覆盖保存）（`recognitionSavePlan :1741-1813`）；矩形保存显式 `polygon:null` 清旧掩膜。
+- 操作区保存：矩形/多边形→`action_shape`，反选→`action_shape.invert`；素材行「识别区/操作区」统一接入工具（`app.js:5484,5647`）。
+- 素材行「操作区」对话框（模型 A）两选一：当前素材操作区（可直接跳画布编辑）/引用素材作识别门槛（只读链）——保存只写当前素材（`app.js:2675-2680,4181+,opRegionDraftUpdates :2421`）。
+
+#### 8.8.4 与旧 flow `region`（§6/§7）的关系
+
+- flow 级旧 `region{mode:asset|ocr|nearest|offset}` 解析/运行时**保留**（`oas-flow` 零改动，优先级 flow region > 素材 op_region），仅旧 flow 兼容；**新 UI 不生成**，构建页 region 编辑器只对旧步骤显示。
+- **§7 的「A 方案：参数 OCR 识别素材 + 操作区域素材」与旧递归编辑 UI 作废**：不再编辑被引用素材、不再有 offset；flow_ops 未新增标记（仍 13，`package.rs:81-95`）。
+
+#### 8.8.5 E2E（`_verify/seq126-e2e-20261106/`，54/53/0/1）
+
+`validate_model_a_chain`（chain=[root:asset,GATE:self]）、`test_action_model_a_action_box_is_root_self`（action_box=根 self `[50,60,10,10]`，非门槛框）、门槛缺失 400 不点击、`update/save/validate` 的 offset 400、region 作节点 400、普通 OCR 门槛（有/无 expected text）200/400、polygon 三态与统一工具后端验收。
+- 未做/后续：真实浏览器手测（Firefox）、真机落点 E2E；loop 模板/变量系统见 `ENGINE §22.65.8`。

@@ -1,27 +1,27 @@
-# 验收反馈（2026-11-06，seq124 后）整改理解与计划
+# 验收反馈整改（2026-11-06，seq124 后）：理解 / 计划 / 实施结果
 
-> 状态：**待用户确认关键口径后开工**（本文只是理解+计划，未改代码）。
+> 状态：**已整改完成（seq126，2026-11-06 19:2x）**。用户 13 条反馈按批次 A/B/C/D/B3a/B3b/D2/E/F 落地；本文 §1~§5 保留当时的理解/核实/计划原文，§1 表新增「整改状态」列，实施结果/最终验证见文末「## 实施结果（Lead 验收）」。
 > 输入：用户 13 条验收反馈 + 3 路只读排查报告（仓外）：
 > `_verify\acceptance-20261106\01-bug-triage.md`（#3/#5/#6/#9/#11）、`02-refactor-design-inputs.md`（#1/#2/#4/#10）、`03-infra-ops.md`（#7/#8/#12）。
-> 当前基线：HEAD `d9c3dcc`；workspace 904/0；UI 2512 checks/194 ids/0 dead/6 nav；E2E 27/26/0/1。
+> 初始基线（整改前）：HEAD `d9c3dcc`；workspace 904/0；UI 2512 checks/194 ids/0 dead/6 nav；E2E 27/26/0/1。
 
 ## 1. 逐条理解与整改方向
 
-| # | 用户反馈 | 核实结论（报告证据） | 整改方向 | 量 | 批次 |
-|---|---|---|---|---|---|
-| 1 | 动作属性页仍有「文字（参数）」下拉 + 「插入参数」按钮 | 属实：locator 文字来源 param 选项 `builder.js:2714-2729`；插入参数组件 `builder.js:2594-2683` + 4 处挂载 | 删除 param 选项与「参数」措辞；旧 flow 的 `text_expr:param()` 以只读「旧参数来源」回显；「插入参数」改为「插入识别文字配置项（素材）」仅列 ocr_var 派生行（写同样的 `param(key)`）；条件编辑器「文字（参数）」行改为选 ocr_var 素材（生成 `text_visible(param(key))`）；goal battles 的 `param('max_battles')` 改字面量 loop | S+M | D |
-| 2 | 构建页/任务库仍有配置项参数 | 属实：`#builder-params` `index.html:341-356`+`builder.js:1153-1249`；任务库配置项对话框 `app.js:802-806,2029-2152`；T3 去声明 `builder.js:1284-1293,1446-1453`；Runner 通用参数组+高级 JSON `runner.html:524-543,190-200,459-461` | 删除用户侧参数入口（面板/配置项对话框/去声明/通用参数组/高级 JSON 参数）；服务端 `meta.params` 派生模型与 `/task/config` 保留（内部/诊断）；Runner 只保留「使用端OCR文字配置项」分节 | M | D |
-| 3 | 多候选只对参数 ocr 生效；引用非参数 OCR 素材时 pick 只有 1 候选 | 部分属实：模板/集合/ocr_var/派生 ocr_line 链节点可多候选 ✅；**普通 ocr_line/ocr_lines 作链节点运行时报错**（校验却放行，`oas-task:63-69` vs `runtime:3145-3148`）；**根目标运行时只取最佳**（只有编辑器 test_action 可传 candidate_index）；候选 API 与 test_action/链枚举口径三处分裂（`candidates_for_asset` 未接线） | ① 统一候选枚举（`candidates_for_asset` 接到 serve 候选 API + `preview_root_candidate`，单行 OCR 编辑器路径改 det+rec）；② 普通 OCR 素材作链节点：允许保存/读取「期望文字」（否则不允许引用并明确提示）；③ pick=score/nearest 对模板多实例、同文多处 OCR 真正生效；④ #11 修复后「队伍2/3」不再是候选（同文只有一处时 1 候选是正确的，需用户确认语义） | M | C |
-| 4 | 操作区去除「相对偏移」概念，它=修改当前素材操作区；引用素材只作识别链节点、不得改其设置 | 属实且现状与用户要求冲突：现状=模型 B（链末端被引用素材的操作区决定落点，`runtime:3036-3108`；UI 保存时 PATCH 被引用素材 `app.js:5701-5715`） | **改为模型 A**：链仅作识别门槛（逐级识别，全中才动作），**最终操作区=当前素材自己的操作区**；删除 asset 级 offset（schema/校验/runtime/UI/测试）；操作区对话框：当前素材可选「当前素材操作区（用统一框选编辑）」/「引用素材链（只读查看被引用素材已有链，不可在此修改）」；保存只写当前素材 | M | B |
-| 5 | 参数类素材不支持阈值 | 后端/运行时/候选全链路已支持；**仅 Studio UI 阻断**：`app.js:assetThresholdKind` 只认 template/ocr_line/ocr_lines（`app.js:6699-6704`），菜单却显示可用 | UI 放开 `ocr_var`→OCR 置信度阈值；补 ui_pure_test 断言。无需改 Rust | S | A |
-| 6 | 多边形保存/展示回退矩形（素材行预览、点选后画布） | 部分属实：保存链路基本保留多边形；**显示层恒矩形**（缩略图按 roi 裁矩形 `asset_ui.js:21-80`；`pickAssetRoi` 清空本地 polygon 不恢复 `app.js:6999-7017`）；`/task/asset/update` **无 polygon 字段**（OCR/非模板移动识别区时已存 polygon 不平移）；模板缩放 ROI 会显式回退矩形并弹窗（`app.js:6518-6583`，属设计限制） | ① 缩略图叠加 polygon 轮廓；② 选中/编辑素材时恢复并绘制已存 polygon；③ `/task/asset/update` 增加 `polygon`（支持清空/平移/校验），OCR/region 识别区移动时同步平移 polygon；④ 可选：模板缩放保持多边形 | S/M | A/B |
-| 7 | Runner 端添加启动脚本 | 发行包里有、仓库根没有；dev 入口 `scripts\dev-serve.bat -Surface runner` 可用；packaging/dist-stage 的 start-runner.bat 停在 seq118 且双击失败无提示 | 新增 oas-core `start-runner.bat`（委托 dev-serve，固定 8789，自检 exe/模型/端口，失败 pause）+ oas-runner 根 `start-runner.bat` + 增强 packaging 两个 bat | S | E |
-| 8 | GitHub About 大量「?」 | 存储值就是字面 `?`（非渲染问题）且不可逆；`updated_at`=2026-11-06T05:39Z；topics 正常、homepage=null | 用 UTF-8 无 BOM JSON + `gh api PATCH --input`（或 curl --data-binary）重写 description；建议同时设 homepage；**需用户授权**（安装 gh 或提供 repo 管理 PAT） | S | E |
-| 9 | 改识别文字后操作区被重置；Runner 改是否同样 | 属实（明确条件）：ocr_var **无 roi/全屏** 时走 `/task/save_asset replace:true`，payload 不带 `op_region/action_shape/threshold`，replace 整项覆盖→操作区链清空；有 roi 走 update 不丢。**Runner 端不会**（只写 values.json，不碰 assets.json）。同类 bug：模板识别区覆盖保存也不带 op_region | ① UI replace payload 携带原 op_region/action_shape/threshold；② 服务端 replace 对 payload 缺省字段从磁盘现有 item 继承（显式 null=清空）——兜底任意调用方；③ 补 Rust+UI 测试（ocr_var 全屏 replace 后 op_region 不变） | S/M | A |
-| 10 | 识别区/操作区不能用多边形框选；建议统一框选（拖动=矩形，点击=多边形多点+双击收尾；只留 3 按钮：识别区域/操作区域/反选；素材行接入） | 可行；识别区多边形后端已是**真实掩膜**（模板 masked NCC、OCR `mask_frame_for_ocr`），不是仅采样限制；缺口=UI 不载入/不显示已存 polygon、`/task/asset/update` 无 polygon；**反选仅对操作区域可行**（识别区掩膜补集无业务语义） | 统一画布工具状态机：`canvasTool{none,recognition,action}` + 手势区分 rect/polygon；3 按钮；素材行「识别区/操作区」接入同一入口；保存：识别区矩形→roi，多边形→roi=bbox+polygon；操作区 action_shape rect/polygon+invert；后端 update 支持 polygon；ocr_var 放开 polygon 并给 `ocr_read_var` 补掩膜 | M | B |
-| 11 | 全屏识别「队伍1」把队伍2/3 也当候选 | 属实：`ocr_text_matches` 对长度≥2 且长度差≤1 允许 **1 个编辑距离**（`runtime:969-999`）→队伍1/2/3 互相匹配；候选、点击、等待共用；阈值救不了（同屏同字体分都高） | ① 加**数字保护**：归一化后数字串不同→不匹配（队伍1≠队伍2；召喚=召唤仍保留）；② 候选枚举走严格模式（normalized 相等，不做编辑距离），运行 click/wait 保留数字保护后的 fuzzy 或可开关；③ 单测覆盖；④ 修复后 #3 的「假多候选」一并消失 | S/M | A |
-| 12 | oas-core/runner 文件夹十几 GB | `D:\OAS-dev` 合计 24.6GB：`_verify` 10.4GB（历轮 E2E 各复制一份 target）> oas-core 9.66GB（target 9.27：incremental 4.36+deps 3.48）> oas-runner 2.60GB（target 2.51）> backend 1.31 > frontend 0.46；git 仅 63MB | 可回收 ~15-18GB：停 8788 服务后 `cargo clean`（core/runner）、删 dist/stage(-0.22GB)、_verify 只留最近 1-2 轮（其余归档/删）、可选 flutter clean。**需用户批准**（本机当前有 oasd PID 占 8788） | S | E |
-| 13 | 配置交互不应只有 OCR 变量，还应支持其他变量传递；编辑端创建、任务应用、发布后使用端个性化修改；后期多账号/多配置/多模拟器 | 现状：ocr_var + meta.params 派生（C1′）；无通用标量变量、无 profile；Runner 只有按任务 values | 设计「变量系统 v2」：变量类型（ocr_text/string/int/bool/enum）+ 默认值/可被使用端改/分组/描述；编辑端创建并应用到 flow；发布 manifest 带变量 schema；Runner 安装后「使用端配置」只显示可改变量；values.json 按变量存值；**Profile**（账号/模拟器/配置预设）= 命名值集合，调度条目/运行指定 profile；与 Phase 2（彻底去 meta.params）合并设计 | 设计 L / 实现 L | F |
+| # | 用户反馈 | 核实结论（报告证据） | 整改方向 | 量 | 批次 | 整改状态 |
+|---|---|---|---|---|---|---|
+| 1 | 动作属性页仍有「文字（参数）」下拉 + 「插入参数」按钮 | 属实：locator 文字来源 param 选项 `builder.js:2714-2729`；插入参数组件 `builder.js:2594-2683` + 4 处挂载 | 删除 param 选项与「参数」措辞；旧 flow 的 `text_expr:param()` 以只读「旧参数来源」回显；「插入参数」改为「插入识别文字配置项（素材）」仅列 ocr_var 派生行（写同样的 `param(key)`）；条件编辑器「文字（参数）」行改为选 ocr_var 素材（生成 `text_visible(param(key))`）；goal battles 的 `param('max_battles')` 改字面量 loop | S+M | D | ✅ D（07ed361） |
+| 2 | 构建页/任务库仍有配置项参数 | 属实：`#builder-params` `index.html:341-356`+`builder.js:1153-1249`；任务库配置项对话框 `app.js:802-806,2029-2152`；T3 去声明 `builder.js:1284-1293,1446-1453`；Runner 通用参数组+高级 JSON `runner.html:524-543,190-200,459-461` | 删除用户侧参数入口（面板/配置项对话框/去声明/通用参数组/高级 JSON 参数）；服务端 `meta.params` 派生模型与 `/task/config` 保留（内部/诊断）；Runner 只保留「使用端OCR文字配置项」分节 | M | D | ✅ D（07ed361）+ D2（c3739f6） |
+| 3 | 多候选只对参数 ocr 生效；引用非参数 OCR 素材时 pick 只有 1 候选 | 部分属实：模板/集合/ocr_var/派生 ocr_line 链节点可多候选 ✅；**普通 ocr_line/ocr_lines 作链节点运行时报错**（校验却放行，`oas-task:63-69` vs `runtime:3145-3148`）；**根目标运行时只取最佳**（只有编辑器 test_action 可传 candidate_index）；候选 API 与 test_action/链枚举口径三处分裂（`candidates_for_asset` 未接线） | ① 统一候选枚举（`candidates_for_asset` 接到 serve 候选 API + `preview_root_candidate`，单行 OCR 编辑器路径改 det+rec）；② 普通 OCR 素材作链节点：允许保存/读取「期望文字」（否则不允许引用并明确提示）；③ pick=score/nearest 对模板多实例、同文多处 OCR 真正生效；④ #11 修复后「队伍2/3」不再是候选（同文只有一处时 1 候选是正确的，需用户确认语义） | M | C | ✅ C 并入 B（4ccd182）；strict 候选 A（c16a536） |
+| 4 | 操作区去除「相对偏移」概念，它=修改当前素材操作区；引用素材只作识别链节点、不得改其设置 | 属实且现状与用户要求冲突：现状=模型 B（链末端被引用素材的操作区决定落点，`runtime:3036-3108`；UI 保存时 PATCH 被引用素材 `app.js:5701-5715`） | **改为模型 A**：链仅作识别门槛（逐级识别，全中才动作），**最终操作区=当前素材自己的操作区**；删除 asset 级 offset（schema/校验/runtime/UI/测试）；操作区对话框：当前素材可选「当前素材操作区（用统一框选编辑）」/「引用素材链（只读查看被引用素材已有链，不可在此修改）」；保存只写当前素材 | M | B | ✅ B（4ccd182）+ B3a（9a3c77f）+ B3b（303a7ac） |
+| 5 | 参数类素材不支持阈值 | 后端/运行时/候选全链路已支持；**仅 Studio UI 阻断**：`app.js:assetThresholdKind` 只认 template/ocr_line/ocr_lines（`app.js:6699-6704`），菜单却显示可用 | UI 放开 `ocr_var`→OCR 置信度阈值；补 ui_pure_test 断言。无需改 Rust | S | A | ✅ A（c16a536） |
+| 6 | 多边形保存/展示回退矩形（素材行预览、点选后画布） | 部分属实：保存链路基本保留多边形；**显示层恒矩形**（缩略图按 roi 裁矩形 `asset_ui.js:21-80`；`pickAssetRoi` 清空本地 polygon 不恢复 `app.js:6999-7017`）；`/task/asset/update` **无 polygon 字段**（OCR/非模板移动识别区时已存 polygon 不平移）；模板缩放 ROI 会显式回退矩形并弹窗（`app.js:6518-6583`，属设计限制） | ① 缩略图叠加 polygon 轮廓；② 选中/编辑素材时恢复并绘制已存 polygon；③ `/task/asset/update` 增加 `polygon`（支持清空/平移/校验），OCR/region 识别区移动时同步平移 polygon；④ 可选：模板缩放保持多边形 | S/M | A/B | ✅ A（c16a536）+ B（4ccd182）+ B3b（303a7ac） |
+| 7 | Runner 端添加启动脚本 | 发行包里有、仓库根没有；dev 入口 `scripts\dev-serve.bat -Surface runner` 可用；packaging/dist-stage 的 start-runner.bat 停在 seq118 且双击失败无提示 | 新增 oas-core `start-runner.bat`（委托 dev-serve，固定 8789，自检 exe/模型/端口，失败 pause）+ oas-runner 根 `start-runner.bat` + 增强 packaging 两个 bat | S | E | ✅ E core（c16a536）；oas-runner 仓脚本待办 |
+| 8 | GitHub About 大量「?」 | 存储值就是字面 `?`（非渲染问题）且不可逆；`updated_at`=2026-11-06T05:39Z；topics 正常、homepage=null | 用 UTF-8 无 BOM JSON + `gh api PATCH --input`（或 curl --data-binary）重写 description；建议同时设 homepage；**需用户授权**（安装 gh 或提供 repo 管理 PAT） | S | E | ✅ E（仓外 API 修复并读回验证；无 commit） |
+| 9 | 改识别文字后操作区被重置；Runner 改是否同样 | 属实（明确条件）：ocr_var **无 roi/全屏** 时走 `/task/save_asset replace:true`，payload 不带 `op_region/action_shape/threshold`，replace 整项覆盖→操作区链清空；有 roi 走 update 不丢。**Runner 端不会**（只写 values.json，不碰 assets.json）。同类 bug：模板识别区覆盖保存也不带 op_region | ① UI replace payload 携带原 op_region/action_shape/threshold；② 服务端 replace 对 payload 缺省字段从磁盘现有 item 继承（显式 null=清空）——兜底任意调用方；③ 补 Rust+UI 测试（ocr_var 全屏 replace 后 op_region 不变） | S/M | A | ✅ A（c16a536） |
+| 10 | 识别区/操作区不能用多边形框选；建议统一框选（拖动=矩形，点击=多边形多点+双击收尾；只留 3 按钮：识别区域/操作区域/反选；素材行接入） | 可行；识别区多边形后端已是**真实掩膜**（模板 masked NCC、OCR `mask_frame_for_ocr`），不是仅采样限制；缺口=UI 不载入/不显示已存 polygon、`/task/asset/update` 无 polygon；**反选仅对操作区域可行**（识别区掩膜补集无业务语义） | 统一画布工具状态机：`canvasTool{none,recognition,action}` + 手势区分 rect/polygon；3 按钮；素材行「识别区/操作区」接入同一入口；保存：识别区矩形→roi，多边形→roi=bbox+polygon；操作区 action_shape rect/polygon+invert；后端 update 支持 polygon；ocr_var 放开 polygon 并给 `ocr_read_var` 补掩膜 | M | B | ✅ B（4ccd182）+ B3b（303a7ac） |
+| 11 | 全屏识别「队伍1」把队伍2/3 也当候选 | 属实：`ocr_text_matches` 对长度≥2 且长度差≤1 允许 **1 个编辑距离**（`runtime:969-999`）→队伍1/2/3 互相匹配；候选、点击、等待共用；阈值救不了（同屏同字体分都高） | ① 加**数字保护**：归一化后数字串不同→不匹配（队伍1≠队伍2；召喚=召唤仍保留）；② 候选枚举走严格模式（normalized 相等，不做编辑距离），运行 click/wait 保留数字保护后的 fuzzy 或可开关；③ 单测覆盖；④ 修复后 #3 的「假多候选」一并消失 | S/M | A | ✅ A（c16a536） |
+| 12 | oas-core/runner 文件夹十几 GB | `D:\OAS-dev` 合计 24.6GB：`_verify` 10.4GB（历轮 E2E 各复制一份 target）> oas-core 9.66GB（target 9.27：incremental 4.36+deps 3.48）> oas-runner 2.60GB（target 2.51）> backend 1.31 > frontend 0.46；git 仅 63MB | 可回收 ~15-18GB：停 8788 服务后 `cargo clean`（core/runner）、删 dist/stage(-0.22GB)、_verify 只留最近 1-2 轮（其余归档/删）、可选 flutter clean。**需用户批准**（本机当前有 oasd PID 占 8788） | S | E | ◐ E 部分完成（_verify 已清 9.68GB；cargo clean/dist 待最终收尾） |
+| 13 | 配置交互不应只有 OCR 变量，还应支持其他变量传递；编辑端创建、任务应用、发布后使用端个性化修改；后期多账号/多配置/多模拟器 | 现状：ocr_var + meta.params 派生（C1′）；无通用标量变量、无 profile；Runner 只有按任务 values | 设计「变量系统 v2」：变量类型（ocr_text/string/int/bool/enum）+ 默认值/可被使用端改/分组/描述；编辑端创建并应用到 flow；发布 manifest 带变量 schema；Runner 安装后「使用端配置」只显示可改变量；values.json 按变量存值；**Profile**（账号/模拟器/配置预设）= 命名值集合，调度条目/运行指定 profile；与 Phase 2（彻底去 meta.params）合并设计 | 设计 L / 实现 L | F | ✅ F 设计（VARIABLES-V2-DESIGN.md；V2.0 实现未排期） |
 
 ## 2. 共性问题（作为整改原则）
 
@@ -76,3 +76,40 @@
 - 排查报告：`_verify\acceptance-20261106\{01-bug-triage.md,02-refactor-design-inputs.md,03-infra-ops.md}`
 - 当前基线：`_verify\seq124-lead-verify\workspace-final.log`、`_verify\seq124-e2e-20261106\e2e-summary.json`
 - 用户数据快照（只读核对）：`assets/assets.json`（已有 ocr_var「队伍1」「预设识别」+ `mode:asset` 链；无 offset 数据）
+
+## 实施结果（Lead 验收，2026-11-06 19:2x）
+
+> 13 条反馈已按批次整改完成（#12 为部分完成：清理已执行，cargo clean/dist stage 最终收尾待做）；实现记录 `ENGINE §22.65`；操作区现行语义 `OPERATION-REGION-DESIGN §8.8`；变量系统设计 `VARIABLES-V2-DESIGN.md`。
+
+### A. 批次与提交（dev=main=origin=`303a7ac`；**未 tag/未 release**）
+
+| 批次 | 内容 | commit |
+|---|---|---|
+| A | #5 ocr_var 阈值 / #9 replace 继承（UI+服务端）/ #11 数字保护+候选 strict / #6 显示层 / #7 根启动脚本（core 侧） | `c16a536` |
+| B（含 C） | #4 操作区模型 A + 删 offset；#6/#10 polygon 能力 + update v3；#3 普通 OCR 链节点 + 候选统一；#11/#3 strict 候选接线 | `4ccd182` |
+| D | #1/#2 用户侧参数 UI 移除（builder/app/runner） | `07ed361` |
+| D2 | goal battles 删自动补 `params.max_battles` | `c3739f6` |
+| B3a | 操作区对话框模型 A + 删 offset 绘制 + 拖测候选/长按测试入口 | `9a3c77f` |
+| B3b | 统一画布框选（3 按钮/手势矩形+多边形）+ polygon 保存层 | `303a7ac` |
+| E | #7 启动脚本（core 侧随 A 提交）/ #8 GitHub About 修复 / #12 清理 | 仓外操作，无独立 commit |
+| E2E | seq126 脚本 54 断言 | 仓外 `_verify/seq126-e2e-20261106/` |
+| F | #13 变量系统 V2 设计 | `docs/VARIABLES-V2-DESIGN.md` |
+
+### B. 最终验证（Lead 实测）
+
+- `cargo test --workspace` = **929 passed / 0 failed**（23 suites；oas-task 147 / oas-runtime 212 / oasd 449；整改前 904/0）。
+- UI pure test = **2217 checks / 177 ids / 0 dead / 158 runner ids / 6 nav**（本机复跑核对；整改前 2512/194/158/0/6，checks 下降为批次 D 删除参数 UI 的功能删除）。
+- E2E seq126 = **54 total / 53 PASS / 0 FAIL / 1 SKIP**（唯一 skip=`test_action_real_click`，无 ADB）——`_verify/seq126-e2e-20261106/e2e-summary.json`（19:25:30 最终 run）+ `README.md` 54 条断言清单。
+- #8 API 读回验证：description 已是中文（「OAS（OnmyojiAutoScript）— 阴阳师自动化引擎（Rust）…v0.1.0 开发中。」）、homepage=`https://github.com/passioki/oas-core/releases`、topics 5 个未变、`updated_at=2026-11-06T11:25:09Z`。
+- #12 清理：`_verify` 10,403MB → **722.5MB**（释放 **9.68GB**）；`D:\OAS-dev` 24.6GB → **7.94GB**。
+
+### C. 仍待办（不阻塞本轮，详见 `ENGINE §22.65.8`）
+
+1. **Firefox 浏览器手测**：批次 D/B3a/B3b 的 UI 改动需真实浏览器加载无 console error + 关键路径截图（内部自检，非用户操作）。
+2. **oas-runner 独立仓**：根 `start-runner.bat`、packaging 脚本增强、pin bump 到 `303a7ac` 与重打包；当前发行包/dist stage 仍停 seq118 `5b0b107`。
+3. **变量系统 V2.0 实现**（#13/F 设计已交付、10 项按推荐口径；实现排期在批次 D 之后）。
+4. **loop 模板 `max_rounds`**：`templates/loop.json:49`、`index.html:454` 仍用 `param('max_rounds')`；参数 UI 移除后该模板轮数无用户配置入口（旧 flow 仍可跑）→ 字面量化或待 V2.1 变量。
+5. **T5 手写 polygon 校验**：`assets_shape_issues`（`oas-task/lib.rs:3405-3600`）不校验 `item.polygon`，仅保存路径 `validate_recognition_polygon`（`:1033`）校验。
+6. **真机 E2E**：`test_action_real_click` 恒 SKIP（无 ADB）；真实点击/长按/滑动落点待验。
+7. **#12 最终收尾**：cargo clean（core/runner）、dist stage/旧 zip 清理（需先停服务）。
+8. 更新检测鉴权/GC、tag/Release 策略仍 backlog。

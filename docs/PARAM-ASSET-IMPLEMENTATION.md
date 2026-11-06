@@ -1,6 +1,6 @@
 # 参数→素材 / 操作区递归 / 候选识别 实施方案
 
-> 状态：**已实现（seq124，2026-11-06；实现记录 `ENGINE §22.64` / `OPERATION-REGION-DESIGN §8`；最终验证与偏差见文末「实现结果（Lead 验收）」）**。依据：`PARAM-ASSET-REDESIGN.md §1b`（用户 2026-11-06 12:4x 权威逐字要求，取代其 §1/§5）、`OPERATION-REGION-DESIGN.md §6/§7`、三份审计（`_verify/paramasset-audit-20261106/01~03`）。
+> 状态：**已实现（seq124，2026-11-06）→ seq126 验收整改修订（2026-11-06 19:2x）**；实现记录 `ENGINE §22.64`/`§22.65`、操作区现行语义 `OPERATION-REGION-DESIGN §8.8`；最终验证与偏差见文末「实现结果（Lead 验收）」+「seq126 修订」。依据：`PARAM-ASSET-REDESIGN.md §1b`（用户 2026-11-06 12:4x 权威逐字要求，取代其 §1/§5）、`OPERATION-REGION-DESIGN.md §6/§7`、三份审计（`_verify/paramasset-audit-20261106/01~03`）。
 > 基线：仓库 `D:\OAS-dev\oas-core`，分支 `dev`，HEAD `c33a822`（代码基线 `ba6813e`）。本文所有代码行号为 2026-11-06 实测。
 > D1 经历两次 Lead 修正，**最终口径 = C1′（Rust 侧单一派生/同步函数 + 后端自动同步，不做 UI 双写，不写用户数据）**；B（虚拟参数）/A（彻底去 meta.params）列为 Phase 2，不在本轮。
 > 本文为设计阶段文档（行号以代码基线 `ba6813e` 为准）；实现结果、与设计的偏差、最终验证数字见文末「实现结果（Lead 验收）」，实现行号以代码/`ENGINE §22.64` 为准。
@@ -483,4 +483,19 @@ pub fn sync_ocr_var_params(meta: &mut Meta, assets: &AssetsFile, flow: &Flow) ->
 6. 全屏 OCR 性能提示与实测（候选/演练入口）。
 7. 真机 E2E（点击/长按落点、ADB 设备）与同版本旧 Runner 的发布门禁检查项。
 8. Phase 2（去 `meta.params`、flow 免 `text_expr`、`values.json.asset_values`）与旧数据迁移。
+
+## seq126 修订（2026-11-06 19:2x，验收整改后状态）
+
+> seq124 的 C1′（`ocr_var` + `meta.params` 派生行）**保留为内部桥**；seq126 按用户 13 条验收反馈整改：操作区改模型 A、候选严格匹配、统一框选、**Studio/Runner 用户侧「参数」概念全部移除**（变量系统 V2 设计见 `docs/VARIABLES-V2-DESIGN.md`）。实现记录 `ENGINE §22.65`；操作区现行语义 `OPERATION-REGION-DESIGN §8.8`。
+
+| 设计/实现点 | seq124 口径 | seq126 修订 |
+|---|---|---|
+| 操作区 `op_region` | 三方式 `self`/`offset`/`asset+pick`；链末端（被引用素材）操作区=落点（模型 B）；UI 递归编辑被引用素材 | **模型 A**：两种模式 `self`/`asset`；链只作识别门槛；**落点=根素材自身操作区**；被引用素材只读；**`offset` 删除**（旧数据响亮 400）；region 不可作链节点；OCR self 跟随识别文字（有 roi 时平移） |
+| 候选识别 | `candidates_for_asset` 未接线；OCR fuzzy（1-edit 会把 队伍1 匹配 队伍2/3） | 候选 API 用 **strict**（normalized 相等）+ 运行时数字保护；普通 `ocr_line/ocr_lines` 可存 `ocr_text` 作链门槛；`preview_root_candidate` 单行 OCR 改 det+rec、候选索引统一 |
+| 多边形 | 仅完整保存可写 polygon；显示层回退矩形；`/task/asset/update` 无 polygon | update v3 **polygon 三态**（absent/null/数组）；模板只改 polygon 不重截图（bbox 不变时）；缩略图/画布回显已存 polygon；ocr_var 放开 polygon+运行时掩膜；**统一画布框选（3 按钮+手势）** |
+| 参数 UI | 构建页参数面板/配置项对话框/Runner 通用参数组仍在 | **用户侧全删**；保留 `meta.params` 派生模型/sync/T8/`/task/config`（内部/诊断）；动作目标=素材库；条件编辑器「识别文字配置项」；goal battles 字面量化、serve 删自动补 `max_battles` |
+| replace 保存 | `replace:true` 会清空 payload 缺省的 `op_region/action_shape/threshold`（#9 数据丢失） | 服务端**继承缺省字段**（显式 `null` 才清空）+ UI payload 带全字段——`serve.rs:3612-3714` |
+| ocr_var 阈值 | Studio 拒绝（`assetThresholdKind` 漏 ocr_var） | Studio 放行 ocr_var=OCR 置信度阈值（Rust 全链早已支持） |
+
+- 未实现/后续：见 `ENGINE §22.65.8`（Firefox 手测、oas-runner 独立仓脚本/pin、变量系统 V2.0、loop 模板 max_rounds、T5 手写 polygon 校验、真机 E2E、未 tag/未 release）。
 
