@@ -4691,3 +4691,21 @@ ode apps\oasd\ui\ui_pure_test.js ≥2512 checks/0 dead/6 nav；E2E 27 断言扩�
 **最终验收**：workspace **929 passed / 0 failed**（23 suites：oas-task 147 / oas-runtime 212 / oasd 449）；UI **2217 checks / 177 ids / 0 dead / 158 runner ids / 6 nav**；E2E seq126 **54 total / 53 PASS / 0 FAIL / 1 SKIP**（无 ADB；_verify\seq126-e2e-20261106\）；cargo check -p oasd --features ocr exit 0；Firefox 手测待用户执行（无浏览器自动化）。
 **提交**：c16a536(A) 4ccd182(B backend)  7ed361(D) c3739f6(D2) 9a3c77f(B3a) 303a7ac(B3b) + docs 提交；dev=main=origin；未 tag/未 release。
 **剩余（不阻塞本轮验收）**：① Firefox 浏览器手测清单（识别区 drag=矩形/click 多边形/dblclick 收尾、操作区 polygon+反选、模板只改多边形不重截图、Runner 端识别文字值、start-runner.bat）；② oas-runner 独立仓根启动脚本与 pin bump（当前 pin 旧，独立包不含 seq126）；③ loop n=param('max_rounds') 模板参数（参数 UI 移除后不可配，建议后续改字面量）；④ T5 不校验手写 assets.json polygon 几何；⑤ 真机 E2E（ADB）；⑥ 变量系统 V2.0 实现。
+# ★ §E-95 ★★★ [11-06 20:0x] seq127：用户验收纠正（多候选/操作区链末端）+ V2.0 变量系统启动
+
+> 用户 20:0x 验收反馈 3 条：① 多候选仍未生效（素材 	est 在 #6 帧应有多个候选却只显示 1 个）；② 操作区语义纠正——「选用了引用素材时，应用**最后一个素材本身的操作区**；只有选当前素材操作区（self）才用自身」；③ 组合场景（预设识别 识别队伍3 → 引用 	est nearest → 点击 test）因此不可用。**根因**：候选枚举只用素材 roi（模板 roi=35×38 小块）而非全帧；操作区链被我们上一轮误改为「模型 A」。
+> 修复已提交 d3339f（dev=main=origin）：全帧多候选（金字塔）+ 模型 B 恢复。**验证**：workspace **934/0**、UI **2223/177/0 dead/6 nav**、cargo check -p oasd --features ocr exit 0；用户数据副本实测见下。
+
+| 项 | 结果（Lead 独立实测，用户数据副本） |
+|---|---|
+| 多候选 | GET /task/asset/candidates?task=切换预设御魂&id=test&frame_id=6 → **count=3**：(973,144)/(973,295)/(973,445) score 1.0/0.973/0.905（原 count=1）；全帧多候选 1280×720/35×38 debug 114ms/release 6.4ms（原 7.4s） |
+| 链末端模型 B | POST /task/asset/test_action {id:"预设识别",gesture:"click",frame_id:6,real:false} → chain_depth=2、ction_box=[973,445,35,38]（test 候选，非预设识别 [573,453,64,29]）、steps=预设识别(队伍3)→test(nearest)；队伍1→[973,295,35,38]；	est→[973,144,35,38] |
+| 代码 | oas-perceive match_template_all_full/masked_all_full（4×金字塔 coarse 全帧+全分辨率 refine+NMS≤64）；oas-runtime candidate/链 pick 改全帧；walk_op_region_chain/
+esolve_asset_op_region/preview 恢复末端 self 几何；UI 文案按 self/asset 动态显示 |
+| 仍待 | E2E seq127 脚本自测（task-34）；seq127 文档（task-35）；**V2.0 变量系统实现**（task-36 已派 backend V2.0a：meta.variables/sync/T3/T7/T8/T10/run 注入/package variables_schema；随后 V2.0b serve、V2.0c UI） |
+
+## 附：seq127 语义最终口径（覆盖 seq126 的模型 A 表述）
+- 操作区 self：落点=当前素材自身操作区（历史 self 几何）。
+- 操作区 sset（引用素材链）：逐级识别门槛；**落点=链末端（最后一个被引用素材）自己的操作区**；被引用素材配置只读、保存只写当前素材。
+- 候选：模板/集合=**全帧多候选**（NMS≤64、稳定排序）；OCR/ocr_var 按既有 roi/全屏+期望文字规则；pick=score|nearest 用全帧候选（nearest=距上一节点真实识别中心最近）。
+- 保留：offset 已删除（旧数据响亮拒绝）、region 不可作链节点、防环/深度16、任一门槛 miss=本步失败不点击。

@@ -1,20 +1,20 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 126，✅ done**），然后按需看实现记录 `docs/ENGINE-DESIGN.md §22.65`（seq126 验收整改）/ §22.64（seq124 参数→素材）、`docs/OPERATION-REGION-DESIGN.md §8`（模型 A）、`docs/ACCEPTANCE-2026-11-06.md`（13 项验收结果）、`docs/VARIABLES-V2-DESIGN.md`（变量系统 v2 设计）、`PENDING-LEDGER §E-94`。
-> **状态：done（seq 126）——seq124 交付后用户 13 条验收反馈全部整改完成（A/B/C/D/B3a/B3b/D2/E）并 Lead 验收通过**：workspace **929/0**、UI **2217/177/0 dead/158 runner/6 nav**、E2E seq126 **54/53/0/1**；GitHub About 已修复；`D:\OAS-dev` 24.6GB→**7.79GB**；**只推送不发布（未 tag/未 release）**。后续见 `PENDING §E-94 §E` / `ENGINE §22.65.8`。
+> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 127，🔄 V2.0 实施中**），然后按需看 `docs/ENGINE-DESIGN.md §22.66`（seq127 修正：全帧多候选/模型 B）/ §22.65（seq126 整改）、`docs/OPERATION-REGION-DESIGN.md §8.9`（模型 B 现行口径）、`docs/ACCEPTANCE-2026-11-06.md`、`docs/VARIABLES-V2-DESIGN.md`（V2.0 实施依据）、`PENDING-LEDGER §E-95`。
+> **状态：seq127 修复已推送 `fd3339f`（dev=main=origin）**：模板/集合候选=全帧多候选（用户数据 test@#6 count 1→3）、操作区链末端=被引用素材自身操作区（模型 B）；workspace **934/0**、UI **2223/177/0 dead/158 runner/6 nav**、E2E seq127 **63/62/0/1**；**当前 V2.0 变量系统实施中（V2.0a backend 在跑，随后 V2.0b serve / V2.0c UI）**。**只推送不发布（未 tag/未 release）**。
 
-## 0. 当前状态（2026-11-06 19:4x，seq 126 done）
+## 0. 当前状态（2026-11-06 20:2x，seq 127 / V2.0 实施中）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | oas-core `dev`；代码 `303a7ac`（B3b；批次 `c16a536`/`4ccd182`/`07ed361`/`c3739f6`/`9a3c77f`/`303a7ac` + docs 提交见 `git log -1`；dev=main=origin）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，**未随 seq126 更新/未打独立包**）；未 tag / 未 release |
-| 任务 | **seq126 已完成**：13 条验收反馈整改（A 匹配/数据保持/阈值/多边形显示/启动脚本；B 操作区模型 A+polygon+普通 OCR 链节点；D 参数 UI 清除；B3a 操作区对话框/删 offset/拖测候选/长按测试；B3b 统一框选+polygon 保存；D2 goal 不补 params；E GitHub About+清理；F 变量系统 v2 设计） |
-| 测试 | `cargo test --workspace` **929 passed / 0 failed**（23 suites；oas-task 147 / oas-runtime 212 / oasd 449 / flow 78 / perceive 11+2 / adapter-pc 5）；UI pure test **2217 checks / 177 ids / 0 dead / 158 runner ids / 6 nav**；E2E seq126 **54 total / 53 passed / 0 failed / 1 skipped**（`_verify\seq126-e2e-20261106\`，skip=真实点击无 ADB）；`cargo check -p oasd --features ocr` exit 0 |
-| 权威文档 | **`ENGINE §22.65`（seq126 实现记录）· `OPERATION-REGION-DESIGN §8`（模型 A 现行口径）· `ACCEPTANCE-2026-11-06.md`（13 项验收+实施结果）· `VARIABLES-V2-DESIGN.md`（#13 设计）· `PARAM-ASSET-IMPLEMENTATION.md` · `PENDING §E-94`** |
-| 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；本地产物不含 seq126 新能力 |
+| 分支 / HEAD | oas-core `dev`；代码 `fd3339f`（seq127 修复；dev=main=origin）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，未随 seq126/127 更新）；未 tag / 未 release |
+| 任务 | **seq127 修复已完成并推送**（用户 20:0x 验收：全帧多候选 + 模型 B 链末端）；**V2.0 变量系统实施中**：V2.0a 后端（meta.variables/sync/T3/T7/T8/T10/run/package）→ V2.0b serve（/task/variables、Runner config 变量+可改过滤、package_schema=2）→ V2.0c UI（Studio 变量面板/插入变量/Runner 变量分节） |
+| 测试 | `cargo test --workspace` **934 passed / 0 failed**（23 suites；perceive 14 / runtime 214 / task 147+ / oasd 449+）；UI **2223 checks / 177 ids / 0 dead / 158 runner ids / 6 nav**；E2E seq127 **63 total / 62 passed / 0 failed / 1 skipped**（`_verify\seq127-e2e-20261106\`，skip=真实点击无 ADB）；`cargo check -p oasd --features ocr` exit 0 |
+| 权威文档 | **`ENGINE §22.66`（seq127 修正）· `OPERATION-REGION-DESIGN §8.9`（模型 B 现行口径）· `ACCEPTANCE-2026-11-06.md`（13 项+seq127 追加）· `VARIABLES-V2-DESIGN.md`（V2.0 实施依据）· `PENDING §E-95`** |
+| 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；本地产物不含 seq126/127 新能力 |
 | 独立仓 | `https://github.com/passioki/oas-runner`（`768a8b7`）；pin `ba6813e`（未打独立包；如需独立 Runner 需 bump pin + 根启动脚本） |
-| 服务 | 无 `oasd`/`oasd-runner` 进程；8787/8788/8789/8792~8797 无监听（E2E/清理后确认） |
-| 工作区 | `scheduler.json`、用户任务 `tasks/{切换预设御魂,关闭弹窗}/{flow,meta}.json`、用户编辑的 `assets/assets.json` / `frames/frames.json` / 新增 `assets/images/a006.png` 均**未提交**（用户数据，**不要提交/覆盖**；用户明确当前配置为测试配置可重建）；其余代码/文档已提交/推送。**注意：cargo incremental 与 oas-runner target 已清理，下次构建会稍慢（deps 仍缓存）** |
+| 服务 | 无 `oasd`/`oasd-runner` 进程；8787/8788/8789/8792~8797 无监听（E2E/验证后确认） |
+| 工作区 | `scheduler.json`、用户任务 `tasks/{切换预设御魂,关闭弹窗}/{flow,meta}.json`、用户编辑的 `assets/assets.json` / `frames/frames.json` / 新增 `assets/images/a006.png` 均**未提交**（用户数据，**不要提交/覆盖**）；V2.0a 进行中时 `crates/oas-task`/`run.rs` 未提交改动属正常，V2.0 全绿后统一提交。**cargo incremental 已清理，下次构建稍慢（deps 缓存仍在）** |
 
 ## 0.1 新会话恢复步骤（直接照做）
 

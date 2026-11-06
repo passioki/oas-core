@@ -12,7 +12,7 @@
 | 1 | 动作属性页仍有「文字（参数）」下拉 + 「插入参数」按钮 | 属实：locator 文字来源 param 选项 `builder.js:2714-2729`；插入参数组件 `builder.js:2594-2683` + 4 处挂载 | 删除 param 选项与「参数」措辞；旧 flow 的 `text_expr:param()` 以只读「旧参数来源」回显；「插入参数」改为「插入识别文字配置项（素材）」仅列 ocr_var 派生行（写同样的 `param(key)`）；条件编辑器「文字（参数）」行改为选 ocr_var 素材（生成 `text_visible(param(key))`）；goal battles 的 `param('max_battles')` 改字面量 loop | S+M | D | ✅ D（07ed361） |
 | 2 | 构建页/任务库仍有配置项参数 | 属实：`#builder-params` `index.html:341-356`+`builder.js:1153-1249`；任务库配置项对话框 `app.js:802-806,2029-2152`；T3 去声明 `builder.js:1284-1293,1446-1453`；Runner 通用参数组+高级 JSON `runner.html:524-543,190-200,459-461` | 删除用户侧参数入口（面板/配置项对话框/去声明/通用参数组/高级 JSON 参数）；服务端 `meta.params` 派生模型与 `/task/config` 保留（内部/诊断）；Runner 只保留「使用端OCR文字配置项」分节 | M | D | ✅ D（07ed361）+ D2（c3739f6） |
 | 3 | 多候选只对参数 ocr 生效；引用非参数 OCR 素材时 pick 只有 1 候选 | 部分属实：模板/集合/ocr_var/派生 ocr_line 链节点可多候选 ✅；**普通 ocr_line/ocr_lines 作链节点运行时报错**（校验却放行，`oas-task:63-69` vs `runtime:3145-3148`）；**根目标运行时只取最佳**（只有编辑器 test_action 可传 candidate_index）；候选 API 与 test_action/链枚举口径三处分裂（`candidates_for_asset` 未接线） | ① 统一候选枚举（`candidates_for_asset` 接到 serve 候选 API + `preview_root_candidate`，单行 OCR 编辑器路径改 det+rec）；② 普通 OCR 素材作链节点：允许保存/读取「期望文字」（否则不允许引用并明确提示）；③ pick=score/nearest 对模板多实例、同文多处 OCR 真正生效；④ #11 修复后「队伍2/3」不再是候选（同文只有一处时 1 候选是正确的，需用户确认语义） | M | C | ✅ C 并入 B（4ccd182）；strict 候选 A（c16a536） |
-| 4 | 操作区去除「相对偏移」概念，它=修改当前素材操作区；引用素材只作识别链节点、不得改其设置 | 属实且现状与用户要求冲突：现状=模型 B（链末端被引用素材的操作区决定落点，`runtime:3036-3108`；UI 保存时 PATCH 被引用素材 `app.js:5701-5715`） | **改为模型 A**：链仅作识别门槛（逐级识别，全中才动作），**最终操作区=当前素材自己的操作区**；删除 asset 级 offset（schema/校验/runtime/UI/测试）；操作区对话框：当前素材可选「当前素材操作区（用统一框选编辑）」/「引用素材链（只读查看被引用素材已有链，不可在此修改）」；保存只写当前素材 | M | B | ✅ B（4ccd182）+ B3a（9a3c77f）+ B3b（303a7ac） |
+| 4 | 操作区去除「相对偏移」概念，它=修改当前素材操作区；引用素材只作识别链节点、不得改其设置 | 属实且现状与用户要求冲突：现状=模型 B（链末端被引用素材的操作区决定落点，`runtime:3036-3108`；UI 保存时 PATCH 被引用素材 `app.js:5701-5715`） | **改为模型 A**：链仅作识别门槛（逐级识别，全中才动作），**最终操作区=当前素材自己的操作区**；删除 asset 级 offset（schema/校验/runtime/UI/测试）；操作区对话框：当前素材可选「当前素材操作区（用统一框选编辑）」/「引用素材链（只读查看被引用素材已有链，不可在此修改）」；保存只写当前素材 | M | B | ✅ B（4ccd182）+ B3a（9a3c77f）+ B3b（303a7ac）；**seq127 修正（fd3339f）** |
 | 5 | 参数类素材不支持阈值 | 后端/运行时/候选全链路已支持；**仅 Studio UI 阻断**：`app.js:assetThresholdKind` 只认 template/ocr_line/ocr_lines（`app.js:6699-6704`），菜单却显示可用 | UI 放开 `ocr_var`→OCR 置信度阈值；补 ui_pure_test 断言。无需改 Rust | S | A | ✅ A（c16a536） |
 | 6 | 多边形保存/展示回退矩形（素材行预览、点选后画布） | 部分属实：保存链路基本保留多边形；**显示层恒矩形**（缩略图按 roi 裁矩形 `asset_ui.js:21-80`；`pickAssetRoi` 清空本地 polygon 不恢复 `app.js:6999-7017`）；`/task/asset/update` **无 polygon 字段**（OCR/非模板移动识别区时已存 polygon 不平移）；模板缩放 ROI 会显式回退矩形并弹窗（`app.js:6518-6583`，属设计限制） | ① 缩略图叠加 polygon 轮廓；② 选中/编辑素材时恢复并绘制已存 polygon；③ `/task/asset/update` 增加 `polygon`（支持清空/平移/校验），OCR/region 识别区移动时同步平移 polygon；④ 可选：模板缩放保持多边形 | S/M | A/B | ✅ A（c16a536）+ B（4ccd182）+ B3b（303a7ac） |
 | 7 | Runner 端添加启动脚本 | 发行包里有、仓库根没有；dev 入口 `scripts\dev-serve.bat -Surface runner` 可用；packaging/dist-stage 的 start-runner.bat 停在 seq118 且双击失败无提示 | 新增 oas-core `start-runner.bat`（委托 dev-serve，固定 8789，自检 exe/模型/端口，失败 pause）+ oas-runner 根 `start-runner.bat` + 增强 packaging 两个 bat | S | E | ✅ E core（c16a536）；oas-runner 仓脚本待办 |
@@ -113,3 +113,27 @@
 6. **真机 E2E**：`test_action_real_click` 恒 SKIP（无 ADB）；真实点击/长按/滑动落点待验。
 7. **#12 最终收尾**：cargo clean（core/runner）、dist stage/旧 zip 清理（需先停服务）。
 8. 更新检测鉴权/GC、tag/Release 策略仍 backlog。
+
+## seq127 追加验收（2026-11-06 20:0x）
+
+> 用户 20:0x 复核 seq126 后追加 3 条反馈，Lead 用用户数据副本实测确认并提交 `fd3339f`（dev=main=origin；未 tag/未 release）。实现记录 `ENGINE §22.66` / `OPERATION-REGION-DESIGN §8.9`；**seq126 §B 的「模型 A 落点」与 ROI-only 候选口径被本节取代**（#4 行已标 seq127 修正）。
+
+### A. 用户 3 条反馈与根因
+
+| # | 反馈 | 根因 | 修复 |
+|---|---|---|---|
+| 1 | 模板/集合多候选未生效：全屏识别 `test`@frame#6 只回 1 个候选，应 3 个 | 候选枚举仍按素材 ROI（`match_template_all` 只在 ROI 内扫） | oas-perceive 新增全帧金字塔多候选 `match_template_all_full`/`match_template_masked_all_full`；runtime 候选 API/链 pick/test_action 根候选改全帧（普通 click best 仍 ROI+金字塔回退） |
+| 2 | 操作区链末端语义：选「引用素材」时应落在**最后一个被引用素材自己的操作区** | seq126 #4 误改为模型 A（落点=根素材 self） | 恢复模型 B：`walk`/`resolve`/`preview` 返回链末端节点自身 self 几何；根 self/无链走历史路径；offset 删除/region 不可节点/防环保留 |
+| 3 | 组合场景（链+多候选+pick score/nearest）结果错误 | 候选与末端几何两处各自错 | 链节点识别改全帧候选 → pick 选中候选后其自身几何即末端落点（同一 resolver，编辑器与引擎一致） |
+
+### B. 修复结果（Lead 实测）
+
+- 候选：`test`@frame#6 **count 1→3**，y=**144/295/445**，score=**1.0/0.973/0.905**（ROI 外候选也返回）。
+- 链末端 `test_action dry`：`预设识别`（runtime_text=队伍3）→ `[973,445,35,38]`（=链末端 `test` 候选，非自身 `[573,453,64,29]`）；`队伍1`→`[973,295,35,38]`；`test`（无链）→`[973,144,35,38]`。
+- 性能：全帧多候选 1280×720/35×38 **debug 114ms / release 6.4ms**（原 7.4s）。
+- Studio 文案按 self/asset 动态显示落点（`opRegionLandingText`，`app.js:2685`；标题/提示/面包屑/保存消息同步）。
+- 测试：perceive 14/0、runtime 214/0、workspace **934/0**、UI **2223 checks/177 ids/0 dead/6 nav**、`cargo check -p oasd --features ocr` exit 0。
+
+### C. 跟进（不阻塞）
+
+E2E seq127 脚本（并清理 seq126 模型 A 断言）、masked 极端 mask 兜底、候选 API `domain` 字段语义（仍=声明域而搜索域已全帧）、`test_action` OCR 耗时（全屏 ~343ms 级）；详见 `ENGINE §22.66.6`。

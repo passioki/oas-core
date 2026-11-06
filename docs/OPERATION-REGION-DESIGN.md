@@ -258,7 +258,9 @@
 - E2E（`_verify/seq124-e2e-20261106/`）：`validate_op_region_asset_chain`（depth=2，末端 region）与 `offset` 200；`dangling`/`cycle` 400；`test_action_dry_chain`（`action_box=[100,50,80,40]`、`chain_depth=2`、`point` 在末端区内）；缺失节点 400 不点击。
 - 未做/后续：候选 API 的链几何预览（`op_rect`）；`test_action` 的 drag 手势；素材行长按测试入口；真机落点 E2E。
 
-### 8.8 seq126 修订（模型 A，2026-11-06 19:2x 已实现）
+### 8.8 seq126 修订（模型 A，2026-11-06 19:2x 已实现；**落点语义已被 §8.9 seq127 取代**）
+
+> ⚠️ **seq127 修正（2026-11-06 20:2x，`fd3339f`）**：§8.8 的「模型 A：动作落点=根素材自身操作区」已被 **§8.9 取代**——恢复模型 B：选「引用素材」时落点=**最后一个被引用素材自己的操作区**，只有 self 才是当前素材自身；模板/集合候选改**全帧金字塔多候选**。§8.8 其余内容（offset 删除、region 不可作链节点、防环/深度 16、统一框选、被引用素材只读）仍有效。
 
 > 用户验收 #4：「操作区去除相对偏移概念；引用素材只作识别链节点、不得改其设置」。实现记录 `ENGINE §22.65.2/§22.65.3`；本节**取代 §8.1/§8.5/§8.6/§8.7**。
 
@@ -299,3 +301,42 @@
 
 `validate_model_a_chain`（chain=[root:asset,GATE:self]）、`test_action_model_a_action_box_is_root_self`（action_box=根 self `[50,60,10,10]`，非门槛框）、门槛缺失 400 不点击、`update/save/validate` 的 offset 400、region 作节点 400、普通 OCR 门槛（有/无 expected text）200/400、polygon 三态与统一工具后端验收。
 - 未做/后续：真实浏览器手测（Firefox）、真机落点 E2E；loop 模板/变量系统见 `ENGINE §22.65.8`。
+
+### 8.9 seq127 修正（模型 B + 全帧多候选，2026-11-06 20:2x，`fd3339f`）
+
+> 用户 20:0x 验收纠正两处语义；本节**取代 §8.8/§8.8.1~§8.8.5 中「模型 A：落点=根 self」表述**（offset 删除/region 不可作节点/防环/统一框选/被引用素材只读仍有效），并补正候选枚举口径。实现记录 `ENGINE §22.66`。
+
+#### 8.9.1 落点语义：链末端=最后一个被引用素材自己的操作区（模型 B）
+
+- `self`（缺省/无 `op_region`）= 当前素材**自身**操作区（历史 `click_box_for` 语义）——此分支与 seq126 相同。
+- `asset` = 逐级识别被引用素材并跟随其 `op_region`，**最终操作框 = 链末端（最后一个 `op_region` 缺失/`self` 的节点）自己的 self 几何**（模板=匹配 bbox 平移后的 action_shape/click_back；OCR=随真实行平移/全屏绝对值；collection=胜出成员几何）。
+- 锚点：`AssetOpRegion` 注释（`runtime:403-422`）；`resolve_asset_op_region`（`:2962-2990`，根无链/self 返回 `None` 走历史路径，根 asset 返回 walk 结果而非 root box）；`walk_op_region_chain`（`:3273-3336`，`None|self` 终止返回该节点 `box_/shape`）；`recognize_chain_node`（`:3342-3462`）；`preview_asset_action`（`:3035-3070`）与 click/long_press/drag 共用。
+- 保留：`offset` 已删除（旧数据 400）、`region` 不可作链节点、环+深度 16、任一 node miss=本步失败不点击、被引用素材只读（保存只写当前素材）。
+- Studio 文案按 self/asset 动态显示落点（`app.js:2685 opRegionLandingText`；标题/面包屑/提示/保存消息 `:4197,4271,4306,4316,4341-4342,4410`）。
+
+#### 8.9.2 候选枚举改全帧（模板/集合）
+
+- 编辑器候选、`test_action` 根候选、链 pick（score/nearest）对模板/集合一律**全帧多候选**：`oas-perceive` 新增 `match_template_all_full`（`perceive:868`）/`match_template_masked_all_full`（`:882`）——4× 金字塔 coarse 全帧扫（放宽阈值+NMS ≤64 anchors）→ 全分辨率 refine（真实阈值+NMS）→ 全局排序/上限 64；1280×720/35×38 **debug 114ms / release 6.4ms**（commit 实测，原 7.4s）。
+- runtime：`asset_match_candidates`（`:1414`，循环 `match_template_*_all_full` `:1454-1457`）、`template_candidates`（`:1505`）、`candidates_for_asset`（`:1596`）、链节点识别（`:3427-3461`）、`preview_root_candidate`（`:3226-3267`）。
+- **普通 click 根 best 不变**（`locate_template :1165` ROI + 金字塔回退）；素材 `roi` 只保留为历史单最佳路径提示，不再限制候选枚举。
+- 设计含义：pick=nearest/score 现在对**全帧所有出现位置**生效（例如同一模板在画面多处/文字多处命中），链末端几何取被选中的那个候选的操作区。
+
+#### 8.9.3 与 §8.8 / seq126 E2E 的关系
+
+- 被取代：§8.8 开头 banner 所指「模型 A 落点=根素材自身操作区」及 §8.8.5 模型 A 断言描述。
+- 仍有效：两模式 schema（self/asset）、offset 删除、region 不可作链节点、普通 OCR 门槛需 expected text、被引用素材只读、防环/深度、统一框选与 polygon。
+- seq126 E2E（`_verify/seq126-e2e-20261106/`）的 `validate_model_a_chain` / `test_action_model_a_action_box_is_root_self` 等断言**已过期**，以 seq127 脚本替换（待办）。
+
+#### 8.9.4 实测（Lead 用户数据副本）
+
+- `test`@frame#6 候选 **1→3**：y=144/295/445，score=1.0/0.973/0.905。
+- 链末端 `test_action dry`：`预设识别`（runtime_text=队伍3）→ `action_box=[973,445,35,38]`（=链末端 `test` 候选，非自身 `[573,453,64,29]`）；`队伍1`→`[973,295,35,38]`；`test`（无链）→`[973,144,35,38]`。
+- 测试：perceive 14/0、runtime 214/0、workspace **934/0**、UI **2223/177/0 dead/6 nav**、`cargo check --features ocr` exit 0。
+
+#### 8.9.5 待办
+
+1. E2E seq127 脚本（全帧候选/链末端 action_box/组合场景），清理 seq126 模型 A 断言。
+2. masked 极端 mask 兜底（全帧 masked coarse 用 majority 降采样 mask；极端细条 mask 走 unmasked coarse 回退，需真实页面复核）。
+3. 候选 API `domain` 语义（仍=声明域 roi/screen/members，但搜索域已是全帧；契约需重命名/加 `search:"full_frame"`）。
+4. `test_action` OCR 耗时（每预览 reobserve+det/rec，全屏 ocr_var ~343ms 级；多候选演练需缓存/复用帧）。
+5. 真机/Firefox 手测沿用 §8.8.5 与 `ENGINE §22.65.8` 的剩余项。

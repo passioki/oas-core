@@ -1,4 +1,4 @@
-﻿# OAS 新引擎设计稿（ENGINE-DESIGN）—— **A（全重写）· Rust 双端**
+# OAS 新引擎设计稿（ENGINE-DESIGN）—— **A（全重写）· Rust 双端**
 
 > ★★★ **[10-15] 用户裁定（逐字）**：
 > > "**可以改run的逻辑，咱们做干净开发，之前的任务可以在任务构建功能成熟后再重新构建。
@@ -3311,10 +3311,11 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 6. **全屏 OCR 成本**：`ocr_var.roi=null` 每次 det+rec 全帧（E2E 合成帧实测 ~343 ms），素材行候选/演练入口需提示慢。
 7. **真机 E2E 未做**：`test_action_real_click` 无 ADB 固定 SKIP；真机点击/长按落点待验。
 8. **未 tag / 未 release**：只推送；`ENGINE_VERSION` 仍 0.1.0，发布包/版本号未升。
+9. Phase 2（去 `meta.params`、虚拟参数、`asset_values`）与旧数据迁移仍是后续批次。
 
 ### 22.65 ★★★ [11-06 19:2x] **seq126 验收整改实现记录（批次 A/B/C/D/B3a/B3b/D2/E/F；13 条反馈闭环）**
 
-> 用户 2026-11-06 下午 13 条验收反馈 → 3 路只读排查（`_verify/acceptance-20261106/{01-bug-triage,02-refactor-design-inputs,03-infra-ops}.md`）→ 理解与计划 `docs/ACCEPTANCE-2026-11-06.md` → 批次 A/B/C/D/B3a/B3b/D2/E/F 实施完成。HEAD `303a7ac`（dev=main=origin），**未 tag/未 release**。最终：workspace **929/0**、UI **2217/177/0/6**、E2E seq126 **54/53/0/1**。设计衔接：变量系统 V2 `docs/VARIABLES-V2-DESIGN.md`（#13）。seq124 记录见 §22.64。
+> 用户 2026-11-06 下午 13 条验收反馈 → 3 路只读排查（`_verify/acceptance-20261106/{01-bug-triage,02-refactor-design-inputs,03-infra-ops}.md`）→ 理解与计划 `docs/ACCEPTANCE-2026-11-06.md` → 批次 A/B/C/D/B3a/B3b/D2/E/F 实施完成。HEAD `303a7ac`（dev=main=origin），**未 tag/未 release**。最终：workspace **929/0**、UI **2217/177/0/6**、E2E seq126 **54/53/0/1**。设计衔接：变量系统 V2 `docs/VARIABLES-V2-DESIGN.md`（#13）。seq124 记录见 §22.64。**seq127 修正（2026-11-06 20:2x）**：本节 §22.65.1 第 4 条、§22.65.2、§22.65.4 的「操作区模型 A：落点=根素材 self」及 ROI-only 候选口径已被 **§22.66** 取代（链末端=最后一个被引用素材自身操作区；模板/集合候选改全帧金字塔多候选）；本节其余内容（参数 UI 移除/严格候选/polygon/统一框选等）仍有效。
 
 #### 22.65.1 13 条反馈 → 批次映射与结论
 
@@ -3389,4 +3390,64 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 5. **T5 手写 polygon 不校验**：`assets_shape_issues`（`oas-task/lib.rs:3405-3600`）只校验 kind/roi/action_shape/ocr_text/op_region，**不校验 `item.polygon` 几何**；仅保存路径 `validate_recognition_polygon`（`:1033`）校验 → 手改 `assets.json` 的坏 polygon 不被 lint 拦（运行时掩膜可能异常）。
 6. **真机 / 浏览器 E2E 未做**：`test_action_real_click` 恒 SKIP（无 ADB），真实点击/长按/滑动落点仍待真机验证。
 7. **未 tag / 未 release**；发布、更新检测鉴权/GC 策略仍 backlog。
-9. Phase 2（去 `meta.params`、虚拟参数、`asset_values`）与旧数据迁移仍是后续批次。
+
+### 22.66 ★★★ [11-06 20:2x] **seq127 语义修正（全帧多候选 + 操作区链末端=最后一个被引用素材自身操作区）**
+
+> 用户 2026-11-06 20:0x 验收纠正两处语义，Lead 用用户数据副本实测确认并提交 `fd3339f`（dev=main=origin；未 tag/未 release）。**本节取代 §22.65 的模型 A 落点表述与 ROI-only 候选口径**；§22.65 其余内容（参数 UI/严格候选/polygon/统一框选等）仍有效。测试：perceive 14/0、runtime 214/0、workspace **934/0**、UI **2223/177/0 dead/6 nav**。
+
+#### 22.66.1 用户纠正与结论
+
+| # | 用户 20:0x 纠正（语义） | 根因 | 结论 |
+|---|---|---|---|
+| 1 | 模板/集合候选应是**全帧所有出现位置**，不只识别 ROI 内（用户数据 `test`@frame#6 应 3 个候选，实际只 1 个） | seq124/126 候选枚举用 `match_template_all`（`perceive:698`）限定 ROI：搜索窗口由 `all_search_window`（`:646`）按传入 ROI 裁剪，ROI 空才整帧 | 新增**全帧金字塔多候选** API（perceive）并在候选 API/链 pick/test_action 根候选统一启用；ROI 仅保留给普通 click 根 best |
+| 2 | 操作区选「引用素材」时，落点=**最后一个被引用素材自己的操作区**；只有选「当前素材操作区(self)」才是自身 | seq126 按 #4 误改为模型 A（落点=根素材 self） | **恢复模型 B**：`walk` 在链末端（`op_region` 缺失/self 的节点）返回该节点自身 self 几何；根 self/无链仍走历史路径 |
+| 3 | 组合场景（链 + 多候选 + pick score/nearest）必须联动 | 候选与末端几何两处各自错 | 链节点识别同样改全帧候选 → pick 选中后其自身几何即末端落点（同一 resolver） |
+
+#### 22.66.2 全帧多候选：新 API / 算法 / 性能
+
+- **oas-perceive 新 API**：`Matcher::match_template_all_full`（`perceive:868`）、`match_template_masked_all_full`（`:882`），共用 `scan_full_pyramid`（`:895`）：
+  1. **coarse**：整帧 + 模板 4× 降采样，放宽阈值 `(threshold-0.45).max(0.20)`（`:929`），`match_template_all` 取局部极大 + NMS → ≤64 anchors（`:959`）；
+  2. **refine**：每个 anchor 建全分辨率窗口 `±(4+2)px`（覆盖整数降采样偏移，`:957-975`），用真实阈值 + 原 NMS 口径重扫（普通/掩膜）；
+  3. 全局排序（score desc→y→x）+ NMS + **上限 64**（`finalize_candidates`，`MAX_MATCH_CANDIDATES :462`）。
+  - 小模板/小帧自动回退穷举全分辨率扫描（`:911-917`）；masked 版 coarse 用 **majority 规则**降采样 boolean mask（`:934-951`），refine 用精确 mask 契约。
+- **性能**（commit `fd3339f` 实测，1280×720 帧 / 35×38 模板）：debug **114ms**、release **6.4ms**（原朴素全帧扫 7.4s）；perceive 新增测试 `full_frame_search_is_fast_enough_for_live_use`（`:1062`）。
+- **runtime 调用点改全帧**（模板/集合）：
+  - `asset_match_candidates`（`runtime:1414`，循环内 `match_template_masked_all_full`/`match_template_all_full` `:1454-1457`；ROI 不再限制候选）；
+  - `template_candidates`（`:1505`，委托上一函数）；`candidates_for_asset`（`:1596`）；
+  - 链节点识别 `recognize_chain_node` 模板/集合分支（`:3427-3461`，用 `asset_match_candidates`，pick=score/nearest 基于全帧候选）；
+  - 编辑器根候选 `preview_root_candidate` 模板/集合分支（`:3226-3267`），`candidate_index` 与候选 API 同序（`sort_asset_match_candidates :1493`）。
+  - **普通 click 根 best 不变**：`locate_template`（`:1165`）仍按 ROI 匹配 + 全帧金字塔回退取单最佳——行为逐字节不变。
+- **serve 候选 API**：ROI 不再限制枚举（`serve.rs:4665` handler；`domain` 仍回声明域 `roi/screen/members` `:4725-4758`；测试 `asset_candidates_are_full_frame_even_with_an_authored_roi :16509`，断言有 authored ROI 时 ROI 外候选也返回、`domain=="roi"`）。
+
+#### 22.66.3 操作区链末端语义（恢复模型 B）
+
+- `AssetOpRegion` 注释与语义（`runtime:403-422`）：`self`=本节点自身操作区；`asset`=识别被引用节点并递归其 `op_region`，**最终操作框=最后一个被引用节点的自身 self 几何**。
+- `resolve_asset_op_region`（`:2962-2990`）：根无链/`self` → 返回 `Ok(None)`（调用方走历史路径，逐字节不变）；根 `asset` → `walk` 的返回即最终几何（不再用 `root_self_box` 覆盖）。
+- `walk_op_region_chain`（`:3273-3336`）：`None|self` 终止时返回**该节点**的 `box_/shape`（`OpRegionChainStep` 的 `action_box` 即「本跳操作框」，`runtime:444-445`）；`asset` 跳先识别（全帧候选 + pick）再递归。
+- `recognize_chain_node`（`:3342-3462`）：模板/集合=`asset_match_candidates` 全帧候选+`pick_template_candidate`（`:964`）→ `template_operation_geometry`（`:1220`）得自身操作框；OCR=`ocr_chain_self_geometry`（`:3472`，`self_operation_geometry` `:1308`）——即有 `roi` 时 `action_shape` 随真实行平移、全屏 ocr_var 绝对。
+- `preview_asset_action`（`:3035-3070`）与 click/long_press/drag 共用同一 resolver，因此 `test_action` 的 `action_box` = 链末端节点操作区。
+- **保留不变**：`offset` 删除（旧数据响亮 400）、`region` 不可作链节点、防环+深度 16、任一 miss=Err 不点击、被引用素材只读（保存只写当前素材）。
+
+#### 22.66.4 实测证据（Lead 用户数据副本 + Studio 文案）
+
+- 候选：`test`@frame#6 **count 1→3**，三候选 y=**144/295/445**，score=**1.0/0.973/0.905**（全帧后）；`test_action dry` 链 pick 可选到远端候选。
+- 链末端落点（`test_action dry`，用户数据）：
+  - `id=预设识别`（`runtime_text=队伍3`，链引用 `test`）→ **`action_box=[973,445,35,38]`**（=链末端 `test` 的候选；**非** `预设识别` 自身 `[573,453,64,29]`）；
+  - `id=队伍1` → `[973,295,35,38]`；`id=test`（无链）→ `[973,144,35,38]`（自身候选）。
+- Studio 文案同步（模型 B）：`opRegionLandingText`（`app.js:2685`）按 self/asset 动态显示「当前素材操作区」/「链末端（最后一个被引用素材）自己的操作区」；对话框标题/提示/面包屑/保存消息（`:4197,4271,4306,4316,4341-4342,4410`）；`ui_pure_test` 断言 `:872-884,2405-2421`。
+- 测试：`cargo test -p oas-perceive` 14/0、`cargo test -p oas-runtime` 214/0、`cargo test --workspace` **934/0**；UI **2223 checks/177 ids/0 dead/158 runner ids/6 nav**（本机实跑核对）；`cargo check -p oasd --features ocr` exit 0。
+
+#### 22.66.5 与 §22.65 / seq126 E2E 的取代关系
+
+- **取代**：§22.65.1 第 4 条、§22.65.2（模型 A：落点=根素材 self）、§22.65.4 中候选枚举相关表述——凡写「模型 A 落点=根 self」的均以 §22.66 为准；§22.65.7 的 workspace/UI 数字为 seq126 时点，seq127 更新为 **934/0、UI 2223**。
+- **seq126 E2E 断言已过期**（README `_verify/seq126-e2e-20261106/README.md` §3.2/§3.3）：`validate_model_a_chain`、`test_action_model_a_action_box_is_root_self`（断言 action_box=根 self `[50,60,10,10]`）按模型 B 不再成立；`domain=roi` 候选数断言也因全帧枚举变化。需以 seq127 E2E 脚本替换（见 §22.66.6）。
+- 不变量仍有效：flow 旧 `region` 兼容、`action_source` deprecated、C1′ 派生参数、polygon/统一框选、参数 UI 移除等（§22.65 其余节）。
+
+#### 22.66.6 待办（不阻塞本轮）
+
+1. **E2E seq127 脚本**：全帧候选 count/坐标/分数（含 ROI 外候选）、链末端 action_box（用户数据三例）、组合场景（链+多候选+pick nearest）、旧 seq126 模型 A 断言清理。
+2. **masked 极端 mask 兜底**：全帧 masked coarse 用 majority 降采样 mask，极端 polygon（细条/降采样后全 false）会回退 unmasked coarse——需真实页面复核并考虑多尺度 coarse。
+3. **候选 API `domain` 字段语义**：仍回声明域（roi/screen/members）而搜索域已=全帧；契约上需重命名或补 `search:"full_frame"`，避免 UI 误读。
+4. **test_action OCR 耗时**：每次预览都 `reobserve`+OCR det/rec（全屏 ocr_var 尤其慢，历史实测 ~343ms）；多候选/多次演练需缓存或复用帧。
+5. 旧文档/评测脚本中模型 A 表述清理（本节 + ACCEPTANCE seq127 已标注；HANDOFF/简历类由 Lead 回填）。
+6. 真机 E2E、Firefox 手测、oas-runner pin、变量系统 V2.0 等沿用 §22.65.8。

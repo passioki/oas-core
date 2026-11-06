@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 126
-updated_at: 2026-11-06T19:4x+08:00
-trigger: 用户 18:4x「全按推荐，尽量用子进程」→ 按批次 A/B/B3a/B3b/D/D2/C/E 完成 13 条验收整改 + 变量系统 v2 设计；Lead 独立验收（workspace 929/0、UI 2217/177/0/6、E2E 54/53/0/1）→ 提交推送
-status: done
-code_head: `303a7ac`（B3b；dev=main=origin；批次提交 c16a536 / 4ccd182 / 07ed361 / c3739f6 / 9a3c77f / 303a7ac + docs 提交见 git log -1）
-docs_head: 本批 docs 提交见 `git log -1`
-next_action: seq126 已完成并推送（未 tag/未 release）。剩余可选：① Firefox 浏览器手测（识别区 drag=矩形/click 多边形/dblclick 收尾、操作区 polygon+反选、模板只改多边形不重截图、Runner 识别文字值、start-runner.bat）；② oas-runner 独立仓根启动脚本 + pin bump（独立包不含 seq126）；③ `loop n=param('max_rounds')` 模板参数（UI 移除后不可配，建议改字面量）；④ T5 手写 polygon 几何校验；⑤ 真机 E2E（ADB）；⑥ 变量系统 V2.0 实现（`docs/VARIABLES-V2-DESIGN.md`，10 项已按推荐拍板）；⑦ 更新检测鉴权/GC、tag/Release 策略。详见 `PENDING §E-94 §E`、`ENGINE §22.65.8`。
+checkpoint_seq: 127
+updated_at: 2026-11-06T20:2x+08:00
+trigger: 用户 20:0x 验收反馈 3 条（多候选未生效 / 操作区链末端应为被引用素材自身操作区 / 组合场景不可用）→ Lead 用用户数据副本定位根因（候选只搜 roi、上一轮误改模型 A）→ backend task-32 修复（全帧多候选金字塔 + 模型 B）→ Lead 实测通过并提交 `fd3339f`；同时启动 V2.0 变量系统（用户剩余项）
+status: in_progress
+code_head: `fd3339f`（seq127 修复；dev=main=origin；未 tag/未 release）
+docs_head: seq127 docs 提交见 `git log -1`
+next_action: ① 提交 seq127 文档（ENGINE §22.66/OPERATION-REGION §8.9/ACCEPTANCE seq127 追加/PENDING §E-95/RESUME/交接）；② E2E seq127 自测（task-34）通过后报结果；③ **V2.0 变量系统实现**：V2.0a backend（task-36：meta.variables/sync/T3/T7/T8/T10/run/package）→ V2.0b serve（/task/variables、Runner config variables+可改过滤、package_schema=2 安装拒绝）→ V2.0c UI（Studio 变量面板/插入变量/Runner 变量分节）→ E2E/文档；④ 用户 Firefox 手测（含本轮多候选/链末端场景：素材行识别看 test 3 候选；预设识别点测/运行应点击 test 最近候选）。**不 tag/不 release。**
 ```
 
 ## 0. 目标（本阶段）
@@ -265,6 +265,14 @@ next_action: seq126 已完成并推送（未 tag/未 release）。剩余可选�
 | F | #13 变量系统 v2 设计 `docs/VARIABLES-V2-DESIGN.md`（10 项按推荐：meta.variables 唯一真相、Runner 可改过滤、values.json v2 Profile、多模拟器隔离部署） | docs |
 
 **剩余（不阻塞）**：Firefox 手测、oas-runner 独立仓 root 脚本/pin bump、`loop n=param('max_rounds')` 模板、T5 手写 polygon 校验、真机 E2E、变量系统 V2.0 实现、更新检测鉴权/GC、发布策略。**未 tag/未 release。**
+
+## 1.21 2026-11-06 20:0x→20:2x（seq 127）用户验收纠正：多候选全帧 + 操作区链末端模型 B（✅ 已修复推送；V2.0 启动）
+
+> 用户 20:0x 反馈 3 条：① 多候选仍未生效（素材 `test` 在 #6 帧应有多个却只显示 1 个）；② 引用素材时落点应为「**最后一个被引用素材自己的操作区**」，只有 self 才用自身（纠正我们上一轮的模型 A）；③ 目标场景：`预设识别` 识别「队伍3」→ 引用 `test` nearest → 点击 `test` 不可用。
+> 根因（Lead 用用户数据副本实测）：`test`=template、roi=[973,144,35,38]，候选枚举只搜素材 roi → 只 1 个；全帧搜索实测 3 个（y=144/295/445）。上一轮把操作区链误改为「模型 A（落点=根 self）」。
+> 修复提交 `fd3339f`：`oas-perceive` 新增 `match_template_all_full`/`masked_all_full`（4× 金字塔 coarse 全帧扫 → 全分辨率 refine → NMS≤64；1280×720/35×38 debug 114ms / release 6.4ms，原 7.4s）；`oas-runtime` 候选/链 pick 改全帧、`walk_op_region_chain`/`resolve_asset_op_region`/`preview` 恢复末端 self 几何；UI 文案按 self/asset 动态。
+> Lead 独立实测（用户数据副本）：candidates test@#6 **count=3**（973/144、973/295、973/445，score 1.0/.973/.905）；`test_action dry id=预设识别` → `action_box=[973,445,35,38]`（test 候选，不是预设识别 [573,453,64,29]）；`队伍1`→`[973,295,35,38]`；`test`→`[973,144,35,38]`。
+> 验证：workspace **934/0**（perceive 14 / runtime 214 / oasd 449+）、UI **2223/177/0 dead/6 nav**、`cargo check -p oasd --features ocr` exit 0。文档（task-35）与 E2E seq127（task-34）随后；V2.0 变量系统已启动（task-36 backend V2.0a → V2.0b serve → V2.0c UI）。
 
 ## 2. 本批交付（seq 110）
 
