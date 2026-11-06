@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 127
-updated_at: 2026-11-06T20:2x+08:00
-trigger: 用户 20:0x 验收反馈 3 条（多候选未生效 / 操作区链末端应为被引用素材自身操作区 / 组合场景不可用）→ Lead 用用户数据副本定位根因（候选只搜 roi、上一轮误改模型 A）→ backend task-32 修复（全帧多候选金字塔 + 模型 B）→ Lead 实测通过并提交 `fd3339f`；同时启动 V2.0 变量系统（用户剩余项）
-status: in_progress
-code_head: `fd3339f`（seq127 修复；dev=main=origin；未 tag/未 release）
-docs_head: seq127 docs 提交见 `git log -1`
-next_action: ① 提交 seq127 文档（ENGINE §22.66/OPERATION-REGION §8.9/ACCEPTANCE seq127 追加/PENDING §E-95/RESUME/交接）；② E2E seq127 自测（task-34）通过后报结果；③ **V2.0 变量系统实现**：V2.0a backend（task-36：meta.variables/sync/T3/T7/T8/T10/run/package）→ V2.0b serve（/task/variables、Runner config variables+可改过滤、package_schema=2 安装拒绝）→ V2.0c UI（Studio 变量面板/插入变量/Runner 变量分节）→ E2E/文档；④ 用户 Firefox 手测（含本轮多候选/链末端场景：素材行识别看 test 3 候选；预设识别点测/运行应点击 test 最近候选）。**不 tag/不 release。**
+checkpoint_seq: 128
+updated_at: 2026-11-06T20:4x+08:00
+trigger: 用户剩余项「变量系统 V2.0 实现」→ 按 `docs/VARIABLES-V2-DESIGN.md` 分 V2.0a 后端模型（`e1b816f`）/V2.0b serve/V2.0c UI（`d780a4b`）完成；Lead 验收（workspace 949/0、UI 2303/177/0/6、E2E seq128 77/76/0/1、用户数据副本冒烟）→ 提交推送
+status: done
+code_head: `d780a4b`（V2.0b/c；dev 领先 main，docs 提交后统一 sync；未 tag/未 release）
+docs_head: V2.0 docs 提交见 `git log -1`
+next_action: V2.0 已完成并推送（未 tag/未 release）。后续：① **Firefox 手测**（构建页「变量」面板新建/编辑/删除/插入变量、动作目标用变量、Runner 配置两分节改值、发布/安装新包、旧包拒绝提示）；② V2.1（`variable('key')` 别名/条件/循环变量/T9/loop 数量变量）；③ V2.2（Profile 多账号/多模拟器、values.json v2）；④ oas-runner 独立仓根启动脚本 + pin bump 重打独立包；⑤ `loop n=param('max_rounds')` 文案、T5 手写 polygon 校验、真机 E2E；⑥ 更新检测鉴权/GC、tag/Release 策略。详见 `PENDING §E-96`、`ENGINE §22.67`、`VARIABLES-V2-DESIGN §10`。
 ```
 
 ## 0. 目标（本阶段）
@@ -273,6 +273,15 @@ next_action: ① 提交 seq127 文档（ENGINE §22.66/OPERATION-REGION §8.9/AC
 > 修复提交 `fd3339f`：`oas-perceive` 新增 `match_template_all_full`/`masked_all_full`（4× 金字塔 coarse 全帧扫 → 全分辨率 refine → NMS≤64；1280×720/35×38 debug 114ms / release 6.4ms，原 7.4s）；`oas-runtime` 候选/链 pick 改全帧、`walk_op_region_chain`/`resolve_asset_op_region`/`preview` 恢复末端 self 几何；UI 文案按 self/asset 动态。
 > Lead 独立实测（用户数据副本）：candidates test@#6 **count=3**（973/144、973/295、973/445，score 1.0/.973/.905）；`test_action dry id=预设识别` → `action_box=[973,445,35,38]`（test 候选，不是预设识别 [573,453,64,29]）；`队伍1`→`[973,295,35,38]`；`test`→`[973,144,35,38]`。
 > 验证：workspace **934/0**（perceive 14 / runtime 214 / oasd 449+）、UI **2223/177/0 dead/6 nav**、`cargo check -p oasd --features ocr` exit 0。文档（task-35）与 E2E seq127（task-34）随后；V2.0 变量系统已启动（task-36 backend V2.0a → V2.0b serve → V2.0c UI）。
+
+## 1.22 2026-11-06 20:3x→20:4x（seq 128）变量系统 V2.0 实现（✅ 已完成并推送）
+
+> 用户剩余项「1 变量系统 V2.0 实现」→ 按 `docs/VARIABLES-V2-DESIGN.md`（10 项已按推荐）分三批：
+> - **V2.0a** `e1b816f`：`Variable` 模型 + `Meta.variables` 唯一真相；`effective_variables()` 旧 params 内存桥（不写盘）+T10 warning；`sync_ocr_var_variables`（ocr_text 变量 key=param_key/default=runtime_text/asset_id）；T3/T7 改 input variables、T8 改目标；loader 子任务默认、run.rs 注入改 `variable_defaults()`+`validate_variable_values`；`PACKAGE_SCHEMA=2`+`Manifest.variables_schema`+旧包响亮拒绝。
+> - **V2.0b** `d780a4b`：`GET/POST /task/variables`（effective+T10；POST 结构错 400、T3/T8 非阻断 issues、原子写+.bak、写盘无 params、保留未知顶层字段）；`/task/config` deprecated 别名（params 只读镜像）；Runner config GET variables/PUT 仅 `runner_editable&&scope=input`（runtime/未知/不可改 400）；sync 切 variables 并清 params（去双写）；test_action/create/publish/CLI 迁移。
+> - **V2.0c** `d780a4b`：Studio 变量面板/变量对话框（识别文字变量绑 ocr_var、param_key 只读；标量全字段）/「插入变量 ▾」/动作目标 key 集 variables 优先；Runner 配置两分节（识别文字变量 / literal 按 group，空组=通用）、隐藏 runtime/不可改、required 橙提示、PUT 只收可改键、高级 JSON 隐藏。
+> **验证（Lead）**：workspace **949/0**（task 157 / runtime 214 / oasd 454）；UI **2303/177/0 dead/158 runner/6 nav**；E2E seq128 **77/76/0/1**（`_verify\seq128-e2e-20261106\`；skip=无 ADB）；`cargo check --features ocr` exit 0；用户数据副本冒烟：GET /task/variables effective+T10、POST 后 meta.json 无 params、`/task/config` alias、Runner config variables。
+> **偏差/后续**：旧 meta.params 只内存桥（M3 用户重建，不自动改写数据）；`/task/config`+`/runner/tasks.params` deprecated 过渡别名；variables 行内未知字段不保留；T8 sync 硬错误不阻断保存（issues）；M1 导入 CLI 未做；`values.json` 零迁移；条件编辑器仍 ocr_var 下拉（V2.1 扩标量）；V2.1/V2.2 后续。
 
 ## 2. 本批交付（seq 110）
 

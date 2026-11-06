@@ -3450,4 +3450,63 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 3. **候选 API `domain` 字段语义**：仍回声明域（roi/screen/members）而搜索域已=全帧；契约上需重命名或补 `search:"full_frame"`，避免 UI 误读。
 4. **test_action OCR 耗时**：每次预览都 `reobserve`+OCR det/rec（全屏 ocr_var 尤其慢，历史实测 ~343ms）；多候选/多次演练需缓存或复用帧。
 5. 旧文档/评测脚本中模型 A 表述清理（本节 + ACCEPTANCE seq127 已标注；HANDOFF/简历类由 Lead 回填）。
-6. 真机 E2E、Firefox 手测、oas-runner pin、变量系统 V2.0 等沿用 §22.65.8。
+6. 真机 E2E、Firefox 手测、oas-runner pin 等沿用 §22.65.8；变量系统 V2.0 已实现，见 §22.67（V2.1/V2.2 待办见其 ⑧）。
+
+### 22.67 ★★★ [11-06 20:4x] **V2.0 变量系统实现记录（meta.variables 唯一存储 + sync/lint/package/API/UI）**
+
+> 用户剩余项「变量系统 V2.0 实现」完成：`e1b816f`（V2.0a 后端模型层）+ `d780a4b`（V2.0b serve + V2.0c UI）。设计依据 `docs/VARIABLES-V2-DESIGN.md`；实施结果与偏差见其 §10，验收记录见 `ACCEPTANCE-2026-11-06.md`「V2.0 变量系统实施结果」。HEAD `d780a4b`（dev=`origin/dev`；main=`origin/main`=6ebffdd 待快进），**未 tag/未 release**。测试：workspace **949/0**（oas-task 157 / oas-runtime 214 / oasd 454）、UI **2303/177/0 dead/158 runner/6 nav**、E2E seq128 **77/76/0/1**、`cargo check -p oasd --features ocr` exit 0。
+
+#### 22.67.1 范围与批次映射
+
+| 批次 | 范围 | commit |
+|---|---|---|
+| V2.0a | oas-task 模型层：`Variable`/`Meta.variables`、`effective_variables()` 旧 params 内存桥、sync/T8、T3/T7/T10、run 注入、package_schema=2 | `e1b816f` |
+| V2.0b | serve：`/task/variables`、`/task/config` deprecated 别名、Runner config GET/PUT、去 params 双写、publish/create/CLI 迁移 | `d780a4b` |
+| V2.0c | Studio 变量面板/对话框/「插入变量 ▾」/动作目标 key 集；Runner 使用端变量分节（可改过滤/required/空态） | `d780a4b` |
+
+#### 22.67.2 数据模型（`Variable` / `Meta.variables` / 旧 params 内存桥 / T10）
+
+- `Variable`（`meta.rs:140-173`）：`key`/`type`/`value_source`（`literal` 默认｜`ocr_text`）/`asset_id`（ocr_text 必填）/`default`/`label`/`description`/`group`/`runner_editable`/`required`/`scope`（`input` 默认｜`runtime`）/`min`/`max`/`enum`；`Variable::ocr_text` 构造器（`:221-234`）。
+- `Meta.variables: Vec<Variable>`（`meta.rs:361-364`）为**唯一存储**；旧 `Meta.params` 保留为**只读兼容**字段（`:353-360`，`skip_serializing_if=empty`，旧文件照常解析；新写入端会删除）。
+- `effective_variables()`（`meta.rs:657-673`）：`variables` 非空时原样返回；否则把旧 `params` **内存导入**（`variables_from_params :676-704`：`asset_id` 行→`value_source=ocr_text`，其余 literal；不写盘、不改 self）。`has_legacy_params :707-709`。
+- **T10 warning**：`legacy_params_warnings()`（`meta.rs:711-779`）——仅 params 时提示「内存导入、不重写文件」；params+variables 混合时逐行报告不一致；`TaskBundle::lint_warnings()`（`lib.rs:3139-3153`）暴露给 serve/CLI，**不进**阻断式 `lint_issues`。
+
+#### 22.67.3 sync：ocr 资产 → 变量（T8 新目标）；去掉 params 双写
+
+- `sync_ocr_var_variables(&mut Meta,&AssetsFile,&Flow)`（`ocr_var.rs:206-243`）：只增删改 `value_source=ocr_text` 且带 `asset_id` 的变量（key=`param_key`、type=string、default=`runtime_text`、label=素材 label/id、preserve `group/description`）；用户手写 literal 变量不动；key 冲突=Err；旧 params 先经内存桥提升再同步（`:211-213`）。旧 `sync_ocr_var_params` 变 deprecated wrapper（`:274-275`）。
+- **T8 改目标**：`derived_variable_issues`（`ocr_var.rs:410-535`）校验 `meta.variables` vs ocr_var/runtime_text/param_key/flow 引用集合，集成于 lint（`lib.rs:3309`）。
+- **去 params 双写**：写盘前 `meta.params.clear()`（sync 路径 `serve.rs:1353-1364`；变量保存路径 `:11144`）；`write_variables_meta` 在 JSON 对象上 `obj.remove("params")`（`serve.rs:11262-11298`）——文件只有一种存储。
+
+#### 22.67.4 lint：T3/T7 改读 input variables、T8、T10 warning
+
+- **T3**：`param('key')` 必须声明在 `meta.variables`（`lib.rs:3250-3275`，用 `declared_input_variable_keys :791`；错误文案明确「not declared in meta.variables」）；旧 params-only 任务 lint 仍绿（内存桥），T10 单独提示。
+- **T7**：`call_task` 父子映射改用双方 input variables（`lib.rs:3906-3907`）。
+- **T8**：见 §22.67.3；lint CLI 为**错误**（发布阻断）。
+- **T10**：见 §22.67.2（`lint_warnings`，serve 在 `GET /task/variables` 返回）。
+
+#### 22.67.5 package：`PACKAGE_SCHEMA=2` + `variables_schema`；旧包响亮拒绝
+
+- `PACKAGE_SCHEMA: u32 = 2`（`package.rs:51-56`，注释说明 `params_schema` 被 `variables_schema` 取代）。
+- `Manifest.variables_schema: VariablesSchema`（`:125-144,189-215`）：`own`=发布任务 `effective_variables()`；`call_deps[]{mapping,inherit,child_variables}`（子任务 input 变量 key 快照，`:205-215`）；构建时写入（`:1489-1515`）。旧 `ParamsSchema` 标 deprecated（`:175-187`）。
+- **旧包拒绝**：安装校验 `manifest.package_schema != 2` → 错误「unsupported package_schema 1 …; re-publish the task with the V2 variable model」（`:1775-1781`；测试 `:2273`）。
+- `min_engine` 机制不变（V2 包对旧 Runner 仍是版本门禁）；flow_ops 未新增标记。
+
+#### 22.67.6 serve API / CLI 迁移
+
+- **Studio**：`GET /task/variables?task=` → `{ok,task,variables(有效列表),derived_keys,lint_warnings}`（`serve.rs:10971-11068`；路由 `:176,2057`）；`POST /task/variables`（`{task,variables}`）→ typed parse（结构错 400）→ T8 sync → `meta.json:variables` 结构 lint（400）→ 原子写（保留未知顶层字段、`.bak`、**永不写 params**）；T3/T8 存疑为**非阻断** `issues`（`:11078-11224`）。
+- **`/task/config` deprecated 别名**：GET 返回同变量 + 只读 params 镜像 + `deprecated` 字段；POST 兼容旧 `{params}` body（内存导入）（`:11015-11076,11062-11066,11220-11224`）。镜像**不落盘**。
+- **Runner**：GET `/runner/tasks/<id>/config` 返回 input-scope variables + values（`serve.rs:10854-10893`）；PUT 只接受 `runner_editable=true && scope=input` 键，runtime/不可改/未知键 400 指名（`:10895-10968`；测试 `:19951`）。values.json 结构/路径零改动。
+- **迁移**：`oasd task lint` 用 `declared_variable_keys`/`variable_defaults`（`task.rs:521,525`）；任务创建只写 variables（`serve.rs:12257-12261`）；publish 响应带 `package_schema` + `variables_schema`（`:9514-9526`）；运行注入 = `variable_defaults` + 合并后 `validate_variable_values` 复检（`run.rs:616-671`，四层优先级不变，meta.variables 为空时保持 legacy 任意键可注入）。
+
+#### 22.67.7 UI：Studio 变量面板/对话框/插入变量；Runner 使用端变量分节
+
+- **Studio**（`builder.js`/`index.html`）：构建页「变量」面板 `#builder-variables`（列表/新建/编辑/删除/插入，`builder.js:2057-2255`；`index.html:336`）；变量对话框 `#variable-dialog`（识别文字变量绑 `ocr_var` 素材、key 跟随 `param_key` 只读、default 跟随 `runtime_text`；标量全字段 type/default/min/max/enum/label/description/group/runner_editable/required/scope，`:2256-2450`；`index.html:576-635`）；纯函数 `variableKeyValid/variableSourceOf/variableScopeOf/variableKindText/variablesForInsert/variablesParamKeys/variableFormToBody/variableToForm` 等（`:2685-2900`，登记 `ui_pure_test:4714-4717`）；「插入变量 ▾」替换旧「插入识别文字配置项」（`:3042-3160`，只列 `scope=input`）；动作目标校验 key 集优先 variables、资产 fallback（`:2743-2760`）。
+- **条件编辑器**：V2.0 仍用「识别文字配置项」素材下拉生成 `text_visible(param(...))`（`builder.js:4113,4207,4236`）；标量变量下拉留 V2.1。
+- **Runner**（`runner.js`/`runner.html`）：配置弹窗只显示 `runner_editable && scope=input`（两分节：识别文字变量在前、literal 按 group；`runner.js:517-570,2462-2494`；`runner.html:529-532`）；runtime/不可改变量隐藏；空态「该任务没有使用端可配置的变量」；required 橙提示不阻断；旧 params 兼容 fallback（`:2539-2550`）；高级参数 JSON 继续隐藏。
+
+#### 22.67.8 验证 / E2E / 冒烟 + 兼容与风险 / 待办
+
+- 数字见节首；E2E `_verify/seq128-e2e-20261106/`（77 断言）：变量 GET 空/写/读回、5 类校验 400、拒绝后状态不变、T3 未声明→声明后清零、识别文字变量 sync/T8 自愈、seq127 回归（全帧候选/模型 B/offset/polygon/严格 OCR）、publish（manifest min_engine/包内资产回归）。**注意**：summary 未单列「旧包拒绝/Runner 可改过滤/package_schema=2 字段」断言——这些由 Rust 单测覆盖（`package.rs:2214,2273`、`serve.rs:19951`）。skip=`test_action_real_click`（无 ADB）。
+- Lead 用户数据副本冒烟（真实数据未写）：GET `/task/variables` 返回 effective variables + T10；POST 后 `meta.json` **无 params**；`/task/config` 带 `deprecated`。
+- 兼容/风险：① `/task/config` 过渡别名（params 只读镜像不落盘）——**下一步可删**；② `Variable` 行内未知字段 serde 默认丢弃（不保留）；③ T8 在保存端只报 `issues` 不阻断（lint CLI 仍错误）；④ M1 导入 CLI 未实现（M3 用户重建为主）；⑤ values.json 不动、旧任务读时内存桥（T10）；⑥ main 分支未快进（origin/main=6ebffdd）、未 tag/未 release。
+- 待办：V2.1（标量变量条件/loop/表达式下拉、`variable()`/T9、loop max_rounds 数值入口）；V2.2（Profile 多账号/多配置/多模拟器、values v2）；Firefox 手测；oas-runner 独立仓 pin/重打包；`/task/config` 别名最终删除。

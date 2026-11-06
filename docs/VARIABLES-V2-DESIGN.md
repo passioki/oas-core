@@ -1,6 +1,6 @@
 # 变量系统 V2 设计（Variable / 使用端个性化 / Profile 多账号·多配置·多模拟器）
 
-> 状态：**设计稿，待评审；本文只设计、不实现**（批次 F 设计）。评审通过后按 §7 拆实现任务。
+> 状态：**V2.0 已实现（2026-11-06，commits `e1b816f` V2.0a + `d780a4b` V2.0b/c；HEAD `d780a4b`）**。本文保留设计原文（§1~§9 为设计时点口径），**§10 = 实施结果与偏差**；V2.1（标量表达式/条件/loop 变量）与 V2.2（Profile/多实例）未实现。实现记录 `ENGINE §22.67`。
 > 输入：#13 用户反馈（`docs/ACCEPTANCE-2026-11-06.md` §1 #13 行 24 + §5 Q8 行 72）、`docs/PARAM-ASSET-IMPLEMENTATION.md`（seq124 C1′ 现状与简化令）、`ENGINE-DESIGN.md §22.64`、`RUNNER-STUDIO-SPLIT-PLAN.md §C.1~§C.4`、`ASSET-DATA-MODEL.md`。
 > 用户原话（#13）：「配置的交互不应当只有一个 ocr 识别变量（参数），还应该有其他变量的传递，是否需要抽成一个函数，编辑端创建，应用在任务中，发布任务后，使用端安装任务后，可对可修改的变量（参数）予以个性化修改，而这些不同的修改就是使用端配置的一部分。后期会涉及到对多账号/多配置/多模拟器的管理。」
 > 基线：HEAD `c16a536`（seq126，**批次 A 已提交**：#11/#9/#5/#6 + #7 启动脚本；批次 B/C/D/E/F 未开始）。本文行号为 2026-11-06 18:4x~18:5x 现场实测；后续批次会漂移 → 实施时按**函数名**定位。现行基线（本轮实测/文档）：UI pure test **2537 checks / 194 ids / 0 dead / 6 nav**（批次 A 后实测；seq124 为 2512，见 `ENGINE-DESIGN.md:3293`）；`cargo test --workspace` seq124 = **904/0**（`ENGINE-DESIGN.md:3292`），批次 A 后需以验收记录回填（本设计阶段不跑 cargo）。
@@ -312,3 +312,44 @@ Profile = **命名变量值集合** + 展示信息（名称/账号标记）+ 设
 - 注入/配置：`run.rs:94-154`（RunOptions）、`:355`（runner_values_layer）、`:616-665`（唯一合并点+复检）、`:861`（with_params）；`runner_config.rs:36-71`（values 结构）、`:98/118/141`（read/write/set）；`schedule.rs:3911/3923/3940`（values 路径/attempt_run_params/entry_run_params）；`scheduler.rs:706-722`（Entry）、`:1049-1072`（RawEntry）、`:1448`（validate_entry）、`:875-960`（to_json）。
 - 发布/门禁：`package.rs:52`（PACKAGE_SCHEMA）、`:81-95`（SUPPORTED_FLOW_OPS）、`:121-190`（Manifest/ParamsSchema）、`:606`（derive_flow_ops）、`:1457-1504`（build manifest）、`:1476`（min_engine）、`:1746`（install package_schema 校验）。
 - serve/UI：`serve.rs:153-226`（route_owner）、`:8458`（/task/run）、`:9238`（/runner/run）、`:10750/10785`（runner config GET/PUT）、`:10833/10872`（/task/config GET/POST）、`:7080`（save_flow）；`runner.js:451/464-524/539-616/2174/2389/2527/2995/4687/4729`；`runner.html:28-37/339-380/410-460/522-543`；`builder.js:186/2556-2683/3084/3641-3774`；`app.js:1907/1988/2050`（配置项对话框）、`:5280`（识别文字对话框）。以上为 18:4x 实测；工作区并行批次会继续漂移，实施时按函数名重新定位。
+
+## 10. V2.0 实施结果（2026-11-06）
+
+> **已实现并提交**：`e1b816f`（V2.0a 后端模型层）+ `d780a4b`（V2.0b serve + V2.0c UI）。实现记录 `ENGINE §22.67`；验收记录 `ACCEPTANCE-2026-11-06.md`「V2.0 变量系统实施结果」。HEAD `d780a4b`（dev=`origin/dev`；main=`origin/main`=6ebffdd 待快进）；**未 tag/未 release**。
+> 测试（Lead 实测）：workspace **949/0**（oas-task 157 / oas-runtime 214 / oasd 454）、UI **2303 checks/177 ids/0 dead/158 runner ids/6 nav**、E2E seq128 **77/76/0/1**（skip=无 ADB）、`cargo check -p oasd --features ocr` exit 0。
+
+### 10.1 实际交付 vs 设计（偏差表）
+
+| 设计项（§） | 设计口径 | V2.0 实际 | 偏差/说明 |
+|---|---|---|---|
+| §2.1 B2 存储 | `variables` 唯一、`params` 退役 | ✅ `meta.variables` 唯一存储；`Meta.params` 仅保留**只读**反序列化（`meta.rs:353-360`）；写入端删 params：同步路径 `serve.rs:1353-1364`、变量保存 `write_variables_meta` `obj.remove("params")`（`:11262-11298`） | 无 |
+| §6 迁移 | M1 导入器 + M3 用户重建 | 仅**内存桥**：`effective_variables()`（`meta.rs:657-673`，不写盘）+ T10 warning（`:711-779`）；**M1 导入 CLI 未实现**，按 M3（用户重建）执行 | M1 后置 |
+| §2.4 `/task/config` | 删除 | 保留 **deprecated 别名**：GET 返回 variables + 只读 params 镜像 + `deprecated` 字段；POST 兼容旧 `{params}` body（内存导入）——`serve.rs:11015-11076,11062-11066,11220-11224` | 过渡兼容，非存储 |
+| §2.2 行内未知字段 | 前向兼容 | `Variable` 无 flatten/deny_unknown_fields，**行内未知字段不保留**（保存后丢弃） | 已知限制 |
+| §2.2 T8 | 错误（阻断） | lint CLI 仍为 T8 **错误**；但 Studio `POST /task/variables` 把 T8/T3 作为**非阻断 `issues`** 返回（`serve.rs:11187-11199`，保存不拒绝） | 保存自愈优先 |
+| §5 编辑端条件 | 变量下拉（标量） | 条件编辑器 V2.0 仍用「识别文字配置项」素材下拉生成 `text_visible(param(...))`（`builder.js:4113,4207,4236`）；标量变量下拉留 V2.1 | V2.1 |
+| §2.3 `ocr_var` 字段 | 素材字段调整 | 保留 `runtime_text`/`param_key`；变量行由 sync 维护（`ocr_var.rs:206-243`） | 无 |
+| §3.1 Runner API | GET/PUT 变量 | GET 返回 input scope（`serve.rs:10854-10893`）；PUT 仅接受 `runner_editable=true && scope=input`，runtime/不可改键 400 指名（`:10895-10968`） | 无 |
+| §4 Profile / values v2 | V2.2 | **未动**：`values.json` 结构与 `runner_config.rs` 零改动；Profile 未实现 | V2.2 |
+| §7 V2.1 | 标量表达式/条件/loop 变量 | 未实现（条件仍 ocr_var 下拉；loop `max_rounds` 无变量入口） | V2.1 |
+
+### 10.2 已交付能力（可核查锚点）
+
+- **模型**：`Variable` 全字段（`meta.rs:140-173`；`value_source=literal/ocr_text`、`scope=input/runtime`、`runner_editable` 默认继承 scope）；`Meta.variables`（`:361-364`）；`effective_variables`/`variables_from_params`/`has_legacy_params`/`legacy_params_warnings`（`:657-779`）；`validate_variable_values`（`:585`）/`variable_defaults`（`:814`）/`declared_variable_keys`（`:782`）/`declared_input_variable_keys`（`:791`）。
+- **sync/T8**：`sync_ocr_var_variables`（`ocr_var.rs:206-243`）；`derived_variable_issues`（`:418-535`，T8 集成 `lib.rs:3309`）；旧 `sync_ocr_var_params` deprecated wrapper（`:274`）。
+- **lint**：T3 读 `declared_input_variable_keys`（`lib.rs:3250-3275`）；T7 改用 input variables（`:3906-3907`）；T10 经 `TaskBundle::lint_warnings`（`:3139-3153`）返回。
+- **package**：`PACKAGE_SCHEMA=2`（`package.rs:51-56`）、`VariablesSchema{own,call_deps[].child_variables}`（`:189-215`）、构建快照（`:1489-1515`）、旧包**响亮拒绝**「unsupported package_schema 1 … re-publish」（`:1775-1781`，测试 `:2273`）。
+- **API/注入**：`GET/POST /task/variables`（`serve.rs:10971-11224`，路由 `:176,213,2057-2058`）；`/task/config` 别名；Runner config GET/PUT（`:10854-10969`）；`write_variables_meta`（`:11262-11298`：未知顶层字段保留、`.bak`、原子写、删 params）；run 注入=`variable_defaults`+合并后 `validate_variable_values`（`run.rs:616-671`，四层优先级不变）；CLI lint（`task.rs:521,525`）；create 只写 variables（`serve.rs:12257-12261`）；publish 响应 `package_schema=2`+`variables_schema`（`:9514-9526`）。
+- **UI**：Studio「变量」面板 `#builder-variables`/变量对话框 `#variable-dialog`/「插入变量 ▾」/动作目标 key 集（`builder.js:2057-2450,2685-2900,3042-3160,2743-2760`；`index.html:336,576-635`；纯函数登记 `ui_pure_test:4714-4717`）；Runner 两分节可改过滤/required 橙提示/空态/隐藏高级 JSON（`runner.js:517-570,2462-2494`；`runner.html:529-532`）。
+
+### 10.3 测试 / E2E / 冒烟
+
+- E2E `_verify/seq128-e2e-20261106/`（77 断言）：变量 GET 空/写/读回、min/max/enum/type/key 语法/重复 key 五类 400、拒绝后状态不变、T3 未声明→声明后清零、识别文字变量 sync/T8 自愈、seq127 回归（全帧候选/模型 B/offset/polygon/严格 OCR）、publish（manifest/包内资产回归）；skip=`test_action_real_click`（无 ADB）。**package_schema=2 快照/旧包拒绝与 Runner 可改过滤**由 Rust 单测覆盖（`package.rs:2214,2273`、`serve.rs:19951`）。
+- Lead 用用户数据副本冒烟（真实数据未写）：GET `/task/variables` → effective variables + T10 警告；POST 保存后 `meta.json` **无 params**；`/task/config` 别名带 `deprecated` 字段/params 只读镜像。
+
+### 10.4 待办（V2.1 / V2.2 / 收尾）
+
+1. **V2.1**：标量变量在条件/loop/表达式选择器中的 UI（当前条件仍 ocr_var 素材下拉）；loop `max_rounds` 等数值入口；`variable()` 表达式别名与 T9「先写后读」lint。
+2. **V2.2**：Profile（多账号/多配置/多模拟器）——`values.json` v2 `profiles`/`active_profile`、调度 `entry.profile`、`/runner/run` profile 参数、多实例部署说明。
+3. 兼容收尾：`/task/config` deprecated 别名最终删除；M1 导入 CLI（可选）；`Variable` 行内未知字段保留策略（可选）。
+4. 工程收尾：Firefox 浏览器手测、oas-runner 独立仓 pin/重打包、main 分支快进、tag/Release 策略（仍未发布）。

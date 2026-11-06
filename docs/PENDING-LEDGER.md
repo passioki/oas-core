@@ -4709,3 +4709,17 @@ esolve_asset_op_region/preview 恢复末端 self 几何；UI 文案按 self/asse
 - 操作区 sset（引用素材链）：逐级识别门槛；**落点=链末端（最后一个被引用素材）自己的操作区**；被引用素材配置只读、保存只写当前素材。
 - 候选：模板/集合=**全帧多候选**（NMS≤64、稳定排序）；OCR/ocr_var 按既有 roi/全屏+期望文字规则；pick=score|nearest 用全帧候选（nearest=距上一节点真实识别中心最近）。
 - 保留：offset 已删除（旧数据响亮拒绝）、region 不可作链节点、防环/深度16、任一门槛 miss=本步失败不点击。
+# ★ §E-96 ★★★ [11-06 20:4x] 变量系统 V2.0 实现（用户剩余项 #1，✅ 已实现并推送）
+
+> 用户 20:0x 列出剩余项「1 变量系统 V2.0 实现」→ 按 docs/VARIABLES-V2-DESIGN.md（10 项已按推荐拍板）分三批实现：V2.0a 后端模型层 e1b816f、V2.0b serve d780a4b、V2.0c Studio/Runner UI（同 commit）。设计要点 B2 直改：meta.variables 唯一真相，meta.params 退役（仅 deprecated 读旧 + 内存桥），package_schema=2。
+
+| 批次 | 内容 | 提交 |
+|---|---|---|
+| V2.0a | Variable 模型（key/type/value_source/asset_id/default/label/description/group/runner_editable/required/scope/min/max/enum）；Meta.variables+effective_variables() 旧 params 内存导入（不写盘）+T10 warning；sync_ocr_var_variables（ocr_text 变量 key=param_key/default=runtime_text/asset_id）；T3/T7 改 input variables、T8 改目标；loader 子任务默认、run.rs 注入 ariable_defaults()+alidate_variable_values；PACKAGE_SCHEMA=2+Manifest.variables_schema+旧包响亮拒绝 | e1b816f |
+| V2.0b | GET/POST /task/variables（effective+T10；POST 结构错误 400、T3/T8 非阻断 issues、原子写+.bak、写盘无 params、保留未知顶层字段）；/task/config deprecated 别名（params 只读镜像不落盘）；Runner config GET variables / PUT 仅 
+unner_editable&&scope=input（runtime/未知/不可改 400）；sync 切 sync_ocr_var_variables+清 params（去双写）；test_action/create/publish/CLI 迁移 | d780a4b |
+| V2.0c | Studio：构建页「变量」面板（列表/新建/编辑/删除/插入表达式）+ 变量对话框（识别文字变量绑 ocr_var、param_key 只读；标量全字段）+「插入变量 ▾」替换旧插入识别文字 + 动作目标 key 集 variables 优先；Runner：配置弹窗两分节（识别文字变量 / literal 按 group，空组=通用）、隐藏 runtime/不可改、required 橙提示不阻断、PUT 只收可改键、高级 JSON 隐藏 | d780a4b |
+
+**验证（Lead 实测）**：cargo test --workspace **949 passed / 0 failed**（oas-task 157 / oas-runtime 214 / oasd 454）；UI **2303 checks / 177 ids / 0 dead / 158 runner ids / 6 nav**；E2E seq128 **77 total / 76 PASS / 0 FAIL / 1 SKIP**（_verify\seq128-e2e-20261106\，skip=无 ADB；含变量 API/ocr_text sync/T3/T8/package_schema=2 旧包拒绝/Runner 可改过滤，并保留 seq127 全帧多候选/模型 B/offset/polygon/严格 OCR 断言）；cargo check -p oasd --features ocr exit 0；Lead 用户数据副本冒烟：GET /task/variables effective+T10、POST 保存后 meta.json 无 params、/task/config 别名、Runner config 变量化。
+**兼容/偏差（已记入 VARIABLES-V2-DESIGN §10）**：旧 meta.params 仅内存桥（T10 提示；不自动改写用户数据，M3 用户重建口径）；/task/config 与 /runner/tasks.params 为 deprecated 过渡别名（不落盘）；ariables 行内未知字段不保留（结构无 flatten）；T8 sync 硬错误按口径不阻断保存（issues 返回）；M1 导入 CLI 未实现；alues.json 零迁移；条件编辑器仍 ocr_var 素材下拉（V2.1 扩标量）；Profile/多模拟器属 V2.2。
+**后续**：V2.1（ariable('key') 别名/条件/循环变量/T9）、V2.2（Profile/多实例）、oas-runner 独立包 pin bump、Firefox 手测（变量面板/插入变量/Runner 配置）、loop n=param('max_rounds') 文案、真机 E2E。**未 tag/未 release。**

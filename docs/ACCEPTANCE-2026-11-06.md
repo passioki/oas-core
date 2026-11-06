@@ -137,3 +137,30 @@
 ### C. 跟进（不阻塞）
 
 E2E seq127 脚本（并清理 seq126 模型 A 断言）、masked 极端 mask 兜底、候选 API `domain` 字段语义（仍=声明域而搜索域已全帧）、`test_action` OCR 耗时（全屏 ~343ms 级）；详见 `ENGINE §22.66.6`。
+
+## V2.0 变量系统实施结果（2026-11-06 20:4x）
+
+> 用户剩余项「变量系统 V2.0 实现」（#13/F 设计 → 实现）已完成并提交：`e1b816f`（V2.0a 后端模型层）+ `d780a4b`（V2.0b serve + V2.0c UI）。设计 `docs/VARIABLES-V2-DESIGN.md`（§10 = 实施结果与偏差）；实现记录 `ENGINE §22.67`。
+
+### A. 完成范围（用户剩余项 → 交付）
+
+- **模型**：`meta.variables`（`Variable`：key/type/value_source/asset_id/default/label/description/group/runner_editable/required/scope/min/max/enum）成为唯一存储；旧 `meta.params` 仅只读内存桥（`effective_variables()`，不写盘）+ T10 warning；`validate_variable_values`/`variable_defaults` 供注入复检。
+- **sync/lint**：`sync_ocr_var_variables` 维护 `value_source=ocr_text` 变量（key=param_key/default=runtime_text/asset_id）；T8 改目标到 variables；T3/T7 改读 input variables；T10 警告经 `lint_warnings` 返回。
+- **package**：`PACKAGE_SCHEMA=2`，`variables_schema{own,call_deps[].child_variables}`；旧 `package_schema=1` 安装**响亮拒绝**（re-publish）。
+- **API/UI**：Studio `GET/POST /task/variables`（有效变量+T10；T3/T8 非阻断 issues；保留未知顶层字段；原子写+.bak；不写 params）；`/task/config` 保留 **deprecated 别名**（params 只读镜像，不落盘）；构建页「变量」面板/变量对话框/「插入变量 ▾」/动作目标 key 集；Runner 配置两分节只显示 `runner_editable && scope=input`（runtime/不可改 400），required 橙提示、空态、高级参数 JSON 保持隐藏。
+- **迁移**：`oasd task lint`/create/publish/run 注入全部迁到 variables（四层优先级不变）；`values.json` 结构与 `runner_config.rs` **零改动**。
+
+### B. 提交与最终验证（Lead 实测）
+
+- commits：`e1b816f`（V2.0a）、`d780a4b`（V2.0b/c）；HEAD `d780a4b`（dev=`origin/dev`；main=`origin/main`=6ebffdd 待快进）；未 tag/未 release。
+- `cargo test --workspace` **949/0**（23 suites；oas-task 157 / oas-runtime 214 / oasd 454；上一轮 934/0）；`cargo check -p oasd --features ocr` exit 0。
+- UI **2303 checks / 177 ids / 0 dead / 158 runner ids / 6 nav**（本机实跑核对）。
+- E2E seq128 `_verify/seq128-e2e-20261106/`：**77 total / 76 PASS / 0 FAIL / 1 SKIP**（skip=`test_action_real_click` 无 ADB）；覆盖变量 API 读写/5 类校验 400/拒绝后状态不变/T3 声明闭环/识别文字变量 sync/T8 自愈 + seq127 回归 + publish（manifest/包资产回归）；package_schema=2 快照/旧包拒绝与 Runner 可改过滤由 Rust 单测覆盖（`package.rs:2214,2273`、`serve.rs:19951`）。
+- Lead 用户数据副本冒烟（真实数据未写）：GET `/task/variables` → effective variables + T10；POST 后 `meta.json` **无 params**；`/task/config` 别名带 `deprecated`。
+
+### C. 仍待（不阻塞）
+
+1. **V2.1**：标量变量在条件/loop/表达式选择器 UI（当前条件仍 ocr_var 素材下拉）、`variable()`/T9、loop `max_rounds` 数值入口。
+2. **V2.2**：Profile 多账号/多配置/多模拟器（values.json v2、调度 entry.profile、`/runner/run` profile、多实例部署）。
+3. 兼容收尾：`/task/config` deprecated 别名后续删除；`Variable` 行内未知字段不保留（限制）；M1 导入 CLI 未实现（M3 用户重建）。
+4. 工程：Firefox 手测、oas-runner 独立仓 pin/重打包、main 快进、tag/Release 策略（未发布）。

@@ -1,20 +1,20 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 127，🔄 V2.0 实施中**），然后按需看 `docs/ENGINE-DESIGN.md §22.66`（seq127 修正：全帧多候选/模型 B）/ §22.65（seq126 整改）、`docs/OPERATION-REGION-DESIGN.md §8.9`（模型 B 现行口径）、`docs/ACCEPTANCE-2026-11-06.md`、`docs/VARIABLES-V2-DESIGN.md`（V2.0 实施依据）、`PENDING-LEDGER §E-95`。
-> **状态：seq127 修复已推送 `fd3339f`（dev=main=origin）**：模板/集合候选=全帧多候选（用户数据 test@#6 count 1→3）、操作区链末端=被引用素材自身操作区（模型 B）；workspace **934/0**、UI **2223/177/0 dead/158 runner/6 nav**、E2E seq127 **63/62/0/1**；**当前 V2.0 变量系统实施中（V2.0a backend 在跑，随后 V2.0b serve / V2.0c UI）**。**只推送不发布（未 tag/未 release）**。
+> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 128，✅ done：变量系统 V2.0 已实现**），然后按需看 `docs/ENGINE-DESIGN.md §22.67`（V2.0 实现记录）/ §22.66（seq127）/ §22.65（seq126）、`docs/VARIABLES-V2-DESIGN.md §10`（V2.0 实施结果/偏差）、`docs/OPERATION-REGION-DESIGN.md §8.9`、`docs/ACCEPTANCE-2026-11-06.md`、`PENDING-LEDGER §E-96/§E-95`。
+> **状态：done（seq 128，V2.0 变量系统已实现并推送）**：`meta.variables` 唯一真相（B2 直改）、sync/T3/T7/T8/T10、run/package、Studio 变量面板与插入变量、Runner 可改变量分节；`e1b816f`（V2.0a）+ `d780a4b`（V2.0b/c）；workspace **949/0**、UI **2303/177/0 dead/158 runner/6 nav**、E2E seq128 **77/76/0/1**；**只推送不发布（未 tag/未 release）**。
 
-## 0. 当前状态（2026-11-06 20:2x，seq 127 / V2.0 实施中）
+## 0. 当前状态（2026-11-06 20:4x，seq 128 done）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | oas-core `dev`；代码 `fd3339f`（seq127 修复；dev=main=origin）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，未随 seq126/127 更新）；未 tag / 未 release |
-| 任务 | **seq127 修复已完成并推送**（用户 20:0x 验收：全帧多候选 + 模型 B 链末端）；**V2.0 变量系统实施中**：V2.0a 后端（meta.variables/sync/T3/T7/T8/T10/run/package）→ V2.0b serve（/task/variables、Runner config 变量+可改过滤、package_schema=2）→ V2.0c UI（Studio 变量面板/插入变量/Runner 变量分节） |
-| 测试 | `cargo test --workspace` **934 passed / 0 failed**（23 suites；perceive 14 / runtime 214 / task 147+ / oasd 449+）；UI **2223 checks / 177 ids / 0 dead / 158 runner ids / 6 nav**；E2E seq127 **63 total / 62 passed / 0 failed / 1 skipped**（`_verify\seq127-e2e-20261106\`，skip=真实点击无 ADB）；`cargo check -p oasd --features ocr` exit 0 |
-| 权威文档 | **`ENGINE §22.66`（seq127 修正）· `OPERATION-REGION-DESIGN §8.9`（模型 B 现行口径）· `ACCEPTANCE-2026-11-06.md`（13 项+seq127 追加）· `VARIABLES-V2-DESIGN.md`（V2.0 实施依据）· `PENDING §E-95`** |
-| 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；本地产物不含 seq126/127 新能力 |
-| 独立仓 | `https://github.com/passioki/oas-runner`（`768a8b7`）；pin `ba6813e`（未打独立包；如需独立 Runner 需 bump pin + 根启动脚本） |
-| 服务 | 无 `oasd`/`oasd-runner` 进程；8787/8788/8789/8792~8797 无监听（E2E/验证后确认） |
-| 工作区 | `scheduler.json`、用户任务 `tasks/{切换预设御魂,关闭弹窗}/{flow,meta}.json`、用户编辑的 `assets/assets.json` / `frames/frames.json` / 新增 `assets/images/a006.png` 均**未提交**（用户数据，**不要提交/覆盖**）；V2.0a 进行中时 `crates/oas-task`/`run.rs` 未提交改动属正常，V2.0 全绿后统一提交。**cargo incremental 已清理，下次构建稍慢（deps 缓存仍在）** |
+| 分支 / HEAD | oas-core `dev`；代码 `d780a4b`（V2.0b/c；dev 领先 main，docs 提交后 sync）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，未随 seq126~128 更新）；未 tag / 未 release |
+| 任务 | **seq128 V2.0 变量系统已完成**：`Variable`/`meta.variables` 唯一真相 + 旧 params 内存桥/T10；`sync_ocr_var_variables`+T8；T3/T7 改 input variables；run/package（`package_schema=2`/`variables_schema`）；Studio `GET/POST /task/variables`、Runner config 变量化/可改过滤；Studio 变量面板/对话框/「插入变量 ▾」；Runner 两分节可改过滤 |
+| 测试 | `cargo test --workspace` **949 passed / 0 failed**（23 suites；oas-task 157 / oas-runtime 214 / oasd 454）；UI **2303 checks / 177 ids / 0 dead / 158 runner ids / 6 nav**；E2E seq128 **77 total / 76 passed / 0 failed / 1 skipped**（`_verify\seq128-e2e-20261106\`，skip=真实点击无 ADB）；`cargo check -p oasd --features ocr` exit 0 |
+| 权威文档 | **`ENGINE §22.67`（V2.0 实现）· `VARIABLES-V2-DESIGN §10`（实施结果/偏差）· `ACCEPTANCE-2026-11-06.md`（V2.0 结果）· `PENDING §E-96` · `OPERATION-REGION-DESIGN §8.9`（模型 B）** |
+| 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；本地产物不含 seq126~128 新能力（package_schema=2 旧包会被拒绝） |
+| 独立仓 | `https://github.com/passioki/oas-runner`（`768a8b7`）；pin `ba6813e`（未打独立包；如需独立 Runner 需 bump pin + 根启动脚本 + V2 变量模型重打） |
+| 服务 | 无 `oasd`/`oasd-runner` 进程；8787/8788/8789/8792~8797 无监听（E2E/冒烟后确认） |
+| 工作区 | `scheduler.json`、用户任务 `tasks/{切换预设御魂,关闭弹窗}/{flow,meta}.json`、用户编辑的 `assets/assets.json` / `frames/frames.json` / `新增 assets/images/a006.png` 均**未提交**（用户数据，**不要提交/覆盖**）；V2.0 代码已提交；**cargo incremental 已清理，下次构建稍慢（deps 缓存仍在）** |
 
 ## 0.1 新会话恢复步骤（直接照做）
 
