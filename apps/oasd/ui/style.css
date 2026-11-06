@@ -1760,3 +1760,29 @@ aside.side {
   font-size: 11px;
   overflow-wrap: anywhere;
 }
+
+/* ===== V2.0c（变量系统）：构建页变量面板 + 变量对话框 ===== */
+.builder-vars-panel { margin-bottom: 8px; }
+.builder-vars-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.builder-vars-head h3 { margin: 0; }
+.builder-vars-list { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow: auto; }
+.builder-var-row {
+  display: grid;
+  grid-template-columns: 140px 90px 150px 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px;
+  border-bottom: 1px solid #23262e;
+}
+.builder-var-key { font-family: Consolas, "Cascadia Mono", monospace; color: #8fd8a4; overflow-wrap: anywhere; }
+.builder-var-kind { color: #4d9fff; font-size: 11px; }
+.builder-var-default { color: #cbd5e1; font-size: 11px; overflow-wrap: anywhere; }
+.builder-var-label { color: #9aa0aa; font-size: 11px; overflow-wrap: anywhere; }
+.builder-var-flags { color: #e8c46a; font-size: 11px; }
+.builder-var-actions { display: flex; gap: 4px; }
+.builder-var-actions button { padding: 0 6px; }
+.builder-vars-issues { color: #e8c46a; font-size: 11px; margin-top: 2px; overflow-wrap: anywhere; }
+.variable-dialog .variable-two-col { display: flex; gap: 10px; }
+.variable-dialog .variable-two-col > label { flex: 1; min-width: 0; }
+.variable-dialog input[type="text"], .variable-dialog select { width: 100%; box-sizing: border-box; }
+

@@ -4577,16 +4577,17 @@ ok(
   'parameter insertion avoids token gluing and malformed conditions are repaired before save'
 );
 ok(
-  /function ocrVarInsertWidget\(mode, getField\)/.test(builderSource) &&
-    /插入识别文字配置项 ▾/.test(builderSource) &&
-    !/插入参数 ▾/.test(builderSource),
-  'D: 插入参数 ▾ is replaced by 插入识别文字配置项 ▾ (ocr_var assets only)'
+  /function variableInsertWidget\(mode, getField\)/.test(builderSource) &&
+    /插入变量 ▾/.test(builderSource) &&
+    !/插入参数 ▾/.test(builderSource) &&
+    !/插入识别文字配置项 ▾/.test(builderSource),
+  'V2.0c: 插入变量 ▾ replaces both 插入参数 ▾ and the D-era ocr_var-only insert'
 );
 ok(
-  /ocrVarInsertWidget\('cond'/.test(builderSource) &&
-    /ocrVarInsertWidget\(exprMode/.test(builderSource) &&
-    /ocrVarInsertWidget\('expr'/.test(builderSource),
-  'D: the ocr_var insert widget mounts on expr/cond/locator expression fields'
+  /variableInsertWidget\('cond'/.test(builderSource) &&
+    /variableInsertWidget\(exprMode/.test(builderSource) &&
+    /variableInsertWidget\('expr'/.test(builderSource),
+  'V2.0c: the variable insert widget mounts on expr/cond/locator expression fields'
 );
 ok(
   !/paramInsertWidget/.test(builderSource) && !/paramInsertFromPanel/.test(builderSource),
@@ -4709,6 +4710,12 @@ const BUILDER_TARGET_PURE = [
   'paramAssetId', 'paramAssetLabel', 'derivedParamKeys', 'assetById', 'ocrVarParamRows',
   'locatorParamKey', 'paramSourceFromLocator',
   'actionTargetIssues', 'saveSyncText', 'locatorHasLegacyRegion',
+  // V2.0c：变量纯函数（面板/对话框/插入/动作目标 key 集）。
+  'variableKeyValid', 'variableSourceOf', 'variableScopeOf', 'variableTypeLabel', 'variableKindText',
+  'variablesForInsert', 'variablesParamKeys', 'variablesParamRows',
+  'actionTargetParamRows', 'variableUseCount', 'variableDefaultText',
+  'variableFormToBody', 'literalDefaultFromText', 'variableToForm',
+  'collectParamUses',
 ];
 const targetSb = {};
 vm.createContext(targetSb);
@@ -4878,7 +4885,7 @@ ok(
   /assetTargetOptions\(B\.assets\)/.test(targetEditorFn) &&
     /targetLocatorForAsset\(asset\)/.test(targetEditorFn) &&
     /targetPickerSummary\(currentAsset\)/.test(targetEditorFn) &&
-    /validateActionTarget\(currentAsset, derivedParamKeys\(ocrVarParamRows\(B\.assets\)\)\)/.test(targetEditorFn),
+    /validateActionTarget\(currentAsset, derivedParamKeys\(actionTargetParamRows\(B\.variables, B\.assets\)\)\)/.test(targetEditorFn),
   'U-T5: the property panel target editor uses the asset-library target model (options/locator/summary/validation)'
 );
 ok(
@@ -4908,18 +4915,18 @@ ok(
   'D: the locator text-source has no param option; legacy param() shows read-only and is kept'
 );
 ok(
-  /function ocrVarInsertWidget\(mode, getField\)/.test(builderSource) &&
+  /function variableInsertWidget\(mode, getField\)/.test(builderSource) &&
     /insert\(key\);/.test(builderSource) &&
     /paramInsertSnippet\(key, mode\)/.test(builderSource),
-  'D: 插入识别文字配置项 ▾ writes param(param_key) for a chosen ocr_var asset'
+  'V2.0c: 插入变量 ▾ writes param(key) for a chosen variable'
 );
 ok(
-  /先创建使用端OCR文字配置项|无可用素材/.test(builderSource),
-  'D: the ocr_var insert widget explains how to create one when the library is empty'
+  /先在构建页「变量」面板点「新建变量…」创建|先在「变量」面板新建变量/.test(builderSource),
+  'V2.0c: the variable insert widget explains how to create one when empty'
 );
 const targetSaveFlowFn = extractFunctionFrom(builderSource, 'saveFlow', 'builder.js');
 ok(
-  /actionTargetIssues\(B\.flow, B\.assets, ocrVarParamRows\(B\.assets\)\)/.test(targetSaveFlowFn),
+  /actionTargetIssues\(B\.flow, B\.assets, actionTargetParamRows\(B\.variables, B\.assets\)\)/.test(targetSaveFlowFn),
   'D: saveFlow validates action targets against assets-derived ocr_var param rows (no params panel)'
 );
 ok(
@@ -4955,6 +4962,87 @@ eq(
   [{ key: 'group', asset_id: 'O_组' }],
   'D: derived param rows are derived from ocr_var assets (no params panel needed)'
 );
+
+// --- V2.0c：变量纯函数（面板/对话框/插入/动作目标 key 集） -------------------
+const v2cTestVars = [
+  { key: 'group', type: 'string', value_source: 'ocr_text', asset_id: 'O_组', default: '御魂', runner_editable: true },
+  { key: 'max_rounds', type: 'int', default: 3, group: '运行参数', runner_editable: true },
+  { key: 'battle_count', type: 'int', scope: 'runtime', default: 0, runner_editable: false },
+];
+eq(targetSb.variableKeyValid('group'), true, 'V2.0c: valid variable key');
+eq(targetSb.variableKeyValid('9bad'), false, 'V2.0c: key cannot start with a digit');
+eq(targetSb.variableKeyValid('a-b'), false, 'V2.0c: key rejects punctuation');
+eq(targetSb.variableSourceOf(v2cTestVars[0]), 'ocr_text', 'V2.0c: value_source ocr_text detected');
+eq(targetSb.variableSourceOf(v2cTestVars[1]), 'literal', 'V2.0c: value_source defaults to literal');
+eq(targetSb.variableScopeOf(v2cTestVars[2]), 'runtime', 'V2.0c: runtime scope detected');
+eq(targetSb.variableKindText(v2cTestVars[0]), '识别文字变量', 'V2.0c: ocr_text kind label');
+eq(targetSb.variableKindText(v2cTestVars[1]), '整数', 'V2.0c: int kind label');
+eq(targetSb.variableKindText(v2cTestVars[2]), '运行变量', 'V2.0c: runtime kind label');
+eq(targetSb.variablesForInsert(v2cTestVars).map((v) => v.key), ['group', 'max_rounds'],
+  'V2.0c: insert lists only scope=input variables');
+eq(targetSb.variablesParamKeys(v2cTestVars), ['group', 'max_rounds'],
+  'V2.0c: action-target keys come from input variables');
+eq(targetSb.variablesParamRows(v2cTestVars), [
+  { key: 'group', asset_id: 'O_组' },
+  { key: 'max_rounds' },
+], 'V2.0c: variable rows carry asset_id only for ocr_text variables');
+eq(targetSb.actionTargetParamRows(v2cTestVars, []).map((r) => r.key), ['group', 'max_rounds'],
+  'V2.0c: action-target rows prefer variables');
+eq(
+  targetSb.actionTargetParamRows([], [{ id: 'O_组', kind: 'ocr_var', param_key: 'group' }]),
+  [{ key: 'group', asset_id: 'O_组' }],
+  'V2.0c: assets fallback still derives keys when the task has no variables'
+);
+eq(targetSb.variableUseCount({ steps: [
+  { op: 'click', args: { text_expr: "param('group')" } },
+  { op: 'loop', args: { n: "param('group')" } },
+  { op: 'click', args: { text_expr: "param('other')" } },
+] }, 'group'), 2, 'V2.0c: variable use count counts param(key) references');
+eq(targetSb.variableDefaultText({ default: '御魂' }), '御魂', 'V2.0c: variable default text');
+eq(targetSb.variableDefaultText({ default: 3 }), '3', 'V2.0c: numeric default text');
+eq(targetSb.variableDefaultText({}), '—', 'V2.0c: missing default text');
+const v2cForm = {
+  key: 'max_rounds', type: 'int', value_source: 'literal', defaultText: '5',
+  min: '1', max: '99', enumText: '', label: '刷本轮数', description: '说明', group: '运行参数',
+  runnerEditable: true, required: false, scope: 'input', editingKey: '',
+};
+const v2cBuilt = targetSb.variableFormToBody(v2cForm, { existingKeys: [], assets: [] });
+eq(v2cBuilt.ok, true, 'V2.0c: a valid scalar variable form builds a body');
+eq(v2cBuilt.variable.key, 'max_rounds', 'V2.0c: form key travels');
+eq(v2cBuilt.variable.type, 'int', 'V2.0c: form type travels');
+eq(v2cBuilt.variable.default, 5, 'V2.0c: int default is numeric');
+eq(v2cBuilt.variable.min, 1, 'V2.0c: int min travels');
+eq(v2cBuilt.variable.max, 99, 'V2.0c: int max travels');
+eq(v2cBuilt.variable.runner_editable, true, 'V2.0c: runner_editable travels');
+ok(targetSb.variableFormToBody(Object.assign({}, v2cForm, { key: 'max_rounds' }), { existingKeys: ['max_rounds'], assets: [] })
+  .errors.some((e) => /已被其它变量使用/.test(e)), 'V2.0c: duplicate key rejected');
+ok(targetSb.variableFormToBody(Object.assign({}, v2cForm, { key: '9bad' }), { assets: [] })
+  .errors.some((e) => /key 非法/.test(e)), 'V2.0c: illegal key rejected');
+const v2cOcrForm = {
+  key: 'group', type: 'string', value_source: 'ocr_text', asset_id: 'O_组',
+  defaultText: '', label: '', description: '', group: '', runnerEditable: true,
+  required: false, scope: 'input', editingKey: '',
+};
+const v2cOcrAssets = [{ id: 'O_组', kind: 'ocr_var', param_key: 'group', runtime_text: '御魂' }];
+const v2cOcrBuilt = targetSb.variableFormToBody(v2cOcrForm, { existingKeys: [], assets: v2cOcrAssets });
+eq(v2cOcrBuilt.ok, true, 'V2.0c: a valid ocr_text variable form builds a body');
+eq(v2cOcrBuilt.variable.value_source, 'ocr_text', 'V2.0c: ocr_text source travels');
+eq(v2cOcrBuilt.variable.asset_id, 'O_组', 'V2.0c: bound ocr_var asset travels');
+eq(v2cOcrBuilt.variable.default, '御魂', 'V2.0c: ocr_text default = asset runtime_text');
+ok(targetSb.variableFormToBody(Object.assign({}, v2cOcrForm, { asset_id: '' }), { assets: v2cOcrAssets })
+  .errors.some((e) => /必须绑定/.test(e)), 'V2.0c: ocr_text variable requires an asset');
+ok(targetSb.variableFormToBody(Object.assign({}, v2cOcrForm, { key: 'other' }), { assets: v2cOcrAssets })
+  .errors.some((e) => /param_key/.test(e)), 'V2.0c: ocr_text key must equal asset param_key');
+const v2cFormBack = targetSb.variableToForm(v2cTestVars[0]);
+eq(v2cFormBack.key, 'group', 'V2.0c: variableToForm keeps key');
+eq(v2cFormBack.asset_id, 'O_组', 'V2.0c: variableToForm keeps bound asset');
+eq(v2cFormBack.defaultText, '御魂', 'V2.0c: variableToForm keeps default text');
+eq(targetSb.literalDefaultFromText('true', 'bool', '').value, true, 'V2.0c: bool default parses true');
+eq(targetSb.literalDefaultFromText('3', 'int', '').value, 3, 'V2.0c: int default parses');
+eq(targetSb.literalDefaultFromText('3.5', 'int', '').ok, false, 'V2.0c: non-integer int default rejected');
+eq(targetSb.literalDefaultFromText('主号', 'string', '主号, 小号').ok, true,
+  'V2.0c: enum string default accepted');
+
 eq(
   targetSb.paramAssetLabel(uT5Params[0], targetAssets),
   '预设分组',
@@ -5215,9 +5303,9 @@ ok(
   'a successful flow save marks the last check stale (manual re-run)'
 );
 ok(
-  /旧参数不再支持：请改用「使用端OCR文字配置项」素材/.test(builderSource) &&
-    /在素材行「识别文字」创建 ocr_var，并用动作目标\/条件行引用它/.test(builderSource),
-  'D: T3 rows explain the new ocr_var path instead of offering 去声明'
+  /旧参数引用不再支持：请在构建页「变量」面板声明变量/.test(builderSource) &&
+    /在「变量」面板新建变量后再用动作目标\/条件行引用它/.test(builderSource),
+  'V2.0c: T3 rows point to the variables panel instead of offering 去声明'
 );
 ok(
   !/去声明/.test(builderSource),
@@ -5427,6 +5515,7 @@ const runnerHelperNames = [
   // P2: Runner params page (group / use switch / bool tri / summary) + feed UI.
   'runnerParamDefaultText', 'runnerParamGroups', 'runnerParamGroupsEx',
   'runnerParamRoleText', 'runnerParamAssetSubtitle', 'runnerParamOcrVarOnly',
+  'runnerVariableEditable', 'runnerVariableRows', 'runnerVariableGroups', 'runnerVariableSummary',
   'runnerParamTypeText', 'runnerParamSavedValue', 'runnerParamBoolTri',
   'runnerParamUseState', 'runnerParamCollectUse', 'runnerParamSummary',
   'runnerConfigFieldKind', 'runnerConfigIsIntegerType', 'runnerConfigCollectValues',
@@ -5826,29 +5915,31 @@ ok(
   'the dialog binds the top summary element'
 );
 ok(
-  /这里只显示「使用端OCR文字配置项」/.test(runnerHtml) &&
-    /通用参数已从用户界面移除/.test(runnerHtml) &&
+  /只显示「使用端可改」的变量/.test(runnerHtml) &&
+    /「识别文字变量」/.test(runnerHtml) &&
+    /「使用端变量」/.test(runnerHtml) &&
+    /runtime 变量与「使用端不可改」的变量不会出现在这里/.test(runnerHtml) &&
     /取消「使用」或值留空 = 不注入（回退默认值）/.test(runnerHtml),
-  'D: the dialog copy explains the ocr_var-only config + 留空=不注入'
+  'V2.0c: the dialog copy explains the two editable-variable sections + 留空=不注入'
 );
 ok(
-  /runnerParamGroupsEx\(params\)\.filter/.test(runnerSource) &&
-    /group\.kind === 'ocr_var'/.test(runnerSource),
-  'D: the form renders only the ocr_var section (generic groups hidden)'
+  /runnerVariableGroups\(params\)/.test(runnerSource) &&
+    /该任务没有使用端可配置的变量/.test(runnerSource),
+  'V2.0c: the form renders the editable variable groups (empty state included)'
 );
 // U-T6: 派生参数行（asset_id）→ 前置「使用端OCR文字配置项」分节 + 素材副标题。
 ok(
   /function runnerParamGroups\(params\)[\s\S]{0,260}runnerParamGroupsEx\(params\)/.test(runnerSource) &&
     /使用端OCR文字配置项/.test(runnerSource),
-  'U-T6: the dialog groups derived (asset_id) params into the leading 使用端OCR文字配置项 section'
+  'U-T6: legacy param grouping helpers are retained for compatibility'
 );
 ok(
   /runnerParamAssetSubtitle\(p\)/.test(runnerSource) && /runner-config-asset-sub/.test(runnerSource),
   'U-T6: derived rows render the 素材 <id> · 当前默认「…」 subtitle'
 );
 ok(
-  /使用端OCR文字配置项/.test(runnerHtml) && /asset_id/.test(runnerHtml),
-  'U-T6: runner.html explains the 使用端OCR文字配置项 section'
+  /「识别文字变量」/.test(runnerHtml) && /ocr_var/.test(runnerHtml),
+  'V2.0c: runner.html explains the 识别文字变量 (ocr_var) section'
 );
 ok(/\.runner-config-asset-sub/.test(runnerCss), 'U-T6: runner.css styles the asset subtitle');
 ok(
@@ -5860,8 +5951,8 @@ ok(
   'each parameter row carries a reset button + hint line'
 );
 ok(
-  /updateRunnerConfigSummary\(\)/.test(runnerSource) && /runnerParamSummary\(configParams/.test(runnerSource),
-  'the top summary is recomputed from the form'
+  /updateRunnerConfigSummary\(\)/.test(runnerSource) && /runnerVariableSummary\(configParams/.test(runnerSource),
+  'V2.0c: the top summary is recomputed from the editable variables form'
 );
 ok(
   /applyRunnerConfigRowErrors\(collected\.errors\)/.test(runnerSource),
@@ -5877,8 +5968,8 @@ ok(
   'dialog title becomes 任务配置 · <task>'
 );
 ok(
-  /本任务无可配置的使用端变量/.test(runnerSource),
-  'D: no ocr_var rows shows the 本任务无可配置的使用端变量 empty state'
+  /该任务没有使用端可配置的变量/.test(runnerSource),
+  'V2.0c: no editable variables shows the 使用端可配置的变量 empty state'
 );
 eq(
   (runnerHtml.match(/<dialog\b/g) || []).length,
@@ -8057,6 +8148,68 @@ async function checkAssetCandidatesWiring() {
   ok(/全屏 OCR/.test(sb.resultEl.textContent), 'U-T4: an empty-roi ocr_var shows the full-screen OCR hint');
 }
 
+// --- V2.0c 静态接线：变量面板/对话框/插入变量/API + Runner 两分节 --------------
+for (const id of ['builder-variables', 'builder-vars-list', 'builder-vars-summary',
+  'builder-vars-status', 'builder-vars-new', 'builder-vars-refresh',
+  'variable-dialog', 'variable-title', 'variable-source', 'variable-ocr-asset',
+  'variable-key', 'variable-scope', 'variable-type', 'variable-default',
+  'variable-min', 'variable-max', 'variable-enum', 'variable-label', 'variable-group',
+  'variable-description', 'variable-runner-editable', 'variable-required',
+  'variable-error', 'variable-save', 'variable-cancel']) {
+  ok(new RegExp(`id="${id}"`).test(html), `V2.0c: index.html provides #${id}`);
+}
+ok(
+  /fetch\('\/task\/variables\?task=' \+ encodeURIComponent\(task\)\)/.test(builderSource) &&
+    /fetch\('\/task\/variables', \{\r?\n\s*method: 'POST'/.test(builderSource),
+  'V2.0c: Studio uses GET/POST /task/variables'
+);
+ok(
+  /function renderVariablesPanel\(\)/.test(builderSource) &&
+    /renderVariablesPanel\(\);\r?\n\s*renderCode\(\);/.test(builderSource),
+  'V2.0c: renderAll paints the variables panel'
+);
+ok(
+  /const variablesPromise = fetchTaskVariables\(name\)/.test(builderSource) &&
+    /B\.variables = vres\.ok \? vres\.variables : \[\]/.test(builderSource),
+  'V2.0c: loadTask fetches meta.variables in parallel with flow/assets'
+);
+ok(
+  /function openVariableDialog\(variable\)/.test(builderSource) &&
+    /function saveVariableDialog\(\)/.test(builderSource) &&
+    /function syncVariableDialogFields\(\)/.test(builderSource),
+  'V2.0c: the variable dialog has open/render/save/sync helpers'
+);
+ok(
+  /function variableInsertWidget\(mode, getField\)/.test(builderSource) &&
+    /variablesForInsert\(B\.variables\)/.test(builderSource) &&
+    /paramInsertSnippet\(key, mode\)/.test(builderSource),
+  'V2.0c: 插入变量 ▾ lists input variables and writes param(key)'
+);
+ok(
+  /derivedParamKeys\(actionTargetParamRows\(B\.variables, B\.assets\)\)/.test(builderSource) &&
+    /actionTargetIssues\(B\.flow, B\.assets, actionTargetParamRows\(B\.variables, B\.assets\)\)/.test(builderSource),
+  'V2.0c: action-target key set comes from variables (assets fallback)'
+);
+ok(
+  /variables = Array\.isArray\(body\.variables\) \? body\.variables : \[\]/.test(runnerSource) &&
+    /runnerVariableRows\(variables\)/.test(runnerSource),
+  'V2.0c: Runner config loads variables (legacy params fallback)'
+);
+ok(
+  /runnerParamCollectUse\(configParams/.test(runnerSource) &&
+    /Object\.assign\(\{\}, configValues, collected\.values\)/.test(runnerSource),
+  'V2.0c: Runner PUT collects only editable variables + keeps hidden values'
+);
+ok(
+  /required-missing/.test(runnerSource) && /\.runner-config-row\.required-missing/.test(runnerCss),
+  'V2.0c: required-without-value is an orange hint (save allowed)'
+);
+ok(
+  /runnerRunBody|runner-run-params/.test(runnerSource) &&
+    /<label class="opt" hidden>参数 JSON/.test(runnerHtml),
+  'V2.0c: advanced param JSON entry stays hidden (code retained)'
+);
+
 // --- DOM id audit（Studio shell；D 批删除了参数面板/配置项对话框相关 id） -------
 const htmlDom = html;
 const referencedIds = [...new Set(
@@ -8123,19 +8276,20 @@ ok(
   'D: 动作属性页无「文字（参数）」选项、无「插入参数 ▾」'
 );
 ok(
-  /function ocrVarInsertWidget\(mode, getField\)/.test(builderSource) &&
-    /items = \(B\.assets \|\| \[\]\)\.filter[\s\S]{0,160}kind === 'ocr_var'/.test(builderSource),
-  'D: 插入识别文字配置项下拉只列 ocr_var 素材'
+  /items = variablesForInsert\(B\.variables\)/.test(builderSource) &&
+    /function variableInsertWidget\(mode, getField\)/.test(builderSource),
+  'V2.0c: 插入变量 ▾ lists meta.variables (scope=input)'
 );
 ok(
-  /btn\.textContent = '插入识别文字配置项 ▾';[\s\S]{0,400}btn\.disabled = !items\.length/.test(builderSource),
-  'D: 无 ocr_var 选项时插入下拉禁用'
+  /btn\.textContent = '插入变量 ▾';[\s\S]{0,400}btn\.disabled = !items\.length/.test(builderSource) &&
+    /先在构建页「变量」面板点「新建变量…」创建/.test(builderSource),
+  'V2.0c: the insert widget disables with the create-a-variable hint when empty'
 );
 ok(
   /const snippet = paramInsertSnippet\(key, mode\);/.test(builderSource) &&
     /insert\(key\);/.test(builderSource) &&
-    /function ocrVarInsertWidget/.test(builderSource),
-  'D: 选中 ocr_var 后插入 param(param_key)'
+    /function variableInsertWidget/.test(builderSource),
+  'V2.0c: selecting a variable inserts param(key)'
 );
 ok(
   /const kindChoices = \[\][\s\S]{0,300}\['ocr_var', '识别文字配置项'\]/.test(builderSource) &&
@@ -8205,7 +8359,7 @@ ok(
   'D: 「去声明」措辞残留 = 0'
 );
 ok(
-  /旧参数不再支持：请改用「使用端OCR文字配置项」素材/.test(builderSource),
+  /旧参数引用不再支持：请在构建页「变量」面板声明变量/.test(builderSource),
   'D: T3 检查文案改为引导 ocr_var 素材'
 );
 // goal battles：字面量循环次数
@@ -8221,15 +8375,15 @@ ok(
   /字面量循环次数/.test(source),
   'D: 结果文案说明字面量循环次数'
 );
-// Runner：只显示 ocr_var 分节 + 隐藏通用参数/高级 JSON
+// Runner V2.0c：可改变量两分节 + 空态 + 隐藏高级 JSON + 只收集可改键
 ok(
-  /runnerParamOcrVarOnly/.test(runnerSource) &&
-    /runnerParamGroupsEx\(params\)\.filter[\s\S]{0,120}kind === 'ocr_var'/.test(runnerSource),
-  'D: Runner 配置弹窗只渲染 ocr_var 派生分节'
+  /runnerVariableGroups\(params\)/.test(runnerSource) &&
+    /runnerVariableRows\(variables\)/.test(runnerSource),
+  'V2.0c: Runner renders the editable variable sections (ocr_text first, literals by group)'
 );
 ok(
-  /本任务无可配置的使用端变量/.test(runnerSource),
-  'D: 无 ocr_var 时显示「本任务无可配置的使用端变量」空态'
+  /该任务没有使用端可配置的变量/.test(runnerSource),
+  'V2.0c: no editable variables shows the 使用端可配置的变量 empty state'
 );
 ok(
   /id="runner-run-params"[^>]*>/.test(runnerHtml) &&
@@ -8242,32 +8396,43 @@ ok(
   'D: 调度条目 params JSON 入口已隐藏（代码保留）'
 );
 ok(
-  /这里只显示「使用端OCR文字配置项」/.test(runnerHtml) &&
-    /通用参数已从用户界面移除/.test(runnerHtml),
-  'D: Runner 配置弹窗文案只说明 ocr_var'
+  /「识别文字变量」/.test(runnerHtml) && /「使用端变量」/.test(runnerHtml),
+  'V2.0c: Runner 配置弹窗文案说明两分节'
 );
 ok(
   /Object\.assign\(\{\}, configValues, collected\.values\)/.test(runnerSource),
   'D: Runner 保存时保留隐藏通用参数的旧值'
 );
+// 纯函数：只显示可改变量；ocr_text 分节在前；literal 按 group/通用；runtime 不透出。
+const v2cVars = [
+  { key: 'group', type: 'string', value_source: 'ocr_text', asset_id: 'O_组', default: '御魂', runner_editable: true },
+  { key: 'max_rounds', type: 'int', default: 3, group: '运行参数', runner_editable: true },
+  { key: 'account_tag', type: 'string', default: '主号', runner_editable: true },
+  { key: 'battle_count', type: 'int', scope: 'runtime', default: 0, runner_editable: false },
+];
+eq(runnerSb.runnerVariableRows(v2cVars).map((v) => v.key), ['group', 'max_rounds', 'account_tag'],
+  'V2.0c: runtime/non-editable variables are filtered out of the Runner dialog');
+eq(runnerSb.runnerVariableGroups(v2cVars).map((g) => [g.group, g.kind, g.variables.map((v) => v.key)]), [
+  ['识别文字变量', 'ocr_text', ['group']],
+  ['运行参数', 'literal', ['max_rounds']],
+  ['通用', 'literal', ['account_tag']],
+], 'V2.0c: ocr_text section first, literal variables grouped (empty group = 通用)');
+eq(runnerSb.runnerVariableEditable({ key: 'x', runner_editable: false }), false,
+  'V2.0c: runner_editable=false is not rendered');
+eq(runnerSb.runnerVariableEditable({ key: 'x', scope: 'runtime' }), false,
+  'V2.0c: scope=runtime is not rendered');
+eq(runnerSb.runnerVariableEditable({ key: 'x' }), true, 'V2.0c: default-editable variable is rendered');
+eq(runnerSb.runnerVariableSummary(v2cVars, { group: '御魂' }), '3 个使用端变量 · 已填 1 · 分组 3 个',
+  'V2.0c: summary counts editable variables/filled values/groups');
+eq(runnerSb.runnerVariableSummary([], {}), '0 个使用端变量', 'V2.0c: empty summary text');
+// legacy fallback helper keeps working for old serve responses.
 eq(
   runnerSb.runnerParamOcrVarOnly([
     { key: 'group', asset_id: 'O_组' },
     { key: 'loop_n' },
-    { key: 'x', asset_id: 'O_甲' },
-    null,
   ]).map((p) => p.key),
-  ['group', 'x'],
-  'D: runnerParamOcrVarOnly 只保留 asset_id 派生行'
-);
-eq(runnerSb.runnerParamOcrVarOnly(null), [], 'D: 无参数时 ocr_var 过滤为空');
-eq(
-  runnerSb.runnerParamGroupsEx([
-    { key: 'group', asset_id: 'O_组' },
-    { key: 'loop_n', group: '通用' },
-  ]).filter((g) => g.kind === 'ocr_var').map((g) => g.params.map((p) => p.key)),
-  [['group']],
-  'D: 分组模型仍可区分 ocr_var 与通用组（通用组仅隐藏）'
+  ['group'],
+  'V2.0c: legacy params fallback still filters ocr_var rows'
 );
 ok(
   /builder-target-errors|builder-legacy-region-hint/.test(styleCss),

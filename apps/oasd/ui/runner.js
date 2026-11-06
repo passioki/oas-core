@@ -514,6 +514,60 @@
     });
   }
 
+  // --- V2.0c：Runner「使用端变量」分节（meta.variables；替换 meta.params 派生行） --
+  // 只显示 runner_editable && scope=input 的变量；ocr_text 在前（识别文字变量），
+  // 其余（literal）按 group 分节（空组=通用）。
+  function runnerVariableEditable(variable) {
+    const v = variable && typeof variable === 'object' && !Array.isArray(variable) ? variable : null;
+    if (!v) return false;
+    if (v.runner_editable === false) return false;
+    const scope = String(v.scope === undefined || v.scope === null ? 'input' : v.scope).trim();
+    return scope !== 'runtime';
+  }
+
+  function runnerVariableRows(variables) {
+    const list = Array.isArray(variables) ? variables : [];
+    return list.filter(runnerVariableEditable);
+  }
+
+  function runnerVariableGroups(variables) {
+    const rows = runnerVariableRows(variables);
+    const ocr = [];
+    const literal = [];
+    for (const v of rows) {
+      const source = String(v.value_source === undefined || v.value_source === null
+        ? 'literal' : v.value_source).trim();
+      if (source === 'ocr_text') ocr.push(v);
+      else literal.push(v);
+    }
+    const groups = [];
+    if (ocr.length) groups.push({ group: '识别文字变量', kind: 'ocr_text', variables: ocr });
+    const index = {};
+    for (const v of literal) {
+      const raw = String(v.group === undefined || v.group === null ? '' : v.group).trim();
+      const group = raw || '通用';
+      if (!Object.prototype.hasOwnProperty.call(index, group)) {
+        index[group] = { group: group, kind: 'literal', variables: [] };
+        groups.push(index[group]);
+      }
+      index[group].variables.push(v);
+    }
+    return groups;
+  }
+
+  function runnerVariableSummary(variables, values) {
+    const rows = runnerVariableRows(variables);
+    const src = values && typeof values === 'object' ? values : {};
+    let filled = 0;
+    for (const v of rows) {
+      const key = String(v.key === undefined || v.key === null ? '' : v.key);
+      if (key && Object.prototype.hasOwnProperty.call(src, key) && src[key] !== null) filled += 1;
+    }
+    if (!rows.length) return '0 个使用端变量';
+    return rows.length + ' 个使用端变量 · 已填 ' + filled + ' · 分组 ' +
+      runnerVariableGroups(rows).length + ' 个';
+  }
+
   function runnerParamRoleText(param) {
     const p = param && typeof param === 'object' ? param : {};
     const assetId = String(p.asset_id === undefined || p.asset_id === null ? '' : p.asset_id).trim();
@@ -2227,8 +2281,14 @@
     control.disabled = !enabled;
     const state = runnerParamUseState(param, control.value, enabled);
     const base = runnerConfigHintText(param, runnerConfigFieldKind(param));
-    if (hint) hint.textContent = [base, state.hint].filter(Boolean).join(' · ');
-    row.classList.toggle('blocked', state.blocked || !!(err && err.textContent));
+    // V2.0c: required 且无值 = 行内橙色提示（允许保存，运行前告警），不阻断。
+    const requiredMissing = param && param.required === true && state.hasValue !== true;
+    if (hint) {
+      hint.textContent = [base, state.hint,
+        requiredMissing ? '必填：使用端应填写（允许保存，运行前告警）' : ''].filter(Boolean).join(' · ');
+    }
+    row.classList.toggle('required-missing', !!requiredMissing);
+    row.classList.toggle('blocked', !requiredMissing && (state.blocked || !!(err && err.textContent)));
   }
 
   function refreshAllRunnerConfigRows() {
@@ -2246,7 +2306,7 @@
       if (form.useFlags[key] === false) continue;
       visible[key] = form.rawValues[key];
     }
-    el.configSummary.textContent = runnerParamSummary(configParams, visible);
+    el.configSummary.textContent = runnerVariableSummary(configParams, visible);
   }
 
   function runnerParamTypeBadges(param) {
@@ -2405,14 +2465,12 @@
     el.configFields.className = '';
     configValues = values && typeof values === 'object' ? values : {};
     if (!params.length) {
-      el.configFields.textContent = '本任务无可配置的使用端变量（需在 Studio 创建「使用端OCR文字配置项」素材）';
+      el.configFields.textContent = '该任务没有使用端可配置的变量';
       el.configFields.className = 'runner-config-empty';
       updateRunnerConfigSummary();
       return;
     }
-    const groups = runnerParamGroupsEx(params).filter(function (group) {
-      return group.kind === 'ocr_var';
-    });
+    const groups = runnerVariableGroups(params);
     let index = 0;
     for (const group of groups) {
       const details = document.createElement('details');
@@ -2422,12 +2480,12 @@
       summary.textContent = group.group;
       const count = document.createElement('span');
       count.className = 'runner-config-group-count';
-      count.textContent = group.params.length + ' 项';
+      count.textContent = group.variables.length + ' 项';
       summary.appendChild(count);
       details.appendChild(summary);
       const body = document.createElement('div');
       body.className = 'runner-config-group-body';
-      for (const param of group.params) {
+      for (const param of group.variables) {
         const row = buildRunnerConfigRow(param, index);
         index += 1;
         if (row) body.appendChild(row);
@@ -2478,14 +2536,18 @@
     try {
       const body = await runnerFetchJson(runnerConfigUrl(task));
       if (configTask !== task) return; // 已关闭/切换到别的任务，丢弃过期响应
-      const params = runnerParamOcrVarOnly(Array.isArray(body.params) ? body.params : []);
+      // V2.0c: new API returns variables; legacy params fallback keeps old runners alive.
+      const variables = Array.isArray(body.variables) ? body.variables : [];
+      const params = variables.length
+        ? runnerVariableRows(variables)
+        : runnerParamOcrVarOnly(Array.isArray(body.params) ? body.params : []);
       const values = body.values && typeof body.values === 'object' ? body.values : {};
       configParams = params;
       configLoaded = true;
       renderRunnerConfigFields(params, values);
       if (el.configError) el.configError.textContent = '';
       if (el.configStatus) {
-        let statusText = '已加载 ' + params.length + ' 项使用端配置';
+        let statusText = '已加载 ' + params.length + ' 项使用端变量';
         if (body.updated_ms !== undefined && body.updated_ms !== null) {
           statusText += ' · 上次保存 ' + runnerTimeText(body.updated_ms);
         }

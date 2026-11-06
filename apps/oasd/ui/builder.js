@@ -57,7 +57,7 @@
   async function prepareActionStep(key) {
     return OP_META[key] ? makeStep(key) : null;
   }
-  // Generic FIELDS text inputs that hold expressions; they get the「插入识别文字配置项 ▾」
+  // Generic FIELDS text inputs that hold expressions; they get the「插入变量 ▾」
   // button. `cond` fields insert a whole text_visible(param('k')) predicate.
   const EXPR_FIELDS = {
     log: { text: 'expr' },
@@ -140,6 +140,11 @@
     params: [],
     paramsLoading: false,
     paramsError: '',
+    // V2.0c：meta.variables 是 flow param('key') 的唯一声明来源（GET/POST /task/variables）。
+    variables: [],
+    variablesLoading: false,
+    variablesError: '',
+    variablesIssues: [],
     // P5：权威 lint（GET /task/lint）。lint=null 表示尚未检查/检查失败。
     lint: null,
     lintError: '',
@@ -743,7 +748,7 @@
     return '阻塞等待：条件成立后继续执行下一个 flow 步骤（本步不会触发独立动作）；超时则本步失败（按 timeout_s 报错）。';
   }
 
-  // 「插入识别文字配置项」片段：从 ocr_var 素材取 param_key 生成 param('k')。
+  // 「插入变量」片段：从 meta.variables 取 key 生成 param('k')。
   function paramInsertSnippet(key, mode) {
     const expr = paramTextExpr(key);
     return mode === 'cond' ? 'text_visible(' + expr + ')' : expr;
@@ -1149,11 +1154,11 @@
     actions.className = 'builder-lint-actions';
     if (lintIsT3Issue(issue)) {
       const key = lintT3ParamKey(issue);
-      msgEl.textContent = '旧参数不再支持：请改用「使用端OCR文字配置项」素材' +
+      msgEl.textContent = '旧参数引用不再支持：请在构建页「变量」面板声明变量（识别文字可用「识别文字变量」）' +
         (key ? '（flow 引用 param(\'' + key + '\')）' : '') + '——发布会被 T3 拒绝';
       const hint = document.createElement('span');
       hint.className = 'builder-lint-hint';
-      hint.textContent = '在素材行「识别文字」创建 ocr_var，并用动作目标/条件行引用它';
+      hint.textContent = '在「变量」面板新建变量后再用动作目标/条件行引用它';
       actions.appendChild(hint);
     } else if (code === 'T4') {
       const hint = document.createElement('span');
@@ -2049,6 +2054,402 @@
     }
   }
 
+  // --- V2.0c：构建页「变量」面板 + 变量对话框（meta.variables） -----------------
+  async function fetchTaskVariables(name) {
+    const task = String(name === undefined || name === null ? '' : name).trim();
+    if (!task) return { ok: true, variables: [], warnings: [], error: '' };
+    try {
+      const r = await fetch('/task/variables?task=' + encodeURIComponent(task));
+      const s = await r.json();
+      if (!s || s.ok === false) {
+        return { ok: false, variables: [], warnings: [], error: (s && (s.errors || [s.error]).join
+          ? (s.errors || [s.error]).join('; ')
+          : ((s && s.error) || '变量读取失败')) };
+      }
+      return {
+        ok: true,
+        variables: Array.isArray(s.variables) ? s.variables : [],
+        warnings: Array.isArray(s.lint_warnings) ? s.lint_warnings : [],
+        error: '',
+      };
+    } catch (e) {
+      return { ok: false, variables: [], warnings: [], error: String((e && e.message) || e) };
+    }
+  }
+
+  async function refreshVariables() {
+    if (!B.task) {
+      B.variables = [];
+      B.variablesError = '';
+      B.variablesIssues = [];
+      renderVariablesPanel();
+      return;
+    }
+    B.variablesLoading = true;
+    renderVariablesPanel();
+    const res = await fetchTaskVariables(B.task);
+    B.variablesLoading = false;
+    B.variables = res.ok ? res.variables : [];
+    B.variablesError = res.ok ? '' : res.error;
+    B.variablesIssues = res.ok ? res.warnings : [];
+    renderVariablesPanel();
+  }
+
+  // POST 整表（后端 /task/variables 语义：variables 为完整列表；issues 为 T3/T8
+  // 校验信息，不阻断保存；成功返回后端规范化后的变量列表）。
+  async function saveTaskVariables(nextVariables) {
+    if (!B.task) return { ok: false, error: '请先选择任务' };
+    try {
+      const r = await fetch('/task/variables', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task: B.task, variables: nextVariables }),
+      });
+      const s = await r.json();
+      if (!s || s.ok === false) {
+        return {
+          ok: false,
+          error: (s && Array.isArray(s.errors) ? s.errors.join('; ') : ((s && s.error) || '变量保存失败')),
+        };
+      }
+      B.variables = Array.isArray(s.variables) ? s.variables : nextVariables;
+      B.variablesIssues = Array.isArray(s.issues) ? s.issues : [];
+      B.variablesError = '';
+      renderVariablesPanel();
+      renderAll();
+      return { ok: true, issues: B.variablesIssues };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  }
+
+  function insertVariableSnippet(key) {
+    const snippet = paramInsertSnippet(key, 'expr');
+    const field = B.lastExprField;
+    if (field && field.isConnected && typeof field.value === 'string') {
+      insertTextAtField(field, snippet, 'expr');
+      status('已插入 ' + snippet);
+      return true;
+    }
+    if (copyTextBestEffort(snippet)) {
+      status('已复制到剪贴板：' + snippet + '（先点表达式输入框可直接插入）');
+      return true;
+    }
+    status('变量片段：' + snippet);
+    return false;
+  }
+
+  function variableRowActionButton(text, title, onClick) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = text;
+    b.title = title || '';
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  function renderVariablesPanel() {
+    const list = $('builder-vars-list');
+    const summary = $('builder-vars-summary');
+    const statusEl = $('builder-vars-status');
+    const issuesEl = $('builder-vars-issues');
+    const newBtn = $('builder-vars-new');
+    if (newBtn) newBtn.disabled = !B.task;
+    if (summary) {
+      summary.textContent = B.variables.length + ' 个变量';
+      summary.className = 'builder-params-chip ' + (B.variables.length ? 'kind' : 'warn');
+    }
+    if (statusEl) {
+      if (B.variablesLoading) {
+        statusEl.textContent = '读取变量…';
+        statusEl.className = 'muted small';
+      } else if (B.variablesError) {
+        statusEl.textContent = '变量读取失败：' + B.variablesError;
+        statusEl.className = 'muted small err';
+      } else if (!B.task) {
+        statusEl.textContent = '先选择任务：变量来自 meta.variables（GET/POST /task/variables）。';
+        statusEl.className = 'muted small';
+      } else if (!B.variables.length) {
+        statusEl.textContent = '暂无变量：点「新建变量…」创建；flow 中 param(\'key\') 必须先在变量面板声明。';
+        statusEl.className = 'muted small';
+      } else {
+        statusEl.textContent = '变量是 flow 中 param(\'key\') 的唯一声明来源；识别文字变量绑定 ocr_var 素材（T8 同步）。';
+        statusEl.className = 'muted small ok';
+      }
+    }
+    if (issuesEl) {
+      issuesEl.textContent = '';
+      if (Array.isArray(B.variablesIssues) && B.variablesIssues.length) {
+        issuesEl.className = 'builder-vars-issues warn';
+        issuesEl.textContent = '变量校验提示：' + B.variablesIssues.map(function (w) {
+          return typeof w === 'string' ? w : (w.message || JSON.stringify(w));
+        }).join('；');
+      }
+    }
+    if (!list) return;
+    list.textContent = '';
+    if (B.variablesLoading) { list.textContent = '读取中…'; return; }
+    if (!B.task) { list.textContent = '（先选择任务）'; return; }
+    if (!B.variables.length) {
+      const empty = document.createElement('div');
+      empty.className = 'muted small';
+      empty.textContent = '（还没有变量；新建后可在动作表达式里用「插入变量 ▾」引用）';
+      list.appendChild(empty);
+      return;
+    }
+    for (let i = 0; i < B.variables.length; i += 1) {
+      const v = B.variables[i];
+      if (!v || typeof v !== 'object') continue;
+      const key = String(v.key === undefined || v.key === null ? '' : v.key);
+      const row = document.createElement('div');
+      row.className = 'builder-var-row';
+      const keyEl = document.createElement('span');
+      keyEl.className = 'builder-var-key';
+      keyEl.textContent = key;
+      const kind = document.createElement('span');
+      kind.className = 'builder-var-kind';
+      kind.textContent = variableKindText(v);
+      const def = document.createElement('span');
+      def.className = 'builder-var-default';
+      def.textContent = '默认 ' + variableDefaultText(v);
+      const label = document.createElement('span');
+      label.className = 'builder-var-label';
+      label.textContent = (v.label || '') + (v.group ? ' · ' + v.group : '');
+      const flags = document.createElement('span');
+      flags.className = 'builder-var-flags';
+      const bits = [];
+      if (variableScopeOf(v) === 'runtime') bits.push('运行变量');
+      bits.push(v.runner_editable === false ? '使用端不可改' : '使用端可改');
+      if (v.required === true) bits.push('必填');
+      const uses = variableUseCount(B.flow, key);
+      if (uses) bits.push('引用 ' + uses);
+      flags.textContent = bits.join(' · ');
+      row.append(keyEl, kind, def, label, flags);
+      const actions = document.createElement('span');
+      actions.className = 'builder-var-actions';
+      actions.appendChild(variableRowActionButton('插入', '把 param(\'' + key + '\') 插入到最近聚焦的表达式',
+        function () { insertVariableSnippet(key); }));
+      actions.appendChild(variableRowActionButton('编辑', '编辑变量（识别文字变量绑定 ocr_var 素材）',
+        function () { openVariableDialog(v); }));
+      actions.appendChild(variableRowActionButton('删除', '删除变量（被 flow 引用时会提示）',
+        function () {
+          const count = variableUseCount(B.flow, key);
+          if (count > 0 && !window.confirm('变量「' + key + '」被 flow 引用 ' + count +
+            ' 处；删除后这些 param(\'' + key + '\') 会变成未声明（发布 T3 会报错）。仍要删除？')) {
+            return;
+          }
+          deleteVariableAt(i);
+        }));
+      row.appendChild(actions);
+      list.appendChild(row);
+    }
+  }
+
+  async function deleteVariableAt(index) {
+    const next = B.variables.slice();
+    next.splice(index, 1);
+    const r = await saveTaskVariables(next);
+    if (!r.ok) status('删除变量失败：' + r.error, '#ff8a80');
+    else status('已删除变量（' + next.length + ' 个剩余）', '#7bd88f');
+  }
+
+  // 变量对话框 DOM（index.html #variable-dialog）。
+  let variableDialogCtx = null;
+
+  function variableDialogEl(id) { return $(id); }
+
+  function ocrVarAssetsForVariable() {
+    return (B.assets || []).filter(function (a) {
+      return a && a.kind === 'ocr_var' && paramSafeKey(a.param_key);
+    });
+  }
+
+  function openVariableDialog(variable) {
+    const dlg = variableDialogEl('variable-dialog');
+    if (!dlg) return;
+    variableDialogCtx = {
+      editingKey: variable && variable.key ? String(variable.key) : '',
+      variable: variable || null,
+    };
+    renderVariableDialog();
+    if (typeof dlg.showModal === 'function') {
+      if (!dlg.open) dlg.showModal();
+    } else {
+      dlg.setAttribute('open', '');
+    }
+  }
+
+  function closeVariableDialog() {
+    const dlg = variableDialogEl('variable-dialog');
+    variableDialogCtx = null;
+    if (!dlg) return;
+    try { if (typeof dlg.close === 'function' && dlg.open) dlg.close(); } catch (e) { /* cosmetic */ }
+    dlg.removeAttribute('open');
+  }
+
+  function renderVariableDialog() {
+    const ctx = variableDialogCtx;
+    if (!ctx) return;
+    const f = ctx.variable ? variableToForm(ctx.variable) : {
+      key: '', type: 'string', value_source: 'literal', asset_id: '', defaultText: '',
+      label: '', description: '', group: '', runnerEditable: true, required: false,
+      scope: 'input', min: '', max: '', enumText: '', editingKey: '',
+    };
+    const editing = !!ctx.variable;
+    const title = variableDialogEl('variable-title');
+    if (title) title.textContent = editing ? '编辑变量 · ' + f.key : '新建变量';
+    const source = variableDialogEl('variable-source');
+    if (source) {
+      source.value = f.value_source;
+      source.disabled = editing && f.value_source === 'ocr_text';
+    }
+    const assetSel = variableDialogEl('variable-ocr-asset');
+    if (assetSel) {
+      assetSel.textContent = '';
+      assetSel.appendChild(new Option('（选择使用端OCR文字配置项素材）', ''));
+      for (const asset of ocrVarAssetsForVariable()) {
+        const runtimeText = String(asset.runtime_text === undefined || asset.runtime_text === null
+          ? '' : asset.runtime_text);
+        assetSel.appendChild(new Option(
+          (asset.label || asset.id) + ' · ' + asset.id + ' · ' + paramTextExpr(paramSafeKey(asset.param_key)) +
+            (runtimeText ? ' · 「' + runtimeText + '」' : ''),
+          String(asset.id)
+        ));
+      }
+      assetSel.value = f.asset_id || '';
+    }
+    const keyInput = variableDialogEl('variable-key');
+    if (keyInput) {
+      keyInput.value = f.key;
+      keyInput.readOnly = f.value_source === 'ocr_text';
+      keyInput.title = f.value_source === 'ocr_text'
+        ? '识别文字变量的 key 由素材 param_key 决定（只读）'
+        : 'key 语法 [A-Za-z_][A-Za-z0-9_]*（≤64）；任务内唯一';
+    }
+    const typeSel = variableDialogEl('variable-type');
+    if (typeSel) typeSel.value = f.type;
+    const defaultInput = variableDialogEl('variable-default');
+    if (defaultInput) defaultInput.value = f.defaultText;
+    const minInput = variableDialogEl('variable-min');
+    if (minInput) minInput.value = f.min;
+    const maxInput = variableDialogEl('variable-max');
+    if (maxInput) maxInput.value = f.max;
+    const enumInput = variableDialogEl('variable-enum');
+    if (enumInput) enumInput.value = f.enumText;
+    const labelInput = variableDialogEl('variable-label');
+    if (labelInput) labelInput.value = f.label;
+    const descInput = variableDialogEl('variable-description');
+    if (descInput) descInput.value = f.description;
+    const groupInput = variableDialogEl('variable-group');
+    if (groupInput) groupInput.value = f.group;
+    const runnerEditable = variableDialogEl('variable-runner-editable');
+    if (runnerEditable) runnerEditable.checked = f.runnerEditable;
+    const requiredInput = variableDialogEl('variable-required');
+    if (requiredInput) requiredInput.checked = f.required;
+    const scopeSel = variableDialogEl('variable-scope');
+    if (scopeSel) scopeSel.value = f.scope;
+    const errorEl = variableDialogEl('variable-error');
+    if (errorEl) errorEl.textContent = '';
+    syncVariableDialogFields();
+  }
+
+  function syncVariableDialogFields() {
+    const source = variableDialogEl('variable-source');
+    const isOcr = !!source && source.value === 'ocr_text';
+    const scopeSel = variableDialogEl('variable-scope');
+    const isRuntime = !!scopeSel && scopeSel.value === 'runtime';
+    for (const id of ['variable-ocr-asset-row']) {
+      const el = variableDialogEl(id);
+      if (el) el.hidden = !isOcr;
+    }
+    for (const id of ['variable-type-row', 'variable-default-row', 'variable-min-row',
+      'variable-max-row', 'variable-enum-row']) {
+      const el = variableDialogEl(id);
+      if (el) el.hidden = isOcr;
+    }
+    const runnerEditable = variableDialogEl('variable-runner-editable');
+    if (runnerEditable) {
+      runnerEditable.disabled = isRuntime;
+      if (isRuntime) runnerEditable.checked = false;
+    }
+    // 识别文字变量：key 跟随所选素材 param_key，default 跟随 runtime_text。
+    if (isOcr) {
+      const assetSel = variableDialogEl('variable-ocr-asset');
+      const asset = assetById(B.assets, assetSel ? assetSel.value : '');
+      const keyInput = variableDialogEl('variable-key');
+      if (keyInput && asset) keyInput.value = paramSafeKey(asset.param_key);
+      const defaultInput = variableDialogEl('variable-default');
+      if (defaultInput && asset) {
+        defaultInput.value = String(asset.runtime_text === undefined || asset.runtime_text === null
+          ? '' : asset.runtime_text);
+      }
+    }
+  }
+
+  function readVariableForm() {
+    const val = (id) => {
+      const el = variableDialogEl(id);
+      return el && el.value !== undefined && el.value !== null ? String(el.value) : '';
+    };
+    const checked = (id) => {
+      const el = variableDialogEl(id);
+      return !!(el && el.checked);
+    };
+    const source = variableDialogEl('variable-source');
+    return {
+      key: val('variable-key').trim(),
+      type: val('variable-type') || 'string',
+      value_source: source && source.value === 'ocr_text' ? 'ocr_text' : 'literal',
+      asset_id: val('variable-ocr-asset'),
+      defaultText: val('variable-default'),
+      min: val('variable-min'),
+      max: val('variable-max'),
+      enumText: val('variable-enum'),
+      label: val('variable-label').trim(),
+      description: val('variable-description').trim(),
+      group: val('variable-group').trim(),
+      runnerEditable: checked('variable-runner-editable'),
+      required: checked('variable-required'),
+      scope: val('variable-scope') === 'runtime' ? 'runtime' : 'input',
+      editingKey: variableDialogCtx ? variableDialogCtx.editingKey : '',
+    };
+  }
+
+  async function saveVariableDialog() {
+    const ctx = variableDialogCtx;
+    if (!ctx) return;
+    const form = readVariableForm();
+    const existingKeys = B.variables.map(function (v) {
+      return v && v.key !== undefined && v.key !== null ? String(v.key) : '';
+    }).filter(Boolean);
+    const built = variableFormToBody(form, {
+      existingKeys: existingKeys,
+      editingKey: ctx.editingKey,
+      assets: B.assets,
+    });
+    const errorEl = variableDialogEl('variable-error');
+    if (!built.ok) {
+      if (errorEl) errorEl.textContent = built.errors.join('\n');
+      return;
+    }
+    const next = B.variables.slice();
+    const idx = ctx.editingKey
+      ? next.findIndex(function (v) { return v && String(v.key) === ctx.editingKey; })
+      : -1;
+    if (idx >= 0) next[idx] = built.variable;
+    else next.push(built.variable);
+    const r = await saveTaskVariables(next);
+    if (!r.ok) {
+      if (errorEl) errorEl.textContent = r.error;
+      return;
+    }
+    closeVariableDialog();
+    status((ctx.editingKey ? '已更新变量 ' : '已新建变量 ') + built.variable.key, '#7bd88f');
+    if (r.issues && r.issues.length) {
+      status('变量已保存（有校验提示：' + r.issues.length + ' 条，见变量面板）', '#e8c46a');
+    }
+  }
+
   // v1.2.2 (N47): structured editors for the two complex actions. Raw args JSON
   // stays below as the escape hatch for multi-locator chains / advanced fields.
   // U-T5：旧入口委托到新的纯函数 targetLocatorForAsset（原先无人调用，保留兼容）。
@@ -2281,6 +2682,227 @@
     return list.find(function (a) { return a && String(a.id) === key; }) || null;
   }
 
+  // --- V2.0c：变量系统纯函数（meta.variables 是 flow param('key') 的唯一声明） -----
+  // Variable: key/type/value_source(literal|ocr_text)/asset_id?/default/label?/
+  // description?/group?/runner_editable/required/scope(input|runtime)/min?/max?/enum?
+  function variableKeyValid(key) {
+    return /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(String(key === undefined || key === null ? '' : key));
+  }
+
+  function variableSourceOf(v) {
+    const it = v && typeof v === 'object' ? v : {};
+    return String(it.value_source === undefined || it.value_source === null
+      ? 'literal' : it.value_source) === 'ocr_text' ? 'ocr_text' : 'literal';
+  }
+
+  function variableScopeOf(v) {
+    const it = v && typeof v === 'object' ? v : {};
+    return String(it.scope === undefined || it.scope === null ? 'input' : it.scope) === 'runtime'
+      ? 'runtime' : 'input';
+  }
+
+  function variableTypeLabel(type) {
+    switch (String(type === undefined || type === null ? '' : type)) {
+      case 'int': return '整数';
+      case 'float': return '小数';
+      case 'number': return '数字';
+      case 'bool': return '布尔';
+      case 'string': return '文本';
+      default: return String(type || '文本');
+    }
+  }
+
+  // 列表「类型+来源」列：识别文字变量 / 文本 / 整数 / 布尔 / 运行变量。
+  function variableKindText(v) {
+    const it = v && typeof v === 'object' ? v : {};
+    if (variableSourceOf(it) === 'ocr_text') return '识别文字变量';
+    if (variableScopeOf(it) === 'runtime') return '运行变量';
+    if (Array.isArray(it.enum) && it.enum.length) return '枚举';
+    return variableTypeLabel(it.type);
+  }
+
+  // 可插入表达式的变量（scope=input；runtime 变量不暴露给使用端但 flow 内可用，
+  // 这里只列 input，保持与「插入变量」语义简单一致）。
+  function variablesForInsert(variables) {
+    const list = Array.isArray(variables) ? variables : [];
+    return list.filter(function (v) {
+      return v && typeof v === 'object' && variableScopeOf(v) === 'input' &&
+        variableKeyValid(v.key);
+    });
+  }
+
+  function variablesParamKeys(variables) {
+    const keys = [];
+    for (const v of variablesForInsert(variables)) {
+      const key = paramSafeKey(v.key);
+      if (key && keys.indexOf(key) < 0) keys.push(key);
+    }
+    return keys;
+  }
+
+  // 动作目标校验用「派生参数行」形状：优先 variables，资产 fallback（D 批兼容）。
+  function variablesParamRows(variables) {
+    return variablesForInsert(variables).map(function (v) {
+      const row = { key: paramSafeKey(v.key) };
+      const assetId = paramAssetId(v);
+      if (assetId) row.asset_id = assetId;
+      return row;
+    });
+  }
+
+  function actionTargetParamRows(variables, assets) {
+    const rows = variablesParamRows(variables);
+    return rows.length ? rows : ocrVarParamRows(assets);
+  }
+
+  // flow 中 param('<key>') 的引用次数（面板「引用」列 + 删除提示）。
+  function variableUseCount(flow, key) {
+    const target = paramSafeKey(key);
+    if (!target) return 0;
+    let count = 0;
+    for (const use of collectParamUses(flow)) {
+      if (use && use.key === target) count += 1;
+    }
+    return count;
+  }
+
+  function variableDefaultText(v) {
+    const it = v && typeof v === 'object' ? v : {};
+    if (it.default === undefined || it.default === null) return '—';
+    if (it.default === '') return '（空字符串）';
+    if (typeof it.default === 'string') return it.default;
+    if (typeof it.default === 'number' || typeof it.default === 'boolean') return String(it.default);
+    try { return JSON.stringify(it.default); } catch (e) { return String(it.default); }
+  }
+
+  function variableRowSummary(v) {
+    const it = v && typeof v === 'object' ? v : {};
+    const key = String(it.key === undefined || it.key === null ? '' : it.key);
+    return key + ' · ' + variableKindText(it);
+  }
+
+  // 表单 → Variable body（纯函数；错误数组返回给对话框）。
+  // form: {key,type,value_source,asset_id,defaultText,label,description,group,
+  //        runnerEditable,required,scope,min,max,enumText}
+  function variableFormToBody(form, opts) {
+    const f = form && typeof form === 'object' ? form : {};
+    const o = opts && typeof opts === 'object' ? opts : {};
+    const errors = [];
+    const key = String(f.key === undefined || f.key === null ? '' : f.key).trim();
+    if (!key) errors.push('key 必填');
+    else if (!variableKeyValid(key)) errors.push('key 非法（[A-Za-z_][A-Za-z0-9_]*，≤64 字符）');
+    const existing = Array.isArray(o.existingKeys) ? o.existingKeys : [];
+    if (key && o.editingKey !== key && existing.indexOf(key) >= 0) {
+      errors.push('key「' + key + '」已被其它变量使用');
+    }
+    const source = f.value_source === 'ocr_text' ? 'ocr_text' : 'literal';
+    const scope = f.scope === 'runtime' ? 'runtime' : 'input';
+    const type = String(f.type === undefined || f.type === null ? 'string' : f.type);
+    const variable = {
+      key: key,
+      type: type,
+      value_source: source,
+      runner_editable: source === 'ocr_text' ? f.runnerEditable !== false : f.runnerEditable !== false,
+      required: f.required === true,
+      scope: scope,
+    };
+    if (scope === 'runtime') variable.runner_editable = false;
+    if (f.label) variable.label = String(f.label);
+    if (f.description) variable.description = String(f.description);
+    if (f.group) variable.group = String(f.group);
+    if (source === 'ocr_text') {
+      const assetId = String(f.asset_id === undefined || f.asset_id === null ? '' : f.asset_id).trim();
+      if (!assetId) errors.push('识别文字变量必须绑定一个 ocr_var 素材');
+      const asset = assetById(o.assets, assetId);
+      if (assetId && !asset) errors.push('绑定的素材「' + assetId + '」不在素材库');
+      else if (asset && String(asset.kind) !== 'ocr_var') errors.push('绑定素材必须是「使用端OCR文字配置项」（ocr_var）');
+      else if (asset) {
+        const assetKey = paramSafeKey(asset.param_key);
+        if (!assetKey) errors.push('绑定素材缺少 param_key');
+        else if (assetKey !== key) errors.push('key 必须等于素材 param_key「' + assetKey + '」');
+      }
+      variable.asset_id = assetId;
+      if (asset) variable.default = String(asset.runtime_text === undefined || asset.runtime_text === null
+        ? '' : asset.runtime_text);
+    } else {
+      const dtype = String(f.type === undefined || f.type === null ? 'string' : f.type);
+      const parsed = literalDefaultFromText(f.defaultText, dtype, f.enumText);
+      if (!parsed.ok) errors.push(parsed.error);
+      else if (parsed.value !== undefined) variable.default = parsed.value;
+      if (dtype === 'int') {
+        if (f.min !== undefined && f.min !== null && String(f.min) !== '' && Number.isFinite(Number(f.min))) {
+          variable.min = Math.round(Number(f.min));
+        }
+        if (f.max !== undefined && f.max !== null && String(f.max) !== '' && Number.isFinite(Number(f.max))) {
+          variable.max = Math.round(Number(f.max));
+        }
+      } else if (dtype === 'float' || dtype === 'number') {
+        if (String(f.min || '') !== '' && Number.isFinite(Number(f.min))) variable.min = Number(f.min);
+        if (String(f.max || '') !== '' && Number.isFinite(Number(f.max))) variable.max = Number(f.max);
+      }
+      if (dtype === 'bool') {
+        // bool 不支持 enum/min/max。
+      } else if (String(f.enumText || '').trim()) {
+        const values = String(f.enumText).split(/[,，、\n]/).map((x) => x.trim()).filter(Boolean);
+        if (values.length) variable.enum = values;
+      }
+    }
+    return { ok: errors.length === 0, errors: errors, variable: variable };
+  }
+
+  function literalDefaultFromText(text, type, enumText) {
+    const raw = String(text === undefined || text === null ? '' : text).trim();
+    if (type === 'bool') {
+      if (raw === '') return { ok: true, value: undefined };
+      if (raw === 'true' || raw === '是') return { ok: true, value: true };
+      if (raw === 'false' || raw === '否') return { ok: true, value: false };
+      return { ok: false, error: '布尔默认值必须是 true/false（或留空）' };
+    }
+    if (type === 'int') {
+      if (raw === '') return { ok: true, value: undefined };
+      const n = Number(raw);
+      if (!Number.isInteger(n)) return { ok: false, error: '整数默认值必须是整数' };
+      return { ok: true, value: n };
+    }
+    if (type === 'float' || type === 'number') {
+      if (raw === '') return { ok: true, value: undefined };
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return { ok: false, error: '数字默认值必须是数字' };
+      return { ok: true, value: n };
+    }
+    const allowed = String(enumText || '').trim()
+      ? String(enumText).split(/[,，、\n]/).map((x) => x.trim()).filter(Boolean)
+      : null;
+    if (allowed && allowed.length && allowed.indexOf(raw) < 0) {
+      return { ok: false, error: '文本默认值必须是枚举成员之一' };
+    }
+    return { ok: true, value: raw };
+  }
+
+  function variableToForm(v) {
+    const it = v && typeof v === 'object' ? v : {};
+    const dtype = String(it.type === undefined || it.type === null ? 'string' : it.type);
+    const source = variableSourceOf(it);
+    return {
+      key: String(it.key === undefined || it.key === null ? '' : it.key),
+      type: dtype,
+      value_source: source,
+      asset_id: paramAssetId(it),
+      defaultText: it.default === undefined || it.default === null
+        ? '' : (typeof it.default === 'string' ? it.default : String(it.default)),
+      label: String(it.label === undefined || it.label === null ? '' : it.label),
+      description: String(it.description === undefined || it.description === null ? '' : it.description),
+      group: String(it.group === undefined || it.group === null ? '' : it.group),
+      runnerEditable: it.runner_editable !== false,
+      required: it.required === true,
+      scope: variableScopeOf(it),
+      min: it.min === undefined || it.min === null ? '' : String(it.min),
+      max: it.max === undefined || it.max === null ? '' : String(it.max),
+      enumText: Array.isArray(it.enum) ? it.enum.join(', ') : '',
+      editingKey: String(it.key === undefined || it.key === null ? '' : it.key),
+    };
+  }
+
   // 保存前校验动作目标（S7/U-T5）：目标素材存在；模板 locator 的 sel 必须存在且
   // 不是 region 素材；OCR locator 的 sel（ocr_var）必须有 param_key，且 text_expr
   // 里 param(key) 必须在派生参数集合中；SEL_OPS 的 args.sel 也必须存在。
@@ -2417,7 +3039,7 @@
     return lab;
   }
 
-  // --- D 批：属性面板「插入识别文字配置项 ▾」 -------------------------------
+  // --- V2.0c：属性面板「插入变量 ▾」 ------------------------------------------
 
   // Track the last focused expression field so the params-panel row button can
   // insert into it (or copy to the clipboard when no field was touched yet).
@@ -2455,22 +3077,20 @@
     return false;
   }
 
-  // 「插入识别文字配置项 ▾」（D 批：去参数）：只列素材库中 kind=ocr_var 的素材，
-  // 点击把 param('<param_key>') 插入到 getField() 返回的输入框光标处。
-  // 不再有用户参数概念；无 ocr_var 时禁用并提示先创建素材。
-  function ocrVarInsertWidget(mode, getField) {
-    const items = (B.assets || []).filter(function (a) {
-      return a && a.kind === 'ocr_var' && paramSafeKey(a.param_key);
-    });
+  // 「插入变量 ▾」（V2.0c）：列出 meta.variables 中 scope=input 的变量，点击把
+  // param('<key>') 插入到 getField() 返回的输入框光标处；ocr_text 变量显示素材信息。
+  // 无变量时禁用并提示先到变量面板创建。
+  function variableInsertWidget(mode, getField) {
+    const items = variablesForInsert(B.variables);
     const wrap = document.createElement('span');
     wrap.className = 'builder-insert-param';
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.textContent = '插入识别文字配置项 ▾';
+    btn.textContent = '插入变量 ▾';
     btn.disabled = !items.length;
     btn.title = items.length
-      ? "把 param('<param_key>') 插入到当前表达式输入框（来自「使用端OCR文字配置项」素材）"
-      : '无可用素材：先在素材库创建「使用端OCR文字配置项」（识别结果「存为OCR文字配置」或素材行「识别文字」）';
+      ? "把 param('<key>') 插入到当前表达式输入框（变量来自构建页「变量」面板）"
+      : '无可用变量：先在构建页「变量」面板点「新建变量…」创建';
     btn.setAttribute('aria-haspopup', 'true');
     btn.setAttribute('aria-expanded', 'false');
     const menu = document.createElement('div');
@@ -2497,7 +3117,7 @@
       } else if (copyTextBestEffort(snippet)) {
         status('已复制到剪贴板：' + snippet);
       } else {
-        status('识别文字片段：' + snippet);
+        status('变量片段：' + snippet);
       }
       close();
     }
@@ -2505,17 +3125,18 @@
       menu.textContent = '';
       const head = document.createElement('div');
       head.className = 'hd';
-      head.textContent = '插入 param(param_key)（来自使用端OCR文字配置项素材）';
+      head.textContent = '插入变量（param(key)；变量在构建页「变量」面板声明）';
       menu.appendChild(head);
       if (!items.length) {
         const empty = document.createElement('div');
         empty.className = 'hd';
-        empty.textContent = '（无可用素材：先在素材库创建「使用端OCR文字配置项」）';
+        empty.textContent = '（无可用变量：先在「变量」面板新建变量）';
         menu.appendChild(empty);
         return;
       }
-      for (const asset of items) {
-        const key = paramSafeKey(asset.param_key);
+      for (const variable of items) {
+        const key = paramSafeKey(variable.key);
+        if (!key) continue;
         const item = document.createElement('button');
         item.type = 'button';
         item.className = 'builder-insert-param-item';
@@ -2524,10 +3145,14 @@
         item.appendChild(code);
         const grp = document.createElement('span');
         grp.className = 'grp';
-        const runtimeText = String(asset.runtime_text === undefined || asset.runtime_text === null
-          ? '' : asset.runtime_text);
-        grp.textContent = (asset.label || asset.id) + ' · 素材 ' + asset.id +
-          (runtimeText ? ' · 「' + runtimeText + '」' : '');
+        const isOcr = variableSourceOf(variable) === 'ocr_text';
+        const asset = isOcr ? assetById(B.assets, paramAssetId(variable)) : null;
+        grp.textContent = (variable.label || key) + ' · ' + variableKindText(variable) +
+          (isOcr
+            ? ' · 素材 ' + (asset ? (asset.label || asset.id) : (paramAssetId(variable) || '?')) +
+              (variable.default !== undefined && variable.default !== null
+                ? ' · 「' + variableDefaultText(variable) + '」' : '')
+            : ' · 默认 ' + variableDefaultText(variable));
         item.appendChild(grp);
         item.addEventListener('click', function (ev) {
           ev.stopPropagation();
@@ -2595,7 +3220,7 @@
       exprInput.spellcheck = false;
       exprInput.value = src.value;
       exprRow.appendChild(exprInput);
-      exprRow.appendChild(ocrVarInsertWidget('expr', function () { return exprInput; }));
+      exprRow.appendChild(variableInsertWidget('expr', function () { return exprInput; }));
       lab.appendChild(exprRow);
       host.appendChild(lab);
       trackExprField(exprInput, 'expr');
@@ -2959,7 +3584,7 @@
       '使用端OCR文字配置项 → param(param_key)。region 素材只作操作区末端，不能作动作目标。';
     box.appendChild(hint);
     if (currentAsset) {
-      const errors = validateActionTarget(currentAsset, derivedParamKeys(ocrVarParamRows(B.assets)));
+      const errors = validateActionTarget(currentAsset, derivedParamKeys(actionTargetParamRows(B.variables, B.assets)));
       if (errors.length) {
         const err = document.createElement('div');
         err.className = 'builder-target-errors';
@@ -3554,7 +4179,7 @@
     custom.type = 'text';
     custom.value = preset.raw || step.args.cond || 'true';
     customRow.appendChild(custom);
-    customRow.appendChild(ocrVarInsertWidget('cond', function () { return custom; }));
+    customRow.appendChild(variableInsertWidget('cond', function () { return custom; }));
     customLabel.appendChild(customRow);
     box.appendChild(customLabel);
     trackExprField(custom, 'cond');
@@ -3815,7 +4440,7 @@
     if (exprHintOps.has(step.op)) {
       const hint = document.createElement('div');
       hint.className = 'muted small';
-      hint.textContent = '表达式值支持 and/or/not、&&/||/!、括号、appear/ocr/param/var；数值字段按数字求值。「插入识别文字配置项 ▾」把 ocr_var 素材的 param_key 写成 param(...)。';
+      hint.textContent = '表达式值支持 and/or/not、&&/||/!、括号、appear/ocr/param/var；数值字段按数字求值。「插入变量 ▾」把变量 key 写成 param(...)。';
       root.appendChild(hint);
     }
     if (step.op === 'if' || step.op === 'while') {
@@ -3860,13 +4485,13 @@
           else step.args[f.key] = input.value;
           renderAll();
         });
-        // D 批: expression fields get「插入识别文字配置项 ▾」(ocr_var param_key).
+        // V2.0c: expression fields get「插入变量 ▾」(meta.variables keys).
         const exprMode = EXPR_FIELDS[step.op] && EXPR_FIELDS[step.op][f.key];
         if (exprMode) {
           const exprRow = document.createElement('span');
           exprRow.className = 'builder-expr-row';
           exprRow.appendChild(input);
-          exprRow.appendChild(ocrVarInsertWidget(exprMode, function () { return input; }));
+          exprRow.appendChild(variableInsertWidget(exprMode, function () { return input; }));
           trackExprField(input, exprMode);
           lab.appendChild(exprRow);
           root.appendChild(lab);
@@ -4032,6 +4657,7 @@
     renderGraph();
     renderForm();
     renderAssetPanel();
+    renderVariablesPanel();
     renderCode();
     updateHistoryButtons();
     scheduleAutoSave();
@@ -4075,6 +4701,7 @@
   }
 
   // U-T5/B-T3a：save_flow 的 sync 改了派生参数行 -> 重新读取 meta.params 并刷新面板。
+  // V2.0c：同步重读 variables（T8 可能同步 ocr_text 变量 default）。
   async function refreshParamsAfterFlowSync() {
     if (!B.task) return;
     try {
@@ -4084,6 +4711,14 @@
     } catch (e) {
       B.paramsError = String((e && e.message) || e);
     }
+    try {
+      const vres = await fetchTaskVariables(B.task);
+      if (vres.ok) {
+        B.variables = vres.variables;
+        B.variablesIssues = vres.warnings;
+        renderVariablesPanel();
+      }
+    } catch (e) { /* keep the last good list */ }
   }
 
   async function loadTask(name) {
@@ -4100,6 +4735,9 @@
       B.params = [];
       B.paramsError = '';
       B.paramsLoading = false;
+      B.variables = [];
+      B.variablesError = '';
+      B.variablesIssues = [];
       renderAll();
       renderLintPanel();
       return;
@@ -4111,6 +4749,7 @@
     try {
       // P3: meta.params loads in parallel with flow/assets; a params failure must
       // never block flow editing (panel shows the error instead).
+      const variablesPromise = fetchTaskVariables(name);
       const paramsPromise = fetchTaskParams(name)
         .then(function (params) { return { ok: true, params: params }; })
         .catch(function (e) { return { ok: false, error: String((e && e.message) || e) }; });
@@ -4136,6 +4775,10 @@
       B.params = pr.ok ? pr.params : [];
       B.paramsError = pr.ok ? '' : pr.error;
       B.paramsLoading = false;
+      const vres = await variablesPromise;
+      B.variables = vres.ok ? vres.variables : [];
+      B.variablesError = vres.ok ? '' : vres.error;
+      B.variablesIssues = vres.ok ? vres.warnings : [];
       B.selected = null;
       B.lastSavedFlow = JSON.stringify(B.flow);
       try {
@@ -4147,7 +4790,7 @@
       }
       renderAll();
       B.autoSaveArmed = true;
-      status(`已载入 ${name}：${B.flow.steps.length} 个根动作 / ${B.assets.length} 个素材 / ${ocrVarParamRows(B.assets).length} 个识别文字配置项`);
+      status(`已载入 ${name}：${B.flow.steps.length} 个根动作 / ${B.assets.length} 个素材 / ${B.variables.length} 个变量`);
       // P5: run the authoritative lint once per load; failures stay silent and
       // never block flow editing (the panel explains 权威检查不可用).
       lintTask({ silent: true });
@@ -4182,7 +4825,7 @@
     const saveIssues = flowTextSpecIssues(B.flow)
       .concat(regionIssues(B.flow, regionAssetIds(B.assets)))
       .concat(actionArgsIssues(B.flow, B.screen))
-      .concat(actionTargetIssues(B.flow, B.assets, ocrVarParamRows(B.assets)));
+      .concat(actionTargetIssues(B.flow, B.assets, actionTargetParamRows(B.variables, B.assets)));
     if (saveIssues.length) {
       status('保存已阻止：' + saveIssues[0] +
         (saveIssues.length > 1 ? '（另有 ' + (saveIssues.length - 1) + ' 项问题，见高级 JSON/属性面板）' : ''),
@@ -4354,6 +4997,21 @@
     if (codeApply) codeApply.addEventListener('click', applyCode);
     const delChecked = $('builder-delete-checked');
     if (delChecked) delChecked.addEventListener('click', deleteCheckedSteps);
+    // V2.0c：变量面板 + 变量对话框。
+    const varsNew = $('builder-vars-new');
+    if (varsNew) varsNew.addEventListener('click', function () { openVariableDialog(null); });
+    const varsRefresh = $('builder-vars-refresh');
+    if (varsRefresh) varsRefresh.addEventListener('click', function () { refreshVariables(); });
+    const varSource = $('variable-source');
+    if (varSource) varSource.addEventListener('change', syncVariableDialogFields);
+    const varAsset = $('variable-ocr-asset');
+    if (varAsset) varAsset.addEventListener('change', syncVariableDialogFields);
+    const varScope = $('variable-scope');
+    if (varScope) varScope.addEventListener('change', syncVariableDialogFields);
+    const varSave = $('variable-save');
+    if (varSave) varSave.addEventListener('click', function () { saveVariableDialog(); });
+    const varCancel = $('variable-cancel');
+    if (varCancel) varCancel.addEventListener('click', closeVariableDialog);
     renderPalette();
     renderAll();
     renderLintPanel();

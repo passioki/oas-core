@@ -518,11 +518,11 @@ mod tests {
             assert!(meta.capabilities.checkpoint);
             if template == "loop" {
                 assert_eq!(
-                    meta.declared_param_keys(),
+                    meta.declared_variable_keys(),
                     std::collections::BTreeSet::from(["max_rounds".to_string()])
                 );
                 assert_eq!(
-                    meta.param_defaults().expect("defaults")["max_rounds"],
+                    meta.variable_defaults().expect("defaults")["max_rounds"],
                     oas_flow::Value::Num(3.0)
                 );
             }

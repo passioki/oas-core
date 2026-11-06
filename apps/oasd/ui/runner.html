@@ -526,10 +526,11 @@
     <p class="muted small">
       运行值保存在 Runner 本机（config/values.json）；单任务运行时使用这里的值；
       被其他任务作为子任务调用时使用调用方的配置（PR4 生效）。<br />
-      这里只显示「使用端OCR文字配置项」（带 <code>asset_id</code> 的识别文字参数）：
-      改值 = 改对应素材的识别文字。通用参数已从用户界面移除。
-      取消「使用」或值留空 = 不注入（回退默认值）。
-      保存只影响下一次运行，正在跑的任务使用启动时的值。
+      只显示「使用端可改」的变量：<br />
+      ①「识别文字变量」= 绑定 ocr_var 素材的识别文字（改值 = 改对应素材的识别文字）；<br />
+      ②「使用端变量」= 变量面板声明的标量变量（按分组展示）。<br />
+      runtime 变量与「使用端不可改」的变量不会出现在这里。
+      取消「使用」或值留空 = 不注入（回退默认值）；保存只影响下一次运行。
     </p>
     <div id="runner-config-summary" class="runner-config-summary muted small">—</div>
     <div id="runner-config-status" class="muted small" role="status" aria-live="polite">—</div>

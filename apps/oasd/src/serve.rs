@@ -45,8 +45,8 @@
 //!   POST /runner/scheduler/start|stop -> start/stop the embedded thread (PR6)
 //!   POST /runner/run      -> temporary Runner run (values.json + body params, PR6)
 //!   GET  /runner/run/status -> status of the current/last temporary run (PR6)
-//!   GET  /runner/tasks/<id>/config  -> Runner task values + param schema (PR2)
-//!   PUT  /runner/tasks/<id>/config  -> validate + store Runner task values (PR2)
+//!   GET  /runner/tasks/<id>/config  -> Runner task values + input variables (V2.0b)
+//!   PUT  /runner/tasks/<id>/config  -> validate + store Runner-editable input values
 //!   GET  /runner/updates  -> publish events from the exchange dir + update feeds (P0-1a/P2)
 //!   POST /runner/updates/ack -> Runner-local seen state (`dismissed`/`installed`, P0-1a)
 //!   POST /runner/updates/install -> install one update event (downloads URL packages; P2)
@@ -55,8 +55,11 @@
 //!   POST /task/publish    -> build one .oaspkg (Studio only, PR5)
 //!   GET  /task/package    -> Studio package history (PR5)
 //!   GET  /task/lint?task=<name> -> authoritative task lint report (Studio only, P2)
-//!   GET  /task/config?task=<name>   -> Studio param schema (PR2)
-//!   POST /task/config               -> Studio edits `meta.params` (PR2)
+//!   GET  /task/variables?task=<name> -> Studio V2 variable schema (V2.0b)
+//!   POST /task/variables             -> Studio saves `meta.variables` (V2.0b;
+//!                                       the old `/task/config` is a deprecated alias)
+//!   GET  /task/config?task=<name>   -> Studio param schema (PR2, deprecated alias)
+//!   POST /task/config               -> Studio edits `meta.params` (PR2, deprecated alias)
 //!
 //! Validation failures answer `400` with a structured `{"ok":false,"errors":[...]}`.
 
@@ -170,8 +173,8 @@ pub fn route_owner(method: &str, path_only: &str) -> Option<RouteOwner> {
             "/assets/conflicts" | "/relations/frame-assets" | "/task/assets"
             | "/task/asset/image" | "/task/asset/match" | "/task/asset/collection/match"
             | "/task/asset/candidates" | "/task/flow" | "/task/list" | "/task/library"
-            | "/task/run/status" | "/task/package" | "/task/config" | "/task/lint"
-            | "/library" => Some(Studio),
+            | "/task/run/status" | "/task/package" | "/task/config" | "/task/variables"
+            | "/task/lint" | "/library" => Some(Studio),
 
             // Runner operational APIs (PR1 read-only subset, PR5 packages, PR6
             // embedded scheduler + temporary run status, P0-1a publish updates).
@@ -207,8 +210,8 @@ pub fn route_owner(method: &str, path_only: &str) -> Option<RouteOwner> {
             "/capture" | "/capture/preview" | "/capture/commit" | "/input/tap"
             | "/input/swipe" | "/frames" | "/task/save_asset" | "/task/save_assets"
             | "/task/goal" | "/task/save_flow" | "/task/create" | "/task/run"
-            | "/task/run/stop" | "/task/delete" | "/task/config" | "/task/publish"
-            | "/assets/migrate" | "/library/save_asset" => Some(Studio),
+            | "/task/run/stop" | "/task/delete" | "/task/config" | "/task/variables"
+            | "/task/publish" | "/assets/migrate" | "/library/save_asset" => Some(Studio),
             p if p.starts_with("/frames/") => Some(Studio),
             p if p.starts_with("/task/asset/") || p.starts_with("/task/assets/") => Some(Studio),
             p if p.starts_with("/relations/") || p.starts_with("/assets/") => Some(Studio),
@@ -1323,13 +1326,15 @@ impl Server {
         }
     }
 
-    /// Rebuild one task's derived `meta.params` rows from its `ocr_var` assets
-    /// and flow (2026-11-06 参数→素材 C1′, B20/B21).
+    /// Rebuild one task's derived (`value_source=ocr_text`) **variables** from its
+    /// `ocr_var` assets and flow (V2.0b; replaces the old `meta.params` sync).
     ///
     /// Returns the sync report; `meta.json` is written (atomic + `.bak`) only
-    /// when the report actually changed a row. A task without `meta.json` or
+    /// when a variable row changed **or** legacy `meta.params` rows were still on
+    /// disk (V2.0b retires them: the typed write clears `params` so the file has
+    /// exactly one storage, `meta.variables`). A task without `meta.json` or
     /// `flow.json` is a no-op (nothing can be derived).
-    fn sync_task_derived_params(
+    fn sync_task_derived_variables(
         &self,
         task: &str,
     ) -> Result<oas_task::ocr_var::SyncReport, String> {
@@ -1345,29 +1350,35 @@ impl Server {
         } else {
             bundle.load_assets_file()?
         };
-        let report = oas_task::ocr_var::sync_ocr_var_params(&mut meta, &assets, &flow)?;
+        let had_legacy_params = !meta.params.is_empty();
+        let report = oas_task::ocr_var::sync_ocr_var_variables(&mut meta, &assets, &flow)?;
         let changed = !report.added.is_empty()
             || !report.updated.is_empty()
             || !report.removed.is_empty();
-        if changed {
+        if changed || had_legacy_params {
+            // V2.0b: `meta.variables` is the only storage. The V2.0a sync already
+            // promoted legacy params into variables in memory; dropping the
+            // deprecated array here is the one-way retirement (old flows keep
+            // resolving through the variable defaults).
+            meta.params.clear();
             bundle.write_meta(&meta)?;
         }
         Ok(report)
     }
 
-    /// Run the derived-parameter sync for every task affected by an asset write
+    /// Run the derived-variable sync for every task affected by an asset write
     /// (B20). Unified global-asset mode scans all tasks and keeps only those
-    /// whose flow references one of `asset_ids` (or uses one of `param_keys`);
-    /// the per-task mode can only be affected in `task` itself.
+    /// whose flow references one of `asset_ids` (or uses one of the variable
+    /// keys); the per-task mode can only be affected in `task` itself.
     ///
     /// Broken/unreadable sibling tasks are skipped with a warning: one bad task
     /// must not make every asset save fail. Returns `(synced, warnings)` with
     /// `synced: [{task, added, updated, removed}]`.
-    fn sync_derived_params_after_asset_change(
+    fn sync_derived_variables_after_asset_change(
         &self,
         task: &str,
         asset_ids: &[&str],
-        param_keys: &[&str],
+        variable_keys: &[&str],
     ) -> (Vec<serde_json::Value>, Vec<String>) {
         let mut synced: Vec<serde_json::Value> = Vec::new();
         let mut warnings: Vec<String> = Vec::new();
@@ -1397,12 +1408,12 @@ impl Server {
                 let refs = flow.referenced_assets();
                 let uses = flow.param_uses();
                 let referenced = asset_ids.iter().any(|id| refs.contains(*id));
-                let key_used = param_keys.iter().any(|key| uses.contains(*key));
+                let key_used = variable_keys.iter().any(|key| uses.contains(*key));
                 if !referenced && !key_used {
                     continue;
                 }
             }
-            match self.sync_task_derived_params(&name) {
+            match self.sync_task_derived_variables(&name) {
                 Ok(report) => {
                     let changed = !report.added.is_empty()
                         || !report.updated.is_empty()
@@ -2042,7 +2053,11 @@ impl Server {
             ("GET", "/task/flow") => self.handle_task_flow(&mut out, &path),
             ("POST", "/task/save_flow") => self.handle_save_flow(&mut out, &body),
             ("GET", "/task/list") => self.handle_task_list(&mut out),
-            // --- PR2: Studio task param-schema editor (design §C.1) ---
+            // --- PR2/V2.0b: Studio task variable schema (V2 storage) ---
+            ("GET", "/task/variables") => self.handle_task_variables_get(&mut out, &path),
+            ("POST", "/task/variables") => self.handle_task_variables_post(&mut out, &body),
+            // Deprecated alias (V2.0b): same storage/response, kept for the
+            // builder's internal refresh + old callers.
             ("GET", "/task/config") => self.handle_task_config_get(&mut out, &path),
             ("POST", "/task/config") => self.handle_task_config_post(&mut out, &body),
             // --- PR5: Studio publish + package history (design §B.3) ---
@@ -3742,11 +3757,11 @@ impl Server {
             bundle.save_asset(decl, Some(&frame))
         } {
             Ok(item) => {
-                // B20: an ocr_var write (re)derives `meta.params` rows in every
+                // B20: an ocr_var write (re)derives the `meta.variables` rows in every
                 // task whose flow references it.
                 let key_refs: Vec<&str> = item.param_key.as_deref().into_iter().collect();
                 let (synced, warnings) =
-                    self.sync_derived_params_after_asset_change(&task, &[item.id.as_str()], &key_refs);
+                    self.sync_derived_variables_after_asset_change(&task, &[item.id.as_str()], &key_refs);
                 let body = Self::with_sync_fields(
                     serde_json::json!({ "ok": true, "task": task, "item": item }),
                     synced,
@@ -5191,7 +5206,7 @@ impl Server {
                     .load_meta()
                     .ok()
                     .flatten()
-                    .and_then(|m| m.param_defaults().ok())
+                    .and_then(|m| m.variable_defaults().ok())
                     .unwrap_or_default(),
                 Err(_) => std::collections::BTreeMap::new(),
             }
@@ -5359,7 +5374,7 @@ impl Server {
                     self.rewrite_tasks_to_collection(&saved.id, &saved.members);
                 // B20: flows may now reference the collection id (rewrite above);
                 // re-derive their ocr_var parameter rows.
-                let (synced, warnings) = self.sync_derived_params_after_asset_change(
+                let (synced, warnings) = self.sync_derived_variables_after_asset_change(
                     task,
                     &[saved.id.as_str()],
                     &[],
@@ -5406,7 +5421,7 @@ impl Server {
         match bundle.delete_collection(id) {
             Ok(item) => {
                 let (synced, warnings) =
-                    self.sync_derived_params_after_asset_change(task, &[item.id.as_str()], &[]);
+                    self.sync_derived_variables_after_asset_change(task, &[item.id.as_str()], &[]);
                 let body = Self::with_sync_fields(
                     serde_json::json!({"ok": true, "collection": item}),
                     synced,
@@ -5711,7 +5726,7 @@ impl Server {
                     .filter_map(|a| a.param_key.as_deref())
                     .collect();
                 let (synced, warnings) =
-                    self.sync_derived_params_after_asset_change(task, &ids, &keys);
+                    self.sync_derived_variables_after_asset_change(task, &ids, &keys);
                 let body = Self::with_sync_fields(
                     serde_json::json!({"ok": true, "saved": saved}),
                     synced,
@@ -5770,7 +5785,7 @@ impl Server {
                 self.editor_log(&format!("asset_delete task={task} id={id}"));
                 let key_refs: Vec<&str> = deleted_key.as_deref().into_iter().collect();
                 let (synced, warnings) =
-                    self.sync_derived_params_after_asset_change(task, &[id], &key_refs);
+                    self.sync_derived_variables_after_asset_change(task, &[id], &key_refs);
                 let body = Self::with_sync_fields(
                     serde_json::json!({"ok": true, "item": item}),
                     synced,
@@ -5833,7 +5848,7 @@ impl Server {
             Ok(item) => {
                 self.editor_log(&format!("asset_rename task={task} from={from} to={to}"));
                 let key_refs: Vec<&str> = item.param_key.as_deref().into_iter().collect();
-                let (synced, warnings) = self.sync_derived_params_after_asset_change(
+                let (synced, warnings) = self.sync_derived_variables_after_asset_change(
                     task,
                     &[from, to, item.id.as_str()],
                     &key_refs,
@@ -5860,7 +5875,7 @@ impl Server {
     /// 2026-11-06 参数→素材 (B-T3a): `runtime_text`/`label` update an ocr_var,
     /// `param_key` is read-only after creation and `op_region` updates the chain
     /// (`null` clears it back to `self`). A successful update re-syncs the
-    /// derived `meta.params` rows of every affected task.
+    /// derived `meta.variables` rows of every affected task.
     ///
     /// 2026-11-06 批次B (#6/#10): `polygon` is a present-style tri-state
     /// (`absent` = unchanged, `null` = clear, `[{x,y},...]` = set); the same
@@ -5973,7 +5988,7 @@ impl Server {
                 self.editor_log(&format!("asset_update task={task} id={id}"));
                 let key_refs: Vec<&str> = item.param_key.as_deref().into_iter().collect();
                 let (synced, warnings) =
-                    self.sync_derived_params_after_asset_change(task, &[item.id.as_str()], &key_refs);
+                    self.sync_derived_variables_after_asset_change(task, &[item.id.as_str()], &key_refs);
                 let body = Self::with_sync_fields(
                     serde_json::json!({"ok": true, "item": item}),
                     synced,
@@ -7174,9 +7189,9 @@ impl Server {
         match result {
             Ok(()) => {
                 // B21: a freshly saved flow can change which `ocr_var` assets are
-                // used, so the derived `meta.params` rows are rebuilt now.
+                // used, so the derived `meta.variables` rows are rebuilt now.
                 let mut body = serde_json::json!({ "ok": true, "task": task });
-                match self.sync_task_derived_params(&task) {
+                match self.sync_task_derived_variables(&task) {
                     Ok(report) => {
                         body["sync"] = serde_json::json!({
                             "added": report.added,
@@ -8543,8 +8558,8 @@ impl Server {
     /// `params` is the Studio-only explicit layer (design §C.3 priority 1): the
     /// editor can run a task with typed values without writing
     /// `config/values.json`. The Studio surface deliberately does **not** inject
-    /// Runner values — those belong to the usage side; `meta.params[].default`
-    /// is still merged inside `run::execute`. A non-object `params` is a 400.
+    /// Runner values — those belong to the usage side; the `meta.variables`
+    /// defaults are still merged inside `run::execute`. A non-object `params` is a 400.
     fn handle_task_run(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
         let v: serde_json::Value = match serde_json::from_slice(body) {
             Ok(v) => v,
@@ -9501,6 +9516,9 @@ impl Server {
                     "task_id": outcome.manifest.task_id,
                     "task_version": outcome.manifest.task_version,
                     "package_id": outcome.manifest.package_id,
+                    "package_schema": outcome.manifest.package_schema,
+                    // V2.0: the published variable snapshot (own + call_deps).
+                    "variables_schema": outcome.manifest.variables_schema,
                     "path": outcome.path.display().to_string(),
                     "sha256": outcome.sha256,
                     "warnings": outcome.warnings,
@@ -9582,6 +9600,8 @@ impl Server {
                         "package_id": archive.manifest.package_id,
                         "task_id": archive.manifest.task_id,
                         "task_version": archive.manifest.task_version,
+                        "package_schema": archive.manifest.package_schema,
+                        "variables_schema": archive.manifest.variables_schema,
                         "created_at_ms": archive.manifest.created_at_ms,
                         "flow_ops": archive.manifest.engine.flow_ops,
                     });
@@ -10831,12 +10851,16 @@ impl Server {
             .collect())
     }
 
-    /// `GET /runner/tasks/<id>/config` — Runner task values + `meta.params`
-    /// schema (design §A.3/§C.1-§C.2).
+    /// `GET /runner/tasks/<id>/config` — Runner task values + the **input-scope
+    /// variables** the usage side may configure (V2.0b, docs/VARIABLES-V2-DESIGN.md
+    /// §3.1).
     ///
-    /// Response: `{ok, task, params:[ParamDecl...], values:{...}, updated_ms}`.
-    /// A task that was never configured returns empty `values` and
-    /// `updated_ms: null` (the runtime then uses `meta.params[].default`).
+    /// Response: `{ok, task, variables:[Variable...], values:{...}, updated_ms}`.
+    /// `variables` are the task's `scope=input` effective variables (the Runner UI
+    /// applies the `runner_editable` filter itself); `scope=runtime` variables are
+    /// flow-local and never leave the engine. A task that was never configured
+    /// returns empty `values` and `updated_ms: null` (the runtime then uses the
+    /// variable defaults).
     fn handle_runner_task_config_get(
         &self,
         out: &mut TcpStream,
@@ -10846,10 +10870,12 @@ impl Server {
         if let Err(e) = oas_task::validate_task_name(&task) {
             return self.send_errors(out, 400, vec![e]);
         }
-        let (_meta, params) = match self.load_config_meta(&task) {
+        let (meta, _raw) = match self.load_meta_for_variables(&task) {
             Ok(loaded) => loaded,
             Err((code, errors)) => return self.send_errors(out, code, errors),
         };
+        let variables: Vec<oas_task::Variable> =
+            meta.effective_variables().into_iter().filter(|v| v.is_input()).collect();
         let values_path = self.runner_values_path();
         let (values, updated_ms) = match runner_config::task_values(&values_path, &task) {
             Ok(Some(stored)) => (stored.values, Some(stored.updated_ms)),
@@ -10859,19 +10885,21 @@ impl Server {
         let body = serde_json::json!({
             "ok": true,
             "task": task,
-            "params": params,
+            "variables": variables,
             "values": values,
             "updated_ms": updated_ms,
         });
         self.send_json(out, 200, &body.to_string())
     }
 
-    /// `PUT /runner/tasks/<id>/config` body `{values:{...}}` — validate the
-    /// values against the task schema, then read-modify-write `values.json`.
+    /// `PUT /runner/tasks/<id>/config` body `{values:{...}}` — validate the values
+    /// against the task's **Runner-editable input variables**, then
+    /// read-modify-write `values.json`.
     ///
-    /// Validation failures answer `400 {"ok":false,"errors":[...]}` and write
-    /// nothing; a corrupt/unsupported values store stays a `500` (never
-    /// silently replaced).
+    /// V2.0b (docs/VARIABLES-V2-DESIGN.md §3.1): only `runner_editable=true` **and**
+    /// `scope=input` keys are accepted; a runtime-scope or `runner_editable=false`
+    /// key is a loud 400 naming the key (the usage side must never edit those).
+    /// A corrupt/unsupported values store stays a `500` (never silently replaced).
     fn handle_runner_task_config_put(
         &self,
         out: &mut TcpStream,
@@ -10882,7 +10910,7 @@ impl Server {
         if let Err(e) = oas_task::validate_task_name(&task) {
             return self.send_errors(out, 400, vec![e]);
         }
-        let (meta, _params) = match self.load_config_meta(&task) {
+        let (meta, _raw) = match self.load_meta_for_variables(&task) {
             Ok(loaded) => loaded,
             Err((code, errors)) => return self.send_errors(out, code, errors),
         };
@@ -10899,7 +10927,30 @@ impl Server {
                 return self.send_errors(out, 400, vec!["`values` object is required".into()])
             }
         };
-        if let Err(errors) = oas_task::validate_param_values(&meta.params, &values) {
+        let all_variables = meta.effective_variables();
+        let editable: Vec<oas_task::Variable> = all_variables
+            .iter()
+            .filter(|v| v.is_input() && v.runner_editable())
+            .cloned()
+            .collect();
+        let mut errors: Vec<String> = Vec::new();
+        for key in values.keys() {
+            match all_variables.iter().find(|v| &v.key == key) {
+                Some(v) if !(v.is_input() && v.runner_editable()) => errors.push(format!(
+                    "values.{key}: 变量 `{key}` 不可由使用端修改（scope={}, runner_editable={}）",
+                    v.scope(),
+                    v.runner_editable()
+                )),
+                None => {}
+                Some(_) => {}
+            }
+        }
+        if errors.is_empty() {
+            if let Err(mut unknown) = oas_task::validate_variable_values(&editable, &values) {
+                errors.append(&mut unknown);
+            }
+        }
+        if !errors.is_empty() {
             return self.send_errors(out, 400, errors);
         }
         let values_path = self.runner_values_path();
@@ -10917,9 +10968,54 @@ impl Server {
         }
     }
 
-    /// `GET /task/config?task=<name>` — Studio reads one task's `params` schema
-    /// (the editor renders it; the Runner fetches the same field together with
-    /// its stored values).
+    /// `GET /task/variables?task=<name>` — Studio reads one task's V2 variable
+    /// schema (V2.0b). Response:
+    /// `{ok, task, variables:[Variable...], derived_keys:[...], lint_warnings:[...]}`.
+    ///
+    /// `variables` is the **effective** list (`meta.variables`, or the V2.0a
+    /// in-memory import of legacy `meta.params`); `lint_warnings` is the
+    /// non-blocking T10 legacy channel. Read-only: never rewrites meta.
+    fn handle_task_variables_get(
+        &self,
+        out: &mut TcpStream,
+        raw_path: &str,
+    ) -> std::io::Result<()> {
+        let q = parse_query(raw_path);
+        let task = q
+            .iter()
+            .find(|(k, _)| k == "task")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        if task.trim().is_empty() {
+            return self.send_errors(out, 400, vec!["`task` query parameter is required".into()]);
+        }
+        match self.task_variables_payload(&task, false) {
+            Ok(body) => self.send_json(out, 200, &body.to_string()),
+            Err((code, errors)) => self.send_errors(out, code, errors),
+        }
+    }
+
+    /// `POST /task/variables` body `{task, variables:[...]}` — Studio saves the
+    /// V2 variable schema (V2.0b).
+    ///
+    /// Pipeline: typed `Vec<Variable>` parse (structure errors = 400) → T8 sync
+    /// against the ocr_var assets + flow → structural `meta.json:variables` lint
+    /// (400) → atomic write preserving unknown top-level meta fields, **never
+    /// writing `meta.params`**. Non-blocking T3/T8 findings are returned as
+    /// `issues` (the save itself is not rejected); the response echoes the final
+    /// `variables`, `derived_keys` and the `sync` report.
+    fn handle_task_variables_post(
+        &self,
+        out: &mut TcpStream,
+        body: &[u8],
+    ) -> std::io::Result<()> {
+        self.handle_variables_save(out, body, false)
+    }
+
+    /// `GET /task/config` — **deprecated alias** of `GET /task/variables`
+    /// (V2.0b). Kept for the builder's internal refresh/diagnostics so pre-V2
+    /// callers never break: it returns the same `variables` list plus a
+    /// read-only legacy `params` mirror (never persisted).
     fn handle_task_config_get(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
         let q = parse_query(raw_path);
         let task = q
@@ -10930,36 +11026,62 @@ impl Server {
         if task.trim().is_empty() {
             return self.send_errors(out, 400, vec!["`task` query parameter is required".into()]);
         }
-        if let Err(e) = oas_task::validate_task_name(&task) {
-            return self.send_errors(out, 400, vec![e]);
+        match self.task_variables_payload(&task, true) {
+            Ok(body) => self.send_json(out, 200, &body.to_string()),
+            Err((code, errors)) => self.send_errors(out, code, errors),
         }
-        let (meta, params) = match self.load_config_meta(&task) {
-            Ok(loaded) => loaded,
-            Err((code, errors)) => return self.send_errors(out, code, errors),
-        };
-        // Derived rows (ocr_var) are shown read-only: the key list tells the UI
-        // which rows must not be edited.
-        let derived_keys: Vec<String> = meta
-            .params
-            .iter()
-            .filter(|p| p.asset_id.is_some())
-            .map(|p| p.key.clone())
-            .collect();
-        let body = serde_json::json!({
-            "ok": true,
-            "task": task,
-            "params": params,
-            "derived_keys": derived_keys,
-        });
-        self.send_json(out, 200, &body.to_string())
     }
 
-    /// `POST /task/config` body `{task, params:[...]}` — Studio edits the task's
-    /// param schema. The raw `meta.json` object is read first and **only**
-    /// `params` is replaced, so `goal`/`exits`/future fields are preserved; the
-    /// new declaration is re-validated through [`oas_task::Meta`] before the
-    /// atomic write.
+    /// Shared payload of `GET /task/variables` and its `/task/config` alias.
+    fn task_variables_payload(
+        &self,
+        task: &str,
+        legacy_alias: bool,
+    ) -> Result<serde_json::Value, (u16, Vec<String>)> {
+        if let Err(e) = oas_task::validate_task_name(task) {
+            return Err((400, vec![e]));
+        }
+        let (meta, _raw) = self.load_meta_for_variables(task)?;
+        let variables = meta.effective_variables();
+        let derived_keys: Vec<String> = variables
+            .iter()
+            .filter(|v| v.asset_id.is_some())
+            .map(|v| v.key.clone())
+            .collect();
+        let warnings = match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
+            Ok(bundle) => lint_issue_rows(&bundle.lint_warnings()),
+            Err(_) => Vec::new(),
+        };
+        let mut body = serde_json::json!({
+            "ok": true,
+            "task": task,
+            "variables": variables,
+            "derived_keys": derived_keys,
+            "lint_warnings": warnings,
+        });
+        if legacy_alias {
+            body["deprecated"] =
+                serde_json::json!("/task/config is deprecated (V2.0b); use /task/variables");
+            body["params"] = serde_json::json!(legacy_param_rows_from_variables(&variables));
+        }
+        Ok(body)
+    }
+
+    /// `POST /task/config` — **deprecated alias** of `POST /task/variables`
+    /// (V2.0b). Accepts either the V2 `{task, variables:[...]}` body or the old
+    /// `{task, params:[...]}` body (legacy rows are imported into the variable
+    /// model in memory, exactly like [`Meta::variables_from_params`]).
     fn handle_task_config_post(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        self.handle_variables_save(out, body, true)
+    }
+
+    /// Shared save path of `POST /task/variables` and its `/task/config` alias.
+    fn handle_variables_save(
+        &self,
+        out: &mut TcpStream,
+        body: &[u8],
+        legacy_alias: bool,
+    ) -> std::io::Result<()> {
         let request: serde_json::Value = match serde_json::from_slice(body) {
             Ok(v) => v,
             Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
@@ -10968,178 +11090,150 @@ impl Server {
             .get("task")
             .and_then(|v| v.as_str())
             .unwrap_or("")
-            .trim();
+            .trim()
+            .to_string();
         if task.is_empty() {
             return self.send_errors(out, 400, vec!["`task` is required".into()]);
         }
-        if let Err(e) = oas_task::validate_task_name(task) {
+        if let Err(e) = oas_task::validate_task_name(&task) {
             return self.send_errors(out, 400, vec![e]);
         }
-        let params_value = match request.get("params") {
-            Some(v) if v.is_array() => v,
-            Some(_) => {
-                return self.send_errors(out, 400, vec!["`params` must be an array".into()])
+        // V2 body: `variables:[Variable...]`. The deprecated alias additionally
+        // accepts the old `params:[ParamDecl...]` shape (imported in memory only).
+        let submitted: Vec<oas_task::Variable> = if let Some(vars) = request.get("variables") {
+            if !vars.is_array() {
+                return self.send_errors(out, 400, vec!["`variables` must be an array".into()]);
             }
-            None => return self.send_errors(out, 400, vec!["`params` array is required".into()]),
-        };
-        let params: Vec<oas_task::ParamDecl> = match serde_json::from_value(params_value.clone()) {
-            Ok(params) => params,
-            Err(e) => {
-                return self.send_errors(out, 400, vec![format!("params: {e}")]);
-            }
-        };
-        // 2026-11-06 参数→素材 (B23): `asset_id` rows are owned by the ocr_var
-        // sync. The client may echo them back (editing only group/description);
-        // any other change / removal / fabrication is a loud 400.
-        let current_meta = match self.load_config_meta(task) {
-            Ok((meta, _raw)) => meta,
-            Err((code, errors)) => return self.send_errors(out, code, errors),
-        };
-        let derived_issues = derived_rows_read_only_issues(&current_meta, &params);
-        if !derived_issues.is_empty() {
-            return self.send_errors(out, 400, derived_issues);
-        }
-        // Merge the typed declarations back into the raw parameter objects so a
-        // field this engine does not know yet survives a Studio round-trip (the
-        // schema editor keeps unknown fields for the same reason). Known keys
-        // are canonicalized from the typed value, absent optional ones dropped.
-        let raw_params = params_value.as_array().expect("checked above");
-        let mut merged_params = Vec::with_capacity(params.len());
-        for (i, decl) in params.iter().enumerate() {
-            let typed = match serde_json::to_value(decl) {
+            match serde_json::from_value::<Vec<oas_task::Variable>>(vars.clone()) {
                 Ok(v) => v,
-                Err(e) => {
-                    return self.send_errors(out, 500, vec![format!("serialize params[{i}]: {e}")]);
-                }
-            };
-            let mut merged = raw_params[i]
-                .as_object()
-                .cloned()
-                .unwrap_or_default();
-            for known in [
-                "key",
-                "type",
-                "default",
-                "min",
-                "max",
-                "label",
-                "description",
-                "enum",
-                "required",
-                "group",
-                "asset_id",
-            ] {
-                merged.remove(known);
+                Err(e) => return self.send_errors(out, 400, vec![format!("variables: {e}")]),
             }
-            if let Some(obj) = typed.as_object() {
-                for (key, value) in obj {
-                    merged.insert(key.clone(), value.clone());
-                }
-            }
-            merged_params.push(serde_json::Value::Object(merged));
-        }
-        let merged_params_json = serde_json::Value::Array(merged_params);
-        let dir = self.tasks_dir.join(task);
-        if !dir.is_dir() {
-            return self.send_errors(
-                out,
-                404,
-                vec![format!(
-                    "task `{task}` not found under `{}`",
-                    self.tasks_dir.display()
-                )],
-            );
-        }
-        let path = dir.join("meta.json");
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return self.send_errors(out, 404, vec![format!("task `{task}` has no meta.json")]);
-            }
-            Err(e) => return self.send_errors(out, 500, vec![format!("read `{}`: {e}", path.display())]),
-        };
-        let mut meta_json: serde_json::Value = match serde_json::from_str(&text) {
-            Ok(v) => v,
-            Err(e) => {
+        } else if legacy_alias {
+            let Some(params) = request.get("params") else {
                 return self.send_errors(
                     out,
                     400,
-                    vec![format!("`{}` invalid JSON: {e}", path.display())],
+                    vec!["`variables` array is required (V2; legacy `params` is only accepted \
+                          by the deprecated /task/config alias)"
+                        .into()],
                 );
+            };
+            if !params.is_array() {
+                return self.send_errors(out, 400, vec!["`params` must be an array".into()]);
             }
-        };
-        let Some(obj) = meta_json.as_object_mut() else {
-            return self.send_errors(out, 400, vec!["meta.json root must be an object".into()]);
-        };
-        obj.insert("params".to_string(), merged_params_json.clone());
-        let pretty = match serde_json::to_string_pretty(&meta_json) {
-            Ok(text) => text,
-            Err(e) => return self.send_errors(out, 500, vec![format!("serialize meta: {e}")]),
-        };
-        // Reparse through the typed contract, then keep only param issues: an
-        // older task may already carry an unrelated lint warning that must not
-        // block a schema edit (the new fields are the only thing being changed).
-        let meta = match oas_task::Meta::from_json(&pretty) {
-            Ok(meta) => meta,
-            Err(e) => return self.send_errors(out, 400, vec![format!("meta validation: {e}")]),
-        };
-        let issues = config_param_issues(&meta);
-        if !issues.is_empty() {
-            return self.send_errors(out, 400, issues);
-        }
-        // PR2 P2: keep the previous meta.json next to the live one so a broken
-        // schema edit can be recovered without a version-control checkout.
-        let backup = dir.join("meta.json.bak");
-        if let Err(e) = std::fs::copy(&path, &backup) {
+            match serde_json::from_value::<Vec<oas_task::ParamDecl>>(params.clone()) {
+                Ok(rows) => legacy_param_rows_to_variables(&rows),
+                Err(e) => return self.send_errors(out, 400, vec![format!("params: {e}")]),
+            }
+        } else {
             return self.send_errors(
                 out,
-                500,
-                vec![format!("backup `{}`: {e}", backup.display())],
+                400,
+                vec!["`variables` array is required".to_string()],
             );
-        }
-        if let Err(e) = write_text_atomic(&path, &format!("{pretty}\n")) {
-            return self.send_errors(out, 500, vec![e]);
-        }
-        // B23: after a user-row save, rebuild the derived rows from the assets
-        // (they are the single source of truth for `runtime_text`/`param_key`).
-        let mut body = serde_json::json!({ "ok": true, "task": task, "params": merged_params_json });
-        match self.sync_task_derived_params(task) {
-            Ok(report) => {
-                body["sync"] = serde_json::json!({
-                    "added": report.added,
-                    "updated": report.updated,
-                    "removed": report.removed,
-                });
+        };
+        let bundle = match oas_task::TaskBundle::open_named(&self.tasks_dir, &task) {
+            Ok(b) => b,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let (mut meta, _raw) = match self.load_meta_for_variables(&task) {
+            Ok(loaded) => loaded,
+            Err((code, errors)) => return self.send_errors(out, code, errors),
+        };
+        // One storage only: submitted variables, legacy params retired.
+        meta.params.clear();
+        meta.variables = submitted;
+        // T8 sync against the ocr_var assets / flow (Studio's single writer keeps
+        // `value_source=ocr_text` rows aligned with the bound assets).
+        let flow = bundle.load_flow().ok().flatten();
+        let assets = if self.using_global_assets() {
+            self.asset_store("").ok().and_then(|b| b.load_assets_file().ok())
+        } else {
+            bundle.load_assets_file().ok()
+        };
+        let mut sync_report: Option<oas_task::ocr_var::SyncReport> = None;
+        let mut sync_errors: Vec<serde_json::Value> = Vec::new();
+        match (&flow, &assets) {
+            (Some(flow), Some(assets)) => {
+                match oas_task::ocr_var::sync_ocr_var_variables(&mut meta, assets, flow) {
+                    Ok(report) => sync_report = Some(report),
+                    Err(e) => sync_errors.push(lint_issue_value(
+                        "T8",
+                        "meta.json:variables",
+                        &e,
+                    )),
+                }
             }
-            Err(e) => {
-                body["sync_warnings"] = serde_json::json!([format!("derived-param sync: {e}")]);
+            _ => sync_errors.push(lint_issue_value(
+                "T8",
+                "meta.json:variables",
+                "flow.json/assets.json 不可读：本次保存未做派生变量一致性同步",
+            )),
+        }
+        // Structural contract (`meta.json:variables…` META issues) blocks the write;
+        // unrelated pre-existing warnings stay editable (same stance as pre-V2).
+        let structural: Vec<String> = meta
+            .lint_issues()
+            .into_iter()
+            .filter(|issue| issue.path.starts_with("meta.json:variables"))
+            .map(|issue| format!("{}: {}", issue.path, issue.msg))
+            .collect();
+        if !structural.is_empty() {
+            return self.send_errors(out, 400, structural);
+        }
+        if let Err((code, errors)) = self.write_variables_meta(&bundle, &meta.variables) {
+            return self.send_errors(out, code, errors);
+        }
+        // Non-blocking findings: T8 drift of the saved state + T3 flow references.
+        let mut issues: Vec<serde_json::Value> = sync_errors;
+        if let (Some(flow), Some(assets)) = (&flow, &assets) {
+            for issue in oas_task::ocr_var::derived_variable_issues(&meta, assets, flow) {
+                issues.push(lint_issue_value(issue.code, &issue.path, &issue.msg));
             }
         }
-        let derived_keys: Vec<String> = body["params"]
-            .as_array()
-            .map(|rows| {
-                rows.iter()
-                    .filter(|row| row.get("asset_id").and_then(|v| v.as_str()).is_some())
-                    .filter_map(|row| row.get("key").and_then(|v| v.as_str()).map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        body["derived_keys"] = serde_json::json!(derived_keys);
+        if let Ok(found) = crate::task::lint_one(&self.tasks_dir, &task, &self.assets_dir) {
+            for issue in found.into_iter().filter(|i| i.code == "T3") {
+                issues.push(lint_issue_value(issue.code, &issue.path, &issue.msg));
+            }
+        }
+        dedupe_issue_values(&mut issues);
+        let derived_keys: Vec<String> = meta
+            .variables
+            .iter()
+            .filter(|v| v.asset_id.is_some())
+            .map(|v| v.key.clone())
+            .collect();
+        let mut body = serde_json::json!({
+            "ok": true,
+            "task": task,
+            "variables": meta.variables,
+            "derived_keys": derived_keys,
+            "issues": issues,
+        });
+        if let Some(report) = sync_report {
+            body["sync"] = serde_json::json!({
+                "added": report.added,
+                "updated": report.updated,
+                "removed": report.removed,
+            });
+        }
+        if legacy_alias {
+            body["deprecated"] =
+                serde_json::json!("/task/config is deprecated (V2.0b); use /task/variables");
+            body["params"] = serde_json::json!(legacy_param_rows_from_variables(&meta.variables));
+        }
         self.send_json(out, 200, &body.to_string())
     }
 
-    /// Load `tasks/<task>/meta.json` for the PR2 config routes.
+    /// Load `tasks/<task>/meta.json` for the V2 variable/config routes.
     ///
-    /// Returns the typed [`oas_task::Meta`] (used for value validation) plus
-    /// the **raw** `params` array: known fields are typed, while a field added
-    /// by a newer Studio survives a read-modify-write round-trip. Errors are
-    /// ready to send: `404` missing bundle/meta, `400` invalid meta or an
-    /// invalid `params` schema, `500` unreadable file. Only the `params` slice
-    /// of the lint is enforced here; unrelated legacy warnings stay editable.
-    fn load_config_meta(
+    /// Returns the typed [`oas_task::Meta`] plus the **raw** JSON object (so a
+    /// write preserves unknown top-level fields). Errors are ready to send:
+    /// `404` missing bundle/meta, `400` invalid meta shape, `500` unreadable file.
+    fn load_meta_for_variables(
         &self,
         task: &str,
-    ) -> Result<(oas_task::Meta, Vec<serde_json::Value>), (u16, Vec<String>)> {
+    ) -> Result<(oas_task::Meta, serde_json::Value), (u16, Vec<String>)> {
         let dir = self.tasks_dir.join(task);
         if !dir.is_dir() {
             return Err((
@@ -11160,18 +11254,47 @@ impl Server {
         };
         let meta = oas_task::Meta::from_json(&text)
             .map_err(|e| (400, vec![format!("`{}` invalid: {e}", path.display())]))?;
-        let issues = config_param_issues(&meta);
-        if !issues.is_empty() {
-            return Err((400, issues));
-        }
         let raw: serde_json::Value = serde_json::from_str(&text)
             .map_err(|e| (400, vec![format!("`{}` invalid: {e}", path.display())]))?;
-        let raw_params = raw
-            .get("params")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok((meta, raw_params))
+        Ok((meta, raw))
+    }
+
+    /// Atomically persist `meta.variables` (V2.0b single storage) into
+    /// `tasks/<task>/meta.json`, preserving unknown top-level fields and
+    /// **removing the deprecated `params` array**; keeps a `meta.json.bak`.
+    fn write_variables_meta(
+        &self,
+        bundle: &oas_task::TaskBundle,
+        variables: &[oas_task::Variable],
+    ) -> Result<(), (u16, Vec<String>)> {
+        let path = bundle.meta_path();
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| (500, vec![format!("read `{}`: {e}", path.display())]))?;
+        let mut raw: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| (400, vec![format!("`{}` invalid JSON: {e}", path.display())]))?;
+        let Some(obj) = raw.as_object_mut() else {
+            return Err((400, vec!["meta.json root must be an object".into()]));
+        };
+        obj.remove("params"); // V2.0b: the deprecated storage is retired
+        if variables.is_empty() {
+            obj.remove("variables");
+        } else {
+            let vars_json = serde_json::to_value(variables)
+                .map_err(|e| (500, vec![format!("serialize variables: {e}")]))?;
+            obj.insert("variables".to_string(), vars_json);
+        }
+        let pretty = serde_json::to_string_pretty(&raw)
+            .map_err(|e| (500, vec![format!("serialize meta: {e}")]))?;
+        let backup = path.with_extension("json.bak");
+        if let Err(e) = std::fs::copy(&path, &backup) {
+            return Err((
+                500,
+                vec![format!("backup `{}`: {e}", backup.display())],
+            ));
+        }
+        write_text_atomic(&path, &format!("{pretty}\n"))
+            .map_err(|e| (500, vec![e]))?;
+        Ok(())
     }
 
     /// Runner values store path (`config/values.json` next to the live config).
@@ -11897,11 +12020,17 @@ fn scan_runner_tasks(
         let has_flow = dir.join("flow.json").is_file();
         // Legacy per-task assets or the unified `images/` directory.
         let has_assets = dir.join("assets.json").is_file() || dir.join("images").is_dir();
-        let (params, version, meta_error) = if has_meta {
+        let (variables, version, meta_error) = if has_meta {
             match std::fs::read_to_string(dir.join("meta.json")) {
                 Ok(text) => match oas_task::Meta::from_json(&text) {
                     Ok(meta) => (
-                        meta.params.iter().map(|p| p.key.clone()).collect::<Vec<_>>(),
+                        // V2.0b: effective variables (legacy params are imported in
+                        // memory by the V2.0a bridge); `params` below is a
+                        // deprecated alias for pre-V2 Runner UIs.
+                        meta.effective_variables()
+                            .iter()
+                            .map(|v| v.key.clone())
+                            .collect::<Vec<_>>(),
                         meta.version,
                         None,
                     ),
@@ -11918,7 +12047,9 @@ fn scan_runner_tasks(
         row.insert("has_meta".to_string(), serde_json::json!(has_meta));
         row.insert("has_flow".to_string(), serde_json::json!(has_flow));
         row.insert("has_assets".to_string(), serde_json::json!(has_assets));
-        row.insert("params".to_string(), serde_json::json!(params));
+        row.insert("variables".to_string(), serde_json::json!(variables));
+        // Deprecated pre-V2 alias (same key list); remove once UI V2.0c lands.
+        row.insert("params".to_string(), serde_json::json!(variables));
         row.insert(
             "unmanaged".to_string(),
             serde_json::json!(managed.is_none()),
@@ -11992,72 +12123,91 @@ fn runner_task_config_id(path_only: &str) -> Option<&str> {
     (!id.is_empty() && !id.contains('/')).then_some(id)
 }
 
-/// Every `params`-scoped `Meta` lint issue, formatted for the config APIs.
-///
-/// Only `meta.json:params…` paths are returned: a schema edit must fail on the
-/// new params, not on an unrelated pre-existing warning elsewhere in meta.
-fn config_param_issues(meta: &oas_task::Meta) -> Vec<String> {
-    meta.lint_issues()
-        .into_iter()
-        .filter(|issue| issue.path.starts_with("meta.json:params"))
-        .map(|issue| format!("{}: {}", issue.path, issue.msg))
+/// One JSON lint row `{code,path,msg}` (the V2.0b response channel for
+/// `GET /task/variables.lint_warnings` / `POST /task/variables.issues`).
+fn lint_issue_value(code: &str, path: &str, msg: &str) -> serde_json::Value {
+    serde_json::json!({ "code": code, "path": path, "msg": msg })
+}
+
+/// JSON rows for a whole lint-issue slice.
+fn lint_issue_rows(issues: &[oas_task::LintIssue]) -> Vec<serde_json::Value> {
+    issues
+        .iter()
+        .map(|issue| lint_issue_value(issue.code, &issue.path, &issue.msg))
         .collect()
 }
 
-/// Enforce the **derived-row read-only contract** of `POST /task/config`
-/// (2026-11-06 参数→素材 C1′, Lead ruling 7).
+/// Drop duplicate `{code,path,msg}` rows: a T3/T8 finding can arrive through
+/// both the save-time sync and the after-write lint collector.
+fn dedupe_issue_values(issues: &mut Vec<serde_json::Value>) {
+    let mut seen: std::collections::BTreeSet<(String, String, String)> =
+        std::collections::BTreeSet::new();
+    issues.retain(|issue| {
+        let field = |name: &str| {
+            issue
+                .get(name)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        seen.insert((field("code"), field("path"), field("msg")))
+    });
+}
+
+/// Render one [`oas_task::Variable`] as the old `meta.params[]` shape.
 ///
-/// A derived row (`asset_id` present) is owned by the ocr_var sync: a client may
-/// echo it back (and may edit only `group`/`description`), but it must not
-/// change the key/type/default/role/source asset nor drop or fabricate one.
-/// Every violation is a ready-to-send 400 message.
-fn derived_rows_read_only_issues(
-    current: &oas_task::Meta,
-    submitted: &[oas_task::ParamDecl],
-) -> Vec<String> {
-    let mut issues: Vec<String> = Vec::new();
-    // Keys/fields the sync owns; group/description/label are user/editable.
-    let owned = |p: &oas_task::ParamDecl| -> oas_task::ParamDecl {
-        let mut c = p.clone();
-        c.group = None;
-        c.description = None;
-        c.label = None;
-        c
-    };
-    for current_row in current.params.iter().filter(|p| p.asset_id.is_some()) {
-        let asset_id = current_row.asset_id.as_deref().unwrap_or("");
-        let Some((i, submitted_row)) = submitted
-            .iter()
-            .enumerate()
-            .find(|(_, p)| p.asset_id.as_deref() == Some(asset_id))
-        else {
-            issues.push(format!(
-                "params: 派生行 `{}`（来自素材 {asset_id}）只读，不能删除；改素材或重新保存 flow 触发同步",
-                current_row.key
-            ));
-            continue;
-        };
-        if owned(submitted_row) != owned(current_row) {
-            issues.push(format!(
-                "params[{i}].asset_id 派生行只读（来自素材 {asset_id}）：请改素材或重新保存 flow 触发同步"
-            ));
-        }
+/// Transitional only: `GET|POST /task/config` (deprecated aliases) mirror the
+/// variable list back as legacy `params` rows so pre-V2 callers keep working.
+/// The mirrored rows are response-only — nothing is persisted as `params`.
+fn variable_to_legacy_param(v: &oas_task::Variable) -> oas_task::ParamDecl {
+    oas_task::ParamDecl {
+        key: v.key.clone(),
+        kind: v.kind.clone(),
+        default: v.default.clone(),
+        min: v.min,
+        max: v.max,
+        label: v.label.clone(),
+        description: v.description.clone(),
+        enum_values: v.enum_values.clone(),
+        required: v.required,
+        group: v.group.clone(),
+        role: v.is_ocr_text().then(|| "ocr_text".to_string()),
+        asset_id: v.asset_id.clone(),
     }
-    for (i, submitted_row) in submitted.iter().enumerate() {
-        let Some(asset_id) = submitted_row.asset_id.as_deref() else {
-            continue;
-        };
-        if !current
-            .params
-            .iter()
-            .any(|p| p.asset_id.as_deref() == Some(asset_id))
-        {
-            issues.push(format!(
-                "params[{i}].asset_id: 派生行不能手工创建（素材 {asset_id}）；请保存对应 ocr_var 素材"
-            ));
-        }
-    }
-    issues
+}
+
+/// Legacy `/task/config` response mirror (`variables` → old `params` rows).
+fn legacy_param_rows_from_variables(
+    variables: &[oas_task::Variable],
+) -> Vec<serde_json::Value> {
+    variables
+        .iter()
+        .filter_map(|v| serde_json::to_value(variable_to_legacy_param(v)).ok())
+        .collect()
+}
+
+/// Import old `POST /task/config {params:[ParamDecl...]}` rows into the V2
+/// variable model (transitional alias path). `asset_id` rows become
+/// `value_source=ocr_text`; everything else is a `literal` variable.
+fn legacy_param_rows_to_variables(rows: &[oas_task::ParamDecl]) -> Vec<oas_task::Variable> {
+    rows.iter()
+        .map(|p| oas_task::Variable {
+            key: p.key.clone(),
+            kind: p.kind.clone(),
+            value_source: p.asset_id.as_ref().map(|_| "ocr_text".to_string()),
+            asset_id: p.asset_id.clone(),
+            default: p.default.clone(),
+            label: p.label.clone(),
+            description: p.description.clone(),
+            group: p.group.clone(),
+            runner_editable: None,
+            required: p.required,
+            scope: None,
+            min: p.min,
+            max: p.max,
+            enum_values: p.enum_values.clone(),
+        })
+        .collect()
 }
 
 /// M0 contract (`task_id` syntax == task-directory-name syntax): derive a stable
@@ -12103,8 +12253,12 @@ fn slugify_task_id(name: &str) -> String {
 
 /// `meta.json` of a freshly created bundle: ENGINE §22.34.2 contract fields with
 /// the M0 defaults (old bundles without them behave exactly like this).
+///
+/// V2.0b: a fresh task stores **`meta.variables`** only (the V2 variable model);
+/// legacy `meta.params` is read-only compatibility for old tasks/packages and is
+/// never written by the create path.
 fn new_task_meta(spec: &CreateSpec) -> serde_json::Value {
-    let (category, params, duration_hint_s) = template_defaults(spec.template);
+    let (category, variables, duration_hint_s) = template_defaults(spec.template);
     let task_id = slugify_task_id(spec.name);
     let mut meta = serde_json::json!({
         "schema_version": 1,
@@ -12115,7 +12269,7 @@ fn new_task_meta(spec: &CreateSpec) -> serde_json::Value {
         // Old (pre-contract) field: still accepted, `category` is authoritative.
         "expire": "daily",
         "category": category,
-        "params": params,
+        "variables": variables,
         "exits": {
             "done": {"result": "success"},
             "failed": {"result": "retryable"},
@@ -13492,7 +13646,9 @@ mod tests {
         assert_eq!(meta["version"], 1);
         assert_eq!(meta["expire"], "daily");
         assert_eq!(meta["category"], "daily");
-        assert_eq!(meta["params"], serde_json::json!([]));
+        // V2.0b: a fresh task stores `variables` (never the deprecated `params`).
+        assert_eq!(meta["variables"], serde_json::json!([]));
+        assert!(meta.get("params").is_none(), "V2 create writes no params: {meta}");
         assert_eq!(meta["exits"]["done"]["result"], "success");
         assert_eq!(meta["exits"]["failed"]["result"], "retryable");
         assert_eq!(meta["capabilities"]["checkpoint"], true);
@@ -13538,13 +13694,13 @@ mod tests {
         let td = TempDir::new("task-templates");
         let tasks_dir = td.path().join("tasks");
         let server = server_with_tasks(td.path());
-        // (name, template, category, duration_hint_s, param key or None)
+        // (name, template, category, duration_hint_s, variable key or None)
         let cases = [
             ("模板日常", "daily", "daily", 300u64, None),
             ("模板循环", "loop", "utility", 600u64, Some("max_rounds")),
             ("模板工具", "utility", "utility", 60u64, None),
         ];
-        for (name, template, category, duration, param_key) in cases {
+        for (name, template, category, duration, variable_key) in cases {
             let body = format!(r#"{{"name":"{name}","template":"{template}"}}"#);
             let (status, out) =
                 post_route(&server, "/task/create", "application/json", body.as_bytes());
@@ -13558,14 +13714,24 @@ mod tests {
             );
             assert_eq!(meta["exits"]["done"]["result"], "success");
             assert_eq!(meta["exits"]["failed"]["result"], "retryable");
-            match param_key {
+            assert!(
+                meta.get("params").is_none(),
+                "{template}: V2 create writes no params: {meta}"
+            );
+            match variable_key {
                 Some(key) => {
-                    let params = meta["params"].as_array().expect("params array");
-                    assert_eq!(params.len(), 1, "{template} must declare {key}");
-                    assert_eq!(params[0]["key"], key);
-                    assert_eq!(params[0]["default"], 3);
+                    let vars = meta["variables"].as_array().expect("variables array");
+                    assert_eq!(vars.len(), 1, "{template} must declare {key}");
+                    assert_eq!(vars[0]["key"], key);
+                    assert_eq!(vars[0]["type"], "int");
+                    assert_eq!(vars[0]["default"], 3);
+                    // Plain scalar default: `value_source` absent = literal.
+                    assert!(
+                        vars[0].get("value_source").is_none(),
+                        "{template}: literal variable: {meta}"
+                    );
                 }
-                None => assert_eq!(meta["params"], serde_json::json!([])),
+                None => assert_eq!(meta["variables"], serde_json::json!([])),
             }
             let flow = oas_flow::Flow::from_json(
                 &std::fs::read_to_string(dir.join("flow.json")).expect("flow"),
@@ -13723,12 +13889,17 @@ mod tests {
         let server = server_with_tasks(td.path());
         make_task(&tasks_dir, "t1");
         let meta_path = tasks_dir.join("t1").join("meta.json");
+        let skeleton = read_json(&meta_path);
         assert!(
-            read_json(&meta_path)["params"]
+            skeleton.get("params").is_none(),
+            "V2 skeleton has no legacy params: {skeleton}"
+        );
+        assert!(
+            skeleton["variables"]
                 .as_array()
                 .map(|a| a.is_empty())
                 .unwrap_or(true),
-            "the daily skeleton starts without params"
+            "the daily skeleton starts without variables"
         );
         let (status, v) = post_goal(
             &server,
@@ -13738,28 +13909,32 @@ mod tests {
         assert_eq!(v["goal"]["mode"], "battles", "{v}");
         assert_eq!(v["goal"]["count"], 7, "{v}");
         // 批次D2: the Studio writes a **literal** `loop n=<count>` now, so the
-        // route must not append `max_battles` (old param bridge removed).
+        // route must not append `max_battles` (old param bridge removed); V2.0b
+        // additionally guarantees no legacy `params` array is written at all.
         let meta = read_json(&meta_path);
         assert_eq!(meta["goal"]["count"], 7, "{meta}");
-        let params = meta["params"].as_array().expect("params array");
+        assert!(meta.get("params").is_none(), "V2 writes no params: {meta}");
+        let vars = meta["variables"].as_array().expect("variables array");
         assert!(
-            params.iter().all(|p| p["key"] != "max_battles"),
-            "goal save must not inject params.max_battles: {meta}"
+            vars.iter().all(|x| x["key"] != "max_battles"),
+            "goal save must not inject a max_battles variable: {meta}"
         );
-        assert!(params.is_empty(), "no params were authored: {meta}");
+        assert!(vars.is_empty(), "no variables were authored: {meta}");
         // Non-battles modes are write-only too.
         let (status, _) = post_goal(
             &server,
             serde_json::json!({"task": "t1", "goal": {"mode": "until_resource"}}),
         );
         assert!(status.contains("200"), "{status}");
+        let meta = read_json(&meta_path);
         assert!(
-            read_json(&meta_path)["params"]
+            meta["variables"]
                 .as_array()
                 .map(|a| a.is_empty())
                 .unwrap_or(true),
-            "until_resource must not inject params either"
+            "until_resource must not inject variables either"
         );
+        assert!(meta.get("params").is_none(), "{meta}");
         // Battles validation is unchanged (count required, 1..=999).
         let (status, _) = post_goal(
             &server,
@@ -14569,22 +14744,36 @@ mod tests {
         assert_eq!(item["runtime_text"], "御魂", "{assets}");
         assert_eq!(item["param_key"], "group", "{assets}");
         assert_eq!(item["op_region"]["mode"], "self", "{assets}");
-        // Saving the flow derives the `meta.params` row.
+        // Saving the flow derives the `meta.variables` row (V2.0b: variables is
+        // the only storage; the deprecated `params` array is never written).
         let (status, out) = save_flow_referencing(&server, "t1", "O_group", "group");
         assert!(status.contains("200"), "{status} {out}");
         let v: serde_json::Value = serde_json::from_str(&out).expect("flow json");
         assert_eq!(v["sync"]["added"], serde_json::json!(["group"]), "{out}");
         let meta = read_json(&tasks_dir.join("t1").join("meta.json"));
-        let row = &meta["params"][0];
+        assert!(
+            meta.get("params").is_none(),
+            "V2.0b writes no meta.params: {meta}"
+        );
+        let row = &meta["variables"][0];
         assert_eq!(row["key"], "group", "{meta}");
         assert_eq!(row["type"], "string", "{meta}");
         assert_eq!(row["default"], "御魂", "{meta}");
-        assert_eq!(row["role"], "ocr_text", "{meta}");
+        assert_eq!(row["value_source"], "ocr_text", "{meta}");
         assert_eq!(row["asset_id"], "O_group", "{meta}");
-        // `/task/config` exposes the read-only derived view.
-        let config = get_json_route(&server, "/task/config?task=t1");
+        // `/task/variables` is the V2 endpoint; `/task/config` is its deprecated
+        // alias (same variables + a read-only legacy `params` mirror).
+        let config = get_json_route(&server, "/task/variables?task=t1");
         assert_eq!(config["derived_keys"], serde_json::json!(["group"]), "{config}");
-        assert_eq!(config["params"][0]["asset_id"], "O_group", "{config}");
+        assert_eq!(config["variables"][0]["asset_id"], "O_group", "{config}");
+        assert!(config.get("params").is_none(), "no legacy mirror on /task/variables: {config}");
+        let alias = get_json_route(&server, "/task/config?task=t1");
+        assert_eq!(alias["variables"][0]["asset_id"], "O_group", "{alias}");
+        assert_eq!(alias["params"][0]["asset_id"], "O_group", "{alias}");
+        assert!(
+            alias["deprecated"].as_str().is_some_and(|s| s.contains("deprecated")),
+            "{alias}"
+        );
     }
 
     #[test]
@@ -15031,8 +15220,9 @@ mod tests {
         assert_eq!(synced[0]["task"], "t1", "{out}");
         assert_eq!(synced[0]["updated"], serde_json::json!(["group"]), "{out}");
         let meta = read_json(&tasks_dir.join("t1").join("meta.json"));
-        assert_eq!(meta["params"][0]["default"], "结界", "{meta}");
-        assert_eq!(meta["params"][0]["label"], "新显示名", "{meta}");
+        assert!(meta.get("params").is_none(), "V2.0b writes no params: {meta}");
+        assert_eq!(meta["variables"][0]["default"], "结界", "{meta}");
+        assert_eq!(meta["variables"][0]["label"], "新显示名", "{meta}");
     }
 
     #[test]
@@ -15059,10 +15249,11 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).expect("flow json");
         assert_eq!(v["sync"]["removed"], serde_json::json!(["group"]), "{out}");
         let meta = read_json(&tasks_dir.join("t1").join("meta.json"));
-        // `Meta.params` is skipped when empty, so "no derived rows" is a missing
-        // key (not an empty array).
+        // V2.0b: the retired `params` array is gone; "no derived rows" means an
+        // empty/missing `variables` array.
+        assert!(meta.get("params").is_none(), "V2.0b writes no params: {meta}");
         assert_eq!(
-            meta["params"].as_array().map(|a| a.len()).unwrap_or(0),
+            meta["variables"].as_array().map(|a| a.len()).unwrap_or(0),
             0,
             "{meta}"
         );
@@ -15092,48 +15283,99 @@ mod tests {
     }
 
     #[test]
-    fn config_post_protects_derived_rows_and_keeps_them_in_sync() {
-        let td = TempDir::new("t3a-config");
+    fn variables_post_syncs_derived_rows_and_keeps_meta_consistent() {
+        let td = TempDir::new("v2b-variables");
         let tasks_dir = td.path().join("tasks");
         let server = server_with_tasks(td.path())
             .with_frames_dir(td.path().join("frames"))
             .with_assets_dir(td.path().join("assets"));
         setup_synced_ocr_var_task(&server, &tasks_dir);
-        let config = get_json_route(&server, "/task/config?task=t1");
-        let derived = config["params"][0].clone();
+        // GET /task/variables is the V2 endpoint; the ocr_text variable bound to
+        // the ocr_var is derived (owned by the asset sync).
+        let config = get_json_route(&server, "/task/variables?task=t1");
+        let derived = config["variables"][0].clone();
         assert_eq!(derived["asset_id"], "O_group", "{config}");
+        assert_eq!(derived["value_source"], "ocr_text", "{config}");
+        assert!(config.get("params").is_none(), "V2 GET has no params: {config}");
 
-        // (a) Editing the derived row's owned field is a 400.
+        // (a) A tampered derived row is reconciled by the T8 sync: the save
+        //     succeeds (the asset is the single truth), the response reports it.
         let mut modified = derived.clone();
         modified["default"] = serde_json::json!("手改");
-        let body = serde_json::json!({"task": "t1", "params": [modified]});
+        let body = serde_json::json!({"task": "t1", "variables": [modified]});
         let (status, out) = post_route(
             &server,
-            "/task/config",
+            "/task/variables",
             "application/json",
             body.to_string().as_bytes(),
         );
-        assert!(status.contains("400"), "{status} {out}");
-        assert!(out.contains("派生行只读"), "{out}");
-
-        // (b) Dropping the derived row is a 400 too.
-        let body = serde_json::json!({"task": "t1", "params": []});
-        let (status, out) = post_route(
-            &server,
-            "/task/config",
-            "application/json",
-            body.to_string().as_bytes(),
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("variables json");
+        assert_eq!(
+            v["sync"]["updated"],
+            serde_json::json!(["group"]),
+            "the asset value wins: {out}"
         );
-        assert!(status.contains("400"), "{status} {out}");
+        let meta = read_json(&tasks_dir.join("t1").join("meta.json"));
+        assert!(meta.get("params").is_none(), "V2 writes no params: {meta}");
+        assert_eq!(meta["variables"][0]["default"], "御魂", "{meta}");
 
-        // (c) Echoing it unchanged + adding a user row succeeds; the derived row
-        //     is rebuilt from the asset and stays present.
+        // (b) User literal variables are persisted next to the derived row; the
+        //     response reports the non-blocking issues channel (possibly empty).
+        let derived = meta["variables"][0].clone();
         let body = serde_json::json!({
             "task": "t1",
-            "params": [
-                derived,
-                {"key": "loop_n", "type": "int", "default": 3}
-            ]
+            "variables": [derived, {"key": "loop_n", "type": "int", "default": 3}]
+        });
+        let (status, out) = post_route(
+            &server,
+            "/task/variables",
+            "application/json",
+            body.to_string().as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("variables json");
+        assert_eq!(v["derived_keys"], serde_json::json!(["group"]), "{out}");
+        assert!(v["issues"].is_array(), "{out}");
+        let meta = read_json(&tasks_dir.join("t1").join("meta.json"));
+        let vars = meta["variables"].as_array().expect("variables");
+        assert_eq!(vars.len(), 2, "{meta}");
+        assert!(
+            vars.iter()
+                .any(|x| x["key"] == "loop_n" && x.get("asset_id").is_none()),
+            "{meta}"
+        );
+        let group = vars.iter().find(|x| x["key"] == "group").expect("derived");
+        assert_eq!(group["default"], "御魂", "{meta}");
+        assert_eq!(group["asset_id"], "O_group", "{meta}");
+
+        // (c) A structural variable error is a loud 400 with the meta path and
+        //     writes nothing.
+        let before = std::fs::read(tasks_dir.join("t1").join("meta.json")).expect("meta bytes");
+        let body = serde_json::json!({
+            "task": "t1",
+            "variables": [{"key": "bad key!", "type": "int"}]
+        });
+        let (status, out) = post_route(
+            &server,
+            "/task/variables",
+            "application/json",
+            body.to_string().as_bytes(),
+        );
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("meta.json:variables"), "{out}");
+        assert_eq!(
+            std::fs::read(tasks_dir.join("t1").join("meta.json")).expect("meta bytes"),
+            before,
+            "a rejected save must not write"
+        );
+
+        // (d) The deprecated `/task/config` alias still accepts the old
+        //     `{params:[...]}` body (imported into variables) and returns the
+        //     legacy mirror; the derived ocr_text row is re-added by the sync.
+        let body = serde_json::json!({
+            "task": "t1",
+            "params": [{"key": "max_rounds", "type": "int", "default": 5}]
         });
         let (status, out) = post_route(
             &server,
@@ -15142,21 +15384,78 @@ mod tests {
             body.to_string().as_bytes(),
         );
         assert!(status.contains("200"), "{status} {out}");
-        let v: serde_json::Value = serde_json::from_str(&out).expect("config json");
-        assert_eq!(v["derived_keys"], serde_json::json!(["group"]), "{out}");
-        let meta = read_json(&tasks_dir.join("t1").join("meta.json"));
-        let params = meta["params"].as_array().expect("params");
-        assert_eq!(params.len(), 2, "{meta}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("alias json");
         assert!(
-            params.iter().any(|p| p["key"] == "loop_n" && p.get("asset_id").is_none()),
-            "{meta}"
+            v["deprecated"].as_str().is_some_and(|s| s.contains("deprecated")),
+            "{out}"
         );
-        let group = params
-            .iter()
-            .find(|p| p["key"] == "group")
-            .expect("derived row");
-        assert_eq!(group["default"], "御魂", "{meta}");
-        assert_eq!(group["asset_id"], "O_group", "{meta}");
+        assert_eq!(v["params"][0]["key"], "max_rounds", "{out}");
+        assert!(
+            v["variables"]
+                .as_array()
+                .expect("variables")
+                .iter()
+                .any(|x| x["key"] == "group" && x["value_source"] == "ocr_text"),
+            "{out}"
+        );
+        let meta = read_json(&tasks_dir.join("t1").join("meta.json"));
+        assert!(meta.get("params").is_none(), "alias writes no params: {meta}");
+        let vars = meta["variables"].as_array().expect("variables");
+        assert!(
+            vars.iter().any(|x| x["key"] == "max_rounds"),
+            "the alias-imported variable is persisted: {meta}"
+        );
+        // The legacy body is a full replacement: the previous literal `loop_n`
+        // row (from (b)) is gone, only the imported row + the derived ocr_text
+        // row remain.
+        assert!(
+            vars.iter().all(|x| x["key"] != "loop_n"),
+            "an omitted variable is deleted by the V2 replacement save: {meta}"
+        );
+    }
+
+    #[test]
+    fn variables_post_reports_t3_as_a_non_blocking_issue() {
+        // T3 (undeclared `param('key')` in the flow) is returned through `issues`
+        // without rejecting the save (V2.0b contract: T3/T8 are advisory here).
+        let td = TempDir::new("v2b-t3-issues");
+        let tasks_dir = td.path().join("tasks");
+        write_config_task(
+            &tasks_dir,
+            "t3_task",
+            serde_json::json!({"schema_version": 1, "name": "t3_task"}),
+        );
+        std::fs::write(
+            tasks_dir.join("t3_task").join("flow.json"),
+            r#"{"schema_version":1,"name":"t3_task","steps":[
+                {"op":"if","args":{"cond":"param('missing_var') > 0"},"then":[]},
+                {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("write flow");
+        let server = studio_config_server(td.path());
+        let body = serde_json::json!({
+            "task": "t3_task",
+            "variables": [{"key": "other", "type": "int", "default": 1}]
+        });
+        let (status, out) = post_route(
+            &server,
+            "/task/variables",
+            "application/json",
+            body.to_string().as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("variables json");
+        assert!(
+            v["issues"]
+                .as_array()
+                .expect("issues")
+                .iter()
+                .any(|i| i["code"] == "T3" && i["msg"].as_str().unwrap_or("").contains("missing_var")),
+            "T3 must be reported, not blocking: {out}"
+        );
+        let meta = read_json(&tasks_dir.join("t3_task").join("meta.json"));
+        assert_eq!(meta["variables"][0]["key"], "other", "{meta}");
+        assert!(meta.get("params").is_none(), "{meta}");
     }
 
     #[test]
@@ -15317,8 +15616,10 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).expect("flow json");
         assert_eq!(v["sync"]["added"], serde_json::json!(["group"]), "{out}");
         let meta = read_json(&tasks_dir.join("t1").join("meta.json"));
-        assert_eq!(meta["params"][0]["asset_id"], "O_group", "{meta}");
-        assert_eq!(meta["params"][0]["default"], "御魂", "{meta}");
+        assert!(meta.get("params").is_none(), "V2 writes no params: {meta}");
+        assert_eq!(meta["variables"][0]["asset_id"], "O_group", "{meta}");
+        assert_eq!(meta["variables"][0]["value_source"], "ocr_text", "{meta}");
+        assert_eq!(meta["variables"][0]["default"], "御魂", "{meta}");
     }
 
     // -----------------------------------------------------------------------
@@ -15987,6 +16288,55 @@ mod tests {
             v["errors"][0].as_str().unwrap_or("").contains("out of range"),
             "{v}"
         );
+    }
+
+    #[test]
+    fn test_action_uses_variable_defaults_for_the_ocr_expected_text() {
+        // V2.0b item 4: the Studio dry-run injects `meta.variables` defaults
+        // (`variable_defaults`) — the retired `meta.params` is not read. A
+        // variable whose key equals the ocr_var's `param_key` overrides its
+        // `runtime_text` through the injection map (the same layer a Runner value
+        // uses), so the preview must recognize the overridden text.
+        let td = TempDir::new("v2b-test-action-vars");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path())
+            .with_frames_dir(td.path().join("frames"))
+            .with_assets_dir(td.path().join("assets"));
+        make_task(&tasks_dir, "t1");
+        let frame_id = upload_test_frame(&server, &Frame::new(64, 48, vec![6u8; 64 * 48 * 4]));
+        save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "O_group", "kind": "ocr_var",
+                "runtime_text": "御魂", "param_key": "group", "positions": [frame_id],
+            }),
+        );
+        write_config_task(
+            &tasks_dir,
+            "t1",
+            serde_json::json!({
+                "schema_version": 1,
+                "name": "t1",
+                "variables": [{"key": "group", "type": "string", "default": "结界"}],
+                "exits": {"done": {"result": "success"}, "failed": {"result": "retryable"}}
+            }),
+        );
+        let lines = vec![
+            // Higher score but NOT the injected text (the runtime_text default).
+            ocr_line([10, 10, 20, 10], "御魂", 0.99),
+            ocr_line([10, 40, 20, 10], "结界", 0.90),
+        ];
+        let server =
+            server.with_ocr_override(move || Box::new(FakeOcrLines { lines: lines.clone() }));
+        let (status, v) =
+            post_test_action(&server, serde_json::json!({"task":"t1","id":"O_group"}));
+        assert!(status.contains("200"), "{status} {v}");
+        assert_eq!(
+            v["real_rect"],
+            serde_json::json!([10, 40, 20, 10]),
+            "the variable default must drive the expected text: {v}"
+        );
+        assert_eq!(v["steps"][0]["text"], "结界", "{v}");
     }
 
     /// #3 candidate alignment: batch B opens `ocr_text` (expected text) up to
@@ -19459,7 +19809,7 @@ mod tests {
         .expect("write meta.json");
     }
 
-    /// Schema with every PR2 ParamDecl feature: required, enum, label/group,
+    /// V2 variable schema with every feature: required, enum, label/group,
     /// plus unrelated meta fields the Studio POST must preserve.
     fn config_meta(name: &str) -> serde_json::Value {
         serde_json::json!({
@@ -19469,10 +19819,9 @@ mod tests {
             "description": "保留这个描述",
             "goal": {"mode": "battles", "count": 5},
             "future_field": {"keep": true},
-            "params": [
+            "variables": [
                 {"key": "rounds", "type": "int", "default": 3, "min": 1, "max": 9,
-                 "label": "轮数", "description": "每次跑几轮", "group": "基础", "required": true,
-                 "future_param_field": {"keep": true}},
+                 "label": "轮数", "description": "每次跑几轮", "group": "基础", "required": true},
                 {"key": "mode", "type": "string", "default": "fast", "enum": ["fast", "safe"],
                  "label": "模式", "required": true},
                 {"key": "flag", "type": "bool", "default": false},
@@ -19508,13 +19857,16 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&body).expect("config JSON");
         assert_eq!(v["ok"], true);
         assert_eq!(v["task"], "任务A");
-        let params = v["params"].as_array().expect("params array");
-        assert_eq!(params.len(), 4, "{v}");
-        assert_eq!(params[0]["key"], "rounds");
-        assert_eq!(params[0]["label"], "轮数");
-        assert_eq!(params[0]["group"], "基础");
-        assert_eq!(params[0]["required"], true);
-        assert_eq!(params[1]["enum"][1], "safe");
+        // V2.0b: the Runner schema is `variables` (input scope); the deprecated
+        // `params` field is not returned any more.
+        assert!(v.get("params").is_none(), "V2 Runner config has no params: {v}");
+        let variables = v["variables"].as_array().expect("variables array");
+        assert_eq!(variables.len(), 4, "{v}");
+        assert_eq!(variables[0]["key"], "rounds");
+        assert_eq!(variables[0]["label"], "轮数");
+        assert_eq!(variables[0]["group"], "基础");
+        assert_eq!(variables[0]["required"], true);
+        assert_eq!(variables[1]["enum"][1], "safe");
         assert!(v["values"].as_object().expect("values object").is_empty());
         assert!(v["updated_ms"].is_null(), "never configured => null: {v}");
         assert!(
@@ -19550,7 +19902,7 @@ mod tests {
             put_route(&server, target, br#"{"values":{"rounds":2,"mode":"fast"}}"#);
         assert!(status.contains("400"), "{status} {body}");
         assert!(
-            body.contains("keyword") && body.contains("缺少必填参数"),
+            body.contains("keyword") && body.contains("缺少必填变量"),
             "{body}"
         );
 
@@ -19596,6 +19948,72 @@ mod tests {
     }
 
     #[test]
+    fn runner_config_returns_input_variables_and_rejects_non_editable_keys() {
+        let td = TempDir::new("pr2-runner-config-filter");
+        let tasks_dir = td.path().join("tasks");
+        write_config_task(
+            &tasks_dir,
+            "v2_task",
+            serde_json::json!({
+                "schema_version": 1,
+                "name": "v2_task",
+                "variables": [
+                    {"key": "speed", "type": "int", "default": 2, "runner_editable": true},
+                    {"key": "locked", "type": "int", "default": 3, "runner_editable": false},
+                    {"key": "local", "type": "int", "default": 4, "scope": "runtime"}
+                ]
+            }),
+        );
+        let server = runner_config_server(td.path());
+        let target = "/runner/tasks/v2_task/config";
+        // GET: input-scope variables only (runtime variables never leak), with the
+        // `runner_editable` flag left to the Runner UI filter (§3.2).
+        let (status, body) = get_route(&server, target);
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("config JSON");
+        let keys: Vec<&str> = v["variables"]
+            .as_array()
+            .expect("variables")
+            .iter()
+            .map(|x| x["key"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(keys, vec!["speed", "locked"], "{v}");
+        assert_eq!(v["variables"][1]["runner_editable"], false, "{v}");
+        // PUT accepts the editable input variable.
+        let (status, body) = put_route(&server, target, br#"{"values":{"speed":5}}"#);
+        assert!(status.contains("200"), "{status} {body}");
+        assert!(
+            td.path().join("config").join("values.json").is_file(),
+            "the accepted value is persisted"
+        );
+        // A non-editable input variable is a loud 400 naming the key.
+        let (status, body) = put_route(&server, target, br#"{"values":{"locked":9}}"#);
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(
+            body.contains("locked") && body.contains("不可由使用端修改"),
+            "{body}"
+        );
+        // A runtime-scope variable is rejected the same way.
+        let (status, body) = put_route(&server, target, br#"{"values":{"local":1}}"#);
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(
+            body.contains("local") && body.contains("不可由使用端修改"),
+            "{body}"
+        );
+        // A completely unknown key is a 400 listing the editable variables.
+        let (status, body) = put_route(&server, target, br#"{"values":{"ghost":1}}"#);
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(
+            body.contains("ghost") && body.contains("unknown variable"),
+            "{body}"
+        );
+        assert!(
+            body.contains("speed"),
+            "the allowed list must name the editable variables: {body}"
+        );
+    }
+
+    #[test]
     fn runner_config_routes_reject_bad_names_missing_bundles_and_bad_meta() {
         let td = TempDir::new("pr2-runner-config-errors");
         let server = runner_config_server(td.path());
@@ -19627,29 +20045,40 @@ mod tests {
     }
 
     #[test]
-    fn studio_get_task_config_returns_the_param_schema() {
+    fn studio_variables_get_returns_the_schema_and_deprecated_alias() {
         let td = TempDir::new("pr2-studio-config-get");
         let tasks_dir = td.path().join("tasks");
         write_config_task(&tasks_dir, "cfg_task", config_meta("cfg_task"));
         write_config_task(&tasks_dir, "任务A", config_meta("任务A"));
         let server = studio_config_server(td.path());
 
-        let (status, body) = get_route(&server, "/task/config?task=cfg_task");
+        // V2 endpoint.
+        let (status, body) = get_route(&server, "/task/variables?task=cfg_task");
         assert!(status.contains("200"), "{status} {body}");
-        let v: serde_json::Value = serde_json::from_str(&body).expect("config JSON");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("variables JSON");
         assert_eq!(v["ok"], true);
         assert_eq!(v["task"], "cfg_task");
-        assert_eq!(v["params"].as_array().expect("params").len(), 4);
-        assert_eq!(v["params"][0]["label"], "轮数");
-        assert_eq!(
-            v["params"][0]["future_param_field"],
-            serde_json::json!({"keep": true}),
-            "GET must expose the raw params object so unknown fields survive: {v}"
-        );
+        let variables = v["variables"].as_array().expect("variables");
+        assert_eq!(variables.len(), 4, "{v}");
+        assert_eq!(variables[0]["label"], "轮数");
+        assert!(v.get("params").is_none(), "V2 GET has no params: {v}");
+        assert!(v["lint_warnings"].is_array(), "{v}");
         assert!(v.get("values").is_none(), "Studio reads the schema only: {v}");
 
+        // Deprecated alias: same variables + a read-only legacy `params` mirror.
+        let (status, body) = get_route(&server, "/task/config?task=cfg_task");
+        assert!(status.contains("200"), "{status} {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("alias JSON");
+        assert_eq!(v["variables"].as_array().expect("variables").len(), 4, "{v}");
+        assert_eq!(v["params"].as_array().expect("legacy mirror").len(), 4, "{v}");
+        assert_eq!(v["params"][0]["key"], "rounds", "{v}");
+        assert!(
+            v["deprecated"].as_str().is_some_and(|s| s.contains("deprecated")),
+            "{v}"
+        );
+
         // Percent-encoded Chinese task name.
-        let target = format!("/task/config?task={}", pct_encode_path("任务A"));
+        let target = format!("/task/variables?task={}", pct_encode_path("任务A"));
         let (status, body) = get_route(&server, &target);
         assert!(status.contains("200"), "{target}: {status} {body}");
         assert_eq!(
@@ -19657,16 +20086,16 @@ mod tests {
             "任务A"
         );
 
-        let (status, _) = get_route(&server, "/task/config");
+        let (status, _) = get_route(&server, "/task/variables");
         assert!(status.contains("400"), "{status}");
-        let (status, _) = get_route(&server, "/task/config?task=missing");
+        let (status, _) = get_route(&server, "/task/variables?task=missing");
         assert!(status.contains("404"), "{status}");
-        let (status, _) = get_route(&server, "/task/config?task=..");
+        let (status, _) = get_route(&server, "/task/variables?task=..");
         assert!(status.contains("400"), "{status}");
     }
 
     #[test]
-    fn studio_post_task_config_preserves_other_meta_fields() {
+    fn studio_post_task_variables_preserves_other_meta_fields() {
         let td = TempDir::new("pr2-studio-config-post");
         let tasks_dir = td.path().join("tasks");
         write_config_task(&tasks_dir, "cfg_task", config_meta("cfg_task"));
@@ -19674,35 +20103,47 @@ mod tests {
         let before = read_json(&meta_path);
         let server = studio_config_server(td.path());
 
-        let params = serde_json::json!([
+        // Canonical V2 variables (only known fields survive the typed round-trip).
+        let variables = serde_json::json!([
             {"key": "speed", "type": "int", "default": 2, "min": 1.0, "max": 5.0,
-             "label": "速度", "description": "执行速度", "group": "基础", "required": true,
-             "future_param_field": {"keep": true}},
+             "label": "速度", "description": "执行速度", "group": "基础", "required": true},
             {"key": "note", "type": "string", "enum": ["a", "b"], "default": "a"}
         ]);
-        let body = serde_json::json!({"task": "cfg_task", "params": params}).to_string();
-        let (status, out) = post_route(&server, "/task/config", "application/json", body.as_bytes());
+        let body = serde_json::json!({"task": "cfg_task", "variables": variables}).to_string();
+        let (status, out) = post_route(
+            &server,
+            "/task/variables",
+            "application/json",
+            body.as_bytes(),
+        );
         assert!(status.contains("200"), "{status} {out}");
         let v: serde_json::Value = serde_json::from_str(&out).expect("post JSON");
         assert_eq!(v["ok"], true);
-        assert_eq!(v["params"], params);
-
-        // Raw meta: params replaced, every other field untouched.
-        let saved = read_json(&meta_path);
-        assert_eq!(saved["params"], params);
-        assert_eq!(
-            saved["params"][0]["future_param_field"],
-            serde_json::json!({"keep": true}),
-            "an unknown params field must survive the round-trip: {saved}"
+        assert_eq!(v["variables"], variables, "{out}");
+        // No flow/assets in this fixture: the response surfaces the skipped T8
+        // reconciliation as a non-blocking issue (the save still succeeded).
+        assert!(
+            v["issues"]
+                .as_array()
+                .expect("issues")
+                .iter()
+                .any(|i| i["code"] == "T8"),
+            "missing flow/assets is reported as a T8 issue, not a 400: {out}"
         );
+
+        // Raw meta: variables replaced, the deprecated params array stays absent,
+        // every other top-level field is untouched.
+        let saved = read_json(&meta_path);
+        assert_eq!(saved["variables"], variables, "{saved}");
+        assert!(saved.get("params").is_none(), "V2 writes no params: {saved}");
         for (key, value) in before.as_object().expect("meta object") {
-            if key == "params" {
+            if key == "variables" || key == "params" {
                 continue;
             }
             assert_eq!(
                 saved.get(key),
                 Some(value),
-                "field `{key}` must survive a params edit: {saved}"
+                "field `{key}` must survive a variables edit: {saved}"
             );
         }
         assert!(
@@ -19710,22 +20151,33 @@ mod tests {
             "meta.json keeps its trailing newline"
         );
 
-        // Read back through the Studio GET.
-        let (status, out) = get_route(&server, "/task/config?task=cfg_task");
+        // Read back through the Studio V2 GET.
+        let (status, out) = get_route(&server, "/task/variables?task=cfg_task");
         assert!(status.contains("200"), "{status} {out}");
         let v: serde_json::Value = serde_json::from_str(&out).expect("get JSON");
-        assert_eq!(v["params"][0]["key"], "speed");
-        assert_eq!(v["params"][0]["label"], "速度");
+        assert_eq!(v["variables"][0]["key"], "speed");
+        assert_eq!(v["variables"][0]["label"], "速度");
 
-        // Empty params is a legal schema (clears the form declarations).
-        let body = serde_json::json!({"task": "cfg_task", "params": []}).to_string();
-        let (status, _) = post_route(&server, "/task/config", "application/json", body.as_bytes());
-        assert!(status.contains("200"), "{status}");
-        assert_eq!(read_json(&meta_path)["params"], serde_json::json!([]));
+        // Empty variables is a legal schema (clears the declarations; the empty
+        // array is omitted from the file like every other empty Vec in Meta).
+        let body = serde_json::json!({"task": "cfg_task", "variables": []}).to_string();
+        let (status, out) = post_route(
+            &server,
+            "/task/variables",
+            "application/json",
+            body.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        assert!(
+            read_json(&meta_path).get("variables").is_none(),
+            "an empty variables array is omitted: {}",
+            read_json(&meta_path)
+        );
+        assert!(read_json(&meta_path).get("params").is_none());
     }
 
     #[test]
-    fn studio_post_task_config_rejects_invalid_params_without_writing() {
+    fn studio_post_task_variables_rejects_invalid_schema_without_writing() {
         let td = TempDir::new("pr2-studio-config-errors");
         let tasks_dir = td.path().join("tasks");
         write_config_task(&tasks_dir, "cfg_task", config_meta("cfg_task"));
@@ -19733,52 +20185,66 @@ mod tests {
         let before = std::fs::read_to_string(&meta_path).expect("read meta");
         let server = studio_config_server(td.path());
 
-        // Duplicate keys are caught by Meta::lint_issues with a params path.
+        // Duplicate keys are caught by Meta::lint_issues with a variables path.
         let body = serde_json::json!({
             "task": "cfg_task",
-            "params": [{"key": "x", "type": "int"}, {"key": "x", "type": "int"}]
+            "variables": [{"key": "x", "type": "int"}, {"key": "x", "type": "int"}]
         })
         .to_string();
-        let (status, out) = post_route(&server, "/task/config", "application/json", body.as_bytes());
+        let (status, out) = post_route(
+            &server,
+            "/task/variables",
+            "application/json",
+            body.as_bytes(),
+        );
         assert!(status.contains("400"), "{status} {out}");
-        assert!(out.contains("duplicate parameter key"), "{out}");
-        assert!(out.contains("meta.json:params[1].key"), "{out}");
+        assert!(out.contains("duplicate variable key"), "{out}");
+        assert!(out.contains("meta.json:variables[1].key"), "{out}");
 
         // enum on a bool is rejected with the field path.
         let body = serde_json::json!({
             "task": "cfg_task",
-            "params": [{"key": "flag", "type": "bool", "enum": [true]}]
+            "variables": [{"key": "flag", "type": "bool", "enum": [true]}]
         })
         .to_string();
-        let (status, out) = post_route(&server, "/task/config", "application/json", body.as_bytes());
+        let (status, out) = post_route(
+            &server,
+            "/task/variables",
+            "application/json",
+            body.as_bytes(),
+        );
         assert!(status.contains("400"), "{status} {out}");
-        assert!(out.contains("meta.json:params[0].enum"), "{out}");
+        assert!(out.contains("meta.json:variables[0].enum"), "{out}");
 
         // Body shape errors.
         for body in [
             "{}",
             r#"{"task":"cfg_task"}"#,
-            r#"{"task":"cfg_task","params":{}}"#,
-            r#"{"params":[]}"#,
+            r#"{"task":"cfg_task","variables":{}}"#,
+            r#"{"variables":[]}"#,
             "{not json",
         ] {
-            let (status, out) =
-                post_route(&server, "/task/config", "application/json", body.as_bytes());
+            let (status, out) = post_route(
+                &server,
+                "/task/variables",
+                "application/json",
+                body.as_bytes(),
+            );
             assert!(status.contains("400"), "{body}: {status} {out}");
         }
         // Unknown task is a 404, invalid name a 400.
         let (status, _) = post_route(
             &server,
-            "/task/config",
+            "/task/variables",
             "application/json",
-            br#"{"task":"missing","params":[]}"#,
+            br#"{"task":"missing","variables":[]}"#,
         );
         assert!(status.contains("404"), "{status}");
         let (status, _) = post_route(
             &server,
-            "/task/config",
+            "/task/variables",
             "application/json",
-            br#"{"task":"..","params":[]}"#,
+            br#"{"task":"..","variables":[]}"#,
         );
         assert!(status.contains("400"), "{status}");
 
@@ -19804,22 +20270,29 @@ mod tests {
         let (status, _) = put_route(&studio, runner_target, b"{\"values\":{}}");
         assert!(status.contains("404"), "studio PUT {runner_target}: {status}");
 
-        // Runner gets the plain 404 for the Studio schema routes, GET and POST.
-        let (status, _) = get_route(&runner, "/task/config?task=cfg_task");
-        assert!(status.contains("404"), "runner GET /task/config: {status}");
-        let (status, _) = post_route(
-            &runner,
-            "/task/config",
-            "application/json",
-            br#"{"task":"cfg_task","params":[]}"#,
-        );
-        assert!(status.contains("404"), "runner POST /task/config: {status}");
+        // Runner gets the plain 404 for the Studio schema routes, GET and POST
+        // (both the V2 route and its deprecated alias).
+        for target in ["/task/variables?task=cfg_task", "/task/config?task=cfg_task"] {
+            let (status, _) = get_route(&runner, target);
+            assert!(status.contains("404"), "runner GET {target}: {status}");
+        }
+        for target in ["/task/variables", "/task/config"] {
+            let (status, _) = post_route(
+                &runner,
+                target,
+                "application/json",
+                br#"{"task":"cfg_task","variables":[]}"#,
+            );
+            assert!(status.contains("404"), "runner POST {target}: {status}");
+        }
 
         // The owning side keeps working, and the PR1 Runner listing is intact.
         let (status, _) = get_route(&runner, runner_target);
         assert!(status.contains("200"), "runner GET config: {status}");
         let (status, _) = get_route(&studio, "/task/config?task=cfg_task");
         assert!(status.contains("200"), "studio GET config: {status}");
+        let (status, _) = get_route(&studio, "/task/variables?task=cfg_task");
+        assert!(status.contains("200"), "studio GET variables: {status}");
         let (status, body) = get_route(&runner, "/runner/tasks");
         assert!(status.contains("200"), "{status} {body}");
         assert_eq!(
@@ -19867,13 +20340,13 @@ mod tests {
 
     // ---- PR5: Studio publish / Runner package lifecycle --------------------
 
-    fn pkg_write_task(tasks: &Path, id: &str, version: u32, params: &str, steps: &str) {
+    fn pkg_write_task(tasks: &Path, id: &str, version: u32, variables: &str, steps: &str) {
         let dir = tasks.join(id);
         std::fs::create_dir_all(&dir).expect("create task dir");
         std::fs::write(
             dir.join("meta.json"),
             format!(
-                r#"{{"schema_version":1,"template_version":1,"task_id":"{id}","name":"{id}","version":{version},"params":{params},"exits":{{"done":{{"result":"success"}},"failed":{{"result":"retryable"}}}}}}"#
+                r#"{{"schema_version":1,"template_version":1,"task_id":"{id}","name":"{id}","version":{version},"variables":{variables},"exits":{{"done":{{"result":"success"}},"failed":{{"result":"retryable"}}}}}}"#
             ),
         )
         .expect("write meta");
@@ -19974,6 +20447,18 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("pkg-发布任务-1-"));
+        // V2.0: the published manifest is package_schema=2 with a variable
+        // snapshot (`variables_schema.own` = effective variables, empty here).
+        assert_eq!(v["package_schema"], 2, "{out}");
+        assert_eq!(
+            v["variables_schema"]["own"],
+            serde_json::json!([]),
+            "{out}"
+        );
+        assert!(
+            v["variables_schema"]["call_deps"].is_array(),
+            "call_deps must be present: {out}"
+        );
 
         // Same version again -> 409 without force.
         let (status, out) = post_route(&studio, "/task/publish", "application/json", body);
@@ -19998,6 +20483,11 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["packages"].as_array().unwrap().len(), 1);
         assert_eq!(v["packages"][0]["task_version"], 1);
+        assert_eq!(v["packages"][0]["package_schema"], 2, "{out}");
+        assert!(
+            v["packages"][0]["variables_schema"].is_object(),
+            "package history keeps the V2 schema snapshot: {out}"
+        );
     }
 
     #[test]
@@ -21110,6 +21600,36 @@ mod tests {
         assert!(!td.path().join("runner/tasks/A").exists());
 
         // A package built by this engine (same min_engine) still installs.
+        let (status, body) = install_pkg(&runner, &pkg.path, false);
+        assert!(status.contains("200"), "{status} {body}");
+    }
+
+    #[test]
+    fn install_refuses_a_legacy_package_schema() {
+        // V2.0 (design §6.3): `package_schema=1` packages are refused loudly and
+        // the user must re-publish with the V2 variable model.
+        let td = TempDir::new("legacy-package");
+        let src = td.path().join("src/tasks");
+        std::fs::create_dir_all(&src).unwrap();
+        pkg_write_task(&src, "A", 1, "[]", PKG_FINISH);
+        let pkg = pkg_build(
+            &src,
+            &td.path().join("src/assets"),
+            "A",
+            false,
+            &td.path().join("dist"),
+        );
+        let legacy = td.path().join("legacy-v1.oaspkg");
+        rewrite_package(&pkg.path, &legacy, |archive| {
+            archive.manifest.package_schema = 1;
+        });
+        let runner = runner_pkg_server(td.path());
+        let (status, body) = install_pkg(&runner, &legacy, false);
+        assert!(status.contains("400"), "{status} {body}");
+        assert!(body.contains("unsupported package_schema 1"), "{body}");
+        assert!(body.contains("re-publish"), "{body}");
+        assert!(!td.path().join("runner/tasks/A").exists());
+        // The V2 package from the same source still installs.
         let (status, body) = install_pkg(&runner, &pkg.path, false);
         assert!(status.contains("200"), "{status} {body}");
     }

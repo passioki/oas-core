@@ -1064,3 +1064,6 @@ main.runner-main {
     justify-content: flex-start;
   }
 }
+
+/* V2.0c：required 无值 = 行内橙色提示（允许保存，运行前告警） */
+.runner-config-row.required-missing .runner-config-row-hint { color: #e8c46a; }

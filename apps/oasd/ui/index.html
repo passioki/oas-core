@@ -327,9 +327,24 @@
         <div id="builder-lint-list" class="builder-lint-list"></div>
         <pre id="builder-lint-error" class="muted small dialog-error"></pre>
         <p class="muted small builder-lint-note">
-          权威结果来自后端（<code>GET /task/lint</code>）；Studio 用户界面已不再暴露参数声明入口，
-          旧 flow 的 <code>param('key')</code> 仍可运行，但需要改成「使用端OCR文字配置项」素材后重新引用。
+          权威结果来自后端（<code>GET /task/lint</code>）；flow 中 <code>param('key')</code> 必须声明为
+          「变量」面板里的变量（V2.0 起 meta.variables 是唯一声明来源），未声明会出现 T3。
         </p>
+      </section>
+
+      <!-- V2.0c：变量面板（meta.variables = flow param('key') 的唯一声明来源；GET/POST /task/variables） -->
+      <section class="card builder-vars-panel" id="builder-variables">
+        <div class="builder-vars-head">
+          <h3>变量 <span class="builder-params-sub">meta.variables · GET/POST /task/variables</span></h3>
+          <span id="builder-vars-summary" class="builder-params-chip kind">0 个变量</span>
+          <span class="muted small">flow 中的 <code>param('key')</code> 必须先在变量面板声明；识别文字变量绑定 ocr_var 素材。</span>
+          <span class="spacer"></span>
+          <button id="builder-vars-new" type="button" title="新建变量（识别文字变量或标量变量）">新建变量…</button>
+          <button id="builder-vars-refresh" type="button" title="重新读取 meta.variables">刷新</button>
+        </div>
+        <div id="builder-vars-status" class="muted small" role="status" aria-live="polite">—</div>
+        <div id="builder-vars-list" class="builder-vars-list muted">（选择任务后加载）</div>
+        <div id="builder-vars-issues" class="builder-vars-issues"></div>
       </section>
 
       <div class="builder-main">
@@ -340,8 +355,8 @@
             先选中中间的 if/loop/while 容器，再添加子动作；否则追加到根流程末尾。
           </p>
           <p class="muted small builder-params-help">
-            流程里要引用「使用端OCR文字配置项」素材的文字时，用属性面板的「插入识别文字配置项 ▾」在
-            <code>text_expr</code> / 条件表达式里写 <code>param('param_key')</code>（素材库中 ocr_var 素材的 param_key）。
+            流程里引用变量（含「识别文字变量」）时，用属性面板的「插入变量 ▾」在
+            <code>text_expr</code> / 条件表达式里写 <code>param('key')</code>（变量在构建页「变量」面板声明）。
           </p>
           <p class="muted small" id="builder-cond-help">
             <strong>条件与等待</strong>：出现 = 现在有没有；识别 = 读出文字内容。
@@ -554,6 +569,84 @@
       <button id="op-region-save" type="button">保存</button>
       <span class="spacer"></span>
       <button id="op-region-cancel" type="button">取消</button>
+    </div>
+  </dialog>
+
+  <!-- V2.0c：变量新建/编辑对话框（识别文字变量绑定 ocr_var 素材；标量变量直接表单） -->
+  <dialog id="variable-dialog" class="task-dialog variable-dialog">
+    <h3 id="variable-title">新建变量</h3>
+    <p class="muted small">
+      变量是 flow 中 <code>param('key')</code> 的唯一声明来源（meta.variables）。
+      「识别文字变量」绑定 ocr_var 素材（key/param_key、default/runtime_text 自动同步）；
+      标量变量由使用端在 Runner 配置里填值。
+    </p>
+    <label class="opt">变量来源
+      <select id="variable-source">
+        <option value="literal">标量变量（literal）</option>
+        <option value="ocr_text">识别文字变量（绑定 ocr_var 素材）</option>
+      </select>
+    </label>
+    <div id="variable-ocr-asset-row" hidden>
+      <label class="opt">绑定素材（ocr_var）
+        <select id="variable-ocr-asset"></select>
+      </label>
+    </div>
+    <div class="row variable-two-col">
+      <label class="opt">key（param 引用名）
+        <input id="variable-key" type="text" spellcheck="false" placeholder="如 group / max_rounds" />
+      </label>
+      <label class="opt">作用域 scope
+        <select id="variable-scope">
+          <option value="input">input（使用端可见）</option>
+          <option value="runtime">runtime（flow 局部，使用端不可见）</option>
+        </select>
+      </label>
+    </div>
+    <div class="row variable-two-col">
+      <label class="opt" id="variable-type-row">类型 type
+        <select id="variable-type">
+          <option value="string">文本 string</option>
+          <option value="int">整数 int</option>
+          <option value="float">小数 float</option>
+          <option value="number">数字 number</option>
+          <option value="bool">布尔 bool</option>
+        </select>
+      </label>
+      <label class="opt" id="variable-default-row">默认值 default
+        <input id="variable-default" type="text" spellcheck="false" placeholder="如 3 / true / 御魂" />
+      </label>
+    </div>
+    <div class="row variable-two-col">
+      <label class="opt" id="variable-min-row">最小值 min（数字）
+        <input id="variable-min" type="text" spellcheck="false" />
+      </label>
+      <label class="opt" id="variable-max-row">最大值 max（数字）
+        <input id="variable-max" type="text" spellcheck="false" />
+      </label>
+    </div>
+    <label class="opt" id="variable-enum-row">枚举 enum（可选，逗号分隔；布尔不支持）
+      <input id="variable-enum" type="text" spellcheck="false" placeholder="如 主号, 小号" />
+    </label>
+    <div class="row variable-two-col">
+      <label class="opt">显示名 label
+        <input id="variable-label" type="text" spellcheck="false" />
+      </label>
+      <label class="opt">分组 group
+        <input id="variable-group" type="text" spellcheck="false" placeholder="如 运行参数" />
+      </label>
+    </div>
+    <label class="opt">说明 description
+      <input id="variable-description" type="text" spellcheck="false" />
+    </label>
+    <div class="row">
+      <label class="run-opt"><input id="variable-runner-editable" type="checkbox" checked /> 使用端可改 runner_editable</label>
+      <label class="run-opt"><input id="variable-required" type="checkbox" /> 必填 required（使用端提示）</label>
+    </div>
+    <pre id="variable-error" class="muted small dialog-error"></pre>
+    <div class="row dialog-actions">
+      <button id="variable-save" type="button">保存变量</button>
+      <span class="spacer"></span>
+      <button id="variable-cancel" type="button">取消</button>
     </div>
   </dialog>
 
