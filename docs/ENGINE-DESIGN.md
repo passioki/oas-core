@@ -3176,3 +3176,42 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 - UI pure test **2146 checks / Studio 164 / Runner 158 / 0 dead / 6 nav**（+99）；`node --check` 3/3；`git diff --check` clean。
 - **新建 op/region E2E（debug 二进制）**：临时任务 `regiontest`（click_target region=nearest、drag from region=offset、long_press hold_range、curve_swipe）→ `oasd task lint` **0 errors** → publish 成功 → manifest `flow_ops = click_target.region,click_target.text_expr,curve_swipe,drag.region,long_press`。证据 `_verify\opregion-e2e-20261106\`。
 - 提交：oas-core `644249c`（code；dev=main=origin）；oas-runner `7e64156`（pin `644249c`，`cargo build` exit 0）；按用户要求只推送、未重打 release / 未 tag。
+
+### 22.62 ★★★ [11-06 09:1x→09:4x] **A 方案：region.asset（全库操作区域素材）+ 模板/集合多候选 nearest（seq 122）**
+
+> 用户确认 A：参数文字识别仍用 OCR 识别素材；**操作区域可来自整个素材库**（`region.asset`）。多个操作素材候选时，选**匹配 bbox 中心离参数 OCR 匹配行 bbox 中心最近**的候选，用其操作区域；无候选/参数文字未匹配 = 本步响亮失败。见 `OPERATION-REGION-DESIGN §7`；台账 `PENDING §E-92`；断点 `RESUME` seq 122。
+
+#### 22.62.1 flow/门禁
+
+- `OpRegion` 改为 `Asset { asset: Option<String> }` / `Nearest { asset: Option<String> }` / `Ocr` / `Offset{dx,dy,w,h}`；`region.asset` **仅 asset/nearest 允许**（trim 非空；ocr/offset 带 asset → 路径精确错误）。
+- T4 收集 `region.asset`（click_target/long_press.find 的 OCR locator、drag from/to）；T3 不受影响。
+- `SUPPORTED_FLOW_OPS` **11→13**：+`click_target.region_asset` / `drag.region_asset`（long_press 由 `long_press` marker 覆盖）；旧 Runner 拒绝新包，避免忽略 asset 几何。
+
+#### 22.62.2 多候选匹配（oas-perceive）
+
+- 新 `match_template_all` / `match_template_masked_all`：全图逐位置 NCC → 3×3 局部极大 → 阈值过滤 → 分数降序 NMS（抑制中心距 < `max(2,min(tw,th)/2)`）→ **最多 64 个**；现有 best 路径（`match_template`/masked/full）逐字节不变（ncc_equivalence 仍绿）。
+
+#### 22.62.3 runtime
+
+- `operation_candidates(id)`：模板资产按阈值+roi+polygon mask；集合逐模板成员；返回 `{rect,shape,centre,score}`。
+- `operation_region_for_asset(asset_id, region, reference, site)`：模板/集合 `asset`=best（保持历史 best 路径）、`nearest`=多候选按「匹配 bbox 中心 ↔ 参考点」距离平方最近（并列取高分）；固定 region 资产=其声明区域；OCR 资产取 click_shape/click_back/ocr_roi；未声明/无候选/无参考点 = 响亮失败（site 如 `click_target args.find[0].region.asset`）。
+- 参考点 = **参数 OCR 匹配文字行 bbox 中心**（单行 OCR 无行 bbox 时用识别 ROI 中心；inline 用 inline roi 中心）。
+- 三处接入：`click_target` OCR 分支（lines/single/inline）、`drag` OCR 端点、`long_press` OCR locator；有 `region.asset` 时操作矩形/shape 完全替代 OCR 行 bbox/素材默认区域；无 asset 或旧 flow = 行为逐字节不变（日志也仅在带 region 时附加）。
+- 采样：`adjust_plan_for_explicit_shape` 按已平移 shape 采样（B-03 语义），点击/长按/拖动落在操作区域内随机点。
+
+#### 22.62.4 UI（构建页）
+
+- 参数点击/长按素材选择对话框：**「OCR 识别素材」（仅 OCR，必需）+「操作区域素材（整个素材库，可选）」（OPTGROUP：OCR/模板/区域/集合/其他 + 无）**+ 操作区域模式；`mode=asset/nearest` 时写入 `region.asset`，无选择不写，ocr/offset 静默丢弃 asset；asset/nearest 显示「操作区域素材无匹配时本步会失败」。
+- 结构化 region 编辑器（click_target OCR / drag from|to / long_press.find）加同一「操作区域素材」下拉（读写/未知素材占位/切模式删 asset/默认删 region、保留未知字段）；保存前校验 asset 仅 asset/nearest、非空、存在于当前素材库；`regionIssues` 覆盖。
+- 新增纯函数 8 个（`regionMatchRiskText`/`regionAssetKindText`/`regionAssetGroupOf`/`chooserOperationAssetOptions`/`regionAssetFromSelector`/`regionOperationAssetText`/`regionAssetIds`/`regionWithOperationAsset`）；UI 测试 **2214 checks**（+68）。
+
+#### 22.62.5 验证
+
+- `cargo test --workspace` **841 / 0**（23 suites；perceive **11**+2 / flow **78** / runtime **186**+2 / task **122** / adapter-pc 5 / oasd 412）；debug+release OCR build exit 0（**1 warning**）。
+- UI pure test **2214 / 164 / 158 / 0 dead / 6 nav**；`node --check` 3/3；`git diff --check` clean。
+- **A 方案 E2E**：临时任务 `regionasset`（click_target region=`nearest`, asset=`返回箭头`；drag from region=`asset`, asset=`预设`；long_press region.asset；curve_swipe）→ lint **0 errors** → publish 成功 → manifest `flow_ops = click_target.region,click_target.region_asset,click_target.text_expr,curve_swipe,drag.region,drag.region_asset,long_press`（`_verify\opregion-aplan-e2e-20261106\`）。
+- 提交：oas-core `ba6813e`（code；dev=main=origin）；oas-runner `768a8b7`（pin `ba6813e`，构建 exit 0）；未重打 release / 未 tag。
+
+#### 22.62.6 风险 / 后续
+
+① 多候选仅模板/集合（region 固定、OCR 资产无多候选）；模板有 roi 时只在 roi 内搜（`nearest` 不走 best 路径的全帧 pyramid 回退）；② NMS 半径固定、候选上限 64（极端画面截断）；③ 单行 OCR 参考点退化为识别 ROI 中心；④ 手改已安装 flow 绕过发布门禁时老 Runner 仍会忽略 asset（历史已知风险）；⑤ `nearest` 每模板/成员全帧多候选 NCC 比 best 慢（1280×720 未实测）；⑥ 需要真机验收操作区域落点/多匹配选择是否符合预期。

@@ -4503,3 +4503,26 @@ Rust 后端未动（workspace 801/0 基线不变）；按用户「推送即可�
 ## C. 风险 / 后续
 
 ① 模板多候选 nearest（match_all/NMS）未做（P2）；② 单行 OCR 无行 bbox：`ocr/nearest` 退化为识别 ROI、offset 基于 ROI；③ curve_swipe 每段独立手势（App 可能视为多次滑动，设计已接受）；④ long_press 在 apps 的 Logged/ReconnectingInput 继承默认实现 → 审计记同点 swipe；⑤ UI 屏内校验依赖 `design_resolution`（缺失 fallback 1280×720）；⑥ 无真实设备 E2E（真机长按/多段曲线时序需验收）。
+
+# ★ §E-92 ★★★ [11-06 09:1x→09:4x] **A 方案：region.asset（全库操作区域素材）+ 多候选 nearest（seq 122）**
+
+> 用户确认 A：OCR 识别素材 + 操作区域素材（整个素材库，可选）；nearest 参考点=参数 OCR 匹配行 bbox 中心 ↔ 候选匹配 bbox 中心；无匹配=本步失败。实现记录 `ENGINE §22.62`；设计 `OPERATION-REGION-DESIGN §7`；断点 `RESUME` seq 122。
+
+## A. 交付
+
+| # | 项 | 结果 | 状态 |
+|---|---|---|---|
+| flow | **region.asset** | `OpRegion` 增 asset（仅 asset/nearest；解析错误路径精确）；T4 收集；flow_ops 13（+2 region_asset）；旧 Runner 拒绝 | ✅ |
+| perceive | **多候选匹配** | `match_template_all`/masked_all（NCC→3×3 局部极大→阈值→分数降序 NMS→≤64）；best 路径逐字节不变 | ✅ |
+| runtime | **操作区域解析** | `operation_candidates`/`operation_region_for_asset`（模板/集合 best/nearest；固定 region；OCR 资产）；reference=参数 OCR 行 bbox 中心；三处接入 click/drag/long_press；无候选/无参考点=响亮失败 | ✅ |
+| UI | **全库操作素材选择** | 对话框/结构化 region 编辑器「操作区域素材（全库，可选）」+ 风险提示；region.asset 读写/校验；+8 纯函数/UI 2214 checks | ✅ |
+| E2E | **regionasset 任务** | lint 0 errors → publish → flow_ops 含 click_target.region_asset/drag.region_asset；`_verify\opregion-aplan-e2e-20261106\` | ✅ |
+
+## B. 验证 / 提交
+
+- workspace **841/0**（perceive 11+2 / flow 78 / runtime 186+2 / task 122 / oasd 412）；UI **2214/164/158/0 dead/6 nav**；debug+release build exit 0（1 warning）。
+- 提交：oas-core `ba6813e`（code；dev=main=origin）；oas-runner `768a8b7`（pin `ba6813e`，构建 exit 0）；未重打 release / 未 tag。
+
+## C. 风险 / 后续
+
+① 多候选仅模板/集合；模板有 roi 时只在 roi 内搜（nearest 无 pyramid 回退）；② NMS 半径固定/候选≤64；③ 单行 OCR 参考点=识别 ROI 中心；④ 老 Runner 手改 flow 绕过门禁风险同前；⑤ nearest 全帧多候选 NCC 性能未在 1280×720 实测；⑥ **真机验收**：操作区域落点、多匹配最近选择、长按/曲线时序。
