@@ -4716,7 +4716,7 @@ esolve_asset_op_region/preview 恢复末端 self 几何；UI 文案按 self/asse
 | 批次 | 内容 | 提交 |
 |---|---|---|
 | V2.0a | Variable 模型（key/type/value_source/asset_id/default/label/description/group/runner_editable/required/scope/min/max/enum）；Meta.variables+effective_variables() 旧 params 内存导入（不写盘）+T10 warning；sync_ocr_var_variables（ocr_text 变量 key=param_key/default=runtime_text/asset_id）；T3/T7 改 input variables、T8 改目标；loader 子任务默认、run.rs 注入 ariable_defaults()+alidate_variable_values；PACKAGE_SCHEMA=2+Manifest.variables_schema+旧包响亮拒绝 | e1b816f |
-| V2.0b | GET/POST /task/variables（effective+T10；POST 结构错误 400、T3/T8 非阻断 issues、原子写+.bak、写盘无 params、保留未知顶层字段）；/task/config deprecated 别名（params 只读镜像不落盘）；Runner config GET variables / PUT 仅 
+| V2.0b | GET/POST /task/variables（effective+T10；POST 结构错误 400、T3/T8 非阻断 issues、原子写+.bak、写盘无 params、保留未知顶层字段）；/task/config deprecated 别名（params 只读镜像不落盘）；Runner config GET variables / PUT 仅
 unner_editable&&scope=input（runtime/未知/不可改 400）；sync 切 sync_ocr_var_variables+清 params（去双写）；test_action/create/publish/CLI 迁移 | d780a4b |
 | V2.0c | Studio：构建页「变量」面板（列表/新建/编辑/删除/插入表达式）+ 变量对话框（识别文字变量绑 ocr_var、param_key 只读；标量全字段）+「插入变量 ▾」替换旧插入识别文字 + 动作目标 key 集 variables 优先；Runner：配置弹窗两分节（识别文字变量 / literal 按 group，空组=通用）、隐藏 runtime/不可改、required 橙提示不阻断、PUT 只收可改键、高级 JSON 隐藏 | d780a4b |
 
