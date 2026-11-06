@@ -606,6 +606,11 @@ pub struct Server {
     /// through [`Adb`].
     #[cfg(test)]
     tap_override: Option<Arc<TapFn>>,
+    /// Test seam: fake det+rec provider for the editor OCR paths (`test_action`,
+    /// candidate indexing), so the det+rec candidate branch can be exercised
+    /// without models or the `ocr` feature. Production uses the loaded engines.
+    #[cfg(test)]
+    ocr_override: Option<Arc<OcrProviderFn>>,
     /// P0-1a test seam: pinned exchange `(enabled, dir)`. Production derives
     /// both from `config.exchange` (`Server::exchange_dir`), so tests never read
     /// or write a real exchange directory.
@@ -636,6 +641,11 @@ type LiveCaptureFn = dyn Fn() -> Result<(String, Frame), String> + Send + Sync;
 /// Test-only replacement for one live tap `(x, y) -> Result<(), String>`.
 #[cfg(test)]
 type TapFn = dyn Fn(i32, i32) -> Result<(), String> + Send + Sync;
+
+/// Test-only factory for a fake OCR provider: a fresh box is created per request,
+/// matching the production ownership model of [`Server::serve_ocr_provider`].
+#[cfg(test)]
+type OcrProviderFn = dyn Fn() -> Box<dyn oas_runtime::OcrProvider> + Send + Sync;
 
 /// One update event with provenance, shared by `GET /runner/updates` and
 /// `POST /runner/updates/install` (P0-1a local exchange + P2 update feeds).
@@ -1000,6 +1010,8 @@ impl Server {
             #[cfg(test)]
             tap_override: None,
             #[cfg(test)]
+            ocr_override: None,
+            #[cfg(test)]
             exchange_override: None,
             #[cfg(test)]
             notifications_path_override: None,
@@ -1089,6 +1101,17 @@ impl Server {
         tap: impl Fn(i32, i32) -> Result<(), String> + Send + Sync + 'static,
     ) -> Self {
         self.tap_override = Some(Arc::new(tap));
+        self
+    }
+
+    /// Test seam: inject a fake det+rec provider for the editor OCR paths (see
+    /// [`Server::ocr_override`]).
+    #[cfg(test)]
+    fn with_ocr_override(
+        mut self,
+        provider: impl Fn() -> Box<dyn oas_runtime::OcrProvider> + Send + Sync + 'static,
+    ) -> Self {
+        self.ocr_override = Some(Arc::new(provider));
         self
     }
 
@@ -3005,18 +3028,24 @@ impl Server {
     ///
     /// `None` when this build has no OCR feature (or no rec model): OCR chain
     /// nodes then fail loudly through the preview entry instead of guessing.
-    #[cfg(feature = "ocr")]
+    /// Tests inject a fake det+rec provider through [`Server::ocr_override`].
     fn serve_ocr_provider(&self) -> Option<Box<dyn oas_runtime::OcrProvider>> {
-        let rec = self.ocr.as_ref()?;
-        Some(Box::new(crate::ocr::ServeOcr {
-            rec: rec.clone(),
-            det: self.det.as_ref().cloned(),
-        }))
-    }
-
-    #[cfg(not(feature = "ocr"))]
-    fn serve_ocr_provider(&self) -> Option<Box<dyn oas_runtime::OcrProvider>> {
-        None
+        #[cfg(test)]
+        if let Some(factory) = self.ocr_override.as_ref() {
+            return Some(factory());
+        }
+        #[cfg(feature = "ocr")]
+        {
+            let rec = self.ocr.as_ref()?;
+            Some(Box::new(crate::ocr::ServeOcr {
+                rec: rec.clone(),
+                det: self.det.as_ref().cloned(),
+            }))
+        }
+        #[cfg(not(feature = "ocr"))]
+        {
+            None
+        }
     }
 
     /// `POST /input/tap` — send one tap to the live device.
@@ -4624,7 +4653,11 @@ impl Server {
     ///
     /// `index` is the stable 0-based position in `candidates`; `pass` mirrors
     /// `score >= threshold` and is `true` for every returned candidate (the list
-    /// only contains candidates that pass). `domain` names the search area that
+    /// only contains candidates that pass). Every candidate's `action_box` is
+    /// computed by the **shared** model-A helper
+    /// [`oas_runtime::self_operation_geometry`] (templates/collections pass the
+    /// winning member id), so the editor can never disagree with `test_action`
+    /// or the engine. `domain` names the search area that
     /// produced the list (`roi` = the asset's own ROI, `screen` = whole-frame
     /// fallback for a template without an ROI, `members` = one ROI per collection
     /// member) and `roi` echoes the authored `roi` (null when there is none).
@@ -4753,33 +4786,45 @@ impl Server {
             };
             oas_runtime::sort_asset_match_candidates(&mut candidates);
             let threshold = oas_runtime::asset_threshold(&assets, &id);
-            let candidates_json: Vec<serde_json::Value> = candidates
-                .iter()
-                .enumerate()
-                .map(|(index, c)| {
-                    let mut v = serde_json::json!({
-                        "index": index,
-                        "x": c.x,
-                        "y": c.y,
-                        "w": c.w,
-                        "h": c.h,
-                        "score": c.score,
-                        "pass": c.score >= threshold,
-                        "action_box": [
-                            c.action_box.x,
-                            c.action_box.y,
-                            c.action_box.w,
-                            c.action_box.h
-                        ],
-                    });
-                    if kind == "collection" {
-                        // The winning member id: harmless for a single template,
-                        // required for a collection row.
-                        v["member"] = serde_json::json!(c.member);
-                    }
-                    v
-                })
-                .collect();
+            let frame_size = (frame.width, frame.height);
+            let mut candidates_json: Vec<serde_json::Value> = Vec::with_capacity(candidates.len());
+            for (index, c) in candidates.iter().enumerate() {
+                // The candidate operation box comes from the **shared** model-A
+                // helper (`self_operation_geometry`), never a copy of the rules:
+                // templates/collections pass the winning member id (`c.member`),
+                // so the editor can never disagree with `test_action`/the engine.
+                let real = oas_types::Rect {
+                    x: c.x,
+                    y: c.y,
+                    w: c.w,
+                    h: c.h,
+                };
+                let (action_box, _shape) = match oas_runtime::self_operation_geometry(
+                    &assets,
+                    &c.member,
+                    real,
+                    Some(frame_size),
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return self.send_errors(out, 400, vec![e]),
+                };
+                let mut v = serde_json::json!({
+                    "index": index,
+                    "x": c.x,
+                    "y": c.y,
+                    "w": c.w,
+                    "h": c.h,
+                    "score": c.score,
+                    "pass": c.score >= threshold,
+                    "action_box": [action_box.x, action_box.y, action_box.w, action_box.h],
+                });
+                if kind == "collection" {
+                    // The winning member id: harmless for a single template,
+                    // required for a collection row.
+                    v["member"] = serde_json::json!(c.member);
+                }
+                candidates_json.push(v);
+            }
             let ms = t0.elapsed().as_secs_f64() * 1000.0;
             self.editor_log(&format!(
                 "asset_candidates OK task={task} id={id} kind={kind} count={} threshold={threshold:.4} elapsed_ms={ms:.1} source={frame_source}",
@@ -4827,13 +4872,16 @@ impl Server {
     }
 
     /// OCR candidate branch of [`Self::handle_asset_candidates`] (`ocr_line` /
-    /// `ocr_lines`): run the **editor-identical** det+rec path
+    /// `ocr_lines` / `ocr_var`): run the **editor-identical** det+rec path
     /// ([`crate::ocr::recognize_lines_impl`], same as `GET /lines` and the
     /// runtime provider), keep every line inside the ROI whose text matches the
-    /// asset's `ocr_text` rule and whose confidence passes the asset threshold,
-    /// and report each line's real bbox plus its operation box (declared
-    /// `action_shape` → `click_back` → the line bbox itself; OCR operation
-    /// shapes are absolute, never translated).
+    /// asset's expected text with the **strict** candidate rule
+    /// ([`filter_ocr_candidate_lines`]: normalized equality, #11) and whose
+    /// confidence passes the asset threshold, and report each line's real bbox
+    /// plus its operation box from the shared [`oas_runtime::self_operation_geometry`]
+    /// (an OCR `action_shape` follows the recognized line; a whole-screen
+    /// `ocr_var` has no authored origin and stays absolute; no shape → the line
+    /// bbox).
     ///
     /// Split out (and feature-gated) only so the non-OCR build stays free of the
     /// engine types.
@@ -4900,26 +4948,15 @@ impl Server {
             }
         };
         let threshold = oas_runtime::asset_threshold(assets, id);
-        // Expected text: an ocr_var's Studio-side text is its `runtime_text` (the
-        // synced parameter default equals it, Lead ruling 12); a plain OCR asset
-        // filters by its saved `ocr_text`; none = every detected line above the
-        // confidence threshold.
-        let expected: Option<String> = if is_ocr_var {
-            item.runtime_text.clone().filter(|t| !t.trim().is_empty())
-        } else {
-            item.ocr_text.clone().filter(|t| !t.trim().is_empty())
-        };
-        let mut lines: Vec<oas_runtime::OcrLine> = match expected.as_deref() {
-            Some(expected) => oas_runtime::matching_ocr_lines(&lines, expected, None)
-                .into_iter()
-                .filter(|line| threshold <= 0.0 || line.score >= threshold)
-                .cloned()
-                .collect(),
-            None => lines
-                .into_iter()
-                .filter(|line| threshold <= 0.0 || line.score >= threshold)
-                .collect(),
-        };
+        // Expected text (Lead ruling 12, one rule): `ocr_var` → its Studio-side
+        // `runtime_text`; a plain OCR asset → its saved `ocr_text` (batch B also
+        // allows `ocr_lines` to carry it); none = every detected line above the
+        // confidence threshold is a candidate.
+        let expected = ocr_candidate_expected_text(item);
+        // #11: editor candidates use the STRICT match (normalized equality, no
+        // 1-edit tolerance), so 「队伍2」/「队伍3」 are never offered as candidates
+        // of 「队伍1」. Runtime click/wait keep the fuzzy rule.
+        let mut lines = filter_ocr_candidate_lines(lines, expected.as_deref(), threshold);
         // Stable editor order: score desc → y asc → x asc (the order `index`
         // refers to).
         lines.sort_by(|a, b| {
@@ -4929,30 +4966,31 @@ impl Server {
                 .then(a.rect.y.cmp(&b.rect.y))
                 .then(a.rect.x.cmp(&b.rect.x))
         });
-        let fixed_box: Option<[i32; 4]> = match assets.click_shape(id) {
-            Some(shape) if shape.invert => Some([0, 0, frame.width as i32, frame.height as i32]),
-            Some(shape) => shape.bbox().map(|b| [b.x, b.y, b.w, b.h]),
-            None => assets.click_back(id).map(|b| [b.x, b.y, b.w, b.h]),
-        };
-        let candidates_json: Vec<serde_json::Value> = lines
-            .iter()
-            .enumerate()
-            .map(|(index, line)| {
-                let action =
-                    fixed_box.unwrap_or([line.rect.x, line.rect.y, line.rect.w, line.rect.h]);
-                serde_json::json!({
-                    "index": index,
-                    "x": line.rect.x,
-                    "y": line.rect.y,
-                    "w": line.rect.w,
-                    "h": line.rect.h,
-                    "text": line.text,
-                    "score": line.score,
-                    "pass": true,
-                    "action_box": action,
-                })
-            })
-            .collect();
+        // The candidate operation box comes from the **shared** model-A helper:
+        // OCR `action_shape`/`click_back` follows the recognized line
+        // (`real.topLeft - authored_roi`; a whole-screen ocr_var has no authored
+        // origin and stays absolute), and no shape → the line bbox itself. The
+        // same call feeds `test_action`/the engine, so the editor cannot disagree.
+        let frame_size = Some((frame.width, frame.height));
+        let mut candidates_json: Vec<serde_json::Value> = Vec::with_capacity(lines.len());
+        for (index, line) in lines.iter().enumerate() {
+            let (action_box, _shape) =
+                match oas_runtime::self_operation_geometry(assets, id, line.rect, frame_size) {
+                    Ok(v) => v,
+                    Err(e) => return self.send_errors(out, 400, vec![e]),
+                };
+            candidates_json.push(serde_json::json!({
+                "index": index,
+                "x": line.rect.x,
+                "y": line.rect.y,
+                "w": line.rect.w,
+                "h": line.rect.h,
+                "text": line.text,
+                "score": line.score,
+                "pass": true,
+                "action_box": [action_box.x, action_box.y, action_box.w, action_box.h],
+            }));
+        }
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         self.editor_log(&format!(
             "asset_candidates OK task={task} id={id} kind={kind} count={} threshold={threshold:.4} elapsed_ms={ms:.1} source={frame_source}",
@@ -5812,7 +5850,7 @@ impl Server {
     }
 
     /// v1.1 asset CRUD: `POST /task/asset/update` body
-    /// `{task,id,roi?,threshold?,action_shape?,keep_action_shape?,
+    /// `{task,id,roi?,threshold?,action_shape?,keep_action_shape?,polygon?,
     ///   op_region?,runtime_text?,label?,param_key?}`.
     ///
     /// P0b (2026-11-06 事项6): the operation region is `action_shape` alone; the
@@ -5823,6 +5861,12 @@ impl Server {
     /// `param_key` is read-only after creation and `op_region` updates the chain
     /// (`null` clears it back to `self`). A successful update re-syncs the
     /// derived `meta.params` rows of every affected task.
+    ///
+    /// 2026-11-06 批次B (#6/#10): `polygon` is a present-style tri-state
+    /// (`absent` = unchanged, `null` = clear, `[{x,y},...]` = set); the same
+    /// validation as the save path runs inside [`oas_task::TaskBundle`]
+    /// (`update_asset_meta_v3`), and for non-template assets the recognition
+    /// ROI is re-derived from the polygon bbox so mask and ROI cannot disagree.
     fn handle_asset_update(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
         let v: serde_json::Value = match serde_json::from_slice(body) {
             Ok(v) => v,
@@ -5894,6 +5938,14 @@ impl Server {
                 }
             },
         };
+        // 2026-11-06 批次B (#6/#10): recognition polygon, present-style tri-state
+        // (absent = unchanged / null = clear / array = set). Geometry rules
+        // (>= 3 points, no self-intersection, inside the frame, template ROI must
+        // stay equal to the polygon bbox) are enforced by `update_asset_meta_v3`.
+        let polygon = match json_present_polygon_field(&v, "polygon") {
+            Ok(p) => p,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
         // P0b: `action_source` from an old body is ignored (the deprecated
         // compat field has no effect); `action_shape` alone decides the region.
         // 2026-11-06 参数→素材: the new ocr_var fields + op_region chain.
@@ -5905,12 +5957,13 @@ impl Server {
             Ok(op) => op,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
-        match b.update_asset_meta_v2(
+        match b.update_asset_meta_v3(
             id,
             roi,
             action_shape,
             threshold,
             keep_action_shape,
+            polygon,
             op_region,
             runtime_text,
             label,
@@ -8058,6 +8111,63 @@ fn json_ocr_var_fields(
 }
 
 // ---------------------------------------------------------------------------
+// Editor candidate API helpers (#3 / #11, 2026-11-06 acceptance)
+// ---------------------------------------------------------------------------
+
+/// Expected text the editor candidate API filters the OCR branch by
+/// (2026-11-06 参数→素材, Lead ruling 12: one expected-text rule):
+///
+/// * `ocr_var` → its Studio-side default text `runtime_text` (the synced
+///   derived-parameter default equals it);
+/// * every other OCR kind → the saved `ocr_text` (the expected line text; batch B
+///   lets `ocr_lines` carry it too, not just `ocr_line`);
+/// * blank/absent → `None` = no text filter (every detected line above the
+///   confidence threshold is a candidate, the plain `ocr_lines` behaviour).
+fn ocr_candidate_expected_text(item: &oas_task::AssetDecl) -> Option<String> {
+    let raw = if item.kind == "ocr_var" {
+        item.runtime_text.as_deref()
+    } else {
+        item.ocr_text.as_deref()
+    };
+    raw.map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+/// Filter the det+rec lines of one OCR asset down to the editor candidates.
+///
+/// 2026-11-06 acceptance **#11**: the editor candidate API uses the **strict**
+/// matching rule ([`oas_runtime::matching_ocr_lines_strict`]: normalized
+/// equality, no 1-edit tolerance), so 「队伍1」 never offers 「队伍2」/「队伍3」
+/// as a candidate and 「召唤」 does not offer 「召喚」. Runtime click/wait keep the
+/// fuzzy rule — this helper only shapes the candidate list (item 3: the
+/// candidate list, the `op_region` pick and `test_action` must agree; #11 makes
+/// the candidate list the strict half).
+///
+/// Without expected text every detected line at/above `min` stays a candidate (a
+/// plain OCR asset without `ocr_text`). `min <= 0.0` means "no confidence
+/// filter" (the asset threshold is normalized the same way elsewhere). Detection
+/// order is preserved; the caller applies the stable editor sort.
+#[cfg_attr(not(feature = "ocr"), allow(dead_code))]
+fn filter_ocr_candidate_lines(
+    lines: Vec<oas_runtime::OcrLine>,
+    expected: Option<&str>,
+    min: f32,
+) -> Vec<oas_runtime::OcrLine> {
+    match expected {
+        Some(expected) => oas_runtime::matching_ocr_lines_strict(&lines, expected, None)
+            .into_iter()
+            .filter(|line| min <= 0.0 || line.score >= min)
+            .cloned()
+            .collect(),
+        None => lines
+            .into_iter()
+            .filter(|line| min <= 0.0 || line.score >= min)
+            .collect(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // B-T3b: editor dry-run adapters for the runtime preview entry
 // ---------------------------------------------------------------------------
 
@@ -8103,7 +8213,9 @@ fn op_region_chain_listing(
     let mut current = op.clone();
     for _ in 0..=oas_task::MAX_OP_REGION_DEPTH {
         match &current {
-            OpRegion::SelfRegion | OpRegion::Offset { .. } => {
+            // 批次B (#4, 模型A): the asset-level `offset` mode was removed; the
+            // remaining terminal modes are `self` and (below) `asset` chains.
+            OpRegion::SelfRegion => {
                 chain.push(serde_json::json!({
                     "asset": current_owner,
                     "mode": current.mode_str(),
@@ -14482,10 +14594,20 @@ mod tests {
     #[test]
     fn replace_inherits_absent_ocr_var_operation_fields() {
         let (_td, server, tasks_dir, frame_id) = acceptance9_server("a9-inherit-ocr-var");
+        // 批次B (#4): the asset-level `offset` mode is gone; a non-default chain
+        // is now a reference to another recognizable asset (here a second ocr_var
+        // whose own op_region is the default `self`).
+        save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "O_other", "kind": "ocr_var",
+                "runtime_text": "其他", "param_key": "other", "positions": [frame_id],
+            }),
+        );
         // A full-screen ocr_var (`roi` absent = whole-screen OCR, the default
         // initial state) that owns an operation chain, an operation shape and a
         // custom OCR confidence threshold.
-        let op_region = serde_json::json!({"mode": "offset", "offset": [10, 5, 20, 10]});
+        let op_region = serde_json::json!({"mode": "asset", "asset": "O_other"});
         let action_shape = serde_json::json!({"kind": "rect", "roi": [0, 0, 30, 20], "invert": false});
         let v = save_asset_route(
             &server,
@@ -14544,6 +14666,14 @@ mod tests {
     #[test]
     fn replace_with_explicit_null_clears_the_inherited_fields() {
         let (_td, server, tasks_dir, frame_id) = acceptance9_server("a9-null-clears");
+        // Chain node for a non-default op_region (`offset` was removed in 批次B).
+        save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "O_other", "kind": "ocr_var",
+                "runtime_text": "其他", "param_key": "other", "positions": [frame_id],
+            }),
+        );
         let v = save_asset_route(
             &server,
             serde_json::json!({
@@ -14551,12 +14681,12 @@ mod tests {
                 "runtime_text": "御魂", "param_key": "group",
                 "label": "预设分组",
                 "positions": [frame_id],
-                "op_region": {"mode": "offset", "offset": [10, 5, 20, 10]},
+                "op_region": {"mode": "asset", "asset": "O_other"},
                 "action_shape": {"kind": "rect", "roi": [0, 0, 30, 20], "invert": false},
                 "threshold": 0.7,
             }),
         );
-        assert_eq!(v["item"]["op_region"]["mode"], "offset", "{v}");
+        assert_eq!(v["item"]["op_region"]["mode"], "asset", "{v}");
 
         // An explicit JSON null is "clear it", not "inherit".
         let v = save_asset_route(
@@ -14595,7 +14725,16 @@ mod tests {
             .with_assets_dir(td.path().join("assets"));
         make_task(&tasks_dir, "t1");
         let frame_id = upload_test_frame(&server, &Frame::new(1280, 720, vec![200u8; 1280 * 720 * 4]));
-        let op_region = serde_json::json!({"mode": "offset", "offset": [5, 5, 60, 50]});
+        // 批次B (#4): non-default chain = a reference to another recognizable
+        // asset (`offset` was removed); the node keeps the default `self`.
+        save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "O_chain", "kind": "ocr_var",
+                "runtime_text": "链节点", "param_key": "chain", "positions": [frame_id],
+            }),
+        );
+        let op_region = serde_json::json!({"mode": "asset", "asset": "O_chain"});
         let action_shape = serde_json::json!({"kind": "rect", "roi": [95, 95, 50, 40], "invert": false});
         let v = save_asset_route(
             &server,
@@ -14938,24 +15077,41 @@ mod tests {
             .with_assets_dir(td.path().join("assets"));
         make_task(&tasks_dir, "t1");
         let frame_id = upload_test_frame(&server, &Frame::new(64, 48, vec![3u8; 64 * 48 * 4]));
-        // Fixed region node.
+        // A pure `region` is a fixed operation area with no recognition: batch B
+        // model A rejects it as a chain node (loud 400, nothing written).
         let region = serde_json::json!({
             "task": "t1", "id": "R_fixed", "kind": "region",
             "roi": [10, 10, 20, 10], "positions": [frame_id],
+        });
+        save_asset_route(&server, region);
+        let region_chain = serde_json::json!({
+            "task": "t1", "id": "O_region_chain", "kind": "ocr_var",
+            "runtime_text": "甲", "param_key": "region_chain",
+            "positions": [frame_id],
+            "op_region": {"mode": "asset", "asset": "R_fixed"},
         });
         let (status, out) = post_route(
             &server,
             "/task/save_asset",
             "application/json",
-            region.to_string().as_bytes(),
+            region_chain.to_string().as_bytes(),
         );
-        assert!(status.contains("200"), "{status} {out}");
-        // ocr_var whose chain ends in that fixed region.
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("cannot be an op_region chain node"), "{out}");
+        // A recognizable gate (a second ocr_var, default `self`) is a valid node.
+        save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "O_node", "kind": "ocr_var",
+                "runtime_text": "节点", "param_key": "node_text", "positions": [frame_id],
+            }),
+        );
+        // ocr_var whose chain references that node.
         let var = serde_json::json!({
             "task": "t1", "id": "O_group", "kind": "ocr_var",
             "runtime_text": "御魂", "param_key": "group",
             "positions": [frame_id],
-            "op_region": {"mode": "asset", "asset": "R_fixed", "pick": "score"},
+            "op_region": {"mode": "asset", "asset": "O_node", "pick": "score"},
         });
         let (status, out) = post_route(
             &server,
@@ -14971,7 +15127,7 @@ mod tests {
             .iter()
             .find(|a| a["id"] == "O_group")
             .expect("ocr_var");
-        assert_eq!(item["op_region"]["asset"], "R_fixed", "{assets}");
+        assert_eq!(item["op_region"]["asset"], "O_node", "{assets}");
         // A dangling chain reference is a loud 400 and nothing is written.
         let bad = serde_json::json!({
             "task": "t1", "id": "O_bad", "kind": "ocr_var",
@@ -14988,7 +15144,7 @@ mod tests {
         assert!(status.contains("400"), "{status} {out}");
         assert!(out.contains("not a declared asset"), "{out}");
         // Deleting the referenced node is blocked while the chain uses it.
-        let del = serde_json::json!({"task": "t1", "id": "R_fixed"});
+        let del = serde_json::json!({"task": "t1", "id": "O_node"});
         let (status, out) = post_route(
             &server,
             "/task/asset/delete",
@@ -15012,9 +15168,9 @@ mod tests {
             "task": "t1",
             "assets": [
                 {"id":"O_a","kind":"ocr_var","runtime_text":"甲","param_key":"pa",
-                 "positions":[frame_id],"op_region":{"mode":"offset","offset":[1,2,30,10]}},
+                 "positions":[frame_id]},
                 {"id":"O_b","kind":"ocr_var","runtime_text":"乙","param_key":"pb",
-                 "positions":[frame_id]}
+                 "positions":[frame_id],"op_region":{"mode":"asset","asset":"O_a"}}
             ]
         });
         let (status, out) = post_route(
@@ -15026,8 +15182,11 @@ mod tests {
         assert!(status.contains("200"), "{status} {out}");
         let v: serde_json::Value = serde_json::from_str(&out).expect("batch json");
         assert_eq!(v["saved"][0]["runtime_text"], "甲", "{out}");
-        assert_eq!(v["saved"][0]["op_region"]["mode"], "offset", "{out}");
+        assert!(v["saved"][0].get("op_region").is_none(), "{out}");
         assert_eq!(v["saved"][1]["param_key"], "pb", "{out}");
+        // 批次B (#4): non-default chain is an asset reference (`offset` removed).
+        assert_eq!(v["saved"][1]["op_region"]["mode"], "asset", "{out}");
+        assert_eq!(v["saved"][1]["op_region"]["asset"], "O_a", "{out}");
         // Both keys are derived once a flow uses the assets (key conflict check
         // is separate; here just verify the persisted fields round-trip).
         let assets = get_json_route(&server, "/task/assets?task=t1");
@@ -15077,27 +15236,37 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Global-asset fixture for the B-T3b endpoints: one 64x48 textured frame,
-    /// template `M` matching at `(20,20)` (8x8), fixed region `R`, optionally the
-    /// chain `M -> R` and an `ocr_var` `O_full` with **no ROI** (whole screen).
+    /// template `M` matching at `(20,20)` (8x8), a **copy** template `T` (same
+    /// pixels/Gates: batch B model A needs a recognizable chain node — a `region`
+    /// can no longer be one), fixed region `R` (region *target*), optionally the
+    /// chain `M -> T` and an `ocr_var` `O_full` with **no ROI** (whole screen).
     fn test_action_fixture(td: &Path, chained: bool, with_ocr_var: bool) -> Server {
         let frame = collection_frame();
         let tpl = crop_frame(&frame, 20, 20, 8, 8);
         let assets_dir = td.join("assets");
         std::fs::create_dir_all(assets_dir.join("images")).expect("assets images dir");
-        std::fs::write(
-            assets_dir.join("images/a001.png"),
-            oas_codec::encode_png(&tpl).expect("template png"),
-        )
-        .expect("write template png");
+        for name in ["images/a001.png", "images/a002.png"] {
+            std::fs::write(
+                assets_dir.join(name),
+                oas_codec::encode_png(&tpl).expect("template png"),
+            )
+            .expect("write template png");
+        }
         let mut member = serde_json::json!({
             "id":"M","kind":"template","file":"images/a001.png",
             "roi":[0,0,64,48],"threshold":0.9,"positions":[1]
         });
         if chained {
-            member["op_region"] = serde_json::json!({"mode":"asset","asset":"R"});
+            // 批次B (#4 model A): chain nodes are recognition gates; `T` is a
+            // template copy of `M` (recognizable, no `op_region` of its own).
+            member["op_region"] = serde_json::json!({"mode":"asset","asset":"T"});
         }
         let mut items = vec![
             member,
+            serde_json::json!({
+                "id":"T","kind":"template","file":"images/a002.png",
+                "roi":[0,0,64,48],"threshold":0.9,"positions":[1]
+            }),
             serde_json::json!({"id":"R","kind":"region","roi":[5,5,10,10],"positions":[1]}),
         ];
         if with_ocr_var {
@@ -15175,21 +15344,29 @@ mod tests {
     }
 
     #[test]
-    fn test_action_dry_follows_the_op_region_chain_into_the_fixed_region() {
+    fn test_action_dry_follows_the_op_region_chain_into_the_chain_node() {
         let td = TempDir::new("t3b-test-action-chain");
         let server = test_action_fixture(td.path(), true, false);
         let (status, v) =
             post_test_action(&server, serde_json::json!({"id":"M","gesture":"click"}));
         assert!(status.contains("200"), "{status} {v}");
-        assert_eq!(v["action_box"], serde_json::json!([5, 5, 10, 10]), "{v}");
+        // 批次B (#4 model A): the chain is only a recognition gate; the final
+        // action box is the ROOT asset's own self box. The fixture's gate `T` is a
+        // pixel copy of `M`, so the box is identical under either model.
+        assert_eq!(v["action_box"], v["real_rect"], "{v}");
         assert_eq!(v["chain_depth"], 2, "{v}");
         assert_eq!(v["steps"][0]["asset"], "M", "{v}");
         assert_eq!(v["steps"][0]["mode"], "asset", "{v}");
-        assert_eq!(v["steps"][1]["asset"], "R", "{v}");
-        assert_eq!(v["steps"][1]["mode"], "region", "{v}");
+        assert_eq!(v["steps"][1]["asset"], "T", "{v}");
+        let rect = v["real_rect"].as_array().expect("real rect");
+        let x0 = rect[0].as_i64().expect("x") as i32;
+        let y0 = rect[1].as_i64().expect("y") as i32;
         let px = v["point"]["x"].as_i64().expect("x") as i32;
         let py = v["point"]["y"].as_i64().expect("y") as i32;
-        assert!((5..15).contains(&px) && (5..15).contains(&py), "{v}");
+        assert!(
+            (x0..x0 + 8).contains(&px) && (y0..y0 + 8).contains(&py),
+            "{v}"
+        );
     }
 
     #[test]
@@ -15269,7 +15446,29 @@ mod tests {
     fn validate_op_region_is_the_server_side_chain_authority() {
         let td = TempDir::new("t3b-validate");
         let server = test_action_fixture(td.path(), false, false);
-        // Valid `asset` chain: chain listing + depth.
+        // Valid `asset` chain: a recognizable template gate (`T`) with its own
+        // default `self`; chain listing + depth.
+        let (status, out) = post_route(
+            &server,
+            "/task/asset/validate_op_region",
+            "application/json",
+            serde_json::json!({
+                "id":"M",
+                "op_region":{"mode":"asset","asset":"T"}
+            })
+            .to_string()
+            .as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("validate json");
+        assert_eq!(v["ok"], true, "{out}");
+        assert_eq!(v["depth"], 2, "{out}");
+        assert_eq!(v["chain"][0]["asset"], "M", "{out}");
+        assert_eq!(v["chain"][0]["mode"], "asset", "{out}");
+        assert_eq!(v["chain"][1]["asset"], "T", "{out}");
+        assert_eq!(v["chain"][1]["mode"], "self", "{out}");
+        // 批次B (#4 model A): a `region` is a fixed operation area with no
+        // recognition, so it cannot be a chain node any more — loud, structured 400.
         let (status, out) = post_route(
             &server,
             "/task/asset/validate_op_region",
@@ -15281,27 +15480,19 @@ mod tests {
             .to_string()
             .as_bytes(),
         );
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("cannot be an op_region chain node"), "{out}");
+        // Valid terminal mode: `self` (批次B #4 removed the asset-level `offset`
+        // mode; the only other terminal shape is an `asset` chain, covered above).
+        let (status, out) = post_route(
+            &server,
+            "/task/asset/validate_op_region",
+            "application/json",
+            serde_json::json!({"id":"M","op_region":{"mode":"self"}})
+                .to_string()
+                .as_bytes(),
+        );
         assert!(status.contains("200"), "{status} {out}");
-        let v: serde_json::Value = serde_json::from_str(&out).expect("validate json");
-        assert_eq!(v["ok"], true, "{out}");
-        assert_eq!(v["depth"], 2, "{out}");
-        assert_eq!(v["chain"][0]["asset"], "M", "{out}");
-        assert_eq!(v["chain"][0]["mode"], "asset", "{out}");
-        assert_eq!(v["chain"][1]["asset"], "R", "{out}");
-        assert_eq!(v["chain"][1]["mode"], "region", "{out}");
-        // Valid terminal modes.
-        for op in [
-            serde_json::json!({"mode":"self"}),
-            serde_json::json!({"mode":"offset","offset":[1,2,3,4]}),
-        ] {
-            let (status, out) = post_route(
-                &server,
-                "/task/asset/validate_op_region",
-                "application/json",
-                serde_json::json!({"id":"M","op_region":op}).to_string().as_bytes(),
-            );
-            assert!(status.contains("200"), "{status} {out}");
-        }
         // Dangling node: structured `{path, msg}` 400.
         let (status, out) = post_route(
             &server,
@@ -15344,8 +15535,10 @@ mod tests {
             assets_dir.join("assets.json"),
             r#"{"schema_version":1,"design_resolution":[64,48],"items":[
                 {"id":"A","kind":"ocr_line","roi":[0,0,10,10],
+                 "ocr_mode":"lines","ocr_text":"A文本",
                  "op_region":{"mode":"asset","asset":"B"}},
-                {"id":"B","kind":"ocr_line","roi":[0,10,10,10]}
+                {"id":"B","kind":"ocr_line","roi":[0,10,10,10],
+                 "ocr_mode":"lines","ocr_text":"B文本"}
             ],"collections":[]}"#,
         )
         .expect("assets json");
@@ -15377,6 +15570,365 @@ mod tests {
         let (status, out) = get_route(&server, "/task/asset/candidates?id=O_full");
         assert!(status.contains("501"), "{status} {out}");
         assert!(!out.contains("has no roi"), "{out}");
+    }
+
+    // -----------------------------------------------------------------------
+    // 批次B (#3/#11): editor candidate text rule — strict match + expected text
+    // -----------------------------------------------------------------------
+
+    fn ocr_line(rect: [i32; 4], text: &str, score: f32) -> oas_runtime::OcrLine {
+        oas_runtime::OcrLine {
+            rect: oas_types::Rect {
+                x: rect[0],
+                y: rect[1],
+                w: rect[2],
+                h: rect[3],
+            },
+            text: text.to_string(),
+            score,
+        }
+    }
+
+    fn candidate_texts(lines: &[oas_runtime::OcrLine]) -> Vec<&str> {
+        lines.iter().map(|line| line.text.as_str()).collect()
+    }
+
+    #[test]
+    fn candidate_ocr_filter_uses_the_strict_match_rule() {
+        // #11: 「队伍1」 must never offer 「队伍2」/「队伍3」/「队伍12」 as a
+        // candidate, even though the runtime's fuzzy click/wait rule (1 edit)
+        // would accept them.
+        let lines = vec![
+            ocr_line([10, 10, 40, 12], "队伍1", 0.90),
+            ocr_line([10, 30, 40, 12], "队伍2", 0.99),
+            ocr_line([10, 50, 40, 12], "队伍3", 0.97),
+            ocr_line([10, 70, 40, 12], "队伍12", 0.96),
+            // Normalized-equal variants ARE the same text: full-width digit /
+            // inner whitespace are formatting, not a different line.
+            ocr_line([10, 90, 40, 12], "队伍１", 0.91),
+            ocr_line([10, 110, 40, 12], " 队伍 1 ", 0.89),
+            // A CJK variant glyph is not the same normalized text, so the strict
+            // candidate rule rejects it (the fuzzy runtime rule accepts 1 edit).
+            ocr_line([10, 130, 40, 12], "召喚", 0.95),
+        ];
+        let filtered = filter_ocr_candidate_lines(lines.clone(), Some("队伍1"), 0.0);
+        assert_eq!(
+            candidate_texts(&filtered),
+            vec!["队伍1", "队伍１", " 队伍 1 "],
+            "strict candidates: only the same normalized text"
+        );
+        // The confidence threshold still applies on top of the text filter.
+        let filtered = filter_ocr_candidate_lines(lines.clone(), Some("队伍1"), 0.90);
+        assert_eq!(candidate_texts(&filtered), vec!["队伍1", "队伍１"]);
+        // No expected text (plain OCR asset without `ocr_text`): every detected
+        // line at/above the threshold stays a candidate, detection order kept.
+        let all = filter_ocr_candidate_lines(lines, None, 0.90);
+        assert_eq!(all.len(), 6, "{all:?}");
+        assert_eq!(candidate_texts(&all)[0], "队伍1");
+        // No line matches the expected text → empty candidate list (the caller
+        // then reports a loud step failure; never a fuzzy fallback).
+        assert!(filter_ocr_candidate_lines(
+            vec![ocr_line([0, 0, 10, 10], "开始", 0.9)],
+            Some("结束"),
+            0.0
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn candidate_expected_text_follows_the_asset_kind() {
+        // ocr_var: the Studio-side default text (`runtime_text`), trimmed; blank =
+        // no text filter (every detected line is a candidate).
+        let mut var = oas_task::AssetDecl::ocr_var("O_full", "group", "御魂", None);
+        assert_eq!(ocr_candidate_expected_text(&var).as_deref(), Some("御魂"));
+        var.runtime_text = Some("  结界  ".to_string());
+        assert_eq!(
+            ocr_candidate_expected_text(&var).as_deref(),
+            Some("结界"),
+            "runtime_text is trimmed"
+        );
+        var.runtime_text = Some("   ".to_string());
+        assert_eq!(ocr_candidate_expected_text(&var), None);
+        // Plain OCR asset: its saved expected text (`ocr_text`), even when the
+        // asset is an `ocr_lines` row (batch B opens that field up).
+        let mut plain = oas_task::AssetDecl::template("I_line", [0, 0, 10, 10]);
+        plain.kind = "ocr_lines".to_string();
+        plain.ocr_text = Some("开始".to_string());
+        assert_eq!(ocr_candidate_expected_text(&plain).as_deref(), Some("开始"));
+        plain.ocr_text = Some(" ".to_string());
+        assert_eq!(ocr_candidate_expected_text(&plain), None);
+    }
+
+    /// #6/#10 endpoint contract: `POST /task/asset/update` accepts a present-style
+    /// recognition `polygon` (absent = unchanged, `null` = clear, array = set),
+    /// validated by the same geometry rules as the save path. For OCR/ocr_var the
+    /// recognition ROI is re-derived from the polygon bbox (mask and ROI can never
+    /// disagree); a template only accepts a mask whose bbox equals its current
+    /// ROI (moving it needs 覆盖保存/re-crop).
+    #[test]
+    fn asset_update_sets_clears_and_validates_the_recognition_polygon() {
+        let td = TempDir::new("b-polygon-update");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path())
+            .with_frames_dir(td.path().join("frames"))
+            .with_assets_dir(td.path().join("assets"));
+        make_task(&tasks_dir, "t1");
+        // Template saves compare the frame against the bundle design resolution.
+        let frame_id = upload_test_frame(&server, &Frame::new(1280, 720, vec![3u8; 1280 * 720 * 4]));
+        let assets_path = tasks_dir.join("t1").join("assets.json");
+        let update = |body: serde_json::Value| {
+            let (status, out) = post_route(
+                &server,
+                "/task/asset/update",
+                "application/json",
+                body.to_string().as_bytes(),
+            );
+            (status, out)
+        };
+        let saved_asset = |id: &str| -> serde_json::Value {
+            read_json(&assets_path)["items"]
+                .as_array()
+                .expect("items")
+                .iter()
+                .find(|a| a["id"] == id)
+                .cloned()
+                .unwrap_or_else(|| panic!("asset `{id}` missing"))
+        };
+
+        // --- OCR row: set → absent keeps → explicit null clears -----------------
+        save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "行一", "kind": "ocr_line",
+                "roi": [10, 10, 30, 12], "positions": [frame_id],
+                "ocr_mode": "lines", "ocr_text": "开始",
+            }),
+        );
+        let ocr_poly = serde_json::json!([[12, 12], [40, 12], [40, 30], [12, 30]]);
+        let (status, out) = update(serde_json::json!({"task":"t1","id":"行一","polygon":ocr_poly}));
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("set json");
+        assert_eq!(v["ok"], true, "{out}");
+        assert_eq!(v["item"]["polygon"], ocr_poly, "{out}");
+        assert_eq!(
+            v["item"]["roi"],
+            serde_json::json!([12, 12, 29, 19]),
+            "OCR roi is re-derived from the polygon bbox: {out}"
+        );
+        // Absent = unchanged: a threshold-only edit must keep the mask.
+        let (status, out) = update(serde_json::json!({"task":"t1","id":"行一","threshold":0.5}));
+        assert!(status.contains("200"), "{status} {out}");
+        assert_eq!(saved_asset("行一")["polygon"], ocr_poly, "{out}");
+        // Explicit null clears it.
+        let (status, out) = update(
+            serde_json::json!({"task":"t1","id":"行一","polygon":serde_json::Value::Null}),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let cleared: serde_json::Value = serde_json::from_str(&out).expect("clear json");
+        assert!(cleared["item"].get("polygon").is_none(), "clear echo: {out}");
+        assert!(saved_asset("行一").get("polygon").is_none(), "persisted clear");
+        // Invalid polygons are loud 400s and write nothing.
+        for bad in [
+            serde_json::json!([[1, 1], [20, 1]]),                            // < 3 points
+            serde_json::json!([[1, 1], [20, 1], [1, 1]]),                    // repeated vertex
+            serde_json::json!([[2000, 2000], [2100, 2000], [2100, 2100]]),   // outside the frame
+            serde_json::json!([[0, 0], [30, 30], [30, 0], [0, 30]]),         // self-intersecting
+        ] {
+            let (status, out) = update(serde_json::json!({"task":"t1","id":"行一","polygon":bad}));
+            assert!(status.contains("400"), "{bad} => {status} {out}");
+            assert!(out.contains("polygon"), "{out}");
+        }
+        assert!(
+            saved_asset("行一").get("polygon").is_none(),
+            "rejected polygons must not be persisted"
+        );
+
+        // --- template: bbox must equal the existing ROI ------------------------
+        save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "I_button", "kind": "template",
+                "roi": [10, 10, 20, 10], "positions": [frame_id],
+            }),
+        );
+        // This mask's bbox is exactly [10,10,20,10] (inclusive pixel bbox).
+        let tpl_poly = serde_json::json!([[10, 10], [29, 10], [29, 19], [10, 19]]);
+        let (status, out) = update(serde_json::json!({"task":"t1","id":"I_button","polygon":tpl_poly}));
+        assert!(status.contains("200"), "{status} {out}");
+        assert_eq!(
+            saved_asset("I_button")["polygon"],
+            tpl_poly,
+            "template polygon set"
+        );
+        // A polygon that would move the recognition box needs a full overwrite.
+        let (status, out) = update(serde_json::json!({
+            "task":"t1","id":"I_button",
+            "polygon":[[12, 12], [40, 12], [40, 30], [12, 30]],
+        }));
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("must keep the existing ROI"), "{out}");
+        // Clearing the mask keeps the template ROI untouched.
+        let (status, _out) = update(
+            serde_json::json!({"task":"t1","id":"I_button","polygon":serde_json::Value::Null}),
+        );
+        assert!(status.contains("200"), "{status} {_out}");
+        let tpl = saved_asset("I_button");
+        assert!(tpl.get("polygon").is_none(), "{tpl}");
+        assert_eq!(tpl["roi"], serde_json::json!([10, 10, 20, 10]), "{tpl}");
+
+        // --- ocr_var: whole-screen initially, polygon gives it a mask/ROI ------
+        save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "O_full", "kind": "ocr_var",
+                "runtime_text": "御魂", "param_key": "group", "positions": [frame_id],
+            }),
+        );
+        let var_poly = serde_json::json!([[5, 5], [20, 5], [20, 15], [5, 15]]);
+        let (status, out) = update(serde_json::json!({"task":"t1","id":"O_full","polygon":var_poly}));
+        assert!(status.contains("200"), "{status} {out}");
+        let var = saved_asset("O_full");
+        assert_eq!(var["polygon"], var_poly, "{var}");
+        assert_eq!(
+            var["roi"],
+            serde_json::json!([5, 5, 16, 11]),
+            "ocr_var roi follows the mask bbox: {var}"
+        );
+
+        // --- region: no recognition polygon at all -----------------------------
+        save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "R_area", "kind": "region",
+                "roi": [5, 5, 10, 10], "positions": [frame_id],
+            }),
+        );
+        let (status, out) = update(serde_json::json!({
+            "task":"t1","id":"R_area","polygon":var_poly,
+        }));
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("no recognition polygon"), "{out}");
+    }
+
+    /// Fake det+rec provider for the editor candidate-index test: the default
+    /// build has no models, so the test seam returns fixed lines for any ROI.
+    struct FakeOcrLines {
+        lines: Vec<oas_runtime::OcrLine>,
+    }
+
+    impl oas_runtime::OcrProvider for FakeOcrLines {
+        fn recognize(
+            &mut self,
+            _frame: &Frame,
+            _roi: oas_types::Rect,
+        ) -> Result<(String, f32), String> {
+            let line = self
+                .lines
+                .first()
+                .cloned()
+                .ok_or_else(|| "fake OCR: no line".to_string())?;
+            Ok((line.text, line.score))
+        }
+
+        fn recognize_lines(
+            &mut self,
+            _frame: &Frame,
+            _roi: oas_types::Rect,
+        ) -> Result<Vec<oas_runtime::OcrLine>, String> {
+            Ok(self.lines.clone())
+        }
+    }
+
+    #[test]
+    fn test_action_candidate_index_selects_a_det_rec_candidate_of_a_plain_ocr_row() {
+        // 批次B (#3): a plain `ocr_line` root must expose the SAME det+rec
+        // multi-candidate list as `GET /task/asset/candidates`, and
+        // `candidate_index >= 1` must be selectable (the historical single-line
+        // path only ever read one crop, so index 1 was impossible).
+        let td = TempDir::new("b-candidate-index-ocr");
+        let tasks_dir = td.path().join("tasks");
+        let server = server_with_tasks(td.path())
+            .with_frames_dir(td.path().join("frames"))
+            .with_assets_dir(td.path().join("assets"));
+        make_task(&tasks_dir, "t1");
+        let frame_id = upload_test_frame(&server, &Frame::new(64, 48, vec![9u8; 64 * 48 * 4]));
+        save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "行一", "kind": "ocr_line",
+                "roi": [0, 0, 64, 48], "positions": [frame_id],
+                "ocr_mode": "lines", "ocr_text": "开始",
+            }),
+        );
+        let lines = vec![
+            ocr_line([10, 10, 20, 10], "开始", 0.90),
+            ocr_line([10, 40, 20, 10], "开始", 0.80),
+            // Different text: filtered out by the saved expected text, so the
+            // candidate list has 2 entries, not 3.
+            ocr_line([10, 30, 20, 10], "结束", 0.99),
+        ];
+        let server =
+            server.with_ocr_override(move || Box::new(FakeOcrLines { lines: lines.clone() }));
+        // index 1 = the lower-score matching line (order: score desc → y → x).
+        let (status, v) = post_test_action(
+            &server,
+            serde_json::json!({"task":"t1","id":"行一","candidate_index":1}),
+        );
+        assert!(status.contains("200"), "{status} {v}");
+        assert_eq!(v["real_rect"], serde_json::json!([10, 40, 20, 10]), "{v}");
+        assert_eq!(v["action_box"], serde_json::json!([10, 40, 20, 10]), "{v}");
+        assert_eq!(v["chain_depth"], 1, "{v}");
+        assert_eq!(v["steps"][0]["text"], "开始", "{v}");
+        // index 0 = the higher-score occurrence.
+        let (status, v) = post_test_action(
+            &server,
+            serde_json::json!({"task":"t1","id":"行一","candidate_index":0}),
+        );
+        assert!(status.contains("200"), "{status} {v}");
+        assert_eq!(v["real_rect"], serde_json::json!([10, 10, 20, 10]), "{v}");
+        // The expected text keeps the list at 2 candidates → index 2 is loud.
+        let (status, v) = post_test_action(
+            &server,
+            serde_json::json!({"task":"t1","id":"行一","candidate_index":2}),
+        );
+        assert!(status.contains("400"), "{status} {v}");
+        assert!(
+            v["errors"][0].as_str().unwrap_or("").contains("out of range"),
+            "{v}"
+        );
+    }
+
+    /// #3 candidate alignment: batch B opens `ocr_text` (expected text) up to
+    /// plain `ocr_lines` rows, so the same asset can act as an `op_region`
+    /// recognition gate. The save route must pass it through and the candidate
+    /// expected-text rule must pick it up without any `ocr_mode` marker.
+    #[test]
+    fn save_asset_accepts_expected_text_on_a_plain_ocr_lines_row() {
+        let (_td, server, _tasks_dir, frame_id) = acceptance9_server("b-ocr-lines-text");
+        let v = save_asset_route(
+            &server,
+            serde_json::json!({
+                "task": "t1", "id": "行组", "kind": "ocr_lines",
+                "roi": [0, 0, 64, 48], "positions": [frame_id],
+                "ocr_text": "开始",
+            }),
+        );
+        assert_eq!(v["item"]["kind"], "ocr_lines", "{v}");
+        assert_eq!(v["item"]["ocr_text"], "开始", "{v}");
+        assert!(
+            v["item"].get("ocr_mode").is_none(),
+            "a plain ocr_lines row needs no ocr_mode marker: {v}"
+        );
+        // GET /task/assets round-trips the expected text; the candidate
+        // expected-text rule (shared by the OCR branch) uses it directly.
+        let assets = get_json_route(&server, "/task/assets?task=t1");
+        let item = assets["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|a| a["id"] == "行组")
+            .expect("ocr_lines row");
+        assert_eq!(item["ocr_text"], "开始", "{assets}");
     }
 
     #[test]
@@ -15626,6 +16178,28 @@ mod tests {
             .contains("does not fit in i32"));
         let huge_poly = serde_json::json!({"polygon": [[0, 0], [10, 0], [10, 4294967296i64]]});
         assert!(json_opt_polygon_field(&huge_poly, "polygon").is_err());
+
+        // Present-style (#9 replace inheritance / #10 update): absent, explicit
+        // null and a value are three distinct states.
+        assert_eq!(
+            json_present_polygon_field(&serde_json::json!({}), "polygon").unwrap(),
+            None,
+            "absent must stay distinct from null"
+        );
+        assert_eq!(
+            json_present_polygon_field(&empty, "polygon").unwrap(),
+            Some(None),
+            "explicit null means clear"
+        );
+        let three = serde_json::json!({"polygon": [[1, 2], [10, 2], [10, 8]]});
+        assert_eq!(
+            json_present_polygon_field(&three, "polygon").unwrap(),
+            Some(Some(vec![[1, 2], [10, 2], [10, 8]])),
+            "a present array is the new polygon"
+        );
+        assert!(json_present_polygon_field(&bad, "polygon")
+            .unwrap_err()
+            .contains("must be an array"));
     }
 
     #[test]
@@ -15782,8 +16356,10 @@ mod tests {
             // Collection members, declared in the REVERSE of the visual order.
             {"id":"M_A","kind":"template","file":"images/a001.png","roi":[0,0,64,48],"threshold":0.9,"positions":[1]},
             {"id":"M_B","kind":"template","file":"images/a002.png","roi":[0,0,64,48],"threshold":0.9,"positions":[1]},
-            // OCR asset: the default build answers 501 (no feature/models).
-            {"id":"OCR_LINE","kind":"ocr_line","roi":[10,10,20,10],"ocr_text":"开始","positions":[1]}
+            // OCR asset: the default build answers 501 (no feature/models); the
+            // expected text needs `ocr_mode:"lines"` (批次B keeps det+rec rows as
+            // the only carriers of `ocr_text`).
+            {"id":"OCR_LINE","kind":"ocr_line","roi":[10,10,20,10],"ocr_mode":"lines","ocr_text":"开始","positions":[1]}
         ]);
         let collections = serde_json::json!([
             {"id":"COL","members":["M_B","M_A"],"threshold":0.9}
@@ -15953,6 +16529,24 @@ mod tests {
             serde_json::json!([22, 22, 4, 4]),
             "{v}"
         );
+        // The candidate API and `test_action` MUST agree on the operation box:
+        // both go through the shared model-A `self_operation_geometry` helper
+        // (model A: the final box is the ROOT asset's own geometry).
+        for (index, expected) in [
+            (0usize, serde_json::json!([50, 10, 4, 4])),
+            (1usize, serde_json::json!([22, 22, 4, 4])),
+        ] {
+            let (status, action) = post_test_action(
+                &server,
+                serde_json::json!({"id":"TPL_SHAPE","candidate_index":index}),
+            );
+            assert!(status.contains("200"), "{status} {action}");
+            assert_eq!(
+                action["action_box"], cands[index]["action_box"],
+                "test_action and candidates disagree: {action} vs {v}"
+            );
+            assert_eq!(action["action_box"], expected, "{action}");
+        }
     }
 
     #[test]

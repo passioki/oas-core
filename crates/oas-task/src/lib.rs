@@ -60,20 +60,23 @@ pub const DEFAULT_THRESHOLD: f32 = 0.85;
 /// OCR).
 pub const KINDS: [&str; 5] = ["template", "ocr_line", "ocr_lines", "ocr_var", "region"];
 
+/// OCR asset kinds (recognition-based, no template pixels).
+pub fn is_ocr_kind(kind: &str) -> bool {
+    matches!(kind, "ocr_line" | "ocr_lines" | "ocr_var")
+}
+
 /// Recognition kinds that may act as a **node in an `op_region` chain**.
 ///
-/// A `region` asset is a legal *terminal* node (its `roi` IS the operation
-/// area, Lead ruling 11) but never a recursive node. Collections are accepted by
-/// id at chain resolution time (they have no `op_region` of their own) but are
-/// not `AssetDecl` items, so they are not in this list.
+/// 2026-11-06 批次B (#4 model A): the chain is a **recognition gate only**; a
+/// node's own operation area never becomes the action target. `region` assets
+/// are pure fixed operation areas with no recognition, so they are **not** chain
+/// nodes any more (referencing one is a validation error). Collections are
+/// accepted by id (they have no `op_region` of their own) but are not `AssetDecl`
+/// items, so they are not in this list.
 pub const OP_REGION_NODE_KINDS: [&str; 4] = ["template", "ocr_line", "ocr_lines", "ocr_var"];
 
 /// Maximum `op_region` chain depth (mirrors the flow region parser's bound).
 pub const MAX_OP_REGION_DEPTH: usize = 16;
-
-/// Bound for the `op_region.offset` values (dx,dy in ±1e6; w,h in 1..=1e6),
-/// the same magnitude every other authored coordinate uses.
-pub const MAX_OP_REGION_OFFSET: i64 = 1_000_000;
 
 /// `runtime_text` (ocr_var default recognition text) max length, matching the
 /// `text_expr`/OCR UI limit.
@@ -83,43 +86,42 @@ pub const RUNTIME_TEXT_MAX_CHARS: usize = 200;
 pub const OCR_VAR_LABEL_MAX_CHARS: usize = 80;
 
 /// **Operation-region source** stored on one asset (`assets.json
-/// items[].op_region`, 2026-11-06 参数→素材 redesign D2).
+/// items[].op_region`, 2026-11-06 参数→素材 redesign D2; 批次B #4 model A).
 ///
-/// Three modes only (unlike the flow-level `oas_flow::OpRegion`, which also
+/// Two modes only (unlike the flow-level `oas_flow::OpRegion`, which also
 /// carries `ocr`/2-value offsets):
 /// * `self` — the current asset's own operation area = the historical runtime
-///   behaviour (`action_shape`/`click_back`, translated by the match offset,
-///   else the real recognized bbox); this is the default when the field is
-///   absent;
-/// * `offset` — operation box relative to the **real recognized bbox**'s
-///   top-left corner: `[dx, dy, w, h]` (`w`/`h` = authored size);
-/// * `asset` — recognize another asset and use *its* `op_region` (recursive
-///   chain; `pick` chooses among that asset's candidates: `score` = best score
-///   (default), `nearest` = centre nearest to the previous node's real rect).
+///   behaviour (`action_shape`/`click_back`; template/collection shapes
+///   translated by the match offset, OCR shapes translated by
+///   `real line - authored roi`, else the real recognized bbox); this is the
+///   default when the field is absent and it is **always** the final action
+///   area (model A: the chain never contributes the click box);
+/// * `asset` — recognize another asset as an additional **recognition gate**
+///   (recursive chain; `pick` chooses among that asset's candidates: `score` =
+///   best score (default), `nearest` = centre nearest to the previous node's
+///   real rect). Every gate must be recognized; the action still lands on the
+///   root asset's own `self` geometry.
 ///
-/// JSON: `{"mode":"self"}`, `{"mode":"offset","offset":[dx,dy,w,h]}`,
-/// `{"mode":"asset","asset":"<id>","pick":"score|nearest"}`. Validation
-/// (offset bounds, node existence/kind, cycle + depth, terminal mode) lives in
-/// [`crate::validate_op_region_chain`] and the assets shape checks.
+/// The former `offset` mode was removed in 批次B (#4): "relative offset" was
+/// just editing the current asset's own operation area, which is exactly
+/// `self` + `action_shape`.
+///
+/// JSON: `{"mode":"self"}`, `{"mode":"asset","asset":"<id>","pick":"score|nearest"}`.
+/// Validation (node existence/kind, referenced OCR expected text, cycle + depth,
+/// terminal mode) lives in [`crate::validate_op_region_chain`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "mode")]
 pub enum OpRegion {
     /// `{"mode":"self"}` — use this asset's own operation area (default).
     #[serde(rename = "self")]
     SelfRegion,
-    /// `{"mode":"offset","offset":[dx,dy,w,h]}` — relative to the **real**
-    /// recognized bbox, size = authored `w`x`h`.
-    #[serde(rename = "offset")]
-    Offset {
-        /// `[dx, dy, w, h]`; `w`,`h` must be > 0.
-        offset: [i32; 4],
-    },
-    /// `{"mode":"asset","asset":"<id>","pick":"score|nearest"}` — recursive
-    /// reference to another asset's `op_region`.
+    /// `{"mode":"asset","asset":"<id>","pick":"score|nearest"}` — an extra
+    /// recognition gate; never the action box (model A).
     #[serde(rename = "asset")]
     Asset {
-        /// Referenced asset/collection id (a `region` item may only be the
-        /// **terminal** node; a collection is always terminal).
+        /// Referenced asset/collection id. A `region` item is **not** allowed as
+        /// a chain node (model A: it has no recognition) and collections are
+        /// always terminal.
         asset: String,
         /// Candidate pick rule for a multi-candidate node; absent = `score`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -136,11 +138,10 @@ impl OpRegion {
         OpRegion::SelfRegion
     }
 
-    /// `self` / `offset` / `asset`.
+    /// `self` / `asset`.
     pub fn mode_str(&self) -> &'static str {
         match self {
             OpRegion::SelfRegion => "self",
-            OpRegion::Offset { .. } => "offset",
             OpRegion::Asset { .. } => "asset",
         }
     }
@@ -417,13 +418,14 @@ fn validate_action_shape(
 /// text (<= [`RUNTIME_TEXT_MAX_CHARS`], no control characters) = the default
 /// recognition text; `param_key` = required valid parameter key; `label` =
 /// optional non-blank display name (<= [`OCR_VAR_LABEL_MAX_CHARS`]); OCR pixel
-/// provenance fields (`file`/`polygon`/`ocr_mode`/`ocr_source_roi`/`ocr_text`)
-/// are forbidden. `roi` is optional (absent = whole-screen OCR) and
-/// `threshold`/`action_shape`/`op_region` keep their normal meaning.
+/// provenance fields (`file`/`ocr_mode`/`ocr_source_roi`/`ocr_text`) are
+/// forbidden. `roi` is optional (absent = whole-screen OCR); `polygon`
+/// (2026-11-06 批次B, #6/#10) is allowed as a real recognition mask (its bbox
+/// becomes the recognition ROI on save); `threshold`/`action_shape`/`op_region`
+/// keep their normal meaning.
 pub(crate) fn validate_ocr_var_fields(item: &AssetDecl, path: &str) -> Result<(), String> {
     for (field, present) in [
         ("file", item.file.is_some()),
-        ("polygon", item.polygon.is_some()),
         ("ocr_mode", item.ocr_mode.is_some()),
         ("ocr_source_roi", item.ocr_source_roi.is_some()),
         ("ocr_text", item.ocr_text.is_some()),
@@ -476,26 +478,6 @@ pub(crate) fn validate_ocr_var_fields(item: &AssetDecl, path: &str) -> Result<()
 fn validate_op_region_shape(op: &OpRegion, path: &str) -> Result<(), String> {
     match op {
         OpRegion::SelfRegion => Ok(()),
-        OpRegion::Offset { offset } => {
-            let [dx, dy, w, h] = *offset;
-            let bound = MAX_OP_REGION_OFFSET;
-            if (dx as i64).abs() > bound || (dy as i64).abs() > bound {
-                return Err(format!(
-                    "{path}.offset dx,dy must be within ±{MAX_OP_REGION_OFFSET} (got [{dx},{dy}])"
-                ));
-            }
-            if w <= 0 || h <= 0 {
-                return Err(format!(
-                    "{path}.offset w,h must be > 0 (got [{dx},{dy},{w},{h}])"
-                ));
-            }
-            if w as i64 > bound || h as i64 > bound {
-                return Err(format!(
-                    "{path}.offset w,h must be <= {MAX_OP_REGION_OFFSET} (got [{dx},{dy},{w},{h}])"
-                ));
-            }
-            Ok(())
-        }
         OpRegion::Asset { asset, pick } => {
             validate_id(asset).map_err(|e| format!("{path}.asset: {e}"))?;
             if let Some(pick) = pick {
@@ -518,14 +500,19 @@ fn validate_op_region_shape(op: &OpRegion, path: &str) -> Result<(), String> {
 /// asset whose new value is `op`; `None` means `op` is a free-standing value
 /// (e.g. a server-side preview) and must terminate without any owner override.
 ///
-/// Rules (Lead rulings 1, 2, 11):
-/// * `offset` is relative to the **real recognized bbox** of its own node;
-/// * `mode=asset` follows the referenced asset's own `op_region`;
-/// * `region` items and collections are legal **terminal** nodes (their `roi` is
-///   the operation area), but a `region` item must not carry `op_region`;
+/// Rules (2026-11-06 批次B, #4 model A):
+/// * `mode=asset` follows the referenced asset's own `op_region`: the chain is a
+///   **recognition gate only** and never contributes the action box;
+/// * every referenced node must be recognizable: `template`/collection (NCC) or
+///   an OCR asset with **expected text** (`ocr_var.runtime_text/param`, derived
+///   `ocr_line.ocr_text`, plain `ocr_line`/`ocr_lines.ocr_text`); a plain OCR
+///   node without `ocr_text` is a validation error;
+/// * a `region` item is a pure fixed operation area with no recognition, so it
+///   can **not** be a chain node (referencing it is an error);
+/// * a collection is always terminal (no `op_region` of its own);
 /// * cycles and chains deeper than [`MAX_OP_REGION_DEPTH`] are rejected;
 /// * a chain must be resolvable: every referenced element must exist and every
-///   leaf must be `self`/`offset`/`region`/collection.
+///   leaf must be `self` (or a node without `op_region`, = self).
 pub fn validate_op_region_chain(
     assets: &AssetsFile,
     owner_id: Option<&str>,
@@ -549,7 +536,7 @@ pub fn validate_op_region_chain(
             walk_op_region_chain(assets, Some(owner), op, owner, 0, &mut visited, path)
         }
         None => match op {
-            OpRegion::SelfRegion | OpRegion::Offset { .. } => Ok(()),
+            OpRegion::SelfRegion => Ok(()),
             OpRegion::Asset { .. } => Err(format!(
                 "{path}: an op_region chain needs an owner asset (mode=asset without one)"
             )),
@@ -587,8 +574,8 @@ fn walk_op_region_chain(
     let item = assets.items.iter().find(|a| a.id == current);
     let Some(item) = item else {
         if assets.collections.iter().any(|c| c.id == current) {
-            // A collection has no op_region of its own: it is a terminal node
-            // (its winning member's geometry / collection-level shape applies).
+            // A collection has no op_region of its own: it is a valid terminal
+            // recognition gate (NCC over its members).
             return Ok(());
         }
         return Err(format!(
@@ -596,15 +583,13 @@ fn walk_op_region_chain(
         ));
     };
     if item.kind == "region" {
-        // Lead ruling 11: a region is a legal terminal fixed-operation-area
-        // node; it never recurses and must not carry op_region itself.
-        if item.op_region.is_some() {
-            return Err(format!(
-                "{path}: region asset `{current}` is a fixed terminal operation area \
-                 and must not carry op_region"
-            ));
-        }
-        return Ok(());
+        // 2026-11-06 批次B (#4 model A): a region is a pure fixed operation
+        // area with no recognition, so it cannot be a recognition gate.
+        return Err(format!(
+            "{path}: region asset `{current}` cannot be an op_region chain node \
+             (model A: chain nodes are recognition gates; region assets are fixed \
+             operation areas only)"
+        ));
     }
     if !OP_REGION_NODE_KINDS.contains(&item.kind.as_str()) {
         return Err(format!(
@@ -612,8 +597,24 @@ fn walk_op_region_chain(
             item.kind
         ));
     }
+    // #3: every referenced OCR gate must be recognizable, i.e. it must carry the
+    // expected text (plain ocr_line/ocr_lines: `ocr_text`; ocr_var:
+    // runtime_text/param handled by its own contract).
+    if is_ocr_kind(&item.kind) && item.kind != "ocr_var" {
+        let has_text = item
+            .ocr_text
+            .as_deref()
+            .map(|t| !t.trim().is_empty())
+            .unwrap_or(false);
+        if !has_text {
+            return Err(format!(
+                "{path}: OCR chain node `{current}` has no expected text (ocr_text); \
+                 save an expected text on it (识别文字) or reference an ocr_var instead"
+            ));
+        }
+    }
     match &item.op_region {
-        None => Ok(()), // default self: this node's real rect is the operation area
+        None => Ok(()), // default self: the gate is recognized, chain ends here
         Some(op) => {
             let op_path = format!("{path} (node `{current}`)");
             validate_op_region_shape(op, &op_path)?;
@@ -622,7 +623,7 @@ fn walk_op_region_chain(
     }
 }
 
-/// Shared tail of one chain hop: `self`/`offset` terminate, `asset` recurses.
+/// Shared tail of one chain hop: `self` terminates, `asset` recurses.
 fn follow_op_region(
     assets: &AssetsFile,
     owner_id: Option<&str>,
@@ -633,7 +634,7 @@ fn follow_op_region(
     path: &str,
 ) -> Result<(), String> {
     match op {
-        OpRegion::SelfRegion | OpRegion::Offset { .. } => Ok(()),
+        OpRegion::SelfRegion => Ok(()),
         OpRegion::Asset { asset, .. } => {
             if asset == current {
                 return Err(format!("{path}: op_region of `{current}` references itself"));
@@ -759,10 +760,12 @@ pub struct AssetDecl {
     /// Required for `kind:"ocr_var"`, forbidden for every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub param_key: Option<String>,
-    /// **Operation-region source** (2026-11-06 参数→素材 redesign D2): absent =
-    /// `self` (= historical `action_shape` behaviour). Present = walk this chain
-    /// at run time. Not allowed on `kind:"region"` (its `roi` already is the
-    /// operation area).
+    /// **Operation-region chain** (2026-11-06 参数→素材 redesign D2; 批次B #4
+    /// model A): absent = `self` (= historical `action_shape` behaviour). Present
+    /// = recognize every referenced node as an extra **gate** at run time; the
+    /// action box itself is always this asset's own self geometry. Not allowed on
+    /// `kind:"region"` (its `roi` already is the operation area, and a region has
+    /// no recognition so it cannot be a chain node either).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub op_region: Option<OpRegion>,
     /// Revision counter (1 on first save).
@@ -833,6 +836,30 @@ impl AssetDecl {
     /// `true` for the 使用端OCR文字配置项 kind.
     pub fn is_ocr_var(&self) -> bool {
         self.kind == "ocr_var"
+    }
+
+    /// Convenience constructor for a `kind:"region"` fixed operation area.
+    pub fn region(id: impl Into<String>, roi: [i32; 4]) -> Self {
+        let mut decl = Self::template(id, roi);
+        decl.kind = "region".to_string();
+        decl.file = None;
+        decl
+    }
+
+    /// Convenience constructor for a single-line OCR asset (`ocr_line`).
+    pub fn ocr_line(id: impl Into<String>, roi: [i32; 4]) -> Self {
+        let mut decl = Self::template(id, roi);
+        decl.kind = "ocr_line".to_string();
+        decl.file = None;
+        decl
+    }
+
+    /// Convenience constructor for a multi-line OCR asset (`ocr_lines`).
+    pub fn ocr_lines(id: impl Into<String>, roi: [i32; 4]) -> Self {
+        let mut decl = Self::template(id, roi);
+        decl.kind = "ocr_lines".to_string();
+        decl.file = None;
+        decl
     }
 
     /// `op_region` with the documented default (`self`) applied.
@@ -924,12 +951,6 @@ fn normalize_legacy_ocr_roi(af: &mut AssetsFile) {
 fn runtime_op_region(op: &OpRegion) -> oas_runtime::AssetOpRegion {
     match op {
         OpRegion::SelfRegion => oas_runtime::AssetOpRegion::SelfRegion,
-        OpRegion::Offset { offset } => oas_runtime::AssetOpRegion::Offset {
-            dx: offset[0],
-            dy: offset[1],
-            w: offset[2],
-            h: offset[3],
-        },
         OpRegion::Asset { asset, pick } => oas_runtime::AssetOpRegion::Asset {
             asset: asset.clone(),
             pick: match pick.as_deref() {
@@ -998,6 +1019,76 @@ fn polygon_self_intersects(poly: &[[i32; 2]]) -> bool {
         }
     }
     false
+}
+
+/// Validate one **recognition polygon** and return its bbox `[x, y, w, h]`
+/// (frame coordinates, inclusive pixel convention — `roi = polygon bbox`).
+///
+/// Shared by the save path (`save_asset_impl`) and the update path
+/// (`update_asset_meta_v3`, 2026-11-06 批次B #6/#10) so both accept exactly the
+/// same geometry. Rules (ENGINE §22.10 N10b-3):
+/// * >= 3 points, no repeated adjacent point, non-zero area, no self-intersection;
+/// * every point inside the frame/design bounds when known;
+/// * `asset_id` is only used to make the error message actionable.
+fn validate_recognition_polygon(
+    poly: &[[i32; 2]],
+    bounds: Option<(i32, i32)>,
+    asset_id: &str,
+) -> Result<[i32; 4], String> {
+    if poly.len() < 3 {
+        return Err(format!(
+            "asset `{asset_id}` rejected: polygon needs >= 3 points (got {}); nothing written",
+            poly.len()
+        ));
+    }
+    let mut area2: i64 = 0;
+    for i in 0..poly.len() {
+        let a = poly[i];
+        let b = poly[(i + 1) % poly.len()];
+        if a == b {
+            return Err(format!(
+                "asset `{asset_id}` rejected: polygon has repeated adjacent point {a:?}; nothing written"
+            ));
+        }
+        area2 += a[0] as i64 * b[1] as i64 - b[0] as i64 * a[1] as i64;
+    }
+    if area2 == 0 {
+        return Err(format!(
+            "asset `{asset_id}` rejected: polygon has zero area (collinear points); nothing written"
+        ));
+    }
+    if polygon_self_intersects(poly) {
+        return Err(format!(
+            "asset `{asset_id}` rejected: polygon self-intersects (edges cross); nothing written"
+        ));
+    }
+    let (mut min_x, mut min_y) = (i32::MAX, i32::MAX);
+    let (mut max_x, mut max_y) = (i32::MIN, i32::MIN);
+    for p in poly {
+        min_x = min_x.min(p[0]);
+        min_y = min_y.min(p[1]);
+        max_x = max_x.max(p[0]);
+        max_y = max_y.max(p[1]);
+    }
+    if min_x < 0 || min_y < 0 {
+        return Err(format!(
+            "asset `{asset_id}` rejected: polygon point is negative; nothing written"
+        ));
+    }
+    if let Some((bw, bh)) = bounds {
+        if max_x >= bw || max_y >= bh {
+            return Err(format!(
+                "asset `{asset_id}` rejected: polygon [{min_x}..{max_x}, {min_y}..{max_y}] \
+                 is outside the {bw}x{bh} frame; nothing written"
+            ));
+        }
+    }
+    Ok([
+        min_x,
+        min_y,
+        max_x - min_x + 1,
+        max_y - min_y + 1,
+    ])
 }
 
 fn is_id_start(c: char) -> bool {
@@ -1925,6 +2016,20 @@ impl TaskBundle {
                     })?;
                     set.set_derived_ocr(item.id.clone(), derived_roi, item.ocr_text.clone().unwrap());
                 }
+                // 2026-11-06 批次B (#3): every OCR asset with a saved expected
+                // text registers it, so plain `ocr_lines` (and single-line
+                // `ocr_line`) can act as `op_region` recognition gates and their
+                // editor candidates are filtered by the same text.
+                if item.kind != "ocr_var" {
+                    if let Some(text) = item
+                        .ocr_text
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|t| !t.is_empty())
+                    {
+                        set.set_ocr_expected_text(item.id.clone(), text.to_string());
+                    }
+                }
                 // §22.10 N10b-2: OCR polygon mask (frame coordinates).
                 if let Some(poly) = &item.polygon {
                     let pts: Vec<oas_types::Point> = poly
@@ -2266,14 +2371,24 @@ impl TaskBundle {
     ///   `self` default), `Some(Some(op))` = set. The whole chain is validated
     ///   against the would-be `assets.json` (node existence/kind, terminal mode,
     ///   cycle + depth) before anything is written.
+    ///
+    /// v3 (2026-11-06 批次B, #6/#10): adds the recognition `polygon` tri-state
+    /// `None` = unchanged, `Some(None)` = clear, `Some(Some(points))` = set.
+    /// The same [`validate_recognition_polygon`] rules as the save path apply;
+    /// for non-template assets the recognition `roi` is re-derived from the
+    /// polygon bbox (so mask and ROI can never disagree). A template update only
+    /// accepts a polygon whose bbox equals its existing ROI (changing it needs a
+    /// full overwrite/re-crop). `update_asset_meta_v2` stays as the
+    /// polygon-less compatibility wrapper.
     #[allow(clippy::too_many_arguments)]
-    pub fn update_asset_meta_v2(
+    pub fn update_asset_meta_v3(
         &self,
         id: &str,
         roi: Option<[i32; 4]>,
         action_shape: Option<ActionShape>,
         threshold: Option<f32>,
         keep_action_shape: bool,
+        polygon: Option<Option<Vec<[i32; 2]>>>,
         op_region: Option<Option<OpRegion>>,
         runtime_text: Option<String>,
         label: Option<String>,
@@ -2354,6 +2469,39 @@ impl TaskBundle {
             }
             af.items[pos].threshold = Some(t);
         }
+        // --- recognition polygon (v3, #6/#10) --------------------------------
+        let has_poly_update = polygon.is_some();
+        if let Some(new_poly) = polygon {
+            match new_poly {
+                None => af.items[pos].polygon = None,
+                Some(points) => {
+                    if kind == "region" {
+                        return Err(format!(
+                            "asset `{id}`: region assets have no recognition polygon"
+                        ));
+                    }
+                    let bounds = shape_bounds.map(|(w, h)| (w as i32, h as i32));
+                    let bbox = validate_recognition_polygon(&points, bounds, id)?;
+                    if kind == "template" {
+                        // The template PNG is the crop of the existing ROI; a
+                        // polygon edit that moves the recognition box would leave
+                        // the crop stale, so require a full overwrite instead.
+                        if af.items[pos].roi != Some(bbox) {
+                            return Err(format!(
+                                "asset `{id}`: template polygon change must keep the existing \
+                                 ROI ({:?}); use 覆盖保存 to re-crop the template",
+                                af.items[pos].roi
+                            ));
+                        }
+                    } else {
+                        // The recognition mask and the ROI can never disagree:
+                        // the bbox is the mask's crop window (same rule as save).
+                        af.items[pos].roi = Some(bbox);
+                    }
+                    af.items[pos].polygon = Some(points);
+                }
+            }
+        }
         // --- ocr_var fields (runtime_text / label / param_key) ---------------
         if runtime_text.is_some() || label.is_some() || param_key.is_some() {
             if kind != "ocr_var" {
@@ -2390,13 +2538,14 @@ impl TaskBundle {
         if roi.is_none()
             && !has_shape
             && threshold.is_none()
+            && !has_poly_update
             && !has_op_update
             && runtime_text.is_none()
             && label.is_none()
             && param_key.is_none()
         {
             return Err(
-                "nothing to update (pass roi, action_shape, threshold, op_region, \
+                "nothing to update (pass roi, action_shape, threshold, polygon, op_region, \
                  runtime_text/label or param_key)"
                     .into(),
             );
@@ -2412,6 +2561,36 @@ impl TaskBundle {
         let item = af.items[pos].clone();
         self.write_assets_file(&af)?;
         Ok(item)
+    }
+
+    /// Backward-compatible wrapper of [`Self::update_asset_meta_v3`] without the
+    /// recognition-polygon argument (2026-11-06 批次B: serve-dev can switch to
+    /// `update_asset_meta_v3` when the HTTP route accepts `polygon`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_asset_meta_v2(
+        &self,
+        id: &str,
+        roi: Option<[i32; 4]>,
+        action_shape: Option<ActionShape>,
+        threshold: Option<f32>,
+        keep_action_shape: bool,
+        op_region: Option<Option<OpRegion>>,
+        runtime_text: Option<String>,
+        label: Option<String>,
+        param_key: Option<String>,
+    ) -> Result<AssetDecl, String> {
+        self.update_asset_meta_v3(
+            id,
+            roi,
+            action_shape,
+            threshold,
+            keep_action_shape,
+            None,
+            op_region,
+            runtime_text,
+            label,
+            param_key,
+        )
     }
 
     /// Backward-compatible wrapper of [`Self::update_asset_meta_v2`] for the
@@ -2500,10 +2679,14 @@ impl TaskBundle {
         // v1.2.1: OCR recognition provenance. A derived `ocr_line` saved from a
         // multi-line det+rec result must keep the source region + expected text
         // so runtime can reproduce the original recognition method.
-        if decl.ocr_mode.is_some() || decl.ocr_source_roi.is_some() || decl.ocr_text.is_some() {
+        //
+        // 2026-11-06 批次B (#3): `ocr_text` (expected text) is now also allowed
+        // on a plain `ocr_lines` asset, so it can act as an `op_region`
+        // recognition gate (the chain validator requires it for OCR nodes).
+        if decl.ocr_mode.is_some() || decl.ocr_source_roi.is_some() {
             if decl.kind != "ocr_line" {
                 return Err(format!(
-                    "asset `{}` rejected: ocr_mode/ocr_source_roi/ocr_text are only valid \
+                    "asset `{}` rejected: ocr_mode/ocr_source_roi are only valid \
                      for ocr_line assets",
                     decl.id
                 ));
@@ -2511,10 +2694,10 @@ impl TaskBundle {
             let mode = decl.ocr_mode.as_deref().unwrap_or("single");
             match mode {
                 "single" => {
-                    if decl.ocr_source_roi.is_some() || decl.ocr_text.is_some() {
+                    if decl.ocr_source_roi.is_some() {
                         return Err(format!(
                             "asset `{}` rejected: ocr_mode=single must not carry \
-                             ocr_source_roi/ocr_text",
+                             ocr_source_roi",
                             decl.id
                         ));
                     }
@@ -2546,6 +2729,35 @@ impl TaskBundle {
                 }
             }
         }
+        if let Some(text) = decl.ocr_text.as_deref() {
+            match decl.kind.as_str() {
+                // Validated by the `ocr_mode=lines` branch above.
+                "ocr_line" => {
+                    if decl.ocr_mode.as_deref() != Some("lines") {
+                        return Err(format!(
+                            "asset `{}` rejected: ocr_line with ocr_text must use \
+                             ocr_mode=lines",
+                            decl.id
+                        ));
+                    }
+                }
+                "ocr_lines" => {
+                    if text.trim().is_empty() {
+                        return Err(format!(
+                            "asset `{}` rejected: ocr_lines ocr_text must not be blank",
+                            decl.id
+                        ));
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "asset `{}` rejected: ocr_text is only valid for ocr_line/ocr_lines \
+                         assets (got kind `{other}`)",
+                        decl.id
+                    ))
+                }
+            }
+        }
 
         // B-05: validate operation geometry against the frame the asset is
         // authored on (frame wins; otherwise the bundle design resolution).
@@ -2556,65 +2768,11 @@ impl TaskBundle {
         // Matching uses a masked NCC inside the polygon; OCR uses the bbox crop
         // with outside-polygon pixels filled white; click uses the bbox.
         if let Some(poly) = &decl.polygon {
-            if poly.len() < 3 {
-                return Err(format!(
-                    "asset `{}` rejected: polygon needs >= 3 points (got {}); nothing written",
-                    decl.id,
-                    poly.len()
-                ));
-            }
-            let mut area2: i64 = 0;
-            for i in 0..poly.len() {
-                let a = poly[i];
-                let b = poly[(i + 1) % poly.len()];
-                if a == b {
-                    return Err(format!(
-                        "asset `{}` rejected: polygon has repeated adjacent point {:?}; nothing written",
-                        decl.id, a
-                    ));
-                }
-                area2 += a[0] as i64 * b[1] as i64 - b[0] as i64 * a[1] as i64;
-            }
-            if area2 == 0 {
-                return Err(format!(
-                    "asset `{}` rejected: polygon has zero area (collinear points); nothing written",
-                    decl.id
-                ));
-            }
-            if polygon_self_intersects(poly) {
-                return Err(format!(
-                    "asset `{}` rejected: polygon self-intersects (edges cross); nothing written",
-                    decl.id
-                ));
-            }
-            let (mut min_x, mut min_y) = (i32::MAX, i32::MAX);
-            let (mut max_x, mut max_y) = (i32::MIN, i32::MIN);
-            for p in poly {
-                min_x = min_x.min(p[0]);
-                min_y = min_y.min(p[1]);
-                max_x = max_x.max(p[0]);
-                max_y = max_y.max(p[1]);
-            }
-            if min_x < 0 || min_y < 0 {
-                return Err(format!(
-                    "asset `{}` rejected: polygon point is negative; nothing written",
-                    decl.id
-                ));
-            }
             let bounds = match frame {
                 Some(f) => Some((f.width as i32, f.height as i32)),
                 None => af.design_resolution.map(|[w, h]| (w as i32, h as i32)),
             };
-            if let Some((bw, bh)) = bounds {
-                if max_x >= bw || max_y >= bh {
-                    return Err(format!(
-                        "asset `{}` rejected: polygon [{}..{}, {}..{}] is outside the {bw}x{bh} frame; \
-                         nothing written",
-                        decl.id, min_x, max_x, min_y, max_y
-                    ));
-                }
-            }
-            decl.roi = Some([min_x, min_y, max_x - min_x + 1, max_y - min_y + 1]);
+            decl.roi = Some(validate_recognition_polygon(poly, bounds, &decl.id)?);
         }
 
         if decl.kind == "region" {
@@ -3286,18 +3444,25 @@ impl TaskBundle {
             if let Err(e) = validate_threshold(item.threshold) {
                 errs.push((format!("{p}.threshold"), e));
             }
-            if item.ocr_mode.is_some()
-                || item.ocr_source_roi.is_some()
-                || item.ocr_text.is_some()
-            {
+            // v1.2.1 OCR provenance (`ocr_mode`/`ocr_source_roi`) belongs to
+            // `ocr_line`; 2026-11-06 批次B (#3): `ocr_text` is also valid on a
+            // plain `ocr_lines` asset (expected text used as a chain gate).
+            if item.ocr_mode.is_some() || item.ocr_source_roi.is_some() {
                 if item.kind != "ocr_line" {
                     errs.push((
                         format!("{p}.ocr_mode"),
-                        "ocr provenance is only valid for ocr_line".to_string(),
+                        "ocr_mode/ocr_source_roi are only valid for ocr_line".to_string(),
                     ));
                 }
                 match item.ocr_mode.as_deref().unwrap_or("single") {
-                    "single" => {}
+                    "single" => {
+                        if item.ocr_source_roi.is_some() {
+                            errs.push((
+                                format!("{p}.ocr_source_roi"),
+                                "ocr_mode=single must not carry ocr_source_roi".to_string(),
+                            ));
+                        }
+                    }
                     "lines" => {
                         // v1.2.3: recognition ROI is the single `roi`; the old
                         // `ocr_source_roi` is migrated on load and no longer
@@ -3312,6 +3477,32 @@ impl TaskBundle {
                     other => errs.push((
                         format!("{p}.ocr_mode"),
                         format!("unknown ocr_mode `{other}` (allowed: single, lines)"),
+                    )),
+                }
+            }
+            if let Some(text) = item.ocr_text.as_deref() {
+                match item.kind.as_str() {
+                    "ocr_line" => {
+                        if item.ocr_mode.as_deref() != Some("lines") {
+                            errs.push((
+                                format!("{p}.ocr_text"),
+                                "ocr_line with ocr_text must use ocr_mode=lines".to_string(),
+                            ));
+                        }
+                    }
+                    "ocr_lines" => {
+                        if text.trim().is_empty() {
+                            errs.push((
+                                format!("{p}.ocr_text"),
+                                "ocr_lines ocr_text must not be blank".to_string(),
+                            ));
+                        }
+                    }
+                    other => errs.push((
+                        format!("{p}.ocr_text"),
+                        format!(
+                            "ocr_text is only valid for ocr_line/ocr_lines assets (got kind `{other}`)"
+                        ),
                     )),
                 }
             }
@@ -6538,10 +6729,10 @@ mod tests {
             (
                 {
                     let mut d = AssetDecl::ocr_var("A2", "k2", "文字", None);
-                    d.polygon = Some(vec![[0, 0], [1, 0], [1, 1]]);
+                    d.polygon = Some(vec![[0, 0], [0, 0], [1, 1]]);
                     d
                 },
-                "polygon is not allowed",
+                "repeated adjacent point",
             ),
             (
                 {
@@ -6639,17 +6830,15 @@ mod tests {
     }
 
     #[test]
-    fn op_region_json_supports_the_three_modes() {
+    fn op_region_json_supports_self_and_asset_modes_only() {
         let self_op: OpRegion = serde_json::from_str(r#"{"mode":"self"}"#).expect("self");
         assert!(self_op.is_self());
         assert_eq!(self_op.mode_str(), "self");
-        let offset: OpRegion =
-            serde_json::from_str(r#"{"mode":"offset","offset":[1,-2,3,4]}"#).expect("offset");
-        assert_eq!(offset.mode_str(), "offset");
         let by_asset: OpRegion =
             serde_json::from_str(r#"{"mode":"asset","asset":"I_战斗按钮"}"#).expect("asset");
         assert_eq!(by_asset.asset(), Some("I_战斗按钮"));
         assert_eq!(by_asset.pick(), "score", "pick defaults to score");
+        assert_eq!(by_asset.mode_str(), "asset");
         // Serialization stays compact: self is a unit variant, pick=None is
         // omitted.
         assert_eq!(
@@ -6664,13 +6853,17 @@ mod tests {
             .expect("json"),
             serde_json::json!({"mode":"asset","asset":"B"})
         );
-        // Unknown modes / malformed offsets are load errors.
+        // Unknown modes are load errors; 批次B (#4 model A) removed `offset`
+        // entirely, so old offset JSON must fail loudly instead of silently
+        // resolving as self.
         assert!(serde_json::from_str::<OpRegion>(r#"{"mode":"ocr"}"#).is_err());
-        assert!(serde_json::from_str::<OpRegion>(r#"{"mode":"offset","offset":[1,2,3]}"#).is_err());
+        let offset_err = serde_json::from_str::<OpRegion>(r#"{"mode":"offset","offset":[1,2,3,4]}"#)
+            .expect_err("offset mode was removed in 批次B");
+        assert!(offset_err.to_string().contains("offset"), "{offset_err}");
     }
 
     #[test]
-    fn op_region_chain_validation_rejects_cycles_depth_and_dangling_nodes() {
+    fn op_region_chain_validation_rejects_cycles_depth_dangling_nodes_and_bad_gates() {
         let af: AssetsFile = serde_json::from_value(serde_json::json!({
             "schema_version": 1,
             "design_resolution": [1280, 720],
@@ -6678,16 +6871,31 @@ mod tests {
                 {"id":"A","kind":"ocr_line","roi":[0,0,100,20],
                  "op_region":{"mode":"asset","asset":"B","pick":"nearest"}},
                 {"id":"B","kind":"ocr_line","roi":[0,30,100,20],
-                 "op_region":{"mode":"offset","offset":[5,5,40,20]}},
+                 "op_region":{"mode":"self"}},
                 {"id":"R","kind":"region","roi":[200,200,50,50]},
                 {"id":"D","kind":"ocr_line","roi":[0,60,100,20],
-                 "op_region":{"mode":"asset","asset":"R"}}
+                 "op_region":{"mode":"asset","asset":"C"}},
+                {"id":"C","kind":"ocr_lines","roi":[0,90,100,20]}
             ],
             "collections": []
         }))
         .expect("assets json");
+        // Model A (#3): a referenced plain OCR gate needs an expected text.
+        // Fill them for the "valid" cases below.
+        let af = {
+            let mut af = af;
+            for item in &mut af.items {
+                if item.kind == "ocr_line" {
+                    item.ocr_mode = Some("lines".into());
+                }
+                if matches!(item.id.as_str(), "B" | "D" | "C" | "A") {
+                    item.ocr_text = Some(format!("text-{}", item.id));
+                }
+            }
+            af
+        };
         let op_of = |id: &str| af.items.iter().find(|a| a.id == id).unwrap().op_region.clone();
-        // A -> B -> offset and D -> R (region terminal) are valid.
+        // A -> B:self and D -> C(self) are valid recognition gates.
         assert!(validate_op_region_chain(&af, Some("A"), &op_of("A").unwrap(), "test").is_ok());
         assert!(validate_op_region_chain(&af, Some("D"), &op_of("D").unwrap(), "test").is_ok());
 
@@ -6719,14 +6927,34 @@ mod tests {
             validate_op_region_chain(&af, Some("A"), &self_ref, "test").expect_err("self ref");
         assert!(err.contains("references itself"), "{err}");
 
-        // A region node may be terminal but must not carry op_region itself.
+        // 批次B (#4 model A): a region is not a recognition gate and cannot be a
+        // chain node.
+        let to_region = OpRegion::Asset {
+            asset: "R".into(),
+            pick: None,
+        };
+        let err = validate_op_region_chain(&af, Some("A"), &to_region, "test")
+            .expect_err("region node");
+        assert!(
+            err.contains("cannot be an op_region chain node"),
+            "{err}"
+        );
+
+        // A region asset still must not carry op_region itself.
         let mut bad_region = af.clone();
         bad_region.items[2].op_region = Some(OpRegion::self_region());
-        let err = validate_op_region_chain(&bad_region, Some("D"), &op_of("D").unwrap(), "test")
+        let err = validate_op_region_chain(&bad_region, Some("R"), &OpRegion::self_region(), "test")
             .expect_err("region op_region");
         assert!(err.contains("must not carry op_region"), "{err}");
 
-        // Structural errors: invalid pick, zero-sized offset, too deep.
+        // #3: a referenced plain OCR node without expected text is a loud error.
+        let mut no_text = af.clone();
+        no_text.items[4].ocr_text = None;
+        let err = validate_op_region_chain(&no_text, Some("D"), &op_of("D").unwrap(), "test")
+            .expect_err("gate without expected text");
+        assert!(err.contains("has no expected text"), "{err}");
+
+        // Structural errors: invalid pick.
         let bad_pick = OpRegion::Asset {
             asset: "B".into(),
             pick: Some("best".into()),
@@ -6734,12 +6962,6 @@ mod tests {
         assert!(validate_op_region_chain(&af, Some("A"), &bad_pick, "test")
             .expect_err("pick")
             .contains("pick"));
-        let zero_offset = OpRegion::Offset {
-            offset: [0, 0, 0, 10],
-        };
-        assert!(validate_op_region_chain(&af, Some("A"), &zero_offset, "test")
-            .expect_err("offset")
-            .contains("w,h must be > 0"));
 
         // 18-node chain: the 17th hop exceeds MAX_OP_REGION_DEPTH.
         let mut items = Vec::new();
@@ -6753,6 +6975,8 @@ mod tests {
                 "id": format!("E{i}"),
                 "kind": "ocr_line",
                 "roi": [0, 0, 10, 10],
+                "ocr_mode": "lines",
+                "ocr_text": format!("gate-{i}"),
                 "op_region": op
             }));
         }
@@ -6920,6 +7144,186 @@ mod tests {
             )
             .expect_err("runtime_text on a template");
         assert!(err.contains("only valid for kind=ocr_var"), "{err}");
+    }
+
+    #[test]
+    fn update_asset_meta_v3_sets_clears_and_validates_the_recognition_polygon() {
+        let td = TempDir::new("update-v3-polygon");
+        let b = open(&td);
+        b.save_asset(AssetDecl::template("底图", [0, 40, 8, 8]), Some(&frame(64, 48)))
+            .expect("baseline template");
+        b.save_asset(
+            AssetDecl::ocr_lines("O_行", [0, 0, 20, 10]),
+            None,
+        )
+        .expect("ocr_lines");
+        // Set: the polygon bbox becomes the recognition ROI (same rule as save).
+        let updated = b
+            .update_asset_meta_v3(
+                "O_行",
+                None,
+                None,
+                None,
+                false,
+                Some(Some(vec![[2, 2], [18, 2], [18, 8], [2, 8]])),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("set polygon");
+        assert_eq!(updated.roi, Some([2, 2, 17, 7]));
+        assert_eq!(
+            updated.polygon,
+            Some(vec![[2, 2], [18, 2], [18, 8], [2, 8]])
+        );
+        // Absent (`None`) leaves the stored polygon untouched.
+        let updated = b
+            .update_asset_meta_v3("O_行", None, None, Some(0.5), false, None, None, None, None, None)
+            .expect("threshold update keeps polygon");
+        assert_eq!(
+            updated.polygon,
+            Some(vec![[2, 2], [18, 2], [18, 8], [2, 8]])
+        );
+        // Explicit `Some(None)` clears it (roi keeps the last bbox).
+        let updated = b
+            .update_asset_meta_v3("O_行", None, None, None, false, Some(None), None, None, None, None)
+            .expect("clear polygon");
+        assert_eq!(updated.polygon, None);
+        assert_eq!(updated.roi, Some([2, 2, 17, 7]));
+        // Validation failures are loud and nothing is written.
+        for (points, needle) in [
+            (vec![[70, 0], [80, 0], [80, 10]], "outside the 64x48 frame"),
+            (vec![[-1, 0], [5, 0], [5, 5]], "negative"),
+            (vec![[0, 0], [10, 4], [10, 0], [0, 10]], "self-intersects"),
+            (vec![[0, 0], [1, 1]], ">= 3 points"),
+        ] {
+            let err = b
+                .update_asset_meta_v3(
+                    "O_行",
+                    None,
+                    None,
+                    None,
+                    false,
+                    Some(Some(points)),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .expect_err("invalid polygon");
+            assert!(err.contains(needle), "{needle}: {err}");
+        }
+        // A region has no recognition polygon.
+        b.save_asset(AssetDecl::region("R", [10, 10, 5, 5]), None)
+            .expect("region");
+        let err = b
+            .update_asset_meta_v3(
+                "R",
+                None,
+                None,
+                None,
+                false,
+                Some(Some(vec![[10, 10], [14, 10], [14, 14]])),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect_err("region polygon");
+        assert!(err.contains("no recognition polygon"), "{err}");
+        // Template: same-ROI polygon is allowed (no re-crop needed), a moved one
+        // is rejected with the re-crop hint.
+        b.update_asset_meta_v3(
+            "底图",
+            None,
+            None,
+            None,
+            false,
+            Some(Some(vec![[0, 40], [7, 40], [7, 47], [0, 47]])),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("template polygon with unchanged ROI");
+        let err = b
+            .update_asset_meta_v3(
+                "底图",
+                None,
+                None,
+                None,
+                false,
+                Some(Some(vec![[1, 41], [7, 41], [7, 47], [1, 47]])),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect_err("moved template polygon");
+        assert!(err.contains("must keep the existing ROI"), "{err}");
+    }
+
+    #[test]
+    fn ocr_var_polygon_saves_and_registers_the_runtime_mask() {
+        let td = TempDir::new("ocr-var-polygon");
+        let b = open(&td);
+        let mut decl = AssetDecl::ocr_var("O_队伍", "team", "队伍1", None);
+        decl.polygon = Some(vec![[10, 10], [40, 10], [40, 30], [10, 30]]);
+        let saved = b.save_asset(decl, None).expect("ocr_var with polygon");
+        // The polygon bbox becomes the recognition ROI on save.
+        assert_eq!(saved.roi, Some([10, 10, 31, 21]));
+        assert_eq!(
+            saved.polygon,
+            Some(vec![[10, 10], [40, 10], [40, 30], [10, 30]])
+        );
+        // Persisted round-trip + T5 accepts it.
+        let af = b.load_assets_file().expect("assets load (T5)");
+        let item = af.items.iter().find(|a| a.id == "O_队伍").expect("item");
+        assert_eq!(item.roi, Some([10, 10, 31, 21]));
+        assert_eq!(
+            item.polygon,
+            Some(vec![[10, 10], [40, 10], [40, 30], [10, 30]])
+        );
+        // Runtime wiring: the mask + the ocr_var ROI are registered.
+        let set = b.load_runtime_assets().expect("runtime assets");
+        assert!(set.is_ocr_asset("O_队伍"));
+        assert_eq!(
+            set.ocr_var("O_队伍")
+                .and_then(|v| v.roi)
+                .map(|r| (r.x, r.y, r.w, r.h)),
+            Some((10, 10, 31, 21))
+        );
+        let pts = set.ocr_polygon("O_队伍").expect("polygon mask");
+        assert_eq!(pts.len(), 4);
+        assert_eq!((pts[0].x, pts[0].y), (10, 10));
+    }
+
+    #[test]
+    fn ocr_lines_ocr_text_is_saved_as_the_expected_text_and_validated() {
+        let td = TempDir::new("ocr-lines-text");
+        let b = open(&td);
+        let mut decl = AssetDecl::ocr_lines("O_行", [0, 0, 40, 20]);
+        decl.ocr_text = Some("开始".to_string());
+        b.save_asset(decl, None).expect("ocr_lines with ocr_text");
+        let set = b.load_runtime_assets().expect("runtime assets");
+        // Plain OCR gate text + candidate filter come from the same table.
+        assert_eq!(set.ocr_expected_text("O_行"), Some("开始"));
+        assert_eq!(
+            set.ocr_roi("O_行").map(|r| (r.x, r.y, r.w, r.h)),
+            Some((0, 0, 40, 20))
+        );
+        // Blank text and non-OCR kinds are rejected.
+        let mut blank = AssetDecl::ocr_lines("O_空", [0, 0, 10, 10]);
+        blank.ocr_text = Some("   ".to_string());
+        let err = b.save_asset(blank, None).expect_err("blank ocr_text");
+        assert!(err.contains("must not be blank"), "{err}");
+        let mut tpl = AssetDecl::template("底图", [0, 0, 8, 8]);
+        tpl.ocr_text = Some("开始".to_string());
+        let err = b
+            .save_asset(tpl, Some(&frame(64, 48)))
+            .expect_err("template ocr_text");
+        assert!(err.contains("only valid for ocr_line/ocr_lines"), "{err}");
     }
 
     #[test]
