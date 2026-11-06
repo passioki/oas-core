@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 119
-updated_at: 2026-11-06T07:3x+08:00
-trigger: seq 118 审计/交接 → 用户反馈「任务『切换预设御魂』加两个参数后与 if 衔接，JSON 多处自动出现 sel: 觉醒材料」→ **seq 119：表达式插入防粘连 + 旧坏条件自愈 + 参数点击素材选择对话框 + 保存前 normalizeFlow；UI 2039/0、只推送不发布**
-status: in_progress               # seq 119 UI bugfix 已推送；更新检测鉴权/GC、tag 策略、产品验收待继续
-code_head: 本批提交后以 `git log -1` 为准（父 `05db80a`；本批代码为 UI bugfix）
+checkpoint_seq: 121
+updated_at: 2026-11-06T09:0x+08:00
+trigger: seq 119 UI bugfix → 用户指出参数点击素材选择不完善，给出 3 类操作区域来源 + 长按/曲线问题（seq 120 设计）→ 用户确认 4 项决策 → **seq 121：region 操作区域（asset/ocr/nearest/offset）+ long_press（默认 3s/随机范围）+ curve_swipe（多段近似）+ 构建页 UI + 等待动作解释；workspace 824/0、UI 2138；只推送不发布**
+status: in_progress               # region/long_press/curve_swipe 已实现；真机 E2E、模板多候选 nearest、发布策略、产品验收待继续
+code_head: 本批提交后以 `git log -1` 为准（代码 `644249c`；oas-runner `7e64156`）
 docs_head: 本批 docs 随代码提交（以 `git log -1` 为准；dev = main = origin）
-next_action: ① 更新检测鉴权/私有仓 token、`packages/remote` GC、UI 手动刷新/复用文案；② tag/Release 与两仓版本联动（未要求，暂不 tag）；③ 产品验收/P2/Phase 5；④ 恢复先读 `docs/AUDIT-2026-11-05.md` §5 + START-HERE/RESUME（seq 119）
+next_action: ① 真机验收长按/多段曲线时序；② 模板多候选 nearest（match_all/NMS，P2）；③ 更新检测鉴权/GC；④ tag/Release 策略与产品验收/P2/Phase 5；恢复先读 `docs/OPERATION-REGION-DESIGN.md §6` + START-HERE/RESUME（seq 121）
 ```
 
 ## 0. 目标（本阶段）
@@ -27,16 +27,21 @@ next_action: ① 更新检测鉴权/私有仓 token、`packages/remote` GC、UI 
 9. **seq 116（已实现）**：用户「好的，下一步」→ **Phase 1b 收尾**：① oas-core `oasd::cli::run_as_with_args`（默认参数可注入、用户可覆盖，commit `802f58b`）；② oas-runner 默认 `--ui ui` + pin `rev=802f58b`；③ 新仓 **`scripts/package-runner.ps1`**（cargo build → stage：exe/ui/models/adb/**bundled-data 生成**/live/README/BUILD-INFO/start-stop bat → 审计 → `/` zip；`-DataFrom`/`-ToolkitFrom` 自动探测、`-DryRun`）；④ 独立包 37,854,377 B，解压 smoke 50/50。
 10. **seq 117（已实现）**：用户「好的，下一步」→ ① **更新检测收尾**：`updates.cache_secs`（默认 60）+ Server feed 索引 TTL 缓存（命中不 curl）、`?refresh=1`、远程包缓存复用（`reused_cache`）、`POST /runner/updates/cache/clear`；② **参数编辑补齐**：文字来源三态组件覆盖 requires/expect/drag.from/to，T3「去声明…」预填 key；③ oas-runner rev bump `78be71d` 并重打独立包；④ E2E 三路全绿。
 11. **seq 118（已实现）**：用户反馈 ①「配置项没有任何解释，不知道怎么填，能干什么」；②「动作库里有参数，但 if 的『是』下拉没有，其他衔接下拉也未更新」；③ 要求重新审计代码/更新文档防漂移/交接后关机。→ ① **动作目录单一事实源** `actionCatalog()`：调色板 + if/loop「是/否/循环体」分支下拉统一，参数预设未声明时禁用+原因；② **配置项结构化表单**（帮助块/每参卡片/逐字段示例/语义校验/高级 JSON/T3 prefill 行）；③ **最终审计** `docs/AUDIT-2026-11-05.md` + 全套文档同步。
-12. **seq 119（本轮）**：用户反馈任务「切换预设御魂」加两个参数后与 if 衔接，JSON 多处自动出现 `sel: 觉醒材料`。→ ① 表达式「插入参数」防粘连（条件末尾自动 ` and `，`insertTextAtField` 统一）；② `repairConditionExpr` 自愈历史 `truetext_visible(...)`；③ 参数点击不再静默选第一个 OCR 素材：上下文复用/唯一素材直用/**多个时弹选择对话框**，取消不加步骤；④ `saveFlow` 前 `normalizeFlow` 清 if/while 遗留 `args.sel`；⑤ 用户任务畸形条件已修为 `text_visible(param('group'))`（保留其两参数/if 分支，工作区未提交）。
+12. **seq 119（已实现）**：用户反馈任务「切换预设御魂」加两个参数后与 if 衔接，JSON 多处自动出现 `sel: 觉醒材料`。→ ① 表达式「插入参数」防粘连；② `repairConditionExpr` 自愈历史坏值；③ 参数点击不再静默选第一个 OCR 素材（多个弹选择对话框）；④ `saveFlow` 前 `normalizeFlow` 清 if/while 遗留 `args.sel`；⑤ 用户任务畸形条件已修为 `text_visible(param('group'))`。
+13. **seq 120（设计）**：用户指出素材选择对话框不完善并给出 3 类区域来源（素材操作区域/多匹配最近/相对位移/参数 OCR 真实识别区域）+ 长按/曲线问题 → `docs/OPERATION-REGION-DESIGN.md` 设计草案 + 4 个待确认问题。
+14. **seq 121（本轮）**：用户确认：nearest 参考点=**OCR 识别 ROI 中心**；长按独立 op、默认 **3000ms**、随机范围；offset 相对 bbox 左上角；曲线用**多段近似**。→ ① 引擎 `region{asset,ocr,nearest,offset}` + `long_press` + `curve_swipe` + flow_ops 7→11；② 构建页动作库/操作区域/长按/曲线面板；③ **等待动作解释**（阻塞等待、继续下一步、超时失败、不触发独立动作）；④ workspace **824/0**、UI **2138**、E2E 发布包 flow_ops 验证通过。
 
-## 1. 状态（2026-11-06 07:3x，seq 119）
+## 1. 状态（2026-11-06 09:0x，seq 121）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | oas-core `dev`（本批 docs 提交后以 `git log -1` 为准；父 `05db80a`）；oas-runner `main` = `a6b8670`（Runner 未受本次 UI bugfix 影响，pin 保持 `5b0b107`）；未 tag / 未 release |
-| 任务状态 | **in_progress**：UI bugfix ✅（表达式插入/坏条件自愈/参数点击素材选择/保存前 normalize）；更新检测鉴权/GC、tag 策略、产品验收待继续 |
-| 双入口 | Studio `http://127.0.0.1:8788/` · Runner `http://127.0.0.1:8789/`；oas-runner 独立 app pin oas-core `5b0b107` |
-| 测试 | `cargo test --workspace` **801 / 0**（Rust 未改，基线）；UI pure test **2039 checks / Studio 164 ids / Runner 158 / 0 dead / 6 nav**（+11）；`node --check` 3/3；`git diff --check` clean |
+| 分支 / HEAD | oas-core `dev`（本批 docs 提交后以 `git log -1` 为准；代码 `644249c`）；oas-runner `main` = `7e64156`（pin `644249c`，cargo build exit 0）；未 tag / 未 release |
+| 任务状态 | **in_progress**：region/long_press/curve_swipe ✅、构建页 UI ✅、等待语义说明 ✅；真机 E2E/模板多候选 nearest/发布策略/产品验收待继续 |
+| 双入口 | Studio `http://127.0.0.1:8788/` · Runner `http://127.0.0.1:8789/`；oas-runner 独立 app pin oas-core `644249c` |
+| 测试 | `cargo test --workspace` **824 / 0**（23 suites；flow **77** / runtime **178**+2 / task **119** / adapter-pc **5** / oasd 412）；UI pure test **2138 checks / Studio 164 ids / Runner 158 / 0 dead / 6 nav**（+99）；debug+release OCR build exit 0（**1 warning**）；`git diff --check` clean |
+| 新能力 | `region`（asset/ocr/nearest/offset）· `long_press`（hold_ms 3000 / hold_range 随机）· `curve_swipe`（多段近似）· flow_ops 11 个（新 4 标记） |
+| 服务 | 无 `oasd`/`oasd-runner` 进程；8787/8788/8789/8792~8796 无监听 |
+| 数据边界 | `scheduler.json` 未提交；用户任务 `tasks/切换预设御魂/{flow,meta}.json` 为用户编辑 + Lead 修复 cond，**工作区未提交**；其余已提交/推送 |
 | 发行包 | 按用户「推送即可，不用发布」**本轮未重打/未上传**；沿用 seq 118 本地产物：Studio `F2184381…1B2F`、oas-core Runner `163679D6…9065`、oas-runner `F6A6C301…D46C` |
 | 独立仓 | `https://github.com/passioki/oas-runner`（`a6b8670`）；pin 仍 `5b0b107`（UI bugfix 不进入 Runner 产物） |
 | 服务 | 无 `oasd`/`oasd-runner` 进程；8787/8788/8789/8792~8796 无监听 |
@@ -163,6 +168,23 @@ next_action: ① 更新检测鉴权/私有仓 token、`packages/remote` GC、UI 
 | 数据 | **用户任务修复** | `tasks/切换预设御魂/flow.json` 条件修为 `text_visible(param('group'))`（保留用户两参数/if 分支；工作区未提交） |
 | 验证 | UI only | UI pure test **2039/164/158/0 dead/6 nav**（+11）；`node --check` 3/3；`git diff --check` clean；Rust 未动（workspace 801/0 基线）；**按用户要求只推送、不发布**（未重打 release/tag） |
 
+## 1.15 2026-11-06 09:0x（seq 121）region 操作区域 + long_press + curve_swipe（已实现）
+
+> 用户确认 seq 120 设计 4 项并追问等待语义。实现 `ENGINE §22.61`；台账 `PENDING §E-91`。
+
+| # | 交付 | 结果 |
+|---|---|---|
+| region | **4 模式** | `region{mode:asset|ocr|nearest|offset, offset:[dx,dy(,w,h)]}` 挂 click_target OCR（含 inline）/ drag OCR 端点 / long_press.find；nearest=行 bbox 中心距 **OCR 识别 ROI 中心**最近；offset=行 bbox 左上角+偏移（2/4 元）；无 region=现状；非 OCR kind 报错 |
+| long_press | **独立长按** | find 复用 locator 链；`hold_ms` 默认 **3000**（100..=10000）；`hold_range` 随机拟人优先；requires/expect；InputSink 默认 `swipe(p,p,ms)` + Adb `input swipe x y x y ms`；不记 clicks |
+| curve_swipe | **多段近似** | points 2..=32、duration_ms [600,1000]/100..=10000；逐段独立 swipe（日志注明）；flow_ops 门禁 |
+| flow_ops | **7→11** | `long_press`/`curve_swipe`/`click_target.region`/`drag.region`；旧 flow 空集；老 Runner 拒绝 |
+| UI | **构建页** | 动作库长按/曲线/参数长按；操作区域下拉+offset；hold/points 面板；保存前校验；**等待语义帮助**（阻塞等待→下一步；超时失败；不触发独立动作） |
+| E2E | **新包** | `regiontest` lint 0 errors → publish → manifest flow_ops 含 4 个新标记（`_verify\opregion-e2e-20261106\`） |
+
+**验证**：workspace **824/0**（flow 77 / runtime 178+2 / task 119 / adapter-pc 5 / oasd 412）；UI **2138/164/158/0 dead/6 nav**；debug+release build exit 0（1 warning）；提交 oas-core `644249c`、oas-runner `7e64156`（pin `644249c`）；**只推送、未重打 release/未 tag**。
+
+**剩余**：真机长按/曲线时序验收、模板多候选 nearest（P2）、更新检测鉴权/GC、产品验收/P2/Phase 5。
+
 ## 2. 本批交付（seq 110）
 
 | # | 交付 | 结果 / 证据 |
@@ -236,8 +258,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\OAS-dev\_verify\release-b
 cd D:\OAS-dev\oas-core
 git log -1 --format="%h %ci %s"     # 本批提交后以实际为准
 git status --porcelain              # 只有用户数据；scripts/docs 应已 clean
-cargo test --workspace              # 801/0（oasd lib 412 + bin 0 / task 116 / flow 70 / runtime 167+2）
-node apps\oasd\ui\ui_pure_test.js   # 2039 / 164 / 158 / 0 / 6 nav
+cargo test --workspace              # 824/0（flow 77 / runtime 178+2 / task 119 / adapter-pc 5 / oasd 412）
+node apps\oasd\ui\ui_pure_test.js   # 2138 / 164 / 158 / 0 / 6 nav
 # oas-runner 独立构建/打包（新仓）：
 #   cargo build --manifest-path D:\OAS-dev\oas-runner\apps\runner\Cargo.toml --target-dir D:\OAS-dev\oas-runner\target
 #   powershell -NoProfile -ExecutionPolicy Bypass -File D:\OAS-dev\oas-runner\scripts\package-runner.ps1 -DataFrom D:\OAS-dev\oas-core
@@ -249,6 +271,7 @@ node apps\oasd\ui\ui_pure_test.js   # 2039 / 164 / 158 / 0 / 6 nav
 
 ## 7. 证据
 
+- **region / long_press / curve_swipe（seq 121）**：`docs/OPERATION-REGION-DESIGN.md §6`；代码 `644249c`；workspace 824/0、UI 2138；新建 op/region E2E `_verify\opregion-e2e-20261106\`（lint 0 / publish flow_ops 4 新标记）；oas-runner pin `644249c`（`7e64156`）。
 - **参数插入/条件修复/素材选择（seq 119）**：`apps/oasd/ui/{builder.js,ui_pure_test.js}`；UI 2039 checks；用户任务 `tasks/切换预设御魂/flow.json` 条件已修复（工作区未提交）；按用户要求只推送、不发布。
 - **动作目录统一 / 配置项表单 / 最终审计（seq 118）**：`docs/AUDIT-2026-11-05.md`；代码 `5b0b107`；UI 2028 checks；截图 `_verify\p7-config-ui-20261105\`（4 张：结构化表单/高级 JSON/空态/T3 预填）；oas-runner 独立包 `37,870,658 B / F6A6C301…D46C`（pin `5b0b107`）。
 - **更新检测收尾 / 参数编辑补齐（seq 117）**：oas-core 代码 `78be71d`；E2E 三路 ALL PASS；`_verify\p6-params-gaps-20261105\`（3 张构建页截图：guards/drag endpoints/T3 prefill）· oas-runner 独立包 **37,871,134 B / `B127C0FC…66DB`**（rev `78be71d`）。

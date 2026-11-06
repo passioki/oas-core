@@ -3140,3 +3140,38 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 
 - UI pure test **2039 checks**（2028+11：`exprInsertText` 的 ` and ` 连接/空值/尾部运算符/中段边界、`repairConditionExpr` 修复与幂等；静态断言分支共用 `prepareActionStep`、素材选择对话框、保存前 `normalizeFlow`）；`dom_id_audit` 164/0；`runner_ui_audit` 158/0/6 nav；`node --check` 3/3；`git diff --check` clean。
 - 仅改 UI（`apps/oasd/ui/builder.js`、`ui_pure_test.js`）；Rust 后端未动（workspace 801/0 基线不变）；按用户「推送即可，不用发布」未重打 release、未 tag。
+
+### 22.61 ★★★ [11-06 08:3x→09:0x] **操作区域 region 模型 + long_press + curve_swipe + 等待语义说明（seq 121）**
+
+> 用户确认设计（`docs/OPERATION-REGION-DESIGN.md §6`）：① nearest 参考点 = **参数 OCR 识别真实区域的 ROI 中心**；② 长按独立 op、默认 3000ms、随机范围可调（拟人）；③ offset 相对匹配/识别 bbox 左上角；④ 曲线用**多段近似**。并追问「等待参数出现」语义（UI 缺解释）。实现记录；台账 `PENDING §E-91`；断点 `RESUME` seq 121。
+
+#### 22.61.1 `region` 操作区域（可选，旧 flow 零变化）
+
+- 新 `OpRegion { Asset | Ocr | Nearest | Offset{dx,dy,w,h} }` + `parse_region`（mode 枚举；`offset` 仅 offset 模式；2 或 4 元整数；4 元时 w/h>0；±1e6 边界；非 `kind:"ocr_text"` 带 region → 路径精确报错）。
+- 挂载：`click_target.find[]` 的 `Locator::OcrText/OcrTextInline`、`drag.from/to` 的 `DragTarget::OcrText`、`long_press.find[]`。
+- 运行期统一 helper：`ocr_line_candidates` / `nearest_ocr_line`（行 bbox 中心距 **OCR 识别 ROI 中心**最近，距离平方）/ `offset_region_rect`（左上角 + dx,dy；4 元改尺寸，2 元继承）/ `clamp_to_frame`。
+- 语义：`asset`=素材操作区域（否则行 bbox）；`ocr`=强制匹配行 bbox（单行 OCR 用识别 ROI）；`nearest`=多行候选中取离识别 ROI 中心最近的一行；`offset`=行 bbox 左上角 + 偏移。无 region = 现状（click 素材 action_shape 优先、drag 行 bbox）。`requires/expect` 的 OCR 文字不支持 region（只做文字判断）。
+- flow_ops（7→**11**）：新增 `long_press`、`curve_swipe`、`click_target.region`、`drag.region`；从原始 flow 递归推导；纯旧 flow 推导仍为空集，老 Runner 拒绝新标记。
+
+#### 22.61.2 `long_press` op
+
+- `{"op":"long_press","args":{"find":[...],"hold_ms":3000,"hold_range":[2500,3500]}}`；`find` 复用 click_target locator 链（模板/OCR/区域/坐标记忆 + region）；`hold_ms` 默认 **3000**、100..=10000；`hold_range` 可选 [min,max]（100..=10000，min≤max）随机拟人、优先于 hold_ms；`requires/expect` 支持。
+- 输入层：`oas-types::InputSink` 新增默认方法 `long_press(p,ms) = self.swipe(p,p,ms)`（apps 的 Logged/ReconnectingInput 零改动继承；审计记同点 swipe）；`AdbInput::long_press` = `input swipe x y x y ms`；runtime `FakeInput` 记录并断言。长按不记入 clicks 审计（click≠press）。
+
+#### 22.61.3 `curve_swipe` op（多段近似）
+
+- `{"op":"curve_swipe","args":{"points":[[x,y],...],"duration_ms":[600,1000]}}`；points 2..=32 屏内整数点；duration_ms 默认 [600,1000]、100..=10000、min≤max；总时长随机后按段均分，逐段 `input.swipe`（每段独立手势，日志注明）。ADB 无法单手势连续曲线，这是用户确认的折中。
+
+#### 22.61.4 UI（构建页）与等待语义
+
+- 动作库新增「长按 `long_press`」「曲线滑动（多段近似）`curve_swipe`」「参数文字长按 `param_long_press_text`」预设；`actionCatalog` 单一目录使动作库/if 分支下拉自动同步。
+- `click_target` OCR 定位器 / `drag.from|to` / `long_press.find` 共用「操作区域」下拉（默认/素材操作区域/OCR识别区域/最近匹配/相对偏移 + dx/dy/w/h），写回 region（保留未知字段、非 offset 删 offset、默认删 region）；保存前 `regionIssues`/`actionArgsIssues` 校验并阻止坏值。
+- long_press 面板：hold_ms 3000（100~10000）+ hold_range 勾选启用；curve_swipe 面板：points JSON + duration 范围 + 风险说明；屏内校验用 `/task/assets` 的 `design_resolution`（缺失 fallback 1280×720）。
+- **等待动作解释**：「等到条件 / 等待参数文字」是**阻塞等待步骤**——条件成立后继续执行**下一个 flow 步骤**（不会触发独立动作）；超时（timeout_s）本步失败。动作库 title、属性面板帮助、index.html 动作库说明已统一；`param_wait_text` 生成 `wait_until {cond:"text_visible(param('key'))", timeout_s:10}`。
+
+#### 22.61.5 验证
+
+- `cargo test --workspace` **824 / 0**（23 suites；flow 70→**77**、runtime **178**+2 integration、task 116→**119**、adapter-pc 3→**5**、oasd 412 不变）；debug+release OCR build exit 0（**1 warning** 无新增）。
+- UI pure test **2138 checks / Studio 164 / Runner 158 / 0 dead / 6 nav**（+99）；`node --check` 3/3；`git diff --check` clean。
+- **新建 op/region E2E（debug 二进制）**：临时任务 `regiontest`（click_target region=nearest、drag from region=offset、long_press hold_range、curve_swipe）→ `oasd task lint` **0 errors** → publish 成功 → manifest `flow_ops = click_target.region,click_target.text_expr,curve_swipe,drag.region,long_press`。证据 `_verify\opregion-e2e-20261106\`。
+- 提交：oas-core `644249c`（code；dev=main=origin）；oas-runner `7e64156`（pin `644249c`，`cargo build` exit 0）；按用户要求只推送、未重打 release / 未 tag。

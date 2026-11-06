@@ -4478,3 +4478,28 @@ Rust 后端未动（workspace 801/0 基线不变）；按用户「推送即可�
 2. 长按形态（独立 op vs click_target `hold_ms`）与默认时长。
 3. offset 基准（匹配/识别 bbox 左上角 vs 中心 vs 素材 roi）。
 4. 曲线方案（保持直线拟人 / 多段近似 / 模拟器低层注入）。
+
+# ★ §E-91 ★★★ [11-06 08:3x→09:0x] **region 操作区域 + long_press + curve_swipe + 等待语义说明（seq 121）**
+
+> 用户确认 §E-90 的 4 个问题（nearest 参考点=OCR 识别 ROI 中心；长按独立 op/默认 3000ms/随机范围；offset 相对 bbox 左上角；曲线多段近似）并要求解释「等待参数出现」。实现 `ENGINE §22.61`；设计 `docs/OPERATION-REGION-DESIGN.md §6`；断点 `RESUME` seq 121。
+
+## A. 交付
+
+| # | 项 | 结果 | 状态 |
+|---|---|---|---|
+| region | **4 模式操作区域** | `OpRegion{asset,ocr,nearest,offset}` 挂 click_target OCR locator（含 inline）/ drag OCR 端点 / long_press.find；nearest=行 bbox 中心距 OCR 识别 ROI 中心最近；offset=行 bbox 左上角+dx,dy（2/4 元）；无 region=现状；非 OCR kind 报错 | ✅ |
+| long_press | **独立长按 op** | find 复用 locator 链；hold_ms 默认 3000（100..=10000）；hold_range 随机拟人优先；requires/expect；InputSink 默认 `swipe(p,p,ms)` + Adb `input swipe x y x y ms` + runtime FakeInput 记录；不记 clicks | ✅ |
+| curve_swipe | **多段近似曲线** | points 2..=32、duration_ms 范围；逐段 `input.swipe`（独立手势，日志注明）；flow_ops 覆盖 | ✅ |
+| flow_ops | **门禁** | SUPPORTED_FLOW_OPS 7→11（+long_press/curve_swipe/click_target.region/drag.region）；纯旧 flow 空集；老 Runner 拒绝 | ✅ |
+| UI | **构建页** | 动作库长按/曲线/参数长按；操作区域下拉+offset；hold/points 面板；保存前校验；**等待动作帮助**（阻塞等待、继续下一步、超时失败、不触发独立动作） | ✅ |
+| E2E | **新 op/region 包** | 临时任务 lint 0 errors → publish → manifest flow_ops 含 4 个新标记 | ✅ |
+
+## B. 验证 / 提交
+
+- workspace **824/0**（flow 77 / runtime 178+2 / task 119 / adapter-pc 5 / oasd 412）；UI **2138/164/158/0 dead/6 nav**（+99）；debug+release build exit 0（1 warning）。
+- E2E 证据 `_verify\opregion-e2e-20261106\`（flow.json/meta/发布包 flow_ops 输出）。
+- 提交：oas-core `644249c`（code；dev=main=origin）；oas-runner `7e64156`（pin `644249c`，构建 exit 0）；未重打 release / 未 tag。
+
+## C. 风险 / 后续
+
+① 模板多候选 nearest（match_all/NMS）未做（P2）；② 单行 OCR 无行 bbox：`ocr/nearest` 退化为识别 ROI、offset 基于 ROI；③ curve_swipe 每段独立手势（App 可能视为多次滑动，设计已接受）；④ long_press 在 apps 的 Logged/ReconnectingInput 继承默认实现 → 审计记同点 swipe；⑤ UI 屏内校验依赖 `design_resolution`（缺失 fallback 1280×720）；⑥ 无真实设备 E2E（真机长按/多段曲线时序需验收）。
