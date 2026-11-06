@@ -1,6 +1,6 @@
 # 操作区域与动作能力设计（Operation Region / Actions）
 
-> 状态：**P1（region/long_press/curve_swipe）已实现（seq 121，commit `644249c`）；A 方案 `region.asset` + 多候选 nearest 已实现（seq 122，commit `ba6813e`）**；但 **2026-11-06 12:0x 用户重新梳理概念（seq 123），本文 §6/§7 的交互方向将被 `docs/PARAM-ASSET-REDESIGN.md` 重构**（region 底层语义可复用，UI/动作库需重做）；新会话先读该文档。
+> 状态：**P1（region/long_press/curve_swipe）已实现（seq 121，commit `644249c`）；A 方案 `region.asset` + 多候选 nearest 已实现（seq 122，commit `ba6813e`）；seq124（2026-11-06 13:1x）操作区域已改为资产级 `op_region` 链（实现 `ENGINE §22.64`、设计/裁决 `PARAM-ASSET-IMPLEMENTATION.md`）——本文 §6/§7 为历史 A 方案与底层语义参考，现行口径看 §8；用户权威要求原文见 `PARAM-ASSET-REDESIGN.md §1b`。**
 > 触发：用户反馈参数文字点击的素材选择对话框「并不完善」，并给出操作区域的 3 类来源 + 动作能力问题
 > （长按？任意曲线滑动？）。
 > 本文先对照**当前引擎事实**，再给统一模型与分期实现计划；实现记录见 `ENGINE §22.61/§22.62` / `PENDING §E-91/§E-92`。
@@ -192,3 +192,67 @@
 3. **动作落点**：点击/长按/拖动落在选出的操作区域内随机点；**不是**参数 OCR 文字框（要文字框请用 `mode=ocr`）。
 
 约束：`region.asset` 只允许 `mode=asset`/`nearest`；`mode=ocr`/`offset` 带 asset = 解析错误；flow_ops 新增 `click_target.region_asset` / `drag.region_asset` 标记（long_press 由 `long_press` 标记覆盖），老 Runner 拒绝新包；T4 收集 region.asset 作为素材引用。
+
+## 8. 现行口径（seq124，2026-11-06 13:1x 已实现）
+
+> 操作区域配置从 flow 级 `region` 移到**素材级**（`assets.json items[].op_region`）：动作库只选目标素材、不再面对「OCR 素材 + 操作区域素材 + region 模式」交互；底层几何（`click_box_for` 平移、全帧金字塔回退、多候选枚举）全部保留。本节取代 §2/§6/§7 的交互方向；设计/Lead 裁决 13 条见 `PARAM-ASSET-IMPLEMENTATION.md`，实现记录 `ENGINE §22.64`。
+
+### 8.1 数据模型（`assets.json items[].op_region`）
+
+```json
+{"mode":"self"}                                          // 缺省（字段可省）；= 现有 action_shape/click_back 平移语义
+{"mode":"offset","offset":[dx,dy,w,h]}                   // 相对【真实识别区域】左上角；w/h=绘制的操作区尺寸
+{"mode":"asset","asset":"<素材/集合 id>","pick":"score"}  // pick 可省，默认 score；nearest=距上一节点真实区域中心最近
+```
+
+- 适用：可识别素材（`template`/`collection`/`ocr_line`/`ocr_lines`/`ocr_var`）；`region` 素材**禁止**带 `op_region`（它自身 `roi` 即操作区）。
+- 链末端必须 `self`/`offset`；`region` 素材与 collection 可作**末端固定区域节点**（Lead 裁决 11：region 的 roi 直接作为操作区，不参与识别/pick；collection 无自身 op_region，按成员几何）。
+- 字段/类型/常量：`oas-task/lib.rs:104-131`（`OpRegion`/`OP_REGION_PICKS`）、`:61/:69/:72`（KINDS/节点 kind/深度上限 16）。
+
+### 8.2 校验（保存/配置时，服务端权威）
+
+- `oas_task::validate_op_region_chain`（`oas-task/lib.rs:529`，DFS `:563`）：节点存在性、kind 合法性、末端模式、环检测（visited）、深度 ≤16、`region` 节点不得带 `op_region`、owner 不能是 `region`。
+- 保存/更新素材时同一校验（`save_asset`/`save_assets`/`asset/update`，`serve.rs:3431/5426/5770`）；对话框保存前调 `POST /task/asset/validate_op_region`（`serve.rs:4930`，返回 `chain/depth` 或 400 `{path,msg}`）——UI 实时校验只是提示（Lead 裁决 13）。
+- 删除/重命名被链引用的素材：删除 400 阻断、rename 重写引用（`oas-task/lib.rs:648,2153,2205`）。
+
+### 8.3 运行时语义（依次识别；缺一=本步失败）
+
+1. 识别动作目标素材（根节点多候选取最高分/最佳匹配）→ 得到真实识别区域。
+2. 按该素材 `op_region` 逐级走链：
+   - `self` → 历史操作区语义（有 `action_shape`/`click_back` 则平移，否则真实识别区域）；
+   - `offset` → 本节点真实识别区域左上角 + `[dx,dy]`，尺寸用 `w×h`；
+   - `asset` → 识别被引用素材（多候选取 `pick`：score=最高分；nearest=中心距**上一节点**真实识别区域中心最近、平分比 score），再继续**它**的 `op_region`；
+   - `region`/collection → 末端，region 的 roi（collection 用成员/集合几何）即操作区。
+3. 末端操作区内采样落点执行点击/长按/拖动。
+4. **任一节点未声明/无候选/低于阈值 = 本步失败，不点击、不 fallback**；运行时 visited+深度 16 双保险（`MAX_OP_REGION_CHAIN_DEPTH`，`runtime:352`）；步骤日志附 `region_chain=[A:self -> B:offset -> R:region]`（`runtime:435-445`）。
+5. flow 旧 `region` 字段存在时**优先级高于**素材 `op_region`（旧行为兼容）；无 flow region 且素材无链/`self` 时旧点击路径逐字节不变（`has_op_region_chain` `runtime:640`）。
+6. 编辑器演练/测试与真实运行共用同一 resolver：`resolve_asset_op_region`（`runtime:2707`）→ `walk_op_region_chain`（`:3019`）→ `recognize_chain_node`（`:3115`）；`preview_asset_action`（`:2778`）供 `POST /task/asset/test_action`。
+
+### 8.4 与旧 flow `region`（§6/§7）的关系
+
+- 旧 `region{mode:asset|ocr|nearest|offset}` 的解析/运行时**全部保留**（`oas-flow` 本轮零改动），仅作为旧 flow 兼容：优先级 flow region > 素材 op_region；新 UI 新步骤**不生成** `region`。
+- 构建页 region 编辑器只对「旧 flow 已带 region」的步骤显示（高级/兼容区，`builder.js:2902,3187-3202`）；新步骤提示「操作区由目标素材的 op_region 决定（到素材行「操作区」设置）」。
+- flow_ops 未新增标记（仍 13，`package.rs:81-95`）：`op_region` 是 assets 字段而非 flow 能力，不进 `derive_flow_ops`。
+
+### 8.5 UI 流程摘要（素材行「设置 → 操作区」递归对话框）
+
+1. 打开对话框显示当前素材 `op_region` 与面包屑；三选一：①「当前素材操作区」（self，默认）②「相对偏移」→切工作台画布（§8.6）③「引用素材库素材」（搜索框，列表含全部素材并标注类型；region 标注仅末端）。
+2. 选中引用素材后**同一对话框内递归展开**被引用素材的 op_region 三选一（缩进/面包屑），提示「修改会影响其它引用该素材的素材/动作」；每级引用可选 `pick`（评分最高/距离最近）。
+3. 任一级可回退；「确定」前调 `POST /task/asset/validate_op_region` 服务端校验；成功后一次提交写入当前素材 `op_region` + 被改动引用素材的 `op_region`（多级 update，`app.js:5691-5717`）。
+
+### 8.6 相对偏移绘制（工作台画布，取代量尺）
+
+- 进入绘制模式→先画「模拟识别区域」（默认取素材位置帧 ROI，可重画，蓝虚线）→再画「操作区域」（橙实线，**尺寸=本次绘制**）→实时显示 `offset=[dx,dy,w,h]`（`dx=操作区.x−模拟识别区.x` 等，`app.js:3606 offsetFromDraw`）→确认后回填对话框/保存。
+- 视图：`app.js:2958 startOffsetDrawForAsset`、`:3066-3100` 叠层、`:3104-3140 finish`；绘制期间禁用其它选择模式。**未做**剪贴板量尺（被事项 4 取代）。
+
+### 8.7 实现锚点与验证
+
+| 层 | 位置 |
+|---|---|
+| 数据/校验 | `oas-task/lib.rs:104-131,423,476,529,563,648,1843-1889,2153` |
+| 运行时 | `oas-runtime/lib.rs:352,362,386,411,426,487-527,605-688,2707,2778,3019,3115,3460,3537,3637,3743,4149,4262,4841,5018,5149,5326` |
+| serve API | `serve.rs:172,2000,2003,2018,4576,4930,5006,5632,5692,5770` |
+| UI | `app.js:19,2958,3066-3140,3606,4312,5115,5174,5450-5730`；`builder.js:2902,3084,3187-3202` |
+
+- E2E（`_verify/seq124-e2e-20261106/`）：`validate_op_region_asset_chain`（depth=2，末端 region）与 `offset` 200；`dangling`/`cycle` 400；`test_action_dry_chain`（`action_box=[100,50,80,40]`、`chain_depth=2`、`point` 在末端区内）；缺失节点 400 不点击。
+- 未做/后续：候选 API 的链几何预览（`op_rect`）；`test_action` 的 drag 手势；素材行长按测试入口；真机落点 E2E。

@@ -3216,9 +3216,9 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 
 ① 多候选仅模板/集合（region 固定、OCR 资产无多候选）；模板有 roi 时只在 roi 内搜（`nearest` 不走 best 路径的全帧 pyramid 回退）；② NMS 半径固定、候选上限 64（极端画面截断）；③ 单行 OCR 参考点退化为识别 ROI 中心；④ 手改已安装 flow 绕过发布门禁时老 Runner 仍会忽略 asset（历史已知风险）；⑤ `nearest` 每模板/成员全帧多候选 NCC 比 best 慢（1280×720 未实测）；⑥ 需要真机验收操作区域落点/多匹配选择是否符合预期。
 
-### 22.63 ★★★ [11-06 12:0x] **用户新要求：参数→素材 / 动作库去参数化 / 素材多候选 / 操作区递归 / 量尺（待设计实现，seq 123）**
+### 22.63 ★★★ [11-06 12:0x] **用户新要求：参数→素材 / 动作库去参数化 / 素材多候选 / 操作区递归 / 量尺（seq123 记录 → ✅ seq124 已实现，见 §22.64）**
 
-> **未实现**。用户重新梳理概念并推翻动作库参数方向；完整需求/影响/待确认见 **`docs/PARAM-ASSET-REDESIGN.md`**，台账 **`PENDING §E-93`**。§22.62 的 `region.asset`/多候选匹配可作为底层能力复用，但 UI 与动作库要按新模型重做。
+> **已实现（seq124）**。本节为 seq123 需求记录；实现记录/最终口径见 **§22.64**，方案与 Lead 裁决见 **`docs/PARAM-ASSET-IMPLEMENTATION.md`**，台账 **`PENDING §E-93`**（已归档）。
 
 要点（待设计）：
 1. 动作库**删除参数预设**（`param_click_text`/`param_wait_text`/`param_long_press_text`）；「参数文字点击」先改名「参数文字动作」，最终按“参数=素材”处理。
@@ -3227,3 +3227,87 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 4. **量尺**：相对偏移编辑时测两点直线距离并复制剪贴板。
 5. **操作区域三方式**：参数真实识别区域 / 素材库素材操作区域（单/多候选最近）/ 相对偏移；支持**递归套娃**（素材1→素材2→…→末端区域），需防环；运行=依次识别，缺一即本步失败。
 6. **废弃操作区域“与真实识别区域有无交集”两状态**：先审计现有全图回退/位移逻辑，确认无意义后删除。
+
+### 22.64 ★★★ [11-06 13:1x→13:2x] **参数→素材 / 操作区递归 / 候选识别 / 废弃两状态（seq124 已实现）**
+
+> 用户 2026-11-06 12:1x 六项要求（原文见 `PARAM-ASSET-REDESIGN.md §1b`）的落地记录；设计与 Lead 裁决 13 条见 `PARAM-ASSET-IMPLEMENTATION.md`（§0/§⑤/末节「★★ Lead 简化令」「★ Lead 裁决」）。实现任务：P0a 候选 helper / P0b 两状态降级 / P0c UI 去参数预设 → B-T1（oas-task 模型/op_region 校验/sync/T8）→ B-T2（runtime ocr_var 读取/链解析/候选 helper）→ B-T3a/B-T3b（serve 字段/同步/候选/test_action/validate）→ U-T4/U-T5/U-T6（Studio 素材行·对话框·画布、构建页目标选择、Runner 分节）。
+> 证据：仓外 `_verify/paramasset-audit-20261106/`（3 份只读审计）、`_verify/seq124-e2e-20261106/`（27 断言，13:19 最终 run）；代码=HEAD `c33a822` 之后工作区全部未提交改动；**oas-flow / oas-perceive / oas-obs / run.rs / runner_config.rs 本轮零改动**（git status 实测）。台账与断点由 Lead 在 `PENDING-LEDGER`/`RESUME*` 回填。
+
+#### 22.64.1 六项要求 → 实现映射
+
+| # | 用户要求 | 实现 |
+|---|---|---|
+| 1 | 动作库删参数预设 | `PARAM_ACTIONS`/`PARAM_GROUP`/参数分支已删（`builder.js` grep 0 命中；只剩真实 op `OP_META` `builder.js:4`、`GROUP_ORDER` 无「参数」`builder.js:31`）；动作目标=素材库素材（`actionTargetEditor` `builder.js:3084`，候选 `assetTargetOptions` `:2236`，ocr_var→`text_expr:"param('<param_key>')"` `:2283-2300`） |
+| 2 | 参数=素材的一种（使用端OCR文字配置项） | 新 kind `"ocr_var"`（`oas-task/lib.rs:61`，第 5 个 kind）；`runtime_text/label/param_key`（`:746-761`）+ `roi` 可空；构造器 `AssetDecl::ocr_var`（`:806`）；Runner 改值仍落 `values.json`；`meta.params` 由唯一 sync 函数派生 `asset_id` 行（`ocr_var.rs:211`） |
+| 3 | 素材行识别=全部候选+评分；演练测全部候选、真实点测可选候选 | 公共候选枚举 `candidates_for_asset`（`oas-runtime/lib.rs:1384`；模板/集合复用 `perceive:665/699`）+ API `GET /task/asset/candidates`（`serve.rs:4576`）；素材行「识别」→`testAssetCandidates`（`app.js:5115`，`boxes` 画全部、结果区逐条 `#i score=…`）；演练/真实点测经 `POST /task/asset/test_action`（`serve.rs:5006`）+ 候选下拉 `#candidate-select`（`app.js:19,4280-4304`） |
+| 4 | 相对偏移改为画布画「模拟识别区+操作区」 | 工作台画布绘制模式（`startOffsetDrawForAsset` `app.js:2958`、双区域绘制 `:3066-3100`、`offsetFromDraw` `:3606` 算 `[dx,dy,w,h]`、完成 `:3104`）；模拟识别区默认取素材识别区、可重画；不做剪贴板量尺 |
+| 5 | 操作区三方式+递归套娃+防环 | `assets.json items[].op_region` 三模式（`oas-task/lib.rs:104-131`）；保存/配置校验 DFS+深度 16（`validate_op_region_chain` `:529`）；运行时链解析（`resolve_asset_op_region` `runtime:2707`→`walk_op_region_chain` `:3019`→`recognize_chain_node` `:3115`，visited/16 兜底）；素材行「操作区」递归对话框（`app.js:5450`），服务端 `POST /task/asset/validate_op_region`（`serve.rs:4930`）为唯一权威 |
+| 6 | 废弃操作区两状态 | 审计确认 `action_source` 只在数据/编辑器层、`oas-runtime` 0 命中（`01-region-two-states-audit.md §1`）；字段降级为兼容字段（保留反序列化、`skip_serializing` 不再写：`oas-task/lib.rs:715-716,860`），删两状态校验/UI 规则；`action_shape` 保留为 `op_region.mode=self` 数据源；全帧金字塔回退与 shape 平移能力保留 |
+
+#### 22.64.2 Schema（assets.json / meta.json / values.json / flow）
+
+- `assets.json`：`schema_version` 仍 1，新字段全 optional、旧文件无需迁移：
+  - `kind:"ocr_var"`：`runtime_text`（必填 ≤200 字符）、`param_key`（必填，`[A-Za-z_][A-Za-z0-9_]*` ≤64，创建后只读）、`label`（可选 ≤80）、`roi` 可空（**空=全屏 OCR**）；禁 `file/polygon/ocr_mode/ocr_source_roi`；强制 det+rec（加载分支 `oas-task/lib.rs:1843-1889`，字段校验 `:423`）。
+  - `op_region`（可识别素材可选；`region` 素材禁止带）：`{"mode":"self"}`（缺省等价，历史行为）/ `{"mode":"offset","offset":[dx,dy,w,h]}`（相对**真实识别区域**左上角，w/h=绘制的操作区尺寸，±1e6、w/h>0）/ `{"mode":"asset","asset":"<id>","pick":"score|nearest"}`（递归引用；pick 缺省 score）。`region`/collection 可作**末端**节点（region 的 roi 即操作区，Lead 裁决 11）。
+- `meta.json`：`ParamDecl` 新增 `asset_id: Option<String>`（`meta.rs:92-99`）：带 `asset_id` = 派生行（`type=string`、`role=ocr_text`、`default=runtime_text`、`label=素材 label/id`；`group/description` 保留用户值）；派生行约束校验 `meta.rs:712-742`。**运行链路不变**：lint/四层注入/`param()`/`values.json`/发布 `params_schema` 全部照旧（`run.rs`/`runner_config.rs` 零改动）。
+- `values.json`：schema 零改动，键=`param_key`（迁移期=旧 key），Runner 保存路径不变。
+- `flow.json`：**零改动**：ocr_var 仍生成 `{"kind":"ocr_text","sel":"O_x","text_expr":"param('<key>')"}`（`builder.js:2279-2300`）；`SUPPORTED_FLOW_OPS` 仍 13（`package.rs:81-95`），`derive_flow_ops` 未改；旧 flow `region` 字段保留解析，优先级=flow region > 素材 op_region。
+
+#### 22.64.3 运行时（oas-runtime）
+
+- `AssetSet`：新增 `ocr_vars: HashMap<String,OcrVar>`、`op_regions: HashMap<String,AssetOpRegion>`（`runtime:524,527`；插入/查询 `:605,623,628,633`）；`has_op_region_chain` 对缺省/`self` 返回 false（`:640`），旧点击路径逐字节不变。
+- ocr_var 读取：`ocr_read_var`（`runtime:4262`）——期望文字=注入参数 `params[param_key]` > `runtime_text`（`ocr_var_expected_text` `:659`；空串/非字符串=响亮失败）；ROI 空→整帧（`:4276-4281`）；**总是 det+rec**（真实行 bbox 供候选/offset/日志），阈值过滤后最高分行写 `last_ocr_rect`（`:4308`）；无匹配行=响亮失败、不点击（`:4296-4306`）。
+- 操作区链：根节点沿用历史识别路径（模板 best/集合冠军/OCR 行/region 固定），再 `walk_op_region_chain`：`self`=历史 `click_box_for` 语义（action_shape/click_back 平移，否则真实 bbox）；`offset`=本节点真实 bbox 左上角 +`[dx,dy]`、尺寸 `w×h`；`asset`=识别引用节点（多候选取 `pick`：score=最高分；nearest=中心距上一节点真实 bbox 中心最近、平分比 score）后继续其 `op_region`；`region`/集合=末端。任一节点未声明/无候选/低于阈值=**本步失败、不点击、不 fallback**；visited+深度 16 双保险；步骤日志追加 `region_chain=[A:self -> B:offset -> R:region]`（`log_suffix` `runtime:435-445`）。
+- 候选：`candidates_for_asset`（`:1384`）——模板/集合=roi 内 `match_template_all/masked_all`（roi 空=整帧非金字塔；上限 64/NMS 不变），OCR/ocr_var=det+rec 行 + 期望文字/阈值过滤，region=固定单候选；返回 `{member,rect,score,text?}`。编辑器候选 API 与链 pick 共用该函数，口径单一。
+- 接入点：`click`/`click_target`（`runtime:4841-4913,5018-5072,5149-5228,5326-5427`）、`long_press`（`:3537-3570,3637-3689,3743-3813`）、`drag`（`:3460-3479`）的几何解析统一改为「flow region 优先，否则素材链」；无链时旧行为不变。
+- 编辑器演练复用：`preview_asset_action`（`:2778`）与真实运行同一 resolver，返回链 steps/最终 `action_box`/shape/`point`；`candidate_index` 采用候选 API 稳定序（`:2841`）。
+
+#### 22.64.4 serve API 契约（Studio；Runner 404）
+
+| 端点 | 锚点 | 关键行为 |
+|---|---|---|
+| `GET /task/asset/candidates?task=&id=[&frame_id][&live=1]` | `serve.rs:4576`；路由 `:172,2018` | 全部候选+评分：`{ok,kind,domain(roi/screen/members),roi,threshold,frame_source,elapsed_ms,count,candidates:[{index,x,y,w,h,score,pass,action_box?,text?,member?}]}`；region 单候选（无帧）；OCR 需模型（否则 501）；未知 kind 400 |
+| `POST /task/asset/test_action` | `serve.rs:5006`；路由 `:2003` | 请求 `{task?,id,gesture:"click"|"long_press",candidate_index?,frame_id?,live?,real?}`；dry→`{steps,action_box,point,real_rect,chain_depth,frame_source,clicked:false}`；`real:true` 走既有 live tap/长按链路返回 `clicked/tap_ok`；链失败=400 且**不点击**；`drag` 明确 400 留后续 |
+| `POST /task/asset/validate_op_region` | `serve.rs:4930`；路由 `:2000` | 请求 `{task?,id,op_region}`；200→`{ok,chain:[{asset,mode}],depth}`；400→`{errors:[{path,msg}]}`（环/深度/节点/末端/owner 校验）——服务端唯一权威（Lead 裁决 13） |
+| `GET /task/assets` | `serve.rs:6492` | items 自然带 `runtime_text/param_key/label/op_region`（`AssetDecl` serde） |
+| `POST /task/save_asset` / `save_assets` / `asset/update` | `serve.rs:3431 / 5426 / 5770` | 接受 ocr_var 字段与 `op_region`（服务端跑 `validate_op_region_chain`）；`param_key` 创建后不可改；`action_source` 忽略不报错；成功响应加 `synced[]` |
+| `POST /task/asset/delete` / `rename` | `serve.rs:5632 / 5692` | 被 flow 引用或 op_region 链引用的素材删除→400；rename 重写 op_region 引用（`oas-task/lib.rs:648,2153,2205`） |
+| `POST /task/save_flow` | `serve.rs:7024`（sync `:7089-7105`） | 保存后重算当前任务派生行；响应 `sync:{added,updated,removed}` |
+| `GET/POST /task/config` | `serve.rs:10687 / 10726` | GET 返回派生行（含 `asset_id`）+`derived_keys`；POST 对 `asset_id` 行只读（400「派生行只读」），保存用户行后重算同步 |
+| 路由归属 | `serve.rs:153-226`（GET 白名单含 candidates `:172`） | 新端点全部 Studio-only；Runner 404（测试 `:17014-17028`） |
+
+#### 22.64.5 Studio / Runner UI
+
+- 素材行（`asset_ui.js`）：`KIND_LABELS.ocr_var`（`:12`）；设置菜单 10 项（末尾「识别文字」`:199`，菜单顺序 9→10 已同步 `ui_pure_test.js`）；「操作区」菜单项保留并改为递归对话框（`:185-186`）；行详情追加 `识别文字「runtime_text」 · 操作区[链摘要]`（`:547-599`）；ocr_var 阈值=OCR 最低置信度。
+- 识别文字对话框（`app.js:5229`；保存 `:5357`；请求构造 `assetTextSaveRequest` `:3998`）：`runtime_text` 必填 ≤200、`param_key`（新建自动生成、编辑只读）、`label`、`roi`（4 整数或勾选全屏 OCR）；保存 `/task/save_asset`（新建/清空 ROI 用 replace）或 `/task/asset/update`，成功后刷新素材库+配置项面板。**ROI 当前为数字输入，未接画布绘制**。
+- 识别=全部候选（`app.js:5115`，入口 `runAssetTest` `:5174`）：按测试帧调候选 API；画布 `boxes` 画全部真实识别区；结果区逐条 `#i score=… [x,y,w,h]`；`domain=screen` 提示「全屏 OCR，较慢」。
+- 测试动作（`app.js:4312`）：素材行「点测」→`test_action`（click；演练逐候选、真实经 `#candidate-select` 二次确认）；拖测仍走旧前端路径；素材行暂无「长按测试」入口（API 已支持）。
+- 操作区递归对话框（`app.js:5450-5730`）：三选一（当前素材操作区/相对偏移/引用素材库素材）+ 递归展开被引用素材的 op_region（面包屑/缩进、提示「改被引用素材会影响其它引用」）；每级 `pick`=评分最高/距离最近；保存前 `POST /task/asset/validate_op_region`，一次提交写多级 `op_region`（多级 update，`:5691-5717`）；region 素材可作末端并在列表标注。
+- offset 画布（工作台，`app.js:2958-3190`）：绘制模式→先画「模拟识别区域」（默认素材识别区、可重画，蓝）→再画「操作区域」（橙，尺寸=本次绘制）→实时 `offset=[dx,dy,w,h]`→完成写 op_region 草稿（`:3104-3140`）；绘制期间禁用其它选择模式。
+- 构建页（`builder.js`）：动作目标=素材库搜索选择器（`actionTargetEditor` `:3084`，列表含 ocr_var、region 标注「仅操作区末端」）；新步骤不生成 `region`；旧 flow 带 region 的步骤仍可高级编辑（`renderRegionEditor` `:2902`，`:3187-3202`）；「插入参数 ▾」保留给表达式字段。
+- Runner（`runner.js:465-520`）：派生行（`param.asset_id`）进前置独立分组「使用端OCR文字配置项」，行标题=`param.label`、副标题含素材/默认文字、短标「识别文字配置」；输入仍为文本、留空=不注入；保存契约/values.json 不变。
+
+#### 22.64.6 测试 / E2E 证据
+
+- `cargo test --workspace` = **904 passed / 0 failed**（23 suites；起 841）：oas-task **144**（122→+22）、oas-runtime **203**（186→+17）、oasd **436**（412→+24）；`cargo build -p oasd --features ocr` exit 0。
+- UI pure test = **2511 checks / 194 ids / 0 dead / 6 nav**（起 2214/164/158/0/6）；Runner ids 158 / 0 dead；`node --check` 通过。
+- E2E `_verify/seq124-e2e-20261106/`（临时工作区/端口 8797/现场构造新模型任务，不碰仓库用户数据）：**27 total / 26 passed / 0 failed / 1 skipped**，exit 0；唯一 SKIP=`test_action_real_click`（无 ADB 设备）。覆盖：lint 0 → `save_flow` 触发 sync（`start_text` 派生行）→幂等→lint 0；`/task/assets` ocr_var/op_region round-trip；候选（模板字段 + ocr_var 全屏 `domain=screen`）；validate 链/offset/dangling/环；test_action dry 链（`action_box=[100,50,80,40]`、`chain_depth=2`）/缺失节点 400；config 派生行只读 400；publish `min_engine=0.1.0`、包内 ocr_var 资产。证据 `lead-run3.log`/`e2e-summary.json`。
+
+#### 22.64.7 兼容口径（用户 12:5x 简化令）
+
+- **不兼容旧参数/旧配置/旧包**：用户明确「全新开发，不需要兼容旧参数/旧配置，旧配置可删除」。因此**未**交付 `virtual_items`、**未**暴露 `POST /task/migrate_ocr_params`（迁移纯函数 `migrate_params_to_ocr_vars` 保留在 `ocr_var.rs:276`，有单测、无 API/无 UI）；旧 `meta.params role=ocr_text` 任务不作为验收对象，旧测试任务可重建。
+- `action_source`：只保留旧数据读兼容（`skip_serializing` 不再写、不再校验）；`action_shape` 保留。
+- 旧 Runner：flow 格式/flow_ops **未变**（仍 13 个标记），新包区分靠发布 `manifest.engine.min_engine = ENGINE_VERSION`（`package.rs:99,1476`）版本门禁；旧引擎安装期 T5 kind 白名单会拒绝含 `ocr_var` 的 `task/assets.json`（全局素材快照模式覆盖不到 store，由 min_engine 兜底）；未加 `asset.ocr_var/op_region` 合成 flow_ops（Lead 裁决 3，列为发布检查项）。
+- C1′ 是内部桥（不是旧配置兼容）：ocr_var 是 UI 唯一真相，`meta.params` 派生行由单一 sync 维护，运行仍走 `param()`/`values.json`；Phase 2（彻底去 `meta.params`、flow 免 `text_expr`、`values.json.asset_values`）未做。
+
+#### 22.64.8 风险 / 后续
+
+1. **drag 测试动作未接**：`test_action` 对 `drag` 明确 400（`serve.rs:5025-5031`）；素材行「拖测」仍走旧前端链路（`app.js:4404`）。后续统一到 `test_action` 并补候选语义。
+2. **素材行无「长按测试」入口**：`test_action` 已支持 `gesture:"long_press"`（`serve.rs:5167-5180`，单测覆盖），素材行尚未放入口。
+3. **识别文字 ROI 数字输入未接画布**（设计 §⑥ S2 的「画识别区」未做）。
+4. **S8 只读卡片渲染未做**：配置项面板目前只保证派生行只读+原样回传（`app.js:1134-1188`），未做「来自素材」badge/打开素材链接/旧参数迁移横幅。
+5. **候选 API 未回 `op_rect` 链预览**：候选仅返回 `action_box`；链几何只在 `test_action`/validate 可见，画布暂不能预演链（设计 §⑤-4 的 `op_rect` 后置）。
+6. **全屏 OCR 成本**：`ocr_var.roi=null` 每次 det+rec 全帧（E2E 合成帧实测 ~343 ms），素材行候选/演练入口需提示慢。
+7. **真机 E2E 未做**：`test_action_real_click` 无 ADB 固定 SKIP；真机点击/长按落点待验。
+8. **未 tag / 未 release**：只推送；`ENGINE_VERSION` 仍 0.1.0，发布包/版本号未升。
+9. Phase 2（去 `meta.params`、虚拟参数、`asset_values`）与旧数据迁移仍是后续批次。

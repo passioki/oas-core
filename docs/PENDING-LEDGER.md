@@ -4527,7 +4527,9 @@ Rust 后端未动（workspace 801/0 基线不变）；按用户「推送即可�
 
 ① 多候选仅模板/集合；模板有 roi 时只在 roi 内搜（nearest 无 pyramid 回退）；② NMS 半径固定/候选≤64；③ 单行 OCR 参考点=识别 ROI 中心；④ 老 Runner 手改 flow 绕过门禁风险同前；⑤ nearest 全帧多候选 NCC 性能未在 1280×720 实测；⑥ **真机验收**：操作区域落点、多匹配最近选择、长按/曲线时序。
 
-# ★ §E-93 ★★★ [11-06 12:0x] **用户新要求：参数→素材 / 动作库去参数化 / 素材多候选 / 操作区递归 / 量尺（待设计实现，seq 123）**
+# ★ §E-93 ★★★ [11-06 12:0x] **用户新要求：参数→素材 / 动作库去参数化 / 素材多候选 / 操作区递归 / 量尺（seq123 记录 → ✅ seq124 已实现，2026-11-06 13:2x）**
+
+> ✅ **已完成**：seq124 全部实现 + Lead 验收（workspace 904/0、UI 2511/194/0 dead/6 nav、E2E 27/26/0/1）；代码 commit `aab6372`（docs 提交见 `git log -1`）；实现记录 `ENGINE §22.64` / `OPERATION-REGION-DESIGN §8` / `PARAM-ASSET-IMPLEMENTATION.md`「实现结果」。**未 tag / 未 release**。
 
 > 用户 2026-11-06 12:0x 一次性给出 6 项重构要求；**当前代码未按这些要求改**（HEAD 仍是 seq 122 的 `cb3d830` / 代码 `ba6813e`）。完整需求与建议见 **`docs/PARAM-ASSET-REDESIGN.md`**；新会话先读本文 + 该设计文档 + `SESSION-HANDOFF.md`。
 
@@ -4535,12 +4537,12 @@ Rust 后端未动（workspace 801/0 基线不变）；按用户「推送即可�
 
 | # | 要求 | 当前实现/影响 | 状态 |
 |---|---|---|---|
-| 1 | 动作库「参数文字点击」改名「参数文字动作」；后进一步：**参数不属于动作库，回退/删除动作库参数相关内容** | 现有 `PARAM_ACTIONS`（`param_click_text`/`param_wait_text`/`param_long_press_text`）与调色板/分支下拉仍存在 | ⬜ 待回退 |
-| 2 | **参数也是素材的一种**：使用端可随时改识别文字的素材类型；初始识别区域为空；与普通 OCR 素材仅此区别；**改名为「使用端OCR文字配置项」**（可换更贴切名） | 现有 `meta.params` + `ParamDecl` 为任务配置模型，非素材类型 | ⬜ 待设计/迁移 |
-| 3 | 素材行：选中显示识别区域/操作区域；点「识别」返回**所有**真实识别区域；**后端返回所有候选+评分**；所有测试动作演练时测试所有候选；真实点击测试可选任意候选（点测下拉显示序号+评分） | 现有素材行只显示单个识别结果/点测单点；`match_template_all` 已存在但无素材候选 API/UI | ⬜ 待实现 |
-| 4 | **量尺**：相对偏移时测量画面两点直线距离，**直接复制到剪贴板** | 无 | ⬜ 待实现 |
-| 5 | **操作区域三方式**：① 参数真实识别区域；② 素材库素材自带操作区域（单一/多候选最近）；③ 相对偏移。**递归套娃**：素材1操作区可选素材2→素材2操作区再选素材3…直到当前素材区域/相对偏移；需**防循环**；运行=依次识别，任一未出现则本步失败 | 现有 `region.asset` 只单层；无递归/防环/链式识别语义 | ⬜ 待重设计 |
-| 6 | **废弃操作区域“与真实识别区域有无交集”两种状态**；用户怀疑现有代码已有“识别不到退全图 + 操作区随真实识别区域位移”，若有则删除 | 需先审计 `action_source=recognition/fixed`、`roi_back`、全图回退与位移现状 | ⬜ 待审计确认 |
+| 1 | 动作库「参数文字点击」改名「参数文字动作」；后进一步：**参数不属于动作库，回退/删除动作库参数相关内容** | `PARAM_ACTIONS` 已删（P0c） | ✅ 已回退（UI 2186/0 残留；`builder.js` 仅通用动作） |
+| 2 | **参数也是素材的一种**：使用端可随时改识别文字的素材类型；初始识别区域为空；与普通 OCR 素材仅此区别；**改名为「使用端OCR文字配置项」** | 按 C1′：新增 `kind:"ocr_var"` + `runtime_text/param_key/roi可空/op_region`；`meta.params` 由单一同步函数维护派生行；旧参数读时虚拟素材、显式迁移 | 🔄 B-T1 模型/同步/T8/迁移核心 ✅（oas-task 143/0）；T2 运行时读取、T3 serve/迁移端点、UI 阶段B 进行中 |
+| 3 | 素材行：选中显示识别区域/操作区域；点「识别」返回**所有**真实识别区域；**后端返回所有候选+评分**；所有测试动作演练时测试所有候选；真实点击测试可选任意候选（点测下拉显示序号+评分） | `GET /task/asset/candidates` 已上线（P0a，workspace 848/0）；素材行「识别」已改全部候选（U-T4-A，UI 2295） | 🔄 候选 API + 素材行识别 ✅；测试动作逐候选演练 / 真实点测候选下拉 待 U-T4 阶段B（test_action） |
+| 4 | ~~量尺：两点直线距离复制剪贴板~~ → **用户最新事项4：选择相对偏移时，在画面上画出模拟识别区域和操作区域，操作区域大小采用绘制出的操作区** | offset 画布绘制（S6）已在 U-T4-A 落地（模拟识别区+操作区+实时 dx,dy,w,h，草稿）；保存接线待 B-T3 | 🔄 绘制 ✅ / op_region 保存接线待 T3 |
+| 5 | **操作区域三方式**：① 参数真实识别区域；② 素材库素材自带操作区域（单一/多候选最近）；③ 相对偏移。**递归套娃**：素材1操作区可选素材2→素材2操作区再选素材3…直到当前素材区域/相对偏移；需**防循环**；运行=依次识别，任一未出现则本步失败 | B-T1：`OpRegion{self|offset|asset+pick}` + 链校验（环/深度16/末端/region 终端）+ 删除/重命名引用保护；T2 运行时链解析进行中 | 🔄 数据模型/校验 ✅；运行时链解析 T2、递归对话框 U-T4-B 进行中 |
+| 6 | **废弃操作区域“与真实识别区域有无交集”两种状态**；用户怀疑现有代码已有“识别不到退全图 + 操作区随真实识别区域位移”，若有则删除 | **审计确认**：两状态只在数据/UI 层、`oas-runtime` 0 读 `action_source`；模板全帧金字塔回退+操作区平移已存在（OCR 运行时无全屏回退）⇒ 无意义 | ✅ 已删除（P0b + P0c）：`action_source` 降级 deprecated、四处强校验删除、UI 有效性删除；`action_shape` 保留为操作区、行为零变化 |
 
 ## B. 当前代码现状（seq 122，未按新要求改）
 
@@ -4553,3 +4555,74 @@ Rust 后端未动（workspace 801/0 基线不变）；按用户「推送即可�
 1. 读 `PARAM-ASSET-REDESIGN.md` → `SESSION-HANDOFF.md` → `START-HERE` → `RESUME` seq 123。
 2. 先做**事项6审计**（两状态是否已存在；现有全图回退/位移逻辑）；再与用户确认设计文档 §5 的 7 个问题（命名/旧参数迁移/参数素材初始 ROI/防环策略/素材类型/量尺输出）。
 3. 实现建议顺序：素材候选 API/素材行识别 → 参数素材类型与迁移 → 动作库去参数化 → 操作区递归/防环 → 量尺 → 文档/测试/迁移。
+
+## D. ★★ seq 124 进展：用户权威澄清 + 3 路审计 + Lead 决策（2026-11-06 12:1x~12:3x）
+
+### D.1 用户权威澄清（逐字，见 `PARAM-ASSET-REDESIGN.md §1b`）
+
+- 事项1 动作库去参数；事项2 参数=素材的一种（使用端可改识别文字、初始识别区为空、与普通 OCR 素材只此区别、不重复造轮子、改名使用端OCR文字配置项）；事项3 素材行识别返回全部候选+评分、测试动作演练全部候选、真实点测可选候选；**事项4 改为：相对偏移时在画面上画模拟识别区域和操作区域，操作区大小采用画出来的**（取代原量尺）；事项5 操作区三方式+递归套娃（素材行设置里操作区：当前素材操作区域/相对偏移/素材库素材……直到收尾；依次识别、缺一即本步失败；防循环；**动作库因此不需要复杂参数交互**）；事项6 确认"全图回退+操作区相对位移"若已存在则删除两状态。
+
+### D.2 三路只读审计结论（报告仓外 `D:\OAS-dev\_verify\paramasset-audit-20261106\`）
+
+| # | 报告 | 关键结论（可核查） |
+|---|---|---|
+| ① | `01-region-two-states-audit.md` | **两状态只在数据/编辑器层**：`action_source=recognition/fixed` 强校验与 UI 重叠有效性（`oas-task:302-309,1989-2012,2626-2650,1163-1186,1772-1786`；`app.js:3045-3088`）；`crates/oas-runtime` 内 `action_source` **0 命中**，引擎只按有无 `action_shape` 决定落点 ⇒ 两状态无引擎意义。用户怀疑的现象**部分真实**：模板 `locate_template` ROI 最优 <0.95 → **全帧金字塔回退**（`runtime:739-756` / `perceive:769-807`，被 locate/match/集合/批量测试共用）；**操作区随匹配平移**存在于模板/集合/派生 OCR（`runtime:419-444,1715-1736,1869-1897,3863-3868`）；普通 OCR/region 素材为绝对坐标不平移；OCR 运行时**无**全屏回退（仅编辑器测试路径 `app.js:7628-7666`）。⇒ **确认删除两状态**（保留 action_shape 作"素材自带操作区域"+回退/平移底层；默认落点 A：有 shape 仍用 shape，零行为变化）。 |
+| ② | `02-param-action-audit.md` | `ParamDecl` 在 `meta.rs:53-90`，参数与素材**零耦合**；22 项参数消费点（四层注入/`param()`/`text_expr`/T3/T4/T7/params_schema/Studio 面板/Runner UI…）；`PARAM_ACTIONS` 只是 `builder.js:36-40` 3 个**纯前端预设**，后端 0 引用、包格式不变 ⇒ 可安全删除（UI + 28 处文档）；关键冲突：OCR locator 带 `roi` 即转 inline 并**忽略 `sel`**（`oas-flow:2335-2371`），运行时必须有资产 ROI（`runtime:2887-2902`、`oas-task:1349-1355`）⇒ "初始识别区为空"必须新增运行时路径；文字值存 `values.json tasks.<t>.values.<key>`（`runner_config.rs:44-71`），`params_schema` 只是快照。推荐两阶段 C1（`ocr_var` + 派生 meta.params，运行链路不变）→ A（值改 asset_values）。 |
+| ③ | `03-asset-candidates-measure-audit.md` | `match_template_all/masked_all` **已存在**（`perceive:665-693,699-762`，NMS/上限 64），唯一消费方是 runtime 私有 `region.asset` nearest；`serve.rs` **0 引用**；现有 API 全单结果（`/task/asset/match serve.rs:4314-4327`、collection match、batch_test）；素材行所有测试动作单候选（`app.js:3329-3477` 等）；真实点测设备链路已有（前端算点 → `/input/tap` `app.js:3241-3269`）⇒ 主要缺候选 API+列表 UI；量尺完全不存在（但按用户最新事项4 已改为画模拟区，不实现剪贴板量尺）。 |
+
+### D.3 Lead 决策（D1~D6）
+
+| # | 决策 |
+|---|---|
+| D1 | 新增素材 kind **`ocr_var`**（中文「使用端OCR文字配置项」），复用 OCR 素材全部机制；字段 `runtime_text`（默认文字）/`param_key`（迁移映射旧 params）/`roi` 可空（空=全屏 OCR）。阶段1 = **C1 双写**：素材是唯一 UI 真相，保存端由 ocr_var 自动派生 `meta.params`（type=string/role=ocr_text/default=runtime_text），运行链路继续 `param()`/`values.json`；旧任务读时合成虚拟 ocr_var（**不写用户数据**）。 |
+| D2 | 操作区配置存在**素材自身** `assets.json item.op_region`：`{mode:"self"}`（默认）/`{mode:"offset","offset":[dx,dy,w,h]}`（相对真实识别区左上角；w/h=绘制大小）/`{mode:"asset","asset":"<id>","pick":"score"\|"nearest"}`（引用另一素材，用其 op_region 递归；pick=多候选筛选，nearest 参考点=上一节点真实识别区中心）。链末端必须 self/offset；保存时图环检测+深度≤16，运行时 visited 兜底；任一素材未识别=本步失败不点击。offset 编辑在工作台画布画模拟识别区+操作区。 |
+| D3 | 候选识别：扩展后端 API 返回全部候选+评分（模板/集合/OCR/ocr_var；搜索域=素材识别区域，空=全屏）；素材行「识别」画全部候选 box；所有素材行测试动作演练时测全部候选；真实点测前可选候选（下拉序号+评分）。 |
+| D4 | 删除 `action_source` 两状态（UI/校验/有效性）；旧数据容忍读取、不再写；保留 `action_shape`、全帧金字塔回退、平移底层。 |
+| D5 | 量尺按用户最新事项4 **取消**（改为画模拟识别区/操作区；不实现剪贴板测距）。 |
+| D6 | 动作库删除 `PARAM_ACTIONS` 全部预设；动作选目标=素材库素材（含 ocr_var）；动作不配操作区（由目标素材 `op_region` 决定）；flow 旧 `region` 字段保留兼容但新 UI 不生成。 |
+
+### D.4 实施阶段（P0~P6，按依赖顺序；看板任务见 Team task-5…）
+
+| 阶段 | 内容 | 主要写域 |
+|---|---|---|
+| P0 | 后端模型/校验：`ocr_var` kind、`op_region` 字段、T5/KINDS/加载、`action_source` 降级兼容 | `crates/oas-task/**`（+`oas-flow` 解析若需） |
+| P1 | 运行时：ocr_var 读取（空 ROI=全屏 OCR、文字=使用端值>runtime_text）、操作区链解析（含候选 pick/防环）、候选枚举公共 helper | `crates/oas-runtime/**`、`crates/oas-perceive/**`（如需全图多候选） |
+| P2 | API：候选（`all=1` / 新端点）、素材保存/更新新字段、`GET /task/assets` 返回、Runner 配置 ocr_var 值（values 映射） | `apps/oasd/src/serve.rs` 等 |
+| P3 | Studio UI：删参数预设/参数面板、动作目标选择、素材行识别候选+点测候选、操作区递归对话框、offset 画布绘制、删两状态有效性 | `apps/oasd/ui/**` |
+| P4 | Runner UI：「识别文字」值编辑（按 derived params/ocr_var 展示），写 values | `apps/oasd/ui/runner.*` |
+| P5 | 迁移/兼容：旧任务虚拟 ocr_var、旧 assets `action_source` 容忍、flow_ops 门禁、用户数据不自动写盘 | `crates/oas-task`、`apps/oasd` |
+| P6 | 测试/E2E/文档：workspace + UI pure test 基线更新、E2E、ENGINE/PLAN/RESUME 同步 | 全仓 + docs |
+
+**实施设计文档**：`docs/PARAM-ASSET-IMPLEMENTATION.md`（architect 产出，Lead 复核并追加「★ Lead 裁决」13 条）。
+**本轮实测基线**：HEAD `c33a822`（docs）/代码 `ba6813e`；workspace **841/0**；UI **2214 / 164 / 158 / 0 dead / 6 nav**；git status 仅用户数据（assets/frames/tasks/scheduler.json）。
+
+### D.5 实施进度（滚动更新）
+
+| 任务 | 看板 | 状态 | 证据（可核查） |
+|---|---|---|---|
+| 设计文档（§①~⑩ + Lead 裁决） | task-4 | ✅ | `docs/PARAM-ASSET-IMPLEMENTATION.md`；3 路审计报告在 `_verify\paramasset-audit-20261106\` |
+| P0c Studio UI：动作库去参数预设 + 删两状态 UI | task-7 | ✅ | 产品文件 grep 0 残留（仅测试负断言）；UI **2186** checks / 164 / 158 / **0 dead** / 6 nav；`node --check` 4/4。**注：2186<2214 是删旧断言所致，最终须 ≥2214** |
+| P0a 后端候选识别 API | task-5 | ✅ | `GET /task/asset/candidates`（serve.rs:172 route_owner / :1901 挂载 / :4365 handler / :4575 OCR 分支）；runtime pub helpers `crates/oas-runtime/src/lib.rs:768/794/902/977`；测试 workspace **848/0**（+7） |
+| P0b 两状态降级（Rust/校验/API 宽容） | task-6 | ✅ | `action_source` 降级 deprecated（`skip_serializing`，旧 JSON 任意值可读）；四处一致性校验删除；serve 四个写接口忽略旧字段；workspace **850/0**（+2）；旧 JSON/旧请求体兼容测试；**风险**：新数据（有 shape 无 action_source）→ pre-P0b 旧引擎会响亮拒绝（需旧 Runner 升级；已记 §⑧ 兼容矩阵） |
+| B-T1 oas-task（ocr_var/op_region/同步/T8/迁移） | task-8 | ✅ | `KINDS`+ocr_var、`OpRegion` 三模式、AssetDecl 新字段、`validate_op_region_chain`（环/深度16/末端/region 终端）、`update_asset_meta_v2`、删除/重命名引用保护、T8 错误级、`ocr_var.rs` 的 `sync_ocr_var_params`/`migrate_params_to_ocr_vars`（dry+real 纯逻辑）、`write_meta/.bak`、`ParamDecl.asset_id`；oas-task **143/0**、workspace **870/0**；**next 需 T2 回改 `load_runtime_assets` 一小段（唯一接线点）** |
+| B-T2 oas-runtime（ocr_var 读取/链解析/候选 helper） | task-9 | ✅ | `OcrVar`/`AssetOpRegion`/`ResolvedOpRegion`/`AssetCandidate` 类型；`AssetSet` ocr_var/op_region 表；`ocr_read_var`（空 roi 全屏、param>runtime_text、det+rec）；`resolve_asset_op_region` 链解析（self/offset/asset+pick、visited+深度16、region 末端、miss=Err 不点击）；`candidates_for_asset`；click/long_press/drag 接入（无链时旧路径逐字节不变）；runtime **201/0**（+15）、oas-task 144/0、workspace **886/0**；证据 `_verify\backend-p0-20261106\workspace-task9b.log` |
+| B-T3a serve（素材新字段/sync 触发/config 保护） | task-14 | ✅ | `GET /task/assets` 新字段 round-trip；save_asset/save_assets/update 接受 runtime_text/param_key/label/op_region（roi 可空、param_key 只读、action_source 忽略）；素材写/save_flow/config POST 触发 `sync_ocr_var_params`→`write_meta(.bak)`，响应 `synced`/`sync`；`/task/config` 派生行只读保护（改/删/造派生行 400）+ `derived_keys`；**无 virtual_items/migrate**（简化令）；oasd **429/0**（+9）、workspace **895/0**；证据 `_verify\backend-p0-20261106\{workspace-task14b,t3a-tests5}.log` |
+| B-T3b serve（test_action/validate/candidates ocr_var） | task-10 | ✅ | 候选 API ocr_var（空 roi=screen、text/score/action_box、无 OCR feature=501）；`POST /task/asset/validate_op_region`（200 chain/depth；400 结构化 path/msg；404）；`POST /task/asset/test_action`（dry steps/action_box/point/chain_depth；real 需 live=1、链失败 400 不点击；click+long_press；**drag 本轮 400 暂不支持**）；runtime 薄公共入口 `preview_asset_action`（零几何复制、旧行为不变）；oasd **436/0**（+7）、runtime **203/0**（+2）、workspace **904/0**；证据 `_verify\backend-p0-20261106\{workspace-task10,t3b-tests3,t3b-rttests}.log` |
+| U-T4 Studio 阶段A/B（素材行/识别文字/候选/操作区递归/offset 画布/test_action 候选点测） | task-11 | ✅ | UI **2474**→（U-T5 后 **2511**）checks / **194** ids / 158 runner ids / 0 dead / 6 nav；识别文字对话框（新建/编辑/roi 可空）、素材行「识别」= 全部候选、操作区递归对话框（三方式+面包屑+引用素材搜索+pick+回退+影响警告+validate 服务端权威+两次 update 保存）、offset 画布绘制+保存、test_action dry 逐候选+真实候选下拉 `#candidate-select`、配置派生行回传契约、三处素材库 onEditText/onOpRegion；偏差：拖测保留旧实现、长按测试无素材行入口、识别文字 ROI 数字输入、S8 只读渲染未做 |
+| U-T5 Studio 动作库目标选择接线 + 旧 region 收口 | task-12 | ✅ | `builder.js` 属性面板「动作目标（素材库）」搜索选择（含 ocr_var，region terminalOnly 提示）、`targetLocatorForAsset` 生成 locator、`validateActionTarget`/`actionTargetIssues` 保存前校验（含 param key 必须在派生参数）、旧 region 编辑器仅旧 flow 显示、save_flow `sync` 状态提示+参数面板刷新；UI **2511** checks（+37）；偏差：调色板不弹目标选择（属性面板选）、重新选目标会替换 find[0] |
+| U-T6 Runner UI（使用端OCR文字配置项分节） | task-13 | ✅ | UI **2205** checks（该任务完成时）；`runnerParamGroupsEx` 前置分节「使用端OCR文字配置项」+ 素材名/默认值副标题 + 旧参数兼容；`runner.js:472-524`、`runner.html` 配置弹窗、`runner.css:271-283`；+19 checks |
+| U-T7 旧配置迁移/兼容落地 | ~~待建~~ | ❌ 取消（用户 12:5x：全新开发、不兼容旧参数/旧配置/旧包；测试配置可删除/重建） | 用户原话："不需要兼容旧参数，我们是全新开发，不需要兼容旧配置，如有冲突可以删除旧配置，当前配置都是测试配置，并不重要" |
+| D-T8a E2E 脚本（仓外） | task-15 | ✅ | `_verify\seq124-e2e-20261106\{run-e2e.ps1,README.md,fixtures\}`；27 断言（构建/起 8797/新模型任务/候选/validate/test_action/publish/清洁收尾）；**Lead 独立复跑 26 PASS / 0 FAIL / 1 SKIP（无 ADB）exit 0**；证据 `e2e-summary.json`、`lead-final-run.log` |
+| D-T8b 文档归档（ENGINE §22.64 / OPERATION-REGION §8 / 实施记录 / README） | task-16 | ✅ | `ENGINE-DESIGN.md` §22.64（L3231-3313）；`OPERATION-REGION-DESIGN.md` §8（L196-258）；`PARAM-ASSET-IMPLEMENTATION.md`「实现结果」；`README.md` 索引+seq124 记录；87 锚点断言 85 精确命中 |
+
+### D.6 最终验收（2026-11-06 13:2x，Lead 独立执行）
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| `cargo test --workspace` | ✅ **904 passed / 0 failed**（23 suites；oas-task 144 / oas-runtime 203 / oasd 436；起 841） | `_verify\seq124-lead-verify\workspace-final.log` |
+| UI pure test | ✅ **2511 checks / 194 ids / 158 runner ids / 0 dead / 6 nav**（起 2214/164/158） | `node apps\oasd\ui\ui_pure_test.js` |
+| E2E（新模型测试任务） | ✅ **27 total / 26 passed / 0 failed / 1 skipped（无 ADB）exit 0** | `_verify\seq124-e2e-20261106\{e2e-summary.json,lead-final-run.log}` |
+| git | 代码 commit `aab6372`（16 files，+11894/−1911）；docs 提交见 `git log -1`；**用户数据未入库**（assets/frames/tasks/scheduler.json 保持交接前状态） | `git show --stat aab6372` |
+| 发布 | **未 tag / 未 release**（按用户"推送即可"策略） | — |
+
+**后续可选项（不阻塞 seq124）**：① drag 测试动作（test_action 400 → 后续单列）；② 素材行「长按测试」入口；③ 识别文字 ROI 接画布绘制；④ 配置项面板派生行只读卡片渲染；⑤ 候选 API `op_rect` 链预览；⑥ 全屏 OCR 性能实测；⑦ 真机 E2E（操作区落点/多候选最近/长按曲线）；⑧ Phase 2（彻底去 `meta.params`、flow 免 text_expr、values asset_values）；⑨ 更新检测鉴权/GC、tag/Release 策略、产品验收 §D.4。

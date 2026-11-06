@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 123
-updated_at: 2026-11-06T12:0x+08:00
-trigger: seq 122 A 方案实现后 → 用户重新梳理概念并推翻动作库参数方向，提出 **6 项重构要求**（参数=素材的一种/动作库去参数化/素材多候选识别 API+UI/量尺/操作区域三方式与递归套娃/废弃操作区两状态）→ **seq 123：仅更新文档与交接，未实现新要求**
-status: awaiting-redesign           # seq 122 A 方案代码已推送；新要求未实现，需先审计+用户确认设计文档 §5
-code_head: 本批 docs 提交后以 `git log -1` 为准（代码仍为 seq 122 `ba6813e`；oas-runner `768a8b7`）
-docs_head: 本批 docs 以 `git log -1` 为准（dev = main = origin）
-next_action: ① 新会话先读 `docs/PARAM-ASSET-REDESIGN.md` → `SESSION-HANDOFF.md` → START-HERE；② 审计「操作区两状态/全图回退+相对位移」现状（事项6）；③ 向用户确认设计文档 §5 的 7 个问题（命名/旧 meta.params 迁移/参数素材初始 ROI/防环策略/素材类型/量尺输出/候选 API）；④ 再拆分实现：素材候选 API/素材行识别 → 参数素材类型与迁移 → 动作库去参数化 → 操作区递归/防环 → 量尺 → 文档/测试；**先不要继续改 seq 122 的 A 方案 UI**
+checkpoint_seq: 124
+updated_at: 2026-11-06T13:3x+08:00
+trigger: seq124 完成（用户 12:1x 权威澄清 → 3 路审计 → 设计 → P0/B-T1~T3/U-T4~T6/D-T8 全实现 → Lead 独立验收通过 → 提交推送）
+status: done
+code_head: `aab6372` feat(seq124)（16 files，+11894/−1911；docs 提交见 `git log -1`）
+docs_head: `git log -1`（dev = main = origin；本批 docs 随文档提交推送）
+next_action: seq124 已完成并推送（只推送不发布，未 tag/未 release）。后续可选：① drag 测试动作（test_action 现 400）；② 素材行「长按测试」入口；③ 识别文字 ROI 接画布绘制；④ 配置项面板派生行只读卡片；⑤ 候选 API op_rect 链预览；⑥ 全屏 OCR 性能实测；⑦ 真机 E2E（操作区落点/多候选最近/长按曲线时序）；⑧ Phase 2（去 meta.params/flow 免 text_expr/values asset_values）；⑨ 更新检测鉴权/GC、tag/Release 策略、产品验收 §D.4。详见 `PENDING-LEDGER §E-93 §D.6`、`ENGINE §22.64.8`
 ```
 
 ## 0. 目标（本阶段）
@@ -213,6 +213,26 @@ next_action: ① 新会话先读 `docs/PARAM-ASSET-REDESIGN.md` → `SESSION-HAN
 | 6 | **废弃操作区“与真实识别区有无交集”两状态**（先审计现有全图回退+相对位移） | ⬜ 待审计确认 |
 
 **接手顺序**：① 审计事项6/现有全图回退逻辑；② 与用户确认 `PARAM-ASSET-REDESIGN.md §5` 的 7 个问题；③ 按建议顺序实现（素材候选 API → 参数素材类型/迁移 → 动作库去参数化 → 操作区递归/防环 → 量尺 → 文档/测试）。**先不要继续修改 seq 122 的 A 方案 UI。**
+
+## 1.18 2026-11-06 12:1x→13:3x（seq 124）用户权威澄清 + 审计 + 全量实现 + 验收（✅ 已完成）
+
+> 用户 12:1x 主动给出 6 事项权威逐字澄清（`PARAM-ASSET-REDESIGN §1b`）；Lead 决策 D1~D6；三路只读审计 + 实施方案 `PARAM-ASSET-IMPLEMENTATION.md`（Lead 裁决 13 条）；用户 12:5x 简化令（全新开发、不兼容旧参数/旧配置/旧包）后取消迁移/兼容交付。**最终验证：workspace 904/0、UI 2511/194/0 dead/6 nav、E2E 27/26/0/1（无 ADB skip）**；代码 commit `aab6372`，docs 提交见 `git log -1`；**只推送不发布，未 tag/未 release**。
+
+| # | 交付 | 结果 / 证据 |
+|---|---|---|
+| 审计 | 3 路只读审计（仓外） | `_verify\paramasset-audit-20261106\{01-region-two-states-audit,02-param-action-audit,03-asset-candidates-measure-audit}.md`；**事项6确认**：两状态只在数据/UI 层、`oas-runtime` 0 读 `action_source`；模板全帧金字塔回退+操作区平移已存在（OCR 运行时无全屏回退）⇒ 已删除两状态 |
+| P0a | 素材候选 API（后端） | `GET /task/asset/candidates`（serve 路由+handler/OCR 分支；runtime pub helper）；workspace **848/0**（+7） |
+| P0b | 废弃两状态（后端） | `action_source` 降级 deprecated（skip_serializing、旧 JSON 容忍）；四处一致性校验删除；serve 写接口忽略旧字段；workspace **850/0**（+2） |
+| P0c | 动作库去参数预设 + 删两状态 UI | 产品文件 0 残留；UI **2186**/164/158/0 dead/6 nav（删旧断言所致） |
+| B-T1 | oas-task：ocr_var/op_region/派生参数同步/T8 | `KINDS`+ocr_var、`OpRegion` 三模式、`validate_op_region_chain`、`sync_ocr_var_params`、`write_meta(.bak)`、T8 错误级、`ParamDecl.asset_id`；oas-task **143/0** |
+| B-T2 | oas-runtime：ocr_var 读取/操作区链/候选 helper | `OcrVar`/`AssetOpRegion`/`ResolvedOpRegion`、`ocr_read_var`（空 roi 全屏、param>runtime_text）、`resolve_asset_op_region`（self/offset/asset+pick、防环、region 末端、miss=Err 不点击）、`candidates_for_asset`；runtime **201/0**（+15） |
+| B-T3a/b | serve：新字段/sync 触发/config 保护/候选扩展/test_action/validate | 素材 CRUD+save_flow+config 触发派生参数 sync（.bak+原子写、`synced`）；`/task/config` 派生行只读；候选 ocr_var 空 roi=screen；`test_action` dry/real（click+long_press；drag 400）；`validate_op_region`；oasd **436/0** |
+| U-T4 | Studio 素材行/识别文字/全部候选/操作区递归对话框/offset 画布 | 识别文字对话框（新建/编辑）、素材行识别=全部候选、操作区三方式递归对话框（validate+两次 update）、offset 画布绘制+保存、test_action 候选点测+真实候选下拉；UI **2474** checks / **194** ids |
+| U-T5 | Studio 动作库目标选择接线 + 旧 region 收口 | 属性面板「动作目标（素材库）」搜索选择、ocr_var→text_expr param(key) locator、保存前目标校验（含 param key 派生校验）、旧 region 仅旧 flow 显示、save_flow sync 提示；UI **2511**（+37） |
+| U-T6 | Runner「使用端OCR文字配置项」分节 | `runnerParamGroupsEx` 前置分节 + 素材名/默认值副标题 + 旧参数兼容；+19 checks |
+| D-T8 | E2E（仓外新模型任务）+ 文档归档 + 交接 | E2E 27 total/26 PASS/0 FAIL/1 SKIP exit 0（`_verify\seq124-e2e-20261106\`）；`ENGINE §22.64`、`OPERATION-REGION-DESIGN §8`、`PARAM-ASSET-IMPLEMENTATION`「实现结果」、`README` 索引 |
+
+**取消**：U-T7 旧配置迁移/兼容（用户 12:5x 简化令：全新开发、旧配置可删）。**未做（后续可选）**：drag 测试动作、素材行长按测试入口、识别文字 ROI 接画布、S8 派生行只读卡片、候选 op_rect 预览、全屏 OCR 性能、真机 E2E、Phase 2（去 meta.params）。详见 `PENDING-LEDGER §E-93 §D.6`。
 
 ## 2. 本批交付（seq 110）
 

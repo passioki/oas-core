@@ -1,35 +1,35 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 123**），然后**先读 `docs/PARAM-ASSET-REDESIGN.md`（本轮用户新要求 + 待确认问题）**，再看 `docs/OPERATION-REGION-DESIGN.md`（§6/§7 是旧 A 方案，交互将被重构）与 `docs/AUDIT-2026-11-05.md`。
-> **状态：awaiting-redesign**——seq 121/122 的 region/long_press/curve_swipe/A 方案代码已推送（workspace 841/0、UI 2214），但**用户 2026-11-06 12:0x 重新梳理概念，推翻 A 方案交互方向**，提出 6 项重构要求（参数=素材/动作库去参数化/素材候选 API+UI/量尺/操作区三方式+递归防环/废弃两状态）。**本轮仅更新文档，未改代码。** 新会话先审计 + 确认问题，再按 `PENDING §E-93` 顺序实现。**本轮不关机，继续待命。**
+> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 124，✅ done**），然后按需看实现记录 `docs/ENGINE-DESIGN.md §22.64`、`docs/OPERATION-REGION-DESIGN.md §8`、`docs/PARAM-ASSET-IMPLEMENTATION.md`「实现结果」、`PENDING-LEDGER §E-93`（已归档）。
+> **状态：done（seq 124）——参数→素材/操作区递归/候选识别/废弃两状态全部实现并 Lead 验收通过**：workspace **904/0**、UI **2511/194/0 dead/6 nav**、E2E **27/26/0/1**（skip=无 ADB）；代码 commit `aab6372`，docs 提交见 `git log -1`；**只推送不发布（未 tag/未 release）**。后续可选清单见 `PENDING §E-93 §D.6` / `ENGINE §22.64.8`。
 
-## 0. 当前状态（2026-11-06 12:0x，seq 123）
+## 0. 当前状态（2026-11-06 13:3x，seq 124 done）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | oas-core `dev`（本批 docs 提交后以 `git log -1` 为准；代码仍 seq 122 `ba6813e`）；oas-runner `main` = `768a8b7`（pin `ba6813e`）；未 tag / 未 release |
-| 任务 | **新要求未实现**：① 动作库参数预设回退；② 参数改为“素材的一种”（可变文字素材）；③ 素材候选全量识别 API/素材行 UI；④ 量尺；⑤ 操作区三方式+递归防环；⑥ 审计并废弃操作区两状态 |
-| 测试（仍为 seq122 基线） | `cargo test --workspace` **841/0**；UI **2214 / 164 / 158 / 0 dead / 6 nav**；debug+release build exit 0（1 warning） |
-| 权威文档 | **`docs/PARAM-ASSET-REDESIGN.md`（本轮，先读）** · `PENDING §E-93` · `ENGINE §22.63` · 旧设计 `OPERATION-REGION-DESIGN.md §6/§7`（交互待重构） |
-| 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；现有本地产物不含 seq 121/122 新能力 |
-| 独立仓 | `https://github.com/passioki/oas-runner`（`768a8b7`）；pin `ba6813e`（已构建验证；未打独立包） |
-| 服务 | 无 `oasd`/`oasd-runner` 进程；8787/8788/8789/8792~8796 无监听 |
-| 工作区 | `scheduler.json`、用户任务 `tasks/切换预设御魂/{flow,meta}.json`、**用户本轮编辑的 `assets/assets.json` / `frames/frames.json` / 新增 `assets/images/a006.png`** 均**未提交**（用户数据/局部配置，**不要提交/覆盖**）；其余已提交/推送 |
+| 分支 / HEAD | oas-core `dev`；代码 `aab6372`（feat seq124；docs 提交见 `git log -1`；dev=main=origin）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，**未随 seq124 更新，如需独立 Runner 需另 bump pin**）；未 tag / 未 release |
+| 任务 | **seq124 已完成**：① 动作库去参数预设 ✅；② 参数→素材 `ocr_var`（使用端OCR文字配置项）✅；③ 素材候选全量识别 API+素材行 UI+测试动作候选 ✅；④ 量尺改为 offset 画布绘制（用户最新事项4）✅；⑤ 操作区三方式+递归防环 ✅；⑥ 废弃操作区两状态 ✅ |
+| 测试 | `cargo test --workspace` **904 passed / 0 failed**（23 suites；oas-task 144 / oas-runtime 203 / oasd 436 / flow 78 / perceive 11+2 / adapter-pc 5）；UI pure test **2511 checks / 194 ids / 158 runner ids / 0 dead / 6 nav**；E2E **27 total / 26 passed / 0 failed / 1 skipped**（`_verify\seq124-e2e-20261106\`，skip=test_action 真实点击无 ADB） |
+| 权威文档 | **`ENGINE §22.64`（实现记录）· `OPERATION-REGION-DESIGN §8`（现行操作区口径）· `PARAM-ASSET-IMPLEMENTATION.md`（方案+Lead 裁决+实现结果）· `PARAM-ASSET-REDESIGN §1b`（用户权威要求）· `PENDING §E-93`（归档）** |
+| 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；现有本地产物不含 seq124 新能力 |
+| 独立仓 | `https://github.com/passioki/oas-runner`（`768a8b7`）；pin `ba6813e`（未打独立包） |
+| 服务 | 无 `oasd`/`oasd-runner` 进程；8787/8788/8789/8792~8797 无监听（E2E 已清洁收尾） |
+| 工作区 | `scheduler.json`、用户任务 `tasks/切换预设御魂/{flow,meta}.json`、用户编辑的 `assets/assets.json` / `frames/frames.json` / 新增 `assets/images/a006.png` 均**未提交**（用户数据，**不要提交/覆盖**；用户 12:5x 明确当前配置都是测试配置、可删可重建）；其余代码/文档已提交/推送 |
 
 ## 0.1 新会话恢复步骤（直接照做）
 
-1. 调 skill `session-memory`；读 `START-HERE` → `RESUME.md`（seq 123）→ `RESUME-INDEX` 最新行。
+1. 调 skill `session-memory`；读 `START-HERE` → `RESUME.md`（seq 124）→ `RESUME-INDEX` 最新行。
 2. 用磁盘核实：`git log -1`、`git status --porcelain`、`cargo test --workspace`、`node apps/oasd/ui/ui_pure_test.js`；与本文 §0 不一致先修文档。
-3. 读 `PARAM-ASSET-REDESIGN.md §5` 的 7 个待确认问题；先向用户问清（命名/旧 meta.params 迁移/参数素材初始 ROI/防环策略/素材类型/量尺输出/候选 API），再拆实现任务。
-4. 先做**事项6审计**：查 `action_source=recognition/fixed`、`roi_back`、识别失败退全图 + 操作区相对位移的现有实现（`crates/oas-task`/`oas-runtime`/素材行 UI），确认“两种状态”是否有实际实现、能否删。
-5. 实现顺序建议：素材候选 API + 素材行识别/点测 UI → 参数素材类型与迁移 → 动作库去参数化 → 操作区递归/防环 → 量尺 → 文档/测试。**先不要继续改 A 方案 UI。**
+3. seq124 已 done；若用户提新需求，先读 `PARAM-ASSET-IMPLEMENTATION.md` 了解现行模型（ocr_var/资产级 op_region/派生参数/候选/test_action），再看 `ENGINE §22.64.8` 的「后续可选」清单，避免重复实现。
+4. 遗留项（不阻塞）：drag 测试动作、素材行长按测试入口、识别文字 ROI 接画布、S8 派生行只读卡片、候选 op_rect 预览、全屏 OCR 性能、真机 E2E、Phase 2（去 meta.params）。
+5. 发布策略：**只推送不发布**；如要发布需先重打 Studio/Runner 包、视需要 bump oas-runner pin/版本（新包不兼容旧 Runner：`action_source` deprecated + `ocr_var` kind 会触发旧引擎拒绝）。
 
-## 0.2 本轮文档产出
+## 0.2 本轮（seq124）文档产出
 
-- **新增 `docs/PARAM-ASSET-REDESIGN.md`**：6 项要求原文摘要、目标概念模型、后端/API 草案、需回退/重做清单、7 个待确认问题、接手顺序。
-- `PENDING §E-93`：逐项状态表（⬜/🔄）、当前代码现状、接手顺序。
-- `ENGINE §22.63`：新要求要点（未实现）。
-- `RESUME` seq 123 / `RESUME-INDEX` 第 123 行 / 本交接单：状态切到 `awaiting-redesign`。
+- `ENGINE-DESIGN.md §22.64`（8 子节：映射/schema/运行时/API/UI/测试/兼容/风险后续）；`OPERATION-REGION-DESIGN.md §8`（资产级 op_region 现行口径，§6/§7 标历史）。
+- `PARAM-ASSET-IMPLEMENTATION.md`：状态改「已实现」+「实现结果（Lead 验收）」偏差/验证/证据/后续；`PARAM-ASSET-REDESIGN.md` 标已实现（§1b 用户权威要求保留）。
+- `PENDING §E-93` 全项完成归档 + §D.6 最终验收 + 后续清单；`RESUME`/`RESUME-INDEX`/本交接单/`START-HERE` 更新 seq124 done。
+- 审计：`_verify\paramasset-audit-20261106\{01,02,03}-*.md`；实现证据：`_verify\backend-p0-20261106\`；E2E：`_verify\seq124-e2e-20261106\`；Lead 验收：`_verify\seq124-lead-verify\`。
 
 ## 1. 最近 3 轮关键变更（历史细节见 PLAN/ENGINE/PENDING）
 
