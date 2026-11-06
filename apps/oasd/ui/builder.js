@@ -57,7 +57,7 @@
   async function prepareActionStep(key) {
     return OP_META[key] ? makeStep(key) : null;
   }
-  // Generic FIELDS text inputs that hold expressions; they get the「插入参数 ▾」
+  // Generic FIELDS text inputs that hold expressions; they get the「插入识别文字配置项 ▾」
   // button. `cond` fields insert a whole text_visible(param('k')) predicate.
   const EXPR_FIELDS = {
     log: { text: 'expr' },
@@ -743,7 +743,7 @@
     return '阻塞等待：条件成立后继续执行下一个 flow 步骤（本步不会触发独立动作）；超时则本步失败（按 timeout_s 报错）。';
   }
 
-  // 「插入参数」片段：普通表达式插 param('k')；条件字段插整段谓词。
+  // 「插入识别文字配置项」片段：从 ocr_var 素材取 param_key 生成 param('k')。
   function paramInsertSnippet(key, mode) {
     const expr = paramTextExpr(key);
     return mode === 'cond' ? 'text_visible(' + expr + ')' : expr;
@@ -921,7 +921,7 @@
   }
 
   // Extract the undeclared param key from a T3 issue (path/message), for the
-  // 「去声明…」 prefill hint. Implements the same «param(<single literal>)» rule as
+  // T3 key extraction hint. Implements the same «param(<single literal>)» rule as
   // T3 without a quoted regex (the UI test extracts these functions verbatim).
   function lintT3ParamKey(issue) {
     const text = [lintIssuePath(issue), lintIssueMessage(issue)].join(' ');
@@ -1014,14 +1014,6 @@
   function locatorIsOcrText(locator) {
     const loc = locator && typeof locator === 'object' && !Array.isArray(locator) ? locator : {};
     return String(loc.kind === undefined || loc.kind === null ? '' : loc.kind).trim() === 'ocr_text';
-  }
-
-  // T3「去声明…」预填：从 issue 提取 key 生成 ParamDecl 形状（type 默认 text，
-  // label=key）；提取不到 key 时返回 null（不预填、仍打开对话框）。
-  function lintT3DeclarePrefill(issue) {
-    const key = paramSafeKey(lintT3ParamKey(issue));
-    if (!key) return null;
-    return { key: key, type: 'text', label: key };
   }
 
   function getRoot() {
@@ -1122,133 +1114,7 @@
     }
   }
 
-  // --- P3：任务参数面板（只读视图；声明入口仍是任务库「配置项…」） ----------
-
-  // Approximate param-usage hint (front-end scan). It is only a convenience:
-  // when the authoritative lint panel has a result it collapses into a low-weight
-  // <details> (or shows «权威检查不可用» when the backend route is missing).
-  function renderParamIssuesHint(host, keys, authoritative) {
-    if (!host) return;
-    host.textContent = '';
-    host.className = 'builder-param-issues';
-    if (!keys.length) return;
-    const text = 'flow 使用了未声明参数：' + keys.join('、') +
-      '；点「配置项…」声明（发布 T3 会拒绝）。';
-    if (!authoritative) {
-      host.className = 'builder-param-issues approx';
-      host.textContent = '⚠ 近似提示（权威检查不可用）：' + text;
-      return;
-    }
-    host.classList.add('approx');
-    const details = document.createElement('details');
-    details.className = 'builder-param-issues-details';
-    const summary = document.createElement('summary');
-    summary.textContent = '参数近似提示：' + keys.length + ' 个 key 未声明（以顶部「检查」结果为准）';
-    const body = document.createElement('div');
-    body.textContent = '⚠ ' + text;
-    details.append(summary, body);
-    host.appendChild(details);
-  }
-
-  function renderParamsPanel() {
-    const list = $('builder-params-list');
-    const summary = $('builder-params-summary');
-    const statusEl = $('builder-params-status');
-    const issuesEl = $('builder-param-issues');
-    const rows = paramPanelRows(B.params);
-    if (summary) {
-      summary.textContent = paramPanelSummary(B.params);
-      summary.className = 'builder-params-chip ' + (rows.length ? 'kind' : 'warn');
-    }
-    if (issuesEl) {
-      const undeclared = undeclaredParamUses(B.params, collectParamUses(B.flow));
-      const keys = [];
-      for (const use of undeclared) {
-        if (keys.indexOf(use.key) < 0) keys.push(use.key);
-      }
-      const authoritative = !!B.lint && !B.lintError;
-      renderParamIssuesHint(issuesEl, keys, authoritative);
-    }
-    if (statusEl) {
-      if (B.paramsError) {
-        statusEl.textContent = '参数读取失败：' + B.paramsError + '（不阻塞 flow 编辑）';
-        statusEl.className = 'muted small err';
-      } else if (B.paramsLoading) {
-        statusEl.textContent = '读取参数…';
-        statusEl.className = 'muted small';
-      } else if (!B.task) {
-        statusEl.textContent = '先选择任务：参数来自该任务的 meta.params。';
-        statusEl.className = 'muted small';
-      } else if (!rows.length) {
-        statusEl.textContent = '暂无任务参数：点「配置项…」声明，或保存「使用端OCR文字配置项」素材自动派生（保存 flow 时同步）。';
-        statusEl.className = 'muted small';
-      } else {
-        statusEl.textContent = '参数来自 meta.params（GET /task/config）；带「识别文字配置项」标记的是由 ocr_var 素材自动派生的行（只读）。';
-        statusEl.className = 'muted small ok';
-      }
-    }
-    if (!list) return;
-    list.textContent = '';
-    if (B.paramsLoading) {
-      list.textContent = '读取中…';
-      return;
-    }
-    if (B.paramsError) {
-      list.textContent = '参数读取失败：' + B.paramsError;
-      return;
-    }
-    if (!B.task) {
-      list.textContent = '（先选择任务）';
-      return;
-    }
-    if (!rows.length) {
-      const empty = document.createElement('div');
-      empty.className = 'builder-params-empty muted small';
-      empty.textContent = '暂无任务参数：点「配置项…」声明，或保存「使用端OCR文字配置项」素材后由 flow 同步自动派生。';
-      list.appendChild(empty);
-      return;
-    }
-    for (const row of rows) {
-      const line = document.createElement('div');
-      line.className = 'builder-param-row';
-      const group = document.createElement('span');
-      group.className = 'builder-param-group';
-      group.textContent = row.group || '未分组';
-      const key = document.createElement('span');
-      key.className = 'builder-param-key';
-      key.textContent = row.key || '（未命名）';
-      const type = document.createElement('span');
-      type.className = 'builder-param-type';
-      type.textContent = row.type || '—';
-      const label = document.createElement('span');
-      label.className = 'builder-param-label';
-      label.textContent = row.label || row.key;
-      const def = document.createElement('span');
-      def.className = 'builder-param-default';
-      def.textContent = '默认 ' + row.defaultText;
-      const insert = document.createElement('button');
-      insert.type = 'button';
-      insert.textContent = '插入参数';
-      insert.title = row.assetId
-        ? "把 param('" + row.key + "') 插入到最近聚焦的表达式字段（该参数来自识别文字配置项素材「" +
-          paramAssetLabel(row, B.assets) + '」）'
-        : "把 param('" + row.key + "') 插入到最近聚焦的表达式字段（或复制到剪贴板）";
-      insert.disabled = !row.key;
-      insert.addEventListener('click', function () { paramInsertFromPanel(row.key); });
-      line.append(group, key, type, label, def);
-      if (row.assetId) {
-        const assetChip = document.createElement('span');
-        assetChip.className = 'builder-param-asset';
-        assetChip.textContent = '识别文字配置项 · 素材 ' + paramAssetLabel(row, B.assets);
-        assetChip.title = '该派生行由素材「' + row.assetId + '」的 runtime_text/param_key 自动同步';
-        line.appendChild(assetChip);
-      }
-      line.appendChild(insert);
-      list.appendChild(line);
-    }
-  }
-
-  // --- P5：权威 lint 面板 / 请求 / T3 去声明 ----------------------------------
+  // --- P5：权威 lint 面板 / 请求 / T3 旧参数指引 ----------------------------------
 
   function clearLintState() {
     B.lint = null;
@@ -1283,14 +1149,12 @@
     actions.className = 'builder-lint-actions';
     if (lintIsT3Issue(issue)) {
       const key = lintT3ParamKey(issue);
-      const declare = document.createElement('button');
-      declare.type = 'button';
-      declare.textContent = '去声明…';
-      declare.title = key
-        ? '打开任务配置项对话框声明参数「' + key + '」；保存后自动重跑检查'
-        : '打开任务配置项对话框声明缺失参数；保存后自动重跑检查';
-      declare.addEventListener('click', function () { lintOpenDeclare(issue); });
-      actions.appendChild(declare);
+      msgEl.textContent = '旧参数不再支持：请改用「使用端OCR文字配置项」素材' +
+        (key ? '（flow 引用 param(\'' + key + '\')）' : '') + '——发布会被 T3 拒绝';
+      const hint = document.createElement('span');
+      hint.className = 'builder-lint-hint';
+      hint.textContent = '在素材行「识别文字」创建 ocr_var，并用动作目标/条件行引用它';
+      actions.appendChild(hint);
     } else if (code === 'T4') {
       const hint = document.createElement('span');
       hint.className = 'builder-lint-hint';
@@ -1406,7 +1270,6 @@
           ? '权威检查不可用：后端未实现 GET /task/lint（或任务不存在）'
           : '权威检查不可用：' + detail;
         renderLintPanel();
-        renderParamsPanel();
         if (!options.silent) status(B.lintError, '#ff8a80');
         return;
       }
@@ -1417,7 +1280,6 @@
         B.lintRunning = false;
         B.lintError = '权威检查不可用：' + (result.errors.join('; ') || '后端返回 ok=false');
         renderLintPanel();
-        renderParamsPanel();
         if (!options.silent) status(B.lintError, '#ff8a80');
         return;
       }
@@ -1425,7 +1287,6 @@
       B.lintError = '';
       B.lintRunning = false;
       renderLintPanel();
-      renderParamsPanel();
       if (!options.silent) {
         const summary = lintSummary(result);
         status('检查完成：' + summary.text +
@@ -1438,18 +1299,8 @@
       B.lintRunning = false;
       B.lintError = '权威检查不可用：' + String((e && e.message) || e);
       renderLintPanel();
-      renderParamsPanel();
       if (!options.silent) status(B.lintError, '#ff8a80');
     }
-  }
-
-  // T3 row「去声明…」: reuse the #task-config-dialog bridge; its onSaved handler
-  // re-reads meta.params and re-runs lint, so a fixed T3 disappears here.
-  function lintOpenDeclare(issue) {
-    const key = lintT3ParamKey(issue);
-    status('去声明参数：' + (key || '（见检查结果）') + '…');
-    // P6: prefill the missing ParamDecl into the config dialog (append + dedupe).
-    openTaskParamsDialog({ prefillParam: lintT3DeclarePrefill(issue) });
   }
 
   function closeLintPanel() {
@@ -2410,6 +2261,19 @@
     return keys;
   }
 
+  // D 批（去参数 UI）：动作目标校验不再依赖 #builder-params 面板/GET task config，
+  // 直接从素材库的 ocr_var 素材推导派生参数行（asset_id + param_key）。
+  function ocrVarParamRows(assets) {
+    const rows = [];
+    for (const asset of Array.isArray(assets) ? assets : []) {
+      if (!asset || asset.kind !== 'ocr_var') continue;
+      const key = paramSafeKey(asset.param_key);
+      if (!key) continue;
+      rows.push({ key: key, asset_id: String(asset.id) });
+    }
+    return rows;
+  }
+
   function assetById(assets, id) {
     const key = String(id === undefined || id === null ? '' : id).trim();
     if (!key) return null;
@@ -2553,7 +2417,7 @@
     return lab;
   }
 
-  // --- P3：属性面板「插入参数 ▾」/ 任务参数面板 -------------------------------
+  // --- D 批：属性面板「插入识别文字配置项 ▾」 -------------------------------
 
   // Track the last focused expression field so the params-panel row button can
   // insert into it (or copy to the clipboard when no field was touched yet).
@@ -2591,17 +2455,22 @@
     return false;
   }
 
-  // 「插入参数 ▾」：列出已声明参数（按 group 显示），点击把 param('key')（或条件
-  // 字段的 text_visible(param('key'))）插入到 getField() 返回的输入框光标处。
-  function paramInsertWidget(mode, getField) {
+  // 「插入识别文字配置项 ▾」（D 批：去参数）：只列素材库中 kind=ocr_var 的素材，
+  // 点击把 param('<param_key>') 插入到 getField() 返回的输入框光标处。
+  // 不再有用户参数概念；无 ocr_var 时禁用并提示先创建素材。
+  function ocrVarInsertWidget(mode, getField) {
+    const items = (B.assets || []).filter(function (a) {
+      return a && a.kind === 'ocr_var' && paramSafeKey(a.param_key);
+    });
     const wrap = document.createElement('span');
     wrap.className = 'builder-insert-param';
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.textContent = '插入参数 ▾';
-    btn.title = mode === 'cond'
-      ? "插入 text_visible(param('key')) 条件片段（key 来自任务参数 / 识别文字配置项素材）"
-      : "插入 param('key') 到当前输入框（key 来自任务参数 / 识别文字配置项素材）";
+    btn.textContent = '插入识别文字配置项 ▾';
+    btn.disabled = !items.length;
+    btn.title = items.length
+      ? "把 param('<param_key>') 插入到当前表达式输入框（来自「使用端OCR文字配置项」素材）"
+      : '无可用素材：先在素材库创建「使用端OCR文字配置项」（识别结果「存为OCR文字配置」或素材行「识别文字」）';
     btn.setAttribute('aria-haspopup', 'true');
     btn.setAttribute('aria-expanded', 'false');
     const menu = document.createElement('div');
@@ -2628,7 +2497,7 @@
       } else if (copyTextBestEffort(snippet)) {
         status('已复制到剪贴板：' + snippet);
       } else {
-        status('参数片段：' + snippet);
+        status('识别文字片段：' + snippet);
       }
       close();
     }
@@ -2636,39 +2505,40 @@
       menu.textContent = '';
       const head = document.createElement('div');
       head.className = 'hd';
-      head.textContent = mode === 'cond'
-        ? "插入条件片段（写入 text_visible(param('key'))）"
-        : "插入 param('key')（任务参数 / 识别文字配置项素材）";
+      head.textContent = '插入 param(param_key)（来自使用端OCR文字配置项素材）';
       menu.appendChild(head);
-      const rows = paramPanelRows(B.params);
-      if (!rows.length) {
+      if (!items.length) {
         const empty = document.createElement('div');
         empty.className = 'hd';
-        empty.textContent = '（还没有可用参数：先在「任务参数」面板点「配置项…」声明，或保存「使用端OCR文字配置项」素材）';
+        empty.textContent = '（无可用素材：先在素材库创建「使用端OCR文字配置项」）';
         menu.appendChild(empty);
         return;
       }
-      for (const row of rows) {
+      for (const asset of items) {
+        const key = paramSafeKey(asset.param_key);
         const item = document.createElement('button');
         item.type = 'button';
         item.className = 'builder-insert-param-item';
         const code = document.createElement('code');
-        code.textContent = paramInsertSnippet(row.key, mode);
+        code.textContent = paramInsertSnippet(key, mode);
         item.appendChild(code);
         const grp = document.createElement('span');
         grp.className = 'grp';
-        grp.textContent = (row.group || '未分组') + (row.type ? ' · ' + row.type : '') +
-          (row.assetId ? ' · 识别文字配置项 · 素材 ' + paramAssetLabel(row, B.assets) : '');
+        const runtimeText = String(asset.runtime_text === undefined || asset.runtime_text === null
+          ? '' : asset.runtime_text);
+        grp.textContent = (asset.label || asset.id) + ' · 素材 ' + asset.id +
+          (runtimeText ? ' · 「' + runtimeText + '」' : '');
         item.appendChild(grp);
         item.addEventListener('click', function (ev) {
           ev.stopPropagation();
-          insert(row.key);
+          insert(key);
         });
         menu.appendChild(item);
       }
     }
     btn.addEventListener('click', function (ev) {
       ev.stopPropagation();
+      if (!items.length) return;
       if (open) { close(); return; }
       renderMenu();
       menu.hidden = false;
@@ -2682,44 +2552,28 @@
     return wrap;
   }
 
-  function paramInsertFromPanel(key) {
-    const snippet = paramInsertSnippet(key, B.lastExprMode || 'expr');
-    const field = B.lastExprField;
-    if (field && field.isConnected && typeof field.value === 'string') {
-      insertTextAtField(field, snippet, B.lastExprMode || 'expr');
-      status('已插入 ' + snippet + '（参数来自面板）');
-      return;
-    }
-    if (copyTextBestEffort(snippet)) {
-      status('已复制到剪贴板：' + snippet + '（先点属性面板的表达式输入框可直接插入）');
-    } else {
-      status('参数片段：' + snippet + '（先点属性面板的表达式输入框可直接插入）');
-    }
-  }
-
-  // P6：通用「文字来源」三态编辑器（OCR locator）。click_target find[0]、
-  // requires/expect 守卫、drag from/to 端点共用：固定文字写 text；任务参数 /
-  // 表达式写 text_expr（互斥）。控件变化时回调 onChange，由调用方用
-  // paramSourceApply 写回（保留未知字段）。返回 {host, read()}。
+  // P6/D：通用「文字来源」编辑器（OCR locator）。click_target find[0]、
+  // requires/expect 守卫、drag from/to 端点共用：固定文字写 text；表达式写
+  // text_expr（互斥）。旧 flow 的 text_expr:"param('x')" 以「旧参数来源（只读）」
+  // 回显：用户不主动改来源就原样保留（旧 flow 继续可运行）；新 flow 的识别文字
+  // 配置项引用由「动作目标」选择器生成 text_expr，所以这里不再有 param 选项。
+  // 控件变化时回调 onChange，由调用方用 paramSourceApply 写回（保留未知字段）。
+  // 返回 {host, read(): {mode:'text'|'expr'|'keep', value}}。
   function locatorTextSourceFields(base, onChange) {
     const loc = base && typeof base === 'object' && !Array.isArray(base) ? base : {};
     const host = document.createElement('div');
     host.className = 'builder-text-source';
     const src = paramSourceFromLocator(loc);
-    const params = paramPanelRows(B.params);
-    const keepParamSource = src.mode === 'param';
-    const paramOptionsAvailable = params.length > 0 || keepParamSource;
-    const currentMode = src.mode === 'param' && !paramOptionsAvailable ? 'text' : src.mode;
+    const legacyParam = src.mode === 'param';
+    const currentMode = src.mode;
 
     const modeLab = document.createElement('label');
     modeLab.textContent = '文字来源（text / text_expr 互斥）';
     const modeSel = document.createElement('select');
-    for (const [value, label] of [
-      ['text', '固定文字（写 text）'],
-      ['param', '识别文字配置项（写 text_expr = param(...)）'],
-      ['expr', '表达式（写 text_expr）'],
-    ]) {
-      if (value === 'param' && !paramOptionsAvailable) continue;
+    const modeOptions = [];
+    if (legacyParam) modeOptions.push(['keep', '旧参数来源（只读）']);
+    modeOptions.push(['text', '固定文字（写 text）'], ['expr', '表达式（写 text_expr）']);
+    for (const [value, label] of modeOptions) {
       const o = document.createElement('option');
       o.value = value;
       o.textContent = label;
@@ -2728,41 +2582,10 @@
     modeSel.value = currentMode;
     modeLab.appendChild(modeSel);
     host.appendChild(modeLab);
-    if (!params.length && !keepParamSource) {
-      const hint = document.createElement('div');
-      hint.className = 'builder-source-hint';
-      hint.textContent = '识别文字配置项：先在「任务参数」面板「配置项…」声明/或保存 ocr_var 素材派生，之后可选「识别文字配置项」来源。';
-      host.appendChild(hint);
-    }
 
     let fixedInput = null;
-    let paramSel = null;
     let exprInput = null;
-    if (currentMode === 'param') {
-      const lab = document.createElement('label');
-      lab.textContent = '识别文字配置项 key';
-      paramSel = document.createElement('select');
-      const known = new Set(params.map(function (row) { return row.key; }));
-      paramSel.appendChild(new Option('（选择已声明的识别文字配置项）', ''));
-      for (const row of params) {
-        const assetText = row.assetId
-          ? ' · 素材 ' + paramAssetLabel(row, B.assets)
-          : '';
-        paramSel.appendChild(new Option(
-          (row.group || '未分组') + ' · ' + row.label + ' (' + row.key + ')' + assetText,
-          row.key
-        ));
-      }
-      // A locator that already uses param(...) keeps that key selectable even
-      // when the schema failed to load / the key is no longer declared, so
-      // editing another field can never silently drop text_expr.
-      if (src.value && !known.has(src.value)) {
-        paramSel.appendChild(new Option('未声明：' + src.value, src.value));
-      }
-      paramSel.value = src.value || (params[0] ? params[0].key : '');
-      lab.appendChild(paramSel);
-      host.appendChild(lab);
-    } else if (currentMode === 'expr') {
+    if (currentMode === 'expr') {
       const lab = document.createElement('label');
       lab.textContent = '文字表达式（text_expr）';
       const exprRow = document.createElement('span');
@@ -2772,17 +2595,26 @@
       exprInput.spellcheck = false;
       exprInput.value = src.value;
       exprRow.appendChild(exprInput);
-      exprRow.appendChild(paramInsertWidget('expr', function () { return exprInput; }));
+      exprRow.appendChild(ocrVarInsertWidget('expr', function () { return exprInput; }));
       lab.appendChild(exprRow);
       host.appendChild(lab);
       trackExprField(exprInput, 'expr');
-    } else {
+    } else if (currentMode === 'text') {
       const lab = document.createElement('label');
       lab.textContent = 'OCR 文字（固定字面量）';
       fixedInput = document.createElement('input');
       fixedInput.type = 'text';
       fixedInput.value = src.value;
       lab.appendChild(fixedInput);
+      host.appendChild(lab);
+    } else if (legacyParam) {
+      const lab = document.createElement('label');
+      lab.textContent = '旧参数来源（只读）';
+      const readonly = document.createElement('input');
+      readonly.type = 'text';
+      readonly.readOnly = true;
+      readonly.value = paramTextExpr(src.value || '');
+      lab.appendChild(readonly);
       host.appendChild(lab);
     }
 
@@ -2792,22 +2624,18 @@
     if (specError) {
       hint.textContent = '现有值无效：' + specError + '；改动后会按互斥规则覆盖。';
       hint.className += ' warn';
-    } else if (currentMode === 'param') {
-      hint.textContent = 'text_expr = ' + paramTextExpr(src.value || '') +
-        ' → 运行时替换为 Runner 参数值（参数未声明时发布 T3 会报错）。';
+    } else if (legacyParam) {
+      hint.textContent = '旧参数来源（只读）：' + paramTextExpr(src.value || '') +
+        '；不修改则原样保留（旧 flow 仍可运行）。选择其它来源会替换该表达式。';
     }
     host.appendChild(hint);
 
     function read() {
       const mode = modeSel.value;
       let value = '';
-      if (mode === 'param') {
-        // On a mode *switch* the param select is not rendered yet: default to the
-        // first declared key so switching never leaves text_expr:'' behind.
-        value = paramSel ? paramSel.value : (params[0] ? params[0].key : '');
-      } else if (mode === 'expr') {
+      if (mode === 'expr') {
         value = exprInput ? exprInput.value : '';
-      } else {
+      } else if (mode === 'text') {
         value = fixedInput ? fixedInput.value : '';
       }
       return { mode: mode, value: value };
@@ -2816,7 +2644,6 @@
       if (typeof onChange === 'function') onChange(read());
     }
     modeSel.addEventListener('change', emit);
-    if (paramSel) paramSel.addEventListener('change', emit);
     if (exprInput) exprInput.addEventListener('change', emit);
     if (fixedInput) fixedInput.addEventListener('change', emit);
     return { host: host, read: read };
@@ -2887,7 +2714,8 @@
         else delete next.timeout_ms;
       }
       const text = textSource.read();
-      step.args[field] = paramSourceApply(next, text.mode, text.value);
+      // D 批：旧 param 来源（keep）= 不改写 text/text_expr，只更新 kind/sel 等字段。
+      step.args[field] = text.mode === 'keep' ? next : paramSourceApply(next, text.mode, text.value);
       renderAll();
     }
     asset.addEventListener('change', sync);
@@ -3066,7 +2894,7 @@
       if (asset.value) next.sel = asset.value;
       else delete next.sel;
       const text = textSource.read();
-      let written = paramSourceApply(next, text.mode, text.value);
+      let written = text.mode === 'keep' ? next : paramSourceApply(next, text.mode, text.value);
       if (regionEditor) {
         const region = regionEditor.read();
         if (region.ok) written = regionWrite(written, region.mode, region.offset, region.asset);
@@ -3131,7 +2959,7 @@
       '使用端OCR文字配置项 → param(param_key)。region 素材只作操作区末端，不能作动作目标。';
     box.appendChild(hint);
     if (currentAsset) {
-      const errors = validateActionTarget(currentAsset, derivedParamKeys(B.params));
+      const errors = validateActionTarget(currentAsset, derivedParamKeys(ocrVarParamRows(B.assets)));
       if (errors.length) {
         const err = document.createElement('div');
         err.className = 'builder-target-errors';
@@ -3209,7 +3037,7 @@
       let written = next;
       if (kind.value === 'ocr_text') {
         const text = textSource ? textSource.read() : { mode: 'text', value: '' };
-        written = paramSourceApply(next, text.mode, text.value);
+        written = text.mode === 'keep' ? next : paramSourceApply(next, text.mode, text.value);
         if (regionEditor) {
           const region = regionEditor.read();
           if (region.ok) written = regionWrite(written, region.mode, region.offset, region.asset);
@@ -3638,7 +3466,7 @@
     if (m) return { custom: false, rows: [{ kind: 'text', neg: false, value: m[1] }], join: 'or', groupNot: false };
     m = c.match(/^(?:not\s+|!)\s*\(?\s*text_visible\(\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]\s*\)\s*\)?$/);
     if (m) return { custom: false, rows: [{ kind: 'text', neg: true, value: m[1] }], join: 'or', groupNot: false };
-    // P3: 文字（参数）行 — text_visible(param('k')) 与 not (...) 两种。
+    // 旧 flow：text_visible(param('k')) 条件行（只读回显）。
     m = c.match(/^text_visible\(\s*param\(\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]\s*\)\s*\)$/);
     if (m) return { custom: false, rows: [{ kind: 'param', neg: false, value: m[1] }], join: 'or', groupNot: false };
     m = c.match(/^(?:not\s+|!)\s*\(?\s*text_visible\(\s*param\(\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]\s*\)\s*\)\s*\)?$/);
@@ -3654,8 +3482,12 @@
     if (row.kind === 'asset') {
       expr = `appear('${v.replace(/'/g, '')}')`;
     } else if (row.kind === 'param') {
-      // P3: 参数文字条件（运行时 text_visible 实参已是表达式）
+      // D 批：旧 flow 的 text_visible(param('k')) 只读回显（不再有新建入口）。
       expr = paramWaitCond(v);
+    } else if (row.kind === 'ocr_var') {
+      // D 批：识别文字配置项行 = ocr_var 素材的 param_key → text_visible(param(key))。
+      const key = paramSafeKey(row.paramKey);
+      expr = key ? paramWaitCond(key) : '';
     } else {
       // A text row still uses the same underlying logical expression; multiple
       // texts inside one row stay OR-compatible with the previous preset.
@@ -3670,7 +3502,7 @@
     box.className = 'builder-subform';
     const title = document.createElement('div');
     title.className = 'muted small';
-    title.textContent = '循环/分支条件（谓词行 + and/or/not、&&/||/!、括号；「文字（参数）」行 = text_visible(param(...))）';
+    title.textContent = '循环/分支条件（谓词行 + and/or/not、&&/||/!、括号；「识别文字配置项」行 = text_visible(param(素材 param_key))；旧参数来源只读回显）';
     box.appendChild(title);
 
     const preset = parseConditionPreset(step.args.cond);
@@ -3722,7 +3554,7 @@
     custom.type = 'text';
     custom.value = preset.raw || step.args.cond || 'true';
     customRow.appendChild(custom);
-    customRow.appendChild(paramInsertWidget('cond', function () { return custom; }));
+    customRow.appendChild(ocrVarInsertWidget('cond', function () { return custom; }));
     customLabel.appendChild(customRow);
     box.appendChild(customLabel);
     trackExprField(custom, 'cond');
@@ -3744,7 +3576,11 @@
         const line = document.createElement('div');
         line.className = 'builder-condition-row';
         const kind = document.createElement('select');
-        for (const [v, label] of [['asset', '素材'], ['text', '文字（全屏）'], ['param', '文字（参数）']]) {
+        const kindChoices = [];
+        // D 批：旧 param 条件行只读回显（可删除/改类型）；新行不再提供参数选项。
+        if (row.kind === 'param') kindChoices.push(['param', '旧参数来源（只读）']);
+        kindChoices.push(['asset', '素材'], ['text', '文字（全屏）'], ['ocr_var', '识别文字配置项']);
+        for (const [v, label] of kindChoices) {
           const o = document.createElement('option');
           o.value = v;
           o.textContent = label;
@@ -3754,6 +3590,7 @@
         kind.addEventListener('change', () => {
           row.kind = kind.value;
           row.value = '';
+          row.paramKey = '';
           renderRows();
           sync();
         });
@@ -3770,21 +3607,43 @@
           valueEl = search.input;
           valueEl.addEventListener('change', () => { row.value = valueEl.value.trim(); sync(); });
           line.append(kind, negLabel, search);
-        } else if (row.kind === 'param') {
-          // P3: 参数行 → text_visible(param('key')); 列表来自任务参数面板。
-          const declared = paramPanelRows(B.params);
+        } else if (row.kind === 'ocr_var') {
+          // D 批：识别文字配置项行 = 选一个 ocr_var 素材 → text_visible(param(key))。
+          const ocrVars = (B.assets || []).filter(function (a) {
+            return a && a.kind === 'ocr_var' && paramSafeKey(a.param_key);
+          });
           valueEl = document.createElement('select');
-          valueEl.appendChild(new Option('（选择已声明参数）', ''));
-          const known = new Set(declared.map((p) => p.key));
-          for (const p of declared) {
-            valueEl.appendChild(new Option((p.group || '未分组') + ' · ' + p.key, p.key));
+          valueEl.appendChild(new Option('（选择使用端OCR文字配置项素材）', ''));
+          const byId = {};
+          for (const asset of ocrVars) {
+            byId[String(asset.id)] = asset;
+            const runtimeText = String(asset.runtime_text === undefined || asset.runtime_text === null
+              ? '' : asset.runtime_text);
+            valueEl.appendChild(new Option(
+              (asset.label || asset.id) + ' · ' + asset.id + ' · ' +
+                paramTextExpr(paramSafeKey(asset.param_key)) +
+                (runtimeText ? ' · 「' + runtimeText + '」' : ''),
+              String(asset.id)
+            ));
           }
-          if (row.value && !known.has(row.value)) {
-            valueEl.appendChild(new Option('未声明：' + row.value, row.value));
+          if (row.value && !byId[row.value]) {
+            valueEl.appendChild(new Option('素材不存在：' + row.value + '（旧配置）', row.value));
           }
-          valueEl.value = row.value || (declared[0] ? declared[0].key : '');
-          valueEl.addEventListener('change', () => { row.value = valueEl.value; sync(); });
+          valueEl.value = row.value || '';
+          const applyAsset = () => {
+            const asset = byId[valueEl.value];
+            row.value = valueEl.value;
+            row.paramKey = asset ? paramSafeKey(asset.param_key) : '';
+          };
+          applyAsset();
+          valueEl.addEventListener('change', () => { applyAsset(); sync(); });
           line.append(kind, negLabel, valueEl);
+        } else if (row.kind === 'param') {
+          // 旧 flow 的 text_visible(param('key'))：只读回显，删除/改类型才移除。
+          const legacy = document.createElement('span');
+          legacy.className = 'muted small';
+          legacy.textContent = '旧参数来源（只读）：' + paramTextExpr(String(row.value || ''));
+          line.append(kind, negLabel, legacy);
         } else {
           valueEl = document.createElement('input');
           valueEl.type = 'text';
@@ -3956,7 +3815,7 @@
     if (exprHintOps.has(step.op)) {
       const hint = document.createElement('div');
       hint.className = 'muted small';
-      hint.textContent = '表达式值支持 and/or/not、&&/||/!、括号、appear/ocr/param/var；数值字段按数字求值。「插入参数 ▾」把已声明参数写成 param(...)。';
+      hint.textContent = '表达式值支持 and/or/not、&&/||/!、括号、appear/ocr/param/var；数值字段按数字求值。「插入识别文字配置项 ▾」把 ocr_var 素材的 param_key 写成 param(...)。';
       root.appendChild(hint);
     }
     if (step.op === 'if' || step.op === 'while') {
@@ -4001,13 +3860,13 @@
           else step.args[f.key] = input.value;
           renderAll();
         });
-        // P3: expression fields get「插入参数 ▾」(param()/text_visible(param())).
+        // D 批: expression fields get「插入识别文字配置项 ▾」(ocr_var param_key).
         const exprMode = EXPR_FIELDS[step.op] && EXPR_FIELDS[step.op][f.key];
         if (exprMode) {
           const exprRow = document.createElement('span');
           exprRow.className = 'builder-expr-row';
           exprRow.appendChild(input);
-          exprRow.appendChild(paramInsertWidget(exprMode, function () { return input; }));
+          exprRow.appendChild(ocrVarInsertWidget(exprMode, function () { return input; }));
           trackExprField(input, exprMode);
           lab.appendChild(exprRow);
           root.appendChild(lab);
@@ -4173,7 +4032,6 @@
     renderGraph();
     renderForm();
     renderAssetPanel();
-    renderParamsPanel();
     renderCode();
     updateHistoryButtons();
     scheduleAutoSave();
@@ -4226,43 +4084,6 @@
     } catch (e) {
       B.paramsError = String((e && e.message) || e);
     }
-    renderParamsPanel();
-  }
-
-  function openTaskParamsDialog(opts) {
-    const options = typeof opts === 'function'
-      ? { onSaved: opts }
-      : (opts && typeof opts === 'object' ? opts : {});
-    if (!B.task) {
-      status('先选择任务，再编辑任务参数', '#ff8a80');
-      return;
-    }
-    const hook = window.OAS_TASK_CONFIG;
-    if (!hook || typeof hook.open !== 'function') {
-      status('任务配置项对话框未就绪（app.js 未加载）', '#ff8a80');
-      return;
-    }
-    const savedCallback = typeof options.onSaved === 'function' ? options.onSaved : null;
-    const prefillParam = options.prefillParam && typeof options.prefillParam === 'object'
-      ? options.prefillParam
-      : null;
-    hook.open(B.task, {
-      // Reuse the existing #task-config-dialog; after a successful save refresh
-      // the panel (meta.params changed) without reloading flow.json.
-      onSaved: function (savedTask, params) {
-        if (String(savedTask || '') !== B.task) return;
-        B.params = Array.isArray(params) ? params : [];
-        B.paramsError = '';
-        renderAll();
-        status('任务参数已更新：' + paramPanelSummary(B.params), '#7bd88f');
-        // meta.params changed -> the authoritative T3 result is stale: re-check.
-        lintTask({ silent: true });
-        if (savedCallback) {
-          try { savedCallback(savedTask, params); } catch (e) { /* never break the save path */ }
-        }
-      },
-      prefillParam: prefillParam,
-    });
   }
 
   async function loadTask(name) {
@@ -4326,14 +4147,13 @@
       }
       renderAll();
       B.autoSaveArmed = true;
-      status(`已载入 ${name}：${B.flow.steps.length} 个根动作 / ${B.assets.length} 个素材 / ${paramPanelRows(B.params).length} 项参数`);
+      status(`已载入 ${name}：${B.flow.steps.length} 个根动作 / ${B.assets.length} 个素材 / ${ocrVarParamRows(B.assets).length} 个识别文字配置项`);
       // P5: run the authoritative lint once per load; failures stay silent and
       // never block flow editing (the panel explains 权威检查不可用).
       lintTask({ silent: true });
     } catch (e) {
       B.paramsLoading = false;
       status('载入失败：' + e, '#ff8a80');
-      renderParamsPanel();
       renderLintPanel();
     }
   }
@@ -4362,7 +4182,7 @@
     const saveIssues = flowTextSpecIssues(B.flow)
       .concat(regionIssues(B.flow, regionAssetIds(B.assets)))
       .concat(actionArgsIssues(B.flow, B.screen))
-      .concat(actionTargetIssues(B.flow, B.assets, B.params));
+      .concat(actionTargetIssues(B.flow, B.assets, ocrVarParamRows(B.assets)));
     if (saveIssues.length) {
       status('保存已阻止：' + saveIssues[0] +
         (saveIssues.length > 1 ? '（另有 ' + (saveIssues.length - 1) + ' 项问题，见高级 JSON/属性面板）' : ''),
@@ -4526,8 +4346,6 @@
     if (save) save.addEventListener('click', () => saveFlow(false));
     const dry = $('builder-dry-run');
     if (dry) dry.addEventListener('click', dryRun);
-    const paramsDeclare = $('builder-params-declare');
-    if (paramsDeclare) paramsDeclare.addEventListener('click', function () { openTaskParamsDialog(); });
     const lintBtn = $('builder-lint-btn');
     if (lintBtn) lintBtn.addEventListener('click', function () { lintTask(); });
     const lintClose = $('builder-lint-close');

@@ -501,6 +501,19 @@
     });
   }
 
+  // D 批（去参数 UI）：Runner 只显示/收集「使用端OCR文字配置项」（asset_id 派生行）；
+  // 通用参数组隐藏（代码保留，服务端 meta.params 派生模型不动）。
+  function runnerParamOcrVarOnly(params) {
+    const list = Array.isArray(params) ? params : [];
+    return list.filter(function (param) {
+      if (!param || typeof param !== 'object' || Array.isArray(param)) return false;
+      const assetId = param.asset_id === undefined || param.asset_id === null
+        ? ''
+        : String(param.asset_id).trim();
+      return !!assetId;
+    });
+  }
+
   function runnerParamRoleText(param) {
     const p = param && typeof param === 'object' ? param : {};
     const assetId = String(p.asset_id === undefined || p.asset_id === null ? '' : p.asset_id).trim();
@@ -2392,12 +2405,14 @@
     el.configFields.className = '';
     configValues = values && typeof values === 'object' ? values : {};
     if (!params.length) {
-      el.configFields.textContent = '该任务没有配置项（编辑端未声明 meta.params）';
+      el.configFields.textContent = '本任务无可配置的使用端变量（需在 Studio 创建「使用端OCR文字配置项」素材）';
       el.configFields.className = 'runner-config-empty';
       updateRunnerConfigSummary();
       return;
     }
-    const groups = runnerParamGroups(params);
+    const groups = runnerParamGroupsEx(params).filter(function (group) {
+      return group.kind === 'ocr_var';
+    });
     let index = 0;
     for (const group of groups) {
       const details = document.createElement('details');
@@ -2463,14 +2478,14 @@
     try {
       const body = await runnerFetchJson(runnerConfigUrl(task));
       if (configTask !== task) return; // 已关闭/切换到别的任务，丢弃过期响应
-      const params = Array.isArray(body.params) ? body.params : [];
+      const params = runnerParamOcrVarOnly(Array.isArray(body.params) ? body.params : []);
       const values = body.values && typeof body.values === 'object' ? body.values : {};
       configParams = params;
       configLoaded = true;
       renderRunnerConfigFields(params, values);
       if (el.configError) el.configError.textContent = '';
       if (el.configStatus) {
-        let statusText = '已加载 ' + params.length + ' 项配置';
+        let statusText = '已加载 ' + params.length + ' 项使用端配置';
         if (body.updated_ms !== undefined && body.updated_ms !== null) {
           statusText += ' · 上次保存 ' + runnerTimeText(body.updated_ms);
         }
@@ -2553,7 +2568,8 @@
     try {
       const body = await runnerFetchJson(runnerConfigUrl(task), {
         method: 'PUT',
-        body: { values: collected.values },
+        // D 批：表单只编辑 ocr_var 派生行；未显示的通用参数值原样保留（不清空旧值）。
+        body: { values: Object.assign({}, configValues, collected.values) },
       });
       const saved = body.values && typeof body.values === 'object' ? body.values : collected.values;
       const savedCount = Object.keys(saved).length;

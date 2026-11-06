@@ -324,7 +324,7 @@
         <div class="builder-lint-head">
           <h3>任务检查 <span class="builder-params-sub">GET /task/lint</span></h3>
           <span id="builder-lint-summary" class="builder-params-chip kind">尚未检查</span>
-          <span class="muted small">与发布校验同一套规则；T3 未声明参数可点「去声明…」。</span>
+          <span class="muted small">与发布校验同一套规则；T3（旧参数引用）不再支持，请改用「使用端OCR文字配置项」素材。</span>
           <span class="spacer"></span>
           <button id="builder-lint-close" type="button" title="收起检查结果（计数徽标保留）">收起</button>
         </div>
@@ -332,26 +332,9 @@
         <div id="builder-lint-list" class="builder-lint-list"></div>
         <pre id="builder-lint-error" class="muted small dialog-error"></pre>
         <p class="muted small builder-lint-note">
-          权威结果来自后端（<code>GET /task/lint</code>）；参数面板底部的近似提示只用于编辑时即时提醒，以此处结果为准。
+          权威结果来自后端（<code>GET /task/lint</code>）；Studio 用户界面已不再暴露参数声明入口，
+          旧 flow 的 <code>param('key')</code> 仍可运行，但需要改成「使用端OCR文字配置项」素材后重新引用。
         </p>
-      </section>
-
-      <!-- P3（参数 v2）：任务参数面板。声明唯一权威仍是 meta.params（任务库「配置项…」），
-           这里只做只读展示 + 插入参数入口。参数不属于动作库（事项 1/2）。 -->
-      <section class="card builder-params-panel" id="builder-params">
-        <div class="builder-params-head">
-          <h3>任务参数 <span class="builder-params-sub">meta.params</span></h3>
-          <span id="builder-params-summary" class="builder-params-chip kind">0 项参数</span>
-          <span class="muted small">
-            参数声明在任务库「配置项…」；构建页在 <code>param('key')</code> / <code>text_expr</code> 里引用。
-          </span>
-          <span class="spacer"></span>
-          <button id="builder-params-declare" type="button"
-            title="打开任务配置项对话框（编辑 meta.params；发布后随 .oaspkg 下发）">配置项…</button>
-        </div>
-        <div id="builder-params-status" class="muted small" role="status" aria-live="polite">—</div>
-        <div id="builder-params-list" class="builder-params-list muted">（选择任务后加载）</div>
-        <div id="builder-param-issues" class="builder-param-issues"></div>
       </section>
 
       <div class="builder-main">
@@ -362,8 +345,8 @@
             先选中中间的 if/loop/while 容器，再添加子动作；否则追加到根流程末尾。
           </p>
           <p class="muted small builder-params-help">
-            参数不属于动作库：动作库只保留通用动作；流程里要引用参数时，用属性面板的「插入参数 ▾」在
-            <code>text_expr</code> / 条件表达式里写 <code>param('key')</code>（先在「任务参数」面板声明；未声明时发布 T3 报错）。
+            流程里要引用「使用端OCR文字配置项」素材的文字时，用属性面板的「插入识别文字配置项 ▾」在
+            <code>text_expr</code> / 条件表达式里写 <code>param('param_key')</code>（素材库中 ocr_var 素材的 param_key）。
           </p>
           <p class="muted small" id="builder-cond-help">
             <strong>条件与等待</strong>：出现 = 现在有没有；识别 = 读出文字内容。
@@ -484,48 +467,6 @@
     <div class="row dialog-actions">
       <button id="btn-create-cancel" type="button">取消</button>
       <button id="btn-create-submit" type="button">创建</button>
-    </div>
-  </dialog>
-
-  <!-- PR2 / P7：任务配置项 schema 编辑（结构化表单 + 高级 JSON；运行值由 Runner 填写） -->
-  <dialog id="task-config-dialog" class="task-dialog task-config-dialog">
-    <h3 id="task-config-title">任务配置项</h3>
-    <div id="task-config-help" class="task-config-help muted small">
-      <p>
-        <strong>参数是什么</strong>：Studio 在这里定义任务的参数 schema（key/type/default/…），
-        终端用户在 Runner 的「已安装任务 → 配置」里填运行值；保存后随任务、发布后随 <code>.oaspkg</code> 下发。
-      </p>
-      <p>
-        <strong>在哪里用</strong>：在 flow 表达式里写 <code>param('key')</code>；OCR 文字来源写
-        <code>text_expr:"param('key')"</code>；条件里写 <code>text_visible(param('key'))</code>。
-        key 必须与 <code>param(...)</code> 里的字面量一致（发布 T3 会校验未声明参数）。
-      </p>
-      <p>
-        <strong>运行值优先级</strong>：CLI <code>--param</code> &gt; 调度条目 params &gt; Runner values.json
-        &gt; 这里填的 <code>default</code>。Runner 里「不使用 / 留空」= 回退 default。
-      </p>
-      <p>
-        不熟悉时按每项的短帮助与示例填写即可；也可以勾选「高级 JSON」直接编辑数组。
-        从构建页检查面板的 T3「去声明…」打开时，会把缺失参数预填进表单（同 key 不重复）。
-      </p>
-    </div>
-    <div class="task-config-toolbar row">
-      <button id="task-config-add" type="button" title="新增一行参数（key/type/default 等）">＋ 添加参数</button>
-      <label class="opt task-config-advanced-toggle">
-        <input id="task-config-advanced" type="checkbox" /> 高级 JSON（直接编辑 meta.params）
-      </label>
-      <span id="task-config-mode-hint" class="muted small">结构化表单模式：保存时以表单内容为准</span>
-      <span class="spacer"></span>
-    </div>
-    <div id="task-config-form" class="task-config-form"></div>
-    <textarea id="task-config-json" class="builder-code task-config-json" spellcheck="false"
-      placeholder='[{"key":"max_rounds","type":"int","default":5,"label":"最大轮数"}]'></textarea>
-    <div id="task-config-status" class="muted small" role="status" aria-live="polite">—</div>
-    <pre id="task-config-error" class="muted small dialog-error"></pre>
-    <div class="row dialog-actions">
-      <button id="task-config-save" type="button">保存配置项</button>
-      <span class="spacer"></span>
-      <button id="task-config-cancel" type="button">取消</button>
     </div>
   </dialog>
 

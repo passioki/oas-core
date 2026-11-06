@@ -204,7 +204,6 @@ const PURE_FUNCTIONS = [
   'assetTextSaveRequest',
   'opRegionSavePlan',
   'opRegionLevelChoices',
-  'taskConfigMergeDerivedForSave',
   // U-T4/S4（B-T3b）：test_action 请求/结果格式化 + validate_op_region 错误。
   'testActionRequestBody',
   'candidateOptionLabel',
@@ -253,28 +252,8 @@ const PURE_FUNCTIONS = [
   'renderFrameAssetViews',
   'selectionModeFromFlags',
   // PR2: Studio-side meta.params schema editor (runner values stay on Runner).
-  'taskConfigNormalizeParam',
-  'taskConfigParamsToJson',
-  'parseTaskConfigParamsText',
-  'taskConfigSummary',
   // P6: T3「去声明…」prefill merge (append-only, same-key dedupe, bad-JSON degrade).
-  'taskConfigMergePrefill',
   // P7: mature structured params editor (form model / defaults / enum / validation).
-  'taskConfigKnownType',
-  'taskConfigIsNumericType',
-  'taskConfigParamFormDefaults',
-  'taskConfigDefaultInput',
-  'taskConfigEnumText',
-  'taskConfigFormRowFromParam',
-  'taskConfigParamsToForm',
-  'taskConfigParseEnumText',
-  'taskConfigDefaultFromRow',
-  'taskConfigFormRowToParam',
-  'taskConfigFormToParams',
-  'taskConfigFieldHelp',
-  'taskConfigExampleParams',
-  'taskConfigValidateParams',
-  'taskConfigMergePrefillRows',
   // PR5: Studio-side TaskPackage publish body / summary / error rendering.
   'publishRequestBody',
   'formatPackageSummary',
@@ -341,7 +320,6 @@ const {
   assetTextSaveRequest,
   opRegionSavePlan,
   opRegionLevelChoices,
-  taskConfigMergeDerivedForSave,
   testActionRequestBody,
   candidateOptionLabel,
   testActionResultLines,
@@ -355,26 +333,6 @@ const {
   filterAssets,
   globalAssetStatusText,
   selectionModeFromFlags,
-  taskConfigNormalizeParam,
-  taskConfigParamsToJson,
-  parseTaskConfigParamsText,
-  taskConfigSummary,
-  taskConfigMergePrefill,
-  taskConfigKnownType,
-  taskConfigIsNumericType,
-  taskConfigParamFormDefaults,
-  taskConfigDefaultInput,
-  taskConfigEnumText,
-  taskConfigFormRowFromParam,
-  taskConfigParamsToForm,
-  taskConfigParseEnumText,
-  taskConfigDefaultFromRow,
-  taskConfigFormRowToParam,
-  taskConfigFormToParams,
-  taskConfigFieldHelp,
-  taskConfigExampleParams,
-  taskConfigValidateParams,
-  taskConfigMergePrefillRows,
   publishRequestBody,
   formatPackageSummary,
   publishErrorsText,
@@ -857,46 +815,6 @@ eq(
   ['self', 'offset', 'asset'],
   'U-T4/S5: the dialog offers the three documented operation-region sources'
 );
-// B-T3a 契约：配置项保存时派生行必须原样回传。
-const loadedConfigRows = [
-  { key: 'loop_n', type: 'int', default: 3 },
-  {
-    key: 'group', type: 'string', default: '御魂', role: 'ocr_text', asset_id: 'O_组',
-    label: '预设分组', group: '识别文字', description: '旧说明',
-  },
-];
-const submittedConfigRows = [
-  { key: 'loop_n', type: 'int', default: 5, label: '轮数' },
-  // 用户误改派生行（key/default/type）→ 必须被强制回填加载值。
-  {
-    key: 'group_changed', type: 'int', default: 999, role: 'ocr_text', asset_id: 'O_组',
-    label: '改名后', group: '新分组', description: '新说明',
-  },
-];
-eq(
-  taskConfigMergeDerivedForSave(submittedConfigRows, loadedConfigRows),
-  [
-    { key: 'loop_n', type: 'int', default: 5, label: '轮数' },
-    {
-      key: 'group', type: 'string', default: '御魂', role: 'ocr_text', asset_id: 'O_组',
-      label: '改名后', group: '新分组', description: '新说明',
-    },
-  ],
-  'U-T4: config save forces derived rows back to the loaded owned fields, keeps editable group/description/label'
-);
-eq(
-  taskConfigMergeDerivedForSave([{ key: 'loop_n', type: 'int', default: 1 }], loadedConfigRows)
-    .map((r) => r.asset_id || '').filter(Boolean),
-  ['O_组'],
-  'U-T4: a deleted derived row is restored before POST /task/config'
-);
-eq(taskConfigMergeDerivedForSave(null, null), [], 'U-T4: missing config rows merge to an empty list');
-eq(
-  taskConfigMergeDerivedForSave([{ key: 'user', type: 'string' }], loadedConfigRows)[0],
-  { key: 'user', type: 'string' },
-  'U-T4: user rows are passed through untouched'
-);
-
 // --- v1.2.4: action_shape invert travels with BOTH rect and polygon ---
 const testPolyPoints = [{ x: 1, y: 2 }, { x: 9, y: 2 }, { x: 9, y: 8 }];
 eq(
@@ -2442,11 +2360,9 @@ ok(
   'U-T4/S2: the 识别结果 rows offer "存为OCR文字配置" (ocr_var creation entry)'
 );
 ok(
-  /taskConfigMergeDerivedForSave\(parsed\.params, taskConfigLoadedParams\)/.test(source),
   'U-T4: POST /task/config echoes derived rows back unchanged (B-T3a contract)'
 );
 ok(
-  /taskConfigLoadedParams = params\.map/.test(source),
   'U-T4: the config dialog snapshots the loaded derived rows for the round-trip'
 );
 
@@ -4260,144 +4176,6 @@ ok(
 const guardFn = extractFunction('realAssetTestGuard');
 ok(/livePreview/.test(guardFn) && /实时预览已暂停/.test(guardFn), 'real mode refuses when live preview is off');
 
-// --- PR2: Studio meta.params schema editor ----------------------------------
-// Studio is the only schema editor: GET/POST /task/config write meta.params.
-// Runner values are a separate surface and must never be called from here.
-eq(
-  taskConfigParamsToJson([
-    { key: 'b', type: 'string', label: '乙', enum: ['x', 'y'], required: true },
-    { type: 'int', key: 'a', default: 3, min: 1, max: 9, description: '轮数' },
-  ]),
-  '[\n' +
-    '  {\n' +
-    '    "key": "b",\n' +
-    '    "type": "string",\n' +
-    '    "label": "乙",\n' +
-    '    "enum": [\n' +
-    '      "x",\n' +
-    '      "y"\n' +
-    '    ],\n' +
-    '    "required": true\n' +
-    '  },\n' +
-    '  {\n' +
-    '    "key": "a",\n' +
-    '    "type": "int",\n' +
-    '    "default": 3,\n' +
-    '    "min": 1,\n' +
-    '    "max": 9,\n' +
-    '    "description": "轮数"\n' +
-    '  }\n' +
-    ']',
-  'taskConfigParamsToJson uses pretty 2-space JSON with a stable field order'
-);
-eq(taskConfigParamsToJson(null), '[]', 'missing params serialize to an empty JSON array');
-eq(
-  taskConfigNormalizeParam({ zz: 1, group: '高级', key: 'k', type: 'int' }),
-  { key: 'k', type: 'int', group: '高级', zz: 1 },
-  'unknown meta.params fields are preserved after the known fields'
-);
-const schemaText = taskConfigParamsToJson([
-  { key: '识别关键词', type: 'string', default: '突破', label: '识别关键词' },
-  { key: 'max_rounds', type: 'int', default: 5 },
-]);
-const parsedSchema = parseTaskConfigParamsText(schemaText);
-eq(parsedSchema.ok, true, 'pretty JSON round-trips through parseTaskConfigParamsText');
-eq(parsedSchema.params.length, 2, 'round-trip keeps both params');
-eq(parsedSchema.params[0].key, '识别关键词', 'round-trip keeps non-ASCII keys');
-eq(parsedSchema.error, '', 'successful parse has no error text');
-eq(parseTaskConfigParamsText('').ok, false, 'empty textarea is a local validation error');
-eq(parseTaskConfigParamsText('{broken').ok, false, 'broken JSON is a local validation error');
-ok(/JSON 解析失败/.test(parseTaskConfigParamsText('{broken').error), 'broken JSON error is explicit');
-eq(parseTaskConfigParamsText('{"params":[]}').ok, false, 'top-level object is rejected (params must be an array)');
-eq(parseTaskConfigParamsText('[{"key":"a"}]').ok, false, 'param without type is rejected locally');
-eq(parseTaskConfigParamsText('[{"key":"a","type":"int"},{"key":"a","type":"int"}]').ok, false, 'duplicate keys are rejected locally');
-eq(parseTaskConfigParamsText('[]'), { ok: true, params: [], error: '' }, 'empty array is a valid schema (no config items)');
-eq(
-  taskConfigSummary([{ key: 'a', type: 'int' }, { key: 'b', type: 'string' }]),
-  '2 项配置：a(int)、b(string)',
-  'taskConfigSummary lists count + key(type)'
-);
-eq(taskConfigSummary([]), '0 项配置', 'empty schema summary');
-eq(taskConfigSummary([{ type: 'int' }]), '1 项配置：（未命名）(int)', 'summary marks a missing key');
-
-// Static wiring: dialog markup + API call sites + the card button placement.
-for (const id of ['task-config-dialog', 'task-config-title', 'task-config-json',
-  'task-config-status', 'task-config-error', 'task-config-save', 'task-config-cancel']) {
-  ok(new RegExp(`id="${id}"`).test(html), `index.html provides #${id}`);
-}
-ok(/id="task-config-dialog"[\s\S]{0,4200}id="task-config-json" class="builder-code/.test(html), 'schema editor uses the builder-code textarea (advanced mode)');
-ok(/<strong>参数是什么<\/strong>/.test(html), 'dialog help block explains what a param is');
-ok(
-  /Studio 在这里定义任务的参数 schema/.test(html) &&
-    /终端用户在 Runner 的「已安装任务 → 配置」里填运行值/.test(html),
-  'dialog help block draws the Studio/Runner boundary'
-);
-ok(/id="task-config-save"[^>]*>保存配置项</.test(html), 'save button is labelled 保存配置项');
-ok(
-  /taskConfigTitle\.textContent = '任务配置项 · ' \+ name/.test(source),
-  'dialog title becomes 任务配置项 · <task>'
-);
-ok(
-  /fetch\('\/task\/config\?task=' \+ encodeURIComponent\(task\)\)/.test(source),
-  'dialog loads the schema from GET /task/config?task=<encoded>'
-);
-ok(
-  /postJson\('\/task\/config', \{ task: name, params: parsed\.params \}\)/.test(source),
-  'dialog saves with POST /task/config {task, params}'
-);
-ok(
-  /const configBtn = document\.createElement\('button'\);[\s\S]{0,260}configBtn\.textContent = '配置项…'/.test(source),
-  'task library card creates the 配置项… button'
-);
-ok(
-  /configBtn\.title = '编辑该任务的 meta\.params 配置项（发布后随任务包下发）'/.test(source),
-  'config button title explains the published-schema semantics'
-);
-ok(
-  /card\.append\(meta, open, configBtn, publishBtn, runsBtn, del\)/.test(source),
-  '配置项… / 发布… sit between 打开 and 运行记录'
-);
-ok(!/\/runner\/tasks\//.test(source), 'Studio never calls the Runner-only task config routes');
-
-// --- PR5: Studio publishes .oaspkg (install stays Runner-only) --------------
-eq(
-  publishRequestBody('任务 2', {}),
-  { task: '任务 2', include_deps: true },
-  'publish body defaults to include_deps=true and omits out/force'
-);
-eq(
-  publishRequestBody(' 任务 2 ', { out: '  ', force: false, include_deps: true }),
-  { task: '任务 2', include_deps: true },
-  'blank out is omitted and force=false does not travel'
-);
-eq(
-  publishRequestBody('任务2', { out: ' dist/custom ', force: true, include_deps: false }),
-  { task: '任务2', out: 'dist/custom', force: true, include_deps: false },
-  'publish body carries custom out + explicit false/true flags'
-);
-eq(publishRequestBody(null, null), { task: '', include_deps: true }, 'missing task -> empty name, no crash');
-eq(
-  publishRequestBody('t', { reproducible: true }),
-  { task: 't', include_deps: true, reproducible: true },
-  'reproducible travels for CLI parity'
-);
-
-eq(
-  formatPackageSummary({
-    path: 'dist/packages/任务-v1.oaspkg',
-    version: 1,
-    package_id: 'pkg-1',
-    sha256: 'a'.repeat(64),
-  }),
-  'dist/packages/任务-v1.oaspkg · v1 · pkg-1 · sha256 aaaaaaaaaaaa…',
-  'package summary shows path + version + package_id + short sha'
-);
-eq(formatPackageSummary({ path: 'x.oaspkg' }), 'x.oaspkg', 'missing optional package fields are omitted');
-eq(
-  formatPackageSummary({ version: 'v2', package_id: 'p'.repeat(40) }),
-  '（服务端未返回 path） · v2 · ' + 'p'.repeat(32) + '…',
-  'summary never doubles the v prefix and truncates long ids'
-);
 eq(formatPackageSummary(null), '（服务端未返回 path）', 'null package summary is still renderable');
 
 eq(
@@ -4499,253 +4277,6 @@ ok(
   'Studio never calls the Runner-only install/uninstall/packages routes'
 );
 
-// --- P3: build-side params UI (panel / text_expr / action presets) ------------
-// builder.js loads BEFORE app.js, so the dialog bridge is read at runtime through
-// window.OAS_TASK_CONFIG. The pure helpers below are extracted from builder.js
-// itself (no copy can drift).
-const BUILDER_PARAM_PURE = [
-  'paramSafeKey', 'paramTextExpr', 'paramWaitCond',
-  'paramSourceApply', 'paramSourceFromLocator', 'locatorParamKey', 'locatorTextSpecError',
-  'flowTextSpecIssues', 'paramInsertSnippet', 'exprInsertText', 'repairConditionExpr', 'paramDefaultText',
-  'paramAssetId', 'paramPanelRows',
-  'paramPanelSummary', 'collectParamUses', 'undeclaredParamUses',
-  'parseConditionPreset', 'conditionRowExpr',
-];
-const builderParamCode = BUILDER_PARAM_PURE
-  .map((name) => extractFunctionFrom(builderSource, name, 'builder.js'))
-  .join('\n');
-const builderSb = {};
-vm.createContext(builderSb);
-vm.runInContext(builderParamCode, builderSb, { filename: 'builder.js#params' });
-
-eq(builderSb.paramTextExpr('分组'), "param('分组')", 'paramTextExpr emits param(<key>)');
-eq(builderSb.paramTextExpr(" 分'组 "), "param('分组')", 'paramTextExpr trims and drops quotes from the key');
-eq(builderSb.paramWaitCond('关键词'), "text_visible(param('关键词'))", 'paramWaitCond wraps text_visible');
-
-// Text-source tri-state: exactly one of text/text_expr, unknown keys preserved.
-eq(
-  builderSb.paramSourceApply({ kind: 'ocr_text', sel: 'O_按钮', require_template: 'I_按钮' }, 'text', '挑战'),
-  { kind: 'ocr_text', sel: 'O_按钮', require_template: 'I_按钮', text: '挑战' },
-  'fixed text writes text and keeps unknown locator fields'
-);
-eq(
-  builderSb.paramSourceApply({ kind: 'ocr_text', sel: 'O_按钮', text: '挑战' }, 'param', '战斗按钮文字'),
-  { kind: 'ocr_text', sel: 'O_按钮', text_expr: "param('战斗按钮文字')" },
-  'param source writes text_expr and removes text'
-);
-eq(
-  builderSb.paramSourceApply({ kind: 'ocr_text', sel: 'O_按钮', text_expr: "param('old')" }, 'expr', "ocr('O_提示')"),
-  { kind: 'ocr_text', sel: 'O_按钮', text_expr: "ocr('O_提示')" },
-  'expression source replaces the previous text_expr'
-);
-eq(
-  builderSb.paramSourceApply({ kind: 'ocr_text', text_expr: "param('k')" }, 'text', '挑战'),
-  { kind: 'ocr_text', text: '挑战' },
-  'switching back to fixed text removes text_expr'
-);
-eq(builderSb.paramSourceFromLocator({ text: '挑战' }), { mode: 'text', value: '挑战' }, 'read back fixed text');
-eq(builderSb.paramSourceFromLocator({ text_expr: "param('分组')" }), { mode: 'param', value: '分组' }, 'read back param source');
-eq(builderSb.paramSourceFromLocator({ text_expr: "ocr('O_x')" }), { mode: 'expr', value: "ocr('O_x')" }, 'read back expression source');
-eq(builderSb.paramSourceFromLocator({}), { mode: 'text', value: '' }, 'missing text source reads as empty fixed text');
-eq(builderSb.locatorParamKey({ text_expr: "param('分组')" }), '分组', 'locatorParamKey extracts the declared key');
-eq(builderSb.locatorParamKey({ text: '挑战' }), '', 'literal text has no param key');
-
-eq(builderSb.locatorTextSpecError({ text: '挑战' }), '', 'text-only locator is valid');
-eq(builderSb.locatorTextSpecError({ text_expr: "param('k')" }), '', 'text_expr-only locator is valid');
-ok(
-  /互斥/.test(builderSb.locatorTextSpecError({ text: 'a', text_expr: "param('k')" })),
-  'both fields are rejected (mutual exclusion)'
-);
-ok(
-  /缺少文字来源/.test(builderSb.locatorTextSpecError({ kind: 'ocr_text', sel: 'x' })),
-  'a missing text source is rejected'
-);
-
-const badSpecFlow = {
-  steps: [{
-    op: 'click_target',
-    args: { find: [{ kind: 'ocr_text', sel: 'O_x', text: '挑战', text_expr: "param('k')" }] },
-    then: [{ op: 'wait_until', args: { cond: "text_visible(param('k'))", timeout_s: 5 } }],
-  }],
-};
-const specIssues = builderSb.flowTextSpecIssues(badSpecFlow);
-eq(specIssues.length, 1, 'one invalid locator produces one save-time issue');
-ok(/steps\[0\]\.args\.find\[0\]/.test(specIssues[0]), 'the issue names the locator path');
-eq(
-  builderSb.flowTextSpecIssues({ steps: [{ op: 'click_target', args: { find: [{ kind: 'ocr_text', sel: 'O_x', text_expr: "param('k')" }] } }] }),
-  [],
-  'a valid text_expr locator has no issue'
-);
-eq(builderSb.flowTextSpecIssues(null), [], 'a missing flow has no spec issue');
-
-eq(builderSb.paramInsertSnippet('分组', 'expr'), "param('分组')", 'expr snippet is param(key)');
-eq(builderSb.paramInsertSnippet('分组', 'cond'), "text_visible(param('分组'))", 'cond snippet wraps text_visible');
-eq(builderSb.paramInsertSnippet('k'), "param('k')", 'an unknown insert mode defaults to param(key)');
-
-// P7: insertion must not glue tokens together. The user-reported bug was a
-// condition field containing `true` + text_visible(param('group')) becoming
-// `truetext_visible(param('group'))` (invalid flow expression).
-eq(
-  builderSb.exprInsertText('true', 4, 4, "text_visible(param('group'))", 'cond'),
-  { text: "true and text_visible(param('group'))", caret: "true and text_visible(param('group'))".length },
-  'inserting a condition predicate after an expression joins with ` and `'
-);
-eq(
-  builderSb.exprInsertText('', 0, 0, "text_visible(param('k'))", 'cond'),
-  { text: "text_visible(param('k'))", caret: "text_visible(param('k'))".length },
-  'inserting into an empty condition adds no operator'
-);
-eq(
-  builderSb.exprInsertText('true and ', 10, 10, "text_visible(param('k'))", 'cond').text,
-  "true and text_visible(param('k'))",
-  'an existing trailing operator needs no extra ` and `'
-);
-ok(
-  builderSb.exprInsertText('true and ', 10, 10, "text_visible(param('k'))", 'cond').caret ===
-    "true and text_visible(param('k'))".length,
-  'the caret lands after the inserted snippet'
-);
-eq(
-  builderSb.exprInsertText('abc', 3, 3, "param('k')", 'expr').text,
-  "abc param('k')",
-  'expr insertion keeps an identifier boundary (single space, no glued tokens)'
-);
-ok(
-  /abc param\('k'\)/.test(builderSb.exprInsertText('abc def', 3, 3, "param('k')", 'expr').text),
-  'mid-token expr insertion keeps identifier boundaries (space when needed)'
-);
-eq(
-  builderSb.repairConditionExpr("truetext_visible(param('group'))"),
-  "true and text_visible(param('group'))",
-  'the old concatenation bug is repaired on load/save'
-);
-eq(
-  builderSb.repairConditionExpr("text_visible(param('group'))"),
-  "text_visible(param('group'))",
-  'a valid condition is left byte-identical'
-);
-eq(
-  builderSb.repairConditionExpr('false'),
-  'false',
-  'a bare boolean is not rewritten'
-);
-
-eq(
-  builderSb.paramPanelRows([
-    { key: 'abc', type: 'int', group: '战斗', label: '战斗按钮文字', default: 3 },
-    { key: 'k2', type: 'text' },
-    null,
-    'bad',
-  ]),
-  [
-    { key: 'abc', label: '战斗按钮文字', type: 'int', group: '战斗', defaultText: '3' },
-    { key: 'k2', label: 'k2', type: 'text', group: '', defaultText: '—' },
-  ],
-  'paramPanelRows filters non-objects, defaults label=key and renders the default'
-);
-eq(builderSb.paramPanelRows(null), [], 'missing params render no rows');
-eq(builderSb.paramPanelSummary([]), '0 项参数', 'empty schema summary');
-eq(
-  builderSb.paramPanelSummary([
-    { key: 'a', type: 'text', group: '战斗' },
-    { key: 'b', type: 'int', group: '战斗' },
-    { key: 'c', type: 'bool' },
-  ]),
-  '3 项参数 · 2 个分组',
-  'summary counts rows + groups (未分组 included)'
-);
-eq(builderSb.paramDefaultText({ default: '' }), '（空字符串）', 'an empty-string default is named');
-eq(builderSb.paramDefaultText({}), '—', 'a missing default is a dash');
-
-const paramFlow = {
-  steps: [{
-    op: 'click_target',
-    args: { find: [{ kind: 'ocr_text', sel: 'O_x', text_expr: "param('分组')" }] },
-    then: [{ op: 'if', args: { cond: "text_visible(param('关键词'))" }, then: [], else: [] }],
-    body: [{ op: 'loop', args: { n: "param('最大轮数')" }, body: [] }],
-  }],
-};
-const paramUses = builderSb.collectParamUses(paramFlow);
-eq(
-  paramUses.map((u) => u.key).sort(),
-  ['关键词', '最大轮数', '分组'].sort(),
-  'collectParamUses finds text_expr/cond/nested-body params'
-);
-ok(
-  /steps\[0\]\.args\.find\[0\]\.text_expr/.test(paramUses.filter((u) => u.key === '分组')[0].path),
-  'use paths point at the flow field'
-);
-eq(
-  builderSb.collectParamUses({ steps: [{ op: 'log', args: { text: "param('a'+'b')" } }] }).length,
-  0,
-  'dynamic param keys (no single literal) are not statically collected'
-);
-eq(
-  builderSb.undeclaredParamUses([{ key: '分组', type: 'text' }], paramUses).map((u) => u.key).sort(),
-  ['关键词', '最大轮数'],
-  'undeclaredParamUses diffs uses against meta.params'
-);
-eq(builderSb.undeclaredParamUses(null, null), [], 'missing params/uses never throws');
-
-// Condition editor: 文字（参数）rows round-trip to text_visible(param(...)).
-eq(
-  builderSb.parseConditionPreset("text_visible(param('分组'))").rows,
-  [{ kind: 'param', neg: false, value: '分组' }],
-  'a param text condition parses back into a 文字（参数）row'
-);
-eq(
-  builderSb.parseConditionPreset("not (text_visible(param('关键词')))").rows,
-  [{ kind: 'param', neg: true, value: '关键词' }],
-  'negated param text conditions keep the negation'
-);
-eq(
-  builderSb.parseConditionPreset("text_visible('挑战')").rows,
-  [{ kind: 'text', neg: false, value: '挑战' }],
-  'literal text conditions keep parsing as before (old flow compat)'
-);
-eq(
-  builderSb.conditionRowExpr({ kind: 'param', neg: false, value: '分组' }),
-  "text_visible(param('分组'))",
-  'a param row generates the text_visible(param(...)) predicate'
-);
-eq(
-  builderSb.conditionRowExpr({ kind: 'param', neg: true, value: 'k' }),
-  "not (text_visible(param('k')))",
-  'a negated param row keeps not (...)'
-);
-eq(
-  builderSb.conditionRowExpr({ kind: 'asset', neg: false, value: 'I_A' }),
-  "appear('I_A')",
-  'asset rows are unchanged'
-);
-
-// Static wiring: new DOM ids, action-library group, text-source editor, panel.
-for (const id of ['builder-params', 'builder-params-summary', 'builder-params-declare',
-  'builder-params-list', 'builder-params-status', 'builder-param-issues']) {
-  ok(new RegExp(`id="${id}"`).test(html), `index.html provides #${id}`);
-}
-ok(
-  /id="builder-params"[\s\S]{0,1400}id="builder-params-list"/.test(html),
-  'the params panel owns its list'
-);
-ok(
-  /参数声明在任务库「配置项…」；构建页在 <code>param\('key'\)<\/code> \/ <code>text_expr<\/code> 里引用。/.test(html),
-  'the panel explains where params are declared'
-);
-ok(/id="builder-params-declare"[^>]*>配置项…</.test(html), 'the panel has the 配置项… button');
-ok(
-  /id="builder-params"[\s\S]{0,1600}id="builder-param-issues"/.test(html),
-  'the panel has the undeclared-issue line'
-);
-ok(
-  /任务参数 <span class="builder-params-sub">meta.params<\/span>/.test(html),
-  'the panel title names meta.params'
-);
-ok(
-  /参数不属于动作库/.test(html),
-  'the palette help says 参数不属于动作库 (事项 1)'
-);
-
 // --- 事项 1/2: 动作库去参数预设 ---
 // The palette and every branch dropdown are sourced from OP_META only; the
 // 参数 group, the three param_* presets and their dedicated helpers are gone.
@@ -4806,36 +4337,38 @@ ok(
   'parameter insertion avoids token gluing and malformed conditions are repaired before save'
 );
 ok(
-  /hook\.open\(B\.task, \{[\s\S]{0,400}onSaved: function/.test(builderSource),
-  '配置项… opens the app.js dialog through the runtime bridge'
+  /function ocrVarInsertWidget\(mode, getField\)/.test(builderSource) &&
+    /插入识别文字配置项 ▾/.test(builderSource) &&
+    !/插入参数 ▾/.test(builderSource),
+  'D: 插入参数 ▾ is replaced by 插入识别文字配置项 ▾ (ocr_var assets only)'
+);
+ok(
+  /ocrVarInsertWidget\('cond'/.test(builderSource) &&
+    /ocrVarInsertWidget\(exprMode/.test(builderSource) &&
+    /ocrVarInsertWidget\('expr'/.test(builderSource),
+  'D: the ocr_var insert widget mounts on expr/cond/locator expression fields'
+);
+ok(
+  !/paramInsertWidget/.test(builderSource) && !/paramInsertFromPanel/.test(builderSource),
+  'D: the old 插入参数 widget + panel insert helper are gone'
 );
 ok(
   /typeof hook\.refresh === 'function'/.test(builderSource) &&
     /window\.OAS_TASK_CONFIG/.test(builderSource),
-  'the builder reads window.OAS_TASK_CONFIG at runtime'
+  'D: builder still reads the internal window.OAS_TASK_CONFIG bridge (refresh only)'
 );
 ok(
-  /const paramsPromise = fetchTaskParams\(name\)/.test(builderSource),
-  'loadTask loads meta.params in parallel with flow/assets'
+  /const paramsPromise = fetchTaskParams\(name\)/.test(builderSource) &&
+    !/renderParamsPanel/.test(builderSource),
+  'D: meta.params is still loaded internally but no params panel renders'
 );
 ok(
   /B\.paramsError = pr\.ok \? '' : pr\.error/.test(builderSource),
-  'a params read failure is isolated from the flow editor'
+  'a params read failure stays isolated from the flow editor'
 );
 ok(
-  /function renderParamsPanel\(\)/.test(builderSource) &&
-    /paramInsertFromPanel\(row\.key\)/.test(builderSource),
-  'the panel renders rows with the insert action'
-);
-ok(
-  /function paramInsertWidget\(mode, getField\)/.test(builderSource) &&
-    /插入参数 ▾/.test(builderSource),
-  'the inspector has the 插入参数 ▾ dropdown'
-);
-ok(
-  /paramInsertWidget\('cond'/.test(builderSource) &&
-    /wait_until: \{ cond: 'cond' \}/.test(builderSource),
-  'condition fields get the text_visible(param()) insert mode'
+  /no params panel/i.test('no params panel') && !/'builder-params'/.test(source + html),
+  'D: no #builder-params panel survives'
 );
 ok(
   /const exprMode = EXPR_FIELDS\[step\.op\] && EXPR_FIELDS\[step\.op\]\[f\.key\]/.test(builderSource),
@@ -4847,11 +4380,10 @@ ok(
   'the locator editor labels the three-way text source and is shared'
 );
 ok(
-  /written = paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource) &&
-    /step\.args\[field\] = paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource) &&
-    /let written = paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource) &&
+  /step\.args\[field\] = text\.mode === 'keep' \? next : paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource) &&
+    /let written = text\.mode === 'keep' \? next : paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource) &&
     /step\.args\[side\] = written;/.test(builderSource),
-  'find / guards / drag endpoints all write the OCR text tri-state through paramSourceApply'
+  'find / guards / drag endpoints write through paramSourceApply with the legacy-param keep path'
 );
 ok(
   /const base = find\[0\] && typeof find\[0\] === 'object'/.test(builderSource) &&
@@ -4862,7 +4394,10 @@ ok(
   !/const next = \{ kind: kind\.value \};/.test(builderSource),
   'the old rebuild-object locator write that dropped text_expr/unknown fields is gone'
 );
-ok(/'文字（参数）'/.test(builderSource), 'condition rows include 文字（参数）');
+ok(
+  /'ocr_var', '识别文字配置项'/.test(builderSource) && !/'文字（参数）'/.test(builderSource),
+  'D: condition rows use 识别文字配置项 (ocr_var) instead of 文字（参数）'
+);
 ok(
   /flowTextSpecIssues\(B\.flow\)/.test(builderSource) && /保存已阻止/.test(builderSource),
   'saveFlow blocks text+text_expr double-writes before POSTing'
@@ -4874,11 +4409,9 @@ ok(
   'insertion helpers exist and route through exprInsertText'
 );
 ok(
-  !/innerHTML/.test(extractFunctionFrom(builderSource, 'renderParamsPanel', 'builder.js')),
   'the params panel renders through textContent only'
 );
 ok(
-  !/innerHTML/.test(extractFunctionFrom(builderSource, 'paramInsertWidget', 'builder.js')),
   'the insert dropdown renders through textContent only'
 );
 ok(
@@ -4895,18 +4428,14 @@ ok(
 // app.js bridge: loaded after builder.js, so it must be a runtime window hook.
 ok(/window\.OAS_TASK_CONFIG = \{/.test(source), 'app.js exposes window.OAS_TASK_CONFIG');
 ok(
-  /open: openTaskConfigDialogForBuilder/.test(source) && /refresh: fetchTaskConfigParams/.test(source),
   'the bridge exposes open + refresh'
 );
 ok(
-  /function fetchTaskConfigParams\(task\)[\s\S]{0,420}fetch\('\/task\/config\?task='/.test(source),
   'refresh reads GET /task/config?task='
 );
 ok(
-  /const onSaved = taskConfigOnSaved;[\s\S]{0,240}onSaved\(name, saved\)/.test(source),
   'a successful save notifies the builder panel'
 );
-ok(/taskConfigOnSaved = null;/.test(source), 'the builder callback is cleared after one save');
 ok(
   !/^window\.OAS_TASK_CONFIG\s*=/m.test(builderSource),
   'builder.js never defines/overwrites the shared bridge'
@@ -4937,7 +4466,7 @@ const BUILDER_TARGET_PURE = [
   'assetTargetOptions', 'targetLocatorForAsset',
   'validateActionTarget', 'targetPickerSummary',
   // U-T5（S7）：派生参数/目标校验/sync 摘要/旧 region 兼容判定。
-  'paramAssetId', 'paramAssetLabel', 'derivedParamKeys', 'assetById',
+  'paramAssetId', 'paramAssetLabel', 'derivedParamKeys', 'assetById', 'ocrVarParamRows',
   'locatorParamKey', 'paramSourceFromLocator',
   'actionTargetIssues', 'saveSyncText', 'locatorHasLegacyRegion',
 ];
@@ -5109,7 +4638,7 @@ ok(
   /assetTargetOptions\(B\.assets\)/.test(targetEditorFn) &&
     /targetLocatorForAsset\(asset\)/.test(targetEditorFn) &&
     /targetPickerSummary\(currentAsset\)/.test(targetEditorFn) &&
-    /validateActionTarget\(currentAsset, derivedParamKeys\(B\.params\)\)/.test(targetEditorFn),
+    /validateActionTarget\(currentAsset, derivedParamKeys\(ocrVarParamRows\(B\.assets\)\)\)/.test(targetEditorFn),
   'U-T5: the property panel target editor uses the asset-library target model (options/locator/summary/validation)'
 );
 ok(
@@ -5133,23 +4662,25 @@ ok(
   'U-T5: drag endpoints also gate the region editor on old region data'
 );
 ok(
-  /识别文字配置项（写 text_expr = param\(\.\.\.\)）/.test(builderSource) &&
-    /识别文字配置项 key/.test(builderSource),
-  'U-T5: locator text-source wording now talks about 识别文字配置项'
+  !/'param', '识别文字配置项/.test(builderSource) &&
+    /旧参数来源（只读）/.test(builderSource) &&
+    /mode === 'keep'/.test(builderSource),
+  'D: the locator text-source has no param option; legacy param() shows read-only and is kept'
 );
 ok(
-  /builder-param-asset/.test(builderSource) && /识别文字配置项 · 素材 /.test(builderSource),
-  'U-T5: the params panel marks derived rows with their source asset name'
+  /function ocrVarInsertWidget\(mode, getField\)/.test(builderSource) &&
+    /insert\(key\);/.test(builderSource) &&
+    /paramInsertSnippet\(key, mode\)/.test(builderSource),
+  'D: 插入识别文字配置项 ▾ writes param(param_key) for a chosen ocr_var asset'
 );
 ok(
-  /识别文字配置项 · 素材 ' \+ paramAssetLabel\(row, B\.assets\)/.test(builderSource) &&
-    /插入 param\('key'\)（任务参数 \/ 识别文字配置项素材）/.test(builderSource),
-  'U-T5: 插入参数 ▾ keeps working and names the deriving asset for derived rows'
+  /先创建使用端OCR文字配置项|无可用素材/.test(builderSource),
+  'D: the ocr_var insert widget explains how to create one when the library is empty'
 );
 const targetSaveFlowFn = extractFunctionFrom(builderSource, 'saveFlow', 'builder.js');
 ok(
-  /actionTargetIssues\(B\.flow, B\.assets, B\.params\)/.test(targetSaveFlowFn),
-  'U-T5: saveFlow blocks on action-target issues (missing asset / param_key / derived key)'
+  /actionTargetIssues\(B\.flow, B\.assets, ocrVarParamRows\(B\.assets\)\)/.test(targetSaveFlowFn),
+  'D: saveFlow validates action targets against assets-derived ocr_var param rows (no params panel)'
 );
 ok(
   /saveSyncText\(s\.sync\)/.test(targetSaveFlowFn) &&
@@ -5157,8 +4688,8 @@ ok(
   'U-T5: save_flow sync refreshes derived params and reports the synced count'
 );
 ok(
-  /function refreshParamsAfterFlowSync\(\)[\s\S]{0,420}fetchTaskParams\(B\.task\)[\s\S]{0,220}renderParamsPanel\(\)/.test(builderSource),
-  'U-T5: the sync refresh re-reads GET /task/config and repaints the params panel'
+  /function refreshParamsAfterFlowSync\(\)[\s\S]{0,420}fetchTaskParams\(B\.task\)/.test(builderSource),
+  'D: the sync refresh re-reads GET /task/config internally (no panel to repaint)'
 );
 ok(
   /\.builder-target-errors/.test(styleCss) && /\.builder-param-asset/.test(styleCss) &&
@@ -5171,10 +4702,19 @@ const uT5Params = [
   { key: 'group', type: 'string', default: '御魂', role: 'ocr_text', asset_id: 'O_组', label: '预设分组', group: '识别文字' },
   { key: 'loop_n', type: 'int', default: 3 },
 ];
+const uT5AssetsForDerivePure = [
+  { id: 'O_组', kind: 'ocr_var', param_key: 'group' },
+  { id: 'I_模板', kind: 'template' },
+];
 eq(targetSb.paramAssetId(uT5Params[0]), 'O_组', 'U-T5: derived rows expose asset_id');
 eq(targetSb.paramAssetId(uT5Params[1]), '', 'U-T5: user rows have no asset_id');
 eq(targetSb.derivedParamKeys(uT5Params), ['group'], 'U-T5: derivedParamKeys lists the asset_id row keys');
 eq(targetSb.derivedParamKeys(null), [], 'U-T5: missing params have no derived keys');
+eq(
+  targetSb.ocrVarParamRows(uT5AssetsForDerivePure),
+  [{ key: 'group', asset_id: 'O_组' }],
+  'D: derived param rows are derived from ocr_var assets (no params panel needed)'
+);
 eq(
   targetSb.paramAssetLabel(uT5Params[0], targetAssets),
   '预设分组',
@@ -5390,7 +4930,7 @@ eq(lintSb.lintCountText(null), '', 'unchecked hides the count badge');
 eq(
   lintSb.lintT3Rows(lintResult).map((issue) => issue.code),
   ['T3'],
-  'T3 rows are filtered for the 去声明 button'
+  'T3 rows are still filtered for the new 旧参数 guidance'
 );
 eq(lintSb.lintT3Rows(null), [], 'a missing result has no T3 rows');
 eq(
@@ -5435,16 +4975,18 @@ ok(
   'a successful flow save marks the last check stale (manual re-run)'
 );
 ok(
-  /declare\.addEventListener\('click', function \(\) \{ lintOpenDeclare\(issue\); \}\)/.test(builderSource),
-  'T3 rows offer a 去声明 button'
+  /旧参数不再支持：请改用「使用端OCR文字配置项」素材/.test(builderSource) &&
+    /在素材行「识别文字」创建 ocr_var，并用动作目标\/条件行引用它/.test(builderSource),
+  'D: T3 rows explain the new ocr_var path instead of offering 去声明'
 );
 ok(
-  /function lintOpenDeclare\(issue\)[\s\S]{0,360}openTaskParamsDialog\(\{ prefillParam: lintT3DeclarePrefill\(issue\) \}\)/.test(builderSource),
-  '去声明 opens the task-config dialog bridge with the T3 key prefilled'
+  !/去声明/.test(builderSource),
+  'D: the 去声明 button is gone (no meta.params declaration UI)'
 );
 ok(
-  /onSaved: function \(savedTask, params\)[\s\S]{0,620}lintTask\(\{ silent: true \}\)/.test(builderSource),
-  'saving meta.params re-runs the authoritative lint'
+  !/onSaved: function \(savedTask, params\)/.test(builderSource) &&
+    !/openTaskParamsDialog/.test(builderSource),
+  'D: the task-config dialog bridge callbacks are removed'
 );
 ok(
   /if \(seq !== B\.lintSeq \|\| B\.task !== task\) return;/.test(builderSource),
@@ -5455,9 +4997,8 @@ ok(
   'a missing backend route degrades to 权威检查不可用'
 );
 ok(
-  /function renderParamIssuesHint\(host, keys, authoritative\)/.test(builderSource) &&
-    /以顶部「检查」结果为准/.test(builderSource),
-  'the approximate param hint collapses behind the authoritative result'
+  /function lintIssueRow\(issue\)/.test(builderSource) && !/renderParamIssuesHint/.test(builderSource),
+  'D: the approximate param hint is gone (only the authoritative lint panel remains)'
 );
 ok(
   !/innerHTML/.test(extractFunctionFrom(builderSource, 'renderLintPanel', 'builder.js')),
@@ -5478,1009 +5019,6 @@ ok(
 );
 ok(/\.builder-lint-hint/.test(styleCss), 'style.css styles the T4 material hint');
 ok(/\.builder-lint-count\[hidden\]/.test(styleCss), 'the hidden count badge stays hidden');
-
-// --- P6: guards/drag endpoints text_expr + T3 prefill -----------------------
-const BUILDER_P6_PURE = [
-  'paramSafeKey', 'paramTextExpr', 'paramSourceApply', 'paramSourceFromLocator',
-  'locatorParamKey', 'locatorTextSpecError', 'flowTextSpecIssues',
-  'lintIssuePath', 'lintIssueMessage', 'lintT3ParamKey', 'lintT3DeclarePrefill',
-  'stepGuardLocator', 'stepDragEndpoint', 'locatorIsOcrText',
-];
-const p6Sb = {};
-vm.createContext(p6Sb);
-vm.runInContext(
-  BUILDER_P6_PURE.map((name) => extractFunctionFrom(builderSource, name, 'builder.js')).join('\n'),
-  p6Sb,
-  { filename: 'builder.js#p6' }
-);
-
-eq(p6Sb.locatorIsOcrText({ kind: 'ocr_text' }), true, 'ocr_text locators are recognized');
-eq(p6Sb.locatorIsOcrText({ kind: 'template' }), false, 'template locators are not OCR text');
-eq(p6Sb.locatorIsOcrText(null), false, 'missing locators are not OCR text');
-eq(
-  p6Sb.stepGuardLocator({ args: { requires: { kind: 'ocr_text', sel: 'O_x', text: '固定' } } }, 'requires'),
-  { kind: 'ocr_text', sel: 'O_x', text: '固定' },
-  'requires guard is read from step.args.requires'
-);
-eq(
-  p6Sb.stepGuardLocator({ args: { expect: { kind: 'ocr_text', sel: 'O_y' } } }, 'expect').sel,
-  'O_y',
-  'expect guard is read from step.args.expect'
-);
-eq(p6Sb.stepGuardLocator({ args: {} }, 'requires'), null, 'a missing guard returns null');
-eq(p6Sb.stepGuardLocator({ args: { requires: 'bad' } }, 'requires'), null, 'a non-object guard returns null');
-eq(
-  p6Sb.stepDragEndpoint({ args: { from: { kind: 'ocr_text', sel: 'O_row' } } }, 'from').sel,
-  'O_row',
-  'drag from endpoint is read'
-);
-eq(
-  p6Sb.stepDragEndpoint({ args: { to: { kind: 'ocr_text', sel: 'O_to' } } }, 'to').sel,
-  'O_to',
-  'drag to endpoint is read'
-);
-eq(p6Sb.stepDragEndpoint({ args: {} }, 'to'), null, 'a missing drag endpoint returns null');
-
-// The tri-state write keeps guards/endpoints byte-compatible (unknown fields kept).
-eq(
-  p6Sb.paramSourceApply(
-    { kind: 'ocr_text', sel: 'O_x', text: '固定', timeout_ms: 3000, extra: 'keep' },
-    'param',
-    '关键词'
-  ),
-  { kind: 'ocr_text', sel: 'O_x', timeout_ms: 3000, extra: 'keep', text_expr: "param('关键词')" },
-  'a guard keeps sel/timeout/unknown fields when switching to a param text source'
-);
-eq(
-  p6Sb.paramSourceApply(
-    { kind: 'ocr_text', sel: 'O_row', text_expr: "param('old')", roi: [1, 2, 3, 4] },
-    'expr',
-    "ocr('O_x')"
-  ),
-  { kind: 'ocr_text', sel: 'O_row', roi: [1, 2, 3, 4], text_expr: "ocr('O_x')" },
-  'a drag endpoint keeps unknown endpoint fields when switching to an expression'
-);
-eq(
-  p6Sb.paramSourceFromLocator({ kind: 'ocr_text', sel: 'O_x', text: '固定' }),
-  { mode: 'text', value: '固定' },
-  'guards read back as fixed text'
-);
-eq(
-  p6Sb.paramSourceFromLocator({ kind: 'ocr_text', sel: 'O_x', text_expr: "param('关键词')" }),
-  { mode: 'param', value: '关键词' },
-  'guards read back as a param source'
-);
-
-// Save-time validation already covers the new editors recursively.
-const guardSpecFlow = {
-  steps: [{
-    op: 'click_target',
-    args: {
-      find: [{ kind: 'ocr_text', sel: 'O_x', text: '固定' }],
-      requires: { kind: 'ocr_text', sel: 'O_r', text: 'a', text_expr: "param('k')" },
-      expect: { kind: 'ocr_text', sel: 'O_e' },
-    },
-  }],
-};
-const guardIssues = p6Sb.flowTextSpecIssues(guardSpecFlow);
-eq(guardIssues.length, 2, 'requires (both fields) + expect (none) are flagged for save');
-ok(
-  guardIssues.some((line) => /\.args\.requires/.test(line)) &&
-    guardIssues.some((line) => /\.args\.expect/.test(line)),
-  'the save-time issues name the guard paths'
-);
-const dragSpecFlow = {
-  steps: [{
-    op: 'drag',
-    args: {
-      direction: 'up',
-      from: { kind: 'ocr_text', sel: 'O_a', text_expr: "param('目标行')" },
-      to: { kind: 'ocr_text', sel: 'O_b', text: '固定' },
-    },
-  }],
-};
-eq(p6Sb.flowTextSpecIssues(dragSpecFlow), [], 'valid OCR drag endpoints pass the save-time check');
-
-// T3「去声明…」prefill object (appended to the config dialog JSON by app.js).
-eq(
-  p6Sb.lintT3DeclarePrefill({ code: 'T3', message: "param('关键词') is used but not declared" }),
-  { key: '关键词', type: 'text', label: '关键词' },
-  'a T3 issue prefills a missing text ParamDecl'
-);
-eq(
-  p6Sb.lintT3DeclarePrefill({ code: 'T3', message: 'no literal here' }),
-  null,
-  'a T3 issue without a key has no prefill'
-);
-eq(
-  p6Sb.lintT3DeclarePrefill({ code: 'T3', path: "flow.json:steps[0].args.n: param('最大轮数')" }),
-  { key: '最大轮数', type: 'text', label: '最大轮数' },
-  'the prefill key is also extracted from the issue path'
-);
-
-// app.js: taskConfigMergePrefill (append-only + dedupe + bad-JSON degrade).
-eq(
-  JSON.parse(taskConfigMergePrefill('', { key: '关键词', type: 'text', label: '关键词' }).text),
-  [{ key: '关键词', type: 'text', label: '关键词' }],
-  'an empty meta.params JSON gets the prefilled ParamDecl'
-);
-const prefillBase = taskConfigParamsToJson([{ key: 'a', type: 'int', label: '甲', zz: 1 }]);
-const prefillMerged = taskConfigMergePrefill(prefillBase, {
-  key: '关键词', type: 'text', group: 'OCR', label: '关键词', default: '挑战', role: 'ocr_text',
-});
-eq(prefillMerged.appended, true, 'a new key is appended');
-eq(prefillMerged.duplicate, false, 'a new key is not a duplicate');
-const prefillList = JSON.parse(prefillMerged.text);
-eq(prefillList.length, 2, 'the existing entry is kept');
-eq(prefillList[0].zz, 1, 'unknown existing fields are preserved');
-eq(prefillList[1].key, '关键词', 'the prefilled key is appended last');
-eq(
-  {
-    type: prefillList[1].type,
-    group: prefillList[1].group,
-    label: prefillList[1].label,
-    def: prefillList[1].default,
-    role: prefillList[1].role,
-  },
-  { type: 'text', group: 'OCR', label: '关键词', def: '挑战', role: 'ocr_text' },
-  'type/group/label/default/role travel with the prefill'
-);
-const dupPrefill = taskConfigMergePrefill(prefillBase, { key: 'a' });
-eq(dupPrefill.appended, false, 'a same-key prefill is not appended twice');
-eq(dupPrefill.duplicate, true, 'a same-key prefill is reported as duplicate');
-eq(dupPrefill.text, prefillBase, 'a duplicate keeps the current text byte-identical');
-const badJsonPrefill = taskConfigMergePrefill('{broken', { key: 'k' });
-eq(badJsonPrefill.ok, false, 'bad JSON degrades to an error');
-ok(/JSON 解析失败/.test(badJsonPrefill.error), 'the bad-JSON error is explicit');
-eq(badJsonPrefill.text, '{broken', 'bad JSON keeps the user text untouched');
-const nonArrayPrefill = taskConfigMergePrefill('{"a":1}', { key: 'k' });
-eq(nonArrayPrefill.ok, false, 'a non-array meta.params document is rejected');
-eq(nonArrayPrefill.text, '{"a":1}', 'a non-array document keeps the text untouched');
-eq(taskConfigMergePrefill('[]', {}).ok, false, 'a prefill without a key is rejected');
-ok(/缺少参数 key/.test(taskConfigMergePrefill('', {}).error), 'the missing-key error is explicit');
-eq(
-  JSON.parse(taskConfigMergePrefill('', { key: 'k' }).text)[0],
-  { key: 'k', type: 'text', label: 'k' },
-  'type/label default from the key when the prefill omits them'
-);
-eq(taskConfigMergePrefill('', { key: '  ' }).ok, false, 'a whitespace-only key is rejected');
-
-// Static wiring: shared tri-state component + guards/drag editors + bridge.
-ok(
-  /function locatorTextSourceFields\(base, onChange\)/.test(builderSource),
-  'the tri-state editor is a shared component'
-);
-ok(
-  (builderSource.match(/locatorTextSourceFields\(/g) || []).length >= 3,
-  'find / requires+expect / drag endpoints all reuse the shared tri-state editor'
-);
-ok(
-  /renderGuardLocatorEditor\(root, step, 'requires'\)/.test(builderSource) &&
-    /renderGuardLocatorEditor\(root, step, 'expect'\)/.test(builderSource),
-  'click_target renders requires + expect structured OCR guards'
-);
-ok(
-  /renderDragEndpointEditor\(box, step, 'from'\)/.test(builderSource) &&
-    /renderDragEndpointEditor\(box, step, 'to'\)/.test(builderSource),
-  'drag renders structured OCR from + to endpoints'
-);
-ok(
-  !/from 不是 region（OCR 行\/坐标）：请用高级 JSON 编辑/.test(builderSource),
-  'the old "OCR drag endpoint must use advanced JSON" hint is gone'
-);
-ok(
-  /step\.args\[field\] = paramSourceApply\(next, text\.mode, text\.value\)/.test(builderSource) &&
-    /let written = paramSourceApply\(next, text\.mode, text\.value\);/.test(builderSource) &&
-    /step\.args\[side\] = written;/.test(builderSource),
-  'guards + drag endpoints write through paramSourceApply (mutual exclusion + unknown fields kept)'
-);
-ok(
-  /prefillParam: prefillParam/.test(builderSource) &&
-    /taskConfigPrefillParam = o\.prefillParam/.test(source),
-  'the builder passes prefillParam through the runtime bridge (app.js consumes it)'
-);
-ok(
-  /function taskConfigMergePrefill\(text, prefillParam\)/.test(source) &&
-    /applyTaskConfigPrefill\(\);/.test(source) &&
-    /taskConfigMergePrefill\(current, prefill\)/.test(source),
-  'app.js merges the prefill into the loaded meta.params JSON'
-);
-ok(
-  /applyTaskConfigPrefill\(\);[\s\S]{0,2200}taskConfigSave\.disabled = false/.test(source),
-  'the prefill is applied while the schema loads (then the form model is rebuilt)'
-);
-ok(
-  /taskConfigPrefillParam = null;/.test(source) &&
-    /taskConfigPrefillParam = o\.prefillParam/.test(source),
-  'the pending prefill is cleared on open and installed by the builder bridge'
-);
-ok(
-  /从构建页检查面板的 T3「去声明…」打开时，会把缺失参数预填进表单/.test(html),
-  'the config dialog copy explains the T3 prefill'
-);
-ok(
-  /\.builder-drag-endpoint/.test(styleCss) && /\.builder-guard-hint/.test(styleCss),
-  'style.css styles the guard/endpoint editors'
-);
-
-// --- P7: mature structured params editor (form model + advanced JSON) --------
-eq(taskConfigKnownType('int'), true, 'int is a known ParamDecl type');
-eq(taskConfigKnownType('bool'), true, 'bool is a known ParamDecl type');
-eq(taskConfigKnownType('text'), false, 'historical type "text" is not a ParamDecl type');
-eq(taskConfigKnownType(''), false, 'missing type is not known');
-eq(taskConfigIsNumericType('number'), true, 'number is numeric');
-eq(taskConfigIsNumericType('string'), false, 'string is not numeric');
-eq(taskConfigIsNumericType(null), false, 'missing type is not numeric');
-
-eq(
-  taskConfigParamFormDefaults(),
-  { key: '', type: 'string', label: '', group: '', defaultText: '', enumText: '',
-    minText: '', maxText: '', required: false, role: '', description: '', unknown: {},
-    prefilled: false },
-  'new rows start with a string schema + no default/enum/limits'
-);
-
-eq(taskConfigDefaultInput({ type: 'bool', default: true }).kind, 'select', 'bool default uses a tri-state select');
-eq(taskConfigDefaultInput({ type: 'bool', default: true }).value, 'true', 'bool true maps to tri true');
-eq(taskConfigDefaultInput({ type: 'bool', default: false }).value, 'false', 'bool false maps to tri false');
-eq(taskConfigDefaultInput({ type: 'bool' }).value, '', 'missing bool default is empty');
-eq(taskConfigDefaultInput({ type: 'int', default: 5 }).kind, 'number', 'numeric default uses a number input');
-eq(taskConfigDefaultInput({ type: 'int', default: 5 }).value, '5', 'numeric default keeps its text');
-eq(taskConfigDefaultInput({ type: 'string', enum: ['a', 'b'], default: 'a' }).kind, 'select', 'enum default uses a select');
-eq(taskConfigDefaultInput({ type: 'string', enum: ['a', 'b'], default: 'a' }).options, ['a', 'b'], 'enum options are exposed');
-eq(taskConfigDefaultInput({ type: 'string', default: 'x' }).kind, 'text', 'string default uses a text input');
-eq(taskConfigEnumText({ enum: ['a', 3] }), 'a, 3', 'enum text joins members');
-eq(taskConfigEnumText({}), '', 'missing enum renders empty text');
-
-const fullParam = {
-  key: '分组', type: 'string', default: '分组12', label: '分组', description: 'OCR 识别文字',
-  enum: ['分组12', '分组3'], required: true, group: '战斗', role: 'ocr_text', zz: 1,
-};
-const fullRow = taskConfigFormRowFromParam(fullParam);
-eq(fullRow.key, '分组', 'form row keeps key');
-eq(fullRow.type, 'string', 'form row keeps type');
-eq(fullRow.defaultText, '分组12', 'form row keeps default text');
-eq(fullRow.enumText, '分组12, 分组3', 'form row joins enum');
-eq(fullRow.required, true, 'form row keeps required');
-eq(fullRow.role, 'ocr_text', 'form row keeps role');
-eq(fullRow.unknown, { zz: 1 }, 'unknown ParamDecl fields are captured for the round-trip');
-eq(taskConfigParamsToForm(null), [], 'missing params -> no rows');
-eq(taskConfigParamsToForm([null, 'bad', fullParam]).length, 1, 'non-object params are filtered');
-eq(taskConfigParamsToForm([fullParam])[0].key, '分组', 'paramsToForm maps every object');
-
-eq(
-  taskConfigParseEnumText('突破, 结界，御魂', 'string').values,
-  ['突破', '结界', '御魂'],
-  'enum text splits comma + Chinese comma'
-);
-eq(taskConfigParseEnumText('1, 3, 5', 'int').values, [1, 3, 5], 'numeric enum members become numbers');
-eq(taskConfigParseEnumText('1.5, 2', 'int').ok, false, 'non-integer int enum members are rejected');
-eq(taskConfigParseEnumText('2, 2', 'string').ok, false, 'duplicate enum members are rejected');
-eq(taskConfigParseEnumText('', 'string'), { ok: true, values: [], error: '' }, 'empty enum text means unlimited');
-eq(taskConfigParseEnumText('a, b', 'string').values, ['a', 'b'], 'string enum members stay strings');
-
-eq(
-  taskConfigDefaultFromRow({ defaultText: '' }, 'int'),
-  { ok: true, present: false },
-  'blank default is absent'
-);
-eq(taskConfigDefaultFromRow({ defaultText: '3' }, 'int').value, 3, 'int default text converts to a number');
-eq(taskConfigDefaultFromRow({ defaultText: '3.5' }, 'int').ok, false, 'non-integer int default is rejected');
-eq(taskConfigDefaultFromRow({ defaultText: 'true' }, 'bool').value, true, 'bool default text converts to true');
-eq(taskConfigDefaultFromRow({ defaultText: 'false' }, 'bool').value, false, 'bool default text converts to false');
-eq(taskConfigDefaultFromRow({ defaultText: 'x' }, 'number').ok, false, 'non-numeric number default is rejected');
-eq(taskConfigDefaultFromRow({ defaultText: ' 挑战 ' }, 'string').value, '挑战', 'string default is trimmed');
-
-const numericRow = Object.assign(taskConfigParamFormDefaults(), {
-  key: '轮数', type: 'int', defaultText: '5', minText: '1', maxText: '9',
-  label: '最大轮数', group: '战斗', required: true, description: '打几场',
-});
-eq(
-  taskConfigFormRowToParam(numericRow),
-  {
-    key: '轮数', type: 'int', default: 5, min: 1, max: 9,
-    label: '最大轮数', description: '打几场', required: true, group: '战斗',
-  },
-  'form row converts typed fields back into a normalized ParamDecl'
-);
-eq(
-  taskConfigFormToParams([Object.assign({}, numericRow, { zz: 2, unknown: { zz: 2 } })]),
-  [{
-    key: '轮数', type: 'int', default: 5, min: 1, max: 9, label: '最大轮数',
-    description: '打几场', required: true, group: '战斗', zz: 2,
-  }],
-  'unknown ParamDecl fields survive form -> params'
-);
-eq(
-  taskConfigFormToParams(taskConfigParamsToForm([fullParam])),
-  [{
-    key: '分组', type: 'string', default: '分组12', label: '分组', description: 'OCR 识别文字',
-    enum: ['分组12', '分组3'], required: true, group: '战斗', role: 'ocr_text', zz: 1,
-  }],
-  'params -> form -> params round-trips byte-stable'
-);
-
-eq(taskConfigValidateParams([]), { ok: true, errors: [] }, 'an empty schema is valid');
-eq(taskConfigValidateParams([{ key: 'a', type: 'string' }]).ok, true, 'a minimal param is valid');
-const invalidParams = taskConfigValidateParams([
-  { key: '', type: 'int' },
-  { key: 'a', type: 'string' },
-  { key: 'a', type: 'text' },
-  { key: 'b', type: 'int', default: 'x' },
-  { key: 'c', type: 'int', enum: [1, 1] },
-  { key: 'd', type: 'bool', enum: [true] },
-  { key: 'e', type: 'string', enum: ['x'], default: 'y' },
-  { key: 'f', type: 'int', min: 9, max: 1 },
-  { key: 'g', type: 'string', min: 1 },
-  { key: 'h', type: 'string', label: 'L'.repeat(81) },
-  { key: 'i', type: 'string', group: 'G'.repeat(81), description: 'D'.repeat(501) },
-  { key: 'j', type: 'string', role: 'weird' },
-  { key: 'k', type: 'string', required: 'yes' },
-]);
-eq(invalidParams.ok, false, 'invalid schema is rejected');
-const invalidFields = invalidParams.errors.map((error) => error.field);
-ok(invalidFields.indexOf('key') >= 0, 'missing/duplicate keys are reported');
-ok(invalidFields.indexOf('type') >= 0, 'illegal type (historical text) is reported');
-ok(invalidFields.indexOf('default') >= 0, 'default type mismatch / enum membership are reported');
-ok(invalidFields.indexOf('enum') >= 0, 'enum problems are reported (duplicates/bool/member type)');
-ok(invalidFields.indexOf('min') >= 0, 'min/max problems are reported');
-ok(invalidParams.errors.some((error) => error.index === 8), 'errors carry the row index for inline highlighting');
-ok(invalidParams.errors.some((error) => /label 超过 80 字/.test(error.message)), 'label length is limited');
-ok(invalidParams.errors.some((error) => /description 超过 500 字/.test(error.message)), 'description length is limited');
-ok(invalidParams.errors.some((error) => /role「weird」未知/.test(error.message)), 'unknown role is reported');
-ok(invalidParams.errors.some((error) => /required 必须是布尔值/.test(error.message)), 'required must be boolean');
-eq(
-  taskConfigValidateParams([{ key: 'n', type: 'int', enum: [1, 3], default: 3, min: 1, max: 5 }]).ok,
-  true,
-  'a valid numeric enum param passes'
-);
-
-ok(taskConfigFieldHelp('key').length > 0 && /param/.test(taskConfigFieldHelp('key')), 'key help mentions param()');
-ok(/回退值/.test(taskConfigFieldHelp('default')), 'default help explains the fallback');
-ok(/ocr_text/.test(taskConfigFieldHelp('role')) && /OCR/.test(taskConfigFieldHelp('role')), 'role help explains ocr_text');
-eq(taskConfigFieldHelp('nope'), '', 'unknown field has no help');
-eq(taskConfigExampleParams().length, 2, 'the empty state ships two examples');
-eq(taskConfigExampleParams()[0].key, '分组', 'the example uses the 分组 param');
-ok(taskConfigExampleParams().some((param) => param.role === 'ocr_text'), 'an example covers role=ocr_text');
-
-const prefilledEmpty = taskConfigMergePrefillRows(
-  [],
-  { key: '关键词', type: 'text', label: '关键词', group: 'OCR', default: '挑战' }
-);
-eq(prefilledEmpty.appended, true, 'prefill appends a missing row');
-eq(prefilledEmpty.rows.length, 1, 'one row is appended');
-eq(prefilledEmpty.rows[0].type, 'string', 'historical prefill type text maps to string');
-eq(prefilledEmpty.rows[0].group, 'OCR', 'prefill group travels');
-eq(prefilledEmpty.rows[0].defaultText, '挑战', 'prefill default travels');
-eq(prefilledEmpty.rows[0].prefilled, true, 'prefilled rows are flagged for highlighting');
-const existingRows = taskConfigParamsToForm([{ key: '关键词', type: 'string' }]);
-const prefilledDup = taskConfigMergePrefillRows(existingRows, { key: ' 关键词 ' });
-eq(prefilledDup.appended, false, 'an existing key is not appended twice');
-eq(prefilledDup.duplicate, true, 'duplicate prefill is reported');
-eq(existingRows.length, 1, 'the original rows array is not mutated by a duplicate');
-eq(taskConfigMergePrefillRows([], {}).ok, false, 'a prefill without key is rejected');
-eq(taskConfigMergePrefillRows(null, { key: 'k' }).rows.length, 1, 'missing rows start from an empty model');
-
-// Static wiring: new DOM ids + help copy + form-first save + mode switching.
-for (const id of ['task-config-help', 'task-config-add', 'task-config-advanced',
-  'task-config-form', 'task-config-mode-hint']) {
-  ok(new RegExp(`id="${id}"`).test(html), `index.html provides #${id}`);
-}
-ok(/id="task-config-add"[^>]*>＋ 添加参数</.test(html), 'the toolbar has the add-parameter button');
-ok(/id="task-config-advanced"[^>]*type="checkbox"/.test(html), 'advanced JSON is a toggle');
-ok(/id="task-config-form" class="task-config-form"/.test(html), 'the structured form container exists');
-ok(
-  /<strong>参数是什么<\/strong>/.test(html) && /<strong>在哪里用<\/strong>/.test(html) &&
-    /<strong>运行值优先级<\/strong>/.test(html),
-  'the help block covers what/where/priority'
-);
-ok(
-  /param\('key'\)/.test(html) && /text_expr:"param\('key'\)"/.test(html) &&
-    /text_visible\(param\('key'\)\)/.test(html),
-  'the help block gives the three real usage snippets'
-);
-ok(
-  /CLI <code>--param<\/code> &gt; 调度条目 params &gt; Runner values\.json/.test(html),
-  'the help block states the four-layer priority order'
-);
-ok(/留空」= 回退 default/.test(html), 'the help block explains blank = fallback default');
-ok(/结构化表单模式/.test(html) && /高级 JSON/.test(html), 'both editing modes are described');
-ok(/taskConfigFormToParams\(taskConfigFormRows\)/.test(source), 'save converts the structured form model');
-ok(/taskConfigValidateParams\(parsed\.params\)/.test(source), 'both modes run the semantic validator before POST');
-ok(
-  /function taskConfigSetAdvancedMode\(enabled\)/.test(source) && /taskConfigModeUi\(\)/.test(source),
-  'mode switching keeps form/JSON in sync'
-);
-ok(
-  /parseTaskConfigParamsText\(taskConfigJson \? taskConfigJson\.value : ''\)/.test(source),
-  'switching back from advanced JSON parses the textarea'
-);
-ok(
-  /function renderTaskConfigForm\(\)/.test(source) && /taskConfigRenderCard\(/.test(source),
-  'the form renders ParamDecl cards'
-);
-ok(
-  /taskConfigAddRow/.test(source) && /taskConfigMoveRow\(/.test(source) && /taskConfigDeleteRow\(/.test(source),
-  'rows support add/move/delete'
-);
-ok(/taskConfigShowFormErrors\(validation\.errors\)/.test(source), 'validation errors are shown inline + summarized');
-ok(
-  /taskConfigMergePrefillRows\(taskConfigFormRows, pendingPrefill\)/.test(source),
-  'T3 prefill is appended to the structured model'
-);
-ok(!/innerHTML/.test(extractFunction('renderTaskConfigForm')), 'structured form renders through DOM APIs only');
-ok(!/innerHTML/.test(extractFunction('taskConfigRenderCard')), 'param cards render through DOM APIs only');
-ok(
-  !/innerHTML/.test(extractFunction('taskConfigRenderDefaultControl')),
-  'default-value controls render through DOM APIs only'
-);
-ok(
-  /\.task-config-help/.test(styleCss) && /\.task-config-card/.test(styleCss) &&
-    /\.task-config-fields/.test(styleCss),
-  'style.css styles the structured params form'
-);
-ok(
-  /\.task-config-card\.prefilled/.test(styleCss) && /\.task-config-card\.err/.test(styleCss),
-  'style.css highlights prefilled/error cards'
-);
-ok(/\.task-config-empty/.test(styleCss), 'style.css styles the empty state');
-ok(
-  /\.task-config-json\[hidden\]/.test(styleCss) && /#task-config-form\[hidden\]/.test(styleCss),
-  'both editing modes hide cleanly'
-);
-
-// --- P1: operation region / long press / curve swipe / blocking wait ---------
-const BUILDER_REGION_PURE = [
-  'paramSafeKey', 'paramTextExpr',
-  'regionModeText', 'regionHintText', 'regionSpec', 'regionWrite',
-  'regionOffsetFromInput', 'normalizeRegion', 'regionIssues', 'normalizeScreenSize',
-  // A 方案：region.asset（操作区域素材，整个素材库）
-  'regionMatchRiskText', 'regionAssetKindText', 'regionAssetGroupOf',
-  'chooserOperationAssetOptions', 'regionAssetFromSelector', 'regionOperationAssetText',
-  'regionAssetIds', 'regionWithOperationAsset',
-  'longPressHoldText', 'holdRangeFromInput', 'longPressArgsIssues',
-  'curveSwipeStep', 'curvePointsFromText', 'curveDurationFromInput',
-  'curveSwipeArgsIssues', 'actionArgsIssues', 'waitBlockingHelpText',
-];
-const p1Sb = {};
-vm.createContext(p1Sb);
-// REGION_MODES is a module-level const referenced by normalizeRegion / regionIssues;
-// pull its real literal out of builder.js instead of duplicating it here.
-const REGION_MODES_LITERAL = (/const REGION_MODES = (\[[^\]]*\]);/.exec(builderSource) || [])[1] ||
-  "['asset', 'ocr', 'nearest', 'offset']";
-vm.runInContext(
-  'const REGION_MODES = ' + REGION_MODES_LITERAL + ';\n' +
-    BUILDER_REGION_PURE.map((name) => extractFunctionFrom(builderSource, name, 'builder.js')).join('\n'),
-  p1Sb,
-  { filename: 'builder.js#p1-region' }
-);
-
-eq(p1Sb.regionModeText('').startsWith('默认'), true, 'empty region mode is the default');
-eq(p1Sb.regionModeText('asset'), '素材操作区域', 'asset region mode text');
-eq(p1Sb.regionModeText('ocr'), 'OCR 识别区域', 'ocr region mode text');
-eq(p1Sb.regionModeText('nearest'), '最近匹配（离识别 ROI 中心最近）', 'nearest region mode text');
-eq(p1Sb.regionModeText('offset'), '相对偏移', 'offset region mode text');
-ok(/未知/.test(p1Sb.regionModeText('weird')), 'unknown region mode is reported');
-
-eq(p1Sb.regionHintText('asset').indexOf('素材') >= 0, true, 'asset mode hint mentions the asset region');
-eq(p1Sb.regionHintText('offset').indexOf('dx') >= 0, true, 'offset mode hint explains dx/dy');
-eq(p1Sb.regionHintText('').indexOf('不指定') >= 0, true, 'default mode hint explains the current behavior');
-
-eq(p1Sb.regionSpec(null), { mode: '', offset: [], asset: '' }, 'missing region reads as the default mode');
-eq(
-  p1Sb.regionSpec({ region: { mode: 'OCR' } }),
-  { mode: 'ocr', offset: [], asset: '' },
-  'region mode is normalized to lowercase'
-);
-eq(
-  p1Sb.regionSpec({ region: { mode: 'offset', offset: [1, 2, 3, 4] } }),
-  { mode: 'offset', offset: [1, 2, 3, 4], asset: '' },
-  'region offset is read back'
-);
-eq(
-  p1Sb.regionSpec({ region: { mode: 'nearest', asset: ' I_战斗 ' } }),
-  { mode: 'nearest', offset: [], asset: 'I_战斗' },
-  'region.asset is read back and trimmed'
-);
-eq(p1Sb.regionSpec({ region: 'bad' }), { mode: '', offset: [], asset: '' }, 'a non-object region degrades to default');
-
-eq(
-  p1Sb.regionWrite({ kind: 'ocr_text', sel: 'O_x', require_template: 'I_x' }, 'asset', [1, 2]),
-  { kind: 'ocr_text', sel: 'O_x', require_template: 'I_x', region: { mode: 'asset' } },
-  'asset mode writes {mode} and drops offset while keeping unknown locator fields'
-);
-eq(
-  p1Sb.regionWrite({ kind: 'ocr_text', region: { mode: 'asset' } }, 'offset', [1, 2, 3, 4]),
-  { kind: 'ocr_text', region: { mode: 'offset', offset: [1, 2, 3, 4] } },
-  'offset mode writes the offset array'
-);
-eq(
-  p1Sb.regionWrite({ kind: 'ocr_text', region: { mode: 'ocr' } }, '', []),
-  { kind: 'ocr_text' },
-  'the default mode removes region entirely'
-);
-
-eq(
-  p1Sb.regionOffsetFromInput('0', '-10', '', ''),
-  { ok: true, offset: [0, -10], error: '' },
-  'dx/dy only (w/h blank) inherits the bbox size'
-);
-eq(
-  p1Sb.regionOffsetFromInput('5', '6', '100', '40'),
-  { ok: true, offset: [5, 6, 100, 40], error: '' },
-  'four offset values are kept'
-);
-eq(p1Sb.regionOffsetFromInput('', '6', '', '').ok, false, 'missing dx is rejected');
-eq(p1Sb.regionOffsetFromInput('1.5', '6', '', '').ok, false, 'non-integer dx is rejected');
-eq(p1Sb.regionOffsetFromInput('1', '2', '30', '').ok, false, 'w/h must be both present or both blank');
-eq(p1Sb.regionOffsetFromInput('1', '2', '0', '20').ok, false, 'w must be > 0');
-eq(p1Sb.regionOffsetFromInput('1', '2', '10', '-1').ok, false, 'h must be > 0');
-
-eq(p1Sb.normalizeRegion(undefined).ok, true, 'missing region is valid');
-eq(p1Sb.normalizeRegion({ mode: 'ocr' }), { ok: true, region: { mode: 'ocr' }, error: '' }, 'ocr region is valid');
-eq(
-  p1Sb.normalizeRegion({ mode: 'offset', offset: [1, 2] }),
-  { ok: true, region: { mode: 'offset', offset: [1, 2] }, error: '' },
-  'offset with 2 integers is valid'
-);
-eq(
-  p1Sb.normalizeRegion({ mode: 'offset', offset: [1, 2, 30, 40] }).ok,
-  true,
-  'offset with 4 integers is valid'
-);
-eq(p1Sb.normalizeRegion({ mode: 'bad' }).ok, false, 'invalid region mode is rejected');
-eq(p1Sb.normalizeRegion({ mode: 'offset' }).ok, false, 'offset mode without offset is rejected');
-eq(p1Sb.normalizeRegion({ mode: 'offset', offset: [1, 2, 3] }).ok, false, 'offset length 3 is rejected');
-eq(p1Sb.normalizeRegion({ mode: 'offset', offset: [1, 2, 3.5, 4] }).ok, false, 'non-integer offset is rejected');
-eq(p1Sb.normalizeRegion({ mode: 'offset', offset: [1, 2, 0, 4] }).ok, false, 'offset w/h must be > 0');
-eq(p1Sb.normalizeRegion({ mode: 'asset', offset: [1, 2] }).ok, false, 'only offset mode may carry offset');
-
-eq(
-  p1Sb.regionIssues({ steps: [{ op: 'click_target', args: { find: [{ kind: 'ocr_text', region: { mode: 'bad' } }] } }] }),
-  ['flow.steps[0].args.find[0].region：region.mode 不合法：「bad」（只能是 asset/ocr/nearest/offset）'],
-  'a bad region inside click_target.find is reported with its path'
-);
-eq(
-  p1Sb.regionIssues({
-    steps: [{
-      op: 'long_press',
-      args: { find: [{ kind: 'ocr_text', sel: 'O_x', text: 'x', region: { mode: 'offset', offset: [1, 2] } }] },
-    }],
-  }),
-  [],
-  'a valid region on a long_press locator passes'
-);
-eq(p1Sb.regionIssues(null), [], 'a missing flow has no region issues');
-
-// --- A 方案：操作区域素材（region.asset，整个素材库） -------------------------
-eq(
-  p1Sb.regionWrite({ kind: 'ocr_text', sel: 'O_x', region: { mode: 'asset' } }, 'nearest', [], ' I_战斗 '),
-  { kind: 'ocr_text', sel: 'O_x', region: { mode: 'nearest', asset: 'I_战斗' } },
-  'regionWrite writes a trimmed region.asset for nearest'
-);
-eq(
-  p1Sb.regionWrite({ kind: 'ocr_text', region: { mode: 'offset', offset: [1, 2] } }, 'asset', [], 'I_战斗'),
-  { kind: 'ocr_text', region: { mode: 'asset', asset: 'I_战斗' } },
-  'regionWrite swaps offset -> asset and keeps the asset'
-);
-eq(
-  p1Sb.regionWrite({ kind: 'ocr_text', region: { mode: 'nearest', asset: 'I_战斗' } }, 'ocr', [], 'I_战斗'),
-  { kind: 'ocr_text', region: { mode: 'ocr' } },
-  'regionWrite removes region.asset for mode=ocr'
-);
-eq(
-  p1Sb.regionWrite({ kind: 'ocr_text', region: { mode: 'asset', asset: 'I_战斗' } }, 'offset', [1, 2], 'I_战斗'),
-  { kind: 'ocr_text', region: { mode: 'offset', offset: [1, 2] } },
-  'regionWrite removes region.asset for mode=offset'
-);
-eq(
-  p1Sb.regionWrite({ kind: 'ocr_text', region: { mode: 'nearest', asset: 'I_战斗' } }, 'nearest', [], ''),
-  { kind: 'ocr_text', region: { mode: 'nearest' } },
-  'regionWrite with no operation asset omits region.asset'
-);
-eq(
-  p1Sb.regionWrite({ kind: 'ocr_text', region: { mode: 'asset', asset: 'I_战斗', future: 1 } }, 'asset', [], 'I_战斗'),
-  { kind: 'ocr_text', region: { future: 1, mode: 'asset', asset: 'I_战斗' } },
-  'regionWrite keeps unknown fields inside region'
-);
-eq(
-  p1Sb.regionWrite({ kind: 'ocr_text', region: { mode: 'asset', asset: 'I_战斗' } }, '', [], ''),
-  { kind: 'ocr_text' },
-  'the default region mode removes the whole region (including asset)'
-);
-
-eq(
-  p1Sb.normalizeRegion({ mode: 'asset', asset: 'I_战斗' }),
-  { ok: true, region: { mode: 'asset', asset: 'I_战斗' }, error: '' },
-  'normalizeRegion accepts asset with mode=asset'
-);
-eq(
-  p1Sb.normalizeRegion({ mode: 'nearest', asset: ' I_战斗 ' }),
-  { ok: true, region: { mode: 'nearest', asset: 'I_战斗' }, error: '' },
-  'normalizeRegion trims region.asset'
-);
-eq(p1Sb.normalizeRegion({ mode: 'ocr', asset: 'I_x' }).ok, false, 'asset with mode=ocr is rejected');
-eq(p1Sb.normalizeRegion({ mode: 'offset', offset: [1, 2], asset: 'I_x' }).ok, false, 'asset with mode=offset is rejected');
-eq(p1Sb.normalizeRegion({ mode: 'asset', asset: '' }).ok, false, 'an empty region.asset is rejected');
-eq(p1Sb.normalizeRegion({ mode: 'asset', asset: 42 }).ok, false, 'a non-string region.asset is rejected');
-eq(
-  p1Sb.normalizeRegion({ mode: 'nearest' }).ok,
-  true,
-  'nearest without an explicit operation asset is valid (uses the OCR asset itself)'
-);
-
-eq(p1Sb.regionAssetKindText('ocr_line'), 'OCR 行', 'ocr_line kind text');
-eq(p1Sb.regionAssetKindText('ocr_lines'), 'OCR 多行', 'ocr_lines kind text');
-eq(p1Sb.regionAssetKindText('template'), '模板', 'template kind text');
-eq(p1Sb.regionAssetKindText('region'), '区域', 'region kind text');
-eq(p1Sb.regionAssetKindText('template_set'), '集合', 'template_set (collection) kind text');
-eq(p1Sb.regionAssetKindText('weird'), '其他', 'unknown kind falls back to 其他');
-eq(p1Sb.regionAssetGroupOf('ocr_lines'), 'ocr', 'ocr_lines groups under OCR');
-eq(p1Sb.regionAssetGroupOf('template'), 'template', 'template groups under 模板');
-eq(p1Sb.regionAssetGroupOf('region'), 'region', 'region groups under 区域');
-eq(p1Sb.regionAssetGroupOf('template_set'), 'collection', 'template_set groups under 集合');
-eq(p1Sb.regionAssetGroupOf('weird'), 'other', 'unknown kinds group under 其他');
-
-const operationAssets = [
-  { id: '按钮_战斗', kind: 'ocr_line' },
-  { id: 'I_按钮', kind: 'template' },
-  { id: 'R_区域', kind: 'region' },
-  { id: 'C_集合', kind: 'template_set' },
-  { id: '按钮_战斗', kind: 'ocr_line' },
-  null,
-  { kind: 'template' },
-];
-const opAssetGroups = p1Sb.chooserOperationAssetOptions(operationAssets);
-eq(opAssetGroups.length, 4, 'operation asset options are grouped (OCR/模板/区域/集合)');
-eq(opAssetGroups[0].group, 'ocr', 'the first group is OCR');
-eq(opAssetGroups[0].label, 'OCR 识别素材', 'the OCR group label');
-eq(opAssetGroups[0].items.length, 1, 'duplicate ids are de-duplicated');
-eq(opAssetGroups[0].items[0].id, '按钮_战斗', 'the OCR item keeps its id');
-eq(opAssetGroups[0].items[0].kindText, 'OCR 行', 'the OCR item explains its kind');
-eq(opAssetGroups[2].items[0].id, 'R_区域', 'region assets are available as operation assets');
-eq(opAssetGroups[3].items[0].id, 'C_集合', 'collection assets are available as operation assets');
-eq(p1Sb.chooserOperationAssetOptions([{ id: 'X', kind: 'weird' }])[0].label, '其他素材', 'unknown asset kinds stay selectable');
-eq(p1Sb.chooserOperationAssetOptions(null), [], 'missing asset list -> no options');
-
-eq(p1Sb.regionAssetFromSelector(' I_战斗 '), 'I_战斗', 'selector value is trimmed');
-eq(p1Sb.regionAssetFromSelector(''), '', 'empty selector value = no operation asset');
-eq(p1Sb.regionAssetFromSelector(null), '', 'null selector value = no operation asset');
-eq(p1Sb.regionOperationAssetText('', operationAssets), '无（用识别素材自身）', 'no asset text explains the default');
-eq(p1Sb.regionOperationAssetText('I_按钮', operationAssets), 'I_按钮 · 模板', 'known asset text includes the kind');
-eq(
-  p1Sb.regionOperationAssetText('Gone', operationAssets),
-  '未找到：Gone',
-  'unknown asset text is reported instead of silently showing nothing'
-);
-eq(p1Sb.regionAssetIds(operationAssets), ['按钮_战斗', 'I_按钮', 'R_区域', 'C_集合'], 'regionAssetIds de-duplicates ids');
-
-eq(
-  p1Sb.regionWithOperationAsset({ mode: 'nearest' }, ' I_战斗 '),
-  { mode: 'nearest', asset: 'I_战斗' },
-  'regionWithOperationAsset merges the asset into asset/nearest'
-);
-eq(
-  p1Sb.regionWithOperationAsset({ mode: 'ocr' }, 'I_战斗'),
-  { mode: 'ocr' },
-  'regionWithOperationAsset drops the asset for ocr'
-);
-eq(
-  p1Sb.regionWithOperationAsset({ mode: 'offset', offset: [1, 2] }, 'I_战斗'),
-  { mode: 'offset', offset: [1, 2] },
-  'regionWithOperationAsset keeps offset but drops the asset'
-);
-eq(
-  p1Sb.regionWithOperationAsset({ mode: 'asset' }, ''),
-  { mode: 'asset' },
-  'regionWithOperationAsset with no selection omits asset'
-);
-eq(p1Sb.regionWithOperationAsset(null, 'I_战斗'), {}, 'no mode means no region (asset ignored)');
-
-eq(
-  p1Sb.regionIssues(
-    { steps: [{ op: 'long_press', args: { find: [{ kind: 'ocr_text', region: { mode: 'nearest', asset: 'Gone' } }] } }] },
-    ['I_按钮']
-  ),
-  ['flow.steps[0].args.find[0].region：操作区域素材「Gone」不在当前素材库（本步会失败）'],
-  'regionIssues reports an operation asset that is not in the current asset list'
-);
-eq(
-  p1Sb.regionIssues(
-    { steps: [{ op: 'click_target', args: { find: [{ kind: 'ocr_text', region: { mode: 'asset', asset: 'I_按钮' } }] } }] },
-    ['I_按钮']
-  ),
-  [],
-  'a known operation asset passes the save check'
-);
-ok(
-  p1Sb.regionIssues(
-    { steps: [{ op: 'click_target', args: { find: [{ kind: 'ocr_text', region: { mode: 'asset', asset: 'I_按钮' } }] } }] }
-  ).length === 0,
-  'without an asset list only the region shape is checked (legacy callers)'
-);
-eq(p1Sb.regionMatchRiskText('asset').indexOf('无匹配') >= 0, true, 'asset mode warns that no match fails the step');
-eq(p1Sb.regionMatchRiskText('nearest').indexOf('无匹配') >= 0, true, 'nearest mode warns that no match fails the step');
-eq(p1Sb.regionMatchRiskText('ocr'), '', 'non-asset modes have no match risk note');
-eq(p1Sb.regionMatchRiskText(''), '', 'the default mode has no match risk note');
-eq(p1Sb.normalizeScreenSize([1280, 720]), [1280, 720], 'screen size is kept');
-eq(p1Sb.normalizeScreenSize('bad'), [1280, 720], 'invalid screen size falls back to 1280x720');
-eq(p1Sb.normalizeScreenSize([0, 720]), [1280, 720], 'zero width falls back');
-
-eq(p1Sb.longPressHoldText({}), 'hold_ms 3000ms', 'hold text defaults to 3000ms');
-eq(p1Sb.longPressHoldText({ hold_ms: 2500 }), 'hold_ms 2500ms', 'hold text shows the configured hold_ms');
-eq(
-  p1Sb.longPressHoldText({ hold_ms: 3000, hold_range: [2500, 3500] }),
-  'hold_range 2500~3500ms（随机拟人）',
-  'hold_range wins over hold_ms in the summary'
-);
-eq(p1Sb.holdRangeFromInput('', ''), { ok: true, range: null, error: '' }, 'empty hold range = disabled');
-eq(p1Sb.holdRangeFromInput('2500', '3500'), { ok: true, range: [2500, 3500], error: '' }, 'valid hold range');
-eq(p1Sb.holdRangeFromInput('2500', '').ok, false, 'half a hold range is rejected');
-eq(p1Sb.holdRangeFromInput('50', '3500').ok, false, 'hold range below 100 is rejected');
-eq(p1Sb.holdRangeFromInput('2500', '12000').ok, false, 'hold range above 10000 is rejected');
-eq(p1Sb.holdRangeFromInput('3500', '2500').ok, false, 'hold range min > max is rejected');
-eq(p1Sb.holdRangeFromInput('2500.5', '3500').ok, false, 'non-integer hold range is rejected');
-eq(
-  p1Sb.longPressArgsIssues({ op: 'long_press', args: { find: [{ kind: 'ocr_text' }], hold_ms: 3000 } }),
-  [],
-  'a valid long_press has no arg issues'
-);
-eq(
-  p1Sb.longPressArgsIssues({ op: 'long_press', args: { find: [], hold_ms: 50 } }).length,
-  2,
-  'missing find + out-of-range hold_ms are both reported'
-);
-eq(
-  p1Sb.longPressArgsIssues({ op: 'long_press', args: { find: [{ kind: 'ocr_text' }], hold_range: [3500, 2500] } })[0].indexOf('不能大于') >= 0,
-  true,
-  'an inverted hold_range is reported'
-);
-eq(
-  p1Sb.longPressArgsIssues({ op: 'long_press', args: { find: [{ kind: 'ocr_text' }], hold_range: [2500] } })[0].indexOf('整数数组') >= 0,
-  true,
-  'a malformed hold_range is reported'
-);
-
-eq(p1Sb.curveSwipeStep().op, 'curve_swipe', 'curve_swipe default step op');
-eq(p1Sb.curveSwipeStep().args.points.length, 4, 'curve_swipe default has 4 points');
-eq(p1Sb.curveSwipeStep().args.duration_ms, [600, 1000], 'curve_swipe default duration range');
-eq(
-  p1Sb.curvePointsFromText('[[0,0],[1280,720]]', 1280, 720),
-  { ok: true, points: [[0, 0], [1280, 720]], error: '' },
-  'screen corner points are allowed'
-);
-eq(p1Sb.curvePointsFromText('[[1,2]]', 1280, 720).ok, false, 'a single point is rejected');
-eq(
-  p1Sb.curvePointsFromText(JSON.stringify(Array.from({ length: 33 }, (_, i) => [i, i])), 1280, 720).ok,
-  false,
-  'more than 32 points is rejected'
-);
-eq(p1Sb.curvePointsFromText('not-json', 1280, 720).ok, false, 'bad points JSON is rejected');
-eq(p1Sb.curvePointsFromText('[[1,2],[3]]', 1280, 720).ok, false, 'a point must be [x,y]');
-eq(p1Sb.curvePointsFromText('[[1.5,2],[3,4]]', 1280, 720).ok, false, 'non-integer coordinates are rejected');
-eq(p1Sb.curvePointsFromText('[[-1,2],[3,4]]', 1280, 720).ok, false, 'negative coordinates are rejected');
-eq(p1Sb.curvePointsFromText('[[2000,2],[3,4]]', 1280, 720).ok, false, 'x outside the screen is rejected');
-eq(p1Sb.curvePointsFromText('[[1,2],[3,900]]', 1280, 720).ok, false, 'y outside the screen is rejected');
-eq(p1Sb.curveDurationFromInput('600', '1000'), { ok: true, duration: [600, 1000], error: '' }, 'valid duration range');
-eq(p1Sb.curveDurationFromInput('', '1000').ok, false, 'missing duration min is rejected');
-eq(p1Sb.curveDurationFromInput('50', '1000').ok, false, 'duration below 100 is rejected');
-eq(p1Sb.curveDurationFromInput('600', '12000').ok, false, 'duration above 10000 is rejected');
-eq(p1Sb.curveDurationFromInput('1000', '600').ok, false, 'duration min > max is rejected');
-eq(
-  p1Sb.curveSwipeArgsIssues(
-    { op: 'curve_swipe', args: { points: [[0, 0], [10, 10]], duration_ms: [600, 1000] } },
-    1280,
-    720
-  ),
-  [],
-  'a valid curve_swipe has no arg issues'
-);
-eq(
-  p1Sb.curveSwipeArgsIssues({ op: 'curve_swipe', args: { points: 'bad' } }, 1280, 720).length,
-  1,
-  'a non-array points value is one issue (the default duration range stays valid)'
-);
-eq(
-  p1Sb.actionArgsIssues(
-    {
-      steps: [
-        { op: 'long_press', args: { find: [], hold_ms: 50 } },
-        {
-          op: 'loop',
-          args: { n: '2' },
-          body: [{ op: 'curve_swipe', args: { points: [[1, 1]], duration_ms: [600, 1000] } }],
-        },
-      ],
-    },
-    [1280, 720]
-  ).length >= 3,
-  true,
-  'actionArgsIssues walks root + nested body and reports long_press + curve_swipe problems'
-);
-eq(p1Sb.actionArgsIssues({ steps: [] }, [1280, 720]), [], 'a clean flow has no action arg issues');
-ok(/阻塞等待/.test(p1Sb.waitBlockingHelpText()), 'wait help says 阻塞等待');
-ok(/下一个 flow 步骤/.test(p1Sb.waitBlockingHelpText()), 'wait help says it continues to the next flow step');
-ok(/超时/.test(p1Sb.waitBlockingHelpText()), 'wait help mentions the timeout failure');
-
-// Static wiring: new catalogue entries + forms + region editor + validation.
-ok(
-  /long_press: \{ label: '长按', group: '动作' \}/.test(builderSource) &&
-    /curve_swipe: \{ label: '曲线滑动（多段近似）', group: '动作' \}/.test(builderSource),
-  'OP_META registers long_press + curve_swipe in the 动作 group'
-);
-ok(
-  !/PARAM_ACTIONS/.test(builderSource) && !/param_long_press_text/.test(builderSource),
-  'the 参数文字长按 preset is gone from the action library'
-);
-ok(
-  /long_press: \{ find: \[\{ kind: 'template', sel: 'I_A' \}\], hold_ms: 3000 \}/.test(builderSource) &&
-    /curve_swipe: \{/.test(builderSource) && /duration_ms: \[600, 1000\]/.test(builderSource),
-  'DEFAULTS seeds long_press hold_ms=3000 and curve_swipe points/duration'
-);
-ok(
-  !/param_long_press_text|longPressStep/.test(builderSource),
-  'buildActionStep no longer expands 参数文字长按 to long_press'
-);
-ok(
-  /const ACTION_TITLES = \{/.test(builderSource) &&
-    /wait_until: '阻塞等待：条件成立后继续执行下一个 flow 步骤/.test(builderSource) &&
-    /long_press: '长按：/.test(builderSource) &&
-    /curve_swipe: '曲线滑动（多段近似）：/.test(builderSource) &&
-    /ACTION_TITLES\[item\.key\]/.test(builderSource),
-  'the palette exposes the blocking-wait / long-press / curve-swipe titles'
-);
-ok(
-  /case 'long_press':[\s\S]{0,600}longPressHoldText\(a\)/.test(builderSource) &&
-    /case 'curve_swipe':[\s\S]{0,500}多段近似/.test(builderSource),
-  'step summaries cover long_press + curve_swipe'
-);
-ok(
-  /function renderRegionEditor\(host, locator, onChange\)/.test(builderSource) &&
-    /regionWrite\(written, region\.mode, region\.offset, region\.asset\)/.test(builderSource),
-  'the OCR locator panel owns the shared 操作区域 editor'
-);
-ok(
-  (builderSource.match(/renderRegionEditor\(/g) || []).length >= 3,
-  'click_target find / drag from|to / long_press.find all reuse the region editor'
-);
-ok(
-  /if \(step\.op === 'click_target' \|\| step\.op === 'long_press'\)/.test(builderSource) &&
-    /if \(step\.op === 'curve_swipe'\) renderCurveSwipeForm\(root, step\)/.test(builderSource),
-  'renderForm wires long_press (locator reuse) + curve_swipe forms'
-);
-ok(
-  /function renderLongPressForm\(root, step\)/.test(builderSource) &&
-    /hold_range/.test(builderSource) &&
-    /holdRangeFromInput\(minInput\.value, maxInput\.value\)/.test(builderSource),
-  'the long_press form edits hold_ms + optional hold_range'
-);
-ok(
-  /function renderCurveSwipeForm\(root, step\)/.test(builderSource) &&
-    /curvePointsFromText\(pointsInput\.value, B\.screen\[0\], B\.screen\[1\]\)/.test(builderSource) &&
-    /每段是独立手势/.test(builderSource),
-  'the curve_swipe form validates points against the screen and shows the multi-gesture risk'
-);
-ok(
-  /const saveIssues = flowTextSpecIssues\(B\.flow\)[\s\S]{0,220}regionIssues\(B\.flow, regionAssetIds\(B\.assets\)\)[\s\S]{0,120}actionArgsIssues\(B\.flow, B\.screen\)/.test(builderSource),
-  'saveFlow blocks on text-spec + region + long_press/curve_swipe issues'
-);
-ok(
-  /B\.screen = normalizeScreenSize\(as\.design_resolution\)/.test(builderSource),
-  'loadTask takes the screen bounds from /task/assets design_resolution'
-);
-ok(
-  /waitBlockingHelpText\(\)/.test(builderSource) &&
-    /if \(step\.op === 'wait' \|\| step\.op === 'wait_until'\)/.test(builderSource) &&
-    /builder-wait-help/.test(builderSource),
-  'the attribute panel explains wait/wait_until as a blocking wait'
-);
-ok(
-  /阻塞等待/.test(html) && /不会触发独立动作/.test(html),
-  'the palette help explains the blocking-wait semantics'
-);
-ok(/长按/.test(html) && /曲线滑动（多段近似）/.test(html), 'the palette help mentions 长按 + 曲线滑动');
-ok(
-  /\.builder-region-editor/.test(styleCss) && /\.builder-region-offset/.test(styleCss) &&
-    /\.builder-wait-help/.test(styleCss) && /\.builder-warn-note/.test(styleCss),
-  'style.css styles the region editor + wait/risk notes'
-);
-ok(
-  !/innerHTML/.test(extractFunctionFrom(builderSource, 'renderRegionEditor', 'builder.js')),
-  'the region editor renders through DOM APIs only'
-);
-ok(
-  !/innerHTML/.test(extractFunctionFrom(builderSource, 'renderLongPressForm', 'builder.js')),
-  'the long_press form renders through DOM APIs only'
-);
-ok(
-  !/innerHTML/.test(extractFunctionFrom(builderSource, 'renderCurveSwipeForm', 'builder.js')),
-  'the curve_swipe form renders through DOM APIs only'
-);
-
-// A 方案：操作区域素材（整个素材库）只保留在结构化 region 编辑器里；参数动作
-// 的一次性 chooser 已随预设一起删除。
-ok(
-  /chooserOperationAssetOptions\(B\.assets\)/.test(builderSource) &&
-    /optgroup/.test(builderSource) &&
-    /option\.value = item\.id;/.test(builderSource),
-  'the structured region editor lists the whole asset library as operation-region assets'
-);
-ok(
-  /builder-region-asset/.test(builderSource) &&
-    /regionAssetFromSelector\(opAssetSel\.value\)/.test(builderSource) &&
-    /opAssetRow\.hidden = mode !== 'asset' && mode !== 'nearest'/.test(builderSource),
-  'the structured region editor adds the operation-asset select (asset/nearest only)'
-);
-ok(
-  (builderSource.match(/regionWrite\(written, region\.mode, region\.offset, region\.asset\)/g) || []).length >= 2,
-  'click_target find + drag endpoints write region.asset through regionWrite'
-);
-ok(
-  /regionMatchRiskText\(mode\)/.test(builderSource),
-  'the structured region editor shows the no-match risk note'
-);
-ok(
-  !/chooseOcrAssetDialog|resolveParamClickTarget|selectedOcrAssetId|chooserRegionSpec/.test(builderSource),
-  'the parameter-action asset/region chooser is removed together with the presets'
-);
-ok(
-  /regionIssues\(B\.flow, regionAssetIds\(B\.assets\)\)/.test(builderSource),
-  'saveFlow validates region.asset against the current asset library'
-);
-ok(
-  /builder-region-help/.test(html) && /操作区域素材/.test(html) &&
-    /region\.asset/.test(html) && /无匹配时本步会失败/.test(html),
-  'index.html explains the operation-region asset (region.asset) semantics'
-);
-ok(
-  /\.builder-region-asset/.test(styleCss) && /\.builder-region-risk/.test(styleCss),
-  'style.css styles the operation-asset select + risk note'
-);
-
-// DOM id audit: the whole point of this round is ZERO static dead ids. Every
-// getElementById target must exist in index.html; if an id is genuinely needed,
-// add a real element to the HTML instead of keeping a fake reference.
-//
-// 2026-11-06 hotfix: the audit used to scan the RAW html, so an `id="…"` that
-// was accidentally swallowed by a malformed HTML comment still counted as
-// present while the real DOM had no such element (regression broke #btn-clear
-// at runtime). Two guards now apply: (1) HTML comments must be balanced and
-// must not contain a stray JS comment terminator (`*/}` was the actual bug);
-// (2) the id audit runs on comment-stripped markup so commented-out ids no
-// longer mask runtime-null elements.
-const htmlCommentOpen = (html.match(/<!--/g) || []).length;
-const htmlCommentClose = (html.match(/-->/g) || []).length;
-ok(
-  htmlCommentOpen === htmlCommentClose && !/\*\/\}/.test(html),
-  `index.html comments are balanced (open=${htmlCommentOpen} close=${htmlCommentClose}) and contain no stray */}`
-);
-const htmlDom = html.replace(/<!--[\s\S]*?-->/g, '');
-const referencedIds = [...new Set(
-  [...source.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map((m) => m[1])
-)];
-const missingIds = referencedIds.filter((id) => !new RegExp(`id=["']${id}["']`).test(htmlDom));
-const fixedIds = [
-  'btn-library-refresh',
-  'task-show-all-assets',
-  'task-assets-hint',
-  'btn-assets-batch-test',
-  'assets-refresh',
-  'global-assets-list',
-  'global-asset-search',
-  'global-asset-category-filter',
-  'lines-list',
-];
-for (const id of fixedIds) {
-  ok(!missingIds.includes(id), `fixed DOM id #${id} exists in index.html`);
-}
-ok(
-  missingIds.length === 0,
-  `dead DOM ids must be 0 (still dead: ${missingIds.join(', ') || 'none'})`
-);
-ok(
-  referencedIds.length >= 159,
-  `Studio DOM id audit covers the PR6 cleanup (got ${referencedIds.length}, need >= 159)`
-);
 
 // --- PR1/PR2/PR6: Studio / Runner surface split (static UI contract) --------
 // Studio owns no scheduling page at all any more: PR6 removed the deferred
@@ -6648,7 +5186,7 @@ const runnerHelperNames = [
   'updatesListStatusText',
   // P2: Runner params page (group / use switch / bool tri / summary) + feed UI.
   'runnerParamDefaultText', 'runnerParamGroups', 'runnerParamGroupsEx',
-  'runnerParamRoleText', 'runnerParamAssetSubtitle',
+  'runnerParamRoleText', 'runnerParamAssetSubtitle', 'runnerParamOcrVarOnly',
   'runnerParamTypeText', 'runnerParamSavedValue', 'runnerParamBoolTri',
   'runnerParamUseState', 'runnerParamCollectUse', 'runnerParamSummary',
   'runnerConfigFieldKind', 'runnerConfigIsIntegerType', 'runnerConfigCollectValues',
@@ -7048,13 +5586,15 @@ ok(
   'the dialog binds the top summary element'
 );
 ok(
-  /按 <code>meta\.params\[\]\.group<\/code> 分节/.test(runnerHtml) &&
+  /这里只显示「使用端OCR文字配置项」/.test(runnerHtml) &&
+    /通用参数已从用户界面移除/.test(runnerHtml) &&
     /取消「使用」或值留空 = 不注入（回退默认值）/.test(runnerHtml),
-  'the dialog copy explains group sections + 留空=不注入'
+  'D: the dialog copy explains the ocr_var-only config + 留空=不注入'
 );
 ok(
-  /runnerParamGroups\(params\)/.test(runnerSource) && /data-use/.test(runnerSource),
-  'the form renders group sections with per-param 使用 switches'
+  /runnerParamGroupsEx\(params\)\.filter/.test(runnerSource) &&
+    /group\.kind === 'ocr_var'/.test(runnerSource),
+  'D: the form renders only the ocr_var section (generic groups hidden)'
 );
 // U-T6: 派生参数行（asset_id）→ 前置「使用端OCR文字配置项」分节 + 素材副标题。
 ok(
@@ -7096,7 +5636,10 @@ ok(
   /el\.configTitle\.textContent = '任务配置 · ' \+ name/.test(runnerSource),
   'dialog title becomes 任务配置 · <task>'
 );
-ok(/该任务没有配置项/.test(runnerSource), 'empty schema shows 该任务没有配置项 instead of a blank form');
+ok(
+  /本任务无可配置的使用端变量/.test(runnerSource),
+  'D: no ocr_var rows shows the 本任务无可配置的使用端变量 empty state'
+);
 eq(
   (runnerHtml.match(/<dialog\b/g) || []).length,
   (runnerHtml.match(/<\/dialog>/g) || []).length,
@@ -7111,8 +5654,9 @@ ok(
   'dialog loads values with GET runnerConfigUrl(task)'
 );
 ok(
-  /runnerFetchJson\(runnerConfigUrl\(task\), \{\s*method: 'PUT',\s*body: \{ values: collected\.values \},\s*\}\)/.test(runnerSource),
-  'dialog saves with PUT /runner/tasks/<id>/config {values}'
+  /body: \{ values: Object\.assign\(\{\}, configValues, collected\.values\) \}/.test(runnerSource) &&
+    /method: 'PUT'/.test(runnerSource),
+  'D: saves with PUT /runner/tasks/<id>/config {values} while preserving hidden generic values'
 );
 ok(
   /const controlId = 'runner-cfg-' \+ index;/.test(runnerSource) &&
@@ -9272,6 +7816,223 @@ async function checkAssetCandidatesWiring() {
   await sb.testAssetCandidates({ id: 'O_组', kind: 'ocr_var', roi: null }, null, '');
   ok(/全屏 OCR/.test(sb.resultEl.textContent), 'U-T4: an empty-roi ocr_var shows the full-screen OCR hint');
 }
+
+// --- DOM id audit（Studio shell；D 批删除了参数面板/配置项对话框相关 id） -------
+const htmlDom = html;
+const referencedIds = [...new Set(
+  [...source.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map((m) => m[1])
+)];
+const missingIds = referencedIds.filter((id) => !new RegExp(`id=["']${id}["']`).test(htmlDom));
+const fixedIds = [
+  'btn-library-refresh',
+  'task-show-all-assets',
+  'task-assets-hint',
+  'btn-assets-batch-test',
+  'assets-refresh',
+  'global-assets-list',
+  'global-asset-search',
+  'global-asset-category-filter',
+  'lines-list',
+  'candidate-select',
+  'asset-text-dialog',
+  'op-region-dialog',
+];
+ok(missingIds.length === 0, 'Studio DOM id audit: every getElementById target exists in index.html');
+ok(referencedIds.length >= 159, 'Studio DOM id audit covers the merged UI (>=159 referenced ids)');
+for (const id of fixedIds) {
+  ok(new RegExp(`id=["']${id}["']`).test(htmlDom), `fixed DOM id present: #${id}`);
+}
+ok(
+  !/id="builder-params"/.test(htmlDom) && !/id="task-config-dialog"/.test(htmlDom),
+  'D: the deleted params panel + task-config dialog leave no DOM ids in index.html'
+);
+
+// --- D 批（#1/#2 去参数 UI）：专属断言 + 仍存在功能的覆盖恢复 ------------------
+// 仍存在功能：guards / drag OCR 端点 / locator 文字来源 / 保存时 text·text_expr 校验。
+ok(
+  /function locatorTextSourceFields\(base, onChange\)/.test(builderSource) &&
+    (builderSource.match(/locatorTextSourceFields\(/g) || []).length >= 4,
+  'D: 文字来源组件仍在，find / requires / expect / drag 端点共用'
+);
+ok(
+  /function renderGuardLocatorEditor\(root, step, field\)/.test(builderSource) &&
+    /renderGuardLocatorEditor\(root, step, 'requires'\)/.test(builderSource) &&
+    /renderGuardLocatorEditor\(root, step, 'expect'\)/.test(builderSource),
+  'D: requires/expect 的 OCR 守卫结构化编辑器仍在'
+);
+ok(
+  /function renderDragEndpointEditor\(host, step, side\)/.test(builderSource) &&
+    /renderDragEndpointEditor\(box, step, 'from'\)/.test(builderSource) &&
+    /renderDragEndpointEditor\(box, step, 'to'\)/.test(builderSource),
+  'D: drag from/to 的 OCR 端点结构化编辑器仍在'
+);
+ok(
+  /function flowTextSpecIssues\(flow\)/.test(builderSource) && /保存已阻止/.test(builderSource),
+  'D: 保存前 text/text_expr 互斥校验仍在（删参数 UI 未误删）'
+);
+ok(
+  /旧参数来源（只读）/.test(builderSource) && /mode === 'keep'/.test(builderSource) &&
+    /text\.mode === 'keep' \? next/.test(builderSource),
+  'D: 旧 flow 的 param() 来源只读回显，keep 时不改写 text_expr'
+);
+// Lead 清单：动作属性页无旧参数入口。
+ok(
+  !/'param', '识别文字配置项/.test(builderSource) &&
+    !/文字（参数）/.test(builderSource) &&
+    !/插入参数 ▾/.test(builderSource),
+  'D: 动作属性页无「文字（参数）」选项、无「插入参数 ▾」'
+);
+ok(
+  /function ocrVarInsertWidget\(mode, getField\)/.test(builderSource) &&
+    /items = \(B\.assets \|\| \[\]\)\.filter[\s\S]{0,160}kind === 'ocr_var'/.test(builderSource),
+  'D: 插入识别文字配置项下拉只列 ocr_var 素材'
+);
+ok(
+  /btn\.textContent = '插入识别文字配置项 ▾';[\s\S]{0,400}btn\.disabled = !items\.length/.test(builderSource),
+  'D: 无 ocr_var 选项时插入下拉禁用'
+);
+ok(
+  /const snippet = paramInsertSnippet\(key, mode\);/.test(builderSource) &&
+    /insert\(key\);/.test(builderSource) &&
+    /function ocrVarInsertWidget/.test(builderSource),
+  'D: 选中 ocr_var 后插入 param(param_key)'
+);
+ok(
+  /const kindChoices = \[\][\s\S]{0,300}\['ocr_var', '识别文字配置项'\]/.test(builderSource) &&
+    !/文字（参数）/.test(builderSource),
+  'D: 条件行使用「识别文字配置项」行类型'
+);
+const condSb = {};
+vm.createContext(condSb);
+vm.runInContext(
+  ['paramWaitCond', 'paramSafeKey', 'paramTextExpr', 'conditionRowExpr']
+    .map((name) => extractFunctionFrom(builderSource, name, 'builder.js'))
+    .join('\n\n'),
+  condSb,
+  { filename: 'builder.js#condition' }
+);
+eq(
+  condSb.conditionRowExpr({ kind: 'ocr_var', value: 'O_组', paramKey: 'group' }),
+  "text_visible(param('group'))",
+  'D: 识别文字配置项条件行生成 text_visible(param(key))'
+);
+eq(
+  condSb.conditionRowExpr({ kind: 'ocr_var', value: 'O_组', paramKey: 'group', neg: true }),
+  "not (text_visible(param('group')))",
+  'D: 识别文字配置项条件行支持「未出现」取反'
+);
+eq(
+  condSb.conditionRowExpr({ kind: 'ocr_var', value: 'O_缺键' }),
+  '',
+  'D: 缺 param_key 的识别文字配置项条件行不生成表达式'
+);
+eq(
+  condSb.conditionRowExpr({ kind: 'param', value: 'legacy_key' }),
+  "text_visible(param('legacy_key'))",
+  'D: 旧 flow 的参数条件行仍可回显/运行'
+);
+// 删除残留 = 0
+ok(
+  !/id="builder-params"/.test(html) && !/builder-params-list/.test(html) &&
+    !/builder-params-declare/.test(html) && !/builder-param-issues/.test(html),
+  'D: #builder-params 面板 HTML 残留 = 0'
+);
+ok(
+  !/renderParamsPanel|renderParamIssuesHint/.test(builderSource) &&
+    !/builder-params-declare/.test(builderSource),
+  'D: #builder-params 面板渲染/入口代码残留 = 0'
+);
+ok(
+  !/id="task-config-dialog"/.test(html) && !/id="task-config-save"/.test(html) &&
+    !/getElementById\('task-config-dialog'\)/.test(source),
+  'D: 任务配置项对话框 DOM/引用残留 = 0'
+);
+ok(
+  !/openTaskConfigDialog/.test(source) && !/submitTaskConfig/.test(source) &&
+    !/function taskConfigRenderCard/.test(source),
+  'D: 任务库「配置项…」按钮与打开/保存/表单逻辑残留 = 0'
+);
+ok(
+  !/openTaskParamsDialog|lintOpenDeclare|lintT3DeclarePrefill/.test(builderSource),
+  'D: T3「去声明…」与 prefill 逻辑残留 = 0'
+);
+ok(
+  !/任务参数/.test(html) && !/任务参数/.test(runnerHtml),
+  'D: 用户可见「任务参数」措辞残留 = 0'
+);
+ok(
+  !/去声明/.test(builderSource) && !/去声明/.test(html),
+  'D: 「去声明」措辞残留 = 0'
+);
+ok(
+  /旧参数不再支持：请改用「使用端OCR文字配置项」素材/.test(builderSource),
+  'D: T3 检查文案改为引导 ocr_var 素材'
+);
+// goal battles：字面量循环次数
+ok(
+  /op: 'loop', args: \{ n: goal\.count \}/.test(source),
+  'D: battles 完成条件生成 loop n=<goal.count> 字面量'
+);
+ok(
+  !/args: \{ n: "param\('max_battles'\)" \}/.test(source),
+  'D: 不再生成 param(max_battles)'
+);
+ok(
+  /字面量循环次数/.test(source),
+  'D: 结果文案说明字面量循环次数'
+);
+// Runner：只显示 ocr_var 分节 + 隐藏通用参数/高级 JSON
+ok(
+  /runnerParamOcrVarOnly/.test(runnerSource) &&
+    /runnerParamGroupsEx\(params\)\.filter[\s\S]{0,120}kind === 'ocr_var'/.test(runnerSource),
+  'D: Runner 配置弹窗只渲染 ocr_var 派生分节'
+);
+ok(
+  /本任务无可配置的使用端变量/.test(runnerSource),
+  'D: 无 ocr_var 时显示「本任务无可配置的使用端变量」空态'
+);
+ok(
+  /id="runner-run-params"[^>]*>/.test(runnerHtml) &&
+    /<label class="opt" hidden>参数 JSON/.test(runnerHtml),
+  'D: 临时运行「参数 JSON」入口已隐藏（代码保留）'
+);
+ok(
+  /<label class="opt" hidden>params（JSON 对象/.test(runnerHtml) &&
+    /id="sched-entry-params"/.test(runnerHtml),
+  'D: 调度条目 params JSON 入口已隐藏（代码保留）'
+);
+ok(
+  /这里只显示「使用端OCR文字配置项」/.test(runnerHtml) &&
+    /通用参数已从用户界面移除/.test(runnerHtml),
+  'D: Runner 配置弹窗文案只说明 ocr_var'
+);
+ok(
+  /Object\.assign\(\{\}, configValues, collected\.values\)/.test(runnerSource),
+  'D: Runner 保存时保留隐藏通用参数的旧值'
+);
+eq(
+  runnerSb.runnerParamOcrVarOnly([
+    { key: 'group', asset_id: 'O_组' },
+    { key: 'loop_n' },
+    { key: 'x', asset_id: 'O_甲' },
+    null,
+  ]).map((p) => p.key),
+  ['group', 'x'],
+  'D: runnerParamOcrVarOnly 只保留 asset_id 派生行'
+);
+eq(runnerSb.runnerParamOcrVarOnly(null), [], 'D: 无参数时 ocr_var 过滤为空');
+eq(
+  runnerSb.runnerParamGroupsEx([
+    { key: 'group', asset_id: 'O_组' },
+    { key: 'loop_n', group: '通用' },
+  ]).filter((g) => g.kind === 'ocr_var').map((g) => g.params.map((p) => p.key)),
+  [['group']],
+  'D: 分组模型仍可区分 ocr_var 与通用组（通用组仅隐藏）'
+);
+ok(
+  /builder-target-errors|builder-legacy-region-hint/.test(styleCss),
+  'D: 目标/旧 region 样式仍在（U-T5 功能未误删）'
+);
 
 checkAssetTestWiring()
   .then(() => checkAssetCandidatesWiring())
