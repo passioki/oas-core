@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 122
-updated_at: 2026-11-06T09:4x+08:00
-trigger: seq 121 region/long_press/curve_swipe → 用户指出素材下拉只列 OCR 素材 → 确认 **A 方案**（OCR 识别素材 + 操作区域素材全库 `region.asset`；nearest=候选匹配 bbox 中心离参数 OCR 行 bbox 中心最近；无匹配=本步失败）→ **seq 122：region.asset + 模板/集合多候选匹配（NCC NMS≤64）+ 三处接入 + 构建页全库操作素材选择；workspace 841/0、UI 2214；只推送不发布**
-status: in_progress               # A 方案已实现；真机验收、性能实测、发布策略、产品验收待继续
-code_head: 本批提交后以 `git log -1` 为准（代码 `ba6813e`；oas-runner `768a8b7`）
-docs_head: 本批 docs 随代码提交（以 `git log -1` 为准；dev = main = origin）
-next_action: ① 真机验收 region.asset 操作区域落点/多候选最近/长按曲线时序与 nearest 性能；② 更新检测鉴权/GC；③ tag/Release 策略；④ 产品验收/P2/Phase 5；恢复先读 `docs/OPERATION-REGION-DESIGN.md §7` + START-HERE/RESUME（seq 122）
+checkpoint_seq: 123
+updated_at: 2026-11-06T12:0x+08:00
+trigger: seq 122 A 方案实现后 → 用户重新梳理概念并推翻动作库参数方向，提出 **6 项重构要求**（参数=素材的一种/动作库去参数化/素材多候选识别 API+UI/量尺/操作区域三方式与递归套娃/废弃操作区两状态）→ **seq 123：仅更新文档与交接，未实现新要求**
+status: awaiting-redesign           # seq 122 A 方案代码已推送；新要求未实现，需先审计+用户确认设计文档 §5
+code_head: 本批 docs 提交后以 `git log -1` 为准（代码仍为 seq 122 `ba6813e`；oas-runner `768a8b7`）
+docs_head: 本批 docs 以 `git log -1` 为准（dev = main = origin）
+next_action: ① 新会话先读 `docs/PARAM-ASSET-REDESIGN.md` → `SESSION-HANDOFF.md` → START-HERE；② 审计「操作区两状态/全图回退+相对位移」现状（事项6）；③ 向用户确认设计文档 §5 的 7 个问题（命名/旧 meta.params 迁移/参数素材初始 ROI/防环策略/素材类型/量尺输出/候选 API）；④ 再拆分实现：素材候选 API/素材行识别 → 参数素材类型与迁移 → 动作库去参数化 → 操作区递归/防环 → 量尺 → 文档/测试；**先不要继续改 seq 122 的 A 方案 UI**
 ```
 
 ## 0. 目标（本阶段）
@@ -30,23 +30,21 @@ next_action: ① 真机验收 region.asset 操作区域落点/多候选最近/�
 12. **seq 119（已实现）**：用户反馈任务「切换预设御魂」加两个参数后与 if 衔接，JSON 多处自动出现 `sel: 觉醒材料`。→ ① 表达式「插入参数」防粘连；② `repairConditionExpr` 自愈历史坏值；③ 参数点击不再静默选第一个 OCR 素材（多个弹选择对话框）；④ `saveFlow` 前 `normalizeFlow` 清 if/while 遗留 `args.sel`；⑤ 用户任务畸形条件已修为 `text_visible(param('group'))`。
 13. **seq 120（设计）**：用户指出素材选择对话框不完善并给出 3 类区域来源（素材操作区域/多匹配最近/相对位移/参数 OCR 真实识别区域）+ 长按/曲线问题 → `docs/OPERATION-REGION-DESIGN.md` 设计草案 + 4 个待确认问题。
 14. **seq 121（已实现）**：用户确认：nearest 参考点=**OCR 识别 ROI 中心**；长按独立 op、默认 **3000ms**、随机范围；offset 相对 bbox 左上角；曲线用**多段近似**。→ ① 引擎 `region{asset,ocr,nearest,offset}` + `long_press` + `curve_swipe` + flow_ops 7→11；② 构建页动作库/操作区域/长按/曲线面板；③ **等待动作解释**；④ workspace **824/0**、UI **2146**。
-15. **seq 122（本轮）**：用户确认 **A 方案**（OCR 识别素材 + 操作区域素材全库）→ ① `region.asset`（仅 asset/nearest；T4/flow_ops +2）；② oas-perceive 多候选匹配（NCC→局部极大→阈值→NMS→≤64，best 路径不变）；③ runtime `operation_region_for_asset`：模板/集合 nearest 按“候选匹配 bbox 中心 ↔ 参数 OCR 行 bbox 中心”距离平方选最近；固定 region/OCR 资产取自身操作区；无候选/未匹配=响亮失败；④ 三处接入 click/drag/long_press；⑤ UI 对话框/结构化编辑器加「操作区域素材（全库，可选）」+ 校验/风险提示；⑥ workspace **841/0**、UI **2214**、E2E `regionasset` flow_ops 含 region_asset；oas-runner pin `ba6813e`。
+15. **seq 122（已实现）**：用户确认 **A 方案**（OCR 识别素材 + 操作区域素材全库）→ ① `region.asset`（仅 asset/nearest；T4/flow_ops +2）；② oas-perceive 多候选匹配（NCC→局部极大→阈值→NMS→≤64，best 路径不变）；③ runtime `operation_region_for_asset`：模板/集合 nearest 按“候选匹配 bbox 中心 ↔ 参数 OCR 行 bbox 中心”距离平方选最近；固定 region/OCR 资产取自身操作区；无候选/未匹配=响亮失败；④ 三处接入 click/drag/long_press；⑤ UI 对话框/结构化编辑器加「操作区域素材（全库，可选）」+ 校验/风险提示；⑥ workspace **841/0**、UI **2214**、E2E `regionasset` flow_ops 含 region_asset；oas-runner pin `ba6813e`。
+16. **seq 123（本轮，仅文档交接）**：用户重新梳理并给出 6 项重构要求，**推翻 seq 122 的交互方向**：① 动作库删除参数预设（「参数文字点击」→「参数文字动作」，最终参数不属于动作库）；② **参数是素材的一种**（使用端可变识别文字；初始识别区为空；改名「使用端OCR文字配置项」待定）；③ 素材行点识别返回**所有候选+评分**（后端 API；测试动作演练所有候选；真实点击可选候选）；④ **量尺**（两点直线距离复制剪贴板）；⑤ **操作区域三方式 + 递归套娃**（参数真实识别区/素材操作区单候选或多候选最近/相对偏移；素材链依次识别、任一缺失则本步失败；防环）；⑥ **废弃操作区“与真实识别区有无交集”两状态**（先审计现有全图回退+相对位移）。→ 本轮**未改代码**，新增 `docs/PARAM-ASSET-REDESIGN.md`、`PENDING §E-93`、`ENGINE §22.63`，更新交接文档；下一步先审计+确认设计文档 §5 问题再实现。
 
-## 1. 状态（2026-11-06 09:4x，seq 122）
+## 1. 状态（2026-11-06 12:0x，seq 123）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | oas-core `dev`（本批 docs 提交后以 `git log -1` 为准；代码 `ba6813e`）；oas-runner `main` = `768a8b7`（pin `ba6813e`，cargo build exit 0）；未 tag / 未 release |
-| 任务状态 | **in_progress**：A 方案 region.asset/多候选 nearest ✅、构建页 UI ✅；真机验收/性能实测/发布策略/产品验收待继续 |
+| 分支 / HEAD | oas-core `dev`（本批 docs 提交后以 `git log -1` 为准；代码仍 seq 122 `ba6813e`）；oas-runner `main` = `768a8b7`（pin `ba6813e`）；未 tag / 未 release |
+| 任务状态 | **awaiting-redesign**：seq 122 A 方案代码已推送但**交互方向被用户推翻**；新 6 项要求**未实现**，先审计 + 确认设计问题再开工 |
 | 双入口 | Studio `http://127.0.0.1:8788/` · Runner `http://127.0.0.1:8789/`；oas-runner 独立 app pin oas-core `ba6813e` |
 | 测试 | `cargo test --workspace` **841 / 0**（23 suites；perceive **11**+2 / flow **78** / runtime **186**+2 / task **122** / adapter-pc 5 / oasd 412）；UI pure test **2214 checks / Studio 164 / Runner 158 / 0 dead / 6 nav**；debug+release OCR build exit 0（**1 warning**）；`git diff --check` clean |
-| 新能力 | `region`（asset/ocr/nearest/offset）· `long_press`（hold_ms 3000 / hold_range 随机）· `curve_swipe`（多段近似）· flow_ops 11 个（新 4 标记） |
+| 新要求 | 参数→素材/动作库去参数化/素材候选 API+行 UI/量尺/操作区三方式+递归防环/废弃两状态 —— 见 `PARAM-ASSET-REDESIGN.md`、`PENDING §E-93`、`ENGINE §22.63` |
 | 服务 | 无 `oasd`/`oasd-runner` 进程；8787/8788/8789/8792~8796 无监听 |
 | 数据边界 | `scheduler.json` 未提交；用户任务 `tasks/切换预设御魂/{flow,meta}.json` 为用户编辑 + Lead 修复 cond，**工作区未提交**；其余已提交/推送 |
-| 发行包 | 按用户「推送即可，不用发布」**本轮未重打/未上传**；沿用 seq 118 本地产物：Studio `F2184381…1B2F`、oas-core Runner `163679D6…9065`、oas-runner `F6A6C301…D46C` |
-| 独立仓 | `https://github.com/passioki/oas-runner`（`a6b8670`）；pin 仍 `5b0b107`（UI bugfix 不进入 Runner 产物） |
-| 服务 | 无 `oasd`/`oasd-runner` 进程；8787/8788/8789/8792~8796 无监听 |
-| 数据边界 | `scheduler.json` 未提交；用户任务 `tasks/切换预设御魂/{flow,meta}.json` 为用户本轮编辑 + Lead 修复 cond，**工作区未提交**；其余已提交/推送 |
+| 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；沿用旧本地产物（不含 seq 121/122 新能力） |
 
 ## 1.5 2026-11-05 18:2x（seq 111）设计轮产出（只读，未改代码）
 
@@ -201,6 +199,21 @@ next_action: ① 真机验收 region.asset 操作区域落点/多候选最近/�
 **验证**：workspace **841/0**（perceive 11+2 / flow 78 / runtime 186+2 / task 122 / oasd 412）；UI **2214/164/158/0 dead/6 nav**；debug+release build exit 0（1 warning）；提交 oas-core `ba6813e`、oas-runner `768a8b7`（pin `ba6813e`）；只推送不发布。
 
 **剩余**：真机验收（操作区域落点/多候选最近/长按曲线时序）、nearest 1280×720 性能实测、更新检测鉴权/GC、发布策略、产品验收。
+
+## 1.17 2026-11-06 12:0x（seq 123）用户新要求（仅记录，未实现）
+
+> **seq 122 的 A 方案交互方向被推翻**；新会话先读 `docs/PARAM-ASSET-REDESIGN.md`（完整需求/影响/待确认）与 `PENDING §E-93`。
+
+| # | 用户要求 | 现状/状态 |
+|---|---|---|
+| 1 | 动作库「参数文字点击」→「参数文字动作」；参数**不属于动作库**，回退/删除动作库参数相关内容 | 现有 `PARAM_ACTIONS` 参数预设仍在 → ⬜ 待回退 |
+| 2 | **参数=素材的一种**（使用端可改识别文字；初始识别区为空；改名「使用端OCR文字配置项」待定） | 现为 `meta.params`/`ParamDecl` → ⬜ 待设计/迁移 |
+| 3 | 素材行点「识别」返回**所有候选+评分**；后端返回全部候选；测试动作演练所有候选；真实点击测试可选候选（序号+评分） | 无素材候选 API/UI；`match_template_all` 底层已有 → ⬜ 待实现 |
+| 4 | **量尺**：相对偏移时测两点直线距离，直接复制剪贴板 | 无 → ⬜ 待实现 |
+| 5 | **操作区域三方式 + 递归套娃**：参数真实识别区/素材操作区（单/多候选最近）/相对偏移；素材1→素材2→…→末端区域；防环；依次识别、任一缺失本步失败 | 现 `region.asset` 仅单层 → ⬜ 待重设计 |
+| 6 | **废弃操作区“与真实识别区有无交集”两状态**（先审计现有全图回退+相对位移） | ⬜ 待审计确认 |
+
+**接手顺序**：① 审计事项6/现有全图回退逻辑；② 与用户确认 `PARAM-ASSET-REDESIGN.md §5` 的 7 个问题；③ 按建议顺序实现（素材候选 API → 参数素材类型/迁移 → 动作库去参数化 → 操作区递归/防环 → 量尺 → 文档/测试）。**先不要继续修改 seq 122 的 A 方案 UI。**
 
 ## 2. 本批交付（seq 110）
 

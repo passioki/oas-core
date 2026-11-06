@@ -1,6 +1,6 @@
 # 操作区域与动作能力设计（Operation Region / Actions）
 
-> 状态：**P1（region/long_press/curve_swipe）已实现（seq 121，commit `644249c`）；A 方案 `region.asset` + 多候选 nearest 已实现（seq 122，commit `ba6813e`）**；真机验收/性能实测待后续。
+> 状态：**P1（region/long_press/curve_swipe）已实现（seq 121，commit `644249c`）；A 方案 `region.asset` + 多候选 nearest 已实现（seq 122，commit `ba6813e`）**；但 **2026-11-06 12:0x 用户重新梳理概念（seq 123），本文 §6/§7 的交互方向将被 `docs/PARAM-ASSET-REDESIGN.md` 重构**（region 底层语义可复用，UI/动作库需重做）；新会话先读该文档。
 > 触发：用户反馈参数文字点击的素材选择对话框「并不完善」，并给出操作区域的 3 类来源 + 动作能力问题
 > （长按？任意曲线滑动？）。
 > 本文先对照**当前引擎事实**，再给统一模型与分期实现计划；实现记录见 `ENGINE §22.61/§22.62` / `PENDING §E-91/§E-92`。

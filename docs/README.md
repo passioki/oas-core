@@ -3,7 +3,7 @@
 > 本目录是 **oas-core 的独立项目文档**，从旧 backend 文档仓迁移而来。
 > 旧仓库 `D:\OAS-dev\backend` 已冻结，仅作为资产/历史资源；oas-core 的构建、运行、测试、发布不依赖它。
 
-## 当前有效文档（顶层 16 份，含发布节点）
+## 当前有效文档（顶层 17 份，含发布节点）
 
 | 文件 | 用途 |
 |---|---|
@@ -16,10 +16,11 @@
 | `RUNNER-STUDIO-SPLIT-PLAN.md` | ★ **Q1~Q7 已批准（2026-11-04，按推荐）；PR1~PR7 全部 ✅ 已提交（PR7 = 代码 `5e45c81` + seq 107 docs `8344d97`）；最终审计 4 个后端 P1 ✅ 修复 `68e5768`；状态 handoff-ready**：Studio / Runner 分离（同一 `serve` 加 `Surface` + 路由归属；`oasd studio` 8788 / `oasd runner` 8789 / `oasd serve` 兼容别名）、Runner 只读 API/UI 骨架 + **PR2 配置 API/表单**、**PR5 TaskPackage `.oaspkg` 发布/安装（package.rs/package_cmd.rs、flow_ops 闸门、素材初始化/冲突、Runner nav 6）**、**PR6 内嵌调度 + 设备租约 + `/runner/run` 临时运行 + Studio 旧调度页删除**、**PR7 把 PR1 前完整 Studio 调度 UI（6 DOM 块/84 旧 id/129 旧函数）整体迁移到 Runner 队列页**、**最终审计与修复（replay 租约/worker panic/install·activate 调度互斥/installed 降级）**、任务配置（`meta.params` 五字段 + `config/values.json` + 四层优先级；**值存储/API/UI = PR2，注入/类型保真/复检 = PR3**）、子任务配置（`call_task.params`/`inherit` + 不落盘 `with_params` + T7；**PR4**）、风险 R1、6 PR、19 步验收；**§A.8 = 分发纠正 + 跨平台；§A.9 = PR1；§A.10 = PR2；§A.11 = PR3；§A.12 = PR4；§A.13 = PR5；§A.14 = PR6；§A.15 = PR7；§A.16 = 最终审计与修复记录** |
 | `ENGINE-DESIGN.md` | 引擎规格（§22 为引擎交付/设计；§22.34 调度 v3 已交付；§22.34.7 = 2026-11-02 术语与 Round 语义裁决 + P4 Run 实体/API + P5 实机验收/`auto_connect`；**§22.42 = 素材库 UX + OCR 阈值；§22.43 = 2026-11-04 晚三项遗留修复；§22.44 = Studio/Runner Surface 拆分 PR1 实现记录（8788/8789 双入口、路由归属、Runner 只读 API、Runner-only 分发、跨平台）；§22.45 = 任务配置模型 + Runner 运行值 PR2 实现记录（ParamDecl 五字段/values.json/配置 API/UI）；§22.46 = 配置注入与类型保真 PR3 实现记录（RunOptions 类型/四层优先级/复检/CLI 引号/限制）；§22.47 = 子任务配置语义 PR4 实现记录（call_task.params/inherit、不落盘 with_params、loader 严格展开、runtime 作用域恢复、T7、T6/checkpoint 指纹）；§22.48 = TaskPackage `.oaspkg` 发布/安装 + flow_ops 闸门 PR5 实现记录（包格式/加固、发布、安装/卸载/回滚、素材、UI、限制）；§22.49 = Runner 内嵌调度 + 设备租约 + 临时运行 PR6 实现记录（可停止调度、线程/启停健康 API、pass 级租约、`/runner/run`、Studio 旧调度页删除、限制）；**§22.50 = Runner 调度 UI 迁移 PR7 实现记录（旧 Studio 完整调度 UI：6 DOM 块/84 旧 id/129 旧函数整体迁移、适配点、功能对等、评审/P2、E2E、最小任务链多参数、限制）；§22.51 = 最终审计与交接（P0=0、4 个后端 P1 修法、测试 721/0、剩余 P2、handoff-ready）**） |
 | `SCHEDULER-RUNNER-PLAN.md` | ★ 调度器产品化 + 队列 Round 语义（单活动实例）：四层术语、Round 10 条、P0–P5 计划（**P0–P5 已完成**） |
-| `PENDING-LEDGER.md` | 未完成台账（当前看 **§E-66~§E-79**；§E-75 = 调度器产品化 + Round 裁决，§C6 = P5 实机验收最终实测；§E-76 = 编辑器帧页；§E-77 = 素材行两按钮 + 一键提交/推送脚本；§E-78 = 素材库 UX 六项 + OCR 阈值 + 11-04 晚三项遗留修复；**§E-79 = Studio/Runner 分离 + TaskPackage + 配置/子任务配置：Q1~Q7 已批准、PR1~PR7 ✅ 已提交（PR1~PR6 见 §F/§G/§H/§I/§J/§K；PR7 = 代码 `5e45c81` + seq 107 docs `8344d97`，§L：旧 Studio 完整调度 UI 迁移 + 最小任务链多参数）、**最终审计 4 个后端 P1 ✅ 修复 `68e5768`（§M；文档 P1 由 seq 108 docs 修复；状态 handoff-ready）**、6 个 PR + PR7 + 最终审计修复全部完成**） |
+| `PENDING-LEDGER.md` | 未完成台账（当前看 **§E-93**：用户新要求参数→素材/动作库去参数化/素材候选/操作区递归/量尺，未实现；前序 §E-92/§E-91/§E-90/§E-89…见文件内） |
 | `EDITOR-UX-PLAN.md` | 编辑器 UX/选择模型/实时帧/区域有效性改版（实现后状态 §15；**2026-11-04 帧页现行口径 §16；§16.6 = 布局回归修复；§17 = 素材行两按钮 + 9 项设置菜单；§18 = 素材库 UX 六项 + OCR 阈值（现行）；§18.10 = 三项遗留修复**） |
 | `ASSET-DATA-MODEL.md` | 全局 `assets/`、任务素材=flow 引用子集、旧 `library/` 兼容边界 |
-| `OPERATION-REGION-DESIGN.md` | ★ **操作区域模型设计草案（seq 120，待用户确认 4 个语义问题后实现）**：现状事实（素材操作区域/多匹配取最高分/OCR 识别框/无 flow 级 offset）、统一 `region.mode=asset\|ocr\|nearest\|offset` 模型、点击/拖动/长按/曲线动作能力与分期计划 |
+| `OPERATION-REGION-DESIGN.md` | ★ **操作区域模型设计（seq 120）**：现状事实、统一 `region.mode=asset\|ocr\|nearest\|offset` 模型、点击/拖动/长按/曲线动作能力；§6/§7 为 seq 121/122 旧 A 方案（**交互将被 seq 123 新要求重构**） |
+| `PARAM-ASSET-REDESIGN.md` | ★★ **用户 2026-11-06 新要求（seq 123，未实现，新会话先读）**：参数=素材的一种 / 动作库去参数化 / 素材候选全量识别 API+UI / 量尺 / 操作区三方式+递归套环 / 废弃操作区两状态；含需求原文摘要、需回退重做清单、7 个待确认问题、接手顺序 |
 | `AUDIT-SUBPROCESS-2026-11-01.md` | 子进程独立复核（范围 21:50 / 361 tests；当前状态见顶部横幅与 §10） |
 
 > **历史文档已归档**到 `docs/archive/`（7 份，`git mv`，未删除）：
@@ -35,6 +36,7 @@
 
 ## 当前基线（2026-11-05 03:3x；**PR1~PR7 + 最终审计修复已收口，状态 handoff-ready；两个服务已停止，交接后电脑关机**；发布节点 v0.1.0 见下行）
 
+- ★ **2026-11-06 12:0x（seq 123，仅文档交接）用户 6 项新要求**：① 动作库删参数预设（参数不属于动作库）；② **参数=素材的一种**（使用端可改识别文字；初始识别区为空）；③ 素材行点识别返回所有候选+评分（后端全 API）；④ **量尺**；⑤ 操作区三方式+**递归套娃**（防环、依次识别、缺一失败）；⑥ 废弃操作区两状态（先审计）。→ 新增 `docs/PARAM-ASSET-REDESIGN.md` + `PENDING §E-93` + `ENGINE §22.63` + RESUME seq 123/交接单；**代码未改**（仍 seq 122 `ba6813e`，workspace 841/0、UI 2214）；新会话先审计+确认设计 §5 的 7 个问题，再实现。
 - ★ **2026-11-06 09:4x（seq 122）**：**A 方案：region.asset（全库操作区域素材）+ 多候选 nearest**——① `region.asset`（仅 asset/nearest；T4 收集；flow_ops 11→13 +`click_target.region_asset`/`drag.region_asset`；旧 Runner 拒绝）；② `oas-perceive` 多候选匹配（NCC→3×3 局部极大→阈值→NMS→≤64；best 不变）；③ runtime `operation_region_for_asset`：模板/集合 best/nearest（最近=候选匹配 bbox 中心 ↔ 参数 OCR 行 bbox 中心）；固定 region/OCR 资产取自身操作区；无候选/未匹配=响亮失败；④ click/drag/long_press 三处接入，无 asset 旧行为逐字节不变；⑤ UI 对话框/结构化编辑器加「操作区域素材（全库，可选）」+ 校验/风险提示；⑥ workspace **841/0**、UI **2214/164/158/0/6**、E2E `regionasset` lint0/publish flow_ops 含 region_asset；oas-runner pin `ba6813e`；只推送不发布。
 - ★ **2026-11-06 09:0x（seq 121）**：**region 操作区域 + long_press + curve_swipe + 等待语义说明**——① `region{mode:asset|ocr|nearest|offset,offset}` 挂 click_target OCR/drag OCR/ long_press.find；nearest=行 bbox 中心距 OCR 识别 ROI 中心最近；② `long_press`（hold_ms 默认 3000、hold_range 拟人、ADB 同点 swipe）；③ `curve_swipe`（points 2..=32 多段独立 swipe）；④ flow_ops 7→11；⑤ 构建页动作库/操作区域/长按/曲线面板 + **等待动作帮助**（阻塞等待→下一步；超时失败；不触发独立动作）；⑥ workspace **824/0**、UI **2146/164/158/0/6**、region E2E lint 0/publish flow_ops 4 新标记；oas-runner pin `644249c`；只推送不发布。
 - ★ **2026-11-06 08:1x（seq 120，设计草案）**：**操作区域与动作能力设计**——用户指出参数点击素材选择不完善，给出 3 类区域来源（素材操作区域 / 多匹配最近 / 相对位移 / 参数 OCR 真实识别区域）与动作问题（长按、任意曲线）。新增 `docs/OPERATION-REGION-DESIGN.md`：现状对照（`click_box_for`/`locate`/`drag_target`/InputSink）、统一 `region.mode` 模型、长按建议、曲线限制与分期计划；**待确认 nearest 参考点/长按形态/offset 基准/曲线方案后再实现**。
