@@ -4740,3 +4740,9 @@ egion.asset mode=asset；op_region 链优先不变；serve preview 原本同源�
 > **遗留**：全屏 ocr_var（roi=None）操作区仍绝对坐标（Q1 限制）；旧 shape_aware 死分支保留待清；#1 非编辑态预览框不拖动；#4 仅工作台/构建页可见时轮询；需 Firefox 手测（框选拖动/叠加图例/条件行变量/自动刷新/真实点测与运行点击）。未 tag/未 release。
 ## §E-98 补记（seq130-fix，2026-11-06 23:3x）
 用户追加反馈：「当前操作区修改没有保存按钮，应该和识别区修改方式一样，有个保存按钮。」→ 已实现：操作区域画布编辑不再在画完手势时自动落盘；进入编辑后 #canvas-footer 显示「保存操作区域（写入素材）」按钮 + 「操作区编辑中：<id>」标签（与识别区域同款）；矩形/多边形/反选/拖动移动均在点按钮后写入 ction_shape；Esc 取消未保存编辑；切换素材/工具/清空自动放弃未保存状态。验证：UI pure test **2382 checks / 180 ids / 0 dead / 158 runner / 6 nav**、node --check 全绿；提交见 git log -1。**用户要求完成后关机 → 本轮收尾后关机。**
+# ★ §E-99 ★★★ [11-07 08:10] seq131：恢复「把素材加入集合」入口（素材设置菜单）
+
+> 用户 08:10 反馈：「把素材添加为集合的UI好像没了，请检查原因。按钮可以放到素材设置里。」
+> **原因**：3eb9fa8（10-31）清理「未使用的多选/新建集合 UI」时移除了素材勾选 + 「新建集合」按钮；此后只有后端 API（POST /task/asset/collection）与集合测试/删除入口，没有创建/加入集合的用户入口。
+> **修复 eaf68fe**：① 素材设置菜单新增「加入集合」（位于「位置帧」后；template 专用，其它 kind 置灰并说明）；② 新增 #collection-add-dialog：列已有集合（成员数/当前集合）+「＋ 新建集合…」，可新建并自动建议 id；已在其它集合时先移出旧集合（剩 0 成员则删除；被 flow 引用按既有 400 显示），再写入目标；保存调用 POST /task/asset/collection（保留集合 threshold/action_shape），成功后刷新任务库/全局库并提示自动改写任务数；③ 任务素材库/全局素材库/帧详情三处素材行接 onCollectionAdd。
+> **验证**：UI pure test **2391 checks / 190 ids / 0 dead / 158 runner ids / 6 nav**、node --check 全绿；数据副本 API 冒烟：POST /task/asset/collection 200、GET /task/assets 回显 collections:[{id,members}]、DELETE 200。未 tag/未 release。

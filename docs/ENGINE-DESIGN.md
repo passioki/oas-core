@@ -3602,3 +3602,7 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 
 - 数字见节首；另 dry 预览证据见 §22.69.1。
 - 遗留：① 全屏 `ocr_var`（`roi=None`）操作区仍为绝对坐标（无 authored 基准，文档化限制）；② 旧 `shape_aware` 分支保留（`translated_click_shape` 仍被旧调用/测试引用，未删）；③ 浏览器 Firefox 手测清单：框选移动/clamp/Esc 撤销、点击叠加图例、条件行列类型、素材 8s 自动刷新暂停恢复、OCR 真实点测落点；④ main 待快进、未 tag/未 release。
+
+## §22.70 [11-07 08:1x] seq131：素材「加入集合」入口恢复（素材设置菜单 + 集合对话框）
+
+用户 08:10 反馈加入集合 UI 消失。原因：3eb9fa8 清理未使用「多选素材+新建集合」UI 时移除；后端 POST /task/asset/collection / DELETE /task/asset/collection/delete 与集合测试/删除一直保留。修复 eaf68fe：素材设置菜单新增「加入集合」（template 专用，其它 kind 置灰；位于位置帧之后，菜单顺序/compact/readonly 规则同步）；新增 #collection-add-dialog（已有集合下拉 + 新建集合 id + 成员/当前集合提示），加入已有集合=并入成员；已在其它集合时先移出旧集合（剩 0 成员删除，被 flow 引用按 400 显示）再写入目标，保留集合 threshold/action_shape；成功后刷新两侧素材库并提示 	asks_rewritten；任务素材库/全局素材库/帧详情三处 onCollectionAdd 接线。验证：UI **2391 checks / 190 ids / 0 dead / 158 runner / 6 nav**；数据副本 API 冒烟 create/list/delete 均 200。

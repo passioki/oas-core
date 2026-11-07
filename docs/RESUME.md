@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 130
-updated_at: 2026-11-06T23:1x+08:00
-trigger: 用户 23:04 反馈 5 项（框选可移动/点击叠加失效/条件行旧参数来源/任务页素材自动刷新/真实点击点测与运行点击失效）→ Lead 从 runs.clicks 日志定位 OCR 点击几何 Q1 平移丢失（后端修单击几何同源）+ UI 修框选移动/叠加/变量误判/自动刷新。提交 `a3556e3`；Lead 验收 workspace 972/0、UI 2370/178/0/6
+checkpoint_seq: 131
+updated_at: 2026-11-07T08:2x+08:00
+trigger: 用户 08:10 反馈「把素材添加为集合的 UI 没了，按钮可放到素材设置里」→ 原因 commit 3eb9fa8 清理未使用 UI 时移除多选素材+新建集合；恢复为素材设置菜单「加入集合」+ 集合对话框（已有集合/新建 id/跨集合先移出旧集合），后台调用既有 POST /task/asset/collection。提交 `eaf68fe`；UI 2391/190/0/6
 status: done
-code_head: `a3556e3`（dev 领先 main，docs 提交后统一 sync；未 tag/未 release）
-docs_head: seq130 docs 提交见 `git log -1`
-next_action: seq130 已完成并推送（未 tag/未 release；用户要求完成后关机 → 本轮收尾已关机）。后续（下次开机）：① **Firefox 手测**（框选点框拖动/撤销保存、点击叠加热力+目标环+miss 叉、条件行不再误报旧参数、任务页素材 8s 自动刷新、真实点测与运行点击落点应随识别行）；② 全屏 ocr_var（roi=None）操作区仍绝对坐标（Q1 限制）；旧 `shape_aware` 死分支清理；③ V2.1（变量表达式/条件/循环/T9）、V2.2（Profile/多模拟器）；④ oas-runner 独立仓脚本+pin bump；⑤ 真机 E2E、T5 手写 polygon 校验、更新检测鉴权/GC、tag/Release 策略。详见 `PENDING §E-98`、`ENGINE §22.69`、`ACCEPTANCE` seq130 追加。
+code_head: `eaf68fe`（dev/main 已同步；未 tag/未 release）
+docs_head: seq131 docs 提交见 `git log -1`
+next_action: seq131 已完成并推送（未 tag/未 release）。后续：① **Firefox 手测**（素材行设置→加入集合：选择已有集合/新建集合；跨集合自动移出；保存后任务库/全局库刷新；集合在 flow 动作里作为目标可用）；② 上一轮 seq130 手测项（框选点框拖动、点击叠加、条件行变量、素材自动刷新、真实点击落点）；③ V2.1（变量表达式/条件/循环/T9）、V2.2（Profile/多模拟器）；④ oas-runner 独立仓脚本+pin bump；⑤ 真机 E2E、T5 手写 polygon 校验、更新检测鉴权/GC、tag/Release 策略。详见 `PENDING §E-99`、`ENGINE §22.70`、`ACCEPTANCE` seq131 追加。
 ```
 
 ## 0. 目标（本阶段）
@@ -298,6 +298,13 @@ next_action: seq130 已完成并推送（未 tag/未 release；用户要求完�
 > **#1** 画布点击已有框优先选中 → 拖动整体平移（识别矩形/多边形、操作区 rect/polygon/反选、候选编辑区；clamp/未保存提示/Esc 撤销；保留空白拖动新建/单击加点/双击收尾）。**#2** 点击叠加 normalize actual/target/miss；热力+实际点+目标环+miss 叉；修缓存/面板刷新/图例。**#3** `param(key)` 已声明（meta.variables ∪ 素材库 ocr_var.param_key）→ 变量来源，仅未声明才旧参数只读。**#4** 工作台/构建页素材 8s 自动刷新 + 可见/聚焦/visibilitychange（隐藏暂停、去重、保持滚动/选中）。
 > **验证**：workspace **972 passed / 0 failed**（runtime 226 / flow 82 / task 160 / oasd 458）；UI **2370 checks / 178 ids / 0 dead / 158 runner ids / 6 nav**；`cargo check --features ocr` exit 0。**提交** `a3556e3`；**未 tag/未 release**；按用户要求本轮完成后关机。
 > **遗留**：全屏 ocr_var（roi=None）操作区仍绝对坐标（Q1 限制）；旧 `shape_aware` 死分支待清；#1 非编辑态预览框不拖动；#4 仅工作台/构建页可见时轮询；浏览器手测清单见 seq130-ui-progress.md。
+
+## 1.25 2026-11-07 08:10→08:2x（seq 131）恢复「加入素材集合」入口（✅ 已完成并推送）
+
+> 用户 08:10：「把素材添加为集合的UI好像没了，请检查原因。按钮可以放到素材设置里。」
+> 原因：`3eb9fa8`（10-31）清理未使用「多选素材+新建集合」UI 时把创建集合入口移除了；后端 `POST /task/asset/collection` 与集合测试/删除入口一直在。
+> 修复 `eaf68fe`：① 素材设置菜单新增「加入集合」（位于「位置帧」后；template 专用，其它 kind 置灰说明）；② `#collection-add-dialog`：已有集合下拉（成员数/当前集合）+「＋新建集合…」+ 新集合 id；跨集合先移出旧集合（剩 0 成员则删除；被 flow 引用按 400 显示）再写入目标；保存调用 `POST /task/asset/collection`（保留 threshold/action_shape），成功后刷新任务库/全局库并提示 `tasks_rewritten`；③ 任务素材库/全局素材库/帧详情三处 `onCollectionAdd` 接线。
+> 验证：UI **2391 checks / 190 ids / 0 dead / 158 runner ids / 6 nav**、node --check 全绿；数据副本 API 冒烟 create/list/delete 均 200。未 tag/未 release。
 
 ## 2. 本批交付（seq 110）
 

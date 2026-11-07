@@ -1,20 +1,20 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 130，✅ done：点击几何同源修复 + 框选移动/叠加/自动刷新**），然后按需看 `docs/ENGINE-DESIGN.md §22.69`（seq130）/ §22.68（seq129）/ §22.67（V2.0）、`docs/ACCEPTANCE-2026-11-06.md`（seq130 追加）、`PENDING-LEDGER §E-98/§E-97`、`VARIABLES-V2-DESIGN §10`、`OPERATION-REGION-DESIGN §8.9`。
-> **状态：done（seq 130）——OCR 点击操作区域 Q1 平移丢失修复（真实点测/运行点击恢复正常落点）+ 框选可点击移动 + 点击叠加分布 + 条件行旧参数误判 + 任务页素材自动刷新**：`a3556e3`；workspace **972/0**、UI **2370/178/0 dead/158 runner/6 nav**；**用户要求完成后关机 → 本轮收尾后已关机**；只推送不发布（未 tag/未 release）。
+> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 131，✅ done：恢复加入集合入口**），然后按需看 `docs/ENGINE-DESIGN.md §22.70`（seq131）/ §22.69（seq130）/ §22.68（seq129）/ §22.67（V2.0）、`docs/ACCEPTANCE-2026-11-06.md`（seq130 追加）、`PENDING-LEDGER §E-99/§E-98`、`VARIABLES-V2-DESIGN §10`、`OPERATION-REGION-DESIGN §8.9`。
+> **状态：done（seq 131）——恢复「加入素材集合」入口（素材设置菜单 + 集合对话框）**：`eaf68fe`；workspace **972/0**、UI **2391/190/0 dead/158 runner/6 nav**；数据副本 API 冒烟集合 create/list/delete 200；只推送不发布（未 tag/未 release）。
 
-## 0. 当前状态（2026-11-06 23:1x，seq 130 done；本轮结束关机）
+## 0. 当前状态（2026-11-07 08:2x，seq 131 done）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | oas-core `dev`；代码 `a3556e3`（dev/main 已同步；关机前确认）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，未随 seq126~130 更新）；未 tag / 未 release |
-| 任务 | **seq130 已完成**：#5 OCR 点击几何同源（`click_geometry_for` rect+shape 同源，修正真实点测/运行点击落点）+ #1 框选点击选中/整体平移（rect/polygon/反选/候选编辑区，clamp/Esc/未保存提示）+ #2 点击叠加分布（actual/target/miss 归一化、热力/目标环/miss 叉、缓存/刷新/图例）+ #3 条件行 `param(key)` 已声明显示变量来源（仅未声明旧参数只读）+ #4 任务/构建页素材 8s 自动刷新（可见/聚焦/隐藏暂停/保持状态） |
-| 测试 | `cargo test --workspace` **972 passed / 0 failed**（runtime 226 / flow 82 / task 160 / oasd 458 等）；UI **2370 checks / 178 ids / 0 dead / 158 runner ids / 6 nav**；`cargo check -p oasd --features ocr` exit 0；dry 预览 `_verify\seq130-click-repro\test_action-dry.json`（action_box=[1103,245,120,50]） |
-| 权威文档 | **`ENGINE §22.69`（seq130）· `ACCEPTANCE-2026-11-06.md`（seq130 追加）· `PENDING §E-98` · `OPERATION-REGION-DESIGN §8.9`** |
+| 分支 / HEAD | oas-core `dev`；代码 `eaf68fe`（dev/main 已同步）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，未随 seq126~130 更新）；未 tag / 未 release |
+| 任务 | **seq131 已完成**：恢复「加入素材集合」入口——素材设置菜单「加入集合」（template 专用）+ `#collection-add-dialog`（已有集合/新建集合；跨集合先移出旧集合；保留 threshold/action_shape；保存后刷新两侧库并提示 tasks_rewritten）；任务库/全局库/帧详情三处接线 |
+| 测试 | `cargo test --workspace` **972 passed / 0 failed**（本轮无 Rust 改动）；UI **2391 checks / 190 ids / 0 dead / 158 runner ids / 6 nav**；`cargo check -p oasd --features ocr` exit 0；集合 API 冒烟 `_verify\seq131-collection-smoke\`（create/list/delete 200） |
+| 权威文档 | **`ENGINE §22.70`（seq131）· `ACCEPTANCE-2026-11-06.md`（seq131 追加）· `PENDING §E-99` · `OPERATION-REGION-DESIGN §8.9`** |
 | 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；本地产物不含 seq126~130 新能力（package_schema=2 旧包被拒绝） |
 | 独立仓 | `https://github.com/passioki/oas-runner`（`768a8b7`）；pin `ba6813e`（未打独立包；如需独立 Runner 需 bump pin + 根启动脚本 + V2 变量模型重打） |
-| 服务 | 本轮结束时无 `oasd`/`oasd-runner` 进程；用户已关机（若从另一台机器接手，注意本机可能处于关机状态） |
-| 工作区 | `scheduler.json`、用户任务 `tasks/*`、`assets/assets.json` / `frames/frames.json` / 新增图片等均**未提交**（用户数据，**不要提交/覆盖**）；用户可能在 Studio 中删除/编辑任务（不要恢复/提交）；seq130 代码已提交；**cargo incremental 已清理，下次构建稍慢（deps 缓存仍在）** |
+| 服务 | 无 `oasd`/`oasd-runner` 进程；8787~8809 无监听（冒烟后确认） |
+| 工作区 | `scheduler.json`、用户任务 `tasks/*`、`assets/assets.json` / `frames/frames.json` / 新增图片等均**未提交**（用户数据，**不要提交/覆盖**）；用户可能在 Studio 中删除/编辑任务（不要恢复/提交）；seq131 代码已提交；**cargo incremental 已清理，下次构建稍慢（deps 缓存仍在）** |
 
 ## 0.1 新会话恢复步骤（直接照做）
 

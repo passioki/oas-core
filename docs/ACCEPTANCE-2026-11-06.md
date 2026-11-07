@@ -204,3 +204,10 @@ E2E seq127 脚本（并清理 seq126 模型 A 断言）、masked 极端 mask 兜
 | 5 | 真实点击点测/实际运行点击失效（OCR 落到 authors 旧操作区） | target rect 已 Q1 平移，但采样 shape 被 `translated_click_shape` 拉回作者绝对 `action_shape`（仅 template 平移） | 新 `click_geometry_for(sel,matched)`（`runtime:2777`，rect+shape 同源，OCR 用 `ocr_self_operation_geometry :3533`；roi=None 绝对；template/collection/region 不变）；统一 Click/click_target/long_press/interrupts/dismiss_popup/region.asset 调用点（`:2951,3890,4767,5071,5189,5391`）；serve preview 同源未改 | 单测 `:12062,12087`；dry 预览 `action_box=[1103,245,120,50]`、`real_rect=[1131,257,68,30]` |
 
 - 遗留：① 全屏 `ocr_var`（`roi=None`）操作区仍绝对坐标（文档化限制）；② 旧 `shape_aware`/`translated_click_shape` 分支保留（未删）；③ 浏览器 Firefox 手测清单（框选移动/clamp/Esc、叠加图例、条件行列、8s 刷新暂停恢复、OCR 真实点测落点）；④ main 待快进、未 tag/未 release。
+
+## seq131 追加验收（2026-11-07 08:10）：恢复「加入素材集合」入口
+
+- 反馈：把素材添加为集合的 UI 没了；按钮可放到素材设置里。
+- 原因：3eb9fa8 清理未使用 UI 时移除了「新建集合」（素材多选 + 按钮）；后端集合 API 仍在。
+- 修复 eaf68fe：素材设置菜单「加入集合」（template 专用，置灰规则）+ #collection-add-dialog（已有集合/新建集合；跨集合自动移出旧集合；保留 threshold/action_shape；保存后刷新并提示改写任务数）；三处素材列表接线。
+- 验证：UI **2391 checks / 190 ids / 0 dead / 158 runner / 6 nav**；node --check 全绿；数据副本 API 冒烟 POST create 200 / GET 回显集合 / DELETE 200。
