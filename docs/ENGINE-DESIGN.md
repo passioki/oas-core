@@ -3683,6 +3683,8 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 - **旧文更正**（就地）：§22.64.3「`candidates_for_asset` 单源/编辑器候选与链 pick 共用」在 seq124/serve 私有实现下**并未真正落地**，seq134 才统一（见本节）；§22.72 #2「OCR 候选=区域内全部行/pass=期望匹配/运行期 fuzzy」**已被本节取代**（#3 ADB 超时保留）；模型 A 旧口径已由 §22.66/`OPERATION-REGION-DESIGN §8.9` 更正为模型 B；seq127 模板全帧多候选仍有效（本节把 OCR/集合也纳入全帧候选）。
 - 遗留：① 保存的 PNG 文件本身仍矩形 ROI 裁剪（缩略图/画布按 polygon 遮罩显示；文件级 alpha 裁剪需后续 serve 支持）；② runtime 保留部分公开 helper（`matching_ocr_lines` 等）仅供历史语义测试；③ 真实点击/Firefox 手测未做；④ 未 tag/未 release，用户数据未提交。
 
+> **seq137 更正（2026-11-07 21:xx）**：本节为 seq136 时点记录。seq137 已更改：① `map_requirements`/T11/publish/install 的 **map 硬门禁已全部删除**（字段 deprecated、publish 不读 map、install 不再 warning，见 §22.76.3）；② 构建页源码框=flow JSON，Rust 仅为**只读投影（非可执行、无 Rust→flow 编译器）**（§22.76.6）；③ 列表**同级拖拽** seq137 才真正实现，SVG 假拖拽已删（§22.76.6）；④ `/map/probe` 78.3s、`/library` 接错素材、`/map/state` OCR asset 2.8–3.0s 等性能/UI 问题已修（§22.76.2/4）；⑤ 操作区 fixed/polygon 的**前端二次平移已删除**，UI 改为消费服务端 `action_shape`（§22.76.5）；⑥ #7 T8 同步改 **raw 父 flow**（§22.76.7）。
+
 ### 22.75 ★★★ [11-07 19:xx] **seq136 操作区 polygon/fixed + 动作 UI + 唯一全局地图/导航 + 全局弹窗 D0**
 
 > 用户 2026-11-07 11 项反馈 + 地图/弹窗补充全部落地。提交链：`8dba49a`（A #6/#7/#4/#3/#9/#10）· `4cc5611`（B #1/#2）· `62a946a`（C #5/#8 + D0 弹窗）· `4c9ea8f`（M1 地图核心+runtime+navigate op）· `9cfc04e`（M2 /map API+T11+publish/install）· `f70eca4`（M3 Studio 地图页+builder navigate+下线关系 UI）· `ccd99de`（M4 补测+CLI popups+E2E）。HEAD `dbaece2`（dev=`origin/dev`；main=`origin/main`=c0a672b 待 docs 后快进；未 tag/未 release）。测试：workspace **1039/0**（flow 83 / runtime 264 / oas-task 167+ / oasd 471 等）、UI **2652 checks/195 ids/0 dead/158 runner/6 nav**、`cargo check -p oasd --features ocr` exit 0。设计/证据：`_verify/seq136-map/DESIGN.md`、`E2E-REPORT.md`、`_verify/seq136-*`。
@@ -3756,3 +3758,74 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 - **其它冒烟**：`_verify/seq136D0-smoke`（/popups GET/POST/test frame6 命中 close box [979,150,27,31] point(991,169)，无真实点击）、`_verify/seq136B-smoke`（polygon+fixed candidates action_shape=polygon、test_action point in polygon、fixed 不平移）、`_verify/seq136D2-smoke`（/map CRUD/save）、`_verify/seq136-probe`/`seq136-smoke`（#16/#73 竖排候选与任务删除 `removed_from_queues`）。
 - **风险/遗留（如实）**：① 真实设备导航/replay 多跳 E2E 未跑（SKIP）；② `map_requirements` 只收**根 flow** 的 navigate（`call_task` 子任务未纳入）；③ CLI popups 解析复用 serve 内部函数（分层耦合）；④ T11 只校验 target 存在、**不含 map 资产引用**（`/map validate` 覆盖）；⑤ `map.json` 损坏时素材引用保护可能失效（删除拦截靠可解析 map）；⑥ `/relations/*` 保留 deprecated；⑦ 地图编辑器边编辑未做内联改字段；⑧ `/map/navigate real` 同步阻塞；⑨ 地图文件不进包、需用户分发（安装 warning、运行期 loud）；⑩ user data 未提交。
 - **旧文更正**：`§22.41`（帧-素材关系）已被本节的**唯一全局地图**取代（关系 UI 下线、服务端 `/relations/*` deprecated，证据文件原样保留不迁移）；`§22.73` seq134 的候选/OCR 语义保留，但 #2 点击几何统一为 ClickShape polygon / #6 ROI+全帧合并去重 / #1 fixed 绝对操作区以本节为准；`OPERATION-REGION-DESIGN §8.10` 为 polygon/fixed 现行口径。
+
+### 22.76 ★★★ [11-07 21:xx] **seq137 审计与修复（地图性能/UI、去 map 门禁、画布 shape、拖拽/大图/Rust 投影、T8）**
+
+> 用户 2026-11-07 21:07 九条验收反馈 → 三路只读审计（`_verify/seq137-audit/{map-audit,builder-audit,task-drift-audit}.md` + `perf-results.json`，基线 b3e3013）确认存在**接错线/状态漂移/测试假绿**，非主观感受；修复 `45a458b`。HEAD `45a458b`（dev=`origin/dev`；main=`origin/main`=b3e3013 待 docs 后快进；未 tag/未 release）。测试：workspace **1043/0**（runtime 267 / oasd 472 / oas-task 172 / flow 83）、UI **2713 checks/195 ids/0 dead/158 runner/6 nav**、`cargo check/build -p oasd --features ocr` exit 0、地图 E2E **19/0**。证据 `_verify/seq137-audit/FIX-EVIDENCE.md`、`_verify/seq137-perf/perf-result.json`、`_verify/seq137-perf-root/personal-breakthrough-result.json`。
+
+#### 22.76.1 九条反馈 → 审计事实（先审计后修）
+
+| 用户反馈 | 审计确认的事实 | 根因锚点（审计时 HEAD） |
+|---|---|---|
+| 地图页返回素材/边 click_asset/asset 特征选不了 | `loadAssets()` 调 `GET /library`（旧库，实测 **0 项**），统一全局素材在 `GET /task/assets`（**96 items + 5 collections**）→ 所有 select 只有占位；`assetSelect` 回退为死代码 | `map_ui.js` 旧 `loadAssets`/`assetSelect`；`map-audit.md §结论 8` |
+| 地图点节点/“从当前帧”巨慢（约 78s 假死） | `/map/probe` 对素材库前 40 个素材逐个 `recognize_best`（OCR 素材各 2 次 det+rec）：release 实测 **78.3s**；`screen_lines` 无缓存；`/map/state`（识别按钮）本身仅 1 次 det+rec（383–568ms） | 旧 `runtime:2352 screen_lines`、`serve handle_map_probe`；`perf-results.json` |
+| 地图识别 OCR asset 特征慢/每次全量 | 节点 `asset` 特征走 `recognition_candidates` 全候选枚举；OCR 资产每次 ROI+全帧 **2 次 det+rec**，单特征 identify **2.8–3.0s**；`wait_until_node` 每 150ms 冷缓存全帧 OCR；PopupGuard `min_hits` 不早退（3 轮 +6.45s） | 旧 `identify_current_node`/`wait_until_node`/`popup_rule_matches`；`map-audit.md` |
+| map 门禁（publish/install/T11）不合理 | `map_requirements` 只收**根 flow**（`publish_map_nodes` 不展开 call_task）而 T11 用展开 flow；publish 在无 map/target 缺失时**硬失败**、install 仅 warning；map 明确“不入包” | 旧 `package_cmd.rs:216-256`、`task.rs:232-264`；`map-audit.md §B`、`task-drift-audit.md` |
+| 画布空白/切帧/切任务后操作区残留 | 清理只清识别区，未清 `actionPoly/actionPolyClosed`；`drawActionShapeOverlay` 无条件绘制 | 旧 `app.js resetSelection`/`mousedown`；`builder-audit.md §A` |
+| “识别”后操作区漂移 / 点测仍是矩形 | UI 二次平移 `candidateActionPolygon`（只对 template 平移）：fixed 再平移、OCR 完全不平移、op_region 链最终 shape 被忽略；`testActionBoxes` 只画 `action_box` 矩形 | 旧 `app.js:2252-2264`/`testActionBoxes`；`builder-audit.md §B` |
+| 步骤列表同级拖拽排序无效 | 列表行只有 `dragstart/dragend`，drop 只挂根区/子容器；SVG `<g draggable>` 不可靠且测试只用正则假绿 | 旧 `builder.js` `renderStepArray`/SVG draggable；`builder-audit.md §C` |
+| 流程图缩到看不清 / 源码不是 Rust | `fitFlowGraphSize` 的 scale/offset 未被使用（只设 width/height）；源码框=`JSON.stringify(flow)`；仓库无 flow→Rust 投影/编译器 | 旧 `builder.js:5153`/`fitFlowGraph`；`builder-audit.md §D` |
+| #7 个人突破“引用子任务报错”（误以为 T7） | 实为 **T8 陈旧变量**：保存 sync 用**展开 call_task** 的 flow 写父 meta（子任务 `p_93445f68`/`p_c60bcfa1`），T8 用**未展开父 flow** 判 stale；删了会被加回；publish 被 2 条 T8 阻断 | 旧 `sync_task_derived_variables`；`_verify/seq137-audit/repro-item7-*.json` |
+
+#### 22.76.2 地图性能修复（缓存 / cheap pass / 早退 / 退避 / probe）
+
+- **OCR 行缓存**：`ocr_roi_cache: HashMap<(frame_seq, x, y, w, h, mask_id), Vec<OcrLine>>`（`runtime:2083`；读 `:2388`、写 `:2399-2401`；帧失效清 `:3254/:3267`）；`screen_lines`（`:2367`）成为唯一入口，`ocr_lines_for`/`identify`/`/map/probe`/PopupGuard 共用同帧同 ROI 的 det+rec（polygon mask 用独立 mask id，不与非 mask 共享）。
+- **cheap 特征判定**：`asset_feature_passes`（`:2411-2444`）——region→true；OCR 有期望文字→缓存全帧 strict 行 `any`；无期望→ROI 行非空；template/collection→`recognize_best`+`selector_threshold`；结果按帧缓存 `MapState.asset_pass_cache`。`identify_current_node` 不再调用 `recognition_candidates`（不再枚举全部候选几何）。
+- **两阶段早退**：identify 的 OCR 相位/asset 相位一旦 `min_hits` 满足立即停止（`:2632-2705`，`:2656`/`:2691-2692` 注释 seq137）；PopupGuard 同款早退（`popup_rule_matches :2452-2478`，`min_hits` 满足后不再跑后续特征），guard 日志含 `det_rec_calls/ncc_calls/elapsed_ms`（`:2605`）。
+- **等待退避**：`wait_until_node`（`:2791-2820`）由固定 `poll_ms` 改指数退避 150→300→600→1000ms（cap 1000），每轮检查预算/取消；失败 hop 的 OCR 次数显著下降。
+- **`/map/probe`**（`serve:5653-5760`）：默认只跑 **1 次**全帧 OCR、不再扫素材库；支持 `node`（取该节点 asset 特征）/`assets`（显式列表）；每项用 `asset_feature_passes` 阈值判定并返回 `pass`；响应含 `scope`/诊断计数；节点选中预览改用 `GET /map/state`。navigate hop 日志 `elapsed_ms` 改为真实耗时（`runtime:1866`/`:3009`）。
+- **实测**（`_verify/seq137-perf/perf-result.json`，debug 构建 + 用户数据副本 + 真 OCR 模型，frame#6）：`POST /map/probe` 默认 **78.3s（release audit）/117.0s（debug）→ 1.453s debug**（`det_rec_calls=1`、`assets=[]`）；probe `{node}` **1.060s**；OCR asset 特征 `/map/state` **2.8–3.0s release → 1.093s debug**（1 次 det+rec，release 估算 0.4–0.6s）。单测证明调用数：`screen_lines_cache_is_per_frame_and_cleared_by_invalidate`、`ocr_asset_lines_share_the_full_frame_cache`、`identify_asset_ocr_feature_uses_cached_full_frame_lines`、`popup_rule_early_exits_when_min_hits_is_satisfied`。
+
+#### 22.76.3 删除 map 硬门禁（lint/publish/install/run）
+
+- **删除 T11**：`lint_one` 不再检查 navigate target 与全局 map（`task.rs` 测试 `navigate_no_longer_gates_lint_on_the_global_map` `:591-603`：map 缺失/非法/未知 target 均 0 lint 错误）。
+- **publish 不读 map**：删除 `publish_map_nodes`；publish 不因 map 缺失/target 不存在失败；`manifest.map_requirements` 与 `BuildOptions.map_nodes` 标 **DEPRECATED 且不填充**（`package.rs:148-152/288-290`；空值序列化省略 `:2272-2277`）。
+- **install 不再按 map_requirements warning**（`package_cmd.rs` 测试断言 manifest 为空 `:2328-2330`）；E2E 验证“无本地 map publish 200 + install 200（warnings=[]）”。
+- **run 懒加载**：`load_nav_map`（`run.rs:540-574`）仅当 flow 有 navigate 时加载 map，只校验**本 flow 的字面量 target**，不再全图 `validate`（资产引用错误延迟到实际 hop）；无 map/缺 target 仍**响亮错误**；runtime `run_navigate` 的 loud 路径保留。
+- **未实现**：`navigate.target` 的 `target_expr` 动态参数（需 UI/版本门禁，见遗留）。
+
+#### 22.76.4 地图 UI 修复（素材接线 / 选择器 / 预览 / 高 DPI）
+
+- **素材接线**：`loadAssets` 改 `GET /task/assets?task=`（`map_ui.js:382-410`；失败时兼容回退 `/library` 并提示不完整）；页面显示素材来源与数量（`:568`）；返回素材/边 `click_asset`/asset 识别特征全部恢复可选（items+collections）。
+- **选择器/编辑器**：`assetSelect` 先 append 缺失当前值再设置 value，修复“不存在：X”死回退（`:509`/`:517` 注释）；父节点下拉列全节点+说明（`:551-556`）；OCR 特征添加改页面内列表选择（`:631-640`）；属性面板宽度/OCR 输入换行（`style.css` 地图页样式）。
+- **画布/预览**：canvas 按显示宽度×`devicePixelRatio` 设 backing store（`:925-929`）；节点选中预览改 `GET /map/state`（`:949-957`，release ~0.4s），不再点击即触发 78s probe；`map.js` 是 `map_ui.js` 的**字节同步副本**（`map.js:2`，UI 测试断言）。
+
+#### 22.76.5 画布/点测操作区：消费服务端 action_shape（删二次平移）
+
+- **统一清理** `clearCanvasSelection`（`app.js:2175-2189`）：一次清 recognition（roi/roiBack/polygon/storedRecognitionPolygon）+ action（actionPoly/actionPolyClosed/actionShapeOwnerId/activeCandidate/pendingActionAsset…）并重绘/日志；调用点：空白点击 `:8092`、检测框选择、切帧 `:7524`、切任务 `:9105/:9117`、Esc `:9097`（UI 断言 `:3880-3908`）。
+- **删前端二次平移**：`candidateActionPayload`（`:1905-1907`）/`actionShapePolygonPoints`（`:2254`）等改为**优先消费服务端 `action_shape`**（候选/点测/长按/拖测响应），仅无 shape 时回退 `action_box` 矩形（`:2271-2273` 注释）；UI 断言 `:8514`（候选操作区画 polygon）、`:4522-4527`（点测 polygon，bbox 仅辅助）。结果：fixed 不再被再平移、OCR shape 跟随识别行、op_region 链末端 shape 生效。
+- **点测显示**：`testActionBoxes`（`:3533`）/`testActionResultLines`（`:3491`）用服务端 shape 画操作区（polygon），`action_box` 仅作矩形回退/标签。
+
+#### 22.76.6 列表同级拖拽 + 全窗口流程图 + 源码/Rust 投影
+
+- **列表真实 DnD**（`builder.js`）：统一 payload `dragPayload :1840`/`parseDragPayload :1887`；行 `dragover` 按上/中/下计算插入位（`flowDropZoneFromRect :1681`）；执行 `applyStepDragDrop :1282` → `moveFlowStepInsert :1706`/`moveStepWithinParent :1181`，支持 root/if/loop、before/inside/after、首尾，纯函数 `dragInsertionIndex :1213`；拖后 step id 选中/滚动/自动保存。**删除 SVG `<g draggable>` 假拖拽**（`:2516` 注释；旧 `builder.js:2183`）与对应假绿断言。
+- **全窗口流程图大页**：`#flow-page`（`index.html:417-429`）+ 打开/返回/缩放/适应/Esc（`builder.js:2522-2590`，按钮接线 `:6174`）；只读可视化，点节点回写选中。
+- **源码与 Rust 投影**：`#builder-code-wrap` 默认折叠 `<details>`（`index.html:388-397`；源码=canonical flow JSON，校验并应用）；新增 `#builder-rust-wrap/#builder-rust-code`（`index.html:398-405`），纯函数 `rustStringLiteral :2600`/`rustNumLiteral :2609`/`rustProjectStepLines :2616`/`rustProjectFlow`/`renderRustProjection :2744` 生成 `pub fn run_flow(ctx: &mut Ctx)` + `ctx.*`（log/wait/click/click_target/long_press/drag/key/call_task/navigate/if_cond/loop/finish…），header 明确「由 flow.json 自动生成的**只读投影，非可执行源码；不是 Rust→flow 编译器**」（`builder.js:2733-2735`、`index.html:401-403`）；未知 op 以注释保留。
+
+#### 22.76.7 #7 个人突破：T8 陈旧变量修复（sync 改 raw 父 flow）
+
+- **sync**：`sync_task_derived_variables`（`serve.rs:1690+`）改用 `TaskBundle::load_flow_for_derived_vars`（`oas-task/lib.rs:1857-1868` → `parse_flow_collections_expanded :1590-1601`）——**raw 父 flow，只做 collection 展开，绝不展开 call_task**；保存响应 `removed:[...]` 列出清理的陈旧派生变量。
+- **T8 同口径**：lint 的 T8 也改用 collection-expanded raw 父 flow（`oas-task/lib.rs:3421-3426`），不再把子任务 ocr_var 判成父 flow stale。
+- **测试/冒烟**：单测 `sync_derived_variables_uses_raw_parent_flow_not_expanded_call_task`（重现旧污染→raw sync 清掉→0 T8）；`_verify/seq137-perf-root/personal-breakthrough-result.json`：before 4 vars（含 2 条子任务派生）→ `POST /task/save_flow` `removed:["p_93445f68","p_c60bcfa1"]` → after 2 vars、`GET /task/lint` issues=0/T8=0；二次 save `removed:[]`（幂等）；审计复现 `_verify/seq137-audit/repro-item7-*.json`。
+
+#### 22.76.8 验证 / E2E / 新单测
+
+- **workspace 1043/0**（runtime 267 / oasd 472 / oas-task 172 / flow 83；`_verify/seq137-final/workspace*.log`）、UI **2713/195/0 dead/158/6**、`cargo check/build -p oasd --features ocr` Finished。
+- **E2E**（`_verify/seq136-map/e2e-results.json`，Studio 8831/Runner 8832 隔离副本）：**19 checks / 0 failed**，新增/更新：probe node-scoped 与 default（default 不扫库）、lint 无 map gate（有/无 map 均 0 错误）、publish 无本地 map 200、install 无 map requirement 200、map `.bak`/validate/plan/navigate dry/素材引用保护；timings `state_ms=123`、`probe_node_ms=124`、`probe_default_ms=129`（E2E 无 OCR 模型、模板-only map）；**real 导航仍 SKIP（无 adb）**。
+- **新增单测**：`screen_lines_cache_is_per_frame_and_cleared_by_invalidate`、`ocr_asset_lines_share_the_full_frame_cache`、`identify_asset_ocr_feature_uses_cached_full_frame_lines`、`popup_rule_early_exits_when_min_hits_is_satisfied`、`navigate_no_longer_gates_lint_on_the_global_map`、`publish_navigate_no_longer_requires_a_local_map`、`sync_derived_variables_uses_raw_parent_flow_not_expanded_call_task`。
+- **审计报告**：`map-audit.md`（78.3s/2.8–3.0s/11.0s/17.5s 等数据）、`builder-audit.md`（A 画布/B 漂移/C 拖拽/D 大图源码）、`task-drift-audit.md`（P0 T8/接错线/假绿清单）、`FIX-EVIDENCE.md`（修复+计数证明）、`perf-results.json`（audit 基线）。
+
+#### 22.76.9 遗留 / 风险 / 旧文更正
+
+- **遗留**：① `navigate.target_expr` 动态参数未实现；② flow→Rust 仅**只读投影**，非可执行、不可编辑编译，无 Rust→flow 编译器；③ `map_requirements` 字段 deprecated 但未彻底删；④ `/map/probe` 默认不返回素材 hints（UI 需传 `node`/`assets`）；⑤ 真实设备导航/Firefox 手测未做；⑥ `text_visible`/`verify_expect` 仍 fuzzy+无缓存；⑦ 全局弹窗配置 UI 未做；⑧ 地图边只能新增/删除、无内联改字段；⑨ canvas 只读、无缩放；⑩ `map.js`/`map_ui.js` 双文件同步机制；⑪ UI pure test 无浏览器级 DnD 自动化；⑫ 用户数据未提交、未 tag/release。
+- **旧文更正**：§22.75 中「map_requirements 门禁/T11/publish 硬失败/仅根 flow」「源码框=最终 flow JSON」「#10 已实现（实为 SVG 假拖拽）」「流程图自适应（scale 未用）」等表述以本节为准；§22.75 的地图性能数字（78.3s 等）为审计前基线，已被 §22.76.2 替代；操作区 fixed/polygon 的 UI 二次平移已删除（§22.76.5）。

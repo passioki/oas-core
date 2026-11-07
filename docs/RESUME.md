@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 136
-updated_at: 2026-11-07T19:4x+08:00
-trigger: 用户 11 项反馈 + 地图/弹窗补充：操作区 polygon/fixed、动作 UI 三项、竖排 OCR、T3、队列、源码框、流程图自适应、同层拖动、唯一全局地图/navigate、全局弹窗 D0；提交 A/B/C+D0/M1-M4（`ccd99de` 为 HEAD）；workspace 1039/0、UI 2652/195/0/6。
+checkpoint_seq: 137
+updated_at: 2026-11-07T21:5x+08:00
+trigger: 用户 21:07 九条验收反馈（地图接错素材/78s 假死/门禁/画布残留/操作区漂移/拖拽假实现/大图与源码/T8）→ 三路只读审计确认接错线/漂移/假绿 → 修复 45a458b；workspace 1043/0、UI 2713/195/0/6、E2E 19/0。
 status: done
-code_head: `dbaece2`（dev=origin/dev；main/origin/main=c0a672b 待 docs 后快进；未 tag/未 release）
-docs_head: seq136 docs 提交见 `git log -1`
-next_action: seq136 已完成（未 tag/未 release）。后续：① **Firefox/真机手测**（操作区 polygon/fixed、地图页建图/识别/路径预览/调试、builder navigate、源码框、拖动排序、弹窗 dry/real）；② **真实设备导航/replay 多跳 E2E**（无 adb，SKIP；fake-frame 单测已覆盖状态机）；③ `map_requirements` 只收根 flow（call_task 子任务未纳入）；④ 地图文件分发（不入包）/Runner 导入通道、map 损坏保护；⑤ relations 服务端 deprecated 清理；⑥ CLI popups 复用 serve 内部函数收敛；⑦ T11 扩展 map 资产引用；⑧ V2.1/V2.2。详见 `PENDING §E-104`、`ENGINE §22.75`、`ACCEPTANCE` seq136。
+code_head: `45a458b`（dev=origin/dev；main/origin/main=b3e3013 待 docs 后快进；未 tag/未 release）
+docs_head: seq137 docs 提交见 `git log -1`
+next_action: seq137 已完成（未 tag/未 release）。后续：① `navigate.target_expr` 动态目标（需 UI/版本门禁）；② flow→Rust 只读投影**不可执行/无 Rust→flow 编译器**（勿宣称可编译）；③ 真实设备导航/replay 多跳 E2E 仍 SKIP + Firefox 手测；④ `/map/probe` 默认不含素材 hints（UI 传 node/assets）；⑤ 全局弹窗配置 UI、地图边内联编辑、canvas 缩放；⑥ `text_visible`/`verify_expect` fuzzy+无缓存；⑦ map.js/map_ui.js 双文件机制；⑧ relations deprecated 清理、map_requirements 字段彻底删；⑨ V2.1/V2.2。详见 `PENDING §E-105`、`ENGINE §22.76`、`ACCEPTANCE` seq137。
 ```
 
 ## 0. 目标（本阶段）
@@ -337,6 +337,13 @@ next_action: seq136 已完成（未 tag/未 release）。后续：① **Firefox/
 > 地图现行口径：唯一 `<assets-dir>/map.json`（不入包、不按任务分）；节点=页面（parent/return_asset/priority/frames/识别特征 ocr_text|asset+min_hits）；边有向不可逆；返回边由 parent+return_asset 派生；三层寻路（直达→LCA→hub）；navigate 状态机（PopupGuard/重识别校验/不一致重规划/rounds3/hops16/PlanOnly/预算取消）；flow `Step::Navigate` + flow_ops 15 + manifest `map_requirements`；`/map*` Studio-only、T11、素材引用保护；关系 UI 下线、`/relations/*` deprecated。
 > 验证：workspace **1039/0**（flow 83 / runtime 264 / task 167+ / oasd 471 等）、UI **2652/195/0 dead/158/6 nav**、cargo check/build ocr exit0；E2E `_verify\seq136-map\E2E-REPORT.md` **18/0**（real 导航 SKIP 无 adb）；D0/B/D2/probe 冒烟见 `_verify\seq136*`；`_verify\seq136-final\workspace*.log`。
 > 遗留：真实设备导航/replay 多跳 E2E；map_requirements 仅根 flow；CLI popups 分层耦合；T11 不含 map 资产引用；map 损坏时引用保护失效；relations deprecated 待清理；边编辑无内联改字段；`/map/navigate real` 同步阻塞；地图文件需分发；用户数据未提交。
+
+## 1.30 2026-11-07 21:07→21:4x（seq 137）九条反馈 → 三路审计 → 修复（地图性能/UI、去 map 门禁、画布 shape、拖拽/大图/Rust 投影、T8）（✅ 已完成并推送 dev；main 待 docs 后快进）
+
+> 用户 21:07 九条验收反馈；三路只读审计 `_verify/seq137-audit/{map,builder,task-drift}-audit.md` 确认是**接错线/状态漂移/测试假绿**：地图页 `loadAssets` 调 `/library`（0 项，全局素材在 `/task/assets` 96+5）；`/map/probe` 78.3s、OCR asset identify 2.8–3.0s、PopupGuard 不早退、wait 150ms 全帧 OCR；`map_requirements` 只收根 flow + publish/T11 硬门禁；画布不清操作区、UI 二次平移/点测矩形；列表拖拽未实现（SVG 假拖拽+正则假绿）；源码=flow JSON 无 Rust；#7=T8 陈旧变量（sync 展开 call_task vs T8 未展开）。
+> 修复 `45a458b`：① 地图性能 `ocr_roi_cache`（frame_seq/ROI/mask）+ `asset_feature_passes` cheap 判定+每帧缓存+identify/PopupGuard min_hits 早退+wait 指数退避+`/map/probe` 默认 1 次 OCR（probe 78.3s→1.453s debug、OCR asset identify→1.093s）；② 去 map 门禁（删 T11、publish 不读 map、install 不 warning、map_requirements/map_nodes deprecated 留空、run 只查本 flow 字面量 target、runtime loud 保留）；③ 地图 UI（/task/assets、assetSelect、父节点全列表、属性/OCR 换行、canvas DPR、预览 /map/state、OCR 列表、map.js/map_ui.js 同步）；④ 画布/点测（clearCanvasSelection 统一清、删二次平移、消费服务端 action_shape）；⑤ 列表真实同级 DnD + 全窗口流程图大页 + 源码折叠 + flow→Rust 只读投影（非可执行/无 Rust→flow）；⑥ #7 sync 改 raw 父 flow、T8 同口径（个人突破 removed 2 vars→lint 0）。
+> 验证：workspace **1043/0**（runtime 267/oasd 472/task 172/flow 83）、UI **2713/195/0 dead/158/6**、cargo check/build ocr；E2E **19/0**（`_verify/seq136-map/e2e-results.json`：probe 缩面/lint 无 map gate/publish 无 map/install 无 requirement；real 导航 SKIP）；性能 `_verify/seq137-perf/perf-result.json`、T8 冒烟 `_verify/seq137-perf-root/personal-breakthrough-result.json`、审计 `_verify/seq137-audit/`。
+> 遗留：target_expr；Rust 投影只读/无 Rust→flow；map_requirements deprecated；probe 素材 hints 需 node/assets；真机/Firefox；text_visible/verify_expect fuzzy 无缓存；弹窗 UI；地图边内联；canvas 缩放；map.js 双文件；UI pure test 无浏览器 DnD；用户数据未提交。
 
 ## 2. 本批交付（seq 110）
 

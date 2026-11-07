@@ -279,3 +279,37 @@ E2E seq127 脚本（并清理 seq126 模型 A 断言）、masked 极端 mask 兜
 - E2E `_verify/seq136-map/E2E-REPORT.md`：**18 checks/0 failed**（map CRUD/.bak/validate/state/plan/不可达 400/navigate dry/probe/T11 两态/publish map_requirements/install warning/素材 delete+rename 400/无残留监听）；**real 导航 SKIP（无 adb）**，同状态机由 fake-frame 单测覆盖；D0 冒烟 frame6 命中 close box [979,150,27,31] point(991,169)；B 冒烟 polygon+fixed 候选 shape=polygon、fixed 不平移。
 - 风险/遗留：真实设备导航/replay 多跳 E2E 未跑；`map_requirements` 只收根 flow（call_task 子任务未纳入）；CLI popups 复用 serve 内部函数（耦合）；T11 只校验 target 存在（map 资产引用由 `/map validate` 覆盖）；map 损坏时素材引用保护可能失效；relations deprecated；边编辑无内联改字段；`/map/navigate real` 同步阻塞；地图文件需用户分发、不进包；用户数据未提交。
 - 旧文更正：`§22.41` 帧-素材关系被地图取代（UI 下线、API deprecated）；`§22.73` seq134 的点击几何/OCR 合并/fixed 以 §22.75 为准；`OPERATION-REGION-DESIGN §8.10` 为 polygon/fixed 现行口径。
+
+## seq137 追加验收（2026-11-07：九条反馈 → 三路审计 → 修复 45a458b）
+
+> 用户 2026-11-07 21:07 九条验收反馈；三路只读审计 `_verify/seq137-audit/{map-audit,builder-audit,task-drift-audit}.md` 确认为**接错线/状态漂移/测试假绿**；修复 `45a458b`。HEAD `45a458b`（dev=`origin/dev`，main=`origin/main`=b3e3013 待 docs 后快进；未 tag/未 release）。记录 `ENGINE §22.76`、`_verify/seq137-audit/FIX-EVIDENCE.md`。
+
+### A. 九条反馈 → 审计事实（摘）
+
+| 反馈 | 审计确认 |
+|---|---|
+| 地图素材/边/返回素材选不了 | `loadAssets` 调 `GET /library`（0 项），全局素材在 `GET /task/assets`（96 items+5 collections）；`assetSelect` 回退死代码 |
+| 点节点/“从当前帧”78s 假死 | `/map/probe` 对前 40 素材逐个 `recognize_best`（OCR 各 2 次 det+rec）实测 78.3s；`screen_lines` 无缓存；`/map/state` 本身仅一次 det+rec（383–568ms） |
+| 地图 OCR asset 特征 2.8–3.0s | identify 用 `recognition_candidates` 全枚举；OCR 资产每次 ROI+全帧 2 次 det+rec；`wait_until_node` 每 150ms 全帧 OCR；PopupGuard `min_hits` 不早退（+6.45s/3 轮） |
+| map 门禁不合理 | `map_requirements` 只收根 flow（不展开 call_task）而 T11 用展开 flow；publish 无 map/target 硬失败、install 仅 warning；map 不入包 |
+| 画布操作区残留 | 清理只清识别区，未清 `actionPoly/actionPolyClosed` |
+| 操作区漂移/点测仍矩形 | UI 二次平移 `candidateActionPolygon`（fixed 再平移、OCR 不平移、链 shape 忽略）；点测只读 `action_box` 矩形 |
+| 列表同级拖拽无效 | 行只有 dragstart/dragend，drop 只挂根/子容器；SVG `<g draggable>` 不可靠 + 正则假绿 |
+| 流程图看不清/源码非 Rust | `fitFlowGraphSize` scale/offset 未使用；源码=flow JSON；无 flow→Rust 投影 |
+| #7 个人突破报错 | **T8 陈旧变量**（非 T7）：sync 用展开 call_task flow 写父 meta、T8 用未展开父 flow 判 stale；删了会加回；publish 被阻断 |
+
+### B. 修复（45a458b）
+
+- **地图性能**：OCR 行缓存 `ocr_roi_cache`（(frame_seq,ROI,mask)，`runtime:2083/2388/2399`）共享 screen_lines/OCR 资产/identify/popup/probe；`asset_feature_passes`（`:2411-2444`）cheap 判定 + 每帧缓存；identify 两阶段 `min_hits` 早退（`:2632-2705`）；PopupGuard 早退+诊断（`:2452-2478/2605`）；`wait_until_node` 指数退避（`:2791-2820`）；`/map/probe`（`serve:5653-5760`）默认 1 次 OCR、支持 node/assets、阈值 pass。实测 probe **78.3s→1.453s debug**、OCR asset identify **2.8–3.0s→1.093s debug**（release 估 0.4–0.6s）。
+- **去 map 门禁**：删除 T11（`task.rs` 测试 `navigate_no_longer_gates_lint_on_the_global_map`）；publish 不读 map/不再因 target 失败；`map_requirements`/`map_nodes` deprecated 且不填（`package.rs:148-152/288-290`）；install 不再 warning；`load_nav_map`（`run.rs:540-574`）只查本 flow 字面量 target、runtime loud 保留。
+- **地图 UI**：`loadAssets` 改 `GET /task/assets`（`map_ui.js:382-410`）；`assetSelect` 先 append 再设值（`:509`）；父节点全列表（`:551-556`）；OCR 特征页面内列表（`:631-640`）；canvas DPR（`:925-929`）；节点预览改 `/map/state`（`:949-957`）；`map.js`/`map_ui.js` 字节同步（`map.js:2`）。
+- **画布/点测 shape**：`clearCanvasSelection` 统一清识别+操作区（`app.js:2175-2189`；调用点 `:7524/:8092/:9097/:9105/:9117`）；删除前端二次平移，候选/点测/长按/拖测消费服务端 `action_shape`（`:1905/2254/2271-2273`；点测 `:3491/:3533`）；`action_box` 仅回退/辅助。
+- **拖拽/大图/源码**：列表真实同级 DnD（`builder.js:1681/1706/1282/1840/1887/1181/1213`；删 SVG 假拖拽 `:2516`）；`#flow-page` 全窗口大页（`index.html:417-429`；`builder.js:2522-2590`）；源码默认折叠 + flow→Rust **只读投影**（`index.html:388-405`；`builder.js:2599-2748`，header 标注非可执行/无 Rust→flow）。
+- **#7 T8**：sync 改 `load_flow_for_derived_vars`（raw 父 flow，仅 collection 展开；`oas-task/lib.rs:1857-1868/1590-1601`），T8 同口径（`:3421-3426`）；个人突破 save `removed:["p_93445f68","p_c60bcfa1"]` → 2 vars、lint 0/T8 0（二次 save 幂等）。
+
+### C. 验证 / 证据 / 遗留
+
+- workspace **1043/0**（runtime 267 / oasd 472 / oas-task 172 / flow 83；`_verify/seq137-final/workspace*.log`）；UI **2713 checks/195 ids/0 dead/158 runner/6 nav**；`cargo check/build -p oasd --features ocr` exit 0。
+- E2E `_verify/seq136-map/e2e-results.json`：**19 checks/0 failed**（probe 缩面、lint 无 map gate 两态、publish 无 map 200、install 无 requirement 200、.bak/validate/plan/navigate dry/素材引用保护；timing state 123ms/probe 124–129ms；real 导航 SKIP 无 adb）。
+- 冒烟/证据：`_verify/seq137-perf/perf-result.json`（probe 1453ms/node 1060ms/state_asset_ocr 1093ms）、`_verify/seq137-perf-root/personal-breakthrough-result.json`（T8 0、before 4→after 2）、`_verify/seq137-audit/repro-item7-*.json`（旧 T8 复现）。
+- 遗留：`target_expr` 未实现；Rust 投影只读非可执行、无 Rust→flow；`map_requirements` deprecated 未删；probe 默认不返回素材 hints（需 node/assets）；真实设备导航/Firefox 未做；`text_visible`/`verify_expect` 仍 fuzzy+无缓存；全局弹窗 UI 未做；地图边无内联改；canvas 只读无缩放；`map.js`/`map_ui.js` 双文件机制；UI pure test 无浏览器 DnD 自动化；用户数据未提交；未 tag/release。
