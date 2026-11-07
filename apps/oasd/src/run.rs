@@ -575,6 +575,42 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
             task_dir.display()
         )
     })?;
+    // seq136 D1: load the ONE global map only when the flow actually navigates
+    // (non-navigate tasks keep zero overhead). Missing map/target = loud error.
+    let nav_uses = flow.navigate_uses();
+    let map_config = if nav_uses.is_empty() {
+        None
+    } else {
+        let map = oas_task::map::load(&opts.assets)
+            .map_err(|e| format!("navigate: map.json: {e}"))?
+            .ok_or_else(|| {
+                format!(
+                    "navigate: 全局地图缺失（{}）；请先把 map.json 放到全局素材库根",
+                    opts.assets.join("map.json").display()
+                )
+            })?;
+        let validation = map.validate(&crate::global_assets::open_store(&opts.assets)
+            .and_then(|s| s.load_assets_file())
+            .map_err(|e| format!("navigate: map assets: {e}"))?, &Default::default());
+        if !validation.is_ok() {
+            return Err(format!("navigate: map.json 校验失败: {}", validation.error_text()));
+        }
+        let rt = map.to_runtime();
+        for use_ in &nav_uses {
+            if rt.node(&use_.target).is_none() {
+                return Err(format!(
+                    "navigate: 目标节点 `{}` 不在全局地图（{}）",
+                    use_.target, use_.path
+                ));
+            }
+        }
+        Some(rt)
+    };
+    let nav_mode = if opts.dry_run && opts.replay.is_none() {
+        oas_runtime::NavMode::PlanOnly
+    } else {
+        oas_runtime::NavMode::Execute
+    };
     let global_assets = crate::global_assets::is_initialized(&opts.assets);
     let mut assets = if global_assets {
         let store = crate::global_assets::open_store(&opts.assets)?;
@@ -864,7 +900,12 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     ));
     let interp = Interpreter::new(DynScreen(src), input, assets, budget)
         .with_seed(seed)
-        .with_params(params);
+        .with_params(params)
+        .with_navigation_mode(nav_mode);
+    let interp = match map_config {
+        Some(map) => interp.with_map(map),
+        None => interp,
+    };
     let interp = if let Some(cancel) = opts.cancel.clone() {
         interp.with_cancel(cancel)
     } else {
@@ -1309,6 +1350,50 @@ fn write_clicks_jsonl(path: &Path, rows: &[ClickRecord]) -> Result<(), String> {
             path.display()
         )
     })
+}
+
+// ---------------------------------------------------------------------------
+// Ephemeral navigation debugging (seq136 D1 / Studio map page)
+// ---------------------------------------------------------------------------
+
+/// Run a one-off flow string through the SAME interpreter/executor (Studio map
+/// debug: `POST /map/navigate {real:true}`): a temporary task bundle is created
+/// outside the user task library, then removed. Nothing is persisted (no map
+/// path/route/state). `opts.task` is ignored/replaced.
+pub fn run_ephemeral_flow(
+    opts: &RunOptions,
+    flow_json: &str,
+) -> Result<RunReport, String> {
+    // Parse first: a bad flow must fail before touching the filesystem.
+    let _flow = oas_flow::Flow::from_json(flow_json)
+        .map_err(|e| format!("ephemeral flow: {}", e.msg))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "oasd-ephemeral-nav-{}-{stamp}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root)
+        .map_err(|e| format!("ephemeral dir {}: {e}", root.display()))?;
+    let result = (|| {
+        let created = crate::task::create_task(&root, "utility", "ephemeral")?;
+        std::fs::write(created.path.join("flow.json"), flow_json)
+            .map_err(|e| format!("ephemeral flow write: {e}"))?;
+        let mut run_opts = opts.clone();
+        run_opts.task = Some(created.path.clone());
+        run_opts.replay = None;
+        run_opts.record = None;
+        run_opts.events_out = None;
+        run_opts.clicks_out = None;
+        run_opts.resume = false;
+        run_opts.checkpoint = None;
+        let mut sink = |_s: &str| {};
+        execute(&run_opts, &mut sink)
+    })();
+    let _ = std::fs::remove_dir_all(&root);
+    result
 }
 
 // ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@
 //!   explicit error, so a flow that needs OCR cannot silently pass.
 
 pub mod humanize;
+pub mod map;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -583,6 +584,51 @@ pub fn global_popups() -> Option<PopupConfig> {
 const POPUP_RETRY_SENTINEL: &str = "__popup_retry__";
 const POPUP_SETTLE_MS: u64 = 250;
 const MAX_POPUP_STEP_RETRIES: u32 = 3;
+
+/// seq136 D1: navigation mode injected by the app (never inferred from the
+/// InputSink: `replay` is a dry input but must run the full Execute state
+/// machine; only a true `--dry-run` preview becomes PlanOnly).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum NavMode {
+    #[default]
+    Execute,
+    PlanOnly,
+}
+
+/// One identified map node (D1). `ambiguous` lists same-priority/same-hits
+/// runners-up (logged; execution re-identifies every hop anyway).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeMatch {
+    pub node: String,
+    pub name: Option<String>,
+    pub hits: u32,
+    pub ambiguous: Vec<String>,
+}
+
+/// Per-interpreter map state: the loaded global map + per-frame identify cache.
+#[derive(Clone, Debug)]
+pub struct MapState {
+    pub config: crate::map::MapConfig,
+    identify_cache: Option<NodeMatch>,
+}
+
+static GLOBAL_MAP: std::sync::Mutex<Option<crate::map::MapConfig>> = std::sync::Mutex::new(None);
+
+/// Install/clear the process-wide map (runs snapshot it at construction).
+pub fn set_global_map(config: Option<crate::map::MapConfig>) {
+    match GLOBAL_MAP.lock() {
+        Ok(mut g) => *g = config,
+        Err(poisoned) => *poisoned.into_inner() = config,
+    }
+}
+
+/// Current process-wide map snapshot.
+pub fn global_map() -> Option<crate::map::MapConfig> {
+    match GLOBAL_MAP.lock() {
+        Ok(g) => g.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
 
 /// The task's declared assets (`assets/<Name>.json` in a later phase).
 #[derive(Default, Clone)]
@@ -2044,6 +2090,11 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     popups: Option<PopupGuard>,
     /// Interval gate for periodic hooks (wait/loop/click).
     popup_last_check: Option<Instant>,
+    /// seq136 D1: optional global map + per-frame identify cache (`None` for
+    /// tasks without `navigate` → zero overhead).
+    map: Option<MapState>,
+    /// PlanOnly = identify+plan only (no clicks/waits/requeue).
+    nav_mode: NavMode,
 }
 
 impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
@@ -2085,7 +2136,36 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             current_op: "",
             popups: global_popups().map(PopupGuard::from_config),
             popup_last_check: None,
+            map: global_map().map(|config| MapState {
+                config,
+                identify_cache: None,
+            }),
+            nav_mode: NavMode::Execute,
         }
+    }
+
+    /// Inject the ONE global map (design §4.4). Without a map a `navigate` step
+    /// fails loudly; other tasks never load it (zero overhead).
+    pub fn with_map(mut self, config: crate::map::MapConfig) -> Self {
+        self.map = Some(MapState {
+            config,
+            identify_cache: None,
+        });
+        self
+    }
+
+    /// Explicit navigation mode (dry-run preview vs full execution).
+    pub fn with_navigation_mode(mut self, mode: NavMode) -> Self {
+        self.nav_mode = mode;
+        self
+    }
+
+    pub fn navigation_mode(&self) -> NavMode {
+        self.nav_mode
+    }
+
+    pub fn map_config(&self) -> Option<&crate::map::MapConfig> {
+        self.map.as_ref().map(|m| &m.config)
     }
 
     pub fn events(&self) -> &[StepEvent] {
@@ -2267,9 +2347,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         Ok(out)
     }
 
-    /// Full-screen (or ROI) det+rec for OCR popup features; without a provider the
-    /// feature is a miss (a run without OCR must not hard-fail on a text popup).
-    fn popup_frame_lines(&mut self, roi: Option<Rect>) -> Result<Vec<OcrLine>, String> {
+    /// seq136 D0/D1: ONE full-frame (or ROI) det+rec per observation, shared by
+    /// the popup guard and map node identification (design §2.1).
+    pub fn screen_lines(&mut self, roi: Option<Rect>) -> Result<Vec<OcrLine>, String> {
         self.observe_screen()?;
         let frame = self
             .screen
@@ -2305,7 +2385,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     candidates.iter().any(|c| c.pass)
                 }
                 PopupFeature::OcrText { text, roi } => {
-                    let lines = self.popup_frame_lines(*roi)?;
+                    let lines = self.screen_lines(*roi)?;
                     lines
                         .iter()
                         .any(|line| ocr_text_matches_strict(text, &line.text))
@@ -2455,6 +2535,331 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             ));
         }
         Ok(false)
+    }
+
+    /// seq136 D1: identify the current game page against the loaded global map.
+    ///
+    /// Two-phase (design §2.2): one full-frame det+rec for OCR features, then
+    /// asset features only for nodes that could still reach `min_hits`; results
+    /// are ranked priority desc → hits desc → total features desc → declaration
+    /// order. Unknown/ambiguous handling is loud for `navigate`.
+    pub fn identify_current_node(&mut self) -> Result<NodeMatch, String> {
+        let Some(map) = self.map.as_ref().map(|m| m.config.clone()) else {
+            return Err("identify: no global map loaded".to_string());
+        };
+        if let Some(cache) = self.map.as_ref().and_then(|m| m.identify_cache.clone()) {
+            return Ok(cache);
+        }
+        self.observe_screen()?;
+        let needs_ocr = map.nodes.iter().any(|n| {
+            n.features
+                .iter()
+                .any(|f| matches!(f, crate::map::MapFeature::OcrText { .. }))
+        });
+        let lines = if needs_ocr {
+            self.screen_lines(None)?
+        } else {
+            Vec::new()
+        };
+        let mut scored: Vec<(usize, u32, u32)> = Vec::new(); // (idx,hits,total)
+        for (idx, node) in map.nodes.iter().enumerate() {
+            let total = node.features.len() as u32;
+            let mut ocr_hits = 0u32;
+            let mut ocr_done = 0u32;
+            for f in &node.features {
+                if let crate::map::MapFeature::OcrText { text, roi } = f {
+                    ocr_done += 1;
+                    let hit = lines.iter().any(|line| {
+                        if !ocr_text_matches_strict(text, &line.text) {
+                            return false;
+                        }
+                        match roi {
+                            None => true,
+                            Some(roi) => {
+                                let cx = line.rect.x + line.rect.w / 2;
+                                let cy = line.rect.y + line.rect.h / 2;
+                                cx >= roi.x
+                                    && cy >= roi.y
+                                    && cx < roi.x + roi.w
+                                    && cy < roi.y + roi.h
+                            }
+                        }
+                    });
+                    if hit {
+                        ocr_hits += 1;
+                    }
+                }
+            }
+            let need = node.min_hits.max(1).min(total.max(1));
+            if ocr_hits >= need {
+                scored.push((idx, ocr_hits, total));
+                continue;
+            }
+            let asset_features = node.asset_feature_count() as u32;
+            if ocr_hits + asset_features < need {
+                continue;
+            }
+            let mut hits = ocr_hits;
+            for f in &node.features {
+                if let crate::map::MapFeature::Asset { asset } = f {
+                    if self
+                        .recognition_candidates(asset)
+                        .map_err(|e| format!("identify: node `{}` feature asset `{asset}`: {e}", node.id))?
+                        .iter()
+                        .any(|c| c.pass)
+                    {
+                        hits += 1;
+                    }
+                }
+            }
+            if hits >= need {
+                scored.push((idx, hits, total));
+            }
+        }
+        if scored.is_empty() {
+            return Err(format!(
+                "当前页面不在地图中（识别结果：无节点命中；建议在地图编辑器用「从当前帧添加节点」）"
+            ));
+        }
+        scored.sort_by(|a, b| {
+            let na = &map.nodes[a.0];
+            let nb = &map.nodes[b.0];
+            nb.priority
+                .cmp(&na.priority)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| b.2.cmp(&a.2))
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        let (idx, hits, _) = scored[0];
+        let node = &map.nodes[idx];
+        let mut ambiguous = Vec::new();
+        for (j, h, _) in scored.iter().skip(1) {
+            let other = &map.nodes[*j];
+            if other.priority == node.priority && *h == hits {
+                ambiguous.push(other.id.clone());
+            }
+        }
+        let matched = NodeMatch {
+            node: node.id.clone(),
+            name: node.name.clone(),
+            hits,
+            ambiguous,
+        };
+        if let Some(state) = self.map.as_mut() {
+            state.identify_cache = Some(matched.clone());
+        }
+        Ok(matched)
+    }
+
+    /// Execute one map edge action (`click_asset` / `key` / `swipe`).
+    fn perform_map_action(&mut self, action: &crate::map::MapAction) -> Result<(), String> {
+        match action {
+            crate::map::MapAction::ClickAsset { asset, .. } => {
+                let best = self.recognize_best(asset)?;
+                let Some(at) = best.at else {
+                    return Err(format!("navigate: edge asset `{asset}` not found"));
+                };
+                let threshold = self.selector_threshold(asset);
+                if best.score < threshold {
+                    return Err(format!(
+                        "navigate: edge asset `{asset}` score {:.3} < threshold {threshold:.3}",
+                        best.score
+                    ));
+                }
+                let (box_, shape) = self.click_geometry_for(asset, at)?;
+                let plan = self.popup_sample_plan(box_, shape.as_ref())?;
+                let (w, h) = self
+                    .screen
+                    .size()
+                    .ok_or_else(|| "navigate: no frame available".to_string())?;
+                self.perform_click(
+                    plan,
+                    rect_centre(box_),
+                    Some(asset.clone()),
+                    "navigate",
+                    format!("navigate:{asset}:{:.3}", best.score),
+                    w,
+                    h,
+                )?;
+                Ok(())
+            }
+            crate::map::MapAction::Key { keycode } => {
+                self.input.key(*keycode)?;
+                self.invalidate_frame();
+                Ok(())
+            }
+            crate::map::MapAction::Swipe { from, to, ms } => {
+                self.input.swipe(*from, *to, *ms)?;
+                self.invalidate_frame();
+                Ok(())
+            }
+        }
+    }
+
+    /// Wait until the expected node is identified, polling every `wait.poll_ms`
+    /// until `wait.timeout_ms`. Returns the last identified node on timeout (the
+    /// caller re-plans); errors only when no frame/identification can run.
+    fn wait_until_node(
+        &mut self,
+        expected: &str,
+        wait: crate::map::MapWait,
+    ) -> Result<String, String> {
+        let deadline = Instant::now() + Duration::from_millis(wait.timeout_ms.max(1) as u64);
+        let mut last = String::new();
+        loop {
+            self.reobserve_screen()?;
+            match self.identify_current_node() {
+                Ok(m) => {
+                    if m.node == expected {
+                        return Ok(m.node);
+                    }
+                    last = m.node;
+                }
+                Err(_) => { /* unknown page: keep polling until timeout */ }
+            }
+            if Instant::now() >= deadline {
+                return Ok(last);
+            }
+            std::thread::sleep(Duration::from_millis(wait.poll_ms.max(50) as u64));
+        }
+    }
+
+    /// `Step::Navigate` state machine (design §4.1): per-hop PopupGuard + settle +
+    /// re-identify/validate; mismatch/unknown → re-plan (bounded rounds); PlanOnly
+    /// identifies+plans only; Execute walks the full loop (replay/dry input works).
+    fn run_navigate(&mut self, target: &str) -> Result<String, String> {
+        let Some(map) = self.map_config().cloned() else {
+            return Err(
+                "navigate: 当前运行未加载全局地图 map.json（任务使用了 navigate；\
+                 请先在地图页建图/复制 map.json 到全局素材库）"
+                    .to_string(),
+            );
+        };
+        if map.node(target).is_none() {
+            return Err(format!("navigate: 目标地图节点 `{target}` 不存在"));
+        }
+        if self.nav_mode == NavMode::PlanOnly {
+            let cur = self.identify_current_node()?;
+            let route = crate::map::plan_route(&map, &cur.node, target)?;
+            let summary = crate::map::route_summary(&route);
+            self.log(
+                0,
+                "navigate",
+                &format!(
+                    "dry from={} target={target} route=[{summary}] hops={}",
+                    cur.node,
+                    route.len()
+                ),
+                "ok",
+                0.0,
+            );
+            return Ok(format!(
+                "navigate(dry) from={} target={target} route=[{summary}] hops={}",
+                cur.node,
+                route.len()
+            ));
+        }
+        let mut rounds = 0u32;
+        let mut popups = 0u32;
+        let mut last_seen = String::new();
+        let mut history: Vec<String> = Vec::new();
+        for round in 1..=crate::map::MAX_NAV_ROUNDS {
+            rounds = round;
+            self.check_budget()?;
+            // Popup first: clearing a popup changes the context.
+            if self.popup_guard_check(true)? {
+                popups += 1;
+            }
+            let cur = self.identify_current_node()?;
+            last_seen = cur.node.clone();
+            if cur.node == target {
+                let detail = format!(
+                    "target={target} from={} hops=0 rounds={rounds} popups={popups}",
+                    cur.node
+                );
+                self.log(0, "navigate", &detail, "ok", 0.0);
+                return Ok(format!("navigate reached {detail}"));
+            }
+            let route = crate::map::plan_route(&map, &cur.node, target)?;
+            if route.len() > crate::map::MAX_NAV_HOPS {
+                return Err(format!(
+                    "navigate: 路径 {} 跳超过上限 {}（from={} target={target}）",
+                    route.len(),
+                    crate::map::MAX_NAV_HOPS,
+                    cur.node
+                ));
+            }
+            let route_txt = crate::map::route_summary(&route);
+            let mut changed = false;
+            for edge in &route {
+                self.check_budget()?;
+                if self.popup_guard_check(true)? {
+                    popups += 1;
+                    changed = true;
+                    break;
+                }
+                self.perform_map_action(&edge.action)?;
+                self.log(
+                    0,
+                    "navigate_hop",
+                    &format!(
+                        "from={} action={} derived={} to={}",
+                        edge.from,
+                        edge.action.label(),
+                        edge.derived,
+                        edge.to
+                    ),
+                    "ok",
+                    0.0,
+                );
+                if edge.wait.settle_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(edge.wait.settle_ms as u64));
+                }
+                self.invalidate_frame();
+                if self.popup_guard_check(false)? {
+                    popups += 1;
+                    changed = true;
+                    break;
+                }
+                let got = self.wait_until_node(&edge.to, edge.wait)?;
+                if got != edge.to {
+                    changed = true;
+                    break;
+                }
+                if edge.wait.stable_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(edge.wait.stable_ms as u64));
+                    self.invalidate_frame();
+                    let again = self.identify_current_node()?;
+                    if again.node != edge.to {
+                        changed = true;
+                        break;
+                    }
+                }
+                if self.popup_guard_check(false)? {
+                    popups += 1;
+                    changed = true;
+                    break;
+                }
+            }
+            history.push(route_txt);
+            if !changed {
+                let cur = self.identify_current_node()?;
+                last_seen = cur.node.clone();
+                if cur.node == target {
+                    let detail = format!(
+                        "target={target} from={} hops={} rounds={rounds} popups={popups}",
+                        history.first().map(|s| s.as_str()).unwrap_or(""),
+                        history.len()
+                    );
+                    self.log(0, "navigate", &detail, "ok", 0.0);
+                    return Ok(format!("navigate reached {detail}"));
+                }
+            }
+        }
+        Err(format!(
+            "navigate 未到达「{target}」（rounds={rounds}；最后识别={last_seen}；\
+             历史路径={history:?}；popups={popups}）"
+        ))
     }
 
     pub fn run(&mut self, flow: &Flow) -> RunResult {
@@ -2748,6 +3153,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     fn reobserve_screen(&mut self) -> Result<(), String> {
         // seq134: a new observation invalidates cached OCR lines too.
         self.ocr_lines_cache.clear();
+        if let Some(map) = self.map.as_mut() {
+            map.identify_cache = None;
+        }
         self.screen.refresh(&mut self.src)
     }
 
@@ -2756,6 +3164,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// the pre-action pixels.
     fn invalidate_frame(&mut self) {
         self.ocr_lines_cache.clear();
+        if let Some(map) = self.map.as_mut() {
+            map.identify_cache = None;
+        }
         self.screen.invalidate();
     }
 
@@ -5811,6 +6222,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     ))
                 }
             }
+            Step::Navigate { target } => self.run_navigate(target),
             Step::DismissPopup {
                 sel,
                 action,
@@ -7344,6 +7756,7 @@ fn step_name(s: &Step) -> &'static str {
         Step::IncVar { .. } => "inc_var",
         Step::OcrToVar { .. } => "ocr_to_var",
         Step::DismissPopup { .. } => "dismiss_popup",
+        Step::Navigate { .. } => "navigate",
         Step::ClickTarget { .. } => "click_target",
         Step::CallTask { .. } => "call_task",
         Step::WithParams { .. } => "with_params",
@@ -16644,6 +17057,257 @@ mod tests {
             other => panic!("expected bounded failure, got {other:?}"),
         }
         assert_eq!(shared.clicks.borrow().len(), 2, "exactly max_attempts closes");
+    }
+
+    fn nav_pattern(seed: u32) -> Vec<u8> {
+        (0..100)
+            .map(|i| {
+                let (x, y) = ((i % 10) as u32, (i / 10) as u32);
+                (((x * 7 + y * 13 + seed * 29) % 251) + 3) as u8
+            })
+            .collect()
+    }
+
+    /// Frame with a marker byte at (60,40) read by [`NavOcr`] (map tests use OCR
+    /// features so the navigation state machine is independent of template NCC).
+    fn nav_frame(tiles: &[(&[u8], u32, u32)], marker: u8) -> Frame {
+        let (w, h) = (64u32, 48u32);
+        let mut rgba = vec![30u8; (w * h * 4) as usize];
+        for (pattern, tx, ty) in tiles {
+            for y in 0..10u32 {
+                for x in 0..10u32 {
+                    let v = pattern[(y * 10 + x) as usize];
+                    let i = (((ty + y) * w + (tx + x)) * 4) as usize;
+                    rgba[i] = v;
+                    rgba[i + 1] = v;
+                    rgba[i + 2] = v;
+                    rgba[i + 3] = 255;
+                }
+            }
+        }
+        let i = ((40 * w + 60) * 4) as usize;
+        rgba[i] = marker;
+        rgba[i + 1] = marker;
+        rgba[i + 2] = marker;
+        rgba[i + 3] = 255;
+        Frame::new(w, h, rgba)
+    }
+
+    /// OCR provider for navigation tests: reads the frame's marker byte and
+    /// returns the matching node text (`N1`/`N2`/`N3`), or no lines for unknown.
+    struct NavOcr;
+    impl OcrProvider for NavOcr {
+        fn recognize(&mut self, _frame: &Frame, _roi: Rect) -> Result<(String, f32), String> {
+            Ok((String::new(), 0.0))
+        }
+        fn recognize_lines(&mut self, frame: &Frame, _roi: Rect) -> Result<Vec<OcrLine>, String> {
+            let marker = frame.rgba[((40 * frame.width + 60) * 4) as usize];
+            let text = match marker {
+                100 => "N1",
+                150 => "N2",
+                200 => "N3",
+                _ => return Ok(Vec::new()),
+            };
+            Ok(vec![chain_line(5, 5, 20, 8, text, 0.99)])
+        }
+    }
+
+    /// Map: 庭院 -> 御魂 -> 御魂十层 (OCR features + key edges, so the state
+    /// machine test does not depend on template NCC at all).
+    fn nav_map() -> crate::map::MapConfig {
+        use crate::map::*;
+        let node = |id: &str, text: &str| MapNode {
+            id: id.to_string(),
+            name: None,
+            parent: None,
+            return_asset: None,
+            min_hits: 1,
+            features: vec![MapFeature::OcrText {
+                text: text.to_string(),
+                roi: None,
+            }],
+            priority: 0,
+        };
+        let edge = |from: &str, to: &str| MapEdge {
+            from: from.to_string(),
+            to: to.to_string(),
+            action: MapAction::Swipe {
+                from: Point { x: 10, y: 10 },
+                to: Point { x: 30, y: 10 },
+                ms: 100,
+            },
+            wait: MapWait {
+                settle_ms: 0,
+                stable_ms: 0,
+                timeout_ms: 500,
+                poll_ms: 50,
+            },
+            derived: false,
+            order: 0,
+        };
+        MapConfig {
+            hub: "庭院".to_string(),
+            default_return_asset: None,
+            nodes: vec![
+                node("庭院", "N1"),
+                node("御魂", "N2"),
+                node("御魂十层", "N3"),
+                node("孤立", "N_NEVER"),
+            ],
+            edges: vec![edge("庭院", "御魂"), edge("御魂", "御魂十层")],
+        }
+    }
+
+    fn nav_flow(target: &str) -> Flow {
+        flow(&format!(
+            r#"{{"schema_version":1,"name":"nav","steps":[
+                 {{"op":"navigate","args":{{"target":"{target}"}}}},
+                 {{"op":"finish","args":{{"exit":"done"}}}}]}}"#
+        ))
+    }
+
+    fn nav_screen() -> TwoFrameScreen {
+        TwoFrameScreen {
+            frames: vec![
+                nav_frame(&[(&nav_pattern(1), 0, 0)], 100),
+                nav_frame(&[(&nav_pattern(2), 0, 0)], 150),
+                nav_frame(&[(&nav_pattern(3), 0, 0)], 200),
+            ],
+            idx: 0,
+        }
+    }
+
+    #[test]
+    fn navigate_execute_walks_multi_hop_and_reaches_target() {
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            nav_screen(),
+            input,
+            AssetSet::new(),
+            Budget::default(),
+        )
+        .with_map(nav_map()).with_ocr(Box::new(NavOcr))
+        .with_humanize(no_miss())
+        .with_seed(51);
+
+
+        assert_eq!(
+            interp.run(&nav_flow("御魂十层")),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        assert_eq!(shared.swipes.borrow().len(), 2, "one swipe per hop");
+        assert_eq!(
+            interp
+                .events()
+                .iter()
+                .filter(|e| e.op == "navigate_hop")
+                .count(),
+            2,
+            "{:?}",
+            interp.events()
+        );
+        assert!(interp.events().iter().any(|e| e.op == "navigate"));
+    }
+
+    #[test]
+    fn navigate_plan_only_identifies_and_plans_without_clicking() {
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            nav_screen(),
+            input,
+            AssetSet::new(),
+            Budget::default(),
+        )
+        .with_map(nav_map()).with_ocr(Box::new(NavOcr))
+        .with_navigation_mode(NavMode::PlanOnly)
+        .with_humanize(no_miss())
+        .with_seed(53);
+        assert_eq!(
+            interp.run(&nav_flow("御魂十层")),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        assert!(shared.clicks.borrow().is_empty(), "PlanOnly must not click");
+        assert!(
+            interp
+                .events()
+                .iter()
+                .any(|e| e.op == "navigate" && e.detail.contains("navigate(dry)")),
+            "{:?}",
+            interp.events()
+        );
+    }
+
+    #[test]
+    fn navigate_without_map_or_unknown_target_or_unreachable_is_loud_and_clicks_nothing() {
+        // no map loaded.
+        let (input, shared) = FakeInput::new();
+        let mut interp =
+            Interpreter::new(nav_screen(), input, AssetSet::new(), Budget::default())
+                .with_humanize(no_miss())
+                .with_seed(55);
+        match interp.run(&nav_flow("御魂十层")) {
+            RunResult::Failed(msg) => assert!(msg.contains("未加载全局地图"), "{msg}"),
+            other => panic!("expected no-map failure, got {other:?}"),
+        }
+        assert!(shared.clicks.borrow().is_empty());
+        // unknown target.
+        let (input, shared) = FakeInput::new();
+        let mut interp =
+            Interpreter::new(nav_screen(), input, AssetSet::new(), Budget::default())
+                .with_map(nav_map()).with_ocr(Box::new(NavOcr))
+                .with_humanize(no_miss())
+                .with_seed(57);
+        match interp.run(&nav_flow("不存在")) {
+            RunResult::Failed(msg) => assert!(msg.contains("不存在"), "{msg}"),
+            other => panic!("expected unknown-target failure, got {other:?}"),
+        }
+        assert!(shared.clicks.borrow().is_empty());
+        // unreachable: 孤立 has no path.
+        let (input, shared) = FakeInput::new();
+        let mut interp =
+            Interpreter::new(nav_screen(), input, AssetSet::new(), Budget::default())
+                .with_map(nav_map()).with_ocr(Box::new(NavOcr))
+                .with_humanize(no_miss())
+                .with_seed(59);
+        match interp.run(&nav_flow("孤立")) {
+            RunResult::Failed(msg) => assert!(msg.contains("无法从"), "{msg}"),
+            other => panic!("expected unreachable failure, got {other:?}"),
+        }
+        assert!(shared.clicks.borrow().is_empty(), "no blind walking");
+    }
+
+    #[test]
+    fn navigate_mismatch_after_a_hop_never_blindly_continues() {
+        // Frame 2 is an unknown page (no node features): the hop must NOT
+        // continue blindly; the next round fails loudly at identification.
+        let frames = vec![
+            nav_frame(&[], 100),
+            nav_frame(&[], 0),
+        ];
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            TwoFrameScreen { frames, idx: 0 },
+            input,
+            AssetSet::new(),
+            Budget::default(),
+        )
+        .with_map(nav_map()).with_ocr(Box::new(NavOcr))
+        .with_humanize(no_miss())
+        .with_seed(61);
+        match interp.run(&nav_flow("御魂十层")) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("不在地图中"), "{msg}");
+            }
+            other => panic!("expected mismatch failure, got {other:?}"),
+        }
+        assert!(
+            shared.clicks.borrow().is_empty(),
+            "key edges never click"
+        );
     }
 
     #[test]

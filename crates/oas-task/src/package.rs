@@ -87,7 +87,7 @@ pub const CHECKSUMS_FILE: &str = "checksums.sha256";
 /// A pre-seq129 Runner's drag parser rejects the unknown kind with a load error,
 /// but the install gate should refuse the package up front, so it gets its own
 /// marker too.
-pub const SUPPORTED_FLOW_OPS: [&str; 14] = [
+pub const SUPPORTED_FLOW_OPS: [&str; 15] = [
     "call_task",
     "call_task.params",
     "call_task.inherit.none",
@@ -102,6 +102,7 @@ pub const SUPPORTED_FLOW_OPS: [&str; 14] = [
     "click_target.region_asset",
     "drag.region_asset",
     "drag.asset",
+    "navigate",
 ];
 
 /// Engine version this crate records in `manifest.engine.min_engine` and checks
@@ -144,9 +145,27 @@ pub struct Manifest {
     pub dependencies: Vec<Dependency>,
     pub asset_refs: Vec<AssetRef>,
     pub platform: Platform,
+    /// seq136 D1: map nodes this package's flows navigate to (additive; the map
+    /// itself is NOT packaged — Runner install compares this against its local
+    /// map and warns on missing nodes; runtime is loud).
+    #[serde(default, skip_serializing_if = "MapRequirements::is_empty")]
+    pub map_requirements: MapRequirements,
     /// v1 has no signing; the field exists so a future package can be signed
     /// without a schema change. Always `null` in Phase 1.
     pub signature: Option<serde_json::Value>,
+}
+
+/// seq136 D1: `navigate` target requirements (literal node ids).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MapRequirements {
+    #[serde(default)]
+    pub nodes: Vec<String>,
+}
+
+impl MapRequirements {
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -266,6 +285,10 @@ pub struct BuildOptions {
     pub repo: String,
     /// Commit hash recorded as `source.commit` (may be empty).
     pub commit: String,
+    /// seq136 D1: literal map nodes targeted by this package's flows. `None` =
+    /// derive nothing (caller/publish fills it from the map); stored as
+    /// `manifest.map_requirements.nodes` (sorted, deduped).
+    pub map_nodes: Option<BTreeSet<String>>,
 }
 
 impl BuildOptions {
@@ -293,6 +316,7 @@ impl BuildOptions {
             surface: "studio".to_string(),
             repo: String::new(),
             commit: String::new(),
+            map_nodes: None,
         }
     }
 }
@@ -622,6 +646,10 @@ fn walk_flow_ops(
             // v1.3 multi-segment curve swipe: new instruction.
             "curve_swipe" => {
                 out.insert("curve_swipe".to_string());
+            }
+            // seq136 D1: navigate needs a D1 engine and a global map.
+            "navigate" => {
+                out.insert("navigate".to_string());
             }
             _ => {}
         }
@@ -1576,6 +1604,13 @@ pub fn build_package(
                 .design_resolution
                 .or_else(|| read_design_resolution(task_dir)),
         },
+        map_requirements: MapRequirements {
+            nodes: opts
+                .map_nodes
+                .clone()
+                .map(|s| s.into_iter().collect())
+                .unwrap_or_default(),
+        },
         signature: None,
     };
     let manifest_text = serde_json::to_string_pretty(&manifest)
@@ -2194,6 +2229,54 @@ mod tests {
             zip.write_all(&bytes).expect("write rewritten entry");
         }
         zip.finish().expect("finish rewritten zip");
+    }
+
+    #[test]
+    fn navigate_flow_op_and_map_requirements_are_additive() {
+        assert!(SUPPORTED_FLOW_OPS.contains(&"navigate"));
+        let ops = derive_flow_ops(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"navigate","args":{"target":"御魂十层"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("derive flow ops");
+        assert!(ops.contains(&"navigate".to_string()), "{ops:?}");
+        assert!(unsupported_flow_ops(&ops).is_empty());
+        // Old Runner gate: the op is recognized by this build (the *old* Runner
+        // rejects it via its own copy of SUPPORTED_FLOW_OPS).
+        assert!(unsupported_flow_ops(&["navigate".to_string()]).is_empty());
+        // Manifest field is additive + default-empty.
+        let req = MapRequirements::default();
+        assert!(req.is_empty());
+        assert_eq!(
+            serde_json::to_value(&req).expect("json"),
+            serde_json::json!({"nodes": []})
+        );
+        let parsed: MapRequirements =
+            serde_json::from_value(serde_json::json!({"nodes":["庭院","御魂十层"]}))
+                .expect("parse");
+        assert_eq!(parsed.nodes, vec!["庭院", "御魂十层"]);
+        // Old manifest without the field still deserializes (default empty).
+        let manifest = serde_json::json!({
+            "package_schema": 2, "package_id":"p","task_id":"t","task_version":1,
+            "name":"n","created_at_ms":0,
+            "tool":{"version":"1","dirty":false,"surface":"studio"},
+            "source":{"repo":"r","commit":"c"},
+            "engine":{"template_version":1,"min_engine":"0.1.0","flow_ops":[]},
+            "files":[],
+            "variables_schema":{"own":[],"call_deps":[]},
+            "dependencies":[], "asset_refs":[],
+            "platform":{"os":"windows","needs_adb":true,"design_resolution":null},
+            "signature":null
+        });
+        let m: Manifest = serde_json::from_value(manifest).expect("old manifest");
+        assert!(m.map_requirements.is_empty());
+        let value = serde_json::to_value(&m).expect("json");
+        assert!(
+            value.get("map_requirements").is_none()
+                || value["map_requirements"].is_null(),
+            "empty map_requirements is skipped in serialization: {value}"
+        );
     }
 
     #[test]

@@ -1215,6 +1215,12 @@ pub enum Step {
         required: bool,
         retry: Option<RetryPolicy>,
     },
+    /// seq136 D1: navigate from the **current page** to a map node using the
+    /// single global map (`<assets>/map.json`). Literal target only in V1; the
+    /// runtime loads the map on demand and fails loudly when it is missing.
+    Navigate {
+        target: String,
+    },
     /// ENGINE §22.11: click a target resolved by an ordered redundancy chain
     /// (image > text > remembered coordinate). All locators failing = loud error.
     ClickTarget {
@@ -2824,6 +2830,18 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
                 body,
             })
         }
+        "navigate" => {
+            let target = req_str(&args, "target", &a_path)?;
+            if target.trim().is_empty() {
+                return Err(FlowError::new(
+                    format!("{a_path}.target"),
+                    "`target` must be a non-empty map node id",
+                ));
+            }
+            Ok(Step::Navigate {
+                target: target.trim().to_string(),
+            })
+        }
         "finish" => {
             let name = req_str(&args, "exit", &a_path)?;
             Ok(Step::Finish {
@@ -2836,7 +2854,7 @@ pub fn parse_step(v: &serde_json::Value, path: &str) -> Result<Step, FlowError> 
             format!(
                 "unknown instruction `{other}` (supported: if/loop/while/break/continue/\
                  wait/wait_until/appear/click/click_point/click_target/long_press/\
-                 curve_swipe/dismiss_popup/swipe/\
+                 curve_swipe/dismiss_popup/navigate/swipe/\
                  drag/key/restart_app/ocr/set_var/inc_var/ocr_to_var/log/call_task/\
                  with_params/finish)"
             ),
@@ -3014,6 +3032,13 @@ impl Flow {
         out
     }
 
+    /// seq136 D1: every literal `navigate` target use (T11 / publish gating).
+    pub fn navigate_uses(&self) -> Vec<NavigateUse> {
+        let mut out = Vec::new();
+        collect_navigate_steps(&self.steps, "steps", &mut out);
+        out
+    }
+
     /// T1: does every path through the flow end with `finish(<exit>)`?
     ///
     /// Conservative: the last step must be a `finish`, or an `if` whose BOTH
@@ -3035,6 +3060,13 @@ pub fn exit_name(exit: Exit) -> &'static str {
         Exit::Failed => "failed",
         Exit::Skipped => "skipped",
     }
+}
+
+/// One literal `navigate` target site (`steps[1].args.target`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NavigateUse {
+    pub target: String,
+    pub path: String,
 }
 
 /// One `finish` site: the exit name + its JSON-ish path (`steps[2].args.exit`).
@@ -3089,6 +3121,31 @@ fn expr_uses_param(e: &Expr) -> bool {
         Expr::Not(inner) | Expr::Neg(inner) => expr_uses_param(inner),
         Expr::Binary(_, lhs, rhs) => expr_uses_param(lhs) || expr_uses_param(rhs),
         Expr::Lit(_) => false,
+    }
+}
+
+fn collect_navigate_steps(steps: &[Step], prefix: &str, out: &mut Vec<NavigateUse>) {
+    for (i, s) in steps.iter().enumerate() {
+        let p = format!("{prefix}[{i}]");
+        match s {
+            Step::Navigate { target } => out.push(NavigateUse {
+                target: target.clone(),
+                path: format!("{p}.args.target"),
+            }),
+            Step::If {
+                then, otherwise, ..
+            } => {
+                collect_navigate_steps(then, &format!("{p}.then"), out);
+                collect_navigate_steps(otherwise, &format!("{p}.else"), out);
+            }
+            Step::Loop { body, .. } | Step::While { body, .. } => {
+                collect_navigate_steps(body, &format!("{p}.body"), out)
+            }
+            Step::WithParams { body, .. } => {
+                collect_navigate_steps(body, &format!("{p}.args.body"), out)
+            }
+            _ => {}
+        }
     }
 }
 
@@ -3207,6 +3264,7 @@ fn collect_param_steps(steps: &[Step], prefix: &str, out: &mut Vec<ParamUse>) {
                 }
                 collect_param_steps(body, &format!("{p}.args.body"), out);
             }
+            Step::Navigate { .. } => {}
             Step::WaitUntil { cond, .. } => {
                 collect_param_expr(cond, &format!("{p}.args.cond"), out)
             }
@@ -3484,7 +3542,8 @@ fn collect_assets_steps(steps: &[Step], out: &mut BTreeSet<String>) {    for s i
             | Step::Break
             | Step::Continue
             | Step::CurveSwipe { .. }
-            | Step::CallTask { .. } => {}
+            | Step::CallTask { .. }
+            | Step::Navigate { .. } => {}
             Step::WaitUntil { cond, .. } => collect_assets_expr(cond, out),
             Step::Appear { sel } | Step::Ocr { sel } => {
                 out.insert(sel.clone());
@@ -5790,6 +5849,37 @@ mod tests {
                  {"op":"nope","args":{}}]}"#,
         );
         assert!(e[0].msg.contains("with_params"), "{}", e[0]);
+    }
+
+    #[test]
+    fn navigate_parses_collects_and_roundtrips() {
+        // valid + literal target.
+        let flow = Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"if","args":{"cond":"1 == 1"},"then":[
+                    {"op":"navigate","args":{"target":"御魂十层"}}],"else":[]},
+                 {"op":"loop","args":{"n":"1"},"body":[
+                    {"op":"navigate","args":{"target":"庭院"}}]},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("flow");
+        let uses = flow.navigate_uses();
+        assert_eq!(uses.len(), 2, "{uses:?}");
+        assert_eq!(uses[0].target, "御魂十层");
+        assert!(uses[0].path.contains("then"), "{}", uses[0].path);
+        assert!(uses[1].path.contains("body"), "{}", uses[1].path);
+        // navigate is not a terminator; finish still is.
+        assert!(flow.ends_with_finish());
+        assert!(flow.param_uses().is_empty());
+        assert!(flow.finish_uses().len() == 1);
+        // non-literal/missing/empty targets are load errors.
+        for bad in [
+            r#"{"schema_version":1,"name":"t","steps":[{"op":"navigate","args":{}}]}"#,
+            r#"{"schema_version":1,"name":"t","steps":[{"op":"navigate","args":{"target":3}}]}"#,
+            r#"{"schema_version":1,"name":"t","steps":[{"op":"navigate","args":{"target":"  "}}]}"#,
+        ] {
+            assert!(Flow::from_json(bad).is_err(), "must reject {bad}");
+        }
     }
 
     #[test]
