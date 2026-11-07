@@ -4827,3 +4827,7 @@ un_with_timeout（spawn + stdout/stderr 双线程排空 + try_wait deadline 轮�
 > 用户对 Lead 理解的确认：**路标就是另一个所在地的引用**；路标与所在地=旧模型中两个相邻节点；所在地引用路标只需要 **名称 + 路径**，**不需要 target/id**（冗余）；路径包含 **动作 + 素材**（V1 动作=点击素材/集合）。Rust 源码选择**编译器**（不是只读投影）。
 > 裁决：① 删除 priority/frames/hub；失败兜底=重启游戏回初始庭院，通过 `fallback_task`（默认「返回庭院」）调用；② v1 迁移自行判断（推荐内存迁移+保存 v2，不自动改未保存数据）；③ 独立地图页**彻底删除**，地图 tab 放工作台最后；④ 路标路径 V1 只 click；⑤ Rust 源码做编译器；⑥ `target_expr` 动态目标必须等**地图 V2 前置基础完成**后再做，并与地图改版一起规划。
 > 设计更新：`docs/MAP-V2-DESIGN.md`（v2 schema：locations 以名称为 key；return/outbound landmarks `{name,path}`；无 target/priority/frames/hub；fallback_task；工作台 tab；Rust DSL 编译器方案/依赖；遗留）。当前代码仍未实现（HEAD 文档提交见 git log；seq137 功能代码 `f6f2ad1`）。
+# ★ §E-108 ★ [11-07 23:03] seq138 补充：v1 只迁代码/素材帧搜索+预览/Rust 编译器暂不做
+
+> 用户确认：v1 map 若是用户数据不用管，只迁移代码；路径素材+帧都要可搜索、套用现有搜索样式并支持候选；完成所在地定义后路标/路径涉及素材/帧要有预览；Rust 源码想要 rustc 原生，但本轮不做、优先级调低；其他按计划。
+> 设计更新：`docs/MAP-V2-DESIGN.md §8`（v1 代码迁移、素材/帧搜索+候选+预览、Rust 编译器延后）；实施顺序仍 V2-B（后端模型/运行时/API）→V2-C（工作台地图 tab/搜索预览）→T1（target_expr）；R1 Rust 编译器暂缓。
