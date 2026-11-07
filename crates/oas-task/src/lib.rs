@@ -1540,6 +1540,7 @@ fn expand_call_steps(
 fn expand_collection_steps(
     steps: &mut Vec<serde_json::Value>,
     collections: &[AssetCollection],
+    items: &[AssetDecl],
 ) -> Result<(), String> {
     for step in steps.iter_mut() {
         let op = step.get("op").and_then(|x| x.as_str()).unwrap_or("");
@@ -1578,15 +1579,73 @@ fn expand_collection_steps(
                         let kind = loc.get("kind").and_then(|x| x.as_str()).unwrap_or("");
                         if let (Some(sel), "template") = (sel, kind) {
                             if let Some(coll) = collections.iter().find(|c| c.id == sel) {
+                                // seq132: collection members may be any asset kind.
+                                // Each member becomes the locator for ITS kind:
+                                // template → template locator; OCR/ocr_var → OCR
+                                // text locator (expected text or the ocr_var
+                                // parameter expression); region → fixed region
+                                // locator. Member order is preserved.
                                 for m in &coll.members {
-                                    let mut next = loc.clone();
-                                    if let Some(obj) = next.as_object_mut() {
-                                        obj.insert(
-                                            "sel".into(),
-                                            serde_json::Value::String(m.clone()),
-                                        );
-                                    }
-                                    out.push(next);
+                                    let item = items.iter().find(|a| &a.id == m).ok_or_else(|| {
+                                        format!(
+                                            "素材集合 `{sel}` 的成员 `{m}` 不存在于 assets.json"
+                                        )
+                                    })?;
+                                    let member_loc = match item.kind.as_str() {
+                                        "template" => serde_json::json!({
+                                            "kind": "template",
+                                            "sel": m,
+                                        }),
+                                        "ocr_var" => {
+                                            let key = item
+                                                .param_key
+                                                .clone()
+                                                .filter(|k| !k.trim().is_empty())
+                                                .ok_or_else(|| {
+                                                    format!(
+                                                        "素材集合 `{sel}` 的 ocr_var 成员 `{m}` 没有 param_key"
+                                                    )
+                                                })?;
+                                            serde_json::json!({
+                                                "kind": "ocr_text",
+                                                "sel": m,
+                                                "text_expr": format!("param('{key}')"),
+                                            })
+                                        }
+                                        "ocr_line" | "ocr_lines" => {
+                                            let text = item.ocr_text.clone().filter(|t| !t.trim().is_empty())
+                                                .ok_or_else(|| {
+                                                    format!(
+                                                        "素材集合 `{sel}` 的 OCR 成员 `{m}` 没有期望文字 \
+                                                         (ocr_text)，无法作为 click_target 集合成员；\
+                                                         请给该素材设置识别文字或改用模板/ocr_var 成员"
+                                                    )
+                                                })?;
+                                            serde_json::json!({
+                                                "kind": "ocr_text",
+                                                "sel": m,
+                                                "text": text,
+                                            })
+                                        }
+                                        "region" => {
+                                            let roi = item.roi.ok_or_else(|| {
+                                                format!(
+                                                    "素材集合 `{sel}` 的 region 成员 `{m}` 没有 roi"
+                                                )
+                                            })?;
+                                            serde_json::json!({
+                                                "kind": "region",
+                                                "roi": roi,
+                                            })
+                                        }
+                                        other => {
+                                            return Err(format!(
+                                                "素材集合 `{sel}` 的成员 `{m}` kind=`{other}` \
+                                                 不能作为 click_target 集合成员"
+                                            ))
+                                        }
+                                    };
+                                    out.push(member_loc);
                                 }
                                 continue;
                             }
@@ -1598,7 +1657,7 @@ fn expand_collection_steps(
             }
         }
         for_each_nested_steps_mut(step, &mut |arr| {
-            expand_collection_steps(arr, collections)
+            expand_collection_steps(arr, collections, items)
         })?;
     }
     Ok(())
@@ -1717,8 +1776,10 @@ impl TaskBundle {
             .unwrap_or(false)
     }
 
-    /// Save a multi-image collection. Members must be existing template assets
-    /// and a template may belong to only one collection in this version.
+    /// Save a multi-image collection. seq132: members may be **any** declared
+    /// asset kind (`template` / `ocr_line` / `ocr_lines` / `ocr_var` / `region`);
+    /// nested collections are rejected, and a member may belong to only one
+    /// collection.
     pub fn save_collection(&self, coll: AssetCollection) -> Result<AssetCollection, String> {
         let mut af = self.load_assets_file()?;
         let id = coll.id.trim().to_string();
@@ -1733,20 +1794,28 @@ impl TaskBundle {
             if members.contains(m) {
                 return Err(format!("集合成员重复：`{m}`"));
             }
+            if af.collections.iter().any(|c| &c.id == m) {
+                return Err(format!(
+                    "集合成员 `{m}` 是另一个集合；素材集合不支持嵌套集合"
+                ));
+            }
             let item = af
                 .items
                 .iter()
                 .find(|a| &a.id == m)
                 .ok_or_else(|| format!("集合成员 `{m}` 不存在"))?;
-            if item.kind != "template" {
-                return Err(format!("集合成员 `{m}` 必须是模板图（template）"));
+            if !KINDS.contains(&item.kind.as_str()) {
+                return Err(format!(
+                    "集合成员 `{m}` 的 kind `{}` 不受支持",
+                    item.kind
+                ));
             }
             if af
                 .collections
                 .iter()
                 .any(|c| c.id != id && c.members.iter().any(|x| x == m))
             {
-                return Err(format!("模板 `{m}` 已经属于另一个集合"));
+                return Err(format!("素材 `{m}` 已经属于另一个集合"));
             }
             members.push(m.clone());
         }
@@ -1867,11 +1936,8 @@ impl TaskBundle {
                 .to_string();
             let mut stack = vec![current_task];
             expand_call_steps(steps, tasks_dir, &mut stack, 0, &mut warnings)?;
-            let collections = self
-                .load_assets_file()
-                .map(|af| af.collections)
-                .unwrap_or_default();
-            expand_collection_steps(steps, &collections)?;
+            let af = self.load_assets_file().unwrap_or_default();
+            expand_collection_steps(steps, &af.collections, &af.items)?;
         }
         let expanded = serde_json::to_string(&value)
             .map_err(|e| format!("flow.json: serialize expanded flow: {e}"))?;
@@ -3695,6 +3761,22 @@ impl TaskBundle {
         // deprecated `action_source` value is tolerated.
         for (ci, coll) in af.collections.iter().enumerate() {
             let p = format!("assets.json: collections[{ci}]");
+            if coll.members.is_empty() {
+                errs.push((format!("{p}.members"), "集合至少需要一个成员".to_string()));
+            }
+            for (mi, m) in coll.members.iter().enumerate() {
+                if af.collections.iter().any(|c| &c.id == m) {
+                    errs.push((
+                        format!("{p}.members[{mi}]"),
+                        format!("`{m}` 是另一个集合；素材集合不支持嵌套集合"),
+                    ));
+                } else if !af.items.iter().any(|a| &a.id == m) {
+                    errs.push((
+                        format!("{p}.members[{mi}]"),
+                        format!("成员 `{m}` 不存在于 assets.json items"),
+                    ));
+                }
+            }
             if let Some(shape) = coll.action_shape.as_ref() {
                 if let Err(e) =
                     validate_action_shape(shape, &format!("{p}.action_shape"), shape_bounds)
@@ -4195,6 +4277,126 @@ mod tests {
             .expect_err("unknown id");
         assert!(err.contains("does not exist"), "{err}");
         assert_eq!(std::fs::read(b.assets_path()).expect("assets"), before);
+    }
+
+    #[test]
+    fn collection_accepts_mixed_member_kinds_and_expands_by_kind() {
+        // seq132: template + OCR + ocr_var + region members.
+        let td = TempDir::new("collection-mixed");
+        let b = open(&td);
+        let f = frame(32, 32);
+        b.save_asset(AssetDecl::template("成员模板", [0, 0, 8, 8]), Some(&f))
+            .expect("template member");
+        let mut ocr = AssetDecl::ocr_lines("成员OCR", [8, 0, 8, 8]);
+        ocr.ocr_text = Some("开始".to_string());
+        b.save_asset(ocr, None).expect("ocr_lines member");
+        b.save_asset(
+            AssetDecl::ocr_var("成员变量", "group", "御魂".to_string(), None),
+            None,
+        )
+        .expect("ocr_var member");
+        b.save_asset(AssetDecl::region("成员区域", [16, 16, 8, 8]), None)
+            .expect("region member");
+        b.save_collection(AssetCollection {
+            id: "混合集合".into(),
+            members: vec![
+                "成员模板".into(),
+                "成员OCR".into(),
+                "成员变量".into(),
+                "成员区域".into(),
+            ],
+            threshold: Some(0.8),
+            action_shape: None,
+            action_source: "recognition".into(),
+        })
+        .expect("mixed-kind collection must save");
+        // Nested collections are rejected with an explicit message.
+        let err = b
+            .save_collection(AssetCollection {
+                id: "嵌套集合".into(),
+                members: vec!["混合集合".into()],
+                threshold: None,
+                action_shape: None,
+                action_source: "recognition".into(),
+            })
+            .expect_err("nested collection must be rejected");
+        assert!(err.contains("嵌套"), "unexpected: {err}");
+        // A member may belong to only one collection.
+        let err = b
+            .save_collection(AssetCollection {
+                id: "第二集合".into(),
+                members: vec!["成员模板".into()],
+                threshold: None,
+                action_shape: None,
+                action_source: "recognition".into(),
+            })
+            .expect_err("double membership must be rejected");
+        assert!(err.contains("已经属于另一个集合"), "unexpected: {err}");
+        // Lint/publish validation is clean for the mixed collection.
+        b.save_flow(
+            r#"{"schema_version":1,"name":"任务1","steps":[
+                {"op":"finish","args":{"exit":"done"}}
+            ]}"#,
+        )
+        .expect("flow");
+        b.lint().expect("mixed collection must lint clean");
+        // click_target expansion keeps the collection's member order and emits a
+        // locator that fits each member kind.
+        b.save_flow(
+            r#"{"schema_version":1,"name":"任务1","steps":[
+                {"op":"click_target","args":{"find":[{"kind":"template","sel":"混合集合"}]}},
+                {"op":"finish","args":{"exit":"done"}}
+            ]}"#,
+        )
+        .expect("flow with collection");
+        let flow = b.load_flow().expect("load").expect("flow");
+        let oas_flow::Step::ClickTarget { find, .. } = &flow.steps[0] else {
+            panic!("expected click_target, got {:?}", flow.steps[0]);
+        };
+        assert_eq!(find.len(), 4, "collection expands to every member: {find:?}");
+        let assets: Vec<&str> = find.iter().filter_map(|l| l.asset()).collect();
+        assert_eq!(assets, vec!["成员模板", "成员OCR", "成员变量"]);
+        // OCR member → text locator using its saved expected text.
+        assert!(
+            matches!(
+                find[1].text_spec(),
+                Some(oas_flow::TextSpec::Literal(text)) if text == "开始"
+            ),
+            "ocr_line member must expand to its text locator: {:?}",
+            find[1]
+        );
+        // ocr_var member → param expression locator (runtime value wins).
+        assert!(
+            matches!(find[2].text_spec(), Some(oas_flow::TextSpec::Expr(_))),
+            "ocr_var member must expand to the param expression: {:?}",
+            find[2]
+        );
+        // region member → fixed region locator.
+        assert!(
+            matches!(find[3], oas_flow::Locator::Region { .. }),
+            "region member must expand to a region locator: {:?}",
+            find[3]
+        );
+        // Plain OCR member without expected text is a loud load error.
+        b.save_asset(AssetDecl::ocr_lines("无期望文字", [0, 16, 8, 8]), None)
+            .expect("plain ocr_lines");
+        b.save_collection(AssetCollection {
+            id: "第二集合".into(),
+            members: vec!["无期望文字".into()],
+            threshold: None,
+            action_shape: None,
+            action_source: "recognition".into(),
+        })
+        .expect("second collection");
+        b.save_flow(
+            r#"{"schema_version":1,"name":"任务1","steps":[
+                {"op":"click_target","args":{"find":[{"kind":"template","sel":"第二集合"}]}},
+                {"op":"finish","args":{"exit":"done"}}
+            ]}"#,
+        )
+        .expect("save flow");
+        let err = b.load_flow().expect_err("plain OCR member without text");
+        assert!(err.contains("没有期望文字"), "unexpected: {err}");
     }
 
     #[test]

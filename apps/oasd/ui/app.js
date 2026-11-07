@@ -5918,6 +5918,23 @@ function updateAssetActionSaveButton() {
 // 已在其它集合时先移出旧集合（剩 0 个则删除旧集合），再写入目标集合。
 let collectionAddCtx = null;
 
+// seq132：集合成员白名单（用户 08:26「扩展到所有素材」）。集合嵌套仍禁止。
+// region 成员=固定区域（总是命中，作为兜底）。
+const COLLECTION_MEMBER_KINDS = ['template', 'ocr_line', 'ocr_lines', 'ocr_var', 'region'];
+
+function collectionMemberKindAllowed(kind) {
+  return COLLECTION_MEMBER_KINDS.indexOf(String(kind === undefined || kind === null ? '' : kind)) >= 0;
+}
+
+function collectionMemberKindNote(kind) {
+  const k = String(kind === undefined || kind === null ? '' : kind);
+  if (k === 'template') return '模板图成员（按模板匹配识别）';
+  if (k === 'ocr_line' || k === 'ocr_lines') return 'OCR 文字成员（按 OCR 类型识别）';
+  if (k === 'ocr_var') return '使用端OCR文字配置项成员（按识别文字识别）';
+  if (k === 'region') return '固定区域成员（总是命中，作为兜底）';
+  return '';
+}
+
 function collectionMembersWith(members, templateId) {
   const out = [];
   for (const m of Array.isArray(members) ? members : []) {
@@ -5944,9 +5961,11 @@ function collectionAddMembersFor(collections, targetId, templateId) {
 
 async function openCollectionAddDialog(it, scopeTask) {
   if (!it) return;
-  if (it.kind !== 'template') {
-    resultEl.textContent = `素材「${it.id}」不是模板图（template），不能加入素材集合；只有模板可作为集合成员。`;
-    log(`加入集合失败：${it.id} kind=${it.kind || '?'} 不是 template`, 'WARN');
+  // seq132：所有可识别/固定素材都可加入集合；仅 template_set（集合嵌套）禁止。
+  if (!collectionMemberKindAllowed(it.kind)) {
+    resultEl.textContent = `素材「${it.id}」（${it.kind || '?'}）不能加入素材集合：` +
+      '素材集合不能加入另一个集合（不支持集合嵌套）。';
+    log(`加入集合失败：${it.id} kind=${it.kind || '?'}（集合嵌套不支持）`, 'WARN');
     return;
   }
   const task = assetRowScopeTask(scopeTask, true);
@@ -6012,13 +6031,15 @@ function syncCollectionAddFields() {
   if (!collectionAddInfo) return;
   const parts = [];
   if (ctx.current) parts.push(`当前已在集合「${ctx.current.id}」`);
+  const kindNote = collectionMemberKindNote(ctx.it.kind);
+  if (kindNote) parts.push('成员类型：' + kindNote);
   if (isNew) {
-    parts.push('将新建集合并把该模板作为成员（集合 id 在 flow 中引用）');
+    parts.push('将新建集合并把该素材作为成员（集合 id 在 flow 中引用）');
   } else {
     const base = ctx.collections.find((c) => c.id === collectionAddTarget.value);
     if (base) {
       const others = (base.members || []).filter((m) => m !== ctx.it.id);
-      parts.push(`目标集合「${base.id}」现有成员：${others.join('、') || '无'}；保存后加入该模板`);
+      parts.push(`目标集合「${base.id}」现有成员：${others.join('、') || '无'}；保存后加入该素材`);
     }
   }
   collectionAddInfo.textContent = parts.join('；') || '—';

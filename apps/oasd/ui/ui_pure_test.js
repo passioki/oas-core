@@ -2004,7 +2004,7 @@ eq(
 );
 eq(setMenuState.filter((m) => m.disabled).length, 11, 'the other eleven collection entries stay visible but disabled');
 ok(
-  setMenuState.filter((m) => m.disabled).every((m) => /集合不支持/.test(m.title)),
+  setMenuState.filter((m) => m.disabled).every((m) => /集合不支持|不能加入另一个集合/.test(m.title)),
     'disabled collection entries explain that sets do not support them'
 );
 
@@ -2018,9 +2018,53 @@ eq(
   false,
   'a manageable template can join a collection'
 );
+// seq132（用户 2026-11-07 08:26）：加入集合放开到所有可加入集合的素材（除 template_set 嵌套）。
+eq(
+  assetUi.COLLECTION_MEMBER_KINDS,
+  ['template', 'ocr_line', 'ocr_lines', 'ocr_var', 'region'],
+  'seq132: the collection member whitelist covers template/OCR/ocr_var/region'
+);
+eq(assetUi.collectionMemberKindAllowed('ocr_line'), true,
+  'seq132: ocr_line can join a collection');
+eq(assetUi.collectionMemberKindAllowed('ocr_lines'), true,
+  'seq132: ocr_lines can join a collection');
+eq(assetUi.collectionMemberKindAllowed('ocr_var'), true,
+  'seq132: ocr_var can join a collection');
+eq(assetUi.collectionMemberKindAllowed('region'), true,
+  'seq132: region can join a collection (fixed area member)');
+eq(assetUi.collectionMemberKindAllowed('template_set'), false,
+  'seq132: template_set cannot join another collection (no nesting)');
+eq(assetUi.collectionMemberKindAllowed('unknown_kind'), false,
+  'seq132: unknown kinds stay rejected');
 const ocrCollectionMenu = assetUi.assetMenuState(rowOcr, { manage: true }).find((m) => m.key === 'collection');
-eq(ocrCollectionMenu.disabled, true, 'non-template assets cannot join a collection');
-ok(/仅模板图（template）可加入素材集合/.test(ocrCollectionMenu.title), 'the disabled 加入集合 title explains the template-only rule');
+eq(ocrCollectionMenu.disabled, false, 'seq132: OCR assets can join a collection');
+ok(/OCR 文字成员/.test(ocrCollectionMenu.title), 'seq132: the OCR collection tooltip explains OCR membership');
+const ocrVarCollectionMenu = assetUi
+  .assetMenuState({ id: '识别文字丁', kind: 'ocr_var', roi: [1, 2, 3, 4] }, { manage: true })
+  .find((m) => m.key === 'collection');
+eq(ocrVarCollectionMenu.disabled, false, 'seq132: ocr_var assets can join a collection');
+ok(/使用端OCR文字配置项/.test(ocrVarCollectionMenu.title), 'seq132: the ocr_var tooltip names the configurable OCR member');
+const regionCollectionMenu = assetUi.assetMenuState(rowRegion, { manage: true }).find((m) => m.key === 'collection');
+eq(regionCollectionMenu.disabled, false, 'seq132: region assets can join a collection');
+ok(/固定区域/.test(regionCollectionMenu.title) && /总是命中/.test(regionCollectionMenu.title),
+  'seq132: the region tooltip explains fixed-area/always-hit membership');
+const setCollectionMenu = assetUi.assetMenuState(rowSet, { manage: true }).find((m) => m.key === 'collection');
+eq(setCollectionMenu.disabled, true, 'seq132: a template_set cannot join a collection');
+ok(/不能加入另一个集合/.test(setCollectionMenu.title), 'seq132: template_set collection tooltip explains the nesting ban');
+ok(!/仅模板图（template）可加入素材集合/.test(assetUiSource),
+  'seq132: the old template-only collection rule/tooltip is gone');
+ok(
+  /COLLECTION_MEMBER_KINDS = \['template', 'ocr_line', 'ocr_lines', 'ocr_var', 'region'\]/.test(source) &&
+    /function collectionMemberKindAllowed\(kind\)/.test(source) &&
+    !/if \(it\.kind !== 'template'\)/.test(source) &&
+    /素材集合不能加入另一个集合（不支持集合嵌套）/.test(source),
+  'seq132: app.js uses the same whitelist and no longer early-returns for non-template kinds'
+);
+ok(
+  /集合=多素材目标（模板\/OCR 行\/使用端OCR文字配置项\/固定区域均可）/.test(html) &&
+    /region 成员=固定区域（总是命中，作为兜底）/.test(html),
+  'seq132: the dialog hint documents mixed members and the region fixed-area rule'
+);
 ok(/id="collection-add-dialog"/.test(html) && /id="collection-add-target"/.test(html) &&
   /id="collection-add-id"/.test(html) && /id="collection-add-save"/.test(html),
   'index.html provides the 加入集合 dialog (target select + new id + save)');
@@ -2153,8 +2197,8 @@ eq(assetUi.kindLabel('ocr_var'), '使用端OCR文字配置项（ocr_var）', 'U-
 const ocrVarMenu = assetUi.assetMenuState(rowOcrVar, { manage: true });
 eq(
   ocrVarMenu.filter((m) => m.disabled).map((m) => m.label),
-  ['加入集合'],
-  'U-T4: an ocr_var row enables every item except 加入集合 (template-only) (long-press + 识别文字 included)'
+  [],
+  'seq132: an ocr_var row enables every item (加入集合 is no longer template-only)'
 );
 const ocrVarTextMenu = ocrVarMenu.find((m) => m.key === 'text');
 eq(ocrVarTextMenu.disabled, false, 'U-T4: ocr_var can edit 识别文字');

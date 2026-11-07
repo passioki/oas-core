@@ -18,6 +18,14 @@
     return KIND_LABELS[kind] || kind;
   }
 
+  // seq132（用户 2026-11-07 08:26）：集合成员从「仅模板」放开到所有可识别/固定素材；
+  // 仅 template_set（集合嵌套）禁止。region 成员=固定区域（总是命中，作兜底）。
+  const COLLECTION_MEMBER_KINDS = ['template', 'ocr_line', 'ocr_lines', 'ocr_var', 'region'];
+
+  function collectionMemberKindAllowed(kind) {
+    return COLLECTION_MEMBER_KINDS.indexOf(String(kind === undefined || kind === null ? '' : kind)) >= 0;
+  }
+
   // #6（验收反馈）：素材已存识别多边形在缩略图上的轮廓绘制。
   // 素材 roi 是帧坐标裁剪框；缩略图把 roi 等比缩放放进 64x44（与 canvas 分支的
   // drawImage 布局一致），polygon 顶点按同一映射投影到缩略图坐标。
@@ -246,6 +254,7 @@
     { key: 'position', label: '位置帧', action: 'onPosition', manage: true, title: '设置素材位置帧' },
     {
       key: 'collection', label: '加入集合', action: 'onCollectionAdd', manage: true,
+    title: '把该素材加入素材集合（模板/OCR/识别文字配置项/固定区域均可；集合嵌套不支持）',
       title: '把该模板加入已有素材集合，或新建集合（template 专用；集合 id 可在 flow 中引用）',
     },
     { key: 'delete', label: '删除', action: 'onDelete', manage: true, title: '删除素材（flow 仍引用时会被拒绝）' },
@@ -291,16 +300,30 @@
     return ASSET_MENU_ITEMS.map((m) => {
       let disabled = false;
       let title = m.title;
-      if (isSet && m.key !== 'delete') {
+      if (isSet && m.key === 'collection') {
+        disabled = true;
+        title = '素材集合不能加入另一个集合（不支持集合嵌套）';
+      } else if (isSet && m.key !== 'delete') {
         disabled = true;
         title = `素材集合不支持「${m.label}」：集合只有成员列表`;
       } else if (m.manage && !o.manage) {
         disabled = true;
         title = `当前列表只读，不能${m.label}；请到任务素材库或全局素材库操作`;
       } else if (m.key === 'collection') {
-        if (kind !== 'template') {
+        if (isVirtual) {
           disabled = true;
-          title = '仅模板图（template）可加入素材集合';
+          title = '该素材是旧任务参数合成的虚拟素材（待迁移）：请先迁移再加入集合';
+        } else if (!collectionMemberKindAllowed(kind)) {
+          disabled = true;
+          title = '该素材类型不能加入素材集合（仅集合嵌套不支持）';
+        } else if (kind === 'region') {
+          title = '加入素材集合（region=固定区域成员：总是命中，作为兜底）';
+        } else if (kind === 'ocr_var') {
+          title = '加入素材集合（使用端OCR文字配置项成员：按识别文字识别）';
+        } else if (kind === 'ocr_line' || kind === 'ocr_lines') {
+          title = '加入素材集合（OCR 文字成员：按 OCR 类型识别）';
+        } else {
+          title = '加入素材集合（模板/OCR/识别文字配置项/固定区域都可作为成员）';
         }
       } else if (m.key === 'action' && kind === 'region') {
         disabled = true;
@@ -701,7 +724,7 @@
 
     if (it.kind === 'template_set') {
       const main = makeButton('', `${it.id}：flow 引用该集合；运行时按成员顺序尝试匹配`, 'asset-main');
-      main.textContent = `${it.id}\n集合成员 ${(it.members || []).length} 张：${(it.members || []).join(' / ')}`;
+      main.textContent = `${it.id}\n集合成员 ${(it.members || []).length} 个：${(it.members || []).join(' / ')}`;
       main.addEventListener('click', () => {
         selectAsset(it.id);
         if (o.onPick) o.onPick(it);
@@ -795,6 +818,8 @@
   window.OASAssetUI = {
     KIND_LABELS,
     kindLabel,
+    COLLECTION_MEMBER_KINDS,
+    collectionMemberKindAllowed,
     makeThumb,
     // #6：已存识别多边形 → 缩略图坐标投影（ui_pure_test 直接断言）。
     thumbPolygonPoints,

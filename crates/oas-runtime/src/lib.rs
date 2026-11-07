@@ -1500,6 +1500,104 @@ pub fn sort_asset_match_candidates(candidates: &mut [AssetMatchCandidate]) {
     });
 }
 
+/// seq132: recognition candidates of a **mixed** collection (template / OCR
+/// / ocr_var / region members), using caller-provided OCR lines.
+///
+/// * template member → every full-frame NCC candidate
+///   ([`asset_match_candidates`]);
+/// * OCR / ocr_var member → its det+rec lines filtered by its expected text and
+///   confidence threshold (`strict_ocr_match` mirrors the editor candidate rule;
+///   the engine's own `region.asset` pick passes `false`);
+/// * region member → exactly one candidate: `score=1.0`, real rect = its ROI (a
+///   collection containing a region therefore always has a match).
+///
+/// Every candidate's `action_box`/`action_shape` comes from the shared
+/// [`self_operation_geometry`] helper, and the result is sorted by
+/// [`sort_asset_match_candidates`] (score desc → y → x; stable to member order),
+/// so the editor candidate API, `test_action` and the engine agree on
+/// `candidate_index` / winner.
+pub fn collection_candidates_with_ocr(
+    assets: &AssetSet,
+    matcher: &Matcher,
+    id: &str,
+    ocr_lines: &BTreeMap<String, Vec<OcrLine>>,
+    params: &BTreeMap<String, oas_flow::Value>,
+    strict_ocr_match: bool,
+    frame_size: Option<(u32, u32)>,
+) -> Result<Vec<AssetMatchCandidate>, String> {
+    let members = assets
+        .collection_members(id)
+        .map(|m| m.to_vec())
+        .ok_or_else(|| format!("`{id}` is not a template collection"))?;
+    let mut out: Vec<AssetMatchCandidate> = Vec::new();
+    for member in members {
+        if let Some(real) = assets.region(&member) {
+            let (action_box, action_shape) =
+                self_operation_geometry(assets, &member, real, frame_size)?;
+            out.push(AssetMatchCandidate {
+                member: member.clone(),
+                score: 1.0,
+                x: real.x,
+                y: real.y,
+                w: real.w,
+                h: real.h,
+                centre: rect_centre(real),
+                action_box,
+                action_shape,
+            });
+            continue;
+        }
+        if assets.get(&member).is_some() {
+            out.extend(asset_match_candidates(assets, matcher, &member)?);
+            continue;
+        }
+        if !assets.is_ocr_asset(&member) {
+            return Err(format!(
+                "collection `{id}` member `{member}` is not a declared asset"
+            ));
+        }
+        let lines = ocr_lines.get(&member).map(|v| v.as_slice()).unwrap_or(&[]);
+        let min = assets.ocr_threshold(&member);
+        let expected = match assets.ocr_var(&member) {
+            Some(_) => Some(assets.ocr_var_expected_text(&member, params)?),
+            None => assets
+                .ocr_expected_text(&member)
+                .map(str::to_string)
+                .or_else(|| assets.derived_ocr(&member).map(|(_, e)| e)),
+        };
+        let matched: Vec<&OcrLine> = match expected.as_deref() {
+            Some(expected) => {
+                if strict_ocr_match {
+                    matching_ocr_lines_strict(lines, expected, min)
+                } else {
+                    matching_ocr_lines(lines, expected, min)
+                }
+            }
+            None => lines
+                .iter()
+                .filter(|line| min.map(|m| line.score >= m).unwrap_or(true))
+                .collect(),
+        };
+        for line in matched {
+            let (action_box, action_shape) =
+                self_operation_geometry(assets, &member, line.rect, frame_size)?;
+            out.push(AssetMatchCandidate {
+                member: member.clone(),
+                score: line.score,
+                x: line.rect.x,
+                y: line.rect.y,
+                w: line.rect.w,
+                h: line.rect.h,
+                centre: rect_centre(line.rect),
+                action_box,
+                action_shape,
+            });
+        }
+    }
+    sort_asset_match_candidates(&mut out);
+    Ok(out)
+}
+
 /// Template / collection recognition candidates in the editor/chain shape
 /// (delegates to [`asset_match_candidates`], the P0a single source of truth).
 pub fn template_candidates(
@@ -2554,19 +2652,45 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             }
             self.observe_screen()?;
             let mut best: Option<(f32, Option<Point>, String)> = None;
+            let mut first_error: Option<String> = None;
             for m in members {
-                let (score, at) = if self.assets.is_ocr_asset(&m) {
-                    self.locate_ocr(&m)?
+                // seq132: mixed collections — region members are a fixed area
+                // (always "recognized", score 1.0 at its ROI centre); OCR members
+                // go through locate_ocr; everything else is template matching.
+                // A member that cannot be recognized (e.g. OCR provider missing)
+                // is a miss for the collection best-pick as long as another
+                // member resolves; it only becomes the step error when no member
+                // resolved at all.
+                let found = if let Some(roi) = self.assets.region(&m) {
+                    Ok((1.0, Some(rect_centre(roi))))
+                } else if self.assets.is_ocr_asset(&m) {
+                    self.locate_ocr(&m)
                 } else {
-                    self.locate_one(&m)?
+                    self.locate_one(&m)
+                };
+                let (score, at) = match found {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if first_error.is_none() {
+                            first_error = Some(e);
+                        }
+                        continue;
+                    }
                 };
                 if best.as_ref().map(|b| score > b.0).unwrap_or(true) {
                     best = Some((score, at, m));
                 }
             }
-            let (score, at, member) = best.ok_or_else(|| format!("collection `{sel}` has no members"))?;
+            let Some((score, at, member)) = best else {
+                return Err(first_error
+                    .unwrap_or_else(|| format!("collection `{sel}` has no members")));
+            };
             self.last_set_member.insert(sel.to_string(), member);
             return Ok((score, at));
+        }
+        // A pure `region` asset is a fixed operation area: no recognition.
+        if let Some(roi) = self.assets.region(sel) {
+            return Ok((1.0, Some(rect_centre(roi))));
         }
         if self.assets.is_ocr_asset(sel) {
             return self.locate_ocr(sel);
@@ -2711,6 +2835,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         } else {
             sel
         };
+        // seq132: a region member's fixed ROI is its click box.
+        if let Some(roi) = self.assets.region(effective_sel) {
+            return Ok(roi);
+        }
         // OCR assets have no template pixels; click their own self operation
         // area. 2026-11-06 批次B (#4/Q1): an authored `roi` makes the stored
         // `action_shape`/`click_back` follow the recognized line by
@@ -2762,6 +2890,37 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         Ok(rect)
     }
 
+    /// seq132: resolve the winning member's **real rect + self geometry** for an
+    /// `op_region` chain root (mixed collections included). Kept next to
+    /// [`Self::click_geometry_for`] so both use the same per-kind dispatch.
+    fn chain_geometry_for(
+        &self,
+        sel: &str,
+        matched: Point,
+    ) -> Result<(Rect, Option<ClickShape>, Rect), String> {
+        let asset = self.effective_asset(sel);
+        if let Some(roi) = self.assets.region(asset) {
+            return Ok((roi, self.assets.click_shape(asset).cloned(), roi));
+        }
+        if self.assets.is_ocr_asset(asset) {
+            let real = self
+                .last_ocr_rect
+                .or_else(|| self.assets.ocr_var(asset).and_then(|v| v.roi))
+                .or_else(|| self.assets.ocr_roi(asset))
+                .ok_or_else(|| {
+                    format!("`{asset}`: op_region chain needs the real recognized rect")
+                })?;
+            let (box_, shape) =
+                self.ocr_self_operation_geometry(asset, real, self.screen.size())?;
+            return Ok((box_, shape, real));
+        }
+        let real = self
+            .root_template_real_rect(asset, matched)
+            .ok_or_else(|| format!("`{asset}`: op_region chain needs the real matched rect"))?;
+        let (box_, shape) = self.click_geometry_for(asset, matched)?;
+        Ok((box_, shape, real))
+    }
+
     /// Click geometry (rect + exact operation shape) from **one source**.
     ///
     /// seq130 fix (#5): the sampled target rect and the shape that constrains the
@@ -2774,6 +2933,85 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// authored area. Template/collection keep the historical
     /// `click_box_for` + translated shape; a full-screen ocr_var (no authored
     /// roi) keeps the absolute shape (Q1 documented limit).
+    /// seq132: the asset that actually owns the geometry for `sel` — the winning
+    /// member for a collection, otherwise `sel` itself.
+    fn effective_asset<'a>(&'a self, sel: &'a str) -> &'a str {
+        if self.assets.collection_members(sel).is_some() {
+            self.last_set_member
+                .get(sel)
+                .map(|s| s.as_str())
+                .unwrap_or(sel)
+        } else {
+            sel
+        }
+    }
+
+    /// seq132: rect + score + member for a mixed collection candidate, used by the
+    /// runtime candidate API/preview and (with the caller's OCR lines) by serve.
+    /// The exact same ordering is used everywhere (`sort_asset_match_candidates`).
+    pub fn collection_candidates(
+        &mut self,
+        id: &str,
+        strict_ocr_match: bool,
+    ) -> Result<Vec<AssetMatchCandidate>, String> {
+        let members = self
+            .assets
+            .collection_members(id)
+            .map(|m| m.to_vec())
+            .ok_or_else(|| format!("`{id}` is not a template collection"))?;
+        self.observe_screen()?;
+        let frame = self
+            .screen
+            .frame
+            .as_ref()
+            .ok_or_else(|| "candidate enumeration: no frame available".to_string())?
+            .clone();
+        let frame_size = (frame.width, frame.height);
+        let mut ocr_lines: BTreeMap<String, Vec<OcrLine>> = BTreeMap::new();
+        for m in &members {
+            if self.assets.region(m).is_some() || self.assets.get(m).is_some() {
+                continue;
+            }
+            if !self.assets.is_ocr_asset(m) {
+                return Err(format!(
+                    "collection `{id}` member `{m}` is not a declared asset"
+                ));
+            }
+            let roi = self
+                .assets
+                .ocr_var(m)
+                .and_then(|v| v.roi)
+                .or_else(|| self.assets.ocr_roi(m))
+                .or_else(|| self.assets.derived_ocr(m).map(|(r, _)| r))
+                .unwrap_or(Rect {
+                    x: 0,
+                    y: 0,
+                    w: frame.width as i32,
+                    h: frame.height as i32,
+                });
+            let provider = self
+                .ocr
+                .as_mut()
+                .ok_or_else(|| format!("collection `{id}` has OCR member `{m}` but no OCR provider"))?;
+            let lines = provider.recognize_lines(&frame, roi)?;
+            ocr_lines.insert(m.clone(), lines);
+        }
+        let matcher = self
+            .screen
+            .matcher
+            .as_ref()
+            .ok_or_else(|| "candidate enumeration: no frame available".to_string())?;
+        collection_candidates_with_ocr(
+            &self.assets,
+            matcher,
+            id,
+            &ocr_lines,
+            &self.params,
+            strict_ocr_match,
+            Some(frame_size),
+        )
+    }
+
     fn click_geometry_for(
         &self,
         sel: &str,
@@ -2787,6 +3025,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         } else {
             sel
         };
+        // seq132: a region member / direct region asset is a fixed operation
+        // area (absolute shape, no recognition).
+        if let Some(roi) = self.assets.region(effective_sel) {
+            return Ok((roi, self.assets.click_shape(effective_sel).cloned()));
+        }
         if self.assets.is_ocr_asset(effective_sel) {
             let authored_roi = self
                 .assets
@@ -2825,6 +3068,19 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// candidates and are skipped here (they are handled by
     /// [`Self::operation_region_for_asset`] directly, with no candidates).
     fn operation_candidates(&mut self, id: &str) -> Result<Vec<OperationCandidate>, String> {
+        // seq132: mixed collections (template / OCR / ocr_var / region members).
+        if self.assets.collection_members(id).is_some() {
+            let candidates = self.collection_candidates(id, false)?;
+            return Ok(candidates
+                .into_iter()
+                .map(|c| OperationCandidate {
+                    rect: c.action_box,
+                    shape: c.action_shape,
+                    centre: c.centre,
+                    score: c.score,
+                })
+                .collect());
+        }
         self.observe_screen()?;
         let matcher = self
             .screen
@@ -3099,10 +3355,16 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         let root_box = root.box_;
         let root_shape = root.shape.clone();
         let mut steps: Vec<OpRegionChainStep> = Vec::new();
+        // seq132: for a collection the winning member owns geometry + chain.
+        let chain_owner = if self.assets.collection_members(target).is_some() {
+            root.asset.clone()
+        } else {
+            target.to_string()
+        };
         let (action_box, shape) =
-            if self.assets.has_op_region_chain(target) && root.kind != "region" {
+            if self.assets.has_op_region_chain(&chain_owner) && root.kind != "region" {
                 let mut visited: BTreeSet<String> = BTreeSet::new();
-                visited.insert(target.to_string());
+                visited.insert(chain_owner.clone());
                 let resolved =
                     self.walk_op_region_chain(root, 0, &mut visited, &mut steps, "test_action")?;
                 // Model B: the final box is the terminal node's own self geometry.
@@ -3167,6 +3429,45 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 box_: rect,
                 shape: self.assets.click_shape(target).cloned(),
                 score: None,
+                text: None,
+            });
+        }
+        if self.assets.collection_members(target).is_some() {
+            // seq132: mixed collection — candidates and their order are the SAME
+            // as the serve candidate API (`collection_candidates_with_ocr` +
+            // `sort_asset_match_candidates`), so `candidate_index` agrees.
+            let candidates = self.collection_candidates(target, true)?;
+            if candidates.is_empty() {
+                return Err(format!(
+                    "{site}: collection `{target}` has no candidate at/above its member thresholds"
+                ));
+            }
+            let idx = candidate_index.unwrap_or(0);
+            let Some(c) = candidates.get(idx) else {
+                return Err(format!(
+                    "{site}: candidate_index {idx} is out of range (collection `{target}` has {} candidates)",
+                    candidates.len()
+                ));
+            };
+            let kind = if self.assets.region(&c.member).is_some() {
+                "region"
+            } else if self.assets.is_ocr_asset(&c.member) {
+                "ocr"
+            } else {
+                "template"
+            };
+            return Ok(ChainNodeHit {
+                asset: c.member.clone(),
+                kind,
+                real: Some(Rect {
+                    x: c.x,
+                    y: c.y,
+                    w: c.w,
+                    h: c.h,
+                }),
+                box_: c.action_box,
+                shape: c.action_shape.clone(),
+                score: Some(c.score),
                 text: None,
             });
         }
@@ -3678,34 +3979,17 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 "{site}: drag asset `{sel}` not found (score {score:.3} < threshold {threshold:.3})"
             ));
         };
-        let frame_size = self.screen.size();
-        let is_ocr = self.assets.is_ocr_asset(sel);
-        let (root_box, root_shape, real) = if is_ocr {
-            let real = self
-                .last_ocr_rect
-                .or_else(|| self.assets.ocr_var(sel).and_then(|v| v.roi))
-                .or_else(|| self.assets.ocr_roi(sel))
-                .ok_or_else(|| {
-                    format!("{site}: drag asset `{sel}` has no recognized OCR rect")
-                })?;
-            let (box_, shape) = self.ocr_self_operation_geometry(sel, real, frame_size)?;
-            (box_, shape, real)
-        } else {
-            let real = self.root_template_real_rect(sel, p).ok_or_else(|| {
-                format!("{site}: drag asset `{sel}` has no matched template rect")
-            })?;
-            // Same helper `Step::Click` uses for the root operation area.
-            let box_ = self.click_box_for(sel, p)?;
-            let shape = self.translated_click_shape(sel, p);
-            (box_, shape, real)
-        };
-        let (mut rect, mut shape) = (root_box, root_shape);
-        if self.assets.has_op_region_chain(sel) {
+        // seq132: mixed collections dispatch per winning member kind; the
+        // member's own op_region chain applies exactly like a click.
+        let (mut rect, mut shape) = self.click_geometry_for(sel, p)?;
+        let chain_sel = self.effective_asset(sel).to_string();
+        if self.assets.has_op_region_chain(&chain_sel) {
+            let (root_box, root_shape, real) = self.chain_geometry_for(&chain_sel, p)?;
             if let Some(resolved) = self.resolve_asset_op_region(
-                sel,
+                &chain_sel,
                 real,
                 root_box,
-                shape.clone(),
+                root_shape,
                 site,
             )? {
                 rect = resolved.rect;
@@ -3891,15 +4175,19 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         // 2026-11-06 参数→素材: an asset-level `op_region` chain
                         // replaces the historical geometry for this locator.
                         let plan_shape = root_shape.clone();
-                        let chain = match self.root_template_real_rect(sel, p) {
-                            Some(real) => self.resolve_asset_op_region(
-                                sel,
+                        // seq132: a collection's winning member owns the chain.
+                        let chain_sel = self.effective_asset(sel).to_string();
+                        let chain = if self.assets.has_op_region_chain(&chain_sel) {
+                            let (box_, shape, real) = self.chain_geometry_for(&chain_sel, p)?;
+                            self.resolve_asset_op_region(
+                                &chain_sel,
                                 real,
-                                rect,
-                                root_shape,
+                                box_,
+                                shape,
                                 "long_press template",
-                            )?,
-                            None => None,
+                            )?
+                        } else {
+                            None
                         };
                         let (target, chain_shape) = match &chain {
                             Some(r) => (r.rect, r.shape.clone()),
@@ -5193,37 +5481,17 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 // Root real rect: OCR = its matched line bbox (`last_ocr_rect`),
                 // template/collection = matched bbox.
                 let mut chain = None;
-                if self.assets.has_op_region_chain(hit_sel) {
-                    let is_ocr = self.assets.is_ocr_asset(hit_sel);
-                    let (root_box, root_shape, real) = if is_ocr {
-                        let real = self
-                            .last_ocr_rect
-                            .or_else(|| {
-                                self.assets
-                                    .ocr_var(hit_sel)
-                                    .and_then(|v| v.roi)
-                                    .or_else(|| self.assets.ocr_roi(hit_sel))
-                            })
-                            .ok_or_else(|| {
-                                format!(
-                                    "click `{hit_sel}`: op_region chain needs the real \
-                                     recognized rect, but none is available"
-                                )
-                            })?;
-                        let (box_, shape) =
-                            self.ocr_self_operation_geometry(hit_sel, real, self.screen.size())?;
-                        (box_, shape, real)
-                    } else {
-                        let real = self.root_template_real_rect(hit_sel, p).ok_or_else(|| {
-                            format!(
-                                "click `{hit_sel}`: op_region chain needs the real recognized \
-                                 rect, but none is available"
-                            )
-                        })?;
-                        (target, self.translated_click_shape(hit_sel, p), real)
-                    };
-                    chain =
-                        self.resolve_asset_op_region(hit_sel, real, root_box, root_shape, "click")?;
+                // seq132: a collection's winning member owns the chain.
+                let chain_sel = self.effective_asset(hit_sel).to_string();
+                if self.assets.has_op_region_chain(&chain_sel) {
+                    let (root_box, root_shape, real) = self.chain_geometry_for(&chain_sel, p)?;
+                    chain = self.resolve_asset_op_region(
+                        &chain_sel,
+                        real,
+                        root_box,
+                        root_shape,
+                        "click",
+                    )?;
                 }
                 let (target, chain_shape) = match &chain {
                     Some(r) => (r.rect, r.shape.clone()),
@@ -5390,15 +5658,20 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                 // byte-identical.
                                 let (root_box, root_shape) = self.click_geometry_for(sel, p)?;
                                 let plan_shape = root_shape.clone();
-                                let chain = match self.root_template_real_rect(sel, p) {
-                                    Some(real) => self.resolve_asset_op_region(
-                                        sel,
+                                // seq132: a collection's winning member owns the chain.
+                                let chain_sel = self.effective_asset(sel).to_string();
+                                let chain = if self.assets.has_op_region_chain(&chain_sel) {
+                                    let (box_, shape, real) =
+                                        self.chain_geometry_for(&chain_sel, p)?;
+                                    self.resolve_asset_op_region(
+                                        &chain_sel,
                                         real,
-                                        root_box,
-                                        root_shape,
+                                        box_,
+                                        shape,
                                         "click_target template",
-                                    )?,
-                                    None => None,
+                                    )?
+                                } else {
+                                    None
                                 };
                                 let (target, chain_shape) = match &chain {
                                     Some(r) => (r.rect, r.shape.clone()),
@@ -7217,6 +7490,207 @@ mod tests {
             (14..20).contains(&p.x) && (12..18).contains(&p.y),
             "collection click must use the winning member action_roi: {}",
             click.detail
+        );
+    }
+
+    // ---- seq132: mixed collections (template / OCR / ocr_var / region) ----
+
+    fn mixed_collection_assets() -> AssetSet {
+        let mut set = assets();
+        set.insert_ocr_var(
+            "O_GROUP",
+            Some(Rect {
+                x: 0,
+                y: 0,
+                w: 64,
+                h: 48,
+            }),
+            "御魂".to_string(),
+            "group".to_string(),
+        );
+        set.insert_region(
+            "R_MIX",
+            Rect {
+                x: 40,
+                y: 4,
+                w: 10,
+                h: 10,
+            },
+        );
+        set.insert_collection(
+            "C_MIX",
+            vec![
+                "I_NEVER".to_string(),
+                "O_GROUP".to_string(),
+                "R_MIX".to_string(),
+                "I_BRIGHT".to_string(),
+            ],
+            None,
+        );
+        set
+    }
+
+    fn mixed_collection_line() -> OcrLine {
+        chain_line(20, 20, 10, 5, "御魂", 0.97)
+    }
+
+    fn mk_mixed_collection_interp() -> (Interpreter<FakeScreen, FakeInput>, SharedInput) {
+        let (ocr, _rois) = FakeDetOcr::new(vec![mixed_collection_line()]);
+        let (input, shared) = FakeInput::new();
+        let interp = Interpreter::new(FakeScreen::new(), input, mixed_collection_assets(), Budget::default())
+            .with_humanize(no_miss())
+            .with_ocr(Box::new(ocr))
+            .with_seed(3);
+        (interp, shared)
+    }
+
+    #[test]
+    fn mixed_collection_locate_records_the_region_member() {
+        let mut interp = Interpreter::new(
+            FakeScreen::new(),
+            FakeInput::new().0,
+            mixed_collection_assets(),
+            Budget::default(),
+        )
+        .with_humanize(no_miss());
+        // No OCR provider here: the region member always wins (score 1.0).
+        let (score, _at) = interp.locate("C_MIX").expect("locate mixed");
+        assert_eq!(score, 1.0);
+        assert_eq!(
+            interp.last_set_member.get("C_MIX").map(String::as_str),
+            Some("R_MIX"),
+            "region member must be the recorded winner"
+        );
+    }
+
+    #[test]
+    fn click_on_mixed_collection_region_member_clicks_its_roi() {
+        let mut set = assets();
+        set.insert_region(
+            "R_MIX",
+            Rect {
+                x: 30,
+                y: 20,
+                w: 10,
+                h: 10,
+            },
+        );
+        set.insert_collection(
+            "C_MIX",
+            vec!["I_NEVER".to_string(), "R_MIX".to_string()],
+            None,
+        );
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, set, Budget::default())
+            .with_humanize(no_miss());
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"C_MIX"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            inside(
+                Rect {
+                    x: 30,
+                    y: 20,
+                    w: 10,
+                    h: 10
+                },
+                p
+            ),
+            "region member click must land in its ROI, got {p:?}"
+        );
+    }
+
+    #[test]
+    fn click_on_mixed_collection_ocr_member_uses_q1_geometry() {
+        let mut set = assets();
+        set.insert_ocr_var("O_GROUP", None, "御魂".to_string(), "group".to_string());
+        set.insert_collection(
+            "C_MIX",
+            vec!["I_NEVER".to_string(), "O_GROUP".to_string()],
+            None,
+        );
+        let (mut interp, _rois, shared) = {
+            let (ocr, rois) = FakeDetOcr::new(vec![mixed_collection_line()]);
+            let (input, shared) = FakeInput::new();
+            let interp = Interpreter::new(FakeScreen::new(), input, set, Budget::default())
+                .with_humanize(no_miss())
+                .with_ocr(Box::new(ocr))
+                .with_seed(5);
+            (interp, rois, shared)
+        };
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"C_MIX"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(interp.run(&f), RunResult::Finished(Exit::Done));
+        let p = shared.clicks.borrow()[0];
+        let line = Rect {
+            x: 20,
+            y: 20,
+            w: 10,
+            h: 5,
+        };
+        assert!(
+            inside(line, p),
+            "OCR member click must use the recognized line rect {line:?}, got {p:?}"
+        );
+    }
+
+    #[test]
+    fn mixed_collection_candidates_enumerate_every_member_kind() {
+        let (mut interp, _shared) = mk_mixed_collection_interp();
+        let candidates = interp.collection_candidates("C_MIX", true).expect("mixed candidates");
+        let members: Vec<&str> = candidates.iter().map(|c| c.member.as_str()).collect();
+        assert!(members.contains(&"I_BRIGHT"), "{members:?}");
+        assert!(members.contains(&"O_GROUP"), "{members:?}");
+        assert!(members.contains(&"R_MIX"), "{members:?}");
+        // Stable order: score desc → y asc → x asc.
+        for pair in candidates.windows(2) {
+            let (a, b) = (&pair[0], &pair[1]);
+            assert!(
+                a.score > b.score || (a.score == b.score && a.y <= b.y),
+                "candidates out of order: {candidates:?}"
+            );
+        }
+        let region = candidates.iter().find(|c| c.member == "R_MIX").expect("region candidate");
+        assert_eq!(region.score, 1.0);
+        assert_eq!(
+            (region.x, region.y, region.w, region.h),
+            (40, 4, 10, 10)
+        );
+        let ocr = candidates.iter().find(|c| c.member == "O_GROUP").expect("ocr candidate");
+        assert!((ocr.score - 0.97).abs() < 1e-6, "{ocr:?}");
+        assert_eq!(
+            (ocr.action_box.x, ocr.action_box.y, ocr.action_box.w, ocr.action_box.h),
+            (20, 20, 10, 5),
+            "OCR candidate operation box must be the recognized line (Q1)"
+        );
+    }
+
+    #[test]
+    fn preview_mixed_collection_candidate_index_matches_the_candidate_list() {
+        let (mut interp, _shared) = mk_mixed_collection_interp();
+        let candidates = interp.collection_candidates("C_MIX", true).expect("candidates");
+        for idx in [0usize, 1] {
+            let preview = interp
+                .preview_asset_action("C_MIX", Some(idx))
+                .expect("mixed preview");
+            let want = &candidates[idx];
+            assert_eq!(
+                preview.steps[0].asset, want.member,
+                "candidate_index {idx} must select the same member"
+            );
+            assert_eq!(preview.action_box, want.action_box);
+            assert!(inside(preview.action_box, preview.point));
+        }
+        assert!(
+            interp.preview_asset_action("C_MIX", Some(candidates.len())).is_err(),
+            "out-of-range candidate_index must be a loud error"
         );
     }
 

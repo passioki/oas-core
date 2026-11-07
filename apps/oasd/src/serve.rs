@@ -4373,6 +4373,10 @@ impl Server {
             Ok(a) => a,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
+        let af = match bundle.load_assets_file() {
+            Ok(a) => a,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
         let Some(members) = assets.collection_members(&id).map(|m| m.to_vec()) else {
             return self.send_errors(out, 404, vec![format!("collection `{id}` not found")]);
         };
@@ -4398,33 +4402,95 @@ impl Server {
         }
         let matcher = oas_perceive::Matcher::new(oas_perceive::GrayImage::from_frame(&frame));
         let t0 = std::time::Instant::now();
-        let mut best: Option<(String, f32, Option<oas_types::Point>)> = None;
-        for m in members {
-            if let Some(tpl) = assets.get(&m) {
-                let (score, point) = oas_runtime::locate_template(&matcher, tpl);
-                if best.as_ref().map(|b| score > b.1).unwrap_or(true) {
-                    best = Some((m, score, point));
+        let threshold = assets.threshold_for(&id).unwrap_or(0.9);
+        let template_only = members.iter().all(|m| assets.get(m).is_some());
+        // seq132: a template-only collection keeps the historical `locate_template`
+        // best-member semantics byte-for-byte; mixed collections use the shared
+        // mixed-candidate enumeration (same order as the candidate API).
+        let (member, score, matched, action, pass) = if template_only {
+            let mut best: Option<(String, f32, Option<oas_types::Point>)> = None;
+            for m in &members {
+                if let Some(tpl) = assets.get(m) {
+                    let (s, point) = oas_runtime::locate_template(&matcher, tpl);
+                    if best.as_ref().map(|b| s > b.1).unwrap_or(true) {
+                        best = Some((m.clone(), s, point));
+                    }
                 }
             }
-        }
-        let threshold = assets.threshold_for(&id).unwrap_or(0.9);
-        let best = best.ok_or_else(|| "collection has no resolvable members".to_string());
-        let body = match best {
-            Ok((member, score, point)) => {
-                // B-10: report the operation box in the CURRENT frame (winner
-                // shape translated by the match offset), not the authored one.
-                let action =
-                    collection_action_box(&assets, &id, &member, point, frame.width, frame.height);
+            match best {
+                Some((member, score, point)) => {
+                    let action = collection_action_box(
+                        &assets,
+                        &id,
+                        &member,
+                        point,
+                        frame.width,
+                        frame.height,
+                    );
+                    let pass = score >= threshold;
+                    (member, score, point, action, pass)
+                }
+                None => {
+                    return self.send_errors(
+                        out,
+                        404,
+                        vec![format!("collection `{id}` has no resolvable members")],
+                    )
+                }
+            }
+        } else {
+            let ocr_lines = match self.collection_ocr_lines(&af, &members, &frame) {
+                Ok(v) => v,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            };
+            let candidates = match oas_runtime::collection_candidates_with_ocr(
+                &assets,
+                &matcher,
+                &id,
+                &ocr_lines,
+                &std::collections::BTreeMap::new(),
+                true,
+                Some((frame.width, frame.height)),
+            ) {
+                Ok(c) => c,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            };
+            let Some(best) = candidates.into_iter().next() else {
+                return self.send_errors(
+                    out,
+                    404,
+                    vec![format!(
+                        "collection `{id}` has no candidate at/above its member thresholds"
+                    )],
+                );
+            };
+            let member = best.member.clone();
+            let score = best.score;
+            let matched = Some(oas_types::Point {
+                x: best.x,
+                y: best.y,
+            });
+            let action = Some([
+                best.action_box.x,
+                best.action_box.y,
+                best.action_box.w,
+                best.action_box.h,
+            ]);
+            let pass = score >= oas_runtime::asset_threshold(&assets, &member);
+            (member, score, matched, action, pass)
+        };
+        let body = {
+            {
                 let mut body = serde_json::json!({
                     "ok": true,
                     "task": task,
                     "id": id,
                     "member": member,
                     "score": score,
-                    "x": point.map(|p| p.x).unwrap_or(-1),
-                    "y": point.map(|p| p.y).unwrap_or(-1),
+                    "x": matched.map(|p| p.x).unwrap_or(-1),
+                    "y": matched.map(|p| p.y).unwrap_or(-1),
                     "threshold": threshold,
-                    "pass": score >= threshold,
+                    "pass": pass,
                     "action_box": action,
                     "elapsed_ms": t0.elapsed().as_secs_f64() * 1000.0,
                     "frame_source": frame_source,
@@ -4452,6 +4518,8 @@ impl Server {
                                 .to_string(),
                         );
                     }
+                    // seq132: mixed winner — template keeps the shared shape
+                    // sampler; OCR / region use the winner's action-box centre.
                     let Some(action_box) = action else {
                         let msg =
                             format!("collection `{id}` matched but has no action_box to click");
@@ -4465,7 +4533,7 @@ impl Server {
                                 .to_string(),
                         );
                     };
-                    let Some(matched) = point else {
+                    let Some(matched_point) = matched else {
                         let msg = format!(
                             "collection `{id}` matched but has no match point to translate its action shape"
                         );
@@ -4479,30 +4547,42 @@ impl Server {
                                 .to_string(),
                         );
                     };
-                    // P1-1: sample INSIDE the exact operation shape (invert /
-                    // polygon aware, same translation+sampler as the runtime
-                    // click path). No bbox / whole-screen centre fallback.
-                    let (cx, cy) = match collection_real_click_point(
-                        &assets,
-                        &id,
-                        &member,
-                        matched,
-                        action_box,
-                        frame.width,
-                        frame.height,
-                    ) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            let msg = format!("collection real click: {e}");
-                            self.editor_log(&format!(
-                                "collection_match REAL FAIL task={task} id={id} error={msg}"
-                            ));
-                            return self.send_json(
-                                out,
-                                400,
-                                &collection_real_error(vec![msg], serde_json::Value::Null)
-                                    .to_string(),
-                            );
+                    let (cx, cy) = if assets.get(&member).is_some() {
+                        match collection_real_click_point(
+                            &assets,
+                            &id,
+                            &member,
+                            matched_point,
+                            action_box,
+                            frame.width,
+                            frame.height,
+                        ) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                let msg = format!("collection real click: {e}");
+                                self.editor_log(&format!(
+                                    "collection_match REAL FAIL task={task} id={id} error={msg}"
+                                ));
+                                return self.send_json(
+                                    out,
+                                    400,
+                                    &collection_real_error(vec![msg], serde_json::Value::Null)
+                                        .to_string(),
+                                );
+                            }
+                        }
+                    } else {
+                        match action_box_center(action_box) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                let msg = format!("collection real click: {e}");
+                                return self.send_json(
+                                    out,
+                                    400,
+                                    &collection_real_error(vec![msg], serde_json::Value::Null)
+                                        .to_string(),
+                                );
+                            }
                         }
                     };
                     body["click_point"] = serde_json::json!([cx, cy]);
@@ -4537,7 +4617,6 @@ impl Server {
                 }
                 body
             }
-            Err(e) => serde_json::json!({"ok": false, "errors": [e]}),
         };
         if body["ok"] == true {
             // P2-5: the dry-run log line stays byte-identical to the pre-O-1
@@ -4677,6 +4756,89 @@ impl Server {
     /// fallback for a template without an ROI, `members` = one ROI per collection
     /// member) and `roi` echoes the authored `roi` (null when there is none).
     /// Read-only: no tap, no write, no run semantics change.
+    /// seq132: det+rec lines for every OCR member of a mixed collection.
+    #[cfg(feature = "ocr")]
+    fn collection_ocr_lines(
+        &self,
+        af: &oas_task::AssetsFile,
+        members: &[String],
+        frame: &Frame,
+    ) -> Result<std::collections::BTreeMap<String, Vec<oas_runtime::OcrLine>>, String> {
+        let mut out = std::collections::BTreeMap::new();
+        let ocr_members: Vec<&oas_task::AssetDecl> = members
+            .iter()
+            .filter_map(|m| af.items.iter().find(|a| &a.id == m))
+            .filter(|a| matches!(a.kind.as_str(), "ocr_line" | "ocr_lines" | "ocr_var"))
+            .collect();
+        if ocr_members.is_empty() {
+            return Ok(out);
+        }
+        let (det, rec) = match (self.det.as_ref(), self.ocr.as_ref()) {
+            (Some(d), Some(r)) => (d.clone(), r.clone()),
+            _ => {
+                return Err(
+                    "collection contains OCR members; start Studio with --model and --det-model"
+                        .to_string(),
+                )
+            }
+        };
+        for item in ocr_members {
+            // An `ocr_var` may be whole-screen (roi=None); every other OCR kind
+            // keeps its authored ROI.
+            let roi = item
+                .roi
+                .map(|[x, y, w, h]| oas_types::Rect { x, y, w, h })
+                .unwrap_or(oas_types::Rect {
+                    x: 0,
+                    y: 0,
+                    w: frame.width as i32,
+                    h: frame.height as i32,
+                });
+            let masked;
+            let frame_ref: &Frame = if let Some(poly) = item.polygon.as_ref() {
+                let pts: Vec<Point> = poly.iter().map(|p| Point { x: p[0], y: p[1] }).collect();
+                masked = oas_runtime::mask_frame_for_ocr(frame, roi, &pts);
+                &masked
+            } else {
+                frame
+            };
+            let lines = {
+                let mut det_guard = det.lock().unwrap();
+                let mut rec_guard = rec.lock().unwrap();
+                crate::ocr::recognize_lines_impl(&mut det_guard, &mut rec_guard, frame_ref, roi, false)?
+            };
+            out.insert(item.id.clone(), lines);
+        }
+        Ok(out)
+    }
+
+    /// Non-OCR build: mixed collection candidates are still available for
+    /// template/region members; an OCR member is a loud 400 rather than a
+    /// silently empty candidate list.
+    #[cfg(not(feature = "ocr"))]
+    fn collection_ocr_lines(
+        &self,
+        af: &oas_task::AssetsFile,
+        members: &[String],
+        _frame: &Frame,
+    ) -> Result<std::collections::BTreeMap<String, Vec<oas_runtime::OcrLine>>, String> {
+        let has_ocr = members.iter().any(|m| {
+            af.items
+                .iter()
+                .find(|a| &a.id == m)
+                .map(|a| matches!(a.kind.as_str(), "ocr_line" | "ocr_lines" | "ocr_var"))
+                .unwrap_or(false)
+        });
+        if has_ocr {
+            Err(
+                "collection contains OCR members; this build has no OCR (rebuild with --features ocr)"
+                    .to_string(),
+            )
+        } else {
+            Ok(std::collections::BTreeMap::new())
+        }
+    }
+
     fn handle_asset_candidates(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
         let q = parse_query(raw_path);
         let mut task = String::new();
@@ -4795,12 +4957,43 @@ impl Server {
         };
         if kind == "template" || kind == "collection" {
             let matcher = oas_perceive::Matcher::new(oas_perceive::GrayImage::from_frame(&frame));
-            let mut candidates = match oas_runtime::asset_match_candidates(&assets, &matcher, &id) {
-                Ok(c) => c,
-                Err(e) => return self.send_errors(out, 400, vec![e]),
+            let mut candidates = if kind == "collection" {
+                // seq132: mixed members (template / OCR / ocr_var / region) — the
+                // same enumeration/order `test_action` uses.
+                let members = assets.collection_members(&id).map(|m| m.to_vec()).unwrap_or_default();
+                let ocr_lines = match self.collection_ocr_lines(&af, &members, &frame) {
+                    Ok(v) => v,
+                    Err(e) => return self.send_errors(out, 400, vec![e]),
+                };
+                match oas_runtime::collection_candidates_with_ocr(
+                    &assets,
+                    &matcher,
+                    &id,
+                    &ocr_lines,
+                    &std::collections::BTreeMap::new(),
+                    true,
+                    Some((frame.width, frame.height)),
+                ) {
+                    Ok(c) => c,
+                    Err(e) => return self.send_errors(out, 400, vec![e]),
+                }
+            } else {
+                match oas_runtime::asset_match_candidates(&assets, &matcher, &id) {
+                    Ok(c) => c,
+                    Err(e) => return self.send_errors(out, 400, vec![e]),
+                }
             };
             oas_runtime::sort_asset_match_candidates(&mut candidates);
             let threshold = oas_runtime::asset_threshold(&assets, &id);
+            // seq132 threshold口径: a **template-only** collection keeps the
+            // historical collection-level threshold; a **mixed** collection
+            // (OCR/region members present) passes each row against its member's
+            // own threshold (template NCC / OCR minimum — 0 = unset / region 1.0).
+            let mixed_collection = kind == "collection"
+                && assets
+                    .collection_members(&id)
+                    .map(|members| members.iter().any(|m| assets.get(m).is_none()))
+                    .unwrap_or(false);
             let frame_size = (frame.width, frame.height);
             let mut candidates_json: Vec<serde_json::Value> = Vec::with_capacity(candidates.len());
             for (index, c) in candidates.iter().enumerate() {
@@ -4823,6 +5016,18 @@ impl Server {
                     Ok(v) => v,
                     Err(e) => return self.send_errors(out, 400, vec![e]),
                 };
+                // Threshold口径 (seq132): a mixed-collection row passes against the
+                // **member's own** threshold for OCR/region members; template
+                // members keep the historical collection-level threshold.
+                let pass = if kind == "collection" {
+                    if mixed_collection {
+                        c.score >= oas_runtime::asset_threshold(&assets, &c.member)
+                    } else {
+                        c.score >= threshold
+                    }
+                } else {
+                    c.score >= threshold
+                };
                 let mut v = serde_json::json!({
                     "index": index,
                     "x": c.x,
@@ -4830,13 +5035,14 @@ impl Server {
                     "w": c.w,
                     "h": c.h,
                     "score": c.score,
-                    "pass": c.score >= threshold,
+                    "pass": pass,
                     "action_box": [action_box.x, action_box.y, action_box.w, action_box.h],
                 });
                 if kind == "collection" {
                     // The winning member id: harmless for a single template,
                     // required for a collection row.
                     v["member"] = serde_json::json!(c.member);
+                    v["member_kind"] = serde_json::json!(asset_kind_str(&af, &c.member));
                 }
                 candidates_json.push(v);
             }
@@ -8116,8 +8322,7 @@ fn json_ocr_var_fields(
 ///   lets `ocr_lines` carry it too, not just `ocr_line`);
 /// * blank/absent → `None` = no text filter (every detected line above the
 ///   confidence threshold is a candidate, the plain `ocr_lines` behaviour).
-fn ocr_candidate_expected_text(item: &oas_task::AssetDecl) -> Option<String> {
-    let raw = if item.kind == "ocr_var" {
+fn ocr_candidate_expected_text(item: &oas_task::AssetDecl) -> Option<String> {    let raw = if item.kind == "ocr_var" {
         item.runtime_text.as_deref()
     } else {
         item.ocr_text.as_deref()
@@ -8125,6 +8330,15 @@ fn ocr_candidate_expected_text(item: &oas_task::AssetDecl) -> Option<String> {
     raw.map(str::trim)
         .filter(|text| !text.is_empty())
         .map(str::to_string)
+}
+
+/// Kind of one declared asset (used by mixed-collection candidate rows).
+fn asset_kind_str<'a>(af: &'a oas_task::AssetsFile, id: &str) -> &'a str {
+    af.items
+        .iter()
+        .find(|a| a.id == id)
+        .map(|a| a.kind.as_str())
+        .unwrap_or("unknown")
 }
 
 /// Filter the det+rec lines of one OCR asset down to the editor candidates.
@@ -16963,6 +17177,108 @@ mod tests {
             let y = c["y"].as_i64().expect("y");
             assert_eq!(c["action_box"], serde_json::json!([x, y, 8, 8]), "{v}");
         }
+    }
+
+    /// seq132: append a mixed collection (template + fixed region) to the global
+    /// store created by [`asset_candidates_fixture`].
+    fn add_mixed_collection(td: &Path, id: &str, members: &[&str]) {
+        let path = td.join("assets/assets.json");
+        let text = std::fs::read_to_string(&path).expect("read fixture assets");
+        let mut v: serde_json::Value = serde_json::from_str(&text).expect("fixture JSON");
+        v["collections"]
+            .as_array_mut()
+            .expect("collections")
+            .push(serde_json::json!({
+                "id": id,
+                "members": members,
+                "threshold": 0.9,
+                "action_source": "recognition"
+            }));
+        std::fs::write(&path, v.to_string()).expect("write mixed collection");
+    }
+
+    #[test]
+    fn asset_candidates_mixed_collection_lists_every_member_kind() {
+        let td = TempDir::new("cand-col-mixed");
+        let server = asset_candidates_fixture(td.path());
+        add_mixed_collection(td.path(), "COL_MIX", &["M_A", "REGION"]);
+        let v = get_json_route(&server, "/task/asset/candidates?id=COL_MIX");
+        assert_eq!(v["kind"], "collection", "{v}");
+        assert_eq!(v["domain"], "members", "{v}");
+        // M_A has two exact occurrences + the fixed region = 3 candidates.
+        assert_eq!(v["count"], 3, "{v}");
+        let rows: Vec<(i64, i64, &str, &str)> = v["candidates"]
+            .as_array()
+            .expect("candidates")
+            .iter()
+            .map(|c| {
+                (
+                    c["x"].as_i64().expect("x"),
+                    c["y"].as_i64().expect("y"),
+                    c["member"].as_str().expect("member"),
+                    c["member_kind"].as_str().expect("member_kind"),
+                )
+            })
+            .collect();
+        // Sorted score desc (all 1.0) → y asc: region y=5 first.
+        assert_eq!(
+            rows,
+            vec![
+                (5, 5, "REGION", "region"),
+                (48, 8, "M_A", "template"),
+                (20, 20, "M_A", "template"),
+            ],
+            "{v}"
+        );
+        for c in v["candidates"].as_array().expect("candidates") {
+            assert_eq!(c["pass"], true, "{v}");
+        }
+        // The region candidate's action_box is its fixed ROI.
+        assert_eq!(
+            v["candidates"][0]["action_box"],
+            serde_json::json!([5, 5, 10, 10]),
+            "{v}"
+        );
+        // ...and test_action uses the SAME candidate list/order.
+        let body = serde_json::json!({"id": "COL_MIX"}).to_string();
+        let (status, out) = post_route(
+            &server,
+            "/task/asset/test_action",
+            "application/json",
+            body.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let ta: serde_json::Value = serde_json::from_str(&out).expect("test_action json");
+        assert_eq!(ta["action_box"], serde_json::json!([5, 5, 10, 10]), "{out}");
+        assert_eq!(ta["steps"][0]["asset"], "REGION", "{out}");
+        assert_eq!(ta["real"], false, "{out}");
+        // candidate_index 1 = the second row of the candidate list (M_A at 48,8).
+        let body = serde_json::json!({"id": "COL_MIX", "candidate_index": 1}).to_string();
+        let (status, out) = post_route(
+            &server,
+            "/task/asset/test_action",
+            "application/json",
+            body.as_bytes(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let ta: serde_json::Value = serde_json::from_str(&out).expect("test_action json");
+        assert_eq!(ta["steps"][0]["asset"], "M_A", "{out}");
+        assert_eq!(ta["action_box"], serde_json::json!([48, 8, 8, 8]), "{out}");
+    }
+
+    #[test]
+    fn collection_match_mixed_selects_the_best_member_across_kinds() {
+        let td = TempDir::new("col-match-mixed");
+        let server = asset_candidates_fixture(td.path());
+        add_mixed_collection(td.path(), "COL_MIX", &["M_A", "REGION"]);
+        let (status, out) = get_route(&server, "/task/asset/collection/match?id=COL_MIX");
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("match json");
+        assert_eq!(v["ok"], true, "{out}");
+        // score 1.0 tie → y asc: the fixed region wins.
+        assert_eq!(v["member"], "REGION", "{out}");
+        assert_eq!(v["pass"], true, "{out}");
+        assert_eq!(v["action_box"], serde_json::json!([5, 5, 10, 10]), "{out}");
     }
 
     #[test]

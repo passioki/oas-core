@@ -557,13 +557,15 @@
       <button id="asset-text-cancel" type="button">取消</button>
     </div>
   </dialog>
-  <!-- seq131（用户 08:10 反馈）：把模板素材加入素材集合。集合=多模板目标，flow
-       直接引用集合 id；入口在素材行「设置→加入集合」。 -->
+  <!-- seq131（用户 08:10 反馈）→ seq132：把素材加入素材集合。集合=多素材目标
+       （模板/OCR 行/使用端OCR文字配置项/固定区域均可），flow 直接引用集合 id；
+       入口在素材行「设置→加入集合」。 -->
   <dialog id="collection-add-dialog" class="task-dialog collection-add-dialog">
     <h3 id="collection-add-title">加入素材集合</h3>
     <p class="muted small" id="collection-add-hint">
-      选择已有集合或新建集合；同一模板只能属于一个集合（已在其它集合时会自动移出旧集合）。
-      集合 id 可直接在 flow 动作里引用；集合成员必须是模板图（template）。
+      集合=多素材目标（模板/OCR 行/使用端OCR文字配置项/固定区域均可），flow 直接引用集合 id；
+      成员按各自类型识别，region 成员=固定区域（总是命中，作为兜底）。
+      同一素材只能属于一个集合（已在其它集合时会自动移出旧集合）；集合嵌套不支持。
     </p>
     <label class="opt">目标集合
       <select id="collection-add-target"></select>
