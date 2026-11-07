@@ -557,6 +557,28 @@
       <button id="asset-text-cancel" type="button">取消</button>
     </div>
   </dialog>
+  <!-- seq131（用户 08:10 反馈）：把模板素材加入素材集合。集合=多模板目标，flow
+       直接引用集合 id；入口在素材行「设置→加入集合」。 -->
+  <dialog id="collection-add-dialog" class="task-dialog collection-add-dialog">
+    <h3 id="collection-add-title">加入素材集合</h3>
+    <p class="muted small" id="collection-add-hint">
+      选择已有集合或新建集合；同一模板只能属于一个集合（已在其它集合时会自动移出旧集合）。
+      集合 id 可直接在 flow 动作里引用；集合成员必须是模板图（template）。
+    </p>
+    <label class="opt">目标集合
+      <select id="collection-add-target"></select>
+    </label>
+    <label class="opt" id="collection-add-id-row" hidden>新集合 id
+      <input id="collection-add-id" type="text" autocomplete="off" spellcheck="false" placeholder="如 集合_庭院入口（flow 将引用这个 id）" />
+    </label>
+    <div id="collection-add-info" class="muted small">—</div>
+    <pre id="collection-add-error" class="muted small dialog-error"></pre>
+    <div class="row dialog-actions">
+      <button id="collection-add-save" type="button">保存</button>
+      <span class="spacer"></span>
+      <button id="collection-add-cancel" type="button">取消</button>
+    </div>
+  </dialog>
 
   <!-- 素材「操作区」对话框（模型 A，批次B3a/B3b）：当前素材操作区(self) / 引用素材作识别门槛（链，只读）。
        操作区域本身用统一框选工具在画布上画（self 分支的按钮）。 -->

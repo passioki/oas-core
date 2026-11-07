@@ -55,6 +55,17 @@ const assetTextPositions = document.getElementById('asset-text-positions');
 const assetTextError = document.getElementById('asset-text-error');
 const assetTextSave = document.getElementById('asset-text-save');
 const assetTextCancel = document.getElementById('asset-text-cancel');
+// seq131：素材设置→加入集合 对话框。
+const collectionAddDialog = document.getElementById('collection-add-dialog');
+const collectionAddTitle = document.getElementById('collection-add-title');
+const collectionAddHint = document.getElementById('collection-add-hint');
+const collectionAddTarget = document.getElementById('collection-add-target');
+const collectionAddIdRow = document.getElementById('collection-add-id-row');
+const collectionAddId = document.getElementById('collection-add-id');
+const collectionAddInfo = document.getElementById('collection-add-info');
+const collectionAddError = document.getElementById('collection-add-error');
+const collectionAddSave = document.getElementById('collection-add-save');
+const collectionAddCancel = document.getElementById('collection-add-cancel');
 // U-T4/S5：素材「操作区」递归对话框（op_region 链）。
 const opRegionDialog = document.getElementById('op-region-dialog');
 const opRegionTitle = document.getElementById('op-region-title');
@@ -5106,6 +5117,7 @@ function renderAssetList() {
     onPosition: (it) => editAssetPositions(it),
     onDelete: (it) => deleteAsset(it),
     onOpRegion: (it) => openOpRegionDialog(it, ''),
+    onCollectionAdd: (it) => openCollectionAddDialog(it),
     onLongPress: (it) => runTestActionForAsset(it, 'long_press'),
     onClickTest: (it) => testAssetClick(it),
     onDragTest: (it) => testAssetDrag(it),
@@ -5899,6 +5911,173 @@ function updateAssetActionSaveButton() {
     assetActionEditLabel.textContent = editing ? `操作区编辑中：${pendingActionAsset}` : '';
   }
 }
+// --- seq131: 素材设置→加入集合 ------------------------------------------------
+// 用户 2026-11-07 08:10 反馈：把素材添加为集合的 UI 没了；按钮放到素材设置里。
+// 集合 = 多模板目标（flow 引用集合 id），后端 POST /task/asset/collection
+// {task,id,members[,threshold,action_shape]}。同一模板只能属于一个集合；
+// 已在其它集合时先移出旧集合（剩 0 个则删除旧集合），再写入目标集合。
+let collectionAddCtx = null;
+
+function collectionMembersWith(members, templateId) {
+  const out = [];
+  for (const m of Array.isArray(members) ? members : []) {
+    if (typeof m === 'string' && m && m !== templateId && !out.includes(m)) out.push(m);
+  }
+  out.push(templateId);
+  return out;
+}
+
+function collectionContaining(collections, templateId) {
+  return (Array.isArray(collections) ? collections : [])
+    .find((c) => Array.isArray(c.members) && c.members.includes(templateId)) || null;
+}
+
+function collectionAddTargetLabel(c, current) {
+  const n = Array.isArray(c.members) ? c.members.length : 0;
+  return `${c.id}（成员 ${n}）` + (current && current.id === c.id ? ' · 当前集合' : '');
+}
+
+function collectionAddMembersFor(collections, targetId, templateId) {
+  const base = (Array.isArray(collections) ? collections : []).find((c) => c.id === targetId) || null;
+  return collectionMembersWith(base ? base.members : [], templateId);
+}
+
+async function openCollectionAddDialog(it, scopeTask) {
+  if (!it) return;
+  if (it.kind !== 'template') {
+    resultEl.textContent = `素材「${it.id}」不是模板图（template），不能加入素材集合；只有模板可作为集合成员。`;
+    log(`加入集合失败：${it.id} kind=${it.kind || '?'} 不是 template`, 'WARN');
+    return;
+  }
+  const task = assetRowScopeTask(scopeTask, true);
+  if (task == null) return;
+  // 全局模式下 /task/assets 用当前选中任务取“全局模式”视图（同 refreshTaskAssets）。
+  const fetchTask = assetsGlobalMode
+    ? ((taskSelect && taskSelect.value) || (taskName && taskName.value) || '')
+    : (task === GLOBAL_SCOPE_TASK ? ((taskSelect && taskSelect.value) || '') : task);
+  let collections = [];
+  try {
+    const r = await fetch('/task/assets?task=' + encodeURIComponent(fetchTask || ''));
+    const s = await r.json();
+    if (!s.ok) throw new Error((s.errors || ['读取素材库失败']).join('；'));
+    collections = Array.isArray(s.collections) ? s.collections : [];
+  } catch (e) {
+    resultEl.textContent = '读取素材集合失败：' + e;
+    log('读取素材集合失败：' + e, 'ERROR');
+    return;
+  }
+  collectionAddCtx = {
+    it: it,
+    task: task,
+    scopeTask: scopeTask,
+    collections: collections,
+    current: collectionContaining(collections, it.id),
+    error: '',
+  };
+  renderCollectionAddDialog();
+  if (collectionAddDialog && !collectionAddDialog.open) collectionAddDialog.showModal();
+}
+
+function renderCollectionAddDialog() {
+  const ctx = collectionAddCtx;
+  if (!ctx) return;
+  if (collectionAddTitle) collectionAddTitle.textContent = `把素材「${ctx.it.id}」加入素材集合`;
+  if (collectionAddTarget) {
+    collectionAddTarget.textContent = '';
+    for (const c of ctx.collections) {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = collectionAddTargetLabel(c, ctx.current);
+      collectionAddTarget.appendChild(opt);
+    }
+    const newOpt = document.createElement('option');
+    newOpt.value = '__new__';
+    newOpt.textContent = '＋ 新建集合…';
+    collectionAddTarget.appendChild(newOpt);
+    const preferred = ctx.current ? ctx.current.id : (ctx.collections.length ? ctx.collections[0].id : '__new__');
+    collectionAddTarget.value = preferred;
+  }
+  syncCollectionAddFields();
+  if (collectionAddError) collectionAddError.textContent = ctx.error || '';
+}
+
+function syncCollectionAddFields() {
+  const ctx = collectionAddCtx;
+  if (!ctx) return;
+  const isNew = !collectionAddTarget || collectionAddTarget.value === '__new__';
+  if (collectionAddIdRow) collectionAddIdRow.hidden = !isNew;
+  if (isNew && collectionAddId && !collectionAddId.value) {
+    collectionAddId.value = '集合_' + ctx.it.id;
+  }
+  if (!collectionAddInfo) return;
+  const parts = [];
+  if (ctx.current) parts.push(`当前已在集合「${ctx.current.id}」`);
+  if (isNew) {
+    parts.push('将新建集合并把该模板作为成员（集合 id 在 flow 中引用）');
+  } else {
+    const base = ctx.collections.find((c) => c.id === collectionAddTarget.value);
+    if (base) {
+      const others = (base.members || []).filter((m) => m !== ctx.it.id);
+      parts.push(`目标集合「${base.id}」现有成员：${others.join('、') || '无'}；保存后加入该模板`);
+    }
+  }
+  collectionAddInfo.textContent = parts.join('；') || '—';
+}
+
+function closeCollectionAddDialog() {
+  collectionAddCtx = null;
+  if (collectionAddDialog && collectionAddDialog.open) collectionAddDialog.close();
+}
+
+async function saveCollectionAddDialog() {
+  const ctx = collectionAddCtx;
+  if (!ctx) return;
+  const isNew = !collectionAddTarget || collectionAddTarget.value === '__new__';
+  const targetId = isNew ? String(collectionAddId && collectionAddId.value || '').trim() : collectionAddTarget.value;
+  if (!targetId) {
+    ctx.error = '请填写新集合 id';
+    renderCollectionAddDialog();
+    return;
+  }
+  if (isNew && ctx.collections.some((c) => c.id === targetId)) {
+    ctx.error = `集合「${targetId}」已存在：请直接选择已有集合，或换一个 id`;
+    renderCollectionAddDialog();
+    return;
+  }
+  try {
+    // 已经在别的集合：先移出旧集合（旧集合剩 0 个成员时删除；被 flow 引用会 400）。
+    if (ctx.current && ctx.current.id !== targetId) {
+      const remain = (ctx.current.members || []).filter((m) => m !== ctx.it.id);
+      if (remain.length) {
+        const r0 = await postJson('/task/asset/collection', {
+          task: ctx.task, id: ctx.current.id, members: remain,
+          threshold: ctx.current.threshold, action_shape: ctx.current.action_shape,
+        });
+        if (!r0.ok) throw new Error('移出旧集合失败：' + (r0.errors || []).join('；'));
+      } else {
+        const r0 = await postJson('/task/asset/collection/delete', { task: ctx.task, id: ctx.current.id });
+        if (!r0.ok) throw new Error('删除旧集合失败：' + (r0.errors || []).join('；'));
+      }
+    }
+    const base = ctx.collections.find((c) => c.id === targetId) || null;
+    const body = { task: ctx.task, id: targetId, members: collectionMembersWith(base ? base.members : [], ctx.it.id) };
+    if (base && base.threshold != null) body.threshold = base.threshold;
+    if (base && base.action_shape) body.action_shape = base.action_shape;
+    const r = await postJson('/task/asset/collection', body);
+    if (!r.ok) throw new Error((r.errors || ['保存素材集合失败']).join('；'));
+    const rewritten = Number(r.tasks_rewritten || 0);
+    log(`素材「${ctx.it.id}」已加入集合「${targetId}」` + (rewritten ? `；自动改写引用任务 ${rewritten} 个` : ''));
+    setStatus(`已加入素材集合「${targetId}」`);
+    const scopeTask = ctx.scopeTask;
+    closeCollectionAddDialog();
+    await refreshTaskAssetsForScope(scopeTask);
+    await refreshGlobalAssets();
+  } catch (e) {
+    ctx.error = String(e);
+    if (collectionAddError) collectionAddError.textContent = ctx.error;
+    log('加入素材集合失败：' + ctx.error, 'ERROR');
+  }
+}
 // P0-2: every path that leaves the ROI editor must go through here. Keeping the
 // editing target armed while the canvas shows another asset/frame is what let
 // "edit A, click B, save" overwrite A with B's box. Cancelling drops the canvas
@@ -6636,6 +6815,7 @@ function renderGlobalAssets() {
     onPosition: (it) => editAssetPositions(it),
     onDelete: (it) => deleteAsset(it),
     onOpRegion: (it) => openOpRegionDialog(it, ''),
+    onCollectionAdd: (it) => openCollectionAddDialog(it),
     onLongPress: (it) => runTestActionForAsset(it, 'long_press'),
     onClickTest: (it) => testAssetClick(it),
     onDragTest: (it) => testAssetDrag(it),
@@ -6884,6 +7064,7 @@ function renderFrameAssets(f, rows) {
       onPosition: (it) => editAssetPositions(it, scopeTask),
       onDelete: (it) => deleteAsset(it, scopeTask),
       onOpRegion: (it) => openOpRegionDialog(it, scopeTask),
+      onCollectionAdd: (it) => openCollectionAddDialog(it, scopeTask),
       onLongPress: (it) => runTestActionForAsset(it, 'long_press', null, scopeTask),
       onEditText: (it) => editAssetText(it, scopeTask),
       onCollectionTest: (it) => testAssetCandidates(it, f.id, scopeTask),
@@ -8415,6 +8596,10 @@ if (assetTextSave) {
 if (assetTextCancel) {
   assetTextCancel.addEventListener('click', () => closeAssetTextDialog());
 }
+// seq131：素材设置→加入集合 对话框。
+if (collectionAddSave) collectionAddSave.addEventListener('click', () => saveCollectionAddDialog());
+if (collectionAddCancel) collectionAddCancel.addEventListener('click', () => closeCollectionAddDialog());
+if (collectionAddTarget) collectionAddTarget.addEventListener('change', syncCollectionAddFields);
 if (assetTextFullScreen) {
   assetTextFullScreen.addEventListener('change', () => {
     if (!assetTextDialogCtx) return;

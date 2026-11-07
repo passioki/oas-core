@@ -244,6 +244,10 @@
     { key: 'rename', label: '重命名', action: 'onRename', manage: true, title: '只重命名素材 id（不改阈值/识别区）' },
     { key: 'threshold', label: '阈值', action: 'onThreshold', manage: true, title: '模板阈值 0~1（template）' },
     { key: 'position', label: '位置帧', action: 'onPosition', manage: true, title: '设置素材位置帧' },
+    {
+      key: 'collection', label: '加入集合', action: 'onCollectionAdd', manage: true,
+      title: '把该模板加入已有素材集合，或新建集合（template 专用；集合 id 可在 flow 中引用）',
+    },
     { key: 'delete', label: '删除', action: 'onDelete', manage: true, title: '删除素材（flow 仍引用时会被拒绝）' },
     {
       key: 'step', label: '步骤', action: 'onStep', compactHide: true,
@@ -293,6 +297,11 @@
       } else if (m.manage && !o.manage) {
         disabled = true;
         title = `当前列表只读，不能${m.label}；请到任务素材库或全局素材库操作`;
+      } else if (m.key === 'collection') {
+        if (kind !== 'template') {
+          disabled = true;
+          title = '仅模板图（template）可加入素材集合';
+        }
       } else if (m.key === 'action' && kind === 'region') {
         disabled = true;
         title = 'region 素材本身就是操作区域，无需再设置操作区';
@@ -358,11 +367,11 @@
 
     const menu = document.createElement('div');
     menu.className = 'asset-row-menu';
-    menu.title = '素材设置：点测 / 拖测 / 识别区 / 操作区 / 重命名 / 阈值 / 位置帧 / 删除 / 步骤 / 识别文字';
+    menu.title = '素材设置：点测 / 拖测 / 识别区 / 操作区 / 重命名 / 阈值 / 位置帧 / 加入集合 / 删除 / 步骤 / 识别文字';
     menu.setAttribute('aria-label', `${it.id} 的设置菜单`);
     const settings = makeButton(
       '设置',
-      '展开设置：点测 / 拖测 / 识别区 / 操作区 / 重命名 / 阈值 / 位置帧 / 删除 / 步骤 / 识别文字',
+      '展开设置：点测 / 拖测 / 识别区 / 操作区 / 重命名 / 阈值 / 位置帧 / 加入集合 / 删除 / 步骤 / 识别文字',
       'asset-test asset-row-action asset-row-action-settings'
     );
     settings.dataset.menuToggle = '1';

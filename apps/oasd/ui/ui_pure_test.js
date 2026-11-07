@@ -1841,7 +1841,7 @@ function installAssetUiHarness() {
 
 const assetUiHarness = installAssetUiHarness();
 const assetUi = assetUiHarness.ui;
-const ASSET_MENU_LABELS = ['点测', '拖测', '识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '步骤', '长按测试', '识别文字'];
+const ASSET_MENU_LABELS = ['点测', '拖测', '识别区', '操作区', '重命名', '阈值', '位置帧', '加入集合', '删除', '步骤', '长按测试', '识别文字'];
 
 function assetChildren(el, className) {
   return (el.children || []).filter((child) =>
@@ -1949,7 +1949,7 @@ eq(
 );
 eq(
   assetUi.assetMenuState(rowTemplate, { manage: true }).filter((m) => !m.disabled).map((m) => m.label),
-  ['点测', '拖测', '识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '步骤', '长按测试'],
+  ['点测', '拖测', '识别区', '操作区', '重命名', '阈值', '位置帧', '加入集合', '删除', '步骤', '长按测试'],
   'every other template settings item (incl. 长按测试) is actionable on a manageable surface'
 );
 const templateRoiMenu = assetUi.assetMenuState(rowTemplate, { manage: true }).find((m) => m.key === 'roi');
@@ -1964,7 +1964,7 @@ ok(
 const readOnlyMenu = assetUi.assetMenuState(rowTemplate, { manage: false });
 eq(
   readOnlyMenu.filter((m) => m.disabled).map((m) => m.label),
-  ['识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '长按测试', '识别文字'],
+  ['识别区', '操作区', '重命名', '阈值', '位置帧', '加入集合', '删除', '长按测试', '识别文字'],
   'manage:false disables every management item (长按测试/识别文字 included)'
 );
 eq(
@@ -2002,10 +2002,49 @@ eq(
   ['删除'],
   'a template_set settings menu only enables 删除'
 );
-eq(setMenuState.filter((m) => m.disabled).length, 10, 'the other ten collection entries stay visible but disabled');
+eq(setMenuState.filter((m) => m.disabled).length, 11, 'the other eleven collection entries stay visible but disabled');
 ok(
   setMenuState.filter((m) => m.disabled).every((m) => /集合不支持/.test(m.title)),
-  'disabled collection entries explain that sets do not support them'
+    'disabled collection entries explain that sets do not support them'
+);
+
+// seq131（用户 2026-11-07 08:10）：素材设置→加入集合
+ok(
+  /key: 'collection', label: '加入集合', action: 'onCollectionAdd'/.test(assetUiSource),
+  'the settings menu re-adds 加入集合 (removed by 3eb9fa8) and routes it through onCollectionAdd'
+);
+eq(
+  assetUi.assetMenuState(rowTemplate, { manage: true }).find((m) => m.key === 'collection').disabled,
+  false,
+  'a manageable template can join a collection'
+);
+const ocrCollectionMenu = assetUi.assetMenuState(rowOcr, { manage: true }).find((m) => m.key === 'collection');
+eq(ocrCollectionMenu.disabled, true, 'non-template assets cannot join a collection');
+ok(/仅模板图（template）可加入素材集合/.test(ocrCollectionMenu.title), 'the disabled 加入集合 title explains the template-only rule');
+ok(/id="collection-add-dialog"/.test(html) && /id="collection-add-target"/.test(html) &&
+  /id="collection-add-id"/.test(html) && /id="collection-add-save"/.test(html),
+  'index.html provides the 加入集合 dialog (target select + new id + save)');
+ok(
+  /async function openCollectionAddDialog/.test(source) &&
+    /async function saveCollectionAddDialog/.test(source) &&
+    /\/task\/asset\/collection/.test(source) &&
+    /collectionMembersWith/.test(source) &&
+    /collectionContaining/.test(source),
+  'app.js implements the collection-add dialog (list existing + create + move-out + POST)'
+);
+ok(
+  /onCollectionAdd: \(it\) => openCollectionAddDialog\(it\)/.test(source) &&
+    /onCollectionAdd: \(it\) => openCollectionAddDialog\(it, scopeTask\)/.test(source),
+  'all three asset surfaces (task library / global library / frame detail) wire 加入集合'
+);
+ok(
+  /collectionAddSave\.addEventListener\('click', \(\) => saveCollectionAddDialog\(\)\)/.test(source) &&
+    /collectionAddCancel\.addEventListener\('click', \(\) => closeCollectionAddDialog\(\)\)/.test(source),
+  'the 加入集合 dialog save/cancel buttons are wired'
+);
+ok(
+  /tasks_rewritten/.test(source) && /已加入素材集合/.test(source),
+  'a successful join reports the rewritten task count and refreshes both libraries'
 );
 
 const tplRowHarness = assetRowOpts();
@@ -2093,7 +2132,7 @@ eq(assetRowMenu(noActionRow), null, 'actions:false renders no settings menu');
 const compactRow = assetUi.createRow(rowOcr, assetRowOpts({ compact: true }).opts);
 eq(
   assetRowMenu(compactRow).children.map((b) => b.textContent),
-  ['识别区', '操作区', '重命名', '阈值', '位置帧', '删除', '长按测试', '识别文字'],
+  ['识别区', '操作区', '重命名', '阈值', '位置帧', '加入集合', '删除', '长按测试', '识别文字'],
   'compact keeps the old hiding of 点测/拖测/步骤'
 );
 
@@ -2114,8 +2153,8 @@ eq(assetUi.kindLabel('ocr_var'), '使用端OCR文字配置项（ocr_var）', 'U-
 const ocrVarMenu = assetUi.assetMenuState(rowOcrVar, { manage: true });
 eq(
   ocrVarMenu.filter((m) => m.disabled).map((m) => m.label),
-  [],
-  'U-T4: an ocr_var row enables all items (long-press + 识别文字 included)'
+  ['加入集合'],
+  'U-T4: an ocr_var row enables every item except 加入集合 (template-only) (long-press + 识别文字 included)'
 );
 const ocrVarTextMenu = ocrVarMenu.find((m) => m.key === 'text');
 eq(ocrVarTextMenu.disabled, false, 'U-T4: ocr_var can edit 识别文字');
