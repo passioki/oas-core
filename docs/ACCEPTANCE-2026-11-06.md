@@ -224,3 +224,25 @@ E2E seq127 脚本（并清理 seq126 模型 A 断言）、masked 极端 mask 兜
 - #2 修复：OCR 候选=区域全部识别行（text/score/pass，pass 优先→score desc→y→x；期望行 index0），runtime preview 与候选 API 同序一致；运行期 click/wait 仍 fuzzy。冒烟 预设队伍更换_通用战斗准备 count=51/pass 置顶、预设分组识别_式神录 count=8 且 test_action index 0/1 一致。
 - 验证：workspace **984/0**、UI **2428/190/0 dead/158 runner/6 nav**、cargo check --features ocr exit 0。
 - 遗留：集合内 OCR 成员候选仍只列 pass 行；global 模式 ocr_var 期望回退 runtime_text；其余非热路径无界等待未改。
+
+## seq134 追加验收（2026-11-07 素材识别统一：strict/全帧候选/运行期回退/链与集合/多边形显示）
+
+> 用户 5 项裁决（Lead 规格 `_verify/seq134-audit/final-spec.md`）；实现 `4815cc4`（统一）+ `6a416ec`（删旧分支，行为不变）；HEAD `6a416ec`（dev=`origin/dev`，main=`origin/main`=7a89fbe 待快进；未 tag/未 release）。记录 `ENGINE §22.73`。
+
+### A. 用户裁决（现行口径）
+
+① OCR 期望文字=**严格匹配**（归一化完全相等）；② 运行期补 **ROI 未命中→全帧 strict 回退**；③ OCR 候选=**全帧**（ROI 命中仅标注/优先）；④ **无期望文字**普通 OCR 限 ROI、**region 不可作链节点**；另补充多边形显示。目标：图像/文字/集合/递归引用共用一套识别与候选，禁止私有实现。
+
+### B. 实施结果
+
+- **runtime 单源**：`recognition_candidates`/`recognize_best`/`pick_candidate`（`runtime:2659/2712/3522`）；统一 `AssetMatchCandidate`（member/member_kind/domain/pass=纯阈值，`:1349-1386`）；OCR 期望严格+全帧候选+ROI 命中标注（`:2616-2654`）；运行期 ROI strict→全屏 strict 回退（`:2792-2860`）；无期望 ROI-only（`:2637/2862`）；collection 全成员递归（`:2680-2690`）；链节点统一+candidate_count/index（`:3693-3770`）；`6a416ec` 删除旧私有分支。
+- **oas-task**：`expand_collection_steps` 按 kind 生成成员 locator、region 用 `RegionRef`、保留 locator 覆盖；load_flow/lint/publish 使用**展开后** flow；collection 作 `op_region` terminal 与 runtime 一致（`oas-task/lib.rs:1570-1712,1986-1993,3386-3405,513-517,582`）。
+- **serve**：`editor_interp` 单解释器（`:3102-3124`）；candidates 统一 `recognition_candidates`（`:4976-4998`；候选行 domain 与顶层 domain 语义区分）；test_action 同源同 index（`:5197-5198`）；collection match 混合 best（`:4502-4510`）。
+- **UI**：候选单一渲染器（`app.js:1708,2510-2600`）、错误体 `{ok:false,errors}` 显示（`:4297-4311`）、`screen_fallback` 显示（`:4319-4349`）、死函数删除；多边形缩略图真实裁剪（`asset_ui.js:55-110`）、画布多边形主显示（`app.js:747-870`）。
+
+### C. 验证 / 冒烟 / 遗留
+
+- workspace **998/0**（oas-task 165 / oas-runtime 240 / oasd 462；上轮 984/0）；UI **2456 checks/190 ids/0 dead/158 runner/6 nav**（本机复跑核对）；`cargo check -p oasd --features ocr` exit 0。
+- 冒烟（用户数据副本，无真实点击/ADB）：`_verify/seq134-serve-smoke/` 中 test@#6 **count=3**、严格 OCR **1 行**（非 seq133 的 51）且 ROI 未命中→`domain=screen_fallback`、混合集合 **6 候选**带 member/member_kind/text、test_action index 与候选一致；`_verify/seq134-runtime-smoke/` strict miss 响亮 400；`_verify/seq134-final/workspace*.log`。
+- 旧文更正：§22.64.3 候选单源声明在 seq134 才真正落地；§22.72 #2 已被取代（#3 ADB 超时保留）；模型 A 旧口径已由 §22.66/`OPERATION-REGION-DESIGN §8.9` 更正；seq127 模板全帧候选仍有效。
+- 遗留：① 保存的 PNG 文件本身仍矩形 ROI 裁剪（缩略图/画布按 polygon 遮罩显示）；② runtime 保留 `matching_ocr_lines` 等公开 helper 仅供历史语义测试；③ 真实点击/Firefox 手测未做；④ 未 tag/未 release、用户数据未提交。

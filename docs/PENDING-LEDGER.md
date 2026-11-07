@@ -1847,6 +1847,8 @@ CDP stage 验收：
 
 | 状态 | ✅ 已修复 |
 
+> **seq134（2026-11-07）交叉引用**：该行为已被恢复/扩展——素材行识别统一候选、OCR 有期望文字且 ROI 未命中→`domain=screen_fallback` 全屏候选并可直接点测/拖测（见 §E-103 / `ENGINE §22.73`）；本历史结论原文保留。
+
 ---
 
 # ★ §E-47 ★★★ [10-31 22:32] **召唤素材精确匹配失败（U-47）**
@@ -4765,3 +4767,17 @@ un_with_timeout（spawn + stdout/stderr 双线程排空 + try_wait deadline 轮�
 > **#2 修复**：OCR 素材候选改为识别区域内**全部 det+rec 行**（仅按素材 OCR 最低置信度过滤），每行 	ext/score/pass（pass=无期望文字或 strict 匹配期望），排序 **pass 优先→score desc→y→x**（期望行存在则 index0=期望行）；runtime preview_root_candidate OCR 分支与候选 API 共用 ocr_candidate_line_pass/ocr_candidate_lines_pass_first，candidate_index 同序一致；编辑器 strict、运行期 click/wait 保持 fuzzy 原规则。冒烟：预设队伍更换_通用战斗准备 frame6 **count=51**（index0=队伍1 pass=true，其余非期望行列出）；预设分组识别_式神录 count=8 且 test_action candidate_index 0/1 与候选完全一致。
 > **验证**：workspace **984/0**（adapter 8/0 含 Windows 假 exe 挂起超时单测、runtime 232/0、oasd 460/0）、UI **2428 checks / 190 ids / 0 dead / 158 runner / 6 nav**、cargo check --features ocr exit 0。未 tag/未 release。
 > **遗留/风险**：集合内 OCR 成员候选仍只列 pass 行（保 collection match 语义，有意取舍）；运行期 OCR click/wait 仍 fuzzy；候选 API 的 ocr_var 期望在 global 模式回退 runtime_text（task 模式用 meta 变量默认值）；残余无界等待（package_cmd git、schedule tasklist/taskkill 等非点测热路径）未改；超时上限固定常量（如需可调）。
+
+> **seq134 已取代 #2**：OCR 候选改为严格匹配 + 全帧 + 运行期 ROI→全屏回退、pass=纯阈值（非期望匹配）；集合 OCR 成员候选=全成员递归统一候选（不再只列 pass 行）；运行期 click/wait 也改严格（见 §E-103 / `ENGINE §22.73`）。#3 ADB 超时修复保留有效。
+
+# ★ §E-103 ★★★ [11-07 12:xx→13:xx] seq134：素材识别统一（strict/全帧候选/运行期回退/链与集合/多边形显示）
+
+> 用户 5 项裁决（Lead 规格 `_verify/seq134-audit/final-spec.md`）：① OCR 期望文字=**严格匹配**（归一化完全相等）；② 运行期补 **ROI 未命中→全帧 strict 回退**；③ OCR 候选=**全帧**（ROI 命中仅标注/优先）；④ **无期望文字**普通 OCR 限声明 ROI、**region 不可作 op_region 链节点**；另补充多边形显示。目标：图像/文字/集合/递归引用共用一套识别与候选，禁止私有实现。
+> **实现**（commits `4815cc4` 统一 + `6a416ec` 删除旧分支，行为不变）：
+> - **runtime 单源**：`recognition_candidates`/`recognize_best`/`pick_candidate`（`crates/oas-runtime/src/lib.rs:2659/2712/3522`）；统一 `AssetMatchCandidate`（member/member_kind/score/rect/action_box/action_shape/text/domain/pass，`:1349-1386`；domain=roi/screen/screen_fallback/region，**pass=score≥阈值**）；OCR 行缓存（`:1883`）；有期望=严格+全帧候选，运行期 ROI strict 优先→同帧全屏 strict 回退（`:2616-2654/2792-2860`）；无期望=ROI-only（`:2637/2862`）；collection 全成员递归（`:2680-2690`）；链节点统一+candidate_count/index（`:3693-3770`）；`Click`/`Appear`（必须命中）/`dismiss_popup`/`interrupts`/`click_target`/`long_press`/`drag ocr_text` 最高分+ocr_var/preview/test_action/region.asset 单源；删 `ocr_candidate_line_pass*`/`send_ocr_asset_candidates`/`collection_candidates_with_ocr`/`pick_template_candidate`/`pick_ocr_line` 等。
+> - **oas-task**：`expand_collection_steps` 按 kind 生成成员 locator、region→`RegionRef`、保留 locator 覆盖；load_flow/lint/publish 用**展开后** flow（`crates/oas-task/src/lib.rs:1570-1712,1986-1993,3386-3405`）；collection 作 op_region terminal 与 runtime 一致（`:513-517,582`）。
+> - **serve**：`editor_interp` 单解释器（`apps/oasd/src/serve.rs:3102-3124`）；candidates 统一 `recognition_candidates`（`:4976-4998`；候选行 domain 与顶层声明域区分）；test_action 同源同 index（`:5197-5198`）；collection match 混合 best（`:4502-4510`）。
+> - **UI**：候选单一渲染器（`apps/oasd/ui/app.js:1708,2510-2600`）、错误体 `{ok:false,errors}`/`screen_fallback` 显示（`:4297-4349`）、死函数删除；多边形缩略图真实裁剪（`asset_ui.js:55-110`）、画布多边形主显示（`app.js:747-870`）。
+> **验证（Lead）**：workspace **998/0**（oas-task 165 / oas-runtime 240 / oasd 462）；UI **2456 checks/190 ids/0 dead/158 runner/6 nav**；`cargo check -p oasd --features ocr` exit 0。冒烟（用户数据副本，无真实点击/ADB）：`_verify\seq134-serve-smoke\` test@#6 count=3、严格 OCR 1 行（非 51）+domain=screen_fallback、混合集合 6 候选带 member/member_kind/text、test_action index 与候选一致；`_verify\seq134-runtime-smoke\` strict miss 响亮 400；`_verify\seq134-final\workspace*.log`。
+> **旧文更正**：ENGINE §22.64.3 候选单源声明在 seq134 才真正落地；§22.72 #2 已被取代（#3 ADB 超时保留）；模型 A 旧口径已由 §22.66/`OPERATION-REGION-DESIGN §8.9` 更正为模型 B；seq127 模板全帧候选仍有效。
+> **遗留**：保存的 PNG 文件本身仍矩形 ROI 裁剪（缩略图/画布按 polygon 遮罩显示；文件级 alpha 裁剪需后续 serve 支持）；runtime 保留 `matching_ocr_lines` 等公开 helper 仅供历史语义测试；真实点击/Firefox 手测未做；未 tag/未 release；用户数据未提交。

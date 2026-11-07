@@ -3255,6 +3255,8 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 
 #### 22.64.3 运行时（oas-runtime）
 
+> **seq134 更正（2026-11-07）**：本节「候选统一（`candidates_for_asset` 单源、编辑器候选 API 与链 pick 共用）」在 seq124/serve 私有实现下**并未真正落地**；seq134 才以 runtime `recognition_candidates`/`recognize_best`/`pick_candidate` 统一（含严格匹配/全帧候选/运行期 ROI→全屏回退），现行语义见 **§22.73**，本节保留 seq124 时点记录。
+
 - `AssetSet`：新增 `ocr_vars: HashMap<String,OcrVar>`、`op_regions: HashMap<String,AssetOpRegion>`（`runtime:524,527`；插入/查询 `:605,623,628,633`）；`has_op_region_chain` 对缺省/`self` 返回 false（`:640`），旧点击路径逐字节不变。
 - ocr_var 读取：`ocr_read_var`（`runtime:4262`）——期望文字=注入参数 `params[param_key]` > `runtime_text`（`ocr_var_expected_text` `:659`；空串/非字符串=响亮失败）；ROI 空→整帧（`:4276-4281`）；**总是 det+rec**（真实行 bbox 供候选/offset/日志），阈值过滤后最高分行写 `last_ocr_rect`（`:4308`）；无匹配行=响亮失败、不点击（`:4296-4306`）。
 - 操作区链：根节点沿用历史识别路径（模板 best/集合冠军/OCR 行/region 固定），再 `walk_op_region_chain`：`self`=历史 `click_box_for` 语义（action_shape/click_back 平移，否则真实 bbox）；`offset`=本节点真实 bbox 左上角 +`[dx,dy]`、尺寸 `w×h`；`asset`=识别引用节点（多候选取 `pick`：score=最高分；nearest=中心距上一节点真实 bbox 中心最近、平分比 score）后继续其 `op_region`；`region`/集合=末端。任一节点未声明/无候选/低于阈值=**本步失败、不点击、不 fallback**；visited+深度 16 双保险；步骤日志追加 `region_chain=[A:self -> B:offset -> R:region]`（`log_suffix` `runtime:435-445`）。
@@ -3611,5 +3613,68 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 用户 08:26 反馈集合仅模板成员；实现 7229c59：成员允许 template/ocr_line/ocr_lines/ocr_var/region（嵌套拒绝）；expand_collection_steps 按 kind 生成 click_target locator（template / OCR text / ocr_var param 表达式 / region roi）；runtime collection locate 按 kind 分派（region=固定 ROI 1.0/OCR=locate_ocr/模板），混合容错；chain_geometry_for/effective_asset 使获胜成员自己的 op_region 链在 click/click_target/long_press/drag 生效；新增 collection_candidates_with_ocr + collection_candidates 统一枚举（模板全帧多候选+OCR 行+region 1.0；score desc→y→x、稳定成员序；candidate_index 与候选 API/test_action 同序）；serve 候选 API 带 member/member_kind、collection/match 混合 best（template-only 保留旧语义）、test_action 经 runtime preview 自动支持；UI 菜单/对话框放开 5 类（template_set 禁用）。阈值：模板-only 用集合 threshold；混合集合每行用成员自身阈值，threshold 仍回显集合级。验证 workspace 980/0、UI 2407/190/0/6；冒烟混合集合 candidates=5、match winner OCR、test_action index0/1 正常。
 ## §22.72 [11-07 12:1x] seq133：ADB 操作超时（点测/拖测卡死修复）+ OCR 文字素材多候选
 
-用户 12:06 反馈 #3 真实点测/拖测卡死、#2 文字素材无多候选。**#3 根因**：oas-adapter-pc 的 Adb::run 用 Command::output() 无超时，ADB 偶发卡住即永久阻塞服务线程（12:04:46 test_action 不返回，其它 GET 正常）。修复 9323ace：
-un_with_timeout（spawn + 双线程排空 stdout/stderr + try_wait deadline；超时 taskkill /T 杀进程树；默认 15s/screencap 20s；错误含 argv）；serve OCR 锁毒化 lock_recover（10 处）；UI 45s AbortController/fetchJsonWithTimeout/postJsonTimed + finally + in-flight，点测/长按/拖测//input/swipe 超时后恢复并提示。**#2**：OCR 候选=识别区域内全部 det+rec 行（阈值过滤），每行 text/score/pass（pass=无期望或 strict 匹配期望），排序 pass 优先→score desc→y→x；候选 API 与 runtime preview_root_candidate 共用 ocr_candidate_line_pass/ocr_candidate_lines_pass_first，index 一致；编辑器 strict、运行期 fuzzy 不变。验证 workspace 984/0、UI 2428/190/0/6；冒烟假 ADB 超时 15.1s 返回 400 且服务恢复，OCR 多候选 count=51/pass 置顶。遗留：集合 OCR 成员候选仍只列 pass 行；global 模式 ocr_var 期望回退 runtime_text；残余非热路径无界等待。
+用户 12:06 反馈 #3 真实点测/拖测卡死、#2 文字素材无多候选。**#3 根因**：oas-adapter-pc 的 Adb::run 用 Command::output() 无超时，ADB 偶发卡住即永久阻塞服务线程（12:04:46 test_action 不返回，其它 GET 正常）。修复 9323ace：un_with_timeout（spawn + 双线程排空 stdout/stderr + try_wait deadline；超时 taskkill /T 杀进程树；默认 15s/screencap 20s；错误含 argv）；serve OCR 锁毒化 lock_recover（10 处）；UI 45s AbortController/fetchJsonWithTimeout/postJsonTimed + finally + in-flight，点测/长按/拖测//input/swipe 超时后恢复并提示。**#2**：OCR 候选=识别区域内全部 det+rec 行（阈值过滤），每行 text/score/pass（pass=无期望或 strict 匹配期望），排序 pass 优先→score desc→y→x；候选 API 与 runtime preview_root_candidate 共用 ocr_candidate_line_pass/ocr_candidate_lines_pass_first，index 一致；编辑器 strict、运行期 fuzzy 不变。验证 workspace 984/0、UI 2428/190/0/6；冒烟假 ADB 超时 15.1s 返回 400 且服务恢复，OCR 多候选 count=51/pass 置顶。遗留：集合 OCR 成员候选仍只列 pass 行；global 模式 ocr_var 期望回退 runtime_text；残余非热路径无界等待。
+
+> **seq134 更正**：本段 #2「OCR 候选=识别区域内全部行、pass=期望匹配、运行期 fuzzy」已被 seq134 取代——现行=严格匹配 + 候选全帧 + 运行期 ROI→全屏回退 + pass=纯阈值（见 §22.73 与 `_verify/seq134-audit/final-spec.md`）；#3 ADB 超时修复保留有效。
+
+### 22.73 ★★★ [11-07 13:xx] **seq134 素材识别统一（strict/全帧候选/运行期回退/链与集合/多边形显示）**
+
+> 用户 2026-11-07 5 项裁决（严格匹配 / 运行期 ROI→全屏回退 / OCR 候选全帧 / 无期望文字普通 OCR 限 ROI+region 不可作链节点 / 多边形显示），Lead 规格 `_verify/seq134-audit/final-spec.md`。实现 `4815cc4`（统一）+ `6a416ec`（删除已替代的旧候选/OCR/链分支，行为不变）。HEAD `6a416ec`（dev=`origin/dev`；main=`origin/main`=7a89fbe 待快进），**未 tag/未 release**。测试：workspace **998/0**（oas-task 165 / oas-runtime 240 / oasd 462）、UI **2456 checks/190 ids/0 dead/158 runner/6 nav**、`cargo check -p oasd --features ocr` exit 0。
+
+#### 22.73.1 用户裁决与范围（现行，覆盖此前各轮私有语义）
+
+目标：**图像/文字/集合/递归引用全部共用一套素材识别与候选行为，禁止再新增私有实现**。口径：① OCR 期望文字匹配=**严格**（归一化完全相等，不用 fuzzy/1-edit，数字保护不再需要）；② 运行期补 **ROI 未命中→同帧全屏 strict 回退**；③ OCR 候选=**全帧**所有严格匹配行（ROI 命中只标注/运行期优先，不限制候选）；④ **无期望文字**普通 OCR 限声明 ROI（不补全屏）、**region 不可作 op_region 链节点**；⑤ 多边形显示（缩略图/画布）补齐。
+
+#### 22.73.2 runtime 单源：API / 结构 / domain / pass
+
+- 三个单源入口：`recognition_candidates`（候选枚举，`runtime:2659-2706`）、`recognize_best`（运行期最佳，`:2712-2760`）、`pick_candidate`（候选选取，`:3522-3544`）。
+- 统一候选结构 `AssetMatchCandidate`（`:1349-1386`）：`member`/`member_kind`/`score`/`x,y,w,h`/`centre`/`action_box`/`action_shape`/`text`/`domain`/`pass`；`CandidateDomain`（`:1330-1347`）= `roi | screen | screen_fallback | region`；**`pass`=score ≥ 产出素材/成员阈值**（纯阈值，不再表示期望文字匹配，`:1383-1385`）；运行期 `BestMatch`（`:1821-1834`）。
+- OCR 行缓存：`ocr_lines_cache: HashMap<(id, full_frame), Vec<OcrLine>>`（`:1883`；读 `:2507`、写 `:2549`；帧失效清 `:2333/:2341`）——同帧同素材 det+rec 只跑一次（候选/预览/test_action 共用）。
+- 单源覆盖：click/locate（`:2445`）、`appear`（`:5202-5215`，必须真识别到）、`dismiss_popup`（`:5227,5241`）、`click`/变体（`:5300-5304`）、`click_target`（`:5465+`）、`long_press`（`:6264+`）、`drag` 的 ocr_text 端点（`:3943,3964,4011` → `pick_candidate :4014-4016`）、`region.asset`（`:3182-3240`）、preview/test_action（`:3445-3609`）、链节点（`:3693-3770`）。
+- `6a416ec` 已删旧私有实现：`ocr_candidate_line_pass*`、`send_ocr_asset_candidates`、`collection_candidates_with_ocr`、`pick_template_candidate`、`pick_ocr_line`；`preview_root_candidate` 保留为 `recognition_candidates` 的薄包装（`:3583-3604`）；`matching_ocr_lines` 等公开 helper 仅供历史语义测试（遗留②）。
+
+#### 22.73.3 OCR 规则：有/无期望文字 + 运行期回退
+
+- **有期望文字**（ocr_line/ocr_lines/derived/ocr_var）：
+  - 候选（编辑器/链/preview）：**全帧** det+rec + `matching_ocr_lines_strict`；每行 domain：无声明 ROI→`screen`；行落在 ROI 内→`roi`；ROI 外→`screen_fallback`（`:2616-2654`）。ROI **不限制**候选（同文多处才多候选）。
+  - 运行期（click/wait/appear/dismiss/interrupts/click_target/long_press/drag）：**ROI 内 strict 优先**；ROI 无匹配→同帧**全帧 strict 回退**（`domain=screen_fallback`）再取最高分；命中行 bbox 写 `last_ocr_rect`（供 `click_geometry_for`）；仍无匹配=响亮 Err（含所有已见行文本，`:2792-2860`）。
+- **无期望文字**（普通 `ocr_line`/`ocr_lines` 未设 `ocr_text`）：候选=声明 ROI 内全部 det+rec 行（`:2637-2650`）；运行=ROI 内识别，**不补全屏回退**（`:2862-2950`；单行 ocr_line 保持 rec-only 历史路径，多行取最高分行写 `last_ocr_rect`）。
+- region：单候选（score=1.0，`:2660-2678`）；不可作链节点（runtime `:3699-3705`；task 校验 `oas-task/lib.rs:599`），可作根目标/集合成员。
+- polygon/mask：mask 仅对 ROI 识别域生效；**全帧回退候选不套 ROI polygon**（`ocr_lines_for(full_frame=true)` 不做 mask，`:2527-2531`）。
+
+#### 22.73.4 链节点 / collection / pick
+
+- `recognition_candidates` 对 collection **递归枚举全部成员**（template/ocr_line/ocr_lines/ocr_var/derived/region 均可），合并后统一排序 score desc→y→x（`:2680-2690`）；候选带 `member`/`member_kind`/`text`，混合集合同样单源。
+- `recognize_best` 对 collection=逐成员 `recognize_best` 取最高分并记录 `last_set_member`（`:2724-2752`）。
+- 链节点 `recognize_chain_node` 统一 `recognition_candidates` + `pick_candidate`（`:3693-3770`），返回 `(ChainNodeHit, candidate_count, idx)`；链步骤记录 `candidate_count`/选中 index/score（`OpRegionChainStep` `:432` + walk 参数 `:3612-3613`）；末端几何=模型 B（不变）。
+- `pick_candidate`（`:3522-3544`）：`score`=最高分（平局按候选序）；`nearest`=候选中心距上一节点 real rect 中心最近（平局比 score→候选序）。
+- `region.asset` 的 asset/nearest、拖动端点、operation 候选共用同一 `recognition_candidates`+`pick_candidate`（`:3182-3240`）；OCR 引用方不再「只有声明操作区、无候选」。
+- oas-task 侧 **collection 作 op_region terminal** 与 runtime 一致：collection 无自身 op_region、只作终结点（`oas-task/lib.rs:513-517,582`；测试 `:7790`）；region 仍不可作节点、region 不得带 op_region（`:538,:599`）。
+
+#### 22.73.5 oas-task：expand_collection_steps / lint / publish
+
+- `expand_collection_steps`（`oas-task/lib.rs:1570-1712`）：click 的 `sel`/`alts` 按成员展开（保留既有 alts，`:1579-1596`）；`click_target` 的集合成员 locator **按 kind 生成**（template→template locator+threshold 覆盖；ocr_line/lines→ocr_text（缺期望文字=Err）+`require_template`/`region` 覆盖；ocr_var→`text_expr:param(...)`；**region→`RegionRef{sel}` 保留素材引用**，绝不生成裸 ROI，`:1681-1688`；`Locator::RegionRef` `oas-flow:889`）。
+- 生产路径：`load_flow` 展开后再 `Flow::from_json`（`:1986-1993`，有生产展开测试）；lint 同样**展开后**校验 T3/T4（`:3386-3405`）；publish 经 `lint_one` 走同一展开校验。
+
+#### 22.73.6 serve/API：单解释器 + 候选/test_action/match
+
+- `editor_interp`（serve:3102-3124）：候选 API、test_action、collection match **共用** `Interpreter`（任务变量默认 params + `with_params` + OCR provider + 关闭 humanize），禁止另建解释器/私有枚举。
+- `GET /task/asset/candidates`（`:4840-5010`）：统一 `recognition_candidates`（`:4976-4998`）；字段 `index/x/y/w/h/score/pass/action_box/text?/member/member_kind/domain`；**顶层 `domain`** 仍回声明域（roi/screen/members，`:4900-4912`），**候选行 `domain`**=产生域（roi/screen/screen_fallback/region，`:4994`）；错误体 `{ok:false,errors}`；未声明=404、参数错=400。
+- `POST /task/asset/test_action`（`:5111-5260`）：同一 `editor_interp`（`:5197`）+ `preview_asset_action`（`:5198`）；`candidate_index` 与候选 API **同序同源**；OCR 期望值使用任务变量默认值（与候选 API 一致），polygon/mask 一致；dry/real 同源。
+- `GET /task/asset/collection/match`（`:4379-4530`）：template-only 保留历史 `locate_template` best（`:4467-4480`）；混合集合走 `recognition_candidates` 取 best（`:4502-4510`），字段/几何/阈值口径统一。
+
+#### 22.73.7 UI：候选单一渲染器 + 多边形显示
+
+- 候选：`renderCandidateList`（`app.js:1708`）+ 统一行信息（`:2510-2600`）单套渲染；图像=缩略图/分数、文字=`text`/分数、集合=`member/member_kind/text`；**删除**「期望/非期望文字」标签与死函数 `testAssetOcr`/`probeAssetOcrFrame`/`testAssetMatch`/`testAssetCollection`/`candidateDisplayInfo`（grep 0）；错误体 `{ok:false,errors}` 显式显示（`:4297-4311`）；`domain=screen_fallback` 显示「ROI未命中→全屏回退」且可勾选/点测/拖测（`:4319-4349`；`candidateDomainText :2526`）。
+- 多边形显示（用户补充）：`asset_ui.js:55-110` 缩略图按 polygon **真实裁剪/遮罩**（canvas clip，多边形外暗背景；无 polygon 保持矩形），位置帧路径同样裁剪（`:160`）；画布选中素材/候选以多边形为主显示（轮廓+半透明填充，矩形仅 bbox 辅助；`app.js` polygon overlay `:747-870`，进行中虚线 `:2347`）；保存/截图链路：**PNG 文件本身仍矩形 ROI 裁剪**（遗留①）。
+
+#### 22.73.8 测试 / 冒烟 / 更正旧文 / 遗留
+
+- 测试：workspace **998/0**（oas-task 165 / oas-runtime 240 / oasd 462）、UI **2456/190/0 dead/158/6 nav**（本机实跑核对）、`cargo check --features ocr` exit 0。
+- 冒烟（用户数据副本，无真实点击/ADB）：
+  - `_verify/seq134-serve-smoke/candidates-test.json`：`test`@frame#6 **count=3**（y=150/301/451，`member_kind=template`；顶层 domain=roi、候选行 domain=screen）。
+  - `candidates-ocr.json`：`预设队伍更换_通用战斗准备` **严格 1 行**（`队伍1`，非 seq133 的 51），ROI 未命中→`domain=screen_fallback`。
+  - `candidates-mixed.json`：混合集合 **6 候选**（region/template/ocr_line/ocr_var，带 member/member_kind/text/domain）；`collection-match.json` 混合 best=region（score=1.0）。
+  - `_verify/seq134-runtime-smoke/`：strict miss 响亮 400（`test_action-strict-miss.json`/`test_action-ocr-0.json`）；`_verify/seq134-final/workspace.log`/`workspace-after-clean.log` 测试日志。
+- **旧文更正**（就地）：§22.64.3「`candidates_for_asset` 单源/编辑器候选与链 pick 共用」在 seq124/serve 私有实现下**并未真正落地**，seq134 才统一（见本节）；§22.72 #2「OCR 候选=区域内全部行/pass=期望匹配/运行期 fuzzy」**已被本节取代**（#3 ADB 超时保留）；模型 A 旧口径已由 §22.66/`OPERATION-REGION-DESIGN §8.9` 更正为模型 B；seq127 模板全帧多候选仍有效（本节把 OCR/集合也纳入全帧候选）。
+- 遗留：① 保存的 PNG 文件本身仍矩形 ROI 裁剪（缩略图/画布按 polygon 遮罩显示；文件级 alpha 裁剪需后续 serve 支持）；② runtime 保留部分公开 helper（`matching_ocr_lines` 等）仅供历史语义测试；③ 真实点击/Firefox 手测未做；④ 未 tag/未 release，用户数据未提交。

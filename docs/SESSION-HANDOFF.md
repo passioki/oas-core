@@ -1,35 +1,35 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 133，✅ done：点测/拖测卡死修复 + 文字素材多候选**），然后按需看 `docs/ENGINE-DESIGN.md §22.72`（seq133）/ §22.71（seq132）/ §22.70（seq131）/ §22.69（seq130）/ §22.68（seq129）/ §22.67（V2.0）、`docs/ACCEPTANCE-2026-11-06.md`（seq130 追加）、`PENDING-LEDGER §E-102/§E-101/§E-100`、`VARIABLES-V2-DESIGN §10`、`OPERATION-REGION-DESIGN §8.9`。
-> **状态：done（seq 133）——ADB 操作超时（点测/拖测卡死修复）+ OCR 文字素材多候选**：`9323ace`；workspace **984/0**、UI **2428/190/0 dead/158 runner/6 nav**；冒烟假 ADB 超时 15.1s 返回 400 且服务恢复、OCR 多候选 pass 置顶；只推送不发布（未 tag/未 release）。
+> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 134，✅ done：素材识别统一 strict/全帧候选/运行期 ROI→全屏回退/链与集合/多边形显示**），然后按需看 `docs/ENGINE-DESIGN.md §22.73` 与 `docs/ACCEPTANCE-2026-11-06.md`（seq134 追加）。
+> **状态：done（seq 134）——素材识别统一**：`4815cc4`（统一）+ `6a416ec`（删旧分支，行为不变）；workspace **998/0**（oas-task 165 / oas-runtime 240 / oasd 462）、UI **2456/190/0 dead/158/6 nav**；冒烟 `_verify/seq134-*`（test#6 3 候选、严格 OCR 1 行+`screen_fallback`、混合集合 6 候选、strict miss 400）。HEAD `6a416ec`（dev=origin/dev；main/origin/main=7a89fbe 待快进；未 tag/未 release）。
 
-## 0. 当前状态（2026-11-07 08:2x，seq 131 done）
+## 0. 当前状态（2026-11-07 13:3x，seq 134 done）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | oas-core `dev`；代码 `9323ace`（dev/main 已同步）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，未随 seq126~130 更新）；未 tag / 未 release |
-| 任务 | **seq133 已完成**：adb 超时修复（真实点测/拖测卡死）+ OCR 文字素材多候选（全部行/pass 优先）；#1 常驻弹窗识别记档不实现——素材设置菜单「加入集合」（template 专用）+ `#collection-add-dialog`（已有集合/新建集合；跨集合先移出旧集合；保留 threshold/action_shape；保存后刷新两侧库并提示 tasks_rewritten）；任务库/全局库/帧详情三处接线 |
-| 测试 | `cargo test --workspace` **972 passed / 0 failed**（本轮无 Rust 改动）；UI **2428 checks / 190 ids / 0 dead / 158 runner ids / 6 nav**；workspace **984/0**；cargo check --features ocr exit 0；冒烟 `_verify\seq133-ocr-candidates\`（假 ADB 超时 400/15.1s；OCR 多候选 count=51/pass 置顶） |
-| 权威文档 | **`ENGINE §22.72`（seq133）· `ACCEPTANCE-2026-11-06.md`（seq133 追加）· `PENDING §E-102/§E-101` · `OPERATION-REGION-DESIGN §8.9`** |
-| 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；本地产物不含 seq126~130 新能力（package_schema=2 旧包被拒绝） |
+| 分支 / HEAD | oas-core `dev`；代码 `6a416ec`（dev=origin/dev；main/origin/main=7a89fbe 待快进）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，未随 seq126~134 更新）；未 tag / 未 release |
+| 任务 | **seq134 已完成**：素材识别统一（严格匹配 / OCR 全帧候选 / 运行期 ROI→全屏回退 / 无期望文字限 ROI / region 不可作链节点 / 链与集合单源）+ 多边形显示（缩略图裁剪 / 画布主显示）；实现 `4815cc4`+`6a416ec`；并就地更正 §22.64.3 候选单源声明、§22.72 #2 旧语义 |
+| 测试 | `cargo test --workspace` **998 passed / 0 failed**（oas-task **165** / oas-runtime **240** / oasd **462** 等）；UI **2456 checks / 190 ids / 0 dead / 158 runner ids / 6 nav**；`cargo check -p oasd --features ocr` exit 0；冒烟 `_verify/seq134-{serve,runtime}-smoke`、`_verify/seq134-final` |
+| 权威文档 | **`ENGINE §22.73`（seq134）· `ACCEPTANCE-2026-11-06.md`（seq134 追加）· `PENDING §E-103` · `OPERATION-REGION-DESIGN §8.9`（模型 B）· `_verify/seq134-audit/final-spec.md`** |
+| 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；本地产物不含 seq126~134 新能力（package_schema=2 旧包被拒绝） |
 | 独立仓 | `https://github.com/passioki/oas-runner`（`768a8b7`）；pin `ba6813e`（未打独立包；如需独立 Runner 需 bump pin + 根启动脚本 + V2 变量模型重打） |
 | 服务 | 无 `oasd`/`oasd-runner` 进程；8787~8809 无监听（冒烟后确认） |
 | 工作区 | `scheduler.json`、用户任务 `tasks/*`、`assets/assets.json` / `frames/frames.json` / 新增图片等均**未提交**（用户数据，**不要提交/覆盖**）；用户可能在 Studio 中删除/编辑任务（不要恢复/提交）；seq131 代码已提交；**cargo incremental 已清理，下次构建稍慢（deps 缓存仍在）** |
 
 ## 0.1 新会话恢复步骤（直接照做）
 
-1. 调 skill `session-memory`；读 `START-HERE` → `RESUME.md`（seq 124）→ `RESUME-INDEX` 最新行。
+1. 调 skill `session-memory`；读 `START-HERE` → `RESUME.md`（seq 134）→ `RESUME-INDEX` 最新行。
 2. 用磁盘核实：`git log -1`、`git status --porcelain`、`cargo test --workspace`、`node apps/oasd/ui/ui_pure_test.js`；与本文 §0 不一致先修文档。
-3. seq124 已 done；若用户提新需求，先读 `PARAM-ASSET-IMPLEMENTATION.md` 了解现行模型（ocr_var/资产级 op_region/派生参数/候选/test_action），再看 `ENGINE §22.64.8` 的「后续可选」清单，避免重复实现。
-4. 遗留项（不阻塞）：drag 测试动作、素材行长按测试入口、识别文字 ROI 接画布、S8 派生行只读卡片、候选 op_rect 预览、全屏 OCR 性能、真机 E2E、Phase 2（去 meta.params）。
-5. 发布策略：**只推送不发布**；如要发布需先重打 Studio/Runner 包、视需要 bump oas-runner pin/版本（新包不兼容旧 Runner：`action_source` deprecated + `ocr_var` kind 会触发旧引擎拒绝）。
+3. seq134 已 done；若用户提新需求，先读 `ENGINE §22.73` 了解现行识别/候选语义（runtime 单源 recognition_candidates/recognize_best/pick_candidate；OCR 严格+全帧候选+运行期 ROI→全屏回退；模型 B 链末端），避免重复实现或恢复已删私有分支。
+4. 遗留项（不阻塞）：保存 PNG 文件本身仍矩形 ROI 裁剪（缩略图/画布按 polygon 遮罩；文件级 alpha 需 serve 支持）、runtime 保留 `matching_ocr_lines` 等仅供历史语义测试、真实点击/Firefox 手测未做、oas-runner 独立仓 pin/重打包未跟进、V2.1/V2.2 变量后续。
+5. 发布策略：**只推送不发布**；如要发布需先重打 Studio/Runner 包、视需要 bump oas-runner pin/版本（新包不兼容旧 Runner：package_schema=2/`ocr_var`/`drag.asset` 等会被旧引擎拒绝）。
 
-## 0.2 本轮（seq124）文档产出
+## 0.2 本轮（seq134）文档产出
 
-- `ENGINE-DESIGN.md §22.64`（8 子节：映射/schema/运行时/API/UI/测试/兼容/风险后续）；`OPERATION-REGION-DESIGN.md §8`（资产级 op_region 现行口径，§6/§7 标历史）。
-- `PARAM-ASSET-IMPLEMENTATION.md`：状态改「已实现」+「实现结果（Lead 验收）」偏差/验证/证据/后续；`PARAM-ASSET-REDESIGN.md` 标已实现（§1b 用户权威要求保留）。
-- `PENDING §E-93` 全项完成归档 + §D.6 最终验收 + 后续清单；`RESUME`/`RESUME-INDEX`/本交接单/`START-HERE` 更新 seq124 done。
-- 审计：`_verify\paramasset-audit-20261106\{01,02,03}-*.md`；实现证据：`_verify\backend-p0-20261106\`；E2E：`_verify\seq124-e2e-20261106\`；Lead 验收：`_verify\seq124-lead-verify\`。
+- `ENGINE-DESIGN.md §22.73`（8 子节：用户裁决 / runtime 单源 / OCR 规则+回退 / 链与集合 / oas-task expand / serve API / UI 候选+多边形 / 测试冒烟更正遗留）；另 §22.64.3、§22.72 就地更正。
+- `ACCEPTANCE-2026-11-06.md` seq134 追加；`PENDING §E-103`（+§E-46/§E-102 交叉引用）；`RESUME §1.28`/`RESUME-INDEX row 134`/`START-HERE`/本交接单更新。
+- 审计/规格：`_verify\seq134-audit\final-spec.md`（+runtime/serve-ui-task/lead 审计）；冒烟证据 `_verify\seq134-{serve,runtime}-smoke\`、`_verify\seq134-final\workspace*.log`。
+- 测试：workspace 998/0（task 165 / runtime 240 / oasd 462）、UI 2456/190/0/6；旧文更正：§22.64.3 单源声明、§22.72 #2、模型 A→模型 B。
 
 ## 1. 最近 3 轮关键变更（历史细节见 PLAN/ENGINE/PENDING）
 

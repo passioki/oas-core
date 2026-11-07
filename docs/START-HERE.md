@@ -23,20 +23,21 @@
 ★ 唯一真相 = git + 磁盘证据；**不信"我记得"** ⇒ 必须贴 `文件:行号` / commit / 测试输出
 ```
 
-## 0.1 当前状态快照（2026-11-07 08:2x · **seq 133 · ✅ done：点测/拖测卡死修复（adb 超时）+ 文字素材多候选**）
+## 0.1 当前状态快照（2026-11-07 13:3x · **seq 134 · ✅ done：素材识别统一（strict/全帧候选/运行期 ROI→全屏回退/链与集合/多边形显示）**）
 
 | 项 | 状态 |
 |---|---|
-| 分支/HEAD | `dev`；代码 HEAD = **`9323ace`**（seq133；dev/main 已同步）；PR1~PR7 全部 ✅（哈希见 `PENDING-LEDGER §E-79`）；**未 tag / 未 release** |
+| 分支/HEAD | `dev`；代码 HEAD = **`6a416ec`**（seq134 统一 `4815cc4` + 旧分支清理 `6a416ec`；dev=origin/dev，main/origin/main=`7a89fbe` 待快进）；PR1~PR7 全部 ✅；**未 tag / 未 release** |
 | 引擎 | `oasd`（studio/runner/run/queue/stats/scheduler）+ 编辑器 UI + 素材库；`oasd --version` = **0.1.0**（dev；旧 v1.x 为历史内部 tag） |
-| 测试 | `cargo test --workspace` **984 passed / 0 failed**（23 suites；perceive **14** / flow **82** / runtime **226** / task **160** / adapter-pc 5 / oasd **458**）；UI pure test **2428 checks / Studio 190 ids / Runner 158 ids / 0 dead / 6 nav**；集合 API 冒烟 `_verify\seq131-collection-smoke\`（create/list/delete 200）；`cargo check -p oasd --features ocr` exit 0 |
+| 测试 | `cargo test --workspace` **998 passed / 0 failed**（23 suites；perceive **14** / flow **82** / runtime **240** / task **165** / adapter-pc 5 / oasd **462**）；UI pure test **2456 checks / Studio 190 ids / 0 dead / 158 runner ids / 6 nav**；`cargo check -p oasd --features ocr` exit 0 |
 | 分包 | **Studio** `dist/oasd-v0.1.0-win64.zip` = **76,670,889 B**，SHA256 `F21843810EF94859DCA57CF172944FDB618DD19B058F11770DF8D236C3471B2F` · **oas-core Runner** `37,860,300 B`，SHA256 `163679D6099AA35ED67A54AD0AAA11AACFCF9275B657C00AEA9C5E2708CC9065` · **oas-runner 独立包** `37,870,658 B`，SHA256 `F6A6C3012AB20BF6CBB4564EC5E9735DF728C0C35DA8950751727415B392D46C`（均不入 git；**本批未重打，且旧 package_schema 包会被新引擎拒绝**） |
 | 独立仓 | **`oas-runner`** = `https://github.com/passioki/oas-runner`（`768a8b7`；pin `ba6813e`，**未随 seq126~130 更新、未打独立包**） |
 | 最终审计 | **`docs/AUDIT-2026-11-05.md`**（代码审计/文档漂移对照/残余风险/交接/关机） |
 | 双入口 | **Studio `http://127.0.0.1:8788/`**（`oasd studio`，编辑/构建/发布，**无调度页/无重置记忆**）· **Runner `http://127.0.0.1:8789/`**（`oasd runner`，nav 6 项：概览/已安装任务/安装包/队列与调度/运行记录/设置；**完整调度 UI + 重置记忆**；启动即内嵌调度，`--no-scheduler` 关闭）；`oasd serve` = Studio 的 deprecated 别名 |
 | 当前状态 | **所有服务已停止**（本轮验证/E2E/冒烟后确认无监听、无 `oasd` 进程）。启动命令见 §1.3/§6；**开发启动器 = `scripts\dev-serve.bat`（默认 Studio 8788；`-Surface runner` → Runner 8789）**；仓库根 `start-runner.bat` 为 Runner 快捷启动 |
 | 发布 | GitHub Release `v0.1.0` 仍是**历史节点**（tag `v0.1.0` → `e8edbef`，**未移动**）；**本批未 tag / 未 release** |
-| 当前任务 | **seq133 已完成并推送**：① #3 真实点测/拖测卡死根因=adb 调用无超时 → oas-adapter-pc `run_with_timeout`（15s/screencap 20s、超时杀进程树、错误含 argv）+ serve OCR 锁恢复 + UI 45s AbortController/finally/in-flight；② #2 OCR 文字素材候选=区域全部行（text/score/pass，pass 优先、期望行 index0），runtime preview 与候选 API 同序；③ #1 常驻弹窗识别线程记档不实现（§E-101）。见 `PENDING §E-102`。工作区用户测试配置不入库（用户可能随时编辑/删除，**不要提交/恢复**） |
+| 当前任务 | **seq134 已完成**：素材识别统一（用户 5 项裁决——OCR 严格匹配 / 运行期 ROI→全屏回退 / OCR 候选全帧 / 无期望文字限 ROI + region 不可作链节点 / 多边形显示）→ runtime 单源 `recognition_candidates/recognize_best/pick_candidate`、oas-task expand/lint、serve 单解释器、UI 单一候选渲染器+多边形缩略图/画布；`4815cc4`+`6a416ec`；旧文更正 §22.64.3/§22.72 #2 |
+| 权威文档 | **`ENGINE §22.73`（seq134）· `ACCEPTANCE-2026-11-06.md`（seq134 追加）· `PENDING §E-103` · `_verify/seq134-audit/final-spec.md`**；模型 B 见 `OPERATION-REGION-DESIGN §8.9` |
 | 数据 | 已提交基线：全局素材 **16 条 / 1 图**（15 `ocr_line` + 1 `template`）；帧 **28 个 / `current_id=20` / `next_id=41`**。工作区未提交用户数据：`assets/assets.json`、`frames/frames.json`、`scheduler.json`(+`.bak`)、未跟踪 `frames/frame-43.png`/`frame-44.png`、`tasks/切换预设御魂/`——**用户数据不入库，勿提交** |
 | 引擎特性 | flow DSL、素材/掩膜/多边形、点击定位链、HB1/HB7、整帧搜索、单识别 ROI + 操作区域、库、queue、stats、checkpoint/resume、reconnect、多帧投票、OCR+模板互证、统一任务模板/task lint、任务创建/编辑器运行、调度 v3、交付包 `.oaspkg`、Studio/Runner 双入口、内嵌调度/设备租约、子任务参数配置 |
 | 已知限制 | 见 `RESUME.md §5` / `SESSION-HANDOFF.md §4`；核心：`installed.json` 损坏无自动隔离、租约 pass 级、install/activate 调度检查有 check-then-act 小窗口、panic 安全依赖 unwind、PR7 8 条 UI P2、`start-runner.bat` 固定 8789、跨平台仅设计预留 |
@@ -318,7 +319,7 @@ run-tests.bat …                                  REM 旧仓守卫基线 171 pa
 | **编辑器 UX / 选择模型计划** | `EDITOR-UX-PLAN.md`（画布、位置详情、多边形/反选、实时帧、点测/拖测、区域有效性、素材排序、分类重命名；**素材库 UX 现行为 §18**；**§18.10 = 三项遗留修复**） |
 | **★ Studio / Runner 分离 + TaskPackage + 任务配置** | `RUNNER-STUDIO-SPLIT-PLAN.md`：**Q1~Q7 已批准；PR1~PR7 全部 ✅ 已提交（PR7 代码 `5e45c81`）+ 最终审计修复 `68e5768`**；§A.9~§A.15 = PR1~PR7 实现记录，**§A.16 = 最终审计与修复记录**，**§A.17 = 双端发行包/分离度/dev-serve/参数 UI 审计（2026-11-05，seq 110）**；§A.8.1 = 两种发行包；§D.3 PR 计划、§D.4 19 步验收；分发/跨平台见 `packaging/CROSS-PLATFORM.md`、`packaging/README-RUNNER.txt`、`packaging/README-DEPLOY.md` |
 | **当前任务（返回庭院）** | `../tasks/返回庭院/flow.json` · 全局素材 `../assets/` · 帧 `../frames/` |
-| **引擎规格/进度** | `ENGINE-DESIGN.md` §22（**§22.51 最终审计；§22.52 发行包/参数审计；§22.53 P0；§22.54 参数 v2/构建端/P0-1b；§22.55 使用端参数 UI/更新检测；§22.56 Phase 1a/Studio lint；§22.57 Phase 1b 独立打包；§22.58 更新检测 TTL/复用/清理 + 参数编辑补齐；§22.59 动作目录统一 + 配置项成熟 UI；§22.60 参数插入/条件修复/素材选择；§22.61 region 操作区域 + long_press + curve_swipe + 等待语义；§22.62 A 方案 region.asset + 多候选 nearest；§22.63 用户新要求记录；§22.64 seq124 参数→素材/op_region/候选 API/test_action/废弃两状态；§22.65 ★ seq126 验收整改：操作区模型 A / polygon+统一框选 / 参数 UI 移除 / 变量系统设计**） |
+| **引擎规格/进度** | `ENGINE-DESIGN.md` §22（**§22.51 最终审计；§22.52 发行包/参数审计；§22.53 P0；§22.54 参数 v2/构建端/P0-1b；§22.55 使用端参数 UI/更新检测；§22.56 Phase 1a/Studio lint；§22.57 Phase 1b 独立打包；§22.58 更新检测 TTL/复用/清理 + 参数编辑补齐；§22.59 动作目录统一 + 配置项成熟 UI；§22.60 参数插入/条件修复/素材选择；§22.61 region 操作区域 + long_press + curve_swipe + 等待语义；§22.62 A 方案 region.asset + 多候选 nearest；§22.63 用户新要求记录；§22.64 seq124 参数→素材/op_region/候选 API/test_action/废弃两状态；§22.65 ★ seq126 验收整改：操作区模型 A / polygon+统一框选 / 参数 UI 移除 / 变量系统设计；§22.66 seq127 全帧多候选+模型 B；§22.67 V2.0 变量系统；§22.68 seq129 拖动素材端点+全局 lint；§22.69 seq130 点击几何同源+UI 四项；§22.70~§22.72 seq131~133（集合入口/混合集合/ADB 超时+多候选）；§22.73 ★ seq134 素材识别统一（strict/全帧候选/运行期 ROI→全屏回退/链与集合/多边形显示）**） |
 | **seq131 现行口径** | `ENGINE §22.70`（加入集合入口恢复）· `ACCEPTANCE-2026-11-06.md`（seq131 追加）· `PENDING §E-99` · `OPERATION-REGION-DESIGN §8.9`（模型 B） |
 | **seq124/126/127/128/129 实现记录（历史）** | `PARAM-ASSET-IMPLEMENTATION.md`（seq124 设计+裁决）· `PARAM-ASSET-REDESIGN.md §1b`（用户权威逐字要求）· `OPERATION-REGION-DESIGN.md §8`（模型 A→B 修正）· `ENGINE §22.64/§22.65/§22.66/§22.67/§22.68/§22.69` |
 | **调度 v3 + 统一任务模板（已交付 V1.0）** | `ENGINE-DESIGN.md` **§22.34 / §22.35**；Round 语义裁决见 **§22.34.7** + `SCHEDULER-RUNNER-PLAN.md` |

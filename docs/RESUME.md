@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 133
-updated_at: 2026-11-07T12:2x+08:00
-trigger: 用户 12:06 三条：① 常驻弹窗识别并行设想（低优先，记档 §E-101 不实现）；② 文字素材缺多识别；③ 素材「预设队伍更换_通用战斗准备」真实点测卡住、点测/拖测不可用。Lead 从 Studio 日志定位 `POST /task/asset/test_action` 永不返回（Adb::run 无超时阻塞线程）→ oas-adapter-pc 全部 adb 调用加超时 + serve OCR 锁恢复 + UI 45s AbortController；OCR 候选改为区域全部行（pass 优先）并与 preview 同序。提交 `9323ace`；workspace 984/0、UI 2428/190/0/6
+checkpoint_seq: 134
+updated_at: 2026-11-07T13:3x+08:00
+trigger: 用户 5 项识别裁决（严格匹配 / 运行期 ROI→全屏回退 / OCR 候选全帧 / 无期望文字限 ROI+region 不可作链节点 / 多边形显示）→ 统一识别单源（Lead 规格 `_verify/seq134-audit/final-spec.md`）；提交 `4815cc4`+`6a416ec`；workspace 998/0、UI 2456/190/0/6。
 status: done
-code_head: `9323ace`（dev=main=origin；未 tag/未 release）
-docs_head: seq133 docs 提交见 `git log -1`
-next_action: seq133 已完成并推送（未 tag/未 release）。后续：① **Firefox 手测**（真实点测/长按/拖测：设备异常时 ≤45s 中止并恢复，不再永久“…”；OCR 素材识别显示区域内全部行，期望行置顶标绿，非期望文字可选测；拖测候选同样显示文字/分数/pass）；② 若仍见「op_region chain node … has no match」那是识别失败（检查帧/ROI/期望文字/链节点），不是卡死；③ 常驻弹窗识别线程设想（§E-101）待排期；④ 集合内 OCR 成员候选仍只列 pass 行、global 模式 ocr_var 期望回退 runtime_text 等遗留；⑤ V2.1/V2.2、oas-runner 独立仓脚本+pin bump、真机 E2E、tag/Release 策略。详见 `PENDING §E-102/§E-101`、`ENGINE §22.72`、`ACCEPTANCE` seq133 追加。
+code_head: `6a416ec`（dev=origin/dev；main/origin/main=7a89fbe 待快进；未 tag/未 release）
+docs_head: seq134 docs 提交见 `git log -1`
+next_action: seq134 已完成（未 tag/未 release）。后续：① **Firefox 手测**（候选统一：图像/文字/集合；OCR 有期望且 ROI 未命中→全屏回退候选显示与点测；多边形缩略图裁剪/画布主显示；test_action candidate_index 与候选逐项一致）；② 真实点击/ADB 手测未做；③ **PNG 文件级 polygon 裁剪**需 serve 支持（现缩略图/画布遮罩，文件仍矩形）；④ oas-runner 独立仓 pin/重打包未跟进；⑤ V2.1 变量表达式/条件/loop、V2.2 Profile。详见 `PENDING §E-103`、`ENGINE §22.73`、`ACCEPTANCE` seq134 追加。
 ```
 
 ## 0. 目标（本阶段）
@@ -323,6 +323,13 @@ next_action: seq133 已完成并推送（未 tag/未 release）。后续：① *
 > **#2**：OCR 候选=识别区域内全部 det+rec 行（仅按素材 OCR 最低置信度过滤），每行 `text/score/pass`（pass=无期望或 strict 匹配期望），排序 pass 优先→score desc→y→x（期望行存在则 index0=期望行）；runtime `preview_root_candidate` 与候选 API 共用 `ocr_candidate_line_pass`/`ocr_candidate_lines_pass_first`，candidate_index 同序；编辑器 strict、运行期 click/wait 保持 fuzzy。冒烟：`预设队伍更换_通用战斗准备` frame6 count=51（index0=队伍1 pass=true），`预设分组识别_式神录` count=8 且 test_action index 0/1 与候选一致。
 > 验证：workspace **984/0**（adapter 8/0 含 Windows 假 exe 挂起超时单测、runtime 232/0、oasd 460/0）、UI **2428 checks / 190 ids / 0 dead / 158 runner / 6 nav**、cargo check --features ocr exit 0。
 > 遗留：集合内 OCR 成员候选仍只列 pass 行（保 collection match 语义）；global 模式 ocr_var 期望回退 runtime_text；残余非热路径无界等待（package_cmd git、schedule tasklist/taskkill）未改；常驻弹窗识别线程待排期（§E-101）。
+
+## 1.28 2026-11-07 12:xx→13:xx（seq 134）素材识别统一（strict/全帧候选/运行期回退/链与集合/多边形显示）（✅ 已完成并推送 dev；main 待快进）
+
+> 用户 5 项裁决（Lead 规格 `_verify/seq134-audit/final-spec.md`）：① OCR 期望=严格匹配；② 运行期补 ROI→全屏回退；③ OCR 候选全帧；④ 无期望文字限 ROI、region 不可作链节点；另多边形显示。目标=图像/文字/集合/递归引用共用一套识别与候选，禁止私有实现。
+> 实现 `4815cc4`（统一）+ `6a416ec`（删旧分支，行为不变）：**runtime** 单源 `recognition_candidates/recognize_best/pick_candidate`（domain/pass 统一、OCR 行缓存、链 `candidate_count/index`、collection 全成员、Click/Appear/dismiss/interrupts/click_target/long_press/drag ocr_text/preview/test_action/region.asset 单源）；**oas-task** `expand_collection_steps` 按 kind+RegionRef、load_flow/lint/publish 展开后校验、collection 作 op_region terminal；**serve** `editor_interp` 单解释器/候选统一/test_action 同 index/collection match 混合 best；**UI** 单一候选渲染器/`screen_fallback` 显示/删死函数 + 多边形缩略图裁剪/画布主显示。
+> 验证：workspace **998/0**（task 165 / runtime 240 / oasd 462）、UI **2456 checks/190 ids/0 dead/158 runner/6 nav**、`cargo check --features ocr` exit 0；冒烟 `_verify\seq134-serve-smoke\`（test#6 count=3、严格 OCR 1 行+screen_fallback、混合集合 6 候选、test_action index 一致）、`_verify\seq134-runtime-smoke\`（strict miss 400）、`_verify\seq134-final\workspace*.log`。
+> 遗留：PNG 文件本身仍矩形 ROI 裁剪（缩略图/画布按 polygon 遮罩，文件级 alpha 待 serve 支持）；runtime 保留 `matching_ocr_lines` 等仅供历史语义测试；真实点击/Firefox 手测未做；main 待快进、未 tag/release。
 
 ## 2. 本批交付（seq 110）
 
