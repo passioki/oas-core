@@ -405,6 +405,11 @@ pub enum AssetOpRegion {
     /// Use the node's own operation area (historical `click_box_for`/`click_back`
     /// semantics); the default when the asset has no `op_region`.
     SelfRegion,
+    /// seq136 B #1: the authored `action_shape` is an **absolute** operation area
+    /// (never translated by `real - roi`). Only valid as the root asset's own
+    /// operation area or as a chain terminal — it has no `asset`, so it cannot
+    /// continue the chain.
+    Fixed,
     /// Recognize `asset` as an extra gate and continue with *its* `op_region`.
     Asset { asset: String, pick: OpRegionPick },
 }
@@ -413,6 +418,7 @@ impl AssetOpRegion {
     pub fn mode_str(&self) -> &'static str {
         match self {
             AssetOpRegion::SelfRegion => "self",
+            AssetOpRegion::Fixed => "fixed",
             AssetOpRegion::Asset { .. } => "asset",
         }
     }
@@ -981,6 +987,34 @@ fn clamp_to_frame(p: Point, w: u32, h: u32) -> Point {
 ///
 /// Empty when the flow has no `region` (old flows keep byte-identical step
 /// details); otherwise ` region=<mode>` plus ` asset=<id>` for the v1.4 A-plan.
+/// seq136 B #1: absolute operation geometry of a `fixed` shape (no translation).
+///
+/// * rect/polygon → its bbox as the display/`action_box` rect + the shape itself;
+/// * invert → the whole screen as the display rect (the effective area is the
+///   complement; sampling is invert-aware in [`ClickShape::sample`]).
+fn fixed_operation_geometry(
+    shape: &ClickShape,
+    frame_size: Option<(u32, u32)>,
+) -> Result<(Rect, ClickShape), String> {
+    if shape.invert {
+        let (w, h) = frame_size
+            .ok_or_else(|| "fixed inverted action_shape needs a frame".to_string())?;
+        return Ok((
+            Rect {
+                x: 0,
+                y: 0,
+                w: w as i32,
+                h: h as i32,
+            },
+            shape.clone(),
+        ));
+    }
+    let bbox = shape
+        .bbox()
+        .ok_or_else(|| "fixed action_shape has no representable bbox".to_string())?;
+    Ok((bbox, shape.clone()))
+}
+
 fn region_log(region: Option<&OpRegion>) -> String {
     let Some(region) = region else {
         return String::new();
@@ -2698,6 +2732,40 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         Ok(out)
     }
 
+    /// seq136 B: resolve one candidate's **final operation geometry** (chain
+    /// applied) without re-recognizing. Used by the editor candidate API so a
+    /// polygon `action_shape`/`fixed` terminal is displayed exactly as
+    /// `test_action` would click it.
+    pub fn resolve_candidate_operation(
+        &mut self,
+        target: &str,
+        candidate: &AssetMatchCandidate,
+    ) -> Result<(Rect, Option<ClickShape>), String> {
+        let real = Rect {
+            x: candidate.x,
+            y: candidate.y,
+            w: candidate.w,
+            h: candidate.h,
+        };
+        let chain_owner = if self.assets.collection_members(target).is_some() {
+            candidate.member.clone()
+        } else {
+            target.to_string()
+        };
+        if self.assets.has_op_region_chain(&chain_owner) {
+            if let Some(resolved) = self.resolve_asset_op_region(
+                &chain_owner,
+                real,
+                candidate.action_box,
+                candidate.action_shape.clone(),
+                "candidates",
+            )? {
+                return Ok((resolved.rect, resolved.shape));
+            }
+        }
+        Ok((candidate.action_box, candidate.action_shape.clone()))
+    }
+
     /// seq134: THE candidate entry point (preview/test_action, chains,
     /// `region.asset`, drag, operation candidates). Image/text/region/collection
     /// members all share this structure and [`sort_asset_match_candidates`].
@@ -3257,7 +3325,27 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             let idx = Self::pick_candidate(&candidates, Some(reference))
                 .ok_or_else(|| err("has no candidate"))?;
             let best = &candidates[idx];
-            return Ok((best.action_box, best.action_shape.clone()));
+            let real = Rect {
+                x: best.x,
+                y: best.y,
+                w: best.w,
+                h: best.h,
+            };
+            let box_ = best.action_box;
+            let shape = best.action_shape.clone();
+            let chain_owner = if self.assets.collection_members(asset_id).is_some() {
+                best.member.clone()
+            } else {
+                asset_id.to_string()
+            };
+            if self.assets.has_op_region_chain(&chain_owner) {
+                if let Some(resolved) =
+                    self.resolve_asset_op_region(&chain_owner, real, box_, shape.clone(), site)?
+                {
+                    return Ok((resolved.rect, resolved.shape));
+                }
+            }
+            return Ok((box_, shape));
         }
         // mode=asset: one best match through recognize_best (template ROI→full,
         // OCR ROI→whole-frame strict fallback, mixed collection best member).
@@ -3271,6 +3359,22 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             return Err(err(&format!(
                 "best match score {score:.3} < threshold {threshold:.3}"
             )));
+        }
+        // seq136 B #1: region.asset must honour the referenced asset's own
+        // op_region chain (a `fixed` root/terminal returns its ABSOLUTE shape).
+        let chain_owner = self.effective_asset(asset_id).to_string();
+        if self.assets.has_op_region_chain(&chain_owner) {
+            let (root_box, root_shape, root_real) =
+                self.chain_geometry_for(&chain_owner, at)?;
+            if let Some(resolved) = self.resolve_asset_op_region(
+                &chain_owner,
+                root_real,
+                root_box,
+                root_shape,
+                site,
+            )? {
+                return Ok((resolved.rect, resolved.shape));
+            }
         }
         if self.assets.is_ocr_asset(asset_id) {
             let real = best
@@ -3685,6 +3789,39 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 Ok(ResolvedOpRegion {
                     rect: node.box_,
                     shape: node.shape,
+                    chain: std::mem::take(steps),
+                })
+            }
+            Some(AssetOpRegion::Fixed) => {
+                // seq136 B #1: absolute operation area — the authored
+                // `action_shape` is used verbatim (no `real - roi` translation).
+                // It is a terminal: `fixed` has no `asset`, so the chain ends.
+                let shape = self
+                    .assets
+                    .click_shape(&node.asset)
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!(
+                            "{site}: op_region fixed terminal `{}` needs an authored \
+                             action_shape (rect/polygon)",
+                            node.asset
+                        )
+                    })?;
+                let (action_box, shape) = fixed_operation_geometry(&shape, self.screen.size())
+                    .map_err(|e| format!("{site}: `{}`: {e}", node.asset))?;
+                steps.push(OpRegionChainStep {
+                    asset: node.asset,
+                    mode: "fixed",
+                    real: node.real,
+                    score: node.score,
+                    text: node.text,
+                    action_box,
+                    candidate_count,
+                    candidate_index,
+                });
+                Ok(ResolvedOpRegion {
+                    rect: action_box,
+                    shape: Some(shape),
                     chain: std::mem::take(steps),
                 })
             }
@@ -4745,6 +4882,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         w: u32,
         h: u32,
     ) -> Result<Point, String> {
+        // seq136 #2: polygon/invert shapes are sampled EXACTLY (a rectangle keeps
+        // its historical bbox+margin behaviour: legacy rect data must not change).
         let exact = endpoint
             .shape
             .as_ref()
@@ -6110,17 +6249,26 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                                 "click_target args.find[{idx}].region.asset"
                                             ),
                                         )?;
-                                        let target = match asset_target {
-                                            Some((rect, _shape)) => rect,
+                                        let (target, target_shape) = match asset_target {
+                                            Some((rect, shape)) => (rect, shape),
                                             None => match region {
-                                                Some(OpRegion::Offset { dx, dy, w, h }) => {
-                                                    offset_region_rect(rect, *dx, *dy, *w, *h)
-                                                }
-                                                _ => rect,
+                                                Some(OpRegion::Offset { dx, dy, w, h }) => (
+                                                    offset_region_rect(rect, *dx, *dy, *w, *h),
+                                                    None,
+                                                ),
+                                                _ => (rect, None),
                                             },
                                         };
                                         let plan =
                                             self.humanize.template_click(target, w, &mut self.rng);
+                                        // seq136 #2: never drop an exact operation shape —
+                                        // a polygon `region.asset` must sample inside it.
+                                        let plan = self.adjust_plan_for_explicit_shape(
+                                            plan,
+                                            target_shape.as_ref(),
+                                            w,
+                                            h,
+                                        )?;
                                         let centre = Point {
                                             x: target.x + target.w / 2,
                                             y: target.y + target.h / 2,
@@ -15604,6 +15752,273 @@ mod tests {
         assert_eq!(cands.len(), 1, "same line must be deduped: {cands:?}");
         assert_eq!(cands[0].domain, CandidateDomain::Roi);
         assert_eq!((cands[0].x, cands[0].y), (104, 104));
+    }
+
+    /// seq136 B: a 4-point polygon `ClickShape` helper for operation-area tests.
+    fn test_polygon(points: &[(i32, i32)]) -> ClickShape {
+        ClickShape {
+            rect: None,
+            points: Some(points.iter().map(|(x, y)| Point { x: *x, y: *y }).collect()),
+            invert: false,
+        }
+    }
+
+    fn point_in_any_rect(p: Point, rects: &[Rect]) -> bool {
+        rects.iter().any(|r| {
+            p.x >= r.x && p.y >= r.y && p.x < r.x + r.w && p.y < r.y + r.h
+        })
+    }
+
+    #[test]
+    fn fixed_op_region_uses_the_absolute_shape_while_self_translates() {
+        // seq136 B #1: the operation polygon is authored ABSOLUTE for `fixed`;
+        // the same polygon authored on a `self` asset follows the match offset.
+        let poly = [(30, 20), (50, 20), (50, 30), (30, 30)];
+        let mut set = assets();
+        let mut base = set.get("I_BRIGHT").expect("I_BRIGHT").clone();
+        base.roi = Some(Rect { x: 0, y: 0, w: 10, h: 10 });
+        set.insert("TPL_SELF", base.clone());
+        set.insert("TPL_FIXED", base);
+        set.set_click_shape("TPL_SELF", test_polygon(&poly));
+        set.set_click_shape("TPL_FIXED", test_polygon(&poly));
+        set.insert_op_region("TPL_FIXED", AssetOpRegion::Fixed);
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, set, Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(11);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"TPL_SELF"}},
+                 {"op":"click","args":{"sel":"TPL_FIXED"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let clicks = shared.clicks.borrow();
+        assert_eq!(clicks.len(), 2);
+        // Match at (12,10): self polygon is translated to (42..62, 30..40).
+        let translated = Rect {
+            x: 42,
+            y: 30,
+            w: 21,
+            h: 11,
+        };
+        let absolute = Rect {
+            x: 30,
+            y: 20,
+            w: 21,
+            h: 11,
+        };
+        assert!(
+            point_in_any_rect(clicks[0], &[translated]),
+            "self must follow the match: {:?}",
+            clicks[0]
+        );
+        assert!(
+            point_in_any_rect(clicks[1], &[absolute]),
+            "fixed must stay absolute: {:?}",
+            clicks[1]
+        );
+        assert!(
+            !point_in_any_rect(clicks[1], &[translated]),
+            "fixed must NOT be translated: {:?}",
+            clicks[1]
+        );
+        // preview/test_action exposes the SAME absolute polygon.
+        let preview = interp
+            .preview_asset_action("TPL_FIXED", None)
+            .expect("fixed preview");
+        assert!(point_in_any_rect(preview.point, &[absolute]), "{preview:?}");
+        let shape = preview.shape.as_ref().expect("exact shape preserved");
+        assert_eq!(shape.rect, None, "polygon must not degrade to a rect");
+        assert_eq!(shape.points.as_ref().map(|p| p.len()), Some(4));
+        assert_eq!(
+            preview.action_box,
+            absolute,
+            "action_box is the display bbox of the absolute polygon"
+        );
+    }
+
+    #[test]
+    fn fixed_as_chain_terminal_stays_absolute() {
+        // root I_BRIGHT matches at (12,10) and points at a terminal asset whose
+        // op_region=fixed: the terminal polygon must NOT be translated.
+        let poly = [(30, 20), (50, 20), (50, 30), (30, 30)];
+        let mut set = assets();
+        let mut term_base = set.get("I_BRIGHT").expect("I_BRIGHT").clone();
+        term_base.roi = Some(Rect { x: 0, y: 0, w: 10, h: 10 });
+        set.insert("TPL_TERM", term_base);
+        set.set_click_shape("TPL_TERM", test_polygon(&poly));
+        set.insert_op_region("TPL_TERM", AssetOpRegion::Fixed);
+        set.insert_op_region(
+            "I_BRIGHT",
+            AssetOpRegion::Asset {
+                asset: "TPL_TERM".to_string(),
+                pick: OpRegionPick::Score,
+            },
+        );
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, set, Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(13);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_BRIGHT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let p = shared.clicks.borrow()[0];
+        let absolute = Rect {
+            x: 30,
+            y: 20,
+            w: 21,
+            h: 11,
+        };
+        assert!(point_in_any_rect(p, &[absolute]), "terminal fixed: {p:?}");
+        let translated = Rect {
+            x: 42,
+            y: 30,
+            w: 21,
+            h: 11,
+        };
+        assert!(!point_in_any_rect(p, &[translated]), "must not translate: {p:?}");
+    }
+
+    #[test]
+    fn fixed_without_action_shape_fails_loudly() {
+        let mut set = assets();
+        set.insert_op_region("I_BRIGHT", AssetOpRegion::Fixed);
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, set, Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(17);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_BRIGHT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("needs an authored action_shape"), "{msg}");
+            }
+            other => panic!("expected loud failure, got {other:?}"),
+        }
+        assert!(shared.clicks.borrow().is_empty());
+    }
+
+    #[test]
+    fn polygon_operation_shape_survives_click_target_long_press_drag_and_region_asset() {
+        // seq136 B #2: every interaction must sample inside the exact polygon
+        // (authored on a template with no authored ROI: translated by the match).
+        let poly = [(2, 2), (16, 2), (16, 8), (2, 8)];
+        let mut set = assets();
+        let mut poly_base = set.get("I_BRIGHT").expect("I_BRIGHT").clone();
+        poly_base.roi = Some(Rect { x: 0, y: 0, w: 10, h: 10 });
+        set.insert("TPL_POLY", poly_base);
+        set.set_click_shape("TPL_POLY", test_polygon(&poly));
+        let translated = Rect {
+            x: 14,
+            y: 12,
+            w: 15,
+            h: 7,
+        };
+        let flows = [
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[{"kind":"template","sel":"TPL_POLY"}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"long_press","args":{"find":[{"kind":"template","sel":"TPL_POLY"}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        ];
+        for (i, src) in flows.iter().enumerate() {
+            let (input, shared) = FakeInput::new();
+            let mut interp =
+                Interpreter::new(FakeScreen::new(), input, set.clone(), Budget::default())
+                    .with_humanize(no_miss())
+                    .with_seed(19 + i as u64);
+            assert_eq!(
+                interp.run(&flow(src)),
+                RunResult::Finished(Exit::Done),
+                "{i}: {:?}",
+                interp.events()
+            );
+            let p = if i == 0 {
+                shared.clicks.borrow()[0]
+            } else {
+                shared.long_presses.borrow()[0].0
+            };
+            assert!(
+                point_in_any_rect(p, &[translated]),
+                "{i}: point must be inside the translated polygon: {p:?}"
+            );
+        }
+        // drag `from` an asset with the same polygon.
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, set.clone(), Budget::default())
+            .with_humanize(no_miss())
+            .with_seed(23);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"drag","args":{"from":{"kind":"asset","sel":"TPL_POLY"},
+                    "direction":"down","distance":[2,3]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let from = shared.swipes.borrow()[0].0;
+        assert!(
+            point_in_any_rect(from, &[translated]),
+            "drag start must be inside the polygon: {from:?}"
+        );
+        // region.asset nearest uses the same exact shape.
+        set.insert_ocr("O_REF", Rect {
+            x: 0,
+            y: 0,
+            w: 64,
+            h: 48,
+        });
+        set.set_ocr_expected_text("O_REF", "行".to_string());
+        let lines = vec![chain_line(2, 2, 10, 5, "行", 0.99)];
+        let (mut interp, _rois, shared) = {
+            let (ocr, rois) = FakeDetOcr::new(lines);
+            let (input, shared) = FakeInput::new();
+            let interp = Interpreter::new(FakeScreen::new(), input, set, Budget::default())
+                .with_humanize(no_miss())
+                .with_ocr(Box::new(ocr))
+                .with_seed(29);
+            (interp, rois, shared)
+        };
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[
+                    {"kind":"ocr_text","sel":"O_REF","text":"行",
+                     "region":{"mode":"nearest","asset":"TPL_POLY"}}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let p = shared.clicks.borrow()[0];
+        assert!(
+            point_in_any_rect(p, &[translated]),
+            "region.asset nearest must sample the polygon: {p:?}"
+        );
     }
 
     #[test]

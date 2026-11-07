@@ -86,6 +86,28 @@ use crate::schedule::{
 };
 use crate::package_cmd;
 
+/// seq136 B #2: exact operation shape as JSON for the editor (polygon preserved).
+///
+/// Rect shapes keep the legacy `{kind:"rect", roi:[x,y,w,h]}` form; polygon
+/// shapes are emitted as `{kind:"polygon", points:[[x,y],…]}`. `invert` is always
+/// present so the UI can render/handle inverted regions.
+fn click_shape_json(shape: &oas_runtime::ClickShape) -> serde_json::Value {
+    let mut v = serde_json::json!({"invert": shape.invert});
+    if let Some(rect) = shape.rect {
+        v["kind"] = serde_json::json!("rect");
+        v["roi"] = serde_json::json!([rect.x, rect.y, rect.w, rect.h]);
+    } else if let Some(points) = shape.points.as_ref() {
+        v["kind"] = serde_json::json!("polygon");
+        v["points"] = serde_json::json!(
+            points
+                .iter()
+                .map(|p| serde_json::json!([p.x, p.y]))
+                .collect::<Vec<_>>()
+        );
+    }
+    v
+}
+
 /// Upper bound for a POST body (flow.json is small; never buffer more).
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
@@ -4464,10 +4486,10 @@ impl Server {
         let t0 = std::time::Instant::now();
         let threshold = assets.threshold_for(&id).unwrap_or(0.9);
         let template_only = members.iter().all(|m| assets.get(m).is_some());
-        // seq132: a template-only collection keeps the historical `locate_template`
-        // best-member semantics byte-for-byte; mixed collections use the shared
-        // mixed-candidate enumeration (same order as the candidate API).
-        let (member, score, matched, action, pass) = if template_only {
+        // seq132/seq136: a template-only collection keeps the historical
+        // `locate_template` best-member semantics; mixed collections use the
+        // single-source candidate + preview (exact shape/chain) path.
+        let (member, score, matched, action, pass, preview_point, shape_json) = if template_only {
             let mut best: Option<(String, f32, Option<oas_types::Point>)> = None;
             for m in &members {
                 if let Some(tpl) = assets.get(m) {
@@ -4488,7 +4510,7 @@ impl Server {
                         frame.height,
                     );
                     let pass = score >= threshold;
-                    (member, score, point, action, pass)
+                    (member, score, point, action, pass, None, None)
                 }
                 None => {
                     return self.send_errors(
@@ -4522,14 +4544,24 @@ impl Server {
                 x: best.x,
                 y: best.y,
             });
+            // seq136 B: resolve the winner's op_region chain through the SAME
+            // runtime preview used by test_action — the reported box/point/shape
+            // are exact (a polygon never degrades to its bbox, `fixed` stays
+            // absolute).
+            let preview = match interp.preview_asset_action(&id, Some(0)) {
+                Ok(p) => p,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            };
             let action = Some([
-                best.action_box.x,
-                best.action_box.y,
-                best.action_box.w,
-                best.action_box.h,
+                preview.action_box.x,
+                preview.action_box.y,
+                preview.action_box.w,
+                preview.action_box.h,
             ]);
             let pass = best.pass;
-            (member, score, matched, action, pass)
+            let preview_point = Some(preview.point);
+            let shape_json = preview.shape.as_ref().map(click_shape_json);
+            (member, score, matched, action, pass, preview_point, shape_json)
         };
         let body = {
             {
@@ -4547,6 +4579,11 @@ impl Server {
                     "elapsed_ms": t0.elapsed().as_secs_f64() * 1000.0,
                     "frame_source": frame_source,
                 });
+                // seq136 B #2: exact operation shape (polygon kept as polygon).
+                body["action_shape"] = match shape_json.clone() {
+                    Some(v) => v,
+                    None => serde_json::Value::Null,
+                };
                 if real {
                     // Extra fields only for an explicit real request: a caller
                     // that omits `real` keeps the pre-existing dry-run payload.
@@ -4599,7 +4636,12 @@ impl Server {
                                 .to_string(),
                         );
                     };
-                    let (cx, cy) = if assets.get(&member).is_some() {
+                    // seq136 B #2: mixed winners use the runtime preview point
+                    // (exact polygon/chain geometry); template-only keeps the
+                    // historical sampler.
+                    let (cx, cy) = if let Some(p) = preview_point {
+                        (p.x, p.y)
+                    } else if assets.get(&member).is_some() {
                         match collection_real_click_point(
                             &assets,
                             &id,
@@ -4980,6 +5022,12 @@ impl Server {
         };
         let mut candidates_json: Vec<serde_json::Value> = Vec::with_capacity(candidates.len());
         for (index, c) in candidates.iter().enumerate() {
+            // seq136 B #1/#2: resolve the candidate's final operation geometry
+            // (op_region chain included) exactly like test_action would.
+            let (op_box, op_shape) = match interp.resolve_candidate_operation(&id, c) {
+                Ok(v) => v,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            };
             let mut v = serde_json::json!({
                 "index": index,
                 "x": c.x,
@@ -4988,13 +5036,18 @@ impl Server {
                 "h": c.h,
                 "score": c.score,
                 "pass": c.pass,
-                "action_box": [c.action_box.x, c.action_box.y, c.action_box.w, c.action_box.h],
+                "action_box": [op_box.x, op_box.y, op_box.w, op_box.h],
                 "member": c.member,
                 "member_kind": c.member_kind,
                 "domain": c.domain.as_str(),
             });
             if let Some(text) = &c.text {
                 v["text"] = serde_json::json!(text);
+            }
+            // seq136 B #2: exact operation shape (polygon never degraded to a
+            // bbox in the editor payload; `action_box` stays the display bbox).
+            if let Some(shape) = op_shape.as_ref() {
+                v["action_shape"] = click_shape_json(shape);
             }
             candidates_json.push(v);
         }
@@ -5230,6 +5283,12 @@ impl Server {
             "clicked": false,
             "tap_ok": false,
         });
+        // seq136 B #2: the exact shape (polygon/rect/invert) the dry preview
+        // sampled and a real tap would use; `action_box` above is its display bbox.
+        result["action_shape"] = match preview.shape.as_ref() {
+            Some(shape) => click_shape_json(shape),
+            None => serde_json::Value::Null,
+        };
         if !real {
             return self.send_json(out, 200, &result.to_string());
         }
@@ -8189,6 +8248,15 @@ fn op_region_chain_listing(
                 chain.push(serde_json::json!({
                     "asset": current_owner,
                     "mode": current.mode_str(),
+                }));
+                break;
+            }
+            // seq136 B #1: `fixed` is an absolute operation-area terminal (the
+            // authored action_shape, no translation, no next hop).
+            OpRegion::Fixed => {
+                chain.push(serde_json::json!({
+                    "asset": current_owner,
+                    "mode": "fixed",
                 }));
                 break;
             }
@@ -17166,6 +17234,109 @@ mod tests {
         assert_eq!(m["member"], "R_MIX", "{out}");
         assert_eq!(m["pass"], true, "{out}");
         assert_eq!(m["action_box"], serde_json::json!([30, 20, 10, 10]), "{out}");
+    }
+
+    /// seq136 B fixture: one template with an absolute `fixed` polygon operation
+    /// area, one self-translated polygon, and one legacy rect action_shape.
+    fn polygon_action_fixture(td: &Path) -> Server {
+        let frame = asset_candidates_frame();
+        let tpl = crop_frame(&frame, 20, 20, 8, 8);
+        let assets_dir = td.join("assets");
+        std::fs::create_dir_all(assets_dir.join("images")).expect("assets images dir");
+        std::fs::write(
+            assets_dir.join("images").join("a001.png"),
+            oas_codec::encode_png(&tpl).expect("template png"),
+        )
+        .expect("write template png");
+        let assets = serde_json::json!({
+            "schema_version": 1,
+            "design_resolution": [64, 48],
+            "items": [
+                {"id":"POLY_FIXED","kind":"template","file":"images/a001.png",
+                 "roi":[0,0,64,48],"threshold":0.9,"positions":[1],
+                 "action_shape":{"kind":"polygon","points":[[10,10],[30,10],[30,20],[10,20]]},
+                 "op_region":{"mode":"fixed"}},
+                {"id":"POLY_SELF","kind":"template","file":"images/a001.png",
+                 "roi":[0,0,64,48],"threshold":0.9,"positions":[1],
+                 "action_shape":{"kind":"polygon","points":[[10,10],[30,10],[30,20],[10,20]]}},
+                {"id":"RECT_SELF","kind":"template","file":"images/a001.png",
+                 "roi":[0,0,64,48],"threshold":0.9,"positions":[1],
+                 "action_shape":{"kind":"rect","roi":[5,5,10,5]}}
+            ],
+            "collections": []
+        });
+        std::fs::write(assets_dir.join("assets.json"), assets.to_string())
+            .expect("write assets.json");
+        let server = server_with_tasks(td)
+            .with_frames_dir(td.join("frames"))
+            .with_assets_dir(assets_dir);
+        upload_test_frame(&server, &frame);
+        server
+    }
+
+    #[test]
+    fn polygon_and_fixed_operation_shapes_reach_candidates_and_test_action() {
+        let td = TempDir::new("shape-poly-fixed");
+        let server = polygon_action_fixture(td.path());
+        // Fixed: absolute polygon (bbox [10,10,21,11]) for EVERY candidate; the
+        // exact polygon is exposed in the candidate payload.
+        let v = get_json_route(&server, "/task/asset/candidates?id=POLY_FIXED");
+        assert_eq!(v["count"], 2, "{v}");
+        for c in v["candidates"].as_array().expect("candidates") {
+            assert_eq!(c["action_shape"]["kind"], "polygon", "{v}");
+            assert_eq!(c["action_shape"]["points"][0], serde_json::json!([10, 10]), "{v}");
+            assert_eq!(c["action_box"], serde_json::json!([10, 10, 21, 11]), "{v}");
+        }
+        let (status, ta) = post_test_action(
+            &server,
+            serde_json::json!({"id":"POLY_FIXED","candidate_index":0}),
+        );
+        assert!(status.contains("200"), "{status} {ta}");
+        assert_eq!(ta["action_shape"]["kind"], "polygon", "{ta}");
+        assert_eq!(ta["action_box"], serde_json::json!([10, 10, 21, 11]), "{ta}");
+        let p = (
+            ta["point"]["x"].as_i64().expect("x") as i32,
+            ta["point"]["y"].as_i64().expect("y") as i32,
+        );
+        assert!(
+            (10..30).contains(&p.0) && (10..20).contains(&p.1),
+            "fixed preview point must be inside the absolute polygon: {ta}"
+        );
+        // validate_op_region accepts fixed and lists it as a terminal.
+        let (status, out) = post_route(
+            &server,
+            "/task/asset/validate_op_region",
+            "application/json",
+            br#"{"id":"POLY_FIXED","op_region":{"mode":"fixed"}}"#,
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("validate json");
+        assert_eq!(v["chain"], serde_json::json!([{"asset":"POLY_FIXED","mode":"fixed"}]), "{out}");
+        // Self: the same polygon follows the match offset (translated), still a
+        // polygon (never a rect) in candidates/test_action.
+        let v = get_json_route(&server, "/task/asset/candidates?id=POLY_SELF");
+        assert_eq!(v["count"], 2, "{v}");
+        let first = &v["candidates"][0];
+        assert_eq!(first["action_shape"]["kind"], "polygon", "{v}");
+        // Candidate 0 is the (48,8) match: 10+48, 10+8.
+        assert_eq!(first["action_box"], serde_json::json!([58, 18, 21, 11]), "{v}");
+        let (status, ta) = post_test_action(
+            &server,
+            serde_json::json!({"id":"POLY_SELF","candidate_index":0}),
+        );
+        assert!(status.contains("200"), "{status} {ta}");
+        assert_eq!(ta["action_shape"]["kind"], "polygon", "{ta}");
+        assert_eq!(ta["action_box"], serde_json::json!([58, 18, 21, 11]), "{ta}");
+        // Legacy rect shape keeps the rect JSON form and translated geometry.
+        let v = get_json_route(&server, "/task/asset/candidates?id=RECT_SELF");
+        let first = &v["candidates"][0];
+        assert_eq!(first["action_shape"]["kind"], "rect", "{v}");
+        assert_eq!(
+            first["action_shape"]["roi"],
+            serde_json::json!([53, 13, 10, 5]),
+            "{v}"
+        );
+        assert_eq!(first["action_box"], serde_json::json!([53, 13, 10, 5]), "{v}");
     }
 
     #[test]

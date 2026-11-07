@@ -154,9 +154,12 @@ const PURE_FUNCTIONS = [
   'actionShapeContains',
   'actionShapeEffectiveContains',
   'actionShapeFromGeometry',
+  // seq136（UI B）：矩形→4 点多边形、保存不退化、操作区候选 polygon。
+  'rectToPolygonPoints', 'actionShapeForSave', 'actionShapePolygonPoints', 'candidateActionPolygon',
   'actionShapeEditState',
   'loadActionShapeForEdit',
   'currentActionShape',
+  'translatedActionShapeForMatch',
   'regionDragStep',
   'assetTestModeLabel',
   'assetTestGestureRequest',
@@ -308,9 +311,14 @@ vm.runInContext(
 
 const {
   actionShapeFromGeometry,
+  rectToPolygonPoints,
+  actionShapeForSave,
+  actionShapePolygonPoints,
+  candidateActionPolygon,
   actionShapeEditState,
   loadActionShapeForEdit,
   currentActionShape,
+  translatedActionShapeForMatch,
   regionDragStep,
   assetTestModeLabel,
   assetTestGestureRequest,
@@ -434,8 +442,9 @@ ok(!/function rectsOverlap\(/.test(source), 'rectsOverlap is gone with the overl
 ok(!/action_source/.test(source), 'app.js never reads or writes action_source any more');
 ok(!/actionSource/.test(source), 'app.js has no in-memory actionSource (two-state) field');
 ok(
-  !/固定操作区|跟随识别框（recognition）|区域有效性/.test(source),
-  'the user-visible two-state labels/validity lines are gone'
+  !/跟随识别框（recognition）|区域有效性/.test(source) && !/action_source/.test(source) &&
+    !/actionSource/.test(source),
+  'the old recognition-vs-fixed two-state validator/labels stay gone (seq136 fixed uses op_region only)'
 );
 ok(
   /function candidateActionPayload\(c\)\s*\{[\s\S]{0,160}c\.actionShape \? \{ action_shape: c\.actionShape \} : \{\}/.test(source),
@@ -908,13 +917,13 @@ eq(planBad.ok, false, 'U-T4/S5: a dangling reference blocks the save plan');
 eq(planBad.updates, [], 'U-T4/S5: an invalid chain produces no updates');
 eq(
   opRegionLevelChoices().map((o) => o.value),
-  ['self', 'asset'],
-  'B3a: the dialog offers the two model-A operation-region sources (self / reference gate)'
+  ['self', 'asset', 'fixed'],
+  'seq136: the dialog offers self / reference gate / fixed absolute operation regions'
 );
 eq(
   opRegionLevelChoices().map((o) => o.label),
-  ['当前素材操作区（self）', '引用素材作识别门槛（链）'],
-  'B3a: the two labels explain model A (fall point = current asset)'
+  ['当前素材操作区（self）', '引用素材作识别门槛（链）', '固定不变（绝对坐标，不随识别移动）'],
+  'seq136: the fixed label explains absolute coordinates (no recognition translation)'
 );
 const modelARefs = [
   { id: 'A', kind: 'ocr_var', runtime_text: 'x', param_key: 'k' },
@@ -998,13 +1007,21 @@ eq(actionShapeFromGeometry(testPolyPoints, false, null, true), null, 'open polyg
 eq(actionShapeFromGeometry(null, false, { x: 1, y: 2, w: 0, h: 4 }, true), null, 'zero-size rect rejected');
 eq(actionShapeFromGeometry(testPolyPoints, true, null, false).invert, false, 'invert defaults off');
 
-// currentActionShape is what rect dragging / save payloads use. A rect drag with
-// the invert toggle on must still produce invert=true.
+// currentActionShape is what rect dragging / save payloads use. seq136（UI B #2）：
+// 矩形快捷保存为 4 点多边形（rect 仅 legacy/快捷），invert 必须保留。
 sandbox.actionPoly = null;
 sandbox.actionPolyClosed = false;
 sandbox.roiBack = { x: 7, y: 8, w: 9, h: 10 };
 sandbox.actionInvert = true;
-eq(currentActionShape(), { kind: 'rect', roi: [7, 8, 9, 10], invert: true }, 'rect drag keeps invert');
+eq(
+  currentActionShape(),
+  {
+    kind: 'polygon',
+    points: [[7, 8], [16, 8], [16, 18], [7, 18]],
+    invert: true,
+  },
+  'seq136: a rect drag saves as a 4-point polygon and keeps invert'
+);
 sandbox.actionPoly = testPolyPoints;
 sandbox.actionPolyClosed = true;
 eq(
@@ -8412,6 +8429,7 @@ async function checkAssetCandidatesWiring() {
     ['candidateBoxOf', 'candidateDomainText', 'candidateMemberKindLabel', 'candidateFieldInfo',
       'candidateTextPreview', 'candidateRenderLabel', 'candidateThumbDescriptor',
       'assetCandidatesUrl', 'matchBoxValid', 'candidatePolygonForAsset',
+      'rectToPolygonPoints', 'actionShapePolygonPoints', 'candidateActionPolygon', 'actionShapeBBox',
       'candidateLabelText', 'candidateBoxes',
       'fetchJsonWithTimeout', 'testAssetCandidates']
       .map((name) => extractFunction(name))
@@ -9084,6 +9102,113 @@ ok(
   /scheduleAutoSave\(\)/.test(extractFunctionFrom(builderSource, 'applyStepDragDrop', 'builder.js')) &&
     (builderSource.match(/scheduleAutoSave\(\);/g) || []).length >= 3,
   'seq136: drag/arrow reorders schedule an auto-save (selection/state changes are persisted)'
+);
+
+// --- seq136（UI B）：操作区多边形不退化 + fixed 固定操作区 ---------------------
+eq(rectToPolygonPoints({ x: 10, y: 20, w: 30, h: 40 }),
+  [{ x: 10, y: 20 }, { x: 40, y: 20 }, { x: 40, y: 60 }, { x: 10, y: 60 }],
+  'seq136: a quick rect expands to its 4 corner points');
+eq(rectToPolygonPoints({ x: 1, y: 2, w: 0, h: 4 }), null,
+  'seq136: a zero-size rect has no polygon');
+eq(
+  actionShapeForSave([{ x: 1, y: 2 }, { x: 9, y: 2 }, { x: 9, y: 8 }], true,
+    { x: 100, y: 100, w: 5, h: 5 }, true),
+  { kind: 'polygon', points: [[1, 2], [9, 2], [9, 8]], invert: true },
+  'seq136: an existing polygon is saved as polygon (never degraded by a rect)'
+);
+eq(
+  actionShapeForSave(null, false, { x: 7, y: 8, w: 9, h: 10 }, true),
+  { kind: 'polygon', points: [[7, 8], [16, 8], [16, 18], [7, 18]], invert: true },
+  'seq136: a rect quick action saves as a 4-point polygon and keeps invert'
+);
+eq(
+  actionShapeForSave([{ x: 1, y: 2 }, { x: 9, y: 2 }], false, { x: 5, y: 6, w: 7, h: 8 }, false),
+  { kind: 'polygon', points: [[5, 6], [12, 6], [12, 14], [5, 14]], invert: false },
+  'seq136: an open polygon falls back to the rect as a 4-point polygon'
+);
+eq(actionShapeForSave(null, false, null, false), null, 'seq136: no geometry => no action_shape');
+eq(
+  actionShapePolygonPoints({ kind: 'rect', roi: [1, 2, 3, 4] }),
+  [{ x: 1, y: 2 }, { x: 4, y: 2 }, { x: 4, y: 6 }, { x: 1, y: 6 }],
+  'seq136: legacy rect displays as a 4-point polygon'
+);
+eq(
+  actionShapePolygonPoints({ kind: 'polygon', points: [[0, 0], [4, 0], [4, 4]] }),
+  [{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 4 }],
+  'seq136: polygon action_shape maps to canvas points'
+);
+eq(actionShapePolygonPoints(null), null, 'seq136: no action_shape => no polygon points');
+eq(
+  candidateActionPolygon(
+    { kind: 'template', roi: [10, 20, 20, 10], action_shape: { kind: 'polygon', points: [[10, 20], [30, 20], [30, 40]] } },
+    [40, 50, 20, 10]
+  ),
+  [{ x: 40, y: 50 }, { x: 60, y: 50 }, { x: 60, y: 70 }],
+  'seq136: a template candidate operation polygon is translated to the match box'
+);
+eq(
+  candidateActionPolygon(
+    { kind: 'ocr_line', roi: [1, 2, 3, 4], action_shape: { kind: 'rect', roi: [5, 6, 7, 8] } },
+    [1, 2, 3, 4]
+  ),
+  [{ x: 5, y: 6 }, { x: 12, y: 6 }, { x: 12, y: 14 }, { x: 5, y: 14 }],
+  'seq136: OCR operation polygons stay absolute (fixed/no translation)'
+);
+eq(candidateActionPolygon({ kind: 'template', roi: [1, 2, 3, 4] }, [1, 2, 3, 4]), null,
+  'seq136: no action_shape => no candidate operation polygon');
+eq(
+  translatedActionShapeForMatch(
+    { kind: 'template', roi: [10, 20, 30, 40], action_shape: { kind: 'rect', roi: [10, 20, 5, 5] } },
+    { x: 100, y: 200 }
+  ),
+  { kind: 'rect', roi: [100, 200, 5, 5], invert: false },
+  'seq136: default op_region translates template action_shape by match offset'
+);
+eq(
+  translatedActionShapeForMatch(
+    {
+      kind: 'template', roi: [10, 20, 30, 40], op_region: { mode: 'fixed' },
+      action_shape: { kind: 'rect', roi: [10, 20, 5, 5] },
+    },
+    { x: 100, y: 200 }
+  ),
+  { kind: 'rect', roi: [10, 20, 5, 5] },
+  'seq136: op_region mode=fixed keeps the action_shape at absolute coordinates'
+);
+eq(opRegionLandingText('fixed'), '固定操作区（绝对坐标，不随识别移动）',
+  'seq136: the dialog landing text names the fixed absolute operation region');
+ok(opRegionLevelChoices().some((o) => o.value === 'fixed'),
+  'seq136: the operation-region dialog offers a fixed (absolute) option');
+ok(
+  /ctx\.mode === 'fixed'[\s\S]{0,120}\{ mode: 'fixed' \}/.test(source),
+  'seq136: saveOpRegionDialog writes op_region {mode:"fixed"}'
+);
+ok(
+  /固定操作区：使用当前素材 action_shape 的绝对坐标/.test(source) &&
+    /仅根\/链终端支持 fixed/.test(source),
+  'seq136: the fixed UI copy explains absolute coordinates and root/terminal-only validity'
+);
+ok(
+  /const quickPoly = rectToPolygonPoints\(quickRect\)/.test(source) &&
+    /actionPoly = quickPoly;/.test(source) && /actionPolyClosed = true;/.test(source),
+  'seq136: the canvas action drag creates a closed 4-point polygon instead of a rect'
+);
+ok(
+  /actionShapeForSave\(actionPoly, actionPolyClosed, roiBack, actionInvert\)/.test(
+    extractFunction('currentActionShape')),
+  'seq136: display/save paths use the non-degrading polygon-first actionShapeForSave'
+);
+ok(
+  /candidateActionPolygon\(it, box\.box\)/.test(extractFunction('testAssetCandidates')) &&
+    /polygon: candidateActionPoly/.test(extractFunction('testAssetDrag')) &&
+    /pushCandidateActionBox/.test(extractFunction('runTestActionForAsset')),
+  'seq136: multi-candidate / click-test / drag-test previews render the action polygon'
+);
+ok(
+  /function candidateActionPolygon\(it, candidateBox\)/.test(source) &&
+    /function actionShapePolygonPoints\(shape\)/.test(source) &&
+    /function rectToPolygonPoints\(rect\)/.test(source),
+  'seq136: polygon helpers are pure and shared by canvas + candidates'
 );
 
 // --- DOM id audit（Studio shell；D 批删除了参数面板/配置项对话框相关 id） -------

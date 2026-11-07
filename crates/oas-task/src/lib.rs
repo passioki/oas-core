@@ -116,6 +116,12 @@ pub enum OpRegion {
     /// `{"mode":"self"}` — use this asset's own operation area (default).
     #[serde(rename = "self")]
     SelfRegion,
+    /// `{"mode":"fixed"}` — the authored `action_shape` is an **absolute**
+    /// operation area: it is never translated by `real - roi`. Only valid as the
+    /// root asset's own operation area or as a chain terminal (fixed has no
+    /// `asset`, so it cannot continue the chain).
+    #[serde(rename = "fixed")]
+    Fixed,
     /// `{"mode":"asset","asset":"<id>","pick":"score|nearest"}` — an extra
     /// recognition gate; never the action box (model A).
     #[serde(rename = "asset")]
@@ -139,10 +145,11 @@ impl OpRegion {
         OpRegion::SelfRegion
     }
 
-    /// `self` / `asset`.
+    /// `self` / `fixed` / `asset`.
     pub fn mode_str(&self) -> &'static str {
         match self {
             OpRegion::SelfRegion => "self",
+            OpRegion::Fixed => "fixed",
             OpRegion::Asset { .. } => "asset",
         }
     }
@@ -479,6 +486,10 @@ pub(crate) fn validate_ocr_var_fields(item: &AssetDecl, path: &str) -> Result<()
 fn validate_op_region_shape(op: &OpRegion, path: &str) -> Result<(), String> {
     match op {
         OpRegion::SelfRegion => Ok(()),
+        // seq136 B #1: FIXED is an absolute operation area and has no `asset`
+        // field, so it can only be the root's own value or a chain terminal —
+        // structurally it can never recurse.
+        OpRegion::Fixed => Ok(()),
         OpRegion::Asset { asset, pick } => {
             validate_id(asset).map_err(|e| format!("{path}.asset: {e}"))?;
             if let Some(pick) = pick {
@@ -541,7 +552,7 @@ pub fn validate_op_region_chain(
             walk_op_region_chain(assets, Some(owner), op, owner, 0, &mut visited, path)
         }
         None => match op {
-            OpRegion::SelfRegion => Ok(()),
+            OpRegion::SelfRegion | OpRegion::Fixed => Ok(()),
             OpRegion::Asset { .. } => Err(format!(
                 "{path}: an op_region chain needs an owner asset (mode=asset without one)"
             )),
@@ -645,6 +656,9 @@ fn follow_op_region(
 ) -> Result<(), String> {
     match op {
         OpRegion::SelfRegion => Ok(()),
+        // seq136 B #1: fixed is an absolute operation area terminal; it has no
+        // next hop (no `asset`), so the chain always ends here.
+        OpRegion::Fixed => Ok(()),
         OpRegion::Asset { asset, .. } => {
             if asset == current {
                 return Err(format!("{path}: op_region of `{current}` references itself"));
@@ -961,6 +975,7 @@ fn normalize_legacy_ocr_roi(af: &mut AssetsFile) {
 fn runtime_op_region(op: &OpRegion) -> oas_runtime::AssetOpRegion {
     match op {
         OpRegion::SelfRegion => oas_runtime::AssetOpRegion::SelfRegion,
+        OpRegion::Fixed => oas_runtime::AssetOpRegion::Fixed,
         OpRegion::Asset { asset, pick } => oas_runtime::AssetOpRegion::Asset {
             asset: asset.clone(),
             pick: match pick.as_deref() {
@@ -7649,10 +7664,82 @@ mod tests {
     }
 
     #[test]
-    fn op_region_json_supports_self_and_asset_modes_only() {
+    fn fixed_op_region_is_an_absolute_terminal_and_reaches_the_runtime() {
+        // seq136 B #1: `fixed` is only a root value or a chain terminal; it has
+        // no asset, so it can never recurse. The runtime mapping must carry it.
+        let td = TempDir::new("opregion-fixed");
+        let b = open(&td);
+        let f = frame(32, 32);
+        b.save_asset(AssetDecl::template("T_FIXED", [0, 0, 8, 8]), Some(&f))
+            .expect("template T");
+        b.save_asset(AssetDecl::template("R_CHAIN", [8, 0, 8, 8]), Some(&f))
+            .expect("template R");
+        let mut af = b.load_assets_file().expect("assets");
+        af.items
+            .iter_mut()
+            .find(|a| a.id == "T_FIXED")
+            .unwrap()
+            .op_region = Some(OpRegion::Fixed);
+        af.items
+            .iter_mut()
+            .find(|a| a.id == "R_CHAIN")
+            .unwrap()
+            .op_region = Some(OpRegion::Asset {
+            asset: "T_FIXED".into(),
+            pick: None,
+        });
+        b.write_assets_file(&af).expect("fixed must validate and save");
+        let af = b.load_assets_file().expect("reload");
+        assert_eq!(
+            af.items
+                .iter()
+                .find(|a| a.id == "T_FIXED")
+                .and_then(|a| a.op_region.as_ref()),
+            Some(&OpRegion::Fixed)
+        );
+        // Chain root + fixed terminal validates (fixed cannot continue).
+        assert!(op_region_issues(&af).is_empty(), "{:?}", op_region_issues(&af));
+        let set = b.load_runtime_assets().expect("runtime assets");
+        assert_eq!(
+            set.op_region("T_FIXED"),
+            Some(&oas_runtime::AssetOpRegion::Fixed)
+        );
+        assert!(set.has_op_region_chain("T_FIXED"));
+        assert_eq!(
+            set.op_region("R_CHAIN"),
+            Some(&oas_runtime::AssetOpRegion::Asset {
+                asset: "T_FIXED".into(),
+                pick: oas_runtime::OpRegionPick::Score,
+            })
+        );
+        // A region asset still must not carry op_region (fixed included).
+        let mut bad = af.clone();
+        bad.items
+            .iter_mut()
+            .find(|a| a.id == "T_FIXED")
+            .unwrap()
+            .kind = "region".into();
+        assert!(op_region_issues(&bad)
+            .iter()
+            .any(|(_, msg)| msg.contains("must not carry op_region")));
+        // Known `fixed` parse rejects nothing structural, but the old `offset`
+        // mode stays a load error (regression guard).
+        assert!(serde_json::from_str::<OpRegion>(r#"{"mode":"offset"}"#).is_err());
+    }
+
+    #[test]
+    fn op_region_json_supports_self_asset_and_fixed_modes() {
         let self_op: OpRegion = serde_json::from_str(r#"{"mode":"self"}"#).expect("self");
         assert!(self_op.is_self());
         assert_eq!(self_op.mode_str(), "self");
+        // seq136 B #1: `fixed` = absolute authored action_shape terminal.
+        let fixed: OpRegion = serde_json::from_str(r#"{"mode":"fixed"}"#).expect("fixed");
+        assert_eq!(fixed.mode_str(), "fixed");
+        assert_eq!(fixed.asset(), None);
+        assert_eq!(
+            serde_json::to_value(OpRegion::Fixed).expect("json"),
+            serde_json::json!({"mode":"fixed"})
+        );
         let by_asset: OpRegion =
             serde_json::from_str(r#"{"mode":"asset","asset":"I_战斗按钮"}"#).expect("asset");
         assert_eq!(by_asset.asset(), Some("I_战斗按钮"));

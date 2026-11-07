@@ -2214,6 +2214,70 @@ function polygonOverlapsRect(points, box) {
 }
 
 // v1.2.4: geometry -> action_shape is pure so both kinds are testable and the
+// seq136（UI B #2）：矩形只作为快捷键；实际保存/显示统一为 4 点多边形（rect=四角
+// 直角多边形），已存 polygon 永不被降级。rectToPolygonPoints 供快捷拖动/展示使用。
+function rectToPolygonPoints(rect) {
+  if (!rect || !(Number(rect.w) > 0) || !(Number(rect.h) > 0)) return null;
+  const x = Number(rect.x);
+  const y = Number(rect.y);
+  const w = Number(rect.w);
+  const h = Number(rect.h);
+  if (![x, y, w, h].every(Number.isFinite)) return null;
+  return [{ x: x, y: y }, { x: x + w, y: y }, { x: x + w, y: y + h }, { x: x, y: y + h }];
+}
+
+// geometry → 保存用 action_shape：closed polygon 原样保留；rect 快捷升级为 4 点
+// polygon（legacy rect 读取仍可显示，下一次保存即升级，顶点不丢）。
+function actionShapeForSave(poly, closed, rect, invert) {
+  const flag = !!invert;
+  if (Array.isArray(poly) && closed === true && poly.length >= 3) {
+    const points = poly.map((p) => [Number(p.x), Number(p.y)]);
+    if (points.every((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]))) {
+      return { kind: 'polygon', points: points, invert: flag };
+    }
+  }
+  const pts = rectToPolygonPoints(rect);
+  if (pts) {
+    return { kind: 'polygon', points: pts.map((p) => [p.x, p.y]), invert: flag };
+  }
+  return null;
+}
+
+// action_shape（polygon/rect legacy）→ 绝对坐标 [[x,y]...] 的 polygon 点（rect 视作
+// 4 点直角多边形）；供画布/候选/预览统一 polygon 显示。
+function actionShapePolygonPoints(shape) {
+  if (!shape || typeof shape !== 'object') return null;
+  const out = [];
+  if (shape.kind === 'polygon' && Array.isArray(shape.points)) {
+    for (const p of shape.points) {
+      if (!Array.isArray(p) || p.length < 2) continue;
+      const x = Number(p[0]);
+      const y = Number(p[1]);
+      if (Number.isFinite(x) && Number.isFinite(y)) out.push({ x: x, y: y });
+    }
+  } else if (shape.kind === 'rect' && Array.isArray(shape.roi) && shape.roi.length === 4) {
+    const pts = rectToPolygonPoints({ x: shape.roi[0], y: shape.roi[1], w: shape.roi[2], h: shape.roi[3] });
+    if (pts) return pts;
+  }
+  return out.length >= 3 ? out : null;
+}
+
+// 候选/点测/拖测的操作区显示：素材 action_shape 平移到该候选位置（template 按
+// 匹配偏移；其它 kind 用绝对坐标）；无 action_shape 返回 null。
+function candidateActionPolygon(it, candidateBox) {
+  if (!it || !Array.isArray(candidateBox) || candidateBox.length < 4) return null;
+  const pts = actionShapePolygonPoints(it.action_shape);
+  if (!pts) return null;
+  let dx = 0;
+  let dy = 0;
+  if (String(it.kind) === 'template' && Array.isArray(it.roi) && it.roi.length === 4) {
+    dx = Number(candidateBox[0]) - Number(it.roi[0]);
+    dy = Number(candidateBox[1]) - Number(it.roi[1]);
+  }
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) dx = 0;
+  return pts.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+}
+
 // invert flag can never be dropped on one of them. Polygon wins when closed;
 // otherwise the last drawn rectangle is the shape. The flag applies to BOTH.
 function actionShapeFromGeometry(poly, closed, rect, invert) {
@@ -2236,7 +2300,8 @@ function actionShapeFromGeometry(poly, closed, rect, invert) {
 }
 
 function currentActionShape() {
-  return actionShapeFromGeometry(actionPoly, actionPolyClosed, roiBack, actionInvert);
+  // seq136（UI B #2）：rect 快捷在保存/显示时升级为 4 点多边形；已存 polygon 原样。
+  return actionShapeForSave(actionPoly, actionPolyClosed, roiBack, actionInvert);
 }
 
 // v1.2.4: normalize a saved action_shape for edit-loading. Pure so the tests can
@@ -2489,6 +2554,12 @@ function matchBoxValid(box) {
 
 function translatedActionShapeForMatch(it, match) {
   if (!it || !it.action_shape) return null;
+  // seq136（UI B #1）：op_region.mode=fixed 表示固定绝对坐标，不随识别结果平移。
+  const op = it.op_region && typeof it.op_region === 'object' && !Array.isArray(it.op_region)
+    ? it.op_region : null;
+  if (op && String(op.mode === undefined || op.mode === null ? '' : op.mode).toLowerCase() === 'fixed') {
+    return it.action_shape;
+  }
   if (!Array.isArray(it.roi)) return it.action_shape;
   return translateActionShape(
     it.action_shape,
@@ -3113,10 +3184,12 @@ function opRegionSavePlan(draft, assets, opts) {
 }
 
 // 操作区对话框的来源（B3a 模型：两选一；引用素材只作识别门槛）。
+// seq136（UI B #1）：fixed = 固定绝对坐标操作区（不随识别移动；仅根/链终端可选）。
 function opRegionLevelChoices() {
   return [
     { value: 'self', label: '当前素材操作区（self）' },
     { value: 'asset', label: '引用素材作识别门槛（链）' },
+    { value: 'fixed', label: '固定不变（绝对坐标，不随识别移动）' },
   ];
 }
 
@@ -3124,6 +3197,7 @@ function opRegionLevelChoices() {
 //   self  → 落点=当前素材自己的操作区
 //   asset → 落点=链末端（最后一个被引用素材）自己的操作区；被引用素材只读
 function opRegionLandingText(mode) {
+  if (mode === 'fixed') return '固定操作区（绝对坐标，不随识别移动）';
   return mode === 'asset'
     ? '链末端（最后一个被引用素材）自己的操作区'
     : '当前素材操作区';
@@ -3551,6 +3625,13 @@ async function runTestActionForAsset(it, gesture, frameId, scopeTask) {
   if (!beginAssetTest(`${gestureLabel}测试`)) return;
   const lines = [];
   const collectedBoxes = [];
+  // seq136（UI B #2）：操作区统一按 polygon 显示（rect legacy 视作 4 点）；矩形仅 bbox。
+  function pushCandidateActionBox(label, realRect) {
+    const actPoly = candidateActionPolygon(it, realRect);
+    if (!actPoly) return;
+    const actBox = actionShapeBBox({ kind: 'polygon', points: actPoly.map((q) => [q.x, q.y]) });
+    if (actBox) collectedBoxes.push({ text: label + ' 操作区', score: 1, box: actBox, polygon: actPoly });
+  }
   resultEl.textContent = `素材「${it.id}」${gestureLabel}测试（${real ? '真实模式' : '演练'}）…`;
   log(`test_action 开始 asset=${it.id} gesture=${gesture} real=${real}`, 'INFO', {
     frames: frames.map((f) => f.label),
@@ -3611,6 +3692,7 @@ async function runTestActionForAsset(it, gesture, frameId, scopeTask) {
         lines.push(...testActionResultLines(sent, index, picked).map((line) => line.replace(/^#/, '#')));
         lines[lines.length - 1] += ' · 帧=' + frame.label;
         collectedBoxes.push(...testActionBoxes(sent, `${frame.label} #${index}`));
+        pushCandidateActionBox(`${frame.label} #${index}`, sent.real_rect);
       } else {
         for (const candidate of candidates.items) {
           let dry = null;
@@ -3628,6 +3710,7 @@ async function runTestActionForAsset(it, gesture, frameId, scopeTask) {
           for (const box of testActionBoxes(dry, `${frame.label} #${candidate.index}`)) {
             collectedBoxes.push(box);
           }
+          pushCandidateActionBox(`${frame.label} #${candidate.index}`, dry.real_rect);
         }
       }
     }
@@ -3727,11 +3810,24 @@ async function testAssetDrag(it, frameId, scopeTask) {
       });
       const candidateAction = Array.isArray(candidate.action_box) && matchBoxValid(candidate.action_box)
         ? candidate.action_box : null;
+      const candidateActionPoly = candidateActionPolygon(it, recognizedBox);
+      const candidateActionPolyBox = candidateActionPoly
+        ? actionShapeBBox({ kind: 'polygon', points: candidateActionPoly.map((p) => [p.x, p.y]) })
+        : null;
       const effShape = it.kind === 'template'
         ? translatedActionShapeForMatch(it, { x: recognizedBox[0], y: recognizedBox[1] })
         : (it.action_shape || null);
       if (candidateAction && !effShape) {
-        candidateBoxesForDraw.push({ text: `操作区 #${candidateIndex}`, score: 1, box: candidateAction });
+        candidateBoxesForDraw.push({
+          text: `操作区 #${candidateIndex}`, score: 1, box: candidateAction,
+          polygon: candidateActionPoly,
+        });
+      } else if (candidateActionPolyBox) {
+        // seq136（UI B #2）：有 action_shape 时操作区画 polygon（bbox 仅辅助）。
+        candidateBoxesForDraw.push({
+          text: `操作区 #${candidateIndex}`, score: 1, box: candidateActionPolyBox,
+          polygon: candidateActionPoly,
+        });
       }
       const action = assetActionBox(it, effShape, recognizedBox || it.roi) || it.roi;
       if (!action) {
@@ -4337,6 +4433,12 @@ async function testAssetCandidates(it, frameId, scopeTask) {
       for (const box of candidateDrawBoxes) {
         const poly = candidatePolygonForAsset(it, box.box);
         if (poly) box.polygon = poly;
+        // seq136（UI B #2）：操作区（action_shape）也按 polygon 显示（矩形仅 bbox 辅助）。
+        const actPoly = candidateActionPolygon(it, box.box);
+        const actBox = actPoly ? actionShapeBBox({ kind: 'polygon', points: actPoly.map((p) => [p.x, p.y]) }) : null;
+        if (actBox) {
+          collected.push({ text: box.text + ' · 操作区', score: 1, box: actBox, polygon: actPoly });
+        }
       }
       collected.push(...candidateDrawBoxes);
     }
@@ -4636,7 +4738,9 @@ function openOpRegionDialog(asset, scopeTask) {
   const scopeInfo = assetDialogScopeInfo(scopeTask);
   // seq127 模型 B 语义：两态；旧 offset 数据按 self 打开并提示将被替换。
   const legacyOp = opRegionNodeOf(asset.op_region);
-  const initialMode = legacyOp.mode === 'asset' ? 'asset' : 'self';
+  const initialMode = legacyOp.mode === 'asset'
+    ? 'asset'
+    : (legacyOp.mode === 'fixed' ? 'fixed' : 'self');
   opRegionDialogCtx = {
     asset: asset,
     scope: scopeInfo.scope,
@@ -4700,12 +4804,15 @@ function buildOpRegionModelA(ctx, lib) {
   const body = document.createElement('div');
   body.className = 'op-region-level-body';
   if (ctx.mode !== 'asset') {
-    body.textContent = '使用当前素材自身的操作区域（action_shape；否则用真实识别区域）。';
+    const isFixed = ctx.mode === 'fixed';
+    body.textContent = isFixed
+      ? '固定操作区：使用当前素材 action_shape 的绝对坐标，不随识别结果平移（仅根/链终端支持 fixed）。'
+      : '使用当前素材自身的操作区域（action_shape；否则用真实识别区域）。';
     // #10（批次B3b）：当前素材的操作区域直接用统一框选工具在画布上画（矩形/多边形/反选）。
     const editBtn = document.createElement('button');
     editBtn.type = 'button';
     editBtn.textContent = '在画布上编辑当前素材操作区…';
-    editBtn.title = '统一框选：拖动=矩形，单击=多边形顶点，双击收尾；反选仅操作区域可用';
+    editBtn.title = '统一框选：拖动=矩形快捷（保存为 4 点多边形），单击=多边形顶点，双击收尾；反选仅操作区域可用';
     editBtn.addEventListener('click', () => {
       const asset = ctx.asset;
       const scope = ctx.scope;
@@ -4715,7 +4822,9 @@ function buildOpRegionModelA(ctx, lib) {
     body.appendChild(editBtn);
     const actionHint = document.createElement('div');
     actionHint.className = 'muted small';
-    actionHint.textContent = '画完后点画布底部「保存操作区域」写入该素材的 action_shape（含反选开关）。';
+    actionHint.textContent = isFixed
+      ? '画完后点画布底部「保存操作区域」写入 action_shape；保存的 op_region 为 {mode:"fixed"}（识别移动时操作区保持绝对位置）。'
+      : '画完后点画布底部「保存操作区域」写入该素材的 action_shape（含反选开关）。';
     body.appendChild(actionHint);
   } else {
     const choices = opRegionRefChoices(lib, ctx.asset.id);
@@ -4815,9 +4924,11 @@ function renderOpRegionDialog() {
   const lib = opRegionDialogAssets();
   if (opRegionTitle) opRegionTitle.textContent = '操作区 · ' + String(ctx.asset.id);
   if (opRegionBreadcrumb) {
-    opRegionBreadcrumb.textContent = ctx.mode === 'asset'
-      ? '引用素材只作识别门槛；动作落点=链末端（最后一个被引用素材）自己的操作区（被引用素材只读）。'
-      : '动作落点=当前素材操作区（self）。';
+    opRegionBreadcrumb.textContent = ctx.mode === 'fixed'
+      ? '固定操作区：绝对坐标，不随识别结果平移（仅根/链终端支持 fixed）。'
+      : (ctx.mode === 'asset'
+        ? '引用素材只作识别门槛；动作落点=链末端（最后一个被引用素材）自己的操作区（被引用素材只读）。'
+        : '动作落点=当前素材操作区（self）。');
   }
   if (opRegionError) opRegionError.textContent = ctx.error || '';
   opRegionLevels.textContent = '';
@@ -4836,9 +4947,12 @@ async function saveOpRegionDialog() {
   if (!ctx || !opRegionSave) return;
   const lib = opRegionDialogAssets();
   // seq127 模型 B：保存只写当前素材；引用素材只作识别门槛（不 PATCH 被引用素材）。
-  const op = ctx.mode === 'asset'
-    ? { mode: 'asset', asset: String(ctx.refAsset || ''), pick: ctx.pick === 'nearest' ? 'nearest' : 'score' }
-    : { mode: 'self' };
+  // seq136（UI B #1）：fixed 固定绝对坐标操作区（仅根/链终端；对话框只编辑根）。
+  const op = ctx.mode === 'fixed'
+    ? { mode: 'fixed' }
+    : (ctx.mode === 'asset'
+      ? { mode: 'asset', asset: String(ctx.refAsset || ''), pick: ctx.pick === 'nearest' ? 'nearest' : 'score' }
+      : { mode: 'self' });
   if (op.mode === 'asset') {
     if (!op.asset) {
       ctx.error = '请选择引用素材（识别门槛）';
@@ -8388,9 +8502,20 @@ canvas.addEventListener('mouseup', (ev) => {
         draw();
         log(`识别区矩形 ${roi.w}x${roi.h} @ ${roi.x},${roi.y}（点「保存识别区」写入素材）`);
       } else {
-        roiBack = normalizeRect(gesture.start, p);
-        log(`操作区域矩形 ${roiBack.w}x${roiBack.h} @ ${roiBack.x},${roiBack.y}`);
-        finishActionGesture();
+        // seq136（UI B #2）：拖动=矩形快捷，但实际生成 4 点多边形（不保存 rect）。
+        const quickRect = normalizeRect(gesture.start, p);
+        const quickPoly = rectToPolygonPoints(quickRect);
+        if (quickPoly) {
+          actionPoly = quickPoly;
+          actionPolyClosed = true;
+          roiBack = null;
+          log(`操作区域多边形（矩形快捷→4 点）${quickRect.w}x${quickRect.h} @ ${quickRect.x},${quickRect.y}`);
+          finishActionGesture();
+        } else {
+          roiBack = quickRect;
+          log(`操作区域矩形 ${roiBack.w}x${roiBack.h} @ ${roiBack.x},${roiBack.y}`);
+          finishActionGesture();
+        }
       }
       return;
     }
