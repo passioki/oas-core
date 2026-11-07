@@ -4805,3 +4805,20 @@ un_with_timeout（spawn + stdout/stderr 双线程排空 + try_wait deadline 轮�
 > **修复**：① 地图性能：`ocr_roi_cache`（frame_seq,ROI,mask）共享 screen_lines/OCR/identify/popup/probe；`asset_feature_passes` cheap 判定+每帧缓存；identify/PopupGuard min_hits 早退+诊断计数；`wait_until_node` 指数退避；`/map/probe` 默认 1 次 OCR、支持 node/assets、阈值 pass。实测 probe 78.3s→1.453s debug、OCR asset identify 2.8–3.0s→1.093s debug。② 去 map 硬门禁：删除 T11；publish 不读 map/不再因 target 失败；map_requirements/map_nodes deprecated 留空；install 不再 warning；run 只查本 flow 字面量 target、runtime loud 保留。③ 地图 UI：/task/assets 素材、assetSelect 回退、父节点全列表、属性列/OCR 换行、canvas DPR、预览改 /map/state、OCR 列表、map.js/map_ui.js 同步。④ 画布/点测：clearCanvasSelection 统一清；删二次平移、消费服务端 action_shape（fixed/OCR/链），action_box 仅回退。⑤ 拖拽/大图/源码：列表真实同级 DnD（before/inside/after、root/if/loop、首尾、step id 跟随/自动保存）、删 SVG 假拖拽；全窗口流程图大页；源码默认折叠 + flow→Rust 只读投影（非可执行，无 Rust→flow）。⑥ #7 T8：sync 改 raw 父 flow（仅 collection 展开）、T8 同口径；个人突破 save removed 2 vars→lint 0。
 > **验证**：workspace **1043/0**（runtime 267/oasd 472/oas-task 172/flow 83）、UI **2713/195/0 dead/158/6**、cargo check/build ocr；E2E `_verify/seq136-map/e2e-results.json` **19/0**（probe/lint 无 gate/publish 无 map/install 无 requirement）；T8 冒烟 `_verify/seq137-perf-root/personal-breakthrough-result.json`；性能 `_verify/seq137-perf/perf-result.json`（probe 1453ms/node 1060ms/state_asset_ocr 1093ms）；审计基线 `_verify/seq137-audit/perf-results.json`（78.3s 等）。
 > **遗留/风险**：`navigate.target_expr` 未实现；flow→Rust 只读投影、非可执行/不可编辑编译、无 Rust→flow 编译器；`map_requirements` 字段 deprecated 未彻底删；`/map/probe` 默认不返回素材 hints（UI 需 node/assets）；真实设备导航/Firefox 手测未做；`text_visible`/`verify_expect` 仍 fuzzy+无缓存；全局弹窗 UI 未做；地图边无内联改；canvas 只读无缩放；map.js/map_ui.js 双文件机制；UI pure test 无浏览器 DnD 自动化；用户数据未提交；未 tag/release。
+
+# ☆ §E-106 ☆☆ [11-07 22:28] seq138 规划（先设计不实现）：地图 V2「所在地/路标/路径」+ 工作台整合
+
+> 用户 22:28 反馈：① 地图页 priority/frames/hub 语义不清；② 工作台帧与地图帧两套状态割裂（工作台选帧后地图自动出现，但点上/下一帧切页仍停留在工作台帧），建议把 map 塞进工作台「素材/图片/任务/点击分布」栏复用 UI；③ 地图维护流程不清爽，拟改语义：**所在地（名称/判定条件/回程路标/去程路标）→ 路标（去往路标后该路标变成所在地）→ 路径（现成素材/集合，一般点击）**。要求先给理解和计划，并带上当前遗留；注意台账。
+> **当前代码状态**：seq137 已完成并推送（`45a458b` 修复 + `f6f2ad1` docs；dev=main=origin=`f6f2ad1`；workspace **1043/0**、UI **2713/195/0/158/6**、地图 E2E 19/0；未 tag/release；用户数据未提交）。seq137 修复：地图 OCR 缓存/probe 缩面、去 map 门禁（T11/publish/install）、地图 UI /task/assets/DPR/state 预览、clearCanvasSelection+服务端 action_shape、列表 DnD、全窗口流程图 + flow→Rust 只读投影、T8 raw 父 flow。
+> **设计文档**：`docs/MAP-V2-DESIGN.md`（22:2x；v2 schema 草案、工作台整合、实施拆分、遗留、待确认项）。
+> **V2 语义（拟）**：
+> - `所在地 Location`：id/name/recognize{min_hits,features[ocr_text|asset]}；识别条件复用 seq134 单源。
+> - `路标 Landmark`：id/name/target（所在地 id）/path（click_asset，素材或 collection；wait 可选）；`回程路标`/`去程路标`是当前所在地下的两个出口列表，均可多个；路标=可点击入口，点击后目标所在地成为当前所在地；有向、不自动补反向。
+> - `路径`：通过现成资产/集合点击；V1 只支持点击，key/swipe 后续高级。
+> - 删除/隐藏 `priority`/`frames`/`hub`：priority 用 features/min_hits/声明序；frames 改为工作台当前帧（唯一帧状态）；hub 改为可选 `fallback_location` 高级（默认空，寻路失败时先回它，否则 loud）。
+> - v1 map（nodes/edges/parent/return_asset）加载内存迁移 v2（保存时 .bak；不自动改未保存用户数据）；priority/frames/hub 丢弃/高级。
+> - 寻路：当前所在地识别 → 所在地 landmarks（return+outbound）有向图 BFS/Dijkstra → 目标；路径不落盘、加载校验引用。
+> - 工作台：新增「地图」tab（与素材/图片/任务/点击分布同级），删除独立地图页/导航；共享工作台当前帧（上一帧/下一帧/切帧实时刷新地图预览）；左所在地列表、中编辑识别/回程/去程路标、右当前帧预览+命中高亮、下路径预览/ dry/real；复用素材/集合 picker、条件行、画布组件；路标内联编辑。
+> **实施拆分（待确认后开工）**：V2-A 设计确认；V2-B oas-task map v2 schema/校验/迁移 + runtime 识别/路标图/执行 + serve `/map` v2/plan/state/navigate + 测试；V2-C 工作台地图 tab + 删除独立页 + 共享帧 + 编辑器/路径预览 + UI 测试；V2-D docs/ENGINE §22.77/ACCEPTANCE/PENDING/RESUME。
+> **当前遗留（seq137 后，必须带进后续）**：① navigate target 动态参数 `target_expr`/param() 未实现（用户 #3 闭环，优先）；② flow→Rust 仅只读投影、不可编译/无可编辑 Rust→flow 编译器（需用户决定是否投入）；③ 真实设备导航/replay 多跳 E2E 未跑 + Firefox 手测；④ 全局弹窗配置 UI 未做（D0 仅 API/runtime）；⑤ 地图 UI：边无内联改、canvas 只读无缩放、`/map/probe` 默认无素材 hints（UI 传 node/assets）、map.js/map_ui.js 双文件、map_requirements deprecated 未彻底删；⑥ 地图性能 debug probe 1.45s/OCR asset identify 1.09s（release 未实测），text_visible/verify_expect 仍 fuzzy 无缓存；⑦ 操作区 fixed 自然路径手测、drag rect bbox+margin 保留；⑧ relations 服务端 deprecated 未清理、旧证据不迁移；⑨ UI 测试无浏览器 DnD/画布自动化；⑩ 用户数据未提交。
+> **待用户确认**：删除 priority/frames/hub（推荐）/ fallback_location 是否保留；v1→v2 迁移策略；地图 tab 位置（推荐最后）、独立地图页是否彻底删；路标路径 V1 只点击；Rust 源码只读 vs 编译器；target_expr 是否下批优先。

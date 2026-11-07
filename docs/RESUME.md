@@ -5,14 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 137
+checkpoint_seq: 138
 updated_at: 2026-11-07T21:5x+08:00
 trigger: 用户 21:07 九条验收反馈（地图接错素材/78s 假死/门禁/画布残留/操作区漂移/拖拽假实现/大图与源码/T8）→ 三路只读审计确认接错线/漂移/假绿 → 修复 45a458b；workspace 1043/0、UI 2713/195/0/6、E2E 19/0。
 status: done
-code_head: `45a458b`（dev=origin/dev；main/origin/main=b3e3013 待 docs 后快进；未 tag/未 release）
+code_head: `f6f2ad1`（dev=main=origin；seq137 已完成；未 tag/未 release）
 docs_head: seq137 docs 提交见 `git log -1`
-next_action: seq137 已完成（未 tag/未 release）。后续：① `navigate.target_expr` 动态目标（需 UI/版本门禁）；② flow→Rust 只读投影**不可执行/无 Rust→flow 编译器**（勿宣称可编译）；③ 真实设备导航/replay 多跳 E2E 仍 SKIP + Firefox 手测；④ `/map/probe` 默认不含素材 hints（UI 传 node/assets）；⑤ 全局弹窗配置 UI、地图边内联编辑、canvas 缩放；⑥ `text_visible`/`verify_expect` fuzzy+无缓存；⑦ map.js/map_ui.js 双文件机制；⑧ relations deprecated 清理、map_requirements 字段彻底删；⑨ V2.1/V2.2。详见 `PENDING §E-105`、`ENGINE §22.76`、`ACCEPTANCE` seq137。
-```
+next_action: seq137 已完成（dev=main=origin=`f6f2ad1`，未 tag/未 release）。seq138 仅规划（见 `docs/MAP-V2-DESIGN.md`、`PENDING §E-106`），未改代码：① 地图 V2 改「所在地/路标/路径」语义（去 priority/frames/hub，回程/去程路标+路径素材；工作台地图 tab 共享当前帧，删独立地图页）；② 优先 `navigate.target_expr` 动态参数（用户 #3）；③ Rust 源码：当前只读投影，需决定是否做 Rust→flow 编译器；④ 真实设备导航/replay E2E + Firefox 手测；⑤ 全局弹窗 UI、地图边内联编辑、canvas 缩放、map.js 双文件、map_requirements 彻底删、relations 清理；⑥ text_visible/verify_expect fuzzy 缓存。详见 `PENDING §E-106`/`§E-105`、`ENGINE §22.76`。\n```
 
 ## 0. 目标（本阶段）
 
