@@ -76,6 +76,8 @@ const stylePath = path.join(__dirname, 'style.css');
 const runnerHtmlPath = path.join(__dirname, 'runner.html');
 const runnerJsPath = path.join(__dirname, 'runner.js');
 const runnerCssPath = path.join(__dirname, 'runner.css');
+const mapUiPath = path.join(__dirname, 'map_ui.js');
+const mapJsPath = path.join(__dirname, 'map.js');
 const source = fs.readFileSync(appPath, 'utf8');
 const html = fs.readFileSync(htmlPath, 'utf8');
 const builderSource = fs.readFileSync(builderPath, 'utf8');
@@ -84,6 +86,8 @@ const styleCss = fs.readFileSync(stylePath, 'utf8');
 const runnerHtml = fs.readFileSync(runnerHtmlPath, 'utf8');
 const runnerSource = fs.readFileSync(runnerJsPath, 'utf8');
 const runnerCss = fs.readFileSync(runnerCssPath, 'utf8');
+const mapUiSource = fs.readFileSync(mapUiPath, 'utf8');
+const mapJsSource = fs.readFileSync(mapJsPath, 'utf8');
 
 function extractFunctionFrom(text, name, label) {
   const re = new RegExp(`(?:^|\\n)[ \\t]*(?:async\\s+)?function\\s+${name}\\s*\\(`);
@@ -4958,6 +4962,8 @@ const BUILDER_TARGET_PURE = [
   'actionTargetParamRows', 'variableUseCount', 'variableDefaultText',
   'variableFormToBody', 'literalDefaultFromText', 'variableToForm',
   'collectParamUses',
+  // seq136（D1-M3）：navigate target 前端校验。
+  'navigateArgsIssues',
   // seq136（#3/#9/#10）：旧目标字段兼容、流程图自适应、同层拖动排序。
   'normalizeLegacyActionTargetArgs',
   'fitFlowGraphSize', 'svgPointInViewBox',
@@ -5671,8 +5677,15 @@ if (studioNavBlock) {
   const studioNav = studioNavBlock[1];
   ok(!/data-page="schedule"/.test(studioNav), 'Studio nav has no schedule page button');
   ok(!/>调度</.test(studioNav), 'Studio nav has no 调度 label');
-  eq((studioNav.match(/class="app-nav-btn/g) || []).length, 5, 'Studio nav exposes exactly 5 page buttons');
+  eq((studioNav.match(/class="app-nav-btn/g) || []).length, 6,
+    'seq136 D1-M3: Studio nav exposes exactly 6 page buttons (地图 added; 5→6)');
+  ok(/data-page="map"[^>]*>地图</.test(studioNav), 'Studio nav has the 地图 page button');
 }
+ok(/id="page-map"/.test(html), 'seq136: index.html provides #page-map');
+ok(/<script src="\/map.js"><\/script>/.test(html),
+  'seq136: index.html loads the map bundle through the M2 static route /map.js');
+ok(mapJsSource.indexOf(mapUiSource) >= 0,
+  'seq136: map.js (runtime route target) is in sync with canonical map_ui.js');
 ok(!/id="page-schedule"/.test(html), 'PR6 removed the legacy #page-schedule DOM');
 ok(!/id="panel-schedule"/.test(html) && !/page-sched-/.test(html), 'PR6 removed the legacy schedule panel + page ids');
 ok(!/id="sched-entry-dialog"/.test(html) && !/id="sched-queue-dialog"/.test(html), 'PR6 removed the legacy entry/queue dialogs');
@@ -9330,11 +9343,191 @@ ok(
 ok(!/function applyCode\(\)[\s\S]{0,600}fetch\(/.test(builderSource),
   'seq136: applying source uses existing saveFlow only (no new backend API)');
 
+// --- seq136（D1-M3）：地图页纯函数 + builder navigate + relations 下线 -------------
+const mapSb = { window: {} };
+vm.createContext(mapSb);
+vm.runInContext(mapUiSource, mapSb, { filename: 'map_ui.js' });
+const mapPure = mapSb.window.OAS_MAP;
+ok(mapPure && typeof mapPure.mapValidationLocal === 'function',
+  'seq136: map_ui.js exposes testable pure functions (window.OAS_MAP)');
+eq(mapPure.mapIdValid('庭院'), true, 'seq136: map node ids allow Chinese/letters');
+eq(mapPure.mapIdValid('御魂十层'), true, 'seq136: map node ids allow multi-char Chinese');
+eq(mapPure.mapIdValid(''), false, 'seq136: empty map node id is invalid');
+eq(mapPure.mapIdValid('a/b'), false, 'seq136: path separators are rejected in node ids');
+eq(mapPure.mapIdValid('..'), false, 'seq136: dot-dot node ids are rejected');
+const tree = mapPure.mapNodeTree([
+  { id: 'A' }, { id: 'B', parent: 'A' }, { id: 'C', parent: 'missing' },
+]);
+eq(tree.roots.map((n) => n.id), ['A'], 'seq136: parent tree has one root');
+eq((tree.children.A || []).map((n) => n.id), ['B'], 'seq136: child nodes group under parent');
+eq(tree.orphans.length, 1, 'seq136: a missing parent is reported as orphan');
+const cycTree = mapPure.mapNodeTree([{ id: 'A', parent: 'B' }, { id: 'B', parent: 'A' }]);
+ok(cycTree.errors.some((e) => /成环/.test(e)), 'seq136: parent cycles are detected');
+eq(mapPure.mapNodeReturnStatus({ edges: [] }, { id: 'A' }), { status: 'root', text: '根节点（无返回边）' },
+  'seq136: root nodes are marked root');
+eq(mapPure.mapNodeReturnStatus(
+  { edges: [{ from: 'B', to: 'A' }] }, { id: 'B', parent: 'A' }
+).status, 'explicit', 'seq136: explicit return edge wins');
+eq(mapPure.mapNodeReturnStatus(
+  { default_return_asset: 'I_返回', edges: [] }, { id: 'B', parent: 'A' }
+).status, 'derived', 'seq136: default return asset derives the return edge');
+eq(mapPure.mapNodeReturnStatus(
+  { edges: [] }, { id: 'B', parent: 'A' }
+).status, 'none', 'seq136: no return asset is a warning state');
+eq(mapPure.mapEdgeActionLabel({ kind: 'click_asset', asset: 'I_A' }), '点击素材 I_A',
+  'seq136: click_asset edge label names the asset');
+eq(mapPure.mapEdgeActionLabel({ kind: 'key', keycode: 4 }), '按键 4',
+  'seq136: key edge label names the keycode');
+ok(/滑动 \[640,600\]→\[640,300\] 300ms/.test(
+  mapPure.mapEdgeActionLabel({ kind: 'swipe', from: [640, 600], to: [640, 300], ms: 300 })
+), 'seq136: swipe edge label names coordinates + ms');
+eq(mapPure.mapEdgeLabel({ from: 'A', to: 'B', action: { kind: 'key', keycode: 4 } }), 'A → B · 按键 4',
+  'seq136: edge list line is from → to · action');
+eq(mapPure.mapFeatureSummary({ kind: 'ocr_text', text: '庭院' }), 'OCR 文字「庭院」',
+  'seq136: OCR feature summary names the expected text');
+eq(mapPure.mapFeatureSummary({ kind: 'asset', asset: 'I_标记' }), '素材 I_标记',
+  'seq136: asset feature summary names the asset');
+ok(/min_hits=2/.test(mapPure.mapNodeFeatureSummary({
+  recognize: { min_hits: 2, features: [{ kind: 'ocr_text', text: 'A' }, { kind: 'asset', asset: 'I_B' }] },
+})), 'seq136: node feature summary includes min_hits');
+const goodMap = {
+  schema_version: 1, hub: 'A', default_return_asset: 'I_返回',
+  nodes: [
+    { id: 'A', recognize: { min_hits: 1, features: [{ kind: 'ocr_text', text: 'A' }] } },
+    { id: 'B', parent: 'A', return_asset: 'I_返回', recognize: { min_hits: 1, features: [{ kind: 'asset', asset: 'I_B' }] } },
+  ],
+  edges: [
+    { from: 'A', to: 'B', action: { kind: 'click_asset', asset: 'I_入口' }, wait: { settle_ms: 500, timeout_ms: 3000 } },
+  ],
+};
+eq(mapPure.mapValidationLocal(goodMap), { errors: [], warnings: [] },
+  'seq136: a well-formed map passes local validation');
+const badMap = {
+  schema_version: 1, hub: 'missing',
+  nodes: [
+    { id: 'A', recognize: { min_hits: 3, features: [{ kind: 'ocr_text', text: 'A' }] } },
+    { id: 'A', recognize: { min_hits: 1, features: [{ kind: 'ocr_text', text: 'A2' }] } },
+    { id: 'B', parent: 'nope', recognize: { min_hits: 1, features: [{ kind: 'ocr_text', text: 'B' }] } },
+  ],
+  edges: [
+    { from: 'A', to: 'A', action: { kind: 'key', keycode: 0 }, wait: { settle_ms: 9999 } },
+    { from: 'A', to: 'B', action: { kind: 'bogus' } },
+  ],
+};
+const badIssues = mapPure.mapValidationLocal(badMap).errors.map((e) => e.path);
+ok(badIssues.indexOf('hub') >= 0, 'seq136: local validation reports a missing hub');
+ok(badIssues.some((p) => /nodes\[\d+\]\.id/.test(p)), 'seq136: local validation reports duplicate/invalid node ids');
+ok(badIssues.some((p) => /parent/.test(p)), 'seq136: local validation reports a missing parent');
+ok(badIssues.some((p) => /recognize\.min_hits/.test(p)), 'seq136: local validation reports min_hits range');
+ok(badIssues.some((p) => /edges\[0\]$/.test(p) || /edges\[0\]\.from/.test(p)),
+  'seq136: local validation reports a self-loop');
+ok(badIssues.some((p) => /keycode/.test(p)), 'seq136: local validation reports keycode range');
+ok(badIssues.some((p) => /wait\.settle_ms/.test(p)), 'seq136: local validation reports wait settle range');
+ok(badIssues.some((p) => /action\.kind/.test(p)), 'seq136: local validation reports an unknown edge action');
+ok(/nodes\[0\]/.test(mapPure.mapIssueText([{ path: 'nodes[0].id', message: 'bad' }])),
+  'seq136: issue text includes the field path');
+const planText = mapPure.mapPlanSummary({
+  ok: true, from: 'A', target: 'C', hops: 2, hub_used: true,
+  route: [
+    { from: 'A', to: 'B', action: 'click_asset:I_1', derived: false, wait: { settle_ms: 600 } },
+    { from: 'B', to: 'C', action: 'return', derived: true, wait: { settle_ms: 700 } },
+  ],
+});
+ok(/起点「A」 → 目标「C」 · hops=2 · 经 hub/.test(planText) &&
+  /1\. A → B · click_asset:I_1/.test(planText) &&
+  /2\. B → C · return（派生返回边）/.test(planText),
+  'seq136: plan summary lists hops/actions/derived returns');
+ok(/路径预览失败：无可用边/.test(mapPure.mapPlanSummary({ ok: false, errors: ['无可用边'] })),
+  'seq136: plan summary renders server errors');
+ok(/当前节点：「A」/.test(mapPure.mapStateSummary({ ok: true, frame_source: 'current', current: { node: 'A', hits: 2, ambiguous: false } })),
+  'seq136: state summary names the identified node');
+ok(/命中多个节点/.test(mapPure.mapStateSummary({ ok: true, current: { node: 'A', hits: 2, ambiguous: true } })),
+  'seq136: ambiguous identification is surfaced');
+ok(/识别失败/.test(mapPure.mapStateSummary({ ok: false, errors: ['not found'] })),
+  'seq136: state errors are surfaced');
+const navText = mapPure.mapNavigateSummary({
+  ok: true, real: true, target: 'A', exit_code: 0, seed: 7,
+  clicks: [{ x: 1, y: 2 }],
+  steps: [{ seq: 1, op: 'navigate', result: 'ok' }, { seq: 2, op: 'finish', result: 'done' }],
+});
+ok(/真实导航执行：target「A」 · exit=0/.test(navText) &&
+  /#1 navigate · ok/.test(navText) && /#2 finish · done/.test(navText),
+  'seq136: real navigation result lists steps/exit/clicks');
+const defNode = mapPure.mapNewNodeDefaults({ frameId: 12, ocrLines: [{ text: '御魂十层' }] });
+eq(defNode.frames, [12], 'seq136: a new node captures the current frame');
+eq(defNode.recognize.features[0].text, '御魂十层', 'seq136: the first OCR line suggests the feature text');
+ok(/^御魂十层/.test(String(defNode.id)), 'seq136: the suggested node id derives from OCR text');
+eq(mapPure.mapNewNodeDefaults({ frameId: 9 }).name, '页面9', 'seq136: no OCR text falls back to 页面<frame>');
+eq(mapPure.mapNavigateFlowPreset('御魂十层'), {
+  schema_version: 1, name: '导航任务',
+  steps: [
+    { op: 'navigate', args: { target: '御魂十层' } },
+    { op: 'finish', args: { exit: 'done' } },
+  ],
+}, 'seq136: 新建导航任务 preset flow = navigate + finish');
+eq(mapPure.mapEdgeDefaults('key').action, { kind: 'key', keycode: 4 },
+  'seq136: key edge defaults to BACK=4');
+eq(mapPure.mapEdgeDefaults('click_asset').action.kind, 'click_asset',
+  'seq136: click_asset edge defaults exist');
+// builder navigate 静态/pure
+ok(/navigate: \{ label: '导航到页面', group: '动作' \}/.test(builderSource),
+  'seq136: action catalog includes navigate (导航到页面)');
+ok(/navigate: \[\]/.test(builderSource) === false &&
+  /navigate: \[\{ key: 'target', label: '目标页面（全局地图节点）', type: 'node' \}\]/.test(builderSource),
+  'seq136: builder navigate FIELDS target is a node picker');
+ok(/navigate: \{ target: '' \}/.test(builderSource), 'seq136: builder navigate DEFAULT target is empty');
+ok(/case 'navigate': return `导航到「/.test(builderSource), 'seq136: navigate has a step summary');
+ok(/f\.type === 'node'/.test(builderSource) && /fetch\('\/map'\)/.test(builderSource),
+  'seq136: node field loads nodes from GET /map and renders a select');
+eq(targetSb.navigateArgsIssues({ op: 'navigate', args: { target: '' } }, ['A'], true)[0].indexOf('导航目标为空') >= 0,
+  true, 'seq136: an empty navigate target is blocked');
+eq(targetSb.navigateArgsIssues({ op: 'navigate', args: { target: 'A' } }, [], false).length, 1,
+  'seq136: navigate is blocked when the global map is missing');
+eq(targetSb.navigateArgsIssues({ op: 'navigate', args: { target: 'B' } }, ['A'], true).length, 1,
+  'seq136: a target absent from the map is blocked');
+eq(targetSb.navigateArgsIssues({ op: 'navigate', args: { target: 'A' } }, ['A', 'B'], true), [],
+  'seq136: a target present in the map passes');
+ok(/navigateArgsIssues\(B\.flow\.steps/.test('') || /actionArgsIssues\(B\.flow, B\.screen, B\.mapNodes, B\.mapLoaded\)/.test(builderSource),
+  'seq136: saveFlow validates navigate targets against the loaded map');
+// relations UI 下线 + 保留项
+for (const gone of ['btn-frame-relations', 'btn-relation-record', 'relations-dialog',
+  'relation-record-dialog', 'annotation-dialog']) {
+  ok(!new RegExp(`id="${gone}"`).test(html), `seq136: removed relations UI id #${gone}`);
+}
+ok(!/btn-frame-relations|btn-relation-record|relations-dialog|relation-record-dialog|annotation-dialog/.test(source),
+  'seq136: app.js no longer queries/binds relations UI');
+ok(!/loadFrameAssetRelations|relationRecord|relation-record|relations\/annotate|relations\/frame-assets/.test(source),
+  'seq136: app.js no longer calls /relations/* or renders relations');
+ok(!/renderBuilderRelationHint|relations\/frame-assets|builder-relation-hint/.test(builderSource),
+  'seq136: builder relation hint/API is gone');
+ok(!/\.relations-|\.builder-relation-hint|\.annotation-dialog|\.relation-record-dialog/.test(styleCss),
+  'seq136: relation CSS is removed');
+ok(/id="frame-assets-list"/.test(html) && /function renderFrameAssets\(/.test(source),
+  'seq136: frame detail keeps the read-only asset list (Asset.positions preserved)');
+ok(/id="page-map"/.test(html) && /id="map-node-tree"/.test(html) && /id="map-canvas"/.test(html) &&
+  /id="map-validation"/.test(html) && /id="map-plan-result"/.test(html),
+  'seq136: map page provides tree/canvas/validation/plan DOM');
+ok(/window\.OAS_MAP_UI/.test(source) && /function activatePage\(name\)/.test(source),
+  'seq136: Studio activates the map page through OAS_MAP_UI');
+ok(
+  /function mapValidationLocal\(map\)/.test(mapUiSource) &&
+    /function mapPlanSummary\(plan\)/.test(mapUiSource) &&
+    /function mapStateSummary\(state\)/.test(mapUiSource) &&
+    /function mapNavigateFlowPreset\(target\)/.test(mapUiSource) &&
+    /\/map\/validate/.test(mapUiSource) && /\/map\/plan/.test(mapUiSource) &&
+    /\/map\/state/.test(mapUiSource) && /\/map\/navigate/.test(mapUiSource),
+  'seq136: map_ui.js implements validate/plan/state/navigate per the M2 API contract'
+);
+
 // --- DOM id audit（Studio shell；D 批删除了参数面板/配置项对话框相关 id） -------
 const htmlDom = html;
-const referencedIds = [...new Set(
-  [...source.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map((m) => m[1])
-)];
+const referencedIds = [...new Set([
+  ...[...source.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]),
+  // seq136 D1-M3：map_ui.js 独立 bundle 的 DOM 引用也纳入审计（el('id')/getElementById）。
+  ...[...mapUiSource.matchAll(/(?:el|\$|getElementById)\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]),
+  // 地图页的全部 DOM id（独立 bundle 动态取用；保证页面契约 0 dead）。
+  ...[...html.matchAll(/id="(map-[^"]+)"/g)].map((m) => m[1]),
+])];
 const missingIds = referencedIds.filter((id) => !new RegExp(`id=["']${id}["']`).test(htmlDom));
 const fixedIds = [
   'btn-library-refresh',

@@ -20,6 +20,7 @@
     dismiss_popup: { label: '关闭弹窗', group: '动作' },
     swipe: { label: '滑动', group: '动作' },
     drag: { label: '拖动（拟人）', group: '动作' },
+    navigate: { label: '导航到页面', group: '动作' },
     key: { label: '发送按键', group: '动作' },
     restart_app: { label: '重启 App', group: '动作' },
     set_var: { label: '设置变量', group: '数据/结束' },
@@ -41,6 +42,7 @@
     swipe: '滑动（坐标手势，低层）：from/to 坐标；元素拖动请用「拖动（拟人）」素材端点',
     curve_swipe: '曲线滑动（坐标手势，低层）：points 逐段坐标；元素拖动请用「拖动（拟人）」素材端点',
     drag: '拖动（拟人）：选择起点素材/可选终点素材，方向+距离或终点素材；坐标端点已停用（旧 flow 只读）',
+    navigate: '导航到页面：按全局地图规划路径并执行（目标为地图节点；dry-run 只预览不点击）',
   };
 
   // Single source of truth for "anything the user can add as a step".
@@ -93,6 +95,7 @@
     long_press: [],
     curve_swipe: [],
     drag: [],
+    navigate: [{ key: 'target', label: '目标页面（全局地图节点）', type: 'node' }],
     set_var: [{ key: 'name', label: '变量名', type: 'text' }, { key: 'value', label: '值（表达式）', type: 'text' }],
     inc_var: [{ key: 'name', label: '变量名', type: 'text' }, { key: 'by', label: '增量（数字/表达式）', type: 'text' }],
     ocr_to_var: [{ key: 'sel', label: 'OCR 素材', type: 'asset' }, { key: 'var', label: '变量名', type: 'text' }],
@@ -127,6 +130,7 @@
       duration_ms: [300, 650],
       margin: 0.15,
     },
+    navigate: { target: '' },
     set_var: { name: 'n', value: '0' },
     inc_var: { name: 'n', by: '1' },
     ocr_to_var: { sel: 'O_A', var: 'text' },
@@ -139,7 +143,6 @@
     task: '',
     flow: null,
     assets: [],
-    relations: null,
     selected: null, // path array
     tasks: [],
     // P3（参数 v2）：meta.params schema (Studio-only read; the Runner owns values).
@@ -151,6 +154,10 @@
     variablesLoading: false,
     variablesError: '',
     variablesIssues: [],
+    // seq136（D1-M3）：全局地图节点（navigate target 下拉 + 保存前校验）。
+    mapNodes: [],
+    mapLoaded: false,
+    mapError: '',
     // P5：权威 lint（GET /task/lint）。lint=null 表示尚未检查/检查失败。
     lint: null,
     lintError: '',
@@ -768,7 +775,29 @@
   }
 
   // 保存前扫描 long_press / curve_swipe 的参数范围（含嵌套 then/else/body）。
-  function actionArgsIssues(flow, screen) {
+  // seq136（D1-M3）：navigate target 前端校验（T11 同口径提前反馈）。
+  function navigateArgsIssues(step, mapNodes, mapLoaded) {
+    const s = step && typeof step === 'object' ? step : {};
+    const args = s.args && typeof s.args === 'object' && !Array.isArray(s.args) ? s.args : {};
+    const target = String(args.target === undefined || args.target === null ? '' : args.target).trim();
+    const errors = [];
+    if (!target) {
+      errors.push('导航目标为空：请选择全局地图中的目标页面/节点');
+      return errors;
+    }
+    if (mapLoaded === false) {
+      errors.push('全局地图缺失：请先到「地图」页创建/保存地图（目标「' + target + '」无法校验）');
+      return errors;
+    }
+    const ids = Array.isArray(mapNodes) ? mapNodes.map((x) => String(x)) : [];
+    if (ids.indexOf(target) < 0) {
+      errors.push('导航目标「' + target + '」不存在于全局地图' +
+        (ids.length ? '（可选：' + ids.slice(0, 8).join('、') + (ids.length > 8 ? '…' : '') + '）' : '（地图暂无节点）'));
+    }
+    return errors;
+  }
+
+  function actionArgsIssues(flow, screen, mapNodes, mapLoaded) {
     const size = normalizeScreenSize(screen);
     const issues = [];
     function walk(steps, path) {
@@ -781,6 +810,11 @@
         }
         if (step.op === 'curve_swipe') {
           curveSwipeArgsIssues(step, size[0], size[1]).forEach(function (error) {
+            issues.push(at + '：' + error);
+          });
+        }
+        if (step.op === 'navigate') {
+          navigateArgsIssues(step, mapNodes, mapLoaded).forEach(function (error) {
             issues.push(at + '：' + error);
           });
         }
@@ -1307,6 +1341,7 @@
       case 'key': return `keycode ${esc(a.keycode)}`;
       case 'restart_app': return esc(a.package) || '（未填包名）';
       case 'drag': return `${a.direction || '?'} ${a.from ? JSON.stringify(a.from).slice(0, 30) : ''}`;
+      case 'navigate': return `导航到「${esc(a.target) || '（未选择节点）'}」`;
       case 'finish': return esc(a.exit);
       case 'set_var': return `${esc(a.name)} = ${esc(a.value)}`;
       case 'inc_var': return `${esc(a.name)} += ${esc(a.by)}`;
@@ -4890,42 +4925,6 @@
     root.appendChild(label);
   }
 
-  function renderBuilderRelationHint(root, step) {
-    if (!B.relations || !step || !step.args) return;
-    const asset = step.args.sel;
-    if (!asset) return;
-    const rel = B.relations;
-    const frames = (rel.frames || []).filter((f) => (f.assets || []).includes(asset));
-    const transitions = (rel.transitions || []).filter((t) => t.asset === asset);
-    const annotations = (rel.annotations || []).filter((a) => {
-      const hay = `${a.a || ''} ${a.b || ''}`;
-      return hay.includes(`/${asset}`) || hay.endsWith(`:${asset}`);
-    });
-    if (!frames.length && !transitions.length && !annotations.length) return;
-    const box = document.createElement('div');
-    box.className = 'builder-relation-hint';
-    const h = document.createElement('div');
-    h.className = 'builder-relation-title';
-    h.textContent = '关系提示（只读）';
-    box.appendChild(h);
-    if (frames.length) {
-      const d = document.createElement('div');
-      d.textContent = `该素材出现在帧：${frames.map((f) => `#${f.id} ${f.name || ''}`).join('、')}`;
-      box.appendChild(d);
-    }
-    for (const t of transitions.slice(0, 8)) {
-      const d = document.createElement('div');
-      d.textContent = `录制 transition：#${t.from_frame} → #${t.to_frame}${t.task ? ' · ' + t.task : ''}`;
-      box.appendChild(d);
-    }
-    for (const a of annotations.slice(0, 8)) {
-      const d = document.createElement('div');
-      d.textContent = `标注 ${a.type}：${a.a} ↔ ${a.b}${a.note ? ' · ' + a.note : ''}`;
-      box.appendChild(d);
-    }
-    root.appendChild(box);
-  }
-
   function renderForm() {
     const root = $('builder-form');
     if (!root) return;
@@ -4995,6 +4994,30 @@
           input.appendChild(op);
         }
         input.value = step.args[f.key] == null ? (f.options ? f.options[0] : '') : step.args[f.key];
+      } else if (f.type === 'node') {
+        // seq136（D1-M3）：navigate target 下拉来自全局地图（无地图时提示先建地图）。
+        const sel = document.createElement('select');
+        sel.appendChild(new Option('（选择地图节点）', ''));
+        for (const id of B.mapNodes) sel.appendChild(new Option(id, id));
+        const current = step.args[f.key] === undefined || step.args[f.key] === null
+          ? '' : String(step.args[f.key]);
+        if (current && B.mapNodes.indexOf(current) < 0) {
+          sel.appendChild(new Option('不存在于地图：' + current + '（旧 flow）', current));
+        }
+        sel.value = current;
+        sel.addEventListener('change', () => {
+          step.args[f.key] = sel.value;
+          renderAll();
+        });
+        lab.appendChild(sel);
+        root.appendChild(lab);
+        const nodeHint = document.createElement('div');
+        nodeHint.className = 'muted small';
+        nodeHint.textContent = B.mapLoaded
+          ? `全局地图节点 ${B.mapNodes.length} 个；目标不存在时保存会阻断（与服务端 T11 一致）。`
+          : '全局地图未加载：请先到「地图」页创建/保存地图，再选择目标节点（保存会被阻断）。';
+        root.appendChild(nodeHint);
+        continue;
       } else if (f.type === 'asset') {
         const search = assetSearch(step.args[f.key], null);
         const input = search.input;
@@ -5061,7 +5084,6 @@
     if (step.op === 'click') renderClickAlts(root, step);
     if (step.op === 'drag') structuredDrag(root, step);
     if (step.op === 'curve_swipe') renderCurveSwipeForm(root, step);
-    renderBuilderRelationHint(root, step);
     // raw args JSON fallback for complex actions (click_target/drag)
     const raw = document.createElement('label');
     raw.textContent = '高级：args JSON';
@@ -5120,7 +5142,7 @@
     return ['if', 'loop', 'while', 'break', 'continue', 'call_task',
       'wait', 'wait_until', 'appear', 'ocr',
       'click', 'click_point', 'click_target', 'long_press', 'curve_swipe',
-      'dismiss_popup', 'swipe', 'drag', 'key', 'restart_app',
+      'dismiss_popup', 'swipe', 'drag', 'navigate', 'key', 'restart_app',
       'set_var', 'inc_var', 'ocr_to_var', 'log', 'finish'];
   }
 
@@ -5484,7 +5506,6 @@
       B.task = '';
       B.flow = null;
       B.assets = [];
-      B.relations = null;
       B.selected = null;
       B.params = [];
       B.paramsError = '';
@@ -5492,6 +5513,9 @@
       B.variables = [];
       B.variablesError = '';
       B.variablesIssues = [];
+      B.mapNodes = [];
+      B.mapLoaded = false;
+      B.mapError = '';
       renderAll();
       renderLintPanel();
       return;
@@ -5533,15 +5557,27 @@
       B.variables = vres.ok ? vres.variables : [];
       B.variablesError = vres.ok ? '' : vres.error;
       B.variablesIssues = vres.ok ? vres.warnings : [];
+      // seq136（D1-M3）：加载全局地图节点（GET /map；失败不阻断构建，只提示）。
+      try {
+        const mr = await fetch('/map');
+        const ms = await mr.json();
+        if (ms && ms.ok) {
+          B.mapLoaded = !!ms.exists;
+          const nodes = ms.map && Array.isArray(ms.map.nodes) ? ms.map.nodes : [];
+          B.mapNodes = nodes.map((n) => String(n.id));
+          B.mapError = '';
+        } else {
+          B.mapLoaded = false;
+          B.mapNodes = [];
+          B.mapError = ((ms && ms.errors) || []).join('; ') || '地图读取失败';
+        }
+      } catch (e) {
+        B.mapLoaded = false;
+        B.mapNodes = [];
+        B.mapError = String(e);
+      }
       B.selected = null;
       B.lastSavedFlow = JSON.stringify(B.flow);
-      try {
-        const rr = await fetch('/relations/frame-assets?task=' + encodeURIComponent(name));
-        const rs = await rr.json();
-        B.relations = rs.ok ? rs.relations : null;
-      } catch (e) {
-        B.relations = null;
-      }
       renderAll();
       B.autoSaveArmed = true;
       status(`已载入 ${name}：${B.flow.steps.length} 个根动作 / ${B.assets.length} 个素材 / ${B.variables.length} 个变量`);
@@ -5578,7 +5614,7 @@
     // U-T5：动作目标校验（素材存在 / ocr_var 有 param_key / param key 已派生）。
     const saveIssues = flowTextSpecIssues(B.flow)
       .concat(regionIssues(B.flow, regionAssetIds(B.assets)))
-      .concat(actionArgsIssues(B.flow, B.screen))
+      .concat(actionArgsIssues(B.flow, B.screen, B.mapNodes, B.mapLoaded))
       .concat(dragEndpointIssues(B.flow))
       .concat(actionTargetIssues(B.flow, B.assets, actionTargetParamRows(B.variables, B.assets)));
     if (saveIssues.length) {

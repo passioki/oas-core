@@ -78,7 +78,6 @@ const opRegionCancel = document.getElementById('op-region-cancel');
 const frameFile = document.getElementById('frame-file');
 const btnFrameUpload = document.getElementById('btn-frame-upload');
 const btnFrameCapture = document.getElementById('btn-frame-capture');
-const btnFrameRelations = document.getElementById('btn-frame-relations');
 const btnFramesRefresh = document.getElementById('btn-frames-refresh');
 const btnFramesClear = document.getElementById('btn-frames-clear');
 const framesList = document.getElementById('frames-list');
@@ -107,24 +106,6 @@ const capturePreviewImg = document.getElementById('capture-preview-img');
 const captureError = document.getElementById('capture-error');
 const captureCancel = document.getElementById('capture-cancel');
 const captureSubmit = document.getElementById('capture-submit');
-const relationsDialog = document.getElementById('relations-dialog');
-const relationsStatus = document.getElementById('relations-status');
-const relationsView = document.getElementById('relations-view');
-const relationRecordDialog = document.getElementById('relation-record-dialog');
-const relationRecordTask = document.getElementById('relation-record-task');
-const relationRecordAssetHost = document.getElementById('relation-record-asset-host');
-const relationRecordResult = document.getElementById('relation-record-result');
-const relationRecordSubmit = document.getElementById('relation-record-submit');
-const annotationDialog = document.getElementById('annotation-dialog');
-const annotationType = document.getElementById('annotation-type');
-const annotationA = document.getElementById('annotation-a');
-const annotationB = document.getElementById('annotation-b');
-const annotationNote = document.getElementById('annotation-note');
-const annotationError = document.getElementById('annotation-error');
-let relationRecordAssetPicker = null;
-let relationRecordAssetId = '';
-let lastRelationsSnapshot = null;
-let lastRelationsTask = '';
 let captureNamePicker = null;
 let captureCategoryPicker = null;
 let captureBusy = false;
@@ -1073,6 +1054,10 @@ function activatePage(name) {
     window.OAS_BUILDER.activate((taskName && taskName.value || '').trim());
   }
   else if (name === 'instances') refreshInstance();
+  else if (name === 'map' && window.OAS_MAP_UI && typeof window.OAS_MAP_UI.onActivate === 'function') {
+    // seq136 D1-M3：地图页懒加载（节点/帧/素材 + /map）。
+    window.OAS_MAP_UI.onActivate();
+  }
   else if (name === 'settings') refreshSettings();
 }
 
@@ -7466,280 +7451,6 @@ async function applyFrameCategoryFromSelect() {
   await refreshFrames();
 }
 
-function relationTaskName() {
-  const direct = (taskName && taskName.value || '').trim();
-  if (direct) return direct;
-  const builder = document.getElementById('builder-task');
-  return builder && builder.value ? builder.value.trim() : '';
-}
-
-async function loadFrameAssetRelations() {
-  if (!relationsView || !relationsDialog) return;
-  const task = relationTaskName();
-  relationsView.textContent = '';
-  if (relationsStatus) relationsStatus.textContent = '加载中…';
-  if (!task) {
-    if (relationsStatus) relationsStatus.textContent = '请先选择任务（任务页或任务构建页）';
-    return;
-  }
-  try {
-    const r = await fetch('/relations/frame-assets?task=' + encodeURIComponent(task));
-    const s = await r.json();
-    if (!s.ok) {
-      if (relationsStatus) relationsStatus.textContent = '加载失败：' + (s.errors || []).join('; ');
-      return;
-    }
-    const rel = s.relations || {};
-    lastRelationsSnapshot = rel;
-    lastRelationsTask = task;
-    if (relationsStatus) {
-      relationsStatus.textContent = `${rel.task || task} · ${(rel.frames || []).length} 帧 / ${(rel.assets || []).length} 素材（只读，派生自 Asset.positions）`;
-    }
-
-    function section(title) {
-      const box = document.createElement('div');
-      box.className = 'relations-section';
-      const h = document.createElement('div');
-      h.className = 'relations-section-title';
-      h.textContent = title;
-      box.appendChild(h);
-      relationsView.appendChild(box);
-      return box;
-    }
-    function line(box, text, cls) {
-      const d = document.createElement('div');
-      d.className = 'relations-line' + (cls ? ' ' + cls : '');
-      d.textContent = text;
-      box.appendChild(d);
-    }
-
-    const cov = rel.coverage || {};
-    const covBox = section('覆盖概览');
-    line(covBox, `帧：${cov.frames_with_assets || 0}/${cov.frames_total || 0} 有素材；素材：${cov.assets_with_positions || 0}/${cov.assets_total || 0} 有位置帧；transition：${cov.transitions || 0}；标注：${cov.annotations || 0}`);
-
-    const frameBox = section('帧 → 素材');
-    for (const f of (rel.frames || [])) {
-      const assets = (f.assets || []).join('、') || '（无）';
-      line(frameBox, `#${f.id} ${f.name || '帧'} [${f.category || '未分类'}] → ${assets}`);
-    }
-
-    const assetBox = section('素材 → 位置帧');
-    for (const a of (rel.assets || [])) {
-      const pos = (a.positions || []).map((id) => '#' + id).join('、') || '（无位置帧）';
-      line(assetBox, `${a.id} (${a.kind || '?'}) → ${pos}`);
-    }
-
-    const coBox = section('素材 ↔ 素材共现');
-    if (!(rel.asset_cooccurrence || []).length) line(coBox, '（暂无可共现素材）', 'muted');
-    for (const p of (rel.asset_cooccurrence || [])) {
-      const frames = (p.frames || []).map((id) => '#' + id).join('、');
-      line(coBox, `${p.a} ↔ ${p.b} · ${p.count} 次 · ${frames}`);
-    }
-
-    const sharedBox = section('帧 ↔ 帧共享素材');
-    if (!(rel.frame_shared_assets || []).length) line(sharedBox, '（暂无共享素材的帧对）', 'muted');
-    for (const p of (rel.frame_shared_assets || [])) {
-      line(sharedBox, `#${p.a} ↔ #${p.b} · 共享 ${p.assets.length} 个：${(p.assets || []).join('、')}`);
-    }
-
-    const transBox = section('帧 → 帧 transition（录制证据）');
-    const knownFrames = new Set((rel.frames || []).map((f) => f.id));
-    if (!(rel.transitions || []).length) line(transBox, '（尚无录制证据）', 'muted');
-    for (const t of (rel.transitions || [])) {
-      const task = t.task ? ` · ${t.task}` : '';
-      const asset = t.asset || '?';
-      const missing = !knownFrames.has(t.from_frame) || !knownFrames.has(t.to_frame);
-      line(
-        transBox,
-        `#${t.from_frame} → #${t.to_frame} · 点击 ${asset}${task}${missing ? ' · 帧缺失（历史证据）' : ''}`
-      );
-    }
-
-    const annBox = section('人工标注');
-    if (!(rel.annotations || []).length) line(annBox, '（暂无标注）', 'muted');
-    for (const ann of (rel.annotations || [])) {
-      const row = document.createElement('div');
-      row.className = 'relations-line annotation-row';
-      const text = document.createElement('span');
-      text.textContent = `${ann.type} · ${ann.a} ↔ ${ann.b}${ann.note ? ' · ' + ann.note : ''}`;
-      const del = document.createElement('button');
-      del.type = 'button';
-      del.className = 'asset-test';
-      del.textContent = '删除';
-      del.addEventListener('click', () => deleteRelationAnnotation(ann.id));
-      row.append(text, del);
-      annBox.appendChild(row);
-    }
-  } catch (e) {
-    if (relationsStatus) relationsStatus.textContent = '加载异常：' + e;
-  }
-}
-
-async function openFrameAssetRelations() {
-  if (!relationsDialog) return;
-  await loadFrameAssetRelations();
-  relationsDialog.showModal();
-}
-
-function relationAssetScope(rel, task) {
-  if (rel && rel.task === '（全局素材库）') return 'global';
-  return task || lastRelationsTask || '';
-}
-
-function fillAnnotationOptions() {
-  if (!annotationA || !annotationB || !lastRelationsSnapshot) return;
-  const rel = lastRelationsSnapshot;
-  const scope = relationAssetScope(rel, lastRelationsTask);
-  const kind = annotationType ? annotationType.value : 'alternative';
-  const frames = (rel.frames || []).map((f) => ({
-    id: `frame:${f.id}`,
-    label: `帧 #${f.id} ${f.name || ''}`,
-  }));
-  const assets = (rel.assets || []).map((a) => ({
-    id: `asset:${scope}/${a.id}`,
-    label: `素材 ${a.id}`,
-  }));
-  const opts = (kind === 'similar' || kind === 'overlay') ? frames : [...frames, ...assets];
-  for (const sel of [annotationA, annotationB]) {
-    sel.textContent = '';
-    for (const o of opts) {
-      const el = document.createElement('option');
-      el.value = o.id;
-      el.textContent = o.label;
-      sel.appendChild(el);
-    }
-    if (opts.length > 1 && sel === annotationB) sel.selectedIndex = 1;
-  }
-}
-
-async function openAnnotationDialog() {
-  if (!annotationDialog) return;
-  if (!lastRelationsSnapshot) await loadFrameAssetRelations();
-  if (!lastRelationsSnapshot) return;
-  if (annotationError) annotationError.textContent = '';
-  if (annotationNote) annotationNote.value = '';
-  fillAnnotationOptions();
-  annotationDialog.showModal();
-}
-
-async function submitRelationAnnotation() {
-  if (!annotationDialog || !annotationA || !annotationB) return;
-  const task = lastRelationsTask || relationTaskName();
-  if (!task && lastRelationsSnapshot?.task !== '（全局素材库）') {
-    if (annotationError) annotationError.textContent = '缺少任务上下文';
-    return;
-  }
-  const payload = {
-    task,
-    kind: annotationType ? annotationType.value : 'alternative',
-    a: annotationA.value,
-    b: annotationB.value,
-    note: annotationNote ? annotationNote.value.trim() : '',
-  };
-  const btn = document.getElementById('annotation-submit');
-  if (btn) btn.disabled = true;
-  try {
-    const r = await postJson('/relations/annotate', payload);
-    if (!r.ok) {
-      if (annotationError) annotationError.textContent = '保存失败：' + (r.errors || []).join('; ');
-      return;
-    }
-    annotationDialog.close();
-    await loadFrameAssetRelations();
-  } catch (e) {
-    if (annotationError) annotationError.textContent = '保存异常：' + e;
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
-async function deleteRelationAnnotation(id) {
-  if (!id) return;
-  try {
-    const r = await postJson('/relations/annotate/delete', { id });
-    if (!r.ok) {
-      if (relationsStatus) relationsStatus.textContent = '删除标注失败：' + (r.errors || []).join('; ');
-      return;
-    }
-    await loadFrameAssetRelations();
-  } catch (e) {
-    if (relationsStatus) relationsStatus.textContent = '删除标注异常：' + e;
-  }
-}
-
-function ensureRelationRecordPicker() {
-  if (!relationRecordAssetHost || !window.OASAssetUI || !window.OASAssetUI.createSearchPicker) return;
-  if (!relationRecordAssetPicker) {
-    relationRecordAssetPicker = window.OASAssetUI.createSearchPicker({
-      items: [],
-      value: '',
-      placeholder: '搜索/选择要点击的素材…',
-      label: (item) => item.label,
-      onChoose: (item, input) => {
-        relationRecordAssetId = item.id || '';
-        input.value = item.label;
-      },
-    });
-    relationRecordAssetHost.textContent = '';
-    relationRecordAssetHost.appendChild(relationRecordAssetPicker);
-  }
-}
-
-async function openRelationRecordDialog() {
-  if (!relationRecordDialog) return;
-  const task = relationTaskName();
-  if (!task) {
-    window.alert('请先选择任务');
-    return;
-  }
-  await refreshTaskAssets(task);
-  ensureRelationRecordPicker();
-  const items = (taskAssets || [])
-    .filter((a) => a.kind !== 'template_set')
-    .map((a) => ({ id: a.id, label: `${a.id} (${a.kind || '?'})` }));
-  relationRecordAssetPicker.setItems(items);
-  relationRecordAssetId = items.length ? items[0].id : '';
-  relationRecordAssetPicker.setValue(relationRecordAssetId);
-  if (relationRecordTask) relationRecordTask.textContent = `任务：${task} · 先停留在动作前的画面`;
-  if (relationRecordResult) relationRecordResult.textContent = '';
-  relationRecordDialog.showModal();
-}
-
-async function submitRelationRecord() {
-  if (!relationRecordSubmit || relationRecordSubmit.disabled) return;
-  const task = relationTaskName();
-  if (!task || !relationRecordAssetId) {
-    if (relationRecordResult) relationRecordResult.textContent = '缺少任务或动作素材';
-    return;
-  }
-  const wait = Number(document.getElementById('relation-record-wait')?.value || 900);
-  relationRecordSubmit.disabled = true;
-  if (relationRecordResult) relationRecordResult.textContent = '录制中：抓前帧 → 点击 → 等待 → 抓后帧…';
-  try {
-    const r = await postJson('/relations/record', {
-      task,
-      asset: relationRecordAssetId,
-      wait_ms: Number.isFinite(wait) ? wait : 900,
-    });
-    if (!r.ok) {
-      if (relationRecordResult) relationRecordResult.textContent = '录制失败：' + (r.errors || []).join('; ');
-      return;
-    }
-    const obs = r.observation || {};
-    if (relationRecordResult) {
-      relationRecordResult.textContent =
-        `已录制：#${obs.from_frame} → #${obs.to_frame} · 点击 ${obs.asset}` +
-        `（${r.before?.name || ''} → ${r.after?.name || ''}）`;
-    }
-    await refreshFrames();
-    if (relationsDialog && relationsDialog.open) await loadFrameAssetRelations();
-  } catch (e) {
-    if (relationRecordResult) relationRecordResult.textContent = '录制异常：' + e;
-  } finally {
-    relationRecordSubmit.disabled = false;
-  }
-}
-
 async function setFrameCategory(f) {
   const cat = window.prompt('分类（自由文本，留空=未分类）', f.category || '');
   if (cat == null) return;
@@ -9454,30 +9165,6 @@ async function doRunTask() {
   // §22.27 会话图片列表
   if (btnFrameUpload) btnFrameUpload.addEventListener('click', uploadFrames);
   if (btnFrameCapture) btnFrameCapture.addEventListener('click', openCaptureFrameDialog);
-  if (btnFrameRelations) btnFrameRelations.addEventListener('click', openFrameAssetRelations);
-  const relationsClose = document.getElementById('relations-close');
-  if (relationsClose) relationsClose.addEventListener('click', () => {
-    if (relationsDialog) relationsDialog.close();
-  });
-  const relationsRefresh = document.getElementById('relations-refresh');
-  if (relationsRefresh) relationsRefresh.addEventListener('click', loadFrameAssetRelations);
-  const relationsAnnotate = document.getElementById('relations-annotate');
-  if (relationsAnnotate) relationsAnnotate.addEventListener('click', openAnnotationDialog);
-  const annotationTypeEl = document.getElementById('annotation-type');
-  if (annotationTypeEl) annotationTypeEl.addEventListener('change', fillAnnotationOptions);
-  const annotationClose = document.getElementById('annotation-close');
-  if (annotationClose) annotationClose.addEventListener('click', () => {
-    if (annotationDialog) annotationDialog.close();
-  });
-  const annotationSubmit = document.getElementById('annotation-submit');
-  if (annotationSubmit) annotationSubmit.addEventListener('click', submitRelationAnnotation);
-  const btnRelationRecord = document.getElementById('btn-relation-record');
-  if (btnRelationRecord) btnRelationRecord.addEventListener('click', openRelationRecordDialog);
-  const relationRecordClose = document.getElementById('relation-record-close');
-  if (relationRecordClose) relationRecordClose.addEventListener('click', () => {
-    if (relationRecordDialog) relationRecordDialog.close();
-  });
-  if (relationRecordSubmit) relationRecordSubmit.addEventListener('click', submitRelationRecord);
   if (captureCancel) captureCancel.addEventListener('click', () => {
     if (capturePreviewImg) capturePreviewImg.removeAttribute('src');
     if (captureDialog) captureDialog.close();

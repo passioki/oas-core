@@ -1095,37 +1095,7 @@ aside.side {
 }
 .capture-preview img:not([src]) { display: none; }
 
-.relations-dialog { width: min(900px, 92vw); }
-.relations-view {
-  max-height: 62vh;
-  overflow: auto;
-  display: grid;
-  gap: 10px;
-}
-.relations-section {
-  border: 1px solid #333944;
-  border-radius: 6px;
-  padding: 8px 10px;
-  background: #12151a;
-}
-.relations-section-title { font-weight: 600; margin-bottom: 5px; }
-.relations-line { font-size: 12px; color: #c7cdd6; padding: 2px 0; }
-.relations-line.muted { color: #6b7280; }
-.relations-line.annotation-row { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
-.annotation-dialog { width: min(620px, 92vw); }
-.builder-relation-hint {
-  border: 1px solid #3b4a5a;
-  border-radius: 6px;
-  padding: 7px 9px;
-  margin-top: 8px;
-  background: #101820;
-  font-size: 12px;
-  color: #b9c6d4;
-  display: grid;
-  gap: 3px;
-}
-.builder-relation-title { font-weight: 600; color: #dbe7f3; }
-.relation-record-dialog { width: min(680px, 92vw); }
+/* seq136 D1-M3：帧-素材关系 UI 已下线（由地图页替代）；相关样式删除。 */
 
 /* ===== P3（参数 v2）：任务参数面板 + 插入参数 ===== */
 .builder-params-panel {
@@ -1874,3 +1844,42 @@ aside.side {
 .variable-dialog .variable-two-col > label { flex: 1; min-width: 0; }
 .variable-dialog input[type="text"], .variable-dialog select { width: 100%; box-sizing: border-box; }
 
+
+/* ===== seq136 D1-M3：全局地图页 ===== */
+.map-page { max-width: 1600px; }
+.map-body { display: grid; grid-template-columns: 260px minmax(360px, 1.4fr) 340px; gap: 10px; margin-top: 8px; }
+.map-pane { border: 1px solid #2b2f38; border-radius: 8px; padding: 8px 10px; background: #12151a; min-width: 0; }
+.map-tree-pane { max-height: 62vh; overflow: auto; }
+.map-node-tree { font-size: 12px; max-height: 34vh; overflow: auto; margin-bottom: 6px; }
+.map-node-row { padding: 3px 4px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; justify-content: space-between; gap: 6px; }
+.map-node-row:hover { background: #1b2430; }
+.map-node-row.selected { background: #24384f; color: #ffd54a; }
+.map-node-row.orphan { color: #e8c46a; }
+.map-node-row.error { color: #ff8a80; cursor: default; }
+.map-toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.map-toolbar button { width: auto; margin: 0; }
+.map-canvas-pane canvas { width: 100%; max-height: 46vh; object-fit: contain; background: #0b0d10; border: 1px solid #2b2f38; border-radius: 6px; }
+.map-feature-detail { max-height: 120px; overflow: auto; white-space: pre-wrap; }
+.map-props-pane { max-height: 62vh; overflow: auto; }
+.map-field-row { display: flex; gap: 6px; }
+.map-field-row input, .map-field-row select { width: 100%; box-sizing: border-box; }
+.map-recognize-box { border-top: 1px dashed #3a4250; margin-top: 8px; padding-top: 6px; }
+.map-feature-row { display: flex; gap: 6px; margin: 4px 0; align-items: center; }
+.map-feature-row input[type="text"] { flex: 1; min-width: 0; }
+.map-feature-add { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.map-feature-add button, .map-feature-row button { width: auto; margin: 0; }
+.map-edge-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0; font-size: 12px; }
+.map-edge-row select, .map-edge-row input { flex: 1; min-width: 80px; width: auto; }
+.map-edge-list { max-height: 22vh; overflow: auto; font-size: 12px; }
+.map-bottom { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(360px, 1.6fr); gap: 10px; margin-top: 10px; }
+.map-bottom-col { border: 1px solid #2b2f38; border-radius: 8px; padding: 8px 10px; background: #12151a; min-width: 0; }
+.map-bottom-col h4 { margin: 0 0 6px; }
+.map-plan-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.map-plan-actions button { width: auto; margin: 0; }
+.map-plan-result { max-height: 28vh; overflow: auto; white-space: pre-wrap; background: #0f141a; border: 1px solid #2b2f38; border-radius: 6px; padding: 6px 8px; }
+.map-recognize-box label.opt, .map-hub-editor label.opt { display: block; }
+@media (max-width: 1200px) {
+  .map-body { grid-template-columns: 220px 1fr; }
+  .map-props-pane { grid-column: 1 / -1; max-height: none; }
+  .map-bottom { grid-template-columns: 1fr; }
+}

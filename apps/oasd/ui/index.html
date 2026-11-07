@@ -47,6 +47,7 @@
     <button class="app-nav-btn" data-page="builder" type="button">任务构建</button>
     <button class="app-nav-btn" data-page="tasks" type="button">任务库</button>
     <button class="app-nav-btn" data-page="instances" type="button">实例</button>
+    <button class="app-nav-btn" data-page="map" type="button">地图</button>
     <button class="app-nav-btn" data-page="settings" type="button">设置</button>
     <span class="spacer"></span>
     <span id="nav-device" class="muted small">实例：—</span>
@@ -155,8 +156,6 @@
           <div class="row lib-toolbar">
             <button id="btn-frame-capture">截取当前帧入库</button>
             <button id="btn-frames-refresh">刷新列表</button>
-            <button id="btn-frame-relations" type="button">帧-素材关系</button>
-            <button id="btn-relation-record" type="button">录制关系</button>
             <button id="btn-frames-clear">清空列表</button>
           </div>
           <div class="row lib-toolbar">
@@ -465,6 +464,88 @@
     </div>
   </div>
 
+  <!-- seq136 D1-M3：全局地图页（节点/边/识别/路径预览/调试）；独立 map_ui.js。
+       帧-素材关系入口已下线（服务端 /relations/* 保留 deprecated），由地图替代。 -->
+  <div id="page-map" class="app-page">
+    <div class="page-wrap map-page">
+      <div class="row page-head">
+        <h2>全局地图</h2>
+        <span id="map-path" class="muted small">—</span>
+        <span class="spacer"></span>
+        <button id="map-refresh" type="button">重载</button>
+        <button id="map-validate" type="button">校验</button>
+        <button id="map-save" type="button">保存地图</button>
+      </div>
+      <div id="map-status" class="muted small">（未加载）</div>
+      <div class="map-body">
+        <aside class="map-pane map-tree-pane">
+          <h4>节点树</h4>
+          <div id="map-node-tree" class="map-node-tree muted">（未加载地图）</div>
+          <div class="map-toolbar">
+            <button id="map-node-new" type="button">新建节点</button>
+            <button id="map-node-from-frame" type="button">用当前帧新建节点</button>
+            <button id="map-node-delete" type="button">删除节点</button>
+          </div>
+          <h4>全局</h4>
+          <div id="map-hub-editor"></div>
+        </aside>
+        <section class="map-pane map-canvas-pane">
+          <div class="row">
+            <span id="map-frame-info" class="muted small">帧：—</span>
+            <span class="spacer"></span>
+            <button id="map-frame-prev" type="button">上一帧</button>
+            <button id="map-frame-next" type="button">下一帧</button>
+          </div>
+          <canvas id="map-canvas" width="640" height="360"></canvas>
+          <div class="row">
+            <label class="opt">节点帧
+              <select id="map-node-frame-select"></select>
+            </label>
+            <label class="opt">节点特征命中
+              <span id="map-feature-hits" class="muted small">—</span>
+            </label>
+          </div>
+          <pre id="map-feature-detail" class="muted small map-feature-detail"></pre>
+        </section>
+        <aside class="map-pane map-props-pane">
+          <h4>节点</h4>
+          <div id="map-node-editor" class="muted small">（选择/新建节点）</div>
+          <h4>边</h4>
+          <div id="map-edge-editor"></div>
+          <h4>边列表</h4>
+          <div id="map-edge-list" class="map-edge-list muted">（无）</div>
+        </aside>
+      </div>
+      <div class="map-bottom">
+        <div class="map-bottom-col">
+          <h4>校验</h4>
+          <div id="map-validation" class="muted small">（未校验）</div>
+        </div>
+        <div class="map-bottom-col">
+          <h4>路径预览 / 识别 / 调试</h4>
+          <div class="row">
+            <label class="opt">目标节点
+              <select id="map-plan-target"></select>
+            </label>
+            <label class="opt">起点
+              <select id="map-plan-from">
+                <option value="auto">自动识别当前节点</option>
+              </select>
+            </label>
+          </div>
+          <div class="row map-plan-actions">
+            <button id="map-state-run" type="button">识别当前节点</button>
+            <button id="map-plan-run" type="button">预览路径</button>
+            <button id="map-nav-dry" type="button">执行导航（dry）</button>
+            <button id="map-nav-real" type="button" class="test-real">执行导航（real，需确认）</button>
+            <button id="map-new-task" type="button">新建导航任务…</button>
+          </div>
+          <pre id="map-plan-result" class="muted small map-plan-result">—</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- M1/N38：新建任务对话框（名称 / 模板 / 描述 -> POST /task/create） -->
   <dialog id="create-task-dialog" class="task-dialog">
     <h3>新建任务</h3>
@@ -715,69 +796,9 @@
       }
     });
   </script>
-  <dialog id="relation-record-dialog" class="task-dialog relation-record-dialog">
-    <h3>录制一次关系</h3>
-    <p class="muted small">
-      请先把模拟器停留在“动作前”的画面。点击「录制一次」会抓前帧 → 点击素材操作区域 →
-      等待 → 抓后帧，并保存一条 transition 证据。
-    </p>
-    <p id="relation-record-task" class="muted small">任务：—</p>
-    <label class="opt">动作素材
-      <div id="relation-record-asset-host"></div>
-    </label>
-    <label class="opt">点击后等待（ms）
-      <input id="relation-record-wait" type="number" min="100" max="5000" value="900" />
-    </label>
-    <pre id="relation-record-result" class="muted small dialog-error"></pre>
-    <div class="row dialog-actions">
-      <button id="relation-record-submit" type="button">录制一次</button>
-      <span class="spacer"></span>
-      <button id="relation-record-close" type="button">关闭</button>
-    </div>
-  </dialog>
-
-  <dialog id="relations-dialog" class="task-dialog relations-dialog">
-    <h3>帧-素材关系</h3>
-    <p id="relations-status" class="muted small">—</p>
-    <div class="row dialog-actions">
-      <button id="relations-refresh" type="button">刷新</button>
-      <button id="relations-annotate" type="button">标注关系</button>
-      <span class="spacer"></span>
-      <button id="relations-close" type="button">关闭</button>
-    </div>
-    <div id="relations-view" class="relations-view muted">（未加载）</div>
-  </dialog>
-
-  <dialog id="annotation-dialog" class="task-dialog annotation-dialog">
-    <h3>标注关系</h3>
-    <p class="muted small">只标注无法自动派生的关系；证据/备注尽量填写。</p>
-    <label class="opt">关系类型
-      <select id="annotation-type">
-        <option value="alternative">替代素材/帧</option>
-        <option value="requires">前置依赖</option>
-        <option value="similar">相似帧</option>
-        <option value="overlay">弹窗覆盖帧</option>
-      </select>
-    </label>
-    <label class="opt">节点 A
-      <select id="annotation-a"></select>
-    </label>
-    <label class="opt">节点 B
-      <select id="annotation-b"></select>
-    </label>
-    <label class="opt">备注（可选）
-      <input id="annotation-note" type="text" maxlength="200" />
-    </label>
-    <pre id="annotation-error" class="muted small dialog-error"></pre>
-    <div class="row dialog-actions">
-      <button id="annotation-submit" type="button">保存标注</button>
-      <span class="spacer"></span>
-      <button id="annotation-close" type="button">关闭</button>
-    </div>
-  </dialog>
-
   <script src="/flow_model.js"></script>
   <script src="/asset_ui.js"></script>
+  <script src="/map.js"></script>
   <script src="/builder.js"></script>
   <script src="/app.js"></script>
 </body>
