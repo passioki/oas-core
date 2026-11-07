@@ -384,6 +384,38 @@ fn validate_popup_asset_refs(
     }
 }
 
+/// seq136 D1-M2: map validation report as JSON (errors/warnings rows).
+fn map_validation_json(v: &oas_task::map::MapValidation) -> serde_json::Value {
+    let row = |i: &oas_task::map::MapIssue| {
+        serde_json::json!({"path": i.path, "message": i.message})
+    };
+    serde_json::json!({
+        "errors": v.errors.iter().map(row).collect::<Vec<_>>(),
+        "warnings": v.warnings.iter().map(row).collect::<Vec<_>>(),
+    })
+}
+
+/// seq136 D1-M2: planned route as JSON hops (action/derived/wait included).
+fn map_route_json(route: &[oas_runtime::map::MapEdge]) -> Vec<serde_json::Value> {
+    route
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "from": e.from,
+                "to": e.to,
+                "action": e.action.label(),
+                "derived": e.derived,
+                "wait": {
+                    "settle_ms": e.wait.settle_ms,
+                    "stable_ms": e.wait.stable_ms,
+                    "timeout_ms": e.wait.timeout_ms,
+                    "poll_ms": e.wait.poll_ms,
+                },
+            })
+        })
+        .collect()
+}
+
 /// Upper bound for a POST body (flow.json is small; never buffer more).
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
@@ -488,6 +520,9 @@ pub fn route_owner(method: &str, path_only: &str) -> Option<RouteOwner> {
             // seq136 D0: global popup config is shared game-wide.
             "/popups" => Some(Both),
 
+            // seq136 D1-M2: the global map editor/debug API is Studio-only.
+            "/map" | "/map/state" | "/map/plan" | "/map.js" => Some(Studio),
+
             // Runner operational APIs (PR1 read-only subset, PR5 packages, PR6
             // embedded scheduler + temporary run status, P0-1a publish updates).
             "/runner/health" | "/runner/tasks" | "/runner/packages" | "/runner/updates"
@@ -519,6 +554,8 @@ pub fn route_owner(method: &str, path_only: &str) -> Option<RouteOwner> {
             // both surfaces (Runner uses the runtime debugger too).
             "/popups" => Some(Studio),
             "/popups/test" => Some(Both),
+            // seq136 D1-M2: map writes/debug are Studio-only (Runner gets 404).
+            "/map" | "/map/validate" | "/map/navigate" | "/map/probe" => Some(Studio),
             // The device config is the one physical resource both surfaces use.
             "/instance" => Some(Both),
 
@@ -2243,6 +2280,14 @@ impl Server {
                 "flow_model.js",
                 "application/javascript; charset=utf-8",
             ),
+            // seq136 D1-M3 will ship the file; M2 reserves the stable route so the
+            // Studio shell can reference it (send_ui_file = 404 before M3).
+            ("GET", "/map.js") => self.send_ui_file(
+                &mut out,
+                ui_dir,
+                "map.js",
+                "application/javascript; charset=utf-8",
+            ),
             ("GET", "/dashboard.html") => self.send_ui_file(
                 &mut out,
                 ui_dir,
@@ -2370,6 +2415,14 @@ impl Server {
             ("GET", "/popups") => self.handle_popups_get(&mut out),
             ("POST", "/popups") => self.handle_popups_post(&mut out, &body),
             ("POST", "/popups/test") => self.handle_popups_test(&mut out, &body),
+            // seq136 D1-M2: global map (Studio-only).
+            ("GET", "/map") => self.handle_map_get(&mut out),
+            ("POST", "/map") => self.handle_map_post(&mut out, &body),
+            ("POST", "/map/validate") => self.handle_map_validate(&mut out, &body),
+            ("GET", "/map/state") => self.handle_map_state(&mut out, &path),
+            ("GET", "/map/plan") => self.handle_map_plan(&mut out, &path),
+            ("POST", "/map/navigate") => self.handle_map_navigate(&mut out, &body),
+            ("POST", "/map/probe") => self.handle_map_probe(&mut out, &body),
             ("GET", "/task/flow") => self.handle_task_flow(&mut out, &path),
             ("POST", "/task/save_flow") => self.handle_save_flow(&mut out, &body),
             ("GET", "/task/list") => self.handle_task_list(&mut out),
@@ -5194,6 +5247,480 @@ impl Server {
         validate_popup_asset_refs(&af, config)
     }
 
+    /// seq136 D1-M2: assets + existing frame ids used by map validation.
+    fn map_assets_and_frames(
+        &self,
+    ) -> Result<(oas_task::AssetsFile, std::collections::BTreeSet<u64>), String> {
+        if !self.using_global_assets() {
+            return Err(
+                "地图依赖全局素材库：请先初始化全局素材库（assets.json）".to_string()
+            );
+        }
+        let af = self.asset_store("")?.load_assets_file()?;
+        let ids = {
+            let st = self
+                .state
+                .lock()
+                .map_err(|_| "state lock poisoned".to_string())?;
+            st.frames.iter().map(|f| f.id).collect()
+        };
+        Ok((af, ids))
+    }
+
+    /// Every global-map reference to `asset` (node features / return assets /
+    /// edge actions), as human-readable node/edge descriptions.
+    fn map_asset_referrers(&self, asset: &str) -> Vec<String> {
+        let Ok(Some(map)) = oas_task::map::load(&self.assets_dir) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (i, node) in map.nodes.iter().enumerate() {
+            for f in &node.recognize.features {
+                if let oas_task::map::MapFeature::Asset { asset: a } = f {
+                    if a == asset {
+                        out.push(format!("node[{}] `{}` recognize", i, node.id));
+                    }
+                }
+            }
+            if node.return_asset.as_deref() == Some(asset) {
+                out.push(format!("node[{}] `{}` return_asset", i, node.id));
+            }
+        }
+        if map.default_return_asset.as_deref() == Some(asset) {
+            out.push("default_return_asset".to_string());
+        }
+        for (i, edge) in map.edges.iter().enumerate() {
+            if let oas_task::map::MapAction::ClickAsset { asset: a, .. } = &edge.action {
+                if a == asset {
+                    out.push(format!(
+                        "edge[{}] {}→{} action",
+                        i, edge.from, edge.to
+                    ));
+                }
+            }
+        }
+        out
+    }
+
+    /// `GET /map` — raw global map + validation (missing file = empty).
+    fn handle_map_get(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        if let Err(e) = self.map_assets_and_frames() {
+            return self.send_errors(out, 400, vec![e]);
+        }
+        let path = oas_task::map::map_path(&self.assets_dir);
+        let map = match oas_task::map::load(&self.assets_dir) {
+            Ok(m) => m,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let (af, frames) = match self.map_assets_and_frames() {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let mut body = serde_json::json!({
+            "ok": true,
+            "path": path.to_string_lossy(),
+            "exists": map.is_some(),
+            "map": serde_json::Value::Null,
+            "node_count": 0,
+            "edge_count": 0,
+            "validation": {"errors": [], "warnings": []},
+        });
+        if let Some(map) = map {
+            let validation = map.validate(&af, &frames);
+            body["map"] = serde_json::to_value(&map).unwrap_or(serde_json::Value::Null);
+            body["node_count"] = serde_json::json!(map.nodes.len());
+            body["edge_count"] = serde_json::json!(map.edges.len());
+            body["validation"] = map_validation_json(&validation);
+        }
+        self.send_json(out, 200, &body.to_string())
+    }
+
+    /// `POST /map` — validate, back up and atomically save the global map.
+    fn handle_map_post(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let mapv = v.get("map").unwrap_or(&v);
+        let map: oas_task::map::MapFile = match serde_json::from_value(mapv.clone()) {
+            Ok(m) => m,
+            Err(e) => return self.send_errors(out, 400, vec![format!("map.json: {e}")]),
+        };
+        let (af, frames) = match self.map_assets_and_frames() {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let validation = map.validate(&af, &frames);
+        if !validation.is_ok() {
+            return self.send_json(
+                out,
+                400,
+                &serde_json::json!({
+                    "ok": false,
+                    "errors": map_validation_json(&validation)["errors"],
+                    "warnings": map_validation_json(&validation)["warnings"],
+                })
+                .to_string(),
+            );
+        }
+        let path = match oas_task::map::save_atomic(&self.assets_dir, &map) {
+            Ok(p) => p,
+            Err(e) => return self.send_errors(out, 500, vec![e]),
+        };
+        self.editor_log(&format!(
+            "map_save nodes={} edges={}",
+            map.nodes.len(),
+            map.edges.len()
+        ));
+        self.send_json(
+            out,
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "path": path.to_string_lossy(),
+                "backup": path.with_extension("json.bak").to_string_lossy(),
+                "map": serde_json::to_value(&map).unwrap_or(serde_json::Value::Null),
+                "validation": map_validation_json(&validation),
+            })
+            .to_string(),
+        )
+    }
+
+    /// `POST /map/validate` — dry validation (never writes).
+    fn handle_map_validate(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let mapv = v.get("map").unwrap_or(&v);
+        let map: oas_task::map::MapFile = match serde_json::from_value(mapv.clone()) {
+            Ok(m) => m,
+            Err(e) => return self.send_errors(out, 400, vec![format!("map.json: {e}")]),
+        };
+        let (af, frames) = match self.map_assets_and_frames() {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let validation = map.validate(&af, &frames);
+        self.send_json(
+            out,
+            200,
+            &serde_json::json!({
+                "ok": validation.is_ok(),
+                "validation": map_validation_json(&validation),
+            })
+            .to_string(),
+        )
+    }
+
+    /// `GET /map/state` — identify the current node on a selected/live frame.
+    fn handle_map_state(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
+        let q = parse_query(raw_path);
+        let map = match oas_task::map::load(&self.assets_dir) {
+            Ok(Some(m)) => m,
+            Ok(None) => {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec![format!(
+                        "全局地图缺失（{}）",
+                        oas_task::map::map_path(&self.assets_dir).display()
+                    )],
+                )
+            }
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let (frame, frame_source) = match self.frame_for_test(&q) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let assets = match self.asset_store("").and_then(|b| b.load_runtime_assets()) {
+            Ok(a) => a,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let mut interp = self
+            .editor_interp(frame, assets, "")
+            .with_map(map.to_runtime());
+        match interp.identify_current_node() {
+            Ok(m) => self.send_json(
+                out,
+                200,
+                &serde_json::json!({
+                    "ok": true, "frame_source": frame_source,
+                    "current": {
+                        "node": m.node, "name": m.name, "hits": m.hits,
+                        "ambiguous": m.ambiguous,
+                    },
+                })
+                .to_string(),
+            ),
+            Err(e) => self.send_json(
+                out,
+                200,
+                &serde_json::json!({
+                    "ok": true, "frame_source": frame_source,
+                    "current": serde_json::Value::Null, "error": e,
+                })
+                .to_string(),
+            ),
+        }
+    }
+
+    /// Resolve the current node for `/map/plan` / `/map/navigate` dry: explicit
+    /// `from` wins; otherwise identify on the selected frame.
+    fn map_resolve_from(
+        &self,
+        from: &str,
+        map: &oas_task::map::MapFile,
+        q: &[(String, String)],
+    ) -> Result<String, String> {
+        if !from.is_empty() && from != "auto" {
+            return Ok(from.to_string());
+        }
+        let (frame, _) = self.frame_for_test(q)?;
+        let assets = self
+            .asset_store("")?
+            .load_runtime_assets()
+            .map_err(|e| e.to_string())?;
+        let mut interp = self
+            .editor_interp(frame, assets, "")
+            .with_map(map.to_runtime());
+        Ok(interp.identify_current_node()?.node)
+    }
+
+    /// Shared plan body for `/map/plan` and `/map/navigate` dry.
+    fn map_plan_body(
+        &self,
+        map: &oas_task::map::MapFile,
+        from: String,
+        target: &str,
+    ) -> Result<serde_json::Value, String> {
+        let rt = map.to_runtime();
+        let route = oas_runtime::map::plan_route(&rt, &from, target)?;
+        let hub_used = route.iter().any(|e| e.to == rt.hub || e.from == rt.hub);
+        Ok(serde_json::json!({
+            "ok": true,
+            "dry": true,
+            "from": from,
+            "target": target,
+            "hops": route.len(),
+            "hub_used": hub_used,
+            "route": map_route_json(&route),
+        }))
+    }
+
+    /// `GET /map/plan?to=<node>[&from=<node|auto>][&frame_id/live]`.
+    fn handle_map_plan(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
+        let q = parse_query(raw_path);
+        let get = |key: &str| {
+            q.iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.trim().to_string())
+                .unwrap_or_default()
+        };
+        let target = {
+            let t = get("to");
+            if t.is_empty() {
+                get("target")
+            } else {
+                t
+            }
+        };
+        if target.is_empty() {
+            return self.send_errors(out, 400, vec!["`to` (map node) is required".into()]);
+        }
+        let map = match oas_task::map::load(&self.assets_dir) {
+            Ok(Some(m)) => m,
+            Ok(None) => {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec![format!(
+                        "全局地图缺失（{}）",
+                        oas_task::map::map_path(&self.assets_dir).display()
+                    )],
+                )
+            }
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let from = match self.map_resolve_from(&get("from"), &map, &q) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        match self.map_plan_body(&map, from, &target) {
+            Ok(body) => self.send_json(out, 200, &body.to_string()),
+            Err(e) => self.send_errors(out, 400, vec![e]),
+        }
+    }
+
+    /// `POST /map/navigate {target, from?, real?:false, frame_id/live}` — dry
+    /// returns the plan; real runs the SAME flow through `run_ephemeral_flow`
+    /// (temporary task, never writes user tasks or the path).
+    fn handle_map_navigate(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let target = v.get("target").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if target.is_empty() {
+            return self.send_errors(out, 400, vec!["`target` (map node) is required".into()]);
+        }
+        let real = v.get("real").and_then(|x| x.as_bool()).unwrap_or(false);
+        let map = match oas_task::map::load(&self.assets_dir) {
+            Ok(Some(m)) => m,
+            Ok(None) => {
+                return self.send_errors(
+                    out,
+                    400,
+                    vec![format!(
+                        "全局地图缺失（{}）",
+                        oas_task::map::map_path(&self.assets_dir).display()
+                    )],
+                )
+            }
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let mut q: Vec<(String, String)> = Vec::new();
+        if v.get("live").and_then(|x| x.as_bool()).unwrap_or(false) {
+            q.push(("live".to_string(), "1".to_string()));
+        }
+        if let Some(fid) = v.get("frame_id") {
+            let Some(n) = fid.as_u64() else {
+                return self.send_errors(out, 400, vec!["`frame_id` must be an integer".into()]);
+            };
+            q.push(("frame_id".to_string(), n.to_string()));
+        }
+        if !real {
+            let from_v = v.get("from").and_then(|x| x.as_str()).unwrap_or("");
+            let from = match self.map_resolve_from(from_v, &map, &q) {
+                Ok(f) => f,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            };
+            return match self.map_plan_body(&map, from, target) {
+                Ok(body) => self.send_json(out, 200, &body.to_string()),
+                Err(e) => self.send_errors(out, 400, vec![e]),
+            };
+        }
+        // Real: ephemeral task → the real executor (NavMode::Execute).
+        let flow_json = serde_json::json!({
+            "schema_version": 1,
+            "name": "map-navigate-debug",
+            "steps": [
+                {"op":"navigate","args":{"target":target}},
+                {"op":"finish","args":{"exit":"done"}}
+            ]
+        })
+        .to_string();
+        let mut opts = RunOptions::default();
+        opts.assets = self.assets_dir.clone();
+        opts.library = self.library_dir.clone();
+        opts.model = self.ocr_model.clone();
+        opts.det_model = self.det_model.clone();
+        opts.dry_run = false;
+        opts.skip_lease = true;
+        match crate::run::run_ephemeral_flow(&opts, &flow_json) {
+            Ok(report) => {
+                let events: Vec<serde_json::Value> = report
+                    .events
+                    .iter()
+                    .map(|e| {
+                        serde_json::json!({
+                            "seq": e.seq, "op": e.op, "detail": e.detail,
+                            "result": e.result,
+                        })
+                    })
+                    .collect();
+                self.send_json(
+                    out,
+                    200,
+                    &serde_json::json!({
+                        "ok": true, "real": true, "target": target,
+                        "exit_code": report.exit_code(),
+                        "seed": report.seed,
+                        "clicks": report.clicks.iter().map(|p| serde_json::json!({"x":p.x,"y":p.y})).collect::<Vec<_>>(),
+                        "steps": events,
+                    })
+                    .to_string(),
+                )
+            }
+            Err(e) => self.send_errors(out, 400, vec![format!("map navigate: {e}")]),
+        }
+    }
+
+    /// `POST /map/probe {frame_id/live}` — editor feature picker: OCR lines +
+    /// per-asset best candidate hints on the selected frame (never clicks).
+    fn handle_map_probe(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let mut q: Vec<(String, String)> = Vec::new();
+        if v.get("live").and_then(|x| x.as_bool()).unwrap_or(false) {
+            q.push(("live".to_string(), "1".to_string()));
+        }
+        if let Some(fid) = v.get("frame_id") {
+            let Some(n) = fid.as_u64() else {
+                return self.send_errors(out, 400, vec!["`frame_id` must be an integer".into()]);
+            };
+            q.push(("frame_id".to_string(), n.to_string()));
+        }
+        let (frame, frame_source) = match self.frame_for_test(&q) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let af = match self.asset_store("").and_then(|b| b.load_assets_file()) {
+            Ok(a) => a,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let asset_ids: Vec<String> = af
+            .items
+            .iter()
+            .filter(|a| a.kind != "region")
+            .map(|a| a.id.clone())
+            .take(40)
+            .collect();
+        let assets = match self.asset_store("").and_then(|b| b.load_runtime_assets()) {
+            Ok(a) => a,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let mut interp = self.editor_interp(frame, assets, "");
+        let lines = match interp.screen_lines(None) {
+            Ok(l) => l,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let ocr_lines: Vec<serde_json::Value> = lines
+            .iter()
+            .map(|l| {
+                serde_json::json!({
+                    "text": l.text, "score": l.score,
+                    "rect": [l.rect.x, l.rect.y, l.rect.w, l.rect.h],
+                })
+            })
+            .collect();
+        let mut hints = Vec::new();
+        for id in &asset_ids {
+            if let Ok(best) = interp.recognize_best(id) {
+                hints.push(serde_json::json!({
+                    "asset": id,
+                    "score": best.score,
+                    "pass": best.at.is_some(),
+                    "point": best.at.map(|p| serde_json::json!({"x":p.x,"y":p.y})),
+                    "real": best.real.map(|r| [r.x,r.y,r.w,r.h]),
+                }));
+            }
+        }
+        self.send_json(
+            out,
+            200,
+            &serde_json::json!({
+                "ok": true, "frame_source": frame_source,
+                "ocr_lines": ocr_lines,
+                "assets": hints,
+            })
+            .to_string(),
+        )
+    }
+
     /// `GET /popups` — global popup config (raw schema; default when absent).
     fn handle_popups_get(&self, out: &mut TcpStream) -> std::io::Result<()> {
         let path = self.popups_path();
@@ -6293,6 +6820,19 @@ impl Server {
                 );
             }
         }
+        // seq136 D1-M2: the global map is a user data file — never silently
+        // rewrite it; block delete until the author removes the references.
+        let map_refs = self.map_asset_referrers(id);
+        if !map_refs.is_empty() {
+            return self.send_errors(
+                out,
+                400,
+                vec![format!(
+                    "素材「{id}」被全局地图引用：{}；请先在地图页删除/替换这些引用，再删除素材",
+                    map_refs.join("、")
+                )],
+            );
+        }
         let b = if global_mode {
             match self.asset_store("") {
                 Ok(b) => b,
@@ -6363,6 +6903,20 @@ impl Server {
                     )],
                 );
             }
+        }
+        // seq136 D1-M2: renaming a map-referenced asset would leave a dangling
+        // map.json; reject instead of silently rewriting user data.
+        let map_refs = self.map_asset_referrers(from);
+        if !map_refs.is_empty() {
+            return self.send_errors(
+                out,
+                400,
+                vec![format!(
+                    "asset `{from}` is referenced by the global map: {}; \
+                     update the map references first (map.json is never auto-rewritten)",
+                    map_refs.join(", ")
+                )],
+            );
         }
         let b = if global_mode {
             match self.asset_store("") {
@@ -18003,6 +18557,120 @@ mod tests {
             "{v}"
         );
         assert_eq!(first["action_box"], serde_json::json!([53, 13, 10, 5]), "{v}");
+    }
+
+    #[test]
+    fn map_api_crud_validate_state_plan_navigate_and_asset_guard() {
+        let td = TempDir::new("map-api");
+        let server = polygon_action_fixture(td.path());
+        let frames = get_json_route(&server, "/frames");
+        let frame_id = frames["frames"][0]["id"].as_u64().expect("frame id");
+        let valid_map = serde_json::json!({
+            "schema_version": 1,
+            "hub": "庭院",
+            "nodes": [
+                {"id":"庭院","recognize":{"min_hits":1,"features":[
+                    {"kind":"asset","asset":"POLY_SELF"}]}},
+                {"id":"御魂","recognize":{"min_hits":1,"features":[
+                    {"kind":"asset","asset":"POLY_FIXED"}]}}
+            ],
+            "edges": [
+                {"from":"庭院","action":{"kind":"click_asset","asset":"POLY_SELF"},
+                 "to":"御魂","wait":{"settle_ms":0,"timeout_ms":500,"poll_ms":50}}
+            ]
+        });
+        // GET before save: not exists, empty map.
+        let v = get_json_route(&server, "/map");
+        assert_eq!(v["ok"], true, "{v}");
+        assert_eq!(v["exists"], false, "{v}");
+        // Dry validate a bad map (missing hub) → 200 ok=false + errors.
+        let bad = serde_json::json!({"schema_version":1,"hub":"不存在","nodes":[],"edges":[]});
+        let (status, out) = post_route(
+            &server,
+            "/map/validate",
+            "application/json",
+            &serde_json::to_vec(&serde_json::json!({"map": bad})).unwrap(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], false, "{out}");
+        assert!(!v["validation"]["errors"].as_array().unwrap().is_empty());
+        // Save valid map, then save again → .bak.
+        let body = serde_json::to_vec(&valid_map).unwrap();
+        let (status, out) = post_route(&server, "/map", "application/json", &body);
+        assert!(status.contains("200"), "{status} {out}");
+        assert!(td.path().join("assets").join("map.json").is_file());
+        let (status, out) = post_route(&server, "/map", "application/json", &body);
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(out.contains("json.bak"), "{out}");
+        assert_eq!(
+            td.path().join("assets").join("map.json.bak").is_file(),
+            true,
+            "backup file"
+        );
+        assert_eq!(v["map"]["hub"], "庭院", "{out}");
+        // GET after save.
+        let v = get_json_route(&server, "/map");
+        assert_eq!(v["exists"], true, "{v}");
+        assert_eq!(v["node_count"], 2, "{v}");
+        // identify current node on the uploaded frame.
+        let v = get_json_route(&server, &format!("/map/state?frame_id={frame_id}"));
+        assert_eq!(v["ok"], true, "{v}");
+        assert!(v["current"].is_object(), "expected a node match: {v}");
+        // plan: 庭院 -> 御魂 = one hop.
+        let v = get_json_route(&server, "/map/plan?from=庭院&to=御魂");
+        assert_eq!(v["hops"], 1, "{v}");
+        assert_eq!(v["route"][0]["to"], "御魂", "{v}");
+        // dry navigate (PlanOnly) must not click and returns the same plan.
+        let (status, out) = post_route(
+            &server,
+            "/map/navigate",
+            "application/json",
+            &serde_json::to_vec(&serde_json::json!({"target":"御魂","from":"庭院"}))
+                .unwrap(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["dry"], true, "{out}");
+        assert_eq!(v["hops"], 1, "{out}");
+        // probe: OCR lines array + per-asset hints.
+        let (status, out) = post_route(
+            &server,
+            "/map/probe",
+            "application/json",
+            &serde_json::to_vec(&serde_json::json!({"frame_id": frame_id})).unwrap(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(v["ocr_lines"].is_array(), "{out}");
+        assert!(!v["assets"].as_array().unwrap().is_empty(), "{out}");
+        // map references protect delete + rename (no silent rewrite).
+        let (status, out) = post_route(
+            &server,
+            "/task/asset/delete",
+            "application/json",
+            br#"{"id":"POLY_SELF"}"#,
+        );
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("全局地图引用"), "{out}");
+        let (status, out) = post_route(
+            &server,
+            "/task/asset/rename",
+            "application/json",
+            br#"{"from":"POLY_SELF","to":"POLY_RENAMED"}"#,
+        );
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("global map"), "{out}");
+        // Studio-only route ownership.
+        assert_eq!(route_owner("GET", "/map"), Some(RouteOwner::Studio));
+        assert_eq!(route_owner("POST", "/map"), Some(RouteOwner::Studio));
+        assert_eq!(route_owner("GET", "/map/state"), Some(RouteOwner::Studio));
+        assert_eq!(route_owner("POST", "/map/navigate"), Some(RouteOwner::Studio));
+        assert_eq!(
+            required_surface("GET", "/map/plan"),
+            Some(Surface::Studio)
+        );
     }
 
     #[test]
