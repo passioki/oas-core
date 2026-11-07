@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use oas_types::Frame;
 
 mod meta;
+pub mod map;
 pub mod ocr_var;
 pub mod package;
 pub use meta::{
