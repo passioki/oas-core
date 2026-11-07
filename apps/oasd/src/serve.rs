@@ -89,6 +89,17 @@ use crate::package_cmd;
 /// Upper bound for a POST body (flow.json is small; never buffer more).
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
+/// Take a mutex value even when a previous holder panicked (poisoned lock).
+///
+/// seq133 #3: the OCR/det engine mutexes are shared by every request. A panic
+/// in one inference used to poison them, turning all later OCR/live requests
+/// into `PoisonError` failures; recovering the inner value keeps the service
+/// usable (the engines rebuild their state per call). Ordinary state mutexes
+/// keep their existing `.lock().unwrap()` semantics.
+fn lock_recover<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Default HTTP port of the editor surface (`oasd studio`). This is also the
 /// `config.serve.port` default; the old CLI hardcoded 8787 and disagreed with
 /// `packaging/live.example.json` (8788).
@@ -2732,7 +2743,7 @@ impl Server {
                 }
             };
             let t0 = std::time::Instant::now();
-            let mut eng = engine.lock().unwrap();
+            let mut eng = lock_recover(&engine);
             match eng.recognize(&crop) {
                 Ok((text, score)) => {
                     let ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -3411,8 +3422,8 @@ impl Server {
             };
             let t0 = std::time::Instant::now();
             let lines = {
-                let mut det_guard = det.lock().unwrap();
-                let mut rec_guard = rec.lock().unwrap();
+                let mut det_guard = lock_recover(&det);
+                let mut rec_guard = lock_recover(&rec);
                 match crate::ocr::recognize_lines_impl(&mut det_guard, &mut rec_guard, frame, roi, vertical_only) {
                     Ok(l) => l,
                     Err(e) => {
@@ -4197,8 +4208,8 @@ impl Server {
                                 } else {
                                     frame
                                 };
-                                let mut det_guard = det.lock().unwrap();
-                                let mut rec_guard = rec.lock().unwrap();
+                                let mut det_guard = lock_recover(&det);
+                                let mut rec_guard = lock_recover(&rec);
                                 let lines = match crate::ocr::recognize_lines_impl(
                                     &mut det_guard,
                                     &mut rec_guard,
@@ -4276,7 +4287,7 @@ impl Server {
                                     continue;
                                 }
                             };
-                            let mut eng = engine.lock().unwrap();
+                            let mut eng = lock_recover(&engine);
                             match eng.recognize(&crop) {
                                 Ok((text, score)) => {
                                     let expected = item.ocr_text.as_deref().unwrap_or("");
@@ -4803,8 +4814,8 @@ impl Server {
                 frame
             };
             let lines = {
-                let mut det_guard = det.lock().unwrap();
-                let mut rec_guard = rec.lock().unwrap();
+                let mut det_guard = lock_recover(&det);
+                let mut rec_guard = lock_recover(&rec);
                 crate::ocr::recognize_lines_impl(&mut det_guard, &mut rec_guard, frame_ref, roi, false)?
             };
             out.insert(item.id.clone(), lines);
@@ -4837,6 +4848,35 @@ impl Server {
         } else {
             Ok(std::collections::BTreeMap::new())
         }
+    }
+
+    /// seq133 #2: expected text for the editor candidate list.
+    ///
+    /// `ocr_var` → the task's current variable default (the same value
+    /// `test_action` injects, so `candidate_index` agrees); every other OCR kind →
+    /// its saved `ocr_text`; `None` → every detected line passes.
+    fn editor_expected_text(&self, task: &str, item: &oas_task::AssetDecl) -> Option<String> {
+        if item.kind == "ocr_var" && !task.trim().is_empty() {
+            if let Some(key) = item.param_key.as_deref() {
+                let path = self.tasks_dir.join(task).join("meta.json");
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    if let Ok(meta) = oas_task::Meta::from_json(&text) {
+                        if let Some(var) = meta
+                            .effective_variables()
+                            .into_iter()
+                            .find(|v| v.key == key && v.asset_id.as_deref() == Some(item.id.as_str()))
+                        {
+                            if let Some(serde_json::Value::String(s)) = var.default {
+                                if !s.trim().is_empty() {
+                                    return Some(s);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ocr_candidate_expected_text(item)
     }
 
     fn handle_asset_candidates(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
@@ -5155,8 +5195,8 @@ impl Server {
             frame
         };
         let lines = {
-            let mut det_guard = det.lock().unwrap();
-            let mut rec_guard = rec.lock().unwrap();
+            let mut det_guard = lock_recover(&det);
+            let mut rec_guard = lock_recover(&rec);
             match crate::ocr::recognize_lines_impl(
                 &mut det_guard,
                 &mut rec_guard,
@@ -5169,32 +5209,29 @@ impl Server {
             }
         };
         let threshold = oas_runtime::asset_threshold(assets, id);
-        // Expected text (Lead ruling 12, one rule): `ocr_var` → its Studio-side
-        // `runtime_text`; a plain OCR asset → its saved `ocr_text` (batch B also
-        // allows `ocr_lines` to carry it); none = every detected line above the
-        // confidence threshold is a candidate.
-        let expected = ocr_candidate_expected_text(item);
-        // #11: editor candidates use the STRICT match (normalized equality, no
-        // 1-edit tolerance), so 「队伍2」/「队伍3」 are never offered as candidates
-        // of 「队伍1」. Runtime click/wait keep the fuzzy rule.
-        let mut lines = filter_ocr_candidate_lines(lines, expected.as_deref(), threshold);
-        // Stable editor order: score desc → y asc → x asc (the order `index`
-        // refers to).
-        lines.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.rect.y.cmp(&b.rect.y))
-                .then(a.rect.x.cmp(&b.rect.x))
-        });
+        // seq133 #2: expected text for the editor. `ocr_var` uses the task's
+        // variable default (the same value `test_action` injects, so
+        // candidate_index stays aligned); every other OCR kind uses its saved
+        // `ocr_text`; none = every line passes.
+        let expected = self.editor_expected_text(task, item);
+        // Editor OCR candidates (seq133 #2): EVERY det+rec line at/above the
+        // asset's minimum confidence, sorted `pass` first → score desc → y → x.
+        // `pass` = the line strictly matches the expected text (no expected ⇒ all
+        // pass). index 0 is therefore the expected line whenever one exists.
+        // Runtime click/wait keep their historical fuzzy matching.
+        let candidates = oas_runtime::ocr_candidate_lines_pass_first(
+            &lines,
+            expected.as_deref(),
+            Some(threshold),
+        );
         // The candidate operation box comes from the **shared** model-A helper:
         // OCR `action_shape`/`click_back` follows the recognized line
         // (`real.topLeft - authored_roi`; a whole-screen ocr_var has no authored
         // origin and stays absolute), and no shape → the line bbox itself. The
         // same call feeds `test_action`/the engine, so the editor cannot disagree.
         let frame_size = Some((frame.width, frame.height));
-        let mut candidates_json: Vec<serde_json::Value> = Vec::with_capacity(lines.len());
-        for (index, line) in lines.iter().enumerate() {
+        let mut candidates_json: Vec<serde_json::Value> = Vec::with_capacity(candidates.len());
+        for (index, line) in candidates.iter().enumerate() {
             let (action_box, _shape) =
                 match oas_runtime::self_operation_geometry(assets, id, line.rect, frame_size) {
                     Ok(v) => v,
@@ -5208,7 +5245,7 @@ impl Server {
                 "h": line.rect.h,
                 "text": line.text,
                 "score": line.score,
-                "pass": true,
+                "pass": oas_runtime::ocr_candidate_line_pass(line, expected.as_deref()),
                 "action_box": [action_box.x, action_box.y, action_box.w, action_box.h],
             }));
         }
@@ -5224,6 +5261,7 @@ impl Server {
             "kind": kind,
             "domain": if item.roi.is_some() { "roi" } else { "screen" },
             "roi": serde_json::json!(item.roi),
+            "expected_text": serde_json::json!(expected),
             "threshold": threshold,
             "frame_source": frame_source,
             "elapsed_ms": ms,
@@ -8340,7 +8378,6 @@ fn asset_kind_str<'a>(af: &'a oas_task::AssetsFile, id: &str) -> &'a str {
         .map(|a| a.kind.as_str())
         .unwrap_or("unknown")
 }
-
 /// Filter the det+rec lines of one OCR asset down to the editor candidates.
 ///
 /// 2026-11-06 acceptance **#11**: the editor candidate API uses the **strict**
@@ -16447,10 +16484,10 @@ mod tests {
 
     #[test]
     fn test_action_candidate_index_selects_a_det_rec_candidate_of_a_plain_ocr_row() {
-        // 批次B (#3): a plain `ocr_line` root must expose the SAME det+rec
-        // multi-candidate list as `GET /task/asset/candidates`, and
-        // `candidate_index >= 1` must be selectable (the historical single-line
-        // path only ever read one crop, so index 1 was impossible).
+        // seq133 #2: a plain `ocr_line` exposes **every** det+rec line as a
+        // candidate; `pass` marks the strict expected-text matches, ordered
+        // pass-first (index 0 is the expected line). `candidate_index` selects
+        // any row and the geometry follows it.
         let td = TempDir::new("b-candidate-index-ocr");
         let tasks_dir = td.path().join("tasks");
         let server = server_with_tasks(td.path())
@@ -16469,13 +16506,14 @@ mod tests {
         let lines = vec![
             ocr_line([10, 10, 20, 10], "开始", 0.90),
             ocr_line([10, 40, 20, 10], "开始", 0.80),
-            // Different text: filtered out by the saved expected text, so the
-            // candidate list has 2 entries, not 3.
+            // Different text: LISTED as a candidate but pass=false (editor
+            // multi-candidate behaviour; runtime click still uses the fuzzy rule).
             ocr_line([10, 30, 20, 10], "结束", 0.99),
         ];
         let server =
             server.with_ocr_override(move || Box::new(FakeOcrLines { lines: lines.clone() }));
-        // index 1 = the lower-score matching line (order: score desc → y → x).
+        // Candidate list order: pass first (开始 .90 y10, 开始 .80 y40), then the
+        // non-pass 结束 .99 y30 — exactly 3 candidates.
         let (status, v) = post_test_action(
             &server,
             serde_json::json!({"task":"t1","id":"行一","candidate_index":1}),
@@ -16485,23 +16523,34 @@ mod tests {
         assert_eq!(v["action_box"], serde_json::json!([10, 40, 20, 10]), "{v}");
         assert_eq!(v["chain_depth"], 1, "{v}");
         assert_eq!(v["steps"][0]["text"], "开始", "{v}");
-        // index 0 = the higher-score occurrence.
+        // index 0 = the highest-score expected row.
         let (status, v) = post_test_action(
             &server,
             serde_json::json!({"task":"t1","id":"行一","candidate_index":0}),
         );
         assert!(status.contains("200"), "{status} {v}");
         assert_eq!(v["real_rect"], serde_json::json!([10, 10, 20, 10]), "{v}");
-        // The expected text keeps the list at 2 candidates → index 2 is loud.
+        // index 2 = the non-pass line; selectable, geometry follows it.
         let (status, v) = post_test_action(
             &server,
             serde_json::json!({"task":"t1","id":"行一","candidate_index":2}),
+        );
+        assert!(status.contains("200"), "{status} {v}");
+        assert_eq!(v["real_rect"], serde_json::json!([10, 30, 20, 10]), "{v}");
+        assert_eq!(v["steps"][0]["text"], "结束", "{v}");
+        // index 3 is out of range → loud 400.
+        let (status, v) = post_test_action(
+            &server,
+            serde_json::json!({"task":"t1","id":"行一","candidate_index":3}),
         );
         assert!(status.contains("400"), "{status} {v}");
         assert!(
             v["errors"][0].as_str().unwrap_or("").contains("out of range"),
             "{v}"
         );
+        // Candidate-API equality is covered by the runtime helper test (the
+        // candidate route itself requires real det+rec models; the fake provider
+        // only feeds `test_action`), and by the seq133 smoke with real models.
     }
 
     #[test]

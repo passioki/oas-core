@@ -2466,17 +2466,47 @@ function assetCandidatesUrl(task, id, frameQuery) {
     '&id=' + encodeURIComponent(String(id || '')) + String(frameQuery || '');
 }
 
-// 一行候选的文字表示：「#0 score=0.9730 [902,601,120,60] 文字="御魂" · 成员 X」。
+// seq133（#2）：OCR 候选行统一信息（text/score/pass）。pass=false = 非期望文字，
+// 仍可选中测试（不再因阈值被过滤；后端返回区域内全部识别行，pass 优先排序）。
+function candidateDisplayInfo(candidate) {
+  const c = candidate && typeof candidate === 'object' && !Array.isArray(candidate) ? candidate : {};
+  const index = Number.isInteger(Number(c.index)) ? Number(c.index) : 0;
+  const score = Number(c.score);
+  const text = c.text === undefined || c.text === null ? '' : String(c.text);
+  const hasPass = Object.prototype.hasOwnProperty.call(c, 'pass') &&
+    c.pass !== undefined && c.pass !== null;
+  const pass = c.pass === true;
+  return {
+    index: index,
+    score: Number.isFinite(score) ? score : null,
+    text: text,
+    hasPass: hasPass,
+    pass: pass,
+    passLabel: hasPass ? (pass ? '期望文字' : '非期望文字') : '',
+  };
+}
+
+function candidateTextPreview(candidate, maxLen) {
+  const info = candidateDisplayInfo(candidate);
+  const limit = Number.isFinite(Number(maxLen)) && Number(maxLen) > 0 ? Number(maxLen) : 24;
+  if (!info.text) return '';
+  const text = info.text.length > limit ? info.text.slice(0, limit) + '…' : info.text;
+  return '「' + text + '」';
+}
+
+// 一行候选的文字表示：「#0 score=0.9730 [902,601,120,60] 文字="御魂" · 期望文字」。
 function candidateLabelText(candidate) {
   const c = candidate && typeof candidate === 'object' && !Array.isArray(candidate) ? candidate : {};
   const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
-  const index = Number.isInteger(Number(c.index)) ? Number(c.index) : 0;
-  const score = Number(c.score);
-  const scoreText = Number.isFinite(score) ? score.toFixed(4) : '—';
+  const info = candidateDisplayInfo(c);
+  const scoreText = info.score === null ? '—' : info.score.toFixed(4);
   const box = [Math.round(num(c.x)), Math.round(num(c.y)), Math.round(num(c.w)), Math.round(num(c.h))];
-  let text = '#' + index + ' score=' + scoreText + ' [' + box.join(',') + ']';
-  if (c.text !== undefined && c.text !== null && String(c.text).trim() !== '') {
-    text += ' 文字=' + JSON.stringify(String(c.text));
+  let text = '#' + info.index + ' score=' + scoreText + ' [' + box.join(',') + ']';
+  if (info.text.trim() !== '') {
+    text += ' 文字=' + JSON.stringify(info.text);
+  }
+  if (info.hasPass) {
+    text += ' · ' + info.passLabel + (info.pass ? '' : '（仍可选中测试）');
   }
   if (c.member !== undefined && c.member !== null && String(c.member).trim() !== '') {
     text += ' · 成员 ' + String(c.member);
@@ -2491,12 +2521,15 @@ function candidateBoxes(candidates) {
     if (!candidate || typeof candidate !== 'object') continue;
     const box = [Number(candidate.x), Number(candidate.y), Number(candidate.w), Number(candidate.h)];
     if (!matchBoxValid(box)) continue;
-    const index = Number.isInteger(Number(candidate.index)) ? Number(candidate.index) : out.length;
-    const score = Number(candidate.score);
+    const info = candidateDisplayInfo(candidate);
+    const scoreText = info.score === null ? '—' : info.score.toFixed(2);
     out.push({
-      text: '#' + index + ' ' + (Number.isFinite(score) ? score.toFixed(2) : '—'),
-      score: Number.isFinite(score) ? score : 0,
+      text: '#' + info.index + ' ' + scoreText + candidateTextPreview(candidate, 16) +
+        (info.hasPass ? (info.pass ? ' · 期望' : ' · 非期望文字') : ''),
+      score: info.score === null ? 0 : info.score,
       box,
+      pass: info.pass,
+      hasPass: info.hasPass,
     });
   }
   return out;
@@ -3066,7 +3099,8 @@ function assetTestGestureRequest(real, gesture, from, to, ms) {
 async function sendAssetTestGesture(real, gesture, from, to, ms) {
   const req = assetTestGestureRequest(real, gesture, from, to, ms);
   if (!req) return { ok: true, dry: true, text: '演练：未发送设备请求' };
-  const r = await postJson(req.url, req.payload);
+  // seq133（#3）：设备手势请求 45s 超时（AbortController），不再无限等待。
+  const r = await postJsonTimed(req.url, req.payload, ASSET_TEST_TIMEOUT_MS);
   if (!r || !r.ok) {
     throw new Error(((r && r.errors) || []).join('; ') || `${gesture} 请求失败`);
   }
@@ -3092,6 +3126,84 @@ function realAssetTestGuard() {
     return { real: true, ok: false, message: msg };
   }
   return { real: true, ok: true };
+}
+
+// seq133（#3）：点测/拖测/长按请求超时。后端 adb 超时 ≤~20s；UI 45s 兜底后
+// AbortController 中止，避免按钮/状态永久卡在 loading。超时文案统一。
+const ASSET_TEST_TIMEOUT_MS = 45000;
+let assetTestBusy = false;
+
+function assetTestTimeoutError() {
+  return new Error('设备无响应/ADB 超时，已中止；请检查模拟器/ADB 后重试');
+}
+
+// 带超时的 fetch+JSON（AbortController）；超时统一转成可读错误。
+async function fetchJsonWithTimeout(url, opts, timeoutMs) {
+  const ms = Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : ASSET_TEST_TIMEOUT_MS;
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller && ms > 0 ? setTimeout(() => controller.abort(), ms) : null;
+  try {
+    const init = Object.assign({}, opts && typeof opts === 'object' ? opts : {});
+    if (controller) init.signal = controller.signal;
+    const r = await fetch(url, init);
+    let body = null;
+    try {
+      body = await r.json();
+    } catch (e) {
+      throw new Error('服务端响应不是 JSON（HTTP ' + r.status + '）');
+    }
+    if (!r.ok) {
+      const errors = body && Array.isArray(body.errors) ? body.errors.join('; ') : '';
+      throw new Error(errors || (body && body.error) || ('HTTP ' + r.status));
+    }
+    return body;
+  } catch (e) {
+    if (e && (e.name === 'AbortError' || e.code === 'ABORT_ERR')) throw assetTestTimeoutError();
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function postJsonTimed(url, payload, timeoutMs) {
+  return fetchJsonWithTimeout(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }, timeoutMs);
+}
+
+// in-flight 防重 + 恢复行内测试按钮（只恢复本轮禁用的，不误伤原本 disabled 的）。
+function setAssetTestBusy(busy) {
+  assetTestBusy = !!busy;
+  const buttons = document.querySelectorAll('.asset-row-action-test, .asset-menu-item');
+  for (const btn of buttons) {
+    if (busy) {
+      if (!btn.disabled) {
+        btn.dataset.testBusy = '1';
+        btn.disabled = true;
+      }
+    } else if (btn.dataset && btn.dataset.testBusy) {
+      btn.disabled = false;
+      delete btn.dataset.testBusy;
+    }
+  }
+  if (btnTestMode) btnTestMode.disabled = !!busy;
+}
+
+function beginAssetTest(label) {
+  if (assetTestBusy) {
+    setStatus('素材测试正在进行，请稍候…', '#ffd54a');
+    return false;
+  }
+  setAssetTestBusy(true);
+  setStatus(`${label || '素材测试'}进行中…`, '#ffd54a');
+  return true;
+}
+
+function endAssetTest() {
+  setAssetTestBusy(false);
+  if (btnTestMode) btnTestMode.disabled = false;
 }
 
 // P2-6: `note` replaces the generic "上面的定位" caveat when the concrete
@@ -3147,21 +3259,29 @@ function testActionRequestBody(gesture, opts) {
   return body;
 }
 
-// 真实点测候选下拉的一行：「#1 score=0.973」。
+// 真实点测候选下拉的一行：「#1 score=0.973 · "御魂" · 期望文字」。
 function candidateOptionLabel(candidate) {
-  const c = candidate && typeof candidate === 'object' ? candidate : {};
-  const index = Number.isInteger(Number(c.index)) ? Number(c.index) : 0;
-  const score = Number(c.score);
-  return '#' + index + ' score=' + (Number.isFinite(score) ? score.toFixed(3) : '—');
+  const info = candidateDisplayInfo(candidate);
+  const scoreText = info.score === null ? '—' : info.score.toFixed(3);
+  let text = '#' + info.index + ' score=' + scoreText;
+  const preview = candidateTextPreview(candidate, 24);
+  if (preview) text += ' · ' + preview;
+  if (info.hasPass) text += info.pass ? ' · ✓期望文字' : ' · ⚠非期望文字（可选测）';
+  return text;
 }
 
 // test_action dry 响应 → 结果区行（含候选序号/真实识别区域/操作区/目标点/链 steps）。
-function testActionResultLines(result, candidateIndex) {
+function testActionResultLines(result, candidateIndex, candidate) {
   const s = result && typeof result === 'object' && !Array.isArray(result) ? result : {};
   const index = Number.isInteger(Number(candidateIndex)) ? Number(candidateIndex) : 0;
+  const info = candidate ? candidateDisplayInfo(candidate) : null;
+  const candidateSuffix = info
+    ? ' · ' + (info.text ? '文字=' + JSON.stringify(info.text) : '') +
+      (info.hasPass ? ' · ' + info.passLabel : '')
+    : '';
   if (!s.ok) {
     const errors = Array.isArray(s.errors) ? s.errors : ['test_action 失败'];
-    return ['#' + index + ' ❌ ' + errors.join('; ')];
+    return ['#' + index + ' ❌ ' + errors.join('; ') + candidateSuffix];
   }
   const boxText = (box) => (Array.isArray(box) && box.length >= 4
     ? '[' + box.join(',') + ']' : '—');
@@ -3172,7 +3292,8 @@ function testActionResultLines(result, candidateIndex) {
     ' action_box=' + boxText(s.action_box) +
     ' point=' + point +
     ' chain_depth=' + Number(s.chain_depth || 0) +
-    (s.frame_source ? ' · 帧来源=' + s.frame_source : ''),
+    (s.frame_source ? ' · 帧来源=' + s.frame_source : '') +
+    candidateSuffix,
   ];
   for (const step of Array.isArray(s.steps) ? s.steps : []) {
     lines.push('  · ' + String(step.asset || '?') + ' [' + String(step.mode || '?') + ']' +
@@ -3224,44 +3345,61 @@ function opRegionValidateErrorText(result) {
 
 async function fetchActionCandidates(it, task, frame) {
   try {
-    const r = await fetch(assetCandidatesUrl(task, it.id, frame && frame.query ? frame.query : ''));
-    const s = await r.json();
+    // seq133（#3）：候选获取同样带超时（设备/OCR 卡住时也能恢复状态）。
+    const s = await fetchJsonWithTimeout(
+      assetCandidatesUrl(task, it.id, frame && frame.query ? frame.query : ''),
+      {},
+      ASSET_TEST_TIMEOUT_MS
+    );
     if (!s || s.error) return { ok: false, items: [], error: (s && s.error) || '候选识别失败' };
     return { ok: true, items: Array.isArray(s.candidates) ? s.candidates : [], error: '' };
   } catch (e) {
-    return { ok: false, items: [], error: String(e) };
+    return { ok: false, items: [], error: String(e && e.message ? e.message : e) };
   }
 }
 
-// 真实点测/拖测：用侧栏下拉选择候选（#序号 score），返回候选序号；取消返回 null。
+// 真实点测/拖测：用侧栏下拉选择候选（#序号 score · 文字 · 期望/非期望），返回候选序号。
+// seq133（#2）：默认选中 index 0（=期望行/最高分）；pass=false 的非期望文字也可选。
+// 取消/没有候选返回 null。
 function pickActionCandidate(candidates, it, purpose) {
   const what = purpose || '真实点击';
+  const items = Array.isArray(candidates) ? candidates : [];
+  if (!items.length) return Promise.resolve(null);
   return new Promise((resolve) => {
     if (!candidateSelect) {
-      resolve(null);
+      resolve(Number(items[0].index));
       return;
     }
     candidateSelect.textContent = '';
-    const placeholder = document.createElement('option');
-    placeholder.value = '';
-    placeholder.textContent = '选择候选后' + what + '…';
-    candidateSelect.appendChild(placeholder);
-    for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    for (const candidate of items) {
       const option = document.createElement('option');
-      option.value = String(candidate.index);
+      option.value = String(candidateDisplayInfo(candidate).index);
       option.textContent = candidateOptionLabel(candidate);
       candidateSelect.appendChild(option);
     }
+    // 默认 index 0（后端已按 pass→score→y→x 排序）：直接高亮；改选其它行走 change。
+    const defaultIndex = String(candidateDisplayInfo(items[0]).index);
+    candidateSelect.value = defaultIndex;
     candidateSelect.hidden = false;
-    candidateSelect.value = '';
-    setStatus(`请选择候选区域：素材「${it.id}」（${what}）`, '#ffd54a');
-    const onChange = () => {
-      const value = candidateSelect.value;
+    setStatus(`请选择候选区域：素材「${it.id}」（${what}；默认 #${defaultIndex} 期望行/最高分，可改选，Enter 确认）`, '#ffd54a');
+    let done = false;
+    const finish = (value) => {
+      if (done) return;
+      done = true;
       candidateSelect.onchange = null;
+      candidateSelect.onkeydown = null;
+      candidateSelect.onblur = null;
       candidateSelect.hidden = true;
-      resolve(value === '' ? null : Number(value));
+      resolve(value === '' || value === null ? Number(items[0].index) : Number(value));
     };
-    candidateSelect.onchange = onChange;
+    candidateSelect.onchange = () => finish(candidateSelect.value);
+    candidateSelect.onkeydown = (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        finish(candidateSelect.value);
+      }
+    };
+    candidateSelect.onblur = () => finish(candidateSelect.value);
   });
 }
 
@@ -3282,6 +3420,8 @@ async function runTestActionForAsset(it, gesture, frameId, scopeTask) {
     frames = [liveFrame];
   }
   const gestureLabel = gesture === 'long_press' ? '长按' : '点击';
+  // seq133（#3）：in-flight 防重；任何成功/失败/超时都在 finally 恢复按钮/状态。
+  if (!beginAssetTest(`${gestureLabel}测试`)) return;
   const lines = [];
   const collectedBoxes = [];
   resultEl.textContent = `素材「${it.id}」${gestureLabel}测试（${real ? '真实模式' : '演练'}）…`;
@@ -3296,7 +3436,7 @@ async function runTestActionForAsset(it, gesture, frameId, scopeTask) {
         continue;
       }
       if (!candidates.items.length) {
-        lines.push(`${frame.label}: （没有符合阈值的候选）`);
+        lines.push(`${frame.label}: （识别区域内没有识别行；pass=false 的行也会显示）`);
         continue;
       }
       if (real) {
@@ -3305,16 +3445,25 @@ async function runTestActionForAsset(it, gesture, frameId, scopeTask) {
           lines.push(`${frame.label}: 已取消（未选择候选）`);
           continue;
         }
-        const dry = await postJson('/task/asset/test_action', testActionRequestBody(gesture, {
-          task, id: it.id, candidateIndex: index, frame, real: false, holdMs: gesture === 'long_press' ? 3000 : undefined,
-        }));
+        const picked = candidates.items.find((c) => Number(candidateDisplayInfo(c).index) === Number(index)) ||
+          candidates.items[0];
+        let dry = null;
+        try {
+          dry = await postJsonTimed('/task/asset/test_action', testActionRequestBody(gesture, {
+            task, id: it.id, candidateIndex: index, frame, real: false, holdMs: gesture === 'long_press' ? 3000 : undefined,
+          }), ASSET_TEST_TIMEOUT_MS);
+        } catch (e) {
+          lines.push(...testActionResultLines({ ok: false, errors: [String(e && e.message ? e.message : e)] }, index, picked));
+          continue;
+        }
         if (!dry || !dry.ok) {
-          lines.push(...testActionResultLines(dry, index));
+          lines.push(...testActionResultLines(dry, index, picked));
           continue;
         }
         const point = dry.point || {};
         const gestureOp = {
-          label: `${frame.label} 候选 #${index} (${point.x},${point.y})`,
+          label: `${frame.label} 候选 #${index} (${point.x},${point.y})` +
+            (candidateDisplayInfo(picked).hasPass ? ' · ' + candidateDisplayInfo(picked).passLabel : ''),
           x: Number(point.x),
           y: Number(point.y),
         };
@@ -3322,18 +3471,30 @@ async function runTestActionForAsset(it, gesture, frameId, scopeTask) {
           lines.push(`${frame.label} #${index}: 已取消真实${gestureLabel}，未发送设备请求`);
           continue;
         }
-        const sent = await postJson('/task/asset/test_action', testActionRequestBody(gesture, {
-          task, id: it.id, candidateIndex: index, frame, real: true, holdMs: gesture === 'long_press' ? 3000 : undefined,
-        }));
-        lines.push(...testActionResultLines(sent, index).map((line) => line.replace(/^#/, '#')));
+        let sent = null;
+        try {
+          sent = await postJsonTimed('/task/asset/test_action', testActionRequestBody(gesture, {
+            task, id: it.id, candidateIndex: index, frame, real: true, holdMs: gesture === 'long_press' ? 3000 : undefined,
+          }), ASSET_TEST_TIMEOUT_MS);
+        } catch (e) {
+          lines.push(...testActionResultLines({ ok: false, errors: [String(e && e.message ? e.message : e)] }, index, picked));
+          continue;
+        }
+        lines.push(...testActionResultLines(sent, index, picked).map((line) => line.replace(/^#/, '#')));
         lines[lines.length - 1] += ' · 帧=' + frame.label;
         collectedBoxes.push(...testActionBoxes(sent, `${frame.label} #${index}`));
       } else {
         for (const candidate of candidates.items) {
-          const dry = await postJson('/task/asset/test_action', testActionRequestBody(gesture, {
-            task, id: it.id, candidateIndex: candidate.index, frame, real: false, holdMs: gesture === 'long_press' ? 3000 : undefined,
-          }));
-          const candidateLines = testActionResultLines(dry, candidate.index);
+          let dry = null;
+          try {
+            dry = await postJsonTimed('/task/asset/test_action', testActionRequestBody(gesture, {
+              task, id: it.id, candidateIndex: candidate.index, frame, real: false, holdMs: gesture === 'long_press' ? 3000 : undefined,
+            }), ASSET_TEST_TIMEOUT_MS);
+          } catch (e) {
+            lines.push(...testActionResultLines({ ok: false, errors: [String(e && e.message ? e.message : e)] }, candidate.index, candidate));
+            continue;
+          }
+          const candidateLines = testActionResultLines(dry, candidate.index, candidate);
           lines.push(`${frame.label} ${candidateLines[0]}`);
           for (let i = 1; i < candidateLines.length; i += 1) lines.push(candidateLines[i]);
           for (const box of testActionBoxes(dry, `${frame.label} #${candidate.index}`)) {
@@ -3346,13 +3507,17 @@ async function runTestActionForAsset(it, gesture, frameId, scopeTask) {
     draw();
     const header = `素材「${it.id}」${gestureLabel}测试（${real ? '真实模式' : '演练，不实际点击'}）`;
     const tail = real
-      ? '（真实模式：已按候选执行；设备/手势结果见上。）'
-      : '注意：演练只验证候选/真实识别区域/操作区/目标点/操作区链；真实点击请切「素材测试：真实点击」。';
+      ? '（真实模式：已按候选执行；设备/手势结果见上。候选=识别区域内全部识别行，pass=false 标「非期望文字」仍可选测。）'
+      : '注意：候选=识别区域内全部识别行（默认 #0 期望行/最高分；⚠非期望文字仍可选中测试）；' +
+        '演练只验证候选/真实识别区域/操作区/目标点/操作区链，真实点击请切「素材测试：真实点击」。';
     resultEl.textContent = `${header}\n` + lines.join('\n') + '\n' + tail;
     log(`test_action 完成 asset=${it.id} gesture=${gesture}`, 'INFO', { real, lines });
   } catch (e) {
-    resultEl.textContent = `${gestureLabel}测试异常：` + e;
-    log(`test_action 异常 asset=${it.id}`, 'ERROR', { error: String(e) });
+    const msg = e && e.message ? e.message : String(e);
+    resultEl.textContent = `${gestureLabel}测试异常：` + msg;
+    log(`test_action 异常 asset=${it.id}`, 'ERROR', { error: msg });
+  } finally {
+    endAssetTest();
   }
 }
 
@@ -3379,6 +3544,8 @@ async function testAssetDrag(it, frameId, scopeTask) {
   let stepShape = null;
   const fw = canvas.width || 1280;
   const fh = canvas.height || 720;
+  // seq133（#3）：in-flight 防重；finally 恢复按钮/状态（含候选获取失败/超时）。
+  if (!beginAssetTest('拖动测试')) return;
   try {
     for (const frame of frames) {
       // B3a（task-27 c）：拖测先取全部候选；多候选时用 #candidate-select 选一个，
@@ -3389,10 +3556,10 @@ async function testAssetDrag(it, frameId, scopeTask) {
         continue;
       }
       if (!fetched.items.length) {
-        lines.push(`${frame.label}: ❌ 没有符合阈值的候选（未生成该帧拖动点）`);
+        lines.push(`${frame.label}: ❌ 识别区域内没有识别行（未生成该帧拖动点）`);
         continue;
       }
-      let candidateIndex = Number(fetched.items[0].index);
+      let candidateIndex = Number(candidateDisplayInfo(fetched.items[0]).index);
       let candidate = fetched.items[0];
       if (fetched.items.length > 1) {
         const picked = await pickActionCandidate(fetched.items, it, '拖测');
@@ -3401,7 +3568,7 @@ async function testAssetDrag(it, frameId, scopeTask) {
           continue;
         }
         candidateIndex = picked;
-        candidate = fetched.items.find((c) => Number(c.index) === Number(picked)) || fetched.items[0];
+        candidate = fetched.items.find((c) => Number(candidateDisplayInfo(c).index) === Number(picked)) || fetched.items[0];
       }
       const recognizedBox = [Number(candidate.x), Number(candidate.y), Number(candidate.w), Number(candidate.h)];
       if (!matchBoxValid(recognizedBox)) {
@@ -3409,11 +3576,16 @@ async function testAssetDrag(it, frameId, scopeTask) {
           `(${candidate.x},${candidate.y},${candidate.w},${candidate.h})（未生成该帧拖动点）`);
         continue;
       }
+      const candidateInfoForDrag = candidateDisplayInfo(candidate);
       for (const box of candidateBoxes(fetched.items)) candidateBoxesForDraw.push(box);
       candidateBoxesForDraw.push({
-        text: `拖测 ${it.id} ${frame.label} 候选 #${candidateIndex}`,
+        text: `拖测 ${it.id} ${frame.label} 候选 #${candidateIndex}` +
+          candidateTextPreview(candidate, 16) +
+          (candidateInfoForDrag.hasPass ? (candidateInfoForDrag.pass ? ' · 期望' : ' · 非期望文字') : ''),
         score: Number(candidate.score || 1),
         box: recognizedBox,
+        pass: candidateInfoForDrag.pass,
+        hasPass: candidateInfoForDrag.hasPass,
       });
       const candidateAction = Array.isArray(candidate.action_box) && matchBoxValid(candidate.action_box)
         ? candidate.action_box : null;
@@ -3447,7 +3619,9 @@ async function testAssetDrag(it, frameId, scopeTask) {
       lines.push(
         `${frame.label}: ${direction} (${from.x},${from.y}) → (${to.x},${to.y}) · ` +
         `操作区[${action.join(',')}]${it.kind === 'template' ? '（已按匹配平移）' : ''}` +
-        ` · 候选 #${candidateIndex}（共 ${fetched.items.length} 个）`
+        ` · 候选 #${candidateIndex}（共 ${fetched.items.length} 个）` +
+        (candidateInfoForDrag.text ? ' · 文字=' + JSON.stringify(candidateInfoForDrag.text) : '') +
+        (candidateInfoForDrag.hasPass ? ' · ' + candidateInfoForDrag.passLabel : '')
       );
       if (assetTestReal) {
         const swipeMs = 300 + Math.floor(Math.random() * 351);
@@ -3518,8 +3692,12 @@ async function testAssetDrag(it, frameId, scopeTask) {
       }
     );
   } catch (e) {
+    const msg = e && e.message ? e.message : String(e);
     resultEl.textContent =
-      `${assetTestReal ? '真实滑动模式' : '演练'}拖动测试异常：` + e;
+      `${assetTestReal ? '真实滑动模式' : '演练'}拖动测试异常：` + msg;
+    log(`素材拖动测试异常：${it.id}`, 'ERROR', { error: msg });
+  } finally {
+    endAssetTest();
   }
 }
 
@@ -4169,7 +4347,7 @@ async function testAssetCandidates(it, frameId, scopeTask) {
         ` · 范围=${domainText}${valueHint} · 阈值=${thresholdText}` +
         ` · 帧来源=${s.frame_source || frame.source}`
       );
-      if (!candidates.length) lines.push('  （没有符合阈值的候选）');
+      if (!candidates.length) lines.push('  （识别区域内没有识别行；pass=false 的行也会显示）');
       for (const candidate of candidates) {
         lines.push('  ' + candidateLabelText(candidate));
       }
@@ -4179,7 +4357,9 @@ async function testAssetCandidates(it, frameId, scopeTask) {
     draw();
     const head = fullScreenOcr ? '识别区域为空 → 按全屏 OCR 识别（较慢）\n' : '';
     resultEl.textContent =
-      `${head}素材「${it.id}」候选识别（${frames.length} 帧）\n` + lines.join('\n');
+      `${head}素材「${it.id}」候选识别（${frames.length} 帧）\n` + lines.join('\n') +
+      '\n\n说明：候选=识别区域内全部识别行（默认 #0=期望行/最高分）；' +
+      '「期望文字」=匹配期望文字，⚠「非期望文字」仍可选中测试。';
     log(`候选识别完成 asset=${it.id}`, 'INFO', {
       count: collected.length,
       frames: frames.length,

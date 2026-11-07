@@ -176,6 +176,10 @@ const PURE_FUNCTIONS = [
   'translateActionShape',
   // U-T4（事项 3/4/5）：候选识别 / op_region 链 / runtime_text。
   'assetCandidatesUrl',
+  // seq133（#2）：OCR 多候选行 text/score/pass 展示。
+  'candidateDisplayInfo',
+  'candidateTextPreview',
+  'candidateOptionLabel',
   'candidateLabelText',
   'candidateBoxes',
   'runtimeTextValid',
@@ -221,8 +225,9 @@ const PURE_FUNCTIONS = [
   'clampPointsToFrame',
   'hitTestActionShape',
   // U-T4/S4（B-T3b）：test_action 请求/结果格式化 + validate_op_region 错误。
+  // seq133（#3）：测试动作超时/恢复。
+  'assetTestTimeoutError',
   'testActionRequestBody',
-  'candidateOptionLabel',
   'testActionResultLines',
   'testActionBoxes',
   'opRegionValidateErrorText',
@@ -317,6 +322,9 @@ const {
   boxCenter,
   translateActionShape,
   assetCandidatesUrl,
+  candidateDisplayInfo,
+  candidateTextPreview,
+  candidateOptionLabel,
   candidateLabelText,
   candidateBoxes,
   runtimeTextValid,
@@ -356,8 +364,8 @@ const {
   clampRectToFrame,
   clampPointsToFrame,
   hitTestActionShape,
+  assetTestTimeoutError,
   testActionRequestBody,
-  candidateOptionLabel,
   testActionResultLines,
   testActionBoxes,
   opRegionValidateErrorText,
@@ -491,10 +499,38 @@ eq(
     { index: 2, x: 1, y: 2, w: 3, h: 4, score: 0.5 },
   ]),
   [
-    { text: '#0 0.97', score: 0.973, box: [11, 21, 30, 40] },
-    { text: '#2 0.50', score: 0.5, box: [1, 2, 3, 4] },
+    { text: '#0 0.97', score: 0.973, box: [11, 21, 30, 40], pass: false, hasPass: false },
+    { text: '#2 0.50', score: 0.5, box: [1, 2, 3, 4], pass: false, hasPass: false },
   ],
   'U-T4: all valid candidates become draw() boxes (invalid boxes are skipped)'
+);
+// seq133（#2）：OCR 候选=区域内全部识别行；text/score/pass 展示，非期望文字仍保留。
+eq(
+  candidateLabelText({ index: 0, x: 1, y: 2, w: 3, h: 4, score: 0.9, text: '御魂', pass: true }),
+  '#0 score=0.9000 [1,2,3,4] 文字="御魂" · 期望文字',
+  'seq133: a matching line is marked 期望文字'
+);
+eq(
+  candidateLabelText({ index: 1, x: 1, y: 2, w: 3, h: 4, score: 0.4, text: '金币', pass: false }),
+  '#1 score=0.4000 [1,2,3,4] 文字="金币" · 非期望文字（仍可选中测试）',
+  'seq133: a pass=false line is marked 非期望文字 but stays selectable'
+);
+eq(
+  candidateDisplayInfo({ index: 2, score: 0.5, text: '金币', pass: false }),
+  { index: 2, score: 0.5, text: '金币', hasPass: true, pass: false, passLabel: '非期望文字' },
+  'seq133: candidateDisplayInfo keeps text/score/pass'
+);
+eq(candidateDisplayInfo({ index: 0, x: 1, y: 2, w: 3, h: 4 }).hasPass, false,
+  'seq133: legacy candidates without pass are still displayable');
+eq(
+  candidateBoxes([{ index: 1, x: 1, y: 2, w: 3, h: 4, score: 0.4, text: '金币', pass: false }]),
+  [{ text: '#1 0.40「金币」 · 非期望文字', score: 0.4, box: [1, 2, 3, 4], pass: false, hasPass: true }],
+  'seq133: the canvas box label shows text + 非期望文字'
+);
+ok(
+  /期望文字/.test(candidateOptionLabel({ index: 0, score: 0.9, text: '御魂', pass: true })) &&
+    /非期望文字/.test(candidateOptionLabel({ index: 1, score: 0.4, text: '金币', pass: false })),
+  'seq133: the real-test candidate dropdown shows pass/mismatch state and text'
 );
 // S6 offset 绘制已删除（B3a 模型 A）；旧 offset 数据仅由 openOpRegionDialog 提示迁移为 self。
 // runtime_text（S2 对话框字段；阶段 A 先落纯校验）
@@ -1033,6 +1069,9 @@ eq(
 
 async function checkAssetTestWiring() {
   const calls = [];
+  // seq133：sendAssetTestGesture 改用 postJsonTimed（超时包装）；测试里转发到 postJson。
+  sandbox.postJsonTimed = (url, payload) => sandbox.postJson(url, payload);
+  if (typeof sandbox.ASSET_TEST_TIMEOUT_MS === 'undefined') sandbox.ASSET_TEST_TIMEOUT_MS = 45000;
   sandbox.postJson = async (url, payload) => {
     calls.push({ url, payload });
     return {
@@ -4281,8 +4320,13 @@ const clickTestFn = extractFunction('runTestActionForAsset');
 ok(/realAssetTestGuard\(\)/.test(clickTestFn), 'U-T4: click/long-press test is gated by the real/dry-run mode');
 ok(/confirmAssetTestGestures\('click'/.test(clickTestFn), 'U-T4: real test_action confirms before sending');
 ok(
-  /postJson\('\/task\/asset\/test_action', testActionRequestBody\(gesture/.test(clickTestFn),
-  'U-T4: 点测/长按 POST /task/asset/test_action (dry + real)'
+  /postJsonTimed\('\/task\/asset\/test_action', testActionRequestBody\(gesture/.test(clickTestFn),
+  'U-T4/seq133: 点测/长按 POST /task/asset/test_action (dry + real) with timeout'
+);
+ok(
+  /beginAssetTest\(/.test(clickTestFn) && /finally \{[\s\S]{0,120}endAssetTest\(\)/.test(clickTestFn) &&
+    /ASSET_TEST_TIMEOUT_MS/.test(clickTestFn),
+  'seq133: click/long-press test uses in-flight guard + AbortController timeout + finally restore'
 );
 ok(
   /pickActionCandidate\(candidates\.items, it\)/.test(clickTestFn) &&
@@ -4406,8 +4450,9 @@ eq(
 eq(opRegionValidateErrorText({ ok: true }), '', 'U-T4: a valid chain yields no error text');
 ok(
   /function pickActionCandidate\(candidates, it, purpose\)/.test(extractFunction('pickActionCandidate')) &&
-    /'选择候选后' \+ what/.test(extractFunction('pickActionCandidate')),
-  'B3a: the candidate picker labels 真实点击/拖测 via the purpose parameter'
+    /默认 #\$\{defaultIndex\} 期望行\/最高分/.test(extractFunction('pickActionCandidate')) &&
+    /candidateOptionLabel\(candidate\)/.test(extractFunction('pickActionCandidate')),
+  'seq133: the candidate picker labels 真实点击/拖测 and defaults to index 0 (期望行/最高分)'
 );
 for (const id of ['candidate-select']) {
   ok(new RegExp(`id="${id}"`).test(html), `U-T4: index.html provides #${id}`);
@@ -8353,7 +8398,8 @@ async function checkAssetCandidatesWiring() {
   };
   vm.createContext(sb);
   vm.runInContext(
-    ['assetCandidatesUrl', 'matchBoxValid', 'candidateLabelText', 'candidateBoxes', 'testAssetCandidates']
+    ['assetCandidatesUrl', 'matchBoxValid', 'candidateDisplayInfo', 'candidateTextPreview',
+      'candidateLabelText', 'candidateBoxes', 'testAssetCandidates']
       .map((name) => extractFunction(name))
       .join('\n\n'),
     sb,
@@ -8634,6 +8680,86 @@ ok(
 ok(
   source.indexOf('已撤销框移动') >= 0 && source.indexOf('boxMoveUndo') >= 0,
   'seq130: Esc restores the previous geometry after a completed move'
+);
+
+// --- seq133（#2/#3）：多候选展示 + 点测/拖测/长按超时恢复 ---------------------
+// #2：候选行展示 text/score/pass；默认 index0；pass=false 仍可选测。
+eq(
+  sandbox.testActionResultLines({ ok: true, real_rect: [1, 2, 3, 4], action_box: [1, 2, 3, 4] }, 1,
+    { index: 1, text: '金币', score: 0.4, pass: false })[0]
+    .indexOf('文字="金币" · 非期望文字') >= 0,
+  true,
+  'seq133: test_action result lines annotate 非期望文字 candidates'
+);
+ok(
+  /candidateDisplayInfo\(candidate\)/.test(source) && /passLabel/.test(source) &&
+    source.indexOf('（仍可选中测试）') >= 0,
+  'seq133: candidates keep pass=false lines labelled 非期望文字 and selectable'
+);
+ok(
+  (source.match(/识别区域内没有识别行/g) || []).length >= 3,
+  'seq133: empty candidate lists say 识别区域内没有识别行 (not 符合阈值)'
+);
+ok(
+  source.indexOf('识别区域内全部识别行') >= 0 &&
+    source.indexOf('默认 #0') >= 0,
+  'seq133: candidate copy explains the full-line list + default #0'
+);
+// #3：AbortController 超时 + in-flight + finally 恢复。
+eq(typeof sandbox.assetTestTimeoutError, 'function', 'seq133: assetTestTimeoutError helper exists');
+ok(
+  /const ASSET_TEST_TIMEOUT_MS = 45000;/.test(source),
+  'seq133: the asset test timeout is 45s'
+);
+ok(
+  /function fetchJsonWithTimeout\(url, opts, timeoutMs\)/.test(source) &&
+    /new AbortController\(\)/.test(source) &&
+    /setTimeout\(\(\) => controller\.abort\(\), ms\)/.test(source) &&
+    /e\.name === 'AbortError'/.test(source) &&
+    /clearTimeout\(timer\)/.test(source),
+  'seq133: fetchJsonWithTimeout aborts via AbortController and clears the timer in finally'
+);
+ok(
+  /function postJsonTimed\(url, payload, timeoutMs\)/.test(source) &&
+    /postJsonTimed\('\/task\/asset\/test_action'/.test(source) &&
+    /postJsonTimed\(req\.url, req\.payload, ASSET_TEST_TIMEOUT_MS\)/.test(source),
+  'seq133: test_action and device gestures go through the timed POST helper'
+);
+ok(
+  /设备无响应\/ADB 超时，已中止；请检查模拟器\/ADB 后重试/.test(source) &&
+    /assetTestTimeoutError\(\)/.test(source),
+  'seq133: the timeout error text tells the user to check adb/emulator and retry'
+);
+ok(
+  /function beginAssetTest\(label\)/.test(source) &&
+    /if \(assetTestBusy\)/.test(source) &&
+    /function endAssetTest\(\)/.test(source) &&
+    /setAssetTestBusy\(false\)/.test(source),
+  'seq133: in-flight guard blocks duplicate test requests and restores buttons'
+);
+const clickFn133 = extractFunction('runTestActionForAsset');
+ok(
+  /if \(!beginAssetTest\(/.test(clickFn133) &&
+    /finally \{[\s\S]{0,80}endAssetTest\(\)/.test(clickFn133) &&
+    /ASSET_TEST_TIMEOUT_MS/.test(clickFn133),
+  'seq133: click/long-press wraps fetch in timeout + finally restores state'
+);
+const dragFn133 = extractFunction('testAssetDrag');
+ok(
+  /if \(!beginAssetTest\('拖动测试'\)\) return;/.test(dragFn133) &&
+    /finally \{[\s\S]{0,80}endAssetTest\(\)/.test(dragFn133) &&
+    /fetchActionCandidates\(it, task, frame\)/.test(dragFn133),
+  'seq133: drag test also uses in-flight guard + finally restore (candidate fetch failure included)'
+);
+ok(
+  /const candidateInfoForDrag = candidateDisplayInfo\(candidate\)/.test(dragFn133) &&
+    /candidateInfoForDrag\.passLabel/.test(dragFn133),
+  'seq133: drag test shows the chosen candidate text/pass state'
+);
+ok(
+  /beginAssetTest/.test(extractFunction('realAssetTestGuard')) === false &&
+    /setAssetTestBusy\(true\)/.test(source),
+  'seq133: the busy state is owned by beginAssetTest (real-mode guard unchanged)'
 );
 
 // --- DOM id audit（Studio shell；D 批删除了参数面板/配置项对话框相关 id） -------

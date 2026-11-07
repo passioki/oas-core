@@ -877,6 +877,53 @@ fn ocr_line_candidates<'a>(
 /// (exact/normalized/fuzzy with #11 digit protection) at/above the optional
 /// minimum confidence. Runtime click/wait/chain keep this fuzzy rule.
 ///
+/// seq133 #2: is one detected OCR line a **pass** for the editor candidate list?
+///
+/// Editor semantics (one implementation shared by the candidate API and
+/// `test_action`): no expected text ⇒ every line passes; otherwise the line must
+/// match the expected text with the **strict** normalized rule (never the fuzzy
+/// click rule — 「队伍2」 is listed but `pass=false` for expected 「队伍1」).
+pub fn ocr_candidate_line_pass(line: &OcrLine, expected: Option<&str>) -> bool {
+    match expected {
+        None => true,
+        Some(expected) => {
+            !matching_ocr_lines_strict(std::slice::from_ref(line), expected, None).is_empty()
+        }
+    }
+}
+
+/// seq133 #2: the editor OCR candidate order — **all** det+rec lines at/above the
+/// asset's minimum confidence, sorted `pass` first → score desc → y asc → x asc.
+///
+/// Returning every line (not only the expected matches) is what gives an OCR
+/// asset the same multi-candidate behaviour templates already had; the `pass`
+/// flag lets the UI highlight the expected row, and the sort guarantees index 0
+/// is the expected row whenever one exists. The serve candidate API and
+/// `preview_root_candidate` both call this, so `candidate_index` agrees.
+pub fn ocr_candidate_lines_pass_first<'a>(
+    lines: &'a [OcrLine],
+    expected: Option<&str>,
+    min: Option<f32>,
+) -> Vec<&'a OcrLine> {
+    let mut out: Vec<&OcrLine> = lines
+        .iter()
+        .filter(|line| min.map(|m| line.score >= m).unwrap_or(true))
+        .collect();
+    out.sort_by(|a, b| {
+        let pa = ocr_candidate_line_pass(a, expected);
+        let pb = ocr_candidate_line_pass(b, expected);
+        pb.cmp(&pa) // true (pass) first
+            .then(
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(a.rect.y.cmp(&b.rect.y))
+            .then(a.rect.x.cmp(&b.rect.x))
+    });
+    out
+}
+
 /// The editor candidate API uses the stricter [`matching_ocr_lines_strict`]
 /// (normalized equality, no 1-edit tolerance), so a digit-variant row can never
 /// be offered as a candidate; both helpers share the same normalization.
@@ -3534,20 +3581,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 (lines, plain_expected)
             };
             let min = self.assets.ocr_threshold(target);
-            let mut candidates: Vec<&OcrLine> = match expected.as_deref() {
-                Some(expected) => matching_ocr_lines(&lines, expected, min),
-                None => lines
-                    .iter()
-                    .filter(|line| min.map(|m| line.score >= m).unwrap_or(true))
-                    .collect(),
-            };
-            candidates.sort_by(|a, b| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(a.rect.y.cmp(&b.rect.y))
-                    .then(a.rect.x.cmp(&b.rect.x))
-            });
+            // seq133 #2: enumerate EVERY det+rec line (min-confidence filtered)
+            // exactly like the serve candidate API; `pass` = strict expected
+            // text match, ordered pass-first so index 0 is the expected line.
+            // Candidate geometry still comes from the OCR Q1/op_region chain.
+            let candidates = ocr_candidate_lines_pass_first(&lines, expected.as_deref(), min);
             if candidates.is_empty() {
                 return Err(format!(
                     "{site}: asset `{target}` has no OCR candidate at/above its threshold"
@@ -15328,6 +15366,35 @@ mod tests {
             .expect("second candidate");
         assert_eq!(idx1.real, Some(second));
         assert!(interp.preview_asset_action("O_ONE", Some(9)).is_err());
+    }
+
+    #[test]
+    fn preview_ocr_candidates_are_all_lines_pass_first() {
+        // seq133 #2: the editor list is EVERY det+rec line (pass=strict expected
+        // match), ordered pass-first → score desc → y → x. With expected 御魂:
+        //   index0 御魂 .90 y10, index1 御魂 .80 y40, index2 结束 .99 y30.
+        let (mut interp, _rois, _shared) = mk_det_interp(
+            ocr_var_assets(),
+            vec![
+                chain_line(10, 10, 20, 10, "御魂", 0.90),
+                chain_line(10, 40, 20, 10, "御魂", 0.80),
+                chain_line(10, 30, 20, 10, "结束", 0.99),
+            ],
+        );
+        let idx0 = interp.preview_asset_action("O_group", None).expect("index 0");
+        assert_eq!(idx0.real, Some(Rect { x: 10, y: 10, w: 20, h: 10 }));
+        assert_eq!(idx0.steps[0].text.as_deref(), Some("御魂"));
+        let idx1 = interp
+            .preview_asset_action("O_group", Some(1))
+            .expect("index 1");
+        assert_eq!(idx1.real, Some(Rect { x: 10, y: 40, w: 20, h: 10 }));
+        // A non-pass line is still selectable (editor multi-candidate).
+        let idx2 = interp
+            .preview_asset_action("O_group", Some(2))
+            .expect("index 2");
+        assert_eq!(idx2.real, Some(Rect { x: 10, y: 30, w: 20, h: 10 }));
+        assert_eq!(idx2.steps[0].text.as_deref(), Some("结束"));
+        assert!(interp.preview_asset_action("O_group", Some(3)).is_err());
     }
 
     #[test]

@@ -9,11 +9,67 @@
 //!   * the same physical device can be reachable under two serials
 //!     (`127.0.0.1:16384` and `emulator-5554`); dedupe by `ro.serialno`.
 
+use std::io::Read;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use oas_codec::decode_png;
 use oas_types::{Frame, InputSink, Point, ScreenSource};
+
+/// Hard deadline for one adb invocation (seq133 #3).
+///
+/// An emulator/ADB server that wedges used to block the calling thread forever
+/// (`Command::output()` has no timeout), which froze Studio's real click/drag
+/// tests permanently. Every adb call is now bounded.
+pub const ADB_TIMEOUT: Duration = Duration::from_secs(15);
+/// `screencap` moves a full PNG over the pipe; keep a slightly larger bound.
+pub const ADB_SCREENCAP_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Deadline for one argv (screencap/exec-out get the longer bound).
+fn timeout_for(args: &[&str]) -> Duration {
+    if args.iter().any(|a| *a == "screencap" || *a == "exec-out") {
+        ADB_SCREENCAP_TIMEOUT
+    } else {
+        ADB_TIMEOUT
+    }
+}
+
+fn format_timeout(d: Duration) -> String {
+    if d.subsec_millis() == 0 {
+        format!("{}s", d.as_secs())
+    } else {
+        format!("{:.1}s", d.as_secs_f64())
+    }
+}
+
+/// Compact argv for error messages (never dump an unbounded command line).
+fn argv_label(args: &[&str]) -> String {
+    let mut text = args.join(" ");
+    if text.chars().count() > 160 {
+        text = text.chars().take(160).collect::<String>() + "…";
+    }
+    format!("adb {text}")
+}
+
+/// Kill the whole process tree of one timed-out child.
+///
+/// A plain `child.kill()` on Windows only kills the direct child; grandchildren
+/// (e.g. a wrapper `.bat` spawning `ping`) may keep the inherited stdout/stderr
+/// pipe handles open, so the reader threads would not see EOF. `taskkill /T`
+/// closes that hole. The fake-exe timeout test exercises exactly this.
+#[cfg(windows)]
+fn kill_process_tree(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(not(windows))]
+fn kill_process_tree(_pid: u32) {}
 
 /// Thin wrapper around the adb executable.
 #[derive(Clone, Debug)]
@@ -76,19 +132,80 @@ impl Adb {
     }
 
     fn run(&self, args: &[&str]) -> Result<Vec<u8>, String> {
-        let out = Command::new(&self.exe)
+        self.run_with_timeout(args, timeout_for(args))
+    }
+
+    /// Run one adb argv with a hard deadline.
+    ///
+    /// Implementation notes (seq133 #3):
+    /// * **spawn** (not `Command::output()`, which waits forever);
+    /// * stdout/stderr are drained on two reader threads so a full pipe can
+    ///   never deadlock the child;
+    /// * `try_wait` polls until the deadline; on timeout the child is killed and
+    ///   a loud `adb ... timed out after Ns` error is returned;
+    /// * the argv is included (truncated) so the user can tell which call stuck.
+    fn run_with_timeout(&self, args: &[&str], timeout: Duration) -> Result<Vec<u8>, String> {
+        let mut child = Command::new(&self.exe)
             .args(args)
-            .output()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .map_err(|e| format!("spawn {:?} {:?}: {e}", self.exe, args))?;
-        if !out.status.success() {
-            return Err(format!(
-                "adb {:?} failed ({}): {}",
-                args,
-                out.status,
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| format!("{}: stdout pipe unavailable", argv_label(args)))?;
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| format!("{}: stderr pipe unavailable", argv_label(args)))?;
+        let stdout_reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stdout.read_to_end(&mut buf);
+            buf
+        });
+        let stderr_reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf);
+            buf
+        });
+        let deadline = Instant::now() + timeout;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        kill_process_tree(child.id());
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break Err(format!(
+                            "{} timed out after {} (killed)",
+                            argv_label(args),
+                            format_timeout(timeout)
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break Err(format!("{}: wait failed: {e}", argv_label(args)));
+                }
+            }
+        };
+        // The child is gone (or killed): readers hit EOF and finish promptly.
+        let out = stdout_reader.join().unwrap_or_default();
+        let err = stderr_reader.join().unwrap_or_default();
+        match status {
+            Ok(status) if status.success() => Ok(out),
+            Ok(status) => Err(format!(
+                "{} failed ({status}): {}",
+                argv_label(args),
+                String::from_utf8_lossy(&err).trim()
+            )),
+            Err(timeout_error) => Err(timeout_error),
         }
-        Ok(out.stdout)
     }
 
     fn text(&self, args: &[&str]) -> Result<String, String> {
@@ -468,6 +585,68 @@ mod tests {
                 "360",
                 "3000"
             ]
+        );
+    }
+
+    #[test]
+    fn timeout_policy_and_labels_are_bounded() {
+        assert_eq!(timeout_for(&["devices"]), ADB_TIMEOUT);
+        assert_eq!(timeout_for(&["exec-out", "screencap", "-p"]), ADB_SCREENCAP_TIMEOUT);
+        assert_eq!(format_timeout(Duration::from_secs(15)), "15s");
+        assert_eq!(format_timeout(Duration::from_millis(800)), "0.8s");
+        let long = vec!["x"; 200];
+        let label = argv_label(&long);
+        assert!(label.starts_with("adb "), "{label}");
+        assert!(label.contains('…'), "{label}");
+        assert!(label.chars().count() < 200, "{label}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_fake_exe_that_hangs_is_killed_at_the_deadline() {
+        // seq133 #3: a wedged adb must never block the service thread. A .bat
+        // fake "exe" sleeps ~29s; run_with_timeout must kill it at ~800ms and
+        // return the loud timeout error instead of waiting for the child.
+        let dir = std::env::temp_dir().join(format!(
+            "oas-adapter-timeout-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let bat = dir.join("fake-adb-hang.bat");
+        std::fs::write(&bat, "@ping -n 30 127.0.0.1 >nul\r\n").expect("write fake adb");
+        let adb = Adb::new("cmd");
+        let t0 = Instant::now();
+        let err = adb
+            .run_with_timeout(&["/c", &bat.to_string_lossy()], Duration::from_millis(800))
+            .expect_err("a hanging fake adb must time out");
+        let elapsed = t0.elapsed();
+        assert!(
+            err.contains("timed out after"),
+            "timeout error must be explicit: {err}"
+        );
+        assert!(err.contains("fake-adb-hang.bat"), "argv must be in the error: {err}");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "timeout must return promptly, took {elapsed:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_fake_exe_returns_stdout_on_success() {
+        let adb = Adb::new("cmd");
+        let out = adb
+            .run_with_timeout(&["/c", "echo", "adapter-ok"], Duration::from_secs(5))
+            .expect("quick fake adb must succeed");
+        assert!(
+            String::from_utf8_lossy(&out).contains("adapter-ok"),
+            "stdout missing: {}",
+            String::from_utf8_lossy(&out)
         );
     }
 }
