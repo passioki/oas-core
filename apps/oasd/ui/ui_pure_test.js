@@ -159,7 +159,7 @@ const PURE_FUNCTIONS = [
   'actionShapeEffectiveContains',
   'actionShapeFromGeometry',
   // seq136（UI B）：矩形→4 点多边形、保存不退化、操作区候选 polygon。
-  'rectToPolygonPoints', 'actionShapeForSave', 'actionShapePolygonPoints', 'candidateActionPolygon',
+  'rectToPolygonPoints', 'actionShapeForSave', 'actionShapePolygonPoints', 'serverActionShapeView',
   'actionShapeEditState',
   'loadActionShapeForEdit',
   'currentActionShape',
@@ -318,7 +318,7 @@ const {
   rectToPolygonPoints,
   actionShapeForSave,
   actionShapePolygonPoints,
-  candidateActionPolygon,
+  serverActionShapeView,
   actionShapeEditState,
   loadActionShapeForEdit,
   currentActionShape,
@@ -3877,6 +3877,35 @@ ok(
 const resetSelectionFn = extractFunction('resetSelection');
 const resetActionFn = extractFunction('resetActionGeometry');
 ok(/setCanvasTool\('none'\)/.test(resetSelectionFn), 'resetSelection exits the canvas tool through setCanvasTool');
+// seq137（A）：空白/检测框/切帧/切任务/Esc 统一清识别区+操作区。
+const clearCanvasFn = extractFunction('clearCanvasSelection');
+ok(
+  /resetSelection\(\{ clearInvert: true, clearRoi: true, clearBoxes: true, redraw: false \}\)/.test(clearCanvasFn) &&
+    /actionPoly = null/.test(clearCanvasFn) && /actionPolyClosed = false/.test(clearCanvasFn) &&
+    /actionShapeOwnerId = ''/.test(clearCanvasFn),
+  'seq137: clearCanvasSelection clears recognition ROI AND action polygon geometry'
+);
+ok(
+  /activeCandidate = -1/.test(clearCanvasFn) && /pendingActionAsset = null/.test(clearCanvasFn) &&
+    /pendingActionAssetScope = null/.test(clearCanvasFn),
+  'seq137: clearCanvasSelection drops candidate/action ownership state'
+);
+ok(/clearCanvasSelection\('点击画布空白'\)/.test(source) &&
+  /resetSelection\(\{ clearInvert: true, clearRoi: false, clearBoxes: false, redraw: false \}\)/.test(source),
+  'seq137: blank click + detection-box selection both clear stale action geometry');
+ok(/clearCanvasSelection\('切换帧'\)/.test(extractFunction('selectFrame')),
+  'seq137: switching frames clears recognition + action geometry');
+ok((source.match(/clearCanvasSelection\('切换任务'\)/g) || []).length >= 2,
+  'seq137: switching tasks clears recognition + action geometry');
+ok(/clearCanvasSelection\('Esc'\)/.test(source),
+  'seq137: Esc clears recognition + action geometry even when only a preview is shown');
+ok(
+  /const owned = canvasTool === 'action' \|\| !!pendingActionAsset \|\| activeCandidate >= 0 \|\|\s*!!actionShapeOwnerId/.test(
+    extractFunction('drawActionShapeOverlay')),
+  'seq137: the action overlay is ownership-gated (tool/candidate/edit target/preview only)'
+);
+ok((source.match(/actionShapeOwnerId = String\(it\.id\)/g) || []).length >= 2,
+  'seq137: selecting/editing an asset records its action-shape ownership');
 ok(!/setSelectionMode/.test(resetActionFn), 'resetActionGeometry no longer flips old mode flags');
 ok(
   /btnClear\.addEventListener\('click',[\s\S]{0,600}resetSelection\(/.test(source),
@@ -4484,6 +4513,18 @@ eq(
   ['帧#1 真实识别', '帧#1 操作区'],
   'U-T4: test_action boxes label the real recognition + operation regions'
 );
+// seq137（B）：点测/长按用服务端 action_shape 画多边形（不再 action_box 矩形）。
+const pointShapeBoxes = testActionBoxes({
+  ok: true, real_rect: [10, 20, 30, 40],
+  action_box: [12, 22, 30, 40],
+  action_shape: { kind: 'polygon', points: [[12, 22], [42, 22], [42, 52]] },
+}, '帧#1');
+eq(pointShapeBoxes.length, 2, 'seq137: test_action with action_shape draws recognition + operation');
+eq(pointShapeBoxes[1].polygon, [{ x: 12, y: 22 }, { x: 42, y: 22 }, { x: 42, y: 52 }],
+  'seq137: point-test operation region is the server action_shape polygon');
+eq(pointShapeBoxes[1].box, [12, 22, 31, 31], 'seq137: polygon bbox is only auxiliary');
+ok(/操作区（polygon）/.test(pointShapeBoxes[1].text),
+  'seq137: point-test labels the server-shape operation region as polygon');
 eq(testActionBoxes({ ok: false }, '').length, 0, 'U-T4: a failed test_action draws no boxes');
 eq(
   opRegionValidateErrorText({ ok: false, errors: [{ path: 'items[3].op_region.asset', msg: 'cycle: A -> B -> A' }] }),
@@ -4969,11 +5010,17 @@ const BUILDER_TARGET_PURE = [
   'fitFlowGraphSize', 'svgPointInViewBox',
   'stepUiId', 'stepPathById', 'moveStepWithinParent',
   'dragInsertionIndex', 'sameParentGraphNodes', 'flowDropIndicatorGeometry',
+  // seq137（UI B #1）：列表同层拖拽插入纯函数。
+  'flowChildArrayAt', 'flowContainerChildKey', 'flowStepIsContainer',
+  'flowDropZoneFromRect', 'moveFlowStepInsert', 'adjustPathAfterStepRemoval',
+  'flowStepAtPath', 'stepContains', 'childArrays',
+  // seq137（UI B #3）：flow → Rust 只读投影。
+  'rustStringLiteral', 'rustNumLiteral', 'rustProjectStepLines', 'rustProjectFlow',
 ];
 const targetSb = {};
 vm.createContext(targetSb);
 vm.runInContext(
-  'let nextStepUiId = 1;\n' +
+  'let nextStepUiId = 1;\nconst OP_META = {};\n' +
     BUILDER_TARGET_PURE.map((name) => extractFunctionFrom(builderSource, name, 'builder.js')).join('\n'),
   targetSb,
   { filename: 'builder.js#targets' }
@@ -8416,7 +8463,7 @@ async function checkAssetCandidatesWiring() {
           elapsed_ms: 1.5,
           count: 2,
           candidates: [
-            { index: 0, x: 11, y: 21, w: 30, h: 40, score: 0.973, pass: true, action_box: [11, 21, 30, 40], member: 'I_A', member_kind: 'template' },
+            { index: 0, x: 11, y: 21, w: 30, h: 40, score: 0.973, pass: true, action_box: [11, 21, 30, 40], action_shape: { kind: 'polygon', points: [[11, 21], [41, 21], [41, 61]] }, member: 'I_A', member_kind: 'template' },
             { index: 1, x: 51, y: 61, w: 30, h: 40, score: 0.901, pass: true, action_box: [51, 61, 30, 40] },
           ],
         }),
@@ -8442,7 +8489,7 @@ async function checkAssetCandidatesWiring() {
     ['candidateBoxOf', 'candidateDomainText', 'candidateMemberKindLabel', 'candidateFieldInfo',
       'candidateTextPreview', 'candidateRenderLabel', 'candidateThumbDescriptor',
       'assetCandidatesUrl', 'matchBoxValid', 'candidatePolygonForAsset',
-      'rectToPolygonPoints', 'actionShapePolygonPoints', 'candidateActionPolygon', 'actionShapeBBox',
+      'rectToPolygonPoints', 'actionShapePolygonPoints', 'serverActionShapeView', 'actionShapeBBox',
       'candidateLabelText', 'candidateBoxes',
       'fetchJsonWithTimeout', 'testAssetCandidates']
       .map((name) => extractFunction(name))
@@ -8457,12 +8504,14 @@ async function checkAssetCandidatesWiring() {
     '/task/asset/candidates?task=%E4%BB%BB%E5%8A%A1%E7%94%B2&id=%E6%A8%A1%E6%9D%BF%E7%94%B2',
     'U-T4: the candidate request carries the task scope + asset id (no frame query for the current frame)'
   );
-  eq(sb.boxes.length, 2, 'U-T4: all candidates become draw() boxes');
+  eq(sb.boxes.length, 4, 'U-T4: all candidates become recognition + operation draw() boxes');
   eq(
     sb.boxes.map((b) => b.box),
-    [[11, 21, 30, 40], [51, 61, 30, 40]],
-    'U-T4: box geometry is the real recognition rectangle of each candidate'
+    [[11, 21, 30, 40], [51, 61, 30, 40], [11, 21, 31, 41], [51, 61, 30, 40]],
+    'U-T4: recognition boxes use server rects; operation boxes use server action_shape (fallback action_box)'
   );
+  eq(sb.boxes[2].polygon, [{ x: 11, y: 21 }, { x: 41, y: 21 }, { x: 41, y: 61 }],
+    'seq137: candidate operation box draws the server action_shape polygon');
   ok(
     /#0 · score=0\.9730 · 成员 I_A（模板） · ≥阈值 \[11,21,30,40\]/.test(sb.resultEl.textContent) &&
       /#1 · score=0\.9010 · 缩略图 模板甲 · ≥阈值 \[51,61,30,40\]/.test(sb.resultEl.textContent),
@@ -9078,44 +9127,143 @@ eq(nestedMove.then.map((s) => s.op), ['t2', 't1'],
 eq(targetSb.moveStepWithinParent([], [], 0).ok, false,
   'seq136: an empty path (root) is not draggable');
 const nodes = [{ path: [0], y: 0, h: 100 }, { path: [1], y: 120, h: 100 }, { path: [2], y: 240, h: 100 }];
-eq(targetSb.dragInsertionIndex(nodes, 40), 0, 'seq136: dragging above the first node inserts at head');
-eq(targetSb.dragInsertionIndex(nodes, 160), 1, 'seq136: below a node midline inserts after it');
-eq(targetSb.dragInsertionIndex(nodes, 999), 3, 'seq136: dragging below all nodes inserts at tail');
-eq(targetSb.dragInsertionIndex([], 10), 0, 'seq136: no siblings => index 0');
+eq(targetSb.dragInsertionIndex(nodes, 40), 0, 'legacy: graph insertion index head');
+eq(targetSb.dragInsertionIndex(nodes, 160), 1, 'legacy: graph insertion index after midline');
+eq(targetSb.dragInsertionIndex(nodes, 999), 3, 'legacy: graph insertion index tail');
+eq(targetSb.dragInsertionIndex([], 10), 0, 'legacy: no siblings => index 0');
 eq(targetSb.sameParentGraphNodes([
   { path: [0], y: 10, h: 10 }, { path: [1], y: 0, h: 10 }, { path: [0, 'then', 0], y: 5, h: 5 },
 ], []), [{ path: [1], y: 0, h: 10 }, { path: [0], y: 10, h: 10 }],
-  'seq136: graph nodes are filtered by parent and sorted by y');
+  'legacy: graph nodes are filtered by parent and sorted by y');
 eq(targetSb.flowDropIndicatorGeometry(nodes, 0).y, -6,
-  'seq136: the insertion indicator sits above the first sibling for head drops');
+  'legacy: graph insertion indicator geometry above first sibling');
 eq(targetSb.flowDropIndicatorGeometry(nodes, 3).y, 346,
-  'seq136: the indicator sits below the last sibling for tail drops');
+  'legacy: graph insertion indicator geometry below last sibling');
 eq(targetSb.flowDropIndicatorGeometry([], 0), null,
-  'seq136: no siblings => no indicator');
+  'legacy: no siblings => no graph indicator');
+
+// seq137（UI B #1）：列表视图同层上/中/下 drop 插入（真实实现）。
+eq(targetSb.flowDropZoneFromRect(100, 100, 110), 'before', 'seq137: list drop top zone = before');
+eq(targetSb.flowDropZoneFromRect(100, 100, 150), 'inside', 'seq137: list drop middle zone = inside');
+eq(targetSb.flowDropZoneFromRect(100, 100, 190), 'after', 'seq137: list drop bottom zone = after');
+const listFlow = {
+  schema_version: 1,
+  steps: [{ op: 'a' }, { op: 'b' }, { op: 'c' }],
+};
+let listRes = targetSb.moveFlowStepInsert(listFlow, [2], [0], 'before');
+eq(listRes.ok, true, 'seq137: list root drop before inserts at head');
+eq(listFlow.steps.map((s) => s.op), ['c', 'a', 'b'], 'seq137: head insertion reorders root steps');
+eq(listRes.path, [0], 'seq137: head insertion reports the new selected path');
+listRes = targetSb.moveFlowStepInsert(listFlow, [0], [2], 'after');
+eq(listRes.ok, true, 'seq137: list root drop after inserts at tail');
+eq(listFlow.steps.map((s) => s.op), ['a', 'b', 'c'], 'seq137: tail insertion reorders root steps');
+eq(listRes.path, [2], 'seq137: tail insertion reports the new selected path');
+listRes = targetSb.moveFlowStepInsert(listFlow, [0], [0], 'before');
+eq(listRes.ok, false, 'seq137: dropping a step onto itself is rejected');
+const ifFlow = {
+  schema_version: 1,
+  steps: [{ op: 'if', args: { cond: 'true' }, then: [{ op: 't1' }, { op: 't2' }], else: [] }],
+};
+listRes = targetSb.moveFlowStepInsert(ifFlow, [0, 'then', 0], [0, 'then', 1], 'after');
+eq(listRes.ok, true, 'seq137: if/then children support after insertion');
+eq(ifFlow.steps[0].then.map((s) => s.op), ['t2', 't1'], 'seq137: if/then child reorder works');
+eq(listRes.path, [0, 'then', 1], 'seq137: if/then new path is reported');
+const loopFlow = {
+  schema_version: 1,
+  steps: [{ op: 'x' }, { op: 'loop', args: { n: 2 }, body: [{ op: 'l1' }] }],
+};
+listRes = targetSb.moveFlowStepInsert(loopFlow, [0], [1], 'inside');
+eq(listRes.ok, true, 'seq137: root step can be dropped inside a loop container');
+eq(loopFlow.steps[0].body.map((s) => s.op), ['l1', 'x'], 'seq137: inside drop appends to loop body');
+eq(listRes.path, [0, 'body', 1], 'seq137: inside drop path adjusts for the removed source sibling');
+const crossFlow = { schema_version: 1, steps: [{ op: 'a' }, { op: 'if', then: [{ op: 't' }], else: [] }] };
+eq(targetSb.moveFlowStepInsert(crossFlow, [0], [1, 'then', 0], 'before').ok, false,
+  'seq137: before/after insertion across parents is rejected (same-level only)');
+eq(targetSb.moveFlowStepInsert(crossFlow, [0], [1, 'then', 0], 'inside').ok, false,
+  'seq137: inside a non-container step is rejected/treated safely');
+const selfFlow = { schema_version: 1, steps: [{ op: 'if', then: [{ op: 't' }], else: [] }] };
+eq(targetSb.moveFlowStepInsert(selfFlow, [0], [0, 'then', 0], 'inside').ok, false,
+  'seq137: moving a container into its own descendant is rejected');
+// 静态接线：行上 dragover/drop（上/中/下）、统一 payload、stopPropagation、自动保存、滚动。
+const renderStepArrayFn = extractFunctionFrom(builderSource, 'renderStepArray', 'builder.js');
+const renderGraphFn = extractFunctionFrom(builderSource, 'renderGraph', 'builder.js');
+const renderSvgNodeFn = extractFunctionFrom(builderSource, 'renderSvgNode', 'builder.js');
 ok(
-  /setAttribute\('draggable', 'true'\)/.test(extractFunctionFrom(builderSource, 'renderSvgNode', 'builder.js')) &&
-    /addEventListener\('dragstart'/.test(extractFunctionFrom(builderSource, 'renderSvgNode', 'builder.js')) &&
-    /applyStepDragDrop\(getRoot\(\), sourcePath, sameParent, pt\.y\)/.test(extractFunctionFrom(builderSource, 'renderGraph', 'builder.js')) &&
-    /flow-drop-indicator/.test(extractFunctionFrom(builderSource, 'renderGraph', 'builder.js')),
-  'seq136: flow nodes are draggable and render the same-level insertion indicator'
+  /addEventListener\('dragover'/.test(renderStepArrayFn) &&
+    /flowDropZoneFromRect\(/.test(renderStepArrayFn) &&
+    /addEventListener\('drop'/.test(renderStepArrayFn) &&
+    /moveFlowStepInsert\(B\.flow/.test(renderStepArrayFn) &&
+    /e\.stopPropagation\(\)/.test(renderStepArrayFn) &&
+    /scheduleAutoSave\(\)/.test(renderStepArrayFn) &&
+    /scrollIntoView\(/.test(renderStepArrayFn),
+  'seq137: list rows implement real top/middle/bottom drop insertion with stopPropagation/autosave/scroll'
 );
 ok(
-  /function applyStepDragDrop\(rootSteps, sourcePath, siblingNodes, pointerY\)/.test(builderSource) &&
-    /const selectedBefore = getStep\(B\.selected\)/.test(builderSource) &&
-    /B\.selected = stepPathById\(rootSteps, selectedId\) \|\| B\.selected/.test(builderSource) &&
-    /function scrollSelectedStepIntoView\(\)/.test(builderSource) &&
-    /scrollIntoView\(/.test(builderSource),
-  'seq136: after a drop the selection is recomputed by step id and scrolled into view'
+  /B\.dragState = \{ paths:/.test(renderStepArrayFn) &&
+    /JSON\.stringify\(payload\)/.test(renderStepArrayFn) &&
+    /parseDragPayload\(e\.dataTransfer\.getData\('text\/plain'\)\)/.test(renderStepArrayFn),
+  'seq137: list rows use one JSON {path/paths} payload (no mixed id payload)'
 );
+ok(!/setAttribute\('draggable', 'true'\)/.test(renderSvgNodeFn) &&
+  !/addEventListener\('dragstart'/.test(renderSvgNodeFn) &&
+  /data-step-path/.test(renderSvgNodeFn),
+  'seq137: graph SVG no longer pretends to be HTML5-draggable (fake-green removed); nodes expose data-step-path');
+ok(!/addEventListener\('drop'/.test(renderGraphFn) && !/flow-drop-indicator/.test(renderGraphFn),
+  'seq137: graph dragover/drop/insertion indicator listeners are removed');
 ok(
-  /'上移'/.test(builderSource) && /'下移'/.test(builderSource) && /function moveStepTo\(/.test(builderSource),
-  'seq136: the existing up/down arrow moves are preserved alongside drag ordering'
-);
-ok(
-  /scheduleAutoSave\(\)/.test(extractFunctionFrom(builderSource, 'applyStepDragDrop', 'builder.js')) &&
+  /function renderStepArray\(/.test(builderSource) &&
     (builderSource.match(/scheduleAutoSave\(\);/g) || []).length >= 3,
-  'seq136: drag/arrow reorders schedule an auto-save (selection/state changes are persisted)'
+  'seq137: reorder paths keep scheduling auto-save'
 );
+
+// seq137（UI B #2/#3）：全窗口流程图页 + flow→Rust 只读投影。
+ok(/id="flow-page"/.test(html) && /id="flow-page-canvas"/.test(html) &&
+  /id="flow-page-back"/.test(html) && /id="builder-open-flow-page"/.test(html) &&
+  /id="flow-page-zoom-in"/.test(html) && /id="flow-page-fit"/.test(html),
+  'seq137: full-window flow page has canvas/back/zoom/fit + builder entry button');
+ok(/<details id="builder-code-wrap" class="builder-code-wrap">/.test(html) &&
+  /<details id="builder-rust-wrap" class="builder-code-wrap">/.test(html),
+  'seq137: JSON source box + Rust projection are both collapsed by default');
+ok(/id="builder-rust-code"/.test(html) && /不是可执行源码/.test(html),
+  'seq137: the Rust projection panel is read-only and labeled non-executable');
+ok(/function openFlowPage\(\)/.test(builderSource) && /function closeFlowPage\(\)/.test(builderSource) &&
+  /flowPageState\.zoom/.test(builderSource) && /position: fixed;/.test(styleCss) &&
+  /\.flow-page-canvas \{[\s\S]{0,120}overflow: auto/.test(styleCss),
+  'seq137: the flow page is full-window with zoom + scrolling');
+ok(/renderRustProjection\(\)/.test(extractFunctionFrom(builderSource, 'renderAll', 'builder.js')),
+  'seq137: renderAll refreshes the Rust projection from the flow model');
+const rustOut = targetSb.rustProjectFlow({
+  schema_version: 1,
+  name: '演示',
+  steps: [
+    { op: 'log', args: { text: '开始' } },
+    { op: 'click', args: { sel: 'I_A' } },
+    { op: 'call_task', args: { task: '子任务' } },
+    { op: 'if', args: { cond: 'true' }, then: [{ op: 'click', args: { sel: 'I_B' } }], else: [{ op: 'click', args: { sel: 'I_C' } }] },
+    { op: 'loop', args: { n: 3 }, body: [{ op: 'wait', args: { seconds: 1.5 } }] },
+    { op: 'navigate', args: { target: '御魂十层' } },
+    { op: 'made_up_op', args: { foo: 'bar' } },
+  ],
+});
+ok(/由 flow\.json 自动生成的只读 Rust 投影/.test(rustOut) &&
+  /不是 Rust→flow 编译器/.test(rustOut),
+  'seq137: Rust projection header states generated/read-only and no Rust→flow compiler');
+ok(/pub fn run_flow\(ctx: &mut Ctx\) -> Result<\(\)> \{/.test(rustOut) && /Ok\(\(\)\)/.test(rustOut),
+  'seq137: Rust projection emits a runnable-shaped read-only function body');
+ok(/ctx\.log\("开始"\);/.test(rustOut) && /ctx\.click\("I_A"\);/.test(rustOut) &&
+  /ctx\.call_task\("子任务", false\);/.test(rustOut) && /ctx\.navigate\("御魂十层"\);/.test(rustOut),
+  'seq137: Rust projection maps log/click/call_task/navigate to ctx calls');
+ok(/ctx\.if_cond\("true", \|ctx\| \{/.test(rustOut) && /ctx\.loop\(3, \|ctx\| \{/.test(rustOut),
+  'seq137: Rust projection maps if/loop to ctx.if_cond/ctx.loop closures');
+ok(/\/\/ TODO: 未知 op "made_up_op"/.test(rustOut),
+  'seq137: unknown ops stay as explicit TODO comments (flow preserved)');
+ok(/ctx\.wait\(1\.5\);/.test(rustOut), 'seq137: numeric args project without quotes');
+const escaped = targetSb.rustProjectFlow({
+  schema_version: 1, name: 'q', steps: [{ op: 'log', args: { text: 'a"b\\c\n' } }],
+});
+ok(/ctx\.log\("a\\"b\\\\c\\n"\);/.test(escaped), 'seq137: Rust string literals are escaped');
+ok(!/function rustToFlow|function compileRust/.test(builderSource),
+  'seq137: no fake Rust→flow compiler is implemented (legacy note only)');
 
 // --- seq136（UI B）：操作区多边形不退化 + fixed 固定操作区 ---------------------
 eq(rectToPolygonPoints({ x: 10, y: 20, w: 30, h: 40 }),
@@ -9151,24 +9299,27 @@ eq(
   'seq136: polygon action_shape maps to canvas points'
 );
 eq(actionShapePolygonPoints(null), null, 'seq136: no action_shape => no polygon points');
-eq(
-  candidateActionPolygon(
-    { kind: 'template', roi: [10, 20, 20, 10], action_shape: { kind: 'polygon', points: [[10, 20], [30, 20], [30, 40]] } },
-    [40, 50, 20, 10]
-  ),
-  [{ x: 40, y: 50 }, { x: 60, y: 50 }, { x: 60, y: 70 }],
-  'seq136: a template candidate operation polygon is translated to the match box'
+// seq137（B）：服务端 action_shape 帧坐标直接消费，UI 不再二次平移。
+const serverShapeView = serverActionShapeView(
+  { kind: 'polygon', points: [[40, 50], [60, 50], [60, 70]] }, null, '候选'
 );
-eq(
-  candidateActionPolygon(
-    { kind: 'ocr_line', roi: [1, 2, 3, 4], action_shape: { kind: 'rect', roi: [5, 6, 7, 8] } },
-    [1, 2, 3, 4]
-  ),
+eq(serverShapeView.polygon, [{ x: 40, y: 50 }, { x: 60, y: 50 }, { x: 60, y: 70 }],
+  'seq137: candidate operation polygon equals the server action_shape (no translation)');
+eq(serverShapeView.box, [40, 50, 21, 21], 'seq137: server polygon bbox is auxiliary');
+ok(/候选 操作区（polygon）/.test(serverShapeView.text),
+  'seq137: server shape view labels the operation polygon');
+const serverRectView = serverActionShapeView(
+  { kind: 'rect', roi: [5, 6, 7, 8] }, null, '候选'
+);
+eq(serverRectView.polygon,
   [{ x: 5, y: 6 }, { x: 12, y: 6 }, { x: 12, y: 14 }, { x: 5, y: 14 }],
-  'seq136: OCR operation polygons stay absolute (fixed/no translation)'
-);
-eq(candidateActionPolygon({ kind: 'template', roi: [1, 2, 3, 4] }, [1, 2, 3, 4]), null,
-  'seq136: no action_shape => no candidate operation polygon');
+  'seq137: OCR/fixed rect action_shape stays at absolute frame coordinates');
+eq(serverActionShapeView(null, [12, 22, 30, 40], '候选').polygon, null,
+  'seq137: no server action_shape falls back to the action_box rectangle');
+eq(serverActionShapeView(null, [12, 22, 30, 40], '候选').box, [12, 22, 30, 40],
+  'seq137: action_box is only the fallback, not the primary shape');
+eq(serverActionShapeView(null, null, '候选'), null,
+  'seq137: no action_shape/action_box renders no operation region');
 eq(
   translatedActionShapeForMatch(
     { kind: 'template', roi: [10, 20, 30, 40], action_shape: { kind: 'rect', roi: [10, 20, 5, 5] } },
@@ -9212,16 +9363,24 @@ ok(
   'seq136: display/save paths use the non-degrading polygon-first actionShapeForSave'
 );
 ok(
-  /candidateActionPolygon\(it, box\.box\)/.test(extractFunction('testAssetCandidates')) &&
-    /polygon: candidateActionPoly/.test(extractFunction('testAssetDrag')) &&
-    /pushCandidateActionBox/.test(extractFunction('runTestActionForAsset')),
-  'seq136: multi-candidate / click-test / drag-test previews render the action polygon'
+  /serverActionShapeView\(candidate\.action_shape, candidate\.action_box/.test(extractFunction('testAssetCandidates')) &&
+    /candidate\.action_shape \|\|/.test(extractFunction('testAssetDrag')) &&
+    /serverActionShapeView\(\s*candidate\.action_shape, candidate\.action_box/.test(extractFunction('testAssetDrag')) &&
+    /pushCandidateActionBox\(.*, sent\)/.test(extractFunction('runTestActionForAsset')) &&
+    /pushCandidateActionBox\(.*, dry\)/.test(extractFunction('runTestActionForAsset')),
+  'seq137: multi-candidate / click-test / drag-test previews consume the server action_shape'
 );
 ok(
-  /function candidateActionPolygon\(it, candidateBox\)/.test(source) &&
+  !/candidateActionPolygon/.test(source) &&
+    /function serverActionShapeView\(shape, fallbackBox, label\)/.test(source) &&
     /function actionShapePolygonPoints\(shape\)/.test(source) &&
     /function rectToPolygonPoints\(rect\)/.test(source),
-  'seq136: polygon helpers are pure and shared by canvas + candidates'
+  'seq137: the front-end action_shape translation (candidateActionPolygon) is removed'
+);
+ok(
+  /serverActionShapeView\(s\.action_shape, s\.action_box/.test(extractFunction('testActionBoxes')) &&
+    !/const candidateActionPoly =/.test(extractFunction('testAssetDrag')),
+  'seq137: point-test/long-press/drag render polygons from action_shape, not action_box rectangles'
 );
 
 // --- seq136（C2 #8）：可编辑源码框（最终 flow JSON / 校验 / dirty / 应用） -----
@@ -9518,6 +9677,45 @@ ok(
     /\/map\/state/.test(mapUiSource) && /\/map\/navigate/.test(mapUiSource),
   'seq136: map_ui.js implements validate/plan/state/navigate per the M2 API contract'
 );
+// seq137（地图页 #1/#3）：素材库改 /task/assets、assetSelect 回退、父节点提示、
+// 布局/画布 DPR、节点预览 /map/state、OCR 列表选择、probe 缩面。
+ok(mapUiSource.indexOf("'/task/assets?task='") >= 0 &&
+  mapUiSource.indexOf("'/task/assets?task='") < mapUiSource.indexOf("api('/library')"),
+  'seq137: map assets load from GET /task/assets (items + collections), /library only a legacy fallback');
+ok(/api\('\/task\/assets\?task='\)/.test(mapUiSource) &&
+  /Array\.isArray\(s\.collections\)/.test(mapUiSource),
+  'seq137: map asset load consumes items + collections');
+ok(
+  /sel\.appendChild\(new Option\('不存在：' \+ cur/.test(mapUiSource) &&
+    /sel\.value = cur;/.test(mapUiSource),
+  'seq137: assetSelect appends the missing current value before setting value (no dead fallback)'
+);
+ok(/returnSel\.addEventListener\('change', markDirty\)/.test(mapUiSource) &&
+  /aSel\.addEventListener\('change', \(\) => \{ f\.asset = aSel\.value; markDirty\(\)/.test(mapUiSource),
+  'seq137: return-asset + feature-asset changes mark the map dirty');
+ok(/parentHint/.test(mapUiSource) && /parent 可选所有其他节点/.test(mapUiSource) &&
+  /只有 1 个节点时它只能是根节点/.test(mapUiSource),
+  'seq137: parent select lists all nodes and explains the single-node case');
+ok(
+  /grid-template-columns: minmax\(240px, 18%\) minmax\(420px, 1fr\) minmax\(420px, 28%\)/.test(styleCss) &&
+    /\.map-feature-row \{ display: flex; flex-wrap: wrap; gap: 6px;/.test(styleCss) &&
+    /\.map-feature-row input\[type="text"\] \{ flex: 1 1 220px; min-width: 220px; \}/.test(styleCss),
+  'seq137: map layout widens the property column and wraps OCR feature inputs'
+);
+ok(/aspect-ratio: 16 \/ 9/.test(styleCss) && /devicePixelRatio/.test(mapUiSource) &&
+  /ctx\.setTransform\(/.test(mapUiSource),
+  'seq137: map canvas keeps 16:9 and uses a DPR-aware backing store');
+ok(
+  /async function previewSelectedNode\(\) \{[\s\S]{0,800}?\/map\/state/.test(mapUiSource) &&
+    !/async function previewSelectedNode\(\) \{[\s\S]{0,800}?\/map\/probe/.test(mapUiSource),
+  'seq137: clicking a node previews via /map/state (no 78s /map/probe)'
+);
+ok(/assets: \[\]/.test(mapUiSource) && /map-ocr-pick/.test(mapUiSource) &&
+  /pickFeatureFromProbe\(features, renderFeatures, featureHost\)/.test(mapUiSource),
+  'seq137: OCR feature add is an in-page list and probe requests OCR-only (assets: [])'
+);
+ok(/setTransform\(w \/ Math\.max\(1, img\.width\)/.test(mapUiSource),
+  'seq137: map overlay drawing keeps frame coordinates after DPR scaling');
 
 // --- DOM id audit（Studio shell；D 批删除了参数面板/配置项对话框相关 id） -------
 const htmlDom = html;

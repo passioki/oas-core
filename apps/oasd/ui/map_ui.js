@@ -380,11 +380,34 @@
       }
     }
     async function loadAssets() {
+      // seq137（#1/#3）：统一全局素材在 GET /task/assets（全局模式忽略 task 参数），
+      // 返回 items + collections；旧 /library 只有 {id,file,...} 且通常为空。
       try {
-        const s = await api('/library');
-        state.assets = (Array.isArray(s.items) ? s.items : []).filter((a) => a && a.kind !== 'region');
-      } catch (e) {
+        const s = await api('/task/assets?task=');
+        const items = (Array.isArray(s.items) ? s.items : [])
+          .filter((a) => a && a.id)
+          .map((a) => ({ id: String(a.id), kind: String(a.kind || 'template'), label: a.label || '' }));
+        const collections = (Array.isArray(s.collections) ? s.collections : [])
+          .filter((c) => c && c.id)
+          .map((c) => ({ id: String(c.id), kind: 'template_set', label: c.id, members: c.members || [] }));
+        const seen = {};
         state.assets = [];
+        for (const a of items.concat(collections)) {
+          if (seen[a.id]) continue;
+          seen[a.id] = true;
+          state.assets.push(a);
+        }
+        if (!state.assets.length) setStatus('全局素材库为空（先到素材页/任务素材库创建素材）', '#e8c46a');
+      } catch (e) {
+        // 兼容旧 server：/task/assets 失败时再试 /library（但一般不完整）。
+        try {
+          const s2 = await api('/library');
+          state.assets = (Array.isArray(s2.items) ? s2.items : [])
+            .filter((a) => a && a.id).map((a) => ({ id: String(a.id), kind: 'template', label: '' }));
+        } catch (e2) {
+          state.assets = [];
+        }
+        setStatus('全局素材读取失败：' + e.message, '#ff8a80');
       }
     }
 
@@ -486,11 +509,15 @@
     function assetSelect(current, includeEmpty, placeholder) {
       const sel = document.createElement('select');
       sel.appendChild(new Option(placeholder || '（无）', ''));
-      for (const a of state.assets) sel.appendChild(new Option(a.id + ' · ' + (a.kind || ''), String(a.id)));
-      sel.value = String(current === undefined || current === null ? '' : current);
-      if (sel.value !== '' && !state.assets.some((a) => String(a.id) === sel.value)) {
-        sel.appendChild(new Option('不存在：' + sel.value, sel.value));
+      for (const a of state.assets) {
+        sel.appendChild(new Option(a.id + ' · ' + (a.kind || '') + (a.label && a.label !== a.id ? ' · ' + a.label : ''), String(a.id)));
       }
+      // seq137：先 append 缺失值再设置 value（否则浏览器会把 value 重置为 ''，回退成死代码）。
+      const cur = String(current === undefined || current === null ? '' : current).trim();
+      if (cur && !state.assets.some((a) => String(a.id) === cur)) {
+        sel.appendChild(new Option('不存在：' + cur + '（旧配置）', cur));
+      }
+      sel.value = cur;
       return sel;
     }
 
@@ -519,21 +546,37 @@
       field('节点 id', idInput);
       const nameInput = document.createElement('input');
       nameInput.type = 'text'; nameInput.value = String(node.name || ''); nameInput.placeholder = '展示名（缺省=id）';
+      nameInput.addEventListener('change', markDirty);
       field('名称', nameInput);
       const parentSel = document.createElement('select');
       parentSel.appendChild(new Option('（根节点）', ''));
       for (const id of nodeIds()) if (id !== String(node.id || '')) parentSel.appendChild(new Option(id, id));
       parentSel.value = node.parent === undefined || node.parent === null ? '' : String(node.parent);
+      parentSel.addEventListener('change', markDirty);
       field('父节点 parent', parentSel);
+      const parentHint = document.createElement('div');
+      parentHint.className = 'muted small';
+      parentHint.textContent = '当前地图共 ' + nodeIds().length + ' 个节点；parent 可选所有其他节点' +
+        (nodeIds().length <= 1 ? '（只有 1 个节点时它只能是根节点）' : '') + '。';
+      host.appendChild(parentHint);
       const returnSel = assetSelect(node.return_asset, true, '（缺省用 default_return_asset）');
+      returnSel.addEventListener('change', markDirty);
       field('返回素材 return_asset', returnSel);
+      const returnHint = document.createElement('div');
+      returnHint.className = 'muted small';
+      returnHint.textContent = state.assets.length
+        ? '素材来源：GET /task/assets（items + collections，共 ' + state.assets.length + ' 项）'
+        : '全局素材库未加载/为空：返回素材、边素材、asset 特征都只有占位项';
+      host.appendChild(returnHint);
       const prioInput = document.createElement('input');
       prioInput.type = 'number'; prioInput.value = String(Number.isInteger(Number(node.priority)) ? Number(node.priority) : 0);
+      prioInput.addEventListener('change', markDirty);
       field('优先级 priority', prioInput);
       const framesInput = document.createElement('input');
       framesInput.type = 'text';
       framesInput.value = Array.isArray(node.frames) ? node.frames.join(',') : '';
       framesInput.placeholder = '帧 id 列表，如 12,31（仅编辑器用）';
+      framesInput.addEventListener('change', markDirty);
       field('帧 frames（逗号分隔）', framesInput);
       const useFrameBtn = document.createElement('button');
       useFrameBtn.type = 'button';
@@ -569,12 +612,12 @@
           row.appendChild(kind);
           if (f.kind === 'asset') {
             const aSel = assetSelect(f.asset, true, '（选择素材）');
-            aSel.addEventListener('change', () => { f.asset = aSel.value; });
+            aSel.addEventListener('change', () => { f.asset = aSel.value; markDirty(); });
             row.appendChild(aSel);
           } else {
             const text = document.createElement('input');
             text.type = 'text'; text.value = String(f.text || ''); text.placeholder = '期望 OCR 文字（严格/归一化匹配由服务端）';
-            text.addEventListener('change', () => { f.text = text.value; });
+            text.addEventListener('change', () => { f.text = text.value; markDirty(); });
             row.appendChild(text);
           }
           const del = document.createElement('button');
@@ -593,7 +636,7 @@
         addAsset.addEventListener('click', () => { features.push({ kind: 'asset', asset: '' }); renderFeatures(); });
         const addFromProbe = document.createElement('button');
         addFromProbe.type = 'button'; addFromProbe.textContent = '从当前帧 OCR 添加…';
-        addFromProbe.addEventListener('click', () => pickFeatureFromProbe(features, renderFeatures));
+        addFromProbe.addEventListener('click', () => pickFeatureFromProbe(features, renderFeatures, featureHost));
         addRow.append(addOcr, addAsset, addFromProbe);
         featureHost.appendChild(addRow);
       }
@@ -601,7 +644,7 @@
       const minHits = document.createElement('input');
       minHits.type = 'number'; minHits.min = '1';
       minHits.value = String(Number.isFinite(Number(rec.min_hits)) ? Number(rec.min_hits) : 1);
-      minHits.addEventListener('change', () => { rec.min_hits = Number(minHits.value) || 1; });
+      minHits.addEventListener('change', () => { rec.min_hits = Number(minHits.value) || 1; markDirty(); });
       const minLab = document.createElement('label');
       minLab.className = 'opt';
       minLab.textContent = 'min_hits';
@@ -648,22 +691,46 @@
       host.appendChild(retLine);
     }
 
-    function pickFeatureFromProbe(features, renderFeatures) {
-      setStatus('读取当前帧 OCR 行…');
-      const body = state.frameId !== null ? { frame_id: Number(state.frameId) } : { live: true };
+    function pickFeatureFromProbe(features, renderFeatures, hostEl) {
+      // seq137：只取 OCR 行（assets: [] 缩面，后端 task 支持按需 assets；不扫描全素材库）。
+      // 用页面内列表选择替代 window.prompt 序号输入；加载/失败都有状态提示。
+      setStatus('读取当前帧 OCR 行…（probe 仅 OCR，不扫描素材库）');
+      const body = state.frameId !== null ? { frame_id: Number(state.frameId), assets: [] } : { live: true, assets: [] };
       postJson('/map/probe', body).then((s) => {
         state.probe = s;
         const lines = Array.isArray(s.ocr_lines) ? s.ocr_lines : [];
         if (!lines.length) { setStatus('当前帧没有 OCR 行', '#e8c46a'); return; }
-        const chosen = window.prompt('选择要添加的 OCR 文字（输入序号，0=取消）：\n' +
-          lines.slice(0, 30).map((l, i) => (i + 1) + '. ' + l.text + ' (' + Number(l.score || 0).toFixed(2) + ')').join('\n'), '1');
-        const idx = Number(chosen);
-        if (!Number.isInteger(idx) || idx < 1 || idx > lines.length) return;
-        const line = lines[idx - 1];
-        features.push({ kind: 'ocr_text', text: line.text, roi: line.rect });
-        renderFeatures();
-        setStatus('已添加 OCR 特征「' + line.text + '」', '#7bd88f');
-      }).catch((e) => setStatus('取特征失败：' + e.message, '#ff8a80'));
+        const list = document.createElement('div');
+        list.className = 'map-ocr-pick';
+        const head = document.createElement('div');
+        head.className = 'muted small';
+        head.textContent = '选择 OCR 行作为特征（' + lines.length + ' 行，最多显示 40）：';
+        list.appendChild(head);
+        lines.slice(0, 40).forEach((line, i) => {
+          const row = document.createElement('button');
+          row.type = 'button';
+          row.className = 'map-ocr-pick-row';
+          row.textContent = (i + 1) + '. ' + String(line.text || '') + ' (' + Number(line.score || 0).toFixed(2) + ')';
+          row.title = '点击添加为 ocr_text 特征' + (Array.isArray(line.rect) ? ' · ROI[' + line.rect.join(',') + ']' : '');
+          row.addEventListener('click', () => {
+            features.push({
+              kind: 'ocr_text', text: String(line.text || ''),
+              ...(Array.isArray(line.rect) ? { roi: line.rect.slice() } : {}),
+            });
+            list.remove();
+            renderFeatures();
+            markDirty();
+            setStatus('已添加 OCR 特征「' + String(line.text || '') + '」', '#7bd88f');
+          });
+          list.appendChild(row);
+        });
+        const cancel = document.createElement('button');
+        cancel.type = 'button'; cancel.textContent = '取消';
+        cancel.addEventListener('click', () => list.remove());
+        list.appendChild(cancel);
+        (hostEl || el('map-feature-detail').parentNode || el('map-node-editor')).appendChild(list);
+        setStatus('请选择要添加的 OCR 行', '#8fb8e8');
+      }).catch((e) => setStatus('读取 OCR 行失败：' + e.message, '#ff8a80'));
     }
 
     function renderHubEditor() {
@@ -855,8 +922,15 @@
       const ctx = canvas.getContext('2d');
       const img = new Image();
       img.onload = () => {
-        canvas.width = img.width;
-        canvas.height = img.height;
+        // seq137：按显示宽度 × devicePixelRatio 设 backing store，避免高分屏模糊/比例失衡；
+        // 用 transform 让后续覆盖层继续使用帧坐标。
+        const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
+        const cssW = Math.max(1, Math.round(canvas.clientWidth || img.width));
+        const w = Math.max(1, Math.round(cssW * dpr));
+        const h = Math.max(1, Math.round((w * img.height) / Math.max(1, img.width)));
+        canvas.width = w;
+        canvas.height = h;
+        ctx.setTransform(w / Math.max(1, img.width), 0, 0, h / Math.max(1, img.height), 0, 0);
         ctx.drawImage(img, 0, 0);
         drawProbeOverlay(ctx);
         const hits = el('map-feature-hits');
@@ -872,17 +946,31 @@
       img.src = currentFrameImageUrl();
     }
 
-    // 选中节点：按节点帧取 OCR/素材特征命中（/map/probe），并展示是否满足 min_hits。
+    // 选中节点预览：用 /map/state（release 下识别当前节点 ~0.4s）；不再触发
+    // /map/probe（旧实现 78s 全素材扫描）。probe 只在“从当前帧 OCR 添加”时按需调用。
     async function previewSelectedNode() {
       const node = selectedNode();
       if (!node) return;
-      const body = state.frameId !== null ? { frame_id: Number(state.frameId) } : { live: true };
+      const qs = state.frameId !== null ? '?frame_id=' + encodeURIComponent(state.frameId) : '?live=1';
+      setStatus('识别当前节点…');
       try {
-        const s = await postJson('/map/probe', body);
-        state.probe = s;
-        drawFrame();
+        const s = await api('/map/state' + qs);
+        setResult(mapStateSummary(s));
+        const hitsEl = el('map-feature-hits');
+        if (hitsEl) {
+          hitsEl.textContent = s.current
+            ? '识别：' + String(s.current.node) + ' · hits=' + Number(s.current.hits || 0)
+            : '未识别到当前节点';
+          hitsEl.style.color = s.current ? '#7bd88f' : '#e8c46a';
+        }
+        const detail = el('map-feature-detail');
+        if (detail) {
+          detail.textContent = '节点 ' + String(node.id) + ' 识别特征（服务端识别结果见下方）：\n' +
+            ((node.recognize && node.recognize.features) || []).map((f, i) => (i + 1) + '. ' + mapFeatureSummary(f)).join('\n');
+        }
+        setStatus('识别当前节点完成', '#7bd88f');
       } catch (e) {
-        setStatus('特征预览失败：' + e.message, '#e8c46a');
+        setStatus('识别当前节点失败：' + e.message, '#e8c46a');
       }
     }
 
@@ -1019,19 +1107,16 @@
         renderAll();
       });
       on('map-node-from-frame', () => {
-        setStatus('用当前帧新建节点…');
-        const body = state.frameId !== null ? { frame_id: Number(state.frameId) } : { live: true };
-        postJson('/map/probe', body).then((s) => {
-          state.probe = s;
-          const def = mapNewNodeDefaults({ frameId: state.frameId, ocrLines: s.ocr_lines });
-          const map = currentMap();
-          map.nodes.push(def);
-          if (!map.hub) map.hub = def.id;
-          state.selectedNodeId = def.id;
-          markDirty();
-          renderAll();
-          setStatus('已用当前帧创建节点「' + def.id + '」（未保存）', '#7bd88f');
-        }).catch((e) => setStatus('从当前帧建节点失败：' + e.message, '#ff8a80'));
+        // seq137：不再调用 /map/probe（78s）；先用当前帧创建节点，用户可再用
+        // “从当前帧 OCR 添加…”按需取行（probe 已缩面为只取 OCR）。
+        const def = mapNewNodeDefaults({ frameId: state.frameId });
+        const map = currentMap();
+        map.nodes.push(def);
+        if (!map.hub) map.hub = def.id;
+        state.selectedNodeId = def.id;
+        markDirty();
+        renderAll();
+        setStatus('已用当前帧创建节点「' + def.id + '」（未保存；可点「从当前帧 OCR 添加…」补充特征）', '#7bd88f');
       });
       on('map-node-delete', deleteSelectedNode);
       on('map-state-run', identifyState);

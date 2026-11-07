@@ -145,9 +145,9 @@ pub struct Manifest {
     pub dependencies: Vec<Dependency>,
     pub asset_refs: Vec<AssetRef>,
     pub platform: Platform,
-    /// seq136 D1: map nodes this package's flows navigate to (additive; the map
-    /// itself is NOT packaged — Runner install compares this against its local
-    /// map and warns on missing nodes; runtime is loud).
+    /// DEPRECATED (seq137 #3): map requirements are not a package dependency —
+    /// the map is a local action-library resource. The field is kept only so old
+    /// packages still load; new builds leave it empty.
     #[serde(default, skip_serializing_if = "MapRequirements::is_empty")]
     pub map_requirements: MapRequirements,
     /// v1 has no signing; the field exists so a future package can be signed
@@ -285,9 +285,8 @@ pub struct BuildOptions {
     pub repo: String,
     /// Commit hash recorded as `source.commit` (may be empty).
     pub commit: String,
-    /// seq136 D1: literal map nodes targeted by this package's flows. `None` =
-    /// derive nothing (caller/publish fills it from the map); stored as
-    /// `manifest.map_requirements.nodes` (sorted, deduped).
+    /// DEPRECATED (seq137 #3): no longer set by publish (map is not a package
+    /// dependency; runtime validates lazily). Kept for API compatibility.
     pub map_nodes: Option<BTreeSet<String>>,
 }
 

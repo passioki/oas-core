@@ -207,52 +207,7 @@ pub fn publish(
     opts.repo = tool.repo;
     opts.commit = tool.commit;
     // seq136 D1-M2: navigate targets are checked against the ONE global map
-    // (same rule as lint T11) and recorded in manifest.map_requirements.
-    let map_nodes = publish_map_nodes(&task_dir, assets_dir)?;
-    opts.map_nodes = Some(map_nodes);
     build_package(&task_dir, &out, &opts)
-}
-
-/// seq136 D1-M2: literal `navigate.target` set (+T11 check against `map.json`).
-fn publish_map_nodes(
-    task_dir: &Path,
-    assets_dir: &Path,
-) -> Result<std::collections::BTreeSet<String>, PackageError> {
-    let flow_path = task_dir.join("flow.json");
-    let flow_text = match std::fs::read_to_string(&flow_path) {
-        Ok(t) => t,
-        Err(_) => return Ok(std::collections::BTreeSet::new()),
-    };
-    let flow = oas_flow::Flow::from_json(&flow_text)
-        .map_err(|e| PackageError::Other(format!("flow.json: {e}")))?;
-    let uses = flow.navigate_uses();
-    let mut nodes = std::collections::BTreeSet::new();
-    if uses.is_empty() {
-        return Ok(nodes);
-    }
-    let map_path = assets_dir.join("map.json");
-    let map = oas_task::map::load(assets_dir)
-        .map_err(PackageError::Other)?
-        .ok_or_else(|| {
-            PackageError::Other(format!(
-                "flow uses navigate but the global map is missing ({}); \
-                 every navigate.target must exist in the map",
-                map_path.display()
-            ))
-        })?;
-    let ids: std::collections::BTreeSet<&str> = map.node_ids().into_iter().collect();
-    for use_ in uses {
-        if !ids.contains(use_.target.as_str()) {
-            return Err(PackageError::Other(format!(
-                "flow.json {}: navigate.target `{}` is not a node in the global map ({})",
-                use_.path,
-                use_.target,
-                map_path.display()
-            )));
-        }
-        nodes.insert(use_.target);
-    }
-    Ok(nodes)
 }
 
 fn usage() -> ExitCode {
@@ -1274,37 +1229,6 @@ pub fn install_from_path(
             ),
         )
         .with_code("unsupported_flow_ops"));
-    }
-    // seq136 D1-M2: map_requirements is a WARNING (map is distributed
-    // separately; the runtime is loud when a target is missing).
-    if !manifest.map_requirements.is_empty() {
-        let local_map = oas_task::map::load(assets_dir).ok().flatten();
-        match local_map {
-            None => warnings.push(format!(
-                "package needs map node(s) [{}] but no global map.json found at {}; \
-                 navigation will fail until the map is installed",
-                manifest.map_requirements.nodes.join(", "),
-                assets_dir.join("map.json").display()
-            )),
-            Some(map) => {
-                let ids: std::collections::BTreeSet<&str> =
-                    map.node_ids().into_iter().collect();
-                let missing: Vec<&str> = manifest
-                    .map_requirements
-                    .nodes
-                    .iter()
-                    .filter(|n| !ids.contains(n.as_str()))
-                    .map(String::as_str)
-                    .collect();
-                if !missing.is_empty() {
-                    warnings.push(format!(
-                        "package needs map node(s) missing from local map.json: {}; \
-                         navigation will fail until they are added",
-                        missing.join(", ")
-                    ));
-                }
-            }
-        }
     }
     let min_engine = manifest.engine.min_engine.trim();
     if !min_engine.is_empty() && !version_at_least(ENGINE_VERSION, min_engine) {
@@ -2360,7 +2284,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn publish_navigate_fills_map_requirements_and_install_warns_missing_nodes() {
+    fn publish_navigate_no_longer_requires_a_local_map() {
+        // seq137 #3: map is a local runtime resource. Publish must succeed even
+        // when the authoring machine has no map.json / no target node.
         let root = test_dir("map-req");
         let tasks = root.join("tasks");
         let assets = root.join("assets");
@@ -2379,13 +2305,7 @@ mod tests {
             r#"{"schema_version":1,"design_resolution":[1280,720],"items":[],"collections":[]}"#,
         )
         .expect("assets.json");
-        std::fs::write(
-            assets.join("map.json"),
-            r#"{"schema_version":1,"hub":"庭院","nodes":[
-                 {"id":"庭院","recognize":{"min_hits":1,"features":[
-                   {"kind":"ocr_text","text":"庭院"}]}}],"edges":[]}"#,
-        )
-        .expect("map.json");
+        // NOTE: no assets/map.json at all.
         let dist = root.join("dist");
         let req = PublishRequest {
             task: "导航任务".into(),
@@ -2394,7 +2314,7 @@ mod tests {
             include_deps: false,
             reproducible: true,
         };
-        let outcome = publish(&tasks, &assets, &dist, &req).expect("publish");
+        let outcome = publish(&tasks, &assets, &dist, &req).expect("publish without map");
         assert!(
             outcome
                 .manifest
@@ -2404,8 +2324,12 @@ mod tests {
             "{:?}",
             outcome.manifest.engine.flow_ops
         );
-        assert_eq!(outcome.manifest.map_requirements.nodes, vec!["庭院"]);
-        // Install into a map that lacks the required node → warning, not blocking.
+        assert!(
+            outcome.manifest.map_requirements.is_empty(),
+            "map_requirements must not be populated from the local map: {:?}",
+            outcome.manifest.map_requirements
+        );
+        // Install into a runner WITHOUT map.json → success, no map warning.
         let assets2 = root.join("assets2");
         std::fs::create_dir_all(&assets2).expect("assets2");
         std::fs::write(
@@ -2413,13 +2337,6 @@ mod tests {
             r#"{"schema_version":1,"design_resolution":[1280,720],"items":[],"collections":[]}"#,
         )
         .expect("assets2 json");
-        std::fs::write(
-            assets2.join("map.json"),
-            r#"{"schema_version":1,"hub":"其他","nodes":[
-                 {"id":"其他","recognize":{"min_hits":1,"features":[
-                   {"kind":"ocr_text","text":"其他"}]}}],"edges":[]}"#,
-        )
-        .expect("assets2 map");
         let layout = PackagesLayout::new(root.join("packages"));
         let installed = install_from_path(
             &layout,
@@ -2429,13 +2346,13 @@ mod tests {
             &InstallOptions { force: true },
             1_700_000_000_000,
         )
-        .expect("install");
+        .expect("install without map");
         assert!(
-            installed
+            !installed
                 .warnings
                 .iter()
-                .any(|w| w.contains("missing from local map.json") && w.contains("庭院")),
-            "{:?}",
+                .any(|w| w.contains("map node") || w.contains("map.json")),
+            "no map hard/warning gate expected: {:?}",
             installed.warnings
         );
     }

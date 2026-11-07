@@ -210,67 +210,12 @@ fn push_issue_lines(lines: &mut Vec<String>, name: &str, issues: &[LintIssue]) {
 ///
 /// Setup errors (invalid name, unreadable bundle/store) are `Err`; contract
 /// findings are returned as issues (`Ok(vec![])` = green).
-/// seq136 D1-M2: T11 — literal `navigate.target` must exist in the ONE global
-/// map (`<assets-root>/map.json`). Map missing/invalid with navigate in use is
-/// a blocking lint error (design §5.1/§7.1 #9).
-fn append_navigate_map_lint(
-    bundle: &TaskBundle,
-    assets_root: &Path,
-    issues: &mut Vec<LintIssue>,
-) {
-    let Ok(Some(flow)) = bundle.load_flow() else {
-        return;
-    };
-    let uses = flow.navigate_uses();
-    if uses.is_empty() {
-        return;
-    }
-    let map_path = assets_root.join("map.json");
-    let map = match oas_task::map::load(assets_root) {
-        Ok(Some(map)) => map,
-        Ok(None) => {
-            issues.push(LintIssue::new(
-                "T11",
-                "flow.json",
-                format!(
-                    "flow uses navigate but the global map is missing ({}); \
-                     every navigate.target must exist in the map",
-                    map_path.display()
-                ),
-            ));
-            return;
-        }
-        Err(e) => {
-            issues.push(LintIssue::new(
-                "T11",
-                "flow.json",
-                format!("global map is invalid ({}): {e}", map_path.display()),
-            ));
-            return;
-        }
-    };
-    let nodes: std::collections::BTreeSet<&str> = map.node_ids().into_iter().collect();
-    for use_ in uses {
-        if !nodes.contains(use_.target.as_str()) {
-            issues.push(LintIssue::new(
-                "T11",
-                use_.path.clone(),
-                format!(
-                    "navigate.target `{}` is not a node in the global map ({})",
-                    use_.target,
-                    map_path.display()
-                ),
-            ));
-        }
-    }
-}
-
 pub(crate) fn lint_one(
     tasks_dir: &Path,
     name: &str,
     assets_root: &Path,
 ) -> Result<Vec<LintIssue>, String> {
-    let mut issues = if crate::global_assets::is_initialized(assets_root) {
+    if crate::global_assets::is_initialized(assets_root) {
         let store = crate::global_assets::open_store(assets_root)?;
         let global_assets = store.load_assets_file()?;
         // T4 accepts asset + collection ids (same rule as publish's
@@ -289,16 +234,10 @@ pub(crate) fn lint_one(
             Some(&ids),
             Some(&global_assets),
         );
-        issues
+        Ok(issues)
     } else {
-        lint_task(tasks_dir, name)?
-    };
-    // T11 needs the parsed flow independent of the asset-mode branch.
-    match TaskBundle::open_named(tasks_dir, name) {
-        Ok(bundle) => append_navigate_map_lint(&bundle, assets_root, &mut issues),
-        Err(e) => issues.push(LintIssue::new("T11", "task", e)),
+        lint_task(tasks_dir, name)
     }
-    Ok(issues)
 }
 
 /// CLI asset root: the repo/package `assets/` directory under the CWD.
@@ -635,8 +574,10 @@ mod tests {
     }
 
     #[test]
-    fn t11_navigate_target_must_exist_in_the_global_map() {
-        let td = TempDir::new("t11");
+    fn navigate_no_longer_gates_lint_on_the_global_map() {
+        // seq137 #3: map is a local runtime resource; lint/publish must not fail
+        // because the authoring machine has no map.json or a target is missing.
+        let td = TempDir::new("nav-nolint");
         let tasks = td.path().join("tasks");
         let assets_root = td.path().join("assets");
         let created = create_task(&tasks, "utility", "导航任务").expect("create");
@@ -647,40 +588,23 @@ mod tests {
                  {"op":"finish","args":{"exit":"done"}}]}"#,
         )
         .expect("flow");
-        // 1) navigate + missing map = T11 error.
-        let issues = lint_one(&tasks, "导航任务", &assets_root).expect("lint");
-        assert!(issues.iter().any(|i| i.code == "T11"), "{issues:?}");
-        assert!(issues.iter().any(|i| i.msg.contains("missing")), "{issues:?}");
-        // 2) map exists but target absent = T11 error.
-        std::fs::create_dir_all(&assets_root).expect("assets root");
-        std::fs::write(
-            assets_root.join("map.json"),
+        // Missing map, invalid map, unknown target: no T11 / no lint error.
+        for setup in [None, Some("{bad"), Some(
             r#"{"schema_version":1,"hub":"其他","nodes":[
                  {"id":"其他","recognize":{"min_hits":1,"features":[
                    {"kind":"ocr_text","text":"其他"}]}}],"edges":[]}"#,
-        )
-        .expect("map");
-        let issues = lint_one(&tasks, "导航任务", &assets_root).expect("lint");
-        assert_eq!(
-            issues.iter().filter(|i| i.code == "T11").count(),
-            1,
-            "{issues:?}"
-        );
-        assert!(issues.iter().any(|i| i.msg.contains("庭院")), "{issues:?}");
-        // 3) target exists = no T11.
-        std::fs::write(
-            assets_root.join("map.json"),
-            r#"{"schema_version":1,"hub":"庭院","nodes":[
-                 {"id":"庭院","recognize":{"min_hits":1,"features":[
-                   {"kind":"ocr_text","text":"庭院"}]}}],"edges":[]}"#,
-        )
-        .expect("map");
-        let issues = lint_one(&tasks, "导航任务", &assets_root).expect("lint");
-        assert!(!issues.iter().any(|i| i.code == "T11"), "{issues:?}");
-        // 4) invalid map JSON = T11 error.
-        std::fs::write(assets_root.join("map.json"), "{bad").expect("bad map");
-        let issues = lint_one(&tasks, "导航任务", &assets_root).expect("lint");
-        assert!(issues.iter().any(|i| i.code == "T11"), "{issues:?}");
+        )] {
+            if let Some(text) = setup {
+                std::fs::create_dir_all(&assets_root).expect("assets root");
+                std::fs::write(assets_root.join("map.json"), text).expect("map");
+            }
+            let issues = lint_one(&tasks, "导航任务", &assets_root).expect("lint");
+            assert!(
+                !issues.iter().any(|i| i.code == "T11"),
+                "navigate must not gate lint on map: {issues:?}"
+            );
+            assert!(issues.is_empty(), "no unrelated lint errors expected: {issues:?}");
+        }
     }
 
     #[test]

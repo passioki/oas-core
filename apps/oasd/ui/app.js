@@ -249,6 +249,8 @@ let canvasTool = 'none';
 let canvasGesture = null; // { start: {x,y} } 按下时记录，move 判定拖动/点击
 let actionPoly = null; // 操作区域多边形顶点
 let actionPolyClosed = false;
+// seq137：操作区 shape 的归属（仅当前选中素材/候选/工具时绘制；防残留）。
+let actionShapeOwnerId = '';
 let actionInvert = false;
 let dragTarget = 'roi'; // 'roi' | 'back'
 let dragStart = null;
@@ -2114,6 +2116,7 @@ function resetActionGeometry(opts) {
   const o = opts || {};
   actionPoly = null;
   actionPolyClosed = false;
+  actionShapeOwnerId = '';
   if (o.clearInvert) {
     actionInvert = false;
     syncCanvasToolButtons();
@@ -2165,6 +2168,24 @@ function resetSelection(opts) {
   }
   updateRoiLabel();
   if (o.redraw !== false) draw();
+}
+
+// seq137（A）：统一“清空画布选择”入口——空白点击/检测框选择/切帧/切任务/Esc
+// 必须同时清识别区 + 操作区（actionPoly/actionPolyClosed/roiBack/归属）。
+function clearCanvasSelection(reason) {
+  resetSelection({ clearInvert: true, clearRoi: true, clearBoxes: true, redraw: false });
+  actionPoly = null;
+  actionPolyClosed = false;
+  actionShapeOwnerId = '';
+  activeCandidate = -1;
+  pendingActionAsset = null;
+  pendingActionAssetScope = null;
+  editingRecognitionAsset = null;
+  updateAssetActionSaveButton();
+  if (typeof updateAssetRoiSaveButton === 'function') updateAssetRoiSaveButton();
+  updateRoiLabel();
+  draw();
+  if (reason) log('已清空画布识别区/操作区：' + reason);
 }
 
 function segmentIntersects(a, b, c, d) {
@@ -2247,20 +2268,27 @@ function actionShapePolygonPoints(shape) {
   return out.length >= 3 ? out : null;
 }
 
-// 候选/点测/拖测的操作区显示：素材 action_shape 平移到该候选位置（template 按
-// 匹配偏移；其它 kind 用绝对坐标）；无 action_shape 返回 null。
-function candidateActionPolygon(it, candidateBox) {
-  if (!it || !Array.isArray(candidateBox) || candidateBox.length < 4) return null;
-  const pts = actionShapePolygonPoints(it.action_shape);
-  if (!pts) return null;
-  let dx = 0;
-  let dy = 0;
-  if (String(it.kind) === 'template' && Array.isArray(it.roi) && it.roi.length === 4) {
-    dx = Number(candidateBox[0]) - Number(it.roi[0]);
-    dy = Number(candidateBox[1]) - Number(it.roi[1]);
+// seq137（B）：服务端 action_shape 优先。候选/点测/拖测返回的 action_shape 已是
+// 帧绝对坐标（含 fixed/OCR/链终端解析结果），UI 直接画多边形；只有服务端没给
+// action_shape 时才回退 action_box 矩形（不再前端二次平移）。
+function serverActionShapeView(shape, fallbackBox, label) {
+  const prefix = String(label === undefined || label === null ? '' : label);
+  const poly = actionShapePolygonPoints(shape);
+  if (poly) {
+    const bbox = actionShapeBBox({ kind: 'polygon', points: poly.map((p) => [p.x, p.y]) });
+    if (bbox) {
+      return {
+        text: (prefix ? prefix + ' ' : '') + '操作区（polygon）',
+        score: 1,
+        box: bbox,
+        polygon: poly,
+      };
+    }
   }
-  if (!Number.isFinite(dx) || !Number.isFinite(dy)) dx = 0;
-  return pts.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+  if (Array.isArray(fallbackBox) && matchBoxValid(fallbackBox)) {
+    return { text: (prefix ? prefix + ' ' : '') + '操作区', score: 1, box: fallbackBox, polygon: null };
+  }
+  return null;
 }
 
 // invert flag can never be dropped on one of them. Polygon wins when closed;
@@ -2359,6 +2387,11 @@ function actionShapePath(shape) {
 }
 
 function drawActionShapeOverlay() {
+  // seq137（A）：归属门——仅当前操作区工具/候选/编辑目标/选中素材预览时绘制，
+  // 防止其它路径留下的 actionPoly 在识别框旁残留。
+  const owned = canvasTool === 'action' || !!pendingActionAsset || activeCandidate >= 0 ||
+    !!actionShapeOwnerId;
+  if (!owned) return;
   const shape = currentActionShape();
   const openPoly = actionPoly && !actionPolyClosed && actionPoly.length ? actionPoly : null;
   if (!shape && !openPoly) return;
@@ -3505,9 +3538,9 @@ function testActionBoxes(result, labelPrefix) {
   if (Array.isArray(s.real_rect) && matchBoxValid(s.real_rect)) {
     out.push({ text: (prefix ? prefix + ' ' : '') + '真实识别', score: Number(s.score || 1), box: s.real_rect });
   }
-  if (Array.isArray(s.action_box) && matchBoxValid(s.action_box)) {
-    out.push({ text: (prefix ? prefix + ' ' : '') + '操作区', score: 1, box: s.action_box });
-  }
+  // seq137（B）：点测/长按画服务端 action_shape 多边形；无 shape 才回退 action_box 矩形。
+  const actionView = serverActionShapeView(s.action_shape, s.action_box, prefix);
+  if (actionView) out.push(actionView);
   return out;
 }
 
@@ -3610,12 +3643,11 @@ async function runTestActionForAsset(it, gesture, frameId, scopeTask) {
   if (!beginAssetTest(`${gestureLabel}测试`)) return;
   const lines = [];
   const collectedBoxes = [];
-  // seq136（UI B #2）：操作区统一按 polygon 显示（rect legacy 视作 4 点）；矩形仅 bbox。
-  function pushCandidateActionBox(label, realRect) {
-    const actPoly = candidateActionPolygon(it, realRect);
-    if (!actPoly) return;
-    const actBox = actionShapeBBox({ kind: 'polygon', points: actPoly.map((q) => [q.x, q.y]) });
-    if (actBox) collectedBoxes.push({ text: label + ' 操作区', score: 1, box: actBox, polygon: actPoly });
+  // seq137（B）：操作区直接消费服务端 action_shape（帧绝对坐标，含 fixed/链终端），
+  // 不再用素材自身 action_shape 做前端二次平移；无 shape 才回退 action_box 矩形。
+  function pushCandidateActionBox(label, result) {
+    const view = serverActionShapeView(result && result.action_shape, result && result.action_box, label);
+    if (view) collectedBoxes.push(view);
   }
   resultEl.textContent = `素材「${it.id}」${gestureLabel}测试（${real ? '真实模式' : '演练'}）…`;
   log(`test_action 开始 asset=${it.id} gesture=${gesture} real=${real}`, 'INFO', {
@@ -3677,7 +3709,7 @@ async function runTestActionForAsset(it, gesture, frameId, scopeTask) {
         lines.push(...testActionResultLines(sent, index, picked).map((line) => line.replace(/^#/, '#')));
         lines[lines.length - 1] += ' · 帧=' + frame.label;
         collectedBoxes.push(...testActionBoxes(sent, `${frame.label} #${index}`));
-        pushCandidateActionBox(`${frame.label} #${index}`, sent.real_rect);
+        pushCandidateActionBox(`${frame.label} #${index}`, sent);
       } else {
         for (const candidate of candidates.items) {
           let dry = null;
@@ -3695,7 +3727,7 @@ async function runTestActionForAsset(it, gesture, frameId, scopeTask) {
           for (const box of testActionBoxes(dry, `${frame.label} #${candidate.index}`)) {
             collectedBoxes.push(box);
           }
-          pushCandidateActionBox(`${frame.label} #${candidate.index}`, dry.real_rect);
+          pushCandidateActionBox(`${frame.label} #${candidate.index}`, dry);
         }
       }
     }
@@ -3793,27 +3825,15 @@ async function testAssetDrag(it, frameId, scopeTask) {
         memberKind: candidateInfoForDrag.memberKind,
         domain: candidateInfoForDrag.domain,
       });
-      const candidateAction = Array.isArray(candidate.action_box) && matchBoxValid(candidate.action_box)
-        ? candidate.action_box : null;
-      const candidateActionPoly = candidateActionPolygon(it, recognizedBox);
-      const candidateActionPolyBox = candidateActionPoly
-        ? actionShapeBBox({ kind: 'polygon', points: candidateActionPoly.map((p) => [p.x, p.y]) })
-        : null;
-      const effShape = it.kind === 'template'
+      // seq137（B）：拖测绘制操作区直接消费服务端候选 action_shape；采样几何也优先
+      // 用服务端 shape（无 shape 时才回退原素材 shape 的匹配平移）。
+      const effShape = candidate.action_shape || (it.kind === 'template'
         ? translatedActionShapeForMatch(it, { x: recognizedBox[0], y: recognizedBox[1] })
-        : (it.action_shape || null);
-      if (candidateAction && !effShape) {
-        candidateBoxesForDraw.push({
-          text: `操作区 #${candidateIndex}`, score: 1, box: candidateAction,
-          polygon: candidateActionPoly,
-        });
-      } else if (candidateActionPolyBox) {
-        // seq136（UI B #2）：有 action_shape 时操作区画 polygon（bbox 仅辅助）。
-        candidateBoxesForDraw.push({
-          text: `操作区 #${candidateIndex}`, score: 1, box: candidateActionPolyBox,
-          polygon: candidateActionPoly,
-        });
-      }
+        : (it.action_shape || null));
+      const serverActionView = serverActionShapeView(
+        candidate.action_shape, candidate.action_box, `操作区 #${candidateIndex}`
+      );
+      if (serverActionView) candidateBoxesForDraw.push(serverActionView);
       const action = assetActionBox(it, effShape, recognizedBox || it.roi) || it.roi;
       if (!action) {
         lines.push(`${frame.label}: ❌ 没有识别/操作区域`);
@@ -4418,14 +4438,14 @@ async function testAssetCandidates(it, frameId, scopeTask) {
       for (const box of candidateDrawBoxes) {
         const poly = candidatePolygonForAsset(it, box.box);
         if (poly) box.polygon = poly;
-        // seq136（UI B #2）：操作区（action_shape）也按 polygon 显示（矩形仅 bbox 辅助）。
-        const actPoly = candidateActionPolygon(it, box.box);
-        const actBox = actPoly ? actionShapeBBox({ kind: 'polygon', points: actPoly.map((p) => [p.x, p.y]) }) : null;
-        if (actBox) {
-          collected.push({ text: box.text + ' · 操作区', score: 1, box: actBox, polygon: actPoly });
-        }
       }
+      // seq137（B）：候选操作区直接消费服务端 action_shape（帧绝对坐标，含 fixed/
+      // OCR/链终端解析），不再用素材自身 shape 做前端二次平移。
       collected.push(...candidateDrawBoxes);
+      for (const candidate of candidates) {
+        const view = serverActionShapeView(candidate.action_shape, candidate.action_box, '候选');
+        if (view) collected.push(view);
+      }
     }
     boxes = collected;
     draw();
@@ -6433,6 +6453,7 @@ function editAssetActionRoi(it, scopeTask) {
   // v1.2.4: restore BOTH kinds (rect + polygon) and their invert flag. The
   // loader clears the stale rect first; a polygon must not keep a bbox rect.
   loadActionShapeForEdit(it.action_shape);
+  actionShapeOwnerId = String(it.id);
   if (!actionBox && roi) roiBack = { ...roi };
   // #10：统一框选工具的操作区域模式（作用对象=该素材）。
   setCanvasTool('action');
@@ -6511,6 +6532,7 @@ function pickAssetRoi(it) {
     ? { x: it.roi[0], y: it.roi[1], w: it.roi[2], h: it.roi[3] }
     : null;
   loadActionShapeForEdit(it.action_shape);
+  actionShapeOwnerId = String(it.id);
   // #6（验收反馈）：恢复已存识别多边形为只读显示（不再只剩矩形 ROI）。
   storedRecognitionPolygon = Array.isArray(it.polygon) && it.polygon.length >= 3
     ? it.polygon.map((p) => ({ x: Number(p[0]), y: Number(p[1]) }))
@@ -7498,6 +7520,8 @@ async function moveFrameBefore(dragged, target, category) {
 async function selectFrame(id) {
   // P0-2: a recognition ROI is frame-relative; switching frames invalidates it.
   cancelRecognitionRoiEdit('切换帧');
+  // seq137：切帧统一清识别区+操作区（旧几何不能画到新帧上）。
+  clearCanvasSelection('切换帧');
   try {
     pauseLivePreview();
     const r = await fetch('/frames/select', {
@@ -8044,6 +8068,8 @@ canvas.addEventListener('mousedown', (ev) => {
       const b = boxes[i];
       const [bx, by, bw, bh] = b.box;
       if (p0.x >= bx && p0.x <= bx + bw && p0.y >= by && p0.y <= by + bh) {
+        // seq137：检测框选择也要清掉旧操作区几何（actionPoly/roiBack），只保留识别框。
+        resetSelection({ clearInvert: true, clearRoi: false, clearBoxes: false, redraw: false });
         roi = { x: bx, y: by, w: bw, h: bh };
         roiBack = null;
         polygon = null;
@@ -8062,16 +8088,10 @@ canvas.addEventListener('mousedown', (ev) => {
       }
     }
   }
+  // seq137：空白点击统一清识别区 + 操作区（共享入口；不再残留 actionPoly/roiBack）。
+  clearCanvasSelection('点击画布空白');
   dragStart = p0;
   dragTarget = 'roi';
-  roi = null;
-  roiBack = null;
-  boxes = [];
-  polygon = null;
-  polyClosed = false;
-  storedRecognitionPolygon = null;
-  selectedBox = null;
-  updateClickStepButtons();
   draw();
 });
 
@@ -9070,12 +9090,19 @@ async function doRunTask() {
       updateRoiLabel();
       draw();
       log('Esc：已退出画布工具（本次绘制放弃）');
+      return;
+    }
+    // seq137：即使只是选中素材预览，Esc 也统一清识别区+操作区。
+    if (roi || polygon || storedRecognitionPolygon || actionPoly || roiBack || activeCandidate >= 0) {
+      clearCanvasSelection('Esc');
+      setStatus('已清空画布识别区/操作区');
     }
   });
   // 初始按钮状态：反选在未进入操作区域工具前禁用。
   syncCanvasToolButtons();
   taskName.addEventListener('change', async () => {
     // P0-2: the asset caches are about to be replaced with another task's rows.
+    clearCanvasSelection('切换任务');
     cancelRecognitionRoiEdit('切换任务');
     syncTaskSelect(taskName.value);
     await refreshTaskAssets((taskName.value || '').trim() || undefined);
@@ -9087,6 +9114,7 @@ async function doRunTask() {
     taskSelect.addEventListener('change', async () => {
       const name = (taskSelect.value || '').trim();
       if (!name) return;
+      clearCanvasSelection('切换任务');
       cancelRecognitionRoiEdit('切换任务');
       taskName.value = name;
       await refreshTaskAssets(name);

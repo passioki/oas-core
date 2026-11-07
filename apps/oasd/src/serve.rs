@@ -1695,13 +1695,16 @@ impl Server {
         let Some(mut meta) = bundle.load_meta()? else {
             return Ok(Default::default());
         };
-        let Some(flow) = bundle.load_flow()? else {
-            return Ok(Default::default());
-        };
         let assets = if self.using_global_assets() {
             self.asset_store("")?.load_assets_file()?
         } else {
             bundle.load_assets_file()?
+        };
+        // seq137 #7: sync derived variables from the RAW parent flow with only
+        // asset-collection expansion — call_task expansion would import the child
+        // task's ocr_var rows into this task's meta (false T8).
+        let Some(flow) = bundle.load_flow_for_derived_vars(&assets)? else {
+            return Ok(Default::default());
         };
         let had_legacy_params = !meta.params.is_empty();
         let report = oas_task::ocr_var::sync_ocr_var_variables(&mut meta, &assets, &flow)?;
@@ -5668,17 +5671,53 @@ impl Server {
             Ok(v) => v,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
-        let af = match self.asset_store("").and_then(|b| b.load_assets_file()) {
-            Ok(a) => a,
-            Err(e) => return self.send_errors(out, 400, vec![e]),
-        };
-        let asset_ids: Vec<String> = af
-            .items
-            .iter()
-            .filter(|a| a.kind != "region")
-            .map(|a| a.id.clone())
-            .take(40)
-            .collect();
+        let mut asset_ids: Vec<String> = v
+            .get("assets")
+            .or_else(|| v.get("ids"))
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut scope = if asset_ids.is_empty() { "none" } else { "assets" };
+        if asset_ids.is_empty() {
+            if let Some(node_id) = v.get("node").and_then(|x| x.as_str()) {
+                let map = match oas_task::map::load(&self.assets_dir) {
+                    Ok(Some(m)) => m,
+                    Ok(None) => {
+                        return self.send_errors(
+                            out,
+                            400,
+                            vec!["`node` requires a global map".to_string()],
+                        )
+                    }
+                    Err(e) => return self.send_errors(out, 400, vec![e]),
+                };
+                let Some(node) = map.nodes.iter().find(|n| n.id == node_id) else {
+                    return self.send_errors(
+                        out,
+                        400,
+                        vec![format!("map node `{node_id}` not found")],
+                    );
+                };
+                asset_ids = node
+                    .recognize
+                    .features
+                    .iter()
+                    .filter_map(|f| match f {
+                        oas_task::map::MapFeature::Asset { asset } => Some(asset.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                scope = "node";
+            }
+        }
+        asset_ids.truncate(40);
         let assets = match self.asset_store("").and_then(|b| b.load_runtime_assets()) {
             Ok(a) => a,
             Err(e) => return self.send_errors(out, 400, vec![e]),
@@ -5699,23 +5738,38 @@ impl Server {
             .collect();
         let mut hints = Vec::new();
         for id in &asset_ids {
-            if let Ok(best) = interp.recognize_best(id) {
-                hints.push(serde_json::json!({
-                    "asset": id,
-                    "score": best.score,
-                    "pass": best.at.is_some(),
-                    "point": best.at.map(|p| serde_json::json!({"x":p.x,"y":p.y})),
-                    "real": best.real.map(|r| [r.x,r.y,r.w,r.h]),
-                }));
+            // Cheap pass first (cached OCR full-frame lines / ROI-first locate);
+            // geometry is only computed for a passing feature.
+            let pass = match interp.asset_feature_passes(id) {
+                Ok(p) => p,
+                Err(_) => false,
+            };
+            let mut hint = serde_json::json!({"asset": id, "pass": pass});
+            if pass {
+                if let Ok(best) = interp.recognize_best(id) {
+                    hint["score"] = serde_json::json!(best.score);
+                    hint["point"] = best
+                        .at
+                        .map(|p| serde_json::json!({"x":p.x,"y":p.y}))
+                        .unwrap_or(serde_json::Value::Null);
+                    hint["real"] = best
+                        .real
+                        .map(|r| serde_json::json!([r.x,r.y,r.w,r.h]))
+                        .unwrap_or(serde_json::Value::Null);
+                }
             }
+            hints.push(hint);
         }
+        let (det_calls, ncc_calls) = interp.recognition_diagnostics();
         self.send_json(
             out,
             200,
             &serde_json::json!({
                 "ok": true, "frame_source": frame_source,
+                "scope": scope,
                 "ocr_lines": ocr_lines,
                 "assets": hints,
+                "diagnostics": {"det_rec_calls": det_calls, "ncc_calls": ncc_calls},
             })
             .to_string(),
         )
@@ -18560,6 +18614,87 @@ mod tests {
     }
 
     #[test]
+    fn sync_derived_variables_uses_raw_parent_flow_not_expanded_call_task() {
+        // seq137 #7: a child task's ocr_var must never leak into the parent meta
+        // (false T8). The save-triggered sync must use the RAW parent flow.
+        let td = TempDir::new("sync-raw-flow");
+        let tasks = td.path().join("tasks");
+        let assets_dir = td.path().join("assets");
+        std::fs::create_dir_all(&assets_dir).unwrap();
+        std::fs::write(
+            assets_dir.join("assets.json"),
+            r#"{"schema_version":1,"design_resolution":[1280,720],"items":[
+                 {"id":"OCR_X","kind":"ocr_var","runtime_text":"甲","param_key":"p"}],
+               "collections":[]}"#,
+        )
+        .unwrap();
+        for name in ["P", "C"] {
+            let dir = tasks.join(name);
+            std::fs::create_dir_all(dir.join("images")).unwrap();
+            std::fs::write(
+                dir.join("meta.json"),
+                format!(
+                    r#"{{"schema_version":1,"name":"{name}","variables":[],"exits":{{"done":{{"result":"success"}}}}}}"#
+                ),
+            )
+            .unwrap();
+            let flow = if name == "P" {
+                r#"{"schema_version":1,"name":"P","steps":[
+                     {"op":"call_task","args":{"task":"C"}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#
+            } else {
+                r#"{"schema_version":1,"name":"C","steps":[
+                     {"op":"appear","args":{"sel":"OCR_X"}},
+                     {"op":"finish","args":{"exit":"done"}}]}"#
+            };
+            std::fs::write(dir.join("flow.json"), flow).unwrap();
+            std::fs::write(
+                dir.join("assets.json"),
+                r#"{"schema_version":1,"design_resolution":[1280,720],"items":[],"collections":[]}"#,
+            )
+            .unwrap();
+        }
+        let server = server_with_tasks(td.path()).with_assets_dir(assets_dir.clone());
+        // Simulate the OLD buggy sync: expanded parent flow adds OCR_X's derived
+        // row to P's meta.
+        let bundle = oas_task::TaskBundle::open_named(&tasks, "P").expect("bundle P");
+        let assets = server
+            .asset_store("")
+            .expect("store")
+            .load_assets_file()
+            .expect("assets");
+        let expanded = bundle.load_flow().expect("expanded").expect("flow");
+        let mut meta = bundle.load_meta().expect("meta").expect("present");
+        let old = oas_task::ocr_var::sync_ocr_var_variables(&mut meta, &assets, &expanded)
+            .expect("old sync");
+        assert!(!old.added.is_empty(), "old expanded sync polluted P meta");
+        bundle.write_meta(&meta).expect("write polluted meta");
+        // T8 (raw-flow口径) sees the stale imported row as an error before fix.
+        let issues = crate::task::lint_one(&tasks, "P", &assets_dir).expect("lint");
+        assert!(
+            issues.iter().any(|i| i.code == "T8"),
+            "expected the reproduced stale T8: {issues:?}"
+        );
+        // Fixed sync: raw parent flow → the imported child row is removed.
+        server
+            .sync_task_derived_variables("P")
+            .expect("raw sync");
+        let meta = bundle.load_meta().expect("meta").expect("present");
+        assert!(
+            meta.effective_variables()
+                .iter()
+                .all(|v| v.asset_id.as_deref() != Some("OCR_X")),
+            "child ocr_var must not be added to parent meta: {:?}",
+            meta.effective_variables()
+        );
+        let issues = crate::task::lint_one(&tasks, "P", &assets_dir).expect("lint");
+        assert!(
+            !issues.iter().any(|i| i.code == "T8"),
+            "no false T8 after raw sync: {issues:?}"
+        );
+    }
+
+    #[test]
     fn map_api_crud_validate_state_plan_navigate_and_asset_guard() {
         let td = TempDir::new("map-api");
         let server = polygon_action_fixture(td.path());
@@ -18634,7 +18769,23 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["dry"], true, "{out}");
         assert_eq!(v["hops"], 1, "{out}");
-        // probe: OCR lines array + per-asset hints.
+        // probe: node-scoped by default (seq137: no whole-library scan).
+        let (status, out) = post_route(
+            &server,
+            "/map/probe",
+            "application/json",
+            &serde_json::to_vec(
+                &serde_json::json!({"frame_id": frame_id, "node": "庭院"}),
+            )
+            .unwrap(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(v["ocr_lines"].is_array(), "{out}");
+        assert_eq!(v["scope"], "node", "{out}");
+        assert!(!v["assets"].as_array().unwrap().is_empty(), "{out}");
+        assert!(v["diagnostics"]["det_rec_calls"].is_number(), "{out}");
+        // No node/assets → OCR lines only (fast default, zero NCC scan).
         let (status, out) = post_route(
             &server,
             "/map/probe",
@@ -18643,8 +18794,7 @@ mod tests {
         );
         assert!(status.contains("200"), "{status} {out}");
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert!(v["ocr_lines"].is_array(), "{out}");
-        assert!(!v["assets"].as_array().unwrap().is_empty(), "{out}");
+        assert!(v["assets"].as_array().unwrap().is_empty(), "{out}");
         // map references protect delete + rename (no silent rewrite).
         let (status, out) = post_route(
             &server,

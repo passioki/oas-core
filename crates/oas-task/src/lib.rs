@@ -1583,6 +1583,24 @@ fn expand_call_steps(
 ///   collection used as a click target must state the line to recognize.
 /// * Nested collections are rejected when the collection is saved, so expansion
 ///   is a single level.
+/// seq137 #7: parse a flow and expand **asset collections only** (never
+/// `call_task`). Shared by the derived-variable sync and T8 so a child task's
+/// ocr_var does not leak into the parent meta, while collection-only OCR
+/// references still resolve identically to the runtime flow.
+pub fn parse_flow_collections_expanded(
+    text: &str,
+    assets: &AssetsFile,
+) -> Result<oas_flow::Flow, String> {
+    let mut value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("flow.json: {e}"))?;
+    if let Some(steps) = value.get_mut("steps").and_then(|x| x.as_array_mut()) {
+        expand_collection_steps(steps, &assets.collections, &assets.items)
+            .map_err(|e| format!("flow.json: collection expansion: {e}"))?;
+    }
+    let text = serde_json::to_string(&value).map_err(|e| format!("flow.json: {e}"))?;
+    oas_flow::Flow::from_json(&text).map_err(|e| format!("flow.json: {e}"))
+}
+
 fn expand_collection_steps(
     steps: &mut Vec<serde_json::Value>,
     collections: &[AssetCollection],
@@ -1820,7 +1838,7 @@ impl TaskBundle {
 
     /// Load `flow.json` without expanding collections/call_task. Used for
     /// reference checks (the expanded flow no longer contains the collection id).
-    fn load_flow_raw(&self) -> Result<Option<oas_flow::Flow>, String> {
+    pub fn load_flow_raw(&self) -> Result<Option<oas_flow::Flow>, String> {
         let path = self.flow_path();
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
@@ -1830,6 +1848,23 @@ impl TaskBundle {
         oas_flow::Flow::from_json(&text)
             .map(Some)
             .map_err(|e| format!("flow.json: {e}"))
+    }
+
+    /// seq137 #7: the parent flow with **asset collection** references expanded
+    /// but **call_task NOT expanded**. Used by derived-variable sync + T8 so a
+    /// child task's ocr_var never leaks into the parent meta, while collection-only
+    /// OCR references still lint/sync correctly.
+    pub fn load_flow_for_derived_vars(
+        &self,
+        assets: &AssetsFile,
+    ) -> Result<Option<oas_flow::Flow>, String> {
+        let path = self.flow_path();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("read {}: {e}", path.display())),
+        };
+        parse_flow_collections_expanded(&text, assets).map(Some)
     }
 
     fn flow_references_id(&self, id: &str) -> bool {
@@ -3383,6 +3418,12 @@ impl TaskBundle {
             }
         };
         let Some(text) = flow_text else { return };
+        // seq137 #7: T8 must use the RAW parent flow (no call_task expansion), the
+        // same source the save-triggered derived-variable sync uses. Collection
+        // expansion below only affects asset locators, not param/asset usage.
+        let raw_flow = merged_assets
+            .as_ref()
+            .and_then(|af| crate::parse_flow_collections_expanded(&text, af).ok());
         // T6: the DSL has no external-code construct by construction; still scan
         // for hand-added keys (e.g. "code"/"script") BEFORE parsing so the report
         // is about the right rule.
@@ -3541,7 +3582,11 @@ impl TaskBundle {
         // never rewrites. seq129-fix: the asset lookup uses the **merged**
         // local+global view, so a global ocr_var no longer reports a false T8.
         if let (Some(meta), Some(assets)) = (&meta, merged_assets.as_ref()) {
-            issues.extend(crate::ocr_var::derived_variable_issues(meta, assets, &flow));
+            issues.extend(crate::ocr_var::derived_variable_issues(
+                meta,
+                assets,
+                raw_flow.as_ref().unwrap_or(&flow),
+            ));
         }
     }
 

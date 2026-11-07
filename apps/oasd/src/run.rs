@@ -557,13 +557,10 @@ pub(crate) fn load_nav_map(
     let assets = crate::global_assets::open_store(assets_dir)
         .and_then(|s| s.load_assets_file().map_err(|e| e.to_string()))
         .map_err(|e| format!("navigate: map assets: {e}"))?;
-    let validation = map.validate(&assets, &Default::default());
-    if !validation.is_ok() {
-        return Err(format!(
-            "navigate: map.json 校验失败: {}",
-            validation.error_text()
-        ));
-    }
+    let _ = assets;
+    // seq137 #3: do NOT validate the whole map here (map is a local action
+    // library resource; asset-ref errors are deferred to the node/hop that
+    // actually needs them). Only the literal targets of this flow are checked.
     let rt = map.to_runtime();
     for use_ in &nav_uses {
         if rt.node(&use_.target).is_none() {

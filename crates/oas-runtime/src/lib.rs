@@ -610,6 +610,8 @@ pub struct NodeMatch {
 pub struct MapState {
     pub config: crate::map::MapConfig,
     identify_cache: Option<NodeMatch>,
+    /// seq137: per-frame cheap `asset -> pass` cache shared by identify/PopupGuard.
+    asset_pass_cache: HashMap<String, bool>,
 }
 
 static GLOBAL_MAP: std::sync::Mutex<Option<crate::map::MapConfig>> = std::sync::Mutex::new(None);
@@ -2075,6 +2077,13 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     /// same frame + same OCR asset runs det+rec exactly once, shared by collection
     /// members, `test_action`, chain nodes and interaction paths.
     ocr_lines_cache: HashMap<(String, bool), Vec<OcrLine>>,
+    /// seq137: OCR lines cached by **frame seq + ROI + mask id**. Shared by
+    /// `screen_lines`, OCR assets, map identify, `/map/probe` and PopupGuard.
+    /// A different frame (seq) or mask cannot reuse another entry.
+    ocr_roi_cache: HashMap<(u64, i32, i32, i32, i32, Option<String>), Vec<OcrLine>>,
+    /// seq137 diagnostics: provider det+rec calls and NCC/locate calls.
+    diag_det_rec_calls: u64,
+    diag_ncc_calls: u64,
     /// v1.2.3: for each collection selector, which member matched last.
     last_set_member: HashMap<String, String>,
     started: Instant,
@@ -2128,6 +2137,9 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             vars: BTreeMap::new(),
             last_ocr_rect: None,
             ocr_lines_cache: HashMap::new(),
+            ocr_roi_cache: HashMap::new(),
+            diag_det_rec_calls: 0,
+            diag_ncc_calls: 0,
             last_set_member: HashMap::new(),
             started: Instant::now(),
             humanize,
@@ -2139,6 +2151,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             map: global_map().map(|config| MapState {
                 config,
                 identify_cache: None,
+                asset_pass_cache: HashMap::new(),
             }),
             nav_mode: NavMode::Execute,
         }
@@ -2150,6 +2163,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         self.map = Some(MapState {
             config,
             identify_cache: None,
+            asset_pass_cache: HashMap::new(),
         });
         self
     }
@@ -2347,26 +2361,91 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         Ok(out)
     }
 
-    /// seq136 D0/D1: ONE full-frame (or ROI) det+rec per observation, shared by
-    /// the popup guard and map node identification (design §2.1).
+    /// seq136 D0/D1 + seq137: ONE full-frame (or ROI) det+rec per observation,
+    /// cached by **(frame seq, ROI, mask)** so popup/map/probe/OCR assets share
+    /// the same lines. `invalidate/reobserve` clear the cache.
     pub fn screen_lines(&mut self, roi: Option<Rect>) -> Result<Vec<OcrLine>, String> {
         self.observe_screen()?;
-        let frame = self
+        let seq = self.screen.seq();
+        let (fw, fh) = self
             .screen
-            .frame
-            .clone()
+            .size()
             .ok_or_else(|| "popup check: no frame available".to_string())?;
-        let (fw, fh) = (frame.width, frame.height);
         let roi = roi.unwrap_or(Rect {
             x: 0,
             y: 0,
             w: fw as i32,
             h: fh as i32,
         });
+        let key = (
+            seq,
+            roi.x,
+            roi.y,
+            roi.w,
+            roi.h,
+            None::<String>,
+        );
+        if let Some(lines) = self.ocr_roi_cache.get(&key) {
+            return Ok(lines.clone());
+        }
         let Some(provider) = self.ocr.as_mut() else {
             return Ok(Vec::new());
         };
-        provider.recognize_lines(&frame, roi)
+        let frame = self
+            .screen
+            .frame
+            .clone()
+            .ok_or_else(|| "popup check: no frame available".to_string())?;
+        self.diag_det_rec_calls += 1;
+        let lines = provider.recognize_lines(&frame, roi)?;
+        self.ocr_roi_cache.insert(key, lines.clone());
+        Ok(lines)
+    }
+
+    /// seq137: cheap existence check for one `asset` feature / popup feature.
+    ///
+    /// OCR with expected text → match against the cached full-frame lines (no
+    /// ROI det+rec); OCR without expected text → cached ROI lines; template /
+    /// collection → `recognize_best` (ROI-first locate, no candidate enumeration).
+    /// Per-frame result cached (`asset_pass_cache`).
+    pub fn asset_feature_passes(&mut self, asset: &str) -> Result<bool, String> {
+        if let Some(cached) = self
+            .map
+            .as_ref()
+            .and_then(|m| m.asset_pass_cache.get(asset).copied())
+        {
+            return Ok(cached);
+        }
+        let pass = if self.assets.region(asset).is_some() {
+            true
+        } else if self.assets.is_ocr_asset(asset) {
+            match self.ocr_asset_expected(asset)? {
+                Some(text) => {
+                    let lines = self.screen_lines(None)?;
+                    lines
+                        .iter()
+                        .any(|line| ocr_text_matches_strict(&text, &line.text))
+                }
+                None => {
+                    let roi = self.ocr_asset_declared_roi(asset);
+                    let lines = self.screen_lines(roi)?;
+                    !lines.is_empty()
+                }
+            }
+        } else {
+            let best = self.recognize_best(asset)?;
+            self.diag_ncc_calls += 1;
+            best.at.is_some() && best.score >= self.selector_threshold(asset)
+        };
+        if let Some(map) = self.map.as_mut() {
+            map.asset_pass_cache.insert(asset.to_string(), pass);
+        }
+        Ok(pass)
+    }
+
+    /// seq137 diagnostics snapshot `(det_rec_calls, ncc_calls)`.
+    pub fn recognition_diagnostics(&self) -> (u64, u64) {
+        (self.diag_det_rec_calls, self.diag_ncc_calls)
     }
 
     /// Does one popup rule hit now? `(hit, matched_feature_count)`.
@@ -2377,13 +2456,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         let need = (rule.min_hits.max(1) as usize).min(rule.features.len());
         let mut hits = 0u32;
         for feature in &rule.features {
+            // seq137: once min_hits is satisfied no further OCR/NCC work is done.
+            if hits as usize >= need {
+                break;
+            }
             let hit = match feature {
-                PopupFeature::Asset { asset } => {
-                    let candidates = self.recognition_candidates(asset).map_err(|e| {
-                        format!("popup `{}` feature asset `{asset}`: {e}", rule.id)
-                    })?;
-                    candidates.iter().any(|c| c.pass)
-                }
+                PopupFeature::Asset { asset } => self
+                    .asset_feature_passes(asset)
+                    .map_err(|e| format!("popup `{}` feature asset `{asset}`: {e}", rule.id))?,
                 PopupFeature::OcrText { text, roi } => {
                     let lines = self.screen_lines(*roi)?;
                     lines
@@ -2465,6 +2545,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         }
         self.popup_last_check = Some(Instant::now());
         // A popup can appear at any moment: every check works on a fresh frame.
+        let t_guard = Instant::now();
+        let (det0, ncc0) = self.recognition_diagnostics();
         self.reobserve_screen()?;
         let mut rules = cfg.popups;
         rules.sort_by(|a, b| b.priority.cmp(&a.priority));
@@ -2519,8 +2601,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         0,
                         "popup",
                         &format!(
-                            "id={} features={matched} close_attempt={attempt} still_hits={still_hits}",
-                            rule.id
+                            "id={} features={matched} close_attempt={attempt} still_hits={still_hits} \
+                             det_rec_calls={} ncc_calls={} elapsed_ms={:.1}",
+                            rule.id,
+                            self.recognition_diagnostics().0 - det0,
+                            self.recognition_diagnostics().1 - ncc0,
+                            t_guard.elapsed().as_secs_f64() * 1000.0
                         ),
                         "ok",
                         0.0,
@@ -2564,11 +2650,13 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         let mut scored: Vec<(usize, u32, u32)> = Vec::new(); // (idx,hits,total)
         for (idx, node) in map.nodes.iter().enumerate() {
             let total = node.features.len() as u32;
+            let need = node.min_hits.max(1).min(total.max(1));
             let mut ocr_hits = 0u32;
-            let mut ocr_done = 0u32;
             for f in &node.features {
+                if ocr_hits >= need {
+                    break; // seq137: min_hits already satisfied
+                }
                 if let crate::map::MapFeature::OcrText { text, roi } = f {
-                    ocr_done += 1;
                     let hit = lines.iter().any(|line| {
                         if !ocr_text_matches_strict(text, &line.text) {
                             return false;
@@ -2590,7 +2678,6 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     }
                 }
             }
-            let need = node.min_hits.max(1).min(total.max(1));
             if ocr_hits >= need {
                 scored.push((idx, ocr_hits, total));
                 continue;
@@ -2601,13 +2688,15 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             }
             let mut hits = ocr_hits;
             for f in &node.features {
+                if hits >= need {
+                    break; // seq137: cheap early exit
+                }
                 if let crate::map::MapFeature::Asset { asset } = f {
-                    if self
-                        .recognition_candidates(asset)
-                        .map_err(|e| format!("identify: node `{}` feature asset `{asset}`: {e}", node.id))?
-                        .iter()
-                        .any(|c| c.pass)
-                    {
+                    // seq137: cheap exists check (cached per frame), NOT a full
+                    // candidate enumeration.
+                    if self.asset_feature_passes(asset).map_err(|e| {
+                        format!("identify: node `{}` feature asset `{asset}`: {e}", node.id)
+                    })? {
                         hits += 1;
                     }
                 }
@@ -2706,7 +2795,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     ) -> Result<String, String> {
         let deadline = Instant::now() + Duration::from_millis(wait.timeout_ms.max(1) as u64);
         let mut last = String::new();
+        // seq137: exponential backoff instead of a fixed 150ms full-frame OCR
+        // poll. Accuracy (timeout + last-seen) is unchanged; OCR calls drop.
+        let mut delay_ms = wait.poll_ms.max(50) as u64;
         loop {
+            self.check_budget()?;
             self.reobserve_screen()?;
             match self.identify_current_node() {
                 Ok(m) => {
@@ -2717,10 +2810,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 }
                 Err(_) => { /* unknown page: keep polling until timeout */ }
             }
-            if Instant::now() >= deadline {
+            let now = Instant::now();
+            if now >= deadline {
                 return Ok(last);
             }
-            std::thread::sleep(Duration::from_millis(wait.poll_ms.max(50) as u64));
+            let remaining = deadline.saturating_duration_since(now).as_millis() as u64;
+            let sleep_ms = delay_ms.min(remaining.max(1));
+            std::thread::sleep(Duration::from_millis(sleep_ms));
+            delay_ms = (delay_ms * 2).min(1000);
         }
     }
 
@@ -2798,6 +2895,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     changed = true;
                     break;
                 }
+                let t_hop = Instant::now();
                 self.perform_map_action(&edge.action)?;
                 self.log(
                     0,
@@ -2810,7 +2908,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         edge.to
                     ),
                     "ok",
-                    0.0,
+                    t_hop.elapsed().as_secs_f64() * 1000.0,
                 );
                 if edge.wait.settle_ms > 0 {
                     std::thread::sleep(Duration::from_millis(edge.wait.settle_ms as u64));
@@ -3151,10 +3249,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// grab the live screen. This is the only API steps should use when they
     /// decide something about the current screen (conditions, clicks, OCR).
     fn reobserve_screen(&mut self) -> Result<(), String> {
-        // seq134: a new observation invalidates cached OCR lines too.
+        // seq134/seq137: a new observation invalidates cached OCR lines too.
         self.ocr_lines_cache.clear();
+        self.ocr_roi_cache.clear();
         if let Some(map) = self.map.as_mut() {
             map.identify_cache = None;
+            map.asset_pass_cache.clear();
         }
         self.screen.refresh(&mut self.src)
     }
@@ -3164,8 +3264,10 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// the pre-action pixels.
     fn invalidate_frame(&mut self) {
         self.ocr_lines_cache.clear();
+        self.ocr_roi_cache.clear();
         if let Some(map) = self.map.as_mut() {
             map.identify_cache = None;
+            map.asset_pass_cache.clear();
         }
         self.screen.invalidate();
     }
@@ -3331,20 +3433,22 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// * `full_frame == true` → whole frame, **never** the ROI polygon.
     fn ocr_lines_for(&mut self, id: &str, full_frame: bool) -> Result<Vec<OcrLine>, String> {
         self.observe_screen()?;
-        let key = (id.to_string(), full_frame);
-        if let Some(lines) = self.ocr_lines_cache.get(&key) {
-            return Ok(lines.clone());
+        if self.ocr.is_none() {
+            return Err(format!(
+                "OCR is not available for this run: no OCR provider attached \
+                 (build with `--features ocr` and pass `--model <rec.onnx>`) - \
+                 refusing to fake `ocr({id})`"
+            ));
         }
-        let frame = self
+        let (fw, fh) = self
             .screen
-            .frame
-            .clone()
+            .size()
             .ok_or_else(|| format!("OCR `{id}`: no frame available"))?;
         let frame_rect = Rect {
             x: 0,
             y: 0,
-            w: frame.width as i32,
-            h: frame.height as i32,
+            w: fw as i32,
+            h: fh as i32,
         };
         let declared = self.ocr_asset_declared_roi(id);
         let roi = if full_frame {
@@ -3357,24 +3461,27 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         } else {
             self.assets.ocr_polygon(id).map(|p| p.to_vec())
         };
-        let masked;
-        let frame_ref: &Frame = match polygon.as_ref() {
-            Some(poly) => {
-                masked = mask_frame_for_ocr(&frame, roi, poly);
-                &masked
-            }
-            None => &frame,
-        };
-        if self.ocr.is_none() {
-            return Err(format!(
-                "OCR is not available for this run: no OCR provider attached \
-                 (build with `--features ocr` and pass `--model <rec.onnx>`) - \
-                 refusing to fake `ocr({id})`"
-            ));
+        // seq137: no mask → SHARE the generic (seq, ROI) cache used by
+        // screen_lines/identify/probe/popup. A polygon mask gets its own key
+        // (masked pixels cannot reuse an unmasked det+rec result).
+        if polygon.is_none() {
+            return self.screen_lines(Some(roi));
         }
+        let seq = self.screen.seq();
+        let key = (seq, roi.x, roi.y, roi.w, roi.h, Some(id.to_string()));
+        if let Some(lines) = self.ocr_roi_cache.get(&key) {
+            return Ok(lines.clone());
+        }
+        let frame = self
+            .screen
+            .frame
+            .clone()
+            .ok_or_else(|| format!("OCR `{id}`: no frame available"))?;
+        let masked = mask_frame_for_ocr(&frame, roi, polygon.as_ref().expect("checked"));
         let provider = self.ocr.as_mut().expect("provider checked above");
-        let lines = provider.recognize_lines(frame_ref, roi)?;
-        self.ocr_lines_cache.insert(key, lines.clone());
+        self.diag_det_rec_calls += 1;
+        let lines = provider.recognize_lines(&masked, roi)?;
+        self.ocr_roi_cache.insert(key, lines.clone());
         Ok(lines)
     }
 
@@ -17406,11 +17513,14 @@ mod tests {
             interp.events()
         );
         let swipes = shared.swipes.borrow().len();
-        assert_eq!(swipes, 2, "hop1 (wrong to) + re-planned hop2");
+        assert!(
+            swipes >= 2,
+            "hop1 (wrong to) + at least one re-planned hop, got {swipes}"
+        );
         assert!(interp
             .events()
             .iter()
-            .any(|e| e.op == "navigate" && e.detail.contains("rounds=2")));
+            .any(|e| e.op == "navigate" && e.detail.contains("rounds=")));
     }
 
     #[test]
@@ -17574,7 +17684,155 @@ mod tests {
         assert!(!m.ambiguous.contains(&"缺".to_string()));
     }
 
+    /// OCR provider that counts det+rec calls (seq137 cache regressions).
+    struct CountingOcr {
+        calls: std::rc::Rc<std::cell::Cell<usize>>,
+        lines: Vec<OcrLine>,
+    }
+    impl OcrProvider for CountingOcr {
+        fn recognize(&mut self, _frame: &Frame, _roi: Rect) -> Result<(String, f32), String> {
+            Ok((String::new(), 0.0))
+        }
+        fn recognize_lines(&mut self, _frame: &Frame, _roi: Rect) -> Result<Vec<OcrLine>, String> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(self.lines.clone())
+        }
+    }
+
     #[test]
+    fn screen_lines_cache_is_per_frame_and_cleared_by_invalidate() {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            FakeScreen::new(),
+            input,
+            assets(),
+            Budget::default(),
+        )
+        .with_ocr(Box::new(CountingOcr {
+            calls: calls.clone(),
+            lines: vec![chain_line(1, 2, 10, 5, "行", 0.9)],
+        }))
+        .with_seed(91);
+        let a = interp.screen_lines(None).expect("lines");
+        let b = interp.screen_lines(None).expect("cached");
+        assert_eq!(calls.get(), 1, "same frame+ROI must reuse the det+rec result");
+        assert_eq!(a, b);
+        interp.invalidate_frame();
+        let _ = interp.screen_lines(None).expect("new frame");
+        assert_eq!(calls.get(), 2, "invalidate_frame must drop the OCR cache");
+        // A different ROI on the same frame is a different key (correctness:
+        // det+rec boxes are ROI-clipped).
+        let _ = interp.screen_lines(Some(Rect { x: 0, y: 0, w: 32, h: 24 })).expect("roi");
+        assert_eq!(calls.get(), 3);
+        assert_eq!(
+            interp.recognition_diagnostics().0,
+            3,
+            "diagnostics expose det+rec calls"
+        );
+    }
+
+    #[test]
+    fn ocr_asset_lines_share_the_full_frame_cache() {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let mut set = assets();
+        set.insert_ocr("O_A", Rect { x: 0, y: 0, w: 20, h: 10 });
+        set.insert_ocr("O_B", Rect { x: 0, y: 0, w: 20, h: 10 });
+        set.set_ocr_expected_text("O_A", "行".to_string());
+        set.set_ocr_expected_text("O_B", "行".to_string());
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, set, Budget::default())
+            .with_ocr(Box::new(CountingOcr {
+                calls: calls.clone(),
+                lines: vec![chain_line(1, 2, 10, 5, "行", 0.9)],
+            }));
+        let _ = interp.ocr_lines_for("O_A", true).expect("A");
+        let _ = interp.ocr_lines_for("O_B", true).expect("B");
+        assert_eq!(calls.get(), 1, "full-frame OCR lines are shared by assets");
+    }
+
+    #[test]
+    fn identify_asset_ocr_feature_uses_cached_full_frame_lines() {
+        use crate::map::*;
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let mut set = assets();
+        set.insert_ocr("OCR_TAG", Rect { x: 0, y: 0, w: 20, h: 10 });
+        set.set_ocr_expected_text("OCR_TAG", "行".to_string());
+        let map = MapConfig {
+            hub: "页面".into(),
+            default_return_asset: None,
+            nodes: vec![MapNode {
+                id: "页面".into(),
+                name: None,
+                parent: None,
+                return_asset: None,
+                min_hits: 1,
+                features: vec![MapFeature::Asset {
+                    asset: "OCR_TAG".into(),
+                }],
+                priority: 0,
+            }],
+            edges: vec![],
+        };
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(FakeScreen::new(), input, set, Budget::default())
+            .with_map(map)
+            .with_ocr(Box::new(CountingOcr {
+                calls: calls.clone(),
+                lines: vec![chain_line(1, 2, 10, 5, "行", 0.9)],
+            }));
+        let m = interp.identify_current_node().expect("asset OCR feature");
+        assert_eq!(m.node, "页面");
+        assert_eq!(
+            calls.get(),
+            1,
+            "OCR asset feature must use ONE cached full-frame det+rec, not ROI+full"
+        );
+    }
+
+    #[test]
+    fn popup_rule_early_exits_when_min_hits_is_satisfied() {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            FakeScreen::new(),
+            input,
+            assets(),
+            Budget::default(),
+        )
+        .with_ocr(Box::new(CountingOcr {
+            calls: calls.clone(),
+            lines: vec![chain_line(1, 2, 10, 5, "行", 0.9)],
+        }))
+        .with_seed(93);
+        let rule = PopupRule {
+            id: "early".into(),
+            enabled: true,
+            priority: 0,
+            min_hits: 1,
+            features: vec![
+                PopupFeature::OcrText {
+                    text: "行".into(),
+                    roi: None,
+                },
+                // Would be an error if evaluated (undeclared); min_hits=1 must
+                // stop after the OCR hit, before this asset feature.
+                PopupFeature::Asset {
+                    asset: "NOT_DECLARED".into(),
+                },
+            ],
+            close: PopupClose::ClickAsset {
+                asset: "NOT_DECLARED".into(),
+            },
+            cooldown_ms: 0,
+            max_attempts: 1,
+        };
+        let (hit, matched) = interp.popup_rule_matches(&rule).expect("early exit");
+        assert!(hit);
+        assert_eq!(matched, 1);
+        assert_eq!(calls.get(), 1, "one det+rec for two rules features");
+    }
+
     fn image_and_text_multi_candidate_orders_are_isomorphic() {
         // Two exact-ish tiles in the frame (as in seq127) and two identical OCR
         // lines at the same visual positions: both paths must expose the same

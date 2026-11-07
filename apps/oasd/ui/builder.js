@@ -175,6 +175,8 @@
     // seq136（C2 #8）：可编辑源码框 dirty 状态（手动编辑后构建器不覆盖）。
     codeDirty: false,
     codeLastSynced: '',
+    // seq137（UI B #1）：列表拖拽内存态（统一 payload；dragover 计算插入位）。
+    dragState: null,
     checked: new Set(),
     // Undo/redo of FLOW EDITS (not selection history). Every renderAll that
     // sees a changed flow stores one snapshot; selection-only changes do not.
@@ -1642,6 +1644,113 @@
     status(`已删除 ${n} 个勾选步骤`);
   }
 
+  // seq137（UI B #1）：列表视图同层拖拽插入纯函数（根/if/loop 子级、首尾）。
+  // path 语义与 B.selected 一致：根 = [i]；if = [i,'then',j] / [i,'else',j]；
+  // loop/while = [i,'body',j]。'inside' 只对容器步骤有效（append 到其子数组）。
+  function flowChildArrayAt(flow, containerPath) {
+    if (!flow || !Array.isArray(flow.steps)) return null;
+    let arr = flow.steps;
+    let obj = null;
+    for (const seg of containerPath) {
+      if (typeof seg === 'number') {
+        if (!Array.isArray(arr)) return null;
+        obj = arr[seg];
+        if (!obj) return null;
+        arr = obj;
+      } else {
+        if (!obj) return null;
+        arr = obj[seg];
+        if (!Array.isArray(arr)) return null;
+      }
+    }
+    return Array.isArray(arr) ? arr : null;
+  }
+
+  function flowContainerChildKey(step) {
+    if (!step || typeof step !== 'object') return '';
+    if (step.op === 'if') return 'then';
+    if (step.op === 'loop' || step.op === 'while') return 'body';
+    return '';
+  }
+
+  function flowStepIsContainer(step) {
+    return !!flowContainerChildKey(step);
+  }
+
+  // 行内垂直位置 → before / after / inside（中间 40% 视为容器内追加）。
+  function flowDropZoneFromRect(rectTop, rectHeight, clientY) {
+    const h = Math.max(1, Number(rectHeight) || 1);
+    const r = (Number(clientY) - Number(rectTop || 0)) / h;
+    if (r < 0.3) return 'before';
+    if (r > 0.7) return 'after';
+    return 'inside';
+  }
+
+  // 删除源步骤后修正 targetPath 中同一数组的下标（源在目标之前时目标前移）。
+  function adjustPathAfterStepRemoval(path, fromPath) {
+    const out = path.slice();
+    const parent = fromPath.slice(0, -1);
+    for (let i = 0; i < parent.length; i++) {
+      if (path[i] !== parent[i]) return out;
+    }
+    const targetIdx = path[parent.length];
+    const fromIdx = fromPath[fromPath.length - 1];
+    if (typeof targetIdx === 'number' && targetIdx > fromIdx) {
+      out[parent.length] = targetIdx - 1;
+    }
+    return out;
+  }
+
+  // 纯函数：把 flow 中 fromPath 步骤移动到 targetPath 的 before/after / 容器 inside。
+  // 返回 {ok:true,path} 或 {ok:false,error}；before/after 仅允许同层（root 或同一子容器）。
+  function moveFlowStepInsert(flow, fromPath, targetPath, position) {
+    if (!flow || !Array.isArray(fromPath) || !fromPath.length ||
+      !Array.isArray(targetPath) || !targetPath.length) {
+      return { ok: false, error: '拖拽路径无效' };
+    }
+    const fromArr = flowChildArrayAt(flow, fromPath.slice(0, -1));
+    const fromIdx = fromPath[fromPath.length - 1];
+    const fromStep = fromArr && fromArr[fromIdx];
+    if (!fromStep) return { ok: false, error: '源步骤不存在' };
+    if (JSON.stringify(fromPath) === JSON.stringify(targetPath)) {
+      return { ok: false, error: '拖到自身位置（无变化）' };
+    }
+    const targetStep = flowStepAtPath(flow, targetPath);
+    if (!targetStep) return { ok: false, error: '目标步骤不存在' };
+    if (fromStep === targetStep || stepContains(fromStep, targetStep)) {
+      return { ok: false, error: '不能把父级移动到自己的子级' };
+    }
+    let pos = position === 'before' || position === 'after' || position === 'inside'
+      ? position : 'after';
+    if (pos === 'inside' && !flowStepIsContainer(targetStep)) pos = 'after';
+    let targetArr = null;
+    let insertIdx = 0;
+    let parentPath = null;
+    if (pos === 'inside') {
+      const key = flowContainerChildKey(targetStep);
+      targetArr = targetStep[key];
+      if (!Array.isArray(targetArr)) return { ok: false, error: '目标容器不存在' };
+      insertIdx = targetArr.length;
+      parentPath = targetPath.concat([key]);
+    } else {
+      targetArr = flowChildArrayAt(flow, targetPath.slice(0, -1));
+      if (!targetArr) return { ok: false, error: '目标容器不存在' };
+      if (targetArr !== fromArr) {
+        return { ok: false, error: '只能同层插入；跨层请拖到 if/loop 容器内' };
+      }
+      insertIdx = targetPath[targetPath.length - 1] + (pos === 'after' ? 1 : 0);
+      parentPath = targetPath.slice(0, -1);
+    }
+    fromArr.splice(fromIdx, 1);
+    if (targetArr === fromArr && insertIdx > fromIdx) insertIdx -= 1;
+    const adjustedTargetPath = adjustPathAfterStepRemoval(targetPath, fromPath);
+    const finalParentPath = pos === 'inside'
+      ? adjustedTargetPath.concat([flowContainerChildKey(targetStep)])
+      : adjustedTargetPath.slice(0, -1);
+    targetArr.splice(insertIdx, 0, fromStep);
+    return { ok: true, path: finalParentPath.concat([insertIdx]) };
+  }
+
   function renderSteps() {
     const root = $('builder-steps');
     if (!root) return;
@@ -1662,8 +1771,12 @@
     drop.addEventListener('dragleave', () => drop.classList.remove('drop-target'));
     drop.addEventListener('drop', (e) => {
       e.preventDefault();
+      e.stopPropagation();
       drop.classList.remove('drop-target');
-      const paths = parseDragPayload(e.dataTransfer.getData('text/plain'));
+      const st = B.dragState;
+      const paths = st && st.paths && st.paths.length
+        ? st.paths.slice() : parseDragPayload(e.dataTransfer.getData('text/plain'));
+      B.dragState = null;
       if (!paths.length) return;
       if (paths.length > 1) moveStepsGroup(paths, null, null, true);
       else moveStepToRoot(paths[0]);
@@ -1816,13 +1929,89 @@
       const row = document.createElement('div');
       row.className = 'builder-step';
       row.draggable = true;
+      row.dataset.stepPath = JSON.stringify(path);
       if (B.selected && JSON.stringify(B.selected) === JSON.stringify(path)) row.classList.add('selected');
       row.addEventListener('dragstart', (e) => {
-        e.dataTransfer.setData('text/plain', JSON.stringify(dragPayload(path)));
+        const payload = dragPayload(path);
+        B.dragState = { paths: payload.paths || [payload.path].filter(Boolean), sourcePath: path.slice() };
+        e.dataTransfer.setData('text/plain', JSON.stringify(payload));
         e.dataTransfer.effectAllowed = 'move';
         row.classList.add('dragging');
       });
-      row.addEventListener('dragend', () => row.classList.remove('dragging'));
+      row.addEventListener('dragend', () => {
+        B.dragState = null;
+        row.classList.remove('dragging');
+        row.classList.remove('drop-before', 'drop-after', 'drop-inside');
+        document.querySelectorAll('.builder-step.drop-before, .builder-step.drop-after, .builder-step.drop-inside')
+          .forEach((n) => n.classList.remove('drop-before', 'drop-after', 'drop-inside'));
+      });
+      const clearRowDropClasses = () => {
+        row.classList.remove('drop-before', 'drop-after', 'drop-inside');
+      };
+      row.addEventListener('dragover', (e) => {
+        const st = B.dragState;
+        // 多选拖拽沿用容器 drop（appends）；单行拖拽按上/中/下算插入位。
+        if (!st || !st.paths || st.paths.length !== 1) return;
+        const srcPath = st.paths[0];
+        if (JSON.stringify(srcPath) === JSON.stringify(path)) return;
+        const rect = row.getBoundingClientRect();
+        let zone = flowDropZoneFromRect(rect.top, rect.height, e.clientY);
+        if (zone === 'inside' && !flowStepIsContainer(step)) zone = 'after';
+        if (zone !== 'inside' && JSON.stringify(srcPath.slice(0, -1)) !== JSON.stringify(path.slice(0, -1))) {
+          clearRowDropClasses();
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        if (zone === 'inside' && flowStepIsContainer(step)) {
+          e.dataTransfer.dropEffect = 'move';
+        } else {
+          e.dataTransfer.dropEffect = 'move';
+        }
+        clearRowDropClasses();
+        row.classList.add(zone === 'inside' ? 'drop-inside' : (zone === 'before' ? 'drop-before' : 'drop-after'));
+      });
+      row.addEventListener('dragleave', clearRowDropClasses);
+      row.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const st = B.dragState;
+        const paths = st && st.paths && st.paths.length
+          ? st.paths.slice() : parseDragPayload(e.dataTransfer.getData('text/plain'));
+        const rect = row.getBoundingClientRect();
+        let zone = flowDropZoneFromRect(rect.top, rect.height, e.clientY);
+        if (zone === 'inside' && !flowStepIsContainer(step)) zone = 'after';
+        clearRowDropClasses();
+        B.dragState = null;
+        if (!paths.length) return;
+        if (paths.length > 1) {
+          if (zone === 'inside') {
+            const key = flowContainerChildKey(step);
+            if (key) moveStepsGroup(paths, path, key, false);
+            else status('多选步骤只能拖入 if/loop 容器', '#e8c46a');
+          } else {
+            status('多选步骤目前只支持拖入 if/loop 容器或根级 drop 区', '#e8c46a');
+          }
+          return;
+        }
+        const srcStep = flowStepAtPath(B.flow, paths[0]);
+        const movedId = srcStep ? stepUiId(srcStep) : null;
+        const res = moveFlowStepInsert(B.flow, paths[0], path, zone);
+        if (!res.ok) {
+          status('拖拽失败：' + res.error, '#ff8a80');
+          renderAll();
+          return;
+        }
+        // seq137：用 step id 重算选中并滚动到新位置（纯 path 会因移动偏移）。
+        B.selected = (movedId !== null && stepPathById(getRoot(), movedId)) || res.path;
+        renderAll();
+        scheduleAutoSave();
+        status(zone === 'inside' ? '已移入子级容器' : (zone === 'before' ? '已插入到目标步骤之前' : '已插入到目标步骤之后'));
+        const selectedRow = document.querySelector('#builder-steps .builder-step.selected');
+        if (selectedRow && typeof selectedRow.scrollIntoView === 'function') {
+          selectedRow.scrollIntoView({ block: 'nearest' });
+        }
+      });
       const pick = document.createElement('input');
       pick.type = 'checkbox';
       pick.className = 'builder-step-check';
@@ -1897,8 +2086,12 @@
         child.addEventListener('dragleave', () => child.classList.remove('drop-target'));
         child.addEventListener('drop', (e) => {
           e.preventDefault();
+          e.stopPropagation();
           child.classList.remove('drop-target');
-          const paths = parseDragPayload(e.dataTransfer.getData('text/plain'));
+          const st = B.dragState;
+          const paths = st && st.paths && st.paths.length
+            ? st.paths.slice() : parseDragPayload(e.dataTransfer.getData('text/plain'));
+          B.dragState = null;
           if (!paths.length) return;
           if (paths.length > 1) moveStepsGroup(paths, path, key, false);
           else moveStepTo(paths[0], path, key);
@@ -2174,30 +2367,14 @@
     }
     if (node.path) {
       g.classList.add('clickable');
+      g.setAttribute('data-step-path', JSON.stringify(node.path));
       if (B.selected && JSON.stringify(B.selected) === JSON.stringify(node.path)) g.classList.add('selected');
       g.addEventListener('click', () => {
         B.selected = node.path;
         renderAll();
       });
-      // seq136（#10）：同层拖动排序（根级 / if-loop 子级共用；跨父级由 wrap 过滤）。
-      g.setAttribute('draggable', 'true');
-      g.style.cursor = 'grab';
-      g.addEventListener('dragstart', (ev) => {
-        const parentPath = node.path.slice(0, -1);
-        flowDragState.sourcePath = node.path.slice();
-        flowDragState.parentPath = parentPath;
-        g.classList.add('dragging');
-        if (ev.dataTransfer) {
-          ev.dataTransfer.effectAllowed = 'move';
-          ev.dataTransfer.setData('text/plain', String(stepUiId(getStep(node.path))));
-        }
-      });
-      g.addEventListener('dragend', () => {
-        flowDragState.sourcePath = null;
-        flowDragState.parentPath = null;
-        g.classList.remove('dragging');
-        clearFlowDropIndicator();
-      });
+      // seq137（UI B #1）：图谱不再使用不可靠的 SVG HTML5 draggable（假绿）；
+      // 排序统一在列表视图完成（行上/中/下插入），图谱只负责选中/可视化。
     }
     svg.appendChild(g);
   }
@@ -2336,55 +2513,238 @@
     }
     for (const n of graph.nodes) renderSvgNode(svg, graph, n);
     root.appendChild(svg);
-    // seq136（#10）：同层拖动插入（上下指示线；首尾由 idx 0/len 覆盖）。
-    flowGraphState.nodes = graph.nodes.filter((n) => n && Array.isArray(n.path));
-    svg.addEventListener('dragover', (ev) => {
-      if (!flowDragState.sourcePath) return;
-      const sameParent = sameParentGraphNodes(flowGraphState.nodes, flowDragState.parentPath);
-      if (!sameParent.length) return;
-      ev.preventDefault();
-      if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
-      const rect = svg.getBoundingClientRect();
-      const vb = svg.viewBox && svg.viewBox.baseVal
-        ? { x: svg.viewBox.baseVal.x, y: svg.viewBox.baseVal.y, width: svg.viewBox.baseVal.width, height: svg.viewBox.baseVal.height }
-        : { x: 0, y: 0, width: flowGraphState.width, height: flowGraphState.height };
-      const pt = svgPointInViewBox(ev.clientX, ev.clientY, rect, vb);
-      const idx = dragInsertionIndex(sameParent, pt.y);
-      const geo = flowDropIndicatorGeometry(sameParent, idx);
-      if (geo) {
-        if (!flowDropIndicator) {
-          flowDropIndicator = sEl('line');
-          flowDropIndicator.setAttribute('class', 'flow-drop-indicator');
-          svg.appendChild(flowDropIndicator);
-        }
-        flowDropIndicator.setAttribute('x1', geo.x1);
-        flowDropIndicator.setAttribute('x2', geo.x2);
-        flowDropIndicator.setAttribute('y1', geo.y);
-        flowDropIndicator.setAttribute('y2', geo.y);
-      }
-    });
-    svg.addEventListener('dragleave', (ev) => {
-      if (!ev.relatedTarget || ev.relatedTarget === svg) clearFlowDropIndicator();
-    });
-    svg.addEventListener('drop', (ev) => {
-      if (!flowDragState.sourcePath) return;
-      ev.preventDefault();
-      const sourcePath = flowDragState.sourcePath.slice();
-      const parentPath = flowDragState.parentPath;
-      flowDragState.sourcePath = null;
-      flowDragState.parentPath = null;
-      clearFlowDropIndicator();
-      const sameParent = sameParentGraphNodes(flowGraphState.nodes, parentPath);
-      if (!sameParent.length) return;
-      const rect = svg.getBoundingClientRect();
-      const vb = svg.viewBox && svg.viewBox.baseVal
-        ? { x: svg.viewBox.baseVal.x, y: svg.viewBox.baseVal.y, width: svg.viewBox.baseVal.width, height: svg.viewBox.baseVal.height }
-        : { x: 0, y: 0, width: flowGraphState.width, height: flowGraphState.height };
-      const pt = svgPointInViewBox(ev.clientX, ev.clientY, rect, vb);
-      applyStepDragDrop(getRoot(), sourcePath, sameParent, pt.y);
-    });
+    // seq137（UI B #1）：删除 SVG draggable/dragover/drop（浏览器对 SVG <g> 不可靠，
+    // 旧静态测试是假绿）；列表视图负责真实排序，图谱保留点击选中。
     // seq136（#9）：按容器可用区域 fit/居中（ResizeObserver/window.resize 再算）。
     fitFlowGraph();
+  }
+
+  // --- seq137（UI B #2）：独立全窗口流程图大页 ---------------------------------
+  const flowPageState = { open: false, zoom: 1 };
+
+  function flowPageNaturalSize() {
+    const w = Number(flowGraphState.width) || 0;
+    const h = Number(flowGraphState.height) || 0;
+    return { width: Math.max(760, w || 760), height: Math.max(360, h || 360) };
+  }
+
+  function renderFlowPage() {
+    const page = $('flow-page');
+    const canvas = $('flow-page-canvas');
+    if (!page || !canvas) return;
+    page.hidden = !flowPageState.open;
+    if (!flowPageState.open) return;
+    const source = $('builder-graph');
+    const svg = source && source.querySelector ? source.querySelector('svg.flow-svg') : null;
+    canvas.textContent = '';
+    const zoomLabel = $('flow-page-zoom-label');
+    const statusEl = $('flow-page-status');
+    if (!svg) {
+      canvas.textContent = '（空流程；添加动作后显示控制流图）';
+      if (zoomLabel) zoomLabel.textContent = '100%';
+      if (statusEl) statusEl.textContent = '—';
+      return;
+    }
+    const nat = flowPageNaturalSize();
+    const clone = svg.cloneNode(true);
+    clone.removeAttribute('width');
+    clone.removeAttribute('height');
+    clone.style.width = Math.round(nat.width * flowPageState.zoom) + 'px';
+    clone.style.height = Math.round(nat.height * flowPageState.zoom) + 'px';
+    clone.style.maxWidth = 'none';
+    // 大页只读可视化；节点点击回写选中（列表/属性面板同步）。
+    clone.querySelectorAll('[data-step-path]').forEach((g) => {
+      g.style.cursor = 'pointer';
+      g.addEventListener('click', () => {
+        try {
+          B.selected = JSON.parse(g.getAttribute('data-step-path'));
+          renderAll();
+          status('已选中步骤；点「返回构建」可编辑属性');
+        } catch (e) { /* ignore */ }
+      });
+    });
+    canvas.appendChild(clone);
+    if (zoomLabel) zoomLabel.textContent = Math.round(flowPageState.zoom * 100) + '%';
+    if (statusEl) statusEl.textContent = '步骤 ' + getRoot().length + ' 个根动作 · 滚轮滚动，按钮缩放';
+  }
+
+  function setFlowPageZoom(next) {
+    flowPageState.zoom = Math.max(0.3, Math.min(3, Number(next) || 1));
+    renderFlowPage();
+  }
+
+  function fitFlowPage() {
+    const canvas = $('flow-page-canvas');
+    const nat = flowPageNaturalSize();
+    const availW = canvas && typeof canvas.getBoundingClientRect === 'function'
+      ? Math.max(320, canvas.getBoundingClientRect().width - 32) : 960;
+    setFlowPageZoom(availW / nat.width);
+  }
+
+  function openFlowPage() {
+    const page = $('flow-page');
+    if (!page) return;
+    flowPageState.open = true;
+    page.hidden = false;
+    renderFlowPage();
+    status('已打开全窗口流程图（只读；拖拽排序在列表做）');
+  }
+
+  function closeFlowPage() {
+    flowPageState.open = false;
+    const page = $('flow-page');
+    if (page) page.hidden = true;
+  }
+
+  // --- seq137（UI B #3）：flow → Rust 只读源码投影（纯函数） -------------------
+  function rustStringLiteral(value) {
+    let s = String(value === undefined || value === null ? '' : value);
+    s = s.split('\\').join('\\\\');
+    s = s.split('"').join('\\"');
+    s = s.split('\r').join('\\r');
+    s = s.split('\n').join('\\n');
+    return '"' + s + '"';
+  }
+
+  function rustNumLiteral(value, fallback) {
+    const n = Number(value);
+    return String(Number.isFinite(n) ? n : (Number.isFinite(Number(fallback)) ? Number(fallback) : 0));
+  }
+
+  // 只读投影：已知 op → ctx.* 调用（教学视图）；未知 op → 注释保留。
+  // 本函数不修改 flow，也不提供 Rust→flow 编译（遗留说明见 UI）。
+  function rustProjectStepLines(step, indent, lines) {
+    const pad = ' '.repeat(indent);
+    const s = step && typeof step === 'object' ? step : {};
+    const a = s.args && typeof s.args === 'object' && !Array.isArray(s.args) ? s.args : {};
+    const op = String(s.op === undefined || s.op === null ? '' : s.op);
+    const emit = (text) => lines.push(pad + text);
+    switch (op) {
+      case 'log':
+        emit('ctx.log(' + rustStringLiteral(a.text) + ');');
+        return;
+      case 'wait':
+        emit('ctx.wait(' + rustNumLiteral(a.seconds, 1) + ');');
+        return;
+      case 'wait_until':
+        emit('ctx.wait_until(' + rustStringLiteral(a.cond) + ', ' + rustNumLiteral(a.timeout_s, 10) + ');');
+        return;
+      case 'appear':
+        emit('ctx.appear(' + rustStringLiteral(a.sel) + ');');
+        return;
+      case 'ocr':
+        emit('ctx.ocr(' + rustStringLiteral(a.sel) + ');');
+        return;
+      case 'click':
+        emit('ctx.click(' + rustStringLiteral(a.sel) + ');');
+        return;
+      case 'click_point':
+        emit('ctx.click_point(' + rustNumLiteral(a.x, 0) + ', ' + rustNumLiteral(a.y, 0) + ');');
+        return;
+      case 'click_target':
+        emit('ctx.click_target(' + rustStringLiteral(JSON.stringify(a.find || [])) + ');');
+        return;
+      case 'long_press':
+        emit('ctx.long_press(' + rustStringLiteral(JSON.stringify(a.find || [])) + ', ' + rustNumLiteral(a.hold_ms, 3000) + ');');
+        return;
+      case 'curve_swipe':
+        emit('ctx.curve_swipe(' + rustStringLiteral(JSON.stringify(a.points || [])) + ', ' + rustStringLiteral(JSON.stringify(a.duration_ms || [])) + ');');
+        return;
+      case 'dismiss_popup':
+        emit('ctx.dismiss_popup(' + rustStringLiteral(a.sel) + ');');
+        return;
+      case 'swipe':
+        emit('ctx.swipe(' + rustStringLiteral(JSON.stringify(a.from || [])) + ', ' + rustStringLiteral(JSON.stringify(a.to || [])) + ');');
+        return;
+      case 'drag':
+        emit('ctx.drag(' + rustStringLiteral(JSON.stringify(a.from || {})) + ', ' + rustStringLiteral(JSON.stringify(a.to || {})) + ', ' + rustStringLiteral(a.direction) + ');');
+        return;
+      case 'key':
+        emit('ctx.key(' + rustNumLiteral(a.keycode, 4) + ');');
+        return;
+      case 'restart_app':
+        emit('ctx.restart_app(' + rustStringLiteral(a.package) + ');');
+        return;
+      case 'set_var':
+        emit('ctx.set_var(' + rustStringLiteral(a.name) + ', ' + rustStringLiteral(a.value) + ');');
+        return;
+      case 'inc_var':
+        emit('ctx.inc_var(' + rustStringLiteral(a.name) + ', ' + rustNumLiteral(a.by, 1) + ');');
+        return;
+      case 'ocr_to_var':
+        emit('ctx.ocr_to_var(' + rustStringLiteral(a.sel) + ', ' + rustStringLiteral(a.var) + ');');
+        return;
+      case 'call_task':
+        emit('ctx.call_task(' + rustStringLiteral(a.task) + ', ' + (a.mode === 'inline' ? 'true' : 'false') + ');');
+        return;
+      case 'navigate':
+        emit('ctx.navigate(' + rustStringLiteral(a.target) + ');');
+        return;
+      case 'finish':
+        emit('ctx.finish(' + rustStringLiteral(a.exit) + ');');
+        return;
+      case 'break':
+        emit('break;');
+        return;
+      case 'continue':
+        emit('continue;');
+        return;
+      case 'if': {
+        emit('ctx.if_cond(' + rustStringLiteral(a.cond) + ', |ctx| {');
+        (Array.isArray(s.then) ? s.then : []).forEach((child) => rustProjectStepLines(child, indent + 4, lines));
+        if (Array.isArray(s.else) && s.else.length) {
+          lines.push(pad + '}, |ctx| {');
+          s.else.forEach((child) => rustProjectStepLines(child, indent + 4, lines));
+        }
+        lines.push(pad + '});');
+        return;
+      }
+      case 'loop': {
+        emit('ctx.loop(' + rustNumLiteral(a.n, 1) + ', |ctx| {');
+        (Array.isArray(s.body) ? s.body : []).forEach((child) => rustProjectStepLines(child, indent + 4, lines));
+        lines.push(pad + '});');
+        return;
+      }
+      case 'while': {
+        emit('ctx.while_cond(' + rustStringLiteral(a.cond) + ', |ctx| {');
+        (Array.isArray(s.body) ? s.body : []).forEach((child) => rustProjectStepLines(child, indent + 4, lines));
+        lines.push(pad + '});');
+        return;
+      }
+      case '': {
+        lines.push(pad + '// TODO: 空步骤（无 op），flow 中保留');
+        return;
+      }
+      default: {
+        // 已知但尚未映射到专用 ctx 生成器的 op（保留 args 便于对照）。
+        if (OP_META[op]) {
+          emit('ctx.step(' + rustStringLiteral(op) + ', json!(' + rustStringLiteral(JSON.stringify(a)) + ')); // 未映射专用生成器');
+        } else {
+          lines.push(pad + '// TODO: 未知 op ' + rustStringLiteral(op) + '（只读投影保留注释；flow 中仍保留该步骤）');
+        }
+      }
+    }
+  }
+
+  function rustProjectFlow(flow) {
+    const f = flow && typeof flow === 'object' ? flow : { schema_version: 1, name: '', steps: [] };
+    const steps = Array.isArray(f.steps) ? f.steps : [];
+    const lines = [];
+    lines.push('// ⚠ 由 flow.json 自动生成的只读 Rust 投影（非可执行源码；不是 Rust→flow 编译器）');
+    lines.push('// flow: ' + rustStringLiteral(f.name || '') + ' · schema_version: ' + rustNumLiteral(f.schema_version, 1) + ' · root_steps: ' + steps.length);
+    lines.push('// 修改流程请改左侧 JSON 并「校验并应用」；本投影只读，未知 op 以注释保留。');
+    lines.push('');
+    lines.push('pub fn run_flow(ctx: &mut Ctx) -> Result<()> {');
+    steps.forEach((step) => rustProjectStepLines(step, 4, lines));
+    lines.push('    Ok(())');
+    lines.push('}');
+    return lines.join('\n');
+  }
+
+  function renderRustProjection() {
+    const pre = $('builder-rust-code');
+    if (!pre) return;
+    pre.textContent = B.flow ? rustProjectFlow(B.flow) : '（无流程；选择任务后显示）';
   }
 
   function assetSearch(current, kinds) {
@@ -5431,6 +5791,8 @@
     renderAssetPanel();
     renderVariablesPanel();
     renderCode();
+    renderRustProjection();
+    if (flowPageState.open) renderFlowPage();
     updateHistoryButtons();
     scheduleAutoSave();
   }
@@ -5809,6 +6171,28 @@
     }
     const codeDiscard = $('builder-code-discard');
     if (codeDiscard) codeDiscard.addEventListener('click', discardCodeEdits);
+    // seq137（UI B #2）：全窗口流程图大页（打开/返回/缩放/适应窗口）。
+    const openFlowBtn = $('builder-open-flow-page');
+    if (openFlowBtn) openFlowBtn.addEventListener('click', openFlowPage);
+    const flowBack = $('flow-page-back');
+    if (flowBack) flowBack.addEventListener('click', closeFlowPage);
+    const flowZoomIn = $('flow-page-zoom-in');
+    if (flowZoomIn) flowZoomIn.addEventListener('click', () => setFlowPageZoom(flowPageState.zoom * 1.2));
+    const flowZoomOut = $('flow-page-zoom-out');
+    if (flowZoomOut) flowZoomOut.addEventListener('click', () => setFlowPageZoom(flowPageState.zoom / 1.2));
+    const flowFit = $('flow-page-fit');
+    if (flowFit) flowFit.addEventListener('click', fitFlowPage);
+    const flowCanvas = $('flow-page-canvas');
+    if (flowCanvas) {
+      flowCanvas.addEventListener('wheel', (ev) => {
+        if (!flowPageState.open || !ev.ctrlKey) return;
+        ev.preventDefault();
+        setFlowPageZoom(flowPageState.zoom * (ev.deltaY > 0 ? 0.9 : 1.1));
+      }, { passive: false });
+    }
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && flowPageState.open) closeFlowPage();
+    });
     const delChecked = $('builder-delete-checked');
     if (delChecked) delChecked.addEventListener('click', deleteCheckedSteps);
     // V2.0c：变量面板 + 变量对话框。

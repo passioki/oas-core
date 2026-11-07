@@ -379,9 +379,13 @@
         <section class="builder-center">
           <h3>流程步骤</h3>
           <div id="builder-steps" class="builder-steps muted">（选择任务后加载）</div>
-          <h3>实时流程图</h3>
+          <div class="row">
+            <h3>实时流程图</h3>
+            <span class="spacer"></span>
+            <button id="builder-open-flow-page" type="button" title="全窗口查看流程图（缩放/滚动）">全窗口流程图</button>
+          </div>
           <div id="builder-graph" class="builder-graph muted">（—）</div>
-          <details id="builder-code-wrap" class="builder-code-wrap" open>
+          <details id="builder-code-wrap" class="builder-code-wrap">
             <summary>流程源码（最终 flow JSON；可直接编辑，校验后应用）</summary>
             <textarea id="builder-code" class="builder-code" spellcheck="false"></textarea>
             <div class="builder-form-actions">
@@ -390,6 +394,14 @@
               <span id="builder-code-status" class="muted small">—</span>
             </div>
             <pre id="builder-code-error" class="builder-code-error muted small" hidden></pre>
+          </details>
+          <details id="builder-rust-wrap" class="builder-code-wrap">
+            <summary>Rust 源码投影（只读 · 由 flow 自动生成，不是可执行源码）</summary>
+            <div class="muted small">
+              遗留说明：本页只做 flow→Rust <strong>只读投影</strong>，不包含 Rust→flow 编译器；
+              需要修改请改左侧 JSON 后「校验并应用」。未知 op 以注释保留。
+            </div>
+            <pre id="builder-rust-code" class="builder-rust-code"></pre>
           </details>
         </section>
         <div class="builder-splitter" data-side="right" title="拖动调整属性面板宽度（记忆）"></div>
@@ -400,6 +412,24 @@
         </aside>
       </div>
     </div>
+  </div>
+
+  <!-- seq137 UI-B：独立全窗口流程图大页（由构建页「全窗口流程图」打开；返回构建按钮）。 -->
+  <div id="flow-page" class="flow-page" hidden>
+    <header class="flow-page-head">
+      <strong>流程图（全窗口）</strong>
+      <span id="flow-page-status" class="muted small">—</span>
+      <span class="spacer"></span>
+      <button id="flow-page-zoom-out" type="button" title="缩小">−</button>
+      <span id="flow-page-zoom-label" class="muted small">100%</span>
+      <button id="flow-page-zoom-in" type="button" title="放大">＋</button>
+      <button id="flow-page-fit" type="button" title="适应窗口宽度">适应窗口</button>
+      <button id="flow-page-back" type="button">返回构建</button>
+    </header>
+    <div id="flow-page-canvas" class="flow-page-canvas"></div>
+    <footer class="flow-page-foot muted small">
+      只读视图：拖拽排序请在构建页列表操作；点击节点可选中对应步骤（返回构建页继续编辑）。
+    </footer>
   </div>
 
   <!-- v1.1 P3: 任务库 -->
