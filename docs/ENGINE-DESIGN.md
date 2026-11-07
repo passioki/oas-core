@@ -3759,6 +3759,8 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 - **风险/遗留（如实）**：① 真实设备导航/replay 多跳 E2E 未跑（SKIP）；② `map_requirements` 只收**根 flow** 的 navigate（`call_task` 子任务未纳入）；③ CLI popups 解析复用 serve 内部函数（分层耦合）；④ T11 只校验 target 存在、**不含 map 资产引用**（`/map validate` 覆盖）；⑤ `map.json` 损坏时素材引用保护可能失效（删除拦截靠可解析 map）；⑥ `/relations/*` 保留 deprecated；⑦ 地图编辑器边编辑未做内联改字段；⑧ `/map/navigate real` 同步阻塞；⑨ 地图文件不进包、需用户分发（安装 warning、运行期 loud）；⑩ user data 未提交。
 - **旧文更正**：`§22.41`（帧-素材关系）已被本节的**唯一全局地图**取代（关系 UI 下线、服务端 `/relations/*` deprecated，证据文件原样保留不迁移）；`§22.73` seq134 的候选/OCR 语义保留，但 #2 点击几何统一为 ClickShape polygon / #6 ROI+全帧合并去重 / #1 fixed 绝对操作区以本节为准；`OPERATION-REGION-DESIGN §8.10` 为 polygon/fixed 现行口径。
 
+> **seq138 更正（2026-11-07 23:xx）**：本节为 v1 地图（`nodes/edges/parent/return_asset`、`priority/frames/hub`、`map_requirements/T11` 门禁）时点记录；seq138 已改为**地图 V2（所在地/路标/路径 + 工作台地图 tab）**，v1 字段不再现行，见 **§22.77**（v1 仅保留内存迁移代码/测试，不处理用户数据）。
+
 ### 22.76 ★★★ [11-07 21:xx] **seq137 审计与修复（地图性能/UI、去 map 门禁、画布 shape、拖拽/大图/Rust 投影、T8）**
 
 > 用户 2026-11-07 21:07 九条验收反馈 → 三路只读审计（`_verify/seq137-audit/{map-audit,builder-audit,task-drift-audit}.md` + `perf-results.json`，基线 b3e3013）确认存在**接错线/状态漂移/测试假绿**，非主观感受；修复 `45a458b`。HEAD `45a458b`（dev=`origin/dev`；main=`origin/main`=b3e3013 待 docs 后快进；未 tag/未 release）。测试：workspace **1043/0**（runtime 267 / oasd 472 / oas-task 172 / flow 83）、UI **2713 checks/195 ids/0 dead/158 runner/6 nav**、`cargo check/build -p oasd --features ocr` exit 0、地图 E2E **19/0**。证据 `_verify/seq137-audit/FIX-EVIDENCE.md`、`_verify/seq137-perf/perf-result.json`、`_verify/seq137-perf-root/personal-breakthrough-result.json`。
@@ -3829,3 +3831,52 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 
 - **遗留**：① `navigate.target_expr` 动态参数未实现；② flow→Rust 仅**只读投影**，非可执行、不可编辑编译，无 Rust→flow 编译器；③ `map_requirements` 字段 deprecated 但未彻底删；④ `/map/probe` 默认不返回素材 hints（UI 需传 `node`/`assets`）；⑤ 真实设备导航/Firefox 手测未做；⑥ `text_visible`/`verify_expect` 仍 fuzzy+无缓存；⑦ 全局弹窗配置 UI 未做；⑧ 地图边只能新增/删除、无内联改字段；⑨ canvas 只读、无缩放；⑩ `map.js`/`map_ui.js` 双文件同步机制；⑪ UI pure test 无浏览器级 DnD 自动化；⑫ 用户数据未提交、未 tag/release。
 - **旧文更正**：§22.75 中「map_requirements 门禁/T11/publish 硬失败/仅根 flow」「源码框=最终 flow JSON」「#10 已实现（实为 SVG 假拖拽）」「流程图自适应（scale 未用）」等表述以本节为准；§22.75 的地图性能数字（78.3s 等）为审计前基线，已被 §22.76.2 替代；操作区 fixed/polygon 的 UI 二次平移已删除（§22.76.5）。
+### 22.77 ★★★ [11-07 23:xx] **seq138 地图 V2（所在地/路标/路径 + 工作台地图 tab）**
+
+> 用户 2026-11-07 22:28/22:53/23:03 三轮裁决（v2 语义、删 priority/frames/hub、工作台整合、v1 只迁代码、Rust 编译器暂缓）；设计 `docs/MAP-V2-DESIGN.md`。实现：V2-B 后端 `8394af7` + V2-C 工作台地图 tab `8134376`。HEAD `8134376`（dev=`origin/dev`；main=`origin/main`=55dc07c 待 docs 后快进；未 tag/未 release）。测试：workspace **1044/0**（runtime 268 / oasd 472 / oas-task 172 / flow 83）、UI **2717 checks/195 ids/0 dead/158 runner/6 nav（Studio nav 5）**、`cargo check/build -p oasd --features ocr` exit 0。证据：`_verify/seq138-v2b/REPORT.md`、`_verify/seq138-v2b-smoke/`、`_verify/seq138-final/workspace-v2b.log`、`_verify/acceptance-20261106/seq138-v2c-progress.md`。
+
+#### 22.77.1 V2 语义（现行，取代 v1 地图）
+
+- **唯一文件**：全局 `<assets-dir>/map.json`，`schema_version=2`（`oas-task/src/map.rs:22`；常量 `MAX_MAP_LOCATIONS=500 / MAX_MAP_LANDMARKS=2000 / MAX_LOCATION_FEATURES=6` `:23-25`）。
+- **所在地 `locations`**：以**所在地名称**为 key 的 map（`BTreeMap`，`MapFile{fallback_task, locations}` `:126-133`；`MapLocation{label?, recognize, return_landmarks, outbound_landmarks}` `:114-122`）；`recognize.min_hits` 默认 1，`features` 为 `ocr_text{text,roi?}` / `asset{asset}`（`MapFeature :54-63`、`MapRecognize :66-70`）。
+- **路标 `landmark`**：仅 `{name, path}`（`:107-110`），`name` 指向另一所在地（无 target/id/priority/frames/hub）；回程/去程两组，均为有向出口、**不自动补反向**；自引用/不存在目标/同组重复目标错误/警告（`:357-427`）。
+- **路径 `path`**：`{action:"click"(默认), asset(素材/集合 id), wait?{settle_ms,stable_ms,timeout_ms,poll_ms}}`（`:95-103/73-93`）；V2 仅支持 click（key/swipe 报错 `:380-386`）。
+- **失败兜底**：`fallback_task` 默认 `返回庭院`（`:129-130`，空串错误 `:274-275`）；未知/无路径/执行失败先调用兜底任务一次再重识别重规划；任务缺失/不可读响亮错误。
+- **删除 v1 字段**：priority（识别冲突改 features/min_hits/声明序）、frames（统一工作台当前帧）、hub（改 fallback_task）；无显式 edges/parent。
+- **v1→v2 迁移只保留代码/测试**：`load`/`parse_compat_value` 检测 v1（`nodes`/schema_version=1）**内存迁移**为 v2，不重写磁盘（模块注释 `:11-12`、`load :437-438`、`parse_compat_value :450-472`、`MapFileV1 :507+`、`migrate_v1_owned :589+`）；priority/frames/hub 丢弃/警告，key/swipe 边丢警告，显式 click 边优先于 parent 派生返回；用户 v1 map 数据**不处理、不自动迁移**。
+- 校验/保存：`validate`（`:263-431`：schema/fallback/名称/特征/min_hits/路标引用/action/素材/wait/上限/空地图 warning）；`load :439`、`save_atomic :482`（`.bak`）、`to_runtime :191`、`map_path :176`。
+
+#### 22.77.2 runtime：所在地识别 + 有向 BFS + navigate V2
+
+- **neutral 类型**（`oas-runtime/src/map.rs`）：`Landmark :52`、`Location{name,label?,min_hits,return_landmarks,outbound_landmarks} :63`、`MapConfig{fallback_task,locations} :90`；`landmarks()` 固定顺序（回程→去程，`:79-84`）；上限 `MAX_NAV_ROUNDS=3 / MAX_NAV_HOPS=16 / MAX_FALLBACK_CYCLES=1`（`:12-16`）。
+- **所在地识别**：沿用 API 名 `identify_current_node`（`lib.rs:2644-2760`），实为识别 location——复用 seq134 单源（OCR strict/素材候选阈值）+ seq137 缓存/早退；`need=min_hits` 满足即跳过后续特征（OCR 相位 `:2669`、asset 相位 `:2697-2704` `asset_feature_passes`）；按 hits→总特征数→声明序决胜（无 priority；`locations` 为 BTreeMap，**同分 tie-break 为名称排序**，V2-B 报告已列风险）；ambiguous 列表与帧缓存（`:2733-2748`）。
+- **路标有向图**：`build_graph`（`map.rs:124`）= return+outbound 路标（不补反向、无 parent/LCA/hub）；`plan_route`（`:167-226`）BFS 最短跳、环安全、确定性；不可达响亮错误；`route_summary :227`。
+- **navigate V2**：`run_navigate`（`lib.rs:2829+`）——PlanOnly 走 `navigate_once`；Execute 循环：识别当前所在地→BFS→逐路标 `perform_map_action`（`:2754`，click 素材/集合+exact shape+click audit）→settle→PopupGuard→`wait_until_node`（`:2790`）重识别校验预期所在地→不符重规划（rounds/hops 上限）；**fallback**：失败且未用过兜底时执行 run.rs 注入的 `fallback_task` flow 一次（`:2840-2880`：`map_fallback` 字段 `:2109`、`with_map_fallback :2184`，成功后重识别重规划；预算/取消不会被 fallback 吞掉 `:2846-2850`）；日志 `navigate`/`navigate_hop`/`navigate_fallback`。
+- seq137 性能保留：identify 帧缓存、`asset_pass_cache`、OCR 行缓存、PopupGuard 早退等继续生效。
+
+#### 22.77.3 serve / run（全 V2 + v1 兼容）
+
+- `/map` GET（v2；`node_count` 兼容字段 + `location_count` + `fallback_task`，`serve:5333-5340`）；POST（v2 native + v1 body **内存迁移**，`:5347-5353`）；`/map/validate`（`:5399-5405`，v1 兼容）；`/map/state`（`:5428`，返回 `current{location, node, name, hits, ambiguous}`，`node` 仅为兼容别名 `:5461-5467`）；`/map/plan`（`:5525`）；`/map/navigate`（`:5571`，dry PlanOnly / real ephemeral）；`/map/probe`（V2 locations；`node` 参数按 location 查，`:5698-5726`）。
+- 素材引用保护：delete/rename 按 V2 locations/landmarks/path/default 引用返回 400（`serve:6894`/`:6978`），不自动改写 map。
+- run：`load_nav_map`（`run.rs:540-574`）加载 v2、只校验本 flow 的**字面量 target**（不再全图 validate）；`fallback_task` flow 从 sibling 任务库加载（`:653-679`，缺失/不可读仅 warning，运行期 loud）；`with_map_fallback` 注入（`:980`）；无 navigate 零 map 读取。
+
+#### 22.77.4 UI：工作台地图 tab（V2-C）
+
+- **独立地图页/导航彻底删除**：Studio nav **6→5**（`index.html` rail `:82-87`；无 `data-page="map"`/`#page-map`；UI 断言 `ui_pure_test:5728-5733`）；地图改为工作台 rail **最后** tab「地图」（`:87`）+ `#panel-map`（`:235`）；面板激活时 `body.map-tab-active` 全宽覆盖（`style.css:1965-1979`），关闭按钮回素材 tab；`app.js:8983-8988` 切 tab 时 `OAS_MAP_UI.onActivate/onDeactivate`。
+- **共享工作台当前帧**：`app.js:7330-7334 notifyWorkbenchFrameChanged()` 在 `selectFrame`/`refreshFrames` 后派发 `oas:frame-changed`（`:7424/:7550`）；`map_ui.js` 直接读全局 `currentFrameId/framesCache`（`:352-372`），上一帧/下一帧调 `selectFrame`（`:363-364`），监听帧事件清 probe/重绘/刷新命中（`:960`）；帧搜索**复用** `filterFramesByQuery`（`:692-695`）；地图不存 frames。
+- **编辑**：所在地列表搜索/新建/删除 + fallback_task + 校验面板（`renderLocationList :434`）；名称/别名/判定条件（OCR/素材特征 + min_hits，OCR 从当前帧取行）/回程+去程路标（目标所在地下拉、click、素材/集合搜索选择器 `OASAssetUI.createSearchPicker` `:566-583`、缩略图、settle、内联改/删/新增 `renderLandmarks :583`）；无 priority/frames/hub 字段（测试断言）。
+- **纯函数 `window.OAS_MAP`**（`map_ui.js:8-302`）：`mapV2Empty/LocationNames/LocationNameValid/FeatureSummary/LocationFeatureSummary/LandmarkPathSummary/SearchLocations/FilterFrames/FilterAssets/LandmarkTargets/CurrentFeatureAssets/LandmarkAssets/ValidationLocal/IssueText/NewLocation/RenameLocation/RemoveLocation/PlanChain/PlanSummary/StateSummary/NavigateSummary/FallbackText/HitSummary`；改名联动全图路标引用、删除被引用阻止。
+- **预览/调试**：probe 只传相关素材（`:767`）/命中框叠加；识别当前所在地 `/map/state`（`:807`）；路径预览 `/map/plan`（`:825-834`）；dry/real `/map/navigate`（`:840+`，real 二次确认、错误显示服务端原因）；保存 `POST /map` 原子写+`.bak`、dirty（`:341-349`）；本地校验 `mapV2ValidationLocal`（`:103-165`）+服务端 `/map/validate`。
+- builder navigate 目标改 V2 locations（`builder.js:98` 字段、`:5931` 从 `map.locations` 取名称，v1 nodes 兼容回退）；`map.js` 为 `map_ui.js` 字节同步副本（UI 断言 `:5737`）。
+
+#### 22.77.5 验证 / 证据 / 测试
+
+- workspace **1044/0**（runtime 268 / oasd 472 / oas-task 172 / flow 83；`_verify/seq138-final/workspace-v2b.log`）；UI **2717/195/0 dead/158/6**（Studio nav 5、Runner 6；本机实跑核对）；`cargo check/build -p oasd --features ocr` Finished。
+- V2-B 冒烟（`_verify/seq138-v2b-smoke`，studio :8825，用户数据副本）：`GET /map` → 200 schema=2/4 locations/fallback=返回庭院；`/map/plan` 2 hops；`/map/navigate` dry PlanOnly 2 hops；`/map/state` 200；v1 map `POST /map/validate` 200（内存迁移）；`/map/probe` node-scoped 200；map 引用素材 delete 400；无真实设备导航（fake-frame 单测覆盖），server stopped/listeners=0。
+- 测试新增/更新：oas-task map v2 roundtrip/save `.bak`/to_runtime/validate 矩阵（dangling/self/path/asset/fallback）/fallback 默认非空/v1 内存迁移不写盘；runtime BFS 最短/显式返回/环/确定性/不可达 + navigate 多跳/PlanOnly/无 map/未知 target/不符重规划/弹窗中断重规划/stable/budget/cancel/V2 click path/fallback 一次+重试/fallback 缺失 loud/asset 特征识别；serve v2 CRUD/validate（v1 迁移）/state/plan/navigate dry/probe/route owner/素材引用保护；UI V2 纯函数/静态/ids 195（净 +4 checks）。
+- 证据：`_verify/seq138-v2b/REPORT.md`、`_verify/seq138-v2b-smoke`、`_verify/seq138-final/workspace-v2b.log`、`_verify/acceptance-20261106/seq138-v2c-progress.md`。
+
+#### 22.77.6 遗留 / 风险 / 旧文更正
+
+- **遗留**：① `navigate.target_expr`/param() 动态目标未实现（T1，地图基础后）；② **Rust 编译器（rustc 原生）本轮不做、优先级调低**——源码框保持 flow JSON 可编辑 + Rust 只读投影，不实现 Rust→flow/原生编译；③ 真实设备导航/replay 多跳 E2E 未跑（无 adb）、Firefox 手测未做；④ 全局弹窗配置 UI 未做；⑤ 地图边只能新增/删除无内联改、canvas 只读无缩放、`map.js`/`map_ui.js` 双文件、`map_requirements` deprecated 未彻底删；⑥ `text_visible`/`verify_expect` 仍 fuzzy+无缓存；⑦ UI 无浏览器自动化（pure test 无 DnD/画布）；⑧ serve `/map/navigate real` 临时任务无 fallback sibling、`fallback_task` 存在性仅运行期 loud（保存不校验任务存在）；⑨ v2 locations 为 BTreeMap → 识别同分 tie-break 按名称排序（V2 无 priority）；⑩ v1 map 用户数据不迁移（仅代码+测试）；⑪ 用户数据未提交、未 tag/release。
+- **旧文更正**：§22.76 的 v1 地图语义（`nodes/edges/parent/return_asset`、`priority/frames/hub`、`map_requirements/T11` 门禁口径）**不再现行**，以本节 V2 为准；§22.76 的「flow→Rust 只读投影」仍为现状，但用户已选择「编译器」方案且本轮**延后**（§22.77.6②）；`MAP-V2-DESIGN.md` 状态已改「V2-B/C 已实现」。

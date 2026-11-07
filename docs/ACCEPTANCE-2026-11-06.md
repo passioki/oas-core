@@ -313,3 +313,24 @@ E2E seq127 脚本（并清理 seq126 模型 A 断言）、masked 极端 mask 兜
 - E2E `_verify/seq136-map/e2e-results.json`：**19 checks/0 failed**（probe 缩面、lint 无 map gate 两态、publish 无 map 200、install 无 requirement 200、.bak/validate/plan/navigate dry/素材引用保护；timing state 123ms/probe 124–129ms；real 导航 SKIP 无 adb）。
 - 冒烟/证据：`_verify/seq137-perf/perf-result.json`（probe 1453ms/node 1060ms/state_asset_ocr 1093ms）、`_verify/seq137-perf-root/personal-breakthrough-result.json`（T8 0、before 4→after 2）、`_verify/seq137-audit/repro-item7-*.json`（旧 T8 复现）。
 - 遗留：`target_expr` 未实现；Rust 投影只读非可执行、无 Rust→flow；`map_requirements` deprecated 未删；probe 默认不返回素材 hints（需 node/assets）；真实设备导航/Firefox 未做；`text_visible`/`verify_expect` 仍 fuzzy+无缓存；全局弹窗 UI 未做；地图边无内联改；canvas 只读无缩放；`map.js`/`map_ui.js` 双文件机制；UI pure test 无浏览器 DnD 自动化；用户数据未提交；未 tag/release。
+## seq138 追加验收（2026-11-07：地图 V2 所在地/路标/路径 + 工作台地图 tab）
+
+> 用户 22:28/22:53/23:03 三轮裁决；设计 `docs/MAP-V2-DESIGN.md`；实现 V2-B `8394af7` + V2-C `8134376`。HEAD `8134376`（dev=`origin/dev`，main=`origin/main`=55dc07c 待 docs 后快进；未 tag/未 release）。记录 `ENGINE §22.77`；证据 `_verify/seq138-v2b/REPORT.md`、`_verify/seq138-v2b-smoke`、`_verify/seq138-final/workspace-v2b.log`、`_verify/acceptance-20261106/seq138-v2c-progress.md`。
+
+### A. 语义（V2 现行）
+
+- 唯一全局 `<assets-dir>/map.json` **schema2**：`locations` 以所在地名称为 key；location=名称/别名/判定条件（`recognize.features` ocr_text|asset + `min_hits`）/回程路标/去程路标。
+- 路标仅 `{name, path}`（指向另一所在地，无 target/id/priority/frames/hub）；path=`{action:"click", asset(素材/集合), wait?}`（V1 仅 click）；`fallback_task` 默认「返回庭院」（空串错误）；有向、不补反向。
+- 删除 priority/frames/hub；v1（nodes/edges/parent/return_asset）**仅保留内存迁移代码/测试**，不处理/不改写用户 v1 map 数据；priority/frames/hub 丢弃/警告，key/swipe 边丢警告。
+- 上限：所在地 ≤500、路标 ≤2000、单所在地特征 ≤6（`oas-task/src/map.rs:22-25`）。
+
+### B. 实现
+
+- **V2-B 后端**：`oas-task/src/map.rs` v2 schema/validate（`:263-431`）/load（`:439`）/save_atomic+`.bak`（`:482`）/to_runtime（`:191`）/v1 内存迁移（`parse_compat_value :458-472`、`MapFileV1 :507`、`migrate_v1_owned :589`）；runtime 所在地识别复用 seq134 单源+seq137 缓存（`runtime/lib.rs:2644-2760`）、路标有向图 BFS（`runtime/map.rs:124/167`）、navigate V2（`runtime/lib.rs:2829+`：逐路标 click→settle→popup→重识别校验→不符重规划，PlanOnly/Execute/预算/取消）、fallback_task 注入后失败执行一次+重试（`:2840-2880`、`with_map_fallback :2184`）；serve `/map` GET/POST/validate/state/plan/navigate/probe 全 v2 + v1 body 内存迁移（`serve:5307-5760`；state `location` 为主、`node` 兼容 `:5461-5467`）；素材 delete/rename 按 v2 引用 400（`:6894/:6978`）；run 加载 v2/字面量 target/sibling fallback flow（`run.rs:540-574/653-679/980`）。
+- **V2-C UI**：独立地图页/导航彻底删（Studio nav **6→5**；无 `data-page="map"`/`#page-map`），地图改为工作台 rail 最后 tab `#panel-map`（`index.html:82-87/235`；全宽 `style.css:1965-1979`；关闭回素材）；共享工作台当前帧（`app.js:7330-7334` 派发 `oas:frame-changed`，`:7424/:7550`；map_ui 用 `currentFrameId/framesCache`、上一帧/下一帧、`filterFramesByQuery` `map_ui.js:352-372/692-695/960`）；所在地/路标编辑（名称/别名/判定条件/回程+去程路标、素材/集合搜索选择器、缩略图、settle、内联改删）；纯函数 `window.OAS_MAP`（`map_ui.js:8-302`）；预览/路径/调试（probe `/map/probe`、state `/map/state`、plan `/map/plan`、dry/real `/map/navigate`、fallback_task、保存 `.bak`/dirty、本地+服务端校验）；builder navigate 目标改 V2 locations（`builder.js:98/5931`，v1 兼容回退）；`map.js`=map_ui 字节同步。
+
+### C. 验证 / 证据 / 遗留
+
+- workspace **1044/0**（runtime 268 / oasd 472 / oas-task 172 / flow 83；`_verify/seq138-final/workspace-v2b.log`）；UI **2717 checks/195 ids/0 dead/158 runner/6 nav（Studio nav 5）**（本机复跑核对）；`cargo check/build -p oasd --features ocr` exit 0。
+- V2-B 冒烟 `_verify/seq138-v2b-smoke`：GET /map schema=2/4 locations/fallback=返回庭院；plan 2 hops；navigate dry；state；v1 validate 200（内存迁移）；probe node；素材 delete 400；无真实设备导航（server stopped）。
+- 遗留：`target_expr` 未实现（T1，地图基础后）；**Rust 编译器（rustc 原生）本轮不做/优先级调低**（源码框保持 flow JSON+Rust 只读投影，无 Rust→flow）；真实设备导航/replay E2E 未跑、Firefox 手测未做；全局弹窗 UI 未做；地图边无内联改/canvas 无缩放/map.js-map_ui.js 双文件/map_requirements deprecated；`text_visible`/`verify_expect` fuzzy 无缓存；UI 无浏览器自动化；serve `/map/navigate real` 临时任务无 fallback sibling、fallback_task 保存不校验存在；v2 locations BTreeMap→同分名称 tie-break；v1 用户数据不迁移；用户数据未提交、未 tag/release。

@@ -1,35 +1,35 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 137，✅ done：九条反馈→三路审计→修复地图性能/UI、去 map 门禁、画布 shape、拖拽/大图/Rust 投影、T8**），然后按需看 `docs/ENGINE-DESIGN.md §22.76`、`_verify/seq137-audit/FIX-EVIDENCE.md`。
-> **状态：done（seq 137）——九条反馈 → 三路审计（接错线/性能/假绿）→ 修复**：`45a458b`（14 文件 +1750/−573）；workspace **1043/0**（runtime 267 / oasd 472 / oas-task 172 / flow 83）、UI **2713/195/0 dead/158/6 nav**、地图 E2E **19/0**。HEAD `45a458b`（dev=origin/dev；main=b3e3013 待 docs 后快进；未 tag/未 release）。
+> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 138，✅ done：地图 V2 所在地/路标/路径 + 工作台地图 tab**），然后按需看 `docs/ENGINE-DESIGN.md §22.77`、`docs/MAP-V2-DESIGN.md §9`、`_verify/seq138-v2b/REPORT.md`。
+> **状态：done（seq 138）——地图 V2（所在地/路标/路径）+ 工作台地图 tab**：V2-B `8394af7` + V2-C `8134376`；workspace **1044/0**（runtime 268 / oasd 472 / oas-task 172 / flow 83）、UI **2717/195/0 dead/158/6（Studio nav 5、Runner 6）**。HEAD `8134376`（dev=origin/dev；main=55dc07c 待 docs 后快进；未 tag/未 release）。
 
-## 0. 当前状态（2026-11-07 21:5x，seq 137 done）
+## 0. 当前状态（2026-11-07 23:4x，seq 138 done）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | oas-core `dev`；代码 `45a458b`（dev=origin/dev；main/origin/main=b3e3013 待 docs 后快进）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，未随 seq126~137 更新）；未 tag / 未 release |
-| 任务 | **seq137 已完成**：九条反馈 → 三路只读审计（地图 `/library` 接错线、probe 78.3s、map_requirements/T11 门禁、画布不清、操作区二次平移、拖拽假实现、大图/源码、T8 陈旧变量）→ 修复 `45a458b`（地图性能/UI、去 map 门禁、画布 shape、列表 DnD、全窗口流程图+Rust 只读投影、T8 raw 父 flow）|
-| 测试 | `cargo test --workspace` **1043 passed / 0 failed**（runtime **267** / oasd **472** / oas-task **172** / flow **83** 等）；UI **2713 checks / 195 ids / 0 dead / 158 runner ids / 6 nav**；`cargo check/build -p oasd --features ocr` exit 0；地图 E2E **19/0**；证据 `_verify/seq137-*` |
-| 权威文档 | **`ENGINE §22.76`（seq137）· `ACCEPTANCE-2026-11-06.md`（seq137 追加）· `PENDING §E-105` · `_verify/seq137-audit/FIX-EVIDENCE.md`**（旧 §22.75 顶部有 seq137 更正条） |
-| 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；本地产物不含 seq126~137 新能力；**地图 `map.json` 不入包**（`map_requirements` 已 deprecated/空，不再门禁） |
+| 分支 / HEAD | oas-core `dev`；代码 `8134376`（dev=origin/dev；main/origin/main=55dc07c 待 docs 后快进）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，未随 seq126~138 更新）；未 tag / 未 release |
+| 任务 | **seq138 已完成**：地图 V2（schema2 所在地/路标/路径 + fallback_task；删 priority/frames/hub；v1 仅内存迁移代码/测试）+ 工作台地图 tab（独立页/导航删、共享当前帧、所在地/路标编辑+素材/帧搜索+预览、V2 API 全 v2）；V2-B `8394af7` + V2-C `8134376` |
+| 测试 | `cargo test --workspace` **1044 passed / 0 failed**（runtime **268** / oasd **472** / oas-task **172** / flow **83** 等）；UI **2717 checks / 195 ids / 0 dead / 158 runner ids / 6 nav（Studio 5）**；`cargo check/build -p oasd --features ocr` exit 0；V2-B 冒烟 `_verify/seq138-v2b-smoke` |
+| 权威文档 | **`ENGINE §22.77`（seq138）· `ACCEPTANCE-2026-11-06.md`（seq138 追加）· `PENDING §E-109` · `docs/MAP-V2-DESIGN.md`（V2-B/C 已实现 + §9 实现结果）** |
+| 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；本地产物不含 seq126~138 新能力；**地图 `map.json` 不入包**（`map_requirements` deprecated/空） |
 | 独立仓 | `https://github.com/passioki/oas-runner`（`768a8b7`）；pin `ba6813e`（未打独立包；如需独立 Runner 需 bump pin + 根启动脚本 + 地图/弹窗全局文件分发） |
 | 服务 | 无 `oasd`/`oasd-runner` 进程；8787~8809 无监听（冒烟后确认） |
 | 工作区 | `scheduler.json`、用户任务 `tasks/*`、`assets/assets.json` / `frames/frames.json` / 新增图片等均**未提交**（用户数据，**不要提交/覆盖**）；用户可能在 Studio 中删除/编辑任务（不要恢复/提交）；seq131 代码已提交；**cargo incremental 已清理，下次构建稍慢（deps 缓存仍在）** |
 
 ## 0.1 新会话恢复步骤（直接照做）
 
-1. 调 skill `session-memory`；读 `START-HERE` → `RESUME.md`（seq 137）→ `RESUME-INDEX` 最新行。
+1. 调 skill `session-memory`；读 `START-HERE` → `RESUME.md`（seq 138）→ `RESUME-INDEX` 最新行。
 2. 用磁盘核实：`git log -1`、`git status --porcelain`、`cargo test --workspace`、`node apps/oasd/ui/ui_pure_test.js`；与本文 §0 不一致先修文档。
-3. seq137 已 done；若用户提新需求，先读 `ENGINE §22.76`（现行：地图性能缓存/cheap pass、去 map 门禁、UI 消费服务端 action_shape、列表 DnD、Rust 只读投影、T8 raw 父 flow），避免恢复已删的 T11/publish_map_nodes/probe 全库扫描/SVG 假拖拽。
-4. 遗留项（不阻塞）：`target_expr` 未实现；flow→Rust 只读投影**非可执行/无 Rust→flow 编译器**；`map_requirements` 字段 deprecated 未删；`/map/probe` 默认不含素材 hints（需 node/assets）；真机导航/replay 多跳 E2E 仍 SKIP、Firefox 手测未做；`text_visible`/`verify_expect` fuzzy+无缓存；全局弹窗 UI 未做；地图边无内联改；canvas 只读无缩放；`map.js`/`map_ui.js` 双文件同步；UI pure test 无浏览器 DnD。
+3. seq138 已 done；若用户提新需求，先读 `ENGINE §22.77` 与 `docs/MAP-V2-DESIGN.md`（现行：V2 locations 名称 key/landmark{name,path}/path click+素材/fallback_task；工作台地图 tab 共享帧；v1 仅内存迁移代码/测试），避免恢复 v1 nodes/priority/frames/hub 语义或独立地图页。
+4. 遗留项（不阻塞）：`navigate.target_expr` 未实现（T1）；**Rust 编译器（rustc 原生）本轮不做/优先级调低**（源码框保持 flow JSON+Rust 只读投影，无 Rust→flow）；真机导航/replay E2E 未跑、Firefox 手测未做；全局弹窗 UI；地图边内联改/canvas 缩放/map.js-map_ui.js 双文件/map_requirements deprecated；`text_visible`/`verify_expect` fuzzy+无缓存；UI 无浏览器自动化；serve `/map/navigate real` 无 fallback sibling、fallback_task 保存不校验；locations BTreeMap 名称 tie-break；v1 用户数据不迁移。
 5. 发布策略：**只推送不发布**；如要发布需先重打 Studio/Runner 包、视需要 bump oas-runner pin/版本；地图/弹窗为全局文件需单独分发（不入包）。
 
-## 0.2 本轮（seq137）文档产出
+## 0.2 本轮（seq138）文档产出
 
-- `ENGINE-DESIGN.md §22.76`（9 子节：九条→审计事实 / 地图性能 / 去 map 门禁 / 地图 UI / 画布 shape / 拖拽大图源码 / T8 / 验证 / 遗留）+ §22.75 顶部 seq137 更正条。
-- `ACCEPTANCE-2026-11-06.md` seq137 追加；`PENDING §E-105`（+§E-104 交叉引用）；`RESUME §1.30`/`RESUME-INDEX row 137`/`START-HERE`/本交接单/`README`。
-- 证据：`_verify\seq137-audit\`（三审计+FIX-EVIDENCE+perf-results/repro）、`seq137-perf\perf-result.json`、`seq137-perf-root\personal-breakthrough-result.json`、`seq136-map\e2e-results.json`（19/0）。
-- 测试：workspace 1043/0（runtime 267/oasd 472/task 172/flow 83）、UI 2713/195/0/6、E2E 19/0；旧文更正：§22.75 map 门禁/源码框/拖拽/性能数字。
+- `ENGINE-DESIGN.md §22.77`（6 子节：V2 语义 / runtime 所在地+BFS+navigate+fallback / serve+run / 工作台地图 tab / 验证证据测试 / 遗留更正）+ §22.76 顶部 seq138 更正条；`docs/MAP-V2-DESIGN.md` 状态改 V2-B/C 已实现+§9 实现结果。
+- `ACCEPTANCE-2026-11-06.md` seq138 追加；`PENDING §E-109`（+§E-106/107/108 交叉引用）；`RESUME §1.31`/`RESUME-INDEX row 138`/`START-HERE`/本交接单/`README`。
+- 证据：`_verify\seq138-v2b\REPORT.md`、`seq138-v2b-smoke\`、`seq138-final\workspace-v2b.log`、`_verify\acceptance-20261106\seq138-v2c-progress.md`。
+- 测试：workspace 1044/0（runtime 268/oasd 472/task 172/flow 83）、UI 2717/195/0/6（Studio nav 5）；旧 v1 地图语义在 §22.76 顶部已标更正。
 
 ## 1. 最近 3 轮关键变更（历史细节见 PLAN/ENGINE/PENDING）
 

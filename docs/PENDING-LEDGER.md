@@ -4822,12 +4822,28 @@ un_with_timeout（spawn + stdout/stderr 双线程排空 + try_wait deadline 轮�
 > **实施拆分（待确认后开工）**：V2-A 设计确认；V2-B oas-task map v2 schema/校验/迁移 + runtime 识别/路标图/执行 + serve `/map` v2/plan/state/navigate + 测试；V2-C 工作台地图 tab + 删除独立页 + 共享帧 + 编辑器/路径预览 + UI 测试；V2-D docs/ENGINE §22.77/ACCEPTANCE/PENDING/RESUME。
 > **当前遗留（seq137 后，必须带进后续）**：① navigate target 动态参数 `target_expr`/param() 未实现（用户 #3 闭环，优先）；② flow→Rust 仅只读投影、不可编译/无可编辑 Rust→flow 编译器（需用户决定是否投入）；③ 真实设备导航/replay 多跳 E2E 未跑 + Firefox 手测；④ 全局弹窗配置 UI 未做（D0 仅 API/runtime）；⑤ 地图 UI：边无内联改、canvas 只读无缩放、`/map/probe` 默认无素材 hints（UI 传 node/assets）、map.js/map_ui.js 双文件、map_requirements deprecated 未彻底删；⑥ 地图性能 debug probe 1.45s/OCR asset identify 1.09s（release 未实测），text_visible/verify_expect 仍 fuzzy 无缓存；⑦ 操作区 fixed 自然路径手测、drag rect bbox+margin 保留；⑧ relations 服务端 deprecated 未清理、旧证据不迁移；⑨ UI 测试无浏览器 DnD/画布自动化；⑩ 用户数据未提交。
 > **待用户确认**：删除 priority/frames/hub（推荐）/ fallback_location 是否保留；v1→v2 迁移策略；地图 tab 位置（推荐最后）、独立地图页是否彻底删；路标路径 V1 只点击；Rust 源码只读 vs 编译器；target_expr 是否下批优先。
+> **seq138 已实现**：本节规划已落地为地图 V2（schema2 所在地/路标/路径）+ 工作台地图 tab（`8394af7` V2-B + `8134376` V2-C）；实现细节/验证/遗留见 §E-109 / `ENGINE §22.77`。
+
 # ★ §E-107 ★★ [11-07 22:53] seq138 补充裁决（地图 V2 语义定稿，未实现）
 
 > 用户对 Lead 理解的确认：**路标就是另一个所在地的引用**；路标与所在地=旧模型中两个相邻节点；所在地引用路标只需要 **名称 + 路径**，**不需要 target/id**（冗余）；路径包含 **动作 + 素材**（V1 动作=点击素材/集合）。Rust 源码选择**编译器**（不是只读投影）。
 > 裁决：① 删除 priority/frames/hub；失败兜底=重启游戏回初始庭院，通过 `fallback_task`（默认「返回庭院」）调用；② v1 迁移自行判断（推荐内存迁移+保存 v2，不自动改未保存数据）；③ 独立地图页**彻底删除**，地图 tab 放工作台最后；④ 路标路径 V1 只 click；⑤ Rust 源码做编译器；⑥ `target_expr` 动态目标必须等**地图 V2 前置基础完成**后再做，并与地图改版一起规划。
 > 设计更新：`docs/MAP-V2-DESIGN.md`（v2 schema：locations 以名称为 key；return/outbound landmarks `{name,path}`；无 target/priority/frames/hub；fallback_task；工作台 tab；Rust DSL 编译器方案/依赖；遗留）。当前代码仍未实现（HEAD 文档提交见 git log；seq137 功能代码 `f6f2ad1`）。
+> **seq138 已实现**：本节裁决（路标={name,path}/删 priority·frames·hub/fallback_task/独立页删/工作台 tab 最后）已全部落地，见 §E-109 / `ENGINE §22.77`；v1 用户数据不迁移（仅内存迁移代码+测试）。
+
 # ★ §E-108 ★ [11-07 23:03] seq138 补充：v1 只迁代码/素材帧搜索+预览/Rust 编译器暂不做
 
 > 用户确认：v1 map 若是用户数据不用管，只迁移代码；路径素材+帧都要可搜索、套用现有搜索样式并支持候选；完成所在地定义后路标/路径涉及素材/帧要有预览；Rust 源码想要 rustc 原生，但本轮不做、优先级调低；其他按计划。
 > 设计更新：`docs/MAP-V2-DESIGN.md §8`（v1 代码迁移、素材/帧搜索+候选+预览、Rust 编译器延后）；实施顺序仍 V2-B（后端模型/运行时/API）→V2-C（工作台地图 tab/搜索预览）→T1（target_expr）；R1 Rust 编译器暂缓。
+
+> **seq138 已实现**：v1 只迁代码（已完成）、素材/帧搜索+候选+预览（V2-C）、Rust 编译器本轮不做/优先级调低（源码框保持 flow JSON+Rust 只读投影），见 §E-109 / `ENGINE §22.77`。
+> **seq138 实现**：本节的规划/裁决已在 seq138 落地为 **地图 V2（schema2 所在地/路标/路径）+ 工作台地图 tab**（`8394af7` V2-B + `8134376` V2-C），v1 priority/frames/hub 删除、v1 仅内存迁移代码/测试；见 §E-109 / `ENGINE §22.77`。
+
+# ★ §E-109 ★★★ [11-07 22:28→23:30] seq138：地图 V2（所在地/路标/路径）+ 工作台地图 tab 实现
+
+> 用户 22:28 反馈（priority/frames/hub 语义不清、工作台帧与地图帧两套状态、维护流程不清爽）→ 22:53 裁决（路标=相邻所在地引用：名称+路径；删 priority/frames/hub；失败兜底 `fallback_task`=返回庭院；独立地图页彻底删、工作台 tab 最后；Rust 源码选“编译器”方案）→ 23:03 补充（v1 只迁代码不处理用户数据；素材/帧搜索+候选+预览；Rust 编译器本轮不做/优先级调低；target_expr 地图基础后）。设计 `docs/MAP-V2-DESIGN.md`。实现 `8394af7`（V2-B 后端）+ `8134376`（V2-C 工作台 tab）。HEAD `8134376`（dev=origin/dev；main=55dc07c 待 docs 后快进；未 tag/未 release）。
+> **V2 语义**：唯一 `<assets-dir>/map.json` schema2；`locations` 以名称为 key（label 可选别名）；location=判定条件（`recognize.features` ocr_text|asset + `min_hits`）+回程/去程路标；landmark 仅 `{name, path}` 指向另一所在地（无 target/id/priority/frames/hub）；path=`{action:"click", asset(素材/集合), wait?}`（V1 仅 click）；`fallback_task` 默认「返回庭院」；有向、不补反向；上限 locations≤500/landmarks≤2000/features≤6；v1→v2 **仅内存迁移代码/测试**，不重写用户数据（priority/frames/hub 丢/警告、key-swift 边丢警告、显式 click 边优先）。
+> **V2-B 后端**：oas-task `map.rs` schema/validate/load/save_atomic(.bak)/to_runtime/v1 迁移（`:22-25/54-133/191/263-431/439/458-472/482/507/589`）；runtime 所在地识别（`lib.rs:2644-2760`，seq134 单源+seq137 缓存/早退，无 priority）、路标有向图 BFS（`map.rs:124/167`，无 parent/LCA/hub）、navigate V2（`lib.rs:2829+`，逐路标 click→settle→popup→重识别校验→不符重规划，PlanOnly/Execute/预算/取消）、fallback_task 注入/失败执行一次+重试/缺失 loud（`:2184/2840-2880`）；serve `/map` GET/POST/validate/state/plan/navigate/probe 全 v2+v1 body 内存迁移（`serve:5307-5760`）、素材引用保护（`:6894/:6978`）；run 加载 v2/字面量 target/sibling fallback（`run.rs:540-574/653-679/980`）。
+> **V2-C UI**：独立地图页/导航删（Studio nav 6→5），地图=工作台 rail 最后 tab `#panel-map` 全宽+关闭回素材（`index.html:82-87/235`、`style.css:1965-1979`）；共享工作台当前帧（`app.js:7330-7334/7424/7550 oas:frame-changed`；map_ui 读 currentFrameId/framesCache、上一帧/下一帧、`filterFramesByQuery` `map_ui.js:352-372/692-695/960`）；所在地/路标编辑（名称/别名/判定条件/回程+去程路标、素材/集合搜索选择器、缩略图、settle、内联改删）；`window.OAS_MAP` 纯函数（`:8-302`）；预览/路径/调试（probe/state/plan/dry+real navigate/fallback/save .bak/dirty/校验）；builder navigate 目标改 V2 locations（`builder.js:98/5931`，v1 兼容回退）；`map.js`=map_ui 字节同步。
+> **验证**：workspace **1044/0**（runtime 268/oasd 472/oas-task 172/flow 83；`_verify/seq138-final/workspace-v2b.log`）；UI **2717 checks/195 ids/0 dead/158 runner/6（Studio nav 5）**；cargo check/build ocr；V2-B 冒烟 `_verify/seq138-v2b-smoke`（GET /map schema=2/4 locations/fallback；plan 2 hops；navigate dry；state；v1 validate 200；probe node；素材 delete 400；server stopped）；测试矩阵见 `seq138-v2b/REPORT.md` / `acceptance-20261106/seq138-v2c-progress.md`。
+> **遗留**：`target_expr` 未实现（T1，地图基础后）；**Rust 编译器（rustc 原生）本轮不做/优先级调低**（源码框保持 flow JSON+Rust 只读投影，无 Rust→flow）；真机导航/replay E2E 未跑、Firefox 手测未做；全局弹窗 UI；地图边内联改/canvas 缩放/map.js-map_ui.js 双文件/map_requirements deprecated；`text_visible`/`verify_expect` fuzzy 无缓存；UI 无浏览器自动化；serve `/map/navigate real` 临时任务无 fallback sibling、fallback_task 保存不校验存在；locations BTreeMap 同分名称 tie-break；v1 用户数据不迁移；用户数据未提交、未 tag/release。

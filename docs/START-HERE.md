@@ -23,21 +23,21 @@
 ★ 唯一真相 = git + 磁盘证据；**不信"我记得"** ⇒ 必须贴 `文件:行号` / commit / 测试输出
 ```
 
-## 0.1 当前状态快照（2026-11-07 21:5x · **seq 137 · ✅ done：九条反馈→三路审计→修复（地图性能/UI、去 map 门禁、画布 shape、拖拽/大图/Rust 投影、T8）**）
+## 0.1 当前状态快照（2026-11-07 23:4x · **seq 138 · ✅ done：地图 V2（所在地/路标/路径）+ 工作台地图 tab（V2-B 后端 + V2-C UI）**）
 
 | 项 | 状态 |
 |---|---|
-| 分支/HEAD | `dev`；代码 HEAD = **`45a458b`**（seq137 审计修复；dev=origin/dev，main/origin/main=`b3e3013` 待 docs 后快进）；PR1~PR7 全部 ✅；**未 tag / 未 release** |
+| 分支/HEAD | `dev`；代码 HEAD = **`8134376`**（seq138：V2-B `8394af7` + V2-C `8134376`；dev=origin/dev，main/origin/main=`55dc07c` 待 docs 后快进）；PR1~PR7 全部 ✅；**未 tag / 未 release** |
 | 引擎 | `oasd`（studio/runner/run/queue/stats/scheduler）+ 编辑器 UI + 素材库；`oasd --version` = **0.1.0**（dev；旧 v1.x 为历史内部 tag） |
-| 测试 | `cargo test --workspace` **1043 passed / 0 failed**（runtime **267** / oasd **472** / oas-task **172** / flow **83** 等）；UI pure test **2713 checks / Studio 195 ids / 0 dead / 158 runner ids / 6 nav**；`cargo check/build -p oasd --features ocr` exit 0；地图 E2E **19/0**（real SKIP） |
+| 测试 | `cargo test --workspace` **1044 passed / 0 failed**（runtime **268** / oasd **472** / oas-task **172** / flow **83** 等）；UI pure test **2717 checks / Studio 195 ids / 0 dead / 158 runner ids / 6 nav（Studio 5）**；`cargo check/build -p oasd --features ocr` exit 0；V2-B 冒烟 `_verify/seq138-v2b-smoke` |
 | 分包 | **Studio** `dist/oasd-v0.1.0-win64.zip` = **76,670,889 B**，SHA256 `F21843810EF94859DCA57CF172944FDB618DD19B058F11770DF8D236C3471B2F` · **oas-core Runner** `37,860,300 B`，SHA256 `163679D6099AA35ED67A54AD0AAA11AACFCF9275B657C00AEA9C5E2708CC9065` · **oas-runner 独立包** `37,870,658 B`，SHA256 `F6A6C3012AB20BF6CBB4564EC5E9735DF728C0C35DA8950751727415B392D46C`（均不入 git；**本批未重打，且旧 package_schema 包会被新引擎拒绝**） |
 | 独立仓 | **`oas-runner`** = `https://github.com/passioki/oas-runner`（`768a8b7`；pin `ba6813e`，**未随 seq126~130 更新、未打独立包**） |
 | 最终审计 | **`docs/AUDIT-2026-11-05.md`**（代码审计/文档漂移对照/残余风险/交接/关机） |
-| 双入口 | **Studio `http://127.0.0.1:8788/`**（`oasd studio`，编辑/构建/发布，**无调度页/无重置记忆**）· **Runner `http://127.0.0.1:8789/`**（`oasd runner`，nav 6 项：概览/已安装任务/安装包/队列与调度/运行记录/设置；**完整调度 UI + 重置记忆**；启动即内嵌调度，`--no-scheduler` 关闭）；`oasd serve` = Studio 的 deprecated 别名 |
+| 双入口 | **Studio `http://127.0.0.1:8788/`**（`oasd studio`，编辑/构建/发布，**无调度页/无重置记忆**；Studio nav 5 页，地图已并入工作台 rail 最后 tab）· **Runner `http://127.0.0.1:8789/`**（`oasd runner`，nav 6 项：概览/已安装任务/安装包/队列与调度/运行记录/设置；**完整调度 UI + 重置记忆**；启动即内嵌调度，`--no-scheduler` 关闭）；`oasd serve` = Studio 的 deprecated 别名 |
 | 当前状态 | **所有服务已停止**（本轮验证/E2E/冒烟后确认无监听、无 `oasd` 进程）。启动命令见 §1.3/§6；**开发启动器 = `scripts\dev-serve.bat`（默认 Studio 8788；`-Surface runner` → Runner 8789）**；仓库根 `start-runner.bat` 为 Runner 快捷启动 |
 | 发布 | GitHub Release `v0.1.0` 仍是**历史节点**（tag `v0.1.0` → `e8edbef`，**未移动**）；**本批未 tag / 未 release** |
-| 当前任务 | **seq137 已完成**：用户 21:07 九条反馈 → 三路只读审计（地图 `/library` 接错线、probe 78.3s、map_requirements/T11 门禁、画布不清、操作区二次平移、拖拽假实现、大图/源码、T8 陈旧变量）→ `45a458b` 修复（地图性能缓存/cheap pass、去 map 门禁、地图 UI、画布/点测 shape、列表 DnD+全窗口流程图+Rust 只读投影、T8 raw 父 flow） |
-| 权威文档 | **`ENGINE §22.76`（seq137，§22.75 顶部有更正条）· `ACCEPTANCE-2026-11-06.md`（seq137 追加）· `PENDING §E-105` · `_verify/seq137-audit/FIX-EVIDENCE.md`** |
+| 当前任务 | **seq138 已完成**：地图改 V2「所在地（名称/别名/判定条件+min_hits/回程+去程路标）/路标（相邻所在地引用：名称+路径 click+素材/集合+wait）/路径」，删 priority/frames/hub，`fallback_task`（默认返回庭院）；独立地图页/导航删、地图=工作台 rail 最后 tab `#panel-map` 全宽、共享工作台当前帧、素材/帧搜索+候选+预览、V2 API 全 v2（v1 body 内存迁移、仅代码+测试，不迁用户数据）；V2-B `8394af7` + V2-C `8134376` |
+| 权威文档 | **`ENGINE §22.77`（seq138，§22.76 顶部有更正条）· `ACCEPTANCE-2026-11-06.md`（seq138 追加）· `PENDING §E-109` · `docs/MAP-V2-DESIGN.md`（V2-B/C 已实现 + §9）** |
 | 数据 | 已提交基线：全局素材 **16 条 / 1 图**（15 `ocr_line` + 1 `template`）；帧 **28 个 / `current_id=20` / `next_id=41`**。工作区未提交用户数据：`assets/assets.json`、`frames/frames.json`、`scheduler.json`(+`.bak`)、未跟踪 `frames/frame-43.png`/`frame-44.png`、`tasks/切换预设御魂/`——**用户数据不入库，勿提交** |
 | 引擎特性 | flow DSL、素材/掩膜/多边形、点击定位链、HB1/HB7、整帧搜索、单识别 ROI + 操作区域、库、queue、stats、checkpoint/resume、reconnect、多帧投票、OCR+模板互证、统一任务模板/task lint、任务创建/编辑器运行、调度 v3、交付包 `.oaspkg`、Studio/Runner 双入口、内嵌调度/设备租约、子任务参数配置 |
 | 已知限制 | 见 `RESUME.md §5` / `SESSION-HANDOFF.md §4`；核心：`installed.json` 损坏无自动隔离、租约 pass 级、install/activate 调度检查有 check-then-act 小窗口、panic 安全依赖 unwind、PR7 8 条 UI P2、`start-runner.bat` 固定 8789、跨平台仅设计预留 |
@@ -90,7 +90,7 @@
 |---|---|---|
 | ⓪ | `docs/RESUME.md` + `docs/RESUME-INDEX.md` | ★ **长任务/压缩后恢复的第一入口**（skill 强制 6）：当前断点（seq 108）、验收清单、下一步精确命令、证据索引 |
 | ① | `docs/SESSION-HANDOFF.md` | 当前在哪、下一步、最近 3 轮变更、活跃坑（一页纸） |
-| ② | `docs/ENGINE-DESIGN.md` **§22** | 引擎规格/进度/判据；§22.34 调度 v3 **已交付**；当前素材/关系模型看 §22.38/§22.39；**PR1~PR7 + 最终审计实现记录看 §22.44~§22.51**（§22.51 = 最终审计与交接）；**seq124 参数→素材/op_region 见 §22.64；seq134 素材识别统一看 §22.73；seq136 唯一全局地图/导航/弹窗/操作区 polygon-fixed 看 §22.75；seq137 审计修复（地图性能/去门禁/画布 shape/拖拽/大图/Rust 投影/T8）看 §22.76** |
+| ② | `docs/ENGINE-DESIGN.md` **§22** | 引擎规格/进度/判据；§22.34 调度 v3 **已交付**；当前素材/关系模型看 §22.38/§22.39；**PR1~PR7 + 最终审计实现记录看 §22.44~§22.51**（§22.51 = 最终审计与交接）；**seq124 参数→素材/op_region 见 §22.64；seq134 素材识别统一看 §22.73；seq136 唯一全局地图/导航/弹窗/操作区 polygon-fixed 看 §22.75；seq137 审计修复看 §22.76；seq138 地图 V2（所在地/路标/路径 + 工作台地图 tab）看 §22.77** |
 | ③ | `docs/PENDING-LEDGER.md` 的 **§E-66~§E-79** | 编辑器 UX/版本重置/任务素材架构/34 事故/静态审计/文档归档/Release+O-1/O-2/调度器产品化/帧页/两按钮+push-all/素材库 UX/**§E-79 = Studio·Runner 分离**（Q1~Q7 已批准、PR1~PR7 全部 ✅、**§M 最终审计与修复**）；§E-24~§E-26 为历史交付台账 |
 | ④ | `docs/EDITOR-UX-PLAN.md` + `docs/ASSET-DATA-MODEL.md` + 旧仓路径/流程（仅在碰旧仓时） | 画布/选择/实时帧/区域有效性/排序/分类改版及**实现后状态（§15）**；全局素材/任务素材边界；旧仓 `D:\OAS-dev\backend\docs\LAYOUT.md` · `DEV-WORKFLOW.md`（冻结） |
 
@@ -319,7 +319,7 @@ run-tests.bat …                                  REM 旧仓守卫基线 171 pa
 | **编辑器 UX / 选择模型计划** | `EDITOR-UX-PLAN.md`（画布、位置详情、多边形/反选、实时帧、点测/拖测、区域有效性、素材排序、分类重命名；**素材库 UX 现行为 §18**；**§18.10 = 三项遗留修复**） |
 | **★ Studio / Runner 分离 + TaskPackage + 任务配置** | `RUNNER-STUDIO-SPLIT-PLAN.md`：**Q1~Q7 已批准；PR1~PR7 全部 ✅ 已提交（PR7 代码 `5e45c81`）+ 最终审计修复 `68e5768`**；§A.9~§A.15 = PR1~PR7 实现记录，**§A.16 = 最终审计与修复记录**，**§A.17 = 双端发行包/分离度/dev-serve/参数 UI 审计（2026-11-05，seq 110）**；§A.8.1 = 两种发行包；§D.3 PR 计划、§D.4 19 步验收；分发/跨平台见 `packaging/CROSS-PLATFORM.md`、`packaging/README-RUNNER.txt`、`packaging/README-DEPLOY.md` |
 | **当前任务（返回庭院）** | `../tasks/返回庭院/flow.json` · 全局素材 `../assets/` · 帧 `../frames/` |
-| **引擎规格/进度** | `ENGINE-DESIGN.md` §22（**§22.51 最终审计；§22.52 发行包/参数审计；§22.53 P0；§22.54 参数 v2/构建端/P0-1b；§22.55 使用端参数 UI/更新检测；§22.56 Phase 1a/Studio lint；§22.57 Phase 1b 独立打包；§22.58 更新检测 TTL/复用/清理 + 参数编辑补齐；§22.59 动作目录统一 + 配置项成熟 UI；§22.60 参数插入/条件修复/素材选择；§22.61 region 操作区域 + long_press + curve_swipe + 等待语义；§22.62 A 方案 region.asset + 多候选 nearest；§22.63 用户新要求记录；§22.64 seq124 参数→素材/op_region/候选 API/test_action/废弃两状态；§22.65 ★ seq126 验收整改：操作区模型 A / polygon+统一框选 / 参数 UI 移除 / 变量系统设计；§22.66 seq127 全帧多候选+模型 B；§22.67 V2.0 变量系统；§22.68 seq129 拖动素材端点+全局 lint；§22.69 seq130 点击几何同源+UI 四项；§22.70~§22.72 seq131~133（集合入口/混合集合/ADB 超时+多候选）；§22.73 ★ seq134 素材识别统一；§22.75 ★ seq136 操作区 polygon/fixed + 11 项 + 唯一全局地图/导航 + 全局弹窗 D0；§22.76 ★ seq137 审计与修复（地图性能/UI、去 map 门禁、画布 shape、拖拽/大图/Rust 投影、T8）**） |
+| **引擎规格/进度** | `ENGINE-DESIGN.md` §22（**§22.51 最终审计；§22.52 发行包/参数审计；§22.53 P0；§22.54 参数 v2/构建端/P0-1b；§22.55 使用端参数 UI/更新检测；§22.56 Phase 1a/Studio lint；§22.57 Phase 1b 独立打包；§22.58 更新检测 TTL/复用/清理 + 参数编辑补齐；§22.59 动作目录统一 + 配置项成熟 UI；§22.60 参数插入/条件修复/素材选择；§22.61 region 操作区域 + long_press + curve_swipe + 等待语义；§22.62 A 方案 region.asset + 多候选 nearest；§22.63 用户新要求记录；§22.64 seq124 参数→素材/op_region/候选 API/test_action/废弃两状态；§22.65 ★ seq126 验收整改：操作区模型 A / polygon+统一框选 / 参数 UI 移除 / 变量系统设计；§22.66 seq127 全帧多候选+模型 B；§22.67 V2.0 变量系统；§22.68 seq129 拖动素材端点+全局 lint；§22.69 seq130 点击几何同源+UI 四项；§22.70~§22.72 seq131~133（集合入口/混合集合/ADB 超时+多候选）；§22.73 ★ seq134 素材识别统一；§22.75 ★ seq136 操作区 polygon/fixed + 11 项 + 唯一全局地图/导航 + 全局弹窗 D0；§22.76 ★ seq137 审计与修复；§22.77 ★ seq138 地图 V2（所在地/路标/路径 + 工作台地图 tab；v1 仅内存迁移代码/测试）**） |
 | **seq131 现行口径** | `ENGINE §22.70`（加入集合入口恢复）· `ACCEPTANCE-2026-11-06.md`（seq131 追加）· `PENDING §E-99` · `OPERATION-REGION-DESIGN §8.9`（模型 B） |
 | **seq124/126/127/128/129 实现记录（历史）** | `PARAM-ASSET-IMPLEMENTATION.md`（seq124 设计+裁决）· `PARAM-ASSET-REDESIGN.md §1b`（用户权威逐字要求）· `OPERATION-REGION-DESIGN.md §8`（模型 A→B 修正）· `ENGINE §22.64/§22.65/§22.66/§22.67/§22.68/§22.69` |
 | **调度 v3 + 统一任务模板（已交付 V1.0）** | `ENGINE-DESIGN.md` **§22.34 / §22.35**；Round 语义裁决见 **§22.34.7** + `SCHEDULER-RUNNER-PLAN.md` |
