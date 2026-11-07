@@ -211,3 +211,9 @@ E2E seq127 脚本（并清理 seq126 模型 A 断言）、masked 极端 mask 兜
 - 原因：3eb9fa8 清理未使用 UI 时移除了「新建集合」（素材多选 + 按钮）；后端集合 API 仍在。
 - 修复 eaf68fe：素材设置菜单「加入集合」（template 专用，置灰规则）+ #collection-add-dialog（已有集合/新建集合；跨集合自动移出旧集合；保留 threshold/action_shape；保存后刷新并提示改写任务数）；三处素材列表接线。
 - 验证：UI **2391 checks / 190 ids / 0 dead / 158 runner / 6 nav**；node --check 全绿；数据副本 API 冒烟 POST create 200 / GET 回显集合 / DELETE 200。
+## seq132 追加验收（2026-11-07 08:26）：集合成员扩展到所有素材
+
+- 反馈：目前只有模板图能加入集合，请扩展到所有素材。
+- 实现 7229c59：成员允许 template/ocr_line/ocr_lines/ocr_var/region（嵌套集合拒绝）；runtime/serve/UI 全链路支持（识别、click/click_target 展开、候选 API、集合 match、test_action、drag；region=固定区域兜底 1.0；获胜成员 op_region 链生效）。
+- 验证：workspace **980/0**、UI **2407/190/0 dead/158 runner/6 nav**；Lead 冒烟（用户数据副本 frame6，无真实点击）：混合集合 candidates count=5（含 member/member_kind）、collection/match winner OCR、test_action dry index 0/1 正常。
+- 遗留：click_target 成员不继承集合级 locator 覆盖；无期望文字普通 OCR 成员 load 期报错；混合真实点击（OCR/region）未真机验证；region 恒 1.0 压过其它分数。

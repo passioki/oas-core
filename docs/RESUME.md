@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 131
-updated_at: 2026-11-07T08:2x+08:00
-trigger: 用户 08:10 反馈「把素材添加为集合的 UI 没了，按钮可放到素材设置里」→ 原因 commit 3eb9fa8 清理未使用 UI 时移除多选素材+新建集合；恢复为素材设置菜单「加入集合」+ 集合对话框（已有集合/新建 id/跨集合先移出旧集合），后台调用既有 POST /task/asset/collection。提交 `eaf68fe`；UI 2391/190/0/6
+checkpoint_seq: 132
+updated_at: 2026-11-07T08:4x+08:00
+trigger: 用户 08:26「目前只有模板图能加入集合，请扩展到所有素材」→ 集合成员允许 template/ocr_line/ocr_lines/ocr_var/region；oas-task 校验/expand、runtime locate/click 几何/获胜成员 op_region 链/混合候选 API、serve 候选/collection match/test_action、UI 菜单/对话框全链路支持。提交 `7229c59`；workspace 980/0、UI 2407/190/0/6；冒烟混合集合 candidates=5/match winner OCR/test_action index0/1
 status: done
-code_head: `eaf68fe`（dev/main 已同步；未 tag/未 release）
-docs_head: seq131 docs 提交见 `git log -1`
-next_action: seq131 已完成并推送（未 tag/未 release）。后续：① **Firefox 手测**（素材行设置→加入集合：选择已有集合/新建集合；跨集合自动移出；保存后任务库/全局库刷新；集合在 flow 动作里作为目标可用）；② 上一轮 seq130 手测项（框选点框拖动、点击叠加、条件行变量、素材自动刷新、真实点击落点）；③ V2.1（变量表达式/条件/循环/T9）、V2.2（Profile/多模拟器）；④ oas-runner 独立仓脚本+pin bump；⑤ 真机 E2E、T5 手写 polygon 校验、更新检测鉴权/GC、tag/Release 策略。详见 `PENDING §E-99`、`ENGINE §22.70`、`ACCEPTANCE` seq131 追加。
+code_head: `7229c59`（dev=main=origin；未 tag/未 release）
+docs_head: seq132 docs 提交见 `git log -1`
+next_action: seq132 已完成并推送（未 tag/未 release）。后续：① **Firefox 手测**（素材设置→加入集合对 template/OCR/ocr_var/region 可用；集合行识别显示混合候选；集合用于 click/click_target/appear 时按成员类型识别；region 成员恒命中作为兜底；跨集合自动移出旧集合）；② 混合集合真实点击（OCR/region）需真机验证；click_target 成员不继承集合级 locator 覆盖（后续可加）；无期望文字普通 OCR 成员 load 期报错；③ V2.1（变量表达式/条件/循环/T9）、V2.2（Profile/多模拟器）；④ oas-runner 独立仓脚本+pin bump；⑤ 真机 E2E、T5 手写 polygon 校验、更新检测鉴权/GC、tag/Release 策略。详见 `PENDING §E-100`、`ENGINE §22.71`、`ACCEPTANCE` seq132 追加。
 ```
 
 ## 0. 目标（本阶段）
@@ -305,6 +305,15 @@ next_action: seq131 已完成并推送（未 tag/未 release）。后续：① *
 > 原因：`3eb9fa8`（10-31）清理未使用「多选素材+新建集合」UI 时把创建集合入口移除了；后端 `POST /task/asset/collection` 与集合测试/删除入口一直在。
 > 修复 `eaf68fe`：① 素材设置菜单新增「加入集合」（位于「位置帧」后；template 专用，其它 kind 置灰说明）；② `#collection-add-dialog`：已有集合下拉（成员数/当前集合）+「＋新建集合…」+ 新集合 id；跨集合先移出旧集合（剩 0 成员则删除；被 flow 引用按 400 显示）再写入目标；保存调用 `POST /task/asset/collection`（保留 threshold/action_shape），成功后刷新任务库/全局库并提示 `tasks_rewritten`；③ 任务素材库/全局素材库/帧详情三处 `onCollectionAdd` 接线。
 > 验证：UI **2391 checks / 190 ids / 0 dead / 158 runner ids / 6 nav**、node --check 全绿；数据副本 API 冒烟 create/list/delete 均 200。未 tag/未 release。
+
+
+## 1.26 2026-11-07 08:26→08:5x（seq 132）素材集合成员扩展到所有素材（✅ 已完成并推送）
+
+> 用户 08:26：「目前只有模板图能加入集合，请扩展到所有素材。」
+> 实现 `7229c59`：成员允许 `template/ocr_line/ocr_lines/ocr_var/region`（嵌套集合拒绝）。oas-task `save_collection` 放开 + `expand_collection_steps` 按 kind 生成 click_target locator（template / OCR text / ocr_var param 表达式 / region roi；无期望文字普通 OCR 成员 load 期报错）；oas-runtime collection `locate` 按 kind 分派（region=固定 ROI 1.0 / OCR=locate_ocr / 模板）、混合容错；click 几何支持 region 成员；`chain_geometry_for`/`effective_asset` 使获胜成员自己的 op_region 链在 click/click_target/long_press/drag 生效；新增 `collection_candidates_with_ocr` + `collection_candidates` 统一枚举（模板全帧多候选+OCR 行+region 1.0；score desc→y→x、稳定成员序；candidate_index 与候选 API/test_action 同序）；serve `collection_ocr_lines`、候选 API 带 member/member_kind、collection/match 混合 best（template-only 保留旧语义）、test_action 经 runtime preview 自动支持；UI 菜单/对话框对 5 类启用（template_set 禁用）。
+> 阈值：模板成员沿用集合级 threshold；混合集合每行 pass 用成员自身阈值（模板 NCC / OCR 最低置信度 0=unset / region 1.0），`threshold` 字段仍回显集合级值。
+> 验证：workspace **980/0**（oas-task 161 / oas-runtime 231 / oasd 460）、UI **2407 checks / 190 ids / 0 dead / 158 runner / 6 nav**、cargo check --features ocr exit 0；Lead 冒烟（用户数据副本 frame6，无真实点击）：混合集合 candidates **count=5**（test×3+OCR×2，含 member/member_kind）、collection/match winner OCR、test_action dry index0→test / index1→OCR 成员（op_region 链生效）。
+> 遗留：click_target 成员不继承集合级 locator 覆盖；无期望文字普通 OCR 成员 load 期报错；混合集合真实点击（OCR/region）未真机验证；region 恒 1.0 会压过其它分数（有意兜底，可后续加优先级）。
 
 ## 2. 本批交付（seq 110）
 
