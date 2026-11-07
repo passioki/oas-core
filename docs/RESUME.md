@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 138
-updated_at: 2026-11-07T23:4x+08:00
-trigger: 用户 22:28 反馈 priority/frames/hub 语义不清+工作台帧与地图帧割裂 → 22:53 裁决地图 V2（所在地/路标/路径，删 priority/frames/hub，fallback_task 返回庭院，工作台 tab 最后，独立页删）→ 23:03 补充（v1 只迁代码、素材/帧搜索+预览、Rust 编译器本轮不做、target_expr 地图后）→ V2-B `8394af7` + V2-C `8134376`；workspace 1044/0、UI 2717/195/0/6（Studio nav 5）。
-status: done（地图 V2 base 已实现：V2-B 后端 + V2-C 工作台地图 tab）
-code_head: `8134376`（dev=origin/dev；main/origin/main=55dc07c 待 docs 后快进；未 tag/未 release）
-docs_head: seq138 docs 提交见 `git log -1`
-next_action: seq138 地图 V2 base 已完成（未 tag/未 release）。后续：① `navigate.target_expr`/param() 动态目标（T1，地图基础后）；② **Rust 编译器（rustc 原生）本轮不做、优先级调低**（源码框保持 flow JSON+Rust 只读投影，无 Rust→flow）；③ 真实设备导航/replay E2E 未跑、Firefox 手测未做；④ 全局弹窗 UI；⑤ 地图边内联改/canvas 缩放/map.js-map_ui.js 双文件/map_requirements deprecated；⑥ `text_visible`/`verify_expect` fuzzy+无缓存；⑦ UI 无浏览器自动化；⑧ serve `/map/navigate real` 无 fallback sibling、fallback_task 保存不校验存在；⑨ v1 用户数据不迁移；⑩ V2.1/V2.2。详见 `PENDING §E-109`、`ENGINE §22.77`、`docs/MAP-V2-DESIGN.md §9`。
+checkpoint_seq: 139
+updated_at: 2026-11-08T00:1x+08:00
+trigger: 用户 00:01 地图 tab 验收五条（切帧刷新清空输入/OCR 结果；别名空默认帧名+分类；底部路径输出被裁；关闭按钮改名；删除所在地不可见）→ 修复 `8c50b5a`（map_ui refreshFrameOnly/别名默认/布局防裁切/按钮/删除可见）。workspace 1044/0、UI 2730/196/0/6。
+status: done（地图 V2 base；seq139 地图 tab 交互修复已提交）
+code_head: `8c50b5a`（dev=origin/dev；main 待 docs 后快进；未 tag/未 release）
+docs_head: seq139 docs 提交见 `git log -1`
+next_action: seq139 已完成（dev=origin/dev=`8c50b5a`，未 tag/未 release）。后续：① `navigate.target_expr`/param() 动态目标（T1，地图基础后）；② **Rust 编译器（rustc 原生）本轮不做、优先级调低**（源码框保持 flow JSON+Rust 只读投影）；③ 真实设备导航/replay E2E 未跑、Firefox 手测未做；④ 全局弹窗 UI；⑤ 地图边内联改/canvas 缩放/map.js-map_ui.js 双文件/map_requirements deprecated；⑥ `text_visible`/`verify_expect` fuzzy 无缓存；⑦ UI 无浏览器自动化；⑧ serve `/map/navigate real` 无 fallback sibling、fallback_task 保存不校验存在；⑨ locations BTreeMap tie-break；v1 用户数据不迁移；⑩ V2.1/V2.2。详见 `PENDING §E-110`、`ENGINE §22.77`、`docs/MAP-V2-DESIGN.md`。
 ```
 
 ## 0. 目标（本阶段）
