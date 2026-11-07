@@ -501,16 +501,20 @@ fn validate_op_region_shape(op: &OpRegion, path: &str) -> Result<(), String> {
 /// asset whose new value is `op`; `None` means `op` is a free-standing value
 /// (e.g. a server-side preview) and must terminate without any owner override.
 ///
-/// Rules (2026-11-06 批次B, #4 model A):
+/// Rules (2026-11-06 批次B, #4 model A; seq134 final spec §A3):
 /// * `mode=asset` follows the referenced asset's own `op_region`: the chain is a
 ///   **recognition gate only** and never contributes the action box;
-/// * every referenced node must be recognizable: `template`/collection (NCC) or
-///   an OCR asset with **expected text** (`ocr_var.runtime_text/param`, derived
+/// * every referenced node must be recognizable: `template` (NCC) or an OCR
+///   asset with **expected text** (`ocr_var.runtime_text/param`, derived
 ///   `ocr_line.ocr_text`, plain `ocr_line`/`ocr_lines.ocr_text`); a plain OCR
 ///   node without `ocr_text` is a validation error;
 /// * a `region` item is a pure fixed operation area with no recognition, so it
 ///   can **not** be a chain node (referencing it is an error);
-/// * a collection is always terminal (no `op_region` of its own);
+/// * a **collection** node is accepted as a terminal recognition gate without
+///   inspecting its members: the runtime's single candidate source enumerates
+///   **every** member (template NCC, OCR expected text or ROI lines, region fixed
+///   candidate) — the task layer must not re-implement or narrow that rule. A
+///   collection has no `op_region` of its own, so it is always terminal;
 /// * cycles and chains deeper than [`MAX_OP_REGION_DEPTH`] are rejected;
 /// * a chain must be resolvable: every referenced element must exist and every
 ///   leaf must be `self` (or a node without `op_region`, = self).
@@ -575,8 +579,13 @@ fn walk_op_region_chain(
     let item = assets.items.iter().find(|a| a.id == current);
     let Some(item) = item else {
         if assets.collections.iter().any(|c| c.id == current) {
-            // A collection has no op_region of its own: it is a valid terminal
-            // recognition gate (NCC over its members).
+            // seq134: a collection is a valid **terminal** recognition gate.
+            // Its members are NOT inspected here: the runtime single candidate
+            // source enumerates every member (template NCC / OCR expected text or
+            // their ROI lines / region fixed candidate), and duplicating that
+            // rule here is exactly the "validation allows, runtime silently
+            // narrows" divergence seq134 removes. Collections have no
+            // `op_region` of their own, so the chain always ends here.
             return Ok(());
         }
         return Err(format!(
@@ -1537,6 +1546,27 @@ fn expand_call_steps(
     Ok(())
 }
 
+/// Expand asset-collection references in a **raw flow JSON** before it is parsed
+/// (production `load_flow` path; seq134 final spec §A4).
+///
+/// * `click` with `sel=<collection>` becomes `sel=<first member>` +
+///   `alts=<rest of the members>` (declaration order kept). Every other `click`
+///   arg (`retry` / `stable_frames` / `requires` / `expect` / …) stays untouched.
+/// * `click_target` locators with `kind:"template", sel:<collection>` are replaced
+///   by one locator **per member, in declaration order**, chosen by the member
+///   kind: `template` → template locator; `ocr_line`/`ocr_lines` → `ocr_text`
+///   with the saved expected text; `ocr_var` → `ocr_text` with
+///   `text_expr: param('<param_key>')`; `region` → `RegionRef` (`sel` member id,
+///   so the runtime uses that region asset's `action_shape`/roi instead of a raw
+///   inline ROI).
+/// * The original locator's overrides are carried onto the generated member
+///   locators where the member kind can express them: `threshold` on template
+///   members, `require_template`/`region` on OCR members. Nothing configured by
+///   the caller is silently dropped by the expansion.
+/// * A plain OCR member without saved expected text is a **loud load error**: a
+///   collection used as a click target must state the line to recognize.
+/// * Nested collections are rejected when the collection is saved, so expansion
+///   is a single level.
 fn expand_collection_steps(
     steps: &mut Vec<serde_json::Value>,
     collections: &[AssetCollection],
@@ -1579,23 +1609,33 @@ fn expand_collection_steps(
                         let kind = loc.get("kind").and_then(|x| x.as_str()).unwrap_or("");
                         if let (Some(sel), "template") = (sel, kind) {
                             if let Some(coll) = collections.iter().find(|c| c.id == sel) {
-                                // seq132: collection members may be any asset kind.
-                                // Each member becomes the locator for ITS kind:
-                                // template → template locator; OCR/ocr_var → OCR
-                                // text locator (expected text or the ocr_var
-                                // parameter expression); region → fixed region
-                                // locator. Member order is preserved.
+                                // seq134: keep the caller's locator overrides. The
+                                // source locator is a template locator, so only
+                                // `threshold` is valid for the template members;
+                                // OCR members can additionally carry
+                                // `require_template` / `region` when a raw flow
+                                // provides them (a template locator ignores these
+                                // keys, so they are forwarded verbatim).
+                                let source = loc.as_object().cloned().unwrap_or_default();
+                                let override_threshold = source.get("threshold").cloned();
+                                let override_require_template =
+                                    source.get("require_template").cloned();
+                                let override_region = source.get("region").cloned();
                                 for m in &coll.members {
                                     let item = items.iter().find(|a| &a.id == m).ok_or_else(|| {
                                         format!(
                                             "素材集合 `{sel}` 的成员 `{m}` 不存在于 assets.json"
                                         )
                                     })?;
-                                    let member_loc = match item.kind.as_str() {
-                                        "template" => serde_json::json!({
-                                            "kind": "template",
-                                            "sel": m,
-                                        }),
+                                    let mut member = serde_json::Map::new();
+                                    match item.kind.as_str() {
+                                        "template" => {
+                                            member.insert("kind".into(), "template".into());
+                                            member.insert("sel".into(), m.as_str().into());
+                                            if let Some(t) = override_threshold.clone() {
+                                                member.insert("threshold".into(), t);
+                                            }
+                                        }
                                         "ocr_var" => {
                                             let key = item
                                                 .param_key
@@ -1606,11 +1646,18 @@ fn expand_collection_steps(
                                                         "素材集合 `{sel}` 的 ocr_var 成员 `{m}` 没有 param_key"
                                                     )
                                                 })?;
-                                            serde_json::json!({
-                                                "kind": "ocr_text",
-                                                "sel": m,
-                                                "text_expr": format!("param('{key}')"),
-                                            })
+                                            member.insert("kind".into(), "ocr_text".into());
+                                            member.insert("sel".into(), m.as_str().into());
+                                            member.insert(
+                                                "text_expr".into(),
+                                                format!("param('{key}')").into(),
+                                            );
+                                            if let Some(t) = override_require_template.clone() {
+                                                member.insert("require_template".into(), t);
+                                            }
+                                            if let Some(r) = override_region.clone() {
+                                                member.insert("region".into(), r);
+                                            }
                                         }
                                         "ocr_line" | "ocr_lines" => {
                                             let text = item.ocr_text.clone().filter(|t| !t.trim().is_empty())
@@ -1621,22 +1668,23 @@ fn expand_collection_steps(
                                                          请给该素材设置识别文字或改用模板/ocr_var 成员"
                                                     )
                                                 })?;
-                                            serde_json::json!({
-                                                "kind": "ocr_text",
-                                                "sel": m,
-                                                "text": text,
-                                            })
+                                            member.insert("kind".into(), "ocr_text".into());
+                                            member.insert("sel".into(), m.as_str().into());
+                                            member.insert("text".into(), text.into());
+                                            if let Some(t) = override_require_template.clone() {
+                                                member.insert("require_template".into(), t);
+                                            }
+                                            if let Some(r) = override_region.clone() {
+                                                member.insert("region".into(), r);
+                                            }
                                         }
                                         "region" => {
-                                            let roi = item.roi.ok_or_else(|| {
-                                                format!(
-                                                    "素材集合 `{sel}` 的 region 成员 `{m}` 没有 roi"
-                                                )
-                                            })?;
-                                            serde_json::json!({
-                                                "kind": "region",
-                                                "roi": roi,
-                                            })
+                                            // seq134: keep the asset reference (RegionRef)
+                                            // so the runtime samples the member's authored
+                                            // `action_shape`/roi; an inline bare ROI would
+                                            // diverge from clicking that region asset.
+                                            member.insert("kind".into(), "region".into());
+                                            member.insert("sel".into(), m.as_str().into());
                                         }
                                         other => {
                                             return Err(format!(
@@ -1644,8 +1692,8 @@ fn expand_collection_steps(
                                                  不能作为 click_target 集合成员"
                                             ))
                                         }
-                                    };
-                                    out.push(member_loc);
+                                    }
+                                    out.push(serde_json::Value::Object(member));
                                 }
                                 continue;
                             }
@@ -3322,10 +3370,48 @@ impl TaskBundle {
         // T6: the DSL has no external-code construct by construction; still scan
         // for hand-added keys (e.g. "code"/"script") BEFORE parsing so the report
         // is about the right rule.
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
-            scan_forbidden_keys(&value, "$", issues);
+        let mut flow_value: serde_json::Value = match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                issues.push(LintIssue::new(
+                    "FLOW",
+                    "flow.json",
+                    format!("invalid JSON: {e}"),
+                ));
+                return;
+            }
+        };
+        scan_forbidden_keys(&flow_value, "$", issues);
+        // seq134 (final spec §A4): lint/publish must validate the flow the engine
+        // actually executes. `load_flow` expands asset-collection references into
+        // per-member locators before parsing, so the lint applies the same
+        // expansion: member-locator config errors (e.g. a plain OCR member without
+        // expected text) and the expanded `param('key')` uses become T4/T3 issues
+        // instead of only failing at run time.
+        let expansion_assets = merged_assets.as_ref().or(assets.as_ref());
+        if let Some(af) = expansion_assets {
+            if let Some(steps) = flow_value.get_mut("steps").and_then(|x| x.as_array_mut()) {
+                if let Err(e) = expand_collection_steps(steps, &af.collections, &af.items) {
+                    issues.push(LintIssue::new(
+                        "T4",
+                        "flow.json:steps",
+                        format!("collection expansion: {e}"),
+                    ));
+                }
+            }
         }
-        let flow = match oas_flow::Flow::from_json(&text) {
+        let expanded_text = match serde_json::to_string(&flow_value) {
+            Ok(t) => t,
+            Err(e) => {
+                issues.push(LintIssue::new(
+                    "FLOW",
+                    "flow.json",
+                    format!("serialize expanded flow: {e}"),
+                ));
+                return;
+            }
+        };
+        let flow = match oas_flow::Flow::from_json(&expanded_text) {
             Ok(f) => f,
             Err(e) => {
                 issues.push(LintIssue::new(
@@ -3397,9 +3483,17 @@ impl TaskBundle {
             Some(ids) => Some(ids.clone()),
             None => match (&global_assets, &merged_assets) {
                 (Some(_), Some(merged)) => Some(merged_asset_ids(merged)),
-                _ => assets
-                    .as_ref()
-                    .map(|af| af.items.iter().map(|i| i.id.clone()).collect()),
+                _ => assets.as_ref().map(|af| {
+                    // A flow may reference a collection id directly (the runtime /
+                    // `load_flow` expands it into member locators first); the
+                    // acceptance set must include collections, otherwise a valid
+                    // collection reference is a false-positive T4.
+                    af.items
+                        .iter()
+                        .map(|i| i.id.clone())
+                        .chain(af.collections.iter().map(|c| c.id.clone()))
+                        .collect()
+                }),
             },
         };
         if let Some(ids) = t4_ids {
@@ -4341,10 +4435,14 @@ mod tests {
         .expect("flow");
         b.lint().expect("mixed collection must lint clean");
         // click_target expansion keeps the collection's member order and emits a
-        // locator that fits each member kind.
+        // locator that fits each member kind. A collection locator may carry the
+        // caller's overrides; seq134 requires them to survive the expansion.
         b.save_flow(
             r#"{"schema_version":1,"name":"任务1","steps":[
-                {"op":"click_target","args":{"find":[{"kind":"template","sel":"混合集合"}]}},
+                {"op":"click_target","args":{"find":[
+                    {"kind":"template","sel":"混合集合","threshold":0.7,
+                     "require_template":"成员模板"}
+                ]}},
                 {"op":"finish","args":{"exit":"done"}}
             ]}"#,
         )
@@ -4354,9 +4452,24 @@ mod tests {
             panic!("expected click_target, got {:?}", flow.steps[0]);
         };
         assert_eq!(find.len(), 4, "collection expands to every member: {find:?}");
+        // Every expanded locator references its member asset by id (the region
+        // member is a RegionRef, not a bare inline ROI).
         let assets: Vec<&str> = find.iter().filter_map(|l| l.asset()).collect();
-        assert_eq!(assets, vec!["成员模板", "成员OCR", "成员变量"]);
-        // OCR member → text locator using its saved expected text.
+        assert_eq!(assets, vec!["成员模板", "成员OCR", "成员变量", "成员区域"]);
+        // Template member: the caller's per-locator `threshold` survives.
+        assert!(
+            matches!(
+                find[0],
+                oas_flow::Locator::Template {
+                    threshold: Some(t),
+                    ..
+                } if (t - 0.7).abs() < 1e-6
+            ),
+            "template member must keep the collection locator's threshold: {:?}",
+            find[0]
+        );
+        // OCR member → text locator using its saved expected text; OCR latches
+        // keep `require_template`/`region` overrides from the source locator.
         assert!(
             matches!(
                 find[1].text_spec(),
@@ -4365,17 +4478,49 @@ mod tests {
             "ocr_line member must expand to its text locator: {:?}",
             find[1]
         );
+        assert!(
+            matches!(
+                &find[1],
+                oas_flow::Locator::OcrText {
+                    require_template: Some(rt),
+                    ..
+                } if rt == "成员模板"
+            ),
+            "OCR member must keep the source locator's require_template: {:?}",
+            find[1]
+        );
         // ocr_var member → param expression locator (runtime value wins).
         assert!(
             matches!(find[2].text_spec(), Some(oas_flow::TextSpec::Expr(_))),
             "ocr_var member must expand to the param expression: {:?}",
             find[2]
         );
-        // region member → fixed region locator.
         assert!(
-            matches!(find[3], oas_flow::Locator::Region { .. }),
-            "region member must expand to a region locator: {:?}",
+            matches!(
+                &find[2],
+                oas_flow::Locator::OcrText {
+                    require_template: Some(rt),
+                    ..
+                } if rt == "成员模板"
+            ),
+            "ocr_var member must keep the source locator's require_template: {:?}",
+            find[2]
+        );
+        // region member → `RegionRef` (`sel` = member id), so the runtime samples
+        // the member's authored action_shape/roi instead of a bare inline ROI.
+        assert!(
+            matches!(&find[3], oas_flow::Locator::RegionRef { sel } if sel == "成员区域"),
+            "region member must expand to a region-ref locator: {:?}",
             find[3]
+        );
+        // seq134: lint validates the *expanded* flow, so the ocr_var member's
+        // `param('group')` must be reported by T3 when meta.variables is missing.
+        let issues = b.lint().expect_err("expanded ocr_var param is undeclared");
+        assert!(
+            issues.iter().any(|i| {
+                i.code == "T3" && i.msg.contains("group")
+            }),
+            "expanded ocr_var member must be linted: {issues:?}"
         );
         // Plain OCR member without expected text is a loud load error.
         b.save_asset(AssetDecl::ocr_lines("无期望文字", [0, 16, 8, 8]), None)
@@ -4448,6 +4593,176 @@ mod tests {
         b.delete_asset("成员甲").expect("delete last member");
         let af = b.load_assets_file().expect("assets");
         assert!(af.collections.is_empty(), "empty unreferenced collection removed");
+    }
+
+    #[test]
+    fn click_collection_expansion_preserves_other_click_args() {
+        // seq134: expanding `click sel=<collection>` may only rewrite sel/alts —
+        // retry/stable_frames (and requires/expect) configured by the caller must
+        // survive. Existing alts keep their order and are never duplicated.
+        let td = TempDir::new("collection-click-args");
+        let b = open(&td);
+        let f = frame(32, 32);
+        for (id, x) in [("成员甲", 0), ("成员乙", 8), ("额外备用", 16)] {
+            b.save_asset(AssetDecl::template(id, [x, 0, 8, 8]), Some(&f))
+                .expect("save template");
+        }
+        b.save_collection(AssetCollection {
+            id: "集合目标".into(),
+            members: vec!["成员甲".into(), "成员乙".into()],
+            threshold: None,
+            action_shape: None,
+            action_source: "recognition".into(),
+        })
+        .expect("save collection");
+        b.save_flow(
+            r#"{"schema_version":1,"name":"任务1","steps":[
+                {"op":"click","args":{"sel":"集合目标","alts":["额外备用"],
+                 "retry":{"times":2,"delay_ms":50},"stable_frames":3}},
+                {"op":"finish","args":{"exit":"done"}}
+            ]}"#,
+        )
+        .expect("save flow");
+        let flow = b.load_flow().expect("load").expect("flow");
+        let oas_flow::Step::Click {
+            sel,
+            alts,
+            retry,
+            stable_frames,
+            ..
+        } = &flow.steps[0]
+        else {
+            panic!("expected click, got {:?}", flow.steps[0]);
+        };
+        assert_eq!(sel, "成员甲", "first member becomes sel");
+        assert_eq!(
+            alts,
+            &vec!["额外备用".to_string(), "成员乙".to_string()],
+            "existing alts keep their order; remaining members are appended once"
+        );
+        let retry = retry.expect("retry override must survive the expansion");
+        assert_eq!(retry.times, 2);
+        assert_eq!(retry.delay_ms, 50);
+        assert_eq!(*stable_frames, Some(3), "stable_frames must survive");
+    }
+
+    #[test]
+    fn lint_reports_plain_ocr_collection_member_without_expected_text() {
+        // seq134: lint/publish validate the flow the engine actually runs. The
+        // raw flow (template locator with the collection id) saves fine, but the
+        // load-time expansion needs each plain OCR member's expected text: lint
+        // must surface that as a blocking T4 issue instead of letting publish
+        // pass and the runtime fail.
+        let td = TempDir::new("collection-lint-ocr-error");
+        let b = open(&td);
+        let f = frame(32, 32);
+        b.save_asset(AssetDecl::template("成员模板", [0, 0, 8, 8]), Some(&f))
+            .expect("template member");
+        b.save_asset(AssetDecl::ocr_lines("无期望文字", [0, 16, 8, 8]), None)
+            .expect("plain ocr member");
+        b.save_collection(AssetCollection {
+            id: "集合目标".into(),
+            members: vec!["成员模板".into(), "无期望文字".into()],
+            threshold: None,
+            action_shape: None,
+            action_source: "recognition".into(),
+        })
+        .expect("save collection");
+        b.save_flow(
+            r#"{"schema_version":1,"name":"任务1","steps":[
+                {"op":"click_target","args":{"find":[{"kind":"template","sel":"集合目标"}]}},
+                {"op":"finish","args":{"exit":"done"}}
+            ]}"#,
+        )
+        .expect("raw flow saves (the collection id is a valid template locator)");
+        let issues = b.lint().expect_err("member expansion error must block lint");
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == "T4" && i.msg.contains("没有期望文字")),
+            "lint must report the plain OCR member error: {issues:?}"
+        );
+        // The task-local collection id itself is NOT a missing-asset T4 issue.
+        assert!(
+            !issues.iter().any(|i| i.msg.contains("not declared")
+                || i.msg.contains("referenced but not declared")),
+            "a locally declared collection must not look like a dangling asset: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn lint_accepts_a_task_local_collection_reference_after_expansion() {
+        // seq134: expanding a mixed collection produces member locators that lint
+        // can fully validate: template member, OCR member with expected text, and
+        // an ocr_var member whose `param('<key>')` is declared in meta.variables.
+        let td = TempDir::new("collection-lint-clean");
+        let b = open(&td);
+        let f = frame(32, 32);
+        b.save_asset(AssetDecl::template("成员模板", [0, 0, 8, 8]), Some(&f))
+            .expect("template member");
+        let mut ocr = AssetDecl::ocr_lines("成员OCR", [8, 0, 8, 8]);
+        ocr.ocr_text = Some("开始".to_string());
+        b.save_asset(ocr, None).expect("ocr member");
+        b.save_asset(
+            AssetDecl::ocr_var("成员变量", "group", "御魂".to_string(), None),
+            None,
+        )
+        .expect("ocr_var member");
+        b.save_asset(AssetDecl::region("成员区域", [16, 16, 8, 8]), None)
+            .expect("region member");
+        b.save_collection(AssetCollection {
+            id: "集合目标".into(),
+            members: vec![
+                "成员模板".into(),
+                "成员OCR".into(),
+                "成员变量".into(),
+                "成员区域".into(),
+            ],
+            threshold: None,
+            action_shape: None,
+            action_source: "recognition".into(),
+        })
+        .expect("save mixed collection");
+        // Declare the derived ocr_text variable exactly like the sync would, so
+        // the expanded `param('group')` satisfies T3 and the T8 consistency check.
+        std::fs::write(
+            b.meta_path(),
+            r#"{"schema_version":1,"name":"任务1","variables":[
+                {"key":"group","type":"string","value_source":"ocr_text",
+                 "asset_id":"成员变量","default":"御魂","runner_editable":true,
+                 "label":"成员变量"}
+            ]}"#,
+        )
+        .expect("write meta");
+        b.save_flow(
+            r#"{"schema_version":1,"name":"任务1","steps":[
+                {"op":"click_target","args":{"find":[
+                    {"kind":"template","sel":"集合目标","threshold":0.6}
+                ]}},
+                {"op":"finish","args":{"exit":"done"}}
+            ]}"#,
+        )
+        .expect("save flow");
+        b.lint().unwrap_or_else(|issues| {
+            panic!(
+                "expanded mixed collection must lint clean: {:?}",
+                issues.iter().map(|i| i.to_string()).collect::<Vec<_>>()
+            )
+        });
+        // The production load path expands the same way and round-trips.
+        let flow = b.load_flow().expect("load").expect("flow");
+        let oas_flow::Step::ClickTarget { find, .. } = &flow.steps[0] else {
+            panic!("expected click_target");
+        };
+        assert_eq!(find.len(), 4, "every member expands: {find:?}");
+        assert!(
+            matches!(
+                &find[3],
+                oas_flow::Locator::RegionRef { sel } if sel == "成员区域"
+            ),
+            "region member keeps its asset reference: {:?}",
+            find[3]
+        );
     }
 
     #[test]
@@ -7469,6 +7784,55 @@ mod tests {
         .expect("write assets");
         let err = b.load_assets_file().expect_err("region with op_region must fail");
         assert!(err.contains("must not carry op_region"), "{err}");
+    }
+
+    #[test]
+    fn collection_is_a_valid_terminal_op_region_node_with_mixed_members() {
+        // seq134 final spec §A3: a collection node is a terminal recognition gate
+        // whose members are enumerated by the runtime's single candidate source
+        // (template / OCR / ocr_var / region). The task layer must accept it and
+        // must not narrow the member kinds; region items stay invalid as nodes.
+        let af: AssetsFile = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "design_resolution": [1280, 720],
+            "items": [
+                {"id":"owner","kind":"ocr_var","runtime_text":"甲","param_key":"owner_key"},
+                {"id":"tpl","kind":"template","roi":[0,0,10,10]},
+                {"id":"ocr","kind":"ocr_line","roi":[0,20,100,20],
+                 "ocr_mode":"lines","ocr_text":"开始"},
+                {"id":"var","kind":"ocr_var","runtime_text":"御魂","param_key":"group"},
+                {"id":"R","kind":"region","roi":[200,200,50,50]}
+            ],
+            "collections": [
+                {"id":"gate","members":["tpl","ocr","var","R"],"threshold":0.7}
+            ]
+        }))
+        .expect("mixed collection assets");
+        let op = OpRegion::Asset {
+            asset: "gate".into(),
+            pick: Some("nearest".into()),
+        };
+        validate_op_region_chain(&af, Some("owner"), &op, "test")
+            .expect("a mixed collection is a valid terminal recognition gate");
+        assert!(
+            op_region_issues(&af).is_empty(),
+            "mixed collection chain must load: {:?}",
+            op_region_issues(&af)
+        );
+        // Region items remain invalid chain nodes (unchanged model-A rule).
+        let to_region = OpRegion::Asset {
+            asset: "R".into(),
+            pick: None,
+        };
+        let err = validate_op_region_chain(&af, Some("owner"), &to_region, "test")
+            .expect_err("region node");
+        assert!(
+            err.contains("cannot be an op_region chain node"),
+            "{err}"
+        );
+        // A collection has no `op_region` of its own: it can only be terminal
+        // (the shape is validated by the assets contract itself).
+        assert!(af.collections[0].members.len() == 4);
     }
 
     #[test]

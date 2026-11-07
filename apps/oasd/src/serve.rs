@@ -3074,6 +3074,55 @@ impl Server {
         }
     }
 
+    /// Studio editor params: the task's variable defaults (same layer
+    /// `POST /task/asset/test_action` and `GET /task/asset/candidates` consume, so
+    /// an `ocr_var` expected value can never differ between the two).
+    fn editor_params(&self, task: &str) -> std::collections::BTreeMap<String, oas_flow::Value> {
+        if task.is_empty() {
+            return std::collections::BTreeMap::new();
+        }
+        match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
+            Ok(bundle) => bundle
+                .load_meta()
+                .ok()
+                .flatten()
+                .and_then(|m| m.variable_defaults().ok())
+                .unwrap_or_default(),
+            Err(_) => std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// ONE runtime recognition interpreter for the editor candidate API,
+    /// `test_action` and collection match (seq134 single source).
+    ///
+    /// Static frame (no device I/O), the same [`Self::serve_ocr_provider`] that
+    /// test_action injects, and the task's variable defaults — so candidate
+    /// enumeration, preview and `candidate_index` share one expectation
+    /// value/polygon/mask behaviour.
+    fn editor_interp(
+        &self,
+        frame: Frame,
+        assets: oas_runtime::AssetSet,
+        task: &str,
+    ) -> oas_runtime::Interpreter<StaticScreen, RejectInput> {
+        let mut interp = oas_runtime::Interpreter::new(
+            StaticScreen(frame),
+            RejectInput,
+            assets,
+            oas_runtime::Budget::default(),
+        )
+        .with_params(self.editor_params(task))
+        .with_humanize(oas_runtime::humanize::Humanize {
+            miss_chance_min: 0.0,
+            miss_chance_max: 0.0,
+            ..Default::default()
+        });
+        if let Some(provider) = self.serve_ocr_provider() {
+            interp = interp.with_ocr(provider);
+        }
+        interp
+    }
+
     /// `POST /input/tap` — send one tap to the live device.
     fn handle_input_tap(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
         let req: InputTapRequest = match serde_json::from_slice(body) {
@@ -4384,7 +4433,7 @@ impl Server {
             Ok(a) => a,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
-        let af = match bundle.load_assets_file() {
+        let _af = match bundle.load_assets_file() {
             Ok(a) => a,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
@@ -4450,19 +4499,11 @@ impl Server {
                 }
             }
         } else {
-            let ocr_lines = match self.collection_ocr_lines(&af, &members, &frame) {
-                Ok(v) => v,
-                Err(e) => return self.send_errors(out, 400, vec![e]),
-            };
-            let candidates = match oas_runtime::collection_candidates_with_ocr(
-                &assets,
-                &matcher,
-                &id,
-                &ocr_lines,
-                &std::collections::BTreeMap::new(),
-                true,
-                Some((frame.width, frame.height)),
-            ) {
+            // seq134: mixed collections use the SAME runtime single-source
+            // candidates as the candidate API (`editor_interp` = same params,
+            // provider, polygon/mask, order).
+            let mut interp = self.editor_interp(frame.clone(), assets.clone(), &task);
+            let candidates = match interp.recognition_candidates(&id) {
                 Ok(c) => c,
                 Err(e) => return self.send_errors(out, 400, vec![e]),
             };
@@ -4487,7 +4528,7 @@ impl Server {
                 best.action_box.w,
                 best.action_box.h,
             ]);
-            let pass = score >= oas_runtime::asset_threshold(&assets, &member);
+            let pass = best.pass;
             (member, score, matched, action, pass)
         };
         let body = {
@@ -4767,89 +4808,6 @@ impl Server {
     /// fallback for a template without an ROI, `members` = one ROI per collection
     /// member) and `roi` echoes the authored `roi` (null when there is none).
     /// Read-only: no tap, no write, no run semantics change.
-    /// seq132: det+rec lines for every OCR member of a mixed collection.
-    #[cfg(feature = "ocr")]
-    fn collection_ocr_lines(
-        &self,
-        af: &oas_task::AssetsFile,
-        members: &[String],
-        frame: &Frame,
-    ) -> Result<std::collections::BTreeMap<String, Vec<oas_runtime::OcrLine>>, String> {
-        let mut out = std::collections::BTreeMap::new();
-        let ocr_members: Vec<&oas_task::AssetDecl> = members
-            .iter()
-            .filter_map(|m| af.items.iter().find(|a| &a.id == m))
-            .filter(|a| matches!(a.kind.as_str(), "ocr_line" | "ocr_lines" | "ocr_var"))
-            .collect();
-        if ocr_members.is_empty() {
-            return Ok(out);
-        }
-        let (det, rec) = match (self.det.as_ref(), self.ocr.as_ref()) {
-            (Some(d), Some(r)) => (d.clone(), r.clone()),
-            _ => {
-                return Err(
-                    "collection contains OCR members; start Studio with --model and --det-model"
-                        .to_string(),
-                )
-            }
-        };
-        for item in ocr_members {
-            // An `ocr_var` may be whole-screen (roi=None); every other OCR kind
-            // keeps its authored ROI.
-            let roi = item
-                .roi
-                .map(|[x, y, w, h]| oas_types::Rect { x, y, w, h })
-                .unwrap_or(oas_types::Rect {
-                    x: 0,
-                    y: 0,
-                    w: frame.width as i32,
-                    h: frame.height as i32,
-                });
-            let masked;
-            let frame_ref: &Frame = if let Some(poly) = item.polygon.as_ref() {
-                let pts: Vec<Point> = poly.iter().map(|p| Point { x: p[0], y: p[1] }).collect();
-                masked = oas_runtime::mask_frame_for_ocr(frame, roi, &pts);
-                &masked
-            } else {
-                frame
-            };
-            let lines = {
-                let mut det_guard = lock_recover(&det);
-                let mut rec_guard = lock_recover(&rec);
-                crate::ocr::recognize_lines_impl(&mut det_guard, &mut rec_guard, frame_ref, roi, false)?
-            };
-            out.insert(item.id.clone(), lines);
-        }
-        Ok(out)
-    }
-
-    /// Non-OCR build: mixed collection candidates are still available for
-    /// template/region members; an OCR member is a loud 400 rather than a
-    /// silently empty candidate list.
-    #[cfg(not(feature = "ocr"))]
-    fn collection_ocr_lines(
-        &self,
-        af: &oas_task::AssetsFile,
-        members: &[String],
-        _frame: &Frame,
-    ) -> Result<std::collections::BTreeMap<String, Vec<oas_runtime::OcrLine>>, String> {
-        let has_ocr = members.iter().any(|m| {
-            af.items
-                .iter()
-                .find(|a| &a.id == m)
-                .map(|a| matches!(a.kind.as_str(), "ocr_line" | "ocr_lines" | "ocr_var"))
-                .unwrap_or(false)
-        });
-        if has_ocr {
-            Err(
-                "collection contains OCR members; this build has no OCR (rebuild with --features ocr)"
-                    .to_string(),
-            )
-        } else {
-            Ok(std::collections::BTreeMap::new())
-        }
-    }
-
     /// seq133 #2: expected text for the editor candidate list.
     ///
     /// `ocr_var` → the task's current variable default (the same value
@@ -4995,279 +4953,73 @@ impl Server {
             Ok(v) => v,
             Err(e) => return self.send_errors(out, 400, vec![e]),
         };
-        if kind == "template" || kind == "collection" {
-            let matcher = oas_perceive::Matcher::new(oas_perceive::GrayImage::from_frame(&frame));
-            let mut candidates = if kind == "collection" {
-                // seq132: mixed members (template / OCR / ocr_var / region) — the
-                // same enumeration/order `test_action` uses.
-                let members = assets.collection_members(&id).map(|m| m.to_vec()).unwrap_or_default();
-                let ocr_lines = match self.collection_ocr_lines(&af, &members, &frame) {
-                    Ok(v) => v,
-                    Err(e) => return self.send_errors(out, 400, vec![e]),
-                };
-                match oas_runtime::collection_candidates_with_ocr(
-                    &assets,
-                    &matcher,
-                    &id,
-                    &ocr_lines,
-                    &std::collections::BTreeMap::new(),
-                    true,
-                    Some((frame.width, frame.height)),
-                ) {
-                    Ok(c) => c,
-                    Err(e) => return self.send_errors(out, 400, vec![e]),
-                }
-            } else {
-                match oas_runtime::asset_match_candidates(&assets, &matcher, &id) {
-                    Ok(c) => c,
-                    Err(e) => return self.send_errors(out, 400, vec![e]),
-                }
-            };
-            oas_runtime::sort_asset_match_candidates(&mut candidates);
-            let threshold = oas_runtime::asset_threshold(&assets, &id);
-            // seq132 threshold口径: a **template-only** collection keeps the
-            // historical collection-level threshold; a **mixed** collection
-            // (OCR/region members present) passes each row against its member's
-            // own threshold (template NCC / OCR minimum — 0 = unset / region 1.0).
-            let mixed_collection = kind == "collection"
-                && assets
-                    .collection_members(&id)
-                    .map(|members| members.iter().any(|m| assets.get(m).is_none()))
-                    .unwrap_or(false);
-            let frame_size = (frame.width, frame.height);
-            let mut candidates_json: Vec<serde_json::Value> = Vec::with_capacity(candidates.len());
-            for (index, c) in candidates.iter().enumerate() {
-                // The candidate operation box comes from the **shared** model-A
-                // helper (`self_operation_geometry`), never a copy of the rules:
-                // templates/collections pass the winning member id (`c.member`),
-                // so the editor can never disagree with `test_action`/the engine.
-                let real = oas_types::Rect {
-                    x: c.x,
-                    y: c.y,
-                    w: c.w,
-                    h: c.h,
-                };
-                let (action_box, _shape) = match oas_runtime::self_operation_geometry(
-                    &assets,
-                    &c.member,
-                    real,
-                    Some(frame_size),
-                ) {
-                    Ok(v) => v,
-                    Err(e) => return self.send_errors(out, 400, vec![e]),
-                };
-                // Threshold口径 (seq132): a mixed-collection row passes against the
-                // **member's own** threshold for OCR/region members; template
-                // members keep the historical collection-level threshold.
-                let pass = if kind == "collection" {
-                    if mixed_collection {
-                        c.score >= oas_runtime::asset_threshold(&assets, &c.member)
-                    } else {
-                        c.score >= threshold
-                    }
-                } else {
-                    c.score >= threshold
-                };
-                let mut v = serde_json::json!({
-                    "index": index,
-                    "x": c.x,
-                    "y": c.y,
-                    "w": c.w,
-                    "h": c.h,
-                    "score": c.score,
-                    "pass": pass,
-                    "action_box": [action_box.x, action_box.y, action_box.w, action_box.h],
-                });
-                if kind == "collection" {
-                    // The winning member id: harmless for a single template,
-                    // required for a collection row.
-                    v["member"] = serde_json::json!(c.member);
-                    v["member_kind"] = serde_json::json!(asset_kind_str(&af, &c.member));
-                }
-                candidates_json.push(v);
-            }
-            let ms = t0.elapsed().as_secs_f64() * 1000.0;
-            self.editor_log(&format!(
-                "asset_candidates OK task={task} id={id} kind={kind} count={} threshold={threshold:.4} elapsed_ms={ms:.1} source={frame_source}",
-                candidates_json.len()
-            ));
-            let body = serde_json::json!({
-                "ok": true,
-                "task": task,
-                "id": id,
-                "kind": kind,
-                "domain": domain,
-                "roi": search_roi,
-                "threshold": threshold,
-                "frame_source": frame_source,
-                "elapsed_ms": ms,
-                "count": candidates_json.len(),
-                "candidates": candidates_json,
-            });
-            return self.send_json(out, 200, &body.to_string());
-        }
-        // Remaining kinds are OCR; they need det+rec (the default workspace
-        // build has no OCR feature, so it answers 501 like `/lines` does).
-        #[cfg(not(feature = "ocr"))]
-        {
-            self.send_json(
+        let frame_size = (frame.width, frame.height);
+        let is_ocr = matches!(kind.as_str(), "ocr_line" | "ocr_lines" | "ocr_var");
+        // OCR candidate enumeration needs the det+rec provider (the default build
+        // has no OCR feature, so it answers 501 like `/lines`).
+        if is_ocr && self.serve_ocr_provider().is_none() {
+            return self.send_json(
                 out,
                 501,
-                r#"{"error":"this build has no OCR (rebuild with --features ocr)"}"#,
-            )
+                r#"{"error":"candidates for OCR assets need det+rec models (start with --model and --det-model)"}"#,
+            );
         }
-        #[cfg(feature = "ocr")]
-        {
-            self.send_ocr_asset_candidates(
-                out,
-                &task,
-                &id,
-                &kind,
-                item.expect("OCR kind implies an assets.json item"),
-                &assets,
-                &frame,
-                frame_source,
-                t0,
-            )
-        }
-    }
-
-    /// OCR candidate branch of [`Self::handle_asset_candidates`] (`ocr_line` /
-    /// `ocr_lines` / `ocr_var`): run the **editor-identical** det+rec path
-    /// ([`crate::ocr::recognize_lines_impl`], same as `GET /lines` and the
-    /// runtime provider), keep every line inside the ROI whose text matches the
-    /// asset's expected text with the **strict** candidate rule
-    /// ([`filter_ocr_candidate_lines`]: normalized equality, #11) and whose
-    /// confidence passes the asset threshold, and report each line's real bbox
-    /// plus its operation box from the shared [`oas_runtime::self_operation_geometry`]
-    /// (an OCR `action_shape` follows the recognized line; a whole-screen
-    /// `ocr_var` has no authored origin and stays absolute; no shape → the line
-    /// bbox).
-    ///
-    /// Split out (and feature-gated) only so the non-OCR build stays free of the
-    /// engine types.
-    #[cfg(feature = "ocr")]
-    #[allow(clippy::too_many_arguments)]
-    fn send_ocr_asset_candidates(
-        &self,
-        out: &mut TcpStream,
-        task: &str,
-        id: &str,
-        kind: &str,
-        item: &oas_task::AssetDecl,
-        assets: &oas_runtime::AssetSet,
-        frame: &Frame,
-        frame_source: String,
-        t0: std::time::Instant,
-    ) -> std::io::Result<()> {
-        let (det, rec) = match (self.det.as_ref(), self.ocr.as_ref()) {
-            (Some(d), Some(r)) => (d.clone(), r.clone()),
-            _ => {
-                return self.send_json(
-                    out,
-                    501,
-                    r#"{"error":"candidates for OCR assets need det+rec models (start with --model and --det-model)"}"#,
-                )
-            }
-        };
-        // 2026-11-06 参数→素材: an `ocr_var` may have no ROI (whole-screen OCR);
-        // every other OCR kind keeps its authored ROI.
-        let is_ocr_var = item.kind == "ocr_var";
-        let roi = match item.roi {
-            Some([x, y, w, h]) => oas_types::Rect { x, y, w, h },
-            None if is_ocr_var => oas_types::Rect {
-                x: 0,
-                y: 0,
-                w: frame.width as i32,
-                h: frame.height as i32,
-            },
-            None => {
-                return self.send_errors(out, 400, vec![format!("OCR asset `{id}` has no roi")])
-            }
-        };
-        // §22.10 N10b-2 parity: the SAME polygon mask the runtime/`/lines` use.
-        let masked;
-        let frame_ref: &Frame = if let Some(poly) = item.polygon.as_ref() {
-            let pts: Vec<Point> = poly.iter().map(|p| Point { x: p[0], y: p[1] }).collect();
-            masked = oas_runtime::mask_frame_for_ocr(frame, roi, &pts);
-            &masked
+        let threshold = oas_runtime::asset_threshold(&assets, &id);
+        // seq134: expected text uses the SAME task-variable-default layer as
+        // `test_action` (`editor_interp` → with_params), so the candidate list and
+        // the preview cannot disagree on an `ocr_var` value.
+        let expected_text = if is_ocr {
+            item.and_then(|i| self.editor_expected_text(&task, i))
         } else {
-            frame
+            None
         };
-        let lines = {
-            let mut det_guard = lock_recover(&det);
-            let mut rec_guard = lock_recover(&rec);
-            match crate::ocr::recognize_lines_impl(
-                &mut det_guard,
-                &mut rec_guard,
-                frame_ref,
-                roi,
-                false,
-            ) {
-                Ok(l) => l,
-                Err(e) => return self.send_errors(out, 400, vec![e]),
-            }
+        let mut interp = self.editor_interp(frame, assets, &task);
+        let candidates = match interp.recognition_candidates(&id) {
+            Ok(c) => c,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
         };
-        let threshold = oas_runtime::asset_threshold(assets, id);
-        // seq133 #2: expected text for the editor. `ocr_var` uses the task's
-        // variable default (the same value `test_action` injects, so
-        // candidate_index stays aligned); every other OCR kind uses its saved
-        // `ocr_text`; none = every line passes.
-        let expected = self.editor_expected_text(task, item);
-        // Editor OCR candidates (seq133 #2): EVERY det+rec line at/above the
-        // asset's minimum confidence, sorted `pass` first → score desc → y → x.
-        // `pass` = the line strictly matches the expected text (no expected ⇒ all
-        // pass). index 0 is therefore the expected line whenever one exists.
-        // Runtime click/wait keep their historical fuzzy matching.
-        let candidates = oas_runtime::ocr_candidate_lines_pass_first(
-            &lines,
-            expected.as_deref(),
-            Some(threshold),
-        );
-        // The candidate operation box comes from the **shared** model-A helper:
-        // OCR `action_shape`/`click_back` follows the recognized line
-        // (`real.topLeft - authored_roi`; a whole-screen ocr_var has no authored
-        // origin and stays absolute), and no shape → the line bbox itself. The
-        // same call feeds `test_action`/the engine, so the editor cannot disagree.
-        let frame_size = Some((frame.width, frame.height));
         let mut candidates_json: Vec<serde_json::Value> = Vec::with_capacity(candidates.len());
-        for (index, line) in candidates.iter().enumerate() {
-            let (action_box, _shape) =
-                match oas_runtime::self_operation_geometry(assets, id, line.rect, frame_size) {
-                    Ok(v) => v,
-                    Err(e) => return self.send_errors(out, 400, vec![e]),
-                };
-            candidates_json.push(serde_json::json!({
+        for (index, c) in candidates.iter().enumerate() {
+            let mut v = serde_json::json!({
                 "index": index,
-                "x": line.rect.x,
-                "y": line.rect.y,
-                "w": line.rect.w,
-                "h": line.rect.h,
-                "text": line.text,
-                "score": line.score,
-                "pass": oas_runtime::ocr_candidate_line_pass(line, expected.as_deref()),
-                "action_box": [action_box.x, action_box.y, action_box.w, action_box.h],
-            }));
+                "x": c.x,
+                "y": c.y,
+                "w": c.w,
+                "h": c.h,
+                "score": c.score,
+                "pass": c.pass,
+                "action_box": [c.action_box.x, c.action_box.y, c.action_box.w, c.action_box.h],
+                "member": c.member,
+                "member_kind": c.member_kind,
+                "domain": c.domain.as_str(),
+            });
+            if let Some(text) = &c.text {
+                v["text"] = serde_json::json!(text);
+            }
+            candidates_json.push(v);
         }
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         self.editor_log(&format!(
             "asset_candidates OK task={task} id={id} kind={kind} count={} threshold={threshold:.4} elapsed_ms={ms:.1} source={frame_source}",
             candidates_json.len()
         ));
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "ok": true,
             "task": task,
             "id": id,
             "kind": kind,
-            "domain": if item.roi.is_some() { "roi" } else { "screen" },
-            "roi": serde_json::json!(item.roi),
-            "expected_text": serde_json::json!(expected),
+            "domain": domain,
+            "roi": search_roi,
             "threshold": threshold,
             "frame_source": frame_source,
             "elapsed_ms": ms,
             "count": candidates_json.len(),
             "candidates": candidates_json,
         });
+        if is_ocr {
+            body["expected_text"] = serde_json::json!(expected_text);
+        }
+        let _ = frame_size;
         self.send_json(out, 200, &body.to_string())
     }
 
@@ -5442,34 +5194,7 @@ impl Server {
         };
         // Studio dry-run uses the task's param defaults (Runner value overrides
         // are not part of an editor test).
-        let params: std::collections::BTreeMap<String, oas_flow::Value> = if task.is_empty() {
-            std::collections::BTreeMap::new()
-        } else {
-            match oas_task::TaskBundle::open_named(&self.tasks_dir, task) {
-                Ok(bundle) => bundle
-                    .load_meta()
-                    .ok()
-                    .flatten()
-                    .and_then(|m| m.variable_defaults().ok())
-                    .unwrap_or_default(),
-                Err(_) => std::collections::BTreeMap::new(),
-            }
-        };
-        let mut interp = oas_runtime::Interpreter::new(
-            StaticScreen(frame),
-            RejectInput,
-            assets,
-            oas_runtime::Budget::default(),
-        )
-        .with_params(params)
-        .with_humanize(oas_runtime::humanize::Humanize {
-            miss_chance_min: 0.0,
-            miss_chance_max: 0.0,
-            ..Default::default()
-        });
-        if let Some(provider) = self.serve_ocr_provider() {
-            interp = interp.with_ocr(provider);
-        }
+        let mut interp = self.editor_interp(frame, assets, &task);
         let preview = match interp.preview_asset_action(id, candidate_index) {
             Ok(p) => p,
             Err(e) => return self.send_errors(out, 400, vec![e]),
@@ -8370,14 +8095,6 @@ fn ocr_candidate_expected_text(item: &oas_task::AssetDecl) -> Option<String> {  
         .map(str::to_string)
 }
 
-/// Kind of one declared asset (used by mixed-collection candidate rows).
-fn asset_kind_str<'a>(af: &'a oas_task::AssetsFile, id: &str) -> &'a str {
-    af.items
-        .iter()
-        .find(|a| a.id == id)
-        .map(|a| a.kind.as_str())
-        .unwrap_or("unknown")
-}
 /// Filter the det+rec lines of one OCR asset down to the editor candidates.
 ///
 /// 2026-11-06 acceptance **#11**: the editor candidate API uses the **strict**
@@ -8392,7 +8109,7 @@ fn asset_kind_str<'a>(af: &'a oas_task::AssetsFile, id: &str) -> &'a str {
 /// plain OCR asset without `ocr_text`). `min <= 0.0` means "no confidence
 /// filter" (the asset threshold is normalized the same way elsewhere). Detection
 /// order is preserved; the caller applies the stable editor sort.
-#[cfg_attr(not(feature = "ocr"), allow(dead_code))]
+#[cfg(test)]
 fn filter_ocr_candidate_lines(
     lines: Vec<oas_runtime::OcrLine>,
     expected: Option<&str>,
@@ -16530,18 +16247,12 @@ mod tests {
         );
         assert!(status.contains("200"), "{status} {v}");
         assert_eq!(v["real_rect"], serde_json::json!([10, 10, 20, 10]), "{v}");
-        // index 2 = the non-pass line; selectable, geometry follows it.
+        // seq134: candidates are the STRICT expected-text matches only (the
+        // seq133 "all lines, pass-first" list was retired by the user ruling), so
+        // the expected text keeps the list at 2 candidates → index 2 is loud.
         let (status, v) = post_test_action(
             &server,
             serde_json::json!({"task":"t1","id":"行一","candidate_index":2}),
-        );
-        assert!(status.contains("200"), "{status} {v}");
-        assert_eq!(v["real_rect"], serde_json::json!([10, 30, 20, 10]), "{v}");
-        assert_eq!(v["steps"][0]["text"], "结束", "{v}");
-        // index 3 is out of range → loud 400.
-        let (status, v) = post_test_action(
-            &server,
-            serde_json::json!({"task":"t1","id":"行一","candidate_index":3}),
         );
         assert!(status.contains("400"), "{status} {v}");
         assert!(
@@ -17313,6 +17024,146 @@ mod tests {
         let ta: serde_json::Value = serde_json::from_str(&out).expect("test_action json");
         assert_eq!(ta["steps"][0]["asset"], "M_A", "{out}");
         assert_eq!(ta["action_box"], serde_json::json!([48, 8, 8, 8]), "{out}");
+    }
+
+    /// seq134 serve single-source fixture: one OCR asset (`ocr_text` expected,
+    /// small ROI), one fixed region, and a mixed collection containing both; the
+    /// OCR provider returns the given lines regardless of ROI (real providers
+    /// return a subset; runtime must still annotate the domain).
+    fn ocr_candidate_fixture(td: &Path) -> Server {
+        let assets_dir = td.join("assets");
+        std::fs::create_dir_all(assets_dir.join("images")).expect("assets images dir");
+        let assets = serde_json::json!({
+            "schema_version": 1,
+            "design_resolution": [64, 48],
+            "items": [
+                {"id":"O_OCR","kind":"ocr_line","roi":[0,0,20,20],"ocr_mode":"lines",
+                 "ocr_text":"开始","positions":[1]},
+                {"id":"R_MIX","kind":"region","roi":[30,20,10,10],"positions":[1]}
+            ],
+            "collections": [
+                {"id":"C_MIX","members":["O_OCR","R_MIX"],"threshold":0.9}
+            ]
+        });
+        std::fs::write(assets_dir.join("assets.json"), assets.to_string())
+            .expect("write assets.json");
+        let server = server_with_tasks(td)
+            .with_frames_dir(td.join("frames"))
+            .with_assets_dir(assets_dir);
+        upload_test_frame(&server, &Frame::new(64, 48, vec![9u8; 64 * 48 * 4]));
+        let lines = vec![
+            ocr_line([5, 5, 10, 5], "开始", 0.99),
+            ocr_line([40, 30, 10, 5], "开始", 0.90),
+            ocr_line([10, 25, 10, 5], "结束", 0.99),
+        ];
+        server.with_ocr_override(move || {
+            Box::new(FakeOcrLines {
+                lines: lines.clone(),
+            })
+        })
+    }
+
+    #[test]
+    fn asset_candidates_ocr_are_strict_full_frame_and_match_test_action() {
+        let td = TempDir::new("cand-ocr-single-source");
+        let server = ocr_candidate_fixture(td.path());
+        let v = get_json_route(&server, "/task/asset/candidates?id=O_OCR");
+        assert_eq!(v["ok"], true, "{v}");
+        assert_eq!(v["kind"], "ocr_line", "{v}");
+        assert_eq!(v["expected_text"], "开始", "{v}");
+        // Strict expected text: 结束 is NOT a candidate even though its score is
+        // the highest; candidates come from the whole frame (ROI [0,0,20,20]
+        // only labels the inside hit, the outside strict hit is screen_fallback).
+        assert_eq!(v["count"], 2, "{v}");
+        let cands = v["candidates"].as_array().expect("candidates");
+        let rows: Vec<(&str, i64, i64, &str, bool)> = cands
+            .iter()
+            .map(|c| {
+                (
+                    c["text"].as_str().expect("text"),
+                    c["x"].as_i64().expect("x"),
+                    c["y"].as_i64().expect("y"),
+                    c["domain"].as_str().expect("domain"),
+                    c["pass"].as_bool().expect("pass"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("开始", 5, 5, "roi", true),
+                ("开始", 40, 30, "screen_fallback", true),
+            ],
+            "{v}"
+        );
+        for (i, c) in cands.iter().enumerate() {
+            assert_eq!(c["index"], i, "{v}");
+            assert_eq!(c["member"], "O_OCR", "{v}");
+            assert_eq!(c["member_kind"], "ocr_line", "{v}");
+        }
+        // test_action candidate_index selects the SAME row/geometry.
+        for idx in [0usize, 1] {
+            let (status, ta) = post_test_action(
+                &server,
+                serde_json::json!({"id":"O_OCR","candidate_index":idx}),
+            );
+            assert!(status.contains("200"), "{status} {ta}");
+            let c = &cands[idx];
+            assert_eq!(ta["real_rect"], serde_json::json!([c["x"], c["y"], c["w"], c["h"]]), "{ta} vs {v}");
+            assert_eq!(ta["action_box"], c["action_box"], "{ta} vs {v}");
+            assert_eq!(ta["steps"][0]["text"], c["text"], "{ta} vs {v}");
+        }
+        // index 2 is out of range (only the 2 strict matches).
+        let (status, ta) =
+            post_test_action(&server, serde_json::json!({"id":"O_OCR","candidate_index":2}));
+        assert!(status.contains("400"), "{status} {ta}");
+    }
+
+    #[test]
+    fn mixed_collection_candidates_expose_text_and_member_kind() {
+        let td = TempDir::new("cand-ocr-collection");
+        let server = ocr_candidate_fixture(td.path());
+        let v = get_json_route(&server, "/task/asset/candidates?id=C_MIX");
+        assert_eq!(v["kind"], "collection", "{v}");
+        assert_eq!(v["domain"], "members", "{v}");
+        // region (1.0) + 2 strict OCR matches.
+        assert_eq!(v["count"], 3, "{v}");
+        let cands = v["candidates"].as_array().expect("candidates");
+        let members: Vec<(&str, &str, Option<&str>)> = cands
+            .iter()
+            .map(|c| {
+                (
+                    c["member"].as_str().expect("member"),
+                    c["member_kind"].as_str().expect("member_kind"),
+                    c["text"].as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            members,
+            vec![
+                ("R_MIX", "region", None),
+                ("O_OCR", "ocr_line", Some("开始")),
+                ("O_OCR", "ocr_line", Some("开始")),
+            ],
+            "{v}"
+        );
+        // test_action follows the same list: index 1 is the OCR member row.
+        let (status, ta) = post_test_action(
+            &server,
+            serde_json::json!({"id":"C_MIX","candidate_index":1}),
+        );
+        assert!(status.contains("200"), "{status} {ta}");
+        assert_eq!(ta["steps"][0]["asset"], "O_OCR", "{ta}");
+        assert_eq!(ta["steps"][0]["text"], "开始", "{ta}");
+        assert_eq!(ta["action_box"], cands[1]["action_box"], "{ta} vs {v}");
+        // Mixed collection match uses the same source: region score 1.0 wins.
+        let (status, out) = get_route(&server, "/task/asset/collection/match?id=C_MIX");
+        assert!(status.contains("200"), "{status} {out}");
+        let m: serde_json::Value = serde_json::from_str(&out).expect("match json");
+        assert_eq!(m["member"], "R_MIX", "{out}");
+        assert_eq!(m["pass"], true, "{out}");
+        assert_eq!(m["action_box"], serde_json::json!([30, 20, 10, 10]), "{out}");
     }
 
     #[test]

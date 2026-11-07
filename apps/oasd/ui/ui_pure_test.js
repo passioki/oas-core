@@ -164,9 +164,6 @@ const PURE_FUNCTIONS = [
   'realAssetTestGuard',
   'confirmAssetTestGestures',
   'updateAssetTestModeButton',
-  'assetCollectionMatchUrl',
-  'assetCollectionClickPoint',
-  'assetCollectionMatchLine',
   'segmentIntersects',
   'polygonOverlapsRect',
   'boxCenter',
@@ -177,10 +174,16 @@ const PURE_FUNCTIONS = [
   // U-T4（事项 3/4/5）：候选识别 / op_region 链 / runtime_text。
   'assetCandidatesUrl',
   // seq133（#2）：OCR 多候选行 text/score/pass 展示。
-  'candidateDisplayInfo',
+  'candidateBoxOf',
+  'candidateDomainText',
+  'candidateMemberKindLabel',
+  'candidateFieldInfo',
+  'candidateRenderLabel',
+  'candidateThumbDescriptor',
   'candidateTextPreview',
   'candidateOptionLabel',
   'candidateLabelText',
+  'candidatePolygonForAsset',
   'candidateBoxes',
   'runtimeTextValid',
   'opRegionNodeOf',
@@ -315,17 +318,20 @@ const {
   realAssetTestGuard,
   confirmAssetTestGestures,
   updateAssetTestModeButton,
-  assetCollectionMatchUrl,
-  assetCollectionClickPoint,
-  assetCollectionMatchLine,
   polygonOverlapsRect,
   boxCenter,
   translateActionShape,
   assetCandidatesUrl,
-  candidateDisplayInfo,
+  candidateBoxOf,
+  candidateDomainText,
+  candidateMemberKindLabel,
+  candidateFieldInfo,
+  candidateRenderLabel,
+  candidateThumbDescriptor,
   candidateTextPreview,
   candidateOptionLabel,
   candidateLabelText,
+  candidatePolygonForAsset,
   candidateBoxes,
   runtimeTextValid,
   opRegionNodeOf,
@@ -473,22 +479,22 @@ eq(
 );
 eq(
   candidateLabelText({ index: 0, x: 11, y: 21, w: 30, h: 40, score: 0.973 }),
-  '#0 score=0.9730 [11,21,30,40]',
-  'U-T4: a candidate renders as #i score=… [x,y,w,h]'
+  '#0 · score=0.9730 [11,21,30,40]',
+  'seq134: a candidate renders through the unified renderer (#i · score)'
 );
 eq(
   candidateLabelText({ index: 1, x: 1, y: 2, w: 3, h: 4, score: 0.9, text: '御魂' }),
-  '#1 score=0.9000 [1,2,3,4] 文字="御魂"',
-  'U-T4: OCR candidates keep their recognised text'
+  '#1 · score=0.9000 · 文字="御魂" [1,2,3,4]',
+  'seq134: OCR candidates display text/score'
 );
 eq(
   candidateLabelText({ index: 2, x: 1, y: 2, w: 3, h: 4, score: 0.5, member: 'I_A' }),
-  '#2 score=0.5000 [1,2,3,4] · 成员 I_A',
-  'U-T4: collection candidates name the winning member'
+  '#2 · score=0.5000 · 成员 I_A [1,2,3,4]',
+  'seq134: collection candidates display member'
 );
 eq(
   candidateLabelText(null),
-  '#0 score=— [0,0,0,0]',
+  '#0 · score=— [0,0,0,0]',
   'U-T4: a missing candidate still renders a placeholder line'
 );
 eq(
@@ -499,38 +505,65 @@ eq(
     { index: 2, x: 1, y: 2, w: 3, h: 4, score: 0.5 },
   ]),
   [
-    { text: '#0 0.97', score: 0.973, box: [11, 21, 30, 40], pass: false, hasPass: false },
-    { text: '#2 0.50', score: 0.5, box: [1, 2, 3, 4], pass: false, hasPass: false },
+    {
+      text: '#0 0.97', score: 0.973, box: [11, 21, 30, 40], pass: false, hasPass: false,
+      textValue: '', member: '', memberKind: '', domain: '', thumb: null,
+    },
+    {
+      text: '#2 0.50', score: 0.5, box: [1, 2, 3, 4], pass: false, hasPass: false,
+      textValue: '', member: '', memberKind: '', domain: '', thumb: null,
+    },
   ],
   'U-T4: all valid candidates become draw() boxes (invalid boxes are skipped)'
 );
-// seq133（#2）：OCR 候选=区域内全部识别行；text/score/pass 展示，非期望文字仍保留。
+// seq134（spec D）：统一渲染器——图像缩略图、文字 text/分数、集合 member/member_kind/text；
+// pass 只表示阈值；不再出现「期望文字/非期望文字」标签。
 eq(
   candidateLabelText({ index: 0, x: 1, y: 2, w: 3, h: 4, score: 0.9, text: '御魂', pass: true }),
-  '#0 score=0.9000 [1,2,3,4] 文字="御魂" · 期望文字',
-  'seq133: a matching line is marked 期望文字'
+  '#0 · score=0.9000 · 文字="御魂" · ≥阈值 [1,2,3,4]',
+  'seq134: pass=true renders as ≥阈值 (no 期望文字 label)'
 );
 eq(
   candidateLabelText({ index: 1, x: 1, y: 2, w: 3, h: 4, score: 0.4, text: '金币', pass: false }),
-  '#1 score=0.4000 [1,2,3,4] 文字="金币" · 非期望文字（仍可选中测试）',
-  'seq133: a pass=false line is marked 非期望文字 but stays selectable'
+  '#1 · score=0.4000 · 文字="金币" · <阈值 [1,2,3,4]',
+  'seq134: pass=false renders as <阈值 and the candidate stays selectable'
 );
 eq(
-  candidateDisplayInfo({ index: 2, score: 0.5, text: '金币', pass: false }),
-  { index: 2, score: 0.5, text: '金币', hasPass: true, pass: false, passLabel: '非期望文字' },
-  'seq133: candidateDisplayInfo keeps text/score/pass'
+  candidateLabelText(
+    { index: 2, x: 1, y: 2, w: 3, h: 4, score: 0.8, member: 'O_组', member_kind: 'ocr_var', text: '御魂' },
+    { task: '任务甲' }
+  ),
+  '#2 · score=0.8000 · 成员 O_组（使用端OCR文字配置项） · 文字="御魂" [1,2,3,4]',
+  'seq134: mixed-collection rows show member + member_kind + text'
 );
-eq(candidateDisplayInfo({ index: 0, x: 1, y: 2, w: 3, h: 4 }).hasPass, false,
-  'seq133: legacy candidates without pass are still displayable');
 eq(
-  candidateBoxes([{ index: 1, x: 1, y: 2, w: 3, h: 4, score: 0.4, text: '金币', pass: false }]),
-  [{ text: '#1 0.40「金币」 · 非期望文字', score: 0.4, box: [1, 2, 3, 4], pass: false, hasPass: true }],
-  'seq133: the canvas box label shows text + 非期望文字'
+  candidateThumbDescriptor({ index: 0, x: 1, y: 2, w: 3, h: 4, score: 0.9 }, { task: '任务甲', assetId: 'I_A' }),
+  { id: 'I_A', kind: 'image', url: '/task/asset/image?task=%E4%BB%BB%E5%8A%A1%E7%94%B2&id=I_A', box: [1, 2, 3, 4] },
+  'seq134: image candidates expose an asset thumbnail descriptor'
 );
+eq(
+  candidateThumbDescriptor({ index: 0, score: 0.9, text: '御魂' }, { task: '任务甲', assetId: 'I_A' }),
+  null,
+  'seq134: text candidates render text, not a thumbnail'
+);
+eq(
+  candidateLabelText({ index: 0, x: 1, y: 2, w: 3, h: 4, score: 0.5, domain: 'screen_fallback' }),
+  '#0 · score=0.5000 · ROI未命中→全屏回退 [1,2,3,4]',
+  'seq134: ROI-miss full-screen fallback candidates are marked in the renderer'
+);
+eq(
+  candidateRenderLabel({ index: 3, score: 0.7, member: 'I_B', member_kind: 'template' }),
+  '#3 · score=0.7000 · 成员 I_B（模板）',
+  'seq134: collection template member rows show member/member_kind'
+);
+eq(candidateFieldInfo({ index: 1, score: 0.4, text: '金币', pass: false }).passText, '<阈值',
+  'seq134: pass is rendered only as a threshold state');
 ok(
-  /期望文字/.test(candidateOptionLabel({ index: 0, score: 0.9, text: '御魂', pass: true })) &&
-    /非期望文字/.test(candidateOptionLabel({ index: 1, score: 0.4, text: '金币', pass: false })),
-  'seq133: the real-test candidate dropdown shows pass/mismatch state and text'
+  !/· 期望文字/.test(source) && !/非期望文字（仍可选中测试）/.test(source) &&
+    !/candidateDisplayInfo/.test(source) && !/passLabel/.test(source) &&
+    /function candidateRenderLabel\(/.test(source) &&
+    /function candidateThumbDescriptor\(/.test(source),
+  'seq134: old 期望/非期望 labels + candidateDisplayInfo are removed; one renderer remains'
 );
 // S6 offset 绘制已删除（B3a 模型 A）；旧 offset 数据仅由 openOpRegionDialog 提示迁移为 self。
 // runtime_text（S2 对话框字段；阶段 A 先落纯校验）
@@ -1032,40 +1065,7 @@ eq(
 );
 eq(assetTestGestureRequest(true, 'tap', { x: 'bad', y: 2 }), null, 'invalid coordinate builds no request');
 
-// --- O-1: collection test real=1 URL / point / result-line contract ---
-eq(
-  assetCollectionMatchUrl('任务', '集合', '&live=1', false),
-  '/task/asset/collection/match?task=%E4%BB%BB%E5%8A%A1&id=%E9%9B%86%E5%90%88&live=1',
-  'collection dry-run URL is byte-identical to the old call (no real param)'
-);
-eq(
-  assetCollectionMatchUrl('t', 'C', '&frame_id=3', true),
-  '/task/asset/collection/match?task=t&id=C&frame_id=3&real=1',
-  'collection real URL appends real=1 after the frame query'
-);
-eq(assetCollectionClickPoint([20, 20, 8, 8]), [24, 24], 'collection click point is the action-box centre');
-eq(assetCollectionClickPoint([0, 0, 1, 1]), [0, 0], '1x1 action box centre');
-eq(assetCollectionClickPoint(null), null, 'missing action box has no click point');
-eq(assetCollectionClickPoint([1, 2, 3]), null, 'malformed action box has no click point');
-eq(assetCollectionClickPoint([0, 0, 0, 4]), null, 'zero-width action box has no click point');
-eq(
-  assetCollectionMatchLine(
-    '实时帧',
-    { member: 'M', score: 0.98765, threshold: 0.8, pass: true, x: 20, y: 20, action_box: [20, 20, 8, 8] },
-    'live'
-  ),
-  '实时帧: 最佳成员 M · score=0.9877 · threshold=0.800 · pass=true · 位置 (20,20) · 帧来源：live · 操作区域[20,20,8,8]',
-  'collection match line keeps the dry-run wording and formats numbers'
-);
-eq(
-  assetCollectionMatchLine(
-    '',
-    { member: 'M', score: 1, threshold: 0.8, pass: false, x: 1, y: 2 },
-    'position:#3'
-  ),
-  '最佳成员 M · score=1.0000 · threshold=0.800 · pass=false · 位置 (1,2) · 帧来源：position:#3',
-  'collection match line supports an empty label and a fallback frame source'
-);
+// --- O-1 已删除（seq134）：collection/match 测试 UI 死路径由统一候选 API 取代。 ---
 
 async function checkAssetTestWiring() {
   const calls = [];
@@ -1332,7 +1332,7 @@ function installGlobalRenderDom(items) {
   for (const fn of [
     'pickAssetRoi', 'runAssetTest', 'editAssetPositions', 'deleteAsset',
     'editAssetActionRoi', 'testAssetClick', 'testAssetDrag', 'generateAssetStep',
-    'testAssetCollection', 'deleteCollection',
+    'deleteCollection',
   ]) {
     sandbox[fn] = () => {};
   }
@@ -1439,7 +1439,7 @@ function installTaskRenderDom(items) {
   };
   for (const fn of ['pickAssetRoi', 'runAssetTest', 'editAssetPositions',
     'deleteAsset', 'editAssetActionRoi', 'testAssetClick', 'testAssetDrag',
-    'generateAssetStep', 'testAssetCollection', 'deleteCollection']) {
+    'generateAssetStep', 'deleteCollection']) {
     sandbox[fn] = () => {};
   }
   vm.runInContext(extractFunction('renderAssetList'), sandbox, {
@@ -1956,25 +1956,42 @@ const polyTemplateRow = Object.assign({}, rowTemplate, {
   polygon: [[10, 20], [30, 20], [30, 40], [10, 40]],
 });
 const polyThumb = assetUi.makeThumb(polyTemplateRow, '任务甲');
-eq(
-  assetChildren(polyThumb, 'asset-thumb-poly').length,
-  1,
-  '#6: a template thumbnail overlays the stored recognition polygon'
-);
+eq(polyThumb.textContent, '加载中…',
+  'seq134: a template with polygon uses the canvas clip pipeline (not a rectangular <img>)');
 const plainThumb = assetUi.makeThumb(Object.assign({}, rowTemplate, { file: 'a.png' }), '任务甲');
-eq(
-  assetChildren(plainThumb, 'asset-thumb-poly').length,
-  0,
-  '#6: a polygon-free asset thumbnail has no overlay'
+ok(
+  /\/task\/asset\/image/.test(plainThumb.innerHTML || '') ||
+    (plainThumb.children || []).some((c) => String(c.tagName || '').toUpperCase() === 'IMG'),
+  'seq134: a polygon-free template keeps the original rectangular thumbnail'
+);
+ok(
+  /clipThumbPolygon\(/.test(assetUiSource) &&
+    (assetUiSource.match(/clipThumbPolygon\(/g) || []).length >= 3,
+  'seq134: template + OCR thumbnail paths both clip to the polygon'
 );
 ok(
   (assetUiSource.match(/drawThumbPolygon\(/g) || []).length >= 3,
-  '#6: both the template and the frame-crop thumbnails draw the stored polygon (definition + 2 calls)'
+  'seq134: the polygon outline/fill is still drawn on both thumbnail paths'
 );
-ok(
-  /\.asset-thumb-poly/.test(styleCss) && /pointer-events: none/.test(styleCss),
-  '#6: style.css styles the thumbnail polygon overlay without stealing pointer events'
-);
+// seq134（UI B）：多边形的路径/裁剪纯函数（缩略图真实裁剪的基础）。
+const clipCalls = [];
+const fakeThumbCtx = {
+  beginPath() { clipCalls.push('begin'); },
+  moveTo() { clipCalls.push('move'); },
+  lineTo() { clipCalls.push('line'); },
+  closePath() { clipCalls.push('close'); },
+  clip() { clipCalls.push('clip'); },
+};
+eq(assetUi.thumbPolygonPath(fakeThumbCtx, [[0, 0], [10, 0], [0, 10]]), true,
+  'seq134: thumbPolygonPath builds a closed path for a valid polygon');
+eq(assetUi.thumbPolygonPath(fakeThumbCtx, [[0, 0], [10, 0]]), false,
+  'seq134: fewer than 3 thumb polygon points build no path');
+eq(assetUi.clipThumbPolygon(fakeThumbCtx, [[0, 0], [10, 0], [0, 10]]), true,
+  'seq134: clipThumbPolygon clips the thumbnail drawing to the polygon');
+eq(assetUi.clipThumbPolygon(fakeThumbCtx, null), false,
+  'seq134: no polygon => no clip (rectangular thumbnail fallback)');
+ok(clipCalls.indexOf('clip') >= 0 && clipCalls.indexOf('close') >= 0,
+  'seq134: the clip path is closed before ctx.clip()');
 
 eq(
   assetUi.ASSET_MENU_ITEMS.map((m) => m.label),
@@ -2438,12 +2455,23 @@ ok(
   'U-T4: 素材行「识别」calls GET /task/asset/candidates per frame'
 );
 ok(
-  /candidateBoxes\(candidates\)/.test(candidatesFn) &&
-    /candidateLabelText\(candidate\)/.test(candidatesFn) &&
+  /candidateBoxes\(candidates, \{ task, assetId: it\.id \}\)/.test(candidatesFn) &&
+    /candidateLabelText\(candidate, \{ task, assetId: it\.id \}\)/.test(candidatesFn) &&
     /boxes = collected;/.test(candidatesFn) && /draw\(\)/.test(candidatesFn),
-  'U-T4: every candidate is drawn as a box and listed as #i score=… [x,y,w,h]'
+  'seq134: every candidate is drawn as a box and listed through the unified renderer'
 );
-ok(/全屏 OCR/.test(candidatesFn), 'U-T4: an empty-roi OCR asset is labelled 全屏 OCR');
+ok(/全屏候选/.test(candidatesFn), 'seq134: an empty-roi OCR asset is labelled 全屏候选');
+ok(
+  /fetchJsonWithTimeout\(/.test(candidatesFn) &&
+    /s\.ok === false/.test(candidatesFn) &&
+    /errors\.join\('；'\)/.test(candidatesFn) &&
+    /候选识别失败/.test(candidatesFn),
+  'seq134: testAssetCandidates recognises {ok:false,errors} and shows the server errors'
+);
+ok(
+  /screen_fallback/.test(candidatesFn) && /ROI 未命中→全屏回退候选/.test(candidatesFn),
+  'seq134: ROI-miss full-screen fallback candidates are displayed with an explicit note'
+);
 const uT4RunAssetTestFn = extractFunction('runAssetTest');
 ok(
   /testAssetCandidates\(it, frameId, scopeTask\)/.test(uT4RunAssetTestFn),
@@ -2714,7 +2742,7 @@ ok(
 for (const name of [
   'pickAssetRoi', 'editAssetRecognitionRoi', 'editAssetActionRoi', 'renameAsset',
   'editAssetThreshold', 'editAssetPositions', 'deleteAsset', 'runAssetTest',
-  'runTestActionForAsset', 'testAssetDrag', 'generateAssetStep', 'testAssetCollection',
+  'runTestActionForAsset', 'testAssetDrag', 'generateAssetStep',
   'deleteCollection', 'selectFrame', 'deleteFrame', 'clearFrames',
   'pauseLivePreview', 'startLivePreview', 'saveAssetUnified',
 ]) {
@@ -3341,8 +3369,8 @@ ok(
   '#6: the editable polygon / operation area keeps the orange color (no confusion with the stored layer)'
 );
 ok(
-  /已存识别多边形/.test(storedPolyFn) && /已存识别多边形/.test(extractFunction('updateRoiLabel')),
-  '#6: the stored polygon layer + ROI label both name 已存识别多边形'
+  /识别区域（多边形）/.test(storedPolyFn) && /已存识别多边形/.test(extractFunction('updateRoiLabel')),
+  'seq134: the stored polygon is the primary canvas label (识别区域（多边形）); ROI label keeps 已存识别多边形'
 );
 ok(
   /storedRecognitionPolygon = Array\.isArray\(it\.polygon\)/.test(extractFunction('pickAssetRoi')),
@@ -4065,10 +4093,7 @@ ok(
   /it\.kind === 'region'[\s\S]{0,160}pickAssetRoi\(it\)/.test(runAssetTestFn),
   'region 识别 still selects the region before listing its single candidate'
 );
-for (const fn of [
-  'testAssetMatch', 'testAssetDrag', 'testAssetOcr',
-  'testAssetCollection', 'testAssetCandidates',
-]) {
+for (const fn of ['testAssetDrag', 'testAssetCandidates']) {
   const body = extractFunction(fn);
   ok(
     new RegExp(`function ${fn}\\(it, frameId, scopeTask\\)`).test(body),
@@ -4077,6 +4102,19 @@ for (const fn of [
   ok(/testFrames\(it, frameId\)/.test(body), `${fn} resolves frames through testFrames(it, frameId)`);
   ok(/assetRowScopeTask\(scopeTask/.test(body), `${fn} resolves the API scope through assetRowScopeTask`);
 }
+// seq134（spec D/B）：死代码清理——只有 runAssetTest→testAssetCandidates /
+// testAssetDrag / 长按存活；素材行旧 OCR/match/collection 测试函数与辅助函数已删除。
+for (const dead of [
+  'testAssetOcr', 'testAssetMatch', 'testAssetCollection', 'probeAssetOcrFrame',
+  'assetRecognitionBox', 'assetCollectionMatchUrl', 'assetCollectionClickPoint',
+  'assetCollectionMatchLine',
+]) {
+  ok(!new RegExp(`function ${dead}\\(`).test(source), `seq134: dead function ${dead} is deleted`);
+}
+ok(
+  !/testAssetOcr\(|testAssetMatch\(|testAssetCollection\(/.test(source),
+  'seq134: no call sites for the deleted per-kind asset tests remain'
+);
 const runTestActionFn = extractFunction('runTestActionForAsset');
 ok(
   /function runTestActionForAsset\(it, gesture, frameId, scopeTask\)/.test(runTestActionFn) &&
@@ -4092,12 +4130,10 @@ ok(
   /function testFrameLabel\(it, frameId\)/.test(extractFunction('testFrameLabel')),
   'testFrameLabel can name an explicitly requested frame'
 );
-for (const fn of ['testAssetDrag', 'testAssetOcr']) {
-  ok(
-    /testFrameLabel\(it, frameId\)/.test(extractFunction(fn)),
-    `${fn} reports the frame it actually tested`
-  );
-}
+ok(
+  /testFrameLabel\(it, frameId\)/.test(extractFunction('testAssetDrag')),
+  'testAssetDrag reports the frame it actually tested'
+);
 ok(
   /onTest: \(it\) => runAssetTest\(it, f\.id, scopeTask\)/.test(renderFrameAssetsFn),
   'frame detail 测试 forces the rendered frame id + row scope'
@@ -4139,38 +4175,23 @@ ok(
     /if \(wasCurrent\) \{\s*boxes = \[\];\s*selectedBox = null;/.test(deleteFrameFn),
   'deleting the current frame drops result boxes measured on the removed image'
 );
-// P2-4: the single-frame full-screen fallback must stay on the frame it was
-// called for instead of silently reading testFrameQuery(it) on the current frame.
+// P2-4 main-canvas OCR fallback keeps the tested frame id (素材行旧路径已删除).
 const fallbackFullscreenFn = extractFunction('fallbackFullscreenLines');
 ok(
   /function fallbackFullscreenLines\(reason, it, frameId\)/.test(fallbackFullscreenFn) &&
     /testFrameQuery\(it, frameId\)/.test(fallbackFullscreenFn) &&
     /testFrameLabel\(it, frameId\)/.test(fallbackFullscreenFn),
-  'the full-screen OCR fallback carries the tested frame id through'
+  'the main-canvas full-screen OCR fallback carries the tested frame id through'
 );
 ok(
-  /fallbackFullscreenLines\(probe\.error, it, frame\.frameId\)/.test(extractFunction('testAssetOcr')),
-  'the OCR probe hands its own frame id to the full-screen fallback'
+  !/fallbackFullscreenLines\(probe/.test(source) &&
+    (source.match(/fallbackFullscreenLines\(/g) || []).length <= 2,
+  'seq134: the asset-row OCR fallback is gone; only the main OCR button calls fallbackFullscreenLines'
 );
 ok(
-  /matchBoxValid\(recognizedBox\)/.test(extractFunction('testAssetMatch')) &&
-    /matchBoxValid\(recognizedBox\)/.test(extractFunction('testAssetDrag')) &&
+  /matchBoxValid\(recognizedBox\)/.test(extractFunction('testAssetDrag')) &&
     /matchBoxValid\(s\.real_rect\)/.test(extractFunction('testActionBoxes')),
-  'template tests + test_action boxes reject a miss (-1,-1) through matchBoxValid before drawing'
-);
-const probeOcrFrameFn = extractFunction('probeAssetOcrFrame');
-ok(/recognizedBox: null/.test(probeOcrFrameFn), 'single-line OCR reports no independent detection box');
-ok(
-  /roiBox: \[rec\[0\], rec\[1\], rec\[2\], rec\[3\]\]/.test(probeOcrFrameFn),
-  'single-line OCR keeps the stored ROI as roiBox only'
-);
-ok(
-  !/recognizedBox: \[rec\[0\]/.test(probeOcrFrameFn),
-  'the stored ROI is no longer labelled a recognized box'
-);
-ok(
-  /识别区域 \[\$\{rec\.join/.test(extractFunction('testAssetOcr')),
-  'the OCR test labels the stored ROI as the recognition area, not a detected box'
+  'drag tests + test_action boxes reject a miss (-1,-1) through matchBoxValid before drawing'
 );
 
 // Boot regression (E2E O1): #task-select must be populated BEFORE the task
@@ -4410,7 +4431,8 @@ ok(
   testActionRequestBody('click', { id: 'X' }).live === undefined,
   'U-T4: no live flag unless the frame plan says live'
 );
-eq(candidateOptionLabel({ index: 1, score: 0.9729 }), '#1 score=0.973', 'U-T4: candidate option = #序号 score');
+eq(candidateOptionLabel({ index: 1, score: 0.9729 }), '#1 · score=0.9729',
+  'seq134: the candidate dropdown reuses the unified renderer');
 eq(
   testActionResultLines({
     ok: true, real: false, candidate_index: 0, real_rect: [10, 20, 30, 40],
@@ -4450,9 +4472,9 @@ eq(
 eq(opRegionValidateErrorText({ ok: true }), '', 'U-T4: a valid chain yields no error text');
 ok(
   /function pickActionCandidate\(candidates, it, purpose\)/.test(extractFunction('pickActionCandidate')) &&
-    /默认 #\$\{defaultIndex\} 期望行\/最高分/.test(extractFunction('pickActionCandidate')) &&
+    /默认 #\$\{defaultIndex\} 最高分候选/.test(extractFunction('pickActionCandidate')) &&
     /candidateOptionLabel\(candidate\)/.test(extractFunction('pickActionCandidate')),
-  'seq133: the candidate picker labels 真实点击/拖测 and defaults to index 0 (期望行/最高分)'
+  'seq134: the candidate picker labels 真实点击/拖测 and defaults to index 0 (最高分)'
 );
 for (const id of ['candidate-select']) {
   ok(new RegExp(`id="${id}"`).test(html), `U-T4: index.html provides #${id}`);
@@ -4606,44 +4628,11 @@ ok(
     !/builder-drag-endpoint/.test(builderSource + styleCss),
   'seq129: renderDragEndpointEditor / builder-drag-endpoint are fully removed'
 );
-const collectionTestFn = extractFunction('testAssetCollection');
-ok(/realAssetTestGuard\(\)/.test(collectionTestFn), 'collection test is gated by the real/dry-run mode');
 ok(
-  /assetCollectionMatchUrl\(/.test(collectionTestFn),
-  'collection test builds both requests through the shared URL helper'
-);
-ok(
-  /real=1/.test(extractFunction('assetCollectionMatchUrl')),
-  'collection real request carries real=1'
-);
-ok(
-  /confirmAssetTestGestures\('click'/.test(collectionTestFn),
-  'collection real mode confirms the concrete click before sending'
-);
-ok(
-  collectionTestFn.indexOf("confirmAssetTestGestures('click'") <
-    collectionTestFn.indexOf('frame.query, true'),
-  'collection real request is sent only after the confirmation'
-);
-ok(/真实点击（已点击/.test(collectionTestFn), 'collection real result names the actual clicked point');
-ok(/演练（未点击）/.test(collectionTestFn), 'collection dry-run result says 演练（未点击）');
-ok(
-  /assetCollectionMatchUrl\(task, it\.id, frame\.query, false\)/.test(collectionTestFn),
-  'collection dry preview explicitly builds a real=0 URL'
-);
-ok(
-  /response\.status === 409/.test(collectionTestFn) &&
-    /真实点击未执行：重新匹配未过阈值（未点击）/.test(collectionTestFn),
-  'collection real below-threshold 409 is a refused click, not a generic failure'
-);
-ok(
-  /服务端将重新匹配并点击最新操作区（shape 内采样）/.test(collectionTestFn) &&
-    /click_point 为准/.test(collectionTestFn),
-  'collection confirmation explains the server re-match and click_point authority'
-);
-ok(
-  !/\/input\/tap/.test(collectionTestFn),
-  'collection test never duplicates the tap route (the backend owns the click)'
+  !/function testAssetCollection\(/.test(source) &&
+    !/assetCollectionMatchUrl\(/.test(source) &&
+    !/assetCollectionMatchLine\(/.test(source),
+  'seq134: collection/match dead UI path (testAssetCollection + helpers) is deleted'
 );
 const guardFn = extractFunction('realAssetTestGuard');
 ok(/livePreview/.test(guardFn) && /实时预览已暂停/.test(guardFn), 'real mode refuses when live preview is off');
@@ -8377,6 +8366,8 @@ async function checkAssetCandidatesWiring() {
     fetch: async (url) => {
       calls.push(url);
       return {
+        ok: true,
+        status: 200,
         json: async () => ({
           ok: true,
           task: '任务甲',
@@ -8389,17 +8380,34 @@ async function checkAssetCandidatesWiring() {
           elapsed_ms: 1.5,
           count: 2,
           candidates: [
-            { index: 0, x: 11, y: 21, w: 30, h: 40, score: 0.973, pass: true, action_box: [11, 21, 30, 40] },
+            { index: 0, x: 11, y: 21, w: 30, h: 40, score: 0.973, pass: true, action_box: [11, 21, 30, 40], member: 'I_A', member_kind: 'template' },
             { index: 1, x: 51, y: 61, w: 30, h: 40, score: 0.901, pass: true, action_box: [51, 61, 30, 40] },
           ],
         }),
       };
     },
+    fetchJsonWithTimeout: async (url) => {
+      calls.push(url);
+      const r = await sb.fetch(url);
+      let body = null;
+      try { body = await r.json(); } catch (e) { throw new Error('服务端响应不是 JSON'); }
+      if (!r.ok) {
+        throw new Error((body && Array.isArray(body.errors) ? body.errors.join('; ') : '') || 'HTTP ' + r.status);
+      }
+      if (body && body.ok === false) {
+        throw new Error((body.errors || []).join('; ') || '候选识别失败');
+      }
+      return body;
+    },
+    ASSET_TEST_TIMEOUT_MS: 45000,
   };
   vm.createContext(sb);
   vm.runInContext(
-    ['assetCandidatesUrl', 'matchBoxValid', 'candidateDisplayInfo', 'candidateTextPreview',
-      'candidateLabelText', 'candidateBoxes', 'testAssetCandidates']
+    ['candidateBoxOf', 'candidateDomainText', 'candidateMemberKindLabel', 'candidateFieldInfo',
+      'candidateTextPreview', 'candidateRenderLabel', 'candidateThumbDescriptor',
+      'assetCandidatesUrl', 'matchBoxValid', 'candidatePolygonForAsset',
+      'candidateLabelText', 'candidateBoxes',
+      'fetchJsonWithTimeout', 'testAssetCandidates']
       .map((name) => extractFunction(name))
       .join('\n\n'),
     sb,
@@ -8419,32 +8427,52 @@ async function checkAssetCandidatesWiring() {
     'U-T4: box geometry is the real recognition rectangle of each candidate'
   );
   ok(
-    /#0 score=0\.9730 \[11,21,30,40\]/.test(sb.resultEl.textContent) &&
-      /#1 score=0\.9010 \[51,61,30,40\]/.test(sb.resultEl.textContent),
-    'U-T4: the result pane lists every candidate as #i score=… [x,y,w,h]'
+    /#0 · score=0\.9730 · 成员 I_A（模板） · ≥阈值 \[11,21,30,40\]/.test(sb.resultEl.textContent) &&
+      /#1 · score=0\.9010 · 缩略图 模板甲 · ≥阈值 \[51,61,30,40\]/.test(sb.resultEl.textContent),
+    'seq134: the result pane lists every candidate through the unified renderer'
   );
   ok(/2 个候选/.test(sb.resultEl.textContent), 'U-T4: the result pane reports the candidate count');
-  ok(/范围=素材识别区/.test(sb.resultEl.textContent), 'U-T4: the result pane names the search domain');
+  ok(/范围=ROI/.test(sb.resultEl.textContent), 'seq134: the result pane names the search domain');
   eq(sb.drawn, 1, 'U-T4: one canvas repaint per recognition run');
 
-  // A backend error (e.g. OCR build without models) degrades to text, never throws.
+  // seq134: server error body {ok:false,errors} must show errors instead of 0 candidates.
   calls.length = 0;
   sb.fetch = async () => ({
-    json: async () => ({ error: 'OCR 素材候选需要 det+rec 模型' }),
+    ok: false,
+    status: 400,
+    json: async () => ({ ok: false, errors: ['OCR 素材候选需要 det+rec 模型'] }),
   });
   await sb.testAssetCandidates({ id: '文字乙', kind: 'ocr_line', roi: [1, 2, 3, 4] }, null, '');
-  ok(/❌ OCR 素材候选需要 det\+rec 模型/.test(sb.resultEl.textContent), 'U-T4: backend errors render inline');
+  ok(/❌ 候选识别失败：OCR 素材候选需要 det\+rec 模型/.test(sb.resultEl.textContent),
+    'seq134: {ok:false,errors} from the candidates API renders inline (no silent 0)');
   eq(sb.boxes.length, 0, 'U-T4: a failed run clears the candidate boxes');
 
-  // ocr_var with an empty ROI: the UI labels the slow full-screen OCR domain.
+  // seq134: ROI-miss full-screen fallback candidates are displayed with a note.
   sb.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      ok: true, task: '任务甲', id: 'O_组', kind: 'ocr_var', domain: 'roi', roi: [0, 0, 10, 10],
+      threshold: 0.6, frame_source: 'current', count: 1, expected_text: '御魂',
+      candidates: [{ index: 0, x: 900, y: 20, w: 80, h: 30, score: 0.8, pass: true, text: '御魂', domain: 'screen_fallback' }],
+    }),
+  });
+  await sb.testAssetCandidates({ id: 'O_组', kind: 'ocr_var', roi: [0, 0, 10, 10] }, null, '');
+  ok(/ROI 未命中→全屏回退候选/.test(sb.resultEl.textContent) &&
+    /全屏回退/.test(sb.resultEl.textContent),
+  'seq134: screen_fallback candidates show the ROI-miss full-screen note');
+
+  // ocr_var with an empty ROI: the UI labels the full-screen candidate domain.
+  sb.fetch = async () => ({
+    ok: true,
+    status: 200,
     json: async () => ({
       ok: true, task: '任务甲', id: 'O_组', kind: 'ocr_var', domain: 'screen', roi: null,
       threshold: 0.6, frame_source: 'current', elapsed_ms: 2, count: 0, candidates: [],
     }),
   });
   await sb.testAssetCandidates({ id: 'O_组', kind: 'ocr_var', roi: null }, null, '');
-  ok(/全屏 OCR/.test(sb.resultEl.textContent), 'U-T4: an empty-roi ocr_var shows the full-screen OCR hint');
+  ok(/全屏候选/.test(sb.resultEl.textContent), 'seq134: an empty-roi ocr_var shows the full-screen candidate hint');
 }
 
 // --- V2.0c 静态接线：变量面板/对话框/插入变量/API + Runner 两分节 --------------
@@ -8682,28 +8710,22 @@ ok(
   'seq130: Esc restores the previous geometry after a completed move'
 );
 
-// --- seq133（#2/#3）：多候选展示 + 点测/拖测/长按超时恢复 ---------------------
-// #2：候选行展示 text/score/pass；默认 index0；pass=false 仍可选测。
+// --- seq133/seq134：统一候选渲染 + 点测/拖测/长按超时恢复 ---------------------
 eq(
   sandbox.testActionResultLines({ ok: true, real_rect: [1, 2, 3, 4], action_box: [1, 2, 3, 4] }, 1,
     { index: 1, text: '金币', score: 0.4, pass: false })[0]
-    .indexOf('文字="金币" · 非期望文字') >= 0,
+    .indexOf('文字="金币" · <阈值') >= 0,
   true,
-  'seq133: test_action result lines annotate 非期望文字 candidates'
+  'seq134: test_action result lines reuse the unified candidate fields (no 非期望文字)'
 );
 ok(
-  /candidateDisplayInfo\(candidate\)/.test(source) && /passLabel/.test(source) &&
-    source.indexOf('（仍可选中测试）') >= 0,
-  'seq133: candidates keep pass=false lines labelled 非期望文字 and selectable'
+  source.indexOf('该范围内没有候选/识别行') >= 0 &&
+    source.indexOf('识别区域内没有识别行') >= 0,
+  'seq134: empty candidate lists explain the server scope instead of silently showing 0'
 );
 ok(
-  (source.match(/识别区域内没有识别行/g) || []).length >= 3,
-  'seq133: empty candidate lists say 识别区域内没有识别行 (not 符合阈值)'
-);
-ok(
-  source.indexOf('识别区域内全部识别行') >= 0 &&
-    source.indexOf('默认 #0') >= 0,
-  'seq133: candidate copy explains the full-line list + default #0'
+  source.indexOf('统一候选列表') >= 0 && source.indexOf('默认 #0 最高分候选') >= 0,
+  'seq134: candidate copy names the unified renderer and default #0'
 );
 // #3：AbortController 超时 + in-flight + finally 恢复。
 eq(typeof sandbox.assetTestTimeoutError, 'function', 'seq133: assetTestTimeoutError helper exists');
@@ -8752,14 +8774,175 @@ ok(
   'seq133: drag test also uses in-flight guard + finally restore (candidate fetch failure included)'
 );
 ok(
-  /const candidateInfoForDrag = candidateDisplayInfo\(candidate\)/.test(dragFn133) &&
-    /candidateInfoForDrag\.passLabel/.test(dragFn133),
-  'seq133: drag test shows the chosen candidate text/pass state'
+  /const candidateInfoForDrag = candidateFieldInfo\(candidate\)/.test(dragFn133) &&
+    /candidateInfoForDrag\.passText/.test(dragFn133) &&
+    /candidateBoxes\(fetched\.items\)/.test(dragFn133),
+  'seq134: drag test reuses the unified candidate renderer/boxes for its picker and canvas'
 );
 ok(
   /beginAssetTest/.test(extractFunction('realAssetTestGuard')) === false &&
     /setAssetTestBusy\(true\)/.test(source),
   'seq133: the busy state is owned by beginAssetTest (real-mode guard unchanged)'
+);
+
+// --- seq134（spec D）：候选渲染单套/错误体/全屏回退 补充断言 ------------------
+eq(candidateDomainText('roi'), 'ROI', 'seq134: domain roi renders as ROI');
+eq(candidateDomainText('screen'), '全屏', 'seq134: domain screen renders as 全屏');
+eq(candidateDomainText('members'), '集合成员', 'seq134: collection candidates show 集合成员 domain');
+eq(candidateDomainText('screen_fallback'), 'ROI未命中→全屏回退',
+  'seq134: ROI-miss fallback domain is explicit');
+eq(candidateDomainText(''), '', 'seq134: a missing domain renders nothing');
+eq(candidateDomainText('future_domain'), 'future_domain',
+  'seq134: unknown domains pass through (forward compatible)');
+eq(candidateMemberKindLabel('template'), '模板', 'seq134: member_kind template label');
+eq(candidateMemberKindLabel('template_set'), '素材集合', 'seq134: member_kind set label');
+eq(candidateMemberKindLabel('ocr_line'), '单行文字', 'seq134: member_kind ocr_line label');
+eq(candidateMemberKindLabel('ocr_lines'), '多行文字', 'seq134: member_kind ocr_lines label');
+eq(candidateMemberKindLabel('ocr_var'), '使用端OCR文字配置项', 'seq134: member_kind ocr_var label');
+eq(candidateMemberKindLabel('region'), '固定区域', 'seq134: member_kind region label');
+eq(candidateMemberKindLabel(''), '', 'seq134: a candidate without member_kind renders nothing');
+eq(candidateBoxOf({ x: 1.4, y: 2.6, w: 3.2, h: 4.8 }), [1, 3, 3, 5],
+  'seq134: candidate box coordinates round to integers');
+eq(candidateFieldInfo({ index: 4, score: 0.5 }).hasPass, false,
+  'seq134: candidates without pass have no threshold label');
+eq(candidateFieldInfo({ index: 4, score: 0.5 }).passText, '',
+  'seq134: absent pass yields an empty threshold text');
+eq(candidateFieldInfo({ index: 4, score: 0.5, pass: true }).passText, '≥阈值',
+  'seq134: pass=true means ≥阈值 only');
+eq(candidateFieldInfo({ index: 4, score: 0.5, pass: false }).passText, '<阈值',
+  'seq134: pass=false means <阈值 only');
+eq(candidateRenderLabel({ index: 9, score: 0.5 }), '#9 · score=0.5000',
+  'seq134: an image candidate without ctx still renders score (no crash)');
+eq(
+  candidateRenderLabel({ index: 3, score: 0.7, text: '御魂', member: 'O_组', member_kind: 'ocr_var', domain: 'roi', pass: true }),
+  '#3 · score=0.7000 · 成员 O_组（使用端OCR文字配置项） · 文字="御魂" · ROI · ≥阈值',
+  'seq134: one renderer composes member/kind/text/domain/pass for mixed candidates'
+);
+eq(
+  candidateThumbDescriptor({ index: 2, score: 0.6, member: 'I_集合成员', member_kind: 'template' }, { task: '任务乙' }),
+  {
+    id: 'I_集合成员',
+    kind: 'template',
+    url: '/task/asset/image?task=%E4%BB%BB%E5%8A%A1%E4%B9%99&id=I_%E9%9B%86%E5%90%88%E6%88%90%E5%91%98',
+    box: [0, 0, 0, 0],
+  },
+  'seq134: collection template members get a member thumbnail descriptor'
+);
+eq(
+  candidateBoxes([{ index: 0, x: 1, y: 2, w: 3, h: 4, score: 0.4, text: '金币', domain: 'screen_fallback', pass: false }])[0].text,
+  '#0 0.40 「金币」 全屏回退',
+  'seq134: canvas candidate labels show text + fallback state'
+);
+ok(
+  /function candidateRenderLabel\(candidate, ctx\)/.test(source) &&
+    /candidateRenderLabel\(candidate, ctx\)/.test(extractFunction('candidateLabelText')) &&
+    /candidateRenderLabel\(candidate, ctx\)/.test(extractFunction('candidateOptionLabel')) &&
+    /candidateFieldInfo\(candidate\)/.test(extractFunction('testActionResultLines')),
+  'seq134: result lines, canvas boxes and the dropdown all use the one renderer'
+);
+ok(
+  /candidateBoxes\(fetched\.items\)/.test(extractFunction('testAssetDrag')) &&
+    /candidateLabelText\(candidate, \{ task, assetId: it\.id \}\)/.test(extractFunction('testAssetCandidates')),
+  'seq134: testAssetDrag/testAssetCandidates share the same candidate presentation'
+);
+ok(
+  !/符合阈值/.test(extractFunction('testAssetCandidates')) &&
+    !/期望行/.test(source) &&
+    !/期望文字\/非期望文字/.test(source),
+  'seq134: stale 阈值/期望候选文案 is removed from the live candidate paths'
+);
+ok(
+  /s\.ok === false/.test(extractFunction('testAssetCandidates')) &&
+    /errors\.join\('；'\)/.test(extractFunction('testAssetCandidates')) &&
+    /候选识别失败/.test(extractFunction('testAssetCandidates')),
+  'seq134: the candidates API error body is rendered, never silently treated as 0 candidates'
+);
+ok(
+  /domain === 'screen_fallback'/.test(extractFunction('testAssetCandidates')) &&
+    /ROI 未命中→全屏回退候选/.test(extractFunction('testAssetCandidates')),
+  'seq134: screen_fallback candidates get the explicit ROI-miss full-screen note'
+);
+eq(
+  sandbox.testActionResultLines({ ok: true, real_rect: [1, 2, 3, 4] }, 0,
+    { index: 0, member: 'O_组', member_kind: 'ocr_var', text: '御魂', domain: 'screen_fallback' })[0]
+    .indexOf('成员="O_组" 文字="御魂" · 全屏回退') >= 0,
+  true,
+  'seq134: test_action result rows carry member/text/fallback from the candidate'
+);
+ok(
+  !/candidateDisplayInfo/.test(source) && !/passLabel/.test(source),
+  'seq134: seq133 candidateDisplayInfo/passLabel helpers are deleted'
+);
+
+// --- seq134（UI B）：多边形缩略图 + 画布 polygon 主显示 ------------------------
+// 缩略图：模板 + OCR 位置帧两条路径都按 polygon 裁剪/遮罩。
+ok(
+  (assetUiSource.match(/thumbPolygonPoints\(/g) || []).length >= 3 &&
+    (assetUiSource.match(/clipThumbPolygon\(/g) || []).length >= 3,
+  'seq134: template and frame-crop thumbnails both project + clip the stored polygon'
+);
+ok(
+  /const polyPoints = thumbPolygonPoints\(it\.polygon, it\.roi, 64, 44\)/.test(assetUiSource) &&
+    /const polyPoints = thumbPolygonPoints\(it\.polygon, it\.roi, c\.width, c\.height\)/.test(assetUiSource),
+  'seq134: both thumbnail branches map polygon points into their canvas coordinates'
+);
+ok(
+  /ctx\.fillStyle = '#0b0d10';\s*ctx\.fillRect\(0, 0, c\.width, c\.height\)/.test(assetUiSource) &&
+    /ctx\.drawImage\(img/.test(assetUiSource),
+  'seq134: polygon-masked thumbnails draw a dark background then the clipped image'
+);
+// 画布：polygon 主显示，ROI 矩形只作 bbox 辅助。
+const drawUiBFn = extractFunction('draw');
+ok(
+  /const recognitionPolygonPrimary =/.test(drawUiBFn) &&
+    /storedRecognitionPolygon\.length >= 3/.test(drawUiBFn) &&
+    /polyClosed/.test(drawUiBFn),
+  'seq134: canvas chooses polygon-primary when a stored/closed polygon exists'
+);
+ok(
+  /ROI bbox（辅助）/.test(drawUiBFn) &&
+    /rgba\(49,208,170,0\.12\)/.test(drawUiBFn),
+  'seq134: with polygon the ROI rect becomes a light bbox helper; without polygon it keeps the rect fill'
+);
+ok(
+  /识别区域（多边形）/.test(extractFunction('drawStoredRecognitionPolygonOverlay')) &&
+    /rgba\(77,159,255,0\.20\)/.test(extractFunction('drawStoredRecognitionPolygonOverlay')),
+  'seq134: the stored polygon gets the primary fill/label on canvas'
+);
+ok(
+  /const boxPoly = Array\.isArray\(b\.polygon\)/.test(drawUiBFn) &&
+    /b\.polygon\.length >= 3/.test(drawUiBFn),
+  'seq134: candidate boxes with polygon render the polygon (rect only as auxiliary)'
+);
+// candidatePolygonForAsset：把素材识别多边形平移到模板候选位置。
+eq(
+  candidatePolygonForAsset(
+    { kind: 'template', roi: [10, 20, 20, 10], polygon: [[10, 20], [30, 20], [30, 40]] },
+    [40, 50, 20, 10]
+  ),
+  [{ x: 40, y: 50 }, { x: 60, y: 50 }, { x: 60, y: 70 }],
+  'seq134: a template candidate polygon is translated from ROI to the candidate box'
+);
+eq(candidatePolygonForAsset({ kind: 'ocr_line', roi: [1, 2, 3, 4], polygon: [[1, 2], [3, 2], [3, 4]] }, [1, 2, 3, 4]), null,
+  'seq134: OCR candidate rows keep rectangles (no polygon translation)');
+eq(candidatePolygonForAsset({ kind: 'template', roi: [1, 2, 3, 4] }, [1, 2, 3, 4]), null,
+  'seq134: no polygon => no candidate polygon (rectangular fallback)');
+eq(candidatePolygonForAsset(null, [1, 2, 3, 4]), null,
+  'seq134: a missing asset yields no candidate polygon');
+ok(
+  /candidatePolygonForAsset\(it, box\.box\)/.test(extractFunction('testAssetCandidates')) &&
+    /candidatePolygonForAsset\(it, recognizedBox\)/.test(extractFunction('testAssetDrag')),
+  'seq134: 识别 + 拖测 candidate boxes both attach the translated polygon'
+);
+ok(
+  /storedRecognitionPolygon = Array\.isArray\(it\.polygon\)/.test(extractFunction('pickAssetRoi')) &&
+    /recognitionDraftFromAsset\(it\)/.test(extractFunction('editAssetRecognitionRoi')) &&
+    /polygon = draft\.polygon/.test(extractFunction('editAssetRecognitionRoi')),
+  'seq134: pickAssetRoi (read-only) and editAssetRecognitionRoi (editable) both load the asset polygon'
+);
+ok(
+  /recognitionPolygonPayload/.test(source) && /polygon/.test(source),
+  'seq134: the save payload still carries the polygon (image file itself remains a rect crop; UI masks it)'
 );
 
 // --- DOM id audit（Studio shell；D 批删除了参数面板/配置项对话框相关 id） -------

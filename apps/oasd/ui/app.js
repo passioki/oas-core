@@ -700,16 +700,32 @@ document.addEventListener('keydown', function (ev) {
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (img) ctx.drawImage(img, 0, 0);
+  // seq134（UI B）：有识别多边形时多边形为主显示，矩形 ROI 仅作 bbox 辅助
+  // （细虚线、不填充），候选/识别结果/选中素材共用这一层。
+  const recognitionPolygonPrimary =
+    (Array.isArray(storedRecognitionPolygon) && storedRecognitionPolygon.length >= 3) ||
+    (Array.isArray(polygon) && polygon.length >= 3 && polyClosed);
   if (roi && roi.w > 0 && roi.h > 0) {
     ctx.save();
-    ctx.strokeStyle = '#31d0aa';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(roi.x + 0.5, roi.y + 0.5, roi.w, roi.h);
-    ctx.fillStyle = 'rgba(49,208,170,0.12)';
-    ctx.fillRect(roi.x, roi.y, roi.w, roi.h);
-    ctx.fillStyle = '#31d0aa';
-    ctx.font = '14px Consolas, monospace';
-    ctx.fillText(`识别 ${roi.w}x${roi.h} @ ${roi.x},${roi.y}`, roi.x + 4, Math.max(14, roi.y - 6));
+    if (recognitionPolygonPrimary) {
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = 'rgba(49,208,170,0.45)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(roi.x + 0.5, roi.y + 0.5, roi.w, roi.h);
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(49,208,170,0.65)';
+      ctx.font = '12px Consolas, monospace';
+      ctx.fillText(`ROI bbox（辅助） ${roi.w}x${roi.h}`, roi.x + 4, Math.max(13, roi.y - 5));
+    } else {
+      ctx.strokeStyle = '#31d0aa';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(roi.x + 0.5, roi.y + 0.5, roi.w, roi.h);
+      ctx.fillStyle = 'rgba(49,208,170,0.12)';
+      ctx.fillRect(roi.x, roi.y, roi.w, roi.h);
+      ctx.fillStyle = '#31d0aa';
+      ctx.font = '14px Consolas, monospace';
+      ctx.fillText(`识别 ${roi.w}x${roi.h} @ ${roi.x},${roi.y}`, roi.x + 4, Math.max(14, roi.y - 6));
+    }
     ctx.restore();
   }
   // #6（验收反馈）：素材已存的识别多边形只读显示（蓝色虚线，独立于橙色正在画的
@@ -757,26 +773,49 @@ function draw() {
   for (const b of boxes) {
     const [x, y, w, h] = b.box;
     ctx.save();
-    ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-    ctx.lineWidth = 5;
-    ctx.strokeRect(x + 0.5, y + 0.5, w, h);
-    ctx.strokeStyle = '#ffd54a';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(x + 0.5, y + 0.5, w, h);
-    // tiny corner ticks make the exact edges readable on busy art
-    ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-    ctx.lineWidth = 4;
-    const tick = 6;
-    ctx.beginPath();
-    for (const [cx, cy, dx, dy] of [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]) {
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(cx + dx * tick, cy);
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(cx, cy + dy * tick);
+    const boxPoly = Array.isArray(b.polygon) && b.polygon.length >= 3 ? b.polygon : null;
+    if (boxPoly) {
+      // seq134（UI B）：候选框有 polygon 时以多边形为主（填充+亮边），矩形仅辅助。
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, y + 0.5, w, h);
+      ctx.beginPath();
+      ctx.moveTo(boxPoly[0].x, boxPoly[0].y);
+      for (let i = 1; i < boxPoly.length; i += 1) ctx.lineTo(boxPoly[i].x, boxPoly[i].y);
+      ctx.closePath();
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+      ctx.lineWidth = 5;
+      ctx.stroke();
+      ctx.strokeStyle = '#ffd54a';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255,213,74,0.14)';
+      ctx.fill();
+      ctx.setLineDash([]);
+    } else {
+      ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+      ctx.lineWidth = 5;
+      ctx.strokeRect(x + 0.5, y + 0.5, w, h);
+      ctx.strokeStyle = '#ffd54a';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x + 0.5, y + 0.5, w, h);
+      // tiny corner ticks make the exact edges readable on busy art
+      ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+      ctx.lineWidth = 4;
+      const tick = 6;
+      ctx.beginPath();
+      for (const [cx, cy, dx, dy] of [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]) {
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + dx * tick, cy);
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx, cy + dy * tick);
+      }
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(232,180,49,0.08)';
+      ctx.fillRect(x, y, w, h);
     }
-    ctx.stroke();
-    ctx.fillStyle = 'rgba(232,180,49,0.08)';
-    ctx.fillRect(x, y, w, h);
     // label plate
     const label = `${b.text} ${b.score.toFixed(2)}`;
     ctx.font = '13px Consolas, monospace';
@@ -794,9 +833,10 @@ function draw() {
   drawClickOverlay();
 }
 
-// #6（验收反馈）：已存识别多边形只读渲染层。颜色与两套可编辑几何区分：
-//   蓝色虚线 = 已存识别多边形（本层，只读）
-//   橙色     = 正在画的多边形 / 操作区域 action_shape
+// #6（验收反馈）：已存识别多边形只读渲染层。seq134（UI B）：有 polygon 时它是
+// 主显示（更实的填充+轮廓），矩形 ROI 仅 bbox 辅助；颜色与可编辑几何区分：
+//   蓝色 = 已存识别多边形（本层，只读）
+//   橙色 = 正在画的多边形 / 操作区域 action_shape
 function drawStoredRecognitionPolygonOverlay() {
   const pts = storedRecognitionPolygon;
   if (!Array.isArray(pts) || pts.length < 3) return;
@@ -805,17 +845,17 @@ function drawStoredRecognitionPolygonOverlay() {
   ctx.moveTo(pts[0].x, pts[0].y);
   for (let i = 1; i < pts.length; i += 1) ctx.lineTo(pts[i].x, pts[i].y);
   ctx.closePath();
-  ctx.setLineDash([4, 3]);
-  ctx.strokeStyle = '#4d9fff';
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.fillStyle = 'rgba(77,159,255,0.08)';
+  ctx.fillStyle = 'rgba(77,159,255,0.20)';
   ctx.fill();
+  ctx.setLineDash([5, 3]);
+  ctx.strokeStyle = '#4d9fff';
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
   ctx.setLineDash([]);
   const bbox = polygonBBox(pts);
   ctx.fillStyle = '#8fb8e8';
   ctx.font = '13px Consolas, monospace';
-  ctx.fillText('已存识别多边形 ' + pts.length + ' 顶点', bbox.x + 4, Math.max(14, bbox.y - 6));
+  ctx.fillText('识别区域（多边形） ' + pts.length + ' 顶点', bbox.x + 4, Math.max(14, bbox.y - 6));
   ctx.restore();
 }
 
@@ -2466,70 +2506,161 @@ function assetCandidatesUrl(task, id, frameQuery) {
     '&id=' + encodeURIComponent(String(id || '')) + String(frameQuery || '');
 }
 
-// seq133（#2）：OCR 候选行统一信息（text/score/pass）。pass=false = 非期望文字，
-// 仍可选中测试（不再因阈值被过滤；后端返回区域内全部识别行，pass 优先排序）。
-function candidateDisplayInfo(candidate) {
+// seq134（spec D）：唯一候选渲染器。统一字段
+// index,x,y,w,h,score,pass,action_box,text?,member?,member_kind?,domain?。
+// - 图像 kind（template/region/集合模板成员）：显示缩略图+分数；
+// - OCR 文字行：显示 text+分数；
+// - 集合成员行：member/member_kind/text；
+// pass 只表示阈值（≥阈值/<阈值），不再有「期望/非期望文字」语义。
+function candidateBoxOf(candidate) {
+  const c = candidate && typeof candidate === 'object' && !Array.isArray(candidate) ? candidate : {};
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  return [Math.round(num(c.x)), Math.round(num(c.y)), Math.round(num(c.w)), Math.round(num(c.h))];
+}
+
+function candidateDomainText(domain) {
+  const d = String(domain === undefined || domain === null ? '' : domain);
+  if (d === 'roi') return 'ROI';
+  if (d === 'screen') return '全屏';
+  if (d === 'members') return '集合成员';
+  if (d === 'screen_fallback') return 'ROI未命中→全屏回退';
+  return d;
+}
+
+function candidateMemberKindLabel(kind) {
+  const k = String(kind === undefined || kind === null ? '' : kind);
+  if (k === 'template') return '模板';
+  if (k === 'template_set') return '素材集合';
+  if (k === 'ocr_line') return '单行文字';
+  if (k === 'ocr_lines') return '多行文字';
+  if (k === 'ocr_var') return '使用端OCR文字配置项';
+  if (k === 'region') return '固定区域';
+  return k;
+}
+
+function candidateFieldInfo(candidate) {
   const c = candidate && typeof candidate === 'object' && !Array.isArray(candidate) ? candidate : {};
   const index = Number.isInteger(Number(c.index)) ? Number(c.index) : 0;
   const score = Number(c.score);
   const text = c.text === undefined || c.text === null ? '' : String(c.text);
+  const member = c.member === undefined || c.member === null ? '' : String(c.member);
+  const memberKind = c.member_kind === undefined || c.member_kind === null ? '' : String(c.member_kind);
+  const domain = c.domain === undefined || c.domain === null ? '' : String(c.domain);
   const hasPass = Object.prototype.hasOwnProperty.call(c, 'pass') &&
     c.pass !== undefined && c.pass !== null;
   const pass = c.pass === true;
+  const kind = memberKind || (text.trim() ? 'text' : 'image');
   return {
     index: index,
     score: Number.isFinite(score) ? score : null,
+    scoreText: Number.isFinite(score) ? score.toFixed(4) : '—',
     text: text,
+    member: member,
+    memberKind: memberKind,
+    memberKindLabel: candidateMemberKindLabel(memberKind),
+    domain: domain,
+    domainText: candidateDomainText(domain),
     hasPass: hasPass,
     pass: pass,
-    passLabel: hasPass ? (pass ? '期望文字' : '非期望文字') : '',
+    passText: hasPass ? (pass ? '≥阈值' : '<阈值') : '',
+    kind: kind,
+    hasText: text.trim() !== '',
   };
 }
 
 function candidateTextPreview(candidate, maxLen) {
-  const info = candidateDisplayInfo(candidate);
+  const info = candidateFieldInfo(candidate);
   const limit = Number.isFinite(Number(maxLen)) && Number(maxLen) > 0 ? Number(maxLen) : 24;
-  if (!info.text) return '';
+  if (!info.hasText) return '';
   const text = info.text.length > limit ? info.text.slice(0, limit) + '…' : info.text;
   return '「' + text + '」';
 }
 
-// 一行候选的文字表示：「#0 score=0.9730 [902,601,120,60] 文字="御魂" · 期望文字」。
-function candidateLabelText(candidate) {
-  const c = candidate && typeof candidate === 'object' && !Array.isArray(candidate) ? candidate : {};
-  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
-  const info = candidateDisplayInfo(c);
-  const scoreText = info.score === null ? '—' : info.score.toFixed(4);
-  const box = [Math.round(num(c.x)), Math.round(num(c.y)), Math.round(num(c.w)), Math.round(num(c.h))];
-  let text = '#' + info.index + ' score=' + scoreText + ' [' + box.join(',') + ']';
-  if (info.text.trim() !== '') {
-    text += ' 文字=' + JSON.stringify(info.text);
+// 图像候选的缩略图描述（/task/asset/image）；文字行返回 null（显示 text 即可）。
+function candidateThumbDescriptor(candidate, ctx) {
+  const info = candidateFieldInfo(candidate);
+  if (info.hasText) return null;
+  const o = ctx && typeof ctx === 'object' ? ctx : {};
+  const assetId = info.member || String(o.assetId || (candidate && (candidate.sel || candidate.id)) || '');
+  if (!assetId) return null;
+  return {
+    id: assetId,
+    kind: info.memberKind || info.kind,
+    url: '/task/asset/image?task=' + encodeURIComponent(String(o.task || '')) +
+      '&id=' + encodeURIComponent(assetId),
+    box: candidateBoxOf(candidate),
+  };
+}
+
+// 单行候选渲染（结果区/下拉/画布共用）：图像=缩略图+分数，文字=text+分数，集合=member/member_kind/text。
+function candidateRenderLabel(candidate, ctx) {
+  const info = candidateFieldInfo(candidate);
+  const parts = ['#' + info.index, 'score=' + info.scoreText];
+  if (info.member) {
+    parts.push('成员 ' + info.member + (info.memberKind ? '（' + info.memberKindLabel + '）' : ''));
   }
-  if (info.hasPass) {
-    text += ' · ' + info.passLabel + (info.pass ? '' : '（仍可选中测试）');
+  if (info.hasText) {
+    parts.push('文字=' + JSON.stringify(info.text));
+  } else if (!info.member) {
+    const thumb = candidateThumbDescriptor(candidate, ctx);
+    if (thumb) parts.push('缩略图 ' + thumb.id);
   }
-  if (c.member !== undefined && c.member !== null && String(c.member).trim() !== '') {
-    text += ' · 成员 ' + String(c.member);
+  if (info.domain) parts.push(info.domainText);
+  if (info.hasPass) parts.push(info.passText);
+  return parts.join(' · ');
+}
+
+function candidateLabelText(candidate, ctx) {
+  return candidateRenderLabel(candidate, ctx) + ' [' + candidateBoxOf(candidate).join(',') + ']';
+}
+
+// seq134（UI B）：候选框的多边形显示。模板全帧多候选时，把素材已存识别多边形
+// 平移到该候选位置（候选 bbox vs 素材 roi 的偏移）；其它 kind 的候选是识别行/固定
+// 区域，保持矩形。返回 [{x,y}] 或 null（无 polygon/无 ROI）。
+function candidatePolygonForAsset(it, box) {
+  const poly = it && Array.isArray(it.polygon) ? it.polygon : [];
+  const roi = it && Array.isArray(it.roi) ? it.roi : null;
+  if (poly.length < 3 || !roi || !Array.isArray(box) || box.length < 4) return null;
+  if (String(it.kind) !== 'template') return null;
+  const dx = Number(box[0]) - Number(roi[0]);
+  const dy = Number(box[1]) - Number(roi[1]);
+  const out = [];
+  for (const p of poly) {
+    if (!Array.isArray(p) || p.length < 2) continue;
+    const x = Number(p[0]);
+    const y = Number(p[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    out.push({ x: x + dx, y: y + dy });
   }
-  return text;
+  return out.length >= 3 ? out : null;
 }
 
 // 候选 → draw() 的 boxes 数组（画全部真实识别区域；无效框跳过）。
-function candidateBoxes(candidates) {
+// 画布标签用紧凑版同一渲染器；thumb 供后续图像缩略图渲染使用。
+function candidateBoxes(candidates, ctx) {
   const out = [];
   for (const candidate of Array.isArray(candidates) ? candidates : []) {
     if (!candidate || typeof candidate !== 'object') continue;
     const box = [Number(candidate.x), Number(candidate.y), Number(candidate.w), Number(candidate.h)];
     if (!matchBoxValid(box)) continue;
-    const info = candidateDisplayInfo(candidate);
-    const scoreText = info.score === null ? '—' : info.score.toFixed(2);
+    const info = candidateFieldInfo(candidate);
+    const thumb = candidateThumbDescriptor(candidate, ctx);
+    const parts = ['#' + info.index, info.score === null ? '—' : info.score.toFixed(2)];
+    if (info.member) parts.push(info.member);
+    if (info.hasText) parts.push(candidateTextPreview(candidate, 16));
+    else if (thumb) parts.push('缩略图');
+    if (info.domain === 'screen_fallback') parts.push('全屏回退');
     out.push({
-      text: '#' + info.index + ' ' + scoreText + candidateTextPreview(candidate, 16) +
-        (info.hasPass ? (info.pass ? ' · 期望' : ' · 非期望文字') : ''),
+      text: parts.join(' '),
       score: info.score === null ? 0 : info.score,
       box,
       pass: info.pass,
       hasPass: info.hasPass,
+      textValue: info.text,
+      member: info.member,
+      memberKind: info.memberKind,
+      domain: info.domain,
+      thumb: thumb,
     });
   }
   return out;
@@ -3259,25 +3390,21 @@ function testActionRequestBody(gesture, opts) {
   return body;
 }
 
-// 真实点测候选下拉的一行：「#1 score=0.973 · "御魂" · 期望文字」。
-function candidateOptionLabel(candidate) {
-  const info = candidateDisplayInfo(candidate);
-  const scoreText = info.score === null ? '—' : info.score.toFixed(3);
-  let text = '#' + info.index + ' score=' + scoreText;
-  const preview = candidateTextPreview(candidate, 24);
-  if (preview) text += ' · ' + preview;
-  if (info.hasPass) text += info.pass ? ' · ✓期望文字' : ' · ⚠非期望文字（可选测）';
-  return text;
+// seq134：真实点测/拖测候选下拉（与结果区/画布共用同一渲染器）。
+function candidateOptionLabel(candidate, ctx) {
+  return candidateRenderLabel(candidate, ctx);
 }
 
 // test_action dry 响应 → 结果区行（含候选序号/真实识别区域/操作区/目标点/链 steps）。
 function testActionResultLines(result, candidateIndex, candidate) {
   const s = result && typeof result === 'object' && !Array.isArray(result) ? result : {};
   const index = Number.isInteger(Number(candidateIndex)) ? Number(candidateIndex) : 0;
-  const info = candidate ? candidateDisplayInfo(candidate) : null;
+  const info = candidate ? candidateFieldInfo(candidate) : null;
   const candidateSuffix = info
-    ? ' · ' + (info.text ? '文字=' + JSON.stringify(info.text) : '') +
-      (info.hasPass ? ' · ' + info.passLabel : '')
+    ? ' · ' + (info.member ? '成员=' + JSON.stringify(info.member) : '') +
+      (info.hasText ? ' 文字=' + JSON.stringify(info.text) : '') +
+      (info.hasPass ? ' · ' + info.passText : '') +
+      (info.domain === 'screen_fallback' ? ' · 全屏回退' : '')
     : '';
   if (!s.ok) {
     const errors = Array.isArray(s.errors) ? s.errors : ['test_action 失败'];
@@ -3359,7 +3486,7 @@ async function fetchActionCandidates(it, task, frame) {
 }
 
 // 真实点测/拖测：用侧栏下拉选择候选（#序号 score · 文字 · 期望/非期望），返回候选序号。
-// seq133（#2）：默认选中 index 0（=期望行/最高分）；pass=false 的非期望文字也可选。
+// seq134：默认选中 index 0（最高分候选）；pass 只表示阈值，非 pass 候选同样可选测。
 // 取消/没有候选返回 null。
 function pickActionCandidate(candidates, it, purpose) {
   const what = purpose || '真实点击';
@@ -3373,15 +3500,15 @@ function pickActionCandidate(candidates, it, purpose) {
     candidateSelect.textContent = '';
     for (const candidate of items) {
       const option = document.createElement('option');
-      option.value = String(candidateDisplayInfo(candidate).index);
+      option.value = String(candidateFieldInfo(candidate).index);
       option.textContent = candidateOptionLabel(candidate);
       candidateSelect.appendChild(option);
     }
-    // 默认 index 0（后端已按 pass→score→y→x 排序）：直接高亮；改选其它行走 change。
-    const defaultIndex = String(candidateDisplayInfo(items[0]).index);
+    // 默认 index 0（后端已按 score→y→x 排序）：直接高亮；改选其它行走 change。
+    const defaultIndex = String(candidateFieldInfo(items[0]).index);
     candidateSelect.value = defaultIndex;
     candidateSelect.hidden = false;
-    setStatus(`请选择候选区域：素材「${it.id}」（${what}；默认 #${defaultIndex} 期望行/最高分，可改选，Enter 确认）`, '#ffd54a');
+    setStatus(`请选择候选区域：素材「${it.id}」（${what}；默认 #${defaultIndex} 最高分候选，可改选，Enter 确认）`, '#ffd54a');
     let done = false;
     const finish = (value) => {
       if (done) return;
@@ -3445,7 +3572,7 @@ async function runTestActionForAsset(it, gesture, frameId, scopeTask) {
           lines.push(`${frame.label}: 已取消（未选择候选）`);
           continue;
         }
-        const picked = candidates.items.find((c) => Number(candidateDisplayInfo(c).index) === Number(index)) ||
+        const picked = candidates.items.find((c) => Number(candidateFieldInfo(c).index) === Number(index)) ||
           candidates.items[0];
         let dry = null;
         try {
@@ -3463,7 +3590,8 @@ async function runTestActionForAsset(it, gesture, frameId, scopeTask) {
         const point = dry.point || {};
         const gestureOp = {
           label: `${frame.label} 候选 #${index} (${point.x},${point.y})` +
-            (candidateDisplayInfo(picked).hasPass ? ' · ' + candidateDisplayInfo(picked).passLabel : ''),
+            (candidateFieldInfo(picked).hasPass ? ' · ' + candidateFieldInfo(picked).passText : '') +
+            (candidateFieldInfo(picked).domain === 'screen_fallback' ? ' · 全屏回退' : ''),
           x: Number(point.x),
           y: Number(point.y),
         };
@@ -3507,9 +3635,9 @@ async function runTestActionForAsset(it, gesture, frameId, scopeTask) {
     draw();
     const header = `素材「${it.id}」${gestureLabel}测试（${real ? '真实模式' : '演练，不实际点击'}）`;
     const tail = real
-      ? '（真实模式：已按候选执行；设备/手势结果见上。候选=识别区域内全部识别行，pass=false 标「非期望文字」仍可选测。）'
-      : '注意：候选=识别区域内全部识别行（默认 #0 期望行/最高分；⚠非期望文字仍可选中测试）；' +
-        '演练只验证候选/真实识别区域/操作区/目标点/操作区链，真实点击请切「素材测试：真实点击」。';
+      ? '（真实模式：已按候选执行；设备/手势结果见上。候选=统一候选列表，pass=是否达到阈值。）'
+      : '说明：候选=统一候选列表（图像=缩略图/分数，文字=text/分数，集合=member/member_kind/text）；' +
+        'pass=是否达到阈值；默认 #0 最高分候选。演练只验证定位，不操作设备。';
     resultEl.textContent = `${header}\n` + lines.join('\n') + '\n' + tail;
     log(`test_action 完成 asset=${it.id} gesture=${gesture}`, 'INFO', { real, lines });
   } catch (e) {
@@ -3559,7 +3687,7 @@ async function testAssetDrag(it, frameId, scopeTask) {
         lines.push(`${frame.label}: ❌ 识别区域内没有识别行（未生成该帧拖动点）`);
         continue;
       }
-      let candidateIndex = Number(candidateDisplayInfo(fetched.items[0]).index);
+      let candidateIndex = Number(candidateFieldInfo(fetched.items[0]).index);
       let candidate = fetched.items[0];
       if (fetched.items.length > 1) {
         const picked = await pickActionCandidate(fetched.items, it, '拖测');
@@ -3568,7 +3696,7 @@ async function testAssetDrag(it, frameId, scopeTask) {
           continue;
         }
         candidateIndex = picked;
-        candidate = fetched.items.find((c) => Number(candidateDisplayInfo(c).index) === Number(picked)) || fetched.items[0];
+        candidate = fetched.items.find((c) => Number(candidateFieldInfo(c).index) === Number(picked)) || fetched.items[0];
       }
       const recognizedBox = [Number(candidate.x), Number(candidate.y), Number(candidate.w), Number(candidate.h)];
       if (!matchBoxValid(recognizedBox)) {
@@ -3576,16 +3704,26 @@ async function testAssetDrag(it, frameId, scopeTask) {
           `(${candidate.x},${candidate.y},${candidate.w},${candidate.h})（未生成该帧拖动点）`);
         continue;
       }
-      const candidateInfoForDrag = candidateDisplayInfo(candidate);
-      for (const box of candidateBoxes(fetched.items)) candidateBoxesForDraw.push(box);
+      const candidateInfoForDrag = candidateFieldInfo(candidate);
+      const dragCandidateBoxes = candidateBoxes(fetched.items);
+      for (const box of dragCandidateBoxes) {
+        const poly = candidatePolygonForAsset(it, box.box);
+        if (poly) box.polygon = poly;
+        candidateBoxesForDraw.push(box);
+      }
       candidateBoxesForDraw.push({
         text: `拖测 ${it.id} ${frame.label} 候选 #${candidateIndex}` +
           candidateTextPreview(candidate, 16) +
-          (candidateInfoForDrag.hasPass ? (candidateInfoForDrag.pass ? ' · 期望' : ' · 非期望文字') : ''),
+          (candidateInfoForDrag.member ? ' · ' + candidateInfoForDrag.member : '') +
+          (candidateInfoForDrag.domain === 'screen_fallback' ? ' · 全屏回退' : ''),
         score: Number(candidate.score || 1),
         box: recognizedBox,
+        polygon: candidatePolygonForAsset(it, recognizedBox),
         pass: candidateInfoForDrag.pass,
         hasPass: candidateInfoForDrag.hasPass,
+        member: candidateInfoForDrag.member,
+        memberKind: candidateInfoForDrag.memberKind,
+        domain: candidateInfoForDrag.domain,
       });
       const candidateAction = Array.isArray(candidate.action_box) && matchBoxValid(candidate.action_box)
         ? candidate.action_box : null;
@@ -3620,8 +3758,10 @@ async function testAssetDrag(it, frameId, scopeTask) {
         `${frame.label}: ${direction} (${from.x},${from.y}) → (${to.x},${to.y}) · ` +
         `操作区[${action.join(',')}]${it.kind === 'template' ? '（已按匹配平移）' : ''}` +
         ` · 候选 #${candidateIndex}（共 ${fetched.items.length} 个）` +
-        (candidateInfoForDrag.text ? ' · 文字=' + JSON.stringify(candidateInfoForDrag.text) : '') +
-        (candidateInfoForDrag.hasPass ? ' · ' + candidateInfoForDrag.passLabel : '')
+        (candidateInfoForDrag.member ? ' · 成员=' + JSON.stringify(candidateInfoForDrag.member) : '') +
+        (candidateInfoForDrag.hasText ? ' · 文字=' + JSON.stringify(candidateInfoForDrag.text) : '') +
+        (candidateInfoForDrag.hasPass ? ' · ' + candidateInfoForDrag.passText : '') +
+        (candidateInfoForDrag.domain === 'screen_fallback' ? ' · 全屏回退' : '')
       );
       if (assetTestReal) {
         const swipeMs = 300 + Math.floor(Math.random() * 351);
@@ -3729,185 +3869,9 @@ async function generateAssetStep(it) {
   }
 }
 
-// v1.1: asset-list OCR action — ocr_lines uses /lines (not single-line /ocr);
-// v1.2.3: exactly one recognition ROI; legacy source ROI is migrated server-side.
-function assetRecognitionBox(it) {
-  // v1.2.3: exactly one recognition ROI. Legacy source ROI is migrated by the
-  // server at asset-load time, so the editor never picks a second region.
-  return it && Array.isArray(it.roi) ? it.roi : null;
-}
-
-async function probeAssetOcrFrame(it, frame, task) {
-  const rec = assetRecognitionBox(it);
-  if (!rec) return { ok: false, error: '素材没有识别区域（roi）', frame };
-  const derived = it.kind === 'ocr_line' && it.ocr_mode === 'lines' && !!it.ocr_text;
-  const roi = { x: rec[0], y: rec[1], w: rec[2], h: rec[3] };
-  const q = `x=${roi.x}&y=${roi.y}&w=${roi.w}&h=${roi.h}` +
-    `&task=${encodeURIComponent(task || '')}&id=${encodeURIComponent(it.id)}` +
-    (frame && frame.query ? frame.query : '');
-  try {
-    if (it.kind === 'ocr_lines' || derived) {
-      if (!detReady) {
-        return { ok: false, error: '多行识别不可用：serve 需 --features ocr 且带 --det-model', frame };
-      }
-      const r = await fetch('/lines?' + q);
-      const s = await r.json();
-      if (s.error) return { ok: false, error: s.error, s, frame };
-      const lines = (s.lines || []).map((b) => ({
-        ...b,
-        box: [roi.x + b.box[0], roi.y + b.box[1], b.box[2], b.box[3]],
-      }));
-      if (!lines.length) return { ok: false, error: '识别区域内没有文字', lines, s, frame };
-      const frameSource = s.frame_source || (frame && frame.source) || 'current';
-      if (derived) {
-        let matched = null;
-        let matchInfo = null;
-        const rank = { exact: 0, normalized: 1, fuzzy: 2 };
-        for (const line of lines) {
-          const info = ocrTextMatchInfo(it.ocr_text, line.text);
-          if (!info.match) continue;
-          if (
-            !matchInfo ||
-            rank[info.mode] < rank[matchInfo.mode] ||
-            (info.mode === matchInfo.mode && Number(line.score) > Number(matched.score))
-          ) {
-            matched = line;
-            matchInfo = info;
-          }
-        }
-        if (!matchInfo) {
-          const raw = lines
-            .map((l) => `${l.text}(${Number(l.score).toFixed(3)})`)
-            .join(', ');
-          return {
-            ok: false,
-            error: `识别区域未找到期望文字 ${JSON.stringify(it.ocr_text)}：${raw}`,
-            lines,
-            s,
-            frame,
-            frameSource,
-          };
-        }
-        return {
-          ok: true,
-          lines,
-          text: matched.text,
-          score: Number(matched.score),
-          recognizedBox: matched.box,
-          matchInfo,
-          s,
-          frame,
-          frameSource,
-        };
-      }
-      return {
-        ok: true,
-        lines,
-        text: lines[0].text,
-        score: Number(lines[0].score),
-        recognizedBox: lines[0].box,
-        s,
-        frame,
-        frameSource,
-      };
-    }
-    const r = await fetch('/ocr?' + q);
-    const s = await r.json();
-    if (s.error || !String(s.text || '').trim()) {
-      return { ok: false, error: s.error || '识别区域内没有文字', s, frame };
-    }
-    return {
-      ok: true,
-      text: s.text,
-      score: Number(s.score),
-      // Single-line /ocr returns text+score only (no bbox). The stored ROI is
-      // the recognition area, not a detected box — report it as roiBox so the
-      // caller never paints/labels it as a real detection box.
-      recognizedBox: null,
-      roiBox: [rec[0], rec[1], rec[2], rec[3]],
-      s,
-      frame,
-      frameSource: s.frame_source || (frame && frame.source) || 'current',
-    };
-  } catch (e) {
-    return { ok: false, error: String(e), frame };
-  }
-}
-
-async function testAssetOcr(it, frameId, scopeTask) {
-  const rec = assetRecognitionBox(it);
-  if (!rec) {
-    resultEl.textContent = `素材「${it.id}」没有识别区域（roi）`;
-    return;
-  }
-  const frames = testFrames(it, frameId);
-  const task = assetRowScopeTask(scopeTask, false);
-  const action = assetActionBox(it);
-  const areaLine =
-    `识别区域 [${rec.join(',')}]` +
-    (action ? `；操作区域 [${action.join(',')}]（仅点击，不参与识别）` : '');
-  const header = `${areaLine}\n测试帧：${testFrameLabel(it, frameId)}（${frames.length} 帧）`;
-  resultEl.textContent = `素材「${it.id}」识别中…\n${header}`;
-  log(`OCR 测试开始 asset=${it.id}`, 'INFO', {
-    frames: frames.map((f) => f.label),
-    kind: it.kind,
-    mode: it.ocr_mode || 'single',
-    roi: { x: rec[0], y: rec[1], w: rec[2], h: rec[3] },
-    action,
-    expected: it.ocr_text || null,
-    task,
-  });
-  const summaries = [];
-  let lastLines = null;
-  try {
-    for (const frame of frames) {
-      const probe = await probeAssetOcrFrame(it, frame, task);
-      if (!probe.ok) {
-        summaries.push(`${frame.label}: ❌ ${probe.error}`);
-        log(`OCR 测试失败 asset=${it.id}`, 'WARN', {
-          frame: frame.label,
-          error: probe.error,
-          expected: it.ocr_text || null,
-        });
-        // Preserve the old single-frame full-screen fallback; multi-frame tests
-        // stay a compact per-frame summary instead of replacing candidates.
-        // P2-4: hand it the probe's own frame so the fallback cannot land on the
-        // editor's current frame when a different frame was explicitly tested.
-        if (frames.length === 1 && await fallbackFullscreenLines(probe.error, it, frame.frameId)) {
-          resultEl.textContent = header + '\n' + resultEl.textContent;
-          return;
-        }
-        continue;
-      }
-      const what = probe.lines
-        ? `${probe.lines.length} 行` +
-          (probe.matchInfo ? `，命中 ${JSON.stringify(probe.text)}（${probe.matchInfo.mode}）` : '')
-        : `文字 ${JSON.stringify(probe.text)}`;
-      summaries.push(
-        `${frame.label}: ✅ ${what} score=${Number(probe.score || 0).toFixed(4)} · ` +
-        `耗时 ${Number((probe.s && probe.s.elapsed_ms) || 0).toFixed(0)} ms · 帧来源：${probe.frameSource}`
-      );
-      log(`OCR 测试成功 asset=${it.id}`, 'INFO', {
-        frame: frame.label,
-        frame_source: probe.frameSource,
-        text: probe.text,
-        score: probe.score,
-        count: probe.lines ? probe.lines.length : 1,
-      });
-      if (probe.lines) lastLines = probe.lines;
-    }
-    if (lastLines && frames.length === 1) {
-      // Single-frame behaviour unchanged: show the line candidates so the user
-      // can still turn a saved OCR asset's lines into new assets.
-      renderOcrLines(lastLines, { x: rec[0], y: rec[1], w: rec[2], h: rec[3] }, `素材「${it.id}」`);
-    }
-    resultEl.textContent = `素材「${it.id}」识别结果\n${header}\n` + summaries.join('\n');
-    if (!summaries.length) resultEl.textContent = `素材「${it.id}」识别结果\n${header}\n（没有结果）`;
-  } catch (e) {
-    log(`OCR 测试异常 asset=${it.id}`, 'ERROR', { error: String(e) });
-    resultEl.textContent = '识别异常：' + e;
-  }
-}
+// seq134（spec D）：素材行识别/点测/拖测/长按统一走 testAssetCandidates →
+// GET /task/asset/candidates。旧素材行 OCR 路径（testAssetOcr/probeAssetOcrFrame）
+// 及其全屏 /lines 回退已删除；主画布 OCR 按钮的 fallbackFullscreenLines 保留。
 
 // --- N4: 点击分布视图 (§21 CD1~CD5) ------------------------------------------
 // Backend contract (impl-n4-core):
@@ -4328,45 +4292,69 @@ async function testAssetCandidates(it, frameId, scopeTask) {
   });
   try {
     for (const frame of frames) {
-      const r = await fetch(assetCandidatesUrl(task, it.id, frame.query));
-      const s = await r.json();
-      if (!s || s.error) {
-        lines.push(`${frame.label}: ❌ ${(s && s.error) || '候选识别失败'}`);
+      let s = null;
+      try {
+        // seq134：统一候选入口带超时，并识别服务端 {ok:false,errors} 错误体。
+        s = await fetchJsonWithTimeout(
+          assetCandidatesUrl(task, it.id, frame.query), {}, ASSET_TEST_TIMEOUT_MS
+        );
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        lines.push(`${frame.label}: ❌ 候选识别失败：${msg}`);
+        log(`候选识别失败 asset=${it.id} frame=${frame.label}`, 'ERROR', { error: msg });
+        continue;
+      }
+      if (!s || s.ok === false) {
+        const errors = s && Array.isArray(s.errors) ? s.errors : [];
+        const msg = errors.length ? errors.join('；') : ((s && s.error) || '候选识别失败');
+        lines.push(`${frame.label}: ❌ ${msg}`);
+        log(`候选识别错误 asset=${it.id}`, 'ERROR', { errors, error: msg });
         continue;
       }
       const candidates = Array.isArray(s.candidates) ? s.candidates : [];
-      const domainText = s.domain === 'screen'
-        ? '全屏'
-        : s.domain === 'members' ? '集合成员识别区' : '素材识别区';
+      const domainText = candidateDomainText(s.domain) || '素材识别区';
       const thresholdText = s.threshold === null || s.threshold === undefined
         ? '—'
         : Number(s.threshold).toFixed(2);
-      const valueHint = s.domain === 'screen' ? '（全屏 OCR，较慢）' : '';
+      const screenFallback = s.domain === 'screen_fallback' ||
+        candidates.some((c) => c && c.domain === 'screen_fallback');
+      const valueHint = screenFallback
+        ? '（ROI 未命中→全屏回退候选，可直接点测/拖测）'
+        : (s.domain === 'screen' ? '（全屏）' : '');
       lines.push(
         `${frame.label}: ${Number(s.count != null ? s.count : candidates.length)} 个候选` +
         ` · 范围=${domainText}${valueHint} · 阈值=${thresholdText}` +
         ` · 帧来源=${s.frame_source || frame.source}`
       );
-      if (!candidates.length) lines.push('  （识别区域内没有识别行；pass=false 的行也会显示）');
-      for (const candidate of candidates) {
-        lines.push('  ' + candidateLabelText(candidate));
+      if (!candidates.length) {
+        lines.push('  （该范围内没有候选/识别行' +
+          (s.expected_text ? '；期望文字=' + JSON.stringify(String(s.expected_text)) : '') + '）');
       }
-      collected.push(...candidateBoxes(candidates));
+      for (const candidate of candidates) {
+        lines.push('  ' + candidateLabelText(candidate, { task, assetId: it.id }));
+      }
+      const candidateDrawBoxes = candidateBoxes(candidates, { task, assetId: it.id });
+      for (const box of candidateDrawBoxes) {
+        const poly = candidatePolygonForAsset(it, box.box);
+        if (poly) box.polygon = poly;
+      }
+      collected.push(...candidateDrawBoxes);
     }
     boxes = collected;
     draw();
-    const head = fullScreenOcr ? '识别区域为空 → 按全屏 OCR 识别（较慢）\n' : '';
+    const head = fullScreenOcr ? '识别区域为空 → 全屏候选（较慢）\n' : '';
     resultEl.textContent =
       `${head}素材「${it.id}」候选识别（${frames.length} 帧）\n` + lines.join('\n') +
-      '\n\n说明：候选=识别区域内全部识别行（默认 #0=期望行/最高分）；' +
-      '「期望文字」=匹配期望文字，⚠「非期望文字」仍可选中测试。';
+      '\n\n说明：统一候选列表（图像=缩略图/分数，文字=text/分数，集合=member/member_kind/text；' +
+      'pass=是否达到阈值）。OCR 有期望文字且 ROI 未命中时服务端返回 domain=screen_fallback 全屏候选，可直接点测/拖测。';
     log(`候选识别完成 asset=${it.id}`, 'INFO', {
       count: collected.length,
       frames: frames.length,
     });
   } catch (e) {
-    resultEl.textContent = '候选识别异常：' + e;
-    log(`候选识别异常 asset=${it.id}`, 'ERROR', { error: String(e) });
+    const msg = e && e.message ? e.message : String(e);
+    resultEl.textContent = '候选识别异常：' + msg;
+    log(`候选识别异常 asset=${it.id}`, 'ERROR', { error: msg });
   }
 }
 
@@ -5367,147 +5355,6 @@ async function saveAssetOrder(ids) {
   // cache so the global library keeps the new order and the frame detail list
   // (global rows come first) is repainted from the same order.
   await refreshGlobalAssets();
-}
-
-// Collection test helpers. The URL builder is shared by the dry-run preview and
-// the real request so a dry-run call stays byte-identical to the old URL. The
-// preview's action-box centre is only an estimate: the real request re-matches
-// and the server samples inside the exact operation shape, so the authoritative
-// point is the returned `click_point`.
-function assetCollectionMatchUrl(task, id, frameQuery, real) {
-  return `/task/asset/collection/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(id)}` +
-    `${frameQuery || ''}${real ? '&real=1' : ''}`;
-}
-
-function assetCollectionClickPoint(actionBox) {
-  if (!Array.isArray(actionBox) || actionBox.length !== 4) return null;
-  const [x, y, w, h] = actionBox.map(Number);
-  if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return null;
-  return [x + Math.floor(w / 2), y + Math.floor(h / 2)];
-}
-
-function assetCollectionMatchLine(label, s, fallbackSource) {
-  const prefix = label ? `${label}: ` : '';
-  const source = s.frame_source || fallbackSource || '';
-  return `${prefix}最佳成员 ${s.member} · score=${Number(s.score).toFixed(4)} · ` +
-    `threshold=${Number(s.threshold).toFixed(3)} · pass=${s.pass} · ` +
-    `位置 (${s.x},${s.y}) · 帧来源：${source}` +
-    (s.action_box ? ` · 操作区域[${s.action_box.join(',')}]` : '');
-}
-
-async function testAssetCollection(it, frameId, scopeTask) {
-  cancelRecognitionRoiEdit('素材集合测试');
-  const mode = realAssetTestGuard();
-  if (!mode.ok) return;
-  const real = assetTestReal;
-  const task = assetRowScopeTask(scopeTask, false);
-  if (!Array.isArray(it.members) || !it.members.length) {
-    resultEl.textContent = `集合「${it.id}」没有成员`;
-    return;
-  }
-  const frames = testFrames(it, frameId);
-  const summaries = [];
-  try {
-    for (const frame of frames) {
-      // Dry preview first: it never taps, and in real mode it gives the user a
-      // concrete point to confirm before the one request allowed to click.
-      let s = await fetch(
-        assetCollectionMatchUrl(task, it.id, frame.query, false)
-      ).then((r) => r.json());
-      if (!s.ok) {
-        summaries.push(`${frame.label}: ❌ ` + (s.errors || []).join('; '));
-        continue;
-      }
-      if (!real) {
-        summaries.push(assetCollectionMatchLine(frame.label, s, frame.source));
-        log(`集合测试「${it.id}」`, 'INFO', {
-          frame: frame.label,
-          frame_source: s.frame_source || frame.source,
-          member: s.member,
-          score: Number(s.score),
-          threshold: Number(s.threshold),
-          pass: s.pass,
-          action_box: s.action_box || null,
-        });
-        continue;
-      }
-      if (s.pass !== true) {
-        summaries.push(
-          `${frame.label}: ⚠ 未过阈值（未点击）· ` +
-          assetCollectionMatchLine('', s, frame.source)
-        );
-        log(`集合测试「${it.id}」未过阈值，未点击`, 'INFO', {
-          frame: frame.label,
-          member: s.member,
-          score: Number(s.score),
-          threshold: Number(s.threshold),
-        });
-        continue;
-      }
-      const point = assetCollectionClickPoint(s.action_box);
-      if (!point) {
-        summaries.push(`${frame.label}: ❌ 匹配通过但没有可点击的操作区域（未点击）`);
-        continue;
-      }
-      const confirmed = confirmAssetTestGestures('click', [{
-        label: `${frame.label} 集合「${it.id}」成员 ${s.member} 点击 (${point[0]}, ${point[1]})`,
-      }], '服务端将重新匹配并点击最新操作区（shape 内采样）；实际点击点以返回 click_point 为准。');
-      if (!confirmed) {
-        summaries.push(`${frame.label}: 真实模式已取消（未点击）`);
-        continue;
-      }
-      const response = await fetch(
-        assetCollectionMatchUrl(task, it.id, frame.query, true)
-      );
-      s = await response.json();
-      if (!s.ok) {
-        // P1-2: the server answers 409 when the re-match is below threshold;
-        // that is a refused real click, not a generic transport exception.
-        if (response.status === 409) {
-          summaries.push(`${frame.label}: ⚠ 真实点击未执行：重新匹配未过阈值（未点击）`);
-        } else {
-          summaries.push(
-            `${frame.label}: ❌ 真实点击失败：` +
-            ((s.errors || []).join('; ') || `HTTP ${response.status}`)
-          );
-        }
-        continue;
-      }
-      const [x, y] = s.click_point || [];
-      if (s.clicked === true && s.tap_ok === true) {
-        summaries.push(
-          `${frame.label}: 真实点击（已点击 ${x},${y}）· ` +
-          assetCollectionMatchLine('', s, frame.source)
-        );
-      } else if (s.pass === false) {
-        summaries.push(
-          `${frame.label}: ⚠ 重新匹配未过阈值（未点击）· ` +
-          assetCollectionMatchLine('', s, frame.source)
-        );
-      } else {
-        summaries.push(
-          `${frame.label}: ⚠ 服务端未确认点击（未点击）· ` +
-          assetCollectionMatchLine('', s, frame.source)
-        );
-      }
-      log(`集合测试「${it.id}」真实点击`, 'WARN', {
-        frame: frame.label,
-        member: s.member,
-        clicked: s.clicked === true,
-        click_point: s.click_point || null,
-        frame_source: s.frame_source || frame.source,
-      });
-    }
-    const header = real
-      ? `素材集合「${it.id}」测试（真实点击模式；${frames.length} 帧；与 runtime 同源）：`
-      : `素材集合「${it.id}」测试（${frames.length} 帧；与 runtime 同源）：`;
-    const modeLine = real
-      ? '模式：真实点击（匹配通过后先确认，再发真实点击；匹配失败/取消不点击）'
-      : '模式：演练（未点击）——只计算定位/操作区域，绝不发真实点击';
-    resultEl.textContent = header + '\n' + modeLine + '\n' + summaries.join('\n');
-  } catch (e) {
-    resultEl.textContent = `集合「${it.id}」测试异常：${e}`;
-  }
 }
 
 async function deleteCollection(it, scopeTask) {
@@ -6575,62 +6422,6 @@ function pickAssetRoi(it) {
   draw();
   log(`已用素材「${it.id}」设置识别区域${shapeBox ? '（含操作区域）' : ''}` +
     (storedRecognitionPolygon ? `（含已存识别多边形 ${storedRecognitionPolygon.length} 顶点）` : ''));
-}
-
-async function testAssetMatch(it, frameId, scopeTask) {
-  const task = assetRowScopeTask(scopeTask, false);
-  const frames = testFrames(it, frameId);
-  const summaries = [];
-  const framesBoxes = [];
-  resultEl.textContent = `素材「${it.id}」全屏匹配中…（${frames.length} 帧）`;
-  try {
-    for (const frame of frames) {
-      const r = await fetch(
-        `/task/asset/match?task=${encodeURIComponent(task)}&id=${encodeURIComponent(it.id)}${frame.query}`
-      );
-      const s = await r.json();
-      if (s.error) {
-        summaries.push(`${frame.label}: ❌ ${s.error}`);
-        continue;
-      }
-      const pass = s.pass !== false ? '通过' : '未过阈值';
-      const recognizedBox = [Number(s.x), Number(s.y), Number(s.w), Number(s.h)];
-      // A miss still carries w/h (template size) with x=y=-1: never draw it.
-      if (!matchBoxValid(recognizedBox)) {
-        summaries.push(`${frame.label}: ❌ 匹配坐标无效 (${s.x},${s.y},${s.w},${s.h})`);
-        continue;
-      }
-      const effShape = translatedActionShapeForMatch(it, s);
-      summaries.push(
-        `${frame.label}: ${s.pass !== false ? '✅' : '❌'} ${pass} · ` +
-        `得分 ${Number(s.score).toFixed(4)}（阈值 ${Number(s.threshold).toFixed(2)}） · ` +
-        `位置 (${s.x},${s.y}) ${s.w}x${s.h} · ` +
-        `耗时 ${Number(s.elapsed_ms).toFixed(0)} ms · ` +
-        `帧来源 ${s.frame_source || frame.source}`
-      );
-      framesBoxes.push({
-        text: `测试 ${s.id} ${frame.label} ${Number(s.score).toFixed(2)}`,
-        score: Number(s.score),
-        box: [s.x, s.y, s.w, s.h],
-      });
-      log(`素材测试：${s.id}`, 'INFO', {
-        frame: frame.label,
-        frame_source: s.frame_source || frame.source,
-        score: Number(s.score),
-        threshold: Number(s.threshold),
-        pass: s.pass,
-        point: [s.x, s.y],
-        size: [s.w, s.h],
-        elapsed_ms: s.elapsed_ms,
-      });
-    }
-    boxes = framesBoxes;
-    draw();
-    resultEl.textContent =
-      `素材「${it.id}」测试（${frames.length} 帧）\n` + summaries.join('\n');
-  } catch (e) {
-    resultEl.textContent = '测试异常：' + e;
-  }
 }
 
 // Persist the current ROI as an asset in the task bundle. The server crops the
