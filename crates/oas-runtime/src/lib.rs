@@ -325,18 +325,6 @@ struct PressTarget {
     region: Option<OpRegion>,
 }
 
-/// One match candidate of a whole-library **operation-area asset** (v1.4 A-plan,
-/// `region.asset` with `mode=nearest`).
-///
-/// `rect`/`shape` are the candidate's **operation region** (translated to frame
-/// coordinates) and `centre` is the **match bbox centre** used for the
-/// "nearest to the parameter OCR line" distance. `score` only breaks ties.
-struct OperationCandidate {
-    rect: Rect,
-    shape: Option<ClickShape>,
-    centre: Point,
-    score: f32,
-}
 
 /// v1.2.5 (O-2): a flow `region` drag shape is the same geometry as an asset
 /// `action_shape`, so drag sampling and click sampling share one algorithm.
@@ -494,20 +482,6 @@ pub struct PreviewAction {
     pub score: Option<f32>,
     /// Every hop (root first) for the request's `steps` field.
     pub steps: Vec<OpRegionChainStep>,
-}
-
-/// One recognition candidate of one asset, in the shape the editor candidate API
-/// and the chain picker both need (real rect + score + optional text).
-#[derive(Debug, Clone, PartialEq)]
-pub struct AssetCandidate {
-    /// The asset that produced the pixels: the asset id itself, or the winning
-    /// member id for a collection.
-    pub member: String,
-    /// The **real recognition region** in frame coordinates.
-    pub rect: Rect,
-    pub score: f32,
-    /// Recognized text for OCR candidates (`None` for templates/region).
-    pub text: Option<String>,
 }
 
 /// The task's declared assets (`assets/<Name>.json` in a later phase).
@@ -891,53 +865,6 @@ fn ocr_line_candidates<'a>(
 /// (exact/normalized/fuzzy with #11 digit protection) at/above the optional
 /// minimum confidence. Runtime click/wait/chain keep this fuzzy rule.
 ///
-/// seq133 #2: is one detected OCR line a **pass** for the editor candidate list?
-///
-/// Editor semantics (one implementation shared by the candidate API and
-/// `test_action`): no expected text ⇒ every line passes; otherwise the line must
-/// match the expected text with the **strict** normalized rule (never the fuzzy
-/// click rule — 「队伍2」 is listed but `pass=false` for expected 「队伍1」).
-pub fn ocr_candidate_line_pass(line: &OcrLine, expected: Option<&str>) -> bool {
-    match expected {
-        None => true,
-        Some(expected) => {
-            !matching_ocr_lines_strict(std::slice::from_ref(line), expected, None).is_empty()
-        }
-    }
-}
-
-/// seq133 #2: the editor OCR candidate order — **all** det+rec lines at/above the
-/// asset's minimum confidence, sorted `pass` first → score desc → y asc → x asc.
-///
-/// Returning every line (not only the expected matches) is what gives an OCR
-/// asset the same multi-candidate behaviour templates already had; the `pass`
-/// flag lets the UI highlight the expected row, and the sort guarantees index 0
-/// is the expected row whenever one exists. The serve candidate API and
-/// `preview_root_candidate` both call this, so `candidate_index` agrees.
-pub fn ocr_candidate_lines_pass_first<'a>(
-    lines: &'a [OcrLine],
-    expected: Option<&str>,
-    min: Option<f32>,
-) -> Vec<&'a OcrLine> {
-    let mut out: Vec<&OcrLine> = lines
-        .iter()
-        .filter(|line| min.map(|m| line.score >= m).unwrap_or(true))
-        .collect();
-    out.sort_by(|a, b| {
-        let pa = ocr_candidate_line_pass(a, expected);
-        let pb = ocr_candidate_line_pass(b, expected);
-        pb.cmp(&pa) // true (pass) first
-            .then(
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
-            .then(a.rect.y.cmp(&b.rect.y))
-            .then(a.rect.x.cmp(&b.rect.x))
-    });
-    out
-}
-
 /// The editor candidate API uses the stricter [`matching_ocr_lines_strict`]
 /// (normalized equality, no 1-edit tolerance), so a digit-variant row can never
 /// be offered as a candidate; both helpers share the same normalization.
@@ -1002,66 +929,6 @@ fn pick_line_score_first<'a>(candidates: &[&'a OcrLine]) -> Option<&'a OcrLine> 
         };
         if better {
             best = Some(line);
-        }
-    }
-    best
-}
-
-/// Pick one OCR line candidate for the `op_region` chain (Lead ruling 2):
-/// no reference → highest score; `nearest` reference → smallest bbox-centre
-/// distance, tied distance breaks on the higher score. Earlier lines win exact
-/// ties (stable).
-#[allow(dead_code)]
-fn pick_ocr_line<'a>(candidates: &[&'a OcrLine], pick_ref: Option<Point>) -> Option<&'a OcrLine> {
-    let mut best: Option<(&'a OcrLine, f32, i64)> = None; // line, score, dist2
-    for &line in candidates {
-        let dist = pick_ref
-            .map(|r| {
-                let c = rect_centre(line.rect);
-                let dx = c.x as i64 - r.x as i64;
-                let dy = c.y as i64 - r.y as i64;
-                dx * dx + dy * dy
-            })
-            .unwrap_or(0);
-        let better = match best {
-            None => true,
-            Some((_, best_score, best_dist)) => match pick_ref {
-                None => line.score > best_score,
-                Some(_) => dist < best_dist || (dist == best_dist && line.score > best_score),
-            },
-        };
-        if better {
-            best = Some((line, line.score, dist));
-        }
-    }
-    best.map(|(line, _, _)| line)
-}
-
-/// Pick one template/collection candidate for the `op_region` chain: same rule as
-/// [`pick_ocr_line`] but on the match bbox centre / NCC score.
-#[allow(dead_code)]
-fn pick_template_candidate(list: &[AssetMatchCandidate], pick_ref: Option<Point>) -> usize {
-    let mut best = 0usize;
-    let mut best_score = f32::MIN;
-    let mut best_dist = i64::MAX;
-    for (i, c) in list.iter().enumerate() {
-        match pick_ref {
-            None => {
-                if c.score > best_score {
-                    best = i;
-                    best_score = c.score;
-                }
-            }
-            Some(r) => {
-                let dx = c.centre.x as i64 - r.x as i64;
-                let dy = c.centre.y as i64 - r.y as i64;
-                let d2 = dx * dx + dy * dy;
-                if d2 < best_dist || (d2 == best_dist && c.score > best_score) {
-                    best = i;
-                    best_dist = d2;
-                    best_score = c.score;
-                }
-            }
         }
     }
     best
@@ -1373,7 +1240,7 @@ pub fn template_operation_geometry(
 /// * template / collection → [`template_operation_geometry`] with
 ///   `matched = real.topLeft` (translated `action_shape` → translated
 ///   `click_back` → match bbox). For a **collection candidate** pass the winning
-///   member's id (`AssetCandidate::member`), not the collection id;
+///   member's id (`AssetMatchCandidate::member`), not the collection id;
 /// * OCR (`ocr_line` / `ocr_lines` / `ocr_var` / derived line) → the stored
 ///   `action_shape`/`click_back` translated by `real.topLeft - authored_roi`
 ///   (it follows the recognized line, exactly like a template follows its
@@ -1634,247 +1501,6 @@ pub fn sort_asset_match_candidates(candidates: &mut [AssetMatchCandidate]) {
     });
 }
 
-/// seq132: recognition candidates of a **mixed** collection (template / OCR
-/// / ocr_var / region members), using caller-provided OCR lines.
-///
-/// * template member → every full-frame NCC candidate
-///   ([`asset_match_candidates`]);
-/// * OCR / ocr_var member → its det+rec lines filtered by its expected text and
-///   confidence threshold (`strict_ocr_match` mirrors the editor candidate rule;
-///   the engine's own `region.asset` pick passes `false`);
-/// * region member → exactly one candidate: `score=1.0`, real rect = its ROI (a
-///   collection containing a region therefore always has a match).
-///
-/// Every candidate's `action_box`/`action_shape` comes from the shared
-/// [`self_operation_geometry`] helper, and the result is sorted by
-/// [`sort_asset_match_candidates`] (score desc → y → x; stable to member order),
-/// so the editor candidate API, `test_action` and the engine agree on
-/// `candidate_index` / winner.
-pub fn collection_candidates_with_ocr(
-    assets: &AssetSet,
-    matcher: &Matcher,
-    id: &str,
-    ocr_lines: &BTreeMap<String, Vec<OcrLine>>,
-    params: &BTreeMap<String, oas_flow::Value>,
-    strict_ocr_match: bool,
-    frame_size: Option<(u32, u32)>,
-) -> Result<Vec<AssetMatchCandidate>, String> {
-    let members = assets
-        .collection_members(id)
-        .map(|m| m.to_vec())
-        .ok_or_else(|| format!("`{id}` is not a template collection"))?;
-    let mut out: Vec<AssetMatchCandidate> = Vec::new();
-    for member in members {
-        if let Some(real) = assets.region(&member) {
-            let (action_box, action_shape) =
-                self_operation_geometry(assets, &member, real, frame_size)?;
-            out.push(AssetMatchCandidate {
-                member: member.clone(),
-                member_kind: "region".to_string(),
-                score: 1.0,
-                x: real.x,
-                y: real.y,
-                w: real.w,
-                h: real.h,
-                centre: rect_centre(real),
-                action_box,
-                action_shape,
-                text: None,
-                domain: CandidateDomain::Region,
-                pass: true,
-            });
-            continue;
-        }
-        if assets.get(&member).is_some() {
-            out.extend(asset_match_candidates(assets, matcher, &member)?);
-            continue;
-        }
-        if !assets.is_ocr_asset(&member) {
-            return Err(format!(
-                "collection `{id}` member `{member}` is not a declared asset"
-            ));
-        }
-        let lines = ocr_lines.get(&member).map(|v| v.as_slice()).unwrap_or(&[]);
-        let min = assets.ocr_threshold(&member);
-        let expected = match assets.ocr_var(&member) {
-            Some(_) => Some(assets.ocr_var_expected_text(&member, params)?),
-            None => assets
-                .ocr_expected_text(&member)
-                .map(str::to_string)
-                .or_else(|| assets.derived_ocr(&member).map(|(_, e)| e)),
-        };
-        let matched: Vec<&OcrLine> = match expected.as_deref() {
-            Some(expected) => {
-                if strict_ocr_match {
-                    matching_ocr_lines_strict(lines, expected, min)
-                } else {
-                    matching_ocr_lines(lines, expected, min)
-                }
-            }
-            None => lines
-                .iter()
-                .filter(|line| min.map(|m| line.score >= m).unwrap_or(true))
-                .collect(),
-        };
-        for line in matched {
-            let (action_box, action_shape) =
-                self_operation_geometry(assets, &member, line.rect, frame_size)?;
-            out.push(AssetMatchCandidate {
-                member: member.clone(),
-                member_kind: assets
-                    .ocr_var(&member)
-                    .map(|_| "ocr_var")
-                    .or_else(|| assets.derived_ocr(&member).map(|_| "derived_ocr"))
-                    .unwrap_or("ocr_line")
-                    .to_string(),
-                score: line.score,
-                x: line.rect.x,
-                y: line.rect.y,
-                w: line.rect.w,
-                h: line.rect.h,
-                centre: rect_centre(line.rect),
-                action_box,
-                action_shape,
-                text: Some(line.text.clone()),
-                domain: CandidateDomain::Roi,
-                pass: line.score >= asset_threshold(assets, &member),
-            });
-        }
-    }
-    sort_asset_match_candidates(&mut out);
-    Ok(out)
-}
-
-/// Template / collection recognition candidates in the editor/chain shape
-/// (delegates to [`asset_match_candidates`], the P0a single source of truth).
-pub fn template_candidates(
-    assets: &AssetSet,
-    matcher: &Matcher,
-    id: &str,
-) -> Result<Vec<AssetCandidate>, String> {
-    let list = asset_match_candidates(assets, matcher, id)?;
-    Ok(list
-        .into_iter()
-        .map(|c| AssetCandidate {
-            member: c.member,
-            rect: Rect {
-                x: c.x,
-                y: c.y,
-                w: c.w,
-                h: c.h,
-            },
-            score: c.score,
-            text: None,
-        })
-        .collect())
-}
-
-/// OCR / ocr_var recognition candidates: the caller supplies the det+rec lines of
-/// the asset's search domain (its ROI, or the whole frame for an ocr_var without
-/// ROI) and this function applies the *one* matching rule: expected text
-/// (exact/normalized/fuzzy) at/above the asset's confidence threshold, sorted in
-/// the editor's stable order (score desc → y → x).
-pub fn ocr_candidates(
-    assets: &AssetSet,
-    id: &str,
-    lines: &[OcrLine],
-    expected: Option<&str>,
-) -> Result<Vec<AssetCandidate>, String> {
-    let min = assets.ocr_threshold(id);
-    if min.is_none() && assets.ocr_var(id).is_none() && assets.ocr_roi(id).is_none() {
-        return Err(format!(
-            "`{id}` is not an OCR/ocr_var asset (no roi/ocr_var declaration)"
-        ));
-    }
-    let matched: Vec<&OcrLine> = match expected {
-        Some(expected) => matching_ocr_lines(lines, expected, min),
-        // No expected text (e.g. an `ocr_lines` asset without ocr_text): every
-        // detected line above the confidence threshold is a candidate.
-        None => lines
-            .iter()
-            .filter(|line| min.map(|m| line.score >= m).unwrap_or(true))
-            .collect(),
-    };
-    let mut out: Vec<AssetCandidate> = matched
-        .into_iter()
-        .map(|line| AssetCandidate {
-            member: id.to_string(),
-            rect: line.rect,
-            score: line.score,
-            text: Some(line.text.clone()),
-        })
-        .collect();
-    out.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.rect.y.cmp(&b.rect.y))
-            .then(a.rect.x.cmp(&b.rect.x))
-    });
-    Ok(out)
-}
-
-/// A pure `region` asset has exactly one candidate: its fixed operation area.
-pub fn region_candidates(assets: &AssetSet, id: &str) -> Result<Vec<AssetCandidate>, String> {
-    let rect = assets
-        .region(id)
-        .ok_or_else(|| format!("`{id}` is not a region asset"))?;
-    Ok(vec![AssetCandidate {
-        member: id.to_string(),
-        rect,
-        score: 1.0,
-        text: None,
-    }])
-}
-
-/// `candidates_for_asset` (design B16): every recognition candidate of one asset
-/// (template / collection / ocr_line / ocr_lines / ocr_var / region).
-///
-/// The caller supplies the data source it owns:
-/// * template / collection → `matcher` (a [`Matcher`] over the current frame);
-/// * OCR / ocr_var → the det+rec `lines` of the asset's search domain plus its
-///   `expected` text (`ocr_var`: [`AssetSet::ocr_var_expected_text`]);
-/// * region → nothing.
-///
-/// This is the same source the `op_region` chain picker and the editor candidate
-/// API use, so both can never disagree.
-pub fn candidates_for_asset(
-    assets: &AssetSet,
-    matcher: Option<&Matcher>,
-    id: &str,
-    ocr: Option<(&[OcrLine], Option<&str>)>,
-) -> Result<Vec<AssetCandidate>, String> {
-    if assets.region(id).is_some() {
-        return region_candidates(assets, id);
-    }
-    if assets.is_ocr_asset(id) {
-        let (lines, expected) = ocr.ok_or_else(|| {
-            format!("candidates for OCR asset `{id}` need det+rec lines (caller-provided)")
-        })?;
-        // 2026-11-06 批次B (#3): when the caller does not pass an expected text,
-        // fall back to the asset's own expected text (`ocr_var` param/runtime_text
-        // or a plain OCR asset's saved `ocr_text`). No expected text at all keeps
-        // the historical "every detected line above the threshold" behavior.
-        let owned_expected: Option<String> = match expected {
-            Some(text) => Some(text.to_string()),
-            None => {
-                if assets.ocr_var(id).is_some() {
-                    let params = BTreeMap::new();
-                    Some(assets.ocr_var_expected_text(id, &params)?)
-                } else if let Some((_, text)) = assets.derived_ocr(id) {
-                    Some(text)
-                } else {
-                    assets.ocr_expected_text(id).map(str::to_string)
-                }
-            }
-        };
-        return ocr_candidates(assets, id, lines, owned_expected.as_deref());
-    }
-    let matcher = matcher.ok_or_else(|| {
-        format!("candidates for template/collection `{id}` need a frame matcher")
-    })?;
-    template_candidates(assets, matcher, id)
-}
 
 /// OCR mask helper (§22.10 N10b-2): copy the frame and fill every pixel inside
 /// the OCR bbox but OUTSIDE the polygon with white, so only polygon content is
@@ -3324,33 +2950,6 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         }
     }
 
-    /// Resolve an OCR asset to (score, found-point). The point is a marker only:
-    /// `click_box_for` uses the asset action ROI/recognized rect for OCR.
-    fn locate_ocr(&mut self, sel: &str) -> Result<(f32, Option<Point>), String> {
-        match self.ocr_read(sel)? {
-            OcrRead::Single(Some(_), score) => Ok((score, Some(Point { x: 0, y: 0 }))),
-            OcrRead::Single(None, _) => Ok((0.0, None)),
-            OcrRead::Lines(lines) if !lines.is_empty() => {
-                let score = lines.iter().map(|l| l.score).fold(f32::MIN, f32::max);
-                Ok((score, Some(Point { x: 0, y: 0 })))
-            }
-            OcrRead::Lines(_) => Ok((0.0, None)),
-        }
-    }
-
-    fn locate_one(&mut self, sel: &str) -> Result<(f32, Option<Point>), String> {
-        self.observe_screen()?;
-        let tpl = self
-            .assets
-            .get(sel)
-            .ok_or_else(|| format!("selector `{sel}` is not declared in the task's assets"))?;
-        let matcher = self
-            .screen.matcher
-            .as_ref()
-            .ok_or_else(|| "no frame available".to_string())?;
-        Ok(locate_template(matcher, tpl))
-    }
-
     /// Return the operation shape in *screen* coordinates. Template shapes are
     /// authored relative to the template ROI, so they must be translated by the
     /// current match offset before validation/sampling.
@@ -3681,47 +3280,6 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         Ok((rect, shape))
     }
 
-    /// v1.4 A-plan (`docs/OPERATION-REGION-DESIGN.md §7`): every match candidate
-    /// of a template asset / template collection at or above its threshold, each
-    /// with its **operation region** (`rect`/`shape`, frame coordinates) and the
-    /// **match bbox centre** used for the `nearest` distance.
-    ///
-    /// Enumeration/geometry come from [`asset_match_candidates`] — the same
-    /// public helper the editor candidate API uses — so the engine and the
-    /// editor can never disagree about a candidate's region. Polygon
-    /// `action_shape`s restrict the match with the same mask the single-best path
-    /// uses. OCR / fixed-region collection members cannot produce position
-    /// candidates and are skipped here (they are handled by
-    /// [`Self::operation_region_for_asset`] directly, with no candidates).
-    fn operation_candidates(&mut self, id: &str) -> Result<Vec<OperationCandidate>, String> {
-        // seq134: one candidate enumeration for every asset kind.
-        let candidates = self.recognition_candidates(id)?;
-        return Ok(candidates
-            .into_iter()
-            .map(|c| OperationCandidate {
-                rect: c.action_box,
-                shape: c.action_shape,
-                centre: c.centre,
-                score: c.score,
-            })
-            .collect());
-        self.observe_screen()?;
-        let matcher = self
-            .screen
-            .matcher
-            .as_ref()
-            .ok_or_else(|| "no frame available".to_string())?;
-        let candidates = asset_match_candidates(&self.assets, matcher, id)?;
-        Ok(candidates
-            .into_iter()
-            .map(|c| OperationCandidate {
-                rect: c.action_box,
-                shape: c.action_shape,
-                centre: c.centre,
-                score: c.score,
-            })
-            .collect())
-    }
 
     /// v1.4 A-plan: the operation region + exact shape of a **whole-library**
     /// operation-area asset (`region.asset`).
@@ -3742,7 +3300,6 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         reference: Option<Point>,
         site: &str,
     ) -> Result<(Rect, Option<ClickShape>), String> {
-        let err = |what: &str| format!("{site}: operation asset `{asset_id}` {what}");
         if asset_id.trim().is_empty() {
             return Err(format!("{site}: `region.asset` is empty"));
         }
@@ -3752,86 +3309,6 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         }
         // seq134: OCR targets are position candidates too (asset/nearest unified).
         return self.operation_region_single_source(asset_id, region, reference, site);
-        // OCR asset: use its declared operation area (no position candidates).
-        if self.assets.is_ocr_asset(asset_id) {
-            if let Some(shape) = self.assets.click_shape(asset_id) {
-                if shape.invert {
-                    let (w, h) = self
-                        .screen
-                        .size()
-                        .ok_or_else(|| err("needs a frame for an inverted action_shape"))?;
-                    return Ok((
-                        Rect {
-                            x: 0,
-                            y: 0,
-                            w: w as i32,
-                            h: h as i32,
-                        },
-                        Some(shape.clone()),
-                    ));
-                }
-                if let Some(b) = shape.bbox() {
-                    return Ok((b, Some(shape.clone())));
-                }
-            }
-            if let Some(back) = self.assets.click_back(asset_id) {
-                return Ok((back, None));
-            }
-            if let Some(roi) = self.assets.ocr_roi(asset_id) {
-                return Ok((roi, None));
-            }
-            return Err(err("is an OCR asset without an operation area"));
-        }
-        // Template / collection: match.
-        let is_template = self.assets.get(asset_id).is_some()
-            || self.assets.collection_members(asset_id).is_some();
-        if !is_template {
-            return Err(err("is not declared in the task's assets"));
-        }
-        if matches!(region, OpRegion::Nearest { .. }) {
-            let reference = reference.ok_or_else(|| {
-                err("needs a reference point for mode=nearest (matched OCR line)")
-            })?;
-            let threshold = self.selector_threshold(asset_id);
-            let candidates = self.operation_candidates(asset_id)?;
-            if candidates.is_empty() {
-                return Err(err(&format!(
-                    "has no match candidate >= its threshold ({threshold:.3})"
-                )));
-            }
-            let mut best_idx = 0usize;
-            let mut best_dist = i64::MAX;
-            let mut best_score = f32::MIN;
-            for (i, c) in candidates.iter().enumerate() {
-                let dx = c.centre.x as i64 - reference.x as i64;
-                let dy = c.centre.y as i64 - reference.y as i64;
-                let d2 = dx * dx + dy * dy;
-                let better = d2 < best_dist || (d2 == best_dist && c.score > best_score);
-                if better {
-                    best_idx = i;
-                    best_dist = d2;
-                    best_score = c.score;
-                }
-            }
-            let best = &candidates[best_idx];
-            return Ok((best.rect, best.shape.clone()));
-        }
-        // mode=asset: one best match (historical locate semantics: ROI best, then
-        // full-frame pyramid fallback).
-        let threshold = self.selector_threshold(asset_id);
-        let (score, at) = self.locate(asset_id)?;
-        let Some(p) = at else {
-            return Err(err("has no match"));
-        };
-        if score < threshold {
-            return Err(err(&format!(
-                "best match score {score:.3} < threshold {threshold:.3}"
-            )));
-        }
-        // seq130: same-source operation geometry (an OCR `region.asset` mode=asset
-        // must follow the recognized line exactly like the click path).
-        let (rect, shape) = self.click_geometry_for(asset_id, p)?;
-        Ok((rect, shape))
     }
 
     /// v1.4 A-plan: when `region` carries a whole-library `asset`, resolve the
@@ -4126,208 +3603,6 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         Ok(hit)
     }
 
-    fn preview_root_candidate_legacy(
-        &mut self,
-        target: &str,
-        candidate_index: Option<usize>,
-        site: &str,
-    ) -> Result<ChainNodeHit, String> {
-        if let Some(rect) = self.assets.region(target) {
-            if let Some(idx) = candidate_index {
-                if idx != 0 {
-                    return Err(format!(
-                        "{site}: region `{target}` has exactly one candidate (got index {idx})"
-                    ));
-                }
-            }
-            return Ok(ChainNodeHit {
-                asset: target.to_string(),
-                kind: "region",
-                real: None,
-                box_: rect,
-                shape: self.assets.click_shape(target).cloned(),
-                score: None,
-                text: None,
-            });
-        }
-        if self.assets.collection_members(target).is_some() {
-            // seq132: mixed collection — candidates and their order are the SAME
-            // as the serve candidate API (`collection_candidates_with_ocr` +
-            // `sort_asset_match_candidates`), so `candidate_index` agrees.
-            let candidates = self.collection_candidates(target, true)?;
-            if candidates.is_empty() {
-                return Err(format!(
-                    "{site}: collection `{target}` has no candidate at/above its member thresholds"
-                ));
-            }
-            let idx = candidate_index.unwrap_or(0);
-            let Some(c) = candidates.get(idx) else {
-                return Err(format!(
-                    "{site}: candidate_index {idx} is out of range (collection `{target}` has {} candidates)",
-                    candidates.len()
-                ));
-            };
-            let kind = if self.assets.region(&c.member).is_some() {
-                "region"
-            } else if self.assets.is_ocr_asset(&c.member) {
-                "ocr"
-            } else {
-                "template"
-            };
-            return Ok(ChainNodeHit {
-                asset: c.member.clone(),
-                kind,
-                real: Some(Rect {
-                    x: c.x,
-                    y: c.y,
-                    w: c.w,
-                    h: c.h,
-                }),
-                box_: c.action_box,
-                shape: c.action_shape.clone(),
-                score: Some(c.score),
-                text: None,
-            });
-        }
-        if self.assets.is_ocr_asset(target) {
-            let ocr_var = self.assets.ocr_var(target).cloned();
-            let derived = self.assets.derived_ocr(target);
-            let plain_roi = self.assets.ocr_roi(target);
-            let plain_expected = self.assets.ocr_expected_text(target).map(str::to_string);
-            let (lines, expected): (Vec<OcrLine>, Option<String>) = if let Some(var) = ocr_var {
-                let expected = self.assets.ocr_var_expected_text(target, &self.params)?;
-                let (fw, fh) = self
-                    .screen
-                    .size()
-                    .ok_or_else(|| format!("{site}: no frame available"))?;
-                let roi = var.roi.unwrap_or(Rect {
-                    x: 0,
-                    y: 0,
-                    w: fw as i32,
-                    h: fh as i32,
-                });
-                let lines = {
-                    let frame = self
-                        .screen
-                        .frame
-                        .as_ref()
-                        .ok_or_else(|| format!("{site}: no frame available"))?;
-                    let provider = self.ocr.as_mut().ok_or_else(|| {
-                        format!("{site}: OCR provider is not attached to this run")
-                    })?;
-                    provider.recognize_lines(frame, roi)?
-                };
-                (lines, Some(expected))
-            } else if let Some((source, expected)) = derived {
-                let lines = {
-                    let frame = self
-                        .screen
-                        .frame
-                        .as_ref()
-                        .ok_or_else(|| format!("{site}: no frame available"))?;
-                    let provider = self.ocr.as_mut().ok_or_else(|| {
-                        format!("{site}: OCR provider is not attached to this run")
-                    })?;
-                    provider.recognize_lines(frame, source)?
-                };
-                (lines, Some(expected))
-            } else {
-                let roi = plain_roi
-                    .ok_or_else(|| format!("{site}: OCR asset `{target}` has no roi"))?;
-                // 2026-11-06 批次B (#3): the editor's single-line OCR candidate
-                // list uses det+rec (not a single pseudo-crop), so
-                // `candidate_index` is consistent with the candidates API. The
-                // runtime click path keeps its historical single-read behaviour.
-                let lines = {
-                    let frame = self
-                        .screen
-                        .frame
-                        .as_ref()
-                        .ok_or_else(|| format!("{site}: no frame available"))?;
-                    let provider = self.ocr.as_mut().ok_or_else(|| {
-                        format!("{site}: OCR provider is not attached to this run")
-                    })?;
-                    provider.recognize_lines(frame, roi)?
-                };
-                (lines, plain_expected)
-            };
-            let min = self.assets.ocr_threshold(target);
-            // seq133 #2: enumerate EVERY det+rec line (min-confidence filtered)
-            // exactly like the serve candidate API; `pass` = strict expected
-            // text match, ordered pass-first so index 0 is the expected line.
-            // Candidate geometry still comes from the OCR Q1/op_region chain.
-            let candidates = ocr_candidate_lines_pass_first(&lines, expected.as_deref(), min);
-            if candidates.is_empty() {
-                return Err(format!(
-                    "{site}: asset `{target}` has no OCR candidate at/above its threshold"
-                ));
-            }
-            let idx = candidate_index.unwrap_or(0);
-            let Some(line) = candidates.get(idx).copied() else {
-                return Err(format!(
-                    "{site}: candidate_index {idx} is out of range (asset `{target}` has {} candidates)",
-                    candidates.len()
-                ));
-            };
-            let (fw, fh) = self
-                .screen
-                .size()
-                .ok_or_else(|| format!("{site}: no frame available"))?;
-            let (box_, shape) = self.ocr_chain_self_geometry(target, line.rect, Some((fw, fh)))?;
-            return Ok(ChainNodeHit {
-                asset: target.to_string(),
-                kind: "ocr",
-                real: Some(line.rect),
-                box_,
-                shape,
-                score: Some(line.score),
-                text: Some(line.text.clone()),
-            });
-        }
-        // Template / collection: multi-candidate NCC in the editor order.
-        self.observe_screen()?;
-        let matcher = self
-            .screen
-            .matcher
-            .as_ref()
-            .ok_or_else(|| format!("{site}: no frame available"))?;
-        let mut list = asset_match_candidates(&self.assets, matcher, target)
-            .map_err(|e| format!("{site}: {e}"))?;
-        if list.is_empty() {
-            return Err(format!(
-                "{site}: asset `{target}` has no match at/above its threshold"
-            ));
-        }
-        sort_asset_match_candidates(&mut list);
-        let idx = candidate_index.unwrap_or(0);
-        if idx >= list.len() {
-            return Err(format!(
-                "{site}: candidate_index {idx} is out of range (asset `{target}` has {} candidates)",
-                list.len()
-            ));
-        }
-        let chosen = list.swap_remove(idx);
-        let kind = if self.assets.collection_members(target).is_some() {
-            "collection"
-        } else {
-            "template"
-        };
-        Ok(ChainNodeHit {
-            asset: chosen.member.clone(),
-            kind,
-            real: Some(Rect {
-                x: chosen.x,
-                y: chosen.y,
-                w: chosen.w,
-                h: chosen.h,
-            }),
-            box_: chosen.action_box,
-            shape: chosen.action_shape,
-            score: Some(chosen.score),
-            text: None,
-        })
-    }
-
     /// One DFS hop of [`Self::resolve_asset_op_region`] (model B: the terminal
     /// `self` node's own geometry is the final operation box; every `asset` hop
     /// recognizes the next node and recurses).
@@ -4486,144 +3761,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         Ok((hit, candidates.len(), idx))
     }
 
-    fn recognize_chain_node_legacy(
-        &mut self,
-        asset: &str,
-        pick_ref: Option<Point>,
-        site: &str,
-    ) -> Result<ChainNodeHit, String> {
-        // 0) Fixed `region` nodes cannot be chain nodes: the chain must be able
-        //    to recognize every referenced node and a region has no recognition
-        //    (2026-11-06 批次B #4). Validation rejects them at save time; this is
-        //    the runtime backup so old/hand-edited data fails loudly.
-        if self.assets.region(asset).is_some() {
-            return Err(format!(
-                "{site}: region asset `{asset}` cannot be an op_region chain node \
-                 (chain nodes must be recognizable; a region has no recognition)"
-            ));
-        }
-        // 1) OCR / ocr_var node: expected text comes from the asset itself
-        //    (ocr_var: param > runtime_text; derived ocr_line: saved text; plain
-        //    OCR: the `ocr_text` expected text, 批次B #3).
-        let is_ocr = self.assets.ocr_var(asset).is_some()
-            || self.assets.ocr_roi(asset).is_some()
-            || self.assets.derived_ocr(asset).is_some();
-        if is_ocr {
-            let expected = if self.assets.ocr_var(asset).is_some() {
-                self.assets.ocr_var_expected_text(asset, &self.params)?
-            } else if let Some((_, expected)) = self.assets.derived_ocr(asset) {
-                expected
-            } else if let Some(expected) = self.assets.ocr_expected_text(asset) {
-                expected.to_string()
-            } else {
-                return Err(format!(
-                    "{site}: op_region chain node `{asset}` is an OCR asset without an \
-                     expected text (set 识别文字/ocr_text on it or reference an ocr_var)"
-                ));
-            };
-            self.observe_screen()?;
-            let (fw, fh) = self
-                .screen
-                .size()
-                .ok_or_else(|| format!("{site}: no frame available for chain node `{asset}`"))?;
-            let roi = self
-                .assets
-                .ocr_var(asset)
-                .and_then(|v| v.roi)
-                .or_else(|| self.assets.ocr_roi(asset))
-                .unwrap_or(Rect {
-                    x: 0,
-                    y: 0,
-                    w: fw as i32,
-                    h: fh as i32,
-                });
-            let min = self.assets.ocr_threshold(asset);
-            let lines = {
-                let frame = self
-                    .screen
-                    .frame
-                    .as_ref()
-                    .ok_or_else(|| format!("{site}: no frame available for `{asset}`"))?;
-                let provider = self.ocr.as_mut().ok_or_else(|| {
-                    format!(
-                        "{site}: op_region chain node `{asset}` needs OCR, but this run has no \
-                         OCR provider attached"
-                    )
-                })?;
-                provider.recognize_lines(frame, roi)?
-            };
-            let candidates = matching_ocr_lines(&lines, &expected, min);
-            let Some(line) = pick_ocr_line(&candidates, pick_ref) else {
-                return Err(format!(
-                    "{site}: op_region chain node `{asset}` has no line matching {expected:?} \
-                     in roi {roi:?} ({} lines found)",
-                    lines.len()
-                ));
-            };
-            let (box_, shape) = self.ocr_chain_self_geometry(asset, line.rect, Some((fw, fh)))?;
-            return Ok(ChainNodeHit {
-                asset: asset.to_string(),
-                kind: "ocr",
-                real: Some(line.rect),
-                box_,
-                shape,
-                score: Some(line.score),
-                text: Some(line.text.clone()),
-            });
-        }
-        // 2) Template / collection node: multi-candidate NCC + pick rule.
-        self.observe_screen()?;
-        let matcher = self
-            .screen
-            .matcher
-            .as_ref()
-            .ok_or_else(|| format!("{site}: no frame available for chain node `{asset}`"))?;
-        let mut list = asset_match_candidates(&self.assets, matcher, asset).map_err(|e| {
-            format!("{site}: op_region chain node `{asset}`: {e}")
-        })?;
-        if list.is_empty() {
-            return Err(format!(
-                "{site}: op_region chain node `{asset}` has no match at/above its threshold"
-            ));
-        }
-        let idx = pick_template_candidate(&list, pick_ref);
-        let chosen = list.swap_remove(idx);
-        Ok(ChainNodeHit {
-            asset: chosen.member.clone(),
-            kind: if self.assets.collection_members(asset).is_some() {
-                "collection"
-            } else {
-                "template"
-            },
-            real: Some(Rect {
-                x: chosen.x,
-                y: chosen.y,
-                w: chosen.w,
-                h: chosen.h,
-            }),
-            box_: chosen.action_box,
-            shape: chosen.action_shape,
-            score: Some(chosen.score),
-            text: None,
-        })
-    }
 
-    /// Self-mode operation geometry of an OCR node, keyed off its **real**
-    /// recognized line rect.
-    ///
-    /// 2026-11-06 批次B (#4, Q1): an OCR asset's authored `action_shape` follows
-    /// the recognized text — for an authored `roi`, translate the stored shape by
-    /// `real.topLeft - roi.topLeft` (same rule as a template following its
-    /// match). `roi` absent (whole-screen `ocr_var`) keeps the absolute
-    /// coordinates (documented limitation: there is no authored origin to follow).
-    fn ocr_chain_self_geometry(
-        &self,
-        sel: &str,
-        real: Rect,
-        frame_size: Option<(u32, u32)>,
-    ) -> Result<(Rect, Option<ClickShape>), String> {
-        self.ocr_self_operation_geometry(sel, real, frame_size)
-    }
 
     /// Shared OCR self-geometry (chain gates, editor preview, root click paths).
     fn ocr_self_operation_geometry(
@@ -5593,104 +4731,6 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         }
     }
 
-    fn ocr_read_legacy(&mut self, sel: &str) -> Result<OcrRead, String> {
-        // 2026-11-06 参数→素材: `ocr_var` has its own recognition contract (text
-        // from params > runtime_text, optional ROI = whole screen, forced det+rec
-        // so a real line bbox is always available).
-        if let Some(var) = self.assets.ocr_var(sel).cloned() {
-            return self.ocr_read_var(sel, &var);
-        }
-        let roi = match self.assets.ocr_roi(sel) {
-            Some(r) => r,
-            None if self.assets.get(sel).is_some() => {
-                return Err(format!(
-                    "selector `{sel}` is a template asset, not an OCR asset \
-                     (kind must be `ocr_line`/`ocr_lines`)"
-                ))
-            }
-            None => {
-                return Err(format!(
-                    "OCR selector `{sel}` is not declared in the task's assets"
-                ))
-            }
-        };
-        if self.ocr.is_none() {
-            return Err(format!(
-                "OCR is not available for this run: no OCR provider attached \
-                 (build with `--features ocr` and pass `--model <rec.onnx>`) - \
-                 refusing to fake `ocr({sel})`"
-            ));
-        }
-        let multiline = self.assets.ocr_is_multiline(sel);
-        let ocr_polygon = self.assets.ocr_polygon(sel).map(|p| p.to_vec());
-        self.observe_screen()?;
-        let frame = self
-            .screen.frame
-            .as_ref()
-            .ok_or_else(|| "OCR: no frame available".to_string())?;
-        // v1.2.1: a line saved from a multi-line det+rec result must use the SAME
-        // source region + det+rec path at runtime. Falling back to single-line
-        // rec on the tight line crop can change the recognized text.
-        if let Some((source, expected)) = self.assets.derived_ocr(sel) {
-            // v1.2.3: exactly one recognition ROI. It is the saved `roi`
-            // (legacy source ROIs are migrated at asset-load time).
-            //
-            // §22.10 N10b-2 parity: a derived line saved from a multi-line region
-            // must honour the SAME polygon mask as the plain path. `source` is the
-            // det+rec input, so mask its bbox (polygon is in frame coordinates)
-            // BEFORE the provider sees the pixels; otherwise neighbour text
-            // inside the source region can be detected and match the wrong line.
-            let masked_frame;
-            let frame: &Frame = if let Some(poly) = &ocr_polygon {
-                masked_frame = mask_frame_for_ocr(frame, source, poly);
-                &masked_frame
-            } else {
-                frame
-            };
-            let provider = self.ocr.as_mut().expect("provider checked above");
-            let lines = provider.recognize_lines(frame, source)?;
-            let hit = lines
-                .iter()
-                .filter(|l| ocr_text_matches(expected.as_str(), l.text.as_str()))
-                .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
-            let Some(line) = hit else {
-                self.last_ocr_rect = None;
-                let found = lines
-                    .iter()
-                    .map(|l| format!("{:?}({:.3})", l.text, l.score))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(format!(
-                    "derived ocr_line `{sel}`: no line equals {:?} in recognition ROI {:?} \
-                     (lines found: {found})",
-                    expected, source
-                ));
-            };
-            self.last_ocr_rect = Some(line.rect);
-            return Ok(OcrRead::Single(Some(line.text.clone()), line.score));
-        }
-        self.last_ocr_rect = None;
-        // §22.10 N10b-2: polygon OCR mask = bbox crop, outside-polygon pixels
-        // filled white so neighbour text / background never reaches the engine.
-        let masked_frame;
-        let frame: &Frame = if let Some(poly) = &ocr_polygon {
-            masked_frame = mask_frame_for_ocr(frame, roi, poly);
-            &masked_frame
-        } else {
-            frame
-        };
-        let provider = self.ocr.as_mut().expect("provider checked above");
-        if multiline {
-            Ok(OcrRead::Lines(provider.recognize_lines(frame, roi)?))
-        } else {
-            let (text, score) = provider.recognize(frame, roi)?;
-            Ok(OcrRead::Single(
-                if text.is_empty() { None } else { Some(text) },
-                score,
-            ))
-        }
-    }
-
     /// seq134: OCR read through the ONE recognition engine (strict expected text,
     /// ROI→whole-frame fallback for expected OCR, ROI-only for plain OCR without
     /// expected text). Every interaction (`click`/`click_target`/`long_press`/
@@ -5766,7 +4806,6 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             ));
         }
         let lines = self.ocr_lines_for(sel, false)?;
-        let threshold = self.assets.ocr_threshold(sel);
         let best = lines.iter().max_by(|a, b| {
             a.score
                 .partial_cmp(&b.score)
@@ -5781,83 +4820,6 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 .unwrap_or((None, 0.0));
             Ok(OcrRead::Single(text, score))
         }
-    }
-
-    /// Read one `ocr_var` asset (使用端OCR文字配置项, 2026-11-06 参数→素材).
-    ///
-    /// * recognition text = injected `params[param_key]` over `runtime_text`
-    ///   ([`AssetSet::ocr_var_expected_text`]);
-    /// * search domain = the declared ROI, or the **whole frame** when the asset
-    ///   has no ROI (design: initial recognition region may be empty);
-    /// * always det + rec (the real line bbox is needed for candidates, the
-    ///   operation-area follow rule [「跟随识别文字」] and the step log) — a plain
-    ///   rec call is never used for an ocr_var;
-    /// * an optional recognition polygon masks the ROI (2026-11-06 批次B #6/#10);
-    /// * the best matching line at/above the asset's confidence threshold becomes
-    ///   `last_ocr_rect` (so the historical OCR click path uses the real line bbox
-    ///   as its default operation area) and is returned as a single-line read.
-    ///
-    /// No matching line is a **loud error** (the step fails, nothing is clicked),
-    /// never "match anything".
-    fn ocr_read_var(&mut self, sel: &str, var: &OcrVar) -> Result<OcrRead, String> {
-        let expected = self.assets.ocr_var_expected_text(sel, &self.params)?;
-        if self.ocr.is_none() {
-            return Err(format!(
-                "OCR is not available for this run: no OCR provider attached \
-                 (build with `--features ocr` and pass `--model <rec.onnx>`) - \
-                 refusing to fake `ocr({sel})`"
-            ));
-        }
-        self.observe_screen()?;
-        let (fw, fh) = self
-            .screen
-            .size()
-            .ok_or_else(|| "OCR: no frame available".to_string())?;
-        let roi = var.roi.unwrap_or(Rect {
-            x: 0,
-            y: 0,
-            w: fw as i32,
-            h: fh as i32,
-        });
-        let threshold = self.assets.ocr_threshold(sel);
-        // §22.10 N10b-2 parity (2026-11-06 批次B #6/#10): an `ocr_var` may now
-        // carry a recognition polygon; mask the bbox before the provider sees the
-        // pixels, exactly like the plain/derived OCR paths.
-        let ocr_polygon = self.assets.ocr_polygon(sel).map(|p| p.to_vec());
-        let frame_ref = self
-            .screen
-            .frame
-            .as_ref()
-            .ok_or_else(|| "OCR: no frame available".to_string())?;
-        let masked_frame;
-        let frame: &Frame = if let Some(poly) = &ocr_polygon {
-            masked_frame = mask_frame_for_ocr(frame_ref, roi, poly);
-            &masked_frame
-        } else {
-            frame_ref
-        };
-        let provider = self.ocr.as_mut().expect("provider checked above");
-        let lines = provider.recognize_lines(frame, roi)?;
-        let candidates = ocr_line_candidates(&lines, &expected, threshold);
-        let best = candidates.iter().copied().max_by(|a, b| {
-            a.score
-                .partial_cmp(&b.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let Some(line) = best else {
-            self.last_ocr_rect = None;
-            let found = lines
-                .iter()
-                .map(|l| format!("{:?}({:.3})", l.text, l.score))
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(format!(
-                "ocr_var `{sel}`: no line equals {expected:?} in recognition ROI {roi:?} \
-                 (lines found: {found})"
-            ));
-        };
-        self.last_ocr_rect = Some(line.rect);
-        Ok(OcrRead::Single(Some(line.text.clone()), line.score))
     }
 
     /// Value-path view of [`Self::ocr_read`]: applies the asset's **explicit**
@@ -6836,7 +5798,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                                     // 2026-11-06 参数→素材: an `ocr_var` may have no
                                     // ROI (whole-screen OCR); its real recognized
                                     // line bbox (`last_ocr_rect`, set by
-                                    // `ocr_read_var`) is then the operation basis.
+                                    // `recognize_best`) is then the operation basis.
                                     let recognition = if let Some(r) = self.assets.ocr_roi(sel) {
                                         r
                                     } else if let Some(r) =
@@ -7802,7 +6764,7 @@ impl<S: ScreenSource, I: InputSink> EvalContext for Interpreter<S, I> {
                         && self.ocr_score_ok(sel, score)),
                     Ok(OcrRead::Lines(lines)) => {
                         // Presence uses the best line (the same score
-                        // `locate_ocr` reports); an explicit OCR threshold must
+                        // `recognize_best` reports); an explicit OCR threshold must
                         // be met by that best line.
                         let best = lines
                             .iter()
@@ -15026,7 +13988,7 @@ mod tests {
 
     #[test]
     fn ocr_lines_threshold_uses_the_best_line_score() {
-        // `locate_ocr` reports the best line of an `ocr_lines` asset; the
+        // `recognize_best` reports the best line of an `ocr_lines` asset; the
         // threshold compares against that same best score.
         let lines = vec![
             line("确认", 0.95, Rect { x: 2, y: 2, w: 10, h: 8 }),
@@ -15972,57 +14934,91 @@ mod tests {
     }
 
     #[test]
-    fn candidates_for_asset_covers_templates_ocr_and_region() {
-        let frame = FakeScreen::new().frame;
-        let matcher = Matcher::new(GrayImage::from_frame(&frame));
-        let set = assets();
-        let tpl = candidates_for_asset(&set, Some(&matcher), "I_BRIGHT", None)
+    fn recognition_candidates_covers_templates_ocr_and_region() {
+        // seq134 single source: templates, OCR (strict expected text + threshold),
+        // and fixed regions all enumerate here; no asset-kind-specific helper.
+        let mut tpl_interp = Interpreter::new(
+            FakeScreen::new(),
+            FakeInput::new().0,
+            assets(),
+            Budget::default(),
+        )
+        .with_humanize(no_miss());
+        let tpl = tpl_interp
+            .recognition_candidates("I_BRIGHT")
             .expect("template candidates");
         assert_eq!(tpl.len(), 1);
-        assert_eq!(
-            (tpl[0].rect.x, tpl[0].rect.y, tpl[0].rect.w, tpl[0].rect.h),
-            (12, 10, 10, 10)
-        );
+        assert_eq!((tpl[0].x, tpl[0].y, tpl[0].w, tpl[0].h), (12, 10, 10, 10));
         assert!(tpl[0].score >= 0.8);
         assert!(tpl[0].text.is_none());
+        assert_eq!(tpl[0].member_kind, "template");
 
-        let mut ocr_set = AssetSet::new();
-        ocr_set.insert_ocr_lines("O_list", Rect { x: 0, y: 0, w: 64, h: 48 });
-        ocr_set.set_ocr_threshold("O_list", 0.6);
         let lines = vec![
             chain_line(10, 5, 20, 10, "开始", 0.90),
             chain_line(10, 30, 20, 10, "结束", 0.99),
             chain_line(40, 5, 20, 10, "开始", 0.50), // below threshold
         ];
-        let ocr = candidates_for_asset(&ocr_set, None, "O_list", Some((&lines, Some("开始"))))
+        let mut ocr_set = AssetSet::new();
+        ocr_set.insert_ocr_lines("O_list", Rect { x: 0, y: 0, w: 64, h: 48 });
+        ocr_set.set_ocr_threshold("O_list", 0.6);
+        ocr_set.set_ocr_expected_text("O_list", "开始".to_string());
+        let (mut ocr_interp, _rois, _shared) = mk_det_interp(ocr_set, lines.clone());
+        let ocr = ocr_interp
+            .recognition_candidates("O_list")
             .expect("ocr candidates");
         assert_eq!(ocr.len(), 1, "{ocr:?}");
         assert_eq!(ocr[0].text.as_deref(), Some("开始"));
-        assert_eq!(ocr[0].rect, Rect { x: 10, y: 5, w: 20, h: 10 });
-        // OCR candidates are sorted score desc → y → x (editor order).
-        let all = candidates_for_asset(&ocr_set, None, "O_list", Some((&lines, None)))
+        assert_eq!(
+            Rect { x: ocr[0].x, y: ocr[0].y, w: ocr[0].w, h: ocr[0].h },
+            Rect { x: 10, y: 5, w: 20, h: 10 }
+        );
+        assert_eq!(ocr[0].member_kind, "ocr_lines");
+
+        // No expected text: every ROI line at/above the OCR threshold, sorted
+        // score desc → y → x (the 0.50 line is filtered).
+        let mut plain_set = AssetSet::new();
+        plain_set.insert_ocr_lines("O_list", Rect { x: 0, y: 0, w: 64, h: 48 });
+        plain_set.set_ocr_threshold("O_list", 0.6);
+        let (mut plain_interp, _rois, _shared) = mk_det_interp(plain_set, lines);
+        let all = plain_interp
+            .recognition_candidates("O_list")
             .expect("all lines");
         assert_eq!(all.len(), 2, "{all:?}");
         assert_eq!(all[0].text.as_deref(), Some("结束"));
 
-        // 批次B (#3): when the caller passes no expected text, the asset's own
-        // saved expected text (`ocr_text`) filters the candidates.
-        ocr_set.set_ocr_expected_text("O_list", "开始".to_string());
-        let filtered = candidates_for_asset(&ocr_set, None, "O_list", Some((&lines, None)))
-            .expect("expected-text fallback");
-        assert_eq!(filtered.len(), 1, "{filtered:?}");
-        assert_eq!(filtered[0].text.as_deref(), Some("开始"));
-        assert_eq!(filtered[0].rect, Rect { x: 10, y: 5, w: 20, h: 10 });
-
         let mut region_set = AssetSet::new();
         region_set.insert_region("R", Rect { x: 5, y: 6, w: 7, h: 8 });
-        let region = candidates_for_asset(&region_set, None, "R", None).unwrap();
+        let mut region_interp = Interpreter::new(
+            FakeScreen::new(),
+            FakeInput::new().0,
+            region_set,
+            Budget::default(),
+        )
+        .with_humanize(no_miss());
+        let region = region_interp
+            .recognition_candidates("R")
+            .expect("region candidate");
         assert_eq!(region.len(), 1);
-        assert_eq!(region[0].rect, Rect { x: 5, y: 6, w: 7, h: 8 });
+        assert_eq!((region[0].x, region[0].y, region[0].w, region[0].h), (5, 6, 7, 8));
+        assert_eq!(region[0].member_kind, "region");
 
-        // Missing data sources are loud errors.
-        assert!(candidates_for_asset(&set, None, "I_BRIGHT", None).is_err());
-        assert!(candidates_for_asset(&ocr_set, None, "O_list", None).is_err());
+        // Missing data sources are loud errors (undeclared asset / no OCR provider).
+        let mut empty_interp = Interpreter::new(
+            FakeScreen::new(),
+            FakeInput::new().0,
+            AssetSet::new(),
+            Budget::default(),
+        );
+        assert!(empty_interp.recognition_candidates("NOPE").is_err());
+        let mut no_provider_set = AssetSet::new();
+        no_provider_set.insert_ocr_lines("O_list", Rect { x: 0, y: 0, w: 64, h: 48 });
+        let mut no_provider = Interpreter::new(
+            FakeScreen::new(),
+            FakeInput::new().0,
+            no_provider_set,
+            Budget::default(),
+        );
+        assert!(no_provider.recognition_candidates("O_list").is_err());
     }
 
     #[test]
