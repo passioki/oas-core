@@ -17106,6 +17106,7 @@ mod tests {
                 100 => "N1",
                 150 => "N2",
                 200 => "N3",
+                250 => "POPUP",
                 _ => return Ok(Vec::new()),
             };
             Ok(vec![chain_line(5, 5, 20, 8, text, 0.99)])
@@ -17308,6 +17309,269 @@ mod tests {
             shared.clicks.borrow().is_empty(),
             "key edges never click"
         );
+    }
+
+    fn nav_popup_config() -> PopupConfig {
+        PopupConfig {
+            enabled: true,
+            check_interval_ms: 1,
+            popups: vec![PopupRule {
+                id: "navigate-popup".to_string(),
+                enabled: true,
+                priority: 0,
+                min_hits: 1,
+                features: vec![PopupFeature::OcrText {
+                    text: "POPUP".to_string(),
+                    roi: None,
+                }],
+                close: PopupClose::ClickAsset {
+                    asset: "POP_CLOSE".to_string(),
+                },
+                cooldown_ms: 0,
+                max_attempts: 2,
+            }],
+        }
+    }
+
+    fn nav_map_mismatch() -> crate::map::MapConfig {
+        use crate::map::*;
+        let node = |id: &str, text: &str| MapNode {
+            id: id.to_string(),
+            name: None,
+            parent: None,
+            return_asset: None,
+            min_hits: 1,
+            features: vec![MapFeature::OcrText {
+                text: text.to_string(),
+                roi: None,
+            }],
+            priority: 0,
+        };
+        let edge = |from: &str, to: &str| MapEdge {
+            from: from.to_string(),
+            to: to.to_string(),
+            action: MapAction::Swipe {
+                from: Point { x: 10, y: 10 },
+                to: Point { x: 30, y: 10 },
+                ms: 100,
+            },
+            wait: MapWait {
+                settle_ms: 0,
+                stable_ms: 0,
+                timeout_ms: 300,
+                poll_ms: 50,
+            },
+            derived: false,
+            order: 0,
+        };
+        MapConfig {
+            hub: "庭院".to_string(),
+            default_return_asset: None,
+            nodes: vec![
+                node("庭院", "N1"),
+                node("御魂", "N2"),
+                node("御魂十层", "N3"),
+            ],
+            // The first edge's expected `to` is wrong (lands on 御魂); the
+            // navigator must re-identify and re-plan from 御魂, not continue.
+            edges: vec![edge("庭院", "御魂十层"), edge("御魂", "御魂十层")],
+        }
+    }
+
+    #[test]
+    fn navigate_mismatch_replans_from_the_real_current_node() {
+        // The wrong node must persist through hop1's full timeout poll window so
+        // the engine cannot accidentally accept it; then a new frame proves the
+        // re-planned hop reaches the target.
+        let mut frames = vec![nav_frame(&[], 100)];
+        for _ in 0..8 {
+            frames.push(nav_frame(&[], 150));
+        }
+        frames.push(nav_frame(&[], 200));
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            TwoFrameScreen { frames, idx: 0 },
+            input,
+            AssetSet::new(),
+            Budget::default(),
+        )
+        .with_map(nav_map_mismatch())
+        .with_ocr(Box::new(NavOcr))
+        .with_humanize(no_miss())
+        .with_seed(71);
+        assert_eq!(
+            interp.run(&nav_flow("御魂十层")),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let swipes = shared.swipes.borrow().len();
+        assert_eq!(swipes, 2, "hop1 (wrong to) + re-planned hop2");
+        assert!(interp
+            .events()
+            .iter()
+            .any(|e| e.op == "navigate" && e.detail.contains("rounds=2")));
+    }
+
+    #[test]
+    fn navigate_popup_interruption_closes_and_replans() {
+        // Frame sequence: clean 庭院 → popup → clean 庭院 → hop chain to target.
+        let mut assets = AssetSet::new();
+        assets.insert_region("POP_CLOSE", Rect { x: 1, y: 1, w: 5, h: 5 });
+        let frames = vec![
+            nav_frame(&[], 100), // exec pre-step check: no popup
+            nav_frame(&[], 250), // navigate round pre-check: POPUP
+            nav_frame(&[], 100), // closed: back to 庭院
+            nav_frame(&[], 100), // hop1 sanity check
+            nav_frame(&[], 150), // 御魂 after hop1
+            nav_frame(&[], 150), // hop2 sanity check
+            nav_frame(&[], 200), // 御魂十层 after hop2
+        ];
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            TwoFrameScreen { frames, idx: 0 },
+            input,
+            assets,
+            Budget::default(),
+        )
+        .with_map(nav_map())
+        .with_ocr(Box::new(NavOcr))
+        .with_popups(nav_popup_config())
+        .with_humanize(no_miss())
+        .with_seed(73);
+        assert_eq!(
+            interp.run(&nav_flow("御魂十层")),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        assert_eq!(shared.clicks.borrow().len(), 1, "one popup close click");
+        assert_eq!(shared.swipes.borrow().len(), 2, "route still executed");
+        assert!(interp
+            .events()
+            .iter()
+            .any(|e| e.op == "popup" && e.detail.contains("navigate-popup")));
+    }
+
+    #[test]
+    fn navigate_stable_ms_rechecks_the_expected_node() {
+        let mut map = nav_map();
+        for e in &mut map.edges {
+            e.wait.stable_ms = 40;
+        }
+        let frames = vec![
+            nav_frame(&[], 100),
+            nav_frame(&[], 150),
+            nav_frame(&[], 150),
+            nav_frame(&[], 200),
+        ];
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            TwoFrameScreen { frames, idx: 0 },
+            input,
+            AssetSet::new(),
+            Budget::default(),
+        )
+        .with_map(map)
+        .with_ocr(Box::new(NavOcr))
+        .with_humanize(no_miss())
+        .with_seed(75);
+        assert_eq!(
+            interp.run(&nav_flow("御魂十层")),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        assert_eq!(shared.swipes.borrow().len(), 2);
+    }
+
+    #[test]
+    fn navigate_budget_and_cancel_are_honoured() {
+        // Step budget: navigate is one step; a max_steps=1 budget is exhausted
+        // inside the navigation state machine, never silently ignored.
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            nav_screen(),
+            input,
+            AssetSet::new(),
+            Budget {
+                max_steps: 1,
+                max_wall_s: 30.0,
+            },
+        )
+        .with_map(nav_map())
+        .with_ocr(Box::new(NavOcr))
+        .with_humanize(no_miss())
+        .with_seed(77);
+        assert!(
+            matches!(interp.run(&nav_flow("御魂十层")), RunResult::Exhausted(_)),
+            "{:?}",
+            interp.events()
+        );
+        // Pre-cancelled run fails loudly before any navigation.
+        let flag = Arc::new(AtomicBool::new(true));
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            nav_screen(),
+            input,
+            AssetSet::new(),
+            Budget::default(),
+        )
+        .with_map(nav_map())
+        .with_ocr(Box::new(NavOcr))
+        .with_cancel(flag)
+        .with_humanize(no_miss())
+        .with_seed(79);
+        match interp.run(&nav_flow("御魂十层")) {
+            RunResult::Failed(msg) => assert!(msg.contains("cancelled"), "{msg}"),
+            other => panic!("expected cancel failure, got {other:?}"),
+        }
+        assert!(shared.swipes.borrow().is_empty());
+    }
+
+    #[test]
+    fn identify_current_node_uses_asset_features_min_hits_and_priority() {
+        // Asset-feature integration through the seq134 single source.
+        use crate::map::*;
+        let node = |id: &str, asset: &str, priority: i32, min_hits: u32| MapNode {
+            id: id.to_string(),
+            name: None,
+            parent: None,
+            return_asset: None,
+            min_hits,
+            features: if min_hits > 1 {
+                vec![
+                    MapFeature::Asset { asset: asset.to_string() },
+                    MapFeature::Asset { asset: "I_NEVER".to_string() },
+                ]
+            } else {
+                vec![MapFeature::Asset { asset: asset.to_string() }]
+            },
+            priority,
+        };
+        let map = MapConfig {
+            hub: "低".to_string(),
+            default_return_asset: None,
+            nodes: vec![
+                node("低", "I_BRIGHT", 0, 1),
+                node("高", "I_BRIGHT", 5, 1),
+                node("缺", "I_BRIGHT", 0, 2),
+            ],
+            edges: vec![],
+        };
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            FakeScreen::new(),
+            input,
+            assets(),
+            Budget::default(),
+        )
+        .with_map(map)
+        .with_seed(81);
+        let m = interp.identify_current_node().expect("asset feature node");
+        assert_eq!(m.node, "高", "priority wins: {m:?}");
+        // min_hits=2 cannot be met by one matching feature.
+        assert!(!m.ambiguous.contains(&"缺".to_string()));
     }
 
     #[test]

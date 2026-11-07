@@ -114,7 +114,7 @@ const POPUP_DEFAULT_COOLDOWN_MS: u64 = 1000;
 const POPUP_DEFAULT_MAX_ATTEMPTS: u32 = 3;
 
 /// Global popup config file (`<assets>/popups.json`, next to assets.json).
-fn popups_file_path(assets_dir: &Path) -> PathBuf {
+pub(crate) fn popups_file_path(assets_dir: &Path) -> PathBuf {
     assets_dir.join("popups.json")
 }
 
@@ -168,7 +168,7 @@ fn popup_config_json(config: &oas_runtime::PopupConfig) -> serde_json::Value {
 }
 
 /// Parse + validate the neutral runtime popup model from JSON (defaults filled).
-fn parse_popup_config(v: &serde_json::Value) -> Result<oas_runtime::PopupConfig, String> {
+pub(crate) fn parse_popup_config(v: &serde_json::Value) -> Result<oas_runtime::PopupConfig, String> {
     let obj = v
         .as_object()
         .ok_or_else(|| "popups config must be a JSON object".to_string())?;

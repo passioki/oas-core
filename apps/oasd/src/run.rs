@@ -523,6 +523,81 @@ fn acquire_run_lease(opts: &RunOptions) -> Result<(Option<DeviceLease>, &'static
     }
 }
 
+/// seq136 D1-M4: navigation mode decision in ONE place (also unit-tested).
+/// `--dry-run` without replay is a plan preview; replay and normal runs execute
+/// the full state machine (replay's dry InputSink is still a real execution).
+pub(crate) fn navigation_mode_for(opts: &RunOptions) -> oas_runtime::NavMode {
+    if opts.dry_run && opts.replay.is_none() {
+        oas_runtime::NavMode::PlanOnly
+    } else {
+        oas_runtime::NavMode::Execute
+    }
+}
+
+/// seq136 D1-M4: load/validate the global map for a flow that uses navigate.
+/// `Ok(None)` = no navigate (map is never read → zero overhead); missing map,
+/// invalid map or unknown literal target = loud error.
+pub(crate) fn load_nav_map(
+    assets_dir: &Path,
+    flow: &oas_flow::Flow,
+) -> Result<Option<oas_runtime::map::MapConfig>, String> {
+    let nav_uses = flow.navigate_uses();
+    if nav_uses.is_empty() {
+        return Ok(None);
+    }
+    let map_path = oas_task::map::map_path(assets_dir);
+    let map = oas_task::map::load(assets_dir)
+        .map_err(|e| format!("navigate: map.json: {e}"))?
+        .ok_or_else(|| {
+            format!(
+                "navigate: 全局地图缺失（{}）；请先把 map.json 放到全局素材库根",
+                map_path.display()
+            )
+        })?;
+    let assets = crate::global_assets::open_store(assets_dir)
+        .and_then(|s| s.load_assets_file().map_err(|e| e.to_string()))
+        .map_err(|e| format!("navigate: map assets: {e}"))?;
+    let validation = map.validate(&assets, &Default::default());
+    if !validation.is_ok() {
+        return Err(format!(
+            "navigate: map.json 校验失败: {}",
+            validation.error_text()
+        ));
+    }
+    let rt = map.to_runtime();
+    for use_ in &nav_uses {
+        if rt.node(&use_.target).is_none() {
+            return Err(format!(
+                "navigate: 目标节点 `{}` 不在全局地图（{}）",
+                use_.target, use_.path
+            ));
+        }
+    }
+    Ok(Some(rt))
+}
+
+/// seq136 D0/M4: CLI `oasd run` loads `<assets>/popups.json` (same schema as
+/// serve) and hands it to the runtime PopupGuard. No file/disabled = `None`.
+pub(crate) fn load_cli_popups(
+    assets_dir: &Path,
+) -> Result<Option<oas_runtime::PopupConfig>, String> {
+    let path = crate::serve::popups_file_path(assets_dir);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("popups.json: read {}: {e}", path.display())),
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("popups.json: {e}"))?;
+    let config = crate::serve::parse_popup_config(&value)
+        .map_err(|e| format!("popups.json: {e}"))?;
+    if config.enabled && !config.popups.is_empty() {
+        Ok(Some(config))
+    } else {
+        Ok(None)
+    }
+}
+
 pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport, String> {
     let task_dir = opts
         .task
@@ -577,40 +652,11 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     })?;
     // seq136 D1: load the ONE global map only when the flow actually navigates
     // (non-navigate tasks keep zero overhead). Missing map/target = loud error.
-    let nav_uses = flow.navigate_uses();
-    let map_config = if nav_uses.is_empty() {
-        None
-    } else {
-        let map = oas_task::map::load(&opts.assets)
-            .map_err(|e| format!("navigate: map.json: {e}"))?
-            .ok_or_else(|| {
-                format!(
-                    "navigate: 全局地图缺失（{}）；请先把 map.json 放到全局素材库根",
-                    opts.assets.join("map.json").display()
-                )
-            })?;
-        let validation = map.validate(&crate::global_assets::open_store(&opts.assets)
-            .and_then(|s| s.load_assets_file())
-            .map_err(|e| format!("navigate: map assets: {e}"))?, &Default::default());
-        if !validation.is_ok() {
-            return Err(format!("navigate: map.json 校验失败: {}", validation.error_text()));
-        }
-        let rt = map.to_runtime();
-        for use_ in &nav_uses {
-            if rt.node(&use_.target).is_none() {
-                return Err(format!(
-                    "navigate: 目标节点 `{}` 不在全局地图（{}）",
-                    use_.target, use_.path
-                ));
-            }
-        }
-        Some(rt)
-    };
-    let nav_mode = if opts.dry_run && opts.replay.is_none() {
-        oas_runtime::NavMode::PlanOnly
-    } else {
-        oas_runtime::NavMode::Execute
-    };
+    let map_config = load_nav_map(&opts.assets, &flow)?;
+    let nav_mode = navigation_mode_for(opts);
+    // seq136 D0/M4: CLI runs (no serve process) load the same global popups.json
+    // and inject it through the runtime's PopupGuard; no file = zero overhead.
+    let popups = load_cli_popups(&opts.assets)?;
     let global_assets = crate::global_assets::is_initialized(&opts.assets);
     let mut assets = if global_assets {
         let store = crate::global_assets::open_store(&opts.assets)?;
@@ -904,6 +950,10 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
         .with_navigation_mode(nav_mode);
     let interp = match map_config {
         Some(map) => interp.with_map(map),
+        None => interp,
+    };
+    let interp = match popups {
+        Some(cfg) => interp.with_popups(cfg),
         None => interp,
     };
     let interp = if let Some(cancel) = opts.cancel.clone() {
@@ -1405,6 +1455,119 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    // ---- seq136 D1-M4: map/NavMode/popups CLI wiring ----
+
+    fn nav_flow() -> oas_flow::Flow {
+        oas_flow::Flow::from_json(
+            r#"{"schema_version":1,"name":"nav","steps":[
+                 {"op":"navigate","args":{"target":"庭院"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .expect("nav flow")
+    }
+
+    fn write_nav_assets(root: &std::path::Path, with_map: bool) -> std::path::PathBuf {
+        let assets = root.join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(
+            assets.join("assets.json"),
+            r#"{"schema_version":1,"design_resolution":[1280,720],"items":[],"collections":[]}"#,
+        )
+        .unwrap();
+        if with_map {
+            std::fs::write(
+                assets.join("map.json"),
+                r#"{"schema_version":1,"hub":"庭院","nodes":[
+                     {"id":"庭院","recognize":{"min_hits":1,"features":[
+                       {"kind":"ocr_text","text":"庭院"}]}}],"edges":[]}"#,
+            )
+            .unwrap();
+        }
+        assets
+    }
+
+    #[test]
+    fn navigation_mode_is_plan_only_only_for_device_dry_run() {
+        let mut opts = RunOptions::default();
+        assert_eq!(navigation_mode_for(&opts), oas_runtime::NavMode::Execute);
+        opts.dry_run = true;
+        assert_eq!(navigation_mode_for(&opts), oas_runtime::NavMode::PlanOnly);
+        opts.replay = Some(PathBuf::from("replay"));
+        assert_eq!(
+            navigation_mode_for(&opts),
+            oas_runtime::NavMode::Execute,
+            "replay is a dry input but a REAL execution"
+        );
+    }
+
+    #[test]
+    fn run_map_loading_is_lazy_loud_and_validates_targets() {
+        let td = TempDir::new("run-map");
+        // No navigate → map is never read, even when absent.
+        let plain = oas_flow::Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .unwrap();
+        assert!(load_nav_map(&td.path().join("missing-assets"), &plain)
+            .unwrap()
+            .is_none());
+        // navigate + missing map → loud.
+        let err = load_nav_map(&td.path().join("no-map"), &nav_flow())
+            .unwrap_err();
+        assert!(err.contains("全局地图缺失"), "{err}");
+        // navigate + valid map/target → Some(runtime map).
+        let assets = write_nav_assets(td.path(), true);
+        let map = load_nav_map(&assets, &nav_flow()).unwrap().expect("map");
+        assert_eq!(map.node_ids(), vec!["庭院"]);
+        // unknown target → loud.
+        let bad = oas_flow::Flow::from_json(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"navigate","args":{"target":"不存在"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        )
+        .unwrap();
+        let err = load_nav_map(&assets, &bad).unwrap_err();
+        assert!(err.contains("不在全局地图"), "{err}");
+        // invalid map JSON → loud.
+        std::fs::write(assets.join("map.json"), "{bad").unwrap();
+        assert!(load_nav_map(&assets, &nav_flow())
+            .unwrap_err()
+            .contains("map.json"));
+    }
+
+    #[test]
+    fn cli_run_loads_global_popups_file() {
+        let td = TempDir::new("run-popups");
+        let assets = td.path().join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        // Missing file → zero overhead.
+        assert!(load_cli_popups(&assets).unwrap().is_none());
+        // Disabled/empty config → None.
+        std::fs::write(
+            assets.join("popups.json"),
+            r#"{"enabled":false,"popups":[]}"#,
+        )
+        .unwrap();
+        assert!(load_cli_popups(&assets).unwrap().is_none());
+        // Valid config → Some with the parsed rule.
+        std::fs::write(
+            assets.join("popups.json"),
+            r#"{"enabled":true,"check_interval_ms":250,"popups":[
+                 {"id":"p","detect":{"min_hits":1,"features":[
+                   {"kind":"ocr_text","text":"奖励"}]},
+                  "close":{"kind":"click_asset","asset":"关闭"},
+                  "cooldown_ms":100,"max_attempts":2}]}"#,
+        )
+        .unwrap();
+        let cfg = load_cli_popups(&assets).unwrap().expect("popups");
+        assert_eq!(cfg.check_interval_ms, 250);
+        assert_eq!(cfg.popups[0].id, "p");
+        // Bad JSON → loud (never silently disables the guard).
+        std::fs::write(assets.join("popups.json"), "{bad").unwrap();
+        assert!(load_cli_popups(&assets).unwrap_err().contains("popups.json"));
+    }
 
     const FRAME_W: u32 = 200;
     const FRAME_H: u32 = 120;
