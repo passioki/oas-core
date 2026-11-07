@@ -76,7 +76,7 @@
   const FIELDS = {
     log: [{ key: 'level', label: '级别', type: 'select', options: ['info', 'warn', 'error'] }, { key: 'text', label: '文本（表达式）', type: 'text' }],
     wait: [{ key: 'seconds', label: '秒', type: 'number' }],
-    wait_until: [{ key: 'cond', label: '条件表达式', type: 'text' }, { key: 'timeout_s', label: '超时秒', type: 'number' }],
+    wait_until: [{ key: 'timeout_s', label: '超时秒', type: 'number' }],
     appear: [{ key: 'sel', label: '素材（识别+操作区域）', type: 'asset' }],
     ocr: [{ key: 'sel', label: 'OCR 素材', type: 'asset' }],
     click: [{ key: 'sel', label: '素材（识别+操作区域）', type: 'asset' }],
@@ -165,6 +165,9 @@
     autoSaveTimer: null,
     lastSavedFlow: '',
     saving: false,
+    // seq136（C2 #8）：可编辑源码框 dirty 状态（手动编辑后构建器不覆盖）。
+    codeDirty: false,
+    codeLastSynced: '',
     checked: new Set(),
     // Undo/redo of FLOW EDITS (not selection history). Every renderAll that
     // sees a changed flow stores one snapshot; selection-only changes do not.
@@ -4467,6 +4470,84 @@
     for (const step of flow.steps) normalizeStepArgs(step);
   }
 
+  // seq136（C1 #5）：识别/等待动作清单 + 常用表单 schema（字段映射到现有 flow args；
+  // 高级表达式仍由条件控件的「自定义表达式」兜底）。text_visible/on_interrupt 不是
+  // 动作（text_visible 只在条件表达式里；interrupts 是 flow 级字段）。
+  function recognitionWaitActionKeys() {
+    return ['wait', 'wait_until', 'appear', 'ocr', 'dismiss_popup', 'ocr_to_var'];
+  }
+
+  function recognitionWaitFormSpec(op) {
+    const specs = {
+      wait: [
+        { key: 'seconds', label: '等待秒数', type: 'number' },
+      ],
+      wait_until: [
+        { key: 'cond', label: '等到条件', type: 'condition', required: true },
+        { key: 'timeout_s', label: '超时秒', type: 'number' },
+      ],
+      appear: [
+        { key: 'sel', label: '目标素材（识别+操作区域）', type: 'asset', required: true },
+      ],
+      ocr: [
+        { key: 'sel', label: 'OCR 素材', type: 'asset', required: true },
+      ],
+      dismiss_popup: [
+        { key: 'sel', label: '弹窗素材', type: 'asset', required: true },
+        { key: 'action', label: '按钮文字（可选，素材库 popup 动作名）', type: 'text' },
+        { key: 'timeout_ms', label: '超时 ms', type: 'number' },
+      ],
+      ocr_to_var: [
+        { key: 'sel', label: 'OCR 素材', type: 'asset', required: true },
+        { key: 'var', label: '变量名', type: 'text' },
+      ],
+    };
+    const entries = specs[String(op === undefined || op === null ? '' : op)] || null;
+    return entries ? entries.map((f) => Object.assign({}, f)) : null;
+  }
+
+  // 单层比较表达式解析：「(left op right)」/「not (...)」→ 比较行；复杂表达式返回 null
+  // （保持自定义表达式模式，不擅自改写）。
+  function parseCompareConditionText(cond) {
+    let s = String(cond === undefined || cond === null ? '' : cond).trim();
+    let neg = false;
+    const negMatch = s.match(/^not\s*\(([\s\S]*)\)$/i);
+    if (negMatch) {
+      neg = true;
+      s = negMatch[1].trim();
+    }
+    if (s.startsWith('(') && s.endsWith(')')) s = s.slice(1, -1).trim();
+    const ops = ['>=', '<=', '==', '!=', '>', '<'];
+    let depth = 0;
+    let quote = '';
+    let found = null;
+    for (let i = 0; i < s.length; i += 1) {
+      const ch = s[i];
+      if (quote) {
+        if (ch === '\\') i += 1;
+        else if (ch === quote) quote = '';
+        continue;
+      }
+      if (ch === "'" || ch === '"') { quote = ch; continue; }
+      if (ch === '(') { depth += 1; continue; }
+      if (ch === ')') { depth -= 1; continue; }
+      if (depth !== 0) continue;
+      for (const op of ops) {
+        if (s.slice(i, i + op.length) === op) {
+          if (found) return null; // 多个顶层比较 → 交给自定义表达式
+          found = { index: i, op: op };
+          i += op.length - 1;
+          break;
+        }
+      }
+    }
+    if (!found) return null;
+    const left = s.slice(0, found.index).trim();
+    const right = s.slice(found.index + found.op.length).trim();
+    if (!left || !right) return null;
+    return { left: left, op: found.op, right: right, neg: neg };
+  }
+
   function parseConditionPreset(cond) {
     const c = String(cond || '').trim();
     let m = c.match(/^appear\(\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]\s*\)$/);
@@ -4482,11 +4563,30 @@
     if (m) return { custom: false, rows: [{ kind: 'param', neg: false, value: m[1] }], join: 'or', groupNot: false };
     m = c.match(/^(?:not\s+|!)\s*\(?\s*text_visible\(\s*param\(\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]\s*\)\s*\)\s*\)?$/);
     if (m) return { custom: false, rows: [{ kind: 'param', neg: true, value: m[1] }], join: 'or', groupNot: false };
+    // seq136（C1 #5）：简单比较表达式往返为「比较」条件行；复杂表达式保持自定义。
+    const cmp = parseCompareConditionText(c);
+    if (cmp) {
+      return {
+        custom: false,
+        rows: [{ kind: 'compare', neg: cmp.neg, left: cmp.left, op: cmp.op, right: cmp.right }],
+        join: 'and',
+        groupNot: false,
+      };
+    }
     if (!c) return { custom: false, rows: [], join: 'and', groupNot: false };
     return { custom: true, rows: [], join: 'and', groupNot: false, raw: c };
   }
 
   function conditionRowExpr(row) {
+    if (row.kind === 'compare') {
+      // seq136（C1 #5）：比较行 → (left op right)；左右缺一不生成表达式。
+      const left = String(row.left === undefined || row.left === null ? '' : row.left).trim();
+      const right = String(row.right === undefined || row.right === null ? '' : row.right).trim();
+      const op = ['>', '>=', '<', '<=', '==', '!='].indexOf(String(row.op || '')) >= 0 ? String(row.op) : '==';
+      if (!left || !right) return '';
+      const expr = '(' + left + ' ' + op + ' ' + right + ')';
+      return row.neg ? `not ${expr}` : expr;
+    }
     const v = String(row.value || '').trim();
     if (!v) return '';
     let expr;
@@ -4508,12 +4608,13 @@
     return row.neg ? `not (${expr})` : expr;
   }
 
-  function renderConditionEditor(root, step) {
+  function renderConditionEditor(root, step, opts) {
+    const cfg = opts && typeof opts === 'object' ? opts : {};
     const box = document.createElement('div');
     box.className = 'builder-subform';
     const title = document.createElement('div');
     title.className = 'muted small';
-    title.textContent = '循环/分支条件（谓词行 + and/or/not、&&/||/!、括号；「识别文字配置项」行 = text_visible(param(素材 param_key))；已声明变量正常显示，仅未声明 param 只读回显）';
+    title.textContent = cfg.title || '循环/分支条件（谓词行 + and/or/not、&&/||/!、括号；「识别文字配置项」行 = text_visible(param(素材 param_key))；已声明变量正常显示，仅未声明 param 只读回显）';
     box.appendChild(title);
 
     const preset = parseConditionPreset(step.args.cond);
@@ -4558,7 +4659,8 @@
     box.appendChild(addBtn);
 
     const customLabel = document.createElement('label');
-    customLabel.textContent = '自定义表达式（0=不循环，非 0=循环；可写 appear(...)/text_visible(...)）';
+    customLabel.textContent = cfg.customLabel ||
+      '自定义表达式（0=不循环，非 0=循环；可写 appear(...)/text_visible(...)）';
     const customRow = document.createElement('span');
     customRow.className = 'builder-expr-row';
     const custom = document.createElement('input');
@@ -4607,6 +4709,8 @@
         if (stillLegacyParam) kindChoices.push(['param', '旧参数来源（只读）']);
         else if (declaredParamRow) kindChoices.push(['param', '识别文字变量（已声明）']);
         kindChoices.push(['asset', '素材'], ['text', '文字（全屏）'], ['ocr_var', '识别文字配置项']);
+        // seq136（C1 #5）：比较行（左值/运算符/右值），与 if 共用同一条件控件。
+        if (cfg.allowCompare !== false) kindChoices.push(['compare', '比较（值/表达式）']);
         for (const [v, label] of kindChoices) {
           const o = document.createElement('option');
           o.value = v;
@@ -4627,7 +4731,7 @@
         neg.type = 'checkbox';
         neg.checked = !!row.neg;
         neg.addEventListener('change', () => { row.neg = neg.checked; sync(); });
-        negLabel.append(neg, document.createTextNode('未出现'));
+        negLabel.append(neg, document.createTextNode(row.kind === 'compare' ? '取反' : '未出现'));
         let valueEl;
         if (row.kind === 'asset') {
           const search = assetSearch(row.value || '', null);
@@ -4665,6 +4769,28 @@
           applyAsset();
           valueEl.addEventListener('change', () => { applyAsset(); sync(); });
           line.append(kind, negLabel, valueEl);
+        } else if (row.kind === 'compare') {
+          // seq136（C1 #5）：比较行 = 左值/运算符/右值 → (left op right)；值支持表达式。
+          const leftEl = document.createElement('input');
+          leftEl.type = 'text';
+          leftEl.className = 'builder-condition-compare-left';
+          leftEl.placeholder = '左值/表达式（如 ocr_result）';
+          leftEl.value = row.left || '';
+          leftEl.addEventListener('change', () => { row.left = leftEl.value.trim(); sync(); });
+          const opEl = document.createElement('select');
+          opEl.className = 'builder-condition-compare-op';
+          for (const op of ['>', '>=', '<', '<=', '==', '!=']) {
+            opEl.appendChild(new Option(op, op));
+          }
+          opEl.value = ['>', '>=', '<', '<=', '==', '!='].indexOf(String(row.op)) >= 0 ? String(row.op) : '==';
+          opEl.addEventListener('change', () => { row.op = opEl.value; sync(); });
+          const rightEl = document.createElement('input');
+          rightEl.type = 'text';
+          rightEl.className = 'builder-condition-compare-right';
+          rightEl.placeholder = '右值/表达式（如 3 或 param(\'x\')）';
+          rightEl.value = row.right || '';
+          rightEl.addEventListener('change', () => { row.right = rightEl.value.trim(); sync(); });
+          line.append(kind, negLabel, leftEl, opEl, rightEl);
         } else if (row.kind === 'param') {
           // seq130（#3）：已声明的 param(key) 是正常变量来源；未声明才旧参数只读。
           const legacy = document.createElement('span');
@@ -4848,6 +4974,14 @@
     if (step.op === 'if' || step.op === 'while') {
       renderConditionEditor(root, step);
     }
+    // seq136（C1 #5）：识别/等待动作的常用表单复用 if 的条件行控件（素材/文字/识别
+    // 文字变量/比较行 + 与或非 + 自定义表达式兜底），避免只能写裸表达式。
+    if (step.op === 'wait_until') {
+      renderConditionEditor(root, step, {
+        title: '等到条件（与 if 相同的条件行：素材/文字/识别文字配置项/比较值 + 与或非；条件成立后继续，超时本步失败）',
+        customLabel: '自定义表达式（条件成立后继续；可写 appear(...)/text_visible(...)/比较；非 0/true 成立）',
+      });
+    }
     for (const f of FIELDS[step.op] || []) {
       const lab = document.createElement('label');
       lab.textContent = f.label;
@@ -4979,30 +5113,233 @@
     root.appendChild(actions);
   }
 
-  function renderCode() {
-    const el = $('builder-code');
-    if (!el || document.activeElement === el) return;
-    el.value = B.flow ? JSON.stringify(B.flow, null, 2) : '';
+  // --- seq136（C2 #8）：可编辑源码框纯函数 -----------------------------------
+  // 最终 flow JSON（canonical=JSON.stringify(flow,null,2)）；已知 op 清单来自
+  // OP_META（固定数组，避免把运行期校验依赖到 DOM/网络）。
+  function flowSourceKnownOps() {
+    return ['if', 'loop', 'while', 'break', 'continue', 'call_task',
+      'wait', 'wait_until', 'appear', 'ocr',
+      'click', 'click_point', 'click_target', 'long_press', 'curve_swipe',
+      'dismiss_popup', 'swipe', 'drag', 'key', 'restart_app',
+      'set_var', 'inc_var', 'ocr_to_var', 'log', 'finish'];
   }
 
-  function applyCode() {
+  function flowSourceKnownOp(op) {
+    return flowSourceKnownOps().indexOf(String(op === undefined || op === null ? '' : op)) >= 0;
+  }
+
+  function flowSourceText(flow) {
+    return flow ? JSON.stringify(flow, null, 2) : '';
+  }
+
+  function flowStepCount(flow) {
+    let n = 0;
+    function walk(steps) {
+      if (!Array.isArray(steps)) return;
+      for (const step of steps) {
+        if (!step || typeof step !== 'object') continue;
+        n += 1;
+        for (const key of ['then', 'else', 'body']) walk(step[key]);
+      }
+    }
+    walk(flow && flow.steps);
+    return n;
+  }
+
+  // JSON.parse 错误位置 → 源码行/列（不依赖浏览器）。
+  function flowSourceParseErrorLine(text, err) {
+    const raw = String(text === undefined || text === null ? '' : text);
+    const msg = String(err && err.message ? err.message : err || '');
+    const m = msg.match(/position\s+(\d+)/i);
+    if (!m) return null;
+    const pos = Math.max(0, Math.min(Number(m[1]), raw.length));
+    const before = raw.slice(0, pos);
+    const line = before.split('\n').length;
+    const col = pos - (before.lastIndexOf('\n') + 1) + 1;
+    return { line: line, column: col };
+  }
+
+  function validateFlowSourceStep(step, path, errors) {
+    if (!step || typeof step !== 'object' || Array.isArray(step)) {
+      errors.push({ path: path, message: '步骤必须是对象' });
+      return;
+    }
+    const op = String(step.op === undefined || step.op === null ? '' : step.op).trim();
+    if (!op) errors.push({ path: path + '.op', message: '缺少 op' });
+    else if (!flowSourceKnownOp(op)) errors.push({ path: path + '.op', message: '未知 op「' + op + '」' });
+    if (step.args !== undefined && step.args !== null &&
+      (typeof step.args !== 'object' || Array.isArray(step.args))) {
+      errors.push({ path: path + '.args', message: 'args 必须是对象' });
+    }
+    for (const key of ['then', 'else', 'body']) {
+      const children = step[key];
+      if (children === undefined || children === null) continue;
+      if (!Array.isArray(children)) {
+        errors.push({ path: path + '.' + key, message: '必须是步骤数组' });
+        continue;
+      }
+      children.forEach((child, i) => validateFlowSourceStep(child, path + '.' + key + '[' + i + ']', errors));
+    }
+  }
+
+  // 解析 + 结构/op/args/children 校验；错误带 path/行/列，失败不产出 flow。
+  function parseFlowSource(text) {
+    const raw = String(text === undefined || text === null ? '' : text);
+    if (!raw.trim()) {
+      return { ok: false, flow: null, errors: [{ path: '(root)', message: '源码为空' }] };
+    }
+    let v;
+    try {
+      v = JSON.parse(raw);
+    } catch (e) {
+      const loc = flowSourceParseErrorLine(raw, e);
+      return {
+        ok: false,
+        flow: null,
+        errors: [{
+          path: '(JSON)',
+          message: String(e && e.message ? e.message : e),
+          line: loc ? loc.line : null,
+          column: loc ? loc.column : null,
+        }],
+      };
+    }
+    const errors = [];
+    if (!v || typeof v !== 'object' || Array.isArray(v)) {
+      errors.push({ path: '(root)', message: 'flow 必须是 JSON 对象' });
+    } else if (!Array.isArray(v.steps)) {
+      errors.push({ path: 'steps', message: 'flow 必须包含 steps 数组' });
+    } else {
+      v.steps.forEach((step, i) => validateFlowSourceStep(step, 'steps[' + i + ']', errors));
+    }
+    if (errors.length) return { ok: false, flow: null, errors: errors };
+    return { ok: true, flow: v, errors: [] };
+  }
+
+  function flowSourceErrorText(errors) {
+    const list = Array.isArray(errors) ? errors : [];
+    return list.map((e) => {
+      let loc = String(e && e.path ? e.path : '(root)');
+      if (e && e.line !== undefined && e.line !== null) {
+        loc = '第 ' + e.line + ' 行' + (e.column !== undefined && e.column !== null ? ' 第 ' + e.column + ' 列' : '') + ' · ' + loc;
+      }
+      return loc + '：' + String(e && e.message ? e.message : '无效');
+    }).join('\n');
+  }
+
+  // 纯函数：按 path 取步骤（不依赖 B）。
+  function flowStepAtPath(flow, path) {
+    if (!Array.isArray(path) || !path.length) return null;
+    let arr = flow && Array.isArray(flow.steps) ? flow.steps : null;
+    let obj = null;
+    for (const seg of path) {
+      if (typeof seg === 'number') {
+        if (!Array.isArray(arr)) return null;
+        obj = arr[seg];
+        if (!obj) return null;
+      } else {
+        if (!obj) return null;
+        arr = obj[seg];
+        if (!Array.isArray(arr)) return null;
+      }
+    }
+    return obj;
+  }
+
+  // 源码覆盖后尽量保留选中：同 path 且 op 相同才保留，否则清空。
+  function selectedPathAfterSourceReplace(oldSelected, oldFlow, newFlow) {
+    if (!Array.isArray(oldSelected) || !oldSelected.length) return null;
+    const oldStep = flowStepAtPath(oldFlow, oldSelected);
+    if (!oldStep) return null;
+    const newStep = flowStepAtPath(newFlow, oldSelected);
+    if (!newStep) return null;
+    if (String(oldStep.op) !== String(newStep.op)) return null;
+    return oldSelected.slice();
+  }
+
+  function flowSourceIsDirty(currentSource, lastSyncedSource) {
+    return String(currentSource === undefined || currentSource === null ? '' : currentSource) !==
+      String(lastSyncedSource === undefined || lastSyncedSource === null ? '' : lastSyncedSource);
+  }
+
+  function updateCodeStatus(text, color) {
+    const st = $('builder-code-status');
+    if (st) {
+      st.textContent = text || '—';
+      st.style.color = color || '';
+    }
+  }
+
+  function showCodeErrors(errors) {
+    const pre = $('builder-code-error');
+    if (!pre) return;
+    const text = flowSourceErrorText(errors);
+    pre.textContent = text;
+    pre.hidden = !text;
+  }
+
+  function renderCode() {
+    const el = $('builder-code');
+    if (!el) return;
+    // dirty：用户手动编辑过，构建器编辑不得覆盖；等待「放弃修改/校验并应用」。
+    if (B.codeDirty) {
+      updateCodeStatus('源码有未应用修改（dirty）', '#e8c46a');
+      return;
+    }
+    if (document.activeElement === el) return;
+    const src = flowSourceText(B.flow);
+    el.value = src;
+    B.codeLastSynced = src;
+    updateCodeStatus('已同步当前流程', '');
+  }
+
+  function discardCodeEdits() {
+    const el = $('builder-code');
+    B.codeDirty = false;
+    const src = flowSourceText(B.flow);
+    if (el) el.value = src;
+    B.codeLastSynced = src;
+    showCodeErrors([]);
+    updateCodeStatus('已放弃源码修改（恢复当前流程）', '#7bd88f');
+    if (el) el.blur();
+  }
+
+  async function applyCode() {
     const el = $('builder-code');
     const st = $('builder-code-status');
     if (!el) return;
-    try {
-      const v = JSON.parse(el.value);
-      if (!v || typeof v !== 'object' || !Array.isArray(v.steps)) {
-        throw new Error('flow 必须包含 steps 数组');
-      }
-      B.flow = v;
-      normalizeFlow(B.flow);
-      B.selected = null;
-      renderAll();
-      if (st) st.textContent = '代码已应用到流程图';
-      status('代码已应用，自动保存将写入 flow.json');
-    } catch (e) {
-      if (st) st.textContent = '代码无效：' + e.message;
+    const parsed = parseFlowSource(el.value);
+    if (!parsed.ok) {
+      // 校验失败：显示精确 path/行/字段，不覆盖当前流程。
+      B.codeDirty = flowSourceIsDirty(el.value, B.codeLastSynced);
+      showCodeErrors(parsed.errors);
+      updateCodeStatus('源码校验失败（未覆盖流程）', '#ff8a80');
+      if (st) st.textContent = '源码校验失败（未覆盖流程，见下方错误）';
+      return;
     }
+    const count = flowStepCount(parsed.flow);
+    if (!window.confirm(`将用源码覆盖当前流程图（${count} 个动作）？\n\n当前流程会被源码替换；确认后仍走现有保存流程。`)) {
+      updateCodeStatus('已取消应用源码', '#e8c46a');
+      return;
+    }
+    const oldFlow = B.flow;
+    const oldSelected = B.selected;
+    B.flow = parsed.flow;
+    normalizeFlow(B.flow);
+    B.selected = selectedPathAfterSourceReplace(oldSelected, oldFlow, B.flow);
+    B.codeDirty = false;
+    const src = flowSourceText(B.flow);
+    B.codeLastSynced = src;
+    el.value = src;
+    showCodeErrors([]);
+    renderAll();
+    updateCodeStatus(`源码已应用（${count} 个动作），正在保存…`, '#e8c46a');
+    await saveFlow(false);
+    const savedOk = B.lastSavedFlow === JSON.stringify(B.flow);
+    updateCodeStatus(
+      savedOk ? '源码已应用并保存' : '源码已应用，但保存未完成（见状态栏/服务端校验）',
+      savedOk ? '#7bd88f' : '#ff8a80'
+    );
   }
 
   function cloneJson(v) {
@@ -5138,6 +5475,10 @@
     B.autoSaveArmed = false;
     B.flowHistory = [];
     B.historyIndex = -1;
+    // seq136（C2 #8）：切换任务时放弃旧任务源码的 dirty/错误状态。
+    B.codeDirty = false;
+    B.codeLastSynced = '';
+    showCodeErrors([]);
     clearLintState();
     if (!name) {
       B.task = '';
@@ -5260,6 +5601,11 @@
         return;
       }
       B.lastSavedFlow = JSON.stringify(B.flow);
+      // seq136（C2 #8）：保存成功后源码框同步（dirty 手动编辑不被覆盖）。
+      if (!B.codeDirty) {
+        B.codeLastSynced = flowSourceText(B.flow);
+        renderCode();
+      }
       // U-T5/B-T3a：save_flow 成功后后端会同步派生参数（响应 sync）；提示并刷新面板。
       const syncText = saveSyncText(s.sync);
       const syncWarnings = Array.isArray(s.sync_warnings) ? s.sync_warnings : [];
@@ -5415,6 +5761,18 @@
     if (lintClose) lintClose.addEventListener('click', closeLintPanel);
     const codeApply = $('builder-code-apply');
     if (codeApply) codeApply.addEventListener('click', applyCode);
+    // seq136（C2 #8）：源码手动编辑进入 dirty（构建器编辑不覆盖），放弃/应用后恢复。
+    const codeEl = $('builder-code');
+    if (codeEl) {
+      codeEl.addEventListener('input', () => {
+        if (!B.codeDirty && flowSourceIsDirty(codeEl.value, B.codeLastSynced)) {
+          B.codeDirty = true;
+          updateCodeStatus('源码有未应用修改（dirty）', '#e8c46a');
+        }
+      });
+    }
+    const codeDiscard = $('builder-code-discard');
+    if (codeDiscard) codeDiscard.addEventListener('click', discardCodeEdits);
     const delChecked = $('builder-delete-checked');
     if (delChecked) delChecked.addEventListener('click', deleteCheckedSteps);
     // V2.0c：变量面板 + 变量对话框。

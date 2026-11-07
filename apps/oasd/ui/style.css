@@ -994,6 +994,39 @@ aside.side {
   font-family: Consolas, monospace;
   font-size: 12px;
   box-sizing: border-box;
+  resize: vertical;
+}
+/* seq136（C2 #8）：可折叠源码框（最终 flow JSON，可直接编辑） */
+.builder-code-wrap {
+  margin-top: 10px;
+  border: 1px solid #2b2f38;
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: #0f141a;
+}
+.builder-code-wrap > summary {
+  cursor: pointer;
+  color: #8fb8e8;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.builder-code-wrap textarea.builder-code {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 220px;
+  max-height: 60vh;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.builder-code-error {
+  margin: 6px 0 0;
+  max-height: 160px;
+  overflow: auto;
+  color: #ff8a80;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 /* v1.2.1 frame gallery rename/group/drag */
 .frame-group { margin: 6px 0; border-top: 1px solid #2b2f38; padding-top: 4px; }

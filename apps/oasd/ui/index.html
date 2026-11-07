@@ -382,12 +382,16 @@
           <div id="builder-steps" class="builder-steps muted">（选择任务后加载）</div>
           <h3>实时流程图</h3>
           <div id="builder-graph" class="builder-graph muted">（—）</div>
-          <h3>流程代码（可直接修改）</h3>
-          <textarea id="builder-code" class="builder-code" spellcheck="false"></textarea>
-          <div class="builder-form-actions">
-            <button id="builder-code-apply" type="button">应用代码到流程图</button>
-            <span id="builder-code-status" class="muted small">—</span>
-          </div>
+          <details id="builder-code-wrap" class="builder-code-wrap" open>
+            <summary>流程源码（最终 flow JSON；可直接编辑，校验后应用）</summary>
+            <textarea id="builder-code" class="builder-code" spellcheck="false"></textarea>
+            <div class="builder-form-actions">
+              <button id="builder-code-apply" type="button">校验并应用</button>
+              <button id="builder-code-discard" type="button">放弃修改</button>
+              <span id="builder-code-status" class="muted small">—</span>
+            </div>
+            <pre id="builder-code-error" class="builder-code-error muted small" hidden></pre>
+          </details>
         </section>
         <div class="builder-splitter" data-side="right" title="拖动调整属性面板宽度（记忆）"></div>
         <aside class="builder-inspector">

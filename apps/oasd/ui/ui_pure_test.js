@@ -9211,6 +9211,125 @@ ok(
   'seq136: polygon helpers are pure and shared by canvas + candidates'
 );
 
+// --- seq136（C2 #8）：可编辑源码框（最终 flow JSON / 校验 / dirty / 应用） -----
+const codeSb = {};
+vm.createContext(codeSb);
+vm.runInContext(
+  ['flowSourceKnownOps', 'flowSourceKnownOp', 'flowSourceText', 'flowStepCount',
+    'flowSourceParseErrorLine', 'validateFlowSourceStep', 'parseFlowSource',
+    'flowSourceErrorText', 'flowStepAtPath', 'selectedPathAfterSourceReplace',
+    'flowSourceIsDirty']
+    .map((name) => extractFunctionFrom(builderSource, name, 'builder.js'))
+    .join('\n\n'),
+  codeSb,
+  { filename: 'builder.js#source' }
+);
+const opMetaKeys = [...builderSource.matchAll(/^    ([a-z_]+): \{ label:/gm)].map((m) => m[1]);
+eq(codeSb.flowSourceKnownOps().slice().sort(), opMetaKeys.slice().sort(),
+  'seq136: the source validator known-op list matches OP_META (one catalog)');
+const sourceFlow = {
+  schema_version: 1,
+  name: '任务甲',
+  steps: [
+    { op: 'wait', args: { seconds: 1 } },
+    { op: 'if', args: { cond: 'true' }, then: [{ op: 'click_target', args: { find: [] } }], else: [] },
+  ],
+};
+eq(codeSb.flowSourceText(sourceFlow).indexOf('"steps": [') >= 0 &&
+  codeSb.flowSourceText(sourceFlow).indexOf('\n') >= 0, true,
+  'seq136: the source box shows canonical pretty-printed flow JSON');
+eq(codeSb.flowSourceText(null), '', 'seq136: no flow renders an empty source');
+eq(codeSb.flowStepCount(sourceFlow), 3, 'seq136: step count includes nested if children');
+const parsedSource = codeSb.parseFlowSource(codeSb.flowSourceText(sourceFlow));
+eq(parsedSource.ok, true, 'seq136: valid source parses');
+eq(parsedSource.flow.steps[1].then[0].op, 'click_target',
+  'seq136: nested children survive parse/apply');
+eq(codeSb.parseFlowSource('').ok, false, 'seq136: empty source is rejected');
+const badJson = codeSb.parseFlowSource('{\n  "steps": [\n    {"op": "wait",}\n  ]\n}');
+eq(badJson.ok, false, 'seq136: invalid JSON is rejected');
+eq(badJson.errors[0].path, '(JSON)', 'seq136: invalid JSON reports the JSON path');
+ok(badJson.errors[0].line >= 2 && badJson.errors[0].column >= 1,
+  'seq136: invalid JSON reports the source line/column');
+eq(codeSb.parseFlowSource('[]').errors[0].path, '(root)', 'seq136: root must be an object');
+eq(codeSb.parseFlowSource('{"schema_version":1}').errors[0].path, 'steps',
+  'seq136: missing steps is reported at the steps path');
+eq(codeSb.parseFlowSource('{"steps":[null]}').errors[0].path, 'steps[0]',
+  'seq136: a non-object step is rejected with its path');
+eq(codeSb.parseFlowSource('{"steps":[{"args":{}}]}').errors[0].path, 'steps[0].op',
+  'seq136: a step without op is rejected at .op');
+const unknownOp = codeSb.parseFlowSource('{"steps":[{"op":"wait"},{"op":"levitate","args":{}}]}');
+eq(unknownOp.ok, false, 'seq136: unknown ops are rejected');
+eq(unknownOp.errors[0].path, 'steps[1].op', 'seq136: unknown op reports its exact path');
+ok(/未知 op「levitate」/.test(unknownOp.errors[0].message), 'seq136: unknown op names the op');
+eq(codeSb.parseFlowSource('{"steps":[{"op":"wait","args":[]}]}').errors[0].path, 'steps[0].args',
+  'seq136: array args are rejected');
+eq(codeSb.parseFlowSource('{"steps":[{"op":"if","then":{}}]}').errors[0].path, 'steps[0].then',
+  'seq136: non-array child containers are rejected');
+ok(/第 \d+ 行/.test(codeSb.flowSourceErrorText(badJson.errors)) &&
+  /\(JSON\)/.test(codeSb.flowSourceErrorText(badJson.errors)),
+  'seq136: error text includes line and source path');
+ok(/steps\[1\]\.op：未知 op/.test(codeSb.flowSourceErrorText(unknownOp.errors)),
+  'seq136: error text includes the field path and message');
+eq(codeSb.flowStepAtPath(sourceFlow, [1, 'then', 0]).op, 'click_target',
+  'seq136: a step can be located by path in the parsed flow');
+eq(codeSb.flowStepAtPath(sourceFlow, [9]), null, 'seq136: a missing path yields null');
+const newFlow = JSON.parse(JSON.stringify(sourceFlow));
+eq(codeSb.selectedPathAfterSourceReplace([1], sourceFlow, newFlow), [1],
+  'seq136: selection is preserved when the same path keeps the same op');
+const changedFlow = JSON.parse(JSON.stringify(sourceFlow));
+changedFlow.steps[1].op = 'loop';
+eq(codeSb.selectedPathAfterSourceReplace([1], sourceFlow, changedFlow), null,
+  'seq136: selection is cleared when the step op changed');
+eq(codeSb.selectedPathAfterSourceReplace([5], sourceFlow, newFlow), null,
+  'seq136: selection is cleared when the path no longer exists');
+eq(codeSb.selectedPathAfterSourceReplace(null, sourceFlow, newFlow), null,
+  'seq136: no previous selection stays none');
+eq(codeSb.flowSourceIsDirty('a', 'a'), false, 'seq136: identical source is not dirty');
+eq(codeSb.flowSourceIsDirty('a', 'b'), true, 'seq136: edited source is dirty');
+// 静态接线：可折叠框 + 校验应用 + dirty 保护 + 应用后 saveFlow。
+for (const id of ['builder-code-wrap', 'builder-code', 'builder-code-apply',
+  'builder-code-discard', 'builder-code-status', 'builder-code-error']) {
+  ok(new RegExp(`id="${id}"`).test(html), `seq136: index.html provides #${id}`);
+}
+ok(/<details id="builder-code-wrap"[\s\S]{0,120}<textarea id="builder-code"/.test(html) &&
+  /id="builder-code-error"[\s\S]{0,40}hidden/.test(html),
+  'seq136: the source box is collapsible and has a hidden error panel');
+ok(
+  /function renderCode\(\)/.test(builderSource) &&
+    /if \(B\.codeDirty\)/.test(builderSource) &&
+    /codeEl\.addEventListener\('input'/.test(builderSource) &&
+    /B\.codeDirty = true;/.test(builderSource),
+  'seq136: manual source edits enter dirty mode and builder edits do not overwrite them'
+);
+ok(
+  /function discardCodeEdits\(\)/.test(builderSource) &&
+    /B\.codeDirty = false;/.test(builderSource) &&
+    /codeDiscard\.addEventListener\('click', discardCodeEdits\)/.test(builderSource),
+  'seq136: 放弃修改 restores the current flow source'
+);
+ok(
+  /function parseFlowSource\(text\)/.test(builderSource) &&
+    /const parsed = parseFlowSource\(el\.value\)/.test(builderSource) &&
+    /showCodeErrors\(parsed\.errors\)/.test(builderSource) &&
+    /源码校验失败（未覆盖流程）/.test(builderSource),
+  'seq136: 校验并应用 rejects invalid source with errors and never overwrites the flow'
+);
+ok(
+  /window\.confirm\(`将用源码覆盖当前流程图/.test(builderSource) &&
+    /selectedPathAfterSourceReplace\(oldSelected, oldFlow, B\.flow\)/.test(builderSource) &&
+    /B\.flow = parsed\.flow;/.test(builderSource) &&
+    /normalizeFlow\(B\.flow\);/.test(builderSource) &&
+    /await saveFlow\(false\);/.test(builderSource),
+  'seq136: applying source confirms, preserves selection and persists through saveFlow'
+);
+ok(
+  /if \(!B\.codeDirty\) \{\s*B\.codeLastSynced = flowSourceText\(B\.flow\);\s*renderCode\(\);/.test(builderSource) &&
+    /B\.codeDirty = false;\s*B\.codeLastSynced = '';/.test(builderSource),
+  'seq136: save refreshes the source and switching tasks clears dirty/error state'
+);
+ok(!/function applyCode\(\)[\s\S]{0,600}fetch\(/.test(builderSource),
+  'seq136: applying source uses existing saveFlow only (no new backend API)');
+
 // --- DOM id audit（Studio shell；D 批删除了参数面板/配置项对话框相关 id） -------
 const htmlDom = html;
 const referencedIds = [...new Set(
@@ -9303,7 +9422,9 @@ ok(
 const condSb = {};
 vm.createContext(condSb);
 vm.runInContext(
-  ['paramWaitCond', 'paramSafeKey', 'paramTextExpr', 'conditionRowExpr']
+  ['paramWaitCond', 'paramSafeKey', 'paramTextExpr', 'conditionRowExpr',
+    'parseCompareConditionText', 'parseConditionPreset',
+    'recognitionWaitActionKeys', 'recognitionWaitFormSpec']
     .map((name) => extractFunctionFrom(builderSource, name, 'builder.js'))
     .join('\n\n'),
   condSb,
@@ -9328,6 +9449,78 @@ eq(
   condSb.conditionRowExpr({ kind: 'param', value: 'legacy_key' }),
   "text_visible(param('legacy_key'))",
   'D: 旧 flow 的参数条件行仍可回显/运行'
+);
+// --- seq136（C1 #5）：条件控件比较行 + 识别/等待动作 schema -------------------
+eq(condSb.recognitionWaitActionKeys(),
+  ['wait', 'wait_until', 'appear', 'ocr', 'dismiss_popup', 'ocr_to_var'],
+  'seq136: the audited recognition/wait action list is explicit');
+for (const op of condSb.recognitionWaitActionKeys()) {
+  ok(Array.isArray(condSb.recognitionWaitFormSpec(op)) && condSb.recognitionWaitFormSpec(op).length > 0,
+    `seq136: ${op} has a common-form schema mapped to flow args`);
+}
+ok(
+  condSb.recognitionWaitFormSpec('wait_until').some((f) => f.key === 'cond' && f.type === 'condition') &&
+    condSb.recognitionWaitFormSpec('wait_until').some((f) => f.key === 'timeout_s'),
+  'seq136: wait_until common form = condition control + timeout (no bare expression-only field)'
+);
+ok(
+  condSb.recognitionWaitFormSpec('appear')[0].type === 'asset' &&
+    condSb.recognitionWaitFormSpec('dismiss_popup').some((f) => f.key === 'timeout_ms') &&
+    condSb.recognitionWaitFormSpec('ocr_to_var').some((f) => f.key === 'var'),
+  'seq136: asset/text/timeout/var common fields map to existing args keys'
+);
+eq(condSb.recognitionWaitFormSpec('if'), null,
+  'seq136: non recognition/wait actions have no recognition-wait schema');
+eq(
+  condSb.conditionRowExpr({ kind: 'compare', left: 'ocr_result', op: '>', right: '3' }),
+  '(ocr_result > 3)',
+  'seq136: a compare row emits a parenthesized comparison expression'
+);
+eq(
+  condSb.conditionRowExpr({ kind: 'compare', left: 'var(\'n\')', op: '<=', right: '10', neg: true }),
+  "not (var('n') <= 10)",
+  'seq136: a compare row supports negation'
+);
+eq(condSb.conditionRowExpr({ kind: 'compare', left: 'x', op: '>', right: '' }), '',
+  'seq136: an incomplete compare row emits nothing');
+eq(condSb.conditionRowExpr({ kind: 'compare', left: 'x', op: 'bogus', right: '1' }),
+  '(x == 1)', 'seq136: an unknown compare operator falls back to ==');
+eq(condSb.parseCompareConditionText('(ocr_result > 3)'),
+  { left: 'ocr_result', op: '>', right: '3', neg: false },
+  'seq136: simple compare expressions round-trip into compare rows');
+eq(condSb.parseCompareConditionText("not (var('n') <= 10)"),
+  { left: "var('n')", op: '<=', right: '10', neg: true },
+  'seq136: negated compare expressions round-trip too');
+eq(condSb.parseCompareConditionText('a > 1 and b < 2'), null,
+  'seq136: multiple top-level comparisons stay custom (not rewritten)');
+eq(condSb.parseConditionPreset('(ocr_result > 3)'),
+  { custom: false, rows: [{ kind: 'compare', neg: false, left: 'ocr_result', op: '>', right: '3' }], join: 'and', groupNot: false },
+  'seq136: the if/wait_until condition parser loads compare rows');
+eq(condSb.parseConditionPreset('appear("I_A")').rows[0].kind, 'asset',
+  'seq136: existing asset rows still parse');
+eq(condSb.parseConditionPreset("randomfn('x', 1)").custom, true,
+  'seq136: unrecognized expressions stay in custom mode (old-flow compatible)');
+ok(
+  /renderConditionEditor\(root, step, \{[\s\S]{0,120}等到条件/.test(builderSource) &&
+    !/wait_until: \[\{ key: 'cond', label: '条件表达式'/.test(builderSource),
+  'seq136: wait_until renders the shared condition control instead of a bare expression field'
+);
+ok(
+  /function renderConditionEditor\(root, step, opts\)/.test(builderSource) &&
+    /cfg\.title/.test(builderSource) && /cfg\.customLabel/.test(builderSource) &&
+    /\[\s*'compare', '比较（值\/表达式）'\s*\]/.test(builderSource),
+  'seq136: the condition editor is shared (title/custom-label options + compare row)'
+);
+ok(
+  /builder-condition-compare-left/.test(builderSource) &&
+    /builder-condition-compare-op/.test(builderSource) &&
+    /builder-condition-compare-right/.test(builderSource),
+  'seq136: the compare row renders left/op/right inputs'
+);
+ok(
+  /function recognitionWaitActionKeys\(\)/.test(builderSource) &&
+    /function recognitionWaitFormSpec\(op\)/.test(builderSource),
+  'seq136: the recognition/wait schema is a pure testable helper'
 );
 // 删除残留 = 0
 ok(

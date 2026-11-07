@@ -490,6 +490,100 @@ pub struct PreviewAction {
     pub steps: Vec<OpRegionChainStep>,
 }
 
+// ---------------------------------------------------------------------------
+// seq136 D0: global independent popup subsystem (`popups.json` + PopupGuard)
+// ---------------------------------------------------------------------------
+//
+// The JSON schema lives in the application (serve) while the runtime owns this
+// neutral model + guard (no serde/JSON dependency). Detection/close reuse the
+// single-source recognition + exact-shape click paths.
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PopupFeature {
+    Asset { asset: String },
+    OcrText { text: String, roi: Option<Rect> },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PopupClose {
+    ClickAsset { asset: String },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PopupRule {
+    pub id: String,
+    pub enabled: bool,
+    pub priority: i32,
+    pub min_hits: u32,
+    pub features: Vec<PopupFeature>,
+    pub close: PopupClose,
+    pub cooldown_ms: u64,
+    pub max_attempts: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct PopupConfig {
+    pub enabled: bool,
+    pub check_interval_ms: u64,
+    pub popups: Vec<PopupRule>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PopupRuleState {
+    last_close: Option<Instant>,
+}
+
+#[derive(Debug, Default)]
+struct PopupGuard {
+    config: PopupConfig,
+    state: HashMap<String, PopupRuleState>,
+    in_guard: bool,
+}
+
+impl PopupGuard {
+    fn from_config(config: PopupConfig) -> Self {
+        Self {
+            config,
+            state: HashMap::new(),
+            in_guard: false,
+        }
+    }
+}
+
+/// Dry probe result of `/popups/test` (never clicks).
+#[derive(Clone, Debug)]
+pub struct PopupProbe {
+    pub rule_id: String,
+    pub matched_features: u32,
+    pub close_asset: Option<String>,
+    pub close_point: Option<Point>,
+    pub close_box: Option<Rect>,
+    pub close_shape: Option<ClickShape>,
+}
+
+static GLOBAL_POPUPS: std::sync::Mutex<Option<PopupConfig>> = std::sync::Mutex::new(None);
+
+/// Install/clear the process-wide popup config (runs snapshot it at construction).
+pub fn set_global_popups(config: Option<PopupConfig>) {
+    match GLOBAL_POPUPS.lock() {
+        Ok(mut g) => *g = config,
+        Err(poisoned) => *poisoned.into_inner() = config,
+    }
+}
+
+/// Current process-wide popup config snapshot.
+pub fn global_popups() -> Option<PopupConfig> {
+    match GLOBAL_POPUPS.lock() {
+        Ok(g) => g.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+/// A click step aborted by the pre-click popup guard: retry the step.
+const POPUP_RETRY_SENTINEL: &str = "__popup_retry__";
+const POPUP_SETTLE_MS: u64 = 250;
+const MAX_POPUP_STEP_RETRIES: u32 = 3;
+
 /// The task's declared assets (`assets/<Name>.json` in a later phase).
 #[derive(Default, Clone)]
 pub struct AssetSet {
@@ -1946,6 +2040,10 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     /// (参数 v2): the message must name the op and the parameter key. Empty
     /// before the first step.
     current_op: &'static str,
+    /// seq136 D0: global popup guard (`None` = disabled → zero overhead).
+    popups: Option<PopupGuard>,
+    /// Interval gate for periodic hooks (wait/loop/click).
+    popup_last_check: Option<Instant>,
 }
 
 impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
@@ -1985,6 +2083,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             rng: crate::humanize::Rng::new(run_seed),
             steps: 0,
             current_op: "",
+            popups: global_popups().map(PopupGuard::from_config),
+            popup_last_check: None,
         }
     }
 
@@ -2101,6 +2201,262 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         self.rng.peek()
     }
 
+    /// Override the process-wide popup config for THIS interpreter (editor
+    /// previews/tests and per-run injection).
+    pub fn with_popups(mut self, config: PopupConfig) -> Self {
+        self.popups = if config.enabled && !config.popups.is_empty() {
+            Some(PopupGuard::from_config(config))
+        } else {
+            None
+        };
+        self
+    }
+
+    /// Current popup guard config, if any.
+    pub fn popup_config(&self) -> Option<&PopupConfig> {
+        self.popups.as_ref().map(|g| &g.config)
+    }
+
+    /// Dry popup probe for `/popups/test`: matched rules (priority order) plus the
+    /// close action's exact geometry/point. Never clicks.
+    pub fn probe_popups(&mut self) -> Result<Vec<PopupProbe>, String> {
+        let Some(cfg) = self.popups.as_ref().map(|g| g.config.clone()) else {
+            return Ok(Vec::new());
+        };
+        if !cfg.enabled {
+            return Ok(Vec::new());
+        }
+        self.observe_screen()?;
+        let mut rules = cfg.popups;
+        rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        let mut out = Vec::new();
+        for rule in rules {
+            if !rule.enabled {
+                continue;
+            }
+            let (hit, matched) = self.popup_rule_matches(&rule)?;
+            if !hit {
+                continue;
+            }
+            let mut probe = PopupProbe {
+                rule_id: rule.id.clone(),
+                matched_features: matched,
+                close_asset: None,
+                close_point: None,
+                close_box: None,
+                close_shape: None,
+            };
+            if let PopupClose::ClickAsset { asset } = &rule.close {
+                probe.close_asset = Some(asset.clone());
+                if let Ok(best) = self.recognize_best(asset) {
+                    if let Some(at) = best.at {
+                        if best.score >= self.selector_threshold(asset) {
+                            if let Ok((box_, shape)) = self.click_geometry_for(asset, at) {
+                                if let Ok(plan) = self.popup_sample_plan(box_, shape.as_ref()) {
+                                    probe.close_point = Some(plan.point);
+                                    probe.close_box = Some(box_);
+                                    probe.close_shape = shape;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            out.push(probe);
+        }
+        Ok(out)
+    }
+
+    /// Full-screen (or ROI) det+rec for OCR popup features; without a provider the
+    /// feature is a miss (a run without OCR must not hard-fail on a text popup).
+    fn popup_frame_lines(&mut self, roi: Option<Rect>) -> Result<Vec<OcrLine>, String> {
+        self.observe_screen()?;
+        let frame = self
+            .screen
+            .frame
+            .clone()
+            .ok_or_else(|| "popup check: no frame available".to_string())?;
+        let (fw, fh) = (frame.width, frame.height);
+        let roi = roi.unwrap_or(Rect {
+            x: 0,
+            y: 0,
+            w: fw as i32,
+            h: fh as i32,
+        });
+        let Some(provider) = self.ocr.as_mut() else {
+            return Ok(Vec::new());
+        };
+        provider.recognize_lines(&frame, roi)
+    }
+
+    /// Does one popup rule hit now? `(hit, matched_feature_count)`.
+    fn popup_rule_matches(&mut self, rule: &PopupRule) -> Result<(bool, u32), String> {
+        if rule.features.is_empty() {
+            return Ok((false, 0));
+        }
+        let need = (rule.min_hits.max(1) as usize).min(rule.features.len());
+        let mut hits = 0u32;
+        for feature in &rule.features {
+            let hit = match feature {
+                PopupFeature::Asset { asset } => {
+                    let candidates = self.recognition_candidates(asset).map_err(|e| {
+                        format!("popup `{}` feature asset `{asset}`: {e}", rule.id)
+                    })?;
+                    candidates.iter().any(|c| c.pass)
+                }
+                PopupFeature::OcrText { text, roi } => {
+                    let lines = self.popup_frame_lines(*roi)?;
+                    lines
+                        .iter()
+                        .any(|line| ocr_text_matches_strict(text, &line.text))
+                }
+            };
+            if hit {
+                hits += 1;
+            }
+        }
+        Ok((hits as usize >= need, hits))
+    }
+
+    /// Sample inside the **exact** operation shape (polygon/invert aware).
+    fn popup_sample_plan(
+        &mut self,
+        box_: Rect,
+        shape: Option<&ClickShape>,
+    ) -> Result<crate::humanize::ClickPlan, String> {
+        let (w, h) = self
+            .screen
+            .size()
+            .ok_or_else(|| "popup close: no frame available".to_string())?;
+        let plan = self.humanize.template_click(box_, w, &mut self.rng);
+        self.adjust_plan_for_explicit_shape(plan, shape, w, h)
+    }
+
+    /// Execute one popup close action (`click_asset`) via the single-source engine.
+    fn popup_close_asset(&mut self, asset: &str) -> Result<(), String> {
+        let best = self.recognize_best(asset)?;
+        let Some(at) = best.at else {
+            return Err(format!("close asset `{asset}` not found"));
+        };
+        let threshold = self.selector_threshold(asset);
+        if best.score < threshold {
+            return Err(format!(
+                "close asset `{asset}` score {:.3} < threshold {threshold:.3}",
+                best.score
+            ));
+        }
+        let (box_, shape) = self.click_geometry_for(asset, at)?;
+        let plan = self.popup_sample_plan(box_, shape.as_ref())?;
+        let (w, h) = self
+            .screen
+            .size()
+            .ok_or_else(|| "popup close: no frame available".to_string())?;
+        self.perform_click(
+            plan,
+            rect_centre(box_),
+            Some(asset.to_string()),
+            "popup_close",
+            format!("popup_close:{asset}:{:.3}", best.score),
+            w,
+            h,
+        )?;
+        Ok(())
+    }
+
+    /// THE popup hook: detect → close → settle → re-identify. `true` means a popup
+    /// was handled and the caller must retry the interrupted work. `force=false`
+    /// applies the configured `check_interval_ms` throttle (wait/click hooks).
+    fn popup_guard_check(&mut self, force: bool) -> Result<bool, String> {
+        let Some(cfg) = self.popups.as_ref().map(|g| g.config.clone()) else {
+            return Ok(false);
+        };
+        if !cfg.enabled || cfg.popups.is_empty() {
+            return Ok(false);
+        }
+        if self.popups.as_ref().map(|g| g.in_guard).unwrap_or(false) {
+            return Ok(false);
+        }
+        if !force {
+            if let Some(last) = self.popup_last_check {
+                if last.elapsed() < Duration::from_millis(cfg.check_interval_ms.max(1)) {
+                    return Ok(false);
+                }
+            }
+        }
+        self.popup_last_check = Some(Instant::now());
+        // A popup can appear at any moment: every check works on a fresh frame.
+        self.reobserve_screen()?;
+        let mut rules = cfg.popups;
+        rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        for rule in rules {
+            if !rule.enabled {
+                continue;
+            }
+            if let Some(state) = self.popups.as_ref().and_then(|g| g.state.get(&rule.id)) {
+                if let Some(last) = state.last_close {
+                    if last.elapsed() < Duration::from_millis(rule.cooldown_ms) {
+                        continue;
+                    }
+                }
+            }
+            let (hit, matched) = self.popup_rule_matches(&rule)?;
+            if !hit {
+                continue;
+            }
+            let attempts = rule.max_attempts.max(1);
+            for attempt in 1..=attempts {
+                self.popups.as_mut().expect("guard exists").in_guard = true;
+                let closed = match &rule.close {
+                    PopupClose::ClickAsset { asset } => self.popup_close_asset(asset),
+                };
+                self.popups.as_mut().expect("guard exists").in_guard = false;
+                match closed {
+                    Ok(()) => {}
+                    Err(e) => {
+                        if attempt == attempts {
+                            return Err(format!(
+                                "popup `{}` close failed after {attempts} attempt(s): {e}",
+                                rule.id
+                            ));
+                        }
+                        continue;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(POPUP_SETTLE_MS));
+                self.invalidate_frame();
+                let _ = self.reobserve_screen();
+                let (still, still_hits) = self.popup_rule_matches(&rule)?;
+                if !still {
+                    if let Some(guard) = self.popups.as_mut() {
+                        guard.state.insert(
+                            rule.id.clone(),
+                            PopupRuleState {
+                                last_close: Some(Instant::now()),
+                            },
+                        );
+                    }
+                    self.log(
+                        0,
+                        "popup",
+                        &format!(
+                            "id={} features={matched} close_attempt={attempt} still_hits={still_hits}",
+                            rule.id
+                        ),
+                        "ok",
+                        0.0,
+                    );
+                    return Ok(true);
+                }
+            }
+            return Err(format!(
+                "popup `{}` is still present after {attempts} close attempt(s); \
+                 refusing to loop (cooldown/max_attempts)",
+                rule.id
+            ));
+        }
+        Ok(false)
+    }
+
     pub fn run(&mut self, flow: &Flow) -> RunResult {
         self.started = Instant::now();
         self.events.clear();
@@ -2207,11 +2563,18 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             x: plan.point.x.clamp(0, w.saturating_sub(1) as i32),
             y: plan.point.y.clamp(0, h.saturating_sub(1) as i32),
         };
+        // seq136 D0: click-before hook — a popup close changes the context, so
+        // this click must not fire; `exec` retries the step.
+        if self.popup_guard_check(false)? {
+            return Err(POPUP_RETRY_SENTINEL.to_string());
+        }
         let delay = self.humanize.delay_ms(&mut self.rng);
         if delay > 0 {
             std::thread::sleep(std::time::Duration::from_millis(delay as u64));
         }
         self.input.click(actual)?;
+        // Click-after hook (reward/confirm popups): handled before the next step.
+        let _ = self.popup_guard_check(false)?;
         // The screen may now be different: never let the next selector match
         // against this pre-click frame.
         self.invalidate_frame();
@@ -5159,6 +5522,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             if !matches!(ctl, Ctl::Normal) {
                 return Ok(());
             }
+            // seq136 D0: global PopupGuard hook before EVERY step.
+            let _ = self.popup_guard_check(true)?;
             // ENGINE §22.15: dismiss known popups BEFORE the step runs. Bounded
             // so a permanently-matching "popup" cannot spin forever.
             let mut dismissed = 0usize;
@@ -5175,10 +5540,28 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             // attached to action steps; control-flow steps never re-run.
             let policy = step_retry(step);
             let mut attempt: u32 = 0;
+            let mut popup_retries: u32 = 0;
             loop {
+                // seq136 D0: popup may appear between the step boundary and the
+                // action; cheap no-op with no popup config.
+                let _ = self.popup_guard_check(false)?;
                 let t0 = Instant::now();
                 match self.exec_one(step, depth, ctl) {
                     Ok(detail) => {
+                        // Popup after the step → context changed; retry step (bounded).
+                        if self.popup_guard_check(true)? {
+                            popup_retries += 1;
+                            if popup_retries > MAX_POPUP_STEP_RETRIES {
+                                return Err(format!(
+                                    "popup guard handled a popup after `{}` more than \
+                                     {MAX_POPUP_STEP_RETRIES} times; refusing to retry",
+                                    step_name(step)
+                                ));
+                            }
+                            self.invalidate_frame();
+                            attempt = 0;
+                            continue;
+                        }
                         let ms = t0.elapsed().as_secs_f64() * 1000.0;
                         let op = step_name(step);
                         if attempt > 0 {
@@ -5198,6 +5581,20 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         break;
                     }
                     Err(e) => {
+                        // Popup-aborted click / popup after a failed step → retry.
+                        if e == POPUP_RETRY_SENTINEL || self.popup_guard_check(true)? {
+                            popup_retries += 1;
+                            if popup_retries > MAX_POPUP_STEP_RETRIES {
+                                return Err(format!(
+                                    "popup guard interrupted `{}` more than \
+                                     {MAX_POPUP_STEP_RETRIES} times; refusing to retry",
+                                    step_name(step)
+                                ));
+                            }
+                            self.invalidate_frame();
+                            attempt = 0;
+                            continue;
+                        }
                         let ms = t0.elapsed().as_secs_f64() * 1000.0;
                         let op = step_name(step);
                         let Some(policy) = policy else {
@@ -5349,7 +5746,21 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 if s < 0.0 {
                     return Err("wait seconds must be >= 0".into());
                 }
-                std::thread::sleep(Duration::from_secs_f64(s));
+                // seq136 D0: periodic popup check while waiting.
+                {
+                    let interval = self
+                        .popups
+                        .as_ref()
+                        .map(|g| Duration::from_millis(g.config.check_interval_ms.max(1)))
+                        .unwrap_or(Duration::from_millis(500));
+                    let mut waited = Duration::ZERO;
+                    while waited < Duration::from_secs_f64(s) {
+                        let chunk = (Duration::from_secs_f64(s) - waited).min(interval);
+                        std::thread::sleep(chunk);
+                        waited += chunk;
+                        let _ = self.popup_guard_check(false)?;
+                    }
+                }
                 // The next selector/condition must re-grab: a wait is often
                 // used exactly because the screen is transitioning.
                 self.invalidate_frame();
@@ -5381,6 +5792,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                         return Err(format!("wait_until timed out after {timeout_s}s"));
                     }
                     std::thread::sleep(Duration::from_millis(20));
+                    // seq136 D0: periodic popup check during wait_until.
+                    let _ = self.popup_guard_check(false)?;
                 }
             }
             Step::Appear { sel } => {
@@ -16019,6 +16432,218 @@ mod tests {
             point_in_any_rect(p, &[translated]),
             "region.asset nearest must sample the polygon: {p:?}"
         );
+    }
+
+    /// Distinct 10x10 pattern B used only by the synthetic popup frames.
+    fn popup_pattern() -> Vec<u8> {
+        (0..100)
+            .map(|i| (((i * 37 + 11) % 251) + 1) as u8)
+            .collect()
+    }
+
+    fn popup_frame(tx: u32, ty: u32) -> Frame {
+        let (w, h) = (64u32, 48u32);
+        let mut rgba = vec![30u8; (w * h * 4) as usize];
+        let pattern = popup_pattern();
+        for y in 0..10u32 {
+            for x in 0..10u32 {
+                let v = pattern[(y * 10 + x) as usize];
+                let i = (((ty + y) * w + (tx + x)) * 4) as usize;
+                rgba[i] = v;
+                rgba[i + 1] = v;
+                rgba[i + 2] = v;
+                rgba[i + 3] = 255;
+            }
+        }
+        Frame::new(w, h, rgba)
+    }
+
+    fn popup_assets() -> AssetSet {
+        let mut set = assets();
+        // TARGET: the ordinary tile pattern (frame 2), authored at (0,0) so its
+        // operation shape translates by the match offset.
+        let mut target = set.get("I_BRIGHT").expect("I_BRIGHT").clone();
+        target.roi = Some(Rect { x: 0, y: 0, w: 10, h: 10 });
+        set.insert("TARGET", target);
+        // The popup uses a DIFFERENT pattern that only exists on frame 1.
+        let gray = GrayImage::new(10, 10, popup_pattern());
+        let popup = Template {
+            gray,
+            roi: None,
+            threshold: 0.8,
+            click_polygon: None,
+        };
+        set.insert("POPUP_DETECT", popup.clone());
+        set.insert("POPUP_CLOSE", popup);
+        set
+    }
+
+    fn popup_config(max_attempts: u32) -> PopupConfig {
+        PopupConfig {
+            enabled: true,
+            check_interval_ms: 1,
+            popups: vec![PopupRule {
+                id: "奖励弹窗".to_string(),
+                enabled: true,
+                priority: 10,
+                min_hits: 1,
+                features: vec![PopupFeature::Asset {
+                    asset: "POPUP_DETECT".to_string(),
+                }],
+                close: PopupClose::ClickAsset {
+                    asset: "POPUP_CLOSE".to_string(),
+                },
+                cooldown_ms: 0,
+                max_attempts,
+            }],
+        }
+    }
+
+    #[test]
+    fn popup_guard_detects_closes_and_retries_the_step() {
+        // seq136 D0: a reward popup covers frame 1; the guard closes it, the
+        // context is re-identified, then the interrupted click_target step runs on
+        // frame 2 and clicks the real target — never the pre-popup pixels.
+        let frames = vec![popup_frame(12, 10), frame_with_tile(40, 6)];
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            TwoFrameScreen { frames, idx: 0 },
+            input,
+            popup_assets(),
+            Budget::default(),
+        )
+        .with_popups(popup_config(2))
+        .with_humanize(no_miss())
+        .with_seed(31);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click_target","args":{"find":[{"kind":"template","sel":"TARGET"}]}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let clicks = shared.clicks.borrow().clone();
+        assert_eq!(clicks.len(), 2, "{clicks:?}");
+        let inside = |p: Point, r: Rect| {
+            p.x >= r.x && p.y >= r.y && p.x < r.x + r.w && p.y < r.y + r.h
+        };
+        assert!(
+            inside(clicks[0], Rect { x: 12, y: 10, w: 10, h: 10 }),
+            "first click must be the popup close: {:?}",
+            clicks[0]
+        );
+        assert!(
+            inside(clicks[1], Rect { x: 40, y: 6, w: 10, h: 10 }),
+            "retried step must click the real target: {:?}",
+            clicks[1]
+        );
+        assert!(
+            interp.events().iter().any(|e| e.op == "popup"),
+            "{:?}",
+            interp.events()
+        );
+    }
+
+    #[test]
+    fn popup_guard_checks_during_wait() {
+        // A popup appears while a wait step is sleeping; the periodic hook must
+        // close it before the next step (no step-boundary-only checking).
+        let frames = vec![
+            frame_with_tile(40, 6),  // clean (target present, no popup)
+            popup_frame(12, 10), // popup covers the screen
+            frame_with_tile(40, 6),  // popup gone after close
+        ];
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            TwoFrameScreen { frames, idx: 0 },
+            input,
+            popup_assets(),
+            Budget::default(),
+        )
+        .with_popups(popup_config(2))
+        .with_humanize(no_miss())
+        .with_seed(37);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"wait","args":{"seconds":0.1}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let clicks = shared.clicks.borrow().clone();
+        assert_eq!(clicks.len(), 1, "{clicks:?}");
+        assert!(
+            clicks[0].x >= 12 && clicks[0].x < 22 && clicks[0].y >= 10 && clicks[0].y < 20,
+            "popup close click: {:?}",
+            clicks[0]
+        );
+        assert!(interp.events().iter().any(|e| e.op == "popup"));
+    }
+
+    #[test]
+    fn popup_guard_is_off_without_config_and_refuses_endless_popups() {
+        // Disabled/empty config → zero clicks, zero popup events.
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            FakeScreen::new(),
+            input,
+            popup_assets(),
+            Budget::default(),
+        )
+        .with_popups(PopupConfig::default())
+        .with_humanize(no_miss())
+        .with_seed(41);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"click","args":{"sel":"I_BRIGHT"}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        assert_eq!(
+            interp.run(&f),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        assert_eq!(shared.clicks.borrow().len(), 1);
+        assert!(!interp.events().iter().any(|e| e.op == "popup"));
+
+        // Persistent popup: max_attempts bounds the close loop and the run fails
+        // loudly instead of spinning forever.
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            FakeScreen {
+                frame: popup_frame(12, 10),
+                grabs: 0,
+            },
+            input,
+            popup_assets(),
+            Budget::default(),
+        )
+        .with_popups(popup_config(2))
+        .with_humanize(no_miss())
+        .with_seed(43);
+        let f = flow(
+            r#"{"schema_version":1,"name":"t","steps":[
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        match interp.run(&f) {
+            RunResult::Failed(msg) => {
+                assert!(
+                    msg.contains("still present after 2 close attempt"),
+                    "{msg}"
+                );
+            }
+            other => panic!("expected bounded failure, got {other:?}"),
+        }
+        assert_eq!(shared.clicks.borrow().len(), 2, "exactly max_attempts closes");
     }
 
     #[test]

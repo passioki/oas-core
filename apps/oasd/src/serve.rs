@@ -108,6 +108,282 @@ fn click_shape_json(shape: &oas_runtime::ClickShape) -> serde_json::Value {
     v
 }
 
+/// Default global popup check interval / cooldown / close attempts.
+const POPUP_DEFAULT_INTERVAL_MS: u64 = 500;
+const POPUP_DEFAULT_COOLDOWN_MS: u64 = 1000;
+const POPUP_DEFAULT_MAX_ATTEMPTS: u32 = 3;
+
+/// Global popup config file (`<assets>/popups.json`, next to assets.json).
+fn popups_file_path(assets_dir: &Path) -> PathBuf {
+    assets_dir.join("popups.json")
+}
+
+fn popup_feature_json(feature: &oas_runtime::PopupFeature) -> serde_json::Value {
+    match feature {
+        oas_runtime::PopupFeature::Asset { asset } => {
+            serde_json::json!({"kind":"asset","asset":asset})
+        }
+        oas_runtime::PopupFeature::OcrText { text, roi } => {
+            serde_json::json!({
+                "kind":"ocr_text","text":text,
+                "roi": roi.map(|r| [r.x,r.y,r.w,r.h]),
+            })
+        }
+    }
+}
+
+fn popup_close_json(close: &oas_runtime::PopupClose) -> serde_json::Value {
+    match close {
+        oas_runtime::PopupClose::ClickAsset { asset } => {
+            serde_json::json!({"kind":"click_asset","asset":asset})
+        }
+    }
+}
+
+fn popup_config_json(config: &oas_runtime::PopupConfig) -> serde_json::Value {
+    let popups: Vec<serde_json::Value> = config
+        .popups
+        .iter()
+        .map(|rule| {
+            serde_json::json!({
+                "id": rule.id,
+                "enabled": rule.enabled,
+                "priority": rule.priority,
+                "detect": {
+                    "min_hits": rule.min_hits,
+                    "features": rule.features.iter().map(popup_feature_json).collect::<Vec<_>>(),
+                },
+                "close": popup_close_json(&rule.close),
+                "cooldown_ms": rule.cooldown_ms,
+                "max_attempts": rule.max_attempts,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "schema_version": 1,
+        "enabled": config.enabled,
+        "check_interval_ms": config.check_interval_ms,
+        "popups": popups,
+    })
+}
+
+/// Parse + validate the neutral runtime popup model from JSON (defaults filled).
+fn parse_popup_config(v: &serde_json::Value) -> Result<oas_runtime::PopupConfig, String> {
+    let obj = v
+        .as_object()
+        .ok_or_else(|| "popups config must be a JSON object".to_string())?;
+    let enabled = match obj.get("enabled") {
+        None => true,
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(other) => return Err(format!("`enabled` must be a boolean, got {other}")),
+    };
+    let interval = match obj.get("check_interval_ms") {
+        None => POPUP_DEFAULT_INTERVAL_MS,
+        Some(x) => x
+            .as_u64()
+            .filter(|n| *n >= 1)
+            .ok_or_else(|| "`check_interval_ms` must be an integer >= 1".to_string())?,
+    };
+    let rules_v = match obj.get("popups") {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(serde_json::Value::Array(a)) => a.clone(),
+        Some(other) => return Err(format!("`popups` must be an array, got {other}")),
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    let mut popups = Vec::with_capacity(rules_v.len());
+    for (i, rv) in rules_v.iter().enumerate() {
+        let p = format!("popups[{i}]");
+        let r = rv
+            .as_object()
+            .ok_or_else(|| format!("{p} must be an object"))?;
+        let id = r
+            .get("id")
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("{p}.id is required"))?
+            .to_string();
+        if !seen.insert(id.clone()) {
+            return Err(format!("duplicate popup id `{id}`"));
+        }
+        let rule_enabled = match r.get("enabled") {
+            None => true,
+            Some(serde_json::Value::Bool(b)) => *b,
+            Some(other) => return Err(format!("{p}.enabled must be a boolean, got {other}")),
+        };
+        let priority = match r.get("priority") {
+            None => 0,
+            Some(x) => x
+                .as_i64()
+                .ok_or_else(|| format!("{p}.priority must be an integer"))?,
+        };
+        let detect = r
+            .get("detect")
+            .and_then(|x| x.as_object())
+            .ok_or_else(|| format!("{p}.detect is required"))?;
+        let min_hits = match r.get("min_hits").or_else(|| detect.get("min_hits")) {
+            None => 1,
+            Some(x) => x
+                .as_u64()
+                .filter(|n| *n >= 1)
+                .ok_or_else(|| format!("{p}.min_hits must be an integer >= 1"))?,
+        };
+        let features_v = detect
+            .get("features")
+            .and_then(|x| x.as_array())
+            .ok_or_else(|| format!("{p}.detect.features must be an array"))?;
+        if features_v.is_empty() {
+            return Err(format!("{p}.detect.features must not be empty"));
+        }
+        let mut features = Vec::with_capacity(features_v.len());
+        for (fi, fv) in features_v.iter().enumerate() {
+            let fp = format!("{p}.detect.features[{fi}]");
+            let f = fv
+                .as_object()
+                .ok_or_else(|| format!("{fp} must be an object"))?;
+            let kind = f
+                .get("kind")
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| format!("{fp}.kind is required"))?;
+            match kind {
+                "asset" => {
+                    let asset = f
+                        .get("asset")
+                        .and_then(|x| x.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| format!("{fp}.asset is required"))?;
+                    features.push(oas_runtime::PopupFeature::Asset {
+                        asset: asset.to_string(),
+                    });
+                }
+                "ocr_text" => {
+                    let text = f
+                        .get("text")
+                        .and_then(|x| x.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| format!("{fp}.text is required"))?;
+                    let roi = match f.get("roi") {
+                        None | Some(serde_json::Value::Null) => None,
+                        Some(x) => {
+                            let a = x
+                                .as_array()
+                                .filter(|a| a.len() == 4)
+                                .ok_or_else(|| format!("{fp}.roi must be [x,y,w,h]"))?;
+                            let mut out = [0i32; 4];
+                            for (k, item) in a.iter().enumerate() {
+                                out[k] = item
+                                    .as_i64()
+                                    .and_then(|n| i32::try_from(n).ok())
+                                    .ok_or_else(|| format!("{fp}.roi[{k}] must be an i32"))?;
+                            }
+                            Some(oas_types::Rect {
+                                x: out[0],
+                                y: out[1],
+                                w: out[2],
+                                h: out[3],
+                            })
+                        }
+                    };
+                    features.push(oas_runtime::PopupFeature::OcrText {
+                        text: text.to_string(),
+                        roi,
+                    });
+                }
+                other => return Err(format!("{fp}.kind `{other}` is not supported")),
+            }
+        }
+        let close_v = r
+            .get("close")
+            .and_then(|x| x.as_object())
+            .ok_or_else(|| format!("{p}.close is required"))?;
+        let close_kind = close_v
+            .get("kind")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| format!("{p}.close.kind is required"))?;
+        let close = match close_kind {
+            "click_asset" => {
+                let asset = close_v
+                    .get("asset")
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| format!("{p}.close.asset is required"))?;
+                oas_runtime::PopupClose::ClickAsset {
+                    asset: asset.to_string(),
+                }
+            }
+            other => return Err(format!("{p}.close.kind `{other}` is not supported")),
+        };
+        let cooldown_ms = match r.get("cooldown_ms") {
+            None => POPUP_DEFAULT_COOLDOWN_MS,
+            Some(x) => x
+                .as_u64()
+                .ok_or_else(|| format!("{p}.cooldown_ms must be an integer >= 0"))?,
+        };
+        let max_attempts = match r.get("max_attempts") {
+            None => POPUP_DEFAULT_MAX_ATTEMPTS,
+            Some(x) => x
+                .as_u64()
+                .filter(|n| *n >= 1 && *n <= 20)
+                .map(|n| n as u32)
+                .ok_or_else(|| format!("{p}.max_attempts must be an integer 1..=20"))?,
+        };
+        popups.push(oas_runtime::PopupRule {
+            id,
+            enabled: rule_enabled,
+            priority: priority as i32,
+            min_hits: (min_hits as usize).min(features.len()) as u32,
+            features,
+            close,
+            cooldown_ms,
+            max_attempts,
+        });
+    }
+    Ok(oas_runtime::PopupConfig {
+        enabled,
+        check_interval_ms: interval,
+        popups,
+    })
+}
+
+/// Validate every asset reference in the popup config against `assets.json`.
+fn validate_popup_asset_refs(
+    af: &oas_task::AssetsFile,
+    config: &oas_runtime::PopupConfig,
+) -> Result<(), String> {
+    let known: std::collections::BTreeSet<&str> = af
+        .items
+        .iter()
+        .map(|a| a.id.as_str())
+        .chain(af.collections.iter().map(|c| c.id.as_str()))
+        .collect();
+    let mut missing: Vec<String> = Vec::new();
+    for rule in &config.popups {
+        for feature in &rule.features {
+            if let oas_runtime::PopupFeature::Asset { asset } = feature {
+                if !known.contains(asset.as_str()) && !missing.contains(asset) {
+                    missing.push(asset.clone());
+                }
+            }
+        }
+        if let oas_runtime::PopupClose::ClickAsset { asset } = &rule.close {
+            if !known.contains(asset.as_str()) && !missing.contains(asset) {
+                missing.push(asset.clone());
+            }
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "popups reference undeclared asset(s): {}",
+            missing.join(", ")
+        ))
+    }
+}
+
 /// Upper bound for a POST body (flow.json is small; never buffer more).
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
@@ -209,6 +485,9 @@ pub fn route_owner(method: &str, path_only: &str) -> Option<RouteOwner> {
             | "/task/run/status" | "/task/package" | "/task/config" | "/task/variables"
             | "/task/lint" | "/library" => Some(Studio),
 
+            // seq136 D0: global popup config is shared game-wide.
+            "/popups" => Some(Both),
+
             // Runner operational APIs (PR1 read-only subset, PR5 packages, PR6
             // embedded scheduler + temporary run status, P0-1a publish updates).
             "/runner/health" | "/runner/tasks" | "/runner/packages" | "/runner/updates"
@@ -236,6 +515,10 @@ pub fn route_owner(method: &str, path_only: &str) -> Option<RouteOwner> {
                 Some(Runner)
             }
 
+            // seq136 D0: saved popup config is Studio-owned; the dry test runs on
+            // both surfaces (Runner uses the runtime debugger too).
+            "/popups" => Some(Studio),
+            "/popups/test" => Some(Both),
             // The device config is the one physical resource both surfaces use.
             "/instance" => Some(Both),
 
@@ -2083,6 +2366,10 @@ impl Server {
             // P0a: every real recognition candidate + score for one asset row
             // (docs/PARAM-ASSET-REDESIGN.md §1b item 3).
             ("GET", "/task/asset/candidates") => self.handle_asset_candidates(&mut out, &path),
+            // seq136 D0: global popup config (popups.json at the assets root).
+            ("GET", "/popups") => self.handle_popups_get(&mut out),
+            ("POST", "/popups") => self.handle_popups_post(&mut out, &body),
+            ("POST", "/popups/test") => self.handle_popups_test(&mut out, &body),
             ("GET", "/task/flow") => self.handle_task_flow(&mut out, &path),
             ("POST", "/task/save_flow") => self.handle_save_flow(&mut out, &body),
             ("GET", "/task/list") => self.handle_task_list(&mut out),
@@ -4877,6 +5164,222 @@ impl Server {
             }
         }
         ocr_candidate_expected_text(item)
+    }
+
+    /// Global popups config path (`<assets>/popups.json`).
+    fn popups_path(&self) -> PathBuf {
+        popups_file_path(&self.assets_dir)
+    }
+
+    /// Load the saved config; `Ok(None)` = no file (guard disabled).
+    fn load_popups_config(&self) -> Result<Option<oas_runtime::PopupConfig>, String> {
+        let path = self.popups_path();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("read {}: {e}", path.display())),
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let config = parse_popup_config(&v).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(Some(config))
+    }
+
+    /// Validate the asset references of a popup config against the global store.
+    fn validate_popup_config(&self, config: &oas_runtime::PopupConfig) -> Result<(), String> {
+        let af = self
+            .asset_store("")
+            .and_then(|b| b.load_assets_file())
+            .map_err(|e| format!("cannot validate popup asset references: {e}"))?;
+        validate_popup_asset_refs(&af, config)
+    }
+
+    /// `GET /popups` — global popup config (raw schema; default when absent).
+    fn handle_popups_get(&self, out: &mut TcpStream) -> std::io::Result<()> {
+        let path = self.popups_path();
+        let exists = path.is_file();
+        let config = match self.load_popups_config() {
+            Ok(Some(c)) => c,
+            Ok(None) => oas_runtime::PopupConfig {
+                enabled: true,
+                check_interval_ms: POPUP_DEFAULT_INTERVAL_MS,
+                popups: Vec::new(),
+            },
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        self.send_json(
+            out,
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "path": path.to_string_lossy(),
+                "exists": exists,
+                "config": popup_config_json(&config),
+            })
+            .to_string(),
+        )
+    }
+
+    /// `POST /popups` — save the global config (validated, atomic, `.bak`).
+    fn handle_popups_post(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let cfg_value = v.get("config").unwrap_or(&v);
+        let config = match parse_popup_config(cfg_value) {
+            Ok(c) => c,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        if let Err(e) = self.validate_popup_config(&config) {
+            return self.send_errors(out, 400, vec![e]);
+        }
+        let path = self.popups_path();
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return self.send_errors(
+                    out,
+                    500,
+                    vec![format!("create {}: {e}", parent.display())],
+                );
+            }
+        }
+        let backup = if path.is_file() {
+            let bak = path.with_extension("json.bak");
+            match std::fs::copy(&path, &bak) {
+                Ok(_) => Some(bak),
+                Err(e) => {
+                    return self.send_errors(
+                        out,
+                        500,
+                        vec![format!("backup {}: {e}", path.display())],
+                    )
+                }
+            }
+        } else {
+            None
+        };
+        let normalized = popup_config_json(&config);
+        let text = serde_json::to_string_pretty(&normalized).unwrap_or_default() + "\n";
+        if let Err(e) = write_text_atomic(&path, &text) {
+            return self.send_errors(out, 500, vec![format!("write popups.json: {e}")]);
+        }
+        self.send_json(
+            out,
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "path": path.to_string_lossy(),
+                "backup": backup.map(|p| p.to_string_lossy().into_owned()),
+                "config": normalized,
+            })
+            .to_string(),
+        )
+    }
+
+    /// `POST /popups/test` — dry detection on the selected frame (default dry;
+    /// real clicks are intentionally not supported here yet).
+    fn handle_popups_test(&self, out: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
+        };
+        let global_mode = self.using_global_assets();
+        let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if !global_mode && task.is_empty() {
+            return self.send_errors(out, 400, vec!["`task` is required".into()]);
+        }
+        let real = match v.get("real") {
+            None => false,
+            Some(x) => match x.as_bool() {
+                Some(b) => b,
+                None => return self.send_errors(out, 400, vec!["`real` must be a boolean".into()]),
+            },
+        };
+        if real {
+            return self.send_errors(
+                out,
+                400,
+                vec!["popups/test only supports dry runs for now (real=false)".into()],
+            );
+        }
+        // Config: an inline `config` object wins over the saved popups.json.
+        let config = if let Some(cfg_value) = v.get("config").filter(|x| x.is_object()) {
+            let cfg = match parse_popup_config(cfg_value) {
+                Ok(c) => c,
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            };
+            if let Err(e) = self.validate_popup_config(&cfg) {
+                return self.send_errors(out, 400, vec![e]);
+            }
+            cfg
+        } else {
+            match self.load_popups_config() {
+                Ok(Some(c)) => c,
+                Ok(None) => oas_runtime::PopupConfig {
+                    enabled: true,
+                    check_interval_ms: POPUP_DEFAULT_INTERVAL_MS,
+                    popups: Vec::new(),
+                },
+                Err(e) => return self.send_errors(out, 400, vec![e]),
+            }
+        };
+        let mut q: Vec<(String, String)> = Vec::new();
+        if v.get("live").and_then(|x| x.as_bool()).unwrap_or(false) {
+            q.push(("live".to_string(), "1".to_string()));
+        }
+        if let Some(x) = v.get("frame_id") {
+            let Some(n) = x.as_u64() else {
+                return self.send_errors(out, 400, vec!["`frame_id` must be an integer".into()]);
+            };
+            q.push(("frame_id".to_string(), n.to_string()));
+        }
+        let (frame, frame_source) = match self.frame_for_test(&q) {
+            Ok(v) => v,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let assets = match self
+            .asset_store(if global_mode { "" } else { task })
+            .and_then(|b| b.load_runtime_assets())
+        {
+            Ok(assets) => assets,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let mut interp = self
+            .editor_interp(frame, assets, if global_mode { "" } else { task })
+            .with_popups(config);
+        let probes = match interp.probe_popups() {
+            Ok(p) => p,
+            Err(e) => return self.send_errors(out, 400, vec![e]),
+        };
+        let rect_json = |r: oas_types::Rect| serde_json::json!([r.x, r.y, r.w, r.h]);
+        let matched: Vec<serde_json::Value> = probes
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "id": p.rule_id,
+                    "matched_features": p.matched_features,
+                    "close": {
+                        "asset": p.close_asset,
+                        "point": p.close_point.map(|pt| serde_json::json!({"x":pt.x,"y":pt.y})),
+                        "action_box": p.close_box.map(rect_json),
+                        "action_shape": p.close_shape.as_ref().map(click_shape_json),
+                    },
+                })
+            })
+            .collect();
+        self.send_json(
+            out,
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "dry": true,
+                "frame_source": frame_source,
+                "count": matched.len(),
+                "matched": matched,
+            })
+            .to_string(),
+        )
     }
 
     fn handle_asset_candidates(&self, out: &mut TcpStream, raw_path: &str) -> std::io::Result<()> {
@@ -8461,7 +8964,37 @@ fn default_run_executor(
     opts: &RunOptions,
     out: &mut dyn FnMut(&str),
 ) -> Result<RunReport, String> {
-    crate::run::execute(opts, out)
+    // seq136 D0: the global popup guard is game-wide and independent of the task.
+    // Load `<assets>/popups.json` for this run (both Studio and Runner use this
+    // same executor), then restore the previous process config afterwards.
+    let previous = oas_runtime::global_popups();
+    let path = popups_file_path(&opts.assets);
+    let loaded = if path.is_file() {
+        match std::fs::read_to_string(&path)
+            .map_err(|e| format!("read {}: {e}", path.display()))
+            .and_then(|text| {
+                serde_json::from_str::<serde_json::Value>(&text)
+                    .map_err(|e| format!("{}: {e}", path.display()))
+            })
+            .and_then(|v| parse_popup_config(&v).map_err(|e| format!("{}: {e}", path.display())))
+        {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                oas_runtime::set_global_popups(previous);
+                return Err(format!("popups config: {e}"));
+            }
+        }
+    } else {
+        oas_runtime::PopupConfig::default()
+    };
+    if loaded.enabled && !loaded.popups.is_empty() {
+        oas_runtime::set_global_popups(Some(loaded));
+    } else {
+        oas_runtime::set_global_popups(None);
+    }
+    let result = crate::run::execute(opts, out);
+    oas_runtime::set_global_popups(previous);
+    result
 }
 
 /// Per-template defaults for a freshly created bundle, aligned with M0's
@@ -17234,6 +17767,139 @@ mod tests {
         assert_eq!(m["member"], "R_MIX", "{out}");
         assert_eq!(m["pass"], true, "{out}");
         assert_eq!(m["action_box"], serde_json::json!([30, 20, 10, 10]), "{out}");
+    }
+
+    /// seq136 D0 fixture: global assets + one frame for the global popup APIs.
+    fn popups_fixture(td: &Path) -> (Server, u64) {
+        let frame = asset_candidates_frame();
+        let tpl = crop_frame(&frame, 20, 20, 8, 8);
+        let assets_dir = td.join("assets");
+        std::fs::create_dir_all(assets_dir.join("images")).expect("assets images dir");
+        std::fs::write(
+            assets_dir.join("images").join("a001.png"),
+            oas_codec::encode_png(&tpl).expect("template png"),
+        )
+        .expect("write template png");
+        let assets = serde_json::json!({
+            "schema_version": 1,
+            "design_resolution": [64, 48],
+            "items": [
+                {"id":"P_MAIN","kind":"template","file":"images/a001.png",
+                 "roi":[0,0,64,48],"threshold":0.9,"positions":[1]},
+                {"id":"P_CLOSE","kind":"template","file":"images/a001.png",
+                 "roi":[0,0,64,48],"threshold":0.9,"positions":[1]}
+            ],
+            "collections": []
+        });
+        std::fs::write(assets_dir.join("assets.json"), assets.to_string())
+            .expect("write assets.json");
+        let server = server_with_tasks(td)
+            .with_frames_dir(td.join("frames"))
+            .with_assets_dir(assets_dir);
+        let frame_id = upload_test_frame(&server, &frame);
+        (server, frame_id)
+    }
+
+    #[test]
+    fn popups_api_roundtrip_validates_and_tests_dry() {
+        let td = TempDir::new("popups-api");
+        let (server, frame_id) = popups_fixture(td.path());
+        let file = td.path().join("assets").join("popups.json");
+        // GET before save: default schema, exists=false.
+        let v = get_json_route(&server, "/popups");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["exists"], false, "{v}");
+        assert_eq!(v["config"]["popups"], serde_json::json!([]), "{v}");
+        // Invalid asset reference is a loud 400 and writes nothing.
+        let bad = serde_json::json!({
+            "enabled": true,
+            "popups": [{"id":"x","detect":{"min_hits":1,"features":[
+                {"kind":"asset","asset":"NO_SUCH"}]},
+                "close":{"kind":"click_asset","asset":"P_CLOSE"}}]
+        });
+        let (status, out) = post_route(
+            &server,
+            "/popups",
+            "application/json",
+            &serde_json::to_vec(&bad).unwrap(),
+        );
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("undeclared"), "{out}");
+        assert!(!file.is_file(), "invalid config must not be written");
+        // Save a valid config.
+        let config = serde_json::json!({
+            "schema_version": 1,
+            "enabled": true,
+            "check_interval_ms": 80,
+            "popups": [{
+                "id":"奖励弹窗","enabled":true,"priority":5,
+                "detect":{"min_hits":1,"features":[
+                    {"kind":"asset","asset":"P_MAIN"}]},
+                "close":{"kind":"click_asset","asset":"P_CLOSE"},
+                "cooldown_ms": 500,"max_attempts": 2
+            }]
+        });
+        let body = serde_json::to_vec(&config).unwrap();
+        let (status, out) = post_route(&server, "/popups", "application/json", &body);
+        assert!(status.contains("200"), "{status} {out}");
+        assert!(file.is_file(), "popups.json must exist after save");
+        let v = get_json_route(&server, "/popups");
+        assert_eq!(v["exists"], true, "{v}");
+        assert_eq!(v["config"]["popups"][0]["id"], "奖励弹窗", "{v}");
+        assert_eq!(v["config"]["popups"][0]["detect"]["min_hits"], 1, "{v}");
+        // Second save creates the `.bak` backup.
+        let (status, out) = post_route(&server, "/popups", "application/json", &body);
+        assert!(status.contains("200"), "{status} {out}");
+        let out_json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(out_json["backup"].is_string(), "{out}");
+        assert!(
+            td.path()
+                .join("assets")
+                .join("popups.json.bak")
+                .is_file(),
+            "backup must exist"
+        );
+        // Dry test: detection + exact close geometry/point, nothing clicked.
+        let (status, out) = post_route(
+            &server,
+            "/popups/test",
+            "application/json",
+            serde_json::to_vec(&serde_json::json!({"frame_id": frame_id})).unwrap().as_slice(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["dry"], true, "{out}");
+        assert_eq!(v["count"], 1, "{out}");
+        assert_eq!(v["matched"][0]["id"], "奖励弹窗", "{out}");
+        assert_eq!(v["matched"][0]["close"]["asset"], "P_CLOSE", "{out}");
+        let action_box = v["matched"][0]["close"]["action_box"]
+            .as_array()
+            .expect("action_box array")
+            .iter()
+            .map(|n| n.as_i64().expect("i64"))
+            .collect::<Vec<_>>();
+        assert_eq!(action_box.len(), 4, "{out}");
+        let pt = &v["matched"][0]["close"]["point"];
+        let (px, py) = (
+            pt["x"].as_i64().unwrap(),
+            pt["y"].as_i64().unwrap(),
+        );
+        assert!(
+            px >= action_box[0]
+                && px < action_box[0] + action_box[2]
+                && py >= action_box[1]
+                && py < action_box[1] + action_box[3],
+            "close point inside the detected action_box: {out}"
+        );
+        // Real is intentionally not supported by the dry endpoint yet.
+        let (status, out) = post_route(
+            &server,
+            "/popups/test",
+            "application/json",
+            br#"{"real":true}"#,
+        );
+        assert!(status.contains("400"), "{status} {out}");
+        assert!(out.contains("dry"), "{out}");
     }
 
     /// seq136 B fixture: one template with an absolute `fixed` polygon operation
