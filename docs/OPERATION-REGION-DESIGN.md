@@ -340,3 +340,10 @@
 3. 候选 API `domain` 语义（仍=声明域 roi/screen/members，但搜索域已是全帧；契约需重命名/加 `search:"full_frame"`）。
 4. `test_action` OCR 耗时（每预览 reobserve+det/rec，全屏 ocr_var ~343ms 级；多候选演练需缓存/复用帧）。
 5. 真机/Firefox 手测沿用 §8.8.5 与 `ENGINE §22.65.8` 的剩余项。
+
+### 8.10 seq136 现行补充（2026-11-07）：操作区统一 `ClickShape` + `fixed` 绝对坐标
+
+- **polygon 为真值**：矩形在保存/候选/点测/拖测/链中统一为 4 点多边形（`runtime ClickShape{rect,points,invert}` `lib.rs:44-48`）；`action_box` 仅 bbox 显示，不再作为点击真值；候选 API/test_action 输出 exact `action_shape`（`serve click_shape_json:94`，候选/test_action `:6080/6319`）；legacy rect 读取兼容、polygon 永不退化（UI `app.js:2204 rectToPolygonPoints`/`:2216 actionShapeForSave`/`:2252 candidateActionPolygon`）。
+- **fixed 绝对操作区**：`op_region.mode=fixed` 使用作者 `action_shape` 绝对坐标、**不随 `real-roi` 平移**；仅根操作区/链终端（无 asset 不能续链），无 shape=响亮 Err（`oas-task/lib.rs:116-138,976-990`；`runtime:405-426,4569-4595`）；操作区对话框「固定不变（绝对坐标）」`app.js:3177`。
+- **候选/链一致**：`resolve_candidate_operation`（`runtime:3509-3541`）把链作用后的最终 rect+shape 一并返回，编辑器所见=运行时点击几何；混入 `op_region` 链时不再只显示 bbox。
+- 本节为 polygon/fixed 现行口径，supersedes 前文仅描述 rect 的段落（旧文保留）；配合 `ENGINE §22.75.2`。

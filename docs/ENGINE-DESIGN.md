@@ -2169,6 +2169,8 @@ tasks/<任务名>/
 
 ### 22.41 ★★★ [11-01] **帧-素材关系（现行唯一关系）**
 
+> **seq136 更正（2026-11-07）**：帧-素材关系已被**唯一全局地图**（§22.75）取代——Studio 关系浏览/录制 UI 已下线，服务端 `/relations/*` API 保留但 **deprecated**；旧 `relations/observations.jsonl`/`annotations.json` 证据不自动迁移、不删除；保留 `Asset.positions` 与帧详情只读素材列表。本节保留历史记录。
+
 ```text
 Asset.positions = [frame_id, ...]
 ```
@@ -3619,6 +3621,8 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
 
 ### 22.73 ★★★ [11-07 13:xx] **seq134 素材识别统一（strict/全帧候选/运行期回退/链与集合/多边形显示）**
 
+> **seq136 更正（2026-11-07）**：本节为 seq134 时点语义；其中点击/操作区几何已由 **§22.75.2** 统一为 `ClickShape`（矩形=4 点多边形、polygon 不退化）+ `op_region fixed` 绝对操作区；OCR「ROI det+rec 与全帧 det+rec 合并去重」见 **§22.75.1 #6**；候选/严格匹配/运行期回退/链与集合规则仍有效。
+
 > 用户 2026-11-07 5 项裁决（严格匹配 / 运行期 ROI→全屏回退 / OCR 候选全帧 / 无期望文字普通 OCR 限 ROI+region 不可作链节点 / 多边形显示），Lead 规格 `_verify/seq134-audit/final-spec.md`。实现 `4815cc4`（统一）+ `6a416ec`（删除已替代的旧候选/OCR/链分支，行为不变）。HEAD `6a416ec`（dev=`origin/dev`；main=`origin/main`=7a89fbe 待快进），**未 tag/未 release**。测试：workspace **998/0**（oas-task 165 / oas-runtime 240 / oasd 462）、UI **2456 checks/190 ids/0 dead/158 runner/6 nav**、`cargo check -p oasd --features ocr` exit 0。
 
 #### 22.73.1 用户裁决与范围（现行，覆盖此前各轮私有语义）
@@ -3678,3 +3682,77 @@ Step::WithParams { label: Option<String>, params: Vec<(String, Expr)>,
   - `_verify/seq134-runtime-smoke/`：strict miss 响亮 400（`test_action-strict-miss.json`/`test_action-ocr-0.json`）；`_verify/seq134-final/workspace.log`/`workspace-after-clean.log` 测试日志。
 - **旧文更正**（就地）：§22.64.3「`candidates_for_asset` 单源/编辑器候选与链 pick 共用」在 seq124/serve 私有实现下**并未真正落地**，seq134 才统一（见本节）；§22.72 #2「OCR 候选=区域内全部行/pass=期望匹配/运行期 fuzzy」**已被本节取代**（#3 ADB 超时保留）；模型 A 旧口径已由 §22.66/`OPERATION-REGION-DESIGN §8.9` 更正为模型 B；seq127 模板全帧多候选仍有效（本节把 OCR/集合也纳入全帧候选）。
 - 遗留：① 保存的 PNG 文件本身仍矩形 ROI 裁剪（缩略图/画布按 polygon 遮罩显示；文件级 alpha 裁剪需后续 serve 支持）；② runtime 保留部分公开 helper（`matching_ocr_lines` 等）仅供历史语义测试；③ 真实点击/Firefox 手测未做；④ 未 tag/未 release，用户数据未提交。
+
+### 22.75 ★★★ [11-07 19:xx] **seq136 操作区 polygon/fixed + 动作 UI + 唯一全局地图/导航 + 全局弹窗 D0**
+
+> 用户 2026-11-07 11 项反馈 + 地图/弹窗补充全部落地。提交链：`8dba49a`（A #6/#7/#4/#3/#9/#10）· `4cc5611`（B #1/#2）· `62a946a`（C #5/#8 + D0 弹窗）· `4c9ea8f`（M1 地图核心+runtime+navigate op）· `9cfc04e`（M2 /map API+T11+publish/install）· `f70eca4`（M3 Studio 地图页+builder navigate+下线关系 UI）· `ccd99de`（M4 补测+CLI popups+E2E）。HEAD `dbaece2`（dev=`origin/dev`；main=`origin/main`=c0a672b 待 docs 后快进；未 tag/未 release）。测试：workspace **1039/0**（flow 83 / runtime 264 / oas-task 167+ / oasd 471 等）、UI **2652 checks/195 ids/0 dead/158 runner/6 nav**、`cargo check -p oasd --features ocr` exit 0。设计/证据：`_verify/seq136-map/DESIGN.md`、`E2E-REPORT.md`、`_verify/seq136-*`。
+
+#### 22.75.1 用户 11 项与实现映射
+
+| # | 用户反馈 | 实现（锚点见后续子节/提交） |
+|---|---|---|
+| 1 | 操作区「固定」=绝对坐标，不随真实识别平移，仅根/链终端 | `OpRegion::Fixed`（`oas-task/lib.rs:116-138`）；`AssetOpRegion::Fixed`（`runtime:405-426`）；fixed 解析 `runtime:4569-4595`；固定无 shape=响亮 Err |
+| 2 | 操作区统一 `ClickShape`，矩形=4 点多边形；点击/点测/链/候选只用 exact shape，polygon 不退化 | `ClickShape{rect,points,invert}`（`runtime:44-48`）；`resolve_candidate_operation`（`:3509-3541`）；serve `click_shape_json`（`serve:94`）候选/test_action 输出 action_shape（`:6080/6319`）；UI `rectToPolygonPoints/actionShapeForSave/candidateActionPolygon`（`app.js:2204/2216/2252`） |
+| 3 | 删除动作属性冗余「素材（识别+操作区域）」；目标素材自动推导 locator | builder 删除二次选择、单 picker 推导 locator；legacy 冗余 `args.sel` 自动规范化（`ui_pure_test:8990-9015`；`builder.js:3949 structuredClickTarget`） |
+| 4 | 编辑端删除任务不被 Runner 队列阻断，自动清理 queues 并返回 `removed_from_queues` | `serve:7326 handle_task_delete` → `prune_scheduler_task`（`:7481-7539`），响应字段（`:7399`）；测试 `:20020/:20110` |
+| 5 | 识别/等待动作属性共用 if 条件行控件（wait_until 比较/与或非/表达式兜底；appear/ocr picker 统一） | `builder.js:4646 renderConditionEditor` 复用；`wait_until` 字段/`cond`（`:87-118`）；统一 picker `:4521-4536` |
+| 6 | 个人突破#16/#73 竖排「个人」：ROI det+rec 与全帧 det+rec 合并去重，count=1 domain=roi | `rects_mostly_same`（`runtime:974-992`，60% 小框面积重叠）；OCR 候选合并（`:3455+`）；测试 `ocr_expected_candidates_merge_roi_and_full_frame_detections` `:16445`、`_dedupe...` `:16528` |
+| 7 | T3 使用全部已声明变量（含 runtime scope），修复 jiejietupo 误报 | `oas-task/lib.rs:3466-3495`：`meta.declared_variable_keys()`（`:3472`）替代 input-only |
+| 8 | 构建页可编辑源码框（canonical flow JSON、校验/错误行/未知 op 拒绝/dirty 保护/应用走 saveFlow） | `index.html:385`「流程源码」；`builder.js:5138-5271`（`flowSourceText/parseFlowSource/validateFlowSourceStep/flowSourceErrorLine/flowSourceIsDirty`）；dirty `:175`；UI 测试 `:9231-9251` |
+| 9 | 流程图 SVG 容器自适应铺满（fit/居中/ResizeObserver） | `builder.js:2207 fitFlowGraphSize`；`app.js:9218-9225 ResizeObserver + scheduleCanvasFit`；测试 `:9018-9043` |
+| 10 | 同层拖动排序 + step id 选中跟随/滚动/自动保存 | `builder.js:1146 stepUiId/1161 stepPathById/1179 moveStepWithinParent/1211 dragInsertionIndex/1286`；测试 `:9062-9084` |
+| 11 | 帧-素材联系改唯一全局地图 + navigate 寻路 | D1 地图（§22.75.4~§22.75.7）；`_verify/seq136-map/` |
+
+#### 22.75.2 #1/#2 操作区：fixed 绝对 + ClickShape 单向真值
+
+- **schema**：`OpRegion::{self,fixed,asset}`（`oas-task/lib.rs:116-138`，`#[serde(tag="mode")]`）；`fixed` 的语义=作者 `action_shape` **绝对**坐标、**不按 `real-roi` 平移**、无 `asset` 不能续链、只能作根操作区或链终端（`validate_op_region_chain` `:533-...`）；`runtime_op_region` 转换（`:976-990`）→ `AssetOpRegion::Fixed`（`runtime:405-426`）。
+- **运行时**：fixed 终端取 `assets.click_shape(asset)` 原样 + `fixed_operation_geometry`，缺 shape 响亮 Err（`runtime:4569-4595`）；`Step::Click/click_target/long_press/drag/region.asset/preview/test_action/候选` 全走同一解析；候选 API 用 `resolve_candidate_operation`（`:3509-3541`）把链作用后的 **最终 rect+shape** 一并返回，serve `click_shape_json` 序列化 exact shape（`serve:94/6080/6319`）。
+- **UI**：`app.js:2204 rectToPolygonPoints`（矩形=4 点多边形）、`:2216 actionShapeForSave`（polygon 永不降级、rect 存为 4 点）、`:2252 candidateActionPolygon`、操作区对话框「固定不变（绝对坐标，不随识别移动）」`:3177` 写 `op_region.mode=fixed`；候选/点测/拖测画 polygon，fixed 画布/预览不平移（提交 `4cc5611`）。
+
+#### 22.75.3 D0 全局弹窗子系统（独立于地图/任务）
+
+- **配置**：全局唯一 `<assets>/popups.json`（`serve:117 popups_file_path`；schema：`PopupConfig{enabled,check_interval_ms,popups[]}`、`PopupRule{id,priority,enabled,features,min_hits,close,cooldown_ms,max_attempts,...}`、`PopupFeature{Asset|OcrText}`、`PopupClose::ClickAsset`，`runtime:495-540`）；serve `parse_popup_config`（`serve:171`）校验/规范化，原子写+`.bak`；API `GET/POST /popups`、`POST /popups/test`（默认 dry；`serve:2415-2417/5724-5900`）。
+- **运行时**：`PopupGuard`（`runtime:538`）+ 唯一钩子 `popup_guard_check(force)`（`:2449-2538`）——步骤前/后、点击前/后、wait/wait_until 周期调用；规则按 priority+cooldown+max_attempts，命中→`click_asset`（exact shape）→settle→invalidate→重新识别，`in_guard` 防递归；无配置零开销。测试 `popup_guard_detects_closes_and_retries_the_step` `:16916`、`...checks_during_wait` `:16965`、`...is_off_without_config...` `:17005`。
+- **加载**：Studio defer/executor（`serve:9522`）、CLI `oasd run`（`run.rs:579-594/655-659 load_cli_popups`，坏 JSON loud）、导航复用同一 guard；**本轮无独立弹窗配置 UI**（API/文件编辑；地图页提示由全局设置管理）。
+
+#### 22.75.4 D1 地图：唯一 schema 与校验
+
+- 唯一文件 `<assets-dir>/map.json`（`oas-task/src/map.rs`；**不按任务分、不进包**）；常亮 `MAP_SCHEMA_VERSION=1`、节点 ≤500 / 边 ≤2000 / 节点特征 ≤6 / parent 深度 ≤16（`:14-18`）。
+- 结构：`MapFile{schema_version,hub,default_return_asset,nodes,edges}`（`:134`）、`MapNode{id,name,parent,return_asset,recognize,priority,frames}`（`:64`）、`MapFeature::OcrText{text,roi?}` / `Asset{asset}`（`:43-56`）、`MapEdge{from,action,to,wait}`（`:124`）、`MapAction::ClickAsset{asset}/Key{keycode}/Swipe{from,to,ms}`（`:82-98`）、`MapWait{settle_ms,stable_ms,timeout_ms,poll_ms}`（`:100`）。
+- API：`load`（`:195`）/`save_atomic`（`:216`，`.tmp`→rename + `.bak`）/`node_ids`（`:238`）/`to_runtime`（`:243`）/`validate(assets,frame_ids)`（`:325-490`：node/edge/parent 环+深度、hub、素材引用、min_hits、wait 范围、自环、数量上限、frames 警告）；错误阻断保存/发布，警告只展示。
+- **返回边派生**：explicit 边优先；否则 `parent` + `return_asset`（缺省 `default_return_asset`）派生 `node→parent`（click_asset）；见 `runtime/map.rs build_graph:121`。
+
+#### 22.75.5 识别 / 寻路 / 执行
+
+- **节点识别** `identify_current_node`（`runtime:2546-2655`）：两阶段——先全帧 `screen_lines()`（`:2352`，D0/地图共用、按帧缓存）匹配 `ocr_text`（seq134 strict）；再仅对「差素材特征才能达标」的节点跑 `recognition_candidates`（seq134 单源）`asset` 特征；排序 priority desc→hits desc→总特征数 desc→声明序；`NodeMatch`（`:601`）带 ambiguous/明细；缓存按 `screen_seq` 失效。
+- **寻路**（`runtime/map.rs`）：`MapConfig`（`:90`）→`build_graph`（`:121`，显式优先+派生返回边）→`plan_route`（`:309`）三层：①直达（不穿 hub 最短路）②LCA 上溯/下行 ③hub/全图兜底；确定性 tie-break；不可达响亮错误；`route_summary`（`:419`）。
+- **执行** `run_navigate`（`runtime:2730-2865`）：每 round 预算/取消→PopupGuard→识别（已到即成功）→规划→hop 循环（hop 前 PopupGuard、`perform_map_action`（`:2655`）click_asset/key/swipe、settle、invalidate、hop 后 PopupGuard、`wait_until_node`（`:2702`，poll 重新识别）、`stable_ms` 复识别）；预期 `to` 不符→不盲走、下一轮从真实当前节点重规划；`NavMode::{Execute,PlanOnly}`（`:592`，PlanOnly 只识别+规划）；上限 `MAX_NAV_ROUNDS=3/MAX_NAV_HOPS=16`（`map.rs:16-17`）；日志 `navigate`/`navigate_hop`。
+- 注入：`with_map`（`:2149`）/`with_navigation_mode`（`:2158`）/`set_global_map`（`:618`）；`screen_lines` 合并 D0 弹窗行检测。
+
+#### 22.75.6 flow / package / run 入口
+
+- flow：`Step::Navigate{target}` 解析（`oas-flow:2833-2844`，target 非空）；`Flow::navigate_uses()`（`:3036`）/`NavigateUse`（`:3067`）；navigate 不是终止（collectors/finish 判定补 arm）。
+- package：`SUPPORTED_FLOW_OPS` 14→15 含 `"navigate"`（`package.rs:90-105`）；`walk_flow_ops` arm（`:650-653`）；`Manifest.map_requirements` additive（`:148-170`，`MapRequirements{nodes}`）、`BuildOptions.map_nodes`（`:291`）；旧 Runner `unsupported_flow_ops` 安装期拒绝（`:699`）。
+- run：flow 含 navigate 才懒加载/校验 map（`run.rs:540 load_nav_map`，缺失/非法/目标不存在 loud）；`navigation_mode_for`（`:529`：dry-run 且非 replay→PlanOnly，replay/正常=Execute）；`run_ephemeral_flow`（`run.rs:1413+`，Studio 调试导航临时任务不落盘）；D0 CLI popups（`:579`）。
+
+#### 22.75.7 serve / API / T11 / 发布安装
+
+- 路由归属：`/map*` Studio-only（Runner 404；`serve:521-558`）；`/map.js` 静态（`:2285`）；`/popups` Studio、`/popups/test` Both（`:555-558`）。
+- `/map*` 处理器（`serve:5306-5700`）：`GET/POST /map`（校验→`.bak`→原子写）、`/map/validate`、`GET /map/state`（当前帧识别节点）、`GET /map/plan`（路径预览）、`POST /map/navigate`（`real:false`=PlanOnly 预览；`real:true`=ephemeral 任务经 `run::run_ephemeral_flow` 执行）、`POST /map/probe`（OCR+素材 hints）。
+- **T11**（`apps/oasd/src/task.rs:213-300`）：flow 每个字面量 `navigate.target` ∈ 全局 map nodes；map 缺失/非法/未知= T11（阻断发布；`/task/lint`）；`publish_map_nodes`（`package_cmd.rs:209-247`）同口径 + manifest；install 缺节点 **warning 不阻断**（`:1278`）。
+- 数据安全：素材 delete/rename 被 map node/edge/return_asset 引用→400 列出引用、不自动改 map（`serve:6799-6833/6872`）；任务删除队列清理（#4 见 §22.75.1）。
+
+#### 22.75.8 UI：地图页 + builder navigate + 下线关系 UI
+
+- 「地图」页：`index.html:45-51` Studio nav 6 项（新增 `data-page="map"`）、`#page-map`（`:469`）；`map_ui.js`（canonical，纯函数 `mapIdValid/mapNodeTree/mapNodeReturnStatus/mapValidationLocal/mapPlanSummary/mapStateSummary/mapNavigateSummary/mapEdgeDefaults/mapNavigateFlowPreset` `:8-315`）；`/map.js` 为 M2 静态路由目标，与 `map_ui.js` 双文件同步（UI 测试 `:5681-5688`，6 nav）；页面含节点树/节点编辑（parent/return_asset/priority/frames/特征）/边编辑（click_asset|key|swipe+wait）/hub/default_return_asset/路径预览/识别当前节点/dry+real 调试（二次确认）/probe/保存重载/用当前帧新建节点/新建导航任务。
+- builder：动作库「导航到页面」`navigate`（`OP_META:23`、`ACTION_TITLES:45`、`FIELDS:98 target=node`、`DEFAULTS:133`、summary `:1344`）；保存前 `navigateArgsIssues`（`:779/816`，target 空/地图缺失/节点不存在阻断）。
+- 下线帧-素材关系 UI（替代为地图）：删除关系按钮/浏览器/录制/标注 dialog 与相关 JS/断言；保留 `Asset.positions` 与帧详情只读素材列表；服务端 `/relations/*` 保留 **deprecated**（`ENGINE §22.41` 标注）。
+- #3/#5/#8/#9/#10 的 UI 细节见 §22.75.1 对应行；UI 数字 2652/195/0 dead/158/6 nav。
+
+#### 22.75.9 测试 / E2E / 风险 / 旧文更正
+
+- **测试**：workspace **1039/0**（oas-flow 83 / oas-runtime 264 / oas-task 167+ / oasd 471 等；`_verify/seq136-final/workspace*.log` 各阶段日志）；UI **2652/195/0 dead/158/6**；`cargo check/build -p oasd --features ocr` exit 0。
+- **E2E**（`_verify/seq136-map/E2E-REPORT.md`，Studio 8831/Runner 8832 隔离副本）：**18 checks / 0 failed**——map CRUD+原子写/.bak、validate 坏引用/父环、state、plan 2 hops、不可达 400、navigate dry、probe、T11 两态、publish `flow_ops+map_requirements`、install 缺节点 warning、素材 delete/rename 400、无残留监听；**real 导航/replay 多跳 SKIP（无 adb）**，同状态机由 fake-frame runtime 单测覆盖（`navigate_mismatch_replans_from_the_real_current_node`、`navigate_popup_interruption_closes_and_replans`、`navigate_stable_ms_rechecks_the_expected_node`、`navigate_budget_and_cancel_are_honoured`、`identify_current_node_uses_asset_features_min_hits_and_priority`；run.rs `navigation_mode_is_plan_only_only_for_device_dry_run`、`run_map_loading_is_lazy_loud_and_validates_targets`、`cli_run_loads_global_popups_file`）。
+- **其它冒烟**：`_verify/seq136D0-smoke`（/popups GET/POST/test frame6 命中 close box [979,150,27,31] point(991,169)，无真实点击）、`_verify/seq136B-smoke`（polygon+fixed candidates action_shape=polygon、test_action point in polygon、fixed 不平移）、`_verify/seq136D2-smoke`（/map CRUD/save）、`_verify/seq136-probe`/`seq136-smoke`（#16/#73 竖排候选与任务删除 `removed_from_queues`）。
+- **风险/遗留（如实）**：① 真实设备导航/replay 多跳 E2E 未跑（SKIP）；② `map_requirements` 只收**根 flow** 的 navigate（`call_task` 子任务未纳入）；③ CLI popups 解析复用 serve 内部函数（分层耦合）；④ T11 只校验 target 存在、**不含 map 资产引用**（`/map validate` 覆盖）；⑤ `map.json` 损坏时素材引用保护可能失效（删除拦截靠可解析 map）；⑥ `/relations/*` 保留 deprecated；⑦ 地图编辑器边编辑未做内联改字段；⑧ `/map/navigate real` 同步阻塞；⑨ 地图文件不进包、需用户分发（安装 warning、运行期 loud）；⑩ user data 未提交。
+- **旧文更正**：`§22.41`（帧-素材关系）已被本节的**唯一全局地图**取代（关系 UI 下线、服务端 `/relations/*` deprecated，证据文件原样保留不迁移）；`§22.73` seq134 的候选/OCR 语义保留，但 #2 点击几何统一为 ClickShape polygon / #6 ROI+全帧合并去重 / #1 fixed 绝对操作区以本节为准；`OPERATION-REGION-DESIGN §8.10` 为 polygon/fixed 现行口径。

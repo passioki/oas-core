@@ -1,35 +1,35 @@
 # 会话交接单（SESSION HANDOFF）★ 一页纸
 
-> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 134，✅ done：素材识别统一 strict/全帧候选/运行期 ROI→全屏回退/链与集合/多边形显示**），然后按需看 `docs/ENGINE-DESIGN.md §22.73` 与 `docs/ACCEPTANCE-2026-11-06.md`（seq134 追加）。
-> **状态：done（seq 134）——素材识别统一**：`4815cc4`（统一）+ `6a416ec`（删旧分支，行为不变）；workspace **998/0**（oas-task 165 / oas-runtime 240 / oasd 462）、UI **2456/190/0 dead/158/6 nav**；冒烟 `_verify/seq134-*`（test#6 3 候选、严格 OCR 1 行+`screen_fallback`、混合集合 6 候选、strict miss 400）。HEAD `6a416ec`（dev=origin/dev；main/origin/main=7a89fbe 待快进；未 tag/未 release）。
+> ★ 新会话先读 `docs/START-HERE.md` → `docs/RESUME.md` → `docs/RESUME-INDEX.md` 最新行（**seq 136，✅ done：11 项 + 唯一全局地图/导航 + 全局弹窗 D0 + 操作区 polygon/fixed**），然后按需看 `docs/ENGINE-DESIGN.md §22.75`、`docs/OPERATION-REGION-DESIGN.md §8.10`、`_verify/seq136-map/DESIGN.md`。
+> **状态：done（seq 136）——11 项 + 唯一全局地图/导航 + 全局弹窗 D0**：提交 `8dba49a`/`4cc5611`/`62a946a`/`4c9ea8f`/`9cfc04e`/`f70eca4`/`ccd99de`；workspace **1039/0**（flow 83 / runtime 264 / task 167+ / oasd 471）、UI **2652/195/0 dead/158/6 nav**；E2E `_verify/seq136-map/E2E-REPORT.md` **18/0**（real 导航 SKIP 无 adb）。HEAD `dbaece2`（dev=origin/dev；main=c0a672b 待 docs 后快进；未 tag/未 release）。
 
-## 0. 当前状态（2026-11-07 13:3x，seq 134 done）
+## 0. 当前状态（2026-11-07 19:4x，seq 136 done）
 
 | 项 | 值 |
 |---|---|
-| 分支 / HEAD | oas-core `dev`；代码 `6a416ec`（dev=origin/dev；main/origin/main=7a89fbe 待快进）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，未随 seq126~134 更新）；未 tag / 未 release |
-| 任务 | **seq134 已完成**：素材识别统一（严格匹配 / OCR 全帧候选 / 运行期 ROI→全屏回退 / 无期望文字限 ROI / region 不可作链节点 / 链与集合单源）+ 多边形显示（缩略图裁剪 / 画布主显示）；实现 `4815cc4`+`6a416ec`；并就地更正 §22.64.3 候选单源声明、§22.72 #2 旧语义 |
-| 测试 | `cargo test --workspace` **998 passed / 0 failed**（oas-task **165** / oas-runtime **240** / oasd **462** 等）；UI **2456 checks / 190 ids / 0 dead / 158 runner ids / 6 nav**；`cargo check -p oasd --features ocr` exit 0；冒烟 `_verify/seq134-{serve,runtime}-smoke`、`_verify/seq134-final` |
-| 权威文档 | **`ENGINE §22.73`（seq134）· `ACCEPTANCE-2026-11-06.md`（seq134 追加）· `PENDING §E-103` · `OPERATION-REGION-DESIGN §8.9`（模型 B）· `_verify/seq134-audit/final-spec.md`** |
-| 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；本地产物不含 seq126~134 新能力（package_schema=2 旧包被拒绝） |
-| 独立仓 | `https://github.com/passioki/oas-runner`（`768a8b7`）；pin `ba6813e`（未打独立包；如需独立 Runner 需 bump pin + 根启动脚本 + V2 变量模型重打） |
+| 分支 / HEAD | oas-core `dev`；代码 `dbaece2`（dev=origin/dev；main/origin/main=c0a672b 待 docs 后快进）；oas-runner 独立仓仍 `768a8b7`（pin `ba6813e`，未随 seq126~136 更新）；未 tag / 未 release |
+| 任务 | **seq136 已完成**：用户 11 项（#1 op_region fixed 绝对 / #2 ClickShape 统一 polygon / #3 去冗余素材 picker / #4 删任务队列独立 / #5 识别等待共用条件行 / #6 竖排 OCR 合并去重 / #7 T3 全变量 / #8 可编辑源码框 / #9 SVG 自适应 / #10 同层拖动 / #11 地图）+ D0 全局弹窗 + D1 唯一全局地图/navigate（M1~M4）|
+| 测试 | `cargo test --workspace` **1039 passed / 0 failed**（flow **83** / runtime **264** / oas-task **167+** / oasd **471** 等）；UI **2652 checks / 195 ids / 0 dead / 158 runner ids / 6 nav**；`cargo check/build -p oasd --features ocr` exit 0；E2E 18/0、D0/B/D2/probe 冒烟见 `_verify/seq136*` |
+| 权威文档 | **`ENGINE §22.75`（seq136）· `ACCEPTANCE-2026-11-06.md`（seq136 追加）· `PENDING §E-104` · `OPERATION-REGION-DESIGN §8.10`（polygon/fixed 现行）· `_verify/seq136-map/DESIGN.md`** |
+| 发行包 | 按用户「推送即可，不用发布」**未重打/未上传**；本地产物不含 seq126~136 新能力（旧包被新引擎拒绝）；**地图 `map.json` 不入包**（manifest `map_requirements` + 运行期 loud） |
+| 独立仓 | `https://github.com/passioki/oas-runner`（`768a8b7`）；pin `ba6813e`（未打独立包；如需独立 Runner 需 bump pin + 根启动脚本 + V2 变量/地图/弹窗文件分发） |
 | 服务 | 无 `oasd`/`oasd-runner` 进程；8787~8809 无监听（冒烟后确认） |
 | 工作区 | `scheduler.json`、用户任务 `tasks/*`、`assets/assets.json` / `frames/frames.json` / 新增图片等均**未提交**（用户数据，**不要提交/覆盖**）；用户可能在 Studio 中删除/编辑任务（不要恢复/提交）；seq131 代码已提交；**cargo incremental 已清理，下次构建稍慢（deps 缓存仍在）** |
 
 ## 0.1 新会话恢复步骤（直接照做）
 
-1. 调 skill `session-memory`；读 `START-HERE` → `RESUME.md`（seq 134）→ `RESUME-INDEX` 最新行。
+1. 调 skill `session-memory`；读 `START-HERE` → `RESUME.md`（seq 136）→ `RESUME-INDEX` 最新行。
 2. 用磁盘核实：`git log -1`、`git status --porcelain`、`cargo test --workspace`、`node apps/oasd/ui/ui_pure_test.js`；与本文 §0 不一致先修文档。
-3. seq134 已 done；若用户提新需求，先读 `ENGINE §22.73` 了解现行识别/候选语义（runtime 单源 recognition_candidates/recognize_best/pick_candidate；OCR 严格+全帧候选+运行期 ROI→全屏回退；模型 B 链末端），避免重复实现或恢复已删私有分支。
-4. 遗留项（不阻塞）：保存 PNG 文件本身仍矩形 ROI 裁剪（缩略图/画布按 polygon 遮罩；文件级 alpha 需 serve 支持）、runtime 保留 `matching_ocr_lines` 等仅供历史语义测试、真实点击/Firefox 手测未做、oas-runner 独立仓 pin/重打包未跟进、V2.1/V2.2 变量后续。
-5. 发布策略：**只推送不发布**；如要发布需先重打 Studio/Runner 包、视需要 bump oas-runner pin/版本（新包不兼容旧 Runner：package_schema=2/`ocr_var`/`drag.asset` 等会被旧引擎拒绝）。
+3. seq136 已 done；若用户提新需求，先读 `ENGINE §22.75`（现行：操作区 ClickShape/fixed、唯一全局地图+navigate、全局弹窗 PopupGuard、T11），并看 `OPERATION-REGION-DESIGN §8.10`，避免重复实现或恢复已下线的关系 UI。
+4. 遗留项（不阻塞）：真实设备导航/replay 多跳 E2E 未跑（无 adb，fake-frame 单测覆盖）、`map_requirements` 只收根 flow（call_task 子任务未纳入）、CLI popups 复用 serve 内部函数（耦合）、T11 不含 map 资产引用、map 损坏时引用保护可能失效、relations deprecated 待清理、UI 边编辑无内联改字段、`/map/navigate real` 同步阻塞、地图文件需分发、Firefox 手测。
+5. 发布策略：**只推送不发布**；如要发布需先重打 Studio/Runner 包、视需要 bump oas-runner pin/版本；地图/弹窗为全局文件、需单独分发（不入包）。
 
-## 0.2 本轮（seq134）文档产出
+## 0.2 本轮（seq136）文档产出
 
-- `ENGINE-DESIGN.md §22.73`（8 子节：用户裁决 / runtime 单源 / OCR 规则+回退 / 链与集合 / oas-task expand / serve API / UI 候选+多边形 / 测试冒烟更正遗留）；另 §22.64.3、§22.72 就地更正。
-- `ACCEPTANCE-2026-11-06.md` seq134 追加；`PENDING §E-103`（+§E-46/§E-102 交叉引用）；`RESUME §1.28`/`RESUME-INDEX row 134`/`START-HERE`/本交接单更新。
-- 审计/规格：`_verify\seq134-audit\final-spec.md`（+runtime/serve-ui-task/lead 审计）；冒烟证据 `_verify\seq134-{serve,runtime}-smoke\`、`_verify\seq134-final\workspace*.log`。
-- 测试：workspace 998/0（task 165 / runtime 240 / oasd 462）、UI 2456/190/0/6；旧文更正：§22.64.3 单源声明、§22.72 #2、模型 A→模型 B。
+- `ENGINE-DESIGN.md §22.75`（9 子节：11 项映射 / 操作区 polygon+fixed / D0 弹窗 / 地图 schema / 识别寻路执行 / flow-package-run / serve-API-T11 / UI / 测试E2E风险更正）；另 §22.41、§22.73 就地更正。
+- `ACCEPTANCE-2026-11-06.md` seq136 追加；`PENDING §E-104`（+§E-103/§E-99 交叉引用）；`RESUME §1.29`/`RESUME-INDEX row 136`/`OPERATION-REGION §8.10`/`START-HERE`/本交接单/`README`。
+- 设计/证据：`_verify\seq136-map/DESIGN.md` + `E2E-REPORT.md`；冒烟 `_verify\seq136{D0,B,D2}-smoke\`、`seq136-probe\`、`seq136-smoke\`、`seq136-final\workspace*.log`。
+- 测试：workspace 1039/0（flow 83 / runtime 264 / task 167+ / oasd 471）、UI 2652/195/0/6；旧文更正：§22.41 关系→地图、§22.73 polygon/fixed。
 
 ## 1. 最近 3 轮关键变更（历史细节见 PLAN/ENGINE/PENDING）
 

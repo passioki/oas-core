@@ -5,13 +5,13 @@
 
 ```yaml
 task_id: oas-core-dual-app-upgrade
-checkpoint_seq: 134
-updated_at: 2026-11-07T13:3x+08:00
-trigger: 用户 5 项识别裁决（严格匹配 / 运行期 ROI→全屏回退 / OCR 候选全帧 / 无期望文字限 ROI+region 不可作链节点 / 多边形显示）→ 统一识别单源（Lead 规格 `_verify/seq134-audit/final-spec.md`）；提交 `4815cc4`+`6a416ec`；workspace 998/0、UI 2456/190/0/6。
+checkpoint_seq: 136
+updated_at: 2026-11-07T19:4x+08:00
+trigger: 用户 11 项反馈 + 地图/弹窗补充：操作区 polygon/fixed、动作 UI 三项、竖排 OCR、T3、队列、源码框、流程图自适应、同层拖动、唯一全局地图/navigate、全局弹窗 D0；提交 A/B/C+D0/M1-M4（`ccd99de` 为 HEAD）；workspace 1039/0、UI 2652/195/0/6。
 status: done
-code_head: `6a416ec`（dev=origin/dev；main/origin/main=7a89fbe 待快进；未 tag/未 release）
-docs_head: seq134 docs 提交见 `git log -1`
-next_action: seq134 已完成（未 tag/未 release）。后续：① **Firefox 手测**（候选统一：图像/文字/集合；OCR 有期望且 ROI 未命中→全屏回退候选显示与点测；多边形缩略图裁剪/画布主显示；test_action candidate_index 与候选逐项一致）；② 真实点击/ADB 手测未做；③ **PNG 文件级 polygon 裁剪**需 serve 支持（现缩略图/画布遮罩，文件仍矩形）；④ oas-runner 独立仓 pin/重打包未跟进；⑤ V2.1 变量表达式/条件/loop、V2.2 Profile。详见 `PENDING §E-103`、`ENGINE §22.73`、`ACCEPTANCE` seq134 追加。
+code_head: `dbaece2`（dev=origin/dev；main/origin/main=c0a672b 待 docs 后快进；未 tag/未 release）
+docs_head: seq136 docs 提交见 `git log -1`
+next_action: seq136 已完成（未 tag/未 release）。后续：① **Firefox/真机手测**（操作区 polygon/fixed、地图页建图/识别/路径预览/调试、builder navigate、源码框、拖动排序、弹窗 dry/real）；② **真实设备导航/replay 多跳 E2E**（无 adb，SKIP；fake-frame 单测已覆盖状态机）；③ `map_requirements` 只收根 flow（call_task 子任务未纳入）；④ 地图文件分发（不入包）/Runner 导入通道、map 损坏保护；⑤ relations 服务端 deprecated 清理；⑥ CLI popups 复用 serve 内部函数收敛；⑦ T11 扩展 map 资产引用；⑧ V2.1/V2.2。详见 `PENDING §E-104`、`ENGINE §22.75`、`ACCEPTANCE` seq136。
 ```
 
 ## 0. 目标（本阶段）
@@ -330,6 +330,13 @@ next_action: seq134 已完成（未 tag/未 release）。后续：① **Firefox 
 > 实现 `4815cc4`（统一）+ `6a416ec`（删旧分支，行为不变）：**runtime** 单源 `recognition_candidates/recognize_best/pick_candidate`（domain/pass 统一、OCR 行缓存、链 `candidate_count/index`、collection 全成员、Click/Appear/dismiss/interrupts/click_target/long_press/drag ocr_text/preview/test_action/region.asset 单源）；**oas-task** `expand_collection_steps` 按 kind+RegionRef、load_flow/lint/publish 展开后校验、collection 作 op_region terminal；**serve** `editor_interp` 单解释器/候选统一/test_action 同 index/collection match 混合 best；**UI** 单一候选渲染器/`screen_fallback` 显示/删死函数 + 多边形缩略图裁剪/画布主显示。
 > 验证：workspace **998/0**（task 165 / runtime 240 / oasd 462）、UI **2456 checks/190 ids/0 dead/158 runner/6 nav**、`cargo check --features ocr` exit 0；冒烟 `_verify\seq134-serve-smoke\`（test#6 count=3、严格 OCR 1 行+screen_fallback、混合集合 6 候选、test_action index 一致）、`_verify\seq134-runtime-smoke\`（strict miss 400）、`_verify\seq134-final\workspace*.log`。
 > 遗留：PNG 文件本身仍矩形 ROI 裁剪（缩略图/画布按 polygon 遮罩，文件级 alpha 待 serve 支持）；runtime 保留 `matching_ocr_lines` 等仅供历史语义测试；真实点击/Firefox 手测未做；main 待快进、未 tag/release。
+
+## 1.29 2026-11-07 18:2x→19:3x（seq 136）操作区 polygon/fixed + 11 项 + 唯一全局地图/导航 + 全局弹窗 D0（✅ 已完成并推送 dev；main 待 docs 后快进）
+
+> 用户 11 项反馈 + 地图/弹窗补充全部实现：提交 `8dba49a` A（#6 竖排 OCR ROI+全帧合并去重 / #7 T3 全部已声明变量 / #4 删任务队列独立 `removed_from_queues` / #3 去冗余素材 picker / #9 SVG 自适应 / #10 同层拖动+step id）、`4cc5611` B（#1 `op_region fixed` 绝对 / #2 ClickShape 统一 polygon 不退化）、`62a946a` C+D0（#5 识别等待共用条件行 / #8 可编辑源码框 / 全局 `popups.json`+PopupGuard）、`4c9ea8f` M1（地图核心模型/runtime/navigate op）、`9cfc04e` M2（/map API/T11/publish/install）、`f70eca4` M3（Studio 地图页/builder navigate/下线关系 UI）、`ccd99de` M4（重规划/弹窗中断/稳定/预算补测+CLI popups+E2E）。
+> 地图现行口径：唯一 `<assets-dir>/map.json`（不入包、不按任务分）；节点=页面（parent/return_asset/priority/frames/识别特征 ocr_text|asset+min_hits）；边有向不可逆；返回边由 parent+return_asset 派生；三层寻路（直达→LCA→hub）；navigate 状态机（PopupGuard/重识别校验/不一致重规划/rounds3/hops16/PlanOnly/预算取消）；flow `Step::Navigate` + flow_ops 15 + manifest `map_requirements`；`/map*` Studio-only、T11、素材引用保护；关系 UI 下线、`/relations/*` deprecated。
+> 验证：workspace **1039/0**（flow 83 / runtime 264 / task 167+ / oasd 471 等）、UI **2652/195/0 dead/158/6 nav**、cargo check/build ocr exit0；E2E `_verify\seq136-map\E2E-REPORT.md` **18/0**（real 导航 SKIP 无 adb）；D0/B/D2/probe 冒烟见 `_verify\seq136*`；`_verify\seq136-final\workspace*.log`。
+> 遗留：真实设备导航/replay 多跳 E2E；map_requirements 仅根 flow；CLI popups 分层耦合；T11 不含 map 资产引用；map 损坏时引用保护失效；relations deprecated 待清理；边编辑无内联改字段；`/map/navigate real` 同步阻塞；地图文件需分发；用户数据未提交。
 
 ## 2. 本批交付（seq 110）
 
