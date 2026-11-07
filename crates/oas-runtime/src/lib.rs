@@ -2104,6 +2104,9 @@ pub struct Interpreter<S: ScreenSource, I: InputSink> {
     map: Option<MapState>,
     /// PlanOnly = identify+plan only (no clicks/waits/requeue).
     nav_mode: NavMode,
+    /// seq138 V2: fallback task flow (`fallback_task`, loaded by run.rs) executed
+    /// once when navigation fails/unknown/no route; None = report a clear error.
+    map_fallback: Option<Flow>,
 }
 
 impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
@@ -2154,6 +2157,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 asset_pass_cache: HashMap::new(),
             }),
             nav_mode: NavMode::Execute,
+            map_fallback: None,
         }
     }
 
@@ -2171,6 +2175,14 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     /// Explicit navigation mode (dry-run preview vs full execution).
     pub fn with_navigation_mode(mut self, mode: NavMode) -> Self {
         self.nav_mode = mode;
+        self
+    }
+
+    /// Inject the loaded `fallback_task` flow (seq138 V2). Called by run.rs from
+    /// the task bundle next to the current task; the runtime executes it once on
+    /// navigation failure and then re-identifies/re-plans.
+    pub fn with_map_fallback(mut self, flow: Flow) -> Self {
+        self.map_fallback = Some(flow);
         self
     }
 
@@ -2637,8 +2649,8 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             return Ok(cache);
         }
         self.observe_screen()?;
-        let needs_ocr = map.nodes.iter().any(|n| {
-            n.features
+        let needs_ocr = map.locations.iter().any(|l| {
+            l.features
                 .iter()
                 .any(|f| matches!(f, crate::map::MapFeature::OcrText { .. }))
         });
@@ -2648,11 +2660,11 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             Vec::new()
         };
         let mut scored: Vec<(usize, u32, u32)> = Vec::new(); // (idx,hits,total)
-        for (idx, node) in map.nodes.iter().enumerate() {
-            let total = node.features.len() as u32;
-            let need = node.min_hits.max(1).min(total.max(1));
+        for (idx, loc) in map.locations.iter().enumerate() {
+            let total = loc.features.len() as u32;
+            let need = loc.min_hits.max(1).min(total.max(1));
             let mut ocr_hits = 0u32;
-            for f in &node.features {
+            for f in &loc.features {
                 if ocr_hits >= need {
                     break; // seq137: min_hits already satisfied
                 }
@@ -2682,12 +2694,12 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 scored.push((idx, ocr_hits, total));
                 continue;
             }
-            let asset_features = node.asset_feature_count() as u32;
+            let asset_features = loc.asset_feature_count() as u32;
             if ocr_hits + asset_features < need {
                 continue;
             }
             let mut hits = ocr_hits;
-            for f in &node.features {
+            for f in &loc.features {
                 if hits >= need {
                     break; // seq137: cheap early exit
                 }
@@ -2695,7 +2707,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     // seq137: cheap exists check (cached per frame), NOT a full
                     // candidate enumeration.
                     if self.asset_feature_passes(asset).map_err(|e| {
-                        format!("identify: node `{}` feature asset `{asset}`: {e}", node.id)
+                        format!("identify: location `{}` feature asset `{asset}`: {e}", loc.name)
                     })? {
                         hits += 1;
                     }
@@ -2706,31 +2718,29 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             }
         }
         if scored.is_empty() {
-            return Err(format!(
-                "当前页面不在地图中（识别结果：无节点命中；建议在地图编辑器用「从当前帧添加节点」）"
-            ));
+            return Err(
+                "当前所在地不在地图中（识别结果：无所在地命中；请在工作台地图中用当前帧添加所在地）"
+                    .to_string(),
+            );
         }
         scored.sort_by(|a, b| {
-            let na = &map.nodes[a.0];
-            let nb = &map.nodes[b.0];
-            nb.priority
-                .cmp(&na.priority)
-                .then_with(|| b.1.cmp(&a.1))
+            // V2: no priority; hits desc → total features desc → declaration order.
+            b.1.cmp(&a.1)
                 .then_with(|| b.2.cmp(&a.2))
                 .then_with(|| a.0.cmp(&b.0))
         });
         let (idx, hits, _) = scored[0];
-        let node = &map.nodes[idx];
+        let loc = &map.locations[idx];
         let mut ambiguous = Vec::new();
         for (j, h, _) in scored.iter().skip(1) {
-            let other = &map.nodes[*j];
-            if other.priority == node.priority && *h == hits {
-                ambiguous.push(other.id.clone());
+            let other = &map.locations[*j];
+            if *h == hits {
+                ambiguous.push(other.name.clone());
             }
         }
         let matched = NodeMatch {
-            node: node.id.clone(),
-            name: node.name.clone(),
+            node: loc.name.clone(),
+            name: loc.label.clone(),
             hits,
             ambiguous,
         };
@@ -2740,49 +2750,38 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         Ok(matched)
     }
 
-    /// Execute one map edge action (`click_asset` / `key` / `swipe`).
-    fn perform_map_action(&mut self, action: &crate::map::MapAction) -> Result<(), String> {
-        match action {
-            crate::map::MapAction::ClickAsset { asset, .. } => {
-                let best = self.recognize_best(asset)?;
-                let Some(at) = best.at else {
-                    return Err(format!("navigate: edge asset `{asset}` not found"));
-                };
-                let threshold = self.selector_threshold(asset);
-                if best.score < threshold {
-                    return Err(format!(
-                        "navigate: edge asset `{asset}` score {:.3} < threshold {threshold:.3}",
-                        best.score
-                    ));
-                }
-                let (box_, shape) = self.click_geometry_for(asset, at)?;
-                let plan = self.popup_sample_plan(box_, shape.as_ref())?;
-                let (w, h) = self
-                    .screen
-                    .size()
-                    .ok_or_else(|| "navigate: no frame available".to_string())?;
-                self.perform_click(
-                    plan,
-                    rect_centre(box_),
-                    Some(asset.clone()),
-                    "navigate",
-                    format!("navigate:{asset}:{:.3}", best.score),
-                    w,
-                    h,
-                )?;
-                Ok(())
+    /// Execute one V2 landmark path (`action="click"`, asset/collection).
+    fn perform_map_action(&mut self, path: &crate::map::MapPath) -> Result<(), String> {
+        if !path.asset.trim().is_empty() {
+            let asset = &path.asset;
+            let best = self.recognize_best(asset)?;
+            let Some(at) = best.at else {
+                return Err(format!("navigate: 路标路径素材 `{asset}` 未找到"));
+            };
+            let threshold = self.selector_threshold(asset);
+            if best.score < threshold {
+                return Err(format!(
+                    "navigate: 路标路径素材 `{asset}` score {:.3} < threshold {threshold:.3}",
+                    best.score
+                ));
             }
-            crate::map::MapAction::Key { keycode } => {
-                self.input.key(*keycode)?;
-                self.invalidate_frame();
-                Ok(())
-            }
-            crate::map::MapAction::Swipe { from, to, ms } => {
-                self.input.swipe(*from, *to, *ms)?;
-                self.invalidate_frame();
-                Ok(())
-            }
+            let (box_, shape) = self.click_geometry_for(asset, at)?;
+            let plan = self.popup_sample_plan(box_, shape.as_ref())?;
+            let (w, h) = self
+                .screen
+                .size()
+                .ok_or_else(|| "navigate: no frame available".to_string())?;
+            self.perform_click(
+                plan,
+                rect_centre(box_),
+                Some(asset.clone()),
+                "navigate",
+                format!("navigate:{asset}:{:.3}", best.score),
+                w,
+                h,
+            )?;
         }
+        Ok(())
     }
 
     /// Wait until the expected node is identified, polling every `wait.poll_ms`
@@ -2822,28 +2821,81 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
     }
 
     /// `Step::Navigate` state machine (design §4.1): per-hop PopupGuard + settle +
-    /// re-identify/validate; mismatch/unknown → re-plan (bounded rounds); PlanOnly
-    /// identifies+plans only; Execute walks the full loop (replay/dry input works).
+    /// `Step::Navigate` (V2): identify current **location**, BFS over directed
+    /// landmarks, execute each click path, settle + popup guard + re-identify the
+    /// expected location; mismatch/unknown → re-plan (bounded rounds). On failure
+    /// the configured `fallback_task` flow is executed once (injected by run.rs)
+    /// and navigation restarts; if that is unavailable/fails, the error is loud.
     fn run_navigate(&mut self, target: &str) -> Result<String, String> {
         let Some(map) = self.map_config().cloned() else {
             return Err(
                 "navigate: 当前运行未加载全局地图 map.json（任务使用了 navigate；\
-                 请先在地图页建图/复制 map.json 到全局素材库）"
+                 请先在工作台地图 tab 建图/复制 map.json 到全局素材库）"
                     .to_string(),
             );
         };
-        if map.node(target).is_none() {
-            return Err(format!("navigate: 目标地图节点 `{target}` 不存在"));
+        if self.nav_mode == NavMode::PlanOnly {
+            return self.navigate_once(target, &map);
+        }
+        let mut fallback_used = false;
+        loop {
+            let err = match self.navigate_once(target, &map) {
+                Ok(v) => return Ok(v),
+                Err(e) => e,
+            };
+            // Budget/cancel are terminal: never swallow their classification with
+            // a fallback attempt (run() maps EXHAUSTED/cancelled specially).
+            if err.starts_with(EXHAUSTED) || err.contains("cancelled") {
+                return Err(err);
+            }
+            if fallback_used {
+                return Err(format!(
+                    "navigate: {err}（兜底任务 `{}` 执行后仍未到达）",
+                    map.fallback_task
+                ));
+            }
+            let Some(fb) = self.map_fallback.clone() else {
+                return Err(format!(
+                    "navigate: {err}（兜底任务 `{}` 未加载：请确认该任务存在且可读）",
+                    map.fallback_task
+                ));
+            };
+            fallback_used = true;
+            self.log(
+                0,
+                "navigate_fallback",
+                &format!("reason={err} task={}", map.fallback_task),
+                "retry",
+                0.0,
+            );
+            let mut ctl = Ctl::Normal;
+            self.exec(&fb.steps, 0, &mut ctl).map_err(|e| {
+                format!(
+                    "navigate: {err}；兜底任务 `{}` 执行失败: {e}",
+                    map.fallback_task
+                )
+            })?;
+            self.invalidate_frame();
+        }
+    }
+
+    fn navigate_once(
+        &mut self,
+        target: &str,
+        map: &crate::map::MapConfig,
+    ) -> Result<String, String> {
+        if map.location(target).is_none() {
+            return Err(format!("navigate: 目标所在地 `{target}` 不在全局地图"));
         }
         if self.nav_mode == NavMode::PlanOnly {
             let cur = self.identify_current_node()?;
-            let route = crate::map::plan_route(&map, &cur.node, target)?;
+            let route = crate::map::plan_route(map, &cur.node, target)?;
             let summary = crate::map::route_summary(&route);
             self.log(
                 0,
                 "navigate",
                 &format!(
-                    "dry from={} target={target} route=[{summary}] hops={}",
+                    "dry current={} target={target} route=[{summary}] hops={}",
                     cur.node,
                     route.len()
                 ),
@@ -2851,7 +2903,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 0.0,
             );
             return Ok(format!(
-                "navigate(dry) from={} target={target} route=[{summary}] hops={}",
+                "navigate(dry) current={} target={target} route=[{summary}] hops={}",
                 cur.node,
                 route.len()
             ));
@@ -2863,7 +2915,6 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
         for round in 1..=crate::map::MAX_NAV_ROUNDS {
             rounds = round;
             self.check_budget()?;
-            // Popup first: clearing a popup changes the context.
             if self.popup_guard_check(true)? {
                 popups += 1;
             }
@@ -2871,16 +2922,16 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
             last_seen = cur.node.clone();
             if cur.node == target {
                 let detail = format!(
-                    "target={target} from={} hops=0 rounds={rounds} popups={popups}",
+                    "target={target} current={} hops=0 rounds={rounds} popups={popups}",
                     cur.node
                 );
                 self.log(0, "navigate", &detail, "ok", 0.0);
                 return Ok(format!("navigate reached {detail}"));
             }
-            let route = crate::map::plan_route(&map, &cur.node, target)?;
+            let route = crate::map::plan_route(map, &cur.node, target)?;
             if route.len() > crate::map::MAX_NAV_HOPS {
                 return Err(format!(
-                    "navigate: 路径 {} 跳超过上限 {}（from={} target={target}）",
+                    "navigate: 路径 {} 跳超过上限 {}（current={} target={target}）",
                     route.len(),
                     crate::map::MAX_NAV_HOPS,
                     cur.node
@@ -2896,22 +2947,21 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     break;
                 }
                 let t_hop = Instant::now();
-                self.perform_map_action(&edge.action)?;
+                self.perform_map_action(&edge.path)?;
                 self.log(
                     0,
                     "navigate_hop",
                     &format!(
-                        "from={} action={} derived={} to={}",
-                        edge.from,
-                        edge.action.label(),
-                        edge.derived,
-                        edge.to
+                        "from={} action=click:{} return={} to={}",
+                        edge.from, edge.path.asset, edge.is_return, edge.to
                     ),
                     "ok",
                     t_hop.elapsed().as_secs_f64() * 1000.0,
                 );
-                if edge.wait.settle_ms > 0 {
-                    std::thread::sleep(Duration::from_millis(edge.wait.settle_ms as u64));
+                if edge.path.wait.settle_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(
+                        edge.path.wait.settle_ms as u64,
+                    ));
                 }
                 self.invalidate_frame();
                 if self.popup_guard_check(false)? {
@@ -2919,13 +2969,15 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                     changed = true;
                     break;
                 }
-                let got = self.wait_until_node(&edge.to, edge.wait)?;
+                let got = self.wait_until_node(&edge.to, edge.path.wait)?;
                 if got != edge.to {
                     changed = true;
                     break;
                 }
-                if edge.wait.stable_ms > 0 {
-                    std::thread::sleep(Duration::from_millis(edge.wait.stable_ms as u64));
+                if edge.path.wait.stable_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(
+                        edge.path.wait.stable_ms as u64,
+                    ));
                     self.invalidate_frame();
                     let again = self.identify_current_node()?;
                     if again.node != edge.to {
@@ -2945,7 +2997,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
                 last_seen = cur.node.clone();
                 if cur.node == target {
                     let detail = format!(
-                        "target={target} from={} hops={} rounds={rounds} popups={popups}",
+                        "target={target} current={} hops={} rounds={rounds} popups={popups}",
                         history.first().map(|s| s.as_str()).unwrap_or(""),
                         history.len()
                     );
@@ -2959,6 +3011,7 @@ impl<S: ScreenSource, I: InputSink> Interpreter<S, I> {
              历史路径={history:?}；popups={popups}）"
         ))
     }
+
 
     pub fn run(&mut self, flow: &Flow) -> RunResult {
         self.started = Instant::now();
@@ -17220,49 +17273,53 @@ mod tests {
         }
     }
 
-    /// Map: 庭院 -> 御魂 -> 御魂十层 (OCR features + key edges, so the state
-    /// machine test does not depend on template NCC at all).
-    fn nav_map() -> crate::map::MapConfig {
+    /// V2 test map: 庭院 -> 御魂 -> 御魂十层 (OCR location features; empty path
+    /// assets so the state-machine tests do not depend on template NCC).
+    fn nav_location(name: &str, text: &str, outbound: &[&str], returns: &[&str]) -> crate::map::Location {
         use crate::map::*;
-        let node = |id: &str, text: &str| MapNode {
-            id: id.to_string(),
-            name: None,
-            parent: None,
-            return_asset: None,
+        let mk = |targets: &[&str], is_return: bool| {
+            targets
+                .iter()
+                .enumerate()
+                .map(|(i, t)| Landmark {
+                    name: t.to_string(),
+                    path: MapPath {
+                        asset: String::new(),
+                        wait: MapWait {
+                            settle_ms: 0,
+                            stable_ms: 0,
+                            timeout_ms: 500,
+                            poll_ms: 50,
+                        },
+                    },
+                    is_return,
+                    order: i,
+                })
+                .collect()
+        };
+        Location {
+            name: name.to_string(),
+            label: None,
             min_hits: 1,
             features: vec![MapFeature::OcrText {
                 text: text.to_string(),
                 roi: None,
             }],
-            priority: 0,
-        };
-        let edge = |from: &str, to: &str| MapEdge {
-            from: from.to_string(),
-            to: to.to_string(),
-            action: MapAction::Swipe {
-                from: Point { x: 10, y: 10 },
-                to: Point { x: 30, y: 10 },
-                ms: 100,
-            },
-            wait: MapWait {
-                settle_ms: 0,
-                stable_ms: 0,
-                timeout_ms: 500,
-                poll_ms: 50,
-            },
-            derived: false,
-            order: 0,
-        };
+            return_landmarks: mk(returns, true),
+            outbound_landmarks: mk(outbound, false),
+        }
+    }
+
+    fn nav_map() -> crate::map::MapConfig {
+        use crate::map::*;
         MapConfig {
-            hub: "庭院".to_string(),
-            default_return_asset: None,
-            nodes: vec![
-                node("庭院", "N1"),
-                node("御魂", "N2"),
-                node("御魂十层", "N3"),
-                node("孤立", "N_NEVER"),
+            fallback_task: "返回庭院".to_string(),
+            locations: vec![
+                nav_location("庭院", "N1", &["御魂"], &[]),
+                nav_location("御魂", "N2", &["御魂十层"], &["庭院"]),
+                nav_location("御魂十层", "N3", &[], &["御魂"]),
+                nav_location("孤立", "N_NEVER", &[], &[]),
             ],
-            edges: vec![edge("庭院", "御魂"), edge("御魂", "御魂十层")],
         }
     }
 
@@ -17305,7 +17362,7 @@ mod tests {
             "{:?}",
             interp.events()
         );
-        assert_eq!(shared.swipes.borrow().len(), 2, "one swipe per hop");
+        assert_eq!(shared.swipes.borrow().len(), 0, "V2 path clicks, not swipes");
         assert_eq!(
             interp
                 .events()
@@ -17442,46 +17499,13 @@ mod tests {
 
     fn nav_map_mismatch() -> crate::map::MapConfig {
         use crate::map::*;
-        let node = |id: &str, text: &str| MapNode {
-            id: id.to_string(),
-            name: None,
-            parent: None,
-            return_asset: None,
-            min_hits: 1,
-            features: vec![MapFeature::OcrText {
-                text: text.to_string(),
-                roi: None,
-            }],
-            priority: 0,
-        };
-        let edge = |from: &str, to: &str| MapEdge {
-            from: from.to_string(),
-            to: to.to_string(),
-            action: MapAction::Swipe {
-                from: Point { x: 10, y: 10 },
-                to: Point { x: 30, y: 10 },
-                ms: 100,
-            },
-            wait: MapWait {
-                settle_ms: 0,
-                stable_ms: 0,
-                timeout_ms: 300,
-                poll_ms: 50,
-            },
-            derived: false,
-            order: 0,
-        };
         MapConfig {
-            hub: "庭院".to_string(),
-            default_return_asset: None,
-            nodes: vec![
-                node("庭院", "N1"),
-                node("御魂", "N2"),
-                node("御魂十层", "N3"),
+            fallback_task: "返回庭院".to_string(),
+            locations: vec![
+                nav_location("庭院", "N1", &["御魂十层"], &[]),
+                nav_location("御魂", "N2", &["御魂十层"], &[]),
+                nav_location("御魂十层", "N3", &[], &[]),
             ],
-            // The first edge's expected `to` is wrong (lands on 御魂); the
-            // navigator must re-identify and re-plan from 御魂, not continue.
-            edges: vec![edge("庭院", "御魂十层"), edge("御魂", "御魂十层")],
         }
     }
 
@@ -17512,11 +17536,12 @@ mod tests {
             "{:?}",
             interp.events()
         );
-        let swipes = shared.swipes.borrow().len();
-        assert!(
-            swipes >= 2,
-            "hop1 (wrong to) + at least one re-planned hop, got {swipes}"
-        );
+        let hops = interp
+            .events()
+            .iter()
+            .filter(|e| e.op == "navigate_hop")
+            .count();
+        assert!(hops >= 2, "hop1 (wrong to) + at least one re-planned hop, got {hops}");
         assert!(interp
             .events()
             .iter()
@@ -17556,7 +17581,15 @@ mod tests {
             interp.events()
         );
         assert_eq!(shared.clicks.borrow().len(), 1, "one popup close click");
-        assert_eq!(shared.swipes.borrow().len(), 2, "route still executed");
+        assert_eq!(
+            interp
+                .events()
+                .iter()
+                .filter(|e| e.op == "navigate_hop")
+                .count(),
+            2,
+            "route still executed"
+        );
         assert!(interp
             .events()
             .iter()
@@ -17566,8 +17599,14 @@ mod tests {
     #[test]
     fn navigate_stable_ms_rechecks_the_expected_node() {
         let mut map = nav_map();
-        for e in &mut map.edges {
-            e.wait.stable_ms = 40;
+        for loc in &mut map.locations {
+            for lm in loc
+                .return_landmarks
+                .iter_mut()
+                .chain(loc.outbound_landmarks.iter_mut())
+            {
+                lm.path.wait.stable_ms = 40;
+            }
         }
         let frames = vec![
             nav_frame(&[], 100),
@@ -17592,7 +17631,14 @@ mod tests {
             "{:?}",
             interp.events()
         );
-        assert_eq!(shared.swipes.borrow().len(), 2);
+        assert_eq!(
+            interp
+                .events()
+                .iter()
+                .filter(|e| e.op == "navigate_hop")
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -17636,38 +17682,40 @@ mod tests {
             RunResult::Failed(msg) => assert!(msg.contains("cancelled"), "{msg}"),
             other => panic!("expected cancel failure, got {other:?}"),
         }
-        assert!(shared.swipes.borrow().is_empty());
+        assert!(shared.clicks.borrow().is_empty());
     }
 
     #[test]
-    fn identify_current_node_uses_asset_features_min_hits_and_priority() {
+    fn identify_current_node_uses_asset_features_and_min_hits() {
         // Asset-feature integration through the seq134 single source.
         use crate::map::*;
-        let node = |id: &str, asset: &str, priority: i32, min_hits: u32| MapNode {
-            id: id.to_string(),
-            name: None,
-            parent: None,
-            return_asset: None,
+        let loc = |name: &str, asset: &str, min_hits: u32| Location {
+            name: name.to_string(),
+            label: None,
             min_hits,
             features: if min_hits > 1 {
                 vec![
-                    MapFeature::Asset { asset: asset.to_string() },
-                    MapFeature::Asset { asset: "I_NEVER".to_string() },
+                    MapFeature::Asset {
+                        asset: asset.to_string(),
+                    },
+                    MapFeature::Asset {
+                        asset: "I_NEVER".to_string(),
+                    },
                 ]
             } else {
-                vec![MapFeature::Asset { asset: asset.to_string() }]
+                vec![MapFeature::Asset {
+                    asset: asset.to_string(),
+                }]
             },
-            priority,
+            return_landmarks: vec![],
+            outbound_landmarks: vec![],
         };
         let map = MapConfig {
-            hub: "低".to_string(),
-            default_return_asset: None,
-            nodes: vec![
-                node("低", "I_BRIGHT", 0, 1),
-                node("高", "I_BRIGHT", 5, 1),
-                node("缺", "I_BRIGHT", 0, 2),
+            fallback_task: "返回庭院".to_string(),
+            locations: vec![
+                loc("页面", "I_BRIGHT", 1),
+                loc("缺", "I_BRIGHT", 2),
             ],
-            edges: vec![],
         };
         let (input, _shared) = FakeInput::new();
         let mut interp = Interpreter::new(
@@ -17678,8 +17726,8 @@ mod tests {
         )
         .with_map(map)
         .with_seed(81);
-        let m = interp.identify_current_node().expect("asset feature node");
-        assert_eq!(m.node, "高", "priority wins: {m:?}");
+        let m = interp.identify_current_node().expect("asset feature location");
+        assert_eq!(m.node, "页面");
         // min_hits=2 cannot be met by one matching feature.
         assert!(!m.ambiguous.contains(&"缺".to_string()));
     }
@@ -17759,20 +17807,17 @@ mod tests {
         set.insert_ocr("OCR_TAG", Rect { x: 0, y: 0, w: 20, h: 10 });
         set.set_ocr_expected_text("OCR_TAG", "行".to_string());
         let map = MapConfig {
-            hub: "页面".into(),
-            default_return_asset: None,
-            nodes: vec![MapNode {
-                id: "页面".into(),
-                name: None,
-                parent: None,
-                return_asset: None,
+            fallback_task: "返回庭院".to_string(),
+            locations: vec![Location {
+                name: "页面".into(),
+                label: None,
                 min_hits: 1,
                 features: vec![MapFeature::Asset {
                     asset: "OCR_TAG".into(),
                 }],
-                priority: 0,
+                return_landmarks: vec![],
+                outbound_landmarks: vec![],
             }],
-            edges: vec![],
         };
         let (input, _shared) = FakeInput::new();
         let mut interp = Interpreter::new(FakeScreen::new(), input, set, Budget::default())
@@ -17831,6 +17876,147 @@ mod tests {
         assert!(hit);
         assert_eq!(matched, 1);
         assert_eq!(calls.get(), 1, "one det+rec for two rules features");
+    }
+
+    #[test]
+    fn navigate_v2_click_path_uses_the_landmark_asset() {
+        use crate::map::*;
+        let mut assets = AssetSet::new();
+        assets.insert_region("P12", Rect { x: 3, y: 4, w: 6, h: 5 });
+        let loc = |name: &str, text: &str, outbound: &[&str]| Location {
+            name: name.into(),
+            label: None,
+            min_hits: 1,
+            features: vec![MapFeature::OcrText {
+                text: text.into(),
+                roi: None,
+            }],
+            return_landmarks: vec![],
+            outbound_landmarks: outbound
+                .iter()
+                .enumerate()
+                .map(|(i, t)| Landmark {
+                    name: t.to_string(),
+                    path: MapPath {
+                        asset: "P12".into(),
+                        wait: MapWait {
+                            settle_ms: 0,
+                            stable_ms: 0,
+                            timeout_ms: 300,
+                            poll_ms: 50,
+                        },
+                    },
+                    is_return: false,
+                    order: i,
+                })
+                .collect(),
+        };
+        let map = MapConfig {
+            fallback_task: "返回庭院".into(),
+            locations: vec![
+                loc("庭院", "N1", &["御魂"]),
+                loc("御魂", "N2", &[]),
+            ],
+        };
+        let frames = vec![
+            nav_frame(&[], 100),
+            nav_frame(&[], 150),
+            nav_frame(&[], 150),
+        ];
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            TwoFrameScreen { frames, idx: 0 },
+            input,
+            assets,
+            Budget::default(),
+        )
+        .with_map(map)
+        .with_ocr(Box::new(NavOcr))
+        .with_humanize(no_miss())
+        .with_seed(101);
+        assert_eq!(
+            interp.run(&nav_flow("御魂")),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        let clicks = shared.clicks.borrow().clone();
+        assert_eq!(clicks.len(), 1, "one landmark path click");
+        assert!(
+            clicks[0].x >= 3 && clicks[0].x < 9 && clicks[0].y >= 4 && clicks[0].y < 9,
+            "click inside the landmark asset region: {:?}",
+            clicks[0]
+        );
+    }
+
+    #[test]
+    fn navigate_fallback_task_invoked_once_then_retries() {
+        // Initial frame is unknown → fallback_task flow runs (a wait here),
+        // then navigation re-identifies and succeeds. Fallback runs exactly once.
+        let frames = vec![
+            nav_frame(&[], 0),
+            nav_frame(&[], 100),
+            nav_frame(&[], 150),
+            nav_frame(&[], 200),
+            nav_frame(&[], 200),
+        ];
+        let fallback = flow(
+            r#"{"schema_version":1,"name":"返回庭院","steps":[
+                 {"op":"wait","args":{"seconds":0}},
+                 {"op":"finish","args":{"exit":"done"}}]}"#,
+        );
+        let (input, shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            TwoFrameScreen { frames, idx: 0 },
+            input,
+            AssetSet::new(),
+            Budget::default(),
+        )
+        .with_map(nav_map())
+        .with_ocr(Box::new(NavOcr))
+        .with_map_fallback(fallback)
+        .with_humanize(no_miss())
+        .with_seed(97);
+        assert_eq!(
+            interp.run(&nav_flow("御魂十层")),
+            RunResult::Finished(Exit::Done),
+            "{:?}",
+            interp.events()
+        );
+        assert_eq!(
+            interp
+                .events()
+                .iter()
+                .filter(|e| e.op == "navigate_fallback")
+                .count(),
+            1,
+            "{:?}",
+            interp.events()
+        );
+        assert!(shared.clicks.borrow().is_empty());
+    }
+
+    #[test]
+    fn navigate_without_loaded_fallback_reports_the_task_name() {
+        let frames = vec![nav_frame(&[], 0), nav_frame(&[], 0)];
+        let (input, _shared) = FakeInput::new();
+        let mut interp = Interpreter::new(
+            TwoFrameScreen { frames, idx: 0 },
+            input,
+            AssetSet::new(),
+            Budget::default(),
+        )
+        .with_map(nav_map())
+        .with_ocr(Box::new(NavOcr))
+        .with_humanize(no_miss())
+        .with_seed(99);
+        match interp.run(&nav_flow("御魂十层")) {
+            RunResult::Failed(msg) => {
+                assert!(msg.contains("返回庭院"), "{msg}");
+                assert!(msg.contains("未加载"), "{msg}");
+            }
+            other => panic!("expected loud fallback-missing error, got {other:?}"),
+        }
     }
 
     fn image_and_text_multi_candidate_orders_are_isomorphic() {

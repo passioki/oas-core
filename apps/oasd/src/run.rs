@@ -563,9 +563,9 @@ pub(crate) fn load_nav_map(
     // actually needs them). Only the literal targets of this flow are checked.
     let rt = map.to_runtime();
     for use_ in &nav_uses {
-        if rt.node(&use_.target).is_none() {
+        if rt.location(&use_.target).is_none() {
             return Err(format!(
-                "navigate: 目标节点 `{}` 不在全局地图（{}）",
+                "navigate: 目标所在地 `{}` 不在全局地图（{}）",
                 use_.target, use_.path
             ));
         }
@@ -650,6 +650,33 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
     // seq136 D1: load the ONE global map only when the flow actually navigates
     // (non-navigate tasks keep zero overhead). Missing map/target = loud error.
     let map_config = load_nav_map(&opts.assets, &flow)?;
+    // seq138 V2: load the map's fallback_task flow from the task library next to
+    // the current bundle (e.g. 返回庭院). Missing/unreadable → warning only; the
+    // runtime reports the fallback task name loudly if a navigation fails.
+    let fallback_flow = match (&map_config, task_dir.parent()) {
+        (Some(cfg), Some(tasks_root)) if !cfg.fallback_task.trim().is_empty() => {
+            match oas_task::TaskBundle::open_named(tasks_root, cfg.fallback_task.trim())
+                .and_then(|b| b.load_flow())
+            {
+                Ok(Some(flow)) => Some(flow),
+                Ok(None) => {
+                    out(&format!(
+                        "warning=navigate fallback_task `{}` has no flow.json",
+                        cfg.fallback_task
+                    ));
+                    None
+                }
+                Err(e) => {
+                    out(&format!(
+                        "warning=navigate fallback_task `{}` unavailable: {e}",
+                        cfg.fallback_task
+                    ));
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
     let nav_mode = navigation_mode_for(opts);
     // seq136 D0/M4: CLI runs (no serve process) load the same global popups.json
     // and inject it through the runtime's PopupGuard; no file = zero overhead.
@@ -947,6 +974,10 @@ pub fn execute(opts: &RunOptions, out: &mut dyn FnMut(&str)) -> Result<RunReport
         .with_navigation_mode(nav_mode);
     let interp = match map_config {
         Some(map) => interp.with_map(map),
+        None => interp,
+    };
+    let interp = match fallback_flow {
+        Some(flow) => interp.with_map_fallback(flow),
         None => interp,
     };
     let interp = match popups {
@@ -1475,9 +1506,10 @@ mod tests {
         if with_map {
             std::fs::write(
                 assets.join("map.json"),
-                r#"{"schema_version":1,"hub":"庭院","nodes":[
-                     {"id":"庭院","recognize":{"min_hits":1,"features":[
-                       {"kind":"ocr_text","text":"庭院"}]}}],"edges":[]}"#,
+                r#"{"schema_version":2,"fallback_task":"返回庭院","locations":{
+                     "庭院":{"recognize":{"min_hits":1,"features":[
+                       {"kind":"ocr_text","text":"庭院"}]},
+                       "return_landmarks":[],"outbound_landmarks":[]}}}"#,
             )
             .unwrap();
         }
@@ -1517,7 +1549,7 @@ mod tests {
         // navigate + valid map/target → Some(runtime map).
         let assets = write_nav_assets(td.path(), true);
         let map = load_nav_map(&assets, &nav_flow()).unwrap().expect("map");
-        assert_eq!(map.node_ids(), vec!["庭院"]);
+        assert_eq!(map.location_names(), vec!["庭院"]);
         // unknown target → loud.
         let bad = oas_flow::Flow::from_json(
             r#"{"schema_version":1,"name":"t","steps":[

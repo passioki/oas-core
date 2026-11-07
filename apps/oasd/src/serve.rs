@@ -403,13 +403,14 @@ fn map_route_json(route: &[oas_runtime::map::MapEdge]) -> Vec<serde_json::Value>
             serde_json::json!({
                 "from": e.from,
                 "to": e.to,
-                "action": e.action.label(),
-                "derived": e.derived,
+                "action": format!("click:{}", e.path.asset),
+                "asset": e.path.asset,
+                "is_return": e.is_return,
                 "wait": {
-                    "settle_ms": e.wait.settle_ms,
-                    "stable_ms": e.wait.stable_ms,
-                    "timeout_ms": e.wait.timeout_ms,
-                    "poll_ms": e.wait.poll_ms,
+                    "settle_ms": e.path.wait.settle_ms,
+                    "stable_ms": e.path.wait.stable_ms,
+                    "timeout_ms": e.path.wait.timeout_ms,
+                    "poll_ms": e.path.wait.poll_ms,
                 },
             })
         })
@@ -5277,28 +5278,25 @@ impl Server {
             return Vec::new();
         };
         let mut out = Vec::new();
-        for (i, node) in map.nodes.iter().enumerate() {
-            for f in &node.recognize.features {
+        for (name, loc) in &map.locations {
+            for f in &loc.recognize.features {
                 if let oas_task::map::MapFeature::Asset { asset: a } = f {
                     if a == asset {
-                        out.push(format!("node[{}] `{}` recognize", i, node.id));
+                        out.push(format!("所在地 `{name}` recognize"));
                     }
                 }
             }
-            if node.return_asset.as_deref() == Some(asset) {
-                out.push(format!("node[{}] `{}` return_asset", i, node.id));
-            }
-        }
-        if map.default_return_asset.as_deref() == Some(asset) {
-            out.push("default_return_asset".to_string());
-        }
-        for (i, edge) in map.edges.iter().enumerate() {
-            if let oas_task::map::MapAction::ClickAsset { asset: a, .. } = &edge.action {
-                if a == asset {
-                    out.push(format!(
-                        "edge[{}] {}→{} action",
-                        i, edge.from, edge.to
-                    ));
+            for (group, list) in [
+                ("return_landmarks", &loc.return_landmarks),
+                ("outbound_landmarks", &loc.outbound_landmarks),
+            ] {
+                for lm in list {
+                    if lm.path.asset == *asset {
+                        out.push(format!(
+                            "所在地 `{name}` {group} → `{}` path",
+                            lm.name
+                        ));
+                    }
                 }
             }
         }
@@ -5331,8 +5329,15 @@ impl Server {
         if let Some(map) = map {
             let validation = map.validate(&af, &frames);
             body["map"] = serde_json::to_value(&map).unwrap_or(serde_json::Value::Null);
-            body["node_count"] = serde_json::json!(map.nodes.len());
-            body["edge_count"] = serde_json::json!(map.edges.len());
+            let landmark_count: usize = map
+                .locations
+                .values()
+                .map(|l| l.return_landmarks.len() + l.outbound_landmarks.len())
+                .sum();
+            body["node_count"] = serde_json::json!(map.locations.len());
+            body["location_count"] = serde_json::json!(map.locations.len());
+            body["edge_count"] = serde_json::json!(landmark_count);
+            body["fallback_task"] = serde_json::json!(map.fallback_task);
             body["validation"] = map_validation_json(&validation);
         }
         self.send_json(out, 200, &body.to_string())
@@ -5345,7 +5350,9 @@ impl Server {
             Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
         };
         let mapv = v.get("map").unwrap_or(&v);
-        let map: oas_task::map::MapFile = match serde_json::from_value(mapv.clone()) {
+        // seq138: accept V2 natively and V1 by in-memory migration (no disk
+        // rewrite until the user saves).
+        let map: oas_task::map::MapFile = match oas_task::map::parse_compat_value(mapv) {
             Ok(m) => m,
             Err(e) => return self.send_errors(out, 400, vec![format!("map.json: {e}")]),
         };
@@ -5371,9 +5378,8 @@ impl Server {
             Err(e) => return self.send_errors(out, 500, vec![e]),
         };
         self.editor_log(&format!(
-            "map_save nodes={} edges={}",
-            map.nodes.len(),
-            map.edges.len()
+            "map_save locations={}",
+            map.locations.len(),
         ));
         self.send_json(
             out,
@@ -5396,7 +5402,9 @@ impl Server {
             Err(e) => return self.send_errors(out, 400, vec![format!("invalid JSON: {e}")]),
         };
         let mapv = v.get("map").unwrap_or(&v);
-        let map: oas_task::map::MapFile = match serde_json::from_value(mapv.clone()) {
+        // seq138: accept V2 natively and V1 by in-memory migration (no disk
+        // rewrite until the user saves).
+        let map: oas_task::map::MapFile = match oas_task::map::parse_compat_value(mapv) {
             Ok(m) => m,
             Err(e) => return self.send_errors(out, 400, vec![format!("map.json: {e}")]),
         };
@@ -5451,7 +5459,10 @@ impl Server {
                 &serde_json::json!({
                     "ok": true, "frame_source": frame_source,
                     "current": {
-                        "node": m.node, "name": m.name, "hits": m.hits,
+                        // V2 name is `location`; `node` kept as a compatibility
+                        // alias for existing Studio/API callers until V2-C UI.
+                        "location": m.node.clone(), "node": m.node,
+                        "name": m.name, "hits": m.hits,
                         "ambiguous": m.ambiguous,
                     },
                 })
@@ -5500,14 +5511,12 @@ impl Server {
     ) -> Result<serde_json::Value, String> {
         let rt = map.to_runtime();
         let route = oas_runtime::map::plan_route(&rt, &from, target)?;
-        let hub_used = route.iter().any(|e| e.to == rt.hub || e.from == rt.hub);
         Ok(serde_json::json!({
             "ok": true,
             "dry": true,
             "from": from,
             "target": target,
             "hops": route.len(),
-            "hub_used": hub_used,
             "route": map_route_json(&route),
         }))
     }
@@ -5698,14 +5707,14 @@ impl Server {
                     }
                     Err(e) => return self.send_errors(out, 400, vec![e]),
                 };
-                let Some(node) = map.nodes.iter().find(|n| n.id == node_id) else {
+                let Some(loc) = map.locations.get(node_id) else {
                     return self.send_errors(
                         out,
                         400,
-                        vec![format!("map node `{node_id}` not found")],
+                        vec![format!("map location `{node_id}` not found")],
                     );
                 };
-                asset_ids = node
+                asset_ids = loc
                     .recognize
                     .features
                     .iter()
@@ -18701,25 +18710,30 @@ mod tests {
         let frames = get_json_route(&server, "/frames");
         let frame_id = frames["frames"][0]["id"].as_u64().expect("frame id");
         let valid_map = serde_json::json!({
-            "schema_version": 1,
-            "hub": "庭院",
-            "nodes": [
-                {"id":"庭院","recognize":{"min_hits":1,"features":[
-                    {"kind":"asset","asset":"POLY_SELF"}]}},
-                {"id":"御魂","recognize":{"min_hits":1,"features":[
-                    {"kind":"asset","asset":"POLY_FIXED"}]}}
-            ],
-            "edges": [
-                {"from":"庭院","action":{"kind":"click_asset","asset":"POLY_SELF"},
-                 "to":"御魂","wait":{"settle_ms":0,"timeout_ms":500,"poll_ms":50}}
-            ]
+            "schema_version": 2,
+            "fallback_task": "返回庭院",
+            "locations": {
+                "庭院": {"recognize":{"min_hits":1,"features":[
+                    {"kind":"asset","asset":"POLY_SELF"}]},
+                    "return_landmarks": [],
+                    "outbound_landmarks": [
+                        {"name":"御魂","path":{"action":"click","asset":"POLY_SELF",
+                         "wait":{"settle_ms":0,"timeout_ms":500,"poll_ms":50}}}
+                    ]},
+                "御魂": {"recognize":{"min_hits":1,"features":[
+                    {"kind":"asset","asset":"POLY_FIXED"}]},
+                    "return_landmarks": [
+                        {"name":"庭院","path":{"action":"click","asset":"POLY_SELF"}}
+                    ],
+                    "outbound_landmarks": []}
+            }
         });
         // GET before save: not exists, empty map.
         let v = get_json_route(&server, "/map");
         assert_eq!(v["ok"], true, "{v}");
         assert_eq!(v["exists"], false, "{v}");
-        // Dry validate a bad map (missing hub) → 200 ok=false + errors.
-        let bad = serde_json::json!({"schema_version":1,"hub":"不存在","nodes":[],"edges":[]});
+        // Dry validate a bad map (empty fallback + dangling landmark) → errors.
+        let bad = serde_json::json!({"schema_version":2,"fallback_task":"","locations":{}});
         let (status, out) = post_route(
             &server,
             "/map/validate",
@@ -18730,6 +18744,20 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["ok"], false, "{out}");
         assert!(!v["validation"]["errors"].as_array().unwrap().is_empty());
+        // seq138: V1 map bodies are accepted by in-memory migration (V2 output,
+        // no disk rewrite unless saved).
+        let v1_body = serde_json::json!({"schema_version":1,"hub":"庭院","nodes":[
+            {"id":"庭院","recognize":{"min_hits":1,"features":[
+              {"kind":"asset","asset":"POLY_SELF"}]}}],"edges":[]});
+        let (status, out) = post_route(
+            &server,
+            "/map/validate",
+            "application/json",
+            &serde_json::to_vec(&serde_json::json!({"map": v1_body})).unwrap(),
+        );
+        assert!(status.contains("200"), "{status} {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], true, "V1 should migrate in memory: {out}");
         // Save valid map, then save again → .bak.
         let body = serde_json::to_vec(&valid_map).unwrap();
         let (status, out) = post_route(&server, "/map", "application/json", &body);
@@ -18744,7 +18772,7 @@ mod tests {
             true,
             "backup file"
         );
-        assert_eq!(v["map"]["hub"], "庭院", "{out}");
+        assert_eq!(v["map"]["fallback_task"], "返回庭院", "{out}");
         // GET after save.
         let v = get_json_route(&server, "/map");
         assert_eq!(v["exists"], true, "{v}");
