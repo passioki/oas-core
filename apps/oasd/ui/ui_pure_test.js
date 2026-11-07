@@ -9697,6 +9697,48 @@ ok(/mapV2PlanChain\(plan\)/.test(mapUiSource) && /map-v2-target/.test(html) &&
   /map-v2-plan/.test(mapUiSource) && /map-v2-dry/.test(mapUiSource) && /map-v2-real/.test(mapUiSource),
   'seq138: target selector + plan chain + dry/real debug are wired');
 
+// --- seq139 地图 tab 修复（用户五条反馈） ---------------------------------
+eq(mapPure.mapV2FrameLabel({ id: 3, name: '庭院', category: '主界面' }), '当前帧 庭院 · 主界面',
+  'seq139: frame label uses name · category when present');
+eq(mapPure.mapV2FrameLabel({ id: 3, name: '', category: '主界面' }), '当前帧 #3 · 主界面',
+  'seq139: empty frame name falls back to #id (never blank)');
+eq(mapPure.mapV2FrameLabel({ id: 3 }), '当前帧 #3',
+  'seq139: label is never empty even without name/category');
+eq(mapPure.mapV2LocationDisplayName('自定义别名', { id: 3, name: '庭院', category: '主界面' }), '自定义别名',
+  'seq139: non-empty location label wins as the display name');
+eq(mapPure.mapV2LocationDisplayName('', { id: 3, name: '狐栖归处_庭院', category: '庭院' }), '狐栖归处_庭院 · 庭院',
+  'seq139: empty label defaults to 当前帧 name · category (not persisted)');
+eq(mapPure.mapV2LocationDisplayName('', { id: 3, name: '庭院', category: '' }), '庭院',
+  'seq139: default display degrades to frame name when category is empty');
+ok(/mapV2LocationDisplayName\(\(locations\(\)\[name\] \|\| \{\}\)\.label, currentFrame\(\)\)/.test(mapUiSource) &&
+  /mapV2LocationDisplayName\(\(locations\(\)\[n\] \|\| \{\}\)\.label, frame\)/.test(mapUiSource),
+  'seq139: location list + target options display the label default (frame name · category)');
+const refreshFrameFnText = extractFunctionFrom(mapUiSource, 'refreshFrameOnly', 'map_ui.js');
+ok(/renderFramePane\(\)/.test(refreshFrameFnText) && /drawPreview\(\)/.test(refreshFrameFnText) &&
+  !/renderAll\(/.test(refreshFrameFnText),
+  'seq139: frame refresh only repaints frame pane/canvas and never rebuilds the location form');
+ok(/oas:frame-changed[\s\S]{0,260}refreshFrameOnly\(\)/.test(mapUiSource) &&
+  !/oas:frame-changed[\s\S]{0,260}renderAll\(\)/.test(mapUiSource),
+  'seq139: oas:frame-changed handler calls refreshFrameOnly (inputs/results preserved)');
+ok(/labelInput\.placeholder = '默认展示：' \+ frameDefaultLabel/.test(mapUiSource) &&
+  /label 为空时展示：' \+ frameDefaultLabel/.test(mapUiSource) &&
+  /不写入 map\.json/.test(mapUiSource),
+  'seq139: empty location label shows the default 当前帧 name · category without persisting it');
+ok(/#panel-map \{[^}]*display: flex;[^}]*flex-direction: column;[^}]*height: 100%;[^}]*min-height: 0;/.test(styleCss) &&
+  /#panel-map \.map-v2-body \{[^}]*flex: 1 1 auto;[^}]*min-height: 0;[^}]*overflow: auto;/.test(styleCss) &&
+  /#panel-map \.map-v2-bottom \{[^}]*flex: 0 0 auto;/.test(styleCss) &&
+  /#panel-map \.map-v2-result \{[^}]*min-height: 64px;[^}]*max-height: min\(26vh, 240px\);[^}]*overflow: auto;/.test(styleCss),
+  'seq139: map body/bottom/result flex layout cannot clip plan/navigate output at common resolutions');
+ok(/id="map-v2-close"[^>]*>返回工作台</.test(html),
+  'seq139: close button copy is 返回工作台');
+ok(/id="map-v2-location-delete"/.test(html) &&
+  /on\('map-v2-location-delete', deleteSelectedLocation\)/.test(mapUiSource) &&
+  /function deleteSelectedLocation\(\)/.test(mapUiSource) &&
+  /mapV2RemoveLocation\(currentMap\(\), state\.selected\)/.test(mapUiSource) &&
+  /window\.confirm\('删除所在地/.test(mapUiSource) &&
+  /state\.selected = mapV2LocationNames\(state\.map\)\[0\]/.test(mapUiSource),
+  'seq139: 删除所在地 lives in the always-visible action area and keeps confirm/reference/selection logic');
+
 // --- DOM id audit（Studio shell；D 批删除了参数面板/配置项对话框相关 id） -------
 const htmlDom = html;
 const referencedIds = [...new Set([

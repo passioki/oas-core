@@ -2006,3 +2006,19 @@ body.map-tab-active #panel-map { max-width: none; }
 @media (max-width: 1200px) {
   .map-v2-body { grid-template-columns: 1fr; }
 }
+
+/* ===== seq139 地图 tab 修复：布局防裁切 / 删除按钮可见 ===== */
+body.map-tab-active .side { overflow: hidden; }
+body.map-tab-active .rail-panels { height: 100%; min-height: 0; overflow: hidden; }
+#panel-map { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+#panel-map .map-v2-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+#panel-map .map-v2-bottom { flex: 0 0 auto; min-height: 0; }
+#panel-map .map-v2-result {
+  min-height: 64px;
+  max-height: min(26vh, 240px);
+  overflow: auto;
+}
+@media (max-height: 820px) {
+  #panel-map .map-v2-result { min-height: 48px; max-height: 20vh; }
+}
+#map-v2-location-delete { background: #3a1f22; color: #ffb4ad; }

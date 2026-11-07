@@ -273,6 +273,30 @@
     return '失败兜底任务：' + task + (task === '返回庭院' ? '（默认：返回庭院）' : '（默认：返回庭院）');
   }
 
+  // 当前帧展示 label：name/category 为空时给可读默认（仅展示，不持久化）。
+  function mapV2FrameLabel(frame) {
+    const f = frame && typeof frame === 'object' ? frame : {};
+    const name = String(f.name === undefined || f.name === null ? '' : f.name).trim();
+    const category = String(f.category === undefined || f.category === null ? '' : f.category).trim();
+    const id = f.id === undefined || f.id === null ? '' : String(f.id);
+    if (!name && !category) return '当前帧' + (id ? ' #' + id : '');
+    return '当前帧 ' + (name || ('#' + id)) + (category ? ' · ' + category : '');
+  }
+
+  // seq139 #2：所在地展示名——label 为空时用当前帧 name · category（不持久化）。
+  function mapV2LocationDisplayName(label, frame) {
+    const lbl = String(label === undefined || label === null ? '' : label).trim();
+    if (lbl) return lbl;
+    const f = frame && typeof frame === 'object' ? frame : {};
+    const name = String(f.name === undefined || f.name === null ? '' : f.name).trim();
+    const category = String(f.category === undefined || f.category === null ? '' : f.category).trim();
+    const id = f.id === undefined || f.id === null ? '' : String(f.id);
+    if (name && category && name !== category) return name + ' · ' + category;
+    if (name) return name;
+    if (category) return category;
+    return id ? '帧 #' + id : '（未命名帧）';
+  }
+
   function mapV2HitSummary(probe, loc) {
     const p = probe && typeof probe === 'object' ? probe : {};
     const lines = Array.isArray(p.ocr_lines) ? p.ocr_lines : [];
@@ -301,6 +325,8 @@
     mapV2LandmarkAssets, mapV2ValidationLocal, mapV2IssueText, mapV2NewLocation,
     mapV2RenameLocation, mapV2RemoveLocation, mapV2PlanChain, mapV2PlanSummary,
     mapV2StateSummary, mapV2NavigateSummary, mapV2FallbackText, mapV2HitSummary,
+    mapV2FrameLabel,
+    mapV2LocationDisplayName,
   };
 
   function boot() {
@@ -441,7 +467,8 @@
         const row = document.createElement('button');
         row.type = 'button';
         row.className = 'map-v2-location-row' + (name === state.selected ? ' selected' : '');
-        row.textContent = name + (locations()[name] && locations()[name].label ? ' · ' + locations()[name].label : '');
+        const display = mapV2LocationDisplayName((locations()[name] || {}).label, currentFrame());
+        row.textContent = name + (display && display !== name ? ' · ' + display : '');
         row.title = mapV2LocationFeatureSummary(locations()[name]);
         row.addEventListener('click', () => {
           state.selected = name;
@@ -464,11 +491,20 @@
       const rename = document.createElement('button');
       rename.type = 'button'; rename.textContent = '保存名称/别名';
       const labelInput = document.createElement('input');
-      labelInput.type = 'text'; labelInput.value = String(loc.label || ''); labelInput.placeholder = '展示别名（可选）';
+      const frameDefaultLabel = mapV2FrameLabel(currentFrame());
+      labelInput.type = 'text'; labelInput.value = String(loc.label || '');
+      labelInput.placeholder = '默认展示：' + frameDefaultLabel;
       const row = document.createElement('div');
       row.className = 'map-v2-field';
       row.append(document.createTextNode('名称'), nameInput, document.createTextNode('别名'), labelInput, rename);
       host.appendChild(row);
+      // seq139 #2：label 为空时展示默认「当前帧 name · category」，仅展示不持久化。
+      if (!String(loc.label || '').trim()) {
+        const labelHint = document.createElement('div');
+        labelHint.className = 'muted small';
+        labelHint.textContent = 'label 为空时展示：' + frameDefaultLabel + '（不写入 map.json）';
+        host.appendChild(labelHint);
+      }
       rename.addEventListener('click', () => {
         const next = nameInput.value.trim();
         const res = mapV2RenameLocation(currentMap(), state.selected, next);
@@ -548,17 +584,6 @@
         featHost.appendChild(minRow);
       }
       renderFeatures();
-      const delBtn = document.createElement('button');
-      delBtn.type = 'button'; delBtn.textContent = '删除所在地';
-      delBtn.addEventListener('click', () => {
-        if (!window.confirm('删除所在地「' + state.selected + '」？（未保存）')) return;
-        const res = mapV2RemoveLocation(currentMap(), state.selected);
-        if (!res.ok) { setStatus('删除失败：' + res.error, '#ff8a80'); return; }
-        state.selected = mapV2LocationNames(state.map)[0] || '';
-        markDirty();
-        renderAll();
-      });
-      host.appendChild(delBtn);
     }
 
     function assetPicker(current, onChoose) {
@@ -669,7 +694,11 @@
       if (!sel) return;
       const keep = sel.value;
       sel.textContent = '';
-      for (const n of mapV2LocationNames(state.map)) sel.appendChild(new Option(n, n));
+      const frame = currentFrame();
+      for (const n of mapV2LocationNames(state.map)) {
+        const display = mapV2LocationDisplayName((locations()[n] || {}).label, frame);
+        sel.appendChild(new Option(n + (display && display !== n ? ' · ' + display : ''), n));
+      }
       if (keep && mapV2LocationNames(state.map).includes(keep)) sel.value = keep;
       else if (state.selected) sel.value = state.selected;
     }
@@ -683,7 +712,7 @@
       const f = currentFrame();
       if (info) {
         info.textContent = f
-          ? '帧 #' + f.id + ' · ' + (f.name || '') + (f.category ? ' · ' + f.category : '') + '（共享工作台）'
+          ? mapV2FrameLabel(f) + '（共享工作台）'
           : '帧：—（工作台暂无可用帧）';
       }
       const list = el('map-v2-frame-list');
@@ -703,6 +732,16 @@
           list.appendChild(row);
         }
       }
+    }
+
+    // seq139 #1：切帧/轮询只刷新帧相关区域，绝不 renderAll（保留表单输入/OCR 结果）。
+    function refreshFrameOnly() {
+      state.probe = null;
+      renderFramePane();
+      drawPreview();
+      const hit = el('map-v2-hit-summary');
+      if (hit) hit.textContent = '帧已切换；点「识别当前所在地」刷新命中预览';
+      previewHits().catch(() => {});
     }
 
     function drawPreview() {
@@ -924,6 +963,18 @@
       setStatus('已用当前帧 #' + f.id + ' 新建所在地「' + name + '」（未保存；可「从当前帧 OCR 取…」填判定条件）', '#7bd88f');
     }
 
+    // seq139 #5：删除所在地放在左侧始终可见操作区；保留被引用阻止/确认/删除后选中逻辑。
+    function deleteSelectedLocation() {
+      if (!state.selected) { setStatus('请先选择所在地', '#e8c46a'); return; }
+      if (!window.confirm('删除所在地「' + state.selected + '」？（未保存）')) return;
+      const res = mapV2RemoveLocation(currentMap(), state.selected);
+      if (!res.ok) { setStatus('删除失败：' + res.error, '#ff8a80'); return; }
+      state.selected = mapV2LocationNames(state.map)[0] || '';
+      markDirty();
+      renderAll();
+      setStatus('已删除所在地（未保存）', '#7bd88f');
+    }
+
     function stepFrame(delta) {
       const frames = currentFrameList();
       if (!frames.length) return;
@@ -941,6 +992,7 @@
       on('map-v2-validate', validateMap);
       on('map-v2-save', saveMap);
       on('map-v2-location-new', newLocation);
+      on('map-v2-location-delete', deleteSelectedLocation);
       on('map-v2-use-frame', newLocationFromFrame);
       on('map-v2-frame-prev', () => stepFrame(-1));
       on('map-v2-frame-next', () => stepFrame(1));
@@ -959,9 +1011,8 @@
       });
       document.addEventListener('oas:frame-changed', () => {
         if (!state.active) return;
-        state.probe = null;
-        renderAll();
-        previewHits().catch(() => {});
+        // seq139 #1：只刷新帧信息/列表/canvas/命中，不重建所在地表单（保留输入与结果）。
+        refreshFrameOnly();
       });
     }
 
