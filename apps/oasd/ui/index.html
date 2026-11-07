@@ -47,7 +47,6 @@
     <button class="app-nav-btn" data-page="builder" type="button">任务构建</button>
     <button class="app-nav-btn" data-page="tasks" type="button">任务库</button>
     <button class="app-nav-btn" data-page="instances" type="button">实例</button>
-    <button class="app-nav-btn" data-page="map" type="button">地图</button>
     <button class="app-nav-btn" data-page="settings" type="button">设置</button>
     <span class="spacer"></span>
     <span id="nav-device" class="muted small">实例：—</span>
@@ -85,6 +84,7 @@
         <button class="rail-btn" data-panel="panel-images" type="button">图片</button>
         <button class="rail-btn" data-panel="panel-task" type="button">任务</button>
         <button class="rail-btn" data-panel="panel-click" type="button">点击分布</button>
+        <button class="rail-btn" data-panel="panel-map" type="button">地图</button>
       </nav>
 
       <div class="rail-panels">
@@ -230,6 +230,65 @@
             全屏调试页仍可访问
             <a href="/dashboard.html">/dashboard.html</a>。
           </p>
+        </section>
+
+        <section class="panel" id="panel-map">
+          <div class="map-v2-head">
+            <h3>全局地图（V2 所在地 / 路标）</h3>
+            <button id="map-v2-close" type="button">关闭地图</button>
+            <span class="spacer"></span>
+            <button id="map-v2-reload" type="button">重载</button>
+            <button id="map-v2-validate" type="button">校验</button>
+            <button id="map-v2-save" type="button">保存地图</button>
+          </div>
+          <div id="map-v2-status" class="muted small">（未加载）</div>
+          <span id="map-v2-dirty" class="muted small">已保存</span>
+          <span id="map-v2-location-count" class="muted small">所在地 0</span>
+          <div class="map-v2-body">
+            <aside class="map-v2-col">
+              <label class="opt">搜索所在地
+                <input id="map-v2-location-search" placeholder="名称/别名片段" />
+              </label>
+              <button id="map-v2-location-new" type="button">新建所在地</button>
+              <div id="map-v2-location-list" class="map-v2-list muted">（未加载）</div>
+              <label class="opt">失败兜底任务（默认返回庭院）
+                <input id="map-v2-fallback" placeholder="返回庭院" />
+              </label>
+              <h4>校验</h4>
+              <div id="map-v2-validation" class="muted small">（未校验）</div>
+            </aside>
+            <section class="map-v2-col map-v2-editor-col">
+              <h4>所在地编辑</h4>
+              <div id="map-v2-editor" class="muted small">（选择/新建所在地）</div>
+              <h4>路标（回程 / 去程）</h4>
+              <div id="map-v2-landmarks"></div>
+            </section>
+            <aside class="map-v2-col">
+              <h4>当前帧（共享工作台）</h4>
+              <div id="map-v2-frame-info" class="muted small">帧：—</div>
+              <div class="row map-v2-actions">
+                <button id="map-v2-frame-prev" type="button">上一帧</button>
+                <button id="map-v2-frame-next" type="button">下一帧</button>
+                <button id="map-v2-use-frame" type="button">用当前帧建所在地</button>
+              </div>
+              <input id="map-v2-frame-search" placeholder="搜索帧：名称 / #id / 分类" />
+              <div id="map-v2-frame-list" class="map-v2-list muted">（帧列表）</div>
+              <canvas id="map-v2-preview" class="map-v2-preview"></canvas>
+              <div id="map-v2-hit-summary" class="muted small">（识别当前所在地后显示素材/帧命中）</div>
+            </aside>
+          </div>
+          <div class="map-v2-bottom">
+            <div class="row map-v2-actions">
+              <button id="map-v2-identify" type="button">识别当前所在地</button>
+              <label class="opt">目标所在地
+                <select id="map-v2-target"></select>
+              </label>
+              <button id="map-v2-plan" type="button">路径预览</button>
+              <button id="map-v2-dry" type="button">dry 执行</button>
+              <button id="map-v2-real" type="button">real 执行（需确认）</button>
+            </div>
+            <pre id="map-v2-result" class="muted small map-v2-result">—</pre>
+          </div>
         </section>
 
         <section class="panel" id="panel-task">
@@ -491,88 +550,6 @@
         保存方式：停止 Studio → 编辑 config/live.json → 启动 Studio；Runner 使用自己的配置入口。<br/>
         调度/运行运维请用 Runner（8789）；编辑端不随使用端分发。
       </p>
-    </div>
-  </div>
-
-  <!-- seq136 D1-M3：全局地图页（节点/边/识别/路径预览/调试）；独立 map_ui.js。
-       帧-素材关系入口已下线（服务端 /relations/* 保留 deprecated），由地图替代。 -->
-  <div id="page-map" class="app-page">
-    <div class="page-wrap map-page">
-      <div class="row page-head">
-        <h2>全局地图</h2>
-        <span id="map-path" class="muted small">—</span>
-        <span class="spacer"></span>
-        <button id="map-refresh" type="button">重载</button>
-        <button id="map-validate" type="button">校验</button>
-        <button id="map-save" type="button">保存地图</button>
-      </div>
-      <div id="map-status" class="muted small">（未加载）</div>
-      <div class="map-body">
-        <aside class="map-pane map-tree-pane">
-          <h4>节点树</h4>
-          <div id="map-node-tree" class="map-node-tree muted">（未加载地图）</div>
-          <div class="map-toolbar">
-            <button id="map-node-new" type="button">新建节点</button>
-            <button id="map-node-from-frame" type="button">用当前帧新建节点</button>
-            <button id="map-node-delete" type="button">删除节点</button>
-          </div>
-          <h4>全局</h4>
-          <div id="map-hub-editor"></div>
-        </aside>
-        <section class="map-pane map-canvas-pane">
-          <div class="row">
-            <span id="map-frame-info" class="muted small">帧：—</span>
-            <span class="spacer"></span>
-            <button id="map-frame-prev" type="button">上一帧</button>
-            <button id="map-frame-next" type="button">下一帧</button>
-          </div>
-          <canvas id="map-canvas" width="640" height="360"></canvas>
-          <div class="row">
-            <label class="opt">节点帧
-              <select id="map-node-frame-select"></select>
-            </label>
-            <label class="opt">节点特征命中
-              <span id="map-feature-hits" class="muted small">—</span>
-            </label>
-          </div>
-          <pre id="map-feature-detail" class="muted small map-feature-detail"></pre>
-        </section>
-        <aside class="map-pane map-props-pane">
-          <h4>节点</h4>
-          <div id="map-node-editor" class="muted small">（选择/新建节点）</div>
-          <h4>边</h4>
-          <div id="map-edge-editor"></div>
-          <h4>边列表</h4>
-          <div id="map-edge-list" class="map-edge-list muted">（无）</div>
-        </aside>
-      </div>
-      <div class="map-bottom">
-        <div class="map-bottom-col">
-          <h4>校验</h4>
-          <div id="map-validation" class="muted small">（未校验）</div>
-        </div>
-        <div class="map-bottom-col">
-          <h4>路径预览 / 识别 / 调试</h4>
-          <div class="row">
-            <label class="opt">目标节点
-              <select id="map-plan-target"></select>
-            </label>
-            <label class="opt">起点
-              <select id="map-plan-from">
-                <option value="auto">自动识别当前节点</option>
-              </select>
-            </label>
-          </div>
-          <div class="row map-plan-actions">
-            <button id="map-state-run" type="button">识别当前节点</button>
-            <button id="map-plan-run" type="button">预览路径</button>
-            <button id="map-nav-dry" type="button">执行导航（dry）</button>
-            <button id="map-nav-real" type="button" class="test-real">执行导航（real，需确认）</button>
-            <button id="map-new-task" type="button">新建导航任务…</button>
-          </div>
-          <pre id="map-plan-result" class="muted small map-plan-result">—</pre>
-        </div>
-      </div>
     </div>
   </div>
 

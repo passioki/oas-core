@@ -1,342 +1,326 @@
-// seq136 D1-M3: runtime bundle served at GET /map.js (M2 static route).
-// Canonical source is map_ui.js; this file is a byte-identical copy kept in sync by the UI test.
-// seq136 D1-M3：Studio 全局地图页（map.json 编辑器）。
-// 独立经典脚本（无构建步骤），依赖 asset_ui.js 的 createSearchPicker；DOM 在 index.html#page-map。
-// 设计：_verify/seq136-map/DESIGN.md §6；服务端 /map* API 由 D1-M2 提供（Studio-only）。
+// seq138 V2-C: workbench map tab runtime bundle (served at GET /map.js).
+// Canonical source is map_ui.js; kept in sync by ui_pure_test.
+// seq138 V2-C：工作台「地图」tab（全局地图 V2：所在地 / 路标 / 路径）。
+// 独立经典脚本（无构建）；DOM 在 index.html#panel-map；共享工作台当前帧。
+// 设计：docs/MAP-V2-DESIGN.md §2/§3/§8；API 由 seq138 V2-B 提供（/map* v2）。
 (function () {
   'use strict';
 
-  // ---------------- 纯函数（ui_pure_test 可直接抽取/执行） -------------------
-  function mapIdValid(id) {
-    const s = String(id === undefined || id === null ? '' : id).trim();
+  // ---------------- 纯函数（ui_pure_test 直接执行 window.OAS_MAP） ------------
+  function mapV2Empty() {
+    return { schema_version: 2, fallback_task: '返回庭院', locations: {} };
+  }
+
+  function mapV2LocationNames(map) {
+    const locations = map && map.locations && typeof map.locations === 'object' ? map.locations : {};
+    return Object.keys(locations).sort((a, b) => a.localeCompare(b, 'zh'));
+  }
+
+  function mapV2LocationNameValid(name) {
+    const s = String(name === undefined || name === null ? '' : name).trim();
     if (!s || s.length > 64) return false;
-    if (/[\u0000-\u001f\u007f]/.test(s)) return false;
-    if (/[\/\\:*?"<>|]/.test(s)) return false;
-    if (s.indexOf('..') >= 0) return false;
-    return true;
+    return !/[\u0000-\u001f\u007f]/.test(s);
   }
 
-  function mapNodeName(node) {
-    const n = node && typeof node === 'object' ? node : {};
-    const name = String(n.name === undefined || n.name === null ? '' : n.name).trim();
-    return name || String(n.id === undefined || n.id === null ? '' : n.id);
+  function mapV2FeatureSummary(feature) {
+    const f = feature && typeof feature === 'object' ? feature : {};
+    if (f.kind === 'ocr_text') return 'OCR「' + String(f.text || '') + '」' +
+      (Array.isArray(f.roi) && f.roi.length === 4 ? ' · ROI[' + f.roi.join(',') + ']' : '');
+    if (f.kind === 'asset') return '素材 ' + String(f.asset || '');
+    return '未知特征(' + String(f.kind || '') + ')';
   }
 
-  function mapEdgeActionLabel(action) {
-    const a = action && typeof action === 'object' && !Array.isArray(action) ? action : {};
-    const kind = String(a.kind === undefined || a.kind === null ? '' : a.kind).trim();
-    if (kind === 'click_asset') {
-      return '点击素材 ' + String(a.asset === undefined || a.asset === null ? '' : a.asset) +
-        (a.hold_ms !== undefined && a.hold_ms !== null ? '（hold ' + Number(a.hold_ms) + 'ms）' : '');
+  function mapV2LocationFeatureSummary(loc) {
+    const l = loc && typeof loc === 'object' ? loc : {};
+    const rec = l.recognize && typeof l.recognize === 'object' ? l.recognize : {};
+    const fs = Array.isArray(rec.features) ? rec.features : [];
+    return fs.map(mapV2FeatureSummary).join('；') + ' · min_hits=' + (Number(rec.min_hits) || 1);
+  }
+
+  function mapV2LandmarkPathSummary(lm) {
+    const l = lm && typeof lm === 'object' ? lm : {};
+    const path = l.path && typeof l.path === 'object' ? l.path : {};
+    const action = String(path.action || 'click');
+    const asset = String(path.asset || '');
+    const wait = path.wait && typeof path.wait === 'object' ? Number(path.wait.settle_ms) : null;
+    return '目标「' + String(l.name || '?') + '」· ' + action + ' 素材 ' + (asset || '（未选）') +
+      (wait !== null ? ' · settle ' + wait + 'ms' : '');
+  }
+
+  function mapV2SearchLocations(map, query) {
+    const q = String(query === undefined || query === null ? '' : query).trim().toLowerCase();
+    const locations = map && map.locations && typeof map.locations === 'object' ? map.locations : {};
+    return mapV2LocationNames(map).filter((name) => {
+      if (!q) return true;
+      const label = String((locations[name] && locations[name].label) || '').toLowerCase();
+      return name.toLowerCase().indexOf(q) >= 0 || label.indexOf(q) >= 0;
+    });
+  }
+
+  function mapV2FilterFrames(frames, query) {
+    const q = String(query === undefined || query === null ? '' : query).trim().toLowerCase();
+    const list = Array.isArray(frames) ? frames : [];
+    if (!q) return list;
+    return list.filter((f) => {
+      const hay = ['#' + String(f.id || ''), String(f.name || ''), String(f.category || '')].join(' ').toLowerCase();
+      return hay.indexOf(q) >= 0;
+    });
+  }
+
+  function mapV2FilterAssets(assets, query) {
+    const q = String(query === undefined || query === null ? '' : query).trim().toLowerCase();
+    const list = Array.isArray(assets) ? assets : [];
+    if (!q) return list;
+    return list.filter((a) => {
+      const hay = [String(a.id || ''), String(a.kind || ''), String(a.label || '')].join(' ').toLowerCase();
+      return hay.indexOf(q) >= 0;
+    });
+  }
+
+  function mapV2LandmarkTargets(map, selfName) {
+    return mapV2LocationNames(map).filter((n) => n !== String(selfName || ''));
+  }
+
+  function mapV2CurrentFeatureAssets(loc) {
+    const l = loc && typeof loc === 'object' ? loc : {};
+    const rec = l.recognize && typeof l.recognize === 'object' ? l.recognize : {};
+    const out = [];
+    for (const f of Array.isArray(rec.features) ? rec.features : []) {
+      if (f && f.kind === 'asset' && f.asset) out.push(String(f.asset));
     }
-    if (kind === 'key') return '按键 ' + String(a.keycode === undefined || a.keycode === null ? '' : a.keycode);
-    if (kind === 'swipe') {
-      return '滑动 ' + JSON.stringify(a.from || []) + '→' + JSON.stringify(a.to || []) +
-        (a.ms !== undefined && a.ms !== null ? ' ' + Number(a.ms) + 'ms' : '');
-    }
-    return kind || '（未设置动作）';
+    return [...new Set(out)];
   }
 
-  function mapEdgeLabel(edge) {
-    const e = edge && typeof edge === 'object' ? edge : {};
-    return String(e.from || '?') + ' → ' + String(e.to || '?') + ' · ' + mapEdgeActionLabel(e.action);
-  }
-
-  function mapFeatureSummary(feature) {
-    const f = feature && typeof feature === 'object' && !Array.isArray(feature) ? feature : {};
-    const kind = String(f.kind === undefined || f.kind === null ? '' : f.kind).trim();
-    if (kind === 'ocr_text') {
-      return 'OCR 文字「' + String(f.text === undefined || f.text === null ? '' : f.text) + '」' +
-        (Array.isArray(f.roi) && f.roi.length === 4 ? ' · ROI[' + f.roi.join(',') + ']' : '');
-    }
-    if (kind === 'asset') return '素材 ' + String(f.asset === undefined || f.asset === null ? '' : f.asset);
-    return kind || '（未知特征）';
-  }
-
-  function mapNodeFeatureSummary(node) {
-    const n = node && typeof node === 'object' ? node : {};
-    const rec = n.recognize && typeof n.recognize === 'object' ? n.recognize : {};
-    const features = Array.isArray(rec.features) ? rec.features : [];
-    if (!features.length) return '（无识别特征）';
-    const minHits = Number(rec.min_hits);
-    return features.map(mapFeatureSummary).join('；') +
-      ' · min_hits=' + (Number.isFinite(minHits) ? minHits : 1);
-  }
-
-  // 节点树：parent 分组；环/孤儿单独列出（不丢节点）。
-  function mapNodeTree(nodes) {
-    const list = Array.isArray(nodes) ? nodes.filter((n) => n && typeof n === 'object') : [];
-    const byId = {};
-    for (const n of list) {
-      const id = String(n.id === undefined || n.id === null ? '' : n.id);
-      if (id && !byId[id]) byId[id] = n;
-    }
-    const children = {};
-    const roots = [];
-    const orphans = [];
-    const errors = [];
-    for (const n of list) {
-      const id = String(n.id || '');
-      const parent = n.parent === undefined || n.parent === null ? '' : String(n.parent).trim();
-      if (!parent) {
-        roots.push(n);
-        continue;
-      }
-      if (!byId[parent]) {
-        orphans.push({ node: n, reason: '父节点「' + parent + '」不存在' });
-        continue;
-      }
-      (children[parent] = children[parent] || []).push(n);
-    }
-    for (const n of list) {
-      const seen = {};
-      let cur = n;
-      let depth = 0;
-      while (cur && cur.parent !== undefined && cur.parent !== null && String(cur.parent).trim()) {
-        const pid = String(cur.parent).trim();
-        if (seen[pid]) {
-          errors.push('节点「' + String(n.id || '') + '」的 parent 链成环（' + pid + '）');
-          break;
-        }
-        seen[pid] = true;
-        depth += 1;
-        if (depth > 16) {
-          errors.push('节点「' + String(n.id || '') + '」parent 深度超过 16');
-          break;
-        }
-        cur = byId[pid];
+  function mapV2LandmarkAssets(loc) {
+    const l = loc && typeof loc === 'object' ? loc : {};
+    const out = [];
+    for (const key of ['return_landmarks', 'outbound_landmarks']) {
+      for (const lm of Array.isArray(l[key]) ? l[key] : []) {
+        if (lm && lm.path && lm.path.asset) out.push(String(lm.path.asset));
       }
     }
-    return { roots: roots, children: children, orphans: orphans, errors: errors };
+    return [...new Set(out)];
   }
 
-  function mapNodeReturnStatus(map, node) {
-    const m = map && typeof map === 'object' ? map : {};
-    const n = node && typeof node === 'object' ? node : {};
-    const id = String(n.id || '');
-    const parent = n.parent === undefined || n.parent === null ? '' : String(n.parent).trim();
-    if (!parent) return { status: 'root', text: '根节点（无返回边）' };
-    const edges = Array.isArray(m.edges) ? m.edges : [];
-    if (edges.some((e) => e && String(e.from) === id && String(e.to) === parent)) {
-      return { status: 'explicit', text: '返回边：显式 ' + id + ' → ' + parent };
-    }
-    const asset = String((n.return_asset === undefined || n.return_asset === null ? '' : n.return_asset) ||
-      (m.default_return_asset === undefined || m.default_return_asset === null ? '' : m.default_return_asset));
-    if (asset) return { status: 'derived', text: '返回边：派生（return_asset=' + asset + '）' };
-    return { status: 'none', text: '无返回素材：请设置 return_asset 或全局 default_return_asset' };
-  }
-
-  // 前端本地校验（服务端 /map/validate 是权威；这里即时反馈基本 schema/引用/范围）。
-  function mapValidationLocal(map) {
+  function mapV2ValidationLocal(map) {
     const m = map && typeof map === 'object' ? map : {};
     const errors = [];
     const warnings = [];
-    const nodes = Array.isArray(m.nodes) ? m.nodes : [];
-    const edges = Array.isArray(m.edges) ? m.edges : [];
-    if (Number(m.schema_version) !== 1) errors.push({ path: 'schema_version', message: 'schema_version 必须为 1' });
-    const hub = String(m.hub === undefined || m.hub === null ? '' : m.hub).trim();
-    const ids = {};
-    nodes.forEach((n, i) => {
-      const path = 'nodes[' + i + ']';
-      const id = String((n && n.id) === undefined || (n && n.id) === null ? '' : n.id).trim();
-      if (!mapIdValid(id)) errors.push({ path: path + '.id', message: '节点 id 非法或为空：' + JSON.stringify(id) });
-      else if (ids[id]) errors.push({ path: path + '.id', message: '节点 id 重复：' + id });
-      else ids[id] = n;
-      if (!n || typeof n !== 'object') {
-        errors.push({ path: path, message: '节点必须是对象' });
-        return;
+    if (Number(m.schema_version) !== 2) errors.push({ path: 'schema_version', message: 'schema_version 必须为 2' });
+    if (!String(m.fallback_task === undefined || m.fallback_task === null ? '' : m.fallback_task).trim()) {
+      errors.push({ path: 'fallback_task', message: 'fallback_task 不能为空' });
+    }
+    const locations = m.locations && typeof m.locations === 'object' && !Array.isArray(m.locations) ? m.locations : null;
+    if (!locations) {
+      errors.push({ path: 'locations', message: 'locations 必须是对象（所在地名称→定义）' });
+      return { errors, warnings };
+    }
+    const names = Object.keys(locations);
+    if (!names.length) warnings.push({ path: 'locations', message: '地图还没有任何所在地' });
+    for (const name of names) {
+      const loc = locations[name] || {};
+      const p = 'locations[' + JSON.stringify(name) + ']';
+      if (!mapV2LocationNameValid(name)) errors.push({ path: p, message: '非法所在地名称（非空、<=64、无控制字符）' });
+      const rec = loc.recognize && typeof loc.recognize === 'object' ? loc.recognize : {};
+      const feats = Array.isArray(rec.features) ? rec.features : [];
+      if (!feats.length) errors.push({ path: p + '.recognize.features', message: '至少需要 1 个识别特征' });
+      const min = Number(rec.min_hits !== undefined && rec.min_hits !== null ? rec.min_hits : 1);
+      if (!Number.isInteger(min) || min < 1 || min > Math.max(1, feats.length)) {
+        errors.push({ path: p + '.recognize.min_hits', message: 'min_hits 必须是 1..特征数 的整数' });
       }
-      const rec = n.recognize && typeof n.recognize === 'object' ? n.recognize : null;
-      const features = rec && Array.isArray(rec.features) ? rec.features : [];
-      if (!features.length) errors.push({ path: path + '.recognize.features', message: '识别特征至少需要 1 个' });
-      const minHits = rec && rec.min_hits !== undefined && rec.min_hits !== null ? Number(rec.min_hits) : 1;
-      if (!Number.isInteger(minHits) || minHits < 1 || minHits > Math.max(1, features.length)) {
-        errors.push({ path: path + '.recognize.min_hits', message: 'min_hits 必须是 1..特征数 的整数' });
-      }
-      if (n.priority !== undefined && n.priority !== null && !Number.isInteger(Number(n.priority))) {
-        warnings.push({ path: path + '.priority', message: 'priority 不是整数（服务端可能拒绝）' });
-      }
-      if (n.frames !== undefined && n.frames !== null && !Array.isArray(n.frames)) {
-        errors.push({ path: path + '.frames', message: 'frames 必须是帧 id 数组' });
-      }
-    });
-    if (!hub) errors.push({ path: 'hub', message: 'hub（兜底路由节点）必填' });
-    else if (!ids[hub]) errors.push({ path: 'hub', message: 'hub 节点「' + hub + '」不存在' });
-    nodes.forEach((n, i) => {
-      if (!n) return;
-      const parent = n.parent === undefined || n.parent === null ? '' : String(n.parent).trim();
-      if (parent && !ids[parent]) {
-        errors.push({ path: 'nodes[' + i + '].parent', message: '父节点「' + parent + '」不存在' });
-      }
-    });
-    edges.forEach((e, i) => {
-      const path = 'edges[' + i + ']';
-      const from = String((e && e.from) === undefined || (e && e.from) === null ? '' : e.from);
-      const to = String((e && e.to) === undefined || (e && e.to) === null ? '' : e.to);
-      if (!ids[from]) errors.push({ path: path + '.from', message: 'from 节点「' + from + '」不存在' });
-      if (!ids[to]) errors.push({ path: path + '.to', message: 'to 节点「' + to + '」不存在' });
-      if (from && from === to) errors.push({ path: path, message: '不允许自环（from == to）' });
-      const action = e && e.action && typeof e.action === 'object' ? e.action : {};
-      const kind = String(action.kind === undefined || action.kind === null ? '' : action.kind).trim();
-      if (kind === 'click_asset') {
-        if (!String(action.asset === undefined || action.asset === null ? '' : action.asset).trim()) {
-          errors.push({ path: path + '.action.asset', message: 'click_asset 需要素材 id' });
-        }
-      } else if (kind === 'key') {
-        const code = Number(action.keycode);
-        if (!Number.isInteger(code) || code < 1 || code > 300) {
-          errors.push({ path: path + '.action.keycode', message: 'key 的 keycode 必须是 1..=300 的整数' });
-        }
-      } else if (kind === 'swipe') {
-        const okBox = (v) => Array.isArray(v) && v.length === 2 && v.every((x) => Number.isFinite(Number(x)));
-        if (!okBox(action.from) || !okBox(action.to)) {
-          errors.push({ path: path + '.action', message: 'swipe 需要 from/to [x,y] 坐标' });
-        }
-        if (action.ms !== undefined && action.ms !== null && !(Number(action.ms) > 0)) {
-          errors.push({ path: path + '.action.ms', message: 'swipe ms 必须大于 0' });
-        }
-      } else {
-        errors.push({ path: path + '.action.kind', message: '未知边动作类型：' + (kind || '（空）') });
-      }
-      const wait = e && e.wait && typeof e.wait === 'object' ? e.wait : null;
-      if (wait) {
-        const ranges = [
-          ['settle_ms', 0, 5000], ['stable_ms', 0, 2000], ['timeout_ms', 100, 15000], ['poll_ms', 50, 1000],
-        ];
-        for (const [key, lo, hi] of ranges) {
-          if (wait[key] === undefined || wait[key] === null) continue;
-          const v = Number(wait[key]);
-          if (!Number.isFinite(v) || v < lo || v > hi) {
-            errors.push({ path: path + '.wait.' + key, message: key + ' 必须在 ' + lo + '..=' + hi });
+      feats.forEach((f, i) => {
+        const fp = p + '.recognize.features[' + i + ']';
+        if (!f || typeof f !== 'object') errors.push({ path: fp, message: '特征必须是对象' });
+        else if (f.kind === 'ocr_text' && !String(f.text || '').trim()) errors.push({ path: fp + '.text', message: 'OCR 特征文字不能为空' });
+        else if (f.kind === 'asset' && !String(f.asset || '').trim()) errors.push({ path: fp + '.asset', message: '素材特征不能为空' });
+        else if (f.kind !== 'ocr_text' && f.kind !== 'asset') errors.push({ path: fp + '.kind', message: '特征类型必须是 ocr_text/asset' });
+      });
+      for (const group of ['return_landmarks', 'outbound_landmarks']) {
+        const list = Array.isArray(loc[group]) ? loc[group] : [];
+        const seen = {};
+        list.forEach((lm, li) => {
+          const lp = p + '.' + group + '[' + li + ']';
+          const target = String((lm && lm.name) || '').trim();
+          if (!target) errors.push({ path: lp + '.name', message: '路标目标不能为空' });
+          else if (target === name) errors.push({ path: lp + '.name', message: '路标不能指向自身所在地' });
+          else if (!Object.prototype.hasOwnProperty.call(locations, target)) {
+            errors.push({ path: lp + '.name', message: '路标目标所在地「' + target + '」不存在' });
           }
-        }
+          if (target && seen[target]) warnings.push({ path: lp + '.name', message: '同一组内重复路标目标「' + target + '」' });
+          seen[target] = true;
+          const path = lm && lm.path && typeof lm.path === 'object' ? lm.path : {};
+          if (String(path.action || 'click') !== 'click') errors.push({ path: lp + '.path.action', message: 'V2 只支持 action=click' });
+          if (!String(path.asset || '').trim()) errors.push({ path: lp + '.path.asset', message: '路径素材不能为空' });
+          if (path.wait && typeof path.wait === 'object') {
+            const ranges = [['settle_ms', 0, 5000], ['stable_ms', 0, 2000], ['timeout_ms', 100, 15000], ['poll_ms', 50, 1000]];
+            for (const [k, lo, hi] of ranges) {
+              if (path.wait[k] === undefined || path.wait[k] === null) continue;
+              const v = Number(path.wait[k]);
+              if (!Number.isFinite(v) || v < lo || v > hi) errors.push({ path: lp + '.path.wait.' + k, message: k + ' 必须在 ' + lo + '..=' + hi });
+            }
+          }
+        });
       }
-    });
-    return { errors: errors, warnings: warnings };
+    }
+    return { errors, warnings };
   }
 
-  function mapIssueText(issues) {
+  function mapV2IssueText(issues) {
     const list = Array.isArray(issues) ? issues : [];
     return list.map((i) => String(i && i.path ? i.path : '(root)') + '：' + String(i && i.message ? i.message : i)).join('\n');
   }
 
-  function mapPlanSummary(plan) {
+  function mapV2NewLocation(name) {
+    return {
+      label: undefined,
+      recognize: { min_hits: 1, features: [] },
+      return_landmarks: [],
+      outbound_landmarks: [],
+    };
+  }
+
+  function mapV2RenameLocation(map, oldName, newName) {
+    const m = map && typeof map === 'object' ? map : null;
+    const from = String(oldName || '').trim();
+    const to = String(newName || '').trim();
+    if (!m || !m.locations) return { ok: false, error: '地图未加载' };
+    if (!mapV2LocationNameValid(to)) return { ok: false, error: '所在地名称非法（非空、<=64、无控制字符）' };
+    if (from === to) return { ok: true, map: m };
+    if (Object.prototype.hasOwnProperty.call(m.locations, to)) return { ok: false, error: '所在地名称已存在：' + to };
+    const loc = m.locations[from];
+    if (!loc) return { ok: false, error: '所在地不存在：' + from };
+    const next = {};
+    for (const [name, value] of Object.entries(m.locations)) next[name === from ? to : name] = value;
+    for (const value of Object.values(next)) {
+      for (const group of ['return_landmarks', 'outbound_landmarks']) {
+        for (const lm of Array.isArray(value[group]) ? value[group] : []) {
+          if (lm && lm.name === from) lm.name = to;
+        }
+      }
+    }
+    m.locations = next;
+    return { ok: true, map: m };
+  }
+
+  function mapV2RemoveLocation(map, name) {
+    const m = map && typeof map === 'object' ? map : null;
+    const n = String(name || '');
+    if (!m || !m.locations || !m.locations[n]) return { ok: false, error: '所在地不存在：' + n };
+    const refs = [];
+    for (const [owner, loc] of Object.entries(m.locations)) {
+      for (const group of ['return_landmarks', 'outbound_landmarks']) {
+        for (const lm of Array.isArray(loc[group]) ? loc[group] : []) {
+          if (lm && lm.name === n) refs.push(owner + '.' + group + '「' + n + '」');
+        }
+      }
+    }
+    if (refs.length) return { ok: false, error: '被路标引用，不能删除：' + refs.slice(0, 5).join('；') };
+    delete m.locations[n];
+    return { ok: true, map: m };
+  }
+
+  function mapV2PlanChain(plan) {
     const p = plan && typeof plan === 'object' ? plan : {};
-    if (p.ok === false) return '路径预览失败：' + ((p.errors || []).join('；') || p.error || '未知错误');
     const route = Array.isArray(p.route) ? p.route : [];
-    const lines = ['起点「' + String(p.from || '?') + '」 → 目标「' + String(p.target || '?') + '」 · hops=' +
-      Number(p.hops || route.length) + (p.hub_used ? ' · 经 hub' : '')];
+    if (p.ok === false) return '路径预览失败：' + ((p.errors || []).join('；') || '未知错误');
+    if (!route.length) return '路径：' + String(p.from || '?') + ' → ' + String(p.target || '?') + '（同层/直达，无路标）';
+    const parts = [String(p.from || route[0].from || '?')];
+    for (const hop of route) {
+      parts.push('--[' + String(hop.action || hop.asset || '?') + (hop.is_return ? '/回程' : '') + ']--> ' + String(hop.to));
+    }
+    return '路标链：' + parts.join(' ');
+  }
+
+  function mapV2PlanSummary(plan) {
+    const p = plan && typeof plan === 'object' ? plan : {};
+    if (p.ok === false) return '路径预览失败：' + ((p.errors || []).join('；') || '未知错误');
+    const route = Array.isArray(p.route) ? p.route : [];
+    const lines = ['起点「' + String(p.from || '?') + '」 → 目标「' + String(p.target || '?') + '」 · hops=' + Number(p.hops || route.length)];
+    lines.push(mapV2PlanChain(plan));
     route.forEach((hop, i) => {
-      lines.push('  ' + (i + 1) + '. ' + String(hop.from) + ' → ' + String(hop.to) +
-        ' · ' + String(hop.action || '') +
-        (hop.derived ? '（派生返回边）' : '') +
-        (hop.wait ? ' · wait settle=' + Number(hop.wait.settle_ms || 0) + 'ms' : ''));
+      lines.push('  ' + (i + 1) + '. ' + String(hop.from) + ' → ' + String(hop.to) + ' · 点击素材 ' +
+        String(hop.asset || hop.action || '') + (hop.is_return ? '（回程路标）' : '') +
+        (hop.wait ? ' · settle=' + Number(hop.wait.settle_ms || 0) + 'ms' : ''));
     });
     return lines.join('\n');
   }
 
-  function mapStateSummary(state) {
+  function mapV2StateSummary(state) {
     const s = state && typeof state === 'object' ? state : {};
     if (s.ok === false) return '识别失败：' + ((s.errors || []).join('；') || s.error || '未知错误');
     const cur = s.current;
-    if (!cur) return '未识别到当前节点' + (s.error ? '：' + s.error : '') + '（帧来源：' + String(s.frame_source || '?') + '）';
-    return '当前节点：「' + String(cur.node || '?') + '」' + (cur.name ? '（' + cur.name + '）' : '') +
-      ' · hits=' + Number(cur.hits || 0) + (cur.ambiguous ? ' · 命中多个节点（priority 裁决）' : '') +
+    if (!cur) return '未识别到当前所在地' + (s.error ? '：' + s.error : '') + '（帧来源：' + String(s.frame_source || '?') + '）';
+    return '当前所在地：「' + String(cur.location || cur.node || '?') + '」' +
+      (cur.name && cur.name !== cur.location ? '（' + cur.name + '）' : '') +
+      ' · hits=' + Number(cur.hits || 0) + (cur.ambiguous ? ' · 多个所在地命中' : '') +
       ' · 帧来源：' + String(s.frame_source || '?');
   }
 
-  function mapNavigateSummary(res) {
+  function mapV2NavigateSummary(res) {
     const r = res && typeof res === 'object' ? res : {};
     if (r.ok === false) return '导航失败：' + ((r.errors || []).join('；') || r.error || '未知错误');
     if (r.real === true) {
       const steps = Array.isArray(r.steps) ? r.steps : [];
-      const lines = ['真实导航执行：target「' + String(r.target || '?') + '」 · exit=' + String(r.exit_code) +
+      const lines = ['真实导航：目标「' + String(r.target || '?') + '」 · exit=' + String(r.exit_code) +
         ' · seed=' + String(r.seed) + ' · clicks=' + (Array.isArray(r.clicks) ? r.clicks.length : 0)];
-      for (const st of steps) {
-        lines.push('  #' + Number(st.seq) + ' ' + String(st.op || '') + ' · ' + String(st.result || ''));
-      }
+      for (const st of steps) lines.push('  #' + Number(st.seq) + ' ' + String(st.op || '') + ' · ' + String(st.result || ''));
       return lines.join('\n');
     }
-    return mapPlanSummary(r);
+    return mapV2PlanSummary(r);
   }
 
-  function mapNewNodeDefaults(input) {
-    const o = input && typeof input === 'object' ? input : {};
-    const frameId = Number.isFinite(Number(o.frameId)) ? Number(o.frameId) : null;
-    const lines = Array.isArray(o.ocrLines) ? o.ocrLines : [];
-    let name = '';
-    for (const line of lines) {
-      const text = String((line && line.text) || '').trim();
-      if (text) { name = text.slice(0, 32); break; }
+  function mapV2FallbackText(map) {
+    const m = map && typeof map === 'object' ? map : {};
+    const task = String(m.fallback_task || '返回庭院');
+    return '失败兜底任务：' + task + (task === '返回庭院' ? '（默认：返回庭院）' : '（默认：返回庭院）');
+  }
+
+  function mapV2HitSummary(probe, loc) {
+    const p = probe && typeof probe === 'object' ? probe : {};
+    const lines = Array.isArray(p.ocr_lines) ? p.ocr_lines : [];
+    const hints = Array.isArray(p.assets) ? p.assets : [];
+    const rec = loc && loc.recognize && typeof loc.recognize === 'object' ? loc.recognize : {};
+    const feats = Array.isArray(rec.features) ? rec.features : [];
+    let hits = 0;
+    for (const f of feats) {
+      if (!f) continue;
+      if (f.kind === 'ocr_text') {
+        if (lines.some((l) => String((l && l.text) || '').indexOf(String(f.text || '')) >= 0)) hits += 1;
+      } else if (f.kind === 'asset') {
+        if (hints.some((h) => h && String(h.asset) === String(f.asset) && h.pass !== false)) hits += 1;
+      }
     }
-    if (!name) name = frameId !== null ? ('页面' + frameId) : '新节点';
-    let id = name.replace(/[\/\\:*?"<>|]/g, '').trim().slice(0, 40);
-    if (!mapIdValid(id)) id = 'node' + (frameId !== null ? frameId : Date.now());
-    return {
-      id: id,
-      name: name,
-      parent: null,
-      return_asset: '',
-      priority: 0,
-      frames: frameId !== null ? [frameId] : [],
-      recognize: {
-        min_hits: 1,
-        features: name ? [{ kind: 'ocr_text', text: name }] : [],
-      },
-    };
+    const min = Number(rec.min_hits) || 1;
+    return '命中 ' + hits + '/' + feats.length + ' · min_hits=' + min +
+      (hits >= min ? ' ✅ 满足' : ' ⚠ 未满足') +
+      (p.scope ? ' · probe scope=' + p.scope : '');
   }
 
-  function mapNavigateFlowPreset(target) {
-    return {
-      schema_version: 1,
-      name: '导航任务',
-      steps: [
-        { op: 'navigate', args: { target: String(target === undefined || target === null ? '' : target) } },
-        { op: 'finish', args: { exit: 'done' } },
-      ],
-    };
-  }
-
-  function mapEdgeDefaults(kind) {
-    const k = String(kind === undefined || kind === null ? 'click_asset' : kind);
-    const action = k === 'key'
-      ? { kind: 'key', keycode: 4 }
-      : (k === 'swipe'
-        ? { kind: 'swipe', from: [640, 600], to: [640, 300], ms: 300 }
-        : { kind: 'click_asset', asset: '' });
-    return { from: '', to: '', action: action, wait: { settle_ms: 500, timeout_ms: 3000 } };
-  }
-
-  // ---------------- UI 实现（浏览器；无 document 时不执行） -------------------
   const PURE = {
-    mapIdValid, mapNodeName, mapEdgeActionLabel, mapEdgeLabel, mapFeatureSummary,
-    mapNodeFeatureSummary, mapNodeTree, mapNodeReturnStatus, mapValidationLocal,
-    mapIssueText, mapPlanSummary, mapStateSummary, mapNavigateSummary,
-    mapNewNodeDefaults, mapNavigateFlowPreset, mapEdgeDefaults,
+    mapV2Empty, mapV2LocationNames, mapV2LocationNameValid, mapV2FeatureSummary,
+    mapV2LocationFeatureSummary, mapV2LandmarkPathSummary, mapV2SearchLocations,
+    mapV2FilterFrames, mapV2FilterAssets, mapV2LandmarkTargets, mapV2CurrentFeatureAssets,
+    mapV2LandmarkAssets, mapV2ValidationLocal, mapV2IssueText, mapV2NewLocation,
+    mapV2RenameLocation, mapV2RemoveLocation, mapV2PlanChain, mapV2PlanSummary,
+    mapV2StateSummary, mapV2NavigateSummary, mapV2FallbackText, mapV2HitSummary,
   };
 
   function boot() {
     const $ = (id) => document.getElementById(id);
     const state = {
-      map: null,
-      frames: [],
-      assets: [],
-      selectedNodeId: '',
-      selectedEdgeIndex: -1,
-      frameId: null,
-      probe: null,
-      loaded: false,
-      busy: false,
-      dirty: false,
+      map: null, loaded: false, dirty: false, active: false, selected: '',
+      assets: [], frameQuery: '', locationQuery: '', result: '', probe: null,
+      busy: false, identifying: false,
     };
-    function el(id) { return $(id); }
+    const el = (id) => $(id);
     function setStatus(text, color) {
-      const s = el('map-status');
+      const s = el('map-v2-status');
       if (s) { s.textContent = text || '—'; s.style.color = color || ''; }
     }
     function setResult(text) {
-      const p = el('map-plan-result');
-      if (p) p.textContent = text || '—';
+      state.result = String(text || '');
+      const p = el('map-v2-result');
+      if (p) p.textContent = state.result || '—';
     }
     async function api(url, opts) {
       const r = await fetch(url, opts);
@@ -351,47 +335,55 @@
       return body;
     }
     function postJson(url, payload) {
-      return api(url, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-      });
+      return api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     }
-    function emptyMap() {
-      return { schema_version: 1, hub: '', default_return_asset: '', nodes: [], edges: [] };
+    function currentMap() { return state.map || mapV2Empty(); }
+    function locations() { return currentMap().locations || {}; }
+    function selectedLocation() { return locations()[state.selected] || null; }
+    function markDirty() {
+      state.dirty = true;
+      const d = el('map-v2-dirty');
+      if (d) { d.textContent = '未保存修改'; d.style.color = '#e8c46a'; }
+      setStatus('地图有未保存修改（保存后写 map.json + .bak）', '#e8c46a');
     }
-    function currentMap() { return state.map || emptyMap(); }
-    function selectedNode() {
-      const nodes = currentMap().nodes || [];
-      return nodes.find((n) => String(n.id) === state.selectedNodeId) || null;
+    function clearDirty() {
+      state.dirty = false;
+      const d = el('map-v2-dirty');
+      if (d) { d.textContent = '已保存'; d.style.color = ''; }
     }
-    function nodeIds() {
-      return (currentMap().nodes || []).map((n) => String(n.id)).filter(Boolean);
+    function currentFrameList() {
+      return typeof framesCache !== 'undefined' && Array.isArray(framesCache) ? framesCache : [];
     }
-    function markDirty() { state.dirty = true; setStatus('地图有未保存修改', '#e8c46a'); }
-
-    async function loadFrames() {
-      try {
-        const s = await api('/frames');
-        state.frames = Array.isArray(s.frames) ? s.frames : [];
-        const cur = state.frames.find((f) => f.current);
-        if (cur) state.frameId = cur.id;
-        else if (state.frames.length) state.frameId = state.frames[0].id;
-        renderFrameInfo();
-      } catch (e) {
-        state.frames = [];
-        setStatus('帧列表读取失败：' + e.message, '#ff8a80');
+    function currentFrameIdSafe() {
+      return typeof currentFrameId !== 'undefined' && currentFrameId !== null ? Number(currentFrameId) : null;
+    }
+    function currentFrame() {
+      const id = currentFrameIdSafe();
+      return currentFrameList().find((f) => Number(f.id) === id) || null;
+    }
+    function selectWorkbenchFrame(id) {
+      if (typeof selectFrame === 'function') {
+        Promise.resolve(selectFrame(id)).catch((e) => setStatus('切换帧失败：' + (e && e.message ? e.message : e), '#ff8a80'));
       }
     }
+
+    async function refreshAll() {
+      setStatus('加载地图/素材/帧…');
+      await Promise.all([loadAssets(), loadMap()]);
+      renderAll();
+      if (currentFrameIdSafe() !== null) previewHits().catch(() => {});
+      setStatus(state.loaded
+        ? '已加载 V2 地图：' + Object.keys(locations()).length + ' 个所在地'
+        : '无地图：新建所在地并保存后生成 map.json（V2）', '');
+    }
+
     async function loadAssets() {
-      // seq137（#1/#3）：统一全局素材在 GET /task/assets（全局模式忽略 task 参数），
-      // 返回 items + collections；旧 /library 只有 {id,file,...} 且通常为空。
       try {
         const s = await api('/task/assets?task=');
-        const items = (Array.isArray(s.items) ? s.items : [])
-          .filter((a) => a && a.id)
+        const items = (Array.isArray(s.items) ? s.items : []).filter((a) => a && a.id)
           .map((a) => ({ id: String(a.id), kind: String(a.kind || 'template'), label: a.label || '' }));
-        const collections = (Array.isArray(s.collections) ? s.collections : [])
-          .filter((c) => c && c.id)
-          .map((c) => ({ id: String(c.id), kind: 'template_set', label: c.id, members: c.members || [] }));
+        const collections = (Array.isArray(s.collections) ? s.collections : []).filter((c) => c && c.id)
+          .map((c) => ({ id: String(c.id), kind: 'template_set', label: c.id }));
         const seen = {};
         state.assets = [];
         for (const a of items.concat(collections)) {
@@ -399,16 +391,8 @@
           seen[a.id] = true;
           state.assets.push(a);
         }
-        if (!state.assets.length) setStatus('全局素材库为空（先到素材页/任务素材库创建素材）', '#e8c46a');
       } catch (e) {
-        // 兼容旧 server：/task/assets 失败时再试 /library（但一般不完整）。
-        try {
-          const s2 = await api('/library');
-          state.assets = (Array.isArray(s2.items) ? s2.items : [])
-            .filter((a) => a && a.id).map((a) => ({ id: String(a.id), kind: 'template', label: '' }));
-        } catch (e2) {
-          state.assets = [];
-        }
+        state.assets = [];
         setStatus('全局素材读取失败：' + e.message, '#ff8a80');
       }
     }
@@ -417,567 +401,461 @@
       setStatus('加载地图…');
       try {
         const s = await api('/map');
-        state.map = s.map || emptyMap();
+        state.map = s.map || mapV2Empty();
         state.loaded = !!s.exists;
-        state.dirty = false;
-        state.selectedNodeId = '';
-        state.selectedEdgeIndex = -1;
-        const p = el('map-path');
-        if (p) p.textContent = s.exists ? String(s.path || '') : '（尚未创建 map.json）';
-        setStatus(s.exists
-          ? '已加载：' + Number(s.node_count || 0) + ' 节点 / ' + Number(s.edge_count || 0) + ' 边'
-          : '无地图：先用「新建节点/用当前帧新建节点」创建，保存后生成全局 map.json', '');
-        renderAll();
+        clearDirty();
+        if (!state.selected || !locations()[state.selected]) {
+          state.selected = mapV2LocationNames(state.map)[0] || '';
+        }
+        const p = el('map-v2-fallback');
+        if (p) p.value = String(currentMap().fallback_task || '返回庭院');
         if (s.validation) renderValidation(s.validation);
+        renderAll();
+        setStatus(state.loaded ? '已加载：' + Number(s.location_count || 0) + ' 所在地 / ' + Number(s.edge_count || 0) + ' 路标' : '无地图：新建所在地并保存', '');
       } catch (e) {
-        state.map = emptyMap();
+        state.map = mapV2Empty();
         state.loaded = false;
         setStatus('地图加载失败：' + e.message, '#ff8a80');
         renderAll();
       }
     }
 
-    async function refreshAll() {
-      await Promise.all([loadFrames(), loadAssets(), loadMap()]);
-    }
-
     function renderAll() {
-      renderTree();
-      renderNodeEditor();
-      renderHubEditor();
-      renderEdgeEditor();
-      renderEdgeList();
-      renderPlanTargets();
-      drawFrame();
+      const count = el('map-v2-location-count');
+      if (count) count.textContent = '所在地 ' + Object.keys(locations()).length;
+      renderLocationList();
+      renderEditor();
+      renderLandmarks();
+      renderTargets();
+      renderFramePane();
+      drawPreview();
+      const fb = el('map-v2-fallback');
+      if (fb) fb.value = String(currentMap().fallback_task || '返回庭院');
     }
 
-    function renderFrameInfo() {
-      const info = el('map-frame-info');
-      if (info) info.textContent = state.frameId === null ? '帧：—（无帧）'
-        : '帧：#' + state.frameId + '（' + state.frames.length + ' 帧可选）';
-      const sel = el('map-node-frame-select');
-      if (sel) {
-        sel.textContent = '';
-        sel.appendChild(new Option('（选择节点帧用于预览）', ''));
-        for (const f of state.frames) sel.appendChild(new Option('#' + f.id + ' ' + (f.name || ''), String(f.id)));
-        const node = selectedNode();
-        if (node && Array.isArray(node.frames) && node.frames.length) sel.value = String(node.frames[0]);
-      }
-    }
-
-    function renderTree() {
-      const host = el('map-node-tree');
+    function renderLocationList() {
+      const host = el('map-v2-location-list');
       if (!host) return;
       host.textContent = '';
-      const map = currentMap();
-      const nodes = map.nodes || [];
-      if (!nodes.length) {
-        host.textContent = '（空地图：先新建节点）';
-        return;
-      }
-      const tree = mapNodeTree(nodes);
-      const renderNode = (node, depth) => {
-        const row = document.createElement('div');
-        row.className = 'map-node-row' + (String(node.id) === state.selectedNodeId ? ' selected' : '');
-        row.style.paddingLeft = (6 + depth * 14) + 'px';
-        row.textContent = (depth ? '└ ' : '') + mapNodeName(node) + '（' + String(node.id) + '）' +
-          (map.hub === node.id ? ' · hub' : '');
+      const names = mapV2SearchLocations(state.map, state.locationQuery);
+      if (!names.length) { host.textContent = '（无匹配所在地；点「新建所在地」）'; return; }
+      for (const name of names) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'map-v2-location-row' + (name === state.selected ? ' selected' : '');
+        row.textContent = name + (locations()[name] && locations()[name].label ? ' · ' + locations()[name].label : '');
+        row.title = mapV2LocationFeatureSummary(locations()[name]);
         row.addEventListener('click', () => {
-          state.selectedNodeId = String(node.id);
-          if (Array.isArray(node.frames) && node.frames.length) state.frameId = Number(node.frames[0]);
-          renderFrameInfo();
+          state.selected = name;
+          state.probe = null;
           renderAll();
-          previewSelectedNode();
+          previewHits().catch(() => {});
         });
         host.appendChild(row);
-        const kids = tree.children[node.id] || [];
-        for (const kid of kids) renderNode(kid, depth + 1);
-      };
-      for (const root of tree.roots) renderNode(root, 0);
-      for (const orphan of tree.orphans) {
-        const row = document.createElement('div');
-        row.className = 'map-node-row orphan';
-        row.textContent = String(orphan.node.id) + ' · ⚠ ' + orphan.reason;
-        host.appendChild(row);
-      }
-      for (const err of tree.errors) {
-        const row = document.createElement('div');
-        row.className = 'map-node-row error';
-        row.textContent = '⚠ ' + err;
-        host.appendChild(row);
       }
     }
 
-    function assetSelect(current, includeEmpty, placeholder) {
-      const sel = document.createElement('select');
-      sel.appendChild(new Option(placeholder || '（无）', ''));
-      for (const a of state.assets) {
-        sel.appendChild(new Option(a.id + ' · ' + (a.kind || '') + (a.label && a.label !== a.id ? ' · ' + a.label : ''), String(a.id)));
-      }
-      // seq137：先 append 缺失值再设置 value（否则浏览器会把 value 重置为 ''，回退成死代码）。
-      const cur = String(current === undefined || current === null ? '' : current).trim();
-      if (cur && !state.assets.some((a) => String(a.id) === cur)) {
-        sel.appendChild(new Option('不存在：' + cur + '（旧配置）', cur));
-      }
-      sel.value = cur;
-      return sel;
-    }
-
-    function renderNodeEditor() {
-      const host = el('map-node-editor');
+    function renderEditor() {
+      const host = el('map-v2-editor');
       if (!host) return;
       host.textContent = '';
-      const map = currentMap();
-      const cur = state.selectedNodeId ? selectedNode() : null;
-      const node = cur ? JSON.parse(JSON.stringify(cur)) : mapNewNodeDefaults({ frameId: state.frameId });
-      const isNew = !cur;
-      function field(labelText, input) {
-        const lab = document.createElement('label');
-        lab.className = 'opt';
-        lab.textContent = labelText;
-        const row = document.createElement('div');
-        row.className = 'map-field-row';
-        row.appendChild(input);
-        lab.appendChild(row);
-        host.appendChild(lab);
-        return input;
-      }
-      const idInput = document.createElement('input');
-      idInput.type = 'text'; idInput.value = String(node.id || ''); idInput.placeholder = '节点 id（全局唯一，navigate.target 引用）';
-      idInput.disabled = !isNew;
-      field('节点 id', idInput);
+      const loc = selectedLocation();
+      if (!loc) { host.textContent = '（选择左侧所在地，或「新建所在地」）'; return; }
       const nameInput = document.createElement('input');
-      nameInput.type = 'text'; nameInput.value = String(node.name || ''); nameInput.placeholder = '展示名（缺省=id）';
-      nameInput.addEventListener('change', markDirty);
-      field('名称', nameInput);
-      const parentSel = document.createElement('select');
-      parentSel.appendChild(new Option('（根节点）', ''));
-      for (const id of nodeIds()) if (id !== String(node.id || '')) parentSel.appendChild(new Option(id, id));
-      parentSel.value = node.parent === undefined || node.parent === null ? '' : String(node.parent);
-      parentSel.addEventListener('change', markDirty);
-      field('父节点 parent', parentSel);
-      const parentHint = document.createElement('div');
-      parentHint.className = 'muted small';
-      parentHint.textContent = '当前地图共 ' + nodeIds().length + ' 个节点；parent 可选所有其他节点' +
-        (nodeIds().length <= 1 ? '（只有 1 个节点时它只能是根节点）' : '') + '。';
-      host.appendChild(parentHint);
-      const returnSel = assetSelect(node.return_asset, true, '（缺省用 default_return_asset）');
-      returnSel.addEventListener('change', markDirty);
-      field('返回素材 return_asset', returnSel);
-      const returnHint = document.createElement('div');
-      returnHint.className = 'muted small';
-      returnHint.textContent = state.assets.length
-        ? '素材来源：GET /task/assets（items + collections，共 ' + state.assets.length + ' 项）'
-        : '全局素材库未加载/为空：返回素材、边素材、asset 特征都只有占位项';
-      host.appendChild(returnHint);
-      const prioInput = document.createElement('input');
-      prioInput.type = 'number'; prioInput.value = String(Number.isInteger(Number(node.priority)) ? Number(node.priority) : 0);
-      prioInput.addEventListener('change', markDirty);
-      field('优先级 priority', prioInput);
-      const framesInput = document.createElement('input');
-      framesInput.type = 'text';
-      framesInput.value = Array.isArray(node.frames) ? node.frames.join(',') : '';
-      framesInput.placeholder = '帧 id 列表，如 12,31（仅编辑器用）';
-      framesInput.addEventListener('change', markDirty);
-      field('帧 frames（逗号分隔）', framesInput);
-      const useFrameBtn = document.createElement('button');
-      useFrameBtn.type = 'button';
-      useFrameBtn.textContent = '把当前帧加入 frames';
-      useFrameBtn.addEventListener('click', () => {
-        if (state.frameId === null) return;
-        const ids = String(framesInput.value || '').split(',').map((s) => s.trim()).filter(Boolean);
-        if (ids.indexOf(String(state.frameId)) < 0) ids.push(String(state.frameId));
-        framesInput.value = ids.join(',');
+      nameInput.type = 'text'; nameInput.value = state.selected; nameInput.placeholder = '所在地名称（全局唯一，路标按此名引用）';
+      const rename = document.createElement('button');
+      rename.type = 'button'; rename.textContent = '保存名称/别名';
+      const labelInput = document.createElement('input');
+      labelInput.type = 'text'; labelInput.value = String(loc.label || ''); labelInput.placeholder = '展示别名（可选）';
+      const row = document.createElement('div');
+      row.className = 'map-v2-field';
+      row.append(document.createTextNode('名称'), nameInput, document.createTextNode('别名'), labelInput, rename);
+      host.appendChild(row);
+      rename.addEventListener('click', () => {
+        const next = nameInput.value.trim();
+        const res = mapV2RenameLocation(currentMap(), state.selected, next);
+        if (!res.ok) { setStatus('改名失败：' + res.error, '#ff8a80'); return; }
+        state.selected = next;
+        loc.label = labelInput.value.trim() || undefined;
+        if (!loc.label) delete loc.label;
+        markDirty();
+        renderAll();
+        setStatus('所在地名称已更新（未保存）', '#7bd88f');
       });
-      host.appendChild(useFrameBtn);
-      // 识别特征
-      const recBox = document.createElement('div');
-      recBox.className = 'map-recognize-box';
-      const recHead = document.createElement('div');
-      recHead.textContent = '识别特征（服务端识别；min_hits 控制命中数）';
-      recHead.className = 'muted small';
-      recBox.appendChild(recHead);
-      const rec = node.recognize && typeof node.recognize === 'object' ? node.recognize : { min_hits: 1, features: [] };
-      const features = Array.isArray(rec.features) ? rec.features : [];
-      const featureHost = document.createElement('div');
-      recBox.appendChild(featureHost);
+      // 识别条件
+      const rec = loc.recognize && typeof loc.recognize === 'object' ? loc.recognize : { min_hits: 1, features: [] };
+      if (!Array.isArray(rec.features)) rec.features = [];
+      loc.recognize = rec;
+      const head = document.createElement('div');
+      head.className = 'muted small';
+      head.textContent = '判定条件（OCR 文字 / 素材特征）：' + mapV2LocationFeatureSummary(loc);
+      host.appendChild(head);
+      const featHost = document.createElement('div');
+      host.appendChild(featHost);
       function renderFeatures() {
-        featureHost.textContent = '';
-        features.forEach((f, idx) => {
-          const row = document.createElement('div');
-          row.className = 'map-feature-row';
+        featHost.textContent = '';
+        rec.features.forEach((f, idx) => {
+          const r = document.createElement('div');
+          r.className = 'map-v2-feature-row';
           const kind = document.createElement('select');
           kind.appendChild(new Option('OCR 文字', 'ocr_text'));
           kind.appendChild(new Option('素材', 'asset'));
           kind.value = f.kind === 'asset' ? 'asset' : 'ocr_text';
-          kind.addEventListener('change', () => { f.kind = kind.value; if (f.kind === 'asset') { delete f.text; f.asset = ''; } else { delete f.asset; f.text = ''; } renderFeatures(); });
-          row.appendChild(kind);
+          kind.addEventListener('change', () => {
+            if (kind.value === 'asset') { delete f.text; delete f.roi; f.kind = 'asset'; f.asset = ''; }
+            else { delete f.asset; f.kind = 'ocr_text'; f.text = ''; }
+            markDirty(); renderFeatures();
+          });
+          r.appendChild(kind);
           if (f.kind === 'asset') {
-            const aSel = assetSelect(f.asset, true, '（选择素材）');
-            aSel.addEventListener('change', () => { f.asset = aSel.value; markDirty(); });
-            row.appendChild(aSel);
+            r.appendChild(assetPicker(f.asset, (id) => { f.asset = id; markDirty(); head.textContent = '判定条件：' + mapV2LocationFeatureSummary(loc); }));
           } else {
-            const text = document.createElement('input');
-            text.type = 'text'; text.value = String(f.text || ''); text.placeholder = '期望 OCR 文字（严格/归一化匹配由服务端）';
-            text.addEventListener('change', () => { f.text = text.value; markDirty(); });
-            row.appendChild(text);
+            const t = document.createElement('input');
+            t.type = 'text'; t.value = String(f.text || ''); t.placeholder = '期望 OCR 文字';
+            t.addEventListener('change', () => { f.text = t.value; markDirty(); head.textContent = '判定条件：' + mapV2LocationFeatureSummary(loc); });
+            r.appendChild(t);
+            const addOcr = document.createElement('button');
+            addOcr.type = 'button'; addOcr.textContent = '从当前帧 OCR 取…';
+            addOcr.addEventListener('click', () => pickOcrLine((line) => {
+              f.text = line.text;
+              if (Array.isArray(line.rect) && line.rect.length === 4) f.roi = line.rect.slice();
+              markDirty(); renderFeatures();
+              setStatus('已填入 OCR 特征「' + line.text + '」', '#7bd88f');
+            }));
+            r.appendChild(addOcr);
           }
           const del = document.createElement('button');
-          del.type = 'button'; del.textContent = '删'; del.title = '删除特征';
-          del.addEventListener('click', () => { features.splice(idx, 1); renderFeatures(); });
-          row.appendChild(del);
-          featureHost.appendChild(row);
+          del.type = 'button'; del.textContent = '删';
+          del.addEventListener('click', () => { rec.features.splice(idx, 1); markDirty(); renderFeatures(); });
+          r.appendChild(del);
+          featHost.appendChild(r);
         });
         const addRow = document.createElement('div');
-        addRow.className = 'map-feature-add';
+        addRow.className = 'map-v2-actions';
         const addOcr = document.createElement('button');
         addOcr.type = 'button'; addOcr.textContent = '+ OCR 文字特征';
-        addOcr.addEventListener('click', () => { features.push({ kind: 'ocr_text', text: '' }); renderFeatures(); });
+        addOcr.addEventListener('click', () => { rec.features.push({ kind: 'ocr_text', text: '' }); renderFeatures(); markDirty(); });
         const addAsset = document.createElement('button');
         addAsset.type = 'button'; addAsset.textContent = '+ 素材特征';
-        addAsset.addEventListener('click', () => { features.push({ kind: 'asset', asset: '' }); renderFeatures(); });
-        const addFromProbe = document.createElement('button');
-        addFromProbe.type = 'button'; addFromProbe.textContent = '从当前帧 OCR 添加…';
-        addFromProbe.addEventListener('click', () => pickFeatureFromProbe(features, renderFeatures, featureHost));
-        addRow.append(addOcr, addAsset, addFromProbe);
-        featureHost.appendChild(addRow);
+        addAsset.addEventListener('click', () => { rec.features.push({ kind: 'asset', asset: '' }); renderFeatures(); markDirty(); });
+        addRow.append(addOcr, addAsset);
+        featHost.appendChild(addRow);
+        const minRow = document.createElement('label');
+        minRow.className = 'opt';
+        minRow.textContent = 'min_hits ';
+        const min = document.createElement('input');
+        min.type = 'number'; min.min = '1'; min.value = String(Number(rec.min_hits) || 1);
+        min.addEventListener('change', () => { rec.min_hits = Number(min.value) || 1; markDirty(); });
+        minRow.appendChild(min);
+        featHost.appendChild(minRow);
       }
       renderFeatures();
-      const minHits = document.createElement('input');
-      minHits.type = 'number'; minHits.min = '1';
-      minHits.value = String(Number.isFinite(Number(rec.min_hits)) ? Number(rec.min_hits) : 1);
-      minHits.addEventListener('change', () => { rec.min_hits = Number(minHits.value) || 1; markDirty(); });
-      const minLab = document.createElement('label');
-      minLab.className = 'opt';
-      minLab.textContent = 'min_hits';
-      minLab.appendChild(minHits);
-      recBox.appendChild(minLab);
-      host.appendChild(recBox);
-
-      const saveBtn = document.createElement('button');
-      saveBtn.type = 'button';
-      saveBtn.textContent = isNew ? '添加节点到地图（未保存）' : '应用节点修改（未保存）';
-      saveBtn.addEventListener('click', () => {
-        const id = String(idInput.value || '').trim();
-        if (!mapIdValid(id)) { setStatus('节点 id 非法：' + id, '#ff8a80'); return; }
-        const next = {
-          id: id,
-          name: String(nameInput.value || '').trim(),
-          parent: parentSel.value ? parentSel.value : null,
-          return_asset: returnSel.value || undefined,
-          priority: Number(prioInput.value) || 0,
-          frames: String(framesInput.value || '').split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n)),
-          recognize: { min_hits: Number(minHits.value) || 1, features: features.slice() },
-        };
-        if (!next.name) delete next.name;
-        if (!next.return_asset) delete next.return_asset;
-        const nodes = map.nodes;
-        if (isNew) {
-          if (nodes.some((n) => String(n.id) === id)) { setStatus('节点 id 已存在：' + id, '#ff8a80'); return; }
-          nodes.push(next);
-          state.selectedNodeId = id;
-        } else {
-          const idx = nodes.findIndex((n) => String(n.id) === state.selectedNodeId);
-          if (idx >= 0) nodes[idx] = next;
-          state.selectedNodeId = id;
-        }
-        if (!map.hub && nodes.length === 1) map.hub = next.id;
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button'; delBtn.textContent = '删除所在地';
+      delBtn.addEventListener('click', () => {
+        if (!window.confirm('删除所在地「' + state.selected + '」？（未保存）')) return;
+        const res = mapV2RemoveLocation(currentMap(), state.selected);
+        if (!res.ok) { setStatus('删除失败：' + res.error, '#ff8a80'); return; }
+        state.selected = mapV2LocationNames(state.map)[0] || '';
         markDirty();
         renderAll();
       });
-      host.appendChild(saveBtn);
-      const ret = mapNodeReturnStatus(map, node);
-      const retLine = document.createElement('div');
-      retLine.className = 'muted small' + (ret.status === 'none' ? ' warn' : '');
-      retLine.textContent = ret.text;
-      host.appendChild(retLine);
+      host.appendChild(delBtn);
     }
 
-    function pickFeatureFromProbe(features, renderFeatures, hostEl) {
-      // seq137：只取 OCR 行（assets: [] 缩面，后端 task 支持按需 assets；不扫描全素材库）。
-      // 用页面内列表选择替代 window.prompt 序号输入；加载/失败都有状态提示。
-      setStatus('读取当前帧 OCR 行…（probe 仅 OCR，不扫描素材库）');
-      const body = state.frameId !== null ? { frame_id: Number(state.frameId), assets: [] } : { live: true, assets: [] };
-      postJson('/map/probe', body).then((s) => {
+    function assetPicker(current, onChoose) {
+      // 复用现有素材搜索选择器（与构建器同一组件/样式）。
+      if (window.OASAssetUI && window.OASAssetUI.createSearchPicker) {
+        return window.OASAssetUI.createSearchPicker({
+          items: state.assets,
+          value: current || '',
+          placeholder: '搜索素材/集合…',
+          className: 'asset-search',
+          label: (a) => a.id + ' [' + a.kind + ']',
+          onChoose: (a, input) => { input.value = a.id; onChoose(a.id, input); },
+        });
+      }
+      const input = document.createElement('input');
+      input.type = 'text'; input.value = String(current || '');
+      input.placeholder = '素材 id';
+      input.addEventListener('change', () => onChoose(input.value.trim(), input));
+      return input;
+    }
+
+    function renderLandmarks() {
+      const host = el('map-v2-landmarks');
+      if (!host) return;
+      host.textContent = '';
+      const loc = selectedLocation();
+      if (!loc) { host.textContent = '（先选择所在地）'; return; }
+      for (const group of ['return_landmarks', 'outbound_landmarks']) {
+        if (!Array.isArray(loc[group])) loc[group] = [];
+        const box = document.createElement('div');
+        box.className = 'map-v2-landmark-group';
+        const title = document.createElement('h4');
+        title.textContent = group === 'return_landmarks' ? '回程路标（返回）' : '去程路标（去往）';
+        box.appendChild(title);
+        loc[group].forEach((lm, idx) => {
+          const row = document.createElement('div');
+          row.className = 'map-v2-landmark-row';
+          const target = document.createElement('select');
+          target.appendChild(new Option('（选择目标所在地）', ''));
+          for (const n of mapV2LandmarkTargets(state.map, state.selected)) target.appendChild(new Option(n, n));
+          if (lm.name && !mapV2LandmarkTargets(state.map, state.selected).includes(lm.name)) {
+            target.appendChild(new Option('不存在：' + lm.name, lm.name));
+          }
+          target.value = String(lm.name || '');
+          target.addEventListener('change', () => { lm.name = target.value; markDirty(); renderLandmarks(); });
+          row.appendChild(target);
+          const action = document.createElement('select');
+          action.appendChild(new Option('点击（V1）', 'click'));
+          action.value = String((lm.path && lm.path.action) || 'click');
+          action.addEventListener('change', () => {
+            if (!lm.path) lm.path = {};
+            lm.path.action = action.value;
+            markDirty();
+          });
+          row.appendChild(action);
+          if (!lm.path || typeof lm.path !== 'object') lm.path = { action: 'click', asset: '' };
+          const assetWrap = document.createElement('span');
+          assetWrap.className = 'map-v2-landmark-asset';
+          assetWrap.appendChild(assetPicker(lm.path.asset || '', (id) => {
+            lm.path.asset = id;
+            markDirty();
+            renderLandmarks();
+            previewHits().catch(() => {});
+          }));
+          row.appendChild(assetWrap);
+          if (lm.path.asset) {
+            const thumb = document.createElement('img');
+            thumb.className = 'map-v2-asset-thumb';
+            thumb.src = '/task/asset/image?task=&id=' + encodeURIComponent(lm.path.asset) + '&ts=' + Date.now();
+            thumb.title = '路径素材预览：' + lm.path.asset;
+            thumb.onerror = () => { thumb.remove(); };
+            row.appendChild(thumb);
+          }
+          const wait = document.createElement('input');
+          wait.type = 'number'; wait.min = '0'; wait.max = '5000';
+          wait.value = String((lm.path.wait && lm.path.wait.settle_ms) || 600);
+          wait.title = '点击后 settle_ms';
+          wait.addEventListener('change', () => {
+            lm.path.wait = { settle_ms: Math.max(0, Math.min(5000, Number(wait.value) || 0)), timeout_ms: 3000 };
+            markDirty();
+          });
+          row.appendChild(wait);
+          const del = document.createElement('button');
+          del.type = 'button'; del.textContent = '删路标';
+          del.addEventListener('click', () => { loc[group].splice(idx, 1); markDirty(); renderLandmarks(); });
+          row.appendChild(del);
+          box.appendChild(row);
+          const summary = document.createElement('div');
+          summary.className = 'muted small';
+          summary.textContent = mapV2LandmarkPathSummary(lm);
+          box.appendChild(summary);
+        });
+        const add = document.createElement('button');
+        add.type = 'button'; add.textContent = '+ 新增' + (group === 'return_landmarks' ? '回程' : '去程') + '路标';
+        add.addEventListener('click', () => {
+          const targets = mapV2LandmarkTargets(state.map, state.selected);
+          loc[group].push({ name: targets[0] || '', path: { action: 'click', asset: '', wait: { settle_ms: 600, timeout_ms: 3000 } } });
+          markDirty();
+          renderLandmarks();
+        });
+        box.appendChild(add);
+        host.appendChild(box);
+      }
+    }
+
+    function renderTargets() {
+      const sel = el('map-v2-target');
+      if (!sel) return;
+      const keep = sel.value;
+      sel.textContent = '';
+      for (const n of mapV2LocationNames(state.map)) sel.appendChild(new Option(n, n));
+      if (keep && mapV2LocationNames(state.map).includes(keep)) sel.value = keep;
+      else if (state.selected) sel.value = state.selected;
+    }
+
+    function frameImageUrl(fid) {
+      return '/frames/image?id=' + encodeURIComponent(fid) + '&ts=' + Date.now();
+    }
+
+    function renderFramePane() {
+      const info = el('map-v2-frame-info');
+      const f = currentFrame();
+      if (info) {
+        info.textContent = f
+          ? '帧 #' + f.id + ' · ' + (f.name || '') + (f.category ? ' · ' + f.category : '') + '（共享工作台）'
+          : '帧：—（工作台暂无可用帧）';
+      }
+      const list = el('map-v2-frame-list');
+      if (list) {
+        list.textContent = '';
+        // 复用工作台现有帧搜索逻辑（filterFramesByQuery），保证同一查询语义。
+        const frames = (typeof filterFramesByQuery === 'function')
+          ? filterFramesByQuery(currentFrameList(), state.frameQuery)
+          : mapV2FilterFrames(currentFrameList(), state.frameQuery);
+        if (!frames.length) list.textContent = '（无匹配帧）';
+        for (const fr of frames.slice(0, 40)) {
+          const row = document.createElement('button');
+          row.type = 'button';
+          row.className = 'map-v2-frame-row' + (Number(fr.id) === currentFrameIdSafe() ? ' selected' : '');
+          row.textContent = '#' + fr.id + ' ' + (fr.name || '') + (fr.category ? ' · ' + fr.category : '');
+          row.addEventListener('click', () => selectWorkbenchFrame(fr.id));
+          list.appendChild(row);
+        }
+      }
+    }
+
+    function drawPreview() {
+      const canvas = el('map-v2-preview');
+      if (!canvas) return;
+      const f = currentFrame();
+      const ctx = canvas.getContext('2d');
+      if (!f) {
+        canvas.width = 480; canvas.height = 270;
+        ctx.fillStyle = '#0b0d10'; ctx.fillRect(0, 0, 480, 270);
+        ctx.fillStyle = '#8fb8e8'; ctx.font = '13px Consolas, monospace';
+        ctx.fillText('无当前帧（请在工作台选择图片）', 12, 24);
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = Math.max(1, canvas.clientWidth || 480);
+        const w = Math.round(cssW * dpr);
+        const h = Math.round((w * img.height) / Math.max(1, img.width));
+        canvas.width = w; canvas.height = h;
+        ctx.setTransform(w / img.width, 0, 0, h / img.height, 0, 0);
+        ctx.drawImage(img, 0, 0);
+        const probe = state.probe;
+        if (probe) {
+          ctx.save(); ctx.lineWidth = 2; ctx.strokeStyle = '#7bd88f';
+          for (const line of Array.isArray(probe.ocr_lines) ? probe.ocr_lines : []) {
+            const r = line && Array.isArray(line.rect) ? line.rect : null;
+            if (r && r.length >= 4) ctx.strokeRect(Number(r[0]) + 0.5, Number(r[1]) + 0.5, Number(r[2]), Number(r[3]));
+          }
+          for (const hint of Array.isArray(probe.assets) ? probe.assets : []) {
+            const r = hint && Array.isArray(hint.real) ? hint.real : null;
+            if (r && r.length >= 4 && hint.pass !== false) {
+              ctx.strokeStyle = '#ffd54a';
+              ctx.strokeRect(Number(r[0]) + 0.5, Number(r[1]) + 0.5, Number(r[2]), Number(r[3]));
+            }
+          }
+          ctx.restore();
+        }
+      };
+      img.onerror = () => {
+        canvas.width = 480; canvas.height = 270;
+        ctx.fillStyle = '#0b0d10'; ctx.fillRect(0, 0, 480, 270);
+        ctx.fillStyle = '#ff8a80'; ctx.font = '13px Consolas, monospace';
+        ctx.fillText('当前帧图片不可用', 12, 24);
+      };
+      img.src = frameImageUrl(f.id);
+    }
+
+    async function previewHits() {
+      const loc = selectedLocation();
+      const fid = currentFrameIdSafe();
+      if (!loc || fid === null) {
+        const elx = el('map-v2-hit-summary');
+        if (elx) elx.textContent = loc ? '（无当前帧）' : '（先选择所在地）';
+        return;
+      }
+      const assets = mapV2CurrentFeatureAssets(loc).concat(mapV2LandmarkAssets(loc));
+      const box = el('map-v2-hit-summary');
+      if (box) box.textContent = '读取命中预览…（probe 限定 ' + assets.length + ' 个素材）';
+      try {
+        const s = await postJson('/map/probe', { frame_id: Number(fid), assets: assets });
+        state.probe = s;
+        if (box) box.textContent = mapV2HitSummary(s, loc);
+        drawPreview();
+      } catch (e) {
+        if (box) box.textContent = '命中预览失败：' + e.message;
+      }
+    }
+
+    async function pickOcrLine(onPick) {
+      const fid = currentFrameIdSafe();
+      if (fid === null) { setStatus('请先在工作台选一张帧', '#e8c46a'); return; }
+      setStatus('读取当前帧 OCR 行…');
+      try {
+        const s = await postJson('/map/probe', { frame_id: Number(fid), assets: [] });
         state.probe = s;
         const lines = Array.isArray(s.ocr_lines) ? s.ocr_lines : [];
         if (!lines.length) { setStatus('当前帧没有 OCR 行', '#e8c46a'); return; }
+        const host = el('map-v2-editor');
         const list = document.createElement('div');
-        list.className = 'map-ocr-pick';
-        const head = document.createElement('div');
-        head.className = 'muted small';
-        head.textContent = '选择 OCR 行作为特征（' + lines.length + ' 行，最多显示 40）：';
-        list.appendChild(head);
-        lines.slice(0, 40).forEach((line, i) => {
-          const row = document.createElement('button');
-          row.type = 'button';
-          row.className = 'map-ocr-pick-row';
-          row.textContent = (i + 1) + '. ' + String(line.text || '') + ' (' + Number(line.score || 0).toFixed(2) + ')';
-          row.title = '点击添加为 ocr_text 特征' + (Array.isArray(line.rect) ? ' · ROI[' + line.rect.join(',') + ']' : '');
-          row.addEventListener('click', () => {
-            features.push({
-              kind: 'ocr_text', text: String(line.text || ''),
-              ...(Array.isArray(line.rect) ? { roi: line.rect.slice() } : {}),
-            });
-            list.remove();
-            renderFeatures();
-            markDirty();
-            setStatus('已添加 OCR 特征「' + String(line.text || '') + '」', '#7bd88f');
-          });
-          list.appendChild(row);
+        list.className = 'map-v2-ocr-pick';
+        lines.slice(0, 40).forEach((line) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = String(line.text || '') + ' (' + Number(line.score || 0).toFixed(2) + ')';
+          b.addEventListener('click', () => { list.remove(); onPick(line); });
+          list.appendChild(b);
         });
         const cancel = document.createElement('button');
         cancel.type = 'button'; cancel.textContent = '取消';
         cancel.addEventListener('click', () => list.remove());
         list.appendChild(cancel);
-        (hostEl || el('map-feature-detail').parentNode || el('map-node-editor')).appendChild(list);
-        setStatus('请选择要添加的 OCR 行', '#8fb8e8');
-      }).catch((e) => setStatus('读取 OCR 行失败：' + e.message, '#ff8a80'));
-    }
-
-    function renderHubEditor() {
-      const host = el('map-hub-editor');
-      if (!host) return;
-      host.textContent = '';
-      const map = currentMap();
-      const hubSel = document.createElement('select');
-      hubSel.appendChild(new Option('（选择 hub）', ''));
-      for (const id of nodeIds()) hubSel.appendChild(new Option(id, id));
-      hubSel.value = String(map.hub || '');
-      hubSel.addEventListener('change', () => { map.hub = hubSel.value; markDirty(); renderAll(); });
-      const hubLab = document.createElement('label');
-      hubLab.className = 'opt'; hubLab.textContent = 'hub（兜底路由节点）'; hubLab.appendChild(hubSel);
-      host.appendChild(hubLab);
-      const retSel = assetSelect(map.default_return_asset, true, '（无默认返回素材）');
-      retSel.addEventListener('change', () => { map.default_return_asset = retSel.value; markDirty(); });
-      const retLab = document.createElement('label');
-      retLab.className = 'opt'; retLab.textContent = 'default_return_asset'; retLab.appendChild(retSel);
-      host.appendChild(retLab);
-    }
-
-    function renderEdgeEditor() {
-      const host = el('map-edge-editor');
-      if (!host) return;
-      host.textContent = '';
-      const map = currentMap();
-      const ids = nodeIds();
-      if (ids.length < 1) { host.textContent = '（先添加节点）'; return; }
-      const fromSel = document.createElement('select');
-      const toSel = document.createElement('select');
-      for (const id of ids) { fromSel.appendChild(new Option(id, id)); toSel.appendChild(new Option(id, id)); }
-      const kindSel = document.createElement('select');
-      for (const k of ['click_asset', 'key', 'swipe']) kindSel.appendChild(new Option(k, k));
-      const assetSel = assetSelect('', true, '（click_asset 素材）');
-      const keyInput = document.createElement('input');
-      keyInput.type = 'number'; keyInput.value = '4'; keyInput.placeholder = 'keycode（BACK=4）';
-      const fromXY = document.createElement('input');
-      fromXY.type = 'text'; fromXY.value = '640,600'; fromXY.placeholder = 'swipe from x,y';
-      const toXY = document.createElement('input');
-      toXY.type = 'text'; toXY.value = '640,300'; toXY.placeholder = 'swipe to x,y';
-      const msInput = document.createElement('input');
-      msInput.type = 'number'; msInput.value = '300'; msInput.placeholder = 'swipe ms';
-      const settleInput = document.createElement('input');
-      settleInput.type = 'number'; settleInput.value = '500'; settleInput.placeholder = 'wait settle_ms';
-      const row1 = document.createElement('div');
-      row1.className = 'map-edge-row';
-      row1.append(document.createTextNode('from'), fromSel, document.createTextNode('to'), toSel, kindSel);
-      host.appendChild(row1);
-      const row2 = document.createElement('div');
-      row2.className = 'map-edge-row';
-      row2.append(assetSel, keyInput, fromXY, toXY, msInput);
-      host.appendChild(row2);
-      const row3 = document.createElement('div');
-      row3.className = 'map-edge-row';
-      row3.append(document.createTextNode('wait settle_ms'), settleInput);
-      host.appendChild(row3);
-      const addBtn = document.createElement('button');
-      addBtn.type = 'button'; addBtn.textContent = '添加边（未保存）';
-      addBtn.addEventListener('click', () => {
-        const kind = kindSel.value;
-        const action = kind === 'click_asset'
-          ? { kind: 'click_asset', asset: assetSel.value }
-          : (kind === 'key'
-            ? { kind: 'key', keycode: Number(keyInput.value) || 4 }
-            : {
-              kind: 'swipe',
-              from: String(fromXY.value || '').split(',').map((s) => Number(s.trim())),
-              to: String(toXY.value || '').split(',').map((s) => Number(s.trim())),
-              ms: Number(msInput.value) || 300,
-            });
-        if (!assetSel.value && kind === 'click_asset') { setStatus('请选择 click_asset 素材', '#ff8a80'); return; }
-        map.edges.push({
-          from: fromSel.value, to: toSel.value, action: action,
-          wait: { settle_ms: Number(settleInput.value) || 500, timeout_ms: 3000 },
-        });
-        markDirty();
-        renderEdgeList();
-        renderAll();
-      });
-      host.appendChild(addBtn);
-    }
-
-    function renderEdgeList() {
-      const host = el('map-edge-list');
-      if (!host) return;
-      host.textContent = '';
-      const edges = currentMap().edges || [];
-      if (!edges.length) { host.textContent = '（无）'; return; }
-      edges.forEach((edge, i) => {
-        const row = document.createElement('div');
-        row.className = 'map-node-row';
-        row.textContent = mapEdgeLabel(edge);
-        const del = document.createElement('button');
-        del.type = 'button'; del.textContent = '删';
-        del.addEventListener('click', () => { edges.splice(i, 1); markDirty(); renderEdgeList(); renderAll(); });
-        row.appendChild(del);
-        host.appendChild(row);
-      });
-    }
-
-    function renderPlanTargets() {
-      const ids = nodeIds();
-      for (const id of ['map-plan-target', 'map-plan-from']) {
-        const sel = el(id);
-        if (!sel) continue;
-        const keep = sel.value;
-        sel.textContent = '';
-        if (id === 'map-plan-from') sel.appendChild(new Option('自动识别当前节点', 'auto'));
-        for (const nid of ids) sel.appendChild(new Option(nid, nid));
-        if (keep && (id === 'map-plan-from' || ids.indexOf(keep) >= 0)) sel.value = keep;
-      }
-    }
-
-    function renderValidation(v) {
-      const host = el('map-validation');
-      if (!host) return;
-      host.textContent = '';
-      const errors = (v && v.errors) || [];
-      const warnings = (v && v.warnings) || [];
-      if (!errors.length && !warnings.length) { host.textContent = '✅ 校验通过'; return; }
-      const pre = document.createElement('div');
-      pre.textContent = (errors.length ? '错误 ' + errors.length + '：\n' + mapIssueText(errors) : '') +
-        (warnings.length ? (errors.length ? '\n' : '') + '警告 ' + warnings.length + '：\n' + mapIssueText(warnings) : '');
-      pre.style.whiteSpace = 'pre-wrap';
-      host.appendChild(pre);
-    }
-
-    function currentFrameImageUrl() {
-      if (state.frameId === null) return '/frame.png?ts=' + Date.now();
-      return '/frames/image?id=' + encodeURIComponent(state.frameId) + '&ts=' + Date.now();
-    }
-
-    function countNodeHits(node, probe) {
-      const n = node && typeof node === 'object' ? node : {};
-      const rec = n.recognize && typeof n.recognize === 'object' ? n.recognize : {};
-      const features = Array.isArray(rec.features) ? rec.features : [];
-      const lines = probe && Array.isArray(probe.ocr_lines) ? probe.ocr_lines : [];
-      const assetHints = probe && Array.isArray(probe.assets) ? probe.assets : [];
-      let hits = 0;
-      for (const f of features) {
-        if (!f || typeof f !== 'object') continue;
-        if (f.kind === 'ocr_text') {
-          const want = String(f.text || '').trim();
-          if (want && lines.some((l) => String((l && l.text) || '').indexOf(want) >= 0)) hits += 1;
-        } else if (f.kind === 'asset') {
-          const aid = String(f.asset || '').trim();
-          if (aid && assetHints.some((h) => h && String(h.asset) === aid && h.pass !== false)) hits += 1;
-        }
-      }
-      const minHits = Math.max(1, Number(rec.min_hits) || 1);
-      return { hits: hits, total: features.length, minHits: minHits, satisfied: hits >= minHits };
-    }
-
-    function drawProbeOverlay(ctx) {
-      const probe = state.probe;
-      if (!ctx || !probe) return;
-      const lines = Array.isArray(probe.ocr_lines) ? probe.ocr_lines : [];
-      ctx.save();
-      ctx.lineWidth = 1.5;
-      ctx.strokeStyle = '#7bd88f';
-      for (const line of lines) {
-        const r = line && Array.isArray(line.rect) ? line.rect : null;
-        if (!r || r.length < 4) continue;
-        ctx.strokeRect(Number(r[0]) + 0.5, Number(r[1]) + 0.5, Number(r[2]), Number(r[3]));
-      }
-      ctx.restore();
-      const node = selectedNode();
-      if (node) {
-        const c = countNodeHits(node, probe);
-        const hitsEl = el('map-feature-hits');
-        if (hitsEl) {
-          hitsEl.textContent = '特征命中 ' + c.hits + '/' + c.total + ' · min_hits=' + c.minHits +
-            (c.satisfied ? ' ✅' : ' ⚠ 未满足');
-          hitsEl.style.color = c.satisfied ? '#7bd88f' : '#e8c46a';
-        }
-        const detail = el('map-feature-detail');
-        if (detail) {
-          detail.textContent = '节点 ' + String(node.id) + ' 识别特征：\n' +
-            ((node.recognize && node.recognize.features) || []).map((f, i) => (i + 1) + '. ' + mapFeatureSummary(f) +
-              (probe ? ' · ' + (countNodeHits({ recognize: { min_hits: 1, features: [f] } }, probe).hits ? '命中' : '未命中') : '')).join('\n');
-        }
-      }
-    }
-
-    function drawFrame() {
-      const canvas = el('map-canvas');
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      const img = new Image();
-      img.onload = () => {
-        // seq137：按显示宽度 × devicePixelRatio 设 backing store，避免高分屏模糊/比例失衡；
-        // 用 transform 让后续覆盖层继续使用帧坐标。
-        const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
-        const cssW = Math.max(1, Math.round(canvas.clientWidth || img.width));
-        const w = Math.max(1, Math.round(cssW * dpr));
-        const h = Math.max(1, Math.round((w * img.height) / Math.max(1, img.width)));
-        canvas.width = w;
-        canvas.height = h;
-        ctx.setTransform(w / Math.max(1, img.width), 0, 0, h / Math.max(1, img.height), 0, 0);
-        ctx.drawImage(img, 0, 0);
-        drawProbeOverlay(ctx);
-        const hits = el('map-feature-hits');
-        if (hits && !state.probe) hits.textContent = '—';
-      };
-      img.onerror = () => {
-        ctx.fillStyle = '#0b0d10';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = '#8fb8e8';
-        ctx.font = '14px Consolas, monospace';
-        ctx.fillText('帧图片不可用（无设备/无帧）', 12, 24);
-      };
-      img.src = currentFrameImageUrl();
-    }
-
-    // 选中节点预览：用 /map/state（release 下识别当前节点 ~0.4s）；不再触发
-    // /map/probe（旧实现 78s 全素材扫描）。probe 只在“从当前帧 OCR 添加”时按需调用。
-    async function previewSelectedNode() {
-      const node = selectedNode();
-      if (!node) return;
-      const qs = state.frameId !== null ? '?frame_id=' + encodeURIComponent(state.frameId) : '?live=1';
-      setStatus('识别当前节点…');
-      try {
-        const s = await api('/map/state' + qs);
-        setResult(mapStateSummary(s));
-        const hitsEl = el('map-feature-hits');
-        if (hitsEl) {
-          hitsEl.textContent = s.current
-            ? '识别：' + String(s.current.node) + ' · hits=' + Number(s.current.hits || 0)
-            : '未识别到当前节点';
-          hitsEl.style.color = s.current ? '#7bd88f' : '#e8c46a';
-        }
-        const detail = el('map-feature-detail');
-        if (detail) {
-          detail.textContent = '节点 ' + String(node.id) + ' 识别特征（服务端识别结果见下方）：\n' +
-            ((node.recognize && node.recognize.features) || []).map((f, i) => (i + 1) + '. ' + mapFeatureSummary(f)).join('\n');
-        }
-        setStatus('识别当前节点完成', '#7bd88f');
+        host.appendChild(list);
+        drawPreview();
+        setStatus('请选择 OCR 行', '#8fb8e8');
       } catch (e) {
-        setStatus('识别当前节点失败：' + e.message, '#e8c46a');
+        setStatus('读取 OCR 失败：' + e.message, '#ff8a80');
+      }
+    }
+
+    async function identifyCurrent() {
+      const fid = currentFrameIdSafe();
+      setStatus('识别当前所在地…');
+      setResult('识别中…');
+      try {
+        const qs = fid !== null ? '?frame_id=' + encodeURIComponent(fid) : '?live=1';
+        const s = await api('/map/state' + qs);
+        setResult(mapV2StateSummary(s));
+        if (s.current && (s.current.location || s.current.node)) {
+          state.selected = String(s.current.location || s.current.node);
+          renderAll();
+          previewHits().catch(() => {});
+        }
+      } catch (e) {
+        setResult('识别失败：' + e.message);
+      }
+    }
+
+    async function planRoute() {
+      const target = el('map-v2-target') ? el('map-v2-target').value : '';
+      if (!target) { setResult('请选择目标所在地'); return; }
+      const fid = currentFrameIdSafe();
+      const qs = new URLSearchParams({ from: 'auto', to: target });
+      if (fid !== null) qs.set('frame_id', String(fid));
+      setResult('路径预览中…');
+      try {
+        const s = await api('/map/plan?' + qs.toString());
+        setResult(mapV2PlanSummary(s));
+      } catch (e) {
+        setResult('路径预览失败：' + e.message);
+      }
+    }
+
+    async function navigateDebug(real) {
+      const target = el('map-v2-target') ? el('map-v2-target').value : '';
+      if (!target) { setResult('请选择目标所在地'); return; }
+      if (real && !window.confirm('对真实设备执行导航到「' + target + '」（临时任务，不写用户任务）？')) return;
+      const body = { target: target, real: !!real };
+      if (currentFrameIdSafe() !== null) body.frame_id = Number(currentFrameIdSafe());
+      setResult(real ? '真实导航执行中…' : 'dry 执行中…');
+      try {
+        const s = await postJson('/map/navigate', body);
+        setResult(mapV2NavigateSummary(s));
+      } catch (e) {
+        setResult('导航失败（当前位置/路标/目标见服务端错误）：' + e.message);
       }
     }
 
     async function validateMap() {
-      const local = mapValidationLocal(currentMap());
+      const local = mapV2ValidationLocal(currentMap());
       renderValidation(local);
       try {
         const s = await postJson('/map/validate', { map: currentMap() });
@@ -989,189 +867,128 @@
       }
     }
 
+    function renderValidation(v) {
+      const host = el('map-v2-validation');
+      if (!host) return;
+      host.textContent = '';
+      const errors = (v && v.errors) || [];
+      const warnings = (v && v.warnings) || [];
+      if (!errors.length && !warnings.length) { host.textContent = '✅ 校验通过'; return; }
+      host.textContent = (errors.length ? '错误 ' + errors.length + '：\n' + mapV2IssueText(errors) : '') +
+        (warnings.length ? (errors.length ? '\n' : '') + '警告 ' + warnings.length + '：\n' + mapV2IssueText(warnings) : '');
+      host.style.whiteSpace = 'pre-wrap';
+    }
+
     async function saveMap() {
-      const local = mapValidationLocal(currentMap());
+      const local = mapV2ValidationLocal(currentMap());
       renderValidation(local);
       if (local.errors.length) {
-        setStatus('本地校验失败，未保存（见校验面板）', '#ff8a80');
+        setStatus('本地校验失败，未保存（见左侧校验面板）', '#ff8a80');
         return;
       }
       setStatus('保存地图…');
       try {
         const s = await postJson('/map', { map: currentMap() });
-        state.dirty = false;
-        setStatus('已保存 map.json' + (s.backup ? '（备份 ' + s.backup + '）' : ''), '#7bd88f');
-        renderValidation(s.validation || { errors: [], warnings: [] });
+        clearDirty();
+        setStatus('已保存 map.json（V2）' + (s.backup ? ' · 备份 ' + s.backup : ''), '#7bd88f');
+        if (s.validation) renderValidation(s.validation);
         await loadMap();
       } catch (e) {
-        const body = e.body;
-        if (body && body.validation) renderValidation(body.validation);
-        else renderValidation({ errors: [{ path: '(save)', message: e.message }], warnings: [] });
+        if (e.body && e.body.errors) renderValidation({ errors: e.body.errors, warnings: e.body.warnings || [] });
         setStatus('保存失败：' + e.message, '#ff8a80');
       }
     }
 
-    async function identifyState() {
-      setStatus('识别当前节点…');
-      setResult('识别中…');
-      const qs = state.frameId !== null ? '?frame_id=' + encodeURIComponent(state.frameId) : '?live=1';
-      try {
-        const s = await api('/map/state' + qs);
-        setResult(mapStateSummary(s));
-        const lines = ['识别当前节点：'];
-        lines.push(mapStateSummary(s));
-        setResult(lines.join('\n'));
-      } catch (e) {
-        setResult('识别失败：' + e.message);
-      }
-    }
-
-    async function planRoute() {
-      const target = el('map-plan-target') ? el('map-plan-target').value : '';
-      if (!target) { setResult('请选择目标节点'); return; }
-      const from = el('map-plan-from') ? el('map-plan-from').value : 'auto';
-      const qs = new URLSearchParams({ from: from || 'auto', to: target });
-      if (from !== 'auto' && state.frameId === null) qs.set('live', '1');
-      setResult('路径预览中…');
-      try {
-        const s = await api('/map/plan?' + qs.toString());
-        setResult(mapPlanSummary(s));
-      } catch (e) {
-        setResult('路径预览失败：' + e.message);
-      }
-    }
-
-    async function navigateDebug(real) {
-      const target = el('map-plan-target') ? el('map-plan-target').value : '';
-      if (!target) { setResult('请选择目标节点'); return; }
-      if (real) {
-        if (!window.confirm('即将对真实设备执行导航到「' + target + '」（服务端临时任务，不写入用户任务）。\n确认执行？')) return;
-      }
-      setResult(real ? '真实导航执行中…' : 'dry 预览中…');
-      const body = { target: target, real: !!real };
-      const from = el('map-plan-from') ? el('map-plan-from').value : 'auto';
-      if (from && from !== 'auto') body.from = from;
-      if (state.frameId !== null) body.frame_id = Number(state.frameId);
-      try {
-        const s = await postJson('/map/navigate', body);
-        setResult(mapNavigateSummary(s));
-      } catch (e) {
-        setResult('导航失败：' + e.message);
-      }
-    }
-
-    async function createNavigateTask() {
-      const target = el('map-plan-target') ? el('map-plan-target').value : '';
-      if (!target) { setResult('请先选择目标节点'); return; }
-      const name = (window.prompt('新导航任务名称（目录名，可用中文）', '导航-' + target) || '').trim();
-      if (!name) return;
-      try {
-        await postJson('/task/create', { name: name, template: 'utility', description: '全局地图导航任务（navigate）' });
-        await postJson('/task/save_flow', { task: name, flow: mapNavigateFlowPreset(target) });
-        setStatus('已创建导航任务「' + name + '」（flow=navigate+finish）', '#7bd88f');
-        setResult('已创建导航任务「' + name + '」。可到「任务构建」继续编辑/运行。');
-        const btn = document.querySelector('.app-nav-btn[data-page="builder"]');
-        if (btn) btn.click();
-      } catch (e) {
-        setStatus('创建导航任务失败：' + e.message, '#ff8a80');
-      }
-    }
-
-    function deleteSelectedNode() {
-      const node = selectedNode();
-      if (!node) { setStatus('请先选择节点', '#e8c46a'); return; }
-      const map = currentMap();
-      const id = String(node.id);
-      const refs = [];
-      for (const e of map.edges || []) {
-        if (String(e.from) === id || String(e.to) === id) refs.push('边 ' + String(e.from) + '→' + String(e.to));
-      }
-      if (map.hub === id) refs.push('hub');
-      if (refs.length) {
-        setStatus('无法删除：节点被引用（' + refs.slice(0, 5).join('；') + '）', '#ff8a80');
-        return;
-      }
-      if (!window.confirm('删除节点「' + id + '」（未保存）？')) return;
-      map.nodes = (map.nodes || []).filter((n) => String(n.id) !== id);
-      for (const n of map.nodes || []) if (String(n.parent || '') === id) n.parent = null;
-      state.selectedNodeId = '';
+    function newLocation() {
+      let base = '新所在地';
+      let name = base;
+      let i = 2;
+      while (Object.prototype.hasOwnProperty.call(locations(), name)) { name = base + i; i += 1; }
+      currentMap().locations[name] = mapV2NewLocation(name);
+      state.selected = name;
       markDirty();
       renderAll();
+      setStatus('已新建所在地「' + name + '」（未保存；先填判定条件与路标）', '#7bd88f');
+    }
+
+    function newLocationFromFrame() {
+      const f = currentFrame();
+      if (!f) { setStatus('工作台没有当前帧', '#e8c46a'); return; }
+      let name = '帧' + f.id;
+      let i = 2;
+      while (Object.prototype.hasOwnProperty.call(locations(), name)) { name = '帧' + f.id + '-' + i; i += 1; }
+      const loc = mapV2NewLocation(name);
+      loc.recognize.features = [{ kind: 'ocr_text', text: '' }];
+      currentMap().locations[name] = loc;
+      state.selected = name;
+      markDirty();
+      renderAll();
+      setStatus('已用当前帧 #' + f.id + ' 新建所在地「' + name + '」（未保存；可「从当前帧 OCR 取…」填判定条件）', '#7bd88f');
+    }
+
+    function stepFrame(delta) {
+      const frames = currentFrameList();
+      if (!frames.length) return;
+      const ids = frames.map((f) => Number(f.id));
+      let idx = ids.indexOf(Number(currentFrameIdSafe()));
+      if (idx < 0) idx = 0;
+      idx = Math.max(0, Math.min(ids.length - 1, idx + delta));
+      selectWorkbenchFrame(ids[idx]);
     }
 
     function bind() {
       const on = (id, fn) => { const b = el(id); if (b) b.addEventListener('click', fn); };
-      on('map-refresh', loadMap);
-      on('map-validate', validateMap);
-      on('map-save', saveMap);
-      on('map-node-new', () => {
-        state.selectedNodeId = '';
-        renderAll();
-      });
-      on('map-node-from-frame', () => {
-        // seq137：不再调用 /map/probe（78s）；先用当前帧创建节点，用户可再用
-        // “从当前帧 OCR 添加…”按需取行（probe 已缩面为只取 OCR）。
-        const def = mapNewNodeDefaults({ frameId: state.frameId });
-        const map = currentMap();
-        map.nodes.push(def);
-        if (!map.hub) map.hub = def.id;
-        state.selectedNodeId = def.id;
+      on('map-v2-close', () => { if (window.__oasActivatePanel) window.__oasActivatePanel('panel-assets'); });
+      on('map-v2-reload', () => { if (state.dirty && !window.confirm('放弃未保存修改并重载地图？')) return; loadMap(); });
+      on('map-v2-validate', validateMap);
+      on('map-v2-save', saveMap);
+      on('map-v2-location-new', newLocation);
+      on('map-v2-use-frame', newLocationFromFrame);
+      on('map-v2-frame-prev', () => stepFrame(-1));
+      on('map-v2-frame-next', () => stepFrame(1));
+      on('map-v2-identify', identifyCurrent);
+      on('map-v2-plan', planRoute);
+      on('map-v2-dry', () => navigateDebug(false));
+      on('map-v2-real', () => navigateDebug(true));
+      const search = el('map-v2-location-search');
+      if (search) search.addEventListener('input', () => { state.locationQuery = search.value; renderLocationList(); });
+      const frameSearch = el('map-v2-frame-search');
+      if (frameSearch) frameSearch.addEventListener('input', () => { state.frameQuery = frameSearch.value; renderFramePane(); });
+      const fallback = el('map-v2-fallback');
+      if (fallback) fallback.addEventListener('change', () => {
+        currentMap().fallback_task = fallback.value.trim() || '返回庭院';
         markDirty();
+      });
+      document.addEventListener('oas:frame-changed', () => {
+        if (!state.active) return;
+        state.probe = null;
         renderAll();
-        setStatus('已用当前帧创建节点「' + def.id + '」（未保存；可点「从当前帧 OCR 添加…」补充特征）', '#7bd88f');
+        previewHits().catch(() => {});
       });
-      on('map-node-delete', deleteSelectedNode);
-      on('map-state-run', identifyState);
-      on('map-plan-run', planRoute);
-      on('map-nav-dry', () => navigateDebug(false));
-      on('map-nav-real', () => navigateDebug(true));
-      on('map-new-task', createNavigateTask);
-      const frameSel = el('map-node-frame-select');
-      if (frameSel) frameSel.addEventListener('change', () => {
-        if (frameSel.value) { state.frameId = Number(frameSel.value); drawFrame(); }
-      });
-      on('map-frame-prev', () => stepFrame(-1));
-      on('map-frame-next', () => stepFrame(1));
     }
 
-    function stepFrame(delta) {
-      if (!state.frames.length) return;
-      const ids = state.frames.map((f) => Number(f.id));
-      let idx = ids.indexOf(Number(state.frameId));
-      if (idx < 0) idx = 0;
-      idx = Math.max(0, Math.min(ids.length - 1, idx + delta));
-      state.frameId = ids[idx];
-      renderFrameInfo();
-      drawFrame();
-    }
-
-    async function onActivate() {
-      bindOnce();
-      await refreshAll();
-    }
     let bound = false;
     function bindOnce() {
       if (bound) return;
       bound = true;
       bind();
     }
-    // 首次载入页面时也准备 DOM（不自动请求，等切到地图页再加载）。
-    state.prepare = function () { bindOnce(); };
     window.OAS_MAP_UI = {
-      onActivate: onActivate,
+      onActivate: async function () {
+        state.active = true;
+        bindOnce();
+        await refreshAll();
+      },
+      onDeactivate: function () { state.active = false; },
       refresh: refreshAll,
-      getMap: currentMap,
       state: state,
+      getMap: currentMap,
     };
-    bindOnce();
   }
 
   window.OAS_MAP = PURE;
   if (typeof document !== 'undefined') {
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', boot);
-    } else {
-      boot();
-    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+    else boot();
   }
 })();

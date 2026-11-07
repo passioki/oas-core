@@ -95,7 +95,7 @@
     long_press: [],
     curve_swipe: [],
     drag: [],
-    navigate: [{ key: 'target', label: '目标页面（全局地图节点）', type: 'node' }],
+    navigate: [{ key: 'target', label: '目标所在地（全局地图 V2）', type: 'node' }],
     set_var: [{ key: 'name', label: '变量名', type: 'text' }, { key: 'value', label: '值（表达式）', type: 'text' }],
     inc_var: [{ key: 'name', label: '变量名', type: 'text' }, { key: 'by', label: '增量（数字/表达式）', type: 'text' }],
     ocr_to_var: [{ key: 'sel', label: 'OCR 素材', type: 'asset' }, { key: 'var', label: '变量名', type: 'text' }],
@@ -784,7 +784,7 @@
     const target = String(args.target === undefined || args.target === null ? '' : args.target).trim();
     const errors = [];
     if (!target) {
-      errors.push('导航目标为空：请选择全局地图中的目标页面/节点');
+      errors.push('导航目标为空：请选择全局地图中的目标所在地');
       return errors;
     }
     if (mapLoaded === false) {
@@ -793,7 +793,7 @@
     }
     const ids = Array.isArray(mapNodes) ? mapNodes.map((x) => String(x)) : [];
     if (ids.indexOf(target) < 0) {
-      errors.push('导航目标「' + target + '」不存在于全局地图' +
+      errors.push('导航目标「' + target + '」不存在于全局地图 V2' +
         (ids.length ? '（可选：' + ids.slice(0, 8).join('、') + (ids.length > 8 ? '…' : '') + '）' : '（地图暂无节点）'));
     }
     return errors;
@@ -1343,7 +1343,7 @@
       case 'key': return `keycode ${esc(a.keycode)}`;
       case 'restart_app': return esc(a.package) || '（未填包名）';
       case 'drag': return `${a.direction || '?'} ${a.from ? JSON.stringify(a.from).slice(0, 30) : ''}`;
-      case 'navigate': return `导航到「${esc(a.target) || '（未选择节点）'}」`;
+      case 'navigate': return `导航到所在地「${esc(a.target) || '（未选择）'}」`;
       case 'finish': return esc(a.exit);
       case 'set_var': return `${esc(a.name)} = ${esc(a.value)}`;
       case 'inc_var': return `${esc(a.name)} += ${esc(a.by)}`;
@@ -5925,8 +5925,15 @@
         const ms = await mr.json();
         if (ms && ms.ok) {
           B.mapLoaded = !!ms.exists;
-          const nodes = ms.map && Array.isArray(ms.map.nodes) ? ms.map.nodes : [];
-          B.mapNodes = nodes.map((n) => String(n.id));
+          // seq138 V2-C：V2 map 用 locations 名称索引；V1 nodes 仅兼容旧服务端。
+          const mapv = ms.map && typeof ms.map === 'object' ? ms.map : null;
+          let names = [];
+          if (mapv && mapv.locations && typeof mapv.locations === 'object' && !Array.isArray(mapv.locations)) {
+            names = Object.keys(mapv.locations).sort((a, b) => a.localeCompare(b, 'zh'));
+          } else if (mapv && Array.isArray(mapv.nodes)) {
+            names = mapv.nodes.map((n) => String(n.id));
+          }
+          B.mapNodes = names;
           B.mapError = '';
         } else {
           B.mapLoaded = false;

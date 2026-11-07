@@ -1056,10 +1056,6 @@ function activatePage(name) {
     window.OAS_BUILDER.activate((taskName && taskName.value || '').trim());
   }
   else if (name === 'instances') refreshInstance();
-  else if (name === 'map' && window.OAS_MAP_UI && typeof window.OAS_MAP_UI.onActivate === 'function') {
-    // seq136 D1-M3：地图页懒加载（节点/帧/素材 + /map）。
-    window.OAS_MAP_UI.onActivate();
-  }
   else if (name === 'settings') refreshSettings();
 }
 
@@ -7330,6 +7326,15 @@ function renderFrameAssetViews() {
   return true;
 }
 
+// seq138 V2-C：工作台当前帧唯一状态——地图 tab 通过该事件实时刷新预览/命中。
+function notifyWorkbenchFrameChanged() {
+  try {
+    document.dispatchEvent(new CustomEvent('oas:frame-changed', {
+      detail: { frameId: currentFrameId },
+    }));
+  } catch (e) { /* CustomEvent unsupported: map tab falls back to activation read */ }
+}
+
 async function refreshFrames() {
   if (!framesList) return;
   try {
@@ -7416,6 +7421,7 @@ async function refreshFrames() {
     renderFramesList();
     framesStatus.textContent = `共 ${frames.length} 帧；拖动排序/换分组，点行切换当前帧`;
     await refreshAssetPositionFrames();
+    notifyWorkbenchFrameChanged();
   } catch (e) {
     framesStatus.textContent = '图片列表异常：' + e;
   }
@@ -7541,6 +7547,7 @@ async function selectFrame(id) {
     boxes = [];
     selectedBox = null;
     await loadFrame();
+    notifyWorkbenchFrameChanged();
     await refreshState();
     draw();
     log(`已切换当前帧 #${id}（${s.width}x${s.height}）`);
@@ -8971,6 +8978,15 @@ async function doRunTask() {
     for (const b of railButtons) b.classList.toggle('active', b.dataset.panel === panelId);
     for (const p of document.querySelectorAll('.rail-panels .panel')) {
       p.classList.toggle('active', p.id === panelId);
+    }
+    // seq138 V2-C：地图是工作台最后一个 tab；激活时展开大工作区并共享当前帧。
+    document.body.classList.toggle('map-tab-active', panelId === 'panel-map');
+    if (window.OAS_MAP_UI) {
+      if (panelId === 'panel-map' && typeof window.OAS_MAP_UI.onActivate === 'function') {
+        window.OAS_MAP_UI.onActivate();
+      } else if (typeof window.OAS_MAP_UI.onDeactivate === 'function') {
+        window.OAS_MAP_UI.onDeactivate();
+      }
     }
     // seq130（#2）：进入点击分布面板时刷新运行记录（2s 节流）并重绘叠加。
     if (panelId === 'panel-click') {
